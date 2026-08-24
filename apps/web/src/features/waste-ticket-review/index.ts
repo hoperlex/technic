@@ -1,0 +1,6 @@
+/**
+ * Разбор талонов вывоза в карточке заявки и баннер состояния подсистемы (ADR 0114).
+ * Снаружи берут `@features/waste-ticket-review`.
+ */
+export { TicketRecognitionBanner } from './ui/TicketRecognitionBanner';
+export { WasteTicketsPanel } from './ui/WasteTicketsPanel';

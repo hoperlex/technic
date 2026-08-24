@@ -8,6 +8,22 @@ import { archiveUnverifiedRegistrations, purgeExpiredRegistrations } from './ret
 import { PermanentMailError } from './mail-transport';
 import { createMailAccounts } from './mail-accounts';
 import { tickMailings } from './mail-scheduler';
+import {
+  createEngineFrom,
+  preprocessOptionsFrom,
+  readTicketOcrConfig,
+  runTicketRecognitionJob,
+} from './ticket-ocr';
+import {
+  claimJobs,
+  completeJob,
+  deferJob,
+  extendLease,
+  killJob,
+  reclaimExpiredJobs,
+  retryJob,
+  type JobRow,
+} from './job-lease';
 
 const logger = pino({
   level: process.env.LOG_LEVEL ?? 'info',
@@ -40,8 +56,61 @@ const REGISTRATION_TTL_DAYS = Number(process.env.USER_REJECTED_REGISTRATION_TTL_
 const REGISTRATION_EXPIRY_DAYS = Number(process.env.MAIL_REGISTRATION_EXPIRY_DAYS ?? 7);
 const WORKER_ID = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
+/**
+ * Аренда задачи: сколько времени строка `jobs` считается занятой этим воркером. По истечении её
+ * забирает обратно очередь (`reclaimExpiredJobs`), поэтому аренда — это ответ на вопрос «через
+ * сколько после смерти процесса задача снова кому-то достанется», а не «сколько она выполняется».
+ *
+ * Пять минут остаются основой: столько стояло в запросе захвата с самого начала, и для всего, что
+ * очередь делает сегодня (удалить объект из S3, отдать письмо SMTP), этого с запасом. Настройка
+ * нужна для другого — эксплуатация должна уметь развести две беды, которые тянут срок в разные
+ * стороны: слишком короткая аренда отдаёт задачу второму воркеру, пока её делает первый, слишком
+ * длинная оставляет очередь стоять после падения процесса.
+ *
+ * Ниже получаса не берём вовсе: аренда короче интервала опроса и разумного продления — это не
+ * настройка, а способ уронить очередь опечаткой в `prod.env`.
+ */
+const DEFAULT_LEASE_MS = 5 * 60_000;
+const MIN_LEASE_MS = 30_000;
+
+function readLeaseMs(): number {
+  const raw = process.env.WORKER_LEASE_MS;
+  if (!raw) return DEFAULT_LEASE_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < MIN_LEASE_MS) {
+    logger.warn(
+      { WORKER_LEASE_MS: raw, minMs: MIN_LEASE_MS, usedMs: DEFAULT_LEASE_MS },
+      'WORKER_LEASE_MS задан неверно — берётся значение по умолчанию',
+    );
+    return DEFAULT_LEASE_MS;
+  }
+  return value;
+}
+
+const LEASE_MS = readLeaseMs();
+
+/**
+ * Как часто продлевается аренда взятых задач. Треть срока — чтобы одно неудавшееся продление
+ * (сеть моргнула, база перезапустилась) не стоило задаче аренды: до истечения останется ещё две
+ * попытки. Пять секунд снизу — чтобы при короткой аренде продление не превратилось в поток
+ * запросов к базе.
+ */
+const LEASE_HEARTBEAT_MS = Math.max(5_000, Math.floor(LEASE_MS / 3));
+
+/**
+ * Сколько просроченных задач возвращается в очередь за один заход. С размером пачки не связано:
+ * вернуть задачу в очередь — это одна строка `UPDATE`, а выполнить её — секунды и сеть.
+ */
+const RECLAIM_BATCH = 50;
+
 const JOB_DELETE_S3_OBJECT = 'delete_s3_object';
 const JOB_SEND_EMAIL = 'send_email';
+/**
+ * Прочитать талоны приложенного файла (ADR 0114). Единица работы — файл, а не страница: в
+ * транзакции закрытия заявки страниц ещё не существует, есть только `fileId`, и раскладывает файл
+ * на страницы уже сам воркер (Р11).
+ */
+const JOB_RECOGNIZE_WASTE_TICKET_FILE = 'recognize_waste_ticket_file';
 
 // ── Почта ──
 //
@@ -55,6 +124,17 @@ const MAIL_MAX_PER_MINUTE = Number(process.env.MAIL_MAX_PER_MINUTE ?? 60);
 const MAILING_TICK_MS = Number(process.env.MAILING_TICK_INTERVAL_MS ?? 60_000);
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL ?? 'http://technic-api:3000';
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN ?? '';
+/**
+ * Часы автозакрытия заявок оргтехники (план `docs/office-equipment-requests-rework-plan.md`, §7.3,
+ * решение Н7): раз в пять минут просим API добрать созревшие заявки «Решена» и закрыть их.
+ *
+ * Минута здесь была бы лишней точностью: срок молчания заказчика — сутки, и опоздание закрытия на
+ * пять минут не значит ничего. Само правило (кого закрывать, с какой даты считать сутки и сколько
+ * штук за раз) живёт в API — worker знает только время, как и у рассылок.
+ */
+const SERVICE_AUTO_CLOSE_TICK_MS = Number(
+  process.env.SERVICE_AUTO_CLOSE_TICK_INTERVAL_MS ?? 300_000,
+);
 
 /**
  * Каналы поднимаются на старте, а не при первом письме: письмо ждёт очереди часами, и отказ «не
@@ -121,14 +201,6 @@ async function deleteObject(objectKey: string): Promise<void> {
     if (name === 'NoSuchKey' || name === 'NotFound') return; // идемпотентно
     throw e;
   }
-}
-
-interface JobRow {
-  id: string;
-  type: string;
-  payload: Record<string, unknown>;
-  attempts: number;
-  max_attempts: number;
 }
 
 interface MailRow {
@@ -213,9 +285,45 @@ async function handleJob(job: JobRow): Promise<void | { deferUntil: Date }> {
     }
     case JOB_SEND_EMAIL:
       return sendEmail(job);
+    case JOB_RECOGNIZE_WASTE_TICKET_FILE:
+      return recognizeWasteTicketFile(job);
     default:
       throw new Error(`Неизвестный тип задачи: ${job.type}`);
   }
+}
+
+/**
+ * Распознавание талонов одного файла. Порядок транзакций и все проверки живут в
+ * `ticket-ocr/job.ts` — здесь только сборка зависимостей и признак «модуль выключен».
+ *
+ * Выключенный модуль не роняет задачу и не тратит попытку: талон мог быть приложен, пока
+ * распознавание было включено, а к моменту разбора его выключили — это состояние конфигурации, а
+ * не сбой задачи.
+ */
+async function recognizeWasteTicketFile(job: JobRow): Promise<void | { deferUntil: Date }> {
+  const cfg = readTicketOcrConfig();
+  if (!cfg.enabled) {
+    logger.info({ jobId: job.id }, 'Распознавание талонов выключено: задача пропущена');
+    return;
+  }
+  const requestId = String(job.payload.requestId ?? '');
+  const fileId = String(job.payload.fileId ?? '');
+  if (!requestId || !fileId) throw new Error('Задача распознавания без requestId или fileId');
+
+  return runTicketRecognitionJob(
+    {
+      pool,
+      s3,
+      bucket,
+      engine: createEngineFrom(cfg),
+      model: cfg.model,
+      escalationModel: cfg.escalationModel,
+      preprocess: preprocessOptionsFrom(cfg),
+      log: (meta, msg) => logger.info(meta, msg),
+    },
+    { requestId, fileId, forced: job.payload.forced === true },
+    job.id,
+  );
 }
 
 /**
@@ -223,7 +331,7 @@ async function handleJob(job: JobRow): Promise<void | { deferUntil: Date }> {
  * попытки. Журнал обязан это показывать — иначе `pending` в нём означало бы и «ждёт очереди», и
  * «никогда не отправится», а разбирают их по-разному.
  */
-async function markMailFailed(job: JobRow, error: string): Promise<void> {
+async function markMailFailed(job: Pick<JobRow, 'type' | 'payload'>, error: string): Promise<void> {
   if (job.type !== JOB_SEND_EMAIL) return;
   const mailId = String(job.payload.mailMessageId ?? '');
   if (!mailId) return;
@@ -240,65 +348,192 @@ function backoffMs(attempts: number): number {
   return base * 1000 + jitter;
 }
 
-async function processJobs(): Promise<number> {
-  const claimed = await pool.query<JobRow>(
-    `UPDATE jobs SET status='running', locked_by=$1, locked_until=now() + interval '5 minutes', updated_at=now()
-     WHERE id IN (
-       SELECT id FROM jobs
-       WHERE status='pending' AND next_run_at <= now()
-       ORDER BY next_run_at
-       LIMIT $2
-       FOR UPDATE SKIP LOCKED
-     )
-     RETURNING id, type, payload, attempts, max_attempts`,
-    [WORKER_ID, BATCH],
+/**
+ * Задача, которую у воркера отобрали, пока он её выполнял: аренда истекла, очередь вернула строку,
+ * и делает её теперь кто-то другой. Результат в базу не пишется — иначе он затёр бы чужую работу.
+ * В журнал это идёт предупреждением, а не ошибкой: сама задача не потеряна, но частота таких
+ * записей — прямой сигнал, что аренда короче, чем реальная длительность задач.
+ */
+function warnJobTaken(job: JobRow, what: string): void {
+  logger.warn(
+    { jobId: job.id, type: job.type, workerId: WORKER_ID },
+    `Задача больше не принадлежит этому воркеру: ${what} не записан`,
   );
+}
 
-  for (const job of claimed.rows) {
-    try {
-      const outcome = await handleJob(job);
-      if (outcome?.deferUntil) {
-        // Отложено, а не выполнено и не провалено: попытки не тратятся. Так упирается в потолок
-        // отправки рассылка на сотню адресов — она растягивается во времени, а не сгорает.
-        await pool.query(
-          `UPDATE jobs SET status='pending', next_run_at=$2, locked_by=NULL, locked_until=NULL, updated_at=now() WHERE id=$1`,
-          [job.id, outcome.deferUntil],
-        );
-        continue;
-      }
-      await pool.query(`UPDATE jobs SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
-    } catch (e) {
-      const attempts = job.attempts + 1;
-      const message = e instanceof Error ? e.message : String(e);
-      // Окончательный отказ SMTP (5xx): повторять нечего, а пять заходов по несуществующему адресу
-      // портят репутацию отправителя у провайдера.
-      if (e instanceof PermanentMailError) {
-        await pool.query(
-          `UPDATE jobs SET status='dead', attempts=$2, last_error=$3, updated_at=now() WHERE id=$1`,
-          [job.id, attempts, message],
-        );
-        await markMailFailed(job, message);
-        logger.error({ jobId: job.id, type: job.type }, `Письмо не будет отправлено: ${message}`);
-        continue;
-      }
-      if (attempts >= job.max_attempts) {
-        await pool.query(
-          `UPDATE jobs SET status='dead', attempts=$2, last_error=$3, updated_at=now() WHERE id=$1`,
-          [job.id, attempts, message],
-        );
-        await markMailFailed(job, message);
-        logger.error({ jobId: job.id, type: job.type }, `Задача переведена в dead: ${message}`);
-      } else {
-        const next = new Date(Date.now() + backoffMs(attempts));
-        await pool.query(
-          `UPDATE jobs SET status='pending', attempts=$2, next_run_at=$3, last_error=$4, updated_at=now() WHERE id=$1`,
-          [job.id, attempts, next, message],
-        );
-        logger.warn({ jobId: job.id, attempts }, `Повтор задачи: ${message}`);
+/**
+ * Продление аренды всех задач, которые воркер держит прямо сейчас (ADR-плана Р5: «аренда
+ * продлевается на время длинного вызова»).
+ *
+ * Почему продление, а не «захват долгих типов по одной с увеличенной арендой» — из двух
+ * предложенных планом решений выбрано это:
+ *
+ *   1. увеличенная аренда требует знать длительность ЗАРАНЕЕ, а именно это знание сегодня и
+ *      подводит: пять минут были выбраны как «с запасом», и запаса не хватило. Внешний вызов
+ *      растягивается провайдером, растеризация — размером файла, отправка — почтовым сервером;
+ *      любое новое число окажется таким же угаданным, только больше;
+ *   2. одиночный захват лечит только «долгий тип». Пачка из десяти обычных задач по минуте
+ *      переживает пятиминутную аренду, не будучи долгой ни в одной из них: срок ставится при
+ *      захвате всей пачке разом, а выполняется она последовательно. Поэтому продлеваются ВСЕ
+ *      удерживаемые задачи — и та, что выполняется сейчас, и те, что ждут своей очереди;
+ *   3. продление опирается на факт («процесс жив и работает»), а не на прогноз, и потому
+ *      единственное, что оставляет аренду выполняющей свою работу: умер процесс — продлений нет,
+ *      и задача уходит обратно в очередь ровно через срок аренды.
+ *
+ * Захват долгих типов по одной остаётся полезным, но по другой причине — не корректности, а
+ * пропускной способности: двухминутное распознавание не должно держать за собой девять писем.
+ * Это делается размером пачки в момент, когда такие типы появятся, и аренды не касается.
+ */
+function startLeaseHeartbeat(held: Set<string>): () => void {
+  let inFlight = false;
+  const timer = setInterval(() => {
+    // Пропуск такта, если предыдущее продление ещё идёт: медленная база не должна получать
+    // очередь запросов, каждый из которых делает то же самое.
+    if (inFlight || held.size === 0) return;
+    const ids = [...held];
+    inFlight = true;
+    void extendLease(pool, { workerId: WORKER_ID, jobIds: ids, leaseMs: LEASE_MS })
+      .then((extended) => {
+        if (extended < ids.length) {
+          logger.warn(
+            { held: ids.length, extended },
+            'Аренда продлена не у всех задач: часть уже отобрана очередью',
+          );
+        }
+      })
+      .catch((err: unknown) => {
+        // Неудавшееся продление — не отказ задачи: она продолжает выполняться, а если база не
+        // вернётся до конца аренды, задачу подберёт другой воркер, и записать результат нам уже
+        // не дадут. Ронять из-за этого цикл нечем и незачем.
+        logger.warn({ err }, 'Не удалось продлить аренду задач');
+      })
+      .finally(() => {
+        inFlight = false;
+      });
+  }, LEASE_HEARTBEAT_MS);
+  // Таймер не держит процесс: при остановке воркер не должен ждать очередного такта продления.
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+/**
+ * Возврат в очередь задач, чью аренду никто не продлил. Первым делом в такте — до захвата: иначе
+ * задача, брошенная упавшим процессом, ждала бы своей очереди на такт дольше без всякой причины.
+ *
+ * Отдельно разбирается случай, когда возврат исчерпал попытки: письмо, задача которого ушла в
+ * `dead`, обязано перестать быть `pending` в журнале — иначе `pending` там означает и «ждёт
+ * очереди», и «уже никогда не уйдёт», а разбирают их по-разному (см. `markMailFailed`).
+ */
+async function reclaimExpiredSafely(): Promise<void> {
+  try {
+    const reclaimed = await reclaimExpiredJobs(pool, { limit: RECLAIM_BATCH });
+    if (reclaimed.length === 0) return;
+    const dead = reclaimed.filter((job) => job.status === 'dead');
+    logger.warn(
+      { count: reclaimed.length, dead: dead.length, ids: reclaimed.map((job) => job.id) },
+      'Задачи с истёкшей арендой возвращены в очередь',
+    );
+    for (const job of dead) {
+      await markMailFailed(job, 'Аренда задачи истекла, попытки исчерпаны');
+      logger.error(
+        { jobId: job.id, type: job.type, attempts: job.attempts },
+        'Задача переведена в dead: аренда истекала столько раз, сколько было попыток',
+      );
+    }
+  } catch (e) {
+    // Уборка не должна ронять такт: захват и выполнение задач от неё не зависят.
+    logger.warn({ err: e }, 'Не удалось вернуть в очередь задачи с истёкшей арендой');
+  }
+}
+
+async function processJobs(): Promise<number> {
+  await reclaimExpiredSafely();
+
+  const claimed = await claimJobs(pool, { workerId: WORKER_ID, limit: BATCH, leaseMs: LEASE_MS });
+  if (claimed.length === 0) return 0;
+
+  // Пачка удерживается целиком, пока не выполнена: задача, ждущая своей очереди внутри пачки,
+  // занимает аренду ровно так же, как выполняющаяся, — очередь её уже никому не отдаст.
+  const held = new Set(claimed.map((job) => job.id));
+  const stopHeartbeat = startLeaseHeartbeat(held);
+  try {
+    for (const job of claimed) {
+      try {
+        const outcome = await handleJob(job);
+        if (outcome?.deferUntil) {
+          // Отложено, а не выполнено и не провалено: попытки не тратятся. Так упирается в потолок
+          // отправки рассылка на сотню адресов — она растягивается во времени, а не сгорает.
+          const owned = await deferJob(pool, {
+            jobId: job.id,
+            workerId: WORKER_ID,
+            nextRunAt: outcome.deferUntil,
+          });
+          if (!owned) warnJobTaken(job, 'перенос');
+          continue;
+        }
+        const owned = await completeJob(pool, { jobId: job.id, workerId: WORKER_ID });
+        if (!owned) warnJobTaken(job, 'результат');
+      } catch (e) {
+        const attempts = job.attempts + 1;
+        const message = e instanceof Error ? e.message : String(e);
+        // Окончательный отказ SMTP (5xx): повторять нечего, а пять заходов по несуществующему
+        // адресу портят репутацию отправителя у провайдера.
+        if (e instanceof PermanentMailError) {
+          const owned = await killJob(pool, {
+            jobId: job.id,
+            workerId: WORKER_ID,
+            attempts,
+            error: message,
+          });
+          if (!owned) {
+            warnJobTaken(job, 'отказ SMTP');
+            continue;
+          }
+          // Журнал письма правится только после того, как задача признана нашей: иначе воркер,
+          // у которого аренда истекла, пометил бы `failed` письмо, которое второй воркер прямо
+          // сейчас успешно отправляет.
+          await markMailFailed(job, message);
+          logger.error({ jobId: job.id, type: job.type }, `Письмо не будет отправлено: ${message}`);
+          continue;
+        }
+        if (attempts >= job.max_attempts) {
+          const owned = await killJob(pool, {
+            jobId: job.id,
+            workerId: WORKER_ID,
+            attempts,
+            error: message,
+          });
+          if (!owned) {
+            warnJobTaken(job, 'исчерпание попыток');
+            continue;
+          }
+          await markMailFailed(job, message);
+          logger.error({ jobId: job.id, type: job.type }, `Задача переведена в dead: ${message}`);
+        } else {
+          const next = new Date(Date.now() + backoffMs(attempts));
+          const owned = await retryJob(pool, {
+            jobId: job.id,
+            workerId: WORKER_ID,
+            attempts,
+            nextRunAt: next,
+            error: message,
+          });
+          if (!owned) {
+            warnJobTaken(job, 'повтор');
+            continue;
+          }
+          logger.warn({ jobId: job.id, attempts }, `Повтор задачи: ${message}`);
+        }
+      } finally {
+        // Задача разобрана — продлевать её аренду больше нечем и незачем: следующий такт
+        // продления должен видеть только то, что воркер действительно держит.
+        held.delete(job.id);
       }
     }
+  } finally {
+    stopHeartbeat();
   }
-  return claimed.rows.length;
+  return claimed.length;
 }
 
 // ── Уборка брошенных файлов (Р18) ──
@@ -540,6 +775,7 @@ async function cleanupRejectedRegistrations(): Promise<void> {
 let stopping = false;
 let lastCleanup = 0;
 let lastMailingTick = 0;
+let lastServiceAutoCloseTick = 0;
 
 /**
  * Тик планировщика рассылок. Пропускается молча, когда почта выключена или секрет не задан: без
@@ -559,14 +795,61 @@ async function tickMailingsSafely(): Promise<void> {
   }
 }
 
+/**
+ * Тик автозакрытия заявок оргтехники (Н7). Пропускается молча без секрета: `/internal/*` без него
+ * всё равно откажет.
+ *
+ * От почты не зависит вовсе — это движение статуса, а не рассылка: при `MAIL_ENABLED=false` заявки
+ * обязаны закрываться так же, иначе выключенная почта тихо остановила бы цикл заявок.
+ */
+async function tickServiceAutoCloseSafely(): Promise<void> {
+  if (!INTERNAL_API_TOKEN) return;
+  try {
+    const res = await fetch(`${INTERNAL_API_URL}/internal/service-requests/auto-close`, {
+      method: 'POST',
+      headers: { 'x-internal-token': INTERNAL_API_TOKEN },
+    });
+    if (!res.ok) throw new Error(`API ответил ${res.status}`);
+    const stats = (await res.json()) as {
+      taken: number;
+      closed: number;
+      skipped: number;
+      failed: number;
+    };
+    // В лог — только прогоны, которые что-то сделали: пустых здесь большинство, и они превратили бы
+    // журнал worker в шум по строке каждые пять минут.
+    if (stats.closed > 0 || stats.failed > 0) {
+      logger.info(stats, 'Автозакрытие заявок оргтехники');
+    }
+  } catch (e) {
+    // API может быть недоступен при выкатке. Заявка никуда не денется: отбор смотрит на состояние,
+    // а не на задачу, и следующий тик возьмёт её снова (Н7).
+    logger.warn({ err: e }, 'Автозакрытие заявок оргтехники: API не ответил');
+  }
+}
+
 async function loop(): Promise<void> {
-  logger.info({ workerId: WORKER_ID }, 'Worker запущен');
+  // Аренда и продление — в журнал старта: когда задача «выполнилась дважды», первым делом
+  // спрашивают именно эти два числа, а они приходят из окружения и могут отличаться от кода.
+  logger.info(
+    {
+      workerId: WORKER_ID,
+      batch: BATCH,
+      leaseMs: LEASE_MS,
+      leaseHeartbeatMs: LEASE_HEARTBEAT_MS,
+    },
+    'Worker запущен',
+  );
   while (!stopping) {
     try {
       const processed = await processJobs();
       if (Date.now() - lastMailingTick > MAILING_TICK_MS) {
         lastMailingTick = Date.now();
         await tickMailingsSafely();
+      }
+      if (Date.now() - lastServiceAutoCloseTick > SERVICE_AUTO_CLOSE_TICK_MS) {
+        lastServiceAutoCloseTick = Date.now();
+        await tickServiceAutoCloseSafely();
       }
       if (Date.now() - lastCleanup > CLEANUP_INTERVAL_MS) {
         lastCleanup = Date.now();

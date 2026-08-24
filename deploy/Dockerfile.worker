@@ -1,9 +1,21 @@
-# Worker (фоновые задачи PostgreSQL + S3 cleanup).
+# Worker (фоновые задачи PostgreSQL + S3 cleanup + распознавание талонов).
 FROM node:24-bookworm-slim
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
+
+# Растеризатор PDF для распознавания талонов (ADR 0114). Талоны приезжают и картинкой, и
+# многостраничным PDF со сканера МФУ, а `sharp` PDF не рендерит вовсе — нужен отдельный
+# растеризатор. Без него любой PDF отдаёт «нет бинаря», и портал показывает не «файл не прочитан»,
+# а «нужен администратор»: отказ терминальный и относится ко всей подсистеме, а не к одному файлу.
+#
+# `libheif-examples` — ради `heif-convert`: айфоны отдают HEIC, а сборка libvips в `sharp` умеет
+# только AV1-ветку формата. Без конвертера такой файл получает честный отказ с действием для
+# человека («сохраните как JPEG»), но проще поставить 2 МБ пакет, чем объяснять это оператору.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends poppler-utils libheif-examples \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
