@@ -184,14 +184,28 @@ export function createProxyEngine(cfg: ProxyEngineConfig): RecognitionEngine {
           { role: 'system', content: SYSTEM_PROMPT },
           {
             role: 'user',
+            /*
+             * ЗАДАНИЕ ИДЁТ ПЕРЕД КАРТИНКОЙ, и это не косметика. Проверено на живом прокси
+             * 24.08.2026 с `google/gemini-3.1-flash-lite`, которую выбирает вариант A:
+             *
+             *   · текст первым, `temperature: 0` → `{"tickets":[],"unreadable":[]}`, 8 токенов;
+             *   · картинка первой, `temperature: 0` → вырождение: модель печатает
+             *     `"00000000000…"` до упора в `max_tokens`, 1985 токенов и `finish_reason: length`
+             *     — то есть каждый скан оплачен и ни один не прочитан;
+             *   · картинка первой без `temperature` → ответ приходит, но модель ВЫДУМЫВАЕТ талон
+             *     на пустом листе.
+             *
+             * Причина у порядка простая: инструкция, прочитанная до изображения, задаёт модели
+             * задачу; прочитанная после — конкурирует с уже начатым описанием картинки.
+             */
             content: [
+              { type: 'text', text: USER_TEXT },
               {
                 type: 'image_url',
                 image_url: {
                   url: `data:${page.mediaType};base64,${page.buffer.toString('base64')}`,
                 },
               },
-              { type: 'text', text: USER_TEXT },
             ],
           },
         ],
