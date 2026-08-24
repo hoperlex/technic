@@ -9,6 +9,7 @@ import type {
 } from '@technic/contracts';
 import { wasteTicketKeys, wasteTicketsApi, wasteTicketsQuery } from '@entities/waste-ticket';
 import { errorMessage } from '../../../utils/format';
+import { BlindCheckPanel } from './BlindCheckPanel';
 import { TicketFormModal } from './TicketFormModal';
 
 /**
@@ -275,6 +276,10 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
           ]}
         />
       )}
+
+      {/* Перепроверка живёт рядом с талонами, а не отдельным экраном: разбирает её тот же
+          человек и тем же правом, а расхождение двух чтений — такая же работа, как замечание. */}
+      <BlindCheckPanel requestId={requestId} checks={data.blindChecks} />
 
       <TicketFormModal
         requestId={requestId}

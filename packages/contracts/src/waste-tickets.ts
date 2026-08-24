@@ -713,6 +713,12 @@ export interface WasteRequestTicketsDto {
   acceptanceAllowed: boolean;
   /** Журнал попыток по страницам заявки (Р29): сворачиваемый блок, только с правом разбора. */
   attempts: WasteTicketAttemptDto[];
+  /**
+   * Слепые перепроверки талонов этой заявки (Р31). Приходят только разбирающему и только после
+   * того, как проверяющий своё прислал: до этого показывать нечего, а показанное задание перестало
+   * бы быть слепым.
+   */
+  blindChecks: WasteTicketBlindCheckDto[];
   /** Сумма объёма по неотклонённым талонам без простоев (Р18) — та цифра, что стоит в замечании. */
   ticketsVolumeM3: number;
   badge: WasteTicketBadgeDto;

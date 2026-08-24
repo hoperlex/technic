@@ -14,12 +14,15 @@ import {
   wasteTicketNumberFuzzy,
   wasteTicketNumberKey,
   type WasteTicketAttemptDto,
+  type WasteTicketBlindCheckDto,
+  type WasteTicketBlindCheckField,
   type WasteTicketCandidateDto,
   type WasteTicketDto,
   type WasteTicketField,
   type WasteTicketFileDto,
   type WasteTicketPageDto,
 } from '@technic/contracts';
+import { config } from '../config';
 import { db } from '../db/client';
 import {
   counterparties,
@@ -39,6 +42,10 @@ import { requirePrincipal } from '../auth/plugin';
 import { assertOperatorScope, assertWasteObjectScope } from '../lib/access';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
+import {
+  blindBaselineFingerprint,
+  shouldSampleBlindCheck,
+} from '../services/waste-ticket-blind';
 import { wasteTicketCheckFingerprint, wasteTicketChecks } from '../services/waste-ticket-checks';
 import {
   loadTicketCheckInputs,
@@ -331,7 +338,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       ...new Set(tickets.map((t) => t.operatorCounterpartyId).filter((id): id is string => !!id)),
     ];
     const ticketIds = tickets.map((t) => t.id);
-    const [personRows, operatorRows, proposalRows] = await Promise.all([
+    const [personRows, operatorRows, proposalRows, blindRows] = await Promise.all([
       personIds.length
         ? db
             .select({ id: users.id, fullName: users.fullName })
@@ -349,6 +356,27 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
             .select()
             .from(wasteTicketProposals)
             .where(inArray(wasteTicketProposals.ticketId, ticketIds))
+        : Promise.resolve([]),
+      // Слепые перепроверки (Р31): показываются разбирающему рядом с талоном — но только со
+      // стороны, где чтение проверяющего уже есть. Пустое задание в карточке было бы приглашением
+      // подсмотреть машинное чтение до того, как второй человек прочитал бумагу сам.
+      ticketIds.length
+        ? db
+            .select({
+              row: wasteTicketBlindChecks,
+              checkerName: sql<string | null>`checker.full_name`,
+              arbiterName: sql<string | null>`arbiter.full_name`,
+            })
+            .from(wasteTicketBlindChecks)
+            .leftJoin(
+              sql`users AS checker`,
+              sql`checker.id = ${wasteTicketBlindChecks.checkerId}`,
+            )
+            .leftJoin(
+              sql`users AS arbiter`,
+              sql`arbiter.id = ${wasteTicketBlindChecks.arbiterId}`,
+            )
+            .where(inArray(wasteTicketBlindChecks.ticketId, ticketIds))
         : Promise.resolve([]),
     ]);
     const personName = new Map(personRows.map((row) => [row.id, row.fullName ?? '']));
@@ -462,6 +490,37 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           createdAt: a.createdAt.toISOString(),
         }),
       ),
+      blindChecks: blindRows.map(
+        ({ row, checkerName, arbiterName }): WasteTicketBlindCheckDto => ({
+          id: row.id,
+          ticketId: row.ticketId,
+          requestId: request.id,
+          status: row.status,
+          checkerName: checkerName ?? null,
+          review: {
+            number: row.reviewNumberRaw,
+            issuedOn: row.reviewIssuedOn,
+            volumeM3: row.reviewVolumeM3 == null ? null : Number(row.reviewVolumeM3),
+          },
+          baseline: {
+            number: row.baselineNumberRaw,
+            issuedOn: row.baselineIssuedOn,
+            volumeM3: row.baselineVolumeM3 == null ? null : Number(row.baselineVolumeM3),
+          },
+          final:
+            row.status === 'arbitrated'
+              ? {
+                  number: row.finalNumberRaw,
+                  issuedOn: row.finalIssuedOn,
+                  volumeM3: row.finalVolumeM3 == null ? null : Number(row.finalVolumeM3),
+                }
+              : null,
+          resolvedFields: row.resolvedFields as WasteTicketBlindCheckField[],
+          arbiterName: arbiterName ?? null,
+          arbitratedAt: row.arbitratedAt?.toISOString() ?? null,
+          createdAt: row.createdAt.toISOString(),
+        }),
+      ),
       ticketsVolumeM3: checks.ticketsVolumeM3,
       preliminary: checks.preliminary,
       acceptanceAllowed: checks.acceptanceAllowed,
@@ -532,7 +591,29 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           .where(eq(wasteTickets.id, ticket.id))
           .returning({ id: wasteTickets.id });
         if (!updated) throw err.conflict();
-        return { ticketId: ticket.id, number: ticket.numberRaw, overrideUsed };
+
+        // Отбор в слепую перепроверку (Р31) — здесь и только здесь: подтверждение и есть момент,
+        // когда машинное чтение становится основанием сверки, и мерить качество надо именно его.
+        //
+        // Только НЕПРАВЛЕНЫЕ МАШИННЫЕ талоны: `baseline_*` — это чтение модели, а ручной или уже
+        // исправленный талон сравнивал бы человека с человеком, и метрика при этом называлась бы
+        // «ошибки OCR». Отбор случайный и без памяти: доля задана долей, а не квотой, — квота
+        // означала бы, что попадание талона в выборку зависит от того, сколько бумаг принесли
+        // соседи в тот же день.
+        const blind = shouldSampleBlindCheck(ticket, config.ticketOcr.blindCheckRate);
+        if (blind) {
+          await tx.insert(wasteTicketBlindChecks).values({
+            ticketId: ticket.id,
+            // Снимок, а не ссылка на талон: талон после подтверждения правят, и сравнение с
+            // поехавшей величиной меряло бы не то, ради чего заведено.
+            baselineNumberRaw: ticket.numberRaw,
+            baselineNumberKey: ticket.numberKey,
+            baselineIssuedOn: ticket.issuedOn,
+            baselineVolumeM3: ticket.volumeM3,
+            baselineFingerprint: blindBaselineFingerprint(ticket),
+          });
+        }
+        return { ticketId: ticket.id, number: ticket.numberRaw, overrideUsed, blind };
       });
 
       await writeAudit({
