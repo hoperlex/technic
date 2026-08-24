@@ -206,6 +206,18 @@ async function failFile(
       ],
     );
   });
+  // Отказ по файлу — то, что человек увидит в карточке; в журнале он нужен той же строкой, чтобы
+  // «у нас талон не читается» разбиралось без захода в базу.
+  deps.log(
+    {
+      requestId: payload.requestId,
+      fileId: payload.fileId,
+      code: err.code,
+      errorClass: err.errorClass,
+      errorScope: err.errorScope,
+    },
+    `Распознавание талона: файл отвергнут — ${err.reason}`,
+  );
 }
 
 // ── T1: одна страница ──
@@ -251,7 +263,15 @@ async function recognizePage(
         [page.sha256, deps.engine.kind, opts.model, PROMPT_VERSION, PREPROCESSING_VERSION],
       );
       const row = hit.rows[0];
-      if (row) return { attemptId: row.id, outcome: null, fromCache: true };
+      if (row) {
+        // Кэш — единственное место, где вызова не было, а результат есть. В журнале это видно
+        // отдельной строкой: иначе «страница разобрана за 20 мс» выглядит подозрительно.
+        deps.log(
+          { pageSha256: page.sha256.slice(0, 12), model: opts.model, attemptId: row.id },
+          'Распознавание талона: страница взята из кэша попыток',
+        );
+        return { attemptId: row.id, outcome: null, fromCache: true };
+      }
     }
 
     const outcome = await deps.engine.recognize(page, {
@@ -548,6 +568,12 @@ export async function runTicketRecognitionJob(
 ): Promise<TicketJobResult> {
   const link = await beginFile(deps, payload, jobId);
   if (!link) return;
+  // Начало работы над файлом. Без этой строки успешный путь молчит целиком: в журнале видны только
+  // отказы, и «распознавание не работает» неотличимо от «задача ещё не дошла до очереди».
+  deps.log(
+    { requestId: payload.requestId, fileId: payload.fileId, jobId, forced: !!payload.forced },
+    'Распознавание талона: начало',
+  );
 
   // Растеризация — вне транзакций: скачивание из S3 и рендер PDF занимают секунды, и держать на
   // это время строку заявки незачем.
@@ -674,12 +700,29 @@ export async function runTicketRecognitionJob(
     );
   }
 
-  await saveResult(
+  const written = await saveResult(
     deps,
     payload,
     { totalPages: prepared.totalPages, skippedPages: prepared.skippedPages },
     results,
   );
+  if (written) {
+    // Итог одной строкой: сколько страниц разобрано, сколько талонов нашлось, сколько вызовов
+    // ушло мимо кэша. По ней видно и работу, и её цену — а без неё пришлось бы считать попытки
+    // запросом к базе.
+    deps.log(
+      {
+        requestId: payload.requestId,
+        fileId: payload.fileId,
+        jobId,
+        pages: results.length,
+        skippedPages: prepared.skippedPages,
+        tickets: results.reduce((sum, page) => sum + page.tickets.length, 0),
+        cached: results.filter((page) => page.escalationAttemptId === null).length,
+      },
+      'Распознавание талона: файл разобран',
+    );
+  }
 }
 
 /** Собирает страницу результата, сливая проходы по полям (Р14). */
