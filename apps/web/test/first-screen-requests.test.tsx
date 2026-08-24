@@ -22,6 +22,10 @@ function mockFirstScreen() {
   return mockHttp({
     'GET /waste-requests': () => json(list([])),
     'GET /waste-requests/summary': () => json(wasteSummary()),
+    // Баннер состояния распознавания (ADR 0114, Р29) спрашивает подсистему на каждом экране
+    // разбора: молчащее распознавание неотличимо от «талоны в порядке». Здесь оно исправно.
+    'GET /waste-requests/ticket-recognition/health': () =>
+      json({ state: 'ok', since: null, code: '', attempts: 0, failed: 0, waiting: 0 }),
     'GET /objects': () => json(list([objectDto()])),
     'GET /container-types': () => json(list([containerType()])),
     'GET /waste-types': () => json(list([wasteType()])),
@@ -30,7 +34,7 @@ function mockFirstScreen() {
 }
 
 describe('запросы первого экрана «Вывоз мусора»', () => {
-  it('диспетчер: список, сводка и четыре справочника — шесть запросов', async () => {
+  it('диспетчер: список, сводка, четыре справочника и состояние распознавания — семь запросов', async () => {
     const http = mockFirstScreen();
     renderWithUser(<WasteRequestsPage />, { user: authUser() });
 
@@ -38,13 +42,16 @@ describe('запросы первого экрана «Вывоз мусора»
     await waitFor(() => expect(http.countOf('GET /counterparties')).toBe(1));
 
     // Диспетчер назначает исполнителя, поэтому видит и фильтр операторов: у него самый полный
-    // набор запросов из всех ролей.
+    // набор запросов из всех ролей. Седьмой — состояние распознавания талонов (ADR 0114, Р29):
+    // баннер стоит одного запроса на портал (ответ общий с карточкой заявки), и это плата за то,
+    // что сломанное распознавание перестало выглядеть спокойным днём.
     expect(http.calls.map((c) => `${c.method} ${c.path}`).sort()).toEqual([
       'GET /container-types',
       'GET /counterparties',
       'GET /objects',
       'GET /waste-requests',
       'GET /waste-requests/summary',
+      'GET /waste-requests/ticket-recognition/health',
       'GET /waste-types',
     ]);
   });

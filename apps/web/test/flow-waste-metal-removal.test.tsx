@@ -45,6 +45,10 @@ function setup(requests: WasteRequestDto[] = []) {
   const http = mockHttp({
     'GET /waste-requests': () => json(list(requests)),
     'GET /waste-requests/summary': () => json(wasteSummary({ confirmed: requests.length })),
+    // Баннер состояния распознавания (ADR 0114, Р29) спрашивает подсистему на каждом экране
+    // разбора: молчащее распознавание неотличимо от «талоны в порядке». Здесь оно исправно.
+    'GET /waste-requests/ticket-recognition/health': () =>
+      json({ state: 'ok', since: null, code: '', attempts: 0, failed: 0, waiting: 0 }),
     'GET /waste-requests/present-groups': () => json([]),
     'GET /objects': () =>
       json(list([objectDto(), objectDto({ id: 'obj-2', code: 'ОБ-2', name: 'ЖК Южный' })])),

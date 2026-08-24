@@ -37,6 +37,10 @@ function renderPage(over: RouteMap = {}): HttpMock {
   const http = mockHttp({
     'GET /waste-requests': () => json(list([REQUEST])),
     'GET /waste-requests/summary': () => json(wasteSummary({ confirmed: 1 })),
+    // Баннер состояния распознавания (ADR 0114, Р29) спрашивает подсистему на каждом экране
+    // разбора: молчащее распознавание неотличимо от «талоны в порядке». Здесь оно исправно.
+    'GET /waste-requests/ticket-recognition/health': () =>
+      json({ state: 'ok', since: null, code: '', attempts: 0, failed: 0, waiting: 0 }),
     'GET /objects': () => json(list([objectDto()])),
     'GET /container-types': () => json(list([])),
     'GET /waste-types': () => json(list([wasteType()])),

@@ -61,6 +61,10 @@ function wastePageRoutes() {
   return {
     'GET /waste-requests': () => json(emptyList()),
     'GET /waste-requests/summary': () => json(wasteSummary()),
+    // Баннер состояния распознавания (ADR 0114, Р29) спрашивает подсистему на каждом экране
+    // разбора: молчащее распознавание неотличимо от «талоны в порядке». Здесь оно исправно.
+    'GET /waste-requests/ticket-recognition/health': () =>
+      json({ state: 'ok', since: null, code: '', attempts: 0, failed: 0, waiting: 0 }),
     'GET /waste-requests/present': () => json(emptyList()),
     'GET /objects': () => json(emptyList()),
     'GET /container-types': () => json(emptyList()),

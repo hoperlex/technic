@@ -36,6 +36,10 @@ function setup() {
   const http = mockHttp({
     'GET /waste-requests': () => json(list<WasteRequestDto>([])),
     'GET /waste-requests/summary': () => json(wasteSummary()),
+    // Баннер состояния распознавания (ADR 0114, Р29) спрашивает подсистему на каждом экране
+    // разбора: молчащее распознавание неотличимо от «талоны в порядке». Здесь оно исправно.
+    'GET /waste-requests/ticket-recognition/health': () =>
+      json({ state: 'ok', since: null, code: '', attempts: 0, failed: 0, waiting: 0 }),
     // Присутствие контейнеров на площадке (ADR 0054) спрашивается на любой выбор объекта, даже
     // когда заявка вывоза о контейнерах не говорит.
     'GET /waste-requests/present-groups': () => json([]),
