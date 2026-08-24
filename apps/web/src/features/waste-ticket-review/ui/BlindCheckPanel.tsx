@@ -10,6 +10,7 @@ import type {
 } from '@technic/contracts';
 import { wasteTicketKeys, wasteTicketsApi } from '@entities/waste-ticket';
 import { errorMessage } from '../../../utils/format';
+import { ticketDate } from './ticketDate';
 
 /**
  * Слепые перепроверки талонов и арбитраж расхождений (ADR 0114, Р31).
@@ -40,7 +41,8 @@ function readingValue(
   field: WasteTicketBlindCheckField,
 ): string {
   if (field === 'number') return reading.number || '(пусто)';
-  if (field === 'issuedOn') return reading.issuedOn ?? '(пусто)';
+  // Дата человеку — по-русски; `YYYY-MM-DD` остаётся форматом обмена, а не показа.
+  if (field === 'issuedOn') return reading.issuedOn ? ticketDate(reading.issuedOn) : '(пусто)';
   return reading.volumeM3 == null ? '(пусто)' : `${reading.volumeM3} м³`;
 }
 

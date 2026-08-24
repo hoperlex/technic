@@ -174,6 +174,9 @@ describe('карточка талона: четыре поля и разбивк
     expect(screen.getAllByText('Адрес')).toHaveLength(2);
 
     expect(screen.getByText('30476')).toBeDefined();
+    // Дата — по-русски: человек сверяет с бланком, где написано «17.08.2026», а не «2026-08-17».
+    expect(screen.getByText('17.08.2026')).toBeDefined();
+    expect(screen.queryByText('2026-08-17')).toBeNull();
     expect(screen.getByText('20 м³')).toBeDefined();
     expect(screen.getByText('Волоколамское ш., 71к14')).toBeDefined();
     // У простоя объёма нет законно, и это сказано словами, а не прочерком (Р2).

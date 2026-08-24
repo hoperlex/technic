@@ -12,6 +12,7 @@ import type {
 import { wasteTicketKeys, wasteTicketsApi, wasteTicketsQuery } from '@entities/waste-ticket';
 import { FilePreviewModal } from '../../../components/FileLinks';
 import { errorMessage } from '../../../utils/format';
+import { ticketDate } from './ticketDate';
 import { BlindCheckPanel } from './BlindCheckPanel';
 import { TicketFormModal } from './TicketFormModal';
 
@@ -378,7 +379,9 @@ function TicketCard({
           ticket.needsReviewFields.includes('issuedOn') ? (
             <Disputed field="issuedOn" label="дату" candidates={ticket.candidates} />
           ) : (
-            (ticket.issuedOn ?? '—')
+            // По-русски, как на бланке: 17.08.2026. `YYYY-MM-DD` — это формат хранения и обмена,
+            // и человеку, сверяющему с бумагой, он читается как чужая запись.
+            ticketDate(ticket.issuedOn)
           ),
         )}
         {field('Объём', volume)}
@@ -453,7 +456,7 @@ function Proposal({
   const diffs: string[] = [];
   if (p.number !== ticket.number) diffs.push(`№ ${ticket.number || '—'} → ${p.number || '—'}`);
   if ((p.issuedOn ?? null) !== (ticket.issuedOn ?? null)) {
-    diffs.push(`дата ${ticket.issuedOn ?? '—'} → ${p.issuedOn ?? '—'}`);
+    diffs.push(`дата ${ticketDate(ticket.issuedOn)} → ${ticketDate(p.issuedOn)}`);
   }
   if ((p.volumeM3 ?? null) !== (ticket.volumeM3 ?? null)) {
     diffs.push(`объём ${ticket.volumeM3 ?? '—'} → ${p.volumeM3 ?? '—'}`);
