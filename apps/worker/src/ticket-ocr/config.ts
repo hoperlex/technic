@@ -34,6 +34,12 @@ export interface TicketOcrConfig {
   pdfMemoryMb: number;
   /** `heif-convert` из образа воркера, если он там есть: libvips читает HEIF, но не HEVC. */
   heifConvertBin: string | undefined;
+  /**
+   * `TICKET_OCR_ATTEMPT_TTL_DAYS`: сколько дней хранится сырьё попытки (Р31). Ответ модели держат
+   * ради двух вещей — разбора «почему прочитано так» и повторной настройки промпта, — и обе
+   * перестают быть нужными задолго до того, как заканчивается срок хранения самой заявки.
+   */
+  attemptTtlDays: number;
 }
 
 const DEFAULTS = {
@@ -44,6 +50,7 @@ const DEFAULTS = {
   httpTimeoutMs: 120_000,
   pdfTimeoutMs: 60_000,
   pdfMemoryMb: 2048,
+  attemptTtlDays: 180,
 };
 
 /** Число из окружения: мусор и ноль откатываются к умолчанию, а не роняют воркер на старте. */
@@ -71,6 +78,7 @@ export function readTicketOcrConfig(env: NodeJS.ProcessEnv = process.env): Ticke
     pdfTimeoutMs: num(env.TICKET_OCR_PDF_TIMEOUT_MS, DEFAULTS.pdfTimeoutMs),
     pdfMemoryMb: num(env.TICKET_OCR_PDF_MEMORY_MB, DEFAULTS.pdfMemoryMb),
     heifConvertBin: env.TICKET_OCR_HEIF_CONVERT_BIN || undefined,
+    attemptTtlDays: num(env.TICKET_OCR_ATTEMPT_TTL_DAYS, DEFAULTS.attemptTtlDays),
   };
 }
 

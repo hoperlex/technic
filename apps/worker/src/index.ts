@@ -723,6 +723,56 @@ async function cleanupAbandonedReports(): Promise<number> {
   }
 }
 
+/**
+ * Попытки распознавания по сроку (ADR 0114, Р31).
+ *
+ * Строка уходит целиком, а не «худеет» очисткой ответа модели. Так решено не ради места: попытка
+ * со статусом `done` и пустым ответом остаётся ЖИВЫМ КЛЮЧОМ КЭША (Р12) — тот же лист, приложенный
+ * заново, попал бы в неё и вернул пустой результат, то есть страницу без единого талона. Молча.
+ * Удалённая попытка кэшем просто не находится, и страница читается заново: это стоит одного
+ * платного вызова и не стоит ни одной потерянной бумаги.
+ *
+ * Исключение одно: попытка, на которую ссылается ЖИВОЙ талон, не убирается никогда. Её ответ —
+ * происхождение цифры, стоящей в талоне, и стереть его значит потерять единственное объяснение
+ * того, откуда взялось «20» на бумаге, где человек видит «28».
+ *
+ * Предложение перераспознавания такой защиты не даёт намеренно: оно само по себе снимок, обе его
+ * ссылки объявлены `ON DELETE SET NULL`, и после уборки оно читается по-прежнему — теряя лишь
+ * возможность заглянуть в исходный ответ. Иначе непринятое предложение держало бы попытки вечно.
+ */
+const ATTEMPT_CLEANUP_BATCH = 500;
+
+async function cleanupTicketAttempts(ttlDays: number): Promise<number> {
+  const removed = await pool.query<{ id: string }>(
+    `DELETE FROM waste_ticket_recognition_attempts a
+      WHERE a.id IN (
+        SELECT c.id FROM waste_ticket_recognition_attempts c
+         WHERE c.created_at < now() - ($1 || ' days')::interval
+           AND NOT EXISTS (
+             SELECT 1 FROM waste_tickets wt
+              WHERE wt.primary_attempt_id = c.id OR wt.escalation_attempt_id = c.id
+           )
+         ORDER BY c.created_at
+         LIMIT ${ATTEMPT_CLEANUP_BATCH}
+         FOR UPDATE SKIP LOCKED
+      )
+      RETURNING a.id`,
+    [ttlDays],
+  );
+  return removed.rows.length;
+}
+
+async function cleanupTicketAttemptsSafely(): Promise<void> {
+  const cfg = readTicketOcrConfig();
+  try {
+    const removed = await cleanupTicketAttempts(cfg.attemptTtlDays);
+    if (removed > 0) logger.info({ count: removed }, 'Убраны попытки распознавания талонов');
+  } catch (e) {
+    // Уборка сырья не обязана удаваться: она про место, а не про работу портала.
+    logger.warn({ err: e }, 'Не удалось убрать попытки распознавания');
+  }
+}
+
 async function cleanupDraftReportsSafely(): Promise<void> {
   try {
     const removed = await cleanupAbandonedReports();
@@ -863,6 +913,8 @@ async function loop(): Promise<void> {
         // ждёт следующего часа между шагами.
         await archiveUnverified();
         await cleanupRejectedRegistrations();
+        // Последней: она ничего не освобождает для других проходов и ни от кого не зависит.
+        await cleanupTicketAttemptsSafely();
       }
       if (processed === 0) await sleep(POLL_INTERVAL_MS);
     } catch (e) {
