@@ -21,6 +21,7 @@ const EMPTY_TICKETS = {
     {
       fileId: 'f-1',
       filename: 'talon.jpg',
+      contentType: 'image/jpeg',
       status: 'not_queued',
       reason: 'Талон приложен, но в разбор не поступал: распознавание было выключено.',
       errorClass: null,
@@ -155,7 +156,23 @@ const TWO_ON_ONE_PAGE = {
     },
   ],
   pages: [{ id: 'p-1', fileId: 'f-1', pageNo: 1, status: 'done', ticketsFound: 2 }],
-  files: [],
+  files: [
+    {
+      fileId: 'f-1',
+      filename: 'talon.jpg',
+      contentType: 'image/jpeg',
+      status: 'done',
+      reason: '',
+      errorClass: null,
+      errorScope: null,
+      totalPages: 1,
+      processedPages: 1,
+      activeJob: null,
+      pages: [{ id: 'p-1', fileId: 'f-1', pageNo: 1, status: 'done', ticketsFound: 2 }],
+      createdAt: '2026-08-24T09:00:00.000Z',
+      updatedAt: '2026-08-24T09:00:00.000Z',
+    },
+  ],
 };
 
 describe('карточка талона: четыре поля и разбивка кадра', () => {
@@ -196,5 +213,31 @@ describe('карточка талона: четыре поля и разбивк
     expect(screen.getByText(/талон 2 из 2/i)).toBeDefined();
     // Открыть тот самый лист можно не уходя из карточки.
     expect(screen.getAllByRole('button', { name: 'Скан' })).toHaveLength(2);
+  });
+});
+
+describe('приложенные сканы показаны с номерами найденных талонов', () => {
+  it('рядом с именем файла стоят номера, найденные именно в нём', async () => {
+    mockHttp({
+      'GET /waste-requests/wr-1/tickets': () => json(TWO_ON_ONE_PAGE),
+      'GET /waste-requests/ticket-recognition/health': () =>
+        json({ ...DISABLED_HEALTH, state: 'ok' }),
+    });
+    renderWithUser(<WasteTicketsPanel requestId="wr-1" />);
+
+    // Имя файла само по себе не отвечает, разобрана ли бумага; рядом с номерами — отвечает.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'talon.jpg' })).toBeDefined());
+    expect(screen.getByText('30476, 30477')).toBeDefined();
+  });
+
+  it('файл без единого талона говорит об этом словами', async () => {
+    mockHttp({
+      'GET /waste-requests/wr-1/tickets': () => json(EMPTY_TICKETS),
+      'GET /waste-requests/ticket-recognition/health': () => json(DISABLED_HEALTH),
+    });
+    renderWithUser(<WasteTicketsPanel requestId="wr-1" />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'talon.jpg' })).toBeDefined());
+    expect(screen.getByText('талоны не найдены')).toBeDefined();
   });
 });

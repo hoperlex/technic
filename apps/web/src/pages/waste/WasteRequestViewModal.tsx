@@ -500,10 +500,10 @@ export function WasteRequestViewModal({
               {canReviewTickets ? (
                 <div style={{ marginTop: 12 }}>
                   <TicketRecognitionBanner enabled />
-                  <FileLinkList files={request.tickets} maxNameWidth={420} />
-                  <div style={{ marginTop: 12 }}>
-                    <WasteTicketsPanel requestId={request.id} />
-                  </div>
+                  {/* Списка файлов здесь больше нет: панель показывает те же сканы, но рядом с
+                      номерами найденных в них талонов. Два списка одних и тех же файлов, один из
+                      которых знает про разбор, а другой нет, — приглашение читать не тот. */}
+                  <WasteTicketsPanel requestId={request.id} />
                 </div>
               ) : (
                 <FileLinkList files={request.tickets} maxNameWidth={420} />

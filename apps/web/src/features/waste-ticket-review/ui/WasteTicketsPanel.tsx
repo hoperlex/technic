@@ -35,7 +35,11 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
   /** Окно талона: `null` — закрыто, `{ticket: null}` — заведение руками, иначе правка. */
   const [form, setForm] = useState<{ ticket: WasteTicketDto | null } | null>(null);
   /** Скан, открытый рядом с полями: сверять цифру с бумагой удобнее не уходя из карточки. */
-  const [scan, setScan] = useState<{ fileId: string; filename: string } | null>(null);
+  const [scan, setScan] = useState<{
+    fileId: string;
+    filename: string;
+    contentType?: string;
+  } | null>(null);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: wasteTicketKeys.list(requestId) });
 
@@ -170,6 +174,47 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
         </Button>
       </Space>
 
+      {/* Приложенные сканы с тем, что в них нашлось. Имя файла само по себе не отвечает на вопрос
+          «эта бумага разобрана?» — а рядом с номерами отвечает: видно и сколько талонов на кадре,
+          и что файл вовсе не читали. */}
+      {data.files.length > 0 && (
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          {data.files.map((file) => {
+            const pageIds = data.pages.filter((pg) => pg.fileId === file.fileId).map((pg) => pg.id);
+            const found = data.tickets.filter(
+              (ticket) => ticket.pageId && pageIds.includes(ticket.pageId),
+            );
+            return (
+              <Space key={file.fileId} size={8} wrap>
+                <Button
+                  size="small"
+                  type="link"
+                  style={{ padding: 0 }}
+                  onClick={() =>
+                    setScan({
+                      fileId: file.fileId,
+                      filename: file.filename,
+                      contentType: file.contentType,
+                    })
+                  }
+                >
+                  {file.filename || 'скан'}
+                </Button>
+                {found.length > 0 ? (
+                  <Typography.Text style={{ fontSize: 13 }}>
+                    {found.map((ticket) => ticket.number || '№ не прочитан').join(', ')}
+                  </Typography.Text>
+                ) : (
+                  <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                    {file.status === 'pending' ? 'распознаётся…' : 'талоны не найдены'}
+                  </Typography.Text>
+                )}
+              </Space>
+            );
+          })}
+        </Space>
+      )}
+
       {data.tickets.length === 0 ? (
         <Empty description="Талоны ещё не распознаны" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : (
@@ -183,7 +228,13 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
               ticket={row}
               page={data.pages.find((pg) => pg.id === row.pageId) ?? null}
               busy={busyId === row.id}
-              onOpenScan={(fileId, filename) => setScan({ fileId, filename })}
+              onOpenScan={(fileId, filename) =>
+                setScan({
+                  fileId,
+                  filename,
+                  contentType: data.files.find((f) => f.fileId === fileId)?.contentType,
+                })
+              }
               onConfirm={() => onConfirm(row)}
               onEdit={() => setForm({ ticket: row })}
               onDismiss={() => {
@@ -275,7 +326,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
 
       {scan && (
         <FilePreviewModal
-          file={{ id: scan.fileId, filename: scan.filename, contentType: 'image/jpeg' }}
+          file={{ id: scan.fileId, filename: scan.filename, contentType: scan.contentType }}
           open
           onClose={() => setScan(null)}
         />

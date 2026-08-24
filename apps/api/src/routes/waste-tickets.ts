@@ -286,6 +286,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         .select({
           fileId: requestFiles.fileId,
           filename: files.filename,
+          contentType: files.contentType,
           // Связь `request_files` своей даты не имеет — берём дату файла: она и есть «когда талон
           // приложили», потому что файл загружают тем же действием.
           createdAt: files.createdAt,
@@ -306,6 +307,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         .select({
           fileId: wasteTicketFiles.fileId,
           filename: files.filename,
+          contentType: files.contentType,
           status: wasteTicketFiles.status,
           reason: wasteTicketFiles.reason,
           errorClass: wasteTicketFiles.errorClass,
@@ -495,6 +497,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         (f): WasteTicketFileDto => ({
           fileId: f.fileId,
           filename: f.filename ?? '',
+          contentType: f.contentType ?? '',
           status: f.status,
           reason: f.reason,
           // Пустая строка в базе и «сбоя не было» — одно состояние для читающего экрана, и в DTO
@@ -525,6 +528,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
             (a): WasteTicketFileDto => ({
               fileId: a.fileId,
               filename: a.filename,
+              contentType: a.contentType,
               status: 'not_queued',
               reason:
                 'Талон приложен, но в разбор не поступал: распознавание было выключено. ' +

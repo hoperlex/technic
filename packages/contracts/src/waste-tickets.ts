@@ -320,6 +320,8 @@ export const wasteTicketCheckLabels: Record<WasteTicketCheckCode, string> = {
 export interface WasteTicketFileDto {
   fileId: string;
   filename: string;
+  /** Тип содержимого: по нему экран решает, показать скан окном или отдать на скачивание. */
+  contentType: string;
   /** `not_queued` — талон приложен, но в разбор не поступал (модуль был выключен). */
   status: WasteTicketFileViewStatus;
   /** Человеческая причина отказа: «это не изображение и не PDF», «файл больше допустимого». */
