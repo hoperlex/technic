@@ -3,7 +3,7 @@ import {
   type MailTransport,
   type MailTransportConfig,
 } from './mail-transport';
-import { MailRateLimiter } from './mail-rate';
+import { RateLimiter } from './mail-rate';
 
 /**
  * Почтовые каналы воркера (план `docs/office-equipment-mail-and-history-plan.md`, Р83–Р87).
@@ -45,7 +45,7 @@ const ACCOUNT_ENV = new RegExp(`^MAIL_ACCOUNT_([A-Z0-9]+)_(${ACCOUNT_VARS.join('
 export interface MailAccountRuntime {
   cfg: MailTransportConfig;
   transport: MailTransport;
-  rate: MailRateLimiter;
+  rate: RateLimiter;
 }
 
 type Log = (msg: string, meta: Record<string, unknown>) => void;
@@ -176,7 +176,7 @@ export function createMailAccounts(
     accounts.set(account, {
       cfg,
       transport: createMailTransport(cfg, log),
-      rate: new MailRateLimiter(limit),
+      rate: new RateLimiter(limit),
     });
 
     // Без секретов: видно, куда и чем отправляем, — этого хватает, чтобы заметить чужой SMTP в проде.

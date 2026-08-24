@@ -641,6 +641,25 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'PATCH /api/v1/waste-requests/:id/status': { payload: { status: 'confirmed', version: 1 } },
   'GET /api/v1/waste-requests/present-groups': { query: `objectId=${OBJECT_ID}` },
 
+  // ── Разбор талонов вывоза (ADR 0114) ──
+  // У всех тел здесь одна задача: пройти схему, чтобы отказ пришёл ОТ СТРАЖА, а не от валидации.
+  // Без описанного тела маршрут отвечал бы 400 раньше проверки права — и перебор доказывал бы
+  // работу Zod вместо работы доступа.
+  'POST /api/v1/waste-requests/:id/tickets': {
+    payload: { number: '30476', issuedOn: FUTURE_DATE, volumeM3: 20, workKind: 'removal' },
+  },
+  'PATCH /api/v1/waste-requests/:id/tickets/:ticketId': { payload: { number: '30476' } },
+  'POST /api/v1/waste-requests/:id/tickets/:ticketId/blind-check': {
+    payload: { number: '30476', issuedOn: FUTURE_DATE, volumeM3: 20 },
+  },
+  'POST /api/v1/waste-requests/:id/blind-checks/:blindCheckId/arbitrate': {
+    payload: { resolvedFields: ['volumeM3'], volumeM3: 20 },
+  },
+  'POST /api/v1/waste-requests/:id/checks/:checkCode/accept': {
+    params: { checkCode: 'volume_mismatch' },
+    payload: { comment: 'недогруз согласован' },
+  },
+
   // ── Недельная заявка на технику ──
   'POST /api/v1/weekly-vehicle-requests': {
     payload: { objectId: OBJECT_ID, weekStart: FUTURE_DATE, items: [] },
@@ -953,6 +972,11 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/vehicle-maintenance/vehicles/:id': {
     payload: { performedOn: PAST_DATE, odometerKm: 128_400, documentNumber: 'АКТ-17' },
   },
+  // Аннулирование: версия и причина. Строк расхода в теле нет вовсе — и это ровно то, из-за чего у
+  // трёх ручек акта условие объявлено ПО ЭФФЕКТУ, а не по полю (ADR 0134, решение 10).
+  'POST /api/v1/vehicle-maintenance/:id/void': {
+    payload: { version: 0, reason: 'акт заведён по ошибке' },
+  },
 };
 
 /** Субъект текущего запроса: подменённый `loadPrincipal` собирает из него принципала. */
@@ -1152,6 +1176,25 @@ function variantsOf(key: ManifestRouteKey, condition: AccessCondition): Variant[
       conditional: [],
     }));
   }
+  // Условие ПО ЭФФЕКТУ (`effectConditionalPermissions`, ADR 0134 решение 10): перебор проверяет
+  // только базовую половину, и большего он проверить не может по построению. Эффект — ненулевая
+  // разница строк расхода — телом запроса не выражается: тот же набор строк склад не двигает, а у
+  // аннулирования строк в теле нет вовсе. Условную половину доказывает db-тест, названный в
+  // `provenBy` самого условия, и манифест этим полем обязывает его существовать.
+  //
+  // Пропустить такой маршрут мимо перебора было бы хуже всего: базовое право осталось бы
+  // непроверенным, а прогон — зелёным. Ровно это и ловит случай «каждый маршрут манифеста попал
+  // ровно в одну группу».
+  if (condition.kind === 'effectConditionalPermissions') {
+    return [
+      {
+        label: 'без эффекта',
+        payload: requestOf(key).payload,
+        required: condition.baseAllOf,
+        conditional: [],
+      },
+    ];
+  }
   if (condition.kind !== 'conditionalPermissions') return [];
   const fixture = FIXTURES[key];
   const base = requestOf(key).payload as Record<string, unknown>;
@@ -1185,7 +1228,11 @@ interface RouteSweep {
 const MANIFEST = Object.entries(ACCESS_MANIFEST) as [ManifestRouteKey, AccessCondition][];
 
 const SWEEPS: RouteSweep[] = MANIFEST.filter(
-  ([, c]) => c.kind === 'permissions' || c.kind === 'anyOf' || c.kind === 'conditionalPermissions',
+  ([, c]) =>
+    c.kind === 'permissions' ||
+    c.kind === 'anyOf' ||
+    c.kind === 'conditionalPermissions' ||
+    c.kind === 'effectConditionalPermissions',
 ).map(([key, condition]) => {
   const handlerNeeds = FIXTURES[key]?.handlerNeeds ?? [];
   return {

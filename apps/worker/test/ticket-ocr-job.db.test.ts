@@ -407,6 +407,30 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     expect(tickets.rows).toHaveLength(2);
   });
 
+  it('вариант A («выбирает прокси») кэш не использует: за одним слагом стоят разные модели', async () => {
+    // Заглушка `proxy` в ключе склеила бы ответы разных моделей, а метрики качества, привязанные
+    // к модели, стали бы выдумкой (Р7). Цена — повторный вызов; она осознанная.
+    const { requestId, fileId } = await seed();
+    const first = countingEngine();
+    const jobId = await seedJob({ requestId, fileId });
+    await runTicketRecognitionJob(
+      deps({ engine: first.engine, model: 'proxy' }) as never,
+      { requestId, fileId },
+      jobId,
+    );
+
+    const second = countingEngine();
+    const jobId2 = await seedJob({ requestId, fileId });
+    await runTicketRecognitionJob(
+      deps({ engine: second.engine, model: 'proxy' }) as never,
+      { requestId, fileId },
+      jobId2,
+    );
+
+    // Второй проход по той же странице всё равно позвал модель.
+    expect(second.calls).toHaveLength(1);
+  });
+
   it('принудительный проход идёт мимо кэша', async () => {
     const { requestId, fileId } = await seed();
     const { engine, calls } = countingEngine();

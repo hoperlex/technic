@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MailRateLimiter } from '../src/mail-rate';
+import { RateLimiter } from '../src/mail-rate';
 
 /**
  * Потолок отправки.
@@ -12,7 +12,7 @@ import { MailRateLimiter } from '../src/mail-rate';
 
 describe('потолок отправки писем в минуту', () => {
   it('пропускает ровно столько писем, сколько разрешено', () => {
-    const limiter = new MailRateLimiter(3);
+    const limiter = new RateLimiter(3);
     const now = 1_000_000;
 
     expect(limiter.take(now)).toBe(true);
@@ -22,7 +22,7 @@ describe('потолок отправки писем в минуту', () => {
   });
 
   it('окно скользящее: место освобождает самая старая отправка, а не начало минуты', () => {
-    const limiter = new MailRateLimiter(2);
+    const limiter = new RateLimiter(2);
     const start = 1_000_000;
 
     limiter.take(start);
@@ -35,7 +35,7 @@ describe('потолок отправки писем в минуту', () => {
   });
 
   it('говорит, когда освободится место: по этому времени откладывается задача', () => {
-    const limiter = new MailRateLimiter(1);
+    const limiter = new RateLimiter(1);
     const start = 1_000_000;
 
     limiter.take(start);
@@ -43,7 +43,7 @@ describe('потолок отправки писем в минуту', () => {
   });
 
   it('пока квота не исчерпана, ждать нечего', () => {
-    const limiter = new MailRateLimiter(2);
+    const limiter = new RateLimiter(2);
     const start = 1_000_000;
 
     limiter.take(start);

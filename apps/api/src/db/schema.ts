@@ -3359,7 +3359,11 @@ export const wasteTicketRecognitionAttempts = pgTable(
      */
     cacheUnique: uniqueIndex('waste_ticket_recognition_attempts_cache_unique')
       .on(t.pageSha256, t.engine, t.model, t.promptVersion, t.preprocessingVersion)
-      .where(sql`${t.status} = 'done' AND NOT ${t.forced}`),
+      // `model <> 'proxy'` — вариант A (Р7, миграция 0191): за заглушкой «выбирает прокси» в разное
+      // время стоит разная модель, поэтому такие попытки не участвуют в кэше ни чтением, ни
+      // уникальностью. Без этого условия выключенный на чтение кэш оставался включённым на запись:
+      // второй проход по той же странице падал бы нарушением уникальности.
+      .where(sql`${t.status} = 'done' AND NOT ${t.forced} AND ${t.model} <> 'proxy'`),
     pageCreatedIdx: index('waste_ticket_recognition_attempts_page_created_idx').on(
       t.pageSha256,
       t.createdAt.desc(),

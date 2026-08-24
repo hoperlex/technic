@@ -31,7 +31,7 @@ import { GetObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { wasteTicketNumberFuzzy, wasteTicketNumberKey } from '@technic/contracts';
 import { prepareTicketFile, PREPROCESSING_VERSION } from './preprocess';
 import { TicketFileError } from './errors';
-import { attemptCacheKey } from './engine/keys';
+import { attemptCacheKey, PROXY_CHOOSES_MODEL } from './engine/keys';
 import type { PageImage, RecognitionEngine, RecognitionOutcome } from './engine/types';
 import { PROMPT_VERSION } from './engine/prompt';
 import type { PreparedFile, PreprocessOptions } from './preprocess';
@@ -232,10 +232,16 @@ async function recognizePage(
     preprocessingVersion: PREPROCESSING_VERSION,
   });
 
+  // Вариант A (`TICKET_OCR_MODEL=proxy` — слаг выбирает оператор): кэш ВЫКЛЮЧЕН (Р7). Заглушка
+  // `proxy` стоит в ключе вместо модели, а за ней в разное время может отработать разная — и
+  // склеенные под одним ключом ответы сделали бы метрики качества, привязанные к модели, выдумкой.
+  // Это стоит повторных вызовов, и это осознанная цена варианта, в котором мы не выбираем модель.
+  const cacheable = opts.model !== PROXY_CHOOSES_MODEL;
+
   return inTransaction(deps.pool, async (client) => {
     await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [advisoryKey(cacheKey)]);
 
-    if (!opts.forced) {
+    if (!opts.forced && cacheable) {
       const hit = await client.query<{ id: string; raw: unknown }>(
         `SELECT id, raw FROM waste_ticket_recognition_attempts
           WHERE page_sha256 = $1 AND engine = $2 AND model = $3
