@@ -58,7 +58,6 @@ const FIELD_LABELS: Record<string, string> = {
   lastName: 'Фамилия',
   firstName: 'Имя',
   middleName: 'Отчество',
-  captchaAnswer: 'Код с картинки',
   captchaToken: 'Проверка',
   role: 'Роль',
   counterpartyId: 'Контрагент',

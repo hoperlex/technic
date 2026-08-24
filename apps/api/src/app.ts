@@ -64,9 +64,18 @@ import auditRoutes from './routes/audit';
 import releasesRoutes from './routes/releases';
 import manualsRoutes from './routes/manuals';
 
-function parseTrustProxy(v: string | undefined): boolean | string | string[] {
+/**
+ * Разбор `TRUST_PROXY` для опции `trustProxy` Fastify. Кроме `true`/`false`, списка адресов и
+ * одиночного адреса понимает целое число — сколько последних хопов в `X-Forwarded-For` считать
+ * своими. Ради него правило и появилось: строка `'1'` без этой ветки ушла бы в `proxy-addr` как
+ * адрес и разобралась бы как мусорная подсеть, то есть тихо превратилась бы в «никому не верим».
+ * `0` осмыслен сам по себе (не доверять ни одному хопу) и потому в `false` не сводится —
+ * `false` отключает разбор заголовка целиком.
+ */
+export function parseTrustProxy(v: string | undefined): boolean | number | string | string[] {
   if (!v || v === 'true') return true;
   if (v === 'false') return false;
+  if (/^\d+$/.test(v)) return Number(v);
   if (v.includes(',')) return v.split(',').map((s) => s.trim());
   return v;
 }
@@ -83,7 +92,11 @@ export interface BuildAppOptions {
 export async function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify({
     loggerInstance: logger,
-    // trustProxy: диапазоны nginx (не blanket true в проде — см. TRUST_PROXY, §23)
+    // trustProxy: в проде — число хопов (`TRUST_PROXY=1`), а не blanket true. Внешний nginx
+    // перезаписывает X-Forwarded-For адресом клиента, отбрасывая присланный им заголовок, а
+    // nginx веба передаёт значение дальше, себя не дописывая, — до API доходит ровно один
+    // адрес, и доверять надо ровно одному. При `true` клиент дописал бы себе любой `req.ip` и
+    // обошёл бы все лимиты по адресу (docs/smart-captcha-plan.md, §6).
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     genReqId: (req) => (req.headers['x-request-id'] as string) || randomUUID(),
     bodyLimit: 1_048_576, // 1 МБ — файлы грузятся напрямую в S3, не через API

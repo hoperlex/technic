@@ -7,6 +7,7 @@ import timezone from 'dayjs/plugin/timezone';
 import { installMatchMedia, resetViewport } from './viewport';
 import { restoreContentHeights } from './clamp';
 import { restoreHttpMock } from './http';
+import { resetCaptcha } from './captcha';
 import { __resetAuthForTests } from '../src/auth/AuthContext';
 import { __resetSessionForTests } from '../src/shared/api';
 
@@ -48,6 +49,13 @@ afterEach(() => {
    */
   __resetAuthForTests();
   __resetSessionForTests();
+  /*
+   * Капча тоже живёт вне дерева: ключ на вкладку и промис скрипта лежат в модулях, объект службы
+   * Яндекса и тег `captcha.js` — в документе, подменённая навигация — в `window`. Не сняв это,
+   * тест «скрипта в документе нет» проверял бы чужой тег, а тест выключенной капчи — чужой ключ
+   * (см. ./captcha).
+   */
+  resetCaptcha();
   // Подменённый сетью тест не должен утаскивать за собой следующие: снимаем мок здесь, а не в
   // самом `mockHttp` — хук, зарегистрированный изнутри `it`, до следующего теста не доживает.
   restoreHttpMock();

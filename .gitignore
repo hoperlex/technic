@@ -69,6 +69,10 @@ web_modules/
 .env
 .env.*
 !.env.example
+# Файл окружения стенда приёмки (deploy/docker-compose.stand.yml): в нём лежат ключи dev-капчи и
+# секреты JWT/cookie. Под правила выше он не подпадает — имя не начинается с точки, — а репозиторий
+# публичный, поэтому запрещаем явно.
+deploy/stand.env
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

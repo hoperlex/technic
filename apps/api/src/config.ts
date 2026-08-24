@@ -134,6 +134,14 @@ const rawSchema = z.object({
   TICKET_OCR_ATTEMPT_TTL_DAYS: z.coerce.number().int().positive().default(180),
 
   SENTRY_DSN: z.string().optional(),
+  // Yandex SmartCaptcha (план `docs/smart-captcha-plan.md`, §8). Обе переменные серверные, включая
+  // клиентский ключ: портал отдаёт его рантайм-ручкой `GET /auth/captcha`, а не вшивает в бандл, —
+  // смена ключа не требует пересборки веба, а «включена ли капча» остаётся одним решением сервера.
+  SMARTCAPTCHA_CLIENT_KEY: z.string().optional(),
+  SMARTCAPTCHA_SERVER_KEY: z.string().optional(),
+  // 3 секунды: проверка стоит перед регистрацией, которая и так ждёт argon2, а сорванный по
+  // таймауту запрос всё равно проходит fail-open (§7) — ждать дольше не за чем.
+  SMARTCAPTCHA_TIMEOUT_MS: z.coerce.number().int().positive().default(3_000),
 });
 
 /** Значения-заглушки, которые недопустимы в production. */
@@ -147,6 +155,7 @@ const SECRET_KEYS = [
   'JWT_PUBLIC_KEY_PEM',
   'SMTP_PASSWORD',
   'INTERNAL_API_TOKEN',
+  'SMARTCAPTCHA_SERVER_KEY',
   'PROXY_LLM_TOKEN',
 ] as const;
 
@@ -179,6 +188,15 @@ function loadConfig() {
     }
     if (!env.PGSSLROOTCERT) {
       throw new Error('PGSSLROOTCERT обязателен в production (TLS verify-full к PostgreSQL).');
+    }
+    // Отсутствие ключей валит старт, а не выключает капчу: «портал в проде без капчи» — не
+    // деградация, о которой можно узнать из метрики, а открытая форма регистрации, которую портал
+    // выдал бы за исправную. Поэтому релиз без ключей в `prod.env` невозможен в принципе (§13).
+    if (!env.SMARTCAPTCHA_CLIENT_KEY || !env.SMARTCAPTCHA_SERVER_KEY) {
+      throw new Error(
+        'SMARTCAPTCHA_CLIENT_KEY и SMARTCAPTCHA_SERVER_KEY обязательны в production: ' +
+          'без них публичные формы остались бы без защиты.',
+      );
     }
   }
 
@@ -219,6 +237,58 @@ function loadConfig() {
     if (missing.length > 0) {
       throw new Error(
         `TICKET_OCR_ENABLED=true с AI_PROVIDER_MODE=proxy требует заполнить: ${missing.join(', ')}.`,
+      );
+    }
+  }
+
+  // Ключи SmartCaptcha (§8). Проверки идут во всех окружениях, а не только в production: пара
+  // ключей бывает неверна одинаково везде, а цена ошибки на стенде — три молча закрытые формы без
+  // единого внятного слова в логе (сервис отвечает `failed`, и это выглядит как работающая капча).
+  const captchaClientKey = env.SMARTCAPTCHA_CLIENT_KEY?.trim() ?? '';
+  const captchaServerKey = env.SMARTCAPTCHA_SERVER_KEY?.trim() ?? '';
+
+  // Один ключ без второго — заведомо нерабочее состояние в обе стороны: с одним клиентским виджет
+  // показывается, но никем не проверяется; с одним серверным сервер требует токен, которого форме
+  // неоткуда взять. Оба исхода хуже честно выключенной капчи.
+  if (!!captchaClientKey !== !!captchaServerKey) {
+    throw new Error(
+      'SMARTCAPTCHA_CLIENT_KEY и SMARTCAPTCHA_SERVER_KEY задаются вместе или не задаются вовсе.',
+    );
+  }
+
+  if (captchaClientKey && captchaServerKey) {
+    // Префиксы ловят самую частую ошибку — ключи, переставленные местами при переносе в `prod.env`.
+    if (!captchaClientKey.startsWith('ysc1_')) {
+      throw new Error('SMARTCAPTCHA_CLIENT_KEY должен начинаться с `ysc1_` (клиентский ключ).');
+    }
+    if (!captchaServerKey.startsWith('ysc2_')) {
+      throw new Error('SMARTCAPTCHA_SERVER_KEY должен начинаться с `ysc2_` (серверный ключ).');
+    }
+    // Длина — раньше сравнения хвостов. Без неё обрезанная пара (`ysc1_` и `ysc2_` без хвоста —
+    // перенос строки в prod.env, обрезанный секрет в CI) проходит все проверки: `slice(5, 25)` у
+    // обоих даёт пустую строку, и они «сходятся». Исход — ровно тот, против которого написана
+    // сверка пары: включённая капча с негодным секретом и сплошной `failed`, снаружи неотличимый
+    // от работающей защиты. Настоящие ключи длиннее сорока символов, 25 — префикс плюс общая часть.
+    const MIN_KEY_LENGTH = 25;
+    for (const [name, key] of [
+      ['SMARTCAPTCHA_CLIENT_KEY', captchaClientKey],
+      ['SMARTCAPTCHA_SERVER_KEY', captchaServerKey],
+    ] as const) {
+      if (key.length < MIN_KEY_LENGTH) {
+        throw new Error(
+          `${name} короче ${MIN_KEY_LENGTH} символов — ключ обрезан при переносе. ` +
+            'Возьмите значение целиком из консоли Yandex Cloud.',
+        );
+      }
+    }
+    // У ключей одной капчи следующие 20 символов после префикса совпадают. Без этой сверки два
+    // ключа от РАЗНЫХ капч пройдут проверку префиксов и молча закроют все формы портала: виджет
+    // выдаст токен одной капчи, а проверять его будет секрет другой — сплошной `failed`, который
+    // снаружи неотличим от работающей защиты.
+    if (captchaClientKey.slice(5, 25) !== captchaServerKey.slice(5, 25)) {
+      throw new Error(
+        'SMARTCAPTCHA_CLIENT_KEY и SMARTCAPTCHA_SERVER_KEY принадлежат разным капчам: ' +
+          'у пары одной капчи совпадают 20 символов после префикса.',
       );
     }
   }
@@ -312,6 +382,17 @@ function loadConfig() {
         dateDays: env.TICKET_DATE_TOLERANCE_DAYS,
       },
       attemptTtlDays: env.TICKET_OCR_ATTEMPT_TTL_DAYS,
+    },
+    captcha: {
+      // Пустая строка вместо `undefined` — по соглашению файла (ср. `mail.from`). Ручке
+      // `GET /auth/captcha` нужен `clientKey: string | null`, и `null` она делает из пустой строки:
+      // в контракте это единственный признак «капча выключена» (§5).
+      clientKey: captchaClientKey,
+      serverKey: captchaServerKey,
+      timeoutMs: env.SMARTCAPTCHA_TIMEOUT_MS,
+      // Включённость решает наличие серверного ключа, а не отдельный флаг: флаг можно выставить
+      // без ключа и получить проверку, которой нечем проверять.
+      enabled: !!captchaServerKey,
     },
     sentryDsn: env.SENTRY_DSN,
   };

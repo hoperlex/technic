@@ -11,7 +11,11 @@ x-common-env: &common-env
     - ${ENV_FILE:-/etc/technic-portal/prod.env}
   environment:
     NODE_ENV: production
-    TRUST_PROXY: ${TRUST_PROXY:-true}
+    # Число ХОПОВ, а не `true`: внешний infra-nginx перезаписывает X-Forwarded-For адресом клиента,
+    # nginx контейнера веба передаёт его не дописывая себя, — до API доходит ровно один адрес.
+    # С `true` Fastify доверял бы всей цепочке, и клиент подставлял бы себе любой req.ip, обходя
+    # лимиты входа, регистрации и почтовых ручек.
+    TRUST_PROXY: ${TRUST_PROXY:-1}
 
 services:
   # Имена сервисов = DNS-алиасы. Короткие `api`/`web` на edge конфликтуют с zakupki.
@@ -78,6 +82,26 @@ services:
     volumes:
       - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
     command: ['pnpm', '--filter', '@technic/api', 'db:migrate']
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
+  # Preflight капчи (план `docs/smart-captcha-plan.md` §8, §13): гейт релиза. Шлёт в SmartCaptcha
+  # заведомо мусорный токен и требует отказа. Смысл именно в отказе: в ограниченном режиме
+  # (платёжный аккаунт не ACTIVE/TRIAL_ACTIVE) сервис отвечает `ok` на всё подряд — метрики
+  # выглядят здоровыми, а капча не защищает, и релиз уехал бы с открытыми формами.
+  #
+  # Запускается deploy-auto ИЗ CANDIDATE-ОБРАЗА (`TAG=$COMMIT_SHA`) до переключения контейнеров:
+  # без явного тега `run` взял бы `:latest`, а он до конца выката указывает на прошлый релиз, и
+  # проверялся бы не тот код, который поедет в прод.
+  #
+  #   TAG=<sha> docker compose -p technic --profile tools run --rm captcha-check
+  captcha-check:
+    <<: *common-env
+    image: technic-api:${TAG:-latest}
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+    command: ['pnpm', '--filter', '@technic/api', 'check:captcha']
     restart: 'no'
     profiles: [tools]
     networks: [internal]

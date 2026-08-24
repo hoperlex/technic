@@ -16,6 +16,7 @@
 #   deploy-auto --previous --restore-db[=файл]  согласованный откат кода и БД
 #   deploy-auto --status            read-only сводка
 #   deploy-auto --no-prune          без чистки образов/BuildKit-кэша (ротация бэкапов — всегда)
+#   deploy-auto --allow-vhost-drift деплой при нераскатанном vhost (аварийный обход гейта)
 #   deploy-auto --cutover           необратимый выкат: остановка записи → миграция → верификатор →
 #                                   граница совместимости → подъём (docs/schema-cutover-protocol.md)
 #   deploy-auto --cutover-revert    откат незавершённого cutover (только пока граница не записана)
@@ -89,6 +90,8 @@ deploy-auto — деплой/обновление портала technic (auto.s
   deploy-auto --previous --restore-db[=файл]   согласованный откат кода и БД
   deploy-auto --status              read-only сводка: релизы, образы, миграции, бэкапы, диск
   deploy-auto --no-prune            не чистить образы и BuildKit-кэш (ротация бэкапов — всегда)
+  deploy-auto --allow-vhost-drift   продолжить деплой, даже если vhost не удалось раскатать
+                                    (по умолчанию это отказ: живой конфиг edge не тот, что в git)
   deploy-auto --cutover             необратимый выкат по протоколу (docs/schema-cutover-protocol.md):
                                     сверка бандла → стоп записи → дамп → миграция → верификатор →
                                     граница совместимости → up -d → health. Возобновляем: повтор
@@ -123,7 +126,7 @@ EOF
 # ---------------------------------------------------------------------------
 # Разбор аргументов.
 # ---------------------------------------------------------------------------
-DO_PREVIOUS=0 DO_RESTORE_DB=0 DO_STATUS=0 NO_PRUNE=0 SKIP_MIGRATE=0
+DO_PREVIOUS=0 DO_RESTORE_DB=0 DO_STATUS=0 NO_PRUNE=0 SKIP_MIGRATE=0 ALLOW_VHOST_DRIFT=0
 DO_CUTOVER=0 DO_CUTOVER_REVERT=0
 RESTORE_DB_ARG=""
 
@@ -134,6 +137,7 @@ for arg in "$@"; do
     --restore-db=*)   DO_RESTORE_DB=1; RESTORE_DB_ARG="${arg#*=}" ;;
     --status)         DO_STATUS=1 ;;
     --no-prune)       NO_PRUNE=1 ;;
+    --allow-vhost-drift) ALLOW_VHOST_DRIFT=1 ;;
     --skip-migrate)   SKIP_MIGRATE=1 ;;
     --cutover)        DO_CUTOVER=1 ;;
     --cutover-revert) DO_CUTOVER_REVERT=1 ;;
@@ -1637,6 +1641,44 @@ log "build: ${SERVICES[*]} (technic-*:$COMMIT_SHA)"
 "${COMPOSE[@]}" build "${SERVICES[@]}" || { REASON="сборка провалилась"; fail "$REASON"; }
 BUILT_TAG="$COMMIT_SHA"
 
+# Preflight капчи — первый гейт релиза: он дешевле всех остальных и не трогает ни базу, ни
+# контейнеры. Проверка идёт из ОБРАЗА КАНДИДАТА (TAG уже равен $COMMIT_SHA), потому что `:latest`
+# до конца выката указывает на прошлый релиз.
+#
+# Гейт работает, только когда капча настроена в prod.env. Пропуск при незаданном ключе — не
+# послабление: в production API без ключей вовсе не стартует (config.ts, план §8), и такой релиз
+# всё равно не переживёт health-check ниже, зато площадка, которая ещё не завела капчу, может
+# выкатывать код. Молчаливым пропуск не бывает — о нём говорит warn.
+if grep -qE '^SMARTCAPTCHA_SERVER_KEY=.+' "$PROD_ENV" 2>/dev/null; then
+  log "preflight капчи (образ кандидата $COMMIT_SHA)"
+  "${COMPOSE[@]}" --profile tools run --rm -T captcha-check || {
+    REASON="preflight капчи не прошёл: SmartCaptcha не отвергла заведомо мусорный токен либо проверка не удалась. Так отвечает ограниченный режим (платёжный аккаунт не ACTIVE/TRIAL_ACTIVE) — релиз уехал бы с капчей, которая ничего не проверяет. Ничего не изменено"
+    fail "$REASON"; }
+else
+  warn "SMARTCAPTCHA_SERVER_KEY не задан в $PROD_ENV — preflight капчи пропущен."
+  warn "В production API без ключей не стартует: релиз с кодом капчи не пройдёт health."
+fi
+
+# Vhost — ДО миграций и до up -d, а не после переключения, как было раньше. Причина в порядке
+# ущерба: релиз, чей код зависит от заголовков edge (CSP, X-Forwarded-For), при нераскатанном
+# vhost выглядит здоровым — контейнеры поднялись, health отвечает, — а формы не работают. Гейтом
+# на прежнем месте (после `docker tag :latest`) останавливать было уже нечего.
+# Здесь же не сделано ничего: дамп не снят, миграции не накатаны, контейнеры прежние.
+# Раскатка до up -d безопасна: в vhost стоит `resolver` и `proxy_pass` через переменную, поэтому
+# nginx -t не требует живого апстрима, а обратный случай — новый конфиг на старом коде — безобиден,
+# новая политика лишь разрешает лишние домены.
+sync_vhost
+case "$VHOST_SYNC" in
+  uptodate|synced) ;;
+  *)
+    if [ "$ALLOW_VHOST_DRIFT" -eq 1 ]; then
+      warn "vhost не раскатан ($VHOST_SYNC), но передан --allow-vhost-drift — продолжаю"
+    else
+      REASON="vhost не раскатан ($VHOST_SYNC): живой $LIVE_VHOST не совпадает с $REPO_VHOST, и релиз поехал бы на чужих заголовках edge. Ничего не изменено — почините доступ/конфиг и повторите, либо deploy-auto --allow-vhost-drift, если расхождение осознанное"
+      fail "$REASON"
+    fi ;;
+esac
+
 # Необратимый выкат идёт своим порядком шагов (протокол §3) и заканчивает деплой сам. Сборка ему
 # нужна ровно та же: сверка бандла спрашивает состав миграций у образа кандидата, а верификатор и
 # teardown приезжают вместе с миграцией.
@@ -1716,10 +1758,6 @@ else
   write_report; trap - EXIT
   exit 1
 fi
-
-# Vhost — после up -d (новые контейнеры уже подняты, proxy_pass есть куда резолвить)
-# и до внешнего health, чтобы тот проверял уже актуальный конфиг edge.
-sync_vhost
 
 # Внешний health — отдельно: проверяет infra-nginx/TLS/DNS, а не наш код.
 if curl -fsSI -m 10 "$HEALTH_EXTERNAL" >/dev/null 2>&1; then

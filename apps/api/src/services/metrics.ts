@@ -1,5 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { moscowDateKeyOf } from '@technic/contracts';
+import { captchaMetrics } from '../auth/captcha';
+import { config } from '../config';
 import { db } from '../db/client';
 import { assignmentBackstopCounters, assignmentBackstopRefusals } from './assignment-backstop';
 import { assignmentCommandCounters } from './assignment-command';
@@ -71,6 +73,7 @@ function render(samples: MetricSample[]): string {
 const OVERDUE_MINUTES = 10;
 
 export async function collectMetrics(): Promise<string> {
+  const captcha = captchaMetrics();
   const asOf = moscowDateKeyOf(new Date());
   const [mail, jobs, runs, overdue, assignmentMode, assignmentPopulation] = await Promise.all([
     db.execute<{ status: string; count: string }>(
@@ -355,6 +358,33 @@ export async function collectMetrics(): Promise<string> {
       help: `Включённые расписания, чьё время прошло более ${OVERDUE_MINUTES} минут назад`,
       type: 'gauge',
       values: [{ value: Number(overdue.rows[0]?.count ?? '0') }],
+    },
+    {
+      // Без этого ряда «капча выключена правкой env» снаружи неотличимо от «капча включена, но
+      // регистраций не было»: у выключенной все счётчики нули, и узнать правду можно только
+      // дёрнув `GET /auth/captcha`. В production капча обязана быть включена (config.ts), поэтому
+      // ноль здесь — сам по себе повод для тревоги.
+      name: 'technic_captcha_enabled',
+      help: '1 — ключи SmartCaptcha заданы и проверка работает; 0 — капча выключена',
+      type: 'gauge',
+      values: [{ value: config.captcha.enabled ? 1 : 0 }],
+    },
+    {
+      // Имя названо ровно тем, что проверяется: мусорный токен отвергается. «Капча защищает» из
+      // этого не следует — тот же `failed` вернётся и на неверный серверный ключ.
+      name: 'technic_captcha_invalid_token_rejected',
+      help: '1 — заведомо мусорный токен отвергнут; 0 — принят или проверить не удалось',
+      type: 'gauge',
+      values: [{ value: captcha.invalidTokenRejected }],
+    },
+    {
+      // Без отметки времени единица могла бы навсегда остаться от давнего прогона. Двигается после
+      // каждой попытки — и удачной, и нет: возраст говорит о живости самого canary, исход — гаугом
+      // выше. Смешивать эти два сигнала в одном значении нельзя.
+      name: 'technic_captcha_canary_last_run_seconds',
+      help: 'Unix-время последней завершённой попытки canary; 0 — не отработал ни разу',
+      type: 'gauge',
+      values: [{ value: captcha.canaryLastRunSeconds }],
     },
   ]);
 }

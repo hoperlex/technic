@@ -26,7 +26,6 @@ const BASE = {
   firstName: 'Иван',
   password: 'Sn3-verkhoyansk-77',
   captchaToken: 'token',
-  captchaAnswer: '24680',
 };
 
 describe('перечень пожеланий', () => {

@@ -37,7 +37,7 @@ server {
     # blob: в frame-src — для печати путевого листа (ADR 0041): бланк приходит телом ответа и
     # показывается фреймом из памяти вкладки. Под 'self' такой адрес не подпадает — у blob:
     # собственный источник, и без явной схемы браузер режет фрейм, оставляя окно печати пустым.
-    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data: https://s3.cloud.ru https://*.s3.cloud.ru; frame-src 'self' blob: https://s3.cloud.ru https://*.s3.cloud.ru; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; connect-src 'self' https://s3.cloud.ru https://*.s3.cloud.ru https://suggestions.dadata.ru" always;
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data: https://s3.cloud.ru https://*.s3.cloud.ru https://smartcaptcha.cloud.yandex.ru https://captcha-api.yandex.ru; frame-src 'self' blob: https://s3.cloud.ru https://*.s3.cloud.ru https://smartcaptcha.cloud.yandex.ru https://captcha-api.yandex.ru; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' https://smartcaptcha.cloud.yandex.ru https://captcha-api.yandex.ru; connect-src 'self' https://s3.cloud.ru https://*.s3.cloud.ru https://suggestions.dadata.ru https://smartcaptcha.cloud.yandex.ru https://captcha-api.yandex.ru" always;
 
     client_max_body_size 2m;
 
@@ -49,7 +49,9 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # Перезапись, а не дополнение: внешний nginx видит настоящего клиента, и присланный
+        # клиентом X-Forwarded-For — вымысел. Дописывать к нему свой адрес значит его узаконить.
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
     }

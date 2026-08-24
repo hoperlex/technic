@@ -111,8 +111,9 @@ TEST_DATABASE_URL=postgres://technic:technic@localhost:5432/technic_test \
 его видимость ничем не сужена.
 
 ФИО спрашивается по частям — фамилия, имя, отчество (если есть), — и склеивается базой в
-`users.full_name`; форму защищает собственная растровая капча без внешних сервисов
-([ADR 0034](docs/adr/0034-registration-name-parts-and-captcha.md)). Нерассмотренные заявки видны
+`users.full_name`; форму защищает Yandex SmartCaptcha
+([ADR 0130](docs/adr/0130-smart-captcha.md), прежде — собственная растровая капча,
+[ADR 0034](docs/adr/0034-registration-name-parts-and-captcha.md)). Нерассмотренные заявки видны
 администратору переключателем «Ожидают активации» и бейджем в меню; отказ требует причины и
 уходит в аудит.
 

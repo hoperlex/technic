@@ -1,0 +1,190 @@
+# Локальный prod-подобный стенд приёмки (docs/smart-captcha-plan.md §11).
+#
+# Зачем. Приёмку CSP и приёмку неподменяемости X-Forwarded-For (§6) негде провести: на локальном
+# Vite production-CSP нет вовсе, а deploy/docker-compose.dev.yml поднимает только PostgreSQL и
+# MinIO — приложения там нет. Здесь собирается та же цепочка, что в бою:
+#   браузер → nginx стенда (deploy/nginx/stand.conf, роль внешнего infra-nginx)
+#           → контейнер веба со штатным spa.conf (production-бандл Vite)
+#           → technic-api → postgres
+# То есть проверяется ровно то, что уедет в прод: политику отдаёт nginx, бандл собран боевой
+# сборкой, X-Forwarded-For проходит через два nginx подряд.
+#
+# Запуск — одной командой из корня репозитория:
+#   docker compose -f deploy/docker-compose.stand.yml up -d --build
+# Затем миграции и администратор (профиль tools, каждая команда — один run):
+#   docker compose -f deploy/docker-compose.stand.yml --profile tools run --rm migrate
+#   docker compose -f deploy/docker-compose.stand.yml --profile tools run --rm \
+#     -e ADMIN_EMAIL=admin@example.test -e ADMIN_PASSWORD='<пароль>' seed
+# Портал: http://localhost:8080. Логи api (в них читается приёмка §6 — поле remoteAddress записи
+# запроса и есть req.ip Fastify):
+#   docker compose -f deploy/docker-compose.stand.yml logs -f technic-api
+# Снести стенд вместе с базой: `... down -v`.
+#
+# Переменные. Секретов в этом файле нет и не будет: они приходят файлом стенда
+# ${ENV_FILE:-./stand.env}; путь считается от каталога deploy/, файл обязан существовать, иначе
+# compose откажется стартовать. Минимальный состав (имена, не значения): JWT_PRIVATE_KEY_PEM,
+# JWT_PUBLIC_KEY_PEM, COOKIE_SECRET, CSRF_SECRET, S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID,
+# S3_SECRET_ACCESS_KEY; позже — SMARTCAPTCHA_CLIENT_KEY и SMARTCAPTCHA_SERVER_KEY **dev**-капчи
+# (§8: у неё в списке сайтов localhost; боевые ключи на стенд не носят — иначе токен, добытый на
+# localhost, начинает проходить в проде).
+# ВНИМАНИЕ: `deploy/stand.env` под .gitignore не подпадает — там ловятся только `.env` и `.env.*`.
+# Держите файл вне git: либо назовите его `deploy/.env.stand` и запускайте с
+# `ENV_FILE=./.env.stand`, либо следите за тем, что уходит в `git add`.
+#
+# Всё, что задано ниже в `environment`, перекрывает `env_file` — это защита, а не удобство:
+# скопированный на стенд prod.env не уведёт его ни на боевую базу, ни на боевой PUBLIC_ORIGIN.
+name: technic-stand
+
+x-stand-env: &stand-env
+  env_file:
+    - ${ENV_FILE:-./stand.env}
+  environment:
+    # development, а не production. В production config.ts требует PGSSLROOTCERT и ходит в базу
+    # только по TLS verify-full, а postgres стенда — обычный локальный контейнер без сертификата.
+    # Обе приёмки от режима не зависят: CSP выдаёт nginx, доверие к заголовкам задано TRUST_PROXY
+    # явно, а лимиты (регистрация 5/10 мин, вход 10/мин) в dev не отключаются. Цена известна и
+    # ограничена: cookie уходят без флага Secure и не работает Origin-проверка cookie-эндпоинтов
+    # (assertCookieOrigin включается только в production). Полноценный production-режим потребовал
+    # бы базы с TLS и корневого сертификата — на стенд это не тянем.
+    NODE_ENV: development
+    # Как в бою: число ХОПОВ, а не `true`. Цепочка та же — nginx стенда перезаписывает
+    # X-Forwarded-For адресом клиента, spa.conf передаёт его не дописывая себя, до API доходит
+    # ровно один адрес. С `true` подставленный клиентом заголовок стал бы req.ip, и приёмка §6
+    # проверяла бы не то.
+    TRUST_PROXY: 1
+    # С портом — обязательно, и менять его в отрыве от `ports:` и `listen` в stand.conf нельзя.
+    # SmartCaptcha возвращает в поле host ответа /validate порт, когда он нестандартный
+    # (`localhost:8080`), а сверка на сервере идёт по URL.host (§7): с origin без порта стенд
+    # отвергал бы каждую собственную валидную проверку.
+    PUBLIC_ORIGIN: http://localhost:8080
+    # Локальный postgres стенда, TLS у него нет. Пустой PGSSLROOTCERT снимает CA и режим verify-full
+    # (config.ts: пустое значение = сертификата нет) — иначе путь, скопированный со стенда из
+    # prod.env, уронил бы старт на readFileSync несуществующего файла.
+    DATABASE_URL: postgres://technic:technic@postgres:5432/technic_portal
+    DATABASE_MIGRATION_URL: postgres://technic:technic@postgres:5432/technic_portal
+    PGSSLROOTCERT: ''
+    # Почта стенда — только в журнал: приёмок она не касается, а рассылать письма с чужой машины по
+    # настоящим адресам нельзя. Даже если stand.env принесёт боевые SMTP-креды, транспорт `log`
+    # оставит письмо в логе.
+    MAIL_ENABLED: 'false'
+    MAIL_TRANSPORT: log
+
+services:
+  # Внешний nginx стенда — заменитель infra-nginx. Единственный контейнер с host-портом: снаружи
+  # видно только его, к api снаружи хода нет (см. сети ниже) — иначе цепочку из двух nginx можно
+  # было бы обойти и приёмка §6 ничего не доказывала бы.
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: technic-stand-nginx
+    volumes:
+      - ./nginx/stand.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - '8080:8080'
+    depends_on: [technic-web]
+    restart: unless-stopped
+    networks: [edge]
+
+  # Имя сервиса — не косметика: spa.conf внутри образа веба проксирует /api/ на `technic-api:3000`
+  # жёстко, и стенд обязан дать этот DNS-алиас. Отличается только container_name — чтобы стенд не
+  # конфликтовал с боевым compose, если оба когда-нибудь окажутся на одной машине.
+  technic-api:
+    <<: *stand-env
+    image: technic-stand-api:${TAG:-latest}
+    container_name: technic-stand-api
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Только internal: снаружи api доступен исключительно через оба nginx, как в бою.
+    networks: [internal]
+
+  technic-web:
+    image: technic-stand-web:${TAG:-latest}
+    container_name: technic-stand-web
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+      args:
+        # Метка версии в бандле и version.json; на стенде сойдёт постоянная — деплоя тут нет.
+        BUILD_ID: ${BUILD_ID:-stand}
+        # Подсказки адресов DaData (build-time, ADR 0006). Пусто — поле работает как обычный ввод;
+        # для приёмок CSP и XFF токен не нужен.
+        VITE_DADATA_SUGGEST_TOKEN: ${VITE_DADATA_SUGGEST_TOKEN:-}
+    depends_on: [technic-api]
+    restart: unless-stopped
+    # Обе сети: внутрь — за api, наружу — за nginx стенда. Ровно как technic-web в бою.
+    networks: [internal, edge]
+
+  # Локальная база стенда. Порт наружу не публикуется намеренно: 5432 и 5433 на машине разработчика
+  # обычно уже заняты dev-контейнером и тестовой базой. Нужен psql — `... exec postgres psql -U
+  # technic technic_portal`.
+  postgres:
+    image: postgres:16
+    container_name: technic-stand-postgres
+    environment:
+      POSTGRES_DB: technic_portal
+      POSTGRES_USER: technic
+      POSTGRES_PASSWORD: technic
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Те же расширения, что в dev-контуре: citext и pg_trgm нужны миграциям, ставятся ДО них.
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U technic -d technic_portal']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  # Профиль tools: разовые команды через `run --rm`, вместе со стендом не поднимаются.
+  migrate:
+    <<: *stand-env
+    image: technic-stand-api:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    command: ['pnpm', '--filter', '@technic/api', 'db:migrate']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
+  seed:
+    <<: *stand-env
+    image: technic-stand-api:${TAG:-latest}
+    # ADMIN_EMAIL / ADMIN_PASSWORD передаются через -e при run — в файле им не место.
+    command: ['pnpm', '--filter', '@technic/api', 'seed:admin']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
+networks:
+  # Разделение сетей повторяет боевое: api и база не видны из сети, куда смотрит nginx.
+  internal:
+    driver: bridge
+  # В бою `edge` — внешняя сеть infra-nginx; на стенде своя, ничего общего с ней не имеющая.
+  edge:
+    driver: bridge
+
+volumes:
+  pgdata: {}
