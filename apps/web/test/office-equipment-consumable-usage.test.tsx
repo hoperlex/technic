@@ -123,11 +123,15 @@ const USER: AuthUser = authUser({
   role: 'shtab',
   constructionObjectIds: ['obj-1'],
   addons: ['office_equipment_operator'],
-  permissions: permissionsFor({
-    role: 'shtab',
-    counterpartyType: null,
-    addons: ['office_equipment_operator'],
-  }),
+  // Копия, а не сам набор: `permissionsFor` отдаёт `readonly`, а `AuthUser.permissions` объявлен
+  // изменяемым — без разворачивания сборка веба падает на `TS4104`.
+  permissions: [
+    ...permissionsFor({
+      role: 'shtab',
+      counterpartyType: null,
+      addons: ['office_equipment_operator'],
+    }),
+  ],
 });
 
 function renderModal(over: RouteMap = {}): HttpMock {
@@ -218,8 +222,7 @@ describe('отчёт по расходу за период', () => {
     // Обрезанный отчёт: строк показана одна, а расход за период — двадцать. Посчитай портал сам,
     // он показал бы 2 и соврал бы ровно тому, кто составляет заказ.
     renderModal({
-      [USAGE_ROUTE]: () =>
-        json({ ...USAGE, totalIssued: 25, totalReturned: 5, truncated: true }),
+      [USAGE_ROUTE]: () => json({ ...USAGE, totalIssued: 25, totalReturned: 5, truncated: true }),
     });
     await openUsage();
 
