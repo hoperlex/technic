@@ -27,3 +27,15 @@ export const ticketRecognitionHealthQuery = (enabled: boolean) =>
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
+
+/**
+ * Очередь заданий слепой перепроверки (Р31). Обновляется при возврате на вкладку: задание берёт
+ * первый приславший чтение, и висящий список показывал бы уже разобранное.
+ */
+export const wasteTicketBlindQueueQuery = (enabled: boolean) =>
+  queryOptions({
+    queryKey: wasteTicketKeys.blindQueue(),
+    queryFn: () => wasteTicketsApi.blindCheckQueue(),
+    enabled,
+    staleTime: 10_000,
+  });

@@ -12,9 +12,11 @@ import {
   WASTE_TICKET_CHECK_CODES,
   wasteTicketBlindCheckSchema,
   wasteTicketNumberFuzzy,
+  wasteTicketFieldLabels,
   wasteTicketNumberKey,
   type WasteTicketAttemptDto,
   type WasteTicketBlindCheckDto,
+  type WasteTicketBlindCheckTaskDto,
   type WasteTicketBlindCheckField,
   type WasteTicketCandidateDto,
   type WasteTicketDto,
@@ -25,6 +27,7 @@ import {
 import { config } from '../config';
 import { db } from '../db/client';
 import {
+  constructionObjects,
   counterparties,
   files,
   jobs,
@@ -39,7 +42,12 @@ import {
   wasteTickets,
 } from '../db/schema';
 import { requirePrincipal } from '../auth/plugin';
-import { assertOperatorScope, assertWasteObjectScope } from '../lib/access';
+import {
+  assertOperatorScope,
+  assertWasteObjectScope,
+  operatorVisibilityWhere,
+  wasteRequestVisibilityWhere,
+} from '../lib/access';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import {
@@ -106,7 +114,11 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
   }
 
   /** Талон этой заявки. Проверка принадлежности здесь, а не в запросе выше: 404 честнее 403. */
-  async function loadTicket(tx: Tx, requestId: string, ticketId: string) {
+  /**
+   * Талон ЭТОЙ заявки. Принимает и транзакцию, и само соединение: проверка принадлежности нужна и
+   * там, где писать нечего, — а требовать ради неё транзакцию значило бы открывать её впустую.
+   */
+  async function loadTicket(tx: Tx | typeof db, requestId: string, ticketId: string) {
     const rows = await tx
       .select()
       .from(wasteTickets)
@@ -983,6 +995,92 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
   // ── Слепая перепроверка (Р31) ──
 
   /**
+   * Очередь заданий проверяющему (Р31). Отдельной ручкой, а не куском карточки: перепроверка —
+   * своя работа, и человек приходит за ней, а не за заявкой.
+   *
+   * **Значений здесь нет ни одного.** Ни распознанного, ни подтверждённого, ни снимка сравнения:
+   * спрячь мы их на клиенте, слепота держалась бы вёрсткой — цифры приехали бы в браузер, и вся
+   * метрика зависела бы от того, открыл человек инструменты разработчика или нет. Приходит только
+   * то, без чего задание не выполнить: какой файл открыть, какая страница, какой по счёту талон на
+   * ней, и чья это заявка.
+   *
+   * Свои подтверждения из очереди убраны: человек, согласившийся с цифрами, во второй раз читал бы
+   * не бумагу, а собственную память (Р31). Отказ он получил бы и при отправке, но показывать
+   * задание, которое нельзя выполнить, — значит тратить его время дважды.
+   *
+   * Область та же, что у всего модуля: свои объекты и свой перевозчик (ADR 0039, ADR 0010).
+   */
+  r.get(
+    '/ticket-blind-checks',
+    {
+      ...canReview,
+      schema: {
+        querystring: z.object({ limit: z.coerce.number().int().min(1).max(50).default(20) }),
+      },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const rows = await db
+        .select({
+          id: wasteTicketBlindChecks.id,
+          ticketId: wasteTicketBlindChecks.ticketId,
+          requestId: wasteTickets.requestId,
+          pageId: wasteTickets.pageId,
+          seq: wasteTickets.seq,
+          fileId: wasteTicketPages.fileId,
+          pageNo: wasteTicketPages.pageNo,
+          ticketsOnPage: wasteTicketPages.ticketsFound,
+          filename: files.filename,
+          requestNum: wasteRequests.num,
+          objectName: constructionObjects.name,
+          createdAt: wasteTicketBlindChecks.createdAt,
+        })
+        .from(wasteTicketBlindChecks)
+        .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketBlindChecks.ticketId))
+        .innerJoin(wasteRequests, eq(wasteRequests.id, wasteTickets.requestId))
+        .innerJoin(constructionObjects, eq(constructionObjects.id, wasteRequests.objectId))
+        .leftJoin(wasteTicketPages, eq(wasteTicketPages.id, wasteTickets.pageId))
+        .leftJoin(files, eq(files.id, wasteTicketPages.fileId))
+        .where(
+          and(
+            eq(wasteTicketBlindChecks.status, 'pending'),
+            sql`${wasteTicketBlindChecks.checkerId} IS NULL`,
+            sql`${wasteRequests.deletedAt} IS NULL`,
+            // Талон, снятый как «не талон» или переехавший в правки, из очереди уходит: читать
+            // второй раз нечего, а строка перепроверки живёт до уборки заявки.
+            ne(wasteTickets.status, 'dismissed'),
+            sql`${wasteTickets.confirmedBy} IS DISTINCT FROM ${p.id}`,
+            wasteRequestVisibilityWhere(p, wasteRequests.objectId),
+            operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
+          ),
+        )
+        // Первым — то, что ждёт дольше всех: очередь без порядка означала бы, что часть заданий не
+        // берут никогда, а срок жизни задания и есть срок жизни метрики.
+        .orderBy(asc(wasteTicketBlindChecks.createdAt))
+        .limit(req.query.limit);
+
+      return {
+        items: rows.map(
+          (row): WasteTicketBlindCheckTaskDto => ({
+            id: row.id,
+            ticketId: row.ticketId,
+            requestId: row.requestId,
+            pageId: row.pageId,
+            fileId: row.fileId,
+            filename: row.filename ?? '',
+            pageNo: row.pageNo,
+            requestNum: row.requestNum,
+            objectName: row.objectName,
+            ticketsOnPage: row.ticketsOnPage ?? 0,
+            seq: row.seq,
+            createdAt: row.createdAt.toISOString(),
+          }),
+        ),
+      };
+    },
+  );
+
+  /**
    * Чтение второго человека. Задание берётся атомарно: `checker_id IS NULL` в условии — это и есть
    * разрешение гонки двух проверяющих в пользу первого, второму реестр отдаст следующий талон.
    *
@@ -997,6 +1095,17 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       const request = await loadRequest(req.params.id);
       assertWasteObjectScope(p, request.objectId);
       assertOperatorScope(p, request.operatorCounterpartyId);
+
+      // Талон обязан принадлежать ЭТОЙ заявке: право `ticketReview` говорит, что человек разбирает
+      // талоны, но не говорит, чьи (Р26). Без проверки чужую бумагу можно было бы прочитать,
+      // прикрывшись своей заявкой.
+      const ticket = await loadTicket(db, request.id, req.params.ticketId);
+      // Проверяющий не может быть тем, кто талон подтвердил (Р31). Он уже видел эти цифры и
+      // согласился с ними — его «второе чтение» мерило бы память, а не рукопись. `CHECK` в базе
+      // этого не удержит: подтвердивший записан в другой таблице, подзапрос в `CHECK` невозможен.
+      if (ticket.confirmedBy === p.id) {
+        throw err.forbidden('Этот талон подтвердили вы — перепроверить его должен другой человек');
+      }
 
       const body = req.body;
       const reviewKey = body.number ? wasteTicketNumberKey(body.number) : '';
@@ -1058,7 +1167,61 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       assertWasteObjectScope(p, request.objectId);
       assertOperatorScope(p, request.operatorCounterpartyId);
 
+      // Строка перепроверки обязана принадлежать этой заявке, а разбирающий — не быть ни
+      // проверяющим (это же держит `CHECK`), ни тем, кто талон подтвердил. Оба запрета про одно:
+      // арбитраж — третий взгляд, и совпади он с одним из двух первых, метрика уверенных ошибок
+      // считала бы человека, оценивающего собственную работу.
+      const [target] = await db
+        .select({
+          id: wasteTicketBlindChecks.id,
+          status: wasteTicketBlindChecks.status,
+          checkerId: wasteTicketBlindChecks.checkerId,
+          requestId: wasteTickets.requestId,
+          confirmedBy: wasteTickets.confirmedBy,
+          baselineNumberKey: wasteTicketBlindChecks.baselineNumberKey,
+          baselineIssuedOn: wasteTicketBlindChecks.baselineIssuedOn,
+          baselineVolumeM3: wasteTicketBlindChecks.baselineVolumeM3,
+          reviewNumberKey: wasteTicketBlindChecks.reviewNumberKey,
+          reviewIssuedOn: wasteTicketBlindChecks.reviewIssuedOn,
+          reviewVolumeM3: wasteTicketBlindChecks.reviewVolumeM3,
+        })
+        .from(wasteTicketBlindChecks)
+        .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketBlindChecks.ticketId))
+        .where(eq(wasteTicketBlindChecks.id, req.params.blindCheckId))
+        .limit(1);
+      // 404, а не 403: чужая строка не должна отвечать «она есть, но не ваша» — по такому ответу
+      // чужие заявки перебираются идентификаторами (Р28).
+      if (!target || target.requestId !== request.id) throw err.notFound('Перепроверка не найдена');
+      if (target.checkerId === p.id) {
+        throw err.forbidden('Читали эту бумагу вы — разобрать расхождение должен третий человек');
+      }
+      if (target.confirmedBy === p.id) {
+        throw err.forbidden('Этот талон подтвердили вы — разобрать расхождение должен другой');
+      }
+
       const body = req.body;
+      // Разобрано должно быть КАЖДОЕ разошедшееся поле. Это же держит `CHECK` в базе, но ответ
+      // «нарушение ограничения» человеку ничего не говорит: он узнал бы, что запрос не прошёл, но
+      // не что именно осталось неразобранным. Частично закрытая строка хуже неразобранной ровно
+      // тем, что выглядит законченной (Р31).
+      const diverged: WasteTicketBlindCheckField[] = [
+        ...(target.baselineNumberKey !== target.reviewNumberKey ? (['number'] as const) : []),
+        ...((target.baselineIssuedOn ?? null) !== (target.reviewIssuedOn ?? null)
+          ? (['issuedOn'] as const)
+          : []),
+        // Объём — `numeric`: сравнивается числом, иначе «20» и «20.000» разошлись бы строками.
+        ...(Number(target.baselineVolumeM3 ?? NaN) !== Number(target.reviewVolumeM3 ?? NaN) &&
+        !(target.baselineVolumeM3 == null && target.reviewVolumeM3 == null)
+          ? (['volumeM3'] as const)
+          : []),
+      ];
+      const unresolved = diverged.filter((field) => !body.resolvedFields.includes(field));
+      if (unresolved.length > 0) {
+        throw err.badRequest('Разберите все разошедшиеся поля', {
+          resolvedFields: `Не разобрано: ${unresolved.map((f) => wasteTicketFieldLabels[f]).join(', ')}`,
+        });
+      }
+
       const finalNumber = body.number === undefined ? null : body.number;
       const updated = await db
         .update(wasteTicketBlindChecks)

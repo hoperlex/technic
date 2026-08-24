@@ -9,5 +9,7 @@ import { createQueryKeys } from '@shared/api';
  */
 export const wasteTicketKeys = createQueryKeys('waste-tickets', {
   list: (requestId: string) => ['list', requestId],
+  /** Очередь заданий перепроверки: общая на портал и своя у каждого — сервер убирает чужое. */
+  blindQueue: () => ['blind-queue'],
   health: () => ['health'],
 });

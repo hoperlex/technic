@@ -101,7 +101,7 @@ import {
   presentGroupsHint,
 } from './waste/containerGroups';
 import { wasteAmountLine, wastePricingHint } from './waste/pricingHint';
-import { TicketBadge } from '@features/waste-ticket-review';
+import { BlindCheckQueue, TicketBadge } from '@features/waste-ticket-review';
 import { WasteDoneModal } from './waste/WasteDoneModal';
 import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
 import { MOSCOW_TZ } from '@shared/config';
@@ -334,7 +334,7 @@ function WasteStatusCell({
 
 // Вкладка живёт в адресе, а не в состоянии: по ссылке из соседнего раздела («№ заявки установки»
 // в списке площадок) сюда приходят с готовым ответом, какую вкладку показать и что на ней открыть.
-const TABS = ['requests', 'on-site', 'archive'] as const;
+const TABS = ['requests', 'on-site', 'blind-check', 'archive'] as const;
 
 export function WasteRequestsPage() {
   // Вкладки управляемые: виджет сводки живёт в строке вкладок и показывается только на «Заявках».
@@ -346,9 +346,16 @@ export function WasteRequestsPage() {
    * должны — иначе вкладка либо ведёт в пустой список, либо прячет доступное.
    */
   const showArchive = can('archive.read');
+  // «Перепроверка» — работа второго человека (ADR 0114, Р31), а не разбор своей заявки: он читает
+  // талон, не видя ни распознанного, ни подтверждённого. Вкладкой здесь, а не отдельным разделом:
+  // область та же и право то же, а приходят за ней редко — доля выборки считается процентами.
+  const showBlindCheck = can('wasteRequests.ticketReview');
   const items = [
     { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
     { key: 'on-site', label: 'На объекте', children: <OnSiteTab /> },
+    ...(showBlindCheck
+      ? [{ key: 'blind-check', label: 'Перепроверка', children: <BlindCheckQueue /> }]
+      : []),
     ...(showArchive ? [{ key: 'archive', label: 'Архив', children: <WasteArchiveTab /> }] : []),
   ];
 

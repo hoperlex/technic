@@ -3,6 +3,7 @@
  * Снаружи берут `@features/waste-ticket-review`.
  */
 export { BlindCheckPanel } from './ui/BlindCheckPanel';
+export { BlindCheckQueue } from './ui/BlindCheckQueue';
 export { TicketBadge } from './ui/TicketBadge';
 export { TicketFormModal } from './ui/TicketFormModal';
 export { TicketRecognitionBanner } from './ui/TicketRecognitionBanner';

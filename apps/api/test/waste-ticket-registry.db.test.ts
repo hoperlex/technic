@@ -140,6 +140,87 @@ describe.skipIf(!DB_URL)('реестр «требуют разбора»', () =>
     await client.query(`DELETE FROM files WHERE id = $1`, [file.rows[0]!.id]);
   });
 
+  /**
+   * Очередь заданий проверяющему (Р31) — предикат отбора, копия условия из маршрута.
+   *
+   * Проверяется именно он: очередь строится тремя `IS NULL`/`IS DISTINCT FROM` и джойнами, и
+   * ошибиться в ней можно молча — задание либо не покажется никогда, либо покажется тому, кому его
+   * выполнять нельзя. Второе хуже: человек, подтвердивший талон, прочитал бы его «второй раз» по
+   * памяти, а метрика назвала бы это качеством распознавания.
+   */
+  const QUEUE_SQL = `
+    SELECT bc.id FROM waste_ticket_blind_checks bc
+      JOIN waste_tickets wt ON wt.id = bc.ticket_id
+      JOIN waste_requests wr ON wr.id = wt.request_id
+     WHERE bc.status = 'pending' AND bc.checker_id IS NULL
+       AND wr.deleted_at IS NULL AND wt.status <> 'dismissed'
+       AND wt.confirmed_by IS DISTINCT FROM $1
+       AND wt.request_id = $2`;
+
+  async function queued(requestId: string, viewerId: string): Promise<boolean> {
+    const res = await client.query(QUEUE_SQL, [viewerId, requestId]);
+    return res.rows.length > 0;
+  }
+
+  async function addBlindCheck(ticketId: string): Promise<string> {
+    const res = await client.query<{ id: string }>(
+      `INSERT INTO waste_ticket_blind_checks (ticket_id, baseline_number_raw, baseline_number_key,
+                                              baseline_fingerprint)
+       VALUES ($1, '30476', '30476', repeat('a', 64)) RETURNING id`,
+      [ticketId],
+    );
+    return res.rows[0]!.id;
+  }
+
+  it('задание видно тому, кто талон не подтверждал', async () => {
+    const requestId = await newRequest();
+    const ticketId = await addTicket(requestId, { status: 'confirmed' });
+    await addBlindCheck(ticketId);
+
+    expect(await queued(requestId, ctx.arbiterId)).toBe(true);
+  });
+
+  it('подтвердившему талон задание не показывают', async () => {
+    // Он уже видел эти цифры и согласился с ними: его «второе чтение» мерило бы память, а не
+    // рукопись. Отказ придёт и при отправке, но показанное задание тратит время дважды.
+    const requestId = await newRequest();
+    const ticketId = await addTicket(requestId, { status: 'confirmed' });
+    await addBlindCheck(ticketId);
+
+    expect(await queued(requestId, ctx.userId)).toBe(false);
+  });
+
+  it('взятое задание из очереди уходит', async () => {
+    const requestId = await newRequest();
+    const ticketId = await addTicket(requestId, { status: 'confirmed' });
+    const checkId = await addBlindCheck(ticketId);
+    await client.query(`UPDATE waste_ticket_blind_checks SET checker_id = $1 WHERE id = $2`, [
+      ctx.arbiterId,
+      checkId,
+    ]);
+
+    // Гонка двух проверяющих разрешается в пользу первого: второму очередь отдаёт следующий талон.
+    expect(await queued(requestId, ctx.arbiterId)).toBe(false);
+  });
+
+  it('снятый как «не талон» из очереди уходит: читать второй раз нечего', async () => {
+    const requestId = await newRequest();
+    const ticketId = await addTicket(requestId, { status: 'confirmed' });
+    await addBlindCheck(ticketId);
+    await client.query(`UPDATE waste_tickets SET status = 'dismissed' WHERE id = $1`, [ticketId]);
+
+    expect(await queued(requestId, ctx.arbiterId)).toBe(false);
+  });
+
+  it('удалённая заявка заданий не даёт', async () => {
+    const requestId = await newRequest();
+    const ticketId = await addTicket(requestId, { status: 'confirmed' });
+    await addBlindCheck(ticketId);
+    await client.query(`UPDATE waste_requests SET deleted_at = now() WHERE id = $1`, [requestId]);
+
+    expect(await queued(requestId, ctx.arbiterId)).toBe(false);
+  });
+
   it('невыполненная слепая перепроверка держит заявку в реестре', async () => {
     const id = await newRequest();
     const ticketId = await addTicket(id, { status: 'confirmed' });

@@ -7,6 +7,7 @@ import type {
   UpdateWasteTicketInput,
   WasteRequestTicketsDto,
   WasteTicketBlindCheckInput,
+  WasteTicketBlindCheckTaskDto,
 } from '@technic/contracts';
 import { apiFetch } from '@shared/api';
 
@@ -90,6 +91,16 @@ export const wasteTicketsApi = {
     apiFetch<{ ok: boolean }>(
       `/waste-requests/${requestId}/blind-checks/${blindCheckId}/arbitrate`,
       { method: 'POST', body },
+    ),
+
+  /**
+   * Очередь заданий слепой перепроверки (Р31). Ответ не несёт ни одного прочитанного значения —
+   * ни машинного, ни подтверждённого: слепота держится тем, что цифр нет в ответе, а не тем, что
+   * их не нарисовали.
+   */
+  blindCheckQueue: (limit = 20) =>
+    apiFetch<{ items: WasteTicketBlindCheckTaskDto[] }>(
+      `/waste-requests/ticket-blind-checks?limit=${limit}`,
     ),
 
   health: () => apiFetch<TicketRecognitionHealth>('/waste-requests/ticket-recognition/health'),
