@@ -866,4 +866,132 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
       await probe.end();
     }
   }, 60_000);
+
+  // ── Границы вида и статуса: что смежные ручки НЕ делают с заявкой на расходники ──
+
+  /**
+   * Обе группы ниже закрывают дыры, найденные сверкой после реализации выпуска 3, и обе — про одно:
+   * ручка спрашивала меньше, чем требует матрица §6.2, а портал знал больше сервера. Портальное
+   * знание защитой не является: 422 отдаёт сервер, к нему ходят и мимо портала.
+   */
+
+  it('смета по заявке на расходники отбита во всех пяти дверях сметного круга', async () => {
+    const consumable = await makeConsumable('Тонер стражевой', 10);
+    const request = await makeRequest([{ consumableId: consumable, requestedQuantity: 1 }]);
+    const base = `/api/v1/service-requests/${request.id}`;
+
+    // Достижимы снаружи только эти две: остальные три требуют «Смету на согласовании», куда без
+    // предъявления не попасть. Проверяются всё равно все — страж не должен зависеть от того, что
+    // соседняя дверь заперта.
+    const doors: [string, string, object][] = [
+      ['PUT', `${base}/estimate`, { items: [], version: request.version }],
+      ['PATCH', `${base}/estimate/submit`, { warrantyRepair: false, version: request.version }],
+      ['PATCH', `${base}/estimate/approval`, { approved: true, version: request.version }],
+      ['PATCH', `${base}/estimate/reopen`, { reason: 'вернуть в правку', version: request.version }],
+      ['PATCH', `${base}/it-approval`, { approved: true, version: request.version }],
+    ];
+    for (const [method, url, body] of doors) {
+      const res = await inject(method, url, body);
+      expect(res.statusCode, `${method} ${url}: ${res.body}`).toBe(422);
+      expect(message(res), `${method} ${url}`).toContain('Заявка на расходники сметы не имеет');
+    }
+
+    // Заявка после всех попыток там же, где была, и склад не тронут.
+    expect((await card(request.id)).status).toBe('in_work');
+    expect(await stockOf(consumable)).toBe(10);
+  });
+
+  it('выдача не отмечается до начала работ — ни в «Новой», ни в «Назначена»', async () => {
+    const consumable = await makeConsumable('Тонер дозаказный', 10);
+    const equipmentId = await makeEquipment();
+    const created = await inject('POST', '/api/v1/service-requests', {
+      officeEquipmentId: equipmentId,
+      kind: 'consumable',
+      consumables: [{ consumableId: consumable, requestedQuantity: 2 }],
+      description: 'Нужны картриджи',
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const request = (created.json() as { request: ServiceRequestDto }).request;
+    const line = lineOf(request, consumable);
+    const issued = (version: number) =>
+      inject('PATCH', `/api/v1/service-requests/${request.id}/consumables/issued`, {
+        items: [{ id: line.id, issuedQuantity: 2 }],
+        version,
+      });
+
+    // «Новая»: исполнителей нет вовсе, и ход держателя `serviceRequests.status` в назначении не
+    // нуждается — прежняя проверка «лишь бы не закрыта» списала бы со склада по заявке, которую
+    // ещё никто не взял.
+    const inNew = await issued(request.version);
+    expect(inNew.statusCode, inNew.body).toBe(422);
+    expect(message(inNew)).toContain('Выдачу отмечают в статусах');
+    expect(await stockOf(consumable)).toBe(10);
+
+    const assigned = await inject('PUT', `/api/v1/service-requests/${request.id}/executors`, {
+      userIds: [ctx.admin.id],
+      serviceCounterpartyId: null,
+      version: request.version,
+    });
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    const assignedVersion = (assigned.json() as { request: ServiceRequestDto }).request.version;
+
+    // «Назначена»: исполнитель уже есть — то есть отсекает именно статус, а не отсутствие прав.
+    const inAssigned = await issued(assignedVersion);
+    expect(inAssigned.statusCode, inAssigned.body).toBe(422);
+    expect(message(inAssigned)).toContain('Выдачу отмечают в статусах');
+    expect(await stockOf(consumable)).toBe(10);
+
+    // А из «В работе» тот же вызов проходит: запирает статус, и только он.
+    const started = await inject('PATCH', `/api/v1/service-requests/${request.id}/start`, {
+      version: assignedVersion,
+    });
+    expect(started.statusCode, started.body).toBe(200);
+    const ok = await issued((started.json() as ServiceRequestDto).version);
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect(await stockOf(consumable)).toBe(8);
+  });
+
+  it('у отложенной заявки выдача не правится — как и её состав (Р110)', async () => {
+    const consumable = await makeConsumable('Тонер отложенный', 10);
+    const request = await makeRequest([{ consumableId: consumable, requestedQuantity: 3 }]);
+    const line = lineOf(request, consumable);
+
+    const held = await inject('PATCH', `/api/v1/service-requests/${request.id}/hold`, {
+      reason: 'ждём поставку',
+      version: request.version,
+    });
+    expect(held.statusCode, held.body).toBe(200);
+    expect((held.json() as ServiceRequestDto).status).toBe('on_hold');
+
+    const res = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/consumables/issued`,
+      {
+        items: [{ id: line.id, issuedQuantity: 3 }],
+        version: (held.json() as ServiceRequestDto).version,
+      },
+    );
+    expect(res.statusCode, res.body).toBe(422);
+    expect(message(res)).toContain('Выдачу отмечают в статусах');
+    expect(await stockOf(consumable)).toBe(10);
+
+    // Возобновление возвращает право на ход: заперта была заморозка, а не заявка.
+    const resumed = await inject('PATCH', `/api/v1/service-requests/${request.id}/resume`, {
+      version: (await card(request.id)).version,
+    });
+    expect(resumed.statusCode, resumed.body).toBe(200);
+    const after = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/consumables/issued`,
+      {
+        items: [{ id: line.id, issuedQuantity: 3 }],
+        version: (resumed.json() as ServiceRequestDto).version,
+      },
+    );
+    expect(after.statusCode, after.body).toBe(200);
+    expect(await stockOf(consumable)).toBe(7);
+    // Шесть обращений подряд: умолчания в 5 с этому случаю не хватает на загруженной машине.
+  }, 30_000);
 });

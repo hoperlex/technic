@@ -793,6 +793,22 @@ async function assertConsumableIssuer(p: Principal, row: RequestRow): Promise<vo
   throw err.forbidden(`${who} не отмечает выдачу по этой заявке — это шаг назначенного исполнителя`);
 }
 
+/**
+ * Смета — принадлежность ремонта, и у заявки на расходники её нет вовсе (план §6.2: «та же таблица
+ * без строк сметы и без визы ИТ»). Страж стоит в **каждой** из пяти дверей сметного круга, хотя
+ * достижимы снаружи только две — правка состава и предъявление: остальные три требуют статуса
+ * «Смета на согласовании», куда без предъявления не попасть. Опираться на эту недостижимость
+ * значило бы держать защиту на выводе о чужом коде — а он меняется; строка на ручку дешевле.
+ *
+ * 422, а не 403: право у человека есть, негоден предмет — эта заявка не про ремонт.
+ */
+function assertRepairKind(row: RequestRow, action: string): void {
+  if (row.kind !== 'consumable') return;
+  throw err.unprocessable(`Заявка на расходники сметы не имеет: ${action} нечего`, {
+    kind: 'Не тот вид заявки',
+  });
+}
+
 function assertCanHold(p: Principal, action: string): void {
   if (canHoldService(p)) return;
   const who = p.role ? roleLabels[p.role] : 'Учётная запись';
@@ -3055,6 +3071,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const body = req.body;
       if (!body.approved) assertSideAllowed(p, 'cancelled', ['estimate_review']);
       const row = await requireEditable(p, req.params.id);
+      assertRepairKind(row, 'визировать');
       // Визируют **смету**, а не заявку: до предъявления согласовывать нечего — предмет решения
       // (счёт инженера) появляется позже.
       if (row.status !== 'estimate_review') {
@@ -3418,6 +3435,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const body = req.body;
       const row = await requireEditable(p, req.params.id);
       await assertExecutorSide(p, row, 'ведёт смету этой заявки');
+      assertRepairKind(row, 'править');
       // legacy: `diagnostics` снимается выпуском 2 — из неё доступно то же, что из «В работе».
       if (row.status !== 'in_work' && row.status !== 'diagnostics') {
         throw err.conflict(
@@ -3480,6 +3498,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       // Смета предъявляется из «В работе» (Н2); `diagnostics` — legacy: снимается выпуском 2.
       assertSideAllowed(p, 'estimate_review', ['in_work', 'diagnostics']);
       const row = await requireEditable(p, req.params.id);
+      assertRepairKind(row, 'предъявлять');
       const assignment = await executorAssignment(p, row);
       assertTransition(p, row.status, 'estimate_review', assignment);
       // Гарантийный ремонт — не пустая смета, а осознанное «чиним по гарантии, денег нет», и без
@@ -3560,6 +3579,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const to: ServiceRequestStatus = 'in_work';
       assertSideAllowed(p, to, ['estimate_review']);
       const row = await requireEditable(p, req.params.id);
+      assertRepairKind(row, 'согласовывать');
       assertTransition(p, row.status, to);
       if (row.status !== 'estimate_review') {
         throw err.unprocessable(
@@ -3626,6 +3646,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const body = req.body;
       const row = await requireEditable(p, req.params.id);
       await assertExecutorSide(p, row, 'возвращает смету в правку');
+      assertRepairKind(row, 'возвращать в правку');
       // legacy: `diagnostics` снимается выпуском 2 — из неё доступно то же, что из «В работе».
       if (row.status !== 'in_work' && row.status !== 'diagnostics') {
         throw err.unprocessable(
@@ -3800,10 +3821,22 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         });
       }
       await assertConsumableIssuer(p, row);
-      if (isServiceRequestClosed(row.status)) {
+      /**
+       * Матрица §6.2 называет **два** статуса поимённо — «В работе» и «Решена», — и проверка
+       * перечисляет их так же, вместо прежнего «лишь бы не закрыта». Разница не редакционная:
+       * «не закрыта» пускало правку из «Новой» и «Назначена», то есть **списывало со склада по
+       * заявке, которую ещё никто не взял в работу**, а держателю `serviceRequests.status`
+       * назначение и не требуется. Отложенную не правят по тому же правилу, что и её состав
+       * (Р110): под разбирательством о задержке факт выдачи — предмет спора, а не поле формы.
+       *
+       * Закрытой оставлен свой текст: там человеку нужен не список статусов, а куда идти дальше.
+       */
+      if (row.status !== 'in_work' && row.status !== 'done') {
         throw err.unprocessable(
-          `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» закрыта — остаток правят вручную, с правом на справочник`,
-          { status: 'Заявка закрыта' },
+          isServiceRequestClosed(row.status)
+            ? `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» закрыта — остаток правят вручную, с правом на справочник`
+            : `Выдачу отмечают в статусах «${serviceRequestStatusLabels.in_work}» и «${serviceRequestStatusLabels.done}», а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
+          { status: isServiceRequestClosed(row.status) ? 'Заявка закрыта' : 'Другой статус' },
         );
       }
 

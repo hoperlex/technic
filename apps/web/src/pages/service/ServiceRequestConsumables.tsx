@@ -81,6 +81,7 @@ export function ServiceRequestConsumablesField({
 }) {
   const form = Form.useFormInstance();
   const lines: ConsumableLineValue[] = Form.useWatch('consumables', form) ?? [];
+  const equipmentChosen = !!Form.useWatch('officeEquipmentId', form);
   // Признак «показать всё» — состояние поля, а не значение формы: он про то, из чего выбирают, а
   // не про то, что просят, и в теле запроса ему делать нечего.
   const [showAll, setShowAll] = useState(false);
@@ -97,29 +98,43 @@ export function ServiceRequestConsumablesField({
         option.value === lines[index]?.consumableId || !chosen.includes(option.value),
     );
 
-  const hint = !modelId
-    ? 'У аппарата не указана модель — показан весь перечень расходников.'
-    : options.length === 0 && !isFetching && !showAll
-      ? 'К этой модели расходники не привязаны — включите весь перечень или скажите ИТ-службе, чего не хватает.'
-      : null;
+  /*
+   * Подсказка отвечает на «почему в списке это»: аппарат ещё не выбран, у него нет модели или к
+   * модели ничего не привязано. Три разных состояния, и общее «ничего не нашлось» не отвечает ни
+   * на одно — человек ищет ошибку у себя, а её нет.
+   */
+  const hint = !equipmentChosen
+    ? 'Сначала выберите аппарат — позиции подберутся по его модели.'
+    : !modelId
+      ? 'У аппарата не указана модель — показан весь перечень расходников.'
+      : options.length === 0 && !isFetching && !showAll
+        ? 'К этой модели расходники не привязаны — включите весь перечень или скажите ИТ-службе, чего не хватает.'
+        : null;
 
   return (
     <Form.Item
       label="Что нужно"
       required
-      // Отказ сервера по строкам («Добавьте хотя бы одну позицию») ложится сюда же: путь ошибки у
-      // схемы заведения — `consumables`, и форма ищет поле по верхнему сегменту.
       tooltip="Позиции подобраны по модели аппарата"
       style={{ marginBottom: 8 }}
     >
-      <Form.List name="consumables">
-        {(fields, { add, remove }) => (
+      {/* Пустой список запирает отправку правилом самого списка, а не подсказкой под ним: сервер
+          заявку без строк не принимает (`createServiceRequestSchema`), и форма, отпустившая её,
+          отвечала бы человеку 422 после заполнения всех остальных полей. */}
+      <Form.List
+        name="consumables"
+        rules={[
+          {
+            validator: async (_rule, value: ConsumableLineValue[] | undefined) => {
+              if (!value || value.length === 0) {
+                throw new Error('Добавьте хотя бы одну позицию: без них заявка не заводится');
+              }
+            },
+          },
+        ]}
+      >
+        {(fields, { add, remove }, { errors }) => (
           <>
-            {fields.length === 0 && (
-              <Typography.Text type="secondary">
-                Добавьте хотя бы одну позицию: заявка на расходники без них не заводится.
-              </Typography.Text>
-            )}
             {fields.map((field, index) => (
               <Row key={field.key} gutter={8} align="top" style={{ marginTop: 4 }}>
                 <Col xs={24} sm={16}>
@@ -178,6 +193,7 @@ export function ServiceRequestConsumablesField({
             >
               Добавить позицию
             </Button>
+            <Form.ErrorList errors={errors} />
           </>
         )}
       </Form.List>

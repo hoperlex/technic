@@ -84,6 +84,14 @@ function usageWhere(query: OfficeEquipmentConsumableUsageQuery): SQL | undefined
  * разницы: `CHECK` `…direction_check` держит их согласованными (`issue` уменьшает остаток,
  * `return` увеличивает), и считать по знаку значило бы завести вторую копию того же правила —
  * ту, которая молча разойдётся с первой, если вид когда-нибудь добавят.
+ *
+ * Оба выражения используются ДВАЖДЫ — в запросе строк (с соединениями) и в запросе итогов (по одной
+ * таблице), — и в односоставном запросе drizzle переписывает колонки списка столбцов в голые имена
+ * (`"entry_kind"` вместо `"office_equipment_consumable_stock_entries"."entry_kind"`; замерено
+ * `toSQL()`, ловушка описана у `consumableIdRef` в маршруте справочника). Здесь это безвредно и
+ * останется безвредным: единственная таблица такого запроса — сам журнал, и голое имя разрешается
+ * в неё же. Но правило работает только пока в запрос итогов не добавили соединение — с ним
+ * одноимённая колонка соседа увела бы сумму молча.
  */
 const issuedExpr = sql<number>`sum(CASE WHEN ${officeEquipmentConsumableStockEntries.entryKind} = 'issue'
     THEN ${officeEquipmentConsumableStockEntries.quantityBefore} - ${officeEquipmentConsumableStockEntries.quantityAfter}
@@ -91,8 +99,18 @@ const issuedExpr = sql<number>`sum(CASE WHEN ${officeEquipmentConsumableStockEnt
 const returnedExpr = sql<number>`sum(CASE WHEN ${officeEquipmentConsumableStockEntries.entryKind} = 'return'
     THEN ${officeEquipmentConsumableStockEntries.quantityAfter} - ${officeEquipmentConsumableStockEntries.quantityBefore}
     ELSE 0 END)::int`;
-/** Позднейшее событие группы: по нему отчёт упорядочен и по нему же читается «когда это было». */
-const lastAtExpr = sql<Date>`max(${officeEquipmentConsumableStockEntries.createdAt})`;
+/**
+ * Позднейшее событие группы: по нему отчёт упорядочен и по нему же читается «когда это было».
+ *
+ * `mapWith` обязателен, и обойтись без него нельзя: у голого `sql`-выражения драйвер отдаёт
+ * `timestamptz` строкой (`2026-08-21 09:00:00.123+03`), а не `Date`, — расшифровку по типу колонки
+ * drizzle применяет к колонкам, а не к выражениям. Разбирать эту строку своим `new Date(...)`
+ * значило бы полагаться на нестандартный разбор даты в V8; правильнее взять готовую расшифровку
+ * той самой колонки, из которой значение и пришло.
+ */
+const lastAtExpr = sql<Date>`max(${officeEquipmentConsumableStockEntries.createdAt})`.mapWith(
+  officeEquipmentConsumableStockEntries.createdAt,
+);
 
 export async function loadConsumableUsage(
   query: OfficeEquipmentConsumableUsageQuery,

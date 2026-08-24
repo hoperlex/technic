@@ -897,6 +897,22 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     if (ctx?.db) {
       const equipment = sql`SELECT id FROM office_equipment WHERE inventory_number LIKE ${`ОЕ-${RUN}-%`}`;
       const users = sql`SELECT id FROM users WHERE email LIKE ${`db-oe-%-${RUN}@example.invalid`}`;
+      // События журнала остатка, оставленные случаем про выдачу расходников. Их надо снять первыми:
+      // на заявку и на автора они ссылаются `RESTRICT`ом, и без этого не удалить ни заявку, ни
+      // учётку. Строки журнала неизменяемы триггером (Р11), круг размыкает только временное
+      // гашение — одной транзакцией и обратно `ENABLE ALWAYS`, как в `service-request-consumables.db`.
+      const расходники = sql`SELECT id FROM office_equipment_consumables WHERE code LIKE ${`ДFLOW${RUN.toUpperCase()}%`}`;
+      await ctx.db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '10s'`);
+        await tx.execute(sql`
+          ALTER TABLE office_equipment_consumable_stock_entries
+            DISABLE TRIGGER office_equipment_consumable_stock_immutable`);
+        await tx.execute(sql`
+          DELETE FROM office_equipment_consumable_stock_entries WHERE consumable_id IN (${расходники})`);
+        await tx.execute(sql`
+          ALTER TABLE office_equipment_consumable_stock_entries
+            ENABLE ALWAYS TRIGGER office_equipment_consumable_stock_immutable`);
+      });
       // Обращение по гарантии ссылается на строку сметы другой заявки: пока ссылка стоит, ни ту,
       // ни другую заявку не удалить одним запросом — `RESTRICT` проверяется построчно.
       await ctx.db.execute(sql`
@@ -905,6 +921,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       await ctx.db.execute(
         sql`DELETE FROM service_requests WHERE office_equipment_id IN (${equipment})`,
       );
+      await ctx.db.execute(sql`DELETE FROM office_equipment_consumables WHERE id IN (${расходники})`);
       await ctx.db.execute(
         sql`DELETE FROM office_equipment WHERE inventory_number LIKE ${`ОЕ-${RUN}-%`}`,
       );
@@ -956,7 +973,8 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     // заявкой ничего не происходит.
     expect(dto.waitingOn).toBe('operator');
     expect(dto.itApproval).toBeNull();
-    // Вид заявки — ремонт: `consumable` API до выпуска 3 не принимает вовсе (план §7.3).
+    // Вид заявки — ремонт: он умолчание и остаётся им навсегда (решение 9 ADR 0133). Заявку на
+    // расходники заводят, явно назвав `kind`, и её цикл проверяет service-request-consumables.db.
     expect(dto.kind).toBe('repair');
     // Подразделение заявителя проставляет сервер по учётке автора (Н11): у штаба отделов нет, и
     // подразделением становится его площадка — со снимком названия, а не одной ссылкой.
@@ -3780,5 +3798,93 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       // Заявка осталась там же, где была: ни один чужой ход не прошёл.
       expect((await card(assigned.id)).status).toBe('in_work');
     });
+
+    /**
+     * Тест 8 плана: **правку факта выдачи спрашивают тем же вопросом, что и прочие ходы
+     * исполнителя** — назначением по строке заявки, а не одним правом на маршруте.
+     *
+     * Случай нужен именно здесь, а не в `service-request-consumables.db`: там единственный актор —
+     * администратор, у которого есть всё, и «кому отказано» на нём не показать. Здесь же готова
+     * пара, которая различается ровно одним: `namedExecutor` назначен на заявку, `strayExecutor`
+     * держит тот же набор «Оргтехника: ИТ-служба» и не назначен ни на что.
+     */
+    it('правку выдачи расходников держит назначение, а не право на маршруте', async () => {
+      const consumable = await inject(
+        'POST',
+        '/api/v1/office-equipment-consumables',
+        ctx.admin.auth,
+        {
+          code: `ДFLOW${RUN.toUpperCase()}1`,
+          name: `Тонер прав ${RUN} (шт)`,
+          quantity: 5,
+          color: null,
+          comment: '',
+        },
+      );
+      expect(consumable.statusCode, consumable.body).toBe(201);
+      const consumableId = (consumable.json() as { id: string }).id;
+
+      const equipmentId = await makeEquipment({
+        typeId: ctx.typeId,
+        name: 'Kyocera ECOSYS M3145',
+        inventoryNumber: `ОЕ-${RUN}-ISSUE`,
+        objectId: ctx.objectId,
+      });
+      const request = await createRequest(ctx.customer.auth, equipmentId, 'Нужны картриджи', {
+        kind: 'consumable',
+        consumables: [{ consumableId, requestedQuantity: 2 }],
+      });
+
+      const assigned = await inject(
+        'PUT',
+        `/api/v1/service-requests/${request.id}/executors`,
+        ctx.operator.auth,
+        {
+          userIds: [ctx.namedExecutor.id],
+          serviceCounterpartyId: null,
+          version: request.version,
+        },
+      );
+      expect(assigned.statusCode, assigned.body).toBe(200);
+      const started = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${request.id}/start`,
+        ctx.namedExecutor.auth,
+        { version: (assigned.json() as { request: ServiceRequestDto }).request.version },
+      );
+      expect(started.statusCode, started.body).toBe(200);
+
+      const lineId = (started.json() as ServiceRequestDto).consumables[0]!.id;
+      const issue = (auth: Auth, version: number) =>
+        inject('PATCH', `/api/v1/service-requests/${request.id}/consumables/issued`, auth, {
+          items: [{ id: lineId, issuedQuantity: 2 }],
+          version,
+        });
+
+      // Заказчик заявку завёл — и на этом его участие кончается: до обработчика он не доходит,
+      // его отбивает страж маршрута, у роли `shtab` прав по заявкам нет вовсе.
+      const byCustomer = await issue(ctx.customer.auth, await version(request.id));
+      expect(byCustomer.statusCode, byCustomer.body).toBe(403);
+
+      // А вот посторонний держатель набора страж маршрута ПРОХОДИТ (`execute` у него есть) и
+      // упирается в назначение — то есть отказ приходит из обработчика, а не с порога.
+      const byStray = await issue(ctx.strayExecutor.auth, await version(request.id));
+      expect(byStray.statusCode, byStray.body).toBe(403);
+      expect((byStray.json() as { message: string }).message).toContain('не отмечает выдачу');
+
+      // Ни одна отбитая попытка склада не коснулась.
+      const stock = await ctx.db.execute<{ quantity: number }>(
+        sql`SELECT quantity FROM office_equipment_consumables WHERE id = ${consumableId}::uuid`,
+      );
+      expect(Number(stock.rows[0]!.quantity)).toBe(5);
+
+      // Назначенный проходит — и списывает.
+      const ok = await issue(ctx.namedExecutor.auth, await version(request.id));
+      expect(ok.statusCode, ok.body).toBe(200);
+      const after = await ctx.db.execute<{ quantity: number }>(
+        sql`SELECT quantity FROM office_equipment_consumables WHERE id = ${consumableId}::uuid`,
+      );
+      expect(Number(after.rows[0]!.quantity)).toBe(3);
+    }, 60_000);
   });
 });
