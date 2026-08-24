@@ -98,3 +98,100 @@ describe('разбор талонов при выключенном распоз
     await waitFor(() => expect(container.textContent).toBe(''));
   });
 });
+
+/** Кадр с двумя талонами: ровно тот случай, ради которого разбивка и нужна. */
+const TWO_ON_ONE_PAGE = {
+  ...EMPTY_TICKETS,
+  tickets: [
+    {
+      id: 't-1',
+      requestId: 'wr-1',
+      pageId: 'p-1',
+      seq: 1,
+      origin: 'ocr',
+      status: 'unconfirmed',
+      number: '30476',
+      issuedOn: '2026-08-17',
+      volumeM3: 20,
+      workKind: 'removal',
+      addressRaw: 'Волоколамское ш., 71к14',
+      needsReviewFields: [],
+      candidates: [],
+      operatorCounterpartyId: null,
+      operatorName: null,
+      editedAt: null,
+      editedByName: null,
+      confirmedAt: null,
+      confirmedByName: null,
+      duplicateOverride: null,
+      proposal: null,
+      createdAt: '2026-08-24T09:00:00.000Z',
+      updatedAt: '2026-08-24T09:00:00.000Z',
+    },
+    {
+      id: 't-2',
+      requestId: 'wr-1',
+      pageId: 'p-1',
+      seq: 2,
+      origin: 'ocr',
+      status: 'unconfirmed',
+      number: '30477',
+      issuedOn: null,
+      volumeM3: null,
+      workKind: 'idle',
+      addressRaw: '',
+      needsReviewFields: [],
+      candidates: [],
+      operatorCounterpartyId: null,
+      operatorName: null,
+      editedAt: null,
+      editedByName: null,
+      confirmedAt: null,
+      confirmedByName: null,
+      duplicateOverride: null,
+      proposal: null,
+      createdAt: '2026-08-24T09:00:00.000Z',
+      updatedAt: '2026-08-24T09:00:00.000Z',
+    },
+  ],
+  pages: [{ id: 'p-1', fileId: 'f-1', pageNo: 1, status: 'done', ticketsFound: 2 }],
+  files: [],
+};
+
+describe('карточка талона: четыре поля и разбивка кадра', () => {
+  it('поля показаны по одному в строке, включая пустые', async () => {
+    mockHttp({
+      'GET /waste-requests/wr-1/tickets': () => json(TWO_ON_ONE_PAGE),
+      'GET /waste-requests/ticket-recognition/health': () =>
+        json({ ...DISABLED_HEALTH, state: 'ok' }),
+    });
+    renderWithUser(<WasteTicketsPanel requestId="wr-1" />);
+
+    // Четыре подписи на каждый талон: сверяют с бумагой поле за полем, а не строкой таблицы.
+    await waitFor(() => expect(screen.getAllByText('№ талона')).toHaveLength(2));
+    expect(screen.getAllByText('Дата')).toHaveLength(2);
+    expect(screen.getAllByText('Объём')).toHaveLength(2);
+    expect(screen.getAllByText('Адрес')).toHaveLength(2);
+
+    expect(screen.getByText('30476')).toBeDefined();
+    expect(screen.getByText('20 м³')).toBeDefined();
+    expect(screen.getByText('Волоколамское ш., 71к14')).toBeDefined();
+    // У простоя объёма нет законно, и это сказано словами, а не прочерком (Р2).
+    expect(screen.getByText(/простой — объёма нет/i)).toBeDefined();
+  });
+
+  it('говорит, который из двух талонов кадра перед тобой', async () => {
+    mockHttp({
+      'GET /waste-requests/wr-1/tickets': () => json(TWO_ON_ONE_PAGE),
+      'GET /waste-requests/ticket-recognition/health': () =>
+        json({ ...DISABLED_HEALTH, state: 'ok' }),
+    });
+    renderWithUser(<WasteTicketsPanel requestId="wr-1" />);
+
+    // Без этой подписи две карточки с одной страницы выглядят как два разных скана.
+    await waitFor(() => expect(screen.getByText(/талон 1 из 2/i)).toBeDefined());
+    expect(screen.getByText(/талон 2 из 2/i)).toBeDefined();
+    // Открыть тот самый лист можно не уходя из карточки.
+    expect(screen.getAllByRole('button', { name: 'Скан' })).toHaveLength(2);
+  });
+});

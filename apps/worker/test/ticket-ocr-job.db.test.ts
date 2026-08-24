@@ -38,7 +38,9 @@ function countingEngine(tickets: unknown[] = [{ number: '30476', issuedOn: '2026
           engine: 'stub',
           model: opts.model,
           modelReported: opts.model,
-          promptVersion: 1,
+          // Заведомо ЧУЖАЯ версия: движок вправе сообщить любую, а ключ кэша строится по нашей.
+          // Совпади они здесь случайно — тест не заметил бы, что запись и чтение разъехались.
+          promptVersion: 99,
           preprocessingVersion: 1,
           inputTokens: 100,
           outputTokens: 20,

@@ -292,8 +292,12 @@ async function recognizePage(
         meta.engine,
         meta.model,
         meta.modelReported,
-        meta.promptVersion,
-        meta.preprocessingVersion,
+        // Версии берутся из НАШИХ констант, а не из ответа движка, хотя движок их и сообщает.
+        // Ключ кэша строится здесь же и по ним — разойдись запись с чтением хоть на единицу, и
+        // кэш перестал бы находить собственные записи: каждый второй проход шёл бы в модель и
+        // падал бы на уникальности. Ровно это и случилось при первой же смене версии промпта.
+        PROMPT_VERSION,
+        PREPROCESSING_VERSION,
         outcome.status,
         opts.forced,
         JSON.stringify(outcome.status === 'done' ? outcome.response : {}),

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Alert, App, Button, Collapse, Empty, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { useState, type ReactNode } from 'react';
+import { Alert, App, Button, Card, Collapse, Empty, Space, Tag, Tooltip, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   WasteTicketCandidateDto,
@@ -7,8 +7,10 @@ import type {
   WasteTicketCheckDto,
   WasteTicketDto,
   WasteTicketField,
+  WasteTicketPageDto,
 } from '@technic/contracts';
 import { wasteTicketKeys, wasteTicketsApi, wasteTicketsQuery } from '@entities/waste-ticket';
+import { FilePreviewModal } from '../../../components/FileLinks';
 import { errorMessage } from '../../../utils/format';
 import { BlindCheckPanel } from './BlindCheckPanel';
 import { TicketFormModal } from './TicketFormModal';
@@ -31,6 +33,8 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   /** Окно талона: `null` — закрыто, `{ticket: null}` — заведение руками, иначе правка. */
   const [form, setForm] = useState<{ ticket: WasteTicketDto | null } | null>(null);
+  /** Скан, открытый рядом с полями: сверять цифру с бумагой удобнее не уходя из карточки. */
+  const [scan, setScan] = useState<{ fileId: string; filename: string } | null>(null);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: wasteTicketKeys.list(requestId) });
 
@@ -168,119 +172,34 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
       {data.tickets.length === 0 ? (
         <Empty description="Талоны ещё не распознаны" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : (
-        <Table<WasteTicketDto>
-          size="small"
-          rowKey="id"
-          dataSource={data.tickets}
-          pagination={false}
-          columns={[
-            {
-              title: '№ талона',
-              dataIndex: 'number',
-              render: (value: string, row) =>
-                row.needsReviewFields.includes('number') ? (
-                  <Disputed field="number" label="номер" candidates={row.candidates} />
-                ) : (
-                  value || '—'
-                ),
-            },
-            {
-              title: 'Дата',
-              dataIndex: 'issuedOn',
-              render: (value: string | null, row) =>
-                row.needsReviewFields.includes('issuedOn') ? (
-                  <Disputed field="issuedOn" label="дату" candidates={row.candidates} />
-                ) : (
-                  (value ?? '—')
-                ),
-            },
-            {
-              title: 'Объём',
-              dataIndex: 'volumeM3',
-              render: (value: number | null, row) =>
-                row.needsReviewFields.includes('volumeM3') ? (
-                  <Disputed field="volumeM3" label="объём" candidates={row.candidates} />
-                ) : value == null ? (
-                  row.workKind === 'idle' ? (
-                    <Typography.Text type="secondary">простой</Typography.Text>
-                  ) : (
-                    '—'
-                  )
-                ) : (
-                  `${value} м³`
-                ),
-            },
-            { title: 'Адрес', dataIndex: 'addressRaw', ellipsis: true },
-            {
-              title: 'Состояние',
-              key: 'state',
-              render: (_, row) => (
-                <Space direction="vertical" size={2}>
-                  <TicketState ticket={row} />
-                  {row.proposal && (
-                    <Proposal
-                      ticket={row}
-                      busy={busyId === row.id}
-                      onAccept={() => {
-                        setBusyId(row.id);
-                        acceptProposal.mutate({ ticketId: row.id });
-                      }}
-                      onDismiss={() => {
-                        setBusyId(row.id);
-                        dismissProposal.mutate(row.id);
-                      }}
-                    />
-                  )}
-                </Space>
-              ),
-            },
-            {
-              title: '',
-              key: 'actions',
-              render: (_, row) =>
-                row.status === 'dismissed' ? null : row.status === 'confirmed' ? (
-                  // Подтверждённый талон правится тем же окном: цифра, замеченная позже, иначе
-                  // осталась бы неисправимой — а сверка считает по подтверждённым.
-                  <Button size="small" type="link" onClick={() => setForm({ ticket: row })}>
-                    Исправить
-                  </Button>
-                ) : (
-                  <Space size={4}>
-                    <Button
-                      size="small"
-                      type="link"
-                      loading={busyId === row.id}
-                      disabled={row.needsReviewFields.length > 0}
-                      title={
-                        row.needsReviewFields.length > 0
-                          ? 'Сначала разберите спорные поля'
-                          : undefined
-                      }
-                      onClick={() => onConfirm(row)}
-                    >
-                      Подтвердить
-                    </Button>
-                    {/* Правка — она же разбор спорного поля: ответ человека и есть то, чего
-                        машина сказать не смогла (Р14). */}
-                    <Button size="small" type="link" onClick={() => setForm({ ticket: row })}>
-                      {row.needsReviewFields.length > 0 ? 'Разобрать' : 'Исправить'}
-                    </Button>
-                    <Button
-                      size="small"
-                      type="link"
-                      danger
-                      onClick={() => {
-                        setBusyId(row.id);
-                        dismiss.mutate(row.id);
-                      }}
-                    >
-                      Не талон
-                    </Button>
-                  </Space>
-                ),
-            },
-          ]}
-        />
+        // Карточкой на талон, а не строкой таблицы: человек сверяет с бумагой поле за полем, и
+        // читать четыре значения по вертикали быстрее, чем выцеплять их из строки среди служебных
+        // колонок. Один кадр с двумя талонами даёт две карточки — разбивка видна сразу.
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          {data.tickets.map((row) => (
+            <TicketCard
+              key={row.id}
+              ticket={row}
+              page={data.pages.find((pg) => pg.id === row.pageId) ?? null}
+              busy={busyId === row.id}
+              onOpenScan={(fileId, filename) => setScan({ fileId, filename })}
+              onConfirm={() => onConfirm(row)}
+              onEdit={() => setForm({ ticket: row })}
+              onDismiss={() => {
+                setBusyId(row.id);
+                dismiss.mutate(row.id);
+              }}
+              onAcceptProposal={() => {
+                setBusyId(row.id);
+                acceptProposal.mutate({ ticketId: row.id });
+              }}
+              onDismissProposal={() => {
+                setBusyId(row.id);
+                dismissProposal.mutate(row.id);
+              }}
+            />
+          ))}
+        </Space>
       )}
 
       {/* «На кадре два талона — проверьте, что распознаны оба» (Р10). Строка появляется только
@@ -353,6 +272,14 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
           человек и тем же правом, а расхождение двух чтений — такая же работа, как замечание. */}
       <BlindCheckPanel requestId={requestId} checks={data.blindChecks} />
 
+      {scan && (
+        <FilePreviewModal
+          file={{ id: scan.fileId, filename: scan.filename, contentType: 'image/jpeg' }}
+          open
+          onClose={() => setScan(null)}
+        />
+      )}
+
       <TicketFormModal
         requestId={requestId}
         ticket={form?.ticket ?? null}
@@ -360,6 +287,146 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
         onClose={() => setForm(null)}
       />
     </Space>
+  );
+}
+
+/**
+ * Талон карточкой: четыре поля, ради которых бумагу и собирают, — номер, дата, объём, адрес.
+ *
+ * Строкой таблицы это читалось хуже: значения тонули среди служебных колонок, а сверять с бумагой
+ * приходится поле за полем. Здесь же рядом кнопка «Скан» — открыть тот самый лист, с которого
+ * значение прочитано, и номер страницы, если в файле их несколько.
+ *
+ * Спорное поле остаётся на своём месте в списке: пустое значение с двумя кандидатами — такой же
+ * ответ, как прочитанный (Р14), и прятать его в отдельный блок значило бы разлучать вопрос с
+ * остальными полями того же талона.
+ */
+function TicketCard({
+  ticket,
+  page,
+  busy,
+  onOpenScan,
+  onConfirm,
+  onEdit,
+  onDismiss,
+  onAcceptProposal,
+  onDismissProposal,
+}: {
+  ticket: WasteTicketDto;
+  page: WasteTicketPageDto | null;
+  busy: boolean;
+  onOpenScan: (fileId: string, filename: string) => void;
+  onConfirm: () => void;
+  onEdit: () => void;
+  onDismiss: () => void;
+  onAcceptProposal: () => void;
+  onDismissProposal: () => void;
+}) {
+  const field = (label: string, node: ReactNode) => (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+      <Typography.Text type="secondary" style={{ minWidth: 92, fontSize: 13 }}>
+        {label}
+      </Typography.Text>
+      <Typography.Text style={{ fontSize: 14 }}>{node}</Typography.Text>
+    </div>
+  );
+
+  const volume = ticket.needsReviewFields.includes('volumeM3') ? (
+    <Disputed field="volumeM3" label="объём" candidates={ticket.candidates} />
+  ) : ticket.volumeM3 == null ? (
+    ticket.workKind === 'idle' ? (
+      <Typography.Text type="secondary">простой — объёма нет</Typography.Text>
+    ) : (
+      '—'
+    )
+  ) : (
+    `${ticket.volumeM3} м³`
+  );
+
+  return (
+    <Card size="small" styles={{ body: { padding: 12 } }}>
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Space size={8} wrap style={{ justifyContent: 'space-between', width: '100%' }}>
+          <Space size={8} wrap>
+            <TicketState ticket={ticket} />
+            {/* Место талона на кадре: «2 из 2» — это и есть разбивка, когда в одном файле их
+                несколько. Без неё две карточки выглядят как две заявки. */}
+            {page && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                страница {page.pageNo}
+                {page.ticketsFound > 1 ? `, талон ${ticket.seq} из ${page.ticketsFound}` : ''}
+              </Typography.Text>
+            )}
+          </Space>
+          {page && (
+            <Button size="small" onClick={() => onOpenScan(page.fileId, `страница ${page.pageNo}`)}>
+              Скан
+            </Button>
+          )}
+        </Space>
+
+        {field(
+          '№ талона',
+          ticket.needsReviewFields.includes('number') ? (
+            <Disputed field="number" label="номер" candidates={ticket.candidates} />
+          ) : (
+            ticket.number || '—'
+          ),
+        )}
+        {field(
+          'Дата',
+          ticket.needsReviewFields.includes('issuedOn') ? (
+            <Disputed field="issuedOn" label="дату" candidates={ticket.candidates} />
+          ) : (
+            (ticket.issuedOn ?? '—')
+          ),
+        )}
+        {field('Объём', volume)}
+        {field('Адрес', ticket.addressRaw || '—')}
+
+        {ticket.proposal && (
+          <Proposal
+            ticket={ticket}
+            busy={busy}
+            onAccept={onAcceptProposal}
+            onDismiss={onDismissProposal}
+          />
+        )}
+
+        {ticket.status !== 'dismissed' && (
+          <Space size={4}>
+            {ticket.status === 'confirmed' ? (
+              <Button size="small" type="link" onClick={onEdit}>
+                Исправить
+              </Button>
+            ) : (
+              <>
+                <Button
+                  size="small"
+                  type="link"
+                  loading={busy}
+                  disabled={ticket.needsReviewFields.length > 0}
+                  title={
+                    ticket.needsReviewFields.length > 0
+                      ? 'Сначала разберите спорные поля'
+                      : undefined
+                  }
+                  onClick={onConfirm}
+                >
+                  Подтвердить
+                </Button>
+                <Button size="small" type="link" onClick={onEdit}>
+                  {ticket.needsReviewFields.length > 0 ? 'Разобрать' : 'Исправить'}
+                </Button>
+                <Button size="small" type="link" danger onClick={onDismiss}>
+                  Не талон
+                </Button>
+              </>
+            )}
+          </Space>
+        )}
+      </Space>
+    </Card>
   );
 }
 
