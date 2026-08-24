@@ -3,9 +3,9 @@ import { Alert, App, Form, Input, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { VehicleMaintenanceDto } from '@technic/contracts';
+import { autoPartKeys } from '@entities/auto-part';
 import { vehicleMaintenanceApi, vehicleMaintenanceKeys } from '@entities/vehicle-maintenance';
 import { FormModal } from '@shared/ui';
-import { autoPartPickKeys } from '../api/autoPartsPick';
 import {
   VERSION_CONFLICT_MESSAGE,
   isVersionConflict,
@@ -56,7 +56,7 @@ export function MaintenanceVoidModal({
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: vehicleMaintenanceKeys.root });
     // Возврат позиций — движение склада: остатки и лента журнала изменились у всех строк акта.
-    void qc.invalidateQueries({ queryKey: autoPartPickKeys.root });
+    void qc.invalidateQueries({ queryKey: autoPartKeys.root });
   };
 
   const voidAct = useMutation({

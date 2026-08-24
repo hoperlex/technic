@@ -967,8 +967,14 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
     }
 
     /** Строки акта прямым SQL: DTO собирает их соединением, а здесь нужен сам факт строки. */
-    async function linesOf(maintenanceId: string): Promise<Array<{ partId: string; quantity: number; note: string }>> {
-      const res = await ctx.db.execute<{ auto_part_id: string; quantity: number; note: string }>(sql`
+    async function linesOf(
+      maintenanceId: string,
+    ): Promise<Array<{ partId: string; quantity: number; note: string }>> {
+      const res = await ctx.db.execute<{
+        auto_part_id: string;
+        quantity: number;
+        note: string;
+      }>(sql`
         SELECT auto_part_id, quantity, note FROM vehicle_maintenance_parts
          WHERE maintenance_id = ${maintenanceId} ORDER BY auto_part_id`);
       return res.rows.map((r) => ({ partId: r.auto_part_id, quantity: r.quantity, note: r.note }));
@@ -1095,7 +1101,9 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
         );
         if (rows[0]!.c >= count) return;
         if (Date.now() > deadline) {
-          throw new Error(`${what}: дождались ${rows[0]!.c} из ${count}; в очереди: ${rows[0]!.qs}`);
+          throw new Error(
+            `${what}: дождались ${rows[0]!.c} из ${count}; в очереди: ${rows[0]!.qs}`,
+          );
         }
         await new Promise((r) => setTimeout(r, 50));
       }
@@ -1404,7 +1412,9 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
       // Ни одна из четырёх попыток не оставила следа: отказ приходит ДО первой записи на склад.
       expect(await stockOf(part.id)).toBe(7);
       expect(await stockOf(other.id)).toBe(10);
-      expect(await linesOf(act.id)).toEqual([{ partId: part.id, quantity: 3, note: 'по регламенту' }]);
+      expect(await linesOf(act.id)).toEqual([
+        { partId: part.id, quantity: 3, note: 'по регламенту' },
+      ]);
 
       // 3. Заведение акта СО СТРОКАМИ — та же граница и та же ручка манифеста.
       await expect(
@@ -1431,7 +1441,10 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
           { version: сРасходом.version, reason: 'ошиблись машиной' },
           dispatcher,
         ),
-      ).rejects.toMatchObject({ statusCode: 403, message: expect.stringContaining(STOCK_DENIED_TAIL) });
+      ).rejects.toMatchObject({
+        statusCode: 403,
+        message: expect.stringContaining(STOCK_DENIED_TAIL),
+      });
       expect(await stockOf(part.id)).toBe(4);
       expect(await linesOf(сРасходом.id)).toHaveLength(1);
 
@@ -1596,7 +1609,10 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
       expect(await stockOf(part.id)).toBe(7);
 
       // 2. Количество уменьшено — принимаем: это возврат на склад, и запрещать его незачем.
-      const less = await editAct(same, { documentNumber: 'АКТ-погашенный', parts: [line(part, 1)] });
+      const less = await editAct(same, {
+        documentNumber: 'АКТ-погашенный',
+        parts: [line(part, 1)],
+      });
       expect(less.parts[0]!.quantity).toBe(1);
       expect(await stockOf(part.id)).toBe(9);
 
@@ -1633,6 +1649,13 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
        * Без НАСТОЯЩЕЙ встречи случай ничего не стоит: последовательные правки этой ветки не
        * касаются вовсе. Поэтому сцена собирается держателем — соседнее соединение берёт обе позиции
        * `FOR UPDATE` и не отпускает, пока обе правки не встанут за ним в очередь.
+       *
+       * ЗАМЕРЕНО, А НЕ ВЫВЕДЕНО, и стоит сказать честно: снятие `ORDER BY` этот случай НЕ КРАСИТ —
+       * три прогона подряд зелены. Причина в том, что захват идёт ОДНИМ `SELECT`, а один запрос
+       * отдаёт строки в одинаковом порядке обоим соединениям, откуда бы этот порядок ни взялся.
+       * Значит случай сторожит не строчку, а ФОРМУ: переезд на построчный захват (цикл по
+       * позициям в порядке присланного набора) он ловит немедленно — а именно такой переезд и
+       * выглядит безобидной правкой. Строчку `ORDER BY` держит комментарий в `lockAutoParts`.
        */
       const первая = await newVehicle();
       const вторая = await newVehicle();
@@ -1656,7 +1679,10 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
         левая = editAct(акт1, { documentNumber: 'АКТ-гонка-1', parts: [line(a, 1), line(b, 1)] });
         правая = editAct(акт2, { documentNumber: 'АКТ-гонка-2', parts: [line(b, 1), line(a, 1)] });
 
-        await waitBlocked(probe, '%auto_parts%for update%', 1, 'правки строк акта');
+        // ОБЕ правки обязаны встать в очередь, а не одна: очередь за строкой выстраивается
+        // цепочкой (первый ждёт держателя, второй — первого), и дождись мы одного, вторая правка
+        // могла бы ещё не дойти до позиций — встречи, ради которой сцена и собрана, не вышло бы.
+        await waitBlocked(probe, '%auto_parts%for update%', 2, 'правки строк акта');
         await holder.query('ROLLBACK');
 
         const [x, y] = await Promise.all([левая, правая]);
@@ -1700,12 +1726,14 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
       const act = await newAct(vehicle, { parts: [line(part, 2)] });
       const fn = `zz_test_audit_boom_${RUN}`;
 
-      await ctx.db.execute(sql.raw(`
+      await ctx.db.execute(
+        sql.raw(`
         CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $fn$
         BEGIN
           RAISE EXCEPTION 'ИСКУССТВЕННЫЙ СБОЙ ПОСЛЕ ЗАПИСИ АУДИТА' USING ERRCODE = 'check_violation';
         END
-        $fn$`));
+        $fn$`),
+      );
       await ctx.db.execute(
         sql.raw(`
         CREATE CONSTRAINT TRIGGER ${fn} AFTER INSERT ON audit_log
@@ -1785,7 +1813,12 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
         }
       }
 
-      const parts = [await newPart(100), await newPart(100), await newPart(100), await newPart(100)];
+      const parts = [
+        await newPart(100),
+        await newPart(100),
+        await newPart(100),
+        await newPart(100),
+      ];
       const vehicles = [await newVehicle(), await newVehicle(), await newVehicle()];
       const acts: VehicleMaintenanceDto[] = [];
       for (const vehicle of vehicles) {
@@ -1798,7 +1831,9 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
         );
       }
 
-      const одна = await запросы(() => ctx.maintenance.loadMaintenanceSnapshot([vehicles[0]!], TODAY));
+      const одна = await запросы(() =>
+        ctx.maintenance.loadMaintenanceSnapshot([vehicles[0]!], TODAY),
+      );
       const тонкий = await запросы(() => ctx.maintenance.loadMaintenanceSnapshot(vehicles, TODAY));
       expect(тонкий.count, 'снапшот запрашивает базу на каждую машину — это и есть N+1').toBe(
         одна.count,
@@ -1813,9 +1848,10 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
         });
       }
       const толстый = await запросы(() => ctx.maintenance.loadMaintenanceSnapshot(vehicles, TODAY));
-      expect(толстый.count, 'строки акта дотянулись до снапшота — краткий DTO разошёлся с полным').toBe(
-        тонкий.count,
-      );
+      expect(
+        толстый.count,
+        'строки акта дотянулись до снапшота — краткий DTO разошёлся с полным',
+      ).toBe(тонкий.count);
 
       // И самое главное: в сводке строк НЕТ ВОВСЕ — не «пустой массив», а отсутствие поля. Пустой
       // массив означал бы «строк нет», а это неправда: их четыре.
@@ -1824,7 +1860,9 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
       expect(сводка.lastMaintenance).not.toHaveProperty('parts');
       expect(сводка.lastMaintenance).not.toHaveProperty('hasPartMovements');
       // А история той же машины строки отдаёт — там акт открыт по одному и читается глазами.
-      expect((await ctx.maintenance.loadMaintenanceHistory(vehicles[0]!))[0]!.parts).toHaveLength(4);
+      expect((await ctx.maintenance.loadMaintenanceHistory(vehicles[0]!))[0]!.parts).toHaveLength(
+        4,
+      );
     }, 60_000);
   });
 });

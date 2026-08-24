@@ -3,14 +3,15 @@ import { Alert, App, DatePicker, Form, Input, InputNumber } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { MaintenanceBody, VehicleMaintenanceDto } from '@technic/contracts';
+import { autoPartKeys } from '@entities/auto-part';
 import { vehicleMaintenanceApi, vehicleMaintenanceKeys } from '@entities/vehicle-maintenance';
 import { errorMessage } from '@shared/lib';
 import { FormModal } from '@shared/ui';
 import { filesApi } from '../../../api/resources';
 import { useAuth } from '../../../auth/AuthContext';
-import { autoPartPickKeys } from '../api/autoPartsPick';
 import {
   VERSION_CONFLICT_MESSAGE,
+  isStaleRecord,
   isVersionConflict,
   maintenanceErrorText,
 } from '../model/conflict';
@@ -101,6 +102,11 @@ export function MaintenanceFormModal({
   const [uploading, setUploading] = useState(false);
   /** Строки расхода живут состоянием окна, а не полями формы: итог считается на каждое нажатие. */
   const [parts, setParts] = useState<PartRow[]>([]);
+  /**
+   * Показывать ли отказ по строкам. До первого нажатия «Сохранить» его нет: только что заведённая
+   * строка ещё пуста по определению, и краснеть на неё значило бы ругаться на собственную кнопку.
+   */
+  const [issueShown, setIssueShown] = useState(false);
   const canStock = can('autoParts.stock');
 
   const performedOn = Form.useWatch('performedOn', form);
@@ -132,6 +138,7 @@ export function MaintenanceFormModal({
     );
     setFiles(attachedScans(record));
     setParts(rowsFromRecord(record));
+    setIssueShown(false);
   }, [open, record, defaultOn, prefillKm, form]);
 
   /**
@@ -173,7 +180,7 @@ export function MaintenanceFormModal({
    */
   function invalidate(): void {
     void qc.invalidateQueries({ queryKey: vehicleMaintenanceKeys.root });
-    void qc.invalidateQueries({ queryKey: autoPartPickKeys.root });
+    void qc.invalidateQueries({ queryKey: autoPartKeys.root });
   }
 
   const save = useMutation({
@@ -215,24 +222,39 @@ export function MaintenanceFormModal({
         onClose();
         return;
       }
+      message.error(maintenanceErrorText(e));
+      /*
+       * Акт закрыли из другого окна (Р6): правку продолжать не над чем — аннулированный не
+       * правится вовсе, и исправление вводится новым актом. Окно закрывается, журнал
+       * перечитывается: в нём акт уже с пометкой.
+       */
+      if (isStaleRecord(e)) {
+        invalidate();
+        onClose();
+        return;
+      }
       /*
        * Отказ по строке (нехватка остатка, погашенная позиция) окно НЕ закрывает: набранное в нём
        * — это и есть то, что надо поправить, а закрытие стоило бы человеку всей формы. Склад при
        * этом перечитывается: раз сервер назвал остаток, показанный устарел.
        */
-      void qc.invalidateQueries({ queryKey: autoPartPickKeys.root });
-      message.error(maintenanceErrorText(e));
+      void qc.invalidateQueries({ queryKey: autoPartKeys.root });
     },
   });
 
-
-  /** Строки проверяются до отправки: пустая строка — это забытый выбор, а не «нисколько». */
+  /**
+   * Строки проверяются до отправки: пустая строка — это забытый выбор, а не «нисколько».
+   *
+   * Отказ показывается **в самом блоке**, а не тостом в углу (ADR 0094): строки живут состоянием
+   * окна, полем формы их не пометить, но место, где ошиблись, назвать обязательно — тост уходит в
+   * угол экрана и ничего не показывает.
+   */
   const submit = (v: Values) => {
-    const issue = partsIssue(parts);
-    if (issue) {
-      message.warning(issue);
+    if (partsIssue(parts)) {
+      setIssueShown(true);
       return;
     }
+    setIssueShown(false);
     save.mutate(v);
   };
 
@@ -298,6 +320,7 @@ export function MaintenanceFormModal({
           performedOn={performedOn ? performedOn.format(DATE) : null}
           canStock={canStock}
           recordParts={record?.parts ?? []}
+          issue={issueShown ? partsIssue(parts) : null}
         />
 
         <MaintenanceScans

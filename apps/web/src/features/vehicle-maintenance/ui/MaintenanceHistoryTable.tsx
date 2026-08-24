@@ -32,10 +32,25 @@ function partTitle(part: VehicleMaintenancePartDto): string {
   return part.code ? `${part.name} · ${part.code}` : part.name;
 }
 
-/** Что поставили на машину этим актом, и аннулирование, если акт закрыт. */
+/**
+ * Что поставили на машину этим актом, и аннулирование, если акт закрыт.
+ *
+ * Содержимое липнет к левому краю и не шире экрана: журнал прокручивается вбок (`scroll.x`), а
+ * раскрытая строка живёт в ячейке во всю ширину таблицы — без этого на телефоне список позиций
+ * уезжал бы вправо, и раскрытие пришлось бы «догонять» горизонтальной прокруткой.
+ */
 function MaintenanceRowDetails({ record }: { record: VehicleMaintenanceDto }) {
   return (
-    <Space direction="vertical" size={8} style={{ display: 'flex' }}>
+    <Space
+      direction="vertical"
+      size={8}
+      style={{
+        display: 'flex',
+        position: 'sticky',
+        insetInlineStart: 0,
+        maxWidth: 'min(100%, 92vw)',
+      }}
+    >
       {record.voidedAt && (
         <Alert
           type="warning"
@@ -50,10 +65,7 @@ function MaintenanceRowDetails({ record }: { record: VehicleMaintenanceDto }) {
         <div>
           <Typography.Text strong>Установленные автозапчасти</Typography.Text>
           {record.parts.map((part) => (
-            <div
-              key={part.id}
-              style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4 }}
-            >
+            <div key={part.id} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4 }}>
               {/* Наименование тянется, количество и примечание не жмутся: на телефоне строка
                   переносится сама, а не уезжает в горизонтальную прокрутку. */}
               <span style={{ flex: '1 1 240px', minWidth: 0 }}>{partTitle(part)}</span>

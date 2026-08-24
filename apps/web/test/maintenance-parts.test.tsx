@@ -35,7 +35,7 @@ const PART = 'GET /auto-parts/:id';
 const ON = '2026-07-24';
 const LABEL = 'КамАЗ 65115 · А123ВС799';
 
-const shown = () => (document.body.textContent ?? '').replace(/ /gu, ' ');
+const shown = () => (document.body.textContent ?? '').replace(/\u00a0/gu, ' ');
 
 /** Карточка склада: остаток, единица и дата заведения — на них опирается весь блок. */
 function autoPart(over: Partial<AutoPartDto> = {}): AutoPartDto {
@@ -75,7 +75,10 @@ function renderBlock(over: RouteMap = {}, user = mechanic(), route = '/garage'):
 
 /** Открытая форма заведения акта. */
 async function openCreateForm(over: RouteMap = {}, user = mechanic()) {
-  const http = renderBlock({ [CREATE]: () => json(maintenanceRecord({ id: 'm-2' }), 201), ...over }, user);
+  const http = renderBlock(
+    { [CREATE]: () => json(maintenanceRecord({ id: 'm-2' }), 201), ...over },
+    user,
+  );
   fireEvent.click(await screen.findByRole('button', { name: /Добавить ТО/u }));
   await screen.findByText(`Запись о ТО — ${LABEL}`);
   return http;
@@ -142,6 +145,17 @@ describe('блок автозапчастей в форме акта', () => {
     expect(screen.getByRole('button', { name: 'Сохранить' }).hasAttribute('disabled')).toBe(false);
   });
 
+  it('строка без позиции не отправляется, и отказ виден в самом блоке', async () => {
+    const http = await openCreateForm();
+
+    fireEvent.click(screen.getByRole('button', { name: /Добавить позицию/u }));
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    // Не тост в углу (ADR 0094): строка живёт состоянием окна, но место ошибки названо.
+    expect(await screen.findByText(/Выберите позицию в строке автозапчастей/u)).toBeDefined();
+    expect(http.countOf(CREATE)).toBe(0);
+  });
+
   it('акт раньше заведения позиции — предупреждение о двойном списании', async () => {
     await openCreateForm({
       [PARTS]: () =>
@@ -157,9 +171,7 @@ describe('блок автозапчастей в форме акта', () => {
     await pickPart('Фильтр масляный');
 
     // Открывающий остаток уже учитывает всё, что установлено раньше (Р20).
-    await waitFor(() =>
-      expect(shown()).toContain('акт раньше даты заведения выбранной позиции'),
-    );
+    await waitFor(() => expect(shown()).toContain('акт раньше даты заведения выбранной позиции'));
     expect(shown()).toContain('заведена 24.08.2026');
   });
 
@@ -238,7 +250,9 @@ describe('правка акта не двигает склад сама по с�
 describe('история актов', () => {
   const withParts = () =>
     maintenanceRecord({
-      parts: [maintenancePart({ quantity: 8, unit: 'л', name: 'Масло моторное 10W-40', note: 'Замена' })],
+      parts: [
+        maintenancePart({ quantity: 8, unit: 'л', name: 'Масло моторное 10W-40', note: 'Замена' }),
+      ],
       hasPartMovements: true,
     });
 
@@ -294,9 +308,9 @@ describe('история актов', () => {
 
     expect(shown()).toContain('Аннулирован');
     // Правка закрыта: прошлое не подчищают, его объясняют — исправление вводится новым актом (Р6).
-    expect(screen.getByRole('button', { name: 'Изменить запись ТО' }).hasAttribute('disabled')).toBe(
-      true,
-    );
+    expect(
+      screen.getByRole('button', { name: 'Изменить запись ТО' }).hasAttribute('disabled'),
+    ).toBe(true);
     fireEvent.click(document.querySelector('.ant-table-row-expand-icon')!);
     expect(await screen.findByText(/Акт заведён на чужую машину/u)).toBeDefined();
   });
@@ -351,7 +365,8 @@ describe('аннулирование вместо удаления', () => {
       'DELETE /vehicle-maintenance/:id': () =>
         apiError(409, {
           code: 'maintenance_has_stock_movements',
-          message: 'По акту прошёл расход автозапчастей — такой акт не удаляют, а аннулируют с причиной',
+          message:
+            'По акту прошёл расход автозапчастей — такой акт не удаляют, а аннулируют с причиной',
         }),
     });
     await screen.findByText('Обслуживание');

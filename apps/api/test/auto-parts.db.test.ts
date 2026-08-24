@@ -59,6 +59,15 @@ import type { db as AppDb } from '../src/db/client';
  *   TEST_DATABASE_URL=postgres://technic:technic@127.0.0.1:5433/technic_archive_test \
  *     npx vitest run apps/api/test/auto-parts.db.test.ts
  *
+ * У ПУСТОЙ базы расширения ставятся до первого прогона — `0001_init.sql` их не создаёт нарочно:
+ *
+ *   psql … -c 'create extension if not exists citext' \
+ *          -c 'create extension if not exists pg_trgm' \
+ *          -c 'create extension if not exists pgcrypto'
+ *
+ * Без них накат падает на `type "citext" does not exist`, и падает он в `beforeAll`, то есть
+ * выглядит поломкой теста, а не незаведённой базой.
+ *
  * Без `TEST_DATABASE_URL` файл пропускается — как и остальные `*.db.test.ts`.
  */
 
@@ -1222,9 +1231,9 @@ describe.skipIf(!DB_URL)('автозапчасти: журнал остатка,
 
     const res = await inject('DELETE', `/api/v1/auto-parts/${part.id}`, ctx.admin.auth);
     expect(res.statusCode, res.body).toBe(200);
-    expect(await countRows(sql`SELECT count(*)::int AS c FROM auto_parts WHERE id = ${part.id}`)).toBe(
-      0,
-    );
+    expect(
+      await countRows(sql`SELECT count(*)::int AS c FROM auto_parts WHERE id = ${part.id}`),
+    ).toBe(0);
     expect(
       await countRows(
         sql`SELECT count(*)::int AS c FROM auto_part_applicability WHERE auto_part_id = ${part.id}`,
@@ -1241,7 +1250,9 @@ describe.skipIf(!DB_URL)('автозапчасти: журнал остатка,
     expect(res.statusCode, res.body).toBe(409);
     expect(res.json().message).toContain('снимите');
 
-    const refusal = await dbRefusal(ctx.db.execute(sql`DELETE FROM auto_parts WHERE id = ${part.id}`));
+    const refusal = await dbRefusal(
+      ctx.db.execute(sql`DELETE FROM auto_parts WHERE id = ${part.id}`),
+    );
     expect(refusal.code).toBe('23503');
     expect(refusal.constraint).toBe('auto_part_stock_entries_auto_part_id_fkey');
 
@@ -1486,11 +1497,7 @@ describe.skipIf(!DB_URL)('автозапчасти: журнал остатка,
     ]);
 
     // Несуществующая машина — 400 словами, а не пятисоткой из пустого ранга.
-    const res = await inject(
-      'GET',
-      `/api/v1/auto-parts?vehicleId=${randomUUID()}`,
-      ctx.admin.auth,
-    );
+    const res = await inject('GET', `/api/v1/auto-parts?vehicleId=${randomUUID()}`, ctx.admin.auth);
     expect(res.statusCode, res.body).toBe(400);
     expect(res.json().message).toContain('Машина не найдена');
   });

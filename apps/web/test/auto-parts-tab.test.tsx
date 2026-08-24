@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { AutoPartDetailDto, AutoPartDto, AutoPartStockEntryDto } from '@technic/contracts';
-import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
+import { apiError, json, mockHttp, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';

@@ -89,6 +89,7 @@ export function MaintenancePartsBlock({
   performedOn,
   canStock,
   recordParts,
+  issue,
 }: {
   vehicleId: string;
   rows: PartRow[];
@@ -100,6 +101,11 @@ export function MaintenancePartsBlock({
   canStock: boolean;
   /** Строки правимого акта как их отдал сервер: ими блок читается без права на склад. */
   recordParts: readonly VehicleMaintenancePartDto[];
+  /**
+   * Что мешает сохранить набор — уже после нажатия «Сохранить» (ADR 0094). Отказ живёт здесь, а не
+   * тостом в углу: полем формы строку не пометить, но место ошибки назвать обязано окно.
+   */
+  issue: string | null;
 }) {
   const [search, setSearch] = useState('');
 
@@ -200,6 +206,7 @@ export function MaintenancePartsBlock({
                       onDropdownVisibleChange={(open) => !open && setSearch('')}
                       loading={loading}
                       value={row.autoPartId ?? undefined}
+                      status={issue && row.autoPartId === null ? 'error' : undefined}
                       aria-label={HEADER.name}
                       placeholder="Наименование или код"
                       notFoundContent={
@@ -227,7 +234,11 @@ export function MaintenancePartsBlock({
                       style={{ width: '100%' }}
                       min={1}
                       precision={0}
-                      status={short === null && !raisesInactive ? undefined : 'error'}
+                      status={
+                        short === null && !raisesInactive && !(issue && row.quantity === null)
+                          ? undefined
+                          : 'error'
+                      }
                       value={row.quantity}
                       aria-label={HEADER.quantity}
                       onChange={(v) => change(row.key, { quantity: v })}
@@ -272,6 +283,12 @@ export function MaintenancePartsBlock({
                 <Typography.Text type="secondary">
                   Позиции не заведены — акт можно сохранить и без расхода
                 </Typography.Text>
+              </div>
+            )}
+
+            {issue && (
+              <div style={{ marginTop: 8 }}>
+                <Typography.Text type="danger">{issue}</Typography.Text>
               </div>
             )}
 

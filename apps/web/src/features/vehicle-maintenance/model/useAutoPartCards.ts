@@ -1,11 +1,7 @@
-import { useEffect, useMemo } from 'react';
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemo } from 'react';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import type { AutoPartDto } from '@technic/contracts';
-import {
-  AUTO_PART_PICK_PAGE_SIZE,
-  autoPartPickApi,
-  autoPartPickKeys,
-} from '../api/autoPartsPick';
+import { autoPartApi, autoPartKeys } from '@entities/auto-part';
 
 /**
  * Карточки автозапчастей, нужные форме акта: подбор под машину и позиции, уже стоящие строками
@@ -15,18 +11,25 @@ import {
  * сервером по рангу применимости: сначала размеченные моделью машины, затем её типом, затем
  * остальные. Погашенные в него не идут — новой строкой их не добавляют (Р24).
  *
- * **Карточки уже стоящих строк** спрашиваются поимённо, потому что подбор их не гарантирует: акт
- * месячной давности ссылается и на погашенную позицию, и на ту, что в алфавите ушла со страницы.
- * Без её остатка нечем показать «12 → 11», без даты заведения — предупредить о двойном списании.
+ * **Карточки уже стоящих строк** спрашиваются поимённо, но только те, которых в подборе нет:
+ * подбор их не гарантирует — акт месячной давности ссылается и на погашенную позицию, и на ту, что
+ * в алфавите ушла со страницы. Без её остатка нечем показать «12 → 11», без даты заведения —
+ * предупредить о двойном списании. Позиция, пришедшая в подборе, второй раз не спрашивается: её
+ * карточка уже в руках.
  *
- * Пришедший список раскладывается по ключам карточек (`setQueryData`): выбранная из подбора позиция
- * тут же оказывается известной, и портал не спрашивает сервер второй раз про то, что уже держит в
- * руках.
+ * Клиент и ключи берутся из слайса склада (`@entities/auto-part`), а не заводятся свои: остаток
+ * меняют оба экрана — вкладка «Автозапчасти» и эта форма, — и два корня ключей означали бы, что
+ * списание из акта не гасит перечень, а вкладка показывает прежнее число до перезагрузки страницы
+ * (Р16).
  *
  * Ничего не спрашивается вовсе, пока блок не в работе (`enabled`): без права `autoParts.stock` он
  * показывает строки акта на чтение, и остатки склада ему не нужны — они пришли бы ради подписи,
  * которой нет.
  */
+
+/** Сколько позиций тянет подбор: страница списка, дальше человек уточняет поиском. */
+const PICK_PAGE_SIZE = 50;
+
 export function useAutoPartCards({
   vehicleId,
   search,
@@ -40,8 +43,6 @@ export function useAutoPartCards({
   ids: readonly string[];
   enabled: boolean;
 }): { options: AutoPartDto[]; cards: Map<string, AutoPartDto>; loading: boolean } {
-  const qc = useQueryClient();
-
   const params = useMemo(
     () => ({
       vehicleId,
@@ -49,28 +50,30 @@ export function useAutoPartCards({
       // Погашенные в подбор не попадают (Р24): добавить такую строку нельзя, и показывать её в
       // списке значило бы обещать отказ сервера.
       isActive: true,
-      pageSize: AUTO_PART_PICK_PAGE_SIZE,
+      pageSize: PICK_PAGE_SIZE,
       sortBy: 'name',
     }),
     [vehicleId, search],
   );
 
   const pick = useQuery({
-    queryKey: autoPartPickKeys.pick(params),
-    queryFn: () => autoPartPickApi.pick(params),
+    queryKey: autoPartKeys.list(params),
+    queryFn: () => autoPartApi.list(params),
     enabled,
   });
 
   const options = useMemo(() => pick.data?.items ?? [], [pick.data]);
 
-  useEffect(() => {
-    for (const item of options) qc.setQueryData(autoPartPickKeys.card(item.id), item);
-  }, [options, qc]);
-
+  /*
+   * Спрашиваем поимённо только то, чего в подборе нет. Список меняется вместе с набранным поиском,
+   * поэтому позиция может выпасть из него и вернуться — но не мигнёт: её карточку кэш уже держит и
+   * отдаёт сразу, а перечитка идёт фоном.
+   */
+  const missing = ids.filter((id) => !options.some((option) => option.id === id));
   const cardQueries = useQueries({
-    queries: ids.map((id) => ({
-      queryKey: autoPartPickKeys.card(id),
-      queryFn: () => autoPartPickApi.card(id),
+    queries: missing.map((id) => ({
+      queryKey: autoPartKeys.detail(id),
+      queryFn: () => autoPartApi.get(id),
       enabled,
     })),
   });
