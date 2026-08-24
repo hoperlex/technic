@@ -3,6 +3,7 @@ import { Alert, App, Button, Collapse, Empty, Space, Table, Tag, Tooltip, Typogr
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   WasteTicketCandidateDto,
+  WasteTicketFileDto,
   WasteTicketCheckDto,
   WasteTicketDto,
   WasteTicketField,
@@ -278,6 +279,20 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
         />
       )}
 
+      {/* «На кадре два талона — проверьте, что распознаны оба» (Р10). Строка появляется только
+          когда машина насчитала больше одного: у обычной страницы сообщать нечего. */}
+      {data.pages.some((page) => page.ticketsFound > 1) && (
+        <Alert
+          type="info"
+          showIcon
+          message="На некоторых кадрах больше одного талона"
+          description={data.pages
+            .filter((page) => page.ticketsFound > 1)
+            .map((page) => `страница ${page.pageNo}: ${page.ticketsFound}`)
+            .join('; ')}
+        />
+      )}
+
       {data.files.length > 0 && (
         <Collapse
           size="small"
@@ -308,6 +323,13 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
                         ? ` (отработала ${a.modelReported})`
                         : ''}{' '}
                       · {a.status === 'done' ? 'успех' : `отказ ${a.errorCode}`}
+                      {a.status !== 'done' && a.errorClass
+                        ? ` (${a.errorClass === 'transient' ? 'повторится' : 'терминальный'}${
+                            a.errorScope === 'subsystem' ? ', сбой сервиса' : ''
+                          })`
+                        : ''}
+                      {a.error ? ` — ${a.error}` : ''}
+                      {/* Идентификатор запроса в прокси называют оператору при разборе. */}
                       {a.proxyRequestId ? ` · ${a.proxyRequestId}` : ''}
                     </Typography.Text>
                   ))}
@@ -445,10 +467,80 @@ function TicketState({ ticket }: { ticket: WasteTicketDto }) {
 }
 
 /** Состояние файла словами человека, а не кодом (Р29). */
-function FileState({ file }: { file: { status: string; reason: string; fileId: string } }) {
-  if (file.status === 'done') return <Typography.Text>Файл разобран</Typography.Text>;
-  if (file.status === 'pending') return <Typography.Text>Распознаётся…</Typography.Text>;
-  return <Typography.Text type="danger">{file.reason || 'Файл не распознан'}</Typography.Text>;
+/**
+ * Состояние файла — главный ответ на вопрос, которого у самих талонов нет: почему их нет вовсе
+ * (Р29).
+ *
+ * Показывается ровно то, что меняет действие человека:
+ *
+ * - **сколько ещё будет попыток и когда следующая** — иначе «распознаётся…» неотличимо от
+ *   «висит навсегда», и человек либо ждёт зря, либо зря зовёт администратора;
+ * - **класс сбоя**: временный разберётся сам, терминальный не разберётся никогда — обещать
+ *   автоматическое восстановление там значит врать;
+ * - **сколько страниц отброшено лимитом** — то, что сверх него, помечается, а не теряется молча.
+ */
+function FileState({ file }: { file: WasteTicketFileDto }) {
+  const skipped = file.totalPages - file.processedPages;
+  const pagesLine =
+    file.totalPages > 0 ? (
+      <Typography.Text type={skipped > 0 ? 'warning' : 'secondary'} style={{ fontSize: 12 }}>
+        {file.filename ? `${file.filename}: ` : ''}
+        страниц {file.totalPages}, разобрано {file.processedPages}
+        {skipped > 0 ? ` — ${skipped} сверх лимита, заведите талоны вручную` : ''}
+      </Typography.Text>
+    ) : null;
+
+  const attempt = file.activeJob ? (
+    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+      попытка {file.activeJob.attempt + 1} из {file.activeJob.maxAttempts}
+      {file.activeJob.nextRunAt
+        ? `, следующая в ${new Date(file.activeJob.nextRunAt).toLocaleTimeString('ru-RU', {
+            hour: '2-digit',
+            minute: '2-digit',
+          })}`
+        : ' — выполняется сейчас'}
+    </Typography.Text>
+  ) : null;
+
+  if (file.status === 'done') {
+    return (
+      <Space direction="vertical" size={0}>
+        <Typography.Text>Файл разобран</Typography.Text>
+        {pagesLine}
+      </Space>
+    );
+  }
+  if (file.status === 'pending') {
+    return (
+      <Space direction="vertical" size={0}>
+        <Typography.Text>
+          Распознаётся…
+          {!file.activeJob && (
+            <Typography.Text type="danger">
+              {' '}
+              задача не найдена — повторов не будет, нужен администратор
+            </Typography.Text>
+          )}
+        </Typography.Text>
+        {attempt}
+        {pagesLine}
+      </Space>
+    );
+  }
+  return (
+    <Space direction="vertical" size={0}>
+      <Typography.Text type="danger">{file.reason || 'Файл не распознан'}</Typography.Text>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {file.errorClass === 'transient'
+          ? 'Сбой временный: портал повторит сам'
+          : file.errorScope === 'subsystem'
+            ? 'Сбой сервиса: автоматического восстановления не будет, нужен администратор'
+            : 'Этот файл прочитать не удалось: перезалейте скан или заведите талон вручную'}
+      </Typography.Text>
+      {attempt}
+      {pagesLine}
+    </Space>
+  );
 }
 
 /**

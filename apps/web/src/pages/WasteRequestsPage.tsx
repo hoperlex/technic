@@ -101,7 +101,11 @@ import {
   presentGroupsHint,
 } from './waste/containerGroups';
 import { wasteAmountLine, wastePricingHint } from './waste/pricingHint';
-import { BlindCheckQueue, TicketBadge } from '@features/waste-ticket-review';
+import {
+  BlindCheckQueue,
+  TicketBadge,
+  TicketRecognitionBanner,
+} from '@features/waste-ticket-review';
 import { WasteDoneModal } from './waste/WasteDoneModal';
 import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
 import { MOSCOW_TZ } from '@shared/config';
@@ -1578,6 +1582,11 @@ function RequestsTab() {
       <TabsExtra tabKey="requests">
         <SummaryBar title="Заявок" items={summaryItems} />
       </TabsExtra>
+
+      {/* Баннер недоступности распознавания — и здесь, а не только в карточке (Р29): тот, кто
+          ведёт реестр, замечаний ждёт именно в списке, и молчащий сервис выглядит отсюда как
+          спокойный день. Спрашивается по тому же праву, что и разбор. */}
+      {canReviewTickets && <TicketRecognitionBanner enabled />}
 
       <DataTable<WasteRequestDto>
         columns={columns}
