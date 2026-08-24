@@ -9,20 +9,29 @@ import {
   createWasteTicketSchema,
   dismissWasteTicketSchema,
   updateWasteTicketSchema,
+  WASTE_TICKET_CHECK_CODES,
   wasteTicketBlindCheckSchema,
   wasteTicketNumberFuzzy,
   wasteTicketNumberKey,
+  type WasteTicketAttemptDto,
+  type WasteTicketCandidateDto,
   type WasteTicketDto,
+  type WasteTicketField,
+  type WasteTicketFileDto,
+  type WasteTicketPageDto,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
+  counterparties,
+  files,
+  jobs,
   users,
   wasteRequests,
-  wasteRequestCompletions,
   wasteTicketBlindChecks,
   wasteTicketCheckResolutions,
   wasteTicketFiles,
   wasteTicketPages,
+  wasteTicketProposals,
   wasteTicketRecognitionAttempts,
   wasteTickets,
 } from '../db/schema';
@@ -31,6 +40,12 @@ import { assertOperatorScope, assertWasteObjectScope } from '../lib/access';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { wasteTicketCheckFingerprint, wasteTicketChecks } from '../services/waste-ticket-checks';
+import {
+  loadTicketCheckInputs,
+  loadTicketCheckRequestRow,
+  type RequestVisibility,
+  type TicketCheckBundle,
+} from '../services/waste-ticket-inputs';
 import { enqueueTicketRecognition } from '../services/waste-tickets';
 
 /**
@@ -147,6 +162,22 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     return rows[0] ?? null;
   }
 
+  /**
+   * Видит ли этот человек чужую заявку. Не бросает, в отличие от `assert*`: здесь ответ нужен
+   * значением — им решается, назвать соседа номером или сказать «по другой заявке» (Р28).
+   */
+  function visibilityFor(principal: ReturnType<typeof requirePrincipal>): RequestVisibility {
+    return (objectId, operatorCounterpartyId) => {
+      try {
+        assertWasteObjectScope(principal, objectId);
+        assertOperatorScope(principal, operatorCounterpartyId);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+  }
+
   /** Ошибка конфликта: называет соседа только тому, кто вправе его видеть (Р28). */
   function numberConflictError(
     principal: ReturnType<typeof requirePrincipal>,
@@ -173,102 +204,40 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
    * (Р21) обязан считаться от ТОГО ЖЕ состояния, которое человек видел на экране. Собери его
    * вторым запросом с другими джойнами, и отпечаток начал бы расходиться с показанным.
    */
-  async function collectCheckInputs(request: Awaited<ReturnType<typeof loadRequest>>) {
-    const [tickets, pages, completionRows, resolutions] = await Promise.all([
-      db
-        .select()
-        .from(wasteTickets)
-        .where(eq(wasteTickets.requestId, request.id))
-        .orderBy(asc(wasteTickets.createdAt)),
-      db.select().from(wasteTicketPages).where(eq(wasteTicketPages.requestId, request.id)),
-      db
-        .select()
-        .from(wasteRequestCompletions)
-        .where(eq(wasteRequestCompletions.requestId, request.id))
-        .limit(1),
-      db
-        .select({
-          checkCode: wasteTicketCheckResolutions.checkCode,
-          subjectKey: wasteTicketCheckResolutions.subjectKey,
-          inputFingerprint: wasteTicketCheckResolutions.inputFingerprint,
-          comment: wasteTicketCheckResolutions.comment,
-          acceptedAt: wasteTicketCheckResolutions.acceptedAt,
-          acceptedByName: users.fullName,
-        })
-        .from(wasteTicketCheckResolutions)
-        .leftJoin(users, eq(users.id, wasteTicketCheckResolutions.acceptedBy))
-        .where(eq(wasteTicketCheckResolutions.requestId, request.id)),
-    ]);
-
-    const keys = tickets.map((t) => t.numberKey).filter((k) => k !== '');
-    const neighbours = keys.length
-      ? await db
-          .select({
-            numberKey: wasteTickets.numberKey,
-            requestId: wasteTickets.requestId,
-            requestNum: wasteRequests.num,
-            objectId: wasteRequests.objectId,
-            operatorCounterpartyId: wasteTickets.operatorCounterpartyId,
-          })
-          .from(wasteTickets)
-          .innerJoin(wasteRequests, eq(wasteRequests.id, wasteTickets.requestId))
-          .where(
-            and(
-              inArray(wasteTickets.numberKey, keys),
-              eq(wasteTickets.status, 'confirmed'),
-              ne(wasteTickets.requestId, request.id),
-            ),
-          )
-      : [];
-
-    const completion = completionRows[0] ?? null;
-    return {
-      request: {
-        id: request.id,
-        num: request.num,
-        objectId: request.objectId,
-        objectAddress: '',
-        objectName: '',
-        requestType: request.requestType,
-        volumeM3: request.volumeM3,
-        deliveryAt: request.deliveryAt.toISOString(),
-        operatorCounterpartyId: request.operatorCounterpartyId,
-      },
-      completion: completion
-        ? {
-            volumeM3: completion.volumeM3 == null ? null : Number(completion.volumeM3),
-            weightTons: completion.weightTons == null ? null : Number(completion.weightTons),
-            removedOn: completion.removedOn ?? null,
-            removedOnSource: completion.removedOnSource,
-          }
-        : null,
-      tickets: tickets.map((t) => ({
-        id: t.id,
-        pageId: t.pageId,
-        seq: t.seq,
-        origin: t.origin,
-        status: t.status,
-        number: t.numberRaw,
-        numberKey: t.numberKey,
-        numberFuzzy: t.numberFuzzy,
-        issuedOn: t.issuedOn,
-        volumeM3: t.volumeM3 == null ? null : Number(t.volumeM3),
-        workKind: t.workKind,
-        addressRaw: t.addressRaw,
-        pageSha256: pages.find((pg) => pg.id === t.pageId)?.pageSha256 ?? '',
-        needsReviewFields: t.needsReviewFields,
-      })),
-      neighbours,
-      resolutions: resolutions.map((res) => ({
-        checkCode: res.checkCode,
-        subjectKey: res.subjectKey,
-        inputFingerprint: res.inputFingerprint,
-        acceptedByName: res.acceptedByName ?? '',
-        acceptedAt: res.acceptedAt.toISOString(),
-        comment: res.comment,
-      })),
-      rows: { tickets, pages },
-    };
+  /**
+   * Вход сверки для этой заявки. Читает его общий загрузчик (`waste-ticket-inputs.ts`) — тот же,
+   * что считает значки списка: сверка карточки и значок в строке обязаны сходиться до штуки, а два
+   * запроса «примерно об одном» разъезжаются молча и именно в ту сторону, где список успокаивает.
+   *
+   * Видимость соседа берётся с этого же пользователя: заявка называется по номеру только тому, кто
+   * вправе её читать (Р28) — текст замечания такой же канал утечки, как ручка чтения.
+   */
+  async function collectCheckInputs(
+    principal: ReturnType<typeof requirePrincipal>,
+    requestId: string,
+  ): Promise<TicketCheckBundle> {
+    const row = await loadTicketCheckRequestRow(requestId);
+    if (!row) throw err.notFound('Заявка не найдена');
+    const bundle = await loadTicketCheckInputs([row], { visible: visibilityFor(principal) });
+    return (
+      bundle.get(requestId) ?? {
+        // Заявка без единой строки распознавания: талонов нет, сверять нечего — но замечания об
+        // объёме и дате считаются и по пустому списку (в талонах 0 м³ против закрытых 40).
+        inputs: {
+          request: {
+            requestedVolumeM3: row.volumeM3 == null ? null : Number(row.volumeM3),
+            deliveryAt: row.deliveryAt,
+            objectAddress: row.objectAddress,
+            objectName: row.objectName,
+            operatorCounterpartyId: row.operatorCounterpartyId,
+          },
+          completion: null,
+          tickets: [],
+        },
+        tickets: [],
+        pages: [],
+      }
+    );
   }
 
   // ── Чтение ──
@@ -284,14 +253,35 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     assertWasteObjectScope(p, request.objectId);
     assertOperatorScope(p, request.operatorCounterpartyId);
 
-    const [tickets, pages, files, attempts, completionRows, resolutions] = await Promise.all([
+    // Вход сверки и всё, что нужно только этому экрану, читаются параллельно: первое — общим
+    // загрузчиком (он же считает значки списка), остальное — здесь.
+    const [bundle, fileRows, attempts] = await Promise.all([
+      collectCheckInputs(p, request.id),
+      // Файловая строка отвечает на вопрос, которого у талонов нет: почему их нет вовсе (Р29).
+      // Имя файла и живая задача — оттуда же: «попытка 3 из 5, следующая в 14:32» собирается из
+      // очереди, и собирать её вторым запросом с экрана значило бы показывать вчерашнее число.
       db
-        .select()
-        .from(wasteTickets)
-        .where(eq(wasteTickets.requestId, request.id))
-        .orderBy(asc(wasteTickets.createdAt)),
-      db.select().from(wasteTicketPages).where(eq(wasteTicketPages.requestId, request.id)),
-      db.select().from(wasteTicketFiles).where(eq(wasteTicketFiles.requestId, request.id)),
+        .select({
+          fileId: wasteTicketFiles.fileId,
+          filename: files.filename,
+          status: wasteTicketFiles.status,
+          reason: wasteTicketFiles.reason,
+          errorClass: wasteTicketFiles.errorClass,
+          errorScope: wasteTicketFiles.errorScope,
+          totalPages: wasteTicketFiles.totalPages,
+          processedPages: wasteTicketFiles.processedPages,
+          createdAt: wasteTicketFiles.createdAt,
+          updatedAt: wasteTicketFiles.updatedAt,
+          jobId: jobs.id,
+          jobAttempt: jobs.attempts,
+          jobMaxAttempts: jobs.maxAttempts,
+          jobRunAt: jobs.nextRunAt,
+          jobStatus: jobs.status,
+        })
+        .from(wasteTicketFiles)
+        .leftJoin(files, eq(files.id, wasteTicketFiles.fileId))
+        .leftJoin(jobs, eq(jobs.id, wasteTicketFiles.activeJobId))
+        .where(eq(wasteTicketFiles.requestId, request.id)),
       // Журнал попыток (Р29): по нему человек называет оператору прокси идентификатор запроса,
       // когда разбираются, почему не работает. Без него разговор сводится к «у нас не читается».
       db
@@ -301,12 +291,19 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           engine: wasteTicketRecognitionAttempts.engine,
           model: wasteTicketRecognitionAttempts.model,
           modelReported: wasteTicketRecognitionAttempts.modelReported,
+          promptVersion: wasteTicketRecognitionAttempts.promptVersion,
+          preprocessingVersion: wasteTicketRecognitionAttempts.preprocessingVersion,
           status: wasteTicketRecognitionAttempts.status,
+          forced: wasteTicketRecognitionAttempts.forced,
+          inputTokens: wasteTicketRecognitionAttempts.inputTokens,
+          outputTokens: wasteTicketRecognitionAttempts.outputTokens,
+          durationMs: wasteTicketRecognitionAttempts.durationMs,
+          proxyRequestId: wasteTicketRecognitionAttempts.proxyRequestId,
+          upstreamRequestId: wasteTicketRecognitionAttempts.upstreamRequestId,
           errorCode: wasteTicketRecognitionAttempts.errorCode,
           errorClass: wasteTicketRecognitionAttempts.errorClass,
           errorScope: wasteTicketRecognitionAttempts.errorScope,
-          durationMs: wasteTicketRecognitionAttempts.durationMs,
-          proxyRequestId: wasteTicketRecognitionAttempts.proxyRequestId,
+          error: wasteTicketRecognitionAttempts.error,
           createdAt: wasteTicketRecognitionAttempts.createdAt,
         })
         .from(wasteTicketRecognitionAttempts)
@@ -316,122 +313,155 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         )
         .where(eq(wasteTicketPages.requestId, request.id))
         .orderBy(asc(wasteTicketRecognitionAttempts.createdAt)),
-      db
-        .select()
-        .from(wasteRequestCompletions)
-        .where(eq(wasteRequestCompletions.requestId, request.id))
-        .limit(1),
-      db
-        .select({
-          checkCode: wasteTicketCheckResolutions.checkCode,
-          subjectKey: wasteTicketCheckResolutions.subjectKey,
-          inputFingerprint: wasteTicketCheckResolutions.inputFingerprint,
-          comment: wasteTicketCheckResolutions.comment,
-          acceptedAt: wasteTicketCheckResolutions.acceptedAt,
-          acceptedByName: users.fullName,
-        })
-        .from(wasteTicketCheckResolutions)
-        .leftJoin(users, eq(users.id, wasteTicketCheckResolutions.acceptedBy))
-        .where(eq(wasteTicketCheckResolutions.requestId, request.id)),
     ]);
 
-    // Соседи по номеру ищутся здесь, а не в сервисе сверок: сервис — чистая функция без базы, и
-    // это его главное свойство (его логику проверяют без постгреса вовсе).
-    const keys = tickets.map((t) => t.numberKey).filter((k) => k !== '');
-    const neighbours = keys.length
-      ? await db
-          .select({
-            numberKey: wasteTickets.numberKey,
-            requestId: wasteTickets.requestId,
-            requestNum: wasteRequests.num,
-            objectId: wasteRequests.objectId,
-            operatorCounterpartyId: wasteTickets.operatorCounterpartyId,
-          })
-          .from(wasteTickets)
-          .innerJoin(wasteRequests, eq(wasteRequests.id, wasteTickets.requestId))
-          .where(
-            and(
-              inArray(wasteTickets.numberKey, keys),
-              eq(wasteTickets.status, 'confirmed'),
-              ne(wasteTickets.requestId, request.id),
-            ),
-          )
-      : [];
+    const { tickets, pages } = bundle;
+    const checks = wasteTicketChecks(bundle.inputs);
 
-    const completion = completionRows[0] ?? null;
-    const checks = wasteTicketChecks({
-      request: {
-        id: request.id,
-        num: request.num,
-        objectId: request.objectId,
-        objectAddress: '',
-        objectName: '',
-        requestType: request.requestType,
-        volumeM3: request.volumeM3,
-        deliveryAt: request.deliveryAt.toISOString(),
-        operatorCounterpartyId: request.operatorCounterpartyId,
-      } as never,
-      completion: completion
-        ? ({
-            volumeM3: completion.volumeM3 == null ? null : Number(completion.volumeM3),
-            weightTons: completion.weightTons == null ? null : Number(completion.weightTons),
-            removedOn: completion.removedOn ?? null,
-            removedOnSource: completion.removedOnSource,
-          } as never)
-        : null,
-      tickets: tickets.map((t) => ({
-        id: t.id,
-        pageId: t.pageId,
-        seq: t.seq,
-        origin: t.origin,
-        status: t.status,
-        number: t.numberRaw,
-        numberKey: t.numberKey,
-        numberFuzzy: t.numberFuzzy,
-        issuedOn: t.issuedOn,
-        volumeM3: t.volumeM3 == null ? null : Number(t.volumeM3),
-        workKind: t.workKind,
-        addressRaw: t.addressRaw,
-        pageSha256: pages.find((pg) => pg.id === t.pageId)?.pageSha256 ?? '',
-        needsReviewFields: t.needsReviewFields,
-      })) as never,
-      neighbours: neighbours as never,
-      resolutions: resolutions.map((res) => ({
-        checkCode: res.checkCode,
-        subjectKey: res.subjectKey,
-        inputFingerprint: res.inputFingerprint,
-        acceptedByName: res.acceptedByName ?? '',
-        acceptedAt: res.acceptedAt.toISOString(),
-        comment: res.comment,
-      })),
+    // Имена людей и перевозчика — вторым запросом и только по тем, кто вправду встретился в
+    // строках: карточка показывает «подтвердил Плехотин А.», а не идентификатор.
+    const personIds = [
+      ...new Set(
+        tickets
+          .flatMap((t) => [t.editedBy, t.confirmedBy, t.duplicateOverrideBy])
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    const operatorIds = [
+      ...new Set(tickets.map((t) => t.operatorCounterpartyId).filter((id): id is string => !!id)),
+    ];
+    const ticketIds = tickets.map((t) => t.id);
+    const [personRows, operatorRows, proposalRows] = await Promise.all([
+      personIds.length
+        ? db
+            .select({ id: users.id, fullName: users.fullName })
+            .from(users)
+            .where(inArray(users.id, personIds))
+        : Promise.resolve([]),
+      operatorIds.length
+        ? db
+            .select({ id: counterparties.id, name: counterparties.name })
+            .from(counterparties)
+            .where(inArray(counterparties.id, operatorIds))
+        : Promise.resolve([]),
+      ticketIds.length
+        ? db
+            .select()
+            .from(wasteTicketProposals)
+            .where(inArray(wasteTicketProposals.ticketId, ticketIds))
+        : Promise.resolve([]),
+    ]);
+    const personName = new Map(personRows.map((row) => [row.id, row.fullName ?? '']));
+    const operatorName = new Map(operatorRows.map((row) => [row.id, row.name]));
+    const proposalOf = new Map(proposalRows.map((row) => [row.ticketId, row]));
+
+    const pagesByFile = new Map<string, WasteTicketPageDto[]>();
+    const pageDtos = pages.map((page): WasteTicketPageDto & { fileId: string } => {
+      const dto = {
+        id: page.id,
+        fileId: page.fileId,
+        pageNo: page.pageNo,
+        status: page.status,
+        ticketsFound: page.ticketsFound,
+      };
+      const list = pagesByFile.get(page.fileId);
+      if (list) list.push(dto);
+      else pagesByFile.set(page.fileId, [dto]);
+      return dto;
     });
 
     return {
       tickets: tickets.map(
-        (t): WasteTicketDto =>
-          ({
-            id: t.id,
-            requestId: t.requestId,
-            pageId: t.pageId,
-            seq: t.seq,
-            origin: t.origin,
-            status: t.status,
-            number: t.numberRaw,
-            issuedOn: t.issuedOn,
-            volumeM3: t.volumeM3 == null ? null : Number(t.volumeM3),
-            workKind: t.workKind,
-            addressRaw: t.addressRaw,
-            needsReviewFields: t.needsReviewFields,
-            editedAt: t.editedAt?.toISOString() ?? null,
-            confirmedAt: t.confirmedAt?.toISOString() ?? null,
-            duplicateOverrideAt: t.duplicateOverrideAt?.toISOString() ?? null,
-            duplicateOverrideReason: t.duplicateOverrideReason,
-          }) as never,
+        (t): WasteTicketDto => ({
+          id: t.id,
+          requestId: t.requestId,
+          pageId: t.pageId,
+          seq: t.seq,
+          origin: t.origin,
+          status: t.status,
+          number: t.numberRaw,
+          issuedOn: t.issuedOn,
+          volumeM3: t.volumeM3 == null ? null : Number(t.volumeM3),
+          workKind: t.workKind,
+          addressRaw: t.addressRaw,
+          needsReviewFields: t.needsReviewFields as WasteTicketField[],
+          candidates: t.candidates as WasteTicketCandidateDto[],
+          operatorCounterpartyId: t.operatorCounterpartyId,
+          operatorName: t.operatorCounterpartyId
+            ? (operatorName.get(t.operatorCounterpartyId) ?? null)
+            : null,
+          editedAt: t.editedAt?.toISOString() ?? null,
+          editedByName: t.editedBy ? (personName.get(t.editedBy) ?? null) : null,
+          confirmedAt: t.confirmedAt?.toISOString() ?? null,
+          confirmedByName: t.confirmedBy ? (personName.get(t.confirmedBy) ?? null) : null,
+          // Тройка клапана неразделима (её держит `CHECK`), поэтому и здесь она одним объектом:
+          // «снято, но без причины» — состояние, которого не бывает (Р17).
+          duplicateOverride:
+            t.duplicateOverrideAt && t.duplicateOverrideBy
+              ? {
+                  at: t.duplicateOverrideAt.toISOString(),
+                  byName: personName.get(t.duplicateOverrideBy) ?? '',
+                  reason: t.duplicateOverrideReason,
+                }
+              : null,
+          proposal: (() => {
+            const row = proposalOf.get(t.id);
+            return row
+              ? {
+                  ticketId: row.ticketId,
+                  number: row.numberRaw,
+                  issuedOn: row.issuedOn,
+                  volumeM3: row.volumeM3 == null ? null : Number(row.volumeM3),
+                  workKind: row.workKind,
+                  addressRaw: row.addressRaw,
+                  primaryAttemptId: row.primaryAttemptId,
+                  escalationAttemptId: row.escalationAttemptId,
+                  createdAt: row.createdAt.toISOString(),
+                }
+              : null;
+          })(),
+          createdAt: t.createdAt.toISOString(),
+          updatedAt: t.updatedAt.toISOString(),
+        }),
       ),
-      pages,
-      files,
+      pages: pageDtos,
+      files: fileRows.map(
+        (f): WasteTicketFileDto => ({
+          fileId: f.fileId,
+          filename: f.filename ?? '',
+          status: f.status,
+          reason: f.reason,
+          // Пустая строка в базе и «сбоя не было» — одно состояние для читающего экрана, и в DTO
+          // оно одно: `null`. Иначе каждое место показа сравнивало бы значение с `''`.
+          errorClass: f.errorClass === '' ? null : f.errorClass,
+          errorScope: f.errorScope === '' ? null : f.errorScope,
+          totalPages: f.totalPages,
+          processedPages: f.processedPages,
+          // Задача показывается, только пока повтор ещё будет: завершённая и мёртвая обещают
+          // человеку то, чего не случится (Р29).
+          activeJob:
+            f.jobId && (f.jobStatus === 'pending' || f.jobStatus === 'running')
+              ? {
+                  id: f.jobId,
+                  attempt: f.jobAttempt ?? 0,
+                  maxAttempts: f.jobMaxAttempts ?? 0,
+                  nextRunAt: f.jobStatus === 'running' ? null : (f.jobRunAt?.toISOString() ?? null),
+                }
+              : null,
+          pages: pagesByFile.get(f.fileId) ?? [],
+          createdAt: f.createdAt.toISOString(),
+          updatedAt: f.updatedAt.toISOString(),
+        }),
+      ),
       checks: checks.checks,
-      attempts,
+      attempts: attempts.map(
+        (a): WasteTicketAttemptDto => ({
+          ...a,
+          errorClass: a.errorClass === '' ? null : a.errorClass,
+          errorScope: a.errorScope === '' ? null : a.errorScope,
+          createdAt: a.createdAt.toISOString(),
+        }),
+      ),
       ticketsVolumeM3: checks.ticketsVolumeM3,
       preliminary: checks.preliminary,
       acceptanceAllowed: checks.acceptanceAllowed,
@@ -754,7 +784,10 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     {
       ...canReview,
       schema: {
-        params: requestParams.extend({ checkCode: z.string().min(1).max(64) }),
+        // Код замечания перечислением, а не свободной строкой: принять можно только то, что
+        // портал считает, и незнакомый код обязан отвечать 400, а не молча заводить строку
+        // принятия, которую никогда ни с чем не сравнят.
+        params: requestParams.extend({ checkCode: z.enum(WASTE_TICKET_CHECK_CODES) }),
         querystring: z.object({ subjectKey: z.string().max(64).optional() }),
         body: acceptWasteTicketCheckSchema,
       },
@@ -766,8 +799,8 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       assertOperatorScope(p, request.operatorCounterpartyId);
 
       const subjectKey = req.query.subjectKey ?? '';
-      const inputs = await collectCheckInputs(request);
-      const state = wasteTicketChecks(inputs as never);
+      const bundle = await collectCheckInputs(p, request.id);
+      const state = wasteTicketChecks(bundle.inputs);
       if (!state.acceptanceAllowed) {
         throw err.badRequest('Сначала разберите все талоны заявки', {
           tickets: 'Есть неподтверждённые талоны',
@@ -778,13 +811,15 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       );
       if (!target) throw err.badRequest('Этого расхождения у заявки нет');
 
+      // Отпечаток снимается с ТОГО ЖЕ входа, по которому только что посчитаны замечания (Р21):
+      // собери его вторым запросом — и он начнёт расходиться с показанным человеку.
       const fingerprint = wasteTicketCheckFingerprint({
-        request: inputs.request,
-        completion: inputs.completion,
-        tickets: inputs.tickets,
+        request: bundle.inputs.request,
+        completion: bundle.inputs.completion,
+        tickets: bundle.inputs.tickets,
         checkCode: req.params.checkCode,
         subjectKey,
-      } as never);
+      });
 
       await db
         .insert(wasteTicketCheckResolutions)

@@ -93,7 +93,7 @@ describe('сверка молчит, когда всё сошлось', () => {
     expect(result.ticketsVolumeM3).toBe(40);
     expect(result.preliminary).toBe(false);
     expect(result.acceptanceAllowed).toBe(true);
-    expect(result.badge).toEqual({ errors: 0, warnings: 0, pendingConfirmation: 0 });
+    expect(result.badge).toEqual({ errors: 0, warnings: 0, pendingConfirmation: 0, failures: 0 });
   });
 
   it('талонов нет вовсе — сверять нечего, «в талонах 0 м³» не пишется', () => {
@@ -419,7 +419,25 @@ describe('уникальность: бумага и номер (Р17)', () => {
     ];
     const result = run({ tickets });
     // ⛔ повтор номера · ⚠️ чужой адрес · ⏳ один талон ждёт подтверждения.
-    expect(result.badge).toEqual({ errors: 1, warnings: 1, pendingConfirmation: 1 });
+    expect(result.badge).toEqual({ errors: 1, warnings: 1, pendingConfirmation: 1, failures: 0 });
+  });
+
+  it('сбои и слепые перепроверки попадают в значок, но не в замечания', () => {
+    // Сломанный файл — не расхождение бумаги с заявкой, а её отсутствие в разборе: принять его
+    // как расхождение нельзя, а показать в списке обязаны — иначе строка реестра «требует
+    // разбора» окажется пустой, и человек прочитает это как ошибку портала (Р24).
+    // Вход тот же, на котором сверка молчит: всё сошлось, и любое число в значке приходит
+    // только из состояния подсистемы.
+    const result = run({
+      subsystem: { failedFiles: 2, failedPages: 1, blindPending: 1, blindMismatch: 1 },
+    });
+    expect(result.badge.failures).toBe(3);
+    // Расхождение двух слепых чтений ждёт арбитра — это работа, и она красная.
+    expect(result.badge.errors).toBe(1);
+    // Непрочитанная вторым человеком бумага стоит в той же очереди, что неподтверждённый талон.
+    expect(result.badge.pendingConfirmation).toBe(1);
+    // И ни одного замечания: принимать нечего.
+    expect(result.checks).toHaveLength(0);
   });
 });
 

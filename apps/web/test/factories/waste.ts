@@ -50,6 +50,9 @@ export function wasteRequest(overrides: Partial<WasteRequestDto> = {}): WasteReq
     files: [],
     tickets: [],
     vehicles: [],
+    // Значка нет: обычная заявка бумаги ещё не принесла, а «разбирать нечего» — не то же, что
+    // «всё разобрано» (ADR 0114, Р24).
+    ticketBadge: null,
     version: 1,
     createdBy: 'user-1',
     createdByName: 'Диспетчеров Д. П.',

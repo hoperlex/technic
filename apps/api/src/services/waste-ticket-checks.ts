@@ -10,6 +10,7 @@ import {
   type WasteTicketCheckDto,
   wasteTicketCheckSeverity,
   type WasteTicketStatus,
+  type WasteTicketSubsystemState,
   type WasteTicketWorkKind,
 } from '@technic/contracts';
 import { similarWasteAddress } from './waste-ticket-normalize';
@@ -170,6 +171,13 @@ export interface WasteTicketChecksInput extends WasteTicketCheckInputs {
   neighbours?: readonly WasteTicketNeighbour[];
   /** Принятия расхождений этой заявки; недействующие отсеются сами по отпечатку. */
   resolutions?: readonly StoredWasteTicketResolution[];
+  /**
+   * Сбои и слепые перепроверки — то, что ждёт человека помимо самой бумаги (Р24). В **замечания**
+   * не превращается: замечание говорит «эти цифры не сходятся», а сломанный файл говорит «цифр
+   * нет вовсе», и принять его как расхождение нельзя. Влияет только на значок — и обязано влиять,
+   * иначе строка реестра оказалась бы пустой при живом фильтре.
+   */
+  subsystem?: WasteTicketSubsystemState;
 }
 
 export interface WasteTicketChecksResult {
@@ -305,7 +313,7 @@ const CODE_ORDER = new Map<WasteTicketCheckCode, number>(
  * результат помечен «предварительно» (Р15).
  */
 export function wasteTicketChecks(input: WasteTicketChecksInput): WasteTicketChecksResult {
-  const { request, completion, tickets } = input;
+  const { request, completion, tickets, subsystem } = input;
   const tolerances = input.tolerances ?? DEFAULT_WASTE_TICKET_TOLERANCES;
   const neighbours = input.neighbours ?? [];
   const resolutions = input.resolutions ?? [];
@@ -379,9 +387,16 @@ export function wasteTicketChecks(input: WasteTicketChecksInput): WasteTicketChe
     badge: {
       // Снятое замечание в значке не считается: оно уже разобрано человеком и в реестр «требуют
       // разбора» заявку не тянет.
-      errors: checks.filter((c) => c.severity === 'error' && !c.resolution).length,
+      //
+      // Слепая перепроверка попадает в значок по своему состоянию: `mismatch` — расхождение двух
+      // чтений, то есть работа арбитра (⛔); `pending` — бумага ещё не прочитана вторым человеком,
+      // то есть та же очередь, что и неподтверждённый талон (⏳).
+      errors:
+        checks.filter((c) => c.severity === 'error' && !c.resolution).length +
+        (subsystem?.blindMismatch ?? 0),
       warnings: checks.filter((c) => c.severity === 'warning' && !c.resolution).length,
-      pendingConfirmation: unconfirmed,
+      pendingConfirmation: unconfirmed + (subsystem?.blindPending ?? 0),
+      failures: (subsystem?.failedFiles ?? 0) + (subsystem?.failedPages ?? 0),
     },
   };
 }

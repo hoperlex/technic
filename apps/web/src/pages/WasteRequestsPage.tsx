@@ -101,6 +101,7 @@ import {
   presentGroupsHint,
 } from './waste/containerGroups';
 import { wasteAmountLine, wastePricingHint } from './waste/pricingHint';
+import { TicketBadge } from '@features/waste-ticket-review';
 import { WasteDoneModal } from './waste/WasteDoneModal';
 import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
 import { MOSCOW_TZ } from '@shared/config';
@@ -406,11 +407,17 @@ function RequestsTab() {
     containerTypeId?: string;
     operatorCounterpartyId?: string;
     num?: number;
+    /** Реестр разбора талонов (ADR 0114, Р24): `pending` — «требуют разбора». */
+    ticketReview?: string;
   }>({ objectId: ownObjectId || undefined }, { searchKeys: ['comment'] });
 
   /** Смена любого фильтра возвращает список на первую страницу. */
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
+
+  // Разбор талонов — отдельное право (ADR 0114, Р25): без него нет ни колонки-значка, ни фильтра.
+  // Сервер отвечает так же: параметр `ticketReview` без права отклоняется, а не игнорируется.
+  const canReviewTickets = can('wasteRequests.ticketReview');
 
   const [objectFilter, setObjectFilter] = useState(ownObjectId);
   const [numInput, setNumInput] = useState('');
@@ -1146,6 +1153,19 @@ function RequestsTab() {
       sorter: true,
       render: (_v: unknown, r: WasteRequestDto) => r.wasteTypeName ?? '—',
     },
+    // Значок разбора талонов (ADR 0114, Р24) — рядом с предметом заявки, а не в конце строки: его
+    // читают вместе с объёмом, к которому он и относится. Колонки нет вовсе без права разбора.
+    ...(canReviewTickets
+      ? [
+          {
+            key: 'ticketBadge',
+            title: 'Талоны',
+            dataIndex: 'ticketBadge',
+            width: 130,
+            render: (_v: unknown, r: WasteRequestDto) => <TicketBadge badge={r.ticketBadge} />,
+          },
+        ]
+      : []),
     badgeColumn<WasteRequestDto>({
       key: 'requestType',
       title: 'Тип заявки',
@@ -1331,6 +1351,19 @@ function RequestsTab() {
           onChange={(v: string | undefined) => applyFilter({ operatorCounterpartyId: v })}
         />
       )}
+      {/* Рабочий реестр того, кто сверяет бумаги (Р24): в отбор попадает и заявка без единого
+          расхождения, если её талоны ещё не подтверждены, — иначе они остались бы неразобранными
+          навсегда, а неподтверждённый талон не занимает номер. */}
+      {canReviewTickets && (
+        <Tooltip title="Заявки, где талоны ждут человека: не подтверждены, спорны, не прочитаны или расходятся с закрытием">
+          <Button
+            type={params.ticketReview ? 'primary' : 'default'}
+            onClick={() => applyFilter({ ticketReview: params.ticketReview ? undefined : 'pending' })}
+          >
+            Требуют разбора
+          </Button>
+        </Tooltip>
+      )}
       <Input
         style={{ width: 160 }}
         allowClear
@@ -1408,6 +1441,17 @@ function RequestsTab() {
       placeholder: 'Например, М-128',
       onChange: (v) => applyNumFilter(v ?? ''),
     },
+    ...(canReviewTickets
+      ? [
+          {
+            kind: 'toggle' as const,
+            key: 'ticketReview',
+            label: 'Требуют разбора',
+            value: params.ticketReview === 'pending',
+            onChange: (v: boolean) => applyFilter({ ticketReview: v ? 'pending' : undefined }),
+          },
+        ]
+      : []),
   ];
 
   /**

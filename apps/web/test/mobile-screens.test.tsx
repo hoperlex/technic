@@ -141,7 +141,11 @@ describe('выполнение заявки на вывоз', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Выполнена' }));
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({ completion: { volumeM3: 48, totalCost: 39_000 } }),
+        // Дата вывоза уходит вместе с закрытием (ADR 0114, Р19): здесь её не заполняли, и это
+        // `null`, а не отсутствие поля — «не знаем» у закрытия отдельное состояние.
+        expect.objectContaining({
+          completion: { volumeM3: 48, totalCost: 39_000, removedOn: null },
+        }),
       ),
     );
   });

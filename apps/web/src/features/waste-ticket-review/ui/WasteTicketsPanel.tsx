@@ -1,9 +1,15 @@
 import { useState } from 'react';
-import { Alert, App, Button, Collapse, Empty, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App, Button, Collapse, Empty, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { WasteTicketCheckDto, WasteTicketDto } from '@technic/contracts';
+import type {
+  WasteTicketCandidateDto,
+  WasteTicketCheckDto,
+  WasteTicketDto,
+  WasteTicketField,
+} from '@technic/contracts';
 import { wasteTicketKeys, wasteTicketsApi, wasteTicketsQuery } from '@entities/waste-ticket';
 import { errorMessage } from '../../../utils/format';
+import { TicketFormModal } from './TicketFormModal';
 
 /**
  * Разбор талонов в карточке заявки (ADR 0114, план §9.2).
@@ -21,6 +27,8 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery(wasteTicketsQuery(requestId, true));
   const [busyId, setBusyId] = useState<string | null>(null);
+  /** Окно талона: `null` — закрыто, `{ticket: null}` — заведение руками, иначе правка. */
+  const [form, setForm] = useState<{ ticket: WasteTicketDto | null } | null>(null);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: wasteTicketKeys.list(requestId) });
 
@@ -120,6 +128,14 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       <ChecksStrip checks={data.checks} preliminary={data.preliminary} />
 
+      {/* Ручной ввод — равноправный путь, а не запасной: машина читает не всё, а два талона на
+          кадре видит как один (Р15). Кнопка на виду всегда, в том числе когда талонов нет вовсе. */}
+      <Space size={8}>
+        <Button size="small" onClick={() => setForm({ ticket: null })}>
+          Добавить талон вручную
+        </Button>
+      </Space>
+
       {data.tickets.length === 0 ? (
         <Empty description="Талоны ещё не распознаны" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : (
@@ -134,7 +150,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
               dataIndex: 'number',
               render: (value: string, row) =>
                 row.needsReviewFields.includes('number') ? (
-                  <Disputed field="номер" />
+                  <Disputed field="number" label="номер" candidates={row.candidates} />
                 ) : (
                   value || '—'
                 ),
@@ -144,7 +160,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
               dataIndex: 'issuedOn',
               render: (value: string | null, row) =>
                 row.needsReviewFields.includes('issuedOn') ? (
-                  <Disputed field="дата" />
+                  <Disputed field="issuedOn" label="дату" candidates={row.candidates} />
                 ) : (
                   (value ?? '—')
                 ),
@@ -154,7 +170,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
               dataIndex: 'volumeM3',
               render: (value: number | null, row) =>
                 row.needsReviewFields.includes('volumeM3') ? (
-                  <Disputed field="объём" />
+                  <Disputed field="volumeM3" label="объём" candidates={row.candidates} />
                 ) : value == null ? (
                   row.workKind === 'idle' ? (
                     <Typography.Text type="secondary">простой</Typography.Text>
@@ -175,7 +191,13 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
               title: '',
               key: 'actions',
               render: (_, row) =>
-                row.status === 'confirmed' || row.status === 'dismissed' ? null : (
+                row.status === 'dismissed' ? null : row.status === 'confirmed' ? (
+                  // Подтверждённый талон правится тем же окном: цифра, замеченная позже, иначе
+                  // осталась бы неисправимой — а сверка считает по подтверждённым.
+                  <Button size="small" type="link" onClick={() => setForm({ ticket: row })}>
+                    Исправить
+                  </Button>
+                ) : (
                   <Space size={4}>
                     <Button
                       size="small"
@@ -190,6 +212,11 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
                       onClick={() => onConfirm(row)}
                     >
                       Подтвердить
+                    </Button>
+                    {/* Правка — она же разбор спорного поля: ответ человека и есть то, чего
+                        машина сказать не смогла (Р14). */}
+                    <Button size="small" type="link" onClick={() => setForm({ ticket: row })}>
+                      {row.needsReviewFields.length > 0 ? 'Разобрать' : 'Исправить'}
                     </Button>
                     <Button
                       size="small"
@@ -248,16 +275,61 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
           ]}
         />
       )}
+
+      <TicketFormModal
+        requestId={requestId}
+        ticket={form?.ticket ?? null}
+        open={!!form}
+        onClose={() => setForm(null)}
+      />
     </Space>
   );
 }
 
 /** Спорное поле: значения нет, потому что модели прочитали разное (Р14). */
-function Disputed({ field }: { field: string }) {
+function Disputed({
+  field,
+  label,
+  candidates,
+}: {
+  field: WasteTicketField;
+  label: string;
+  candidates: readonly WasteTicketCandidateDto[];
+}) {
+  // Варианты показываются с указанием, какая модель что прочитала: это честнее произвольно
+  // выбранного значения старшей модели, которая ошибается реже, но ошибается (Р14). Без вариантов
+  // «поле спорное» отправляет человека к скану вслепую.
+  const own = candidates.filter((c) => c.field === field);
   return (
-    <Tag color="gold" title={`Модели прочитали ${field} по-разному — разберите вручную`}>
-      спорно
-    </Tag>
+    <Tooltip
+      title={
+        own.length > 0 ? (
+          <Space direction="vertical" size={0}>
+            <span>Прочитали по-разному:</span>
+            {own.map((c, i) => (
+              <span key={`${c.model}-${i}`}>
+                {c.value || '(пусто)'} — {c.model || 'модель не названа'}
+              </span>
+            ))}
+            <span>Впишите верное кнопкой «Разобрать».</span>
+          </Space>
+        ) : (
+          `Модели прочитали ${label} по-разному — разберите вручную`
+        )
+      }
+    >
+      <Space size={4} wrap>
+        <Tag color="gold" style={{ marginInlineEnd: 0 }}>
+          спорно
+        </Tag>
+        {own.map((c, i) => (
+          <Typography.Text key={`${c.model}-${i}`} type="secondary" style={{ fontSize: 12 }}>
+            {c.value || '—'}
+            {i < own.length - 1 ? ' /' : ''}
+          </Typography.Text>
+        ))}
+      </Space>
+    </Tooltip>
   );
 }
 

@@ -195,6 +195,71 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     expect(file.rows[0]).toMatchObject({ status: 'done', total_pages: 1, processed_pages: 1 });
   });
 
+  it('расхождение проходов оставляет поле пустым и сохраняет обоих кандидатов', async () => {
+    // Эскалация прочитала объём иначе. Значение не выбирается ни одно: старшая модель ошибается
+    // реже, но ошибается, и выбор за человеком (Р14). Но вопрос без вариантов не задать — рядом с
+    // талоном ложится снимок того, что прочитал каждый проход.
+    // Эскалацию запускает ПУСТОЕ обязательное поле — здесь дата (Р14): просить старшую модель
+    // перечитать то, что и так прочитано, незачем. Спор возникает попутно, по объёму: страницу
+    // старшая читает целиком, и её чтение сверяется со всеми полями первой.
+    const { requestId, fileId } = await seed();
+    const primary = countingEngine([
+      { number: '30476', issuedOn: null, volumeM3: 20, workKind: 'removal', addressRaw: 'Автозаводская, лот 33' },
+    ]);
+    const escalated = countingEngine([
+      { number: '30476', issuedOn: '2026-08-17', volumeM3: 28, workKind: 'removal', addressRaw: 'Автозаводская, лот 33' },
+    ]);
+    /** Первый вызов отвечает основной моделью, второй — старшей: каскад ходит по одной странице. */
+    const engine: RecognitionEngine = {
+      kind: 'stub',
+      recognize: (page, opts) =>
+        opts.model === 'test/senior'
+          ? escalated.engine.recognize(page, opts)
+          : primary.engine.recognize(page, opts),
+    };
+    const jobId = await seedJob({ requestId, fileId });
+    await runTicketRecognitionJob(
+      deps({ engine, escalationModel: 'test/senior' }) as never,
+      { requestId, fileId },
+      jobId,
+    );
+
+    const tickets = await admin.query<{
+      volume_m3: string | null;
+      needs_review_fields: string[];
+      candidates: { field: string; value: string; model: string }[];
+    }>(
+      `SELECT volume_m3, needs_review_fields, candidates FROM waste_tickets WHERE request_id = $1`,
+      [requestId],
+    );
+    const row = tickets.rows[0]!;
+    expect(row.volume_m3).toBeNull();
+    expect(row.needs_review_fields).toEqual(['volumeM3']);
+    // Пустое у первой и прочитанное старшей — не спор, а ответ: дата встала без вопросов.
+    expect(row.candidates).toEqual([
+      { field: 'volumeM3', value: '20', model: 'test/model' },
+      { field: 'volumeM3', value: '28', model: 'test/senior' },
+    ]);
+  });
+
+  it('сошедшиеся проходы кандидатов не заводят: спорить не о чем', async () => {
+    const { requestId, fileId } = await seed();
+    const { engine } = countingEngine();
+    const jobId = await seedJob({ requestId, fileId });
+    await runTicketRecognitionJob(
+      deps({ engine, escalationModel: 'test/senior' }) as never,
+      { requestId, fileId },
+      jobId,
+    );
+
+    const tickets = await admin.query<{ candidates: unknown[]; needs_review_fields: string[] }>(
+      `SELECT candidates, needs_review_fields FROM waste_tickets WHERE request_id = $1`,
+      [requestId],
+    );
+    expect(tickets.rows[0]!.candidates).toEqual([]);
+    expect(tickets.rows[0]!.needs_review_fields).toEqual([]);
+  });
+
   it('ГОНКА: откат в зазоре перед записью — задача ничего не пишет', async () => {
     const { requestId, fileId } = await seed();
     const { engine, calls } = countingEngine();

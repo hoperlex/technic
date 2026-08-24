@@ -334,12 +334,19 @@ function matchTicket<T extends { number: string | null; issuedOn: string | null;
  * уходит в `needs_review_fields`, и человек видит двух кандидатов. Старшая модель ошибается реже,
  * но ошибается, и выбирать за человека молча портал не берётся (Р14).
  */
-function mergeField<V>(primary: V | null, escalated: V | null | undefined): { value: V | null; review: boolean } {
-  if (escalated === undefined) return { value: primary, review: false };
-  if (primary === null || primary === undefined) return { value: escalated ?? null, review: false };
-  if (escalated === null) return { value: primary, review: false };
-  if (primary === escalated) return { value: primary, review: false };
-  return { value: null, review: true };
+function mergeField<V>(
+  primary: V | null,
+  escalated: V | null | undefined,
+): { value: V | null; review: boolean; candidates: [V, V] | null } {
+  if (escalated === undefined) return { value: primary, review: false, candidates: null };
+  if (primary === null || primary === undefined) {
+    return { value: escalated ?? null, review: false, candidates: null };
+  }
+  if (escalated === null) return { value: primary, review: false, candidates: null };
+  if (primary === escalated) return { value: primary, review: false, candidates: null };
+  // Оба прочитанных значения сохраняются рядом с талоном: без них вопрос «поле спорное» отправляет
+  // человека к скану вслепую, а «первая прочитала 20, вторая 28» решается взглядом (Р14).
+  return { value: null, review: true, candidates: [primary, escalated] };
 }
 
 // ── T2: запись результата ──
@@ -356,6 +363,8 @@ interface PageResult {
     workKind: string;
     addressRaw: string | null;
     needsReview: string[];
+    /** Что прочитал каждый проход по спорному полю — снимком, для экрана разбора (Р14). */
+    candidates: { field: string; value: string; model: string }[];
   }[];
 }
 
@@ -406,8 +415,9 @@ async function saveResult(
           `INSERT INTO waste_tickets
              (request_id, page_id, seq, primary_attempt_id, escalation_attempt_id,
               number_raw, number_key, number_fuzzy, issued_on, volume_m3, work_kind,
-              address_raw, origin, status, needs_review_fields)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'ocr','unconfirmed',$13::text[])
+              address_raw, origin, status, needs_review_fields, candidates)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'ocr','unconfirmed',$13::text[],
+                   $14::jsonb)
            ON CONFLICT (page_id, seq) WHERE page_id IS NOT NULL AND origin = 'ocr'
            DO NOTHING`,
           [
@@ -424,6 +434,7 @@ async function saveResult(
             ticket.workKind,
             ticket.addressRaw ?? '',
             ticket.needsReview,
+            JSON.stringify(ticket.candidates),
           ],
         );
       }
@@ -586,7 +597,17 @@ export async function runTicketRecognitionJob(
       continue;
     }
     results.push(
-      toPageResult(page, first.attemptId, second.attemptId, outcome.response, secondOutcome.response.tickets),
+      toPageResult(
+        page,
+        first.attemptId,
+        second.attemptId,
+        outcome.response,
+        secondOutcome.response.tickets,
+        {
+          primary: outcome.meta.modelReported || deps.model,
+          escalation: secondOutcome.meta.modelReported || deps.escalationModel,
+        },
+      ),
     );
   }
 
@@ -605,7 +626,14 @@ function toPageResult(
   escalationAttemptId: string | null,
   primary: { tickets?: unknown[]; unreadable?: string[] } | Record<string, unknown>,
   escalated: readonly unknown[],
+  /**
+   * Чем читали проходы. Фактические модели (`model_reported`, Р7), а не заказанные: человеку в
+   * споре важно, кто именно так прочитал, а прокси вправе подставить свою (Р7).
+   */
+  models: { primary: string; escalation: string } = { primary: '', escalation: '' },
 ): PageResult {
+  const primaryModel = models.primary;
+  const escalationModel = models.escalation;
   type T = {
     number: string | null;
     issuedOn: string | null;
@@ -628,6 +656,18 @@ function toPageResult(
       ...(issuedOn.review ? ['issuedOn'] : []),
       ...(volume.review ? ['volumeM3'] : []),
     ];
+    // Значение кандидата — строка при любом поле, включая дату и объём: кандидат это то, что
+    // модель ПРОЧИТАЛА, а не то, что портал принял, и приведение к числу стёрло бы половину
+    // вопроса ещё до показа («28» и «2 8» различаются ровно там, где человек выбирает верное).
+    const candidates: { field: string; value: string; model: string }[] = [];
+    const addCandidates = (field: string, pairValues: [unknown, unknown] | null): void => {
+      if (!pairValues) return;
+      candidates.push({ field, value: String(pairValues[0]), model: primaryModel });
+      candidates.push({ field, value: String(pairValues[1]), model: escalationModel });
+    };
+    addCandidates('number', number.candidates);
+    addCandidates('issuedOn', issuedOn.candidates);
+    addCandidates('volumeM3', volume.candidates);
     return {
       number: number.value,
       issuedOn: issuedOn.value,
@@ -635,6 +675,7 @@ function toPageResult(
       workKind: ticket.workKind,
       addressRaw: ticket.addressRaw,
       needsReview,
+      candidates,
     };
   });
 
