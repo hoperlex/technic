@@ -45,7 +45,16 @@ async function main(): Promise<void> {
   console.log(`Прокси:  ${cfg.baseUrl}`);
   console.log(`Модель:  ${cfg.model}${cfg.model === 'proxy' ? ' (вариант A — выбирает прокси)' : ''}`);
 
-  const buffer = await readFile(path);
+  // Пробник запускает администратор в день включения, и «стек Node» вместо «файла нет» — худший
+  // ответ из возможных: он выглядит как поломка портала там, где опечатка в пути.
+  let buffer;
+  try {
+    buffer = await readFile(path);
+  } catch (e) {
+    const reason = e instanceof Error && 'code' in e && e.code === 'ENOENT' ? 'файла нет' : String(e);
+    console.error(`Не удалось прочитать ${path}: ${reason}`);
+    process.exit(2);
+  }
   console.log(`Файл:    ${basename(path)}, ${(buffer.length / 1024).toFixed(0)} КБ`);
 
   let prepared;
