@@ -6,6 +6,7 @@ import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { pino } from 'pino';
 import { archiveUnverifiedRegistrations, purgeExpiredRegistrations } from './retention';
 import { PermanentMailError } from './mail-transport';
+import { RateLimiter } from './mail-rate';
 import { createMailAccounts } from './mail-accounts';
 import { tickMailings } from './mail-scheduler';
 import {
@@ -300,11 +301,38 @@ async function handleJob(job: JobRow): Promise<void | { deferUntil: Date }> {
  * распознавание было включено, а к моменту разбора его выключили — это состояние конфигурации, а
  * не сбой задачи.
  */
+/**
+ * Потолок обращений к прокси (`TICKET_OCR_MAX_PER_MINUTE`, этап 0).
+ *
+ * Очередь у прокси общая с чужими сервисами, и лимиты (`maxConcurrency`, `maxPending`) оператор
+ * называет для каждого клиента отдельно. Наша вежливость — единственное, что мешает порталу занять
+ * её целиком: страница читается за минуты, а задач в очереди бывает десятки.
+ *
+ * Считается по ЗАДАЧАМ, а не по страницам, и это осознанное упрощение: файл — единица работы, у
+ * него от одной до пяти страниц, и точный счёт вызовов потребовал бы состояния в базе на каждый
+ * вызов. Значение по умолчанию (30) заведомо ниже любого разумного лимита; узнав настоящий,
+ * ставят своё.
+ *
+ * Счётчик живёт в процессе — как у почты (`RateLimiter`) и по той же причине: воркер в проде
+ * один, а точный общий потолок стоил бы записи в БД на каждое обращение.
+ */
+const ticketRate = new RateLimiter(readTicketOcrConfig().maxPerMinute);
+
 async function recognizeWasteTicketFile(job: JobRow): Promise<void | { deferUntil: Date }> {
   const cfg = readTicketOcrConfig();
   if (!cfg.enabled) {
     logger.info({ jobId: job.id }, 'Распознавание талонов выключено: задача пропущена');
     return;
+  }
+  // Квота проверяется ДО скачивания файла и до всякой транзакции: ждать внутри неё значило бы
+  // держать соединение и замок ключа кэша всё время ожидания. Отложенная задача попытки не тратит.
+  if (!ticketRate.take()) {
+    const deferUntil = ticketRate.freeAt();
+    logger.info(
+      { jobId: job.id, deferUntil },
+      'Потолок обращений к прокси на минуту исчерпан: задача отложена',
+    );
+    return { deferUntil };
   }
   const requestId = String(job.payload.requestId ?? '');
   const fileId = String(job.payload.fileId ?? '');
