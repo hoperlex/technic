@@ -7,7 +7,9 @@ import {
   type OfficeEquipmentFormValues,
   officeEquipmentApi,
   officeEquipmentPayload,
+  officeEquipmentConsumableKeys,
   officeEquipmentKeys,
+  officeEquipmentModelKeys,
   officeEquipmentTypeOptionsQuery,
 } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
@@ -77,6 +79,10 @@ export function QuickCreateEquipmentModal({
         prev ? { ...prev, items: [created, ...prev.items], total: prev.total + 1 } : prev,
       );
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+      // Новая карточка меняет счётчик «В парке» — и у своей модели, и у расходников, которые к
+      // этой модели привязаны (матрица Р14): считают его оба окна.
+      void qc.invalidateQueries({ queryKey: officeEquipmentModelKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentConsumableKeys.root });
       onCreated(created);
       onClose();
     },
@@ -97,7 +103,12 @@ export function QuickCreateEquipmentModal({
       okText="Завести и выбрать"
       width={560}
     >
-      <Form form={form} layout="vertical" onFinish={(v) => mutation.mutate(v)} {...blockers.formProps}>
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={(v) => mutation.mutate(v)}
+        {...blockers.formProps}
+      >
         <OfficeEquipmentFields
           typeOptions={typeOptions}
           typesLoading={typesLoading}

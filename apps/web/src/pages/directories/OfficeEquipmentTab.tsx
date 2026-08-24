@@ -1,19 +1,13 @@
 import { useState } from 'react';
-import { App, Button, Checkbox, Form, Select, Space } from 'antd';
-import { PlusOutlined, TagsOutlined } from '@ant-design/icons';
+import { App, Button, Form, Space } from 'antd';
+import { AppstoreOutlined, PlusOutlined, PrinterOutlined, TagsOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  OFFICE_EQUIPMENT_WARRANTY_FILTERS,
-  type OfficeEquipmentDto,
-  type OfficeEquipmentWarrantyFilter,
-  officeEquipmentTitle,
-  WARRANTY_EXPIRING_DAYS,
-} from '@technic/contracts';
+import { type OfficeEquipmentDto, officeEquipmentTitle } from '@technic/contracts';
 import { DataTable } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
-import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
+import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import {
   OfficeEquipmentFields,
@@ -21,7 +15,9 @@ import {
   officeEquipmentApi,
   officeEquipmentPayload,
   officeEquipmentUpdatePayload,
+  officeEquipmentConsumableKeys,
   officeEquipmentKeys,
+  officeEquipmentModelKeys,
   officeEquipmentTypeOptionsQuery,
   officeEquipmentCard,
   officeEquipmentColumns,
@@ -30,8 +26,15 @@ import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
+import {
+  useOfficeEquipmentFilters,
+  type OfficeEquipmentFilterParams,
+} from './OfficeEquipmentFilters';
 import { OfficeEquipmentTypesModal } from './OfficeEquipmentTypesModal';
+import { OfficeEquipmentModelsModal } from './OfficeEquipmentModelsModal';
+import { OfficeEquipmentConsumablesModal } from './OfficeEquipmentConsumablesModal';
 import { OfficeEquipmentServiceHistory } from './OfficeEquipmentServiceHistory';
+import { OfficeEquipmentSupplies } from './OfficeEquipmentSupplies';
 import { EquipmentMoveModal } from '@features/equipment-move';
 import { EquipmentHistoryModal } from '@features/equipment-history';
 
@@ -48,32 +51,15 @@ import { EquipmentHistoryModal } from '@features/equipment-history';
  * подсветка обязана совпадать со списком заявок и реестром гарантий.
  */
 
-/** Три вопроса, которые задают справочнику про гарантию. Порог — общий с подсветкой (Р25). */
-const warrantyFilterLabels: Record<OfficeEquipmentWarrantyFilter, string> = {
-  active: 'Действует',
-  expiring: `Истекает (${WARRANTY_EXPIRING_DAYS} дней)`,
-  expired: 'Истекла',
-};
-
-const warrantyOptions = OFFICE_EQUIPMENT_WARRANTY_FILTERS.map((value) => ({
-  value,
-  label: warrantyFilterLabels[value],
-}));
-
 export function OfficeEquipmentTab() {
   const { message, modal } = App.useApp();
   const { can } = useAuth();
   const canWrite = can('officeEquipment.write');
   const qc = useQueryClient();
 
-  const { params, setParams, setSort, onTableChange } = useListParams<{
-    objectId?: string;
-    equipmentTypeId?: string;
-    departmentId?: string;
-    unassignedDepartment?: string;
-    warranty?: string;
-    isActive?: string;
-  }>(
+  // Набор отборов описан один раз — в модуле полосы фильтров: разъехавшись, тип параметров и
+  // сама полоса начали бы спорить о том, что вкладка умеет спрашивать.
+  const { params, setParams, setSort, onTableChange } = useListParams<OfficeEquipmentFilterParams>(
     {},
     {
       // Поиск живёт лупой в заголовке «Модели» — единственного столбца с поисковой выпадашкой;
@@ -97,24 +83,16 @@ export function OfficeEquipmentTab() {
   const { data: departmentOptions = [] } = useQuery(departmentOptionsQuery());
 
   const [typesOpen, setTypesOpen] = useState(false);
+  const [modelsOpen, setModelsOpen] = useState(false);
+  const [consumablesOpen, setConsumablesOpen] = useState(false);
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<OfficeEquipmentDto | null>(null);
   const [form] = Form.useForm<OfficeEquipmentFormValues>();
   const blockers = useFormBlockers(form);
 
-  /**
-   * Отдел и «без владельца» — один вопрос с двумя ответами, а не два фильтра: сервер их вместе не
-   * принимает, да и смысла в «отдел АХО и при этом ничей» нет. Поэтому каждый гасит другой.
-   */
-  const applyDepartment = (v: string | undefined) =>
-    setParams((p) => ({ ...p, departmentId: v, unassignedDepartment: undefined, page: 1 }));
-  const applyUnassigned = (checked: boolean) =>
-    setParams((p) => ({
-      ...p,
-      unassignedDepartment: checked ? 'true' : undefined,
-      departmentId: undefined,
-      page: 1,
-    }));
+  /** Смена любого отбора возвращает список на первую страницу: та же страница — уже другие строки. */
+  const applyFilter = (patch: Partial<typeof params>) =>
+    setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const openCreate = () => {
     setRecord(null);
@@ -134,7 +112,9 @@ export function OfficeEquipmentTab() {
     form.resetFields();
     form.setFieldsValue({
       equipmentTypeId: r.type.id,
-      name: r.name,
+      // Ссылка, а не имя: с выпуска A `name` карточки — зеркало имени модели, которое ведёт база
+      // (Р3), и подставлять его в поле означало бы предложить править зеркало.
+      modelId: r.model?.id,
       serialNumber: r.serialNumber,
       inventoryNumber: r.inventoryNumber,
       objectId: r.object.id,
@@ -158,6 +138,16 @@ export function OfficeEquipmentTab() {
     onSuccess: () => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+      /*
+       * Матрица Р14, вторая сторона: счётчик «В парке» в окне моделей посчитан по карточкам, и
+       * его меняет каждое из действий этой формы — заведение, смена модели, снятая «Активна»,
+       * смена отдела-владельца. Без гашения окно, открытое следом, показывало бы вчерашнее число
+       * ровно `staleTime`, то есть первые десять секунд после правки.
+       */
+      void qc.invalidateQueries({ queryKey: officeEquipmentModelKeys.root });
+      // Та же матрица и тот же счётчик, но во втором окне: «В парке» в списке и карточке
+      // расходника посчитан по карточкам техники в области смотрящего (Р12, Р15).
+      void qc.invalidateQueries({ queryKey: officeEquipmentConsumableKeys.root });
       setOpen(false);
     },
     onError: (e) => {
@@ -170,6 +160,10 @@ export function OfficeEquipmentTab() {
     onSuccess: () => {
       message.success('Карточка удалена');
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+      // Уехавшая в архив карточка выпадает из счётчика «В парке» (Р12): он считает живые и
+      // активные — значит устарел и он (Р14). Счётчиков этих два, в обоих окнах.
+      void qc.invalidateQueries({ queryKey: officeEquipmentModelKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentConsumableKeys.root });
     },
     // «По технике есть незакрытые заявки» — обычный ответ сервера, а не сбой: он и объясняет,
     // почему карточку не убрать.
@@ -200,117 +194,16 @@ export function OfficeEquipmentTab() {
   };
   const columns = officeEquipmentColumns(grid);
 
-  const filters = (
-    <Space wrap>
-      <Select
-        allowClear
-        showSearch
-        optionFilterProp="label"
-        placeholder="Все объекты"
-        style={{ width: 240 }}
-        options={objectOptions}
-        value={params.objectId}
-        onChange={(v) => setParams((p) => ({ ...p, objectId: v, page: 1 }))}
-      />
-      <Select
-        allowClear
-        showSearch
-        optionFilterProp="label"
-        placeholder="Все типы"
-        style={{ width: 180 }}
-        loading={typesLoading}
-        options={typeOptions}
-        value={params.equipmentTypeId}
-        onChange={(v) => setParams((p) => ({ ...p, equipmentTypeId: v, page: 1 }))}
-      />
-      <Select
-        allowClear
-        showSearch
-        optionFilterProp="label"
-        placeholder="Все отделы"
-        style={{ width: 220 }}
-        options={departmentOptions}
-        disabled={params.unassignedDepartment === 'true'}
-        value={params.departmentId}
-        onChange={applyDepartment}
-      />
-      <Checkbox
-        checked={params.unassignedDepartment === 'true'}
-        onChange={(e) => applyUnassigned(e.target.checked)}
-      >
-        Без владельца
-      </Checkbox>
-      <Select
-        allowClear
-        placeholder="Любая гарантия"
-        style={{ width: 200 }}
-        options={warrantyOptions}
-        value={params.warranty}
-        onChange={(v) => setParams((p) => ({ ...p, warranty: v, page: 1 }))}
-      />
-    </Space>
-  );
-
-  /** Те же фильтры описанием — для шита на телефоне (ADR 0030). */
-  const mobileFilters: FilterDefinition[] = [
-    {
-      kind: 'select',
-      key: 'objectId',
-      label: 'Объект',
-      value: params.objectId,
-      options: objectOptions,
-      placeholder: 'Все объекты',
-      onChange: (v) => setParams((p) => ({ ...p, objectId: v, page: 1 })),
-    },
-    {
-      kind: 'select',
-      key: 'equipmentTypeId',
-      label: 'Тип',
-      value: params.equipmentTypeId,
-      options: typeOptions,
-      loading: typesLoading,
-      placeholder: 'Все типы',
-      onChange: (v) => setParams((p) => ({ ...p, equipmentTypeId: v, page: 1 })),
-    },
-    {
-      kind: 'select',
-      key: 'departmentId',
-      label: 'Отдел',
-      value: params.departmentId,
-      options: departmentOptions,
-      placeholder: 'Все отделы',
-      disabled: params.unassignedDepartment === 'true',
-      onChange: applyDepartment,
-    },
-    {
-      kind: 'toggle',
-      key: 'unassignedDepartment',
-      label: 'Без владельца',
-      value: params.unassignedDepartment === 'true',
-      onChange: applyUnassigned,
-    },
-    {
-      kind: 'select',
-      key: 'warranty',
-      label: 'Гарантия',
-      value: params.warranty,
-      options: warrantyOptions,
-      placeholder: 'Любая',
-      onChange: (v) => setParams((p) => ({ ...p, warranty: v, page: 1 })),
-    },
-    {
-      kind: 'select',
-      key: 'isActive',
-      label: 'Активность',
-      value: params.isActive,
-      options: [
-        { value: 'true', label: 'Активные' },
-        { value: 'false', label: 'Неактивные' },
-      ],
-      placeholder: 'Все',
-      onChange: (v) => setParams((p) => ({ ...p, isActive: v, page: 1 })),
-    },
-  ];
+  // Полоса отборов десктопа и её описание для шита живут отдельным модулем: шесть полей дважды
+  // — это сто строк разметки посреди работы с данными.
+  const { filters, mobileFilters } = useOfficeEquipmentFilters({
+    params,
+    apply: applyFilter,
+    objectOptions,
+    typeOptions,
+    typesLoading,
+    departmentOptions,
+  });
 
   const card = officeEquipmentCard(grid);
 
@@ -333,19 +226,74 @@ export function OfficeEquipmentTab() {
         primaryAction: canWrite
           ? { label: 'Добавить технику', icon: <PlusOutlined />, onClick: openCreate }
           : undefined,
+        /*
+         * Вход в окна справочников на телефоне. Десктопный слот `extra` там не рисуется вовсе —
+         * полоса кнопок заняла бы весь экран, — и до появления этой строки три окна вкладки были
+         * с телефона недостижимы: дверь есть, ключа нет.
+         *
+         * Дороже всего это стоило расходникам: остаток пересчитывают у полки, с телефона в руках,
+         * а не за столом, и человек с одним правом на правку остатка до своей работы не доходил
+         * вовсе. Само окно к телефону готово — карточки строк, отборы шитом, кнопка в футере.
+         *
+         * Порядок и права те же, что в шапке десктопа: ведение перечней типов и моделей — под
+         * `officeEquipment.write`, картриджи открыты всем, кому видна оргтехника (Р10). Главное
+         * действие остаётся одно («Добавить технику», круглой кнопкой), а эти живут рядом с
+         * фильтрами: двух круглых кнопок у списка быть не может.
+         */
+        secondaryActions: [
+          ...(canWrite
+            ? [
+                {
+                  label: 'Типы оргтехники',
+                  icon: <TagsOutlined />,
+                  onClick: () => setTypesOpen(true),
+                },
+                {
+                  label: 'Модели аппаратов',
+                  icon: <AppstoreOutlined />,
+                  onClick: () => setModelsOpen(true),
+                },
+              ]
+            : []),
+          {
+            label: 'Картриджи и тонеры',
+            icon: <PrinterOutlined />,
+            onClick: () => setConsumablesOpen(true),
+          },
+        ],
       }}
       extra={
-        canWrite ? (
-          <Space>
-            {/* Перечень типов ведут здесь же: отдельной вкладки ради десяти строк не заводят (Р34). */}
-            <Button icon={<TagsOutlined />} onClick={() => setTypesOpen(true)}>
-              Типы оргтехники
-            </Button>
+        <Space>
+          {canWrite && (
+            <>
+              {/* Перечень типов ведут здесь же: отдельной вкладки ради десяти строк не заводят (Р34). */}
+              <Button icon={<TagsOutlined />} onClick={() => setTypesOpen(true)}>
+                Типы оргтехники
+              </Button>
+              {/* Модели — соседней кнопкой (Р8): из них выбирают в карточке техники, и ходить за
+                  ними на другую вкладку пришлось бы при каждом заведении аппарата. */}
+              <Button icon={<AppstoreOutlined />} onClick={() => setModelsOpen(true)}>
+                Модели аппаратов
+              </Button>
+            </>
+          )}
+          {/*
+           * Картриджи — третьей кнопкой того же ряда (Р8): расходник существует только при
+           * технике, и отдельной вкладки «Справочников» ради него не заводят.
+           *
+           * Кнопка стоит вне права на парк (Р10): перечень расходников читают по
+           * `officeEquipment.read` — подобрать картридж должен и тот, кто заявку заводит, — а
+           * ведение номенклатуры и правку остатка спрашивает уже само окно, каждое своим правом.
+           */}
+          <Button icon={<PrinterOutlined />} onClick={() => setConsumablesOpen(true)}>
+            Картриджи и тонеры
+          </Button>
+          {canWrite && (
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               Добавить технику
             </Button>
-          </Space>
-        ) : undefined
+          )}
+        </Space>
       }
     >
       <DataTable<OfficeEquipmentDto>
@@ -362,6 +310,16 @@ export function OfficeEquipmentTab() {
       />
 
       <OfficeEquipmentTypesModal open={typesOpen} onClose={() => setTypesOpen(false)} />
+      <OfficeEquipmentModelsModal
+        open={modelsOpen}
+        onClose={() => setModelsOpen(false)}
+        typeOptions={typeOptions}
+        typesLoading={typesLoading}
+      />
+      <OfficeEquipmentConsumablesModal
+        open={consumablesOpen}
+        onClose={() => setConsumablesOpen(false)}
+      />
 
       <FormModal
         title={record ? 'Редактирование карточки' : 'Новая единица оргтехники'}
@@ -382,11 +340,22 @@ export function OfficeEquipmentTab() {
             typesLoading={typesLoading}
             objectOptions={objectOptions}
             departmentOptions={departmentOptions}
+            // Модель правящейся карточки: она может быть погашена, и без неё поле открылось бы
+            // пустым — то есть правка кабинета требовала бы заодно сменить модель.
+            savedModel={record?.model}
           />
         </Form>
-        {/* Только у заведённой карточки: у новой единицы истории нет по определению, и раздел
-            «Обслуживание — ничего» в форме заведения был бы шумом. */}
-        {record && <OfficeEquipmentServiceHistory equipmentId={record.id} />}
+        {/* Только у заведённой карточки: у новой единицы ни истории, ни модели ещё нет, и разделы
+            «Обслуживание — ничего» и «Заправлять нечем» в форме заведения были бы шумом.
+            Обе секции читают один и тот же ответ карточки — второго запроса это не стоит. */}
+        {record && (
+          <>
+            {/* «Чем заправлять» выше истории: за картриджем приходят чаще, чем за прошлым
+                ремонтом, и ответ на частый вопрос не должен лежать под редким (Р15). */}
+            <OfficeEquipmentSupplies equipmentId={record.id} />
+            <OfficeEquipmentServiceHistory equipmentId={record.id} />
+          </>
+        )}
       </FormModal>
 
       <EquipmentMoveModal equipment={moving} onClose={() => setMoving(null)} />

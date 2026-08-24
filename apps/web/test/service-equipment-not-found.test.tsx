@@ -4,8 +4,10 @@ import type {
   AuthUser,
   CreateOfficeEquipmentInput,
   OfficeEquipmentDto,
+  OfficeEquipmentModelDto,
   OfficeEquipmentTypeDto,
 } from '@technic/contracts';
+import { selectOption } from './antd';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
@@ -37,6 +39,28 @@ const TYPE: OfficeEquipmentTypeDto = {
   updatedAt: '2026-08-01T00:00:00.000Z',
 };
 
+/**
+ * Модели того же типа — их две намеренно: с единственным вариантом `AutoSelect` заполнил бы поле
+ * сам, и проверка «в тело ушла выбранная модель» прошла бы независимо от того, выбирал её кто-то
+ * или нет (план `docs/office-equipment-consumables-plan.md`, Р1).
+ */
+function modelDto(id: string, name: string): OfficeEquipmentModelDto {
+  return {
+    id,
+    type: { id: TYPE.id, name: TYPE.name, isActive: true },
+    name,
+    manufacturer: '',
+    isActive: true,
+    comment: '',
+    isUsed: false,
+    equipmentCount: 0,
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:00:00.000Z',
+  };
+}
+
+const MODELS = [modelDto('oem-1', 'Kyocera M3145'), modelDto('oem-2', 'Canon i-SENSYS')];
+
 function equipmentDto(over: Partial<OfficeEquipmentDto> = {}): OfficeEquipmentDto {
   return {
     id: 'oe-1',
@@ -60,12 +84,19 @@ function equipmentDto(over: Partial<OfficeEquipmentDto> = {}): OfficeEquipmentDt
   };
 }
 
-/** Ответ `POST /office-equipment`: сервер отдаёт карточку целиком — ею и заполняется поле. */
+/**
+ * Ответ `POST /office-equipment`: сервер отдаёт карточку целиком — ею и заполняется поле.
+ *
+ * Имя карточки берётся из модели, а не из тела запроса: с выпуска A `name` — зеркало имени
+ * модели, которое ведёт база (Р3), и форма его не шлёт вовсе.
+ */
 function createdDto(input: CreateOfficeEquipmentInput): OfficeEquipmentDto {
+  const model = MODELS.find((m) => m.id === input.modelId)!;
   return equipmentDto({
     id: 'oe-new',
     type: { id: input.equipmentTypeId, name: TYPE.name, isActive: true },
-    name: input.name,
+    model: { id: model.id, name: model.name },
+    name: model.name,
     serialNumber: input.serialNumber ?? '',
     inventoryNumber: input.inventoryNumber ?? '',
     object: { id: input.objectId, code: 'ОБ-1', name: 'ЖК Северный' },
@@ -100,6 +131,7 @@ function renderForm(user: AuthUser, over: RouteMap = {}): HttpMock {
   const http = mockHttp({
     'GET /office-equipment': () => json(list(units)),
     'GET /office-equipment-types': () => json(list([TYPE])),
+    'GET /office-equipment-models': () => json(list(MODELS)),
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
     'POST /office-equipment': ({ body }) => {
@@ -134,7 +166,10 @@ describe('«Не нашли технику?» у того, кто ведёт с�
     expect(await screen.findByText('Новая единица оргтехники')).toBeDefined();
     // Тип и объект по единственному варианту подставляет `AutoSelect`: проверяется здесь не он, а
     // то, что окно получило справочники и собирает тело запроса из полей карточки.
-    fill('Модель', 'Kyocera M3145');
+    //
+    // Модель выбирается из справочника, а не набирается словами (Р1): картридж подходит модели, и
+    // «Kyocera M3145», написанная по памяти, оставила бы аппарат без ответа на «чем заправлять».
+    await selectOption('Модель', 'Kyocera M3145');
     fill('Инвентарный номер', '0012345');
     fireEvent.click(screen.getByRole('button', { name: 'Завести и выбрать' }));
 
@@ -142,7 +177,10 @@ describe('«Не нашли технику?» у того, кто ведёт с�
     const body = http.lastCall('POST /office-equipment')?.body as CreateOfficeEquipmentInput;
     expect(body.equipmentTypeId).toBe('oet-1');
     expect(body.objectId).toBe('obj-1');
-    expect(body.name).toBe('Kyocera M3145');
+    expect(body.modelId).toBe('oem-1');
+    // Имени карточки форма не шлёт совсем: его пишет зеркало модели в базе (Р3), и второе
+    // «название» в теле означало бы два ответа на вопрос, что это за аппарат.
+    expect(body.name).toBeUndefined();
 
     // Заявка продолжается с того же места: заведённая единица стоит выбранной, и стоит подписью
     // портала («модель · инв. номер»), а не идентификатором.

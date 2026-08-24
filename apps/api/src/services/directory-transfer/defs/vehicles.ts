@@ -373,8 +373,17 @@ const vehicleSpecsDirectory = directory<VehicleSpecRow, SpecModel, SpecsEnv>({
         code: vehicleSpecs.code,
         unit: vehicleSpecs.unit,
         decimals: vehicleSpecs.decimals,
+        /*
+         * Ссылка наружу — отдельным `sql`-объектом, тем же правилом, что и в
+         * `routes/vehicle-specs.ts`, где оно объяснено полностью. Коротко: запрос односоставный
+         * (`from(vehicleSpecs)` без соединений), а список столбцов такого запроса drizzle
+         * переписывает в голые идентификаторы — без выноса сюда уходит `WHERE "spec_id" = "id"`.
+         * Считалось верно лишь потому, что у `vehicle_type_specs` нет своего `id`; появится
+         * суррогатный ключ — счётчик молча обнулится, и обмен файлом перестанет видеть, что ТТХ
+         * привязан к типам. Ответ от выноса не меняется (сверено на справочнике).
+         */
         usedInTypes: sql<number>`(
-          SELECT count(*) FROM ${vehicleTypeSpecs} WHERE ${vehicleTypeSpecs.specId} = ${vehicleSpecs.id}
+          SELECT count(*) FROM ${vehicleTypeSpecs} WHERE ${vehicleTypeSpecs.specId} = ${sql`${vehicleSpecs.id}`}
         )`,
       })
       .from(vehicleSpecs);

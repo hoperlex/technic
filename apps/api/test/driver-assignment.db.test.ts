@@ -337,10 +337,27 @@ async function newRelocationRoute(opts: {
   return { id: route!.id, displayNumber: formatVehicleRouteNumber(route!.num) };
 }
 
-/** Действующий недельный лист ЭСМ-2: неделя целиком, от понедельника (`waybills_period_check`). */
+/*
+ * ЭСМ2-РАЗРЕЗ. Лист выписывается **отрезком в два дня**, а не неделей целиком: после переключения
+ * чтения (этап 5) машинист и машина меняются внутри срока, и лист покрывает отрезок постоянного
+ * состава. Прежняя фикстура «неделя от понедельника» делала случай «день той же недели, но вне
+ * листа» физически невоспроизводимым — а задание водителя обязано гаснуть именно на нём.
+ *
+ * Отрезок держится внутри календарной недели (`waybills_period_check` этого требует и после разреза)
+ * и всегда накрывает `day`: началом берётся `day`, а у воскресенья — предыдущий день, иначе конец
+ * уехал бы в следующую неделю.
+ */
+function esm2Segment(day: string): { from: string; to: string } {
+  const start =
+    weekStartKey(day) === weekStartKey(shiftDateKey(day, 1)) ? day : shiftDateKey(day, -1);
+  return { from: start, to: shiftDateKey(start, 1) };
+}
+
+/** Действующий лист ЭСМ-2 отрезком, накрывающим `day` (`waybills_period_check` — одна неделя). */
 async function newEsm2(personId: string, day: string, vehicleId?: string): Promise<string> {
   waybillNo += 1;
-  const from = weekStartKey(day);
+  const segment = esm2Segment(day);
+  const from = segment.from;
   const [waybill] = await ctx.db
     .insert(ctx.schema.waybills)
     .values({
@@ -354,7 +371,7 @@ async function newEsm2(personId: string, day: string, vehicleId?: string): Promi
       issuedForDate: from,
       sourceRequestId: await newSpecialRequest(),
       periodFrom: from,
-      periodTo: shiftDateKey(from, 6),
+      periodTo: segment.to,
       garageNumber: GARAGE_NUMBER,
       issuedBy: ctx.adminId,
     })
@@ -678,11 +695,20 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
     });
     expect(weekly.sourceLabel).toMatch(/^ЭСМ-2 № ЗАД-/u);
 
-    // Соседний день той же недели лист накрывает тоже: его время задано периодом, а не датой.
-    const nextDay = shiftDateKey(ctx.today, 1);
-    const sameWeek = weekStartKey(nextDay) === weekStartKey(ctx.today);
-    const next = await assignment(person, nextDay);
-    expect(next.entries.map((entry) => entry.sourceId)).toEqual(sameWeek ? [esm2] : []);
+    /*
+     * Время задания задаёт **период листа**, а не дата выписки, и после разреза период — отрезок.
+     * Поэтому проверяются обе стороны его границы: день внутри отрезка накрыт, первый день за
+     * концом — уже нет, даже когда это та же календарная неделя. На недельной фикстуре второй
+     * случай было не воспроизвести вовсе.
+     */
+    const segment = esm2Segment(ctx.today);
+    const insideDay = segment.to;
+    const inside = await assignment(person, insideDay);
+    expect(inside.entries.map((entry) => entry.sourceId)).toEqual([esm2]);
+
+    const afterDay = shiftDateKey(segment.to, 1);
+    const after = await assignment(person, afterDay);
+    expect(after.entries.map((entry) => entry.sourceId)).toEqual([]);
   });
 
   it('лист 4-П своей строки не даёт: его выезд уже представлен рейсом (Р16)', async () => {

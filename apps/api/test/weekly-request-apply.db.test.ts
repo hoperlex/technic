@@ -2,6 +2,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeReadModes, inLegacy, useReadModeDatabase } from './assignment-read-mode';
 import {
   formatWeeklyRequestNumber,
   moscowDateKeyOf,
@@ -44,7 +45,11 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('weekly');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 /** Свой суффикс на прогон: файл переживает повторный запуск на той же базе. */
 const RUN = randomUUID().slice(0, 8);
@@ -262,7 +267,16 @@ async function freshObject(prefix = 'WK', bindUsers = true): Promise<string> {
  * Через настоящие ручки, а не вставкой: недельная заявка сверяется с состоянием заказа, и заказ,
  * собранный мимо маршрутов, отвечал бы на её проверки не тем, чем отвечает рабочий.
  */
-async function makeOrder(opts: {
+/*
+ * ЭСМ2-РАЗРЕЗ. Заказ заводится в сегодняшнем мире (`inLegacy`): его переводит в работу статусная
+ * ручка, а в `history` её останавливает бэкстоп (Р22). Предмет файла — проведение недельной заявки,
+ * и подготовка заказа к нему не относится.
+ */
+async function makeOrder(opts: Parameters<typeof makeOrderNow>[0]) {
+  return inLegacy(readMode, () => makeOrderNow(opts));
+}
+
+async function makeOrderNow(opts: {
   objectId: string;
   ownership?: 'own' | 'rental';
   dateFrom?: string;
@@ -638,8 +652,7 @@ async function requestEarlyEnd(order: Order): Promise<void> {
 
 describe.skipIf(!DB_URL)('недельная заявка: применение визой (живая схема)', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
 
     const { db, closeDb } = await import('../src/db/client');
     const { hashPassword } = await import('../src/auth/password');
@@ -913,7 +926,16 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
   // ── Продление: срок, версия, снимок ──
 
   describe('продление заказа', () => {
-    it('двигает срок, поднимает версию с автором и пишет снимок момента применения', async () => {
+    /*
+   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+   *
+   * Сегодня половины совпадают: проведение двигает срок заказа, а бумагу переписывает недельная сверка. На этапе 5 недельная операция начнёт резать неделю — тогда и расходятся ожидания по числу листов.
+   */
+  describeReadModes(readMode, 'проведение недельной заявки', (mode) => {
+    void mode;
+
+  it('двигает срок, поднимает версию с автором и пишет снимок момента применения', async () => {
       const objectId = await freshObject();
       const order = await makeOrder({ objectId, ownership: 'rental' });
       const weekly = await makeWeekly(ctx.admin.auth, {
@@ -989,6 +1011,8 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
   });
 
   // ── ЭСМ-2: план сверки, а не «ровно один новый лист» ──
+
+  });
 
   describe('ЭСМ-2 после продления', () => {
     it.skipIf(RUNS_ON_SUNDAY)(
@@ -2464,7 +2488,9 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       // Соседняя сессия держит шапку `FOR UPDATE` — ровно так её берёт применение. `purge`
       // встаёт на этой блокировке и обязан перечитать статус после неё, а не работать по
       // снимку, снятому до ожидания.
-      const holder = new pg.Client({ connectionString: DB_URL! });
+      // Своё соединение идёт в базу механики, а не в исходную `TEST_DATABASE_URL`: файл переведён
+      // на свою базу (ЭСМ2-РАЗРЕЗ), и в прежней его таблиц просто нет.
+      const holder = new pg.Client({ connectionString: readMode.url });
       await holder.connect();
       let purgeRes: Awaited<ReturnType<typeof inject>>;
       try {

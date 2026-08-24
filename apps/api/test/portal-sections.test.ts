@@ -306,19 +306,29 @@ describe('совместимость с сегодняшним homePath', () => 
     }
     expect(changed).toEqual([
       'directories.export + officeEquipment.write: /admin → /directories',
+      'directories.export + officeEquipmentConsumables.manage: /admin → /directories',
+      'directories.export + officeEquipmentConsumables.stock: /admin → /directories',
       'officeEquipment.write + users.manage: /admin → /directories',
       'officeEquipment.write + mailings.read: /admin → /directories',
       'officeEquipment.write + manuals.manage: /admin → /directories',
+      'officeEquipmentConsumables.manage + users.manage: /admin → /directories',
+      'officeEquipmentConsumables.manage + mailings.read: /admin → /directories',
+      'officeEquipmentConsumables.manage + manuals.manage: /admin → /directories',
+      'officeEquipmentConsumables.stock + users.manage: /admin → /directories',
+      'officeEquipmentConsumables.stock + mailings.read: /admin → /directories',
+      'officeEquipmentConsumables.stock + manuals.manage: /admin → /directories',
     ]);
   });
 
   /**
    * Обратная сторона того же сличения: наборы, доводившие перебор до смены пароля, — это ровно те,
    * кого волна и чинит. Разделов, которыми она лечит, ровно два, и оба — то, чего `homePath` не
-   * спрашивал вовсе: модуль «Орг.техника» целиком (ADR 0085) и второе право справочников
-   * (`officeEquipment.write`, Р7). Третьего взяться неоткуда: остальные строки перебора реестр
-   * повторяет слово в слово, и появись здесь чужой раздел — разошлись бы права раздела с правами
-   * его гейта.
+   * спрашивал вовсе: модуль «Орг.техника» целиком (ADR 0085) и справочники, открытые не общим
+   * `directories.write`, а узкими правами оргтехники (Р7). Узких прав теперь три: `officeEquipment.write`
+   * и два права номенклатуры расходников — ими ведут картриджи и правят остаток, а живёт этот
+   * справочник окном из той же вкладки, поэтому дверь в раздел им нужна такая же. Четвёртого взяться
+   * неоткуда: остальные строки перебора реестр повторяет слово в слово, и появись здесь чужой
+   * раздел — разошлись бы права раздела с правами его гейта.
    */
   it('на смену пароля уводили держатели оргтехники — их и лечит реестр', () => {
     const healed = PERMISSION_COMBOS.filter((combo) => {
@@ -333,10 +343,21 @@ describe('совместимость с сегодняшним homePath', () => 
     const sections = new Set<string>();
     for (const combo of healed) {
       const section = startSection(accessOfPermissions(combo, roleForCombo(combo)));
-      // Справочники здесь достаются только держателю второго права: первое `homePath` знает, и до
-      // смены пароля с ним перебор не доходил.
+      // Справочники здесь достаются только держателю узкого права: общий `directories.write`
+      // `homePath` знает, и до смены пароля с ним перебор не доходил.
       if (section?.id === 'directories')
-        expect(combo, combo.join(' + ')).toContain('officeEquipment.write');
+        expect(
+          combo.some((permission) =>
+            (
+              [
+                'officeEquipment.write',
+                'officeEquipmentConsumables.manage',
+                'officeEquipmentConsumables.stock',
+              ] as string[]
+            ).includes(permission),
+          ),
+          combo.join(' + '),
+        ).toBe(true);
       sections.add(section?.id ?? 'нет раздела');
     }
     expect([...sections].sort()).toEqual(['directories', 'office-equipment']);

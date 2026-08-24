@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeReadModes, inLegacy, useReadModeDatabase } from './assignment-read-mode';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -28,7 +29,11 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается: обычный прогон тестов базы не требует.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('linsw');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 const ADMIN_EMAIL = 'db-linear-switch-admin@example.invalid';
 const PASSWORD = 'db-test-password-123';
@@ -260,7 +265,16 @@ interface WorkingRequest {
  * который кладёт строку напрямую. Здесь это принципиально: заморозка снимается транзакцией смены
  * статуса, и проверять её на заявке, никогда через эту транзакцию не проходившей, нечестно.
  */
+/*
+ * ЭСМ2-РАЗРЕЗ. Заказ переводится в работу в сегодняшнем мире (`inLegacy`): в `history` статусная
+ * ручка упирается в бэкстоп (Р22), а предмет файла — заморозка работающих заказов при переключении
+ * линейности, не она.
+ */
 async function requestInProgress(typeId: string): Promise<WorkingRequest> {
+  return inLegacy(readMode, () => requestInProgressNow(typeId));
+}
+
+async function requestInProgressNow(typeId: string): Promise<WorkingRequest> {
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-requests',
@@ -389,8 +403,7 @@ async function lastAudit(
 
 describe.skipIf(!DB_URL)('переключение признака линейности под работающими заказами', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
     const adminId = await seedAdmin();
 
     const { buildApp } = await import('../src/app');
@@ -488,6 +501,15 @@ describe.skipIf(!DB_URL)('переключение признака линейн
     await ctx?.app.close();
     await ctx?.closeDb();
   });
+
+  /*
+   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+   *
+   * Сегодня половины совпадают: заморозка считает работающие заказы и их листы, а нарезка бумаги на счёт не влияет. На этапе 5 число листов у заказа может вырасти, и счётчик операции придётся пересчитать.
+   */
+  describeReadModes(readMode, 'переключение линейности', (mode) => {
+    void mode;
 
   it('переключение морозит работающие заказы и отвечает номерами этой операции', async () => {
     const type = await createType();
@@ -1039,7 +1061,9 @@ describe.skipIf(!DB_URL)('переключение признака линейн
      * режим из `before`-DTO и ушёл бы в работу недельным, хотя признак к моменту записи уже
      * дневной.
      */
-    const holder = new pg.Client({ connectionString: DB_URL });
+    // Своё соединение — в базу механики: файл переведён на свою (ЭСМ2-РАЗРЕЗ), и в исходной
+    // `TEST_DATABASE_URL` его таблиц нет.
+    const holder = new pg.Client({ connectionString: readMode.url });
     await holder.connect();
     let confirming: ReturnType<typeof ctx.app.inject>;
     try {
@@ -1125,5 +1149,6 @@ describe.skipIf(!DB_URL)('переключение признака линейн
     // Мягкое удаление статуса не меняет: восстановление обязано вернуть заявку такой, какой её
     // спрятали, — иначе она вернулась бы в работу в другом режиме и молча.
     expect((await frozenOf(archived.id)).isLinear).toBe(false);
+  });
   });
 });

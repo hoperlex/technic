@@ -23,10 +23,17 @@ import { errorMessage } from '../../utils/format';
 
 /**
  * Какие виды документов заявка принимает в этом статусе (§8.3). Портал не решает — решает
- * сервер; здесь этот же перечень, чтобы человек не выбирал вид, на котором получит отказ.
+ * сервер; здесь этот же перечень (`FILE_KIND_STATUSES`), чтобы человек не выбирал вид, на котором
+ * получит отказ.
  *
  * Правило одной строкой: до терминального статуса файлы живут обычной жизнью; после него заявка
  * принимает бумаги и ничего не отдаёт (Р16, Р29) — акт и счёт присылают и через неделю.
+ *
+ * Смета и гарантийный талон принимаются и в «В работе» (план §7.3). У сметы это следствие Н2:
+ * предъявляют её оттуда, значит и файл кладут оттуда же. У талона — следствие Н8: закрывающим
+ * документом он считается, а без закрывающего документа сервисный ремонт в «Решена» не уходит, —
+ * разреши мы талон только после неё, заявка, чья единственная бумага гарантийная, не закрылась бы
+ * вовсе.
  */
 function attachableKinds(status: ServiceRequestStatus): ServiceFileKind[] {
   const closed = isServiceRequestClosed(status);
@@ -36,12 +43,12 @@ function attachableKinds(status: ServiceRequestStatus): ServiceFileKind[] {
       case 'attachment':
         return !closed;
       case 'estimate':
-        return status === 'diagnostics' || status === 'estimate_review';
+        // `diagnostics` — legacy: снимается выпуском 2, пока такие заявки ещё стоят в базе.
+        return status === 'in_work' || status === 'diagnostics' || status === 'estimate_review';
       case 'act':
       case 'invoice':
-        return afterWork;
       case 'warranty_card':
-        return status === 'done' || closed;
+        return afterWork;
     }
   });
 }
@@ -97,7 +104,7 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
           type="warning"
           showIcon
           message={SERVICE_CLOSING_DOCUMENT_HINT}
-          description="Пока нет ни одного, заявка стоит в очереди «Ожидаются документы»: принять работу без закрывающего документа сервер не даст."
+          description="Пока нет ни одного, заявка стоит в очереди «Ожидаются документы»: работу сервисной компании без закрывающего документа не закрыть, и портал такую заявку не закроет сам — сутки на возражение отсчитываются от подшитой бумаги."
         />
       )}
 

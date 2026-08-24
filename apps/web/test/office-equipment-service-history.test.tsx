@@ -72,7 +72,8 @@ describe('история обслуживания в карточке едини
     );
 
     expect(await screen.findByText('СО-14')).toBeDefined();
-    expect(screen.getByText('Принята')).toBeDefined();
+    // «Принята» → «Закрыта» (Н2): единый словарь статусов на оба вида заявок.
+    expect(screen.getByText('Закрыта')).toBeDefined();
     expect(screen.getByText('ООО «Сервис-Про»')).toBeDefined();
     expect(screen.getByText('Замена узла подачи')).toBeDefined();
   });

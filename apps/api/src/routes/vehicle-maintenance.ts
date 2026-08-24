@@ -7,6 +7,7 @@ import {
   maintenanceSummaryQuerySchema,
   maintenanceUpdateSchema,
   maintenanceVersionQuerySchema,
+  maintenanceVoidSchema,
   moscowDateKeyOf,
   uuidSchema,
   type VehicleMaintenanceDto,
@@ -21,6 +22,7 @@ import {
   loadMaintenanceSnapshot,
   loadMaintenanceSummary,
   updateMaintenance,
+  voidMaintenance,
 } from '../services/vehicle-maintenance';
 
 /**
@@ -41,6 +43,21 @@ import {
  *
  * Области видимости у ручек нет: парк у портала один, и обе роли службы механика смотрят его
  * целиком — своей оси области у них не заведено (`ACCESS_PROFILES`).
+ *
+ * **Второе право у трёх пишущих ручек — условное и по ЭФФЕКТУ** (план автозапчастей, Р19). Страж
+ * маршрута объявляет `vehicleMaintenance.write` — это базовая половина, и она же стоит в манифесте
+ * доступа. Движение склада автозапчастей требует сверх неё `autoParts.stock`, и спрашивается оно
+ * не по полю тела, а по фактической разнице строк расхода под блокировкой: `assertCan` живёт в
+ * `syncParts` сервиса, потому что до чтения текущих строк разницы ещё не существует.
+ *
+ * Из этого следует то, ради чего условие и заведено: PATCH, приславший те же самые строки, склад не
+ * двигает и второго права не требует — иначе диспетчер, у которого `vehicleMaintenance.write` есть,
+ * а `autoParts.stock` нет, не смог бы исправить опечатку в номере документа у акта с расходом. И
+ * наоборот: у аннулирования полей про запчасти в теле нет вовсе, а движение будет — сразу по всем
+ * строкам, — и право спрашивается по их наличию. Выразить это `conditionalPermissions` манифеста
+ * нечем: тот спрашивает право по полю запроса. Манифест называет такое условие своим видом —
+ * `effectConditionalPermissions`, — а доказывают условную половину db-тесты, а не структурная
+ * сверка «манифест ↔ факт»: телом её не выразить по построению.
  */
 
 /** `:id` — машина: сводка и история адресуются техникой, а не записью ТО. */
@@ -130,15 +147,21 @@ export default async function vehicleMaintenanceRoutes(app: FastifyInstance): Pr
   );
 
   /**
-   * Завести запись ТО. Машина — в адресе, и в теле её нет: два места, где названа одна и та же
-   * машина, — это возможность их рассогласовать.
+   * Завести запись ТО — вместе со строками расхода автозапчастей (Р5). Машина — в адресе, и в теле
+   * её нет: два места, где названа одна и та же машина, — это возможность их рассогласовать.
+   *
+   * Отсутствие `parts` в теле у **этой** ручки означает пустой набор: у нового акта строк ещё нет,
+   * снимать нечего. У правки то же отсутствие означает противоположное (Р18) — см. ниже.
+   *
+   * Принципал уходит в сервис целиком, а не одним идентификатором: `autoParts.stock` спрашивается
+   * по фактической разнице строк, то есть уже под блокировкой позиций внутри транзакции.
    */
   r.post(
     '/vehicles/:id',
     { ...write, schema: { params: vehicleParams, body: maintenanceInputSchema } },
     async (req, reply): Promise<VehicleMaintenanceDto> => {
       const p = requirePrincipal(req);
-      const created = await createMaintenance(req.params.id, req.body, p.id);
+      const created = await createMaintenance(req.params.id, req.body, p);
       reply.code(201);
       return created;
     },
@@ -148,6 +171,14 @@ export default async function vehicleMaintenanceRoutes(app: FastifyInstance): Pr
    * Правка записи. Версия обязательна (Р30): правка в середине истории меняет интервалы соседних
    * записей, и два механика не должны молча переписывать её друг у друга — разошедшаяся версия
    * означает, что правили другое. Отказ по ней — 409 из сервиса, где запись взята под блокировку.
+   *
+   * **`parts` здесь необязателен, и отсутствие поля означает «строки не менять»** (Р18): схема
+   * правки переобъявляет его без умолчания, сервис получает `undefined` и до склада не доходит
+   * вовсе. Снять все строки можно только явным `parts: []`. Правило постоянное, а не окно
+   * совместимости: старая вкладка портала, открытая до выката, шлёт PATCH без нового поля — и
+   * унаследованное умолчание `[]` вернуло бы на склад весь расход акта молча.
+   *
+   * Аннулированный акт правку отбивает 409 (Р6): исправление — новый акт.
    */
   r.patch(
     '/:id',
@@ -155,7 +186,28 @@ export default async function vehicleMaintenanceRoutes(app: FastifyInstance): Pr
     async (req): Promise<VehicleMaintenanceDto> => {
       const p = requirePrincipal(req);
       const { version, ...input } = req.body;
-      return updateMaintenance(req.params.id, input, version, p.id);
+      return updateMaintenance(req.params.id, input, version, p);
+    },
+  );
+
+  /**
+   * Аннулировать акт — с версией и причиной (Р6).
+   *
+   * Ручка заведена ради РАСЧЁТА, а не ради интерфейса: акт, по которому прошло движение склада,
+   * удалить нельзя (`RESTRICT` журнала), и оставленный пустым он остался бы последним
+   * обслуживанием машины — «пробег с ТО» считался бы от ложного якоря, и машина, которую пора
+   * обслуживать, показывала бы «в норме».
+   *
+   * Одной транзакцией: строки снимаются с возвратом на склад, ставятся три поля аннулирования,
+   * пишется аудит. Второе право (`autoParts.stock`) спрашивается, если строки есть, — аннулирование
+   * акта без расхода это обычная правка документа. Повторное аннулирование — 409.
+   */
+  r.post(
+    '/:id/void',
+    { ...write, schema: { params: maintenanceParams, body: maintenanceVoidSchema } },
+    async (req): Promise<VehicleMaintenanceDto> => {
+      const p = requirePrincipal(req);
+      return voidMaintenance(req.params.id, req.body, p);
     },
   );
 
@@ -164,13 +216,18 @@ export default async function vehicleMaintenanceRoutes(app: FastifyInstance): Pr
    * ошибочно заведённую строку иначе не убрать (уникальности по «машина + дата» у таблицы нет
    * именно поэтому). Версия приходит в адресе: тела у DELETE нет, а удалять чужую правку вслепую
    * нельзя — правило то же, что у правки (Р30).
+   *
+   * **Акт, по которому прошёл расход автозапчастей, не удаляется** (Р6) — 409 словами про
+   * автозапчасти и про выход (аннулирование), а не именем ограничения. Портал знает это заранее по
+   * `hasPartMovements` DTO и показывает «Аннулировать» вместо «Удалить», а не узнаёт правило из
+   * отказа после нажатия.
    */
   r.delete(
     '/:id',
     { ...write, schema: { params: maintenanceParams, querystring: maintenanceVersionQuerySchema } },
     async (req): Promise<{ ok: true }> => {
       const p = requirePrincipal(req);
-      await deleteMaintenance(req.params.id, req.query.version, p.id);
+      await deleteMaintenance(req.params.id, req.query.version, p);
       return { ok: true };
     },
   );

@@ -64,14 +64,25 @@ const RECORD: VehicleMaintenanceDto = {
   createdByName: 'Механиков М. М.',
   updatedAt: '2026-08-10T07:00:00.000Z',
   updatedByName: '',
+  // Акт действующий: три поля аннулирования — одно состояние, и пустые они ровно вместе (Р6).
+  voidedAt: null,
+  voidedByName: '',
+  voidReason: '',
+  // Строки расхода и признак движений — полный DTO акта (Р23): его отдают история, форма и
+  // карточка, тогда как сводка получает краткий, без строк.
+  parts: [],
+  hasPartMovements: false,
 };
+
+const { parts: _parts, hasPartMovements: _moved, ...recordWithoutParts } = RECORD;
 
 const summaryOf = (vehicleId: string): VehicleMaintenanceSummaryDto => ({
   vehicleId,
   vehicleLabel: 'Экскаватор JCB, А123БВ777',
   maintenanceBasis: 'odometer',
   lastOdometer: { km: 136_740, measuredOn: '2026-08-12' },
-  lastMaintenance: { ...RECORD, vehicleId },
+  // Краткий акт (Р23): строк и признака движений в сводке нет — она приходит пакетом на страницу.
+  lastMaintenance: { ...recordWithoutParts, vehicleId },
   kmSince: 8_340,
   chainBroken: false,
   lowerBound: false,
@@ -171,23 +182,44 @@ vi.mock('../src/services/vehicle-maintenance', async (importOriginal) => {
     createMaintenance: async (
       vehicleId: string,
       input: unknown,
-      actorUserId: string,
+      actor: { id: string },
     ): Promise<VehicleMaintenanceDto> => {
-      note('createMaintenance', vehicleId, input, actorUserId);
+      note('createMaintenance', vehicleId, input, actor.id);
       return { ...RECORD, vehicleId, version: 0 };
     },
     updateMaintenance: async (
       id: string,
       input: unknown,
       version: number,
-      actorUserId: string,
+      actor: { id: string },
     ): Promise<VehicleMaintenanceDto> => {
-      note('updateMaintenance', id, input, version, actorUserId);
+      note('updateMaintenance', id, input, version, actor.id);
       if (version !== CURRENT_VERSION) throw err.conflict();
       return { ...RECORD, id, version: version + 1, updatedByName: 'Механиков М. М.' };
     },
-    deleteMaintenance: async (id: string, version: number, actorUserId: string): Promise<void> => {
-      note('deleteMaintenance', id, version, actorUserId);
+    voidMaintenance: async (
+      id: string,
+      input: { version: number; reason: string },
+      actor: { id: string },
+    ): Promise<VehicleMaintenanceDto> => {
+      note('voidMaintenance', id, input, actor.id);
+      if (input.version !== CURRENT_VERSION) throw err.conflict();
+      return {
+        ...RECORD,
+        id,
+        version: input.version + 1,
+        voidedAt: '2026-08-12T09:00:00.000Z',
+        voidedByName: 'Механиков М. М.',
+        voidReason: input.reason,
+        parts: [],
+      };
+    },
+    deleteMaintenance: async (
+      id: string,
+      version: number,
+      actor: { id: string },
+    ): Promise<void> => {
+      note('deleteMaintenance', id, version, actor.id);
       if (version !== CURRENT_VERSION) throw err.conflict();
     },
   };
@@ -410,6 +442,8 @@ describe('ведение записи ТО', () => {
           documentNumber: 'АКТ-17',
           note: 'Замена масла',
           fileIds: [FILE_ID],
+          // Умолчание схемы ЗАВЕДЕНИЯ: строк у нового акта ещё нет (Р18).
+          parts: [],
         },
         'user-1',
       ],
@@ -429,6 +463,7 @@ describe('ведение записи ТО', () => {
       documentNumber: '',
       note: '',
       fileIds: [],
+      parts: [],
     });
   });
 
@@ -473,6 +508,8 @@ describe('ведение записи ТО', () => {
     const { fn, args } = lastCall()!;
     expect(fn).toBe('updateMaintenance');
     expect(args[0]).toBe(MAINTENANCE_ID);
+    // `parts` в теле не было — и в сервис оно не подставляется: отсутствие поля у ПРАВКИ означает
+    // «строки не менять» (Р18), а пустой массив означал бы «снять все».
     expect(args[1]).toEqual({
       performedOn: '2026-08-11',
       odometerKm: 128_500,
@@ -504,6 +541,60 @@ describe('ведение записи ТО', () => {
     const body = res.json<{ code: string; message: string }>();
     expect(body.code).toBe('version_conflict');
     expect(body.message).toMatch(/обновите данные/i);
+  });
+
+  /**
+   * Аннулирование (план автозапчастей, Р6). Ручка заведена ради РАСЧЁТА: акт с движением склада
+   * удалить нельзя, а оставленный пустым он остался бы последним обслуживанием машины — «пробег с
+   * ТО» считался бы от ложного якоря. Здесь проверяется ручка: причина обязательна, версия уходит
+   * в сервис, а состояние приходит в ответе.
+   */
+  it('аннулирование идёт с версией и причиной', async () => {
+    const res = await call('POST', `/${MAINTENANCE_ID}/void`, {
+      payload: { version: CURRENT_VERSION, reason: 'Ошибочно заведён на другую машину' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json<VehicleMaintenanceDto>();
+    expect(body.voidedAt).not.toBeNull();
+    expect(body.voidReason).toBe('Ошибочно заведён на другую машину');
+    expect(lastCall()).toEqual({
+      fn: 'voidMaintenance',
+      args: [
+        MAINTENANCE_ID,
+        { version: CURRENT_VERSION, reason: 'Ошибочно заведён на другую машину' },
+        'user-1',
+      ],
+    });
+  });
+
+  /** Причина обязательна: «аннулировали и не сказали зачем» — документ, который нечем прочитать. */
+  it('аннулирование без причины — 400 и ни одного обращения к сервису', async () => {
+    const before = state.calls.length;
+    const res = await call('POST', `/${MAINTENANCE_ID}/void`, {
+      payload: { version: CURRENT_VERSION },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(state.calls.length).toBe(before);
+  });
+
+  it('аннулирование с устаревшей версией — 409', async () => {
+    const res = await call('POST', `/${MAINTENANCE_ID}/void`, {
+      payload: { version: STALE_VERSION, reason: 'Ошибка ввода' },
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('аннулирование без права vehicleMaintenance.write — 403', async () => {
+    const before = state.calls.length;
+    const res = await call('POST', `/${MAINTENANCE_ID}/void`, {
+      role: 'observer',
+      payload: { version: CURRENT_VERSION, reason: 'Ошибка ввода' },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(state.calls.length).toBe(before);
   });
 
   it('удаление идёт с версией из адреса', async () => {

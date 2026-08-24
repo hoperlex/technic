@@ -11,6 +11,7 @@ import {
 import { db } from '../db/client';
 import { officeEquipment, officeEquipmentTypes, type OfficeEquipmentTypeRow } from '../db/schema';
 import { err } from '../lib/errors';
+import { pgErrorOf } from '../lib/pg-error';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
@@ -44,9 +45,34 @@ function toDto(r: OfficeEquipmentTypeRow): OfficeEquipmentTypeDto {
 }
 
 /**
+ * Один текст и одна пометка поля на обе двери отказа — проверку до записи и разбор `23505` из
+ * гонки: человеку всё равно, какая из них сработала, а форме нужно знать, какое поле подсветить
+ * (ADR 0094).
+ */
+const CODE_TAKEN = 'Тип с таким кодом уже существует';
+const CODE_TAKEN_FIELDS = { code: 'Такой код уже занят' };
+
+/**
+ * Гонка двух заведений одного кода доходит до уникального индекса: чужая незакоммиченная строка
+ * проверке ниже не видна, обе транзакции её проходят, и вторая падает на `23505`. Без разбора это
+ * 500 — «внутренняя ошибка» там, где человеку нужно то же слово, что и при обычном дубле.
+ *
+ * Опознаётся кодом и именем ограничения, а не текстом сообщения: текст зависит от версии и локали
+ * сервера, а имя индекса задано схемой. Через `pgErrorOf`, потому что drizzle оборачивает ошибку
+ * драйвера в свою и на верхнем объекте кода уже нет — прямая проверка молчала бы.
+ */
+function asTypeCodeConflict(e: unknown): unknown {
+  const pg = pgErrorOf(e);
+  if (pg?.code === '23505' && pg.constraint === 'office_equipment_types_code_unique') {
+    return err.conflict(CODE_TAKEN, { fields: CODE_TAKEN_FIELDS });
+  }
+  return e;
+}
+
+/**
  * Код уникален. Проверяем до вставки, хотя уникальный индекс держит то же самое: нарушение
  * ограничения превратилось бы в 500 с текстом про индекс, а человеку нужно знать, что такой тип уже
- * заведён.
+ * заведён. Щель между этой проверкой и записью закрывает `asTypeCodeConflict` выше.
  */
 async function assertCodeFree(code: string, exceptId?: string): Promise<void> {
   const dup = await db
@@ -58,7 +84,7 @@ async function assertCodeFree(code: string, exceptId?: string): Promise<void> {
         exceptId ? ne(officeEquipmentTypes.id, exceptId) : undefined,
       ),
     );
-  if (dup.length > 0) throw err.conflict('Тип с таким кодом уже существует');
+  if (dup.length > 0) throw err.conflict(CODE_TAKEN, { fields: CODE_TAKEN_FIELDS });
 }
 
 export default async function officeEquipmentTypesRoutes(app: FastifyInstance): Promise<void> {
@@ -116,7 +142,14 @@ export default async function officeEquipmentTypesRoutes(app: FastifyInstance): 
     async (req, reply) => {
       const p = requirePrincipal(req);
       await assertCodeFree(req.body.code);
-      const [created] = await db.insert(officeEquipmentTypes).values(req.body).returning();
+      const [created] = await db
+        .insert(officeEquipmentTypes)
+        .values(req.body)
+        .returning()
+        // Гонка с соседним заведением приходит сюда нарушением индекса — и уходит тем же 409.
+        .catch((e: unknown) => {
+          throw asTypeCodeConflict(e);
+        });
       await writeAudit({
         actorUserId: p.id,
         action: 'officeEquipmentType.create',
@@ -145,7 +178,12 @@ export default async function officeEquipmentTypesRoutes(app: FastifyInstance): 
         .update(officeEquipmentTypes)
         .set({ ...req.body, updatedAt: new Date() })
         .where(eq(officeEquipmentTypes.id, id))
-        .returning();
+        .returning()
+        // Вторая такая же дверь: правка кода на занятый соседом упирается в тот же индекс, и
+        // проверка выше эту щель не закрывает — чужая незакоммиченная строка ей не видна.
+        .catch((e: unknown) => {
+          throw asTypeCodeConflict(e);
+        });
       if (!updated) throw err.notFound('Тип оргтехники не найден');
       await writeAudit({
         actorUserId: p.id,

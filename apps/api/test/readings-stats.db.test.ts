@@ -1,6 +1,6 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   moscowDateKeyOf,
@@ -269,10 +269,24 @@ async function newRoute(
   return route!.id;
 }
 
-/** Действующий недельный лист ЭСМ-2, накрывающий день: неделя целиком, от понедельника. */
-async function newEsm2(vehicleId: string, personId: string, date: string): Promise<string> {
+/*
+ * ЭСМ2-РАЗРЕЗ. Лист умеет быть **отрезком**, а не только неделей: после переключения чтения (этап 5)
+ * состав меняется внутри срока, и неделя разрезается на два листа. Умолчание оставлено недельным —
+ * прочие случаи файла проверяют не разрез, и переписывать их значило бы менять их предмет, — а
+ * случаи разреза передают границы явно.
+ *
+ * Проверено здесь: ожидаемые смены считаются **днями действия листа** (`period_from…period_to`), и
+ * это верно для любой его длины. От семидневности не зависит ничего — семёрка была следствием
+ * недельной фикстуры, а не правилом.
+ */
+async function newEsm2(
+  vehicleId: string,
+  personId: string,
+  date: string,
+  span?: { from: string; to: string },
+): Promise<string> {
   waybillNo += 1;
-  const from = weekStartKey(date);
+  const from = span ? span.from : weekStartKey(date);
   const [waybill] = await ctx.db
     .insert(ctx.schema.waybills)
     .values({
@@ -286,11 +300,32 @@ async function newEsm2(vehicleId: string, personId: string, date: string): Promi
       issuedForDate: from,
       sourceRequestId: await newRequest(),
       periodFrom: from,
-      periodTo: shiftDateKey(from, 6),
+      periodTo: span ? span.to : shiftDateKey(from, 6),
       issuedBy: ctx.adminId,
     })
     .returning({ id: ctx.schema.waybills.id });
   return waybill!.id;
+}
+
+/**
+ * Границы действующего листа машины — из базы, а не из арифметики теста (ЭСМ2-РАЗРЕЗ). Именно они
+ * задают перечень ожидаемых смен, какой бы длины лист ни был.
+ */
+async function esm2Span(vehicleId: string): Promise<{ from: string; to: string }> {
+  const [row] = await ctx.db
+    .select({ from: ctx.schema.waybills.periodFrom, to: ctx.schema.waybills.periodTo })
+    .from(ctx.schema.waybills)
+    .where(
+      and(
+        eq(ctx.schema.waybills.vehicleId, vehicleId),
+        eq(ctx.schema.waybills.formCode, 'esm2'),
+        ne(ctx.schema.waybills.status, 'cancelled'),
+      ),
+    )
+    .orderBy(ctx.schema.waybills.periodFrom)
+    .limit(1);
+  if (!row?.from || !row.to) throw new Error('лист ЭСМ-2 не найден: сцена собрана неверно');
+  return { from: row.from, to: row.to };
 }
 
 /** Числа показания: поля с умолчаниями схема заполняет сама, а сервис зовётся уже разобранным телом. */
@@ -710,14 +745,18 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       const from = weekStartKey(day(5));
       await newEsm2(vehicle, person, day(5));
 
-      // Смены считаются днями действия документа, а не выездами (Р34): в неделю с простоями
-      // ожидаемых смен всё равно семь.
-      for (let i = 0; i < 7; i += 1) {
-        expect(await isPending(shiftDateKey(from, i), vehicle), `день ${i} недели`).toBe(true);
+      /*
+       * Смены считаются днями действия документа, а не выездами (Р34), и перечень дней берётся из
+       * самого листа, а не из семёрки: после разреза длина листа — любая, и цикл «от нуля до семи»
+       * доказывал бы семидневность, которой нет. Границы читаются из базы.
+       */
+      const span = await esm2Span(vehicle);
+      for (let cursor = span.from; cursor <= span.to; cursor = shiftDateKey(cursor, 1)) {
+        expect(await isPending(cursor, vehicle), `день ${cursor} листа`).toBe(true);
       }
       // Границы строгие с обеих сторон: до листа и после него ждать нечего.
-      expect(await isPending(shiftDateKey(from, -1), vehicle)).toBe(false);
-      expect(await isPending(shiftDateKey(from, 7), vehicle)).toBe(false);
+      expect(await isPending(shiftDateKey(span.from, -1), vehicle)).toBe(false);
+      expect(await isPending(shiftDateKey(span.to, 1), vehicle)).toBe(false);
 
       // Сданный день закрывается сам по себе, а не вся неделя: ключ у смены — лист и день
       // (`report_items_waybill_key`).
@@ -727,6 +766,46 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       await submit(person, closed, [line(opened.items[0]!.id, values({ engineHours: 12.5 }))]);
       expect(await isPending(closed, vehicle)).toBe(false);
       expect(await isPending(shiftDateKey(from, 3), vehicle)).toBe(true);
+    });
+
+    /*
+     * ЭСМ2-РАЗРЕЗ. Разрезанная неделя: два листа одной машины, стык день-в-день. Ожидания обязаны
+     * резаться **по границе отрезка**, а не по неделе, и день стыка принадлежать второму листу —
+     * иначе смена окажется приписана бумаге, в которой этого дня нет.
+     *
+     * До разреза такого состояния не бывало: неделя была одним листом, и «границы строгие с обеих
+     * сторон» проверялось только на её краях.
+     */
+    it('разрезанная неделя: ожидания режутся по границе отрезка, а не по неделе', async () => {
+      const person = await newPerson('Разрезанный');
+      const vehicle = await newVehicle();
+      // День в прошлом: показания снимают с прибора, и окно записи будущего не пускает.
+      const monday = weekStartKey(day(12));
+      const split = shiftDateKey(monday, 3); // четверг — первый день второго отрезка
+      await newEsm2(vehicle, person, monday, { from: monday, to: shiftDateKey(monday, 2) });
+      await newEsm2(vehicle, person, split, { from: split, to: shiftDateKey(monday, 6) });
+
+      // Оба отрезка ждут своих дней: разрез не отменяет ожиданий, он их делит.
+      for (
+        let cursor = monday;
+        cursor <= shiftDateKey(monday, 6);
+        cursor = shiftDateKey(cursor, 1)
+      ) {
+        expect(await isPending(cursor, vehicle), `день ${cursor} разрезанной недели`).toBe(true);
+      }
+      expect(await isPending(shiftDateKey(monday, -1), vehicle)).toBe(false);
+      expect(await isPending(shiftDateKey(monday, 7), vehicle)).toBe(false);
+
+      /*
+       * Смена дня стыка привязана ко **второму** листу. Проверяется не номером, а поведением:
+       * закрытие этого дня гасит ожидание ровно на нём, а последний день первого отрезка остаётся
+       * ждать — если бы день стыка попал в первый лист, погасло бы не то.
+       */
+      const opened = await report(person, split);
+      expect(opened.items).toHaveLength(1);
+      await submit(person, split, [line(opened.items[0]!.id, values({ engineHours: 20 }))]);
+      expect(await isPending(split, vehicle)).toBe(false);
+      expect(await isPending(shiftDateKey(monday, 2), vehicle)).toBe(true);
     });
 
     it('фильтр и колонка считают один день: две смены гаснут по одной', async () => {

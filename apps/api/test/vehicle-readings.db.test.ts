@@ -204,10 +204,23 @@ async function newRoute(
   return route!.id;
 }
 
-/** Действующий недельный лист ЭСМ-2, накрывающий день: неделя целиком, от понедельника. */
-async function newEsm2(vehicleId: string, personId: string, day: string): Promise<string> {
+/*
+ * ЭСМ2-РАЗРЕЗ. Лист умеет быть **отрезком**: после переключения чтения (этап 5) состав меняется
+ * внутри срока, и соседние дни принадлежат разным листам. Умолчание недельное — прочие случаи файла
+ * проверяют не разрез, — а случаи разреза передают границы явно.
+ *
+ * Проверено здесь: ряд показаний машины (`previous_odometer_id`, `previous_engine_hours_id`)
+ * непрерывен **через границу листов**. От разреза он не зависит вовсе — цепочка привязана к машине
+ * и дате, а не к бумаге: точка ключа `report_items_chain_key` это машина, день и позиция смены.
+ */
+async function newEsm2(
+  vehicleId: string,
+  personId: string,
+  day: string,
+  span?: { from: string; to: string },
+): Promise<string> {
   waybillNo += 1;
-  const from = weekStartKey(day);
+  const from = span ? span.from : weekStartKey(day);
   const [waybill] = await ctx.db
     .insert(ctx.schema.waybills)
     .values({
@@ -221,7 +234,7 @@ async function newEsm2(vehicleId: string, personId: string, day: string): Promis
       issuedForDate: from,
       sourceRequestId: await newRequest(),
       periodFrom: from,
-      periodTo: shiftDateKey(from, 6),
+      periodTo: span ? span.to : shiftDateKey(from, 6),
       issuedBy: ctx.adminId,
     })
     .returning({ id: ctx.schema.waybills.id });
@@ -546,6 +559,72 @@ describe.skipIf(!DB_URL)('показания техники: отчёт дня �
     // У строки без одометра ряда одометра нет вовсе — она его и не разрывает.
     expect(hoursRow.previousOdometerId).toBeNull();
     expect(hoursRow.previousEngineHoursId).toBe(startRow.id);
+  });
+
+  /*
+   * ЭСМ2-РАЗРЕЗ. Смена состава внутри недели: два листа со стыком день-в-день. Ряд показаний машины
+   * обязан пройти **сквозь** границу листов — счётчик стоит на машине, а не на бумаге, и разрыв
+   * ряда на стыке сделал бы первое показание нового листа «началом ряда», то есть скрыл бы любой
+   * пробег между ними.
+   *
+   * До разреза случай был невоспроизводим: соседние дни принадлежали одному листу, и цепочка ни
+   * разу не пересекала смену бумаги.
+   */
+  it('разрезанная неделя: ряд показаний идёт сквозь границу листов', async () => {
+    /*
+     * Своя машина и свой человек: ряд показаний общий на машину, и взять чужую значило бы дописать
+     * в её ряд свои числа — соседний случай про порог второй смены увидел бы сброс счётчика.
+     */
+    const vehicle = await newVehicle();
+    const person = await newPerson('Стыковой');
+    const first = shiftDateKey(ctx.today, -2);
+    const second = shiftDateKey(ctx.today, -1);
+    // Стык день-в-день: вчерашний лист кончился позавчера, сегодняшний начался вчера.
+    await newEsm2(vehicle, person, first, { from: first, to: first });
+    await newEsm2(vehicle, person, second, { from: second, to: second });
+
+    const day1 = await ctx.service.openReport(person, first, ctx.adminId);
+    const sent1 = await ctx.service.submitReport(
+      person,
+      first,
+      {
+        version: day1.version,
+        items: [line(day1.items[0]!.id, values({ odometerKm: 5000 }))],
+        reason: '',
+      },
+      ctx.adminId,
+      null,
+    );
+    expect(sent1.items[0]!.reading!.odometerDelta).toBeNull();
+
+    const day2 = await ctx.service.openReport(person, second, ctx.adminId);
+    // День принадлежит уже второму листу — и это видно по источнику строки.
+    expect(day2.items).toHaveLength(1);
+    const sent2 = await ctx.service.submitReport(
+      person,
+      second,
+      {
+        version: day2.version,
+        items: [line(day2.items[0]!.id, values({ odometerKm: 5120 }))],
+        reason: '',
+      },
+      ctx.adminId,
+      null,
+    );
+
+    // Пробег посчитан от показания прежнего листа: 120 км, а не «начало ряда».
+    const crossed = sent2.items[0]!.reading!;
+    expect(crossed.odometerDelta).toBe(120);
+    expect(crossed.odometerAnomaly).toBeNull();
+
+    const rows = await ctx.db
+      .select()
+      .from(ctx.schema.vehicleReadings)
+      .where(eq(ctx.schema.vehicleReadings.vehicleId, vehicle))
+      .orderBy(asc(ctx.schema.vehicleReadings.reportDate));
+    const before = rows.find((r) => r.reportDate === first)!;
+    const after = rows.find((r) => r.reportDate === second)!;
+    expect(after.previousOdometerId).toBe(before.id);
   });
 
   it('порог второй смены того же дня не обнуляется: 1400 км — норма, 1600 — аномалия', async () => {

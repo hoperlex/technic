@@ -26,6 +26,7 @@ import {
   moveOfficeEquipmentSchema,
   officeEquipmentListQuerySchema,
   officeEquipmentTitle,
+  type OfficeEquipmentConsumableRefDto,
   type OfficeEquipmentDto,
   type OfficeEquipmentItemWarrantyDto,
   type OfficeEquipmentServiceEntryDto,
@@ -39,12 +40,16 @@ import {
   counterparties,
   departments,
   officeEquipment,
+  officeEquipmentConsumableModels,
+  officeEquipmentConsumables,
+  officeEquipmentModels,
   officeEquipmentMovements,
   officeEquipmentTypes,
   serviceRequestItems,
   serviceRequests,
 } from '../db/schema';
 import { err } from '../lib/errors';
+import { pgErrorOf } from '../lib/pg-error';
 import { writeAudit } from '../lib/audit';
 import { officeEquipmentDiff } from '../services/office-equipment-diff';
 import {
@@ -89,6 +94,15 @@ const typeRef = {
   isActive: officeEquipmentTypes.isActive,
 };
 
+/**
+ * Модель в строке единицы (Р1): показать и выбрать заново — больше от неё в списке ничего не нужно.
+ * Производитель, комментарий и признак «активна» живут в окне моделей, а не в каждой карточке парка.
+ */
+const modelRef = {
+  id: officeEquipmentModels.id,
+  name: officeEquipmentModels.name,
+};
+
 /** Код объекта различает одноимённые корпуса — без него «Стройка» в списке ничего не называет. */
 const objectRef = {
   id: constructionObjects.id,
@@ -116,12 +130,25 @@ const departmentRef = {
 /**
  * Тип и объект у единицы есть всегда (`NOT NULL`), поэтому они `innerJoin`; отдел — необязателен,
  * и `leftJoin` здесь означает ровно «не размечена», а не потерянную ссылку.
+ *
+ * Модель — тоже `leftJoin`, и в выпуске A обязана им быть (Р2): колонка `model_id` весь выпуск
+ * nullable, потому что в окне выката карточку заводит старый код, ничего о ней не знающий.
+ * `innerJoin` вычеркнул бы такую карточку из списка и из карточки — то есть спрятал бы ровно ту
+ * единицу, ради которой совместимость и делалась. В выпуске B, вместе с `NOT NULL`, join станет
+ * внутренним.
  */
 function baseQuery() {
   return db
-    .select({ e: officeEquipment, type: typeRef, object: objectRef, department: departmentRef })
+    .select({
+      e: officeEquipment,
+      type: typeRef,
+      model: modelRef,
+      object: objectRef,
+      department: departmentRef,
+    })
     .from(officeEquipment)
     .innerJoin(officeEquipmentTypes, eq(officeEquipment.equipmentTypeId, officeEquipmentTypes.id))
+    .leftJoin(officeEquipmentModels, eq(officeEquipment.modelId, officeEquipmentModels.id))
     .innerJoin(constructionObjects, eq(officeEquipment.objectId, constructionObjects.id))
     .leftJoin(departments, eq(officeEquipment.ownerDepartmentId, departments.id));
 }
@@ -132,6 +159,12 @@ function toDto(r: EquipmentRow): OfficeEquipmentDto {
   return {
     id: r.e.id,
     type: r.type,
+    // Модель отдаётся всегда, а не «когда получилось»: необязательной в контракте она стоит только
+    // на время выпуска A (Р2) — ради фикстур портала и ещё не переведённых читателей. Отсюда
+    // `null` означает «ссылки у карточки нет» (её завёл старый код в окне выката), а не «маршрут
+    // не умеет»; в выпуске B оба переходных состояния уходят вместе с nullable-колонкой.
+    model: r.model,
+    // Имя — копия имени модели, которую ведёт база (Р3), а не то, что ввёл человек.
     name: r.e.name,
     serialNumber: r.e.serialNumber,
     inventoryNumber: r.e.inventoryNumber,
@@ -252,6 +285,94 @@ async function assertTypeUsable(tx: Tx, typeId: string): Promise<void> {
 }
 
 /**
+ * Модель существует, не погашена и заведена тем же типом, что и карточка (Р1).
+ *
+ * Проверяем до записи, хотя пару «модель — тип» держит и база: составной ключ
+ * `office_equipment_model_type_fk` отобьёт попытку приписать МФУ модель принтера, но текстом про
+ * ограничение — человек прочитал бы имя ключа вместо «это модель принтера». Тот же счёт, что у
+ * номеров: нарушение ключа стало бы 500 там, где нужен ответ словами.
+ *
+ * Погашенная модель отбивается только на входе. У заведённых карточек она остаётся (Р11): гашение
+ * означает «больше не предлагать», а не «переписать парк», — поэтому правка карточки, не трогающая
+ * ссылку, сюда не заходит вовсе.
+ *
+ * Коды разные, и это не случайность. Ненайденная и погашенная модель — 400 полем `modelId`, как у
+ * типа (`assertTypeUsable`): ссылка на справочник либо ведёт куда надо, либо нет. Чужой тип — 422:
+ * запрос понятен и обе ссылки живые, недопустима их пара (тот же разбор, что у «оба номера пусты»).
+ */
+/**
+ * Один текст на обе двери отказа «модели нет» — проверку ниже и гонку (`asMissingModelBadRequest`):
+ * человеку всё равно, которая сработала, а разойдясь, две формулировки означали бы разные причины.
+ */
+const MODEL_NOT_FOUND = 'Модель аппарата не найдена';
+const MODEL_NOT_FOUND_FIELDS = { modelId: 'Не найдена' };
+
+async function assertModelUsable(tx: Tx, modelId: string, equipmentTypeId: string): Promise<void> {
+  const [row] = await tx
+    .select({
+      name: officeEquipmentModels.name,
+      isActive: officeEquipmentModels.isActive,
+      equipmentTypeId: officeEquipmentModels.equipmentTypeId,
+      typeName: officeEquipmentTypes.name,
+    })
+    .from(officeEquipmentModels)
+    .innerJoin(
+      officeEquipmentTypes,
+      eq(officeEquipmentModels.equipmentTypeId, officeEquipmentTypes.id),
+    )
+    .where(eq(officeEquipmentModels.id, modelId));
+  if (!row) throw err.badRequest(MODEL_NOT_FOUND, MODEL_NOT_FOUND_FIELDS);
+  // Чужой тип проверяется раньше гашения: погашенную модель нужного типа человек хотя бы выбирал
+  // осознанно, а модель другого типа — это вообще не тот аппарат, и говорить о ней «погашена»
+  // значило бы отвечать не на тот вопрос.
+  if (row.equipmentTypeId !== equipmentTypeId) {
+    throw err.unprocessable(`Модель «${row.name}» заведена типом «${row.typeName}»`, {
+      modelId: 'Модель другого типа',
+    });
+  }
+  if (!row.isActive) {
+    throw err.badRequest(`Модель «${row.name}» погашена`, { modelId: 'Модель погашена' });
+  }
+}
+
+/**
+ * Та же «модель не найдена», но пришедшая гонкой, а не проверкой.
+ *
+ * `assertModelUsable` отвечает по состоянию, которое видит транзакция, и эту щель закрыть не может:
+ * соседняя транзакция держит `FOR UPDATE` на свободной модели и удаляет её; наша проверка модель ещё
+ * видит — чужое удаление не закоммичено, — а `BEFORE`-триггер зеркала уже стоит на `FOR KEY SHARE`
+ * и после чужого коммита перечитывает пустоту: `RAISE … USING ERRCODE = '23503'` (миграция 0171).
+ * Без разбора это 500 `internal_error` с текстом SQL-запроса в теле — на тот самый вопрос, на
+ * который проверка выше отвечает 400 словами.
+ *
+ * Отличается это от НАСТОЯЩЕГО нарушения внешнего ключа именем ограничения, а не текстом сообщения
+ * (текст зависит от версии и локали сервера):
+ *
+ *   `RAISE` из триггера зеркала ..... `23503`, `constraint` пуст;
+ *   `office_equipment_model_type_fk`  `23503`, `constraint` назван.
+ *
+ * Второй случай обязан остаться 500, и это не небрежность: модель чужого типа маршрут отбивает 422
+ * сам, до записи, — и если отказ всё-таки дошёл до ключа, значит код разошёлся со схемой. Спрятав
+ * его под человеческую формулировку, мы погасили бы единственный сигнал об этом.
+ *
+ * «`23503` без имени ограничения» читается как «бросил триггер» ровно потому, что такой триггер в
+ * этой транзакции один: на `office_equipment` не висит ничего, кроме зеркала 0171, а во всём
+ * каталоге миграций `ERRCODE = '23503'` встречается один раз — в нём же. Признак держится на этом,
+ * и следующий триггер с тем же кодом обязан получить здесь свой разбор, а не приехать под чужой
+ * вывеской: заводя такой, проверьте это место.
+ *
+ * Через `pgErrorOf`, а не по полям самой ошибки: drizzle оборачивает ошибку драйвера в свою, и на
+ * верхнем объекте кода уже нет — прямая проверка молчала бы.
+ */
+function asMissingModelBadRequest(e: unknown): unknown {
+  const pg = pgErrorOf(e);
+  if (pg?.code === '23503' && !pg.constraint) {
+    return err.badRequest(MODEL_NOT_FOUND, MODEL_NOT_FOUND_FIELDS);
+  }
+  return e;
+}
+
+/**
  * Объект существует. Активность не проверяется намеренно: техника стоит на площадке и после того,
  * как ту закрыли для новых заявок, — карточка должна оставаться заводимой, пока имущество не
  * перевезли.
@@ -323,6 +444,62 @@ async function requireHistoryEquipment(p: Principal, id: string) {
   assertArchiveVisible(p, ex.deletedAt, 'Единица оргтехники не найдена');
   assertOfficeEquipmentScope(p, { objectId: ex.objectId, ownerDepartmentId: ex.ownerDepartmentId });
   return ex;
+}
+
+/**
+ * Чем заправлять этот аппарат (Р15): расходники, привязанные к его МОДЕЛИ, а не к карточке.
+ *
+ * Права своего у среза нет — он отдаётся по `officeEquipment.read`, тому же, по которому открыта
+ * сама карточка. Отдельное право означало бы, что человек видит аппарат, но не видит, что к нему
+ * нужно: «чем заправлять» — часть эксплуатации техники, а не складская тайна, и спрашивают об этом
+ * ровно те, кто у этой техники и стоит.
+ *
+ * С историей обслуживания ниже это не путать: та рассказывает про деньги и работы, поэтому просит
+ * `serviceRequests.read` и сужается ОБЛАСТЬЮ ЗАЯВОК. Здесь ни того, ни другого нет — остаток на
+ * складе один на компанию (области у справочника расходников нет вовсе), а сумм и исполнителей в
+ * срезе не появляется.
+ *
+ * Карточка без модели отвечает пустым списком, а не отсутствием поля и не отказом: в окне выпуска A
+ * ссылка у карточки может быть пуста (Р2), но вопрос «чем заправлять» законен и тогда — просто
+ * ответа на него нет.
+ *
+ * Погашенные позиции (`is_active = false`) не показываются: их больше не покупают, и предлагать их
+ * тому, кто пришёл за картриджем, значит звать к пустой полке. У самой карточки расходника они
+ * остаются — гашение это «не предлагать новым», а не «стереть» (Р11).
+ *
+ * Соединением, а не коррелированным подзапросом — и это не вкусовщина: собирая столбцы
+ * односоставного запроса, drizzle переписывает колоночные чанки внутри `sql`-выражений в голые
+ * идентификаторы, и такой подзапрос молча отвечает пустотой (разобрано у `consumableIdRef` в
+ * маршруте расходников). Здесь двухтабличный запрос, живущий отдельно от запроса карточки, — ловушке
+ * не за что зацепиться.
+ */
+async function loadConsumables(modelId: string | null): Promise<OfficeEquipmentConsumableRefDto[]> {
+  if (!modelId) return [];
+  return (
+    db
+      .select({
+        id: officeEquipmentConsumables.id,
+        code: officeEquipmentConsumables.code,
+        name: officeEquipmentConsumables.name,
+        color: officeEquipmentConsumables.color,
+        quantity: officeEquipmentConsumables.quantity,
+      })
+      .from(officeEquipmentConsumableModels)
+      .innerJoin(
+        officeEquipmentConsumables,
+        eq(officeEquipmentConsumableModels.consumableId, officeEquipmentConsumables.id),
+      )
+      .where(
+        and(
+          eq(officeEquipmentConsumableModels.modelId, modelId),
+          eq(officeEquipmentConsumables.isActive, true),
+        ),
+      )
+      // По наименованию — им позицию и называют вслух. Код вторым ключом ради устойчивости порядка:
+      // у цветной серии наименования совпадают до буквы, и без него две строки менялись бы местами
+      // от запроса к запросу.
+      .orderBy(officeEquipmentConsumables.name, officeEquipmentConsumables.code)
+  );
 }
 
 /** Сколько ремонтов показывает карточка: срез, а не журнал — за полным списком идут в раздел. */
@@ -442,6 +619,11 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
         officeEquipmentScopeWhere(p, officeEquipment.objectId, officeEquipment.ownerDepartmentId),
         q.objectId ? eq(officeEquipment.objectId, q.objectId) : undefined,
         q.equipmentTypeId ? eq(officeEquipment.equipmentTypeId, q.equipmentTypeId) : undefined,
+        // «Вся техника этой модели» — по ссылке, а не по наименованию: `name` карточки с выпуска A
+        // зеркалит модель, и поиск по тексту нашёл бы сегодня то же самое, но разошёлся бы на
+        // первом же переименовании. Условие идёт в общий `where`, поэтому строки и счётчик отбирают
+        // одно и то же — разъехавшись, они дали бы «показано 20 из 68» на списке из двадцати.
+        q.modelId ? eq(officeEquipment.modelId, q.modelId) : undefined,
         q.departmentId ? eq(officeEquipment.ownerDepartmentId, q.departmentId) : undefined,
         // Срез для разметки парка: что ещё ни за кем не числится.
         q.unassignedDepartment ? isNull(officeEquipment.ownerDepartmentId) : undefined,
@@ -522,11 +704,14 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
         objectId: dto.object.id,
         ownerDepartmentId: dto.department?.id ?? null,
       });
+      // Расходники — тем же правом, что и сама карточка: см. `loadConsumables`. Поле есть в ответе
+      // всегда, в том числе пустым списком у карточки без модели.
+      const card = { ...dto, consumables: await loadConsumables(dto.model?.id ?? null) };
       // Секция обслуживания — по праву модуля, а не справочника (§8.2): менеджер и диспетчер ведут
       // карточки техники, но ремонтом не занимаются, и заявки с суммами им знать незачем. Поля
       // просто нет в ответе — пустой список означал бы «ремонтов не было».
-      if (!can(p, 'serviceRequests.read')) return dto;
-      return { ...dto, serviceHistory: await loadServiceHistory(p, dto.id) };
+      if (!can(p, 'serviceRequests.read')) return card;
+      return { ...card, serviceHistory: await loadServiceHistory(p, dto.id) };
     },
   );
 
@@ -536,44 +721,68 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
     async (req, reply) => {
       const p = requirePrincipal(req);
       const b = req.body;
-      const created = await db.transaction(async (tx) => {
-        await assertTypeUsable(tx, b.equipmentTypeId);
-        await assertObjectExists(tx, b.objectId);
-        if (b.departmentId) await assertDepartmentExists(tx, b.departmentId);
-        // Область — по месту, куда единицу заводят: без этой проверки роль со своим объектом
-        // ставила бы технику на чужой.
-        assertOfficeEquipmentScope(p, {
-          objectId: b.objectId,
-          ownerDepartmentId: b.departmentId ?? null,
-        });
-        await assertNumbersFree(tx, b);
-        const [row] = await tx
-          .insert(officeEquipment)
-          .values({
-            equipmentTypeId: b.equipmentTypeId,
-            name: b.name,
-            serialNumber: b.serialNumber,
-            inventoryNumber: b.inventoryNumber,
+      const created = await db
+        .transaction(async (tx) => {
+          await assertTypeUsable(tx, b.equipmentTypeId);
+          // Модель сверяется, только если её прислали ссылкой. Старый клиент в окне выката шлёт одно
+          // имя, и по нему модель найдёт или заведёт триггер (Р3) — это и есть совместимость
+          // выпуска A, а не забытая проверка.
+          if (b.modelId) await assertModelUsable(tx, b.modelId, b.equipmentTypeId);
+          await assertObjectExists(tx, b.objectId);
+          if (b.departmentId) await assertDepartmentExists(tx, b.departmentId);
+          // Область — по месту, куда единицу заводят: без этой проверки роль со своим объектом
+          // ставила бы технику на чужой.
+          assertOfficeEquipmentScope(p, {
             objectId: b.objectId,
             ownerDepartmentId: b.departmentId ?? null,
-            location: b.location,
-            purchasedOn: b.purchasedOn ?? null,
-            warrantyUntil: b.warrantyUntil ?? null,
-            comment: b.comment,
-            isActive: b.isActive,
-            createdBy: p.id,
-            updatedBy: p.id,
-          })
-          .returning({ id: officeEquipment.id });
-        return row!;
-      });
+          });
+          await assertNumbersFree(tx, b);
+          const [row] = await tx
+            .insert(officeEquipment)
+            .values({
+              equipmentTypeId: b.equipmentTypeId,
+              // Ссылка на модель — то, что шлёт новая форма. Пустой она остаётся только у старого
+              // клиента: `BEFORE INSERT` проставит её сам, разобрав имя (Р3).
+              modelId: b.modelId ?? null,
+              // Пустое имя законно, когда пришла ссылка на модель: `BEFORE INSERT` перепишет его из
+              // модели раньше, чем сработает `office_equipment_name_not_blank_check` (Р3). Старый
+              // клиент по-прежнему шлёт имя и ссылки не знает — обе двери открыты до выпуска B.
+              name: b.name ?? '',
+              serialNumber: b.serialNumber,
+              inventoryNumber: b.inventoryNumber,
+              objectId: b.objectId,
+              ownerDepartmentId: b.departmentId ?? null,
+              location: b.location,
+              purchasedOn: b.purchasedOn ?? null,
+              warrantyUntil: b.warrantyUntil ?? null,
+              comment: b.comment,
+              isActive: b.isActive,
+              createdBy: p.id,
+              updatedBy: p.id,
+            })
+            .returning({
+              id: officeEquipment.id,
+              name: officeEquipment.name,
+              modelId: officeEquipment.modelId,
+            });
+          return row!;
+        })
+        // Гонка с удалением модели приходит сюда отказом триггера зеркала — и уходит тем же 400,
+        // что и ссылка в никуда: дверь другая, ответ обязан быть один.
+        .catch((e: unknown) => {
+          throw asMissingModelBadRequest(e);
+        });
       await writeAudit({
         actorUserId: p.id,
         action: 'officeEquipment.create',
         entityType: 'officeEquipment',
         entityId: created.id,
         metadata: {
-          name: b.name,
+          // Имя и ссылка — те, что легли в базу, а не те, что пришли в запросе: при заведении по
+          // модели `name` в теле может отсутствовать вовсе (его пишет зеркало, Р3), и `undefined`
+          // в журнале означал бы карточку без названия там, где название есть.
+          name: created.name,
+          modelId: created.modelId,
           serialNumber: b.serialNumber,
           inventoryNumber: b.inventoryNumber,
           objectId: b.objectId,
@@ -597,76 +806,127 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
       // Карточка «до» — снимком DTO, а не сырыми колонками: в историю идут названия справочников и
       // человеческие значения, а не идентификаторы (тот же приём, что у диффа заявок).
       const before = await getDto(id);
-      await db.transaction(async (tx) => {
-        const [ex] = await tx
-          .select()
-          .from(officeEquipment)
-          .where(and(eq(officeEquipment.id, id), isNull(officeEquipment.deletedAt)));
-        if (!ex) throw err.notFound('Единица оргтехники не найдена');
-        // Область проверяется по обеим сторонам (Р7): сначала по нынешнему месту единицы — чужую
-        // карточку не правят и не переносят, — а ниже по целевому: перенос на чужой объект это тот
-        // же выход за область, только наружу.
-        assertOfficeEquipmentScope(p, {
-          objectId: ex.objectId,
-          ownerDepartmentId: ex.ownerDepartmentId,
-        });
-
-        // PATCH присылает только изменившееся, поэтому все проверки идут по «склеенному»
-        // состоянию: половина условий (оба номера пусты, чужой целевой отдел) видна лишь на нём.
-        const equipmentTypeId = b.equipmentTypeId ?? ex.equipmentTypeId;
-        // Объект правкой не меняется (Р59): переезд — своя ручка с датой, причиной и журналом.
-        const objectId = ex.objectId;
-        const ownerDepartmentId =
-          b.departmentId !== undefined ? (b.departmentId ?? null) : ex.ownerDepartmentId;
-        const serialNumber = b.serialNumber ?? ex.serialNumber;
-        const inventoryNumber = b.inventoryNumber ?? ex.inventoryNumber;
-
-        if (equipmentTypeId !== ex.equipmentTypeId) await assertTypeUsable(tx, equipmentTypeId);
-        if (ownerDepartmentId && ownerDepartmentId !== ex.ownerDepartmentId) {
-          await assertDepartmentExists(tx, ownerDepartmentId);
-        }
-        if (ownerDepartmentId !== ex.ownerDepartmentId) {
-          assertOfficeEquipmentScope(p, { objectId, ownerDepartmentId });
-        }
-
-        // Хотя бы один номер обязан остаться — это же держит CHECK в БД, но отказ ограничения
-        // человеку ничего не объясняет. 422: запрос понятен, недопустимо получившееся состояние.
-        if (!serialNumber.trim() && !inventoryNumber.trim()) {
-          throw err.unprocessable('Укажите серийный или инвентарный номер', {
-            inventoryNumber: 'Нужен хотя бы один номер',
+      await db
+        .transaction(async (tx) => {
+          const [ex] = await tx
+            .select()
+            .from(officeEquipment)
+            .where(and(eq(officeEquipment.id, id), isNull(officeEquipment.deletedAt)));
+          if (!ex) throw err.notFound('Единица оргтехники не найдена');
+          // Область проверяется по обеим сторонам (Р7): сначала по нынешнему месту единицы — чужую
+          // карточку не правят и не переносят, — а ниже по целевому: перенос на чужой объект это тот
+          // же выход за область, только наружу.
+          assertOfficeEquipmentScope(p, {
+            objectId: ex.objectId,
+            ownerDepartmentId: ex.ownerDepartmentId,
           });
-        }
-        // Перепроверяем только изменившийся номер: неизменившийся занят самой этой карточкой, и
-        // спрашивать про него означало бы искать конфликт с собой.
-        const serialChanged = serialNumber !== ex.serialNumber;
-        const inventoryChanged = inventoryNumber !== ex.inventoryNumber;
-        if (serialChanged || inventoryChanged) {
-          await assertNumbersFree(
-            tx,
-            {
-              serialNumber: serialChanged ? serialNumber : '',
-              inventoryNumber: inventoryChanged ? inventoryNumber : '',
-            },
-            id,
-          );
-        }
 
-        const set: Partial<typeof officeEquipment.$inferInsert> = {
-          updatedBy: p.id,
-          updatedAt: new Date(),
-        };
-        if (b.equipmentTypeId !== undefined) set.equipmentTypeId = b.equipmentTypeId;
-        if (b.name !== undefined) set.name = b.name;
-        if (b.serialNumber !== undefined) set.serialNumber = b.serialNumber;
-        if (b.inventoryNumber !== undefined) set.inventoryNumber = b.inventoryNumber;
-        if (b.departmentId !== undefined) set.ownerDepartmentId = b.departmentId ?? null;
-        if (b.location !== undefined) set.location = b.location;
-        if (b.purchasedOn !== undefined) set.purchasedOn = b.purchasedOn ?? null;
-        if (b.warrantyUntil !== undefined) set.warrantyUntil = b.warrantyUntil ?? null;
-        if (b.comment !== undefined) set.comment = b.comment;
-        if (b.isActive !== undefined) set.isActive = b.isActive;
-        await tx.update(officeEquipment).set(set).where(eq(officeEquipment.id, id));
-      });
+          // PATCH присылает только изменившееся, поэтому все проверки идут по «склеенному»
+          // состоянию: половина условий (оба номера пусты, чужой целевой отдел) видна лишь на нём.
+          const equipmentTypeId = b.equipmentTypeId ?? ex.equipmentTypeId;
+          // Объект правкой не меняется (Р59): переезд — своя ручка с датой, причиной и журналом.
+          const objectId = ex.objectId;
+          const ownerDepartmentId =
+            b.departmentId !== undefined ? (b.departmentId ?? null) : ex.ownerDepartmentId;
+          const serialNumber = b.serialNumber ?? ex.serialNumber;
+          const inventoryNumber = b.inventoryNumber ?? ex.inventoryNumber;
+
+          if (equipmentTypeId !== ex.equipmentTypeId) await assertTypeUsable(tx, equipmentTypeId);
+          // Сменить тип, не назвав, чем карточку именовать, нельзя (Р1). Тип у модели неизменяем, и
+          // такой запрос уходит в legacy-ветку триггера: та резолвит карточку по её нынешнему имени и
+          // ЗАВОДИТ в справочнике новую модель нового типа. Справочник, который пополняется правкой
+          // чужой карточки, — ровно то, ради чего модель и уводили из свободного текста: ИТ-служба
+          // должна видеть перечень, который ведёт сама.
+          //
+          // Отбивает это маршрут, а не триггер, и это не вкусовщина: триггер обязан оставаться
+          // терпимым — через него в окне выпуска A идёт старый код, не знающий о моделях вовсе, — а
+          // маршрут видит, кто к нему пришёл, и вправе требовать явного выбора.
+          //
+          // Присланное имя запрет снимает: `{ equipmentTypeId, name }` — это и есть старый клиент
+          // (и заливка файлом до перевода на модели), у него резолв по имени законен и является
+          // единственным доступным способом сказать «эта карточка теперь вот такая». Ловим ровно
+          // случай «тип меняют, а чем именовать — не сказали». Запрет уходит вместе с legacy-веткой в
+          // выпуске C: резолвить будет нечего, и смена типа без модели станет отказом самой базы.
+          if (
+            equipmentTypeId !== ex.equipmentTypeId &&
+            b.modelId === undefined &&
+            b.name === undefined
+          ) {
+            throw err.unprocessable(
+              'Смена типа требует выбрать модель нужного типа: у моделей тип неизменяем',
+              { modelId: 'Выберите модель нового типа' },
+            );
+          }
+          // Модель сверяется с типом, который получится ПОСЛЕ правки, и перепроверяется даже тогда,
+          // когда ссылку прислали прежнюю: смена одного типа у карточки с моделью — это уже другая
+          // пара. Оставить её базе нельзя дважды: составной ключ ответил бы именем ограничения, а до
+          // него добралась бы legacy-ветка триггера и увела карточку на модель нового типа, найденную
+          // по имени, — то есть не на ту, которую в запросе назвали ссылкой (Р3).
+          //
+          // Правка, ссылку не трогающая, сюда не заходит: у карточки может стоять погашенная модель,
+          // и запрещать из-за неё смену кабинета было бы наказанием за чужое решение (Р11).
+          if (
+            b.modelId !== undefined &&
+            (b.modelId !== ex.modelId || equipmentTypeId !== ex.equipmentTypeId)
+          ) {
+            await assertModelUsable(tx, b.modelId, equipmentTypeId);
+          }
+          if (ownerDepartmentId && ownerDepartmentId !== ex.ownerDepartmentId) {
+            await assertDepartmentExists(tx, ownerDepartmentId);
+          }
+          if (ownerDepartmentId !== ex.ownerDepartmentId) {
+            assertOfficeEquipmentScope(p, { objectId, ownerDepartmentId });
+          }
+
+          // Хотя бы один номер обязан остаться — это же держит CHECK в БД, но отказ ограничения
+          // человеку ничего не объясняет. 422: запрос понятен, недопустимо получившееся состояние.
+          if (!serialNumber.trim() && !inventoryNumber.trim()) {
+            throw err.unprocessable('Укажите серийный или инвентарный номер', {
+              inventoryNumber: 'Нужен хотя бы один номер',
+            });
+          }
+          // Перепроверяем только изменившийся номер: неизменившийся занят самой этой карточкой, и
+          // спрашивать про него означало бы искать конфликт с собой.
+          const serialChanged = serialNumber !== ex.serialNumber;
+          const inventoryChanged = inventoryNumber !== ex.inventoryNumber;
+          if (serialChanged || inventoryChanged) {
+            await assertNumbersFree(
+              tx,
+              {
+                serialNumber: serialChanged ? serialNumber : '',
+                inventoryNumber: inventoryChanged ? inventoryNumber : '',
+              },
+              id,
+            );
+          }
+
+          const set: Partial<typeof officeEquipment.$inferInsert> = {
+            updatedBy: p.id,
+            updatedAt: new Date(),
+          };
+          if (b.equipmentTypeId !== undefined) set.equipmentTypeId = b.equipmentTypeId;
+          if (b.modelId !== undefined) set.modelId = b.modelId;
+          // Имя пишется, только когда ссылки в запросе нет. С выпуска A `name` — копия модели (Р3), и
+          // у запроса, назвавшего модель ссылкой, оно ничего не решает; записав оба поля разом, мы
+          // отдали бы выбор state-машине триггера, а та при неизменившейся ссылке считает главным
+          // имя — и увела бы карточку на модель, найденную по тексту, вместо выбранной. Старый
+          // клиент, шлющий одно имя, идёт этой веткой по-прежнему: он и есть её адресат.
+          if (b.name !== undefined && b.modelId === undefined) set.name = b.name;
+          if (b.serialNumber !== undefined) set.serialNumber = b.serialNumber;
+          if (b.inventoryNumber !== undefined) set.inventoryNumber = b.inventoryNumber;
+          if (b.departmentId !== undefined) set.ownerDepartmentId = b.departmentId ?? null;
+          if (b.location !== undefined) set.location = b.location;
+          if (b.purchasedOn !== undefined) set.purchasedOn = b.purchasedOn ?? null;
+          if (b.warrantyUntil !== undefined) set.warrantyUntil = b.warrantyUntil ?? null;
+          if (b.comment !== undefined) set.comment = b.comment;
+          if (b.isActive !== undefined) set.isActive = b.isActive;
+          await tx.update(officeEquipment).set(set).where(eq(officeEquipment.id, id));
+        })
+        // Смена модели правкой открывает ту же щель, что и заведение: проверка видит модель, а
+        // зеркало — уже нет. Разбор поэтому стоит на обеих дверях, а не только на заведении.
+        .catch((e: unknown) => {
+          throw asMissingModelBadRequest(e);
+        });
       const after = (await getDto(id))!;
       /**
        * Что именно изменила правка — снимком в метаданных (Р76). Без него лента показывала бы

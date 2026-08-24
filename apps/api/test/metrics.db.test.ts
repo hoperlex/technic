@@ -7,6 +7,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { db as AppDb } from '../src/db/client';
 import type * as DbSchema from '../src/db/schema';
 import type { collectMetrics as CollectMetrics } from '../src/services/metrics';
+import type * as AssignmentCommand from '../src/services/assignment-command';
 
 /**
  * Метрики почты на живой схеме (§20).
@@ -30,6 +31,8 @@ interface Ctx {
   closeDb: () => Promise<void>;
   schema: typeof DbSchema;
   collectMetrics: typeof CollectMetrics;
+  /** Каркас команд истории — ради его счётчика исходов; грузится тем же поздним импортом. */
+  command: typeof AssignmentCommand;
   scheduleId: string;
   userId: string;
 }
@@ -81,6 +84,7 @@ describe.skipIf(!DB_URL)('метрики почты (живая схема)', ()
     const { db, closeDb } = await import('../src/db/client');
     const schema = await import('../src/db/schema');
     const { collectMetrics } = await import('../src/services/metrics');
+    const command = await import('../src/services/assignment-command');
 
     const [user] = await db
       .insert(schema.users)
@@ -117,6 +121,7 @@ describe.skipIf(!DB_URL)('метрики почты (живая схема)', ()
       closeDb,
       schema,
       collectMetrics,
+      command,
       scheduleId: schedule!.id,
       userId: user!.id,
     };
@@ -194,6 +199,83 @@ describe.skipIf(!DB_URL)('метрики почты (живая схема)', ()
     const after = await ctx.collectMetrics();
     // Растёт только когда планировщик молчит: штатный запуск сдвигает время сразу же.
     expect(metricValue(after, 'technic_mailing_schedules_overdue')).toBe(wasOverdue + 1);
+  });
+
+  /*
+   * Метрики модуля истории назначения (план `docs/assignment-periods-plan.md`, волна 4.2).
+   *
+   * Проверяется не «число совпало», а то, что метрика вообще будет прочитана сборщиком и что
+   * классификация исходов не разошлась с тем, ради чего заведена. Числа популяции считает свой
+   * файл на своей базе (`assignment-report.db.test.ts`): здесь база общая, и соседний прогон
+   * двигал бы счёт заявок под руками.
+   */
+  it('метрики модуля истории назначения объявлены и разбираются', async () => {
+    const text = await ctx.collectMetrics();
+
+    for (const name of [
+      'technic_assignment_mode',
+      'technic_assignment_write_frozen_seconds',
+      'technic_assignment_history_requests',
+      'technic_assignment_history_flags',
+      'technic_assignment_backstop_shadow',
+      'technic_assignment_backstop_refusals',
+      'technic_assignment_command',
+    ]) {
+      expect(text).toContain(`# TYPE ${name} `);
+    }
+    // Режим — info-метрика: единица у действующей пары. Без обеих меток по ней не написать ни
+    // алерта «заморожено дольше часа», ни подписи на графике.
+    expect(text).toMatch(/^technic_assignment_mode\{write="\w+",read="\w+"\} 1$/mu);
+    // Три состояния готовности присутствуют всегда, в том числе нулями: пропавшая строка в
+    // Prometheus неотличима от «метрика перестала считаться».
+    for (const state of ['empty', 'materialized', 'ready']) {
+      expect(text).toMatch(
+        new RegExp(`^technic_assignment_history_requests\\{state="${state}"\\} \\d+$`, 'mu'),
+      );
+    }
+    for (const flag of ['dirty', 'stale', 'no_assignment']) {
+      expect(text).toMatch(
+        new RegExp(`^technic_assignment_history_flags\\{flag="${flag}"\\} \\d+$`, 'mu'),
+      );
+    }
+  });
+
+  it('конфликт сериализации попадает в метрику отдельным исходом, а не в «ошибку»', async () => {
+    ctx.command.resetAssignmentCommandCounters();
+
+    // Исполнитель, который падает `40001` до всякой работы: ровно то, что делает PostgreSQL,
+    // когда две транзакции сошлись на одной строке — в том числе на счётчике номеров бланков,
+    // одном на весь портал (спайк §4.3).
+    const conflict = Object.assign(new Error('could not serialize access'), { code: '40001' });
+    const spec = {
+      door: 'history',
+      journalDoor: 'metrics-probe',
+      requestId: '00000000-0000-0000-0000-000000000000',
+      actor: { id: ctx.userId },
+      expectedVersion: 0,
+      body: {},
+      operation: null,
+    } as unknown as Parameters<typeof ctx.command.runAssignmentCommand>[1];
+
+    await expect(
+      ctx.command.runAssignmentCommand(
+        {
+          transaction: () => {
+            throw conflict;
+          },
+        } as unknown as Parameters<typeof ctx.command.runAssignmentCommand>[0],
+        spec,
+      ),
+    ).rejects.toThrow(/serialize/u);
+
+    const text = await ctx.collectMetrics();
+    // Именно `serialization`, а не `error`: 500 разбирают как поломку, а этот отказ — временная
+    // конкуренция, и пока протокола повторов нет, каждый такой случай увидел человек.
+    expect(text).toContain(
+      'technic_assignment_command{door="metrics-probe",outcome="serialization"} 1',
+    );
+
+    ctx.command.resetAssignmentCommandCounters();
   });
 
   it('выключенное расписание просроченным не считается', async () => {

@@ -35,6 +35,12 @@ const REFERENCING_TABLE_LABELS: Record<string, string> = {
   construction_object_operators: 'привязки операторов вывоза к объектам',
   counterparty_synonyms: 'синонимы контрагентов',
   office_equipment: 'карточки оргтехники',
+  // Журнал остатка расходников: `changed_by` стоит с `RESTRICT`, поэтому учётка, когда-либо
+  // правившая наличие, без этой строки объяснялась бы человеку общим «на запись ссылаются другие
+  // данные». Событие без автора не отвечает на свой единственный вопрос — потому ссылка и
+  // неразрывна.
+  office_equipment_consumable_stock_entries: 'движения остатка расходников',
+  office_equipment_movements: 'перемещения оргтехники',
   person_credentials: 'документы работников',
   person_employments: 'записи о работе',
   person_specializations: 'специализации работников',

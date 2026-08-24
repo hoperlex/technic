@@ -10,7 +10,12 @@ import {
   type OfficeEquipmentDto,
   type OfficeEquipmentState,
 } from '@technic/contracts';
-import { officeEquipmentApi, officeEquipmentKeys } from '@entities/office-equipment';
+import {
+  officeEquipmentApi,
+  officeEquipmentConsumableKeys,
+  officeEquipmentKeys,
+  officeEquipmentModelKeys,
+} from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
 import { serviceRequestKeys } from '@entities/service-request';
@@ -97,6 +102,10 @@ export function EquipmentMoveModal({
     onSuccess: () => {
       message.success('Перемещение записано');
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+      // Переезд меняет и область, и состояние карточки, а счётчик «В парке» считается по ним
+      // обоим (матрица Р14). Считают его два окна — моделей и расходников, — и устаревают оба.
+      void qc.invalidateQueries({ queryKey: officeEquipmentModelKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentConsumableKeys.root });
       // Заявки показывают реквизиты снимком, но карточка единицы в них тянется отдельно — и
       // состояние техники там же.
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });

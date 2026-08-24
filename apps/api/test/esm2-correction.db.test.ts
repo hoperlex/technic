@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
 import { issueRequestEsm2 } from './waybill-issue-helper';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -30,7 +31,13 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается: обычный прогон тестов базы не требует.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: он переключает `read_mode`, а строка
+ * режима одна на базу. Обёртка стоит уже сейчас, чтобы окно выката тратилось на переключение, а не
+ * на переделку тестов; сегодня половины совпадают — бумагу везде пишет недельная сверка.
+ */
+const readMode = useReadModeDatabase('esm2corr');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 const ADMIN_EMAIL = 'db-esm2-correction-admin@example.invalid';
 const PASSWORD = 'db-test-password-123';
@@ -325,8 +332,7 @@ function pastSheet(sheets: SheetRow[]): SheetRow | undefined {
 
 describe.skipIf(!DB_URL)('коррекция назначения задним числом (живая схема)', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики — остаётся посеять администратора.
     await seedAdmin();
 
     const { buildApp } = await import('../src/app');

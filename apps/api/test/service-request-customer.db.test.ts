@@ -226,6 +226,9 @@ describe.skipIf(!DB_URL)('заказчик заявки на обслужива�
     const typeId = typeRow.rows[0]?.id;
     if (!typeId) throw new Error('В базе нет типов оргтехники: миграция 0104 не применена');
 
+    // Суффикс прогона стоит и в наименовании, а не только в инвентарном номере: с миграции
+    // `0171` наименование карточки — это имя строки справочника `office_equipment_models`, и
+    // вставка без `model_id` заводит модель сама. По этому же суффиксу уборка её и находит.
     const newEquipment = async (
       tag: string,
       ownerDepartmentId: string | null = null,
@@ -233,7 +236,7 @@ describe.skipIf(!DB_URL)('заказчик заявки на обслужива�
       const row = await db.execute<{ id: string }>(sql`
         INSERT INTO office_equipment (equipment_type_id, name, inventory_number, object_id,
                                       owner_department_id, location)
-        VALUES (${typeId}, ${`МФУ ${tag}`}, ${`ЗК-${RUN}-${tag}`}, ${objectId},
+        VALUES (${typeId}, ${`МФУ ${tag} ${RUN}`}, ${`ЗК-${RUN}-${tag}`}, ${objectId},
                 ${ownerDepartmentId}, 'кабинет 214')
         RETURNING id`);
       return row.rows[0]!.id;
@@ -283,6 +286,17 @@ describe.skipIf(!DB_URL)('заказчик заявки на обслужива�
       await ctx.db.execute(
         sql`DELETE FROM office_equipment WHERE inventory_number LIKE ${`ЗК-${RUN}-%`}`,
       );
+      // Модели, заведённые карточками этого файла. С миграции `0171` наименование карточки — это
+      // имя строки справочника `office_equipment_models`, и вставка без `model_id` заводит модель
+      // сама; удаление карточки её за собой не уносит, а база у db-тестов общая — за неделю
+      // прогонов справочник зарастёт именами фикстур. Отбор идёт по суффиксу прогона в самом
+      // наименовании: копию боевого парка в этой базе он не заденет. Проверка «карточек не
+      // осталось» — страховка от `ON DELETE RESTRICT` у ссылки карточки: пережившая уборку
+      // карточка уронила бы `afterAll` отказом внешнего ключа вместо тихо оставленной строки.
+      await ctx.db.execute(sql`
+        DELETE FROM office_equipment_models m
+         WHERE m.name LIKE ${`% ${RUN}`}
+           AND NOT EXISTS (SELECT 1 FROM office_equipment e WHERE e.model_id = m.id)`);
       await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${users})`);
       await ctx.db.execute(
         sql`DELETE FROM users WHERE email LIKE ${`db-src-%-${RUN}@example.invalid`}`,
@@ -316,6 +330,10 @@ describe.skipIf(!DB_URL)('заказчик заявки на обслужива�
     const dto = await createOk(
       ctx.multiDept,
       await ctx.newEquipment('hint-owner', ctx.secondDepartmentId),
+      // Подразделение **заявителя** — второе решение и второе поле (Н11): подсказка из техники к
+      // нему не относится, и у учётки с двумя отделами выбор обязателен. Предмет этого теста —
+      // заказчик, поэтому подразделение просто называется явно.
+      { requesterDepartmentId: ctx.secondDepartmentId },
     );
     // Отделов у автора два, и первый из набора — не ответ: техника числится за вторым, от его
     // имени заявка и заведена.

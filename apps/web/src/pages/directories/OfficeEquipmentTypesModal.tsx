@@ -19,6 +19,7 @@ import { FormModal, useFormBlockers } from '@shared/ui';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import {
   officeEquipmentKeys,
+  officeEquipmentModelKeys,
   officeEquipmentTypeKeys,
   officeEquipmentTypesApi,
 } from '@entities/office-equipment';
@@ -68,10 +69,15 @@ export function OfficeEquipmentTypesModal({ open, onClose }: Props) {
   /**
    * Список типов устарел после любой правки, и вместе с ним — список единиц: тип стоит в его
    * колонке своим названием, и переименование обязано доехать до строк справочника.
+   *
+   * Тем же переименованием живёт и окно моделей: тип стоит своей колонкой в каждой строке модели
+   * и подписью в форме, а перечень моделей спрашивают по типу. Правило то же, что у единиц, —
+   * название хранится в одном месте, а показывается в трёх (матрица Р14).
    */
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: officeEquipmentTypeKeys.root });
     void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+    void qc.invalidateQueries({ queryKey: officeEquipmentModelKeys.root });
   };
 
   const openCreate = () => {

@@ -22,6 +22,8 @@ import {
   wasteSubjectLabel,
 } from '@technic/contracts';
 import { wasteRequestsApi } from '../../api/resources';
+import { TicketRecognitionBanner, WasteTicketsPanel } from '@features/waste-ticket-review';
+import { useAuth } from '../../auth/AuthContext';
 import { FileLinkList, FilesButton } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
@@ -233,6 +235,11 @@ export function WasteRequestViewModal({
   onSaveOperatorComment,
   savingOperatorComment,
 }: Props) {
+  // Право разбора талонов (ADR 0114, Р25). Оно же управляет видимостью замечаний и журнала
+  // попыток: у внешнего исполнителя есть право закрывать заявку, но не проверять собственную бумагу.
+  const { can } = useAuth();
+  const canReviewTickets = can('wasteRequests.ticketReview');
+
   const { data: history, isPending } = useQuery({
     queryKey: ['waste-requests', request?.id, 'history'],
     queryFn: () => wasteRequestsApi.history(request!.id),
@@ -484,7 +491,20 @@ export function WasteRequestViewModal({
           {request.tickets.length > 0 && (
             <div>
               <Typography.Text strong>Талоны</Typography.Text>
-              <FileLinkList files={request.tickets} maxNameWidth={420} />
+              {/* Разбор показывается только с правом `ticketReview` (ADR 0114, Р25): распознанные
+                  значения — такой же результат сверки, как и замечания, и видеть их проверяемому
+                  незачем. Без права карточка остаётся прежней: список файлов и просмотр. */}
+              {canReviewTickets ? (
+                <div style={{ marginTop: 12 }}>
+                  <TicketRecognitionBanner enabled />
+                  <FileLinkList files={request.tickets} maxNameWidth={420} />
+                  <div style={{ marginTop: 12 }}>
+                    <WasteTicketsPanel requestId={request.id} />
+                  </div>
+                </div>
+              ) : (
+                <FileLinkList files={request.tickets} maxNameWidth={420} />
+              )}
             </div>
           )}
 

@@ -143,7 +143,8 @@ async function seedDriver(params: {
     .select({ id: schema.specializations.id })
     .from(schema.specializations)
     .where(sql`${schema.specializations.code} = 'driver'`);
-  if (!specialization) throw new Error('В базе нет специализации «водитель»: миграции не применены');
+  if (!specialization)
+    throw new Error('В базе нет специализации «водитель»: миграции не применены');
 
   const snils = makeSnils();
   return db.transaction(async (tx) => {

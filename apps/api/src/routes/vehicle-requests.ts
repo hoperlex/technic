@@ -23,6 +23,7 @@ import { alias, unionAll } from 'drizzle-orm/pg-core';
 import {
   type AddressMeta,
   ADDRESS_NOT_VERIFIED_MESSAGE,
+  type AssignmentPreviewDto,
   type AssignVehicleInput,
   calcVehicleRequestCost,
   can,
@@ -278,6 +279,38 @@ import {
   shiftSummaries,
   unapprovedPastShiftDates,
 } from '../services/vehicle-request-shifts';
+// Гейт режима модуля периодов назначения (план §10, решение И1) и метка загрязнения истории (К4).
+// Гейт стоит шагом 0 канонического порядка — первым запросом пишущей транзакции: так freeze
+// дожидается активных писателей, а писатель не проскакивает мимо freeze (Ж3). Класс двери здесь не
+// стилистика: `history` закрывается уже откатом (`history_frozen`), `history_free` — только
+// cutover'ом (`all_frozen`).
+import { ensureAssignmentHistory } from '../services/assignment-ensure';
+import {
+  historyIsAuthoritative,
+  requireOpenDoor,
+  type AssignmentModeSnapshot,
+} from '../services/assignment-mode';
+/*
+ * Предпросмотр и отпечаток **старой двери смены техники** (план §8, «новая ручка у старой двери»).
+ *
+ * Расчёт последствий живёт в своём модуле, а не здесь, по той же причине, по какой туда уехали
+ * остальные двери истории: этот файл — барьер плана (§16.1), и пять дверей, дописанных в него,
+ * конфликтуют при любом порядке работ. Здесь остаётся только то, что действительно принадлежит
+ * маршруту: где стоит сверка отпечатка в порядке транзакции и что видит человек.
+ */
+import { previewAssignmentCommand, type AssignmentCommandTx } from '../services/assignment-command';
+import {
+  assertReassignPreviewFingerprint,
+  lockedReassignRequest,
+  planReassignCommand,
+  reassignPreviewDto,
+  type ReassignCommand,
+  type ReassignPlan,
+} from '../services/assignment-reassign';
+// Бэкстоп чужих дверей (план Р21, Р22; фаза — Ж5): четыре двери этого файла зовут сверку ЭСМ-2, но
+// машиниста не спрашивают. До переключения чтения расчёт остаётся диагностикой и работу не трогает.
+import { assertAssignmentBackstop } from '../services/assignment-backstop';
+import { markAssignmentHistoryDirty } from '../services/assignment-dirty';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 import { categorySpecsSql } from '../services/vehicle-categories';
 import {
@@ -3663,6 +3696,29 @@ function feedSortExprs(sortBy: string | undefined): { order: SQL; weekly: SQL } 
   return byField[sortBy ?? ''] ?? byField.createdAt!;
 }
 
+/**
+ * Нужна ли этой заявке готовность истории назначения (Р20).
+ *
+ * Три условия, и все три — из контракта, а не из осторожности. **Заказ спецтехники**: грузоперевозке
+ * история не нужна вовсе, и снимок ответил бы ей 422 — то есть достройка сломала бы восстановление
+ * заявки, к которой она не относится. **Рабочий статус** («В работе» или «Выполнена»): только он
+ * рождает бумагу, и только его смотрит предикат cutover; новая и отменённая заявки истории не
+ * ведут. **Срок работ**: без него не посчитать ни одного отрезка, и заявка без строки деталей —
+ * не повод отказать в выводе из архива.
+ */
+async function needsAssignmentHistory(
+  tx: Parameters<Parameters<(typeof db)['transaction']>[0]>[0],
+  request: { id: string; requestType: string; status: string },
+): Promise<boolean> {
+  if (request.requestType !== 'special_equipment') return false;
+  if (request.status !== 'confirmed' && request.status !== 'done') return false;
+  const [details] = await tx
+    .select({ dateFrom: specialEquipmentRequestDetails.dateFrom })
+    .from(specialEquipmentRequestDetails)
+    .where(eq(specialEquipmentRequestDetails.requestId, request.id));
+  return details?.dateFrom != null;
+}
+
 export default async function vehicleRequestsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   // Право на каждое действие отдельно (ADR 0021): модуль «Заказ ТС» оператору вывоза недоступен
@@ -4639,6 +4695,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       }
 
       const applyEdit = async (tx: Tx): Promise<void> => {
+        // Шаг 0 канонического порядка — гейт режима (§10). Правка срока читает историю ради
+        // бумаги (сверка ЭСМ-2 и дней), поэтому дверь класса `history`: при откате она закрыта.
+        await requireOpenDoor(tx, 'history');
         /*
          * Рейсы заявки — под блокировкой и первым делом (Р17): порядок «маршруты → заявки» один на
          * модуль, и правка, взявшая заявку раньше рейса, встала бы во встречную блокировку со
@@ -4859,6 +4918,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             actor: { id: p.id },
             reason: 'Срок работ изменён правкой заявки — путевые листы переоформлены',
             dropPendingEarlyEnd: true,
+            // Бэкстоп считает сам сервис последствий: правка заявки — одна заявка и один человек,
+            // разбивать расчёт на preflight ей незачем (в отличие от недельной операции, Р23).
+            backstop: 'work_period',
           }));
           /*
            * Дни линейного заказа, которых рейс не отдал (ADR 0100 п. 11, Р11). У обычной правки
@@ -5642,6 +5704,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         tx: Tx,
         correction: CorrectionRecord | null,
       ): Promise<IssuedEsm2> => {
+        /*
+         * Гейт и строка заявки — до всякой работы с бумагой (план Л3, подэтап 2a). Прежде эта
+         * дверь заявку под блокировку не брала вовсе, а версию её двигала последним `UPDATE`, то
+         * есть шла `листы → заявка`; команда истории идёт `заявка → листы`, и с меткой `dirty`
+         * встречный порядок стал бы взаимной блокировкой.
+         *
+         * Класс двери — `history_free` (И1): истории ручная выписка не пишет, но множество листов
+         * двигает, поэтому при откате она работает, а на cutover закрыта.
+         */
+        await requireOpenDoor(tx, 'history_free');
+        await lockRequestRow(tx, before.id);
         const created = await issueEsm2OnDemand(tx, {
           requestId: before.id,
           weekOf,
@@ -5666,6 +5739,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           .where(and(eq(vehicleRequests.id, before.id), eq(vehicleRequests.version, version)))
           .returning({ id: vehicleRequests.id });
         if (!updated) throw err.conflict();
+        // У заявки прибавился лист — значит отменяемость её бумаги изменилась внутри дня, а
+        // `validated_on` остался прежним (К4). Метку ставят все двери этого класса.
+        await markAssignmentHistoryDirty(tx, before.id);
         return created;
       };
 
@@ -5975,6 +6051,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // время с листом на другое — даже мгновение.
       const { assigned, completed, earlyEndDropped, droppedRelocations, detachedDays, esm2, days } =
         await db.transaction(async (tx) => {
+          // Шаг 0 канонического порядка — гейт режима (§10), до типа и до рейсов: смена статуса
+          // назначает технику и переоформляет бумагу, то есть дверь класса `history`.
+          await requireOpenDoor(tx, 'history');
           /*
            * Блокировки — первым делом и в этом порядке: тип, рейсы, заявка (Р5, Р11, Р17).
            *
@@ -6166,6 +6245,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
            * аннулируются вместе с работой. Закрытие срока не меняет и потому ничего не трогает —
            * сверка на нём молчит сама, отдельного условия для этого не нужно.
            */
+          // Бэкстоп Р21 — перед бумагой. Статус новых дней не открывает, поэтому решения по хвосту
+          // (Р31) с него не спрашивают; пробелы машиниста спрашивают: рождённые этим переходом
+          // листы выписываются на те же дни, о которых история молчит. День расчёта — тот же
+          // `today`, каким считает сверка: полночь между двумя расчётами дала бы разные ответы.
+          await assertAssignmentBackstop(tx, {
+            door: 'request_status',
+            requestId: before.id,
+            actor: { id: p.id },
+            asOf: today,
+            reason: esm2StatusReason(status),
+          });
           const esm2 = await syncEsm2Waybills(tx, {
             requestId: before.id,
             actor: { id: p.id },
@@ -6361,7 +6451,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     { ...canChangeStatus, schema: { params: idParams, body: changeVehicleAssignmentSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const { version, route, correction, ...rates } = req.body;
+      // `previewFingerprint` вынут из `rates` намеренно: остаток уходит в `resolveAssignment`
+      // как назначение, и рукопожатию там не место — оно про разговор с человеком, а не про машину.
+      const { version, route, correction, previewFingerprint, ...rates } = req.body;
       const before = await getDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, before);
@@ -6448,6 +6540,57 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       };
       authorize();
 
+      /** Семантическая команда двери — то, из чего считаются последствия (план §8, Р11, Р32). */
+      const semanticCommand = (): ReassignCommand => ({
+        vehicleId: rates.vehicleId,
+        driverPersonId: rates.driverPersonId,
+        // Коррекционная половина: список названных листов и глубина, посчитанная `planAssignmentCorrection`
+        // до первой правки (Р36). На повторе операции `plan` пуст — но туда мы и не доходим:
+        // `perform` при найденном ключе не зовётся вовсе.
+        ...(correction && plan
+          ? {
+              correction: {
+                unlockWaybillIds: correction.unlockWaybillIds,
+                effectiveDate: plan.effectiveDate,
+              },
+            }
+          : {}),
+      });
+
+      /**
+       * Шаг 7 канона у старой двери: сверка отпечатка последствий — **под блокировками и до первой
+       * записи** (план §8; фазирование — Ж5, И5).
+       *
+       * Стоит здесь по той же причине, по какой она стоит здесь у статусной ручки: между просмотром
+       * и нажатием план меняется, не тронув заявку вовсе — лист аннулировали своей ручкой, объект
+       * подписал день, наступила полночь, — и `version` ни одного из этих случаев не ловит.
+       *
+       * Считается только тогда, когда отпечаток в игре, и это существенно: в фазе `legacy` у
+       * запроса без отпечатка не происходит **ни одного лишнего чтения**, то есть обычная смена
+       * техники идёт ровно тем же путём и с той же ценой, что и до этой волны.
+       */
+      const checkPreviewFingerprint = async (
+        tx: Tx,
+        mode: AssignmentModeSnapshot,
+      ): Promise<void> => {
+        if (previewFingerprint === undefined && !historyIsAuthoritative(mode)) return;
+        // У грузоперевозки нет ни срока работ, ни недельной бумаги: предпросмотра у неё не бывает,
+        // и спрашивать отпечаток не с чего даже после переключения чтения.
+        if (before.requestType !== 'special_equipment') return;
+        const cmdTx = tx as AssignmentCommandTx;
+        const locked = await lockedReassignRequest(cmdTx, before.id);
+        const planned = await planReassignCommand(
+          { tx: cmdTx, mode, request: locked, asOf: today, actor: { id: p.id } },
+          semanticCommand(),
+        );
+        assertReassignPreviewFingerprint({
+          mode,
+          effects: planned.effects,
+          computed: planned.fingerprint,
+          supplied: previewFingerprint,
+        });
+      };
+
       let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       let days: LinearDaysSyncResult = { detached: [], frozen: [] };
       /**
@@ -6464,6 +6607,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         tx: Tx,
         correctionId: string | null,
       ): Promise<SavedAssignment> => {
+        // Шаг 0 — гейт режима (§10): смена техники и её коррекция и есть та дверь, ради которой
+        // класс `history` заведён, — она пишет назначение и переоформляет листы.
+        const mode = await requireOpenDoor(tx, 'history');
         /*
          * Канонический порядок Р17 — первым делом и до всякой правки: сначала все рейсы заявки
          * (нынешний, названный телом целевой и перегоны) по возрастанию `id`, затем её строка.
@@ -6475,6 +6621,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
          */
         await lockRequestRoutes(tx, before.id, namedRouteIds(route));
         await lockRequestRow(tx, before.id);
+        // Шаг 7: отпечаток — под уже взятыми блокировками и **до** первой записи. Позже он ничего
+        // бы не значил: заявка уже была бы переписана тем состоянием, которое человек не видел.
+        await checkPreviewFingerprint(tx, mode);
         const saved = await resolveAssignment(
           tx,
           { ...rates, route },
@@ -6506,6 +6655,18 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         // Причина коррекции идёт сюда же и уходит в оба листа (Р35): в сгоревший — как причина
         // списания, в новый — как `correction_reason`. Обычной смене техники объяснение пишет
         // портал, и оно у неё одно на всё.
+        //
+        // Бэкстоп Р21 — перед бумагой. Эта дверь однажды примет якоря сама (Р22: там они нужны
+        // коррекции принадлежности, и права у неё те же, что у команды машиниста), но пока не
+        // принимает, и в режиме `history` ей полагается тот же отказ с указанием, где называют
+        // людей. Хвост (Р31) у неё не спрашивается: новых дней смена техники не открывает, а
+        // расхождение «история против назначения» она сама и создаёт — история догонит его
+        // dual-write'ом, а не отказом здесь.
+        await assertAssignmentBackstop(tx, {
+          door: 'request_assignment',
+          requestId: before.id,
+          actor: { id: p.id },
+        });
         esm2 = await syncEsm2Waybills(tx, {
           requestId: before.id,
           actor: { id: p.id },
@@ -6657,6 +6818,94 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     },
   );
 
+  /**
+   * Предпросмотр смены техники — **новая ручка у старой двери**
+   * (`docs/assignment-periods-plan.md`, §8; Р11, Р16, Р18, Р32).
+   *
+   * ЗАЧЕМ ОНА. Смена техники — главный рабочий инструмент диспетчера, и до этой волны она была
+   * единственной дверью бумаги, у которой предпросмотра не было вовсе. Из-за этого человек узнавал
+   * о последствиях постфактум: какие номера ЭСМ-2 сгорят, какие выпишутся заново, какие подписи
+   * объекта снимутся и почему заявка вообще не даётся в правку. Ответ на последний вопрос Р18
+   * обещает брать **отсюда**, а не из агрегата `VehicleRequestShiftsSummaryDto`: тот несёт два
+   * числа без дат, потому что едет в каждой строке списка, и «есть 4 подтверждённых дня» не
+   * говорит человеку, какие именно сутки ему мешают.
+   *
+   * ТЕЛО ТО ЖЕ, ЧТО У БОЕВОЙ РУЧКИ, и это правило модуля: расчёт обязан идти по тем входам, по
+   * которым его потом исполнит сама дверь, а своя схема разошлась бы с боевой на первом же новом
+   * поле — и окно начало бы обещать не то. Версия в теле не проверяется: предпросмотр ничего не
+   * меняет, а устаревшее состояние ловит отпечаток, который он же и выдаёт.
+   *
+   * НИ ОДНОЙ ЗАПИСИ (Р20). Каркас предпросмотра ведёт транзакцию в режиме расчёта: `insert`,
+   * `update` и `delete` в фазе плана бросают, заявка под `FOR UPDATE` не берётся вовсе, а гейт
+   * режима читается без блокировки — закрытый на запись модуль по-прежнему показывает последствия,
+   * и «модуль закрыт» человек слышит при попытке применить, а не вместо ответа на свой вопрос.
+   *
+   * ПРАВО — **то же, что у самой двери** (`vehicleRequests.status`), и это решение, а не недосмотр.
+   * Остальные предпросмотры модуля закрыты парой «видит заявку + видит бланки», но у них и боевая
+   * ручка требует `waybills.read`. Здесь боевая ручка его не требует, и добавить его предпросмотру
+   * значило бы закрыть просмотр последствий тому, кому открыта сама операция, — а после
+   * переключения чтения отпечаток становится обязательным, то есть такая роль осталась бы без входа
+   * вовсе. Номера бланков и фамилии парка при этом видит ровно тот, кто и так вправе их
+   * переоформить: арендодателя область отсекает раньше (`assertLessorScope`), а бумаги у его
+   * арендной единицы нет по построению.
+   *
+   * ОТКАЗЫ ЗДЕСЬ ТЕ ЖЕ, ЧТО У ДВЕРИ, — кроме одного. Замок подтверждённых дней (`canReassignVehicle`)
+   * предпросмотр **не** повторяет: показать, какие именно сутки запирают команду, и есть его работа
+   * (Р18). Состояние заявки остаётся отказом: у «Новой» менять нечего, у закрытой и отменённой это
+   * уже история.
+   */
+  r.post(
+    '/:id/assignment/preview',
+    { ...canChangeStatus, schema: { params: idParams, body: changeVehicleAssignmentSchema } },
+    async (req): Promise<AssignmentPreviewDto> => {
+      const p = requirePrincipal(req);
+      const { correction, vehicleId, driverPersonId } = req.body;
+      const before = await getDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      assertRequestScope(p, before);
+      assertLessorScope(p, before.assignment?.lessorId ?? null);
+      if (!canCorrectAssignment(before)) {
+        throw err.unprocessable(
+          before.status === 'confirmed'
+            ? 'У заявки нет назначенной техники — её назначает перевод в работу'
+            : before.status === 'done'
+              ? ASSIGNMENT_CORRECTION_CLOSED_MESSAGE
+              : 'Сменить технику можно только у заявки в работе',
+          { vehicleId: 'Заявка не в работе' },
+        );
+      }
+
+      const today = moscowDateKeyOf(new Date());
+      /*
+       * Коррекционная половина считается тем же расчётом, что и у боевой ручки (Р36): её отказы —
+       * чужой лист, неделя с двумя листами, пустая коррекция — человек обязан услышать в
+       * предпросмотре, а не после нажатия. Обычная смена техники сюда не заходит вовсе.
+       */
+      const plan = correction
+        ? await planAssignmentCorrection(before, correction, vehicleId, today)
+        : null;
+      const preview = await previewAssignmentCommand<ReassignPlan>(db, {
+        requestId: req.params.id,
+        actor: { id: p.id },
+        asOf: today,
+        plan: (ctx) =>
+          planReassignCommand(ctx, {
+            vehicleId,
+            driverPersonId,
+            ...(correction && plan
+              ? {
+                  correction: {
+                    unlockWaybillIds: correction.unlockWaybillIds,
+                    effectiveDate: plan.effectiveDate,
+                  },
+                }
+              : {}),
+          }),
+      });
+      return reassignPreviewDto(preview.effects, preview.plan, preview.fingerprint, preview.asOf);
+    },
+  );
+
   // ── Досрочное завершение заказа спецтехники (ADR 0044) ──
   /**
    * Запросить сокращение срока: техника освободилась раньше заказанного.
@@ -6700,6 +6949,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       let days: LinearDaysSyncResult = { detached: [], frozen: [] };
       await db.transaction(async (tx) => {
+        // Шаг 0 — гейт режима (§10): запрос сокращения правит срок заказа и снимает дни с
+        // рейсов, то есть читает историю ради бумаги — дверь класса `history`.
+        await requireOpenDoor(tx, 'history');
         /*
          * Канонический порядок Р17 — до первой записи: сокращённый срок снимает дни с рейсов
          * (`syncLinearRouteDays`), то есть эта транзакция берёт и рейсы, и заявку. Прежде она шла
@@ -6732,6 +6984,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           });
         if (auto) {
           await applyEarlyEnd(tx, before.id, newDateTo);
+          // Бэкстоп Р21 — после сокращения срока и перед бумагой. Порядок именно такой: считать
+          // до `applyEarlyEnd` значило бы спрашивать машиниста на дни, которые операция как раз и
+          // убирает. Решения по хвосту (Р31) сокращение не спрашивает — новых дней оно не
+          // открывает, а расхождение на прошлом бумаге не мешает (Р30).
+          await assertAssignmentBackstop(tx, {
+            door: 'early_end_request',
+            requestId: before.id,
+            actor: { id: p.id },
+            reason: `Срок заявки сокращён до ${dateKeyRu(newDateTo)}`,
+          });
           // Сокращённый срок переписывает бумагу той же транзакцией (миграция 0087): недели за
           // новой датой аннулируются, а текущая — аннулируется и выписывается заново, с днями по
           // новый последний день включительно. Отработанные недели сверка не трогает.
@@ -6840,6 +7102,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       }
 
       await db.transaction(async (tx) => {
+        // Шаг 0 — гейт режима (§10): виза сокращения правит срок и переписывает листы — та же
+        // дверь класса `history`, что и сам запрос.
+        await requireOpenDoor(tx, 'history');
         // Тот же канонический порядок, что и у самого запроса сокращения (Р17): виза правит срок и
         // снимает дни с рейсов, значит рейсы и заявка берутся до первой записи и в этом порядке.
         await lockRequestRoutes(tx, before.id);
@@ -6860,6 +7125,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         // будет, не должна пережить визу даже на мгновение.
         if (approved) {
           await applyEarlyEnd(tx, before.id, pending.newDateTo);
+          // Бэкстоп Р21 — тем же порядком и по той же причине, что и у самого запроса сокращения:
+          // сначала новый срок, потом расчёт по нему, и только потом бумага.
+          await assertAssignmentBackstop(tx, {
+            door: 'early_end_decision',
+            requestId: before.id,
+            actor: { id: p.id },
+            reason: `Срок заявки сокращён до ${dateKeyRu(pending.newDateTo)}`,
+          });
           esm2 = await syncEsm2Waybills(tx, {
             requestId: before.id,
             actor: { id: p.id },
@@ -6920,6 +7193,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     assertRequestScope(p, before);
 
     const dropped = await db.transaction(async (tx) => {
+      // Шаг 0 — гейт режима (§10): отзыв запроса на сокращение стоит в том же ряду, что сам
+      // запрос и его виза, — дверь класса `history`.
+      await requireOpenDoor(tx, 'history');
       // Заявка — раньше своего запроса на сокращение (Р17): рейсов отзыв не трогает вовсе, но
       // строку заказа он правит, а смена статуса снимает тот же запрос уже под её блокировкой
       // (`clearPendingEarlyEnd`). Обратный порядок здесь и был бы встречной блокировкой.
@@ -7235,6 +7511,13 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    * «объектная роль правит только "Новую"» здесь **не применяется** осознанно, как и у досрочного
    * завершения (ADR 0044 п. 3): смены появляются ровно у заявки в работе, и заполняет их тот, кто
    * стоит на площадке.
+   *
+   * ПОРЯДОК ЗАХВАТА (план Л3, подэтап 2a). Транзакция идёт `режим → заявка → смена`: сперва гейт
+   * (шаг 0), затем строка заявки `FOR UPDATE`, и только потом сама смена. Прежде ручка не брала
+   * заявку вовсе, а состояние дня читала до транзакции; с меткой загрязнения (`dirty`) такой
+   * порядок стал бы встречным команде истории, которая идёт `заявка → смена`, — то есть прямой
+   * взаимной блокировкой. Заодно закрывается и старая щель: решение «день не подписан» теперь
+   * принимается под той же блокировкой, под которой пишется.
    */
   r.put(
     '/:id/shifts/:date',
@@ -7246,16 +7529,21 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const { date } = req.params;
       const request = await requireShiftEditableRequest(p, req.params.id, date);
-      const before = await loadRequestShift(request.id, date, request);
-      // Принятый день не переписывается: иначе часы менялись бы под уже поставленной подписью.
-      // Снять подпись может тот же круг, кто её ставил, — и это отдельное, видимое действие.
-      if (before?.approvedAt) {
-        throw err.unprocessable(
-          `Смена за ${dateKeyRu(date)} согласована — сначала снимите согласование`,
-        );
-      }
       await db.transaction(async (tx) => {
+        // Смены истории не пишут, но двигают отменяемость бумаги (И1): дверь `history_free`
+        // работает при откате и закрывается только на cutover.
+        await requireOpenDoor(tx, 'history_free');
+        await lockRequestRow(tx, request.id);
+        const before = await loadRequestShift(request.id, date, request, tx);
+        // Принятый день не переписывается: иначе часы менялись бы под уже поставленной подписью.
+        // Снять подпись может тот же круг, кто её ставил, — и это отдельное, видимое действие.
+        if (before?.approvedAt) {
+          throw err.unprocessable(
+            `Смена за ${dateKeyRu(date)} согласована — сначала снимите согласование`,
+          );
+        }
         await saveRequestShift(tx, { requestId: request.id, date, actorId: p.id, input: req.body });
+        await markAssignmentHistoryDirty(tx, request.id);
       });
       return await shiftsResponse(request);
     },
@@ -7264,20 +7552,25 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
   /**
    * Убрать ошибочно заведённый день — пока он не подтверждён. Согласованный день удалению не
    * подлежит: за ним стоит принятая работа, и стирают её снятием подписи, а не молча.
+   *
+   * Порядок захвата — тот же, что и у сохранения: гейт, заявка, смена (Л3).
    */
   r.delete('/:id/shifts/:date', { ...canUpdate, schema: { params: shiftParams } }, async (req) => {
     const p = requirePrincipal(req);
     const { date } = req.params;
     const request = await requireShiftEditableRequest(p, req.params.id, date);
-    const before = await loadRequestShift(request.id, date, request);
-    if (!before) throw err.notFound('Смена не найдена');
-    if (before.approvedAt) {
-      throw err.unprocessable(
-        `Смена за ${dateKeyRu(date)} согласована — сначала снимите согласование`,
-      );
-    }
     await db.transaction(async (tx) => {
+      await requireOpenDoor(tx, 'history_free');
+      await lockRequestRow(tx, request.id);
+      const before = await loadRequestShift(request.id, date, request, tx);
+      if (!before) throw err.notFound('Смена не найдена');
+      if (before.approvedAt) {
+        throw err.unprocessable(
+          `Смена за ${dateKeyRu(date)} согласована — сначала снимите согласование`,
+        );
+      }
       await deleteRequestShift(tx, request.id, date);
+      await markAssignmentHistoryDirty(tx, request.id);
     });
     return await shiftsResponse(request);
   });
@@ -7289,6 +7582,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    * Подтверждает тот, кто мог бы эту заявку завести (`canConfirmShifts`): решение принимает
    * заказчик — он один видит, во сколько машина вышла и сколько простояла. Снятие нужно не реже
    * подписи: им откатывают заявку и меняют машину, запертые подтверждёнными днями.
+   *
+   * ПОРЯДОК ЗАХВАТА (план Р18, Л3). Здесь он и был самым слабым: смена читалась до транзакции, а
+   * правилась без блокировки заявки — то есть порядок «смена машины увидела пустой диапазон →
+   * закоммитилась → подпись легла под день, который уже относится к другой машине» ничем не
+   * запрещался. Теперь транзакция идёт `режим → заявка → смена`, и день перечитывается под той же
+   * блокировкой, под которой подпись ставится.
    */
   r.post(
     '/:id/shifts/:date/approval',
@@ -7304,27 +7603,37 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // Право на маршруте общее, а подтверждает заказчик этой заявки — как виза руководителя
       // строительства проверяется по объекту, а не по одному лишь праву.
       assertShiftApprover(p, request);
-      const before = await loadRequestShift(request.id, date, request);
-      // Подтверждают внесённые часы, а не пустой день: подпись под ненаписанным ничего не значит.
-      if (!before) {
-        throw err.unprocessable(`Смена за ${dateKeyRu(date)} не заполнена — подтверждать нечего`, {
-          machineHours: 'Заполните смену',
+
+      /** Смена после правки; `null` — правки не было: подпись уже стояла (или уже была снята). */
+      const after = await db.transaction(async (tx) => {
+        await requireOpenDoor(tx, 'history_free');
+        await lockRequestRow(tx, request.id);
+        const before = await loadRequestShift(request.id, date, request, tx);
+        // Подтверждают внесённые часы, а не пустой день: подпись под ненаписанным ничего не значит.
+        if (!before) {
+          throw err.unprocessable(
+            `Смена за ${dateKeyRu(date)} не заполнена — подтверждать нечего`,
+            {
+              machineHours: 'Заполните смену',
+            },
+          );
+        }
+        if (!!before.approvedAt === approved) return null;
+        await setShiftApproval(tx, { requestId: request.id, date, approved, actorId: p.id });
+        await markAssignmentHistoryDirty(tx, request.id);
+        return (await loadRequestShift(request.id, date, request, tx))!;
+      });
+      // Событие пишется только за состоявшуюся правку — как и прежде: повторное нажатие той же
+      // кнопки журнал не пополняет.
+      if (after) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: approved ? 'vehicle_request.shift_approve' : 'vehicle_request.shift_revoke',
+          entityType: 'vehicle_request',
+          entityId: request.id,
+          metadata: { shiftDate: date, changes: shiftChange(after) },
         });
       }
-      if (!!before.approvedAt === approved) return await shiftsResponse(request);
-
-      await db.transaction(async (tx) => {
-        await setShiftApproval(tx, { requestId: request.id, date, approved, actorId: p.id });
-      });
-
-      const after = (await loadRequestShift(request.id, date, request))!;
-      await writeAudit({
-        actorUserId: p.id,
-        action: approved ? 'vehicle_request.shift_approve' : 'vehicle_request.shift_revoke',
-        entityType: 'vehicle_request',
-        entityId: request.id,
-        metadata: { shiftDate: date, changes: shiftChange(after) },
-      });
       return await shiftsResponse(request);
     },
   );
@@ -7457,10 +7766,44 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         .where(eq(vehicleRequestAssignments.requestId, existing.id));
       assertLessorScope(p, assigned?.lessorId ?? null);
       if (existing.deletedAt) {
-        await db
-          .update(vehicleRequests)
-          .set({ deletedAt: null, deletedBy: null, updatedAt: new Date() })
-          .where(eq(vehicleRequests.id, existing.id));
+        /*
+         * Р28. Восстановление из архива — дверь готовности, и канонический порядок у неё тот же,
+         * что у команд истории: гейт режима (§10) первым запросом транзакции, затем
+         * `lockRequestRow`, и только потом работа. Гейт стоит первым не ради значения, а чтобы
+         * freeze дождался этой транзакции, а она не проскочила мимо freeze; блокировка — потому
+         * что достройка истории её требует и сама не берёт (иначе перевернулся бы порядок захвата
+         * у двери, которая уже держит рейсы).
+         *
+         * Зачем здесь вообще история. Архив сохраняет рабочий статус, и заявка возвращается в
+         * бумагообразующий режим: без достройки после переключения чтения появилась бы живая
+         * «Выполненная» в состоянии `empty` — то есть заказ, по которому нельзя ни выписать лист,
+         * ни разобрать, чем он работал.
+         *
+         * Якорей ручка не принимает и рукопожатия не заводит — это прямое следствие Р22, и заодно
+         * оно избавляет `archive.restore` от двухфазного протокола, прав `waybills.*` и
+         * собственного предпросмотра. Бумагу восстановление не выписывает и сейчас: снимает
+         * `deleted_at` и на этом кончается, а листы появятся при ближайшей сверке по любому поводу.
+         *
+         * ОТКАЗОВ ЭТА ДВЕРЬ НЕ ДОБАВЛЯЕТ — и здесь волна соединения расходится с буквой Р28 п. 3,
+         * который велит отвечать 422 «сначала подготовьте историю» на состояние `materialized`.
+         * Отложено намеренно: сегодня это был бы **новый** отказ на пути, который до сих пор
+         * работал всегда, и цена ошибки в нём — заявка, запертая в архиве из-за пробела, который
+         * чинится другой дверью. Само требование не пропало: пока читается старая бумага
+         * (`assignmentPeriodsReadMode = legacy`), `materialized` восстановлению не мешает ничему —
+         * предикат cutover видит такую заявку и до переключения её не пустит, — а включать отказ
+         * следует вместе с переключением чтения, как и прочие 422 Р22 (Ж5).
+         */
+        await db.transaction(async (tx) => {
+          await requireOpenDoor(tx, 'history');
+          await lockRequestRow(tx, existing.id);
+          await tx
+            .update(vehicleRequests)
+            .set({ deletedAt: null, deletedBy: null, updatedAt: new Date() })
+            .where(eq(vehicleRequests.id, existing.id));
+          if (await needsAssignmentHistory(tx, existing)) {
+            await ensureAssignmentHistory(tx, { requestId: existing.id });
+          }
+        });
         await writeAudit({
           actorUserId: p.id,
           action: 'vehicle_request.restore',

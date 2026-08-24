@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, Skeleton, Space, Tag, Tooltip, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -13,10 +13,17 @@ import { vehicleMaintenanceApi, vehicleMaintenanceKeys } from '@entities/vehicle
 import { errorMessage } from '@shared/lib';
 import { ViewFields } from '@shared/ui';
 import { useAuth } from '../../../auth/AuthContext';
-import { VERSION_CONFLICT_MESSAGE, isVersionConflict } from '../model/conflict';
+import {
+  VERSION_CONFLICT_MESSAGE,
+  isStaleRecord,
+  isVersionConflict,
+  maintenanceErrorText,
+} from '../model/conflict';
+import { useMaintenanceRecordAddress } from '../model/maintenanceAddress';
 import { SHOWN_DATE, isLowerBound, kmSinceText, kmText } from '../model/maintenanceText';
 import { MaintenanceFormModal } from './MaintenanceFormModal';
 import { MaintenanceHistoryTable } from './MaintenanceHistoryTable';
+import { MaintenanceVoidModal } from './MaintenanceVoidModal';
 
 /**
  * Блок обслуживания машины (план «Показания техники», Р14а): когда обслуживали, сколько прошла с
@@ -65,6 +72,9 @@ export function VehicleMaintenanceBlock({
 
   /** Открытая форма: `null` в `record` — заводят новую запись, иначе правят эту (Р15). */
   const [editing, setEditing] = useState<{ record: VehicleMaintenanceDto | null } | null>(null);
+  /** Акт, который аннулируют: окно спрашивает причину и называет возвращаемые позиции (Р6). */
+  const [voiding, setVoiding] = useState<VehicleMaintenanceDto | null>(null);
+  const [expandedIds, setExpandedIds] = useState<readonly string[]>([]);
 
   const query = on ? { on } : {};
   const summaryQuery = useQuery({
@@ -92,9 +102,38 @@ export function VehicleMaintenanceBlock({
         void qc.invalidateQueries({ queryKey: vehicleMaintenanceKeys.root });
         return;
       }
-      message.error(errorMessage(e));
+      /*
+       * По акту успели провести расход, пока журнал был на экране: кнопка «Удалить» стояла по
+       * устаревшему `hasPartMovements` и обещала действие, которого уже нет. Журнал перечитывается
+       * — на месте кнопки появится «Аннулировать» (Р6).
+       */
+      message.error(maintenanceErrorText(e));
+      if (isStaleRecord(e)) void qc.invalidateQueries({ queryKey: vehicleMaintenanceKeys.root });
     },
   });
+
+  /**
+   * Акт, названный вторым ключом адреса (Р14): лента журнала склада присылает ссылку на документ,
+   * а не на машину, и открытая по ней сводка обязана показать нужную строку среди десятков —
+   * прокруткой и раскрытыми строками расхода.
+   *
+   * Раскрытие одноразовое: `applied` помнит уже отработанный акт, поэтому строка, свёрнутая
+   * человеком руками, не разворачивается обратно на каждой перерисовке журнала.
+   */
+  const addressedId = useMaintenanceRecordAddress(canRead);
+  const applied = useRef<string | null>(null);
+  const journal = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const items = historyQuery.data?.items;
+    if (!addressedId || !items || applied.current === addressedId) return;
+    if (!items.some((r) => r.id === addressedId)) return;
+    applied.current = addressedId;
+    setExpandedIds((prev) => (prev.includes(addressedId) ? prev : [...prev, addressedId]));
+    // Прокрутка — не украшение: журнал не разбит на страницы, и присланный акт бывает двадцатым.
+    const row = journal.current?.querySelector(`[data-row-key="${addressedId}"]`);
+    row?.scrollIntoView?.({ block: 'center' });
+  }, [addressedId, historyQuery.data]);
 
   if (!canRead) return null;
 
@@ -127,7 +166,12 @@ export function VehicleMaintenanceBlock({
       okText: 'Удалить',
       okButtonProps: { danger: true },
       cancelText: 'Отмена',
-      onOk: () => remove.mutateAsync(r),
+      /*
+       * Отказ гасится здесь, а не отдаётся окну подтверждения: объяснение уже показано `onError`
+       * («акт аннулируют, а не удаляют», «запись изменили в другом окне»), и оставленное открытым
+       * подтверждение предлагало бы нажать «Удалить» второй раз — с тем же исходом.
+       */
+      onOk: () => remove.mutateAsync(r).catch(() => undefined),
     });
 
   return (
@@ -217,12 +261,20 @@ export function VehicleMaintenanceBlock({
         {hint}
       </Typography.Text>
 
-      <MaintenanceHistoryTable
-        items={history}
-        canWrite={canWrite}
-        onEdit={(record) => setEditing({ record })}
-        onRemove={confirmRemove}
-      />
+      <div ref={journal}>
+        <MaintenanceHistoryTable
+          items={history}
+          canWrite={canWrite}
+          expandedIds={expandedIds}
+          onExpandedChange={setExpandedIds}
+          highlightId={addressedId}
+          onEdit={(record) => setEditing({ record })}
+          onRemove={confirmRemove}
+          onVoid={setVoiding}
+        />
+      </div>
+
+      <MaintenanceVoidModal record={voiding} onClose={() => setVoiding(null)} />
 
       {editing && (
         <MaintenanceFormModal

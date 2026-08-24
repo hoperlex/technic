@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
 import { issueRequestEsm2 } from './waybill-issue-helper';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -41,7 +42,11 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('backdoors');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 const PASSWORD = 'db-test-password-123';
 const ADMIN_EMAIL = 'db-doors-admin@example.invalid';
@@ -388,8 +393,7 @@ async function routesOf(requestId: string): Promise<string[]> {
 
 describe.skipIf(!DB_URL)('двери заднего числа со стороны заявки (живая схема)', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
 
     await seedUser(ADMIN_EMAIL, 'admin');
     const dispatcherId = await seedUser(DISPATCHER_EMAIL, 'dispatcher');
@@ -496,7 +500,16 @@ describe.skipIf(!DB_URL)('двери заднего числа со сторон
   });
 
   describe('ЭСМ-2 по требованию за прошедшую неделю (дыра 3)', () => {
-    it('без права — 403, без причины — 422, без ключа — 422, и ни один номер не сгорел', async () => {
+    /*
+   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+   *
+   * Сегодня половины совпадают: двери проверяют право, причину и ключ операции, а не нарезку бумаги. На этапе 5 расходится счёт выписанных номеров там, где команда режет неделю.
+   */
+  describeReadModes(readMode, 'двери заднего числа', (mode) => {
+    void mode;
+
+  it('без права — 403, без причины — 422, без ключа — 422, и ни один номер не сгорел', async () => {
       const request = await linearInProgress();
       const weekOf = ctx.pastFrom;
 
@@ -867,5 +880,6 @@ describe.skipIf(!DB_URL)('двери заднего числа со сторон
       expect(res.statusCode, res.body).toBe(200);
       await routesOf(request.id);
     });
+  });
   });
 });

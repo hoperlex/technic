@@ -207,12 +207,32 @@ export function serviceRequestColumns(
       ? [
           {
             key: 'service',
-            title: 'Сервис',
+            // Колонка называет обоих исполнителей: с волны В6 их два слоя — сервисная компания
+            // целиком и свои сотрудники поимённо (Н5). Прежнее «Сервис» показывало половину, и у
+            // заявки, которую чинит свой сисадмин, столбец читался как «никто не назначен».
+            title: 'Исполнители',
             dataIndex: 'service',
-            width: 190,
+            width: 220,
+            // Сортировка осталась по контрагенту — среди полей сортировки контракта поимённых нет,
+            // и сортируемый заголовок обещал бы порядок, на который сервер ответит 400.
             sorter: true,
-            render: (_v: unknown, r: ServiceRequestDto) =>
-              r.service?.name ?? <Typography.Text type="secondary">не назначен</Typography.Text>,
+            render: (_v: unknown, r: ServiceRequestDto) => {
+              const named = r.executors.map((e) => e.name);
+              if (!r.service && named.length === 0) {
+                return <Typography.Text type="secondary">не назначены</Typography.Text>;
+              }
+              return (
+                <>
+                  {r.service?.name}
+                  {r.service && named.length > 0 && <br />}
+                  {named.length > 0 && (
+                    <Typography.Text type={r.service ? 'secondary' : undefined}>
+                      {named.join(', ')}
+                    </Typography.Text>
+                  )}
+                </>
+              );
+            },
           },
         ]
       : []),

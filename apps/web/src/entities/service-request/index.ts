@@ -9,8 +9,8 @@
  * ни раздел, ни окна действий.
  */
 export { serviceRequestsApi } from './api/serviceRequestsApi';
-export { serviceCompanyKeys, serviceRequestKeys } from './api/keys';
-export { serviceCompanyOptionsQuery } from './api/queries';
+export { serviceCompanyKeys, serviceExecutorKeys, serviceRequestKeys } from './api/keys';
+export { serviceCompanyOptionsQuery, serviceExecutorCandidatesQuery } from './api/queries';
 export {
   serviceStatusLine,
   type ServiceStatusLine,
@@ -18,10 +18,23 @@ export {
   statusAgeLabel,
 } from './model/waiting';
 export {
+  consumableFactChanges,
+  consumableFactDelta,
+  consumableFactIssue,
+  consumableFactPayload,
+  consumableFactRows,
+  consumableFactTouched,
+  consumableFailureText,
+  consumableLabel,
+  type ConsumableFactRow,
+} from './model/consumables';
+export {
   isAwaitingDocuments,
   SERVICE_CLOSING_DOCUMENT_HINT,
   serviceDocumentCounts,
 } from './model/documents';
+export { ServiceConsumableFactRows } from './ui/ServiceConsumableFactRows';
+export { ServiceConsumablesTable } from './ui/ServiceConsumablesTable';
 export { ServiceDocumentUpload } from './ui/ServiceDocumentUpload';
 export { ServiceEstimateTable } from './ui/ServiceEstimateTable';
 export { ServiceRequestContext } from './ui/ServiceRequestContext';

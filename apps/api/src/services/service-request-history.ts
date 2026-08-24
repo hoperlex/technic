@@ -56,6 +56,8 @@ const AUDIT_ACTIONS = [
   'serviceRequest.estimate_approve',
   'serviceRequest.estimate_reject',
   'serviceRequest.estimate_reopen',
+  'serviceRequest.consumables_update',
+  'serviceRequest.consumables_issued',
   'serviceRequest.complete',
   'serviceRequest.accept',
   'serviceRequest.rework',
@@ -83,6 +85,14 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   'serviceRequest.estimate_approve': 'estimateApproved',
   'serviceRequest.estimate_reject': 'estimateRejected',
   'serviceRequest.estimate_reopen': 'estimateReopened',
+  // Правка состава номенклатуры — обычная правка заявки: до первой выдачи это ещё список
+  // пожеланий, и своего вида события он не заслуживает. А вот содержание у него своё, и берётся
+  // оно не из `changes` (их у этого действия нет), а из снимков состава — см. `changesOf`.
+  'serviceRequest.consumables_update': 'updated',
+  // Отметка факта выдачи — своё событие: с него заявка перестаёт быть просьбой и становится
+  // основанием записи на складе. «Правка» в этом месте истории умолчала бы о том, что со склада
+  // ушли картриджи.
+  'serviceRequest.consumables_issued': 'consumablesIssued',
   'serviceRequest.complete': 'completed',
   'serviceRequest.accept': 'accepted',
   'serviceRequest.rework': 'returnedToWork',
@@ -99,7 +109,7 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
 };
 
 /** Изменения из metadata аудита. Записи, сделанные до появления истории, деталей не несут. */
-function changesOf(metadata: unknown): RequestChangeDto[] {
+function fieldChangesOf(metadata: unknown): RequestChangeDto[] {
   if (!metadata || typeof metadata !== 'object') return [];
   const raw = (metadata as { changes?: unknown }).changes;
   if (!Array.isArray(raw)) return [];
@@ -107,6 +117,101 @@ function changesOf(metadata: unknown): RequestChangeDto[] {
     (c): c is RequestChangeDto =>
       !!c && typeof c === 'object' && typeof (c as RequestChangeDto).field === 'string',
   );
+}
+
+/** Позиция с количеством — так её читают и в движении склада, и в снимке состава заявки. */
+function position(name: unknown, quantity: unknown): string | null {
+  if (typeof name !== 'string' || typeof quantity !== 'number') return null;
+  return `${name} — ${quantity} шт`;
+}
+
+function arrayOf(metadata: unknown, key: string): unknown[] {
+  if (!metadata || typeof metadata !== 'object') return [];
+  const raw = (metadata as Record<string, unknown>)[key];
+  return Array.isArray(raw) ? raw : [];
+}
+
+/**
+ * Движение склада строками истории: «Списано со склада: Тонер Ricoh 201 — 2 шт» (Р10).
+ *
+ * Отдельно от `changes`, потому что это и есть отдельная вещь: `changes` отвечают «какие поля
+ * заявки поменялись», а склад двигает не поле, а отметка факта выдачи, и пишут её два действия —
+ * правка факта и закрытие работ. Из аудита они приезжают полем `movements`, и оба разбираются
+ * здесь одной функцией: два разбора одного снимка разошлись бы на первой же правке формата.
+ *
+ * Возврат — своей подписью, а не отрицательным числом: «−2» в ленте истории читается как опечатка,
+ * а «Возвращено на склад» отвечает на вопрос, ради которого строку и ищут.
+ *
+ * Записи, сделанные до этого выпуска, поля не несут вовсе — тогда движений просто нет, и событие
+ * остаётся в истории самим собой.
+ */
+function movementChangesOf(metadata: unknown): RequestChangeDto[] {
+  const changes: RequestChangeDto[] = [];
+  for (const raw of arrayOf(metadata, 'movements')) {
+    if (!raw || typeof raw !== 'object') continue;
+    const movement = raw as Record<string, unknown>;
+    const text = position(movement.name, movement.quantity);
+    if (!text) continue;
+    changes.push({
+      field: movement.entryKind === 'return' ? 'consumablesReturned' : 'consumablesIssued',
+      // «Было» у движения нет: событие не меняет значение поля, а называет случившийся факт —
+      // стрелка из пустоты в такой строке только мешает (`ChangeLines` на портале).
+      from: null,
+      to: text,
+    });
+  }
+  return changes;
+}
+
+/**
+ * Правка состава номенклатуры — одной строкой «было → стало», а не перечнем добавленных и убранных.
+ *
+ * Состав заменяется целиком одной ручкой (`PUT /:id/consumables`), и аудит хранит два снимка, а не
+ * разницу: спорят здесь не о том, какую строку тронули, а о том, что именно просили и в каком
+ * количестве. Собрать разницу из снимков можно, но читалась бы она хуже — «убрали 2, добавили 3»
+ * вместо самого списка.
+ */
+function compositionChangesOf(metadata: unknown): RequestChangeDto[] {
+  const listOf = (key: string): string | null => {
+    const rows = arrayOf(metadata, key);
+    if (rows.length === 0) return null;
+    const texts = rows
+      .map((row) =>
+        row && typeof row === 'object'
+          ? position(
+              (row as Record<string, unknown>).name,
+              (row as Record<string, unknown>).requestedQuantity,
+            )
+          : null,
+      )
+      .filter((text): text is string => text !== null);
+    return texts.length > 0 ? texts.join('; ') : null;
+  };
+  const before = listOf('before');
+  const after = listOf('after');
+  // Пустая заявка с обеих сторон — это не правка состава, а запись, у которой снимков не оказалось
+  // (аудит прошлых выпусков): строка «— → —» не сказала бы читателю ничего.
+  if (before === null && after === null) return [];
+  return [{ field: 'consumables', from: before ?? '—', to: after ?? '—' }];
+}
+
+/**
+ * Всё содержание события одним списком: поля заявки, движение склада и состав номенклатуры.
+ *
+ * Собрано в одном месте намеренно: перечень изменений показывается человеку одной колонкой, и
+ * решать, что в неё попадёт, обязана одна функция, а не три вызова, разложенные по веткам.
+ *
+ * Состав спрашивается **по действию**, а не по наличию полей: `before`/`after` — имена настолько
+ * общие, что первое же чужое событие с такой парой снимков молча приехало бы в историю подписью
+ * «Состав номенклатуры». Движения так не гадают: поле `movements` пишут два действия, и оба —
+ * ровно про склад.
+ */
+function changesOf(action: string, metadata: unknown): RequestChangeDto[] {
+  return [
+    ...fieldChangesOf(metadata),
+    ...movementChangesOf(metadata),
+    ...(action === 'serviceRequest.consumables_update' ? compositionChangesOf(metadata) : []),
+  ];
 }
 
 /** Ревизия сметы из metadata: её кладут события сметы — предъявление, согласование, отклонение. */
@@ -169,7 +274,7 @@ export async function loadServiceRequestHistory(
       toStatus: null,
       estimateRevision: revisionOf(row.metadata),
       comment: '',
-      changes: changesOf(row.metadata),
+      changes: changesOf(row.action, row.metadata),
     })),
   ];
 

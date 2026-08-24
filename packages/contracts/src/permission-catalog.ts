@@ -152,6 +152,17 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'manage',
     label: 'Пишет примечание исполнителя',
   },
+  /*
+   * Разбор талонов (ADR 0114). Действие `manage`, а не `status`: колонка «Ход» описывает движение
+   * заявки по статусам, а разбор её статуса не меняет вовсе — замечания закрытие не блокируют
+   * (Р23). Попади право в «Ход», витрина сказала бы, что сверка это часть закрытия заявки, — то
+   * есть ровно то смешение с `wasteRequests.status`, ради которого право и заведено отдельным.
+   */
+  'wasteRequests.ticketReview': {
+    module: 'waste',
+    action: 'manage',
+    label: 'Разбирает талоны вывоза',
+  },
 
   'vehicleRequests.read': { module: 'vehicle', action: 'read', label: 'Видит заказы техники' },
   'vehicleRequests.create': { module: 'vehicle', action: 'create', label: 'Заводит заказ техники' },
@@ -244,6 +255,27 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'status',
     label: 'Двигает заявку на обслуживание по статусам',
   },
+  'serviceRequests.hold': {
+    module: 'service',
+    action: 'status',
+    label: 'Откладывает заявку и возобновляет',
+  },
+  'serviceRequests.urgency': {
+    module: 'service',
+    action: 'manage',
+    label: 'Помечает заявку срочной',
+  },
+  /**
+   * Подпись говорит про работу, а не про клетку в форме назначения, и это не вольность. Право —
+   * половина условия: ходы заявки открывает назначение, и держатель права без назначения не может
+   * ничего. «Может быть назначен исполнителем» в витрине читалось бы как разрешение назначать —
+   * то есть как `serviceRequests.assign`, которое стоит строкой выше и означает обратное.
+   */
+  'serviceRequests.execute': {
+    module: 'service',
+    action: 'manage',
+    label: 'Работает исполнителем назначенных заявок',
+  },
   'serviceRequests.files': {
     module: 'service',
     action: 'manage',
@@ -260,8 +292,28 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'update',
     label: 'Ведёт справочник оргтехники',
   },
+  'officeEquipmentConsumables.manage': {
+    module: 'officeEquipment',
+    action: 'manage',
+    label: 'Ведёт номенклатуру картриджей и тонеров',
+  },
+  'officeEquipmentConsumables.stock': {
+    module: 'officeEquipment',
+    action: 'manage',
+    label: 'Правит остаток расходника вручную',
+  },
 
   'garage.read': { module: 'garage', action: 'read', label: 'Смотрит день гаража' },
+  'autoParts.manage': {
+    module: 'garage',
+    action: 'manage',
+    label: 'Ведёт справочник автозапчастей',
+  },
+  'autoParts.stock': {
+    module: 'garage',
+    action: 'manage',
+    label: 'Правит остаток автозапчасти',
+  },
   'driverCabinet.read': {
     module: 'driverCabinet',
     action: 'read',

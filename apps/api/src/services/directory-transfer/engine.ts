@@ -191,6 +191,37 @@ function mapHeader(
   return { idAt, at };
 }
 
+/**
+ * Ячейка строки по колонке описания. `undefined` — колонки в файле нет вовсе, и `set` не зовут:
+ * человек вправе удалить то, чего не правит.
+ */
+function cellAt(
+  cells: readonly string[],
+  at: Map<DirectoryColumn<unknown>, number>,
+  column: DirectoryColumn<unknown>,
+): string | undefined {
+  const index = at.get(column);
+  return index === undefined ? undefined : (cells[index] ?? '').trim();
+}
+
+/**
+ * Разбор строки файла в модель. Вынесен из `planRows` потому, что тем же разбором пользуется
+ * догрузка окружения (`resolveRows`): два разбора одного файла разошлись бы молча.
+ */
+function applyRow(
+  columns: DirectoryColumn<unknown>[],
+  at: Map<DirectoryColumn<unknown>, number>,
+  cells: readonly string[],
+  model: unknown,
+  ctx: RowContext,
+): void {
+  for (const column of columns) {
+    const text = cellAt(cells, at, column);
+    if (text === undefined || !column.set) continue;
+    column.set(model, text, ctx);
+  }
+}
+
 /** Копилка замечаний одной строки. Пустая — строка разобрана. */
 function rowContext(row: number, problems: string[], warnings: string[]): RowContext {
   return {
@@ -254,17 +285,10 @@ function planRows(
     if (cells.every((c) => c.trim() === '')) return;
     totalRows += 1;
 
-    const at2 = (column: DirectoryColumn<unknown>): string | undefined => {
-      const columnIndex = at.get(column);
-      return columnIndex === undefined ? undefined : (cells[columnIndex] ?? '').trim();
-    };
+    const at2 = (column: DirectoryColumn<unknown>): string | undefined => cellAt(cells, at, column);
 
     const apply = (model: unknown, ctx: RowContext): void => {
-      for (const column of prepared.columns) {
-        const text = at2(column);
-        if (text === undefined || !column.set) continue;
-        column.set(model, text, ctx);
-      }
+      applyRow(prepared.columns, at, cells, model, ctx);
     };
 
     // Первый проход — тихий: он нужен ради ключа, а его ошибки повторит второй.
@@ -336,6 +360,44 @@ function planRows(
 }
 
 /**
+ * Догрузка окружения по присланному файлу (`resolveRows` описания). Описаний с такой догрузкой одно
+ * — оргтехника, — и для всех остальных этот проход не стоит ничего: без хука он выходит первой же
+ * строкой.
+ *
+ * Проход отдельный, а не встроен в `planRows`, ровно по одной причине: `check()` синхронна, а
+ * догрузка ходит в базу. Разложить `planRows` на «разобрать всё → сходить в базу → проверить всё»
+ * значило бы переставить местами сообщения разбора и проверок в отчёте, то есть поменять порядок
+ * жалоб во всех восемнадцати справочниках ради одного.
+ *
+ * Строки разбираются начисто, поверх `blank()`, и с молчаливой копилкой: описанию нужен перечень
+ * присланного, а не итоговые модели, и ошибки этого прохода дословно повторит `planRows`.
+ */
+async function resolveFromSheet(
+  def: AnyDirectory,
+  prepared: Prepared,
+  sheet: string[][],
+): Promise<void> {
+  const resolveRows = def.resolveRows;
+  if (!resolveRows) return;
+  const body = sheet.slice(1);
+  // Слишком длинный файл дальше не пойдёт: `planRows` отвергнет его следующей же строкой. Тратить
+  // на него запрос в базу незачем — и незачем давать этим запросом работу тому, кто прислал книгу
+  // на миллион строк.
+  if (body.length > DIRECTORY_IMPORT_MAX_ROWS) return;
+
+  const { at } = mapHeader(sheet[0] ?? [], prepared.columns);
+  const models: unknown[] = [];
+  body.forEach((cells, index) => {
+    if (cells.every((c) => c.trim() === '')) return;
+    const model = def.blank();
+    // Номер строки — тот же, что в `planRows`: заголовок занял первую, отсчёт данных идёт со второй.
+    applyRow(prepared.columns, at, cells, model, silentContext(index + 2));
+    models.push(model);
+  });
+  await resolveRows(models, prepared.env);
+}
+
+/**
  * Отказ базы при записи. Уникальность здесь означает не поломку, а строку, которая столкнулась с
  * уже заведённой не по тому ключу, по которому её искали: один и тот же тип мусора под двумя
  * кодами, тот же госномер у другой машины. Человеку нужно знать это, а не текст ограничения.
@@ -367,7 +429,11 @@ export async function importDirectory(
   opts: { dryRun: boolean; actorUserId: string },
 ): Promise<DirectoryImportReportDto> {
   const prepared = await prepare(def);
-  const { plan, report } = planRows(def, prepared, dataSheet(bytes));
+  const sheet = dataSheet(bytes);
+  // Догрузка идёт и на предпросмотре: без неё `check()` не смогла бы сказать, что не так со
+  // строкой, — а предпросмотр затем и существует, чтобы сказать это до записи.
+  await resolveFromSheet(def, prepared, sheet);
+  const { plan, report } = planRows(def, prepared, sheet);
 
   if (opts.dryRun) return { dryRun: true, ...report };
 

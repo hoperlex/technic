@@ -87,11 +87,17 @@ function attachDocument(name = 'Акт выполненных работ.pdf'): 
 }
 
 describe('приёмка требует закрывающий документ (Р112)', () => {
-  it('без единой бумаги кнопка неактивна, а причина названа в окне', async () => {
+  it('без единой бумаги приёмку не запирают, но бумагу называют (Н8)', async () => {
+    /*
+     * Планка закрывающего документа уехала с приёмки на «Решена» (Н8): сервер её здесь больше не
+     * спрашивает. Запертая кнопка теперь запирала бы то, что сервер пропускает, — и оставила бы
+     * без выхода заявку-наследие, доехавшую до «Решена» без бумаги: автозакрытие такую не берёт, и
+     * ручная приёмка — единственный способ её закрыть.
+     */
     renderAccept();
 
     await screen.findByText('Нужен один из документов: акт, счёт или гарантийный талон');
-    expect(acceptButton().disabled).toBe(true);
+    expect(acceptButton().disabled).toBe(false);
   });
 
   it('с любым закрывающим документом кнопка активна и предупреждения нет', async () => {
@@ -122,7 +128,7 @@ describe('приёмка требует закрывающий документ 
 });
 
 describe('окно приёмки живёт своим DTO (Р120)', () => {
-  it('подшитый документ отпирает кнопку и заявку принимают, не закрывая окна', async () => {
+  it('документ подшивают в том же окне, и заявку принимают, не закрывая его', async () => {
     const accepted = vi.fn();
     const { http, onClose } = renderAccept(PRESENTED, {
       'POST /service-requests/:id/files': () => json(WITH_ACT),
@@ -132,7 +138,8 @@ describe('окно приёмки живёт своим DTO (Р120)', () => {
       },
     });
 
-    expect(acceptButton().disabled).toBe(true);
+    // Кнопка активна и до бумаги (Н8) — окно проверяет не запрет, а то, что подшивка идёт здесь же.
+    expect(acceptButton().disabled).toBe(false);
 
     attachDocument();
     await waitFor(() => expect(http.countOf('POST /service-requests/:id/files')).toBe(1));
@@ -142,8 +149,13 @@ describe('окно приёмки живёт своим DTO (Р120)', () => {
       kind: 'act',
     });
 
-    // Кнопка отпирается **в том же окне**: ни закрывать, ни открывать заново не пришлось.
-    await waitFor(() => expect(acceptButton().disabled).toBe(false));
+    // Предупреждение уходит **в том же окне**: ни закрывать, ни открывать заново не пришлось.
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Нужен один из документов: акт, счёт или гарантийный талон'),
+      ).toBeNull(),
+    );
+    expect(acceptButton().disabled).toBe(false);
     expect(onClose).not.toHaveBeenCalled();
 
     fireEvent.click(acceptButton());

@@ -118,7 +118,7 @@ describe('изменения учётной записи для журнала',
       account({ addons: ['office_equipment_operator'] }),
       account({ addons: [] }),
     );
-    expect(changes).toEqual([{ field: 'addonsRevoked', from: null, to: 'Оператор (оргтехника)' }]);
+    expect(changes).toEqual([{ field: 'addonsRevoked', from: null, to: 'Оргтехника: ведение' }]);
   });
 
   it('у заведённой учётки записывает состав, а не пары', () => {
@@ -132,7 +132,7 @@ describe('изменения учётной записи для журнала',
       { field: 'role', from: null, to: 'Диспетчер' },
       { field: 'isActive', from: null, to: 'закрыт' },
       { field: 'objectsAdded', from: null, to: 'СУ-10' },
-      { field: 'addonsGranted', from: null, to: 'Оператор (оргтехника)' },
+      { field: 'addonsGranted', from: null, to: 'Оргтехника: ведение' },
     ]);
   });
 

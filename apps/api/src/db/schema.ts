@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  char,
   check,
   customType,
   date,
@@ -22,7 +23,18 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import type { AddressMeta, MailAccount, ModuleMailEvent, ReplyToMode } from '@technic/contracts';
+import type {
+  AddressMeta,
+  AssignmentChangeOrigin,
+  AssignmentDimension,
+  AssignmentHistoryState,
+  AssignmentSupersedeKind,
+  DriverStateKind,
+  MailAccount,
+  ModuleMailEvent,
+  ReplyToMode,
+  WaybillCorrectionAuthorizationScope,
+} from '@technic/contracts';
 
 /** case-insensitive text (расширение citext включается ops-ом до миграций). */
 const citext = customType<{ data: string }>({
@@ -100,6 +112,11 @@ export const mailKindEnum = pgEnum('mail_kind', [
    */
   'service_request_waiting_it',
   'service_request_cancelled',
+  /**
+   * Заявка назначена исполнителю (миграция 0180). Первое письмо модуля, адресованное людям, а не
+   * ящику службы: его получают назначенные поимённо и оператор сервисной компании.
+   */
+  'service_request_assigned',
 ]);
 export const mailStatusEnum = pgEnum('mail_status', ['pending', 'sent', 'failed']);
 /** Расписания рассылок (ADR 0075, миграция 0099). */
@@ -1388,6 +1405,77 @@ export const officeEquipmentTypes = pgTable(
 );
 
 /**
+ * Перечень моделей аппаратов (план `docs/office-equipment-consumables-plan.md`, Р1; выпуск A).
+ *
+ * Картридж подходит **модели**, а не конкретной единице: «Тонер Ricoh 201» одинаково годится всем
+ * карточкам Ricoh Aficio MP 201SPF и любой следующей, которую заведут завтра. Пока модель была
+ * просто текстом в карточке, на вопрос «чем заправить этот аппарат» отвечал бы поиск по подстроке —
+ * и промахивался на каждом «Ricon», кириллической «Н» в «НР» и «301SP» против «301SPF». Разнописание
+ * в этом парке уже случалось: сид 0143 отдельно выправлял кириллические двойники.
+ *
+ * Модель существует независимо от парка: картриджи лежат на складе и для аппаратов, которых в
+ * портале нет вовсе, и требование «сначала заведите технику» было бы отказом внести то, что есть.
+ */
+export const officeEquipmentModels = pgTable(
+  'office_equipment_models',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    equipmentTypeId: uuid('equipment_type_id')
+      .notNull()
+      .references(() => officeEquipmentTypes.id, { onDelete: 'restrict' }),
+    name: text('name').notNull(),
+    // Производитель отдельной колонкой, а не первым словом имени: по нему группируют перечень, а
+    // разбирать «Ricoh Aficio MP 201SPF» на части каждому читателю пришлось бы по-своему.
+    manufacturer: text('manufacturer').notNull().default(''),
+    // Гашение вместо удаления (Р11): погашенная модель не предлагается при заведении техники, но
+    // остаётся у тех, кто на неё уже ссылается.
+    isActive: boolean('is_active').notNull().default(true),
+    comment: text('comment').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Правило написания живёт двумя IMMUTABLE-функциями базы (миграция 0171), а не выражением на
+    // месте: как модель ПИШЕТСЯ — `office_equipment_model_name_normalize` (череда пробельных
+    // схлопнута в один пробел, ПОТОМ обрезаны края; регистр не тронут — «ECOSYS» и «i-Sensys»
+    // фирменные написания), по чему ОПОЗНАЁТСЯ — `office_equipment_model_key` (то же в верхнем
+    // регистре). Звать их обязаны все двери разом: посчитай одно место ключ иначе — и оно
+    // перестанет находить заведённое соседним, а выражение здесь было бы ровно такой копией.
+    //
+    // Порядок внутри функции обратному не равен: `btrim` снимает только пробелы, и краевой таб
+    // после него стал бы краевым пробелом, убирать который уже некому, — функция перестала бы быть
+    // идемпотентной, а `nameNormalized` ниже отверг бы её собственный результат.
+    //
+    // Класс шире `\s`: неразрывные U+00A0 и U+202F Postgres пробелами не считает, а приезжают они
+    // из Word и Excel постоянно и дают в справочнике двойника, неотличимого на экране. Символы
+    // нулевой ширины и мягкий перенос в класс намеренно не входят — они отмечают перенос ВНУТРИ
+    // слова, и схлопывание превратило бы «Ricoh<U+00AD>IM» в «Ricoh IM», то есть испортило бы имя.
+    nameNotBlank: check(
+      'office_equipment_models_name_not_blank_check',
+      sql`office_equipment_model_key(${t.name}) <> ''`,
+    ),
+    // В справочнике имя лежит уже свёрнутым. Без этой проверки правило держал бы только индекс, то
+    // есть ключ, — а маршрут завёл бы «Ricoh␣␣IM 350» с двойным пробелом в самом наименовании, и
+    // оно уехало бы зеркалом во все карточки модели: тот же дефект, только другой дверью.
+    nameNormalized: check(
+      'office_equipment_models_name_normalized_check',
+      sql`${t.name} = office_equipment_model_name_normalize(${t.name})`,
+    ),
+    // Цель составного ключа из карточки техники — см. officeEquipment.modelTypeFk.
+    idTypeUnique: unique('office_equipment_models_type_unique').on(t.id, t.equipmentTypeId),
+    // Уникальность по паре «тип + ключ написания», а не по одному имени: пара разводит одинаково
+    // названные принтер и МФУ, а ключ не даёт завести ту же модель вторым написанием — «Ricoh IM
+    // 350», «RICOH IM 350» и «Ricoh␣␣IM 350» это одна строка. На этот же индекс опирается резолв в
+    // триггере (Р3): недостающую модель он заводит через
+    // `ON CONFLICT (equipment_type_id, office_equipment_model_key(name))`.
+    typeNameUnique: uniqueIndex('office_equipment_models_name_unique').on(
+      t.equipmentTypeId,
+      sql`office_equipment_model_key(${t.name})`,
+    ),
+  }),
+);
+
+/**
  * Где физически находится единица (миграция 0120). Не «статус жизненного цикла»: списание и ввод
  * в эксплуатацию модулем не ведутся (§12 плана модуля), а `is_active` отвечает на другой вопрос —
  * «эксплуатируется ли». Здесь только местонахождение, и меняет его перемещение.
@@ -1409,6 +1497,12 @@ export const officeEquipment = pgTable(
     // Наименование модели: «Kyocera ECOSYS M3145». Опознают единицу номерами, но выбирают глазами
     // по модели — поэтому поле обязательное.
     name: text('name').notNull(),
+    // Модель записью справочника (Р1). Колонка nullable — это выпуск A (Р2): миграции
+    // накатываются до перезапуска, и в окне выката живой старый код заводит карточку, ничего не
+    // зная о колонке. `NOT NULL` ставит следующий выпуск, когда ссылку пишет уже весь код.
+    // Заполняет её не маршрут, а триггер зеркала (Р3): заливка файлом и скрипты пишут мимо
+    // маршрута, а `name` с этого момента — копия имени модели, а не то, что ввели руками.
+    modelId: uuid('model_id'),
     serialNumber: text('serial_number').notNull().default(''),
     inventoryNumber: text('inventory_number').notNull().default(''),
     // Где стоит. Офис заводится таким же объектом строительства: площадка у техники есть всегда.
@@ -1440,6 +1534,17 @@ export const officeEquipment = pgTable(
   },
   (t) => ({
     nameNotBlank: check('office_equipment_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
+    // Модель обязана быть своего типа: приписать МФУ модель принтера нельзя (Р1). Межтабличной
+    // проверки в Postgres нет, и держит это составной ключ — вторая колонка пары и есть проверка.
+    // Режим «замок» (`ON UPDATE` умолчанием): тип модели неизменяем, а отказ обязан быть словами
+    // маршрута, а не ошибкой целостности — род ключа назван в schema-copy-keys.test.ts.
+    // `restrict` на удаление: модель, на которую ссылается хоть одна карточка — живая или
+    // архивная, — не удаляют, а гасят (Р11), и держит это схема, а не вежливость маршрута.
+    modelTypeFk: foreignKey({
+      columns: [t.modelId, t.equipmentTypeId],
+      foreignColumns: [officeEquipmentModels.id, officeEquipmentModels.equipmentTypeId],
+      name: 'office_equipment_model_type_fk',
+    }).onDelete('restrict'),
     // Единицу нужно чем-то опознать при приёмке из ремонта: хотя бы один номер обязателен.
     identity: check(
       'office_equipment_identity_check',
@@ -1459,6 +1564,10 @@ export const officeEquipment = pgTable(
       .on(t.ownerDepartmentId)
       .where(sql`${t.deletedAt} IS NULL AND ${t.ownerDepartmentId} IS NOT NULL`),
     typeIdx: index('office_equipment_type_idx').on(t.equipmentTypeId),
+    // Индекс нужен обеим сторонам связи: по нему раскладывается новое имя модели по её карточкам
+    // (Р3) и проверяется запрет удаления. `deleted_at` в условие не идёт — архивные карточки
+    // участвуют и в раскладке имени, и в запрете.
+    modelIdx: index('office_equipment_model_idx').on(t.modelId),
     nameTrgm: index('office_equipment_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
     warrantyIdx: index('office_equipment_warranty_idx')
       .on(t.warrantyUntil)
@@ -1534,6 +1643,306 @@ export const officeEquipmentMovements = pgTable(
   }),
 );
 
+// ── Расходники оргтехники: картриджи и тонеры (план `docs/office-equipment-consumables-plan.md`,
+// Р5–Р7; миграция расходников, волна В5) ──
+//
+// Три таблицы: сама номенклатура, разметка совместимости «расходник — модель» и журнал остатка.
+// Остаток лежит в карточке числом, а меняется только событием журнала — складского учёта у
+// ИТ-службы нет, приход и выдачу операциями никто оформлять не станет, и число вводит человек.
+// Держат порядок при этом не маршрут и не его аккуратность, а ограничения и триггеры: журнал
+// сверяет оба конца цепочки, отложенная проверка на карточке не даёт остатку измениться без
+// события, а сами строки журнала неизменяемы (Р7, Р11).
+
+/**
+ * Номенклатура расходников (Р5): код учётной системы, наименование как в ней же, остаток.
+ *
+ * Наименование хранится ровно как в источнике, вместе с хвостом «(шт)»: справочник сверяют глазами
+ * со счётом и выгрузкой, и «причёсанное» наименование эту сверку ломает. Отдельного поля «единица
+ * измерения» нет — штуки единственная.
+ *
+ * Цвет прошёл полный круг и вернулся: 20.08.2026 его сняли (во всей присланной таблице он упомянут
+ * дважды и оба раза означал «комплект всех цветов»), а решением от 21.08 завели снова — но не
+ * перечнем из пяти значений, который тогда и не окупался, а свободной строкой рядом. Подробности —
+ * у самой колонки ниже.
+ *
+ * Вид расходника (картридж, тонер, принт-тонер) отдельным перечнем не заводится: это часть
+ * наименования поставщика, а не ось, по которой считают.
+ */
+export const officeEquipmentConsumables = pgTable(
+  'office_equipment_consumables',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Код номенклатуры учётной системы: «Б0000014256», «Д0000337741». По нему сверяют со счётом. */
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    /**
+     * Сколько штук на складе. Правится не формой карточки, а своей ручкой (Р7) — и это не
+     * соглашение маршрута: `updateOfficeEquipmentConsumableSchema` количества не принимает вовсе,
+     * а `UPDATE` мимо журнала отбивает отложенный триггер на этой таблице.
+     */
+    quantity: integer('quantity').notNull().default(0),
+    /** Гашение вместо удаления (Р11): то, что больше не покупают, из перечня не исчезает. */
+    isActive: boolean('is_active').notNull().default(true),
+    /**
+     * Цвет позиции (Р5) — свойство карточки, а не строки заявки: складская позиция определяется
+     * кодом, и четыре цвета с четырьмя кодами — это четыре позиции с четырьмя остатками. Код на
+     * комплект заводится позицией с цветом «комплект».
+     *
+     * Текстом, а не перечнем: источник приносит и CMYK, и «комплект», и поставщицкие названия.
+     * «Нет цвета» — это `null`; пустую строку отбивает `CHECK`, иначе у одного состояния было бы
+     * два представления.
+     */
+    color: text('color'),
+    comment: text('comment').notNull().default(''),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Правило написания кода живёт IMMUTABLE-функцией базы `office_equipment_consumable_code_key`,
+    // а не выражением на месте, — по той же причине, что у моделей (Р4): двери в справочник
+    // разные (форма, обмен файлом, скрипт), и посчитай одна из них ключ иначе — она перестанет
+    // находить заведённое соседней. Сегодняшний урок моделей прямой: правило там меняли дважды за
+    // одну волну, и копия на TypeScript разошлась бы с базой молча.
+    //
+    // Правило у кода **своё**, и от имени модели оно отличается не мелочью: пробельные символы,
+    // включая неразрывные из Word и Excel, **удаляются**, а не схлопываются в один. В коде учётной
+    // системы пробелов не бывает вовсе — «Д0000337741» с прилипшим неразрывным пробелом это тот же
+    // код, а не соседний, — тогда как «Ricoh␣IM 350» без пробела стало бы другим именем. Регистр,
+    // наоборот, поднимается прямо в написании, поэтому функция здесь одна, а не пара «как пишется
+    // + по чему опознаётся»: фирменных строчных букв в коде номенклатуры нет.
+    codeNotBlank: check(
+      'office_equipment_consumables_code_not_blank_check',
+      sql`office_equipment_consumable_code_key(${t.code}) <> ''`,
+    ),
+    // Код лежит в справочнике уже нормализованным. Без этой проверки правило держал бы только
+    // индекс, то есть ключ, — а в карточке и в выгрузке остался бы «д0000337741 » с хвостом
+    // пробела, который человек глазами со счётом уже не сведёт.
+    codeNormalized: check(
+      'office_equipment_consumables_code_normalized_check',
+      sql`${t.code} = office_equipment_consumable_code_key(${t.code})`,
+    ),
+    // Пустоту имени меряет тот же класс пробельных символов, что и код: `btrim` неразрывный пробел
+    // не снимает, и наименование из одних U+00A0 — а приезжают они из Word и Excel постоянно —
+    // прошло бы в справочник как непустое, заняв строку, которую на экране не отличить от пустой.
+    //
+    // Класс общий, а правила разные, и это не оговорка: у кода спрашивают «один ли это код»
+    // (отсюда функция и хранение в нормализованном виде), у имени — «есть ли в строке хоть один
+    // настоящий знак». Имя хранится дословно, вместе с хвостом «(шт)» и внутренними пробелами
+    // (Р5), сравнивать и нормализовать его негде, поэтому правило стоит выражением на месте, а не
+    // функцией: функция обещала бы нормализацию и напрашивалась бы в маршрут.
+    //
+    // Обратные слэши удвоены, и это не стиль: в шаблонной строке JS `\s` съедается до буквы «s», а
+    // `\u00a0` — до самого неразрывного пробела, и в базу уехал бы класс `[s ...]+`,
+    // считающий пустым имя из одних «s». В базе лежит ровно `[\s\u00a0\u202f]+`, и записан
+    // он escape-последовательностями, как в миграции 0172: невидимый байт в исходнике нельзя
+    // вычитать на ревью, а любой редактор способен его потерять.
+    nameNotBlank: check(
+      'office_equipment_consumables_name_not_blank_check',
+      sql`regexp_replace(${t.name}, '[\\s\\u00a0\\u202f]+', '', 'g') <> ''`,
+    ),
+    // Остаток неотрицателен: «минус два картриджа» не бывает ни на складе, ни в отчёте.
+    colorNotBlank: check(
+      'office_equipment_consumables_color_not_blank_check',
+      sql`${t.color} IS NULL OR btrim(${t.color}) <> ''`,
+    ),
+    quantityNonNegative: check(
+      'office_equipment_consumables_quantity_check',
+      sql`${t.quantity} >= 0`,
+    ),
+    // Занятость кода маршрут проверяет заранее и отвечает словами «расходник с таким кодом уже
+    // заведён» (как у типов оргтехники), но последнее слово за индексом: две вкладки, обмен файлом
+    // и скрипт мимо маршрута приходят к одной и той же строке.
+    codeUnique: uniqueIndex('office_equipment_consumables_code_unique').on(
+      sql`office_equipment_consumable_code_key(${t.code})`,
+    ),
+    // Поиск идёт по наименованию и коду (Р9); индекс — под наименование, по нему спрашивают
+    // подстрокой («Pantum», «PC-211»), а код чаще вставляют целиком.
+    nameTrgm: index('office_equipment_consumables_name_trgm').using(
+      'gin',
+      sql`${t.name} gin_trgm_ops`,
+    ),
+  }),
+);
+
+/**
+ * Совместимость «расходник — модель» (Р6): к чему подходит картридж.
+ *
+ * Связь много-ко-многим, и обе стороны нужны по-настоящему: PC-211EV годится трём Pantum, а у
+ * Ricoh Aficio MP C2011SP расходников два — чёрный и цветной. Любая односторонняя связь списывала
+ * бы половину случаев из присланной таблицы (§7).
+ *
+ * Это разметка, а не история: строка снимается свободно с обеих сторон, поэтому удаление расходника
+ * уносит привязки каскадом. Модель каскаду не подлежит — на неё ссылаются, значит её гасят (Р11).
+ */
+export const officeEquipmentConsumableModels = pgTable(
+  'office_equipment_consumable_models',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    consumableId: uuid('consumable_id')
+      .notNull()
+      .references(() => officeEquipmentConsumables.id, { onDelete: 'cascade' }),
+    modelId: uuid('model_id')
+      .notNull()
+      .references(() => officeEquipmentModels.id, { onDelete: 'restrict' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    // Пара уникальна: «подходит» — это да или нет, и вторая такая же строка ничего не добавляет,
+    // зато удвоила бы счётчик моделей в списке расходников.
+    pairUnique: unique('office_equipment_consumable_models_unique').on(t.consumableId, t.modelId),
+    // Индекс со стороны модели: по нему идут оба вопроса, которые задают справочнику с этого конца
+    // — «чем заправлять этот аппарат» (Р15) и «удаляема ли модель» (Р11). Уникальный ключ выше
+    // читается только слева направо и ни одному из них не помогает.
+    modelIdx: index('office_equipment_consumable_models_model_idx').on(t.modelId),
+  }),
+);
+
+/**
+ * Журнал остатка (Р7): каждое изменение количества — событие с обоими концами, причиной и автором.
+ *
+ * Журнал здесь не след действия (для этого есть аудит), а сам предмет: на вопрос «куда делись
+ * двенадцать картриджей» отвечает только он. Поэтому он неизменяем — правку и удаление строки
+ * отбивает триггер, как у переходов режима назначений, — а исправляют ошибку следующим событием
+ * («ошиблись, вернули 15»), а не подчисткой прошлого.
+ */
+export const officeEquipmentConsumableStockEntries = pgTable(
+  'office_equipment_consumable_stock_entries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * Порядок в цепочке держит счётчик, а не время: две правки одной секунды по `created_at`
+     * неразличимы, а «предыдущая строка этого расходника» обязана определяться однозначно —
+     * на этом стоит проверка цепочки. Тот же приём, что у `app_releases.seq`.
+     */
+    seq: bigint('seq', { mode: 'number' }).generatedAlwaysAsIdentity(),
+    /**
+     * `restrict`, а не `cascade`: правило «есть движение — только гашение» (Р11) держит схема.
+     * Маршрут проверяет то же самое заранее, но лишь затем, чтобы человек прочитал «по расходнику
+     * есть движение, снимите „Активен“», а не имя ограничения; унести историю вместе с карточкой
+     * не может ни он, ни скрипт, ни ручной `DELETE`.
+     */
+    consumableId: uuid('consumable_id')
+      .notNull()
+      .references(() => officeEquipmentConsumables.id, { onDelete: 'restrict' }),
+    /**
+     * Вид события (план переработки заявок, §2.1): `manual` — ручная правка кладовщика, `issue` —
+     * выдача по заявке, `return` — возврат выданного. Умолчание сохраняет контракт ручной ручки:
+     * вид она проставляет сама, клиент его не выбирает.
+     */
+    entryKind: text('entry_kind')
+      .$type<'manual' | 'issue' | 'return'>()
+      .notNull()
+      .default('manual'),
+    /**
+     * Заявка, по которой прошло движение, и её строка. Обе ссылки **не типизированы** здесь
+     * намеренно — тот же приём, что у `warrantyClaimItemId`: расходники объявлены выше заявок, и
+     * стрелка `() => serviceRequests.id` тянула бы значение, которого в этот момент ещё нет. Сами
+     * ключи стоят в базе: `service_request_id` → `service_requests` с `RESTRICT` уже в миграции
+     * `0172`, а составной ключ на строку заявки достраивает M12 плана переработки — до неё таблицы
+     * строк не существует вовсе.
+     */
+    serviceRequestId: uuid('service_request_id'),
+    serviceRequestConsumableId: uuid('service_request_consumable_id'),
+    /** Оба конца, а не одна «дельта»: цепочку проверяют по «было», а читают по «стало». */
+    quantityBefore: integer('quantity_before').notNull(),
+    quantityAfter: integer('quantity_after').notNull(),
+    reason: text('reason').notNull(),
+    /**
+     * `restrict`, как `moved_by` у перемещений: запись «кто изменил остаток», теряющая автора
+     * вместе с увольнением, отвечает на свой единственный вопрос словом «неизвестно».
+     */
+    changedBy: uuid('changed_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    // Причина обязательна: «12 → 4» без объяснения через месяц не отличить от опечатки.
+    reasonNotBlank: check(
+      'office_equipment_consumable_stock_reason_check',
+      sql`btrim(${t.reason}) <> ''`,
+    ),
+    // Событие, ничего не изменившее, — запись ни о чём; повторное нажатие кнопки не должно пухнуть
+    // журналом. Отсюда следствие для заведения карточки: первая строка пишется только при
+    // ненулевом остатке, потому что «0 → 0» это ограничение не пропустит (Р7).
+    change: check(
+      'office_equipment_consumable_stock_change_check',
+      sql`${t.quantityAfter} <> ${t.quantityBefore}`,
+    ),
+    // Оба конца неотрицательны: «было −1» не бывает так же, как «стало −1».
+    amounts: check(
+      'office_equipment_consumable_stock_amount_check',
+      sql`${t.quantityAfter} >= 0 AND ${t.quantityBefore} >= 0`,
+    ),
+    // Ключ цепочки: по нему проверка находит предыдущую строку расходника (`max(seq)`) и по нему же
+    // лента журнала читается с конца. Уникальность — заодно и запрет двух событий с одним номером
+    // у одной карточки.
+    kindCheck: check(
+      'office_equipment_consumable_stock_kind_check',
+      sql`${t.entryKind} IN ('manual','issue','return')`,
+    ),
+    // Вид события и ссылки на заявку — одно утверждение: «ручная правка» и «списано по заявке» не
+    // бывают наполовину. Ручное событие имеет обе ссылки пустыми, событие по заявке — обе
+    // заполненными.
+    requestLinks: check(
+      'office_equipment_consumable_stock_request_links_check',
+      sql`(${t.entryKind} = 'manual'
+             AND ${t.serviceRequestId} IS NULL
+             AND ${t.serviceRequestConsumableId} IS NULL)
+          OR (${t.entryKind} IN ('issue','return')
+             AND ${t.serviceRequestId} IS NOT NULL
+             AND ${t.serviceRequestConsumableId} IS NOT NULL)`,
+    ),
+    // Направление задаёт вид: «возврат», уменьшающий остаток, сделал бы отчёт по расходу неверным
+    // при верной цепочке — расход считается по видам, а не по знаку разницы.
+    direction: check(
+      'office_equipment_consumable_stock_direction_check',
+      sql`${t.entryKind} = 'manual'
+          OR (${t.entryKind} = 'issue' AND ${t.quantityAfter} < ${t.quantityBefore})
+          OR (${t.entryKind} = 'return' AND ${t.quantityAfter} > ${t.quantityBefore})`,
+    ),
+    seqIdx: uniqueIndex('office_equipment_consumable_stock_seq_idx').on(
+      t.consumableId,
+      t.seq.desc(),
+    ),
+    // «Что списали по этой заявке» — второй вопрос журнала; частичный, потому что у ручных событий
+    // ссылка пуста и держать их в индексе незачем.
+    requestIdx: index('office_equipment_consumable_stock_request_idx')
+      .on(t.serviceRequestId)
+      .where(sql`${t.serviceRequestId} IS NOT NULL`),
+    /**
+     * Строка заявки, из которой выдали, — ключом на ТРОЙКУ «строка + заявка + позиция» (M12).
+     * Ключ на одну колонку проверял бы только существование строки, то есть разрешал бы событию по
+     * заявке СО-1234 указывать на строку заявки СО-5678 или на строку с другим расходником: отчёт
+     * «сколько выдано по заявке» считал бы чужое, а сторно правило бы не ту строку. Копии
+     * реквизитов родителя в дочерней строке — приём ADR 0007 §2.
+     *
+     * MATCH SIMPLE (умолчание) здесь обязателен: у ручной правки остатка `consumableId` заполнен, а
+     * обе ссылки на заявку пусты, и составной ключ при NULL в любой своей части не проверяется
+     * вовсе. `MATCH FULL` означал бы обратное — «либо все три пусты, либо все три заполнены», — и
+     * первая же правка кладовщика упёрлась бы в него.
+     *
+     * `restrict`: строку заявки, за которой числится движение, не удаляет ни маршрут, ни каскад от
+     * заявки, ни скрипт — журнал не должен уметь показывать на пустоту.
+     *
+     * Ссылка объявлена ЗДЕСЬ, а не колонкой выше, потому что `foreignKey` в конфигурации таблицы
+     * вычисляется лениво, а `.references(() => …)` — сразу при объявлении: расходники стоят в этом
+     * файле выше заявок, и колоночная стрелка тянула бы значение, которого в тот момент ещё нет.
+     */
+    requestRowFk: foreignKey({
+      columns: [t.serviceRequestConsumableId, t.serviceRequestId, t.consumableId],
+      foreignColumns: [
+        serviceRequestConsumables.id,
+        serviceRequestConsumables.requestId,
+        serviceRequestConsumables.consumableId,
+      ],
+      name: 'office_equipment_consumable_stock_row_fk',
+    }).onDelete('restrict'),
+  }),
+);
+
 // ── Заявки на обслуживание оргтехники (ADR 0085, миграция 0105) ──
 // Цикл длиннее, чем у вывоза мусора и заказа техники: между «приняли» и «сделали» стоит смета,
 // которую согласует заказчик, а после работ — приёмка. Отсюда собственный набор статусов:
@@ -1564,6 +1973,20 @@ export const serviceRequests = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     // Сквозной человекочитаемый номер (отображается как «СО-<num>»).
     num: integer('num').generatedAlwaysAsIdentity(),
+    // Вид заявки (Н1, миграция M3 плана переработки заявок оргтехники): `repair` — ремонт или
+    // обслуживание единицы, `consumable` — выдача расходников со склада. Одной таблицей на два
+    // вида, а не второй рядом: статусный словарь, визы, история, вложения и права у них общие, а
+    // различает их предмет строки.
+    //
+    // `DEFAULT 'repair'` остаётся навсегда. Умолчание заведено ради окна выката (протокол §1:
+    // миграции накатываются до перезапуска сервисов) — старый код вставляет заявку, не зная про
+    // колонку, и без умолчания вставка падала бы, — но снимать его потом незачем: «вид по
+    // умолчанию — ремонт» верно и после окна, а снятие вернуло бы ту же поломку при откате релиза.
+    //
+    // Схема разрешает `consumable` с этой миграции, а API — только с выпуском 3: до того у такой
+    // заявки нет ни строк номенклатуры, ни формы, ни списания, и заведённая раньше времени она
+    // была бы заявкой без предмета.
+    kind: text('kind').$type<'repair' | 'consumable'>().notNull().default('repair'),
     officeEquipmentId: uuid('office_equipment_id')
       .notNull()
       .references(() => officeEquipment.id, { onDelete: 'restrict' }),
@@ -1583,6 +2006,25 @@ export const serviceRequests = pgTable(
     equipmentDepartmentId: uuid('equipment_department_id').references(() => departments.id, {
       onDelete: 'restrict',
     }),
+    // Подразделение заявителя (Н11, миграция M5): от кого пришла заявка — отдел, а если отделов у
+    // учётки нет, площадка. Проставляет его сервер из привязок `created_by`, а не клиент: иначе
+    // заявку можно было бы подать от имени чужого отдела. Это не заказчик выше: заказчика выбирает
+    // человек (сотрудник соседнего отдела чинит «чужой» принтер), а здесь — где числится он сам.
+    //
+    // `restrict`, как у остальных ссылок заявки: удаление отдела, за которым есть заявки, — не
+    // уборка справочника, а потеря половины ответа «от кого это пришло»; портал отвечает на такое
+    // словами. Ссылка и снимок названия ходят парой (`service_requests_requester_place_check`):
+    // идентификатор без названия — снимок, который ничего не помнит, а название без ссылки нечем
+    // связать со справочником. Обе пары пустые тоже законны — так выглядят заявки, заведённые до
+    // этого выпуска и в его окне выката, и заявки учёток вовсе без привязок (администратор).
+    requesterDepartmentId: uuid('requester_department_id').references(() => departments.id, {
+      onDelete: 'restrict',
+    }),
+    requesterObjectId: uuid('requester_object_id').references(() => constructionObjects.id, {
+      onDelete: 'restrict',
+    }),
+    requesterDepartmentName: text('requester_department_name').notNull().default(''),
+    requesterObjectName: text('requester_object_name').notNull().default(''),
     // Снимок предмета: карточку переименуют, перенесут и перезакрепят, а заявка должна остаться
     // рассказом о том, что чинили тогда.
     equipmentName: text('equipment_name').notNull(),
@@ -1615,6 +2057,13 @@ export const serviceRequests = pgTable(
     itApprovedBy: uuid('it_approved_by').references(() => users.id, { onDelete: 'set null' }),
     itApprovedAt: timestamp('it_approved_at', { withTimezone: true }),
     itApprovedAuto: boolean('it_approved_auto').notNull().default(false),
+    // Ревизия сметы, к которой относится виза ИТ (Н3, миграция M1). Виза переехала со входа на
+    // смету, и без номера ревизии «согласовано ИТ» перестаёт отвечать, что именно согласовали:
+    // смету предъявляют заново, а подпись осталась бы от прошлой. Пусто у виз старого образца —
+    // входных, поставленных до сметы вовсе, — и это законно: требование ревизии у каждой подписи
+    // уронило бы визирование старым кодом в окне выката. Связку «подпись есть ⇒ ревизия есть»
+    // ставит триггер выпуска 2 (M10 того же плана), когда старого кода в проде уже нет.
+    itApprovedEstimateRevision: integer('it_approved_estimate_revision'),
     // Возраст в текущем статусе — колонкой, а не latest-подзапросом по истории: «кто ждёт дольше
     // всех» спрашивает каждый список, и признак зависшей заявки читается отсюда же.
     statusChangedAt: timestamp('status_changed_at', { withTimezone: true }).notNull().defaultNow(),
@@ -1650,6 +2099,22 @@ export const serviceRequests = pgTable(
     completedAt: timestamp('completed_at', { withTimezone: true }),
     acceptedBy: uuid('accepted_by').references(() => users.id, { onDelete: 'set null' }),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    // Кто закрыл заявку (Н7, миграция M2): `human` — человек нажал «Принять», `auto` — портал
+    // закрыл сам, не дождавшись ответа заказчика. Отдельным полем, а не выводом из пустого автора:
+    // автор теряется вместе с уволенной учёткой (ссылка выше — `set null`), и «принято
+    // автоматически» перестало бы отличаться от «принято тем, кого уже нет».
+    //
+    // В выпуске 1 колонка НЕ связана с `accepted_at`, и это не забывчивость (§3 плана, п. 2): в
+    // окне выката старый код и принимает заявку, и откатывает приёмку, ничего не зная про
+    // источник, — связка «источник есть ровно у принятой» уронила бы обе операции. Она встаёт
+    // отдельной миграцией выпуска 2 (M9), а до неё пустой источник у принятой заявки читается как
+    // `human` — этого обязан держаться весь код выпуска 1.
+    acceptanceSource: text('acceptance_source').$type<'human' | 'auto'>(),
+    // «Ремонт нецелесообразен, аппарат под замену» (Н3, В21, миграция M5): пометка объясняет,
+    // почему заявку закрыли, ничего не починив, и потому существует только у отменённой
+    // (`service_requests_replacement_check`). Возврат отменённой в «Новую» её снимает — это делает
+    // матрица сброса `serviceResetOnTransition`, и без неё откат упрётся в ограничение.
+    replacementRecommended: boolean('replacement_recommended').notNull().default(false),
     comment: text('comment').notNull().default(''),
     serviceComment: text('service_comment').notNull().default(''),
     createdBy: uuid('created_by')
@@ -1664,6 +2129,7 @@ export const serviceRequests = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => ({
+    kindCheck: check('service_requests_kind_check', sql`${t.kind} IN ('repair','consumable')`),
     descriptionNotBlank: check(
       'service_requests_description_not_blank_check',
       sql`btrim(${t.description}) <> ''`,
@@ -1691,15 +2157,17 @@ export const serviceRequests = pgTable(
       sql`${t.heldFromStatus} IS NULL
           OR ${t.heldFromStatus} NOT IN ('on_hold','accepted','cancelled')`,
     ),
-    // Без исполнителя заявку никто не ведёт; исключение — три статуса до его назначения:
-    // «Новая», «Согласована ИТ» (виза есть, сервис ещё не выбран) и «Отменена». Проверяется
-    // «эффективный» статус (миграция 0162): отложенная из «Новой» исполнителя не имеет и иметь не
-    // должна, а по одному `status` заморозка такой заявки упиралась бы в отказ базы.
-    executor: check(
-      'service_requests_executor_check',
-      sql`COALESCE(${t.heldFromStatus}, ${t.status}) IN ('new','it_approved','cancelled')
-          OR ${t.serviceCounterpartyId} IS NOT NULL`,
-    ),
+    // `service_requests_executor_check` здесь больше нет: миграция M4 плана переработки заявок
+    // его снимает. Он требовал КОНТРАГЕНТА, а исполнителем теперь бывает и свой сотрудник —
+    // строкой `service_request_executors`, которой `CHECK` не видит: он читает только собственную
+    // строку. Сам инвариант «в рабочем статусе у заявки есть исполнитель — контрагент или
+    // поимённый» не пропал, а переехал в отложенные constraint-триггеры
+    // `service_requests_executor_present` и `service_request_executors_present` той же миграции
+    // (прецедент приёма — 0035). Отложенные, а не немедленные: «сняли последнего исполнителя и
+    // вернули заявку в „Новую“» — законная пара шагов, и немедленная проверка отбила бы её на
+    // первом. Исключения по статусам остались прежними («Новая», «Согласована ИТ», «Отменена») и
+    // считаются по «эффективному» статусу (миграция 0162) — отложенная из «Новой» исполнителя не
+    // имеет и иметь не должна.
     // Согласование — снимок из трёх полей: кто, когда и что именно. Любое поле по отдельности на
     // вопрос «что согласовали» не отвечает.
     approval: check(
@@ -1712,9 +2180,24 @@ export const serviceRequests = pgTable(
       sql`${t.approvedEstimateRevision} IS NULL
           OR ${t.approvedEstimateRevision} <= ${t.estimateRevision}`,
     ),
-    accepted: check(
-      'service_requests_accepted_check',
-      sql`(${t.acceptedBy} IS NULL) = (${t.acceptedAt} IS NULL)`,
+    // Парного `service_requests_accepted_check` («автор и дата приёмки заполнены вместе или
+    // никак») здесь больше нет: его снимает миграция M2. Автоматическое закрытие приезжает уже в
+    // выпуске 1 и пишет `accepted_at` без автора — при живом ограничении первая же закрытая
+    // порталом заявка упёрлась бы в него. Старому коду снятие не мешает: он по-прежнему пишет пару
+    // целиком. Уцелевшее направление («автор без даты — бессмыслица») возвращается в выпуске 2
+    // вместе со связкой источника (M9).
+    //
+    // Мягкая редакция выпуска 1: перечень значений и запрет автора у автоматической приёмки — всё,
+    // что можно потребовать, пока старый код в окне выката пишет и откатывает приёмку, не зная про
+    // источник (§3 плана, п. 2). «Человек» непустого `accepted_by` не требует: ссылка объявлена
+    // `set null`, и удаление уволенного сотрудника обнулило бы её — с таким требованием удаление
+    // упёрлось бы в это ограничение, а источник отвечает на вопрос «человек или портал», не «кто
+    // именно».
+    acceptanceSource: check(
+      'service_requests_acceptance_source_check',
+      sql`${t.acceptanceSource} IS NULL
+          OR (${t.acceptanceSource} IN ('human','auto')
+              AND (${t.acceptanceSource} <> 'auto' OR ${t.acceptedBy} IS NULL))`,
     ),
     // Корректировка акта — неразрывная пара «сумма + причина»: причина без суммы ничего не
     // корректирует, сумма без причины делает итог необъяснимым. Только вниз — наценка это
@@ -1739,6 +2222,15 @@ export const serviceRequests = pgTable(
       'service_requests_it_auto_check',
       sql`NOT ${t.itApprovedAuto} OR ${t.itApprovedBy} IS NOT NULL`,
     ),
+    // Ревизия без подписи не значит ничего, и согласовать можно только то, что уже предъявлено, —
+    // опережать смету ревизия визы не может. Обратное («подпись без ревизии») здесь ЗАКОННО: так
+    // выглядит входная виза старого образца, и запрет на неё встаёт триггером выпуска 2 (M10).
+    itRevision: check(
+      'service_requests_it_revision_check',
+      sql`${t.itApprovedEstimateRevision} IS NULL
+          OR (${t.itApprovedBy} IS NOT NULL
+              AND ${t.itApprovedEstimateRevision} <= ${t.estimateRevision})`,
+    ),
     // Срочность — такая же неразрывная пара, как корректировка акта выше: флаг без причины
     // отбирает заявки, ничего про них не объясняя, причина без флага ничего не объявляет.
     urgency: check(
@@ -1746,15 +2238,46 @@ export const serviceRequests = pgTable(
       sql`(NOT ${t.isUrgent} AND btrim(${t.urgencyReason}) = '')
           OR (${t.isUrgent} AND btrim(${t.urgencyReason}) <> '')`,
     ),
+    // Подразделение заявителя — ЛИБО отдел, ЛИБО площадка, и ссылка со снимком названия ходят
+    // парой в обе стороны (Н11). Обе пары пустые законны: заявки до этого выпуска, заявки его окна
+    // выката и заявки учёток без единой привязки выглядят именно так, и запрет на них закрыл бы
+    // подачу администратору портала.
+    requesterPlace: check(
+      'service_requests_requester_place_check',
+      sql`NOT (${t.requesterDepartmentId} IS NOT NULL AND ${t.requesterObjectId} IS NOT NULL)
+          AND (${t.requesterDepartmentId} IS NOT NULL) = (btrim(${t.requesterDepartmentName}) <> '')
+          AND (${t.requesterObjectId} IS NOT NULL) = (btrim(${t.requesterObjectName}) <> '')`,
+    ),
+    // «Рекомендована замена» — объяснение отмены, а не свойство заявки: у живой заявки такая
+    // пометка означала бы «чиним то, что решили не чинить». Отсюда обязанность матрицы сброса
+    // `serviceResetOnTransition` гасить её при возврате отменённой в работу.
+    replacement: check(
+      'service_requests_replacement_check',
+      sql`NOT ${t.replacementRecommended} OR ${t.status} = 'cancelled'`,
+    ),
     numUnique: uniqueIndex('service_requests_num_unique').on(t.num),
-    // Одна открытая заявка на единицу: две параллельные означали бы два сервиса, два акта и две
-    // гарантии на одну работу. Индекс сторожит и заведение, и восстановление из архива — сервер
-    // обязан отвечать на оба случая понятным 409 со ссылкой на открытую заявку, а не ошибкой БД.
-    // Отложенная заявка считается открытой (Р109) и потому из условия не исключается: техника
-    // ждёт этого же ремонта, и второй заявке на неё взяться неоткуда.
-    openPerEquipmentUnique: uniqueIndex('service_requests_open_per_equipment_unique')
+    // Одна открытая заявка на единицу — но НА ВИД (В12, миграция M3): ремонт и расходники по
+    // одному аппарату не мешают друг другу (картридж просят и тому принтеру, который сейчас в
+    // ремонте), а два открытых ремонта или две открытых заявки на картриджи по-прежнему означали
+    // бы два сервиса, два акта и две гарантии на одну работу. Прежний общий
+    // `service_requests_open_per_equipment_unique` снят там же и заменён этой парой.
+    //
+    // Оба индекса сторожат и заведение, и восстановление из архива — сервер обязан отвечать на оба
+    // случая понятным 409 со ссылкой на открытую заявку, а не ошибкой БД. Отложенная заявка
+    // считается открытой (Р109) и потому из условия не исключается: техника ждёт этого же ремонта,
+    // и второй заявке на неё взяться неоткуда.
+    openRepairUnique: uniqueIndex('service_requests_open_repair_unique')
       .on(t.officeEquipmentId)
-      .where(sql`${t.deletedAt} IS NULL AND ${t.status} NOT IN ('accepted','cancelled')`),
+      .where(
+        sql`${t.deletedAt} IS NULL AND ${t.kind} = 'repair'
+            AND ${t.status} NOT IN ('accepted','cancelled')`,
+      ),
+    openConsumableUnique: uniqueIndex('service_requests_open_consumable_unique')
+      .on(t.officeEquipmentId)
+      .where(
+        sql`${t.deletedAt} IS NULL AND ${t.kind} = 'consumable'
+            AND ${t.status} NOT IN ('accepted','cancelled')`,
+      ),
     // Очереди спрашивают «что в этом статусе ждёт дольше всех» — статус и возраст читаются
     // вместе; отдельного индекса по одному статусу нет, этот покрывает его префиксом.
     statusChangedIdx: index('service_requests_status_changed_idx').on(t.status, t.statusChangedAt),
@@ -1904,6 +2427,147 @@ export const serviceRequestFiles = pgTable(
   }),
 );
 
+/**
+ * Поимённые исполнители заявки (Н5, миграция M4 плана переработки заявок оргтехники): свои
+ * сотрудники, которые ведут ремонт руками. Исполнитель-контрагент остаётся колонкой
+ * `service_counterparty_id` в самой заявке — сервисная компания назначается целиком, её людей
+ * портал не знает и выбирать не может.
+ *
+ * Отсюда разное правило отказа у двух слоёв: свой сотрудник снимает отказом СВОЮ строку и остальные
+ * назначенные продолжают вести заявку, а оператор сервиса — ВСЮ компанию (обнуляется контрагент),
+ * потому что назначена была она, а не человек. Если не осталось ни строк, ни контрагента, заявка
+ * возвращается в «Новую».
+ *
+ * Ключ — пара «заявка + учётка», без суррогатного id: второе назначение того же человека на ту же
+ * заявку ничего не добавляет, а с id таких строк стало бы две и список исполнителей удвоился бы.
+ *
+ * Инвариант «в рабочем статусе исполнитель есть — контрагент или поимённый» держат отложенные
+ * constraint-триггеры `service_request_executors_present` (эта таблица) и
+ * `service_requests_executor_present` (сама заявка), заведённые той же миграцией: межтабличную
+ * проверку `CHECK` выразить не может, и снятый `service_requests_executor_check` заменён именно
+ * ими. Триггер этой таблицы слушает и `UPDATE`: прямой перевод строки на другую заявку оставил бы
+ * прежнюю без единого исполнителя, и проверяются обе стороны.
+ */
+export const serviceRequestExecutors = pgTable(
+  'service_request_executors',
+  {
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => serviceRequests.id, { onDelete: 'cascade' }),
+    /**
+     * `restrict`, как `created_by` у самой заявки: «кто вёл этот ремонт» — часть её истории, и
+     * удаление учётки, за которой есть назначения, портал обязан отклонить словами, а не унести
+     * их молча. Снятие исполнителя — отдельное действие, у которого есть автор и след в аудите.
+     */
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * Кто назначил — `set null`, а не `restrict`: назначение остаётся в силе и без имени
+     * назначившего (оно про исполнителя, а не про диспетчера), и удаление уволенной учётки не
+     * должно упираться в чужие назначения. Само событие назначения остаётся в аудите с автором.
+     */
+    assignedBy: uuid('assigned_by').references(() => users.id, { onDelete: 'set null' }),
+    assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.requestId, t.userId] }),
+    // Со стороны учётки спрашивают «что висит на мне» — очередь исполнителя в его разделе;
+    // первичный ключ читается только слева направо, от заявки, и на этот вопрос не отвечает.
+    userIdx: index('service_request_executors_user_idx').on(t.userId),
+  }),
+);
+
+/**
+ * Строки заявки на расходники (Н9, миграция M12 плана переработки заявок оргтехники): что просили,
+ * что выдали и почему разошлось.
+ *
+ * Своей таблицей, а не в `serviceRequestItems`: там цена, сумма, скидка акта и гарантия — то есть
+ * смета ремонта, которую согласует заказчик и по которой платят подрядчику. У строки расходника нет
+ * ни одного из этих полей: картридж берут со своего склада, и согласовывать по нему сумму не у
+ * кого. Слить их в одну таблицу значило бы завести строку, у которой половина колонок обязана быть
+ * пустой по виду заявки.
+ *
+ * Списание идёт не отсюда, а событиями журнала остатка (Р1): у остатка один источник истины —
+ * цепочка событий, и второго счётчика «выдано по заявкам» не заводится. Согласованность двух
+ * половин держат отложенные constraint-триггеры `service_request_consumables_issued_covered` (эта
+ * таблица) и `office_equipment_consumable_stock_issued_covered` (журнал), заведённые той же
+ * миграцией: «выдано по строке равно сумме `issue` минус `return` по её событиям». Односторонней
+ * проверки не хватило бы — транзакция может подвинуть склад законным событием и не тронуть строку.
+ */
+export const serviceRequestConsumables = pgTable(
+  'service_request_consumables',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * `cascade`, как у поимённых исполнителей: строки — состав самой заявки, а не её история.
+     * Заявку с движением склада каскад при этом не уносит — ссылки журнала объявлены `restrict`.
+     */
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => serviceRequests.id, { onDelete: 'cascade' }),
+    /**
+     * `restrict`: позиция, которую просили, не имеет права исчезнуть из-под заявки — иначе «выдано
+     * 2» осталось бы без ответа на вопрос «чего именно 2», а отчёт по расходу — с дырой на месте
+     * удалённой номенклатуры.
+     */
+    consumableId: uuid('consumable_id')
+      .notNull()
+      .references(() => officeEquipmentConsumables.id, { onDelete: 'restrict' }),
+    requestedQuantity: integer('requested_quantity').notNull(),
+    /**
+     * Сколько числится выданным. Три состояния, и они разные (В9б): `null` — работу ещё не
+     * закрывали, `0` — закрыли, но не выдали («съездили, тонер оказался цел»), `N` — выдали и
+     * ровно столько списано со склада. Ни `notNull`, ни `default` здесь быть не должно — иначе
+     * просимое читалось бы как выданное (тот же приём, что у `performed` в строке сметы).
+     */
+    issuedQuantity: integer('issued_quantity'),
+    /**
+     * Причина любого расхождения факта с запрошенным. Живёт в строке заявки, а не только в событии
+     * журнала: её читают в карточке и в отчёте, а событие журнала — это склад. Пустая строка
+     * означает «объяснять нечего»; `null` рядом с ней был бы вторым именем того же состояния.
+     */
+    issueNote: text('issue_note').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Просят хотя бы штуку: «прошу ноль картриджей» — это отсутствие строки, а не строка.
+    requestedPositive: check(
+      'service_request_consumables_requested_check',
+      sql`${t.requestedQuantity} > 0`,
+    ),
+    // Факт неотрицателен, но ноль законен — в отличие от запрошенного.
+    issuedNonNegative: check(
+      'service_request_consumables_issued_check',
+      sql`${t.issuedQuantity} IS NULL OR ${t.issuedQuantity} >= 0`,
+    ),
+    // Любое расхождение объясняется причиной — и выдача сверх заявки (В9а), и недодача, и ноль
+    // (В9б). Совпал факт с заявкой — объяснять нечего, и требовать текст значило бы заставлять
+    // писать «всё как просили» две тысячи раз в год.
+    noteOnMismatch: check(
+      'service_request_consumables_note_check',
+      sql`${t.issuedQuantity} IS NULL
+          OR ${t.issuedQuantity} = ${t.requestedQuantity}
+          OR btrim(${t.issueNote}) <> ''`,
+    ),
+    // Одна строка на позицию: две строки «Тонер Ricoh 201» — не два расходника, а ошибка формы.
+    pairUnique: unique('service_request_consumables_unique').on(t.requestId, t.consumableId),
+    // Ключ существует только затем, чтобы быть адресатом составного ключа журнала: Postgres требует
+    // уникального ограничения ровно на тот набор колонок, на который ссылается FOREIGN KEY, а
+    // первичный ключ по `id` тройку не накрывает. Читать по нему ничего не читают.
+    rowUnique: unique('service_request_consumables_row_unique').on(
+      t.id,
+      t.requestId,
+      t.consumableId,
+    ),
+    // Индекс со стороны позиции, а не заявки: по заявке спрашивает сам `pairUnique` (он начинается
+    // с `request_id`), а по позиции спрашивают отчёт по расходу и `restrict` при попытке удалить
+    // номенклатуру.
+    consumableIdx: index('service_request_consumables_consumable_idx').on(t.consumableId),
+  }),
+);
+
 // История статусов. Ревизия сметы на момент события: по истории должно читаться, что именно
 // согласовали и что поменялось между двумя согласованиями.
 export const serviceRequestStatusHistory = pgTable(
@@ -1916,13 +2580,35 @@ export const serviceRequestStatusHistory = pgTable(
     fromStatus: serviceRequestStatusEnum('from_status'),
     toStatus: serviceRequestStatusEnum('to_status').notNull(),
     estimateRevision: integer('estimate_revision'),
-    changedBy: uuid('changed_by')
-      .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * Автор перехода. `NOT NULL` снят миграцией M2 плана переработки заявок оргтехники: переход
+     * «Решена» → «Закрыта» портал делает сам, по истечении срока молчания заказчика (Н7), и автора
+     * у такой строки нет вовсе. Служебная учётка вместо пустоты была бы хуже пустоты: она
+     * появлялась бы в журнале наравне с людьми, и «кто закрыл заявку» отвечалось бы именем,
+     * которого не существует. Кто именно поставил строку без автора, говорит `actor_source`.
+     *
+     * `restrict` остаётся: у строки с автором автор обязан быть читаемым и через год, поэтому
+     * пустой `changed_by` означает ровно одно — «сделал портал», а не «сотрудник уволился».
+     */
+    changedBy: uuid('changed_by').references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * Кто двигал заявку: `user` — человек, `system` — портал сам. Умолчание `user` сохраняет
+     * контракт для всего существующего кода и всех существующих строк — автор у них есть, — а
+     * ограничение ниже держит эти две колонки согласованными в обе стороны.
+     */
+    actorSource: text('actor_source').$type<'user' | 'system'>().notNull().default('user'),
     changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
     comment: text('comment').notNull().default(''),
   },
   (t) => ({
+    // Равенство, а не «одно из двух»: `system` с автором означало бы приписанное порталу действие
+    // человека, `user` без автора — потерянного автора там, где его обязаны знать. Обе стороны
+    // ошибочны одинаково, и обе закрываются одной строкой.
+    actorCheck: check(
+      'service_request_status_history_actor_check',
+      sql`${t.actorSource} IN ('user','system')
+          AND (${t.actorSource} = 'user') = (${t.changedBy} IS NOT NULL)`,
+    ),
     requestIdx: index('service_request_status_history_request_idx').on(t.requestId, t.changedAt),
   }),
 );
@@ -2326,6 +3012,26 @@ export const wasteRequestCompletions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     completedAt: timestamp('completed_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * День фактического вывоза (ADR 0114, Р19, миграция 0181). Ни `deliveryAt`, ни `completedAt`
+     * его не заменяют: первое — план, а вывозят и раньше, и позже; второе — когда заявку закрыли,
+     * а закрывают её задним числом. Сверять дату талона надо с фактом, и до этой колонки факта не
+     * было вовсе.
+     *
+     * Пусто у закрытий старше колонки: backfill не выполнялся сознательно — подстановка плановой
+     * даты выдала бы предположение за факт и при первой же прогонке архива нарисовала бы
+     * расхождения там, где их никто не совершал.
+     */
+    removedOn: date('removed_on', { mode: 'string' }),
+    /**
+     * `entered` — дату ввёл человек, `unknown` — закрытие старше колонки. Значение `inferred` из
+     * ранних редакций плана убрано: у строки без даты оно означало бы «выведено», хотя не выведено
+     * ничего. Жёсткая сверка с датой талона идёт только против `entered`.
+     */
+    removedOnSource: text('removed_on_source')
+      .notNull()
+      .default('unknown')
+      .$type<'entered' | 'unknown'>(),
     updatedAt: updatedAt(),
   },
   (t) => ({
@@ -2364,6 +3070,829 @@ export const wasteRequestCompletions = pgTable(
       sql`${t.wasteTariffId} IS NULL OR ${t.pricePerM3} IS NOT NULL`,
     ),
     completedAtIdx: index('waste_request_completions_completed_at_idx').on(t.completedAt.desc()),
+    removedOnSourceCheck: check(
+      'waste_request_completions_removed_on_source_check',
+      sql`${t.removedOnSource} IN ('entered', 'unknown')`,
+    ),
+    // Дата и её источник связаны намертво в обе стороны: дата без источника и `entered` без даты —
+    // это два способа соврать о том, откуда взялся день вывоза.
+    removedOnCheck: check(
+      'waste_request_completions_removed_on_check',
+      sql`(${t.removedOn} IS NULL) = (${t.removedOnSource} = 'unknown')`,
+    ),
+  }),
+);
+
+// ── Распознавание талонов вывоза (ADR 0114, миграция 0181) ──
+//
+// Талон до этого модуля был файлом и больше ничем: скан висел строкой `requestFiles` с
+// `kind = 'ticket'` (ADR 0024), и три вопроса, ради которых бумагу собирают, задать было некому —
+// не предъявлялся ли этот лист раньше, сходится ли объём, сходится ли дата.
+//
+// ЗАМЕЧАНИЯ ЗДЕСЬ НЕ ХРАНЯТСЯ: они считаются функцией от (заявка, факт, талоны) в
+// `services/waste-ticket-checks.ts`. Материализованная таблица замечаний разошлась бы с талонами
+// на первой же правке, и разошлась бы молча. Материализуется только РЕШЕНИЕ человека — принятие
+// расхождения, и оно хранится с отпечатком входа (`wasteTicketCheckResolutions`).
+//
+// СОСТАВНЫЕ КЛЮЧИ. Заявка хранится своей колонкой у файловой строки, страницы и талона — иначе
+// каждый отбор «талоны заявки» шёл бы тремя джойнами; цена такого хранения известна, три копии
+// одного факта расходятся, поэтому пары `(requestId, fileId)` и `(requestId, pageId)` замкнуты
+// внешними ключами на соседа. Без них схема допускает страницу, сославшуюся на файл одной заявки
+// с `requestId` другой, и талон на странице чужой заявки: ошибка кода превращалась бы в тихо
+// неверную сверку — то есть ровно в то, от чего модуль и заводится.
+
+/**
+ * Обработка файла-скана: единственное место, где живёт «файл отвергнут» (Р10).
+ *
+ * Файл отвечает за обработку, страница — за распознавание. Отвергнутый файл страниц не порождает
+ * вовсе, и пометить «это не изображение и не PDF» больше негде; без этой строки недоступное
+ * распознавание неотличимо от «талоны в порядке» (Р29).
+ */
+export const wasteTicketFiles = pgTable(
+  'waste_ticket_files',
+  {
+    /**
+     * PK = FK: у файла ровно одна строка обработки. Отдельный `id` означал бы, что один и тот же
+     * скан можно обработать дважды с разным исходом, и «какой из них показывать» стало бы вопросом.
+     */
+    fileId: uuid('file_id')
+      .primaryKey()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    /** Колонка ради отборов; согласованность с привязкой держит составной ключ `linkFk`. */
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => wasteRequests.id, { onDelete: 'cascade' }),
+    /**
+     * `unsupported` отделён от `failed` намеренно: первое — приговор бумаге (повтор не поможет,
+     * нужен человек), второе — приговор попытке (повтор будет). Человеку это две разные фразы,
+     * воркеру — два разных решения о ретрае.
+     */
+    status: text('status').notNull().$type<'pending' | 'done' | 'unsupported' | 'failed'>(),
+    /** Причина человеческими словами: собрать её заново из кодов нельзя. */
+    reason: text('reason').notNull().default(''),
+    /**
+     * Дубль классификации ПОСЛЕДНЕЙ неуспешной попытки (Р29). Источник истины — попытки: за час их
+     * бывает несколько с разной природой, и доля ошибок для баннера считается по ним. Здесь она
+     * лежит затем, чтобы строка в списке показывала своё состояние без запроса по попыткам.
+     */
+    errorClass: text('error_class').notNull().default('').$type<'' | 'transient' | 'terminal'>(),
+    errorScope: text('error_scope').notNull().default('').$type<'' | 'subsystem' | 'item'>(),
+    /**
+     * «В файле 6 страниц, обработано 5». Две колонки, а не одна: сверх лимита
+     * `TICKET_OCR_MAX_PAGES` страницы не теряются молча, и разница между «всего» и «обработано» —
+     * это то, что человек обязан увидеть.
+     */
+    totalPages: smallint('total_pages').notNull().default(0),
+    processedPages: smallint('processed_pages').notNull().default(0),
+    /**
+     * По ней считается «попытка 3 из 5, следующая в 14:32»: очередь уже умеет и попытки, и паузу,
+     * и переспрашивать её дешевле второй копии счётчика. `SET NULL` — задачу вычищают как
+     * отработавшую, и надпись к этому времени уже неинтересна.
+     */
+    activeJobId: uuid('active_job_id').references(() => jobs.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    /**
+     * Поддерживает составной ключ страницы. Ведущим `requestId` он же обслуживает каскад от
+     * заявки, поэтому отдельного индекса по ней нет.
+     */
+    requestFileUnique: unique('waste_ticket_files_request_file_unique').on(t.requestId, t.fileId),
+    /**
+     * Обработка идёт следом за привязкой: откат заявки в «Новую» отвязывает файлы, и этим же
+     * движением обязано исчезнуть распознанное (Р22). Каскадом, а не уборкой в коде — отвязка идёт
+     * из маршрута статуса, который о распознавании знать не обязан.
+     */
+    linkFk: foreignKey({
+      columns: [t.requestId, t.fileId],
+      foreignColumns: [requestFiles.requestId, requestFiles.fileId],
+      name: 'waste_ticket_files_link_fk',
+    }).onDelete('cascade'),
+    statusCheck: check(
+      'waste_ticket_files_status_check',
+      sql`${t.status} IN ('pending', 'done', 'unsupported', 'failed')`,
+    ),
+    /**
+     * Набор значений закрыт с обеих осей: опечатка в `errorScope` не сломала бы ничего видимого,
+     * но молча вывела бы строку из числителя health-метрики — погасила бы баннер ровно тогда,
+     * когда он нужен.
+     */
+    errorClassCheck: check(
+      'waste_ticket_files_error_class_check',
+      sql`${t.errorClass} IN ('', 'transient', 'terminal')`,
+    ),
+    errorScopeCheck: check(
+      'waste_ticket_files_error_scope_check',
+      sql`${t.errorScope} IN ('', 'subsystem', 'item')`,
+    ),
+    /** «Обработано больше, чем есть» — не редкий случай, а рассинхрон, выглядящий готовой работой. */
+    pagesCheck: check(
+      'waste_ticket_files_pages_check',
+      sql`${t.totalPages} >= 0 AND ${t.processedPages} >= 0
+          AND ${t.processedPages} <= ${t.totalPages}`,
+    ),
+  }),
+);
+
+/**
+ * Страница файла — единица распознавания (Р10).
+ *
+ * Хэш считается по РАСТРУ СТРАНИЦЫ, а не по файлу, и это главное в таблице: хэш всего PDF не
+ * узнает страницу, вложенную в другой PDF, — а именно так выглядит повторное предъявление бумаги,
+ * когда бухгалтерия сканирует пачкой. Точный повтор виден до всякого чтения, даже когда номер не
+ * прочитался вовсе (Р17).
+ */
+export const wasteTicketPages = pgTable(
+  'waste_ticket_pages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => wasteRequests.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id').notNull(),
+    pageNo: smallint('page_no').notNull(),
+    /** sha256 растра после предобработки, нижним регистром (`CHECK` в миграции). */
+    pageSha256: char('page_sha256', { length: 64 }).notNull(),
+    /**
+     * Страница провалилась — файл при этом мог обработаться: пять страниц из шести прочитаны,
+     * шестая не далась, и это состояние обязано быть выразимым.
+     */
+    status: text('status').notNull().$type<'pending' | 'done' | 'failed'>(),
+    /**
+     * Треть снимков несёт по два талона (замер 18.08.2026), поэтому ноль здесь — законный ответ
+     * «страница есть, талонов на ней нет», а не ошибка.
+     */
+    ticketsFound: smallint('tickets_found').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    fileFk: foreignKey({
+      columns: [t.requestId, t.fileId],
+      foreignColumns: [wasteTicketFiles.requestId, wasteTicketFiles.fileId],
+      name: 'waste_ticket_pages_file_fk',
+    }).onDelete('cascade'),
+    /** Вторая «страница 3» означала бы, что лист разобран дважды, и сумма по талонам удвоилась бы. */
+    filePageUnique: unique('waste_ticket_pages_file_page_unique').on(t.fileId, t.pageNo),
+    /**
+     * Поддерживает составной ключ талона. Ведущим `requestId` он же обслуживает каскад от заявки,
+     * поэтому отдельного индекса по ней нет.
+     */
+    requestIdUnique: unique('waste_ticket_pages_request_id_unique').on(t.requestId, t.id),
+    statusCheck: check(
+      'waste_ticket_pages_status_check',
+      sql`${t.status} IN ('pending', 'done', 'failed')`,
+    ),
+    pageNoCheck: check('waste_ticket_pages_page_no_check', sql`${t.pageNo} >= 1`),
+    ticketsFoundCheck: check('waste_ticket_pages_tickets_found_check', sql`${t.ticketsFound} >= 0`),
+    /**
+     * Форма хэша проверяется схемой, потому что на нём стоит обнаружение дубля бумаги: тот же лист
+     * в верхнем регистре и в нижнем — это два разных ключа и молча пропущенный повтор.
+     */
+    sha256Check: check('waste_ticket_pages_sha256_check', sql`${t.pageSha256} ~ '^[0-9a-f]{64}$'`),
+    /** «Этот растр уже видели» — вопрос о повторе бумаги, отдельный от кэша распознавания. */
+    sha256Idx: index('waste_ticket_pages_sha256_idx').on(t.pageSha256),
+  }),
+);
+
+/**
+ * Вызов модели по растру страницы (Р12).
+ *
+ * Таблица НЕ знает ни о заявке, ни о файле, и это её главное свойство: попытка отвечает на вопрос
+ * «что такая-то модель такой-то версии промпта прочитала на таком-то растре». Ответ не меняется от
+ * того, к какой заявке приложили бумагу, поэтому строки переживают откат заявки (Р22) и служат
+ * кэшем: повторное закрытие тем же листом не стоит ни копейки.
+ */
+export const wasteTicketRecognitionAttempts = pgTable(
+  'waste_ticket_recognition_attempts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * Ссылки на страницу здесь нет намеренно: страницу удаляет откат заявки, а попытка обязана его
+     * пережить — иначе кэш терял бы смысл ровно в том случае, ради которого заведён.
+     */
+    pageSha256: char('page_sha256', { length: 64 }).notNull(),
+    /** Наружу портал ходит только через прокси (Р3); `stub` — тесты и разработка без сети. */
+    engine: text('engine').notNull().$type<'stub' | 'proxy' | 'ocr'>(),
+    /**
+     * ЗАКАЗАННАЯ модель — та, что в ключе кэша; прокси вправе отдать запрос другой (Р7), и
+     * фактическая пишется рядом. Одной колонкой их не свести: по заказанной ищется кэш, по
+     * фактической сверяется биллинг, и разойтись они обязаны видимо.
+     */
+    model: text('model').notNull().default(''),
+    modelReported: text('model_reported').notNull().default(''),
+    /** Обе версии в ключе кэша: сменился промпт или предобработка — это другое чтение. */
+    promptVersion: integer('prompt_version').notNull(),
+    preprocessingVersion: integer('preprocessing_version').notNull(),
+    /** Неуспешная хранится наравне с успешной: по ней считается доля ошибок (Р29). */
+    status: text('status').notNull().$type<'done' | 'failed'>(),
+    /**
+     * Принудительный проход мимо кэша (Р13): «перераспознать» при тех же версиях. Флаг выводит
+     * строку из уникального ключа — иначе ограничение не дало бы завести вторую успешную попытку,
+     * и кнопка молча возвращала бы старый результат.
+     */
+    forced: boolean('forced').notNull().default(false),
+    /**
+     * ТОЛЬКО нормализованный ответ, прошедший схему: `tickets[]` и `unreadable`. Ни служебных полей
+     * провайдера, ни полного текста ответа, ни тем более изображения — это данные, попадающие под
+     * вопрос о передаче сканов вовне (В1), и держать их «на всякий случай» нельзя.
+     */
+    raw: jsonb('raw')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    durationMs: integer('duration_ms'),
+    /** Свой — найти вызов в журнале прокси; апстримовый — сверить счёт. Владельцы разные. */
+    proxyRequestId: text('proxy_request_id').notNull().default(''),
+    upstreamRequestId: text('upstream_request_id').notNull().default(''),
+    /** Код как приехал: множество открыто — чужая подсистема не обязана отвечать нашим словарём. */
+    errorCode: text('error_code').notNull().default(''),
+    /**
+     * А классификация закрыта, потому что по ней принимаются решения: `transient` — повтор будет,
+     * `terminal` — не будет; `subsystem` поднимает баннер, `item` не поднимает (Р29).
+     */
+    errorClass: text('error_class').notNull().default('').$type<'' | 'transient' | 'terminal'>(),
+    errorScope: text('error_scope').notNull().default('').$type<'' | 'subsystem' | 'item'>(),
+    error: text('error').notNull().default(''),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    engineCheck: check(
+      'waste_ticket_recognition_attempts_engine_check',
+      sql`${t.engine} IN ('stub', 'proxy', 'ocr')`,
+    ),
+    statusCheck: check(
+      'waste_ticket_recognition_attempts_status_check',
+      sql`${t.status} IN ('done', 'failed')`,
+    ),
+    errorClassCheck: check(
+      'waste_ticket_recognition_attempts_error_class_check',
+      sql`${t.errorClass} IN ('', 'transient', 'terminal')`,
+    ),
+    errorScopeCheck: check(
+      'waste_ticket_recognition_attempts_error_scope_check',
+      sql`${t.errorScope} IN ('', 'subsystem', 'item')`,
+    ),
+    /**
+     * Неклассифицированный сбой = слепая метрика: строка попадёт в знаменатель health-метрики и не
+     * попадёт ни в один числитель, то есть УЛУЧШИТ картину самим фактом того, что её не разобрали.
+     */
+    classificationCheck: check(
+      'waste_ticket_recognition_attempts_classification_check',
+      sql`${t.status} <> 'failed' OR (${t.errorClass} IN ('transient', 'terminal')
+                                  AND ${t.errorScope} IN ('subsystem', 'item'))`,
+    ),
+    sha256Check: check(
+      'waste_ticket_recognition_attempts_sha256_check',
+      sql`${t.pageSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    rawCheck: check(
+      'waste_ticket_recognition_attempts_raw_check',
+      sql`jsonb_typeof(${t.raw}) = 'object'`,
+    ),
+    /**
+     * КЛЮЧ КЭША, он же ключ идемпотентности прокси: оба отвечают на вопрос «это та же работа?».
+     * Только для успешных — ограничение без этого условия запирало бы повтор после разрыва сети,
+     * то есть делало бы неудачу окончательной. И мимо принудительных проходов (Р13).
+     */
+    cacheUnique: uniqueIndex('waste_ticket_recognition_attempts_cache_unique')
+      .on(t.pageSha256, t.engine, t.model, t.promptVersion, t.preprocessingVersion)
+      .where(sql`${t.status} = 'done' AND NOT ${t.forced}`),
+    pageCreatedIdx: index('waste_ticket_recognition_attempts_page_created_idx').on(
+      t.pageSha256,
+      t.createdAt.desc(),
+    ),
+    /**
+     * Два частичных индекса под health-метрику (Р29): знаменатель — попытки, действительно
+     * ходившие в прокси, числитель — неуспешные. Окно у метрики короткое, а таблица растёт всем,
+     * что когда-либо читали.
+     */
+    proxyIdx: index('waste_ticket_recognition_attempts_proxy_idx')
+      .on(t.createdAt.desc())
+      .where(sql`${t.engine} = 'proxy'`),
+    failedIdx: index('waste_ticket_recognition_attempts_failed_idx')
+      .on(t.createdAt.desc())
+      .where(sql`${t.status} = 'failed'`),
+  }),
+);
+
+/**
+ * Талон вывоза (Р15–Р17).
+ *
+ * Распознанное — предложение, но проверка считается сразу. Считать её только по подтверждённым
+ * нельзя: тогда человек, ещё не разобравший талоны, не видел бы ни одного замечания — сверка
+ * появлялась бы уже ПОСЛЕ того, как он принял решение. Поэтому проверки считаются по всем
+ * неотклонённым, а ограничения БД — только по подтверждённым: занять номер может лишь бумага,
+ * которую человек признал.
+ */
+export const wasteTickets = pgTable(
+  'waste_tickets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => wasteRequests.id, { onDelete: 'cascade' }),
+    /** Пусто у ручного талона и у машинного, чья страница убрана (см. `pageFk`). */
+    pageId: uuid('page_id'),
+    /** Позиция талона на странице: их бывает по два на снимке. */
+    seq: smallint('seq').notNull().default(1),
+    /**
+     * Обе попытки каскада (Р14): дешёвая читает всё, старшая перечитывает спорное. Хранятся обе,
+     * потому что «чем прочитана эта цифра» — вопрос к живому значению, а не к истории вызовов.
+     * `SET NULL` — страховка от рассинхрона с уборкой попыток по TTL: пока талон на попытку
+     * ссылается, уборка её не трогает (Р31).
+     */
+    primaryAttemptId: uuid('primary_attempt_id').references(
+      () => wasteTicketRecognitionAttempts.id,
+      { onDelete: 'set null' },
+    ),
+    escalationAttemptId: uuid('escalation_attempt_id').references(
+      () => wasteTicketRecognitionAttempts.id,
+      { onDelete: 'set null' },
+    ),
+    /**
+     * СНИМОК оператора-исполнителя, взятый в момент подтверждения и дальше замороженный: область
+     * уникальности номера — перевозчик, потому что талон выдаёт он, а у двух перевозчиков нумерация
+     * независима. Не ссылка на заявку: исполнителя выполненной заявки законно меняют, и вместе с
+     * ним поехала бы область уникальности уже занятого номера. `NULL` законен — оператор у заявки
+     * необязателен, и `NOT NULL` означал бы выдуманного контрагента.
+     */
+    operatorCounterpartyId: uuid('operator_counterparty_id').references(() => counterparties.id),
+    /**
+     * Номер в трёх видах, и каждый нужен отдельно (Р16): дословно — человеку, консервативный ключ —
+     * ограничению БД, поисковый — предупреждению о похожем. Агрессивная нормализация в ключе
+     * склеила бы `12-34` и `123-4`, поэтому дефисы и ведущие нули в нём сохраняются.
+     */
+    numberRaw: text('number_raw').notNull().default(''),
+    numberKey: text('number_key').notNull().default(''),
+    numberFuzzy: text('number_fuzzy').notNull().default(''),
+    /** Пусто — не прочиталось или проходы разошлись (Р14): расхождение оставляет поле пустым. */
+    issuedOn: date('issued_on', { mode: 'string' }),
+    /**
+     * `NULL` законен дважды: у простоя объёма нет вовсе, и у обычного талона он бывает не прочитан.
+     * Поэтому «объём обязателен у вывоза» не проверяется — такой `CHECK` запретил бы записать
+     * честно нераспознанное и отправил бы весь талон в ручной ввод.
+     */
+    volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }),
+    /**
+     * Талон бывает про простой («Простой с 9:10 по 10:10»), и в сумму объёма он не входит (Р18);
+     * без этого поля такой талон выглядел бы вывозом на ноль кубов.
+     */
+    workKind: text('work_kind').notNull().default('removal').$type<'removal' | 'idle' | 'other'>(),
+    /**
+     * Адрес выполнения — он же объект; графа «Заказчик» несёт название компании и бесполезна.
+     * Дословно: адрес пишут от руки и сокращают как придётся, сравнение нестрогое.
+     */
+    addressRaw: text('address_raw').notNull().default(''),
+    /**
+     * Неизменяемо. Правка машинного талона `origin` НЕ меняет — иначе метрика «доля правок»
+     * переставала бы его видеть ровно тогда, когда он для неё интереснее всего.
+     */
+    origin: text('origin').notNull().$type<'ocr' | 'manual'>(),
+    status: text('status')
+      .notNull()
+      .default('unconfirmed')
+      .$type<'unconfirmed' | 'confirmed' | 'dismissed'>(),
+    /**
+     * Какие поля модель просит посмотреть (Р14). Набор значений намеренно НЕ закрыт `CHECK`, в
+     * отличие от `resolvedFields` слепой проверки: там имена полей несут ограничения целостности,
+     * здесь это подсказка интерфейсу, и новый повод присмотреться не должен стоить миграции.
+     */
+    needsReviewFields: text('needs_review_fields')
+      .array()
+      .notNull()
+      .default(sql`'{}'`),
+    /**
+     * Что прочитал каждый проход по спорному полю (Р14): `[{ field, value, model }]`. Снимком
+     * рядом с талоном, а не ссылкой на попытки: сопоставление талонов между проходами делает
+     * воркер, повторять его в API значило бы завести второй расходящийся алгоритм, — а сырьё
+     * попыток убирается по сроку (Р31), тогда как спорное поле живёт до разбора.
+     */
+    candidates: jsonb('candidates')
+      .notNull()
+      .default(sql`'[]'::jsonb`)
+      .$type<{ field: string; value: string; model: string }[]>(),
+    editedAt: timestamp('edited_at', { withTimezone: true }),
+    editedBy: uuid('edited_by').references(() => users.id),
+    confirmedBy: uuid('confirmed_by').references(() => users.id),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    /**
+     * Клапан уникальности (Р17): ставится ТОЛЬКО на конфликтующую строку — заводимую или
+     * подтверждаемую сейчас, и только если конфликт под блокировкой действительно нашёлся.
+     * Отдельной ручки «снять ограничение» нет вовсе: сняв его со старшей строки, она открыла бы её
+     * номер всем следующим дублям — починила бы один случай, отключив проверку навсегда.
+     */
+    duplicateOverrideAt: timestamp('duplicate_override_at', { withTimezone: true }),
+    duplicateOverrideBy: uuid('duplicate_override_by').references(() => users.id),
+    duplicateOverrideReason: text('duplicate_override_reason').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    /**
+     * В базе объявлено `ON DELETE SET NULL (page_id)` (PostgreSQL 15+, миграция 0181): обнуляется
+     * ТОЛЬКО `pageId`, потому что `requestId` у талона `NOT NULL` — обычный `SET NULL` уронил бы
+     * удаление страницы ошибкой вместо того, чтобы отвязать талон. Drizzle список колонок не
+     * выражает, источник истины — миграция. Отвязать, а не удалить: подтверждённый человеком талон
+     * переживает уборку страницы.
+     */
+    pageFk: foreignKey({
+      columns: [t.requestId, t.pageId],
+      foreignColumns: [wasteTicketPages.requestId, wasteTicketPages.id],
+      name: 'waste_tickets_page_fk',
+    }).onDelete('set null'),
+    originCheck: check('waste_tickets_origin_check', sql`${t.origin} IN ('ocr', 'manual')`),
+    statusCheck: check(
+      'waste_tickets_status_check',
+      sql`${t.status} IN ('unconfirmed', 'confirmed', 'dismissed')`,
+    ),
+    workKindCheck: check(
+      'waste_tickets_work_kind_check',
+      sql`${t.workKind} IN ('removal', 'idle', 'other')`,
+    ),
+    seqCheck: check('waste_tickets_seq_check', sql`${t.seq} >= 1`),
+    /**
+     * Отрицательный объём — не расхождение, а бессмыслица. Ноль допущен намеренно: он всего лишь
+     * неправдоподобен, а строку нужно суметь записать, чтобы человеку было что исправить.
+     */
+    volumeCheck: check(
+      'waste_tickets_volume_check',
+      sql`${t.volumeM3} IS NULL OR ${t.volumeM3} >= 0`,
+    ),
+    /** «Кто и когда» ходят парой: половина ответа хуже его отсутствия — она выглядит ответом. */
+    editedCheck: check(
+      'waste_tickets_edited_check',
+      sql`(${t.editedAt} IS NULL) = (${t.editedBy} IS NULL)`,
+    ),
+    confirmedCheck: check(
+      'waste_tickets_confirmed_check',
+      sql`(${t.confirmedAt} IS NULL) = (${t.confirmedBy} IS NULL)`,
+    ),
+    /**
+     * Ручной талон создаётся сразу подтверждённым (Р15): его ввёл человек, и ждать, пока он
+     * подтвердит сам себя, не за чем. Отклонить его потом можно — `dismissed` здесь законен.
+     */
+    manualConfirmedCheck: check(
+      'waste_tickets_manual_confirmed_check',
+      sql`${t.origin} <> 'manual' OR ${t.status} <> 'unconfirmed'`,
+    ),
+    /**
+     * Все три колонки клапана вместе или ни одной. Снятый клапан — это отсутствие причины, а не
+     * пустая причина: иначе «почему этот дубль разрешён» имело бы два представления, и отбор
+     * «строки с клапаном» разошёлся бы с частичными индексами ниже.
+     */
+    duplicateOverrideCheck: check(
+      'waste_tickets_duplicate_override_check',
+      sql`(${t.duplicateOverrideAt} IS NULL) = (${t.duplicateOverrideBy} IS NULL)
+          AND (${t.duplicateOverrideAt} IS NULL) = (${t.duplicateOverrideReason} = '')`,
+    ),
+    /**
+     * Один талон на позицию страницы: повторный разбор той же страницы не должен раздваивать
+     * бумагу. Только машинные — ручной талон `seq` ничего не занимает.
+     */
+    pageSeqUnique: uniqueIndex('waste_tickets_page_seq_unique')
+      .on(t.pageId, t.seq)
+      .where(sql`${t.pageId} IS NOT NULL AND ${t.origin} = 'ocr'`),
+    /**
+     * ГЛАВНОЕ ОГРАНИЧЕНИЕ МОДУЛЯ: один лист не закрывает две заявки. Индексов два, потому что
+     * «ничьи» заявки надо свести в одну область, а `NULL` в PostgreSQL не равен `NULL` — с одним
+     * индексом по паре талоны заявок без исполнителя не конфликтовали бы вообще ни с чем, то есть
+     * проверка молча выключалась бы там, где оператор не проставлен.
+     */
+    operatorNumberUnique: uniqueIndex('waste_tickets_operator_number_unique')
+      .on(t.operatorCounterpartyId, t.numberKey)
+      .where(
+        sql`${t.operatorCounterpartyId} IS NOT NULL AND ${t.numberKey} <> ''
+            AND ${t.status} = 'confirmed' AND ${t.duplicateOverrideAt} IS NULL`,
+      ),
+    numberUnique: uniqueIndex('waste_tickets_number_unique')
+      .on(t.numberKey)
+      .where(
+        sql`${t.operatorCounterpartyId} IS NULL AND ${t.numberKey} <> ''
+            AND ${t.status} = 'confirmed' AND ${t.duplicateOverrideAt} IS NULL`,
+      ),
+    requestIdx: index('waste_tickets_request_idx').on(t.requestId),
+    /**
+     * Поиск похожего номера (Р16). Результат такого поиска всегда предупреждение, а не запрет:
+     * сведение `О`/`0` и `A`/`А` — догадка, и запрещать по догадке нельзя.
+     */
+    numberFuzzyIdx: index('waste_tickets_number_fuzzy_idx').on(t.numberFuzzy),
+  }),
+);
+
+/**
+ * Предложение перераспознавания (Р13).
+ *
+ * Кнопка «перераспознать» не переписывает работу человека: `unconfirmed` без правки замещается
+ * новыми значениями прямо в талоне, а подтверждённое, ручное и правленое не трогается — новое
+ * чтение живёт здесь, пока человек не примет или не отклонит его.
+ *
+ * Хранится МАТЕРИАЛИЗОВАННЫЙ СНИМОК значений, а не одни ссылки на попытки: попытки, на которые не
+ * ссылается талон, убираются по TTL, и предложение, собираемое из `raw`, в этот день молча
+ * обнулилось бы. Ссылки на обе попытки каскада объявлены `SET NULL` намеренно — иначе непринятое
+ * предложение держало бы сырьё вечно.
+ */
+export const wasteTicketProposals = pgTable(
+  'waste_ticket_proposals',
+  {
+    /**
+     * PK = FK: одно активное предложение на талон. Второе означало бы очередь предложений, а
+     * человеку в ней пришлось бы разбирать не бумагу, а историю кнопки.
+     */
+    ticketId: uuid('ticket_id')
+      .primaryKey()
+      .references(() => wasteTickets.id, { onDelete: 'cascade' }),
+    /**
+     * Нормализованного ключа номера здесь нет намеренно: предложение номера не занимает. Принятие,
+     * меняющее номер, идёт тем же путём, что обычная правка (Р27) — с блокировкой по
+     * `(оператор, numberKey)` и повторной проверкой конфликта, а не в обход уникальности.
+     */
+    numberRaw: text('number_raw').notNull().default(''),
+    issuedOn: date('issued_on', { mode: 'string' }),
+    volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }),
+    workKind: text('work_kind').notNull().default('removal').$type<'removal' | 'idle' | 'other'>(),
+    addressRaw: text('address_raw').notNull().default(''),
+    primaryAttemptId: uuid('primary_attempt_id').references(
+      () => wasteTicketRecognitionAttempts.id,
+      { onDelete: 'set null' },
+    ),
+    escalationAttemptId: uuid('escalation_attempt_id').references(
+      () => wasteTicketRecognitionAttempts.id,
+      { onDelete: 'set null' },
+    ),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    workKindCheck: check(
+      'waste_ticket_proposals_work_kind_check',
+      sql`${t.workKind} IN ('removal', 'idle', 'other')`,
+    ),
+    volumeCheck: check(
+      'waste_ticket_proposals_volume_check',
+      sql`${t.volumeM3} IS NULL OR ${t.volumeM3} >= 0`,
+    ),
+  }),
+);
+
+/**
+ * Слепая перепроверка талона и арбитраж (Р31).
+ *
+ * Признак `confidence` метрикой не считается: модель уверена и когда ошибается. Разметка из работы
+ * тоже неравноценна — правка сильный сигнал, подтверждение слабый. Поэтому второй человек читает
+ * талон, НЕ ВИДЯ ни распознанного, ни подтверждённого, и его чтение сравнивается со снимком
+ * машинного.
+ *
+ * Сама перепроверка не измеряет уверенные ошибки: она показывает, что два чтения разошлись, но не
+ * говорит, кто прав. Атрибуция требует третьего разбора — арбитража, и в метрику идёт только
+ * разобранное. Отсюда почти все ограничения ниже: они не дают объявить разобранным то, что не
+ * разобрано, и не дают засчитать разбор там, где расхождения не было.
+ */
+export const wasteTicketBlindChecks = pgTable(
+  'waste_ticket_blind_checks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    ticketId: uuid('ticket_id')
+      .notNull()
+      .references(() => wasteTickets.id, { onDelete: 'cascade' }),
+    /**
+     * Пусто, пока задание не взято: строка заводится в момент попадания талона в выборку, иначе
+     * состояния `pending` в реестре не существовало бы вовсе. Взятие атомарно проставляет
+     * `checkerId` (`UPDATE … WHERE checker_id IS NULL RETURNING`), поэтому гонка двух проверяющих
+     * разрешается в пользу первого, а второму реестр отдаёт следующий талон.
+     */
+    checkerId: uuid('checker_id').references(() => users.id),
+    reviewNumberRaw: text('review_number_raw').notNull().default(''),
+    /**
+     * Ключ по Р16: номера сравниваются нормализованными, иначе «№ 12-34» и «12-34» уходили бы в
+     * расхождение, и метрика ошибок OCR наполнялась бы разницей в пробелах.
+     */
+    reviewNumberKey: text('review_number_key').notNull().default(''),
+    reviewIssuedOn: date('review_issued_on', { mode: 'string' }),
+    reviewVolumeM3: numeric('review_volume_m3', { precision: 12, scale: 3 }),
+    /**
+     * СНИМОК машинного чтения на момент попадания в выборку, а не чтение талона по ссылке: талон
+     * правят, и сравнение поехало бы задним числом — вчерашнее расхождение превратилось бы в
+     * совпадение просто потому, что кто-то исправил цифру.
+     */
+    baselineNumberRaw: text('baseline_number_raw').notNull().default(''),
+    baselineNumberKey: text('baseline_number_key').notNull().default(''),
+    baselineIssuedOn: date('baseline_issued_on', { mode: 'string' }),
+    baselineVolumeM3: numeric('baseline_volume_m3', { precision: 12, scale: 3 }),
+    baselineFingerprint: char('baseline_fingerprint', { length: 64 }).notNull(),
+    status: text('status')
+      .notNull()
+      .default('pending')
+      .$type<'pending' | 'match' | 'mismatch' | 'arbitrated'>(),
+    /**
+     * Вердикта одним словом нет: правота бывает разной по полям — номер за машиной, дата за
+     * человеком, объём мимо у обоих. Хранятся итоговые ЗНАЧЕНИЯ, а «кто прав» считается сравнением
+     * с `review*` и `baseline*` по каждому полю отдельно.
+     */
+    finalNumberRaw: text('final_number_raw'),
+    finalNumberKey: text('final_number_key'),
+    finalIssuedOn: date('final_issued_on', { mode: 'string' }),
+    finalVolumeM3: numeric('final_volume_m3', { precision: 12, scale: 3 }),
+    /**
+     * Какие поля арбитр разобрал. Отдельно от значений, потому что «верного значения нет» (объёма
+     * на талоне не было вовсе) и «поле не разобрано» — разные вещи, а `NULL` их не различает.
+     */
+    resolvedFields: text('resolved_fields')
+      .array()
+      .notNull()
+      .default(sql`'{}'`)
+      .$type<('number' | 'issuedOn' | 'volumeM3')[]>(),
+    arbiterId: uuid('arbiter_id').references(() => users.id),
+    arbitratedAt: timestamp('arbitrated_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    /**
+     * Одна перепроверка на талон, а не по одной на человека: иначе «доля расхождений» зависела бы
+     * от того, сколько людей позвали смотреть на один и тот же лист.
+     */
+    ticketUnique: unique('waste_ticket_blind_checks_ticket_unique').on(t.ticketId),
+    statusCheck: check(
+      'waste_ticket_blind_checks_status_check',
+      sql`${t.status} IN ('pending', 'match', 'mismatch', 'arbitrated')`,
+    ),
+    /** Без проверяющего строка может быть только ожидающей: «совпало» с пустотой не совпадает. */
+    pendingCheck: check(
+      'waste_ticket_blind_checks_pending_check',
+      sql`${t.checkerId} IS NOT NULL OR ${t.status} = 'pending'`,
+    ),
+    /**
+     * Арбитр не проверяет сам себя: третий разбор затем и нужен, что двое уже высказались.
+     * «Арбитр ≠ подтвердивший талон» держит сервис — подзапрос в `CHECK` невозможен.
+     */
+    arbiterCheck: check(
+      'waste_ticket_blind_checks_arbiter_check',
+      sql`${t.arbiterId} IS NULL OR ${t.arbiterId} <> ${t.checkerId}`,
+    ),
+    /**
+     * Статус обязан соответствовать ФАКТИЧЕСКОМУ сравнению. Иначе совпавшую строку можно объявить
+     * разобранной и подмешать в метрику разбор, которого не было, — а метрика для того и заведена,
+     * чтобы ей верили без пересчёта.
+     */
+    matchCheck: check(
+      'waste_ticket_blind_checks_match_check',
+      sql`${t.status} <> 'match' OR (
+            ${t.baselineNumberKey} IS NOT DISTINCT FROM ${t.reviewNumberKey}
+        AND ${t.baselineIssuedOn} IS NOT DISTINCT FROM ${t.reviewIssuedOn}
+        AND ${t.baselineVolumeM3} IS NOT DISTINCT FROM ${t.reviewVolumeM3})`,
+    ),
+    mismatchCheck: check(
+      'waste_ticket_blind_checks_mismatch_check',
+      sql`${t.status} NOT IN ('mismatch', 'arbitrated') OR (
+            ${t.baselineNumberKey} IS DISTINCT FROM ${t.reviewNumberKey}
+         OR ${t.baselineIssuedOn} IS DISTINCT FROM ${t.reviewIssuedOn}
+         OR ${t.baselineVolumeM3} IS DISTINCT FROM ${t.reviewVolumeM3})`,
+    ),
+    /**
+     * Разобрать можно только то, что разошлось. `<> ALL`, а не `<> ANY`: нужно «этого имени нет в
+     * массиве», а `ANY` означало бы «отличается хотя бы от одного его элемента» — и совпавшее поле
+     * проходило бы проверку за счёт соседнего, разошедшегося.
+     */
+    resolvedDiffCheck: check(
+      'waste_ticket_blind_checks_resolved_diff_check',
+      sql`('number' <> ALL(${t.resolvedFields})
+             OR ${t.baselineNumberKey} IS DISTINCT FROM ${t.reviewNumberKey})
+      AND ('issuedOn' <> ALL(${t.resolvedFields})
+             OR ${t.baselineIssuedOn} IS DISTINCT FROM ${t.reviewIssuedOn})
+      AND ('volumeM3' <> ALL(${t.resolvedFields})
+             OR ${t.baselineVolumeM3} IS DISTINCT FROM ${t.reviewVolumeM3})`,
+    ),
+    /** «Кто разобрал» и «когда» появляются ровно вместе со статусом разбора, в обе стороны. */
+    arbitrationCheck: check(
+      'waste_ticket_blind_checks_arbitration_check',
+      sql`(${t.status} = 'arbitrated') = (${t.arbiterId} IS NOT NULL)
+          AND (${t.status} = 'arbitrated') = (${t.arbitratedAt} IS NOT NULL)`,
+    ),
+    /**
+     * До арбитража итогов нет вовсе: значение, вписанное в неразобранную строку, — это чужое
+     * мнение, выданное за решение.
+     */
+    noFinalCheck: check(
+      'waste_ticket_blind_checks_no_final_check',
+      sql`${t.status} = 'arbitrated' OR (${t.resolvedFields} = '{}'
+          AND ${t.finalNumberRaw} IS NULL AND ${t.finalIssuedOn} IS NULL
+          AND ${t.finalVolumeM3} IS NULL)`,
+    ),
+    /**
+     * В массив попадают только имена полей талона: опечатка тихо вывела бы поле из всех проверок
+     * ниже, потому что ни одна из них про несуществующее имя ничего не утверждает.
+     */
+    resolvedDomainCheck: check(
+      'waste_ticket_blind_checks_resolved_domain_check',
+      sql`${t.resolvedFields} <@ ARRAY['number', 'issuedOn', 'volumeM3']::text[]`,
+    ),
+    /** Итог пишется только для разобранного поля: значение без разбора — тихая выдумка. */
+    finalResolvedCheck: check(
+      'waste_ticket_blind_checks_final_resolved_check',
+      sql`(${t.finalNumberRaw} IS NULL OR 'number' = ANY(${t.resolvedFields}))
+      AND (${t.finalIssuedOn} IS NULL OR 'issuedOn' = ANY(${t.resolvedFields}))
+      AND (${t.finalVolumeM3} IS NULL OR 'volumeM3' = ANY(${t.resolvedFields}))`,
+    ),
+    /**
+     * Дословный итог и его ключ ходят парой: по ключу считается «кто прав по номеру», и итог без
+     * ключа выпал бы из метрики, оставшись видимым в интерфейсе.
+     */
+    finalKeyCheck: check(
+      'waste_ticket_blind_checks_final_key_check',
+      sql`(${t.finalNumberKey} IS NULL) = (${t.finalNumberRaw} IS NULL)`,
+    ),
+    /**
+     * Разобрано должно быть КАЖДОЕ разошедшееся поле: частично закрытая строка хуже неразобранной,
+     * потому что выглядит законченной и уходит из реестра разбора.
+     */
+    arbitratedCompleteCheck: check(
+      'waste_ticket_blind_checks_arbitrated_complete_check',
+      sql`${t.status} <> 'arbitrated' OR (
+            (${t.baselineNumberKey} IS NOT DISTINCT FROM ${t.reviewNumberKey}
+               OR 'number' = ANY(${t.resolvedFields}))
+        AND (${t.baselineIssuedOn} IS NOT DISTINCT FROM ${t.reviewIssuedOn}
+               OR 'issuedOn' = ANY(${t.resolvedFields}))
+        AND (${t.baselineVolumeM3} IS NOT DISTINCT FROM ${t.reviewVolumeM3}
+               OR 'volumeM3' = ANY(${t.resolvedFields})))`,
+    ),
+    fingerprintCheck: check(
+      'waste_ticket_blind_checks_fingerprint_check',
+      sql`${t.baselineFingerprint} ~ '^[0-9a-f]{64}$'`,
+    ),
+    /** Реестры: «что ждёт проверяющего» и «что ждёт арбитра» — два вопроса к одной колонке. */
+    statusIdx: index('waste_ticket_blind_checks_status_idx').on(t.status, t.createdAt),
+  }),
+);
+
+/**
+ * Принятое расхождение (Р21).
+ *
+ * Материализуется РЕШЕНИЕ, а не замечание. Само замечание остаётся вычисляемым — иначе разойдётся
+ * с талонами на первой же правке. А «принимаю расхождение» хранится с ОТПЕЧАТКОМ ВХОДА: код
+ * проверки, набор подтверждённых талонов, фактический объём, `removedOn`, заявленный объём,
+ * `deliveryAt`, область оператора, действующие допуски и версия алгоритма проверок. Изменилась
+ * любая из величин — принятие перестаёт действовать само, и замечание возвращается.
+ *
+ * Без отпечатка «принято» означало бы «замолчать навсегда» — в том числе про расхождение, которого
+ * в момент принятия не было и которое появилось потом.
+ */
+export const wasteTicketCheckResolutions = pgTable(
+  'waste_ticket_check_resolutions',
+  {
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => wasteRequests.id, { onDelete: 'cascade' }),
+    /**
+     * `duplicate_number`, `volume_mismatch`, `date_mismatch`, `address_mismatch`, … Набор НЕ закрыт
+     * `CHECK` намеренно: проверки заводятся кодом, и каждая новая стоила бы миграции — притом что
+     * закрытый набор здесь ничего не защищает, принятие с неизвестным кодом просто ни к чему не
+     * привяжется и ничего не погасит.
+     */
+    checkCode: text('check_code').notNull(),
+    /**
+     * Id талона для построчных проверок, `''` — для заявочных. Пустая строка, а не `NULL`, потому
+     * что колонка входит в первичный ключ: `NULL` в нём означал бы, что заявочное принятие можно
+     * записать дважды.
+     */
+    subjectKey: text('subject_key').notNull().default(''),
+    inputFingerprint: char('input_fingerprint', { length: 64 }).notNull(),
+    /**
+     * Удаление учётки запрещено умолчанием (`NO ACTION`): «кто принял расхождение» обязано пережить
+     * увольнение — иначе принятие осталось бы решением без принявшего, а это и есть та самая
+     * тишина, от которой отпечаток защищает.
+     */
+    acceptedBy: uuid('accepted_by')
+      .notNull()
+      .references(() => users.id),
+    comment: text('comment').notNull(),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    /**
+     * Одно принятие на «заявка + проверка + предмет»: повторное принятие того же расхождения
+     * переписывает строку вместе с отпечатком, а не копится историей молчания.
+     */
+    pk: primaryKey({
+      name: 'waste_ticket_check_resolutions_pk',
+      columns: [t.requestId, t.checkCode, t.subjectKey],
+    }),
+    checkCodeCheck: check(
+      'waste_ticket_check_resolutions_check_code_check',
+      sql`btrim(${t.checkCode}) <> ''`,
+    ),
+    /**
+     * Причина обязательна и непуста: принятие расхождения — ответ человека на вопрос «почему цифры
+     * не сходятся», и пустая строка означала бы, что вопрос закрыли, не ответив.
+     */
+    commentCheck: check(
+      'waste_ticket_check_resolutions_comment_check',
+      sql`btrim(${t.comment}) <> ''`,
+    ),
+    fingerprintCheck: check(
+      'waste_ticket_check_resolutions_fingerprint_check',
+      sql`${t.inputFingerprint} ~ '^[0-9a-f]{64}$'`,
+    ),
   }),
 );
 
@@ -2432,12 +3961,44 @@ export const vehicleRequests = pgTable(
      */
     isLinearFrozen: boolean('is_linear_frozen'),
     linearFrozenAt: timestamp('linear_frozen_at', { withTimezone: true }),
+    /**
+     * Готовность истории назначения (миграция 0166, план `docs/assignment-periods-plan.md` §6).
+     *
+     * Три состояния, а не флаг (Р26): `materialized` означает «строки истории есть, но валидности
+     * нет», и ленивый пересчёт в нём ничего не пересобирает. Предикат cutover читает именно эту
+     * колонку. Пишет их этап 3 — сегодня у всех заявок `empty`.
+     */
+    assignmentHistoryState: text('assignment_history_state')
+      .$type<AssignmentHistoryState>()
+      .notNull()
+      .default('empty'),
+    /**
+     * День, на который состояние считалось. Это не `asOf` запроса: календарь двигает валидность
+     * истории сам, без всякой двери (З1), и «посчитано сегодня» — единственное, что делает
+     * состояние пригодным для решения о бумаге. Пусто тогда и только тогда, когда состояние
+     * `empty` (CHECK `vehicle_requests_history_state_check`, добавлен `NOT VALID` по Р2).
+     */
+    assignmentHistoryValidatedOn: date('assignment_history_validated_on', { mode: 'string' }),
+    /**
+     * Загрязнение внутри дня (К4): двери, разрешённые в `history_frozen`, меняют отменяемость
+     * бумаги, а `validated_on` при этом остаётся сегодняшним и ленивое правило устаревания молчит.
+     */
+    assignmentHistoryDirty: boolean('assignment_history_dirty').notNull().default(false),
     version: integer('version').notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => ({
     numUnique: uniqueIndex('vehicle_requests_num_unique').on(t.num),
+    // Состояние `empty` и день расчёта — одно и то же утверждение с двух сторон (миграция 0166).
+    assignmentHistoryStateValues: check(
+      'vehicle_requests_assignment_history_state_check',
+      sql`${t.assignmentHistoryState} IN ('empty', 'materialized', 'ready')`,
+    ),
+    assignmentHistoryStatePresence: check(
+      'vehicle_requests_history_state_check',
+      sql`(${t.assignmentHistoryState} = 'empty') = (${t.assignmentHistoryValidatedOn} is null)`,
+    ),
     // Пара честна или пуста целиком (миграция 0137): половина снимка не отвечает ни на «как
     // ведётся», ни на «с какого числа».
     linearFrozenPresence: check(
@@ -3646,8 +5207,25 @@ export const waybillCorrections = pgTable(
      */
     kind: text('kind')
       .notNull()
-      .$type<'route' | 'transfer' | 'esm2' | 'cancel' | 'issue' | 'request_date' | 'weekly'>(),
+      .$type<
+        | 'route'
+        | 'transfer'
+        | 'esm2'
+        | 'cancel'
+        | 'issue'
+        | 'request_date'
+        | 'weekly'
+        | 'crew'
+        | 'assignment_tail'
+      >(),
     reason: text('reason').notNull(),
+    /**
+     * Снимок авторизации (Р9): какие права требовались, когда операцию разрешили. Повтор спустя
+     * недели проверяет **сохранённые требования**, а глубину и архивный статус заново не считает —
+     * пересчёт и есть та дыра, ради которой снимок заведён. У старых семи видов пусто: они
+     * авторизуются прежним, своим для каждого входа путём.
+     */
+    authorizationScope: jsonb('authorization_scope').$type<WaybillCorrectionAuthorizationScope>(),
     /**
      * RESTRICT: учётку автора коррекции не удалить, пока за ней числятся правки бланков. Право у
      * диспетчера и администратора, увольнение диспетчера — обычное дело, а «кто это сделал» обязано
@@ -3674,7 +5252,13 @@ export const waybillCorrections = pgTable(
     // числом» отвечается одним словом на два разных события.
     kindCheck: check(
       'waybill_corrections_kind_check',
-      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly')`,
+      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly', 'crew', 'assignment_tail')`,
+    ),
+    // Снимок обязателен ровно у тех видов, что заведены историей назначения: у остальных его нет и
+    // быть не может — миграция их не переписывала.
+    authorizationScopeCheck: check(
+      'waybill_corrections_authorization_scope_check',
+      sql`${t.kind} NOT IN ('crew', 'assignment_tail') OR ${t.authorizationScope} IS NOT NULL`,
     ),
     // Причина обязательна и непуста — ради неё таблица и заведена. Пустая строка означала бы
     // «номер сгорел, объяснения нет», то есть ровно то состояние, которое фича закрывает.
@@ -4094,6 +5678,12 @@ export const jobs = pgTable(
   },
   (t) => ({
     dueIdx: index('jobs_due_idx').on(t.status, t.nextRunAt),
+    // Под возврат просроченных задач (миграция 0182): аренда спрашивается по `locked_until`
+    // у строк в `running`, а `jobs_due_idx` внутри статуса упорядочен по `next_run_at` — величине,
+    // к аренде отношения не имеющей. Частичный: `running` в очереди всегда меньшинство.
+    leaseIdx: index('jobs_lease_idx')
+      .on(t.lockedUntil)
+      .where(sql`${t.status} = 'running'`),
   }),
 );
 
@@ -4924,10 +6514,17 @@ export type CounterpartyRow = typeof counterparties.$inferSelect;
 export type CounterpartySynonymRow = typeof counterpartySynonyms.$inferSelect;
 export type WarehouseRow = typeof warehouses.$inferSelect;
 export type OfficeEquipmentTypeRow = typeof officeEquipmentTypes.$inferSelect;
+export type OfficeEquipmentModelRow = typeof officeEquipmentModels.$inferSelect;
 export type OfficeEquipmentRow = typeof officeEquipment.$inferSelect;
+export type OfficeEquipmentConsumableRow = typeof officeEquipmentConsumables.$inferSelect;
+export type OfficeEquipmentConsumableModelRow = typeof officeEquipmentConsumableModels.$inferSelect;
+export type OfficeEquipmentConsumableStockEntryRow =
+  typeof officeEquipmentConsumableStockEntries.$inferSelect;
 export type ServiceRequestRow = typeof serviceRequests.$inferSelect;
 export type ServiceRequestItemRow = typeof serviceRequestItems.$inferSelect;
 export type ServiceRequestFileRow = typeof serviceRequestFiles.$inferSelect;
+export type ServiceRequestExecutorRow = typeof serviceRequestExecutors.$inferSelect;
+export type ServiceRequestConsumableRow = typeof serviceRequestConsumables.$inferSelect;
 export type ServiceRequestStatusHistoryRow = typeof serviceRequestStatusHistory.$inferSelect;
 export type ObjectOperatorRow = typeof constructionObjectOperators.$inferSelect;
 export type PersonRow = typeof persons.$inferSelect;
@@ -5444,6 +7041,25 @@ export const vehicleMaintenance = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * Аннулирование акта (`docs/auto-parts-plan.md` Р6, миграция 0188). Появилось вместе с
+     * расходом автозапчастей и решает не вопрос интерфейса, а вопрос РАСЧЁТА: ошибочный акт,
+     * который нельзя удалить (по нему прошло движение склада), оставался бы последним
+     * обслуживанием машины, и «пробег с ТО» считался бы от ложного якоря — машина, которую пора
+     * обслуживать, показывала бы «в норме».
+     *
+     * `null` — акт действующий. Аннулированный выпадает из «последнего ТО», `kmSince`, состояния и
+     * снапшота гаража, не правится и повторно не аннулируется (409), но в истории виден: на него
+     * ссылается журнал склада, и спрятать документ нельзя.
+     */
+    voidedAt: timestamp('voided_at', { withTimezone: true }),
+    /** `restrict`, как остальные авторы акта: «кто аннулировал» обязано пережить увольнение. */
+    voidedBy: uuid('voided_by').references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * Причина аннулирования. Пустая строка, а не `null`, у действующего акта: поле заполнено
+     * всегда, и второе представление «причины нет» пришлось бы отличать в каждом чтении.
+     */
+    voidReason: text('void_reason').notNull().default(''),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -5459,6 +7075,16 @@ export const vehicleMaintenance = pgTable(
       t.createdAt.desc(),
       t.id.desc(),
     ),
+    /**
+     * Порядок ДЕЙСТВУЮЩЕЙ истории. Колонки те же, что у `vehicleIdx`, и это не дубликат: тот
+     * обслуживает историю целиком, где аннулированные акты обязаны быть видны, а этот — три
+     * вопроса расчёта («последнее ТО», пробег с обслуживания, снапшот гаража), в которых они не
+     * участвуют вовсе (Р6). Условие `voidedAt IS NULL` стоит в трёх запросах сразу, и разойдись
+     * хоть один — расчёт молча вернулся бы к ложному якорю.
+     */
+    activeIdx: index('vehicle_maintenance_active_idx')
+      .on(t.vehicleId, t.performedOn.desc(), t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.voidedAt} IS NULL`),
     // Отрицательный пробег — единственное, что база про одометр акта знает наверняка: монотонности
     // не требуется, замена прибора законна (Р11а).
     odometerNonNegative: check(
@@ -5466,6 +7092,20 @@ export const vehicleMaintenance = pgTable(
       sql`${t.odometerKm} IS NULL OR ${t.odometerKm} >= 0`,
     ),
     versionNonNegative: check('vehicle_maintenance_version_check', sql`${t.version} >= 0`),
+    // Три поля аннулирования — одно состояние: «аннулирован, но неизвестно кем» стало бы законной
+    // записью, а спросить с неё было бы некого.
+    voidedPair: check(
+      'vehicle_maintenance_voided_pair_check',
+      sql`(${t.voidedAt} IS NULL) = (${t.voidedBy} IS NULL)`,
+    ),
+    // Причина есть ровно у аннулированного: пустая у него — «аннулировали и не сказали зачем», а
+    // непустая у действующего — текст, который никто не прочитает и который через год примут за
+    // признак аннулирования.
+    voidReasonPresence: check(
+      'vehicle_maintenance_void_reason_check',
+      sql`(${t.voidedAt} IS NULL AND btrim(${t.voidReason}) = '')
+          OR (${t.voidedAt} IS NOT NULL AND btrim(${t.voidReason}) <> '')`,
+    ),
   }),
 );
 
@@ -5492,3 +7132,786 @@ export const vehicleMaintenanceFiles = pgTable(
 );
 
 export type VehicleMaintenanceRow = typeof vehicleMaintenance.$inferSelect;
+
+// ── История назначения заявки (миграции 0166 и 0167, план `docs/assignment-periods-plan.md` §6) ──
+//
+// Вторая шкала рядом с назначением (`vehicle_request_assignments`). Снимок назначения отвечает
+// только на «что стоит сейчас»: смена машины посреди срока переписывает его, и прошлое становится
+// неотличимо от настоящего — а бумага прошлого выписана на прежнюю машину и прежнего человека.
+// Здесь же строка появляется в день, с которого изменение действует, и прежние строки не
+// переписываются никогда: правка гасит старую строку и вставляет новую (Р3).
+//
+// Пишет и читает эти таблицы этап 3; на момент миграций 0166/0167 в них не ходит никто — схема
+// уезжает в прод раньше кода, который её использует.
+
+/**
+ * Изменение назначения: «с этого числа на заявке эта машина» либо «с этого числа этот машинист».
+ *
+ * Конца у строки нет — его задаёт следующая строка той же шкалы либо конец срока работ. Пара
+ * «с — по» держала бы два источника правды об одной границе и требовала чинить их согласованность
+ * руками при каждой вставке в середину.
+ */
+export const vehicleRequestAssignmentChanges = pgTable(
+  'vehicle_request_assignment_changes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
+    /** Дата, С КОТОРОЙ изменение действует. */
+    effectiveDate: date('effective_date', { mode: 'string' }).notNull(),
+    /** Шкала: техника и машинист меняются независимо друг от друга (Р16). */
+    dimension: text('dimension').$type<AssignmentDimension>().notNull(),
+    /**
+     * RESTRICT у обеих ссылок: «кем и на чём работали» обязано пережить вывод машины из парка и
+     * увольнение человека — ровно так же держит их снимок листа.
+     */
+    vehicleId: uuid('vehicle_id').references(() => vehicles.id, { onDelete: 'restrict' }),
+    driverPersonId: uuid('driver_person_id').references(() => persons.id, { onDelete: 'restrict' }),
+    /**
+     * Состояние шкалы машиниста (Р19): `set` — назначен, `cleared` — снят осознанно (арендный
+     * отрезок), `unknown` — история не знает. «Не менялось» выражается отсутствием строки, а не
+     * состоянием: иначе у одного факта было бы два представления.
+     */
+    driverState: text('driver_state').$type<DriverStateKind>(),
+    /**
+     * Происхождение строки — признак, по которому команды находят свои строки: отмена заполнения
+     * ищет группу по `known_fill`, решение хвоста — по `tail_resolution`. Тот же список выписан в
+     * контрактах (`ASSIGNMENT_CHANGE_ORIGINS`) и в CHECK'е таблицы.
+     */
+    origin: text('origin').$type<AssignmentChangeOrigin>().notNull(),
+    /**
+     * Строки, рождённые ОДНИМ решением: vehicle-изменение и порождённые им driver-строки, решение
+     * хвоста целиком, пара заполнения. Гашение всегда групповое (В2): погасив одну строку, мы
+     * оставили бы её спутника, который оживёт при следующем продлении срока.
+     */
+    changeGroupId: uuid('change_group_id').notNull().defaultRandom(),
+    /** Операция журнала коррекций, породившая строку; NULL — обычная работа без бумаги задним числом. */
+    correctionId: uuid('correction_id').references(() => waybillCorrections.id, {
+      onDelete: 'restrict',
+    }),
+    /**
+     * NULL — строку написал бэкфилл: у восстановленной по бумаге истории автора нет, и приписывать
+     * её запустившему скрипт значило бы называть автором решения того, кто его не принимал.
+     */
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: createdAt(),
+    /**
+     * Строка, которую эта заменила (Р3). Ссылка обратная: прямую «старая → новая» нельзя записать
+     * ни в каком порядке, пока частичный UNIQUE держит одну актуальную строку на шкалу и дату.
+     */
+    supersedesChangeId: uuid('supersedes_change_id'),
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
+    supersededByUser: uuid('superseded_by_user').references(() => users.id, {
+      onDelete: 'restrict',
+    }),
+    supersededKind: text('superseded_kind').$type<AssignmentSupersedeKind>(),
+  },
+  (t) => ({
+    dimensionValues: check(
+      'vehicle_request_assignment_changes_dimension_check',
+      sql`${t.dimension} IN ('vehicle', 'driver')`,
+    ),
+    driverStateValues: check(
+      'vehicle_request_assignment_changes_driver_state_check',
+      sql`${t.driverState} IN ('set', 'cleared', 'unknown')`,
+    ),
+    originValues: check(
+      'vehicle_request_assignment_changes_origin_check',
+      sql`${t.origin} IN ('assignment', 'reassignment', 'machinist_change', 'backfill',
+                          'tail_resolution', 'known_fill', 'unknown_remainder')`,
+    ),
+    supersededKindValues: check(
+      'vehicle_request_assignment_changes_superseded_kind_check',
+      sql`${t.supersededKind} IN ('replaced', 'cancelled')`,
+    ),
+    // Состав строки задаётся шкалой целиком, и человек назван тогда и только тогда, когда
+    // состояние `set`. Четвёртого сочетания («не знаем, но человек назван») не существует: именно
+    // оно превратило бы `unknown` из признания неполноты в мнение.
+    valueCheck: check(
+      'vehicle_request_assignment_changes_value_check',
+      sql`(${t.dimension} = 'vehicle' and ${t.vehicleId} is not null
+            and ${t.driverPersonId} is null and ${t.driverState} is null)
+          or (${t.dimension} = 'driver' and ${t.vehicleId} is null
+            and ${t.driverState} is not null
+            and (${t.driverState} = 'set') = (${t.driverPersonId} is not null))`,
+    ),
+    // Строка либо актуальна, либо погашена, названа кем и как: все три колонки идут вместе.
+    supersedeCheck: check(
+      'vehicle_request_assignment_changes_supersede_check',
+      sql`(${t.supersededAt} is null and ${t.supersededByUser} is null
+            and ${t.supersededKind} is null)
+          or (${t.supersededAt} is not null and ${t.supersededByUser} is not null
+            and ${t.supersededKind} is not null)`,
+    ),
+    selfCheck: check(
+      'vehicle_request_assignment_changes_self_check',
+      sql`${t.supersedesChangeId} is null or ${t.supersedesChangeId} <> ${t.id}`,
+    ),
+    // `unknown` — признание неполноты, и завести его человеку нечем (Р19). Источников два: бэкфилл
+    // и производный остаток заполнения (Ш4), у которого `correction_id`, наоборот, обязателен —
+    // граница рождается внутри коррекции и без автора появиться не может.
+    unknownCheck: check(
+      'vehicle_request_assignment_changes_unknown_check',
+      sql`${t.driverState} <> 'unknown'
+          or (${t.origin} = 'backfill' and ${t.correctionId} is null)
+          or (${t.origin} = 'unknown_remainder' and ${t.correctionId} is not null)`,
+    ),
+    // Обратное направление (Щ3): origin остатка не встречается нигде, кроме `unknown`. Без него
+    // `set` или vehicle-строка надели бы его и проскользнули мимо ослабленного индекса группы.
+    remainderCheck: check(
+      'vehicle_request_assignment_changes_remainder_check',
+      sql`${t.origin} <> 'unknown_remainder'
+          or (${t.dimension} = 'driver' and ${t.driverState} = 'unknown'
+              and ${t.correctionId} is not null)`,
+    ),
+    // Провенанс заполнения (Ю2): по составу строк группу заполнения не отличить от обычной смены
+    // машиниста, и отмена «по составу» превратила бы известного человека обратно в `unknown`.
+    knownFillCheck: check(
+      'vehicle_request_assignment_changes_known_fill_check',
+      sql`${t.origin} <> 'known_fill'
+          or (${t.dimension} = 'driver' and ${t.driverState} = 'set'
+              and ${t.driverPersonId} is not null and ${t.correctionId} is not null)`,
+    ),
+    /**
+     * Цель составного FK ниже: замена физически привязана к той же заявке, шкале и дате. Без этих
+     * трёх колонок в ключе строка могла бы объявить заменённой чужую — соседней заявки или другой
+     * шкалы. Перенос даты выражается парой «cancel + set» (Р13).
+     */
+    identityUnique: unique('vehicle_request_assignment_changes_identity_unique').on(
+      t.id,
+      t.requestId,
+      t.dimension,
+      t.effectiveDate,
+    ),
+    supersedesFk: foreignKey({
+      columns: [t.supersedesChangeId, t.requestId, t.dimension, t.effectiveDate],
+      foreignColumns: [t.id, t.requestId, t.dimension, t.effectiveDate],
+      name: 'vehicle_request_assignment_changes_supersedes_fk',
+    }),
+    /**
+     * Главный инвариант модели: одна действующая строка на шкалу и дату. Свёртка читает «последнюю
+     * строку не позже даты», и две актуальные строки на одну дату дали бы два ответа на вопрос, на
+     * который бумага отвечает однозначно.
+     */
+    actualUnique: uniqueIndex('vehicle_request_assignment_changes_actual_unique')
+      .on(t.requestId, t.dimension, t.effectiveDate)
+      .where(sql`${t.supersededAt} is null`),
+    // Замена достаётся ровно одной наследнице: иначе цепочка правок ветвится и «что действует»
+    // теряется.
+    supersedesUnique: uniqueIndex('vehicle_request_assignment_changes_supersedes_unique')
+      .on(t.supersedesChangeId)
+      .where(sql`${t.supersedesChangeId} is not null`),
+    /**
+     * Группа решения (Р31): её читают гашение при сокращении срока, отмена заполнения и решение
+     * хвоста. Он же покрывает выборки по заявке — ведёт по `request_id` первой колонкой. Отдельного
+     * индекса `(request_id, effective_date)` нет: замер волны 2.1 на 240 тысячах строк не нашёл
+     * разницы (причина выписана в миграции `0166`).
+     */
+    groupIdx: index('vehicle_request_assignment_changes_group_idx').on(
+      t.requestId,
+      t.changeGroupId,
+    ),
+    /**
+     * Одна актуальная строка на шкалу внутри группы **этой заявки**. Заявка в ключе не для
+     * скорости: без неё ограничение читалось бы как «одна строка на шкалу в группе во всём
+     * портале», а группа принадлежит заявке (найдено волной 3.1). Исключение по `origin` — для
+     * заполнения `unknown` (Щ1): его группа это ДВЕ driver-строки, `set` на начале отрезка и
+     * граница `unknown` за его концом.
+     */
+    groupDimensionUnique: uniqueIndex('vehicle_request_assignment_changes_group_dimension_unique')
+      .on(t.requestId, t.changeGroupId, t.dimension)
+      .where(sql`${t.supersededAt} is null and ${t.origin} <> 'unknown_remainder'`),
+    // Исключённые строки не остаются вовсе без счёта (Э3): остаток нормативно один на группу.
+    groupRemainderUnique: uniqueIndex('vehicle_request_assignment_changes_group_remainder_unique')
+      .on(t.requestId, t.changeGroupId)
+      .where(sql`${t.supersededAt} is null and ${t.origin} = 'unknown_remainder'`),
+  }),
+);
+
+export type VehicleRequestAssignmentChangeRow = typeof vehicleRequestAssignmentChanges.$inferSelect;
+
+// ── Управляющий контур модуля (миграция 0167) ──
+
+/**
+ * Поколение теневого сравнения: `building` → seal → `running` → finalize → `completed` | `failed`.
+ *
+ * Печать (seal) существует ради того, чтобы поколение с наполовину построенным manifest'ом не
+ * объявило себя завершённым: 90 целей из ста, все сошлись, `pending` нет.
+ */
+export const assignmentShadowRuns = pgTable(
+  'assignment_shadow_runs',
+  {
+    runId: uuid('run_id').primaryKey().defaultRandom(),
+    status: text('status').$type<'building' | 'running' | 'completed' | 'failed'>().notNull(),
+    /** Прогон, переживший полночь, начинается заново (О3): календарь двигает валидность сам. */
+    asOf: date('as_of', { mode: 'string' }).notNull(),
+    /** Чем именно получен результат: без этого доказательство cutover ничего не доказывает. */
+    algoVersion: text('algo_version').notNull(),
+    buildVersion: text('build_version').notNull(),
+    expectedChecks: integer('expected_checks').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+  },
+  (t) => ({
+    statusValues: check(
+      'assignment_shadow_runs_status_check',
+      sql`${t.status} IN ('building', 'running', 'completed', 'failed')`,
+    ),
+    expectedNonNegative: check(
+      'assignment_shadow_runs_expected_checks_check',
+      sql`${t.expectedChecks} >= 0`,
+    ),
+    // Завершённое поколение обязано иметь время конца, работающее — не иметь.
+    finishCheck: check(
+      'assignment_shadow_runs_finish_check',
+      sql`(${t.status} in ('building', 'running')) = (${t.finishedAt} is null)`,
+    ),
+  }),
+);
+
+/**
+ * Режимы модуля: строка ровно одна, и через неё проходит весь автомат — заморозка, разморозка,
+ * включение и выключение чтения истории.
+ *
+ * Правит её только административная дверь (maintenance-сервис своими кредами); приложение получает
+ * `SELECT` и `UPDATE (lock_tick)` — и второе не ради записи, а ради права взять
+ * `SELECT ... FOR SHARE`: PostgreSQL требует `UPDATE` хотя бы на одну колонку для любой
+ * блокирующей формы SELECT (Ц1). Саму запись в `lock_tick` запрещает триггер.
+ */
+export const assignmentPeriodsControl = pgTable(
+  'assignment_periods_control',
+  {
+    /** Одиночка: строка ровно одна, вторую запрещает первичный ключ с CHECK. */
+    id: boolean('id').primaryKey().default(true),
+    /**
+     * Режим записи, а не булев freeze (И1): `history_frozen` останавливает двери, меняющие
+     * историю, `all_frozen` — всё пишущее, и только под ним разрешены cutover и возврат.
+     */
+    writeMode: text('write_mode')
+      .$type<'normal' | 'history_frozen' | 'all_frozen'>()
+      .notNull()
+      .default('normal'),
+    /** Откуда читатели берут «кто и на чём работал». Переключается отдельно от записи и позже неё. */
+    readMode: text('read_mode').$type<'legacy' | 'history'>().notNull().default('legacy'),
+    /** Каким поколением теневого сравнения разрешено переключение (М1). */
+    cutoverRunId: uuid('cutover_run_id').references(() => assignmentShadowRuns.runId, {
+      onDelete: 'restrict',
+    }),
+    /** Техническая колонка блокировки (Ц1, Ш1): не читается никем и не меняется никогда. */
+    lockTick: smallint('lock_tick').notNull().default(0),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'restrict' }),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    singleton: check('assignment_periods_control_id_check', sql`${t.id}`),
+    writeModeValues: check(
+      'assignment_periods_control_write_mode_check',
+      sql`${t.writeMode} IN ('normal', 'history_frozen', 'all_frozen')`,
+    ),
+    readModeValues: check(
+      'assignment_periods_control_read_mode_check',
+      sql`${t.readMode} IN ('legacy', 'history')`,
+    ),
+    // Условие одностороннее: возврат в `legacy` не обязан стирать ссылку и уничтожать аудит того,
+    // чем история была включена.
+    cutoverCheck: check(
+      'assignment_periods_control_cutover_check',
+      sql`${t.readMode} <> 'history' or ${t.cutoverRunId} is not null`,
+    ),
+  }),
+);
+
+/**
+ * Manifest целей поколения (К1): строки заводятся ЗАРАНЕЕ, по одной на каждую ожидаемую цель, и
+ * worker только переводит их в `match`/`mismatch`. Лишнюю область записать некуда — строки нет, а
+ * пропущенная останется `pending` и не даст завершить поколение.
+ */
+export const assignmentShadowChecks = pgTable(
+  'assignment_shadow_checks',
+  {
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => assignmentShadowRuns.runId, { onDelete: 'cascade' }),
+    /**
+     * Значение, а не внешний ключ (Н3-узкое): удаление заявки не вправе менять завершённое
+     * поколение — доказательство cutover обязано быть неизменяемым.
+     */
+    requestId: uuid('request_id').notNull(),
+    scopeFingerprint: text('scope_fingerprint').notNull(),
+    /**
+     * Результат одной строкой (К2): раздельные «факт проверки» и «расхождение» расходились, если
+     * worker падал между двумя вставками, — поколение выглядело зелёным.
+     */
+    status: text('status').$type<'pending' | 'match' | 'mismatch'>().notNull().default('pending'),
+    evaluationFingerprint: text('evaluation_fingerprint'),
+    details: jsonb('details'),
+    checkedAt: timestamp('checked_at', { withTimezone: true }),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.runId, t.requestId, t.scopeFingerprint] }),
+    statusValues: check(
+      'assignment_shadow_checks_status_check',
+      sql`${t.status} IN ('pending', 'match', 'mismatch')`,
+    ),
+    resultCheck: check(
+      'assignment_shadow_checks_result_check',
+      sql`case ${t.status}
+            when 'pending'  then ${t.checkedAt} is null and ${t.evaluationFingerprint} is null
+                                 and ${t.details} is null
+            when 'match'    then ${t.checkedAt} is not null
+                                 and ${t.evaluationFingerprint} is not null
+            when 'mismatch' then ${t.checkedAt} is not null
+                                 and ${t.evaluationFingerprint} is not null
+                                 and ${t.details} is not null
+          end`,
+    ),
+  }),
+);
+
+/**
+ * Аттестация деплоя (О4, Р3): что именно раскатано на момент cutover — со стороны деплоя, а не со
+ * слов нажимающего кнопку.
+ *
+ * SQL-функция не знает ни `BUILD_SHA` вызывающего процесса, ни инвентаря, ни метрики старых
+ * клиентов. Строку пишет job деплоя, потребляет job cutover: одна кнопка, которая и подтверждает,
+ * и использует, возвращает круговую проверку Н3.
+ */
+export const assignmentDeployAttestations = pgTable(
+  'assignment_deploy_attestations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    attestedAt: timestamp('attested_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Во время раската сборок законно две — переключаться можно, когда обе умеют читать историю. */
+    activeBuildShas: text('active_build_shas').array().notNull(),
+    algoVersion: text('algo_version').notNull(),
+    /** Вызовы старого широкого маршрута с датами (И5): ноль — условие перехода. */
+    legacyClientCalls: integer('legacy_client_calls').notNull(),
+    /** Связь односторонняя (П3): «каким переходом потреблена» читается из журнала переходов. */
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  },
+  (t) => ({
+    buildsNotEmpty: check(
+      'assignment_deploy_attestations_active_build_shas_check',
+      sql`array_length(${t.activeBuildShas}, 1) >= 1`,
+    ),
+    callsNonNegative: check(
+      'assignment_deploy_attestations_legacy_client_calls_check',
+      sql`${t.legacyClientCalls} >= 0`,
+    ),
+  }),
+);
+
+/**
+ * Журнал переходов режима (Н2, О5) — append-only физически: правку и удаление отклоняет триггер.
+ *
+ * Соглашения тут мало: журнал и есть доказательство «чем и когда разрешён переход», а
+ * доказательство, которое можно поправить, ничего не доказывает.
+ */
+export const assignmentPeriodsModeTransitions = pgTable(
+  'assignment_periods_mode_transitions',
+  {
+    id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+    at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+    /** RESTRICT: «кто разрешил» обязано пережить увольнение. */
+    actorUserId: uuid('actor_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** Обе стороны обоих режимов: журнал восстанавливает автомат целиком, а не «чем кончилось». */
+    fromReadMode: text('from_read_mode').notNull(),
+    toReadMode: text('to_read_mode').notNull(),
+    fromWriteMode: text('from_write_mode').notNull(),
+    toWriteMode: text('to_write_mode').notNull(),
+    runId: uuid('run_id').references(() => assignmentShadowRuns.runId, { onDelete: 'restrict' }),
+    attestationId: uuid('attestation_id').references(() => assignmentDeployAttestations.id, {
+      onDelete: 'restrict',
+    }),
+    /** Те же значения, что в аттестации: её потребляют однажды, а журнал читают годами. */
+    buildSha: text('build_sha').notNull(),
+    algoVersion: text('algo_version').notNull(),
+    reason: text('reason').notNull(),
+  },
+  (t) => ({
+    reasonNotBlank: check(
+      'assignment_periods_mode_transitions_reason_check',
+      sql`btrim(${t.reason}) <> ''`,
+    ),
+    /**
+     * Активация истории обязана опираться на поколение и аттестацию (О4). Обратный переход в
+     * `legacy` — нет: возврат бывает аварийным, и требовать от него поколения значило бы запирать
+     * откат ровно тогда, когда он нужен.
+     */
+    historyCheck: check(
+      'assignment_periods_mode_transitions_history_check',
+      sql`${t.toReadMode} <> 'history'
+          or (${t.runId} is not null and ${t.attestationId} is not null)`,
+    ),
+    /**
+     * Одна аттестация — один переход, физически. Однократность держали `consumed_at` и `FOR UPDATE`
+     * в двери, но дверь — код, который меняют; смысл же аттестации в том, что переключение чтения
+     * разрешено ОДНИМ проверенным раскатом, и второй переход по той же бумаге означал бы, что
+     * вторую проверку заменили ссылкой на первую.
+     */
+    attestationUnique: uniqueIndex('assignment_periods_mode_transitions_attestation_unique')
+      .on(t.attestationId)
+      .where(sql`${t.attestationId} is not null`),
+  }),
+);
+
+export type AssignmentPeriodsControlRow = typeof assignmentPeriodsControl.$inferSelect;
+export type AssignmentShadowRunRow = typeof assignmentShadowRuns.$inferSelect;
+export type AssignmentShadowCheckRow = typeof assignmentShadowChecks.$inferSelect;
+export type AssignmentDeployAttestationRow = typeof assignmentDeployAttestations.$inferSelect;
+export type AssignmentPeriodsModeTransitionRow =
+  typeof assignmentPeriodsModeTransitions.$inferSelect;
+
+// ── Автозапчасти: склад гаража и расход по обслуживанию (миграции 0187 и 0188) ──
+//
+// План — `docs/auto-parts-plan.md`. Приём «остаток не врёт» перенесён целиком с расходников
+// оргтехники (Р3): событие вместо поля формы, неизменяемый журнал, три триггера. Предмет назван
+// «автозапчастью», а не «запчастью», потому что слово уже занято сметой заявок оргтехники
+// (`serviceRequestItems.kind = 'part'`), а вопрос «сколько ушло запчастей» задают одинаковыми
+// словами про разные вещи (Р1).
+
+/**
+ * Складская позиция гаража (Р2, Р9, Р12): что лежит на складе и сколько.
+ *
+ * Склад ВИРТУАЛЬНЫЙ — остаток одно число, мест хранения нет: заказчик сказал прямо, что наличие
+ * есть, если есть штуки, и таблица `warehouses` в портале описывает склады поставщиков (ADR 0051),
+ * а не свой. Переезд к местам хранения, если однажды понадобится, будет расширением журнала (у
+ * события появится место), а не переделкой карточки.
+ *
+ * Идентичность держит ПАРА «наименование + артикул», и обе половины по отдельности не годятся
+ * (Р12): «Фильтр масляный» разных производителей с разными артикулами — законные разные позиции, а
+ * два «Ремня генератора» без артикула — двойник, которого надо отбить. Артикул при этом
+ * необязателен: требовать его значило бы запретить механику завести позицию до того, как
+ * бухгалтерия пришлёт номенклатуру.
+ */
+export const autoParts = pgTable(
+  'auto_parts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * Артикул: «21126-1006040», «MANNW914/2». Необязателен (Р12) — главное отличие от расходников
+     * оргтехники, где код приезжает выгрузкой из учётной системы и потому обязателен. Хранится
+     * уже нормализованным: в верхнем регистре и без пробелов, включая неразрывные.
+     */
+    code: text('code'),
+    /**
+     * Наименование ДОСЛОВНО, как его написал механик. Нормализуется только ключ (`auto_part_name_key`),
+     * по которому ищут двойника, а не хранимое значение: поднятый регистр на экране был бы криком.
+     */
+    name: text('name').notNull(),
+    /**
+     * Единица измерения (Р9). У расходников оргтехники её нет вовсе — «(шт)» живёт внутри
+     * наименования, потому что оно дословно из учётной системы. Здесь так нельзя: на складе гаража
+     * лежат штуки, литры, комплекты и метры, и «5» без единицы — не число, а загадка. Текстом, а не
+     * перечнем: набор единиц заранее неизвестен, а на счёт единица не влияет — она подписывает
+     * число, а не участвует в нём.
+     */
+    unit: text('unit').notNull().default('шт'),
+    /**
+     * Остаток. Правится не формой карточки, а своей ручкой `POST /auto-parts/:id/stock` с
+     * `expectedQuantity` (Р3) и разницей строк акта (Р5) — и это не соглашение маршрута: прямой
+     * `UPDATE` мимо журнала отбивает отложенный триггер `auto_part_stock_covered` на этой таблице.
+     * Количество ЦЕЛОЕ, подтверждено заказчиком: канистры и литры считают целыми (Р9).
+     */
+    quantity: integer('quantity').notNull().default(0),
+    /**
+     * Гашение вместо удаления (Р11). Погашенная позиция в подбор не попадает и новой строкой акта
+     * не добавляется, но уже стоящую строку можно уменьшить или снять (Р24) — это возврат на склад,
+     * и запрещать его незачем.
+     */
+    isActive: boolean('is_active').notNull().default(true),
+    comment: text('comment').notNull().default(''),
+    /** `set null`, как у карточек техники: справочник переживает увольнение своего автора. */
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    /**
+     * Не только реквизит: это ориентир предупреждения о двойном списании (Р20). Открывающий
+     * остаток вводят числом «сколько лежит сейчас», и в нём уже учтено установленное раньше;
+     * значит строка в акте, датированном РАНЬШЕ заведения позиции, может списать одну и ту же
+     * деталь дважды. Портал предупреждает — не запрещает: заказчик выбрал свободу ввода задним
+     * числом.
+     */
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Правила написания живут IMMUTABLE-функциями базы, а не выражениями на месте и не копией на
+    // TypeScript: ключ нужен уникальному индексу, `CHECK` и маршруту, который обязан ответить
+    // «позиция с таким артикулом уже заведена», а не 500 с именем индекса. Разойдись они хоть на
+    // символ — маршрут перестанет находить то, что отвергает индекс.
+    //
+    // Функции СВОИ, а не общие с расходниками оргтехники (Р12): правила сегодня совпадают, но
+    // хозяева разные, и первая же правка чужого модуля ради дословного регистра из выгрузки молча
+    // изменила бы уникальность здесь — причём построенный индекс продолжил бы считать по-старому.
+    codeNotBlank: check(
+      'auto_parts_code_not_blank_check',
+      sql`${t.code} IS NULL OR auto_part_code_key(${t.code}) <> ''`,
+    ),
+    // Артикул лежит уже нормализованным. Без этой проверки правило держал бы только индекс, то есть
+    // ключ, — а в карточке остался бы «mann w914 /2 » с хвостом и внутренним пробелом: уникальность
+    // соблюдена, дефект тихий, и ломает он сверку глазами с прайсом.
+    codeNormalized: check(
+      'auto_parts_code_normalized_check',
+      sql`${t.code} IS NULL OR ${t.code} = auto_part_code_key(${t.code})`,
+    ),
+    // Пустоту имени меряет КЛЮЧ, а не `btrim`: `btrim` неразрывный пробел не снимает, и имя из
+    // одних U+00A0 — а приезжают они из Word и Excel постоянно — встало бы в справочник строкой,
+    // которую на экране не отличить от пустой: с артикулом, остатком и разметкой, но без имени.
+    nameNotBlank: check(
+      'auto_parts_name_not_blank_check',
+      sql`auto_part_name_key(${t.name}) <> ''`,
+    ),
+    // Единице `btrim` достаточен: от неё не требуется ни ключа, ни уникальности, и вопрос к ней
+    // ровно один — «написано ли хоть что-нибудь».
+    unitNotBlank: check('auto_parts_unit_not_blank_check', sql`btrim(${t.unit}) <> ''`),
+    // Отрицательный остаток не бывает даже промежуточно (Р7): «минус два фильтра» — не долг, а
+    // ошибка ввода. Маршрут отвечает 409 «на складе 3, списываете 5» до того, как это сработает.
+    quantityNonNegative: check('auto_parts_quantity_check', sql`${t.quantity} >= 0`),
+    // Артикул уникален, КОГДА ОН ЕСТЬ. Частичность здесь говорит словами то, что иначе держалось бы
+    // на знании тонкости про неконфликтующие `NULL`.
+    codeUnique: uniqueIndex('auto_parts_code_unique')
+      .on(sql`auto_part_code_key(${t.code})`)
+      .where(sql`${t.code} IS NOT NULL`),
+    // `coalesce(..., '')` превращает «артикула нет» в значение, которое индекс умеет сравнивать:
+    // без него безартикульные строки снова перестали бы конфликтовать, и правило пары не работало
+    // бы ровно там, ради чего заведено. Пустая строка на месте артикула безопасна — в саму колонку
+    // её не пускает `codeNotBlank`.
+    nameCodeUnique: uniqueIndex('auto_parts_name_code_unique').on(
+      sql`auto_part_name_key(${t.name})`,
+      sql`coalesce(auto_part_code_key(${t.code}), '')`,
+    ),
+    // Поиск идёт по наименованию подстрокой («фильтр масл»); артикул ищут целиком, и на это
+    // работает уникальный индекс выше.
+    nameTrgm: index('auto_parts_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
+  }),
+);
+
+/**
+ * Применимость: к чему подходит деталь (Р8).
+ *
+ * Ссылок ДВЕ, и это не запас. Привязки к модели недостаточно: `vehicles.vehicleModelId`
+ * необязателен (в источнике есть машины без марки), и машина без модели осталась бы без ответа
+ * вовсе. Кроме того, половина расходуемого — масло, антифриз, фильтры общего применения —
+ * применима к ТИПУ, а не к модели: «всем самосвалам» это утверждение о типе.
+ *
+ * Одна таблица, а не две: разметка одна и ведётся одним экраном, а два места ведения одного
+ * свойства расходятся при первой же правке. Пустая разметка законна — ждать ответа «к чему
+ * подходит», не заводя позицию, значит потерять её совсем.
+ */
+export const autoPartApplicability = pgTable(
+  'auto_part_applicability',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** `cascade`: разметка — свойство живой позиции, а не история (позицию с движением не удалить). */
+    autoPartId: uuid('auto_part_id')
+      .notNull()
+      .references(() => autoParts.id, { onDelete: 'cascade' }),
+    /**
+     * `restrict` у обеих сторон (Р11): модель или тип, на которые ссылается разметка, не удаляются.
+     * Иначе деталь молча потеряла бы половину ответа «к чему подходит» — строка просто исчезла бы.
+     */
+    vehicleModelId: uuid('vehicle_model_id').references(() => vehicleModels.id, {
+      onDelete: 'restrict',
+    }),
+    vehicleTypeId: uuid('vehicle_type_id').references(() => vehicleTypes.id, {
+      onDelete: 'restrict',
+    }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    // РОВНО ОДНА ссылка, записанная через `<>` булевых: «одна из двух» и «не обе и не ни одной» —
+    // одно утверждение. Обе ссылки означали бы «подходит этой модели И всем машинам её типа», где
+    // второе поглощает первое; ни одной — разметку, не размечающую ничего.
+    target: check(
+      'auto_part_applicability_target_check',
+      sql`(${t.vehicleModelId} IS NULL) <> (${t.vehicleTypeId} IS NULL)`,
+    ),
+    // Пара уникальна на каждой оси: «подходит» — это да или нет, а вторая такая же строка удвоила
+    // бы позицию в подборе по машине (ранг Р21 считается через `EXISTS` именно поэтому).
+    modelUnique: uniqueIndex('auto_part_applicability_model_unique')
+      .on(t.autoPartId, t.vehicleModelId)
+      .where(sql`${t.vehicleModelId} IS NOT NULL`),
+    typeUnique: uniqueIndex('auto_part_applicability_type_unique')
+      .on(t.autoPartId, t.vehicleTypeId)
+      .where(sql`${t.vehicleTypeId} IS NOT NULL`),
+    // Обратная сторона связи: ранг подбора «что подходит этой машине» (Р21) и проверка `restrict`
+    // при попытке удалить модель или тип. Ключи выше читаются слева направо, от позиции, и на эти
+    // вопросы не работают.
+    modelIdx: index('auto_part_applicability_model_idx')
+      .on(t.vehicleModelId)
+      .where(sql`${t.vehicleModelId} IS NOT NULL`),
+    typeIdx: index('auto_part_applicability_type_idx')
+      .on(t.vehicleTypeId)
+      .where(sql`${t.vehicleTypeId} IS NOT NULL`),
+  }),
+);
+
+/**
+ * Журнал движения остатка (Р3): каждое изменение количества — событие с обоими концами, причиной,
+ * автором и, если движение прошло по обслуживанию, ссылкой на акт.
+ *
+ * Журнал здесь не след действия (для этого есть аудит), а сам предмет: на вопрос «куда делись
+ * двенадцать фильтров» отвечает только он. Поэтому он неизменяем — правку и удаление строки
+ * отбивает триггер, — а исправляют ошибку следующим событием, а не подчисткой прошлого.
+ */
+export const autoPartStockEntries = pgTable(
+  'auto_part_stock_entries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * Порядок в цепочке держит счётчик, а не время: две правки одной секунды по `createdAt`
+     * неразличимы, а «предыдущее событие этой позиции» обязано определяться однозначно — на этом
+     * стоит проверка цепочки. Тот же приём, что у `appReleases.seq`.
+     */
+    seq: bigint('seq', { mode: 'number' }).generatedAlwaysAsIdentity(),
+    /**
+     * `restrict`, а не `cascade`: правило «есть движение — только гашение» (Р11) держит схема.
+     * Маршрут проверяет то же самое заранее, но лишь затем, чтобы человек прочитал «по позиции есть
+     * движение, снимите „Активна“», а не имя ограничения.
+     */
+    autoPartId: uuid('auto_part_id')
+      .notNull()
+      .references(() => autoParts.id, { onDelete: 'restrict' }),
+    /**
+     * Вид события: `manual` — ручная корректировка механика, `issue` — списание по акту
+     * обслуживания, `return` — возврат (снятие строки, уменьшение количества, аннулирование акта).
+     * Умолчание сохраняет контракт ручной ручки: вид она проставляет сама, клиент его не выбирает и
+     * выдать корректировку за расход не может.
+     */
+    entryKind: text('entry_kind')
+      .$type<'manual' | 'issue' | 'return'>()
+      .notNull()
+      .default('manual'),
+    /** Оба конца, а не одна «дельта»: цепочку проверяют по «было», а читают по «стало». */
+    quantityBefore: integer('quantity_before').notNull(),
+    quantityAfter: integer('quantity_after').notNull(),
+    /**
+     * Причина обязательна: журнал без неё отвечает «стало 8» на вопрос «почему стало 8». У движений
+     * по акту она НЕЙТРАЛЬНАЯ и пишется сервером («Списание по акту обслуживания»): реквизиты акта
+     * в текст не вписываются намеренно (Р5) — дату, номер и машину правят после движения, и снимок
+     * разошёлся бы с документом, на который сам же и ссылается.
+     */
+    reason: text('reason').notNull(),
+    /**
+     * Акт обслуживания, по которому прошло движение (миграция 0188). Пусто у ручной корректировки и
+     * заполнено у `issue`/`return` — держит `links`. Связь ссылкой, а не разбором текста причины:
+     * по тексту не построить ни отчёт, ни адресный возврат при аннулировании, ни запрет удалить
+     * акт, за которым числится движение. `restrict` и делает правило Р6 («акт с движением
+     * аннулируют, а не удаляют») свойством схемы.
+     */
+    maintenanceId: uuid('maintenance_id').references(() => vehicleMaintenance.id, {
+      onDelete: 'restrict',
+    }),
+    /**
+     * `restrict`: запись «кто изменил остаток», теряющая автора вместе с увольнением, отвечает на
+     * свой единственный вопрос словом «неизвестно».
+     */
+    changedBy: uuid('changed_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * Дата СКЛАДСКОГО учёта — когда движение отражено в портале (Р20). Сознательно отличается от
+     * `vehicleMaintenance.performedOn`, даты ХОЗЯЙСТВЕННОЙ: акт задним числом законен, и
+     * расхождение этих двух дат — норма, а не дефект. Всякий будущий отчёт обязан назвать, какую из
+     * них берёт: склад считается по дате движения, обслуживание — по дате акта.
+     */
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    reasonNotBlank: check('auto_part_stock_reason_check', sql`btrim(${t.reason}) <> ''`),
+    // Событие обязано что-то менять. Отсюда следствие для заведения позиции: первая строка журнала
+    // пишется только при ненулевом начальном остатке, потому что «0 → 0» это не пропустит (Р3).
+    change: check('auto_part_stock_change_check', sql`${t.quantityAfter} <> ${t.quantityBefore}`),
+    // Оба конца неотрицательны: «было −1» не бывает так же, как «стало −1».
+    amounts: check(
+      'auto_part_stock_amount_check',
+      sql`${t.quantityAfter} >= 0 AND ${t.quantityBefore} >= 0`,
+    ),
+    kindCheck: check(
+      'auto_part_stock_kind_check',
+      sql`${t.entryKind} IN ('manual','issue','return')`,
+    ),
+    // Вид события и ссылка на акт — ОДНО утверждение: «ручная корректировка» и «списано по акту» не
+    // бывают наполовину. Иначе в журнале появилось бы списание, не знающее своего документа, — и
+    // инвариант расхода его бы не увидел вовсе: искать движения он умеет только по паре.
+    links: check(
+      'auto_part_stock_links_check',
+      sql`(${t.entryKind} = 'manual' AND ${t.maintenanceId} IS NULL)
+          OR (${t.entryKind} IN ('issue','return') AND ${t.maintenanceId} IS NOT NULL)`,
+    ),
+    // Направление задаёт ВИД, а не знак разницы: «возврат», уменьшающий остаток, сделал бы отчёт по
+    // расходу неверным при верной цепочке.
+    direction: check(
+      'auto_part_stock_direction_check',
+      sql`${t.entryKind} = 'manual'
+          OR (${t.entryKind} = 'issue' AND ${t.quantityAfter} < ${t.quantityBefore})
+          OR (${t.entryKind} = 'return' AND ${t.quantityAfter} > ${t.quantityBefore})`,
+    ),
+    // Ключ цепочки: по нему проверки находят предыдущее событие позиции (`max(seq)`) и по нему же
+    // лента журнала читается с конца. Уникальность — заодно запрет двух событий с одним номером у
+    // одной позиции, то есть цепочка ветвиться не может. Он же обслуживает `restrict` при удалении.
+    seqIdx: uniqueIndex('auto_part_stock_seq_idx').on(t.autoPartId, t.seq.desc()),
+    // Под сам инвариант расхода: обе половины проверки отбирают движения ровно по этой паре, она же
+    // отвечает «что списано по этому акту». Частичный — у ручных корректировок ссылка пуста.
+    maintenanceIdx: index('auto_part_stock_maintenance_idx')
+      .on(t.maintenanceId, t.autoPartId)
+      .where(sql`${t.maintenanceId} IS NOT NULL`),
+  }),
+);
+
+/**
+ * Строки акта обслуживания — что поставили на машину (Р5).
+ *
+ * Пара «акт + позиция» УНИКАЛЬНА, и это решение, а не удобство: две одинаковых детали в одном акте
+ * — это количество 2, а не две строки. Из уникальности следует всё остальное: журнал адресуется
+ * парой, а не ссылкой на строку, и инвариант «количество строки равно Σ issue − Σ return по паре»
+ * формулируется по паре. Держат его два отложенных constraint-триггера — со стороны строк и со
+ * стороны журнала, потому что войти в расхождение можно с обеих сторон.
+ *
+ * Ссылки на строку акта в журнале нет намеренно (отличие от расходников оргтехники, где событие
+ * ссылается на строку заявки): строка приходит и уходит, а акт остаётся, и движения после снятия
+ * строки продолжают отвечать, по какому документу они прошли.
+ */
+export const vehicleMaintenanceParts = pgTable(
+  'vehicle_maintenance_parts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * `cascade` безвреден и выбран нарочно: акт С ДВИЖЕНИЯМИ удалить всё равно не даст `restrict`
+     * журнала (Р6) — такой акт аннулируют, — а у акта БЕЗ движений строк нет вовсе, потому что
+     * строка без движения не проходит инвариант. Каскад срабатывает ровно в одном случае: удаляют
+     * пустой акт, и уносить ему нечего.
+     */
+    maintenanceId: uuid('maintenance_id')
+      .notNull()
+      .references(() => vehicleMaintenance.id, { onDelete: 'cascade' }),
+    /** `restrict`: строка акта — документ, а не разметка, и позицию из-под неё не убирают. */
+    autoPartId: uuid('auto_part_id')
+      .notNull()
+      .references(() => autoParts.id, { onDelete: 'restrict' }),
+    /**
+     * Целое и строго положительное (Р9). Ноль не бывает: «поставили ноль фильтров» — это отсутствие
+     * строки, а не строка. Отрицательное тем более: возврат — уменьшение строки, а не минус в ней.
+     */
+    quantity: integer('quantity').notNull(),
+    /** Пометка механика к строке: «поставлен передний левый», «б/у, со списанной машины». */
+    note: text('note').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    quantityPositive: check('vehicle_maintenance_parts_quantity_check', sql`${t.quantity} > 0`),
+    pairUnique: unique('vehicle_maintenance_parts_unique').on(t.maintenanceId, t.autoPartId),
+    // Обратная сторона: «в каких актах стоит эта позиция». Ключ уникальности читается слева
+    // направо, от акта, и на этот вопрос не работает; он же нужен `restrict` при удалении позиции.
+    partIdx: index('vehicle_maintenance_parts_part_idx').on(t.autoPartId),
+  }),
+);
+
+export type AutoPartRow = typeof autoParts.$inferSelect;
+export type AutoPartApplicabilityRow = typeof autoPartApplicability.$inferSelect;
+export type AutoPartStockEntryRow = typeof autoPartStockEntries.$inferSelect;
+export type VehicleMaintenancePartRow = typeof vehicleMaintenanceParts.$inferSelect;

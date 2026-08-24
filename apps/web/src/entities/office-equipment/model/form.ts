@@ -12,7 +12,12 @@ import type { CreateOfficeEquipmentInput, UpdateOfficeEquipmentInput } from '@te
  */
 export interface OfficeEquipmentFormValues {
   equipmentTypeId: string;
-  name: string;
+  /**
+   * Модель записью справочника (Р1), а не строкой ввода. Имени карточки в значениях формы больше
+   * нет вовсе: с выпуска A `name` — зеркало имени модели, которое ведёт база (Р3), и отправлять
+   * его вместе со ссылкой значило бы дать серверу два ответа на вопрос «что это за аппарат».
+   */
+  modelId: string;
   serialNumber?: string;
   inventoryNumber?: string;
   objectId: string;
@@ -35,7 +40,7 @@ const DATE = 'YYYY-MM-DD';
 export function officeEquipmentPayload(v: OfficeEquipmentFormValues): CreateOfficeEquipmentInput {
   return {
     equipmentTypeId: v.equipmentTypeId,
-    name: v.name,
+    modelId: v.modelId,
     serialNumber: v.serialNumber?.trim() ?? '',
     inventoryNumber: v.inventoryNumber?.trim() ?? '',
     objectId: v.objectId,

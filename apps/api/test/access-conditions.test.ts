@@ -32,6 +32,12 @@ import {
  *    именно они доказывают, что каждое право обязательно, а не приписано рядом;
  * 3. **пустой набор** — 403.
  *
+ * У дизъюнктивного условия (`anyOf`, ходы исполнителя заявки на обслуживание) случаи те же, но
+ * вариантов запроса столько, сколько прав в выборе: каждое право проверяется **в одиночку** —
+ * с ним маршрут пускает, без него (то есть с пустым набором) отказывает. Проверять их вместе
+ * нельзя: субъект с обоими правами прошёл бы и через страж, требующий любое одно, и через страж,
+ * требующий конкретное, — то есть ровно та подмена условия, которую перебор и ищет.
+ *
  * Ожидание берётся из манифеста (`src/lib/access-manifest.ts`), который пишут и ревьюят руками, а
  * не из пометки `guard.authz`: перебор по пометке проверял бы код его же собственным утверждением
  * (см. преамбулу манифеста). Совпадение пометки с манифестом — дело `access-manifest.test.ts`;
@@ -155,6 +161,11 @@ const PARAM_VALUES: Record<string, string> = {
   personId: PERSON_ID,
   date: FUTURE_DATE,
   key: 'objects',
+  // Талоны вывоза (поток «Распознавание талонов»): идентификаторы записей и код проверки. Значения
+  // те же, что у прочих записей, — перебор прав спрашивает страж, а не существование строки.
+  ticketId: RECORD_ID,
+  blindCheckId: RECORD_ID,
+  checkCode: 'weight',
 };
 
 /**
@@ -223,8 +234,21 @@ const CONTACT = { responsibleName: 'Петров П. П.', responsiblePhone: '+7
  * «<Статус>» — это шаг другой стороны». Правило живёт в обработчике и правом маршрута не выражается.
  */
 const CORRIDOR_REFUSAL = 'это шаг другой стороны';
+/**
+ * Неизменная часть отказа заморозки и возврата (`canHoldService`): «<Роль> не откладывает заявку —
+ * это шаг того, кто её ведёт». Правило живёт в обработчике и правом маршрута не выражается: у него
+ * два источника (`serviceRequests.hold` и `serviceRequests.status`), а условие манифеста —
+ * конъюнкция.
+ */
+const HOLD_REFUSAL = 'это шаг того, кто её ведёт';
 /** Отказ условной проверки назначения исполнителя (`assertCan` в обработчике вывоза). */
 const ASSIGN_OPERATOR_REFUSAL = 'Оператора назначает диспетчер или менеджер';
+/**
+ * Отказ условной проверки начального остатка расходника (`assertCan` в обработчике заведения).
+ * Взята действенная половина текста: она называет выход, а не только запрет, и от правок хвоста
+ * («…проставит тот, кому доверена правка остатка») не зависит.
+ */
+const INITIAL_STOCK_REFUSAL = 'Заведите позицию с нулевым остатком';
 
 const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   // ── Вход и self-service ──
@@ -393,6 +417,48 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   // ── Орг.техника ──
   'POST /api/v1/office-equipment-types': { payload: { code: 'plotter', name: 'Плоттер' } },
   'PATCH /api/v1/office-equipment-types/:id': { payload: { name: 'Плоттеры' } },
+  // Модель заводится парой «тип + наименование»: без них схема отвергла бы тело раньше стража, и
+  // негативный случай показал бы 400 вместо 403.
+  'POST /api/v1/office-equipment-models': {
+    payload: { equipmentTypeId: RECORD_ID, name: 'Ricoh Aficio MP 201SPF' },
+  },
+  'PATCH /api/v1/office-equipment-models/:id': { payload: { manufacturer: 'Ricoh' } },
+  // Расходник заводится парой «код + наименование»: без них схема отвергла бы тело раньше стража,
+  // и негативный случай показал бы 400 вместо 403.
+  // Заведение с нулём — работа одного `manage`, поэтому базовое тело остатка не называет вовсе:
+  // `quantity` приезжает умолчанием схемы (ноль), и это законный случай базового права.
+  'POST /api/v1/office-equipment-consumables': {
+    payload: { code: 'Д0000093569', name: 'Тонер Ricoh 201 (шт)' },
+    conditionalRefusal: INITIAL_STOCK_REFUSAL,
+    conditionalValues: {
+      /*
+       * Значения ТОЛЬКО НЕНУЛЕВЫЕ, и это не выбор примера, а само правило: условное право
+       * спрашивается по значению (`quantity > 0`), а не по присутствию поля, как у вывоза. Ноль
+       * сценарием быть не может — заведение с нулём проходит с одним `manage`, и случай «минус
+       * право на остаток → 403» на нём не сработал бы вовсе.
+       *
+       * Верхняя граница схемы (миллион) сюда не идёт: перебор доказывает право, а не длину
+       * диапазона, и второе значение того же смысла удвоило бы число случаев без нового вопроса.
+       */
+      quantity: [{ label: 'ненулевой начальный остаток', value: 12 }],
+    },
+  },
+  'PATCH /api/v1/office-equipment-consumables/:id': {
+    payload: { name: 'Тонер Ricoh 201 (шт)' },
+  },
+  // У правки остатка обязательны все три поля (Р7): новое число, то, которое человек видел, и
+  // причина. Любого из них не хватило бы до стража.
+  'POST /api/v1/office-equipment-consumables/:id/stock': {
+    payload: { quantity: 10, expectedQuantity: 12, reason: 'выдано на АЛ13' },
+  },
+  // Обе границы периода обязательны (В18): отчёт — это отрезок, и без дат схема отбила бы запрос
+  // раньше стража, то есть 400 вместо доказательства права.
+  'GET /api/v1/office-equipment-consumables/usage-report': {
+    query: `from=${PAST_DATE}&to=${PAST_DATE}`,
+  },
+  'GET /api/v1/office-equipment-consumables/usage-report.xlsx': {
+    query: `from=${PAST_DATE}&to=${PAST_DATE}`,
+  },
   'POST /api/v1/office-equipment': {
     payload: {
       equipmentTypeId: RECORD_ID,
@@ -423,11 +489,37 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
    * названо: дугу открывает не оно. Без добавки положительный случай упирался бы в коридор, а не в
    * стража; с добавкой негативные случаи остаются в силе — она не пересекается с условием (это
    * отдельная проверка ниже).
+   *
+   * Третьего члена выбора — `serviceRequests.execute` — добавка не касается: он открывает дугу сам,
+   * предварительный отсев `assertSideAllowed` спрашивает коридор с признаками «мог бы быть
+   * назначен» (`MAYBE_ASSIGNED`). Настоящее назначение считается по строке заявки, и до неё перебор
+   * не доходит: БД подменена.
    */
   'PATCH /api/v1/service-requests/:id/complete': {
     payload: { completedOn: FUTURE_DATE, items: [], version: 1 },
-    handlerNeeds: ['serviceRequests.status'],
     selfRefusal: CORRIDOR_REFUSAL,
+  },
+  /*
+   * Состав строк заявки на расходники: право маршрута — правка заявки, и ею же дуга открыта. До
+   * первого запроса в БД обработчик спрашивает только вид заявки, а он читается из строки — то есть
+   * уже за подменённой БД.
+   */
+  'PUT /api/v1/service-requests/:id/consumables': {
+    payload: {
+      items: [{ consumableId: RECORD_ID, requestedQuantity: 2 }],
+      version: 1,
+    },
+  },
+  /*
+   * Правка факта выдачи (Р6): у маршрута дизъюнкция «право хода **или** назначение», и оба члена
+   * проверяются поодиночке. Назначен ли субъект на эту заявку, решает обработчик — но до него
+   * запрос доходит уже за подменённой БД, поэтому `selfRefusal` здесь не нужен.
+   */
+  'PATCH /api/v1/service-requests/:id/consumables/issued': {
+    payload: {
+      items: [{ id: RECORD_ID, issuedQuantity: 2, issueNote: '' }],
+      version: 1,
+    },
   },
   'PATCH /api/v1/service-requests/:id/decline': {
     payload: { reason: 'заняты до конца месяца', version: 1 },
@@ -445,40 +537,60 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     handlerNeeds: ['serviceRequests.status'],
     selfRefusal: CORRIDOR_REFUSAL,
   },
+  /*
+   * Возврат сметы в правку статуса не меняет (Н3): коридора у него нет, и добавка «нужно
+   * обработчику» ему больше не требуется — маршрут закрыт выбором прав исполнителя, а дальше он
+   * упирается в подменённую БД. Сторону такие ручки спрашивают по самой заявке
+   * (`assertExecutorSide`), то есть уже за подменённой БД, — доказывает её db-тест цикла.
+   */
   'PATCH /api/v1/service-requests/:id/estimate/reopen': {
     payload: { reason: 'нужен ещё термоузел', version: 1 },
-    handlerNeeds: ['serviceRequests.status'],
-    selfRefusal: CORRIDOR_REFUSAL,
   },
+  /*
+   * Предъявление сметы — дуга исполнителя `in_work → estimate_review`, и открывает её любой член
+   * выбора, которым закрыт маршрут: право сметы у стороны, `serviceRequests.execute` у поимённого
+   * исполнителя. `serviceRequests.status` здесь больше ни при чём.
+   */
   'PATCH /api/v1/service-requests/:id/estimate/submit': {
     payload: { version: 1 },
-    handlerNeeds: ['serviceRequests.status'],
     selfRefusal: CORRIDOR_REFUSAL,
   },
   'POST /api/v1/service-requests/:id/files': { payload: { fileIds: [RECORD_ID], kind: 'act' } },
-  // Заморозка и возврат — шаг ведущей стороны (ADR 0125): право то же, что у прочих ходов
-  // оператора, а сервисной компании обе ручки отказывают своим сообщением.
+  /*
+   * Заморозка и возврат — шаг ведущей стороны (ADR 0125, план переработки цикла §7.3). Право
+   * маршрута — только чтение модуля: настоящее условие («есть `hold` **или** есть `status`»)
+   * спрашивает обработчик предикатом контрактов `canHoldService`, потому что дизъюнкции в
+   * манифесте нет. Отсюда и `selfRefusal` у обеих ручек: положительный случай доказывает, что
+   * страж пропустил, отказом самого обработчика.
+   */
   'PATCH /api/v1/service-requests/:id/hold': {
     payload: { reason: 'ждём запчасть с завода', version: 1 },
-    selfRefusal: CORRIDOR_REFUSAL,
+    selfRefusal: HOLD_REFUSAL,
   },
   'PATCH /api/v1/service-requests/:id/resume': {
     payload: { version: 1 },
-    selfRefusal: 'это шаг того, кто её ведёт',
+    selfRefusal: HOLD_REFUSAL,
   },
   'PATCH /api/v1/service-requests/:id/it-approval': { payload: { approved: true, version: 1 } },
   'POST /api/v1/service-requests/:id/notify': { payload: { idempotencyKey: RECORD_ID } },
   'PATCH /api/v1/service-requests/:id/rework': {
     payload: { reason: 'подача по-прежнему не работает', version: 1 },
   },
+  // Совместимый адаптер выпуска 1 и сменившая его ручка: дуга у обеих одна — `… → assigned`, — и
+  // открывает её право распределения, то есть само условие маршрута.
   'PATCH /api/v1/service-requests/:id/service': {
     payload: { serviceCounterpartyId: COUNTERPARTY_ID, version: 1 },
-    handlerNeeds: ['serviceRequests.status'],
+    selfRefusal: CORRIDOR_REFUSAL,
+  },
+  'PUT /api/v1/service-requests/:id/executors': {
+    payload: { userIds: [], serviceCounterpartyId: COUNTERPARTY_ID, version: 1 },
     selfRefusal: CORRIDOR_REFUSAL,
   },
   'PATCH /api/v1/service-requests/:id/service-comment': {
     payload: { serviceComment: 'будем во вторник', version: 1 },
   },
+  // «Принять в работу» и отказ — дуги исполнителя (`assigned → in_work` и `assigned → new`), а в
+  // выборе прав маршрута стоит право хода: открывает дугу не оно, поэтому добавка остаётся.
   'PATCH /api/v1/service-requests/:id/start': {
     payload: { version: 1 },
     handlerNeeds: ['serviceRequests.estimate'],
@@ -574,6 +686,71 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'PATCH /api/v1/vehicle-requests/:id/approval': { payload: { approved: true, version: 1 } },
   'PATCH /api/v1/vehicle-requests/:id/assignment': {
     payload: { vehicleId: RECORD_ID, version: 1 },
+  },
+  /*
+   * Предпросмотр смены техники: тело у него то же, что у боевой ручки (§8), и фикстура — та же
+   * самая. Отпечатка в ней нет намеренно: он необязателен в схеме, а страж до него и не доходит.
+   */
+  'POST /api/v1/vehicle-requests/:id/assignment/preview': {
+    payload: { vehicleId: RECORD_ID, version: 1 },
+  },
+  /*
+   * Команда машиниста: тело — дискриминированный союз по `kind` (Р13), и пустая фикстура дала бы
+   * 400 от схемы раньше, чем страж ответил бы 403. Форма названа самая короткая — `set`: у `cancel`
+   * в теле стоит цель, а изменения, на которое она сослалась бы, у заявки перебора нет.
+   */
+  'POST /api/v1/vehicle-requests/:id/assignment-changes': {
+    payload: {
+      kind: 'set',
+      dimension: 'driver',
+      effectiveDate: FUTURE_DATE,
+      driverPersonId: PERSON_ID,
+      version: 1,
+    },
+  },
+  /*
+   * Дверь правки срока. Тело валидное, потому что схема стоит до стража: с пустым телом
+   * невошедший получил бы 400 от валидации, и проверка «без права — 403» доказывала бы работу
+   * схемы, а не стража.
+   */
+  'POST /api/v1/vehicle-requests/:id/period/preview': {
+    payload: { version: 0, dateTo: FUTURE_DATE },
+  },
+
+  'PATCH /api/v1/vehicle-requests/:id/period': {
+    payload: { version: 0, dateTo: FUTURE_DATE, previewFingerprint: 'a'.repeat(64) },
+  },
+
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/preview': {
+    payload: {
+      kind: 'set',
+      dimension: 'driver',
+      effectiveDate: FUTURE_DATE,
+      driverPersonId: PERSON_ID,
+      version: 1,
+    },
+  },
+  /*
+   * Ремонт истории: тело — дискриминированный союз по `mode` (Ю1), и пустая фикстура дала бы 400 от
+   * схемы раньше, чем страж ответил бы 403. Работа названа самая короткая — решение хвоста: якорям
+   * и заполнению нужны даты, которых у заявки перебора нет.
+   */
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/repair': {
+    payload: { mode: 'repair', version: 1, tailResolution: { kind: 'assignment_wins' } },
+  },
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/repair/preview': {
+    payload: { mode: 'repair', version: 1, tailResolution: { kind: 'assignment_wins' } },
+  },
+  /*
+   * Периодная коррекция: цель и машина обязательны схемой, и пустая фикстура дала бы 400 раньше,
+   * чем страж ответил бы 403. Цель названа идентификатором — изменения с таким id у заявки перебора
+   * нет, но до его разрешения запрос и не доходит: область и права спрашиваются раньше.
+   */
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/correction': {
+    payload: { target: { changeId: RECORD_ID }, vehicleId: RECORD_ID, version: 1 },
+  },
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/correction/preview': {
+    payload: { target: { changeId: RECORD_ID }, vehicleId: RECORD_ID, version: 1 },
   },
   'POST /api/v1/vehicle-requests/:id/days/:date/route': { payload: { routeId: RECORD_ID } },
   'POST /api/v1/vehicle-requests/:id/early-end': {
@@ -738,6 +915,33 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'GET /api/v1/vehicle-readings/stats/export': { query: `from=${PAST_DATE}&to=${PAST_DATE}` },
   'GET /api/v1/vehicle-readings/vehicles/:id/card': {
     query: `from=${PAST_DATE}&to=${PAST_DATE}`,
+  },
+
+  // ── Склад автозапчастей ──
+  // Позиция заводится ОДНИМ наименованием (Р12): артикул необязателен — механик заводит «Ремень
+  // генератора» до того, как бухгалтерия пришлёт номенклатуру. Без имени схема отвергла бы тело
+  // раньше стража, и негативный случай показал бы 400 вместо 403.
+  //
+  // Остатка базовое тело не называет вовсе: `quantity` приезжает умолчанием схемы (ноль), а
+  // заведение с нулём — работа одного `manage`, и это законный случай базового права.
+  'POST /api/v1/auto-parts': {
+    payload: { name: 'Ремень генератора' },
+    conditionalRefusal: INITIAL_STOCK_REFUSAL,
+    conditionalValues: {
+      /*
+       * Значения ТОЛЬКО НЕНУЛЕВЫЕ, и это не выбор примера, а само правило (Р19): условное право
+       * спрашивается по значению (`quantity > 0`), а не по присутствию поля, как у вывоза. Ноль
+       * сценарием быть не может — заведение с нулём проходит с одним `manage`, и случай «минус
+       * право на склад → 403» на нём не сработал бы вовсе.
+       */
+      quantity: [{ label: 'ненулевой начальный остаток', value: 12 }],
+    },
+  },
+  'PATCH /api/v1/auto-parts/:id': { payload: { comment: 'уточнили применимость' } },
+  // У правки остатка обязательны все три поля (Р3): новое число, то, которое человек видел, и
+  // причина. Любого из них не хватило бы до стража.
+  'POST /api/v1/auto-parts/:id/stock': {
+    payload: { quantity: 10, expectedQuantity: 12, reason: 'продали два на сторону' },
   },
 
   // ── Техническое обслуживание ──
@@ -936,6 +1140,18 @@ function variantsOf(key: ManifestRouteKey, condition: AccessCondition): Variant[
       { label: '', payload: requestOf(key).payload, required: condition.allOf, conditional: [] },
     ];
   }
+  // Дизъюнкция: по варианту на каждое право, и в каждом оно **единственное**. Тогда «минимальный
+  // разрешающий набор» доказывает, что этого права довольно, а «без него» — что пускает именно
+  // оно, а не сосед по выбору.
+  if (condition.kind === 'anyOf') {
+    const payload = requestOf(key).payload;
+    return condition.anyOf.map((permission) => ({
+      label: `только ${permission}`,
+      payload,
+      required: [permission],
+      conditional: [],
+    }));
+  }
   if (condition.kind !== 'conditionalPermissions') return [];
   const fixture = FIXTURES[key];
   const base = requestOf(key).payload as Record<string, unknown>;
@@ -969,7 +1185,7 @@ interface RouteSweep {
 const MANIFEST = Object.entries(ACCESS_MANIFEST) as [ManifestRouteKey, AccessCondition][];
 
 const SWEEPS: RouteSweep[] = MANIFEST.filter(
-  ([, c]) => c.kind === 'permissions' || c.kind === 'conditionalPermissions',
+  ([, c]) => c.kind === 'permissions' || c.kind === 'anyOf' || c.kind === 'conditionalPermissions',
 ).map(([key, condition]) => {
   const handlerNeeds = FIXTURES[key]?.handlerNeeds ?? [];
   return {

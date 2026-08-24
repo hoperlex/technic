@@ -1,8 +1,8 @@
 import { queryOptions } from '@tanstack/react-query';
-import type { CounterpartyDto } from '@technic/contracts';
+import type { CounterpartyDto, } from '@technic/contracts';
 import { apiFetch, type ListResult } from '@shared/api';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
-import { serviceCompanyKeys } from './keys';
+import { serviceCompanyKeys, serviceExecutorKeys } from './keys';
 
 /**
  * Сервисные компании для выбора исполнителя (Р1: контрагент типа `service`).
@@ -33,4 +33,40 @@ export const serviceCompanyOptionsQuery = () =>
         },
       }),
     select: (r) => r.items.map((c) => ({ value: c.id, label: c.name })),
+  });
+
+/**
+ * Кандидаты в поимённые исполнители (Н5, Н6): учётки, которых **можно** назначить на заявку.
+ *
+ * Отбор — право `serviceRequests.execute`, и он не украшение: сервер проверяет его при назначении
+ * и отвечает 422 с именем человека (`resolveNamedExecutors`). Предложи портал учётку без
+ * полномочия — выбор оказался бы отказом уже после нажатия «Назначить».
+ *
+ * Фильтр стоит на клиенте, потому что перечень учёток фильтра по праву не имеет: список приходит
+ * одной страницей справочника, и это тот же ответ, которым живут фильтры журнала и выдача
+ * полномочий.
+ *
+ * **Перечень учёток портал отдаёт только `users.manage`** — то есть администратору. У «Ведения» и
+ * «ИТ-службы», которые и назначают, такого права нет, и до появления серверной ручки «кандидаты в
+ * исполнители» поимённый слой виден им только тем составом, что уже стоит в заявке. Поэтому
+ * спрашивать этот перечень имеет смысл лишь там, где он разрешён (`enabled` у вызывающего), а
+ * само поле обязано показывать назначенных из самой заявки, а не из этого ответа.
+ */
+/**
+ * Кандидаты в поимённые исполнители — своей ручкой модуля, а не отбором из списка учёток.
+ *
+ * `GET /users` закрыт правом `users.manage`, которого нет ни у «Ведения», ни у ИТ-службы: поле
+ * выбора заполнялось бы только у администратора портала, а у того, кто заявки и распределяет,
+ * оставалось бы пустым. Ручка модуля закрыта тем самым правом, которым назначают
+ * (`serviceRequests.assign`), и отбирает держателей `serviceRequests.execute` по **эффективным**
+ * правам — то есть с гейтом совместимости набора с ролью.
+ */
+export const serviceExecutorCandidatesQuery = () =>
+  queryOptions({
+    queryKey: serviceExecutorKeys.options(),
+    queryFn: () =>
+      apiFetch<{ items: { id: string; fullName: string }[] }>(
+        '/service-requests/executor-candidates',
+      ),
+    select: (r) => r.items.map((u) => ({ value: u.id, label: u.fullName })),
   });

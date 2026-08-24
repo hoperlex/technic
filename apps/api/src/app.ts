@@ -22,6 +22,8 @@ import departmentsRoutes from './routes/departments';
 import counterpartiesRoutes from './routes/counterparties';
 import warehousesRoutes from './routes/warehouses';
 import officeEquipmentTypesRoutes from './routes/office-equipment-types';
+import officeEquipmentModelsRoutes from './routes/office-equipment-models';
+import officeEquipmentConsumablesRoutes from './routes/office-equipment-consumables';
 import officeEquipmentRoutes from './routes/office-equipment';
 import serviceRequestsRoutes from './routes/service-requests';
 import containerTypesRoutes from './routes/container-types';
@@ -34,6 +36,10 @@ import vehicleModelsRoutes from './routes/vehicle-models';
 import vehiclesRoutes from './routes/vehicles';
 import driversRoutes from './routes/drivers';
 import waybillsRoutes from './routes/waybills';
+import vehicleRequestAssignmentRoutes from './routes/vehicle-request-assignment';
+import vehicleRequestAssignmentRepairRoutes from './routes/vehicle-request-assignment-repair';
+import vehicleRequestAssignmentCorrectionRoutes from './routes/vehicle-request-assignment-correction';
+import vehicleRequestPeriodRoutes from './routes/vehicle-request-period';
 import vehicleRequestsRoutes from './routes/vehicle-requests';
 import weeklyVehicleRequestsRoutes from './routes/weekly-vehicle-requests';
 import vehicleRoutesRoutes from './routes/vehicle-routes';
@@ -41,8 +47,10 @@ import garageRoutes from './routes/garage';
 import driverRoutes from './routes/driver';
 import vehicleReadingsRoutes from './routes/vehicle-readings';
 import vehicleReadingsStatsRoutes from './routes/vehicle-readings-stats';
+import autoPartsRoutes from './routes/auto-parts';
 import vehicleMaintenanceRoutes from './routes/vehicle-maintenance';
 import wasteRequestsRoutes from './routes/waste-requests';
+import wasteTicketsRoutes from './routes/waste-tickets';
 import wasteTypesRoutes from './routes/waste-types';
 import wasteTariffsRoutes from './routes/waste-tariffs';
 import filesRoutes from './routes/files';
@@ -51,6 +59,7 @@ import adminMailRoutes from './routes/admin-mail';
 import adminMailingsRoutes from './routes/admin-mailings';
 import moduleMailRoutes from './routes/module-mail';
 import internalMailRoutes from './routes/internal-mail';
+import internalServiceRequestRoutes from './routes/internal-service-requests';
 import auditRoutes from './routes/audit';
 import releasesRoutes from './routes/releases';
 import manualsRoutes from './routes/manuals';
@@ -85,7 +94,17 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   await app.register(cookie, { secret: config.auth.cookieSecret });
   await app.register(helmet, { contentSecurityPolicy: false });
-  await app.register(rateLimit, { max: 300, timeWindow: '1 minute' });
+  /*
+   * Потолок частоты берётся из окружения, умолчание прежнее. Понадобилось это тестам: db-файл,
+   * прогоняемый в двух режимах чтения (подэтап 4b), делает вдвое больше запросов и упирается в
+   * лимит — при этом ловит он не дефект, а сам себя, и падение выглядит ошибкой кода. В проде и в
+   * dev значение не меняется: переменной там нет.
+   */
+  const rateLimitMax = Number(process.env.RATE_LIMIT_MAX ?? 300);
+  await app.register(rateLimit, {
+    max: Number.isFinite(rateLimitMax) && rateLimitMax > 0 ? rateLimitMax : 300,
+    timeWindow: '1 minute',
+  });
   await app.register(authPlugin);
 
   if (options.onRoute) app.addHook('onRoute', options.onRoute);
@@ -112,6 +131,19 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // Справочник оргтехники (ADR 0085): перечень типов идёт перед единицами — окно ведения типов
   // открывается из той же вкладки, и без него единицу не завести.
   await app.register(officeEquipmentTypesRoutes, { prefix: '/api/v1/office-equipment-types' });
+  // Справочник моделей аппаратов (план `docs/office-equipment-consumables-plan.md`, Р1) — свой
+  // префикс рядом с типами, а не ветка единиц: модель существует независимо от парка (картридж
+  // лежит на складе и для аппарата, которого в портале нет), и вести её из адреса единицы значило
+  // бы требовать сначала завести технику. Порядок тот же, что у типов: и тип, и модель нужны
+  // раньше, чем сама единица.
+  await app.register(officeEquipmentModelsRoutes, { prefix: '/api/v1/office-equipment-models' });
+  // Расходники — картриджи и тонеры (тот же план, Р5–Р7). Свой префикс рядом с моделями, а не ветка
+  // единиц: расходник лежит на складе и для аппарата, которого в портале нет вовсе, — вести его из
+  // адреса единицы значило бы требовать сначала завести технику. После моделей, потому что
+  // совместимость расходника выражается ссылками на них.
+  await app.register(officeEquipmentConsumablesRoutes, {
+    prefix: '/api/v1/office-equipment-consumables',
+  });
   await app.register(officeEquipmentRoutes, { prefix: '/api/v1/office-equipment' });
   // Заявки на обслуживание оргтехники (ADR 0085) — третий модуль заявок: свой префикс, свои права
   // и свой перечень статусов, а не ветка справочника, из которого приходит только предмет заявки.
@@ -126,6 +158,16 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(vehiclesRoutes, { prefix: '/api/v1/vehicles' });
   await app.register(driversRoutes, { prefix: '/api/v1/drivers' });
   await app.register(vehicleRequestsRoutes, { prefix: '/api/v1/vehicle-requests' });
+  // Двери истории назначения (план `docs/assignment-periods-plan.md` §8) — второй плагин на том же
+  // префиксе: адреса портала от разделения не меняются, а `vehicle-requests.ts` их не вмещает
+  // (§16.1 плана — барьерный файл, которого хотят сразу пять дверей). Тот же приём, что у двух
+  // плагинов `vehicle-readings`. Боевых ручек в модуле пока нет: волна 3.1 привезла каркас.
+  await app.register(vehicleRequestAssignmentRoutes, { prefix: '/api/v1/vehicle-requests' });
+  await app.register(vehicleRequestAssignmentRepairRoutes, { prefix: '/api/v1/vehicle-requests' });
+  await app.register(vehicleRequestAssignmentCorrectionRoutes, {
+    prefix: '/api/v1/vehicle-requests',
+  });
+  await app.register(vehicleRequestPeriodRoutes, { prefix: '/api/v1/vehicle-requests' });
   // Недельная заявка (ADR 0085) — документ-основание **над** заказами ТС: свой префикс, а не ветка
   // `/vehicle-requests`, потому что и права у неё свои, и область видимости своя.
   await app.register(weeklyVehicleRequestsRoutes, { prefix: '/api/v1/weekly-vehicle-requests' });
@@ -145,12 +187,20 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // общее право `vehicleReadings.read`, но разные пути и разная цена запроса (сводка считает
   // разности по всему парку за период). Тот же приём, что у двух плагинов `admin/mail`.
   await app.register(vehicleReadingsStatsRoutes, { prefix: '/api/v1/vehicle-readings' });
+  // Склад автозапчастей (план `docs/auto-parts-plan.md`, Р2) — свой префикс, а не ветка гаража:
+  // гараж показывает срез дня, а склад существует сам по себе и ведётся своими правами
+  // (`autoParts.manage` и `autoParts.stock`). Перед обслуживанием, потому что акт ссылается на
+  // склад, а склад на акт — нет: тот же порядок, что у расходников перед оргтехникой.
+  await app.register(autoPartsRoutes, { prefix: '/api/v1/auto-parts' });
   // Техобслуживание по пробегу (план «Показания техники», Р14) — свой префикс, а не ветка
   // показаний: права у него свои (`vehicleMaintenance.*`), и держит их порознь ровно то, что
   // служба главного механика ведёт ТО, не открывая приёмку, журналы и фотографии показаний.
   await app.register(vehicleMaintenanceRoutes, { prefix: '/api/v1/vehicle-maintenance' });
   await app.register(waybillsRoutes, { prefix: '/api/v1/waybills' });
   await app.register(wasteRequestsRoutes, { prefix: '/api/v1/waste-requests' });
+  // Разбор талонов — отдельный роут на том же префиксе: у него своё право (`ticketReview`), и
+  // держать его вместе со статусами заявки значило бы смешивать две области доступа в одном файле.
+  await app.register(wasteTicketsRoutes, { prefix: '/api/v1/waste-requests' });
   await app.register(wasteTypesRoutes, { prefix: '/api/v1/waste-types' });
   await app.register(wasteTariffsRoutes, { prefix: '/api/v1/waste-tariffs' });
   await app.register(filesRoutes, { prefix: '/api/v1/files' });
@@ -164,6 +214,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(moduleMailRoutes, { prefix: '/api/v1/admin/mail' });
   // Наружу не проксируется: этим маршрутом ходит только планировщик из worker (ADR 0075).
   await app.register(internalMailRoutes, { prefix: '/internal/mail' });
+  // Тот же внутренний контур и тот же секрет: worker будит автозакрытие заявок оргтехники
+  // «Решена» → «Закрыта» (план `docs/office-equipment-requests-rework-plan.md`, решение Н7).
+  await app.register(internalServiceRequestRoutes, { prefix: '/internal/service-requests' });
   await app.register(auditRoutes, { prefix: '/api/v1/audit' });
   // Журнал обновлений (ADR 0077) — служебное окно, а не раздел: читает любой вошедший, права нет.
   await app.register(releasesRoutes, { prefix: '/api/v1/releases' });

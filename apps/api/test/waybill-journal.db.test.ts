@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeReadModes, inLegacy, useReadModeDatabase } from './assignment-read-mode';
 import { moscowDateKeyOf, WAYBILL_CANCELLED_PRINT_MESSAGE } from '@technic/contracts';
 import { runSeed, snilsOf } from './db-identity';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -43,7 +44,11 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('wbjournal');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 /** Тестовый машинист: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
 // Свой на прогон, а не общая константа: пять файлов заводили водителя по одному номеру, и
@@ -288,7 +293,16 @@ async function seed(): Promise<{ personId: string; machinistPersonId: string }> 
  * Машинист — параметром: снимок листа берёт его документ по должности, и проверяется это разными
  * людьми.
  */
+/*
+ * ЭСМ2-РАЗРЕЗ. Сцена собирается в сегодняшнем мире (`inLegacy`), а проверяется в назначенном режиме:
+ * заказ заводится статусной ручкой, а в `history` её останавливает бэкстоп (Р22). Предмет файла —
+ * журнал бланков, к подготовке заказа он отношения не имеет.
+ */
 async function requestInWork(driverPersonId = ctx.personId): Promise<{ id: string }> {
+  return inLegacy(readMode, () => requestInWorkNow(driverPersonId));
+}
+
+async function requestInWorkNow(driverPersonId = ctx.personId): Promise<{ id: string }> {
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-requests',
@@ -421,8 +435,7 @@ async function cancel(id: string): Promise<void> {
 
 describe.skipIf(!DB_URL)('журнал путевых листов: поиск, порядок и печать (живая схема)', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
 
     const { personId, machinistPersonId } = await seed();
     const { buildApp } = await import('../src/app');
@@ -518,6 +531,15 @@ describe.skipIf(!DB_URL)('журнал путевых листов: поиск, 
     await ctx?.app.close();
     await ctx?.closeDb();
   }, 60_000);
+
+  /*
+   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+   *
+   * Сегодня половины совпадают: журнал показывает выписанные листы, а нарезка бумаги на его отбор не влияет. На этапе 5 у однодневного срока отрезок один и счёт «=1» должен выжить — проверить прогоном.
+   */
+  describeReadModes(readMode, 'журнал бланков', (mode) => {
+    void mode;
 
   it('поиск по номеру: напечатанный целиком, хвост цифр и чужой номер', async () => {
     const sheet = await issueWaybill();
@@ -764,4 +786,5 @@ describe.skipIf(!DB_URL)('журнал путевых листов: поиск, 
     expect(mine.printedAt).toBeNull();
     expect(other.exportedAt).toBeNull();
   }, 60_000);
+  });
 });

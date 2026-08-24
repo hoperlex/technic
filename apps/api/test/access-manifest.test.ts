@@ -1,6 +1,9 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { RouteOptions } from 'fastify';
 import {
+  ACCESS_CONDITION_KINDS,
   ACCESS_MANIFEST,
   guardPermissionsOf,
   type AccessCondition,
@@ -100,8 +103,27 @@ beforeAll(async () => {
 
 const manifest = ACCESS_MANIFEST as Record<string, AccessCondition>;
 
+/**
+ * Пометка стража «одно из перечисленных прав» (`auth/plugin.ts`): префикс плюс перечень через `|`.
+ * Литералом, как и `handler:`, а не импортом из проверяемого кода: пометка — это **факт**, и
+ * разбирать его тем же модулем, который его пишет, значило бы сверять код с самим собой.
+ */
+const ANY_OF = 'anyOf:';
+
+function isAnyOfFact(authz: string): boolean {
+  return authz.startsWith(ANY_OF);
+}
+
+/** Права, объявленные стражами: дизъюнкция разворачивается в свои члены. */
 function permissionsFact(authz: string[]): string[] {
-  return authz.filter((a) => !a.startsWith('handler:'));
+  return authz
+    .filter((a) => !a.startsWith('handler:'))
+    .flatMap((a) => (isAnyOfFact(a) ? a.slice(ANY_OF.length).split('|') : [a]));
+}
+
+/** Наборы прав из пометок «одно из перечисленных» — по одному на каждого такого стража. */
+function anyOfFacts(authz: string[]): string[][] {
+  return authz.filter(isAnyOfFact).map((a) => a.slice(ANY_OF.length).split('|'));
 }
 
 function isHandlerFact(authz: string[]): boolean {
@@ -152,6 +174,26 @@ describe('манифест доступа маршрутов', () => {
         );
         continue;
       }
+      // Дизъюнкция сверяется отдельно от конъюнкции, а не одним множеством прав: «нужны оба» и
+      // «довольно любого» из одинаковой пары прав дают один и тот же перечень имён, и множество
+      // сошлось бы на подменённом условии — том самом, что открывает ручку вдвое шире.
+      const disjunctions = anyOfFacts(fact.authz);
+      if (condition.kind === 'anyOf') {
+        const only = disjunctions.length === 1 ? disjunctions[0]! : null;
+        if (!only || !sameSet(only, condition.anyOf) || actual.length !== only.length) {
+          mismatched.push(
+            `${fact.key}: манифест ожидает «одно из [${condition.anyOf.join(', ')}]», ` +
+              `страж объявляет [${fact.authz.join(', ') || '—'}]`,
+          );
+        }
+        continue;
+      }
+      if (disjunctions.length > 0) {
+        mismatched.push(
+          `${fact.key}: манифест — ${condition.kind}, факт — страж «одно из прав» (${fact.authz.join(', ')})`,
+        );
+        continue;
+      }
       if (!sameSet(expected, actual)) {
         mismatched.push(
           `${fact.key}: манифест ожидает [${expected.join(', ') || '—'}], ` +
@@ -193,11 +235,18 @@ describe('манифест доступа маршрутов', () => {
     const conditional = Object.entries(manifest).filter(
       ([, c]) => c.kind === 'conditionalPermissions',
     );
-    // Условных мест в модели два, оба в «Вывозе мусора»: заведение и правка заявки требуют
-    // `wasteRequests.assignOperator` только при присутствии `operatorCounterpartyId`. Список
-    // поимённый: третье такое место обязано попасть в ревью, а не приехать молча.
+    // Условных мест в модели четыре. Два в «Вывозе мусора»: заведение и правка заявки требуют
+    // `wasteRequests.assignOperator` только при присутствии `operatorCounterpartyId`. Ещё два —
+    // заведение расходника оргтехники и заведение автозапчасти: ненулевой начальный остаток требует
+    // права на склад (`officeEquipmentConsumables.stock`, `autoParts.stock`) сверх `manage`, потому
+    // что это уже утверждение о складе, а не о номенклатуре. Эти два отличаются от первых способом
+    // проверки: право спрашивается по ЗНАЧЕНИЮ (`quantity > 0`), а не по присутствию поля, —
+    // `quantity` приезжает умолчанием схемы и в теле есть всегда.
+    // Список поимённый: пятое такое место обязано попасть в ревью, а не приехать молча.
     expect(conditional.map(([key]) => key).sort()).toEqual([
       'PATCH /api/v1/waste-requests/:id',
+      'POST /api/v1/auto-parts',
+      'POST /api/v1/office-equipment-consumables',
       'POST /api/v1/waste-requests',
     ]);
     for (const [key, condition] of conditional) {
@@ -212,15 +261,97 @@ describe('манифест доступа маршрутов', () => {
     }
   });
 
-  it('в манифесте перечислены все шесть типов условия', () => {
-    const kinds = new Set(Object.values(manifest).map((c) => c.kind));
-    expect([...kinds].sort()).toEqual([
+  /**
+   * Дизъюнкция открывает ручку двум сторонам сразу, и список её мест обязан быть поимённым:
+   * девятая такая строка должна попасть в ревью, а не приехать молча вместе с правкой соседнего
+   * маршрута.
+   *
+   * Все восемь — ходы исполнителя заявки на обслуживание (план переработки цикла §7.3), и во всех
+   * восьми вторым членом стоит `serviceRequests.execute`: ради поимённого исполнителя дизъюнкция и
+   * заведена. Дизъюнкция без него означала бы, что ручку открыли кому-то ещё.
+   *
+   * Восьмая приехала выпуском 3 — правка факта выдачи расходников (Р6): отмечает выдачу тот, кто
+   * картриджи вёз, и это ровно тот же выбор сторон, что у статусных ходов.
+   */
+  it('дизъюнкция объявлена поимённо и всегда ради поимённого исполнителя', () => {
+    const declared = Object.entries(manifest).filter(([, c]) => c.kind === 'anyOf');
+    expect(declared.map(([key]) => key).sort()).toEqual([
+      'PATCH /api/v1/service-requests/:id/complete',
+      'PATCH /api/v1/service-requests/:id/consumables/issued',
+      'PATCH /api/v1/service-requests/:id/decline',
+      'PATCH /api/v1/service-requests/:id/estimate/reopen',
+      'PATCH /api/v1/service-requests/:id/estimate/submit',
+      'PATCH /api/v1/service-requests/:id/service-comment',
+      'PATCH /api/v1/service-requests/:id/start',
+      'PUT /api/v1/service-requests/:id/estimate',
+    ]);
+    for (const [key, condition] of declared) {
+      if (condition.kind !== 'anyOf') continue;
+      expect(condition.anyOf, key).toContain('serviceRequests.execute');
+      // Выбор из одного члена — это `permissions`, только записанное так, что в ревью не спросить
+      // «почему их два». Тип это уже требует; здесь проверка на случай приведения типа.
+      expect(condition.anyOf.length, key).toBeGreaterThan(1);
+    }
+  });
+
+  /**
+   * Видов условия восемь, и перечень их поимённый по той же причине, что и списки условных мест:
+   * девятый вид — это новая форма доступа, и приезжать молча она не должна.
+   *
+   * Сверяется РЕЕСТР (`ACCESS_CONDITION_KINDS`), а не множество видов, встреченных в манифесте.
+   * Union рантайму не виден, а полноту реестра держит компилятор, — поэтому реестр отвечает на
+   * «сколько видов бывает», тогда как манифест отвечает лишь на «сколько уже применено». Разница
+   * не теоретическая: `effectConditionalPermissions` заводится вместе со складом автозапчастей, а
+   * три его строки приезжают с ручками обслуживания (план автозапчастей, Р19), и между этими двумя
+   * руками одного выпуска вид законно стоит незанятым.
+   */
+  it('видов условия восемь, и все они перечислены реестром', () => {
+    expect([...ACCESS_CONDITION_KINDS].sort()).toEqual([
+      'anyOf',
       'authenticated',
       'conditionalPermissions',
+      'effectConditionalPermissions',
       'handlerAuthorized',
       'internalToken',
       'permissions',
       'public',
     ]);
+    // Обратная сторона: вид, встреченный в манифесте, обязан быть в реестре. Иначе реестр отстал бы
+    // от union'а молча — ровно так, как отставал руками писанный список ключей профилей.
+    const used = [...new Set(Object.values(manifest).map((c) => c.kind))];
+    const unknown = used.filter(
+      (kind) => !(ACCESS_CONDITION_KINDS as readonly string[]).includes(kind),
+    );
+    expect(unknown, 'вид условия из манифеста не назван реестром').toEqual([]);
+    // И третья: реестр не копилка. Незанятым может стоять только вид, чьи маршруты объявлены планом
+    // и приедут этим же выпуском; всякий другой — либо забытый, либо больше не нужный.
+    const idle = ACCESS_CONDITION_KINDS.filter(
+      (kind) => kind !== 'effectConditionalPermissions' && !used.includes(kind),
+    );
+    expect(idle, 'вид условия заведён, но не применён ни одним маршрутом').toEqual([]);
+  });
+
+  /**
+   * Ссылка на доказательство обязана вести в существующий файл. Проверяются те условия, у которых
+   * перебором прав правило не доказать вовсе (`handlerAuthorized` — доступ по самой записи,
+   * `effectConditionalPermissions` — право по эффекту запроса): у них `provenBy` — единственное
+   * место, где сказано, чем правило держится, и протухшая ссылка тиха вдвойне.
+   *
+   * Перебираются РЕАЛЬНО ОБЪЯВЛЕННЫЕ строки манифеста, а не виды: пока у вида нет ни одного
+   * маршрута, доказывать ему нечего, и требовать файл заранее значило бы требовать написать тест
+   * раньше кода, который он проверяет.
+   */
+  it('`provenBy` условий ведёт в существующий файл теста', () => {
+    const missing = Object.entries(manifest)
+      .flatMap(([key, condition]) =>
+        condition.kind === 'handlerAuthorized' || condition.kind === 'effectConditionalPermissions'
+          ? [[key, condition.provenBy] as const]
+          : [],
+      )
+      .filter(
+        ([, provenBy]) => !existsSync(fileURLToPath(new URL(`../${provenBy}`, import.meta.url))),
+      )
+      .map(([key, provenBy]) => `${key}: ${provenBy}`);
+    expect(missing, 'условие ссылается на несуществующий тест').toEqual([]);
   });
 });

@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeReadModes, inLegacy, useReadModeDatabase } from './assignment-read-mode';
 import { moscowDateKeyOf } from '@technic/contracts';
 import { runSeed, snilsOf } from './db-identity';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -30,7 +31,11 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('wblinks');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 /** Тестовый машинист: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
 // Свой на прогон, а не общая константа: пять файлов заводили водителя по одному номеру, и
@@ -198,6 +203,16 @@ async function seed(): Promise<{ personId: string }> {
 
 /** Заявка на спецтехнику, взятая в работу: этим и выписываются недельные листы ЭСМ-2. */
 async function requestInWork(): Promise<{ id: string; displayNumber: string; version: number }> {
+  // ЭСМ2-РАЗРЕЗ: подготовка идёт в сегодняшнем мире — заказ заводит статусная ручка, а в `history`
+  // её останавливает бэкстоп (Р22). Предмет файла — связь талона с заявкой, не подготовка.
+  return inLegacy(readMode, requestInWorkNow);
+}
+
+async function requestInWorkNow(): Promise<{
+  id: string;
+  displayNumber: string;
+  version: number;
+}> {
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-requests',
@@ -272,8 +287,7 @@ async function talonOf(requestId: string): Promise<{ displayNumber: string; stat
 
 describe.skipIf(!DB_URL)('талоны заказчиков в журнале листов (живая схема)', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
 
     const { personId } = await seed();
     const { buildApp } = await import('../src/app');
@@ -360,6 +374,15 @@ describe.skipIf(!DB_URL)('талоны заказчиков в журнале л
     await ctx?.closeDb();
   }, 60_000);
 
+  /*
+   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+   *
+   * Сегодня половины совпадают: ожидания файла не считают ни листов, ни границ. На этапе 5, если листов в окне станет больше, ссылка на первый остаётся валидной — проверить прогоном.
+   */
+  describeReadModes(readMode, 'талон и заявка', (mode) => {
+    void mode;
+
   it('талон несёт номер заявки и её состояние на сейчас', async () => {
     const request = await requestInWork();
 
@@ -423,5 +446,6 @@ describe.skipIf(!DB_URL)('талоны заказчиков в журнале л
     });
     expect(historical.statusCode, historical.body).toBe(200);
     expect(historical.json()).toMatchObject({ personId: ctx.personId, phone: DRIVER_PHONE });
+  });
   });
 });

@@ -7,8 +7,22 @@ import { vehicleMaintenanceApi, vehicleMaintenanceKeys } from '@entities/vehicle
 import { errorMessage } from '@shared/lib';
 import { FormModal } from '@shared/ui';
 import { filesApi } from '../../../api/resources';
-import { VERSION_CONFLICT_MESSAGE, isVersionConflict } from '../model/conflict';
+import { useAuth } from '../../../auth/AuthContext';
+import { autoPartPickKeys } from '../api/autoPartsPick';
+import {
+  VERSION_CONFLICT_MESSAGE,
+  isVersionConflict,
+  maintenanceErrorText,
+} from '../model/conflict';
 import { DATE, SHOWN_DATE, kmText, previousOdometerKm } from '../model/maintenanceText';
+import {
+  partsBefore,
+  partsIssue,
+  rowsFromRecord,
+  rowsToPayload,
+  type PartRow,
+} from '../model/parts';
+import { MaintenancePartsBlock } from './MaintenancePartsBlock';
 import { MaintenanceScans, type ScanFile } from './MaintenanceScans';
 
 /**
@@ -28,6 +42,16 @@ import { MaintenanceScans, type ScanFile } from './MaintenanceScans';
  *      ноль дал бы «пробег с ТО» размером во всю жизнь машины.
  *   2. **Одометр меньше предыдущего — предупреждение, а не отказ** (Р11а). Счётчики меняют, и
  *      монотонности от акта никто не требует; портал только спрашивает, не тот ли это случай.
+ *
+ * С выпуском автозапчастей у формы появилось третье правило, и оно про склад (план
+ * `docs/auto-parts-plan.md`, Р18):
+ *
+ *   3. **Правка всегда несёт полный набор строк — тот, что показан в блоке.** Отсутствие `parts` в
+ *      PATCH означает «строки не менять», и это защита от старого клиента, а не режим работы
+ *      нового: угадывать «трогали блок или нет» портал не станет — состояние «пользователь коснулся
+ *      поля» разъезжается с действительностью первым. Неизменённый набор сервер видит нулевой
+ *      разницей, склад не двигает и `autoParts.stock` не спрашивает (Р19), поэтому правка номера
+ *      документа диспетчером проходит ровно как раньше.
  */
 
 interface Values {
@@ -70,10 +94,14 @@ export function MaintenanceFormModal({
   onClose: () => void;
 }) {
   const { message } = App.useApp();
+  const { can } = useAuth();
   const qc = useQueryClient();
   const [form] = Form.useForm<Values>();
   const [files, setFiles] = useState<ScanFile[]>([]);
   const [uploading, setUploading] = useState(false);
+  /** Строки расхода живут состоянием окна, а не полями формы: итог считается на каждое нажатие. */
+  const [parts, setParts] = useState<PartRow[]>([]);
+  const canStock = can('autoParts.stock');
 
   const performedOn = Form.useWatch('performedOn', form);
   const odometerKm = Form.useWatch('odometerKm', form);
@@ -103,6 +131,7 @@ export function MaintenanceFormModal({
           },
     );
     setFiles(attachedScans(record));
+    setParts(rowsFromRecord(record));
   }, [open, record, defaultOn, prefillKm, form]);
 
   /**
@@ -137,6 +166,16 @@ export function MaintenanceFormModal({
     if (file.isNew) void filesApi.remove(file.id).catch(() => undefined);
   };
 
+  /**
+   * Что гасится после записи акта (Р16). Не только машина: строки акта двигают **склад**, и
+   * вкладка автозапчастей с карточками позиций обязана узнать новый остаток — иначе она показывала
+   * бы прежнее число до перезагрузки страницы.
+   */
+  function invalidate(): void {
+    void qc.invalidateQueries({ queryKey: vehicleMaintenanceKeys.root });
+    void qc.invalidateQueries({ queryKey: autoPartPickKeys.root });
+  }
+
   const save = useMutation({
     mutationFn: (v: Values) => {
       const body: MaintenanceBody = {
@@ -146,14 +185,24 @@ export function MaintenanceFormModal({
         note: v.note?.trim() ?? '',
         // Список уходит целиком: сервер сам разберёт, что подшить, а что отвязать.
         fileIds: files.map((f) => f.id),
+        parts: rowsToPayload(parts),
       };
-      return record
-        ? vehicleMaintenanceApi.update(record.id, { ...body, version: record.version })
-        : vehicleMaintenanceApi.create(vehicleId, body);
+      if (!record) return vehicleMaintenanceApi.create(vehicleId, body);
+      return vehicleMaintenanceApi.update(record.id, {
+        ...body,
+        version: record.version,
+        /*
+         * Набор строк уходит и в правке — полным, а не разницей (Р5, Р18). Единственное, что может
+         * его отменить, — акт, пришедший вовсе без строк: так отвечал бы сервер до выката, и
+         * присланный ему пустой массив означал бы «снять все». Тогда поля в теле нет — «строки не
+         * менять», — и правка реквизитов проходит, не тронув склад.
+         */
+        parts: Array.isArray(record.parts) ? rowsToPayload(parts) : undefined,
+      });
     },
     onSuccess: () => {
       message.success(record ? 'Запись ТО изменена' : 'Запись ТО добавлена');
-      void qc.invalidateQueries({ queryKey: vehicleMaintenanceKeys.root });
+      invalidate();
       onClose();
     },
     onError: (e) => {
@@ -162,13 +211,30 @@ export function MaintenanceFormModal({
       // закрывается: правку продолжают уже поверх чужой.
       if (isVersionConflict(e)) {
         message.error(VERSION_CONFLICT_MESSAGE);
-        void qc.invalidateQueries({ queryKey: vehicleMaintenanceKeys.root });
+        invalidate();
         onClose();
         return;
       }
-      message.error(errorMessage(e));
+      /*
+       * Отказ по строке (нехватка остатка, погашенная позиция) окно НЕ закрывает: набранное в нём
+       * — это и есть то, что надо поправить, а закрытие стоило бы человеку всей формы. Склад при
+       * этом перечитывается: раз сервер назвал остаток, показанный устарел.
+       */
+      void qc.invalidateQueries({ queryKey: autoPartPickKeys.root });
+      message.error(maintenanceErrorText(e));
     },
   });
+
+
+  /** Строки проверяются до отправки: пустая строка — это забытый выбор, а не «нисколько». */
+  const submit = (v: Values) => {
+    const issue = partsIssue(parts);
+    if (issue) {
+      message.warning(issue);
+      return;
+    }
+    save.mutate(v);
+  };
 
   return (
     <FormModal
@@ -179,7 +245,7 @@ export function MaintenanceFormModal({
       confirmLoading={save.isPending}
       width={560}
     >
-      <Form form={form} layout="vertical" onFinish={(v) => save.mutate(v)}>
+      <Form form={form} layout="vertical" onFinish={submit}>
         <Form.Item
           name="performedOn"
           label="Дата обслуживания"
@@ -223,6 +289,16 @@ export function MaintenanceFormModal({
         <Form.Item name="note" label="Примечание">
           <Input.TextArea rows={3} maxLength={1000} showCount />
         </Form.Item>
+
+        <MaintenancePartsBlock
+          vehicleId={vehicleId}
+          rows={parts}
+          onChange={setParts}
+          before={partsBefore(record)}
+          performedOn={performedOn ? performedOn.format(DATE) : null}
+          canStock={canStock}
+          recordParts={record?.parts ?? []}
+        />
 
         <MaintenanceScans
           files={files}

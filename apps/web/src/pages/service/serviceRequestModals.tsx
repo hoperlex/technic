@@ -1,0 +1,153 @@
+import { useState, type ReactNode } from 'react';
+import { App } from 'antd';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import type { ModuleMailOutcome, ServiceRequestDto } from '@technic/contracts';
+import { serviceRequestKeys } from '@entities/service-request';
+import { officeEquipmentKeys } from '@entities/office-equipment';
+import { AssignServiceModal } from '@features/assign-service';
+import { EstimateEditorModal } from '@features/estimate-editor';
+import { EstimateApprovalModal } from '@features/estimate-approval';
+import { ServiceCommentModal } from '@features/service-comment';
+import { ServiceCompleteModal } from '@features/service-complete';
+import { ServiceConsumablesIssueModal } from '@features/service-consumables-issue';
+import { ServiceAcceptModal, type AcceptMode } from '@features/service-accept';
+import { ServiceHoldModal, type HoldMode } from '@features/service-hold';
+import { EquipmentMoveFromRequest } from '@features/equipment-move';
+import { ItApprovalModal } from '@features/it-approval';
+import { ServiceUrgencyModal } from '@features/service-urgency';
+import { reportServiceMail } from './serviceMailNotice';
+import type { ReasonPrompt } from './serviceRequestPrompts';
+import { ReasonModal } from '../../components/CancelReasonModal';
+import { errorMessage } from '../../utils/format';
+
+/** Чем открывается каждое окно заявки: заявкой, а у двойных — ещё и стороной действия. */
+export interface ServiceRequestModals {
+  assign: (request: ServiceRequestDto) => void;
+  estimate: (request: ServiceRequestDto) => void;
+  approval: (request: ServiceRequestDto) => void;
+  complete: (request: ServiceRequestDto) => void;
+  /** Правка факта выдачи расходников (Р6): склад двигает она, а не смена статуса. */
+  issue: (request: ServiceRequestDto) => void;
+  accept: (request: ServiceRequestDto, mode: AcceptMode) => void;
+  hold: (request: ServiceRequestDto, mode: HoldMode) => void;
+  urgency: (request: ServiceRequestDto) => void;
+  comment: (request: ServiceRequestDto) => void;
+  itApproval: (request: ServiceRequestDto) => void;
+  moveEquipment: (request: ServiceRequestDto) => void;
+  /** Переход, у которого из содержания только причина: отказ, отмена, откат (§5.3). */
+  ask: (prompt: ReasonPrompt) => void;
+  /** Идёт переход «с одной причиной»: подвал списка держит на нём индикатор. */
+  pending: boolean;
+  node: ReactNode;
+}
+
+/**
+ * Окна заявки на обслуживание: какое открыто и чем.
+ *
+ * Отдельно от набора действий (`serviceRequestActions`), потому что это два разных предмета. Там
+ * решают, **что субъекту доступно** — по коридору переходов, правам и назначению; здесь — **чем
+ * это делается**, и добавление одиннадцатого окна не должно раздувать функцию, отвечающую на
+ * первый вопрос.
+ *
+ * Переходы с одной лишь причиной идут одной мутацией: гасит кэш и сообщает об успехе она одна,
+ * поэтому «отказался», «переоткрыл» и «отменил» не могут разойтись в поведении.
+ */
+export function useServiceRequestModals(): ServiceRequestModals {
+  const { message } = App.useApp();
+  const qc = useQueryClient();
+
+  const [assignTarget, setAssignTarget] = useState<ServiceRequestDto | null>(null);
+  const [estimateTarget, setEstimateTarget] = useState<ServiceRequestDto | null>(null);
+  const [approvalTarget, setApprovalTarget] = useState<ServiceRequestDto | null>(null);
+  const [completeTarget, setCompleteTarget] = useState<ServiceRequestDto | null>(null);
+  const [issueTarget, setIssueTarget] = useState<ServiceRequestDto | null>(null);
+  const [acceptTarget, setAcceptTarget] = useState<{
+    request: ServiceRequestDto;
+    mode: AcceptMode;
+  } | null>(null);
+  const [holdTarget, setHoldTarget] = useState<{
+    request: ServiceRequestDto;
+    mode: HoldMode;
+  } | null>(null);
+  const [urgencyTarget, setUrgencyTarget] = useState<ServiceRequestDto | null>(null);
+  const [commentTarget, setCommentTarget] = useState<ServiceRequestDto | null>(null);
+  const [itTarget, setItTarget] = useState<ServiceRequestDto | null>(null);
+  const [moveTarget, setMoveTarget] = useState<ServiceRequestDto | null>(null);
+  const [prompt, setPrompt] = useState<ReasonPrompt | null>(null);
+
+  const reasonMutation = useMutation({
+    mutationFn: (task: { run: () => Promise<unknown>; success: string }) => task.run(),
+    onSuccess: (result, task) => {
+      message.success(task.success);
+      // Отмена шлёт письмо службе: «не выезжайте». Если письма не будет, человек узнаёт об этом
+      // здесь же — служба читает почту, а не портал.
+      reportServiceMail(message, (result as { mail?: ModuleMailOutcome } | null)?.mail);
+      void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+      setPrompt(null);
+    },
+    onError: (e) => message.error(errorMessage(e)),
+  });
+
+  return {
+    assign: setAssignTarget,
+    estimate: setEstimateTarget,
+    approval: setApprovalTarget,
+    complete: setCompleteTarget,
+    issue: setIssueTarget,
+    accept: (request, mode) => setAcceptTarget({ request, mode }),
+    hold: (request, mode) => setHoldTarget({ request, mode }),
+    urgency: setUrgencyTarget,
+    comment: setCommentTarget,
+    itApproval: setItTarget,
+    moveEquipment: setMoveTarget,
+    ask: setPrompt,
+    pending: reasonMutation.isPending,
+    node: (
+      <>
+        <AssignServiceModal request={assignTarget} onClose={() => setAssignTarget(null)} />
+        <EstimateEditorModal request={estimateTarget} onClose={() => setEstimateTarget(null)} />
+        <EstimateApprovalModal request={approvalTarget} onClose={() => setApprovalTarget(null)} />
+        <ServiceCompleteModal request={completeTarget} onClose={() => setCompleteTarget(null)} />
+        <ServiceConsumablesIssueModal
+          request={issueTarget}
+          onClose={() => setIssueTarget(null)}
+        />
+        <ServiceAcceptModal
+          request={acceptTarget?.request ?? null}
+          mode={acceptTarget?.mode ?? 'accept'}
+          onClose={() => setAcceptTarget(null)}
+        />
+        <ServiceHoldModal
+          request={holdTarget?.request ?? null}
+          mode={holdTarget?.mode ?? 'hold'}
+          onClose={() => setHoldTarget(null)}
+        />
+        <ServiceUrgencyModal request={urgencyTarget} onClose={() => setUrgencyTarget(null)} />
+        <ServiceCommentModal request={commentTarget} onClose={() => setCommentTarget(null)} />
+        <ItApprovalModal request={itTarget} onClose={() => setItTarget(null)} />
+        {moveTarget && (
+          <EquipmentMoveFromRequest
+            equipmentId={moveTarget.equipment.id}
+            serviceRequestId={moveTarget.id}
+            open
+            onClose={() => setMoveTarget(null)}
+          />
+        )}
+        <ReasonModal
+          open={!!prompt}
+          title={prompt?.title}
+          label={prompt?.label}
+          okText={prompt?.okText}
+          danger={prompt?.danger}
+          confirmLoading={reasonMutation.isPending}
+          onCancel={() => setPrompt(null)}
+          onSubmit={(reason) => {
+            if (!prompt) return;
+            reasonMutation.mutate({ run: () => prompt.submit(reason), success: prompt.success });
+          }}
+        />
+      </>
+    ),
+  };
+}

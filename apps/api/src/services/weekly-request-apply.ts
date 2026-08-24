@@ -33,10 +33,18 @@ import {
   weeklyVehicleRequests,
 } from '../db/schema';
 import { err } from '../lib/errors';
+import {
+  applyAssignmentBackstop,
+  evaluateAssignmentBackstop,
+  type AssignmentBackstopVerdict,
+} from './assignment-backstop';
 import { extendSpecialEquipmentPeriod } from './vehicle-request-period';
 import { createSpecialEquipmentRequest } from './vehicle-request-create';
 import { loadLeftBy } from './weekly-request-blockers';
 import { esm2SheetsOfRequests, type Esm2SyncResult } from './waybill-esm2';
+// Гейт режима модуля периодов назначения (план §10, решение И1): применение недели продлевает
+// сроки и переоформляет листы, то есть читает историю ради бумаги — дверь класса `history`.
+import { requireOpenDoor } from './assignment-mode';
 
 /**
  * Применение недельной заявки (ADR 0085, план §8): виза той же транзакцией двигает сроки и
@@ -357,6 +365,9 @@ export async function applyWeeklyRequest(
     correction?: WeeklyApplyCorrection;
   },
 ): Promise<WeeklyApplyOutcome> {
+  // Шаг 0 канонического порядка — до шапки недели и до первой её блокировки: гейт обязан быть
+  // первым запросом пишущей транзакции, иначе freeze не дождётся этого писателя (Ж3).
+  await requireOpenDoor(tx, 'history');
   const [header] = await tx
     .select({
       id: weeklyVehicleRequests.id,
@@ -451,6 +462,45 @@ export async function applyWeeklyRequest(
   const esm2: { requestId: string; sync: Esm2SyncResult }[] = [];
   const reason = `Недельная заявка ${formatWeeklyRequestNumber(header.num)} (${weeklyWeekLabel(header.weekStart)})`;
 
+  /*
+   * Бэкстоп чужой двери (Р21, Р22) — **preflight'ом, до первой записи** (Р23).
+   *
+   * Считается он здесь, а не внутри `extendSpecialEquipmentPeriod`, по двум причинам. Первая:
+   * отказ обязан назвать **все** проблемные заказы, а не первый, — неделю чинят одним заходом, и
+   * вердикт, полученный на середине применения, назвал бы один заказ из четырёх. Вторая: ловить
+   * отказ из середины бесполезно — к тому моменту применение уже переписало предыдущие строки
+   * состава.
+   *
+   * Считается только по **применимым** строкам (`skipReason === null`) и только по `extend`:
+   * строка, которую применение и так пропустит, не вправе запереть неделю требованием машиниста,
+   * а `leave` с заказом не делает ничего и `new` заводит заказ, истории у которого ещё нет.
+   *
+   * Продление смотрит на **будущий** срок (`prospectiveDateTo`): Р31 требует проверить весь вновь
+   * открываемый диапазон — в нём могут лежать дремлющие изменения обеих шкал, — а нынешний
+   * `date_to` их не захватывает.
+   *
+   * Якорей недельная виза не принимает и не должна (Р22): её ставит руководитель строительства по
+   * праву `weeklyRequests.approve`, а «завизировано, но не применено» модель недельной заявки
+   * запрещает физически — двумя CHECK-равенствами схемы.
+   */
+  const backstop: AssignmentBackstopVerdict[] = [];
+  for (const decision of decisions) {
+    if (decision.skipReason !== null || decision.item.kind !== 'extend') continue;
+    const verdict = await evaluateAssignmentBackstop(tx, {
+      door: 'weekly_apply',
+      requestId: decision.order!.id,
+      asOf: today,
+      prospectiveDateTo: decision.item.dateTo,
+    });
+    if (verdict) backstop.push(verdict);
+  }
+  await applyAssignmentBackstop(tx, {
+    door: 'weekly_apply',
+    actor: params.actor,
+    verdicts: backstop,
+    reason,
+  });
+
   for (const decision of decisions) {
     const { item, order } = decision;
     if (decision.skipReason !== null) {
@@ -492,6 +542,8 @@ export async function applyWeeklyRequest(
         // отменить чужое решение у модуля быть не должно. Умолчания у параметра нет намеренно
         // (`vehicle-request-period.ts`): ответ на этот вопрос даёт вызывающий, а не забывчивость.
         dropPendingEarlyEnd: false,
+        // Бэкстоп уже посчитан preflight'ом выше — по всем строкам разом и до первой записи (Р23).
+        backstop: 'checked_by_caller',
         // Контекст операции — иначе продление в прошедшую неделю оставило бы заказ с новым сроком
         // и без бумаги за отработанные дни: сверка кончившуюся неделю сама не выписывает (Р21
         // ADR 0101). Названные листы идут сюда уже разложенными по заказам.

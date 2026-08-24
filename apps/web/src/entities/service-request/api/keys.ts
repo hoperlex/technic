@@ -49,3 +49,14 @@ export const serviceRequestKeys = createQueryKeys('service-requests', {
 export const serviceCompanyKeys = createQueryKeys('service-companies', {
   options: () => ['options'],
 });
+
+/**
+ * Кандидаты в поимённые исполнители (Н5, Н6) — учётки с правом `serviceRequests.execute`.
+ *
+ * Свой корень, а не семейство внутри заявок: перечень живёт учётками портала и от хода заявок не
+ * зависит. Общий корень означал бы, что каждое согласование сметы гасит список сотрудников, а
+ * выдача полномочия — все открытые списки заявок.
+ */
+export const serviceExecutorKeys = createQueryKeys('service-executor-candidates', {
+  options: () => ['options'],
+});

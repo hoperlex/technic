@@ -22,6 +22,13 @@ export class AppError extends Error {
 /** Чем 409 объясняется, если это не расхождение версий: свой код и тело для разбора порталом. */
 interface ConflictOptions {
   code?: string;
+  /**
+   * Пометки полей формы — те же, что у `badRequest` и `unprocessable` (ADR 0094). 409 бывает не
+   * только расхождением версий, но и отказом по конкретному полю («модель с таким наименованием
+   * уже заведена»), а без пути поля портал показать его может лишь тостом поверх формы — то есть
+   * ровно мимо того места, которое человеку и надо исправить.
+   */
+  fields?: Record<string, string>;
   details?: unknown;
 }
 
@@ -36,7 +43,7 @@ export const err = {
    * списком, — и различить два исхода на один код было бы нечем.
    */
   conflict: (m = 'Конфликт версий — обновите данные и повторите', options?: ConflictOptions) =>
-    new AppError(409, options?.code ?? 'version_conflict', m, undefined, options?.details),
+    new AppError(409, options?.code ?? 'version_conflict', m, options?.fields, options?.details),
   /**
    * 400. `details` — тот же разбор машиной, что у 409 и 422: список нарушений выдачи полномочия
    * (`GrantValidationDetailsDto`) в `fields` не кладётся — там `Record<string, string>` под пометки

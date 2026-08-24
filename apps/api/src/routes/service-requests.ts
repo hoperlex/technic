@@ -29,14 +29,17 @@ import {
   assignServiceSchema,
   attachServiceFilesSchema,
   can,
+  canHoldService,
   canResumeService,
   canTransitionServiceStatus,
   completeServiceRequestSchema,
   createServiceRequestSchema,
   declineServiceRequestSchema,
   formatServiceRequestNumber,
+  hasCurrentItApproval,
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
+  isServiceExecutor,
   isServiceRequestClosed,
   isWarrantyActive,
   isWaitingOn,
@@ -44,18 +47,26 @@ import {
   officeEquipmentTitle,
   parseServiceRequestNumberSearch,
   putServiceEstimateSchema,
+  putServiceExecutorsSchema,
   reopenServiceEstimateSchema,
   reworkServiceRequestSchema,
   roleLabels,
+  putServiceConsumablesSchema,
+  serviceConsumableIssueIssue,
+  serviceRequestKindLabels,
+  setServiceConsumablesIssuedSchema,
   SERVICE_ADMIN_ROLLBACKS,
   isServiceClosingDocument,
   SERVICE_CLOSING_DOCUMENT_KINDS,
   SERVICE_REQUEST_STATUSES,
+  SERVICE_WAITING_ON,
   serviceCommentSchema,
   serviceFileKindLabels,
   serviceHoldSchema,
   serviceRequestListQuerySchema,
+  serviceRequestNeedsClosingDocument,
   serviceRequestStatusLabels,
+  serviceRequestWaitingOn,
   serviceResetOnTransition,
   serviceResumeSchema,
   serviceResumeTarget,
@@ -63,7 +74,6 @@ import {
   notifyServiceRequestSchema,
   type ServiceRequestNotifyResultDto,
   serviceStatusChangeSchema,
-  serviceWaitingOn,
   setServiceUrgencySchema,
   startServiceRequestSchema,
   submitServiceEstimateSchema,
@@ -75,11 +85,17 @@ import {
   warrantyListQuerySchema,
   warrantyState,
   warrantyToday,
+  type ServiceExecutorAssignment,
   type ServiceFileKind,
+  type ServiceRequestConsumableDto,
+  type ServiceRequestKind,
+  type ServiceWaitingOn,
   type ServiceWarrantyRowDto,
   type ServiceRequestDto,
+  type ServiceRequestExecutorDto,
   type ServiceRequestFileDto,
   type ServiceRequestItemDto,
+  type ServiceRequestRequesterPlaceDto,
   type ServiceRequestStatus,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -89,18 +105,24 @@ import {
   departments,
   files,
   officeEquipment,
+  officeEquipmentConsumables,
+  officeEquipmentConsumableStockEntries,
   officeEquipmentTypes,
+  serviceRequestConsumables,
+  serviceRequestExecutors,
   serviceRequestFiles,
   serviceRequestItems,
   serviceRequests,
   serviceRequestStatusHistory,
   users,
 } from '../db/schema';
+import { grantPermissionsExpr } from '../services/user-scopes';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import {
   loadServiceLetterData,
   logServiceMailFailure,
+  planServiceAssignmentMail,
   planServiceMail,
   queueServiceMails,
   renderServiceLetter,
@@ -108,10 +130,11 @@ import {
   type ServiceMailPlan,
 } from '../services/service-request-mail';
 import { requirePrincipal } from '../auth/plugin';
-import type { Principal } from '../auth/principal';
+import { loadPrincipal, type Principal } from '../auth/principal';
 import {
   archiveWhere,
   assertArchiveVisible,
+  assertServiceRequestDeletable,
   assertServiceRequestEditable,
   assertServiceRequestScope,
   officeEquipmentScopeWhere,
@@ -312,20 +335,141 @@ async function filesByRequest(ids: string[]): Promise<Map<string, ServiceRequest
   return map;
 }
 
+/**
+ * Строки заявки на расходники (Н9). Своей выборкой, по той же причине, что исполнители и смета: их
+ * несколько на заявку.
+ *
+ * Реквизиты позиции читаются из **живой** карточки справочника, а не снимком: строка ссылается на
+ * неё `ON DELETE RESTRICT`, и переименование позиции обязано читаться в заявке новым именем. Склад
+ * — не история заявки, а действующий перечень.
+ *
+ * Порядок — по наименованию позиции: у строк заявки своего порядка нет (сортировать по времени
+ * заведения нечего — `PUT /:id/consumables` заменяет состав целиком одной вставкой), а карточка
+ * обязана показывать их одинаково при каждом открытии.
+ */
+async function consumablesByRequest(
+  ids: string[],
+): Promise<Map<string, ServiceRequestConsumableDto[]>> {
+  const map = new Map<string, ServiceRequestConsumableDto[]>();
+  if (ids.length === 0) return map;
+  const rows = await db
+    .select({
+      id: serviceRequestConsumables.id,
+      requestId: serviceRequestConsumables.requestId,
+      consumableId: serviceRequestConsumables.consumableId,
+      requestedQuantity: serviceRequestConsumables.requestedQuantity,
+      issuedQuantity: serviceRequestConsumables.issuedQuantity,
+      issueNote: serviceRequestConsumables.issueNote,
+      code: officeEquipmentConsumables.code,
+      name: officeEquipmentConsumables.name,
+      color: officeEquipmentConsumables.color,
+    })
+    .from(serviceRequestConsumables)
+    .innerJoin(
+      officeEquipmentConsumables,
+      eq(serviceRequestConsumables.consumableId, officeEquipmentConsumables.id),
+    )
+    .where(inArray(serviceRequestConsumables.requestId, ids))
+    .orderBy(asc(officeEquipmentConsumables.name), asc(officeEquipmentConsumables.code));
+  for (const row of rows) {
+    const list = map.get(row.requestId) ?? [];
+    list.push({
+      id: row.id,
+      consumableId: row.consumableId,
+      code: row.code,
+      name: row.name,
+      color: row.color,
+      requestedQuantity: row.requestedQuantity,
+      issuedQuantity: row.issuedQuantity,
+      issueNote: row.issueNote,
+    });
+    map.set(row.requestId, list);
+  }
+  return map;
+}
+
+/**
+ * Поимённые исполнители заявок (Н5) — второй слой рядом с исполнителем-контрагентом. Своей
+ * выборкой, а не соединением в `requestQuery`: их несколько на заявку, и `leftJoin` размножил бы
+ * строки заголовка, испортив и `count`, и страницу.
+ */
+async function executorsByRequest(ids: string[]): Promise<Map<string, ServiceRequestExecutorDto[]>> {
+  const map = new Map<string, ServiceRequestExecutorDto[]>();
+  if (ids.length === 0) return map;
+  const rows = await db
+    .select({
+      requestId: serviceRequestExecutors.requestId,
+      userId: serviceRequestExecutors.userId,
+      assignedAt: serviceRequestExecutors.assignedAt,
+      name: users.fullName,
+    })
+    .from(serviceRequestExecutors)
+    .innerJoin(users, eq(serviceRequestExecutors.userId, users.id))
+    .where(inArray(serviceRequestExecutors.requestId, ids))
+    .orderBy(asc(serviceRequestExecutors.assignedAt), asc(users.fullName));
+  for (const row of rows) {
+    const list = map.get(row.requestId) ?? [];
+    list.push({ userId: row.userId, name: row.name, assignedAt: row.assignedAt.toISOString() });
+    map.set(row.requestId, list);
+  }
+  return map;
+}
+
+/**
+ * Подразделение заявителя (Н11): ссылка со снимком названия. Заполнена ровно одна пара — этого
+ * требует `service_requests_requester_place_check`, — поэтому в карточку уходит одно поле, а не
+ * два: «и отдел, и площадка» — состояние, которого не бывает.
+ */
+function requesterPlaceOf(r: RequestRow): ServiceRequestRequesterPlaceDto | null {
+  if (r.requesterDepartmentId) {
+    return { kind: 'department', id: r.requesterDepartmentId, name: r.requesterDepartmentName };
+  }
+  if (r.requesterObjectId) {
+    return { kind: 'object', id: r.requesterObjectId, name: r.requesterObjectName };
+  }
+  return null;
+}
+
+/**
+ * Строка, по которой считается очередь (`serviceRequestWaitingOn`). Три поля вместо статуса: у
+ * «Сметы на согласовании» две очереди подряд, и границу между ними проводит только ревизионная
+ * виза ИТ (Н3).
+ */
+function waitingRowOf(r: RequestRow): {
+  status: ServiceRequestStatus;
+  estimateRevision: number;
+  itApprovedEstimateRevision: number | null;
+} {
+  return {
+    status: r.status,
+    estimateRevision: r.estimateRevision,
+    itApprovedEstimateRevision: r.itApprovedEstimateRevision,
+  };
+}
+
 function toDto(
   row: HeaderRow,
   items: ServiceRequestItemDto[],
   fileList: ServiceRequestFileDto[],
+  executors: ServiceRequestExecutorDto[],
+  consumables: ServiceRequestConsumableDto[],
 ): ServiceRequestDto {
   const r = row.r;
   return {
     id: r.id,
     num: r.num,
     displayNumber: formatServiceRequestNumber(r.num),
+    kind: r.kind,
     status: r.status,
     statusChangedAt: r.statusChangedAt.toISOString(),
-    // Кого ждут — считает сервер: правило одно на список, карточку и бейдж раздела (Р35).
-    waitingOn: serviceWaitingOn(r.status),
+    /**
+     * Кого ждут — считает сервер: правило одно на список, карточку и бейдж раздела (Р35).
+     *
+     * По **строке**, а не по статусу (Н3): в «Смете на согласовании» ждут двоих по очереди —
+     * сперва ИТ («чинить или менять»), потом «Ведение» («согласны на эту сумму»), — и различает
+     * их только ревизионная виза.
+     */
+    waitingOn: serviceRequestWaitingOn(waitingRowOf(r)),
     // Заморозка ходит парой (Р104, Р107): при `on_hold` оба поля непусты, в остальных статусах
     // пусты оба — этого требует CHECK в базе. По `heldFromStatus` считается и «эффективный»
     // статус: виды документов отложенной «Диагностики» — те же, что у неё (Р110).
@@ -354,6 +498,7 @@ function toDto(
           name: row.equipmentDepartmentName!,
         }
       : null,
+    requesterPlace: requesterPlaceOf(r),
     description: r.description,
     responsibleName: r.responsibleName,
     responsiblePhone: r.responsiblePhone,
@@ -371,6 +516,7 @@ function toDto(
     service: r.serviceCounterpartyId
       ? { id: r.serviceCounterpartyId, name: row.serviceName ?? '' }
       : null,
+    executors,
     warrantyClaim: r.warrantyClaimSource
       ? {
           source: r.warrantyClaimSource,
@@ -392,6 +538,9 @@ function toDto(
           }
         : null,
     items,
+    // Строки расходников — предмет заявки этого вида (Н9). У ремонта список пуст: предмет там
+    // смета, и двух списков предмета у одной заявки не бывает.
+    consumables,
     completion: r.completedAt
       ? {
           completedAt: r.completedAt.toISOString(),
@@ -402,6 +551,10 @@ function toDto(
       : null,
     acceptedByName: row.acceptedByName ?? '',
     acceptedAt: r.acceptedAt ? r.acceptedAt.toISOString() : null,
+    // Пустой источник у принятой заявки — не ошибка, а след окна выката (план §5, M2): читается
+    // он как «принято человеком», и ни портал, ни отчёт не должны считать иначе.
+    acceptanceSource: r.acceptanceSource,
+    replacementRecommended: r.replacementRecommended,
     comment: r.comment,
     serviceComment: r.serviceComment,
     files: fileList,
@@ -415,8 +568,21 @@ function toDto(
 
 async function loadDtos(rows: HeaderRow[]): Promise<ServiceRequestDto[]> {
   const ids = rows.map((row) => row.r.id);
-  const [items, fileMap] = await Promise.all([itemsByRequest(ids), filesByRequest(ids)]);
-  return rows.map((row) => toDto(row, items.get(row.r.id) ?? [], fileMap.get(row.r.id) ?? []));
+  const [items, fileMap, executorMap, consumableMap] = await Promise.all([
+    itemsByRequest(ids),
+    filesByRequest(ids),
+    executorsByRequest(ids),
+    consumablesByRequest(ids),
+  ]);
+  return rows.map((row) =>
+    toDto(
+      row,
+      items.get(row.r.id) ?? [],
+      fileMap.get(row.r.id) ?? [],
+      executorMap.get(row.r.id) ?? [],
+      consumableMap.get(row.r.id) ?? [],
+    ),
+  );
 }
 
 async function getDto(id: string): Promise<ServiceRequestDto | null> {
@@ -493,6 +659,50 @@ async function lockRequest(tx: Tx, id: string): Promise<RequestRow> {
 }
 
 /**
+ * Признаки назначения, которых до чтения заявки знать неоткуда: субъект **мог бы** оказаться и
+ * назначенным подрядчиком, и поимённым исполнителем. Ими спрашивается предварительный отсев
+ * `assertSideAllowed` — «бывает ли у этой стороны такой ход вообще», — а настоящее назначение
+ * считается по строке (`executorAssignment`) и проверяется вторым разом уже в обработчике.
+ *
+ * Ответить здесь «не назначен» было бы неверно: у поимённого исполнителя дуги исполнителя
+ * открываются назначением, и предварительный отсев отбирал бы их у него, не заглянув в заявку.
+ * Ответить «назначен» безопасно ровно потому, что проверка повторяется: `isServiceExecutor` всё
+ * равно спросит у поимённого `serviceRequests.execute`, а у подрядчика — тип контрагента.
+ */
+const MAYBE_ASSIGNED: ServiceExecutorAssignment = {
+  actsForAssignedCounterparty: true,
+  isNamedExecutor: true,
+};
+
+/**
+ * Кто субъект **на этой заявке** (Н5): оператор назначенного контрагента, поимённый исполнитель —
+ * или никто. Пара признаков, а не готовый ответ: решение по ним принимает `isServiceExecutor` из
+ * контрактов, и второго правила рядом с ним заводить нельзя.
+ *
+ * Строка исполнителей спрашивается только у того, кто вообще может быть назначен поимённо: без
+ * `serviceRequests.execute` ответ всё равно «не исполнитель», и лишний запрос в базу на каждом
+ * ходе оператора не нужен.
+ */
+async function executorAssignment(
+  p: Principal,
+  row: RequestRow,
+): Promise<ServiceExecutorAssignment> {
+  const actsForAssignedCounterparty =
+    row.serviceCounterpartyId !== null && row.serviceCounterpartyId === p.counterpartyId;
+  if (!can(p, 'serviceRequests.execute')) {
+    return { actsForAssignedCounterparty, isNamedExecutor: false };
+  }
+  const [named] = await db
+    .select({ userId: serviceRequestExecutors.userId })
+    .from(serviceRequestExecutors)
+    .where(
+      and(eq(serviceRequestExecutors.requestId, row.id), eq(serviceRequestExecutors.userId, p.id)),
+    )
+    .limit(1);
+  return { actsForAssignedCounterparty, isNamedExecutor: !!named };
+}
+
+/**
  * Чужая сторона отсекается **до** чтения записи.
  *
  * Специализированная ручка описывает одну дугу коридора (Р18), и субъекту, у которого этой дуги
@@ -509,7 +719,7 @@ function assertSideAllowed(
   to: ServiceRequestStatus,
   from: readonly ServiceRequestStatus[] = SERVICE_REQUEST_STATUSES,
 ): void {
-  if (from.some((status) => canTransitionServiceStatus(status, to, p))) return;
+  if (from.some((status) => canTransitionServiceStatus(status, to, p, MAYBE_ASSIGNED))) return;
   const who = p.role ? roleLabels[p.role] : 'Учётная запись';
   throw err.forbidden(
     `${who} не переводит заявку в «${serviceRequestStatusLabels[to]}» — это шаг другой стороны`,
@@ -519,17 +729,74 @@ function assertSideAllowed(
 /**
  * Переход доступен субъекту — коридор из контрактов (Р17). 403, а не 422: сам переход существует,
  * но не для этой стороны — оператор не ведёт смету, а сервис не принимает работу за заказчика.
+ *
+ * Признаки назначения обязательны у ходов исполнителя (Н5): их открывает **факт назначения**, а
+ * не право, и посчитаны они должны быть по строке заявки (`executorAssignment`). Опущенные, они
+ * означают «сторона исполнителя определяется одним субъектом» — так спрашивают ручки, у которых
+ * шага исполнителя нет вовсе (отмена, откаты, заморозка).
  */
 function assertTransition(
   p: Principal,
   from: ServiceRequestStatus,
   to: ServiceRequestStatus,
+  assignment?: ServiceExecutorAssignment,
 ): void {
-  if (canTransitionServiceStatus(from, to, p)) return;
+  if (canTransitionServiceStatus(from, to, p, assignment)) return;
   const who = p.role ? roleLabels[p.role] : 'Учётная запись';
   throw err.forbidden(
     `${who} не может перевести заявку «${serviceRequestStatusLabels[from]}» → «${serviceRequestStatusLabels[to]}»`,
   );
+}
+
+/**
+ * Ход исполнителя, который **не меняет статуса**: правка состава сметы, снятие согласования,
+ * примечание сервиса. Коридора у таких ручек нет — двигать нечего, — а сторона у них та же, и
+ * спросить её всё равно надо: маршрут открыт «одному из прав» (`estimate` **или** `execute`), и
+ * без этой проверки держатель `execute` правил бы смету любой заявки, на которую его не назначали.
+ *
+ * Дизъюнкция здесь та же, что в коридоре контрактов (`allowedServiceStatusTransitions`), и в том
+ * же порядке: **назначение** — `isServiceExecutor`, единственный ответ модуля на вопрос «чей это
+ * ход», — **либо** право сметы, которым «Ведение» и администратор доводят заявку за исполнителя.
+ * Второй ветки достаточно и для сервисной компании: до этой строки доходит только назначенная —
+ * чужую отсекла область (`assertExecutorScope` внутри `requireEditable`).
+ *
+ * Строку заявки функция получает готовой: спрашивается она после `requireEditable`, потому что
+ * назначение считается по самой заявке, а не по правам субъекта.
+ */
+async function assertExecutorSide(p: Principal, row: RequestRow, action: string): Promise<void> {
+  if (isServiceExecutor(p, await executorAssignment(p, row))) return;
+  if (can(p, 'serviceRequests.estimate')) return;
+  const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+  throw err.forbidden(`${who} не ${action} — это шаг назначенного исполнителя`);
+}
+
+/**
+ * Держит и отпускает заявку тот, кто её ведёт (Р105) — предикатом контрактов, а не правом на
+ * маршруте (план §7.3): `canHoldService` отвечает «есть `hold` **или** есть `status`», и той же
+ * функцией спрашивает портал. Исполнителю заморозка закрыта при любом праве: о задержке он
+ * сообщает примечанием.
+ */
+/**
+ * Чей ход — правка факта выдачи (§7.3 плана). Предикат тот же, что у ходов исполнителя, и записан
+ * один раз на оба случая: **оператор назначенного контрагента либо поимённый исполнитель с
+ * `serviceRequests.execute`** (`isServiceExecutor` контрактов — единственный ответ модуля на вопрос
+ * «чей это ход») **либо обладатель `serviceRequests.status`** — «Ведение», которое разбирает ошибки
+ * и доводит заявку за любую сторону (§6.2).
+ *
+ * Второй ветки достаточно и для сервисной компании, если её оператор дошёл сюда через право хода:
+ * чужую заявку отсекла область (`assertExecutorScope` внутри `requireEditable`).
+ */
+async function assertConsumableIssuer(p: Principal, row: RequestRow): Promise<void> {
+  if (isServiceExecutor(p, await executorAssignment(p, row))) return;
+  if (can(p, 'serviceRequests.status')) return;
+  const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+  throw err.forbidden(`${who} не отмечает выдачу по этой заявке — это шаг назначенного исполнителя`);
+}
+
+function assertCanHold(p: Principal, action: string): void {
+  if (canHoldService(p)) return;
+  const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+  throw err.forbidden(`${who} не ${action} — это шаг того, кто её ведёт`);
 }
 
 // ── Ссылки на смету по гарантии ──
@@ -650,14 +917,26 @@ async function resolveWarrantyClaim(
 }
 
 // ── Одна открытая заявка на единицу (Р21) ──
+//
+// **На единицу И НА ВИД** (В12, миграция `0177`): ремонт и расходники по одному аппарату друг другу
+// не мешают — картридж просят и тому принтеру, который сейчас в ремонте, — а два открытых ремонта
+// по-прежнему означали бы два сервиса, два акта и две гарантии на одну работу. Проверка повторяет
+// условие пары частичных индексов `service_requests_open_repair_unique` и `…_open_consumable_unique`
+// затем, что человеку нужен номер занявшей место заявки, а не `23505`.
 
-async function assertNoOpenRequest(tx: Tx, equipmentId: string, exceptId?: string): Promise<void> {
+async function assertNoOpenRequest(
+  tx: Tx,
+  equipmentId: string,
+  kind: ServiceRequestKind,
+  exceptId?: string,
+): Promise<void> {
   const [open] = await tx
     .select({ num: serviceRequests.num })
     .from(serviceRequests)
     .where(
       and(
         eq(serviceRequests.officeEquipmentId, equipmentId),
+        eq(serviceRequests.kind, kind),
         isNull(serviceRequests.deletedAt),
         notInArray(serviceRequests.status, ['accepted', 'cancelled']),
         exceptId ? ne(serviceRequests.id, exceptId) : undefined,
@@ -666,8 +945,266 @@ async function assertNoOpenRequest(tx: Tx, equipmentId: string, exceptId?: strin
   if (!open) return;
   // Номер в ответе — не украшение: портал вместо глухого отказа предлагает открыть эту заявку.
   throw err.conflict(
-    `По этой технике уже есть незакрытая заявка ${formatServiceRequestNumber(open.num)} — откройте её`,
+    `По этой технике уже есть незакрытая заявка ${formatServiceRequestNumber(open.num)} (${serviceRequestKindLabels[kind].toLowerCase()}) — откройте её`,
   );
+}
+
+// ── Строки заявки на расходники и склад (§4 набросков, Р1–Р8) ──
+
+/**
+ * Позиции номенклатуры, названные в теле, — с проверкой, что они вообще есть в справочнике.
+ * Внешний ключ строки заявки поймал бы то же самое, но ответом `23503`: человек, выбравший позицию
+ * из подсказки, которую в этот момент удалили, должен прочитать про неё словами.
+ *
+ * Гашение позиции (`is_active = false`) заведению строки НЕ мешает: оно говорит «больше не
+ * закупаем», а не «этой позиции нет». Что погашенное не предлагают в форме — дело подсказки, а не
+ * отказа сервера.
+ */
+async function assertConsumablesExist(tx: Tx, ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const rows = await tx
+    .select({ id: officeEquipmentConsumables.id })
+    .from(officeEquipmentConsumables)
+    .where(inArray(officeEquipmentConsumables.id, [...ids]));
+  if (rows.length === ids.length) return;
+  const found = new Set(rows.map((row) => row.id));
+  const missing = ids.filter((id) => !found.has(id));
+  throw err.unprocessable(
+    missing.length === 1
+      ? 'Позиция номенклатуры не найдена — обновите справочник и выберите заново'
+      : `Позиций номенклатуры не найдено: ${missing.length} — обновите справочник и выберите заново`,
+    { consumables: 'Позиция не найдена' },
+  );
+}
+
+/** Строка заявки вместе с реквизитами позиции: их называет и отказ по остатку, и причина события. */
+interface ConsumableLineRow {
+  id: string;
+  consumableId: string;
+  code: string;
+  name: string;
+  requestedQuantity: number;
+  issuedQuantity: number | null;
+  issueNote: string;
+}
+
+/**
+ * Строки заявки под её блокировкой. Своего `FOR UPDATE` у них нет и не нужно: строка заявки уже
+ * взята `lockRequest`, а состав правит только та же заявка. Дерутся за **карточки склада**, и
+ * порядок их захвата задан ниже.
+ */
+async function consumableLinesOf(tx: Tx, requestId: string): Promise<ConsumableLineRow[]> {
+  return tx
+    .select({
+      id: serviceRequestConsumables.id,
+      consumableId: serviceRequestConsumables.consumableId,
+      code: officeEquipmentConsumables.code,
+      name: officeEquipmentConsumables.name,
+      requestedQuantity: serviceRequestConsumables.requestedQuantity,
+      issuedQuantity: serviceRequestConsumables.issuedQuantity,
+      issueNote: serviceRequestConsumables.issueNote,
+    })
+    .from(serviceRequestConsumables)
+    .innerJoin(
+      officeEquipmentConsumables,
+      eq(serviceRequestConsumables.consumableId, officeEquipmentConsumables.id),
+    )
+    .where(eq(serviceRequestConsumables.requestId, requestId));
+}
+
+/** Что уехало со склада (или вернулось на него) одним действием — строкой аудита и ответа. */
+interface ConsumableMovement {
+  lineId: string;
+  consumableId: string;
+  code: string;
+  name: string;
+  entryKind: 'issue' | 'return';
+  /** Всегда положительное: направление называет `entryKind`. */
+  quantity: number;
+  quantityBefore: number;
+  quantityAfter: number;
+}
+
+/**
+ * Факт выдачи по строкам заявки и вызванное им движение склада — **одной транзакцией** с тем
+ * действием, которое факт и меняет (Р5).
+ *
+ * ЧТО ДВИГАЕТ СКЛАД. Не смена статуса, а **изменение факта** (Р6): каждая правка порождает событие
+ * на разницу — было 2, стало 3, значит `issue` на единицу; было 2, стало 0, значит `return` на две.
+ * Отсюда поведение на всех путях назад само собой: возврат на доработку, отмена и откат склада не
+ * касаются вовсе, а повторное «Решена» списывает только разницу, если факт изменился. Признак «уже
+ * списано» не нужен — его роль играет само «выдано».
+ *
+ * ПОРЯДОК ЗАХВАТА, и переставить его нельзя: строка заявки (её берёт вызывающий, `lockRequest`) →
+ * карточки склада `FOR UPDATE` **в порядке возрастания `consumable_id`** → проверка остатков →
+ * `UPDATE` количества и `INSERT` события. Сортировка именно по позиции склада, а не по строке
+ * заявки: дерутся две заявки не за свои строки — те у каждой свои, — а за общие карточки
+ * номенклатуры, которые берёт `FOR UPDATE` ещё и триггер цепочки (`0172`). Отсортируй мы строки
+ * заявки, две заявки с одними и теми же позициями брали бы их в противоположном порядке и давали
+ * `40P01` вместо закрытия (тест `service-request-consumables.db.test.ts`).
+ *
+ * `UPDATE` карточки идёт **перед** `INSERT` события: триггер цепочки сверяет «стало» события с
+ * фактическим остатком карточки, и событие, вставленное раньше правки, будет отбито.
+ *
+ * ПРИЧИНУ СОБЫТИЯ ПИШЕТ СЕРВЕР (план §7.3). `reason` журнала обязателен всегда (`CHECK` в `0172`),
+ * а `issue_note` строки объясняет расхождение факта с запрошенным и при обычной выдаче пуст: это
+ * разные поля, и подставлять одно вместо другого нельзя.
+ */
+async function applyConsumableFacts(
+  tx: Tx,
+  params: {
+    request: { id: string; num: number; kind: ServiceRequestKind };
+    actor: Principal;
+    /** Присланные факты; строки, которых здесь нет, остаются как были. */
+    facts: readonly { id: string; issuedQuantity: number; issueNote: string }[];
+    /**
+     * Закрытие работ: факт обязан быть у **каждой** строки — своим значением в теле либо уже
+     * проставленный правкой. Умолчание «сколько просили» подставляет форма, а не сервер: списывать
+     * со склада по молчанию клиента он не должен (контракт `completeServiceRequestSchema`).
+     */
+    requireEveryLine: boolean;
+  },
+): Promise<ConsumableMovement[]> {
+  const { request, actor, facts } = params;
+  const lines = await consumableLinesOf(tx, request.id);
+  if (request.kind !== 'consumable') {
+    if (facts.length > 0) {
+      throw err.unprocessable('Строки номенклатуры бывают только у заявки на расходники', {
+        consumables: 'Не тот вид заявки',
+      });
+    }
+    return [];
+  }
+
+  const byId = new Map(lines.map((line) => [line.id, line]));
+  const wanted = new Map<string, { issuedQuantity: number; issueNote: string }>();
+  for (const fact of facts) {
+    if (!byId.has(fact.id)) {
+      throw err.unprocessable('В заявке нет такой строки номенклатуры — обновите карточку', {
+        consumables: 'Строка не найдена',
+      });
+    }
+    if (wanted.has(fact.id)) {
+      throw err.unprocessable('Строка номенклатуры названа дважды — оставьте одну отметку', {
+        consumables: 'Повтор строки',
+      });
+    }
+    wanted.set(fact.id, { issuedQuantity: fact.issuedQuantity, issueNote: fact.issueNote });
+  }
+
+  /** Строка, которую надо записать: новый факт, его причина и разница со списанным. */
+  const targets: { line: ConsumableLineRow; issued: number; note: string; delta: number }[] = [];
+  for (const line of lines) {
+    const fact = wanted.get(line.id);
+    if (!fact) {
+      if (params.requireEveryLine && line.issuedQuantity === null) {
+        throw err.unprocessable(
+          `По строке «${line.name}» нет отметки о выдаче — укажите, сколько выдали`,
+          { consumables: 'Заполните все строки' },
+        );
+      }
+      continue;
+    }
+    // Правило одно на сервер и портал (`serviceConsumableIssueIssue`), а `CHECK`
+    // `service_request_consumables_note_check` повторяет его последним рубежом.
+    const issue = serviceConsumableIssueIssue({
+      requestedQuantity: line.requestedQuantity,
+      issuedQuantity: fact.issuedQuantity,
+      issueNote: fact.issueNote,
+    });
+    if (issue) {
+      throw err.unprocessable(`${line.name}: ${issue}`, { consumables: issue });
+    }
+    targets.push({
+      line,
+      issued: fact.issuedQuantity,
+      note: fact.issueNote,
+      delta: fact.issuedQuantity - (line.issuedQuantity ?? 0),
+    });
+  }
+
+  /**
+   * СОРТИРОВКА ПО ПОЗИЦИИ СКЛАДА, А НЕ ПО СТРОКЕ ЗАЯВКИ. Строки заявки — случайные `uuid`, у каждой
+   * заявки свои: две заявки с одними и теми же позициями брали бы их в противоположном порядке, и
+   * встречное ожидание дало бы `40P01` вместо закрытия. Общий порядок обязан быть у того, за что
+   * дерутся, — у карточки склада.
+   */
+  const moving = targets
+    .filter((target) => target.delta !== 0)
+    .sort((a, b) =>
+      a.line.consumableId < b.line.consumableId
+        ? -1
+        : a.line.consumableId > b.line.consumableId
+          ? 1
+          : 0,
+    );
+
+  const now = new Date();
+  const movements: ConsumableMovement[] = [];
+  // Карточка берётся своим `FOR UPDATE` — по одной и в этом порядке, а не одной выборкой по списку:
+  // порядок захвата обязан читаться в коде, а не выводиться из плана запроса. Позиция в заявке
+  // одна на строку (`service_request_consumables_unique`), поэтому дважды одну и ту же карточку
+  // цикл не берёт.
+  for (const target of moving) {
+    const [card] = await tx
+      .select({ quantity: officeEquipmentConsumables.quantity })
+      .from(officeEquipmentConsumables)
+      .where(eq(officeEquipmentConsumables.id, target.line.consumableId))
+      .for('update');
+    // Позицию, на которую ссылается строка заявки, не удаляет никто (`ON DELETE RESTRICT`), — но
+    // отвечать «не найдено» лучше словами, чем разыменованием пустоты.
+    if (!card) throw err.notFound('Позиция номенклатуры не найдена');
+    const before = card.quantity;
+    const after = before - target.delta;
+    if (after < 0) {
+      // Отказ, а не минус (Р7): `quantity >= 0` стоит `CHECK`ом, и выходов у человека два — оба
+      // законные, и оба названы в тексте.
+      throw err.unprocessable(
+        `${target.line.name} (${target.line.code}): на складе ${before}, выдаётся ${target.delta}. Исправьте выданное количество или пополните остаток`,
+        { consumables: 'Не хватает остатка' },
+      );
+    }
+    await tx
+      .update(officeEquipmentConsumables)
+      .set({ quantity: after, updatedBy: actor.id, updatedAt: now })
+      .where(eq(officeEquipmentConsumables.id, target.line.consumableId));
+    const entryKind = target.delta > 0 ? 'issue' : 'return';
+    const head = `${entryKind === 'issue' ? 'Выдано' : 'Возврат'} по заявке ${formatServiceRequestNumber(request.num)}`;
+    await tx.insert(officeEquipmentConsumableStockEntries).values({
+      consumableId: target.line.consumableId,
+      entryKind,
+      serviceRequestId: request.id,
+      serviceRequestConsumableId: target.line.id,
+      quantityBefore: before,
+      quantityAfter: after,
+      reason: target.note ? `${head}: ${target.note}` : head,
+      changedBy: actor.id,
+    });
+    movements.push({
+      lineId: target.line.id,
+      consumableId: target.line.consumableId,
+      code: target.line.code,
+      name: target.line.name,
+      entryKind,
+      quantity: Math.abs(target.delta),
+      quantityBefore: before,
+      quantityAfter: after,
+    });
+  }
+
+  // Факт строки пишется после событий: обе стороны инварианта сверяет отложенный триггер на
+  // коммите (`0186`), и порядок внутри транзакции ему безразличен — важно, что обе половины
+  // изменены одной транзакцией.
+  for (const target of targets) {
+    if (target.issued === target.line.issuedQuantity && target.note === target.line.issueNote) {
+      continue;
+    }
+    await tx
+      .update(serviceRequestConsumables)
+      .set({ issuedQuantity: target.issued, issueNote: target.note, updatedAt: now })
+      .where(eq(serviceRequestConsumables.id, target.line.id));
+  }
+  return movements;
 }
 
 // ── Переход статуса ──
@@ -724,7 +1261,14 @@ async function applyTransition(
     set.itApprovedAt = null;
     set.itApprovedAuto = false;
   }
-  if (reset.executor) set.serviceCounterpartyId = null;
+  if (reset.executor) {
+    set.serviceCounterpartyId = null;
+    // Оба слоя разом (Н5): «заявка снова ничья» означает и снятого подрядчика, и пустой список
+    // поимённых. Снимай мы только колонку — отменённая заявка осталась бы за своим сисадмином, а
+    // отложенный триггер `service_requests_executor_present` этого не заметил бы: у неё
+    // исполнитель формально есть.
+    await tx.delete(serviceRequestExecutors).where(eq(serviceRequestExecutors.requestId, row.id));
+  }
   if (reset.estimate) {
     await assertEstimateReplaceable(tx, row.id);
     await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, row.id));
@@ -783,6 +1327,14 @@ async function applyTransition(
   if (reset.acceptance) {
     set.acceptedBy = null;
     set.acceptedAt = null;
+    // Источник приёмки чистится вместе с парой (план §5, M2): оставленный у непринятой заявки, он
+    // уронил бы накат M9 — там связка «источник есть ровно у принятой» становится ограничением.
+    set.acceptanceSource = null;
+  }
+  if (reset.replacement) {
+    // Пометка «рекомендована замена» живёт только у отменённой заявки (M5): возврат в «Новую»
+    // обязан её снять, иначе `service_requests_replacement_check` встретит откат ошибкой БД.
+    set.replacementRecommended = false;
   }
   if (reset.hold) {
     // Выход из заморозки чистит её поля — при возобновлении, при отмене отложенной и на любом
@@ -923,10 +1475,18 @@ const FILE_KIND_STATUSES: Record<ServiceFileKind, ServiceRequestStatus[]> = {
     'in_work',
     'done',
   ],
-  estimate: ['diagnostics', 'estimate_review'],
+  // Смета предъявляется из «В работе» (Н2), значит и файл сметы прикладывают оттуда же;
+  // `diagnostics` — legacy: снимается выпуском 2.
+  estimate: ['in_work', 'diagnostics', 'estimate_review'],
   act: ['in_work', 'done', 'accepted', 'cancelled'],
   invoice: ['in_work', 'done', 'accepted', 'cancelled'],
-  warranty_card: ['done', 'accepted', 'cancelled'],
+  /**
+   * Гарантийный талон принимается и в «В работе» (план §7.3). Без этого планка Н8 замыкает круг:
+   * закрывающим документом талон считается, но подшить его можно было только после «Решена», куда
+   * без закрывающего документа не пускают. Заявка, у которой единственная бумага — талон, не
+   * закрывалась бы вовсе.
+   */
+  warranty_card: ['in_work', 'done', 'accepted', 'cancelled'],
 };
 
 /**
@@ -981,10 +1541,25 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       app.requirePermission('serviceRequests.assign', 'Назначает сервис оператор оргтехники'),
     ],
   };
+  /**
+   * Работа исполнителя по заявке: смета, её предъявление и возврат в правку, закрытие работ,
+   * примечание. Держат её **две стороны с разными правами** (план §7.3), поэтому страж —
+   * «одно из перечисленных»: у сервисной компании и у «Ведения» это `serviceRequests.estimate`,
+   * у поимённого исполнителя — `serviceRequests.execute`, которым он значится в заявке.
+   *
+   * Записанное конъюнкцией, условие отобрало бы ручку у обеих сторон сразу; записанное одним
+   * правом стороны — у поимённого исполнителя, и матрица §6 для него не работала бы ни при каком
+   * `execute`. Страж отвечает только на вопрос «пускать ли к ручке вообще»: что субъекту доступно
+   * **на этой заявке**, решает коридор (`assertTransition`) и `assertExecutorSide` — держатель
+   * `execute` без назначения получает отказ от них, а не отсюда.
+   */
   const canEstimate = {
     preHandler: [
       app.authenticate,
-      app.requirePermission('serviceRequests.estimate', 'Смету ведёт исполнитель'),
+      app.requireAnyPermission(
+        ['serviceRequests.estimate', 'serviceRequests.execute'],
+        'Смету ведёт исполнитель',
+      ),
     ],
   };
   const canApproveEstimate = {
@@ -1005,8 +1580,73 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       app.requirePermission('serviceRequests.status', 'Недостаточно прав для смены статуса'),
     ],
   };
+  /**
+   * Две статусные дуги исполнителя — «принять в работу» и «отказаться». Право хода у них общее с
+   * операторским коридором (`serviceRequests.status`), и по той же причине, что у сметы, страж
+   * здесь «одно из перечисленных»: поимённому исполнителю дугу открывает назначение вместе с
+   * `serviceRequests.execute`. Какая из сторон перед ним, страж не различает — это дело
+   * `assertSideAllowed` и `assertTransition`, стоящих первыми строками обработчиков.
+   */
+  const canExecutorStatus = {
+    preHandler: [
+      app.authenticate,
+      app.requireAnyPermission(
+        ['serviceRequests.status', 'serviceRequests.execute'],
+        'Недостаточно прав для смены статуса',
+      ),
+    ],
+  };
+  /**
+   * Правка факта выдачи расходников (Р6). Страж тот же, что у статусных ходов исполнителя, и по той
+   * же причине «одно из перечисленных»: правит факт тот, кто картриджи вёз, — оператор назначенного
+   * контрагента (у него `serviceRequests.status` есть) либо поимённый исполнитель
+   * (`serviceRequests.execute`), — **либо** «Ведение», которое разбирает ошибки за любую сторону.
+   *
+   * Отдельного права на списание нет и быть не должно (Р8): списание — следствие закрытия заявки, а
+   * не действие над складом. Заведи мы его — исполнитель без прав на справочник не смог бы закрыть
+   * собственную заявку, а прав на справочник у него нет и не будет.
+   *
+   * Кто перед стражем на **этой** заявке, решает `assertConsumableIssuer`: держатель `execute` без
+   * назначения получает отказ от него, а не отсюда.
+   */
+  const canSetIssued = {
+    preHandler: [
+      app.authenticate,
+      app.requireAnyPermission(
+        ['serviceRequests.status', 'serviceRequests.execute'],
+        'Выдачу отмечает назначенный исполнитель',
+      ),
+    ],
+  };
   const canFiles = {
     preHandler: [app.authenticate, app.requirePermission('serviceRequests.files')],
+  };
+  /**
+   * Срочность — своё право (Н12): сегодня флаг приходил вместе с `serviceRequests.update`, то есть
+   * всякому, кто правит заявку, и составом набора его было не отобрать. Требование постановки
+   * «внешний исполнитель приоритет не ставит» держится тем же правом: у сервисной компании нет ни
+   * `update`, ни этого.
+   */
+  const canUrgency = {
+    preHandler: [
+      app.authenticate,
+      app.requirePermission('serviceRequests.urgency', 'Срочность ставит тот, кто ведёт заявки'),
+    ],
+  };
+  /**
+   * Заморозка и возврат: право спрашивает **обработчик** предикатом `canHoldService`, а не страж
+   * (план §7.3). Причина в окне волн: до выката каталога наборов (В5) «Ведение» приходит носителям
+   * надстройки `office_equipment_operator`, а права `hold` в ней нет и появиться не может —
+   * надстройка правится той же волной В5. Спроси страж `hold` напрямую, и заморозка отвалилась бы
+   * у тех, кто ею пользуется сегодня, на весь промежуток между волнами.
+   *
+   * Портал спрашивает ту же функцию контрактов — разойдись они, кнопка вела бы в 403.
+   */
+  const canHold = {
+    preHandler: [
+      app.authenticate,
+      app.requirePermission('serviceRequests.read', 'Заявки на обслуживание недоступны'),
+    ],
   };
 
   /** Обе оси видимости списка: заказчик заявки и назначенный исполнитель. */
@@ -1022,16 +1662,96 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     );
   }
 
-  /** Статусы, в которых ждут именно этого субъекта, — очередь «Требуют решения» (Р35). */
-  function waitingStatuses(p: Principal): ServiceRequestStatus[] {
-    return SERVICE_REQUEST_STATUSES.filter((status) => isWaitingOn(p, serviceWaitingOn(status)));
+  /**
+   * Виза ИТ стоит на **текущей** ревизии сметы — то же равенство, что в `hasCurrentItApproval`
+   * (Н3), переведённое на SQL: очередь отбирается выборкой, а предикат контрактов считает по
+   * строке. Разъехаться им нечем — обе половины сравнивают ровно эти две колонки.
+   */
+  const currentItApproval = sql`${serviceRequests.itApprovedEstimateRevision} IS NOT NULL
+      AND ${serviceRequests.itApprovedEstimateRevision} = ${serviceRequests.estimateRevision}`;
+
+  /**
+   * Условие «в этом состоянии ждут такую-то сторону». Статусы не перечисляются руками, а
+   * **выводятся** из `serviceRequestWaitingOn`: та же функция, что отвечает в карточке, опрашивается
+   * на обоих исходах визы, и статусы раскладываются на три кучки — «ждут всегда», «ждут только с
+   * визой» и «ждут только без визы». Вторая и третья существуют ровно из-за «Сметы на
+   * согласовании»: там две очереди подряд.
+   */
+  function waitingSideWhere(side: ServiceWaitingOn): SQL | undefined {
+    const always: ServiceRequestStatus[] = [];
+    const signed: ServiceRequestStatus[] = [];
+    const unsigned: ServiceRequestStatus[] = [];
+    for (const status of SERVICE_REQUEST_STATUSES) {
+      const withIt =
+        serviceRequestWaitingOn({ status, estimateRevision: 1, itApprovedEstimateRevision: 1 }) ===
+        side;
+      const withoutIt =
+        serviceRequestWaitingOn({
+          status,
+          estimateRevision: 1,
+          itApprovedEstimateRevision: null,
+        }) === side;
+      if (withIt && withoutIt) always.push(status);
+      else if (withIt) signed.push(status);
+      else if (withoutIt) unsigned.push(status);
+    }
+    const parts = [
+      always.length > 0 ? inArray(serviceRequests.status, always) : undefined,
+      signed.length > 0
+        ? and(inArray(serviceRequests.status, signed), currentItApproval)
+        : undefined,
+      unsigned.length > 0
+        ? and(inArray(serviceRequests.status, unsigned), not(currentItApproval))
+        : undefined,
+    ].filter((part): part is SQL => part !== undefined);
+    return parts.length > 0 ? or(...parts) : undefined;
+  }
+
+  /** Субъект значится поимённым исполнителем этой заявки (Н5). */
+  function namedExecutorHere(p: Principal): SQL {
+    return exists(
+      db
+        .select({ x: sql`1` })
+        .from(serviceRequestExecutors)
+        .where(
+          and(
+            eq(serviceRequestExecutors.requestId, serviceRequests.id),
+            eq(serviceRequestExecutors.userId, p.id),
+          ),
+        ),
+    );
+  }
+
+  /**
+   * Очередь «Ждут меня» (Р35). `null` — у субъекта шага в цикле нет вовсе (заказчик, наблюдатель):
+   * очередь пуста, и стоить обращения к базе она не должна.
+   *
+   * Сторона считается двумя источниками, и второй без первого не выводится. `isWaitingOn` знает
+   * стороны, видные **по субъекту** — согласующего от ИТ, распределяющего, оператора подрядчика.
+   * Поимённый исполнитель ей не виден и виден быть не может: «я в списке назначенных» — свойство
+   * заявки, и отбирается оно соединением с `service_request_executors`.
+   */
+  function waitingOnMeWhere(p: Principal): SQL | null {
+    const parts: SQL[] = [];
+    for (const side of SERVICE_WAITING_ON) {
+      if (!isWaitingOn(p, side)) continue;
+      const where = waitingSideWhere(side);
+      if (where) parts.push(where);
+    }
+    if (can(p, 'serviceRequests.execute')) {
+      const service = waitingSideWhere('service');
+      const named = service ? and(service, namedExecutorHere(p)) : undefined;
+      if (named) parts.push(named);
+    }
+    if (parts.length === 0) return null;
+    return parts.length === 1 ? parts[0]! : or(...parts)!;
   }
 
   // ── Список ──
   r.get('/', { ...auth, schema: { querystring: serviceRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     const q = req.query;
-    const mine = waitingStatuses(p);
+    const mine = waitingOnMeWhere(p);
     // «Предъявлена или принята, а закрывающих документов нет ни одного» — очередь «Ожидаются
     // документы» (Р114). Планка та же, что у приёмки (Р112): её снимает любой из трёх видов, и
     // прежняя пара «акт и счёт» заставляла бы портал требовать бумагу, которая ничего не запирает.
@@ -1067,10 +1787,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         ? eq(serviceRequests.serviceCounterpartyId, q.serviceCounterpartyId)
         : undefined,
       q.waitingOnMe
-        ? mine.length > 0
-          ? inArray(serviceRequests.status, mine)
-          : // У субъекта без шага в цикле (наблюдатель) очередь пуста, а не равна всему списку.
-            sql`false`
+        ? // У субъекта без шага в цикле (наблюдатель) очередь пуста, а не равна всему списку.
+          (mine ?? sql`false`)
         : undefined,
       q.mine ? eq(serviceRequests.createdBy, p.id) : undefined,
       q.awaitingDocuments
@@ -1367,19 +2085,48 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    */
   r.get('/waiting-count', auth, async (req) => {
     const p = requirePrincipal(req);
-    const mine = waitingStatuses(p);
-    if (mine.length === 0) return { count: 0 };
+    const mine = waitingOnMeWhere(p);
+    if (!mine) return { count: 0 };
     const [row] = await db
       .select({ c: count() })
       .from(serviceRequests)
+      .where(and(isNull(serviceRequests.deletedAt), visibility(p), mine));
+    return { count: Number(row!.c) };
+  });
+
+  /**
+   * Кандидаты в поимённые исполнители — те, кого вообще можно назначить на заявку (§7.1): учётка с
+   * правом `serviceRequests.execute`, живая и не удалённая.
+   *
+   * Своя ручка, а не `GET /users`, и причина не в удобстве. Список учёток закрыт `users.manage` —
+   * правом, которого нет ни у «Ведения», ни у ИТ-службы: спрашивай портал его, поле выбора
+   * заполнялось бы только у администратора портала, а у того, кто заявки и распределяет, оставалось
+   * бы пустым. Здесь же условие ровно обратное: страж — `serviceRequests.assign`, то самое право,
+   * которым назначают.
+   *
+   * Отдаётся минимум — идентификатор и ФИО: поле выбора большего не показывает, а всё остальное про
+   * учётку — предмет модуля витрины, а не этого.
+   *
+   * Право читается **эффективным** (`grantPermissionsExpr` — с гейтом совместимости набора с
+   * ролью), а не по составу набора в коде: у переведённой учётки набор мог перестать действовать,
+   * и назначенный по такому списку человек получил бы отказ от коридора — то есть кандидат,
+   * которого нельзя назначить.
+   *
+   * Путь статический и стоит **до** `/:id`: параметр перехватил бы его первым.
+   */
+  r.get('/executor-candidates', { ...canAssign }, async () => {
+    const rows = await db
+      .select({ id: users.id, fullName: users.fullName })
+      .from(users)
       .where(
         and(
-          isNull(serviceRequests.deletedAt),
-          visibility(p),
-          inArray(serviceRequests.status, mine),
+          eq(users.isActive, true),
+          isNull(users.deletedAt),
+          sql`${grantPermissionsExpr} @> ARRAY['serviceRequests.execute']::text[]`,
         ),
-      );
-    return { count: Number(row!.c) };
+      )
+      .orderBy(users.fullName);
+    return { items: rows.map((row) => ({ id: row.id, fullName: row.fullName })) };
   });
 
   // ── Карточка ──
@@ -1452,13 +2199,6 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         equipmentDepartmentId: equipment.ownerDepartmentId,
       });
 
-      /**
-       * Заявку, заведённую обладателем визы, визирует сама система (Р52) — приём ADR 0025
-       * (решение 5). Администратора это не касается (ADR 0032): он заводит заявку не от имени
-       * отдела ИТ, и его заявка ждёт визы наравне с остальными.
-       */
-      const autoApproved = p.role !== 'admin' && can(p, 'serviceRequests.approveIt');
-      const now = new Date();
 
       /**
        * Адресаты и обратные адреса считаются **до** транзакции (Р67): здесь ходят в базу и в
@@ -1468,13 +2208,31 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        *
        * Автор будущей заявки — сам заводящий: ответ службы на письмо уйдёт ему.
        */
-      const mailPlan = autoApproved
-        ? ({ plan: null, outcome: 'queued' } as const)
-        : await planServiceMail('new', { actor: p, authorId: p.id });
+      const mailPlan = await planServiceMail('new', { actor: p, authorId: p.id });
+
+      /**
+       * Вид заявки (Н1). «Поля нет» читается как «ремонт» — ровно так, как читает его старый код в
+       * окне выката, и так же стоит умолчанием колонки (`0177`). Строки номенклатуры и вид схема
+       * сверила между собой (`createServiceRequestSchema`): у расходников строки обязательны, у
+       * ремонта их не бывает.
+       */
+      const kind: ServiceRequestKind = body.kind ?? 'repair';
+      const consumables = body.consumables ?? [];
 
       const created = await db.transaction(async (tx) => {
-        await assertNoOpenRequest(tx, equipment.id);
+        await assertNoOpenRequest(tx, equipment.id, kind);
+        await assertConsumablesExist(
+          tx,
+          consumables.map((line) => line.consumableId),
+        );
         const claim = await resolveWarrantyClaim(tx, body.warrantyClaim, equipment, null);
+        /**
+         * Подразделение заявителя (Н11, M5): проставляет его **сервер** по учётке `created_by`, а
+         * не клиент — иначе заявку подавали бы от имени чужого отдела. Названия снимаются из
+         * справочника **в той же транзакции**, что и вставка: снимок обязан совпадать с тем, как
+         * подразделение называлось в момент заведения.
+         */
+        const requester = await resolveRequesterPlace(tx, p, body);
         const [row] = await tx
           .insert(serviceRequests)
           .values({
@@ -1488,19 +2246,24 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             // Место — часть того же снимка: сервис поедет по нему, а карточка к тому времени
             // могла переехать (Р57).
             equipmentLocation: equipment.location,
+            kind,
             description: body.description,
             responsibleName: body.responsibleName,
             responsiblePhone: body.responsiblePhone,
             isUrgent: body.isUrgent,
             urgencyReason: body.urgencyReason,
-            ...(autoApproved
-              ? {
-                  status: 'it_approved' as const,
-                  itApprovedBy: p.id,
-                  itApprovedAt: now,
-                  itApprovedAuto: true,
-                }
-              : {}),
+            // Подразделение заявителя — ссылка и снимок названия одной парой: заполненный
+            // идентификатор без названия означал бы снимок, который ничего не помнит (Н11).
+            requesterDepartmentId: requester.departmentId,
+            requesterDepartmentName: requester.departmentName,
+            requesterObjectId: requester.objectId,
+            requesterObjectName: requester.objectName,
+            /*
+             * Автовизы при заведении больше нет (Н3). Она существовала потому, что заявку,
+             * заведённую самим согласующим, незачем было подписывать вторым действием **на входе**;
+             * виза по смете — решение по чужому счёту, и автоматической быть не может. Заявка
+             * обладателя `approveIt` заводится «Новой» наравне с остальными.
+             */
             warrantyClaimSource: claim.source,
             warrantyClaimItemId: claim.itemId,
             comment: body.comment,
@@ -1509,18 +2272,28 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           })
           .returning({ id: serviceRequests.id, num: serviceRequests.num });
         const request = row!;
+        /**
+         * Строки номенклатуры приезжают **заведением**, а не отдельным `PUT` следом (контракт
+         * заведения): заявка на расходники без строк запрещена постановкой, и разложенное на два
+         * запроса заведение оставляло бы её в этом состоянии всякий раз, когда второй запрос не
+         * дошёл.
+         */
+        if (consumables.length > 0) {
+          await tx.insert(serviceRequestConsumables).values(
+            consumables.map((line) => ({
+              requestId: request.id,
+              consumableId: line.consumableId,
+              requestedQuantity: line.requestedQuantity,
+            })),
+          );
+        }
         const transition = await recordServiceStatusTransition(tx, {
           requestId: request.id,
           fromStatus: null,
-          // Автовиза видна в истории тем же переходом, что и заведение: заявка не была «Новой»
-          // ни секунды, и рисовать событие, которого не происходило, незачем.
-          toStatus: autoApproved ? 'it_approved' : 'new',
+          toStatus: 'new',
           estimateRevision: 0,
           actorId: p.id,
-          comment: autoApproved ? 'Заявку завёл согласующий от ИТ — виза проставлена сразу' : '',
-          // Письма у автовизы нет и не должно быть: адресат письма — тот же отдел, который заявку
-          // и завёл, а «вам заявка, которую вы только что подписали» — шум (Р66). Механика это
-          // делает сама: в «Новой» такая заявка не бывает.
+          comment: '',
           mail: mailPlan.plan,
         });
         if (body.fileIds.length > 0) {
@@ -1532,7 +2305,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             );
           await markFilesActive(tx, body.fileIds);
         }
-        return { ...request, mailFailed: transition.mailFailed };
+        return { ...request, mailFailed: transition.mailFailed, requester };
       });
 
       const dto = (await getDto(created.id))!;
@@ -1543,12 +2316,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityId: created.id,
         metadata: {
           num: created.num,
+          kind,
           title: serviceRequestTitle(dto),
           objectId: equipment.objectId,
           customerDepartmentId,
           warrantyClaim: dto.warrantyClaim?.source ?? null,
           isUrgent: dto.isUrgent,
-          itAutoApproved: autoApproved,
+          requesterDepartmentId: created.requester.departmentId,
+          requesterObjectId: created.requester.objectId,
         },
       });
       // Неудача сборки письма пишется в аудит только теперь: `writeAudit` ходит мимо транзакции, и
@@ -1626,6 +2401,106 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     // Отделов у автора нет вовсе (штаб, руководитель строительства, администратор): заявка
     // объектная. `NULL` здесь означает «к отделам не относится», а не «видна всем».
     return null;
+  }
+
+  /** Подразделение заявителя: пара «ссылка + снимок названия», заполненная максимум одна. */
+  interface RequesterPlace {
+    departmentId: string | null;
+    departmentName: string;
+    objectId: string | null;
+    objectName: string;
+  }
+
+  const NO_REQUESTER_PLACE: RequesterPlace = {
+    departmentId: null,
+    departmentName: '',
+    objectId: null,
+    objectName: '',
+  };
+
+  /**
+   * Откуда сам заявитель (Н11, В25). Источник один и он не обсуждается — привязки учётки
+   * `created_by`: её отдел, а если отделов у неё нет — её площадка. `responsible_name` остаётся
+   * тем, **кому звонить**, и на подразделение не влияет: иначе правка контакта задним числом
+   * переписывала бы, от какого отдела пришла заявка.
+   *
+   * Клиент присылает не подразделение, а **выбор из своих**: у учётки с двумя отделами одно
+   * значение не подставить, и тогда выбирает человек — ровно как с отделом-заказчиком. Чужое
+   * подразделение отбивается 422: «выбор» не означает «любое».
+   *
+   * Ни одной привязки — обе пары пустые, и это законное состояние (администратор портала), а не
+   * дефект. Ошибкой оно выглядело бы только у того, кто ждёт от карточки заполненного поля.
+   */
+  async function resolveRequesterPlace(
+    tx: Tx,
+    p: Principal,
+    body: { requesterDepartmentId?: string | null; requesterObjectId?: string | null },
+  ): Promise<RequesterPlace> {
+    const chosenDepartment = body.requesterDepartmentId ?? null;
+    const chosenObject = body.requesterObjectId ?? null;
+    if (chosenDepartment && chosenObject) {
+      throw err.unprocessable(
+        'Подразделение заявителя — либо отдел, либо площадка: пришло и то и другое',
+        { requesterObjectId: 'Выберите одно' },
+      );
+    }
+
+    const department = async (id: string): Promise<RequesterPlace> => {
+      const [row] = await tx
+        .select({ name: departments.name })
+        .from(departments)
+        .where(eq(departments.id, id));
+      if (!row) throw err.unprocessable('Отдел заявителя не найден', { requesterDepartmentId: 'Не найден' });
+      return { ...NO_REQUESTER_PLACE, departmentId: id, departmentName: row.name };
+    };
+    const object = async (id: string): Promise<RequesterPlace> => {
+      const [row] = await tx
+        .select({ name: constructionObjects.name })
+        .from(constructionObjects)
+        .where(eq(constructionObjects.id, id));
+      if (!row) throw err.unprocessable('Площадка заявителя не найдена', { requesterObjectId: 'Не найдена' });
+      return { ...NO_REQUESTER_PLACE, objectId: id, objectName: row.name };
+    };
+
+    if (chosenDepartment) {
+      if (!p.departmentIds.includes(chosenDepartment)) {
+        throw err.unprocessable('Заявитель не числится в этом отделе', {
+          requesterDepartmentId: 'Чужой отдел',
+        });
+      }
+      return department(chosenDepartment);
+    }
+    if (chosenObject) {
+      // Площадка — запасной ответ, а не второй равноправный (Н11): у учётки с отделом
+      // подразделением остаётся отдел, и выбор площадки в обход него означал бы заявку «от
+      // площадки» от человека, который в ней не числится.
+      if (p.departmentIds.length > 0) {
+        throw err.unprocessable(
+          'У заявителя есть отдел — подразделением заявки становится он, а не площадка',
+          { requesterObjectId: 'Укажите отдел' },
+        );
+      }
+      if (!p.constructionObjectIds.includes(chosenObject)) {
+        throw err.unprocessable('Заявитель не работает на этой площадке', {
+          requesterObjectId: 'Чужая площадка',
+        });
+      }
+      return object(chosenObject);
+    }
+
+    if (p.departmentIds.length === 1) return department(p.departmentIds[0]!);
+    if (p.departmentIds.length > 1) {
+      throw err.unprocessable('Укажите отдел, в котором числится заявитель', {
+        requesterDepartmentId: 'Выберите отдел',
+      });
+    }
+    if (p.constructionObjectIds.length === 1) return object(p.constructionObjectIds[0]!);
+    if (p.constructionObjectIds.length > 1) {
+      throw err.unprocessable('Укажите площадку, на которой работает заявитель', {
+        requesterObjectId: 'Выберите площадку',
+      });
+    }
+    return NO_REQUESTER_PLACE;
   }
 
   // ── Правка заявки ──
@@ -1742,7 +2617,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    */
   r.patch(
     '/:id/urgency',
-    { ...canUpdate, schema: { params: idParams, body: setServiceUrgencySchema } },
+    { ...canUrgency, schema: { params: idParams, body: setServiceUrgencySchema } },
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
@@ -1759,9 +2634,6 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         throw err.unprocessable('Отложенной заявке срочность не меняют — сначала возобновите её', {
           status: 'Заявка отложена',
         });
-      }
-      if (!can(p, 'serviceRequests.assign')) {
-        assertServiceRequestEditable(p, row.status, 'менять срочность');
       }
 
       const before = (await getDto(row.id))!;
@@ -1798,7 +2670,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
   r.delete('/:id', { ...canDelete, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
     const row = await requireEditable(p, req.params.id);
-    assertServiceRequestEditable(p, row.status, 'удалять');
+    // Своё правило, а не «то же, что правка» (В20): «Назначенную» ещё удаляют — работа по ней не
+    // начиналась, — а править её уже нельзя.
+    assertServiceRequestDeletable(p, row.status);
     const now = new Date();
     await db
       .update(serviceRequests)
@@ -1814,15 +2688,276 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     return { ok: true };
   });
 
-  // ── Назначение и переназначение исполнителя ──
+  // ── Назначение исполнителей (Н5, Н6) ──
   /**
-   * Переназначение — тот же статус, другой исполнитель: заявка не откатывается назад, но её
-   * возраст в статусе обнуляется (`touchStatusAt`), иначе новый сервис наследовал бы чужое
-   * ожидание. Вместе с исполнителем стирается его незавершённая смета и снимок согласования:
-   * ревизия прежнего сервиса к новому отношения не имеет.
+   * Исполнителей у заявки два слоя, и назначаются они **одним действием**: свои сотрудники
+   * поимённо, сервисная компания — контрагентом целиком (Н5). «Наш сисадмин + КопиЛайт» —
+   * обычный случай постановки, и разложенный на два запроса он давал бы промежуточное состояние,
+   * в котором заявка уже переназначена, но ещё наполовину.
    *
-   * Матрица `serviceResetOnTransition` эту дугу не покрывает и покрыть не может: она отвечает на
-   * вопрос «куда перешла заявка», а здесь заявка никуда не переходила — сменился исполнитель.
+   * Переназначение — тот же статус, другой исполнитель: заявка не откатывается назад, но её
+   * возраст в статусе обнуляется (`touchStatusAt`), иначе новый исполнитель наследовал бы чужое
+   * ожидание. Матрица `serviceResetOnTransition` эту дугу не покрывает и покрыть не может: она
+   * отвечает на вопрос «куда перешла заявка», а здесь заявка никуда не переходила.
+   *
+   * Порядок блокировок общий для назначения, отказа и смены статуса (Н5): сначала `FOR UPDATE`
+   * строки заявки, затем работа со строками исполнителей. Никогда наоборот — иначе назначение,
+   * идущее «от исполнителей», встречается со сменой статуса, идущей «от заявки».
+   */
+  r.put(
+    '/:id/executors',
+    { ...canAssign, schema: { params: idParams, body: putServiceExecutorsSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      assertSideAllowed(p, 'assigned', [
+        'new',
+        // legacy: снимается выпуском 2 — из «Согласована ИТ» доступно то же, что из «Новой».
+        'it_approved',
+        'assigned',
+        'diagnostics', // legacy: снимается выпуском 2 — то же, что из «В работе»
+        'in_work',
+      ]);
+      const row = await requireEditable(p, req.params.id);
+      assertTransition(p, row.status, 'assigned');
+
+      const userIds = [...new Set(body.userIds)];
+      if (userIds.length === 0 && !body.serviceCounterpartyId) {
+        throw err.unprocessable(
+          'Назначьте хотя бы одного исполнителя — сотрудника или сервисную компанию',
+          { userIds: 'Нужен исполнитель' },
+        );
+      }
+
+      const executors = await resolveNamedExecutors(userIds);
+      const service = body.serviceCounterpartyId
+        ? await resolveServiceCounterparty(body.serviceCounterpartyId)
+        : null;
+
+      /**
+       * Что именно меняется, считается **до** транзакции: от дельты зависят и адресаты письма, и
+       * обязательность причины. Состав, прочитанный здесь, к моменту записи не устареет: и
+       * назначение, и отказ поднимают версию самой заявки, а её сверяет `applyTransition` — 409
+       * придёт раньше, чем разъедется дельта.
+       */
+      const current = await db
+        .select({ userId: serviceRequestExecutors.userId })
+        .from(serviceRequestExecutors)
+        .where(eq(serviceRequestExecutors.requestId, row.id));
+      const had = new Set(current.map((r) => r.userId));
+      const keep = new Set(userIds);
+      const removed = [...had].filter((id) => !keep.has(id));
+      const added = userIds.filter((id) => !had.has(id));
+      const counterpartyId = service?.id ?? null;
+      const counterpartyChanged = row.serviceCounterpartyId !== counterpartyId;
+      const changed = removed.length > 0 || added.length > 0 || counterpartyChanged;
+      // «Назначена» и тот же состав — не назначение, а повтор нажатия. Из остальных статусов тот
+      // же состав означает возврат заявки к исполнителям, и он законен.
+      if (!changed && row.status === 'assigned') {
+        throw err.unprocessable('Эти исполнители уже назначены на заявку');
+      }
+      // Первое назначение причины не требует, переназначение требует: у прежнего исполнителя
+      // отбирают работу, и в истории обязано остаться, почему.
+      const first = row.status === 'new' || row.status === 'it_approved';
+      if (!first && !body.reason) {
+        throw err.unprocessable(
+          'Укажите причину переназначения — у прежнего исполнителя отбирают работу',
+          { reason: 'Укажите причину' },
+        );
+      }
+
+      /**
+       * Письмо о назначении (Н13) — задание на работу, и уходит оно **только тем, кого назначили
+       * этим действием**: поимённо — новым строкам, компании — только если сменилась она сама.
+       * Иначе при каждом переназначении сервиса свои сисадмины, давно ведущие заявку, получали бы
+       * повторное «вам назначено» и перестали бы читать эти письма вовсе.
+       *
+       * Обратный адрес — автор заявки: вопрос исполнителя про поломку адресован ему, а не
+       * назначившему. Считается до транзакции (Р67): адресаты ходят в базу и в конфигурацию, и
+       * упавшие внутри откатили бы саму заявку.
+       */
+      const mailPlan = await planServiceAssignmentMail(
+        { userIds: added, serviceCounterpartyId: counterpartyChanged ? counterpartyId : null },
+        { actor: p, authorId: row.createdBy },
+      );
+
+      /**
+       * Смета — документ того, кто её составлял, и держится она **только** пока заявка у него.
+       * Стирается поэтому не на всякой правке состава, а когда заявка меняет руки: у прежнего
+       * подрядчика её забрали либо сняли поимённого исполнителя. Добавление второго сисадмина к
+       * первому чужого счёта не обесценивает и смету не трогает.
+       */
+      const handedOver =
+        removed.length > 0 || (row.serviceCounterpartyId !== null && counterpartyChanged);
+
+      const mailFailed = await db.transaction(async (tx) => {
+        const locked = await lockRequest(tx, row.id);
+
+        /**
+         * Строки исполнителей пишутся **до** `applyTransition`: письмо собирается внутри той же
+         * транзакции и читает исполнителей из таблицы. Вставь мы их после — задание ушло бы без
+         * половины адресатов либо вовсе без них.
+         *
+         * Отложенный `service_requests_executor_present` этому не мешает: он проверяет состояние к
+         * концу транзакции, каким бы ни был порядок шагов внутри.
+         */
+        if (removed.length > 0) {
+          await tx
+            .delete(serviceRequestExecutors)
+            .where(
+              and(
+                eq(serviceRequestExecutors.requestId, locked.id),
+                inArray(serviceRequestExecutors.userId, removed),
+              ),
+            );
+        }
+        if (added.length > 0) {
+          await tx.insert(serviceRequestExecutors).values(
+            added.map((userId) => ({
+              requestId: locked.id,
+              userId,
+              assignedBy: p.id,
+            })),
+          );
+        }
+
+        const patch: RequestPatch = { serviceCounterpartyId: counterpartyId };
+        if (handedOver && !first) {
+          await assertEstimateReplaceable(tx, locked.id);
+          await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, locked.id));
+          patch.estimateRevision = 0;
+          patch.estimateSubmittedAt = null;
+          patch.estimatedTotalAmount = null;
+          patch.approvedEstimateRevision = null;
+          patch.estimateApprovedBy = null;
+          patch.estimateApprovedAt = null;
+        }
+
+        const transition = await applyTransition(tx, {
+          row: locked,
+          to: 'assigned',
+          version: body.version,
+          actor: p,
+          comment: body.reason ?? body.comment,
+          patch,
+          touchStatusAt: true,
+          mail: mailPlan.plan,
+        });
+        return transition.mailFailed;
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: first ? 'serviceRequest.assign' : 'serviceRequest.reassign',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        metadata: {
+          serviceCounterpartyId: counterpartyId,
+          serviceName: service?.name ?? '',
+          // Поимённо — именами, а не идентификаторами: журнал читают люди, и «сняли исполнителя
+          // 8f3c…» ничего им не говорит.
+          executors: executors.map((e) => e.fullName),
+          added: added.length,
+          removed: removed.length,
+          reason: body.reason ?? '',
+        },
+      });
+      // Неудача сборки письма пишется в аудит только теперь: `writeAudit` ходит мимо транзакции, и
+      // запись, сделанная внутри, пережила бы её откат (Р67).
+      if (mailFailed) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'serviceRequest.mailFailed',
+          entityType: 'serviceRequest',
+          entityId: row.id,
+          metadata: { event: 'service_request_assigned' },
+        });
+      }
+      return {
+        request: (await getDto(row.id))!,
+        mail: mailFailed ? 'mail_failed' : mailPlan.outcome,
+      };
+    },
+  );
+
+  /**
+   * Контрагент-исполнитель: активная сервисная компания и никто больше. Разбор общий у новой ручки
+   * и у совместимого адаптера — двух ответов на «годится ли этот контрагент» быть не должно.
+   */
+  async function resolveServiceCounterparty(id: string) {
+    const [service] = await db
+      .select({
+        id: counterparties.id,
+        name: counterparties.name,
+        type: counterparties.type,
+        isActive: counterparties.isActive,
+        deletedAt: counterparties.deletedAt,
+      })
+      .from(counterparties)
+      .where(eq(counterparties.id, id));
+    if (!service || service.deletedAt) throw err.badRequest('Контрагент не найден');
+    if (service.type !== 'service') {
+      throw err.badRequest('Исполнителем может быть только контрагент типа «Сервисная компания»', {
+        serviceCounterpartyId: 'Нужна сервисная компания',
+      });
+    }
+    if (!service.isActive) throw err.badRequest('Контрагент неактивен');
+    return service;
+  }
+
+  /**
+   * Кого можно назначить поимённо — учётку с правом `serviceRequests.execute`, и только её
+   * (план §7.1). Назначение само открывает статусные ходы: без этой проверки администратор мог бы
+   * назначить исполнителем заказчика и тем выдать ему ходы, которых нет ни в одном наборе.
+   *
+   * Отказ называет **человека**, а не право: назначающий видит список фамилий, и «у учётки нет
+   * полномочия» без имени не подскажет, кого из пятерых убрать.
+   *
+   * Права считаются полной сборкой субъекта (`loadPrincipal`) — той же, что отвечает на каждом
+   * запросе: право приходит четырьмя источниками (роль, тип контрагента, надстройка, набор), и
+   * собрать их вторым способом значило бы завести вторую матрицу доступа. Запрос на учётку — цена
+   * назначения, а не списка: назначают редко и не больше двух десятков разом.
+   */
+  async function resolveNamedExecutors(userIds: string[]) {
+    if (userIds.length === 0) return [];
+    const rows = await db
+      .select({ id: users.id, fullName: users.fullName })
+      .from(users)
+      .where(inArray(users.id, userIds));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const resolved: { id: string; fullName: string }[] = [];
+    for (const id of userIds) {
+      const row = byId.get(id);
+      if (!row) throw err.badRequest('Учётная запись не найдена', { userIds: 'Не найдена' });
+      const subject = await loadPrincipal(id);
+      if (!subject) {
+        throw err.unprocessable(
+          `${row.fullName} — учётка закрыта или неактивна, назначить её нельзя`,
+          { userIds: 'Учётка неактивна' },
+        );
+      }
+      if (!can(subject, 'serviceRequests.execute')) {
+        throw err.unprocessable(
+          `${row.fullName} не может быть исполнителем заявки оргтехники — у учётки нет такого полномочия`,
+          { userIds: 'Нет полномочия исполнителя' },
+        );
+      }
+      resolved.push(row);
+    }
+    return resolved;
+  }
+
+  // ── Назначение контрагента: совместимый адаптер выпуска 1 ──
+  /**
+   * Прежняя ручка назначения. Остаётся на весь выпуск 1 и удаляется в выпуске 2 (план §7.3), и
+   * причина не в старом коде сервера, а в старом коде **браузера**: вкладка, открытая до выката,
+   * живёт с загруженным JS и зовёт прежний адрес — удали мы ручку сразу, назначение отвечало бы
+   * 404 всем, кто не перезагрузил страницу.
+   *
+   * Адаптер меняет **только контрагента** и не трогает строк поимённых исполнителей: у старой
+   * ручки ровно такая семантика, и трактовать её как «назначить компанию и пустой список людей»
+   * нельзя — заявка «свой сисадмин + КопиЛайт», переназначенная из вчерашней вкладки, молча
+   * лишилась бы своего сотрудника.
    */
   r.patch(
     '/:id/service',
@@ -1830,11 +2965,18 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      assertSideAllowed(p, 'assigned', ['it_approved', 'assigned', 'diagnostics']);
+      assertSideAllowed(p, 'assigned', [
+        'new',
+        'it_approved', // legacy: снимается выпуском 2
+        'assigned',
+        'diagnostics', // legacy: снимается выпуском 2
+        'in_work',
+      ]);
       const row = await requireEditable(p, req.params.id);
       assertTransition(p, row.status, 'assigned');
 
-      const reassignment = row.status !== 'it_approved';
+      const first = row.status === 'new' || row.status === 'it_approved';
+      const reassignment = !first;
       if (reassignment && !body.reason) {
         throw err.unprocessable(
           'Укажите причину переназначения — у прежнего сервиса отбирают работу',
@@ -1847,31 +2989,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         throw err.unprocessable('Заявка уже назначена этому сервису');
       }
 
-      const [service] = await db
-        .select({
-          id: counterparties.id,
-          name: counterparties.name,
-          type: counterparties.type,
-          isActive: counterparties.isActive,
-          deletedAt: counterparties.deletedAt,
-        })
-        .from(counterparties)
-        .where(eq(counterparties.id, body.serviceCounterpartyId));
-      if (!service || service.deletedAt) throw err.badRequest('Контрагент не найден');
-      if (service.type !== 'service') {
-        throw err.badRequest(
-          'Исполнителем может быть только контрагент типа «Сервисная компания»',
-          {
-            serviceCounterpartyId: 'Нужна сервисная компания',
-          },
-        );
-      }
-      if (!service.isActive) throw err.badRequest('Контрагент неактивен');
+      const service = await resolveServiceCounterparty(body.serviceCounterpartyId);
 
       const executorChanged = row.serviceCounterpartyId !== service.id;
       await db.transaction(async (tx) => {
         const patch: RequestPatch = { serviceCounterpartyId: service.id };
-        if (executorChanged && row.status !== 'it_approved') {
+        if (executorChanged && !first) {
           // Смета прежнего исполнителя вместе с ревизией и снимком предъявления (§5.4).
           await assertEstimateReplaceable(tx, row.id);
           await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, row.id));
@@ -1902,18 +3025,27 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           serviceCounterpartyId: service.id,
           serviceName: service.name,
           reason: body.reason ?? '',
+          legacyAdapter: true,
         },
       });
       return (await getDto(row.id))!;
     },
   );
 
-  // ── Виза отдела ИТ ──
+  // ── Виза отдела ИТ по смете (Н3) ──
   /**
-   * Одна ручка на «да» и «нет» (Р51): у решения одно право, одна область и один момент — тот же
-   * приём, что у согласования сметы. Отказ закрывает заявку с причиной (Р53): своего терминального
-   * статуса у него нет, «закрыта без результата» у модуля уже есть, и второе имя для того же
-   * состояния делило бы отчёты пополам.
+   * Решение переехало со входа на смету: «чинить за эти деньги или менять аппарат». Одна ручка на
+   * оба исхода — право одно (`serviceRequests.approveIt`), область одна и момент решения один, тот
+   * же приём, что у согласования сметы.
+   *
+   * Первый исход **статуса не меняет**: он подписывает текущую ревизию сметы, и заявка остаётся в
+   * «Смете на согласовании» — дальше её двигает согласование суммы. Поэтому коридора у него нет и
+   * `assertSideAllowed` спрашивается только у второго.
+   *
+   * Второй закрывает заявку отменой с пометкой «рекомендована замена» (В21): своего терминального
+   * статуса у него нет, «закрыта без результата» у модуля уже есть (Р53), а второе имя для того же
+   * состояния делило бы отчёты пополам. Причина обязательна — из пометки собирается список «что
+   * пора менять», и «ИТ отказал» без объяснения заказчик прочитает как молчание.
    */
   r.patch(
     '/:id/it-approval',
@@ -1921,86 +3053,240 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      const to: ServiceRequestStatus = body.approved ? 'it_approved' : 'cancelled';
-      assertSideAllowed(p, to, ['new']);
+      if (!body.approved) assertSideAllowed(p, 'cancelled', ['estimate_review']);
       const row = await requireEditable(p, req.params.id);
-      assertTransition(p, row.status, to);
+      // Визируют **смету**, а не заявку: до предъявления согласовывать нечего — предмет решения
+      // (счёт инженера) появляется позже.
+      if (row.status !== 'estimate_review') {
+        throw err.unprocessable(
+          `Визу ИТ ставят на предъявленную смету, а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
+          { status: 'Смета не предъявлена' },
+        );
+      }
+      if (!body.approved) assertTransition(p, row.status, 'cancelled');
 
-      const now = new Date();
-      await db.transaction(async (tx) => {
-        await applyTransition(tx, {
-          row,
-          to,
-          version: body.version,
-          actor: p,
-          comment: body.reason,
-          // Отказ визы снимать нечего: подписи ещё не было. Согласие пишет снимок решения —
-          // «кто и когда», как виза заказа ТС (ADR 0025).
-          patch: body.approved
-            ? { itApprovedBy: p.id, itApprovedAt: now, itApprovedAuto: false }
-            : {},
+      if (body.approved) {
+        // Порядок подписей жёсткий: сперва ИТ, потом деньги. Второй раз подписывать ту же ревизию
+        // нечего — согласие уже стоит, и повтор лишь переписал бы дату решения.
+        if (hasCurrentItApproval(waitingRowOf(row))) {
+          throw err.unprocessable(
+            `Виза ИТ на ревизию сметы ${row.estimateRevision} уже стоит — дальше решают по сумме`,
+            { approved: 'Виза уже стоит' },
+          );
+        }
+        const now = new Date();
+        await db.transaction(async (tx) => {
+          const locked = await lockRequest(tx, row.id);
+          const [updated] = await tx
+            .update(serviceRequests)
+            .set({
+              itApprovedBy: p.id,
+              itApprovedAt: now,
+              // Ревизия — то, **что именно** подписано (Н3): следующее предъявление поднимет её и
+              // обесценит подпись, не стирая её. `NULL` осталась бы «входной визой старого
+              // образца», то есть визой сметы не считалась бы вовсе.
+              itApprovedEstimateRevision: locked.estimateRevision,
+              // Автовизы больше нет ни при заведении, ни здесь: виза по смете — решение по чужому
+              // счёту, и автоматической быть не может.
+              itApprovedAuto: false,
+              updatedBy: p.id,
+              updatedAt: now,
+              version: locked.version + 1,
+            })
+            .where(
+              and(eq(serviceRequests.id, locked.id), eq(serviceRequests.version, body.version)),
+            )
+            .returning({ id: serviceRequests.id });
+          if (!updated) throw err.conflict();
+          // Строка истории у визы своя, хотя статус не меняется: «кто и когда подписал ревизию» —
+          // событие цикла, и без неё лента показывала бы прыжок из «Сметы» в «В работе» без
+          // объяснения, кто по дороге сказал «чинить».
+          await recordServiceStatusTransition(tx, {
+            requestId: locked.id,
+            fromStatus: locked.status,
+            toStatus: locked.status,
+            estimateRevision: locked.estimateRevision,
+            actorId: p.id,
+            comment: body.reason ?? '',
+          });
         });
-      });
+      } else {
+        await db.transaction(async (tx) => {
+          await applyTransition(tx, {
+            row,
+            to: 'cancelled',
+            version: body.version,
+            actor: p,
+            comment: body.reason,
+            // Пометка живёт только у отменённой заявки (M5) и объясняет, почему её закрыли без
+            // ремонта. Возврат в «Новую» снимает её матрицей сброса.
+            patch: { replacementRecommended: true },
+          });
+        });
+      }
 
       await writeAudit({
         actorUserId: p.id,
         action: body.approved ? 'serviceRequest.it_approve' : 'serviceRequest.it_reject',
         entityType: 'serviceRequest',
         entityId: row.id,
-        metadata: { reason: body.reason ?? '' },
+        metadata: {
+          revision: row.estimateRevision,
+          reason: body.reason ?? '',
+          ...(body.approved ? {} : { replacementRecommended: true }),
+        },
       });
       return (await getDto(row.id))!;
     },
   );
 
-  // ── Отказ исполнителя ──
+  // ── Отказ исполнителя (Н5, §4.2) ──
+  /**
+   * Отказ снимает **отказавшегося**, а не заявку с распределения, и слоя у него два, с разными
+   * правилами — потому что назначаются они по-разному:
+   *
+   * - **свой сотрудник** снимает свою строку: остальные назначенные продолжают вести заявку;
+   * - **оператор сервисной компании** снимает **всю компанию** — назначена была она, а не человек,
+   *   поимённых строк у её сотрудников нет вовсе, и «часть подрядчика» отказаться не может.
+   *
+   * Заявка возвращается в «Новую», только если не осталось **ни строк, ни контрагента**. Осталось
+   * хоть что-то — статус не меняется, и в истории остаётся строка о том, кто ушёл: пара переходов
+   * без неё не объяснила бы, почему исполнителей стало меньше.
+   *
+   * Возврат идёт в «Новую», а не к визе ИТ (Н3): визы на входе больше нет.
+   */
   r.patch(
     '/:id/decline',
-    { ...canChangeStatus, schema: { params: idParams, body: declineServiceRequestSchema } },
+    { ...canExecutorStatus, schema: { params: idParams, body: declineServiceRequestSchema } },
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      // Отказ возвращает заявку оператору, а не в «Новую» (Р51): виза ИТ уже дана, и решение
-      // «внешний ремонт нужен» отказом подрядчика не отменяется — менять надо исполнителя.
-      assertSideAllowed(p, 'it_approved', ['assigned']);
+      assertSideAllowed(p, 'new', ['assigned']);
       const row = await requireEditable(p, req.params.id);
-      assertTransition(p, row.status, 'it_approved');
-      await db.transaction(async (tx) => {
-        // Исполнителя снимает матрица возвратов: заявка снова ничья, но виза ИТ при ней остаётся.
-        await applyTransition(tx, {
-          row,
-          to: 'it_approved',
-          version: body.version,
-          actor: p,
+      const assignment = await executorAssignment(p, row);
+      assertTransition(p, row.status, 'new', assignment);
+
+      const outcome = await db.transaction(async (tx) => {
+        // Порядок блокировок тот же, что у назначения (Н5): сперва заявка, потом её исполнители.
+        const locked = await lockRequest(tx, row.id);
+        const named = await tx
+          .select({ userId: serviceRequestExecutors.userId })
+          .from(serviceRequestExecutors)
+          .where(eq(serviceRequestExecutors.requestId, locked.id));
+
+        /**
+         * Каким слоем субъект держит заявку — решает та же функция контрактов, что открывает ему
+         * ход исполнителя (`isServiceExecutor`): двух ответов на «исполнитель ли он и по какому
+         * основанию» в модуле быть не должно. Признаки подаются по одному, порознь, — именно
+         * потому, что снимается **тот слой, которым отказавшийся и был назначен**.
+         */
+        const ownRow = isServiceExecutor(p, {
+          actsForAssignedCounterparty: false,
+          isNamedExecutor: named.some((row) => row.userId === p.id),
+        });
+        const wholeCounterparty =
+          !ownRow &&
+          isServiceExecutor(p, {
+            actsForAssignedCounterparty:
+              locked.serviceCounterpartyId !== null &&
+              locked.serviceCounterpartyId === p.counterpartyId,
+            isNamedExecutor: false,
+          });
+
+        let restNamed = named;
+        let restCounterparty = locked.serviceCounterpartyId;
+        if (ownRow) restNamed = named.filter((row) => row.userId !== p.id);
+        else if (wholeCounterparty) restCounterparty = null;
+        else {
+          // Ни строкой, ни компанией субъект в заявке не значится — сюда доходит только тот, кому
+          // коридор открыт правом сметы, то есть администратор, доводящий чужую заявку. Отказ за
+          // всех: выбирать, чью именно строку снять, ему не по чему.
+          restNamed = [];
+          restCounterparty = null;
+        }
+
+        if (restNamed.length === 0 && restCounterparty === null) {
+          // Оба слоя снимает матрица возвратов (`reset.executor`): и контрагента, и строки.
+          await applyTransition(tx, {
+            row: locked,
+            to: 'new',
+            version: body.version,
+            actor: p,
+            comment: body.reason,
+          });
+          return { returned: true, wholeCounterparty, ownRow };
+        }
+
+        if (ownRow) {
+          await tx
+            .delete(serviceRequestExecutors)
+            .where(
+              and(
+                eq(serviceRequestExecutors.requestId, locked.id),
+                eq(serviceRequestExecutors.userId, p.id),
+              ),
+            );
+        }
+        const [updated] = await tx
+          .update(serviceRequests)
+          .set({
+            serviceCounterpartyId: restCounterparty,
+            updatedBy: p.id,
+            updatedAt: new Date(),
+            version: locked.version + 1,
+          })
+          .where(and(eq(serviceRequests.id, locked.id), eq(serviceRequests.version, body.version)))
+          .returning({ id: serviceRequests.id });
+        if (!updated) throw err.conflict();
+        // Статус тот же — строка истории всё равно пишется: иначе «исполнителей стало меньше»
+        // осталось бы событием без следа, а спорят с подрядчиком именно по нему.
+        await recordServiceStatusTransition(tx, {
+          requestId: locked.id,
+          fromStatus: locked.status,
+          toStatus: locked.status,
+          estimateRevision: locked.estimateRevision,
+          actorId: p.id,
           comment: body.reason,
         });
+        return { returned: false, wholeCounterparty, ownRow };
       });
+
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.decline',
         entityType: 'serviceRequest',
         entityId: row.id,
-        metadata: { reason: body.reason, serviceCounterpartyId: row.serviceCounterpartyId },
+        metadata: {
+          reason: body.reason,
+          serviceCounterpartyId: row.serviceCounterpartyId,
+          // Что именно сняли и осталась ли заявка у кого-то: по одной причине этого не восстановить.
+          scope: outcome.ownRow ? 'self' : outcome.wholeCounterparty ? 'counterparty' : 'all',
+          returnedToNew: outcome.returned,
+        },
       });
       return (await getDto(row.id))!;
     },
   );
 
-  // ── Взятие в диагностику ──
+  // ── Принятие заявки в работу ──
   // Своего события в аудите у перехода нет: содержания сверх самого перехода в нём тоже нет, и
   // строка аудита повторила бы строку истории статусов слово в слово.
+  //
+  // Отдельного статуса «Диагностика» больше нет (Н2): взявшийся за заявку стоит в «В работе» и
+  // оттуда же предъявляет смету.
   r.patch(
     '/:id/start',
-    { ...canChangeStatus, schema: { params: idParams, body: startServiceRequestSchema } },
+    { ...canExecutorStatus, schema: { params: idParams, body: startServiceRequestSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      assertSideAllowed(p, 'diagnostics', ['assigned']);
+      assertSideAllowed(p, 'in_work', ['assigned']);
       const row = await requireEditable(p, req.params.id);
-      assertTransition(p, row.status, 'diagnostics');
+      const assignment = await executorAssignment(p, row);
+      assertTransition(p, row.status, 'in_work', assignment);
       await db.transaction(async (tx) => {
         await applyTransition(tx, {
           row,
-          to: 'diagnostics',
+          to: 'in_work',
           version: req.body.version,
           actor: p,
         });
@@ -2026,10 +3312,11 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    */
   r.patch(
     '/:id/hold',
-    { ...canChangeStatus, schema: { params: idParams, body: serviceHoldSchema } },
+    { ...canHold, schema: { params: idParams, body: serviceHoldSchema } },
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
+      assertCanHold(p, 'откладывает заявку');
       assertSideAllowed(p, 'on_hold');
       const row = await requireEditable(p, req.params.id);
       assertTransition(p, row.status, 'on_hold');
@@ -2070,7 +3357,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    */
   r.patch(
     '/:id/resume',
-    { ...canChangeStatus, schema: { params: idParams, body: serviceResumeSchema } },
+    { ...canHold, schema: { params: idParams, body: serviceResumeSchema } },
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
@@ -2112,9 +3399,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
   // ── Состав сметы ──
   /**
    * Смета передаётся целиком: это документ, и «добавить строку» без остальных строк не имеет
-   * смысла. Правится она только в «Диагностике» — предъявленная заперта (Р14).
+   * смысла. Правится она в «В работе» — предъявленная заперта (Р14), и отдельного статуса
+   * «Диагностика» под неё больше нет (Н2).
    *
-   * 409, а не 422: смету запер не сам заказчик, а чужое действие — её предъявление, — и человеку
+   * **Согласованная ревизия не правится.** Иначе состав менялся бы под уже поставленными
+   * подписями: и виза ИТ, и согласие по сумме относятся к номеру ревизии, а не к строкам, и правка
+   * без подъёма номера оставила бы обе подписи стоять под цифрами, которых никто не видел. Снять
+   * согласование и открыть смету обратно — своё действие (`/estimate/reopen`).
+   *
+   * 409, а не 422: смету запер не сам исполнитель, а чужое действие — согласование, — и человеку
    * нужно обновить окно, а не исправить данные.
    */
   r.put(
@@ -2124,9 +3417,16 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const body = req.body;
       const row = await requireEditable(p, req.params.id);
-      if (row.status !== 'diagnostics') {
+      await assertExecutorSide(p, row, 'ведёт смету этой заявки');
+      // legacy: `diagnostics` снимается выпуском 2 — из неё доступно то же, что из «В работе».
+      if (row.status !== 'in_work' && row.status !== 'diagnostics') {
         throw err.conflict(
-          `Смета правится только в статусе «${serviceRequestStatusLabels.diagnostics}»`,
+          `Смета правится только в статусе «${serviceRequestStatusLabels.in_work}»`,
+        );
+      }
+      if (row.estimateRevision > 0 && row.approvedEstimateRevision === row.estimateRevision) {
+        throw err.conflict(
+          `Ревизия сметы ${row.estimateRevision} согласована — верните смету в правку, прежде чем менять состав`,
         );
       }
       const before = (await getDto(row.id))!;
@@ -2177,9 +3477,11 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      assertSideAllowed(p, 'estimate_review', ['diagnostics']);
+      // Смета предъявляется из «В работе» (Н2); `diagnostics` — legacy: снимается выпуском 2.
+      assertSideAllowed(p, 'estimate_review', ['in_work', 'diagnostics']);
       const row = await requireEditable(p, req.params.id);
-      assertTransition(p, row.status, 'estimate_review');
+      const assignment = await executorAssignment(p, row);
+      assertTransition(p, row.status, 'estimate_review', assignment);
       // Гарантийный ремонт — не пустая смета, а осознанное «чиним по гарантии, денег нет», и без
       // названного источника гарантии он ничем не подтверждён (Р27).
       if (body.warrantyRepair && !row.warrantyClaimSource) {
@@ -2239,8 +3541,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
   /**
    * Одна ручка на «да» и «нет»: у них одно право, одна область и один момент. Согласие пишет
    * снимок из трёх полей — кто, когда и какую ревизию, — потому что по отдельности ни одно из них
-   * не отвечает на вопрос «что именно согласовали». Отказ требует причины и стирает снимок
-   * (матрица §5.4): заявка возвращается в диагностику к тому же исполнителю.
+   * не отвечает на вопрос «что именно согласовали». Причину отказа требует тело ручки.
+   *
+   * Оба исхода ведут в **один статус** — «В работе» (Н2): «Диагностики», куда возвращалась
+   * отклонённая смета, больше нет, и различает исходы не пара «откуда → куда», а само тело. Стирать
+   * при отказе нечего: обе подписи обесценивает подъём ревизии на следующем предъявлении (Н3).
+   *
+   * **Порядок подписей жёсткий: сперва ИТ, потом деньги** (Н3). Иначе «Ведение» согласовывало бы
+   * сумму ремонта, который через минуту признают ненужным. Проверяет порядок сервер, а не скрытая
+   * кнопка портала.
    */
   r.patch(
     '/:id/estimate/approval',
@@ -2248,13 +3557,19 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      const to: ServiceRequestStatus = body.approved ? 'in_work' : 'diagnostics';
+      const to: ServiceRequestStatus = 'in_work';
       assertSideAllowed(p, to, ['estimate_review']);
       const row = await requireEditable(p, req.params.id);
       assertTransition(p, row.status, to);
       if (row.status !== 'estimate_review') {
         throw err.unprocessable(
           `Согласуют смету, предъявленную на согласование, а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
+        );
+      }
+      if (body.approved && !hasCurrentItApproval(waitingRowOf(row))) {
+        throw err.unprocessable(
+          'Сумму согласуют после визы ИТ по этой ревизии сметы — сперва отдел ИТ решает, чинить или менять аппарат',
+          { approved: 'Нет визы ИТ' },
         );
       }
 
@@ -2288,24 +3603,65 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     },
   );
 
-  // ── Переоткрытие сметы ──
-  // Единственный путь изменить согласованную смету (Р14): дуги `in_work → estimate_review` нет
-  // намеренно, и второй путь назад сделал бы этот инвариант необязательным.
+  // ── Возврат сметы в правку ──
+  /**
+   * Единственный путь изменить **согласованную** смету (Р14). Статуса заявка при этом не меняет:
+   * «Диагностики», куда она откатывалась прежде, больше нет (Н2), а второй дуги `in_work →
+   * estimate_review` заводить нельзя — она сделала бы необязательным подъём ревизии, на котором
+   * держится обесценивание обеих подписей (Н3).
+   *
+   * Поэтому ручка делает ровно одно: **снимает снимок согласования**. Дальше исполнитель правит
+   * состав обычной ручкой сметы и предъявляет её заново — с ревизией +1, как любое предъявление.
+   * Снимок согласования и есть то, что запирает правку: подпись под цифрами, которых уже нет, была
+   * бы согласием, которого никто не давал.
+   *
+   * Визу ИТ ручка не трогает: обесценит её тот же подъём ревизии. Стереть её здесь значило бы
+   * завести второе правило рядом с ревизионным — и разойтись с ним на первой же правке.
+   */
   r.patch(
     '/:id/estimate/reopen',
     { ...canEstimate, schema: { params: idParams, body: reopenServiceEstimateSchema } },
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      assertSideAllowed(p, 'diagnostics', ['in_work']);
       const row = await requireEditable(p, req.params.id);
-      assertTransition(p, row.status, 'diagnostics');
+      await assertExecutorSide(p, row, 'возвращает смету в правку');
+      // legacy: `diagnostics` снимается выпуском 2 — из неё доступно то же, что из «В работе».
+      if (row.status !== 'in_work' && row.status !== 'diagnostics') {
+        throw err.unprocessable(
+          `Смету возвращают в правку из «${serviceRequestStatusLabels.in_work}», а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
+          { status: 'Другой статус' },
+        );
+      }
+      if (row.approvedEstimateRevision === null) {
+        throw err.unprocessable(
+          'Согласования у этой сметы нет — снимать нечего, правьте состав и предъявляйте её заново',
+          { status: 'Смета не согласована' },
+        );
+      }
       await db.transaction(async (tx) => {
-        await applyTransition(tx, {
-          row,
-          to: 'diagnostics',
-          version: body.version,
-          actor: p,
+        const locked = await lockRequest(tx, row.id);
+        const [updated] = await tx
+          .update(serviceRequests)
+          .set({
+            approvedEstimateRevision: null,
+            estimateApprovedBy: null,
+            estimateApprovedAt: null,
+            updatedBy: p.id,
+            updatedAt: new Date(),
+            version: locked.version + 1,
+          })
+          .where(and(eq(serviceRequests.id, locked.id), eq(serviceRequests.version, body.version)))
+          .returning({ id: serviceRequests.id });
+        if (!updated) throw err.conflict();
+        // Статус тот же, событие своё: «согласование снято» обязано быть видно в ленте — иначе
+        // между двумя согласованиями одной заявки не понять, что произошло.
+        await recordServiceStatusTransition(tx, {
+          requestId: locked.id,
+          fromStatus: locked.status,
+          toStatus: locked.status,
+          estimateRevision: locked.estimateRevision,
+          actorId: p.id,
           comment: body.reason,
         });
       });
@@ -2315,6 +3671,167 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityType: 'serviceRequest',
         entityId: row.id,
         metadata: { revision: row.estimateRevision, reason: body.reason },
+      });
+      return (await getDto(row.id))!;
+    },
+  );
+
+  // ── Строки заявки на расходники ──
+  /**
+   * Состав передаётся целиком, как и смета: это список того, что просят, и «добавить одну позицию»
+   * без остальных заставляло бы сервер угадывать, снимали ли что-то.
+   *
+   * Право — `serviceRequests.update` (план §7.3): состав заявки на расходники это её **предмет**,
+   * ровно как описание неисправности у ремонта, и правит его тот же субъект по тому же правилу
+   * («заказчик — пока заявку никому не отдали»).
+   *
+   * ПОКА ВЫДАЧИ НЕ БЫЛО. Строку, за которой числится движение склада, не удаляет ни маршрут, ни
+   * каскад (`ON DELETE RESTRICT` составного ключа журнала), и замена состава упёрлась бы в неё
+   * `23503`. Но дело не в коде ошибки: заявка, по которой уже что-то выдали, — это не список
+   * пожеланий, а основание записи на складе, и менять его задним числом нельзя.
+   */
+  r.put(
+    '/:id/consumables',
+    { ...canUpdate, schema: { params: idParams, body: putServiceConsumablesSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      const row = await requireEditable(p, req.params.id);
+      if (row.kind !== 'consumable') {
+        throw err.unprocessable('Строки номенклатуры бывают только у заявки на расходники', {
+          items: 'Не тот вид заявки',
+        });
+      }
+      // Действие — глаголом: отказ складывается в «… может править заявку только до назначения
+      // сервиса», и «править состав» дало бы «править состав заявку».
+      assertServiceRequestEditable(p, row.status, 'править');
+      if (isServiceRequestClosed(row.status)) {
+        throw err.unprocessable(
+          `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» не правится`,
+        );
+      }
+      // Отложенную не правит и администратор (Р110) — то же правило, что у прочей правки заявки.
+      if (row.status === 'on_hold') {
+        throw err.unprocessable('Отложенную заявку не правят — сначала возобновите её', {
+          status: 'Заявка отложена',
+        });
+      }
+      const before = (await getDto(row.id))!;
+
+      await db.transaction(async (tx) => {
+        const locked = await lockRequest(tx, row.id);
+        const lines = await consumableLinesOf(tx, locked.id);
+        if (lines.some((line) => line.issuedQuantity !== null)) {
+          throw err.conflict(
+            'По заявке уже отмечена выдача — состав больше не меняют, правьте выданное количество',
+          );
+        }
+        await assertConsumablesExist(
+          tx,
+          body.items.map((line) => line.consumableId),
+        );
+        await tx
+          .delete(serviceRequestConsumables)
+          .where(eq(serviceRequestConsumables.requestId, locked.id));
+        await tx.insert(serviceRequestConsumables).values(
+          body.items.map((line) => ({
+            requestId: locked.id,
+            consumableId: line.consumableId,
+            requestedQuantity: line.requestedQuantity,
+          })),
+        );
+        // Правка состава возраст ожидания не сбрасывает: заявка всё это время ждёт того же.
+        const [updated] = await tx
+          .update(serviceRequests)
+          .set({ updatedBy: p.id, updatedAt: new Date(), version: locked.version + 1 })
+          .where(and(eq(serviceRequests.id, locked.id), eq(serviceRequests.version, body.version)))
+          .returning({ id: serviceRequests.id });
+        if (!updated) throw err.conflict();
+      });
+
+      const after = (await getDto(row.id))!;
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'serviceRequest.consumables_update',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        // Состав, а не «строки трогали»: спорят о том, что именно просили и в каком количестве.
+        metadata: {
+          before: before.consumables.map((line) => ({
+            code: line.code,
+            name: line.name,
+            requestedQuantity: line.requestedQuantity,
+          })),
+          after: after.consumables.map((line) => ({
+            code: line.code,
+            name: line.name,
+            requestedQuantity: line.requestedQuantity,
+          })),
+        },
+      });
+      return after;
+    },
+  );
+
+  // ── Правка факта выдачи (Р6) ──
+  /**
+   * Склад двигает **изменение факта**, а не смена статуса. Каждая правка порождает событие на
+   * разницу: было 2, стало 3 — `issue` на единицу; было 2, стало 0 — `return` на две. Возврат
+   * заявки на доработку, отмена и откат склада не касаются вовсе: заявку возвращают на доработку не
+   * потому, что картридж сняли с аппарата и увезли на склад, — тонер стоит там, где его поставили.
+   * Вернули физически — исполнитель правит факт вниз этой самой ручкой, и это осознанное действие с
+   * причиной, а не побочный эффект кнопки «вернуть».
+   *
+   * **Пока заявка не закрыта.** После «Закрыта» строки заявки замирают, и всё, что случилось со
+   * складом дальше, — это уже ручная правка остатка с причиной, доступная тому, у кого есть на неё
+   * право (`officeEquipmentConsumables.stock`). Иначе закрытая заявка оставалась бы бессрочным
+   * входом в склад.
+   */
+  r.patch(
+    '/:id/consumables/issued',
+    { ...canSetIssued, schema: { params: idParams, body: setServiceConsumablesIssuedSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      const row = await requireEditable(p, req.params.id);
+      if (row.kind !== 'consumable') {
+        throw err.unprocessable('Выдачу отмечают только у заявки на расходники', {
+          items: 'Не тот вид заявки',
+        });
+      }
+      await assertConsumableIssuer(p, row);
+      if (isServiceRequestClosed(row.status)) {
+        throw err.unprocessable(
+          `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» закрыта — остаток правят вручную, с правом на справочник`,
+          { status: 'Заявка закрыта' },
+        );
+      }
+
+      const movements = await db.transaction(async (tx) => {
+        const locked = await lockRequest(tx, row.id);
+        const written = await applyConsumableFacts(tx, {
+          request: { id: locked.id, num: locked.num, kind: locked.kind },
+          actor: p,
+          facts: body.items,
+          requireEveryLine: false,
+        });
+        const [updated] = await tx
+          .update(serviceRequests)
+          .set({ updatedBy: p.id, updatedAt: new Date(), version: locked.version + 1 })
+          .where(and(eq(serviceRequests.id, locked.id), eq(serviceRequests.version, body.version)))
+          .returning({ id: serviceRequests.id });
+        if (!updated) throw err.conflict();
+        return written;
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'serviceRequest.consumables_issued',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        // Движение склада — вместе с заявкой: журнал остатка отвечает на вопрос «что с полкой», а
+        // аудит заявки — «кто и когда это сделал по ней».
+        metadata: { movements },
       });
       return (await getDto(row.id))!;
     },
@@ -2336,12 +3853,18 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      assertSideAllowed(p, 'done', ['in_work']);
+      // legacy: `diagnostics` снимается выпуском 2 — из неё доступно то же, что из «В работе».
+      assertSideAllowed(p, 'done', ['in_work', 'diagnostics']);
       const row = await requireEditable(p, req.params.id);
-      assertTransition(p, row.status, 'done');
+      const assignment = await executorAssignment(p, row);
+      assertTransition(p, row.status, 'done', assignment);
       // Закрывают по согласованной ревизии: иначе правка прошла бы между открытием окна
       // согласования и нажатием кнопки, и работы закрылись бы не по той смете.
-      if (row.approvedEstimateRevision !== row.estimateRevision) {
+      //
+      // У расходников сметы нет вовсе (§6.2): согласовывать по картриджу со своего склада нечего и
+      // не у кого, ревизия так и остаётся нулевой, а подписи — пустой. Спроси мы равенство и здесь,
+      // ни одна заявка на расходники не закрылась бы никогда.
+      if (row.kind === 'repair' && row.approvedEstimateRevision !== row.estimateRevision) {
         throw err.conflict(
           `Согласована ревизия сметы ${row.approvedEstimateRevision ?? 0}, а в заявке ${row.estimateRevision} — согласуйте её заново`,
         );
@@ -2369,6 +3892,34 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       }
 
       const outcome = await db.transaction(async (tx) => {
+        /**
+         * Планка закрывающего документа переехала сюда с приёмки (Н8): за работу внешнего сервиса
+         * платят, и бумага — основание платежа. Свой сисадмин и замена картриджа закрываются без
+         * неё — правило живёт **одной функцией контрактов**, потому что спрашивают его четверо:
+         * этот переход, отбор пачки автозакрытия, портал неактивной кнопкой и текст отказа.
+         *
+         * Проверка внутри транзакции и после блокировки строки (Р112): между чтением и `COMMIT`
+         * документ успевают снять, и `EXISTS`, посчитанный до неё, ничего не гарантирует.
+         */
+        const locked = await lockRequest(tx, row.id);
+        if (serviceRequestNeedsClosingDocument(locked)) {
+          const [closing] = await tx
+            .select({ fileId: serviceRequestFiles.fileId })
+            .from(serviceRequestFiles)
+            .where(
+              and(
+                eq(serviceRequestFiles.requestId, locked.id),
+                inArray(serviceRequestFiles.kind, [...SERVICE_CLOSING_DOCUMENT_KINDS]),
+              ),
+            )
+            .limit(1);
+          if (!closing) {
+            throw err.unprocessable(
+              'Перевод в «Решена» требует закрывающего документа — акта, счёта или гарантийного талона',
+              { files: 'Нет закрывающего документа' },
+            );
+          }
+        }
         const rows = await estimateItems(tx, row.id);
         const sent = new Map(body.items.map((item) => [item.id, item]));
         if (sent.size !== rows.length) {
@@ -2444,7 +3995,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             adjustmentAmount: 'Скидка больше итога',
           });
         }
-        // Шаг 5: сверка с согласованным — страховка инварианта, а не рабочая проверка: поднять
+        // Шаг 4: сверка с согласованным — страховка инварианта, а не рабочая проверка: поднять
         // цену или объём при закрытии нечем (CHECK не даёт), и сработать она может только на
         // испорченных данных.
         const approved = num(row.estimatedTotalAmount);
@@ -2454,7 +4005,24 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           );
         }
 
-        // Шаг 4: факт закрытия. Дата выполнения — календарные сутки, момент собирается по Москве:
+        /**
+         * Шаг 5: списание расходников — **той же транзакцией**, что и смена статуса (Р5), и до
+         * неё: нехватка остатка обязана отменить весь переход, иначе заявка успевала бы стать
+         * решённой при неудавшемся списании. Порядок захвата блокировок — внутри
+         * `applyConsumableFacts`: заявка уже взята `lockRequest` выше, дальше идут карточки склада
+         * по возрастанию `consumable_id`.
+         *
+         * Списывается **факт**, а не запрошенное (Р3): заявка на два тонера, из которых поставили
+         * один, оставила бы склад врущим на единицу — и без всякого признака, что это произошло.
+         */
+        const movements = await applyConsumableFacts(tx, {
+          request: { id: locked.id, num: locked.num, kind: locked.kind },
+          actor: p,
+          facts: body.consumables ?? [],
+          requireEveryLine: true,
+        });
+
+        // Шаг 6: факт закрытия. Дата выполнения — календарные сутки, момент собирается по Москве:
         // от неё считаются гарантии, и часовой пояс сдвигал бы их на день.
         await applyTransition(tx, {
           row,
@@ -2464,12 +4032,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           comment: body.comment,
           patch: {
             completedAt: moscowInstantOf(body.completedOn, '00:00'),
-            finalTotalAmount: money(total),
+            // Итога по акту у расходников не бывает: сметы нет, платить не за что, и «0,00 ₽» в
+            // карточке читалось бы как выполненная на ноль работа.
+            finalTotalAmount: locked.kind === 'consumable' ? null : money(total),
             finalAdjustmentAmount: adjustment === null ? null : money(adjustment),
             finalAdjustmentReason: adjustment === null ? '' : body.adjustmentReason,
           },
         });
-        return { total, works };
+        return { total, works, movements };
       });
 
       const after = (await getDto(row.id))!;
@@ -2483,6 +4053,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           total: outcome.total,
           works: outcome.works,
           adjustment: body.adjustmentAmount ?? null,
+          // Что уехало со склада этим закрытием (Р10): в истории заявки строка «Списано со склада:
+          // Тонер Ricoh 201 — 2 шт» берётся отсюда.
+          movements: outcome.movements,
           // Что именно предъявил исполнитель: «тормозную площадку не ставили» иначе осталось бы
           // незамеченным, а гарантию на неё искали бы годом позже.
           changes: diffServiceCompletion(after.items),
@@ -2506,14 +4079,16 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
 
   // ── Приёмка ──
   /**
-   * Принимают работу с закрывающим документом — актом, счётом **или** гарантийным талоном (Р112,
-   * отменяет Р16). Комплекта планка не требует: любой из трёх подтверждает, что работа состоялась,
-   * а перечисление недостающих читалось бы как «нужны все три».
+   * Планки закрывающего документа здесь больше нет: она переехала на «Решена» (Н8) — туда, где
+   * работу предъявляют. Проверять её дважды значило бы держать одно правило в двух местах, а
+   * заявку-наследие, уехавшую в «Решена» без бумаги до выпуска 1, приёмка запирала бы навсегда:
+   * автозакрытие такую заявку не берёт, и снять её с очереди мог бы только человек.
    *
-   * Проверка стоит внутри транзакции и **после блокировки строки заявки**, а не по DTO,
-   * прочитанному до неё: между чтением и `COMMIT` документ успевают снять. Снятие ходит той же
-   * блокировкой (`DELETE /:id/files/:fileId`), поэтому два запроса выстраиваются в очередь — либо
-   * документ снимут до приёмки, и откажет она, либо приёмка пройдёт первой, и откажет снятие.
+   * Снятый последним закрывающий документ у принятой заявки по-прежнему не снимает никто
+   * (`DELETE /:id/files/:fileId`): планка удерживается там, где её можно обойти.
+   *
+   * Приёмка человеком — `acceptance_source = 'human'` (Н7). Автоматическая пишет `auto` и пустого
+   * автора, и различает их именно это поле, а не отсутствие имени: имя теряется вместе с учёткой.
    */
   r.patch(
     '/:id/accept',
@@ -2526,21 +4101,6 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       assertTransition(p, row.status, 'accepted');
       await db.transaction(async (tx) => {
         const locked = await lockRequest(tx, row.id);
-        const [closing] = await tx
-          .select({ fileId: serviceRequestFiles.fileId })
-          .from(serviceRequestFiles)
-          .where(
-            and(
-              eq(serviceRequestFiles.requestId, locked.id),
-              inArray(serviceRequestFiles.kind, [...SERVICE_CLOSING_DOCUMENT_KINDS]),
-            ),
-          )
-          .limit(1);
-        if (!closing) {
-          throw err.unprocessable('Нужен один из документов: акт, счёт или гарантийный талон', {
-            files: 'Нет закрывающего документа',
-          });
-        }
         await applyTransition(tx, {
           // Переход считается по строке, перечитанной под блокировкой: расхождение с прочитанной
           // до транзакции упрётся в сверку версии и вернёт 409, а не молча пройдёт по старой.
@@ -2549,7 +4109,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           version: body.version,
           actor: p,
           comment: body.comment,
-          patch: { acceptedBy: p.id, acceptedAt: new Date() },
+          patch: { acceptedBy: p.id, acceptedAt: new Date(), acceptanceSource: 'human' },
         });
       });
       await writeAudit({
@@ -2765,6 +4325,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const body = req.body;
       const row = await requireEditable(p, req.params.id);
+      await assertExecutorSide(p, row, 'пишет примечание исполнителя');
       if (isServiceRequestClosed(row.status)) {
         throw err.unprocessable(
           `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» не правится`,
@@ -2867,10 +4428,17 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       if (isServiceRequestClosed(status) && !manageAny) {
         throw err.forbidden('Из закрытой заявки документы не снимают');
       }
-      if (link.kind === 'estimate' && status !== 'diagnostics' && !manageAny) {
-        throw err.unprocessable('Предъявленная смета не снимается — верните заявку в диагностику', {
-          kind: 'Смета предъявлена',
-        });
+      // legacy: `diagnostics` снимается выпуском 2 — смета живёт в «В работе» (Н2).
+      if (
+        link.kind === 'estimate' &&
+        status !== 'in_work' &&
+        status !== 'diagnostics' &&
+        !manageAny
+      ) {
+        throw err.unprocessable(
+          'Предъявленная смета не снимается — верните заявку в работу и предъявите смету заново',
+          { kind: 'Смета предъявлена' },
+        );
       }
       if (link.attachedBy !== p.id && !manageAny) {
         throw err.forbidden('Снять вложение может тот, кто его приложил');
@@ -2952,7 +4520,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         assertScope(p, row);
         if (!row.deletedAt) return false;
         if (!isServiceRequestClosed(row.status)) {
-          await assertNoOpenRequest(tx, row.officeEquipmentId, row.id);
+          await assertNoOpenRequest(tx, row.officeEquipmentId, row.kind, row.id);
         }
         await tx
           .update(serviceRequests)

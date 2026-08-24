@@ -248,10 +248,23 @@ async function newRoute(vehicleId: string, date: string, personId: string): Prom
   return route!.id;
 }
 
-/** Действующий недельный лист ЭСМ-2, накрывающий день: неделя целиком, от понедельника. */
-async function newEsm2(vehicleId: string, personId: string, date: string): Promise<void> {
+/*
+ * ЭСМ2-РАЗРЕЗ. Лист умеет быть **отрезком**: после переключения чтения (этап 5) состав меняется
+ * внутри срока, и одна календарная неделя даёт два листа. Умолчание недельное — прочие случаи файла
+ * проверяют не разрез, — а случай разреза передаёт границы явно.
+ *
+ * Проверено здесь: числа сводки по парку считаются **днями и сменами**, а не листами, поэтому от
+ * длины листа не зависят. Разрез недели на два листа не меняет ни пробег, ни моточасы, ни литры, ни
+ * счёт разрывов — он лишь иначе распределяет строки ожидания по дням.
+ */
+async function newEsm2(
+  vehicleId: string,
+  personId: string,
+  date: string,
+  span?: { from: string; to: string },
+): Promise<void> {
   waybillNo += 1;
-  const from = weekStartKey(date);
+  const from = span ? span.from : weekStartKey(date);
   await ctx.db.insert(ctx.schema.waybills).values({
     seriesId: ctx.seriesId,
     number: WAYBILL_NUMBER_BASE + waybillNo,
@@ -263,7 +276,7 @@ async function newEsm2(vehicleId: string, personId: string, date: string): Promi
     issuedForDate: from,
     sourceRequestId: await newRequest(),
     periodFrom: from,
-    periodTo: shiftDateKey(from, 6),
+    periodTo: span ? span.to : shiftDateKey(from, 6),
     issuedBy: ctx.adminId,
   });
 }
@@ -476,6 +489,25 @@ describe.skipIf(!DB_URL)('сводка показаний: агрегат отв
       const vehicle = await newVehicle('день не открывали');
       await newRoute(vehicle, ago(16), person);
     }
+
+    /*
+     * 7. ЭСМ2-РАЗРЕЗ. Неделя, разрезанная сменой состава: два листа-отрезка вместо одного
+     *    недельного, смены приходятся на разные дни. Числа сводки обязаны остаться теми же, что у
+     *    цельной недели с теми же показаниями, — они считаются днями и сменами, а не бумагой.
+     *
+     *    До разреза такую сцену было не собрать: неделя была одним листом, и «сводка не зависит от
+     *    того, как нарезана бумага» проверить было нечем.
+     */
+    {
+      const person = await newPerson('Разрезанный');
+      const vehicle = await newVehicle('разрезанная неделя');
+      const first = ago(13);
+      const second = ago(12);
+      await newEsm2(vehicle, person, first, { from: first, to: first });
+      await newEsm2(vehicle, person, second, { from: second, to: second });
+      await reportDay(person, first, values({ odometerKm: 700, engineHours: 10 }));
+      await reportDay(person, second, values({ odometerKm: 900, engineHours: 13 }));
+    }
   }, 180_000);
 
   afterAll(async () => {
@@ -497,10 +529,23 @@ describe.skipIf(!DB_URL)('сводка показаний: агрегат отв
         'день не открывали',
         'две смены в день',
         'несданная смена',
+        'разрезанная неделя',
         'сброс обоих счётчиков',
         'цепочка',
       ].sort(),
     );
+
+    /*
+     * Разрезанная неделя: два листа вместо одного, показания те же — и числа те же, что дала бы
+     * цельная неделя. 900 − 700 = 200 км и 13 − 10 = 3 часа считаются **через границу листов**;
+     * первый день — начало ряда и в разрывы не идёт.
+     */
+    expect(numbersOf(rows.get('разрезанная неделя')!)).toEqual({
+      distanceKm: 200,
+      engineHours: 3,
+      fuelFilledLiters: 0,
+      gaps: 0,
+    });
 
     // Разрывов нет; 150 + 250 и 2,5 + 2,5; литры — простая сумма.
     expect(numbersOf(rows.get('цепочка')!)).toEqual({

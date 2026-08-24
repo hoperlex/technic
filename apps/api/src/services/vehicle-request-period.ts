@@ -6,6 +6,7 @@ import {
   vehicleRequests,
 } from '../db/schema';
 import { err } from '../lib/errors';
+import { assertAssignmentBackstop, type AssignmentBackstopDoor } from './assignment-backstop';
 import { type LinearDaysSyncResult, syncLinearRouteDays } from './vehicle-request-days';
 import { type Esm2SyncResult, syncEsm2Waybills } from './waybill-esm2';
 
@@ -68,6 +69,17 @@ export interface WorkPeriodCorrection {
   unlockWaybillIds: readonly string[];
 }
 
+/**
+ * Кто считает бэкстоп чужой двери (Р21, Р22) — сервис или вызывающий.
+ *
+ * Умолчания нет намеренно, как и у `dropPendingEarlyEnd`: правку срока зовут две двери с разными
+ * ответами на этот вопрос, и «забыли передать» не должно означать «проверки не было». Недельная
+ * операция считает бэкстоп сама и **до первой записи** — по всем применимым строкам разом (Р23),
+ * чтобы неделю чинили одним заходом, — и здесь ей проверять уже нечего.
+ */
+export type WorkPeriodBackstop =
+  Extract<AssignmentBackstopDoor, 'work_period'> | 'checked_by_caller';
+
 /** Чем кончилось изменение срока: снятый запрос на отъезд, переоформленные листы и снятые дни. */
 export interface WorkPeriodChangeResult {
   earlyEndDropped: boolean;
@@ -94,6 +106,8 @@ export async function afterWorkPeriodChanged(
     /** Попадёт в причину аннулирования листов и в журнал аудита. */
     reason: string;
     dropPendingEarlyEnd: boolean;
+    /** Кто считает бэкстоп истории: `'work_period'` — этот сервис, иначе вызывающий уже посчитал. */
+    backstop: WorkPeriodBackstop;
     /** Контекст операции коррекции; не передан — правка обычная, прошлое остаётся закрытым. */
     correction?: WorkPeriodCorrection;
   },
@@ -101,6 +115,25 @@ export async function afterWorkPeriodChanged(
   const earlyEndDropped = params.dropPendingEarlyEnd
     ? await clearPendingEarlyEnd(tx, params.requestId)
     : false;
+  /*
+   * Бэкстоп чужой двери (Р21, Р22) — перед бумагой и по уже записанному сроку.
+   *
+   * Срок к этому моменту записан, и это здесь правильный порядок расчёта: Р31 требует проверять
+   * **весь вновь открываемый диапазон**, а он и есть новый `date_to`. Записи бэкстоп при этом не
+   * оставляет: в режиме `legacy` он молча кладёт диагностику, а в `history` бросает 422, и вся
+   * транзакция двери — вместе с только что записанным сроком — откатывается.
+   *
+   * Якорей эта дверь не принимает и принимать не должна (Р22): правка заявки защищена правом
+   * площадки `vehicleRequests.update`, а называть людей в бланки строгой отчётности — не её дело.
+   */
+  if (params.backstop !== 'checked_by_caller') {
+    await assertAssignmentBackstop(tx, {
+      door: params.backstop,
+      requestId: params.requestId,
+      actor: params.actor,
+      reason: params.reason,
+    });
+  }
   const esm2 = await syncEsm2Waybills(tx, {
     requestId: params.requestId,
     actor: params.actor,
@@ -169,6 +202,12 @@ export async function extendSpecialEquipmentPeriod(
     reason: string;
     dropPendingEarlyEnd: boolean;
     /**
+     * Кто считает бэкстоп истории (Р21–Р23). Проезжает насквозь и без умолчания: продление зовёт
+     * недельная операция, а она обязана посчитать его preflight'ом по всем строкам разом — иначе
+     * первый же проблемный заказ остановил бы неделю посреди применения.
+     */
+    backstop: WorkPeriodBackstop;
+    /**
      * Контекст операции коррекции (ADR 0101). Продление в **прошедшую** неделю без него оставило бы
      * заказ с новым сроком и без бумаги за уже отработанные дни: сверка кончившуюся неделю не
      * выписывает вовсе. Проверять его здесь нечем и не нужно — признак приходит от сервера, уже
@@ -208,6 +247,7 @@ export async function extendSpecialEquipmentPeriod(
     actor: params.actor,
     reason: params.reason,
     dropPendingEarlyEnd: params.dropPendingEarlyEnd,
+    backstop: params.backstop,
     correction: params.correction,
   });
   return { previousDateTo: period.effectiveDateTo, ...result };

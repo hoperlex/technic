@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { WasteTicketBadgeDto } from './waste-tickets';
 import {
   MIN_WASTE_VOLUME_M3,
   requestStatusSchema,
@@ -12,6 +13,7 @@ import {
   baseListQuery,
   contactNameSchema,
   contactPhoneSchema,
+  dateOnlySchema,
   uuidSchema,
 } from './common';
 import type { FileDto } from './files';
@@ -84,6 +86,17 @@ export const wasteRequestListQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIEL
   deliveryTo: z.coerce.date().optional(),
   /** Архив (ADR 0070): `only` — вкладка «Архив», остальное сервер отдаёт только праву `archive.read`. */
   archive: archiveFilterSchema,
+  /**
+   * Реестр разбора талонов (ADR 0114, Р24): `pending` — «требуют разбора». Отбор шире, чем «есть
+   * замечания»: корректно распознанный талон без единого расхождения иначе никогда не попал бы к
+   * проверяющему и остался бы неподтверждённым навсегда — а неподтверждённый талон не занимает
+   * номер и не входит в сверку.
+   *
+   * Без права `wasteRequests.ticketReview` параметр **отклоняется**, а не игнорируется: сам состав
+   * выдачи отвечает на вопрос «есть ли по этой заявке замечания» не хуже самой сверки, а
+   * молчаливое игнорирование вернуло бы полный список и читалось бы как «замечаний нет».
+   */
+  ticketReview: z.literal('pending').optional(),
 });
 
 /**
@@ -215,6 +228,17 @@ export const completeWasteRequestSchema = z
     volumeM3: factVolumeSchema.optional(),
     weightTons: factWeightSchema.optional(),
     totalCost: factCostSchema.nullable().optional(),
+    /**
+     * День фактического вывоза (ADR 0114, Р19). До распознавания талонов его в модели не было
+     * вовсе: `delivery_at` — это план подачи, а `completed_at` — момент, когда бухгалтер нажал
+     * «Выполнена», и он законно отстаёт на дни, потому что бумаги привозят пачкой в конце недели.
+     * Сверять дату талона было не с чем.
+     *
+     * Вводит его человек, и **распознанным он не предзаполняется**: цифра, скопированная из
+     * талона, сверялась бы сама с собой. Необязателен ради старых закрытий и заявок, где день
+     * вывоза никто не помнит: пусто означает «неизвестно», а не «сегодня».
+     */
+    removedOn: dateOnlySchema.nullable().optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -774,6 +798,15 @@ export interface WasteRequestDto {
    * закрытых до ADR 0035 — новых строк не появляется, а прежние остаются в истории заявки.
    */
   vehicles: WasteRequestVehicleDto[];
+  /**
+   * Значок разбора талонов для строки списка (ADR 0114, Р24): ⛔ расхождения · ⚠️ предупреждения ·
+   * ⏳ ждут подтверждения · нечитаемое.
+   *
+   * `null` означает ровно две вещи сразу — «смотрящий не разбирает талоны» либо «бумаги у заявки
+   * нет». Нулями это не заменяется: «разбирать нечего» и «всё разобрано» — разные ответы, и один
+   * значок на оба показывал бы молчащую подсистему как порядок (Р29).
+   */
+  ticketBadge: WasteTicketBadgeDto | null;
   version: number;
   createdBy: string;
   createdByName: string;

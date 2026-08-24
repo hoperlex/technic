@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 import { moscowDateKeyOf } from '@technic/contracts';
 import { runSeed, snilsOf } from './db-identity';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -40,7 +41,11 @@ import type { db as AppDb } from '../src/db/client';
  * может, — учётку и человека (персональные данные в миграции не кладут).
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('delivery');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 /** Тестовый водитель: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
 // Свой на прогон, а не общая константа: пять файлов заводили водителя по одному номеру, и
@@ -266,8 +271,7 @@ function confirmPayload(version: number, delivery: boolean): Record<string, unkn
 
 describe.skipIf(!DB_URL)('перевод заказа спецтехники в работу (живая схема)', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
 
     const { personId } = await seed();
     const { buildApp } = await import('../src/app');
@@ -356,6 +360,15 @@ describe.skipIf(!DB_URL)('перевод заказа спецтехники в 
     await ctx?.closeDb();
   }, 60_000);
 
+  /*
+   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+   *
+   * Сегодня половины совпадают: перегон заводится тем же запросом, что и статус, а нарезка бумаги на это не влияет. На этапе 5 расходится число выписанных листов, если срок режется сменой состава.
+   */
+  describeReadModes(readMode, 'перегон и листы', (mode) => {
+    void mode;
+
   it('заводит перегон и выписывает листы ЭСМ-2 тем же запросом, что и статус', async () => {
     const request = await approvedRequest();
 
@@ -365,6 +378,19 @@ describe.skipIf(!DB_URL)('перевод заказа спецтехники в 
       headers: ctx.auth,
       payload: confirmPayload(request.version, true),
     });
+
+    /*
+     * РАСХОЖДЕНИЕ РЕЖИМОВ. Предмет этого файла — **сама статусная ручка**, поэтому подготовку сюда
+     * не завернуть (`inLegacy` спрятал бы проверяемое). В `history` ручка упирается в бэкстоп: у
+     * заказа нет истории назначения, а достраивать её чужой двери не положено (Р22) — машинист
+     * назначается своей дверью до перевода в работу. Дальнейшее в этом режиме недостижимо, и
+     * притворяться, что оно проверено, нельзя.
+     */
+    if (mode === 'history') {
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().code).toBe('assignment_history_incomplete');
+      return;
+    }
 
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json().status).toBe('confirmed');
@@ -408,6 +434,19 @@ describe.skipIf(!DB_URL)('перевод заказа спецтехники в 
       payload: confirmPayload(request.version, false),
     });
 
+    /*
+     * РАСХОЖДЕНИЕ РЕЖИМОВ. Предмет этого файла — **сама статусная ручка**, поэтому подготовку сюда
+     * не завернуть (`inLegacy` спрятал бы проверяемое). В `history` ручка упирается в бэкстоп: у
+     * заказа нет истории назначения, а достраивать её чужой двери не положено (Р22) — машинист
+     * назначается своей дверью до перевода в работу. Дальнейшее в этом режиме недостижимо, и
+     * притворяться, что оно проверено, нельзя.
+     */
+    if (mode === 'history') {
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().code).toBe('assignment_history_incomplete');
+      return;
+    }
+
     expect(res.statusCode, res.body).toBe(200);
     const relocations = await ctx.app.inject({
       method: 'GET',
@@ -425,6 +464,13 @@ describe.skipIf(!DB_URL)('перевод заказа спецтехники в 
       headers: ctx.auth,
       payload: confirmPayload(request.version, true),
     });
+    // РАСХОЖДЕНИЕ РЕЖИМОВ: см. первый случай блока — в `history` статусная ручка отказывает до
+    // всякой работы, и второй перегон завести не на чем.
+    if (mode === 'history') {
+      expect(first.statusCode, first.body).toBe(422);
+      expect(first.json().code).toBe('assignment_history_incomplete');
+      return;
+    }
     expect(first.statusCode, first.body).toBe(200);
 
     // Повторный перегон заводят уже из карточки заявки — тем же правилом «одна доставка и один
@@ -443,5 +489,6 @@ describe.skipIf(!DB_URL)('перевод заказа спецтехники в 
     });
     expect(again.statusCode).toBe(409);
     expect(again.json().message).toMatch(/уже заведён/);
+  });
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, render, screen, fireEvent } from '@testing-library/react';
-import { DataTable, type CardConfig, type TableChange } from '../src/shared/ui';
+import { DataTable, PageTableLayout, type CardConfig, type TableChange } from '../src/shared/ui';
 import { FilterSheet } from '../src/shared/ui';
 import { ListToolbar } from '../src/shared/ui';
 import type { FilterDefinition } from '../src/shared/ui';
@@ -392,5 +392,76 @@ describe('поиск в панели списка', () => {
   it('панель без единого контрола не рисуется', () => {
     const { container } = render(<ListToolbar />);
     expect(container.querySelector('.list-toolbar')).toBeNull();
+  });
+});
+
+/**
+ * Шапка списка на телефоне (ADR 0030) — и та её особенность, из-за которой действие пропадает с
+ * узкого экрана молча.
+ *
+ * Десктопный слот `extra` на телефоне не рисуется вовсе: полоса кнопок заняла бы там весь экран.
+ * Поэтому страница, у которой есть мобильное описание, обязана продублировать свои действия в
+ * нём — главное круглой кнопкой (`primaryAction`), прочие рядом с фильтрами
+ * (`secondaryActions`). Забыв это, страница теряет действие на телефоне и не ломает ни один тест:
+ * на десктопе всё на месте. Ровно так пропадали окна перечней у вкладки «Оргтехника».
+ *
+ * Проверка держит обе стороны договора: слот на телефоне молчит, а оба мобильных входа работают.
+ */
+describe('шапка списка на телефоне', () => {
+  const extra = <button type="button">Модели аппаратов</button>;
+
+  it('слот `extra` на телефоне не рисуется — действия обязаны быть продублированы', () => {
+    setViewport(MOBILE_VIEWPORT);
+    render(
+      <PageTableLayout extra={extra} mobile={{ search: { value: '', onChange: vi.fn() } }}>
+        <div>список</div>
+      </PageTableLayout>,
+    );
+
+    expect(screen.queryByText('Модели аппаратов')).toBeNull();
+    setViewport(DESKTOP_VIEWPORT);
+  });
+
+  it('главное действие на телефоне живёт круглой кнопкой, а прочие — рядом с фильтрами', () => {
+    setViewport(MOBILE_VIEWPORT);
+    const openModels = vi.fn();
+    const create = vi.fn();
+    render(
+      <PageTableLayout
+        extra={extra}
+        mobile={{
+          primaryAction: { label: 'Добавить технику', onClick: create },
+          secondaryActions: [{ label: 'Модели аппаратов', onClick: openModels }],
+        }}
+      >
+        <div>список</div>
+      </PageTableLayout>,
+    );
+
+    // Круглая кнопка безымянна на вид: её подпись живёт в `aria-label`.
+    fireEvent.click(screen.getByLabelText('Добавить технику'));
+    expect(create).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByText('Модели аппаратов'));
+    expect(openModels).toHaveBeenCalledTimes(1);
+    setViewport(DESKTOP_VIEWPORT);
+  });
+
+  it('на десктопе действия остаются в шапке, а мобильных входов нет', () => {
+    render(
+      <PageTableLayout
+        extra={extra}
+        mobile={{
+          primaryAction: { label: 'Добавить технику', onClick: vi.fn() },
+          secondaryActions: [{ label: 'Модели аппаратов', onClick: vi.fn() }],
+        }}
+      >
+        <div>список</div>
+      </PageTableLayout>,
+    );
+
+    // Одна кнопка, а не три: мобильное описание на широком экране не рисуется вовсе.
+    expect(screen.getByText('Модели аппаратов')).toBeTruthy();
+    expect(screen.queryByLabelText('Добавить технику')).toBeNull();
   });
 });

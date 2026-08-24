@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeReadModes, inLegacy, useReadModeDatabase } from './assignment-read-mode';
 import { formatVehicleRouteNumber, moscowDateKeyOf } from '@technic/contracts';
 import { runSeed, snilsOf } from './db-identity';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -39,7 +40,11 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('wbroute');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 /** Тестовый водитель: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
 // Свой на прогон, а не общая константа: файлы db-тестов делили водителя по одному номеру, и
@@ -276,6 +281,12 @@ async function routeWithWaybill(): Promise<{ routeId: string; waybillId: string;
  * пришёлся ровно один бланк.
  */
 async function weeklyWaybill(): Promise<{ requestId: string; waybillId: string }> {
+  // ЭСМ2-РАЗРЕЗ: сцена собирается в сегодняшнем мире — заказ заводит статусная ручка, а в `history`
+  // её останавливает бэкстоп (Р22). Предмет файла — связь листа с рейсом, не подготовка заказа.
+  return inLegacy(readMode, weeklyWaybillNow);
+}
+
+async function weeklyWaybillNow(): Promise<{ requestId: string; waybillId: string }> {
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-requests',
@@ -335,8 +346,7 @@ async function weeklyWaybill(): Promise<{ requestId: string; waybillId: string }
 
 describe.skipIf(!DB_URL)('номер рейса в журнале путевых листов (живая схема)', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
 
     const { personId } = await seed();
     const { buildApp } = await import('../src/app');
@@ -432,6 +442,15 @@ describe.skipIf(!DB_URL)('номер рейса в журнале путевых
     await ctx?.closeDb();
   }, 60_000);
 
+  /*
+   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+   *
+   * Сегодня половины совпадают: предмет — левый join листа с рейсом, разрезом он не затрагивается. На этапе 5 править придётся только помощник, если строк у заявки станет несколько.
+   */
+  describeReadModes(readMode, 'журнал: лист и рейс', (mode) => {
+    void mode;
+
   it('лист, выписанный по рейсу, несёт в журнале и сам рейс, и его читаемый номер', async () => {
     const { routeId, waybillId, num } = await routeWithWaybill();
 
@@ -463,4 +482,5 @@ describe.skipIf(!DB_URL)('номер рейса в журнале путевых
     // он, а недельный лист — и заметить это можно только на паре.
     expect(rowOf(rows, route.waybillId, 'лист рейса').routeId).toBe(route.routeId);
   }, 60_000);
+  });
 });

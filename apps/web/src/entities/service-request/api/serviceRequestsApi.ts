@@ -7,13 +7,16 @@ import type {
   CompleteServiceRequestInput,
   CreateServiceRequestInput,
   DeclineServiceRequestInput,
+  PutServiceConsumablesInput,
   PutServiceEstimateInput,
+  PutServiceExecutorsInput,
   RequestHistoryEntryDto,
   ServiceFileKind,
   ApproveServiceItInput,
   ServiceRequestDto,
   ServiceStatusChangeInput,
   ServiceWarrantyRowDto,
+  SetServiceConsumablesIssuedInput,
   SetServiceUrgencyInput,
   SubmitServiceEstimateInput,
   UpdateServiceRequestInput,
@@ -96,7 +99,22 @@ export const serviceRequestsApi = {
    */
   waitingCount: () => apiFetch<{ count: number }>(`${PATH}/waiting-count`),
 
-  /** Назначение и переназначение исполнителя: при смене сервиса причина обязательна (§5.3). */
+  /**
+   * Исполнители заявки одним действием (Н5, Н6): список своих сотрудников **и**
+   * исполнитель-контрагент. Оба поля уходят целиком — это состав, а не добавление: «прислать
+   * одного» означало бы, что сервер угадывает, снимали ли кого-то.
+   *
+   * Ответ несёт исход письма о назначении: оно адресовано **людям**, а не ящику службы, и
+   * «назначили, но задание никуда не ушло» назначивший обязан узнать сразу — иначе он будет ждать
+   * работу от того, кто о ней не знает.
+   */
+  putExecutors: (id: string, body: PutServiceExecutorsInput) =>
+    apiFetch<ServiceRequestWithMailDto>(`${PATH}/${id}/executors`, { method: 'PUT', body }),
+  /**
+   * Прежнее назначение контрагента. Остаётся совместимым адаптером на весь выпуск 1 и уходит
+   * вместе с ним (план §7.3): её зовёт вкладка, открытая до выката, — портал ходит только новой
+   * ручкой выше.
+   */
   assignService: (id: string, body: AssignServiceInput) =>
     patch<ServiceRequestDto>(id, '/service', body),
   /** Отказ исполнителя: заявка снова ничья, у неё стирается сервис. */
@@ -128,6 +146,24 @@ export const serviceRequestsApi = {
   /** Переоткрытие согласованной сметы — единственный путь её изменить (Р14). */
   reopenEstimate: (id: string, body: ReasonInput) =>
     patch<ServiceRequestDto>(id, '/estimate/reopen', body),
+
+  /**
+   * Состав строк номенклатуры целиком (Н9), как и смета: это список того, что просят, и «добавить
+   * одну позицию» без остальных заставляло бы сервер угадывать, снимали ли что-то. Пустой список
+   * ручка не принимает — заявка на расходники без строк это заявка без предмета.
+   *
+   * Правится он только до первой отметки о выдаче: строка, за которой числится движение склада, —
+   * уже основание записи на складе, и сервер отвечает на такую правку 409.
+   */
+  putConsumables: (id: string, body: PutServiceConsumablesInput) =>
+    apiFetch<ServiceRequestDto>(`${PATH}/${id}/consumables`, { method: 'PUT', body }),
+  /**
+   * Правка факта выдачи (Р6). Склад двигает **изменение факта**, а не смена статуса: каждая правка
+   * порождает событие журнала на разницу — было 2, стало 3, значит со склада уйдёт одна штука.
+   * Отсюда `PATCH` и только тронутые строки: состава заявки эта ручка не касается.
+   */
+  setConsumablesIssued: (id: string, body: SetServiceConsumablesIssuedInput) =>
+    patch<ServiceRequestDto>(id, '/consumables/issued', body),
 
   /** Закрытие работ: отметки факта по строкам. Итог не передаётся — его считает сервер (Р12). */
   complete: (id: string, body: CompleteServiceRequestInput) =>

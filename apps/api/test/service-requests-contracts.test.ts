@@ -11,6 +11,7 @@ import {
   hasServiceClosingDocument,
   isServiceClosingDocument,
   isServiceRequestClosed,
+  isServiceRequestDeletable,
   isServiceRequestEditable,
   parseServiceRequestNumberSearch,
   putServiceEstimateSchema,
@@ -25,7 +26,9 @@ import {
   serviceHoldSchema,
   serviceRequestChangeLabels,
   type ServiceRequestFileDto,
+  serviceRequestKindLabels,
   serviceRequestListQuerySchema,
+  serviceRequestNeedsClosingDocument,
   serviceResumeSchema,
   serviceStatusChangeSchema,
   setServiceUrgencySchema,
@@ -60,7 +63,7 @@ const MUTATIONS: [
   ['PATCH /:id — правка заявки', updateServiceRequestSchema, {}],
   ['PATCH /:id/service — назначение', assignServiceSchema, { serviceCounterpartyId: UUID }],
   ['PATCH /:id/decline — отказ', declineServiceRequestSchema, { reason: 'занят до конца месяца' }],
-  ['PATCH /:id/start — в диагностику', startServiceRequestSchema, {}],
+  ['PATCH /:id/start — принять в работу', startServiceRequestSchema, {}],
   ['PUT /:id/estimate — состав сметы', putServiceEstimateSchema, { items: [] }],
   ['PATCH /:id/estimate/submit — предъявление', submitServiceEstimateSchema, {}],
   ['PATCH /:id/estimate/approval — согласование', approveServiceEstimateSchema, { approved: true }],
@@ -228,12 +231,14 @@ describe('заведение и правка заявки', () => {
     expect(setServiceUrgencySchema.safeParse({ isUrgent: false, version: 1 }).success).toBe(true);
   });
 
-  /** Правка заявки — только «Новой» (§5.3): дальше за заявкой стоят договорённости с исполнителем. */
+  /** Правка заявки — только «Новой» (§6.1): дальше за заявкой стоят договорённости с исполнителем. */
   it('правится заявка, которую ещё не начали вести', () => {
-    // Статуса два: «Новая» и «Согласована ИТ» (Р51). Виза отвечает на «нужен ли внешний ремонт», а
-    // не на «как он описан», и запирать ею правку значило бы заводить новую заявку из-за опечатки.
     expect(isServiceRequestEditable('new')).toBe(true);
+    // Второй статус — legacy: заявка, заведённая старым кодом в «Согласована ИТ», правится как
+    // «Новая», иначе из-за опечатки в описании пришлось бы заводить новую (план §3, п. 5).
     expect(isServiceRequestEditable('it_approved')).toBe(true);
+    // «Назначенную» уже не правят: предмет заявки исполнитель прочитал и по нему договорился.
+    expect(isServiceRequestEditable('assigned')).toBe(false);
     // Отложенную не правят (Р110): заморозка останавливает ход заявки, и правка её предмета была
     // бы ходом мимо остановки — даже если отложили как раз «Новую». Такую возвращают и правят.
     expect(isServiceRequestEditable('on_hold')).toBe(false);
@@ -245,7 +250,7 @@ describe('заведение и правка заявки', () => {
     )) {
       expect(isServiceRequestEditable(status), status).toBe(false);
     }
-    // Закрытая заявка — «Принята» и «Отменена»: ни хода, ни правки ей больше не положено.
+    // Закрытая заявка — «Закрыта» и «Отменена»: ни хода, ни правки ей больше не положено.
     expect(isServiceRequestClosed('accepted')).toBe(true);
     expect(isServiceRequestClosed('cancelled')).toBe(true);
     for (const status of SERVICE_REQUEST_STATUSES.filter(
@@ -253,6 +258,30 @@ describe('заведение и правка заявки', () => {
     )) {
       expect(isServiceRequestClosed(status), status).toBe(false);
     }
+  });
+
+  /**
+   * Удаление отвязано от правки (В20): «Назначенную» заявку удалить можно, а править уже нельзя —
+   * работа по ней не начиналась, но её предмет исполнитель прочитал. Два решения заказчика, и
+   * держись они на одном списке статусов, разъехались бы на первой же правке любого из них.
+   */
+  it('удаляются «Новая» и «Назначенная», и дальше — ни одна', () => {
+    expect(isServiceRequestDeletable('new')).toBe(true);
+    expect(isServiceRequestDeletable('assigned')).toBe(true);
+    // legacy: заявка со входной визой старого образца удаляется как «Новая» (план §3, п. 5).
+    expect(isServiceRequestDeletable('it_approved')).toBe(true);
+    // Дальше — ни при каких условиях: с «В работе» по заявке уже могли списать расходники (Р6), и
+    // архивная заявка означала бы списание без основания.
+    for (const status of SERVICE_REQUEST_STATUSES.filter(
+      (s) => s !== 'new' && s !== 'assigned' && s !== 'it_approved',
+    )) {
+      expect(isServiceRequestDeletable(status), status).toBe(false);
+    }
+    // Списки правки и удаления расходятся ровно на «Назначенной» — иначе одно из двух правил
+    // молча стало бы копией другого.
+    const editable = SERVICE_REQUEST_STATUSES.filter(isServiceRequestEditable);
+    const deletable = SERVICE_REQUEST_STATUSES.filter(isServiceRequestDeletable);
+    expect(deletable.filter((s) => !editable.includes(s))).toEqual(['assigned']);
   });
 
   it('правка приходит частями: менять одно поле, не пересылая остальные', () => {
@@ -664,6 +693,32 @@ describe('документы заявки', () => {
     expect(hasServiceClosingDocument({ files: [] })).toBe(false);
     // Комплекта не требуется (§8): счёта достаточно, даже когда акта нет.
     expect(hasServiceClosingDocument({ files: [file('attachment'), file('invoice')] })).toBe(true);
+  });
+
+  /**
+   * Кому документ обязателен (Н8, В7): планка стоит **только внешнему сервису** — за его работу
+   * платят, и бумага основание платежа. Свой сисадмин и замена картриджа закрываются без неё.
+   *
+   * Вид в условии не лишний, хотя заявка на расходники сервису сегодня не назначается: правило,
+   * опирающееся на одного исполнителя, начнёт требовать акт в тот день, когда картриджи повезёт
+   * подрядчик. Проверяются поэтому все четыре сочетания, а не одно рабочее.
+   */
+  it('документ обязателен сервисному ремонту — и больше никому', () => {
+    const repairByService = { kind: 'repair', serviceCounterpartyId: UUID } as const;
+    expect(serviceRequestNeedsClosingDocument(repairByService)).toBe(true);
+    // Инхаус-ремонт: исполнитель свой, платить по акту некому.
+    expect(
+      serviceRequestNeedsClosingDocument({ kind: 'repair', serviceCounterpartyId: null }),
+    ).toBe(false);
+    // Расходники: ни у своего, ни у подрядчика бумаги не требуют — везли картридж, а не ремонт.
+    expect(
+      serviceRequestNeedsClosingDocument({ kind: 'consumable', serviceCounterpartyId: UUID }),
+    ).toBe(false);
+    expect(
+      serviceRequestNeedsClosingDocument({ kind: 'consumable', serviceCounterpartyId: null }),
+    ).toBe(false);
+    // Два вида и обе подписи — на случай, если словарь видов начнёт расти молча.
+    expect(Object.keys(serviceRequestKindLabels).sort()).toEqual(['consumable', 'repair']);
   });
 
   it('подшивается пачка файлов с видом, по умолчанию — вложение', () => {

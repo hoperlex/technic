@@ -50,15 +50,39 @@ import {
 const idParams = z.object({ id: z.string().uuid() });
 const specParams = z.object({ id: z.string().uuid(), specId: z.string().uuid() });
 
+/**
+ * Ссылка на строку типа ИЗВНЕ коррелированного подзапроса — отдельным `sql`-объектом, а не колонкой,
+ * вписанной прямо в выражение. Замерено `toSQL()` (drizzle 0.45.2): собирая список столбцов запроса
+ * с ОДНОЙ таблицей во `FROM`, drizzle переписывает колоночные чанки в голые идентификаторы
+ * (`"vehicle_types"."id"` → `"id"`), но внутрь вложенного `sql`-объекта не заходит. Сегодня оба
+ * запроса этого файла идут с `innerJoin` по видам, переписывания нет вовсе, и с выносом SQL
+ * совпадает посимвольно — правка ничего не меняет ни в плане, ни в ответе (проверено сравнением
+ * собранного текста и 34 строк справочника).
+ *
+ * Она нужна на будущее, и не для всех трёх счётчиков одинаково. Голое имя Postgres ищет в самом
+ * внутреннем `FROM`, а не находит — идёт наружу, поэтому потеря квалификации опасна ровно там, где
+ * у внутренней таблицы есть СВОЙ столбец с тем же именем:
+ *
+ *   `vehicle_type_specs`  — столбца `id` нет вовсе, `specCount` уцелел бы и без выноса;
+ *   `vehicle_categories`  — `id` есть: `"vehicle_type_id" = "id"` сравнивало бы категорию с самой
+ *                           собой, и `categoryCount` стал бы нулём у каждого типа;
+ *   `vehicle_requests`    — `id` есть: то же самое с `frozenRequests`.
+ *
+ * Замер на копии базы: убери join — и категории показывают 0 там, где их две. Отказа при этом не
+ * бывает, обе колонки существуют, запрос законен; число просто врёт. Поэтому правило одно на все
+ * три выражения: ссылка наружу выносится, даже если сегодняшний контекст её и так бережёт.
+ */
+const typeIdRef = sql`${vehicleTypes.id}`;
+
 // Счётчики ТТХ и категорий (ADR 0016) — коррелированными подзапросами, чтобы список типов не
 // порождал запрос на строку. specCount = 0 означает, что у типа нет и не может быть категорий.
 const specCount = sql<number>`(
   SELECT count(*) FROM ${vehicleTypeSpecs}
-  WHERE ${vehicleTypeSpecs.vehicleTypeId} = ${vehicleTypes.id}
+  WHERE ${vehicleTypeSpecs.vehicleTypeId} = ${typeIdRef}
 )`;
 const categoryCount = sql<number>`(
   SELECT count(*) FROM ${vehicleCategories}
-  WHERE ${vehicleCategories.vehicleTypeId} = ${vehicleTypes.id}
+  WHERE ${vehicleCategories.vehicleTypeId} = ${typeIdRef}
 )`;
 // Сколько заявок типа дорабатывает по прежнему режиму — их застигло переключение признака
 // (миграция 0137). Тем же коррелированным подзапросом, что и счётчики выше, и по частичному
@@ -66,7 +90,7 @@ const categoryCount = sql<number>`(
 // костыль»: колонки снимка уходят, когда оно обнулится по всем типам, — и уходит вместе с ними.
 const frozenRequests = sql<number>`(
   SELECT count(*) FROM ${vehicleRequests}
-  WHERE ${vehicleRequests.vehicleTypeId} = ${vehicleTypes.id}
+  WHERE ${vehicleRequests.vehicleTypeId} = ${typeIdRef}
     AND ${vehicleRequests.isLinearFrozen} IS NOT NULL
 )`;
 

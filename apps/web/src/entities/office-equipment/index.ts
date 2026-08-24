@@ -6,9 +6,25 @@
  * Снаружи берут `@entities/office-equipment` — внутренние модули слайса не видны, и перестроить
  * его можно, не трогая ни вкладку справочника, ни будущий модуль заявок на обслуживание.
  */
-export { officeEquipmentApi, officeEquipmentTypesApi } from './api/officeEquipmentApi';
-export { officeEquipmentKeys, officeEquipmentTypeKeys } from './api/keys';
-export { officeEquipmentOptionsQuery, officeEquipmentTypeOptionsQuery } from './api/queries';
+export {
+  officeEquipmentApi,
+  officeEquipmentConsumablesApi,
+  officeEquipmentModelsApi,
+  officeEquipmentTypesApi,
+} from './api/officeEquipmentApi';
+export {
+  officeEquipmentConsumableKeys,
+  officeEquipmentKeys,
+  officeEquipmentModelKeys,
+  officeEquipmentTypeKeys,
+} from './api/keys';
+export {
+  officeEquipmentConsumablePickerQuery,
+  officeEquipmentModelOptionsQuery,
+  officeEquipmentModelPickerQuery,
+  officeEquipmentOptionsQuery,
+  officeEquipmentTypeOptionsQuery,
+} from './api/queries';
 export { EquipmentStateTag } from './ui/EquipmentStateTag';
 /**
  * Список единиц: колонки таблицы и карточка строки на телефоне. В слое сущности, а не у вкладки
@@ -29,6 +45,12 @@ export { WarrantyTag } from './ui/WarrantyTag';
  * набора одиннадцати полей с правилом «нужен хотя бы один номер» разъехались бы при первой правке.
  */
 export { OfficeEquipmentFields } from './ui/OfficeEquipmentFields';
+/**
+ * Форма модели аппарата (Р1). В слое сущности по той же причине, что и поля карточки: заводят
+ * модель из двух мест — из окна «Модели аппаратов» и из самой карточки техники, когда нужной
+ * модели в перечне не нашлось.
+ */
+export { OfficeEquipmentModelFormModal } from './ui/OfficeEquipmentModelFormModal';
 export {
   officeEquipmentPayload,
   officeEquipmentUpdatePayload,

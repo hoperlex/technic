@@ -12,9 +12,12 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1091.0",
+    "@technic/contracts": "workspace:*",
     "nodemailer": "9.0.4",
     "pg": "8.22.0",
-    "pino": "10.3.1"
+    "pino": "10.3.1",
+    "sharp": "0.35.3",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

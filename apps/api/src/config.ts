@@ -76,9 +76,63 @@ const rawSchema = z.object({
   MAIL_VERIFY_TTL_SECONDS: z.coerce.number().int().positive().default(86_400),
   MAIL_RESET_TTL_SECONDS: z.coerce.number().int().positive().default(3_600),
   MAIL_REGISTRATION_EXPIRY_DAYS: z.coerce.number().int().positive().default(7),
-  // Общий секрет worker → API для `/internal/mail/*`: у планировщика нет человека, от чьего имени
-  // он действует, поэтому и не JWT.
+  // Общий секрет worker → API для `/internal/*`: ни у планировщика рассылок, ни у автозакрытия
+  // заявок нет человека, от чьего имени они действуют, поэтому и не JWT.
   INTERNAL_API_TOKEN: z.string().optional(),
+
+  // Автозакрытие заявок оргтехники (план `docs/office-equipment-requests-rework-plan.md`, §7.3,
+  // решение Н7): сколько созревших заявок портал закрывает за один прогон.
+  //
+  // Настройкой задан размер пачки, а не срок молчания: срок — правило цикла, одинаковое для всех
+  // заявок (сутки, `SERVICE_AUTO_CLOSE_AFTER_HOURS`), а размер пачки — про нагрузку. В день выката
+  // отбор увидит все заявки, стоявшие в «Решена» до него, и уменьшенное значение разбирает эту
+  // очередь за несколько проходов вместо одного всплеска.
+  SERVICE_REQUEST_AUTO_CLOSE_BATCH: z.coerce.number().int().positive().default(50),
+  // Распознавание талонов вывоза (ADR 0114, план `docs/waste-ticket-ocr-plan.md`).
+  //
+  // Наружу портал ходит **только** через LLM-прокси заказчика: ключей провайдера у него нет и не
+  // будет, а `AI_PROVIDER_MODE` решает, живой это транспорт или заглушка. `stub` — не «выключено»,
+  // а «отвечает предсказуемым ответом»: так работают тесты и разработка без сети и без расхода.
+  AI_PROVIDER_MODE: z.enum(['proxy', 'stub']).default('stub'),
+  PROXY_LLM_BASE_URL: z.string().url().optional(),
+  PROXY_LLM_TOKEN: z.string().optional(),
+  // Флаг выдан заказчиком вместе с адресом; его точный смысл подтверждается оператором прокси
+  // (Р6 плана) — портал только передаёт его дальше и не толкует.
+  PROXY_LLM_ACK_NO_PROVIDER_POLICY: boolFromEnv(false),
+
+  // Признак модуля отдельно от транспорта: прокси может быть настроен, а распознавание выключено —
+  // например, пока не получены ответы по хранению сканов (В1).
+  TICKET_OCR_ENABLED: boolFromEnv(false),
+  // Слаг каталога OpenRouter. Заглушка `proxy` означает «модель выбирает прокси» и остаётся
+  // безопасным значением по умолчанию: при варианте B заказчик называет слаг сам, но до первого
+  // замера мы не знаем какой (этап 1 плана).
+  TICKET_OCR_MODEL: z.string().default('proxy'),
+  TICKET_OCR_ESCALATION_MODEL: z.string().optional(),
+  // Потолок обращений к прокси. Своей очереди у прокси две — наша клиентская и общая на всех, —
+  // и упираться в чужую ценой отказов незачем.
+  TICKET_OCR_MAX_PER_MINUTE: z.coerce.number().int().positive().default(30),
+  // Длинная сторона после ресайза. Значение по умолчанию — потолок разрешения моделей 4.7+;
+  // уточняется замером, потому что за пиксели платят токенами.
+  TICKET_OCR_MAX_EDGE_PX: z.coerce.number().int().positive().default(2576),
+  // Страниц в файле (В7): бухгалтерия сканирует пачкой на МФУ, и разбирать одну страницу из пяти
+  // значило бы отправлять остальные на ручной ввод.
+  TICKET_OCR_MAX_PAGES: z.coerce.number().int().positive().default(5),
+  // Таймаут вызова зажат с двух сторон: он обязан быть меньше дедлайна прокси (~190 с) и меньше
+  // `idle_in_transaction_session_timeout`, потому что вызов идёт внутри открытой транзакции.
+  TICKET_OCR_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  // Доля подтверждённых машинных талонов, уходящая на слепую перепроверку.
+  TICKET_OCR_BLIND_CHECK_RATE: z.coerce.number().min(0).max(1).default(0.05),
+  // Допуски сверки. Жёсткая — сумма талонов против факта закрытия: ноль означает «до кубометра»,
+  // потому что за это платят. Мягкая — против заявленного: заявка это план, недогруз законен, и
+  // замечание ставится только на перегруз. Дневной допуск нужен исторической дате, где фактической
+  // даты вывоза нет вовсе и сверять приходится с плановой.
+  TICKET_VOLUME_TOLERANCE: z.coerce.number().min(0).default(0),
+  TICKET_VOLUME_PLAN_TOLERANCE: z.coerce.number().min(0).max(1).default(0.1),
+  TICKET_DATE_TOLERANCE_DAYS: z.coerce.number().int().min(0).default(3),
+  // Срок хранения **несвязанных** попыток распознавания: попытку, на которую ссылается живой
+  // талон, уборка не трогает — это журнал цифры, а не мусор.
+  TICKET_OCR_ATTEMPT_TTL_DAYS: z.coerce.number().int().positive().default(180),
+
   SENTRY_DSN: z.string().optional(),
 });
 
@@ -93,6 +147,7 @@ const SECRET_KEYS = [
   'JWT_PUBLIC_KEY_PEM',
   'SMTP_PASSWORD',
   'INTERNAL_API_TOKEN',
+  'PROXY_LLM_TOKEN',
 ] as const;
 
 /** PEM может быть задан inline или путём к файлу. */
@@ -144,6 +199,26 @@ function loadConfig() {
     if (missing.length > 0) {
       throw new Error(
         `MAIL_ENABLED=true с MAIL_TRANSPORT=smtp требует заполнить: ${missing.join(', ')}.`,
+      );
+    }
+  }
+
+  // Распознавание талонов с боевым транспортом требует адреса и токена прокси. Проверка стоит
+  // здесь, а не при первом вызове: талон приезжает к закрытию заявки, и «не задан
+  // PROXY_LLM_TOKEN» обнаружился бы вечером на закрытии, а не при выкате — ровно та же логика,
+  // по которой почтовые каналы поднимаются на старте.
+  if (env.TICKET_OCR_ENABLED && env.AI_PROVIDER_MODE === 'proxy') {
+    const missing = (
+      [
+        ['PROXY_LLM_BASE_URL', env.PROXY_LLM_BASE_URL],
+        ['PROXY_LLM_TOKEN', env.PROXY_LLM_TOKEN],
+      ] as const
+    )
+      .filter(([, value]) => !value)
+      .map(([key]) => key);
+    if (missing.length > 0) {
+      throw new Error(
+        `TICKET_OCR_ENABLED=true с AI_PROVIDER_MODE=proxy требует заполнить: ${missing.join(', ')}.`,
       );
     }
   }
@@ -211,6 +286,32 @@ function loadConfig() {
       registrationExpiryDays: env.MAIL_REGISTRATION_EXPIRY_DAYS,
       internalToken: env.INTERNAL_API_TOKEN ?? '',
       accounts: mailAccountsFromEnv(),
+    },
+    serviceRequests: {
+      /** Размер пачки автозакрытия «Решена» → «Закрыта» за один прогон (Н7). */
+      autoCloseBatch: env.SERVICE_REQUEST_AUTO_CLOSE_BATCH,
+    },
+    ticketOcr: {
+      enabled: env.TICKET_OCR_ENABLED,
+      mode: env.AI_PROVIDER_MODE,
+      proxy: {
+        baseUrl: env.PROXY_LLM_BASE_URL ?? '',
+        token: env.PROXY_LLM_TOKEN ?? '',
+        ackNoProviderPolicy: env.PROXY_LLM_ACK_NO_PROVIDER_POLICY,
+      },
+      model: env.TICKET_OCR_MODEL,
+      escalationModel: env.TICKET_OCR_ESCALATION_MODEL ?? '',
+      maxPerMinute: env.TICKET_OCR_MAX_PER_MINUTE,
+      maxEdgePx: env.TICKET_OCR_MAX_EDGE_PX,
+      maxPages: env.TICKET_OCR_MAX_PAGES,
+      httpTimeoutMs: env.TICKET_OCR_HTTP_TIMEOUT_MS,
+      blindCheckRate: env.TICKET_OCR_BLIND_CHECK_RATE,
+      tolerances: {
+        volumeM3: env.TICKET_VOLUME_TOLERANCE,
+        volumePlanShare: env.TICKET_VOLUME_PLAN_TOLERANCE,
+        dateDays: env.TICKET_DATE_TOLERANCE_DAYS,
+      },
+      attemptTtlDays: env.TICKET_OCR_ATTEMPT_TTL_DAYS,
     },
     sentryDsn: env.SENTRY_DSN,
   };

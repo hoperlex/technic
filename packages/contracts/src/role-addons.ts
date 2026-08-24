@@ -22,8 +22,11 @@ export type RoleAddon = (typeof ROLE_ADDONS)[number];
 export const roleAddonLabels: Record<RoleAddon, string> = {
   // Подпись называет предмет работы, а не набор прав: в списке учёток её читают рядом с ролью, и
   // «Оператор» без уточнения спорил бы с «Оператором (внешним исполнителем)».
-  office_equipment_operator: 'Оператор (оргтехника)',
-  office_equipment_it_approver: 'Согласование ИТ',
+  // Названия приведены к каталогу полномочий (волна В5 плана переработки заявок): человек видит в
+  // списке учёток ту же подпись, что администратор выбирает при выдаче набора, — иначе «Оператор
+  // (оргтехника)» и «Оргтехника: ведение» читались бы как два разных доступа.
+  office_equipment_operator: 'Оргтехника: ведение',
+  office_equipment_it_approver: 'Оргтехника: ИТ-служба',
 };
 
 export const roleAddonColors: Record<RoleAddon, string> = {

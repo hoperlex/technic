@@ -58,7 +58,7 @@ export function ItApprovalModal({
   const reject = () => {
     const reason = (form.getFieldValue('reason') as string | undefined)?.trim();
     if (!reason) {
-      form.setFields([{ name: 'reason', errors: ['Укажите причину отказа'] }]);
+      form.setFields([{ name: 'reason', errors: ['Укажите, почему аппарат дешевле заменить'] }]);
       return;
     }
     mutation.mutate(false);
@@ -66,14 +66,14 @@ export function ItApprovalModal({
 
   return (
     <ViewModal
-      title={request ? `Согласование ИТ ${request.displayNumber}` : 'Согласование ИТ'}
+      title={request ? `Решение ИТ по смете ${request.displayNumber}` : 'Решение ИТ по смете'}
       open={!!request}
       onClose={onClose}
       width={640}
       destroyOnHidden
       footer={[
         <Button key="reject" danger loading={mutation.isPending} onClick={reject}>
-          Отклонить
+          Менять аппарат
         </Button>,
         <Button
           key="approve"
@@ -81,7 +81,7 @@ export function ItApprovalModal({
           loading={mutation.isPending}
           onClick={() => mutation.mutate(true)}
         >
-          Согласовать
+          Чинить за эти деньги
         </Button>,
       ]}
     >
@@ -89,12 +89,35 @@ export function ItApprovalModal({
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <ServiceRequestContext request={request} />
 
+          {/*
+            * Виза уехала со входа на смету (ADR 0133): вопрос теперь не «звать ли сервис», а
+            * «стоит ли этот ремонт своих денег». Врезка объясняет оба исхода, потому что второй
+            * закрывает заявку — а кнопка «Менять аппарат» без объяснения читалась бы как отказ
+            * визировать, а не как решение по технике.
+            */}
           <Alert
             type="info"
             showIcon
-            message="Решение: звать ли внешний сервис"
-            description="Согласованную заявку оператор передаёт сервисной компании. Отказ закрывает её с причиной — заказчик увидит объяснение в истории."
+            message="Решение: чинить за эту сумму или менять аппарат"
+            description="«Чинить» оставляет заявку на согласовании — сумму подписывает тот, кто ведёт модуль. «Менять аппарат» закрывает её с причиной и с пометкой «рекомендована замена»: по таким заявкам собирают список того, что пора обновить."
           />
+
+          {/* Смета — предмет решения, и без неё оно не принимается: сумма показывается здесь же. */}
+          {request.estimatedTotalAmount !== null && (
+            <div>
+              <Typography.Text strong>Смета</Typography.Text>
+              <div>
+                {request.estimatedTotalAmount.toLocaleString('ru-RU', {
+                  style: 'currency',
+                  currency: 'RUB',
+                  maximumFractionDigits: 2,
+                })}
+                {request.estimateRevision > 1 && (
+                  <Typography.Text type="secondary"> · ревизия {request.estimateRevision}</Typography.Text>
+                )}
+              </div>
+            </div>
+          )}
 
           {request.isUrgent && (
             <Space size={8} wrap>
@@ -118,14 +141,14 @@ export function ItApprovalModal({
           <Form form={form} layout="vertical">
             <Form.Item
               name="reason"
-              label="Причина отказа"
-              extra="Нужна только при отказе: согласие объясняет себя само."
+              label="Причина замены"
+              extra="Нужна только для «Менять аппарат»: согласие на ремонт объясняет себя суммой."
               style={{ marginBottom: 0 }}
             >
               <Input.TextArea
                 rows={2}
                 maxLength={1000}
-                placeholder="Например: чиним своими силами, картридж на складе"
+                placeholder="Например: ремонт дороже половины нового аппарата, менять"
               />
             </Form.Item>
           </Form>

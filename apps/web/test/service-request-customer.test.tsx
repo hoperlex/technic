@@ -337,6 +337,48 @@ describe('правка без касания поля шлёт прежнего 
   });
 });
 
+/**
+ * Подразделение заявителя (Н11) — «откуда человек», а не «от чьего имени просят».
+ *
+ * Проверяется то, что иначе ловится только отказом сервера: у учётки с двумя отделами одно
+ * значение не подставить, и сервер отвечает 422 «Укажите отдел, в котором числится заявитель».
+ * Не спроси форма — заявка не заводилась бы вовсе, а человек видел бы отказ по полю, которого в
+ * ней нет. Там же, где привязка одна, поля быть не должно: сервер подставит её сам, и
+ * обязательное поле с единственным вариантом стоило бы человеку клика.
+ */
+describe('подразделение заявителя (Н11)', () => {
+  const create = {
+    'POST /service-requests': () => json({ request: request(), mail: 'queued' }, 201),
+  };
+
+  it('у двух отделов форма спрашивает свой и шлёт его идентификатором', async () => {
+    const http = renderForm(DEP_USER, { routes: create });
+    await selectOption('Техника', /Kyocera/);
+    await selectOption('Заказчик', PTO_LABEL);
+    fireEvent.change(screen.getByLabelText('Неисправность'), {
+      target: { value: 'Не захватывает бумагу' },
+    });
+    await selectOption('Отдел заявителя', PTO_LABEL);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+
+    const body = bodyOf(http, 'POST /service-requests');
+    expect(body.requesterDepartmentId).toBe('dep-1');
+    // Площадка не уходит вовсе: подразделение — либо отдел, либо она, и оба сразу сервер отбивает.
+    expect('requesterObjectId' in body).toBe(false);
+  });
+
+  it('единственная привязка не спрашивается: её подставит сервер', async () => {
+    // Оператор с одним объектом и без отделов — самый частый случай, и лишнее поле в форме тут
+    // означало бы вопрос, ответ на который известен заранее.
+    renderForm(OPERATOR, { routes: create });
+    await selectOption('Техника', /Kyocera/);
+
+    expect(document.getElementById('requesterPlaceId')).toBeNull();
+  });
+});
+
 describe('заведение шлёт осознанное значение (Р12а)', () => {
   const create = {
     'POST /service-requests': () => json({ request: request(), mail: 'queued' }, 201),

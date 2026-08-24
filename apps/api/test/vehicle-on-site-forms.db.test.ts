@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeReadModes, inLegacy, useReadModeDatabase } from './assignment-read-mode';
 import { moscowDateKeyOf, shiftDateKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 import { issueRequestEsm2 } from './waybill-issue-helper';
@@ -36,7 +37,11 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается: обычный прогон тестов базы не требует.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('onsite');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 const ADMIN_EMAIL = 'db-on-site-forms-admin@example.invalid';
 const PASSWORD = 'db-test-password-123';
@@ -211,7 +216,15 @@ interface Request {
 }
 
 /** Заказ техники на объект, доведённый до работы: срок — сегодня плюс три дня. */
+/*
+ * ЭСМ2-РАЗРЕЗ. Заказ переводится в работу в сегодняшнем мире (`inLegacy`): в `history` статусная
+ * ручка упирается в бэкстоп (Р22), а предмет файла — отбор форм на площадке, не она.
+ */
 async function requestInProgress(typeId: string, vehicleId: string): Promise<Request> {
+  return inLegacy(readMode, () => requestInProgressNow(typeId, vehicleId));
+}
+
+async function requestInProgressNow(typeId: string, vehicleId: string): Promise<Request> {
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-requests',
@@ -338,8 +351,7 @@ async function onSiteSummaryTotal(request: Request, forms?: string): Promise<num
 
 describe.skipIf(!DB_URL)('отбор среза «На объекте» по бланку работы дня (живая схема)', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
     await seedAdmin();
 
     const { buildApp } = await import('../src/app');
@@ -479,6 +491,15 @@ describe.skipIf(!DB_URL)('отбор среза «На объекте» по б�
     await ctx?.closeDb();
   });
 
+  /*
+   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+   *
+   * Сегодня половины совпадают: отбор идёт по бланку, накрывающему день. На этапе 5 у недели станет два бланка, и «ищется как ЭСМ-2 и только им» придётся уточнить — каким именно.
+   */
+  describeReadModes(readMode, 'формы на площадке', (mode) => {
+    void mode;
+
   it('нелинейный заказ своей машиной ищется как ЭСМ-2 и только им', async () => {
     const request = await requestInProgress(ctx.plainTypeId, ctx.plainVehicleId);
 
@@ -573,5 +594,6 @@ describe.skipIf(!DB_URL)('отбор среза «На объекте» по б�
     await planToday(linear.id, ctx.dayVehicleId);
     expect(await onSiteSummaryTotal(linear, '4p')).toBe(1);
     expect(await onSiteSummaryTotal(linear, 'esm2')).toBe(0);
+  });
   });
 });

@@ -5,6 +5,7 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   FileTextOutlined,
+  InboxOutlined,
   MailOutlined,
   MessageOutlined,
   PauseCircleOutlined,
@@ -20,31 +21,24 @@ import {
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   actsForCounterparty,
+  hasServiceClosingDocument,
+  serviceRequestNeedsClosingDocument,
   allowedServiceStatusTransitions,
   can as hasPermission,
   canResumeService,
+  isServiceExecutor,
   isServiceRequestEditable,
   serviceMailRepeatable,
-  type ModuleMailOutcome,
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
+import type { HoldMode } from '@features/service-hold';
 import { officeEquipmentKeys } from '@entities/office-equipment';
-import { AssignServiceModal } from '@features/assign-service';
-import { EstimateEditorModal } from '@features/estimate-editor';
-import { EstimateApprovalModal } from '@features/estimate-approval';
-import { ServiceCommentModal } from '@features/service-comment';
-import { ServiceCompleteModal } from '@features/service-complete';
-import { ServiceAcceptModal, type AcceptMode } from '@features/service-accept';
-import { ServiceHoldModal, type HoldMode } from '@features/service-hold';
-import { EquipmentMoveFromRequest } from '@features/equipment-move';
-import { ItApprovalModal } from '@features/it-approval';
-import { ServiceUrgencyModal } from '@features/service-urgency';
 import type { ActionSheetItem } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
-import { serviceReasonPrompts, type ReasonPrompt } from './serviceRequestPrompts';
+import { useServiceRequestModals } from './serviceRequestModals';
+import { serviceReasonPrompts } from './serviceRequestPrompts';
 import { reportServiceMail } from './serviceMailNotice';
-import { ReasonModal } from '../../components/CancelReasonModal';
 import { errorMessage } from '../../utils/format';
 
 /**
@@ -69,41 +63,7 @@ export function useServiceRequestActions(): {
   const { message } = App.useApp();
   const qc = useQueryClient();
 
-  const [assignTarget, setAssignTarget] = useState<ServiceRequestDto | null>(null);
-  const [estimateTarget, setEstimateTarget] = useState<ServiceRequestDto | null>(null);
-  const [approvalTarget, setApprovalTarget] = useState<ServiceRequestDto | null>(null);
-  const [completeTarget, setCompleteTarget] = useState<ServiceRequestDto | null>(null);
-  const [acceptTarget, setAcceptTarget] = useState<{
-    request: ServiceRequestDto;
-    mode: AcceptMode;
-  } | null>(null);
-  const [holdTarget, setHoldTarget] = useState<{
-    request: ServiceRequestDto;
-    mode: HoldMode;
-  } | null>(null);
-  const [urgencyTarget, setUrgencyTarget] = useState<ServiceRequestDto | null>(null);
-  const [commentTarget, setCommentTarget] = useState<ServiceRequestDto | null>(null);
-  const [itTarget, setItTarget] = useState<ServiceRequestDto | null>(null);
-  const [moveTarget, setMoveTarget] = useState<ServiceRequestDto | null>(null);
-  const [prompt, setPrompt] = useState<ReasonPrompt | null>(null);
-
-  /**
-   * Переходы с одной лишь причиной идут одной мутацией: гасит кэш и сообщает об успехе она одна,
-   * поэтому «отказался», «переоткрыл» и «отменил» не могут разойтись в поведении.
-   */
-  const reasonMutation = useMutation({
-    mutationFn: (task: { run: () => Promise<unknown>; success: string }) => task.run(),
-    onSuccess: (result, task) => {
-      message.success(task.success);
-      // Отмена шлёт письмо службе: «не выезжайте». Если письма не будет, человек узнаёт об этом
-      // здесь же — служба читает почту, а не портал.
-      reportServiceMail(message, (result as { mail?: ModuleMailOutcome } | null)?.mail);
-      void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
-      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
-      setPrompt(null);
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
+  const modals = useServiceRequestModals();
 
   /**
    * Повторная отправка письма службе (Р70). Ключ идемпотентности живёт до успеха: два нажатия
@@ -150,56 +110,71 @@ export function useServiceRequestActions(): {
     // Архивной заявке ход не положен: её либо восстанавливают, либо сносят — это действия архива.
     if (request.deletedAt) return [];
 
-    const allowed = allowedServiceStatusTransitions(request.status, user);
+    /*
+     * Коридор считается с признаками назначения (волна В6): ход исполнителя открывает не право, а
+     * назначение на **эту** заявку — поимённое вместе с `serviceRequests.execute` либо своя
+     * компания в исполнителях (Н5). Сервер спрашивает то же самое теми же признаками, поэтому меню
+     * и ответ маршрута не расходятся.
+     */
+    const assignment = {
+      actsForAssignedCounterparty: actsForCounterparty(user, 'service'),
+      isNamedExecutor: request.executors.some((e) => e.userId === user?.id),
+    };
+    const allowed = allowedServiceStatusTransitions(request.status, user, assignment);
     const has = (status: (typeof allowed)[number]) => allowed.includes(status);
-    const executor = actsForCounterparty(user, 'service');
+    const executor = assignment.actsForAssignedCounterparty;
     const items: ActionSheetItem[] = [];
-    const ask = (p: ReasonPrompt) => setPrompt(p);
+    const ask = modals.ask;
     // Переходы «только с причиной» собраны отдельно: их шесть, и различаются они подписями, а не
     // поведением (`serviceRequestPrompts.ts`).
     const prompts = serviceReasonPrompts(request, executor);
 
     /*
-     * Виза ИТ (Р51) — первый шаг цикла: до неё сервис не назначают. Одно действие на согласие и
-     * отказ: решение одно, и разводить его двумя кнопками в меню значило бы предлагать отказ
-     * наравне с согласием там, где чаще нужно второе.
+     * Виза ИТ уехала со входа на смету (Н3): вопрос «чинить за эти деньги или менять аппарат»
+     * задаётся, когда есть счёт, а не когда заявку только завели. Одно действие на оба исхода —
+     * решение одно, и разводить его двумя кнопками значило бы предлагать замену наравне с ремонтом.
+     *
+     * Условие — `waitingOn === 'it'`, а не право и не дуга. Сервер считает эту сторону по строке
+     * заявки, сверяя ревизию подписи с текущей (`serviceRequestWaitingOn`): подпись прошлой ревизии
+     * визой не считается, а повторную на ту же ревизию маршрут отбивает 422. Спроси мы право —
+     * пункт висел бы у согласующего и после подписи.
      */
-    // Спрашивается статус, а не дуга: `it_approved` даёт и отказ исполнителя из «Назначен сервис»,
-    // и по одной дуге пункт всплывал бы у сервиса — окно открылось бы, сервер ответил бы 403.
-    if (request.status === 'new' && has('it_approved')) {
+    if (request.status === 'estimate_review' && request.waitingOn === 'it') {
       items.push({
         key: 'it-approval',
-        label: 'Согласование ИТ',
+        label: 'Решение ИТ по смете',
         icon: <SafetyCertificateOutlined />,
-        primary: true, // главный шаг «Новой»: до визы сервис не назначают
-        onClick: () => setItTarget(request),
+        primary: true, // главный шаг статуса: пока визы нет, сумму не согласуют
+        onClick: () => modals.itApproval(request),
       });
     }
 
     if (has('assigned')) {
-      const reassign = request.status !== 'it_approved';
+      // Назначение — главный шаг «Новой» (и мёртвого `it_approved`, пока такие заявки есть):
+      // дальше это уже переназначение, то есть разбор ошибки, а не ожидаемый ход.
+      const first = request.status === 'new' || request.status === 'it_approved';
       items.push({
         key: 'assign',
-        label: reassign ? 'Переназначить сервис' : 'Назначить сервис',
+        label: first ? 'Назначить исполнителей' : 'Изменить исполнителей',
         icon: <UserSwitchOutlined />,
-        // Назначение — главный шаг только сразу после визы: переназначение в «Диагностике» — это
-        // разбор ошибки, а не шаг, которого ждут.
-        primary: !reassign,
-        onClick: () => setAssignTarget(request),
+        primary: first,
+        onClick: () => modals.assign(request),
       });
     }
 
-    if (request.status === 'assigned' && has('diagnostics')) {
+    // «Диагностики» больше нет (Н2): исполнитель принимает заявку в работу и оттуда предъявляет
+    // смету — состояние «взялся» у ремонта и у расходников теперь одно и называется одинаково.
+    if (request.status === 'assigned' && has('in_work')) {
       items.push({
         key: 'start',
-        label: 'Взять в диагностику',
+        label: 'Принять в работу',
         icon: <PlayCircleOutlined />,
         primary: true,
         onClick: () => startMutation.mutate(request),
       });
     }
 
-    if (request.status === 'assigned' && has('it_approved')) {
+    if (request.status === 'assigned' && has('new')) {
       items.push({
         key: 'decline',
         label: executor ? 'Отказаться от заявки' : 'Вернуть в «Новую»',
@@ -209,53 +184,116 @@ export function useServiceRequestActions(): {
       });
     }
 
-    if (request.status === 'diagnostics' && has('estimate_review')) {
+    /*
+     * Смета предъявляется из «В работе»; `diagnostics` рядом — legacy: снимается выпуском 2, пока
+     * такие заявки ещё стоят в базе.
+     *
+     * У расходников сметы нет вовсе (§6.2): картридж берут со своего склада, согласовывать по нему
+     * нечего и не у кого, — и заход в смету у этого вида заявки не открыт ни одной стороне.
+     */
+    if (
+      request.kind === 'repair' &&
+      (request.status === 'in_work' || request.status === 'diagnostics') &&
+      has('estimate_review')
+    ) {
       items.push({
         key: 'estimate',
         label: 'Смета',
         icon: <FileTextOutlined />,
-        primary: true,
-        onClick: () => setEstimateTarget(request),
+        primary: request.status === 'in_work' && !request.estimateSubmittedAt,
+        onClick: () => modals.estimate(request),
       });
     }
 
-    if (request.status === 'estimate_review') {
-      if (has('in_work') && hasPermission(user, 'serviceRequests.approveEstimate')) {
-        items.push({
-          key: 'approval',
-          label: 'Согласование сметы',
-          icon: <AuditOutlined />,
-          primary: true,
-          onClick: () => setApprovalTarget(request),
-        });
-      } else if (has('diagnostics')) {
-        items.push({
-          key: 'reject-estimate',
-          label: 'Вернуть в диагностику',
-          icon: <RollbackOutlined />,
-          onClick: () => ask(prompts.rejectEstimate),
-        });
-      }
+    /*
+     * Сумму согласуют **после** визы ИТ (Н3), и `waitingOn` это уже знает: пока он `it`, пункт не
+     * показывается — сервер на такое согласование отвечает 422 «Сумму согласуют после визы ИТ».
+     * Оба исхода (согласие и отклонение) ведут в «В работе» и живут в одном окне: различает их не
+     * дуга, а тело действия.
+     */
+    if (
+      request.status === 'estimate_review' &&
+      request.waitingOn === 'operator' &&
+      has('in_work') &&
+      hasPermission(user, 'serviceRequests.approveEstimate')
+    ) {
+      items.push({
+        key: 'approval',
+        label: 'Согласование сметы',
+        icon: <AuditOutlined />,
+        primary: true,
+        onClick: () => modals.approval(request),
+      });
     }
 
-    if (request.status === 'in_work') {
+    if (request.status === 'in_work' || request.status === 'diagnostics') {
       if (has('done')) {
+        /*
+         * Планка закрывающего документа переехала с приёмки на «Решена» (Н8) и стоит только у
+         * сервисного ремонта — предикат контрактов, а не своя копия правила. Кнопка при этом
+         * остаётся видимой и неактивной: спрятанная, она читалась бы как «мне это не положено», а
+         * причина запрета — «бумаги нет», и она написана рядом.
+         */
+        // Предикат берёт вид заявки и назначенного контрагента; в DTO компания лежит объектом
+        // (`service`), поэтому сюда передаётся её идентификатор, а правило остаётся одно на портал
+        // и сервер.
+        const needsDoc =
+          serviceRequestNeedsClosingDocument({
+            kind: request.kind,
+            serviceCounterpartyId: request.service?.id ?? null,
+          }) && !hasServiceClosingDocument(request);
         items.push({
           key: 'complete',
           label: 'Закрыть работы',
           icon: <CheckCircleOutlined />,
-          primary: true,
-          onClick: () => setCompleteTarget(request),
+          primary: !needsDoc,
+          disabled: needsDoc,
+          disabledReason: needsDoc
+            ? 'Сначала подшейте акт, счёт или гарантийный талон — без документа заявка не уходит в «Решена»'
+            : undefined,
+          onClick: () => modals.complete(request),
         });
       }
-      if (has('diagnostics')) {
+      /*
+       * «Вернуть смету в правку» — единственный путь изменить согласованную смету (уточнение В3):
+       * ручка снимает снимок согласования, не двигая статус. Пункт показывается ровно там, где он
+       * что-то меняет: пока согласованная ревизия совпадает с текущей.
+       */
+      if (request.approval?.revision === request.estimateRevision) {
         items.push({
           key: 'reopen',
-          label: 'Переоткрыть смету',
+          label: 'Вернуть смету в правку',
           icon: <UndoOutlined />,
           onClick: () => ask(prompts.reopenEstimate),
         });
       }
+    }
+
+    /*
+     * Отметка о выдаче расходников (Р6): склад двигает она, а не смена статуса, — поэтому пункт
+     * стоит рядом с ходами, а не внутри них, и живёт в двух статусах сразу. В «В работе» им
+     * отмечают выдачу до закрытия, в «Решена» — правят то, что уже списано.
+     *
+     * После «Закрыта» пункта нет: строки заявки замирают, и всё дальнейшее — ручная правка остатка
+     * с причиной и своим правом (Р8). Сервер отвечает на такую правку 422, и кнопка, ведущая в
+     * него, была бы обещанием, которого он не даёт.
+     *
+     * Кто вправе — тот же предикат, что и на сервере (`assertConsumableIssuer`): назначенный
+     * исполнитель (поимённо с `execute` либо своей компанией) **либо** тот, кто ведёт заявки и
+     * разбирает ошибки за любую сторону.
+     */
+    if (
+      request.kind === 'consumable' &&
+      (request.status === 'in_work' || request.status === 'done') &&
+      (isServiceExecutor(user, assignment) || hasPermission(user, 'serviceRequests.status'))
+    ) {
+      const marked = request.consumables.some((line) => line.issuedQuantity !== null);
+      items.push({
+        key: 'consumables-issued',
+        label: marked ? 'Изменить выданное' : 'Отметить выдачу',
+        icon: <InboxOutlined />,
+        onClick: () => modals.issue(request),
+      });
     }
 
     if (request.status === 'done') {
@@ -267,7 +305,7 @@ export function useServiceRequestActions(): {
           // Сюда же ведёт подпись «Вам: нужен закрывающий документ» (Р120): бумагу подшивают в
           // том же окне, и второго адреса у этого шага нет.
           primary: true,
-          onClick: () => setAcceptTarget({ request, mode: 'accept' }),
+          onClick: () => modals.accept(request, 'accept'),
         });
       }
       if (has('in_work')) {
@@ -276,7 +314,7 @@ export function useServiceRequestActions(): {
           label: 'Вернуть на доработку',
           icon: <RollbackOutlined />,
           danger: true,
-          onClick: () => setAcceptTarget({ request, mode: 'rework' }),
+          onClick: () => modals.accept(request, 'rework'),
         });
       }
     }
@@ -320,7 +358,7 @@ export function useServiceRequestActions(): {
         key: holdMode,
         label: holdMode === 'resume' ? 'Возобновить' : 'Отложить',
         icon: holdMode === 'resume' ? <PlayCircleOutlined /> : <PauseCircleOutlined />,
-        onClick: () => setHoldTarget({ request, mode: holdMode }),
+        onClick: () => modals.hold(request, holdMode),
       });
     }
 
@@ -344,7 +382,7 @@ export function useServiceRequestActions(): {
         key: 'urgency',
         label: request.isUrgent ? 'Снять срочность' : 'Отметить срочной',
         icon: <ThunderboltOutlined />,
-        onClick: () => setUrgencyTarget(request),
+        onClick: () => modals.urgency(request),
       });
     }
 
@@ -364,7 +402,7 @@ export function useServiceRequestActions(): {
         key: 'service-comment',
         label: 'Примечание исполнителя',
         icon: <MessageOutlined />,
-        onClick: () => setCommentTarget(request),
+        onClick: () => modals.comment(request),
       });
     }
 
@@ -379,7 +417,7 @@ export function useServiceRequestActions(): {
         key: 'move-equipment',
         label: 'Записать перемещение техники',
         icon: <SwapOutlined />,
-        onClick: () => setMoveTarget(request),
+        onClick: () => modals.moveEquipment(request),
       });
     }
 
@@ -414,48 +452,5 @@ export function useServiceRequestActions(): {
     return items;
   };
 
-  const modals = (
-    <>
-      <AssignServiceModal request={assignTarget} onClose={() => setAssignTarget(null)} />
-      <EstimateEditorModal request={estimateTarget} onClose={() => setEstimateTarget(null)} />
-      <EstimateApprovalModal request={approvalTarget} onClose={() => setApprovalTarget(null)} />
-      <ServiceCompleteModal request={completeTarget} onClose={() => setCompleteTarget(null)} />
-      <ServiceAcceptModal
-        request={acceptTarget?.request ?? null}
-        mode={acceptTarget?.mode ?? 'accept'}
-        onClose={() => setAcceptTarget(null)}
-      />
-      <ServiceHoldModal
-        request={holdTarget?.request ?? null}
-        mode={holdTarget?.mode ?? 'hold'}
-        onClose={() => setHoldTarget(null)}
-      />
-      <ServiceUrgencyModal request={urgencyTarget} onClose={() => setUrgencyTarget(null)} />
-      <ServiceCommentModal request={commentTarget} onClose={() => setCommentTarget(null)} />
-      <ItApprovalModal request={itTarget} onClose={() => setItTarget(null)} />
-      {moveTarget && (
-        <EquipmentMoveFromRequest
-          equipmentId={moveTarget.equipment.id}
-          serviceRequestId={moveTarget.id}
-          open
-          onClose={() => setMoveTarget(null)}
-        />
-      )}
-      <ReasonModal
-        open={!!prompt}
-        title={prompt?.title}
-        label={prompt?.label}
-        okText={prompt?.okText}
-        danger={prompt?.danger}
-        confirmLoading={reasonMutation.isPending}
-        onCancel={() => setPrompt(null)}
-        onSubmit={(reason) => {
-          if (!prompt) return;
-          reasonMutation.mutate({ run: () => prompt.submit(reason), success: prompt.success });
-        }}
-      />
-    </>
-  );
-
-  return { actionsFor, modals, pending: reasonMutation.isPending || startMutation.isPending };
+  return { actionsFor, modals: modals.node, pending: modals.pending || startMutation.isPending };
 }

@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { describeReadModes, inLegacy, useReadModeDatabase } from './assignment-read-mode';
 import {
   moscowDateKeyOf,
   shiftDateKey,
@@ -42,7 +43,11 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('wbcorr');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 /**
  * Что происходит внутри сборки PDF. Обычно ничего — тогда конвертер просто отдаёт байты, и печать
@@ -231,7 +236,17 @@ async function seedPerson(): Promise<string> {
  * Выписанный недельный лист: заявку на технику берут в работу, и портал выписывает бланк сам —
  * отдельной ручки «выписать» у журнала нет.
  */
+/*
+ * ЭСМ2-РАЗРЕЗ. Сцена собирается **в сегодняшнем мире** (`inLegacy`), а проверяется в назначенном
+ * режиме. Причина: заказ заводится статусной ручкой, а в `history` её останавливает бэкстоп (Р22) —
+ * история назначения стала источником истины, и чужая дверь её не достраивает. Предмет файла —
+ * списание бланка задним числом, к подготовке заказа он отношения не имеет.
+ */
 async function issueWaybill(): Promise<Sheet> {
+  return inLegacy(readMode, issueWaybillNow);
+}
+
+async function issueWaybillNow(): Promise<Sheet> {
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-requests',
@@ -372,8 +387,7 @@ function uuid(): string {
 
 describe.skipIf(!DB_URL)('коррекция задним числом: списание и печать (живая схема)', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
 
     const adminId = await seedUser(ADMIN_EMAIL, 'admin');
     await seedUser(DISPATCHER_EMAIL, 'dispatcher');
@@ -470,6 +484,15 @@ describe.skipIf(!DB_URL)('коррекция задним числом: спис
     await ctx?.app.close();
     await ctx?.closeDb();
   }, 60_000);
+
+  /*
+   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+   *
+   * Сегодня половины совпадают: глубину и право коррекция считает по датам, а не по бумаге. На этапе 5 расходится фикстура movePast — её надо переписать на отрезок (например ср–пт), иначе файл будет мерить глубину только по воскресеньям.
+   */
+  describeReadModes(readMode, 'списание задним числом', (mode) => {
+    void mode;
 
   it('без права прошедший день закрыт, а сегодняшний лист тот же человек списывает', async () => {
     const past = await issueWaybill();
@@ -641,4 +664,5 @@ describe.skipIf(!DB_URL)('коррекция задним числом: спис
       duringRender = null;
     }
   }, 180_000);
+  });
 });

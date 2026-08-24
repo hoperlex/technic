@@ -39,6 +39,8 @@ export * from './role-migration';
 export * from './warehouses';
 export * from './warranty';
 export * from './office-equipment';
+export * from './office-equipment-models';
+export * from './office-equipment-consumables';
 export * from './office-equipment-history';
 export * from './service-requests';
 export * from './container-types';
@@ -56,6 +58,13 @@ export * from './module-mail';
 export * from './request-history';
 export * from './waste-tariffs';
 export * from './waste-requests';
+/* Талоны вывоза (`waste-tickets.ts`) — сразу за заявкой, потому что вне её не существуют: ручки
+ * вложены в заявку, а талон без неё это файл без смысла (ADR 0114). Отдельным файлом, а не частью
+ * `waste-requests.ts`, ровно по обратной причине — заявку читают все роли модуля, а талоны только
+ * право разбора, и смешанные в одном файле, эти два круга читателей однажды смешались бы и в
+ * коде. */
+export * from './waste-ticket-number';
+export * from './waste-tickets';
 export * from './vehicle-routes';
 export * from './cost-target';
 export * from './vehicle-request-trips';
@@ -67,9 +76,18 @@ export * from './vehicle-requests';
 export * from './vehicle-request-feed';
 export * from './weekly-vehicle-requests';
 export * from './waybills';
+/* Периоды назначения (`assignment-periods.ts`) — после заявки и путевого листа, потому что читаются
+ * они вместе: история назначения объясняет, чей состав напечатан в каком бланке. Двери появляются на
+ * этапе 3 плана `docs/assignment-periods-plan.md`; словарь и тела выписаны раньше — у фичи пять
+ * дверей с общим рукопожатием, и разойдись их схемы, разошлись бы и последствия. */
+export * from './assignment-periods';
 export * from './garage';
 export * from './driver-cabinet';
 export * from './vehicle-readings';
+/* Склад автозапчастей (`auto-parts.ts`) — перед обслуживанием, потому что акт на него ссылается:
+ * строка расхода берёт потолок количества отсюда, а движение склада заводится актом (план
+ * `docs/auto-parts-plan.md`, Р4). Обратной ссылки нет и не будет — склад существует и без акта. */
+export * from './auto-parts';
 export * from './vehicle-maintenance';
 export * from './releases';
 export * from './manuals';

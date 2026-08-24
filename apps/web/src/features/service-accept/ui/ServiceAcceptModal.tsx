@@ -101,8 +101,16 @@ export function ServiceAcceptModal({
     mutation.mutate();
   };
 
-  /** Планка приёмки (Р112). Считается по своей копии заявки — той, что знает о свежей загрузке. */
-  const needsDocument = !rework && !!shown && !hasServiceClosingDocument(shown);
+  /**
+   * Планка закрывающего документа **уехала с приёмки на «Решена»** (Н8 плана переработки заявок):
+   * сервер её здесь больше не спрашивает, и держать окно запертым значило бы запирать то, что
+   * сервер уже пропускает. Прямее всего это видно на заявке-наследии, доехавшей до «Решена» без
+   * бумаги: принять её вручную — единственный способ закрыть, автозакрытие такую не берёт.
+   *
+   * Подсказка при этом остаётся: работа без бумаги — повод спросить её у исполнителя, а не повод
+   * запретить приёмку. Считается по своей копии заявки — той, что знает о свежей загрузке.
+   */
+  const missingDocument = !rework && !!shown && !hasServiceClosingDocument(shown);
   const canAttach = can('serviceRequests.files');
 
   return (
@@ -118,7 +126,6 @@ export function ServiceAcceptModal({
       confirmLoading={mutation.isPending}
       okText={rework ? 'Вернуть на доработку' : 'Принять'}
       okDanger={rework}
-      okDisabled={needsDocument}
       width={520}
     >
       {shown && (
@@ -141,12 +148,12 @@ export function ServiceAcceptModal({
 
           {!rework && (
             <>
-              {needsDocument && (
+              {missingDocument && (
                 <Alert
                   type="warning"
                   showIcon
                   message={SERVICE_CLOSING_DOCUMENT_HINT}
-                  description="Пока его нет, принять работу нельзя — подшейте бумагу прямо здесь, окно останется открытым."
+                  description="Работа предъявлена без бумаги — её стоит запросить у исполнителя. Подшить можно прямо здесь; принять работу портал не мешает, но заявка сама уже не закроется."
                 />
               )}
               {/* Виды — только закрывающие: остальное подшивают на вкладке документов, а здесь

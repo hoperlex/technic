@@ -40,6 +40,13 @@ export type RouteKey = `${HttpMethod} /${string}`;
  */
 export type PermissionSet = readonly [Permission, ...Permission[]];
 
+/**
+ * Выбор из прав для условия «хотя бы одно»: не меньше двух членов. Дизъюнкция из одного члена —
+ * это `permissions`, записанное так, что в манифесте его не отличить от настоящего выбора, а в
+ * ревью не спросить «почему их два».
+ */
+export type PermissionChoice = readonly [Permission, Permission, ...Permission[]];
+
 /** Право, которое требуется только при определённом поле в теле запроса. */
 export interface ConditionalRequirement {
   /**
@@ -52,9 +59,18 @@ export interface ConditionalRequirement {
 }
 
 /**
- * Шесть типов условия. Пять простых и шестой, условный: без него правило «строка на каждый
- * маршрут» несовместимо с маршрутами, у которых права нет законно, а условное право попало бы в
- * манифест постоянным `allOf` — и половина законных запросов оказалась бы в нём запрещённой.
+ * Восемь типов условия. Пять простых, шестой и седьмой — условные (по полю тела и по эффекту),
+ * восьмой — дизъюнктивный.
+ *
+ * Условный нужен потому, что без него правило «строка на каждый маршрут» несовместимо с
+ * маршрутами, у которых права нет законно, а условное право попало бы в манифест постоянным
+ * `allOf` — и половина законных запросов оказалась бы в нём запрещённой.
+ *
+ * Дизъюнктивный (`anyOf`) заведён под ходы исполнителя заявки на обслуживание (план переработки
+ * цикла §7.3). Они закрыты правом стороны — `serviceRequests.status` либо `.estimate`, — а
+ * поимённому исполнителю дугу открывает назначение вместе с `serviceRequests.execute`; ни первого,
+ * ни второго права у набора «Оргтехника: ИТ-служба» нет и быть не должно. Записанное конъюнкцией,
+ * такое условие отобрало бы ручку у обеих сторон сразу.
  */
 export type AccessCondition =
   /** Доступ без входа: вход, регистрация, ссылки из писем, health. */
@@ -65,6 +81,11 @@ export type AccessCondition =
   | { readonly kind: 'authenticated'; readonly why: string }
   /** Обычный случай: конъюнкция прав из одного, двух или трёх членов. */
   | { readonly kind: 'permissions'; readonly allOf: PermissionSet }
+  /**
+   * Хотя бы одно из перечисленных прав: ручку держат две стороны, и права у них разные. Что
+   * субъекту доступно **на самой записи**, условие не описывает — это дело коридора в обработчике.
+   */
+  | { readonly kind: 'anyOf'; readonly anyOf: PermissionChoice; readonly why: string }
   /** Базовые права плюс те, что требуются только при определённом поле тела запроса. */
   | {
       readonly kind: 'conditionalPermissions';
@@ -78,6 +99,40 @@ export type AccessCondition =
        */
       readonly conditionDeclaredOnRoute: boolean;
     }
+  /**
+   * Базовые права плюс те, что требуются только при ЭФФЕКТЕ запроса (план автозапчастей, Р19).
+   *
+   * Отличие от `conditionalPermissions` не в оттенке, а в том, где живёт условие. Там оно в ТЕЛЕ:
+   * поле прислали — право спрашиваем. Здесь тело ответа не даёт вовсе:
+   *
+   *   · акт обслуживания присылает строки расхода и тогда, когда набор не изменился, — склад не
+   *     двигается, и требовать второе право не за что; условие «поле есть» отобрало бы у диспетчера
+   *     правку номера документа у акта с расходом;
+   *   · аннулирование акта про запчасти в теле не говорит ничего (там версия и причина), а движение
+   *     будет — и сразу по всем строкам.
+   *
+   * Поэтому условие считается ПО ФАКТУ, под блокировкой, уже внутри обработчика: ненулевая разница
+   * зовёт `assertCan`, нулевая молчит. Страж маршрута объявляет только `baseAllOf` — сверять с
+   * фактом можно его одного, и `conditionDeclaredOnRoute` у этого вида нет вовсе: структурно
+   * объявить эффект нельзя по построению.
+   *
+   * `handlerAuthorized` для этого не годится: он означает «решает обработчик по самой записи»,
+   * базовой половины у него нет, и записав туда акт, мы спрятали бы в обработчик и право на сам
+   * акт — то есть убрали бы из манифеста то, что там как раз есть.
+   */
+  | {
+      readonly kind: 'effectConditionalPermissions';
+      readonly baseAllOf: PermissionSet;
+      /** Что спрашивается сверх базового, когда эффект наступил. */
+      readonly effectAllOf: PermissionSet;
+      /** Сам эффект СЛОВАМИ: «ненулевая разница строк расхода». Ревьюер читает правило, а не код. */
+      readonly effect: string;
+      /**
+       * Тест, доказывающий правило. Перебором прав по манифесту его не доказать: телом запроса
+       * эффект не выражается, и структурная сверка «манифест ↔ факт» видит только базовую половину.
+       */
+      readonly provenBy: string;
+    }
   /** Решает обработчик по самой записи: доступ к файлу выводится из связанной заявки. */
   | {
       readonly kind: 'handlerAuthorized';
@@ -89,14 +144,43 @@ export type AccessCondition =
 export type AccessConditionKind = AccessCondition['kind'];
 
 /**
- * Права, которые обязан объявить страж маршрута для этого условия. У условного типа — только
- * базовая половина: условная применяется к телу запроса, а не к маршруту целиком.
+ * Все виды условия, перечисленные для прогона. Тип union'ом рантайму не виден, а тест обязан уметь
+ * сказать «видов восемь» — поэтому реестр записан руками, а полноту его держит компилятор
+ * (`_EveryKindListed` ниже): вид, заведённый в union и забытый здесь, уронит сборку, а не прогон.
+ *
+ * Вид, которого в манифесте пока нет ни у одного маршрута, — законное состояние выпуска, идущего
+ * двумя руками: `effectConditionalPermissions` заводится вместе со складом автозапчастей, а три
+ * его строки приезжают с ручками обслуживания (план автозапчастей, Р19).
+ */
+export const ACCESS_CONDITION_KINDS = [
+  'public',
+  'internalToken',
+  'authenticated',
+  'permissions',
+  'anyOf',
+  'conditionalPermissions',
+  'effectConditionalPermissions',
+  'handlerAuthorized',
+] as const satisfies readonly AccessConditionKind[];
+
+/** Виды, забытые в реестре. Пусто (`never`) — все перечислены; иначе имя забытого встаёт в ошибку. */
+type KindsNotListed = Exclude<AccessConditionKind, (typeof ACCESS_CONDITION_KINDS)[number]>;
+const everyKindListed: KindsNotListed extends never ? true : KindsNotListed = true;
+void everyKindListed;
+
+/**
+ * Права, которые обязан объявить страж маршрута для этого условия. У обоих условных типов — только
+ * базовая половина: условная применяется к телу запроса или к его эффекту, а не к маршруту целиком.
  */
 export function guardPermissionsOf(condition: AccessCondition): readonly Permission[] {
   switch (condition.kind) {
     case 'permissions':
       return condition.allOf;
+    case 'anyOf':
+      // Все перечисленные: страж обязан назвать их в пометке целиком, хотя требует любое одно.
+      return condition.anyOf;
     case 'conditionalPermissions':
+    case 'effectConditionalPermissions':
       return condition.baseAllOf;
     default:
       return [];
@@ -105,8 +189,16 @@ export function guardPermissionsOf(condition: AccessCondition): readonly Permiss
 
 /** Все права, упомянутые условием, — включая условные (для перебора сценариев на будущих этапах). */
 export function allPermissionsOf(condition: AccessCondition): readonly Permission[] {
-  if (condition.kind !== 'conditionalPermissions') return guardPermissionsOf(condition);
-  return [...condition.baseAllOf, ...condition.conditionalAllOf.flatMap((c) => [...c.allOf])];
+  if (condition.kind === 'conditionalPermissions') {
+    return [...condition.baseAllOf, ...condition.conditionalAllOf.flatMap((c) => [...c.allOf])];
+  }
+  // Обе половины и здесь. Перебору прав условная половина не поможет (эффект телом не выразить), но
+  // «какие права вообще упомянуты манифестом» обязано отвечать одинаково для обоих условных видов —
+  // иначе право, спрашиваемое только по эффекту, выглядело бы в сводках неиспользуемым.
+  if (condition.kind === 'effectConditionalPermissions') {
+    return [...condition.baseAllOf, ...condition.effectAllOf];
+  }
+  return guardPermissionsOf(condition);
 }
 
 /**
@@ -136,6 +228,11 @@ export const ACCESS_MANIFEST = {
   'GET /internal/mail/schedules/due': {
     kind: 'internalToken',
     why: 'планировщик из worker спрашивает, какие рассылки пора собрать (ADR 0075)',
+  },
+  // Автозакрытие «Решена» → «Закрыта» (Н7): пачку закрывает сам портал, человека за ней нет.
+  'POST /internal/service-requests/auto-close': {
+    kind: 'internalToken',
+    why: 'worker просит закрыть заявки, простоявшие сутки в «Решена» (Н7)',
   },
 
   // ── Вход, письма и self-service ──
@@ -393,6 +490,73 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['officeEquipment.write'],
   },
+  // Справочник моделей (план `docs/office-equipment-consumables-plan.md`, Р10): права те же, что у
+  // самой техники, — расходники и парк ведёт один человек. Области в условии нет и здесь: она
+  // сужает не доступ к перечню, а счётчик карточек в строке (Р12).
+  'GET /api/v1/office-equipment-models': { kind: 'permissions', allOf: ['officeEquipment.read'] },
+  'POST /api/v1/office-equipment-models': { kind: 'permissions', allOf: ['officeEquipment.write'] },
+  'PATCH /api/v1/office-equipment-models/:id': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.write'],
+  },
+  'DELETE /api/v1/office-equipment-models/:id': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.write'],
+  },
+  // Расходники (Р10): чтение широкое — подобрать картридж при заведении заявки должен каждый, кому
+  // видна оргтехника. Запись — своя пара прав, отдельная от `officeEquipment.write`: то открывает
+  // весь парк, а номенклатуру ведёт один человек. Ручка остатка закрыта третьим правом, потому что
+  // пересчитать коробки на полке и завести позицию — разные работы.
+  'GET /api/v1/office-equipment-consumables': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read'],
+  },
+  // Заведение позиции — работа `manage`, но НЕНУЛЕВОЙ начальный остаток требует сверх него
+  // `stock`: иначе разделение прав держалось бы только у уже заведённых позиций, а то же число
+  // ставилось бы заведением в обход ручки остатка. Условие живёт в обработчике
+  // (`routes/office-equipment-consumables.ts`, `assertCan` при `quantity > 0`), поэтому страж
+  // объявляет одно базовое право — сверять с фактом можно `baseAllOf`, условную половину
+  // доказывают сценарии перебора.
+  //
+  // ОТЛИЧИЕ ОТ УСЛОВНЫХ РУЧЕК ВЫВОЗА: там право спрашивается по ПРИСУТСТВИЮ поля
+  // (`operatorCounterpartyId !== undefined`), здесь — по ЗНАЧЕНИЮ (`> 0`). Разница не вкусовая:
+  // `quantity` приезжает умолчанием схемы, то есть присутствует в теле всегда, и условие «есть
+  // поле» потребовало бы `stock` на каждое заведение — включая заведение с нулём, которое никакого
+  // утверждения о складе не делает. Отсюда требование к фикстуре перебора: значения условного поля
+  // здесь только ненулевые, а ноль сценарием быть не может — он законен и с одним `manage`.
+  'POST /api/v1/office-equipment-consumables': {
+    kind: 'conditionalPermissions',
+    baseAllOf: ['officeEquipmentConsumables.manage'],
+    conditionalAllOf: [{ when: 'quantity', allOf: ['officeEquipmentConsumables.stock'] }],
+    conditionDeclaredOnRoute: false,
+  },
+  // Отчёт по расходу за период (Р10, опрос В18) — под тем же чтением, что и справочник: он
+  // собирает те же события журнала, что видны в карточке позиции, только за отрезок времени.
+  // Своего права у него нет намеренно — оно запирало бы сводку от того, кому открыты сами строки.
+  'GET /api/v1/office-equipment-consumables/usage-report': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read'],
+  },
+  'GET /api/v1/office-equipment-consumables/usage-report.xlsx': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read'],
+  },
+  'GET /api/v1/office-equipment-consumables/:id': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read'],
+  },
+  'PATCH /api/v1/office-equipment-consumables/:id': {
+    kind: 'permissions',
+    allOf: ['officeEquipmentConsumables.manage'],
+  },
+  'DELETE /api/v1/office-equipment-consumables/:id': {
+    kind: 'permissions',
+    allOf: ['officeEquipmentConsumables.manage'],
+  },
+  'POST /api/v1/office-equipment-consumables/:id/stock': {
+    kind: 'permissions',
+    allOf: ['officeEquipmentConsumables.stock'],
+  },
   'GET /api/v1/office-equipment': { kind: 'permissions', allOf: ['officeEquipment.read'] },
   'POST /api/v1/office-equipment': { kind: 'permissions', allOf: ['officeEquipment.write'] },
   'GET /api/v1/office-equipment/:id': { kind: 'permissions', allOf: ['officeEquipment.read'] },
@@ -417,8 +581,21 @@ export const ACCESS_MANIFEST = {
   // Права нарезаны по сторонам процесса, а не по глаголам HTTP: `serviceRequests.estimate` — это
   // «служба работает по заявке» (смета, её подача и переоткрытие, закрытие работ, примечание
   // сервиса), `serviceRequests.status` — ход заявки, `approveEstimate` и `approveIt` — две визы.
+  //
+  // Семь ручек исполнителя объявлены дизъюнкцией (`anyOf`): у стороны это её собственное право, а у
+  // поимённого исполнителя — `serviceRequests.execute`, которым он значится в заявке. Условие
+  // отвечает на вопрос «пускать ли к ручке вообще»; какая дуга субъекту доступна на самой заявке,
+  // решает коридор контрактов (`isServiceExecutor`), и держатель `execute` без назначения получает
+  // отказ от него, а не от стража.
   'GET /api/v1/service-requests': { kind: 'permissions', allOf: ['serviceRequests.read'] },
   'POST /api/v1/service-requests': { kind: 'permissions', allOf: ['serviceRequests.create'] },
+  // Кандидаты в поимённые исполнители: страж — право назначения, а не `users.manage`. Иначе поле
+  // выбора заполнялось бы только у администратора портала, а у того, кто заявки распределяет,
+  // оставалось бы пустым.
+  'GET /api/v1/service-requests/executor-candidates': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.assign'],
+  },
   'GET /api/v1/service-requests/:id': { kind: 'permissions', allOf: ['serviceRequests.read'] },
   'PATCH /api/v1/service-requests/:id': { kind: 'permissions', allOf: ['serviceRequests.update'] },
   'DELETE /api/v1/service-requests/:id': { kind: 'permissions', allOf: ['serviceRequests.delete'] },
@@ -427,28 +604,51 @@ export const ACCESS_MANIFEST = {
     allOf: ['serviceRequests.status'],
   },
   'PATCH /api/v1/service-requests/:id/complete': {
+    kind: 'anyOf',
+    anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
+    why: 'работа исполнителя: у стороны — право сметы, у поимённого — назначение',
+  },
+  // Состав заявки на расходники — её ПРЕДМЕТ, ровно как описание неисправности у ремонта, и правит
+  // его то же право (план §7.3). Кто именно и в каком статусе — решает обработчик тем же правилом,
+  // что и правку заявки (`assertServiceRequestEditable`).
+  'PUT /api/v1/service-requests/:id/consumables': {
     kind: 'permissions',
-    allOf: ['serviceRequests.estimate'],
+    allOf: ['serviceRequests.update'],
+  },
+  // Правка факта выдачи (Р6). Дизъюнкция та же, что у статусных ходов исполнителя: у оператора
+  // назначенного контрагента и у «Ведения» это `serviceRequests.status`, у поимённого исполнителя —
+  // `serviceRequests.execute`. Отдельного права на списание нет: оно следствие закрытия заявки, а
+  // не действие над складом (Р8), — иначе исполнитель без прав на справочник не смог бы закрыть
+  // собственную заявку. Назначен ли субъект на ЭТУ заявку, решает обработчик
+  // (`assertConsumableIssuer`), а не страж.
+  'PATCH /api/v1/service-requests/:id/consumables/issued': {
+    kind: 'anyOf',
+    anyOf: ['serviceRequests.status', 'serviceRequests.execute'],
+    why: 'выдачу отмечает исполнитель: у стороны — право хода, у поимённого — назначение',
   },
   'PATCH /api/v1/service-requests/:id/decline': {
-    kind: 'permissions',
-    allOf: ['serviceRequests.status'],
+    kind: 'anyOf',
+    anyOf: ['serviceRequests.status', 'serviceRequests.execute'],
+    why: 'ход исполнителя: у стороны — право хода, у поимённого — назначение',
   },
   'PUT /api/v1/service-requests/:id/estimate': {
-    kind: 'permissions',
-    allOf: ['serviceRequests.estimate'],
+    kind: 'anyOf',
+    anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
+    why: 'работа исполнителя: у стороны — право сметы, у поимённого — назначение',
   },
   'PATCH /api/v1/service-requests/:id/estimate/approval': {
     kind: 'permissions',
     allOf: ['serviceRequests.approveEstimate'],
   },
   'PATCH /api/v1/service-requests/:id/estimate/reopen': {
-    kind: 'permissions',
-    allOf: ['serviceRequests.estimate'],
+    kind: 'anyOf',
+    anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
+    why: 'работа исполнителя: у стороны — право сметы, у поимённого — назначение',
   },
   'PATCH /api/v1/service-requests/:id/estimate/submit': {
-    kind: 'permissions',
-    allOf: ['serviceRequests.estimate'],
+    kind: 'anyOf',
+    anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
+    why: 'работа исполнителя: у стороны — право сметы, у поимённого — назначение',
   },
   'POST /api/v1/service-requests/:id/files': {
     kind: 'permissions',
@@ -462,9 +662,19 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['serviceRequests.read'],
   },
+  /*
+   * Заморозка и возврат: право спрашивает **обработчик** предикатом контрактов `canHoldService`
+   * («есть `hold` **или** есть `status`»), а не страж. Дизъюнкции в манифесте нет и заводить её
+   * ради двух маршрутов нельзя, поэтому условие маршрута — чтение модуля, а решение — за
+   * обработчиком; его отказ проверяется сценарием `selfRefusal` в `access-conditions.test.ts`.
+   *
+   * Почему не `serviceRequests.hold` напрямую: до выката каталога наборов (В5) «Ведение» приходит
+   * носителям надстройки `office_equipment_operator`, а права `hold` в ней нет — строгая проверка
+   * отобрала бы заморозку у тех, кто ею пользуется сегодня.
+   */
   'PATCH /api/v1/service-requests/:id/hold': {
     kind: 'permissions',
-    allOf: ['serviceRequests.status'],
+    allOf: ['serviceRequests.read'],
   },
   'PATCH /api/v1/service-requests/:id/it-approval': {
     kind: 'permissions',
@@ -477,32 +687,43 @@ export const ACCESS_MANIFEST = {
   'DELETE /api/v1/service-requests/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
   'PATCH /api/v1/service-requests/:id/resume': {
     kind: 'permissions',
-    allOf: ['serviceRequests.status'],
+    allOf: ['serviceRequests.read'],
   },
   'POST /api/v1/service-requests/:id/restore': { kind: 'permissions', allOf: ['archive.restore'] },
   'PATCH /api/v1/service-requests/:id/rework': {
     kind: 'permissions',
     allOf: ['serviceRequests.status'],
   },
+  // Совместимый адаптер выпуска 1: прежний адрес назначения, который зовёт вкладка, открытая до
+  // выката. Право у него то же, что у новой ручки; уходит вместе с выпуском 2.
   'PATCH /api/v1/service-requests/:id/service': {
     kind: 'permissions',
     allOf: ['serviceRequests.assign'],
   },
-  'PATCH /api/v1/service-requests/:id/service-comment': {
+  'PUT /api/v1/service-requests/:id/executors': {
     kind: 'permissions',
-    allOf: ['serviceRequests.estimate'],
+    allOf: ['serviceRequests.assign'],
+  },
+  'PATCH /api/v1/service-requests/:id/service-comment': {
+    kind: 'anyOf',
+    anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
+    why: 'работа исполнителя: у стороны — право сметы, у поимённого — назначение',
   },
   'PATCH /api/v1/service-requests/:id/start': {
-    kind: 'permissions',
-    allOf: ['serviceRequests.status'],
+    kind: 'anyOf',
+    anyOf: ['serviceRequests.status', 'serviceRequests.execute'],
+    why: 'ход исполнителя: у стороны — право хода, у поимённого — назначение',
   },
   'PATCH /api/v1/service-requests/:id/status': {
     kind: 'permissions',
     allOf: ['serviceRequests.status'],
   },
+  // Срочность — своё право (Н12 плана переработки цикла): прежде флаг приходил вместе с
+  // `serviceRequests.update`, то есть всякому, кто правит заявку, и составом набора его было не
+  // отобрать ни у ИТ-службы, ни у заказчика.
   'PATCH /api/v1/service-requests/:id/urgency': {
     kind: 'permissions',
-    allOf: ['serviceRequests.update'],
+    allOf: ['serviceRequests.urgency'],
   },
   'GET /api/v1/service-requests/waiting-count': {
     kind: 'permissions',
@@ -560,6 +781,74 @@ export const ACCESS_MANIFEST = {
     allOf: ['wasteRequests.read'],
   },
   'GET /api/v1/waste-requests/summary': { kind: 'permissions', allOf: ['wasteRequests.read'] },
+
+  // ── Разбор талонов вывоза (ADR 0114, Р25, Р26) ──
+  // Все под одним правом `wasteRequests.ticketReview`, и это не «право на модуль»: вешать разбор
+  // на `wasteRequests.status` нельзя — оно есть у внешнего исполнителя, который талон и приносит,
+  // и он закрывал бы замечания к собственной бумаге.
+  //
+  // Права мало: оно говорит, что человек разбирает талоны, но не говорит, ЧЬИ. Связь файла с
+  // заявкой, `request_files.kind = 'ticket'`, живость файла, статус заявки и объектную с
+  // операторской область проверяет каждый обработчик отдельно — из манифеста этого не видно, и
+  // здесь стоит только право.
+  'GET /api/v1/waste-requests/:id/tickets': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  'POST /api/v1/waste-requests/:id/tickets': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  'PATCH /api/v1/waste-requests/:id/tickets/:ticketId': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  'POST /api/v1/waste-requests/:id/tickets/:ticketId/confirm': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  'POST /api/v1/waste-requests/:id/tickets/:ticketId/dismiss': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  'POST /api/v1/waste-requests/:id/tickets/:ticketId/blind-check': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  'POST /api/v1/waste-requests/:id/blind-checks/:blindCheckId/arbitrate': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  'POST /api/v1/waste-requests/:id/checks/:checkCode/accept': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  'POST /api/v1/waste-requests/:id/ticket-files/:fileId/recognize': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  // Предложение перераспознавания (Р13): принять — это правка талона, отклонить — уборка строки.
+  // Право то же: и то и другое делает разбирающий, и оба действия про распознанное.
+  'POST /api/v1/waste-requests/:id/tickets/:ticketId/proposal/accept': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  'POST /api/v1/waste-requests/:id/tickets/:ticketId/proposal/dismiss': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  // Очередь заданий слепой перепроверки (Р31): своя работа того же человека, и право то же.
+  // Значений в ответе нет ни одного — иначе слепота держалась бы вёрсткой.
+  'GET /api/v1/waste-requests/ticket-blind-checks': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
+  // Состояние подсистемы: тем же правом, что и разбор. Доля отказов и срок молчания — сведения о
+  // том, работает ли распознавание, и спрашивают их те же экраны (Р29).
+  'GET /api/v1/waste-requests/ticket-recognition/health': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
 
   // ── Недельная заявка на технику ──
   // Своего права на статус у модуля нет: смену состояния ведёт `weeklyRequests.update`, визу —
@@ -637,6 +926,105 @@ export const ACCESS_MANIFEST = {
   'PATCH /api/v1/vehicle-requests/:id/assignment': {
     kind: 'permissions',
     allOf: ['vehicleRequests.status'],
+  },
+  /*
+   * Предпросмотр смены техники (`docs/assignment-periods-plan.md` §8, «новая ручка у старой двери»).
+   *
+   * Право **то же самое**, что у самой двери, а не пара «видит заявку + видит бланки», которой
+   * закрыты предпросмотры новых дверей истории. Разница по делу: у тех и боевая ручка требует
+   * `waybills.read`, а эта — нет, и добавь мы второе право предпросмотру, просмотр последствий
+   * оказался бы закрыт тому, кому открыта сама операция. После переключения чтения отпечаток
+   * предпросмотра становится обязательным (Ж5, И5), то есть такая роль осталась бы без входа
+   * вовсе. Коррекционные права здесь по той же причине, что и у соседей, не значатся: предпросмотр
+   * ничего не пишет и ни одного номера не жжёт — он их только называет.
+   */
+  'POST /api/v1/vehicle-requests/:id/assignment/preview': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status'],
+  },
+  /*
+   * История назначения — команда машиниста (`docs/assignment-periods-plan.md` §8, этап 3).
+   *
+   * Чтение и предпросмотр закрыты парой «видит заявку + видит бланки»: состав по датам показывает
+   * фамилии парка и номера ЭСМ-2, и без `waybills.read` показывать его нечем. Боевая команда меняет
+   * второе право на `vehicleRequests.status`: смотреть состав вправе тот, кто видит заявку, а
+   * менять — тот, кто ведёт её состояние.
+   *
+   * Коррекционные права (`waybills.correct`, `waybills.correctBeyondLimit`) в манифест не попадают,
+   * и это то же решение, что у визы недельной заявки выше: право спрашивает **обработчик**, потому
+   * что нужно оно не всегда. Плановая смена машиниста с понедельника — обычная работа диспетчера, а
+   * та же команда мартовской датой переоформляет выданную бумагу; исход считается под блокировкой
+   * (Р32), из тела он не виден, и страж, потребовавший коррекционного права у всех, закрыл бы
+   * обычную работу тому, кому она и поручена. Условным правом это тоже не пишется: там право
+   * добавляется **по полю тела**, а здесь — по посчитанному исходу. Доказывается сценариями
+   * db-теста команды (`test/assignment-crew.db.test.ts`).
+   */
+  'GET /api/v1/vehicle-requests/:id/assignment-changes': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.read', 'waybills.read'],
+  },
+  'POST /api/v1/vehicle-requests/:id/assignment-changes': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status', 'waybills.read'],
+  },
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/preview': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.read', 'waybills.read'],
+  },
+  /*
+   * Дверь ремонта истории (Р29) — безусловная пара та же, а всё остальное её условный контракт, и
+   * ни одна его часть манифестом не выражается. `waybills.correct` и `correctBeyondLimit`
+   * спрашиваются по посчитанному под блокировкой исходу (Р32), а не по полю тела. `archive.restore`
+   * добавляется полем `restore`, но условным правом здесь тоже не пишется: манифест сверяется с
+   * `guard.authz`, а это право спрашивает шаг 9 канона вместе с проверкой «а заявка вообще в
+   * архиве». И, наконец, архивная заявка открывается **по идентификатору без `archive.read`**
+   * (Ц3) — отступление, у которого в манифесте нет строки по построению: манифест описывает то,
+   * что нужно, а не то, чего намеренно не спрашивают. Всё это доказывается сценариями
+   * `test/assignment-repair.db.test.ts`.
+   */
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/repair': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status', 'waybills.read'],
+  },
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/repair/preview': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status', 'waybills.read'],
+  },
+  /*
+   * Периодная коррекция (Р7, Р10, Р11) — безусловная пара та же, а коррекционные права спрашивает
+   * шаг 9 канона: коррекция отрезка, целиком лежащего в будущем, правит принятое решение
+   * (`assignment_tail`) и `waybills.correct` не требует, а та же команда мартовской датой требует.
+   * Из тела это не видно — исход считается под блокировкой (Р32). Предпросмотр читающий: смотреть
+   * последствия вправе тот, кто видит заявку, а править — тот, кто ведёт её состояние.
+   */
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/correction': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status', 'waybills.read'],
+  },
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/correction/preview': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.read', 'waybills.read'],
+  },
+  /*
+   * Правка срока — своя дверь (Ж4, З5). Безусловная пара здесь другая, чем у соседних дверей
+   * истории, и это по существу: срок — поле заявки, и правит его тот, кто правит заявку
+   * (`vehicleRequests.update`, то же право, каким срок двигает широкий `PATCH /:id`), а не тот, кто
+   * ведёт её состояние. `waybills.read` — за просмотр последствий: рабочий путь идёт через
+   * предпросмотр, и роль без него упиралась бы в 403 посреди операции.
+   *
+   * Коррекционные права (`waybills.correct`, `waybills.correctBeyondLimit`) в манифест не попадают
+   * по той же причине, что у соседей: исход считается под блокировкой (Р32, Е3) — продление вперёд
+   * коррекции не требует, а сокращение, гасящее отработанную группу, требует, — и из тела он не
+   * виден. Условным правом это не пишется: там право добавляется по полю тела, а здесь — по
+   * посчитанному исходу. Доказывается сценариями `test/assignment-period.db.test.ts`.
+   */
+  'POST /api/v1/vehicle-requests/:id/period/preview': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.read', 'waybills.read'],
+  },
+  'PATCH /api/v1/vehicle-requests/:id/period': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.update', 'waybills.read'],
   },
   'GET /api/v1/vehicle-requests/:id/days': {
     kind: 'permissions',
@@ -909,10 +1297,66 @@ export const ACCESS_MANIFEST = {
     allOf: ['vehicleReadings.read'],
   },
 
+  // ── Склад автозапчастей (план `docs/auto-parts-plan.md`, Р10, Р19) ──
+  // Чтение — широкое `garage.read`: подобрать позицию при заведении акта обслуживания должен
+  // каждый, кому виден гараж. Запись — своя пара прав, отдельная от чтения и друг от друга: вести
+  // номенклатуру и пересчитывать детали на полке делают не обязательно одни руки, а
+  // `vehicleMaintenance.write` (оно есть и у менеджера, и у диспетчера) склад не открывает вовсе.
+  // Оба права требуют `garage.read` (`PERMISSION_REQUIRES`): справочник, которого не видно, вести
+  // нечем.
+  'GET /api/v1/auto-parts': { kind: 'permissions', allOf: ['garage.read'] },
+  // Заведение позиции — работа `manage`, но НЕНУЛЕВОЙ начальный остаток требует сверх него
+  // `stock`: иначе разделение прав держалось бы только у уже заведённых позиций, а то же число
+  // ставилось бы заведением в обход ручки остатка. Условие живёт в обработчике
+  // (`routes/auto-parts.ts`, `assertCan` при `quantity > 0`), поэтому страж объявляет одно базовое
+  // право — сверять с фактом можно `baseAllOf`, условную половину доказывают db-сценарии.
+  //
+  // Условие по ЗНАЧЕНИЮ, а не по присутствию поля, — тем же приёмом, что у расходников оргтехники:
+  // `quantity` приезжает умолчанием схемы и в теле есть всегда, а заведение с нулём никакого
+  // утверждения о складе не делает и законно с одним `manage`.
+  'POST /api/v1/auto-parts': {
+    kind: 'conditionalPermissions',
+    baseAllOf: ['autoParts.manage'],
+    conditionalAllOf: [{ when: 'quantity', allOf: ['autoParts.stock'] }],
+    conditionDeclaredOnRoute: false,
+  },
+  'GET /api/v1/auto-parts/:id': { kind: 'permissions', allOf: ['garage.read'] },
+  'PATCH /api/v1/auto-parts/:id': { kind: 'permissions', allOf: ['autoParts.manage'] },
+  // Удаление — только пока журнал остатка пуст (Р11); дальше `RESTRICT` и гашение флагом. Правом
+  // это не различается: удаляет тот же, кто завёл.
+  'DELETE /api/v1/auto-parts/:id': { kind: 'permissions', allOf: ['autoParts.manage'] },
+  'POST /api/v1/auto-parts/:id/stock': { kind: 'permissions', allOf: ['autoParts.stock'] },
+
   // ── Техническое обслуживание ──
+  //
+  // Три ручки акта стоят под условием ПО ЭФФЕКТУ (план автозапчастей, Р19), и это единственное
+  // место в манифесте, где право спрашивается не за поле тела, а за то, что операция сделала.
+  // Причина в аудитории: `vehicleMaintenance.write` есть у пяти ролей, включая менеджера и
+  // диспетчера, а склад автозапчастей ведут механики. Оставь расход под одним правом на акт — и
+  // диспетчер, которому нельзя поправить остаток в карточке, списал бы любое количество через акт.
+  //
+  // Условие считается по фактической разнице строк под блокировкой позиций, а не по присутствию
+  // `parts` в теле: PATCH, приславший тот же набор, склад не двигает и второго права не требует —
+  // иначе диспетчер не смог бы исправить опечатку в номере документа у акта с расходом.
+  //
+  // `DELETE` ниже условия не имеет намеренно: акт с движениями не удаляется вовсе — ни с правом,
+  // ни без него (409 маршрута и `RESTRICT` журнала), а у акта без движений удалять со склада
+  // нечего.
   'PATCH /api/v1/vehicle-maintenance/:id': {
-    kind: 'permissions',
-    allOf: ['vehicleMaintenance.write'],
+    kind: 'effectConditionalPermissions',
+    baseAllOf: ['vehicleMaintenance.write'],
+    effectAllOf: ['autoParts.stock'],
+    effect: 'ненулевая разница строк расхода автозапчастей',
+    provenBy: 'test/vehicle-maintenance.db.test.ts',
+  },
+  'POST /api/v1/vehicle-maintenance/:id/void': {
+    kind: 'effectConditionalPermissions',
+    baseAllOf: ['vehicleMaintenance.write'],
+    effectAllOf: ['autoParts.stock'],
+    // У аннулирования тела про запчасти нет вовсе — там версия и причина, — а движение будет, и
+    // сразу по всем строкам акта. Ровно этот случай `conditionalPermissions` выразить не может.
+    effect: 'возврат всех строк расхода при аннулировании акта',
+    provenBy: 'test/vehicle-maintenance.db.test.ts',
   },
   'DELETE /api/v1/vehicle-maintenance/:id': {
     kind: 'permissions',
@@ -923,8 +1367,11 @@ export const ACCESS_MANIFEST = {
     allOf: ['vehicleMaintenance.read'],
   },
   'POST /api/v1/vehicle-maintenance/vehicles/:id': {
-    kind: 'permissions',
-    allOf: ['vehicleMaintenance.write'],
+    kind: 'effectConditionalPermissions',
+    baseAllOf: ['vehicleMaintenance.write'],
+    effectAllOf: ['autoParts.stock'],
+    effect: 'ненулевая разница строк расхода автозапчастей',
+    provenBy: 'test/vehicle-maintenance.db.test.ts',
   },
   'GET /api/v1/vehicle-maintenance/vehicles/:id/history': {
     kind: 'permissions',

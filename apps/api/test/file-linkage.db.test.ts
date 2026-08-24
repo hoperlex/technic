@@ -280,10 +280,22 @@ async function newRoute(vehicleId: string, personId: string, date: string): Prom
   return route!.id;
 }
 
-/** Недельный ЭСМ-2: `waybills_form_source_check` требует заявку-источник и обе границы недели. */
+/*
+ * ЭСМ2-РАЗРЕЗ. Лист выписывается **отрезком внутри недели**, а не неделей целиком: после
+ * переключения чтения (этап 5) `period_from` — любой день срока, и фикстура «понедельник плюс шесть»
+ * проверяла бы форму листа, которой не бывает. Проверено здесь: каскад связей файла на лист и
+ * составной ключ снимка показания. От разреза они не зависят — связь смотрит на `waybills.id`, а
+ * ключ снимка на машину, дату и позицию смены; границы периода в предмет проверки не входят вовсе.
+ *
+ * Неделя всё же остаётся рамкой: `waybills_period_check` требует, чтобы обе границы лежали в одной
+ * календарной неделе, и это ограничение разрез не отменяет — он сужает лист внутри недели, а не
+ * растягивает поверх неё.
+ */
+/** ЭСМ-2 отрезком: `waybills_form_source_check` требует заявку-источник и обе границы. */
 async function newEsm2(vehicleId: string, personId: string, day: string): Promise<string> {
   waybillNo += 1;
-  const from = weekStartKey(day);
+  // Середина недели, а не понедельник: среда — пятница.
+  const from = shiftDateKey(weekStartKey(day), 2);
   const [waybill] = await ctx.db
     .insert(ctx.schema.waybills)
     .values({
@@ -297,7 +309,7 @@ async function newEsm2(vehicleId: string, personId: string, day: string): Promis
       issuedForDate: from,
       sourceRequestId: await newVehicleRequest(),
       periodFrom: from,
-      periodTo: shiftDateKey(from, 6),
+      periodTo: shiftDateKey(from, 2),
       issuedBy: ctx.adminId,
     })
     .returning({ id: ctx.schema.waybills.id });
@@ -416,6 +428,26 @@ async function fileLinkTables(): Promise<string[]> {
      WHERE c.contype = 'f' AND c.confrelid = 'files'::regclass
      ORDER BY 1`);
   return res.rows.map((r) => r.table);
+}
+
+/**
+ * Таблицы, живущие ПРИ таблице привязки: их строка уходит каскадом вместе с ней.
+ *
+ * Такая таблица ссылается на `files` своим ключом, но второй связью файла не является: пережить
+ * привязку она не может, и спрашивать про неё в `file_is_linked` незачем. Больше того — вредно:
+ * второй ответ на тот же вопрос запирает файл навсегда в первом же расклеившемся случае (строка
+ * есть, привязки нет), потому что удалять его становится некому.
+ *
+ * Проверяется не именем, а свойством. Ослабь кто-нибудь каскад — таблица немедленно вернётся в
+ * список недостающих, и страж снова потребует внести её в функцию.
+ */
+async function tablesCascadedFrom(parents: readonly string[]): Promise<string[]> {
+  const res = await ctx.db.execute<{ table: string; parent: string }>(sql`
+    SELECT DISTINCT c.conrelid::regclass::text AS table,
+                    c.confrelid::regclass::text AS parent
+      FROM pg_constraint c
+     WHERE c.contype = 'f' AND c.confdeltype = 'c'`);
+  return res.rows.filter((r) => parents.includes(r.parent)).map((r) => r.table);
 }
 
 /** Таблицы, названные в теле функции: определение читается у самой базы, а не из файла миграции. */
@@ -585,7 +617,14 @@ describe.skipIf(!DB_URL)('жизненный цикл файла: связи и 
       // новым модулем, и её обязаны дописать в функцию той же миграцией. Список в тесте пришлось
       // бы пополнять руками — то есть он молчал бы ровно в том случае, ради которого написан.
       const known = await tablesKnownToFunction();
-      const missing = (await fileLinkTables()).filter((t) => !known.includes(t));
+      // Спутники таблиц привязки исключаются по свойству, а не по списку имён: строка
+      // `waste_ticket_files` (ADR 0114) держит составной ключ на `request_files` с `ON DELETE
+      // CASCADE` и пережить привязку талона не может. Внеси её в функцию — и файл, у которого
+      // связь расклеилась, стал бы неудаляемым навсегда.
+      const companions = await tablesCascadedFrom(known);
+      const missing = (await fileLinkTables()).filter(
+        (t) => !known.includes(t) && !companions.includes(t),
+      );
 
       // Исключений нет: перечень собирают по внешним ключам к `files`, а не по тому, какие ручки
       // уже написаны. `person_credential_files` (миграция 0019) — тот случай, ради которого это

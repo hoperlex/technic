@@ -128,6 +128,119 @@ services:
     profiles: [tools]
     networks: [internal]
 
+  # Теневое сравнение планов бумаги (этап 4 плана assignment-periods): поколение целей, прогон и
+  # исход. Тот же доступ, что у `assignment-mode`, — своими кредами. Отличие одно и оно по делу:
+  # команда зовёт БОЕВОЙ недельный расчёт бумаги, а тот тянет прикладной конфиг, поэтому прикладной
+  # env ей нужен целиком (`prod.env` здесь и подключён). В базу она при этом всё равно ходит
+  # `DATABASE_MAINTENANCE_URL`: сравнение — путь maintenance (З3), и прикладной роли его не открыть.
+  #
+  # Прогон идёт под `write_mode = all_frozen` (§10 плана): иначе legacy-транзакция, начатая до
+  # сверки, закоммитит старый план уже после того, как поколение увидело ноль расхождений.
+  #
+  #   docker compose -p technic --profile tools run --rm assignment-shadow start --build=<sha>
+  #   docker compose -p technic --profile tools run --rm assignment-shadow run --run=<uuid>
+  #   docker compose -p technic --profile tools run --rm assignment-shadow finalize --run=<uuid>
+  assignment-shadow:
+    image: technic-api:${TAG:-latest}
+    env_file:
+      - ${ENV_FILE:-/etc/technic-portal/prod.env}
+      - ${MAINTENANCE_ENV_FILE:-${ENV_FILE:-/etc/technic-portal/prod.env}}
+    environment:
+      NODE_ENV: production
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+    entrypoint: ['pnpm', '--filter', '@technic/api', 'assignment:shadow']
+    command: ['status']
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
+  # Массовый бэкфилл истории назначения (этап 4 плана assignment-periods): достраивает историю всем
+  # заявкам, до которых не дошли двери, и печатает блокирующий отчёт. Прикладного env не требует
+  # вовсе — в базу ходит только `DATABASE_MAINTENANCE_URL` (З3, П7), — но подключён он так же, как
+  # у соседей: одна площадка, один файл секретов.
+  #
+  # По умолчанию команда — dry-run: ничего не пишет, считает и показывает отчёт. Запись включается
+  # флагом `--apply`. Прогон ОДНОПОТОЧНЫЙ (спайк §4.3), поэтому второй такой контейнер параллельно
+  # запускать нельзя. Файл `--state` кладётся на том, иначе прерванный прогон продолжить нечем.
+  #
+  #   docker compose -p technic --profile tools run --rm assignment-backfill \
+  #     --report=/var/lib/technic/assignment/report.txt
+  #   docker compose -p technic --profile tools run --rm assignment-backfill --apply \
+  #     --state=/var/lib/technic/assignment/backfill.json
+  assignment-backfill:
+    image: technic-api:${TAG:-latest}
+    env_file:
+      - ${ENV_FILE:-/etc/technic-portal/prod.env}
+      - ${MAINTENANCE_ENV_FILE:-${ENV_FILE:-/etc/technic-portal/prod.env}}
+    environment:
+      NODE_ENV: production
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+      - ${ASSIGNMENT_WORK_DIR:-/var/lib/technic/assignment}:/var/lib/technic/assignment
+    entrypoint: ['pnpm', '--filter', '@technic/api', 'assignment:backfill']
+    command: []
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
+  # Обратный прогон истории назначения (этап 4 плана assignment-periods, волна 4.2): удаляет
+  # восстановленную историю и возвращает заявки в состояние `empty`. Путь назад, а не forward-fix.
+  #
+  # РАБОТАЕТ ТОЛЬКО ПОД ЗАМОРОЗКОЙ (Е4): при `write_mode = normal` отказывается идти вовсе, потому
+  # что под живой записью отчёт устаревает раньше, чем допечатается. Порядок на площадке —
+  # `assignment-mode set --write=history_frozen …`, и только потом этот контейнер.
+  #
+  # Удаляет он НЕ «всё, что записал бэкфилл», а только заявки без единого человеческого следа
+  # (предикат Д3 считается на заявку целиком и проверяется дважды — при отборе и под блокировкой).
+  # Остальные попадают в отчёт с указанием, чья отмена, какая операция и какая связь их удержали.
+  # По умолчанию dry-run; удаление — флагом `--apply`. Прогон однопоточный, как и бэкфилл.
+  #
+  #   docker compose -p technic --profile tools run --rm assignment-rollback \
+  #     --report=/var/lib/technic/assignment/rollback.txt
+  #   docker compose -p technic --profile tools run --rm assignment-rollback --apply \
+  #     --state=/var/lib/technic/assignment/rollback.json
+  assignment-rollback:
+    image: technic-api:${TAG:-latest}
+    env_file:
+      - ${ENV_FILE:-/etc/technic-portal/prod.env}
+      - ${MAINTENANCE_ENV_FILE:-${ENV_FILE:-/etc/technic-portal/prod.env}}
+    environment:
+      NODE_ENV: production
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+      - ${ASSIGNMENT_WORK_DIR:-/var/lib/technic/assignment}:/var/lib/technic/assignment
+    entrypoint: ['pnpm', '--filter', '@technic/api', 'assignment:rollback']
+    command: []
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
+  # Сводка готовности модуля истории назначения (этап 4 плана assignment-periods, волна 4.2):
+  # одним вызовом — сколько заявок в каком состоянии, что с метками, чем обосновано переключение и
+  # что именно ему мешает. Ничего не пишет и ничего не разрешает: переключает `assignment-mode`.
+  #
+  # Прикладного env не требует вовсе — в базу ходит только `DATABASE_MAINTENANCE_URL` (З3, П7).
+  # Коды возврата: 0 — готов, 3 — есть препятствия (перечислены), поэтому команда годится и как
+  # шаг job'а выката: `run --rm assignment-report --json && …`.
+  #
+  #   docker compose -p technic --profile tools run --rm assignment-report
+  #   docker compose -p technic --profile tools run --rm assignment-report --data --json
+  assignment-report:
+    image: technic-api:${TAG:-latest}
+    env_file:
+      - ${ENV_FILE:-/etc/technic-portal/prod.env}
+      - ${MAINTENANCE_ENV_FILE:-${ENV_FILE:-/etc/technic-portal/prod.env}}
+    environment:
+      NODE_ENV: production
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+    entrypoint: ['pnpm', '--filter', '@technic/api', 'assignment:report']
+    command: []
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
   # pg_dump/pg_restore для deploy-auto (бэкап БД перед миграциями, restore).
   # Запускается ТОЛЬКО через `run --rm` (deploy-auto подставляет команду); default-команда
   # безобидна, чтобы `up` с профилем tools ничего не поднимал вечно. postgres:17 = мажор

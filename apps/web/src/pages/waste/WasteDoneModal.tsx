@@ -1,4 +1,5 @@
-import { App, Button, Form, Input, InputNumber, Space, Typography, Upload } from 'antd';
+import { App, Button, DatePicker, Form, Input, InputNumber, Space, Typography, Upload } from 'antd';
+import type { Dayjs } from 'dayjs';
 import { CameraOutlined, UploadOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -53,6 +54,12 @@ interface Props {
 }
 
 interface FormValues {
+  /**
+   * День фактического вывоза (ADR 0114, Р19). Вводится руками и **не предзаполняется распознанным**:
+   * цифра, скопированная из талона, сверялась бы сама с собой, и проверка «дата талона против дня
+   * вывоза» перестала бы что-либо значить.
+   */
+  removedOn?: Dayjs | null;
   volumeM3?: number | null;
   weightTons?: number | null;
   totalCost?: number | null;
@@ -219,10 +226,11 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
     }
     // Величина уходит ровно одна — та, которой меряется тип заявки. Сумма — только у объёма:
     // у металлолома её не считают вовсе, и присланное поле сервер отвергнет (ADR 0067).
+    const removedOn = v.removedOn ? v.removedOn.format('YYYY-MM-DD') : null;
     const completion: CompleteWasteRequestInput | null = byVolume
-      ? { volumeM3: v.volumeM3!, totalCost: v.totalCost ?? null }
+      ? { volumeM3: v.volumeM3!, totalCost: v.totalCost ?? null, removedOn }
       : byWeight
-        ? { weightTons: v.weightTons! }
+        ? { weightTons: v.weightTons!, removedOn }
         : null;
     onSubmit({
       comment: (v.comment ?? '').trim(),
@@ -322,6 +330,14 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
                     onChange={changeVolume}
                   />
                 </Form.Item>
+                <Form.Item
+                  name="removedOn"
+                  label="Дата вывоза"
+                  extra="Дата с талона, а не дата закрытия в портале"
+                >
+                  <DatePicker style={{ width: '100%' }} format="DD.MM.YYYY" allowClear />
+                </Form.Item>
+
                 <Form.Item
                   name="totalCost"
                   label="Стоимость, ₽"

@@ -18,6 +18,13 @@ import { specialEquipmentRequestDetails, users, vehicleRequestShifts } from '../
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+/**
+ * Кто читает смены. Пул годится всюду, где смену показывают, а транзакция обязательна там, где по
+ * прочитанному тут же принимают решение: подпись и правка перечитывают день **под** блокировкой
+ * заявки, и чтение мимо транзакции вернуло бы им состояние до собственной блокировки.
+ */
+type Reader = Tx | typeof db;
+
 /** Кто внёс часы и кто их принял — две разные учётки, поэтому два алиаса на таблицу учёток. */
 const fillers = alias(users, 'shift_fillers');
 const shiftApprovers = alias(users, 'shift_approvers');
@@ -79,8 +86,9 @@ function emptyShift(date: string): VehicleRequestShiftDto {
 export async function loadRequestShifts(
   requestId: string,
   term: ShiftTerm,
+  reader: Reader = db,
 ): Promise<VehicleRequestShiftDto[]> {
-  const rows = await db
+  const rows = await reader
     .select({
       shiftDate: vehicleRequestShifts.shiftDate,
       startedAt: vehicleRequestShifts.startedAt,
@@ -121,13 +129,20 @@ export async function loadRequestShifts(
   });
 }
 
-/** Одна смена по её дню; `null` — за этот день ничего не внесено. */
+/**
+ * Одна смена по её дню; `null` — за этот день ничего не внесено.
+ *
+ * Читателя передают все пишущие ручки смен: они перечитывают день **внутри** транзакции и после
+ * `lockRequestRow`, иначе решение принималось бы по состоянию, которое к моменту записи уже
+ * неверно (план Р18, подэтап 2a).
+ */
 export async function loadRequestShift(
   requestId: string,
   date: string,
   term: ShiftTerm,
+  reader: Reader = db,
 ): Promise<VehicleRequestShiftDto | null> {
-  const shift = (await loadRequestShifts(requestId, term)).find((s) => s.date === date);
+  const shift = (await loadRequestShifts(requestId, term, reader)).find((s) => s.date === date);
   return shift?.filledAt ? shift : null;
 }
 

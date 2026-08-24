@@ -1,12 +1,12 @@
 import {
   type AccessSubject,
-  hasServiceClosingDocument,
   isServiceRequestClosed,
   isWaitingOn,
   type ServiceRequestDto,
-  serviceStepLabels,
+  serviceStepLabelFor,
   serviceWaitingOnLabels,
 } from '@technic/contracts';
+import { isAwaitingDocuments } from './documents';
 
 /**
  * Возраст ожидания и подпись состояния — то, чем список заявок на обслуживание отличается от
@@ -68,7 +68,10 @@ export interface ServiceStatusLine {
  * `null` — в столбце прочерк: у принятой и отменённой заявки хода нет и ждать в них нечего.
  */
 export function serviceStatusLine(
-  request: Pick<ServiceRequestDto, 'status' | 'waitingOn' | 'holdReason' | 'files'>,
+  request: Pick<
+    ServiceRequestDto,
+    'status' | 'waitingOn' | 'holdReason' | 'files' | 'kind' | 'service'
+  >,
   subject: AccessSubject | null | undefined,
 ): ServiceStatusLine | null {
   if (isServiceRequestClosed(request.status)) return null;
@@ -84,16 +87,32 @@ export function serviceStatusLine(
 
   const mine = isWaitingOn(subject, request.waitingOn);
 
-  // Предъявленная работа без единой закрывающей бумаги — это и есть очередь «Ожидаются
-  // документы», видимая прямо в столбце (Р112, Р114): принять такую заявку нельзя, и звать
-  // «принять работу» значило бы звать в отказ сервера.
-  if (request.status === 'done' && !hasServiceClosingDocument(request)) {
+  /*
+   * Предъявленная работа без единой закрывающей бумаги — это и есть очередь «Ожидаются документы»,
+   * видимая прямо в столбце (Р112, Р114).
+   *
+   * Спрашивается **тот же предикат**, что у вкладки документов и у сервера (`isAwaitingDocuments`
+   * → `serviceRequestNeedsClosingDocument`), а не один статус: после Н8 бумага обязательна только
+   * сервисному ремонту, и «Ждёт документов» у заявки на картриджи или у инхаус-ремонта — подпись
+   * про обязанность, которой нет. Столбец и вкладка обязаны отвечать одно и то же.
+   */
+  if (isAwaitingDocuments(request)) {
     return mine
       ? { text: 'Вам: нужен закрывающий документ', mine: true }
       : { text: 'Ждёт документов', mine: false };
   }
 
+  /*
+   * Подпись «Вам: …» берётся по паре «статус + кого ждут», а не по одному статусу (волна В6). В
+   * «Смете на согласовании» сторон две: сперва виза ИТ, потом деньги, — и `waitingOn` их различает,
+   * потому что сервер считает его по строке заявки (`serviceRequestWaitingOn`), сверяя ревизию
+   * подписи с текущей. Подпись по статусу звала бы согласующего от ИТ «согласовать смету», то есть
+   * не туда: сумму подписывает «Ведение».
+   *
+   * Чужой ход подписан стороной (`serviceWaitingOnLabels`) — там шаг называть незачем: смотрящему
+   * важно, кого ждут, а не что именно тот сделает.
+   */
   return mine
-    ? { text: `Вам: ${serviceStepLabels[request.status]}`, mine: true }
+    ? { text: `Вам: ${serviceStepLabelFor(request.status, request.waitingOn)}`, mine: true }
     : { text: serviceWaitingOnLabels[request.waitingOn], mine: false };
 }

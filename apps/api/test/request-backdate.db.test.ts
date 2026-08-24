@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 import {
   moscowDateKeyOf,
   shiftDateKey,
@@ -43,7 +44,11 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('backdate');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 /** Свой человек у файла: база db-тестов общая, и работник ищется по СНИЛС — он его ключ. */
 const DRIVER_SNILS = '44444444480';
@@ -247,8 +252,7 @@ async function linkedRequests(correctionId: string): Promise<string[]> {
 
 describe.skipIf(!DB_URL)('даты заявок задним числом (живая схема)', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
 
     await seedUser(ADMIN_EMAIL, 'admin');
     const dispatcherId = await seedUser(DISPATCHER_EMAIL, 'dispatcher');
@@ -357,7 +361,16 @@ describe.skipIf(!DB_URL)('даты заявок задним числом (жи�
   }, 60_000);
 
   describe('заведение задним числом (Р15)', () => {
-    it('без права прошлое закрыто, даже с объяснением', async () => {
+    /*
+   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+   *
+   * Сегодня половины совпадают: право и глубина считаются по датам, а не по бумаге. На этапе 5 расходится случай с переводом в работу — он выписывает листы, и их число зависит от нарезки.
+   */
+  describeReadModes(readMode, 'заявка задним числом', (mode) => {
+    void mode;
+
+  it('без права прошлое закрыто, даже с объяснением', async () => {
       const yesterday = shiftDateKey(ctx.today, -1);
       const res = await create(
         ctx.manager,
@@ -669,5 +682,6 @@ describe.skipIf(!DB_URL)('даты заявок задним числом (жи�
       // Ничего не поехало: отказ стоит до транзакции (Р36).
       expect((await read(request.id)).dateFrom).toBe(ctx.today);
     });
+  });
   });
 });

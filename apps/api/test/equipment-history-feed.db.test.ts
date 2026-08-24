@@ -136,10 +136,15 @@ describe.skipIf(!DB_URL)('лента истории единицы (живая �
     const typeRow = await db.execute<{ id: string }>(
       sql`SELECT id FROM office_equipment_types WHERE code = 'mfp'`,
     );
+    // Суффикс прогона стоит и в наименовании, а не только в инвентарном номере: с миграции
+    // `0171` наименование карточки — это имя строки справочника `office_equipment_models`, и
+    // вставка без `model_id` заводит модель сама. По этому же суффиксу уборка её и находит —
+    // причём обе: переименование ниже заводит вторую, а карточка остаётся одна.
     const equipmentRow = await db.execute<{ id: string }>(sql`
       INSERT INTO office_equipment (equipment_type_id, name, inventory_number, object_id,
                                     warranty_until)
-      VALUES (${typeRow.rows[0]!.id}, 'Kyocera M3145', ${`ХФ-${RUN}`}, ${objectId}, '2020-01-01')
+      VALUES (${typeRow.rows[0]!.id}, ${`Kyocera M3145 ${RUN}`}, ${`ХФ-${RUN}`}, ${objectId},
+              '2020-01-01')
       RETURNING id`);
 
     const app = await buildApp();
@@ -176,6 +181,17 @@ describe.skipIf(!DB_URL)('лента истории единицы (живая �
         sql`DELETE FROM office_equipment_movements WHERE equipment_id = ${ctx.equipmentId}`,
       );
       await ctx.db.execute(sql`DELETE FROM office_equipment WHERE id = ${ctx.equipmentId}`);
+      // Модели, заведённые карточками этого файла. С миграции `0171` наименование карточки — это
+      // имя строки справочника `office_equipment_models`, и вставка без `model_id` заводит модель
+      // сама; удаление карточки её за собой не уносит, а база у db-тестов общая — за неделю
+      // прогонов справочник зарастёт именами фикстур. Отбор идёт по суффиксу прогона в самом
+      // наименовании: копию боевого парка в этой базе он не заденет. Проверка «карточек не
+      // осталось» — страховка от `ON DELETE RESTRICT` у ссылки карточки: пережившая уборку
+      // карточка уронила бы `afterAll` отказом внешнего ключа вместо тихо оставленной строки.
+      await ctx.db.execute(sql`
+        DELETE FROM office_equipment_models m
+         WHERE m.name LIKE ${`% ${RUN}`}
+           AND NOT EXISTS (SELECT 1 FROM office_equipment e WHERE e.model_id = m.id)`);
       await ctx.db.execute(
         sql`DELETE FROM users WHERE email LIKE ${`db-hf-%-${RUN}@example.invalid`}`,
       );
@@ -189,7 +205,7 @@ describe.skipIf(!DB_URL)('лента истории единицы (живая �
       'PATCH',
       `/api/v1/office-equipment/${ctx.equipmentId}`,
       ctx.admin,
-      { name: 'Kyocera M3145dn', warrantyUntil: '2027-03-01' },
+      { name: `Kyocera M3145dn ${RUN}`, warrantyUntil: '2027-03-01' },
     );
     expect(patched.statusCode, patched.body).toBe(200);
 

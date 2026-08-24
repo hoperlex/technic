@@ -12,6 +12,7 @@ import {
   isDepartmentScopedRole,
   isObjectScopedRole,
   isPlaceScopedRole,
+  isServiceRequestDeletable,
   isServiceRequestEditable,
   isWeeklyWeekOverdue,
   type Permission,
@@ -19,6 +20,7 @@ import {
   requestStatusLabels,
   roleLabels,
   roleScopeAxis,
+  serviceRequestStatusLabels,
   type ServiceRequestStatus,
   type VehicleRequestType,
   vehicleRequestTypeLabels,
@@ -532,6 +534,25 @@ export function assertServiceRequestEditable(
   if (isPlaceScopedRole(p.role) && !isServiceRequestEditable(status)) {
     throw err.forbidden(
       `${roleLabels[p.role!]} может ${action} заявку только до назначения сервиса`,
+    );
+  }
+}
+
+/**
+ * Удаление заявки площадочной ролью — **своё** правило, а не «то же, что правка» (В20 плана
+ * переработки цикла). Удалять можно и «Назначенную»: работа по ней не начиналась, исполнителя ей
+ * просто назначили, — а править её уже нельзя, предмет заявки исполнитель прочитал и по нему
+ * договорился.
+ *
+ * Отдельной функцией, потому что список статусов у этих двух решений разный и живёт он в
+ * контрактах (`isServiceRequestDeletable`): переиспользуй мы `assertServiceRequestEditable`, два
+ * разных решения заказчика держались бы на одном перечне и разъехались бы на первой же правке
+ * любого из них.
+ */
+export function assertServiceRequestDeletable(p: Principal, status: ServiceRequestStatus): void {
+  if (isPlaceScopedRole(p.role) && !isServiceRequestDeletable(status)) {
+    throw err.forbidden(
+      `${roleLabels[p.role!]} удаляет заявку, пока по ней не начали работать — «${serviceRequestStatusLabels[status]}» уже дальше`,
     );
   }
 }

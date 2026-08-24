@@ -1,4 +1,9 @@
 import { z } from 'zod';
+// Периоды назначения (`docs/assignment-periods-plan.md`, Я5): добавляемая часть тела смены техники
+// описана там одним объектом, и расширение берёт поле **оттуда**, а не пишет его копию.
+// Обратной зависимости нет — `assignment-periods.ts` про заявку не знает вовсе, — значит и цикла
+// импортов здесь не возникает.
+import { changeVehicleAssignmentExtrasSchema } from './assignment-periods';
 import {
   requestStatusLabels,
   requestStatusSchema,
@@ -1327,6 +1332,26 @@ export const changeVehicleAssignmentSchema = z
      * — обычная смена техники, как была: ни права, ни причины, ни следа в журнале коррекций.
      */
     correction: correctAssignmentSchema.optional(),
+    /**
+     * Отпечаток последствий, показанных предпросмотром
+     * (`POST /vehicle-requests/:id/assignment/preview`, план §8, Р32).
+     *
+     * Необязателен в схеме, и это не мягкость, а фазирование (Ж5, И5). Портал шлёт его начиная с
+     * волны 4a, а старые вкладки и кэш живут дольше выката: потребуй схема отпечаток сразу, смена
+     * техники перестала бы работать у всех в момент деплоя. Поэтому спрашивает его **сервер** и по
+     * режиму чтения: в `legacy` отпечаток сверяется только у того, кто его прислал, в `history`
+     * становится обязательным, и старый клиент получает 409 `CLIENT_UPGRADE_REQUIRED` из
+     * обработчика, а не 400 от схемы.
+     *
+     * Остальная часть `changeVehicleAssignmentExtrasSchema` — `anchors`, `unlockFingerprint`,
+     * `clearedShiftsFingerprint`, `acknowledgements`, `operation` и коррекционный блок с целью —
+     * приезжает вместе с окном волны 4a. Принять их сейчас значило бы принимать и **молча
+     * игнорировать**: якорей эта дверь пока не пишет (Р22, бэкстоп), а рукопожатие, которое никто
+     * не проверяет, хуже отсутствующего. Коррекционный блок здесь по той же причине остаётся
+     * прежним (`correctAssignmentSchema`): его цель и `operation` — это смена тела, а не
+     * расширение, и она идёт своей волной.
+     */
+    previewFingerprint: changeVehicleAssignmentExtrasSchema.shape.previewFingerprint,
   })
   .strict();
 export type ChangeVehicleAssignmentInput = z.infer<typeof changeVehicleAssignmentSchema>;

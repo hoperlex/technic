@@ -32,6 +32,8 @@ import {
   type WasteRequestVehicleDto,
   wasteRequestListQuerySchema,
   wasteRequestSummaryQuerySchema,
+  can,
+  type WasteTicketBadgeDto,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -85,6 +87,9 @@ import {
 import { loadWasteRequestHistory } from '../services/waste-request-history';
 import { vehiclesByRequestIds } from '../services/waste-request-vehicles';
 import { assertOperatorServesObject } from '../services/object-operators';
+import { enqueueTicketRecognition, purgeRequestRecognition } from '../services/waste-tickets';
+import { wasteTicketChecks } from '../services/waste-ticket-checks';
+import { loadTicketCheckInputs } from '../services/waste-ticket-inputs';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -245,10 +250,44 @@ function toCompletionDto(r: RequestRow): WasteRequestCompletionDto | null {
   };
 }
 
+const EMPTY_BADGES: ReadonlyMap<string, WasteTicketBadgeDto> = new Map();
+
+/**
+ * Значки разбора для страницы списка (ADR 0114, Р24). Считает их ТА ЖЕ функция, что и карточка:
+ * человек включает фильтр «Требуют разбора», получает список и по значкам решает, с какой строки
+ * начать, — пустой значок при живом фильтре читается как ошибка портала.
+ *
+ * Соблазн посчитать разбивку отдельным SQL — «дёшево, прямо в списке» — стоил бы второго
+ * определения того, что такое расхождение: допуски, отклонённые талоны, снятые принятия с их
+ * отпечатками. Два определения разъезжаются молча и именно в ту сторону, где список успокаивает, а
+ * карточка показывает расхождение.
+ *
+ * Соседей по номеру расчёт списка НЕ называет: `visible` не передан, и замечание о повторе
+ * скажет «по другой заявке». Значку этого достаточно — он показывает число, а не текст, — а
+ * право читать чужую заявку проверяется там, где текст читают (Р28).
+ */
+async function ticketBadgesFor(
+  rows: readonly RequestRow[],
+): Promise<ReadonlyMap<string, WasteTicketBadgeDto>> {
+  const bundles = await loadTicketCheckInputs(rows);
+  const badges = new Map<string, WasteTicketBadgeDto>();
+  for (const [requestId, bundle] of bundles) {
+    badges.set(requestId, wasteTicketChecks(bundle.inputs).badge);
+  }
+  return badges;
+}
+
 function toDto(
   r: RequestRow,
   fileGroups: RequestFileGroups,
   vehicles: WasteRequestVehicleDto[] = [],
+  /**
+   * Значок разбора талонов (ADR 0114, Р24). `null` — либо у смотрящего нет права разбора, либо
+   * бумаги у заявки нет вовсе. Нулями это не заменяется намеренно: «разбирать нечего» и «всё
+   * разобрано» — разные ответы, и один значок на оба означал бы, что молчащая подсистема выглядит
+   * как порядок.
+   */
+  ticketBadge: WasteTicketBadgeDto | null = null,
 ): WasteRequestDto {
   return {
     id: r.id,
@@ -283,6 +322,7 @@ function toDto(
     files: fileGroups.files,
     tickets: fileGroups.tickets,
     vehicles,
+    ticketBadge,
     completion: toCompletionDto(r),
     version: r.version,
     createdBy: r.createdBy,
@@ -623,6 +663,13 @@ async function saveWasteCompletion(
   requestId: string,
   c: WasteRequestCompletionDto,
   wasteTariffId: string | null,
+  /**
+   * День фактического вывоза (ADR 0114, Р19). Источник хранится рядом со значением: `entered` —
+   * человек ввёл, `unknown` — дня нет. Историческим закрытиям он **не выдумывается**: подстановка
+   * плановой даты выдала бы предположение за факт, и сверка нарисовала бы расхождения там, где их
+   * никто не совершал.
+   */
+  removedOn: string | null | undefined,
 ): Promise<void> {
   const values = {
     // Ровно одна из двух колонок — вторая явным NULL: строка переписывается целиком, и оставшееся
@@ -633,6 +680,9 @@ async function saveWasteCompletion(
     wasteTariffId,
     totalCost: numToDb(c.totalCost),
     completedBy: c.completedBy,
+    // Пустое поле — это «неизвестно», а не «не меняли»: закрытие переписывает строку целиком.
+    removedOn: removedOn ?? null,
+    removedOnSource: removedOn ? ('entered' as const) : ('unknown' as const),
   };
   await tx
     .insert(wasteRequestCompletions)
@@ -719,6 +769,13 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   r.get('/', { ...auth, schema: { querystring: wasteRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     const q = req.query;
+    // Реестр разбора (ADR 0114, Р24). Право спрашивается ЗДЕСЬ, а не в `preHandler`: сам список
+    // открыт всем, у кого есть чтение заявок, и закрыт только этот его срез. Параметр без права
+    // отклоняется, а не игнорируется: молчаливое игнорирование вернуло бы полный список, и человек
+    // прочитал бы его как «разбирать нечего».
+    if (q.ticketReview) {
+      assertCan(p, 'wasteRequests.ticketReview', 'Разбор талонов — отдельное право');
+    }
     const where = and(
       // Архив (ADR 0070): вкладка «Архив» просит `only`, обычный список — умолчание `exclude`.
       // Границы видимости при этом те же: свой объект, свои заявки, — архив их не расширяет.
@@ -735,6 +792,25 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       q.num ? eq(wasteRequests.num, q.num) : undefined,
       q.deliveryFrom ? gte(wasteRequests.deliveryAt, q.deliveryFrom) : undefined,
       q.deliveryTo ? lte(wasteRequests.deliveryAt, q.deliveryTo) : undefined,
+      // «Требуют разбора»: неподтверждённый или спорный талон, неудачный файл, мёртвая задача либо
+      // непринятое расхождение. Именно ждущая работа, а не только расхождения, — иначе корректно
+      // распознанный талон без замечаний остался бы неподтверждённым навсегда (Р24).
+      q.ticketReview === 'pending'
+        ? sql`(
+            EXISTS (SELECT 1 FROM waste_tickets wt
+                     WHERE wt.request_id = ${wasteRequests.id}
+                       AND (wt.status = 'unconfirmed' OR array_length(wt.needs_review_fields, 1) > 0))
+            OR EXISTS (SELECT 1 FROM waste_ticket_files wf
+                        WHERE wf.request_id = ${wasteRequests.id}
+                          AND wf.status IN ('unsupported', 'failed'))
+            OR EXISTS (SELECT 1 FROM waste_ticket_pages wp
+                        WHERE wp.request_id = ${wasteRequests.id} AND wp.status = 'failed')
+            OR EXISTS (SELECT 1 FROM waste_ticket_blind_checks bc
+                        JOIN waste_tickets wt2 ON wt2.id = bc.ticket_id
+                       WHERE wt2.request_id = ${wasteRequests.id}
+                         AND bc.status IN ('pending', 'mismatch'))
+          )`
+        : undefined,
       // Ищут по тексту, не помня, чья это была строка, — поэтому обе (ADR 0053).
       searchCondition(q.search, [
         wasteRequests.comment,
@@ -778,13 +854,22 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       .from(wasteRequests)
       .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
       .where(where);
-    const [filesMap, vehiclesMap] = await Promise.all([
+    const [filesMap, vehiclesMap, badges] = await Promise.all([
       filesByRequestIds(rows.map((row) => row.id)),
       vehiclesByRequestIds(rows.map((row) => row.id)),
+      // Значок разбора (Р24) — только с правом `ticketReview` и только для этой страницы. Без
+      // права он не считается вовсе: по разбивке ⛔/⚠️ читается наличие расхождений, а это те же
+      // сведения, что закрыты в карточке, — показанные в списке, они обошли бы её проверку.
+      can(p, 'wasteRequests.ticketReview') ? ticketBadgesFor(rows) : EMPTY_BADGES,
     ]);
     return {
       items: rows.map((row) =>
-        toDto(row, filesMap.get(row.id) ?? EMPTY_FILE_GROUPS, vehiclesMap.get(row.id) ?? []),
+        toDto(
+          row,
+          filesMap.get(row.id) ?? EMPTY_FILE_GROUPS,
+          vehiclesMap.get(row.id) ?? [],
+          badges.get(row.id) ?? null,
+        ),
       ),
       total: Number(totalRow!.c),
       page: p2.page,
@@ -1300,6 +1385,35 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // транзакции их уже не по чему пересчитать.
       let ticketsUnlinked = 0;
       const closed = await db.transaction(async (tx) => {
+        // Строка заявки берётся `FOR UPDATE` **первым** действием транзакции — до чтения талонов,
+        // факта и вообще чего бы то ни было связанного. Это общий замок всего контура вывоза:
+        // любая транзакция, меняющая талоны, страницы распознавания, файловые строки или статус
+        // заявки, начинается именно с него (ADR 0114, решение 4; план — Р11).
+        //
+        // Без замка откат «В работе» → «Новая» проигрывает фоновой задаче распознавания. Задача
+        // работает связкой «прочитал состояние → сходил в сеть → записал результат», и до этой
+        // правки строка заявки запиралась здесь **последней**: талоны отвязывались и факт
+        // удалялся раньше, чем `UPDATE waste_requests`. Всё окно между уборкой и сменой статуса
+        // было открыто для писателей — «воркер увидел выполненную заявку с живой связью талона →
+        // откат отвязал файлы и снёс факт → воркер вставил страницу и талон → откат дописал
+        // статус `new`». На выходе заявка, выглядящая только что заведённой, но с бумагой,
+        // которую никто не прикладывал, и с занятым чужим номером талона.
+        //
+        // Проверок «внутри транзакции» для этого мало: они читают состояние, но не удерживают
+        // его, — а перепроверка под общим замком делает опоздавшую задачу no-op, в том числе уже
+        // взятую в работу, поэтому отменять задачи при откате не нужно.
+        //
+        // Оптимистическую проверку версии ниже (`WHERE version = $version`) замок не заменяет и
+        // не дублирует: та отвечает за конкурентную правку из интерфейса — «карточку открыли
+        // вдвоём, один сохранил раньше» — и опирается на данные, прочитанные до транзакции. Замок
+        // отвечает за писателей, которые версию не двигают вовсе: воркер распознавания сверяет
+        // состояние (заявка выполнена и связь талона жива), а не версию, — правка выполненной
+        // заявки поднимает `version`, и сверка по ней молча отменяла бы распознавание.
+        await tx
+          .select({ id: wasteRequests.id })
+          .from(wasteRequests)
+          .where(eq(wasteRequests.id, before.id))
+          .for('update');
         // Закрытие заявки — это предъявление факта, и оно проводится тем же запросом, что и смена
         // статуса. Талон обязателен: «Выполнена» без бумаги о вывозе — отметка о работе, которую
         // нечем подтвердить (ADR 0020). Крепится он к самой заявке у любого типа — общим пулом
@@ -1313,7 +1427,13 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
               name: p.fullName,
             });
             saved = resolved.dto;
-            await saveWasteCompletion(tx, before.id, resolved.dto, resolved.wasteTariffId);
+            await saveWasteCompletion(
+              tx,
+              before.id,
+              resolved.dto,
+              resolved.wasteTariffId,
+              completion.removedOn,
+            );
           }
           await linkFiles(tx, before.id, ticketFileIds, p.id, true, 'ticket');
           if ((await countRequestTickets(tx, before.id)) === 0) {
@@ -1321,6 +1441,19 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
               ticketFileIds: 'Приложите талон',
             });
           }
+          // Приложенная бумага уходит на распознавание (ADR 0114, решение 4; план — Р11). Задача
+          // ставится **по файлу** и **той же транзакцией**: страниц в этот момент не существует —
+          // их заводит воркер после скачивания и растеризации, — а связь талона и задача на него
+          // обязаны появиться вместе. Задача, записанная отдельным соединением, уехала бы в
+          // очередь раньше коммита закрытия: воркер не нашёл бы ни выполненной заявки, ни связи,
+          // а откат этой транзакции оставил бы её искать талон, которого никто не приложил.
+          //
+          // Только на файлы этого закрытия: талон, приложенный прошлым разом (заявку вернули в
+          // работу и закрывают снова), уже разобран, и вторая задача перераспознавала бы
+          // подтверждённую человеком бумагу — а перераспознавание это отдельная кнопка со своей
+          // политикой (Р13). Версии заявки в задаче нет намеренно — сверка по ней молча отменяла
+          // бы распознавание при любой правке выполненной заявки; воркер сверяет состояние.
+          await enqueueTicketRecognition(tx, before.id, before.requestType, ticketFileIds);
         }
         // Возврат в «Новую» стирает работу той же транзакцией, что и меняет статус: «Новая» с
         // предъявленным фактом и талонами прошлого закрытия означала бы, что заявку с работы и не
@@ -1331,6 +1464,21 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // заявке (ADR 0053). Назначенный исполнитель — тоже: его ставят отдельным правом, и к
         // переводу в работу это отношения не имеет.
         if (resetsWork) {
+          // Распознанное уходит вместе с талонами и той же транзакцией (Р22; ADR 0114, решение
+          // 12): талоны заявки, её страницы, файловые строки обработки и принятия расхождений.
+          // «Новая» заявка, за которой числится разобранный талон, держала бы чужой номер занятым
+          // — область уникальности номера это перевозчик (Р17), — и следующая бумага с тем же
+          // номером упёрлась бы в конфликт с закрытием, которого больше нет.
+          //
+          // ПОПЫТКИ распознавания при этом сохраняются: они принадлежат содержимому страницы, а
+          // не заявке (заявки нет даже в их ключе), и служат кэшем — повторное закрытие тем же
+          // листом, самый частый исход отката, не стоит ни копейки и не отправляет скан наружу
+          // второй раз. Подробности порядка удаления — в сервисе.
+          //
+          // Идёт под тем же `FOR UPDATE`, что взят первым действием транзакции: уборка,
+          // выполненная мимо общего замка, разошлась бы с фоновой задачей ровно так, как описано
+          // выше. Отменять уже поставленные задачи не нужно — под замком они становятся no-op.
+          await purgeRequestRecognition(tx, before.id);
           const tickets = await tx
             .select({ fileId: requestFiles.fileId })
             .from(requestFiles)

@@ -1,6 +1,7 @@
 import {
   maintenanceState,
   type VehicleMaintenanceDto,
+  type VehicleMaintenancePartDto,
   type VehicleMaintenanceSummaryDto,
 } from '@technic/contracts';
 
@@ -12,6 +13,25 @@ import {
  * `kmSince: 9 500`, и тест начал бы проверять портал на данных, которых сервер не отдаёт, — а
  * половина правил состояния как раз про то, какое число с каким флагом чем оказывается.
  */
+
+/**
+ * Строка расхода в акте (план `docs/auto-parts-plan.md`, Р5): позиция, сколько поставили и зачем.
+ * Наименование и единица приходят соединением с текущей карточкой склада, а не снимком момента.
+ */
+export function maintenancePart(
+  overrides: Partial<VehicleMaintenancePartDto> = {},
+): VehicleMaintenancePartDto {
+  return {
+    id: 'mp-1',
+    autoPartId: 'ap-1',
+    name: 'Фильтр масляный',
+    code: 'LF3349',
+    unit: 'шт',
+    quantity: 1,
+    note: '',
+    ...overrides,
+  };
+}
 
 /** Запись ТО: акт с датой, пробегом и номером; правок ещё не было (`updatedByName` пуст). */
 export function maintenanceRecord(
@@ -31,6 +51,13 @@ export function maintenanceRecord(
     createdByName: 'Механиков Михаил Иванович',
     updatedAt: '2026-06-11T08:00:00.000Z',
     updatedByName: '',
+    // Расхода по акту нет, движений склада не было, акт действующий: три отдельных умолчания, а не
+    // одно — строки снимают правкой, а движения по ним остаются навсегда (Р6).
+    parts: [],
+    hasPartMovements: false,
+    voidedAt: null,
+    voidedByName: '',
+    voidReason: '',
     ...overrides,
   };
 }

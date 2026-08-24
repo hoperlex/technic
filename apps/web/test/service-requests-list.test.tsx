@@ -13,7 +13,8 @@ import {
   serviceRequest,
   serviceRequestFile,
 } from './factories/service';
-import { objectDto } from './factories/waste';
+import { objectDto, operator } from './factories/waste';
+import { selectOption } from './antd';
 import { RequestsTab } from '../src/pages/service/RequestsTab';
 
 /**
@@ -89,7 +90,9 @@ describe('список заявок на обслуживание: колонк�
   it('оператор видит исполнителя, документы и один столбец состояния', async () => {
     renderTab(OPERATOR, [serviceRequest()]);
     expect(await screen.findByText('СО-14')).toBeDefined();
-    expect(shown('Сервис')).toBe(true);
+    // Колонка называет обоих исполнителей — компанию и своих сотрудников (Н5), поэтому она уже не
+    // «Сервис».
+    expect(shown('Исполнители')).toBe(true);
     expect(shown('Документы')).toBe(true);
     expect(shown('Статус')).toBe(true);
     /*
@@ -123,19 +126,22 @@ describe('список заявок на обслуживание: колонк�
  * того, кто ждёт чужого хода, читается как требование к нему.
  */
 describe('столбец состояния подписан лицом смотрящего', () => {
-  const inDiagnostics = () => serviceRequest({ status: 'diagnostics' });
+  // «Диагностики» больше нет (Н2): взявшаяся за работу заявка стоит в «В работе» — одно состояние
+  // и у ремонта, и у расходников.
+  const inWork = () => serviceRequest({ status: 'in_work' });
 
-  it('исполнителю в «Диагностике» — его собственный шаг', async () => {
-    renderTab(EXECUTOR, [inDiagnostics()]);
+  it('исполнителю в «В работе» — его собственный шаг', async () => {
+    renderTab(EXECUTOR, [inWork()]);
     await screen.findByText('СО-14');
-    expect(shown('Вам: собрать и предъявить смету')).toBe(true);
+    expect(shown('Вам: выполнить и закрыть работы')).toBe(true);
   });
 
   it('оператору та же заявка говорит, что ход не за ним', async () => {
-    renderTab(OPERATOR, [inDiagnostics()]);
+    renderTab(OPERATOR, [inWork()]);
     await screen.findByText('СО-14');
-    expect(shown('Ждёт сервис')).toBe(true);
-    expect(shown('Вам: собрать и предъявить смету')).toBe(false);
+    // «Ждёт исполнителя», а не «Ждёт сервис»: исполнителем теперь бывает и свой сотрудник (Н5).
+    expect(shown('Ждёт исполнителя')).toBe(true);
+    expect(shown('Вам: выполнить и закрыть работы')).toBe(false);
   });
 
   it('заказчику подпись всегда чужая: шага в цикле у него нет', async () => {
@@ -189,24 +195,29 @@ describe('столбец состояния подписан лицом смот
  * может. Второй картой это и разошлось бы — строка звала бы к действию, которого в меню нет.
  */
 describe('подпись состояния ведёт в действие (Р117)', () => {
-  it('«Вам: назначить сервис» открывает окно назначения — то же, что и пункт меню', async () => {
-    renderTab(OPERATOR, [serviceRequest({ status: 'it_approved' })]);
+  it('«Вам: назначить исполнителей» открывает окно назначения — то же, что и пункт меню', async () => {
+    renderTab(OPERATOR, [serviceRequest()]);
     await screen.findByText('СО-14');
     // Тот же ход есть и в меню строки: подпись обещает ровно его.
-    expect(await rowActionLabels()).toContain('Назначить сервис');
+    expect(await rowActionLabels()).toContain('Назначить исполнителей');
     fireEvent.keyDown(document.body, { key: 'Escape' });
 
-    const link = statusLink('Вам: назначить сервис');
+    const link = statusLink('Вам: назначить исполнителей');
     expect(link).not.toBeNull();
     fireEvent.click(link!);
 
     // Ровно одно окно: клик по ссылке не всплывает до строки, иначе окно действия открылось бы
-    // под карточкой заявки (Р117).
-    await waitFor(() => expect(openModalTitles()).toEqual(['Назначить сервис']));
+    // под карточкой заявки (Р117). Заголовок тот же, что и подпись пункта: исполнителей с волны В6
+    // выбирают одним полем — и своих поимённо, и сервисную компанию строкой (Н5, Н6).
+    await waitFor(() => expect(openModalTitles()).toEqual(['Назначить исполнителей']));
   });
 
   it('«Вам: нужен закрывающий документ» ведёт в окно приёмки, где бумагу и подшивают (Р120)', async () => {
-    renderTab(OPERATOR, [serviceRequest({ status: 'done' })]);
+    // Заявка сервисной компании: после Н8 бумага обязательна только ей, и подпись про документ
+    // появляется ровно у такой заявки — у инхаус-ремонта её нет и быть не должно.
+    renderTab(OPERATOR, [
+      serviceRequest({ status: 'done', service: { id: 'cp-1', name: 'Сервис-Про' } }),
+    ]);
     await screen.findByText('СО-14');
 
     const link = statusLink('Вам: нужен закрывающий документ');
@@ -219,31 +230,36 @@ describe('подпись состояния ведёт в действие (Р11
 
   it('шаг без окна уходит на сервер сразу — как и одноимённый пункт меню', async () => {
     const http = renderTab(EXECUTOR, [serviceRequest({ status: 'assigned' })], {
-      'PATCH /service-requests/:id/start': () => json(serviceRequest({ status: 'diagnostics' })),
+      'PATCH /service-requests/:id/start': () => json(serviceRequest({ status: 'in_work' })),
     });
     await screen.findByText('СО-14');
 
     fireEvent.click(statusLink('Вам: принять в работу')!);
 
-    // «Взять в диагностику» — единственное действие без содержания: подтверждать нечего, и второе
+    // «Принять в работу» — единственное действие без содержания: подтверждать нечего, и второе
     // поведение у той же дуги было бы расхождением подписи с меню (§8 плана).
     await waitFor(() => expect(http.countOf('PATCH /service-requests/:id/start')).toBe(1));
   });
 
   it('чужой ход подписан текстом, а не ссылкой', async () => {
-    renderTab(OPERATOR, [serviceRequest({ status: 'diagnostics' })]);
+    renderTab(OPERATOR, [serviceRequest({ status: 'in_work' })]);
     await screen.findByText('СО-14');
     // Ход за исполнителем: у оператора пункта меню для него нет — и звать некуда.
-    expect(statusLink('Ждёт сервис')).toBeNull();
+    expect(statusLink('Ждёт исполнителя')).toBeNull();
   });
 });
 
 /**
- * Ячейка документов (Р112): чем работа закрыта и чего не хватает.
+ * Ячейка документов (Р112, Н8): чем работа закрыта и чего не хватает.
  *
  * Планка одна на всё — хватает любого закрывающего документа, — поэтому перечня недостающих видов
  * у портала больше нет: три тега «нет: акт / нет: счёт / нет: талон» читались бы как «нужны все
- * три», хотя приёмку запирает отсутствие сразу всех.
+ * три», хотя запирает переход отсутствие сразу всех.
+ *
+ * Спрашивается она только у того, кому бумага **положена** (`serviceRequestNeedsClosingDocument`):
+ * платят за работу внешнего сервиса, и основание платежа — документ. У инхаус-ремонта его не
+ * требует ни сервер, ни автозакрытие, и красный тег на такой заявке висел бы вечно, требуя
+ * бумагу, которой неоткуда взяться.
  */
 describe('ячейка документов', () => {
   it('подшитые виды показаны тегами, красного среди них нет', async () => {
@@ -261,7 +277,10 @@ describe('ячейка документов', () => {
   });
 
   it('отсутствие всех трёх — один красный тег, а не три «нет: …»', async () => {
-    renderTab(OPERATOR, [serviceRequest({ status: 'done', files: [] })]);
+    // Заявка сервисной компании: только ей документ и обязателен (Н8).
+    renderTab(OPERATOR, [
+      serviceRequest({ status: 'done', files: [], service: { id: 'cp-1', name: 'КопиЛайт' } }),
+    ]);
     await screen.findByText('СО-14');
 
     expect(screen.getAllByText('нет закрывающих')).toHaveLength(1);
@@ -270,42 +289,107 @@ describe('ячейка документов', () => {
     expect(shown('Счёт')).toBe(false);
     expect(shown('Гарантийный талон')).toBe(false);
   });
+
+  it('своему сисадмину бумага не нужна: красного тега у инхаус-ремонта нет', async () => {
+    // Тот же статус и те же пустые документы, но исполнитель свой — платить некому, и требовать
+    // основание платежа не с кого. Сервер такую заявку закрывает и без бумаги, а автозакрытие
+    // берёт её наравне с остальными.
+    renderTab(OPERATOR, [serviceRequest({ status: 'done', files: [], service: null })]);
+    await screen.findByText('СО-14');
+
+    expect(shown('нет закрывающих')).toBe(false);
+  });
 });
 
 describe('действия строятся из коридора переходов', () => {
-  it('оператору «Новая» назначения не предлагает: сначала виза ИТ', async () => {
+  it('оператору «Новая» предлагает распределение — и ничего чужого', async () => {
+    /*
+     * Раньше этот случай назывался «назначения не предлагает: сначала виза ИТ» и искал подписи
+     * «Назначить сервис» и «Согласование ИТ». После ADR 0133 обеих нет в портале вовсе — то есть
+     * тест остался бы зелёным, охраняя отменённое правило и не проверяя ничего. Поэтому он
+     * переписан на положительное утверждение: с «Новой» начинается распределение, а не виза.
+     */
     renderTab(OPERATOR, [serviceRequest()]);
     await openRowActions();
-    expect(await screen.findByText('Отменить заявку')).toBeDefined();
-    // До визы отдела ИТ дуги «Новая → Назначен сервис» нет ни у кого (Р51).
-    expect(screen.queryByText('Назначить сервис')).toBeNull();
-    // Виза — не его решение: подписывать заявку самому себе оператор не может (Р55).
-    expect(screen.queryByText('Согласование ИТ')).toBeNull();
+    expect(await screen.findByText('Назначить исполнителей')).toBeDefined();
+    expect(screen.getByText('Отменить заявку')).toBeDefined();
+    // Виза — не его решение и не этого статуса: она ждёт предъявленной сметы (Н3).
+    expect(screen.queryByText('Решение ИТ по смете')).toBeNull();
     // Шаги исполнителя оператору недоступны ни через портал, ни через сервер (Р17).
-    expect(screen.queryByText('Взять в диагностику')).toBeNull();
+    expect(screen.queryByText('Принять в работу')).toBeNull();
   });
 
-  it('согласованную ИТ заявку оператор назначает', async () => {
-    renderTab(OPERATOR, [serviceRequest({ status: 'it_approved' })]);
+  it('«Новую» заявку оператор распределяет по исполнителям', async () => {
+    // Виза уехала на смету (Н3), и «Новая» ждёт не её, а распределения: заявка, ещё не бывшая ни у
+    // кого, — это главный шаг того, кто ведёт модуль.
+    renderTab(OPERATOR, [serviceRequest()]);
     await openRowActions();
-    expect(await screen.findByText('Назначить сервис')).toBeDefined();
+    expect(await screen.findByText('Назначить исполнителей')).toBeDefined();
   });
 
-  it('визу предлагают согласующему от ИТ и только на «Новой»', async () => {
+  it('на «Новой» решения ИТ не предлагают: счёта ещё нет', async () => {
+    // Виза уехала со входа на смету (Н3): вопрос «чинить или менять» задаётся, когда есть сумма.
     renderTab(IT_APPROVER, [serviceRequest()]);
     await openRowActions();
-    expect(await screen.findByText('Согласование ИТ')).toBeDefined();
-    // Дальше цикл ведут другие: назначения у него нет.
-    expect(screen.queryByText('Назначить сервис')).toBeNull();
+    expect(screen.queryByText('Решение ИТ по смете')).toBeNull();
   });
 
-  it('исполнителю назначенная заявка предлагает диагностику и отказ, но не назначение', async () => {
+  it('на смете решение ИТ предлагают, пока подписи текущей ревизии нет', async () => {
+    renderTab(IT_APPROVER, [serviceRequest({ status: 'estimate_review', waitingOn: 'it' })]);
+    await openRowActions();
+    expect(await screen.findByText('Решение ИТ по смете')).toBeDefined();
+  });
+
+  it('подписанную смету ИТ второй раз не визирует: ход ушёл к деньгам', async () => {
+    // `waitingOn: 'operator'` на том же статусе означает «виза текущей ревизии уже стоит» — сервер
+    // считает это по строке заявки, сверяя ревизии, и повторную подпись отбивает 422.
+    renderTab(IT_APPROVER, [serviceRequest({ status: 'estimate_review', waitingOn: 'operator' })]);
+    await openRowActions();
+    expect(screen.queryByText('Решение ИТ по смете')).toBeNull();
+  });
+
+  it('исполнителю назначенная заявка предлагает работу и отказ, но не распределение', async () => {
     renderTab(EXECUTOR, [serviceRequest({ status: 'assigned' })]);
     await openRowActions();
-    expect(await screen.findByText('Взять в диагностику')).toBeDefined();
+    expect(await screen.findByText('Принять в работу')).toBeDefined();
     expect(screen.getByText('Отказаться от заявки')).toBeDefined();
-    expect(screen.queryByText('Назначить сервис')).toBeNull();
+    expect(screen.queryByText('Назначить исполнителей')).toBeNull();
     expect(screen.queryByText('Отменить заявку')).toBeNull();
+  });
+});
+
+/**
+ * Исполнители одним полем (Н5, Н6).
+ *
+ * Проверяется стык, который иначе виден только в сети: в списке лежат два вида строк — сотрудники
+ * поимённо и сервисные компании, — а сервер принимает их **разными полями** одного тела. Спутай
+ * портал слои, и компания уехала бы идентификатором учётки: 422 с чужим текстом вместо назначения.
+ */
+describe('назначение исполнителей', () => {
+  it('сервисная компания уходит контрагентом, а поимённый список остаётся пустым', async () => {
+    const http = renderTab(OPERATOR, [serviceRequest()], {
+      'GET /counterparties': () =>
+        json(list([operator({ id: 'cp-9', name: 'КопиЛайт', type: 'service' })])),
+      'PUT /service-requests/:id/executors': () =>
+        json({ request: serviceRequest({ status: 'assigned' }), mail: 'queued' }),
+    });
+    await screen.findByText('СО-14');
+    await openRowActions();
+    fireEvent.click(await screen.findByText('Назначить исполнителей'));
+
+    await selectOption('Исполнители', 'КопиЛайт');
+    fireEvent.click(screen.getByRole('button', { name: 'Назначить' }));
+
+    await waitFor(() => expect(http.countOf('PUT /service-requests/:id/executors')).toBe(1));
+    const body = http.lastCall('PUT /service-requests/:id/executors')?.body as Record<
+      string,
+      unknown
+    >;
+    // Компания — контрагентом целиком (Н5): её сотрудников портал не перечисляет вовсе.
+    expect(body.serviceCounterpartyId).toBe('cp-9');
+    expect(body.userIds).toEqual([]);
+    // Первое назначение причины не требует — её спрашивают, когда работу у кого-то отбирают.
+    expect(body.reason).toBeUndefined();
   });
 });
 
@@ -343,7 +427,7 @@ describe('объект и срочность в списке', () => {
   it('исполнителю срочности не предлагают: признак заказывающей стороны', async () => {
     renderTab(EXECUTOR, [serviceRequest({ status: 'assigned' })]);
     await openRowActions();
-    await screen.findByText('Взять в диагностику');
+    await screen.findByText('Принять в работу');
     expect(screen.queryByText('Отметить срочной')).toBeNull();
     expect(screen.queryByText('Снять срочность')).toBeNull();
   });

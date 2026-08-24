@@ -26,6 +26,10 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     id: 'sr-1',
     num: 14,
     displayNumber: 'СО-14',
+    // Вид заявки (Н1): умолчание — ремонт, как и в базе. Заявки на расходники API не заводит до
+    // выпуска 3, но фикстура обязана уметь их описать — предикат закрывающего документа читает
+    // именно это поле.
+    kind: 'repair',
     status,
     statusChangedAt: '2026-08-05T09:00:00.000Z',
     waitingOn: serviceWaitingOn(status),
@@ -44,12 +48,17 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     object: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
     customerDepartment: null,
     equipmentDepartment: null,
+    // Подразделение заявителя (Н11): у учётки без отделов и площадок его нет вовсе — законное
+    // состояние, а не пробел в фикстуре.
+    requesterPlace: null,
     description: 'Не захватывает бумагу',
     responsibleName: 'Иванов И. И.',
     responsiblePhone: '9000000000',
     isUrgent: false,
     urgencyReason: '',
     service: null,
+    // Поимённых исполнителей у «Новой» заявки нет: их назначают, а не заводят вместе с заявкой.
+    executors: [],
     itApproval: null,
     warrantyClaim: null,
     estimateRevision: 0,
@@ -57,9 +66,16 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     estimatedTotalAmount: null,
     approval: null,
     items: [],
+    // Строки расходников: у ремонта их не бывает, и пустой список здесь — не пробел фикстуры, а
+    // само правило («предмет заявки либо смета, либо номенклатура»).
+    consumables: [],
     completion: null,
     acceptedByName: '',
     acceptedAt: null,
+    // Источник приёмки пуст, пока заявку не приняли (Н7); у принятой пустой источник читается как
+    // «человек» — таким его оставляет старый код в окне выката.
+    acceptanceSource: null,
+    replacementRecommended: false,
     comment: '',
     serviceComment: '',
     files: [],

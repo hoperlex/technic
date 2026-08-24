@@ -1,6 +1,7 @@
 import type {
   MaintenanceBody,
   MaintenanceUpdateBody,
+  MaintenanceVoidInput,
   VehicleMaintenanceDto,
   VehicleMaintenanceSummaryDto,
 } from '@technic/contracts';
@@ -49,6 +50,13 @@ export const vehicleMaintenanceApi = {
    */
   update: (id: string, body: MaintenanceUpdateBody) =>
     apiFetch<VehicleMaintenanceDto>(`${BASE}/${id}`, { method: 'PATCH', body }),
+  /**
+   * Аннулирование акта с причиной (план `docs/auto-parts-plan.md`, Р6). Отдельная ручка, а не
+   * поле правки: у неё своё тело, свой отказ и своё складское последствие — все строки акта
+   * возвращаются на склад одной транзакцией. Ответ — тот же акт, уже с подписью и причиной.
+   */
+  void: (id: string, body: MaintenanceVoidInput) =>
+    apiFetch<VehicleMaintenanceDto>(`${BASE}/${id}/void`, { method: 'POST', body }),
   /** Удаление — версией в адресе: тела у DELETE нет, а сносить чужую правку вслепую нельзя (Р30). */
   remove: (id: string, version: number) =>
     apiFetch<{ ok: true }>(`${BASE}/${id}`, { method: 'DELETE', query: { version } }),

@@ -247,10 +247,24 @@ async function reassignRoute(routeId: string, personId: string): Promise<void> {
     .where(eq(ctx.schema.waybills.routeId, routeId));
 }
 
-/** Действующий недельный лист ЭСМ-2: неделя целиком, от понедельника (`waybills_period_check`). */
-async function newEsm2(vehicleId: string, personId: string, day: string): Promise<string> {
+/*
+ * ЭСМ2-РАЗРЕЗ. Лист умеет быть **отрезком**, а не только неделей: после переключения чтения (этап 5)
+ * состав меняется внутри срока, и понедельник со вторником могут принадлежать **разным** листам.
+ * Умолчание оставлено недельным — прочие случаи файла проверяют не разрез, — а случаи разреза
+ * передают границы явно.
+ *
+ * Проверено здесь: строка отчёта занимает пару «лист и день» (`report_items_waybill_key`), и это
+ * верно при любой длине листа. От недельности не зависит ничего: ключ смотрит на `waybill_id` и
+ * дату, а не на то, сколько дней покрывает бумага.
+ */
+async function newEsm2(
+  vehicleId: string,
+  personId: string,
+  day: string,
+  span?: { from: string; to: string },
+): Promise<string> {
   waybillNo += 1;
-  const from = weekStartKey(day);
+  const from = span ? span.from : weekStartKey(day);
   const [waybill] = await ctx.db
     .insert(ctx.schema.waybills)
     .values({
@@ -264,7 +278,7 @@ async function newEsm2(vehicleId: string, personId: string, day: string): Promis
       issuedForDate: from,
       sourceRequestId: await newRequest(),
       periodFrom: from,
-      periodTo: shiftDateKey(from, 6),
+      periodTo: span ? span.to : shiftDateKey(from, 6),
       issuedBy: ctx.adminId,
     })
     .returning({ id: ctx.schema.waybills.id });
@@ -441,6 +455,72 @@ describe.skipIf(!DB_URL)('строки ожидания: состав отчёт
           vehicleId: vehicle,
           reportDate: tuesday,
           shiftOrder: 2,
+        }),
+      ),
+    ).toBe('report_items_waybill_key');
+  });
+
+  /*
+   * ЭСМ2-РАЗРЕЗ. Разрезанная неделя: понедельник и вторник принадлежат **разным** листам, потому
+   * что во вторник сменился состав. Строки отчёта обязаны сослаться каждая на свой лист — иначе
+   * смена окажется приписана бумаге, в которой её дня нет, и сводка покажет работу не тому
+   * машинисту.
+   *
+   * До разреза случай был невоспроизводим: неделя была одним листом, и «строки разные» проверялось
+   * только позицией внутри дня, а не принадлежностью бумаге.
+   */
+  it('разрезанная неделя: строки соседних дней ссылаются на разные листы', async () => {
+    const person = await newPerson('Разрезанный');
+    const vehicle = await newVehicle();
+    const monday = weekStartKey(shiftDateKey(ctx.today, -7));
+    const tuesday = shiftDateKey(monday, 1);
+    // Один день — один лист: стык день-в-день, ровно как его напишет смена состава со вторника.
+    const first = await newEsm2(vehicle, person, monday, { from: monday, to: monday });
+    const second = await newEsm2(vehicle, person, tuesday, { from: tuesday, to: tuesday });
+
+    const mondayReport = await ctx.service.openReport(person, monday, ctx.adminId, {
+      mode: 'staff',
+    });
+    const tuesdayReport = await ctx.service.openReport(person, tuesday, ctx.adminId, {
+      mode: 'staff',
+    });
+    expect(mondayReport.items.map((i) => i.sourceId)).toEqual([first]);
+    expect(tuesdayReport.items.map((i) => i.sourceId)).toEqual([second]);
+
+    /*
+     * Ключ `report_items_waybill_key` занят парой «лист и день», а не листом целиком: вставка листа
+     * вторника на понедельник ограничение **не** нарушает. С недельной бумагой этого было не
+     * различить — оба дня принадлежали одному листу, и любая вторая строка упиралась бы в ключ, чем
+     * бы он ни держался.
+     *
+     * Проверяется именно ограничение, а не ответ сервиса: `openReport` собирает состав дня по
+     * листам, которые его накрывают, и такую строку не покажет — и правильно, лист вторника
+     * понедельника не касается.
+     */
+    await ctx.db.insert(ctx.schema.driverDailyReportItems).values({
+      reportId: mondayReport.id,
+      sourceKind: 'esm2',
+      waybillId: second,
+      vehicleId: vehicle,
+      reportDate: monday,
+      shiftOrder: 2,
+    });
+    const stored = await ctx.db
+      .select({ waybillId: ctx.schema.driverDailyReportItems.waybillId })
+      .from(ctx.schema.driverDailyReportItems)
+      .where(eq(ctx.schema.driverDailyReportItems.reportId, mondayReport.id));
+    expect(stored.map((r) => r.waybillId).sort()).toEqual([first, second].sort());
+
+    // А тот же лист на тот же день второй строкой ключ уже не пускает.
+    expect(
+      await rejectedConstraint(() =>
+        ctx.db.insert(ctx.schema.driverDailyReportItems).values({
+          reportId: mondayReport.id,
+          sourceKind: 'esm2',
+          waybillId: first,
+          vehicleId: vehicle,
+          reportDate: monday,
+          shiftOrder: 3,
         }),
       ),
     ).toBe('report_items_waybill_key');

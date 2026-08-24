@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Button, Dropdown, Space, Spin, Tabs, Tag, Tooltip, Typography } from 'antd';
+import { Button, Dropdown, Spin, Tabs, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
   type RequestHistoryEntryDto,
@@ -7,31 +7,19 @@ import {
   serviceRequestChangeLabels,
   serviceRequestStatusColors,
   serviceRequestStatusLabels,
-  warrantyClaimSourceLabels,
 } from '@technic/contracts';
 import {
+  ServiceConsumablesTable,
   serviceRequestKeys,
   serviceRequestsApi,
-  ServiceStatusTag,
-  serviceStatusLine,
-  statusAgeLabel,
-  UrgentTag,
 } from '@entities/service-request';
-import { WarrantyTag } from '@entities/office-equipment';
-import {
-  ActionSheet,
-  ViewFields,
-  ViewModal,
-  type ActionSheetItem,
-  type ViewField,
-} from '@shared/ui';
+import { ActionSheet, ViewFields, ViewModal, type ActionSheetItem } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
-import { ResponsibleValue } from '../../components/ResponsibleFields';
-import { formatDateTime } from '../../utils/format';
 import { ServiceRequestDocuments } from './ServiceRequestDocuments';
 import { ServiceRequestEstimate } from './ServiceRequestEstimate';
+import { serviceRequestViewFields } from './serviceRequestViewFields';
 
 /**
  * События истории для общей таблицы (ADR 0012).
@@ -114,181 +102,13 @@ export function ServiceRequestViewModal({
   });
   const rows = useMemo(() => toRows(history), [history]);
 
-  // Подпись — та же, что во второй строке столбца (Р100); у отложенной её разбирает строка ниже.
-  const statusLine =
-    request && request.status !== 'on_hold' ? serviceStatusLine(request, user) : null;
-
-  const fields: ViewField[] = request
-    ? [
-        {
-          key: 'status',
-          label: 'Статус',
-          children: (
-            <Space size={8} wrap>
-              <ServiceStatusTag status={request.status} />
-              {statusLine &&
-                (statusLine.mine ? (
-                  <span>{statusLine.text}</span>
-                ) : (
-                  <Typography.Text type="secondary">{statusLine.text}</Typography.Text>
-                ))}
-              <Typography.Text type="secondary">
-                в статусе {statusAgeLabel(request.statusChangedAt)}
-              </Typography.Text>
-            </Space>
-          ),
-          full: true,
-        },
-        // Заморозка объясняется строкой, а не одной подписью в шапке: причина отвечает на «чего
-        // ждём» (Р107), а статус возврата — на «куда заявка пойдёт дальше» (Р104: дуга одна, и
-        // выбора пути у заморозки нет).
-        ...(request.status === 'on_hold'
-          ? [
-              {
-                key: 'hold',
-                label: 'Отложена',
-                full: true,
-                children: [
-                  request.holdReason || '—',
-                  request.heldFromStatus &&
-                    `вернётся в «${serviceRequestStatusLabels[request.heldFromStatus]}»`,
-                ]
-                  .filter(Boolean)
-                  .join(' · '),
-              },
-            ]
-          : []),
-        {
-          key: 'equipment',
-          label: 'Техника',
-          full: true,
-          children: (
-            <Space direction="vertical" size={2}>
-              <span>{request.equipment.name}</span>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {[
-                  request.equipment.typeName,
-                  request.equipment.inventoryNumber && `инв. ${request.equipment.inventoryNumber}`,
-                  request.equipment.serialNumber && `SN ${request.equipment.serialNumber}`,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </Typography.Text>
-              {/* Два разных признака (§9.2): состояние гарантии самой техники и пометка о том,
-                  что заявку завели по гарантии. Первое известно только тому, кому виден
-                  справочник, второе — всем. */}
-              {equipmentWarrantyUntil !== undefined && (
-                <Space size={8} wrap>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    гарантия на технику:
-                  </Typography.Text>
-                  <WarrantyTag until={equipmentWarrantyUntil} />
-                </Space>
-              )}
-              {request.warrantyClaim && (
-                <Tooltip
-                  title={
-                    request.warrantyClaim.sourceRequestNum
-                      ? `Источник: заявка СО-${request.warrantyClaim.sourceRequestNum}`
-                      : 'Гарантия поставщика на саму единицу'
-                  }
-                >
-                  <Tag color="purple">
-                    {warrantyClaimSourceLabels[request.warrantyClaim.source]}
-                    {request.warrantyClaim.itemName ? `: ${request.warrantyClaim.itemName}` : ''}
-                  </Tag>
-                </Tooltip>
-              )}
-            </Space>
-          ),
-        },
-        {
-          key: 'customer',
-          label: 'Объект и заказчик',
-          full: true,
-          children: (
-            <Space size={8} wrap>
-              <span>
-                {request.object.code} — {request.object.name}
-              </span>
-              {/* Место внутри объекта — снимок на момент заведения (Р57): по нему сервис и едет,
-                  а карточка единицы к моменту ремонта могла уже переехать. */}
-              {request.equipment.location && (
-                <Typography.Text type="secondary">{request.equipment.location}</Typography.Text>
-              )}
-              {request.customerDepartment && <Tag>{request.customerDepartment.name}</Tag>}
-              {/* Отдел-владелец техники: по нему считается область, и он бывает не тем же, что
-                  отдел-заказчик — соседний отдел чинит «чужой» принтер чаще, чем кажется. */}
-              {request.equipmentDepartment &&
-                request.equipmentDepartment.id !== request.customerDepartment?.id && (
-                  <Typography.Text type="secondary">
-                    владелец: {request.equipmentDepartment.name}
-                  </Typography.Text>
-                )}
-            </Space>
-          ),
-        },
-        {
-          key: 'description',
-          label: 'Неисправность',
-          full: true,
-          children: request.description,
-        },
-        {
-          key: 'responsible',
-          label: 'Заявитель',
-          children: (
-            <ResponsibleValue name={request.responsibleName} phone={request.responsiblePhone} />
-          ),
-        },
-        // Срочность показывается строкой, а не одной меткой в заголовке: решение принимают по
-        // причине, а не по красному цвету, и в карточке для неё есть место (Р56).
-        ...(request.isUrgent
-          ? [
-              {
-                key: 'urgency',
-                label: 'Срочность',
-                full: true,
-                children: (
-                  <Space size={8} wrap>
-                    <UrgentTag reason="" />
-                    <span>{request.urgencyReason}</span>
-                  </Space>
-                ),
-              },
-            ]
-          : []),
-        {
-          key: 'service',
-          label: 'Сервис',
-          children: request.service?.name ?? 'не назначен',
-        },
-        {
-          key: 'acceptance',
-          label: 'Приёмка',
-          children: request.acceptedAt
-            ? `${request.acceptedByName || '—'} · ${formatDateTime(request.acceptedAt)}`
-            : '—',
-        },
-        {
-          key: 'author',
-          label: 'Автор',
-          children: `${request.createdByName} · ${formatDateTime(request.createdAt)}`,
-        },
-        { key: 'comment', label: 'Комментарий', full: true, children: request.comment || '—' },
-        // Примечание исполнителя (приём ADR 0053): его строка в заявке, заявку она не редактирует.
-        ...(request.serviceComment
-          ? [
-              {
-                key: 'serviceComment',
-                label: 'Примечание исполнителя',
-                full: true,
-                children: request.serviceComment,
-              },
-            ]
-          : []),
-      ]
-    : [];
+  /*
+   * Поля вкладки «Заявка» собираются отдельным модулем (`serviceRequestViewFields`): их
+   * двенадцать, у каждого своё правило показа, и вместе с устройством окна они перерастали
+   * ограничение длины файла. Окно отвечает за вкладки, действия и запросы, состав полей — за
+   * ответ «что с заявкой».
+   */
+  const fields = request ? serviceRequestViewFields({ request, user, equipmentWarrantyUntil }) : [];
 
   const actionItems = request && actions ? actions(request) : [];
 
@@ -357,11 +177,23 @@ export function ServiceRequestViewModal({
                 </>
               ),
             },
-            {
-              key: 'estimate',
-              label: 'Смета',
-              children: <ServiceRequestEstimate request={request} />,
-            },
+            /*
+             * Предмет заявки — либо смета, либо номенклатура, и вкладка у них одна (Н1): у
+             * расходников сметы нет вовсе (согласовывать картридж со своего склада не с кем), а у
+             * ремонта нет строк выдачи. Две вкладки, из которых одна всегда пуста, отвечали бы на
+             * вопрос «а где тут смета» каждый раз заново.
+             */
+            request.kind === 'consumable'
+              ? {
+                  key: 'consumables',
+                  label: 'Номенклатура',
+                  children: <ServiceConsumablesTable lines={request.consumables} />,
+                }
+              : {
+                  key: 'estimate',
+                  label: 'Смета',
+                  children: <ServiceRequestEstimate request={request} />,
+                },
             {
               key: 'documents',
               label: 'Документы',

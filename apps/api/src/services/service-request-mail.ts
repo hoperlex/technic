@@ -1,5 +1,6 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import {
+  COUNTERPARTY_SCOPED_ROLES,
   DEFAULT_MAIL_ACCOUNT,
   formatServiceRequestNumber,
   moduleMailEventLabels,
@@ -12,8 +13,10 @@ import {
 import { db } from '../db/client';
 import {
   constructionObjects,
+  counterparties,
   departments,
   moduleMailRecipients,
+  serviceRequestExecutors,
   serviceRequestFiles,
   serviceRequests,
   users,
@@ -34,6 +37,11 @@ import { queuePreparedMail, type MailKind } from './mail';
  * Отсюда же ключ дедупликации: строка истории статуса плюс адресат. По заявке ключ был бы неверен
  * дважды — повторный цикл «отменили → вернули» не дал бы второго письма, а второй адресат не
  * получил бы ничего (уникальность очереди — `(kind, dedupe_key)`).
+ *
+ * Третье письмо модуля — **о назначении** (план `office-equipment-requests-rework-plan.md`, §7.3,
+ * Н13) — уходит по той же механике события и того же ключа, но адресовано не службе, а назначенным
+ * людям: см. `planServiceAssignmentMail`. Всё остальное у него общее с первыми двумя намеренно —
+ * второй способ ставить письма по заявке разошёлся бы с первым на первой же правке.
  */
 
 /** Канал, которым уходят письма модуля: ящик службы одновременно и отправитель, и получатель. */
@@ -43,6 +51,13 @@ const SERVICE_MAIL_ACCOUNT = 'repair';
  * Какому событию соответствует вход в статус. Перечень согласован с `serviceMailRepeatable` в
  * контрактах — это же условие показывает кнопку повтора в портале: разойдись они, кнопка вела бы в
  * 422 либо повтор был бы недоступен там, где сервер его позволяет.
+ *
+ * `assigned` в этой таблице **нет намеренно**, хотя письмо о назначении и привязано ко входу в
+ * статус. Таблица отвечает не на вопрос «есть ли у статуса письмо», а на вопрос «какое письмо
+ * **службе** ставит общий помощник перехода»: его адресаты — ящик канала и копии, а у назначения
+ * они другие (`planServiceAssignmentMail`). Впиши его сюда — и письмо о назначении уйдёт службе
+ * вместо исполнителей на каждом переходе в «Назначена», а кнопка повтора в портале, спрашивающая
+ * `serviceMailRepeatable`, разошлась бы с сервером в другую сторону.
  */
 const EVENT_BY_STATUS: Partial<Record<ServiceRequestStatus, ModuleMailEvent>> = {
   new: 'service_request_waiting_it',
@@ -53,9 +68,12 @@ export function serviceMailEventOf(status: ServiceRequestStatus): ModuleMailEven
   return EVENT_BY_STATUS[status] ?? null;
 }
 
-/** Получатель письма: ящик канала или заведённая копия. */
+/** Получатель письма: ящик канала, назначенный исполнитель или заведённая копия. */
 interface Recipient {
-  /** Часть ключа дедупликации: `channel` у основного адресата, id строки — у копии. */
+  /**
+   * Часть ключа дедупликации — **чем вызвано письмо**, а не куда оно ушло: `channel` у основного
+   * адресата писем службе, id учётки — у назначенного исполнителя, id строки — у копии.
+   */
   key: string;
   email: string;
   /** Куда уйдёт ответ; пусто — общий адрес портала. */
@@ -71,6 +89,37 @@ export interface ServiceMailPlan {
 export type ServiceMailPlanResult =
   | { plan: ServiceMailPlan; outcome: 'queued' }
   | { plan: null; outcome: Exclude<ModuleMailOutcome, 'queued'> };
+
+/**
+ * Накопитель адресатов: одно правило дедупликации на все письма модуля — **по адресу, а не по
+ * ключу**.
+ *
+ * Дедупликация нужна потому, что источники адресатов пересекаются, и человек попадает в письмо
+ * дважды с разных сторон: ящик службы бывает заведён ещё и копией, а назначенный исполнитель —
+ * заодно и той копией, которой «хочется видеть все назначения». Ключи у таких попаданий разные (id
+ * учётки и id строки настройки), и `(kind, dedupe_key)` в очереди их не схлопнет: в один ящик
+ * придут два одинаковых письма.
+ *
+ * Первый источник побеждает — отсюда порядок вызовов: сперва тот, кому письмо адресовано, потом
+ * копии. Обратный порядок отдал бы адресату обратный адрес копии (у неё свой режим), то есть тихо
+ * подменил бы смысл письма настройкой, заведённой ради наблюдения со стороны.
+ */
+function recipientCollector(): {
+  add: (key: string, email: string, replyTo: string) => void;
+  list: Recipient[];
+} {
+  const seen = new Set<string>();
+  const list: Recipient[] = [];
+  return {
+    list,
+    add(key, email, replyTo) {
+      const normalized = email.trim().toLowerCase();
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      list.push({ key, email, replyTo });
+    },
+  };
+}
 
 /**
  * Кому и с каким обратным адресом уйдёт письмо. Считается **до** транзакции заявки: здесь ходят в
@@ -104,23 +153,129 @@ export async function planServiceMail(
     .from(moduleMailRecipients)
     .where(and(eq(moduleMailRecipients.event, event), eq(moduleMailRecipients.isEnabled, true)));
 
-  const recipients: Recipient[] = [
-    // Ящик канала первым и всегда: письмо адресовано службе, а копии — это «кому ещё».
-    { key: 'channel', email: channelEmail, replyTo: author?.email ?? '' },
-    ...copies
-      // Копия на адрес самого канала означала бы два одинаковых письма в один ящик.
-      .filter((row) => row.toEmail.toLowerCase() !== channelEmail.toLowerCase())
-      .map((row) => ({
-        key: row.id,
-        email: row.toEmail,
-        replyTo: replyToOf(row.replyToMode, row.replyToEmail, {
-          author: author?.email ?? '',
-          actor: ctx.actor.email,
-        }),
-      })),
-  ];
+  // Ящик канала первым и всегда: письмо адресовано службе, а копии — это «кому ещё». Копия на
+  // адрес самого канала после этого отсеивается сама — двух одинаковых писем в один ящик не будет.
+  const to = recipientCollector();
+  to.add('channel', channelEmail, author?.email ?? '');
+  for (const row of copies) {
+    to.add(
+      row.id,
+      row.toEmail,
+      replyToOf(row.replyToMode, row.replyToEmail, {
+        author: author?.email ?? '',
+        actor: ctx.actor.email,
+      }),
+    );
+  }
 
-  return { plan: { event, kind: event as MailKind, recipients }, outcome: 'queued' };
+  return { plan: { event, kind: event as MailKind, recipients: to.list }, outcome: 'queued' };
+}
+
+/**
+ * Кому уйдёт письмо о назначении (план `docs/office-equipment-requests-rework-plan.md`, §7.3, Н13;
+ * решение опроса В16).
+ *
+ * **Это единственное письмо модуля, адресованное людям, а не службе.** Остальные два уходят на ящик
+ * канала: за ним нет учётки, и список копий только добавляет наблюдателей. Здесь наоборот — письмо
+ * это задание на работу, и получает его тот, кому работать: назначенные поимённо сотрудники и
+ * оператор сервисной компании, если заявку отдали ей. Ящик канала в адресатах не участвует: служба
+ * назначение и сделала, и второе письмо об этом ей ни о чём не сообщает.
+ *
+ * Отсюда же три следствия, каждое из которых легко потерять:
+ *
+ * 1. **Заявителю письмо не уходит** (В16): движение по заявке он видит в портале, а задание — не
+ *    его дело. Автор появляется здесь только обратным адресом: вопрос исполнителя про поломку
+ *    адресован ему.
+ * 2. **Копии из `module_mail_recipients` работают поверх, а не вместо.** Строка настройки на это
+ *    событие — «хочу видеть все назначения»; подменить ею адресата нельзя.
+ * 3. **Нет назначенных с ящиками — письма нет вовсе** (`no_recipients`). Отправить его одной службе
+ *    было бы худшим из исходов: портал отчитался бы «письмо ушло», а исполнитель задания не увидел.
+ *
+ * Считается **до** транзакции, как и `planServiceMail` (Р67): здесь ходят в базу и в конфигурацию,
+ * и упавшее внутри транзакции откатило бы саму заявку. Список приходит **параметром**, а не
+ * вычитывается из `service_request_executors`: строк там на этот момент ещё нет — их пишет та самая
+ * транзакция, ради которой письмо и составляется.
+ */
+export async function planServiceAssignmentMail(
+  assignment: {
+    /** Учётки, назначаемые поимённо, — те же, что уйдут в `service_request_executors`. */
+    userIds: string[];
+    /** Сервисная компания, если заявка назначается ей; `null` — назначение только своими силами. */
+    serviceCounterpartyId: string | null;
+  },
+  ctx: { actor: { id: string; email: string }; authorId: string | null },
+): Promise<ServiceMailPlanResult> {
+  const event: ModuleMailEvent = 'service_request_assigned';
+  if (!config.mail.enabled) return { plan: null, outcome: 'mail_disabled' };
+
+  // Канал нужен и здесь, хотя его ящик писем не получает: он отправитель, и без настроенного
+  // `From` письмо некому подписать.
+  if (!config.mail.accounts[SERVICE_MAIL_ACCOUNT].configured) {
+    return { plan: null, outcome: 'channel_missing' };
+  }
+
+  const [author] = ctx.authorId
+    ? await db.select({ email: users.email }).from(users).where(eq(users.id, ctx.authorId))
+    : [];
+  const authorEmail = author?.email ?? '';
+
+  /**
+   * Условие живой учётки одно на обе стороны: задание адресуется тому, кто может войти в портал и
+   * принять заявку. Архивная и отключённая учётки — это ящик, за которым никого нет; молчаливо
+   * отправить туда письмо хуже, чем сказать назначившему «предупредите их сами».
+   */
+  const alive = (...extra: (SQL | undefined)[]) =>
+    and(...extra, eq(users.isActive, true), isNull(users.deletedAt));
+
+  const named = assignment.userIds.length
+    ? await db
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(alive(inArray(users.id, assignment.userIds)))
+        .orderBy(users.email)
+    : [];
+
+  /**
+   * У сервисной компании поимённых строк нет (§4.2): назначается она целиком, а читают почту её
+   * операторы — учётки, у которых этот контрагент задаёт область видимости. Их может не быть ни
+   * одной, и это обычное дело: подрядчик без доступа в портал существует.
+   *
+   * Роль спрашивается вдобавок к контрагенту, а не вместо него: `users_operator_counterparty_check`
+   * (миграция 0023) односторонний — «оператор обязан иметь контрагента», но не наоборот, и у
+   * учётки, которую перевели на другую роль, привязка остаётся. Такой человек заявок компании уже
+   * не видит, и задание ему — письмо в никуда. Список ролей берётся из контрактов, чтобы вторая
+   * копия «кто работает от контрагента» не разошлась с первой.
+   */
+  const operators = assignment.serviceCounterpartyId
+    ? await db
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(
+          alive(
+            eq(users.counterpartyId, assignment.serviceCounterpartyId),
+            inArray(users.role, [...COUNTERPARTY_SCOPED_ROLES]),
+          ),
+        )
+        .orderBy(users.email)
+    : [];
+
+  const to = recipientCollector();
+  for (const row of [...named, ...operators]) to.add(row.id, row.email, authorEmail);
+  if (to.list.length === 0) return { plan: null, outcome: 'no_recipients' };
+
+  const copies = await db
+    .select()
+    .from(moduleMailRecipients)
+    .where(and(eq(moduleMailRecipients.event, event), eq(moduleMailRecipients.isEnabled, true)));
+  for (const row of copies) {
+    to.add(
+      row.id,
+      row.toEmail,
+      replyToOf(row.replyToMode, row.replyToEmail, { author: authorEmail, actor: ctx.actor.email }),
+    );
+  }
+
+  return { plan: { event, kind: event as MailKind, recipients: to.list }, outcome: 'queued' };
 }
 
 /**
@@ -172,6 +327,14 @@ export interface ServiceLetterData {
   departmentName: string | null;
   attachments: number;
   authorName: string | null;
+  /**
+   * Кого назначили — готовой строкой, потому что письмо её только печатает: «Иванов И. И.,
+   * Петров П. П.». Пусто — поимённых исполнителей нет; у заявки, отданной одному лишь подрядчику,
+   * это нормальное состояние (§4.2).
+   */
+  executorNames: string;
+  /** Сервисная компания, если заявка назначена ей; `null` — своими силами. */
+  serviceName: string | null;
 }
 
 /** Транзакция drizzle: письмо ставится вместе с тем, ради чего оно отправляется. */
@@ -191,15 +354,28 @@ export async function loadServiceLetterData(tx: Tx, requestId: string): Promise<
       objectName: constructionObjects.name,
       departmentName: departments.name,
       authorName: users.fullName,
+      serviceName: counterparties.name,
       attachments: sql<number>`(
         SELECT count(*)::int FROM ${serviceRequestFiles}
          WHERE ${serviceRequestFiles.requestId} = ${serviceRequests.id}
+      )`,
+      /**
+       * Исполнители подзапросом с псевдонимом, а не соединением: строк на заявку несколько, и
+       * соединение размножило бы саму заявку — вложения посчитались бы по разу на исполнителя.
+       * Псевдоним `ex_user` обязателен: `users` уже стоит в этом запросе автором заявки.
+       */
+      executorNames: sql<string>`(
+        SELECT coalesce(string_agg(ex_user.full_name, ', ' ORDER BY ex_user.full_name), '')
+          FROM ${serviceRequestExecutors} ex
+          JOIN ${users} ex_user ON ex_user.id = ex.user_id
+         WHERE ex.request_id = ${serviceRequests.id}
       )`,
     })
     .from(serviceRequests)
     .innerJoin(constructionObjects, eq(serviceRequests.equipmentObjectId, constructionObjects.id))
     .leftJoin(departments, eq(serviceRequests.customerDepartmentId, departments.id))
     .leftJoin(users, eq(serviceRequests.createdBy, users.id))
+    .leftJoin(counterparties, eq(serviceRequests.serviceCounterpartyId, counterparties.id))
     .where(eq(serviceRequests.id, requestId));
   if (!row) throw new Error(`Заявка ${requestId} не найдена при сборке письма`);
 
@@ -221,6 +397,8 @@ export async function loadServiceLetterData(tx: Tx, requestId: string): Promise<
     departmentName: row.departmentName,
     attachments: row.attachments,
     authorName: row.authorName,
+    executorNames: row.executorNames,
+    serviceName: row.serviceName,
   };
 }
 
@@ -233,10 +411,19 @@ function numbersOf(data: ServiceLetterData): string {
   return parts.join(', ');
 }
 
+/** Кому отдали заявку — одной строкой: свои сотрудники и подрядчик перечисляются подряд (§4.2). */
+function assigneesOf(data: ServiceLetterData): string {
+  return [data.executorNames, data.serviceName ?? ''].filter(Boolean).join(', ');
+}
+
 /**
  * Тело письма — самодостаточное: у службы учётки в портале может не быть вовсе, и ссылка ей ничего
  * не откроет. Вложения не прикладываются (контур их не носит), но их число названо — иначе о
  * фотографиях поломки никто не узнает.
+ *
+ * Письмо о назначении отличается двумя строками — списком назначенных и припиской: у него другой
+ * адресат (`planServiceAssignmentMail`), и приписка «ответ уйдёт заявителю» без «заявка назначена
+ * вам» читалась бы как уведомление службе, а не как задание.
  */
 export function renderServiceLetter(
   event: ModuleMailEvent,
@@ -245,9 +432,24 @@ export function renderServiceLetter(
   const number = formatServiceRequestNumber(data.num);
   const urgent = data.isUrgent ? 'СРОЧНО · ' : '';
   const subject = `${urgent}${number} · ${moduleMailEventLabels[event]}`;
+  const assignment = event === 'service_request_assigned';
+
+  /**
+   * Письмо о назначении без назначенных — не пустая строка, а признак того, что исполнителей
+   * записали **после** перехода: данные письма читаются той же транзакцией, что их пишет. Молчать
+   * тут нельзя — отказ ловит вызывающий и отвечает `mail_failed`, то есть «письма нет» будет
+   * сказано вслух, а не показано пробелом в теле.
+   */
+  if (assignment && !assigneesOf(data)) {
+    throw new Error(
+      `Заявка ${number}: письмо о назначении собирается, а исполнителей у заявки нет — ` +
+        'строки исполнителей пишутся до перехода статуса',
+    );
+  }
 
   const lines = [
     `Статус: ${serviceRequestStatusLabels[data.status]}`,
+    ...(assignment ? [`Назначены: ${assigneesOf(data)}`] : []),
     `Техника: ${data.equipmentName}${numbersOf(data) ? ` · ${numbersOf(data)}` : ''}`,
     `Где стоит: ${data.objectCode} — ${data.objectName}${
       data.equipmentLocation ? `, ${data.equipmentLocation}` : ''
@@ -278,7 +480,10 @@ export function renderServiceLetter(
       },
       {
         kind: 'note' as const,
-        text: 'Ссылка работает у тех, у кого есть доступ в портал. Ответ на это письмо уйдёт заявителю.',
+        text: assignment
+          ? 'Заявка назначена вам — примите её в работу в портале. Ответ на это письмо уйдёт ' +
+            'заявителю.'
+          : 'Ссылка работает у тех, у кого есть доступ в портал. Ответ на это письмо уйдёт заявителю.',
       },
     ],
   };

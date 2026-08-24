@@ -1,0 +1,328 @@
+import { useEffect } from 'react';
+import { App, Button, Form, Input, Space, Switch, Typography } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { OfficeEquipmentConsumableDto } from '@technic/contracts';
+import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
+import { errorMessage, withSavedOption } from '@shared/lib';
+import {
+  officeEquipmentConsumableKeys,
+  officeEquipmentConsumablesApi,
+  officeEquipmentKeys,
+  officeEquipmentModelKeys,
+  officeEquipmentModelPickerQuery,
+} from '@entities/office-equipment';
+import { OfficeEquipmentStockJournal } from './OfficeEquipmentStockJournal';
+
+/**
+ * Карточка расходника: код, наименование, к чему подходит, комментарий и активность (план
+ * `docs/office-equipment-consumables-plan.md`, Р5, Р6, §6).
+ *
+ * Остатка среди полей нет намеренно — он меняется своим окном, событием с причиной и автором
+ * (Р7): здесь он только показан, рядом с кнопкой «Изменить остаток», и под ним лентой лежит
+ * журнал. Поле ввода на его месте обещало бы правку, которой контракт не принимает вовсе.
+ *
+ * Заведённая карточка перечитывается по идентификатору: ленту журнала приносит только она
+ * (`GET /:id`), в списке её нет — отдельной ручки под журнал не заводили намеренно (§8). Пока
+ * ответ не пришёл, поля берутся из строки списка — иначе открытие карточки начиналось бы с
+ * пустой формы.
+ *
+ * Права раздельные (Р10). Карточку с журналом читает всякий, кому видна оргтехника, — подобрать
+ * картридж должен и тот, кто заводит заявку; правит её `officeEquipmentConsumables.manage`; на
+ * остаток нужно третье, своё право, и кнопка «Изменить остаток» показана только с ним. Отсюда и
+ * форма, открытая на чтение: поля заперты, а кнопка сохранения выключена — читателю обещать
+ * сохранение нечем.
+ */
+
+interface Props {
+  open: boolean;
+  onCancel: () => void;
+  /** Правка заведённого расходника; `null` — заведение нового. */
+  record?: OfficeEquipmentConsumableDto | null;
+  /** Ведение номенклатуры: без него карточка открыта на чтение (Р10). */
+  canManage: boolean;
+  /**
+   * Правка остатка своим правом. Кнопка зовёт наверх, а не открывает окно сама: окно остатка
+   * живёт у списка — его открывают и строкой, минуя карточку, у кого права ведения нет вовсе.
+   */
+  onEditStock?: () => void;
+}
+
+interface Values {
+  code: string;
+  name: string;
+  /** Пустая строка означает «цвета нет» и уходит на сервер как `null` (Р5). */
+  color: string;
+  comment: string;
+  isActive: boolean;
+  /** К чему подходит: полный набор моделей, а не пара «привязать/отвязать» (Р6). */
+  modelIds: string[];
+}
+
+export function OfficeEquipmentConsumableFormModal({
+  open,
+  onCancel,
+  record,
+  canManage,
+  onEditStock,
+}: Props) {
+  const { message } = App.useApp();
+  const qc = useQueryClient();
+  const [form] = Form.useForm<Values>();
+  const blockers = useFormBlockers(form);
+
+  const { data: detail, isFetching: detailLoading } = useQuery({
+    queryKey: officeEquipmentConsumableKeys.detail(record?.id ?? ''),
+    queryFn: () => officeEquipmentConsumablesApi.get(record!.id),
+    enabled: open && !!record,
+  });
+  /**
+   * Что показываем: перечитанную карточку, а пока её нет — строку списка. Свежесть здесь не
+   * украшение: после 409 в окне остатка перечитанное число становится тем самым
+   * `expectedQuantity`, с которым уйдёт следующая попытка.
+   */
+  const card = record ? (detail ?? record) : null;
+
+  const { data: modelOptions = [], isFetching: modelsLoading } = useQuery({
+    ...officeEquipmentModelPickerQuery(),
+    enabled: open,
+  });
+  /**
+   * Уже привязанные модели остаются в списке, даже если из действующего справочника выпали:
+   * погашенная модель — «новых аппаратов такого рода не заводим» (Р11), а не «расходник ей больше
+   * не подходит». Без этой добавки правка комментария снимала бы привязку молча.
+   */
+  const models = (card?.models ?? []).reduce<{ value: string; label: string }[]>(
+    (acc, m) => withSavedOption(acc, { id: m.id, name: m.name }),
+    modelOptions,
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    // Окно открывают и повторно — на соседней строке: набранное в прошлый раз к ней отношения не
+    // имеет. «Активен» стоит сразу: заводят то, что покупают.
+    form.resetFields();
+    form.setFieldsValue({
+      code: record?.code ?? '',
+      name: record?.name ?? '',
+      color: record?.color ?? '',
+      comment: record?.comment ?? '',
+      isActive: record?.isActive ?? true,
+      modelIds: record?.models.map((m) => m.id) ?? [],
+    });
+  }, [open, record, form]);
+
+  const saveMut = useMutation({
+    mutationFn: (values: Values) => {
+      // Остаток в теле не уходит ни при заведении, ни при правке: у первого числа тоже есть
+      // причина и автор, и получает их оно тем же окном остатка (Р7).
+      const body = {
+        code: values.code,
+        name: values.name,
+        // Поле формы пустое — это «цвета нет», и на сервер уходит `null`: пустую строку схема
+        // приводит к тому же, но отправлять «нет цвета» двумя способами незачем.
+        color: values.color?.trim() ? values.color.trim() : null,
+        comment: values.comment ?? '',
+        isActive: values.isActive,
+        modelIds: values.modelIds ?? [],
+      };
+      return record
+        ? officeEquipmentConsumablesApi.update(record.id, body)
+        : officeEquipmentConsumablesApi.create(body);
+    },
+    onSuccess: () => {
+      message.success('Сохранено');
+      void qc.invalidateQueries({ queryKey: officeEquipmentConsumableKeys.root });
+      // Матрица Р14: карточка единицы оргтехники отвечает «чем заправлять» — перечень расходников
+      // и их остатки стоят в её ответе (Р15), и правка здесь делает его вчерашним.
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+      /*
+       * И третья сторона той же матрицы — обратная той, что уже сделана у моделей. Форма всегда
+       * шлёт полный набор `modelIds`, то есть любое сохранение потенциально меняет привязку, а на
+       * ней в окне моделей стоят два ответа сразу: «удаляема ли модель» (`isUsed`) и срез «без
+       * расходника» (Р15). Без гашения окно, открытое следом, покажет модель свободной, а нажатие
+       * «Удалить» вернёт 409 — то есть портал позовёт человека на отказ.
+       */
+      void qc.invalidateQueries({ queryKey: officeEquipmentModelKeys.root });
+      onCancel();
+    },
+    /*
+     * Отказы, названные полем, ложатся на поле (ADR 0094): занятый код номенклатуры маршрут шлёт
+     * как `{ code: … }` — и на проверке до вставки, и на разборе `23505` из гонки. Тост остаётся
+     * тому, у чего поля нет.
+     */
+    onError: (e) => {
+      if (!blockers.fromApi(e)) message.error(errorMessage(e));
+    },
+  });
+
+  return (
+    <FormModal
+      /*
+       * Заголовок называет, что окно даёт сделать: без права ведения номенклатуры это карточка
+       * для чтения — с журналом и, при своём праве, с правкой остатка. Обещать «Редактирование»
+       * там, где сохранить нельзя, значит звать на отказ.
+       */
+      title={
+        record
+          ? canManage
+            ? 'Редактирование расходника'
+            : 'Карточка расходника'
+          : 'Новый картридж или тонер'
+      }
+      open={open}
+      onCancel={onCancel}
+      onSubmit={() => form.submit()}
+      confirmLoading={saveMut.isPending}
+      // Читателю сохранять нечего: маршрут правки закрыт своим правом (Р10), и включённая кнопка
+      // звала бы на 403. Причина стоит строкой в теле окна — выключенная кнопка без объяснения
+      // читается как поломка.
+      okDisabled={!canManage}
+      width={520}
+    >
+      {!canManage && (
+        <Typography.Paragraph type="secondary">
+          Карточка открыта на чтение: ведение номенклатуры — отдельное право «Ведёт номенклатуру
+          картриджей и тонеров».
+        </Typography.Paragraph>
+      )}
+      <Form
+        form={form}
+        layout="vertical"
+        // Один запрет на всю форму, а не на каждое поле: `disabled` у `Form` доезжает до всех
+        // вложенных полей, и забыть его на новом поле невозможно.
+        disabled={!canManage}
+        onFinish={(v) => saveMut.mutate(v)}
+        {...blockers.formProps}
+      >
+        <Form.Item
+          name="code"
+          label="Код номенклатуры"
+          /*
+           * Минимум повторён с контракта, а не оставлен серверу: правило, о котором узнают после
+           * нажатия «Сохранить», человек узнаёт на один ход позже, чем мог бы. `transform`
+           * обрезает края ровно так же, как это делает схема, — иначе пробел с буквой прошли бы
+           * проверку формы и упёрлись в 400.
+           */
+          rules={[
+            { required: true, whitespace: true, message: 'Укажите код номенклатуры' },
+            {
+              min: 2,
+              transform: (v: string | undefined) => (v ?? '').trim(),
+              message: 'Код номенклатуры — не короче двух символов',
+            },
+          ]}
+          // Написание правит база: пробелы (включая неразрывный из Word) убираются, регистр
+          // поднимается — своей нормализации на портале нет намеренно, иначе в справочнике завёлся
+          // бы второй «тот же» код (Р5).
+          extra="Как в учётной системе: Б0000014256, Д0000337741"
+        >
+          <Input maxLength={50} />
+        </Form.Item>
+        <Form.Item
+          name="name"
+          label="Наименование"
+          // Тот же минимум, что и в схеме: «Т» вместо «Тонер …» это опечатка, а не наименование.
+          rules={[
+            { required: true, whitespace: true, message: 'Укажите наименование расходника' },
+            {
+              min: 2,
+              transform: (v: string | undefined) => (v ?? '').trim(),
+              message: 'Наименование — не короче двух символов',
+            },
+          ]}
+          // Ровно как в учётной системе, вместе с хвостом «(шт)»: справочник сверяют глазами со
+          // счётом и выгрузкой, и «причёсанное» наименование эту сверку ломает (Р5).
+          extra="Как в учётной системе, вместе с «(шт)»: Тонер Ricoh 201 (шт)"
+        >
+          <Input maxLength={255} />
+        </Form.Item>
+        <Form.Item
+          name="color"
+          label="Цвет"
+          extra="Заполняется у цветных серий: чёрный, голубой, пурпурный, жёлтый — или «комплект», если у поставщика один код на все тубы. У чёрно-белой техники поле остаётся пустым"
+        >
+          <Input maxLength={60} placeholder="Например: голубой" />
+        </Form.Item>
+        <Form.Item
+          name="modelIds"
+          label="Подходит к"
+          // Пустой набор законен: код прислали, а к какому аппарату он подходит — вопрос к
+          // ИТ-службе (§7), и ждать ответа, не заводя строку, значит потерять её совсем.
+          extra="Модели аппаратов, которым годится этот расходник; можно оставить пустым и уточнить потом"
+        >
+          <AutoSelect
+            mode="multiple"
+            options={models}
+            loading={modelsLoading}
+            showSearch
+            optionFilterProp="label"
+            placeholder="Выберите модели"
+            // Единственную модель справочника поле не подставляет: пустой набор здесь — законный
+            // ответ, а не незаполненное поле.
+            autoSelectSole={false}
+          />
+        </Form.Item>
+        <Form.Item name="comment" label="Комментарий">
+          <Input.TextArea rows={2} maxLength={2000} />
+        </Form.Item>
+        <Form.Item
+          name="isActive"
+          label="Активен"
+          valuePropName="checked"
+          extra="Погашенный расходник не предлагают при заказе; остаток и журнал у него остаются"
+        >
+          <Switch />
+        </Form.Item>
+      </Form>
+
+      {card ? (
+        <>
+          <Space align="center" size={12} style={{ marginTop: 4 }}>
+            <Typography.Text>
+              В наличии: <Typography.Text strong>{card.quantity}</Typography.Text>
+            </Typography.Text>
+            {/* Кнопки нет вовсе без права на остаток (Р10): его выдают кладовщику, а не тому,
+                кто ведёт номенклатуру, и наоборот. Само окно открывает список — оно одно на
+                карточку и на строку таблицы. */}
+            {onEditStock && <Button onClick={onEditStock}>Изменить остаток</Button>}
+          </Space>
+          {/*
+           * Сколько аппаратов кормит позиция (Р12, Р15) — то, ради чего заказывают: остаток 12
+           * при 68 аппаратах и при двух означает разное.
+           *
+           * Подпись «в вашей области» стоит прямо рядом с числом, а не подсказкой по наведению:
+           * счёт идёт в области смотрящего, и роль одной площадки увидит здесь свои аппараты, а не
+           * весь парк. Число без этой оговорки читается как масштаб компании — ровно та ошибка,
+           * ради которой «сколько таких у нас» и разведено с «можно ли удалить».
+           */}
+          <div>
+            <Typography.Text>
+              В парке: <Typography.Text strong>{card.equipmentCount}</Typography.Text>{' '}
+              <Typography.Text type="secondary">
+                — столько аппаратов в вашей области видимости, живых и активных
+              </Typography.Text>
+            </Typography.Text>
+          </div>
+          {card.models.length === 0 && (
+            // Ноль в счётчике объясняется двумя разными причинами, и различает их этот перечень
+            // (Р12): «у вас таких нет» и «позиция ещё ни к чему не привязана».
+            <div>
+              <Typography.Text type="warning">
+                Модели не указаны: пока их нет, позиция не найдётся ни отбором «что подходит к
+                аппарату», ни в карточке самого аппарата.
+              </Typography.Text>
+            </div>
+          )}
+          <OfficeEquipmentStockJournal entries={detail?.stockEntries} loading={detailLoading} />
+        </>
+      ) : (
+        // У новой карточки остатка нет и быть не может: первое число — такое же событие с
+        // причиной и автором, и вводят его тем же окном сразу после сохранения (Р7).
+        <Typography.Text type="secondary">
+          Остаток вводится после сохранения кнопкой «Изменить остаток»: у первого числа тоже
+          спрашивают причину, и оно попадает в журнал.
+        </Typography.Text>
+      )}
+    </FormModal>
+  );
+}

@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs';
-import pg from 'pg';
+import type pg from 'pg';
 import { applyMigrations, diffMigrations, type MigrationDiff } from './migration-journal';
+import { buildMigrationClient } from './migration-client';
 
 // Простой SQL-first раннер миграций (§8): применяет ./drizzle/*.sql по порядку,
 // идемпотентно, с журналом `_migrations`. Не зависит от секретов приложения —
@@ -18,22 +18,6 @@ import { applyMigrations, diffMigrations, type MigrationDiff } from './migration
 
 const EXIT_FAILURE = 1;
 const EXIT_PENDING = 3;
-
-function buildClient(): pg.Client {
-  const migrationUrl = process.env.DATABASE_MIGRATION_URL ?? process.env.DATABASE_URL;
-  if (!migrationUrl) {
-    throw new Error('Не задан DATABASE_MIGRATION_URL (или DATABASE_URL)');
-  }
-  const caPath = process.env.PGSSLROOTCERT;
-  const ca = caPath ? readFileSync(caPath, 'utf8') : undefined;
-  const url = new URL(migrationUrl);
-  url.searchParams.delete('sslmode');
-
-  return new pg.Client({
-    connectionString: url.toString(),
-    ssl: ca ? { ca, rejectUnauthorized: true } : false,
-  });
-}
 
 async function runMigrations(client: pg.Client): Promise<void> {
   await applyMigrations(client, (message) => console.log(message));
@@ -60,7 +44,7 @@ async function statusCmd(client: pg.Client): Promise<void> {
 
 async function main(): Promise<void> {
   const mode = process.argv[2] ?? 'apply';
-  const client = buildClient();
+  const client = buildMigrationClient();
   await client.connect();
   let code = 0;
   try {

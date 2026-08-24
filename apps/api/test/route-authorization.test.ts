@@ -49,7 +49,12 @@ const PUBLIC_ROUTES = new Set([
  * Перечислены поимённо намеренно: список из двух строк заметен в ревью, а «пропустить всё под
  * /internal/» однажды прикрыло бы забытую ручку без всякой проверки.
  */
-const INTERNAL_ROUTES = new Set(['/internal/mail/schedules/due', '/internal/mail/runs']);
+const INTERNAL_ROUTES = new Set([
+  '/internal/mail/schedules/due',
+  '/internal/mail/runs',
+  // Автозакрытие «Решена» → «Закрыта» (Н7): пачку закрывает портал, человека за ручкой нет.
+  '/internal/service-requests/auto-close',
+]);
 
 /** Маршруты «про себя»: доступны любому вошедшему независимо от роли. */
 const SELF_SERVICE_ROUTES = new Set(['/api/v1/auth/me', '/api/v1/auth/change-password']);
@@ -77,9 +82,32 @@ interface RouteInfo {
   /** Метод в том виде, в каком его показало приложение: `HEAD` приводится к `GET` ниже. */
   method: string;
   url: string;
-  /** Пометки стражей: право из матрицы либо `handler:<причина>` (см. auth/plugin.ts). */
+  /**
+   * Пометки стражей как есть: право из матрицы, `anyOf:<право>|<право>` либо `handler:<причина>`
+   * (см. auth/plugin.ts).
+   */
   authz: string[];
   requiresLogin: boolean;
+}
+
+/**
+ * Пометка стража «одно из перечисленных прав» (`auth/plugin.ts`): префикс плюс перечень через `|`.
+ * Литералом, как и `handler:` ниже: сверять пометку тем же модулем, который её пишет, значило бы
+ * проверять код его собственным утверждением.
+ */
+const ANY_OF = 'anyOf:';
+
+/**
+ * Права, которые страж на самом деле спрашивает: дизъюнкция разворачивается в свои члены.
+ *
+ * Разворачивать обязательно. Проверки ниже читают пометки как имена прав («модуль закрыт своими
+ * правами», «удаление насовсем — под `records.purge`»), и нетронутая пометка `anyOf:…` для них —
+ * просто незнакомая строка: маршрут молча выпал бы из-под правила, ради которого оно написано.
+ */
+function permissionsOf(route: RouteInfo): string[] {
+  return route.authz
+    .filter((a) => !a.startsWith('handler:'))
+    .flatMap((a) => (a.startsWith(ANY_OF) ? a.slice(ANY_OF.length).split('|') : [a]));
 }
 
 /**
@@ -183,7 +211,7 @@ describe('авторизация маршрутов', () => {
       // `GET` (и заведённый к нему Fastify `HEAD`) — в списке и без пометки права; всё остальное —
       // наоборот. Ни один маршрут не может оказаться сразу в списке и под правом.
       expect(openByList, route.key).toBe(route.method === 'GET' || route.method === 'HEAD');
-      expect(route.authz, route.key).toEqual(openByList ? [] : ['manuals.manage']);
+      expect(permissionsOf(route), route.key).toEqual(openByList ? [] : ['manuals.manage']);
     }
   });
 
@@ -200,7 +228,7 @@ describe('авторизация маршрутов', () => {
     expect(waste.length).toBeGreaterThan(0);
     for (const route of waste) {
       expect(
-        route.authz.every(
+        permissionsOf(route).every(
           (a) =>
             a.startsWith('wasteRequests.') ||
             a.startsWith('archive.') ||
@@ -221,6 +249,30 @@ describe('авторизация маршрутов', () => {
   it('окончательное удаление закрыто правом `records.purge`', () => {
     const purge = routes.filter((r) => r.url.endsWith('/purge'));
     expect(purge.length).toBeGreaterThan(0);
-    for (const route of purge) expect(route.authz).toContain('records.purge');
+    for (const route of purge) expect(permissionsOf(route)).toContain('records.purge');
+  });
+
+  /**
+   * Страж «одно из перечисленных прав» открывает ручку двум сторонам сразу, и оставлен он ровно
+   * там, где сторон действительно две: у ходов исполнителя заявки на обслуживание (план
+   * переработки цикла §7.3). Инвариант тот же, что у доступа «по самой записи» выше: дизъюнкция,
+   * приписанная соседнему маршруту, — это удвоенный круг допущенных, и заметить её иначе можно
+   * только в бою.
+   *
+   * Какая пара прав стоит на каждой ручке, здесь не проверяется: это ожидание живёт в манифесте
+   * (`access-manifest.test.ts`), а тут — только место и форма пометки.
+   */
+  it('страж «одно из прав» оставлен ходам исполнителя заявок на обслуживание', () => {
+    const disjunctive = routes.filter((r) => r.authz.some((a) => a.startsWith(ANY_OF)));
+    expect(disjunctive.length).toBeGreaterThan(0);
+    for (const route of disjunctive) {
+      expect(route.url.startsWith('/api/v1/service-requests/'), route.key).toBe(true);
+      // Один страж на маршрут: два «одного из прав» подряд — это уже конъюнкция дизъюнкций,
+      // которую манифест не выражает, а ревьюер не прочитает.
+      expect(route.authz.filter((a) => a.startsWith(ANY_OF)).length, route.key).toBe(1);
+      // Пометка обязана называть права: перечень из одного члена — обычное `requirePermission`,
+      // записанное так, что сверка с манифестом перестала бы отличать выбор от единственного права.
+      expect(permissionsOf(route).length, route.key).toBeGreaterThan(1);
+    }
   });
 });

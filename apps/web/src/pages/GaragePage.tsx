@@ -7,6 +7,7 @@ import { PageTabs } from '../components/PageTabs';
 import { GarageVehiclesTab } from './garage/GarageVehiclesTab';
 import { GarageDriversTab } from './garage/GarageDriversTab';
 import { ReadingsTab } from './garage/ReadingsTab';
+import { AutoPartsTab } from './garage/AutoPartsTab';
 import { readingsSub } from './garage/readingsAddress';
 import { useAuth } from '../auth/AuthContext';
 
@@ -17,11 +18,16 @@ import { useAuth } from '../auth/AuthContext';
  * с двух сторон — «чем занята машина» и «кто за рулём», — и переключение вкладки, сбрасывающее
  * дату на сегодня, ломало бы ровно этот переход. Отсюда же адрес: `?tab=` и `?date=` переживают
  * перезагрузку и уходят ссылкой тому, кого зовут посмотреть на завтрашний день.
+ *
+ * Вкладок при этом четыре, и день среза — свойство первых двух, а не страницы целиком. У
+ * «Показаний» свой период (ADR 0103), у «Автозапчастей» дня нет вовсе: склад показывает текущее
+ * состояние, а не срез суток (план `docs/auto-parts-plan.md`, Р14). Ключ `?date=` обе эти вкладки
+ * переживают нетронутым — возврат на «Технику» показывает тот же день, с которого ушли.
  */
 
 const DATE = 'YYYY-MM-DD';
 
-const TABS = ['vehicles', 'drivers', 'readings'] as const;
+const TABS = ['vehicles', 'drivers', 'readings', 'parts'] as const;
 
 export function GaragePage() {
   const isMobile = useIsMobile();
@@ -124,6 +130,17 @@ export function GaragePage() {
           },
         ]
       : []),
+    /*
+     * Склад автозапчастей (план `docs/auto-parts-plan.md`, Р14). Четвёртая вкладка, после
+     * «Показаний», и дня среза у неё нет по существу предмета: остаток — это «сколько лежит
+     * сейчас», а не состояние на дату, и календарь наверху отвечал бы на вопрос, которого складу
+     * не задают.
+     *
+     * Своего права у вкладки нет: склад читают все, кому виден гараж (Р10) — ответить «есть ли на
+     * складе фильтр» должен и диспетчер, и менеджер. Двумя правами закрыты действия внутри
+     * (`autoParts.manage`, `autoParts.stock`), а не сам список.
+     */
+    { key: 'parts', label: 'Автозапчасти', children: <AutoPartsTab /> },
   ];
 
   return (

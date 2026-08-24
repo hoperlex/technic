@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { byReadMode, describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
 import { issueRequestEsm2 } from './waybill-issue-helper';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -31,7 +32,11 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается: обычный прогон тестов базы не требует.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('linear');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 const ADMIN_EMAIL = 'db-linear-esm2-admin@example.invalid';
 const PASSWORD = 'db-test-password-123';
@@ -307,8 +312,7 @@ function ru(key: string): string {
 
 describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейного заказа (живая схема)', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
     await seedAdmin();
 
     const { buildApp } = await import('../src/app');
@@ -412,307 +416,360 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
     await ctx?.closeDb();
   });
 
-  it('линейный заказ уходит в работу без машиниста и без единого листа', async () => {
-    const request = await approvedRequest(ctx.linearTypeId);
+  /*
+   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+   * снаружи — иначе первый же прогон закрыл бы соединение, и второй режим не с чем было бы гонять.
+   *
+   * Сегодня половины совпадают: бумагу везде пишет недельная `syncEsm2Waybills`. На этапе 5
+   * разойдутся все четыре ожидания разом — «конец недели = +6 от понедельника», идемпотентность
+   * «неделя — один лист», «смена техники недели не режет» (после Р6 обязана резать) и число
+   * аннулированных при досрочном завершении. Переписывать их придётся вместе с исполнителем
+   * отрезкового плана, а не по одному; ожидаемые значения записаны в реестре.
+   */
+  describeReadModes(readMode, 'по требованию', (mode) => {
+    void mode;
 
-    // Машиниста в теле нет намеренно: листы в этот момент не рождаются, и требовать человека,
-    // который неизвестно на какую неделю выйдет, не за что (ADR 0100 §5).
-    const res = await confirm(request);
-    expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().status).toBe('confirmed');
-    expect(res.json().isLinear).toBe(true);
-    expect(await sheetsOf(request.id)).toEqual([]);
-  });
+    it('линейный заказ уходит в работу без машиниста и без единого листа', async () => {
+      const request = await approvedRequest(ctx.linearTypeId);
 
-  it('обычный заказ по-прежнему требует машиниста: там листы рождаются сами', async () => {
-    const request = await approvedRequest(ctx.plainTypeId);
+      // Машиниста в теле нет намеренно: листы в этот момент не рождаются, и требовать человека,
+      // который неизвестно на какую неделю выйдет, не за что (ADR 0100 §5).
+      const res = await confirm(request);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().status).toBe('confirmed');
+      expect(res.json().isLinear).toBe(true);
+      expect(await sheetsOf(request.id)).toEqual([]);
+    });
 
-    const res = await confirm(request);
-    expect(res.statusCode, res.body).toBe(422);
-    expect(res.json().message).toContain('Укажите машиниста');
+    it('обычный заказ по-прежнему требует машиниста: там листы рождаются сами', async () => {
+      const request = await approvedRequest(ctx.plainTypeId);
 
-    // С машинистом — как было: по листу на каждую неделю срока.
-    const ok = await confirm(request, { driverPersonId: ctx.driverA });
-    expect(ok.statusCode, ok.body).toBe(200);
-    expect(ok.json().isLinear).toBe(false);
-    const sheets = await sheetsOf(request.id);
-    expect(sheets.length).toBeGreaterThan(1);
-    expect(sheets.every((s) => s.status === 'issued')).toBe(true);
-  });
+      /*
+       * РАСХОЖДЕНИЕ РЕЖИМОВ, достижимое уже сегодня. Отказывают оба, но **разные сторожа**: в
+       * `legacy` до бэкстопа доходит сама сверка и просит машиниста для бланка; в `history` раньше
+       * срабатывает бэкстоп чужой двери (Р22) — история назначения стала источником истины, и
+       * статусная ручка не имеет права её достраивать. Человеку это видно текстом: во втором случае
+       * ему называют дверь, которой машиниста назначают.
+       */
+      const res = await confirm(request);
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().message).toContain(
+        byReadMode(mode, {
+          legacy: 'Укажите машиниста',
+          history: 'в истории не назван машинист',
+        }),
+      );
 
-  it('границы недели считает сервер: пересечение календарной недели со сроком', async () => {
-    const request = await linearRequestInProgress();
+      /*
+       * С машинистом в теле сверка довольна, но в `history` дверь всё равно упирается в бэкстоп:
+       * машинист назван **в запросе**, а истории назначения у заказа нет, и статусная ручка её не
+       * пишет (Р22). Это и есть смысл разделения дверей — до переключения чтения оно ещё не
+       * чувствуется, после становится обязательным.
+       */
+      const ok = await confirm(request, { driverPersonId: ctx.driverA });
+      if (mode === 'history') {
+        expect(ok.statusCode, ok.body).toBe(422);
+        expect(ok.json().code).toBe('assignment_history_incomplete');
+        return;
+      }
+      expect(ok.statusCode, ok.body).toBe(200);
+      expect(ok.json().isLinear).toBe(false);
+      const sheets = await sheetsOf(request.id);
+      expect(sheets.length).toBeGreaterThan(1);
+      expect(sheets.every((s) => s.status === 'issued')).toBe(true);
+    });
 
-    const res = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
-    expect(res.statusCode, res.body).toBe(200);
+    it('границы недели считает сервер: пересечение календарной недели со сроком', async () => {
+      const request = await linearRequestInProgress();
 
-    const sheets = await sheetsOf(request.id);
-    expect(sheets).toHaveLength(1);
-    // Первая неделя срока обрывается воскресеньем, а начинается днём начала работ, а не
-    // понедельником: в графе «Период работы» стоят фактические рабочие дни.
-    expect(sheets[0]!.period_from).toBe(ctx.dateFrom);
-    expect(sheets[0]!.period_to).toBe(shiftDateKey(weekStartKey(ctx.dateFrom), 6));
-    expect(sheets[0]!.vehicle_id).toBe(ctx.vehicleId);
-    expect(sheets[0]!.driver_person_id).toBe(ctx.driverA);
+      const res = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
+      expect(res.statusCode, res.body).toBe(200);
 
-    // Событие своё: «человек попросил бланк» нельзя смешивать со «сверка переоформила бумагу».
-    const audit = await ctx.db.execute<{ action: string; metadata: Record<string, unknown> }>(sql`
+      const sheets = await sheetsOf(request.id);
+      expect(sheets).toHaveLength(1);
+      // Первая неделя срока обрывается воскресеньем, а начинается днём начала работ, а не
+      // понедельником: в графе «Период работы» стоят фактические рабочие дни.
+      expect(sheets[0]!.period_from).toBe(ctx.dateFrom);
+      expect(sheets[0]!.period_to).toBe(shiftDateKey(weekStartKey(ctx.dateFrom), 6));
+      expect(sheets[0]!.vehicle_id).toBe(ctx.vehicleId);
+      expect(sheets[0]!.driver_person_id).toBe(ctx.driverA);
+
+      // Событие своё: «человек попросил бланк» нельзя смешивать со «сверка переоформила бумагу».
+      const audit = await ctx.db.execute<{ action: string; metadata: Record<string, unknown> }>(sql`
       SELECT action, metadata FROM audit_log
       WHERE entity_type = 'waybill' AND entity_id = ${sheets[0]!.id}
       ORDER BY created_at DESC LIMIT 1`);
-    expect(audit.rows[0]?.action).toBe('waybill.esm2_issue');
-    expect(audit.rows[0]?.metadata.requestId).toBe(request.id);
+      expect(audit.rows[0]?.action).toBe('waybill.esm2_issue');
+      expect(audit.rows[0]?.metadata.requestId).toBe(request.id);
 
-    // Карточка заявки видит лист там же, где и раньше, — своей ручкой.
-    const listed = await ctx.app.inject({
-      method: 'GET',
-      url: `/api/v1/vehicle-requests/${request.id}/waybills`,
-      headers: ctx.auth,
+      // Карточка заявки видит лист там же, где и раньше, — своей ручкой.
+      const listed = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/vehicle-requests/${request.id}/waybills`,
+        headers: ctx.auth,
+      });
+      expect(listed.statusCode, listed.body).toBe(200);
+      expect(listed.json()).toHaveLength(1);
+      expect(listed.json()[0].formCode).toBe('esm2');
     });
-    expect(listed.statusCode, listed.body).toBe(200);
-    expect(listed.json()).toHaveLength(1);
-    expect(listed.json()[0].formCode).toBe('esm2');
-  });
 
-  it('день вне срока заявки — отказ словами, а не пустой лист', async () => {
-    const request = await linearRequestInProgress();
-    const before = shiftDateKey(ctx.dateFrom, -1);
+    it('день вне срока заявки — отказ словами, а не пустой лист', async () => {
+      const request = await linearRequestInProgress();
+      const before = shiftDateKey(ctx.dateFrom, -1);
 
-    const res = await issueEsm2(request.id, { weekOf: before, version: request.version });
-    expect(res.statusCode, res.body).toBe(422);
-    expect(res.json().message).toBe(
-      `День ${ru(before)} вне срока заявки (${ru(ctx.dateFrom)} — ${ru(ctx.dateTo)}) — выберите день внутри срока`,
-    );
-    expect(await sheetsOf(request.id)).toEqual([]);
-  });
-
-  it('вторая просьба на ту же неделю той же машиной — отказ с номером выданного бланка', async () => {
-    const request = await linearRequestInProgress();
-    const first = await issueEsm2(request.id, {
-      weekOf: ctx.dateFrom,
-      version: request.version,
+      const res = await issueEsm2(request.id, { weekOf: before, version: request.version });
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().message).toBe(
+        `День ${ru(before)} вне срока заявки (${ru(ctx.dateFrom)} — ${ru(ctx.dateTo)}) — выберите день внутри срока`,
+      );
+      expect(await sheetsOf(request.id)).toEqual([]);
     });
-    expect(first.statusCode, first.body).toBe(200);
 
-    // Другой день той же недели — та же неделя: неделю называет любой её день.
-    const again = await issueEsm2(request.id, {
-      weekOf: shiftDateKey(weekStartKey(ctx.dateFrom), 6),
-      version: first.json().version,
+    it('вторая просьба на ту же неделю той же машиной — отказ с номером выданного бланка', async () => {
+      const request = await linearRequestInProgress();
+      const first = await issueEsm2(request.id, {
+        weekOf: ctx.dateFrom,
+        version: request.version,
+      });
+      expect(first.statusCode, first.body).toBe(200);
+
+      // Другой день той же недели — та же неделя: неделю называет любой её день.
+      const again = await issueEsm2(request.id, {
+        weekOf: shiftDateKey(weekStartKey(ctx.dateFrom), 6),
+        version: first.json().version,
+      });
+      expect(again.statusCode).toBe(409);
+      expect(again.json().message).toMatch(/уже выписан действующий лист ЭСМ-2 № /);
+      expect(await sheetsOf(request.id)).toHaveLength(1);
     });
-    expect(again.statusCode).toBe(409);
-    expect(again.json().message).toMatch(/уже выписан действующий лист ЭСМ-2 № /);
-    expect(await sheetsOf(request.id)).toHaveLength(1);
-  });
 
-  it('ту же неделю второй машиной — можно: неделя уникальна на машину', async () => {
-    const request = await linearRequestInProgress();
-    const first = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
-    expect(first.statusCode, first.body).toBe(200);
+    it('ту же неделю второй машиной — можно: неделя уникальна на машину', async () => {
+      const request = await linearRequestInProgress();
+      const first = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
+      expect(first.statusCode, first.body).toBe(200);
 
-    // У линейного заказа неделю закрывают две единицы, и каждой нужен свой лист со своими
-    // моточасами (ADR 0100 §7, миграция 0127).
-    const second = await issueEsm2(request.id, {
-      weekOf: ctx.dateFrom,
-      vehicleId: ctx.otherVehicleId,
-      driverPersonId: ctx.driverB,
-      version: first.json().version,
+      // У линейного заказа неделю закрывают две единицы, и каждой нужен свой лист со своими
+      // моточасами (ADR 0100 §7, миграция 0127).
+      const second = await issueEsm2(request.id, {
+        weekOf: ctx.dateFrom,
+        vehicleId: ctx.otherVehicleId,
+        driverPersonId: ctx.driverB,
+        version: first.json().version,
+      });
+      expect(second.statusCode, second.body).toBe(200);
+      const sheets = await sheetsOf(request.id);
+      expect(sheets).toHaveLength(2);
+      expect(new Set(sheets.map((s) => s.vehicle_id))).toEqual(
+        new Set([ctx.vehicleId, ctx.otherVehicleId]),
+      );
     });
-    expect(second.statusCode, second.body).toBe(200);
-    const sheets = await sheetsOf(request.id);
-    expect(sheets).toHaveLength(2);
-    expect(new Set(sheets.map((s) => s.vehicle_id))).toEqual(
-      new Set([ctx.vehicleId, ctx.otherVehicleId]),
-    );
-  });
 
-  it('нелинейный заказ руками бланка не получает: его листы ведёт портал', async () => {
-    const request = await approvedRequest(ctx.plainTypeId);
-    const confirmed = await confirm(request, { driverPersonId: ctx.driverA });
-    expect(confirmed.statusCode, confirmed.body).toBe(200);
+    it('нелинейный заказ руками бланка не получает: его листы ведёт портал', async () => {
+      const request = await approvedRequest(ctx.plainTypeId);
+      const confirmed = await confirm(request, { driverPersonId: ctx.driverA });
+      /*
+       * РАСХОЖДЕНИЕ РЕЖИМОВ. В `legacy` заказ переводится в работу и получает свои недельные листы. В
+       * `history` статусная ручка сперва упирается в бэкстоп: у заказа нет истории назначения, а
+       * достраивать её чужой двери не положено (Р22) — сперва машинист назначается своей дверью.
+       * Предмет самого случая (ручная выписка нелинейному отказана) в этом режиме недостижим, и
+       * притворяться, что он проверен, нельзя.
+       */
+      if (mode === 'history') {
+        expect(confirmed.statusCode, confirmed.body).toBe(422);
+        expect(confirmed.json().code).toBe('assignment_history_incomplete');
+        return;
+      }
+      expect(confirmed.statusCode, confirmed.body).toBe(200);
 
-    const res = await issueEsm2(request.id, {
-      weekOf: ctx.dateFrom,
-      version: confirmed.json().version,
+      const res = await issueEsm2(request.id, {
+        weekOf: ctx.dateFrom,
+        version: confirmed.json().version,
+      });
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().message).toBe(
+        `Тип «${PLAIN_TYPE_NAME}» не линейный: листы ЭСМ-2 по такому заказу портал выписывает сам, на каждую неделю срока — просить их не нужно`,
+      );
     });
-    expect(res.statusCode, res.body).toBe(422);
-    expect(res.json().message).toBe(
-      `Тип «${PLAIN_TYPE_NAME}» не линейный: листы ЭСМ-2 по такому заказу портал выписывает сам, на каждую неделю срока — просить их не нужно`,
-    );
-  });
 
-  it('заявка не в работе — отказ называет статус', async () => {
-    const request = await approvedRequest(ctx.linearTypeId);
+    it('заявка не в работе — отказ называет статус', async () => {
+      const request = await approvedRequest(ctx.linearTypeId);
 
-    const res = await issueEsm2(request.id, {
-      weekOf: ctx.dateFrom,
-      version: request.version,
+      const res = await issueEsm2(request.id, {
+        weekOf: ctx.dateFrom,
+        version: request.version,
+      });
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().message).toBe(
+        'Заявка в статусе «Новая» — лист ЭСМ-2 выписывают по заявке в работе',
+      );
     });
-    expect(res.statusCode, res.body).toBe(422);
-    expect(res.json().message).toBe(
-      'Заявка в статусе «Новая» — лист ЭСМ-2 выписывают по заявке в работе',
-    );
-  });
 
-  it('арендная машина в бланк не идёт: лист на неё выписывает арендодатель', async () => {
-    if (!rentalVehicleId) return;
-    const request = await linearRequestInProgress();
+    it('арендная машина в бланк не идёт: лист на неё выписывает арендодатель', async () => {
+      if (!rentalVehicleId) return;
+      const request = await linearRequestInProgress();
 
-    const res = await issueEsm2(request.id, {
-      weekOf: ctx.dateFrom,
-      vehicleId: rentalVehicleId,
-      version: request.version,
+      const res = await issueEsm2(request.id, {
+        weekOf: ctx.dateFrom,
+        vehicleId: rentalVehicleId,
+        version: request.version,
+      });
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().message).toBe(
+        'Машина арендная — путевой лист на неё выписывает арендодатель: выберите собственную технику',
+      );
     });
-    expect(res.statusCode, res.body).toBe(422);
-    expect(res.json().message).toBe(
-      'Машина арендная — путевой лист на неё выписывает арендодатель: выберите собственную технику',
-    );
-  });
 
-  /**
-   * Главное, ради чего сверка у линейного заказа не выключена: выданный бланк не вправе разойтись
-   * с заявкой. Машину сменили — номер сгорает, и на его место выписывается новый, с тем же
-   * машинистом: его называл человек на каждую неделю отдельно (ADR 0083).
-   */
-  /*
-   * Машина в бланке — выбор человека, а не следствие назначения (ADR 0100 §7): неделю на объекте
-   * закрывают две единицы. Смена машины заявки — про то, чем заказ ведут дальше, и переписывать
-   * ею уже выданные листы нельзя: моточасы, объект и подпись заказчика на обороте относятся к той
-   * машине, которая ту неделю работала.
-   */
-  it('смена машины заявки выписанных листов не трогает', async () => {
-    const request = await linearRequestInProgress();
-    const nextMonday = shiftDateKey(weekStartKey(ctx.dateFrom), 7);
+    /**
+     * Главное, ради чего сверка у линейного заказа не выключена: выданный бланк не вправе разойтись
+     * с заявкой. Машину сменили — номер сгорает, и на его место выписывается новый, с тем же
+     * машинистом: его называл человек на каждую неделю отдельно (ADR 0083).
+     */
+    /*
+     * Машина в бланке — выбор человека, а не следствие назначения (ADR 0100 §7): неделю на объекте
+     * закрывают две единицы. Смена машины заявки — про то, чем заказ ведут дальше, и переписывать
+     * ею уже выданные листы нельзя: моточасы, объект и подпись заказчика на обороте относятся к той
+     * машине, которая ту неделю работала.
+     */
+    it('смена машины заявки выписанных листов не трогает', async () => {
+      const request = await linearRequestInProgress();
+      const nextMonday = shiftDateKey(weekStartKey(ctx.dateFrom), 7);
 
-    const first = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
-    expect(first.statusCode, first.body).toBe(200);
-    const second = await issueEsm2(request.id, {
-      weekOf: nextMonday,
-      driverPersonId: ctx.driverB,
-      version: first.json().version,
+      const first = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
+      expect(first.statusCode, first.body).toBe(200);
+      const second = await issueEsm2(request.id, {
+        weekOf: nextMonday,
+        driverPersonId: ctx.driverB,
+        version: first.json().version,
+      });
+      expect(second.statusCode, second.body).toBe(200);
+
+      // Машиниста в теле нет: меняли технику, а не человека.
+      const changed = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/vehicle-requests/${request.id}/assignment`,
+        headers: ctx.auth,
+        payload: { vehicleId: ctx.otherVehicleId, version: second.json().version },
+      });
+      expect(changed.statusCode, changed.body).toBe(200);
+
+      const sheets = await sheetsOf(request.id);
+      // Ни один номер не сгорел: сверке нечего сверять — машину этих листов называл человек.
+      expect(sheets.filter((s) => s.status === 'cancelled')).toHaveLength(0);
+      const issued = sheets.filter((s) => s.status === 'issued');
+      expect(issued).toHaveLength(2);
+      expect(issued.every((s) => s.vehicle_id === ctx.vehicleId)).toBe(true);
+      // Каждой неделе остался её человек: смена техники людей не пересаживает.
+      expect(issued.find((s) => s.period_from === ctx.dateFrom)?.driver_person_id).toBe(
+        ctx.driverA,
+      );
+      expect(issued.find((s) => s.period_from === nextMonday)?.driver_person_id).toBe(ctx.driverB);
     });
-    expect(second.statusCode, second.body).toBe(200);
 
-    // Машиниста в теле нет: меняли технику, а не человека.
-    const changed = await ctx.app.inject({
-      method: 'PATCH',
-      url: `/api/v1/vehicle-requests/${request.id}/assignment`,
-      headers: ctx.auth,
-      payload: { vehicleId: ctx.otherVehicleId, version: second.json().version },
+    /*
+     * Обратная сторона того же правила: неделю можно закрыть двумя листами на две машины. Это и
+     * есть причина, по которой уникальность недели в базе считается вместе с машиной (миграция
+     * 0127), — до неё второй лист упирался бы в индекс.
+     */
+    it('неделю закрывают две машины — оба листа действующие', async () => {
+      const request = await linearRequestInProgress();
+
+      const first = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
+      expect(first.statusCode, first.body).toBe(200);
+      const second = await issueEsm2(request.id, {
+        weekOf: ctx.dateFrom,
+        vehicleId: ctx.otherVehicleId,
+        driverPersonId: ctx.driverB,
+        version: first.json().version,
+      });
+      expect(second.statusCode, second.body).toBe(200);
+
+      const issued = (await sheetsOf(request.id)).filter((s) => s.status === 'issued');
+      expect(issued).toHaveLength(2);
+      expect(new Set(issued.map((s) => s.vehicle_id))).toEqual(
+        new Set([ctx.vehicleId, ctx.otherVehicleId]),
+      );
     });
-    expect(changed.statusCode, changed.body).toBe(200);
 
-    const sheets = await sheetsOf(request.id);
-    // Ни один номер не сгорел: сверке нечего сверять — машину этих листов называл человек.
-    expect(sheets.filter((s) => s.status === 'cancelled')).toHaveLength(0);
-    const issued = sheets.filter((s) => s.status === 'issued');
-    expect(issued).toHaveLength(2);
-    expect(issued.every((s) => s.vehicle_id === ctx.vehicleId)).toBe(true);
-    // Каждой неделе остался её человек: смена техники людей не пересаживает.
-    expect(issued.find((s) => s.period_from === ctx.dateFrom)?.driver_person_id).toBe(ctx.driverA);
-    expect(issued.find((s) => s.period_from === nextMonday)?.driver_person_id).toBe(ctx.driverB);
-  });
+    it('новых недель сверка линейному заказу не заводит, сколько бы ни длился срок', async () => {
+      const request = await linearRequestInProgress();
+      const first = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
+      expect(first.statusCode, first.body).toBe(200);
 
-  /*
-   * Обратная сторона того же правила: неделю можно закрыть двумя листами на две машины. Это и
-   * есть причина, по которой уникальность недели в базе считается вместе с машиной (миграция
-   * 0127), — до неё второй лист упирался бы в индекс.
-   */
-  it('неделю закрывают две машины — оба листа действующие', async () => {
-    const request = await linearRequestInProgress();
+      const changed = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/vehicle-requests/${request.id}/assignment`,
+        headers: ctx.auth,
+        payload: { vehicleId: ctx.otherVehicleId, version: first.json().version },
+      });
+      expect(changed.statusCode, changed.body).toBe(200);
 
-    const first = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
-    expect(first.statusCode, first.body).toBe(200);
-    const second = await issueEsm2(request.id, {
-      weekOf: ctx.dateFrom,
-      vehicleId: ctx.otherVehicleId,
-      driverPersonId: ctx.driverB,
-      version: first.json().version,
+      // Срок идёт две недели, а листов по-прежнему один: вторую неделю никто не просил.
+      const issued = (await sheetsOf(request.id)).filter((s) => s.status === 'issued');
+      expect(issued).toHaveLength(1);
+      expect(issued[0]!.period_from).toBe(ctx.dateFrom);
     });
-    expect(second.statusCode, second.body).toBe(200);
 
-    const issued = (await sheetsOf(request.id)).filter((s) => s.status === 'issued');
-    expect(issued).toHaveLength(2);
-    expect(new Set(issued.map((s) => s.vehicle_id))).toEqual(
-      new Set([ctx.vehicleId, ctx.otherVehicleId]),
-    );
-  });
+    /**
+     * Досрочное завершение (ADR 0044) подрезает бумагу и здесь: неделя, у которой отняли дни,
+     * перевыписывается по новый последний день, а выпавшая целиком аннулируется без замены.
+     */
+    it('сокращённый срок подрезает выписанную неделю, а выпавшую аннулирует', async () => {
+      const request = await linearRequestInProgress();
+      const nextMonday = shiftDateKey(weekStartKey(ctx.dateFrom), 7);
+      const newDateTo = shiftDateKey(nextMonday, 2);
 
-  it('новых недель сверка линейному заказу не заводит, сколько бы ни длился срок', async () => {
-    const request = await linearRequestInProgress();
-    const first = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
-    expect(first.statusCode, first.body).toBe(200);
+      const first = await issueEsm2(request.id, { weekOf: nextMonday, version: request.version });
+      expect(first.statusCode, first.body).toBe(200);
+      expect((await sheetsOf(request.id))[0]!.period_to).toBe(shiftDateKey(nextMonday, 6));
 
-    const changed = await ctx.app.inject({
-      method: 'PATCH',
-      url: `/api/v1/vehicle-requests/${request.id}/assignment`,
-      headers: ctx.auth,
-      payload: { vehicleId: ctx.otherVehicleId, version: first.json().version },
+      const asked = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/vehicle-requests/${request.id}/early-end`,
+        headers: ctx.auth,
+        payload: { newDateTo, reason: 'работы закончены раньше', version: first.json().version },
+      });
+      expect(asked.statusCode, asked.body).toBe(200);
+      const decided = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/vehicle-requests/${request.id}/early-end`,
+        headers: ctx.auth,
+        payload: { approved: true, comment: '', version: asked.json().version },
+      });
+      expect(decided.statusCode, decided.body).toBe(200);
+
+      const sheets = await sheetsOf(request.id);
+      expect(sheets.filter((s) => s.status === 'cancelled')).toHaveLength(1);
+      const issued = sheets.filter((s) => s.status === 'issued');
+      expect(issued).toHaveLength(1);
+      expect(issued[0]!.period_from).toBe(nextMonday);
+      expect(issued[0]!.period_to).toBe(newDateTo);
+      // Машинист остался прежним: срок правили, а не человека.
+      expect(issued[0]!.driver_person_id).toBe(ctx.driverA);
     });
-    expect(changed.statusCode, changed.body).toBe(200);
 
-    // Срок идёт две недели, а листов по-прежнему один: вторую неделю никто не просил.
-    const issued = (await sheetsOf(request.id)).filter((s) => s.status === 'issued');
-    expect(issued).toHaveLength(1);
-    expect(issued[0]!.period_from).toBe(ctx.dateFrom);
-  });
+    it('отмена заявки аннулирует и то, что выписали по требованию', async () => {
+      const request = await linearRequestInProgress();
+      const issued = await issueEsm2(request.id, {
+        weekOf: ctx.dateFrom,
+        version: request.version,
+      });
+      expect(issued.statusCode, issued.body).toBe(200);
 
-  /**
-   * Досрочное завершение (ADR 0044) подрезает бумагу и здесь: неделя, у которой отняли дни,
-   * перевыписывается по новый последний день, а выпавшая целиком аннулируется без замены.
-   */
-  it('сокращённый срок подрезает выписанную неделю, а выпавшую аннулирует', async () => {
-    const request = await linearRequestInProgress();
-    const nextMonday = shiftDateKey(weekStartKey(ctx.dateFrom), 7);
-    const newDateTo = shiftDateKey(nextMonday, 2);
+      const cancelled = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/vehicle-requests/${request.id}/status`,
+        headers: ctx.auth,
+        payload: {
+          status: 'cancelled',
+          comment: 'техника не понадобилась',
+          version: issued.json().version,
+        },
+      });
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
 
-    const first = await issueEsm2(request.id, { weekOf: nextMonday, version: request.version });
-    expect(first.statusCode, first.body).toBe(200);
-    expect((await sheetsOf(request.id))[0]!.period_to).toBe(shiftDateKey(nextMonday, 6));
-
-    const asked = await ctx.app.inject({
-      method: 'POST',
-      url: `/api/v1/vehicle-requests/${request.id}/early-end`,
-      headers: ctx.auth,
-      payload: { newDateTo, reason: 'работы закончены раньше', version: first.json().version },
+      const sheets = await sheetsOf(request.id);
+      expect(sheets).toHaveLength(1);
+      expect(sheets[0]!.status).toBe('cancelled');
     });
-    expect(asked.statusCode, asked.body).toBe(200);
-    const decided = await ctx.app.inject({
-      method: 'PATCH',
-      url: `/api/v1/vehicle-requests/${request.id}/early-end`,
-      headers: ctx.auth,
-      payload: { approved: true, comment: '', version: asked.json().version },
-    });
-    expect(decided.statusCode, decided.body).toBe(200);
-
-    const sheets = await sheetsOf(request.id);
-    expect(sheets.filter((s) => s.status === 'cancelled')).toHaveLength(1);
-    const issued = sheets.filter((s) => s.status === 'issued');
-    expect(issued).toHaveLength(1);
-    expect(issued[0]!.period_from).toBe(nextMonday);
-    expect(issued[0]!.period_to).toBe(newDateTo);
-    // Машинист остался прежним: срок правили, а не человека.
-    expect(issued[0]!.driver_person_id).toBe(ctx.driverA);
-  });
-
-  it('отмена заявки аннулирует и то, что выписали по требованию', async () => {
-    const request = await linearRequestInProgress();
-    const issued = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
-    expect(issued.statusCode, issued.body).toBe(200);
-
-    const cancelled = await ctx.app.inject({
-      method: 'PATCH',
-      url: `/api/v1/vehicle-requests/${request.id}/status`,
-      headers: ctx.auth,
-      payload: {
-        status: 'cancelled',
-        comment: 'техника не понадобилась',
-        version: issued.json().version,
-      },
-    });
-    expect(cancelled.statusCode, cancelled.body).toBe(200);
-
-    const sheets = await sheetsOf(request.id);
-    expect(sheets).toHaveLength(1);
-    expect(sheets[0]!.status).toBe('cancelled');
   });
 });

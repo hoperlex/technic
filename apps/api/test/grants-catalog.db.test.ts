@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   ADMIN_GRANT_CODES,
   ADMIN_GRANTS,
+  MODULE_GRANT_CODES,
+  MODULE_GRANTS,
   ALL_SYSTEM_GRANT_CODES,
   isPermission,
   ROLE_ADDON_BASE_ROLES,
@@ -78,6 +80,13 @@ const DECLARED: ReadonlyMap<
       ] as const,
   ),
   ...ADMIN_GRANT_CODES.map((code) => [code as string, ADMIN_GRANTS[code]] as const),
+  /*
+   * Модульная часть (волна В5 плана переработки заявок) объявлена `MODULE_GRANTS` — как
+   * административная, и по той же причине: надстройки за ней не стоит. Без этой строки набор
+   * попадал бы в перебор `ALL_SYSTEM_GRANT_CODES` (существует, помечен системным), но его состав
+   * не сверялся бы ни с чем — то есть страж молчал бы о расхождении, ради которого заведён.
+   */
+  ...MODULE_GRANT_CODES.map((code) => [code as string, MODULE_GRANTS[code]] as const),
 ]);
 
 /** Состав набора в базе, отсортированный: порядок строк `INSERT`'а свойством каталога не является. */

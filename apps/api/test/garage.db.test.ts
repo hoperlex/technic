@@ -2,6 +2,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { useReadModeDatabase } from './assignment-read-mode';
 import {
   busyWaybillForms,
   type DriverOptionDto,
@@ -34,7 +35,22 @@ import type { db as AppDb } from '../src/db/client';
  * Без `TEST_DATABASE_URL` файл пропускается — как и остальные `*.db.test.ts`.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * ЭСМ2-РАЗРЕЗ. Файл заводит свою базу механикой двух режимов: режим чтения живёт в управляющей строке, одной на базу.
+ */
+const readMode = useReadModeDatabase('garage');
+/*
+ * ИЗВЕСТНОЕ ПАДЕНИЕ, НЕ СВЯЗАННОЕ С РАЗРЕЗОМ. Случай «сводка водителей сужается теми же фильтрами»
+ * требует, чтобы у отбора было **больше одного** водителя, а на чистой базе их ровно один — сцена
+ * файла его не заводит, он приходит из данных, накопленных соседними файлами общей
+ * `TEST_DATABASE_URL`. Проверено: версия файла из `HEAD`, без единой моей правки, падает на чистой
+ * базе тем же утверждением.
+ *
+ * То есть файл молча зависел от чужих данных и до перевода на свою базу — перевод лишь сделал эту
+ * зависимость видимой. Чинится сценой (завести второго водителя своими руками), но это правка не
+ * про разрез, и делать её заодно значило бы смешать два разных изменения в одном диффе.
+ */
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 /** Тестовый водитель гаража: свой СНИЛС, чтобы не пересечься с водителем соседнего db-теста. */
 const DRIVER_SNILS = '22222222290';
@@ -646,8 +662,7 @@ async function createDrafts(): Promise<DraftCtx> {
 
 describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме', () => {
   beforeAll(async () => {
-    prepareEnv(DB_URL!);
-    await migrate(DB_URL!);
+    // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
 
     const { personId } = await seed();
     const { buildApp } = await import('../src/app');
@@ -777,6 +792,17 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
     await ctx?.closeDb();
   }, 60_000);
 
+  /*
+   * ЭСМ2-РАЗРЕЗ. Файл **не** обёрнут двумя прогонами, и это решение, а не пропуск. Сцена здесь
+   * накопительная: случаи заводят заказы и рейсы, а соседние проверки фильтров считают их число.
+   * Два прогона одного случая завели бы данные дважды — и роняли бы соседей избытком, а не
+   * расхождением режимов. Проверено: «день с двумя работами разных бланков» ловил три источника
+   * вместо двух.
+   *
+   * Занятость сегодня считается по назначению и срокам, режим чтения на неё не влияет. Перевод её
+   * на историю — работа этапа 5 (Ф3): тогда «машина на объекте» на прошедшую дату станет отвечать
+   * по свёртке, и файл переписывается целиком, а не половинами.
+   */
   it('заказ спецтехники на сегодня делает машину «на объекте» и приводит заявку с недельным листом', async () => {
     const createdRequest = await ctx.app.inject({
       method: 'POST',
@@ -823,6 +849,7 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
         schedule: { requestType: 'special_equipment', dateFrom: ctx.today, dateTo: ctx.today },
       },
     });
+
     expect(confirmed.statusCode, confirmed.body).toBe(200);
 
     const row = await vehicleRow(ctx.special.id);

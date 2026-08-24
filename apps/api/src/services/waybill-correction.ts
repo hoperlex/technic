@@ -6,10 +6,11 @@ import {
   backdateGuard,
   type BackdateVerdict,
   can,
+  type WaybillCorrectionAuthorizationScope,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import { vehicleRequestCorrections, waybillCorrections, waybills } from '../db/schema';
-import { err } from '../lib/errors';
+import { AppError, err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
 
 /**
@@ -25,6 +26,15 @@ import { pgErrorOf } from '../lib/pg-error';
  * - идемпотентность по ключу клиента и отпечатку тела (Р31);
  * - мелочь, которую легко посчитать по-разному: эффективная дата листа, связь операции с заявками,
  *   аннулирование листа операцией.
+ *
+ * ДВЕ ФОРМЫ ВХОДА, ОДНА ЗАПИСЬ. Входы ADR 0101 приходят сюда `runCorrection`: он сам открывает
+ * транзакцию и вставляет строку операции **до** `perform`, потому что предмет блокирует сама
+ * правка. Каноническая транзакция команды истории (§8, шаг 10) устроена наоборот — блокировки,
+ * повторный поиск операции под ними, и только потом строка журнала (Р9, «протокол `prepare/lock`»);
+ * иначе две двери с одним `operationId` встают в клинч. Ей отдана **та же запись** отдельной
+ * функцией (`insertCorrection`, `saveCorrectionPayload`, `sameCorrectionOrThrow`), а не своя копия
+ * `INSERT`: журнал коррекций в портале один, и второй путь в ту же таблицу разошёлся бы с этим на
+ * первой же новой колонке — как это чуть не случилось со снимком авторизации (Р9).
  *
  * Почему транзакционная таблица, а не аудит, объяснено в схеме и в ADR 0101 п. 8: `writeAudit`
  * пишет отдельным соединением и глотает ошибку — единственным носителем обоснования правки бланка
@@ -171,29 +181,21 @@ export async function runCorrection(
     body: command.body,
   });
 
+  const same = { actorUserId: command.actorUserId, fingerprint };
   const prior = await findCorrection(db, command.operationId);
-  if (prior) return { correction: sameCommandOrThrow(prior, command, fingerprint), repeated: true };
+  if (prior) return { correction: sameCorrectionOrThrow(prior, same), repeated: true };
 
   try {
     const correction = await db.transaction(async (tx) => {
-      const [row] = await tx
-        .insert(waybillCorrections)
-        .values({
-          operationId: command.operationId,
-          fingerprint,
-          kind: command.kind,
-          reason: command.reason,
-          actorUserId: command.actorUserId,
-        })
-        .returning(correctionColumns);
-      const created = row!;
+      const created = await insertCorrection(tx, {
+        operationId: command.operationId,
+        fingerprint,
+        kind: command.kind,
+        reason: command.reason,
+        actorUserId: command.actorUserId,
+      });
       const payload = await handlers.perform(tx, created);
-      // Снимок отдельным `UPDATE`, потому что «было → стало» становится известно только внутри
-      // `perform`, а идентификатор операции нужен ему самому — листы ссылаются на неё колонкой.
-      await tx
-        .update(waybillCorrections)
-        .set({ payload })
-        .where(eq(waybillCorrections.id, created.id));
+      await saveCorrectionPayload(tx, created.id, payload);
       return created;
     });
     return { correction, repeated: false };
@@ -203,7 +205,7 @@ export async function runCorrection(
     // Строки нет — значит уникальность нарушил не наш ключ (либо победитель сам откатился уже
     // после нас). Придумывать этому объяснение нечем: ошибка уходит как есть.
     if (!winner) throw e;
-    return { correction: sameCommandOrThrow(winner, command, fingerprint), repeated: true };
+    return { correction: sameCorrectionOrThrow(winner, same), repeated: true };
   }
 }
 
@@ -216,6 +218,84 @@ const correctionColumns = {
   actorUserId: waybillCorrections.actorUserId,
   createdAt: waybillCorrections.createdAt,
 };
+
+/**
+ * Строка журнала — **внутри уже взятой транзакции и под уже взятыми блокировками** (Р9,
+ * «протокол `prepare/lock`»).
+ *
+ * Это та форма, ради которой журнал коррекций перестал быть двумя механизмами. `runCorrection`
+ * открывает транзакцию сам и вставляет строку **до** `perform`, а блокировка предмета живёт внутри
+ * него — тогда две двери с одним `operationId` встают в клинч: одна держит уникальную строку
+ * операции и ждёт заявку, вторая держит заявку и ждёт тот же уникальный ключ. Канонической
+ * транзакции (§8, шаг 10) нужен обратный порядок — блокировки, повторный поиск операции, и только
+ * потом `INSERT`, — и брать его она обязана **отсюда**: строка журнала коррекций пишется в портале
+ * ровно одним заявлением, иначе следующая колонка (как уже случилось со снимком авторизации)
+ * появится в одном пути и не появится в другом.
+ *
+ * Отпечаток считает вызывающий (`correctionFingerprint`): у команды истории в него входит цель
+ * `{ door, requestId }`, у входов ADR 0101 — цель из пути ручки, и одного правила на оба вида
+ * целей не существует.
+ */
+export interface CorrectionRowInput {
+  /** Ключ идемпотентности от клиента (Р31). */
+  operationId: string;
+  /** Отпечаток нормализованной команды: `correctionFingerprint({ kind, target, body })`. */
+  fingerprint: string;
+  kind: CorrectionKind;
+  reason: string;
+  actorUserId: string;
+  /**
+   * Снимок требований, при которых операцию разрешили (Р9). Обязателен у видов `crew` и
+   * `assignment_tail` — это держит `waybill_corrections_authorization_scope_check`, — и у старых
+   * семи видов его нет и быть не должно: они авторизуются своим для каждого входа путём.
+   */
+  authorizationScope?: WaybillCorrectionAuthorizationScope | undefined;
+}
+
+/** Вставить строку операции. Транзакцию и блокировки приносит вызывающий — здесь только запись. */
+export async function insertCorrection(
+  tx: Tx,
+  input: CorrectionRowInput,
+): Promise<CorrectionRecord> {
+  const [row] = await tx
+    .insert(waybillCorrections)
+    .values({
+      operationId: input.operationId,
+      fingerprint: input.fingerprint,
+      kind: input.kind,
+      reason: input.reason,
+      actorUserId: input.actorUserId,
+      ...(input.authorizationScope ? { authorizationScope: input.authorizationScope } : {}),
+    })
+    .returning(correctionColumns);
+  if (!row) {
+    // Нарушение канона, а не запроса: `INSERT ... RETURNING` без строки означает, что таблица под
+    // нами не та, за которую себя выдаёт. Читает такой отказ разработчик, а не человек за окном.
+    throw new AppError(
+      500,
+      'correction_journal_invariant',
+      'Журнал коррекций: строка операции не вставилась',
+    );
+  }
+  return row;
+}
+
+/**
+ * Снимок операции — отдельным `UPDATE` и в той же транзакции.
+ *
+ * Отдельным потому, что «было → стало» становится известно только после самой правки, а
+ * идентификатор операции нужен ей самой: и листы, и строки истории ссылаются на неё колонкой.
+ */
+export async function saveCorrectionPayload(
+  tx: Tx,
+  correctionId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await tx
+    .update(waybillCorrections)
+    .set({ payload })
+    .where(eq(waybillCorrections.id, correctionId));
+}
 
 /** Операция по ключу клиента — для повтора и для карточки разбирательства. */
 export async function findCorrection(
@@ -235,14 +315,18 @@ export async function findCorrection(
  * отпечаток тела и автор. Отказ один и тот же по смыслу («это не повтор»), но тексты разные: одно
  * поручение человеку — повторить действие заново, другое — обновить страницу и посмотреть, что уже
  * сделал коллега.
+ *
+ * Экспортируется ради канонической транзакции (§8, шаг 2): она ищет прежнюю операцию сама и **под
+ * блокировкой**, но сверять её обязана теми же двумя признаками и теми же словами отказа. Своя
+ * копия этой проверки разошлась бы с этой на первом же новом признаке — а признак «тот же ли
+ * запрос» в портале один.
  */
-function sameCommandOrThrow(
+export function sameCorrectionOrThrow(
   prior: CorrectionRecord & { fingerprint: string },
-  command: CorrectionCommand,
-  fingerprint: string,
+  expected: { actorUserId: string; fingerprint: string },
 ): CorrectionRecord {
-  if (prior.actorUserId !== command.actorUserId) throw err.conflict(CORRECTION_KEY_FOREIGN);
-  if (prior.fingerprint !== fingerprint) throw err.conflict(CORRECTION_KEY_REUSED);
+  if (prior.actorUserId !== expected.actorUserId) throw err.conflict(CORRECTION_KEY_FOREIGN);
+  if (prior.fingerprint !== expected.fingerprint) throw err.conflict(CORRECTION_KEY_REUSED);
   return prior;
 }
 
