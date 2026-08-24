@@ -947,6 +947,46 @@ describe('заявки на обслуживание оргтехники (ADR 0
   });
 
   /**
+   * Чего у ИТ-службы НЕТ — вторая половина теста 8 плана переработки заявок (§6.3): «ИТ-служба не
+   * удаляет заявки, не принимает работу и не отменяет заявки произвольно».
+   *
+   * Проверяется это составом надстройки, а не отказом маршрута, и написать иначе нельзя: у самого
+   * человека роль остаётся при нём, а роли заказчика (штаб, площадка, отдел) удаление своих заявок
+   * в «Новой» дано законно (ADR 0085). Живая попытка удаления доказывала бы поэтому обратное —
+   * что право пришло ролью. Здесь же спрашивается ровно то, что решает постановка: **надстройка
+   * не добавляет ни `delete`, ни `status`** — и если однажды добавит, упадёт этот случай, а не
+   * тихо разъедется матрица.
+   */
+  it('ИТ-служба не удаляет заявок и не двигает статус: надстройка этого не даёт', () => {
+    const itService: AccessSubject[] = [
+      { role: 'shtab', addons: ['office_equipment_it_approver'] },
+      { role: 'site', addons: ['office_equipment_it_approver'] },
+      { role: 'department', addons: ['office_equipment_it_approver'] },
+    ];
+    for (const subject of itService) {
+      const label = accessProfileLabel(subject);
+      // `status` — весь операторский коридор разом: приёмка работы и отмена из любого статуса.
+      expect(can(subject, 'serviceRequests.status'), label).toBe(false);
+      // Ходы исполнителя приходят парой «назначение + execute», а не статусом.
+      expect(can(subject, 'serviceRequests.execute'), label).toBe(true);
+      // Согласование сметы — подпись под деньгами, у ИТ-службы её нет: она решает «чинить или
+      // менять», и это другое право.
+      expect(can(subject, 'serviceRequests.approveEstimate'), label).toBe(false);
+      expect(can(subject, 'serviceRequests.approveIt'), label).toBe(true);
+    }
+    // Удаление надстройка не добавляет никому: у трёх профилей выше оно есть, но приходит РОЛЬЮ —
+    // ровно тем же правом заказчика, что и без надстройки. Сравнение с голой ролью это и говорит.
+    for (const role of ['shtab', 'site', 'department'] as const) {
+      const withAddon: AccessSubject = { role, addons: ['office_equipment_it_approver'] };
+      expect(can(withAddon, 'serviceRequests.delete'), role).toBe(can(of(role), 'serviceRequests.delete'));
+    }
+    // И ни одна надстройка модуля не раздаёт `delete` сама по себе — профиль без роли пуст.
+    expect(can({ role: null, addons: ['office_equipment_it_approver'] }, 'serviceRequests.delete')).toBe(
+      false,
+    );
+  });
+
+  /**
    * Исполнителя задаёт тип контрагента, а не роль (ADR 0038): «оператор» с контрагентом-сервисом
    * ведёт смету, тот же «оператор» с контрагентом вывоза не видит модуля вовсе. Заводить и править
    * заявки исполнитель не может ни в одном из трёх модулей — это граница модели.

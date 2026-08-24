@@ -867,6 +867,97 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
     }
   }, 60_000);
 
+  // ── Тест 13 плана: составной ключ журнала ──
+
+  /**
+   * Ключ `office_equipment_consumable_stock_row_fk` берёт ТРОЙКУ «строка + заявка + позиция», и
+   * проверяется здесь ровно то, ради чего он составной: одноколоночный ключ на строку заявки
+   * пропустил бы событие, которое ссылается на строку ЧУЖОЙ заявки или на строку ДРУГОГО
+   * расходника, — обе ссылки по отдельности были бы целы, а вместе означали бы неправду.
+   *
+   * Строки событий вставляются прямым SQL: маршрут такую пару собрать не может в принципе, а
+   * проверяется свойство схемы, а не маршрута. Отсюда же и порядок «правка карточки → событие» —
+   * его требует цепочка журнала (`0172`), и без него отказ пришёл бы не от того ограничения.
+   */
+  it('событие списания не привязать ни к строке чужой заявки, ни к строке другого расходника', async () => {
+    const первый = await makeConsumable('Тонер ключевой A', 10);
+    const второй = await makeConsumable('Тонер ключевой B', 10);
+    const своя = await makeRequest([{ consumableId: первый, requestedQuantity: 1 }]);
+    const чужая = await makeRequest([
+      { consumableId: первый, requestedQuantity: 1 },
+      { consumableId: второй, requestedQuantity: 1 },
+    ]);
+
+    const { pgErrorOf } = await import('../src/lib/pg-error');
+    const отказ = async (
+      run: Promise<unknown>,
+    ): Promise<{ code?: string; constraint?: string }> => {
+      try {
+        await run;
+      } catch (e) {
+        return pgErrorOf(e) ?? {};
+      }
+      throw new Error('база приняла событие, которого не должно быть');
+    };
+
+    // (а) Строка есть, заявка есть, но строка принадлежит ДРУГОЙ заявке. Одноколоночный ключ
+    // такую вставку пропустил бы: сама строка существует.
+    const чужаяСтрока = lineOf(чужая, первый);
+    const поЧужойСтроке = await отказ(
+      ctx.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`UPDATE office_equipment_consumables SET quantity = 9 WHERE id = ${первый}`,
+        );
+        await tx.execute(sql`
+          INSERT INTO office_equipment_consumable_stock_entries
+            (consumable_id, entry_kind, service_request_id, service_request_consumable_id,
+             quantity_before, quantity_after, reason, changed_by)
+          VALUES (${первый}, 'issue', ${своя.id}, ${чужаяСтрока.id}, 10, 9,
+                  'выдано по строке чужой заявки', ${ctx.admin.id})`);
+      }),
+    );
+    expect(поЧужойСтроке.code).toBe('23503');
+    expect(поЧужойСтроке.constraint).toBe('office_equipment_consumable_stock_row_fk');
+
+    // (б) Строка своя и заявка своя, но позиция в событии — ДРУГАЯ. Третья колонка тройки.
+    const свояСтрока = lineOf(своя, первый);
+    const поДругойПозиции = await отказ(
+      ctx.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`UPDATE office_equipment_consumables SET quantity = 9 WHERE id = ${второй}`,
+        );
+        await tx.execute(sql`
+          INSERT INTO office_equipment_consumable_stock_entries
+            (consumable_id, entry_kind, service_request_id, service_request_consumable_id,
+             quantity_before, quantity_after, reason, changed_by)
+          VALUES (${второй}, 'issue', ${своя.id}, ${свояСтрока.id}, 10, 9,
+                  'списано не с той позиции', ${ctx.admin.id})`);
+      }),
+    );
+    expect(поДругойПозиции.code).toBe('23503');
+    expect(поДругойПозиции.constraint).toBe('office_equipment_consumable_stock_row_fk');
+
+    // Ни одна отбитая вставка склада не сдвинула: отказ приходит на коммите, и правка карточки
+    // откатывается вместе с ним.
+    expect(await stockOf(первый)).toBe(10);
+    expect(await stockOf(второй)).toBe(10);
+
+    // (в) Ручная правка остатка — ссылки на заявку обе пусты — проходит. Это и есть `MATCH SIMPLE`
+    // (умолчание, и переписывать его нельзя): ключ пропускает строку, где хоть одна колонка тройки
+    // пуста. С `MATCH FULL` первая же корректировка кладовщика упёрлась бы в этот ключ.
+    const правка = await inject('POST', `/api/v1/office-equipment-consumables/${первый}/stock`, {
+      quantity: 12,
+      expectedQuantity: 10,
+      reason: 'привезли две пачки',
+    });
+    expect(правка.statusCode, правка.body).toBe(200);
+    expect(await stockOf(первый)).toBe(12);
+    const последнее = (await entriesOf(первый)).at(-1)!;
+    expect(последнее.entry_kind).toBe('manual');
+    expect(последнее.service_request_id).toBeNull();
+    expect(последнее.service_request_consumable_id).toBeNull();
+  }, 60_000);
+
   // ── Границы вида и статуса: что смежные ручки НЕ делают с заявкой на расходники ──
 
   /**

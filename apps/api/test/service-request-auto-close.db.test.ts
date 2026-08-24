@@ -209,7 +209,7 @@ async function makeRequest(tag: string, opts: MakeRequest): Promise<string> {
 /** Закрывающий документ, подшитый заданное время назад. */
 async function attachDocument(
   requestId: string,
-  kind: 'act' | 'invoice',
+  kind: 'act' | 'invoice' | 'warranty_card',
   attachedAgo: string,
 ): Promise<void> {
   const file = await ctx.db.execute<{ id: string }>(sql`
@@ -460,6 +460,32 @@ describe.skipIf(!DB_URL)('автозакрытие заявок оргтехни
     await autoClose();
     expect(await statusOf(inhouse)).toBe('accepted');
     expect(await statusOf(consumable)).toBe('accepted');
+  });
+
+  /**
+   * Тест 2а плана: **гарантийный талон как единственный документ**. Планка Н8 требует у сервисного
+   * ремонта «закрывающий документ», и талон — один из трёх, которые ею считаются (акт, счёт,
+   * талон). Случай нужен отдельно от двух соседних именно потому, что талон — самый неочевидный из
+   * трёх: гарантийный ремонт денег не стоит, счёта и акта по нему может не быть вовсе, и заявка,
+   * закрытая по гарантии, оставалась бы висеть в «Решена» вечно, если бы отбор считал закрывающими
+   * только бумаги с суммой.
+   *
+   * Проверяется вся цепочка разом: талон подшит, отбор заявку ВИДИТ (в пачку она попала), сутки от
+   * предъявления работ прошли — заявка закрыта автоматически.
+   */
+  it('гарантийный талон закрывающим считается: заявка по гарантии закрывается сама', async () => {
+    const id = await makeRequest('warranty', { completedAgo: '25 hours', service: true });
+    await attachDocument(id, 'warranty_card', '25 hours');
+
+    // Контроль: до подшивки такая же заявка сервиса в пачку не попадала бы вовсе — это соседний
+    // случай файла. Здесь важно обратное: с талоном она в пачке есть.
+    const stats = await autoClose();
+    expect(stats.closed).toBeGreaterThan(0);
+    expect(await statusOf(id)).toBe('accepted');
+    // Закрыла система, а не человек: у строки истории нет автора, источник приёмки — `auto`.
+    const row = await rowOf(id);
+    expect(row.acceptance_source).toBe('auto');
+    expect(row.accepted_by).toBeNull();
   });
 
   it('отложенная заявка не закрывается', async () => {

@@ -3808,6 +3808,60 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
      * пара, которая различается ровно одним: `namedExecutor` назначен на заявку, `strayExecutor`
      * держит тот же набор «Оргтехника: ИТ-служба» и не назначен ни на что.
      */
+    /**
+     * Остаток теста 8 плана — две границы, которые до сих пор держались только кодом.
+     *
+     * Первая: **исполнителем назначают лишь того, кто им может быть.** Право проверяется у
+     * НАЗНАЧАЕМОГО, а не у назначающего, и отказ обязан назвать имя: оператор выбирает из списка
+     * живых учёток и по одному «нельзя» не поймёт, которая из трёх не годится.
+     *
+     * Второй половиной теста 8 — «ИТ-служба заявок не удаляет» — здесь не занимаются, и это не
+     * упущение: правило держится СОСТАВОМ НАБОРА (`serviceRequests.delete` в него не входит), а не
+     * отказом обработчика, и проверяется там же, где живёт состав, — контрактным случаем в
+     * `permissions.test.ts` и сверкой каталога с базой в `grants-catalog.db.test.ts`. Попытка
+     * проверить его здесь, живым удалением, доказывала бы обратное: у поимённого исполнителя роль
+     * `shtab`, а штаб — заказчик модуля (ADR 0085) и свои заявки в «Новой» удаляет законно, своим
+     * правом, а не набором.
+     */
+    it('исполнителем не назначить учётку без права исполнения — 422 с именем', async () => {
+      // Своя единица: по каждой разрешена одна открытая заявка, и общий `ctx.mfp` к этому месту
+      // сценария уже занят.
+      const equipmentId = await makeEquipment({
+        typeId: ctx.typeId,
+        name: 'Kyocera ECOSYS M3145',
+        inventoryNumber: `ОЕ-${RUN}-NOEXEC`,
+        objectId: ctx.objectId,
+      });
+      const dto = await createRequest(ctx.customer.auth, equipmentId, 'Не печатает');
+      const res = await inject(
+        'PUT',
+        `/api/v1/service-requests/${dto.id}/executors`,
+        ctx.operator.auth,
+        {
+          // Заказчик — живая учётка своей площадки, и в справочнике он есть. Нет у него ровно
+          // одного: `serviceRequests.execute`.
+          userIds: [ctx.customer.id],
+          serviceCounterpartyId: null,
+          version: dto.version,
+        },
+      );
+      expect(res.statusCode, res.body).toBe(422);
+      const message = (res.json() as { message: string }).message;
+      expect(message).toContain('не может быть исполнителем');
+      // Имя в отказе — половина его смысла: без него оператор не узнает, которую строку убрать.
+      // Берётся оно из базы, а не собирается в тесте: `full_name` — вычисляемая колонка, и её
+      // правило (порядок частей, разделители) — предмет схемы, а не догадки этого файла.
+      const имя = await ctx.db.execute<{ full_name: string }>(
+        sql`SELECT full_name FROM users WHERE id = ${ctx.customer.id}::uuid`,
+      );
+      expect(message).toContain(имя.rows[0]!.full_name);
+
+      // Заявка осталась нераспределённой: негодная строка не пропустила и годных.
+      const after = await card(dto.id);
+      expect(after.executors).toEqual([]);
+      expect(after.status).toBe('new');
+    });
+
     it('правку выдачи расходников держит назначение, а не право на маршруте', async () => {
       const consumable = await inject(
         'POST',
