@@ -411,7 +411,27 @@ async function saveResult(
       for (const ticket of page.tickets) {
         seq += 1;
         const raw = ticket.number ?? '';
-        await client.query(
+        const values = [
+          payload.requestId,
+          pageId,
+          seq,
+          page.primaryAttemptId,
+          page.escalationAttemptId,
+          raw,
+          raw ? wasteTicketNumberKey(raw) : '',
+          raw ? wasteTicketNumberFuzzy(raw) : '',
+          ticket.issuedOn,
+          ticket.volumeM3,
+          ticket.workKind,
+          ticket.addressRaw ?? '',
+          ticket.needsReview,
+          JSON.stringify(ticket.candidates),
+        ];
+        // Строка, к которой человек не прикасался, переписывается новым проходом целиком: она и
+        // была предложением машины, а не решением. Тронутая — нет (Р13): подтверждённая занимает
+        // номер, ручная написана человеком, правленая исправлена им же, и перезапись стёрла бы
+        // работу, ради которой кнопку «перераспознать» и нажимают.
+        const written = await client.query<{ id: string }>(
           `INSERT INTO waste_tickets
              (request_id, page_id, seq, primary_attempt_id, escalation_attempt_id,
               number_raw, number_key, number_fuzzy, issued_on, volume_m3, work_kind,
@@ -419,22 +439,59 @@ async function saveResult(
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'ocr','unconfirmed',$13::text[],
                    $14::jsonb)
            ON CONFLICT (page_id, seq) WHERE page_id IS NOT NULL AND origin = 'ocr'
-           DO NOTHING`,
+           DO UPDATE SET primary_attempt_id = EXCLUDED.primary_attempt_id,
+                         escalation_attempt_id = EXCLUDED.escalation_attempt_id,
+                         number_raw = EXCLUDED.number_raw,
+                         number_key = EXCLUDED.number_key,
+                         number_fuzzy = EXCLUDED.number_fuzzy,
+                         issued_on = EXCLUDED.issued_on,
+                         volume_m3 = EXCLUDED.volume_m3,
+                         work_kind = EXCLUDED.work_kind,
+                         address_raw = EXCLUDED.address_raw,
+                         needs_review_fields = EXCLUDED.needs_review_fields,
+                         candidates = EXCLUDED.candidates,
+                         updated_at = now()
+                   WHERE waste_tickets.status = 'unconfirmed'
+                     AND waste_tickets.edited_at IS NULL
+           RETURNING id`,
+          values,
+        );
+        if (written.rows[0]) continue;
+
+        // Талон тронут человеком — новый проход ложится РЯДОМ предложением (Р13). Снимком, а не
+        // ссылкой на попытку: сырьё убирается по сроку (Р31), обе ссылки объявлены `SET NULL`, и
+        // предложение обязано читаться и тогда — теряя лишь возможность заглянуть в исходный ответ.
+        //
+        // Предложение, повторяющее то, что в талоне уже стоит, не заводится: «модель прочитала то
+        // же самое» — не новость, а лишняя строка, которую человеку придётся закрывать руками.
+        await client.query(
+          `INSERT INTO waste_ticket_proposals
+             (ticket_id, number_raw, issued_on, volume_m3, work_kind, address_raw,
+              primary_attempt_id, escalation_attempt_id)
+           SELECT wt.id, $4, $5, $6, $7, $8, $9, $10
+             FROM waste_tickets wt
+            WHERE wt.page_id = $1 AND wt.seq = $2 AND wt.origin = 'ocr'
+              AND wt.request_id = $3
+              AND (wt.number_raw, wt.issued_on, wt.volume_m3, wt.work_kind, wt.address_raw)
+                  IS DISTINCT FROM ($4, $5::date, $6::numeric, $7, $8)
+           ON CONFLICT (ticket_id) DO UPDATE
+                  SET number_raw = EXCLUDED.number_raw, issued_on = EXCLUDED.issued_on,
+                      volume_m3 = EXCLUDED.volume_m3, work_kind = EXCLUDED.work_kind,
+                      address_raw = EXCLUDED.address_raw,
+                      primary_attempt_id = EXCLUDED.primary_attempt_id,
+                      escalation_attempt_id = EXCLUDED.escalation_attempt_id,
+                      created_at = now()`,
           [
-            payload.requestId,
             pageId,
             seq,
-            page.primaryAttemptId,
-            page.escalationAttemptId,
+            payload.requestId,
             raw,
-            raw ? wasteTicketNumberKey(raw) : '',
-            raw ? wasteTicketNumberFuzzy(raw) : '',
             ticket.issuedOn,
             ticket.volumeM3,
             ticket.workKind,
             ticket.addressRaw ?? '',
-            ticket.needsReview,
-            JSON.stringify(ticket.candidates),
+            page.primaryAttemptId,
+            page.escalationAttemptId,
           ],
         );
       }

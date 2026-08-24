@@ -60,6 +60,29 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
     onSettled: () => setBusyId(null),
   });
 
+  const acceptProposal = useMutation({
+    mutationFn: (vars: { ticketId: string; reason?: string }) =>
+      wasteTicketsApi.acceptProposal(requestId, vars.ticketId, {
+        duplicateOverrideReason: vars.reason,
+      }),
+    onSuccess: async () => {
+      await invalidate();
+      message.success('Новое чтение принято');
+    },
+    onError: (e) => message.error(errorMessage(e)),
+    onSettled: () => setBusyId(null),
+  });
+
+  const dismissProposal = useMutation({
+    mutationFn: (ticketId: string) => wasteTicketsApi.dismissProposal(requestId, ticketId),
+    onSuccess: async () => {
+      await invalidate();
+      message.success('Предложение отклонено');
+    },
+    onError: (e) => message.error(errorMessage(e)),
+    onSettled: () => setBusyId(null),
+  });
+
   const recognize = useMutation({
     mutationFn: (fileId: string) => wasteTicketsApi.recognize(requestId, fileId),
     onSuccess: async () => {
@@ -186,7 +209,25 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
             {
               title: 'Состояние',
               key: 'state',
-              render: (_, row) => <TicketState ticket={row} />,
+              render: (_, row) => (
+                <Space direction="vertical" size={2}>
+                  <TicketState ticket={row} />
+                  {row.proposal && (
+                    <Proposal
+                      ticket={row}
+                      busy={busyId === row.id}
+                      onAccept={() => {
+                        setBusyId(row.id);
+                        acceptProposal.mutate({ ticketId: row.id });
+                      }}
+                      onDismiss={() => {
+                        setBusyId(row.id);
+                        dismissProposal.mutate(row.id);
+                      }}
+                    />
+                  )}
+                </Space>
+              ),
             },
             {
               title: '',
@@ -287,6 +328,57 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
         open={!!form}
         onClose={() => setForm(null)}
       />
+    </Space>
+  );
+}
+
+/**
+ * Предложение перераспознавания (Р13): новый проход прочитал иначе строку, которую человек уже
+ * трогал. Талон при этом не менялся — подтверждённый занимает номер, ручной написан человеком, — и
+ * решение остаётся за ним: принять чтение целиком или отклонить.
+ *
+ * Показываются только отличия: перечислять поля, совпавшие с талоном, значит прятать в них те два,
+ * ради которых предложение и заведено.
+ */
+function Proposal({
+  ticket,
+  busy,
+  onAccept,
+  onDismiss,
+}: {
+  ticket: WasteTicketDto;
+  busy: boolean;
+  onAccept: () => void;
+  onDismiss: () => void;
+}) {
+  const p = ticket.proposal!;
+  const diffs: string[] = [];
+  if (p.number !== ticket.number) diffs.push(`№ ${ticket.number || '—'} → ${p.number || '—'}`);
+  if ((p.issuedOn ?? null) !== (ticket.issuedOn ?? null)) {
+    diffs.push(`дата ${ticket.issuedOn ?? '—'} → ${p.issuedOn ?? '—'}`);
+  }
+  if ((p.volumeM3 ?? null) !== (ticket.volumeM3 ?? null)) {
+    diffs.push(`объём ${ticket.volumeM3 ?? '—'} → ${p.volumeM3 ?? '—'}`);
+  }
+  if (p.addressRaw !== ticket.addressRaw) diffs.push('адрес');
+  return (
+    <Space direction="vertical" size={0}>
+      <Tooltip title="Новый проход прочитал иначе. Талон не менялся — решать вам">
+        <Tag color="purple" style={{ marginInlineEnd: 0 }}>
+          новое чтение
+        </Tag>
+      </Tooltip>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {diffs.join('; ')}
+      </Typography.Text>
+      <Space size={0}>
+        <Button size="small" type="link" loading={busy} onClick={onAccept}>
+          Принять
+        </Button>
+        <Button size="small" type="link" onClick={onDismiss}>
+          Отклонить
+        </Button>
+      </Space>
     </Space>
   );
 }

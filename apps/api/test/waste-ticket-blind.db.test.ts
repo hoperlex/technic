@@ -5,9 +5,11 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
 import type * as DbSchema from '../src/db/schema';
+import { eq as sqlEq } from 'drizzle-orm';
 
 /**
- * Слепая перепроверка целиком: очередь, чтение, арбитраж — на живых маршрутах (ADR 0114, Р31).
+ * Разбор талона на живых маршрутах: слепая перепроверка (Р31) и предложения перераспознавания
+ * (Р13) — ADR 0114.
  *
  * Зачем через `inject`, а не запросами к базе. Всё ценное здесь — это ЗАПРЕТЫ, и живут они в
  * маршруте: подтвердивший талон не читает его второй раз, проверяющий не разбирает собственное
@@ -366,5 +368,116 @@ describe.skipIf(!DB_URL)('слепая перепроверка на живых 
     });
     // 404, а не 403: «она есть, но не ваша» позволяло бы перебирать чужие заявки номерами.
     expect(res.statusCode, res.body).toBe(404);
+  });
+
+  describe('предложение перераспознавания', () => {
+    /** Предложение рядом с подтверждённым талоном — то, что кладёт воркер после нового прохода. */
+    async function seedProposal(
+      ticketId: string,
+      values: { number: string; issuedOn: string | null; volumeM3: string | null },
+    ): Promise<void> {
+      await ctx.db.insert(ctx.schema.wasteTicketProposals).values({
+        ticketId,
+        numberRaw: values.number,
+        issuedOn: values.issuedOn,
+        volumeM3: values.volumeM3,
+        workKind: 'removal',
+        addressRaw: '',
+      });
+    }
+
+    it('принятие переносит значения в талон и уносит предложение', async () => {
+      const { requestId, ticketId } = await seedTicket(`P${RUN}`);
+      await confirm(requestId, ticketId);
+      await seedProposal(ticketId, { number: `P${RUN}NEW`.toUpperCase(), issuedOn: '2026-08-18', volumeM3: '25' });
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/waste-requests/${requestId}/tickets/${ticketId}/proposal/accept`,
+        headers: ctx.owner.auth,
+        payload: {},
+      });
+      expect(res.statusCode, res.body).toBe(200);
+
+      const [ticket] = await ctx.db
+        .select()
+        .from(ctx.schema.wasteTickets)
+        .where(sqlEq(ctx.schema.wasteTickets.id, ticketId));
+      expect(ticket!.numberRaw).toBe(`P${RUN}NEW`.toUpperCase());
+      expect(ticket!.issuedOn).toBe('2026-08-18');
+      // Принятие — правка: талон помечается тронутым, и следующий проход уже не перепишет его молча.
+      expect(ticket!.editedAt).not.toBeNull();
+      // Происхождение не меняется: `origin` про то, откуда строка взялась, а не кто её касался.
+      expect(ticket!.origin).toBe('ocr');
+
+      const left = await ctx.db
+        .select()
+        .from(ctx.schema.wasteTicketProposals)
+        .where(sqlEq(ctx.schema.wasteTicketProposals.ticketId, ticketId));
+      expect(left).toHaveLength(0);
+    });
+
+    it('отклонение талон не трогает, а строку уносит', async () => {
+      const { requestId, ticketId } = await seedTicket(`Q${RUN}`);
+      await confirm(requestId, ticketId);
+      await seedProposal(ticketId, { number: `Q${RUN}NEW`.toUpperCase(), issuedOn: null, volumeM3: null });
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/waste-requests/${requestId}/tickets/${ticketId}/proposal/dismiss`,
+        headers: ctx.owner.auth,
+        payload: {},
+      });
+      expect(res.statusCode, res.body).toBe(200);
+
+      const [ticket] = await ctx.db
+        .select()
+        .from(ctx.schema.wasteTickets)
+        .where(sqlEq(ctx.schema.wasteTickets.id, ticketId));
+      // Человек уже сказал, что написано на бумаге, и новый проход этого не отменяет.
+      expect(ticket!.numberRaw).toBe(`Q${RUN}`.toUpperCase());
+      expect(ticket!.editedAt).toBeNull();
+    });
+
+    it('принимать нечего — отказ словами, а не тишиной', async () => {
+      const { requestId, ticketId } = await seedTicket(`R${RUN}`);
+      await confirm(requestId, ticketId);
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/waste-requests/${requestId}/tickets/${ticketId}/proposal/accept`,
+        headers: ctx.owner.auth,
+        payload: {},
+      });
+      expect(res.statusCode, res.body).toBe(400);
+    });
+
+    it('принятие, упирающееся в занятый номер, отбивается 409 и принимает причину', async () => {
+      // Предложение — не обход уникальности: бумага, чей номер уже занят, остаётся конфликтующей,
+      // кто бы её ни прочитал (Р13, Р27).
+      const busy = await seedTicket(`S${RUN}`);
+      await confirm(busy.requestId, busy.ticketId);
+
+      const other = await seedTicket(`T${RUN}`);
+      await confirm(other.requestId, other.ticketId);
+      await seedProposal(other.ticketId, { number: `S${RUN}`.toUpperCase(), issuedOn: null, volumeM3: null });
+
+      const conflict = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/waste-requests/${other.requestId}/tickets/${other.ticketId}/proposal/accept`,
+        headers: ctx.owner.auth,
+        payload: {},
+      });
+      expect(conflict.statusCode, conflict.body).toBe(409);
+
+      const withReason = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/waste-requests/${other.requestId}/tickets/${other.ticketId}/proposal/accept`,
+        headers: ctx.owner.auth,
+        payload: { duplicateOverrideReason: 'разные книжки перевозчика' },
+      });
+      expect(withReason.statusCode, withReason.body).toBe(200);
+      expect(withReason.json().duplicateOverrideApplied).toBe(true);
+    });
   });
 });

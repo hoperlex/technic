@@ -260,6 +260,111 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     expect(tickets.rows[0]!.needs_review_fields).toEqual([]);
   });
 
+  it('нетронутый талон новый проход переписывает целиком', async () => {
+    // Неподтверждённая строка и была предложением машины, а не решением человека: держаться за
+    // прежнее чтение, когда есть новое, незачем.
+    const { requestId, fileId } = await seed();
+    const jobId = await seedJob({ requestId, fileId });
+    await runTicketRecognitionJob(
+      deps({ engine: countingEngine().engine }) as never,
+      { requestId, fileId },
+      jobId,
+    );
+
+    const second = countingEngine([
+      { number: '30999', issuedOn: '2026-08-18', volumeM3: 25, workKind: 'removal', addressRaw: 'Автозаводская, лот 33' },
+    ]);
+    const jobId2 = await seedJob({ requestId, fileId });
+    await runTicketRecognitionJob(
+      deps({ engine: second.engine }) as never,
+      { requestId, fileId, forced: true },
+      jobId2,
+    );
+
+    const tickets = await admin.query<{ number_key: string; volume_m3: string }>(
+      `SELECT number_key, volume_m3 FROM waste_tickets WHERE request_id = $1`,
+      [requestId],
+    );
+    expect(tickets.rows).toHaveLength(1);
+    expect(tickets.rows[0]!.number_key).toBe('30999');
+    const proposals = await admin.query(
+      `SELECT 1 FROM waste_ticket_proposals p
+         JOIN waste_tickets wt ON wt.id = p.ticket_id WHERE wt.request_id = $1`,
+      [requestId],
+    );
+    // Переписанной строке предложение не нужно: новое чтение уже стоит в самом талоне.
+    expect(proposals.rows).toHaveLength(0);
+  });
+
+  it('подтверждённый талон новый проход не трогает, а кладёт предложение рядом', async () => {
+    const { requestId, fileId } = await seed();
+    const jobId = await seedJob({ requestId, fileId });
+    await runTicketRecognitionJob(
+      deps({ engine: countingEngine().engine }) as never,
+      { requestId, fileId },
+      jobId,
+    );
+    await admin.query(
+      `UPDATE waste_tickets SET status = 'confirmed', confirmed_at = now(),
+              confirmed_by = (SELECT created_by FROM waste_requests WHERE id = $1)
+        WHERE request_id = $1`,
+      [requestId],
+    );
+
+    const second = countingEngine([
+      { number: '30999', issuedOn: '2026-08-18', volumeM3: 25, workKind: 'removal', addressRaw: 'Автозаводская, лот 33' },
+    ]);
+    const jobId2 = await seedJob({ requestId, fileId });
+    await runTicketRecognitionJob(
+      deps({ engine: second.engine }) as never,
+      { requestId, fileId, forced: true },
+      jobId2,
+    );
+
+    const tickets = await admin.query<{ number_key: string; status: string }>(
+      `SELECT number_key, status FROM waste_tickets WHERE request_id = $1`,
+      [requestId],
+    );
+    // Подтверждённая строка занимает номер и осталась как была: перезапись стёрла бы работу
+    // человека, ради которой кнопку и нажимают.
+    expect(tickets.rows[0]).toMatchObject({ number_key: '30476', status: 'confirmed' });
+
+    const proposals = await admin.query<{ number_raw: string; volume_m3: string }>(
+      `SELECT p.number_raw, p.volume_m3 FROM waste_ticket_proposals p
+         JOIN waste_tickets wt ON wt.id = p.ticket_id WHERE wt.request_id = $1`,
+      [requestId],
+    );
+    expect(proposals.rows).toHaveLength(1);
+    expect(proposals.rows[0]!.number_raw).toBe('30999');
+  });
+
+  it('повтор того же чтения предложения не заводит: «то же самое» — не новость', async () => {
+    const { requestId, fileId } = await seed();
+    const jobId = await seedJob({ requestId, fileId });
+    await runTicketRecognitionJob(
+      deps({ engine: countingEngine().engine }) as never,
+      { requestId, fileId },
+      jobId,
+    );
+    await admin.query(`UPDATE waste_tickets SET status = 'confirmed', confirmed_at = now(),
+              confirmed_by = (SELECT created_by FROM waste_requests WHERE id = $1)
+        WHERE request_id = $1`, [requestId]);
+
+    const jobId2 = await seedJob({ requestId, fileId });
+    await runTicketRecognitionJob(
+      deps({ engine: countingEngine().engine }) as never,
+      { requestId, fileId, forced: true },
+      jobId2,
+    );
+
+    const proposals = await admin.query(
+      `SELECT 1 FROM waste_ticket_proposals p
+         JOIN waste_tickets wt ON wt.id = p.ticket_id WHERE wt.request_id = $1`,
+      [requestId],
+    );
+    expect(proposals.rows).toHaveLength(0);
+  });
+
   it('ГОНКА: откат в зазоре перед записью — задача ничего не пишет', async () => {
     const { requestId, fileId } = await seed();
     const { engine, calls } = countingEngine();

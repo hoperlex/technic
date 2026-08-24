@@ -4,9 +4,11 @@ import { z } from 'zod';
 import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm';
 import {
   acceptWasteTicketCheckSchema,
+  acceptWasteTicketProposalSchema,
   arbitrateWasteTicketBlindCheckSchema,
   confirmWasteTicketSchema,
   createWasteTicketSchema,
+  dismissWasteTicketProposalSchema,
   dismissWasteTicketSchema,
   updateWasteTicketSchema,
   WASTE_TICKET_CHECK_CODES,
@@ -760,6 +762,135 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.ticket_dismiss',
+        entityType: 'waste_request',
+        entityId: request.id,
+        metadata: { ticketId: req.params.ticketId },
+      });
+      return { ok: true };
+    },
+  );
+
+  /**
+   * Принять предложение перераспознавания (Р13): значения переезжают в талон, пишется `edited_at`,
+   * строка предложения уходит.
+   *
+   * Значений в теле НЕТ: они лежат снимком в самом предложении. Присылай их клиент — принять можно
+   * было бы что угодно под видом «так прочитала машина», и метрика качества считала бы ручной ввод
+   * машинным чтением.
+   *
+   * Номер идёт тем же путём, что и обычная правка (Р27): замок области, сброс клапана и повторная
+   * проверка конфликта. Предложение — не обход уникальности: бумага, чей номер уже занят, остаётся
+   * конфликтующей, кто бы её ни прочитал.
+   */
+  r.post(
+    '/:id/tickets/:ticketId/proposal/accept',
+    { ...canReview, schema: { params: ticketParams, body: acceptWasteTicketProposalSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const request = await loadRequest(req.params.id);
+      assertWasteObjectScope(p, request.objectId);
+      assertOperatorScope(p, request.operatorCounterpartyId);
+
+      const reason = req.body.duplicateOverrideReason?.trim() ?? '';
+      const result = await db.transaction(async (tx) => {
+        const ticket = await loadTicket(tx, request.id, req.params.ticketId);
+        const [proposal] = await tx
+          .select()
+          .from(wasteTicketProposals)
+          .where(eq(wasteTicketProposals.ticketId, ticket.id))
+          .limit(1);
+        if (!proposal) throw err.badRequest('Предложения нет: принимать нечего');
+
+        const numberKey = proposal.numberRaw ? wasteTicketNumberKey(proposal.numberRaw) : '';
+        const numberChanged = numberKey !== ticket.numberKey;
+        let overrideUsed = false;
+        if (numberChanged && ticket.status === 'confirmed') {
+          await lockNumberArea(tx, ticket.operatorCounterpartyId, numberKey);
+          const neighbour = await findNumberConflict(tx, {
+            ticketId: ticket.id,
+            operatorId: ticket.operatorCounterpartyId,
+            numberKey,
+          });
+          if (neighbour && !reason) throw numberConflictError(p, neighbour, proposal.numberRaw);
+          overrideUsed = !!neighbour && !!reason;
+        }
+
+        await tx
+          .update(wasteTickets)
+          .set({
+            numberRaw: proposal.numberRaw,
+            numberKey,
+            numberFuzzy: proposal.numberRaw ? wasteTicketNumberFuzzy(proposal.numberRaw) : '',
+            issuedOn: proposal.issuedOn,
+            volumeM3: proposal.volumeM3,
+            workKind: proposal.workKind,
+            addressRaw: proposal.addressRaw,
+            // Спорных полей после принятия не остаётся: человек согласился с чтением целиком.
+            needsReviewFields: [],
+            candidates: [],
+            // Принятие — правка (Р13): талон помечается тронутым, и следующий проход уже не
+            // перепишет его молча. `origin` при этом не меняется — он про происхождение строки,
+            // а не про то, кто последним её касался.
+            editedAt: new Date(),
+            editedBy: p.id,
+            ...(numberChanged
+              ? { duplicateOverrideAt: null, duplicateOverrideBy: null, duplicateOverrideReason: '' }
+              : {}),
+            ...(overrideUsed
+              ? {
+                  duplicateOverrideAt: new Date(),
+                  duplicateOverrideBy: p.id,
+                  duplicateOverrideReason: reason,
+                }
+              : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(wasteTickets.id, ticket.id));
+        await tx.delete(wasteTicketProposals).where(eq(wasteTicketProposals.ticketId, ticket.id));
+        return { number: proposal.numberRaw, overrideUsed };
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'waste_request.ticket_proposal_accept',
+        entityType: 'waste_request',
+        entityId: request.id,
+        metadata: {
+          ticketId: req.params.ticketId,
+          number: result.number,
+          duplicateOverride: result.overrideUsed || undefined,
+        },
+      });
+      return { ok: true, duplicateOverrideApplied: result.overrideUsed };
+    },
+  );
+
+  /**
+   * Отклонить предложение (Р13). Талон не трогается вовсе: человек уже сказал, что написано на
+   * бумаге, и новый проход этого не отменяет. Уходит только строка предложения — иначе она висела
+   * бы вечно и держала бы попытки, на которые ссылается.
+   */
+  r.post(
+    '/:id/tickets/:ticketId/proposal/dismiss',
+    { ...canReview, schema: { params: ticketParams, body: dismissWasteTicketProposalSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const request = await loadRequest(req.params.id);
+      assertWasteObjectScope(p, request.objectId);
+      assertOperatorScope(p, request.operatorCounterpartyId);
+
+      const removed = await db.transaction(async (tx) => {
+        const ticket = await loadTicket(tx, request.id, req.params.ticketId);
+        return tx
+          .delete(wasteTicketProposals)
+          .where(eq(wasteTicketProposals.ticketId, ticket.id))
+          .returning({ ticketId: wasteTicketProposals.ticketId });
+      });
+      if (!removed[0]) throw err.badRequest('Предложения нет: отклонять нечего');
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'waste_request.ticket_proposal_dismiss',
         entityType: 'waste_request',
         entityId: request.id,
         metadata: { ticketId: req.params.ticketId },

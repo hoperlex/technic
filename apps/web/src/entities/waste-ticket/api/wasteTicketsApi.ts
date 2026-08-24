@@ -1,5 +1,6 @@
 import type {
   AcceptWasteTicketCheckInput,
+  AcceptWasteTicketProposalInput,
   ArbitrateWasteTicketBlindCheckInput,
   ConfirmWasteTicketInput,
   CreateWasteTicketInput,
@@ -91,6 +92,23 @@ export const wasteTicketsApi = {
     apiFetch<{ ok: boolean }>(
       `/waste-requests/${requestId}/blind-checks/${blindCheckId}/arbitrate`,
       { method: 'POST', body },
+    ),
+
+  /**
+   * Принять предложение перераспознавания (Р13). Значений в теле нет: они лежат снимком в самом
+   * предложении, и присылай их клиент — принять можно было бы что угодно под видом «так прочитала
+   * машина».
+   */
+  acceptProposal: (requestId: string, ticketId: string, body: AcceptWasteTicketProposalInput) =>
+    apiFetch<{ ok: boolean; duplicateOverrideApplied: boolean }>(
+      `/waste-requests/${requestId}/tickets/${ticketId}/proposal/accept`,
+      { method: 'POST', body },
+    ),
+
+  dismissProposal: (requestId: string, ticketId: string) =>
+    apiFetch<{ ok: boolean }>(
+      `/waste-requests/${requestId}/tickets/${ticketId}/proposal/dismiss`,
+      { method: 'POST', body: {} },
     ),
 
   /**
