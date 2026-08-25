@@ -1,4 +1,6 @@
 import type {
+  AssignmentChangeDto,
+  AssignmentPreviewDto,
   DriverDto,
   FreightTransportRequestDto,
   SpecialEquipmentRequestDto,
@@ -8,6 +10,7 @@ import type {
   VehicleRequestDto,
   VehicleRequestSummaryDto,
   VehicleRequestTripDto,
+  RequestAssignmentHistoryDto,
   WeeklyRequestItemDto,
   WeeklyVehicleRequestDto,
 } from '@technic/contracts';
@@ -291,7 +294,17 @@ export function vehicleFeed(
 export function vehicleSummary(
   overrides: Partial<VehicleRequestSummaryDto> = {},
 ): VehicleRequestSummaryDto {
-  return { new: 0, confirmed: 0, done: 0, cancelled: 0, awaitingApproval: 0, ...overrides };
+  // Счётчик заводится на каждый статус перечня: `completed` появился вместе со статусом
+  // «Завершена», и без него тип сводки не собирается.
+  return {
+    new: 0,
+    confirmed: 0,
+    done: 0,
+    completed: 0,
+    cancelled: 0,
+    awaitingApproval: 0,
+    ...overrides,
+  };
 }
 
 /**
@@ -340,4 +353,89 @@ export function machinist(overrides: Partial<DriverDto> = {}): DriverDto {
     deletedAt: null,
     ...overrides,
   } as DriverDto;
+}
+
+/**
+ * Ответ предпросмотра смены техники (`POST /vehicle-requests/:id/assignment/preview`, волна 4a).
+ *
+ * По умолчанию — **пустые** последствия: бумага не тронется, подписи останутся, пробелов нет. Такую
+ * смену окно отправляет сразу, вторым экраном не задерживая, поэтому пустой ответ — это ровно тот
+ * фон, на котором проверяется всё остальное окно подбора: форма, машинист, блок коррекции. Где
+ * предметом проверки становятся сами последствия, их называют полями `overrides`.
+ */
+export function assignmentPreview(
+  overrides: Partial<AssignmentPreviewDto> = {},
+): AssignmentPreviewDto {
+  return {
+    plan: { cancel: [], issue: [] },
+    requiredAnchors: [],
+    requiredVehicleResolution: null,
+    blockedShiftDays: [],
+    clearedShiftDays: [],
+    clearedShiftsFingerprint: null,
+    requiredUnlocks: [],
+    unlockFingerprint: null,
+    issues: [],
+    operationRequirement: null,
+    asOf: '2026-08-24',
+    fingerprint: 'fp-preview',
+    ...overrides,
+  };
+}
+
+/**
+ * Строка истории назначения (`GET /vehicle-requests/:id/assignment-changes`, этап 6 плана
+ * `docs/assignment-periods-plan.md`).
+ *
+ * По умолчанию — начальное решение перевода в работу: машина и человек одной группой и одной
+ * датой. Именно с него начинается история любой заявки, и от него сценарии отсчитывают остальное.
+ * Строка шкалы задаётся полем `dimension`: у `vehicle` пуст `driver`, у `driver` — `vehicle`, и
+ * четвёртого сочетания не бывает (Р3).
+ */
+export function assignmentChange(
+  overrides: Partial<AssignmentChangeDto> = {},
+): AssignmentChangeDto {
+  return {
+    id: 'ch-1',
+    effectiveDate: '2026-08-10',
+    dimension: 'driver',
+    vehicle: null,
+    driver: { state: 'set', personId: 'p-machinist' },
+    origin: 'assignment',
+    changeGroupId: 'g-1',
+    correctionId: null,
+    createdAt: '2026-08-01T10:00:00.000Z',
+    createdByName: 'Диспетчеров Д. П.',
+    supersededKind: null,
+    supersededAt: null,
+    supersededByName: null,
+    ...overrides,
+  };
+}
+
+/**
+ * История назначения заявки целиком — то, из чего портал строит «Состав по датам».
+ *
+ * По умолчанию `ready`: история полна, и на этом фоне проверяется всё остальное окно. Неполноту
+ * («истории нет» против «история есть, но за какие-то дни человек неизвестен») сценарий задаёт
+ * сам — это разные ответы и разные действия, и путать их нельзя (Р20, Р26).
+ */
+export function assignmentHistory(
+  overrides: Partial<RequestAssignmentHistoryDto> = {},
+): RequestAssignmentHistoryDto {
+  return {
+    state: 'ready',
+    validatedOn: '2026-08-24',
+    dirty: false,
+    changes: [
+      assignmentChange({
+        id: 'ch-v1',
+        dimension: 'vehicle',
+        vehicle: { vehicleId: 'v-1', name: 'Ивановец КС-45717 · Е646СК799' },
+        driver: null,
+      }),
+      assignmentChange(),
+    ],
+    ...overrides,
+  };
 }

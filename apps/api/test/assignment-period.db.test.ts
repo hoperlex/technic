@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { useReadModeDatabase } from './assignment-read-mode';
+import { byReadMode, describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 import {
   moscowDateKeyOf,
   shiftDateKey,
@@ -21,15 +21,29 @@ import type * as Esm2 from '../src/services/waybill-esm2';
 /*
  * ФАЙЛУ НУЖНА СВОЯ БАЗА. Каждая команда здесь берёт управляющую строку модуля `FOR SHARE` (шаг 0
  * канона), а соседние файлы модуля эту же строку меняют и замораживают (план Ю27, Ю30). Заводит и
- * сносит базу механика `useReadModeDatabase`; режим чтения при этом остаётся тем, каким его
- * привозит миграция `0167`, — `legacy`.
+ * сносит базу механика `useReadModeDatabase`, она же и двигает на ней режим чтения: два блока
+ * файла идут двумя прогонами, а вне их режим остаётся тем, каким его привозит миграция `0167`, —
+ * `legacy`.
  *
- * ПОЧЕМУ ФАЙЛ НЕ ХОДИТ ДВУМЯ РЕЖИМАМИ. Своего поведения по режиму у этой двери нет: дремлющих
- * записей она не заводит (Р24 гасит, а не пишет), а весь разговор с режимом ведёт бэкстоп чужой
- * двери — он же и проверяется двумя прогонами в `assignment-backstop.db.test.ts`. Заводить здесь
- * второй набор ожиданий значило бы проверять чужой предмет: в `history` сокращение с гашением
- * упирается в расхождение хвоста (Р31), которое оно само же и создаёт, — и это поведение бэкстопа,
- * а не правки срока.
+ * ЧТО У ФАЙЛА ЗАВИСИТ ОТ РЕЖИМА ЧТЕНИЯ. Два блока из шести — «продление и сокращение» и «права по
+ * исходу»: в них дверь доходит до шага 12, а шаг 12 исполняется **по режиму** (§10, этап 5). До
+ * cutover бумагу правки срока ведёт недельная сверка: она знает **одну** пару «машина + машинист»
+ * — ту, что стоит в денормализации заявки, — и печатает её во всех листах. После переключения тот
+ * же шаг исполняет отрезковый план, и пару он берёт из истории на каждый отрезок. Разошлись они
+ * там, где эти два источника не совпадают: после гашения хвостовой группы денормализация ещё
+ * показывает машину хвоста (Р17 её не двигает), а история за срок — уже машину начала.
+ *
+ * Оба набора ожиданий написаны **до** cutover: в окно `all_frozen` чинить набор нечем (У1).
+ *
+ * ЧЕГО В ЭТИХ ДВУХ ПРОГОНАХ НЕТ. Бэкстопа: разговор с ним ведёт чужая дверь, и проверяется он
+ * двумя прогонами в `assignment-backstop.db.test.ts`. Сокращение с гашением упирается в
+ * расхождение хвоста (Р31) не по правилу правки срока, а по правилу бэкстопа — и с Ю86 больше не
+ * упирается вовсе: направление правки дверь называет явно (`opensTerm`).
+ *
+ * ОСТАЛЬНЫЕ ЧЕТЫРЕ БЛОКА ИДУТ ОДНИМ ПРОГОНОМ. Предпросмотр ничего не пишет, подтверждение гашения
+ * отказывает до шага 12, повтор по ключу возвращает прежний результат, а у заказа без техники
+ * бумаги нет вовсе: во всех четырёх шаг 12 исполняет пустой план, и две половины ожиданий
+ * совпадали бы навсегда, а не до переключения.
  */
 
 /**
@@ -438,14 +452,35 @@ async function rowsOf(tx: SceneTx, requestId: string) {
 
 async function sheetsOf(tx: SceneTx, requestId: string) {
   return (
-    await tx.execute<{ id: string; period_from: string; period_to: string; status: string }>(sql`
-      SELECT id, period_from, period_to, status FROM waybills
-       WHERE source_request_id = ${requestId} ORDER BY period_from`)
+    await tx.execute<{
+      id: string;
+      period_from: string;
+      period_to: string;
+      vehicle_id: string;
+      driver_person_id: string;
+      status: string;
+    }>(sql`
+      SELECT id, period_from, period_to, vehicle_id, driver_person_id, status FROM waybills
+       WHERE source_request_id = ${requestId} ORDER BY period_from, id`)
   ).rows;
 }
 
 const activeSheets = (rows: Awaited<ReturnType<typeof sheetsOf>>) =>
   rows.filter((row) => row.status !== 'cancelled');
+
+/**
+ * Действующая бумага **составом**: границы, машина, человек.
+ *
+ * Числом и границами здесь не обойтись. Прежняя, недельная сверка печатает во всех листах одну
+ * пару «машина + машинист» — ту, что стоит в денормализации заявки, — а отрезковый план берёт её
+ * из истории на каждый отрезок. У сокращения, погасившего хвостовую группу, это разные машины:
+ * денормализация правкой срока не двигается (Р17), а история за концом срока уже погашена. Тест,
+ * сверяющий только `period_from—period_to`, обе картины считает одинаковыми.
+ */
+const compositionOf = (rows: Awaited<ReturnType<typeof sheetsOf>>) =>
+  activeSheets(rows).map(
+    (row) => `${row.period_from}—${row.period_to}|${row.vehicle_id}|${row.driver_person_id}`,
+  );
 
 async function journalOf(tx: SceneTx, requestId: string) {
   return (
@@ -523,7 +558,7 @@ describe.skipIf(!DB_URL)('правка срока: предпросмотр (Р2
 
 // ── Продление против сокращения: последствия разные ──
 
-describe.skipIf(!DB_URL)('правка срока: продление и сокращение (Д2, Е3)', () => {
+describeReadModes(readMode, 'правка срока: продление и сокращение (Д2, Е3)', (mode) => {
   it('продление добавляет неделю бумаги, истории не трогает и журнала не заводит', async () => {
     await inScene({ status: 'confirmed', issueSheets: true }, async (tx, scene) => {
       const before = await sheetsOf(tx, scene.requestId);
@@ -544,13 +579,109 @@ describe.skipIf(!DB_URL)('правка срока: продление и сок�
       expect(outcome.paper?.esm2.issued).toHaveLength(1);
 
       expect(await termOf(tx, scene.requestId)).toMatchObject({ date_to: EXTENDED_TO });
-      expect(activeSheets(await sheetsOf(tx, scene.requestId))).toHaveLength(3);
+      /*
+       * Состав, а не число, — и здесь обе половины совпадают намеренно. Продление вперёд ничего не
+       * режет: у заявки одна машина и один машинист на весь срок, и недельный разрез с отрезковым
+       * дают один и тот же документ. Это и есть паритет, которого гейт совместимости требует до
+       * переключения (Б1): расходиться исполнители обязаны только там, где недельная единица врёт.
+       */
+      expect(compositionOf(await sheetsOf(tx, scene.requestId))).toEqual([
+        `${PREV}—${shiftDateKey(PREV, 6)}|${scene.vehicleA}|${scene.personA}`,
+        `${MONDAY}—${TERM_TO}|${scene.vehicleA}|${scene.personA}`,
+        `${NEXT}—${EXTENDED_TO}|${scene.vehicleA}|${scene.personA}`,
+      ]);
       // История не тронута: продление её не пишет вовсе — оно лишь открывает дни.
       expect((await rowsOf(tx, scene.requestId)).every((r) => r.superseded_at === null)).toBe(true);
       expect(await journalOf(tx, scene.requestId)).toHaveLength(0);
       // Версия поднимается **любым** успешным выполнением, включая исход `none` (§8, шаг 14).
       expect(await versionOf(tx, scene.requestId)).toBe(1);
     });
+  });
+
+  it('продление задним числом: лист выходит на отрезок состава, а недельная сверка молчит', async () => {
+    /*
+     * Продление в **прошедшую** неделю. Срок кончился в прошлый вторник, и его двигают на прошлую
+     * же пятницу: исход `crew` (Р32, Е3) — правка утверждает что-то о днях, которые уже прошли, и
+     * потому спрашивает причину, право и глубину.
+     *
+     * Со среды прошлой недели по истории работает другая машина с другим машинистом. Это и есть
+     * то, чего недельная сверка выразить не может: единица у неё — календарная неделя, а неделя
+     * уже занята запертым листом за вторник (Р21). Отрезковый план единицей считает отрезок
+     * постоянного состава, и открытые продлением дни получают **свой** документ.
+     */
+    const splitAt = shiftDateKey(PREV, 3);
+    const extendedTo = shiftDateKey(PREV, 4);
+    await inScene(
+      { status: 'done', dateTo: shiftDateKey(PREV, 1), splitAt, issueSheets: true },
+      async (tx, scene) => {
+        const before = compositionOf(await sheetsOf(tx, scene.requestId));
+        expect(before).toEqual([
+          `${PREV}—${shiftDateKey(PREV, 1)}|${scene.vehicleB}|${scene.personA}`,
+        ]);
+
+        const command: PeriodCommand = { version: 0, dateTo: extendedTo };
+        const preview = await previewPeriod(tx, scene, DISPATCHER, command);
+        expect(preview.operationRequirement).toMatchObject({ kind: 'crew' });
+        /*
+         * Предпросмотр в **обоих** режимах показывает один и тот же отрезковый план: дверь считает
+         * его всегда, режим решает не «считать ли», а «исполнять ли». До переключения обещание
+         * шире исполнения — недельная сверка этот отрезок не выпишет, — и ровно это расхождение
+         * cutover и закрывает.
+         */
+        expect(preview.plan.issue.map((i) => `${i.from}—${i.to}`)).toEqual([
+          `${splitAt}—${extendedTo}`,
+        ]);
+        // Подтверждать надо и пустое множество разблокировок (Д4): лист за вторник в область
+        // сверки не попал — область продления это только открытые им дни (Р11).
+        expect(preview.unlockFingerprint).not.toBeNull();
+        expect(preview.requiredUnlocks).toEqual([]);
+
+        const outcome = await runPeriod(tx, scene, DISPATCHER, {
+          ...armed(command, preview, {
+            operation: {
+              operationId: randomUUID(),
+              reason: 'заказчик задержал технику до пятницы',
+            },
+          }),
+          unlockFingerprint: preview.unlockFingerprint!,
+        });
+        expect(outcome.repeated).toBe(false);
+        expect(await termOf(tx, scene.requestId)).toMatchObject({ date_to: extendedTo });
+
+        expect(compositionOf(await sheetsOf(tx, scene.requestId))).toEqual(
+          byReadMode(mode, {
+            /*
+             * Недельная сверка не выписала ничего. Не «забыла»: неделю она считает занятой —
+             * действующий лист за вторник в ней уже есть, а переоформить его нельзя, он отработан
+             * и в область сверки не назван. Заказ живёт с новым сроком и без бумаги за открытые
+             * дни: тот самый исход, ради устранения которого шаг 12 и переводят на отрезки.
+             */
+            legacy: before,
+            /*
+             * Отрезковый план выписывает документ ровно на новый отрезок — со среды по пятницу, на
+             * машину и человека, которых история этих дней и называет. Лист за вторник при этом не
+             * тронут: он вне области, и переоформлять его никто не просил.
+             */
+            history: [...before, `${splitAt}—${extendedTo}|${scene.vehicleB}|${scene.personB}`],
+          }),
+        );
+        expect(outcome.paper?.esm2.issued).toHaveLength(
+          byReadMode(mode, { legacy: 0, history: 1 }),
+        );
+
+        /*
+         * Среда остаётся без бумаги в обоих режимах, и это не пропуск: её накрыл бы только
+         * переоформленный лист за вторник, а он вне области сверки. Р11 запрещает трогать
+         * документы, которых человек в предпросмотре не видел, — и запрет здесь сильнее удобства.
+         */
+        const middle = shiftDateKey(PREV, 2);
+        expect(
+          activeSheets(await sheetsOf(tx, scene.requestId)).some(
+            (row) => row.period_from <= middle && row.period_to >= middle,
+          ),
+        ).toBe(false);
+      },
+    );
   });
 
   it('сокращение гасит группу за новым концом срока — машину вместе с её машинистом', async () => {
@@ -597,8 +728,18 @@ describe.skipIf(!DB_URL)('правка срока: продление и сок�
           reason: 'заказчик отпустил технику раньше',
         });
         expect(await termOf(tx, scene.requestId)).toMatchObject({ date_to: TERM_TO });
-        // Бумага следующей недели сгорела вместе с днями, которых у заказа больше нет.
-        expect(activeSheets(await sheetsOf(tx, scene.requestId))).toHaveLength(2);
+        /*
+         * Бумага следующей недели сгорела вместе с днями, которых у заказа больше нет, — и обе
+         * оставшиеся недели остались как были, **включая машину хвоста в них**. Область сверки
+         * (Р11) накрывает только вынесенные за срок дни, и переписывать соседние документы дверь
+         * не имеет права: человек их в предпросмотре не видел. Поэтому половины и совпадают —
+         * расхождение исполнителей начинается там, где документ попадает в область (см. блок
+         * «права по исходу»).
+         */
+        expect(compositionOf(await sheetsOf(tx, scene.requestId))).toEqual([
+          `${PREV}—${shiftDateKey(PREV, 6)}|${scene.vehicleB}|${scene.personA}`,
+          `${MONDAY}—${TERM_TO}|${scene.vehicleB}|${scene.personA}`,
+        ]);
         // Р17: назначение — «чем заявка закрыта сейчас» — правкой срока не двигается, и хвост
         // истории после гашения **законно** расходится с ним (Р30, Р31).
         expect(await assignmentOf(tx, scene.requestId)).toBe(scene.vehicleB);
@@ -741,7 +882,7 @@ describe.skipIf(!DB_URL)('правка срока: повтор по ключу 
 
 // ── Р32, Е3: права по посчитанному исходу ──
 
-describe.skipIf(!DB_URL)('правка срока: права по исходу (Р32, Е3)', () => {
+describeReadModes(readMode, 'правка срока: права по исходу (Р32, Е3)', (mode) => {
   it('сокращение, гасящее отработанную группу, спрашивает право коррекции', async () => {
     const splitAt = shiftDateKey(PREV, 2);
     await inScene(
@@ -780,13 +921,26 @@ describe.skipIf(!DB_URL)('правка срока: права по исходу 
           (row) => row.superseded_kind === 'cancelled',
         );
         expect(cancelled.map((row) => row.effective_date)).toEqual([splitAt, splitAt]);
-        // Бумага сошлась с новым сроком: на укороченную первую неделю выписан новый номер, всё
-        // остальное сгорело.
-        expect(
-          activeSheets(await sheetsOf(tx, scene.requestId)).map(
-            (s) => `${s.period_from}—${s.period_to}`,
-          ),
-        ).toEqual([`${PREV}—${shiftDateKey(splitAt, -1)}`]);
+        /*
+         * Бумага сошлась с новым сроком: на укороченную первую неделю выписан новый номер, всё
+         * остальное сгорело. Границы у обоих исполнителей одни и те же — а вот **машина в листе**
+         * разная, и это то самое расхождение, ради которого разрез и затеян.
+         *
+         * Недельная сверка печатает пару из денормализации заявки, а та после гашения хвостовой
+         * группы всё ещё показывает машину хвоста: правка срока назначения не двигает (Р17). То
+         * есть лист за отработанные дни выписывается на машину, которой в эти дни у заказа по
+         * истории не было. Отрезковый план берёт машину из истории отрезка — и печатает ту,
+         * которая эти два дня и работала.
+         *
+         * Тест, сверяющий только `period_from—period_to`, обе картины считает одинаковыми: границы
+         * совпадают до дня. Поэтому здесь и стоит состав.
+         */
+        expect(compositionOf(await sheetsOf(tx, scene.requestId))).toEqual([
+          byReadMode(mode, {
+            legacy: `${PREV}—${shiftDateKey(splitAt, -1)}|${scene.vehicleB}|${scene.personA}`,
+            history: `${PREV}—${shiftDateKey(splitAt, -1)}|${scene.vehicleA}|${scene.personA}`,
+          }),
+        ]);
       },
     );
   });

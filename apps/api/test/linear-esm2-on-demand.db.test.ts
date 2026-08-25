@@ -310,6 +310,37 @@ function ru(key: string): string {
   return `${d}.${m}.${y}`;
 }
 
+
+/**
+ * Сменить технику заказа так, как это делает портал: сперва спросить последствия, потом послать
+ * команду с их отпечатком.
+ *
+ * До переключения чтения сервер отпечатка не требует, и старый вызов работал. В `history` он
+ * обязателен (`client_upgrade_required`) — иначе окно подтвердило бы человеку то, чего не видело.
+ * Сцена делает ровно то, что будет делать портал, а не обходит правило.
+ */
+async function changeVehicle(
+  requestId: string,
+  payload: Record<string, unknown>,
+): Promise<ReturnType<typeof ctx.app.inject> extends Promise<infer R> ? R : never> {
+  const preview = await ctx.app.inject({
+    method: 'POST',
+    url: `/api/v1/vehicle-requests/${requestId}/assignment/preview`,
+    headers: ctx.auth,
+    payload,
+  });
+  const fingerprint =
+    preview.statusCode === 200
+      ? (preview.json<{ fingerprint?: string }>().fingerprint ?? undefined)
+      : undefined;
+  return ctx.app.inject({
+    method: 'PATCH',
+    url: `/api/v1/vehicle-requests/${requestId}/assignment`,
+    headers: ctx.auth,
+    payload: fingerprint ? { ...payload, previewFingerprint: fingerprint } : payload,
+  });
+}
+
 describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейного заказа (живая схема)', () => {
   beforeAll(async () => {
     // Окружение и своя база готовы хуком механики (`useReadModeDatabase`).
@@ -644,11 +675,9 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       expect(second.statusCode, second.body).toBe(200);
 
       // Машиниста в теле нет: меняли технику, а не человека.
-      const changed = await ctx.app.inject({
-        method: 'PATCH',
-        url: `/api/v1/vehicle-requests/${request.id}/assignment`,
-        headers: ctx.auth,
-        payload: { vehicleId: ctx.otherVehicleId, version: second.json().version },
+      const changed = await changeVehicle(request.id, {
+        vehicleId: ctx.otherVehicleId,
+        version: second.json().version,
       });
       expect(changed.statusCode, changed.body).toBe(200);
 
@@ -695,11 +724,9 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       const first = await issueEsm2(request.id, { weekOf: ctx.dateFrom, version: request.version });
       expect(first.statusCode, first.body).toBe(200);
 
-      const changed = await ctx.app.inject({
-        method: 'PATCH',
-        url: `/api/v1/vehicle-requests/${request.id}/assignment`,
-        headers: ctx.auth,
-        payload: { vehicleId: ctx.otherVehicleId, version: first.json().version },
+      const changed = await changeVehicle(request.id, {
+        vehicleId: ctx.otherVehicleId,
+        version: first.json().version,
       });
       expect(changed.statusCode, changed.body).toBe(200);
 

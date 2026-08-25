@@ -287,9 +287,25 @@ import {
 import { ensureAssignmentHistory } from '../services/assignment-ensure';
 import {
   historyIsAuthoritative,
+  historyIsAuthoritativeSql,
   requireOpenDoor,
   type AssignmentModeSnapshot,
 } from '../services/assignment-mode';
+/*
+ * Читатели денормализации (план Ф3, С1; этап 5). Два из четырёх живут в этом файле: отбор «где
+ * ходила эта машина» (`requestVehicleWhere`, четыре применения) и срез «Техника на площадке»
+ * (`dayVehicle`), к ним же примыкает контакт водителя. Правило у всех одно и лежит в общем модуле:
+ * при `read_mode = history` отвечает свёртка истории, при `legacy` — назначение, а заявке без
+ * действующей истории — назначение в обоих режимах.
+ */
+import {
+  hasVehicleHistorySql,
+  readActualChanges,
+  readAssignmentStatesOn,
+  readHistoryIsAuthoritative,
+  vehicleWorkedByHistorySql,
+} from '../services/assignment-read';
+import { assignmentStateOn } from '../services/assignment-history';
 /*
  * Предпросмотр и отпечаток **старой двери смены техники** (план §8, «новая ручка у старой двери»).
  *
@@ -369,7 +385,6 @@ import {
   waybillRequirementFor,
 } from '../services/waybill-issue';
 import {
-  auditEsm2Sync,
   // Тот же вход и тот же план, что у боевой сверки, но без единой записи (§5.4): им предпросмотр
   // отвечает «что случится», а боевая ручка сверяет, что обещанное ещё верно.
   buildEsm2SyncPlan,
@@ -703,11 +718,30 @@ const dayRoutes = alias(vehicleRoutes, 'day_routes');
  * `work_date IS NOT NULL` — не украшение: без него условие поймало бы и грузовую строку состава, то
  * есть заявку, которая просто едет в рейсе этой машины, — а это не «машина работала по заказу», это
  * «машина везёт груз», и спрашивают про это журналом листов и «Маршрутами».
+ *
+ * ИСТОРИЯ ЗАМЕНЯЕТ ПЕРВУЮ ПОЛОВИНУ УСЛОВИЯ, А НЕ ВСЁ ЦЕЛИКОМ (Ф3, этап 5). После разреза срока
+ * назначение повторяет **последнее** vehicle-изменение (Р17), и машина, отработавшая январь с
+ * февралём, не находится ни одним из четырёх мест применения: в назначении стоит мартовская, а
+ * рейсов у нелинейного заказа нет вовсе. Поэтому в режиме `history` у заявки с историей вместо
+ * равенства назначению спрашивается пересечение отрезков истории со сроком
+ * ([assignment-read.ts](../services/assignment-read.ts)).
+ *
+ * Вторая половина — дни линейного заказа — остаётся в обеих ветвях нетронутой, и это не осторожность:
+ * у линейной заявки история хранит машину по умолчанию, а работали днями другие единицы (ADR 0100
+ * §12). Замени мы и её — отбор перестал бы находить то единственное, ради чего он и заводился.
+ *
+ * Заявка без действующей истории машины отвечает денормализацией в обоих режимах: грузоперевозки,
+ * новые и отменённые заказы истории не имеют вовсе, а `empty` внутри популяции означает «история
+ * молчит», а не «никто не работал» (разбор — в шапке `assignment-read.ts`).
  */
 function requestVehicleWhere(vehicleId: string | undefined): SQL | undefined {
   if (!vehicleId) return undefined;
+  const request = sql`${vehicleRequests.id}`;
   return or(
-    eq(vehicleRequestAssignments.vehicleId, vehicleId),
+    sql`CASE WHEN ${historyIsAuthoritativeSql()} AND ${hasVehicleHistorySql(request)}
+        THEN ${vehicleWorkedByHistorySql(request, vehicleId)}
+        ELSE ${eq(vehicleRequestAssignments.vehicleId, vehicleId)}
+      END`,
     exists(
       db
         .select({ one: sql`1` })
@@ -818,6 +852,139 @@ async function dayVehiclesByRequestIds(
     });
   }
   return map;
+}
+
+/**
+ * Машина и человек дня у **обычного** заказа — по свёртке истории назначения (Ф3, этап 5).
+ *
+ * ЗАЧЕМ ЭТО ПОЯВИЛОСЬ. Срез спрашивал машину дня только у линейного заказа, и обоснование опиралось
+ * ровно на посылку, которую фича отменяет: «у прочих машина стоит на площадке весь срок, и ответ у
+ * них один — назначение». После разреза срока ответов у обычного заказа столько же, сколько
+ * отрезков, а назначение повторяет последнее vehicle-изменение (Р17) — то есть на январской дате
+ * называет мартовскую машину.
+ *
+ * ЧТО ОТДАЁТСЯ, А ЧТО НЕТ. В карту попадает только заявка, у которой история **называет машину на
+ * этот день**. Заявка без действующей истории и заявка, чья история про этот день молчит, из карты
+ * выпадают, и колонка отвечает назначением, как в `legacy`, — то самое общее правило `empty` из
+ * шапки [assignment-read.ts](../services/assignment-read.ts). Пустой машины (`null`) этот источник
+ * не отдаёт вовсе: «на этот день машина не назначена» — ответ про нераспланированный день линейного
+ * заказа, и у стоящего на площадке он означал бы не то.
+ *
+ * Рейса у ответа нет и быть не может (`routeId: null`): машина стоит сроком заказа, а не выезжает
+ * рейсом. Человек — со шкалы машиниста той же свёртки: `cleared` и `unknown` дают пустого, и это
+ * честнее последнего известного (Р19).
+ *
+ * Линейный заказ сюда не попадает даже в режиме `history`, и это не пропуск: история хранит ему
+ * машину по умолчанию, а на объект в конкретный день выходит машина рейса (ADR 0100 §12). Ответ ему
+ * по-прежнему даёт `dayVehiclesByRequestIds`.
+ */
+async function historyDayVehiclesByRequestIds(
+  ids: string[],
+  onDate: string,
+): Promise<Map<string, VehicleOnSiteDayVehicleDto>> {
+  const map = new Map<string, VehicleOnSiteDayVehicleDto>();
+  if (ids.length === 0 || !(await readHistoryIsAuthoritative())) return map;
+
+  const states = await readAssignmentStatesOn(ids, onDate);
+  const vehicleIds = [
+    ...new Set([...states.values()].map((s) => s.vehicle?.vehicleId).filter((v): v is string => !!v)),
+  ];
+  if (vehicleIds.length === 0) return map;
+  const driverIds = [
+    ...new Set(
+      [...states.values()]
+        .map((s) => (s.driver?.state === 'set' ? s.driver.personId : null))
+        .filter((v): v is string => !!v),
+    ),
+  ];
+
+  // Справочники добираются по найденным идентификаторам, а не join'ом к истории: строк истории у
+  // страницы больше, чем заявок, и join размножил бы машину по числу её изменений.
+  const [vehicleRows, personRows] = await Promise.all([
+    db
+      .select({
+        id: vehicles.id,
+        ownership: vehicles.ownership,
+        description: vehicles.description,
+        registrationNumber: vehicles.registrationNumber,
+        modelName: vehicleModels.name,
+        categoryName: vehicleCategories.name,
+        typeName: vehicleTypes.name,
+      })
+      .from(vehicles)
+      .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
+      .leftJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
+      .leftJoin(vehicleCategories, eq(vehicleCategories.id, vehicles.vehicleCategoryId))
+      .where(inArray(vehicles.id, vehicleIds)),
+    driverIds.length > 0
+      ? db
+          .select({ id: persons.id, fullName: persons.fullName })
+          .from(persons)
+          .where(inArray(persons.id, driverIds))
+      : Promise.resolve([] as { id: string; fullName: string }[]),
+  ]);
+  const vehicleById = new Map(vehicleRows.map((row) => [row.id, row]));
+  const personById = new Map(personRows.map((row) => [row.id, row.fullName]));
+
+  for (const [requestId, state] of states) {
+    const vehicle = state.vehicle && vehicleById.get(state.vehicle.vehicleId);
+    if (!vehicle) continue;
+    const driverPersonId = state.driver?.state === 'set' ? state.driver.personId : null;
+    map.set(requestId, {
+      routeId: null,
+      routeDisplayNumber: null,
+      vehicleId: vehicle.id,
+      vehicleLabel: vehicleLabel({ ...vehicle, typeName: vehicle.typeName ?? '' }),
+      vehicleModelName: vehicle.modelName,
+      driverPersonId,
+      driverName: (driverPersonId && personById.get(driverPersonId)) || '',
+    });
+  }
+  return map;
+}
+
+/**
+ * День, на который спрашивают контакт водителя (С1). Пусто — сегодня: заказчик спрашивает «кто у
+ * меня работает», и день по умолчанию у этого вопроса один.
+ */
+const requestDriverQuerySchema = z.object({ on: dateOnlySchema.optional() });
+
+/**
+ * Машинист заявки на день — по свёртке истории назначения (С1, этап 5).
+ *
+ * Три исхода, и они разные по смыслу:
+ *
+ * - `'no_history'` — отвечать нечем: режим `legacy`, не заказ спецтехники либо у заявки нет
+ *   действующей истории. Ручка идёт прежним путём (маршрут, потом последний лист);
+ * - `null` — история отвечает «человека нет»: день вне срока заявки, машинист снят осознанно
+ *   (`cleared`, арендный отрезок) или не восстановлен (`unknown`). Подставлять сюда последний
+ *   известный бланк нельзя — именно этим ручка и ошибалась;
+ * - контакт — человек отрезка, накрывающего день.
+ *
+ * Пустая дата окончания читается однодневным сроком (Р24) — тем же правилом, каким её читают
+ * свёртка, сверка ЭСМ-2 и отбор среза.
+ */
+async function driverByAssignmentHistory(
+  request: VehicleRequestDto,
+  on: string | undefined,
+): Promise<VehicleRequestDriverDto | null | 'no_history'> {
+  if (request.requestType !== 'special_equipment') return 'no_history';
+  if (!(await readHistoryIsAuthoritative())) return 'no_history';
+  const changes = (await readActualChanges([request.id])).get(request.id);
+  if (!changes || changes.length === 0) return 'no_history';
+
+  const date = on ?? moscowDateKeyOf(new Date());
+  const last = request.dateTo || request.dateFrom;
+  if (!request.dateFrom || date < request.dateFrom || date > last) return null;
+
+  const driver = assignmentStateOn(changes, date).driver;
+  if (driver?.state !== 'set') return null;
+  const [person] = await db
+    .select({ personId: persons.id, fullName: persons.fullName, phone: persons.phone })
+    .from(persons)
+    .where(eq(persons.id, driver.personId))
+    .limit(1);
+  return person ?? null;
 }
 
 /** numeric из pg приходит строкой — приводим к числу с проверкой конечности. */
@@ -1266,18 +1433,25 @@ async function toDtos(
   q: { onDate?: string; vehicleId?: string } = {},
 ): Promise<VehicleRequestDto[]> {
   const ids = rows.map((r) => r.id);
-  const [filesMap, tripsMap, shiftsMap, weekly, matchedDays, dayVehicles] = await Promise.all([
-    filesByRequestIds(ids),
-    // Ездки — тем же добором на страницу, что и файлы: строка списка показывает первую из них, а
-    // карточка все, и запрос на строку превратил бы список из двадцати заявок в двадцать запросов.
-    tripsByRequests(db, rows),
-    shiftSummaries(rows, q.onDate ?? moscowDateKeyOf(new Date())),
-    weeklyLinksByRequestIds(ids),
-    matchedDaysByRequestIds(ids, q.vehicleId),
-    q.onDate
-      ? dayVehiclesByRequestIds(ids, q.onDate)
-      : Promise.resolve(new Map<string, VehicleOnSiteDayVehicleDto>()),
-  ]);
+  const [filesMap, tripsMap, shiftsMap, weekly, matchedDays, dayVehicles, historyDayVehicles] =
+    await Promise.all([
+      filesByRequestIds(ids),
+      // Ездки — тем же добором на страницу, что и файлы: строка списка показывает первую из них, а
+      // карточка все, и запрос на строку превратил бы список из двадцати заявок в двадцать запросов.
+      tripsByRequests(db, rows),
+      shiftSummaries(rows, q.onDate ?? moscowDateKeyOf(new Date())),
+      weeklyLinksByRequestIds(ids),
+      matchedDaysByRequestIds(ids, q.vehicleId),
+      q.onDate
+        ? dayVehiclesByRequestIds(ids, q.onDate)
+        : Promise.resolve(new Map<string, VehicleOnSiteDayVehicleDto>()),
+      // Второй источник машины дня — история обычного заказа (Ф3). Режим спрашивает он сам и в
+      // `legacy` возвращает пустую карту: разветвление здесь стоило бы ещё одного места, где о
+      // режиме можно забыть.
+      q.onDate
+        ? historyDayVehiclesByRequestIds(ids, q.onDate)
+        : Promise.resolve(new Map<string, VehicleOnSiteDayVehicleDto>()),
+    ]);
   return rows.map((row) =>
     toDto(
       row,
@@ -1289,9 +1463,14 @@ async function toDtos(
         extensions: weekly.extensions.get(row.id) ?? [],
       },
       {
-        // Машину дня спрашивают только у линейного заказа: у прочих день среза машину не выбирает —
-        // она стоит на площадке весь срок, и ответ на этот вопрос у них один, назначение.
-        dayVehicle: q.onDate && row.isLinear ? (dayVehicles.get(row.id) ?? null) : undefined,
+        // Машина дня: у линейного заказа — рейс этого дня (`null` — день никуда не поставлен), у
+        // обычного — свёртка истории на день среза (Ф3). Поля нет вовсе там, где ни один из двух
+        // источников не ответил: колонка показывает назначение, как и до разреза срока.
+        dayVehicle: q.onDate
+          ? row.isLinear
+            ? (dayVehicles.get(row.id) ?? null)
+            : historyDayVehicles.get(row.id)
+          : undefined,
         matchedDays: q.vehicleId ? (matchedDays.get(row.id) ?? []) : undefined,
       },
     ),
@@ -5045,12 +5224,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           metadata: { reason: 'edited', changes: earlyEndReasonChange('Срок заявки изменён') },
         });
       }
-      await auditEsm2Sync({
-        actorUserId: p.id,
-        requestId: id,
-        reason: 'period_edited',
-        result: esm2,
-      });
       await auditLinearDaysSync({
         actorUserId: p.id,
         requestId: id,
@@ -5516,12 +5689,27 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    * принадлежит маршруту, у заказа спецтехники машинист записан в недельных листах ЭСМ-2.
    * Последний лист остаётся запасным источником и для снятого маршрута — закрытая заявка должна
    * по-прежнему объяснять, кто выполнял работу.
+   *
+   * ПОСЛЕ РАЗРЕЗА СРОКА ОТВЕЧАЕТ СВЁРТКА, А НЕ ПОСЛЕДНИЙ БЛАНК (план С1, этап 5). Пока лист у
+   * заявки был один, «кто в последнем листе» и «кто работает» совпадали. С разрезом у заявки
+   * несколько действующих листов с разными людьми, и `ORDER BY issued_at DESC` отвечает тем, чей
+   * бланк **перевыписан позже**, — то есть при перевыписке пн–вт после ср–вс называет машиниста
+   * прошлого отрезка. В режиме `history` ответ строится свёрткой на дату: по умолчанию на сегодня,
+   * с необязательным `on=YYYY-MM-DD` — на названный день.
+   *
+   * Вне срока заявки ответ пуст, а не «последний известный»: заказчик спрашивает «кто у меня
+   * работает», и человек с прошлой недели — неверный ответ, а не приблизительный. Прошлое при этом
+   * не потеряно — его спрашивают тем же `on`.
+   *
+   * Права и область не меняются (ADR 0122), и запасной путь остаётся на месте: заявка без
+   * действующей истории — грузоперевозка, новый заказ, `empty` — отвечает маршрутом и бланком, как
+   * в `legacy`.
    */
   r.get(
     '/:id/driver',
     {
       ...auth,
-      schema: { params: idParams },
+      schema: { params: idParams, querystring: requestDriverQuerySchema },
     },
     async (req): Promise<VehicleRequestDriverDto | null> => {
       const p = requirePrincipal(req);
@@ -5529,6 +5717,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       if (!request) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, request);
       if (!request.assignment) return null;
+
+      const byHistory = await driverByAssignmentHistory(request, req.query.on);
+      if (byHistory !== 'no_history') return byHistory;
 
       // У грузоперевозки водитель известен уже после включения заявки в маршрут — ждать выпуска
       // путевого листа для показа контакта нельзя.
@@ -5867,7 +6058,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // переход предпросмотр обязан отвергать ровно так же, иначе он стал бы дорогой в обход.
       assertRequestScope(p, before);
       assertLessorScope(p, before.assignment?.lessorId ?? null);
-      assertTransitionAllowed(p, before.status, body.status);
+      assertTransitionAllowed(p, before.status, body.status, 'vehicle');
       // И только тот сценарий, ради которого ручка заведена: по прочим переходам советовать
       // нечего, а отвечать номерами бланков тем более.
       if (
@@ -5933,7 +6124,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // отдельно.
       assertLessorScope(p, before.assignment?.lessorId ?? null);
       if (before.status === status) return before;
-      assertTransitionAllowed(p, before.status, status);
+      assertTransitionAllowed(p, before.status, status, 'vehicle');
       // Без визы заявка не обрабатывается (ADR 0025): в работу её не берут, пока руководитель
       // строительства не согласовал. Отменить незавизированную заявку можно — ей так и закрывают
       // путь. 422, а не 403: право на переход есть, не хватает состояния самой заявки.
@@ -6398,12 +6589,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           entityId: before.id,
         });
       }
-      await auditEsm2Sync({
-        actorUserId: p.id,
-        requestId: before.id,
-        reason: `status:${status}`,
-        result: esm2,
-      });
       await auditLinearDaysSync({
         actorUserId: p.id,
         requestId: before.id,
@@ -6775,12 +6960,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // сделана первой попыткой.
       if (repeated || !assigned) return (await getDto(before.id))!;
 
-      await auditEsm2Sync({
-        actorUserId: p.id,
-        requestId: before.id,
-        reason: correction ? 'correction' : 'vehicle_changed',
-        result: esm2,
-      });
       await auditLinearDaysSync({
         actorUserId: p.id,
         requestId: before.id,
@@ -6946,7 +7125,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
       const auto = approvesOwnRequestOnCreate(p, before);
       const previousDateTo = special.dateTo!;
-      let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       let days: LinearDaysSyncResult = { detached: [], frozen: [] };
       await db.transaction(async (tx) => {
         // Шаг 0 — гейт режима (§10): запрос сокращения правит срок заказа и снимает дни с
@@ -6997,7 +7175,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           // Сокращённый срок переписывает бумагу той же транзакцией (миграция 0087): недели за
           // новой датой аннулируются, а текущая — аннулируется и выписывается заново, с днями по
           // новый последний день включительно. Отработанные недели сверка не трогает.
-          esm2 = await syncEsm2Waybills(tx, {
+          await syncEsm2Waybills(tx, {
             requestId: before.id,
             actor: { id: p.id },
             reason: `Срок заявки сокращён до ${dateKeyRu(newDateTo)} — путевые листы переоформлены`,
@@ -7043,12 +7221,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           metadata: { auto: true, changes: diffVehicleRequests(before, after) },
         });
       }
-      await auditEsm2Sync({
-        actorUserId: p.id,
-        requestId: before.id,
-        reason: 'early_end',
-        result: esm2,
-      });
       await auditLinearDaysSync({
         actorUserId: p.id,
         requestId: before.id,
@@ -7087,7 +7259,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           ? before.earlyEnd
           : null;
       if (!pending) throw err.unprocessable('Запрос на досрочное завершение не найден');
-      let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       let days: LinearDaysSyncResult = { detached: [], frozen: [] };
 
       if (approved) {
@@ -7133,7 +7304,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             actor: { id: p.id },
             reason: `Срок заявки сокращён до ${dateKeyRu(pending.newDateTo)}`,
           });
-          esm2 = await syncEsm2Waybills(tx, {
+          await syncEsm2Waybills(tx, {
             requestId: before.id,
             actor: { id: p.id },
             reason: `Срок заявки сокращён до ${dateKeyRu(pending.newDateTo)} — путевые листы переоформлены`,
@@ -7163,12 +7334,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         metadata: approved
           ? { changes: diffVehicleRequests(before, after) }
           : { changes: earlyEndReasonChange(comment) },
-      });
-      await auditEsm2Sync({
-        actorUserId: p.id,
-        requestId: before.id,
-        reason: 'early_end',
-        result: esm2,
       });
       await auditLinearDaysSync({
         actorUserId: p.id,

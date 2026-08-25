@@ -80,6 +80,10 @@ import {
   type Esm2SheetPlan,
 } from './esm2-plan';
 import { buildEsm2SyncPlan, type Esm2SyncResult } from './waybill-esm2';
+// Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
+// провенансом (§10, Р32). Порядок работ шага 12 у этой двери свой и остаётся у общего сервиса
+// правки срока — сюда приходит только «что исполнять».
+import { assignmentPaperExecution, paperFollowsHistory } from './assignment-paper';
 import { afterWorkPeriodChanged } from './vehicle-request-period';
 import type { LinearDaysSyncResult } from './vehicle-request-days';
 
@@ -177,6 +181,16 @@ export interface PeriodPlan {
   /** Отпечаток множества разблокировок; `null` — исход не `crew`, разблокировок не спрашивают (Д4). */
   unlockFingerprint: string | null;
   esm2Mode: Esm2Mode;
+  /** План листов на отрезках — предмет предпросмотра, отпечатка и шага 12 в режиме `history`. */
+  sheetPlan: Esm2SheetPlan;
+  /**
+   * Действующие листы заявки и их напечатанные номера — прочитанные шагом 6 и один раз.
+   *
+   * Нужны шагу 12: исполнитель отрезкового плана называет сгоревшую бумагу номером, а прочитать
+   * его после аннулирования уже поздно.
+   */
+  sheets: Esm2ExistingSheet[];
+  sheetNumbers: Map<string, string>;
   /**
    * Восстановима ли история заявки. `false` — назначения у заказа нет вовсе (`no_assignment`), и
    * это **не отказ**: срок правят и у заявки без техники, у неё же нет и бумаги. Гасить и
@@ -406,6 +420,9 @@ export async function planPeriodCommand(
     requiredUnlocks: requiredUnlockIds.map((id) => unlockDtoOf(id, sheets, numbers)),
     unlockFingerprint: effects.needsCorrection ? fingerprintOf({ requiredUnlockIds }) : null,
     esm2Mode,
+    sheetPlan,
+    sheets,
+    sheetNumbers: numbers,
     historyPresent: history.state !== 'empty',
     /*
      * Виза руководителя строительства (ADR 0025): согласовано было то, что он видел, а срок —
@@ -815,7 +832,7 @@ export function periodCommandSpec(params: {
       esm2: ctx.paper.esm2,
       linearDays: ctx.paper.days,
     }),
-    audit: (ctx) => periodAuditOf(ctx, reason),
+    audit: (ctx) => periodAuditOf(ctx),
   };
 }
 
@@ -873,12 +890,19 @@ async function clearApproval(tx: AssignmentCommandTx, requestId: string): Promis
  * Контекст коррекции передаётся ровно при исходе `crew` и вместе с серверным списком разблокировок:
  * без него продление в прошедшую неделю оставило бы заказ с новым сроком и без бумаги за уже
  * отработанные дни — сверка кончившуюся неделю не выписывает вовсе.
+ *
+ * **Кто исполняет бумагу, решает режим** (§10). В `legacy` её ведёт недельная сверка — та же, что и
+ * у трёх соседних вызывающих этого сервиса. В `history` дверь передаёт сюда **готовый** отрезковый
+ * план: он посчитан шагом 6, показан человеку и захеширован в отпечаток, а порядок работ шага 12
+ * остаётся за сервисом. Пересчитывать план здесь нельзя — это было бы исполнением не того, что
+ * подтверждено.
  */
 async function syncPeriodPaper(
   ctx: AssignmentPaperContext<PeriodPlan, AssignmentWriteResult>,
   params: { requestId: string; actorUserId: string; reason: string },
 ): Promise<PeriodPaper> {
   const correctionId = ctx.operation?.id ?? null;
+  const unlockWaybillIds = ctx.plan.requiredUnlocks.map((u) => u.waybillId);
   const result = await afterWorkPeriodChanged(ctx.tx, {
     requestId: params.requestId,
     actor: { id: params.actorUserId },
@@ -887,11 +911,34 @@ async function syncPeriodPaper(
     // глядя на него. Недельная операция так поступать не вправе — там согласие спрашивают построчно.
     dropPendingEarlyEnd: true,
     backstop: 'work_period',
+    /*
+     * Направление правки — явно (Ю78). Умолчание двери «правка срока» — «открывает новые дни», и
+     * для продления это верно. Сокращение же само гасит хвостовую группу и, спроси оно решение по
+     * хвосту, получило бы вердикт о расхождении, которое только что и создало. Считается по
+     * прочитанному под блокировкой сроку, а не по намерению тела: `dateTo` мог не измениться вовсе,
+     * а начало — сдвинуться.
+     */
+    opensTerm: lastDayOf(ctx.plan.termAfter) > lastDayOf(ctx.plan.termBefore),
     ...(ctx.effects.needsCorrection && correctionId
+      ? { correction: { id: correctionId, unlockWaybillIds } }
+      : {}),
+    ...(paperFollowsHistory(ctx.mode)
       ? {
-          correction: {
-            id: correctionId,
-            unlockWaybillIds: ctx.plan.requiredUnlocks.map((u) => u.waybillId),
+          paper: {
+            kind: 'plan' as const,
+            ...assignmentPaperExecution({
+              requestId: params.requestId,
+              actor: { id: params.actorUserId },
+              reason: params.reason,
+              mode: ctx.mode,
+              effects: ctx.effects,
+              operationId: correctionId,
+              sheetPlan: ctx.plan.sheetPlan,
+              paperScope: ctx.plan.paperScope,
+              sheets: ctx.plan.sheets,
+              displayNumbers: ctx.plan.sheetNumbers,
+              unlockWaybillIds,
+            }),
           },
         }
       : {}),
@@ -940,12 +987,11 @@ function historySnapshotOf(write: AssignmentWriteResult): Record<string, unknown
  * Действие правки остаётся общим (`vehicle_request.update`) и с тем же перечнем изменённых полей:
  * человек, читающий историю заказа, спрашивает «когда подвинули срок», а не «какой дверью». Своё у
  * этой двери — соседние события: снятая виза и снятый запрос на отъезд объясняют, почему заявка
- * перестала быть согласованной и куда делся чужой запрос, а сгоревшая и выписанная бумага — почему
- * сменились номера бланков.
+ * перестала быть согласованной и куда делся чужой запрос. Переписанную бумагу объясняет
+ * `waybill.esm2_sync`, и пишет его единственный владелец — исполнитель плана шагом 12.
  */
 function periodAuditOf(
   ctx: AssignmentAuditContext<PeriodPlan, AssignmentWriteResult, PeriodPaper>,
-  reason: string,
 ): AuditEntry[] {
   const { plan, paper } = ctx;
   const entries: AuditEntry[] = [
@@ -980,12 +1026,11 @@ function periodAuditOf(
       metadata: { reason: 'edited' },
     });
   }
-  if (paper.esm2.cancelled.length > 0 || paper.esm2.issued.length > 0) {
-    entries.push({
-      action: 'waybill.esm2_sync',
-      metadata: { reason, cancelled: paper.esm2.cancelled, issued: paper.esm2.issued },
-    });
-  }
+  /*
+   * Переписанной бумаги здесь нет намеренно: `waybill.esm2_sync` пишет единственный владелец
+   * строгого события — исполнитель плана (`applyEsm2SyncPlanAndAudit`), той же транзакцией и
+   * шагом раньше. Второе его написание здесь дало бы два события подряд об одной работе.
+   */
   return entries;
 }
 

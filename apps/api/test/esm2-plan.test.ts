@@ -247,6 +247,28 @@ describe('esm2SheetPlan: сверка с выписанным', () => {
     expect(plan.issue.map((s) => [s.from, s.to])).toEqual([[WEDNESDAY, SUNDAY]]);
   });
 
+  it('прошедший отрезок выписывается взамен листа, который гасит эта же сверка', () => {
+    /*
+     * ЭСМ2-РАЗРЕЗ. Смена машиниста со среды: лист пн–вс горит целиком, и взамен обязаны выйти два
+     * документа — пн–вт прежним человеком и ср–вс новым. Первый уже кончился, но дырой не является:
+     * его дни держал документ, который эта же сверка и гасит. Не разреши мы этого, обычная работа
+     * диспетчера оставила бы понедельник со вторником без бумаги — молча (§7, замыкание).
+     */
+    const today = { ...context, today: WEDNESDAY };
+    const plan = esm2SheetPlan(
+      [segment(MONDAY, '2026-08-04', 'A', set('Иван')), segment(WEDNESDAY, SUNDAY, 'A', set('Пётр'))],
+      { dateFrom: MONDAY, dateTo: SUNDAY },
+      [sheet('w1', MONDAY, SUNDAY, 'A', 'Иван')],
+      today,
+    );
+
+    expect(plan.cancel).toEqual(['w1']);
+    expect(plan.issue.map((s) => [s.from, s.to])).toEqual([
+      [MONDAY, '2026-08-04'],
+      [WEDNESDAY, SUNDAY],
+    ]);
+  });
+
   it('прошедший отрезок без листа сам не выписывается, а с проверенной коррекцией — выписывается', () => {
     const past = { ...context, today: '2026-08-20' };
     const segments = [segment(MONDAY, SUNDAY, 'A', set('Иван'))];

@@ -323,6 +323,16 @@ async function inScene<T>(
           // Расчёт от начала срока: тогда лист получает и та неделя, что к среде уже отработана.
           asOf: term.from,
         });
+        /*
+         * ЭСМ2-РАЗРЕЗ. Событие сверки, записанное **подготовкой сцены**, из журнала убирается.
+         *
+         * С этапа 5 бумагу пишет единственный владелец строгого события
+         * (`applyEsm2SyncPlanAndAudit`), и `waybill.esm2_sync` появляется в той же транзакции, что
+         * и листы, — в том числе когда сверку зовёт сцена, а не дверь. Утверждения файла о журнале
+         * говорят о **команде**, и подготовка в них попадать не должна: иначе тест мерил бы не
+         * дверь, а собственные декорации.
+         */
+        await tx.execute(sql`DELETE FROM audit_log WHERE entity_id = ${request.id!}`);
       }
 
       out = await run(tx, {
@@ -847,15 +857,17 @@ describe('границы команды (Р12, Р13)', () => {
 
 /*
  * БЛОК ИДЁТ ДВУМЯ ПРОГОНАМИ (подэтап 4b, У1), и это единственный блок файла, который их требует:
- * весь он про границу «до переключения чтения», то есть про то, что этап 5 и снимает.
+ * весь он про границу «до переключения чтения», то есть про то, что этап 5 и снял.
  *
- * Сегодня расходится один случай из пяти — дремлющая запись (Д1): запрет на неё стоит прямо на
- * `historyIsAuthoritative`, и в `history` его уже нет. Остальные четыре в обоих прогонах отвечают
- * одинаково, потому что держит их гейт совместимости (Б1, В3) — он спрашивается **безусловно**,
- * пока бумагу пишет недельная сверка. Это не повод их отсюда убрать, а наоборот: гейт снимается
- * тем же выкатом, что и режим, и его половина ожиданий обязана быть написана заранее — иначе в
- * окно `all_frozen` попадёт починка четырёх случаев вместо переключения. Кто снимает гейт, правит
- * здесь только ветку `history`, и по красноте видит, что именно поменялось.
+ * Расходятся теперь четыре случая из пяти, и все четыре — по одной причине. Дремлющая запись (Д1)
+ * держалась прямо на `historyIsAuthoritative`; три остальных держал гейт совместимости (Б1, В3), и
+ * гейт этот **снят режимом**: в `history` шаг 12 исполняет отрезковый план, а он несёт машину и
+ * человека в каждом выпускаемом листе — значит умеет и разрез посреди недели, и разных людей в
+ * соседних документах (Ю49). Пятый случай — граница недели — совпадает в обоих прогонах: там оба
+ * исполнителя дают тот же документ.
+ *
+ * Обе половины остаются написанными: режим двигается в обе стороны (§10), и после отката к
+ * `legacy` исполнителем снова становится недельная сверка вместе со всеми своими границами.
  */
 describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)', (mode) => {
   it('дремлющая команда за концом срока: отвергается до переключения чтения и проходит после', async () => {
@@ -908,52 +920,134 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
     });
   });
 
-  it('дата в середине выписанной недели режет её надвое — старый алгоритм её не воспроизводит', async () => {
+  it('дата в середине выписанной недели режет её надвое — до переключения чтения нечем', async () => {
     if (!readMode.enabled) return;
     await inScene({ driverAtStart: 'person_a', issueSheets: true }, async (tx, scene) => {
-      const failure = await errorOf(() =>
-        previewCrew(tx, scene, setBody({ effectiveDate: AS_OF, driverPersonId: scene.personB })),
+      const body = setBody({ effectiveDate: AS_OF, driverPersonId: scene.personB });
+
+      const expected = byReadMode(mode, { legacy: 'refused' as const, history: 'split' as const });
+      if (expected === 'refused') {
+        const failure = await errorOf(() => previewCrew(tx, scene, body));
+        expect(failure.message).toMatch(/режет уже выписанную неделю/);
+        return;
+      }
+
+      /*
+       * ЭСМ2-РАЗРЕЗ. После переключения чтения тот же разрез — обычная работа: лист пн–вс горит, а
+       * вместо него выходят **два** документа — пн–вт прежним человеком и ср–вс новым. Ключ недели
+       * такого состава не выражает вовсе, и потому старый исполнитель этой команды не умел (Б1).
+       */
+      const preview = await previewCrew(tx, scene, body);
+      // Горят две недели: текущая и следующая — обе выписаны на прежнего человека, а новый работает
+      // с середины текущей и до конца срока.
+      expect(preview.plan.cancel).toHaveLength(2);
+      expect(preview.plan.issue.map((i) => `${i.from}|${i.to}|${i.driverPersonId}`)).toEqual([
+        `${MONDAY}|${shiftDateKey(AS_OF, -1)}|${scene.personA}`,
+        `${AS_OF}|${shiftDateKey(MONDAY, 6)}|${scene.personB}`,
+        `${NEXT}|${shiftDateKey(NEXT, 6)}|${scene.personB}`,
+      ]);
+
+      const outcome = await runCrew(
+        tx,
+        scene,
+        DISPATCHER,
+        armed(body, preview, 'Смена машиниста с середины недели'),
       );
-      expect(failure.message).toMatch(/режет уже выписанную неделю/);
+      expect(outcome.repeated).toBe(false);
+      expect(outcome.paper?.esm2.cancelled).toHaveLength(2);
+      expect(outcome.paper?.esm2.issued).toHaveLength(3);
+
+      // Бумага заявки: отработанная прошлая неделя цела, текущая — двумя листами, следующая своя.
+      const after = await sheetsOf(tx, scene.requestId);
+      expect(after.map((s) => `${s.period_from}|${s.period_to}|${s.driver_person_id}`)).toEqual([
+        `${PREV}|${shiftDateKey(PREV, 6)}|${scene.personA}`,
+        `${MONDAY}|${shiftDateKey(AS_OF, -1)}|${scene.personA}`,
+        `${AS_OF}|${shiftDateKey(MONDAY, 6)}|${scene.personB}`,
+        `${NEXT}|${shiftDateKey(NEXT, 6)}|${scene.personB}`,
+      ]);
+      // Событие сверки — ровно одно и в той же транзакции: владелец у него один (§7).
+      const events = (
+        await tx.execute<{ action: string }>(sql`
+          SELECT action FROM audit_log WHERE entity_id = ${scene.requestId} ORDER BY action`)
+      ).rows;
+      expect(events.map((e) => e.action)).toEqual([
+        'vehicle_request.assignment_change',
+        'waybill.esm2_sync',
+      ]);
     });
   });
 
   /*
    * Ю49. Плановая смена машиниста будущей датой — два сюжета одной причины, и оба ниже.
    *
-   * Исполняет бумагу на этапе 3 недельная сверка, а печатает она **одного** машиниста заявки — того,
+   * В `legacy` бумагу исполняет недельная сверка, а печатает она **одного** машиниста заявки — того,
    * что работает на день расчёта (`legacyDriverPersonId`). Команда, после которой листы области
    * ждут другого человека, ей неисполнима; гейт же сравнивал планы **без человека** и обоих сюжетов
    * не видел. До волны 3.6 первый умирал постусловием Р11 уже после проведённой команды, а второй
    * получал «дата режет уже выписанную неделю надвое» на дате, которая является точной границей
    * недели. Теперь оба получают один отказ, и получают его в предпросмотре.
+   *
+   * ЭСМ2-РАЗРЕЗ. В `history` оба сюжета — обычная плановая работа диспетчера: исполнитель
+   * отрезкового плана несёт человека в каждом выпускаемом листе, и «машиниста заявки» у него нет
+   * вовсе. По матрице Р32 это строка 4 — исход `none`, ни причины, ни коррекционного права.
    */
-  it('смена будущей датой при бумаге прежнего человека — отказ про переключение чтения, а не про границу недели', async () => {
+  it('смена будущей датой при бумаге прежнего человека — до переключения чтения нечем, после — обычная работа', async () => {
     if (!readMode.enabled) return;
     await inScene({ driverAtStart: 'person_a', issueSheets: true }, async (tx, scene) => {
       const body = setBody({ effectiveDate: NEXT, driverPersonId: scene.personB });
-      const failure = await errorOf(() => previewCrew(tx, scene, body));
-      expect(failure.statusCode).toBe(422);
-      expect(failure.message).toMatch(/машиниста меняют датой не позже сегодняшней/);
-      expect(failure.message).toMatch(/переключением чтения/);
-      // `NEXT` — точная граница недели, и прежняя причина была неверна: границу человек выбрал
-      // правильно, недостижимо здесь другое.
-      expect(failure.message).not.toMatch(/режет уже выписанную неделю/);
 
-      // Боевая ручка отвечает **тем же**: отказ стоит в расчёте, до рукопожатия, — отпечатка у
-      // человека нет вовсе, потому что предпросмотр его не выдал.
-      const live = await errorOf(() =>
-        runCrew(
-          tx,
-          scene,
-          DISPATCHER,
-          armed(body, { fingerprint: 'предпросмотра не было', unlockFingerprint: null }),
-        ),
-      );
-      expect(live.message).toBe(failure.message);
-      // Ни бумаги, ни истории команда не тронула.
-      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(3);
-      expect(await rowsOf(tx, scene.requestId)).toHaveLength(2);
+      const expected = byReadMode(mode, {
+        legacy: 'refused' as const,
+        history: 'planned' as const,
+      });
+      if (expected === 'refused') {
+        const failure = await errorOf(() => previewCrew(tx, scene, body));
+        expect(failure.statusCode).toBe(422);
+        expect(failure.message).toMatch(/машиниста меняют датой не позже сегодняшней/);
+        expect(failure.message).toMatch(/переключением чтения/);
+        // `NEXT` — точная граница недели, и прежняя причина была неверна: границу человек выбрал
+        // правильно, недостижимо здесь другое.
+        expect(failure.message).not.toMatch(/режет уже выписанную неделю/);
+
+        // Боевая ручка отвечает **тем же**: отказ стоит в расчёте, до рукопожатия, — отпечатка у
+        // человека нет вовсе, потому что предпросмотр его не выдал.
+        const live = await errorOf(() =>
+          runCrew(
+            tx,
+            scene,
+            DISPATCHER,
+            armed(body, { fingerprint: 'предпросмотра не было', unlockFingerprint: null }),
+          ),
+        );
+        expect(live.message).toBe(failure.message);
+        // Ни бумаги, ни истории команда не тронула.
+        expect(await sheetsOf(tx, scene.requestId)).toHaveLength(3);
+        expect(await rowsOf(tx, scene.requestId)).toHaveLength(2);
+        return;
+      }
+
+      // Исход `none` (Р32, строка 4): дата в будущем, отработанного не задето — причины и
+      // коррекционного права не спрашивают.
+      const preview = await previewCrew(tx, scene, body);
+      expect(preview.operationRequirement).toBeNull();
+      expect(preview.plan.cancel).toHaveLength(1);
+      expect(preview.plan.issue.map((i) => `${i.from}|${i.to}|${i.driverPersonId}`)).toEqual([
+        `${NEXT}|${shiftDateKey(NEXT, 6)}|${scene.personB}`,
+      ]);
+
+      const outcome = await runCrew(tx, scene, DISPATCHER, armed(body, preview));
+      expect(outcome.effects?.operationOutcome).toBe('none');
+      expect(outcome.operation).toBeNull();
+      expect(outcome.paper?.esm2.cancelled).toHaveLength(1);
+      expect(outcome.paper?.esm2.issued).toHaveLength(1);
+
+      // Прошлая и текущая недели остались за прежним человеком, следующая вышла за новым.
+      const after = await sheetsOf(tx, scene.requestId);
+      expect(after.map((s) => `${s.period_from}|${s.driver_person_id}`)).toEqual([
+        `${PREV}|${scene.personA}`,
+        `${MONDAY}|${scene.personA}`,
+        `${NEXT}|${scene.personB}`,
+      ]);
     });
   });
 
@@ -974,23 +1068,49 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
       expect(await sheetsOf(tx, scene.requestId)).toHaveLength(2);
 
       const body = setBody({ effectiveDate: NEXT, driverPersonId: scene.personB });
-      const failure = await errorOf(() => previewCrew(tx, scene, body));
-      expect(failure.statusCode).toBe(422);
-      expect(failure.message).toMatch(/машиниста меняют датой не позже сегодняшней/);
 
-      const live = await errorOf(() =>
-        runCrew(
-          tx,
-          scene,
-          DISPATCHER,
-          armed(body, { fingerprint: 'предпросмотра не было', unlockFingerprint: null }),
-        ),
-      );
-      expect(live.statusCode).toBe(422);
-      expect(live.message).toBe(failure.message);
-      // Номер не сгорел и лист не выписан: до шага 12 команда не доходит вовсе.
-      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(2);
-      expect(await rowsOf(tx, scene.requestId)).toHaveLength(2);
+      const expected = byReadMode(mode, { legacy: 'refused' as const, history: 'issued' as const });
+      if (expected === 'refused') {
+        const failure = await errorOf(() => previewCrew(tx, scene, body));
+        expect(failure.statusCode).toBe(422);
+        expect(failure.message).toMatch(/машиниста меняют датой не позже сегодняшней/);
+
+        const live = await errorOf(() =>
+          runCrew(
+            tx,
+            scene,
+            DISPATCHER,
+            armed(body, { fingerprint: 'предпросмотра не было', unlockFingerprint: null }),
+          ),
+        );
+        expect(live.statusCode).toBe(422);
+        expect(live.message).toBe(failure.message);
+        // Номер не сгорел и лист не выписан: до шага 12 команда не доходит вовсе.
+        expect(await sheetsOf(tx, scene.requestId)).toHaveLength(2);
+        expect(await rowsOf(tx, scene.requestId)).toHaveLength(2);
+        return;
+      }
+
+      /*
+       * ЭСМ2-РАЗРЕЗ. После переключения чтения гореть нечему — лист недели уже аннулирован, — и
+       * команда просто выписывает недостающую неделю на нового человека. Прежде именно здесь
+       * старый исполнитель печатал **прежнего** и падал постусловием Р11 уже после расхода номера.
+       */
+      const preview = await previewCrew(tx, scene, body);
+      expect(preview.plan.cancel).toEqual([]);
+      expect(preview.plan.issue.map((i) => `${i.from}|${i.driverPersonId}`)).toEqual([
+        `${NEXT}|${scene.personB}`,
+      ]);
+
+      const outcome = await runCrew(tx, scene, DISPATCHER, armed(body, preview));
+      expect(outcome.paper?.esm2.cancelled).toEqual([]);
+      expect(outcome.paper?.esm2.issued).toHaveLength(1);
+      const after = await sheetsOf(tx, scene.requestId);
+      expect(after.map((s) => `${s.period_from}|${s.driver_person_id}`)).toEqual([
+        `${PREV}|${scene.personA}`,
+        `${MONDAY}|${scene.personA}`,
+        `${NEXT}|${scene.personB}`,
+      ]);
     });
   });
 

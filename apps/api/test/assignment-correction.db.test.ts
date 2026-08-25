@@ -1,7 +1,7 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { describeReadModes, useReadModeDatabase } from './assignment-read-mode';
+import { byReadMode, describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 import {
   moscowDateKeyOf,
   shiftDateKey,
@@ -273,6 +273,12 @@ async function inScene<T>(
           // Расчёт от начала срока: тогда лист получает и та неделя, что к среде уже отработана.
           asOf: TERM_FROM,
         });
+        /*
+         * ЭСМ2-РАЗРЕЗ. Событие сверки, записанное **подготовкой сцены**, из журнала убирается: с
+         * этапа 5 `waybill.esm2_sync` пишет исполнитель плана и в той же транзакции, что и листы,
+         * — в том числе когда сверку зовёт сцена. Утверждения файла о журнале говорят о команде.
+         */
+        await tx.execute(sql`DELETE FROM audit_log WHERE entity_id = ${request.id!}`);
       }
 
       out = await run(tx, {
@@ -791,17 +797,16 @@ describe('операция журнала (Р9, Р32)', () => {
 // ── Границы двери (Р7, Р12) ──
 
 /*
- * ЭСМ2-РАЗРЕЗ. Блок гоняется в **обоих** режимах чтения. Сегодня половины совпадают, и это не
- * упущение, а состояние кода: бумагу везде пишет недельная `syncEsm2Waybills`, отрезковый план
- * работает только в предпросмотрах и сверке. Расхождение появится вместе с исполнителем
- * отрезкового плана на этапе 5 — тогда последний случай блока («действующий лист в области»)
- * разойдётся: в `legacy` команда отвергается, в `history` проходит и переоформляет листы по
- * отрезкам. Ожидаемое будущее значение записано в реестре.
+ * ЭСМ2-РАЗРЕЗ. Блок гоняется в **обоих** режимах чтения, и расходится в нём последний случай —
+ * «действующий лист в области». В `legacy` бумагу пишет недельная `syncEsm2Waybills`: она знает
+ * одну машину на заявку и переписала бы задетые недели машиной **назначения**, то есть вопреки
+ * коррекции, — поэтому такая команда отвергается до единой записи. В `history` шаг 12 исполняет
+ * отрезковый план, и та же команда проходит: лист прежней машины горит, взамен выходит лист
+ * исправленной, а отработанный номер человек подтверждает отпечатком разблокировок (Р11).
  *
- * Обёртка стоит уже сейчас, чтобы окно выката тратилось на переключение, а не на переделку тестов.
+ * Обе половины остаются написанными: режим двигается в обе стороны (§10).
  */
 describeReadModes(readMode, 'границы коррекции (Р7, Р12)', (mode) => {
-  void mode;
   it('последнее решение о машине правит окно смены техники, а не коррекция', async () => {
     if (!DB_URL) return;
     await inScene({ split: 'past' }, async (tx, scene) => {
@@ -847,7 +852,7 @@ describeReadModes(readMode, 'границы коррекции (Р7, Р12)', (mo
     });
   });
 
-  it('действующий лист в области: предпросмотр показывает бумагу, команда отказывает', async () => {
+  it('действующий лист в области: до переключения чтения отказ, после — переоформление по отрезкам', async () => {
     if (!DB_URL) return;
     await inScene({ split: 'past', issueSheets: true, approvals: true }, async (tx, scene) => {
       const body = correctionBody(
@@ -865,29 +870,106 @@ describeReadModes(readMode, 'границы коррекции (Р7, Р12)', (mo
         true,
       );
 
+      const expected = byReadMode(mode, {
+        legacy: 'refused' as const,
+        history: 'reissued' as const,
+      });
+      if (expected === 'refused') {
+        /*
+         * Недельная сверка — единственный исполнитель бумаги в `legacy`, и знает она одну машину
+         * на заявку: переписала бы задетые недели машиной назначения, то есть вопреки коррекции.
+         * Такая команда отвергается **до** записи истории.
+         */
+        const error = await errorOf(() =>
+          runCorrection(
+            tx,
+            scene,
+            DISPATCHER,
+            armed(body, preview, { operationId: randomUUID(), reason: 'бумага мешает' }),
+          ),
+        );
+        expect(error.statusCode).toBe(422);
+        expect(error.message).toContain('ЭСМ-2');
+        // Ю51: совета «выпишите листы по требованию» в отказе больше нет — ручная выписка ЭСМ-2
+        // заведена только для линейной техники (`onDemandRefusal`), а линейный заказ эта дверь
+        // отвергает выше. Взамен отказ называет срок: переоформление по отрезкам приедет с
+        // переключением чтения.
+        expect(error.message).not.toMatch(/по требованию/);
+        expect(error.message).toMatch(/переключением чтения истории/);
+        expect(await journalOf(tx, scene.requestId)).toEqual([]);
+        expect((await shiftsOf(tx, scene.requestId)).every((s) => s.approved_at !== null)).toBe(
+          true,
+        );
+        return;
+      }
+
       /*
-       * Недельная сверка — единственный исполнитель бумаги на этапе 3, и знает она одну машину на
-       * заявку: переписала бы задетые недели машиной назначения, то есть вопреки коррекции. Пока
-       * исполнителя отрезкового плана нет, такая команда отвергается **до** записи истории.
+       * ЭСМ2-РАЗРЕЗ. Исполнитель отрезкового плана переоформляет прошлое: отрезок `TERM_FROM …
+       * воскресенье` был отработан и его лист неприкосновенен, — значит операция обязана назвать
+       * его поимённо, и подтверждается это отпечатком серверного множества, а не списком (Р11).
        */
-      const error = await errorOf(() =>
-        runCorrection(
-          tx,
-          scene,
-          DISPATCHER,
-          armed(body, preview, { operationId: randomUUID(), reason: 'бумага мешает' }),
-        ),
+      expect(preview.operationRequirement).toMatchObject({ kind: 'crew' });
+      expect(preview.unlockFingerprint).not.toBeNull();
+      expect(preview.requiredUnlocks.length).toBeGreaterThan(0);
+      expect(preview.plan.cancel.map((c) => c.waybillId).sort()).toEqual(
+        preview.requiredUnlocks.map((u) => u.waybillId).sort(),
       );
-      expect(error.statusCode).toBe(422);
-      expect(error.message).toContain('ЭСМ-2');
-      // Ю51: совета «выпишите листы по требованию» в отказе больше нет — ручная выписка ЭСМ-2
-      // заведена только для линейной техники (`onDemandRefusal`), а линейный заказ эта дверь
-      // отвергает выше. Взамен отказ называет срок: переоформление по отрезкам приедет с
-      // переключением чтения.
-      expect(error.message).not.toMatch(/по требованию/);
-      expect(error.message).toMatch(/переключением чтения истории/);
-      expect(await journalOf(tx, scene.requestId)).toEqual([]);
-      expect((await shiftsOf(tx, scene.requestId)).every((s) => s.approved_at !== null)).toBe(true);
+      // Выписывается тот же отрезок, но исправленной машиной: это и есть предмет коррекции.
+      expect(preview.plan.issue.length).toBeGreaterThan(0);
+      expect(preview.plan.issue.every((i) => i.vehicleId === scene.vehicleC)).toBe(true);
+
+      const outcome = await runCorrection(tx, scene, DISPATCHER, {
+        ...armed(body, preview, {
+          operationId: randomUUID(),
+          reason: 'по табелю в эти дни работала другая машина',
+        }),
+        unlockFingerprint: preview.unlockFingerprint ?? undefined,
+      });
+      expect(outcome.repeated).toBe(false);
+      expect(outcome.paper?.esm2.cancelled).toHaveLength(preview.plan.cancel.length);
+      expect(outcome.paper?.esm2.issued).toHaveLength(preview.plan.issue.length);
+
+      // Бумага исправленного отрезка стоит на новой машине, а её сгоревший номер объяснён
+      // операцией: и списание, и выпуск ссылаются на одну строку журнала (Р35).
+      const sheets = await sheetsOf(tx, scene.requestId);
+      const fresh = sheets.filter((sheet) => sheet.status !== 'cancelled');
+      expect(fresh.some((sheet) => sheet.vehicle_id === scene.vehicleC)).toBe(true);
+      const burned = sheets.filter((sheet) => sheet.status === 'cancelled');
+      expect(burned.length).toBeGreaterThan(0);
+      expect(burned.every((sheet) => sheet.cancel_correction_id !== null)).toBe(true);
+
+      // Событие сверки — ровно одно и в той же транзакции: владелец у него один (§7).
+      const events = (
+        await tx.execute<{ action: string; metadata: Record<string, unknown> }>(sql`
+          SELECT action, metadata FROM audit_log
+           WHERE entity_id = ${scene.requestId} AND action = 'waybill.esm2_sync'`)
+      ).rows;
+      expect(events).toHaveLength(1);
+      expect(Array.isArray(events[0]!.metadata.replacements)).toBe(true);
+
+      // Подписи снимаются по `approvalClearRange`, а не по всей заявке, — как и в `legacy`.
+      const shifts = await shiftsOf(tx, scene.requestId);
+      expect(shifts.filter((s) => s.approved_at === null).length).toBeGreaterThan(0);
+      expect(shifts.some((s) => s.approved_at !== null)).toBe(true);
     });
   });
 });
+
+/** Листы заявки со статусом и ссылками операции: ими проверяется переоформление по отрезкам. */
+async function sheetsOf(tx: SceneTx, requestId: string) {
+  return (
+    await tx.execute<{
+      id: string;
+      period_from: string;
+      period_to: string;
+      vehicle_id: string;
+      status: string;
+      cancel_correction_id: string | null;
+      correction_id: string | null;
+      corrects_waybill_id: string | null;
+    }>(sql`
+      SELECT id, period_from, period_to, vehicle_id, status, cancel_correction_id, correction_id,
+             corrects_waybill_id
+        FROM waybills WHERE source_request_id = ${requestId} ORDER BY period_from, id`)
+  ).rows;
+}

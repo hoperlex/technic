@@ -54,6 +54,9 @@ import { applyAssignmentMutations, type AssignmentWriteResult } from '../service
 import { assignmentSegments } from '../services/assignment-history';
 import { correctionFingerprint } from '../services/waybill-correction';
 import type { Esm2SheetPlan } from '../services/esm2-plan';
+// Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
+// провенансом (§10, Р32).
+import { applyAssignmentPaper, paperFollowsHistory } from '../services/assignment-paper';
 
 /**
  * Дверь ремонта истории назначения — `POST /vehicle-requests/:id/assignment-changes/repair`
@@ -87,11 +90,16 @@ import type { Esm2SheetPlan } from '../services/esm2-plan';
  * администратором» возвращала бы диспетчера к просьбе позвать администратора ровно в том случае,
  * ради которого дверь и заведена.
  *
- * ЧЕГО ДВЕРЬ НЕ ДЕЛАЕТ. Бумаги: шаг 12 канона (`applyEsm2SyncPlanAndAudit`) пуст у **всех** дверей
- * волны 3.2 — вместе с ним уходят шесть внешних вызовов `auditEsm2Sync`, и наполнять его в одиночку
- * значило бы получить либо двойное событие, либо старое нетранзакционное окно. План листов при этом
+ * БУМАГА — ШАГОМ 12 И ТОЛЬКО ПРИ `read_mode = history` (§10). До переключения чтения бланки ведёт
+ * недельная сверка: она знает одну машину и одного машиниста на заявку и переписала бы починенные
+ * отрезки вопреки ремонту, — поэтому там дверь бумаги не трогает, а план листов всё равно
  * **считается**: без него не выразить ни «paper-free по расчёту, а не по статусу архива» (Р29), ни
- * предпросмотр. Отмены дремлющей tail-группы здесь тоже нет — она идёт общей командой `cancel`
+ * предпросмотр. После переключения тот же план исполняет `applyEsm2SyncPlanAndAudit` — единственный
+ * владелец строгого события `waybill.esm2_sync`.
+ *
+ * ЧЕГО ДВЕРЬ НЕ ДЕЛАЕТ. Постусловия «бумага сошлась»: ремонт по своей природе бывает частичным
+ * (Р27), и непокрытая дыра `unknown` или неназванный отработанный лист — законный его исход, а не
+ * расхождение. Отмены дремлющей tail-группы здесь тоже нет — она идёт общей командой `cancel`
  * (Р13), и `repairSchema` формы `cancel` не имеет вовсе.
  */
 
@@ -310,6 +318,40 @@ export default async function vehicleRequestAssignmentRepairRoutes(
               .where(eq(vehicleRequests.id, ctx.request.id));
             return { write, applied: { write, state } };
           },
+          /*
+           * Шаг 12 — бумага починенной истории, и **только при `read_mode = history`** (§10).
+           *
+           * До переключения чтения бланки ведёт недельная сверка: она знает одну машину и одного
+           * машиниста на заявку и переписала бы починенные отрезки вопреки ремонту — потому дверь
+           * там бумаги не трогает вовсе, как и до этой волны. После переключения исполняется тот же
+           * план, который человек видел предпросмотром и подтвердил отпечатком.
+           *
+           * Постусловия «бумага сошлась» у ремонта нет намеренно, и это не пропуск. Ремонт по своей
+           * природе бывает **частичным** (Р27): дыра `unknown`, которую эта команда не закрывала,
+           * законно остаётся без листа, а отработанный лист, который операция не назвала, законно
+           * остаётся неприкосновенным. Постусловие соседних дверей отвергло бы ровно такой —
+           * нормальный — исход.
+           */
+          syncPaper: async (ctx) => {
+            if (!paperFollowsHistory(ctx.mode)) return;
+            await applyAssignmentPaper(ctx.tx, {
+              requestId: ctx.request.id,
+              actor: { id: p.id },
+              reason: repairSyncReason(body),
+              mode: ctx.mode,
+              effects: ctx.effects,
+              operationId: ctx.operation?.id ?? null,
+              sheetPlan: ctx.plan.paperPlan,
+              // Области у ремонта нет и по устройству двери: он чинит историю заявки целиком, а не
+              // диапазон дней, и `isPaperFree` (Р29) считается по тому же целому плану.
+              paperScope: [],
+              sheets: ctx.plan.context.sheets,
+              displayNumbers: new Map(
+                ctx.plan.context.sheets.map((sheet) => [sheet.id, sheet.displayNumber]),
+              ),
+              unlockWaybillIds: ctx.plan.unlockWaybillIds,
+            });
+          },
           payload: (ctx) => ({
             repair: ctx.plan.summary,
             restore,
@@ -365,10 +407,15 @@ interface RepairComputed {
   stateAfter: AssignmentHistoryState;
   blockerFingerprint: string;
   blockersBefore: AssignmentBlockerFact[];
+  /** Исполняемый план бумаги: он же показывается, он же хешируется, он же исполняется шагом 12. */
   paperPlan: Esm2SheetPlan;
+  /** Пробный план — без разблокировок: им считаются `paperFree` (Р29) и множество разблокировок. */
+  probePlan: Esm2SheetPlan;
   paperFree: boolean;
   restoreRequired: boolean;
   unlockFingerprint: string | null;
+  /** Листы, названные операцией поимённо (Р11): серверный список, тело носит только отпечаток. */
+  unlockWaybillIds: string[];
   context: RepairContext;
   preview: {
     requiredAnchors: ReturnType<typeof requiredAnchorsOf>;
@@ -426,16 +473,32 @@ async function planRepairCommand(
     sheets: context.sheets,
   });
 
-  const paperPlan = repairPaperPlan(context, plan.changesAfter, term, asOf);
-  const paperFree = isPaperFree(paperPlan);
+  /*
+   * Планов бумаги два, и разница между ними смысловая (Р11, Р29).
+   *
+   * **Пробный** — без разблокировок: его `cancel`/`issue` отвечают на вопрос «paper-free ли этот
+   * ремонт», а его `locked` и есть множество отработанных листов, которые операция обязана назвать
+   * поимённо, чтобы их переоформить. Считать это по плану, которому разблокировки уже отданы,
+   * нельзя: там их в `locked` уже не будет.
+   *
+   * **Исполняемый** — с разблокировками и разрешением на прошлое: его показывает предпросмотр, его
+   * хеширует отпечаток, и его же исполняет шаг 12. Показывать одно, а исполнять другое означало бы
+   * обещание, которого дверь не держит.
+   */
+  const probePlan = repairPaperPlan(context, plan.changesAfter, term, asOf);
+  const paperFree = isPaperFree(probePlan);
   // Р29: paper-free определяется расчётом, а не архивным статусом. Мягкое удаление сверку не
   // зовёт, поэтому листы, выписанные до архивирования, остаются действующими, и «в архиве
   // `esm2Mode` = none» ничего не говорит о бумаге.
   const restoreRequired = request.deletedAt !== null && !paperFree;
 
-  const unlocks = requiredUnlocksOf(context, paperPlan, effects.paperScope);
+  const unlocks = requiredUnlocksOf(context, probePlan, effects.paperScope);
   const unlockFingerprint =
     unlocks.length === 0 ? null : correctionFingerprint(unlocks.map((sheet) => sheet.id).sort());
+  const paperPlan = repairPaperPlan(context, plan.changesAfter, term, asOf, {
+    waybillIds: unlocks.map((sheet) => sheet.id),
+    correction: effects.needsCorrection,
+  });
 
   const blockerFingerprint = blockerFingerprintOf(blockersBefore);
   const computed: RepairComputed = {
@@ -444,9 +507,11 @@ async function planRepairCommand(
     blockerFingerprint,
     blockersBefore,
     paperPlan,
+    probePlan,
     paperFree,
     restoreRequired,
     unlockFingerprint,
+    unlockWaybillIds: unlocks.map((sheet) => sheet.id),
     context,
     preview: {
       requiredAnchors: requiredAnchorsOf(
@@ -608,6 +673,16 @@ function authorizeRepeatRepair(
   if (scope.requiresArchiveRestore && !can(subject, 'archive.restore')) throw err.forbidden();
 }
 
+/**
+ * Причина, с которой идёт сверка бумаги ремонта: у операции — её собственная, иначе своя.
+ *
+ * Правило то же, что у соседних дверей: причина операции старше, потому что она и есть объяснение
+ * разрыва нумерации — и лежит она в обоих концах замены.
+ */
+function repairSyncReason(body: RepairInput): string {
+  return body.operation?.reason ?? 'История назначения починена — путевые листы переоформлены';
+}
+
 // ── Ответы ──
 
 function previewDto(
@@ -655,7 +730,7 @@ function previewDto(
     blockedShiftDays: [],
     clearedShiftDays: [],
     clearedShiftsFingerprint: null,
-    requiredUnlocks: requiredUnlocksOf(plan.context, plan.paperPlan, effects.paperScope).map(
+    requiredUnlocks: requiredUnlocksOf(plan.context, plan.probePlan, effects.paperScope).map(
       (sheet) => ({
         waybillId: sheet.id,
         displayNumber: sheet.displayNumber,

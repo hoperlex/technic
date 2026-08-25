@@ -238,6 +238,17 @@ export function esm2SheetPlan(
   const kept: string[] = [];
   const locked: string[] = [];
   const outOfScope: string[] = [];
+  /**
+   * Дни, которые освобождает сама эта сверка: их держал документ, который она же и гасит.
+   *
+   * Нужны выписке прошедшего отрезка. Граница Р21 — «кончившийся отрезок портал сам не выписывает»
+   * — заведена против **дыры**: прошедший день, у которого листа не было вовсе, заполнять попутно,
+   * без права и причины, нельзя. Но переоформление дырой не является: смена машиниста со среды
+   * гасит лист пн–вс и обязана выписать взамен и пн–вт прежним составом. Не разреши мы этого, та
+   * же команда оставила бы понедельник со вторником без бумаги — молча и в обычной работе
+   * диспетчера (§7, документное замыкание).
+   */
+  const burned: AssignmentRange[] = [];
   /** Ожидания, за которыми уже стоит документ: второй такой же лист не выписывается. */
   const covered = new Set<Esm2WantedSheet>();
   /**
@@ -274,7 +285,9 @@ export function esm2SheetPlan(
       continue;
     }
     cancel.push(sheet.id);
+    burned.push(period);
   }
+  const freed = normalizeRangeSet(burned);
 
   const issue = wanted.filter(
     (want): want is Esm2IssuableSheet =>
@@ -283,9 +296,12 @@ export function esm2SheetPlan(
       want.driver.state === 'set' &&
       !covered.has(want) &&
       !busy.some((period) => rangesIntersect(period, { from: want.from, to: want.to })) &&
-      // Кончившийся отрезок выписывается только проверенной операцией (Р21): прошедший день без
-      // листа — это дыра, и заполнять её попутно, без права и причины, портал не вправе.
-      (context.correction?.allowed === true || want.to >= context.today) &&
+      // Кончившийся отрезок выписывается либо проверенной операцией (Р21), либо взамен документа,
+      // который гасит эта же сверка. Дыра — прошедший день, у которого листа не было вовсе, — так
+      // и остаётся незаполнимой: её дни в `freed` не попадают.
+      (context.correction?.allowed === true ||
+        want.to >= context.today ||
+        rangeSetCovers(freed, { from: want.from, to: want.to })) &&
       (scope === null || rangeSetCovers(scope, { from: want.from, to: want.to })),
   );
 
@@ -603,4 +619,223 @@ function collapsePaperSegments(segments: readonly Esm2PaperSegment[]): Esm2Paper
     merged.push({ ...segment });
   }
   return merged;
+}
+
+// ── Исполняемый план отрезков (§7, `Esm2ScopedPlan`) ──
+
+/**
+ * Аннулируемый лист в исполняемом плане.
+ *
+ * Номер здесь не украшение: сгоревший бланк строгой отчётности, не названный номером, в журнале
+ * не объясняется ничем, а читать его после аннулирования уже поздно — строка помечена, и второе
+ * чтение вернуло бы ту же цифру лишним запросом. Границы нужны графу замен: чем именно заменён
+ * этот документ, видно только по пересечению дней.
+ */
+export interface Esm2ScopedCancel {
+  waybillId: string;
+  displayNumber: string;
+  period: Esm2Period;
+}
+
+/**
+ * Выпускаемый лист в исполняемом плане — **со своим составом**, а не с ключом недели.
+ *
+ * Сегодняшняя недельная сверка добирает машину и человека из глобальной пары заявки или из
+ * сгоревшего листа той же недели. После Р5 это неисполнимо: пн–вт обязаны выйти как `A + Иван`,
+ * ср–вс — как `B + Пётр`, и восстановить это по понедельнику нечем.
+ */
+export interface Esm2ScopedIssue {
+  /** Стабильный ключ, посчитанный **до** записи: им адресуют лист и предпросмотр, и граф замен. */
+  issueKey: number;
+  period: Esm2Period;
+  vehicleId: string;
+  driverPersonId: string;
+  /**
+   * Предшественник, которому этот лист объявляет себя заменой (`corrects_waybill_id`).
+   *
+   * `null` — либо предшественника нет, либо его уже занял сосед по канону, либо исход операции
+   * `none`: база запрещает `corrects_waybill_id` без `correction_id`, а обычная сегодняшняя смена
+   * машиниста строки журнала не имеет и при этом законно разрезает действующий лист.
+   */
+  correctsWaybillId: string | null;
+}
+
+/**
+ * План, который строится один раз и исполняется как есть (§7).
+ *
+ * Область лежит здесь, а не в контексте исполнения: два места для одной области означали бы
+ * возможность посчитать план по одной, а исполнить по другой.
+ */
+export interface Esm2ScopedPlan {
+  scope: DateRangeSet;
+  cancel: Esm2ScopedCancel[];
+  issue: Esm2ScopedIssue[];
+}
+
+/** Ребро графа замен: сгоревший лист, наследник и дни, по которым они пересеклись. */
+export interface Esm2ReplacementEdge {
+  waybillId: string;
+  displayNumber: string;
+  issueKey: number;
+  /** Дни пересечения — именно они и делают лист заменой, а не соседство в одном плане. */
+  from: string;
+  to: string;
+}
+
+/** Состав выпускаемого листа до присвоения ключа: ровно то, чем документы различаются. */
+export interface Esm2IssueSpec {
+  from: string;
+  to: string;
+  vehicleId: string;
+  driverPersonId: string;
+}
+
+/**
+ * Собрать исполняемый план: ключи, канонический порядок и проекция связей замены (§7).
+ *
+ * Три правила, и каждое закрывает свой способ получить нестабильный результат:
+ *
+ * 1. **`issueKey` — индекс в плане, отсортированном по `(from, to, vehicleId, driverPersonId)`.**
+ *    Не хеш и не порядок выборки: «индекс или хеш» — это два протокола, и один и тот же план дал
+ *    бы в них разные ключи, разный граф и разный отпечаток. По идентификатору сортировать нельзя
+ *    вовсе — он появится только после расхода номера.
+ * 2. **дубликат кортежа — внутренняя ошибка, а не «второй такой же лист».** Два одинаковых
+ *    документа на одни дни не бывают законны ни в одном разрезе, и молча сжечь на них два номера
+ *    хуже, чем отказать.
+ * 3. **`correctsWaybillId` — каноническое проецирование.** После разреза связь стала
+ *    many-to-many (лист пн–вс → два новых; пн–вт и ср–вс → один новый), а физически новый лист
+ *    называет одного предшественника, и каждый предшественник достаётся одному наследнику
+ *    (`waybills_corrects_unique`). Правило: `cancel` в порядке `(from, waybillId)`, `issue` — по
+ *    `issueKey`; предшественник нового листа — первый по этому порядку ещё не занятый отменяемый,
+ *    чьи дни с ним пересекаются.
+ *
+ * `withCorrectionLinks = false` оставляет все связи пустыми: без строки журнала база их не примет
+ * (`waybills_correction_issue_reason_check`), а граф замен всё равно уходит в событие сверки.
+ */
+export function esm2ScopedPlan(params: {
+  scope: DateRangeSet;
+  cancel: readonly Esm2ScopedCancel[];
+  issue: readonly Esm2IssueSpec[];
+  withCorrectionLinks: boolean;
+}): Esm2ScopedPlan {
+  const cancel = [...params.cancel].sort((a, b) =>
+    a.period.from < b.period.from
+      ? -1
+      : a.period.from > b.period.from
+        ? 1
+        : a.waybillId < b.waybillId
+          ? -1
+          : a.waybillId > b.waybillId
+            ? 1
+            : 0,
+  );
+
+  const sorted = [...params.issue].sort((a, b) =>
+    issueSpecKey(a) < issueSpecKey(b) ? -1 : issueSpecKey(a) > issueSpecKey(b) ? 1 : 0,
+  );
+  for (let i = 1; i < sorted.length; i += 1) {
+    if (issueSpecKey(sorted[i]!) === issueSpecKey(sorted[i - 1]!)) {
+      throw new Error(
+        `План ЭСМ-2 содержит два одинаковых листа (${issueSpecKey(sorted[i]!)}): это ошибка расчёта, а не второй документ`,
+      );
+    }
+  }
+
+  /** Занятые предшественники: связь «заменил» одна на номер (`waybills_corrects_unique`). */
+  const taken = new Set<string>();
+  const issue = sorted.map((spec, issueKey): Esm2ScopedIssue => {
+    const period: Esm2Period = { from: spec.from, to: spec.to };
+    const predecessor = params.withCorrectionLinks
+      ? cancel.find(
+          (burned) => !taken.has(burned.waybillId) && rangesIntersect(burned.period, period),
+        )
+      : undefined;
+    if (predecessor) taken.add(predecessor.waybillId);
+    return {
+      issueKey,
+      period,
+      vehicleId: spec.vehicleId,
+      driverPersonId: spec.driverPersonId,
+      correctsWaybillId: predecessor?.waybillId ?? null,
+    };
+  });
+
+  return { scope: normalizeRangeSet(params.scope), cancel, issue };
+}
+
+/**
+ * Полный граф пересечений «сгоревший лист → выпускаемый»: то, чего физическая связь не хранит.
+ *
+ * FK держит одну связь из многих, а вопрос «каким документом заменён этот номер» задают спустя
+ * месяцы — и отвечает на него только журнал (§11.4). Поэтому граф считается по **всем** парам, а
+ * не по одной проекции, и уходит в событие сверки целиком.
+ */
+export function esm2ReplacementGraph(
+  cancel: readonly Esm2ScopedCancel[],
+  issue: readonly Esm2ScopedIssue[],
+): Esm2ReplacementEdge[] {
+  const edges: Esm2ReplacementEdge[] = [];
+  for (const burned of cancel) {
+    for (const fresh of issue) {
+      if (!rangesIntersect(burned.period, fresh.period)) continue;
+      edges.push({
+        waybillId: burned.waybillId,
+        displayNumber: burned.displayNumber,
+        issueKey: fresh.issueKey,
+        from: burned.period.from > fresh.period.from ? burned.period.from : fresh.period.from,
+        to: burned.period.to < fresh.period.to ? burned.period.to : fresh.period.to,
+      });
+    }
+  }
+  return edges;
+}
+
+/**
+ * Перевести план листов (`esm2SheetPlan`) в исполняемый — тем же составом, что и посчитан (§7).
+ *
+ * Здесь нет ни одного нового решения: границы, машина и человек приходят из `issue`, номера и
+ * периоды сгорающих — из уже прочитанных листов. Единственное, что добавляется, — ключи, порядок и
+ * проекция связей замены, и всё это считает {@link esm2ScopedPlan}.
+ *
+ * Номер аннулируемого листа берётся из карты, а не из базы: читать его **после** аннулирования
+ * поздно, а строить второй запрос ради цифры, которая уже на руках у предпросмотра, незачем.
+ */
+export function esm2ScopedPlanOfSheetPlan(params: {
+  plan: Esm2SheetPlan;
+  /** Область сверки: та же, по которой план и посчитан (Р11). */
+  scope: DateRangeSet;
+  /** Действующие листы заявки: из них берутся границы сгорающих. */
+  sheets: readonly Esm2ExistingSheet[];
+  /** Напечатанные номера действующих листов — ими журнал называет сгоревшую бумагу. */
+  displayNumbers: ReadonlyMap<string, string>;
+  /** Заполнять ли `corrects_waybill_id`: без строки журнала база связь не примет. */
+  withCorrectionLinks: boolean;
+}): Esm2ScopedPlan {
+  const byId = new Map(params.sheets.map((sheet) => [sheet.id, sheet]));
+  return esm2ScopedPlan({
+    scope: params.scope,
+    cancel: params.plan.cancel.map((id) => {
+      const sheet = byId.get(id);
+      return {
+        waybillId: id,
+        displayNumber: params.displayNumbers.get(id) ?? id,
+        period: {
+          from: sheet?.periodFrom ?? '',
+          to: sheet?.periodTo ?? '',
+        },
+      };
+    }),
+    issue: params.plan.issue.map((want) => ({
+      from: want.from,
+      to: want.to,
+      vehicleId: want.vehicleId,
+      driverPersonId: want.driver.personId,
+    })),
+    withCorrectionLinks: params.withCorrectionLinks,
+  });
+}
+
+/** Каноническая строка состава: по ней и сортируют, и ловят дубликат. */
+function issueSpecKey(spec: Esm2IssueSpec): string {
+  return `${spec.from}|${spec.to}|${spec.vehicleId}|${spec.driverPersonId}`;
 }

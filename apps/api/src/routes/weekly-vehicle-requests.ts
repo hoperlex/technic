@@ -89,7 +89,7 @@ import {
   weeklyItemsReadWhere,
 } from '../services/weekly-request-access';
 import { loadLeftBy } from '../services/weekly-request-blockers';
-import { auditEsm2Sync, esm2CorrectionScope } from '../services/waybill-esm2';
+import { esm2CorrectionScope } from '../services/waybill-esm2';
 // Механика заднего числа — общая для всех входов (ADR 0101): вердикт, запись операции,
 // идемпотентность по ключу и связь операции с заявками живут в одном месте, а не переписываются
 // каждым входом по-своему.
@@ -936,29 +936,13 @@ function assertWeekAllowed(weekStart: string, p: Principal): void {
 /**
  * Итог применения, вынесенный из транзакции. Объектом, а не парой `let`: присваивание идёт внутри
  * замыкания, и по обычной переменной анализ типов видел бы только её начальный `null`.
+ *
+ * Бумаги здесь больше нет: событие `waybill.esm2_sync` по каждому затронутому заказу пишет сам
+ * исполнитель плана — в транзакции применения и ровно один раз (§7). Прежде оно уходило отсюда
+ * после коммита и best-effort, то есть номера бланков успевали сгореть раньше объяснения.
  */
-type WeeklyApplyOutcome = Awaited<ReturnType<typeof applyWeeklyRequest>>;
 interface ApplyOutcomeHolder {
   apply: WeeklyApplyResultDto | null;
-  esm2: WeeklyApplyOutcome['esm2'];
-}
-
-/**
- * Аудит переписанной бумаги — после транзакции и по каждому затронутому заказу: сгоревший номер
- * бланка строгой отчётности не должен объясняться только строкой в ответе.
- */
-async function auditWeeklyEsm2(
-  actorUserId: string,
-  esm2: WeeklyApplyOutcome['esm2'],
-): Promise<void> {
-  for (const e of esm2) {
-    await auditEsm2Sync({
-      actorUserId,
-      requestId: e.requestId,
-      reason: 'weekly_request',
-      result: e.sync,
-    });
-  }
 }
 
 /**
@@ -1425,7 +1409,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
           weekStart: header.weekStart,
           today: moscowDateKeyOf(new Date()),
         });
-      const outcome: ApplyOutcomeHolder = { apply: null, esm2: [] };
+      const outcome: ApplyOutcomeHolder = { apply: null };
 
       await db.transaction(async (tx) => {
         const [updated] = await tx
@@ -1462,7 +1446,6 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
           actor: { id: p.id },
         });
         outcome.apply = applied.result;
-        outcome.esm2 = applied.esm2;
       });
 
       await writeAudit({
@@ -1472,7 +1455,6 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         entityId: header.id,
         metadata: { status: body.status, reason: body.reason, auto: selfApplies || undefined },
       });
-      await auditWeeklyEsm2(p.id, outcome.esm2);
       await auditWeeklyOrderEvents(p.id, header.num, outcome.apply);
       return { request: (await getDto(header.id))!, apply: outcome.apply };
     },
@@ -1558,7 +1540,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         );
       }
 
-      const outcome: ApplyOutcomeHolder = { apply: null, esm2: [] };
+      const outcome: ApplyOutcomeHolder = { apply: null };
       /** Что субъекту позволено задним числом: пятая точка проверки недели считает глубину им. */
       const access = backdateAccessOf(p);
       /**
@@ -1630,7 +1612,6 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
                 },
               });
               outcome.apply = applied.result;
-              outcome.esm2 = applied.esm2;
               // «Что делали с этим заказом задним числом» спрашивают со стороны заказа, и связь
               // операции с ним — единственный ответ (Р16 ADR 0101). Порождённые строкой `new`
               // заказы связываются наравне с продлёнными: их дата начала тоже в прошлом.
@@ -1666,7 +1647,6 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
               actor: { id: p.id },
             });
             outcome.apply = applied.result;
-            outcome.esm2 = applied.esm2;
             return;
           }
           // Отклонённая возвращается в черновик, а причина показывается сверху в самой заявке: тому,
@@ -1731,7 +1711,6 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
             }
           : { comment: body.comment },
       });
-      await auditWeeklyEsm2(p.id, outcome.esm2);
       await auditWeeklyOrderEvents(p.id, header.num, outcome.apply);
       return { request: (await getDto(header.id))!, apply: outcome.apply };
     },

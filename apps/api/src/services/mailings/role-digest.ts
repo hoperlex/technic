@@ -413,7 +413,11 @@ export async function buildRoleDigestMail(input: {
  * таблицы, а не вместо неё: письмо — повод открыть портал, но первые строки человек читает здесь.
  */
 function tableBlocks(table: DigestTable): MailBlock[] {
-  const blocks: MailBlock[] = [{ kind: 'table', head: table.head, rows: table.rows }];
+  const blocks: MailBlock[] = [];
+  // Пояснение стоит перед таблицей, а не под ней: оно отвечает на вопрос, который у читателя
+  // возникнет на первой же паре строк, и снизу оно опоздает.
+  if (table.note) blocks.push({ kind: 'paragraph', text: table.note });
+  blocks.push({ kind: 'table', head: table.head, rows: table.rows });
   if (table.total > table.rows.length) {
     const rest = table.total - table.rows.length;
     blocks.push({ kind: 'paragraph', text: `…и ещё ${rest} — смотреть в портале` });

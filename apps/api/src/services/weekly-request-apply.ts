@@ -139,11 +139,16 @@ async function splitUnlockedSheets(
   return byRequest;
 }
 
-/** Итог применения плюс то, что нужно позвать после транзакции: аудит бумаги по каждому заказу. */
+/**
+ * Итог применения недельной заявки.
+ *
+ * Позвать после транзакции больше нечего: событие `waybill.esm2_sync` пишет по каждому заказу сам
+ * исполнитель плана — в той же транзакции и ровно один раз (§7 плана периодов назначения). Прежде
+ * оно уходило отсюда наружу списком, и уходило best-effort: между коммитом и `writeAudit` жило
+ * окно, в котором номера бланков уже сгорели, а объяснения им не было.
+ */
 export interface WeeklyApplyOutcome {
   result: WeeklyApplyResultDto;
-  /** Сверки ЭСМ-2 по заказам — уходят в `auditEsm2Sync` уже за пределами транзакции. */
-  esm2: { requestId: string; sync: Esm2SyncResult }[];
 }
 
 /** Заказ под блокировкой: левая сторона всех предикатов плюс то, что нужно снимку и записи. */
@@ -567,7 +572,7 @@ export async function applyWeeklyRequest(
         .where(eq(weeklyVehicleRequestItems.id, item.id));
       // Молчаливая сверка записью не считается: у арендного заказа листов нет вовсе, и пустая
       // строка «аннулировано 0, выписано 0» читалась бы в ответе как расход бланков, которого
-      // не было. Тем же правилом молчит `auditEsm2Sync` (ADR 0060 п. 3).
+      // не было. Тем же правилом молчит и событие сверки (ADR 0060 п. 3).
       if (extended.esm2.cancelled.length > 0 || extended.esm2.issued.length > 0) {
         esm2.push({ requestId: order!.id, sync: extended.esm2 });
       }
@@ -715,6 +720,5 @@ export async function applyWeeklyRequest(
         issued: e.sync.issued.length,
       })),
     },
-    esm2,
   };
 }

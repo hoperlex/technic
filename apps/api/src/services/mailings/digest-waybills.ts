@@ -18,6 +18,7 @@ import {
   type VehicleRouteRequestDto,
   waybillDisplayNumber,
   waybillPath,
+  weekStartKey,
 } from '@technic/contracts';
 import { config } from '../../config';
 import { db } from '../../db/client';
@@ -73,6 +74,11 @@ export interface DigestTable {
   rows: MailTableCell[][];
   /** Куда идти за остальным, когда строк больше лимита. */
   link: string;
+  /**
+   * Пояснение над таблицей — печатается, только когда без него строки читаются как ошибка.
+   * Сейчас повод один: неделя, разрезанная сменой исполнителя (С2).
+   */
+  note?: string;
 }
 
 /** Перевозки одного дня окна: у окна шире суток заголовок дня стоит над своей таблицей. */
@@ -367,6 +373,12 @@ interface OnsiteRow {
   /** Первый день строки внутри окна: им строки одного объекта идут в порядке работ. */
   from: string;
   cells: MailTableCell[];
+  /**
+   * Чем строка опознаётся при поиске разрезанных недель: номер заявки, неделя листа и состав
+   * (машина + машинист). У дней линейных заказов поля нет — недели у них не документ, а набор
+   * выездов, и разрезать её нечему.
+   */
+  esm2?: { requestNum: number; weekKey: string; crewKey: string };
 }
 
 /** Машина строки: «Камаз 65115 · В123АА777», а у безномерной — то, чем её называют в реестре. */
@@ -428,7 +440,55 @@ export async function digestOnsiteTable(ctx: DigestContext): Promise<DigestTable
     head: ONSITE_HEAD,
     rows: limitRows(rows.map((row) => row.cells)),
     link: portalLink(VEHICLE_ON_SITE_PATH),
+    note: splitWeekNote(rows),
   };
+}
+
+/** Сколько номеров заявок печатается в пояснении, прежде чем список схлопнется в счётчик. */
+const SPLIT_NOTE_LIMIT = 5;
+
+/**
+ * Пояснение к разрезанной неделе (С2): почему одна и та же машина стоит в письме двумя строками.
+ *
+ * Признак — два листа одной заявки в **одной** неделе с **разным** составом. Оба условия нужны:
+ * заказ на месяц и без всякого разреза даёт четыре листа (недели разные), а продление срока внутри
+ * недели даёт два листа тем же составом — там строки различает один период, и объяснять нечего.
+ * Смена же исполнителя ставит рядом две строки с одной машиной или одним человеком, и без
+ * пояснения это читается как задвоение письма.
+ *
+ * Считается по строкам, а не по режиму модуля: в `legacy` недельная сверка разреза не делает,
+ * условие не выполнится само собой, и спрашивать про режим здесь незачем.
+ */
+function splitWeekNote(rows: OnsiteRow[]): string | undefined {
+  const crews = new Map<string, Set<string>>();
+  const nums = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.esm2) continue;
+    const key = `${row.esm2.requestNum}|${row.esm2.weekKey}`;
+    nums.set(key, row.esm2.requestNum);
+    const seen = crews.get(key) ?? new Set<string>();
+    seen.add(row.esm2.crewKey);
+    crews.set(key, seen);
+  }
+
+  const split = [
+    ...new Set(
+      [...crews]
+        .filter(([, seen]) => seen.size > 1)
+        .map(([key]) => nums.get(key) as number)
+        .sort((a, b) => a - b),
+    ),
+  ];
+  if (split.length === 0) return undefined;
+
+  const shown = split.slice(0, SPLIT_NOTE_LIMIT).map(formatVehicleRequestNumber);
+  const rest = split.length - shown.length;
+  const list = rest > 0 ? `${shown.join(', ')} и ещё ${rest}` : shown.join(', ');
+  const subject = split.length === 1 ? `заявки ${list}` : `заявок ${list}`;
+  return (
+    `Неделя ${subject} разбита на несколько документов: внутри срока сменился машинист или ` +
+    'машина, и с даты смены работа идёт по новому листу. Строки различаются периодом и составом.'
+  );
 }
 
 /**
@@ -454,6 +514,10 @@ async function esm2Rows(ctx: DigestContext): Promise<OnsiteRow[]> {
       requestNum: vehicleRequests.num,
       requestStatus: vehicleRequests.status,
       comment: vehicleRequests.comment,
+      // Состав листа идентификаторами — им опознаётся разрезанная неделя: ФИО и госномер для
+      // этого не годятся, тёзки и перевешенный номер сравнялись бы там, где состав разный.
+      driverPersonId: waybills.driverPersonId,
+      vehicleId: waybills.vehicleId,
       // Объект — идентификатором и кодом наравне с наименованием: заказчика выводит объект затрат
       // (Р25), а он спрашивает `object_id`, а не заполненность подписи.
       objectId: vehicleRequests.objectId,
@@ -522,6 +586,13 @@ async function esm2Rows(ctx: DigestContext): Promise<OnsiteRow[]> {
     return {
       objectName: r.objectName ?? '',
       from,
+      // Неделя считается по началу листа тем же `weekStartKey`, каким её режет сам ЭСМ-2: два
+      // куска одной недели дадут один ключ, соседние недели — разные.
+      esm2: {
+        requestNum: r.requestNum,
+        weekKey: weekStartKey(r.periodFrom ?? from),
+        crewKey: `${r.vehicleId}|${r.driverPersonId}`,
+      },
       cells: [
         cell(waybillDisplayNumber(r.prefix, r.number, r.numberWidth), {
           href: portalLink(waybillPath(waybillDisplayNumber(r.prefix, r.number, r.numberWidth))),

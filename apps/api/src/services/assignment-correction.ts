@@ -6,6 +6,8 @@ import {
   type AccessSubject,
   type AssignmentClearedApprovalDto,
   type AssignmentCorrectionPreviewDto,
+  type AssignmentPlanCancelDto,
+  type AssignmentPlanIssueDto,
   type AssignmentVehicleCorrectionInput,
   type Esm2Period,
   type OperationRequirement,
@@ -39,7 +41,11 @@ import {
   ensureCommandHistory,
   planAssignmentHistory,
 } from './assignment-ensure';
-import { assignmentSegments } from './assignment-history';
+import {
+  assignmentSegments,
+  type AssignmentSegment,
+  type AssignmentTerm,
+} from './assignment-history';
 import {
   applyAssignmentMutations,
   resolveChangeTarget,
@@ -51,10 +57,27 @@ import {
 // Право коррекции — одно правило на все двери истории, и живёт оно у двери машиниста (волна 3.2).
 // Своя копия «`crew` требует `waybills.correct`, глубже тридцати дней — `correctBeyondLimit`»
 // разошлась бы с ней при первой же правке правила, а разъезжаются такие пары молча.
-import { authorizeCrewCommand, authorizeCrewRepeat, fingerprintOf } from './assignment-crew';
-import { esm2SheetPlan, type DateRangeSet, type Esm2ExistingSheet } from './esm2-plan';
-import { buildEsm2SyncPlan } from './waybill-esm2';
+import {
+  assignmentPaperPreviewOf,
+  authorizeCrewCommand,
+  authorizeCrewRepeat,
+  fingerprintOf,
+} from './assignment-crew';
+import {
+  esm2SheetPlan,
+  type DateRangeSet,
+  type Esm2ExistingSheet,
+  type Esm2SheetPlan,
+} from './esm2-plan';
+import { buildEsm2SyncPlan, type Esm2SyncResult } from './waybill-esm2';
 import { clearShiftApprovals, type ShiftApproval } from './vehicle-route-correction';
+// Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
+// провенансом (§10, Р32). Своя копия этого решения разошлась бы с соседними дверями молча.
+import {
+  applyAssignmentPaper,
+  assertAssignmentPaperConverged,
+  paperFollowsHistory,
+} from './assignment-paper';
 
 /**
  * Периодная коррекция — правка **прошлого решения о машине**, адресуемая целью
@@ -100,6 +123,16 @@ import { clearShiftApprovals, type ShiftApproval } from './vehicle-route-correct
 /** Имя двери в цели операции журнала (Р9) и в отпечатке предпросмотра. */
 const DOOR = 'assignment-correction';
 
+/** Пустой план листов: заявка без бумаги и режим `legacy` считают по нему всё остальное. */
+const EMPTY_SHEET_PLAN: Esm2SheetPlan = {
+  wanted: [],
+  cancel: [],
+  issue: [],
+  kept: [],
+  locked: [],
+  outOfScope: [],
+};
+
 /**
  * Происхождение новой строки. `reassignment` — «обычная смена техники существующей дверью»: по
  * составу коррекция и есть смена машины, а отличает её от плановой не `origin`, а `correction_id`,
@@ -139,19 +172,41 @@ export interface VehicleCorrectionPlan {
   /** Область бумаги (Р11, §7): документное замыкание дневного диапазона. */
   paperScope: DateRangeSet;
   /**
-   * Действующие листы, которых команда касается. В этой волне они не разблокируются, а **запирают**
-   * команду (см. шапку модуля): предпросмотр их показывает, а боевая ручка отказывает рукопожатием
-   * — иначе отказ звучал бы как «нельзя», без ответа на вопрос «что мешает».
+   * Действующие листы, которых команда касается.
+   *
+   * В режиме `legacy` они **запирают** команду (см. шапку модуля): предпросмотр их показывает, а
+   * боевая ручка отказывает рукопожатием — иначе отказ звучал бы как «нельзя», без ответа на
+   * вопрос «что мешает». В `history` они перестают быть препятствием: их переоформляет отрезковый
+   * план шагом 12, а подтверждаются они отпечатком разблокировок, как у прочих дверей (Р11).
    */
   blockingSheets: { waybillId: string; displayNumber: string; from: string; to: string }[];
-  /** Отпечаток серверного множества разблокировок; `null` — разблокировок нет. */
+  /** Отпечаток серверного множества разблокировок; `null` — разблокировок не спрашивают. */
   unlockFingerprint: string | null;
+  /** Листы под разблокировку, названные сервером (Р11): их же показывает предпросмотр. */
+  requiredUnlocks: { waybillId: string; displayNumber: string; from: string; to: string }[];
+  /** План листов на отрезках — предмет постусловия и шага 12 в режиме `history`. */
+  sheetPlan: Esm2SheetPlan;
+  /** Тот же план глазами окна: что сгорит и что выпишется, с именами и `issueKey`. */
+  preview: { cancel: AssignmentPlanCancelDto[]; issue: AssignmentPlanIssueDto[] };
+  /** Отрезки состава **после** коррекции: по ним считаются бумага и постусловие. */
+  segmentsAfter: AssignmentSegment[];
+  /** Действующие листы заявки и их напечатанные номера — прочитанные шагом 6 и один раз. */
+  sheets: Esm2ExistingSheet[];
+  sheetNumbers: Map<string, string>;
+  /** Принадлежность машин разреза — вход плана листов и постусловия. */
+  ownershipByVehicle: Map<string, VehicleOwnership>;
+  /** Срок заявки, каким его прочитал каркас. */
+  term: AssignmentTerm;
+  /** Бумагу ведёт отрезковый план (`read_mode = history`), а не недельная сверка (§10). */
+  paperByHistory: boolean;
   /** Подписи, попавшие в `approvalClearRange`: ровно они и будут сняты шагом 12. */
   approvals: ShiftApproval[];
 }
 
 /** Что дверь пронесла через шаг 12 в аудит и снимок операции. */
 export interface CorrectionPaper {
+  /** Переоформленная бумага: пусто в `legacy` — там команда, задевающая бланк, не проходит вовсе. */
+  esm2: Esm2SyncResult;
   /** Дни, с которых снята подпись объекта. */
   clearedApprovals: string[];
 }
@@ -236,10 +291,15 @@ export async function planVehicleCorrection(
   const segmentsBefore = assignmentSegments(changes, term);
   const segmentsAfter = assignmentSegments(changesAfter, term);
 
-  const planContextOf = (options: { scope?: DateRangeSet; correction?: boolean }) => ({
+  const planContextOf = (options: {
+    scope?: DateRangeSet;
+    unlockWaybillIds?: readonly string[];
+    correction?: boolean;
+  }) => ({
     ownershipByVehicle,
     today: asOf,
     ...(options.scope ? { scope: options.scope } : {}),
+    ...(options.unlockWaybillIds ? { unlockWaybillIds: options.unlockWaybillIds } : {}),
     ...(options.correction ? { correction: { allowed: true as const } } : {}),
   });
   /** Отрезки `wanted` до и после команды: замыкание области считается по обоим разрезам (§7). */
@@ -289,7 +349,47 @@ export async function planVehicleCorrection(
     effects.approvalClearRange,
   );
 
+  /*
+   * Бумага коррекции — только в режиме `history` (§10). Считается тем же порядком, что и у двери
+   * машиниста: сперва пробный план **без** разблокировок (его `locked` и есть то множество,
+   * которое операция обязана назвать поимённо, Р11), потом настоящий — с областью, названными
+   * листами и разрешением на прошедший отрезок.
+   *
+   * В `legacy` планировать нечего: недельная сверка знает одну машину на заявку и переписала бы
+   * задетые недели машиной **назначения**, то есть ровно вопреки правке, — поэтому такая команда
+   * отвергается рукопожатием, а не исполняется наполовину.
+   */
+  const paperByHistory = paperFollowsHistory(ctx.mode);
+  const probe =
+    paperByHistory && esm2Mode !== 'none'
+      ? esm2SheetPlan(segmentsAfter, term, sheets, planContextOf({ scope: paperScope }))
+      : EMPTY_SHEET_PLAN;
+  const requiredUnlockIds = effects.needsCorrection ? [...probe.locked].sort() : [];
+  const sheetPlan =
+    paperByHistory && esm2Mode !== 'none'
+      ? esm2SheetPlan(
+          segmentsAfter,
+          term,
+          sheets,
+          planContextOf({
+            scope: paperScope,
+            unlockWaybillIds: requiredUnlockIds,
+            correction: effects.needsCorrection,
+          }),
+        )
+      : EMPTY_SHEET_PLAN;
+  const requiredUnlocks = requiredUnlockIds.map((id) => {
+    const sheet = sheets.find((s) => s.id === id);
+    return {
+      waybillId: id,
+      displayNumber: numbers.get(id) ?? id,
+      from: sheet?.periodFrom ?? '',
+      to: sheet?.periodTo ?? '',
+    };
+  });
+
   const plan: VehicleCorrectionPlan = {
+    preview: await assignmentPaperPreviewOf(tx, sheetPlan, sheets, numbers),
     target,
     vehicleBefore: target.vehicleId,
     vehicleAfter,
@@ -297,10 +397,23 @@ export async function planVehicleCorrection(
     denormalization: { kind: 'keep' },
     paperScope,
     blockingSheets,
-    // Разблокировок у этой волны не бывает: команда, которой они понадобились бы, отвергается
-    // рукопожатием. Поле остаётся, потому что рукопожатие Д4 симметрично — лишний отпечаток в теле
-    // это заявка на право сжечь чужие номера, и терпеть её нельзя даже там, где сжигать нечего.
-    unlockFingerprint: null,
+    /*
+     * Отпечаток разблокировок возвращается тогда и только тогда, когда исход `crew`, — в том числе
+     * для пустого множества (Д4): у прошедшего отрезка без листа разблокировать нечего, но
+     * разрешение на прошлое ему нужно, и подтверждать человек должен именно пустоту, а не её
+     * отсутствие. В `legacy` он остаётся пустым: там команда, которой разблокировки понадобились
+     * бы, отвергается рукопожатием, и просить подтверждение было бы просьбой ни о чём.
+     */
+    unlockFingerprint:
+      paperByHistory && effects.needsCorrection ? fingerprintOf({ requiredUnlockIds }) : null,
+    requiredUnlocks,
+    sheetPlan,
+    segmentsAfter,
+    sheets,
+    sheetNumbers: numbers,
+    ownershipByVehicle,
+    term,
+    paperByHistory,
     approvals,
   };
 
@@ -490,8 +603,57 @@ async function approvalsInRange(
 export async function clearCorrectionApprovals(
   ctx: AssignmentApplyContext<VehicleCorrectionPlan>,
 ): Promise<CorrectionPaper> {
+  /*
+   * Порядок шага 12 (§8): сперва бумага, потом подписи. Он не произволен — переоформление бланка
+   * способно отказать (постусловие Р11, нехватка машиниста), и откатывать им уже снятые подписи
+   * значило бы делать работу, которую транзакция всё равно отменит.
+   *
+   * В `legacy` бумаги здесь нет вовсе: команда, задевающая действующий бланк, до этого места не
+   * доходит — её отвергает рукопожатие. Снимаемые подписи при этом остаются: они относятся к
+   * прошлому решению о машине, а не к бумаге.
+   */
+  const esm2 = ctx.plan.paperByHistory
+    ? await applyAssignmentPaper(ctx.tx, {
+        requestId: ctx.request.id,
+        actor: ctx.actor,
+        reason: correctionSyncReason(ctx),
+        mode: ctx.mode,
+        effects: ctx.effects,
+        operationId: ctx.operation?.id ?? null,
+        sheetPlan: ctx.plan.sheetPlan,
+        paperScope: ctx.plan.paperScope,
+        sheets: ctx.plan.sheets,
+        displayNumbers: ctx.plan.sheetNumbers,
+        unlockWaybillIds: ctx.plan.requiredUnlocks.map((u) => u.waybillId),
+      })
+    : { cancelled: [], issued: [] };
+  if (ctx.plan.paperByHistory) {
+    await assertAssignmentPaperConverged(ctx.tx, {
+      requestId: ctx.request.id,
+      asOf: ctx.asOf,
+      segmentsAfter: ctx.plan.segmentsAfter,
+      term: ctx.plan.term,
+      ownershipByVehicle: ctx.plan.ownershipByVehicle,
+      paperScope: ctx.plan.paperScope,
+      unlockWaybillIds: ctx.plan.requiredUnlocks.map((u) => u.waybillId),
+      needsCorrection: ctx.effects.needsCorrection,
+    });
+  }
   await clearShiftApprovals(ctx.tx, ctx.plan.approvals);
-  return { clearedApprovals: ctx.plan.approvals.map((approval) => approval.date) };
+  return { esm2, clearedApprovals: ctx.plan.approvals.map((approval) => approval.date) };
+}
+
+/**
+ * Причина, с которой идёт сверка бумаги: у операции — её собственная, у правки будущего — своя.
+ *
+ * Правило то же, что у двери машиниста: причина операции старше, потому что она и есть объяснение
+ * разрыва нумерации. Второго правила здесь быть не должно — оба конца замены ссылаются на один
+ * текст.
+ */
+function correctionSyncReason(ctx: AssignmentApplyContext<VehicleCorrectionPlan>): string {
+  return (
+    ctx.operation?.reason ?? 'Исправлено прошлое решение о машине — путевые листы переоформлены'
+  );
 }
 
 // ── Рукопожатия (шаг 8) ──
@@ -499,11 +661,10 @@ export async function clearCorrectionApprovals(
 /**
  * Что тело обязано подтвердить против **рассчитанного** плана (§8, Д4).
  *
- * Проверок две. Первая — паритет старой бумаги: команда, задевающая действующий бланк, отвергается
- * здесь. Вторая — отпечаток разблокировок: присутствие поля определяется исходом, а не желанием
- * клиента, и лишний отпечаток это не «лишнее поле», а заявка на право сжечь чужие номера. В этой
- * волне он лишний всегда — команда, которой разблокировки понадобились бы, отвергается первой
- * проверкой.
+ * Проверок две. Первая — паритет старой бумаги, и она живёт ровно до переключения чтения: команда,
+ * задевающая действующий бланк, в режиме `legacy` отвергается здесь. Вторая — отпечаток
+ * разблокировок: присутствие поля определяется исходом, а не желанием клиента, и лишний отпечаток
+ * это не «лишнее поле», а заявка на право сжечь чужие номера.
  */
 export function assertCorrectionHandshake(
   plan: VehicleCorrectionPlan,
@@ -512,13 +673,17 @@ export function assertCorrectionHandshake(
   /*
    * Паритет старой бумаги (Б1, В3): команда, задевающая действующий бланк, отвергается **до**
    * записи истории — иначе история разошлась бы с бумагой молча. Отказ называет листы поимённо и
-   * говорит, чего у портала пока нет; снимется он вместе с исполнителем отрезкового плана (этап 5).
+   * говорит, чего у портала пока нет.
+   *
+   * Снимается он **режимом**, а не удаляется: в `history` задетые листы переоформляет отрезковый
+   * план шагом 12, а после отката к `legacy` исполнителем снова становится недельная сверка — и
+   * запрет обязан вернуться вместе с ней.
    *
    * Совета «аннулируйте номера и выпишите листы по требованию» здесь больше нет (Ю51): ручная
    * выписка ЭСМ-2 заведена **только** для линейной техники (`onDemandRefusal`), а линейный заказ
    * эта дверь отвергает выше. Совет был адресован ровно тем заказам, где он не работает.
    */
-  if (plan.blockingSheets.length > 0) {
+  if (!plan.paperByHistory && plan.blockingSheets.length > 0) {
     throw err.unprocessable(
       `Коррекция задевает действующие листы ЭСМ-2 (№ ${plan.blockingSheets
         .map((sheet) => sheet.displayNumber)
@@ -583,6 +748,16 @@ function previewFingerprintOf(
     },
     clearedApprovals: plan.approvals.map((approval) => approval.date),
     blockingSheets: plan.blockingSheets.map((sheet) => sheet.waybillId).sort(),
+    /*
+     * Бумага входит в отпечаток составом, а не одними границами (§7): после разреза документы
+     * различаются машиной и человеком, и план, поменявшийся только составом, обязан обесценить
+     * предпросмотр. В `legacy` обе половины пусты — там дверь бумаги не трогает.
+     */
+    requiredUnlockIds: plan.requiredUnlocks.map((u) => u.waybillId),
+    paper: {
+      cancel: plan.preview.cancel.map((c) => c.waybillId).sort(),
+      issue: plan.preview.issue.map((i) => `${i.from}|${i.to}|${i.vehicleId}|${i.driverPersonId}`),
+    },
   });
 }
 
@@ -669,6 +844,10 @@ export function vehicleCorrectionSpec(params: {
        * месяца — и ответить на это будет больше нечем.
        */
       clearedShiftApprovals: ctx.plan.approvals,
+      // Переоформленная бумага — номерами: в `legacy` пусто, в `history` это и есть объяснение
+      // разрыва нумерации. Полный граф замен лежит в событии сверки, которое пишет исполнитель.
+      esm2: ctx.paper.esm2,
+      requiredUnlockIds: ctx.plan.requiredUnlocks.map((u) => u.waybillId),
       history: historySnapshotOf(ctx.write),
     }),
     audit: (ctx) => auditOf(ctx.plan, ctx.effects, ctx.operation?.operationId ?? null, ctx.paper),
@@ -726,9 +905,10 @@ function auditOf(
 /**
  * Ответ предпросмотра: общий `AssignmentPreviewDto` плюс то, что есть только у этой двери.
  *
- * Бумажный план приходит пустым не «пока не сделали», а потому, что команда, которой он был бы
- * непустым, отвергается расчётом (см. шапку модуля): показывать человеку план, который дверь не
- * исполнит, значило бы обещать не то.
+ * Бумажный план непуст ровно тогда, когда дверь его и исполнит, — то есть в режиме `history`. В
+ * `legacy` он пуст не «пока не сделали», а потому, что команда, которой он был бы непустым,
+ * отвергается рукопожатием: показывать человеку план, который дверь не исполнит, значило бы
+ * обещать не то. Что именно мешает, тот же ответ говорит списком `blockingSheets`.
  */
 export function correctionPreviewDto(
   effects: AssignmentEffects,
@@ -737,15 +917,15 @@ export function correctionPreviewDto(
   asOf: string,
 ): AssignmentCorrectionPreviewDto {
   return {
-    plan: { cancel: [], issue: [] },
+    plan: plan.preview,
     requiredAnchors: [],
     requiredVehicleResolution: null,
     blockedShiftDays: [],
     clearedShiftDays: [],
     clearedShiftsFingerprint: null,
-    // Разблокировок у этой волны не бывает: команда, которой они понадобились бы, отвергается
-    // рукопожатием. Пустой список здесь — правда о сегодняшнем исполнителе, а не заглушка.
-    requiredUnlocks: [],
+    // В `legacy` список пуст, и это правда об исполнителе, а не заглушка: команда, которой
+    // разблокировки понадобились бы, отвергается рукопожатием.
+    requiredUnlocks: plan.requiredUnlocks,
     unlockFingerprint: plan.unlockFingerprint,
     issues: [],
     operationRequirement: operationRequirementOf(effects),

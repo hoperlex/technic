@@ -39,6 +39,12 @@ import {
   waybillSeries,
 } from '../db/schema';
 import { requestIsLinearRawSql, requestIsLinearSql } from '../db/linear-mode';
+/*
+ * Машина заявки на день (план Ф3, этап 5): при `read_mode = history` её называет действующее на
+ * этот день изменение истории, при `legacy` и у заявки без истории — прежнее назначение. Гараж
+ * спрашивает её дважды — состоянием дня и расшифровкой строки, — и оба раза одним выражением.
+ */
+import { requestDayVehicleSql } from './assignment-read';
 
 /**
  * Занятость дня: чем заняты машина и человек на выбранную дату (ADR 0076).
@@ -193,14 +199,22 @@ export function routeHasWork(route: string): SQL {
  * Спрашивается при этом режим самой заявки, а не признак справочника: заявку могло застать
  * переключение (миграция 0137), и живой признак вернул бы её на новый режим — то есть снял бы с
  * машины занятость, которой заказ держит площадку, и пустил бы на те же дни второй заказ.
+ *
+ * КАКАЯ ИМЕННО МАШИНА СТОИТ НА ПЛОЩАДКЕ — СПРАШИВАЕТСЯ У ДНЯ (план Ф3, этап 5). Прежде запрос шёл
+ * от назначения: «есть заказ, накрывающий день, с этой машиной». После разреза срока назначение
+ * повторяет **последнее** vehicle-изменение (Р17), и на прошедшей дате экран показывал бы `on_site`
+ * машину, которой там не было, — а ту, что действительно стояла, объявлял бы свободной. Поэтому
+ * запрос развёрнут от заявки, а машина дня берётся общим выражением
+ * ([assignment-read.ts](./assignment-read.ts)): в режиме `history` — действующее на день изменение,
+ * в `legacy` и у заявки без истории — то же назначение, что и раньше.
  */
 function specialBusyExists(on: string, objects?: ObjectFilter): SQL {
   return sql`EXISTS (
-    SELECT 1 FROM ${vehicleRequestAssignments} ga_a
-    JOIN ${vehicleRequests} ga_r ON ga_r.id = ga_a.request_id
+    SELECT 1 FROM ${vehicleRequests} ga_r
     JOIN ${vehicleTypes} ga_vt ON ga_vt.id = ga_r.vehicle_type_id
     JOIN ${specialEquipmentRequestDetails} ga_d ON ga_d.request_id = ga_r.id
-    WHERE ga_a.vehicle_id = ${vehicles.id}
+    LEFT JOIN ${vehicleRequestAssignments} ga_a ON ga_a.request_id = ga_r.id
+    WHERE ${requestDayVehicleSql(sql.raw('ga_r.id'), sql.raw('ga_a.vehicle_id'), on)} = ${vehicles.id}
       AND ga_r.status = 'confirmed'
       AND ga_r.deleted_at IS NULL
       AND NOT ${requestIsLinearRawSql('ga_r', 'ga_vt')}
@@ -655,6 +669,11 @@ async function loadRouteWaybills(
  * Линейные заказы отсюда исключены тем же условием, каким они исключены из состояния дня
  * (`specialBusyExists`): два места считают одну и ту же занятость, и разойдись они — колонка
  * сказала бы «в рейсе», а строка под ней показала бы стоянку на площадке до конца месяца.
+ *
+ * Тем же требованием сюда пришла и машина дня (Ф3): состояние дня спрашивает у истории, какая
+ * единица стояла на площадке, — и расшифровка обязана спрашивать то же самое, иначе колонка
+ * назовёт машину январского отрезка, а строка под ней — мартовскую. Отсюда и разворот запроса от
+ * заявки: машина находится **по дню**, а не заявка по машине.
  */
 async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpecialBusy[]> {
   if (vehicleIds.length === 0) return [];
@@ -675,7 +694,7 @@ async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpe
       departmentName: departments.name,
       dateFrom: specialEquipmentRequestDetails.dateFrom,
       dateTo: specialEquipmentRequestDetails.dateTo,
-      vehicleId: vehicleRequestAssignments.vehicleId,
+      vehicleId: vehicles.id,
       // Строка смены появляется при первом заполнении, а не заготавливается на весь срок
       // (миграция 0086): её наличие и означает «день заполнен».
       shiftFilled: sql<boolean>`${vehicleRequestShifts.requestId} IS NOT NULL`,
@@ -683,8 +702,13 @@ async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpe
       earlyEndPending: sql<boolean>`coalesce(${vehicleRequestEarlyEndings.status} = 'pending', false)`,
       ...vehicleLabelColumns,
     })
-    .from(vehicleRequestAssignments)
-    .innerJoin(vehicleRequests, eq(vehicleRequests.id, vehicleRequestAssignments.requestId))
+    .from(vehicleRequests)
+    // Назначение — левым join'ом и больше не ведущей таблицей: у заявки с историей машину дня
+    // называет она, а денормализация остаётся запасным ответом (`requestDayVehicleSql`).
+    .leftJoin(
+      vehicleRequestAssignments,
+      eq(vehicleRequestAssignments.requestId, vehicleRequests.id),
+    )
     // Заказанный тип — своим алиасом: `vehicleTypes` в этом запросе уже занят типом назначенной
     // машины (подпись строки), а признак линейности спрашивают у заказа (ADR 0100 §1).
     .innerJoin(orderedTypes, eq(orderedTypes.id, vehicleRequests.vehicleTypeId))
@@ -692,7 +716,10 @@ async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpe
       specialEquipmentRequestDetails,
       eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
     )
-    .innerJoin(vehicles, eq(vehicles.id, vehicleRequestAssignments.vehicleId))
+    .innerJoin(
+      vehicles,
+      sql`${vehicles.id} = ${requestDayVehicleSql(sql`${vehicleRequests.id}`, sql`${vehicleRequestAssignments.vehicleId}`, on)}`,
+    )
     .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
     .leftJoin(vehicleCategories, eq(vehicleCategories.id, vehicles.vehicleCategoryId))
     .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
@@ -711,7 +738,7 @@ async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpe
     )
     .where(
       and(
-        inArray(vehicleRequestAssignments.vehicleId, vehicleIds),
+        inArray(vehicles.id, vehicleIds),
         eq(vehicleRequests.status, 'confirmed'),
         isNull(vehicleRequests.deletedAt),
         // Тем же выражением, что и в состоянии дня: режим заявки, а не признак справочника —

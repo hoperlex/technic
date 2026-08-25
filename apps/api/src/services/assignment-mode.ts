@@ -1,4 +1,4 @@
-import { and, eq, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { moscowDateKeyOf } from '@technic/contracts';
 import type * as schema from '../db/schema';
@@ -173,6 +173,38 @@ export function doorIsOpen(writeMode: AssignmentWriteMode, door: AssignmentDoorC
 /** Читатели берут «кто и на чём работал» из истории, а не из назначения. */
 export function historyIsAuthoritative(mode: AssignmentModeSnapshot): boolean {
   return mode.readMode === 'history';
+}
+
+/**
+ * Тот же вопрос, заданный внутри запроса, — близнец `historyIsAuthoritative` для читателей,
+ * которым режим нужен **выражением**, а не значением (Ф3).
+ *
+ * ЗАЧЕМ БЛИЗНЕЦ. Четыре читателя денормализации — отбор «где ходила эта машина», срез «Техника на
+ * площадке», занятость гаража и контакт водителя — живут в отборах: `requestVehicleWhere` и
+ * `specialBusyExists` собирают куски `WHERE` синхронно, а спрашивают их полтора десятка запросов
+ * в двух файлах. Протянуть в каждый из них прочитанный заранее булев флаг значило бы завести
+ * полтора десятка мест, где о нём можно забыть, — и забывший не падает, а тихо отвечает по
+ * денормализации уже после cutover. Здесь режим спрашивает сама база, тем же одним запросом, что и
+ * остальной отбор.
+ *
+ * Подзапрос некоррелированный: планировщик считает его один раз на запрос (`InitPlan`), а ветви
+ * `CASE`, в которых он стоит, вычисляются только выбранная. Управляющая строка одна на базу, и
+ * читается она без блокировки — читателю она и не нужна: он ничего не пишет, а переключение режима
+ * своим `drain`'ом дожидается **писателей** (Ж3).
+ *
+ * ОТСУТСТВУЮЩАЯ СТРОКА ЧИТАЕТСЯ КАК `legacy`, А НЕ КАК ОТКАЗ. Пишущий путь на пропавшей строке
+ * останавливается (`controlRowMissing`) — молчаливая работа без freeze недопустима. У читателя
+ * выбор другой: выражению внутри `WHERE` бросить нечем, а уронить на 503 список заявок, срез и
+ * гараж значило бы погасить портал целиком там, где он обязан оставаться читаемым. Поэтому
+ * `NULL` из подзапроса уводит `CASE` в ветвь `legacy` — то самое поведение, что было до модуля.
+ * Тем же правилом отвечает и TS-сторона читателей (`readHistoryIsAuthoritative`,
+ * [assignment-read.ts](./assignment-read.ts)): два читателя одной фичи обязаны одинаково понимать
+ * одно и то же состояние базы.
+ */
+export function historyIsAuthoritativeSql(): SQL<boolean> {
+  return sql<boolean>`(SELECT ${assignmentPeriodsControl.readMode} = 'history'
+       FROM ${assignmentPeriodsControl}
+      WHERE ${assignmentPeriodsControl.id})`;
 }
 
 /**

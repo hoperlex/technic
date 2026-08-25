@@ -7,8 +7,15 @@ import {
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { assertAssignmentBackstop, type AssignmentBackstopDoor } from './assignment-backstop';
+import type { Esm2ScopedPlan } from './esm2-plan';
 import { type LinearDaysSyncResult, syncLinearRouteDays } from './vehicle-request-days';
-import { type Esm2SyncResult, syncEsm2Waybills } from './waybill-esm2';
+import {
+  applyEsm2SyncPlanAndAudit,
+  esm2SyncResultOf,
+  syncEsm2Waybills,
+  type Esm2ExecutionContext,
+  type Esm2SyncResult,
+} from './waybill-esm2';
 
 /**
  * Срок работ заказа спецтехники: его изменение и всё, что за ним следует.
@@ -80,6 +87,19 @@ export interface WorkPeriodCorrection {
 export type WorkPeriodBackstop =
   Extract<AssignmentBackstopDoor, 'work_period'> | 'checked_by_caller';
 
+/**
+ * Кто ведёт бумагу ЭСМ-2 этой правки — недельная сверка или **готовый отрезковый план** (§10).
+ *
+ * Умолчание есть, и оно `weekly`: правку срока зовут четыре места, и три из них — статусная ручка,
+ * широкая правка и досрочное завершение — отрезкового плана не считают вовсе. Отрезковый приносит
+ * дверь `/period` и только в режиме `history`: там он уже посчитан шагом 6, показан человеку и
+ * захеширован в отпечаток, и пересчитывать его здесь значило бы исполнить не то, что подтверждено.
+ *
+ * Событие `waybill.esm2_sync` в обеих ветвях пишет один и тот же владелец — исполнитель плана.
+ */
+export type WorkPeriodPaper =
+  { kind: 'weekly' } | { kind: 'plan'; plan: Esm2ScopedPlan; context: Esm2ExecutionContext };
+
 /** Чем кончилось изменение срока: снятый запрос на отъезд, переоформленные листы и снятые дни. */
 export interface WorkPeriodChangeResult {
   earlyEndDropped: boolean;
@@ -110,6 +130,17 @@ export async function afterWorkPeriodChanged(
     backstop: WorkPeriodBackstop;
     /** Контекст операции коррекции; не передан — правка обычная, прошлое остаётся закрытым. */
     correction?: WorkPeriodCorrection;
+    /** Кто ведёт бумагу (§10); не передан — недельная сверка, как и было до модуля. */
+    paper?: WorkPeriodPaper;
+    /**
+     * Открывает ли команда новые дни (Ю78). Знает это только вызывающий: сюда он приходит уже
+     * после записи срока, и прежнего конца в базе больше нет.
+     *
+     * Не передан — считается по умолчанию двери, то есть «открывает». Это прежнее поведение и
+     * верно для продления; сокращение обязано сказать `false`, иначе спросит решение по хвосту,
+     * которое само же и сломало гашением хвостовой группы.
+     */
+    opensTerm?: boolean;
   },
 ): Promise<WorkPeriodChangeResult> {
   const earlyEndDropped = params.dropPendingEarlyEnd
@@ -132,16 +163,34 @@ export async function afterWorkPeriodChanged(
       requestId: params.requestId,
       actor: params.actor,
       reason: params.reason,
+      /*
+       * Направление говорится явно (Ю78): решение по хвосту спрашивают у **расширения** срока, а
+       * сокращение его само же и ломает — гасит хвостовую группу и тут же получает вердикт
+       * «хвост разошёлся». Сравниваются прежний и новый конец срока, а не намерение вызывающего.
+       */
+      opensTerm: params.opensTerm,
     });
   }
-  const esm2 = await syncEsm2Waybills(tx, {
-    requestId: params.requestId,
-    actor: params.actor,
-    reason: params.reason,
-    // Ключ передаётся только когда он есть: `correction: undefined` сверка читает как «контекста
-    // нет», но писать это условием здесь честнее — видно, что прошлое открывает вызывающий.
-    ...(params.correction ? { correction: params.correction } : {}),
-  });
+  /*
+   * Бумага: недельная сверка либо готовый отрезковый план — выбор сделан вызывающим по режиму
+   * чтения (§10), а не здесь. Своего решения у этого сервиса быть не должно: он ведёт **порядок**
+   * последствий правки срока, а «кто исполняет бумагу» — вопрос режима модуля, и второй ответ на
+   * него разошёлся бы с первым ровно в окне переключения.
+   */
+  const esm2 =
+    params.paper?.kind === 'plan'
+      ? esm2SyncResultOf(
+          await applyEsm2SyncPlanAndAudit(tx, params.paper.plan, params.paper.context),
+        )
+      : await syncEsm2Waybills(tx, {
+          requestId: params.requestId,
+          actor: params.actor,
+          reason: params.reason,
+          // Ключ передаётся только когда он есть: `correction: undefined` сверка читает как
+          // «контекста нет», но писать это условием здесь честнее — видно, что прошлое открывает
+          // вызывающий.
+          ...(params.correction ? { correction: params.correction } : {}),
+        });
   // План по дням сверяется той же транзакцией и по той же причине, что и бумага: сокращённый срок
   // оставил бы рейсы на дни, которых у заказа больше нет. Продление дней не трогает — их просто
   // становится больше, и распланировать новые день за днём предстоит человеку (ADR 0100 §8).

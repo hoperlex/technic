@@ -15,6 +15,7 @@ import {
   licenseNumberLabel,
   moscowDateKeyOf,
   requiredCredentialType,
+  type RequestStatus,
   requestStatusLabels,
   type VehicleOwnership,
   waybillDisplayNumber,
@@ -40,8 +41,20 @@ import {
 } from '../db/schema';
 import { requestIsLinearSql } from '../db/linear-mode';
 import { err } from '../lib/errors';
-import { writeAudit } from '../lib/audit';
+import { writeAuditTx } from '../lib/audit';
 import { findMachinist, type MachinistOption } from './drivers';
+// Исполняемый план отрезков и его чистая половина (§7 плана периодов назначения): ключи, порядок,
+// проекция связей замены и граф пересечений. Здесь остаётся только запись — расчёт живёт там же,
+// где и весь прочий расчёт бумаги, и второго его написания быть не должно.
+import {
+  esm2ReplacementGraph,
+  esm2ScopedPlan,
+  normalizeRangeSet,
+  type Esm2IssueSpec,
+  type Esm2ReplacementEdge,
+  type Esm2ScopedCancel,
+  type Esm2ScopedPlan,
+} from './esm2-plan';
 // Рукопожатие выписки (Р21а) — общее с листом по рейсу: набор предупреждений у двух бланков разный,
 // а решение «пускать, спрашивать или записать подтверждённое» одно, и второе его написание
 // разошлось бы с первым на первой же правке.
@@ -72,6 +85,18 @@ import { findSeriesByCode, seriesCodeOfForm, takeNextNumber } from './waybill-nu
  * листов ему не выписывает. Нужен лист — человек просит его сам, неделю за неделей
  * (`issueEsm2OnDemand`). Сверка при этом не выключается: выданный бланк строгой отчётности не
  * вправе разойтись с заявкой, и уже выписанное она ведёт наравне с автоматическим.
+ *
+ * Третий вход — `applyEsm2SyncPlanAndAudit`: исполнение **уже посчитанного** плана (план периодов
+ * назначения, §7). Им ходят двери истории, когда бумагу ведёт отрезковый разрез, а не календарная
+ * неделя. Здесь же он и живёт, а не в соседнем модуле, ровно по одной причине: расход номеров
+ * бланков строгой отчётности обязан быть в одном месте. Недельная сверка своего кода записи не
+ * имеет вовсе — она строит план и отдаёт его тому же исполнителю.
+ *
+ * ЭТОТ МОДУЛЬ — ЕДИНСТВЕННЫЙ ВЛАДЕЛЕЦ СОБЫТИЯ `waybill.esm2_sync`, и пишет он его **в транзакции**
+ * (`writeAuditTx`). Прежде событие писали шесть внешних вызовов после коммита и через best-effort
+ * `writeAudit`: между сгоревшим номером и объяснением жило окно, а забывший позвать вызывающий не
+ * получал ни ошибки, ни события. Теперь непустой результат исполнения всегда порождает ровно одно
+ * событие, какой бы дверью ни пришли.
  */
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -92,7 +117,7 @@ function today(): string {
 interface RequestState {
   id: string;
   requestType: 'special_equipment' | 'freight_transport';
-  status: 'new' | 'confirmed' | 'done' | 'cancelled';
+  status: RequestStatus;
   deletedAt: Date | null;
   objectId: string | null;
   dateFrom: string | null;
@@ -672,6 +697,226 @@ async function issueEsm2Waybill(
   return { id: created!.id, number: number.display, period: params.period };
 }
 
+// ── Исполнитель плана и единственный владелец строгого события (§7, §8 шаг 12) ──
+
+/** Операция журнала коррекций, под которой идёт исполнение: на неё сошлются оба конца замены. */
+export interface Esm2Operation {
+  /** Строка `waybill_corrections`. */
+  id: string;
+}
+
+/**
+ * Режим исполнения — **дискриминированный union**, а не два необязательных поля.
+ *
+ * Независимые `operation?` и `backdate?` допускали бы состояние «прошлое открыто, разблокировки
+ * применены — а операции журнала нет», то есть правку бланков строгой отчётности без provenance.
+ * Ветку выбирает исход последствий (Р32) и только он: `none → ordinary`,
+ * `assignment_tail → operation`, `crew → backdate`.
+ *
+ * Что от чего зависит: связью листов с операцией пользуются обе непустые ветви, а снятие
+ * неприкосновенности прошлого (выписка кончившегося отрезка и названные листы) — только `backdate`.
+ * Проверять их порознь нельзя: разблокировав лист, но не разрешив прошедший отрезок, исполнение
+ * сожгло бы номер и не выписало замены.
+ */
+export type Esm2ExecutionMode =
+  | { kind: 'ordinary'; operation?: never; backdate?: never }
+  | { kind: 'operation'; operation: Esm2Operation; backdate?: never }
+  | {
+      kind: 'backdate';
+      operation: Esm2Operation;
+      /** Листы, которые операция назвала поимённо; право и принадлежность проверил вызывающий. */
+      backdate: { unlockWaybillIds: readonly string[] };
+    };
+
+/**
+ * Что исполнителю нужно знать сверх самого плана.
+ *
+ * Области здесь нет намеренно: она внутри `Esm2ScopedPlan.scope`, и два места для одной области
+ * означали бы возможность посчитать план по одной, а исполнить по другой.
+ */
+export type Esm2ExecutionContext = {
+  /** Заявка, чья это бумага: `source_request_id`, талон заказчика и предмет события. */
+  requestId: string;
+  /** Автор: `issued_by`, `cancelled_by` и актор события. */
+  actorUserId: string;
+  /** Причина сверки: ложится в `cancel_reason`, `correction_reason` и в текст события. */
+  syncReason: string;
+} & Esm2ExecutionMode;
+
+/**
+ * Нормативный результат исполнения: из него берут данные и `payload` операции, и событие журнала.
+ *
+ * Два массива строк-номеров (`Esm2SyncResult`) для этого не годятся: соответствие
+ * `issueKey → waybillId` из них не собрать — порядок массива связью не является. Особенно это важно
+ * при исходе `none`, где граф «что чем заменено» живёт только в событии сверки.
+ */
+export interface Esm2ApplyResult {
+  cancelled: { waybillId: string; displayNumber: string; period: Esm2Period }[];
+  issued: { issueKey: number; waybillId: string; displayNumber: string; period: Esm2Period }[];
+  /** Рёбра «сгоревший лист → выпущенный», с днями пересечения. */
+  replacementGraph: Esm2ReplacementEdge[];
+}
+
+/** Пустое исполнение: план сошёлся, номера не тронуты, события нет. */
+const EMPTY_APPLY: Esm2ApplyResult = { cancelled: [], issued: [], replacementGraph: [] };
+
+/**
+ * Исполнить **уже посчитанный** план: сжечь названные номера и выписать названные отрезки.
+ *
+ * Приватен модулю намеренно, и это не стилистика. Публичный сырой вход — готовый обход
+ * обязательного события: новая дверь выпустила бы листы без строгого аудита, а при исходе `none`
+ * граф замен не хранится больше нигде. Наружу смотрит только {@link applyEsm2SyncPlanAndAudit}.
+ *
+ * Порядок «сначала аннулировать, потом выписать» обязателен: `waybills_request_period_unique`
+ * держит «одна неделя — один действующий лист», и выписка поверх ещё не погашенного номера упала
+ * бы на ограничении.
+ */
+async function applyEsm2SyncPlan(
+  tx: Tx,
+  plan: Esm2ScopedPlan,
+  context: Esm2ExecutionContext,
+): Promise<Esm2ApplyResult> {
+  if (plan.cancel.length === 0 && plan.issue.length === 0) return EMPTY_APPLY;
+  /*
+   * Union живёт в типах, а вызывающие бывают старые: ветка `backdate` без операции означала бы
+   * открытое прошлое без строки журнала, и поймать это обязан runtime, а не только сборка.
+   */
+  if (context.kind !== 'ordinary' && !context.operation?.id) {
+    throw new Error('Исполнение ЭСМ-2 под операцией без строки журнала: прошлое без provenance');
+  }
+
+  const cancelled: Esm2ApplyResult['cancelled'] = [];
+  for (const item of plan.cancel) {
+    if (context.kind === 'ordinary') {
+      await tx
+        .update(waybills)
+        .set({
+          status: 'cancelled',
+          cancelledAt: new Date(),
+          cancelledBy: context.actorUserId,
+          cancelReason: context.syncReason,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(waybills.id, item.waybillId), ne(waybills.status, 'cancelled')));
+    } else {
+      // Списание в рамках операции: причина ложится в `cancel_reason`, а ссылка на операцию — в
+      // свою колонку (`cancel_correction_id`). В `correction_id` её писать нельзя: там стоит
+      // операция, **породившая** номер, и у листа бывают обе сразу (Р12).
+      await cancelWaybillForCorrection(tx, {
+        waybillId: item.waybillId,
+        correctionId: context.operation.id,
+        reason: context.syncReason,
+        actorUserId: context.actorUserId,
+      });
+    }
+    cancelled.push({
+      waybillId: item.waybillId,
+      displayNumber: item.displayNumber,
+      period: item.period,
+    });
+  }
+
+  const issued: Esm2ApplyResult['issued'] = [];
+  for (const item of plan.issue) {
+    const created = await issueEsm2Waybill(tx, {
+      requestId: context.requestId,
+      vehicleId: item.vehicleId,
+      driverPersonId: item.driverPersonId,
+      period: item.period,
+      actorId: context.actorUserId,
+      // Рукопожатия у сверки нет и быть не может: бумага здесь — следствие решения по заявке, а не
+      // просьба о бланке (`Esm2Requester`). Предупреждения при этом считаются наравне с ручной
+      // выдачей — ими лист и получает свой `clean` вместо умолчания «не проверяли».
+      requester: { by: 'sync' },
+    });
+    if (context.kind !== 'ordinary') {
+      /*
+       * Номер, рождённый операцией, объяснён и связан (Р35): причина — в `correction_reason`,
+       * ссылка на операцию — в `correction_id`, заменённый номер — в `corrects_waybill_id`.
+       * Последнего может и не быть: отрезок, у которого листа не было вовсе (дыра 3), заменяет
+       * пустоту, а сосед по разрезу мог занять единственного предшественника раньше —
+       * `waybills_corrects_unique` держит «каждый номер заменён не более одного раза».
+       */
+      await markCorrectionWaybill(tx, {
+        waybillId: created.id,
+        correctionId: context.operation.id,
+        reason: context.syncReason,
+        correctsWaybillId: item.correctsWaybillId,
+      });
+    }
+    issued.push({
+      issueKey: item.issueKey,
+      waybillId: created.id,
+      displayNumber: created.number,
+      period: item.period,
+    });
+  }
+
+  return { cancelled, issued, replacementGraph: esm2ReplacementGraph(plan.cancel, plan.issue) };
+}
+
+/**
+ * Исполнить план и записать строгое событие — **единственный владелец** `waybill.esm2_sync`.
+ *
+ * Непустой результат всегда порождает ровно одно событие, какой бы дверью ни пришли: команда
+ * истории, статус, срок, досрочное завершение, недельная операция. Разложить строгий аудит по
+ * дверям значило бы получить либо потерянное событие там, где его забыли, либо два подряд —
+ * ровно то состояние, из которого этот модуль и вышел: шесть внешних вызовов после транзакции.
+ *
+ * **Событие транзакционное** (`writeAuditTx`), и это не перестраховка. При исходе `none` строки
+ * `waybill_corrections` не существует вовсе, `corrects_waybill_id` заполнить нечем — и граф «что
+ * чем заменено» живёт только здесь. Обычный `writeAudit` намеренно глотает ошибку записи и
+ * хранилищем важных данных быть не может: не записалось событие — откатывается и выпуск.
+ *
+ * Молчаливая сверка событием не является: сошлось — ни номера, ни строки в журнале.
+ */
+export async function applyEsm2SyncPlanAndAudit(
+  tx: Tx,
+  plan: Esm2ScopedPlan,
+  context: Esm2ExecutionContext,
+): Promise<Esm2ApplyResult> {
+  const result = await applyEsm2SyncPlan(tx, plan, context);
+  if (result.cancelled.length === 0 && result.issued.length === 0) return result;
+  await writeAuditTx(tx, {
+    actorUserId: context.actorUserId,
+    action: 'waybill.esm2_sync',
+    entityType: 'vehicle_request',
+    entityId: context.requestId,
+    metadata: {
+      reason: context.syncReason,
+      // Номера — тем же видом, каким они напечатаны на бланке: журнал читают глазами, а не
+      // джойном, и идентификатор строки на вопрос «какой бланк сгорел» не отвечает.
+      cancelled: result.cancelled.map((sheet) => sheet.displayNumber),
+      issued: result.issued.map((sheet) => sheet.displayNumber),
+      // Дни, которых сверка касалась: вне области она не тронула ничего, и это часть объяснения.
+      scope: plan.scope,
+      /*
+       * Соответствие `issueKey → waybillId` и полный граф пересечений. Физическая связь хранит
+       * лишь одно ребро из многих (`corrects_waybill_id`), а при исходе `none` не хранит и его —
+       * цепочку «чем заменён этот номер» восстанавливают отсюда.
+       */
+      issuedKeys: result.issued.map((sheet) => ({
+        issueKey: sheet.issueKey,
+        waybillId: sheet.waybillId,
+        displayNumber: sheet.displayNumber,
+        from: sheet.period.from,
+        to: sheet.period.to,
+      })),
+      replacements: result.replacementGraph,
+      ...(context.kind === 'ordinary' ? {} : { operationId: context.operation.id }),
+    },
+  });
+  return result;
+}
+
+/** Итог исполнения глазами дверей и ответов портала: номера, и ничего больше. */
+export function esm2SyncResultOf(result: Esm2ApplyResult): Esm2SyncResult {
+  return {
+    cancelled: result.cancelled.map((sheet) => sheet.displayNumber),
+    issued: result.issued.map((sheet) => sheet.displayNumber),
+  };
+}
+
 /** Чем кончилась сверка — этим объясняются исчезнувшие и появившиеся номера в журнале. */
 export interface Esm2SyncResult {
   cancelled: string[];
@@ -798,7 +1043,8 @@ export async function buildEsm2SyncPlan(
  *
  * Право на аннулирование здесь не спрашивается (`waybills.cancel`): это не действие человека, а
  * следствие его решения по заявке — право проверено на самом решении. В аудит уходит своё
- * событие: иначе исчезнувшая бумага не объясняется ничем.
+ * событие: иначе исчезнувшая бумага не объясняется ничем. Пишет его исполнитель
+ * ({@link applyEsm2SyncPlanAndAudit}) и в той же транзакции — своего аудита у сверки нет.
  */
 export async function syncEsm2Waybills(
   tx: Tx,
@@ -916,110 +1162,84 @@ export async function syncEsm2Waybills(
   }
 
   /*
-   * Напечатанные номера сгорающих листов — вторым чтением: в плане их нет и быть не должно.
-   * Считает план чистая читающая работа (`buildEsm2SyncPlan`), которой заодно живёт предпросмотр, а
-   * номер бланка строгой отчётности нужен здесь одному — журналу аудита: исчезнувшая бумага, не
-   * названная номером, не объясняется ничем. Читается он только когда что-то и правда горит.
+   * Напечатанные номера и границы сгорающих листов — вторым чтением: в плане их нет и быть не
+   * должно. Считает план чистая читающая работа (`buildEsm2SyncPlan`), которой заодно живёт
+   * предпросмотр, а номер бланка строгой отчётности нужен исполнению для журнала: исчезнувшая
+   * бумага, не названная номером, не объясняется ничем. Читается он только когда что-то и правда
+   * горит, и **до** аннулирования: после него та же строка вернула бы ту же цифру лишним запросом.
    */
-  const numbersById = new Map<string, string>();
+  const burnedById = new Map<string, Esm2ScopedCancel>();
   if (plan.cancel.length > 0) {
     for (const s of await activeSheets(tx, params.requestId)) {
-      numbersById.set(s.id, waybillDisplayNumber(s.prefix, s.number, s.numberWidth));
+      burnedById.set(s.id, {
+        waybillId: s.id,
+        displayNumber: waybillDisplayNumber(s.prefix, s.number, s.numberWidth),
+        period: { from: s.periodFrom!, to: s.periodTo! },
+      });
     }
   }
-  const cancelled: string[] = [];
-  for (const id of plan.cancel) {
-    if (params.correction) {
-      // Списание в рамках операции: причина ложится в `cancel_reason`, а ссылка на операцию — в
-      // свою колонку (`cancel_correction_id`), рядом с «кем и когда». В `correction_id` её писать
-      // нельзя: там стоит операция, **породившая** номер, и у листа бывают обе сразу (Р12).
-      await cancelWaybillForCorrection(tx, {
+
+  /*
+   * Недельный план переводится в исполняемый — и исполняется **тем же** исполнителем, каким идёт
+   * отрезковый (§7).
+   *
+   * Своего кода записи у недельной сверки больше нет намеренно. Номера бланков строгой отчётности
+   * тратятся в одном месте, событие `waybill.esm2_sync` пишется одним владельцем и в транзакции, а
+   * связь замены проецируется одним каноном. Второй механизм рядом означал бы два ответа на
+   * вопрос «какой номер сгорел и чем заменён» — и расходились бы они молча.
+   *
+   * Что здесь остаётся недельного: состав каждой выписки. Машину и человека сверка добирает из
+   * глобальной пары заявки или из сгоревшего листа той же недели — исполнителю она их называет
+   * готовыми, потому что по ключу недели их восстановить уже нельзя (Р5).
+   */
+  const issueSpecs: Esm2IssueSpec[] = plan.issue.map((period) => ({
+    from: period.from,
+    to: period.to,
+    vehicleId: vehicleFor(period)!,
+    driverPersonId: machinistFor(period)!,
+  }));
+  const cancelSpecs = plan.cancel.map(
+    (id) =>
+      burnedById.get(id) ?? {
         waybillId: id,
-        correctionId: params.correction.id,
-        reason: params.reason,
-        actorUserId: params.actor.id,
-      });
-    } else {
-      await tx
-        .update(waybills)
-        .set({
-          status: 'cancelled',
-          cancelledAt: new Date(),
-          cancelledBy: params.actor.id,
-          cancelReason: params.reason,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(waybills.id, id), ne(waybills.status, 'cancelled')));
-    }
-    cancelled.push(numbersById.get(id) ?? id);
-  }
-
-  const issued: string[] = [];
-  /** Сгоревшие номера, у которых замена уже нашлась: связь «заменил» одна на номер (Р32). */
-  const replacedBy = new Set<string>();
-  for (const period of plan.issue) {
-    const created = await issueEsm2Waybill(tx, {
-      requestId: params.requestId,
-      vehicleId: vehicleFor(period)!,
-      driverPersonId: machinistFor(period)!,
-      period,
-      actorId: params.actor.id,
-      // Рукопожатия у сверки нет и быть не может: бумага здесь — следствие решения по заявке, а не
-      // просьба о бланке (`Esm2Requester`). Предупреждения при этом считаются наравне с ручной
-      // выдачей — ими лист и получает свой `clean` вместо умолчания «не проверяли».
-      requester: { by: 'sync' },
-    });
-    if (params.correction) {
-      /*
-       * Номер, рождённый операцией, объяснён и связан (Р35): причина операции — в
-       * `correction_reason`, ссылка на операцию — в `correction_id`, заменённый номер — в
-       * `corrects_waybill_id`. Последнего может и не быть: неделя, у которой листа не было вовсе
-       * (дыра 3), заменяет пустоту, и `waybills_correction_issue_reason_check` этого не требует.
-       *
-       * Предшественник достаётся ровно одному наследнику: `waybills_corrects_unique` держит
-       * «каждый номер заменён не более одного раза», а в одну календарную неделю попадают и два
-       * выписываемых отрезка сразу (лист «пн–ср» и лист «чт–вс» после подрезки срока). Второй из
-       * них объявил бы себя заменой тому же листу — и операция упала бы уже после сгоревших
-       * номеров. Карта при этом не трогается: из неё же берутся машина и машинист замены.
-       */
-      const replaced = burnedOfWeek.get(weekStartKey(period.from));
-      const correctsWaybillId = replaced && !replacedBy.has(replaced.id) ? replaced.id : null;
-      if (correctsWaybillId) replacedBy.add(correctsWaybillId);
-      await markCorrectionWaybill(tx, {
-        waybillId: created.id,
-        correctionId: params.correction.id,
-        reason: params.reason,
-        correctsWaybillId,
-      });
-    }
-    issued.push(created.number);
-  }
-
-  return { cancelled, issued };
-}
-
-/**
- * Событие аудита о переписанной бумаге. Пишется после транзакции — как и все прочие события
- * заявки, — и только если что-то действительно изменилось: молчаливая сверка событием не является.
- */
-export async function auditEsm2Sync(params: {
-  actorUserId: string;
-  requestId: string;
-  reason: string;
-  result: Esm2SyncResult;
-}): Promise<void> {
-  if (params.result.cancelled.length === 0 && params.result.issued.length === 0) return;
-  await writeAudit({
-    actorUserId: params.actorUserId,
-    action: 'waybill.esm2_sync',
-    entityType: 'vehicle_request',
-    entityId: params.requestId,
-    metadata: {
-      reason: params.reason,
-      cancelled: params.result.cancelled,
-      issued: params.result.issued,
-    },
+        displayNumber: id,
+        period: { from: input.today, to: input.today },
+      },
+  );
+  const scoped = esm2ScopedPlan({
+    // Области у недельной сверки нет: она ведёт бумагу заявки целиком. В плане поэтому стоят те
+    // дни, которых работа и правда касается, — ими событие журнала и объясняет, что переписано.
+    scope: normalizeRangeSet([
+      ...cancelSpecs.map((item) => item.period),
+      ...issueSpecs.map((item) => ({ from: item.from, to: item.to })),
+    ]),
+    cancel: cancelSpecs,
+    issue: issueSpecs,
+    // Связь замены заполняется только под операцией: база запрещает `corrects_waybill_id` без
+    // `correction_id` (`waybills_correction_issue_reason_check`).
+    withCorrectionLinks: params.correction !== undefined,
   });
+
+  const applied = await applyEsm2SyncPlanAndAudit(tx, scoped, {
+    requestId: params.requestId,
+    actorUserId: params.actor.id,
+    syncReason: params.reason,
+    /*
+     * Режим исполнения. Недельная сверка неприкосновенность прошлого снимает целиком (у неё это
+     * один ключ — `correction`), поэтому непустая ветвь у неё одна — `backdate`: и связь листов с
+     * операцией, и `allowPast`, и названные листы приходят вместе. Разделение `operation` и
+     * `backdate` появляется у дверей истории, где исход считается отдельно (Р32).
+     */
+    ...(params.correction
+      ? {
+          kind: 'backdate' as const,
+          operation: { id: params.correction.id },
+          backdate: { unlockWaybillIds: params.correction.unlockWaybillIds },
+        }
+      : { kind: 'ordinary' as const }),
+  });
+
+  return esm2SyncResultOf(applied);
 }
 
 /** Календарный ключ `YYYY-MM-DD` человеку: «24.07.2026». Через JS Date он бы поехал на день. */

@@ -18,6 +18,8 @@ import type {
   RevokeDriverLicenseInput,
   UpdateDriverInput,
   VerifyDriverLicenseBody,
+  AssignmentCommandBody,
+  AssignmentPreviewDto,
   AssignVehicleBody,
   AttachVehicleTypeSpecInput,
   ChangeVehicleAssignmentBody,
@@ -66,6 +68,10 @@ import type {
   VehicleOnSiteListDto,
   VehicleOnSiteSummaryDto,
   VehicleFeedListDto,
+  PeriodApplyBody,
+  PeriodCommand,
+  PeriodPreviewDto,
+  RequestAssignmentHistoryDto,
   VehicleRequestDto,
   VehicleRequestDriverDto,
   VehicleRequestShiftsDto,
@@ -80,6 +86,7 @@ import type {
   SwitchVehicleTypeLinearInput,
   PresentContainerGroupDto,
   WasteRequestDto,
+  WasteRequestHistorySummaryDto,
   WasteRequestSummaryDto,
   ApproveWeeklyRequestBody,
   CreateWeeklyRequestBody,
@@ -566,6 +573,45 @@ export const vehiclesApi = {
 };
 
 /**
+ * Ответ двери срока: состояние заявки после команды, а не отчёт о ней (Р9).
+ *
+ * Описан здесь, а не в контрактах, по той же причине, что и прочие ответы ручек: пакет контрактов
+ * держит тела запросов и общие DTO, а этот тип живёт ровно между сервером и порталом. Повтор по
+ * тому же ключу операции отвечает то же самое — по нему и видно, что работы не было (`repeated`).
+ */
+export interface VehicleRequestPeriodResultDto {
+  version: number;
+  /** true — операцию уже выполнял этот же ключ: работы не было, версия не тронута. */
+  repeated: boolean;
+  dateFrom: string;
+  dateTo: string | null;
+  /** Что переписала сверка ЭСМ-2: сгоревшие и выписанные номера. */
+  esm2: { cancelled: string[]; issued: string[] };
+  /** Снят ли ожидавший визы запрос на досрочное завершение (ADR 0044). */
+  earlyEndDropped: boolean;
+  /** Ключ операции журнала; `null` — исход `none`, объяснять нечего (Р32). */
+  operationId: string | null;
+  history: RequestAssignmentHistoryDto;
+}
+
+/**
+ * Ответ двери машиниста: состояние заявки после команды, а не отчёт о ней (Р9).
+ *
+ * Пересобирается из **текущего** состояния, поэтому повтор по тому же ключу операции отвечает то
+ * же, что ответил бы обычный запрос, — по нему и видно, что работы не было (`repeated`).
+ * Переписанная бумага стоит рядом с историей намеренно: окно, сделавшее смену, обязано узнать и
+ * то, чем продолжать (версия), и то, что случилось с номерами бланков.
+ */
+export interface AssignmentCommandResultDto {
+  version: number;
+  /** true — операцию уже выполнял этот же ключ: работы не было, версия не тронута. */
+  repeated: boolean;
+  /** Что переписала сверка ЭСМ-2: сгоревшие и выписанные номера. */
+  esm2: { cancelled: string[]; issued: string[] };
+  history: RequestAssignmentHistoryDto;
+}
+
+/**
  * Что предъявляется вместе со статусом заявки. Тип один на смену статуса и её предпросмотр
  * намеренно: предпросмотр обязан считать последствия по тем же входам, по которым их потом
  * исполнит боевая ручка, — разойдись эти тела, диалог начал бы обещать не то.
@@ -733,6 +779,95 @@ export const vehicleRequestsApi = {
    */
   changeAssignment: (id: string, body: ChangeVehicleAssignmentBody) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/assignment`, { method: 'PATCH', body }),
+  /**
+   * Последствия смены техники до её совершения (волна 4a плана `docs/assignment-periods-plan.md`,
+   * §7): какие номера ЭСМ-2 сгорят и какие выпишутся, какие подписи объекта слетят, каких дней не
+   * хватает машинисту. Ничего не пишет.
+   *
+   * Тело — то же самое, что у боевой ручки, и это существенно: план считается по машине, машинисту
+   * и коррекционному блоку из окна, а своя схема разошлась бы с боевой на первом же новом поле — и
+   * вместе с ней разошёлся бы отпечаток, которым сервер сверяет обещанное.
+   *
+   * Отпечаток сюда не передаётся никогда: предпросмотр его выдаёт, а не спрашивает.
+   */
+  assignmentPreview: (id: string, body: ChangeVehicleAssignmentBody) =>
+    apiFetch<AssignmentPreviewDto>(`/vehicle-requests/${id}/assignment/preview`, {
+      method: 'POST',
+      body,
+    }),
+  /**
+   * Последствия правки срока до её совершения (волна 4a плана `docs/assignment-periods-plan.md`,
+   * Ж4, З5, Л1): какие бланки ЭСМ-2 сгорят и какие выпишутся, какие решения о технике погасит
+   * сокращение (Д2), какие отработанные листы придётся переоформить и нужна ли причина. Ничего
+   * не пишет.
+   *
+   * Тело у предпросмотра — семантическая половина боевого (Л1): отпечатка, исхода и ключей листов
+   * он ещё не знает — он их и вычисляет. Отпечаток сюда не передаётся никогда.
+   */
+  periodPreview: (id: string, body: PeriodCommand) =>
+    apiFetch<PeriodPreviewDto>(`/vehicle-requests/${id}/period/preview`, { method: 'POST', body }),
+  /**
+   * Правка срока работ — своя дверь, а не поля широкого `PATCH /:id` (Ж4, З5).
+   *
+   * Узкое тело «продлить до 31 августа» в широкий маршрут не легло бы: там строгий union с
+   * обязательными типом заявки, техникой, заказчиком, контактами и файлами. Но главное не форма
+   * тела, а рукопожатия: сокращение способно **погасить решения о технике** за новым концом срока
+   * (Д2), и портал обязан показать перечень и вернуть подтверждение — иначе сервер отвечает 422.
+   *
+   * Что уезжает подтверждениями: `previewFingerprint` — последствия, которые человек видел;
+   * `cancelGroupsFingerprint` — перечень гасимых решений; `unlockFingerprint` — отработанные
+   * листы, которые переоформит операция (присутствие поля задаёт исход, а не желание клиента);
+   * `operation` — причина и ключ идемпотентности там, где нужна запись в журнале коррекций.
+   *
+   * Широкий маршрут при этом продолжает принимать даты (И5): выкат не одномоментный, и старый
+   * путь остаётся рабочим до cutover.
+   */
+  changePeriod: (id: string, body: PeriodApplyBody) =>
+    apiFetch<VehicleRequestPeriodResultDto>(`/vehicle-requests/${id}/period`, {
+      method: 'PATCH',
+      body,
+    }),
+  /**
+   * История назначения заявки — то, из чего портал строит «Состав по датам» (этап 6 плана
+   * `docs/assignment-periods-plan.md`, §9): с какого числа какая машина и какой машинист.
+   *
+   * Погашенные строки приходят наравне с актуальными: журнал заявки читают, чтобы понять, **что**
+   * правили, а не только чем дело кончилось. Состояние готовности отдаётся той же ручкой (Р26) —
+   * окно обязано отличить «истории нет» от «история есть, но неполна», и второй запрос за этим
+   * означал бы, что между ними состояние успевает измениться.
+   */
+  assignmentHistory: (id: string) =>
+    apiFetch<RequestAssignmentHistoryDto>(`/vehicle-requests/${id}/assignment-changes`),
+  /**
+   * Последствия команды машиниста до её совершения (§8). Ничего не пишет.
+   *
+   * Двухфазный (Р16): первый вызов идёт без якорей и возвращает `requiredAnchors` — границы, на
+   * которых свёртка осталась бы без человека; второй, с названными именами, отдаёт окончательный
+   * план и отпечаток, который и принимает боевая ручка. Одной фазы не хватает: пока люди не
+   * названы, набор последствий ещё неизвестен, и подтверждать нечего.
+   *
+   * Тело — то же самое, что у боевой ручки (§8): расчёт обязан идти по тем входам, по которым его
+   * потом исполнит команда, иначе окно начнёт обещать не то. Отпечаток сюда не передаётся никогда:
+   * предпросмотр его выдаёт, а не спрашивает.
+   */
+  assignmentChangePreview: (id: string, body: AssignmentCommandBody) =>
+    apiFetch<AssignmentPreviewDto>(`/vehicle-requests/${id}/assignment-changes/preview`, {
+      method: 'POST',
+      body,
+    }),
+  /**
+   * Команда машиниста: `set` — назначить человека с даты, `cancel` — снять запланированное
+   * решение (Р13).
+   *
+   * Ответ — состояние заявки после команды, а не отчёт о ней (Р9): версия, переписанные номера
+   * ЭСМ-2 и вся история заново. Повтор по тому же ключу операции отвечает то же самое — по нему и
+   * видно, что работы не было (`repeated`).
+   */
+  changeAssignmentMachinist: (id: string, body: AssignmentCommandBody) =>
+    apiFetch<AssignmentCommandResultDto>(`/vehicle-requests/${id}/assignment-changes`, {
+      method: 'POST',
+      body,
+    }),
   /** Виза руководителя строительства: `approved: false` — отзыв (ADR 0025). */
   setApproval: (id: string, approved: boolean, version: number) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/approval`, {
@@ -986,6 +1121,15 @@ export const wasteRequestsApi = {
     }),
   /** Счётчики заявок по статусам — сводка над списком; сужается только фильтром по объекту. */
   summary: (q: Query) => apiFetch<WasteRequestSummaryDto>('/waste-requests/summary', { query: q }),
+  /**
+   * Журнал закрытых заявок — вкладка «История» (ADR 0135): завершённые и отменённые. Своя ручка,
+   * а не список с фильтром: в списке закрытых заявок нет вовсе, и вопросы к журналу другие.
+   */
+  historyList: (q: Query) =>
+    apiFetch<ListResult<WasteRequestDto>>('/waste-requests/history', { query: q }),
+  /** Итог журнала по тем же фильтрам: сколько закрыто, чем закончилось, что вывезли. */
+  historySummary: (q: Query) =>
+    apiFetch<WasteRequestHistorySummaryDto>('/waste-requests/history/summary', { query: q }),
   get: (id: string) => apiFetch<WasteRequestDto>(`/waste-requests/${id}`),
   /** События заявки в хронологическом порядке: создание, правки, смены статусов (ADR 0012). */
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`/waste-requests/${id}/history`),

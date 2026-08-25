@@ -82,6 +82,41 @@ const MANY = { from: '2099-09-14', to: '2099-09-18', day: '2099-09-16' };
 const SPLIT = { first: '2099-10-05', firstTo: '2099-10-06', from: '2099-10-07', to: '2099-10-09' };
 
 /**
+ * Ещё один разрез, своей неделей: им проверяется само пояснение. Отдельные дни, а не общие с
+ * `SPLIT`, — база внутри файла общая, и два случая в одном окне считали бы строки друг друга.
+ */
+const EXPLAINED = {
+  first: '2099-10-19',
+  firstTo: '2099-10-20',
+  from: '2099-10-21',
+  to: '2099-10-23',
+};
+
+/**
+ * Неделя, разрезанная **не** сменой состава: срок кончался во вторник и был продлён. Листа тоже
+ * два, но исполнитель у них один — пояснять в письме нечего, и проверяется именно молчание.
+ */
+const EXTENDED = {
+  first: '2099-10-12',
+  firstTo: '2099-10-13',
+  from: '2099-10-14',
+  to: '2099-10-16',
+};
+
+/**
+ * Месяц с двумя сменами: четыре недели, разрез в первой и в третьей. Им проверяется объём письма —
+ * сколько строк выходит и сколько раз заявка называется в пояснении.
+ */
+const MONTH = {
+  from: '2099-11-02',
+  to: '2099-11-29',
+  firstCut: '2099-11-04',
+  secondWeek: '2099-11-09',
+  thirdCut: '2099-11-18',
+  fourthWeek: '2099-11-23',
+};
+
+/**
  * Дни линейного заказа (ADR 0100): свои дни у каждого случая и своя неделя, не пересекающаяся с
  * окнами выше. База общая, а таблица собирается глазами роли без области — она видит в окне всё,
  * что в него попало, включая заведённое соседним случаем этого же файла.
@@ -136,6 +171,8 @@ interface Ctx {
   rentalVehicleId: string;
   lessorId: string;
   driverId: string;
+  /** Сменщик: им проверяется разрез недели — два листа одной недели с разным составом (С2). */
+  standInDriverId: string;
   organizationId: string;
   seriesId: string;
 }
@@ -358,7 +395,17 @@ async function makeSpecialRequest(
 }
 
 /** Лист ЭСМ-2 на неделю работы машины: рейса у него нет, есть заявка и период. */
-async function makeEsm2(input: { requestId: string; from: string; to: string }): Promise<string> {
+/**
+ * Недельный ЭСМ-2 заявки. Состав по умолчанию один на весь файл — разрез недели проверяется тем,
+ * что второму отрезку он задаётся явно: одинаковый состав и разный различает как раз пояснение.
+ */
+async function makeEsm2(input: {
+  requestId: string;
+  from: string;
+  to: string;
+  driverPersonId?: string;
+  vehicleId?: string;
+}): Promise<string> {
   const { db, schema } = ctx;
   const [row] = await db
     .insert(schema.waybills)
@@ -367,8 +414,8 @@ async function makeEsm2(input: { requestId: string; from: string; to: string }):
       number: nextWaybillNumber,
       formCode: 'esm2',
       organizationId: ctx.organizationId,
-      vehicleId: ctx.specialVehicleId,
-      driverPersonId: ctx.driverId,
+      vehicleId: input.vehicleId ?? ctx.specialVehicleId,
+      driverPersonId: input.driverPersonId ?? ctx.driverId,
       issuedForDate: input.from,
       sourceRequestId: input.requestId,
       periodFrom: input.from,
@@ -597,6 +644,18 @@ describe.skipIf(!DB_URL)('сводка по путевым листам (жив�
       })
       .returning({ id: schema.persons.id });
 
+    const [standIn] = await db
+      .insert(schema.persons)
+      .values({
+        lastName: `Сменщик${suffix}`,
+        firstName: 'Пётр',
+        middleName: 'Ильич',
+        snils: makeSnils(),
+        phone: '9007654322',
+        comment: 'ТЕСТОВЫЕ ДАННЫЕ: сводка по путевым листам',
+      })
+      .returning({ id: schema.persons.id });
+
     const organization = await db.execute<{ id: string }>(
       sql`SELECT id FROM organizations ORDER BY created_at LIMIT 1`,
     );
@@ -638,6 +697,7 @@ describe.skipIf(!DB_URL)('сводка по путевым листам (жив�
       rentalVehicleId: rentalVehicle!.id,
       lessorId: lessor!.id,
       driverId: driver!.id,
+      standInDriverId: standIn!.id,
       organizationId,
       seriesId: series!.id,
     };
@@ -676,7 +736,9 @@ describe.skipIf(!DB_URL)('сводка по путевым листам (жив�
     await db.delete(schema.vehicleTypes).where(eq(schema.vehicleTypes.id, ctx.linearTypeId));
     await db.delete(schema.counterparties).where(eq(schema.counterparties.id, ctx.lessorId));
     await db.delete(schema.waybillSeries).where(eq(schema.waybillSeries.id, ctx.seriesId));
-    await db.delete(schema.persons).where(eq(schema.persons.id, ctx.driverId));
+    await db
+      .delete(schema.persons)
+      .where(inArray(schema.persons.id, [ctx.driverId, ctx.standInDriverId]));
     await db
       .delete(schema.constructionObjects)
       .where(inArray(schema.constructionObjects.id, [ctx.objectId, ctx.otherObjectId]));
@@ -818,9 +880,15 @@ describe.skipIf(!DB_URL)('сводка по путевым листам (жив�
       from: SPLIT.first,
       to: SPLIT.to,
     });
-    // Понедельник — вторник и среда — пятница: один срок, два состава, два номера.
+    // Понедельник — вторник и среда — пятница: один срок, два состава, два номера. Состав второго
+    // отрезка задаётся явно — на нём и держится всё, что проверяется дальше про разрез.
     const first = await makeEsm2({ requestId: working.id, from: SPLIT.first, to: SPLIT.firstTo });
-    const second = await makeEsm2({ requestId: working.id, from: SPLIT.from, to: SPLIT.to });
+    const second = await makeEsm2({
+      requestId: working.id,
+      from: SPLIT.from,
+      to: SPLIT.to,
+      driverPersonId: ctx.standInDriverId,
+    });
 
     const table = await onsiteOn(SPLIT.from);
     expect(table).not.toBeNull();
@@ -843,6 +911,99 @@ describe.skipIf(!DB_URL)('сводка по путевым листам (жив�
     const wideNumbers = wide!.rows.map((row) => row[0]!.text);
     expect(wideNumbers).toContain(first);
     expect(wideNumbers).toContain(second);
+  });
+
+  it('разрез недели объясняется в письме: пояснение над таблицей называет заявку', async () => {
+    const working = await makeSpecialRequest('разрез с пояснением', {
+      from: EXPLAINED.first,
+      to: EXPLAINED.to,
+    });
+    await makeEsm2({ requestId: working.id, from: EXPLAINED.first, to: EXPLAINED.firstTo });
+    await makeEsm2({
+      requestId: working.id,
+      from: EXPLAINED.from,
+      to: EXPLAINED.to,
+      driverPersonId: ctx.standInDriverId,
+    });
+
+    /*
+     * Сводка на день разреза не видит второй строки — и пояснять ей нечего: человек читает одну
+     * строку, вопроса «почему их две» у него не возникает. Пояснение появляется ровно там, где
+     * появляется вторая строка, а не всюду, где в базе есть разрез.
+     */
+    const single = await onsiteOn(EXPLAINED.from);
+    expect(single!.note).toBeUndefined();
+
+    const wide = await onsiteBetween(EXPLAINED.first, EXPLAINED.to);
+    expect(wide!.note).toBeDefined();
+    // Заявка названа номером в том же виде, в каком она стоит в строке таблицы: пояснение — это
+    // указание, куда смотреть, а не общая фраза про «возможные разрезы».
+    expect(wide!.note).toContain(working.number);
+    expect(wide!.note).toContain('сменился машинист или машина');
+  });
+
+  it('продление внутри недели пояснения не даёт: листа два, а состав один', async () => {
+    const working = await makeSpecialRequest('продление внутри недели', {
+      from: EXTENDED.first,
+      to: EXTENDED.to,
+    });
+    // Срок кончался во вторник, продлён до пятницы — второй лист выписан тем же составом.
+    const first = await makeEsm2({
+      requestId: working.id,
+      from: EXTENDED.first,
+      to: EXTENDED.firstTo,
+    });
+    const second = await makeEsm2({ requestId: working.id, from: EXTENDED.from, to: EXTENDED.to });
+
+    const wide = await onsiteBetween(EXTENDED.first, EXTENDED.to);
+    expect(wide!.total).toBe(2);
+    const numbers = wide!.rows.map((row) => row[0]!.text);
+    expect(numbers).toContain(first);
+    expect(numbers).toContain(second);
+    /*
+     * Строки различает один период, и объяснять тут нечего: пояснение про смену исполнителя было
+     * бы прямой неправдой. Признак потому и считается по составу, а не по числу листов недели.
+     */
+    expect(wide!.note).toBeUndefined();
+  });
+
+  it('месяц с двумя сменами: строк по числу листов, а заявка в пояснении названа один раз', async () => {
+    const working = await makeSpecialRequest('месяц со сменами', {
+      from: MONTH.from,
+      to: MONTH.to,
+    });
+    // Четыре недели: в первой и третьей — смена машиниста, во второй и четвёртой — один лист.
+    await makeEsm2({ requestId: working.id, from: MONTH.from, to: '2099-11-03' });
+    await makeEsm2({
+      requestId: working.id,
+      from: MONTH.firstCut,
+      to: '2099-11-08',
+      driverPersonId: ctx.standInDriverId,
+    });
+    await makeEsm2({
+      requestId: working.id,
+      from: MONTH.secondWeek,
+      to: '2099-11-15',
+      driverPersonId: ctx.standInDriverId,
+    });
+    await makeEsm2({ requestId: working.id, from: '2099-11-16', to: '2099-11-17' });
+    await makeEsm2({
+      requestId: working.id,
+      from: MONTH.thirdCut,
+      to: '2099-11-22',
+      driverPersonId: ctx.standInDriverId,
+    });
+    await makeEsm2({ requestId: working.id, from: MONTH.fourthWeek, to: MONTH.to });
+
+    const table = await onsiteBetween(MONTH.from, MONTH.to);
+    // Объём письма — это и есть предмет: шесть листов дают шесть строк, склеивать их нечем.
+    expect(table!.total).toBe(6);
+    expect(table!.rows).toHaveLength(6);
+
+    // Заявка разрезана дважды, но в пояснении названа один раз: перечисляются заявки, а не разрезы.
+    const note = table!.note ?? '';
+    expect(note.split(working.number)).toHaveLength(2);
+    expect(note).toContain('Неделя заявки');
   });
 
   it('строк больше лимита — печатается лимит, а счётчик остаётся полным', async () => {

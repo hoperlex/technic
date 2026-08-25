@@ -56,7 +56,15 @@ import {
   ensureCommandHistory,
   planAssignmentHistory,
 } from './assignment-ensure';
-import { historyIsAuthoritative } from './assignment-mode';
+import { historyIsAuthoritative, type AssignmentModeSnapshot } from './assignment-mode';
+// Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
+// провенансом. Своя копия этого решения в каждой двери разошлась бы молча — и разошлась бы там,
+// где тратятся номера бланков строгой отчётности.
+import {
+  applyAssignmentPaper,
+  assertAssignmentPaperConverged,
+  paperFollowsHistory,
+} from './assignment-paper';
 import {
   applyAssignmentMutations,
   readAssignmentChanges,
@@ -67,16 +75,15 @@ import {
   type AssignmentWriteResult,
 } from './assignment-write';
 import {
+  esm2ScopedPlanOfSheetPlan,
   esm2SheetPlan,
   legacyComparableKey,
   normalizeRangeSet,
   rangeSetCovers,
-  sheetMatchesWanted,
   toLegacyComparable,
   type DateRangeSet,
   type Esm2ExistingSheet,
   type Esm2SheetPlan,
-  type Esm2WantedSheet,
 } from './esm2-plan';
 import { correctionFingerprint } from './waybill-correction';
 import { buildEsm2SyncPlan, syncEsm2Waybills, type Esm2SyncResult } from './waybill-esm2';
@@ -109,17 +116,19 @@ import type { db as AppDb } from '../db/client';
  * занятость, и переигрывает его дверь ремонта. Линейный заказ этой дверью не ходит (Р14): машиниста
  * там называют при выписке каждого листа.
  *
- * ПОЧЕМУ РЯДОМ С НОВЫМ ПЛАНОМ ЛИСТОВ ЖИВЁТ СТАРАЯ СВЕРКА. Этап 3 — dual-write **с паритетом старой
- * бумаги** (§10 п. 2, решения Б1, В3, Д1): история пишется по-новому, а листы по-прежнему ведёт
- * недельная `syncEsm2Waybills`, и допускаются только те команды, которые она способна исполнить.
- * Критерий не календарный, а вычисляемый, и считается он под той же блокировкой: документы обязаны
- * совпасть (`legacyComparable(старый план) == legacyComparable(новый план)`), а человек в них —
- * быть тем единственным, которого сверка умеет напечатать. Отсюда три вещи, которые иначе
- * выглядели бы произволом:
+ * ПОЧЕМУ РЯДОМ С НОВЫМ ПЛАНОМ ЛИСТОВ ЖИВЁТ СТАРАЯ СВЕРКА — И ДО КАКОГО МОМЕНТА. Ответ даёт **режим
+ * чтения**, а не календарь и не дверь (§10).
  *
- * - **дремлющая команда (Р24) до переключения чтения отвергается** — дата обязана лежать внутри
- *   срока. Именно дремлющие изменения и есть единственный источник «сегодня планы совпали, а
- *   завтра, после продления срока, разойдутся» (Д1);
+ * При `read_mode = legacy` идёт dual-write **с паритетом старой бумаги** (§10 п. 2, решения Б1, В3,
+ * Д1): история пишется по-новому, а листы по-прежнему ведёт недельная `syncEsm2Waybills`, и
+ * допускаются только те команды, которые она способна исполнить. Критерий вычисляемый и считается
+ * под той же блокировкой: документы обязаны совпасть (`legacyComparable(старый план) ==
+ * legacyComparable(новый план)`), а человек в них — быть тем единственным, которого сверка умеет
+ * напечатать. Отсюда три отказа, которые иначе выглядели бы произволом:
+ *
+ * - **дремлющая команда (Р24) отвергается** — дата обязана лежать внутри срока. Именно дремлющие
+ *   изменения и есть единственный источник «сегодня планы совпали, а завтра, после продления
+ *   срока, разойдутся» (Д1);
  * - **дата в середине уже выписанной недели отвергается** — старый алгоритм такой границы не
  *   воспроизводит: он переписал бы неделю целиком одним человеком, а новый режет её надвое (Б1).
  *   Якорь на среду при сроке со среды при этом **проходит**: там оба плана дают тот же документ;
@@ -129,9 +138,13 @@ import type { db as AppDb } from '../db/client';
  *   саму работу двери), поэтому кого напечатает исполнитель, спрашивается отдельной проверкой —
  *   и спрашивается **до** сравнения документов, чтобы причина отказа была настоящей (Ю49).
  *
- * Снимается гейт вместе с переключением чтения (этап 5), и там же шаг 12 переезжает с недельной
- * сверки на исполнителя отрезкового плана. Пока такого исполнителя нет, план на отрезках считается
- * (он и есть предмет предпросмотра и постусловия), а исполняет его доказанно равный ему старый.
+ * При `read_mode = history` гейта нет вовсе, и все три отказа исчезают вместе с ним: шаг 12
+ * исполняет сам отрезковый план (`syncCrewPaper` → `applyAssignmentPaper`), а он несёт машину и
+ * человека в каждом элементе `issue` — то есть умеет и разрез посреди недели, и разных людей в
+ * соседних листах. Именно это делает достижимой плановую смену будущей датой (Ю49).
+ *
+ * Гейт при этом **снимается режимом, а не удаляется**: переключение обратимо (§10), и после отката
+ * недельная сверка снова остаётся единственным исполнителем — вместе с её границами.
  *
  * ГДЕ ГРАНИЦА С КАРКАСОМ. Порядок транзакции, блокировки, отпечаток, журнал коррекций, версия и
  * аудит принадлежат `assignment-command.ts`; запись строк — `assignment-write.ts`; проекции
@@ -190,8 +203,9 @@ export interface CrewPlan {
   /** Аннулируемые и выписываемые листы — так, как их показывает окно. */
   preview: { cancel: AssignmentPlanCancelDto[]; issue: AssignmentPlanIssueDto[] };
   /**
-   * Машинист, действующий на день расчёта **после** команды. Им идёт недельная сверка шага 12:
-   * «машинист заявки» у неё один, и другого значения, совместимого со старой бумагой, нет.
+   * Машинист, действующий на день расчёта **после** команды. Им идёт недельная сверка шага 12 в
+   * режиме `legacy`: «машинист заявки» у неё один, и другого значения, совместимого со старой
+   * бумагой, нет. В `history` поле не читается вовсе — там человека несёт каждый отрезок плана.
    */
   legacyDriverPersonId: string | null;
   /** Режим ведения листов (`esm2Mode`): `none` — бумаги у заявки нет вовсе. */
@@ -200,6 +214,15 @@ export interface CrewPlan {
   ownershipByVehicle: Map<string, VehicleOwnership>;
   /** Срок заявки, каким его прочитал каркас. */
   term: AssignmentTerm;
+  /**
+   * Действующие листы заявки и их напечатанные номера — прочитанные шагом 6 и **один раз**.
+   *
+   * Нужны шагу 12: исполнитель отрезкового плана называет сгоревшую бумагу номером, а прочитать
+   * его после аннулирования уже поздно. Второе чтение здесь означало бы, что предпросмотр обещал
+   * одни номера, а журнал назвал другие.
+   */
+  sheets: Esm2ExistingSheet[];
+  sheetNumbers: Map<string, string>;
 }
 
 /** Что дверь пронесла через шаг 12 в аудит. */
@@ -377,6 +400,14 @@ export async function planCrewCommand(
    * В3: гейт совместимости — под той же блокировкой и по гипотетическому состоянию. Старый план
    * считается ровно теми входами, с какими шаг 12 его и исполнит.
    *
+   * **Спрашивается он только в `legacy`** (§10). Гейт существует ради одного: доказать, что работу
+   * отрезкового плана способна исполнить недельная сверка, — а в `history` её исполняет сам
+   * отрезковый план (`syncCrewPaper`), и доказывать нечего. Оставь мы гейт включённым после
+   * переключения — он запретил бы ровно то, ради чего переключение и делалось: разрез посреди
+   * недели и плановую смену машиниста будущей датой (Ю49). Снимается он вместе с чтением, а не
+   * удаляется: режим двигается в обе стороны, и после отката недельная сверка снова единственный
+   * исполнитель.
+   *
    * Проверок две, и порядок между ними смысловой. Первая — **кто** будет напечатан
    * (`assertLegacyDriverReachable`): сверка знает одного машиниста заявки, и команда, оставляющая
    * бумагу области другому человеку, ей неисполнима вовсе. Вторая — **какие документы** выйдут
@@ -393,7 +424,7 @@ export async function planCrewCommand(
    *   у неё не работает, и сравнивать её пустой план с **несуженным** старым значило бы отвергать
    *   отмену дремлющего решения из-за расхождения бумаги, к которому она отношения не имеет.
    */
-  if (requiredAnchors.length === 0 && paperScope.length > 0) {
+  if (!historyIsAuthoritative(mode) && requiredAnchors.length === 0 && paperScope.length > 0) {
     assertLegacyDriverReachable(sheetPlan, paperScope, base.input.wanted, legacyDriverPersonId);
     const legacy = await buildEsm2SyncPlan(tx, {
       requestId: request.id,
@@ -439,6 +470,8 @@ export async function planCrewCommand(
     esm2Mode,
     ownershipByVehicle,
     term,
+    sheets,
+    sheetNumbers: numbers,
   };
 
   return {
@@ -1236,6 +1269,7 @@ export function crewCommandSpec(params: {
         actor: { id: actor.id },
         reason,
         asOf: ctx.asOf,
+        mode: ctx.mode,
         plan: ctx.plan,
         effects: ctx.effects,
         correctionId: ctx.operation?.id ?? null,
@@ -1247,7 +1281,7 @@ export function crewCommandSpec(params: {
       esm2: ctx.paper.esm2,
       history: historySnapshotOf(ctx.write),
     }),
-    audit: (ctx) => crewAuditOf(ctx, reason),
+    audit: (ctx) => crewAuditOf(ctx),
   };
 }
 
@@ -1298,19 +1332,18 @@ function historySnapshotOf(write: AssignmentWriteResult): Record<string, unknown
 }
 
 /**
- * События команды — **данными**: пишет их каркас и в транзакции (§8, шаг 13).
+ * Событие команды — **данными**: пишет его каркас и в транзакции (§8, шаг 13).
  *
- * Событий два, и второе не украшение: исчезнувшая бумага, не названная номером, не объясняется
- * ничем. Сегодня `waybill.esm2_sync` пишется соседними дверями **после** транзакции, через
- * best-effort `writeAudit` ([waybill-esm2.ts](./waybill-esm2.ts)); здесь оно транзакционно с самого
- * начала — иначе у первой же двери истории осталось бы окно «бумага переписана, события нет».
- * Молчаливая сверка событием не является: пустой результат его не пишет.
+ * Событие здесь **одно**, и это не потеря. Переписанную бумагу объясняет `waybill.esm2_sync`, а
+ * пишет его единственный владелец — исполнитель плана (`applyEsm2SyncPlanAndAudit`), той же
+ * транзакцией и шагом раньше. Второе его написание здесь дало бы два события подряд об одной
+ * работе, а вернуть его сюда «на всякий случай» значило бы завести второго владельца строгого
+ * аудита — то самое состояние, из которого шесть внешних вызовов и вывели.
  */
 function crewAuditOf(
   ctx: AssignmentAuditContext<CrewPlan, AssignmentWriteResult, CrewPaper>,
-  reason: string,
 ): AuditEntry[] {
-  const entries: AuditEntry[] = [
+  return [
     {
       action: 'vehicle_request.assignment_change',
       metadata: {
@@ -1329,25 +1362,26 @@ function crewAuditOf(
       },
     },
   ];
-  const esm2 = ctx.paper.esm2;
-  if (esm2.cancelled.length > 0 || esm2.issued.length > 0) {
-    entries.push({
-      action: 'waybill.esm2_sync',
-      metadata: { reason, cancelled: esm2.cancelled, issued: esm2.issued },
-    });
-  }
-  return entries;
 }
 
 // ── Шаг 12: бумага ──
 
 /**
- * Сверка ЭСМ-2 и постусловие Р11.
+ * Сверка ЭСМ-2 и постусловие Р11 — **исполнителя выбирает режим** (§10).
  *
- * Исполняет недельная сверка, а проверяет — отрезковый план: гейт совместимости уже доказал под
- * этой же блокировкой, что оба плана совпадают, поэтому исполнение старым путём и есть исполнение
- * нового плана. Постусловие проверяет результат, а не намерение: в области сверки каждый ожидаемый
- * документ обязан существовать, и ни один действующий лист не должен остаться расходящимся.
+ * В `legacy` бумагу по-прежнему ведёт недельная сверка, а отрезковый план остаётся предметом
+ * предпросмотра и постусловия: гейт совместимости уже доказал под этой же блокировкой, что оба
+ * плана совпадают, поэтому исполнение старым путём и есть исполнение нового плана.
+ *
+ * В `history` тот же шаг исполняет сам отрезковый план (`applyAssignmentPaper`) — тот, который
+ * дверь посчитала шагом 6 и захешировала в отпечаток. Ничего не пересчитывается: пересчёт означал
+ * бы исполнение не того, что человек подтвердил. И только здесь становится достижимой плановая
+ * смена машиниста будущей датой (Ю49): недельная сверка знает **одного** машиниста заявки и
+ * печатает его во всех листах, а отрезковый план несёт человека в каждом элементе `issue`.
+ *
+ * Постусловие остаётся общим и проверяет результат, а не намерение: в области сверки каждый
+ * ожидаемый документ обязан существовать, и ни один действующий лист не должен остаться
+ * расходящимся. Оно же и есть страховка на обеих сторонах переключения.
  *
  * Подписи смен здесь не снимаются, и это правило, а не упущение (Р11): фамилии машиниста в
  * `vehicle_request_shifts` нет вовсе, и переподписывать часы объекту из-за смены человека не за что.
@@ -1359,6 +1393,7 @@ export async function syncCrewPaper(
     actor: { id: string };
     reason: string;
     asOf: string;
+    mode: AssignmentModeSnapshot;
     plan: CrewPlan;
     effects: AssignmentEffects;
     correctionId: string | null;
@@ -1373,58 +1408,43 @@ export async function syncCrewPaper(
     return { esm2: { cancelled: [], issued: [] } };
   }
 
-  const esm2 = await syncEsm2Waybills(tx, {
+  const unlockWaybillIds = params.plan.requiredUnlocks.map((u) => u.waybillId);
+  const esm2 = paperFollowsHistory(params.mode)
+    ? await applyAssignmentPaper(tx, {
+        requestId: params.requestId,
+        actor: params.actor,
+        reason: params.reason,
+        mode: params.mode,
+        effects: params.effects,
+        operationId: params.correctionId,
+        sheetPlan: params.plan.sheetPlan,
+        paperScope: params.plan.paperScope,
+        sheets: params.plan.sheets,
+        displayNumbers: params.plan.sheetNumbers,
+        unlockWaybillIds,
+      })
+    : await syncEsm2Waybills(tx, {
+        requestId: params.requestId,
+        actor: params.actor,
+        reason: params.reason,
+        driverPersonId: params.plan.legacyDriverPersonId,
+        asOf: params.asOf,
+        ...(params.effects.needsCorrection && params.correctionId
+          ? { correction: { id: params.correctionId, unlockWaybillIds } }
+          : {}),
+      });
+
+  await assertAssignmentPaperConverged(tx, {
     requestId: params.requestId,
-    actor: params.actor,
-    reason: params.reason,
-    driverPersonId: params.plan.legacyDriverPersonId,
     asOf: params.asOf,
-    ...(params.effects.needsCorrection && params.correctionId
-      ? {
-          correction: {
-            id: params.correctionId,
-            unlockWaybillIds: params.plan.requiredUnlocks.map((u) => u.waybillId),
-          },
-        }
-      : {}),
-  });
-
-  await assertPaperConverged(tx, params);
-  return { esm2 };
-}
-
-/**
- * Постусловие по `paperScope` (Р11): в области сверки бумага обязана сойтись с разрезом.
- *
- * Проверяется именно **область**, а не весь срок: чинить чужой участок попутно значит менять
- * бумагу, которой человек в предпросмотре не видел. И проверяется по ожиданиям, а не по пустоте
- * плана: пустой план прячет расхождение за `locked`.
- */
-async function assertPaperConverged(
-  tx: AssignmentCommandTx,
-  params: { requestId: string; asOf: string; plan: CrewPlan; effects: AssignmentEffects },
-): Promise<void> {
-  const after = await buildEsm2SyncPlan(tx, { requestId: params.requestId, asOf: params.asOf });
-  if (!after) return;
-  const sheets: Esm2ExistingSheet[] = [...after.input.existing];
-  const plan = esm2SheetPlan(params.plan.segmentsAfter, params.plan.term, sheets, {
+    segmentsAfter: params.plan.segmentsAfter,
+    term: params.plan.term,
     ownershipByVehicle: params.plan.ownershipByVehicle,
-    today: params.asOf,
-    scope: params.plan.paperScope,
-    unlockWaybillIds: params.plan.requiredUnlocks.map((u) => u.waybillId),
-    ...(params.effects.needsCorrection ? { correction: { allowed: true as const } } : {}),
+    paperScope: params.plan.paperScope,
+    unlockWaybillIds,
+    needsCorrection: params.effects.needsCorrection,
   });
-  const missing = plan.wanted.filter(
-    (want: Esm2WantedSheet) =>
-      want.driver.state === 'set' &&
-      rangeSetCovers(params.plan.paperScope, { from: want.from, to: want.to }) &&
-      !sheets.some((sheet) => sheetMatchesWanted(sheet, want)),
-  );
-  if (plan.cancel.length === 0 && missing.length === 0) return;
-  throw err.conflict(
-    'Бумага заявки не сошлась с составом по датам — операция отменена, посмотрите последствия заново',
-    { code: 'assignment_paper_diverged' },
-  );
+  return { esm2 };
 }
 
 // ── Чтение справочников ──
@@ -1482,6 +1502,22 @@ interface PreviewNames {
   persons: Map<string, string>;
 }
 
+/**
+ * План бумаги глазами окна — **одной функцией на двери истории**.
+ *
+ * Заведена ради периодной коррекции: после переключения чтения она переоформляет задетые листы
+ * сама, и показать их человеку обязана тем же способом, каким их называет исполнитель. Своя копия
+ * этого показа разошлась бы с `issueKey`, а по `issueKey` строятся и рукопожатия, и граф замен.
+ */
+export async function assignmentPaperPreviewOf(
+  tx: AssignmentCommandTx,
+  plan: Esm2SheetPlan,
+  sheets: readonly Esm2ExistingSheet[],
+  numbers: ReadonlyMap<string, string>,
+): Promise<{ cancel: AssignmentPlanCancelDto[]; issue: AssignmentPlanIssueDto[] }> {
+  return previewPlanOf(plan, sheets, numbers, await readNames(tx, plan));
+}
+
 /** Имена машин и людей выпускаемых листов: идентификатор нужен команде, имя — человеку. */
 async function readNames(tx: AssignmentCommandTx, plan: Esm2SheetPlan): Promise<PreviewNames> {
   const vehicleIds = new Set(plan.issue.map((i) => i.vehicleId));
@@ -1517,9 +1553,11 @@ async function readNames(tx: AssignmentCommandTx, plan: Esm2SheetPlan): Promise<
 /**
  * План глазами окна: что сгорит и что выпишется.
  *
- * `issueKey` — индекс в плане, отсортированном по `(from, to, vehicleId, driverPersonId)`.
- * Сортировать по идентификатору нельзя вовсе: он появится только после расхода номера, а
- * сгенерированные идентификаторы в отпечаток предпросмотра не входят.
+ * Считается **той же сборкой**, какой его исполнит шаг 12 (`esm2ScopedPlanOfSheetPlan`), а не
+ * своим проходом по `plan.issue`. Причина простая: `issueKey` — это индекс в плане, отсортированном
+ * по `(from, to, vehicleId, driverPersonId)`, и по нему строятся и рукопожатия, и граф замен. Два
+ * места, считающих этот порядок, разошлись бы молча — и человек подтверждал бы один лист, а
+ * исполнитель выписывал другой.
  */
 function previewPlanOf(
   plan: Esm2SheetPlan,
@@ -1527,32 +1565,34 @@ function previewPlanOf(
   numbers: ReadonlyMap<string, string>,
   names: PreviewNames,
 ): { cancel: AssignmentPlanCancelDto[]; issue: AssignmentPlanIssueDto[] } {
-  const cancel = plan.cancel.map((id) => {
-    const sheet = sheets.find((s) => s.id === id);
-    return {
-      waybillId: id,
-      displayNumber: numbers.get(id) ?? id,
-      from: sheet?.periodFrom ?? '',
-      to: sheet?.periodTo ?? '',
-    };
+  const scoped = esm2ScopedPlanOfSheetPlan({
+    plan,
+    // Область предпросмотру не нужна: он показывает, что сгорит и что выпишется, а не сверяет
+    // границы — их уже проверил сам план.
+    scope: [],
+    sheets,
+    displayNumbers: numbers,
+    // Связей замены у показа нет: они рождаются вместе со строкой журнала, которой при просмотре
+    // ещё не существует.
+    withCorrectionLinks: false,
   });
-  const issue = [...plan.issue]
-    .sort((a, b) =>
-      `${a.from}|${a.to}|${a.vehicleId}|${a.driver.personId}` <
-      `${b.from}|${b.to}|${b.vehicleId}|${b.driver.personId}`
-        ? -1
-        : 1,
-    )
-    .map((want, index) => ({
-      issueKey: index,
-      from: want.from,
-      to: want.to,
-      vehicleId: want.vehicleId,
-      vehicleName: names.vehicles.get(want.vehicleId) ?? want.vehicleId,
-      driverPersonId: want.driver.personId,
-      driverName: names.persons.get(want.driver.personId) ?? want.driver.personId,
-    }));
-  return { cancel, issue };
+  return {
+    cancel: scoped.cancel.map((item) => ({
+      waybillId: item.waybillId,
+      displayNumber: item.displayNumber,
+      from: item.period.from,
+      to: item.period.to,
+    })),
+    issue: scoped.issue.map((item) => ({
+      issueKey: item.issueKey,
+      from: item.period.from,
+      to: item.period.to,
+      vehicleId: item.vehicleId,
+      vehicleName: names.vehicles.get(item.vehicleId) ?? item.vehicleId,
+      driverPersonId: item.driverPersonId,
+      driverName: names.persons.get(item.driverPersonId) ?? item.driverPersonId,
+    })),
+  };
 }
 
 // ── Предпросмотр (§7) ──

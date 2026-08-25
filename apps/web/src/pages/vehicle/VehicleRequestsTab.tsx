@@ -22,6 +22,7 @@ import {
   PlusOutlined,
   ReloadOutlined,
   SwapOutlined,
+  UserSwitchOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -31,6 +32,7 @@ import {
   type ConfirmScheduleBody,
   assignmentRateLabel,
   assignmentTitle,
+  canCorrectAssignment,
   canOrderVehicleRequestType,
   canReassignVehicle,
   canRequestEarlyEnd,
@@ -39,6 +41,7 @@ import {
   // Ключ заказчика собирают контракты (план Р2): своего представления о формате в портале нет.
   costTargetKeyOf,
   costTargetOf,
+  esm2Mode,
   type FeedKind,
   feedKindLabels,
   minRequestDateKey,
@@ -75,7 +78,7 @@ import {
   vehicleRequestTypeLabels,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '../../api/resources';
+import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '@shared/ui';
@@ -117,9 +120,12 @@ import { calendarDaysLabel, vehicleRequestDateRules } from '../../utils/date';
 
 import { FilesCell } from '../../components/FileLinks';
 import { VehicleAssignModal } from './VehicleAssignModal';
+import { reassignStaleReason } from './ReassignPreview';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleEsm2Modal } from './VehicleEsm2Modal';
+import { VehicleMachinistModal } from './VehicleMachinistModal';
+import { VehiclePeriodModal, type VehiclePeriodCommand } from './VehiclePeriodModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { VehicleRelocationModal } from './VehicleRelocationModal';
 import { RequestRelocationsField } from './RequestRelocationsField';
@@ -206,6 +212,19 @@ interface FormValues {
    * заявки уехало бы в следующую, заведённую в том же окне.
    */
   backdateReason?: string;
+}
+
+/**
+ * Вход сохранения формы: значения плюс уже проведённая правка срока (волна 4a плана
+ * `docs/assignment-periods-plan.md`).
+ *
+ * `period` приходит там, где срок ушёл своей дверью, и несёт две вещи, которых у формы больше нет:
+ * **свежую версию** заявки (дверь её подняла — старая ответила бы 409) и признак того, что
+ * календарь этой правкой уже сдвинут, а значит второй записи в журнал коррекций не положено.
+ */
+interface SaveInput {
+  v: FormValues;
+  period?: VehicleRequestPeriodResultDto;
 }
 
 /**
@@ -711,6 +730,20 @@ export function VehicleRequestsTab() {
    */
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
 
+  /**
+   * Правка срока, ждущая своей двери: заявка, каким срок станет и значения формы, которые
+   * досохранятся следом (волна 4a плана `docs/assignment-periods-plan.md`).
+   *
+   * Состоянием, а не флагом внутри мутации: между «нажал Сохранить» и «подтвердил последствия»
+   * стоит окно, и значения формы обязаны пережить его — форма к этому моменту уже отработала свои
+   * правила, и спрашивать их заново было бы вторым прогоном тех же полей.
+   */
+  const [periodSave, setPeriodSave] = useState<{
+    request: SpecialEquipmentRequestDto;
+    command: VehiclePeriodCommand;
+    values: FormValues;
+  } | null>(null);
+
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
@@ -800,7 +833,7 @@ export function VehicleRequestsTab() {
   };
 
   const saveMut = useMutation({
-    mutationFn: (v: FormValues) => {
+    mutationFn: ({ v, period }: SaveInput) => {
       // Выбрана одна позиция классификатора (ADR 0028) — в API она уходит парой «тип +
       // категория»: категория пуста у типа, у которого её и не бывает.
       const picked = parseVehicleClassificationKey(v.classificationKey)!;
@@ -808,8 +841,13 @@ export function VehicleRequestsTab() {
        * Задним числом (ADR 0101): причина и ключ операции едут только тогда, когда операция
        * действительно уходит в прошлое. Слать их всегда нельзя — сервер завёл бы запись коррекции
        * на обычную дневную работу, и журнал правок бланков наполнился бы заявками на завтра.
+       *
+       * Срок, уже проведённый своей дверью, календарь этой правки больше не двигает: даты в теле
+       * совпадают с теми, что лежат в заявке, и причина здесь означала бы вторую запись журнала
+       * коррекций за одну и ту же правку — объяснение человек дал двери срока.
        */
-      const backdate = backdated ? { backdateReason: v.backdateReason?.trim(), operationId } : {};
+      const backdate =
+        backdated && !period ? { backdateReason: v.backdateReason?.trim(), operationId } : {};
       /*
        * Заказчик — парой колонок из выбранной опции (Р2, Р2а): род и идентификатор лежат в ней
        * данными, и разбирать строку на каждом сохранении незачем.
@@ -829,7 +867,9 @@ export function VehicleRequestsTab() {
       const retyping = !!record && record.requestType !== v.requestType;
       const edit = record
         ? {
-            version: record.version,
+            // Версия — та, что вернула дверь срока, если она отработала перед этим: заявку она
+            // изменила, и прежняя версия ответила бы 409 на правку, которую человек уже начал.
+            version: period?.version ?? record.version,
             addFileIds: editor.newFileIds(),
             removeFileIds: editor.removedIds,
           }
@@ -972,6 +1012,30 @@ export function VehicleRequestsTab() {
   };
 
   /**
+   * Идёт ли эта правка срока через свою дверь — и каким срок станет (Ж4, З5, И5).
+   *
+   * `null` — двери здесь нет, и срок уходит прежним, широким маршрутом. Так бывает в четырёх
+   * случаях, и каждый из них не «пока не сделали», а свойство самой правки:
+   *
+   * - **срок не менялся**: дверь пустую команду и не примет — она подняла бы версию заявки и
+   *   оставила бы в журнале строку без предмета;
+   * - **не заказ техники на объект**: у грузоперевозки срока работ нет вовсе;
+   * - **заявка «Новая»**: ни техники, ни бумаги, ни истории — предпросмотру нечего показать, а
+   *   гасить нечего. До cutover её срок ведёт широкий маршрут, и это законный путь (И5);
+   * - **нет права читать бумагу**: последствия показывает предпросмотр, а он живёт на
+   *   `waybills.read`; роль без него упёрлась бы в 403 посреди сохранения.
+   */
+  const periodDoorCommand = (v: FormValues): VehiclePeriodCommand | null => {
+    if (!record || record.requestType !== 'special_equipment') return null;
+    if (v.requestType !== 'special_equipment') return null;
+    if (record.status === 'new' || !can('waybills.read')) return null;
+    const dateFrom = v.dateFrom!.format('YYYY-MM-DD');
+    const dateTo = v.dateTo ? v.dateTo.format('YYYY-MM-DD') : null;
+    if (dateFrom === record.dateFrom && dateTo === record.dateTo) return null;
+    return { dateFrom, dateTo };
+  };
+
+  /**
    * Переоформление спрашиваем, обычное сохранение — нет. Заявка при смене типа не просто меняет
    * значения: поля прежнего типа исчезают вместе с деталью, и виза, если её ставил не тот, кто
    * правит, уходит следом. Перечень — по самой заявке (`retypeErases`), а не общими словами:
@@ -979,7 +1043,19 @@ export function VehicleRequestsTab() {
    */
   const submit = (v: FormValues) => {
     if (!record || record.requestType === v.requestType) {
-      saveMut.mutate(v);
+      /*
+       * Правка срока — своя дверь (план `docs/assignment-periods-plan.md`, волна 4a; Ж4, З5, Д2).
+       * Сохранение при этом распадается на две команды: у срока свои последствия и свои
+       * рукопожатия, и «продлить и заодно поправить комментарий» одним телом не бывает. Сначала
+       * срок — он показывает цену и берёт подтверждения, — потом остальное с версией, которую он
+       * вернул.
+       */
+      const command = periodDoorCommand(v);
+      if (command && record?.requestType === 'special_equipment') {
+        setPeriodSave({ request: record, command, values: v });
+        return;
+      }
+      saveMut.mutate({ v });
       return;
     }
     // Право визы у себя же заявку не отбирает (ADR 0025): визирующий подтверждает переоформление
@@ -1003,7 +1079,7 @@ export function VehicleRequestsTab() {
       okText: 'Переоформить',
       okButtonProps: { danger: true },
       cancelText: 'Отмена',
-      onOk: () => saveMut.mutateAsync(v),
+      onOk: () => saveMut.mutateAsync({ v }),
     });
   };
 
@@ -1062,6 +1138,13 @@ export function VehicleRequestsTab() {
   const [completeTarget, setCompleteTarget] = useState<VehicleRequestDto | null>(null);
   // Смена машины у работающей заявки (ADR 0048) — своим запросом: статус при ней не меняется.
   const [reassignTarget, setReassignTarget] = useState<VehicleRequestDto | null>(null);
+  /**
+   * Смена машиниста внутри срока и «Состав по датам» (план `docs/assignment-periods-plan.md`,
+   * §9); `null` — окно закрыто. Своё окно, а не поле в окне смены техники: там меняют, чем заявку
+   * выполняют, — машину, ставки и рейс, — а здесь одно решение о человеке и о дате, с которой он
+   * работает.
+   */
+  const [machinistTarget, setMachinistTarget] = useState<SpecialEquipmentRequestDto | null>(null);
   /** Заявка, которую переносят в другой рейс (ADR 0052); null — окно переноса закрыто. */
   /** Заведение перегона: заявка и что именно заводим — доставку или вывоз. */
   const [relocation, setRelocation] = useState<{
@@ -1079,11 +1162,19 @@ export function VehicleRequestsTab() {
       assignment: AssignVehicleBody;
       /** Смена машины задним числом (ADR 0101, Р8): причина, ключ операции и листы к перевыписке. */
       correction?: CorrectAssignmentBody;
+      /**
+       * Отпечаток последствий, показанных вторым шагом окна (волна 4a плана
+       * `docs/assignment-periods-plan.md`): им сервер сверяет под блокировками, что обещанное
+       * человеку ещё верно. Не приходит там, где предпросмотра не было вовсе, — у грузоперевозки и
+       * у сервера старее портала.
+       */
+      previewFingerprint?: string;
     }) =>
       vehicleRequestsApi.changeAssignment(v.id, {
         ...v.assignment,
         version: v.version,
         ...(v.correction ? { correction: v.correction } : {}),
+        ...(v.previewFingerprint ? { previewFingerprint: v.previewFingerprint } : {}),
       }),
     onSuccess: (_updated, v) => {
       message.success(v.correction ? 'Назначение исправлено задним числом' : 'Техника изменена');
@@ -1095,7 +1186,15 @@ export function VehicleRequestsTab() {
       void qc.invalidateQueries({ queryKey: ['waybills'] });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
-    onError: (e) => message.error(errorMessage(e)),
+    /*
+     * «Последствия изменились» — не ошибка, а вопрос, и отвечает на него окно: оно спрашивает план
+     * заново и показывает пересчитанный перечень с объяснением, почему вернулось. Тост здесь был бы
+     * вторым голосом о том же — и увёл бы глаз от экрана, на который человеку и надо смотреть.
+     */
+    onError: (e) => {
+      if (reassignStaleReason(e)) return;
+      message.error(errorMessage(e));
+    },
   });
 
   const statusMut = useMutation({
@@ -1214,6 +1313,33 @@ export function VehicleRequestsTab() {
    * тем же, которым отвечает сервер, чтобы кнопка не предлагала отказ.
    */
   const reassignAllowed = (r: VehicleRequestDto) => canChangeStatus && canReassignVehicle(r);
+
+  /**
+   * Сменить машиниста внутри срока заявки (план `docs/assignment-periods-plan.md`, §9).
+   *
+   * Права — те же, какими открыта сама дверь: вести состояние заявки и видеть путевые листы.
+   * Коррекционные (`waybills.correct` и глубже тридцати дней) здесь не спрашиваются нарочно — их
+   * спрашивает сервер и **по посчитанному исходу**, а не по календарю (Р32): плановая смена с
+   * понедельника — обычная работа диспетчера, и запретить её тому, у кого нет права коррекции,
+   * значило бы отнять работающее действие. Отказ по исходу окно показывает словами.
+   *
+   * Состояние заявки спрашивается теми же предикатами, что у смены техники, а режим ведения
+   * бумаги — контрактом `esm2Mode`: у линейного заказа машиниста называют при выписке каждого
+   * листа (ADR 0100 §6), а на арендную машину бланк выписывает арендодатель — истории человека
+   * там не ведётся вовсе, и дверь отвечает на такую команду отказом.
+   */
+  const machinistChangeAllowed = (r: VehicleRequestDto): r is SpecialEquipmentRequestDto =>
+    canChangeStatus &&
+    can('waybills.read') &&
+    r.requestType === 'special_equipment' &&
+    canCorrectAssignment(r) &&
+    esm2Mode({
+      requestType: r.requestType,
+      status: r.status,
+      ownership: r.assignment?.ownership ?? null,
+      deletedAt: r.deletedAt,
+      isLinear: r.isLinear,
+    }) === 'auto';
 
   /** Кнопка смены техники — одна на обе ветки «Действий»: у арендодателя своя короткая. */
   const reassignButton = (r: VehicleRequestDto) => (
@@ -2012,12 +2138,24 @@ export function VehicleRequestsTab() {
             },
           ]
         : [];
-      if (!canEdit && !canDelete) return [view, ...routeActions, ...reassign];
+      /** Смена машиниста — рядом со сменой техники: одно решение о заявке, только о человеке. */
+      const machinist = machinistChangeAllowed(r)
+        ? [
+            {
+              key: 'machinist',
+              label: 'Сменить машиниста',
+              icon: <UserSwitchOutlined />,
+              onClick: () => setMachinistTarget(r),
+            },
+          ]
+        : [];
+      if (!canEdit && !canDelete) return [view, ...routeActions, ...reassign, ...machinist];
       const allowed = canModify(r);
       return [
         view,
         ...routeActions,
         ...reassign,
+        ...machinist,
         ...(decidableEarlyEnd(r)
           ? [
               {
@@ -2391,6 +2529,17 @@ export function VehicleRequestsTab() {
               }
             : undefined
         }
+        // Смена машиниста и «Состав по датам» прямо из карточки: строка «Водитель» отвечает про
+        // сегодня, а вопрос «кто работал в марте» задают, глядя на неё. Карточка закрывается —
+        // команда меняет версию заявки, и её поля позади устареют.
+        onChangeMachinist={
+          viewed && machinistChangeAllowed(viewed)
+            ? (r) => {
+                closeView();
+                if (machinistChangeAllowed(r)) setMachinistTarget(r);
+              }
+            : undefined
+        }
         // Перенос заявки в другой рейс (ADR 0052) — тем же правом, что и ход заявки: рейс это
         // ход работы по ней. Карточка закрывается, потому что после переноса её поля устареют —
         // заявка уедет в другой рейс, а с ним, возможно, и на другую машину.
@@ -2446,6 +2595,26 @@ export function VehicleRequestsTab() {
         onDone={() => setEsm2Target(null)}
       />
 
+      {/* Правка срока — своя дверь (волна 4a плана `docs/assignment-periods-plan.md`): окно
+        показывает, что сгорит и что выпишется, какие решения о технике погасит сокращение, и
+        берёт подтверждения, которых у широкого маршрута нет. Причина, набранная в форме за задний
+        ход, переезжает сюда: человек объясняет одну правку, а не каждую ручку, через которую она
+        проходит. */}
+      <VehiclePeriodModal
+        request={periodSave?.request ?? null}
+        command={periodSave?.command ?? null}
+        reason={periodSave?.values.backdateReason}
+        operationId={operationId}
+        onCancel={() => setPeriodSave(null)}
+        onApplied={(result) => {
+          const pending = periodSave;
+          setPeriodSave(null);
+          // Остальное тело — второй командой: у неё своя дверь и своя версия. Даты в нём те же,
+          // что дверь уже записала, — широкий маршрут их и не тронет.
+          if (pending) saveMut.mutate({ v: pending.values, period: result });
+        }}
+      />
+
       {/* Доставка техники на объект и вывоз с него: рейс перемещения, по которому выписывается
         4-П. Заводится по желанию — технику могут привезти тралом. */}
       <VehicleRelocationModal
@@ -2469,8 +2638,8 @@ export function VehicleRequestsTab() {
         request={assignTarget}
         confirmLoading={statusMut.isPending}
         onCancel={() => setAssignTarget(null)}
-        onSubmit={({ assignment, schedule, previewFingerprint }) =>
-          assignTarget &&
+        onSubmit={({ assignment, schedule, previewFingerprint }) => {
+          if (!assignTarget) return;
           statusMut.mutate({
             id: assignTarget.id,
             status: 'confirmed',
@@ -2481,8 +2650,8 @@ export function VehicleRequestsTab() {
             // Приходит только с отката «Выполнена» → «В работе»: на прочих переходах окно
             // предпросмотра не зовёт и обещать серверу нечего.
             previewFingerprint,
-          })
-        }
+          });
+        }}
       />
 
       {/* Смена техники у заявки в работе (ADR 0048): то же окно подбора, но без фактического
@@ -2492,15 +2661,33 @@ export function VehicleRequestsTab() {
         mode="reassign"
         confirmLoading={reassignMut.isPending}
         onCancel={() => setReassignTarget(null)}
-        onSubmit={({ assignment, correction }) =>
-          reassignTarget &&
-          reassignMut.mutate({
-            id: reassignTarget.id,
-            version: reassignTarget.version,
-            assignment,
-            correction,
-          })
+        // `mutateAsync`, а не `mutate`: окно ждёт ответа сервера — 409 «последствия изменились»
+        // лечится повторным показом, и узнать об отказе обязано именно оно (волна 4a).
+        onSubmit={({ assignment, correction, previewFingerprint }) =>
+          reassignTarget
+            ? reassignMut.mutateAsync({
+                id: reassignTarget.id,
+                version: reassignTarget.version,
+                assignment,
+                correction,
+                previewFingerprint,
+              })
+            : undefined
         }
+      />
+
+      {/* Смена машиниста внутри срока и «Состав по датам» (план `docs/assignment-periods-plan.md`,
+          §9): окно показывает историю заявки отрезками, спрашивает человека и дату, а перед
+          записью — цену действия. Окно остаётся открытым после команды: состав по датам обновится
+          в нём же, и вторая смена подряд идёт уже с новой версией заявки. */}
+      <VehicleMachinistModal
+        request={machinistTarget}
+        onCancel={() => setMachinistTarget(null)}
+        onApplied={() => {
+          // Списки за окном устарели: у заявки другая версия, а у недель — другие номера бланков.
+          void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+          void qc.invalidateQueries({ queryKey: ['waybills'] });
+        }}
       />
 
       {/* Выполнение: отработанное время и стоимость (ADR 0029). Факт уходит тем же запросом,

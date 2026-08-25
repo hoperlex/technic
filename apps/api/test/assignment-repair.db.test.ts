@@ -1,9 +1,7 @@
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
-import pg from 'pg';
+import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { moscowDateKeyOf, shiftDateKey, type Role } from '@technic/contracts';
-import { applyMigrations } from '../src/db/migration-journal';
+import { moscowDateKeyOf, shiftDateKey, weekStartKey, type Role } from '@technic/contracts';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
@@ -11,12 +9,16 @@ import type { db as AppDb } from '../src/db/client';
 import type * as AssignmentEffects from '../src/services/assignment-effects';
 import type * as AssignmentRepair from '../src/services/assignment-repair';
 import type * as AssignmentWrite from '../src/services/assignment-write';
+import type * as Esm2 from '../src/services/waybill-esm2';
+import { byReadMode, describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 
 /*
- * ФАЙЛУ НУЖНА СВОЯ БАЗА (`ap_repair`). Каждая команда здесь берёт управляющую строку модуля
- * `FOR SHARE` (шаг 0 канона), а соседние файлы модуля эту же строку меняют и замораживают (план
- * Ю27, Ю30). Прогон по общей `TEST_DATABASE_URL` дал бы падение, которое выглядит поломкой кода, а
- * не гонкой файлов.
+ * ФАЙЛУ НУЖНА СВОЯ БАЗА. Каждая команда здесь берёт управляющую строку модуля `FOR SHARE` (шаг 0
+ * канона), а соседние файлы модуля эту же строку меняют и замораживают (план Ю27, Ю30). Мало того,
+ * теперь файл её и **двигает** сам — блок бумаги идёт двумя режимами, — так что общая база топила
+ * бы соседей не гонкой, а прямой записью. Заводит и сносит базу механика `useReadModeDatabase`
+ * ([assignment-read-mode.ts](assignment-read-mode.ts)); вне блока бумаги режим остаётся тем, каким
+ * его привозит миграция `0167`, — `legacy`.
  */
 
 /**
@@ -41,13 +43,24 @@ import type * as AssignmentWrite from '../src/services/assignment-write';
  *    (Ц4 — иначе человек прочёл бы «лишнее поле» вместо объяснения) и упирается в `409
  *    backdated_issue_not_authorized` на обеих ручках;
  * 5. **решение хвоста** (Р31) — дремлющая граница значением назначения, её провенанс и группа, и
- *    переключение на `history_wins` одной транзакцией.
+ *    переключение на `history_wins` одной транзакцией;
+ * 6. **бумага починенной истории** (§10, этап 5) — единственный предмет файла, у которого поведение
+ *    зависит от **режима чтения**, и потому единственный, что идёт двумя прогонами: в `legacy`
+ *    дверь бумаги не трогает вовсе (её ведёт недельная сверка, знающая одного машиниста на заявку),
+ *    в `history` тот же ремонт переоформляет листы по отрезкам истории.
+ *
+ * ПОЧЕМУ ДВУМЯ ПРОГОНАМИ ИДЁТ ТОЛЬКО ШЕСТОЙ. Остальные пять сцен бумаги не имеют вовсе
+ * (`issueSheets` у них не стоит), и шаг 12 в них — пустой план в обоих режимах: две половины
+ * ожиданий совпадали бы навсегда, а не до cutover. Оборачивать их значило бы удвоить прогон ради
+ * одинаковых чисел и спрятать единственное настоящее расхождение среди двадцати восьми мнимых.
  *
  * ПОЧЕМУ ЧАСТЬ ТЕСТОВ ИДЁТ ПО HTTP, А ЧАСТЬ — ПО СЕРВИСУ. Права, отпечаток и идемпотентность живут
  * в ручке и проверяются только через неё. Правила заполнения живут в чистом планировщике, и гонять
- * их через HTTP значило бы проверять флаг вместо правил — а флаг сегодня закрыт.
+ * их через HTTP значило бы проверять флаг вместо правил — а флаг сегодня закрыт. Бумага — снова по
+ * HTTP: шаг 12 ремонта живёт в **ручке** (`syncPaper` её команды), и вызов сервиса напрямую прошёл
+ * бы мимо предмета.
  *
- * Запуск (миграции тест накатывает сам):
+ * Запуск (база из переменной может быть любой — своя всё равно заводится рядом и сносится следом):
  *
  *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/ap_repair \
  *     npx vitest run test/assignment-repair.db.test.ts
@@ -55,7 +68,9 @@ import type * as AssignmentWrite from '../src/services/assignment-write';
  * Без `TEST_DATABASE_URL` файл пропускается — как и остальные `*.db.test.ts`.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+/** Своя база и режим чтения на ней; стоит до собственного `beforeAll` — см. шапку механики. */
+const readMode = useReadModeDatabase('repair');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 /** Метки своих строк: уборка идёт по ним, а не «по последним записям». */
 const EMAIL_PREFIX = 'db-ap-repair';
@@ -71,6 +86,24 @@ const NEAR_FROM = shiftDateKey(TODAY, -20);
 const DEEP_FROM = shiftDateKey(TODAY, -60);
 const TERM_TO = shiftDateKey(TODAY, 10);
 
+/*
+ * Календарь блока бумаги. Он **недельный**, и это не украшение: сцена кладёт листы прежней,
+ * недельной сверкой, и её единица — календарная неделя. Если бы сцена считала границы сама,
+ * проверять было бы нечего — она нарисовала бы ровно тот разрез, который ждёт от двери.
+ */
+/** Понедельник текущей недели. */
+const MONDAY = weekStartKey(TODAY);
+/** Понедельник прошлой недели: к сегодня её лист уже отработан и потому заперт (Р21). */
+const PREV_MONDAY = shiftDateKey(MONDAY, -7);
+/** Воскресенье текущей недели — конец срока бумажной сцены: две недели работы. */
+const PAPER_TO = shiftDateKey(MONDAY, 6);
+/** Понедельник следующей недели. */
+const NEXT_MONDAY = shiftDateKey(MONDAY, 7);
+/** Воскресенье следующей недели: срок сцены частичного ремонта — три недели. */
+const PAPER_TO_LONG = shiftDateKey(NEXT_MONDAY, 6);
+/** Завтра: день, с которого сцена частичного ремонта снимает машиниста. */
+const TOMORROW = shiftDateKey(TODAY, 1);
+
 interface Account {
   id: string;
   email: string;
@@ -84,6 +117,7 @@ interface Ctx {
   repair: typeof AssignmentRepair;
   write: typeof AssignmentWrite;
   effects: typeof AssignmentEffects;
+  esm2: typeof Esm2;
   admin: Account;
   dispatcher: Account;
   manager: Account;
@@ -100,28 +134,12 @@ let seq = 0;
 
 beforeAll(async () => {
   if (!DB_URL) return;
-  process.env.DATABASE_URL = DB_URL;
-  process.env.NODE_ENV ??= 'test';
-  process.env.PUBLIC_ORIGIN ??= 'http://localhost:5173';
-  process.env.COOKIE_SECRET ??= 'test-cookie-secret-0123456789abcdef';
-  process.env.CSRF_SECRET ??= 'test-csrf-secret-0123456789abcdef';
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  process.env.JWT_PRIVATE_KEY_PEM = String(privateKey.export({ type: 'pkcs8', format: 'pem' }));
-  process.env.JWT_PUBLIC_KEY_PEM = String(publicKey.export({ type: 'spki', format: 'pem' }));
-  process.env.S3_ENDPOINT ??= 'http://localhost:9000';
-  process.env.S3_BUCKET ??= 'test';
-  process.env.S3_ACCESS_KEY_ID ??= 'test';
-  process.env.S3_SECRET_ACCESS_KEY ??= 'test-secret';
-  process.env.LOG_LEVEL ??= 'error';
+  /*
+   * Окружение и миграции своей базы — уже за механикой режима: её `beforeAll` зарегистрирован
+   * раньше этого и успевает выставить `DATABASE_URL` до первого импорта сервиса. Здесь остаётся
+   * только то, чего она не знает: почта у приложения выключена явно, чтобы прогон не ходил наружу.
+   */
   process.env.MAIL_ENABLED = 'false';
-
-  const client = new pg.Client({ connectionString: DB_URL });
-  await client.connect();
-  try {
-    await applyMigrations(client);
-  } finally {
-    await client.end();
-  }
 
   const { buildApp: build } = await import('../src/app');
   const { db, closeDb } = await import('../src/db/client');
@@ -133,6 +151,7 @@ beforeAll(async () => {
     repair: await import('../src/services/assignment-repair'),
     write: await import('../src/services/assignment-write'),
     effects: await import('../src/services/assignment-effects'),
+    esm2: await import('../src/services/waybill-esm2'),
   } as Ctx;
   await cleanup();
 
@@ -174,7 +193,15 @@ async function cleanup(): Promise<void> {
   const db = ctx.db;
   await db.execute(sql`DELETE FROM audit_log WHERE entity_type = 'vehicle_request' AND entity_id IN (
     SELECT id::text FROM vehicle_requests WHERE comment = ${REQUEST_MARK})`);
-  // Заявки первыми: строки истории ссылаются на операции под RESTRICT, и уносит их каскад заявки.
+  /*
+   * Листы ЭСМ-2 — раньше заявок: `waybills.source_request_id` стоит под RESTRICT, и заявка с
+   * выписанной бумагой не удалилась бы вовсе. Одним запросом уносятся и заменённые, и заменяющие:
+   * самоссылка `corrects_waybill_id` проверяется в конце запроса, а не построчно.
+   */
+  await db.execute(sql`
+    DELETE FROM waybills WHERE source_request_id IN (
+      SELECT id FROM vehicle_requests WHERE comment = ${REQUEST_MARK})`);
+  // Заявки следом: строки истории ссылаются на операции под RESTRICT, и уносит их каскад заявки.
   await db.execute(sql`DELETE FROM vehicle_requests WHERE comment = ${REQUEST_MARK}`);
   await db.execute(sql`
     DELETE FROM waybill_corrections WHERE actor_user_id IN (
@@ -183,12 +210,19 @@ async function cleanup(): Promise<void> {
   await db.execute(sql`DELETE FROM persons WHERE comment = ${PERSON_MARK}`);
 }
 
+/**
+ * Работник со **действующей специализацией водителя**: без неё человек в лист не попадает вовсе
+ * (`findMachinist`), и сцена блока бумаги получила бы «Выберите машиниста» вместо листов.
+ */
 async function newPerson(lastName: string): Promise<string> {
   const [row] = (
     await ctx.db.execute<{ id: string }>(sql`
       INSERT INTO persons (last_name, first_name, comment)
       VALUES (${lastName}, 'Пров', ${PERSON_MARK}) RETURNING id`)
   ).rows;
+  await ctx.db.execute(sql`
+    INSERT INTO person_specializations (person_id, specialization_id, started_on)
+    SELECT ${row!.id}, id, ${shiftDateKey(DEEP_FROM, -400)} FROM specializations WHERE code = 'driver'`);
   return row!.id;
 }
 
@@ -233,6 +267,15 @@ interface SceneOptions {
     origin?: string;
     group?: string;
   }[];
+  /**
+   * Выписать бумагу **прежней, недельной сверкой** — на весь срок и расчётом от его начала.
+   *
+   * Именно ею, а не прямой вставкой: сцена обязана дать двери ту бумагу, какую заявка носит
+   * сегодня в бою, — по листу на календарную неделю, все с одним машинистом. Расчёт от `dateFrom`
+   * нужен затем, чтобы лист достался и уже отработанной неделе: без неё нечего было бы запирать
+   * (Р21) и нечего разблокировать поимённо (Р11).
+   */
+  issueSheets?: { driverPersonId: string; asOf?: string };
 }
 
 interface Scene {
@@ -284,6 +327,25 @@ async function makeScene(options: SceneOptions = {}): Promise<Scene> {
       VALUES (${requestId}, ${row.effectiveDate}, ${row.dimension}, ${row.vehicleId ?? null},
               ${row.driverPersonId ?? null}, ${row.driverState ?? null},
               ${row.origin ?? 'backfill'}, ${groupId})`);
+  }
+  if (options.issueSheets) {
+    const { driverPersonId } = options.issueSheets;
+    const issueAsOf = options.issueSheets.asOf ?? dateFrom;
+    await ctx.db.transaction(async (tx) => {
+      await ctx.esm2.syncEsm2Waybills(tx, {
+        requestId,
+        actor: { id: ctx.admin.id },
+        reason: 'сцена теста: бумага на весь срок',
+        driverPersonId,
+        asOf: issueAsOf,
+      });
+    });
+    /*
+     * След подготовки из журнала убирается: владелец события сверки один, и пишет он его в той же
+     * транзакции, что и листы, — в том числе когда сверку зовёт сцена. Утверждения о журнале
+     * говорят о **ремонте**, а не о декорациях.
+     */
+    await ctx.db.execute(sql`DELETE FROM audit_log WHERE entity_id = ${requestId}`);
   }
   return { requestId, version: 0 };
 }
@@ -1442,5 +1504,273 @@ describe('допуск, отпечаток и повтор', () => {
          WHERE correction_id = ${row!.id} AND request_id = ${scene.requestId}`)
     ).rows;
     expect(Number(link!.n)).toBe(1);
+  });
+});
+
+// ── 6. Бумага починенной истории: режим решает, кто её ведёт (§10, шаг 12, этап 5) ──
+
+interface SheetRow {
+  id: string;
+  period_from: string;
+  period_to: string;
+  vehicle_id: string;
+  driver_person_id: string;
+  status: string;
+}
+
+/** Все листы заявки — и действующие, и сгоревшие: номер бланка не исчезает вместе со статусом. */
+async function sheetsOf(requestId: string): Promise<SheetRow[]> {
+  return (
+    await ctx.db.execute<SheetRow>(sql`
+      SELECT id, period_from, period_to, vehicle_id, driver_person_id, status
+        FROM waybills WHERE source_request_id = ${requestId}
+       ORDER BY period_from, id`)
+  ).rows;
+}
+
+/**
+ * Действующий лист **составом**: границы, машина, человек — то, чем документы и различаются.
+ *
+ * Числом здесь не обойтись, и это не придирка: в первом случае блока листов до ремонта два и после
+ * ремонта два. Счётчик сказал бы «ничего не изменилось» ровно там, где бумага переоформлена на
+ * другого человека, — а это и есть та ошибка, ради которой разрез затеян.
+ */
+const compositionOf = (rows: readonly SheetRow[]): string[] =>
+  rows
+    .filter((row) => row.status !== 'cancelled')
+    .map((row) => `${row.period_from}|${row.period_to}|${row.vehicle_id}|${row.driver_person_id}`);
+
+/** Сгоревшие номера — их идентификаторы: переоформление это аннулирование, а не правка бланка. */
+const burnedOf = (rows: readonly SheetRow[]): string[] =>
+  rows
+    .filter((row) => row.status === 'cancelled')
+    .map((row) => row.id)
+    .sort();
+
+const esm2EventsOf = async (
+  requestId: string,
+): Promise<{ metadata: { reason?: string; cancelled?: string[]; issued?: string[] } }[]> =>
+  (
+    await ctx.db.execute<{
+      metadata: { reason?: string; cancelled?: string[]; issued?: string[] };
+    }>(sql`
+      SELECT metadata FROM audit_log
+       WHERE entity_id = ${requestId} AND action = 'waybill.esm2_sync'
+       ORDER BY created_at, id`)
+  ).rows;
+
+/**
+ * Шаг 12 двери ремонта — единственный её предмет, зависящий от режима чтения (§10).
+ *
+ * До cutover бумагу ведёт недельная сверка: она знает **одного** машиниста на заявку и, позови её
+ * ремонт, переписала бы починенные отрезки одним человеком — то есть уничтожила бы ровно тот
+ * результат, ради которого дверь и звали. Поэтому в `legacy` дверь бумаги не трогает вовсе, хотя
+ * план листов считает: без него не выразить ни `paperFree` (Р29), ни предпросмотр. После
+ * переключения тот же посчитанный план исполняет `applyEsm2SyncPlanAndAudit`.
+ *
+ * Обе половины ожиданий пишутся **до** cutover: в окно `all_frozen` чинить набор нечем.
+ */
+describeReadModes(readMode, 'бумага починенной истории (§10, шаг 12)', (mode) => {
+  it('починенный машинист прошлой недели: в legacy бумага молчит, в history переоформляется', async () => {
+    if (!DB_URL) return;
+    /*
+     * Сцена кладёт бумагу прямой недельной сверкой — тем же способом, каким её носит заявка
+     * сегодня: по листу на календарную неделю, оба на одного человека. Режим на подготовку не
+     * влияет и заворачивать её в `inLegacy` незачем: `syncEsm2Waybills` — не дверь портала, и
+     * бэкстопа (Р22) на ней нет.
+     */
+    const scene = await makeScene({
+      dateFrom: PREV_MONDAY,
+      dateTo: PAPER_TO,
+      history: [
+        { effectiveDate: PREV_MONDAY, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id },
+        { effectiveDate: PREV_MONDAY, dimension: 'driver', driverState: 'unknown' },
+      ],
+      issueSheets: { driverPersonId: ctx.personA },
+    });
+    const before = await sheetsOf(scene.requestId);
+    expect(compositionOf(before)).toEqual([
+      `${PREV_MONDAY}|${shiftDateKey(PREV_MONDAY, 6)}|${ctx.ownVehicle.id}|${ctx.personA}`,
+      `${MONDAY}|${PAPER_TO}|${ctx.ownVehicle.id}|${ctx.personA}`,
+    ]);
+
+    const body = {
+      mode: 'repair',
+      version: 0,
+      anchors: [{ effectiveDate: PREV_MONDAY, driverPersonId: ctx.personB }],
+      operation: operation('По табелю обе недели отработал сменщик'),
+    };
+    const preview = await previewRepair(ctx.admin, scene.requestId, body);
+    expect(preview.statusCode, preview.body).toBe(200);
+    const dto = preview.json<{
+      fingerprint: string;
+      unlockFingerprint: string | null;
+      requiredUnlocks: { waybillId: string }[];
+      paperFree: boolean;
+      stateAfter: string;
+    }>();
+    /*
+     * Предпросмотр в обоих режимах **одинаков**, и это утверждение, а не совпадение: план листов
+     * дверь считает всегда — им отвечают на «paper-free ли ремонт» (Р29) и им же называют листы,
+     * которые операция обязана разблокировать поимённо (Р11). Режим решает не «считать ли», а
+     * «исполнять ли».
+     */
+    expect(dto.paperFree).toBe(false);
+    expect(dto.stateAfter).toBe('ready');
+    // Отработанная неделя заперта (Р21) и потому названа поимённо; текущая ещё не кончилась.
+    expect(dto.requiredUnlocks.map((sheet) => sheet.waybillId)).toEqual([before[0]!.id]);
+    expect(dto.unlockFingerprint).not.toBeNull();
+
+    const applied = await postRepair(ctx.admin, scene.requestId, {
+      ...body,
+      previewFingerprint: dto.fingerprint,
+      unlockFingerprint: dto.unlockFingerprint!,
+    });
+    expect(applied.statusCode, applied.body).toBe(200);
+    expect((await requestState(scene.requestId)).state).toBe('ready');
+
+    const after = await sheetsOf(scene.requestId);
+    const expected = byReadMode(mode, {
+      /*
+       * До переключения чтения бумага остаётся ровно той же — теми же строками с теми же номерами.
+       * Это не «дверь забыла»: недельная сверка воспроизвести починенный состав не умеет, и
+       * молчание здесь честнее выписки не тому человеку.
+       */
+      legacy: {
+        composition: compositionOf(before),
+        burned: [] as string[],
+        events: 0,
+      },
+      /*
+       * После переключения тот же ремонт переоформляет обе недели: история говорит, что работал
+       * сменщик, — бумага обязана говорить то же. Листов при этом снова два, и потому проверяется
+       * СОСТАВ: сменился человек, а не количество документов.
+       *
+       * Прошлая неделя выписывается заново законно: её лист гасит **эта же** сверка, названная
+       * поимённо разблокировкой (Р11, Ю84), — дырой в прошлом такая выписка не является.
+       */
+      history: {
+        composition: [
+          `${PREV_MONDAY}|${shiftDateKey(PREV_MONDAY, 6)}|${ctx.ownVehicle.id}|${ctx.personB}`,
+          `${MONDAY}|${PAPER_TO}|${ctx.ownVehicle.id}|${ctx.personB}`,
+        ],
+        burned: [before[0]!.id, before[1]!.id].sort(),
+        events: 1,
+      },
+    });
+    expect(compositionOf(after)).toEqual(expected.composition);
+    expect(burnedOf(after)).toEqual(expected.burned);
+
+    const events = await esm2EventsOf(scene.requestId);
+    expect(events).toHaveLength(expected.events);
+    if (events.length > 0) {
+      // Причина события — причина операции: ею и объясняется разрыв нумерации бланков (Р35).
+      expect(events[0]!.metadata.reason).toBe('По табелю обе недели отработал сменщик');
+      expect(events[0]!.metadata.issued).toHaveLength(2);
+      expect(events[0]!.metadata.cancelled).toHaveLength(2);
+    }
+  });
+
+  it('починен один блокер из двух: неделя режется по отрезку, а остаток дней законно без бумаги', async () => {
+    if (!DB_URL) return;
+    /*
+     * Ремонт по своей природе бывает **частичным** (Р27), и это то, чем он отличается от команды
+     * машиниста: постусловия «бумага сошлась» у него нет. Здесь блокера два — неизвестный машинист
+     * с прошлой недели и снятый машинист с завтрашнего дня, — а чинится один. Заявка остаётся
+     * `materialized`, дни со снятым машинистом остаются без листа, и команда **не откатывается**.
+     */
+    const scene = await makeScene({
+      dateFrom: PREV_MONDAY,
+      dateTo: PAPER_TO_LONG,
+      history: [
+        { effectiveDate: PREV_MONDAY, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id },
+        { effectiveDate: PREV_MONDAY, dimension: 'driver', driverState: 'unknown' },
+        { effectiveDate: TOMORROW, dimension: 'driver', driverState: 'cleared' },
+      ],
+      issueSheets: { driverPersonId: ctx.personA },
+    });
+    const before = await sheetsOf(scene.requestId);
+    // Три недели срока — три недельных листа: единица прежней сверки это календарная неделя.
+    expect(compositionOf(before)).toEqual([
+      `${PREV_MONDAY}|${shiftDateKey(PREV_MONDAY, 6)}|${ctx.ownVehicle.id}|${ctx.personA}`,
+      `${MONDAY}|${PAPER_TO}|${ctx.ownVehicle.id}|${ctx.personA}`,
+      `${NEXT_MONDAY}|${PAPER_TO_LONG}|${ctx.ownVehicle.id}|${ctx.personA}`,
+    ]);
+
+    const body = {
+      mode: 'repair',
+      version: 0,
+      anchors: [{ effectiveDate: PREV_MONDAY, driverPersonId: ctx.personB }],
+      operation: operation('По табелю прошлую неделю отработал сменщик'),
+    };
+    const preview = await previewRepair(ctx.admin, scene.requestId, body);
+    expect(preview.statusCode, preview.body).toBe(200);
+    const dto = preview.json<{
+      fingerprint: string;
+      unlockFingerprint: string | null;
+      stateAfter: string;
+      requiredAnchors: { effectiveDate: string }[];
+    }>();
+    // Обе границы названы, чинится одна — потому и `materialized` (Р27).
+    expect(dto.requiredAnchors.map((anchor) => anchor.effectiveDate)).toEqual([
+      PREV_MONDAY,
+      TOMORROW,
+    ]);
+    expect(dto.stateAfter).toBe('materialized');
+
+    const applied = await postRepair(ctx.admin, scene.requestId, {
+      ...body,
+      previewFingerprint: dto.fingerprint,
+      unlockFingerprint: dto.unlockFingerprint!,
+    });
+    /*
+     * Главное утверждение случая: частичный ремонт **проходит**. Постусловия «бумага сошлась с
+     * разрезом» у этой двери нет намеренно — в отличие от команды машиниста, которая им себя и
+     * откатывает. Здесь откатывать нечего: половина блокеров осталась неснятой, дни без известного
+     * машиниста законно остаются без листа, и постусловие пришлось бы писать так, чтобы этот исход
+     * считался нормой, — то есть не писать вовсе.
+     */
+    expect(applied.statusCode, applied.body).toBe(200);
+    expect((await requestState(scene.requestId)).state).toBe('materialized');
+
+    const after = await sheetsOf(scene.requestId);
+    const expected = byReadMode(mode, {
+      // Бумага не тронута: недельная сверка эту работу не делает, и делать вид, что сделала, нечем.
+      legacy: {
+        composition: compositionOf(before),
+        burned: [] as string[],
+        events: 0,
+        // Бумага и на завтра, и на неделю вперёд по-прежнему выписана — на человека, которого
+        // история этих дней не знает. Ровно от этого расхождения и уходит переключение.
+        paperBeyondToday: true,
+      },
+      /*
+       * А здесь видно, чем отрезок отличается от недели. Текущая неделя перестала быть единицей:
+       * машинист известен по сегодня включительно, и лист выписан ровно на эти дни — от
+       * понедельника до сегодня. Дни со снятым машинистом (с завтра и до конца срока) остаются без
+       * бумаги вовсе, и лист следующей недели сгорает без замены: истории, которая назвала бы его
+       * человека, нет.
+       */
+      history: {
+        composition: [
+          `${PREV_MONDAY}|${shiftDateKey(PREV_MONDAY, 6)}|${ctx.ownVehicle.id}|${ctx.personB}`,
+          `${MONDAY}|${TODAY}|${ctx.ownVehicle.id}|${ctx.personB}`,
+        ],
+        burned: before.map((sheet) => sheet.id).sort(),
+        events: 1,
+        paperBeyondToday: false,
+      },
+    });
+    expect(compositionOf(after)).toEqual(expected.composition);
+    expect(burnedOf(after)).toEqual(expected.burned);
+    expect(await esm2EventsOf(scene.requestId)).toHaveLength(expected.events);
+
+    /*
+     * И отдельно — то, ради чего случай и написан: в боевом режиме за починенным участком не
+     * остаётся ни одного действующего листа, и заявка живёт с этим дальше — без отката, без
+     * отказа и без выдуманного машиниста на завтра.
+     */
+    const live = after.filter((sheet) => sheet.status !== 'cancelled');
+    expect(live.some((sheet) => sheet.period_to >= TOMORROW)).toBe(expected.paperBeyondToday);
   });
 });

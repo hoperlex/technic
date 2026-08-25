@@ -6,7 +6,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { selectOption } from './antd';
 import { list } from './factories/common';
-import { machinist, vehicleRequest } from './factories/vehicle';
+import { assignmentPreview, machinist, vehicleRequest } from './factories/vehicle';
 import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
 
 /**
@@ -144,6 +144,12 @@ function renderModal(
     'GET /vehicles': () => json(list([CRANE, OTHER_CRANE])),
     'GET /drivers': () => json(list([SEMENOV, KUZNETSOV])),
     'GET /vehicle-requests/:id/waybills': () => json(options.waybills ?? [sheet(), CURRENT_SHEET]),
+    /*
+     * Предпросмотр последствий (волна 4a): окно спрашивает его перед каждой сменой техники у
+     * заказа на объект. Здесь он не предмет проверки и отвечает пустым планом — тогда окно
+     * отправляет команду сразу, как отправляло до этой волны.
+     */
+    'POST /vehicle-requests/:id/assignment/preview': () => json(assignmentPreview()),
   });
   renderWithUser(
     <VehicleAssignModal
