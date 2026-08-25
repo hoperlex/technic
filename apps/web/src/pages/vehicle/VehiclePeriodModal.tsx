@@ -10,6 +10,7 @@ import {
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { garageKeys } from '@entities/garage';
+import { vehicleRequestKeys, waybillKeys } from '@entities/vehicle-request';
 import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '../../api/resources';
 import { calendarDaysLabel } from '../../utils/date';
 import { errorMessage } from '../../utils/format';
@@ -89,7 +90,7 @@ export function VehiclePeriodModal({
    * ручкой, наступила полночь), а отпечаток такой предпросмотр уже не подтвердит.
    */
   const preview = useQuery({
-    queryKey: ['vehicle-requests', request?.id, 'period-preview', command],
+    queryKey: vehicleRequestKeys.periodPreview(request?.id ?? '', command),
     queryFn: () =>
       vehicleRequestsApi.periodPreview(request!.id, { version: request!.version, ...command! }),
     enabled: open,
@@ -127,9 +128,9 @@ export function VehiclePeriodModal({
     },
     onSuccess: (res) => {
       message.success(res.repeated ? 'Срок уже был изменён этой же командой' : 'Срок изменён');
-      void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       // Срок переписывает бумагу: недели за прежним концом гаснут, новые выписываются.
-      void qc.invalidateQueries({ queryKey: ['waybills'] });
+      void qc.invalidateQueries({ queryKey: waybillKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
       onApplied(res);
     },

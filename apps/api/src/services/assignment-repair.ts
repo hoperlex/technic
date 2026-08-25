@@ -597,6 +597,29 @@ export interface RepairPlanInput {
  * занёсшая новый блокер, обязана откатиться целиком (Р27), и узнать об этом после `INSERT` было бы
  * поздно.
  */
+/**
+ * План осмотра: ремонт, который ничего не чинит (подэтап 6a).
+ *
+ * Окно портала обязано сперва спросить, **что** чинить: какие `unknown`-промежутки заблокированы и
+ * потому адресуются заполнением, а какие правятся якорями. Ответ считает сервер — он один знает
+ * отменяемость бумаги, — и получить его иначе как расчётом двери нельзя.
+ *
+ * Отдельным планом, а не пустым телом ремонта: `planRepair` на пустом теле законно отвечает «чинить
+ * нечего», и ослабить это ради осмотра значило бы разрешить боевой команде записать операцию без
+ * предмета. Мутаций здесь нет вовсе, поэтому исход — `none`, и прав такой запрос требует ровно
+ * столько, сколько чтение.
+ */
+export function inspectRepair(changes: readonly AssignmentChangeRecord[]): RepairPlan {
+  return {
+    writeMutations: [],
+    effectMutations: [],
+    denormalization: { kind: 'keep' },
+    assignmentUpdate: null,
+    changesAfter: [...changes],
+    summary: { anchors: [], fills: [], cancelledFillGroup: null, tail: null },
+  };
+}
+
 export function planRepair(input: RepairPlanInput): RepairPlan {
   const { context, term, asOf, request, body } = input;
   const plan: RepairPlan = {

@@ -20,6 +20,9 @@ import type {
   VerifyDriverLicenseBody,
   AssignmentCommandBody,
   AssignmentPreviewDto,
+  RepairBody,
+  RepairPreviewDto,
+  RepairResultDto,
   AssignVehicleBody,
   AttachVehicleTypeSpecInput,
   ChangeVehicleAssignmentBody,
@@ -865,6 +868,41 @@ export const vehicleRequestsApi = {
    */
   changeAssignmentMachinist: (id: string, body: AssignmentCommandBody) =>
     apiFetch<AssignmentCommandResultDto>(`/vehicle-requests/${id}/assignment-changes`, {
+      method: 'POST',
+      body,
+    }),
+  /**
+   * Осмотр истории: что в ней чинить (подэтап 6a плана `docs/assignment-periods-plan.md`, Р29).
+   *
+   * Первый запрос окна «Починка истории». Своя ручка, а не предпросмотр с пустым телом: тело
+   * предпросмотра нарочно одно с боевым, а спросить «что чинить» окно обязано **до** того, как
+   * назовёт работу. Главное в ответе — `fillableGaps`: какие `unknown`-промежутки заблокированы и
+   * потому адресуются заполнением, а какие правятся якорями, знает только сервер — это зависит от
+   * отменяемости бумаги. Ничего не пишет.
+   */
+  repairState: (id: string) =>
+    apiFetch<RepairPreviewDto>(`/vehicle-requests/${id}/assignment-changes/repair/state`),
+  /**
+   * Последствия ремонта до его совершения (Р29): какие бланки сгорят, какие выпишутся задним
+   * числом, какие отработанные листы придётся переоформить и станет ли история полной.
+   *
+   * Тело — то же самое, что у боевой ручки (§8). Отпечаток сюда не передаётся никогда:
+   * предпросмотр его выдаёт, а не спрашивает.
+   */
+  repairPreview: (id: string, body: RepairBody) =>
+    apiFetch<RepairPreviewDto>(`/vehicle-requests/${id}/assignment-changes/repair/preview`, {
+      method: 'POST',
+      body,
+    }),
+  /**
+   * Ремонт истории: якоря на пробелах машиниста, заполнение `unknown` известным человеком,
+   * решение о машине после конца срока и отмена заполнения (Р29, Р31).
+   *
+   * Заполнение выписывает недостающие бланки **задним числом** — расход строгой отчётности
+   * реальный, и окно обязано показать номера до нажатия.
+   */
+  repairAssignmentHistory: (id: string, body: RepairBody) =>
+    apiFetch<RepairResultDto>(`/vehicle-requests/${id}/assignment-changes/repair`, {
       method: 'POST',
       body,
     }),

@@ -11,6 +11,7 @@ import {
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { garageKeys } from '@entities/garage';
+import { vehicleRequestKeys, waybillKeys } from '@entities/vehicle-request';
 import {
   driversApi,
   vehicleRequestsApi,
@@ -57,11 +58,6 @@ import { ASSIGNMENT_PREVIEW_STALE } from './ReassignPreview';
  * показать состав по датам — ни одна кнопка от этого расчёта не зависит.
  */
 
-// Ключи кэша названы один раз: окно и то, что оно гасит после команды, обязаны знать один адрес —
-// разойдись они, «Состав по датам» показывал бы прежнюю историю после собственной же смены.
-const VEHICLE_REQUESTS_KEY = ['vehicle-requests'] as const;
-const WAYBILLS_KEY = ['waybills'] as const;
-const historyKey = (id: string) => ['vehicle-requests', id, 'assignment-changes'] as const;
 const MACHINISTS_KEY = ['drivers', 'machinists'] as const;
 
 /** Аргумент предпросмотра: команда, уже названные имена и причина возврата к последствиям. */
@@ -126,7 +122,7 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
   }, [targetId]);
 
   const history = useQuery({
-    queryKey: historyKey(targetId ?? ''),
+    queryKey: vehicleRequestKeys.history(targetId ?? ''),
     queryFn: () => vehicleRequestsApi.assignmentHistory(targetId!),
     enabled: open,
     retry: false,
@@ -201,10 +197,10 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
       setAnchors([]);
       // История возвращается в ответе, но берётся заново: между ответом и показом окна стоит тот же
       // кэш, которым пользуются соседние экраны, и держать в нём две редакции одной истории нельзя.
-      void qc.invalidateQueries({ queryKey: historyKey(targetId!) });
-      void qc.invalidateQueries({ queryKey: VEHICLE_REQUESTS_KEY });
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.history(targetId!) });
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       // Смена машиниста переписывает бумагу: недельные листы уходят на другую фамилию.
-      void qc.invalidateQueries({ queryKey: WAYBILLS_KEY });
+      void qc.invalidateQueries({ queryKey: waybillKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
       onApplied(res);
     },

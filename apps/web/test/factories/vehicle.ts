@@ -7,6 +7,7 @@ import type {
   VehicleClassificationDto,
   VehicleFeedListDto,
   VehicleFeedRow,
+  RepairPreviewDto,
   VehicleRequestDto,
   VehicleRequestSummaryDto,
   VehicleRequestTripDto,
@@ -379,6 +380,26 @@ export function assignmentPreview(
     operationRequirement: null,
     asOf: '2026-08-24',
     fingerprint: 'fp-preview',
+    ...overrides,
+  };
+}
+
+/**
+ * Ответ двери ремонта — осмотра (`GET .../repair/state`) и предпросмотра (подэтап 6a).
+ *
+ * По умолчанию — история, в которой чинить нечего: пустой осмотр полной заявки. Сценарии
+ * добавляют то, что проверяют: промежутки заполнения, расхождение хвоста или пробелы под якоря.
+ */
+export function repairPreview(overrides: Partial<RepairPreviewDto> = {}): RepairPreviewDto {
+  return {
+    ...assignmentPreview(),
+    state: 'ready',
+    stateAfter: 'ready',
+    blockedDays: [],
+    fillableGaps: [],
+    archived: false,
+    paperFree: true,
+    restoreRequired: false,
     ...overrides,
   };
 }

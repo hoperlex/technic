@@ -358,6 +358,14 @@ const previewRepair = (account: Account, requestId: string, body: Record<string,
     payload: body,
   });
 
+/** Осмотр (6a): «что чинить» без работы в теле — та же дверь, GET и без единой мутации. */
+const inspectRepair = (account: Account, requestId: string) =>
+  ctx.app.inject({
+    method: 'GET',
+    url: `/api/v1/vehicle-requests/${requestId}/assignment-changes/repair/state`,
+    headers: account.auth,
+  });
+
 const postRepair = (account: Account, requestId: string, body: Record<string, unknown>) =>
   ctx.app.inject({
     method: 'POST',
@@ -652,6 +660,84 @@ describe('готовность истории (Р26, Р27)', () => {
     );
     // Тот же `unknown` заблокированного прошлого — адрес заполнения, а не якоря (Ц4).
     expect(dto.fillableGaps).toEqual([{ from: DEEP_FROM, to: shiftDateKey(TODAY, -10) }]);
+  });
+
+  /*
+   * Осмотр (подэтап 6a). Окно портала обязано спросить «что чинить» до того, как назовёт работу:
+   * какие `unknown`-промежутки заблокированы и адресуются заполнением, а какие правятся якорями,
+   * знает только сервер. Предпросмотром это не спросить — его тело нарочно одно с боевым и пустоты
+   * не допускает.
+   */
+  it('осмотр называет адреса заполнения и не пишет ни строки', async () => {
+    if (!DB_URL) return;
+    const scene = await makeScene({
+      dateFrom: DEEP_FROM,
+      dateTo: shiftDateKey(TODAY, -10),
+      history: [
+        { effectiveDate: DEEP_FROM, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id },
+        { effectiveDate: DEEP_FROM, dimension: 'driver', driverState: 'unknown' },
+      ],
+    });
+    const before = await rowsOf(scene.requestId);
+
+    const seen = await inspectRepair(ctx.admin, scene.requestId);
+    expect(seen.statusCode, seen.body).toBe(200);
+    const dto = seen.json<{
+      state: string;
+      stateAfter: string;
+      fillableGaps: { from: string; to: string }[];
+      requiredAnchors: unknown[];
+      plan: { cancel: unknown[]; issue: unknown[] };
+    }>();
+
+    expect(dto.fillableGaps).toEqual([{ from: DEEP_FROM, to: shiftDateKey(TODAY, -10) }]);
+    // Осмотр ничего не обещает: состояние после равно состоянию до, план бумаги пуст.
+    expect(dto.stateAfter).toBe(dto.state);
+    expect(dto.plan.cancel).toEqual([]);
+    expect(dto.plan.issue).toEqual([]);
+    // И ничего не пишет: строки истории те же, что были до запроса.
+    expect(await rowsOf(scene.requestId)).toEqual(before);
+  });
+
+  /*
+   * Полная история — не отказ, а ответ. Прежде дверь на `ready` отвечала 422 «ремонтировать
+   * нечего», и окно, открытое ради отмены заполнения, не смогло бы даже показать список сделанных
+   * заполнений.
+   */
+  it('осмотр проходит и на полной истории, где ремонту отказано', async () => {
+    if (!DB_URL) return;
+    const scene = await makeScene({
+      dateFrom: shiftDateKey(TODAY, -3),
+      dateTo: shiftDateKey(TODAY, 10),
+      history: [
+        {
+          effectiveDate: shiftDateKey(TODAY, -3),
+          dimension: 'vehicle',
+          vehicleId: ctx.ownVehicle.id,
+        },
+        {
+          effectiveDate: shiftDateKey(TODAY, -3),
+          dimension: 'driver',
+          driverState: 'set',
+          driverPersonId: ctx.personA,
+          origin: 'machinist_change',
+        },
+      ],
+      state: 'ready',
+    });
+
+    const seen = await inspectRepair(ctx.admin, scene.requestId);
+    expect(seen.statusCode, seen.body).toBe(200);
+    expect(seen.json<{ state: string }>().state).toBe('ready');
+
+    // Тот же запрос телом ремонта — законный отказ: чинить в полной истории нечего.
+    const refused = await previewRepair(ctx.admin, scene.requestId, {
+      mode: 'repair',
+      version: 0,
+      anchors: [{ effectiveDate: shiftDateKey(TODAY, -3), driverPersonId: ctx.personB }],
+    });
+    expect(refused.statusCode).toBe(422);
+    expect(refused.json<{ code: string }>().code).toBe('assignment_history_ready');
   });
 });
 

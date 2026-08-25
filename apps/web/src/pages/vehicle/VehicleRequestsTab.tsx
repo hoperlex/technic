@@ -23,6 +23,7 @@ import {
   ReloadOutlined,
   SwapOutlined,
   UserSwitchOutlined,
+  ToolOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -125,6 +126,7 @@ import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleEsm2Modal } from './VehicleEsm2Modal';
 import { VehicleMachinistModal } from './VehicleMachinistModal';
+import { VehicleRepairModal } from './VehicleRepairModal';
 import { VehiclePeriodModal, type VehiclePeriodCommand } from './VehiclePeriodModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { VehicleRelocationModal } from './VehicleRelocationModal';
@@ -1145,6 +1147,7 @@ export function VehicleRequestsTab() {
    * работает.
    */
   const [machinistTarget, setMachinistTarget] = useState<SpecialEquipmentRequestDto | null>(null);
+  const [repairTarget, setRepairTarget] = useState<SpecialEquipmentRequestDto | null>(null);
   /** Заявка, которую переносят в другой рейс (ADR 0052); null — окно переноса закрыто. */
   /** Заведение перегона: заявка и что именно заводим — доставку или вывоз. */
   const [relocation, setRelocation] = useState<{
@@ -1340,6 +1343,27 @@ export function VehicleRequestsTab() {
       deletedAt: r.deletedAt,
       isLinear: r.isLinear,
     }) === 'auto';
+
+  /**
+   * Починка истории (подэтап 6a плана `docs/assignment-periods-plan.md`, Р29).
+   *
+   * Условия те же, что у смены машиниста, **плюс архив**: архивная заявка с непустой бумагой —
+   * ровно тот случай, ради которого дверь ремонта и заведена (коррекция назначения в архиве
+   * запрещена, и разомкнуть это больше нечем). Поэтому `canCorrectAssignment` здесь не спрашивается
+   * — он отвергает удалённые.
+   *
+   * Пункт стоит по применимости двери, а не по наличию работы: «есть ли что чинить» знает только
+   * осмотр, и спрашивать его для каждой строки списка значило бы слать запрос на страницу. Ответ
+   * «чинить нечего» окно говорит словами — это честнее, чем спрятанный пункт меню.
+   */
+  const historyRepairAllowed = (r: VehicleRequestDto): r is SpecialEquipmentRequestDto =>
+    canChangeStatus &&
+    can('waybills.read') &&
+    r.requestType === 'special_equipment' &&
+    r.status === 'confirmed' &&
+    !!r.assignment &&
+    !r.isLinear &&
+    (r.assignment?.ownership ?? 'own') === 'own';
 
   /** Кнопка смены техники — одна на обе ветки «Действий»: у арендодателя своя короткая. */
   const reassignButton = (r: VehicleRequestDto) => (
@@ -2149,13 +2173,26 @@ export function VehicleRequestsTab() {
             },
           ]
         : [];
-      if (!canEdit && !canDelete) return [view, ...routeActions, ...reassign, ...machinist];
+      /** Починка истории — рядом со сменой машиниста: та же история, но про её пробелы. */
+      const repair = historyRepairAllowed(r)
+        ? [
+            {
+              key: 'history-repair',
+              label: 'Починка истории',
+              icon: <ToolOutlined />,
+              onClick: () => setRepairTarget(r),
+            },
+          ]
+        : [];
+      if (!canEdit && !canDelete)
+        return [view, ...routeActions, ...reassign, ...machinist, ...repair];
       const allowed = canModify(r);
       return [
         view,
         ...routeActions,
         ...reassign,
         ...machinist,
+        ...repair,
         ...(decidableEarlyEnd(r)
           ? [
               {
@@ -2685,6 +2722,18 @@ export function VehicleRequestsTab() {
         onCancel={() => setMachinistTarget(null)}
         onApplied={() => {
           // Списки за окном устарели: у заявки другая версия, а у недель — другие номера бланков.
+          void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+          void qc.invalidateQueries({ queryKey: ['waybills'] });
+        }}
+      />
+
+      {/* Починка истории (подэтап 6a): пробелы машиниста, заполнение неизвестных дней и решение о
+          машине после конца срока. Окно само спрашивает сервер, что чинить, — портал этого не
+          считает: зависит от того, какую бумагу ещё можно отменить. */}
+      <VehicleRepairModal
+        request={repairTarget}
+        onCancel={() => setRepairTarget(null)}
+        onRepaired={() => {
           void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
           void qc.invalidateQueries({ queryKey: ['waybills'] });
         }}

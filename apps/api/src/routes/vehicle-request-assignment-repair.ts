@@ -7,8 +7,9 @@ import {
   repairSchema,
   uuidSchema,
   type AssignmentHistoryState,
-  type AssignmentPreviewDto,
   type RepairInput,
+  type RepairPreviewDto,
+  type RepairResultDto,
   type WaybillCorrectionAuthorizationScope,
 } from '@technic/contracts';
 import { requirePrincipal } from '../auth/plugin';
@@ -37,6 +38,7 @@ import {
   blockerFactsOf,
   blockerFingerprintOf,
   fillableGapsOf,
+  inspectRepair,
   isPaperFree,
   mutableRangesOf,
   planRepair,
@@ -105,6 +107,15 @@ import { applyAssignmentPaper, paperFollowsHistory } from '../services/assignmen
 
 const idParams = z.object({ id: uuidSchema });
 
+/**
+ * Вход расчёта двери: тело ремонта либо **осмотр** — запрос без работы (подэтап 6a).
+ *
+ * Осмотр не форма запроса, а третий режим расчёта: у него нет тела вовсе, он приходит `GET`'ом и
+ * ничего не пишет. В `repairSchema` его нет намеренно — там форма боевой команды, и пустое тело она
+ * обязана отвергать.
+ */
+type RepairPlanBody = RepairInput | { mode: 'inspect' };
+
 /** Имя двери в цели операции журнала (Р9): у ремонта и у команды машиниста тела бывают неотличимы. */
 const JOURNAL_DOOR = 'assignment-changes/repair';
 
@@ -115,32 +126,6 @@ const JOURNAL_DOOR = 'assignment-changes/repair';
  * историю ради `ready`, и «сколько осталось» — часть того же ответа. Второй запрос за этим означал
  * бы, что между ними состояние успевает измениться.
  */
-interface RepairPreviewDto extends AssignmentPreviewDto {
-  /** Состояние истории **сейчас** (Р26): `materialized` — чинить есть что. */
-  state: AssignmentHistoryState;
-  /** Каким станет состояние, если нажать (Р27). */
-  stateAfter: AssignmentHistoryState;
-  /** Блокеры до команды интервалами — проекция для карточки, а не единица сравнения. */
-  blockedDays: { from: string; to: string }[];
-  /** Промежутки `unknown` на заблокированных днях — адреса `knownFills` (Ц4). */
-  fillableGaps: { from: string; to: string }[];
-  /** Заявка в архиве: дверь открыла её по идентификатору (Ц3). */
-  archived: boolean;
-  /** Пуст ли бумажный план для гипотетического `deleted_at = null` (Р29). */
-  paperFree: boolean;
-  /** Архивной заявке с непустым планом ремонт разрешён только режимом `restore` (Р29). */
-  restoreRequired: boolean;
-}
-
-/** Итог боевой ручки: чем кончилось и в каком состоянии осталась история. */
-interface RepairResultDto {
-  ok: true;
-  repeated: boolean;
-  version: number;
-  state: AssignmentHistoryState;
-  operationId: string | null;
-  archived: boolean;
-}
 
 export default async function vehicleRequestAssignmentRepairRoutes(
   app: FastifyInstance,
@@ -167,6 +152,32 @@ export default async function vehicleRequestAssignmentRepairRoutes(
    * Предпросмотр двухфазен: первый вызов без якорей называет `requiredAnchors`, второй — с
    * именами — отдаёт окончательный план и отпечаток.
    */
+  /**
+   * Осмотр истории: что в ней чинить (подэтап 6a).
+   *
+   * Своя ручка, а не предпросмотр с пустым телом. Тело предпросмотра и тело боевой команды нарочно
+   * одно (§8): расчёт обязан идти по тем входам, которыми его потом исполнят, — и разрешить в нём
+   * пустоту значило бы развести схемы на первом же поле. А спросить «что чинить» окно обязано до
+   * того, как назовёт работу: какие `unknown`-промежутки заблокированы и адресуются заполнением, а
+   * какие правятся якорями, знает только сервер — это зависит от отменяемости бумаги.
+   *
+   * Ответ той же формы, что у предпросмотра: окно рисует одним компонентом и осмотр, и план.
+   * Отпечаток в нём бесполезен и безвреден — пустую команду боевая схема не примет.
+   */
+  r.get(
+    '/:id/assignment-changes/repair/state',
+    { ...guards, schema: { params: idParams } },
+    async (req): Promise<RepairPreviewDto> => {
+      const p = requirePrincipal(req);
+      const outcome = await previewAssignmentCommand(db, {
+        requestId: req.params.id,
+        actor: { id: p.id },
+        plan: (ctx) => planRepairCommand(ctx, { mode: 'inspect' }),
+      });
+      return previewDto(outcome.plan, outcome.effects, outcome.fingerprint, outcome.request);
+    },
+  );
+
   r.post(
     '/:id/assignment-changes/repair/preview',
     { ...guards, schema: { params: idParams, body: repairSchema } },
@@ -439,7 +450,7 @@ interface RepairApplied {
  */
 async function planRepairCommand(
   ctx: AssignmentPlanContext,
-  body: RepairInput,
+  body: RepairPlanBody,
 ): Promise<AssignmentPlanned<RepairPlan & RepairComputed>> {
   const { request, term, asOf } = { request: ctx.request, term: ctx.request.term, asOf: ctx.asOf };
   /*
@@ -452,10 +463,16 @@ async function planRepairCommand(
   const history = await planAssignmentHistory(ctx.tx, { requestId: request.id, asOf });
   const stateBefore = history.state;
   const context = await readRepairContext(ctx.tx, request.id, history.changes);
-  const restore = body.restore === true;
+  const restore = body.mode !== 'inspect' && body.restore === true;
 
   assertRepairDoorOpen(stateBefore, history.unrestorable, body);
-  const plan = planRepair({ context, term, asOf, request, body });
+  // Осмотр (6a) идёт тем же расчётом, что и ремонт, но без единой мутации: окно спрашивает, что
+  // чинить, — адреса заполнения и блокеры считает сервер, а `planRepair` на пустом теле законно
+  // отвечает «чинить нечего».
+  const plan =
+    body.mode === 'inspect'
+      ? inspectRepair(context.changes)
+      : planRepair({ context, term, asOf, request, body });
 
   const mutable = mutableRangesOf(term, context.sheets, asOf);
   const segmentsBefore = assignmentSegments(context.changes, term);
@@ -573,7 +590,7 @@ async function planRepairCommand(
 function assertRepairDoorOpen(
   state: AssignmentHistoryState,
   unrestorable: readonly AssignmentHistoryUnrestorable[],
-  body: RepairInput,
+  body: RepairPlanBody,
 ): void {
   if (state === 'empty') {
     throw err.unprocessable(
@@ -583,6 +600,13 @@ function assertRepairDoorOpen(
     );
   }
   if (state !== 'ready') return;
+  /*
+   * Осмотр пускается в любом состоянии, кроме `empty`: «история полна» — это ответ, который окно
+   * обязано показать, а не отказ, на котором ему нечего рисовать. Мутаций у осмотра нет, и
+   * запрещать его на полной истории значило бы прятать от человека список сделанных заполнений,
+   * которые он как раз и пришёл отменять.
+   */
+  if (body.mode === 'inspect') return;
   /*
    * Заполнение и его отмена проходят при `ready` — обе, и по одной причине.
    *
@@ -598,7 +622,10 @@ function assertRepairDoorOpen(
    * значит уметь снять утверждение и не уметь его сделать.
    */
   const tailOnly =
-    body.mode === 'repair' && body.tailResolution !== undefined && !body.anchors && !body.knownFills;
+    body.mode === 'repair' &&
+    body.tailResolution !== undefined &&
+    !body.anchors &&
+    !body.knownFills;
   const fillOnly = body.mode === 'repair' && body.knownFills !== undefined && !body.anchors;
   if (!tailOnly && !fillOnly && body.mode !== 'cancel_fill') {
     throw new AppError(

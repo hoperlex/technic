@@ -972,6 +972,45 @@ export interface PeriodPreviewDto extends AssignmentPreviewDto {
   cancelGroupsFingerprint: string | null;
 }
 
+/**
+ * Ответ двери ремонта — и предпросмотра, и осмотра (`GET .../repair/state`, подэтап 6a).
+ *
+ * Форма одна на оба запроса нарочно: окно рисует одним компонентом и «что чинить», и «что будет,
+ * если нажать». У осмотра работы в теле нет вовсе, поэтому `stateAfter` равен `state`, а план
+ * бумаги пуст — это ответ, а не обещание.
+ */
+export interface RepairPreviewDto extends AssignmentPreviewDto {
+  /** Состояние истории **сейчас** (Р26): `materialized` — чинить есть что. */
+  state: AssignmentHistoryState;
+  /** Каким станет состояние, если нажать (Р27). У осмотра равно `state`. */
+  stateAfter: AssignmentHistoryState;
+  /** Блокеры до команды интервалами — проекция для карточки, а не единица сравнения. */
+  blockedDays: { from: string; to: string }[];
+  /**
+   * Промежутки `unknown` на **заблокированных** днях — единственные адреса `knownFills` (Ц4).
+   *
+   * На изменяемых днях та же дыра чинится якорями, и второго способа назвать человека там нет.
+   * Отличить одно от другого может только сервер: это зависит от отменяемости бумаги.
+   */
+  fillableGaps: { from: string; to: string }[];
+  /** Заявка в архиве: дверь открыла её по идентификатору (Ц3). */
+  archived: boolean;
+  /** Пуст ли бумажный план для гипотетического `deleted_at = null` (Р29). */
+  paperFree: boolean;
+  /** Архивной заявке с непустым планом ремонт разрешён только режимом `restore` (Р29). */
+  restoreRequired: boolean;
+}
+
+/** Итог боевой ручки ремонта: чем кончилось и в каком состоянии осталась история. */
+export interface RepairResultDto {
+  ok: true;
+  repeated: boolean;
+  version: number;
+  state: AssignmentHistoryState;
+  operationId: string | null;
+  archived: boolean;
+}
+
 // ── История заявки: `GET /vehicle-requests/:id/assignment-changes` ──
 
 /**
