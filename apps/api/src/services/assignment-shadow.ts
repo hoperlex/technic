@@ -6,6 +6,7 @@ import {
   esm2Mode,
   formatVehicleRequestNumber,
   moscowDateKeyOf,
+  type RequestStatus,
 } from '@technic/contracts';
 import type * as schema from '../db/schema';
 import {
@@ -516,7 +517,7 @@ async function selectShadowPopulation(tx: Tx): Promise<string[]> {
  */
 function portalKeepsPaper(head: {
   requestType: 'special_equipment' | 'freight_transport';
-  status: 'new' | 'confirmed' | 'done' | 'cancelled';
+  status: RequestStatus;
   deletedAt: Date | null;
   isLinear: boolean;
 }): boolean {

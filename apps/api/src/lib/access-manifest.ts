@@ -751,6 +751,14 @@ export const ACCESS_MANIFEST = {
     conditionalAllOf: [{ when: 'operatorCounterpartyId', allOf: ['wasteRequests.assignOperator'] }],
     conditionDeclaredOnRoute: false,
   },
+  // Журнал закрытых заявок — вкладка «История» (ADR 0135). Право то же, что у списка: закрытая
+  // заявка — это те же сведения, по которым уже нечего решать, а границы видимости (свой объект,
+  // свои заявки) журнал повторяет за списком.
+  'GET /api/v1/waste-requests/history': { kind: 'permissions', allOf: ['wasteRequests.read'] },
+  'GET /api/v1/waste-requests/history/summary': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.read'],
+  },
   'GET /api/v1/waste-requests/:id': { kind: 'permissions', allOf: ['wasteRequests.read'] },
   // То же условие у правки, но схема здесь `uuidSchema.nullable().optional()` — сценариев три:
   // без поля, с идентификатором и `null`. Снять назначенного исполнителя — такое же назначение,

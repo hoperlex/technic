@@ -80,7 +80,7 @@ export function OnSiteTab() {
       // телефону оператору, и ради этого сюда заходят не реже.
       render: (_v: unknown, r: WasteRequestDto) => (
         <Typography.Text copyable={{ text: r.displayNumber }}>
-          <EntityLink to={wasteRequestLink(can, { id: r.id })} title="Открыть заявку">
+          <EntityLink to={wasteRequestLink(can, { id: r.id, status: r.status })} title="Открыть заявку">
             {r.displayNumber}
           </EntityLink>
         </Typography.Text>

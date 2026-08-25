@@ -99,14 +99,16 @@ describe('роль «Оператор»', () => {
   });
 
   it('оператору доступен единственный переход: «В работе» → «Выполнена»', () => {
-    expect(allowedStatusTransitions('confirmed', wasteOperator)).toEqual(['done']);
-    expect(canTransitionStatus('confirmed', 'done', wasteOperator)).toBe(true);
+    expect(allowedStatusTransitions('confirmed', wasteOperator, 'waste')).toEqual(['done']);
+    expect(canTransitionStatus('confirmed', 'done', wasteOperator, 'waste')).toBe(true);
   });
 
   it('оператор не подтверждает, не отменяет и не откатывает заявки', () => {
-    expect(canTransitionStatus('new', 'confirmed', wasteOperator)).toBe(false);
-    expect(canTransitionStatus('confirmed', 'cancelled', wasteOperator)).toBe(false);
-    expect(canTransitionStatus('done', 'confirmed', wasteOperator)).toBe(false);
-    expect(allowedStatusTransitions('new', wasteOperator)).toEqual([]);
+    expect(canTransitionStatus('new', 'confirmed', wasteOperator, 'waste')).toBe(false);
+    expect(canTransitionStatus('confirmed', 'cancelled', wasteOperator, 'waste')).toBe(false);
+    expect(canTransitionStatus('done', 'confirmed', wasteOperator, 'waste')).toBe(false);
+    expect(allowedStatusTransitions('new', wasteOperator, 'waste')).toEqual([]);
+    // Завершение заявки исполнителю закрыто: бумагу он приносит, а принимает её другой (ADR 0135).
+    expect(canTransitionStatus('done', 'completed', wasteOperator, 'waste')).toBe(false);
   });
 });

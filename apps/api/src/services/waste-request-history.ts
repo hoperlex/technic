@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import type { RequestHistoryEntryDto, RequestHistoryKind } from '@technic/contracts';
 import { db } from '../db/client';
 import { requestStatusHistory, users } from '../db/schema';
@@ -56,10 +56,15 @@ export async function loadWasteRequestHistory(
         comment: requestStatusHistory.comment,
         at: requestStatusHistory.changedAt,
         actorId: requestStatusHistory.changedBy,
-        actorName: users.fullName,
+        // Переход без автора — перевод выкатом (ADR 0135, миграция 0195): статус меняла не
+        // учётка, а накат. Подпись ставится здесь, а не в браузере: «—» в столбце «Кто» читается
+        // как потерянная запись, а это ровно тот случай, когда автора и не было.
+        actorName: sql<string>`coalesce(${users.fullName}, 'Портал')`,
       })
       .from(requestStatusHistory)
-      .innerJoin(users, eq(requestStatusHistory.changedBy, users.id))
+      // Внешнее соединение, а не внутреннее: строка без автора иначе выпала бы из истории вовсе,
+      // и заявка выглядела бы сменившей статус ниоткуда.
+      .leftJoin(users, eq(requestStatusHistory.changedBy, users.id))
       .where(eq(requestStatusHistory.requestId, requestId))
       .orderBy(desc(requestStatusHistory.changedAt))
       .limit(HISTORY_LIMIT),

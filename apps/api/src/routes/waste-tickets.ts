@@ -10,6 +10,7 @@ import {
   createWasteTicketSchema,
   dismissWasteTicketProposalSchema,
   dismissWasteTicketSchema,
+  type RequestStatus,
   updateWasteTicketSchema,
   WASTE_TICKET_CHECK_CODES,
   wasteTicketBlindCheckSchema,
@@ -114,6 +115,23 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     const request = rows[0];
     if (!request || request.deletedAt) throw err.notFound('Заявка не найдена');
     return request;
+  }
+
+  /**
+   * Разбор бумаги открыт, пока заявка «Выполнена» (ADR 0135). Завершение и есть объявление разбора
+   * законченным: правь талон после него — и сверка задним числом нарисовала бы расхождение в
+   * заявке, про которую уже сказано «принято». Понадобилась правка — администратор возвращает
+   * заявку в «Выполнена» тем же откатом, что и всюду, и разбор открывается снова.
+   *
+   * Читающие ручки этой проверки не знают: посмотреть талоны завершённой заявки можно всегда.
+   */
+  function assertReviewOpen(request: { status: RequestStatus }): void {
+    if (request.status === 'done') return;
+    throw err.badRequest(
+      request.status === 'completed'
+        ? 'Заявка завершена — талоны в ней больше не правят. Нужна правка — верните заявку в «Выполнена»'
+        : 'Талоны разбирают у выполненной заявки',
+    );
   }
 
   /** Талон этой заявки. Проверка принадлежности здесь, а не в запросе выше: 404 честнее 403. */
@@ -611,6 +629,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       const request = await loadRequest(req.params.id);
       assertWasteObjectScope(p, request.objectId);
       assertOperatorScope(p, request.operatorCounterpartyId);
+      assertReviewOpen(request);
 
       const reason = req.body.duplicateOverrideReason?.trim() ?? '';
       const result = await db.transaction(async (tx) => {
@@ -712,6 +731,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       const request = await loadRequest(req.params.id);
       assertWasteObjectScope(p, request.objectId);
       assertOperatorScope(p, request.operatorCounterpartyId);
+      assertReviewOpen(request);
 
       const body = req.body;
       const reason = body.duplicateOverrideReason?.trim() ?? '';
@@ -801,6 +821,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       const request = await loadRequest(req.params.id);
       assertWasteObjectScope(p, request.objectId);
       assertOperatorScope(p, request.operatorCounterpartyId);
+      assertReviewOpen(request);
 
       await db.transaction(async (tx) => {
         const ticket = await loadTicket(tx, request.id, req.params.ticketId);
@@ -840,6 +861,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       const request = await loadRequest(req.params.id);
       assertWasteObjectScope(p, request.objectId);
       assertOperatorScope(p, request.operatorCounterpartyId);
+      assertReviewOpen(request);
 
       const reason = req.body.duplicateOverrideReason?.trim() ?? '';
       const result = await db.transaction(async (tx) => {
@@ -928,6 +950,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       const request = await loadRequest(req.params.id);
       assertWasteObjectScope(p, request.objectId);
       assertOperatorScope(p, request.operatorCounterpartyId);
+      assertReviewOpen(request);
 
       const removed = await db.transaction(async (tx) => {
         const ticket = await loadTicket(tx, request.id, req.params.ticketId);
@@ -962,6 +985,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       const request = await loadRequest(req.params.id);
       assertWasteObjectScope(p, request.objectId);
       assertOperatorScope(p, request.operatorCounterpartyId);
+      assertReviewOpen(request);
 
       const body = req.body;
       const reason = body.duplicateOverrideReason?.trim() ?? '';
@@ -1071,6 +1095,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       const request = await loadRequest(req.params.id);
       assertWasteObjectScope(p, request.objectId);
       assertOperatorScope(p, request.operatorCounterpartyId);
+      assertReviewOpen(request);
 
       const subjectKey = req.query.subjectKey ?? '';
       const bundle = await collectCheckInputs(p, request.id);

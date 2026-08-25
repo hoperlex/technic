@@ -16,6 +16,7 @@ import {
   isServiceRequestEditable,
   isWeeklyWeekOverdue,
   type Permission,
+  type RequestModule,
   type RequestStatus,
   requestStatusLabels,
   roleLabels,
@@ -743,26 +744,36 @@ export function assertWeeklyRequestScope(p: Principal, objectId: string): void {
 }
 
 /**
- * Переход статуса заявки с учётом прав (един для «Вывоза мусора» и «Заказа ТС»). Откат
- * закрытой заявки — право администратора, поэтому 403, а не 400: переход существует,
- * но не для этой учётки.
+ * Переход статуса заявки с учётом прав. Модуль обязателен: с ADR 0135 коридоры «Вывоза мусора» и
+ * «Заказа ТС» разошлись — у вывоза за «Выполнена» идёт «Завершена», у техники «Выполнена»
+ * терминальна. Откат закрытой заявки — право администратора, поэтому 403, а не 400: переход
+ * существует, но не для этой учётки.
  */
 export function assertTransitionAllowed(
   p: Principal,
   from: RequestStatus,
   to: RequestStatus,
+  module: RequestModule,
 ): void {
-  if (canTransitionStatus(from, to, p)) return;
+  if (canTransitionStatus(from, to, p, module)) return;
   // Учётка без роли до сюда не доходит — её отсекает право на маршруте. Но объяснять отказ
   // разбором переходов ей нечем: у неё нет ни одного, и «только администратор» было бы ложью.
   if (!p.role) throw err.forbidden('Недостаточно прав для смены статуса');
+  // Завершение отпирает разбор талонов, а не ведение цикла (ADR 0135), и отказ называет именно
+  // его: у того, кто ведёт статусы, но бумагу не разбирает, коридор здесь кончается — и «переход
+  // недопустим» соврало бы, будто такого хода нет вовсе.
+  if (to === 'completed' && module === 'waste') {
+    throw err.forbidden(
+      `Заявку завершает тот, кто разбирает талоны, — «${requestStatusLabels.completed}» ставится после разбора бумаги`,
+    );
+  }
   // У внешнего исполнителя коридор один, поэтому «недопустимый переход» ему ничего не объясняет.
   if (isCounterpartyScopedRole(p.role)) {
     throw err.forbidden(
       `${roleLabels[p.role]} может только отметить заявку «${requestStatusLabels.confirmed}» выполненной`,
     );
   }
-  if (canTransitionStatus(from, to, { role: 'admin' })) {
+  if (canTransitionStatus(from, to, { role: 'admin' }, module)) {
     // Отказ называет **право**, а не роль. Прежний текст говорил «может только администратор», и
     // это перестало быть правдой дважды: сперва откат получил диспетчер, а с ADR 0106 право
     // приезжает ещё и назначенным набором — то есть кому угодно, кому его выдали. Роль в таком

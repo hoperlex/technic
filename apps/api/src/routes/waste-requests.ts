@@ -1,12 +1,25 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, asc, count, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  lte,
+  notInArray,
+  type SQL,
+  sql,
+} from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
   calcWasteFactCost,
   assignWasteOperatorSchema,
   changeWasteRequestStatusSchema,
+  CLOSED_WASTE_STATUSES,
   type CompleteWasteRequestInput,
   createWasteRequestSchema,
   FACT_UNIT_MISMATCH_MESSAGE,
@@ -14,9 +27,11 @@ import {
   factWeightOf,
   type FileDto,
   formatWasteRequestNumber,
+  isClosedWasteStatus,
   MIN_WASTE_VOLUME_M3,
   presentContainerGroupsQuerySchema,
   REQUEST_STATUSES,
+  requestStatusLabels,
   type RequestType,
   transitionResetsWork,
   updateWasteOperatorCommentSchema,
@@ -28,12 +43,16 @@ import {
   WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestCompletionDto,
   type WasteRequestDto,
+  type WasteRequestHistoryQuery,
+  wasteRequestHistoryQuerySchema,
+  type WasteRequestHistorySummaryDto,
   type WasteRequestSummaryDto,
   type WasteRequestVehicleDto,
   wasteRequestListQuerySchema,
   wasteRequestSummaryQuerySchema,
   can,
   type WasteTicketBadgeDto,
+  wasteTicketReviewBlocker,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -52,6 +71,7 @@ import {
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
+import type { Principal } from '../auth/principal';
 import {
   archiveWhere,
   assertArchiveVisible,
@@ -89,7 +109,7 @@ import { vehiclesByRequestIds } from '../services/waste-request-vehicles';
 import { assertOperatorServesObject } from '../services/object-operators';
 import { enqueueTicketRecognition, purgeRequestRecognition } from '../services/waste-tickets';
 import { wasteTicketChecks } from '../services/waste-ticket-checks';
-import { loadTicketCheckInputs } from '../services/waste-ticket-inputs';
+import { loadTicketCheckInputs, loadTicketCheckRequestRow } from '../services/waste-ticket-inputs';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -275,6 +295,26 @@ async function ticketBadgesFor(
     badges.set(requestId, wasteTicketChecks(bundle.inputs).badge);
   }
   return badges;
+}
+
+/**
+ * Чем не закончен разбор бумаги заявки — готовый текст отказа либо `null`, если завершать можно
+ * (ADR 0135). Считается тем же значком, что стоит в списке: ждущий подтверждения талон,
+ * непринятое расхождение, нечитаемый файл.
+ *
+ * Спрашивается ПОД ЗАМКОМ заявки (`FOR UPDATE`, взятым первым действием транзакции смены
+ * статуса): все писатели талонов начинают с того же замка (ADR 0114, решение 4), и без него
+ * ответ устаревал бы между проверкой и записью — задача распознавания успела бы дописать
+ * неподтверждённый талон в заявку, которую портал в этот момент объявляет завершённой.
+ *
+ * `null` возвращается и там, где бумага не распознавалась вовсе: разбирать нечего — значит и
+ * завершению ничто не мешает.
+ */
+async function ticketReviewBlockerFor(requestId: string): Promise<string | null> {
+  const row = await loadTicketCheckRequestRow(requestId);
+  if (!row) return null;
+  const bundle = (await loadTicketCheckInputs([row])).get(requestId);
+  return wasteTicketReviewBlocker(bundle ? wasteTicketChecks(bundle.inputs).badge : null);
 }
 
 function toDto(
@@ -776,7 +816,22 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     if (q.ticketReview) {
       assertCan(p, 'wasteRequests.ticketReview', 'Разбор талонов — отдельное право');
     }
+    /**
+     * Вкладка «Заявки» показывает работу, а не всё подряд (ADR 0135): завершённые и отменённые
+     * живут своим журналом («История»). Архив — исключение: удаляют и закрытые заявки, и вкладка
+     * удалённого обязана показать их такими, какими они были.
+     */
+    const openOnly = q.archive !== 'only';
+    if (openOnly && q.status && isClosedWasteStatus(q.status)) {
+      // Отклоняется, а не отдаётся пустым списком: пустая таблица на живой фильтр читается как
+      // «таких заявок нет», хотя они есть — просто в другой вкладке.
+      throw err.badRequest(
+        `Заявки в статусе «${requestStatusLabels[q.status]}» — во вкладке «История»`,
+        { status: 'Статус журнала' },
+      );
+    }
     const where = and(
+      openOnly ? notInArray(wasteRequests.status, [...CLOSED_WASTE_STATUSES]) : undefined,
       // Архив (ADR 0070): вкладка «Архив» просит `only`, обычный список — умолчание `exclude`.
       // Границы видимости при этом те же: свой объект, свои заявки, — архив их не расширяет.
       archiveWhere(p, q.archive, wasteRequests.deletedAt),
@@ -970,6 +1025,156 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       ) as WasteRequestSummaryDto;
       for (const row of rows) summary[row.status] = Number(row.c);
       return summary;
+    },
+  );
+
+  // ── Журнал закрытых заявок: вкладка «История» (ADR 0135) ──
+  //
+  // Отдельным маршрутом, а не фильтром общего списка, по той же причине, что и у заказа техники
+  // (ADR 0029): вопросы к журналу другие. Не «что сейчас в работе», а «что за период вывезли с
+  // этого объекта, кто вывозил и во сколько это обошлось» — отсюда свой итог и свой порядок по
+  // умолчанию (по дате подачи, с которой сводят акты).
+  //
+  // «Выполнена» сюда не попадает: по такой заявке ещё разбирают талоны, и работа с ней не кончена.
+
+  /** Условия журнала. Границы видимости те же, что у списка: свой объект, свои заявки. */
+  const historyWhere = (p: Principal, q: WasteRequestHistoryQuery): SQL => {
+    const statuses = q.status ? [q.status] : [...CLOSED_WASTE_STATUSES];
+    return and(
+      // Удалённых в журнале нет вовсе: снесённая заявка живёт вкладкой «Архив» (ADR 0070), а
+      // журнал отвечает про состоявшееся. Параметра `archive` у него поэтому нет.
+      isNull(wasteRequests.deletedAt),
+      inArray(wasteRequests.status, statuses),
+      wasteRequestVisibilityWhere(p, wasteRequests.objectId),
+      operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
+      q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
+      q.containerTypeId ? eq(wasteRequests.containerTypeId, q.containerTypeId) : undefined,
+      q.operatorCounterpartyId
+        ? eq(wasteRequests.operatorCounterpartyId, q.operatorCounterpartyId)
+        : undefined,
+      q.requestType ? eq(wasteRequests.requestType, q.requestType) : undefined,
+      q.num ? eq(wasteRequests.num, q.num) : undefined,
+      q.deliveryFrom ? gte(wasteRequests.deliveryAt, q.deliveryFrom) : undefined,
+      q.deliveryTo ? lte(wasteRequests.deliveryAt, q.deliveryTo) : undefined,
+      // Обе стороны комментария, как и в списке (ADR 0053): журнал ищут теми же словами, что и
+      // работающие заявки, — разойдись эти два места, строка находилась бы до закрытия и
+      // терялась после.
+      searchCondition(q.search, [
+        wasteRequests.comment,
+        wasteRequests.operatorComment,
+        constructionObjects.name,
+        constructionObjects.code,
+      ]),
+    )!;
+  };
+
+  /** Открытый статус в журнале — отказ, а не молчаливое расширение до всех закрытых. */
+  const assertHistoryStatus = (q: WasteRequestHistoryQuery): void => {
+    if (q.status && !isClosedWasteStatus(q.status)) {
+      throw err.badRequest(
+        `Заявки в статусе «${requestStatusLabels[q.status]}» журналом не закрыты — они во вкладке «Заявки»`,
+        { status: 'Статус работы' },
+      );
+    }
+  };
+
+  r.get(
+    '/history',
+    { ...auth, schema: { querystring: wasteRequestHistoryQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      assertHistoryStatus(req.query);
+      const q = req.query;
+      const where = historyWhere(p, q);
+      const sortCols = {
+        num: wasteRequests.num,
+        objectName: constructionObjects.name,
+        createdByName: users.fullName,
+        containerTypeName: containerTypes.name,
+        wasteTypeName: wasteTypes.name,
+        requestType: wasteRequests.requestType,
+        deliveryAt: wasteRequests.deliveryAt,
+        status: wasteRequests.status,
+        operatorName: counterparties.name,
+        comment: wasteRequests.comment,
+        createdAt: wasteRequests.createdAt,
+      };
+      const pg = pageParams(q);
+      const rows = await baseQuery()
+        .where(where)
+        // По дате подачи, а не по дате заведения: журнал читают по времени, когда вывозили, — так
+        // же его сводят с талонами и счетами. Доводка `num + id` та же, что и в списке: сортировка
+        // по неуникальному столбцу сама по себе порядок строк не задаёт.
+        .orderBy(
+          orderByFrom(sortCols, q.sortBy, q.sortOrder, 'deliveryAt'),
+          asc(wasteRequests.num),
+          asc(wasteRequests.id),
+        )
+        .limit(pg.limit)
+        .offset(pg.offset);
+      const [totalRow] = await db
+        .select({ c: count() })
+        .from(wasteRequests)
+        .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
+        .where(where);
+      const [filesMap, vehiclesMap] = await Promise.all([
+        filesByRequestIds(rows.map((row) => row.id)),
+        vehiclesByRequestIds(rows.map((row) => row.id)),
+      ]);
+      return {
+        items: rows.map((row) =>
+          toDto(row, filesMap.get(row.id) ?? EMPTY_FILE_GROUPS, vehiclesMap.get(row.id) ?? []),
+        ),
+        total: Number(totalRow!.c),
+        page: pg.page,
+        pageSize: pg.pageSize,
+      };
+    },
+  );
+
+  /**
+   * Итог журнала за выбранные фильтры. Считается по тем же условиям, что и сам журнал: сводка,
+   * отвечающая не про то, что человек видит в таблице, вводит в заблуждение вернее, чем её
+   * отсутствие. Вывезенное — двумя числами: мусор меряют объёмом, лом принимают по весу
+   * (ADR 0067), и сложить их не во что.
+   */
+  r.get(
+    '/history/summary',
+    { ...auth, schema: { querystring: wasteRequestHistoryQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      assertHistoryStatus(req.query);
+      const where = historyWhere(p, req.query);
+      const [agg] = await db
+        .select({
+          total: count(),
+          completed: sql<number>`count(*) FILTER (WHERE ${wasteRequests.status} = 'completed')`,
+          cancelled: sql<number>`count(*) FILTER (WHERE ${wasteRequests.status} = 'cancelled')`,
+          // Только по завершённым: у отменённой заявки факта не бывает вовсе, а строка закрытия
+          // могла остаться от прошлого закрытия — нет, не могла: возврат в «Новую» её удаляет.
+          // Условие всё равно стоит — оно отвечает за смысл цифры, а не за целостность.
+          totalCost: sql<
+            string | null
+          >`sum(${wasteRequestCompletions.totalCost}) FILTER (WHERE ${wasteRequests.status} = 'completed')`,
+          volumeM3: sql<
+            string | null
+          >`sum(${wasteRequestCompletions.volumeM3}) FILTER (WHERE ${wasteRequests.status} = 'completed')`,
+          weightTons: sql<
+            string | null
+          >`sum(${wasteRequestCompletions.weightTons}) FILTER (WHERE ${wasteRequests.status} = 'completed')`,
+        })
+        .from(wasteRequests)
+        .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
+        .leftJoin(wasteRequestCompletions, eq(wasteRequests.id, wasteRequestCompletions.requestId))
+        .where(where);
+      return {
+        total: Number(agg!.total),
+        completed: Number(agg!.completed),
+        cancelled: Number(agg!.cancelled),
+        totalCost: toNum(agg!.totalCost) ?? 0,
+        volumeM3: toNum(agg!.volumeM3) ?? 0,
+        weightTons: toNum(agg!.weightTons) ?? 0,
+      } satisfies WasteRequestHistorySummaryDto;
     },
   );
 
@@ -1339,7 +1544,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       assertWasteObjectScope(p, before.objectId);
       assertOperatorScope(p, before.operatorCounterpartyId);
       if (before.status === status) return before;
-      assertTransitionAllowed(p, before.status, status);
+      assertTransitionAllowed(p, before.status, status, 'waste');
       // Возврат «В работе» → «Новая» стирает нажитое в работе (`transitionResetsWork`), и причина
       // ему нужна наравне с причиной отмены: без неё в истории осталась бы пара переходов, по
       // которой не понять, зачем стёрли факт и талоны. Спрашивает её сервер, а не схема тела:
@@ -1414,6 +1619,14 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           .from(wasteRequests)
           .where(eq(wasteRequests.id, before.id))
           .for('update');
+        // Завершение — точка в разборе бумаги (ADR 0135), и ставится она только когда разбирать
+        // нечего: все талоны подтверждены, расхождения приняты, нечитаемых файлов нет. Проверка
+        // идёт здесь, под общим замком контура вывоза, а не до транзакции: писатели талонов
+        // начинают с того же замка, и ответ, прочитанный раньше него, устарел бы к записи.
+        if (status === 'completed') {
+          const blocker = await ticketReviewBlockerFor(before.id);
+          if (blocker) throw err.badRequest(blocker, { status: 'Разбор не закончен' });
+        }
         // Закрытие заявки — это предъявление факта, и оно проводится тем же запросом, что и смена
         // статуса. Талон обязателен: «Выполнена» без бумаги о вывозе — отметка о работе, которую
         // нечем подтвердить (ADR 0020). Крепится он к самой заявке у любого типа — общим пулом

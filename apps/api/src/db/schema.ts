@@ -77,6 +77,11 @@ export const requestStatusEnum = pgEnum('request_status', [
   'new',
   'confirmed',
   'done',
+  // Вывоз мусора (ADR 0135, миграция 0194): бумага разобрана и принята — заявка стала документом.
+  // Значение добавлено `BEFORE 'cancelled'`, чтобы порядок enum'а совпал с порядком цикла: по нему
+  // сортируется столбец «Статус». У заказа техники перехода в него нет вовсе — держит CHECK
+  // `vehicle_requests_status_check` (миграция 0195).
+  'completed',
   'cancelled',
 ]);
 export const requestTypeEnum = pgEnum('request_type', [

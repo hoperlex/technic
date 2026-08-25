@@ -8,6 +8,7 @@ import {
   roleLabels,
   ROLES,
   VEHICLE_REQUEST_TYPES,
+  type RequestModule,
   type RequestStatus,
   type Role,
   type VehicleRequestType,
@@ -1354,27 +1355,48 @@ function canChangeAnyStatus(subject: AccessSubject): boolean {
   return can(subject, 'wasteRequests.status') || can(subject, 'vehicleRequests.status');
 }
 
-/**
- * Статусы, доступные субъекту из текущего статуса (пустой список — смена статуса запрещена).
- * Живёт рядом с матрицей, а не с таблицами переходов: «кто может» — это право, а таблицы
- * переходов описывают только «что за чем идёт».
- */
-export function allowedStatusTransitions(
+/** Ходы по циклу, открытые правом ведения статусов: без завершения — оно отпирается другим. */
+function cycleTransitions(
   from: RequestStatus,
   subject: AccessSubject,
+  module: RequestModule,
 ): RequestStatus[] {
   if (!canChangeAnyStatus(subject)) return [];
   const ownCorridor = subject.role ? ROLE_STATUS_TRANSITIONS[subject.role] : undefined;
   if (ownCorridor) return ownCorridor[from];
   return can(subject, 'requests.rollbackStatus')
-    ? [...requestStatusTransitions[from], ...requestStatusRollbacks[from]]
-    : requestStatusTransitions[from];
+    ? [...requestStatusTransitions[module][from], ...requestStatusRollbacks[module][from]]
+    : requestStatusTransitions[module][from];
+}
+
+/**
+ * Статусы, доступные субъекту из текущего статуса (пустой список — смена статуса запрещена).
+ * Живёт рядом с матрицей, а не с таблицами переходов: «кто может» — это право, а таблицы
+ * переходов описывают только «что за чем идёт».
+ *
+ * Модуль обязателен: с ADR 0135 коридоры «Вывоза мусора» и «Заказа ТС» разошлись, и вопрос
+ * «куда отсюда можно» без него не имеет одного ответа.
+ *
+ * **Завершение отпирает не ведение цикла, а разбор талонов** (`wasteRequests.ticketReview`).
+ * Точку в заявке ставит тот, кто признал бумагу: он один видел талоны, сверку и расхождения, —
+ * а `wasteRequests.status` есть и у внешнего исполнителя, который эту бумагу принёс. Отсюда и
+ * порядок: ход в «Завершена» из таблицы цикла вычитается и возвращается отдельным правом.
+ */
+export function allowedStatusTransitions(
+  from: RequestStatus,
+  subject: AccessSubject,
+  module: RequestModule,
+): RequestStatus[] {
+  const cycle = cycleTransitions(from, subject, module).filter((s) => s !== 'completed');
+  if (module !== 'waste' || from !== 'done') return cycle;
+  return can(subject, 'wasteRequests.ticketReview') ? [...cycle, 'completed'] : cycle;
 }
 
 export function canTransitionStatus(
   from: RequestStatus,
   to: RequestStatus,
   subject: AccessSubject,
+  module: RequestModule,
 ): boolean {
-  return allowedStatusTransitions(from, subject).includes(to);
+  return allowedStatusTransitions(from, subject, module).includes(to);
 }

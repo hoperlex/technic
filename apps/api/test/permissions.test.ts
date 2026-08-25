@@ -400,7 +400,7 @@ describe('права ролей', () => {
     }
     // Все три модуля заявок видны целиком, без сужения по объекту.
     expect(isObjectScopedRole('observer')).toBe(false);
-    expect(allowedStatusTransitions('new', of('observer'))).toEqual([]);
+    expect(allowedStatusTransitions('new', of('observer'), 'waste')).toEqual([]);
     // Ход сервисной заявки наблюдателю закрыт так же, как ход двух остальных модулей: чтение
     // раздела не даёт ни одной дуги (полный перебор статусов — в `service-corridors.test.ts`).
     expect(allowedServiceStatusTransitions('new', of('observer'))).toEqual([]);
@@ -1011,18 +1011,23 @@ describe('заявки на обслуживание оргтехники (ADR 0
 
 describe('переходы статусов следуют из прав', () => {
   it('роль без права на статус не меняет его вовсе', () => {
-    expect(allowedStatusTransitions('new', of('shtab'))).toEqual([]);
-    expect(canTransitionStatus('new', 'confirmed', of('shtab'))).toBe(false);
+    expect(allowedStatusTransitions('new', of('shtab'), 'waste')).toEqual([]);
+    expect(canTransitionStatus('new', 'confirmed', of('shtab'), 'waste')).toBe(false);
   });
 
   it('у исполнителя один переход — закрыть взятую в работу заявку, в любом из модулей', () => {
-    for (const subject of [wasteOperator, vehicleLessor]) {
-      expect(allowedStatusTransitions('confirmed', subject)).toEqual(['done']);
-      expect(allowedStatusTransitions('new', subject)).toEqual([]);
-      expect(canTransitionStatus('new', 'cancelled', subject)).toBe(false);
+    for (const [subject, module] of [
+      [wasteOperator, 'waste'],
+      [vehicleLessor, 'vehicle'],
+    ] as const) {
+      expect(allowedStatusTransitions('confirmed', subject, module)).toEqual(['done']);
+      expect(allowedStatusTransitions('new', subject, module)).toEqual([]);
+      expect(canTransitionStatus('new', 'cancelled', subject, module)).toBe(false);
+      // Завершает заявку тот, кто разбирает бумагу, а приносит её исполнитель (ADR 0135).
+      expect(allowedStatusTransitions('done', subject, module)).toEqual([]);
     }
     // Без контрагента модульного права на статус нет — значит нет и перехода.
-    expect(allowedStatusTransitions('confirmed', of('operator'))).toEqual([]);
+    expect(allowedStatusTransitions('confirmed', of('operator'), 'waste')).toEqual([]);
   });
 
   /**
@@ -1032,22 +1037,25 @@ describe('переходы статусов следуют из прав', () =>
    * исполнителю оно стёрло бы уже назначенную ему машину.
    */
   it('коридор исполнителя не расширяется новыми откатами', () => {
-    for (const subject of [wasteOperator, vehicleLessor]) {
-      expect(allowedStatusTransitions('confirmed', subject)).toEqual(
+    for (const [subject, module] of [
+      [wasteOperator, 'waste'],
+      [vehicleLessor, 'vehicle'],
+    ] as const) {
+      expect(allowedStatusTransitions('confirmed', subject, module)).toEqual(
         OPERATOR_STATUS_TRANSITIONS.confirmed,
       );
-      expect(canTransitionStatus('confirmed', 'new', subject)).toBe(false);
+      expect(canTransitionStatus('confirmed', 'new', subject, module)).toBe(false);
     }
     expect(OPERATOR_STATUS_TRANSITIONS.confirmed).not.toContain('new');
   });
 
   it('откат закрытой заявки идёт от права, а не от имени роли', () => {
-    expect(canTransitionStatus('done', 'confirmed', of('admin'))).toBe(true);
+    expect(canTransitionStatus('done', 'confirmed', of('admin'), 'waste')).toBe(true);
     // Диспетчер получил дугу назад вместе с правом — не потому, что он диспетчер: у менеджера
     // права нет, и той же дуги у него нет тоже, хотя заявки они ведут одинаково.
-    expect(canTransitionStatus('done', 'confirmed', of('dispatcher'))).toBe(true);
+    expect(canTransitionStatus('done', 'confirmed', of('dispatcher'), 'waste')).toBe(true);
     expect(can(of('manager'), 'requests.rollbackStatus')).toBe(false);
-    expect(canTransitionStatus('done', 'confirmed', of('manager'))).toBe(false);
+    expect(canTransitionStatus('done', 'confirmed', of('manager'), 'waste')).toBe(false);
   });
 
   /**
@@ -1063,16 +1071,19 @@ describe('переходы статусов следуют из прав', () =>
     // Ход вперёд остаётся первым: откат дописывается к обычным переходам, а не вместо них.
     for (const role of ['admin', 'dispatcher'] as Role[]) {
       expect(can(of(role), 'requests.rollbackStatus'), role).toBe(true);
-      expect(canTransitionStatus('confirmed', 'new', of(role)), role).toBe(true);
-      expect(allowedStatusTransitions('confirmed', of(role)), role).toEqual([
+      expect(canTransitionStatus('confirmed', 'new', of(role), 'waste'), role).toBe(true);
+      expect(allowedStatusTransitions('confirmed', of(role), 'waste'), role).toEqual([
         'done',
         'cancelled',
         'new',
       ]);
     }
     expect(can(of('manager'), 'requests.rollbackStatus')).toBe(false);
-    expect(canTransitionStatus('confirmed', 'new', of('manager'))).toBe(false);
+    expect(canTransitionStatus('confirmed', 'new', of('manager'), 'waste')).toBe(false);
     // Забрали только откат: заявку в работе менеджер по-прежнему и закрывает, и отменяет.
-    expect(allowedStatusTransitions('confirmed', of('manager'))).toEqual(['done', 'cancelled']);
+    expect(allowedStatusTransitions('confirmed', of('manager'), 'waste')).toEqual([
+      'done',
+      'cancelled',
+    ]);
   });
 });

@@ -29,7 +29,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 import {
   allowedStatusTransitions,
   MIN_WASTE_VOLUME_M3,
-  REQUEST_STATUSES,
+  OPEN_WASTE_STATUSES,
   REQUEST_TYPES,
   type RequestStatus,
   type RequestType,
@@ -58,6 +58,7 @@ import {
   wasteFactLabel,
   wasteRequestCommentLines,
   wasteSubjectLabel,
+  wasteTicketReviewBlocker,
 } from '@technic/contracts';
 import {
   counterpartiesApi,
@@ -93,6 +94,7 @@ import { withSavedOption } from '@shared/lib';
 import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
 import { WasteArchiveTab } from './waste/WasteArchiveTab';
+import { WasteHistoryTab } from './waste/WasteHistoryTab';
 import {
   containerGroupKey,
   containerGroupOptions,
@@ -258,7 +260,7 @@ function WasteStatusCell({
 
   // Набор переходов зависит от прав: линейный цикл для всех, откаты — только администратору,
   // а у внешнего исполнителя свой коридор — закрытие взятой в работу заявки.
-  const transitions = user ? allowedStatusTransitions(request.status, user) : [];
+  const transitions = user ? allowedStatusTransitions(request.status, user, 'waste') : [];
   const tag = (
     <Tag color={requestStatusColors[request.status]} style={{ marginInlineEnd: 0 }}>
       {requestStatusLabels[request.status]}
@@ -275,7 +277,23 @@ function WasteStatusCell({
   if (request.deletedAt || transitions.length === 0) {
     return badge;
   }
-  const items = transitions.map((s) => ({ key: s, label: requestStatusLabels[s] }));
+  /**
+   * Завершение — точка в разборе бумаги (ADR 0135), и до конца разбора его предлагать нечем:
+   * пункт остаётся в меню, но выключен и объясняет, чего ждёт. Убрать его вовсе нельзя — тогда
+   * тот, кто пришёл завершить заявку, не нашёл бы действия и решил бы, что права нет.
+   *
+   * Считается по тому же значку, что стоит в столбце разбора, и той же функцией, которой
+   * отказывает сервер: значок приходит только с правом `ticketReview`, а пункт «Завершена» — ровно
+   * тому, у кого это право есть. `null` значка означает «бумаги в разборе нет» — завершать можно.
+   */
+  const completionBlocker = wasteTicketReviewBlocker(request.ticketBadge);
+  const items = transitions.map((s) => ({
+    key: s,
+    label: requestStatusLabels[s],
+    ...(s === 'completed' && completionBlocker
+      ? { disabled: true, title: completionBlocker }
+      : {}),
+  }));
 
   // На телефоне переходы показываются списком снизу: выпадающее меню у тега в карточке
   // открывается под палец мимо цели, а подписи в нём — те же (ADR 0030).
@@ -304,6 +322,9 @@ function WasteStatusCell({
           items={items.map((item) => ({
             key: item.key,
             label: item.label,
+            disabled: item.key === 'completed' && !!completionBlocker,
+            disabledReason:
+              item.key === 'completed' && completionBlocker ? completionBlocker : undefined,
             onClick: () => onChange(request, item.key as RequestStatus),
           }))}
         />
@@ -338,7 +359,7 @@ function WasteStatusCell({
 
 // Вкладка живёт в адресе, а не в состоянии: по ссылке из соседнего раздела («№ заявки установки»
 // в списке площадок) сюда приходят с готовым ответом, какую вкладку показать и что на ней открыть.
-const TABS = ['requests', 'on-site', 'blind-check', 'archive'] as const;
+const TABS = ['requests', 'on-site', 'history', 'blind-check', 'archive'] as const;
 
 export function WasteRequestsPage() {
   // Вкладки управляемые: виджет сводки живёт в строке вкладок и показывается только на «Заявках».
@@ -357,6 +378,10 @@ export function WasteRequestsPage() {
   const items = [
     { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
     { key: 'on-site', label: 'На объекте', children: <OnSiteTab /> },
+    // «История» (ADR 0135) — журнал завершённых и отменённых заявок. Открыта всем, кто видит сам
+    // модуль: закрытая заявка — это те же сведения, что и работающая, только по ним уже нечего
+    // решать; сервер сужает выдачу той же областью, что и в списке.
+    { key: 'history', label: 'История', children: <WasteHistoryTab /> },
     ...(showBlindCheck
       ? [{ key: 'blind-check', label: 'Перепроверка', children: <BlindCheckQueue /> }]
       : []),
@@ -457,6 +482,10 @@ function RequestsTab() {
   const summaryItems = [
     ...(isOperator ? [] : [{ label: 'Не обработанных', value: summary?.new ?? 0 }]),
     { label: requestStatusLabels.confirmed, value: summary?.confirmed ?? 0 },
+    // «Выполнена» — очередь на завершение (ADR 0135): вывезли, но бумагу ещё разбирают. Цифра
+    // нужна именно здесь: во вкладке «История» такой заявки нет, и без неё не видно, сколько
+    // закрытий ждёт разбора.
+    { label: requestStatusLabels.done, value: summary?.done ?? 0 },
   ];
 
   // isLoading у списков нужен полям формы: обязательное поле с единственным вариантом
@@ -493,7 +522,13 @@ function RequestsTab() {
   const truckTypes = allTypes.filter((t) => t.type === 'truck');
   const truckTypeOptions = truckTypes.map((t) => ({ value: t.id, label: t.name }));
   const requestTypeOptions = REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] }));
-  const statusOptions = REQUEST_STATUSES.map((s) => ({ value: s, label: requestStatusLabels[s] }));
+  // Только рабочие статусы (ADR 0135): завершённые и отменённые живут вкладкой «История», и
+  // сервер их в этом списке не отдаёт вовсе — вариант фильтра, кончающийся отказом, хуже его
+  // отсутствия.
+  const statusOptions = OPEN_WASTE_STATUSES.map((s) => ({
+    value: s,
+    label: requestStatusLabels[s],
+  }));
   // Фильтр по столбцу «Контейнер / машина»: в нём соседствуют оба вида, поэтому список общий,
   // но разложен по группам — иначе самосвалы и контейнеры идут вперемешку. Самосвал в фильтре
   // находит только заявки вывоза, заведённые до ADR 0022: у новых техники в предмете нет.

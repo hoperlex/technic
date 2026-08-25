@@ -9,6 +9,7 @@ import {
   formatWasteRequestNumber,
   isInlineViewable,
   parseWasteRequestNumberSearch,
+  REQUEST_MODULES,
   REQUEST_STATUSES,
   requestStatusTransitions,
   statusChangeRequiresReason,
@@ -17,33 +18,42 @@ import {
 
 describe('статусы заявок', () => {
   it('линейный цикл доступен ролям, ведущим заявки', () => {
-    expect(canTransitionStatus('new', 'confirmed', { role: 'dispatcher' })).toBe(true);
-    expect(canTransitionStatus('confirmed', 'done', { role: 'dispatcher' })).toBe(true);
-    expect(canTransitionStatus('new', 'cancelled', { role: 'dispatcher' })).toBe(true);
-    expect(canTransitionStatus('confirmed', 'cancelled', { role: 'manager' })).toBe(true);
+    expect(canTransitionStatus('new', 'confirmed', { role: 'dispatcher' }, 'waste')).toBe(true);
+    expect(canTransitionStatus('confirmed', 'done', { role: 'dispatcher' }, 'waste')).toBe(true);
+    expect(canTransitionStatus('new', 'cancelled', { role: 'dispatcher' }, 'waste')).toBe(true);
+    expect(canTransitionStatus('confirmed', 'cancelled', { role: 'manager' }, 'vehicle')).toBe(
+      true,
+    );
   });
 
   it('хронологию нарушать нельзя, закрытые статусы терминальны', () => {
-    expect(canTransitionStatus('new', 'done', { role: 'dispatcher' })).toBe(false);
+    expect(canTransitionStatus('new', 'done', { role: 'dispatcher' }, 'waste')).toBe(false);
     // Назад заявку двигает только откат, и он приходит правом, а не рабочим циклом: у менеджера
     // права нет, поэтому «В работе» → «Новая» для него закрыто по-прежнему.
-    expect(canTransitionStatus('confirmed', 'new', { role: 'manager' })).toBe(false);
-    expect(requestStatusTransitions.confirmed).not.toContain('new');
-    expect(requestStatusTransitions.done).toEqual([]);
-    expect(requestStatusTransitions.cancelled).toEqual([]);
+    expect(canTransitionStatus('confirmed', 'new', { role: 'manager' }, 'waste')).toBe(false);
+    for (const module of REQUEST_MODULES) {
+      expect(requestStatusTransitions[module].confirmed).not.toContain('new');
+      expect(requestStatusTransitions[module].completed).toEqual([]);
+      expect(requestStatusTransitions[module].cancelled).toEqual([]);
+    }
+    // «Выполнена» терминальна только у техники: у вывоза за ней идёт разбор бумаги (ADR 0135).
+    expect(requestStatusTransitions.vehicle.done).toEqual([]);
+    expect(requestStatusTransitions.waste.done).toEqual(['completed']);
   });
 
   it('откат — администратору и диспетчеру, и снятие заявки с работы тоже', () => {
-    expect(canTransitionStatus('done', 'confirmed', { role: 'admin' })).toBe(true);
-    expect(canTransitionStatus('cancelled', 'new', { role: 'admin' })).toBe(true);
-    expect(canTransitionStatus('confirmed', 'new', { role: 'admin' })).toBe(true);
+    expect(canTransitionStatus('done', 'confirmed', { role: 'admin' }, 'waste')).toBe(true);
+    expect(canTransitionStatus('cancelled', 'new', { role: 'admin' }, 'waste')).toBe(true);
+    expect(canTransitionStatus('confirmed', 'new', { role: 'admin' }, 'waste')).toBe(true);
+    // Завершённая заявка вывоза откатывается в «Выполнена» — разбор бумаги открывается заново.
+    expect(canTransitionStatus('completed', 'done', { role: 'admin' }, 'waste')).toBe(true);
     // Диспетчеру откат отдан вместе с коррекцией: чинит тот, кому звонят. Менеджер, у которого
     // прав на заявку не меньше, назад её не двигает — откат приходит правом, а не должностью.
-    expect(canTransitionStatus('done', 'confirmed', { role: 'dispatcher' })).toBe(true);
-    expect(canTransitionStatus('cancelled', 'new', { role: 'dispatcher' })).toBe(true);
-    expect(canTransitionStatus('confirmed', 'new', { role: 'dispatcher' })).toBe(true);
-    expect(canTransitionStatus('done', 'confirmed', { role: 'manager' })).toBe(false);
-    expect(canTransitionStatus('cancelled', 'new', { role: 'manager' })).toBe(false);
+    expect(canTransitionStatus('done', 'confirmed', { role: 'dispatcher' }, 'waste')).toBe(true);
+    expect(canTransitionStatus('cancelled', 'new', { role: 'dispatcher' }, 'waste')).toBe(true);
+    expect(canTransitionStatus('confirmed', 'new', { role: 'dispatcher' }, 'waste')).toBe(true);
+    expect(canTransitionStatus('done', 'confirmed', { role: 'manager' }, 'waste')).toBe(false);
+    expect(canTransitionStatus('cancelled', 'new', { role: 'manager' }, 'waste')).toBe(false);
   });
 
   /**
@@ -78,8 +88,8 @@ describe('статусы заявок', () => {
   });
 
   it('роли без ведения заявок статусы не меняют', () => {
-    expect(allowedStatusTransitions('new', { role: 'shtab' })).toEqual([]);
-    expect(canTransitionStatus('new', 'confirmed', { role: 'shtab' })).toBe(false);
+    expect(allowedStatusTransitions('new', { role: 'shtab' }, 'waste')).toEqual([]);
+    expect(canTransitionStatus('new', 'confirmed', { role: 'shtab' }, 'waste')).toBe(false);
   });
 
   it('отмена требует причины, прочие переходы — нет', () => {

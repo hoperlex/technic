@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { can, ROLES, type CounterpartyType, type Permission, type Role } from '@technic/contracts';
+import {
+  can,
+  ROLES,
+  type CounterpartyType,
+  type Permission,
+  type RequestModule,
+  type Role,
+} from '@technic/contracts';
 import {
   approvesOwnRequestOnCreate,
   approvesOwnWeeklyRequest,
@@ -556,12 +563,15 @@ describe('assertCan — право внутри обработчика', () => {
 describe('переход статуса', () => {
   it('разрешённый переход проходит', () => {
     expect(
-      statusOf(() => assertTransitionAllowed(principal('dispatcher'), 'new', 'confirmed')),
+      statusOf(() => assertTransitionAllowed(principal('dispatcher'), 'new', 'confirmed', 'waste')),
     ).toBe(200);
-    for (const type of ['operator', 'vehicle_lessor'] as CounterpartyType[]) {
+    for (const [type, module] of [
+      ['operator', 'waste'],
+      ['vehicle_lessor', 'vehicle'],
+    ] as [CounterpartyType, RequestModule][]) {
       expect(
         statusOf(() =>
-          assertTransitionAllowed(executor(type, COUNTERPARTY_A), 'confirmed', 'done'),
+          assertTransitionAllowed(executor(type, COUNTERPARTY_A), 'confirmed', 'done', module),
         ),
         type,
       ).toBe(200);
@@ -571,9 +581,26 @@ describe('переход статуса', () => {
   it('несуществующий переход — 400, чужое право — 403', () => {
     const manager = principal('manager');
     // Перехода «Новая» → «Выполнена» нет ни у кого: это ошибка запроса, а не прав.
-    expect(statusOf(() => assertTransitionAllowed(manager, 'new', 'done'))).toBe(400);
+    expect(statusOf(() => assertTransitionAllowed(manager, 'new', 'done', 'waste'))).toBe(400);
     // Откат существует, но только у администратора — отказ по правам.
-    expect(statusOf(() => assertTransitionAllowed(manager, 'done', 'confirmed'))).toBe(403);
+    expect(statusOf(() => assertTransitionAllowed(manager, 'done', 'confirmed', 'waste'))).toBe(
+      403,
+    );
+    // Завершение (ADR 0135) отпирает разбор талонов: у ведущего заявки вывоза он есть — значит
+    // есть и ход. А у внешнего исполнителя разбора нет: он бумагу приносит, а не принимает, —
+    // отказ по правам (403), а не «недопустимый переход».
+    expect(statusOf(() => assertTransitionAllowed(manager, 'done', 'completed', 'waste'))).toBe(
+      200,
+    );
+    expect(
+      statusOf(() =>
+        assertTransitionAllowed(executor('operator', COUNTERPARTY_A), 'done', 'completed', 'waste'),
+      ),
+    ).toBe(403);
+    // У заказа техники такого хода нет вовсе — это ошибка запроса.
+    expect(statusOf(() => assertTransitionAllowed(manager, 'done', 'completed', 'vehicle'))).toBe(
+      400,
+    );
   });
 
   it('исполнителю объясняют его единственный переход — в любом из модулей', () => {

@@ -1,4 +1,5 @@
 import {
+  isClosedWasteStatus,
   vehicleRequestPath,
   vehicleRequestTab,
   vehicleRequestViewPath,
@@ -79,16 +80,26 @@ export function vehicleRequestViewLink(can: Can, requestId: string): string | nu
 }
 
 /**
- * Заявка на вывоз мусора: список заявок либо архив, если её удалили. Адрес остаётся здесь —
- * в письмах заявки на мусор не печатаются, и второго спрашивающего у него нет.
+ * Заявка на вывоз мусора: рабочий список, журнал закрытых либо архив, если её удалили. Адрес
+ * остаётся здесь — в письмах заявки на мусор не печатаются, и второго спрашивающего у него нет.
+ *
+ * Вкладка выбирается по состоянию заявки, потому что вкладки делят строки между собой (ADR 0135):
+ * завершённой и отменённой в рабочем списке нет вовсе, и ссылка на неё открывала бы карточку над
+ * таблицей, в которой этой строки не найти. Статус необязателен: спрашивающий, у которого его нет
+ * под рукой, получает рабочий список — карточка откроется и там, она грузится по номеру.
  */
 export function wasteRequestLink(
   can: Can,
-  request: { id: string; deleted?: boolean },
+  request: { id: string; deleted?: boolean; status?: RequestStatus },
 ): string | null {
   if (!can('wasteRequests.read')) return null;
   if (request.deleted && !canSeeArchiveTab(can)) return null;
-  return `/waste?tab=${request.deleted ? 'archive' : 'requests'}&open=${request.id}`;
+  const tab = request.deleted
+    ? 'archive'
+    : request.status && isClosedWasteStatus(request.status)
+      ? 'history'
+      : 'requests';
+  return `/waste?tab=${tab}&open=${request.id}`;
 }
 
 /** Путевой лист: журнал учёта с поиском по номеру. */

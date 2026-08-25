@@ -26,7 +26,12 @@ export interface StatusEventRow {
   toStatus: RequestStatus;
   comment: string;
   at: Date;
-  actorId: string;
+  /**
+   * Кто перевёл. `null` — перевод выкатом (ADR 0135): статус меняла миграция, а не учётка.
+   * Подпись такому переходу ставит сам модуль (`coalesce(..., 'Портал')`), поэтому имя здесь
+   * остаётся строкой: событие без автора в ленте есть, а безымянного события не бывает.
+   */
+  actorId: string | null;
   actorName: string;
 }
 

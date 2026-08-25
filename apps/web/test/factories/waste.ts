@@ -68,7 +68,8 @@ export function wasteRequest(overrides: Partial<WasteRequestDto> = {}): WasteReq
 export function wasteSummary(
   overrides: Partial<WasteRequestSummaryDto> = {},
 ): WasteRequestSummaryDto {
-  return { new: 0, confirmed: 0, done: 0, cancelled: 0, ...overrides };
+  // `completed` — статус «Завершена», заведённый в перечень заявок: счётчик обязан быть у каждого.
+  return { new: 0, confirmed: 0, done: 0, completed: 0, cancelled: 0, ...overrides };
 }
 
 export function objectDto(overrides: Partial<ObjectDto> = {}): ObjectDto {

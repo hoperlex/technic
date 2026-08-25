@@ -211,7 +211,11 @@ export function isCounterpartyScopedRole(role: Role | null | undefined): boolean
 // списки ролей не расходились по файлам.
 
 // ── Статусы заявки ──
-export const REQUEST_STATUSES = ['new', 'confirmed', 'done', 'cancelled'] as const;
+//
+// Порядок значений здесь — порядок цикла, и он же порядок значений enum'а в базе: столбец
+// «Статус» сортируется по нему, и «Завершена» обязана стоять между «Выполнена» и «Отменена»
+// (миграция 0194 добавляет значение `BEFORE 'cancelled'` ровно поэтому).
+export const REQUEST_STATUSES = ['new', 'confirmed', 'done', 'completed', 'cancelled'] as const;
 export const requestStatusSchema = z.enum(REQUEST_STATUSES);
 export type RequestStatus = (typeof REQUEST_STATUSES)[number];
 
@@ -220,6 +224,10 @@ export const requestStatusLabels: Record<RequestStatus, string> = {
   new: 'Новая',
   confirmed: 'В работе',
   done: 'Выполнена',
+  // Вывоз мусора (ADR 0135): бумага разобрана, сверка сошлась, спрашивать по заявке больше нечего.
+  // «Выполнена» отвечает на «вывезли», «Завершена» — на «приняли»; у заказа техники этого статуса
+  // не бывает вовсе, и подпись говорит про заявку вообще, а не про модуль.
+  completed: 'Завершена',
   cancelled: 'Отменена',
 };
 
@@ -227,18 +235,58 @@ export const requestStatusColors: Record<RequestStatus, string> = {
   new: 'blue',
   confirmed: 'gold',
   done: 'green',
+  // Не второй оттенок зелёного: «Выполнена» и «Завершена» стоят в одном столбце друг под другом,
+  // и различать их надо с одного взгляда. `cyan` свободен и в подписях типов заявок — иначе тег
+  // статуса слился бы с соседним тегом типа в той же строке.
+  completed: 'cyan',
   cancelled: 'red',
 };
 
 /**
- * Рабочий цикл заявки линейный: «Новая» → «В работе» → «Выполнена». Отменить можно только
- * незакрытую заявку; «Выполнена» и «Отменена» терминальны — назад заявку не возвращают.
+ * Модуль заявки. Статусный тип у «Вывоза мусора» и «Заказа ТС» общий — цикл у них один и тот же
+ * до дня, когда бумагу стало нужно принимать: с ADR 0135 у вывоза за «Выполнена» идёт
+ * «Завершена», а у техники «Выполнена» так и осталась терминальной.
+ *
+ * Отдельный тип, а не «флаг вывоза», потому что спрашивают его трое и по-разному: коридор
+ * переходов, откаты и матрица прав. Строкой-именем модуля, а не типом заявки: у вывоза их пять,
+ * у техники два, и цикл не зависит ни от одного из них.
  */
-export const requestStatusTransitions: Record<RequestStatus, RequestStatus[]> = {
-  new: ['confirmed', 'cancelled'],
-  confirmed: ['done', 'cancelled'],
-  done: [],
-  cancelled: [],
+export const REQUEST_MODULES = ['waste', 'vehicle'] as const;
+export type RequestModule = (typeof REQUEST_MODULES)[number];
+
+/**
+ * Рабочий цикл заявки линейный: «Новая» → «В работе» → «Выполнена». Отменить можно только
+ * незакрытую заявку; «Отменена» терминальна — назад заявку не возвращают.
+ *
+ * Дальше циклы модулей расходятся (ADR 0135). У вывоза мусора «Выполнена» означает «вывезли и
+ * предъявили талон», но не «бумага принята»: талоны разбирают и сверяют уже после закрытия
+ * (ADR 0114), и до конца разбора заявка остаётся рабочей. Точку ставит «Завершена» — она и
+ * терминальна. У заказа техники разбирать нечего, и «Выполнена» терминальна сама.
+ *
+ * Таблица на модуль, а не общая с оговоркой в коде: в неё смотрят и сервер, и портал, и оба
+ * обязаны видеть один и тот же коридор.
+ */
+export const requestStatusTransitions: Record<
+  RequestModule,
+  Record<RequestStatus, RequestStatus[]>
+> = {
+  waste: {
+    new: ['confirmed', 'cancelled'],
+    confirmed: ['done', 'cancelled'],
+    done: ['completed'],
+    completed: [],
+    cancelled: [],
+  },
+  vehicle: {
+    new: ['confirmed', 'cancelled'],
+    confirmed: ['done', 'cancelled'],
+    done: [],
+    // Недостижимо: значение статуса общее, а перехода в него у техники нет ни одного. Строка
+    // здесь не заготовка, а обязанность типа — `Record` требует ответа на каждый статус, и
+    // пустой список отвечает «отсюда никуда», что для заявки техники и верно.
+    completed: [],
+    cancelled: [],
+  },
 };
 
 /**
@@ -248,12 +296,28 @@ export const requestStatusTransitions: Record<RequestStatus, RequestStatus[]> = 
  * Возврат из «В работе» в «Новую» отличается от остальных откатов тем, что **стирает работу**
  * (`transitionResetsWork`): назначенную технику, факт, рейс и визу. Прочие откаты, наоборот,
  * прежние данные берегут — повторное закрытие обходится уже предъявленным фактом.
+ *
+ * Откат «Завершена» → «Выполнена» (ADR 0135) из тех, что берегут: завершение ничего не стирает,
+ * оно лишь объявляет разбор законченным, — и возврат снова открывает талоны для правки.
  */
-export const requestStatusRollbacks: Record<RequestStatus, RequestStatus[]> = {
-  new: [],
-  confirmed: ['new'],
-  done: ['confirmed'],
-  cancelled: ['new'],
+export const requestStatusRollbacks: Record<
+  RequestModule,
+  Record<RequestStatus, RequestStatus[]>
+> = {
+  waste: {
+    new: [],
+    confirmed: ['new'],
+    done: ['confirmed'],
+    completed: ['done'],
+    cancelled: ['new'],
+  },
+  vehicle: {
+    new: [],
+    confirmed: ['new'],
+    done: ['confirmed'],
+    completed: [],
+    cancelled: ['new'],
+  },
 };
 
 /**
@@ -278,7 +342,11 @@ export function transitionResetsWork(from: RequestStatus, to: RequestStatus): bo
 export const OPERATOR_STATUS_TRANSITIONS: Record<RequestStatus, RequestStatus[]> = {
   new: [],
   confirmed: ['done'],
+  // Завершение заявки исполнителю не открыто и открыто не будет: «Завершена» означает, что бумагу
+  // приняли, а приносит её он сам (ADR 0135). Таблица остаётся общей на оба модуля — коридор
+  // исполнителя от модуля не зависит.
   done: [],
+  completed: [],
   cancelled: [],
 };
 

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { WasteTicketBadgeDto } from './waste-tickets';
 import {
   MIN_WASTE_VOLUME_M3,
+  REQUEST_STATUSES,
   requestStatusSchema,
   requestTypeSchema,
   requestTypeShort,
@@ -98,6 +99,61 @@ export const wasteRequestListQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIEL
    */
   ticketReview: z.literal('pending').optional(),
 });
+
+/**
+ * Статусы журнала «История» (ADR 0135): заявка, по которой уже нечего решать. «Выполнена» сюда не
+ * входит намеренно — по ней ещё разбирают талоны, и работа с ней не кончена.
+ */
+export const CLOSED_WASTE_STATUSES = [
+  'completed',
+  'cancelled',
+] as const satisfies readonly RequestStatus[];
+
+export function isClosedWasteStatus(status: RequestStatus): boolean {
+  return (CLOSED_WASTE_STATUSES as readonly RequestStatus[]).includes(status);
+}
+
+/**
+ * Статусы рабочей вкладки «Заявки»: всё, что ещё ведут. Считается вычитанием, а не вторым
+ * перечнем: появись у цикла новый статус, он попал бы в работу сам — а забытый в списке статус
+ * пропал бы из обеих вкладок молча.
+ */
+export const OPEN_WASTE_STATUSES: readonly RequestStatus[] = REQUEST_STATUSES.filter(
+  (s) => !isClosedWasteStatus(s),
+);
+
+/**
+ * Журнал закрытых заявок вывоза (ADR 0135) — те же фильтры, что и у списка, кроме двух. Реестра
+ * разбора здесь нет: разбирать в завершённой заявке нечего. Архива тоже нет: удалённые заявки
+ * живут своей вкладкой (ADR 0070), и журнал их не показывает — он про состоявшееся, а не про
+ * снесённое. `status` сужает журнал до одного из двух закрытых; остальные сервер отклоняет.
+ */
+export const wasteRequestHistoryQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIELDS).extend({
+  status: requestStatusSchema.optional(),
+  objectId: uuidSchema.optional(),
+  containerTypeId: uuidSchema.optional(),
+  requestType: requestTypeSchema.optional(),
+  operatorCounterpartyId: uuidSchema.optional(),
+  num: z.coerce.number().int().positive().optional(),
+  deliveryFrom: z.coerce.date().optional(),
+  deliveryTo: z.coerce.date().optional(),
+});
+export type WasteRequestHistoryQuery = z.infer<typeof wasteRequestHistoryQuerySchema>;
+
+/**
+ * Итог журнала за выбранные фильтры: сколько заявок закрыто, чем закончилось и что по ним вывезли.
+ * Вывезенное двумя числами, а не одним: мусор меряют объёмом, лом принимают по весу (ADR 0067), и
+ * сложить их не во что. Сумма — по завершённым с известной стоимостью: у отменённой её не бывает,
+ * а контейнерные операции не тарифицируются вовсе (ADR 0019).
+ */
+export interface WasteRequestHistorySummaryDto {
+  total: number;
+  completed: number;
+  cancelled: number;
+  totalCost: number;
+  volumeM3: number;
+  weightTons: number;
+}
 
 /**
  * Сводка по статусам для виджета над списком. Из фильтров таблицы учитывается только объект:
@@ -857,12 +913,13 @@ export function wasteRequestCommentLines(
 }
 
 /**
- * Пишется ли ещё примечание исполнителя. У закрытой заявки — нет: «Выполнена» и «Отменена»
- * терминальны, заявка стала документом, и дописывать в неё нечего. Понадобилась правка —
- * администратор откатывает статус, тем же порядком, что и с фактом вывоза (ADR 0035).
+ * Пишется ли ещё примечание исполнителя. У закрытой заявки — нет: с «Выполнена» работа
+ * исполнителя кончена, заявка стала документом, и дописывать в неё нечего. «Завершена» и
+ * «Отменена» закрыты тем более — они терминальны (ADR 0135). Понадобилась правка — администратор
+ * откатывает статус, тем же порядком, что и с фактом вывоза (ADR 0035).
  */
 export function wasteOperatorCommentEditable(status: RequestStatus): boolean {
-  return status !== 'done' && status !== 'cancelled';
+  return status !== 'done' && !isClosedWasteStatus(status);
 }
 
 // ── История заявки (ADR 0012) ──
