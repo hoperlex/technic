@@ -156,17 +156,15 @@ export function WasteHistoryTab() {
 
   const filters = (
     <Space size={[12, 8]} wrap>
-      {/* Список раскрывается по своей ширине, а не по ширине поля: подпись с адресом длиннее
-          любого разумного фильтра, и обрезанная в многоточие она перестаёт отвечать на «та ли это
-          площадка». Потолок в 90 % ширины экрана держит его в пределах окна. */}
+      {/* Раскрытый список шире поля: подпись с адресом длиннее любого разумного фильтра, и
+          обрезанная в многоточие она перестаёт отвечать на «та ли это площадка». Ширина задана не
+          здесь — правило одно на портал и живёт в корневом провайдере (ADR 0136). */}
       <Select
         allowClear
         showSearch
         optionFilterProp="label"
         placeholder="Все площадки"
         style={{ width: 240 }}
-        popupMatchSelectWidth={false}
-        styles={{ popup: { root: { maxWidth: '90vw' } } }}
         options={objectOptions}
         value={params.objectId}
         onChange={(v: string | undefined) => applyFilter({ objectId: v })}
