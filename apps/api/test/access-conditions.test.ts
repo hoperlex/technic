@@ -576,12 +576,6 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'PATCH /api/v1/service-requests/:id/rework': {
     payload: { reason: 'подача по-прежнему не работает', version: 1 },
   },
-  // Совместимый адаптер выпуска 1 и сменившая его ручка: дуга у обеих одна — `… → assigned`, — и
-  // открывает её право распределения, то есть само условие маршрута.
-  'PATCH /api/v1/service-requests/:id/service': {
-    payload: { serviceCounterpartyId: COUNTERPARTY_ID, version: 1 },
-    selfRefusal: CORRIDOR_REFUSAL,
-  },
   'PUT /api/v1/service-requests/:id/executors': {
     payload: { userIds: [], serviceCounterpartyId: COUNTERPARTY_ID, version: 1 },
     selfRefusal: CORRIDOR_REFUSAL,

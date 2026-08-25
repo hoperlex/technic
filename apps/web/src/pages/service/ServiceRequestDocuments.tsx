@@ -43,8 +43,7 @@ function attachableKinds(status: ServiceRequestStatus): ServiceFileKind[] {
       case 'attachment':
         return !closed;
       case 'estimate':
-        // `diagnostics` — legacy: снимается выпуском 2, пока такие заявки ещё стоят в базе.
-        return status === 'in_work' || status === 'diagnostics' || status === 'estimate_review';
+        return status === 'in_work' || status === 'estimate_review';
       case 'act':
       case 'invoice':
       case 'warranty_card':

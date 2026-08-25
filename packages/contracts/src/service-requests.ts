@@ -12,11 +12,12 @@ import type { ModuleMailOutcome } from './module-mail';
 //
 // Выпуск 1 плана `office-equipment-requests-rework-plan.md` свёл оба вида заявок к одному
 // словарю статусов (Н2) и увёл визу ИТ со входа на смету (Н3). Два значения статуса —
-// `it_approved` и `diagnostics` — остались в типе мёртвыми: удалить значение enum в Postgres значит
-// пересоздать тип со всеми зависимостями при нулевом выигрыше (Н4). Строки с ними живут до
-// выпуска 2 — в окне выката старый код ещё заводит заявки в `it_approved`, — поэтому каждая
-// таблица и каждый предикат здесь отвечают и на них: из `it_approved` доступно то же, что из
-// «Новой», из `diagnostics` — то же, что из «В работе».
+// `it_approved` и `diagnostics` — МЁРТВЫЕ значения: заявок в этих статусах больше не существует,
+// их запретил `CHECK` выпуска 2 (`0197`), а остаток перевела та же миграция. В типе они остались по
+// двум причинам, и обе внешние: `ALTER TYPE … DROP VALUE` в Postgres нет вовсе, а история переходов
+// их ХРАНИТ — строка «Новая → Согласована ИТ» от 12.08 правдива, и портал обязан её подписать.
+// Поэтому подписи и цвета у них есть, а ходов нет: в каждом коридоре ниже стоит пустой список, и
+// это не пропуск, а утверждение «из этого статуса не ходят, потому что в нём не бывают».
 
 // ── Вид заявки ──
 
@@ -68,7 +69,7 @@ export const serviceRequestStatusLabels: Record<ServiceRequestStatus, string> = 
   // Не «Назначен сервис» (Н2): исполнителем бывает и свой сотрудник, и название, называющее
   // подрядчика, перестало описывать состояние.
   assigned: 'Назначена',
-  diagnostics: 'Диагностика', // legacy: снимается выпуском 2
+  diagnostics: 'Диагностика', // мёртвый статус (0197): подпись нужна истории
   estimate_review: 'Смета на согласовании',
   in_work: 'В работе',
   // Заморозка — состояние, а не флаг рядом со статусом (Р103): «В работе, но не в работе»
@@ -109,9 +110,9 @@ export const serviceRequestStatusColors: Record<ServiceRequestStatus, string> = 
  */
 export const serviceStepLabels: Record<ServiceRequestStatus, string> = {
   new: 'назначить исполнителей',
-  it_approved: 'назначить исполнителей', // legacy: снимается выпуском 2 — то же, что у «Новой»
+  it_approved: 'назначить исполнителей', // мёртвый статус (0197)
   assigned: 'принять в работу',
-  diagnostics: 'выполнить и закрыть работы', // legacy: снимается выпуском 2
+  diagnostics: 'выполнить и закрыть работы', // мёртвый статус (0197)
   estimate_review: 'согласовать смету',
   in_work: 'выполнить и закрыть работы',
   on_hold: '',
@@ -161,12 +162,12 @@ export function isServiceRequestClosed(status: ServiceRequestStatus): boolean {
  */
 export const SERVICE_EXECUTOR_TRANSITIONS: Record<ServiceRequestStatus, ServiceRequestStatus[]> = {
   new: [],
-  it_approved: [], // legacy: снимается выпуском 2 — то же, что из «Новой»
+  it_approved: [], // мёртвый статус (0197): заявок в нём не бывает
   // Отказ возвращает заявку в «Новую», а не к визе ИТ: визы на входе больше нет (Н3). Дуга одна на
   // весь отказ, а кого снимать — строку отказавшегося или всю компанию — решает ручка (§4.2):
   // коридор отвечает на «бывает ли такой ход», а не на «остался ли кто-то ещё».
   assigned: ['in_work', 'new'], // принять в работу · отказаться (причина)
-  diagnostics: ['estimate_review', 'done'], // legacy: снимается выпуском 2 — то же, что из «В работе»
+  diagnostics: [], // мёртвый статус (0197): заявок в нём не бывает
   estimate_review: [],
   // Смета предъявляется из «В работе» и возвращает заявку туда же: «Диагностика» слилась с ней
   // (Н2), и повторное предъявление — та же дуга с ревизией +1, а не откат в отдельный статус.
@@ -192,9 +193,9 @@ export const SERVICE_IT_TRANSITIONS: Record<ServiceRequestStatus, ServiceRequest
   // «Новую» распределяют, а не визируют: на распределении согласовывать нечего — предмет решения
   // (счёт инженера) появляется позже.
   new: [],
-  it_approved: [], // legacy: снимается выпуском 2
+  it_approved: [], // мёртвый статус (0197)
   assigned: [],
-  diagnostics: [], // legacy: снимается выпуском 2 — то же, что из «В работе»
+  diagnostics: [], // мёртвый статус (0197)
   estimate_review: ['cancelled'], // «менять аппарат»: причина обязательна, пометку ставит ручка
   in_work: [],
   on_hold: [],
@@ -211,11 +212,11 @@ export const SERVICE_IT_TRANSITIONS: Record<ServiceRequestStatus, ServiceRequest
  */
 export const SERVICE_ASSIGNER_TRANSITIONS: Record<ServiceRequestStatus, ServiceRequestStatus[]> = {
   new: ['assigned'],
-  it_approved: ['assigned'], // legacy: снимается выпуском 2 — то же, что из «Новой»
+  it_approved: [], // мёртвый статус (0197)
   // Переназначение — тот же статус, другой исполнитель: заявка не откатывается назад, но её
   // возраст в статусе обнуляется, иначе новый исполнитель наследовал бы чужое ожидание.
   assigned: ['assigned'],
-  diagnostics: ['assigned'], // legacy: снимается выпуском 2 — то же, что из «В работе»
+  diagnostics: [], // мёртвый статус (0197)
   // Пока смета на подписи, менять исполнителя нечем: цифры в ней его, и переназначение оставило бы
   // новому чужой счёт. Сперва решают по смете — из «В работе» переназначение снова открыто.
   estimate_review: [],
@@ -237,9 +238,9 @@ export const SERVICE_ASSIGNER_TRANSITIONS: Record<ServiceRequestStatus, ServiceR
  */
 export const SERVICE_HOLD_TRANSITIONS: Record<ServiceRequestStatus, ServiceRequestStatus[]> = {
   new: ['on_hold'],
-  it_approved: ['on_hold'], // legacy: снимается выпуском 2 — то же, что из «Новой»
+  it_approved: [], // мёртвый статус (0197)
   assigned: ['on_hold'],
-  diagnostics: ['on_hold'], // legacy: снимается выпуском 2 — то же, что из «В работе»
+  diagnostics: [], // мёртвый статус (0197)
   estimate_review: ['on_hold'],
   in_work: ['on_hold'],
   // В себя заморозка не вкладывается: вторая причина поверх первой потеряла бы `held_from_status`,
@@ -272,9 +273,9 @@ export const SERVICE_OPERATOR_TRANSITIONS: Record<ServiceRequestStatus, ServiceR
   // Отменить «Новую» можно: заявку, которую отзывает сам заказчик, незачем гонять по циклу. Сам
   // заказчик статусов не двигает (§6.3) — он просит отменить, а ход делает «Ведение».
   new: ['cancelled'],
-  it_approved: ['cancelled'], // legacy: снимается выпуском 2 — то же, что из «Новой»
+  it_approved: [], // мёртвый статус (0197)
   assigned: ['cancelled'],
-  diagnostics: ['cancelled'], // legacy: снимается выпуском 2 — то же, что из «В работе»
+  diagnostics: [], // мёртвый статус (0197)
   estimate_review: ['in_work', 'cancelled'], // согласовать сумму · отклонить смету (причина)
   in_work: ['cancelled'],
   on_hold: ['cancelled'],
@@ -293,9 +294,9 @@ export const SERVICE_OPERATOR_TRANSITIONS: Record<ServiceRequestStatus, ServiceR
  */
 export const SERVICE_ADMIN_ROLLBACKS: Record<ServiceRequestStatus, ServiceRequestStatus[]> = {
   new: [],
-  it_approved: ['new'], // legacy: снимается выпуском 2 — откат входной визы старого образца
+  it_approved: [], // мёртвый статус (0197)
   assigned: ['new'],
-  diagnostics: ['assigned'], // legacy: снимается выпуском 2
+  diagnostics: [], // мёртвый статус (0197)
   // Предъявление сметы отматывает не откат, а дуга «Ведения» (`estimate_review → in_work`): два
   // способа пройти один переход разошлись бы на первой же правке.
   estimate_review: [],
@@ -478,7 +479,6 @@ export function serviceStatusChangeRequiresReason(
   if (to === 'on_hold') return true;
   // Отказ исполнителя и откат назначения: у заявки отбирают того, кто за неё взялся.
   if (from === 'assigned' && to === 'new') return true;
-  if (from === 'it_approved' && to === 'new') return true; // legacy: снимается выпуском 2
   if (from === 'done' && to === 'in_work') return true; // возврат на доработку
   return false;
 }
@@ -564,7 +564,6 @@ function baseServiceReset(
   if (from === 'assigned' && to === 'new') return { ...NO_RESET, executor: true };
   // legacy: снимается выпуском 2. Откат входной визы старого образца — заявка возвращается к
   // отделу ИТ, и подпись под ней держаться не должна.
-  if (from === 'it_approved' && to === 'new') return { ...NO_RESET, itApproval: true };
   // Отмена возвращает заявку в состояние «ничего не делали»: она остаётся историей того, что
   // собирались чинить, но ни исполнителя, ни согласованной сметы у неё больше нет.
   if (to === 'cancelled') return { ...NO_RESET, executor: true, approval: true };
@@ -655,7 +654,9 @@ export function serviceRequestWaitingOn(row: ServiceWaitingRequest): ServiceWait
     // «Новую» ждёт тот, кто распределяет: визы на входе больше нет (Н3), и до назначения с заявкой
     // ничего не происходит.
     case 'new':
-    case 'it_approved': // legacy: снимается выпуском 2 — то же, что «Новая»
+    // Мёртвые статусы (0197) в `switch` остаются: заявок в них нет, но функцию зовут и на
+    // строках истории, где они встречаются законно, — а `switch` обязан покрыть весь тип.
+    case 'it_approved':
     case 'done':
       return 'operator';
     // Порядок подписей жёсткий: сперва ИТ, потом деньги. Наоборот — значило бы согласовывать сумму
@@ -663,7 +664,7 @@ export function serviceRequestWaitingOn(row: ServiceWaitingRequest): ServiceWait
     case 'estimate_review':
       return hasCurrentItApproval(row) ? 'operator' : 'it';
     case 'assigned':
-    case 'diagnostics': // legacy: снимается выпуском 2 — то же, что «В работе»
+    case 'diagnostics':
     case 'in_work':
       return 'service';
     // Заморозка снимает заявку со всех очередей: ход не за исполнителем и не за оператором — она
@@ -1678,15 +1679,14 @@ export function serviceMailRepeatable(status: ServiceRequestStatus): boolean {
  * Правит ли субъект саму заявку: заказчик — пока её никому не отдали (§6.1). После назначения за
  * заявкой стоят договорённости с исполнителем, и менять её предмет задним числом нельзя.
  *
- * `it_approved` остаётся в списке как legacy (снимается выпуском 2): в новом цикле такого шага
- * нет, но заявка, заведённая в него старым кодом в окне выката, обязана правиться так же, как
- * «Новая», — иначе из-за опечатки в описании пришлось бы заводить новую заявку.
+ * `it_approved` из списка ушёл вместе с самим статусом (`0197`): заявок в нём больше не бывает, и
+ * ветка под него отвечала бы на вопрос, которого никто не задаёт.
  *
  * `on_hold` в список не входит (Р110): заморозка останавливает ход заявки, и правка её предмета
  * была бы ходом мимо остановки. Отложенную из «Новой» правят, вернув в работу.
  */
 export function isServiceRequestEditable(status: ServiceRequestStatus): boolean {
-  return status === 'new' || status === 'it_approved'; // legacy: снимается выпуском 2
+  return status === 'new';
 }
 
 /**
@@ -1700,12 +1700,7 @@ export function isServiceRequestEditable(status: ServiceRequestStatus): boolean 
  * списать расходники (Р6), и архивная заявка означала бы списание без основания.
  */
 export function isServiceRequestDeletable(status: ServiceRequestStatus): boolean {
-  return (
-    status === 'new' ||
-    status === 'assigned' ||
-    // legacy: снимается выпуском 2 — то же, что «Новая».
-    status === 'it_approved'
-  );
+  return status === 'new' || status === 'assigned';
 }
 
 /** Права модуля — одним списком: он нужен и матрице, и проверке «открыт ли раздел». */

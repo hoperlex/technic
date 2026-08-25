@@ -118,12 +118,13 @@ describe('коридор исполнителя: ход открывает на�
   });
 
   /**
-   * Совместимость выпуска 1 (план §3, п. 5): заявки в мёртвых статусах живут до выпуска 2, и код
-   * обязан их вести. Из `diagnostics` доступно то же, что из «В работе», — иначе заявка, взятая в
-   * диагностику накануне выката, повисла бы без единого хода до наката M8.
+   * Выпуск 2 (`0197`) перевёл остаток заявок и запретил мёртвые статусы `CHECK`ом — в них больше не
+   * стоят. Ходов у них поэтому нет ни у кого: пустой список здесь не пропуск, а утверждение «из
+   * этого статуса не ходят, потому что в нём не бывают». Совместимость выпуска 1, которую проверял
+   * прежний случай, снята вместе с самими статусами.
    */
-  it('заявка в мёртвой «Диагностике» ведётся как «В работе»', () => {
-    expect(from('diagnostics', service, BY_COUNTERPARTY)).toEqual(['done', 'estimate_review']);
+  it('из мёртвых статусов ходов нет ни у исполнителя, ни у кого-либо ещё', () => {
+    expect(from('diagnostics', service, BY_COUNTERPARTY)).toEqual([]);
     expect(from('it_approved', service, BY_COUNTERPARTY)).toEqual([]);
   });
 
@@ -222,8 +223,6 @@ describe('коридор исполнителя: ход открывает на�
     // Административные откаты. `assigned → new` в этот перечень не входит намеренно: у исполнителя
     // это не откат, а собственный отказ от работы (Р20), и дуга у них общая.
     for (const [a, b] of [
-      ['it_approved', 'new'],
-      ['diagnostics', 'assigned'],
       ['in_work', 'assigned'],
       ['done', 'in_work'],
       ['accepted', 'done'],
@@ -302,8 +301,9 @@ describe('коридор «Ведения»: решения заказчика �
       expect(from('accepted', operator), who).toEqual([]);
       expect(from('cancelled', operator), who).toEqual([]);
       // Мёртвые статусы ведутся как их живые двойники (план §3, п. 5).
-      expect(from('it_approved', operator), who).toEqual(['assigned', 'cancelled', 'on_hold']);
-      expect(from('diagnostics', operator), who).toEqual(['assigned', 'cancelled', 'on_hold']);
+      // Мёртвые статусы (`0197`): ходов нет и у «Ведения».
+      expect(from('it_approved', operator), who).toEqual([]);
+      expect(from('diagnostics', operator), who).toEqual([]);
     }
   });
 
@@ -442,10 +442,6 @@ describe('администратор проходит каждую дугу вс
     ['accepted', 'done', 'откатить приёмку'],
     ['cancelled', 'new', 'вернуть отменённую в работу'],
     // Мёртвые статусы — до выпуска 2 заявки в них ведутся наравне с живыми
-    ['it_approved', 'assigned', 'назначить по заявке со входной визой'],
-    ['it_approved', 'new', 'откатить входную визу'],
-    ['diagnostics', 'estimate_review', 'предъявить смету из диагностики'],
-    ['diagnostics', 'assigned', 'переназначить из диагностики'],
   ];
 
   it('каждая дуга проходима', () => {
@@ -471,15 +467,9 @@ describe('администратор проходит каждую дугу вс
     expect(from('done', admin)).toEqual(['accepted', 'in_work', 'on_hold']);
     expect(from('accepted', admin)).toEqual(['done']);
     expect(from('cancelled', admin)).toEqual(['new']);
-    // Мёртвые статусы: `it_approved` ведётся как «Новая» плюс откат, `diagnostics` — как «В работе».
-    expect(from('it_approved', admin)).toEqual(['assigned', 'cancelled', 'new', 'on_hold']);
-    expect(from('diagnostics', admin)).toEqual([
-      'assigned',
-      'cancelled',
-      'done',
-      'estimate_review',
-      'on_hold',
-    ]);
+    // Мёртвые статусы (`0197`): ходов нет и у администратора — заявок в них не бывает.
+    expect(from('it_approved', admin)).toEqual([]);
+    expect(from('diagnostics', admin)).toEqual([]);
   });
 
   /**
@@ -517,9 +507,7 @@ describe('заморозка: кто откладывает, кто возвра
    */
   const HOLDABLE: ServiceRequestStatus[] = [
     'new',
-    'it_approved',
     'assigned',
-    'diagnostics',
     'estimate_review',
     'in_work',
     // «Решена» — тоже: Р106 ADR 0125 её откладывал («ждём акт от сервиса»), и она же снимается
@@ -528,7 +516,7 @@ describe('заморозка: кто откладывает, кто возвра
   ];
 
   it('«Ведение» и администратор откладывают из рабочих статусов и «Решена» — и только из них', () => {
-    expect(HOLDABLE).toHaveLength(7);
+    expect(HOLDABLE).toHaveLength(5);
     for (const operator of [...OPERATORS, admin]) {
       const who = accessProfileLabel(operator);
       for (const status of SERVICE_REQUEST_STATUSES) {
@@ -750,7 +738,6 @@ describe('кому ход заявки закрыт целиком', () => {
 describe('причина перехода', () => {
   const REQUIRE_REASON = new Set([
     'assigned→new', // отказ исполнителя и откат назначения
-    'it_approved→new', // legacy: откат входной визы старого образца
     'done→in_work', // возврат на доработку
   ]);
 
@@ -820,11 +807,6 @@ describe('сброс при возвратах и откатах', () => {
 
   it('отказ и откат назначения: заявка снова ничья и ждёт распределения', () => {
     expect(keysOf('assigned', 'new')).toEqual(['executor']);
-  });
-
-  it('откат входной визы снимает подпись ИТ и ничего больше', () => {
-    // legacy: дуга живёт до выпуска 2 — по ней возвращают заявку, завизированную старым кодом.
-    expect(keysOf('it_approved', 'new')).toEqual(['itApproval']);
   });
 
   it('отмена из любого статуса снимает исполнителя и согласование', () => {
@@ -1089,7 +1071,11 @@ describe('кого ждёт заявка', () => {
       // отложенная из правила выпадают: у первой шага нет вовсе, у второй он не в цикле — заявку
       // возвращают своей ручкой (`canResumeService`), а не дугой коридора.
       const subject = waiting === 'service' ? service : shtabOperator;
-      if (waiting !== 'nobody' && waiting !== 'hold') {
+      // Мёртвые статусы (`0197`) из правила выпадают третьими: `waitingOn` отвечает за них по
+      // живому двойнику — функцию зовут и на строках истории, — но ходов у них нет и быть не
+      // должно, потому что нет самих заявок.
+      const dead = status === 'it_approved' || status === 'diagnostics';
+      if (waiting !== 'nobody' && waiting !== 'hold' && !dead) {
         expect(
           allowedServiceStatusTransitions(status, subject, BY_COUNTERPARTY).length,
           status,

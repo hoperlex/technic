@@ -3,7 +3,6 @@ import type {
   ServiceRequestNotifyResultDto,
   ServiceRequestWithMailDto,
   ApproveServiceEstimateInput,
-  AssignServiceInput,
   CompleteServiceRequestInput,
   CreateServiceRequestInput,
   DeclineServiceRequestInput,
@@ -115,8 +114,6 @@ export const serviceRequestsApi = {
    * вместе с ним (план §7.3): её зовёт вкладка, открытая до выката, — портал ходит только новой
    * ручкой выше.
    */
-  assignService: (id: string, body: AssignServiceInput) =>
-    patch<ServiceRequestDto>(id, '/service', body),
   /** Отказ исполнителя: заявка снова ничья, у неё стирается сервис. */
   decline: (id: string, body: DeclineServiceRequestInput) =>
     patch<ServiceRequestDto>(id, '/decline', body),

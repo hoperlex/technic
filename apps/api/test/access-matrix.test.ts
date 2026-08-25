@@ -973,15 +973,6 @@ const CASES: Case[] = [
     allowed: SERVICE_REQUEST_ASSIGNERS,
   },
   {
-    // Совместимый адаптер выпуска 1: прежний адрес, который зовёт вкладка, открытая до выката.
-    // Право у него то же; уходит вместе с выпуском 2.
-    title: 'заявки на обслуживание — назначение сервиса (адаптер выпуска 1)',
-    method: 'PATCH',
-    url: `/api/v1/service-requests/${RECORD_ID}/service`,
-    payload: { serviceCounterpartyId: COUNTERPARTY_ID, version: 1 },
-    allowed: SERVICE_REQUEST_ASSIGNERS,
-  },
-  {
     // Виза переехала со входа на смету (Н3): та же ручка, тот же круг, два исхода — «чинить за эти
     // деньги» и «менять аппарат». Второй закрывает заявку отменой, и приходит он тем же правом
     // `serviceRequests.approveIt`, а не общим правом отменять заявки.

@@ -26,7 +26,6 @@ import {
   actsForCounterparty,
   approveServiceEstimateSchema,
   approveServiceItSchema,
-  assignServiceSchema,
   attachServiceFilesSchema,
   can,
   canHoldService,
@@ -1482,18 +1481,9 @@ async function estimateItems(tx: Tx, requestId: string) {
  * нечего.
  */
 const FILE_KIND_STATUSES: Record<ServiceFileKind, ServiceRequestStatus[]> = {
-  attachment: [
-    'new',
-    'it_approved',
-    'assigned',
-    'diagnostics',
-    'estimate_review',
-    'in_work',
-    'done',
-  ],
+  attachment: ['new', 'assigned', 'estimate_review', 'in_work', 'done'],
   // Смета предъявляется из «В работе» (Н2), значит и файл сметы прикладывают оттуда же;
-  // `diagnostics` — legacy: снимается выпуском 2.
-  estimate: ['in_work', 'diagnostics', 'estimate_review'],
+  estimate: ['in_work', 'estimate_review'],
   act: ['in_work', 'done', 'accepted', 'cancelled'],
   invoice: ['in_work', 'done', 'accepted', 'cancelled'],
   /**
@@ -2726,14 +2716,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      assertSideAllowed(p, 'assigned', [
-        'new',
-        // legacy: снимается выпуском 2 — из «Согласована ИТ» доступно то же, что из «Новой».
-        'it_approved',
-        'assigned',
-        'diagnostics', // legacy: снимается выпуском 2 — то же, что из «В работе»
-        'in_work',
-      ]);
+      assertSideAllowed(p, 'assigned', ['new', 'assigned', 'in_work']);
       const row = await requireEditable(p, req.params.id);
       assertTransition(p, row.status, 'assigned');
 
@@ -2774,7 +2757,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       }
       // Первое назначение причины не требует, переназначение требует: у прежнего исполнителя
       // отбирают работу, и в истории обязано остаться, почему.
-      const first = row.status === 'new' || row.status === 'it_approved';
+      const first = row.status === 'new';
       if (!first && !body.reason) {
         throw err.unprocessable(
           'Укажите причину переназначения — у прежнего исполнителя отбирают работу',
@@ -2964,89 +2947,6 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
   }
 
   // ── Назначение контрагента: совместимый адаптер выпуска 1 ──
-  /**
-   * Прежняя ручка назначения. Остаётся на весь выпуск 1 и удаляется в выпуске 2 (план §7.3), и
-   * причина не в старом коде сервера, а в старом коде **браузера**: вкладка, открытая до выката,
-   * живёт с загруженным JS и зовёт прежний адрес — удали мы ручку сразу, назначение отвечало бы
-   * 404 всем, кто не перезагрузил страницу.
-   *
-   * Адаптер меняет **только контрагента** и не трогает строк поимённых исполнителей: у старой
-   * ручки ровно такая семантика, и трактовать её как «назначить компанию и пустой список людей»
-   * нельзя — заявка «свой сисадмин + КопиЛайт», переназначенная из вчерашней вкладки, молча
-   * лишилась бы своего сотрудника.
-   */
-  r.patch(
-    '/:id/service',
-    { ...canAssign, schema: { params: idParams, body: assignServiceSchema } },
-    async (req) => {
-      const p = requirePrincipal(req);
-      const body = req.body;
-      assertSideAllowed(p, 'assigned', [
-        'new',
-        'it_approved', // legacy: снимается выпуском 2
-        'assigned',
-        'diagnostics', // legacy: снимается выпуском 2
-        'in_work',
-      ]);
-      const row = await requireEditable(p, req.params.id);
-      assertTransition(p, row.status, 'assigned');
-
-      const first = row.status === 'new' || row.status === 'it_approved';
-      const reassignment = !first;
-      if (reassignment && !body.reason) {
-        throw err.unprocessable(
-          'Укажите причину переназначения — у прежнего сервиса отбирают работу',
-          {
-            reason: 'Укажите причину',
-          },
-        );
-      }
-      if (row.status === 'assigned' && row.serviceCounterpartyId === body.serviceCounterpartyId) {
-        throw err.unprocessable('Заявка уже назначена этому сервису');
-      }
-
-      const service = await resolveServiceCounterparty(body.serviceCounterpartyId);
-
-      const executorChanged = row.serviceCounterpartyId !== service.id;
-      await db.transaction(async (tx) => {
-        const patch: RequestPatch = { serviceCounterpartyId: service.id };
-        if (executorChanged && !first) {
-          // Смета прежнего исполнителя вместе с ревизией и снимком предъявления (§5.4).
-          await assertEstimateReplaceable(tx, row.id);
-          await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, row.id));
-          patch.estimateRevision = 0;
-          patch.estimateSubmittedAt = null;
-          patch.estimatedTotalAmount = null;
-          patch.approvedEstimateRevision = null;
-          patch.estimateApprovedBy = null;
-          patch.estimateApprovedAt = null;
-        }
-        await applyTransition(tx, {
-          row,
-          to: 'assigned',
-          version: body.version,
-          actor: p,
-          comment: body.reason ?? body.comment,
-          patch,
-          touchStatusAt: true,
-        });
-      });
-
-      await writeAudit({
-        actorUserId: p.id,
-        action: reassignment ? 'serviceRequest.reassign' : 'serviceRequest.assign',
-        entityType: 'serviceRequest',
-        entityId: row.id,
-        metadata: {
-          serviceCounterpartyId: service.id,
-          serviceName: service.name,
-          reason: body.reason ?? '',
-          legacyAdapter: true,
-        },
-      });
-      return (await getDto(row.id))!;
-    },
-  );
 
   // ── Виза отдела ИТ по смете (Н3) ──
   /**
@@ -3436,8 +3336,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const row = await requireEditable(p, req.params.id);
       await assertExecutorSide(p, row, 'ведёт смету этой заявки');
       assertRepairKind(row, 'править');
-      // legacy: `diagnostics` снимается выпуском 2 — из неё доступно то же, что из «В работе».
-      if (row.status !== 'in_work' && row.status !== 'diagnostics') {
+      if (row.status !== 'in_work') {
         throw err.conflict(
           `Смета правится только в статусе «${serviceRequestStatusLabels.in_work}»`,
         );
@@ -3495,8 +3394,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      // Смета предъявляется из «В работе» (Н2); `diagnostics` — legacy: снимается выпуском 2.
-      assertSideAllowed(p, 'estimate_review', ['in_work', 'diagnostics']);
+      // Смета предъявляется из «В работе» (Н2).
+      assertSideAllowed(p, 'estimate_review', ['in_work']);
       const row = await requireEditable(p, req.params.id);
       assertRepairKind(row, 'предъявлять');
       const assignment = await executorAssignment(p, row);
@@ -3647,8 +3546,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const row = await requireEditable(p, req.params.id);
       await assertExecutorSide(p, row, 'возвращает смету в правку');
       assertRepairKind(row, 'возвращать в правку');
-      // legacy: `diagnostics` снимается выпуском 2 — из неё доступно то же, что из «В работе».
-      if (row.status !== 'in_work' && row.status !== 'diagnostics') {
+      if (row.status !== 'in_work') {
         throw err.unprocessable(
           `Смету возвращают в правку из «${serviceRequestStatusLabels.in_work}», а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
           { status: 'Другой статус' },
@@ -3886,8 +3784,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      // legacy: `diagnostics` снимается выпуском 2 — из неё доступно то же, что из «В работе».
-      assertSideAllowed(p, 'done', ['in_work', 'diagnostics']);
+      assertSideAllowed(p, 'done', ['in_work']);
       const row = await requireEditable(p, req.params.id);
       const assignment = await executorAssignment(p, row);
       assertTransition(p, row.status, 'done', assignment);
@@ -4461,13 +4358,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       if (isServiceRequestClosed(status) && !manageAny) {
         throw err.forbidden('Из закрытой заявки документы не снимают');
       }
-      // legacy: `diagnostics` снимается выпуском 2 — смета живёт в «В работе» (Н2).
-      if (
-        link.kind === 'estimate' &&
-        status !== 'in_work' &&
-        status !== 'diagnostics' &&
-        !manageAny
-      ) {
+      if (link.kind === 'estimate' && status !== 'in_work' && !manageAny) {
         throw err.unprocessable(
           'Предъявленная смета не снимается — верните заявку в работу и предъявите смету заново',
           { kind: 'Смета предъявлена' },

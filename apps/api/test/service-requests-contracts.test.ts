@@ -234,9 +234,8 @@ describe('заведение и правка заявки', () => {
   /** Правка заявки — только «Новой» (§6.1): дальше за заявкой стоят договорённости с исполнителем. */
   it('правится заявка, которую ещё не начали вести', () => {
     expect(isServiceRequestEditable('new')).toBe(true);
-    // Второй статус — legacy: заявка, заведённая старым кодом в «Согласована ИТ», правится как
-    // «Новая», иначе из-за опечатки в описании пришлось бы заводить новую (план §3, п. 5).
-    expect(isServiceRequestEditable('it_approved')).toBe(true);
+    // Мёртвый статус (`0197`) правке не подлежит наравне с прочими: заявок в нём не бывает.
+    expect(isServiceRequestEditable('it_approved')).toBe(false);
     // «Назначенную» уже не правят: предмет заявки исполнитель прочитал и по нему договорился.
     expect(isServiceRequestEditable('assigned')).toBe(false);
     // Отложенную не правят (Р110): заморозка останавливает ход заявки, и правка её предмета была
@@ -245,9 +244,7 @@ describe('заведение и правка заявки', () => {
     // И закрытой она при этом не считается (Р109): техника ждёт этого же ремонта, и вторую заявку
     // на ту же единицу завести нельзя.
     expect(isServiceRequestClosed('on_hold')).toBe(false);
-    for (const status of SERVICE_REQUEST_STATUSES.filter(
-      (s) => s !== 'new' && s !== 'it_approved',
-    )) {
+    for (const status of SERVICE_REQUEST_STATUSES.filter((s) => s !== 'new')) {
       expect(isServiceRequestEditable(status), status).toBe(false);
     }
     // Закрытая заявка — «Закрыта» и «Отменена»: ни хода, ни правки ей больше не положено.
@@ -268,12 +265,12 @@ describe('заведение и правка заявки', () => {
   it('удаляются «Новая» и «Назначенная», и дальше — ни одна', () => {
     expect(isServiceRequestDeletable('new')).toBe(true);
     expect(isServiceRequestDeletable('assigned')).toBe(true);
-    // legacy: заявка со входной визой старого образца удаляется как «Новая» (план §3, п. 5).
-    expect(isServiceRequestDeletable('it_approved')).toBe(true);
+    // Мёртвый статус (`0197`): не удаляется, потому что заявок в нём не бывает.
+    expect(isServiceRequestDeletable('it_approved')).toBe(false);
     // Дальше — ни при каких условиях: с «В работе» по заявке уже могли списать расходники (Р6), и
     // архивная заявка означала бы списание без основания.
     for (const status of SERVICE_REQUEST_STATUSES.filter(
-      (s) => s !== 'new' && s !== 'assigned' && s !== 'it_approved',
+      (s) => s !== 'new' && s !== 'assigned',
     )) {
       expect(isServiceRequestDeletable(status), status).toBe(false);
     }

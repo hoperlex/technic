@@ -396,17 +396,18 @@ async function approveByIt(id: string): Promise<void> {
  */
 async function toInWork(id: string): Promise<void> {
   const assigned = await inject(
-    'PATCH',
-    `/api/v1/service-requests/${id}/service`,
+    'PUT',
+    `/api/v1/service-requests/${id}/executors`,
     ctx.operator.auth,
     {
+      userIds: [],
       serviceCounterpartyId: ctx.serviceCounterpartyId,
       version: await version(id),
     },
   );
   expect(assigned.statusCode, assigned.body).toBe(200);
   const started = await inject('PATCH', `/api/v1/service-requests/${id}/start`, ctx.service.auth, {
-    version: assigned.json().version,
+    version: (assigned.json() as { request: ServiceRequestDto }).request.version,
   });
   expect(started.statusCode, started.body).toBe(200);
 }
@@ -447,16 +448,16 @@ async function driveTo(id: string, target: ServiceRequestStatus): Promise<void> 
   if (target === 'new') return;
 
   const assigned = await inject(
-    'PATCH',
-    `/api/v1/service-requests/${id}/service`,
+    'PUT',
+    `/api/v1/service-requests/${id}/executors`,
     ctx.operator.auth,
-    { serviceCounterpartyId: ctx.serviceCounterpartyId, version: await version(id) },
+    { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: await version(id) },
   );
   expect(assigned.statusCode, assigned.body).toBe(200);
   if (target === 'assigned') return;
 
   const started = await inject('PATCH', `/api/v1/service-requests/${id}/start`, ctx.service.auth, {
-    version: assigned.json().version,
+    version: (assigned.json() as { request: ServiceRequestDto }).request.version,
   });
   expect(started.statusCode, started.body).toBe(200);
 
@@ -1195,13 +1196,18 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
 
   it('оператор назначает сервис — заявка становится видна исполнителю', async () => {
     const res = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${state.main.id}/service`,
+      'PUT',
+      `/api/v1/service-requests/${state.main.id}/executors`,
       ctx.operator.auth,
-      { serviceCounterpartyId: ctx.serviceCounterpartyId, version: await version(state.main.id) },
+      {
+        userIds: [],
+        serviceCounterpartyId: ctx.serviceCounterpartyId,
+        version: await version(state.main.id),
+      },
     );
     expect(res.statusCode, res.body).toBe(200);
-    const dto = res.json() as ServiceRequestDto;
+    // Назначение отвечает парой «заявка + исход письма исполнителям» (Н13).
+    const dto = (res.json() as { request: ServiceRequestDto }).request;
     expect(dto.status).toBe('assigned');
     expect(dto.waitingOn).toBe('service');
     expect(dto.service?.id).toBe(ctx.serviceCounterpartyId);
@@ -1867,10 +1873,14 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     state.otherUnit = { id: dto.id, itemId: '' };
 
     const assigned = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${dto.id}/service`,
+      'PUT',
+      `/api/v1/service-requests/${dto.id}/executors`,
       ctx.operator.auth,
-      { serviceCounterpartyId: ctx.serviceCounterpartyId, version: await version(dto.id) },
+      {
+        userIds: [],
+        serviceCounterpartyId: ctx.serviceCounterpartyId,
+        version: await version(dto.id),
+      },
     );
     expect(assigned.statusCode, assigned.body).toBe(200);
 
@@ -1878,7 +1888,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       'PATCH',
       `/api/v1/service-requests/${dto.id}/decline`,
       ctx.service.auth,
-      { reason: 'Сканеры этой серии не обслуживаем', version: assigned.json().version },
+      { reason: 'Сканеры этой серии не обслуживаем', version: (assigned.json() as { request: ServiceRequestDto }).request.version },
     );
     expect(declined.statusCode, declined.body).toBe(200);
     const after = declined.json() as ServiceRequestDto;
@@ -2047,10 +2057,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     // от этого видна не становится — область исполнителя считается по контрагенту, а не по статусу.
     await approveByIt(state.deptOwned.id);
     const assigned = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${state.deptOwned.id}/service`,
+      'PUT',
+      `/api/v1/service-requests/${state.deptOwned.id}/executors`,
       ctx.admin.auth,
       {
+        userIds: [],
         serviceCounterpartyId: ctx.otherServiceCounterpartyId,
         version: await version(state.deptOwned.id, ctx.admin.auth),
       },
@@ -2530,10 +2541,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     it('срочность ставят и после назначения сервиса, а исполнитель — не ставит вовсе', async () => {
       const id = state.urgent.id;
       const assigned = await inject(
-        'PATCH',
-        `/api/v1/service-requests/${id}/service`,
+        'PUT',
+        `/api/v1/service-requests/${id}/executors`,
         ctx.operator.auth,
         {
+          userIds: [],
           serviceCounterpartyId: ctx.serviceCounterpartyId,
           version: await version(id),
         },
@@ -2570,7 +2582,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect(byOperator.json().isUrgent).toBe(true);
       // Возраст в статусе срочность не сбрасывает: она не ожидание, и очередь «дольше всех ждут»
       // не должна обнуляться от того, что заявку пометили красным.
-      expect(byOperator.json().statusChangedAt).toBe(assigned.json().statusChangedAt);
+      expect(byOperator.json().statusChangedAt).toBe(
+        (assigned.json() as { request: ServiceRequestDto }).request.statusChangedAt,
+      );
     });
 
     it('срочные идут первыми в списке и отбираются своим фильтром', async () => {
@@ -3547,31 +3561,6 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect(after.status).toBe('new');
     });
 
-    /**
-     * Совместимый адаптер выпуска 1 (§7.3): вкладка, открытая до выката, зовёт прежний адрес. Он
-     * меняет **только контрагента** — трактовать его как «назначить компанию и пустой список
-     * людей» нельзя: заявка «свой + сервис», переназначенная из вчерашней вкладки, молча лишилась
-     * бы своего сотрудника.
-     */
-    it('старый адрес назначения меняет компанию и сохраняет поимённых исполнителей', async () => {
-      const both = await assignedToBoth('Смешанное назначение: назначение старой вкладкой');
-      const legacy = await inject(
-        'PATCH',
-        `/api/v1/service-requests/${both.id}/service`,
-        ctx.operator.auth,
-        {
-          serviceCounterpartyId: ctx.otherServiceCounterpartyId,
-          reason: 'подрядчика меняем, свой сисадмин остаётся',
-          version: both.version,
-        },
-      );
-      expect(legacy.statusCode, legacy.body).toBe(200);
-
-      const after = await card(both.id);
-      expect(after.service?.id).toBe(ctx.otherServiceCounterpartyId);
-      expect(after.executors.map((e) => e.userId)).toEqual([ctx.namedExecutor.id]);
-      expect(after.status).toBe('assigned');
-    });
   });
 
   /**
@@ -3580,7 +3569,17 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
    * всё это время API обязан отдавать её как принятую человеком, а не как ошибку.
    */
   describe('совместимость выпуска 1: приёмка без источника', () => {
-    it('заявка, принятая старым кодом, читается как принятая человеком', async () => {
+    /**
+     * Тест 10 плана в редакции выпуска 2. Прежде он проверял СОВМЕСТИМОСТЬ: заявку, принятую
+     * старым кодом без источника, портал читал как принятую человеком. Выпуск 2 (`0198`) эту
+     * совместимость снял и поставил на её место эквивалентность «принята ⟺ известно, кем закрыта»,
+     * а backfill той же миграции проставил `human` всем, кого приняли в окне выката.
+     *
+     * Поэтому случай перевёрнут: проверяется не то, что портал терпит пустой источник, а то, что
+     * база его больше не допускает. Прямой `UPDATE` — единственный способ сюда добраться: маршрут
+     * такого состояния не производит.
+     */
+    it('принятая заявка без источника базой больше не принимается', async () => {
       const done = await requestIn('done', 'Окно выката: приёмка старым кодом');
       await attachClosingDocument(done.id);
       const accepted = await inject(
@@ -3590,16 +3589,18 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         { version: (await card(done.id)).version },
       );
       expect(accepted.statusCode, accepted.body).toBe(200);
+      expect((await card(done.id)).acceptanceSource).toBe('human');
 
-      // Ровно то, что оставил бы после себя старый код: дата приёмки на месте, источника нет.
-      await ctx.db.execute(
-        sql`UPDATE service_requests SET acceptance_source = NULL WHERE id = ${done.id}::uuid`,
-      );
+      // Ровно то, что оставил бы после себя старый код, — и ровно то, что теперь отбивает `CHECK`.
+      await expect(
+        ctx.db.execute(
+          sql`UPDATE service_requests SET acceptance_source = NULL WHERE id = ${done.id}::uuid`,
+        ),
+      ).rejects.toThrow();
 
       const dto = await card(done.id);
       expect(dto.status).toBe('accepted');
-      expect(dto.acceptanceSource).toBeNull();
-      // Имя принявшего никуда не делось: пустой источник — это «неизвестно как», а не «никто».
+      expect(dto.acceptanceSource).toBe('human');
       expect(dto.acceptedByName).toBeTruthy();
       expect(dto.acceptedAt).toBeTruthy();
     });

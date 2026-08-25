@@ -150,9 +150,9 @@ export function useServiceRequestActions(): {
     }
 
     if (has('assigned')) {
-      // Назначение — главный шаг «Новой» (и мёртвого `it_approved`, пока такие заявки есть):
+      // Назначение — главный шаг «Новой»:
       // дальше это уже переназначение, то есть разбор ошибки, а не ожидаемый ход.
-      const first = request.status === 'new' || request.status === 'it_approved';
+      const first = request.status === 'new';
       items.push({
         key: 'assign',
         label: first ? 'Назначить исполнителей' : 'Изменить исполнителей',
@@ -185,15 +185,14 @@ export function useServiceRequestActions(): {
     }
 
     /*
-     * Смета предъявляется из «В работе»; `diagnostics` рядом — legacy: снимается выпуском 2, пока
-     * такие заявки ещё стоят в базе.
+     * Смета предъявляется из «В работе» (Н2).
      *
      * У расходников сметы нет вовсе (§6.2): картридж берут со своего склада, согласовывать по нему
      * нечего и не у кого, — и заход в смету у этого вида заявки не открыт ни одной стороне.
      */
     if (
       request.kind === 'repair' &&
-      (request.status === 'in_work' || request.status === 'diagnostics') &&
+      request.status === 'in_work' &&
       has('estimate_review')
     ) {
       items.push({
@@ -226,7 +225,7 @@ export function useServiceRequestActions(): {
       });
     }
 
-    if (request.status === 'in_work' || request.status === 'diagnostics') {
+    if (request.status === 'in_work') {
       if (has('done')) {
         /*
          * Планка закрывающего документа переехала с приёмки на «Решена» (Н8) и стоит только у

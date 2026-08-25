@@ -696,12 +696,6 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['serviceRequests.status'],
   },
-  // Совместимый адаптер выпуска 1: прежний адрес назначения, который зовёт вкладка, открытая до
-  // выката. Право у него то же, что у новой ручки; уходит вместе с выпуском 2.
-  'PATCH /api/v1/service-requests/:id/service': {
-    kind: 'permissions',
-    allOf: ['serviceRequests.assign'],
-  },
   'PUT /api/v1/service-requests/:id/executors': {
     kind: 'permissions',
     allOf: ['serviceRequests.assign'],

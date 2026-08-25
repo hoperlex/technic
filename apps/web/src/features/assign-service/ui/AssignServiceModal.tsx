@@ -41,8 +41,7 @@ interface Values {
  * требовало бы причину там, где она не нужна, либо отправляло бы запрос, на который придёт 422.
  */
 function isFirstAssignment(status: ServiceRequestStatus): boolean {
-  // `it_approved` — legacy: снимается выпуском 2, пока такие заявки ещё стоят в базе.
-  return status === 'new' || status === 'it_approved';
+  return status === 'new';
 }
 
 /**
