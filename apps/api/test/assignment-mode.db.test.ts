@@ -645,6 +645,52 @@ describe.skipIf(!DB_URL)('включение истории', () => {
     expect(ctx.mode.historyIsAuthoritative(await ctx.mode.readAssignmentMode(ctx.db))).toBe(true);
   });
 
+  /*
+   * Третий шаг cutover — и до репетиции на копии базы его никто не проходил следом за вторым.
+   *
+   * Порядок операции: заморозить запись → переключить чтение → разморозить. К третьему шагу чтение
+   * уже `history`, а поколения и аттестации у перехода **записи** нет и быть не может — сервис их
+   * у такого перехода прямо отвергает. Условие журнала при этом смотрело на состояние после
+   * перехода, а не на сам переход, и строка не проходила `CHECK`: портал оставался замороженным, и
+   * снять заморозку было нечем ни одной командой.
+   */
+  it('после включения истории запись размораживается — и это третий шаг cutover', async () => {
+    const { runId, attestationId } = await activationKit();
+    await force('all_frozen', 'legacy');
+    await setMode(
+      change({
+        targetWriteMode: 'all_frozen',
+        targetReadMode: 'history',
+        runId,
+        attestationId,
+        reason: 'cutover: переключение чтения',
+      }),
+    );
+    const top = await journalTop();
+
+    const unfrozen = await setMode(
+      change({
+        targetWriteMode: 'normal',
+        targetReadMode: 'history',
+        reason: 'cutover завершён: запись возвращается в работу',
+      }),
+    );
+
+    expect(unfrozen.to).toMatchObject({ writeMode: 'normal', readMode: 'history' });
+    expect(await control()).toMatchObject({ write_mode: 'normal', read_mode: 'history' });
+
+    // Строка журнала есть, и доказательств у неё нет: их требует переход чтения, а не записи.
+    const [written] = await journalAfter(top);
+    expect(written).toMatchObject({
+      from_write_mode: 'all_frozen',
+      to_write_mode: 'normal',
+      from_read_mode: 'history',
+      to_read_mode: 'history',
+      run_id: null,
+      attestation_id: null,
+    });
+  });
+
   it('доведённая до `ready` заявка популяции переключению не мешает', async () => {
     const { runId, attestationId } = await activationKit();
     await force('all_frozen', 'legacy');

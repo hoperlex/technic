@@ -7549,10 +7549,16 @@ export const assignmentPeriodsModeTransitions = pgTable(
      * Активация истории обязана опираться на поколение и аттестацию (О4). Обратный переход в
      * `legacy` — нет: возврат бывает аварийным, и требовать от него поколения значило бы запирать
      * откат ровно тогда, когда он нужен.
+     *
+     * Условие проверяет **переход**, а не состояние после него (миграция `0201`). Прежняя редакция
+     * смотрела на одно `to_read_mode` — и запирала разморозку после cutover: к третьему шагу
+     * чтение уже `history`, а поколения у перехода записи нет и быть не может. Портал оставался
+     * замороженным, и снять заморозку было нечем. Нашла репетиция на копии базы.
      */
     historyCheck: check(
       'assignment_periods_mode_transitions_history_check',
-      sql`${t.toReadMode} <> 'history'
+      sql`${t.fromReadMode} = ${t.toReadMode}
+          or ${t.toReadMode} <> 'history'
           or (${t.runId} is not null and ${t.attestationId} is not null)`,
     ),
     /**

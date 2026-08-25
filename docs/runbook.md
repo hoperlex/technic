@@ -1702,10 +1702,14 @@ docker compose … run --rm assignment-mode log --limit=20
 
    ```bash
    # сначала dry-run — он ничего не пишет и печатает те же числа
-   docker compose -f deploy/docker-compose.yml -p technic --profile tools      run --rm assignment-backfill --state=/var/lib/technic/backfill.json
+ docker compose -f deploy/docker-compose.yml -p technic --profile tools run --rm assignment-backfill --state=/var/lib/technic/backfill.json
    # затем запись
    docker compose … run --rm assignment-backfill --apply --state=/var/lib/technic/backfill.json
    ```
+
+   Тот же прогон с флагом `--revalidate` делает **другую** работу: не достраивает пустую историю, а
+   пересчитывает валидность непустой под заданным днём. Он нужен в самом окне (шаг 1a ниже), а до
+   окна им проверяют, что пересчёт проходит без отказов.
 
    Заявки, которым историю строить не из чего (в работе, но без назначенной машины), прогон
    пропустит: это работа диспетчера, а не оператора. Их список — в отчёте и в сводке.
@@ -1725,9 +1729,9 @@ docker compose … run --rm assignment-mode log --limit=20
    самом окне).
 
    ```bash
-   docker compose … run --rm assignment-report            # человеку
-   docker compose … run --rm assignment-report --json     # машине
-   docker compose … run --rm assignment-report --data     # только ярус данных
+ docker compose … run --rm assignment-report # человеку
+ docker compose … run --rm assignment-report --json # машине
+ docker compose … run --rm assignment-report --data # только ярус данных
    ```
 
 **Окно выката.** Здесь считаются минуты: заморозка останавливает запись всему модулю, и портал в это
@@ -1735,24 +1739,29 @@ docker compose … run --rm assignment-mode log --limit=20
 
 ```bash
 # 1. Заморозить запись целиком и дождаться завершения активных писателей
-docker compose … run --rm assignment-mode set --write=all_frozen   --actor=<email> --reason='cutover истории назначения' --build=<sha>
+docker compose … run --rm assignment-mode set --write=all_frozen --actor=<email> --reason='cutover истории назначения' --build=<sha>
+
+# 1a. Ревалидация: пересчёт состояния всей непустой истории под единым днём. Обязательна и
+#     обязательно здесь — календарь двигает границу изменяемого сам, каждую полночь, а дверь
+#     активации требует `validated_on = день поколения` у всех заявок. 3 тыс. заявок — 7 секунд.
+docker compose … run --rm assignment-backfill --revalidate --apply
 
 # 2. Поколение теневого сравнения — на сегодняшний день и на раскатанной сборке
-docker compose … run --rm assignment-shadow start --build=<sha>     # печатает run-id
-docker compose … run --rm assignment-shadow run --run=<run-id>      # считает цели манифеста
+docker compose … run --rm assignment-shadow start --build=<sha> # печатает run-id
+docker compose … run --rm assignment-shadow run --run=<run-id> # считает цели манифеста
 docker compose … run --rm assignment-shadow finalize --run=<run-id> # исход: completed или mismatch
 
 # 3. Аттестация раската — её пишет тот, кто раскатывал (годна 30 минут, на одно переключение)
-docker compose … run --rm assignment-attest --build=<sha>           # печатает attestation-id
+docker compose … run --rm assignment-attest --build=<sha> # печатает attestation-id
 
 # 4. Сводка обязана быть зелёной именно с этим поколением
 docker compose … run --rm assignment-report --build=<sha> --run=<run-id>
 
 # 5. Переключение чтения. Дверь проверит всё заново под блокировкой и запишет cutover_run_id
-docker compose … run --rm assignment-mode set --read=history   --actor=<email> --reason='cutover истории назначения' --build=<sha>   --run=<run-id> --attestation=<attestation-id>
+docker compose … run --rm assignment-mode set --read=history --actor=<email> --reason='cutover истории назначения' --build=<sha> --run=<run-id> --attestation=<attestation-id>
 
 # 6. Разморозить запись
-docker compose … run --rm assignment-mode set --write=normal   --actor=<email> --reason='cutover завершён' --build=<sha>
+docker compose … run --rm assignment-mode set --write=normal --actor=<email> --reason='cutover завершён' --build=<sha>
 ```
 
 **Почему шаги нельзя переставить.** Поколение, снятое до заморозки, доказывает состояние, которое
@@ -1789,7 +1798,7 @@ docker compose … run --rm assignment-mode set --write=normal   --actor=<email>
 
 ```bash
 # 1. Режим: history_frozen при откате, all_frozen при незавершённом cutover
-docker compose … run --rm assignment-mode set --write=history_frozen   --actor=<email> --reason='откат релиза истории' --build=<sha>
+docker compose … run --rm assignment-mode set --write=history_frozen --actor=<email> --reason='откат релиза истории' --build=<sha>
 
 # 2. Дождаться завершения активных писателей и убедиться, что новых записей нет
 psql "$DATABASE_URL" -c "select max(created_at) from vehicle_request_assignment_changes;"
@@ -1797,8 +1806,10 @@ psql "$DATABASE_URL" -c "select max(created_at) from vehicle_request_assignment_
 # 3. Откатить API на нужный образ (digest — в журнале выката)
 
 # 4. Обязательный путь возврата к работе: history_frozen → all_frozen + полная revalidation → normal
-docker compose … run --rm assignment-report          # dirty и stale должны быть нулями
-docker compose … run --rm assignment-mode set --write=normal   --actor=<email> --reason='после отката: история пересчитана' --build=<sha>
+docker compose … run --rm assignment-mode set --write=all_frozen --actor=<email> --reason='возврат после отката' --build=<sha>
+docker compose … run --rm assignment-backfill --revalidate --apply
+docker compose … run --rm assignment-report # dirty и stale должны быть нулями
+docker compose … run --rm assignment-mode set --write=normal --actor=<email> --reason='после отката: история пересчитана' --build=<sha>
 ```
 
 Шаг 4 не формальность: в `history_frozen` разрешены `on_demand`, сохранение и подпись смен — они

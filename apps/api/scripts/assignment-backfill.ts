@@ -127,6 +127,7 @@ type Flags = Map<string, string>;
 
 const KNOWN_FLAGS = new Set([
   'apply',
+  'revalidate',
   'state',
   'asof',
   'limit',
@@ -365,29 +366,49 @@ async function readPopulation(db: Handle): Promise<Population> {
 }
 
 /**
- * Очередная страница заявок к обработке — только те, у кого истории нет вовсе.
+ * Очередная страница заявок к обработке. Что попадает в выборку, решает работа прогона.
  *
- * Отбор по `empty` — это и есть запрет пересборки (Д3): заявка, у которой история появилась (или
- * была отменена человеком до пустоты, но состояние осталось `materialized`), в выборку не попадает
- * никогда. Порядок по `id` — он же курсор возобновления: устойчив к любым правкам данных, в
- * отличие от порядка по номеру или по дате.
+ * **Бэкфилл** берёт только `empty` — и это запрет пересборки (Д3): заявка, у которой история
+ * появилась (или была отменена человеком до пустоты, но состояние осталось `materialized`), в
+ * выборку не попадает никогда.
+ *
+ * **Ревалидация** (`--revalidate`) берёт обратное: заявки с **непустой** историей, чьё состояние
+ * считалось не на сегодняшний `asOf` либо помечено `dirty`. Пересборки здесь тоже нет — путь тот
+ * же, `ensureAssignmentHistory`, а он на непустой истории строк не добавляет (Р26): он пересчитывает
+ * состояние и снимает метку. Без этого прогона cutover недостижим: дверь активации требует
+ * `validated_on = run.as_of` у **всех** заявок с непустой историей, а календарь двигает границу
+ * изменяемого сам — каждую полночь у всей популяции.
+ *
+ * Порядок по `id` — он же курсор возобновления: устойчив к любым правкам данных, в отличие от
+ * порядка по номеру или по дате.
  */
 async function nextPage(
   db: Handle,
   after: string | null,
   limit: number,
+  work: Work,
+  asOf: string,
 ): Promise<{ id: string; num: number }[]> {
+  const scope =
+    work === 'backfill'
+      ? sql`r.assignment_history_state = 'empty'`
+      : sql`r.assignment_history_state <> 'empty'
+            AND (r.assignment_history_validated_on IS DISTINCT FROM ${asOf}::date
+                 OR r.assignment_history_dirty)`;
   const rows = await db.execute<{ id: string; num: number }>(sql`
     SELECT r.id, r.num
       FROM vehicle_requests r
       JOIN special_equipment_request_details d ON d.request_id = r.id
      WHERE ${POPULATION}
-       AND r.assignment_history_state = 'empty'
+       AND ${scope}
        ${after === null ? sql`` : sql`AND r.id > ${after}::uuid`}
      ORDER BY r.id
      LIMIT ${limit}`);
   return [...rows.rows];
 }
+
+/** Что делает прогон: достраивает пустую историю либо пересчитывает валидность непустой. */
+type Work = 'backfill' | 'revalidate';
 
 // ───────────────────────────────── человеческие подписи ─────────────────────────────────
 
@@ -676,6 +697,7 @@ function renderReport(
 const HELP =
   'Массовый бэкфилл истории назначения (этап 4 плана assignment-periods).\n' +
   '  без флагов — dry-run (ничего не пишется); --apply — запись.\n' +
+  '  --revalidate  пересчёт валидности непустой истории под единым asOf (перед cutover)\n' +
   '  --state=ПУТЬ  файл возобновления      --asof=ДАТА   день расчёта валидности\n' +
   '  --limit=N     предел заявок           --report=ПУТЬ полный отчёт в файл\n' +
   '  --restart     забыть состояние        --progress=N  строка хода каждые N заявок\n' +
@@ -692,6 +714,13 @@ async function main(): Promise<number> {
   }
 
   const apply = boolFlag(flags, 'apply');
+  /*
+   * Ревалидация — не второй прогон, а другая работа того же: перед cutover надо пересчитать
+   * состояние всей непустой популяции под **единым** `asOf`. Отдельной командой её делать нечем —
+   * механизм пересчёта один (`ensureAssignmentHistory`), и вторая команда означала бы второй ответ
+   * на вопрос «валидна ли история».
+   */
+  const work: Work = boolFlag(flags, 'revalidate') ? 'revalidate' : 'backfill';
   const mode: RunState['mode'] = apply ? 'apply' : 'dry-run';
   const asOf = dateFlag(flags, 'asof') ?? moscowDateKeyOf(new Date());
   const statePath = flags.get('state')?.trim() || null;
@@ -717,7 +746,7 @@ async function main(): Promise<number> {
       statePath && !boolFlag(flags, 'restart') ? readState(statePath, mode, asOf) : null;
     const state = stored ?? freshState(mode, asOf);
     const headerOf = (): string[] => [
-      `Массовый бэкфилл истории назначения — ${apply ? 'ЗАПИСЬ' : 'dry-run (ничего не пишется)'}`,
+      `${work === 'revalidate' ? 'Ревалидация истории назначения' : 'Массовый бэкфилл истории назначения'} — ${apply ? 'ЗАПИСЬ' : 'dry-run (ничего не пишется)'}`,
       `База: ${identity?.database ?? '?'}, роль ${identity?.role ?? '?'}, доступ ${access.source}`,
       `Режим модуля: запись ${moduleMode.writeMode}, чтение ${moduleMode.readMode}` +
         ' (maintenance-путь идёт мимо гейта по З3)',
@@ -745,7 +774,7 @@ async function main(): Promise<number> {
     let stoppedByLimit = false;
 
     pages: for (;;) {
-      const page = await nextPage(db, state.cursor, PAGE_SIZE);
+      const page = await nextPage(db, state.cursor, PAGE_SIZE, work, asOf);
       if (page.length === 0) break;
       // Страница обязана начинаться строго за курсором. Проверка дешёвая и спасает от единственной
       // ошибки этого цикла, у которой нет внешних признаков: не сдвинувшийся курсор даёт не отказ,

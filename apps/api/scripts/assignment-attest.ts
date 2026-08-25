@@ -135,15 +135,24 @@ async function main(): Promise<void> {
       console.error(
         'ОТКАЗ: срок работ ещё правят старым широким маршрутом. Дверь перехода такую аттестацию ' +
           'не примет (И5). Кто и когда — в журнале:\n' +
-          "  select created_at, entity_id, metadata from audit_log\n" +
+          '  select created_at, entity_id, metadata from audit_log\n' +
           "   where action = 'assignment.legacy_period_call' order by created_at desc limit 20;",
       );
       process.exit(EXIT_GATE);
     }
 
+    /*
+     * Сборки уезжают `ARRAY[…]`, а не одним параметром: массив, подставленный в запрос целиком,
+     * приезжает в драйвер строкой, и `('fb43638')::text[]` отказывает приведением. Каждая сборка —
+     * свой параметр: и типы сходятся, и подстановки не бывает.
+     */
+    const shas = sql.join(
+      builds.map((b) => sql`${b}`),
+      sql`, `,
+    );
     const { rows } = await db.execute<{ id: string; attested_at: string }>(sql`
       INSERT INTO assignment_deploy_attestations (active_build_shas, algo_version, legacy_client_calls)
-      VALUES (${builds}::text[], ${ASSIGNMENT_HISTORY_ALGO_VERSION}, ${legacyCalls})
+      VALUES (ARRAY[${shas}]::text[], ${ASSIGNMENT_HISTORY_ALGO_VERSION}, ${legacyCalls})
       RETURNING id, attested_at`);
     const row = rows[0]!;
     console.log(`аттестация : ${row.id}`);
