@@ -68,6 +68,10 @@ const LEGACY = {
     'SupportContactsModal.tsx',
     'TimeInput.tsx',
     'UserAvatar.tsx',
+    // Загрузка виджета SmartCaptcha и жизненный цикл токена (ADR 0130) — вторая половина
+    // `CaptchaField.tsx`, отделённая только потому, что поле рисует, а хук ведёт. Порознь они
+    // бессмысленны и переедут одним куском.
+    'useCaptcha.ts',
     // Вложения путевого листа: зовут waybillsApi и filesApi — уедут в `waybill` вместе с печатью.
     'WaybillFiles.tsx',
     'WaybillPrint.tsx',

@@ -119,9 +119,18 @@ describe('запрос к прокси', () => {
     expect(request.body.response_format).toMatchObject({ type: 'json_schema' });
 
     const messages = request.body.messages as { role: string; content: unknown }[];
-    const user = messages[1]!.content as { type: string; image_url?: { url: string } }[];
-    expect(user[0]!.type).toBe('image_url');
-    expect(user[0]!.image_url!.url.startsWith('data:image/jpeg;base64,')).toBe(true);
+    const user = messages[1]!.content as {
+      type: string;
+      text?: string;
+      image_url?: { url: string };
+    }[];
+    // Порядок частей проверяется целиком, а не «где-то есть картинка»: он такая же часть задания,
+    // как слова промпта. Инструкция, прочитанная ДО изображения, задаёт модели задачу; прочитанная
+    // после — конкурирует с уже начатым описанием картинки, и на `temperature: 0` ответ
+    // вырождается в повтор одного символа до упора в `max_tokens` (замер на прокси, коммит
+    // 1b05550). Ошибка не ловится ничем ниже: запрос остаётся валидным, прокси отвечает 200.
+    expect(user.map((part) => part.type)).toEqual(['text', 'image_url']);
+    expect(user[1]!.image_url!.url.startsWith('data:image/jpeg;base64,')).toBe(true);
   });
 
   it('никогда не отправляет stream: прокси отвергает такие запросы целиком (Р5)', async () => {
