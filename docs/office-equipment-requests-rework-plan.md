@@ -394,7 +394,12 @@ ALTER TABLE service_requests ADD CONSTRAINT service_requests_replacement_check
 
 ### Выпуск 2 (contract)
 
-**M8 — `0185_service_request_dead_statuses.sql`**
+**Номера в именах ниже намеренно не проставлены.** Ориентир, стоявший здесь при написании плана
+(`0185`–`0187`), устарел к 24.08.2026 весь: `0185` занял поток вывоза, `0186` — наша же M12
+выпуска 3, `0187` — автозапчасти. Номер берётся свободным на момент создания файла и сверяется
+прямо перед ним — это правило, а не пожелание (§13).
+
+**M8 — `<номер>_service_request_dead_statuses.sql`**
 
 ```sql
 -- Перевод остатка. Выполняется, когда старого кода в проде уже нет (§11.3).
@@ -418,7 +423,7 @@ ALTER TABLE service_requests ADD CONSTRAINT service_requests_dead_status_check C
 (колонки, `CHECK`и, индексы) при нулевом выигрыше. Прецедент — `due_date` после ADR 0125. Дверь
 закрывает `CHECK`, а не отсутствие значения.
 
-**M9 — `0186_service_request_acceptance_contract.sql`**
+**M9 — `<номер>_service_request_acceptance_contract.sql`**
 
 ```sql
 -- Принятые в окне выката выпуска 1 — источник у них не проставлен.
@@ -445,7 +450,7 @@ ALTER TABLE service_requests ADD CONSTRAINT service_requests_acceptance_source_c
 поставить в выпуске 1 (§3, п. 2). Требования «у принятой человеком есть автор» здесь нет по той же
 причине, что в M2: ссылка на автора обнуляется при удалении учётки.
 
-**M10 — `0187_service_request_it_signature_guard.sql`**
+**M10 — `<номер>_service_request_it_signature_guard.sql`**
 
 ```sql
 -- Подпись ИТ, которую ЗАПИСЫВАЮТ или МЕНЯЮТ после этого выпуска, обязана нести ревизию — и ту
