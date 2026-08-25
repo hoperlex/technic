@@ -27,10 +27,32 @@ export const MAINTENANCE_ROLE = 'technic_maintenance';
 
 export interface MaintenanceAccess {
   /** Имя переменной, из которой взят URL, — оно попадает в вывод: чем открыта дверь, видно всегда. */
-  source: 'DATABASE_MAINTENANCE_URL' | 'DATABASE_MIGRATION_URL';
+  source: 'DATABASE_MAINTENANCE_URL' | 'DATABASE_MIGRATION_URL' | 'DATABASE_DEPLOY_URL';
   url: string;
   /** URL совпал с прикладным байт в байт: разделения доступа на этой площадке нет. */
   sharedWithApp: boolean;
+}
+
+/**
+ * Доступ **job'а деплоя** — тот, которым пишется аттестация раската (О4, Р3).
+ *
+ * Роль здесь другая не для красоты: аттестацию пишет тот, кто раскатывал, а потребляет тот, кто
+ * переключает, и одна кнопка, которая и подтверждает, и использует, вернула бы круговую проверку,
+ * ради устранения которой аттестация заведена. Пока роли в кластере не разделены, порядок тот же,
+ * что у остальных команд, — но источник печатается, и «взяли не свою переменную» видно в выводе.
+ */
+export function resolveDeployAccess(): MaintenanceAccess & { separated: boolean } {
+  const deploy = process.env.DATABASE_DEPLOY_URL?.trim();
+  if (deploy) {
+    const appUrl = process.env.DATABASE_URL?.trim();
+    return {
+      source: 'DATABASE_DEPLOY_URL',
+      url: deploy,
+      sharedWithApp: appUrl !== undefined && appUrl === deploy,
+      separated: true,
+    };
+  }
+  return { ...resolveMaintenanceAccess(), separated: false };
 }
 
 /** Кто мы в кластере и заряжена ли граница средствами БД. */

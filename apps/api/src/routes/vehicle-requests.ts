@@ -326,6 +326,7 @@ import {
 // Бэкстоп чужих дверей (план Р21, Р22; фаза — Ж5): четыре двери этого файла зовут сверку ЭСМ-2, но
 // машиниста не спрашивают. До переключения чтения расчёт остаётся диагностикой и работу не трогает.
 import { assertAssignmentBackstop } from '../services/assignment-backstop';
+import { noteLegacyPeriodCall } from '../services/assignment-legacy-note';
 import { markAssignmentHistoryDirty } from '../services/assignment-dirty';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 import { categorySpecsSql } from '../services/vehicle-categories';
@@ -887,7 +888,9 @@ async function historyDayVehiclesByRequestIds(
 
   const states = await readAssignmentStatesOn(ids, onDate);
   const vehicleIds = [
-    ...new Set([...states.values()].map((s) => s.vehicle?.vehicleId).filter((v): v is string => !!v)),
+    ...new Set(
+      [...states.values()].map((s) => s.vehicle?.vehicleId).filter((v): v is string => !!v),
+    ),
   ];
   if (vehicleIds.length === 0) return map;
   const driverIds = [
@@ -4970,6 +4973,30 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             .update(specialEquipmentRequestDetails)
             .set({ dateFrom, dateTo, responsibleName, responsiblePhone })
             .where(eq(specialEquipmentRequestDetails.requestId, id));
+          /*
+           * Клиентский гейт cutover (И5). Срок работ уехал в свою дверь `PATCH /:id/period`, но
+           * широкий маршрут даты пока принимает — выкат портала и API не одномоментен. После
+           * переключения чтения такой запрос получит `409 CLIENT_UPGRADE_REQUIRED`, и разрешено
+           * оно только там, где живых клиентов старого пути не осталось. Здесь это и меряется:
+           * запись — свидетельство, что кто-то правил срок мимо новой двери.
+           *
+           * Условие — `periodEdited`, а не «поле пришло»: форма присылает заявку целиком на каждой
+           * правке, и «прислал те же даты» не означает «не знает новой двери». Иначе гейт не дошёл
+           * бы до нуля никогда — его держала бы всякая правка комментария.
+           */
+          if (periodEdited) {
+            await noteLegacyPeriodCall(tx, {
+              actor: { id: p.id },
+              requestId: id,
+              // `before` сужен самой веткой: тип сторон сверен до транзакции, но TS этого не
+              // видит — тем же приёмом сужается заявка в ручках смен.
+              before: {
+                dateFrom: (before as SpecialEquipmentRequestDto).dateFrom,
+                dateTo: (before as SpecialEquipmentRequestDto).dateTo,
+              },
+              after: { dateFrom, dateTo },
+            });
+          }
         } else {
           // Тип сторон совпадает — правка чужого типа отклонена до транзакции («Тип заявки меняют
           // переоформлением»), но сузить `before` этой проверкой TS не умеет: сравниваются два

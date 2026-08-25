@@ -152,6 +152,31 @@ services:
     profiles: [tools]
     networks: [internal]
 
+  # Аттестация раската для переключения чтения (О4, Р3 плана assignment-periods). Её пишет job
+  # ДЕПЛОЯ — сразу после успешного раската, — а потребляет переключение, у которого прав на запись
+  # аттестации нет: разрешение и его обоснование обязаны исходить от разных рук. Доступ поэтому
+  # свой (`DATABASE_DEPLOY_URL`); пока роли в кластере не разделены, команда берёт maintenance и
+  # честно печатает, что разделения нет.
+  #
+  # Инвентарь раската приносится аргументом: базе он неоткуда узнать, какие образы работают. Во
+  # время раската сборок законно две — называют обе.
+  #
+  #   docker compose -p technic --profile tools run --rm assignment-attest --build=<sha>
+  assignment-attest:
+    image: technic-api:${TAG:-latest}
+    env_file:
+      - ${ENV_FILE:-/etc/technic-portal/prod.env}
+      - ${MAINTENANCE_ENV_FILE:-${ENV_FILE:-/etc/technic-portal/prod.env}}
+    environment:
+      NODE_ENV: production
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+    entrypoint: ['pnpm', '--filter', '@technic/api', 'assignment:attest']
+    command: ['--help']
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
   # Теневое сравнение планов бумаги (этап 4 плана assignment-periods): поколение целей, прогон и
   # исход. Тот же доступ, что у `assignment-mode`, — своими кредами. Отличие одно и оно по делу:
   # команда зовёт БОЕВОЙ недельный расчёт бумаги, а тот тянет прикладной конфиг, поэтому прикладной

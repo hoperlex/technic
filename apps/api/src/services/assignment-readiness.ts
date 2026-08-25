@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { formatVehicleRequestNumber, moscowDateKeyOf } from '@technic/contracts';
 import type * as schema from '../db/schema';
+import { ASSIGNMENT_LEGACY_WINDOW_DAYS, countLegacyPeriodCalls } from './assignment-legacy-calls';
 import {
   ASSIGNMENT_HISTORY_ALGO_VERSION,
   ATTESTATION_MAX_AGE_MS,
@@ -399,6 +400,7 @@ export type CutoverObstacleKind =
   | 'attestation_missing'
   | 'attestation_stale'
   | 'attestation_legacy_calls'
+  | 'legacy_period_calls'
   | 'attestation_algo_mismatch'
   | 'attestation_build_mismatch'
   | 'control_row_missing';
@@ -466,11 +468,18 @@ export async function assignmentCutoverReadiness(
   const asOf = options.asOf ?? moscowDateKeyOf(now);
   const limit = options.sampleLimit ?? 10;
 
-  const [mode, population, shadow, attestation] = await Promise.all([
+  const [mode, population, shadow, attestation, legacyPeriodCalls] = await Promise.all([
     readAssignmentModeState(reader),
     readAssignmentPopulation(reader, asOf),
     readShadowRunState(reader, options.runId),
     readAttestationState(reader, now),
+    /*
+     * Клиентский гейт **сейчас**, а не тот, что записан в аттестации (И5). Разница по делу:
+     * аттестация отвечает «сколько их было в момент раската», а сводку читают до раската — чтобы
+     * понять, есть ли смысл его затевать. Одно число из аттестации показало бы прошлое и молчало
+     * бы там, где старый клиент появился сегодня.
+     */
+    countLegacyPeriodCalls(reader),
   ]);
 
   const obstacles: CutoverObstacle[] = [];
@@ -494,6 +503,22 @@ export async function assignmentCutoverReadiness(
       count: 0,
       what: 'управляющей строки модуля нет: `assignment_periods_control` пуста',
       fix: 'строка заводится миграцией 0167 и удалению не подлежит — разбирает человек',
+      samples: [],
+    });
+  }
+
+  /*
+   * Клиентский гейт (И5) — ярус окна: он снимается не подготовкой данных, а выкатом клиента, и к
+   * готовности заявок отношения не имеет. Стоит до яруса данных нарочно: увидев его первым,
+   * оператор не станет затевать раскат, который дверь всё равно не пропустит.
+   */
+  if (legacyPeriodCalls > 0) {
+    obstacles.push({
+      kind: 'legacy_period_calls',
+      tier: 'window',
+      count: legacyPeriodCalls,
+      what: `правок срока старым широким маршрутом за ${ASSIGNMENT_LEGACY_WINDOW_DAYS} дн.: живой клиент двери /period не знает (И5)`,
+      fix: "кто и когда — `select created_at, entity_id, metadata from audit_log where action = 'assignment.legacy_period_call' order by created_at desc`; выкатить клиента и дождаться, пока окно очистится",
       samples: [],
     });
   }

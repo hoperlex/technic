@@ -4,6 +4,7 @@ import { captchaMetrics } from '../auth/captcha';
 import { config } from '../config';
 import { db } from '../db/client';
 import { assignmentBackstopCounters, assignmentBackstopRefusals } from './assignment-backstop';
+import { countLegacyPeriodCalls } from './assignment-legacy-calls';
 import { assignmentCommandCounters } from './assignment-command';
 import { readAssignmentModeState, readAssignmentPopulation } from './assignment-readiness';
 
@@ -75,7 +76,8 @@ const OVERDUE_MINUTES = 10;
 export async function collectMetrics(): Promise<string> {
   const captcha = captchaMetrics();
   const asOf = moscowDateKeyOf(new Date());
-  const [mail, jobs, runs, overdue, assignmentMode, assignmentPopulation] = await Promise.all([
+  const [mail, jobs, runs, overdue, assignmentMode, assignmentPopulation, legacyPeriodCalls] =
+    await Promise.all([
     db.execute<{ status: string; count: string }>(
       sql`SELECT status::text AS status, count(*)::text AS count
             FROM mail_messages
@@ -113,6 +115,12 @@ export async function collectMetrics(): Promise<string> {
      * индекс — он всё равно не помог бы: считаются почти все строки, и планировщик выбрал бы скан.
      */
     readAssignmentPopulation(db, asOf),
+    /*
+     * Клиентский гейт cutover (И5): вызовы старого широкого маршрута с датами за неделю. Считается
+     * по журналу, а не процессным счётчиком, — аттестация деплоя снимается через минуту после
+     * перезапуска, и счётчик процесса доказывал бы свежесть процесса, а не отсутствие клиентов.
+     */
+    countLegacyPeriodCalls(db),
   ]);
 
   const byStatus = (rows: { status: string; count: string }[]) =>
@@ -314,6 +322,21 @@ export async function collectMetrics(): Promise<string> {
               : 0,
         },
       ],
+    },
+    {
+      /*
+       * Клиентский гейт cutover (И5): сколько раз за последнюю неделю срок работ правили **старым**
+       * широким маршрутом вместо двери `/period`. Ноль — условие переключения чтения: после него
+       * такой запрос получает `409 CLIENT_UPGRADE_REQUIRED`, и ненулевое значение означает живого
+       * клиента, который разреза не знает.
+       *
+       * Gauge со скользящим окном, а не counter: вопрос здесь не «сколько было всего», а «есть ли
+       * они сейчас», и ответ обязан со временем возвращаться к нулю сам.
+       */
+      name: 'technic_assignment_legacy_period_calls',
+      help: 'Правок срока старым широким маршрутом за 7 дней (0 — клиентский гейт cutover пройден)',
+      type: 'gauge',
+      values: [{ value: legacyPeriodCalls }],
     },
     {
       /*

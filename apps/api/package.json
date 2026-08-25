@@ -16,6 +16,7 @@
     "db:migrate:files": "tsx scripts/migration-report.ts files",
     "db:migrate:journal": "tsx scripts/migration-report.ts journal",
     "db:cutover-down": "tsx scripts/cutover-down.ts",
+    "assignment:attest": "tsx scripts/assignment-attest.ts",
     "assignment:backfill": "tsx scripts/assignment-backfill.ts",
     "assignment:mode": "tsx scripts/assignment-mode.ts",
     "assignment:report": "tsx scripts/assignment-report.ts",
