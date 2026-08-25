@@ -115,10 +115,18 @@ AS $$
   SELECT btrim(regexp_replace(t, '[\s\u00a0\u202f]+', ' ', 'g'))
 $$;
 
+-- Обращение к соседней функции ОБЯЗАНО быть со схемой. PostgreSQL 17 исполняет обслуживающие
+-- команды — и `CREATE INDEX` в их числе — под защищённым `search_path` (`pg_catalog, pg_temp`), а
+-- тело SQL-функции при инлайне разбирается ПО ИМЕНИ и в тот момент, когда до неё дошло, а не при
+-- создании. Сама `office_equipment_model_key` при этом находится по OID из выражения индекса и
+-- потому претензий не вызывает: не находится ровно внутренний вызов. Без схемы построение индекса
+-- ниже падает с «function office_equipment_model_name_normalize(text) does not exist» — на 16-й, где
+-- такого ограничения ещё нет, миграция при этом проходит целиком, поэтому отказ ждёт ровно на
+-- боевом сервере.
 CREATE FUNCTION office_equipment_model_key(t text) RETURNS text
   LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
 AS $$
-  SELECT upper(office_equipment_model_name_normalize(t))
+  SELECT upper(public.office_equipment_model_name_normalize(t))
 $$;
 
 COMMENT ON FUNCTION office_equipment_model_name_normalize(text) IS
