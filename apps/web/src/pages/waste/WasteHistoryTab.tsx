@@ -19,14 +19,17 @@ import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { dayEnd, dayStart } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { useOpenedRecord } from '@shared/lib';
 import { useWasteObjectScope } from '../../hooks/useWasteObjectScope';
 import { useAuth } from '../../auth/AuthContext';
 import { formatMoney } from '../../utils/format';
-import { objectsApi, objectKeys } from '@entities/object';
+import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';
 import { wasteHistoryCard, wasteHistoryColumns } from './wasteHistoryColumns';
 import { WasteRequestViewModal } from './WasteRequestViewModal';
+
+const DATE = 'YYYY-MM-DD';
 
 /**
  * Журнал закрытых заявок на вывоз (ADR 0135). Первая вкладка отвечает на «что сейчас везём», эта —
@@ -68,16 +71,26 @@ export function WasteHistoryTab() {
     applyFilter({ num: parseWasteRequestNumberSearch(raw) });
   };
 
+  /**
+   * Параметры запроса: период разложен на моменты в поясе портала. В самих параметрах он живёт
+   * датами — тот же вид приходит и из шита фильтров на телефоне, — а `deliveryAt` хранится со
+   * временем, и дата без границы дня отрезала бы последние сутки периода.
+   */
+  const query = {
+    ...params,
+    deliveryFrom: dayStart(params.deliveryFrom),
+    deliveryTo: dayEnd(params.deliveryTo),
+  };
   const { data, isFetching } = useQuery({
-    queryKey: ['waste-requests', 'history', params],
-    queryFn: () => wasteRequestsApi.historyList(params),
+    queryKey: ['waste-requests', 'history', query],
+    queryFn: () => wasteRequestsApi.historyList(query),
   });
 
   // Итог считается по тем же фильтрам, что и таблица: сводка, отвечающая не про то, что человек
   // видит перед собой, вводит в заблуждение вернее, чем её отсутствие.
   const { data: summary } = useQuery({
-    queryKey: ['waste-requests', 'history-summary', params],
-    queryFn: () => wasteRequestsApi.historySummary(params),
+    queryKey: ['waste-requests', 'history-summary', query],
+    queryFn: () => wasteRequestsApi.historySummary(query),
   });
 
   const { data: objects } = useQuery({
@@ -91,8 +104,10 @@ export function WasteHistoryTab() {
         sortOrder: 'asc',
       }),
   });
+  // Площадка называется и адресом: журнал открывают вопросом «что вывезли с Ленина, 14», и по
+  // адресу же ищут в поле — подпись у варианта одна, поиск идёт по ней.
   const objectOptions = limitObjectOptions(
-    (objects?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` })),
+    (objects?.items ?? []).map((o) => ({ value: o.id, label: objectFilterOptionLabel(o) })),
   );
 
   const { data: operatorsData } = useQuery({
@@ -141,12 +156,17 @@ export function WasteHistoryTab() {
 
   const filters = (
     <Space size={[12, 8]} wrap>
+      {/* Список раскрывается по своей ширине, а не по ширине поля: подпись с адресом длиннее
+          любого разумного фильтра, и обрезанная в многоточие она перестаёт отвечать на «та ли это
+          площадка». Потолок в 90 % ширины экрана держит его в пределах окна. */}
       <Select
         allowClear
         showSearch
         optionFilterProp="label"
         placeholder="Все площадки"
         style={{ width: 240 }}
+        popupMatchSelectWidth={false}
+        styles={{ popup: { root: { maxWidth: '90vw' } } }}
         options={objectOptions}
         value={params.objectId}
         onChange={(v: string | undefined) => applyFilter({ objectId: v })}
@@ -185,14 +205,15 @@ export function WasteHistoryTab() {
         format="DD.MM.YYYY"
         style={{ width: 250 }}
         allowEmpty={[true, true]}
+        placeholder={['Подача с', 'по']}
         value={[
           params.deliveryFrom ? dayjs(params.deliveryFrom) : null,
           params.deliveryTo ? dayjs(params.deliveryTo) : null,
         ]}
         onChange={(range) =>
           applyFilter({
-            deliveryFrom: range?.[0]?.startOf('day').toISOString(),
-            deliveryTo: range?.[1]?.endOf('day').toISOString(),
+            deliveryFrom: range?.[0]?.format(DATE),
+            deliveryTo: range?.[1]?.format(DATE),
           })
         }
       />

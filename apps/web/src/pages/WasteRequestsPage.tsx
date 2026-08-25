@@ -29,7 +29,6 @@ import dayjs, { type Dayjs } from 'dayjs';
 import {
   allowedStatusTransitions,
   MIN_WASTE_VOLUME_M3,
-  OPEN_WASTE_STATUSES,
   REQUEST_TYPES,
   type RequestStatus,
   type RequestType,
@@ -44,6 +43,7 @@ import {
   type CompleteWasteRequestInput,
   actsForCounterparty,
   checkContainerOwner,
+  type ContainerKind,
   containerOwnerMismatch,
   FOREIGN_CONTAINER_SPLIT_MESSAGE,
   isPlaceScopedRole,
@@ -77,13 +77,14 @@ import { FormGrid } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { ResponsibleFields } from '../components/ResponsibleFields';
-import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
+import { sortOptionsFrom } from '@shared/ui';
 import { PageTabs, TabsExtra, useActiveTabKey } from '../components/PageTabs';
 import { SummaryBar } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../components/ObjectCell';
 import { TimeInput, optionalWorkTimeRule } from '../components/TimeInput';
 import { useIsMobile } from '@shared/lib';
+import { dayEnd, dayStart } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { useOpenedRecord } from '@shared/lib';
 import { useWasteObjectScope } from '../hooks/useWasteObjectScope';
@@ -103,6 +104,12 @@ import {
   presentGroupsHint,
 } from './waste/containerGroups';
 import { wasteAmountLine, wastePricingHint } from './waste/pricingHint';
+import { wasteFiltersBar, wasteMobileFilters } from './waste/requestFilters';
+import {
+  subjectFilterOptions,
+  subjectFilterPatch,
+  subjectFilterValue,
+} from './waste/subjectFilter';
 import {
   BlindCheckQueue,
   TicketBadge,
@@ -111,7 +118,7 @@ import {
 import { WasteDoneModal } from './waste/WasteDoneModal';
 import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
 import { MOSCOW_TZ } from '@shared/config';
-import { objectsApi, objectKeys } from '@entities/object';
+import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';
 import { containerTypeOptionsQuery } from '@entities/container-type';
 import { wasteTypeOptionsQuery } from '@entities/waste-type';
 import { wasteTariffResolveQuery } from '@entities/waste-tariff';
@@ -290,9 +297,7 @@ function WasteStatusCell({
   const items = transitions.map((s) => ({
     key: s,
     label: requestStatusLabels[s],
-    ...(s === 'completed' && completionBlocker
-      ? { disabled: true, title: completionBlocker }
-      : {}),
+    ...(s === 'completed' && completionBlocker ? { disabled: true, title: completionBlocker } : {}),
   }));
 
   // На телефоне переходы показываются списком снизу: выпадающее меню у тега в карточке
@@ -441,8 +446,13 @@ function RequestsTab() {
     requestType?: string;
     objectId?: string;
     containerTypeId?: string;
+    /** Весь вид разом: «все контейнеры» или «все самосвалы». */
+    containerKind?: ContainerKind;
     operatorCounterpartyId?: string;
     num?: number;
+    /** Границы периода подачи — датами `YYYY-MM-DD`; моментами они становятся в запросе. */
+    deliveryFrom?: string;
+    deliveryTo?: string;
     /** Реестр разбора талонов (ADR 0114, Р24): `pending` — «требуют разбора». */
     ticketReview?: string;
   }>({ objectId: ownObjectId || undefined }, { searchKeys: ['comment'] });
@@ -466,9 +476,19 @@ function RequestsTab() {
     applyFilter({ num: parseWasteRequestNumberSearch(raw) });
   };
 
+  /**
+   * Параметры запроса — те же фильтры, но период разложен на моменты: в поле его выбирают днями,
+   * а `deliveryAt` хранится со временем. Ключ кэша считается по ним же — иначе два разных периода
+   * с одинаковыми датами делили бы одну запись кэша.
+   */
+  const listQuery = {
+    ...params,
+    deliveryFrom: dayStart(params.deliveryFrom),
+    deliveryTo: dayEnd(params.deliveryTo),
+  };
   const { data, isFetching } = useQuery({
-    queryKey: ['waste-requests', params],
-    queryFn: () => wasteRequestsApi.list(params),
+    queryKey: ['waste-requests', listQuery],
+    queryFn: () => wasteRequestsApi.list(listQuery),
   });
 
   // Сводка в шапке: сколько заявок ждёт обработки и сколько в работе. Ключ начинается с
@@ -512,6 +532,12 @@ function RequestsTab() {
       label: `${o.code} — ${o.name}`,
     })),
   );
+  // Фильтр списка называет площадку ещё и адресом: заявки ищут «что было на Ленина, 14» не реже,
+  // чем по названию объекта, — и по нему же работает поиск в поле. В форме заявки подпись прежняя:
+  // там площадку не ищут, а выбирают свою, и третий кусок строки только удлинял бы список.
+  const objectFilterOptions = limitObjectOptions(
+    (objects?.items ?? []).map((o) => ({ value: o.id, label: objectFilterOptionLabel(o) })),
+  );
   const allTypes = types?.items ?? [];
   // Установка — только контейнеры (type='cont').
   const contTypeOptions = allTypes
@@ -522,20 +548,12 @@ function RequestsTab() {
   const truckTypes = allTypes.filter((t) => t.type === 'truck');
   const truckTypeOptions = truckTypes.map((t) => ({ value: t.id, label: t.name }));
   const requestTypeOptions = REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] }));
-  // Только рабочие статусы (ADR 0135): завершённые и отменённые живут вкладкой «История», и
-  // сервер их в этом списке не отдаёт вовсе — вариант фильтра, кончающийся отказом, хуже его
-  // отсутствия.
-  const statusOptions = OPEN_WASTE_STATUSES.map((s) => ({
-    value: s,
-    label: requestStatusLabels[s],
-  }));
-  // Фильтр по столбцу «Контейнер / машина»: в нём соседствуют оба вида, поэтому список общий,
-  // но разложен по группам — иначе самосвалы и контейнеры идут вперемешку. Самосвал в фильтре
-  // находит только заявки вывоза, заведённые до ADR 0022: у новых техники в предмете нет.
-  const subjectFilterOptions = [
-    { label: 'Контейнеры', options: contTypeOptions },
-    { label: 'Самосвалы', options: truckTypeOptions },
-  ].filter((g) => g.options.length > 0);
+  // Фильтр по столбцу «Контейнер / машина»: варианты собирает `subjectFilter` — там же и разбор
+  // выбранного обратно в параметры. Самосвал в фильтре находит только заявки вывоза, заведённые
+  // до ADR 0022: у новых техники в предмете нет.
+  const subjectOptions = subjectFilterOptions({ cont: contTypeOptions, truck: truckTypeOptions });
+  const subjectValue = subjectFilterValue(params);
+  const applySubjectFilter = (v: string | undefined) => applyFilter(subjectFilterPatch(v));
 
   // Типы мусора — только для вывоза (ADR 0019). Спрашиваются
   // только типы с действующей ценой (ADR 0017): выбор типа без тарифа кончался бы отказом
@@ -560,6 +578,8 @@ function RequestsTab() {
       }),
     enabled: canAssignOperator,
   });
+  /** Фильтр списка спрашивает исполнителя без оглядки на объект: заявки ищут и по обоим сразу. */
+  const operatorOptions = (operatorsData?.items ?? []).map((c) => ({ value: c.id, label: c.name }));
   /**
    * Исполнителя выбираем среди операторов, привязанных к объекту заявки (ADR 0010). Правило
    * повторяет серверное: объект, у которого операторы не заведены, список не сужает — иначе на
@@ -1346,159 +1366,23 @@ function RequestsTab() {
     }, 120),
   ];
 
-  const filters = (
-    <Space size={[12, 8]} wrap>
-      <Select
-        style={{ width: 240 }}
-        value={objectFilter}
-        onChange={applyObjectFilter}
-        options={[{ value: '', label: 'Все объекты' }, ...objectOptions]}
-        showSearch
-        optionFilterProp="label"
-        disabled={objectFieldDisabled}
-      />
-      <Select
-        style={{ width: 190 }}
-        allowClear
-        placeholder="Все типы заявок"
-        options={requestTypeOptions}
-        value={params.requestType}
-        onChange={(v: string | undefined) => applyFilter({ requestType: v })}
-      />
-      <Select
-        style={{ width: 150 }}
-        allowClear
-        placeholder="Все статусы"
-        options={statusOptions}
-        value={params.status}
-        onChange={(v: string | undefined) => applyFilter({ status: v })}
-      />
-      <Select
-        style={{ width: 200 }}
-        allowClear
-        showSearch
-        optionFilterProp="label"
-        placeholder="Контейнер / машина"
-        options={subjectFilterOptions}
-        value={params.containerTypeId}
-        onChange={(v: string | undefined) => applyFilter({ containerTypeId: v })}
-      />
-      {/* Оператора выбирает тот, кто назначает исполнителя; самому оператору фильтр не нужен —
-          в его списке все заявки и так его (ADR 0010). */}
-      {canAssignOperator && (
-        <Select
-          style={{ width: 200 }}
-          allowClear
-          showSearch
-          optionFilterProp="label"
-          placeholder="Все операторы"
-          options={(operatorsData?.items ?? []).map((c) => ({ value: c.id, label: c.name }))}
-          value={params.operatorCounterpartyId}
-          onChange={(v: string | undefined) => applyFilter({ operatorCounterpartyId: v })}
-        />
-      )}
-      {/* Рабочий реестр того, кто сверяет бумаги (Р24): в отбор попадает и заявка без единого
-          расхождения, если её талоны ещё не подтверждены, — иначе они остались бы неразобранными
-          навсегда, а неподтверждённый талон не занимает номер. */}
-      {canReviewTickets && (
-        <Tooltip title="Заявки, где талоны ждут человека: не подтверждены, спорны, не прочитаны или расходятся с закрытием">
-          <Button
-            type={params.ticketReview ? 'primary' : 'default'}
-            onClick={() => applyFilter({ ticketReview: params.ticketReview ? undefined : 'pending' })}
-          >
-            Требуют разбора
-          </Button>
-        </Tooltip>
-      )}
-      <Input
-        style={{ width: 160 }}
-        allowClear
-        placeholder="Поиск по № заявки"
-        value={numInput}
-        onChange={(e) => applyNumFilter(e.target.value)}
-      />
-    </Space>
-  );
-
-  /**
-   * Те же фильтры описаниями — для шита на телефоне (ADR 0030). Панель выше остаётся панелью:
-   * на десктопе она вся на виду, и собирать её из описаний было бы переписыванием ради
-   * единообразия. Значения и обработчики здесь общие с ней — расходиться нечему.
-   */
-  const mobileFilters: FilterDefinition[] = [
-    {
-      kind: 'select',
-      key: 'objectId',
-      label: 'Объект',
-      value: objectFilter || undefined,
-      options: objectOptions,
-      placeholder: 'Все объекты',
+  const filterOptions = {
+    values: params,
+    onChange: applyFilter,
+    objects: {
+      options: objectFilterOptions,
       loading: objectsLoading,
-      // С одним объектом фильтр показан, но не меняется; с несколькими — выбор из своих.
+      value: objectFilter,
       disabled: objectFieldDisabled,
-      onChange: (v) => applyObjectFilter(v ?? ''),
+      onChange: applyObjectFilter,
     },
-    {
-      kind: 'select',
-      key: 'requestType',
-      label: 'Тип заявки',
-      value: params.requestType,
-      options: requestTypeOptions,
-      placeholder: 'Все типы заявок',
-      onChange: (v) => applyFilter({ requestType: v }),
-    },
-    {
-      kind: 'select',
-      key: 'status',
-      label: 'Статус',
-      value: params.status,
-      options: statusOptions,
-      placeholder: 'Все статусы',
-      onChange: (v) => applyFilter({ status: v }),
-    },
-    {
-      kind: 'select',
-      key: 'containerTypeId',
-      label: 'Контейнер / машина',
-      value: params.containerTypeId,
-      options: subjectFilterOptions,
-      placeholder: 'Любой',
-      onChange: (v) => applyFilter({ containerTypeId: v }),
-    },
-    ...(canAssignOperator
-      ? [
-          {
-            kind: 'select' as const,
-            key: 'operatorCounterpartyId',
-            label: 'Оператор вывоза',
-            value: params.operatorCounterpartyId,
-            options: (operatorsData?.items ?? []).map((c) => ({ value: c.id, label: c.name })),
-            placeholder: 'Все операторы',
-            loading: operatorsLoading,
-            onChange: (v: string | undefined) => applyFilter({ operatorCounterpartyId: v }),
-          },
-        ]
-      : []),
-    {
-      kind: 'text',
-      key: 'num',
-      label: '№ заявки',
-      value: numInput || undefined,
-      placeholder: 'Например, М-128',
-      onChange: (v) => applyNumFilter(v ?? ''),
-    },
-    ...(canReviewTickets
-      ? [
-          {
-            kind: 'toggle' as const,
-            key: 'ticketReview',
-            label: 'Требуют разбора',
-            value: params.ticketReview === 'pending',
-            onChange: (v: boolean) => applyFilter({ ticketReview: v ? 'pending' : undefined }),
-          },
-        ]
-      : []),
-  ];
+    subject: { options: subjectOptions, value: subjectValue, onChange: applySubjectFilter },
+    operators: canAssignOperator ? { options: operatorOptions, loading: operatorsLoading } : null,
+    num: { text: numInput, onChange: applyNumFilter },
+    ticketReview: canReviewTickets,
+  };
+  const filters = wasteFiltersBar(filterOptions);
+  const mobileFilters = wasteMobileFilters(filterOptions);
 
   /**
    * Строка списка на телефоне (ADR 0030). Читают её сверху вниз: что за заявка и в каком она

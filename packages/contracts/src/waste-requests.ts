@@ -3,6 +3,7 @@ import type { WasteTicketBadgeDto } from './waste-tickets';
 import {
   MIN_WASTE_VOLUME_M3,
   REQUEST_STATUSES,
+  containerKindSchema,
   requestStatusSchema,
   requestTypeSchema,
   requestTypeShort,
@@ -78,6 +79,16 @@ export const wasteRequestListQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIEL
   status: requestStatusSchema.optional(),
   objectId: uuidSchema.optional(),
   containerTypeId: uuidSchema.optional(),
+  /**
+   * Весь вид разом — «все контейнеры» или «все самосвалы», — вместо одной позиции справочника.
+   * Спрашивают именно так: «что везли самосвалами за неделю», а перечислять типы поимённо значит
+   * промахнуться мимо заведённого вчера. Отдельным параметром, а не значением `containerTypeId`:
+   * тот — идентификатор строки справочника, и подмешанное в него слово перестало бы им быть.
+   *
+   * Задаются оба — сужают вместе: тип уже принадлежит одному виду, и пара «контейнер X + все
+   * самосвалы» даёт пустую выдачу честно, а не молчаливым игнорированием одного из них.
+   */
+  containerKind: containerKindSchema.optional(),
   requestType: requestTypeSchema.optional(),
   /** Заявки, назначенные конкретному оператору вывоза (ADR 0010). */
   operatorCounterpartyId: uuidSchema.optional(),

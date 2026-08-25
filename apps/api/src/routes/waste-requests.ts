@@ -840,6 +840,19 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       q.status ? eq(wasteRequests.status, q.status) : undefined,
       q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
       q.containerTypeId ? eq(wasteRequests.containerTypeId, q.containerTypeId) : undefined,
+      // «Все контейнеры» / «все самосвалы»: вид спрашивается подзапросом по справочнику, а не
+      // условием на присоединённый `container_types`, — тем же условием считается `total`, а в
+      // его запросе справочник не присоединён. Заявка без предмета (вывоз мусора после ADR 0022)
+      // в отбор не попадает: у неё нечему быть контейнером или машиной.
+      q.containerKind
+        ? inArray(
+            wasteRequests.containerTypeId,
+            db
+              .select({ id: containerTypes.id })
+              .from(containerTypes)
+              .where(eq(containerTypes.type, q.containerKind)),
+          )
+        : undefined,
       q.operatorCounterpartyId
         ? eq(wasteRequests.operatorCounterpartyId, q.operatorCounterpartyId)
         : undefined,

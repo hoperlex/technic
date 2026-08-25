@@ -8,6 +8,7 @@ import {
   presentGroupLabel,
   usesContainerGroup,
   usesContainerType,
+  wasteRequestListQuerySchema,
   wasteSubjectLabel,
 } from '@technic/contracts';
 
@@ -236,5 +237,25 @@ describe('подписи для человека', () => {
         volumeM3: 20,
       }),
     ).toBe('20 м³');
+  });
+});
+
+describe('фильтр списка по предмету', () => {
+  // Вид целиком — свой параметр, а не значение `containerTypeId`: тот проверяется как uuid, и
+  // слово «truck» в нём кончилось бы отказом схемы вместо отбора.
+  it('вид принимается только известный', () => {
+    expect(wasteRequestListQuerySchema.safeParse({ containerKind: 'cont' }).success).toBe(true);
+    expect(wasteRequestListQuerySchema.safeParse({ containerKind: 'truck' }).success).toBe(true);
+    expect(wasteRequestListQuerySchema.safeParse({ containerKind: 'все' }).success).toBe(false);
+    expect(wasteRequestListQuerySchema.parse({}).containerKind).toBeUndefined();
+  });
+
+  it('вид и позиция справочника уживаются в одном запросе', () => {
+    const q = wasteRequestListQuerySchema.parse({
+      containerKind: 'cont',
+      containerTypeId: TYPE_ID,
+    });
+    expect(q.containerKind).toBe('cont');
+    expect(q.containerTypeId).toBe(TYPE_ID);
   });
 });

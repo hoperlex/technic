@@ -6,3 +6,4 @@
 export { objectsApi } from './api/objectsApi';
 export { objectKeys } from './api/keys';
 export { objectAddressOptionsQuery, objectOptionsQuery } from './api/queries';
+export { objectFilterOptionLabel } from './model/optionLabel';

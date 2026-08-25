@@ -3,6 +3,7 @@
  * а не отдельные модули внутри — так линт границ отличает пользование от залезания внутрь.
  */
 export * from './avatar';
+export * from './dayBounds';
 export * from './dayjs';
 export * from './errors';
 export * from './selectOptions';
