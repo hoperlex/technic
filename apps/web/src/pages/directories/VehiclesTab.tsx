@@ -2,7 +2,6 @@ import { useState } from 'react';
 import {
   App,
   Button,
-  Checkbox,
   Form,
   Input,
   InputNumber,
@@ -26,6 +25,7 @@ import {
   RENTAL_STATUSES,
   type CreateVehicleInput,
   type UpdateVehicleInput,
+  type UpdateVehicleResult,
   type VehicleDto,
   type VehicleOwnership,
   type VehicleStatus,
@@ -53,14 +53,16 @@ import {
   withSavedClassification,
 } from '../../hooks/useVehicleClassifications';
 import { garageKeys } from '@entities/garage';
+import { unhitchedNotice, VehicleTrailersField } from '@entities/vehicle-trailer';
 import { useVehicleMaintenanceAction } from '@features/vehicle-maintenance';
 import { AutoSelect, DataTable, FormModal, PageTableLayout } from '@shared/ui';
 import { actionsColumn, badgeColumn, sortOptionsFrom, textColumn } from '@shared/ui';
-import type { CardConfig, FilterDefinition } from '@shared/ui';
+import type { CardConfig } from '@shared/ui';
 import { useIsMobile, useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
+import { useVehicleFilters, type VehicleFilterParams } from './VehicleFilters';
 
 // Справочник техники (ADR 0007) с двумя ветками принадлежности (ADR 0018). Один список, а не две
 // вкладки: сравнивать своё и аренду нужно рядом. Переключатель принадлежности не только фильтрует,
@@ -91,6 +93,12 @@ const rentalStatusOptions = RENTAL_STATUSES.map((s) => ({
 const money = (v: number | null) =>
   v == null ? '—' : `${v.toLocaleString('ru-RU', { minimumFractionDigits: 0 })} ₽`;
 
+/**
+ * Заведение отвечает голой карточкой — к форме ответа правки его приводит одно место. Снимать
+ * привязки заведению не с чего: у новой машины их ещё нет, и ноль здесь — факт, а не заглушка.
+ */
+const created = (vehicle: VehicleDto): UpdateVehicleResult => ({ vehicle, unhitchedTrailers: 0 });
+
 export function VehiclesTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
@@ -102,15 +110,10 @@ export function VehiclesTab() {
   // Обслуживание (Р14в, Р15): своё право, своё окно и та же форма, что в карточке машины.
   const maintenance = useVehicleMaintenanceAction();
 
-  const { params, setParams, setSort, onTableChange } = useListParams<{
-    ownership?: VehicleOwnership;
-    vehicleTypeId?: string;
-    lessorId?: string;
-    status?: VehicleStatus;
-    includeDeleted?: string;
-    // Статус и поиск задаются только панелью над таблицей: продублируй их выпадашкой столбца —
-    // и любая сортировка сбрасывала бы выбранное (в onChange таблицы приходит пустой фильтр).
-  }>({}, { searchKeys: [] });
+  const { params, setParams, setSort, onTableChange } = useListParams<VehicleFilterParams>(
+    {},
+    { searchKeys: [] },
+  );
 
   const ownershipFilter = params.ownership;
   const showOwnColumns = ownershipFilter !== 'rental';
@@ -237,7 +240,7 @@ export function VehiclesTab() {
   };
 
   const saveMut = useMutation({
-    mutationFn: (v: FormValues) => {
+    mutationFn: async (v: FormValues): Promise<UpdateVehicleResult> => {
       // Выбрана одна позиция классификатора (ADR 0028) — в API она уходит парой «тип +
       // категория»: категория пуста у типа, у которого её и не бывает.
       const chosen = parseVehicleClassificationKey(v.classificationKey)!;
@@ -259,7 +262,9 @@ export function VehiclesTab() {
         // Принадлежность неизменяема — в PATCH её не отправляем.
         return record
           ? vehiclesApi.update(record.id, body as UpdateVehicleInput)
-          : vehiclesApi.create({ ownership: 'rental', ...body } as CreateVehicleInput);
+          : created(
+              await vehiclesApi.create({ ownership: 'rental', ...body } as CreateVehicleInput),
+            );
       }
       const body = {
         ...common,
@@ -269,10 +274,15 @@ export function VehiclesTab() {
       };
       return record
         ? vehiclesApi.update(record.id, body as UpdateVehicleInput)
-        : vehiclesApi.create({ ownership: 'own', ...body } as CreateVehicleInput);
+        : created(await vehiclesApi.create({ ownership: 'own', ...body } as CreateVehicleInput));
     },
-    onSuccess: () => {
+    onSuccess: ({ unhitchedTrailers: unhitched }) => {
       message.success('Сохранено');
+      // Снятые привязки — второе изменение в базе, о котором не просили: списание машины и
+      // перевод её на бланк «форма № 3» отцепляют закреплённые прицепы (план §4.2.3). Говорим
+      // отдельным тостом и дольше обычного — иначе о нём узнают из чужой жалобы. Ноль — молчим:
+      // сообщать не о чем, а «отцеплено 0» читалось бы как сбой.
+      if (unhitched) message.warning(unhitchedNotice(unhitched, 'этой правкой'), 8);
       void qc.invalidateQueries({ queryKey: ['vehicles'] });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
       setOpen(false);
@@ -282,8 +292,11 @@ export function VehiclesTab() {
 
   const removeMut = useMutation({
     mutationFn: (id: string) => vehiclesApi.remove(id),
-    onSuccess: () => {
+    onSuccess: ({ unhitchedTrailers: unhitched }) => {
       message.success('Перемещено в архив');
+      // Та же дверь §4.2.3, и молчать ей не разрешено тем более: архивная машина исчезает из
+      // списков совсем — о сошедшем с неё прицепе сказать больше будет некому.
+      if (unhitched) message.warning(unhitchedNotice(unhitched, 'уходом в архив'), 8);
       void qc.invalidateQueries({ queryKey: ['vehicles'] });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
@@ -467,143 +480,15 @@ export function VehiclesTab() {
     ),
   ];
 
-  const filters = (
-    <Space wrap>
-      <Segmented<string>
-        value={ownershipFilter ?? 'all'}
-        options={[
-          { value: 'all', label: 'Все' },
-          { value: 'own', label: vehicleOwnershipLabels.own },
-          { value: 'rental', label: vehicleOwnershipLabels.rental },
-        ]}
-        onChange={(v) =>
-          setParams((p) => ({
-            ...p,
-            ownership: v === 'all' ? undefined : (v as VehicleOwnership),
-            // Фильтр по арендодателю осмыслен только внутри аренды.
-            lessorId: v === 'rental' ? p.lessorId : undefined,
-            page: 1,
-          }))
-        }
-      />
-      <Select
-        allowClear
-        showSearch
-        optionFilterProp="label"
-        placeholder="Все типы"
-        style={{ width: 200 }}
-        options={typeOptions}
-        value={params.vehicleTypeId as string | undefined}
-        onChange={(v) => setParams((p) => ({ ...p, vehicleTypeId: v, page: 1 }))}
-      />
-      {ownershipFilter === 'rental' ? (
-        <Select
-          allowClear
-          showSearch
-          optionFilterProp="label"
-          placeholder="Все арендодатели"
-          style={{ width: 220 }}
-          options={lessorOptions}
-          value={params.lessorId}
-          onChange={(v) => setParams((p) => ({ ...p, lessorId: v, page: 1 }))}
-        />
-      ) : null}
-      <Select
-        allowClear
-        placeholder="Все статусы"
-        style={{ width: 160 }}
-        options={ownershipFilter === 'rental' ? rentalStatusOptions : statusOptions}
-        value={params.status}
-        onChange={(v) => setParams((p) => ({ ...p, status: v, page: 1 }))}
-      />
-      <Input.Search
-        allowClear
-        placeholder="Госномер / марка / арендодатель"
-        style={{ width: 280 }}
-        onSearch={(val) => setParams((p) => ({ ...p, search: val || undefined, page: 1 }))}
-      />
-      <Checkbox
-        checked={params.includeDeleted === 'true'}
-        onChange={(e) =>
-          setParams((p) => ({
-            ...p,
-            includeDeleted: e.target.checked ? 'true' : undefined,
-            page: 1,
-          }))
-        }
-      >
-        Показать архив
-      </Checkbox>
-    </Space>
-  );
-
-  /**
-   * Те же фильтры описаниями — для шита на телефоне (ADR 0030). Принадлежность на десктопе —
-   * переключатель на три положения; в шите это список с пустым значением «все», потому что
-   * три кнопки во всю ширину заняли бы там целую строку ради одного выбора.
-   */
-  const mobileFilters: FilterDefinition[] = [
-    {
-      kind: 'select',
-      key: 'ownership',
-      label: 'Принадлежность',
-      value: ownershipFilter,
-      options: [
-        { value: 'own', label: vehicleOwnershipLabels.own },
-        { value: 'rental', label: vehicleOwnershipLabels.rental },
-      ],
-      placeholder: 'Все',
-      onChange: (v) =>
-        setParams((p) => ({
-          ...p,
-          ownership: v as VehicleOwnership | undefined,
-          // Фильтр по арендодателю осмыслен только внутри аренды.
-          lessorId: v === 'rental' ? p.lessorId : undefined,
-          page: 1,
-        })),
-    },
-    {
-      kind: 'select',
-      key: 'vehicleTypeId',
-      label: 'Тип ТС',
-      value: params.vehicleTypeId as string | undefined,
-      options: typeOptions,
-      placeholder: 'Все типы',
-      onChange: (v) => setParams((p) => ({ ...p, vehicleTypeId: v, page: 1 })),
-    },
-    ...(ownershipFilter === 'rental'
-      ? [
-          {
-            kind: 'select' as const,
-            key: 'lessorId',
-            label: 'Арендодатель',
-            value: params.lessorId,
-            options: lessorOptions,
-            placeholder: 'Все арендодатели',
-            loading: lessorsLoading,
-            onChange: (v: string | undefined) => setParams((p) => ({ ...p, lessorId: v, page: 1 })),
-          },
-        ]
-      : []),
-    {
-      kind: 'select',
-      key: 'status',
-      label: 'Статус',
-      value: params.status,
-      options: ownershipFilter === 'rental' ? rentalStatusOptions : statusOptions,
-      placeholder: 'Все статусы',
-      onChange: (v) =>
-        setParams((p) => ({ ...p, status: v as VehicleStatus | undefined, page: 1 })),
-    },
-    {
-      kind: 'toggle',
-      key: 'includeDeleted',
-      label: 'Показывать архив',
-      value: params.includeDeleted === 'true',
-      onChange: (checked) =>
-        setParams((p) => ({ ...p, includeDeleted: checked ? 'true' : undefined, page: 1 })),
-    },
-  ];
+  const { filters, mobileFilters } = useVehicleFilters({
+    params,
+    setParams,
+    typeOptions,
+    lessorOptions,
+    lessorsLoading,
+    statusOptions,
+    rentalStatusOptions,
+  });
 
   /**
    * Карточка единицы техники на телефоне (ADR 0042). Заголовок — то, чем машину зовут: у своей
@@ -836,6 +721,11 @@ export function VehiclesTab() {
               <Form.Item name="passportNumber" label="ПТС / ПСМ">
                 <Input maxLength={100} />
               </Form.Item>
+              {/* Закреплённые прицепы — показом (план §7, шаг 4). Место выбрано ручкой: она
+                  отбирает по одной машине (`hitchedVehicleId`), поэтому колонка в списке стоила бы
+                  запроса на строку, а карточка обходится одним на открытие. Кому блок положен,
+                  решает он сам — это правило §4.2.3, и живёт оно в слайсе прицепа. */}
+              <VehicleTrailersField vehicle={record} />
             </>
           )}
 

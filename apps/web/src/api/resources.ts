@@ -12,6 +12,7 @@ import type {
   RoutePointBody,
   SplitPointBody,
   VehicleRouteDto,
+  VehicleRouteSuggestDto,
   WaybillDto,
   WaybillFormCode,
   DriverLicenseBody,
@@ -40,6 +41,7 @@ import type {
   CreateVehicleRequestInput,
   CreateVehicleSpecInput,
   CreateVehicleTypeInput,
+  DeleteVehicleResult,
   DirectoryImportBody,
   DirectoryImportReportDto,
   DirectoryInfoDto,
@@ -59,8 +61,10 @@ import type {
   UpdateVehicleCategoryInput,
   UpdateVehicleInput,
   UpdateVehicleRequestInput,
+  UpdateVehicleResult,
   UpdateVehicleSpecInput,
   UpdateVehicleTypeInput,
+  UpdateVehicleTypeResult,
   UpdateVehicleTypeSpecInput,
   UploadSessionDto,
   VehicleCategoryDto,
@@ -246,15 +250,14 @@ export const vehicleRoutesApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleRouteDto>>('/vehicle-routes', { query: q }),
   get: (id: string) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}`),
   /**
-   * Что у этой машины на этот день: её рейсы и графы шапки от прошлого рейса. Форма перевода в
-   * работу наследует ими реквизиты выезда — прицеп, гаражный номер, вид сообщения и перевозки:
-   * они описывают машину в рейсе и правятся раз в сезон, а не в каждый рейс.
+   * Что портал знает об этой машине на этот день: её рейсы, графы шапки прошлого рейса (ими окна
+   * наследуют реквизиты выезда — их правят раз в сезон) и закреплённые за ней прицепы, которые
+   * приходят отдельным полем и читаются своим правилом (`docs/vehicle-trailers-plan.md`, §4.2.2).
+   *
+   * Тип ответа — из контрактов, а не инлайном: повтор знал два поля из трёх, третьего не заметив.
    */
   suggest: (q: { vehicleId: string; date: string }) =>
-    apiFetch<{ routes: VehicleRouteDto[]; trip: RouteTripFields | null }>(
-      '/vehicle-routes/suggest',
-      { query: q },
-    ),
+    apiFetch<VehicleRouteSuggestDto>('/vehicle-routes/suggest', { query: q }),
   create: (body: {
     vehicleId: string;
     routeDate: string;
@@ -486,8 +489,10 @@ export const vehicleTypesApi = {
   // Только описательные поля (типа) + isActive (подтипа). Структурные поля неизменяемы.
   // Признака линейности здесь нет: у переключения свой протокол (см. ниже), а этой ручке сервер
   // отвечает на него 422 — иначе подтверждение обходилось бы вкладкой, открытой со вчера.
+  // Ответ — обёртка `{ type, unhitchedTrailers, unhitchedVehicles }`, а не карточка: перевод типа
+  // на бланк «форма № 3» снимает привязки прицепов у всех машин типа разом (план §4.2.3).
   update: (id: string, body: UpdateVehicleTypeInput) =>
-    apiFetch<VehicleTypeDto>(`/vehicle-types/${id}`, { method: 'PATCH', body }),
+    apiFetch<UpdateVehicleTypeResult>(`/vehicle-types/${id}`, { method: 'PATCH', body }),
   /**
    * Что случится, если признак линейности переключить: сколько заявок останется на прежнем режиме,
    * какие именно и сколько из них лежит в архиве. Ничего не пишет — это чтение для диалога.
@@ -567,9 +572,14 @@ export const vehicleModelsApi = {
 export const vehiclesApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleDto>>('/vehicles', { query: q }),
   create: (body: CreateVehicleInput) => apiFetch<VehicleDto>('/vehicles', { method: 'POST', body }),
+  /**
+   * Ответы правки и архивации — обёртки с числом снятых привязок, а не карточка и не голое `{ ok }`:
+   * обе двери снимают привязки прицепов (списание машины, перевод её типа на «форму № 3», уход в
+   * архив), и о втором изменении в базе портал обязан сказать (`docs/vehicle-trailers-plan.md`, §4.2.3).
+   */
   update: (id: string, body: UpdateVehicleInput) =>
-    apiFetch<VehicleDto>(`/vehicles/${id}`, { method: 'PATCH', body }),
-  remove: (id: string) => apiFetch<{ ok: boolean }>(`/vehicles/${id}`, { method: 'DELETE' }),
+    apiFetch<UpdateVehicleResult>(`/vehicles/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) => apiFetch<DeleteVehicleResult>(`/vehicles/${id}`, { method: 'DELETE' }),
   restore: (id: string) => apiFetch<VehicleDto>(`/vehicles/${id}/restore`, { method: 'POST' }),
   /** Удаление насовсем — только из архива (ADR 0060). */
   purge: (id: string) => apiFetch<{ ok: boolean }>(`/vehicles/${id}/purge`, { method: 'DELETE' }),

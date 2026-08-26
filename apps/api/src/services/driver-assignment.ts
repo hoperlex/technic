@@ -9,6 +9,7 @@ import {
   isRelocationPurpose,
   pointContacts,
   type RoutePointAction,
+  trailerLabelOf,
   vehicleLabel,
   type VehicleOwnership,
   type VehicleRoutePointDto,
@@ -537,6 +538,11 @@ async function esm2Sources(
       withTrailer: waybills.withTrailer,
       trailer1Model: waybills.trailer1Model,
       trailer1RegNumber: waybills.trailer1RegNumber,
+      // Обе пары, хотя у ЭСМ-2 прицепов не бывает по устройству (`waybill-esm2.ts` пишет графы
+      // пустыми): подпись здесь считается той же функцией, что у рейса и журнала, и кормить её
+      // усечённой строкой значило бы завести четвёртый ответ на вопрос, у которого он один.
+      trailer2Model: waybills.trailer2Model,
+      trailer2RegNumber: waybills.trailer2RegNumber,
     })
     .from(waybills)
     .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
@@ -566,9 +572,7 @@ async function esm2Sources(
       purposeLabel: PURPOSE_SITE,
       vehicleLabel: labels.get(row.vehicleId) ?? '',
       garageNumber: row.garageNumber,
-      trailerLabel: row.withTrailer
-        ? [row.trailer1Model, row.trailer1RegNumber].filter(Boolean).join(' ')
-        : '',
+      trailerLabel: row.withTrailer ? trailerLabelOf(row) : '',
       itemId: null,
       shiftOrder: null,
       // Порядка объезда у листа не бывает: неделю работы задаёт заявка-основание, точек ей не

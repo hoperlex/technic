@@ -17,9 +17,15 @@ import {
   vehicleLabel,
 } from '@technic/contracts';
 import { driversApi, vehicleRequestsApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
+import {
+  emptyTrailerGraphs,
+  inheritedTrailerGraphs,
+  vehicleRouteKeys,
+} from '@entities/vehicle-route';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from './shared';
+import { TrailerFields, trailerTripBody } from './TrailerFields';
 import { BackdateReasonField } from './VehicleBackdateFields';
 
 /**
@@ -44,24 +50,13 @@ const NEW_ROUTE = 'new';
 /** Собственный действующий парк — тот же список, из которого выписывают ЭСМ-2 по требованию. */
 const FLEET_KEY = ['vehicles', 'linear-day'];
 
-/**
- * Рейсы машины на день и графы шапки её прошлого рейса. Ключ той же формы, что в форме перевода в
- * работу: подсказка одна и та же, и второй раз тянуть её с сервера незачем.
- */
-const suggestKey = (vehicleId: string | undefined, date: string) => [
-  'vehicle-routes',
-  'suggest',
-  vehicleId,
-  date,
-];
-
 /** Кто может сесть за эту машину в этот день — тем же ключом, что и при переводе в работу. */
-const driversKey = (vehicleId: string | undefined, date: string) => [
+const driversKey = (vehicleId: string | undefined, date: string, withTrailer: boolean) => [
   'drivers',
   'available',
   vehicleId,
   date,
-  false,
+  withTrailer,
 ];
 
 interface Props {
@@ -85,6 +80,15 @@ interface FormValues {
   /** Идентификатор готового рейса либо `NEW_ROUTE`. */
   routeId?: string;
   driverPersonId?: string;
+  /**
+   * Графы прицепа нового рейса: до Э4 окно их не спрашивало и пересылало вслепую — рейс уезжал с
+   * прицепом, которого человек не видел (план `docs/vehicle-trailers-plan.md`, §4.2.2).
+   */
+  withTrailer?: boolean;
+  trailer1Model?: string;
+  trailer1RegNumber?: string;
+  trailer2Model?: string;
+  trailer2RegNumber?: string;
   /** Причина заднего числа — спрашивается только у прошедшего дня (ADR 0101 п. 4). */
   reason?: string;
 }
@@ -98,6 +102,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
 
   const vehicleId = Form.useWatch('vehicleId', form);
   const routeId = Form.useWatch('routeId', form);
+  const withTrailer = Form.useWatch('withTrailer', form) ?? false;
 
   /**
    * Рейс выбран руками — подстановка его больше не трогает. Признак взводится первым же изменением
@@ -119,6 +124,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
       vehicleId: target.request.assignment?.vehicleId,
       routeId: NEW_ROUTE,
       driverPersonId: undefined,
+      ...emptyTrailerGraphs(),
       reason: undefined,
     });
   }, [target?.request.id, target?.date]);
@@ -171,12 +177,21 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
     return options;
   }, [fleet, request?.assignment]);
 
-  /** Рейсы этой машины на этот день плюс графы шапки её прошлого рейса. */
+  /** Рейсы этой машины на этот день, графы шапки её прошлого рейса и закреплённые за ней прицепы. */
   const { data: suggestion } = useQuery({
-    queryKey: suggestKey(vehicleId, date),
+    queryKey: vehicleRouteKeys.suggest(vehicleId, date),
     queryFn: () => vehicleRoutesApi.suggest({ vehicleId: vehicleId!, date }),
     enabled: !!target && !!vehicleId,
   });
+
+  /**
+   * Графы прицепа наследуются от прошлого рейса — как наследовались и до Э4, только теперь видны и
+   * правятся. Закрепление их вытесняет и подписывает себя само (`TrailerFields`).
+   */
+  useEffect(() => {
+    const graphs = inheritedTrailerGraphs(suggestion?.trip, suggestion?.hitched);
+    if (graphs) form.setFieldsValue(graphs);
+  }, [suggestion?.trip, suggestion?.hitched, form]);
 
   /**
    * Куда день можно положить: рейс со свободной строкой задания, не замороженный выписанным листом
@@ -202,14 +217,17 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
   /** Выбран готовый рейс: водитель и реквизиты выезда в нём уже свои, спрашивать их незачем. */
   const joined = routeOptions.find((r) => r.id === routeId) ?? null;
 
+  /** Выбранная единица: её бланк решает, спрашивать ли прицеп, а тип — встанет ли галочка сама. */
+  const selectedVehicle = (fleet?.items ?? []).find((v) => v.id === vehicleId) ?? null;
+
   /**
    * Водители на этот день — тем же отбором, что и при переводе в работу (ADR 0064): день линейной
    * машины печатается обычным 4-П, а в нём графы удостоверения и СНИЛСа. Никого из списка отбор не
    * убирает: пробелы документов помечают строку и объясняются подписью под полем.
    */
   const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: driversKey(vehicleId, date),
-    queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: date }),
+    queryKey: driversKey(vehicleId, date, withTrailer),
+    queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: date, withTrailer }),
     enabled: !!target && !!vehicleId && !joined,
   });
   const driverOptions = (selection?.drivers ?? []).map((d) => ({
@@ -240,7 +258,15 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
                 // Графы шапки наследуются от прошлого рейса машины — гаражный номер, вид сообщения
                 // и перевозки описывают саму машину и правятся раз в сезон, а не в каждый рейс.
                 // Спрашивать их у дня значило бы задавать один и тот же вопрос по разу в сутки.
-                ...(suggestion?.trip ? { trip: suggestion.trip } : {}),
+                // Прицеп из правила выведен: его окно теперь показывает и спрашивает, и уезжает
+                // он из формы, а не из подсказки.
+                trip: {
+                  garageNumber: '',
+                  communicationKind: '',
+                  transportationKind: '',
+                  ...suggestion?.trip,
+                  ...trailerTripBody(v),
+                },
               },
               ...backdate,
             };
@@ -372,6 +398,23 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
               </Form.Item>
             )}
           </FormGrid.Full>
+
+          {/* Прицеп нового рейса: у готового реквизиты выезда свои, а у формы № 3 граф прицепа нет
+            вовсе (ADR 0071). Галочка поднимает требование до CE и пересобирает список выше. */}
+          {!joined && selectedVehicle?.waybillFormCode !== 'leg3' && (
+            <TrailerFields
+              key={`${request?.id}:${date}`}
+              withTrailer={withTrailer}
+              checkboxLabel="Рейс с прицепом"
+              checkboxFullWidth
+              modelPlaceholder="СЗАП-8551"
+              regNumberPlaceholder="АВ1234 77"
+              secondPlaceholder="Если прицепов два"
+              hitched={suggestion?.hitched}
+              vehicleId={vehicleId}
+              vehicleTypeId={selectedVehicle?.vehicleTypeId}
+            />
+          )}
 
           {/* Прошедший день — под правом и с причиной (ADR 0101 п. 4). Строки в журнале коррекций
             постановка дня не заводит: номер строгой отчётности она не расходует, и объяснение

@@ -10,6 +10,7 @@ import { WasteTariffsTab } from './directories/WasteTariffsTab';
 import { VehicleTypesTab } from './directories/VehicleTypesTab';
 import { VehicleSpecsTab } from './directories/VehicleSpecsTab';
 import { VehiclesTab } from './directories/VehiclesTab';
+import { TrailersTab } from './directories/TrailersTab';
 import { OfficeEquipmentTab } from './directories/OfficeEquipmentTab';
 import { DriversTab } from './directories/DriversTab';
 import { useAuth } from '../auth/AuthContext';
@@ -85,6 +86,9 @@ export function DirectoriesPage() {
           { key: 'vehicle-types', label: 'Типы ТС', children: <VehicleTypesTab /> },
           { key: 'vehicle-specs', label: 'ТТХ', children: <VehicleSpecsTab /> },
           { key: 'vehicles', label: 'Техника', children: <VehiclesTab /> },
+          // Прицепы — сразу за техникой: их читают с ней рядом, а живут они своей таблицей,
+          // потому что прицеп не единица техники (план `docs/vehicle-trailers-plan.md`, Р7).
+          { key: 'vehicle-trailers', label: 'Прицепы', children: <TrailersTab /> },
         ]
       : []),
     // Оргтехника (ADR 0085) — сразу за техникой: два парка рядом, и ведут их одни и те же люди.

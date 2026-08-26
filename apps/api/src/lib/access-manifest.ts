@@ -448,6 +448,31 @@ export const ACCESS_MANIFEST = {
   'DELETE /api/v1/vehicles/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
   'POST /api/v1/vehicles/:id/restore': { kind: 'permissions', allOf: ['archive.restore'] },
 
+  // ── Реестр прицепов (план `docs/vehicle-trailers-plan.md`) ──
+  // Права те же, что у техники, и это не копипаста: прицеп — такая же строка справочника, которую
+  // ведёт тот же человек, а отдельная пара прав означала бы, что закрепление полуприцепа за
+  // тягачом кому-то доступно без права на саму машину.
+  'GET /api/v1/vehicle-trailers': { kind: 'permissions', allOf: ['directories.read'] },
+  'POST /api/v1/vehicle-trailers': { kind: 'permissions', allOf: ['directories.write'] },
+  'GET /api/v1/vehicle-trailers/:id': { kind: 'permissions', allOf: ['directories.read'] },
+  'PATCH /api/v1/vehicle-trailers/:id': { kind: 'permissions', allOf: ['directories.write'] },
+  'DELETE /api/v1/vehicle-trailers/:id': { kind: 'permissions', allOf: ['directories.write'] },
+  'POST /api/v1/vehicle-trailers/:id/restore': {
+    kind: 'permissions',
+    allOf: ['archive.restore'],
+  },
+  'DELETE /api/v1/vehicle-trailers/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
+  // Привязка — команда, а не поле карточки (план §4.2.1), но право у неё то же самое: это правка
+  // того же справочника, только с единым порядком блокировок.
+  'POST /api/v1/vehicle-trailers/:id/hitch': {
+    kind: 'permissions',
+    allOf: ['directories.write'],
+  },
+  'POST /api/v1/vehicle-trailers/:id/unhitch': {
+    kind: 'permissions',
+    allOf: ['directories.write'],
+  },
+
   // ── Справочник водителей ──
   // Своя пара прав, а не `directories.*`: в карточке ФИО и СНИЛС. Удаление документа — тоже
   // `records.purge`: аннулирование его не заменяет (см. комментарий у маршрута в `drivers.ts`).
@@ -852,6 +877,64 @@ export const ACCESS_MANIFEST = {
   'GET /api/v1/waste-requests/ticket-recognition/health': {
     kind: 'permissions',
     allOf: ['wasteRequests.ticketReview'],
+  },
+
+  // ── Аудит распознавания талонов (ADR 0137, план аудита §4.1, §6) ──
+  // Соседняя строка выше закрыта разбором, эта — своим правом, и разводит их не предмет, а
+  // область: разбор вложен в заявку и проходит область объекта с оператором, а сводка считается
+  // по всем площадкам сразу. Дай её `ticketReview` — и сквозная картина досталась бы всей
+  // диспетчерской разом, мимо поимённой выдачи набора `waste_ticket_audit`.
+  //
+  // Чего манифест не показывает: область здесь не применяется вовсе — намеренно, а не по
+  // недосмотру. Причина записана у самого маршрута (`routes/ticket-audit.ts`), и проверена она
+  // запросом: `test/ticket-audit-route.db.test.ts`.
+  'GET /api/v1/waste-requests/ticket-audit/summary': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketAudit'],
+  },
+  // Когорты (§5.2) закрыты тем же правом, что и сводка, и это не копия строки по инерции: экраны
+  // читают одни и те же наблюдения, и разведи их права — держатель одного собрал бы картину
+  // второго по разнице чисел, а запрет читался бы как соблюдённый.
+  'GET /api/v1/waste-requests/ticket-audit/cohorts': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketAudit'],
+  },
+  // Лента (§5.3) и её выгрузка (§4.3) — тем же правом. У выгрузки соблазн развести права сильнее
+  // всего: файл уносит из портала адреса площадок и фамилии правивших, и «пусть смотрят все, а
+  // выгружает избранный» звучит осторожнее. Это было бы самообманом — лента отдаёт те же строки,
+  // только страницами, и второе право отделяло бы кнопку от способа сделать то же руками. Учётным
+  // событием выгрузка при этом остаётся: её пишет `audit_log` действием
+  // `waste_request.ticket_audit_export`, и это единственная ручка раздела, которая вообще пишет.
+  'GET /api/v1/waste-requests/ticket-audit/events': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketAudit'],
+  },
+  'GET /api/v1/waste-requests/ticket-audit/events.csv': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketAudit'],
+  },
+  // Точность среди неисправленных подтверждённых талонов (§5.5) — тем же правом. Соблазн отдать
+  // её разбору силён: числа считаются по слепой перепроверке, а перепроверку делает как раз
+  // держатель `ticketReview`. Но делает он одну бумагу, а экран показывает долю по всем сразу —
+  // ту же сквозную картину, что и сводка, только с другой стороны. Разведи права — и держатель
+  // разбора собрал бы недостающее из процента и знаменателя.
+  'GET /api/v1/waste-requests/ticket-audit/blind': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketAudit'],
+  },
+  // Состояние подсистемы (§5.4) — правом АУДИТА, хотя строкой выше состоянием же закрыт разбор
+  // (`ticket-recognition/health`). Двух строк здесь не по недосмотру: у ручек разный предмет.
+  // Health отвечает разбирающему «работает ли прямо сейчас» и живёт в окне часа; эта отдаёт цену
+  // работы по всему порталу — токены, очередь, отказы по кодам и размер журнала. Отдай её
+  // `ticketReview` — расход на модель и глубина очереди достались бы всей диспетчерской разом,
+  // мимо поимённой выдачи набора `waste_ticket_audit`.
+  //
+  // Периода ручка не принимает, и строгая схема отвергает его раньше стража: манифест этого не
+  // показывает, потому что предмет манифеста — право, а не форма запроса. Проверено запросом:
+  // `test/ticket-audit-route.db.test.ts`.
+  'GET /api/v1/waste-requests/ticket-audit/operations': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketAudit'],
   },
 
   // ── Недельная заявка на технику ──

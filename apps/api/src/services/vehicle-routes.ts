@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import {
   type DriverDocumentGap,
+  type HitchedTrailerDto,
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
   moscowDateKeyOf,
@@ -10,6 +11,7 @@ import {
   type RoutePurpose,
   type RouteTripFields,
   routeCargoLabel,
+  trailerLabelOf,
   routeWaybillForm,
   type VehicleRouteDto,
   type VehicleRouteRequestDto,
@@ -35,6 +37,7 @@ import {
   vehicleRouteRequests,
   vehicleRoutes,
   vehicles,
+  vehicleTrailers,
   vehicleTypes,
   waybillRequests,
   waybills,
@@ -1171,6 +1174,60 @@ export async function lastTripFields(vehicleId: string): Promise<RouteTripFields
   return row ?? null;
 }
 
+/**
+ * Прицепы, закреплённые за этой машиной, — по слотам бланка (план `docs/vehicle-trailers-plan.md`,
+ * §4.2.2, §4.2.3). Их отдаёт `GET /vehicle-routes/suggest` **отдельным полем** `hitched`, рядом с
+ * `trip`, а не внутри него.
+ *
+ * ПОЧЕМУ РЯДОМ, А НЕ ВНУТРИ `trip`. `lastTripFields` выше отвечает на другой вопрос — «чем были
+ * заполнены графы в прошлый раз», то есть историей машины. Подмешай закрепление туда — и обратно
+ * потекла бы история: `trip` читают два окна заведения рейса из шести, а поле, в котором графы
+ * прицепа появились «сами», прочитали бы все шесть, включая «Новый маршрут», который сегодня не
+ * подставляет ничего. Портал начал бы решать за человека там, где вчера молчал, — ровно то, что
+ * запретил ADR 0083 решением 2 («ни вчерашним на этой машине»). Закрепление же — не догадка по
+ * истории, а решение, принятое человеком в карточке прицепа, и повторить его законно (§4.3).
+ * Поэтому `lastTripFields` не тронута ни поведением, ни именем, а новое знание приезжает своим
+ * полем со своим источником.
+ *
+ * Одним запросом, а не по запросу на слот: слотов два, но «два коротких запроса вместо одного» —
+ * это два круга до базы на каждое открытие окна заведения рейса, и порядок между ними всё равно
+ * пришлось бы наводить руками. Порядок задаёт `ORDER BY hitch_position`: окно раскладывает ответ
+ * по парам граф бланка сверху вниз и не обязано сортировать за сервером.
+ *
+ * Живые (`deleted_at IS NULL`) — потому что удалённый прицеп в шапку листа не печатают. Строка
+ * такая, вообще говоря, невозможна: мягкое удаление снимает привязку той же транзакцией (§4.2.3),
+ * а CHECK `vehicle_trailers_hitch_alive_check` не даёт удалённой строке иметь тягача. Условие
+ * стоит как страховка на наследство — строки, легшие в базу до правила или мимо портала (миграции,
+ * правки руками): подставленный в рейс архивный прицеп заметили бы уже у принтера.
+ *
+ * Статус не фильтруется намеренно: закрепление прицепа в ремонте законно (§4.2.3), и решает, как о
+ * нём сказать, показ — подписью под графами. Скрой такой прицеп здесь — и машина с единственным
+ * закреплённым полуприцепом выглядела бы незакреплённой, то есть портал молча вернулся бы к
+ * прежнему поведению вместо предупреждения. Списанного (`retired`) прицепа тут не бывает по той же
+ * причине, что и удалённого: списание снимает привязку.
+ */
+export async function hitchedTrailersOf(vehicleId: string): Promise<HitchedTrailerDto[]> {
+  const rows = await db
+    .select({
+      id: vehicleTrailers.id,
+      position: vehicleTrailers.hitchPosition,
+      model: vehicleTrailers.model,
+      registrationNumber: vehicleTrailers.registrationNumber,
+      status: vehicleTrailers.status,
+    })
+    .from(vehicleTrailers)
+    .where(and(eq(vehicleTrailers.hitchedVehicleId, vehicleId), isNull(vehicleTrailers.deletedAt)))
+    .orderBy(asc(vehicleTrailers.hitchPosition));
+  return rows.map((row) => ({
+    ...row,
+    // Слот у прицепа с тягачом заполнен всегда: пара «машина + слот» заведена и пуста только
+    // целиком (CHECK `vehicle_trailers_hitch_pair`). Утверждение здесь — не догадка о данных, а
+    // перевод этого ограничения на язык типов: колонка объявлена допускающей NULL, потому что у
+    // отцепленного прицепа она пуста, а отцепленных этот запрос не выбирает.
+    position: row.position!,
+  }));
+}
+
 // ── DTO ──
 
 type ListRow = Awaited<ReturnType<typeof selectRoutes>>[number];
@@ -1250,7 +1307,7 @@ export function toRouteDto(
     driverGaps,
     points,
     withTrailer: row.withTrailer,
-    trailerLabel: [row.trailer1Model, row.trailer1RegNumber].filter(Boolean).join(' '),
+    trailerLabel: trailerLabelOf(row),
     trailer1Model: row.trailer1Model,
     trailer1RegNumber: row.trailer1RegNumber,
     trailer2Model: row.trailer2Model,

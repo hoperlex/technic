@@ -21,6 +21,7 @@ import {
   waybillStatusLabels,
 } from '@technic/contracts';
 import { driversApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
+import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { EntityLink } from '@shared/ui';
@@ -37,6 +38,7 @@ import { vehicleRequestViewLink, waybillLink } from '../../utils/links';
 import { useAuth } from '../../auth/AuthContext';
 import { useRouteModal } from './routeModal';
 import { formatDateOnly, useDriverOptions, useOwnVehicleOptions } from './shared';
+import { TrailerFields, trailerTripBody } from './TrailerFields';
 
 /**
  * Список рейсов — окном поверх той страницы, где о рейсах спросили
@@ -73,6 +75,15 @@ interface CreateValues {
   vehicleId?: string;
   routeDate?: dayjs.Dayjs;
   driverPersonId?: string;
+  /**
+   * Графы прицепа: до Э4 окно про прицеп не спрашивало вовсе и заводило рейс без него молча
+   * (план `docs/vehicle-trailers-plan.md`, §4.2.2) — дописывали его потом, в карточке рейса.
+   */
+  withTrailer?: boolean;
+  trailer1Model?: string;
+  trailer1RegNumber?: string;
+  trailer2Model?: string;
+  trailer2RegNumber?: string;
   /** Причина заведения задним числом (ADR 0101, дыра 1): спрашивается только на прошедшем дне. */
   reason?: string;
 }
@@ -540,9 +551,15 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
 }
 
 /**
- * Новый рейс: машина, дата и — если уже известно — водитель. Реквизиты выезда сюда не вынесены:
- * их наследует сам сервер от прошлого рейса этой машины, а правят их в карточке.
+ * Новый рейс: машина, дата, прицеп и — если уже известно — водитель. Прочие реквизиты выезда сюда
+ * не вынесены: их правят в карточке рейса.
  *
+ * Прицеп спрашивается с Э4 (`docs/vehicle-trailers-plan.md`, §4.2.2). До того окно не спрашивало
+ * его вовсе, а водителей просило с зашитым `withTrailer: false` — то есть меряло их категорию
+ * рейсом без прицепа, каким бы рейс ни оказался. У машины с закреплённым полуприцепом графы и
+ * галочка встают сами и подписаны источником; у машины без закрепления графы пусты, и портал
+ * молчит ровно столько же, сколько молчал: истории прицепа здесь нет и не будет (ADR 0083).
+
  * Прошедший день (ADR 0101 п. 4, дыра 1 плана) до сих пор заводился здесь молча — ни права, ни
  * причины, ни следа. Теперь календарь заперт тем же правилом, что и у форм заявок, — три режима
  * (`minRequestDateKey`, Р37): без права коррекции прошлого нет вовсе, с `waybills.correct` открыты
@@ -565,6 +582,8 @@ function CreateRouteModal({
   const [form] = Form.useForm<CreateValues>();
   const vehicleId = Form.useWatch('vehicleId', form);
   const routeDate = Form.useWatch('routeDate', form);
+  const withTrailer = Form.useWatch('withTrailer', form) ?? false;
+  const on = routeDate?.format(DATE);
 
   const today = moscowDateKeyOf(new Date());
   /** Нижняя граница календаря; `null` — границы нет вовсе (`waybills.correctBeyondLimit`). */
@@ -582,17 +601,30 @@ function CreateRouteModal({
     enabled: open,
   });
 
+  /** Выбранная единица: её бланк решает, спрашивать ли прицеп, а тип — встанет ли галочка сама. */
+  const selectedVehicle = (vehicles?.items ?? []).find((v) => v.id === vehicleId) ?? null;
+
+  /**
+   * Закреплённые за машиной прицепы. Из ответа окну нужно только это поле: рейсы оно не предлагает
+   * (заводят новый), а графы шапки прошлого рейса не наследует и наследовать не начинает — новая
+   * подстановка бывает только у машины с закреплением (§4.2.2, пункт 2). Дата в запросе — просьба
+   * самой ручки: закрепление от дня не зависит, но ключ у подсказки один на портал.
+   */
+  const { data: suggestion } = useQuery({
+    queryKey: vehicleRouteKeys.suggest(vehicleId, on),
+    queryFn: () => vehicleRoutesApi.suggest({ vehicleId: vehicleId!, date: on! }),
+    enabled: open && !!vehicleId && !!on,
+  });
+
   // Водитель — весь справочник (ADR 0064): категория и полнота документов никого не убирают, они
   // помечают строку. Чем это грозит бланку, скажет карточка рейса — там, где лист выписывают.
+  //
+  // Прицеп в запросе — не «false на всякий случай», как было до Э4: с ним требование машины растёт
+  // с C до CE, и зашитая ложь показывала бы годным того, кому сцепку не доверят (ADR 0055, 0064).
   const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: ['drivers', 'available', vehicleId, routeDate?.format(DATE)],
-    queryFn: () =>
-      driversApi.available({
-        vehicleId: vehicleId!,
-        on: routeDate!.format(DATE),
-        withTrailer: false,
-      }),
-    enabled: open && !!vehicleId && !!routeDate,
+    queryKey: ['drivers', 'available', vehicleId, on, withTrailer],
+    queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: on!, withTrailer }),
+    enabled: open && !!vehicleId && !!on,
   });
 
   const create = useMutation({
@@ -601,6 +633,13 @@ function CreateRouteModal({
         vehicleId: v.vehicleId!,
         routeDate: v.routeDate!.format(DATE),
         driverPersonId: v.driverPersonId ?? null,
+        // Прочие графы шапки уходят пустыми — как уходили и без тела `trip`: их правят в карточке.
+        trip: {
+          ...trailerTripBody(v),
+          garageNumber: '',
+          communicationKind: '',
+          transportationKind: '',
+        },
         // Причина уходит только с прошедшим днём: на сегодняшнем рейсе сервер её не спрашивает, и
         // отправленная «на всякий случай» она означала бы коррекцию там, где её нет.
         ...(v.routeDate!.format(DATE) < today ? { reason: v.reason } : {}),
@@ -680,6 +719,22 @@ function CreateRouteModal({
               </Form.Item>
             </FormGrid.Full>
           )}
+          {/* У формы № 3 граф прицепа нет вовсе (ADR 0071). Блок стоит перед водителем намеренно:
+            галочка меняет требуемую категорию, и список под ней пересобирается. */}
+          {selectedVehicle?.waybillFormCode !== 'leg3' && (
+            <TrailerFields
+              withTrailer={withTrailer}
+              checkboxLabel="Рейс с прицепом"
+              checkboxFullWidth
+              modelPlaceholder="СЗАП-8551"
+              regNumberPlaceholder="АВ1234 77"
+              secondPlaceholder="Если прицепов два"
+              hitched={suggestion?.hitched}
+              vehicleId={vehicleId}
+              vehicleTypeId={selectedVehicle?.vehicleTypeId}
+            />
+          )}
+
           <FormGrid.Full>
             <Form.Item
               name="driverPersonId"

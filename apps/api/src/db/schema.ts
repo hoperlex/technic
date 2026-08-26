@@ -23,6 +23,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type {
   AddressMeta,
   AssignmentChangeOrigin,
@@ -34,6 +35,7 @@ import type {
   ModuleMailEvent,
   ReplyToMode,
   WaybillCorrectionAuthorizationScope,
+  WasteTicketBlindCheckField,
   WasteTicketField,
 } from '@technic/contracts';
 
@@ -823,6 +825,117 @@ export const vehicles = pgTable(
     inventoryNumberIdx: index('vehicles_inventory_number_idx').on(t.inventoryNumber),
     serialNumberIdx: index('vehicles_serial_number_idx').on(t.serialNumber),
     deletedAtIdx: index('vehicles_deleted_at_idx').on(t.deletedAt),
+  }),
+);
+
+// ── Прицепы и полуприцепы (план `docs/vehicle-trailers-plan.md`, миграция 0208) ──
+// Прицеп НЕ единица техники и в `vehicles` не лежит (§4.1). Причина не в чистоте модели: `vehicles`
+// читают 74 запроса в 37 файлах, и прицепная строка означала бы прицеп в списке заказываемой
+// техники — его предложат назначить на заявку и спросят одометр. Довод предъявлен боевой базой:
+// на проде уже есть заведённый руками тип «полуприцеп низкорамный», и в нём лежит настоящий тягач,
+// потерявший при переносе марку (`vehicles_model_type_fk` снял модель вместе со сменой типа).
+//
+// Марка — текстовая колонка, а не ссылка на `vehicle_models`: та принадлежит `vehicle_type_id`, и
+// ссылка вернула бы прицепные типы в классификатор техники. Состояние — существующий
+// `vehicle_status`, своего enum у прицепа нет.
+//
+// Привязка к тягачу живёт здесь, а не на машине (§4.2): инвариант «полуприцеп стоит за одним
+// тягачом» получается физическим — одна строка, одно значение, записать второго тягача некуда.
+// Обратная раскладка (`vehicles.default_trailer_id`) допускала бы один прицеп за двумя машинами.
+export const vehicleTrailers = pgTable(
+  'vehicle_trailers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Графа «Тип ТС» из СТС. Тип объявлен здесь литералами, а не импортом `TrailerKind`: схема БД
+    // не должна зависеть от контрактов, значения держит CHECK ниже.
+    kind: text('kind').$type<'trailer' | 'semi_trailer'>().notNull().default('semi_trailer'),
+    /** «ШМИТЦ SPR-24» — печатается в графе «(марка)» бланка целиком, строкой. */
+    model: text('model').notNull(),
+    registrationNumber: text('registration_number').notNull(),
+    // Той же функцией, что у техники: правило написания госномера в портале одно, иначе номер из
+    // реестра и номер из бланка перестанут быть одним номером.
+    registrationNumberNormalized: text('registration_number_normalized').generatedAlwaysAs(
+      sql`vehicle_reg_normalize(registration_number)`,
+    ),
+    vin: text('vin').notNull().default(''),
+    passportNumber: text('passport_number').notNull().default(''),
+    manufacturedYear: smallint('manufactured_year'),
+    color: text('color').notNull().default(''),
+    // Массы переносятся со СТС, хотя сегодня ни на что не влияют: ими когда-нибудь заменится
+    // галочка прицепа проверкой «свыше 750 кг нужна E-категория» (ADR 0037 п. 8).
+    maxMassKg: integer('max_mass_kg'),
+    curbMassKg: integer('curb_mass_kg'),
+    // Юрлицо, за которым числится прицеп. NULL — за основной организацией портала, как у техники.
+    ownerOrganizationId: uuid('owner_organization_id').references(() => organizations.id, {
+      onDelete: 'restrict',
+    }),
+    status: vehicleStatusEnum('status').notNull().default('active'),
+    note: text('note').notNull().default(''),
+    sourceName: text('source_name').notNull().default(''),
+    hitchedVehicleId: uuid('hitched_vehicle_id').references(() => vehicles.id, {
+      onDelete: 'restrict',
+    }),
+    /** 1|2 — слот бланка 4-П: тот же порядок, в каком графы печатаются. */
+    hitchPosition: smallint('hitch_position').$type<1 | 2>(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (t) => ({
+    kindCheck: check('vehicle_trailers_kind_check', sql`${t.kind} IN ('trailer', 'semi_trailer')`),
+    // Марка и госномер печатаются в бланке: пустые дали бы графу, по которой прицеп не опознать.
+    modelNotBlank: check('vehicle_trailers_model_not_blank', sql`btrim(${t.model}) <> ''`),
+    regNotBlank: check('vehicle_trailers_reg_not_blank', sql`btrim(${t.registrationNumber}) <> ''`),
+    yearRange: check(
+      'vehicle_trailers_year_range',
+      sql`${t.manufacturedYear} IS NULL OR ${t.manufacturedYear} BETWEEN 1900 AND 2100`,
+    ),
+    massPositive: check(
+      'vehicle_trailers_mass_positive',
+      sql`(${t.maxMassKg} IS NULL OR ${t.maxMassKg} > 0)
+        AND (${t.curbMassKg} IS NULL OR ${t.curbMassKg} > 0)`,
+    ),
+    massOrder: check(
+      'vehicle_trailers_mass_order',
+      sql`${t.maxMassKg} IS NULL OR ${t.curbMassKg} IS NULL OR ${t.curbMassKg} <= ${t.maxMassKg}`,
+    ),
+    // Половина привязки бессмысленна: машина без слота не скажет, какую графу заполнять, а слот
+    // без машины не скажет, чей он.
+    hitchPair: check(
+      'vehicle_trailers_hitch_pair',
+      sql`(${t.hitchedVehicleId} IS NULL) = (${t.hitchPosition} IS NULL)`,
+    ),
+    hitchPositionCheck: check(
+      'vehicle_trailers_hitch_position_check',
+      sql`${t.hitchPosition} IS NULL OR ${t.hitchPosition} IN (1, 2)`,
+    ),
+    // Списанный и удалённый за машиной не стоят. Снятие держит сервис (списание и мягкое удаление
+    // снимают привязку той же транзакцией), а это — физический запрет, чтобы забытая привязка не
+    // пережила списание и не подставилась в рейс из архива.
+    hitchStatusCheck: check(
+      'vehicle_trailers_hitch_status_check',
+      sql`${t.hitchedVehicleId} IS NULL OR ${t.status} <> 'retired'`,
+    ),
+    hitchAliveCheck: check(
+      'vehicle_trailers_hitch_alive_check',
+      sql`${t.hitchedVehicleId} IS NULL OR ${t.deletedAt} IS NULL`,
+    ),
+    // Удалённый освобождает номер — тот же приём, что у техники (`vehicles_registration_number_unique`).
+    regUnique: uniqueIndex('vehicle_trailers_reg_unique')
+      .on(t.registrationNumberNormalized)
+      .where(sql`${t.deletedAt} IS NULL`),
+    // «Слот занят один раз»: два прицепа не претендуют на графу «прицеп 1» одной машины. Обратное
+    // — «прицеп стоит за одним тягачом» — индекса не требует, оно следует из того, что строка одна.
+    hitchSlotUnique: uniqueIndex('vehicle_trailers_hitch_slot_unique')
+      .on(t.hitchedVehicleId, t.hitchPosition)
+      .where(sql`${t.hitchedVehicleId} IS NOT NULL`),
+    // «Что закреплено за этой машиной» спрашивают при каждой сборке рейса — ради подстановки граф.
+    hitchedVehicleIdx: index('vehicle_trailers_hitched_vehicle_idx')
+      .on(t.hitchedVehicleId)
+      .where(sql`${t.hitchedVehicleId} IS NOT NULL`),
+    statusIdx: index('vehicle_trailers_status_idx')
+      .on(t.status)
+      .where(sql`${t.deletedAt} IS NULL`),
   }),
 );
 
@@ -3870,7 +3983,15 @@ export const wasteTicketFieldEvents = pgTable(
     pageSha256: char('page_sha256', { length: 64 }).notNull().default(''),
     event: text('event')
       .notNull()
-      .$type<'recognized' | 'disputed' | 'edited' | 'proposal' | 'arbitrated' | 'dismissed'>(),
+      .$type<
+        | 'recognized'
+        | 'disputed'
+        | 'edited'
+        | 'proposal'
+        | 'proposal_dismissed'
+        | 'arbitrated'
+        | 'dismissed'
+      >(),
     field: text('field').notNull().$type<WasteTicketField>(),
     /** Значения текстом, как показаны человеку: «3» и «38» различимы, `null` и «» — тоже. */
     oldValue: text('old_value'),
@@ -3882,11 +4003,62 @@ export const wasteTicketFieldEvents = pgTable(
     /** Проходов каскада по странице: 1 — только дешёвая, 2 — с эскалацией (Р14). */
     passes: smallint('passes').notNull().default(0),
     escalated: boolean('escalated').notNull().default(false),
+    /**
+     * Наблюдение, к которому адресовано человеческое событие: одно машинное чтение одного поля.
+     * `RESTRICT` — удаление основания метрики отдельное решение, а не следствие чужой уборки.
+     */
+    observationId: uuid('observation_id').references((): AnyPgColumn => wasteTicketFieldEvents.id, {
+      onDelete: 'restrict',
+    }),
+    /** Прочитано, не прочитано или неприменимо — считается ПОСЛЕ слияния проходов. */
+    readState: text('read_state').$type<'read' | 'unreadable' | 'not_applicable'>(),
+    /** Откуда итоговое значение: `merged` — оба прохода сошлись, у спора ступени нет. */
+    sourceStage: text('source_stage').$type<'primary' | 'escalation' | 'merged'>(),
+    /*
+     * Три ссылки: у спора и слияния участвуют две попытки. Все `SET NULL` — попытки убираются по
+     * сроку, и `RESTRICT` сломал бы уборку; поэтому рядом снимки моделей, иначе когорта прошлого
+     * года осталась бы без имени модели.
+     */
+    primaryAttemptId: uuid('primary_attempt_id').references(
+      () => wasteTicketRecognitionAttempts.id,
+      { onDelete: 'set null' },
+    ),
+    escalationAttemptId: uuid('escalation_attempt_id').references(
+      () => wasteTicketRecognitionAttempts.id,
+      { onDelete: 'set null' },
+    ),
+    /** Попытка, давшая итог; пусто у `merged` и спора — там ступень не одна. */
+    selectedAttemptId: uuid('selected_attempt_id').references(
+      () => wasteTicketRecognitionAttempts.id,
+      { onDelete: 'set null' },
+    ),
+    primaryModelReported: text('primary_model_reported').notNull().default(''),
+    escalationModelReported: text('escalation_model_reported').notNull().default(''),
+    /** Оба кандидата: без них не сказать, какая ступень была права. */
+    primaryValue: text('primary_value'),
+    escalationValue: text('escalation_value'),
+    /** Куда смотреть человеку: ссылка переживает обнуление `ticketId`, разбор без скана бессмыслен. */
+    fileId: uuid('file_id').references(() => files.id, { onDelete: 'set null' }),
+    pageNo: smallint('page_no'),
+    /** Разбор как единица работы и признак, что вызова к прокси не было. */
+    recognitionRunId: uuid('recognition_run_id'),
+    cacheHit: boolean('cache_hit').notNull().default(false),
+    /** Отличалось ли поле предложения от талона В МОМЕНТ ЧТЕНИЯ (план, §1.2.2). */
+    proposalDiffers: boolean('proposal_differs'),
+    /** Версия сбора: собранное до словаря метрик остаётся единицей и в метрики не идёт. */
+    collectionVersion: smallint('collection_version').notNull().default(2),
     /** `null` у машинных событий: их совершила модель, а не человек. */
     actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
   (t) => ({
+    idFieldUnique: unique('waste_ticket_field_events_id_field_key').on(t.id, t.field),
+    observationIdx: index('waste_ticket_field_events_observation_idx')
+      .on(t.observationId)
+      .where(sql`${t.observationId} IS NOT NULL`),
+    editedIdx: index('waste_ticket_field_events_edited_idx')
+      .on(t.field, t.createdAt.desc())
+      .where(sql`${t.event} = 'edited'`),
     modelIdx: index('waste_ticket_field_events_model_idx').on(
       t.modelReported,
       t.field,
@@ -3898,15 +4070,49 @@ export const wasteTicketFieldEvents = pgTable(
     createdIdx: index('waste_ticket_field_events_created_idx').on(t.createdAt),
     eventCheck: check(
       'waste_ticket_field_events_event_check',
-      sql`${t.event} IN ('recognized', 'disputed', 'edited', 'proposal', 'arbitrated', 'dismissed')`,
+      sql`${t.event} IN ('recognized', 'disputed', 'edited', 'proposal', 'proposal_dismissed', 'arbitrated', 'dismissed')`,
+    ),
+    readStateCheck: check(
+      'waste_ticket_field_events_read_state_check',
+      sql`${t.readState} IS NULL OR ${t.readState} IN ('read', 'unreadable', 'not_applicable')`,
+    ),
+    sourceStageCheck: check(
+      'waste_ticket_field_events_source_stage_check',
+      sql`${t.sourceStage} IS NULL OR ${t.sourceStage} IN ('primary', 'escalation', 'merged')`,
+    ),
+    collectionVersionCheck: check(
+      'waste_ticket_field_events_collection_version_check',
+      sql`${t.collectionVersion} >= 1`,
+    ),
+    /*
+     * Инварианты второй версии. Условие по версии — не оговорка ради удобства: прежние события
+     * собраны другим кодом, и требуй мы от них признака прочтения, ограничение упало бы на
+     * собственной истории, а починить её задним числом нечем.
+     */
+    v2ReadStateCheck: check(
+      'waste_ticket_field_events_v2_read_state_check',
+      sql`${t.collectionVersion} < 2 OR ${t.event} NOT IN ('recognized', 'disputed') OR ${t.readState} IS NOT NULL`,
+    ),
+    v2ProposalCheck: check(
+      'waste_ticket_field_events_v2_proposal_check',
+      sql`${t.collectionVersion} < 2 OR (${t.event} IN ('proposal', 'proposal_dismissed')) = (${t.proposalDiffers} IS NOT NULL)`,
+    ),
+    /** Наблюдение — только машинное чтение: человеческое событие основанием метрики не бывает. */
+    observationSelfCheck: check(
+      'waste_ticket_field_events_observation_self_check',
+      sql`${t.observationId} IS NULL OR ${t.event} NOT IN ('recognized', 'disputed')`,
     ),
     fieldCheck: check(
       'waste_ticket_field_events_field_check',
       sql`${t.field} IN ('number', 'issuedOn', 'volumeM3', 'workKind', 'addressRaw')`,
     ),
+    /*
+     * Очистка поля — тоже правка: талон простоя объёма не несёт, и «стало пусто» здесь законный
+     * исход. Запрещено только событие, пустое с обеих сторон: это строка ни о чём (0210).
+     */
     editCheck: check(
       'waste_ticket_field_events_edit_check',
-      sql`${t.event} <> 'edited' OR ${t.newValue} IS NOT NULL`,
+      sql`${t.event} <> 'edited' OR ${t.oldValue} IS NOT NULL OR ${t.newValue} IS NOT NULL`,
     ),
     /*
      * Только одна сторона: машинное событие человека не называет. Обратное проверять нельзя —
@@ -3924,6 +4130,77 @@ export const wasteTicketFieldEvents = pgTable(
     shaCheck: check(
       'waste_ticket_field_events_sha_check',
       sql`${t.pageSha256} = '' OR ${t.pageSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+  }),
+);
+
+/*
+ * Связи наблюдений: чем адресовано решение человека, когда чтения в талоне уже нет.
+ *
+ * Правило «последнее наблюдение по талону и полю» годится для правки и снятия, но не для этих
+ * двух: предложение живёт отдельной строкой со своими попытками, а перепроверка сравнивает
+ * `baseline_*`, снятый в момент отбора. Между отбором и арбитражем талон мог смениться дважды —
+ * и «последнее» приписало бы ошибку не той модели.
+ *
+ * Обе таблицы временные по природе: живут, пока живы владельцы. Исход к моменту удаления уже
+ * закреплён событием, поэтому `CASCADE` на владельце безопасен, а `RESTRICT` на наблюдении
+ * обязателен.
+ */
+export const wasteTicketProposalObservations = pgTable(
+  'waste_ticket_proposal_observations',
+  {
+    proposalTicketId: uuid('proposal_ticket_id')
+      .notNull()
+      .references(() => wasteTicketProposals.ticketId, { onDelete: 'cascade' }),
+    field: text('field').notNull().$type<WasteTicketField>(),
+    observationId: uuid('observation_id').notNull(),
+    /**
+     * Отличалось ли поле от талона в момент чтения. Пять строк на предложение, а не только
+     * отличавшиеся: без строки на совпавшее поле его нечем будет назвать `uninformative`.
+     */
+    differs: boolean('differs').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.proposalTicketId, t.field] }),
+    fieldCheck: check(
+      'waste_ticket_proposal_observations_field_check',
+      sql`${t.field} IN ('number', 'issuedOn', 'volumeM3', 'workKind', 'addressRaw')`,
+    ),
+    /** Составной ключ доказывает, что связь указывает на наблюдение ТОГО ЖЕ поля. */
+    observationFk: foreignKey({
+      columns: [t.observationId, t.field],
+      foreignColumns: [wasteTicketFieldEvents.id, wasteTicketFieldEvents.field],
+      name: 'waste_ticket_proposal_observations_observation_fk',
+    }).onDelete('restrict'),
+    observationIdx: index('waste_ticket_proposal_observations_observation_idx').on(t.observationId),
+  }),
+);
+
+export const wasteTicketBlindCheckObservations = pgTable(
+  'waste_ticket_blind_check_observations',
+  {
+    blindCheckId: uuid('blind_check_id')
+      .notNull()
+      .references(() => wasteTicketBlindChecks.id, { onDelete: 'cascade' }),
+    field: text('field').notNull().$type<WasteTicketBlindCheckField>(),
+    observationId: uuid('observation_id').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.blindCheckId, t.field] }),
+    /** Перепроверка меряет чтение рукописи, а не разметку бланка: вида работ и адреса в ней нет. */
+    fieldCheck: check(
+      'waste_ticket_blind_check_observations_field_check',
+      sql`${t.field} IN ('number', 'issuedOn', 'volumeM3')`,
+    ),
+    observationFk: foreignKey({
+      columns: [t.observationId, t.field],
+      foreignColumns: [wasteTicketFieldEvents.id, wasteTicketFieldEvents.field],
+      name: 'waste_ticket_blind_check_observations_observation_fk',
+    }).onDelete('restrict'),
+    observationIdx: index('waste_ticket_blind_check_observations_observation_idx').on(
+      t.observationId,
     ),
   }),
 );
@@ -5464,6 +5741,16 @@ export const vehicleRoutes = pgTable(
         AND ${t.trailer2Model} = '' AND ${t.trailer2RegNumber} = ''
       )`,
     ),
+    // Второй слот при пустом первом — графа, которую негде напечатать: бланк печатает слоты по
+    // порядку (миграция 0208). Парного ограничения на `waybills` НЕТ намеренно: лист помнит
+    // выданную бумагу, сдвинуть в нём графы нельзя, а `NOT VALID` проверял бы старую строку при
+    // каждом `UPDATE` — и аннулирование отказало бы именно в тот день, когда бумагу надо списать.
+    // Порядок слотов проверяет рейс — там, где его правят; лист принимает то, что ему передали.
+    trailerOrderCheck: check(
+      'vehicle_routes_trailer_order_check',
+      sql`${t.trailer1Model} <> '' OR ${t.trailer1RegNumber} <> ''
+        OR (${t.trailer2Model} = '' AND ${t.trailer2RegNumber} = '')`,
+    ),
     purposeCheck: check(
       'vehicle_routes_purpose_check',
       sql`${t.purpose} IN ('freight', 'delivery', 'pickup')`,
@@ -6597,6 +6884,7 @@ export type VehicleCategoryRow = typeof vehicleCategories.$inferSelect;
 export type VehicleCategorySpecValueRow = typeof vehicleCategorySpecValues.$inferSelect;
 export type VehicleModelRow = typeof vehicleModels.$inferSelect;
 export type VehicleRow = typeof vehicles.$inferSelect;
+export type VehicleTrailerRow = typeof vehicleTrailers.$inferSelect;
 export type VehicleRequestRow = typeof vehicleRequests.$inferSelect;
 export type SpecialEquipmentRequestDetailsRow = typeof specialEquipmentRequestDetails.$inferSelect;
 export type FreightTransportRequestDetailsRow = typeof freightTransportRequestDetails.$inferSelect;

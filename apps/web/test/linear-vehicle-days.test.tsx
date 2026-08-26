@@ -294,7 +294,8 @@ function renderDays(days: VehicleRequestDaysDto = DAYS, routes: VehicleRouteDto[
     'GET /vehicle-requests/:id/days': () => json(days),
     'GET /vehicles': () => json(list([LIFT, LIFT_2])),
     // Рейсы выбранной машины на этот день плюс графы шапки прошлого рейса.
-    'GET /vehicle-routes/suggest': () => json({ routes, trip: null }),
+    'GET /vehicle-routes/suggest': () => json({ routes, trip: null, hitched: [] }),
+    'GET /vehicle-types': () => json({ items: [], total: 0, page: 1, pageSize: 500 }),
     'GET /drivers/available': () => json(SELECTION),
     'POST /vehicle-requests/:id/days/:date/route': () => json(days),
     'DELETE /vehicle-requests/:id/days/:date/route': () => json(days),
@@ -304,6 +305,22 @@ function renderDays(days: VehicleRequestDaysDto = DAYS, routes: VehicleRouteDto[
   const { queryClient } = renderWithUser(<VehicleRequestDays request={REQUEST} />);
   return { http, queryClient };
 }
+
+/**
+ * Пустая шапка нового рейса. Тело её теперь несёт всегда: графы прицепа уезжают из формы, а не из
+ * подсказки (план `docs/vehicle-trailers-plan.md`, §4.2.2), и «прицепа нет» — такой же ответ, как
+ * «прицеп такой-то». Сервер читает её ровно как прежнее отсутствие ключа (`tripValues`).
+ */
+const EMPTY_TRIP = {
+  withTrailer: false,
+  trailer1Model: '',
+  trailer1RegNumber: '',
+  trailer2Model: '',
+  trailer2RegNumber: '',
+  garageNumber: '',
+  communicationKind: '',
+  transportationKind: '',
+};
 
 describe('таблица дней линейного заказа', () => {
   it('день показывает рейс, машину, водителя, лист, часы смены и подпись объекта', async () => {
@@ -409,7 +426,7 @@ describe('день в рейс', () => {
     // День — часть адреса, а не тела: второй ответ на «за какой это день» разошёлся бы с первым.
     expect(call.path).toBe('/vehicle-requests/vr-9/days/2026-08-12/route');
     expect(call.body).toEqual({
-      newRoute: { vehicleId: 'v-lift-2', driverPersonId: 'p-1' },
+      newRoute: { vehicleId: 'v-lift-2', driverPersonId: 'p-1', trip: EMPTY_TRIP },
     });
   });
 
@@ -444,7 +461,7 @@ describe('день в рейс', () => {
       expect(http.countOf('POST /vehicle-requests/:id/days/:date/route')).toBe(1),
     );
     expect(http.lastCall('POST /vehicle-requests/:id/days/:date/route')!.body).toEqual({
-      newRoute: { vehicleId: 'v-lift', driverPersonId: null },
+      newRoute: { vehicleId: 'v-lift', driverPersonId: null, trip: EMPTY_TRIP },
       reason: 'машина отработала день, вносим по факту',
     });
   });
@@ -459,7 +476,7 @@ describe('день в рейс', () => {
       expect(http.countOf('POST /vehicle-requests/:id/days/:date/route')).toBe(1),
     );
     expect(http.lastCall('POST /vehicle-requests/:id/days/:date/route')!.body).toEqual({
-      newRoute: { vehicleId: 'v-lift', driverPersonId: null },
+      newRoute: { vehicleId: 'v-lift', driverPersonId: null, trip: EMPTY_TRIP },
     });
   });
 

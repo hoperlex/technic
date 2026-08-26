@@ -194,7 +194,9 @@ async function seed(): Promise<{ personId: string }> {
 }
 
 /** Пустой рейс: машина, дата и водитель — всё, чего лист требует помимо задания. */
-async function emptyRoute(): Promise<{ id: string; version: number }> {
+async function emptyRoute(
+  trip: Record<string, unknown> = {},
+): Promise<{ id: string; version: number }> {
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-routes',
@@ -203,7 +205,7 @@ async function emptyRoute(): Promise<{ id: string; version: number }> {
       vehicleId: ctx.vehicleId,
       routeDate: ctx.routeDate,
       driverPersonId: ctx.personId,
-      trip: { communicationKind: 'городское' },
+      trip: { communicationKind: 'городское', ...trip },
     },
   });
   expect(created.statusCode, created.body).toBe(201);
@@ -354,6 +356,85 @@ describe.skipIf(!DB_URL)('пустой путевой лист по рейсу �
     expect(row.data.task_from).toBe('');
     expect(row.data.task_cargo).toBe('');
     expect(row.data.task5_line).toBe('');
+  });
+
+  /*
+   * Второй прицеп: от тела запроса до снимка бланка.
+   *
+   * Колонки `trailer2_*` лежали в `waybills` с миграции 0061, ключи `trailer2_brand` и
+   * `trailer2_reg_number` — в `WAYBILL_SNAPSHOT_KEYS`, а шаблон `waybill-4p.xlsx` печатает их в
+   * `J22`/`AV22`. Не спрашивало второй прицеп только окно — и потому вся цепочка ни разу не была
+   * пройдена целиком. Тест закрывает её на живой схеме: графа, дошедшая до снимка, дойдёт и до
+   * бумаги, потому что печать берёт снимок.
+   */
+  it('оба прицепа доезжают до снимка бланка, а не только первый', async () => {
+    const route = await emptyRoute({
+      withTrailer: true,
+      trailer1Model: 'ШМИТЦ SPR-24',
+      trailer1RegNumber: 'ВХ933277',
+      trailer2Model: 'КРОНА SDP27',
+      trailer2RegNumber: 'ЕН806277',
+    });
+
+    const { res: issued } = await issueRouteWaybill({
+      app: ctx.app,
+      headers: ctx.admin,
+      routeId: route.id,
+      payload: { version: route.version },
+    });
+
+    const waybill = issued.json().waybill;
+    const rows = await ctx.db.execute<{
+      with_trailer: boolean;
+      trailer2_model: string;
+      trailer2_reg_number: string;
+      data: Record<string, string>;
+    }>(sql`
+      SELECT w.with_trailer, w.trailer2_model, w.trailer2_reg_number, w.data
+      FROM waybills w WHERE w.id = ${waybill.id}`);
+    const row = rows.rows[0]!;
+
+    // Колонки листа: лист помнит состав целиком, а не его начало.
+    expect(row.with_trailer).toBe(true);
+    expect(row.trailer2_model).toBe('КРОНА SDP27');
+    expect(row.trailer2_reg_number).toBe('ЕН806277');
+
+    // Снимок: печать идёт из него, и графа, до него не дошедшая, до бумаги не дойдёт молча.
+    expect(row.data.trailer1_brand).toBe('ШМИТЦ SPR-24');
+    expect(row.data.trailer1_reg_number).toBe('ВХ933277');
+    expect(row.data.trailer2_brand).toBe('КРОНА SDP27');
+    expect(row.data.trailer2_reg_number).toBe('ЕН806277');
+
+    // Журнал листов называет оба — та самая подпись, которая до этой работы знала первый.
+    const listed = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v1/waybills?search=${waybill.number}`,
+      headers: ctx.admin,
+    });
+    expect(listed.statusCode, listed.body).toBe(200);
+    const found = listed.json().items.find((w: { id: string }) => w.id === waybill.id);
+    expect(found?.trailerLabel).toBe('ШМИТЦ SPR-24 ВХ933277 · КРОНА SDP27 ЕН806277');
+  });
+
+  /* Порядок пар — свойство бланка: заполненный второй слот при пустом первом печатался бы дырой. */
+  it('второй прицеп без первого рейс не принимает', async () => {
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/vehicle-routes',
+      headers: ctx.admin,
+      payload: {
+        vehicleId: ctx.vehicleId,
+        routeDate: ctx.routeDate,
+        driverPersonId: ctx.personId,
+        trip: {
+          communicationKind: 'городское',
+          withTrailer: true,
+          trailer2Model: 'КРОНА SDP27',
+          trailer2RegNumber: 'ЕН806277',
+        },
+      },
+    });
+    expect(created.statusCode, created.body).toBe(400);
   });
 
   it('диспетчеру пустой бланк не выписывается: своё право (ADR 0071)', async () => {

@@ -341,6 +341,9 @@ describe('адрес окон: «назад» уносит правку рейс
       // Форма правки подсказывает, кого посадить за руль (ADR 0064); сценарию список не важен.
       'GET /drivers/available': () =>
         json({ requiredCategory: null, requiredCategoryType: null, drivers: [] }),
+      // Прицеп рейса: закрепление за машиной и справочник типов, по которому встаёт галочка.
+      'GET /vehicle-routes/suggest': () => json({ routes: [], trip: null, hitched: [] }),
+      'GET /vehicle-types': () => json(emptyList()),
     });
     // Рейс открывается кликом, а не начальным адресом: «назад» проверяется настоящей записью
     // истории, а не подменой адреса руками.
@@ -371,6 +374,8 @@ describe('адрес окон: «назад» уносит правку рейс
       'GET /drivers': () => json(list([{ id: 'p-1', fullName: 'Иванов Иван Иванович' } as never])),
       'GET /drivers/available': () =>
         json({ requiredCategory: null, requiredCategoryType: null, drivers: [] }),
+      'GET /vehicle-routes/suggest': () => json({ routes: [], trip: null, hitched: [] }),
+      'GET /vehicle-types': () => json(list([])),
     });
     renderScene('/vehicle-requests');
 

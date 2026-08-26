@@ -50,6 +50,10 @@ export * from './vehicle-specs';
 export * from './vehicle-categories';
 export * from './vehicle-classifications';
 export * from './vehicles';
+/* Прицепы (`vehicle-trailers.ts`) — сразу за техникой, потому что читаются с ней рядом, и
+ * отдельным файлом ровно потому, что прицеп не единица техники: в `vehicles` он не лежит
+ * (план `docs/vehicle-trailers-plan.md`, Р7), и общий файл со временем стёр бы эту границу. */
+export * from './vehicle-trailers';
 export * from './directory-transfer';
 export * from './files';
 export * from './mailings';
@@ -65,6 +69,10 @@ export * from './waste-requests';
  * коде. */
 export * from './waste-ticket-number';
 export * from './waste-tickets';
+/* Аудит распознавания (`waste-ticket-audit.ts`) — снова отдельным файлом и по той же причине, что
+ * талоны отделены от заявки: круг читателей у него свой и ещё уже. Разбирают талоны многие, а
+ * смотрят на цену и качество чтения единицы, и право там сквозное (ADR 0137). */
+export * from './waste-ticket-audit';
 export * from './vehicle-routes';
 export * from './cost-target';
 export * from './vehicle-request-trips';

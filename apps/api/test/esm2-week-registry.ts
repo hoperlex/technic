@@ -410,6 +410,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: 'маршрут `POST /vehicle-requests/:id/esm2` перечислением в таблице тел (692–699) и `POST /waybills/:id/cancel`, `/print-batch` (786–788); дальше стражи тест не идёт',
   },
   {
+    file: 'vehicle-routes-contracts.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note: 'комментарий к подписи прицепов перечисляет три места её сборки, одно из которых — задание по листу ЭСМ-2; недельного разреза в файле нет, прицепов у ЭСМ-2 не бывает по устройству',
+  },
+  {
     file: 'access-matrix.test.ts',
     klass: 'mention',
     status: 'done',

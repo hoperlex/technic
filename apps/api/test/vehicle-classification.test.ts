@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   classificationPriceHint,
@@ -16,6 +17,8 @@ import {
   vehicleSubstitutionWarning,
   vehicleTypeCodeSchema,
   vehicleTypeListQuerySchema,
+  type UpdateVehicleTypeResult,
+  type VehicleTypeDto,
 } from '@technic/contracts';
 
 const KIND_ID = '11111111-1111-4111-8111-111111111111';
@@ -475,5 +478,80 @@ describe('расхождение назначенной техники с зак
     expect(w.text).toContain('Автокраны, г/п 130 т');
     expect(w.text).toContain('Самосвалы, 20 м³');
     expect(w.text).toContain('другого вида');
+  });
+});
+
+/**
+ * Форма ответа правки типа — `PATCH /vehicle-types/:id`.
+ *
+ * Правка справочника делает две вещи разом: меняет карточку типа и — при переводе на бланк
+ * «форма № 3» — снимает привязки закреплённых прицепов у всех машин этого типа
+ * (план `docs/vehicle-trailers-plan.md`, §4.2.3, «четвёртая дверь»). §7 обещает, что портал скажет,
+ * сколько снял, и эта дверь громче остальных: одним полем справочника отцепляется сразу несколько
+ * полуприцепов у нескольких машин.
+ */
+describe('vehicle_types: ответ правки', () => {
+  const card = { id: 't1', code: 'tractor_trailers', name: 'Тягачи' } as VehicleTypeDto;
+
+  it('обёртка: карточка отдельно, два числа снятого отдельно', () => {
+    const res: UpdateVehicleTypeResult = {
+      type: card,
+      unhitchedTrailers: 3,
+      unhitchedVehicles: 2,
+    };
+    expect(Object.keys(res).sort()).toEqual(['type', 'unhitchedTrailers', 'unhitchedVehicles']);
+    expect(res.type).toBe(card);
+    // Исход операции не приписан свойствам типа: в карточке чисел нет и быть не должно — иначе
+    // они читались бы у каждой строки справочника, где никто ничего не снимал.
+    expect(res.type).not.toHaveProperty('unhitchedTrailers');
+    expect(res.type).not.toHaveProperty('unhitchedVehicles');
+  });
+
+  /**
+   * Два числа, а не одно, — потому что операция на множество: у машины два слота, и счёт привязок
+   * не отвечает на вопрос «сколько машин это задело». Проверяется именно расхождение — равные
+   * числа прошли бы и при одном поле, размноженном в два.
+   */
+  it('привязок больше, чем машин: у машины два слота', () => {
+    const res: UpdateVehicleTypeResult = {
+      type: card,
+      unhitchedTrailers: 4,
+      unhitchedVehicles: 2,
+    };
+    expect(res.unhitchedTrailers).toBeGreaterThan(res.unhitchedVehicles);
+  });
+
+  it('ничего не сняли — нули, а не пропущенные поля: портал молчит по значению', () => {
+    const res: UpdateVehicleTypeResult = {
+      type: card,
+      unhitchedTrailers: 0,
+      unhitchedVehicles: 0,
+    };
+    expect(res.unhitchedTrailers).toBe(0);
+    expect('unhitchedVehicles' in res).toBe(true);
+  });
+
+  /**
+   * Сторож самой ручки — приём из `vehicles-contracts.test.ts`. `apps/api/tsconfig.json` каталог
+   * `test/` не включает, поэтому объявление выше `tsc` сервера не держит: убери обёртку из ручки
+   * вместе с её читателями — и всё снова зелёно, а обещание §7 снова не выполнено. Ровно так оно
+   * и осталось невыполненным в первый раз: снятие привязок было написано верно, а ответ о нём
+   * молчал. Проверка смотрит **только** ветку `PATCH /:id`: заведение отвечает карточкой, и это
+   * правильно — оно ничего не снимает.
+   */
+  it('PATCH отвечает обёрткой, а не голой карточкой', () => {
+    const src = readFileSync(new URL('../src/routes/vehicle-types.ts', import.meta.url), 'utf8');
+    const from = src.indexOf('r.patch(');
+    const patchBranch = src.slice(from, src.indexOf('r.get(', from));
+    expect(patchBranch).toMatch(
+      /const answer: UpdateVehicleTypeResult = \{[\s\S]*?unhitchedTrailers[\s\S]*?unhitchedVehicles[\s\S]*?\};/,
+    );
+    expect(patchBranch).not.toMatch(/return \(await getDtoById\(id\)\)!;/);
+    // Имена — те же, что уходят в журнал этой же ручкой: одно событие не должно называться в
+    // портале и в аудите по-разному. Поэтому каждое имя стоит в ветке дважды — в `metadata`
+    // писателя журнала и в ответе; разъедься они, счётчик упадёт до одного.
+    const times = (name: string): number => patchBranch.split(name).length - 1;
+    expect(times('unhitchedTrailers')).toBeGreaterThanOrEqual(2);
+    expect(times('unhitchedVehicles')).toBeGreaterThanOrEqual(2);
   });
 });

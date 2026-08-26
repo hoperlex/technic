@@ -4,13 +4,16 @@ import { and, count, eq, ilike, isNull, ne, or, sql } from 'drizzle-orm';
 import {
   can,
   createVehicleSchema,
+  type DeleteVehicleResult,
   rentalActivationBlockReason,
   updateVehicleSchema,
   updateVehicleSchemaByOwnership,
   type UpdateOwnVehicleInput,
   type UpdateRentalVehicleInput,
+  type UpdateVehicleResult,
   type VehicleDto,
   vehicleListQuerySchema,
+  type WaybillFormCode,
 } from '@technic/contracts';
 import { z } from 'zod';
 import { db } from '../db/client';
@@ -28,6 +31,7 @@ import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
 import { categorySpecsSql } from '../services/vehicle-categories';
+import { releaseHitchesOfVehicle } from '../services/vehicle-trailer-hitch';
 
 // Справочник техники (ADR 0007) с двумя ветками принадлежности (ADR 0018): собственные машины и
 // предложения аренды. Ветку задаёт `ownership`, и она неизменяема — смена принадлежности означала бы
@@ -127,12 +131,21 @@ async function getById(id: string): Promise<VehicleDto | null> {
   return row ? toDto(row) : null;
 }
 
-async function assertTypeExists(typeId: string): Promise<void> {
+/**
+ * Тип существует — и каким бланком он выписывается.
+ *
+ * Бланк возвращается не ради проверки: у «формы № 3» граф прицепа нет вовсе (ADR 0071), и перевод
+ * машины на такой тип снимает её привязки (план `docs/vehicle-trailers-plan.md`, §4.2.3). Читается
+ * тем же запросом, которым тип и так проверяется на существование, — второй за тем же ответом
+ * ходил бы зря.
+ */
+async function assertTypeExists(typeId: string): Promise<WaybillFormCode> {
   const [t] = await db
-    .select({ id: vehicleTypes.id })
+    .select({ id: vehicleTypes.id, waybillFormCode: vehicleTypes.waybillFormCode })
     .from(vehicleTypes)
     .where(eq(vehicleTypes.id, typeId));
   if (!t) throw err.badRequest('Тип ТС не найден');
+  return t.waybillFormCode;
 }
 
 async function assertModelMatchesType(modelId: string, typeId: string): Promise<void> {
@@ -408,9 +421,13 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
       }
 
       const typeId = parsed.data.vehicleTypeId ?? ex.vehicleTypeId;
-      if (parsed.data.vehicleTypeId && parsed.data.vehicleTypeId !== ex.vehicleTypeId) {
-        await assertTypeExists(typeId);
-      }
+      // Бланк спрашивается только у нового типа: за машиной с «формой № 3» прицеп закрепить нельзя
+      // вовсе, поэтому у неизменившегося типа снимать нечего, и лишний запрос ответил бы на
+      // вопрос, которого никто не задавал.
+      const nextWaybillForm =
+        parsed.data.vehicleTypeId && parsed.data.vehicleTypeId !== ex.vehicleTypeId
+          ? await assertTypeExists(typeId)
+          : null;
       const categoryId =
         parsed.data.vehicleCategoryId !== undefined
           ? (parsed.data.vehicleCategoryId ?? null)
@@ -482,15 +499,58 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
         if (b.shiftHours !== undefined) set.shiftHours = b.shiftHours ?? null;
       }
 
-      await db.update(vehicles).set(set).where(eq(vehicles.id, id));
+      /*
+       * Смена состояния снимает привязки прицепов — сторона машины из таблицы плана §4.2.3.
+       * Событий здесь два из трёх: списание и перевод на бланк «форма № 3» (третье — мягкое
+       * удаление, оно в `DELETE` ниже). Снятие, а не запрет: закрепление — удобство подстановки,
+       * а не учётный факт, и держать списание машины заложником у него не за что.
+       *
+       * Условие считается по **итоговому** состоянию, а не по «пришло ли поле»: тем же правилом
+       * живёт списание на стороне прицепа (`routes/vehicle-trailers.ts`), и разойдись они — одна
+       * и та же таблица §4.2.3 читалась бы в двух модулях по-разному. Повтор ничего не стоит: у
+       * списанной машины привязок уже нет, и снятие вернёт ноль.
+       */
+      const releasesHitches =
+        (parsed.data.status ?? ex.status) === 'retired' || nextWaybillForm === 'leg3';
+
+      /*
+       * Правка и снятие — одной транзакцией: врозь они дают состояние, которого §4.2.3 не
+       * допускает, — списанная машина с закреплённым прицепом, — и живёт оно ровно до тех пор,
+       * пока второй запрос не упадёт. Порядок внутри тот же, что у команд привязки: сначала
+       * строка `vehicles` (её берёт сам `UPDATE`), затем строки прицепов.
+       */
+      const unhitchedTrailers = await db.transaction(async (tx) => {
+        await tx.update(vehicles).set(set).where(eq(vehicles.id, id));
+        return releasesHitches ? await releaseHitchesOfVehicle(tx, id) : 0;
+      });
       await writeAudit({
         actorUserId: requirePrincipal(req).id,
         action: 'vehicle.update',
         entityType: 'vehicle',
         entityId: id,
-        metadata: { ownership: ex.ownership },
+        // Снятые привязки — часть той же правки, и в журнале они обязаны стоять рядом с ней:
+        // иначе «прицеп перестал стоять за машиной» не объясняется ничем. Причина названа
+        // отдельно — списание и перевод на «форму № 3» это разные события с одним следствием.
+        metadata: unhitchedTrailers
+          ? {
+              ownership: ex.ownership,
+              unhitchedTrailers,
+              unhitchedReason: nextWaybillForm === 'leg3' ? 'waybill_form_leg3' : 'retired',
+            }
+          : { ownership: ex.ownership },
       });
-      return (await getById(id))!;
+      /*
+       * Число снятых — в ответе, как обещает §7: правка, отцепившая полуприцеп, обязана сказать
+       * об этом тому, кто её сделал. Списание машины идёт именно этой дверью, а не `DELETE`, —
+       * промолчи она, и самый частый путь остался бы немым.
+       *
+       * Обёрткой `UpdateVehicleResult` (`{ vehicle, unhitchedTrailers }`), а не полем в карточке:
+       * число снятых привязок — про операцию, а не про машину, и в `VehicleDto` оно читалось бы у
+       * каждой строки списка, где никто ничего не снимал. Так же разведены исход и карточка у
+       * `UserMutationResult` и `HitchTrailerResultDto`.
+       */
+      const answer: UpdateVehicleResult = { vehicle: (await getById(id))!, unhitchedTrailers };
+      return answer;
     },
   );
 
@@ -499,19 +559,40 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
     { preHandler: [app.authenticate, canWrite], schema: { params: idParams } },
     async (req) => {
       const { id } = req.params;
-      const [row] = await db
-        .update(vehicles)
-        .set({ deletedAt: new Date(), updatedAt: new Date() })
-        .where(and(eq(vehicles.id, id), isNull(vehicles.deletedAt)))
-        .returning({ id: vehicles.id });
-      if (!row) throw err.notFound('Техника не найдена');
+      /*
+       * Уход в архив снимает привязки прицепов (план §4.2.3) — той же транзакцией, что и само
+       * удаление. Случай опаснее списания: удалённая машина исчезает из списков совсем, и
+       * оставленная привязка становится ссылкой в никуда — карточка прицепа продолжала бы
+       * называть тягача, которого в портале уже нет, а подстановка в рейс (шаг 4) достала бы его
+       * из архива.
+       */
+      const unhitchedTrailers = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(vehicles)
+          .set({ deletedAt: new Date(), updatedAt: new Date() })
+          .where(and(eq(vehicles.id, id), isNull(vehicles.deletedAt)))
+          .returning({ id: vehicles.id });
+        if (!row) throw err.notFound('Техника не найдена');
+        return releaseHitchesOfVehicle(tx, id);
+      });
       await writeAudit({
         actorUserId: requirePrincipal(req).id,
         action: 'vehicle.delete',
         entityType: 'vehicle',
         entityId: id,
+        metadata: unhitchedTrailers ? { unhitchedTrailers } : {},
       });
-      return { ok: true };
+      /*
+       * Число снятых — в ответе, как обещает §7: человек, удаливший машину, узнаёт о втором
+       * изменении в базе от того же нажатия, а не из чужой жалобы «мой полуприцеп отцепился».
+       *
+       * Форма объявлена в контрактах (`DeleteVehicleResult`) и стоит здесь аннотацией: пока её
+       * там не было, число приезжало «лишним полем» рядом с `ok` — сервер его слал, портал о нём
+       * не знал, и обещание §7 у этой двери оставалось невыполненным при верном снятии привязок.
+       * Аннотация держит сервер на контракте: разойдись они — упадёт `tsc`, а не пользователь.
+       */
+      const answer: DeleteVehicleResult = { ok: true, unhitchedTrailers };
+      return answer;
     },
   );
 

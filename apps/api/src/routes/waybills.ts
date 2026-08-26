@@ -30,6 +30,7 @@ import {
   moscowDateKeyOf,
   requestCustomerName,
   snapshotForPrint,
+  trailerLabelOf,
   waybillDisplayNumber,
   type WaybillDto,
   waybillListQuerySchema,
@@ -225,6 +226,11 @@ const waybillSelect = {
   withTrailer: waybills.withTrailer,
   trailer1Model: waybills.trailer1Model,
   trailer1RegNumber: waybills.trailer1RegNumber,
+  // Второй прицеп берётся из БД наравне с первым: журнал показывает состав, а не его начало.
+  // Колонки лежали здесь с самого заведения листов (миграция 0061), но не выбирались — оттого
+  // подпись и знала половину.
+  trailer2Model: waybills.trailer2Model,
+  trailer2RegNumber: waybills.trailer2RegNumber,
   issuedByName: issuers.fullName,
   issuedAt: waybills.issuedAt,
   cancelledAt: waybills.cancelledAt,
@@ -412,7 +418,7 @@ function toDto(
   files: FileDto[],
   marks: PrintMarks = NO_MARKS,
 ): WaybillDto {
-  const trailer = [row.trailer1Model, row.trailer1RegNumber].filter(Boolean).join(' ');
+  const trailer = trailerLabelOf(row);
   return {
     id: row.id,
     number: waybillDisplayNumber(row.prefix, row.number, row.numberWidth),

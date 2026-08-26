@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   createVehicleSchema,
@@ -6,6 +7,8 @@ import {
   updateVehicleSchemaByOwnership,
   vehicleListQuerySchema,
   vehicleTitle,
+  type DeleteVehicleResult,
+  type UpdateVehicleResult,
   type VehicleDto,
 } from '@technic/contracts';
 
@@ -291,5 +294,87 @@ describe('vehicles: заголовок строки', () => {
       });
       expect(reason).toContain('справочнике контрагентов');
     });
+  });
+});
+
+/**
+ * Форма ответа правки — `PATCH /vehicles/:id`.
+ *
+ * Правка машины делает две вещи разом: меняет карточку и — при списании либо переводе типа на
+ * бланк «форма № 3» — снимает привязки закреплённых прицепов (план `docs/vehicle-trailers-plan.md`,
+ * §4.2.3). §7 обещает, что портал скажет, сколько снял, и списание идёт именно этой дверью, а не
+ * `DELETE`: промолчи она — немым остаётся самый частый путь.
+ */
+describe('vehicles: ответ правки', () => {
+  const card = { id: 'v1', registrationNumber: 'В094ЕТ77' } as VehicleDto;
+
+  it('обёртка: карточка отдельно, число снятых привязок отдельно', () => {
+    const res: UpdateVehicleResult = { vehicle: card, unhitchedTrailers: 2 };
+    expect(Object.keys(res).sort()).toEqual(['unhitchedTrailers', 'vehicle']);
+    expect(res.vehicle).toBe(card);
+    // Исход операции не приписан свойствам машины: в карточке числа нет и быть не должно —
+    // иначе оно читалось бы у каждой строки списка, где никто ничего не снимал.
+    expect(res.vehicle).not.toHaveProperty('unhitchedTrailers');
+  });
+
+  it('ничего не сняли — ноль, а не пропущенное поле: портал молчит по значению', () => {
+    const res: UpdateVehicleResult = { vehicle: card, unhitchedTrailers: 0 };
+    expect(res.unhitchedTrailers).toBe(0);
+    expect('unhitchedTrailers' in res).toBe(true);
+  });
+
+  /**
+   * Сторож самой ручки. Типы держат согласие сервера и портала, пока обёртка объявлена; но убери
+   * её из контрактов вместе с обоими читателями — и `tsc` снова зелёный, а обещание §7 снова
+   * не выполнено. Ровно так оно и осталось невыполненным в первый раз: снятие привязок в `PATCH`
+   * было написано верно, а ответ о нём молчал. Проверка смотрит **только** ветку `PATCH`:
+   * заведение и восстановление отвечают карточкой, и это правильно.
+   */
+  it('PATCH отвечает обёрткой, а не голой карточкой', () => {
+    const src = readFileSync(new URL('../src/routes/vehicles.ts', import.meta.url), 'utf8');
+    const patchBranch = src.slice(src.indexOf('r.patch('), src.indexOf('r.delete('));
+    expect(patchBranch).toMatch(
+      /const answer: UpdateVehicleResult = \{[\s\S]*?unhitchedTrailers[\s\S]*?\};/,
+    );
+    expect(patchBranch).not.toMatch(/return \(await getById\(id\)\)!;/);
+  });
+});
+
+/**
+ * Ответ мягкого удаления — `DELETE /vehicles/:id`, кнопка «В архив».
+ *
+ * Третья дверь той же таблицы §4.2.3: уход машины в архив снимает привязки прицепов, как списание
+ * и перевод на «форму № 3». Снятие тут написано верно с самого начала, а вот сказать о нём ответ
+ * не мог: число ехало полем, не объявленным ни в одном контракте, — портал типизировал ответ как
+ * `{ ok: boolean }` и число не читал. Немой ответ и молчащий ответ для §7 — одно и то же.
+ */
+describe('vehicles: ответ архивации', () => {
+  it('форма: признак успеха и число снятых привязок, карточки нет', () => {
+    const res: DeleteVehicleResult = { ok: true, unhitchedTrailers: 2 };
+    expect(Object.keys(res).sort()).toEqual(['ok', 'unhitchedTrailers']);
+    expect(res.ok).toBe(true);
+    // Карточки в ответе нет намеренно: удалённую запись списки не показывают, показывать нечего.
+    expect(res).not.toHaveProperty('vehicle');
+  });
+
+  it('ничего не сняли — ноль, а не пропущенное поле: портал молчит по значению', () => {
+    const res: DeleteVehicleResult = { ok: true, unhitchedTrailers: 0 };
+    expect(res.unhitchedTrailers).toBe(0);
+    expect('unhitchedTrailers' in res).toBe(true);
+  });
+
+  /**
+   * Сторож самой ручки — тем же приёмом, что и у `PATCH` выше, и по той же причине: `tsconfig`
+   * приложения каталог `test/` не включает, поэтому проверка типом здесь без зубов, а исходник
+   * ручки читается всегда. Убери аннотацию — и ответ снова разойдётся с контрактом молча.
+   */
+  it('DELETE отвечает объявленным типом, а не голым { ok: true }', () => {
+    const src = readFileSync(new URL('../src/routes/vehicles.ts', import.meta.url), 'utf8');
+    const start = src.indexOf('r.delete(');
+    const deleteBranch = src.slice(start, src.indexOf('/:id/restore', start));
+    expect(deleteBranch).toMatch(
+      /const answer: DeleteVehicleResult = \{[\s\S]*?unhitchedTrailers[\s\S]*?\};/,
+    );
+    expect(deleteBranch).not.toMatch(/return \{ ok: true \};/);
   });
 });

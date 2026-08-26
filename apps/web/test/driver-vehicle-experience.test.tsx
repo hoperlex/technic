@@ -201,7 +201,8 @@ function renderModal(): HttpMock {
         routes: [],
         trip: null,
       }),
-    'GET /vehicle-routes/suggest': () => json({ routes: [], trip: null }),
+    'GET /vehicle-routes/suggest': () => json({ routes: [], trip: null, hitched: [] }),
+    'GET /vehicle-types': () => json({ items: [], total: 0, page: 1, pageSize: 500 }),
     'GET /drivers/available': () => json(SELECTION),
   });
 

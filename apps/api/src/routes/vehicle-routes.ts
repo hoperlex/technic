@@ -34,6 +34,7 @@ import {
   updateVehicleRouteSchema,
   type VehicleRouteDto,
   vehicleRouteListQuerySchema,
+  type VehicleRouteSuggestDto,
   vehicleStatusLabels,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -72,6 +73,7 @@ import {
   attachRequest,
   bumpRouteVersion,
   detachRequest,
+  hitchedTrailersOf,
   lastTripFields,
   legacyWaybillOf,
   loadRouteDto,
@@ -441,7 +443,19 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
 
   /**
    * Рейсы этой машины на эту дату — ими форма перевода в работу предлагает готовый рейс вместо
-   * второго, плюс реквизиты прошлого рейса машины для нового.
+   * второго, плюс реквизиты прошлого рейса машины для нового и закреплённые за ней прицепы.
+   *
+   * Полей о реквизитах два, и они отвечают на разные вопросы (план `docs/vehicle-trailers-plan.md`,
+   * §4.2.2). `trip` — графы шапки **прошлого рейса** машины; он не изменился ни на байт и считается
+   * той же `lastTripFields`, что и до появления реестра прицепов. `hitched` — **сегодняшнее
+   * закрепление** из реестра, то есть решение, которое человек уже принял в карточке прицепа.
+   *
+   * Смешать их в одно поле было заманчиво и запрещено: `trip` читают два окна заведения рейса из
+   * шести, и графы прицепа, появившиеся в нём «сами», прочитали бы все шесть — включая «Новый
+   * маршрут», который сегодня не подставляет ничего. Портал начал бы подсказывать вчерашний прицеп
+   * там, где вчера молчал, — ровно то, что запретил ADR 0083 решением 2. Оттого правило чтения
+   * одно на все окна и границу проводит по источнику: `hitched` не пуст — графы берутся оттуда и
+   * подписываются; пуст — новой подстановки нет вовсе.
    */
   r.get(
     '/suggest',
@@ -451,7 +465,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         querystring: z.object({ vehicleId: z.string().uuid(), date: z.string() }),
       },
     },
-    async (req) => {
+    async (req): Promise<VehicleRouteSuggestDto> => {
       const rows = await routeQuery(db)
         .where(
           and(
@@ -463,6 +477,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
       return {
         routes: await loadRouteDtos(db, rows),
         trip: await lastTripFields(req.query.vehicleId),
+        hitched: await hitchedTrailersOf(req.query.vehicleId),
       };
     },
   );

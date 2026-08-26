@@ -325,7 +325,8 @@ function renderModal({
         trip: null,
       }),
     /** Реквизиты выезда наследуются по выбранной машине и дате рейса. */
-    'GET /vehicle-routes/suggest': () => json({ routes: [], trip: LAST_TRIP }),
+    'GET /vehicle-routes/suggest': () => json({ routes: [], trip: LAST_TRIP, hitched: [] }),
+    'GET /vehicle-types': () => json({ items: [], total: 0, page: 1, pageSize: 500 }),
     'GET /drivers/available': () => json(SELECTION),
     /*
      * Машинист заказа техники на объект (миграция 0087): на него выписываются недельные листы

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { App, Checkbox, DatePicker, Form, Input, Select, Typography } from 'antd';
+import { App, DatePicker, Form, Input, Select, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -20,12 +20,14 @@ import {
   WAYBILL_CORRECTION_DAYS,
 } from '@technic/contracts';
 import { driversApi, vehicleRoutesApi } from '../../api/resources';
+import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { AutoSelect } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
+import { TrailerFields, trailerTripBody } from './TrailerFields';
 import { BackdateReasonField } from './VehicleBackdateFields';
 
 /**
@@ -58,6 +60,8 @@ interface FormValues {
   withTrailer: boolean;
   trailer1Model: string;
   trailer1RegNumber: string;
+  trailer2Model: string;
+  trailer2RegNumber: string;
   garageNumber: string;
   communicationKind: string;
   transportationKind: string;
@@ -93,6 +97,8 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
       withTrailer: route.withTrailer,
       trailer1Model: route.trailer1Model,
       trailer1RegNumber: route.trailer1RegNumber,
+      trailer2Model: route.trailer2Model,
+      trailer2RegNumber: route.trailer2RegNumber,
       garageNumber: route.garageNumber,
       // Пустая графа рейса открывается умолчанием: поле стало обязательным, и рейс, заведённый до
       // списка, иначе не дал бы сохранить ни смену водителя, ни перенос дня, пока кто-то не
@@ -134,6 +140,18 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
   const moveLocked = !!route && backdateFloor !== null && route.routeDate < backdateFloor;
 
   /**
+   * Прицепы, закреплённые за машиной рейса (план `docs/vehicle-trailers-plan.md`, §4.2.2). Графы
+   * рейса окно берёт из самого рейса, а закрепление знает только сервер — за ним и идём той же
+   * подсказкой, что зовут окна заведения. Рейсы и графы прошлого рейса из ответа здесь не нужны:
+   * правка описывает рейс, который уже есть.
+   */
+  const { data: suggestion } = useQuery({
+    queryKey: vehicleRouteKeys.suggest(route?.vehicleId, on),
+    queryFn: () => vehicleRoutesApi.suggest({ vehicleId: route!.vehicleId, date: on! }),
+    enabled: !!route && !!on,
+  });
+
+  /**
    * Кто может сесть за эту машину в этот день. Список подсказывает — пригодные первыми, с
    * пометками о категории и документах (ADR 0064), — но сам никого не выбирает: за руль человека
    * сажает диспетчер.
@@ -169,14 +187,7 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
         routeDate: v.routeDate.format(DATE),
         driverPersonId: v.driverPersonId ?? null,
         trip: {
-          withTrailer: v.withTrailer,
-          // Реквизиты прицепа уходят только вместе с самим прицепом: без него сервер их не примет
-          // («реквизиты прицепа без прицепа в рейсе не печатаются»), а у рейса они могли остаться
-          // с прошлого раза — снятый прицеп забирает их с собой.
-          trailer1Model: v.withTrailer ? (v.trailer1Model ?? '') : '',
-          trailer1RegNumber: v.withTrailer ? (v.trailer1RegNumber ?? '') : '',
-          trailer2Model: '',
-          trailer2RegNumber: '',
+          ...trailerTripBody(v),
           garageNumber: v.garageNumber ?? '',
           communicationKind: v.communicationKind ?? '',
           transportationKind: v.transportationKind ?? '',
@@ -335,23 +346,21 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
             здесь, а не пересборкой рейса. У формы № 3 граф прицепа нет вовсе (ADR 0071), поэтому
             прицеп спрашивается только там, где он печатается. */}
           {route?.formCode !== 'leg3' && (
-            <>
-              <FormGrid.Full>
-                <Form.Item name="withTrailer" valuePropName="checked">
-                  <Checkbox>Рейс с прицепом</Checkbox>
-                </Form.Item>
-              </FormGrid.Full>
-              {withTrailer && (
-                <>
-                  <Form.Item name="trailer1Model" label="Прицеп: марка">
-                    <Input placeholder="СЗАП-8551" />
-                  </Form.Item>
-                  <Form.Item name="trailer1RegNumber" label="Прицеп: госномер">
-                    <Input placeholder="АВ1234 77" />
-                  </Form.Item>
-                </>
-              )}
-            </>
+            <TrailerFields
+              key={route?.id}
+              withTrailer={withTrailer}
+              checkboxLabel="Рейс с прицепом"
+              checkboxFullWidth
+              modelPlaceholder="СЗАП-8551"
+              regNumberPlaceholder="АВ1234 77"
+              secondPlaceholder="Если прицепов два"
+              hitched={suggestion?.hitched}
+              vehicleId={route?.vehicleId}
+              vehicleTypeId={route?.vehicleTypeId}
+              // Свои графы рейса закрепление не вытесняет: рейс уже описал прицеп, и переписать
+              // его значило бы подменить запись, которую открыли править. Пустые — подставит.
+              keepOwnGraphs
+            />
           )}
 
           <Form.Item name="garageNumber" label="Гаражный номер">

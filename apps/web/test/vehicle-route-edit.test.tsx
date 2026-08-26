@@ -140,6 +140,8 @@ function renderModal(
 ) {
   const http = mockHttp({
     'GET /drivers/available': () => json(SELECTION),
+    'GET /vehicle-routes/suggest': () => json({ routes: [], trip: null, hitched: [] }),
+    'GET /vehicle-types': () => json({ items: [], total: 0, page: 1, pageSize: 500 }),
     'PATCH /vehicle-routes/:id': ({ body }) => json({ ...route, ...(body as object) }),
   });
   renderWithUser(<VehicleRouteEditModal route={route} onClose={() => {}} onSaved={() => {}} />, {

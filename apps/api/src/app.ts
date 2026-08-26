@@ -34,6 +34,7 @@ import vehicleCategoriesRoutes from './routes/vehicle-categories';
 import vehicleClassificationsRoutes from './routes/vehicle-classifications';
 import vehicleModelsRoutes from './routes/vehicle-models';
 import vehiclesRoutes from './routes/vehicles';
+import vehicleTrailersRoutes from './routes/vehicle-trailers';
 import driversRoutes from './routes/drivers';
 import waybillsRoutes from './routes/waybills';
 import vehicleRequestAssignmentRoutes from './routes/vehicle-request-assignment';
@@ -51,6 +52,7 @@ import autoPartsRoutes from './routes/auto-parts';
 import vehicleMaintenanceRoutes from './routes/vehicle-maintenance';
 import wasteRequestsRoutes from './routes/waste-requests';
 import wasteTicketsRoutes from './routes/waste-tickets';
+import ticketAuditRoutes from './routes/ticket-audit';
 import wasteTypesRoutes from './routes/waste-types';
 import wasteTariffsRoutes from './routes/waste-tariffs';
 import filesRoutes from './routes/files';
@@ -169,6 +171,10 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(vehicleClassificationsRoutes, { prefix: '/api/v1/vehicle-classifications' });
   await app.register(vehicleModelsRoutes, { prefix: '/api/v1/vehicle-models' });
   await app.register(vehiclesRoutes, { prefix: '/api/v1/vehicles' });
+  // Реестр прицепов (план `docs/vehicle-trailers-plan.md`, Р7) — свой префикс, а не ветка
+  // `/vehicles`: прицеп не единица техники и в `vehicles` не лежит. Общий адрес обещал бы обратное
+  // тем самым, что заказ техники и её справочник читались бы по одному пути.
+  await app.register(vehicleTrailersRoutes, { prefix: '/api/v1/vehicle-trailers' });
   await app.register(driversRoutes, { prefix: '/api/v1/drivers' });
   await app.register(vehicleRequestsRoutes, { prefix: '/api/v1/vehicle-requests' });
   // Двери истории назначения (план `docs/assignment-periods-plan.md` §8) — второй плагин на том же
@@ -214,6 +220,11 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // Разбор талонов — отдельный роут на том же префиксе: у него своё право (`ticketReview`), и
   // держать его вместе со статусами заявки значило бы смешивать две области доступа в одном файле.
   await app.register(wasteTicketsRoutes, { prefix: '/api/v1/waste-requests' });
+  // Аудит распознавания талонов (ADR 0137, план аудита §6) — третий плагин на том же префиксе.
+  // Порознь с разбором, потому что порознь их держит не размер файла, а область доступа: разбор
+  // вложен в заявку и проходит область объекта с оператором, а сводка сквозная по всему порталу
+  // и закрыта своим правом `wasteRequests.ticketAudit`, которое выдаётся поимённо (§4.1).
+  await app.register(ticketAuditRoutes, { prefix: '/api/v1/waste-requests' });
   await app.register(wasteTypesRoutes, { prefix: '/api/v1/waste-types' });
   await app.register(wasteTariffsRoutes, { prefix: '/api/v1/waste-tariffs' });
   await app.register(filesRoutes, { prefix: '/api/v1/files' });

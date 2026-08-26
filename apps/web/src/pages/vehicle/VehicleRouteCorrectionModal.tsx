@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, App, Checkbox, Form, Input, Select, Typography } from 'antd';
+import { Alert, App, Form, Input, Select, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   communicationKindOptions,
@@ -15,9 +15,11 @@ import {
 } from '@technic/contracts';
 import { driversApi, vehicleRoutesApi, vehiclesApi, waybillsApi } from '../../api/resources';
 import { garageKeys } from '@entities/garage';
+import { sameTrailerGraphs, vehicleRouteKeys } from '@entities/vehicle-route';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 import { RouteCorrectionConsequences } from './RouteCorrectionConsequences';
+import { TrailerFields, trailerTripBody } from './TrailerFields';
 
 /**
  * Исправление исполнения рейса задним числом (ADR 0101, Р2).
@@ -40,6 +42,8 @@ interface FormValues {
   withTrailer: boolean;
   trailer1Model: string;
   trailer1RegNumber: string;
+  trailer2Model: string;
+  trailer2RegNumber: string;
   garageNumber: string;
   communicationKind: string;
   transportationKind: string;
@@ -80,6 +84,8 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
       withTrailer: route.withTrailer,
       trailer1Model: route.trailer1Model,
       trailer1RegNumber: route.trailer1RegNumber,
+      trailer2Model: route.trailer2Model,
+      trailer2RegNumber: route.trailer2RegNumber,
       garageNumber: route.garageNumber,
       // Умолчанием пустая графа здесь, в отличие от окна правки, не заполняется: подставленное
       // значение само по себе отличало бы форму от рейса, и проверка «коррекция должна что-то
@@ -153,6 +159,16 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
   );
 
   /**
+   * Прицепы, закреплённые за **выбранной** машиной (§4.2.2 плана прицепов): её здесь меняют, и
+   * спрашиваем о той, что стоит в поле, — закрепление прежней описывало бы уже не тот рейс.
+   */
+  const { data: suggestion } = useQuery({
+    queryKey: vehicleRouteKeys.suggest(vehicleId, route?.routeDate),
+    queryFn: () => vehicleRoutesApi.suggest({ vehicleId: vehicleId!, date: route!.routeDate }),
+    enabled: !!route && !!vehicleId,
+  });
+
+  /**
    * Кто мог сесть за эту машину **в день рейса**: отбор исторический (ADR 0101 п. 15), и уволенный
    * после рейса человек из списка не пропадает — иначе лист за прошлую неделю нельзя было бы
    * выписать на того, кто её и отработал.
@@ -185,12 +201,7 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
         vehicleId: v.vehicleId,
         driverPersonId: v.driverPersonId,
         trip: {
-          withTrailer: v.withTrailer,
-          // Реквизиты прицепа уходят только вместе с самим прицепом: без него сервер их не примет.
-          trailer1Model: v.withTrailer ? (v.trailer1Model ?? '') : '',
-          trailer1RegNumber: v.withTrailer ? (v.trailer1RegNumber ?? '') : '',
-          trailer2Model: '',
-          trailer2RegNumber: '',
+          ...trailerTripBody(v),
           garageNumber: v.garageNumber ?? '',
           communicationKind: v.communicationKind ?? '',
           transportationKind: v.transportationKind ?? '',
@@ -214,7 +225,7 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
     !!route &&
     (vehicleId !== route.vehicleId ||
       (driverPersonId ?? null) !== route.driverPersonId ||
-      withTrailer !== route.withTrailer ||
+      !sameTrailerGraphs(trailerTripBody(form.getFieldsValue()), route) ||
       (form.getFieldValue('garageNumber') ?? '') !== route.garageNumber ||
       (form.getFieldValue('communicationKind') ?? '') !== route.communicationKind ||
       (form.getFieldValue('transportationKind') ?? '') !== route.transportationKind);
@@ -308,24 +319,24 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
           </Form.Item>
 
           {/* У формы № 3 граф прицепа нет вовсе (ADR 0071) — спрашивается он там, где печатается. */}
+          {/* Вторая пара граф здесь нужнее, чем где-либо: коррекция переписывает то, что уже
+            уехало на бумаге, и рейс с двумя прицепами до сих пор нельзя было описать иначе как
+            забыв половину. */}
           {route?.formCode !== 'leg3' && (
-            <>
-              <FormGrid.Full>
-                <Form.Item name="withTrailer" valuePropName="checked">
-                  <Checkbox>Рейс был с прицепом</Checkbox>
-                </Form.Item>
-              </FormGrid.Full>
-              {withTrailer && (
-                <>
-                  <Form.Item name="trailer1Model" label="Прицеп: марка">
-                    <Input placeholder="СЗАП-8551" />
-                  </Form.Item>
-                  <Form.Item name="trailer1RegNumber" label="Прицеп: госномер">
-                    <Input placeholder="АВ1234 77" />
-                  </Form.Item>
-                </>
-              )}
-            </>
+            <TrailerFields
+              key={route?.id}
+              withTrailer={withTrailer}
+              checkboxLabel="Рейс был с прицепом"
+              checkboxFullWidth
+              modelPlaceholder="СЗАП-8551"
+              regNumberPlaceholder="АВ1234 77"
+              secondPlaceholder="Если прицепов было два"
+              hitched={suggestion?.hitched}
+              vehicleId={vehicleId}
+              vehicleTypeId={fleet?.items.find((v) => v.id === vehicleId)?.vehicleTypeId}
+              // День состоялся: закрепление знает о сменённой машине, а о прошлом вторнике — нет.
+              substituteOnOpen={false}
+            />
           )}
 
           <Form.Item name="garageNumber" label="Гаражный номер">

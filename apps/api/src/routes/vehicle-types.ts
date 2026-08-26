@@ -11,6 +11,7 @@ import {
   updateVehicleTypeSchema,
   updateVehicleTypeSpecSchema,
   vehicleTypeListQuerySchema,
+  type UpdateVehicleTypeResult,
   type VehicleTypeDto,
   type VehicleTypeLinearSwitchPreviewDto,
   type VehicleTypeLinearSwitchRequestDto,
@@ -37,6 +38,7 @@ import { requirePrincipal } from '../auth/plugin';
 import { vehicleRequestVisibilityWhere } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
+import { releaseHitchesOfVehicleType } from '../services/vehicle-trailer-hitch';
 import { dropWeeklyItemsOfVehicleType } from '../services/weekly-request-cleanup';
 import {
   assertValueFitsSpec,
@@ -387,7 +389,7 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
       preHandler: [app.authenticate, canWrite],
       schema: { params: idParams, body: updateVehicleTypeSchema },
     },
-    async (req) => {
+    async (req): Promise<UpdateVehicleTypeResult> => {
       const actor = requirePrincipal(req).id;
       const id = req.params.id;
       const body = req.body;
@@ -413,10 +415,45 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
         );
       }
 
-      await db
-        .update(vehicleTypes)
-        .set({ ...body, updatedAt: new Date() })
-        .where(eq(vehicleTypes.id, id));
+      /*
+       * ЧЕТВЁРТАЯ ДВЕРЬ К ПРИВЯЗКАМ ПРИЦЕПОВ (план `docs/vehicle-trailers-plan.md`, §4.2.3).
+       *
+       * Таблица §4.2.3 перечисляет события у машины — списание, мягкое удаление, смену её типа на
+       * тип «формы № 3»; все три держит `routes/vehicles.ts`. Но `waybill_form_code` правится и
+       * здесь, у самого **типа**, и перевод существующего типа на форму № 3 осиротит привязки у
+       * всех машин этого типа разом: графы прицепа у формы № 3 отсутствуют вовсе (ADR 0071), а
+       * привязки остались бы — и подстановка в рейс достала бы их туда, где их негде напечатать.
+       *
+       * Снятие, а не запрет, — как и во всех остальных строках таблицы: закрепление это удобство
+       * подстановки, а не учётный факт, и держать правку справочника заложником у него не за что.
+       *
+       * Условие — по **итоговому** бланку, а не по «пришло ли поле»: тем же правилом живёт сторона
+       * машины (`routes/vehicles.ts`), и разойдись они, одна и та же таблица §4.2.3 читалась бы в
+       * двух модулях по-разному. Повтор ничего не стоит: у типа, который уже «форма № 3»,
+       * привязок нет, и снятие вернёт нули.
+       */
+      const nextWaybillForm = body.waybillFormCode ?? row.waybillFormCode;
+
+      /*
+       * Правка и снятие — одной транзакцией: врозь они дают состояние, которого §4.2.3 не
+       * допускает, — легковой тип с закреплёнными за его машинами прицепами, — и живёт оно ровно
+       * до того, как кто-нибудь откроет карточку прицепа. Порядок захвата внутри — общий на весь
+       * портал (`withHitchLocks`): сначала строки `vehicles`, затем `vehicle_trailers`.
+       *
+       * Строка типа берётся раньше них — её берёт сам `UPDATE`. Третьим порядком это не делает:
+       * встречные команды привязки строку типа не блокируют вовсе (`assertTractorUsable` читает
+       * бланк обычным `SELECT`), поэтому цикла ожидания на паре «тип ↔ машина» не возникает, а
+       * взятая первой строка типа сериализует два перевода одного и того же типа между собой.
+       */
+      const released = await db.transaction(async (tx) => {
+        await tx
+          .update(vehicleTypes)
+          .set({ ...body, updatedAt: new Date() })
+          .where(eq(vehicleTypes.id, id));
+        return nextWaybillForm === 'leg3'
+          ? await releaseHitchesOfVehicleType(tx, id)
+          : { trailers: 0, vehicles: 0 };
+      });
 
       const activeChanged = body.isActive !== undefined && body.isActive !== row.isActive;
       /*
@@ -462,7 +499,17 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           oldActive: row.isActive,
           newActive: body.isActive ?? row.isActive,
           oldWaybillFormCode: row.waybillFormCode,
-          newWaybillFormCode: body.waybillFormCode ?? row.waybillFormCode,
+          newWaybillFormCode: nextWaybillForm,
+          /*
+           * Снятые привязки — часть той же правки, и в журнале они обязаны стоять рядом с ней:
+           * иначе «прицеп перестал стоять за машиной» не объясняется ничем. Два числа, а не одно:
+           * операция на множество, и «снято N привязок у M машин» — это то, что о ней спросят.
+           * Ключей нет вовсе, когда снимать было нечего: нули в каждой правке наименования
+           * рассказывали бы о событии, которого не было.
+           */
+          ...(released.trailers > 0
+            ? { unhitchedTrailers: released.trailers, unhitchedVehicles: released.vehicles }
+            : {}),
           oldMaintenanceBasis: row.maintenanceBasis,
           newMaintenanceBasis: body.maintenanceBasis ?? row.maintenanceBasis,
           // Пары «было → стало» по линейности здесь нет: этой ручкой признак не меняется, и
@@ -470,7 +517,24 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           isLinear: row.isLinear,
         },
       });
-      return (await getDtoById(id))!;
+      /*
+       * Число снятых привязок уходит человеку — обёрткой `UpdateVehicleTypeResult`
+       * (`{ type, unhitchedTrailers, unhitchedVehicles }`), а не полями в карточке: исход операции
+       * — про правку, а не про тип, и в `VehicleTypeDto` он читался бы у каждой строки справочника,
+       * где никто ничего не снимал. Так же разведены исход и карточка у соседней ручки этого же
+       * модуля (`VehicleTypeLinearSwitchResultDto`) и у правки машины (`UpdateVehicleResult`).
+       *
+       * Оба числа отвечают всегда, включая нули: «ничего не сняли» портал читает по значению, а не
+       * по отсутствию ключа. В журнале выше — наоборот, ключей нет вовсе при нуле: там строка
+       * события, и нули рассказывали бы о том, чего не было. Разница намеренная и на именах полей
+       * не сказывается — они одни и те же.
+       */
+      const answer: UpdateVehicleTypeResult = {
+        type: (await getDtoById(id))!,
+        unhitchedTrailers: released.trailers,
+        unhitchedVehicles: released.vehicles,
+      };
+      return answer;
     },
   );
 

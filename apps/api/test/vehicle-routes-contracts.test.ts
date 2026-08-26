@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   assignRouteSchema,
   dayAlreadyPlannedMessage,
@@ -27,6 +27,8 @@ import {
   routeWaybillForm,
   routeOrderSchema,
   routeTripFieldsSchema,
+  type RouteTripFields,
+  trailerLabelOf,
   shouldDetachOnStatus,
 } from '@technic/contracts';
 
@@ -912,6 +914,69 @@ describe('схемы маршрута', () => {
     ).toBe(false);
   });
 
+  it('второй прицеп без первого не принимается — в бланке они идут по порядку', () => {
+    const both = {
+      withTrailer: true,
+      trailer1Model: 'ШМИТЦ SPR-24',
+      trailer1RegNumber: 'ВХ933277',
+      trailer2Model: 'КРОНА SDP27',
+      trailer2RegNumber: 'ЕН806277',
+    };
+    expect(routeTripFieldsSchema.safeParse(both).success).toBe(true);
+    // Первый пуст, второй заполнен: в шапке 4-П это дыра между графами, а не «второй прицеп».
+    expect(
+      routeTripFieldsSchema.safeParse({ withTrailer: true, trailer2Model: 'КРОНА SDP27' }).success,
+    ).toBe(false);
+    expect(
+      routeTripFieldsSchema.safeParse({ withTrailer: true, trailer2RegNumber: 'ЕН806277' }).success,
+    ).toBe(false);
+    // Госномер без марки первым прицепом считается: графы бланка независимы, и рейс, о прицепе
+    // которого известен только номер, описать по-прежнему можно.
+    expect(
+      routeTripFieldsSchema.safeParse({
+        withTrailer: true,
+        trailer1RegNumber: 'ВХ933277',
+        trailer2Model: 'КРОНА SDP27',
+      }).success,
+    ).toBe(true);
+  });
+
+  /*
+   * Подпись прицепов: одна функция на три места, которые её показывают, — карточку рейса и кабинет
+   * водителя, журнал путевых листов и задание по листу ЭСМ-2. Предмет теста именно единственность:
+   * до неё выражение было переписано трижды и все три копии знали только первый прицеп.
+   */
+  describe('подпись прицепов', () => {
+    it('называет оба прицепа и разделяет их так же, как подпись машины', () => {
+      expect(
+        trailerLabelOf({
+          trailer1Model: 'ШМИТЦ SPR-24',
+          trailer1RegNumber: 'ВХ933277',
+          trailer2Model: 'КРОНА SDP27',
+          trailer2RegNumber: 'ЕН806277',
+        }),
+      ).toBe('ШМИТЦ SPR-24 ВХ933277 · КРОНА SDP27 ЕН806277');
+    });
+
+    it('один прицеп остаётся одной строкой, без разделителя в хвосте', () => {
+      expect(trailerLabelOf({ trailer1Model: 'ШМИТЦ SPR-24', trailer1RegNumber: 'ВХ933277' })).toBe(
+        'ШМИТЦ SPR-24 ВХ933277',
+      );
+    });
+
+    it('пропущенная графа не оставляет лишнего пробела', () => {
+      expect(trailerLabelOf({ trailer1RegNumber: 'ВХ933277' })).toBe('ВХ933277');
+      expect(trailerLabelOf({ trailer1Model: 'ШМИТЦ SPR-24' })).toBe('ШМИТЦ SPR-24');
+    });
+
+    it('пустой набор даёт пустую строку, а не разделители', () => {
+      expect(trailerLabelOf({})).toBe('');
+      expect(
+        trailerLabelOf({ trailer1Model: '  ', trailer1RegNumber: null, trailer2Model: undefined }),
+      ).toBe('');
+    });
+  });
+
   it('порядок присылается полным списком без повторов и не длиннее бланка', () => {
     expect(routeOrderSchema.safeParse({ requestIds: [UUID_A, UUID_B], version: 3 }).success).toBe(
       true,
@@ -1076,5 +1141,247 @@ describe('эффективная дата переноса рейса', () => {
     // Вперёд: решает прежний день рейса. Иначе прошлое открывалось бы в два шага — сдвинуть рейс
     // на завтра без права, а оттуда куда угодно, — и подача заявок состава переписалась бы молча.
     expect(movedRouteDateKey('2026-08-05', '2026-08-10')).toBe('2026-08-05');
+  });
+});
+
+// ── Подсказка заведения рейса: закреплённые прицепы (план `docs/vehicle-trailers-plan.md`, §4.2.2) ──
+//
+// `GET /vehicle-routes/suggest` отдавал `{ routes, trip }`, где `trip` — графы шапки ПРОШЛОГО рейса
+// машины (`lastTripFields`). Закрепление прицепа приезжает **третьим полем** `hitched`, а не
+// подмешивается в `trip`, и доказывается здесь не подстановка, а то, что она НЕ ПРОТЕКЛА: у машины
+// без закрепления `hitched` пуст, а `trip` возвращается ровно тем же, чем был. Смешай источники — и
+// история прицепа поехала бы в окно «Новый маршрут», которое сегодня не подставляет ничего, то есть
+// портал начал бы решать за человека там, где вчера молчал (ADR 0083, решение 2).
+//
+// БАЗЫ ЗДЕСЬ НЕТ, и это не упрощение. Проверяется форма ответа и форма запроса — то и другое живо
+// на любой машине, а db-тесты пропускаются без `TEST_DATABASE_URL`, то есть в обычном прогоне
+// защиты бы не было вовсе. Приём тот же, что в `office-equipment-sql-correlation.test.ts`:
+// `db/client` подменён фальшивым драйвером поверх настоящего drizzle (запрос собирается по-честному
+// и записывается), маршрут регистрируется на подставном `FastifyInstance`, обработчик зовётся
+// напрямую. Чего файл не проверяет: живую выборку из `vehicle_trailers` — правильность самих
+// привязок остаётся за `vehicle-trailers.db.test.ts`.
+
+/**
+ * Перехваченные запросы и то, чем на них отвечает драйвер. Через `vi.hoisted`: фабрика `vi.mock`
+ * поднимается выше объявлений модуля, и обычная константа к её выполнению ещё не существовала бы.
+ */
+const probe = vi.hoisted(() => ({
+  queries: [] as { text: string; params: unknown[] }[],
+  /** Строки прошлого рейса — по одной на машину; пусто означает «рейсов у машины ещё не было». */
+  lastTrip: [] as unknown[][],
+  /** Закреплённые прицепы: ключ — id машины, строки лежат в том порядке, в каком их вернёт база. */
+  hitched: new Map<string, unknown[][]>(),
+}));
+
+vi.mock('../src/db/client', async () => {
+  const { drizzle } = await import('drizzle-orm/node-postgres');
+  const schema = await import('../src/db/schema');
+  const result = (rows: unknown[][]) => ({
+    rows,
+    rowCount: rows.length,
+    fields: [],
+    command: 'SELECT',
+    oid: 0,
+  });
+  /**
+   * Драйвер отвечает по таблице запроса: `vehicle_trailers` — закреплённым, `vehicle_routes` без
+   * джойнов — прошлым рейсом (его читает `lastTripFields`), `vehicle_routes` с джойнами — рейсами
+   * дня, которых у этих машин нет. Строки массивами: drizzle просит у pg `rowMode: 'array'` и
+   * раскладывает значения по полям `select` позиционно — порядок фикстур обязан совпадать с
+   * порядком полей в запросе.
+   *
+   * `casing: 'snake_case'` — тот же, что у настоящего клиента: иначе собрался бы не тот SQL,
+   * который уходит в базу, и разбор запроса ниже проверял бы выдумку.
+   */
+  const client = {
+    query: async (q: unknown, params: unknown[] = []) => {
+      const text = typeof q === 'string' ? q : String((q as { text?: string }).text ?? q);
+      probe.queries.push({ text, params });
+      if (text.includes('"vehicle_trailers"')) {
+        return result(probe.hitched.get(String(params[0] ?? '')) ?? []);
+      }
+      if (text.includes('inner join')) return result([]);
+      if (text.includes('"vehicle_routes"')) return result(probe.lastTrip);
+      return result([]);
+    },
+    connect: async () => {
+      throw new Error('фальшивый драйвер транзакций не открывает: подсказка только читает');
+    },
+  };
+  return {
+    db: drizzle(client as never, { schema, casing: 'snake_case' }),
+    pool: client,
+    pingDb: async () => undefined,
+    closeDb: async () => undefined,
+  };
+});
+
+/** Машина с двумя закреплёнными прицепами и машина без единого — весь предмет проверки. */
+const VEHICLE_HITCHED = '44444444-4444-4444-8444-444444444444';
+const VEHICLE_BARE = '55555555-5555-4555-8555-555555555555';
+const TRAILER_SLOT_1 = '66666666-6666-4666-8666-666666666666';
+const TRAILER_SLOT_2 = '77777777-7777-4777-8777-777777777777';
+
+/**
+ * Графы шапки прошлого рейса: восемь значений в порядке полей `lastTripFields`. Прицеп в них стоит
+ * ВЧЕРАШНИЙ и с закреплением не совпадает — иначе «поле не протекло» доказывалось бы совпадением
+ * двух одинаковых строк.
+ */
+const LAST_TRIP_ROW = [
+  true,
+  'СЗАП-8551',
+  'АВ123477',
+  '',
+  '',
+  'Г-14',
+  'городское',
+  'коммерческая',
+] as unknown[];
+
+/** Строка закреплённого прицепа: порядок значений — порядок полей `hitchedTrailersOf`. */
+const trailerRow = (id: string, position: number, model: string, reg: string, status: string) =>
+  [id, position, model, reg, status] as unknown[];
+
+type SuggestHandler = (req: unknown) => Promise<{
+  routes: unknown[];
+  trip: RouteTripFields | null;
+  hitched: { id: string; position: number; model: string; registrationNumber: string }[];
+}>;
+
+let suggestHandler: SuggestHandler;
+let lastTripFieldsOf: (vehicleId: string) => Promise<RouteTripFields | null>;
+
+describe('подсказка заведения рейса: закреплённые прицепы приезжают своим полем', () => {
+  beforeAll(async () => {
+    /*
+     * Конфиг проверяет окружение при импорте, поэтому оно выставляется до первого `await import`.
+     * Адрес базы заведомо нерабочий: перестань подмена драйвера действовать — файл упадёт отказом
+     * соединения, а не уедет молча в чью-то настоящую базу.
+     */
+    const { generateKeyPairSync } = await import('node:crypto');
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    process.env.JWT_PRIVATE_KEY_PEM ??= String(privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    process.env.JWT_PUBLIC_KEY_PEM ??= String(publicKey.export({ type: 'spki', format: 'pem' }));
+    process.env.DATABASE_URL ??= 'postgres://suggest:suggest@127.0.0.1:1/none';
+    process.env.PUBLIC_ORIGIN ??= 'http://localhost:5173';
+    process.env.COOKIE_SECRET ??= 'test-cookie-secret-0123456789abcdef';
+    process.env.CSRF_SECRET ??= 'test-csrf-secret-0123456789abcdef';
+    process.env.S3_ENDPOINT ??= 'http://localhost:9000';
+    process.env.S3_BUCKET ??= 'test';
+    process.env.S3_ACCESS_KEY_ID ??= 'test';
+    process.env.S3_SECRET_ACCESS_KEY ??= 'test-secret';
+    process.env.LOG_LEVEL ??= 'error';
+
+    /*
+     * Подставной `FastifyInstance`: вместо маршрутизации складывает обработчики в карту. Стражи
+     * прав к форме ответа отношения не имеют — обработчик зовётся напрямую, минуя `preHandler`;
+     * доступ к подсказке проверяет `access-conditions.test.ts`.
+     */
+    const handlers = new Map<string, SuggestHandler>();
+    const record =
+      (method: string) =>
+      (url: string, _options: unknown, handler: SuggestHandler): void => {
+        handlers.set(`${method} ${url}`, handler);
+      };
+    const app: Record<string, unknown> = {
+      requirePermission: () => async () => undefined,
+      authenticate: async () => undefined,
+      get: record('GET'),
+      post: record('POST'),
+      put: record('PUT'),
+      patch: record('PATCH'),
+      delete: record('DELETE'),
+    };
+    app.withTypeProvider = () => app;
+
+    const routes = await import('../src/routes/vehicle-routes');
+    await routes.default(app as never);
+    suggestHandler = handlers.get('GET /suggest')!;
+    lastTripFieldsOf = (await import('../src/services/vehicle-routes')).lastTripFields;
+
+    probe.lastTrip = [LAST_TRIP_ROW];
+    probe.hitched.set(VEHICLE_HITCHED, [
+      trailerRow(TRAILER_SLOT_1, 1, 'ШМИТЦ SPR-24', 'ВХ933277', 'active'),
+      trailerRow(TRAILER_SLOT_2, 2, 'МАЗ 975800', 'ВК118577', 'maintenance'),
+    ]);
+  });
+
+  const suggest = async (vehicleId: string) => {
+    probe.queries.length = 0;
+    return suggestHandler({ query: { vehicleId, date: '2026-08-26' } });
+  };
+
+  it('у машины с закреплением поле полно и стоит по слотам', async () => {
+    const res = await suggest(VEHICLE_HITCHED);
+    // Каждое поле элемента здесь нужно окну: марка и госномер — это графы бланка, слот говорит, в
+    // какую из двух пар их класть, состояние — то, о чём подпись обязана предупредить (§4.2.3).
+    expect(res.hitched).toEqual([
+      {
+        id: TRAILER_SLOT_1,
+        position: 1,
+        model: 'ШМИТЦ SPR-24',
+        registrationNumber: 'ВХ933277',
+        status: 'active',
+      },
+      {
+        id: TRAILER_SLOT_2,
+        position: 2,
+        model: 'МАЗ 975800',
+        registrationNumber: 'ВК118577',
+        status: 'maintenance',
+      },
+    ]);
+  });
+
+  it('прицеп в ремонте из ответа не выкидывается — о нём предупреждают', async () => {
+    // Скрой его здесь — и машина с единственным закреплённым полуприцепом выглядела бы
+    // незакреплённой, то есть портал молча вернулся бы к вчерашнему поведению вместо подписи.
+    const res = await suggest(VEHICLE_HITCHED);
+    expect(res.hitched.map((t) => t.position)).toEqual([1, 2]);
+    expect(res.hitched[1]).toMatchObject({ status: 'maintenance' });
+  });
+
+  it('порядок слотов задаёт база, а удалённые в выборку не попадают', async () => {
+    await suggest(VEHICLE_HITCHED);
+    const trailerQueries = probe.queries.filter((q) => q.text.includes('"vehicle_trailers"'));
+    // Один запрос, а не по запросу на слот: слотов два, и два круга до базы на каждое открытие
+    // окна заведения рейса — цена, за которую ничего не покупается.
+    expect(trailerQueries).toHaveLength(1);
+    const { text } = trailerQueries[0]!;
+    expect(text).toMatch(/order by "vehicle_trailers"\."hitch_position"/);
+    expect(text).toMatch(/"vehicle_trailers"\."deleted_at" is null/);
+  });
+
+  it('у машины без закрепления поле пусто, а графы прошлого рейса — прежние', async () => {
+    const res = await suggest(VEHICLE_BARE);
+    // Главная проверка этапа. Пусто — это не «данных нет», а полноценный ответ: новой подстановки
+    // у такой машины не бывает, и окно обязано вести себя ровно как вчера.
+    expect(res.hitched).toEqual([]);
+    // `trip` — прежний, вчерашний, со своим прицепом: подстановка в него не подмешалась ни на байт.
+    expect(res.trip).toMatchObject({
+      withTrailer: true,
+      trailer1Model: 'СЗАП-8551',
+      trailer1RegNumber: 'АВ123477',
+      garageNumber: 'Г-14',
+      communicationKind: 'городское',
+      transportationKind: 'коммерческая',
+    });
+    // И то же самое — сравнением с источником: ответ отдаёт ровно то, что вернула `lastTripFields`,
+    // а не пересобранную из чего-то ещё копию.
+    expect(res.trip).toEqual(await lastTripFieldsOf(VEHICLE_BARE));
+  });
+
+  it('закрепление не переписывает графы прошлого рейса и у машины с прицепом', async () => {
+    // Два поля отвечают на разные вопросы и живут рядом: `trip` — история, `hitched` — сегодняшнее
+    // закрепление. Кто из них попадёт в графы, решает окно, а не сервер.
+    const res = await suggest(VEHICLE_HITCHED);
+    expect(res.trip).toEqual(await lastTripFieldsOf(VEHICLE_HITCHED));
+    expect(res.trip).toMatchObject({ trailer1RegNumber: 'АВ123477' });
+  });
+
+  it('ответ несёт ровно три поля — форма `VehicleRouteSuggestDto`', async () => {
+    const res = await suggest(VEHICLE_BARE);
+    expect(Object.keys(res).sort()).toEqual(['hitched', 'routes', 'trip']);
+    expect(res.routes).toEqual([]);
   });
 });

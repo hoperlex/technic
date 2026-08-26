@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import {
   buildVehicleCategoryName,
   isOdometerMaintenance,
@@ -26,6 +26,7 @@ import {
   vehicleModels,
   vehicles,
   vehicleSpecs,
+  vehicleTrailers,
   vehicleTypeSpecs,
   vehicleTypes,
   type VehicleKindRow,
@@ -44,6 +45,7 @@ import {
   valueDtos,
   valueToColumn,
 } from '../../vehicle-categories';
+import { releaseHitchesOfVehicle, releaseHitchesOfVehicleType } from '../../vehicle-trailer-hitch';
 import {
   boolCell,
   dateCell,
@@ -656,6 +658,14 @@ interface TypeState {
   isLinear: boolean;
   /** Признак ТО, заведённый сейчас: по нему видно, что строка файла его снимает. */
   maintenanceBasis: MaintenanceBasis;
+  /**
+   * Что стоит за машинами типа в реестре прицепов на момент чтения файла: `null` — ничего.
+   *
+   * Лежит здесь, а не отдельной картой окружения, ровно по той причине, по которой рядом лежат
+   * `isLinear` и `maintenanceBasis`: всё это — «чем тип является сейчас», и читается оно в одном
+   * месте, где строка файла сравнивается с заведённым.
+   */
+  hitched: { trailers: number; vehicles: number } | null;
 }
 
 interface TypesEnv {
@@ -720,47 +730,131 @@ async function syncTypeSpecs(
   if (changed) await refreshTypeCategories(tx, typeId, typeName);
 }
 
+/*
+ * ПЯТАЯ ДВЕРЬ К ПРИВЯЗКАМ ПРИЦЕПОВ — ОБМЕН СПРАВОЧНИКАМИ ФАЙЛОМ
+ * (план `docs/vehicle-trailers-plan.md`, §4.2.3 и §7; дверь нашли тесты — в таблице решений её
+ * не было, хотя §7 её уже называл).
+ *
+ * §4.2.3 перечисляет четыре двери, и все четыре живут в ручках: списание машины, её мягкое
+ * удаление и смена её типа на тип «формы № 3» (`routes/vehicles.ts`), перевод самого типа на
+ * «форму № 3» (`routes/vehicle-types.ts`). Обмен файлом пишет **те же поля** — `status` и
+ * `vehicle_type_id` у машины, `waybill_form_code` у типа, — но идёт мимо ручек: у него своя
+ * транзакция и свой разбор. Значит и снятие обязано быть здесь, иначе загрузка делает ровно то,
+ * от чего заперты остальные четыре, — и делает **пачкой**: в файле таких строк не одна.
+ *
+ * ПРАВИЛО ТО ЖЕ, что у ручек, и записано оно один раз в `services/vehicle-trailer-hitch.ts`:
+ * снятие, а не запрет (закрепление — удобство подстановки, а не учётный факт), в **той же**
+ * транзакции, что и сама правка, и тем же порядком захвата строк. Своего порядка здесь нет и
+ * быть не может: второй порядок на паре «машина ↔ прицеп» — это и есть та взаимоблокировка,
+ * ради которой порядок объявлен один на портал.
+ *
+ * ЧЕГО ЭТОТ ПОРЯДОК ЗДЕСЬ НЕ ДАЁТ, И ЭТО НАДО ЗНАТЬ. §4.2.1 объявляет порядок для **одной**
+ * операции: собрать все затронутые строки и взять их разом — сначала `vehicles`, потом
+ * `vehicle_trailers`. Загрузка файла — не одна операция, а сотня правок в одной транзакции, и
+ * строки она берёт **в порядке файла**: `UPDATE` каждой строки — это уже блокировка, взятая до
+ * всех последующих. Собственного порядка захвата здесь нет и не заводится (каждое снятие идёт
+ * общим), но объявленному порядку транзакция целиком всё равно не подчиняется — и подчиниться не
+ * может: её первую блокировку берёт правка справочника, а не снятие.
+ *
+ * Значит встречная пара «загрузка файла / перестановка прицепа в портале» способна встать в
+ * взаимоблокировку. Она не молчаливая: Postgres её обнаруживает и снимает одну из сторон, а
+ * загрузка применяется целиком либо никак (`engine.ts`) — то есть худший исход тут «файл не
+ * загружен, повторите», а не половина справочника. Свойство это **не новое**: правки справочника
+ * файлом и через карточку спорят за те же строки `vehicles` и без всяких прицепов. Убрать его
+ * можно только одним способом — собрать снятия всего файла в одно действие в конце транзакции, а
+ * для этого движку нужен свой хук «после всех строк», которого у него нет.
+ *
+ * ЧЕЛОВЕКУ ОБ ЭТОМ ГОВОРИТСЯ ЗАМЕЧАНИЕМ СТРОКИ (`ctx.warn`) — тем же способом, каким обмен
+ * сообщает о прочих своих последствиях («признак „ТО по пробегу“ снимается…»), и по той же
+ * причине: другого места в отчёте загрузки нет — его форма объявлена в контрактах
+ * (`DirectoryImportReportDto`), а колонок под снятые привязки в файле не существует.
+ * Замечание видно **до** записи, на предпросмотре, — там, где его и читают; ниже оно
+ * повторяется в отчёте применения, потому что отчёт у обоих проходов один.
+ *
+ * ЧТО ЭТО ЗНАЧИТ ДЛЯ ТОЧНОСТИ ЧИСЛА. Замечание считается по справочнику, прочитанному **до**
+ * транзакции, то есть это предсказание, а не итог: разойтись они могут ровно тогда, когда прицеп
+ * переставили между чтением файла и записью. Настоящий итог возвращают
+ * `releaseHitchesOfVehicle` и `releaseHitchesOfVehicleType` под блокировкой — и он никуда не
+ * уходит, потому что уйти ему **некуда**:
+ *
+ * - в отчёт — нечем: `DirectoryImportReportDto` объявлен в контрактах и собирается до
+ *   транзакции; поля под исход записи в нём нет;
+ * - в журнал портала — нечем: строку `directory.import` пишет маршрут после коммита и по своей
+ *   форме, а `writeAuditTx` объявлен закрытым перечнем областей (`lib/audit.ts`);
+ * - в лог сервера — нельзя: `logger` тянет за собой конфигурацию, а описание справочника обязано
+ *   собираться без неё. Это не придирка, а проверенный инвариант: `directory-transfer-registry`
+ *   строит все описания на подменённой базе и без переменных окружения вовсе.
+ *
+ * То есть «сколько сняло» человек читает предсказанием в отчёте, а доказательством остаётся сам
+ * реестр прицепов. Место под точный итог — правка контрактов, и она за границей этой работы.
+ */
+
 const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
   key: 'vehicle-types',
   env: async () => {
-    const [kinds, specs, types, bindings, categoryCounts, qualifications] = await Promise.all([
-      db
-        .select({ id: vehicleKinds.id, code: vehicleKinds.code, isActive: vehicleKinds.isActive })
-        .from(vehicleKinds),
-      db
-        .select({
-          id: vehicleSpecs.id,
-          code: vehicleSpecs.code,
-          name: vehicleSpecs.name,
-          isActive: vehicleSpecs.isActive,
-        })
-        .from(vehicleSpecs),
-      db
-        .select({
-          id: vehicleTypes.id,
-          code: vehicleTypes.code,
-          kindId: vehicleTypes.kindId,
-          isLinear: vehicleTypes.isLinear,
-          maintenanceBasis: vehicleTypes.maintenanceBasis,
-        })
-        .from(vehicleTypes),
-      db
-        .select({
-          vehicleTypeId: vehicleTypeSpecs.vehicleTypeId,
-          code: vehicleSpecs.code,
-          sortOrder: vehicleTypeSpecs.sortOrder,
-          name: vehicleSpecs.name,
-        })
-        .from(vehicleTypeSpecs)
-        .innerJoin(vehicleSpecs, eq(vehicleTypeSpecs.specId, vehicleSpecs.id))
-        .orderBy(asc(vehicleTypeSpecs.sortOrder), asc(vehicleSpecs.name)),
-      db
-        .select({ vehicleTypeId: vehicleCategories.vehicleTypeId, count: sql<number>`count(*)` })
-        .from(vehicleCategories)
-        .groupBy(vehicleCategories.vehicleTypeId),
-      loadQualifications(),
-    ]);
+    const [kinds, specs, types, bindings, categoryCounts, hitched, qualifications] =
+      await Promise.all([
+        db
+          .select({ id: vehicleKinds.id, code: vehicleKinds.code, isActive: vehicleKinds.isActive })
+          .from(vehicleKinds),
+        db
+          .select({
+            id: vehicleSpecs.id,
+            code: vehicleSpecs.code,
+            name: vehicleSpecs.name,
+            isActive: vehicleSpecs.isActive,
+          })
+          .from(vehicleSpecs),
+        db
+          .select({
+            id: vehicleTypes.id,
+            code: vehicleTypes.code,
+            kindId: vehicleTypes.kindId,
+            isLinear: vehicleTypes.isLinear,
+            maintenanceBasis: vehicleTypes.maintenanceBasis,
+          })
+          .from(vehicleTypes),
+        db
+          .select({
+            vehicleTypeId: vehicleTypeSpecs.vehicleTypeId,
+            code: vehicleSpecs.code,
+            sortOrder: vehicleTypeSpecs.sortOrder,
+            name: vehicleSpecs.name,
+          })
+          .from(vehicleTypeSpecs)
+          .innerJoin(vehicleSpecs, eq(vehicleTypeSpecs.specId, vehicleSpecs.id))
+          .orderBy(asc(vehicleTypeSpecs.sortOrder), asc(vehicleSpecs.name)),
+        db
+          .select({ vehicleTypeId: vehicleCategories.vehicleTypeId, count: sql<number>`count(*)` })
+          .from(vehicleCategories)
+          .groupBy(vehicleCategories.vehicleTypeId),
+        /*
+         * Закрепления полуприцепов в разрезе типа (план `docs/vehicle-trailers-plan.md`, §4.2.3).
+         *
+         * Читается один раз на файл, как и всё остальное окружение: перевод типа на «форму № 3»
+         * бывает в файле не один, а спрашивать базу построчно значило бы класть по запросу на
+         * каждую строку справочника.
+         *
+         * Считаются две величины, а не одна: снятие — операция на множество, и человеку сказать
+         * надо ровно «привязок N у M машин». Машины берутся все, включая списанные и мягко
+         * удалённые: привязка ссылается `ON DELETE RESTRICT`, и оставленная за невидимой машиной
+         * строка — не мелочь показа, а то, что потом не даст снести запись насовсем.
+         */
+        db
+          .select({
+            typeId: vehicles.vehicleTypeId,
+            trailers: sql<number>`count(*)`,
+            owners: sql<number>`count(distinct ${vehicles.id})`,
+          })
+          .from(vehicleTrailers)
+          .innerJoin(vehicles, eq(vehicles.id, vehicleTrailers.hitchedVehicleId))
+          .groupBy(vehicles.vehicleTypeId),
+        loadQualifications(),
+      ]);
 
+    const hitchedByTypeId = new Map(
+      hitched.map((h) => [h.typeId, { trailers: Number(h.trailers), vehicles: Number(h.owners) }]),
+    );
     const kindCodeById = new Map(kinds.map((k) => [k.id, k.code]));
     const specCodesByTypeId = new Map<string, string[]>();
     for (const b of bindings) {
@@ -784,6 +878,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
             categories: counts.get(t.id) ?? 0,
             isLinear: t.isLinear,
             maintenanceBasis: t.maintenanceBasis,
+            hitched: hitchedByTypeId.get(t.id) ?? null,
           },
         ]),
       ),
@@ -1001,6 +1096,22 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
         'признак «ТО по пробегу» снимается: срок обслуживания у машин этого типа портал считать и подсвечивать перестанет, а записи ТО останутся на месте',
       );
     }
+    /*
+     * Перевод типа на «форму № 3» осиротит закрепления полуприцепов у всех машин типа разом:
+     * граф прицепа у этого бланка нет вовсе (ADR 0071). Портал их снимает (§4.2.3) — и говорит
+     * об этом заранее, до записи: человек, правящий бланк у типа, о реестре прицепов не думает.
+     *
+     * Считается по **итоговому** бланку, а не по «бланк изменился»: тем же правилом живут обе
+     * ручки, и разойдись они — одна и та же таблица §4.2.3 читалась бы в трёх модулях
+     * по-разному. Цена решения — замечание у строки, которая уже стоит на «форме № 3» и при этом
+     * держит привязки. Такой строки через двери портала не бывает; появись она правкой руками
+     * или наследством миграции — сказать о ней вернее, чем промолчать.
+     */
+    if (m.waybillFormCode === 'leg3' && saved.hitched) {
+      ctx.warn(
+        `бланк «${WAYBILL_FORM_CELLS.leg3}» граф прицепа не имеет — закрепления полуприцепов у машин типа снимаются (привязок: ${saved.hitched.trailers}, машин: ${saved.hitched.vehicles})`,
+      );
+    }
 
     if (saved.categories === 0) return;
     // Состав ТТХ и категории типа — один инвариант (ADR 0016). Новый ТТХ мгновенно сделал бы все
@@ -1063,8 +1174,47 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
       })
       .where(eq(vehicleTypes.id, row.id));
     await syncTypeSpecs(tx, row.id, m.name, m.specCodes, env);
+    await releaseTypeHitches(tx, row, m, env);
   },
 });
+
+/**
+ * Снятие привязок у машин типа, переведённого файлом на «форму № 3», — пятая дверь §4.2.3 со
+ * стороны типа. Зовётся **последним действием той же транзакции**, что и сама правка: врозь они
+ * дают состояние, которого §4.2.3 не допускает, — легковой тип с закреплёнными за его машинами
+ * полуприцепами, — и живёт оно ровно до того, как кто-нибудь откроет карточку прицепа.
+ *
+ * Порядок захвата — общий на портал, и берётся он готовым (`releaseHitchesOfVehicleType`):
+ * сначала строки `vehicles`, затем `vehicle_trailers`, внутри каждой таблицы по возрастанию `id`.
+ *
+ * КОГДА СНЯТИЕ ВООБЩЕ ЗОВЁТСЯ. Условие сложнее, чем у ручки, и не по прихоти: ручка правит одну
+ * строку, а загрузка — сотни, и «позвать на всякий случай» стоит здесь `FOR UPDATE` на каждую
+ * машину каждого легкового типа файла. Поэтому зовётся оно в двух случаях:
+ *
+ * 1. **тип переводится на «форму № 3» сейчас** — тогда снятие обязательно, даже если по чтению
+ *    до транзакции за типом ничего не стояло: привязку могли поставить между чтением файла и
+ *    записью, и поймать её может только запрос под блокировкой;
+ * 2. **тип уже на «форме № 3», а привязки за ним числятся** — наследство правок помимо портала,
+ *    и загрузка, которая правит эту строку, его же и убирает. Ровно об этом случае предупредило
+ *    замечание строки.
+ *
+ * Строка, которую файл не меняет вовсе, сюда не доходит: движок зовёт `update()` только для
+ * строк с правками (`engine.ts`, `planRows`). Наследство под нетронутой строкой остаётся лежать —
+ * замечание о нём человек прочитает, а уберёт его карточка типа или следующая правка.
+ */
+async function releaseTypeHitches(
+  tx: Tx,
+  row: VehicleTypeRow,
+  m: TypeModel,
+  env: TypesEnv,
+): Promise<void> {
+  if (m.waybillFormCode !== 'leg3') return;
+  const known = env.saved.get(m.savedCode ?? m.code)?.hitched;
+  if (row.waybillFormCode === 'leg3' && !known) return;
+  // Возвращённые числа никуда не уходят, и это не потеря по дороге: сказать их некуда — см.
+  // очерк пятой двери выше. Человеку о снятии сказало замечание строки, до записи.
+  await releaseHitchesOfVehicleType(tx, row.id);
+}
 
 // ── Категории типов ТС ──
 
@@ -1628,10 +1778,21 @@ interface VehicleModel {
    * бы уже не там, где заведена.
    */
   savedOwnership?: VehicleOwnership;
+  /**
+   * Идентификатор заведённой записи; у новой строки поля нет. Нужен ровно затем, зачем рядом
+   * лежит `savedOwnership`: сказать о строке то, что видно только про **уже заведённую** машину, —
+   * здесь это закреплённые за ней полуприцепы (§4.2.3). В ячейки не попадает и в сравнении «что
+   * изменится» не участвует: колонки его не читают.
+   */
+  savedId?: string;
 }
 
 interface VehiclesEnv {
-  types: Map<string, { id: string }>;
+  /**
+   * Типы по коду. Бланк лежит рядом с идентификатором, потому что читаются они вместе: тип машины
+   * — это и есть её бланк, а у бланка «форма № 3» граф прицепа нет вовсе (ADR 0071).
+   */
+  types: Map<string, { id: string; waybillFormCode: WaybillFormCode }>;
   typeCodeById: Map<string, string>;
   /** Категория ищется внутри типа: одноимённые категории разных типов — разные записи. */
   categories: Map<string, { id: string; isActive: boolean }>;
@@ -1643,6 +1804,32 @@ interface VehiclesEnv {
   organizations: Map<string, { id: string }>;
   organizationNameById: Map<string, string>;
   qualifications: QualificationIndex;
+  /**
+   * Сколько полуприцепов закреплено за машиной — по идентификатору машины; машины без
+   * закреплений в карте нет вовсе. Читается один раз на файл: списаний в нём бывает не одно, а
+   * запрос на строку справочника означал бы сотни запросов на загрузку.
+   */
+  hitchedByVehicleId: Map<string, number>;
+}
+
+/**
+ * Снимает ли машина в этом состоянии закрепления полуприцепов (§4.2.3): списанная — да, машина
+ * бланка «форма № 3» — да, потому что граф прицепа у этого бланка нет вовсе (ADR 0071).
+ *
+ * Мягкого удаления среди состояний нет, и это не пропуск: удалённой техники в файле не бывает
+ * (`load` берёт только живые строки), а загрузка не удаляет — она заводит и правит.
+ */
+function releasesHitches(status: VehicleStatus, form: WaybillFormCode | undefined): boolean {
+  return status === 'retired' || form === 'leg3';
+}
+
+/**
+ * Бланк типа по его идентификатору — через код: своей связки «идентификатор → бланк» в окружении
+ * нет, а обе половины уже есть. Нужен для прежнего состояния машины: в модели лежит код нового
+ * типа, а в строке базы — идентификатор старого.
+ */
+function waybillFormOfTypeId(typeId: string, env: VehiclesEnv): WaybillFormCode | undefined {
+  return env.types.get(env.typeCodeById.get(typeId) ?? '')?.waybillFormCode;
 }
 
 function findType(code: string, env: VehiclesEnv): Lookup {
@@ -1695,8 +1882,14 @@ function findOrganization(text: string, env: VehiclesEnv): Lookup {
 const vehiclesDirectory = directory<VehicleRow, VehicleModel, VehiclesEnv>({
   key: 'vehicles',
   env: async () => {
-    const [types, categories, models, lessors, orgs, qualifications] = await Promise.all([
-      db.select({ id: vehicleTypes.id, code: vehicleTypes.code }).from(vehicleTypes),
+    const [types, categories, models, lessors, orgs, hitched, qualifications] = await Promise.all([
+      db
+        .select({
+          id: vehicleTypes.id,
+          code: vehicleTypes.code,
+          waybillFormCode: vehicleTypes.waybillFormCode,
+        })
+        .from(vehicleTypes),
       db
         .select({
           id: vehicleCategories.id,
@@ -1722,6 +1915,17 @@ const vehiclesDirectory = directory<VehicleRow, VehicleModel, VehiclesEnv>({
       db
         .select({ id: organizations.id, name: organizations.name, inn: organizations.inn })
         .from(organizations),
+      /*
+       * Закрепления полуприцепов в разрезе машины (план `docs/vehicle-trailers-plan.md`, §4.2.3):
+       * ими и объясняется человеку, что списание строки файла отцепит полуприцеп. Прицепы
+       * берутся все живые — удалённой строке привязку не даёт держать сама схема
+       * (`vehicle_trailers_hitch_alive_check`), поэтому отбирать нечего.
+       */
+      db
+        .select({ vehicleId: vehicleTrailers.hitchedVehicleId, trailers: sql<number>`count(*)` })
+        .from(vehicleTrailers)
+        .where(isNotNull(vehicleTrailers.hitchedVehicleId))
+        .groupBy(vehicleTrailers.hitchedVehicleId),
       loadQualifications(),
     ]);
 
@@ -1734,7 +1938,7 @@ const vehiclesDirectory = directory<VehicleRow, VehicleModel, VehiclesEnv>({
     }
 
     return {
-      types: new Map(types.map((t) => [t.code, { id: t.id }])),
+      types: new Map(types.map((t) => [t.code, { id: t.id, waybillFormCode: t.waybillFormCode }])),
       typeCodeById: new Map(types.map((t) => [t.id, t.code])),
       categories: new Map(
         categories.map((c) => [
@@ -1754,6 +1958,9 @@ const vehiclesDirectory = directory<VehicleRow, VehicleModel, VehiclesEnv>({
       organizations: organizationsByKey,
       organizationNameById: new Map(orgs.map((o) => [o.id, o.name])),
       qualifications,
+      hitchedByVehicleId: new Map(
+        hitched.flatMap((h) => (h.vehicleId === null ? [] : [[h.vehicleId, Number(h.trailers)]])),
+      ),
     };
   },
   columns: () => [
@@ -2015,6 +2222,7 @@ const vehiclesDirectory = directory<VehicleRow, VehicleModel, VehiclesEnv>({
     sourceName: row.sourceName,
     note: row.note,
     savedOwnership: row.ownership,
+    savedId: row.id,
   }),
   blank: () => ({
     ownership: 'own',
@@ -2067,6 +2275,34 @@ const vehiclesDirectory = directory<VehicleRow, VehicleModel, VehiclesEnv>({
       ctx.warn(
         `категория «${m.categoryName}» погашена — новой технике её в портале уже не выбрать`,
       );
+    }
+
+    /*
+     * Списание машины и перевод её на тип «формы № 3» снимают закрепления полуприцепов (§4.2.3) —
+     * и человеку об этом говорится **до** записи: он правит справочник техники и о реестре
+     * прицепов в этот момент не думает вовсе.
+     *
+     * Число — из справочника, прочитанного до транзакции, то есть это предсказание: настоящее
+     * снятие считает `releaseHitchesOfVehicle` под блокировкой. Разойтись они могут только если
+     * прицеп переставили между предпросмотром и применением.
+     *
+     * Считается по **итоговому** состоянию, как у обеих ручек (§4.2.3), — и потому замечание
+     * выйдет и у строки, которая списана уже сейчас и при этом держит привязку. Через двери
+     * портала такой строки не бывает; появись она наследством — сказать о ней вернее, чем
+     * промолчать.
+     */
+    if (
+      m.savedId !== undefined &&
+      releasesHitches(m.status, env.types.get(m.typeCode)?.waybillFormCode)
+    ) {
+      const trailers = env.hitchedByVehicleId.get(m.savedId) ?? 0;
+      if (trailers > 0) {
+        ctx.warn(
+          m.status === 'retired'
+            ? `машина списывается — закрепления полуприцепов снимаются (привязок: ${trailers}): за списанной машиной прицеп не стоит`
+            : `бланк «${WAYBILL_FORM_CELLS.leg3}» граф прицепа не имеет — закрепления полуприцепов снимаются (привязок: ${trailers})`,
+        );
+      }
     }
 
     // Ветки различают CHECK'и в базе (ADR 0018 §1–2). Здесь они проверяются заранее и словами:
@@ -2151,8 +2387,43 @@ const vehiclesDirectory = directory<VehicleRow, VehicleModel, VehiclesEnv>({
       .update(vehicles)
       .set({ ...vehicleValues(m, env), updatedAt: new Date() })
       .where(eq(vehicles.id, row.id));
+    await releaseVehicleHitches(tx, row, m, env);
   },
 });
+
+/**
+ * Снятие привязок у машины, списанной файлом или переведённой им на тип «формы № 3», — пятая
+ * дверь §4.2.3 со стороны машины. Зовётся **после самой правки и в той же транзакции**: врозь они
+ * дают состояние, которого §4.2.3 не допускает, — списанная машина с закреплённым полуприцепом.
+ *
+ * Порядок захвата берётся готовым (`releaseHitchesOfVehicle`) и потому совпадает с ручками:
+ * `UPDATE vehicles` выше — это и есть первая блокировка объявленного порядка, а снятие её лишь
+ * повторяет и добирает строки прицепов.
+ *
+ * КОГДА ЗОВЁТСЯ. Как и у типа, двумя случаями, и по той же причине — загрузка правит сотни строк,
+ * а «позвать на всякий случай» стоит `FOR UPDATE` на каждую машину каждого легкового типа файла:
+ *
+ * 1. **машина входит в это состояние сейчас** — списывается или переезжает в тип «формы № 3».
+ *    Тогда снятие обязательно, даже если по чтению до транзакции за ней ничего не стояло:
+ *    привязку могли поставить между чтением файла и записью, и увидит её только запрос под
+ *    блокировкой (встречная команда привязки читает бланк и статус уже после захвата строки
+ *    машины — значит, либо она дождётся нас и получит отказ, либо ляжет раньше и будет снята);
+ * 2. **машина в нём уже была, а привязки за ней числятся** — наследство правок помимо портала,
+ *    о котором предупредило замечание строки.
+ */
+async function releaseVehicleHitches(
+  tx: Tx,
+  row: VehicleRow,
+  m: VehicleModel,
+  env: VehiclesEnv,
+): Promise<void> {
+  if (!releasesHitches(m.status, env.types.get(m.typeCode)?.waybillFormCode)) return;
+  const was = releasesHitches(row.status, waybillFormOfTypeId(row.vehicleTypeId, env));
+  if (was && (env.hitchedByVehicleId.get(row.id) ?? 0) === 0) return;
+  // Число снятых здесь не сохраняется: сказать его некуда (см. очерк пятой двери выше), а
+  // человеку о снятии сказало замечание строки — до записи, на предпросмотре.
+  await releaseHitchesOfVehicle(tx, row.id);
+}
 
 /**
  * Строка техники для записи. Одна сборка на заведение и обновление: у веток разные наборы полей, и

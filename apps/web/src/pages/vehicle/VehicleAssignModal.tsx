@@ -77,6 +77,8 @@ import {
 } from './assignDriverHints';
 import { emptyVehicleListText, vehicleOptionLabel } from './assignVehicleHints';
 import { RollbackPreview } from './RollbackPreview';
+import { inheritedTrailerGraphs, vehicleRouteKeys } from '@entities/vehicle-route';
+import { TrailerFields, trailerTripBody } from './TrailerFields';
 import {
   ReassignPreview,
   reassignPreviewBlocked,
@@ -195,6 +197,8 @@ interface FormValues {
   withTrailer?: boolean;
   trailer1Model?: string;
   trailer1RegNumber?: string;
+  trailer2Model?: string;
+  trailer2RegNumber?: string;
   garageNumber?: string;
   communicationKind?: string;
   transportationKind?: string;
@@ -853,9 +857,9 @@ export function VehicleAssignModal({
   const joiningRoute = !!routeId && routeId !== NEW_ROUTE;
   const joinedRoute = routeOptions.find((r) => r.id === routeId) ?? null;
 
-  /** Графы шапки от прошлого рейса выбранной машины — они нужны только новому рейсу. */
+  /** Графы шапки прошлого рейса машины и закреплённые за ней прицепы — они нужны новому рейсу. */
   const { data: suggestion } = useQuery({
-    queryKey: ['vehicle-routes', 'suggest', vehicleId, tripDate],
+    queryKey: vehicleRouteKeys.suggest(vehicleId, tripDate),
     queryFn: () => vehicleRoutesApi.suggest({ vehicleId: vehicleId!, date: tripDate! }),
     enabled: needsRoute && !joiningRoute && !!vehicleId && !!tripDate,
   });
@@ -984,14 +988,18 @@ export function VehicleAssignModal({
     form.setFields([{ name: 'driverPersonId', value: undefined, errors: [] }]);
   }, [routeId]);
 
-  /** Графы шапки наследуются от прошлого рейса этой машины — их правят раз в сезон, а не в рейс. */
+  /**
+   * Графы шапки наследуются от прошлого рейса этой машины — их правят раз в сезон, а не в рейс.
+   * Кроме прицепа, если за машиной он закреплён: `trip` — вчерашний рейс, а закрепление —
+   * сегодняшнее решение человека, и наследовать поверх него значило бы поставить в бланк то, что
+   * за машиной уже не стоит (план `docs/vehicle-trailers-plan.md`, §4.2.2). Графы прицепа тогда
+   * ставит `TrailerFields` — там же, где о них подпись.
+   */
   useEffect(() => {
     const trip = suggestion?.trip;
     if (!trip) return;
     form.setFieldsValue({
-      withTrailer: trip.withTrailer,
-      trailer1Model: trip.trailer1Model,
-      trailer1RegNumber: trip.trailer1RegNumber,
+      ...inheritedTrailerGraphs(trip, suggestion?.hitched),
       garageNumber: trip.garageNumber,
       // У прошлого рейса графа могла быть пустой — все рейсы до появления списка такие.
       // Наследовать пустоту в поле, которого без выбора не сохранить, значит наследовать заминку:
@@ -999,7 +1007,7 @@ export function VehicleAssignModal({
       communicationKind: trip.communicationKind || DEFAULT_COMMUNICATION_KIND,
       transportationKind: trip.transportationKind,
     });
-  }, [suggestion?.trip]);
+  }, [suggestion?.trip, suggestion?.hitched]);
 
   /** Ставки предложения аренды: по ним подставляются поля и видно, что цену изменили вручную. */
   const listedRate = selected?.ownership === 'rental' ? selected : null;
@@ -1163,9 +1171,7 @@ export function VehicleAssignModal({
                       newRoute: {
                         driverPersonId: v.driverPersonId,
                         trip: {
-                          withTrailer: v.withTrailer ?? false,
-                          trailer1Model: v.withTrailer ? (v.trailer1Model ?? '') : '',
-                          trailer1RegNumber: v.withTrailer ? (v.trailer1RegNumber ?? '') : '',
+                          ...trailerTripBody(v),
                           garageNumber: v.garageNumber ?? '',
                           communicationKind: v.communicationKind ?? '',
                           transportationKind: v.transportationKind ?? '',
@@ -1916,19 +1922,19 @@ export function VehicleAssignModal({
                   категорию водителя, поэтому список выше пересобирается при его включении. */}
                   {!joiningRoute && (
                     <>
-                      <Form.Item name="withTrailer" valuePropName="checked">
-                        <Checkbox>Рейс с прицепом</Checkbox>
-                      </Form.Item>
-                      {withTrailer && (
-                        <>
-                          <Form.Item name="trailer1Model" label="Марка прицепа">
-                            <Input placeholder="МАЗ-8926" />
-                          </Form.Item>
-                          <Form.Item name="trailer1RegNumber" label="Госномер прицепа">
-                            <Input placeholder="8062 ЕН 77" />
-                          </Form.Item>
-                        </>
-                      )}
+                      {/* Обе пары граф наследуются от прошлого рейса тем же движением, а у машины
+                      с закреплённым прицепом их ставит закрепление — оно старше истории. */}
+                      <TrailerFields
+                        key={targetId}
+                        withTrailer={withTrailer}
+                        checkboxLabel="Рейс с прицепом"
+                        modelPlaceholder="МАЗ-8926"
+                        regNumberPlaceholder="8062 ЕН 77"
+                        secondPlaceholder="Если прицепов два"
+                        hitched={suggestion?.hitched}
+                        vehicleId={vehicleId}
+                        vehicleTypeId={selected?.vehicleTypeId}
+                      />
 
                       <Form.Item name="garageNumber" label="Гаражный номер">
                         <Input placeholder="00000389" />
