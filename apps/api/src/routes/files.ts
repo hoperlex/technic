@@ -26,8 +26,10 @@ import {
   vehicleRequests,
   vehicles,
   wasteRequests,
+  wasteTicketFieldEvents,
   waybillFiles,
 } from '../db/schema';
+import { writeAudit } from '../lib/audit';
 import { err } from '../lib/errors';
 import { requirePrincipal } from '../auth/plugin';
 import {
@@ -132,6 +134,13 @@ export interface FileLinkage {
  * таблиц привязки, которое теперь живёт в функции БД `file_is_linked(uuid)` (миграция 0133) и
  * спрашивается через `isFileLinked`. Модуль, о котором та функция не знает, попадает сюда как
  * «файл ничей» — и ветка авторства отдаёт документ бессрочно.
+ *
+ * **Сквозного аудита талонов (ADR 0137) здесь нет намеренно.** Он не «ещё один модуль с
+ * вложениями», а второй вход в тот же вывоз, и решается он не так, как всё перечисленное выше: эта
+ * функция складывает признаки в одно «да», после чего сказать, какой именно ветвью открыт файл,
+ * уже нельзя. Аудиту это нужно — его открытие пишется в журнал просмотров (§4.2), а обычная работа
+ * держателя со своей площадкой не пишется. Признак в `FileLinkage` стёр бы разницу между ними в
+ * первой же строке, поэтому ветка живёт в `canAccessFile`, где вход ещё различим.
  */
 export function decideFileAccess(
   p: Principal,
@@ -148,11 +157,59 @@ export function decideFileAccess(
   return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
 }
 
+/**
+ * Талон ли это — единственный вопрос, на который отвечает ветка сквозного аудита распознавания
+ * (ADR 0137, решение 8; план аудита §4.2). Возвращает заявку, в которой талон лежит (её может уже
+ * не быть), либо `null`, если файл талоном не является.
+ *
+ * **Почему `kind = 'ticket'`, а не «файл, связанный с заявкой вывоза».** Право аудита — про
+ * машинное чтение бумаги, и открывать им всё подшитое к заявке значило бы отдать держателю заодно
+ * договоры, письма и фотографии площадок, к распознаванию отношения не имеющие. Разделяет одно и
+ * другое ровно эта колонка — та же, по которой отличает талон от вложения весь модуль разбора.
+ *
+ * **Почему два источника, а не один.** Талон лежит в `request_files`, пока цела заявка; наблюдение
+ * (`waste_ticket_field_events.file_id`) переживает и талон, и заявку — ссылки на них обнуляются, а
+ * `file_id` остаётся. Лента аудита показывает наблюдения за весь период, и лупа рядом со строкой
+ * обязана открываться, пока цел сам файл: разбор ошибки без картинки бессмыслен, а талон снятый
+ * или откатанный для метрики ценнее прочих — его и трогали потому, что с чтением что-то было не
+ * так. «Скан недоступен» остаётся ответом только на исчезнувший или помеченный удалённым файл.
+ *
+ * **Заявка не проверяется ни на удалённость, ни на область** — и это не пропуск: обе проверки
+ * стоят выше, в обычной ветке вывоза, а здесь они закрыли бы ровно те талоны, ради которых ветка и
+ * заведена. Сквозным аудит выбран заказчиком (§4.1), и цена решения названа там же.
+ */
+async function wasteTicketScan(fileId: string): Promise<{ requestId: string | null } | null> {
+  const [attached] = await db
+    .select({ requestId: requestFiles.requestId })
+    .from(requestFiles)
+    .where(and(eq(requestFiles.fileId, fileId), eq(requestFiles.kind, 'ticket')))
+    .limit(1);
+  if (attached) return { requestId: attached.requestId };
+  const [observed] = await db
+    .select({ requestId: wasteTicketFieldEvents.requestId })
+    .from(wasteTicketFieldEvents)
+    .where(eq(wasteTicketFieldEvents.fileId, fileId))
+    .limit(1);
+  return observed ? { requestId: observed.requestId } : null;
+}
+
+/**
+ * Каким входом открыт файл — и открыт ли вообще.
+ *
+ * Не `boolean`, потому что вход решает не только «отдавать ли», но и «писать ли просмотр»: сквозной
+ * аудит талонов виден в журнале, обычная работа — нет (ADR 0137, §4.2). Разбор входа именно здесь,
+ * а не догадкой в обработчике: восстанавливать причину доступа второй проверкой значило бы завести
+ * второе мнение о правилах — то самое, которое однажды разойдётся с первым и начнёт писать в журнал
+ * не те строки (или не писать те).
+ */
+type FileAccess =
+  { via: 'denied' } | { via: 'linkedRecord' } | { via: 'ticketAudit'; requestId: string | null };
+
 async function canAccessFile(
   p: Principal,
   fileId: string,
   uploadedBy: string | null,
-): Promise<boolean> {
+): Promise<FileAccess> {
   // Связи ищем только по доступным ролям модулям: иначе учётка без роли (и любая новая роль)
   // прошла бы по заявке вывоза — ограничения видимости на неё не действуют, они про штаб и
   // оператора.
@@ -305,7 +362,7 @@ async function canAccessFile(
         ? await isFileLinked(fileId)
         : false;
 
-  return decideFileAccess(p, uploadedBy, {
+  const byRecord = decideFileAccess(p, uploadedBy, {
     visibleWaste,
     visibleVehicle,
     visibleService,
@@ -315,6 +372,22 @@ async function canAccessFile(
     ownDriverReading,
     linkedAnywhere,
   });
+  if (byRecord) return { via: 'linkedRecord' };
+
+  /*
+   * Сквозной аудит распознавания талонов (ADR 0137, решение 8) — последним, и порядок здесь несёт
+   * смысл, а не экономию запроса.
+   *
+   * Право `wasteRequests.ticketAudit` без `wasteRequests.read` не выдаётся (`PERMISSION_REQUIRES`),
+   * так что его держатель ведёт и обычную работу: свою площадку, свои заявки, свои талоны. Их он
+   * открывает ветками выше — и в журнал просмотров они не попадают. Спроси мы аудит первым, те же
+   * открытия стали бы записями «смотрел чужое», и читать журнал стало бы нечем: настоящие переходы
+   * через область утонули бы в собственной работе держателя. Журнал заведён про сквозной доступ
+   * (§4.2), поэтому и ветка стоит там, где обычный доступ уже отказал.
+   */
+  if (!can(p, 'wasteRequests.ticketAudit')) return { via: 'denied' };
+  const scan = await wasteTicketScan(fileId);
+  return scan ? { via: 'ticketAudit', requestId: scan.requestId } : { via: 'denied' };
 }
 
 export default async function filesRoutes(app: FastifyInstance): Promise<void> {
@@ -404,9 +477,32 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
       const p = requirePrincipal(req);
       const [file] = await db.select().from(files).where(eq(files.id, req.params.id));
       if (!file || file.status !== 'active' || file.deletedAt) throw err.notFound('Файл не найден');
-      if (!(await canAccessFile(p, file.id, file.uploadedBy))) throw err.forbidden();
+      const access = await canAccessFile(p, file.id, file.uploadedBy);
+      if (access.via === 'denied') throw err.forbidden();
       const inline = req.query.disposition === 'inline' && isInlineViewable(file.contentType);
       const url = await presignGet(file.objectKey, file.filename, inline ? 'inline' : 'attachment');
+      if (access.via === 'ticketAudit') {
+        /*
+         * Просмотр скана мимо области — событие журнала (ADR 0137, §4.2). Право сквозное: держатель
+         * видит бумагу всех площадок и всех перевозчиков, и единственное, чем это уравновешено, —
+         * что видно, кто смотрел. Запись поэтому идёт не на «файл открыт», а на «файл открыт правом
+         * аудита»: своя площадка держателя в журнале не появляется.
+         *
+         * Сущность — файл, а не заявка, как у соседних событий вывоза: заявки может уже не быть
+         * (талон снят, заявка откатана), а вопрос к строке всегда про конкретный скан. Заявка
+         * уходит в `metadata`, пока она известна: по ней читается, чью площадку смотрели.
+         *
+         * `writeAudit`, а не `writeAuditTx`: транзакции здесь нет, а закрытый перечень строгой
+         * записи (см. `lib/audit.ts`) молча не расширяют — просмотр в него не входит.
+         */
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'waste_request.ticket_audit_view',
+          entityType: 'file',
+          entityId: file.id,
+          metadata: { requestId: access.requestId, filename: file.filename },
+        });
+      }
       return { url, expiresIn: config.s3.downloadUrlTtl };
     },
   );

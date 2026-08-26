@@ -37,10 +37,12 @@ import {
   jobs,
   users,
   wasteRequests,
+  wasteTicketBlindCheckObservations,
   wasteTicketBlindChecks,
   wasteTicketCheckResolutions,
   wasteTicketFiles,
   wasteTicketPages,
+  wasteTicketProposalObservations,
   wasteTicketProposals,
   wasteTicketRecognitionAttempts,
   wasteTickets,
@@ -60,6 +62,7 @@ import {
 } from '../services/waste-ticket-blind';
 import { wasteTicketCheckFingerprint, wasteTicketChecks } from '../services/waste-ticket-checks';
 import {
+  currentTicketObservations,
   recordTicketFieldEvents,
   ticketFieldValue,
   TICKET_FIELDS,
@@ -145,15 +148,85 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
    * Талон ЭТОЙ заявки. Принимает и транзакцию, и само соединение: проверка принадлежности нужна и
    * там, где писать нечего, — а требовать ради неё транзакцию значило бы открывать её впустую.
    */
-  async function loadTicket(tx: Tx | typeof db, requestId: string, ticketId: string) {
-    const rows = await tx
+  async function loadTicket(
+    tx: Tx | typeof db,
+    requestId: string,
+    ticketId: string,
+    /**
+     * `forUpdate` — там, где по прочитанной строке пишется журнал разбора: между чтением и записью
+     * события воркер успевает перезаписать талон новым проходом, и правка адресовалась бы чтению,
+     * которого человек не видел (план §1.1). Замок берётся только по просьбе: читающим ручкам он
+     * не нужен, а держать его впустую значит стоять на пути у воркера.
+     */
+    opts?: { forUpdate?: boolean },
+  ) {
+    const query = tx
       .select()
       .from(wasteTickets)
       .where(and(eq(wasteTickets.id, ticketId), eq(wasteTickets.requestId, requestId)))
       .limit(1);
+    const rows = await (opts?.forUpdate ? query.for('update') : query);
     const ticket = rows[0];
     if (!ticket) throw err.notFound('Талон не найден');
     return ticket;
+  }
+
+  /**
+   * Изменилось ли поле НА САМОМ ДЕЛЕ. Форма талона шлёт все пять полей всегда, поэтому «пришло в
+   * теле» и «человек исправил» — разные вещи: пиши мы событие по факту присутствия поля, каждое
+   * сохранение давало бы пять правок, из которых настоящих обычно ноль, и знаменатель доли
+   * исправлений мерил бы работу формы, а не работу человека (план §1.2, миграция 0210).
+   */
+  function ticketFieldEdited(
+    field: WasteTicketField,
+    oldValue: string | null,
+    newValue: string | null,
+  ): boolean {
+    // Объём лежит в `numeric` и читается строкой вида «20.000»: сравнение текстом объявило бы
+    // исправлением повторный ввод того же числа другой записью.
+    if (field === 'volumeM3') {
+      if (oldValue === null || newValue === null) return oldValue !== newValue;
+      return Number(oldValue) !== Number(newValue);
+    }
+    // Дата приходит строгим `YYYY-MM-DD` — сравнивается как есть, без приведения к типу.
+    if (field === 'issuedOn') return oldValue !== newValue;
+    // Остальное текстом, где пустая строка и `null` — одно и то же: талон без номера и адреса
+    // хранит `''`, а журнал показывает `null`, и разница между ними — свойство хранения, а не
+    // человеческого решения.
+    return (oldValue ?? '').trim() !== (newValue ?? '').trim();
+  }
+
+  /**
+   * Чем прочитано предложение: поле → наблюдение и признак отличия от талона В МОМЕНТ ЧТЕНИЯ.
+   *
+   * Нужно и принятию, и отклонению, и обоим — внутри их транзакции и до удаления строки: связи
+   * уходят каскадом вместе с предложением, а исход обязан пережить удаление (план §1.2.2).
+   *
+   * Поля без связи — предложение, заведённое до миграции 0210: событие им всё равно пишется, но
+   * без адресации, и в когорту наблюдений оно не попадает, потому что ссылаться ему не на что.
+   */
+  async function proposalObservations(
+    tx: Tx,
+    ticketId: string,
+  ): Promise<{
+    byField: Partial<Record<WasteTicketField, string | null>>;
+    differs: Partial<Record<WasteTicketField, boolean>>;
+  }> {
+    const rows = await tx
+      .select({
+        field: wasteTicketProposalObservations.field,
+        observationId: wasteTicketProposalObservations.observationId,
+        differs: wasteTicketProposalObservations.differs,
+      })
+      .from(wasteTicketProposalObservations)
+      .where(eq(wasteTicketProposalObservations.proposalTicketId, ticketId));
+    const byField: Partial<Record<WasteTicketField, string | null>> = {};
+    const differs: Partial<Record<WasteTicketField, boolean>> = {};
+    for (const row of rows) {
+      byField[row.field] = row.observationId;
+      differs[row.field] = row.differs;
+    }
+    return { byField, differs };
   }
 
   /**
@@ -639,7 +712,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
 
       const reason = req.body.duplicateOverrideReason?.trim() ?? '';
       const result = await db.transaction(async (tx) => {
-        const ticket = await loadTicket(tx, request.id, req.params.ticketId);
+        const ticket = await loadTicket(tx, request.id, req.params.ticketId, { forUpdate: true });
         if (ticket.status === 'dismissed') {
           throw err.badRequest('Талон снят как «не талон» — подтверждать нечего');
         }
@@ -691,16 +764,37 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         // соседи в тот же день.
         const blind = shouldSampleBlindCheck(ticket, config.ticketOcr.blindCheckRate);
         if (blind) {
-          await tx.insert(wasteTicketBlindChecks).values({
-            ticketId: ticket.id,
-            // Снимок, а не ссылка на талон: талон после подтверждения правят, и сравнение с
-            // поехавшей величиной меряло бы не то, ради чего заведено.
-            baselineNumberRaw: ticket.numberRaw,
-            baselineNumberKey: ticket.numberKey,
-            baselineIssuedOn: ticket.issuedOn,
-            baselineVolumeM3: ticket.volumeM3,
-            baselineFingerprint: blindBaselineFingerprint(ticket),
-          });
+          const [check] = await tx
+            .insert(wasteTicketBlindChecks)
+            .values({
+              ticketId: ticket.id,
+              // Снимок, а не ссылка на талон: талон после подтверждения правят, и сравнение с
+              // поехавшей величиной меряло бы не то, ради чего заведено.
+              baselineNumberRaw: ticket.numberRaw,
+              baselineNumberKey: ticket.numberKey,
+              baselineIssuedOn: ticket.issuedOn,
+              baselineVolumeM3: ticket.volumeM3,
+              baselineFingerprint: blindBaselineFingerprint(ticket),
+            })
+            .returning({ id: wasteTicketBlindChecks.id });
+          if (!check) throw err.conflict();
+
+          // Чем снят `baseline` — записывается здесь же, в той же транзакции (план §1.1). Позже
+          // связь взять неоткуда: арбитраж случается над талоном, который с момента отбора могли
+          // перечитать дважды, и «последнее наблюдение» приписало бы вердикт не той модели.
+          //
+          // Три поля, а не пять: перепроверка меряет чтение рукописи, а не разметку бланка.
+          const observations = await currentTicketObservations(tx, ticket.id);
+          const links = (['number', 'issuedOn', 'volumeM3'] as const)
+            .map((field) => ({ field, observationId: observations[field] }))
+            // Наблюдения нет у ручного талона — такой в выборку не попадает вовсе, но связь без
+            // наблюдения всё равно невозможна: составной ключ требует существующей строки.
+            .filter(
+              (link): link is { field: WasteTicketBlindCheckField; observationId: string } =>
+                link.observationId !== undefined,
+            )
+            .map((link) => ({ blindCheckId: check.id, ...link }));
+          if (links.length > 0) await tx.insert(wasteTicketBlindCheckObservations).values(links);
         }
         return { ticketId: ticket.id, number: ticket.numberRaw, overrideUsed, blind };
       });
@@ -742,7 +836,9 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       const body = req.body;
       const reason = body.duplicateOverrideReason?.trim() ?? '';
       const changed = await db.transaction(async (tx) => {
-        const ticket = await loadTicket(tx, request.id, req.params.ticketId);
+        // Под замком: событие правки адресуется чтению, которое стоит в талоне СЕЙЧАС, и без
+        // `FOR UPDATE` воркер успел бы дописать новое чтение между этой строкой и записью события.
+        const ticket = await loadTicket(tx, request.id, req.params.ticketId, { forUpdate: true });
         const nextNumber = body.number === undefined ? ticket.numberRaw : body.number.trim();
         const numberChanged = nextNumber !== ticket.numberRaw;
         const numberKey = nextNumber ? wasteTicketNumberKey(nextNumber) : '';
@@ -805,15 +901,15 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           .returning({ id: wasteTickets.id });
         if (!updated) throw err.conflict();
 
-        // Журнал разбора (Р30): «было → стало» по каждому тронутому полю. Прежние значения берутся
-        // из строки, прочитанной до обновления, — после него их уже не восстановить, и самый
-        // сильный сигнал качества модели пропал бы вместе с ними.
-        await recordTicketFieldEvents(tx, {
-          ticketId: ticket.id,
-          requestId: request.id,
-          event: 'edited',
-          actorId: p.id,
-          changes: touched.map((field) => ({
+        // Журнал разбора (Р30): «было → стало» по каждому ДЕЙСТВИТЕЛЬНО изменённому полю. Прежние
+        // значения берутся из строки, прочитанной до обновления, — после него их уже не
+        // восстановить, и самый сильный сигнал качества модели пропал бы вместе с ними.
+        //
+        // Список `touched` шире: он про то, что пришло в теле, и им управляется сам `UPDATE` со
+        // снятием спора. В журнал уходит только настоящее изменение (план §1.2) — иначе форма,
+        // присылающая все пять полей, писала бы пять правок на каждое сохранение.
+        const edits = touched
+          .map((field) => ({
             field,
             oldValue: ticketFieldValue(ticket, field),
             newValue:
@@ -826,7 +922,14 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
                     : field === 'workKind'
                       ? (body.workKind ?? ticket.workKind)
                       : (body.addressRaw ?? ''),
-          })),
+          }))
+          .filter((change) => ticketFieldEdited(change.field, change.oldValue, change.newValue));
+        await recordTicketFieldEvents(tx, {
+          ticketId: ticket.id,
+          requestId: request.id,
+          event: 'edited',
+          actorId: p.id,
+          changes: edits,
         });
         return { ticketId: ticket.id, touched, numberChanged };
       });
@@ -854,7 +957,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       assertReviewOpen(request);
 
       await db.transaction(async (tx) => {
-        const ticket = await loadTicket(tx, request.id, req.params.ticketId);
+        const ticket = await loadTicket(tx, request.id, req.params.ticketId, { forUpdate: true });
         await tx
           .update(wasteTickets)
           .set({ status: 'dismissed', updatedAt: new Date() })
@@ -964,19 +1067,30 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           .where(eq(wasteTickets.id, ticket.id));
         // Принятие предложения — тоже правка, но чужой рукой: значения предложил новый проход, а
         // согласился человек. Событие отдельного вида, чтобы не смешивать с ручным исправлением.
+        //
+        // Пишутся ВСЕ ПЯТЬ полей, а не только изменившиеся (план §1.2.2): поле, где предложение
+        // повторило талон, — это тоже исход наблюдения (`uninformative`), и без события назвать
+        // его будет нечем. Отбор «что изменилось» здесь и невозможен: между чтением и решением
+        // человек мог править талон, поэтому отличие берётся из связи, а не из сравнения значений.
+        const links = await proposalObservations(tx, ticket.id);
         await recordTicketFieldEvents(tx, {
           ticketId: ticket.id,
           requestId: request.id,
           event: 'proposal',
           actorId: p.id,
-          changes: ([
+          changes: [
             { field: 'number', oldValue: ticketFieldValue(ticket, 'number'), newValue: proposal.numberRaw || null },
             { field: 'issuedOn', oldValue: ticket.issuedOn, newValue: proposal.issuedOn },
             { field: 'volumeM3', oldValue: ticket.volumeM3, newValue: proposal.volumeM3 },
             { field: 'workKind', oldValue: ticket.workKind, newValue: proposal.workKind },
             { field: 'addressRaw', oldValue: ticket.addressRaw || null, newValue: proposal.addressRaw || null },
-          ] satisfies TicketFieldChange[]).filter((c) => c.oldValue !== c.newValue),
+          ] satisfies TicketFieldChange[],
+          // Адресуется чтение ПРЕДЛОЖЕНИЯ: оно сделано своими попытками, и приписывать его исход
+          // текущему чтению талона значило бы записать ошибку не той модели (план §1.1).
+          target: { kind: 'explicit', byField: links.byField },
+          proposalDiffers: links.differs,
         });
+        // Только теперь: связи уйдут каскадом, а исход уже закреплён событием.
         await tx.delete(wasteTicketProposals).where(eq(wasteTicketProposals.ticketId, ticket.id));
         return { number: proposal.numberRaw, overrideUsed };
       });
@@ -1000,6 +1114,12 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
    * Отклонить предложение (Р13). Талон не трогается вовсе: человек уже сказал, что написано на
    * бумаге, и новый проход этого не отменяет. Уходит только строка предложения — иначе она висела
    * бы вечно и держала бы попытки, на которые ссылается.
+   *
+   * Но событие пишется: «человек посмотрел новое чтение и отказался от него» — самый сильный
+   * отрицательный сигнал о модели, и до миграции 0210 он терялся целиком. По полям отказ при этом
+   * не раскладывается (план §1.2.1): отклонив предложение, человек сообщил лишь то, что хотя бы
+   * одно из отличавшихся значений неприемлемо, а разбирает это уже выгрузка — по паре «событие +
+   * `differs`».
    */
   r.post(
     '/:id/tickets/:ticketId/proposal/dismiss',
@@ -1011,14 +1131,40 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       assertOperatorScope(p, request.operatorCounterpartyId);
       assertReviewOpen(request);
 
-      const removed = await db.transaction(async (tx) => {
+      await db.transaction(async (tx) => {
         const ticket = await loadTicket(tx, request.id, req.params.ticketId);
-        return tx
-          .delete(wasteTicketProposals)
+        const [proposal] = await tx
+          .select()
+          .from(wasteTicketProposals)
           .where(eq(wasteTicketProposals.ticketId, ticket.id))
-          .returning({ ticketId: wasteTicketProposals.ticketId });
+          .limit(1);
+        // Проверка внутри транзакции, а не после неё: раньше отказ «предложения нет» приходил уже
+        // после коммита пустого удаления, и теперь на нём держится ещё и запись события — писать
+        // его по отсутствующему предложению нечем.
+        if (!proposal) throw err.badRequest('Предложения нет: отклонять нечего');
+
+        // Пять событий, а не по отличавшимся полям, и ДО удаления строки (план §1.2.2): связи
+        // уходят каскадом, а исход обязан пережить удаление. «Было» — значение талона, «стало» —
+        // то, что предложила машина: талон не меняется, но показать человеку, от чего он
+        // отказался, журнал обязан.
+        const links = await proposalObservations(tx, ticket.id);
+        await recordTicketFieldEvents(tx, {
+          ticketId: ticket.id,
+          requestId: request.id,
+          event: 'proposal_dismissed',
+          actorId: p.id,
+          changes: [
+            { field: 'number', oldValue: ticketFieldValue(ticket, 'number'), newValue: proposal.numberRaw || null },
+            { field: 'issuedOn', oldValue: ticket.issuedOn, newValue: proposal.issuedOn },
+            { field: 'volumeM3', oldValue: ticket.volumeM3, newValue: proposal.volumeM3 },
+            { field: 'workKind', oldValue: ticket.workKind, newValue: proposal.workKind },
+            { field: 'addressRaw', oldValue: ticket.addressRaw || null, newValue: proposal.addressRaw || null },
+          ] satisfies TicketFieldChange[],
+          target: { kind: 'explicit', byField: links.byField },
+          proposalDiffers: links.differs,
+        });
+        await tx.delete(wasteTicketProposals).where(eq(wasteTicketProposals.ticketId, ticket.id));
       });
-      if (!removed[0]) throw err.badRequest('Предложения нет: отклонять нечего');
 
       await writeAudit({
         actorUserId: p.id,
@@ -1499,37 +1645,54 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       }
 
       const finalNumber = body.number === undefined ? null : body.number;
-      const updated = await db
-        .update(wasteTicketBlindChecks)
-        .set({
-          status: 'arbitrated',
-          arbiterId: p.id,
-          arbitratedAt: new Date(),
-          resolvedFields: body.resolvedFields,
-          finalNumberRaw: finalNumber,
-          finalNumberKey: finalNumber === null ? null : wasteTicketNumberKey(finalNumber),
-          finalIssuedOn: body.issuedOn === undefined ? null : body.issuedOn,
-          finalVolumeM3:
-            body.volumeM3 === undefined || body.volumeM3 === null ? null : String(body.volumeM3),
-        })
-        .where(
-          and(
-            eq(wasteTicketBlindChecks.id, req.params.blindCheckId),
-            eq(wasteTicketBlindChecks.status, 'mismatch'),
-          ),
-        )
-        .returning({ id: wasteTicketBlindChecks.id });
-
-      // Не нашлось — либо чужая строка, либо чтения совпали: совпавшую разбирать нечего, и это
-      // держит `CHECK` в базе, а не только маршрут.
-      if (!updated[0])
-        throw err.badRequest('Разбирать нечего: расхождения нет или оно уже разобрано');
-
-      // Арбитраж — САМЫЙ СИЛЬНЫЙ сигнал качества (Р31): человек читал бумагу, не видя машинного
-      // чтения, а третий назвал верное значение. В журнале «было» — это снимок машины
-      // (`baseline_*`), а не текущее состояние талона: талон после подтверждения правят, и
-      // сравнение с поехавшей величиной меряло бы не то.
+      // Разбор и его журнал — ОДНОЙ транзакцией: разойдись они, при сбое между ними строка
+      // осталась бы разобранной без события либо событие рассказывало бы о вердикте, которого
+      // никто не выносил, — а именно по этим событиям считается точность среди неисправленных.
       await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(wasteTicketBlindChecks)
+          .set({
+            status: 'arbitrated',
+            arbiterId: p.id,
+            arbitratedAt: new Date(),
+            resolvedFields: body.resolvedFields,
+            finalNumberRaw: finalNumber,
+            finalNumberKey: finalNumber === null ? null : wasteTicketNumberKey(finalNumber),
+            finalIssuedOn: body.issuedOn === undefined ? null : body.issuedOn,
+            finalVolumeM3:
+              body.volumeM3 === undefined || body.volumeM3 === null ? null : String(body.volumeM3),
+          })
+          .where(
+            and(
+              eq(wasteTicketBlindChecks.id, req.params.blindCheckId),
+              eq(wasteTicketBlindChecks.status, 'mismatch'),
+            ),
+          )
+          .returning({ id: wasteTicketBlindChecks.id });
+
+        // Не нашлось — либо чужая строка, либо чтения совпали: совпавшую разбирать нечего, и это
+        // держит `CHECK` в базе, а не только маршрут.
+        if (!updated[0])
+          throw err.badRequest('Разбирать нечего: расхождения нет или оно уже разобрано');
+
+        // Судят о ТОМ ЧТЕНИИ, что снято в момент отбора: связи заведены вместе с `baseline_*`, и
+        // между отбором и арбитражем талон могли перечитать дважды (план §1.1). Связей нет у
+        // перепроверок, заведённых до миграции 0210, — событие пишется без адресации: вердикт
+        // третьего человека ценен и сам по себе, просто в когорту наблюдений он не попадёт.
+        const linkRows = await tx
+          .select({
+            field: wasteTicketBlindCheckObservations.field,
+            observationId: wasteTicketBlindCheckObservations.observationId,
+          })
+          .from(wasteTicketBlindCheckObservations)
+          .where(eq(wasteTicketBlindCheckObservations.blindCheckId, target.id));
+        const byField: Partial<Record<WasteTicketField, string | null>> = {};
+        for (const row of linkRows) byField[row.field] = row.observationId;
+
+        // Арбитраж — САМЫЙ СИЛЬНЫЙ сигнал качества (Р31): человек читал бумагу, не видя машинного
+        // чтения, а третий назвал верное значение. В журнале «было» — это снимок машины
+        // (`baseline_*`), а не текущее состояние талона: талон после подтверждения правят, и
+        // сравнение с поехавшей величиной меряло бы не то.
         await recordTicketFieldEvents(tx, {
           ticketId: target.ticketId,
           requestId: request.id,
@@ -1552,6 +1715,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
                     ? null
                     : String(body.volumeM3),
           })),
+          target: { kind: 'explicit', byField },
         });
       });
 

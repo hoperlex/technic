@@ -66,6 +66,10 @@ vi.mock('../src/config', () => ({
   config: {
     files: { maxSize: 1, maxPerRequest: 10 },
     s3: { bucket: 'b', uploadUrlTtl: 1, downloadUrlTtl: 1 },
+    // Уровень журнала — не для этих проверок, а для загрузки модуля: маршрут файлов пишет просмотр
+    // скана талона в `audit_log` (ADR 0137, §4.2), а тот тянет логгер, и `pino` падает на старте от
+    // `level: undefined`. Подмена конфига обязана отвечать на всё, что спрашивают при импорте.
+    logLevel: 'silent',
   },
 }));
 

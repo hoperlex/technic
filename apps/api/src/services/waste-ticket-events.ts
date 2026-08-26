@@ -1,7 +1,11 @@
 import { sql } from 'drizzle-orm';
 import type { WasteTicketField } from '@technic/contracts';
 import type { db } from '../db/client';
-import { wasteTicketFieldEvents, wasteTicketRecognitionAttempts, wasteTickets } from '../db/schema';
+import {
+  wasteTicketFieldEvents,
+  wasteTicketProposalObservations,
+  wasteTickets,
+} from '../db/schema';
 
 // ── Журнал распознавания и разбора (ADR 0114, Р30/Р31, миграция 0206) ──
 //
@@ -14,8 +18,10 @@ import { wasteTicketFieldEvents, wasteTicketRecognitionAttempts, wasteTickets } 
 // «прочитано 3, верно 38» и «262 вместо 26213». Приведение к типу стёрло бы половину случая, а
 // `null` и пустая строка перестали бы различаться.
 //
-// МОДЕЛЬ БЕРЁТСЯ ИЗ ПОПЫТКИ ТАЛОНА, А НЕ ИЗ НАСТРОЕК. Настройки меняются, а исправляют работу той
-// модели, которая эту цифру прочитала, — иначе журнал припишет ошибку той, что пришла ей на смену.
+// МОДЕЛЬ БЕРЁТСЯ ИЗ НАБЛЮДЕНИЯ, А НЕ ИЗ ТАЛОНА И НЕ ИЗ НАСТРОЕК. Настройки меняются, талон помнит
+// только последнюю попытку, а исправляют работу той модели, которая эту цифру прочитала. Раньше
+// контекст подтягивался из `primary_attempt_id` талона — и принятие предложения приписывало ошибку
+// попытке, которая предложения не делала (миграция 0210, план §1.1).
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -33,8 +39,22 @@ export type TicketFieldEvent =
   | 'disputed'
   | 'edited'
   | 'proposal'
+  | 'proposal_dismissed'
   | 'arbitrated'
   | 'dismissed';
+
+/**
+ * Чем адресовано человеческое решение — то самое машинное чтение, о котором оно судит.
+ *
+ * `current` годится правке и снятию: человек смотрит на то, что стоит в талоне сейчас. Двум
+ * процессам он не годится совсем: принятие и отклонение предложения судят о чтении, лежащем
+ * отдельной строкой со своими попытками, а арбитраж — о `baseline`, снятом в момент отбора.
+ * Между отбором и арбитражем талон мог смениться дважды, и «последнее по времени» приписало бы
+ * ошибку не той модели.
+ */
+export type TicketObservationTarget =
+  | { kind: 'current' }
+  | { kind: 'explicit'; byField: Readonly<Partial<Record<WasteTicketField, string | null>>> };
 
 /**
  * Записать события по полям одного талона.
@@ -56,38 +76,124 @@ export async function recordTicketFieldEvents(
     /** `null` только у машинных событий: их совершила модель, а не человек (держит `CHECK`). */
     actorId: string | null;
     changes: readonly TicketFieldChange[];
+    /** По умолчанию — текущее чтение поля; предложение и арбитраж называют своё (см. тип). */
+    target?: TicketObservationTarget;
+    /**
+     * Отличалось ли поле предложения от талона в момент чтения. Хранится, а не выводится из
+     * значений события: между чтением и решением человек мог править талон, и «повторило ли
+     * чтение то, что стояло в талоне» — свойство момента чтения, а не момента решения.
+     */
+    proposalDiffers?: Readonly<Partial<Record<WasteTicketField, boolean>>>;
   },
 ): Promise<void> {
   if (params.changes.length === 0) return;
 
+  const target = params.target ?? { kind: 'current' };
+  const isProposal = params.event === 'proposal' || params.event === 'proposal_dismissed';
+
   for (const change of params.changes) {
+    /*
+     * Наблюдение подставляется джойном, а не читается отдельным запросом: в транзакции правки
+     * лишний круг к базе — это лишняя блокировка. Явная ветка берёт строку по идентификатору,
+     * ветка «текущее» — последнее машинное чтение этого поля второй версии сбора.
+     */
+    const observation =
+      target.kind === 'explicit'
+        ? sql`LEFT JOIN ${wasteTicketFieldEvents} obs
+                ON obs.id = ${target.byField[change.field] ?? null}::uuid`
+        : sql`LEFT JOIN LATERAL (
+                SELECT e.* FROM ${wasteTicketFieldEvents} e
+                 WHERE e.ticket_id = wt.id AND e.field = ${change.field}
+                   AND e.event IN ('recognized', 'disputed')
+                   AND e.collection_version >= 2
+                   /*
+                    * Чтения предложения — тоже «recognized» этого талона, и они СВЕЖЕЕ того, чьи
+                    * значения человек видит в карточке. Возьми мы просто последнее — правка талона
+                    * при живом предложении легла бы на модель, чьё чтение никто не принимал, а
+                    * прежнее чтение осталось бы без исхода. Поэтому «текущее» — это то, чьи
+                    * значения стоят в талоне сейчас:
+                    *   · пока предложение живо, его чтение не в счёт (есть строка связи);
+                    *   · отклонённое чтение не в счёт и после удаления связи (есть исход-отказ);
+                    *   · принятое — в счёт: его значения и переехали в талон.
+                    */
+                   AND NOT EXISTS (
+                     SELECT 1 FROM ${wasteTicketProposalObservations} po
+                      WHERE po.observation_id = e.id
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM ${wasteTicketFieldEvents} d
+                      WHERE d.observation_id = e.id AND d.event = 'proposal_dismissed'
+                   )
+                 ORDER BY e.created_at DESC
+                 LIMIT 1
+              ) obs ON TRUE`;
+
     await tx.execute(sql`
       INSERT INTO ${wasteTicketFieldEvents}
         (ticket_id, request_id, page_sha256, event, field, old_value, new_value,
-         model, model_reported, prompt_version, preprocessing_version, passes, escalated, actor_id)
+         model, model_reported, prompt_version, preprocessing_version, passes, escalated,
+         observation_id, primary_attempt_id, escalation_attempt_id, selected_attempt_id,
+         primary_model_reported, escalation_model_reported, file_id, page_no,
+         recognition_run_id, cache_hit, proposal_differs, collection_version, actor_id)
       SELECT
         wt.id,
         ${params.requestId}::uuid,
-        COALESCE(pa.page_sha256, ''),
+        COALESCE(obs.page_sha256, ''),
         ${params.event},
         ${change.field},
         ${change.oldValue},
         ${change.newValue},
-        COALESCE(pa.model, ''),
-        COALESCE(pa.model_reported, ''),
-        pa.prompt_version,
-        pa.preprocessing_version,
-        -- Проходов ровно столько, сколько попыток привязано к строке: вторая появляется только
-        -- при эскалации (Р14), и по этой паре чисел считается, окупается ли вторая ступень.
-        (CASE WHEN wt.primary_attempt_id IS NULL THEN 0 ELSE 1 END)
-          + (CASE WHEN wt.escalation_attempt_id IS NULL THEN 0 ELSE 1 END),
-        wt.escalation_attempt_id IS NOT NULL,
+        -- Контекст чтения копируется ИЗ НАБЛЮДЕНИЯ, а не из талона: талон помнит только последнюю
+        -- попытку, а судят здесь о той, что эту цифру прочитала. Для ручного талона наблюдения
+        -- нет вовсе — и колонки остаются пустыми, что и означает «модель тут ни при чём».
+        COALESCE(obs.model, ''),
+        COALESCE(obs.model_reported, ''),
+        obs.prompt_version,
+        obs.preprocessing_version,
+        COALESCE(obs.passes, 0),
+        COALESCE(obs.escalated, false),
+        obs.id,
+        obs.primary_attempt_id,
+        obs.escalation_attempt_id,
+        obs.selected_attempt_id,
+        COALESCE(obs.primary_model_reported, ''),
+        COALESCE(obs.escalation_model_reported, ''),
+        obs.file_id,
+        obs.page_no,
+        obs.recognition_run_id,
+        COALESCE(obs.cache_hit, false),
+        ${isProposal ? (params.proposalDiffers?.[change.field] ?? false) : null},
+        2,
         ${params.actorId}::uuid
       FROM ${wasteTickets} wt
-      LEFT JOIN ${wasteTicketRecognitionAttempts} pa ON pa.id = wt.primary_attempt_id
+      ${observation}
       WHERE wt.id = ${params.ticketId}::uuid
     `);
   }
+}
+
+/**
+ * Наблюдения талона: поле → идентификатор последнего машинного чтения.
+ *
+ * Нужно там, где связь заводится вперёд решения — при создании предложения и при отборе в слепую
+ * перепроверку. Читается в той же транзакции, что и запись связи: иначе воркер успеет перечитать
+ * страницу между чтением и записью, и связь укажет на чтение, которого человек не видел.
+ */
+export async function currentTicketObservations(
+  tx: Tx,
+  ticketId: string,
+): Promise<Partial<Record<WasteTicketField, string>>> {
+  const rows = await tx.execute<{ field: WasteTicketField; id: string }>(sql`
+    SELECT DISTINCT ON (e.field) e.field, e.id
+      FROM ${wasteTicketFieldEvents} e
+     WHERE e.ticket_id = ${ticketId}::uuid
+       AND e.event IN ('recognized', 'disputed')
+       AND e.collection_version >= 2
+     ORDER BY e.field, e.created_at DESC
+  `);
+  const byField: Partial<Record<WasteTicketField, string>> = {};
+  for (const row of rows.rows) byField[row.field] = row.id;
+  return byField;
 }
 
 /** Пять полей талона в порядке бланка: журналу нужен устойчивый обход, а не случайный. */

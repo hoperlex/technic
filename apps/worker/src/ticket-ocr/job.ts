@@ -26,9 +26,14 @@
  * T2 просто ничего не запишет. Устранимо только долгой блокировкой заявки, а она недопустима.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { GetObjectCommand, type S3Client } from '@aws-sdk/client-s3';
-import { wasteTicketNumberFuzzy, wasteTicketNumberKey } from '@technic/contracts';
+import {
+  WASTE_TICKET_FIELDS,
+  wasteTicketNumberFuzzy,
+  wasteTicketNumberKey,
+  type WasteTicketField,
+} from '@technic/contracts';
 import { prepareTicketFile, PREPROCESSING_VERSION } from './preprocess';
 import { TicketFileError } from './errors';
 import { attemptCacheKey, PROXY_CHOOSES_MODEL } from './engine/keys';
@@ -137,6 +142,12 @@ async function inTransaction<T>(pool: JobPool, fn: (c: JobClient) => Promise<T>)
     client.release();
   }
 }
+
+/**
+ * Канонический uuid. Номер задачи обычно им и является, но проверять это дешевле, чем узнавать о
+ * несовпадении типов из упавшей вставки.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** `pg_advisory_xact_lock` берёт 64-битное число — ключ кэша сворачивается в него хэшем. */
 function advisoryKey(cacheKey: string): string {
@@ -360,26 +371,62 @@ function matchTicket<T extends { number: string | null; issuedOn: string | null;
 }
 
 /**
+ * Ступень каскада, давшая итоговое значение поля (`source_stage`, §2.1 плана аудита):
+ * `merged` — оба прохода прочитали одно и то же, `escalation` — первый промолчал, прочитал второй.
+ */
+type FieldStage = 'primary' | 'escalation' | 'merged';
+
+/**
  * Слияние двух проходов по одному полю. Расхождение — **не ответ**: поле остаётся пустым, а имя
  * уходит в `needs_review_fields`, и человек видит двух кандидатов. Старшая модель ошибается реже,
  * но ошибается, и выбирать за человека молча портал не берётся (Р14).
+ *
+ * Вместе со значением возвращается и ступень, его давшая. По одному итогу она невосстановима, а
+ * без неё «вторая ступень заполнила пустое поле» и «обе прочитали одинаково» — одно и то же число,
+ * и вопрос «окупается ли эскалация» остаётся без ответа (§2.1 плана аудита). Ступени нет там, где
+ * нет и значения: спор портал не разрешил, а пустоту не прочитала ни одна ступень.
  */
 function mergeField<V>(
   primary: V | null,
   escalated: V | null | undefined,
-): { value: V | null; review: boolean; candidates: [V, V] | null } {
-  if (escalated === undefined) return { value: primary, review: false, candidates: null };
-  if (primary === null || primary === undefined) {
-    return { value: escalated ?? null, review: false, candidates: null };
+): { value: V | null; review: boolean; candidates: [V, V] | null; stage: FieldStage | null } {
+  if (escalated === undefined) {
+    return {
+      value: primary,
+      review: false,
+      candidates: null,
+      stage: primary === null || primary === undefined ? null : 'primary',
+    };
   }
-  if (escalated === null) return { value: primary, review: false, candidates: null };
-  if (primary === escalated) return { value: primary, review: false, candidates: null };
+  if (primary === null || primary === undefined) {
+    return {
+      value: escalated ?? null,
+      review: false,
+      candidates: null,
+      stage: escalated === null ? null : 'escalation',
+    };
+  }
+  if (escalated === null) return { value: primary, review: false, candidates: null, stage: 'primary' };
+  if (primary === escalated) {
+    return { value: primary, review: false, candidates: null, stage: 'merged' };
+  }
   // Оба прочитанных значения сохраняются рядом с талоном: без них вопрос «поле спорное» отправляет
   // человека к скану вслепую, а «первая прочитала 20, вторая 28» решается взглядом (Р14).
-  return { value: null, review: true, candidates: [primary, escalated] };
+  return { value: null, review: true, candidates: [primary, escalated], stage: null };
 }
 
 // ── T2: запись результата ──
+
+/**
+ * Что случилось с полем при слиянии проходов — то, чего по итоговому значению уже не видно
+ * (§2.1 плана аудита). Значения обеих ступеней хранятся текстом и обе: без них нельзя сказать,
+ * какая ступень была права, а спор читается как «поле пустое» без всякого объяснения.
+ */
+interface FieldReading {
+  stage: FieldStage | null;
+  primaryValue: string | null;
+  escalationValue: string | null;
+}
 
 interface PageResult {
   pageNo: number;
@@ -388,6 +435,15 @@ interface PageResult {
   escalationAttemptId: string | null;
   /** Фактическая модель первого прохода (`model_reported`, Р7): её и записывает журнал. */
   modelReported: string;
+  /** Фактическая модель второй ступени; пусто, когда её чтение в итог не вошло. */
+  escalationModelReported: string;
+  /**
+   * Поля, названные моделью нечитаемыми. Свойство СТРАНИЦЫ, а не талона — так устроен контракт
+   * ответа, и при двух талонах на листе признак ложится на оба.
+   */
+  unreadable: readonly WasteTicketField[];
+  /** Страница взята из кэша попыток: вызова наружу не было и денег не потрачено (§2.1). */
+  cacheHit: boolean;
   tickets: {
     number: string | null;
     issuedOn: string | null;
@@ -397,6 +453,8 @@ interface PageResult {
     needsReview: string[];
     /** Что прочитал каждый проход по спорному полю — снимком, для экрана разбора (Р14). */
     candidates: { field: string; value: string; model: string }[];
+    /** Чем прочитано каждое из пяти полей — из этого собирается наблюдение журнала (§2.1). */
+    readings: Record<WasteTicketField, FieldReading>;
   }[];
 }
 
@@ -414,6 +472,7 @@ async function saveResult(
   payload: TicketJobPayload,
   prepared: { totalPages: number; skippedPages: number },
   pages: readonly PageResult[],
+  recognitionRunId: string,
 ): Promise<boolean> {
   return inTransaction(deps.pool, async (client) => {
     await lockRequest(client, payload.requestId);
@@ -489,16 +548,16 @@ async function saveResult(
           values,
         );
         if (written.rows[0]) {
-          // Журнал распознавания (Р30, миграция 0206): что модель прочитала и что осталось
-          // спорным. Пишется В ТОЙ ЖЕ транзакции, что и талон: событие о строке, которой нет,
-          // — мусор, а строка без события — дыра в метрике.
+          // Журнал распознавания (Р30, миграции 0206 и 0210): что модель прочитала, что осталось
+          // спорным и чем читали. Пишется В ТОЙ ЖЕ транзакции, что и талон: событие о строке,
+          // которой нет, — мусор, а строка без события — дыра в метрике.
           await recordRecognizedFields(client, {
             ticketId: written.rows[0].id,
             requestId: payload.requestId,
-            pageSha256: page.sha256,
+            fileId: payload.fileId,
+            recognitionRunId,
             model: deps.model,
-            modelReported: page.modelReported,
-            escalated: page.escalationAttemptId !== null,
+            page,
             ticket,
           });
           continue;
@@ -508,25 +567,27 @@ async function saveResult(
         // ссылкой на попытку: сырьё убирается по сроку (Р31), обе ссылки объявлены `SET NULL`, и
         // предложение обязано читаться и тогда — теряя лишь возможность заглянуть в исходный ответ.
         //
-        // Предложение, повторяющее то, что в талоне уже стоит, не заводится: «модель прочитала то
-        // же самое» — не новость, а лишняя строка, которую человеку придётся закрывать руками.
-        await client.query(
-          `INSERT INTO waste_ticket_proposals
-             (ticket_id, number_raw, issued_on, volume_m3, work_kind, address_raw,
-              primary_attempt_id, escalation_attempt_id)
-           SELECT wt.id, $4, $5, $6, $7, $8, $9, $10
+        // Сравнение с талоном делает база и ЗДЕСЬ, под общим замком: `differs` — свойство момента
+        // чтения (§1.2.2 плана аудита), а между чтением и решением человек успеет талон поправить.
+        // Поле в поле, а не кортежем: исход предложения раскладывается по полям, и «отличалось ли
+        // хоть что-то» на этот вопрос не отвечает.
+        const current = await client.query<{
+          id: string;
+          number_differs: boolean;
+          issued_on_differs: boolean;
+          volume_differs: boolean;
+          work_kind_differs: boolean;
+          address_differs: boolean;
+        }>(
+          `SELECT wt.id,
+                  wt.number_raw  IS DISTINCT FROM $4          AS number_differs,
+                  wt.issued_on   IS DISTINCT FROM $5::date    AS issued_on_differs,
+                  wt.volume_m3   IS DISTINCT FROM $6::numeric AS volume_differs,
+                  wt.work_kind   IS DISTINCT FROM $7          AS work_kind_differs,
+                  wt.address_raw IS DISTINCT FROM $8          AS address_differs
              FROM waste_tickets wt
             WHERE wt.page_id = $1 AND wt.seq = $2 AND wt.origin = 'ocr'
-              AND wt.request_id = $3
-              AND (wt.number_raw, wt.issued_on, wt.volume_m3, wt.work_kind, wt.address_raw)
-                  IS DISTINCT FROM ($4, $5::date, $6::numeric, $7, $8)
-           ON CONFLICT (ticket_id) DO UPDATE
-                  SET number_raw = EXCLUDED.number_raw, issued_on = EXCLUDED.issued_on,
-                      volume_m3 = EXCLUDED.volume_m3, work_kind = EXCLUDED.work_kind,
-                      address_raw = EXCLUDED.address_raw,
-                      primary_attempt_id = EXCLUDED.primary_attempt_id,
-                      escalation_attempt_id = EXCLUDED.escalation_attempt_id,
-                      created_at = now()`,
+              AND wt.request_id = $3`,
           [
             pageId,
             seq,
@@ -536,10 +597,75 @@ async function saveResult(
             ticket.volumeM3,
             ticket.workKind,
             ticket.addressRaw ?? '',
+          ],
+        );
+        const target = current.rows[0];
+        if (!target) continue;
+        const differs: Record<WasteTicketField, boolean> = {
+          number: target.number_differs,
+          issuedOn: target.issued_on_differs,
+          volumeM3: target.volume_differs,
+          workKind: target.work_kind_differs,
+          addressRaw: target.address_differs,
+        };
+        // Предложение, повторяющее то, что в талоне уже стоит, не заводится: «модель прочитала то
+        // же самое» — не новость, а лишняя строка, которую человеку придётся закрывать руками.
+        // Наблюдений тоже нет: исход наблюдения предложения приходит решением человека по этому
+        // предложению, а решать нечего — пять строк остались бы `pending` навсегда и завышали бы
+        // «ждут решения» на каждом повторном проходе (§1.2.2).
+        if (!WASTE_TICKET_FIELDS.some((field) => differs[field])) continue;
+
+        // Порядок вынужденный: связи нужен идентификатор наблюдения, а самой связи — строка
+        // предложения, которой до вставки нет.
+        const observations = await recordRecognizedFields(client, {
+          ticketId: target.id,
+          requestId: payload.requestId,
+          fileId: payload.fileId,
+          recognitionRunId,
+          model: deps.model,
+          page,
+          ticket,
+        });
+        await client.query(
+          `INSERT INTO waste_ticket_proposals
+             (ticket_id, number_raw, issued_on, volume_m3, work_kind, address_raw,
+              primary_attempt_id, escalation_attempt_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           ON CONFLICT (ticket_id) DO UPDATE
+                  SET number_raw = EXCLUDED.number_raw, issued_on = EXCLUDED.issued_on,
+                      volume_m3 = EXCLUDED.volume_m3, work_kind = EXCLUDED.work_kind,
+                      address_raw = EXCLUDED.address_raw,
+                      primary_attempt_id = EXCLUDED.primary_attempt_id,
+                      escalation_attempt_id = EXCLUDED.escalation_attempt_id,
+                      created_at = now()`,
+          [
+            target.id,
+            raw,
+            ticket.issuedOn,
+            ticket.volumeM3,
+            ticket.workKind,
+            ticket.addressRaw ?? '',
             page.primaryAttemptId,
             page.escalationAttemptId,
           ],
         );
+        // Перезапись предложения меняет и чтение, о котором оно: связи прежнего снимаются целиком,
+        // иначе исход нового решения приписался бы наблюдениям, которых человек уже не увидит.
+        // Сами наблюдения остаются на месте — они случились, и `RESTRICT` их бережёт.
+        await client.query(
+          'DELETE FROM waste_ticket_proposal_observations WHERE proposal_ticket_id = $1',
+          [target.id],
+        );
+        // Связь по всем пяти полям, а не только по отличавшимся: без строки на совпавшее поле его
+        // потом нечем назвать `uninformative` (§1.2.2 плана аудита).
+        for (const [field, observationId] of observations) {
+          await client.query(
+            `INSERT INTO waste_ticket_proposal_observations
+               (proposal_ticket_id, field, observation_id, differs)
+             VALUES ($1,$2,$3,$4)`,
+            [target.id, field, observationId, differs[field]],
+          );
+        }
       }
     }
 
@@ -595,6 +721,13 @@ export async function runTicketRecognitionJob(
     'Распознавание талона: начало',
   );
 
+  // Разбор как единица работы (§2.1 плана аудита): все наблюдения одного файла помечаются общим
+  // идентификатором, и «сколько разборов было» перестаёт считаться эвристикой по времени. Задача
+  // на файл ровно одна, поэтому её номер годится сам — он уникален и связывает журнал с очередью.
+  // Но задачу зовут и из тестов, и вручную, где номер бывает не uuid, а колонка типизирована
+  // строго: тогда идентификатор свой, один на весь вызов.
+  const recognitionRunId = UUID_RE.test(jobId) ? jobId : randomUUID();
+
   // Растеризация — вне транзакций: скачивание из S3 и рендер PDF занимают секунды, и держать на
   // это время строку заявки незачем.
   let prepared;
@@ -634,13 +767,27 @@ export async function runTicketRecognitionJob(
     // Кэш: страницу этими же версиями уже читали. Вызова нет, денег нет, попытка та же.
     if (first.fromCache) {
       const cached = await inTransaction(deps.pool, (client) =>
-        client.query<{ raw: { tickets?: unknown[]; unreadable?: string[] } }>(
-          'SELECT raw FROM waste_ticket_recognition_attempts WHERE id = $1',
+        client.query<{ raw: { tickets?: unknown[]; unreadable?: string[] }; model_reported: string }>(
+          'SELECT raw, model_reported FROM waste_ticket_recognition_attempts WHERE id = $1',
           [first.attemptId],
         ),
       );
-      const raw = cached.rows[0]?.raw ?? {};
-      results.push(toPageResult(page, first.attemptId, null, raw, []));
+      const hit = cached.rows[0];
+      results.push(
+        toPageResult({
+          page,
+          primaryAttemptId: first.attemptId,
+          primary: hit?.raw ?? {},
+          // Вызова не было, значит нет и `meta` ответа: фактическую модель называет сама попытка.
+          // Возьми мы заказанный слаг — метрика приписала бы чтение не тому, кто читал (Р7).
+          //
+          // Пусто, когда не знает и попытка. Именно пусто, а не заказанный слаг: при варианте A в
+          // колонке фактической модели стояло бы слово `proxy`, то есть выдумка вместо ответа
+          // «неизвестно». Заказанное имя и так лежит рядом, в `model`.
+          models: { primary: hit?.model_reported ?? '', escalation: '' },
+          cacheHit: true,
+        }),
+      );
       continue;
     }
 
@@ -690,7 +837,14 @@ export async function runTicketRecognitionJob(
       );
 
     if (!needsSecond) {
-      results.push(toPageResult(page, first.attemptId, null, outcome.response, []));
+      results.push(
+        toPageResult({
+          page,
+          primaryAttemptId: first.attemptId,
+          primary: outcome.response,
+          models: { primary: outcome.meta.modelReported, escalation: '' },
+        }),
+      );
       continue;
     }
 
@@ -701,22 +855,31 @@ export async function runTicketRecognitionJob(
     });
     const secondOutcome = second.outcome;
     if (!secondOutcome || secondOutcome.status === 'failed') {
-      // Эскалация не удалась — это не повод терять первый проход: пишем его как есть.
-      results.push(toPageResult(page, first.attemptId, null, outcome.response, []));
+      // Эскалация не удалась — это не повод терять первый проход: пишем его как есть. Вторая
+      // ступень в итог не вошла, поэтому и в наблюдении её нет: назови мы её моделью, метрика
+      // засчитала бы старшей модели чтение, которого та не сделала.
+      results.push(
+        toPageResult({
+          page,
+          primaryAttemptId: first.attemptId,
+          primary: outcome.response,
+          models: { primary: outcome.meta.modelReported, escalation: '' },
+        }),
+      );
       continue;
     }
     results.push(
-      toPageResult(
+      toPageResult({
         page,
-        first.attemptId,
-        second.attemptId,
-        outcome.response,
-        secondOutcome.response.tickets,
-        {
-          primary: outcome.meta.modelReported || deps.model,
+        primaryAttemptId: first.attemptId,
+        escalationAttemptId: second.attemptId,
+        primary: outcome.response,
+        escalated: secondOutcome.response.tickets,
+        models: {
+          primary: outcome.meta.modelReported,
           escalation: secondOutcome.meta.modelReported || deps.escalationModel,
         },
-      ),
+      }),
     );
   }
 
@@ -725,6 +888,7 @@ export async function runTicketRecognitionJob(
     payload,
     { totalPages: prepared.totalPages, skippedPages: prepared.skippedPages },
     results,
+    recognitionRunId,
   );
   if (written) {
     // Итог одной строкой: сколько страниц разобрано, сколько талонов нашлось, сколько вызовов
@@ -738,7 +902,7 @@ export async function runTicketRecognitionJob(
         pages: results.length,
         skippedPages: prepared.skippedPages,
         tickets: results.reduce((sum, page) => sum + page.tickets.length, 0),
-        cached: results.filter((page) => page.escalationAttemptId === null).length,
+        cached: results.filter((page) => page.cacheHit).length,
       },
       'Распознавание талона: файл разобран',
     );
@@ -746,7 +910,42 @@ export async function runTicketRecognitionJob(
 }
 
 /**
- * Журнал распознавания: пять полей одной строкой каждое (ADR 0114, Р30, миграция 0206).
+ * Версия сбора, которую реализует этот код (§2.1 плана аудита). Пишется числом, а не берётся
+ * дефолтом базы: наблюдение делает второй версией именно код, и, разойдись они, метрика молча
+ * зачла бы события, собранные по прежним правилам.
+ */
+const COLLECTION_VERSION = 2;
+
+/**
+ * Прочитано ли поле — по §2.1.1 плана аудита, и только ПОСЛЕ слияния проходов.
+ *
+ * Без этого признака «не прочитано» пришлось бы угадывать по пустому значению, а пустое значение
+ * законно сразу у двух разных случаев: у объёма талона простоя графы нет вовсе, а спорное поле
+ * портал очистил сам, не выбирая между двумя состоявшимися чтениями.
+ */
+function readState(args: {
+  field: WasteTicketField;
+  value: string | null;
+  workKind: string;
+  disputed: boolean;
+  unreadable: readonly WasteTicketField[];
+}): 'read' | 'unreadable' | 'not_applicable' {
+  // Спор — это ДВА состоявшихся чтения, разошедшихся в оценке (Р14): читали обе ступени, пустым
+  // поле оставил портал. Считать его непрочитанным значило бы списать на немоту модели решение,
+  // принятое за неё.
+  if (args.disputed) return 'read';
+  if (args.value !== null && args.value !== '') return 'read';
+  // У простоя объёма нет законно (Р2) — графы на такой бумаге не существует. Но если модель сама
+  // назвала объём нечитаемым, это уже немота: назвав её «неприменимо», мы записали бы неудачное
+  // чтение в законную пустоту и потеряли бы его из метрики целиком.
+  if (args.field === 'volumeM3' && args.workKind === 'idle' && !args.unreadable.includes('volumeM3')) {
+    return 'not_applicable';
+  }
+  return 'unreadable';
+}
+
+/**
+ * Журнал распознавания: пять полей одной строкой каждое (ADR 0114, Р30, миграции 0206 и 0210).
  *
  * Событие `recognized` — знаменатель всей метрики: сколько модель прочитала, из них столько-то
  * потом исправили. Подтверждения при этом не пишутся намеренно (Р31): человек смотрит на
@@ -755,73 +954,144 @@ export async function runTicketRecognitionJob(
  * Спорное поле пишется отдельным событием `disputed` вместо `recognized`: значения у него нет
  * вовсе — проходы каскада разошлись, и портал не выбрал за человека (Р14). Считать его
  * «прочитанным» значило бы завышать знаменатель на самых трудных полях.
+ *
+ * Строка события — НАБЛЮДЕНИЕ (§1.1 плана аудита): человеческие события сошлются на её
+ * идентификатор, и метрика считается по ним, а не по правкам. Поэтому здесь записывается всё, чего
+ * потом не восстановить: чем читала каждая ступень, что каждая дала, чья работа стала итогом, был
+ * ли вызов наружу и куда смотреть человеку. Модели и версии дублируются текстом рядом со ссылками
+ * на попытки намеренно — попытки убираются по сроку (Р31), а модель старой когорты и есть то, ради
+ * чего журнал ведётся.
+ *
+ * Возвращает карту «поле → наблюдение»: предложению она нужна связью (§1.2.2).
  */
 async function recordRecognizedFields(
   client: JobClient,
   args: {
     ticketId: string;
     requestId: string;
-    pageSha256: string;
+    fileId: string;
+    /** Разбор как единица работы: один вызов задачи — один идентификатор на весь файл (§2.1). */
+    recognitionRunId: string;
+    /** Заказанная модель (Р7). Фактические лежат в самой странице — их вернул движок. */
     model: string;
-    modelReported: string;
-    escalated: boolean;
-    ticket: {
-      number: string | null;
-      issuedOn: string | null;
-      volumeM3: number | null;
-      workKind: string;
-      addressRaw: string | null;
-      needsReview: string[];
-    };
+    page: PageResult;
+    ticket: PageResult['tickets'][number];
   },
-): Promise<void> {
-  const values: Record<string, string | null> = {
-    number: args.ticket.number,
-    issuedOn: args.ticket.issuedOn,
-    volumeM3: args.ticket.volumeM3 == null ? null : String(args.ticket.volumeM3),
-    workKind: args.ticket.workKind,
-    addressRaw: args.ticket.addressRaw,
+): Promise<Map<WasteTicketField, string>> {
+  const { page, ticket } = args;
+  const values: Record<WasteTicketField, string | null> = {
+    number: ticket.number,
+    issuedOn: ticket.issuedOn,
+    volumeM3: asText(ticket.volumeM3),
+    workKind: ticket.workKind,
+    addressRaw: ticket.addressRaw,
   };
-  for (const [field, value] of Object.entries(values)) {
-    const disputed = args.ticket.needsReview.includes(field);
-    await client.query(
+  const escalated = page.escalationAttemptId !== null;
+  const observations = new Map<WasteTicketField, string>();
+  for (const field of WASTE_TICKET_FIELDS) {
+    const value = values[field];
+    const reading = ticket.readings[field];
+    const disputed = ticket.needsReview.includes(field);
+    // Итог дала одна ступень — её попытку и называем «выбранной». У слияния и спора их две, и
+    // выбранной среди них нет: ссылка остаётся пустой, а обе попытки записаны рядом.
+    const selectedAttemptId =
+      reading.stage === 'primary'
+        ? page.primaryAttemptId
+        : reading.stage === 'escalation'
+          ? page.escalationAttemptId
+          : null;
+    const inserted = await client.query<{ id: string }>(
       `INSERT INTO waste_ticket_field_events
          (ticket_id, request_id, page_sha256, event, field, old_value, new_value,
-          model, model_reported, prompt_version, preprocessing_version, passes, escalated)
-       VALUES ($1,$2,$3,$4,$5,NULL,$6,$7,$8,$9,$10,$11,$12)`,
+          model, model_reported, prompt_version, preprocessing_version, passes, escalated,
+          read_state, source_stage, primary_attempt_id, escalation_attempt_id, selected_attempt_id,
+          primary_model_reported, escalation_model_reported, primary_value, escalation_value,
+          file_id, page_no, recognition_run_id, cache_hit, collection_version)
+       VALUES ($1,$2,$3,$4,$5,NULL,$6,$7,$8,$9,$10,$11,$12,
+               $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+       RETURNING id`,
       [
         args.ticketId,
         args.requestId,
-        args.pageSha256,
+        page.sha256,
         disputed ? 'disputed' : 'recognized',
         field,
         disputed ? null : value,
         args.model,
-        args.modelReported,
+        // Старая колонка остаётся моделью ПЕРВОГО прохода: по ней построен индекс выгрузки 0206, и
+        // сменить её смысл значило бы разъехаться с уже собранной историей. Обе ступени названы
+        // отдельными снимками ниже.
+        page.modelReported,
         PROMPT_VERSION,
         PREPROCESSING_VERSION,
-        args.escalated ? 2 : 1,
-        args.escalated,
+        escalated ? 2 : 1,
+        escalated,
+        readState({
+          field,
+          value,
+          workKind: ticket.workKind,
+          disputed,
+          unreadable: page.unreadable,
+        }),
+        reading.stage,
+        page.primaryAttemptId,
+        page.escalationAttemptId,
+        selectedAttemptId,
+        page.modelReported,
+        page.escalationModelReported,
+        reading.primaryValue,
+        reading.escalationValue,
+        args.fileId,
+        page.pageNo,
+        args.recognitionRunId,
+        page.cacheHit,
+        COLLECTION_VERSION,
       ],
     );
+    observations.set(field, inserted.rows[0]!.id);
   }
+  return observations;
+}
+
+/**
+ * Значение поля текстом — ровно так, как его хранит журнал (0206): и дата, и объём. Приведение к
+ * типу стёрло бы половину случая — обрезанный номер `262` и пустая строка выглядели бы одинаково.
+ */
+function asText(value: string | number | null | undefined): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+/**
+ * Список нечитаемых полей из ответа модели. Проверяется поимённо, а не принимается на веру: у
+ * страницы, взятой из кэша, он приезжает сырым `jsonb` попытки, который писала прошлая версия кода.
+ */
+function readUnreadable(value: unknown): WasteTicketField[] {
+  if (!Array.isArray(value)) return [];
+  const known: readonly string[] = WASTE_TICKET_FIELDS;
+  return value.filter((f): f is WasteTicketField => typeof f === 'string' && known.includes(f));
 }
 
 /** Собирает страницу результата, сливая проходы по полям (Р14). */
-function toPageResult(
-  page: PageImage & { pageNo: number },
-  primaryAttemptId: string,
-  escalationAttemptId: string | null,
-  primary: { tickets?: unknown[]; unreadable?: string[] } | Record<string, unknown>,
-  escalated: readonly unknown[],
+function toPageResult(args: {
+  page: PageImage & { pageNo: number };
+  primaryAttemptId: string;
+  /** Попытка второй ступени — только если её чтение вошло в итог. */
+  escalationAttemptId?: string | null;
+  /** Ответ первого прохода: от движка или из `raw` попытки, когда страница взята из кэша. */
+  primary: { tickets?: unknown; unreadable?: unknown };
+  /** Талоны второго прохода: пусто, когда эскалации не было или её результат не пригодился. */
+  escalated?: readonly unknown[];
   /**
    * Чем читали проходы. Фактические модели (`model_reported`, Р7), а не заказанные: человеку в
    * споре важно, кто именно так прочитал, а прокси вправе подставить свою (Р7).
    */
-  models: { primary: string; escalation: string } = { primary: '', escalation: '' },
-): PageResult {
-  const primaryModel = models.primary;
-  const escalationModel = models.escalation;
+  models?: { primary: string; escalation: string };
+  /** Вызова наружу не было — страницу отдал кэш попыток (§2.1 плана аудита). */
+  cacheHit?: boolean;
+}): PageResult {
+  const escalationAttemptId = args.escalationAttemptId ?? null;
+  const primaryModel = args.models?.primary ?? '';
+  const escalationModel = args.models?.escalation ?? '';
   type T = {
     number: string | null;
     issuedOn: string | null;
@@ -829,8 +1099,10 @@ function toPageResult(
     workKind: string;
     addressRaw: string | null;
   };
-  const primaryTickets = ((primary as { tickets?: T[] }).tickets ?? []) as T[];
-  const escalatedTickets = escalated as T[];
+  // Форма талона в ответе — обещание схемы контракта, а не факт: из кэша сюда приходит `jsonb`.
+  const primaryTickets = (Array.isArray(args.primary.tickets) ? args.primary.tickets : []) as T[];
+  const escalatedTickets = (args.escalated ?? []) as readonly T[];
+  const unreadable = readUnreadable(args.primary.unreadable);
 
   const tickets = primaryTickets.map((ticket, index) => {
     const pair = escalationAttemptId
@@ -856,6 +1128,33 @@ function toPageResult(
     addCandidates('number', number.candidates);
     addCandidates('issuedOn', issuedOn.candidates);
     addCandidates('volumeM3', volume.candidates);
+    // Вид работ и адрес каскад не сливает: в талон уходит чтение первого прохода, чем бы ни
+    // ответил второй. Ступень поэтому только `merged` (второй прочитал то же самое) или
+    // `primary`, а расхождение видно значениями — оба записаны, и спорным поле от этого не станет.
+    const kept = (value: string | null, escalatedValue: string | null | undefined): FieldReading => ({
+      stage: value === null || value === '' ? null : escalatedValue === value ? 'merged' : 'primary',
+      primaryValue: asText(value),
+      escalationValue: asText(escalatedValue),
+    });
+    const readings: Record<WasteTicketField, FieldReading> = {
+      number: {
+        stage: number.stage,
+        primaryValue: asText(ticket.number),
+        escalationValue: asText(pair?.number),
+      },
+      issuedOn: {
+        stage: issuedOn.stage,
+        primaryValue: asText(ticket.issuedOn),
+        escalationValue: asText(pair?.issuedOn),
+      },
+      volumeM3: {
+        stage: volume.stage,
+        primaryValue: asText(ticket.volumeM3),
+        escalationValue: asText(pair?.volumeM3),
+      },
+      workKind: kept(ticket.workKind, pair?.workKind),
+      addressRaw: kept(ticket.addressRaw, pair?.addressRaw),
+    };
     return {
       number: number.value,
       issuedOn: issuedOn.value,
@@ -864,15 +1163,19 @@ function toPageResult(
       addressRaw: ticket.addressRaw,
       needsReview,
       candidates,
+      readings,
     };
   });
 
   return {
-    pageNo: page.pageNo,
-    sha256: page.sha256,
-    primaryAttemptId,
+    pageNo: args.page.pageNo,
+    sha256: args.page.sha256,
+    primaryAttemptId: args.primaryAttemptId,
     escalationAttemptId,
-    modelReported: models.primary,
+    modelReported: primaryModel,
+    escalationModelReported: escalationModel,
+    unreadable,
+    cacheHit: !!args.cacheHit,
     tickets,
   };
 }

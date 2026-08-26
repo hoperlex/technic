@@ -6,6 +6,11 @@ export { wasteTicketsApi } from './api/wasteTicketsApi';
 export type { TicketRecognitionHealth } from './api/wasteTicketsApi';
 export { wasteTicketKeys } from './api/keys';
 export {
+  ticketAuditAccuracyQuery,
+  ticketAuditCohortsQuery,
+  ticketAuditEventsQuery,
+  ticketAuditOperationsQuery,
+  ticketAuditSummaryQuery,
   ticketRecognitionHealthQuery,
   wasteTicketBlindQueueQuery,
   wasteTicketsQuery,

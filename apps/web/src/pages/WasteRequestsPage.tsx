@@ -87,6 +87,11 @@ import { useIsMobile } from '@shared/lib';
 import { dayEnd, dayStart } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { useOpenedRecord } from '@shared/lib';
+import {
+  TicketAuditButton,
+  TicketAuditModal,
+  useTicketAuditMobileAction,
+} from '@features/ticket-audit';
 import { useWasteObjectScope } from '../hooks/useWasteObjectScope';
 import { useAuth } from '../auth/AuthContext';
 
@@ -380,6 +385,10 @@ export function WasteRequestsPage() {
   // талон, не видя ни распознанного, ни подтверждённого. Вкладкой здесь, а не отдельным разделом:
   // область та же и право то же, а приходят за ней редко — доля выборки считается процентами.
   const showBlindCheck = can('wasteRequests.ticketReview');
+  // Аудит распознавания (ADR 0137) — не вкладка, а окно поверх реестра: право сильное и редкое,
+  // а место размещения временное. Окно смонтировано здесь, над вкладками: ссылка `?ticketAudit=1`
+  // приходит с любой из них, а внутри вкладки оно открылось бы только на своей.
+  const canTicketAudit = can('wasteRequests.ticketAudit');
   const items = [
     { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
     { key: 'on-site', label: 'На объекте', children: <OnSiteTab /> },
@@ -402,6 +411,7 @@ export function WasteRequestsPage() {
 
   return (
     <div style={{ height: '100%' }}>
+      <TicketAuditModal allowed={canTicketAudit} />
       <PageTabs
         activeKey={tab}
         // Переключение вкладки руками закрывает карточку, открытую по ссылке: адрес остаётся с
@@ -464,6 +474,8 @@ function RequestsTab() {
   // Разбор талонов — отдельное право (ADR 0114, Р25): без него нет ни колонки-значка, ни фильтра.
   // Сервер отвечает так же: параметр `ticketReview` без права отклоняется, а не игнорируется.
   const canReviewTickets = can('wasteRequests.ticketReview');
+  const canAuditTickets = can('wasteRequests.ticketAudit');
+  const auditAction = useTicketAuditMobileAction(canAuditTickets);
 
   const [objectFilter, setObjectFilter] = useState(ownObjectId);
   const [numInput, setNumInput] = useState('');
@@ -1476,11 +1488,16 @@ function RequestsTab() {
     <PageTableLayout
       filters={filters}
       extra={
-        canCreate ? (
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            Создать заявку
-          </Button>
-        ) : null
+        <Space size={8}>
+          {/* Вход в аудит распознавания: на телефоне панель отдана фильтрам, и второй круглой
+              кнопки рядом с «Создать заявку» там не заводится — окно открывается ссылкой. */}
+          <TicketAuditButton allowed={canAuditTickets} />
+          {canCreate ? (
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              Создать заявку
+            </Button>
+          ) : null}
+        </Space>
       }
       mobile={{
         filters: mobileFilters,
@@ -1494,6 +1511,9 @@ function RequestsTab() {
         primaryAction: canCreate
           ? { label: 'Создать заявку', icon: <PlusOutlined />, onClick: openCreate }
           : undefined,
+        // Вход в аудит на телефоне: круглая кнопка списка занята созданием заявки, и без этой
+        // строки держатель права открывал бы окно только присланной ссылкой.
+        secondaryActions: auditAction ? [auditAction] : undefined,
       }}
     >
       {/* Сводка — на уровне вкладок, над фильтрами и кнопкой: она относится ко всему списку,

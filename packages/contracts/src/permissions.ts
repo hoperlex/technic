@@ -101,6 +101,37 @@ export const PERMISSIONS = [
    */
   'wasteRequests.ticketReview',
 
+  /**
+   * Аудит распознавания талонов (ADR 0137, план `docs/waste-ticket-audit-plan.md` §4.1): сводка
+   * точности по полям, когорты конфигураций конвейера, разбор споров, лупа на скан и выгрузка
+   * наблюдений в CSV.
+   *
+   * **Отдельное право, а не часть `wasteRequests.ticketReview`, и разводит их не размер модуля, а
+   * область.** Разбор — работа над своей заявкой: держатель `ticketReview` закрывает замечания к
+   * тем талонам, которые ему и так видны, и чьи они, проверяет каждая ручка отдельно (Р26). Аудит
+   * работает поперёк: он отвечает на вопрос «где машина ошибается», а ответ на него собирается по
+   * всем площадкам сразу — считай его по своему куску выборки, и доля исправлений мерила бы не
+   * модель, а объект. Держатель поэтому видит адреса всех площадок и сканы талонов всех
+   * исполнителей; это цена сквозного аудита, выбранная заказчиком 26.08.2026 (§4.1).
+   *
+   * Отсюда и способ выдачи: право не выдаётся **ни одной роли**, кроме администратора, у которого
+   * оно есть по построению (`admin: [...PERMISSIONS]`). Живёт оно только одноцелевым системным
+   * набором `waste_ticket_audit` (`MODULE_GRANTS` в `grants.ts`), а тот администратор выдаёт
+   * поимённо, строкой с автором и временем. Впиши его кто-нибудь в `WASTE_REQUEST_PERMISSIONS`
+   * рядом с разбором — и сквозная картина досталась бы всей диспетчерской разом, то есть мимо
+   * поимённой выдачи, ради которой набор и заведён.
+   *
+   * **Страницы администрирования право не касается.** Аудит открывается окном из самого модуля
+   * вывоза (§5), а не вкладкой `/admin`, поэтому строки в `ADMIN_PAGE_PERMISSIONS` у него нет и не
+   * будет: тот список отвечает на вопрос «пускать ли на страницу администрирования», а этой
+   * страницы аудит не открывает вовсе.
+   *
+   * Право отвечает на два вопроса и только на них: показывать ли кнопку в панели вывоза и пускать
+   * ли в шесть ручек аудита. Ни статуса заявки, ни её содержимого оно не трогает — все шесть
+   * читающие.
+   */
+  'wasteRequests.ticketAudit',
+
   // Заказ ТС
   'vehicleRequests.read',
   'vehicleRequests.create',
@@ -1355,6 +1386,27 @@ function canChangeAnyStatus(subject: AccessSubject): boolean {
   return can(subject, 'wasteRequests.status') || can(subject, 'vehicleRequests.status');
 }
 
+/**
+ * Строка таблицы переходов по статусу заявки — единственное место, где эти таблицы читаются.
+ *
+ * Смотрит на таблицу `Partial`-взглядом сознательно, хотя тип обещает строку на каждый статус.
+ * Обещание верно только внутри одной сборки: `RequestStatus` — словарь собранного бандла, а
+ * значение приходит из типа `request_status` базы, и на выкате они расходятся. Так и случилось с
+ * «Завершена» (ADR 0135, миграции 0194/0195): база получила новое значение и перевела в него
+ * выполненные заявки, а у людей в браузере оставался прошлый выпуск портала — статуса такого он
+ * не знал, спред `undefined` бросал `TypeError`, и падала не ячейка, а весь список заявок.
+ *
+ * Неизвестный статус означает «ходов отсюда нет»: строка показывается, меню переходов не
+ * открывается, остальной список работает. Смену статуса всё равно решает сервер — портал лишь
+ * предлагает ходы, и предложить их по незнакомому статусу ему нечем.
+ */
+function corridorFrom(
+  table: Record<RequestStatus, RequestStatus[]>,
+  from: RequestStatus,
+): RequestStatus[] {
+  return (table as Partial<Record<RequestStatus, RequestStatus[]>>)[from] ?? [];
+}
+
 /** Ходы по циклу, открытые правом ведения статусов: без завершения — оно отпирается другим. */
 function cycleTransitions(
   from: RequestStatus,
@@ -1363,10 +1415,11 @@ function cycleTransitions(
 ): RequestStatus[] {
   if (!canChangeAnyStatus(subject)) return [];
   const ownCorridor = subject.role ? ROLE_STATUS_TRANSITIONS[subject.role] : undefined;
-  if (ownCorridor) return ownCorridor[from];
+  if (ownCorridor) return corridorFrom(ownCorridor, from);
+  const forward = corridorFrom(requestStatusTransitions[module], from);
   return can(subject, 'requests.rollbackStatus')
-    ? [...requestStatusTransitions[module][from], ...requestStatusRollbacks[module][from]]
-    : requestStatusTransitions[module][from];
+    ? [...forward, ...corridorFrom(requestStatusRollbacks[module], from)]
+    : forward;
 }
 
 /**
