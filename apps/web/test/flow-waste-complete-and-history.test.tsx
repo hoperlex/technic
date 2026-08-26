@@ -26,7 +26,20 @@ const DONE_PENDING = wasteRequest({
   id: 'wr-2',
   num: 129,
   displayNumber: 'М-129',
-  ticketBadge: { errors: 0, warnings: 0, pendingConfirmation: 2, failures: 0 },
+  ticketBadge: { errors: 0, warnings: 0, pendingConfirmation: 2, failures: 0, unreviewedPaper: 0 },
+});
+
+/**
+ * Она же с приложенным талоном, к разбору которого не приступали: распознавания у бумаги нет вовсе,
+ * значит нет и неподтверждённых талонов — прежнее правило читало это как «всё разобрано» (ADR 0135,
+ * миграция 0204).
+ */
+const DONE_UNREVIEWED = wasteRequest({
+  ...DONE,
+  id: 'wr-3',
+  num: 130,
+  displayNumber: 'М-130',
+  ticketBadge: { errors: 0, warnings: 0, pendingConfirmation: 0, failures: 0, unreviewedPaper: 1 },
 });
 
 const COMPLETED = wasteRequest({
@@ -121,6 +134,21 @@ describe('завершение заявки на вывоз и журнал за
     // нет. Он выключен и объясняет, чего ждёт.
     expect(complete!.className).toContain('ant-dropdown-menu-item-disabled');
     expect(complete!.getAttribute('title')).toContain('не подтверждено талонов: 2');
+
+    fireEvent.click(complete!);
+    expect(http.countOf('PATCH /waste-requests/:id/status')).toBe(0);
+  });
+
+  it('приложенный, но не разобранный талон тоже держит пункт выключенным', async () => {
+    const http = renderPage([DONE_UNREVIEWED]);
+    expect(await screen.findByText('М-130')).toBeDefined();
+
+    const items = await openTransitions();
+    const complete = items.find((el) => el.textContent === 'Завершена');
+    expect(complete!.className).toContain('ant-dropdown-menu-item-disabled');
+    // Текст говорит не только «нельзя», но и что делать: файл распознают либо талон заводят руками.
+    expect(complete!.getAttribute('title')).toContain('приложенных талонов не разобрано: 1');
+    expect(complete!.getAttribute('title')).toContain('заведите талон руками');
 
     fireEvent.click(complete!);
     expect(http.countOf('PATCH /waste-requests/:id/status')).toBe(0);

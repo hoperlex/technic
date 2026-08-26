@@ -3,7 +3,9 @@ import type { RequestType } from '@technic/contracts';
 import { db } from '../db/client';
 import {
   constructionObjects,
+  files,
   jobs,
+  requestFiles,
   users,
   wasteRequestCompletions,
   wasteRequests,
@@ -174,7 +176,7 @@ export async function loadTicketCheckInputs(
   const ids = rows.map((r) => r.id);
   if (ids.length === 0) return result;
 
-  const [ticketRows, pageRows, fileRows, completionRows, resolutionRows, blindRows] =
+  const [ticketRows, pageRows, fileRows, completionRows, resolutionRows, blindRows, paperRows] =
     await Promise.all([
       db.select().from(wasteTickets).where(inArray(wasteTickets.requestId, ids)),
       db
@@ -222,6 +224,22 @@ export async function loadTicketCheckInputs(
         .from(wasteTicketBlindChecks)
         .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketBlindChecks.ticketId))
         .where(inArray(wasteTickets.requestId, ids)),
+      // Приложенная бумага заявки — та, что легла в неё при закрытии (ADR 0020, ADR 0024). Читается
+      // здесь, а не выводится из строк распознавания: вопрос «есть ли бумага» и вопрос «дошла ли
+      // она до разбора» — разные, и второй отвечает `waste_ticket_files`. Разойдись они (модуль
+      // был выключен, задача не дошла до страниц) — заявка с нетронутым сканом выглядела бы
+      // разобранной.
+      db
+        .select({ requestId: requestFiles.requestId })
+        .from(requestFiles)
+        .innerJoin(files, eq(files.id, requestFiles.fileId))
+        .where(
+          and(
+            inArray(requestFiles.requestId, ids),
+            eq(requestFiles.kind, 'ticket'),
+            eq(files.status, 'active'),
+          ),
+        ),
     ]);
 
   const pageById = new Map(pageRows.map((p) => [p.id, p]));
@@ -236,8 +254,23 @@ export async function loadTicketCheckInputs(
 
   for (const row of rows) {
     const tickets = ticketRows.filter((t) => t.requestId === row.id);
-    const files = fileRows.filter((f) => f.requestId === row.id);
-    if (tickets.length === 0 && files.length === 0) continue;
+    const recognitionFiles = fileRows.filter((f) => f.requestId === row.id);
+    /*
+     * Бумага, которая ждёт разбора, — только у вывоза мусора: распознавание ставится единственному
+     * типу (Р1, `enqueueTicketRecognition`), у контейнерных операций вывезенного объёма нет вовсе,
+     * металлолом закрывается весовой квитанцией. Считай мы их бумагу здесь — их завершение
+     * закрылось бы навсегда, потому что разбирать её некому и нечем.
+     */
+    const attachedTicketFiles =
+      row.requestType === 'waste_removal'
+        ? paperRows.filter((f) => f.requestId === row.id).length
+        : 0;
+    /*
+     * Заявка без бумаги вовсе значка не получает (`badge = null`, и завершению это не помеха).
+     * Приложенный талон бумагой считается наравне со строкой распознавания: именно он и есть то,
+     * что предстоит разобрать.
+     */
+    if (tickets.length === 0 && recognitionFiles.length === 0 && attachedTicketFiles === 0) continue;
 
     const pages = pageRows.filter((p) => p.requestId === row.id);
     const blind = blindRows.filter((b) => b.requestId === row.id);
@@ -275,7 +308,8 @@ export async function loadTicketCheckInputs(
             comment: r.comment,
           })),
         subsystem: {
-          failedFiles: files.filter(
+          attachedTicketFiles,
+          failedFiles: recognitionFiles.filter(
             (f) => f.status === 'unsupported' || f.status === 'failed' || f.jobStatus === 'dead',
           ).length,
           failedPages: pages.filter((p) => p.status === 'failed').length,

@@ -2,6 +2,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { wasteTicketReviewBlocker, wasteTicketReviewSettled } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 import type { db as AppDb } from '../src/db/client';
 import type * as DbSchema from '../src/db/schema';
@@ -76,18 +77,25 @@ async function seedRequest(opts: {
   factVolumeM3?: number;
   removedOn?: string | null;
   deliveryAt?: Date;
+  /** Тип заявки: бумага разбирается только у вывоза мусора (ADR 0114, Р1). */
+  requestType?: 'waste_removal' | 'container_removal' | 'metal_removal';
 }): Promise<string> {
   const { db, schema } = ctx;
   const [request] = await db
     .insert(schema.wasteRequests)
     .values({
       objectId: ctx.objectId,
-      requestType: 'waste_removal',
+      requestType: opts.requestType ?? 'waste_removal',
       deliveryAt: opts.deliveryAt ?? new Date('2026-08-17T09:00:00.000Z'),
       createdBy: ctx.userId,
       status: 'done',
       comment: MARK,
-      volumeM3: String(opts.volumeM3 ?? 40),
+      // У металлолома объёма не бывает вовсе (ADR 0067): вывезенное меряют весом, и CHECK схемы
+      // такую строку не принимает.
+      volumeM3:
+        (opts.requestType ?? 'waste_removal') === 'metal_removal'
+          ? null
+          : String(opts.volumeM3 ?? 40),
       operatorCounterpartyId: ctx.operatorId,
     })
     .returning({ id: schema.wasteRequests.id });
@@ -102,6 +110,29 @@ async function seedRequest(opts: {
     });
   }
   return id;
+}
+
+/**
+ * Талон, приложенный к заявке при закрытии (`request_files.kind = 'ticket'`), — бумага как она
+ * есть, ДО всякого распознавания. Строк `waste_ticket_files` он не заводит намеренно: именно так
+ * выглядит закрытие при выключенном модуле и файл, чья задача не дошла до страниц.
+ */
+async function seedTicketFile(requestId: string): Promise<string> {
+  const { db, schema } = ctx;
+  const [file] = await db
+    .insert(schema.files)
+    .values({
+      bucket: 'test',
+      objectKey: `badge-${suffix}/${randomUUID()}.pdf`,
+      filename: 'ticket.pdf',
+      contentType: 'application/pdf',
+      size: 1024,
+      status: 'active',
+      uploadedBy: ctx.userId,
+    })
+    .returning({ id: schema.files.id });
+  await db.insert(schema.requestFiles).values({ requestId, fileId: file!.id, kind: 'ticket' });
+  return file!.id;
 }
 
 async function seedTicket(
@@ -131,7 +162,8 @@ async function seedTicket(
       numberKey: opts.number,
       numberFuzzy: opts.number,
       issuedOn: opts.issuedOn === undefined ? '2026-08-17' : opts.issuedOn,
-      volumeM3: opts.volumeM3 === undefined ? '40' : opts.volumeM3 === null ? null : String(opts.volumeM3),
+      volumeM3:
+        opts.volumeM3 === undefined ? '40' : opts.volumeM3 === null ? null : String(opts.volumeM3),
       workKind: 'removal',
       addressRaw: opts.addressRaw ?? '',
       operatorCounterpartyId: ctx.operatorId,
@@ -240,6 +272,7 @@ describe.skipIf(!DB_URL)('вход сверки талонов на живой �
       warnings: 0,
       pendingConfirmation: 0,
       failures: 0,
+      unreviewedPaper: 0,
     });
   });
 
@@ -311,5 +344,45 @@ describe.skipIf(!DB_URL)('вход сверки талонов на живой �
   it('заявка без единой строки распознавания значка не получает вовсе', async () => {
     const requestId = await seedRequest({ factVolumeM3: 40 });
     expect(await badgeOf(requestId)).toBeNull();
+  });
+
+  it('приложенный талон без единого подтверждённого держит заявку в разборе', async () => {
+    // Тот самый случай, который выкат 0195 счёл разобранным: бумага приложена, распознавания у неё
+    // нет вовсе — значит и неподтверждённых талонов нет, и прежнее правило читало это как «всё
+    // чисто». Разбирать здесь ровно всё.
+    const requestId = await seedRequest({ factVolumeM3: 40 });
+    await seedTicketFile(requestId);
+
+    const state = await badgeOf(requestId);
+    expect(state).not.toBeNull();
+    expect(state!.badge.unreviewedPaper).toBe(1);
+    expect(wasteTicketReviewSettled(state!.badge)).toBe(false);
+    expect(wasteTicketReviewBlocker(state!.badge)).toContain('приложенных талонов не разобрано: 1');
+  });
+
+  it('подтверждённый талон гасит признак нетронутой бумаги, отклонённый — нет', async () => {
+    const requestId = await seedRequest({ factVolumeM3: 40 });
+    await seedTicketFile(requestId);
+    await seedTicket(requestId, { number: `G${suffix}`, volumeM3: 40, status: 'dismissed' });
+
+    // «Это не талон» — не разбор бумаги, а вывод о том, что бумаги на кадре нет.
+    const dismissedOnly = await badgeOf(requestId);
+    expect(dismissedOnly!.badge.unreviewedPaper).toBe(1);
+
+    await seedTicket(requestId, { number: `H${suffix}`, volumeM3: 40, seq: 2 });
+    const confirmed = await badgeOf(requestId);
+    expect(confirmed!.badge.unreviewedPaper).toBe(0);
+    expect(wasteTicketReviewSettled(confirmed!.badge)).toBe(true);
+  });
+
+  it('у заявки, чья бумага разбору не подлежит, приложенный талон значка не даёт', async () => {
+    // Снятие контейнера и металлолом в распознавание не ставятся (Р1): вывезенного объёма у первого
+    // нет вовсе, второй закрывается весовой квитанцией. Считай мы их бумагу нетронутой — завершение
+    // таких заявок закрылось бы навсегда.
+    for (const requestType of ['container_removal', 'metal_removal'] as const) {
+      const requestId = await seedRequest({ requestType });
+      await seedTicketFile(requestId);
+      expect(await badgeOf(requestId)).toBeNull();
+    }
   });
 });

@@ -397,6 +397,13 @@ export function wasteTicketChecks(input: WasteTicketChecksInput): WasteTicketChe
       warnings: checks.filter((c) => c.severity === 'warning' && !c.resolution).length,
       pendingConfirmation: unconfirmed + (subsystem?.blindPending ?? 0),
       failures: (subsystem?.failedFiles ?? 0) + (subsystem?.failedPages ?? 0),
+      // Приложенная бумага, к разбору которой не приступали. Гаснет с ПЕРВЫМ подтверждённым
+      // талоном, а не с первым распознанным: распознанный талон ждёт человека и виден как ⏳, а
+      // отклонённый («это не талон») говорит ровно обратное — настоящей бумаги в разборе так и
+      // нет. Считается по неотклонённым: `active` за вычетом неподтверждённых и есть число
+      // подтверждённых.
+      unreviewedPaper:
+        active.length - unconfirmed > 0 ? 0 : (subsystem?.attachedTicketFiles ?? 0),
     },
   };
 }

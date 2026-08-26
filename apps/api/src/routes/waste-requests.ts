@@ -860,9 +860,10 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       q.num ? eq(wasteRequests.num, q.num) : undefined,
       q.deliveryFrom ? gte(wasteRequests.deliveryAt, q.deliveryFrom) : undefined,
       q.deliveryTo ? lte(wasteRequests.deliveryAt, q.deliveryTo) : undefined,
-      // «Требуют разбора»: неподтверждённый или спорный талон, неудачный файл, мёртвая задача либо
-      // непринятое расхождение. Именно ждущая работа, а не только расхождения, — иначе корректно
-      // распознанный талон без замечаний остался бы неподтверждённым навсегда (Р24).
+      // «Требуют разбора»: неподтверждённый или спорный талон, неудачный файл, мёртвая задача,
+      // непринятое расхождение либо приложенная бумага, к разбору которой не приступали. Именно
+      // ждущая работа, а не только расхождения, — иначе корректно распознанный талон без замечаний
+      // остался бы неподтверждённым навсегда (Р24).
       q.ticketReview === 'pending'
         ? sql`(
             EXISTS (SELECT 1 FROM waste_tickets wt
@@ -877,6 +878,20 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
                         JOIN waste_tickets wt2 ON wt2.id = bc.ticket_id
                        WHERE wt2.request_id = ${wasteRequests.id}
                          AND bc.status IN ('pending', 'mismatch'))
+            OR (
+              -- Талон приложен, а разбор его не касался: ни одного подтверждённого талона. Условие
+              -- зеркалит «wasteTicketReviewSettled» — реестр обязан показывать ровно те заявки,
+              -- которым портал отказывает в завершении. Только вывоз мусора: распознавание ставится
+              -- одному типу (Р1), и бумага прочих типов разбора не ждёт.
+              ${wasteRequests.requestType} = 'waste_removal'
+              AND EXISTS (SELECT 1 FROM request_files rf
+                            JOIN files f ON f.id = rf.file_id
+                           WHERE rf.request_id = ${wasteRequests.id}
+                             AND rf.kind = 'ticket' AND f.status = 'active')
+              AND NOT EXISTS (SELECT 1 FROM waste_tickets wt3
+                               WHERE wt3.request_id = ${wasteRequests.id}
+                                 AND wt3.status = 'confirmed')
+            )
           )`
         : undefined,
       // Ищут по тексту, не помня, чья это была строка, — поэтому обе (ADR 0053).

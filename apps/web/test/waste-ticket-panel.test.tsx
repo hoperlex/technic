@@ -40,7 +40,7 @@ const EMPTY_TICKETS = {
   ticketsVolumeM3: 0,
   preliminary: false,
   acceptanceAllowed: true,
-  badge: { errors: 0, warnings: 0, pendingConfirmation: 0, failures: 0 },
+  badge: { errors: 0, warnings: 0, pendingConfirmation: 0, failures: 0, unreviewedPaper: 0 },
 };
 
 const DISABLED_HEALTH = {

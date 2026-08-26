@@ -4,19 +4,20 @@ import type { WasteTicketBadgeDto } from '@technic/contracts';
 /**
  * Значок разбора талонов в строке списка заявок (ADR 0114, Р24).
  *
- * Четыре числа, и каждое отвечает на свой вопрос: **⛔** — цифры не сошлись либо два слепых чтения
+ * Пять чисел, и каждое отвечает на свой вопрос: **⛔** — цифры не сошлись либо два слепых чтения
  * разошлись, нужен разбор; **⚠️** — похоже на расхождение, но бывает законно (похожий номер, чужой
  * адрес); **⏳** — бумага прочитана и ждёт подтверждения человеком; **🚫** — прочитать не удалось
- * вовсе, нужен новый скан или ручной ввод.
+ * вовсе, нужен новый скан или ручной ввод; **📄** — талон приложен, а разбор его не касался: ни
+ * одного подтверждённого талона нет.
  *
- * Показываются только ненулевые: строка списка тесная, а четыре нуля подряд не сообщают ничего,
+ * Показываются только ненулевые: строка списка тесная, а пять нулей подряд не сообщают ничего,
  * кроме того, что колонка существует. Заявка совсем без бумаги значка не получает — `badge` у неё
  * `null`, и это не то же самое, что «все нули»: у первой разбирать нечего, у второй всё разобрано.
  */
 export function TicketBadge({ badge }: { badge: WasteTicketBadgeDto | null }) {
   if (!badge) return null;
-  const { errors, warnings, pendingConfirmation, failures } = badge;
-  if (errors + warnings + pendingConfirmation + failures === 0) {
+  const { errors, warnings, pendingConfirmation, failures, unreviewedPaper } = badge;
+  if (errors + warnings + pendingConfirmation + failures + unreviewedPaper === 0) {
     return (
       <Tooltip title="Талоны разобраны, расхождений нет">
         <Tag color="success" style={{ marginInlineEnd: 0 }}>
@@ -52,6 +53,15 @@ export function TicketBadge({ badge }: { badge: WasteTicketBadgeDto | null }) {
         <Tooltip title={`Не удалось прочитать: ${failures}. Нужен новый скан или ручной ввод`}>
           <Tag color="default" style={{ marginInlineEnd: 0 }}>
             🚫 {failures}
+          </Tag>
+        </Tooltip>
+      )}
+      {unreviewedPaper > 0 && (
+        <Tooltip
+          title={`Талон приложен, но не разобран: ${unreviewedPaper}. Распознайте файл или заведите талон руками`}
+        >
+          <Tag color="default" style={{ marginInlineEnd: 0 }}>
+            📄 {unreviewedPaper}
           </Tag>
         </Tooltip>
       )}

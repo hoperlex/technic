@@ -14,6 +14,7 @@ import {
   wasteTicketNumberFuzzy,
   wasteTicketNumberKey,
 } from '../src/services/waste-ticket-normalize';
+import { wasteTicketReviewBlocker, wasteTicketReviewSettled } from '@technic/contracts';
 
 // Сверка талонов с заявкой (ADR 0114, план `docs/waste-ticket-ocr-plan.md`, Р15–Р21).
 // Фикстуры синтетические: репозиторий публичный, настоящих сканов, номеров и ФИО в тестах нет.
@@ -93,7 +94,13 @@ describe('сверка молчит, когда всё сошлось', () => {
     expect(result.ticketsVolumeM3).toBe(40);
     expect(result.preliminary).toBe(false);
     expect(result.acceptanceAllowed).toBe(true);
-    expect(result.badge).toEqual({ errors: 0, warnings: 0, pendingConfirmation: 0, failures: 0 });
+    expect(result.badge).toEqual({
+      errors: 0,
+      warnings: 0,
+      pendingConfirmation: 0,
+      failures: 0,
+      unreviewedPaper: 0,
+    });
   });
 
   it('талонов нет вовсе — сверять нечего, «в талонах 0 м³» не пишется', () => {
@@ -419,7 +426,13 @@ describe('уникальность: бумага и номер (Р17)', () => {
     ];
     const result = run({ tickets });
     // ⛔ повтор номера · ⚠️ чужой адрес · ⏳ один талон ждёт подтверждения.
-    expect(result.badge).toEqual({ errors: 1, warnings: 1, pendingConfirmation: 1, failures: 0 });
+    expect(result.badge).toEqual({
+      errors: 1,
+      warnings: 1,
+      pendingConfirmation: 1,
+      failures: 0,
+      unreviewedPaper: 0,
+    });
   });
 
   it('сбои и слепые перепроверки попадают в значок, но не в замечания', () => {
@@ -615,5 +628,50 @@ describe('принятое расхождение возвращается са�
       resolutions: [accepted],
     });
     expect(result.checks.find((c) => c.code === 'date_mismatch')?.resolution).toBeNull();
+  });
+});
+
+describe('приложенная бумага, которой разбор не касался', () => {
+  const PAPER = {
+    attachedTicketFiles: 1,
+    failedFiles: 0,
+    failedPages: 0,
+    blindPending: 0,
+    blindMismatch: 0,
+  };
+
+  it('талон приложен, распознавания нет — завершать нельзя', () => {
+    // Ровно то состояние, которое выкат 0195 счёл разобранным (ADR 0135, миграция 0204): талонов
+    // нет, значит и неподтверждённых нет, значит прежнее правило читало «всё чисто».
+    const result = run({ tickets: [], subsystem: PAPER });
+    expect(result.badge.unreviewedPaper).toBe(1);
+    expect(wasteTicketReviewSettled(result.badge)).toBe(false);
+    expect(wasteTicketReviewBlocker(result.badge)).toContain('приложенных талонов не разобрано: 1');
+  });
+
+  it('первый подтверждённый талон снимает признак', () => {
+    const result = run({ tickets: [ticket({ volumeM3: 40 })], subsystem: PAPER });
+    expect(result.badge.unreviewedPaper).toBe(0);
+    expect(wasteTicketReviewSettled(result.badge)).toBe(true);
+  });
+
+  it('неподтверждённый талон признак не снимает — но говорит о себе своим числом', () => {
+    const result = run({
+      tickets: [ticket({ volumeM3: 40, status: 'unconfirmed' })],
+      subsystem: PAPER,
+    });
+    expect(result.badge.unreviewedPaper).toBe(1);
+    expect(result.badge.pendingConfirmation).toBe(1);
+  });
+
+  it('«это не талон» разбором бумаги не считается', () => {
+    const result = run({ tickets: [ticket({ status: 'dismissed' })], subsystem: PAPER });
+    expect(result.badge.unreviewedPaper).toBe(1);
+  });
+
+  it('бумаги не приложено вовсе — признака нет', () => {
+    const result = run({ tickets: [], subsystem: { ...PAPER, attachedTicketFiles: 0 } });
+    expect(result.badge.unreviewedPaper).toBe(0);
+    expect(wasteTicketReviewSettled(result.badge)).toBe(true);
   });
 });
