@@ -386,6 +386,8 @@ interface PageResult {
   sha256: string;
   primaryAttemptId: string;
   escalationAttemptId: string | null;
+  /** Фактическая модель первого прохода (`model_reported`, Р7): её и записывает журнал. */
+  modelReported: string;
   tickets: {
     number: string | null;
     issuedOn: string | null;
@@ -486,7 +488,21 @@ async function saveResult(
            RETURNING id`,
           values,
         );
-        if (written.rows[0]) continue;
+        if (written.rows[0]) {
+          // Журнал распознавания (Р30, миграция 0206): что модель прочитала и что осталось
+          // спорным. Пишется В ТОЙ ЖЕ транзакции, что и талон: событие о строке, которой нет,
+          // — мусор, а строка без события — дыра в метрике.
+          await recordRecognizedFields(client, {
+            ticketId: written.rows[0].id,
+            requestId: payload.requestId,
+            pageSha256: page.sha256,
+            model: deps.model,
+            modelReported: page.modelReported,
+            escalated: page.escalationAttemptId !== null,
+            ticket,
+          });
+          continue;
+        }
 
         // Талон тронут человеком — новый проход ложится РЯДОМ предложением (Р13). Снимком, а не
         // ссылкой на попытку: сырьё убирается по сроку (Р31), обе ссылки объявлены `SET NULL`, и
@@ -729,6 +745,68 @@ export async function runTicketRecognitionJob(
   }
 }
 
+/**
+ * Журнал распознавания: пять полей одной строкой каждое (ADR 0114, Р30, миграция 0206).
+ *
+ * Событие `recognized` — знаменатель всей метрики: сколько модель прочитала, из них столько-то
+ * потом исправили. Подтверждения при этом не пишутся намеренно (Р31): человек смотрит на
+ * подставленное значение и склонен согласиться, так что «согласился» ничего не говорит о качестве.
+ *
+ * Спорное поле пишется отдельным событием `disputed` вместо `recognized`: значения у него нет
+ * вовсе — проходы каскада разошлись, и портал не выбрал за человека (Р14). Считать его
+ * «прочитанным» значило бы завышать знаменатель на самых трудных полях.
+ */
+async function recordRecognizedFields(
+  client: JobClient,
+  args: {
+    ticketId: string;
+    requestId: string;
+    pageSha256: string;
+    model: string;
+    modelReported: string;
+    escalated: boolean;
+    ticket: {
+      number: string | null;
+      issuedOn: string | null;
+      volumeM3: number | null;
+      workKind: string;
+      addressRaw: string | null;
+      needsReview: string[];
+    };
+  },
+): Promise<void> {
+  const values: Record<string, string | null> = {
+    number: args.ticket.number,
+    issuedOn: args.ticket.issuedOn,
+    volumeM3: args.ticket.volumeM3 == null ? null : String(args.ticket.volumeM3),
+    workKind: args.ticket.workKind,
+    addressRaw: args.ticket.addressRaw,
+  };
+  for (const [field, value] of Object.entries(values)) {
+    const disputed = args.ticket.needsReview.includes(field);
+    await client.query(
+      `INSERT INTO waste_ticket_field_events
+         (ticket_id, request_id, page_sha256, event, field, old_value, new_value,
+          model, model_reported, prompt_version, preprocessing_version, passes, escalated)
+       VALUES ($1,$2,$3,$4,$5,NULL,$6,$7,$8,$9,$10,$11,$12)`,
+      [
+        args.ticketId,
+        args.requestId,
+        args.pageSha256,
+        disputed ? 'disputed' : 'recognized',
+        field,
+        disputed ? null : value,
+        args.model,
+        args.modelReported,
+        PROMPT_VERSION,
+        PREPROCESSING_VERSION,
+        args.escalated ? 2 : 1,
+        args.escalated,
+      ],
+    );
+  }
+}
+
 /** Собирает страницу результата, сливая проходы по полям (Р14). */
 function toPageResult(
   page: PageImage & { pageNo: number },
@@ -794,6 +872,7 @@ function toPageResult(
     sha256: page.sha256,
     primaryAttemptId,
     escalationAttemptId,
+    modelReported: models.primary,
     tickets,
   };
 }

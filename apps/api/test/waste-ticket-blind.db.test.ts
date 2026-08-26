@@ -5,7 +5,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
 import type * as DbSchema from '../src/db/schema';
-import { eq as sqlEq } from 'drizzle-orm';
+import { eq as sqlEq, sql as sqlRaw } from 'drizzle-orm';
 
 /**
  * Разбор талона на живых маршрутах: слепая перепроверка (Р31) и предложения перераспознавания
@@ -441,6 +441,101 @@ describe.skipIf(!DB_URL)('слепая перепроверка на живых 
       // кнопка отвечала бы «отправлено», не отправив ничего.
       expect(res.statusCode, res.body).toBe(400);
       expect(res.body).toContain('выключено');
+    });
+  });
+
+  describe('журнал распознавания и разбора (Р30)', () => {
+    /**
+     * Самый сильный сигнал качества модели — исправление оператора, и до этого журнала он пропадал
+     * целиком: талон помнит только последнее значение, а общий аудит писал лишь имя поля. Теперь
+     * «было → стало» сохраняется вместе с моделью, версией промпта и числом проходов каскада.
+     */
+    async function eventsOf(ticketId: string) {
+      const rows = await ctx.db.execute<{
+        event: string;
+        field: string;
+        old_value: string | null;
+        new_value: string | null;
+        model: string;
+        passes: number;
+        actor_id: string | null;
+      }>(
+        sqlRaw`SELECT event, field, old_value, new_value, model, passes, actor_id
+                 FROM waste_ticket_field_events
+                WHERE ticket_id = ${ticketId}::uuid
+                ORDER BY created_at, field`,
+      );
+      return rows.rows;
+    }
+
+    it('правка пишет прежнее и новое значение', async () => {
+      const { requestId, ticketId } = await seedTicket(`J${RUN}`);
+
+      const res = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/waste-requests/${requestId}/tickets/${ticketId}`,
+        headers: ctx.owner.auth,
+        payload: { volumeM3: 38 },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+
+      const events = await eventsOf(ticketId);
+      const edited = events.filter((e) => e.event === 'edited');
+      expect(edited).toHaveLength(1);
+      // Ровно тот случай, ради которого журнал заведён: модель прочитала 20, на бумаге 38.
+      expect(edited[0]!.field).toBe('volumeM3');
+      expect(Number(edited[0]!.old_value)).toBe(20);
+      expect(Number(edited[0]!.new_value)).toBe(38);
+      // Человеческое событие обязано знать человека — иначе непонятно, кто исправил.
+      expect(edited[0]!.actor_id).toBe(ctx.owner.id);
+    });
+
+    it('подтверждение событий не заводит: согласие ничего не говорит о качестве', async () => {
+      const { requestId, ticketId } = await seedTicket(`K${RUN}`);
+      await confirm(requestId, ticketId);
+
+      // Человек смотрит на подставленное значение и склонен согласиться (Р31) — писать пять строк
+      // на каждый талон ради слабейшего сигнала незачем. Знаменатель берётся по `recognized`.
+      expect(await eventsOf(ticketId)).toHaveLength(0);
+    });
+
+    it('«не талон» пишется по всем полям и без нового значения', async () => {
+      const { requestId, ticketId } = await seedTicket(`L${RUN}`);
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/waste-requests/${requestId}/tickets/${ticketId}/dismiss`,
+        headers: ctx.owner.auth,
+        payload: {},
+      });
+      expect(res.statusCode, res.body).toBe(200);
+
+      const events = await eventsOf(ticketId);
+      // Модель увидела бумагу там, где её нет: поля не менялись, изменилась их судьба.
+      expect(events.every((e) => e.event === 'dismissed')).toBe(true);
+      expect(events.every((e) => e.new_value === null)).toBe(true);
+      expect(events.map((e) => e.field).sort()).toEqual([
+        'addressRaw',
+        'issuedOn',
+        'number',
+        'volumeM3',
+        'workKind',
+      ]);
+    });
+
+    it('машинное событие человека не называет', async () => {
+      // `recognized` совершила модель, и приписать его сотруднику нельзя — это держит `CHECK`.
+      // Обратное не проверяется намеренно: удаление учётки обнуляет актора у прошлых правок, и
+      // двусторонняя проверка запрещала бы кадровые действия ради журнала.
+      const { requestId, ticketId } = await seedTicket(`M${RUN}`);
+      await expect(
+        ctx.db.execute(sqlRaw`
+          INSERT INTO waste_ticket_field_events
+            (ticket_id, request_id, event, field, new_value, actor_id)
+          VALUES (${ticketId}::uuid, ${requestId}::uuid, 'recognized', 'volumeM3', '38',
+                  ${ctx.owner.id}::uuid)
+        `),
+      ).rejects.toThrow();
     });
   });
 

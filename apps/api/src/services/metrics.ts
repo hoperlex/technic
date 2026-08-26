@@ -134,7 +134,7 @@ export async function collectMetrics(): Promise<string> {
    * привязана к календарю заявки, поэтому «за вчера» здесь означает «вчера читали», а не «вчера
    * возили».
    */
-  const [attempts, tokens, blind, review] = await Promise.all([
+  const [attempts, tokens, blind, journal, review] = await Promise.all([
     db.execute<{ engine: string; status: string; scope: string; count: string }>(
       sql`SELECT engine, status, error_scope AS scope, count(*)::text AS count
             FROM waste_ticket_recognition_attempts
@@ -149,6 +149,18 @@ export async function collectMetrics(): Promise<string> {
     ),
     db.execute<{ status: string; count: string }>(
       sql`SELECT status, count(*)::text AS count FROM waste_ticket_blind_checks GROUP BY status`,
+    ),
+    /*
+     * Размер журнала распознавания (Р30, миграция 0206). Срок хранения у него не задан намеренно:
+     * метрика тем полезнее, чем длиннее ряд. Но «храним, пока не станет проблемой» требует, чтобы
+     * проблему было видно — иначе о ней узнают из места, где кончилось.
+     *
+     * Оценка из статистики планировщика, а не `count(*)`: точное число здесь не нужно, а полный
+     * проход по растущей таблице на каждом скрейпе — плата ни за что.
+     */
+    db.execute<{ rows: string }>(
+      sql`SELECT GREATEST(reltuples, 0)::bigint::text AS rows
+            FROM pg_class WHERE oid = 'waste_ticket_field_events'::regclass`,
     ),
     // Тот же предикат, что у реестра «требуют разбора» (Р24): график и список обязаны показывать
     // одно число, иначе один из них молча соврёт.
@@ -225,6 +237,12 @@ export async function collectMetrics(): Promise<string> {
       help: 'Слепые перепроверки талонов по состоянию',
       type: 'gauge',
       values: byStatus([...blind.rows]),
+    },
+    {
+      name: 'technic_ticket_field_events',
+      help: 'Строк в журнале распознавания и разбора (оценка): по ней решают, когда нужна уборка',
+      type: 'gauge',
+      values: [{ value: Number(journal.rows[0]?.rows ?? 0) }],
     },
     {
       name: 'technic_ticket_review_pending',

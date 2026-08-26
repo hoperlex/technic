@@ -34,6 +34,7 @@ import type {
   ModuleMailEvent,
   ReplyToMode,
   WaybillCorrectionAuthorizationScope,
+  WasteTicketField,
 } from '@technic/contracts';
 
 /** case-insensitive text (расширение citext включается ops-ом до миграций). */
@@ -3846,6 +3847,87 @@ export const wasteTicketBlindChecks = pgTable(
  * Без отпечатка «принято» означало бы «замолчать навсегда» — в том числе про расхождение, которого
  * в момент принятия не было и которое появилось потом.
  */
+/**
+ * Журнал распознавания и разбора: событие на ПОЛЕ (ADR 0114, Р30/Р31, миграция 0206).
+ *
+ * Отвечает на вопрос, которого не знает ни одна соседняя таблица: что стало с тем, что прочитала
+ * модель. Попытка помнит ответ, но не знает, приняли его или переписали; талон помнит только
+ * последнее значение — прежнее затирается правкой; общий `audit_log` фиксирует факт («правили
+ * объём»), но не значения, и по нему нельзя ответить, как часто модель путает 38 с 3.
+ *
+ * Подтверждение здесь не пишется намеренно: человек смотрит на подставленное значение и склонен
+ * согласиться, так что «подтверждено» не значит «прочитано верно» (Р31). Знаменатель берётся по
+ * `recognized`.
+ */
+export const wasteTicketFieldEvents = pgTable(
+  'waste_ticket_field_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Обнуляемые ссылки: строка живёт дольше и заявки, и талона — качество модели свойство листа. */
+    ticketId: uuid('ticket_id').references(() => wasteTickets.id, { onDelete: 'set null' }),
+    requestId: uuid('request_id').references(() => wasteRequests.id, { onDelete: 'set null' }),
+    /** Хэш растра: единственная связь, переживающая уборку заявки, — по нему находится попытка. */
+    pageSha256: char('page_sha256', { length: 64 }).notNull().default(''),
+    event: text('event')
+      .notNull()
+      .$type<'recognized' | 'disputed' | 'edited' | 'proposal' | 'arbitrated' | 'dismissed'>(),
+    field: text('field').notNull().$type<WasteTicketField>(),
+    /** Значения текстом, как показаны человеку: «3» и «38» различимы, `null` и «» — тоже. */
+    oldValue: text('old_value'),
+    newValue: text('new_value'),
+    model: text('model').notNull().default(''),
+    modelReported: text('model_reported').notNull().default(''),
+    promptVersion: integer('prompt_version'),
+    preprocessingVersion: integer('preprocessing_version'),
+    /** Проходов каскада по странице: 1 — только дешёвая, 2 — с эскалацией (Р14). */
+    passes: smallint('passes').notNull().default(0),
+    escalated: boolean('escalated').notNull().default(false),
+    /** `null` у машинных событий: их совершила модель, а не человек. */
+    actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    modelIdx: index('waste_ticket_field_events_model_idx').on(
+      t.modelReported,
+      t.field,
+      t.createdAt.desc(),
+    ),
+    ticketIdx: index('waste_ticket_field_events_ticket_idx')
+      .on(t.ticketId, t.createdAt)
+      .where(sql`${t.ticketId} IS NOT NULL`),
+    createdIdx: index('waste_ticket_field_events_created_idx').on(t.createdAt),
+    eventCheck: check(
+      'waste_ticket_field_events_event_check',
+      sql`${t.event} IN ('recognized', 'disputed', 'edited', 'proposal', 'arbitrated', 'dismissed')`,
+    ),
+    fieldCheck: check(
+      'waste_ticket_field_events_field_check',
+      sql`${t.field} IN ('number', 'issuedOn', 'volumeM3', 'workKind', 'addressRaw')`,
+    ),
+    editCheck: check(
+      'waste_ticket_field_events_edit_check',
+      sql`${t.event} <> 'edited' OR ${t.newValue} IS NOT NULL`,
+    ),
+    /*
+     * Только одна сторона: машинное событие человека не называет. Обратное проверять нельзя —
+     * ссылка обнуляется при удалении учётки, и двусторонний `CHECK` запрещал бы кадровые действия
+     * ради журнала качества.
+     */
+    actorCheck: check(
+      'waste_ticket_field_events_actor_check',
+      sql`${t.event} NOT IN ('recognized', 'disputed') OR ${t.actorId} IS NULL`,
+    ),
+    passesCheck: check(
+      'waste_ticket_field_events_passes_check',
+      sql`${t.passes} BETWEEN 0 AND 2`,
+    ),
+    shaCheck: check(
+      'waste_ticket_field_events_sha_check',
+      sql`${t.pageSha256} = '' OR ${t.pageSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+  }),
+);
+
 export const wasteTicketCheckResolutions = pgTable(
   'waste_ticket_check_resolutions',
   {

@@ -60,6 +60,12 @@ import {
 } from '../services/waste-ticket-blind';
 import { wasteTicketCheckFingerprint, wasteTicketChecks } from '../services/waste-ticket-checks';
 import {
+  recordTicketFieldEvents,
+  ticketFieldValue,
+  TICKET_FIELDS,
+  type TicketFieldChange,
+} from '../services/waste-ticket-events';
+import {
   loadTicketCheckInputs,
   loadTicketCheckRequestRow,
   type RequestVisibility,
@@ -798,6 +804,30 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           .where(eq(wasteTickets.id, ticket.id))
           .returning({ id: wasteTickets.id });
         if (!updated) throw err.conflict();
+
+        // Журнал разбора (Р30): «было → стало» по каждому тронутому полю. Прежние значения берутся
+        // из строки, прочитанной до обновления, — после него их уже не восстановить, и самый
+        // сильный сигнал качества модели пропал бы вместе с ними.
+        await recordTicketFieldEvents(tx, {
+          ticketId: ticket.id,
+          requestId: request.id,
+          event: 'edited',
+          actorId: p.id,
+          changes: touched.map((field) => ({
+            field,
+            oldValue: ticketFieldValue(ticket, field),
+            newValue:
+              field === 'number'
+                ? nextNumber
+                : field === 'issuedOn'
+                  ? (body.issuedOn ?? null)
+                  : field === 'volumeM3'
+                    ? (body.volumeM3 == null ? null : String(body.volumeM3))
+                    : field === 'workKind'
+                      ? (body.workKind ?? ticket.workKind)
+                      : (body.addressRaw ?? ''),
+          })),
+        });
         return { ticketId: ticket.id, touched, numberChanged };
       });
 
@@ -829,6 +859,20 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           .update(wasteTickets)
           .set({ status: 'dismissed', updatedAt: new Date() })
           .where(eq(wasteTickets.id, ticket.id));
+        // «Не талон» — сильный сигнал: модель увидела бумагу там, где её нет, либо приняла за
+        // талон приписку или шапку бланка. В журнале это событие без нового значения: поля не
+        // менялись, изменилась их судьба.
+        await recordTicketFieldEvents(tx, {
+          ticketId: ticket.id,
+          requestId: request.id,
+          event: 'dismissed',
+          actorId: p.id,
+          changes: TICKET_FIELDS.map((field) => ({
+            field,
+            oldValue: ticketFieldValue(ticket, field),
+            newValue: null,
+          })),
+        });
       });
       await writeAudit({
         actorUserId: p.id,
@@ -918,6 +962,21 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
             updatedAt: new Date(),
           })
           .where(eq(wasteTickets.id, ticket.id));
+        // Принятие предложения — тоже правка, но чужой рукой: значения предложил новый проход, а
+        // согласился человек. Событие отдельного вида, чтобы не смешивать с ручным исправлением.
+        await recordTicketFieldEvents(tx, {
+          ticketId: ticket.id,
+          requestId: request.id,
+          event: 'proposal',
+          actorId: p.id,
+          changes: ([
+            { field: 'number', oldValue: ticketFieldValue(ticket, 'number'), newValue: proposal.numberRaw || null },
+            { field: 'issuedOn', oldValue: ticket.issuedOn, newValue: proposal.issuedOn },
+            { field: 'volumeM3', oldValue: ticket.volumeM3, newValue: proposal.volumeM3 },
+            { field: 'workKind', oldValue: ticket.workKind, newValue: proposal.workKind },
+            { field: 'addressRaw', oldValue: ticket.addressRaw || null, newValue: proposal.addressRaw || null },
+          ] satisfies TicketFieldChange[]).filter((c) => c.oldValue !== c.newValue),
+        });
         await tx.delete(wasteTicketProposals).where(eq(wasteTicketProposals.ticketId, ticket.id));
         return { number: proposal.numberRaw, overrideUsed };
       });
@@ -1393,6 +1452,8 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           checkerId: wasteTicketBlindChecks.checkerId,
           requestId: wasteTickets.requestId,
           confirmedBy: wasteTickets.confirmedBy,
+          ticketId: wasteTicketBlindChecks.ticketId,
+          baselineNumberRaw: wasteTicketBlindChecks.baselineNumberRaw,
           baselineNumberKey: wasteTicketBlindChecks.baselineNumberKey,
           baselineIssuedOn: wasteTicketBlindChecks.baselineIssuedOn,
           baselineVolumeM3: wasteTicketBlindChecks.baselineVolumeM3,
@@ -1463,6 +1524,37 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       // держит `CHECK` в базе, а не только маршрут.
       if (!updated[0])
         throw err.badRequest('Разбирать нечего: расхождения нет или оно уже разобрано');
+
+      // Арбитраж — САМЫЙ СИЛЬНЫЙ сигнал качества (Р31): человек читал бумагу, не видя машинного
+      // чтения, а третий назвал верное значение. В журнале «было» — это снимок машины
+      // (`baseline_*`), а не текущее состояние талона: талон после подтверждения правят, и
+      // сравнение с поехавшей величиной меряло бы не то.
+      await db.transaction(async (tx) => {
+        await recordTicketFieldEvents(tx, {
+          ticketId: target.ticketId,
+          requestId: request.id,
+          event: 'arbitrated',
+          actorId: p.id,
+          changes: body.resolvedFields.map((field) => ({
+            field,
+            oldValue:
+              field === 'number'
+                ? target.baselineNumberRaw || null
+                : field === 'issuedOn'
+                  ? target.baselineIssuedOn
+                  : target.baselineVolumeM3,
+            newValue:
+              field === 'number'
+                ? (finalNumber ?? null)
+                : field === 'issuedOn'
+                  ? (body.issuedOn ?? null)
+                  : body.volumeM3 == null
+                    ? null
+                    : String(body.volumeM3),
+          })),
+        });
+      });
+
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.ticket_blind_arbitrate',
