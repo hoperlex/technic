@@ -30,7 +30,7 @@
     "src/pages/vehicle/shared.tsx": 645,
     "src/pages/vehicle/weeklyComposition.ts": 411,
     "src/pages/waste/WasteDoneModal.tsx": 464,
-    "src/pages/waste/WasteRequestViewModal.tsx": 537,
+    "src/pages/waste/WasteRequestViewModal.tsx": 567,
     "src/shared/ui/DataTable.tsx": 444
   }
 }

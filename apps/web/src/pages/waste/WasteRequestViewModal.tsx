@@ -1,4 +1,4 @@
-import { Button, Input, Space, Spin, Tag, Typography } from 'antd';
+import { Button, Input, Popconfirm, Space, Spin, Tag, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -48,6 +48,17 @@ interface Props {
   /** Не передана — примечание исполнителя этой роли недоступно либо заявка уже закрыта. */
   onSaveOperatorComment?: (r: WasteRequestDto, operatorComment: string) => void;
   savingOperatorComment?: boolean;
+  /**
+   * Возврат завершённой заявки в «Выполнена» (ADR 0135). Не передан — хода нет: либо статус не
+   * терминальный, либо нет права отката, либо заявка в архиве.
+   *
+   * Кнопка живёт ЗДЕСЬ, а не в строке журнала, потому что журнал отвечает на «что было», а
+   * возврат — это решение по конкретной заявке, которое принимают, посмотрев её талоны и историю.
+   * До этой кнопки завершённая заявка вообще не имела в портале хода назад: меню статуса стоит
+   * только в рабочем списке, а туда закрытые заявки не попадают (ADR 0135 §5).
+   */
+  onRollbackToDone?: (r: WasteRequestDto) => void;
+  rollingBack?: boolean;
 }
 
 /**
@@ -234,6 +245,8 @@ export function WasteRequestViewModal({
   onEdit,
   onSaveOperatorComment,
   savingOperatorComment,
+  onRollbackToDone,
+  rollingBack,
 }: Props) {
   // Право разбора талонов (ADR 0114, Р25). Оно же управляет видимостью замечаний и журнала
   // попыток: у внешнего исполнителя есть право закрывать заявку, но не проверять собственную бумагу.
@@ -460,6 +473,23 @@ export function WasteRequestViewModal({
       // Окно переоткрывают на соседней заявке — раскрытые строки прошлой истории не её дело.
       destroyOnHidden
       footer={[
+        ...(request && onRollbackToDone
+          ? [
+              // Спрашивается подтверждением, а не окном с причиной: возврат ничего не стирает
+              // (ADR 0135 §6), объяснять нечего — но заявка уедет из журнала обратно в работу, и
+              // нажавший должен знать об этом до нажатия, а не после.
+              <Popconfirm
+                key="rollback"
+                title="Вернуть заявку в «Выполнена»?"
+                description="Заявка вернётся в рабочий список, а её талоны — в разбор: их снова можно править и подтверждать. Из заявки ничего не стирается."
+                okText="Вернуть"
+                cancelText="Отмена"
+                onConfirm={() => onRollbackToDone(request)}
+              >
+                <Button loading={rollingBack}>Вернуть в «Выполнена»</Button>
+              </Popconfirm>,
+            ]
+          : []),
         ...(request && onEdit
           ? [
               <Button key="edit" type="primary" onClick={() => onEdit(request)}>

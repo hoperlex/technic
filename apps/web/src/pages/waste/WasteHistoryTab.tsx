@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { DatePicker, Input, Select, Space } from 'antd';
-import { useQuery } from '@tanstack/react-query';
+import { App, DatePicker, Input, Select, Space } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import {
   actsForCounterparty,
+  allowedStatusTransitions,
   CLOSED_WASTE_STATUSES,
   parseWasteRequestNumberSearch,
   REQUEST_TYPES,
@@ -24,7 +25,7 @@ import { useListParams } from '@shared/lib';
 import { useOpenedRecord } from '@shared/lib';
 import { useWasteObjectScope } from '../../hooks/useWasteObjectScope';
 import { useAuth } from '../../auth/AuthContext';
-import { formatMoney } from '../../utils/format';
+import { errorMessage, formatMoney } from '../../utils/format';
 import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';
 import { wasteHistoryCard, wasteHistoryColumns } from './wasteHistoryColumns';
 import { WasteRequestViewModal } from './WasteRequestViewModal';
@@ -42,6 +43,8 @@ const DATE = 'YYYY-MM-DD';
  */
 export function WasteHistoryTab() {
   const { user } = useAuth();
+  const { message } = App.useApp();
+  const qc = useQueryClient();
   const { soleObjectId, limitObjectOptions } = useWasteObjectScope();
   // Исполнителю фильтр «кто вывозил» повторял бы единственный вариант — свою же компанию
   // (ADR 0038): чужие заявки сервер ему всё равно не отдаёт.
@@ -134,6 +137,40 @@ export function WasteHistoryTab() {
    * Закрытая заявка, названная в адресе: ссылка из соседнего раздела ведёт именно сюда — в списке
    * заявок завершённой и отменённой больше нет.
    */
+  /**
+   * Возврат завершённой заявки в «Выполнена» (ADR 0135 §6). Факт закрытия при этом не спрашивается:
+   * он у заявки уже предъявлен, и сервер повторного не требует. Причина тоже не спрашивается —
+   * возврат ничего не стирает, в отличие от отката в «Новую».
+   */
+  const rollbackMut = useMutation({
+    mutationFn: (r: WasteRequestDto) => wasteRequestsApi.changeStatus(r.id, 'done', r.version),
+    onSuccess: () => {
+      setViewRecord(null);
+      opened.clear();
+      // Заявка уходит из журнала в рабочий список, и сказать об этом обязательно: иначе она
+      // выглядит просто исчезнувшей со страницы.
+      message.success('Заявка вернулась в «Выполнена» — талоны снова открыты для разбора');
+      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+    },
+    onError: (e) => {
+      message.error(errorMessage(e));
+      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+    },
+  });
+
+  /**
+   * Кому показывать возврат: тому, у кого этот ход есть в коридоре, — то есть праву отката
+   * (`requests.rollbackStatus`) вместе с ведением статусов. Одна и та же функция и здесь, и на
+   * сервере: разойдись они, кнопка предлагала бы то, что кончается ошибкой. Заявка из архива
+   * возврата не получает — удалённой заявке сервер статуса не меняет вовсе.
+   */
+  const rollbackHandler = (
+    r: WasteRequestDto | null,
+  ): ((r: WasteRequestDto) => void) | undefined =>
+    r && user && !r.deletedAt && allowedStatusTransitions(r.status, user, 'waste').includes('done')
+      ? (target) => rollbackMut.mutate(target)
+      : undefined;
+
   const opened = useOpenedRecord<WasteRequestDto>({
     active: useActiveTabKey() === 'history',
     queryKey: (id) => ['waste-requests', id],
@@ -320,14 +357,17 @@ export function WasteHistoryTab() {
         onChange={onTableChange}
       />
 
-      {/* Карточка закрытой заявки только на чтение: править в ней нечего — обработчик правки
-          окну не передан. */}
+      {/* Карточка закрытой заявки на чтение: править в ней нечего — обработчик правки окну не
+          передан. Единственное действие — возврат завершённой заявки в работу, и только у того,
+          кому этот ход открыт правом. */}
       <WasteRequestViewModal
         request={viewRecord ?? opened.record}
         onClose={() => {
           setViewRecord(null);
           opened.clear();
         }}
+        onRollbackToDone={rollbackHandler(viewRecord ?? opened.record)}
+        rollingBack={rollbackMut.isPending}
       />
     </PageTableLayout>
   );

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
-import type { WasteRequestDto } from '@technic/contracts';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import type { AuthUser, WasteRequestDto } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
+import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto, wasteRequest, wasteSummary } from './factories/waste';
 import { WasteRequestsPage } from '../src/pages/WasteRequestsPage';
@@ -59,8 +60,11 @@ const CANCELLED = wasteRequest({
   cancelReason: 'Площадка отказалась',
 });
 
-/** Экран заявок глазами диспетчера: он же ведёт заявки и разбирает талоны (ADR 0114, Р25). */
-function renderPage(rows: WasteRequestDto[], over: RouteMap = {}): HttpMock {
+/**
+ * Экран заявок глазами диспетчера: он же ведёт заявки и разбирает талоны (ADR 0114, Р25).
+ * `user` задаётся сценариями про возврат из журнала: откат статуса — право администратора.
+ */
+function renderPage(rows: WasteRequestDto[], over: RouteMap = {}, user?: AuthUser): HttpMock {
   const http = mockHttp({
     'GET /waste-requests': () => json(list(rows)),
     'GET /waste-requests/summary': () => json(wasteSummary({ done: rows.length })),
@@ -81,11 +85,21 @@ function renderPage(rows: WasteRequestDto[], over: RouteMap = {}): HttpMock {
     'GET /container-types': () => json(emptyList()),
     'GET /waste-types': () => json(emptyList()),
     'GET /counterparties': () => json(emptyList()),
+    'GET /waste-requests/:id/history': () => json([]),
     'PATCH /waste-requests/:id/status': () => json(COMPLETED),
     ...over,
   });
-  renderWithUser(<WasteRequestsPage />);
+  renderWithUser(<WasteRequestsPage />, user ? { user } : {});
   return http;
+}
+
+/** Карточка закрытой заявки: в журнале её открывают единственным действием строки. */
+async function openHistoryCard(displayNumber: string) {
+  switchToTab('История');
+  const row = (await screen.findByText(displayNumber)).closest('tr');
+  expect(row, `строка ${displayNumber}`).toBeTruthy();
+  fireEvent.click(within(row as HTMLElement).getByLabelText('Открыть карточку'));
+  return screen.findByText(`Заявка № ${displayNumber}`);
 }
 
 /** Меню переходов у тега статуса. Ищется по `aria-label`: `*ByRole` на таблице antd слишком дорог. */
@@ -152,6 +166,34 @@ describe('завершение заявки на вывоз и журнал за
 
     fireEvent.click(complete!);
     expect(http.countOf('PATCH /waste-requests/:id/status')).toBe(0);
+  });
+
+  it('владеющий откатом возвращает завершённую заявку в «Выполнена» прямо из карточки', async () => {
+    // До этой кнопки у завершённой заявки хода назад в портале не было вовсе: меню статуса стоит
+    // только в рабочем списке, а закрытые заявки туда не попадают (ADR 0135 §5).
+    const http = renderPage([DONE], {}, authUser({ role: 'admin' }));
+    await openHistoryCard('М-120');
+
+    const button = await screen.findByRole('button', { name: /Вернуть в «Выполнена»/ });
+    fireEvent.click(button);
+    const confirm = await screen.findByRole('button', { name: 'Вернуть' });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(http.countOf('PATCH /waste-requests/:id/status')).toBe(1));
+    // Факт закрытия повторно не предъявляется — он у заявки уже есть (сервер повторного и не
+    // требует), а версия берётся из строки журнала.
+    const body = http.lastCall('PATCH /waste-requests/:id/status')?.body as Record<string, unknown>;
+    expect(body).toMatchObject({ status: 'done', version: 8 });
+    expect(body.completion).toBeUndefined();
+  });
+
+  it('без права отката кнопки возврата в карточке нет', async () => {
+    // Менеджер ведёт заявки, но откат статусов ему не открыт (ADR 0106): «чинит тот, кому звонят»
+    // — право есть у диспетчера и администратора. Карточка при этом открывается как обычно.
+    renderPage([DONE], {}, authUser({ role: 'manager' }));
+    await openHistoryCard('М-120');
+
+    expect(screen.queryByRole('button', { name: /Вернуть в «Выполнена»/ })).toBeNull();
   });
 
   it('вкладка «История» спрашивает журнал и показывает закрытые заявки', async () => {
