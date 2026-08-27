@@ -9,8 +9,14 @@ import {
   type OfficeEquipmentDto,
   type OfficeEquipmentWarrantyFilter,
 } from '@technic/contracts';
-import { DataTable, PageTableLayout, sortOptionsFrom, type FilterDefinition } from '@shared/ui';
-import { useListParams } from '@shared/lib';
+import {
+  DataTable,
+  FilterReset,
+  PageTableLayout,
+  sortOptionsFrom,
+  type FilterDefinition,
+} from '@shared/ui';
+import { useListParams, usePruneMissingFilters } from '@shared/lib';
 import {
   officeEquipmentApi,
   officeEquipmentCard,
@@ -54,31 +60,89 @@ const stateOptions = OFFICE_EQUIPMENT_STATES.map((value) => ({
   label: officeEquipmentStateLabels[value],
 }));
 
+/** Срезы вкладки в параметрах списка; поиск, страница и сортировка сюда не заходят. */
+interface EquipmentListFilters {
+  objectId?: string;
+  equipmentTypeId?: string;
+  departmentId?: string;
+  state?: string;
+  strandedAtService?: string;
+  warranty?: string;
+}
+
+/** Те же срезы перечнем: вкладка запоминает их между сеансами и снимает «Сбросить» (ADR 0139). */
+const EQUIPMENT_FILTER_FIELDS = [
+  'objectId',
+  'equipmentTypeId',
+  'departmentId',
+  'state',
+  'strandedAtService',
+  'warranty',
+] as const satisfies readonly (keyof EquipmentListFilters)[];
+
 export function EquipmentTab() {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   // Переезд записывает тот, кто ведёт парк. Смотреть список и историю может каждый, кому открыт
   // справочник: «что с этим аппаратом было» — вопрос читателя.
   const canWrite = can('officeEquipment.write');
 
-  const { params, setParams, setSort, onTableChange } = useListParams<{
-    objectId?: string;
-    equipmentTypeId?: string;
-    departmentId?: string;
-    state?: string;
-    strandedAtService?: string;
-    warranty?: string;
-  }>({}, { searchKeys: ['name'] });
+  const { params, setParams, setSort, onTableChange, filtersActive, resetFilters } =
+    useListParams<EquipmentListFilters>(
+      {},
+      {
+        searchKeys: ['name'],
+        filterKeys: EQUIPMENT_FILTER_FIELDS,
+        // Парк смотрят кабинет за кабинетом и площадка за площадкой: срез здесь — рабочее место,
+        // а не разовый вопрос (ADR 0139).
+        persist: { scope: 'service-equipment', userId: user?.id },
+      },
+    );
 
   const { data, isFetching } = useQuery({
     queryKey: officeEquipmentKeys.list(params),
     queryFn: () => officeEquipmentApi.list(params),
   });
 
-  const { data: typeOptions = [], isLoading: typesLoading } = useQuery(
-    officeEquipmentTypeOptionsQuery(),
+  const {
+    data: typeOptions = [],
+    isLoading: typesLoading,
+    isSuccess: typesReady,
+  } = useQuery(officeEquipmentTypeOptionsQuery());
+  const { data: objectOptions = [], isSuccess: objectsReady } = useQuery(
+    objectOptionsQuery({ activeOnly: false }),
   );
-  const { data: objectOptions = [] } = useQuery(objectOptionsQuery({ activeOnly: false }));
-  const { data: departmentOptions = [] } = useQuery(departmentOptionsQuery());
+  const { data: departmentOptions = [], isSuccess: departmentsReady } =
+    useQuery(departmentOptionsQuery());
+
+  /**
+   * Сохранённый срез мог пережить свой предмет: площадку закрыли, отдел выключили, тип погасили
+   * (ADR 0139). Такое значение в поле не прочитать, а список от него пуст — снимаем.
+   */
+  usePruneMissingFilters(
+    [
+      { key: 'objectId', value: params.objectId, options: objectOptions, ready: objectsReady },
+      {
+        key: 'equipmentTypeId',
+        value: params.equipmentTypeId,
+        options: typeOptions,
+        ready: typesReady,
+      },
+      {
+        key: 'departmentId',
+        value: params.departmentId,
+        options: departmentOptions,
+        ready: departmentsReady,
+      },
+      { key: 'state', value: params.state, options: stateOptions, ready: true },
+      { key: 'warranty', value: params.warranty, options: warrantyOptions, ready: true },
+    ],
+    (keys) =>
+      setParams((p) => ({
+        ...p,
+        ...Object.fromEntries(keys.map((key) => [key, undefined])),
+        page: 1,
+      })),
+  );
 
   const [moving, setMoving] = useState<OfficeEquipmentDto | null>(null);
   const [historyOf, setHistoryOf] = useState<OfficeEquipmentDto | null>(null);
@@ -158,6 +222,9 @@ export function EquipmentTab() {
         value={params.warranty}
         onChange={(v) => setParams((p) => ({ ...p, warranty: v, page: 1 }))}
       />
+      {/* Выход из набора одним движением: срез здесь переживает сеанс, и разбирать его шестью
+          крестиками человек не должен (ADR 0139). */}
+      <FilterReset active={filtersActive} onClick={resetFilters} />
     </Space>
   );
 
@@ -181,6 +248,15 @@ export function EquipmentTab() {
       loading: typesLoading,
       placeholder: 'Все типы',
       onChange: (v) => setParams((p) => ({ ...p, equipmentTypeId: v, page: 1 })),
+    },
+    {
+      kind: 'select',
+      key: 'departmentId',
+      label: 'Отдел',
+      value: params.departmentId,
+      options: departmentOptions,
+      placeholder: 'Все отделы',
+      onChange: (v) => setParams((p) => ({ ...p, departmentId: v, page: 1 })),
     },
     {
       kind: 'select',

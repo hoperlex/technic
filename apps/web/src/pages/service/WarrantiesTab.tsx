@@ -7,7 +7,7 @@ import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
 import { DataTable, PageTableLayout, sortOptionsFrom, type FilterDefinition } from '@shared/ui';
-import { useListParams } from '@shared/lib';
+import { useListParams, usePruneMissingFilters } from '@shared/lib';
 import { OPEN_PARAM } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { ServiceFilterBar } from './serviceRequestFilters';
@@ -27,6 +27,15 @@ const KIND_OPTIONS = [
   { value: 'repair', label: 'Только ремонты' },
 ];
 
+/** Ключи отборов реестра: по ним набор запоминается между сеансами и снимается «Сбросить» (ADR 0139). */
+const WARRANTY_FILTER_FIELDS = [
+  'objectId',
+  'departmentId',
+  'equipmentTypeId',
+  'kind',
+  'expiring',
+] as const satisfies readonly (keyof WarrantyListFilters)[];
+
 /**
  * Реестр действующих гарантий (§9.5).
  *
@@ -42,13 +51,20 @@ const KIND_OPTIONS = [
  * ремонта, а без него сервер обращение не примет — по построению, а не по забывчивости формы.
  */
 export function WarrantiesTab() {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const [, setSearchParams] = useSearchParams();
 
-  const { params, setParams, setSort, onTableChange } = useListParams<WarrantyListFilters>(
-    {},
-    { searchKeys: ['equipment'] },
-  );
+  const { params, setParams, setSort, onTableChange, filtersActive, resetFilters } =
+    useListParams<WarrantyListFilters>(
+      {},
+      {
+        searchKeys: ['equipment'],
+        filterKeys: WARRANTY_FILTER_FIELDS,
+        // Свой набор у реестра, а не общий с заявками (ADR 0139): вопросы разные — «за что не
+        // платить» и «что чинится сейчас», — и общий срез стирал бы один другим.
+        persist: { scope: 'service-warranties', userId: user?.id },
+      },
+    );
 
   const sortBy = params.sortBy ?? 'warrantyUntil';
   const sortOrder = params.sortBy ? params.sortOrder : 'asc';
@@ -59,16 +75,40 @@ export function WarrantiesTab() {
     queryFn: () => serviceRequestsApi.warranties(query),
   });
 
-  const { data: objectOptions = [] } = useQuery(objectOptionsQuery({ activeOnly: false }));
-  const { data: departmentOptions = [] } = useQuery(departmentOptionsQuery());
+  const { data: objectOptions = [], isSuccess: objectsReady } = useQuery(
+    objectOptionsQuery({ activeOnly: false }),
+  );
+  const { data: departmentOptions = [], isSuccess: departmentsReady } =
+    useQuery(departmentOptionsQuery());
   // Перечень типов закрыт правом справочника: сервису он недоступен (Р7), и спрашивать его за
   // него значило бы ловить 403 на каждом открытии вкладки.
-  const { data: typeOptions = [] } = useQuery({
+  const { data: typeOptions = [], isSuccess: typesReady } = useQuery({
     ...officeEquipmentTypeOptionsQuery(),
     enabled: can('officeEquipment.read'),
   });
 
   const apply = (patch: WarrantyListFilters) => setParams((p) => ({ ...p, ...patch, page: 1 }));
+
+  /** Сохранённая ссылка на закрытый объект или выключенный отдел снимается сама (ADR 0139). */
+  usePruneMissingFilters(
+    [
+      { key: 'objectId', value: params.objectId, options: objectOptions, ready: objectsReady },
+      {
+        key: 'departmentId',
+        value: params.departmentId,
+        options: departmentOptions,
+        ready: departmentsReady,
+      },
+      {
+        key: 'equipmentTypeId',
+        value: params.equipmentTypeId,
+        options: typeOptions,
+        ready: typesReady,
+      },
+      { key: 'kind', value: params.kind, options: KIND_OPTIONS, ready: true },
+    ],
+    (keys) => apply(Object.fromEntries(keys.map((key) => [key, undefined]))),
+  );
 
   const filters: FilterDefinition[] = [
     {
@@ -143,7 +183,12 @@ export function WarrantiesTab() {
 
   return (
     <PageTableLayout
-      filters={<ServiceFilterBar filters={filters} />}
+      filters={
+        <ServiceFilterBar
+          filters={filters}
+          reset={{ active: filtersActive, onClick: resetFilters }}
+        />
+      }
       mobile={{
         search: {
           value: params.search,

@@ -36,7 +36,7 @@ import { ServiceRequestViewModal } from './ServiceRequestViewModal';
 export function ServiceArchiveTab() {
   const { message } = App.useApp();
   const qc = useQueryClient();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const canRestore = can('archive.restore');
   const [viewRecord, setViewRecord] = useState<ServiceRequestDto | null>(null);
 
@@ -47,7 +47,15 @@ export function ServiceArchiveTab() {
     fetch: (id) => serviceRequestsApi.get(id),
   });
 
-  const { params, setParams, setSort, onTableChange } = useListParams({}, { searchKeys: [] });
+  /*
+   * Отборов у архива нет — только поиск, — но порядок и размер страницы вкладка помнит наравне с
+   * соседями (ADR 0139): архив открывают разбором «что было», и заново переставлять сортировку
+   * при каждом заходе так же лишне, как заново выставлять отборы в списке.
+   */
+  const { params, setParams, setSort, onTableChange } = useListParams(
+    {},
+    { searchKeys: [], persist: { scope: 'service-archive', userId: user?.id } },
+  );
 
   /**
    * Поиск один на номер и на технику: «СО-14», «со-14» и просто «14» сервер разбирает как номер

@@ -7,7 +7,8 @@ import { serviceCompanyOptionsQuery } from '@entities/service-request';
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
-import type { FilterDefinition } from '@shared/ui';
+import { FilterReset, type FilterDefinition } from '@shared/ui';
+import { usePruneMissingFilters } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 
 const DATE = 'YYYY-MM-DD';
@@ -38,6 +39,27 @@ export interface ServiceListFilters {
 }
 
 /**
+ * Ключи отборов списка — те же, что поля `ServiceListFilters`, но перечнем: по ним хук списка
+ * запоминает набор между сеансами (ADR 0139), строит «Сбросить» и решает, задан ли отбор вообще.
+ * Тип сторожит совпадение — поле, добавленное в отбор и забытое здесь, перестанет запоминаться
+ * молча, а не сломается.
+ */
+export const SERVICE_FILTER_FIELDS = [
+  'status',
+  'objectId',
+  'departmentId',
+  'serviceCounterpartyId',
+  'equipmentTypeId',
+  'waitingOnMe',
+  'mine',
+  'awaitingDocuments',
+  'warrantyClaim',
+  'urgent',
+  'createdFrom',
+  'createdTo',
+] as const satisfies readonly (keyof ServiceListFilters)[];
+
+/**
  * Отбор по статусу перечисляет коридор целиком, а не избранные значения: заведённая в контрактах
  * «Отложена» (Р103) появилась здесь сама, и следующий статус появится так же.
  */
@@ -58,17 +80,57 @@ export function useServiceRequestFilters({
 }): FilterDefinition[] {
   const { can } = useAuth();
 
-  const { data: objectOptions = [] } = useQuery(objectOptionsQuery({ activeOnly: false }));
-  const { data: departmentOptions = [] } = useQuery(departmentOptionsQuery());
-  const { data: serviceOptions = [], isFetching: servicesLoading } = useQuery(
-    serviceCompanyOptionsQuery(),
+  const { data: objectOptions = [], isSuccess: objectsReady } = useQuery(
+    objectOptionsQuery({ activeOnly: false }),
   );
+  const { data: departmentOptions = [], isSuccess: departmentsReady } =
+    useQuery(departmentOptionsQuery());
+  const {
+    data: serviceOptions = [],
+    isFetching: servicesLoading,
+    isSuccess: servicesReady,
+  } = useQuery(serviceCompanyOptionsQuery());
   // Перечень типов оргтехники закрыт правом справочника: сервису он недоступен вовсе (Р7), и
   // спрашивать его за него значило бы ловить 403 на каждом открытии списка.
-  const { data: typeOptions = [] } = useQuery({
+  const { data: typeOptions = [], isSuccess: typesReady } = useQuery({
     ...officeEquipmentTypeOptionsQuery(),
     enabled: can('officeEquipment.read'),
   });
+
+  /**
+   * Восстановленный набор мог пережить сам предмет отбора: объект закрыли, отдел выключили,
+   * подрядчика приостановили (ADR 0139). Такое значение уходит в запрос, но в поле показывается
+   * сырым идентификатором — человек остаётся с пустым списком и без причины. Снимаем.
+   *
+   * Статус проверяется тем же порядком, хотя перечень его — из контрактов: снимок переживает
+   * выпуск, а выбывшее из перечня значение сервер встретит отказом, и починить список изнутри
+   * будет нечем.
+   */
+  usePruneMissingFilters(
+    [
+      { key: 'status', value: params.status, options: statusOptions, ready: true },
+      { key: 'objectId', value: params.objectId, options: objectOptions, ready: objectsReady },
+      {
+        key: 'departmentId',
+        value: params.departmentId,
+        options: departmentOptions,
+        ready: departmentsReady,
+      },
+      {
+        key: 'serviceCounterpartyId',
+        value: params.serviceCounterpartyId,
+        options: serviceOptions,
+        ready: servicesReady,
+      },
+      {
+        key: 'equipmentTypeId',
+        value: params.equipmentTypeId,
+        options: typeOptions,
+        ready: typesReady,
+      },
+    ],
+    (keys) => apply(Object.fromEntries(keys.map((key) => [key, undefined]))),
+  );
 
   return [
     {
@@ -232,7 +294,23 @@ function renderFilter(filter: FilterDefinition): ReactNode {
   }
 }
 
-/** Панель фильтров десктопа из тех же описаний, что уходят в шит телефона. */
-export function ServiceFilterBar({ filters }: { filters: FilterDefinition[] }) {
-  return <Space wrap>{filters.map(renderFilter)}</Space>;
+/**
+ * Панель фильтров десктопа из тех же описаний, что уходят в шит телефона.
+ *
+ * `reset` — выход из набора одним движением (ADR 0139). Не передан — кнопки нет: список, отборы
+ * которого живут один сеанс, разбирается теми же крестиками, что и собран.
+ */
+export function ServiceFilterBar({
+  filters,
+  reset,
+}: {
+  filters: FilterDefinition[];
+  reset?: { active: boolean; onClick: () => void };
+}) {
+  return (
+    <Space wrap>
+      {filters.map(renderFilter)}
+      {reset ? <FilterReset {...reset} /> : null}
+    </Space>
+  );
 }

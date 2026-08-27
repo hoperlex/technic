@@ -11,6 +11,7 @@ export * from './DataTable';
 export * from './EntityLink';
 export * from './ExpandableCell';
 export * from './Fab';
+export * from './FilterReset';
 export * from './FilterSheet';
 export * from './formBlockers';
 export * from './FormGrid';
