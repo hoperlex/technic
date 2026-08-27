@@ -1,4 +1,4 @@
-import { App, Form, Input, InputNumber, Select, type FormInstance } from 'antd';
+import { App, Form, Input, InputNumber, Select, Typography, type FormInstance } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   type TrailerKind,
@@ -155,6 +155,18 @@ export function TrailerFormModal({
           <Form.Item name="status" label="Состояние">
             <Select<VehicleStatus> options={statusOptions} />
           </Form.Item>
+          {/* Собственник — показ, а не поле: справочника организаций в портале нет вовсе, и
+            завести юрлицо из этой формы нечем. Пусто у прицепа значит «за основной организацией»,
+            как у всего парка, и строка тогда не показывается: подпись «собственник — мы» ничего
+            не добавляет к тому, что человек и так знает. Появится она у единиц другого юрлица —
+            их приносит миграция или обмен справочником. */}
+          {record?.ownerOrganizationName ? (
+            <FormGrid.Full>
+              <Form.Item label="Собственник">
+                <Typography.Text>{record.ownerOrganizationName}</Typography.Text>
+              </Form.Item>
+            </FormGrid.Full>
+          ) : null}
           <FormGrid.Full>
             <Form.Item name="note" label="Примечание">
               <Input.TextArea rows={2} maxLength={2000} />

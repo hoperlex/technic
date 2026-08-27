@@ -199,7 +199,7 @@ export function TrailersTab() {
       />
       <Input.Search
         allowClear
-        placeholder="Госномер / марка / ПТС"
+        placeholder="Госномер / марка / VIN / ПТС"
         style={{ width: 280 }}
         onSearch={(val) => setParams((p) => ({ ...p, search: val || undefined, page: 1 }))}
       />
