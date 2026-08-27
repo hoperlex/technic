@@ -7,7 +7,12 @@ import {
   vehicleOptionLabel,
   type VehicleTrailerDto,
 } from '@technic/contracts';
-import { trailerHitchTargetsKey, trailerKeys, vehicleTrailersApi } from '@entities/vehicle-trailer';
+import {
+  trailerHitchTargetsKey,
+  trailerKeys,
+  trailerSlotsQuery,
+  vehicleTrailersApi,
+} from '@entities/vehicle-trailer';
 import { AutoSelect, FormModal } from '@shared/ui';
 import { vehiclesApi } from '../../api/resources';
 import { errorMessage } from '../../utils/format';
@@ -90,12 +95,17 @@ export function TrailerHitchModal({
    * Состав выбранной машины — им же и отвечает `hitchedVehicleId` в контракте списка. Спрашиваем
    * до нажатия, а не разбираем ответ после: слот освобождает сама команда, и человек имеет право
    * знать, кого он вытесняет, **пока** ещё может передумать.
+   *
+   * Запрос — общий (`trailerSlotsQuery`), а не свой под тем же ключом. Копия здесь уже стоила
+   * работоспособности: в ней остался `pageSize: 10`, которого контракт не допускает (только
+   * 50|100|200|500), ручка отвечала 400, и подсказки «Прицеп 1 — занят» не появлялись **никогда**.
+   * Два запроса под одним ключом расходятся молча — поэтому запрос обязан быть один.
    */
+  const slotsBase = trailerSlotsQuery(watchVehicleId);
   const { data: slotsData } = useQuery({
-    queryKey: trailerKeys.slots(watchVehicleId),
-    queryFn: () =>
-      vehicleTrailersApi.list({ page: 1, pageSize: 10, hitchedVehicleId: watchVehicleId }),
-    enabled: !!trailer && !!watchVehicleId,
+    ...slotsBase,
+    // Своё условие поверх общего: спрашивать состав нужно только при открытом окне.
+    enabled: !!trailer && slotsBase.enabled,
   });
 
   // Сам перемещаемый прицеп жильцом слота не считается: «переставить в тот же слот» — не вытеснение.

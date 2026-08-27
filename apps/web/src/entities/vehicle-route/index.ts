@@ -5,12 +5,18 @@
 export { vehicleRouteKeys, vehicleTypesForTrailerKey } from './api/keys';
 export {
   emptyTrailerGraphs,
+  foreignHitchWarning,
   graphsAreHitched,
   hitchedTrailerGraphs,
   hitchedTrailerNote,
   inheritedTrailerGraphs,
+  MANUAL_TRAILER_MODES,
   sameTrailerGraphs,
+  substitutedTrailerModes,
   TRACTOR_TRAILER_HINT,
   TRACTOR_TRAILERS_TYPE_CODE,
+  TRAILER_DIRECTORY_HINT,
   type TrailerGraphs,
+  type TrailerSlotMode,
+  type TrailerSlotModes,
 } from './model/hitchedTrailers';

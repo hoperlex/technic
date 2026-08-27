@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Checkbox, Form, Input, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import type { HitchedTrailerDto } from '@technic/contracts';
@@ -7,11 +7,16 @@ import {
   graphsAreHitched,
   hitchedTrailerGraphs,
   hitchedTrailerNote,
+  MANUAL_TRAILER_MODES,
+  substitutedTrailerModes,
   TRACTOR_TRAILER_HINT,
   TRACTOR_TRAILERS_TYPE_CODE,
+  type TrailerSlotMode,
+  type TrailerSlotModes,
   vehicleTypesForTrailerKey,
 } from '@entities/vehicle-route';
 import { vehicleTypesApi } from '../../api/resources';
+import { TrailerPicker } from './TrailerPicker';
 
 /**
  * Графы прицепа в форме рейса: галочка «с прицепом», две пары «марка / госномер» под ней и подпись
@@ -113,6 +118,15 @@ export function TrailerFields({
   const trailer2RegNumber = Form.useWatch('trailer2RegNumber', form);
 
   /**
+   * Режим каждой пары граф (Р17): состояние окна, а не поле формы — в бланке его нет, а рейс
+   * помнит графы, а не то, каким движением их заполнили (Р11). Слоты переключаются порознь:
+   * закреплённый полуприцеп берут из реестра, а разовый прицеп вписывают руками, и наоборот.
+   */
+  const [modes, setModes] = useState<TrailerSlotModes>(MANUAL_TRAILER_MODES);
+  const setMode = (slot: 1 | 2, mode: TrailerSlotMode) =>
+    setModes((prev) => ({ ...prev, [`slot${slot}`]: mode }));
+
+  /**
    * Типы техники — ради одного вопроса: этот тип седельный тягач или нет. Спрашивается справочник
    * целиком, потому что в карточке машины (`VehicleDto`) кода типа нет — есть идентификатор и
    * наименование, а наименование в условии было бы сверкой по написанию. Запрос один на портал:
@@ -148,6 +162,9 @@ export function TrailerFields({
       applied.current = null;
       openVehicle.current = undefined;
       vehicleChanged.current = false;
+      // Режим снимается вместе с графами: следующий рейс заводят с чистой формы, а список,
+      // оставшийся открытым над пустыми графами, обещал бы выбор, которого не делали.
+      setModes(MANUAL_TRAILER_MODES);
       return;
     }
     // Ответа сервера ещё нет: пустых граф это не значит — значит «пока не знаем».
@@ -170,7 +187,13 @@ export function TrailerFields({
       !!form.getFieldValue('trailer2RegNumber');
     if (keepOwnGraphs && !vehicleChanged.current && own) return;
 
-    if (graphs) form.setFieldsValue(graphs);
+    if (graphs) {
+      form.setFieldsValue(graphs);
+      // Подстановка включает режим справочника (Р17, пункт 1) — этого и просили: портал повторяет
+      // решение, принятое в карточке прицепа, и показывает его тем же списком, каким человек
+      // выбрал бы сам. Заодно видно чужое закрепление, если подставленное им и оказалось.
+      setModes(substitutedTrailerModes(hitched));
+    }
     // Закрепления нет — новой подстановки не бывает (§4.2.2, пункт 2), но галочка тягача встаёт:
     // она про категорию прав и бланк, а не про то, чем машина сегодня укомплектована (§4.4 (а)).
     else if (isTractor) form.setFieldsValue({ withTrailer: true });
@@ -205,18 +228,26 @@ export function TrailerFields({
       {checkboxFullWidth ? <FormGrid.Full>{checkbox}</FormGrid.Full> : checkbox}
       {withTrailer && (
         <>
-          <Form.Item name="trailer1Model" label="Прицеп 1: марка">
-            <Input placeholder={modelPlaceholder} />
-          </Form.Item>
-          <Form.Item name="trailer1RegNumber" label="Прицеп 1: госномер">
-            <Input placeholder={regNumberPlaceholder} />
-          </Form.Item>
-          <Form.Item name="trailer2Model" label="Прицеп 2: марка">
-            <Input placeholder={secondPlaceholder} />
-          </Form.Item>
-          <Form.Item name="trailer2RegNumber" label="Прицеп 2: госномер">
-            <Input placeholder={secondPlaceholder} />
-          </Form.Item>
+          <TrailerSlot
+            slot={1}
+            mode={modes.slot1}
+            onMode={(mode) => setMode(1, mode)}
+            modelPlaceholder={modelPlaceholder}
+            regNumberPlaceholder={regNumberPlaceholder}
+            vehicleId={vehicleId}
+          />
+          <TrailerSlot
+            slot={2}
+            mode={modes.slot2}
+            onMode={(mode) => setMode(2, mode)}
+            modelPlaceholder={secondPlaceholder}
+            regNumberPlaceholder={secondPlaceholder}
+            vehicleId={vehicleId}
+            // Одна единица не стоит в двух графах: второй слот не предлагает того, кто уже в
+            // первом (§13.6). Госномером, а не идентификатором: в графах он и лежит, и правило
+            // работает одинаково — выбрали прицеп списком или вписали руками.
+            excludeRegNumber={trailer1RegNumber}
+          />
           {note && (
             <FormGrid.Full>
               <Typography.Text type="secondary">{note}</Typography.Text>
@@ -224,6 +255,74 @@ export function TrailerFields({
           )}
         </>
       )}
+    </>
+  );
+}
+
+/**
+ * Одна пара граф бланка: чекбокс «Из справочника» над ней и два вида ввода под ним (Р17).
+ *
+ * Слоты одинаковы во всём, кроме номера, поэтому описаны одним компонентом: правило «пара граф
+ * переключается целиком» иначе стояло бы в двух экземплярах, и второй прицеп повторил бы историю
+ * §2 — то, что заводили копированием, разошлось с оригиналом.
+ */
+function TrailerSlot({
+  slot,
+  mode,
+  onMode,
+  modelPlaceholder,
+  regNumberPlaceholder,
+  vehicleId,
+  excludeRegNumber,
+}: {
+  slot: 1 | 2;
+  mode: TrailerSlotMode;
+  onMode: (mode: TrailerSlotMode) => void;
+  modelPlaceholder: string;
+  regNumberPlaceholder: string;
+  vehicleId?: string | null;
+  excludeRegNumber?: string;
+}) {
+  return (
+    <>
+      {/* Чекбокс стоит НАД графами и в своём блоке, а не в подписи поля: `<label>` внутри
+        `<label>` отправляет клик в поле — вместо переключения открывался бы список. Тот же приём и
+        по той же причине, что у выбора адреса (`features/address-input/ui/AddressField.tsx`). */}
+      <FormGrid.Full>
+        <Checkbox
+          checked={mode === 'directory'}
+          onChange={(e) => onMode(e.target.checked ? 'directory' : 'manual')}
+        >
+          Из справочника
+        </Checkbox>
+      </FormGrid.Full>
+      {mode === 'directory' && (
+        /* Список занимает строку целиком: подпись строки — марка, госномер и метка состояния, и в
+           половине ширины она обрезается ровно на госномере, ради которого её и читают. */
+        <FormGrid.Full>
+          <TrailerPicker slot={slot} vehicleId={vehicleId} excludeRegNumber={excludeRegNumber} />
+        </FormGrid.Full>
+      )}
+      {/* Графы остаются полями формы в обоих режимах и в справочнике лишь прячутся — убрать их
+        со страницы значило бы убрать из отправки: `onFinish` получает значения **заведённых**
+        полей, а не весь склад формы (rc-field-form: `validateFields` собирает `getFieldEntities`).
+        Ровно так рейс уже уезжал с половиной состава прицепов (§2, расхождение 1), и повторять это
+        под новым предлогом нельзя. Заодно отсюда и «переключение не теряет набранного»: поле не
+        подменяется списком, а заполняется им. */}
+      <Form.Item
+        name={`trailer${slot}Model`}
+        label={`Прицеп ${slot}: марка`}
+        hidden={mode === 'directory'}
+      >
+        <Input placeholder={modelPlaceholder} />
+      </Form.Item>
+      <Form.Item
+        name={`trailer${slot}RegNumber`}
+        label={`Прицеп ${slot}: госномер`}
+        hidden={mode === 'directory'}
+      >
+        <Input placeholder={regNumberPlaceholder} />
+      </Form.Item>
     </>
   );
 }

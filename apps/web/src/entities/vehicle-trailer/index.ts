@@ -4,7 +4,7 @@
  */
 export { vehicleTrailersApi } from './api/vehicleTrailersApi';
 export { trailerHitchTargetsKey, trailerKeys } from './api/keys';
-export { trailerSlotsQuery } from './api/queries';
+export { trailerPickerQuery, trailerSlotsQuery } from './api/queries';
 /** Слова портала о снятых привязках — общие для всех дверей, которые их снимают (§4.2.3). */
 export { unhitchedNotice } from './model/notices';
 /** Состав машины в её же карточке — показом, без правки: привязку ставят у прицепа (§4.2). */
