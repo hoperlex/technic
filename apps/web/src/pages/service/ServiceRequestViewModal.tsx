@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Button, Dropdown, Spin, Tabs, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -50,8 +50,11 @@ const SERVICE_HISTORY_STATUSES = {
  * сломалось, во сколько это встало и чем подтверждено. В один свиток они складываются так, что
  * смету приходится искать прокруткой между фотографиями и историей.
  *
- * Действия здесь не живут: их строит коридор переходов (`useServiceRequestActions`), и вызываются
- * они из списка — карточка отвечает на «что с заявкой», а не «что с ней сделать».
+ * Ход заявки карточка не решает сама: набор действий ей строит коридор переходов
+ * (`useServiceRequestActions`) — тот же, что и строке списка. Но открываются они отсюда, и потому
+ * окна действий карточки живут внутри неё (ADR 0140): снаружи они делят слой с самой карточкой и
+ * прячутся под ней. Исполнители — единственное действие, вынесенное из меню в тело: состав правят
+ * там же, где его читают.
  */
 export function ServiceRequestViewModal({
   request: row,
@@ -59,6 +62,7 @@ export function ServiceRequestViewModal({
   onClose,
   onEdit,
   actions,
+  modals,
 }: {
   /** `null` — окно закрыто. Строка списка: с неё карточка рисуется, пока едет свежая. */
   request: ServiceRequestDto | null;
@@ -76,6 +80,19 @@ export function ServiceRequestViewModal({
    * смету и историю, — то есть здесь, а не в строке списка.
    */
   actions?: (request: ServiceRequestDto) => ActionSheetItem[];
+  /**
+   * Окна действий карточки (ADR 0140). Рендерятся **внутри** окна, и это не вкусовщина:
+   * вложенная модалка получает от antd собственный слой (`ZIndexContext` даёт ей z-index на сотню
+   * выше родительской), а соседняя по странице делит слой с карточкой — у корневых модалок
+   * z-index один на всех, и спор решает порядок узлов в `body`. Карточка же пересоздаёт свой узел
+   * при каждом открытии (`destroyOnHidden`), поэтому рано или поздно оказывается последней и
+   * накрывает окно действия: человек нажимает пункт меню и видит, что «ничего не произошло».
+   *
+   * Отсюда и раздельное владение: набор окон для строк списка живёт на уровне страницы, набор
+   * окон карточки — здесь. Один и тот же отрисовать в двух местах нельзя — это два экземпляра
+   * одного окна.
+   */
+  modals?: ReactNode;
 }) {
   const { user } = useAuth();
   const isMobile = useIsMobile();
@@ -108,9 +125,27 @@ export function ServiceRequestViewModal({
    * ограничение длины файла. Окно отвечает за вкладки, действия и запросы, состав полей — за
    * ответ «что с заявкой».
    */
-  const fields = request ? serviceRequestViewFields({ request, user, equipmentWarrantyUntil }) : [];
+  const allActions = request && actions ? actions(request) : [];
+  /*
+   * Назначение исполнителей ушло из меню карточки в саму карточку (ADR 0140): кнопка стоит у поля
+   * «Исполнители», там же, где читают состав. Из меню оно здесь вычеркнуто — двум ручкам к одному
+   * действию в одном окне взяться неоткуда; в меню строки списка пункт остаётся, там карточка не
+   * открыта, и подпись «Вам: назначить исполнителей» ведёт прямо в окно (Р117).
+   *
+   * Пункт берётся готовым, а не строится заново: кому назначение доступно, решает коридор
+   * переходов — и второй раз этот вопрос в портале не задаётся.
+   */
+  const assign = allActions.find((item) => item.key === 'assign');
+  const actionItems = allActions.filter((item) => item.key !== 'assign');
 
-  const actionItems = request && actions ? actions(request) : [];
+  const fields = request
+    ? serviceRequestViewFields({
+        request,
+        user,
+        equipmentWarrantyUntil,
+        onAssign: assign?.onClick,
+      })
+    : [];
 
   return (
     <ViewModal
@@ -226,6 +261,10 @@ export function ServiceRequestViewModal({
         onClose={() => setSheetOpen(false)}
         items={actionItems}
       />
+
+      {/* Окна действий — внутри карточки, а не соседями по странице (ADR 0140): только так antd
+          считает им слой сам, и окно назначения не уходит под карточку, из которой его позвали. */}
+      {modals}
     </ViewModal>
   );
 }

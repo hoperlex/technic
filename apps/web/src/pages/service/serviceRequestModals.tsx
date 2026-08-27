@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useCallback, useState, type ReactNode } from 'react';
 import { App } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ModuleMailOutcome, ServiceRequestDto } from '@technic/contracts';
@@ -36,6 +36,14 @@ export interface ServiceRequestModals {
   moveEquipment: (request: ServiceRequestDto) => void;
   /** Переход, у которого из содержания только причина: отказ, отмена, откат (§5.3). */
   ask: (prompt: ReasonPrompt) => void;
+  /**
+   * Погасить все окна набора (ADR 0140). Нужно тому, чьи окна живут **внутри** карточки: карточку
+   * закрывают и мимо них — «Назад» браузера снимает `?open=…`, и системный жест «назад» закрывает
+   * полноэкранный шит на телефоне. Элемент окна при этом уезжает вместе с детьми карточки, а
+   * взведённая цель остаётся — и следующее открытие той же карточки выкидывало бы окно само, без
+   * нажатия и с устаревшей ревизией заявки.
+   */
+  close: () => void;
   /** Идёт переход «с одной причиной»: подвал списка держит на нём индикатор. */
   pending: boolean;
   node: ReactNode;
@@ -89,6 +97,21 @@ export function useServiceRequestModals(): ServiceRequestModals {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  const close = useCallback(() => {
+    setAssignTarget(null);
+    setEstimateTarget(null);
+    setApprovalTarget(null);
+    setCompleteTarget(null);
+    setIssueTarget(null);
+    setAcceptTarget(null);
+    setHoldTarget(null);
+    setUrgencyTarget(null);
+    setCommentTarget(null);
+    setItTarget(null);
+    setMoveTarget(null);
+    setPrompt(null);
+  }, []);
+
   return {
     assign: setAssignTarget,
     estimate: setEstimateTarget,
@@ -102,6 +125,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
     itApproval: setItTarget,
     moveEquipment: setMoveTarget,
     ask: setPrompt,
+    close,
     pending: reasonMutation.isPending,
     node: (
       <>

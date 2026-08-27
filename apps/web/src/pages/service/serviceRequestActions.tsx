@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { App } from 'antd';
 import {
   AuditOutlined,
@@ -39,6 +39,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { useServiceRequestModals } from './serviceRequestModals';
 import { serviceReasonPrompts } from './serviceRequestPrompts';
 import { reportServiceMail } from './serviceMailNotice';
+import { forgetServiceNotifyKey, serviceNotifyKey } from './serviceRequestNotifyKeys';
 import { errorMessage } from '../../utils/format';
 
 /**
@@ -57,6 +58,8 @@ import { errorMessage } from '../../utils/format';
 export function useServiceRequestActions(): {
   actionsFor: (request: ServiceRequestDto) => ActionSheetItem[];
   modals: ReactNode;
+  /** Погасить все окна набора: нужно тому, чьи окна живут внутри карточки (ADR 0140). */
+  close: () => void;
   pending: boolean;
 } {
   const { user } = useAuth();
@@ -65,16 +68,12 @@ export function useServiceRequestActions(): {
 
   const modals = useServiceRequestModals();
 
-  /**
-   * Повторная отправка письма службе (Р70). Ключ идемпотентности живёт до успеха: два нажатия
-   * подряд дают одно письмо, а осознанный повтор после ответа — новое.
-   */
-  const [notifyKey, setNotifyKey] = useState(() => crypto.randomUUID());
+  /** Повторная отправка письма службе (Р70); чем держится её ключ — `serviceRequestNotifyKeys`. */
   const notifyMutation = useMutation({
     mutationFn: (request: ServiceRequestDto) =>
-      serviceRequestsApi.notify(request.id, { idempotencyKey: notifyKey }),
-    onSuccess: (res) => {
-      setNotifyKey(crypto.randomUUID());
+      serviceRequestsApi.notify(request.id, { idempotencyKey: serviceNotifyKey(request.id) }),
+    onSuccess: (res, request) => {
+      forgetServiceNotifyKey(request.id);
       // Успех называет адресатов: повтор шлют, когда сомневаются в настройке, — и ответ на это
       // сомнение не «отправлено», а «отправлено вот сюда». Неудача повтора — тем же
       // предупреждением, что и у прочих действий: письма снова нет.
@@ -451,5 +450,6 @@ export function useServiceRequestActions(): {
     return items;
   };
 
-  return { actionsFor, modals: modals.node, pending: modals.pending || startMutation.isPending };
+  const pending = modals.pending || startMutation.isPending;
+  return { actionsFor, modals: modals.node, close: modals.close, pending };
 }

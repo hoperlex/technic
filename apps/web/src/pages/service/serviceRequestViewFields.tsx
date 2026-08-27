@@ -1,4 +1,5 @@
-import { Space, Tag, Tooltip, Typography } from 'antd';
+import { Button, Space, Tag, Tooltip, Typography } from 'antd';
+import { UserSwitchOutlined } from '@ant-design/icons';
 import {
   type AccessSubject,
   serviceRequestKindLabels,
@@ -29,6 +30,7 @@ export function serviceRequestViewFields({
   request,
   user,
   equipmentWarrantyUntil,
+  onAssign,
 }: {
   request: ServiceRequestDto;
   /** Смотрящий: от него зависит только лицо подписи состояния — «Вам: …» либо «Ждёт …». */
@@ -38,6 +40,13 @@ export function serviceRequestViewFields({
    * реквизитов без срока, а справочник виден не всякому — сервису он закрыт (Р7).
    */
   equipmentWarrantyUntil?: string | null;
+  /**
+   * Открыть окно исполнителей (ADR 0140). Не задан — состав правит кто-то другой либо не тот
+   * статус: право и коридор здесь не считаются вовсе, обработчик приходит готовым пунктом
+   * действий. Спроси поле само, кому назначать можно, — и это была бы вторая карта прав, которая
+   * разошлась бы с коридором переходов на первом же изменении цикла.
+   */
+  onAssign?: (() => void) | null;
 }): ViewField[] {
   // Подпись — та же, что во второй строке столбца (Р100); у отложенной её разбирает строка ниже.
   const statusLine = request.status !== 'on_hold' ? serviceStatusLine(request, user) : null;
@@ -226,24 +235,43 @@ export function serviceRequestViewFields({
       key: 'executors',
       label: 'Исполнители',
       full: true,
-      children:
-        request.executors.length === 0 && !request.service ? (
-          'не назначены'
-        ) : (
-          /* Два слоя рядом (Н5): свои — поимённо, сервисная компания — строкой. Разными тегами,
-             потому что и спрашивают с них по-разному: с человека — лично, с компании — как с
-             подрядчика, чьих инженеров портал не знает. */
-          <Space size={8} wrap>
-            {request.executors.map((person) => (
-              <Tag key={person.userId}>{person.name}</Tag>
-            ))}
-            {request.service && (
-              <Tooltip title="Сервисная компания назначена целиком: кто из инженеров поедет, решает она">
-                <Tag color="blue">{request.service.name}</Tag>
-              </Tooltip>
-            )}
-          </Space>
-        ),
+      /* Состав и ручка к нему — в одной строке (ADR 0140): исполнителей меняют, глядя на то, кто
+         ведёт заявку, а прежде за этим шли в меню «Действия» внизу карточки — то есть отводили
+         глаза от самого ответа. Глагол кнопки берётся от видимого состава, а не от статуса: рядом
+         с пустым полем «Изменить» звало бы менять то, чего нет. Кому кнопка положена, здесь не
+         решается вовсе — её просто нет, когда обработчик не передан. */
+      children: (
+        <Space size={8} wrap>
+          {request.executors.length === 0 && !request.service ? (
+            'не назначены'
+          ) : (
+            /* Два слоя рядом (Н5): свои — поимённо, сервисная компания — строкой. Разными тегами,
+               потому что и спрашивают с них по-разному: с человека — лично, с компании — как с
+               подрядчика, чьих инженеров портал не знает. */
+            <>
+              {request.executors.map((person) => (
+                <Tag key={person.userId}>{person.name}</Tag>
+              ))}
+              {request.service && (
+                <Tooltip title="Сервисная компания назначена целиком: кто из инженеров поедет, решает она">
+                  <Tag color="blue">{request.service.name}</Tag>
+                </Tooltip>
+              )}
+            </>
+          )}
+          {onAssign && (
+            <Button
+              type="link"
+              size="small"
+              icon={<UserSwitchOutlined />}
+              style={{ padding: 0 }}
+              onClick={onAssign}
+            >
+              {request.executors.length === 0 && !request.service ? 'Назначить' : 'Изменить'}
+            </Button>
+          )}
+        </Space>
+      ),
     },
     {
       key: 'acceptance',

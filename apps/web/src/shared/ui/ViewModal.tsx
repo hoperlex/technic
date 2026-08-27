@@ -45,6 +45,11 @@ export function ViewModal({
         placement="bottom"
         size="100%"
         mask={{ closable: false }}
+        /* Вложенное окно карточку не толкает (ADR 0140). По умолчанию открытый внутри Drawer
+           сдвигает родителя на 180 px — приём для боковых панелей, где так видно, что окон два.
+           Здесь оба развёрнуты во весь экран, и сдвиг заметен только рывком содержимого и полосой
+           подложки снизу на время анимации. Тем же путём ходит и шит действий карточки. */
+        push={false}
         destroyOnHidden={destroyOnHidden}
         styles={bodyStyle ? { body: bodyStyle } : undefined}
         footer={footer ? <div className="sheet-footer">{footer}</div> : undefined}

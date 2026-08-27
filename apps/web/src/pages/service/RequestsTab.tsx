@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { App, Button, Segmented, Space } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -16,6 +16,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { serviceRequestCard, serviceRequestColumns, serviceGridView } from './serviceRequestGrid';
 import {
+  SERVICE_FILTER_FIELDS,
   ServiceFilterBar,
   useServiceRequestFilters,
   type ServiceListFilters,
@@ -50,11 +51,26 @@ export function RequestsTab() {
   const qc = useQueryClient();
   const view = useMemo(() => serviceGridView(user), [user]);
 
-  const { params, setParams, setSort, onTableChange } = useListParams<ServiceListFilters>(
-    {},
-    // Поиск живёт лупой столбца «Техника»: сервер ищет по модели, обоим номерам и номеру заявки.
-    { searchKeys: ['equipment'] },
-  );
+  const { params, setParams, setSort, onTableChange, filtersActive, resetFilters } =
+    useListParams<ServiceListFilters>(
+      {},
+      {
+        // Поиск живёт лупой столбца «Техника»: сервер ищет по модели, обоим номерам и номеру заявки.
+        searchKeys: ['equipment'],
+        filterKeys: SERVICE_FILTER_FIELDS,
+        /*
+         * Набор отборов переживает перезагрузку и утренний вход (ADR 0139): оператор работает не
+         * со списком вообще, а со своим срезом — своя площадка, свой подрядчик, — и выставлять
+         * его заново после каждого `F5` он не должен.
+         *
+         * Очередь-пресет над таблицей сохраняется вместе с отборами: это те же три параметра
+         * (`waitingOnMe`, `urgent`, `awaitingDocuments`), и разделять их значило бы заводить
+         * исключение. Выбранная очередь при этом всегда видна переключателем — вопрос «почему я
+         * вижу не всё» отвечается с экрана, а не догадкой.
+         */
+        persist: { scope: 'service-requests', userId: user?.id },
+      },
+    );
 
   const applyFilter = (patch: ServiceListFilters) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
@@ -84,7 +100,15 @@ export function RequestsTab() {
   const warrantyOf = (equipmentId: string) => warranties.get(equipmentId);
 
   const filters = useServiceRequestFilters({ params, apply: applyFilter });
+  /*
+   * Наборов действий два, и это не дубль по невнимательности (ADR 0140). Окна списка живут здесь,
+   * на уровне страницы, а окна карточки — внутри карточки: только вложенной модалке antd считает
+   * слой, и только так окно назначения не уходит под карточку, из которой его позвали. Один набор
+   * отрисовать в двух местах нельзя — это два экземпляра одного окна, — поэтому у карточки свой.
+   * Состав пунктов при этом один: его строит коридор переходов, а не место вызова.
+   */
   const actions = useServiceRequestActions();
+  const cardActions = useServiceRequestActions();
 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<ServiceRequestDto | null>(null);
@@ -97,6 +121,18 @@ export function RequestsTab() {
     fetch: (id) => serviceRequestsApi.get(id),
   });
   const shown = viewRecord ?? opened.record;
+
+  /*
+   * Закрылась карточка — гаснут и её окна (ADR 0140). Карточку закрывают не только её кнопками:
+   * «Назад» браузера снимает `?open=…`, а на телефоне тот же жест закрывает полноэкранный шит.
+   * Элемент окна уезжает вместе с детьми карточки, но взведённая цель осталась бы в наборе — и
+   * следующее открытие той же заявки выкидывало бы окно само, без нажатия и с ревизией, которая к
+   * тому времени устарела. Списку такой уборки не нужно: его окна карточке не подчинены.
+   */
+  const closeCardModals = cardActions.close;
+  useEffect(() => {
+    if (!shown) closeCardModals();
+  }, [shown, closeCardModals]);
 
   const removeMutation = useMutation({
     mutationFn: (id: string) => serviceRequestsApi.remove(id),
@@ -132,39 +168,49 @@ export function RequestsTab() {
     (!isPlaceScopedRole(user?.role) || isServiceRequestEditable(request.status));
 
   /**
-   * Действия строки: сначала ход заявки (его строит коридор переходов), затем правка и удаление —
+   * Действия записи: сначала ход заявки (его строит коридор переходов), затем правка и удаление —
    * они не переходы, а распоряжение самой записью, и потому стоят ниже.
+   *
+   * Набор строится от переданного владельца окон: у строки списка он свой, у карточки свой
+   * (ADR 0140). Пункт обязан вести в окно того набора, которому принадлежит, — иначе карточка
+   * открывала бы окно, живущее снаружи, и оно пряталось бы под ней. Состав пунктов при этом
+   * одинаков: его решает коридор, а не место вызова.
    */
-  const rowActions = (request: ServiceRequestDto): ActionSheetItem[] => [
-    ...actions.actionsFor(request),
-    ...(isServiceRequestEditable(request.status) && can('serviceRequests.update')
-      ? [
-          {
-            key: 'edit',
-            label: 'Редактировать',
-            onClick: () => openEdit(request),
-          },
-        ]
-      : []),
-    ...(mayDelete(request)
-      ? [
-          {
-            key: 'delete',
-            label: 'Удалить',
-            danger: true,
-            onClick: () =>
-              modal.confirm({
-                title: `Удалить заявку ${request.displayNumber}?`,
-                content: 'Заявка уйдёт в архив: восстановить её сможет администратор.',
-                okText: 'Удалить',
-                okButtonProps: { danger: true },
-                cancelText: 'Отмена',
-                onOk: () => removeMutation.mutateAsync(request.id),
-              }),
-          },
-        ]
-      : []),
-  ];
+  const requestActions =
+    (set: ReturnType<typeof useServiceRequestActions>) =>
+    (request: ServiceRequestDto): ActionSheetItem[] => [
+      ...set.actionsFor(request),
+      ...(isServiceRequestEditable(request.status) && can('serviceRequests.update')
+        ? [
+            {
+              key: 'edit',
+              label: 'Редактировать',
+              onClick: () => openEdit(request),
+            },
+          ]
+        : []),
+      ...(mayDelete(request)
+        ? [
+            {
+              key: 'delete',
+              label: 'Удалить',
+              danger: true,
+              onClick: () =>
+                modal.confirm({
+                  title: `Удалить заявку ${request.displayNumber}?`,
+                  content: 'Заявка уйдёт в архив: восстановить её сможет администратор.',
+                  okText: 'Удалить',
+                  okButtonProps: { danger: true },
+                  cancelText: 'Отмена',
+                  onOk: () => removeMutation.mutateAsync(request.id),
+                }),
+            },
+          ]
+        : []),
+    ];
+
+  const rowActions = requestActions(actions);
+  const cardRowActions = requestActions(cardActions);
 
   const grid = {
     view,
@@ -210,7 +256,12 @@ export function RequestsTab() {
 
   return (
     <PageTableLayout
-      filters={<ServiceFilterBar filters={filters} />}
+      filters={
+        <ServiceFilterBar
+          filters={filters}
+          reset={{ active: filtersActive, onClick: resetFilters }}
+        />
+      }
       toolbar={
         // Пресеты стоят над таблицей и на телефоне тоже: это вход в работу, а не фильтр.
         <Segmented options={[...QUEUES]} value={queue} onChange={(v) => setQueue(String(v))} />
@@ -247,7 +298,7 @@ export function RequestsTab() {
         card={serviceRequestCard(grid)}
         data={data?.items ?? []}
         total={data?.total ?? 0}
-        loading={isFetching || actions.pending || removeMutation.isPending}
+        loading={isFetching || actions.pending || cardActions.pending || removeMutation.isPending}
         page={params.page}
         pageSize={params.pageSize}
         sortBy={sortBy}
@@ -269,8 +320,9 @@ export function RequestsTab() {
         request={shown}
         equipmentWarrantyUntil={shown ? warrantyOf(shown.equipment.id) : undefined}
         // Действия карточки — те же, что у строки: их строит коридор переходов, и разойтись
-        // они не могут.
-        actions={rowActions}
+        // они не могут. Разные у них только окна: карточкины живут внутри неё (ADR 0140).
+        actions={cardRowActions}
+        modals={cardActions.modals}
         onEdit={
           shown && isServiceRequestEditable(shown.status) && can('serviceRequests.update')
             ? openEdit
