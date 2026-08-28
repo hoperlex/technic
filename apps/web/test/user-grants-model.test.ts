@@ -87,6 +87,88 @@ describe('гидратация галочек (Р4)', () => {
   });
 });
 
+describe('подстановка по пожеланию (план активации, §3.6)', () => {
+  /**
+   * Что предлагает пожелание «сотрудник объекта» — **коды**, а не идентификаторы: код набора
+   * стабилен навсегда, `id` строки каталога — нет, и таблица умолчаний, помнящая `id`, разошлась бы
+   * с базой при первой же пересборке справочника.
+   */
+  const WISHED = [ORDERING.code];
+
+  /** Нерассмотренная заявка: назначений у неё нет вовсе — отмечать нечего, кроме предложенного. */
+  const PENDING = { assigned: [], edits: NO_GRANT_EDITS };
+
+  it('отмечает набор, чей код предложен пожеланием', () => {
+    const value = hydrateGrantSelection({
+      ...PENDING,
+      catalog: SITE_CATALOG,
+      suggestedCodes: WISHED,
+    });
+
+    expect(value).toEqual([ORDERING_ID]);
+  });
+
+  it('не находит кода, которого в живом каталоге нет, — и молчит об этом', () => {
+    // Набор переименовали или вывели из роли: источник правды здесь каталог, а не таблица
+    // умолчаний. Отметить нечего, и придумывать `id` подстановке не из чего — она просто молчит.
+    const renamed = hydrateGrantSelection({
+      ...PENDING,
+      catalog: SITE_CATALOG,
+      suggestedCodes: ['grant_renamed_last_year'],
+    });
+
+    expect(renamed).toEqual([]);
+  });
+
+  it('снятое руками не возвращает ни пересчёт, ни возврат роли', () => {
+    // Подстановка — предложение экрана, а не решение: сняв галочку, администратор ответил на него,
+    // и повторять предложение на каждом пересчёте значило бы спорить с человеком. Держит это
+    // `unchecked` — то самое множество, ради которого его и завели (Р4), а не отдельное правило.
+    const edits = applyGrantToggle(NO_GRANT_EDITS, [ORDERING_ID], []);
+    const wished = { assigned: [], suggestedCodes: WISHED, edits };
+
+    expect(hydrateGrantSelection({ ...wished, catalog: SITE_CATALOG })).toEqual([]);
+    // Сменил роль и вернул обратно — предложенное не воскресло: снятое руками сильнее пожелания и
+    // живёт, пока открыто окно. Закрытие окна ручные отметки сбросит, и предложение прозвучит снова.
+    expect(hydrateGrantSelection({ ...wished, catalog: SHTAB_CATALOG })).toEqual([]);
+    expect(hydrateGrantSelection({ ...wished, catalog: SITE_CATALOG })).toEqual([]);
+  });
+
+  it('смена роли гасит предложенное сама, а возврат роли его возвращает', () => {
+    // Сценарий, на котором видно, что полномочия и поля формы — разные механики (§3.5): поля
+    // подставляет автомат инициализации однажды, а наборы живут множеством и пересчитываются на
+    // каждой смене роли. «Заказ техники» совместим только с «Площадкой» и у «Штаба» выпадает из
+    // пересечения — без единой строки, гасящей его отдельно.
+    const site = { ...PENDING, catalog: SITE_CATALOG, suggestedCodes: WISHED };
+    expect(hydrateGrantSelection(site)).toEqual([ORDERING_ID]);
+
+    expect(hydrateGrantSelection({ ...site, catalog: SHTAB_CATALOG })).toEqual([]);
+
+    // Вернули роль — вернулась и галочка: пожелание никуда не делось, а ручных отметок не было.
+    expect(hydrateGrantSelection(site)).toEqual([ORDERING_ID]);
+  });
+
+  it('в теле запроса предложенное выглядит выдачей — тем же расчётом, что и отметка руками', () => {
+    // Ради этого подстановка и живёт в гидратации: тело собирается от её значения, и несовместимое
+    // на сервер не уйдёт никаким путём. Роль «до» у заявки пуста — её и назначает одобрение.
+    const selected = hydrateGrantSelection({
+      ...PENDING,
+      catalog: SITE_CATALOG,
+      suggestedCodes: WISHED,
+    });
+
+    const rows = buildGrantStatements({
+      assigned: [],
+      catalog: SITE_CATALOG,
+      selected,
+      roleBefore: null,
+      roleAfter: 'site',
+    });
+
+    expect(rows).toEqual([{ id: ORDERING_ID, version: ORDERING.version, selected: true }]);
+  });
+});
+
 describe('сборка высказывания (§6, §4.2, §4.3)', () => {
   it('site → shtab: гасимый набор назван строкой с selected: false, версия — из назначения', () => {
     // Обратный переход выражается только так: в группе чекбоксов набора нет вовсе — он несовместим

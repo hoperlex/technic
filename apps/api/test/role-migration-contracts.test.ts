@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canAttachAddon,
-  defaultRoleForRequest,
+  activationDefaultsFor,
   isRetiringRole,
   NON_GRANTABLE_PERMISSIONS,
   permissionsFor,
@@ -145,7 +145,7 @@ describe('таблица перевода ролей', () => {
     // Иначе форма рассмотрения открывалась бы с ролью, которую сервер отклоняет: заявку нельзя
     // было бы принять вовсе.
     for (const request of REGISTRATION_ROLE_REQUESTS) {
-      expect(isRetiringRole(defaultRoleForRequest(request)), request).toBe(false);
+      expect(isRetiringRole(activationDefaultsFor(request).role), request).toBe(false);
     }
   });
 });

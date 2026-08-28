@@ -74,6 +74,9 @@ function renderTab(users: UserDto[]) {
     'GET /objects': () => json(emptyList()),
     'GET /departments': () => json(emptyList()),
     'GET /counterparties': () => json(emptyList()),
+    // Каталог полномочий: окно заявки открывается с ролью, подставленной по пожеланию (план
+    // «пожелание при регистрации», §3.5), а вместе с ролью форма спрашивает и наборы к ней.
+    'GET /grants': () => json(emptyList()),
     'PATCH /users/:id': () => json({ user: EMPLOYEE, notified: 'not_requested' }),
   });
   renderWithUser(<UsersTab />, { user: authUser({ role: 'admin' }) });

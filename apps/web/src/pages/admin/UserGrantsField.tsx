@@ -53,6 +53,18 @@ interface Params {
   counterpartyType: CounterpartyType | null;
   /** Правимая учётка: её назначения и роль «до». У новой их нет. */
   record: UserAccountDto | null;
+  /**
+   * Коды наборов, предложенных пожеланием заявителя (план «пожелание при регистрации заполняет
+   * форму активации», §3.6). Пусто или не передано — подстановки нет: так открывается обычная
+   * учётка и заведение новой.
+   *
+   * Третьим множеством гидратации, а не присваиванием в поле, и это другая механика, чем автомат
+   * инициализации формы (§3.5): роль и область он подставляет **однажды**, а наборы
+   * пересчитываются на каждой смене роли. Разница видна на одном сценарии — сменил роль и вернул
+   * обратно: галочки наборов вернутся (пожелание никуда не делось), а снятая руками не вернётся
+   * (`unchecked` живёт, пока открыто окно).
+   */
+  suggestedCodes?: readonly string[];
   /** Перечитать данные учётки: зовётся, когда сохранение упёрлось в устаревший экран. */
   onReload: () => void;
 }
@@ -61,9 +73,23 @@ export interface UserGrantsControl {
   /** Поле показывается: роль выбрана, она не `driver`, учётка не своя. */
   shown: boolean;
   /**
-   * Каталог неполон или не прочитан. Блокирует **и поле роли**: молчание о полномочиях законно лишь
-   * пока роль не переключает их действие (§4.2), и форма не должна доводить до отказа, причину
-   * которого создала сама.
+   * Каталог дочитан до конца — то есть о полномочиях есть что сказать. Форме он нужен барьером
+   * одобрения заявки (§3.6), и `blocked` его не заменяет: тот считается по ошибке и `complete ===
+   * false`, а **первоначальная загрузка** (`data === undefined`) в него не входит вовсе. В этом
+   * окне `statements()` молча возвращает `undefined` — поле полномочий не уходит в тело.
+   *
+   * Пока роль не подставлялась, молчание было безвредно: администратор ничего не отметил, ничего и
+   * не сохранилось. С подставленной ролью — вредно: можно включить «Активен» и сохранить, получив
+   * учётку с ролью и **без** предложенных наборов, причём молча. Поэтому признак отдаётся честным
+   * (`complete === true`), а запрет одобрять недочитанное ставит валидатор поля роли — тот же, что
+   * держит «заявку рассматривают целиком».
+   */
+  ready: boolean;
+  /**
+   * Каталог отдан неполным или не отдан вовсе — ошибкой; ожидание первого ответа сюда не входит,
+   * его показывает `ready`. Блокирует **и поле роли**: молчание о полномочиях законно лишь пока
+   * роль не переключает их действие (§4.2), и форма не должна доводить до отказа, причину которого
+   * создала сама.
    */
   blocked: boolean;
   /** Высказывание для тела запроса; `undefined` — не отправлять поле вовсе (§4.1). */
@@ -82,7 +108,7 @@ export interface UserGrantsControl {
 const NO_CATALOG_ROLE: Role = 'driver';
 
 export function useUserGrantsField(params: Params): UserGrantsControl {
-  const { open, isSelf, role, counterpartyType, record, onReload } = params;
+  const { open, isSelf, role, counterpartyType, record, suggestedCodes, onReload } = params;
   const { message } = App.useApp();
   const qc = useQueryClient();
 
@@ -106,7 +132,7 @@ export function useUserGrantsField(params: Params): UserGrantsControl {
     staleTime: 0,
   });
   const catalog: GrantDto[] = useMemo(() => catalogQuery.data?.items ?? [], [catalogQuery.data]);
-  /** Список дочитан до конца — только тогда о полномочиях можно высказываться (§6). */
+  /** Список дочитан до конца — только тогда о полномочиях можно высказываться (§6, §3.6). */
   const ready = shown && catalogQuery.data?.complete === true;
   const blocked = shown && (catalogQuery.isError || catalogQuery.data?.complete === false);
 
@@ -126,8 +152,8 @@ export function useUserGrantsField(params: Params): UserGrantsControl {
   }, [open]);
 
   const value = useMemo(
-    () => hydrateGrantSelection({ assigned, catalog, edits }),
-    [assigned, catalog, edits],
+    () => hydrateGrantSelection({ assigned, catalog, edits, suggestedCodes }),
+    [assigned, catalog, edits, suggestedCodes],
   );
   const outOfRange = useMemo(() => outOfRangeGrants(assigned, catalog), [assigned, catalog]);
 
@@ -195,6 +221,7 @@ export function useUserGrantsField(params: Params): UserGrantsControl {
 
   return {
     shown,
+    ready,
     blocked,
     statements,
     handleError,

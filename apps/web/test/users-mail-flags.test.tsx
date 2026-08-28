@@ -73,6 +73,13 @@ const EMPLOYEE = user({
 /** Деактивированный сотрудник: роль у него уже есть — включение обратно письма не порождает. */
 const DEACTIVATED = user({ ...EMPLOYEE, id: 'u-3', email: 'off@example.test', isActive: false });
 
+/**
+ * Дождаться каталога полномочий: одобрить заявку раньше, чем он дочитан, форма не даёт (план
+ * «пожелание при регистрации», §3.6) — иначе учётка получила бы роль без предложенных наборов,
+ * причём молча. Без ожидания сценарии ниже проверяли бы этот барьер, а не судьбу письма.
+ */
+const catalogRead = () => screen.findByText(/Наборов, совместимых с этой ролью, нет/);
+
 const REJECT = 'POST /users/:id/reject';
 const PATCH = 'PATCH /users/:id';
 
@@ -283,6 +290,7 @@ describe('отметка о письме в форме учётной запис
 
     await selectOption('Роль', 'Диспетчер');
     await waitFor(() => expect(checkbox(ACCESS_MAIL)).toBeTruthy());
+    await catalogRead();
 
     clickButton('Сохранить');
     await waitFor(() => expect(http.countOf(PATCH)).toBe(1));
@@ -341,6 +349,7 @@ describe('отметка о письме в форме учётной запис
     fireEvent.click(activeSwitch());
     await selectOption('Роль', 'Диспетчер');
     await waitFor(() => expect(checkbox(ACCESS_MAIL)).toBeTruthy());
+    await catalogRead();
     clickButton('Сохранить');
 
     expect(
@@ -364,6 +373,7 @@ describe('отметка о письме в форме учётной запис
     fireEvent.click(activeSwitch());
     await selectOption('Роль', 'Диспетчер');
     await waitFor(() => expect(checkbox(ACCESS_MAIL)).toBeTruthy());
+    await catalogRead();
     const before = http.countOf('GET /users');
     clickButton('Сохранить');
 

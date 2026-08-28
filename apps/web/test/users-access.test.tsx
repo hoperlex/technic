@@ -11,12 +11,14 @@ import {
   type UserAccountDto,
   type UserGrantRefDto,
 } from '@technic/contracts';
-import { json, mockHttp } from './http';
+import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
+import { selectOption } from './antd';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { AccessTab } from '../src/pages/admin/AccessTab';
 import { AdministrationPage } from '../src/pages/AdministrationPage';
+import { UsersTab } from '../src/pages/admin/UsersTab';
 
 /**
  * Вкладка «Права» — витрина модели доступа (`docs/permissions-tab-plan.md`).
@@ -538,5 +540,293 @@ describe('Вкладка «Права»', () => {
     // Право, которого нет ни у одной живой учётки, пометку сохраняет.
     const purge = await rowWith(PERMISSION_CATALOG['records.purge'].label);
     expect(within(purge).getByText('Ни у кого из живых')).toBeTruthy();
+  });
+});
+
+/**
+ * Подстановка в форме рассмотрения заявки (план «пожелание при регистрации называет должность и
+ * заполняет форму активации», §3.5–§3.8) — рендером вкладки, а не вызовом хука: расчёт подбора
+ * проверен значениями в `activation-suggestion.test.ts`, а здесь предмет другой — что форма зовёт
+ * его вовремя, кладёт результат в **поля**, а не в тело запроса, и не выдаёт доступ по чужому
+ * заявлению.
+ *
+ * Главных проверок две, и обе не про «подставилось ли». Первая: правка заявки, оставляемой в
+ * очереди, по-прежнему уходит на сервер **без роли** — иначе экран сам создал бы отказ, потому что
+ * `decidesRegistration` отвечает 400 на роль в теле нерассмотренной заявки. Вторая: «Активен»
+ * подстановка не трогает, а одобрить заявку до прихода каталога полномочий нельзя — заранее
+ * отмеченные галочки меняют то, что произойдёт по «Сохранить» у администратора, который не
+ * вчитывался, и защиты от этого ровно две.
+ */
+
+/** Объект, чьё наименование заявитель написал точно, — по нему подстановка и срабатывает. */
+const NORTH = { id: 'o-north', code: 'С-12', name: 'ЖК Северный' };
+/** Второй «Северный»: точного совпадения ему не создаёт, а в кандидаты по вхождению попадает. */
+const NORTH_2 = { id: 'o-north-2', code: 'С-14', name: 'ЖК Северный-2' };
+
+const CATALOG_ROW = {
+  description: 'Набор прав',
+  isSystem: true,
+  version: 1,
+  // Состав набора баннер не читает, но подсказка чекбокса — читает: строка каталога без прав
+  // противоречила бы сама себе.
+  permissions: ['vehicleRequests.create'],
+  unknownPermissions: [],
+  holderCount: 0,
+  createdAt: '2026-08-01T10:00:00.000Z',
+  updatedAt: '2026-08-01T10:00:00.000Z',
+};
+
+/**
+ * Каталог наборов «Площадки» — ровно те два, которыми таблица активации отличает руководителя
+ * строительства от коменданта. Имена здесь свои: баннер обязан брать их из каталога, а не из
+ * таблицы умолчаний, и совпади они с кодами, тест не отличил бы один источник от другого.
+ */
+const SITE_CATALOG = [
+  { ...CATALOG_ROW, id: 'g-ordering', code: 'vehicle_ordering', name: 'Заказ техники' },
+  { ...CATALOG_ROW, id: 'g-approval', code: 'site_approval', name: 'Виза объекта' },
+];
+
+/** Заявка руководителя строительства: роль «Площадка», два набора и объект строкой. */
+const REQUEST = user({
+  id: 'u-req',
+  email: 'rukstroy@example.test',
+  lastName: 'Заявкин',
+  firstName: 'Захар',
+  middleName: 'Петрович',
+  fullName: 'Заявкин Захар Петрович',
+  role: null,
+  isActive: false,
+  constructionObjects: [],
+  requestedRole: 'rukstroy',
+  requestedObject: 'ЖК Северный',
+  permissions: [],
+});
+
+/** Вторая заявка, другого пожелания: ею проверяется, что умолчания первой не протекают. */
+const REQUEST_2 = user({
+  ...REQUEST,
+  id: 'u-req-2',
+  email: 'dispatcher@example.test',
+  lastName: 'Диспетчеров',
+  firstName: 'Дмитрий',
+  middleName: 'Петрович',
+  fullName: 'Диспетчеров Дмитрий Петрович',
+  requestedRole: 'dispatcher',
+  requestedObject: '',
+});
+
+function renderUsers(accounts: UserAccountDto[], over: RouteMap = {}): HttpMock {
+  const http = mockHttp({
+    'GET /users': () => json(list(accounts)),
+    'GET /users/pending-count': () => json({ count: accounts.length }),
+    'GET /objects': () => json(list([NORTH, NORTH_2])),
+    'GET /departments': () => json(emptyList()),
+    'GET /counterparties': () => json(emptyList()),
+    // Каталог отбирает сервер по роли из запроса — своего представления о совместимости у портала
+    // нет ни строчки, и заводить его в тесте значило бы проверять фикстуру.
+    'GET /grants': (ctx) => json(list(ctx.query.get('role') === 'site' ? SITE_CATALOG : [])),
+    'PATCH /users/:id': () => json({ user: accounts[0], notified: 'not_requested' }),
+    ...over,
+  });
+  renderWithUser(<UsersTab />, { user: authUser({ role: 'admin' }) });
+  return http;
+}
+
+/**
+ * Открыть карточку из меню строки — так же, как её открывает администратор.
+ *
+ * Пункт ищется в последнем непрятанном меню, а не по всему документу: закрытые меню antd
+ * оставляет в разметке и рисует новое в конце `body`, а сценарий с двумя заявками подряд молча
+ * открывал бы карточку первой строки.
+ */
+async function openAccount(fullName: string, action: string): Promise<void> {
+  const row = await rowWith(fullName);
+  fireEvent.click(row.querySelector('button')!);
+  const item = await waitFor(() => {
+    const menu = [...document.querySelectorAll<HTMLElement>('.ant-dropdown')]
+      .filter((el) => !el.classList.contains('ant-dropdown-hidden'))
+      .at(-1);
+    const found = [...(menu?.querySelectorAll<HTMLElement>('li') ?? [])].find(
+      (li) => li.textContent?.trim() === action,
+    );
+    if (!found) throw new Error(`пункта «${action}» в меню строки нет`);
+    return found;
+  });
+  fireEvent.click(item);
+  await screen.findByLabelText('Фамилия');
+}
+
+/** Что показано в поле выбора: выбранное antd рисует отдельным узлом, а не значением `input`. */
+function chosen(labelText: string): string {
+  const label = [...document.querySelectorAll('label')].find(
+    (el) => el.textContent?.replace(/\s+/g, ' ').trim() === labelText,
+  );
+  const id = label?.getAttribute('for');
+  const input = id ? document.getElementById(id) : null;
+  return input?.closest('.ant-select')?.textContent ?? '';
+}
+
+/** Чекбокс набора по имени: подпись antd — соседний `span` внутри общего `label`. */
+function grantBox(name: string): HTMLInputElement | null {
+  const wrapper = [...document.querySelectorAll('label.ant-checkbox-wrapper')].find((el) =>
+    el.textContent?.includes(name),
+  );
+  return wrapper?.querySelector<HTMLInputElement>('input[type="checkbox"]') ?? null;
+}
+
+/** Кнопка подвала окна по подписи: заголовки и подписи полей ею не задеваются. */
+function clickButton(label: string): void {
+  const button = [...document.querySelectorAll('button')].find(
+    (el) => el.textContent?.trim() === label,
+  );
+  expect(button, `кнопка «${label}»`).toBeTruthy();
+  fireEvent.click(button!);
+}
+
+const banner = (): string => screen.getByRole('alert').textContent ?? '';
+
+describe('Подстановка по заявке в окне учётки', () => {
+  it('окно заявки открывается ролью пожелания, наборами и объектом — но не активацией', async () => {
+    renderUsers([REQUEST]);
+    await openAccount(REQUEST.fullName, 'Рассмотреть заявку');
+
+    await waitFor(() => expect(grantBox('Заказ техники')?.checked).toBe(true));
+    expect(chosen('Роль')).toContain(roleLabels.site);
+    expect(grantBox('Виза объекта')?.checked).toBe(true);
+    expect(chosen(`Объекты (для роли «${roleLabels.site}»)`)).toContain('С-12 — ЖК Северный');
+    /*
+     * Главное ограничение всей затеи (§3.5): заполненная форма не отменяет того, ради чего роль
+     * не подставляли раньше, — активация остаётся отдельным осознанным движением.
+     */
+    expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('false');
+
+    // Вторая строка баннера — о произведённом действии: роль, наборы каталожными именами и объект
+    // вместе с тем, чем он совпал.
+    expect(banner()).toContain(`Заполнено по заявке: роль «${roleLabels.site}»`);
+    expect(banner()).toContain('полномочия «Заказ техники», «Виза объекта»');
+    expect(banner()).toContain('объект «С-12 — ЖК Северный» (совпал по названию)');
+  });
+
+  it('в окне обычной учётки подстановки нет — даже с тем же пожеланием в карточке', async () => {
+    // Пожелание у рассмотренной заявки остаётся навсегда, а подставлять по нему уже нечего:
+    // роль и область назначены решением администратора, и переписывать их справочником нельзя.
+    const approved = user({
+      ...REQUEST,
+      id: 'u-done',
+      role: 'shtab',
+      isActive: true,
+      constructionObjects: [],
+    });
+    renderUsers([approved]);
+    await openAccount(approved.fullName, 'Редактировать');
+
+    expect(chosen('Роль')).toContain(roleLabels.shtab);
+    await waitFor(() => expect(banner()).toContain('При регистрации указал'));
+    expect(banner()).not.toContain('Заполнено по заявке');
+    expect(chosen(`Объекты (для роли «${roleLabels.shtab}»)`)).not.toContain('ЖК Северный');
+  });
+
+  it('одобрение до прихода каталога отклонено с объяснением, а не молча', async () => {
+    /*
+     * Барьер §3.6. Пока каталог не дочитан, поле полномочий в тело не уходит вовсе — и одобренная
+     * в этом окне заявка получила бы роль **без** предложенных наборов, причём молча. Каталог
+     * здесь не отвечает никогда: так выглядит и медленная сеть, и попытка сохранить сразу.
+     */
+    const http = renderUsers([REQUEST], { 'GET /grants': () => new Promise<never>(() => {}) });
+    await openAccount(REQUEST.fullName, 'Рассмотреть заявку');
+    await waitFor(() => expect(chosen('Роль')).toContain(roleLabels.site));
+
+    fireEvent.click(screen.getByRole('switch'));
+    // Ждём, пока переключатель дойдёт до формы: нажатие и значение поля — разные мгновения, и
+    // сохранение, случившееся между ними, проверяло бы правку в очереди, а не одобрение.
+    await waitFor(() =>
+      expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('true'),
+    );
+    clickButton('Сохранить');
+
+    expect(await screen.findByText(/Список полномочий ещё загружается/)).toBeTruthy();
+    expect(http.countOf('PATCH /users/:id')).toBe(0);
+  });
+
+  it('правка заявки в очереди сохраняется, а подставленное в тело не уходит', async () => {
+    /*
+     * Тот самый отказ, который экран создал бы сам: `decidesRegistration` отвечает 400 на роль в
+     * теле нерассмотренной заявки. Поэтому сохранение без одобрения собирается как прежде — без
+     * роли, без полномочий и с областью безролевой учётки, — а подстановка остаётся предложением
+     * экрана: заявка лежит в очереди ровно такой, какой была.
+     */
+    const http = renderUsers([REQUEST]);
+    await openAccount(REQUEST.fullName, 'Рассмотреть заявку');
+    await waitFor(() => expect(grantBox('Заказ техники')?.checked).toBe(true));
+
+    fireEvent.change(screen.getByLabelText('Фамилия'), { target: { value: 'Заявочкин' } });
+    clickButton('Сохранить');
+
+    await waitFor(() => expect(http.countOf('PATCH /users/:id')).toBe(1));
+    const body = http.lastCall('PATCH /users/:id')!.body as Record<string, unknown>;
+    expect(body.lastName).toBe('Заявочкин');
+    expect(body).not.toHaveProperty('role');
+    expect(body).not.toHaveProperty('grants');
+    expect(body).not.toHaveProperty('approveRegistration');
+    expect(body.constructionObjectIds).toEqual([]);
+  });
+
+  it('поздний ответ справочника не переписывает правку администратора', async () => {
+    /*
+     * Правило 3 автомата: ручной выбор навсегда сильнее позднего ответа справочника. Тронутым
+     * здесь оказывается поле роли — единственное, которое можно править **до** ответа справочника
+     * (в пустом списке объектов выбирать нечего). Наивная подстановка «на каждое изменение данных»
+     * вернула бы сюда «Площадку» в тот миг, когда приедут объекты.
+     */
+    let answer: (() => void) | null = null;
+    const http = renderUsers([REQUEST], {
+      'GET /objects': () =>
+        new Promise((resolve) => {
+          answer = () => resolve(json(list([NORTH, NORTH_2])));
+        }),
+    });
+    await openAccount(REQUEST.fullName, 'Рассмотреть заявку');
+    await waitFor(() => expect(chosen('Роль')).toContain(roleLabels.site));
+
+    await selectOption('Роль', roleLabels.dispatcher);
+    await waitFor(() => expect(answer).not.toBeNull());
+    answer!();
+
+    await waitFor(() => expect(http.countOf('GET /objects')).toBe(1));
+    expect(chosen('Роль')).toContain(roleLabels.dispatcher);
+    expect(chosen('Роль')).not.toContain(roleLabels.site);
+  });
+
+  it('умолчания первой заявки не протекают во вторую', async () => {
+    // Ключ автомата — `record.id` (правило 1): открыли другую заявку — считаем заново, а не
+    // донашиваем чужое. Ошибка здесь тихая: во второй заявке всё выглядело бы заполненным.
+    renderUsers([REQUEST, REQUEST_2]);
+    await openAccount(REQUEST.fullName, 'Рассмотреть заявку');
+    await waitFor(() => expect(grantBox('Заказ техники')?.checked).toBe(true));
+
+    clickButton('Отмена');
+    await openAccount(REQUEST_2.fullName, 'Рассмотреть заявку');
+
+    await waitFor(() => expect(chosen('Роль')).toContain(roleLabels.dispatcher));
+    expect(banner()).toContain(`Заполнено по заявке: роль «${roleLabels.dispatcher}»`);
+    expect(banner()).not.toContain('ЖК Северный');
+    expect(grantBox('Заказ техники')).toBeNull();
+  });
+
+  it('неточное совпадение предлагает кандидатов, а нажатие подставляет', async () => {
+    // Два «Северных» — тот случай, когда выбрать за администратора портал не может: молчаливый
+    // выбор отдал бы человеку чужой объект. Показать оба и дать нажать — может (§3.7).
+    renderUsers([user({ ...REQUEST, id: 'u-req-3', requestedObject: 'Северный' })]);
+    await openAccount(REQUEST.fullName, 'Рассмотреть заявку');
+
+    const objects = `Объекты (для роли «${roleLabels.site}»)`;
+    const candidate = await screen.findByText('С-14 — ЖК Северный-2');
+    expect(screen.getByText('С-12 — ЖК Северный')).toBeTruthy();
+    expect(chosen(objects)).not.toContain('ЖК Северный');
+    expect(banner()).not.toContain('объект «');
+
+    fireEvent.click(candidate);
+
+    await waitFor(() => expect(chosen(objects)).toContain('С-14 — ЖК Северный-2'));
   });
 });

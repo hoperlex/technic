@@ -70,16 +70,29 @@ export function roleTags(u: UserAccountDto) {
 /**
  * Уточнение из заявки — свободный текст, а не ссылка на справочник: список объектов
  * неаутентифицированному не отдаётся (ADR 0034), сопоставляет его администратор.
+ *
+ * Строк здесь **две сразу**, а не первая подошедшая: комментарий теперь пишут при любом пожелании,
+ * а не только у «Другого», и вернись отсюда одно уточнение — сотрудник отдела, дописавший «системный
+ * администратор», выглядел бы обычным сотрудником отдела. Именно ради этой приписки комментарий и
+ * открыли всем: узкой должности своего пожелания в перечне нет.
+ *
+ * Склейка тем же ` · `, каким карточка заявки соединяет пожелание, уточнение и пометку о почте:
+ * строка попадает в тот же ряд, и второй разделитель читался бы как разница в смысле.
  */
 export function requestedDetailText(u: UserAccountDto): string | undefined {
   if (!u.requestedRole) return undefined;
   const detail = registrationRequestDetail[u.requestedRole];
-  if (detail === 'object' && u.requestedObject) return `Объект: ${u.requestedObject}`;
-  if (detail === 'company' && u.requestedCompany) return `Компания: ${u.requestedCompany}`;
-  // У «Другого» это единственное, по чему заявку вообще можно рассмотреть. Пусто — заявка подана
-  // до того, как комментарий стал обязательным (миграция 0139): дозаполнить её нечем.
-  if (detail === 'comment' && u.requestedComment) return `Комментарий: ${u.requestedComment}`;
-  return undefined;
+  const parts = [
+    // Объект и отдел — одна колонка на два вопроса, и различает их только пожелание.
+    detail === 'object' && u.requestedObject ? `Объект: ${u.requestedObject}` : undefined,
+    detail === 'department' && u.requestedObject ? `Отдел: ${u.requestedObject}` : undefined,
+    detail === 'company' && u.requestedCompany ? `Компания: ${u.requestedCompany}` : undefined,
+    // Без оглядки на пожелание: у «Другого» это единственное, по чему заявку вообще можно
+    // рассмотреть, у остальных — то, чего в перечне должностей не нашлось. Пусто — писать было
+    // нечего либо заявка подана до того, как комментарий стал обязательным (миграция 0139).
+    u.requestedComment ? `Комментарий: ${u.requestedComment}` : undefined,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 
 /** Адрес заявки вместе с пометкой о чужом домене — одинаково в списке и в карточке на телефоне. */

@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import {
-  Alert,
   App,
   Badge,
   Button,
@@ -38,6 +37,7 @@ import {
   normalizeEmail,
   REGISTRATION_ROLE_REQUESTS,
   registrationRoleRequestLabels,
+  requestRoleTitle,
   ROLES,
   roleLabels,
   type RejectUserBody,
@@ -71,11 +71,11 @@ import {
   approvesRegistration,
   asksAboutMail,
   HALF_APPROVAL,
-  hasExternalEmail,
   isPendingRegistration,
   withMailOutcome,
 } from './registrationApproval';
-import { emailCell, requestedDetailText, roleNote, roleTags } from './userAccountLabels';
+import { roleIssue, useActivationDefaults } from './useActivationDefaults';
+import { emailCell, roleNote, roleTags } from './userAccountLabels';
 import { userAuditKeys } from '@entities/user-audit';
 import { isApiError } from '@shared/api';
 import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
@@ -88,7 +88,7 @@ import { errorMessage } from '../../utils/format';
 import { objectsApi, objectKeys } from '@entities/object';
 import { departmentKeys, departmentOptionsQuery } from '@entities/department';
 
-interface UserFormValues {
+export interface UserFormValues {
   email: string;
   lastName: string;
   firstName: string;
@@ -244,12 +244,24 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
   const watchCounterpartyType = isCounterpartyScopedRole(watchRole)
     ? (executors?.items.find((c) => c.id === watchCounterpartyId)?.type ?? null)
     : null;
+  // Заполнение формы по пожеланию заявителя (§3.5–§3.8): роль, область, коды наборов и баннер о
+  // сделанном. Считается своим файлом; здесь важно одно — правятся поля, а не тело запроса, и
+  // «Активен» подстановка не трогает никогда.
+  const activation = useActivationDefaults({
+    open,
+    record,
+    form,
+    objects: objects?.items,
+    counterparties: executors?.items,
+  });
   const grants = useUserGrantsField({
     open,
     isSelf: !!record && record.id === currentUser?.id,
     role: watchRole ?? null,
     counterpartyType: watchCounterpartyType,
     record,
+    // Предложенные — третьим множеством гидратации (§3.6), а не присваиванием в поле.
+    suggestedCodes: activation.grantCodes,
     onReload: () => void qc.invalidateQueries({ queryKey: ['users'] }),
   });
 
@@ -278,8 +290,8 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       firstName: r.firstName,
       middleName: r.middleName,
       phone: r.phone,
-      // Роль по умолчанию не подставляем: у зарегистрировавшегося самостоятельно её нет,
-      // а активация без осознанно выбранной роли запрещена — пусть выберет администратор.
+      // Роль записи, а не пожелания: умолчание по заявке ставит автомат — однажды и только в
+      // пустое поле (§3.5), а решение остаётся за администратором.
       role: r.role ?? undefined,
       constructionObjectIds: r.constructionObjects.map((o) => o.id),
       departmentIds: r.departments.map((d) => d.id),
@@ -303,22 +315,28 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       // и показанный чекбокс обязаны говорить об одном и том же решении.
       const approving = approvesRegistration(record, values.role, values.isActive);
       const notifying = asksAboutMail(record, values.role, values.isActive);
-      const grantStatements = grants.statements();
+      /*
+       * Подставленное уходит на сервер только вместе с одобрением (§3.6): сервер отвечает 400 на
+       * заявку с ролью в теле без объявленного рассмотрения, и правка ФИО в очереди упёрлась бы в
+       * отказ, причину которого создал бы сам экран. Подстановка — предложение экрана, а не
+       * значение заявки, и несохранённая соберётся заново при следующем открытии.
+       */
+      const role = pendingRecord && !approving ? undefined : values.role;
+      // Полномочия молчат вместе с ролью не за компанию: набор без роли планировщик отвергает
+      // отдельно (`role_required`) — полномочия выдаются поверх должности.
+      const grantStatements = role ? grants.statements() : undefined;
       const payload = {
         ...fields,
+        role,
         // Пустое поле уходит пустой строкой, а не `undefined`: у правки это разные вещи —
         // «телефон стёрли» и «телефон не трогали» (ADR 0043).
         phone: values.phone ?? '',
         // Область чужой оси обнуляется здесь же: сменив роль с объектной на отдельскую, форма
         // не должна отправлять оставшийся от прежней роли набор — сервер его всё равно отвергнет
         // как несовместимую пару (ADR 0040).
-        constructionObjectIds: isObjectScopedRole(values.role)
-          ? (values.constructionObjectIds ?? [])
-          : [],
-        departmentIds: isDepartmentScopedRole(values.role) ? (values.departmentIds ?? []) : [],
-        counterpartyId: isCounterpartyScopedRole(values.role)
-          ? (values.counterpartyId ?? null)
-          : null,
+        constructionObjectIds: isObjectScopedRole(role) ? (values.constructionObjectIds ?? []) : [],
+        departmentIds: isDepartmentScopedRole(role) ? (values.departmentIds ?? []) : [],
+        counterpartyId: isCounterpartyScopedRole(role) ? (values.counterpartyId ?? null) : null,
         /*
          * Полномочия — высказыванием о каждом показанном наборе (Р3), а не списком оставшихся:
          * снимаемого в таком списке нет по построению, и ни версии его состава, ни факта показа
@@ -332,7 +350,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
         // Работник уходит только у своей роли (ADR 0102). Отправить его вместе с другой ролью
         // нельзя даже пустым: `null` означает «отвяжите», а отвязка живой водительской учётки
         // запрещена (Р6) — у прочих ролей связь справочная и правится не здесь.
-        ...(isPersonScopedRole(values.role)
+        ...(isPersonScopedRole(role)
           ? { personId, confirmNameMismatch: confirmNameMismatch ?? false }
           : {}),
       };
@@ -597,11 +615,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
           {isPendingRegistration(r) ? (
             <Badge
               color="gold"
-              text={
-                r.requestedRole
-                  ? `Заявка: ${registrationRoleRequestLabels[r.requestedRole]}`
-                  : 'Заявка'
-              }
+              text={r.requestedRole ? `Заявка: ${requestRoleTitle(r.requestedRole)}` : 'Заявка'}
             />
           ) : null}
         </Space>
@@ -994,8 +1008,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
             ? `${r.counterpartyName} — ${counterpartyTypeLabels[r.counterpartyType]}`
             : r.counterpartyName
           : null,
-      (r) =>
-        r.requestedRole ? `Пожелание: ${registrationRoleRequestLabels[r.requestedRole]}` : null,
+      (r) => (r.requestedRole ? `Пожелание: ${requestRoleTitle(r.requestedRole)}` : null),
       (r) => (r.deletedAt ? 'В архиве' : null),
     ],
     // Карточка архивной строки не открывается на правку, но действия у неё те же, что в таблице
@@ -1085,26 +1098,9 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
               шлёт» здесь больше нет: почтовый контур работает (ADR 0093), и обещание тишины было
               бы неправдой. */}
           <PhoneField />
-          {/* Пожелание заявителя (ADR 0034) — справка, а не подстановка: роль остаётся выбором
-              администратора, иначе «Сохранить» не глядя выдавало бы права по чужому заявлению. */}
-          {record?.requestedRole ? (
-            // Одной строкой, а не парой «заголовок + описание»: справка на полторы строки
-            // занимала блоком высоту целого поля и выдавливала конец формы под прокрутку.
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message={[
-                `При регистрации указал: ${registrationRoleRequestLabels[record.requestedRole]}`,
-                requestedDetailText(record),
-                // Тот же признак, что и пометкой в списке (ADR 0090): решение принимается в этом
-                // окне, и увиденное в списке к этому моменту уже забыто.
-                hasExternalEmail(record) ? 'Адрес внешней почты' : undefined,
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-            />
-          ) : null}
+          {/* Пожелание заявителя (ADR 0034) и то, что по нему заполнено (§3.8). Вторая строка
+              баннера — в прошедшем времени, поэтому правка роли её не делает ложью. */}
+          {activation.banner}
           {/* Роль у заявки обязательна не всегда: исправить в ней опечатку в ФИО или телефон
               можно, не рассматривая её, — заявка остаётся в очереди. А вот назначить роль,
               не активируя, нельзя: запись перестала бы быть заявкой, и следующая правка
@@ -1128,12 +1124,10 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
             dependencies={pendingRecord ? ['isActive'] : undefined}
             rules={[
               {
+                // Оба правила рассмотрения — ответом расчёта: целиком и не раньше каталога (§3.6).
                 validator: (_rule, value: UserFormValues['role'] | undefined) => {
-                  if (value) return Promise.resolve();
-                  if (!pendingRecord) return Promise.reject(new Error('Выберите роль'));
-                  return form.getFieldValue('isActive')
-                    ? Promise.reject(new Error(HALF_APPROVAL))
-                    : Promise.resolve();
+                  const issue = roleIssue(record, value, form.getFieldValue('isActive'), grants);
+                  return issue ? Promise.reject(new Error(issue)) : Promise.resolve();
                 },
               },
             ]}
@@ -1148,6 +1142,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
             <Form.Item
               name="constructionObjectIds"
               label={`Объекты (для роли «${roleLabels[watchRole!]}»)`}
+              extra={activation.hint('constructionObjectIds')}
               rules={[
                 {
                   validator: (_rule, value: string[] | undefined) =>
@@ -1181,6 +1176,8 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
               loading={departmentsLoading}
             />
           ) : null}
+          {/* Кандидаты отдела — снаружи поля и при его условии: разметку поля держит свой файл. */}
+          {isDepartmentScopedRole(watchRole) ? activation.hint('departmentIds') : null}
           {isCounterpartyScopedRole(watchRole) ? (
             <Form.Item
               name="counterpartyId"
@@ -1190,7 +1187,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
               extra={
                 executorCount === 0
                   ? 'Нет активных контрагентов-исполнителей — заведите оператора вывоза или арендодателя в справочнике'
-                  : undefined
+                  : activation.hint('counterpartyId')
               }
             >
               <AutoSelect
@@ -1224,8 +1221,11 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
               pendingRecord
                 ? [
                     {
+                      // Требует активации роль, выбранная **руками**: подставленная — предложение
+                      // экрана, и без одобрения она в тело не уходит вовсе (§3.6), так что правка
+                      // заявки в очереди половинчатым решением не становится.
                       validator: (_rule, value: boolean | undefined) =>
-                        !value && form.getFieldValue('role')
+                        !value && form.isFieldTouched('role') && form.getFieldValue('role')
                           ? Promise.reject(new Error(HALF_APPROVAL))
                           : Promise.resolve(),
                     },

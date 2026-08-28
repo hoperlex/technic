@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { ConfigProvider } from 'antd';
 import type { RegisterInput } from '@technic/contracts';
 import { apiError, json, mockHttp, type HttpMock, type RouteHandler } from './http';
 import { renderWithSession, renderWithUser } from './render';
@@ -54,13 +55,23 @@ beforeEach(() => {
  *
  * Ответ ручки конфига задаётся сценарием: включённая капча, выключенная, чужой формат ответа и
  * молчание сети — четыре разных формы, а не четыре настроения одной.
+ *
+ * `popupMatchSelectWidth={false}` повторяет настройку точки входа портала (`main.tsx`, ADR 0136), и
+ * без неё проверялся бы экран в конфигурации, которой в портале нет: настройка заодно выключает
+ * виртуализацию списков, а с ней rc-virtual-list рисует первую десятку вариантов — из одиннадцати
+ * должностей «Другое», стоящее последним, до клика не доживало бы.
  */
 function renderPage(captchaRoute: RouteHandler = () => captchaConfig(CLIENT_KEY)): HttpMock {
   const http = mockHttp({
     'GET /auth/captcha': captchaRoute,
     'POST /auth/register': () => json({ ok: true, message: 'ок' }),
   });
-  renderWithUser(<RegisterPage />, { user: null });
+  renderWithUser(
+    <ConfigProvider popupMatchSelectWidth={false}>
+      <RegisterPage />
+    </ConfigProvider>,
+    { user: null },
+  );
   return http;
 }
 
@@ -87,7 +98,7 @@ function fill(label: string, value: string) {
 
 /** Выбор в `Select`: открыть список поля и нажать пункт — как это делает человек. */
 function selectRoleRequest(optionLabel: string) {
-  return selectOption('Выберите наиболее подходящую роль', optionLabel);
+  return selectOption('Кем вы работаете', optionLabel);
 }
 
 function submit() {
@@ -301,8 +312,13 @@ describe('предупреждение о внешней почте', () => {
   });
 });
 
+/**
+ * Пожелание спрашивает про должность («Кем вы работаете»), а не про роль портала: заявитель знает,
+ * кем работает, а «наиболее подходящую роль» из таблицы прав — нет. Уточнение к пожеланию задаётся
+ * тем вопросом, на который человек может ответить: объект, отдел или компания.
+ */
 describe('пожелание по роли', () => {
-  it('без выбора роли заявка не уходит', async () => {
+  it('без выбора пожелания заявка не уходит', async () => {
     const http = renderPage();
     await captchaShown();
 
@@ -310,7 +326,7 @@ describe('пожелание по роли', () => {
     await act(async () => submit());
 
     expect(registrations(http)).toBe(0);
-    expect(await screen.findByText('Выберите роль')).toBeDefined();
+    expect(await screen.findByText('Выберите, кем вы работаете')).toBeDefined();
   });
 
   it('«Сотрудник объекта» открывает поле объекта и требует его заполнить', async () => {
@@ -335,6 +351,35 @@ describe('пожелание по роли', () => {
     });
   });
 
+  it('«Сотрудник отдела» спрашивает отдел, а не объект, и без него заявку не отправляет', async () => {
+    const http = renderPage();
+    await captchaShown();
+
+    await fillCommonFields();
+    await selectRoleRequest('Сотрудник отдела');
+    expect(await screen.findByLabelText('Отдел')).toBeDefined();
+    // Вопрос ровно один: «Объект» и «Отдел» на экране вместе не стоят никогда — иначе человек
+    // выбирал бы, куда написать одно и то же.
+    expect(screen.queryByLabelText('Объект')).toBeNull();
+
+    await act(async () => submit());
+    expect(registrations(http)).toBe(0);
+    // Отказ назван тем же словом, что и вопрос: «Укажите объект» под полем «Отдел» читалось бы
+    // как ошибка формы.
+    expect(await screen.findByText('Укажите отдел')).toBeDefined();
+
+    fill('Отдел', 'Отдел снабжения');
+    await act(async () => submit());
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    // Отдел уезжает в ту же переменную, что и объект: колонка в базе одна — «где вы работаете», —
+    // и различает два пожелания только заданный вопрос.
+    expect(sent(http)).toMatchObject({
+      requestedRole: 'department_staff',
+      requestedObject: 'Отдел снабжения',
+      requestedCompany: '',
+    });
+  });
+
   it('«Оператор по вывозу мусора» спрашивает компанию, а не объект', async () => {
     const http = renderPage();
     await captchaShown();
@@ -350,6 +395,31 @@ describe('пожелание по роли', () => {
     expect(sent(http)).toMatchObject({
       requestedRole: 'waste_operator',
       requestedCompany: 'ООО «Ромашка»',
+      requestedObject: '',
+    });
+  });
+
+  it('«Представитель сервисной компании» требует компанию — он работает от её лица', async () => {
+    // Сама сервисная компания себя не регистрирует: контрагента заводит администрация (ответ
+    // заказчика 28.08.2026). Регистрируется её сотрудник, и «Компания» называет организацию, от
+    // лица которой он работает, — ту же, что администратор выберет при активации.
+    const http = renderPage();
+    await captchaShown();
+
+    await fillCommonFields();
+    await selectRoleRequest('Представитель сервисной компании (обслуживание оргтехники)');
+    expect(await screen.findByLabelText('Компания')).toBeDefined();
+
+    await act(async () => submit());
+    expect(registrations(http)).toBe(0);
+    expect(await screen.findByText('Укажите название компании')).toBeDefined();
+
+    fill('Компания', 'ООО «Сервис-Плюс»');
+    await act(async () => submit());
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({
+      requestedRole: 'service_company',
+      requestedCompany: 'ООО «Сервис-Плюс»',
       requestedObject: '',
     });
   });
@@ -381,13 +451,37 @@ describe('пожелание по роли', () => {
     });
   });
 
-  it('комментарий спрашивают только у «Другого»', async () => {
+  it('комментарий открыт любому пожеланию: узкая должность объясняется только им', async () => {
+    // Системному администратору, сотруднику ИТ-службы и механику отдельного пожелания в перечне
+    // нет намеренно — они приходят сотрудником отдела и дописывают, кем работают. Спрячь форма
+    // комментарий у всех, кроме «Другого», — объясниться им было бы негде.
     const http = renderPage();
     await captchaShown();
 
     await fillCommonFields();
+    await selectRoleRequest('Сотрудник отдела');
+    await screen.findByLabelText('Отдел');
+    fill('Отдел', 'ИТ-служба');
+    fill('Комментарий', 'Системный администратор');
+    await act(async () => submit());
+
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({
+      requestedRole: 'department_staff',
+      requestedObject: 'ИТ-служба',
+      requestedComment: 'Системный администратор',
+    });
+  });
+
+  it('обязателен комментарий только у «Другого»: остальные заявки уходят без него', async () => {
+    const http = renderPage();
+    await captchaShown();
+
+    await fillCommonFields();
+    // Поле стоит на форме до всякого выбора: показ комментария от пожелания не зависит вовсе —
+    // зависит только обязательность.
+    expect(screen.getByLabelText('Комментарий')).toBeDefined();
     await selectRoleRequest('Диспетчер');
-    expect(screen.queryByLabelText('Комментарий')).toBeNull();
     await act(async () => submit());
 
     await waitFor(() => expect(registrations(http)).toBe(1));
