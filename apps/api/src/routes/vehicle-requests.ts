@@ -171,10 +171,10 @@ import {
   vehicleRequestSummaryQuerySchema,
   vehicleStatusLabels,
   vehicleWorkUnitRateLabels,
+  // Пересечение дней двух периодов: им коррекция проверяет, не стоит ли на дни названного листа
+  // второй действующий бланк (Р11) — тем же вопросом считается и замок сверки.
+  periodsOverlap,
   waybillDisplayNumber,
-  // Понедельник недели ЭСМ-2: им коррекция проверяет, не стоит ли в неделе названного листа
-  // второй действующий бланк (Р11) — недельный замок сверки считается тем же ключом.
-  weekStartKey,
   weeklyRowsExcludedBy,
   type RoutePurpose,
 } from '@technic/contracts';
@@ -395,7 +395,7 @@ import {
   esm2CorrectionScope,
   // Неделя ручной выдачи, посчитанная до транзакции: её `periodTo` и есть эффективная дата
   // операции (таблица §4 плана), по которой спрашивается право и глубина.
-  esm2OnDemandPeriod,
+  esm2OnDemandPeriods,
   type Esm2SheetRef,
   type Esm2SyncResult,
   type IssuedEsm2,
@@ -3325,31 +3325,37 @@ async function planAssignmentCorrection(
   const unlocked = correction.unlockWaybillIds.map((id) => byId.get(id)!);
 
   /*
-   * Неделя переоформляется целиком или не переоформляется вовсе.
+   * Дни листа переоформляются целиком или не переоформляются вовсе.
    *
-   * Замок сверки считается по понедельнику (`esm2SyncPlan`), а лист после линейной техники
-   * уникален по паре «неделя + машина» (ADR 0100 п. 7). Поэтому в неделе, где стоят листы двух
-   * единиц, любой исход плох: назвав один, получишь аннулирование без перевыписки — неделю запрёт
-   * второй; назвав оба, получишь один новый лист вместо двух — набор недель их не различает, и
-   * недельный отчёт второй машины (свои моточасы, свой оборот с подписью заказчика) пропал бы.
+   * Замок сверки считается по дням (`esm2SyncPlan`), а лист после линейной техники уникален по
+   * тройке «заявка + начало периода + машина» (ADR 0100 п. 7). Поэтому там, где на одни и те же
+   * дни стоят листы двух единиц, любой исход плох: назвав один, получишь аннулирование без
+   * перевыписки — дни запрёт второй; назвав оба, получишь один новый лист вместо двух — набор
+   * периодов их не различает, и недельный отчёт второй машины (свои моточасы, свой оборот с
+   * подписью заказчика) пропал бы.
    *
-   * Поэтому отказ, а не молчаливое расширение списка. Дверь для такой недели своя и она есть:
-   * лист списывают номером и выписывают заново по требованию (ADR 0100 §6), где машина называется
-   * явно, — там неделя двух единиц выражается, а здесь нет.
+   * Поэтому отказ, а не молчаливое расширение списка. Дверь для таких дней своя и она есть: лист
+   * списывают номером и выписывают заново по требованию (ADR 0100 §6), где машина называется явно,
+   * — там неделя двух единиц выражается, а здесь нет.
+   *
+   * Соседство считается **пересечением дней**, а не общей неделей (ADR 0142): у переходной недели
+   * листа два — «31–31 августа» и «1–6 сентября», — и это один и тот же документооборот одной
+   * машины, разрезанный месяцем. Запрещать его переоформление значило бы закрыть коррекцию всякой
+   * неделе, в которой кончается месяц.
    */
   for (const sheet of unlocked) {
-    const week = weekStartKey(sheet.periodFrom);
+    const days = { from: sheet.periodFrom, to: sheet.periodTo };
     const neighbours = scope.sheets.filter(
-      (s) => s.id !== sheet.id && weekStartKey(s.periodFrom) === week,
+      (s) => s.id !== sheet.id && periodsOverlap({ from: s.periodFrom, to: s.periodTo }, days),
     );
     if (neighbours.length > 0) {
       throw err.unprocessable(
-        `В неделе листа № ${sheet.number} (${dateKeyRu(sheet.periodFrom)} — ${dateKeyRu(sheet.periodTo)}) у заявки есть ещё ${neighbours.length === 1 ? 'один действующий лист' : 'действующие листы'} — № ${neighbours
+        `На дни листа № ${sheet.number} (${dateKeyRu(sheet.periodFrom)} — ${dateKeyRu(sheet.periodTo)}) у заявки есть ещё ${neighbours.length === 1 ? 'один действующий лист' : 'действующие листы'} — № ${neighbours
           .map((s) => s.number)
           .join(
             ', № ',
-          )}: на неделю выписался бы один бланк, и недельный отчёт второй машины пропал бы. Такую неделю переоформляют по одному листу — аннулированием номера и выпиской ЭСМ-2 по требованию, где машина называется явно`,
-        { unlockWaybillIds: 'В неделе несколько листов' },
+          )}: на эти дни выписался бы один бланк, и недельный отчёт второй машины пропал бы. Такие дни переоформляют по одному листу — аннулированием номера и выпиской ЭСМ-2 по требованию, где машина называется явно`,
+        { unlockWaybillIds: 'На эти дни несколько листов' },
       );
     }
   }
@@ -5900,16 +5906,21 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
        * (`issueEsm2OnDemand`), а не «нет права на прошлое» там, где листа не будет ни при каком
        * праве.
        */
-      const period = await esm2OnDemandPeriod(db, { requestId: before.id, weekOf });
+      const periods = await esm2OnDemandPeriods(db, { requestId: before.id, weekOf });
       const reason = req.body.reason?.trim() ?? '';
       // Функцией, а не разово: `runCorrection` зовёт её сам на каждой попытке, включая повтор, —
       // на нём это единственная проверка доступа, которая вообще случится (Р31).
+      //
+      // Эффективная дата — конец **первого** периода (ADR 0142): у переходной недели бланка два,
+      // и августовский кусок мог уже стать прошлым, когда сентябрьский ещё будущее. Право
+      // спрашивается по строгому из двух — иначе просьба закрыла бы прошлое молча, прикрывшись
+      // будущим концом недели.
       const authorize = (): boolean =>
-        period === null
+        periods.length === 0
           ? false
           : backdateOrThrow(
               checkBackdate({
-                effectiveDate: period.to,
+                effectiveDate: periods[0]!.to,
                 today: moscowDateKeyOf(new Date()),
                 subject: p,
                 hasReason: reason !== '',
@@ -5921,7 +5932,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const issueInTransaction = async (
         tx: Tx,
         correction: CorrectionRecord | null,
-      ): Promise<IssuedEsm2> => {
+      ): Promise<IssuedEsm2[]> => {
         /*
          * Гейт и строка заявки — до всякой работы с бумагой (план Л3, подэтап 2a). Прежде эта
          * дверь заявку под блокировку не брала вовсе, а версию её двигала последним `UPDATE`, то
@@ -5939,9 +5950,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           vehicleId,
           driverPersonId,
           actor: { id: p.id },
-          // Неделя, по которой спрошено право: разъехавшись со сроком заявки между чтением и
-          // транзакцией, она получит конфликт, а не бланк прошедшей недели без операции.
-          guardedPeriodTo: period?.to ?? null,
+          // Периоды, по которым спрошено право: разъехавшись со сроком заявки между чтением и
+          // транзакцией, они получат конфликт, а не бланк прошедшей недели без операции.
+          guardedPeriods: periods,
           // Рукопожатие выписки (Р21а): отпечаток, прочитанный человеком в окне. Сервер считает
           // набор сам и под теми же чтениями, из которых печатает бланк, — тело только возвращает
           // подтверждение обратно, и не переданное означает «набор обязан быть пуст».
@@ -5963,8 +5974,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         return created;
       };
 
-      /** Что выписано; на повторе операции (Р31) остаётся `null` — выписывать было нечего. */
-      let issued: IssuedEsm2 | null = null;
+      /** Что выписано; на повторе операции (Р31) остаётся пустым — выписывать было нечего. */
+      let issued: IssuedEsm2[] = [];
       let correctionId: string | null = null;
 
       if (!backdated) {
@@ -5997,18 +6008,22 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               // операции с ней — единственный ответ (Р16).
               await linkCorrectionRequests(tx, correction.id, [before.id]);
               /*
-               * Снимок «было → стало» (Р16). «Было» здесь пусто по построению — бланка за эту
-               * неделю не существовало, — и остаётся то, ради чего операцию откроют через месяцы:
-               * какая неделя закрыта задним числом, какой машиной и каким номером это кончилось.
+               * Снимок «было → стало» (Р16). «Было» здесь пусто по построению — бланка за эти дни
+               * не существовало, — и остаётся то, ради чего операцию откроют через месяцы: какие
+               * дни закрыты задним числом, какой машиной и какими номерами это кончилось.
+               *
+               * Листов в снимке список, а не один (ADR 0142): переходная неделя закрывается двумя
+               * бланками одной операцией, и назвать в журнале только первый значило бы умолчать о
+               * втором сожжённом номере.
                */
               return {
                 request: { id: before.id, num: before.num },
-                waybill: {
-                  id: created.id,
-                  number: created.number,
-                  periodFrom: created.period.from,
-                  periodTo: created.period.to,
-                },
+                waybills: created.map((sheet) => ({
+                  id: sheet.id,
+                  number: sheet.number,
+                  periodFrom: sheet.period.from,
+                  periodTo: sheet.period.to,
+                })),
                 vehicleId,
                 driverPersonId,
               };
@@ -6023,17 +6038,19 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       //
       // На повторе операции записи нет: второй строки об одной и той же выдаче в ленте быть не
       // должно — номер выдан один раз.
-      if (issued) {
+      // Событие на каждый выписанный лист (ADR 0142): у переходной недели их два, и одна строка
+      // на оба означала бы номер строгой отчётности, ушедший на документ без следа в ленте.
+      for (const sheet of issued) {
         await writeAudit({
           actorUserId: p.id,
           action: 'waybill.esm2_issue',
           entityType: 'waybill',
-          entityId: issued.id,
+          entityId: sheet.id,
           metadata: {
-            number: issued.number,
+            number: sheet.number,
             requestId: before.id,
-            periodFrom: issued.period.from,
-            periodTo: issued.period.to,
+            periodFrom: sheet.period.from,
+            periodTo: sheet.period.to,
             vehicleId,
             driverPersonId,
             // Задний ход — и в ленте аудита: журнал коррекций отвечает «почему», а лента остаётся

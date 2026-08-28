@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { moscowDateKeyOf, shiftDateKey, weekStartKey, type Role } from '@technic/contracts';
+import {
+  esm2Periods,
+  moscowDateKeyOf,
+  shiftDateKey,
+  weekStartKey,
+  type Role,
+} from '@technic/contracts';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
@@ -1776,12 +1782,13 @@ describeReadModes(readMode, 'бумага починенной истории (�
       issueSheets: { driverPersonId: ctx.personA },
     });
     const before = await sheetsOf(scene.requestId);
-    // Три недели срока — три недельных листа: единица прежней сверки это календарная неделя.
-    expect(compositionOf(before)).toEqual([
-      `${PREV_MONDAY}|${shiftDateKey(PREV_MONDAY, 6)}|${ctx.ownVehicle.id}|${ctx.personA}`,
-      `${MONDAY}|${PAPER_TO}|${ctx.ownVehicle.id}|${ctx.personA}`,
-      `${NEXT_MONDAY}|${PAPER_TO_LONG}|${ctx.ownVehicle.id}|${ctx.personA}`,
-    ]);
+    // Три недели срока — три листа прежней сверки, а если месяц кончается в середине недели, то
+    // четыре: единица бумаги — неделя, подрезанная концом месяца (ADR 0142).
+    expect(compositionOf(before)).toEqual(
+      esm2Periods(PREV_MONDAY, PAPER_TO_LONG).map(
+        (period) => `${period.from}|${period.to}|${ctx.ownVehicle.id}|${ctx.personA}`,
+      ),
+    );
 
     const body = {
       mode: 'repair',

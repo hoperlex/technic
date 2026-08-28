@@ -995,10 +995,10 @@ async function auditWeeklyOrderEvents(
 
 // ── Чек-лист готовности недели (§5 шаг 6) ──
 
-const CELL_NONE: WeeklyDocumentCellDto = { state: 'none', number: null, text: '—' };
+const CELL_NONE: WeeklyDocumentCellDto = { state: 'none', numbers: [], text: '—' };
 const CELL_LESSOR: WeeklyDocumentCellDto = {
   state: 'lessor',
-  number: null,
+  numbers: [],
   text: 'Ведёт арендодатель',
 };
 
@@ -1008,24 +1008,33 @@ function kindSuffix(row: ItemRow): string {
 }
 
 /**
- * Клетка ЭСМ-2: лист недели заявки. Ищется по `weekStartKey(period_from) = week_start`, а не по
+ * Клетка ЭСМ-2: листы недели заявки. Ищутся по `weekStartKey(period_from) = week_start`, а не по
  * равенству понедельнику: у заказа, начавшегося в среду, первый период начинается со среды.
+ *
+ * Листов у недели бывает **несколько**, и берутся все (ADR 0142): месяц режет неделю на два
+ * документа, а линейный заказ закрывает её двумя машинами (ADR 0100 §7). Клетка, показывавшая
+ * первый попавшийся, отвечала бы «бумага есть» там, где половины бумаги не хватает.
  */
 function esm2Cell(
   row: ItemRow,
   weekStart: string,
-  sheets: Map<string, { weekStart: string; number: string }[]>,
+  sheets: Map<string, { weekStart: string; periodFrom: string; number: string }[]>,
 ): WeeklyDocumentCellDto {
   if (row.kind === 'leave' || row.result === 'skipped') return CELL_NONE;
   const requestId = row.sourceRequestId ?? row.createdRequestId;
   if (!requestId) return CELL_NONE;
   if (row.ownership && row.ownership !== 'own') return CELL_LESSOR;
   if (!row.currentVehicleId) {
-    return { state: 'awaiting', number: null, text: 'Будет при назначении' };
+    return { state: 'awaiting', numbers: [], text: 'Будет при назначении' };
   }
-  const sheet = (sheets.get(requestId) ?? []).find((s) => s.weekStart === weekStart);
-  if (!sheet) return { state: 'awaiting', number: null, text: 'Будет при назначении' };
-  return { state: 'issued', number: sheet.number, text: `№ ${sheet.number}` };
+  const weekSheets = (sheets.get(requestId) ?? [])
+    .filter((s) => s.weekStart === weekStart)
+    .sort((a, b) => (a.periodFrom < b.periodFrom ? -1 : a.periodFrom > b.periodFrom ? 1 : 0));
+  if (weekSheets.length === 0) {
+    return { state: 'awaiting', numbers: [], text: 'Будет при назначении' };
+  }
+  const numbers = weekSheets.map((s) => s.number);
+  return { state: 'issued', numbers, text: numbers.map((n) => `№ ${n}`).join(', ') };
 }
 
 /**
@@ -1046,13 +1055,13 @@ function relocationCell(
   if (!trip) {
     return {
       state: 'missing',
-      number: null,
+      numbers: [],
       text: row.kind === 'leave' ? 'Вывоз не оформлен' : 'Доставка запрошена, рейса нет',
     };
   }
   if (!trip.number)
-    return { state: 'awaiting', number: null, text: 'Рейс заведён, лист не выписан' };
-  return { state: 'issued', number: trip.number, text: `№ ${trip.number}` };
+    return { state: 'awaiting', numbers: [], text: 'Рейс заведён, лист не выписан' };
+  return { state: 'issued', numbers: [trip.number], text: `№ ${trip.number}` };
 }
 
 export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance): Promise<void> {
@@ -1871,7 +1880,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         ),
       ];
 
-      const sheets = new Map<string, { weekStart: string; number: string }[]>();
+      const sheets = new Map<string, { weekStart: string; periodFrom: string; number: string }[]>();
       const trips = new Map<string, { purpose: string; number: string | null }[]>();
       if (requestIds.length > 0) {
         const sheetRows = await db
@@ -1896,6 +1905,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
           const list = sheets.get(s.requestId) ?? [];
           list.push({
             weekStart: weekStartKey(s.periodFrom),
+            periodFrom: s.periodFrom,
             number: waybillDisplayNumber(s.prefix, s.number, s.numberWidth),
           });
           sheets.set(s.requestId, list);

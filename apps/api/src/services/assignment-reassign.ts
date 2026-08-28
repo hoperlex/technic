@@ -2,8 +2,8 @@ import { and, eq, inArray, ne } from 'drizzle-orm';
 import {
   canCancelWaybill,
   esm2SyncPlan,
+  periodsOverlap,
   waybillDisplayNumber,
-  weekStartKey,
   type AssignmentPlanCancelDto,
   type AssignmentPlanIssueDto,
   type AssignmentPreviewDto,
@@ -614,7 +614,7 @@ async function readIsLinear(tx: AssignmentCommandTx, requestId: string): Promise
  * План глазами окна: что сгорит и что выпишется, с составом каждого выпускаемого листа.
  *
  * Состав считается **тем же правилом, что и у сверки** (`syncEsm2Waybills`): человек — названный
- * запросом, иначе тот, кто стоял в сгоревшем листе этой недели; машина — новая, а в линейном
+ * запросом, иначе тот, кто стоял в сгоревшем листе этих дней; машина — новая, а в линейном
  * режиме та, что стояла в сгоревшем листе (номер второй единицы недели переписывать на первую
  * нельзя). Второй свод тех же правил разошёлся бы с первым, и окно обещало бы не тот бланк.
  *
@@ -634,10 +634,20 @@ async function previewPlanOf(
 ): Promise<{ cancel: AssignmentPlanCancelDto[]; issue: AssignmentPlanIssueDto[] }> {
   const { plan, sheets, numbers, mode } = params;
   const burning = new Set(plan.cancel);
-  const burnedOfWeek = new Map<string, Esm2Sheet>();
-  for (const sheet of sheets) {
-    if (burning.has(sheet.id)) burnedOfWeek.set(weekStartKey(sheet.periodFrom), sheet);
-  }
+  /*
+   * Сгорающие листы — списком, а не картой по понедельнику: предшественник ищется по **дням**, тем
+   * же правилом, что и в самой сверке (ADR 0142). После месячного разреза лист «31.08–06.09» гаснет
+   * ради двух документов, и второй из них по ключу недели остался бы без состава — окно обещало бы
+   * бланк без машиниста, а сверка выписала бы его с машинистом сгоревшего листа.
+   */
+  const burnedSheets = sheets.filter((sheet) => burning.has(sheet.id));
+  const burnedFor = (period: { from: string; to: string }): Esm2Sheet | undefined =>
+    burnedSheets.find(
+      (sheet) => sheet.periodFrom === period.from && sheet.periodTo === period.to,
+    ) ??
+    burnedSheets.find((sheet) =>
+      periodsOverlap({ from: sheet.periodFrom, to: sheet.periodTo }, period),
+    );
 
   const cancel = plan.cancel.map((id) => {
     const sheet = sheets.find((s) => s.id === id);
@@ -650,7 +660,7 @@ async function previewPlanOf(
   });
 
   const wanted = plan.issue.map((period) => {
-    const burned = burnedOfWeek.get(weekStartKey(period.from));
+    const burned = burnedFor(period);
     return {
       from: period.from,
       to: period.to,

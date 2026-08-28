@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  esm2Periods,
   moscowDateKeyOf,
   shiftDateKey,
   weekStartKey,
@@ -85,6 +86,20 @@ const PREV = shiftDateKey(MONDAY, -7);
 const NEXT = shiftDateKey(MONDAY, 7);
 const TERM_FROM = PREV;
 const TERM_TO = shiftDateKey(NEXT, 6);
+/**
+ * Периоды бумаги срока — тем же расчётом, каким режет портал (`esm2Periods`).
+ *
+ * Считаются, а не перечисляются тремя понедельниками: лист режет не только воскресенье, но и конец
+ * месяца (ADR 0142), и в последнюю неделю месяца тот же срок даёт четыре документа вместо трёх.
+ * Числа, записанные цифрой, зеленели бы три недели из четырёх и краснели бы в последнюю — без
+ * всякой правки кода.
+ */
+const TERM_PERIODS = esm2Periods(TERM_FROM, TERM_TO);
+/** Сколько листов у нетронутого срока: им меряется «бумага осталась как была». */
+const TERM_SHEETS = TERM_PERIODS.length;
+/** Периоды, начинающиеся не раньше дня, — то, что переоформляет команда с этой датой. */
+const periodsFrom = (day: string): { from: string; to: string }[] =>
+  TERM_PERIODS.filter((period) => period.from >= day);
 
 interface Ctx {
   db: typeof AppDb;
@@ -529,11 +544,10 @@ describe('якорь машиниста (Р16) и три состояния шк
       // Две фазы — два разных состояния последствий, и отпечаток обязан их различать.
       expect(full.fingerprint).not.toBe(bare.fingerprint);
       // Бумага: отработанная неделя не тронута, две оставшиеся переоформляются.
-      expect(full.plan.cancel.map((c) => c.from)).toEqual([MONDAY, NEXT]);
-      expect(full.plan.issue.map((i) => `${i.from}|${i.driverPersonId}`)).toEqual([
-        `${MONDAY}|${scene.personB}`,
-        `${NEXT}|${scene.personB}`,
-      ]);
+      expect(full.plan.cancel.map((c) => c.from)).toEqual(periodsFrom(MONDAY).map((p) => p.from));
+      expect(full.plan.issue.map((i) => `${i.from}|${i.driverPersonId}`)).toEqual(
+        periodsFrom(MONDAY).map((p) => `${p.from}|${scene.personB}`),
+      );
       // Разблокировок нет: отработанный лист лежит **вне** области сверки, и просить подтвердить
       // бумагу, которой человек в предпросмотре не видел, было бы неправдой (Р11).
       expect(full.requiredUnlocks).toEqual([]);
@@ -550,7 +564,7 @@ describe('якорь машиниста (Р16) и три состояния шк
     if (!readMode.enabled) return;
     await inScene(options, async (tx, scene) => {
       const before = await sheetsOf(tx, scene.requestId);
-      expect(before.map((s) => s.period_from)).toEqual([PREV, MONDAY, NEXT]);
+      expect(before.map((s) => s.period_from)).toEqual(TERM_PERIODS.map((p) => p.from));
 
       const body = setBody({
         effectiveDate: NEXT,
@@ -582,15 +596,22 @@ describe('якорь машиниста (Р16) и три состояния шк
 
       // Бумага: прошлая неделя со своим номером и прежним человеком осталась как была.
       const after = await sheetsOf(tx, scene.requestId);
-      expect(after).toHaveLength(3);
+      expect(after).toHaveLength(TERM_SHEETS);
       expect(after[0]).toMatchObject({ period_from: PREV, driver_person_id: scene.personA });
       expect(after[0]!.id).toBe(before[0]!.id);
-      expect(after[1]).toMatchObject({ period_from: MONDAY, driver_person_id: scene.personB });
-      expect(after[2]).toMatchObject({ period_from: NEXT, driver_person_id: scene.personB });
+      // Вся бумага с текущего понедельника — на новом человеке, сколько бы листов её ни было.
+      expect(after.filter((s) => s.period_from >= MONDAY).map((s) => s.period_from)).toEqual(
+        periodsFrom(MONDAY).map((p) => p.from),
+      );
+      expect(
+        after
+          .filter((s) => s.period_from >= MONDAY)
+          .every((s) => s.driver_person_id === scene.personB),
+      ).toBe(true);
       // Переоформление — это аннулирование номера и выписка нового, а не правка бланка.
       expect(after[1]!.id).not.toBe(before[1]!.id);
-      expect(outcome.paper?.esm2.issued).toHaveLength(2);
-      expect(outcome.paper?.esm2.cancelled).toHaveLength(2);
+      expect(outcome.paper?.esm2.issued).toHaveLength(periodsFrom(MONDAY).length);
+      expect(outcome.paper?.esm2.cancelled).toHaveLength(periodsFrom(MONDAY).length);
 
       // Событий два: решение о человеке и переписанная бумага — и оба в той же транзакции.
       const events = (
@@ -661,7 +682,7 @@ describe('условная авторизация (Р32)', () => {
       expect(failure.statusCode).toBe(403);
       expect(await rowsOf(tx, scene.requestId)).toHaveLength(2);
       // Номер бланка на отказе не расходуется: авторизация стоит до первой мутации (шаг 9).
-      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(3);
+      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(TERM_SHEETS);
     });
   });
 
@@ -916,7 +937,7 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
         driver_person_id: scene.personB,
         origin: 'machinist_change',
       });
-      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(3);
+      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(TERM_SHEETS);
     });
   });
 
@@ -937,15 +958,26 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
        * вместо него выходят **два** документа — пн–вт прежним человеком и ср–вс новым. Ключ недели
        * такого состава не выражает вовсе, и потому старый исполнитель этой команды не умел (Б1).
        */
+      /**
+       * Ожидаемый состав переоформляемой бумаги: периоды от текущего понедельника, из которых тот,
+       * внутрь которого попала дата, разрезан надвое — дни до неё за прежним человеком.
+       */
+      const expectedIssue = periodsFrom(MONDAY).flatMap((period) =>
+        period.from < AS_OF && AS_OF <= period.to
+          ? [
+              `${period.from}|${shiftDateKey(AS_OF, -1)}|${scene.personA}`,
+              `${AS_OF}|${period.to}|${scene.personB}`,
+            ]
+          : [`${period.from}|${period.to}|${period.from < AS_OF ? scene.personA : scene.personB}`],
+      );
+
       const preview = await previewCrew(tx, scene, body);
-      // Горят две недели: текущая и следующая — обе выписаны на прежнего человека, а новый работает
-      // с середины текущей и до конца срока.
-      expect(preview.plan.cancel).toHaveLength(2);
-      expect(preview.plan.issue.map((i) => `${i.from}|${i.to}|${i.driverPersonId}`)).toEqual([
-        `${MONDAY}|${shiftDateKey(AS_OF, -1)}|${scene.personA}`,
-        `${AS_OF}|${shiftDateKey(MONDAY, 6)}|${scene.personB}`,
-        `${NEXT}|${shiftDateKey(NEXT, 6)}|${scene.personB}`,
-      ]);
+      // Горит вся бумага с текущего понедельника: она выписана на прежнего человека, а новый
+      // работает с середины текущей недели и до конца срока.
+      expect(preview.plan.cancel).toHaveLength(periodsFrom(MONDAY).length);
+      expect(preview.plan.issue.map((i) => `${i.from}|${i.to}|${i.driverPersonId}`)).toEqual(
+        expectedIssue,
+      );
 
       const outcome = await runCrew(
         tx,
@@ -954,16 +986,16 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
         armed(body, preview, 'Смена машиниста с середины недели'),
       );
       expect(outcome.repeated).toBe(false);
-      expect(outcome.paper?.esm2.cancelled).toHaveLength(2);
-      expect(outcome.paper?.esm2.issued).toHaveLength(3);
+      expect(outcome.paper?.esm2.cancelled).toHaveLength(periodsFrom(MONDAY).length);
+      expect(outcome.paper?.esm2.issued).toHaveLength(expectedIssue.length);
 
-      // Бумага заявки: отработанная прошлая неделя цела, текущая — двумя листами, следующая своя.
+      // Бумага заявки: отработанная прошлая неделя цела, текущая — двумя листами, дальше своё.
       const after = await sheetsOf(tx, scene.requestId);
       expect(after.map((s) => `${s.period_from}|${s.period_to}|${s.driver_person_id}`)).toEqual([
-        `${PREV}|${shiftDateKey(PREV, 6)}|${scene.personA}`,
-        `${MONDAY}|${shiftDateKey(AS_OF, -1)}|${scene.personA}`,
-        `${AS_OF}|${shiftDateKey(MONDAY, 6)}|${scene.personB}`,
-        `${NEXT}|${shiftDateKey(NEXT, 6)}|${scene.personB}`,
+        ...TERM_PERIODS.filter((p) => p.from < MONDAY).map(
+          (p) => `${p.from}|${p.to}|${scene.personA}`,
+        ),
+        ...expectedIssue,
       ]);
       // Событие сверки — ровно одно и в той же транзакции: владелец у него один (§7).
       const events = (
@@ -1021,7 +1053,7 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
         );
         expect(live.message).toBe(failure.message);
         // Ни бумаги, ни истории команда не тронула.
-        expect(await sheetsOf(tx, scene.requestId)).toHaveLength(3);
+        expect(await sheetsOf(tx, scene.requestId)).toHaveLength(TERM_SHEETS);
         expect(await rowsOf(tx, scene.requestId)).toHaveLength(2);
         return;
       }
@@ -1030,24 +1062,22 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
       // коррекционного права не спрашивают.
       const preview = await previewCrew(tx, scene, body);
       expect(preview.operationRequirement).toBeNull();
-      expect(preview.plan.cancel).toHaveLength(1);
-      expect(preview.plan.issue.map((i) => `${i.from}|${i.to}|${i.driverPersonId}`)).toEqual([
-        `${NEXT}|${shiftDateKey(NEXT, 6)}|${scene.personB}`,
-      ]);
+      expect(preview.plan.cancel).toHaveLength(periodsFrom(NEXT).length);
+      expect(preview.plan.issue.map((i) => `${i.from}|${i.to}|${i.driverPersonId}`)).toEqual(
+        periodsFrom(NEXT).map((p) => `${p.from}|${p.to}|${scene.personB}`),
+      );
 
       const outcome = await runCrew(tx, scene, DISPATCHER, armed(body, preview));
       expect(outcome.effects?.operationOutcome).toBe('none');
       expect(outcome.operation).toBeNull();
-      expect(outcome.paper?.esm2.cancelled).toHaveLength(1);
-      expect(outcome.paper?.esm2.issued).toHaveLength(1);
+      expect(outcome.paper?.esm2.cancelled).toHaveLength(periodsFrom(NEXT).length);
+      expect(outcome.paper?.esm2.issued).toHaveLength(periodsFrom(NEXT).length);
 
       // Прошлая и текущая недели остались за прежним человеком, следующая вышла за новым.
       const after = await sheetsOf(tx, scene.requestId);
-      expect(after.map((s) => `${s.period_from}|${s.driver_person_id}`)).toEqual([
-        `${PREV}|${scene.personA}`,
-        `${MONDAY}|${scene.personA}`,
-        `${NEXT}|${scene.personB}`,
-      ]);
+      expect(after.map((s) => `${s.period_from}|${s.driver_person_id}`)).toEqual(
+        TERM_PERIODS.map((p) => `${p.from}|${p.from >= NEXT ? scene.personB : scene.personA}`),
+      );
     });
   });
 
@@ -1061,11 +1091,15 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
        * выписывала лист прежним человеком и падала постусловием Р11 (409
        * `assignment_paper_diverged`), а повторный предпросмотр показывал тот же неисполнимый план.
        */
+      // Аннулируется вся бумага недели смены, а не первый её лист: месяц режет неделю надвое
+      // (ADR 0142), и оставленный сосед сделал бы сцену не той, что описана выше.
       await tx.execute(sql`
         UPDATE waybills SET status = 'cancelled', cancelled_at = now(),
                             cancel_reason = 'сцена теста: неделю смены оставили без листа'
-         WHERE source_request_id = ${scene.requestId} AND period_from = ${NEXT}`);
-      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(2);
+         WHERE source_request_id = ${scene.requestId} AND period_from >= ${NEXT}`);
+      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(
+        TERM_SHEETS - periodsFrom(NEXT).length,
+      );
 
       const body = setBody({ effectiveDate: NEXT, driverPersonId: scene.personB });
 
@@ -1086,7 +1120,9 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
         expect(live.statusCode).toBe(422);
         expect(live.message).toBe(failure.message);
         // Номер не сгорел и лист не выписан: до шага 12 команда не доходит вовсе.
-        expect(await sheetsOf(tx, scene.requestId)).toHaveLength(2);
+        expect(await sheetsOf(tx, scene.requestId)).toHaveLength(
+          TERM_SHEETS - periodsFrom(NEXT).length,
+        );
         expect(await rowsOf(tx, scene.requestId)).toHaveLength(2);
         return;
       }
@@ -1098,19 +1134,17 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
        */
       const preview = await previewCrew(tx, scene, body);
       expect(preview.plan.cancel).toEqual([]);
-      expect(preview.plan.issue.map((i) => `${i.from}|${i.driverPersonId}`)).toEqual([
-        `${NEXT}|${scene.personB}`,
-      ]);
+      expect(preview.plan.issue.map((i) => `${i.from}|${i.driverPersonId}`)).toEqual(
+        periodsFrom(NEXT).map((p) => `${p.from}|${scene.personB}`),
+      );
 
       const outcome = await runCrew(tx, scene, DISPATCHER, armed(body, preview));
       expect(outcome.paper?.esm2.cancelled).toEqual([]);
-      expect(outcome.paper?.esm2.issued).toHaveLength(1);
+      expect(outcome.paper?.esm2.issued).toHaveLength(periodsFrom(NEXT).length);
       const after = await sheetsOf(tx, scene.requestId);
-      expect(after.map((s) => `${s.period_from}|${s.driver_person_id}`)).toEqual([
-        `${PREV}|${scene.personA}`,
-        `${MONDAY}|${scene.personA}`,
-        `${NEXT}|${scene.personB}`,
-      ]);
+      expect(after.map((s) => `${s.period_from}|${s.driver_person_id}`)).toEqual(
+        TERM_PERIODS.map((p) => `${p.from}|${p.from >= NEXT ? scene.personB : scene.personA}`),
+      );
     });
   });
 
@@ -1119,7 +1153,7 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
     await inScene({ driverAtStart: 'person_a', issueSheets: true }, async (tx, scene) => {
       const body = setBody({ effectiveDate: MONDAY, driverPersonId: scene.personB });
       const preview = await previewCrew(tx, scene, body);
-      expect(preview.plan.issue.map((i) => i.from)).toEqual([MONDAY, NEXT]);
+      expect(preview.plan.issue.map((i) => i.from)).toEqual(periodsFrom(MONDAY).map((p) => p.from));
       const outcome = await runCrew(
         tx,
         scene,
@@ -1128,11 +1162,9 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
       );
       expect(outcome.effects?.operationOutcome).toBe('crew');
       const after = await sheetsOf(tx, scene.requestId);
-      expect(after.map((s) => s.driver_person_id)).toEqual([
-        scene.personA,
-        scene.personB,
-        scene.personB,
-      ]);
+      expect(after.map((s) => s.driver_person_id)).toEqual(
+        TERM_PERIODS.map((p) => (p.from >= MONDAY ? scene.personB : scene.personA)),
+      );
     });
   });
 });
@@ -1153,7 +1185,7 @@ describe('рукопожатия каркаса (§8, Р9, Р20)', () => {
         ),
       );
       expect(failure.statusCode).toBe(409);
-      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(3);
+      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(TERM_SHEETS);
     });
   });
 
@@ -1169,7 +1201,7 @@ describe('рукопожатия каркаса (§8, Р9, Р20)', () => {
       expect(again.version).toBe(first.version);
       expect(again.operation?.id).toBe(first.operation?.id);
       // Второй раз номера не жгутся: работы второй раз не происходит.
-      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(3);
+      expect(await sheetsOf(tx, scene.requestId)).toHaveLength(TERM_SHEETS);
     });
   });
 });

@@ -22,6 +22,8 @@ import {
   waybillFormShortLabels,
   type WaybillSnapshotKey,
   type WaybillWarning,
+  periodsOverlap,
+  shiftDateKey,
   weekStartKey,
 } from '@technic/contracts';
 import type { db } from '../db/client';
@@ -223,9 +225,13 @@ function dayOf(dateKey: string): string {
 /**
  * Номер месяца для графы «Период работы: … месяца __».
  *
- * Клетка в бланке одна, а неделя по границе месяца не дробится (лист остаётся одним документом,
- * потому что бланк — это календарная неделя). У недели, перешедшей в следующий месяц, печатаются
- * оба номера: «08–09». Ширина графы это держит — объединение BK11:BO11 в 13 знаков.
+ * Клетка в бланке одна, и с ADR 0142 ей ровно один номер и нужен: срок режется последним числом
+ * месяца, и периода, лежащего в двух месяцах, у листа не бывает. Прежде такой период был, и в
+ * графу печаталась пара «08–09»; вернуть её нечем — заказчик отменил переходный лист как документ.
+ *
+ * Оба конца всё равно читаются, а не берётся один `from`: расхождение здесь означало бы, что
+ * разрез не сработал, и лучше напечатать в бланке видимое «08–09», чем молча выдать сентябрьскую
+ * работу за августовскую.
  */
 function monthOf(period: Esm2Period): string {
   const from = period.from.slice(5, 7);
@@ -316,10 +322,16 @@ async function collectSnapshot(
    * Семь строк недели — одни числа месяца. Объект из них ушёл: он повторял один и тот же адрес
    * семь раз, а теперь печатается один раз в шапке графы (`object_line`). Числа остаются — ими
    * лист и ведут: заказчик проставляет напротив дня отработанные часы и расписывается.
+   *
+   * Печатаются при этом **только дни периода** (ADR 0142): строки «пн…вс» впечатаны в бланк и
+   * никуда не делись, но число в строке дня, которого лист не покрывает, приглашает вписать часы
+   * в чужой документ. Раньше это было умеренной неточностью у листа, начавшегося в среду; с
+   * месячным разрезом у двух листов одной недели сетка чисел совпала бы полностью, и заказчик
+   * закрыл бы сентябрьскую работу августовским бланком, не заметив подмены.
    */
   const days = esm2WeekDays(params.period);
   const dayValues = Object.fromEntries(
-    days.map((day, index) => [`day${index + 1}_date`, dayOf(day.date)]),
+    days.map((day, index) => [`day${index + 1}_date`, day.inPeriod ? dayOf(day.date) : '']),
   ) as Record<string, string>;
 
   const [yyyy, mm, dd] = params.period.from.split('-') as [string, string, string];
@@ -1106,26 +1118,36 @@ export async function syncEsm2Waybills(
    * Кем выписывать замену сгоревшему номеру.
    *
    * Названный действием машинист старше всего: человек только что сказал, кем теперь ведут
-   * заявку. Не назван — замена печатает того же, кто стоял в аннулированном листе этой недели:
+   * заявку. Не назван — замена печатает того же, кто стоял в аннулированном листе этих дней:
    * в `auto` это тот же человек, что и на всей заявке, а в `on_demand` — единственный ответ,
    * какой у портала есть (ADR 0083 — своей волей людей он не подставляет).
    */
   const burning = new Set(plan.cancel);
-  const burnedOfWeek = new Map<string, { id: string; driverPersonId: string; vehicleId: string }>();
-  for (const sheet of sheets) {
-    if (burning.has(sheet.id)) {
-      burnedOfWeek.set(weekStartKey(sheet.periodFrom), {
-        // Идентификатор сгоревшего листа нужен коррекции: новый номер объявляет себя заменой
-        // именно ему (`corrects_waybill_id`, Р32), и без этой ссылки разрыв нумерации за
-        // прошедшую неделю в журнале не читается.
-        id: sheet.id,
-        driverPersonId: sheet.driverPersonId,
-        vehicleId: sheet.vehicleId,
-      });
-    }
-  }
+  /**
+   * Сгорающие листы — списком, а не картой по понедельнику недели (ADR 0142).
+   *
+   * Предшественник нового листа ищется по **дням**: с месячным разрезом лист «31.08–06.09» гаснет
+   * ради двух документов, и второй из них — «1–6 сентября» — по ключу недели не нашёл бы себе
+   * ни машиниста, ни машины, а сверка отказала бы «Укажите машиниста» там, где человек в
+   * сгоревшем бланке напечатан. Точное совпадение границ проверяется первым: в неделе законно
+   * гаснут листы двух машин (ADR 0100 §7), и переоформляемый обязан наследовать свой, а не соседа.
+   */
+  const burned = sheets
+    .filter((sheet) => burning.has(sheet.id))
+    // Идентификатор сгоревшего листа нужен коррекции: новый номер объявляет себя заменой именно
+    // ему (`corrects_waybill_id`, Р32), и без этой ссылки разрыв нумерации за прошедшую неделю в
+    // журнале не читается.
+    .map((sheet) => ({
+      id: sheet.id,
+      period: { from: sheet.periodFrom, to: sheet.periodTo },
+      driverPersonId: sheet.driverPersonId,
+      vehicleId: sheet.vehicleId,
+    }));
+  const burnedFor = (period: Esm2Period): (typeof burned)[number] | undefined =>
+    burned.find((sheet) => sheet.period.from === period.from && sheet.period.to === period.to) ??
+    burned.find((sheet) => periodsOverlap(sheet.period, period));
   const machinistFor = (period: Esm2Period): string | null =>
-    driverPersonId ?? burnedOfWeek.get(weekStartKey(period.from))?.driverPersonId ?? null;
+    driverPersonId ?? burnedFor(period)?.driverPersonId ?? null;
 
   /*
    * На какой машине выписывать замену.
@@ -1133,15 +1155,14 @@ export async function syncEsm2Waybills(
    * В `auto` это машина заявки: она одна, и переоформление как раз ею и вызвано — назначили
    * другую технику, значит и бумага переписывается на неё.
    *
-   * В `on_demand` — та, что стояла в сгоревшем листе этой недели. Машину такого листа выбрал
+   * В `on_demand` — та, что стояла в сгоревшем листе этих дней. Машину такого листа выбрал
    * человек (ADR 0100 §7), и подмена её машиной назначения означала бы, что портал переписал
    * недельный отчёт второй единицы на первую: моточасы, объект и подпись заказчика на обороте
    * относятся к той машине, которая там работала. Своих недель режим не заводит, поэтому лист
    * без предшественника здесь невозможен, а `??` оставлен на случай, если он появится.
    */
   const vehicleFor = (period: Esm2Period): string | null =>
-    (mode === 'on_demand' ? burnedOfWeek.get(weekStartKey(period.from))?.vehicleId : null) ??
-    input.vehicleId;
+    (mode === 'on_demand' ? burnedFor(period)?.vehicleId : null) ?? input.vehicleId;
 
   // Машинист нужен до первой же выписки: лист без него бухгалтерия не примет, а графа в бланке
   // одна на всю неделю. Проверка здесь, а не только в форме, — сверку зовут пять мест.
@@ -1336,13 +1357,17 @@ export async function esm2CorrectionScope(
     isLinear: request.isLinear,
   });
   // Своих недель `on_demand` не заводит (ADR 0100 §5): у линейного заказа бумагу называет человек,
-  // и «недели без листа» у него не бывает по определению — есть недели, о которых не просили.
-  const covered = new Set(sheets.map((s) => weekStartKey(s.periodFrom)));
+  // и «периода без листа» у него не бывает по определению — есть периоды, о которых не просили.
+  //
+  // Покрытие считается **днями** листа, а не понедельником его недели (ADR 0142): после месячного
+  // разреза лист «31–31 августа» покрывает один день, и объявить закрытой всю неделю значило бы
+  // умолчать о сентябрьской бумаге, которую операция как раз и выпишет.
+  const covered = sheets.map((s) => ({ from: s.periodFrom, to: s.periodTo }));
   const dateTo = params.dateTo === undefined ? request.dateTo : params.dateTo;
   const pastWeeks =
     mode === 'auto' && request.dateFrom
       ? esm2Periods(request.dateFrom, dateTo).filter(
-          (p) => p.to < params.today && !covered.has(weekStartKey(p.from)),
+          (p) => p.to < params.today && !covered.some((sheet) => periodsOverlap(sheet, p)),
         )
       : [];
   return { sheets, pastWeeks };
@@ -1439,36 +1464,55 @@ function onDemandRefusal(request: RequestState): string | null {
 }
 
 /**
- * Неделя, которую выписала бы ручная выдача, — посчитанная **до** транзакции и без единой правки.
+ * Периоды, которые выписала бы ручная выдача, — посчитанные **до** транзакции и без единой правки.
  *
- * Нужна ради одного вопроса, и вопрос этот тот же, что у коррекции назначения: какая у операции
+ * Нужны ради одного вопроса, и вопрос этот тот же, что у коррекции назначения: какая у операции
  * эффективная дата. По таблице §4 плана у листа ЭСМ-2 это `periodTo` — и у существующего, который
  * переписывают, и у прошедшей недели, которой листа не было. Понедельник как ключ отвергнут там же
- * и по той же причине: `canCancelWaybill` считает конец недели по `periodTo`, и второй расчёт
+ * и по той же причине: `canCancelWaybill` считает конец периода по `periodTo`, и второй расчёт
  * разошёлся бы с первым на шесть дней.
  *
- * `null` означает «выписывать по этой заявке нечего» — не та заявка, не в работе, арендная, без
- * срока или названный день лежит вне срока. Заднего числа у такой просьбы нет: бланк не родится
+ * **Периодов бывает два** (ADR 0142). Человек просит неделю, а месяц режет её пополам, и заказчик
+ * решил, что просьба закрывается сразу обоими бланками: «31–31 августа» и «1–6 сентября» выходят
+ * одной операцией. Право спрашивается по самому раннему концу — то есть по более строгому из двух:
+ * августовский кусок мог уже стать прошлым, когда сентябрьский ещё будущее.
+ *
+ * Пустой список означает «выписывать по этой заявке нечего» — не та заявка, не в работе, арендная,
+ * без срока или названный день лежит вне срока. Заднего числа у такой просьбы нет: бланк не родится
  * вовсе, а причину отказа назовёт словами сама выписка (`onDemandRefusal`). Спрашивать право
  * раньше этих слов значило бы отвечать «нет права на прошлое» там, где верный ответ — «по этой
  * заявке листы выписывает портал сам».
  */
-export async function esm2OnDemandPeriod(
+export async function esm2OnDemandPeriods(
   reader: Reader,
   params: { requestId: string; weekOf: string },
-): Promise<Esm2Period | null> {
+): Promise<Esm2Period[]> {
   const request = await loadRequest(reader, params.requestId);
-  return request ? onDemandPeriodOf(request, params.weekOf) : null;
+  return request ? onDemandPeriodsOf(request, params.weekOf) : [];
 }
 
-/** Неделя просьбы: календарная неделя названного дня, обрезанная сроком заявки (ADR 0100 §5). */
-function onDemandPeriodOf(request: RequestState, weekOf: string): Esm2Period | null {
-  if (onDemandRefusal(request)) return null;
-  return (
-    esm2Periods(request.dateFrom!, request.dateTo).find(
-      (p) => p.from <= weekOf && weekOf <= p.to,
-    ) ?? null
-  );
+/**
+ * Периоды просьбы: календарная неделя названного дня, обрезанная сроком заявки (ADR 0100 §5) и
+ * разрезанная границей месяца (ADR 0142).
+ *
+ * Ключом — сама неделя, а не день: человек указывает любой её день, а получает всю бумагу этой
+ * недели. Отбор поэтому идёт пересечением с неделей, а не попаданием дня внутрь периода — иначе
+ * названное «3 сентября» выдало бы один сентябрьский лист, а названное «31 августа» — один
+ * августовский, и результат просьбы зависел бы от того, на какую клетку человек нажал.
+ */
+function onDemandPeriodsOf(request: RequestState, weekOf: string): Esm2Period[] {
+  if (onDemandRefusal(request)) return [];
+  const periods = esm2Periods(request.dateFrom!, request.dateTo);
+  /*
+   * Названный день обязан лежать **внутри срока**, и это проверяется до всякого расширения до
+   * недели. Иначе просьба «выписать за 26 августа» по заказу, начатому 28-го, молча выдала бы
+   * бланк за 28–30: неделя-то пересекается. Отказ словами тут ценнее — он ловит опечатку в дате,
+   * а не превращает её в номер строгой отчётности.
+   */
+  if (!periods.some((p) => p.from <= weekOf && weekOf <= p.to)) return [];
+  const monday = weekStartKey(weekOf);
+  const week: Esm2Period = { from: monday, to: shiftDateKey(monday, 6) };
+  return periods.filter((p) => periodsOverlap(p, week));
 }
 
 /**
@@ -1504,18 +1548,22 @@ export async function issueEsm2OnDemand(
     driverPersonId: string;
     actor: { id: string };
     /**
-     * Конец недели, по которому вызывающий спросил право (`esm2OnDemandPeriod`); `null` — он
-     * насчитал, что выписывать нечего.
+     * Периоды, по которым вызывающий спросил право (`esm2OnDemandPeriods`); пусто — он насчитал,
+     * что выписывать нечего.
      *
-     * Сверяется с неделей, посчитанной здесь: между чтением и транзакцией срок заявки успевают
-     * подрезать или продлить, а от конца недели зависит, обычная это выдача или операция. Вердикт
-     * по устаревшей неделе выписал бы прошедший бланк без права и без причины — то есть ровно ту
+     * Сверяются с посчитанными здесь: между чтением и транзакцией срок заявки успевают подрезать
+     * или продлить, а от конца периода зависит, обычная это выдача или операция. Вердикт по
+     * устаревшему периоду выписал бы прошедший бланк без права и без причины — то есть ровно ту
      * дыру, которую закрывает ADR 0101. Тем же приёмом перечитывает дату рейса выписка листа по
      * рейсу. Строку заявки к этому моменту держит вызывающий (`lockRequestRow`, план Л3), но
-     * неделю он считал до транзакции — поэтому расхождение и ловится здесь сверкой границы, а не
+     * периоды он считал до транзакции — поэтому расхождение и ловится здесь сверкой границ, а не
      * подразумевается блокировкой.
+     *
+     * Сверяется **весь набор**, а не его последний день (ADR 0142): у переходной недели листов
+     * два, и подрезка срока, оставившая от них один, обязана быть замечена — иначе человек,
+     * подтвердивший два бланка, молча получил бы другой их состав.
      */
-    guardedPeriodTo: string | null;
+    guardedPeriods: readonly Esm2Period[];
     /**
      * Контекст проверенной операции коррекции (ADR 0101, Р35): строка `waybill_corrections` и её
      * причина. Приходит только оттуда, где право, причина и глубина уже спрошены. Лист получает
@@ -1535,22 +1583,25 @@ export async function issueEsm2OnDemand(
      */
     acknowledge?: { fingerprint: string } | null;
   },
-): Promise<IssuedEsm2> {
+): Promise<IssuedEsm2[]> {
   const request = await loadRequest(tx, params.requestId);
   if (!request) throw err.notFound('Заявка не найдена');
   const refusal = onDemandRefusal(request);
   if (refusal) throw err.unprocessable(refusal);
 
-  // Неделя — ровно та, какую выписал бы автомат: календарная неделя дня, обрезанная сроком.
-  const period = onDemandPeriodOf(request, params.weekOf);
-  if (!period) {
+  // Периоды — ровно те, какие выписал бы автомат: календарная неделя дня, обрезанная сроком и
+  // разрезанная концом месяца. Их два ровно тогда, когда неделя переходная (ADR 0142).
+  const periods = onDemandPeriodsOf(request, params.weekOf);
+  if (periods.length === 0) {
     const last = request.dateTo || request.dateFrom!;
     throw err.unprocessable(
       `День ${dateRu(params.weekOf)} вне срока заявки (${dateRu(request.dateFrom!)} — ${dateRu(last)}) — выберите день внутри срока`,
       { weekOf: 'День вне срока заявки' },
     );
   }
-  if (params.guardedPeriodTo !== period.to) {
+  const boundsOf = (list: readonly Esm2Period[]): string =>
+    list.map((p) => `${p.from}|${p.to}`).join(',');
+  if (boundsOf(params.guardedPeriods) !== boundsOf(periods)) {
     throw err.conflict(
       'Срок заявки изменился, пока выписывался лист, — неделя стала другой: откройте карточку заново',
     );
@@ -1572,28 +1623,39 @@ export async function issueEsm2OnDemand(
   }
 
   /*
-   * «Одна неделя — один действующий лист» теперь считается на машину, а не на заявку (миграция
-   * 0127): у линейного заказа неделю закрывают две единицы, и каждой нужен свой бланк. Проверка
-   * повторяет частичный UNIQUE в базе, но словами: 23505 из индекса человек прочесть не может.
+   * «Один период — один действующий лист» считается на машину, а не на заявку (миграция 0127): у
+   * линейного заказа неделю закрывают две единицы, и каждой нужен свой бланк. Проверка повторяет
+   * частичный UNIQUE в базе, но словами: 23505 из индекса человек прочесть не может.
+   *
+   * Занятость спрашивается **днями** (ADR 0142). Понедельник как ключ после месячного разреза
+   * отказал бы во втором бланке той же недели — том самом, ради которого разрез и заведён, — а
+   * пересечение отвечает на настоящий вопрос: не выписан ли уже документ на эти дни этой машины.
    */
   const existing = await activeSheets(tx, params.requestId);
-  const clash = existing.find(
-    (s) =>
-      s.periodFrom &&
-      weekStartKey(s.periodFrom) === weekStartKey(period.from) &&
-      s.vehicleId === params.vehicleId,
-  );
-  if (clash) {
-    const number = waybillDisplayNumber(clash.prefix, clash.number, clash.numberWidth);
-    throw err.conflict(
-      `На эту неделю у выбранной машины уже выписан действующий лист ЭСМ-2 № ${number} (${dateRu(clash.periodFrom!)} — ${dateRu(clash.periodTo!)}) — аннулируйте его, если бланк нужно переоформить`,
+  for (const period of periods) {
+    const clash = existing.find(
+      (s) =>
+        s.periodFrom &&
+        s.periodTo &&
+        periodsOverlap({ from: s.periodFrom, to: s.periodTo }, period) &&
+        s.vehicleId === params.vehicleId,
     );
+    if (clash) {
+      const number = waybillDisplayNumber(clash.prefix, clash.number, clash.numberWidth);
+      throw err.conflict(
+        `На эти дни у выбранной машины уже выписан действующий лист ЭСМ-2 № ${number} (${dateRu(clash.periodFrom!)} — ${dateRu(clash.periodTo!)}) — аннулируйте его, если бланк нужно переоформить`,
+      );
+    }
   }
 
   // Машинист — действующий водитель справочника: отбор у ЭСМ-2 свой и никакой (в бланке нет ни
   // СНИЛС, ни граф удостоверения), но человек, которого в справочнике нет, напечатался бы пустой
   // графой ФИО — то есть недействительным бланком.
-  const machinist = await findMachinist(tx, params.driverPersonId, period.from);
+  //
+  // Спрашивается один раз и на начало первого периода: два бланка одной недели выписывает одна
+  // просьба, и человек в них один. Годность его документов у каждого листа своя — её считает
+  // рукопожатие внутри выписки, по дате самого листа.
+  const machinist = await findMachinist(tx, params.driverPersonId, periods[0]!.from);
   if (!machinist) {
     throw err.unprocessable(
       'Выбранный человек не числится водителем в справочнике — на него нельзя выписать путевой лист',
@@ -1601,29 +1663,40 @@ export async function issueEsm2OnDemand(
     );
   }
 
-  const issued = await issueEsm2Waybill(tx, {
-    requestId: params.requestId,
-    vehicleId: params.vehicleId,
-    driverPersonId: params.driverPersonId,
-    period,
-    actorId: params.actor.id,
-    // Бланк просит человек — значит с него и спрашивается рукопожатие (Р21а). Отпечаток проверяет
-    // общая точка выпуска, а не эта ручка: пропущенный путь записал бы в свежий лист `not_checked`.
-    requester: { by: 'human', acknowledge: params.acknowledge ?? null },
-  });
   /*
-   * Метка коррекции (Р35) — тем же кодом, что и у листа, рождённого сверкой: правило «лист помнит,
-   * какой операцией он рождён» одно на все входы, и второе его написание разошлось бы. Заменяемого
-   * номера у прошедшей недели нет: листа за неё не было вовсе, и `waybills_correction_issue_reason_check`
-   * этого не требует — причина при пустом `corrects_waybill_id` и есть предусмотренная форма.
+   * Переходная неделя закрывается обоими бланками сразу и одной транзакцией (ADR 0142, Р3): просьба
+   * у человека одна — «нужен лист за эту неделю», — и оставить её наполовину исполненной значило бы
+   * выдать документ на август и промолчать про сентябрь.
    */
-  if (params.correction) {
-    await markCorrectionWaybill(tx, {
-      waybillId: issued.id,
-      correctionId: params.correction.id,
-      reason: params.correction.reason,
-      correctsWaybillId: null,
+  const issued: IssuedEsm2[] = [];
+  for (const period of periods) {
+    const sheet = await issueEsm2Waybill(tx, {
+      requestId: params.requestId,
+      vehicleId: params.vehicleId,
+      driverPersonId: params.driverPersonId,
+      period,
+      actorId: params.actor.id,
+      // Бланк просит человек — значит с него и спрашивается рукопожатие (Р21а). Отпечаток
+      // проверяет общая точка выпуска, а не эта ручка: пропущенный путь записал бы в свежий лист
+      // `not_checked`.
+      requester: { by: 'human', acknowledge: params.acknowledge ?? null },
     });
+    /*
+     * Метка коррекции (Р35) — тем же кодом, что и у листа, рождённого сверкой: правило «лист
+     * помнит, какой операцией он рождён» одно на все входы, и второе его написание разошлось бы.
+     * Заменяемого номера у прошедшей недели нет: листа за неё не было вовсе, и
+     * `waybills_correction_issue_reason_check` этого не требует — причина при пустом
+     * `corrects_waybill_id` и есть предусмотренная форма.
+     */
+    if (params.correction) {
+      await markCorrectionWaybill(tx, {
+        waybillId: sheet.id,
+        correctionId: params.correction.id,
+        reason: params.correction.reason,
+        correctsWaybillId: null,
+      });
+    }
+    issued.push(sheet);
   }
   return issued;
 }

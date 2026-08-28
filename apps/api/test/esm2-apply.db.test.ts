@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import {
+  esm2Periods,
   moscowDateKeyOf,
   shiftDateKey,
   waybillDisplayNumber,
@@ -77,6 +78,37 @@ const PREV = shiftDateKey(MONDAY, -7);
 const NEXT = shiftDateKey(MONDAY, 7);
 const TERM_FROM = PREV;
 const TERM_TO = shiftDateKey(NEXT, 6);
+/**
+ * Периоды бумаги срока — тем же расчётом, каким их режет портал (`esm2Periods`).
+ *
+ * Считаются, а не перечисляются тремя понедельниками: кроме воскресенья лист режет ещё и конец
+ * месяца (ADR 0142), и в последнюю неделю месяца тот же срок даёт четыре документа вместо трёх.
+ * Перечень дат зеленел бы три недели из четырёх — то есть врал бы ровно тогда, когда его читают.
+ */
+const TERM_PERIODS = esm2Periods(TERM_FROM, TERM_TO);
+
+/**
+ * Ожидаемый состав бумаги: `границы|машина|человек` по каждому периоду срока.
+ *
+ * `after` — день смены машиниста: период, внутрь которого он попал, разрезается надвое, и дни до
+ * него остаются за прежним человеком. Не передан — вся бумага на нём одном.
+ */
+function compositionFor(
+  vehicleId: string,
+  before: string,
+  after?: { from: string; personId: string },
+): string[] {
+  const line = (from: string, to: string, personId: string): string =>
+    `${from}|${to}|${vehicleId}|${personId}`;
+  return TERM_PERIODS.flatMap((period) => {
+    if (!after || period.to < after.from) return [line(period.from, period.to, before)];
+    if (period.from >= after.from) return [line(period.from, period.to, after.personId)];
+    return [
+      line(period.from, shiftDateKey(after.from, -1), before),
+      line(after.from, period.to, after.personId),
+    ];
+  });
+}
 
 /** Диспетчер: `waybills.correct` есть, предел тридцати дней остаётся. */
 const DISPATCHER: AccessSubject = { role: 'dispatcher' };
@@ -399,11 +431,7 @@ describeReadModes(readMode, 'исполнитель плана ЭСМ-2 (§7, §
     if (!readMode.enabled) return;
     await inScene(async (tx, scene) => {
       const before = await sheetsOf(tx, scene.requestId);
-      expect(compositionOf(before)).toEqual([
-        `${PREV}|${shiftDateKey(PREV, 6)}|${scene.vehicleA}|${scene.personA}`,
-        `${MONDAY}|${shiftDateKey(MONDAY, 6)}|${scene.vehicleA}|${scene.personA}`,
-        `${NEXT}|${shiftDateKey(NEXT, 6)}|${scene.vehicleA}|${scene.personA}`,
-      ]);
+      expect(compositionOf(before)).toEqual(compositionFor(scene.vehicleA, scene.personA));
 
       const body = setBody({ effectiveDate: AS_OF, driverPersonId: scene.personB });
       const expected = byReadMode(mode, { legacy: 'refused' as const, history: 'split' as const });
@@ -432,11 +460,15 @@ describeReadModes(readMode, 'исполнитель плана ЭСМ-2 (§7, §
        * а как замена документу, который эта же сверка и гасит: дни держал сгоревший лист.
        */
       const preview = await previewCrew(tx, scene, body);
-      expect(preview.plan.issue.map((i) => `${i.from}|${i.to}|${i.driverPersonId}`)).toEqual([
-        `${MONDAY}|${shiftDateKey(AS_OF, -1)}|${scene.personA}`,
-        `${AS_OF}|${shiftDateKey(MONDAY, 6)}|${scene.personB}`,
-        `${NEXT}|${shiftDateKey(NEXT, 6)}|${scene.personB}`,
-      ]);
+      // Выписывается всё, кроме отработанных периодов прошлой недели: они неприкосновенны (Р11).
+      expect(preview.plan.issue.map((i) => `${i.from}|${i.to}|${i.driverPersonId}`)).toEqual(
+        compositionFor(scene.vehicleA, scene.personA, { from: AS_OF, personId: scene.personB })
+          .filter((composed) => (composed.split('|')[1] as string) >= MONDAY)
+          .map((composed) => {
+            const [from, to, , personId] = composed.split('|');
+            return `${from}|${to}|${personId}`;
+          }),
+      );
 
       const outcome = await runCrew(tx, scene, armed(body, preview));
       expect(outcome.repeated).toBe(false);
@@ -446,17 +478,20 @@ describeReadModes(readMode, 'исполнитель плана ЭСМ-2 (§7, §
       const after = await sheetsOf(tx, scene.requestId);
       // Утверждается СОСТАВ, а не число: бумага, выписанная не на того человека, дала бы то же
       // количество листов — и это ровно та ошибка, ради которой разрез и заведён.
-      expect(compositionOf(after)).toEqual([
-        `${PREV}|${shiftDateKey(PREV, 6)}|${scene.vehicleA}|${scene.personA}`,
-        `${MONDAY}|${shiftDateKey(AS_OF, -1)}|${scene.vehicleA}|${scene.personA}`,
-        `${AS_OF}|${shiftDateKey(MONDAY, 6)}|${scene.vehicleA}|${scene.personB}`,
-        `${NEXT}|${shiftDateKey(NEXT, 6)}|${scene.vehicleA}|${scene.personB}`,
-      ]);
+      expect(compositionOf(after)).toEqual(
+        compositionFor(scene.vehicleA, scene.personA, { from: AS_OF, personId: scene.personB }),
+      );
       // Отработанная неделя не тронута вовсе — тот же лист с тем же номером (Р11).
       expect(after[0]!.id).toBe(before[0]!.id);
-      // Переоформление — это аннулирование номера и выписка нового, а не правка бланка.
+      // Переоформление — это аннулирование номера и выписка нового, а не правка бланка: сгорело
+      // всё, кроме отработанной прошлой недели.
       const burned = after.filter((row) => row.status === 'cancelled').map((row) => row.id);
-      expect(burned.sort()).toEqual([before[1]!.id, before[2]!.id].sort());
+      expect(burned.sort()).toEqual(
+        before
+          .filter((row) => row.period_to >= MONDAY)
+          .map((row) => row.id)
+          .sort(),
+      );
     });
   });
 

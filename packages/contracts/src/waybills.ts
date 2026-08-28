@@ -1,7 +1,13 @@
 import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
 import type { FileDto } from './files';
-import { dateKeysBetween, shiftDateKey, weekStartKey, WAYBILL_CORRECTION_DAYS } from './time';
+import {
+  dateKeysBetween,
+  monthEndKey,
+  shiftDateKey,
+  weekStartKey,
+  WAYBILL_CORRECTION_DAYS,
+} from './time';
 import { formatNameWithInitials } from './person-name';
 import type { VehicleOwnership } from './vehicles';
 import type { RequestStatus, VehicleRequestType } from './enums';
@@ -188,11 +194,34 @@ export interface Esm2Period {
 }
 
 /**
- * Срок заявки, разрезанный на недели: по листу на каждую.
+ * Пересекаются ли два периода хоть одним днём.
  *
- * Единица бланка — календарная неделя (семь строк «пн…вс» и недельные итоги), поэтому границ,
- * режущих срок, ровно две: его начало и его конец. По границе месяца неделя **не дробится** —
- * лист остаётся одним документом, а в графе «месяца» печатаются оба номера («08–09»).
+ * Общий ответ на вопрос «про одни ли это дни», которым после месячного разреза (ADR 0142)
+ * адресуется бумага: неделя перестала быть ключом листа — в ней законно живут два документа, — а
+ * дни остались тем, что у листа и у ожидания сравнимо всегда.
+ *
+ * Границы включительные: лист «31–31 августа» и период «31.08–06.09» — про один и тот же день.
+ */
+export function periodsOverlap(a: Esm2Period, b: Esm2Period): boolean {
+  return a.from <= b.to && b.from <= a.to;
+}
+
+/**
+ * Срок заявки, разрезанный на периоды листов: по бланку на каждый.
+ *
+ * Границ, режущих срок, три: его начало, его конец и **две календарные** — воскресенье и последнее
+ * число месяца.
+ *
+ * Неделя режет потому, что семь строк «пн…вс» впечатаны в бланк и лист не умеет пересечь
+ * воскресенье. Месяц режет потому, что бланк ведут месяцем: недельные итоги сводят в месячные, и
+ * документ, у которого работа лежит в двух отчётных периодах, не закрывает ни одного (ADR 0142).
+ * Прежде месяц не резал, а печатался в графе «месяца» парой номеров («08–09»); решение отменено
+ * заказчиком: у недели 31.08–06.09 должно быть два листа — «31–31 августа» и «1–6 сентября».
+ *
+ * Два разреза в одном цикле, а не один поверх другого: у обеих границ роль одна — оборвать
+ * текущий период раньше конца срока, — и ближайшая из них и есть конец листа. Второй проход по
+ * готовым неделям дал бы тот же ответ дороже и завёл бы второе место, где написано, чем режется
+ * бумага.
  *
  * Пустая дата окончания — однодневный срок: так её читают и отбор среза, и подписи присутствия.
  */
@@ -203,7 +232,9 @@ export function esm2Periods(dateFrom: string, dateTo: string | null): Esm2Period
   let from = dateFrom;
   while (from <= last) {
     const weekEnd = shiftDateKey(weekStartKey(from), 6);
-    const to = weekEnd < last ? weekEnd : last;
+    const monthEnd = monthEndKey(from);
+    const bound = monthEnd < weekEnd ? monthEnd : weekEnd;
+    const to = bound < last ? bound : last;
     periods.push({ from, to });
     from = shiftDateKey(to, 1);
   }
@@ -214,10 +245,11 @@ export function esm2Periods(dateFrom: string, dateTo: string | null): Esm2Period
  * Семь дней недели листа — от понедельника до воскресенья, независимо от того, какой кусок недели
  * покрывает сам лист: строки «пн…вс» впечатаны в бланк, и сдвигать их нельзя.
  *
- * `inPeriod` отвечает, попал ли день в срок заявки, и на бумагу этот ответ больше не идёт: графа
- * «Наименование и адрес объекта» в днях не печатается — объект стоит один раз в шапке графы, — и
- * пустая строка дня перестала означать «портал не знает, работала ли машина в субботу». Срок листа
- * читается теперь только по графе «Период работы» в шапке.
+ * `inPeriod` отвечает, попал ли день в период листа, и на бумагу этот ответ снова идёт (ADR 0142):
+ * число печатается только у своего дня, а строка чужого остаётся пустой. Прежде печатались все
+ * семь чисел — графа объекта из строк ушла, и пустая строка перестала значить «портал не знает,
+ * работала ли машина в субботу», — но с месячным разрезом два листа одной недели получили бы
+ * одинаковую сетку чисел, и часы 1 сентября вписали бы в августовский бланк.
  */
 export function esm2WeekDays(period: Esm2Period): { date: string; inPeriod: boolean }[] {
   const monday = weekStartKey(period.from);
@@ -271,7 +303,16 @@ export function esm2RequestedPeriods(
     const from = sheet.periodFrom < dateFrom ? dateFrom : sheet.periodFrom;
     const to = sheet.periodTo > last ? last : sheet.periodTo;
     if (to < from) continue;
-    byBounds.set(`${from}|${to}`, { from, to });
+    /*
+     * Подрезанный кусок режется дальше теми же границами, что и срок в `auto` (ADR 0142): лист,
+     * выписанный до месячного разреза, при первой же правке срока переоформляется парой, а не
+     * воспроизводит сам себя переходным периодом. Недельная граница здесь не срабатывает никогда —
+     * лист внутри своей недели по построению, — и стоит тут не ради неё, а ради единственного
+     * места, где написано, чем режется бумага.
+     */
+    for (const period of esm2Periods(from, to)) {
+      byBounds.set(`${period.from}|${period.to}`, period);
+    }
   }
   return [...byBounds.values()].sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
 }
@@ -356,21 +397,30 @@ export function esm2SyncPlan(input: {
 }): Esm2SyncPlan {
   const unlocked = new Set(input.unlockWaybillIds ?? []);
   const correcting = input.correction?.allowed === true;
-  const locked = new Set<string>();
+  /**
+   * Дни неприкосновенных листов — отрезками, а не понедельниками их недель (ADR 0142).
+   *
+   * Замок отвечает на вопрос «не выпишем ли мы второй документ на уже сделанную работу», и работа
+   * лежит в днях листа, а не в его календарной неделе. Пока лист был всегда недельным, разницы не
+   * было; с месячным разрезом она появляется в обе стороны: отработанный кусок «31–31 августа» не
+   * должен запирать сентябрьские дни той же недели, а отработанный лист на всю неделю обязан
+   * запирать оба куска сразу.
+   */
+  const locked: Esm2Period[] = [];
   const kept = new Set<string>();
-  /** Недели, на которые лист уже выписывался: ими ограничен `on_demand`. */
-  const requested = new Set<string>();
+  /** Дни, на которые лист уже выписывался: ими ограничен `on_demand` — тем же отрезком, что и замок. */
+  const requested: Esm2Period[] = [];
   const cancel: string[] = [];
 
   for (const sheet of input.existing) {
-    requested.add(weekStartKey(sheet.periodFrom));
+    requested.push({ from: sheet.periodFrom, to: sheet.periodTo });
     // У ЭСМ-2 дата листа — первый рабочий день недели, а граница аннулирования — последний.
     // Названный коррекцией лист эту границу проходит: его прошедшая неделя и есть предмет правки.
     if (
       !unlocked.has(sheet.id) &&
       !canCancelWaybill({ issuedForDate: sheet.periodFrom, periodTo: sheet.periodTo }, input.today)
     ) {
-      locked.add(weekStartKey(sheet.periodFrom));
+      locked.push({ from: sheet.periodFrom, to: sheet.periodTo });
       continue;
     }
     /*
@@ -414,11 +464,11 @@ export function esm2SyncPlan(input: {
   const issue = input.wanted.filter(
     (p) =>
       !kept.has(p.from) &&
-      !locked.has(weekStartKey(p.from)) &&
+      !locked.some((sheet) => periodsOverlap(p, sheet)) &&
       /*
-       * Кончившаяся неделя выписывается только проверенной операцией (Р21). Граница считается по
-       * концу недели, а не по её понедельнику: тем же концом её считает `canCancelWaybill`, и
-       * второй расчёт того же «когда неделя кончилась» разошёлся бы с первым на шесть дней.
+       * Кончившийся период выписывается только проверенной операцией (Р21). Граница считается по
+       * его концу, а не по понедельнику его недели: тем же концом её считает `canCancelWaybill`, и
+       * второй расчёт того же «когда работа кончилась» разошёлся бы с первым на шесть дней.
        *
        * Проверка стоит рядом с `locked`, а не вместо него: `locked` защищает **выписанную**
        * отработанную неделю от второго документа на ту же работу, а это правило — прошедшую
@@ -430,7 +480,7 @@ export function esm2SyncPlan(input: {
       // переоформлять то, что он уже попросил. Правило стоит здесь, а не только в расчёте
       // `wanted`, потому что оно и есть определение режима: ошибись вызывающий набором — портал
       // всё равно не выпишет линейному заказу неделю, которой у него не было.
-      (input.mode !== 'on_demand' || requested.has(weekStartKey(p.from))),
+      (input.mode !== 'on_demand' || requested.some((sheet) => periodsOverlap(p, sheet))),
   );
   return { cancel, issue };
 }

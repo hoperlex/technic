@@ -3,7 +3,7 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { byReadMode, describeReadModes, useReadModeDatabase } from './assignment-read-mode';
-import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
+import { esm2Periods, moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
 import { issueRequestEsm2 } from './waybill-issue-helper';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -304,12 +304,24 @@ async function sheetsOf(requestId: string): Promise<SheetRow[]> {
   return res.rows;
 }
 
+/**
+ * Периоды, которые выпишет просьба за неделю названного дня (ADR 0142).
+ *
+ * Считается, а не пишется числом: месяц режет неделю, и в конце месяца одна просьба выдаёт два
+ * бланка, а в середине — один. Ожидание «ровно два листа», записанное цифрой, зеленело бы три
+ * недели из четырёх и краснело бы в последнюю — без всякой правки кода.
+ */
+function askedPeriods(day: string): { from: string; to: string }[] {
+  const monday = weekStartKey(day);
+  const weekEnd = shiftDateKey(monday, 6);
+  return esm2Periods(ctx.dateFrom, ctx.dateTo).filter((p) => p.from <= weekEnd && monday <= p.to);
+}
+
 /** Календарный ключ `YYYY-MM-DD` человеку: им сверяются формулировки отказов. */
 function ru(key: string): string {
   const [y, m, d] = key.split('-');
   return `${d}.${m}.${y}`;
 }
-
 
 /**
  * Сменить технику заказа так, как это делает портал: сперва спросить последствия, потом послать
@@ -685,7 +697,10 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       // Ни один номер не сгорел: сверке нечего сверять — машину этих листов называл человек.
       expect(sheets.filter((s) => s.status === 'cancelled')).toHaveLength(0);
       const issued = sheets.filter((s) => s.status === 'issued');
-      expect(issued).toHaveLength(2);
+      // Просьб две, а листов столько, на сколько месяц разрезал их недели (ADR 0142).
+      expect(issued).toHaveLength(
+        askedPeriods(ctx.dateFrom).length + askedPeriods(nextMonday).length,
+      );
       expect(issued.every((s) => s.vehicle_id === ctx.vehicleId)).toBe(true);
       // Каждой неделе остался её человек: смена техники людей не пересаживает.
       expect(issued.find((s) => s.period_from === ctx.dateFrom)?.driver_person_id).toBe(
@@ -747,7 +762,9 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
 
       const first = await issueEsm2(request.id, { weekOf: nextMonday, version: request.version });
       expect(first.statusCode, first.body).toBe(200);
-      expect((await sheetsOf(request.id))[0]!.period_to).toBe(shiftDateKey(nextMonday, 6));
+      // Просьба закрыла неделю целиком: последний её лист кончается воскресеньем — одним бланком
+      // или двумя, если неделю разрезал месяц (ADR 0142).
+      expect((await sheetsOf(request.id)).at(-1)!.period_to).toBe(shiftDateKey(nextMonday, 6));
 
       const asked = await ctx.app.inject({
         method: 'POST',
@@ -765,13 +782,19 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       expect(decided.statusCode, decided.body).toBe(200);
 
       const sheets = await sheetsOf(request.id);
+      // Сгорел ровно один — тот, чьи дни вышли за новый срок; остальные листы просьбы (их бывает
+      // два, если неделю разрезал месяц) сошлись и остались нетронутыми.
       expect(sheets.filter((s) => s.status === 'cancelled')).toHaveLength(1);
       const issued = sheets.filter((s) => s.status === 'issued');
-      expect(issued).toHaveLength(1);
+      // Бумага покрывает новый срок и не выходит за него: первый лист начинается понедельником,
+      // последний кончается новым концом срока.
       expect(issued[0]!.period_from).toBe(nextMonday);
-      expect(issued[0]!.period_to).toBe(newDateTo);
+      expect(issued.at(-1)!.period_to).toBe(newDateTo);
+      expect(issued.every((s) => s.period_from >= nextMonday && s.period_to <= newDateTo)).toBe(
+        true,
+      );
       // Машинист остался прежним: срок правили, а не человека.
-      expect(issued[0]!.driver_person_id).toBe(ctx.driverA);
+      expect(issued.every((s) => s.driver_person_id === ctx.driverA)).toBe(true);
     });
 
     it('отмена заявки аннулирует и то, что выписали по требованию', async () => {

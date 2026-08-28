@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
+import { esm2Periods, moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -74,6 +74,13 @@ const NEXT_MONDAY = shiftDateKey(weekStartKey(TODAY), 7);
 const NEXT_SUNDAY = shiftDateKey(NEXT_MONDAY, 6);
 /** Среда следующей недели — ею режется неделя надвое (Б1). */
 const NEXT_WEDNESDAY = shiftDateKey(NEXT_MONDAY, 2);
+/**
+ * Периоды бумаги срока сцены — тем же расчётом, каким режет портал (`esm2Periods`).
+ *
+ * Их два, если в середине недели кончается месяц (ADR 0142): бумага сцены — не «лист недели», а
+ * столько документов, сколько дал разрез. Числа, записанные цифрой, краснели бы раз в месяц.
+ */
+const TERM_PERIODS = esm2Periods(NEXT_MONDAY, NEXT_SUNDAY);
 /** Отработанная неделя: срок кончился, и бумаги ни одна сторона уже не заводит. */
 const PAST_MONDAY = shiftDateKey(weekStartKey(TODAY), -14);
 const PAST_SUNDAY = shiftDateKey(PAST_MONDAY, 6);
@@ -426,12 +433,23 @@ describe.skipIf(!DB_URL)('теневое сравнение: поколение 
     expect(details.reason).toBe('week_split');
     // Обе проекции целиком: разбор идёт по записанному, а не по пересчёту живых данных.
     expect(details.legacy).toEqual({ cancel: [], issue: [] });
-    expect(details.fresh?.cancel).toHaveLength(1);
-    expect(details.fresh?.issue).toHaveLength(2);
-    expect(details.fresh?.issue.map((sheet) => [sheet.from, sheet.to])).toEqual([
-      [NEXT_MONDAY, shiftDateKey(NEXT_WEDNESDAY, -1)],
-      [NEXT_WEDNESDAY, NEXT_SUNDAY],
-    ]);
+    /*
+     * Переоформляется только та бумага, чей состав разошёлся: документ, кончившийся до среды
+     * (а он появляется, когда месяц режет неделю, — ADR 0142), остаётся при своём человеке.
+     * Внутри задетого периода разрез идёт по дате смены.
+     */
+    const touched = TERM_PERIODS.filter((period) => period.to >= NEXT_WEDNESDAY);
+    expect(details.fresh?.cancel).toHaveLength(touched.length);
+    expect(details.fresh?.issue.map((sheet) => [sheet.from, sheet.to])).toEqual(
+      touched.flatMap((period) =>
+        period.from < NEXT_WEDNESDAY
+          ? [
+              [period.from, shiftDateKey(NEXT_WEDNESDAY, -1)],
+              [NEXT_WEDNESDAY, period.to],
+            ]
+          : [[period.from, period.to]],
+      ),
+    );
 
     const summary = await ctx.shadow.shadowMismatchSummary(ctx.db, sealed.runId);
     expect(summary).toHaveLength(1);
@@ -451,8 +469,9 @@ describe.skipIf(!DB_URL)('теневое сравнение: поколение 
 
     const details = (await checkOf(sealed.runId, requestId))?.details as Shadow.ShadowCheckDetails;
     expect(details.reason).toBe('driver_unknown');
-    // Недельная сторона выписала бы неделю, не зная человека; отрезковая — не выписывает (Р16, Р19).
-    expect(details.legacy?.issue).toHaveLength(1);
+    // Недельная сторона выписала бы бумагу срока, не зная человека; отрезковая — не выписывает
+    // вовсе (Р16, Р19).
+    expect(details.legacy?.issue).toHaveLength(TERM_PERIODS.length);
     expect(details.fresh?.issue).toEqual([]);
     expect(details.notes.blockers?.[0]).toMatchObject({ kind: 'unknown', date: NEXT_MONDAY });
   });
@@ -492,7 +511,10 @@ describe.skipIf(!DB_URL)('теневое сравнение: поколение 
       ?.details as Shadow.ShadowCheckDetails;
     // Обе стороны молчат — но молчат о выписанной бумаге: отрезковой стороне пришлось сойтись с
     // каждым листом по границам, машине и человеку, иначе она бы его переоформила.
-    expect(confirmed.notes).toMatchObject({ actions: { legacy: 0, fresh: 0 }, sheets: 1 });
+    expect(confirmed.notes).toMatchObject({
+      actions: { legacy: 0, fresh: 0 },
+      sheets: TERM_PERIODS.length,
+    });
 
     const empty = (await checkOf(sealed.runId, idle))?.details as Shadow.ShadowCheckDetails;
     expect(empty.notes).toMatchObject({ actions: { legacy: 0, fresh: 0 }, sheets: 0 });

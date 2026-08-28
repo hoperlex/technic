@@ -34,21 +34,30 @@ type Can = (permission: Permission) => boolean;
  * Клетка документа: состояние тегом и готовый текст из контрактов. Кнопка печати показывается
  * только при праве `waybills.read` (§5 шаг 6): штаб видит номер и состояние, но журнал бланков
  * ради одной кнопки ему не открывают. Печать живёт в самом журнале — туда ссылка и ведёт.
+ *
+ * Ссылка на каждый номер, а не на первый (ADR 0142): у недели, в которой кончается месяц, листов
+ * ЭСМ-2 два, и одна кнопка «Печать» увела бы человека печатать половину бумаги недели.
  */
 function DocumentCell({ cell, can }: { cell: WeeklyDocumentCellDto; can: Can }) {
-  const print = cell.state === 'issued' && cell.number ? waybillLink(can, cell.number) : null;
+  const prints =
+    cell.state === 'issued'
+      ? cell.numbers.flatMap((number) => {
+          const link = waybillLink(can, number);
+          return link ? [{ number, link }] : [];
+        })
+      : [];
   return (
     <div style={{ lineHeight: 1.35 }}>
       <Tag color={weeklyDocumentStateColors[cell.state]} style={{ marginInlineEnd: 0 }}>
         {cell.text}
       </Tag>
-      {print && (
-        <div>
-          <EntityLink to={print} title="Открыть лист в журнале — оттуда его и печатают">
-            <PrinterOutlined /> Печать
+      {prints.map(({ number, link }) => (
+        <div key={number}>
+          <EntityLink to={link} title="Открыть лист в журнале — оттуда его и печатают">
+            <PrinterOutlined /> Печать{prints.length > 1 ? ` № ${number}` : ''}
           </EntityLink>
         </div>
-      )}
+      ))}
     </div>
   );
 }

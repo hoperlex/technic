@@ -7,9 +7,11 @@ import {
   esm2Periods,
   type IssueRequestEsm2Body,
   moscowDateKeyOf,
+  shiftDateKey,
   type VehicleDto,
   vehicleLabel,
   type VehicleRequestDto,
+  weekStartKey,
 } from '@technic/contracts';
 import { driversApi, vehicleRequestsApi, vehiclesApi } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
@@ -98,20 +100,28 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
   const weekOf = Form.useWatch('weekOf', form);
 
   /**
-   * Что попадёт в лист: календарная неделя выбранного дня, пересечённая со сроком заявки. Считает
+   * Что попадёт в листы: календарная неделя выбранного дня, пересечённая со сроком заявки. Считает
    * сервер, но обещание портала обязано совпасть с выпиской — поэтому здесь тот же `esm2Periods`,
    * которым режет срок автомат, а не вторая реализация недели.
    *
-   * `null` — выбранный день за сроком заявки: сервер такую неделю не примет, и сказать об этом
-   * надо до нажатия, а не отказом на нём.
+   * Периодов бывает **два** (ADR 0142): месяц режет неделю, и просьба закрывается сразу обоими
+   * бланками — «31–31 августа» и «1–6 сентября». Отбор идёт пересечением с неделей выбранного дня,
+   * тем же правилом, каким считает сервер: иначе нажатие на 3 сентября обещало бы один лист, а
+   * выписка вернула бы два.
+   *
+   * Пусто — выбранный день за сроком заявки: сервер такую неделю не примет, и сказать об этом надо
+   * до нажатия, а не отказом на нём.
    */
-  const period = useMemo(() => {
+  const periods = useMemo(() => {
     const day = weekOf?.format('YYYY-MM-DD');
-    if (!day || request?.requestType !== 'special_equipment') return null;
-    const found = esm2Periods(request.dateFrom, request.dateTo).find(
-      (p) => p.from <= day && day <= p.to,
-    );
-    return found ?? null;
+    if (!day || request?.requestType !== 'special_equipment') return [];
+    const all = esm2Periods(request.dateFrom, request.dateTo);
+    // Названный день обязан лежать внутри срока — тем же порядком, что и на сервере: сперва
+    // проверка дня, и только потом расширение до его недели.
+    if (!all.some((p) => p.from <= day && day <= p.to)) return [];
+    const monday = weekStartKey(day);
+    const weekEnd = shiftDateKey(monday, 6);
+    return all.filter((p) => p.from <= weekEnd && monday <= p.to);
   }, [request, weekOf]);
 
   /**
@@ -120,10 +130,11 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
    * Поэтому причина спрашивается прямо в форме, а не отдельным подтверждением, как у выписки листа
    * по рейсу, — там прошедший день редкость, здесь правило.
    *
-   * Граница считается по `periodTo` — тем же концом недели, каким её считает сервер (таблица §4
-   * плана): понедельник дал бы «уже прошло» ещё в четверг той же недели.
+   * Граница считается по концу **первого** периода — тем же, каким её считает сервер (таблица §4
+   * плана и ADR 0142): понедельник дал бы «уже прошло» ещё в четверг той же недели, а конец
+   * последнего куска промолчал бы о прошедшем августовском листе переходной недели.
    */
-  const past = !!period && period.to < moscowDateKeyOf(new Date());
+  const past = periods.length > 0 && periods[0]!.to < moscowDateKeyOf(new Date());
 
   /**
    * Собственная техника парка: лист на арендную выписывает арендодатель, и предлагать её здесь
@@ -259,7 +270,8 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
           <FormGrid.Full>
             <Typography.Paragraph type="secondary">
               По этой заявке портал листы сам не выписывает — их выписывают здесь, по неделе за раз.
-              Работа каждого дня печатается своим 4-П.
+              Работа каждого дня печатается своим 4-П. Если в середине недели кончается месяц,
+              выпишутся два листа: бланк не бывает сразу на два месяца.
             </Typography.Paragraph>
           </FormGrid.Full>
 
@@ -268,8 +280,12 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
             label="Неделя"
             rules={[{ required: true, message: 'Укажите неделю' }]}
             extra={
-              period
-                ? `Лист покроет ${formatDateOnly(period.from)} – ${formatDateOnly(period.to)}`
+              periods.length > 0
+                ? // Месяц режет неделю на два бланка (ADR 0142), и сказать об этом надо до
+                  // нажатия: человек просит «неделю», а получает два номера строгой отчётности.
+                  `${periods.length > 1 ? 'Выпишутся два листа: ' : 'Лист покроет '}${periods
+                    .map((p) => `${formatDateOnly(p.from)} – ${formatDateOnly(p.to)}`)
+                    .join(' и ')}`
                 : weekOf
                   ? 'Этот день за сроком заявки — выберите день внутри срока'
                   : 'Достаточно любого дня недели: границы листа считает сервер'
@@ -325,7 +341,7 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
           {past && (
             <FormGrid.Full>
               <BackdateReasonField
-                effectiveDate={period!.to}
+                effectiveDate={periods[0]!.to}
                 consequence="лист уйдёт в журнал с меткой коррекции, вашим именем и этой причиной"
                 placeholder="Например: машина отработала неделю, бланк выписываем по факту"
               />

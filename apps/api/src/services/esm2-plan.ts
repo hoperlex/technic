@@ -3,6 +3,7 @@ import {
   type Esm2Period,
   esm2Periods,
   type Esm2Sheet,
+  periodsOverlap,
   shiftDateKey,
   type VehicleOwnership,
 } from '@technic/contracts';
@@ -535,9 +536,15 @@ export function documentClosure(
 
 // ── Наборы диапазонов ──
 
-/** Пересекаются ли два диапазона хотя бы одним днём. */
+/**
+ * Пересекаются ли два диапазона хотя бы одним днём.
+ *
+ * Считает контрактный `periodsOverlap`, а не своя строка сравнения: тем же вопросом после
+ * месячного разреза (ADR 0142) адресуется бумага в недельной сверке, а вторая реализация одного
+ * сравнения разошлась бы молча — на включительности границы её не поймал бы ни один тест.
+ */
 export function rangesIntersect(a: AssignmentRange, b: AssignmentRange): boolean {
-  return a.from <= b.to && b.from <= a.to;
+  return periodsOverlap(a, b);
 }
 
 /** Касается ли набор диапазона хотя бы одним днём. */

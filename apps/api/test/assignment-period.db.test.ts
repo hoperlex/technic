@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { byReadMode, describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 import {
+  esm2Periods,
   moscowDateKeyOf,
   shiftDateKey,
   weekStartKey,
@@ -96,6 +97,13 @@ const TERM_FROM = PREV;
 const TERM_TO = shiftDateKey(MONDAY, 6);
 /** Конец срока после продления — воскресенье следующей недели. */
 const EXTENDED_TO = shiftDateKey(NEXT, 6);
+/**
+ * Периоды бумаги, которые добавляет продление, — тем же расчётом, каким режет портал.
+ *
+ * Считаются, а не пишутся одной неделей: лист режет и конец месяца (ADR 0142), и продление на
+ * переходную неделю добавляет два документа вместо одного.
+ */
+const ADDED_PERIODS = esm2Periods(NEXT, EXTENDED_TO);
 
 interface Ctx {
   db: typeof AppDb;
@@ -569,14 +577,14 @@ describeReadModes(readMode, 'правка срока: продление и со
       // Исход `none`: продление вперёд ничего о прошлом не утверждает (Р32).
       expect(preview.operationRequirement).toBeNull();
       expect(preview.unlockFingerprint).toBeNull();
-      expect(preview.plan.issue.map((i) => `${i.from}—${i.to}`)).toEqual([
-        `${NEXT}—${EXTENDED_TO}`,
-      ]);
+      expect(preview.plan.issue.map((i) => `${i.from}—${i.to}`)).toEqual(
+        ADDED_PERIODS.map((p) => `${p.from}—${p.to}`),
+      );
 
       const outcome = await runPeriod(tx, scene, DISPATCHER, armed(command, preview));
       expect(outcome.repeated).toBe(false);
       expect(outcome.operation).toBeNull();
-      expect(outcome.paper?.esm2.issued).toHaveLength(1);
+      expect(outcome.paper?.esm2.issued).toHaveLength(ADDED_PERIODS.length);
 
       expect(await termOf(tx, scene.requestId)).toMatchObject({ date_to: EXTENDED_TO });
       /*
@@ -588,7 +596,7 @@ describeReadModes(readMode, 'правка срока: продление и со
       expect(compositionOf(await sheetsOf(tx, scene.requestId))).toEqual([
         `${PREV}—${shiftDateKey(PREV, 6)}|${scene.vehicleA}|${scene.personA}`,
         `${MONDAY}—${TERM_TO}|${scene.vehicleA}|${scene.personA}`,
-        `${NEXT}—${EXTENDED_TO}|${scene.vehicleA}|${scene.personA}`,
+        ...ADDED_PERIODS.map((p) => `${p.from}—${p.to}|${scene.vehicleA}|${scene.personA}`),
       ]);
       // История не тронута: продление её не пишет вовсе — оно лишь открывает дни.
       expect((await rowsOf(tx, scene.requestId)).every((r) => r.superseded_at === null)).toBe(true);

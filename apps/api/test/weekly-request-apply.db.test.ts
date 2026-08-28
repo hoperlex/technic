@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { describeReadModes, inLegacy, useReadModeDatabase } from './assignment-read-mode';
 import {
+  esm2Periods,
   formatWeeklyRequestNumber,
   moscowDateKeyOf,
   shiftDateKey,
@@ -73,6 +74,13 @@ const CUR_SUN = shiftDateKey(CUR_MON, 6);
 /** Ближайшая будущая неделя — на неё собирается почти всё в этом файле. */
 const W1 = shiftDateKey(CUR_MON, 7);
 const W1_END = shiftDateKey(W1, 6);
+/**
+ * Периоды бумаги целевой недели — тем же расчётом, каким режет портал (`esm2Periods`).
+ *
+ * Их два, если в середине недели кончается месяц (ADR 0142). Ожидание «один лист на неделю»,
+ * записанное цифрой, краснело бы раз в месяц без всякой правки кода.
+ */
+const W1_PERIODS = esm2Periods(W1, W1_END);
 /** Вторая будущая: ею проверяется порядок применения двух недель на один заказ (§8). */
 const W2 = shiftDateKey(CUR_MON, 14);
 const W2_END = shiftDateKey(W2, 6);
@@ -927,91 +935,90 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
 
   describe('продление заказа', () => {
     /*
-   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
-   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
-   *
-   * Сегодня половины совпадают: проведение двигает срок заказа, а бумагу переписывает недельная сверка. На этапе 5 недельная операция начнёт резать неделю — тогда и расходятся ожидания по числу листов.
-   */
-  describeReadModes(readMode, 'проведение недельной заявки', (mode) => {
-    void mode;
+     * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+     * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+     *
+     * Сегодня половины совпадают: проведение двигает срок заказа, а бумагу переписывает недельная сверка. На этапе 5 недельная операция начнёт резать неделю — тогда и расходятся ожидания по числу листов.
+     */
+    describeReadModes(readMode, 'проведение недельной заявки', (mode) => {
+      void mode;
 
-  it('двигает срок, поднимает версию с автором и пишет снимок момента применения', async () => {
-      const objectId = await freshObject();
-      const order = await makeOrder({ objectId, ownership: 'rental' });
-      const weekly = await makeWeekly(ctx.admin.auth, {
-        objectId,
-        weekStart: W1,
-        items: [extendItem(order, W1_END)],
-      });
+      it('двигает срок, поднимает версию с автором и пишет снимок момента применения', async () => {
+        const objectId = await freshObject();
+        const order = await makeOrder({ objectId, ownership: 'rental' });
+        const weekly = await makeWeekly(ctx.admin.auth, {
+          objectId,
+          weekStart: W1,
+          items: [extendItem(order, W1_END)],
+        });
 
-      const before = await orderRow(order.id);
-      const { approval } = await submitAndApprove(weekly);
-      expect(approval.statusCode, approval.body).toBe(200);
-      const apply = approval.json().apply;
-      expect(apply.applied).toBe(1);
-      expect(apply.skipped).toBe(0);
+        const before = await orderRow(order.id);
+        const { approval } = await submitAndApprove(weekly);
+        expect(approval.statusCode, approval.body).toBe(200);
+        const apply = approval.json().apply;
+        expect(apply.applied).toBe(1);
+        expect(apply.skipped).toBe(0);
 
-      // Срок двинулся ровно на дату строки, а не «на неделю вперёд».
-      const after = await orderRow(order.id);
-      expect(after.date_to).toBe(W1_END);
-      // Версия и автор — без них следующий читатель заказа получил бы старую версию (Р6).
-      expect(after.version).toBe(before.version + 1);
-      expect(after.updated_by).toBe(ctx.admin.id);
+        // Срок двинулся ровно на дату строки, а не «на неделю вперёд».
+        const after = await orderRow(order.id);
+        expect(after.date_to).toBe(W1_END);
+        // Версия и автор — без них следующий читатель заказа получил бы старую версию (Р6).
+        expect(after.version).toBe(before.version + 1);
+        expect(after.updated_by).toBe(ctx.admin.id);
 
-      // Снимок момента применения (Р14): три поля обязаны быть заполнены вместе — полуснимок
-      // однажды прочитают как факт.
-      const [item] = await itemRows(weekly.id);
-      expect(item!.result).toBe('extended');
-      expect(item!.previous_date_to).toBe(order.effectiveDateTo);
-      expect(item!.applied_source_version).toBe(before.version);
-      expect(item!.snapshot_vehicle_id).toBe(order.vehicleId);
-      // `expected_date_to` сервер читает из самого заказа, а не из тела (§7), и им же сверяет
-      // применимость строки.
-      expect(item!.expected_date_to).toBe(order.effectiveDateTo);
+        // Снимок момента применения (Р14): три поля обязаны быть заполнены вместе — полуснимок
+        // однажды прочитают как факт.
+        const [item] = await itemRows(weekly.id);
+        expect(item!.result).toBe('extended');
+        expect(item!.previous_date_to).toBe(order.effectiveDateTo);
+        expect(item!.applied_source_version).toBe(before.version);
+        expect(item!.snapshot_vehicle_id).toBe(order.vehicleId);
+        // `expected_date_to` сервер читает из самого заказа, а не из тела (§7), и им же сверяет
+        // применимость строки.
+        expect(item!.expected_date_to).toBe(order.effectiveDateTo);
 
-      const header = await weeklyRow(weekly.id);
-      expect(header!.status).toBe('applied');
-      expect(header!.approved_by).toBe(ctx.admin.id);
-      expect(header!.applied_at).not.toBeNull();
-      // Подача и применение — два перехода, каждый поднимает версию шапки.
-      expect(header!.version).toBe(weekly.version + 2);
+        const header = await weeklyRow(weekly.id);
+        expect(header!.status).toBe('applied');
+        expect(header!.approved_by).toBe(ctx.admin.id);
+        expect(header!.applied_at).not.toBeNull();
+        // Подача и применение — два перехода, каждый поднимает версию шапки.
+        expect(header!.version).toBe(weekly.version + 2);
 
-      // История — своей транзакционной таблицей, а не только аудитом (Р17).
-      const history = await historyRows(weekly.id);
-      expect(
-        history.some((h) => h.event === 'status' && h.to_status === 'applied'),
-        JSON.stringify(history),
-      ).toBe(true);
-    }, 60_000);
+        // История — своей транзакционной таблицей, а не только аудитом (Р17).
+        const history = await historyRows(weekly.id);
+        expect(
+          history.some((h) => h.event === 'status' && h.to_status === 'applied'),
+          JSON.stringify(history),
+        ).toBe(true);
+      }, 60_000);
 
-    it('строка «уезжает» заказ не трогает, но снимок пишет', async () => {
-      const objectId = await freshObject();
-      const order = await makeOrder({ objectId, ownership: 'rental' });
-      const weekly = await makeWeekly(ctx.admin.auth, {
-        objectId,
-        weekStart: W1,
-        items: [leaveItem(order)],
-      });
-      const before = await orderRow(order.id);
-      const { approval } = await submitAndApprove(weekly);
-      expect(approval.statusCode, approval.body).toBe(200);
+      it('строка «уезжает» заказ не трогает, но снимок пишет', async () => {
+        const objectId = await freshObject();
+        const order = await makeOrder({ objectId, ownership: 'rental' });
+        const weekly = await makeWeekly(ctx.admin.auth, {
+          objectId,
+          weekStart: W1,
+          items: [leaveItem(order)],
+        });
+        const before = await orderRow(order.id);
+        const { approval } = await submitAndApprove(weekly);
+        expect(approval.statusCode, approval.body).toBe(200);
 
-      const after = await orderRow(order.id);
-      // «Уезжает» — решение, а не действие: срок кончится сам, версия заказа не растёт.
-      expect(after.date_to).toBe(before.date_to);
-      expect(after.version).toBe(before.version);
+        const after = await orderRow(order.id);
+        // «Уезжает» — решение, а не действие: срок кончится сам, версия заказа не растёт.
+        expect(after.date_to).toBe(before.date_to);
+        expect(after.version).toBe(before.version);
 
-      const [item] = await itemRows(weekly.id);
-      expect(item!.result).toBe('left');
-      // Снимок обязателен и здесь: через месяц к строке придут с тем же вопросом — какая машина
-      // и до какого числа стояла.
-      expect(item!.previous_date_to).toBe(order.effectiveDateTo);
-      expect(item!.snapshot_vehicle_id).toBe(order.vehicleId);
-    }, 60_000);
-  });
+        const [item] = await itemRows(weekly.id);
+        expect(item!.result).toBe('left');
+        // Снимок обязателен и здесь: через месяц к строке придут с тем же вопросом — какая машина
+        // и до какого числа стояла.
+        expect(item!.previous_date_to).toBe(order.effectiveDateTo);
+        expect(item!.snapshot_vehicle_id).toBe(order.vehicleId);
+      }, 60_000);
+    });
 
-  // ── ЭСМ-2: план сверки, а не «ровно один новый лист» ──
-
+    // ── ЭСМ-2: план сверки, а не «ровно один новый лист» ──
   });
 
   describe('ЭСМ-2 после продления', () => {
@@ -1039,7 +1046,7 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         expect(esm2).toHaveLength(1);
         expect(esm2[0].requestId).toBe(order.id);
         expect(esm2[0].cancelled).toHaveLength(1);
-        expect(esm2[0].issued).toBe(2);
+        expect(esm2[0].issued).toBe(1 + W1_PERIODS.length);
 
         const after = await sheetsOf(order.id);
         expect(after.filter((s) => s.status === 'cancelled')).toHaveLength(1);
@@ -1048,7 +1055,7 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
             .filter((s) => s.status !== 'cancelled')
             .map((s) => `${s.period_from}..${s.period_to}`)
             .sort(),
-        ).toEqual([`${TODAY}..${CUR_SUN}`, `${W1}..${W1_END}`].sort());
+        ).toEqual([`${TODAY}..${CUR_SUN}`, ...W1_PERIODS.map((p) => `${p.from}..${p.to}`)].sort());
 
         // Сгоревший номер объясняется не только строкой ответа: аудит переписанной бумаги пишется
         // по каждому затронутому заказу.
@@ -1091,7 +1098,7 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         // выписывается — иначе на одну работу вышло бы два документа.
         const esm2 = approval.json().apply.esm2;
         expect(esm2[0].cancelled).toHaveLength(0);
-        expect(esm2[0].issued).toBe(2);
+        expect(esm2[0].issued).toBe(1 + W1_PERIODS.length);
 
         const after = await sheetsOf(order.id);
         const old = after.find((s) => s.id === sheet!.id)!;
@@ -1102,7 +1109,13 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
             .filter((s) => s.status !== 'cancelled')
             .map((s) => `${s.period_from}..${s.period_to}`)
             .sort(),
-        ).toEqual([`${prevWed}..${prevSun}`, `${CUR_MON}..${CUR_SUN}`, `${W1}..${W1_END}`].sort());
+        ).toEqual(
+          [
+            `${prevWed}..${prevSun}`,
+            `${CUR_MON}..${CUR_SUN}`,
+            ...W1_PERIODS.map((p) => `${p.from}..${p.to}`),
+          ].sort(),
+        );
       },
       60_000,
     );
