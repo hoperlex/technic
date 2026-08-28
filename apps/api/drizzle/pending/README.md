@@ -51,10 +51,11 @@ git mv apps/api/drizzle/pending/<файл>.sql apps/api/drizzle/<NNNN>_<имя>.
 
 ## Что здесь лежит
 
-| Файл                                | Шаг                | Релиз                                            |
-| ----------------------------------- | ------------------ | ------------------------------------------------ |
-| `stage8-migrate-site-role.sql`      | этап 8, `migrate`  | следующий после prepare (`0154`–`0156`)          |
-| `stage9-migrate-department-role.sql`| этап 9, `migrate`  | тот же или следующий                             |
-| `stage8-cleanup-site-role.sql`      | этап 8, `cleanup`  | следующий после `migrate` этапа 8                |
-| `stage9-cleanup-department-role.sql`| этап 9, `cleanup`  | следующий после `migrate` этапа 9                |
-| `step1e-drop-user-role-addons.sql`  | шаг 1e             | следующий после 1d (1d — релиз без миграций)     |
+| Файл                                    | Шаг                         | Релиз                                            |
+| --------------------------------------- | --------------------------- | ------------------------------------------------ |
+| `stage8-migrate-site-role.sql`          | этап 8, `migrate`           | следующий после prepare (`0154`–`0156`)          |
+| `stage9-migrate-department-role.sql`    | этап 9, `migrate`           | тот же или следующий                             |
+| `stage8-cleanup-site-role.sql`          | этап 8, `cleanup`           | следующий после `migrate` этапа 8                |
+| `stage9-cleanup-department-role.sql`    | этап 9, `cleanup`           | следующий после `migrate` этапа 9                |
+| `step1e-drop-user-role-addons.sql`      | шаг 1e                      | следующий после 1d (1d — релиз без миграций)     |
+| `service-chat-drop-service-comment.sql` | обсуждение заявки, выпуск C | следующий после выпуска B (ADR 0141, план §3.10) |

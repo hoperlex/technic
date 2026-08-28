@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react';
-import { Badge, Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd';
+import { useState, type MouseEvent, type ReactNode } from 'react';
+import { Badge, Dropdown, Layout, Menu, type MenuProps, Space, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
   CarOutlined,
@@ -91,15 +91,14 @@ export function AppLayout() {
    * пункт меню и открывает раздел целиком. Ставится он только на зажжённый бейдж — у погасшего
    * иконка обязана вести туда же, куда весь пункт.
    */
+  const openWaitingQueue = (e: MouseEvent) => {
+    e.stopPropagation();
+    navigate('/office-equipment?tab=requests&waitingOnMe=true');
+  };
+
   const waitingBadge =
     waitingServiceCount > 0 ? (
-      <span
-        title="Требуют решения"
-        onClick={(e) => {
-          e.stopPropagation();
-          navigate('/office-equipment?tab=requests&waitingOnMe=true');
-        }}
-      >
+      <span title="Требуют решения" onClick={openWaitingQueue}>
         <Badge count={waitingServiceCount} size="small" offset={[4, -2]} color="gold">
           {SECTION_ICONS['office-equipment']}
         </Badge>
@@ -120,6 +119,10 @@ export function AppLayout() {
    * На телефоне — точка вместо числа, как у новостей выпуска (ADR 0077): пункт нижней навигации
    * шириной в четверть экрана несёт подпись и иконку, и число поверх них не читается. Дальше
    * человек всё равно идёт в раздел, где метка стоит у самой заявки.
+   *
+   * Точка стоит у ЛЕВОГО края иконки, а золотой счётчик — у правого: на двузначном числе он
+   * разрастается влево, и точка, поставленная там же, тонула прямо в нём — на приёмке она
+   * закрывала «2» у «12».
    */
   const serviceMenuIcon =
     unreadChatCount > 0 ? (
@@ -127,7 +130,7 @@ export function AppLayout() {
         count={isMobile ? undefined : unreadChatCount}
         dot={isMobile}
         size="small"
-        offset={isMobile ? [2, 2] : [4, 14]}
+        offset={isMobile ? [-16, 2] : [4, 14]}
         color="blue"
         title={`Непрочитанных обсуждений: ${unreadChatCount}`}
       >
@@ -136,6 +139,33 @@ export function AppLayout() {
     ) : (
       waitingBadge
     );
+
+  /**
+   * Те же два счётчика для РАЗВЁРНУТОГО меню — строкой, у правого края пункта, а не на иконке.
+   * От иконки до подписи десять пикселей, и двузначное число в них не помещается: на приёмке
+   * золотой «12» лежал на первой букве «Орг.техники», а синий закрывал правый край самой иконки.
+   * У правого края строки места хватает обоим, и оба остаются ЧИСЛАМИ: точка отвечала бы
+   * «где-то что-то есть» там, где спрашивают «сколько». На свёрнутой панели и на телефоне подписи
+   * рядом с иконкой нет вовсе — там счётчики остаются на иконке (`serviceMenuIcon`).
+   */
+  const serviceCounters =
+    waitingServiceCount > 0 || unreadChatCount > 0 ? (
+      <Space size={4}>
+        {waitingServiceCount > 0 && (
+          <span title="Требуют решения" onClick={openWaitingQueue}>
+            <Badge count={waitingServiceCount} size="small" color="gold" />
+          </span>
+        )}
+        {unreadChatCount > 0 && (
+          <Badge
+            count={unreadChatCount}
+            size="small"
+            color="blue"
+            title={`Непрочитанных обсуждений: ${unreadChatCount}`}
+          />
+        )}
+      </Space>
+    ) : null;
 
   /**
    * Бейджи — украшение иконки, а не отдельный пункт: состав меню задаёт реестр, число надевает
@@ -164,12 +194,20 @@ export function AppLayout() {
    * `short` — подпись для нижней навигации мобильного режима: на 360 px пункту достаётся четверть
    * экрана, и полное название раздела туда не помещается (ADR 0030).
    */
-  const navItems: (MobileNavItem & { icon: ReactNode })[] = openShellSections({
+  const sectionCounters: Partial<Record<PortalShellSectionId, ReactNode>> = {
+    'office-equipment': serviceCounters,
+  };
+
+  /** `menuIcon` — иконка развёрнутого меню: у раздела со счётчиками в строке она остаётся голой. */
+  type NavItem = MobileNavItem & { icon: ReactNode; menuIcon: ReactNode; counters: ReactNode };
+  const navItems: NavItem[] = openShellSections({
     role: user?.role ?? null,
     canUse,
   }).map((section) => ({
     key: section.path,
     icon: sectionIcons[section.id],
+    menuIcon: sectionCounters[section.id] ? SECTION_ICONS[section.id] : sectionIcons[section.id],
+    counters: sectionCounters[section.id] ?? null,
     label: section.label,
     short: section.short,
   }));
@@ -279,9 +317,29 @@ export function AppLayout() {
               <Menu
                 mode="inline"
                 selectedKeys={[selectedKey]}
-                // Пункт меню antd получает ровно те же поля, что и раньше: короткая подпись
-                // нужна только нижней навигации мобильного режима.
-                items={navItems.map(({ key, icon, label }) => ({ key, icon, label }))}
+                // Короткая подпись нужна только нижней навигации мобильного режима, а счётчики
+                // разъезжаются по пункту сами: подпись жмётся влево, числа встают справа.
+                items={navItems.map(({ key, menuIcon, label, counters }) => ({
+                  key,
+                  icon: menuIcon,
+                  label: counters ? (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {label}
+                      </span>
+                      {counters}
+                    </span>
+                  ) : (
+                    label
+                  ),
+                }))}
                 onClick={({ key }) => navigate(key)}
                 style={{ borderInlineEnd: 'none' }}
               />

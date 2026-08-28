@@ -172,7 +172,18 @@ export function ServiceRequestViewModal({
               // Счётчик — двумя числами о разном: сколько всего сказано (подпись) и сколько
               // адресовано мне и не прочитано (бейдж). Одним числом они не складываются: «12»
               // на кнопке ничего не сообщало бы тому, кому написали только что.
-              <Badge key="chat" count={request.chat.unreadMine} size="small" offset={[-8, 4]}>
+              //
+              // Синий, а не умолчательный красный: то же самое число синим стоит и меткой в
+              // строке списка, и счётчиком в меню, а красный здесь читался бы как «ошибка,
+              // требует внимания» — разные цвета одной величины и есть повод искать разницу,
+              // которой нет.
+              <Badge
+                key="chat"
+                count={request.chat.unreadMine}
+                size="small"
+                color="blue"
+                offset={[-8, 4]}
+              >
                 <Button icon={<MessageOutlined />} onClick={chat.onClick}>
                   {request.chat.total > 0 ? `Обсуждение · ${request.chat.total}` : 'Обсуждение'}
                 </Button>

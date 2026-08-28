@@ -214,17 +214,23 @@ async function makeRequest(input: {
   withService?: boolean;
   executors?: readonly string[];
   objectId?: string;
+  /** Тип единицы: им отбирает список, и по нему же кнопка «Отметить все» обязана промахиваться. */
+  typeId?: string;
+  /** Автор заявки: он же её сторона `customer` — то есть тот, кто в ней вправе писать. */
+  createdBy?: string;
   serviceComment?: string;
 }): Promise<string> {
   unitNo += 1;
   const objectId = input.objectId ?? ctx.objectId;
+  const typeId = input.typeId ?? ctx.typeId;
+  const createdBy = input.createdBy ?? ctx.author.id;
   const status = input.status ?? 'in_work';
   const executors = input.executors ?? [];
   const counterparty = input.withService ? ctx.serviceCounterpartyId : null;
   return ctx.db.transaction(async (tx) => {
     const eq = await tx.execute<{ id: string }>(sql`
       INSERT INTO office_equipment (equipment_type_id, name, inventory_number, object_id, location)
-      VALUES (${ctx.typeId}, ${`Чат-МФУ ${input.tag} ${RUN}`}, ${`ОЧ-${RUN}-${unitNo}`},
+      VALUES (${typeId}, ${`Чат-МФУ ${input.tag} ${RUN}`}, ${`ОЧ-${RUN}-${unitNo}`},
               ${objectId}, 'кабинет 101')
       RETURNING id`);
     const equipmentId = eq.rows[0]!.id;
@@ -233,7 +239,7 @@ async function makeRequest(input: {
                                     equipment_inventory_number, description, created_by, status,
                                     service_counterparty_id, service_comment)
       VALUES (${equipmentId}, ${objectId}, ${`Чат-МФУ ${input.tag} ${RUN}`},
-              ${`ОЧ-${RUN}-${unitNo}`}, ${`обсуждение ${input.tag}`}, ${ctx.author.id},
+              ${`ОЧ-${RUN}-${unitNo}`}, ${`обсуждение ${input.tag}`}, ${createdBy},
               ${sql.raw(`'${status}'::service_request_status`)}, ${counterparty},
               ${input.serviceComment ?? ''})
       RETURNING id`);
@@ -255,6 +261,58 @@ function makeFullRequest(tag: string, status: ServiceRequestStatus = 'in_work'):
     withService: true,
     executors: [ctx.exec1.id, ctx.exec2.id],
   });
+}
+
+/**
+ * Площадка, заведённая случаем для себя. Нужна там, где предмет проверки — ЧИСЛО по всей области
+ * субъекта (бейдж, ответ кнопки «Отметить все»): восемь учёток фикстуры сидят на одной площадке, и
+ * заявки соседних случаев легли бы в тот же счёт — ожидаемое «2» стало бы зависеть от порядка
+ * прогона, а не от предмета проверки.
+ *
+ * Код начинается с `OCH-` и кончается меткой прогона: уборка `afterAll` ищет площадки ровно так.
+ */
+async function makeObject(tag: string): Promise<string> {
+  const created = await ctx.db.execute<{ id: string }>(sql`
+    INSERT INTO construction_objects (code, name, address)
+    VALUES (${`OCH-${tag}-${RUN}`}, ${`Площадка ${tag} ${RUN}`}, 'г Москва, ул Тестовая, д 3')
+    RETURNING id`);
+  return created.rows[0]!.id;
+}
+
+/**
+ * Учётка, заведённая ПРЯМО СЕЙЧАС, на названных площадках и без единой надстройки: чистый штаб.
+ * Стороной разговора такой человек становится только авторством заявки (`customer`), и это ровно
+ * тот случай, ради которого кнопка «Отметить все прочитанными» и заведена.
+ *
+ * Своя учётка на случай — не прихоть: непрочитанным считается лишь написанное после
+ * `users.created_at` читателя (п. 9), поэтому заведённый здесь человек не видит ничего, кроме
+ * реплик самого случая, — сколько бы ленты ни осталось от соседних.
+ *
+ * Адрес той же формы, что у фикстурных: уборка `afterAll` уносит их одним `LIKE`.
+ */
+async function makeNewcomer(tag: string, objectIds: readonly string[]): Promise<TestUser> {
+  const { hashPassword } = await import('../src/auth/password');
+  const email = `db-chat-${tag}-${RUN}@example.invalid`;
+  const created = await ctx.db.execute<{ id: string }>(sql`
+    INSERT INTO users (email, last_name, first_name, middle_name, password_hash, role,
+                       is_active, email_verified_at)
+    VALUES (${email}, 'Тестовый', 'Участник', ${tag}, ${await hashPassword(PASSWORD)},
+            'shtab'::role, true, now())
+    RETURNING id`);
+  const id = created.rows[0]!.id;
+  for (const objectId of objectIds) {
+    await ctx.db.execute(sql`
+      INSERT INTO user_construction_objects (user_id, construction_object_id)
+      VALUES (${id}, ${objectId})`);
+  }
+  const login = await ctx.app.inject({
+    method: 'POST',
+    url: '/api/v1/auth/login',
+    payload: { email, password: PASSWORD },
+    remoteAddress: nextAddress(),
+  });
+  expect(login.statusCode, login.body).toBe(200);
+  return { id, email, auth: { authorization: `Bearer ${login.json().accessToken}` } };
 }
 
 // ── Обращения к обсуждению ──
@@ -292,6 +350,17 @@ async function page(
 
 function markRead(auth: Auth, id: string, throughSeq: number) {
   return inject('POST', `/api/v1/service-requests/${id}/messages/read`, auth, { throughSeq });
+}
+
+/**
+ * «Отметить все прочитанными»: телом приходит ТОТ ЖЕ отбор, что и списку, а ответом — число заявок,
+ * у которых курсор действительно сдвинулся. Возвращается именно оно: портал показывает его человеку
+ * («Отмечено прочитанными заявок: N»), и ноль в нём означает «непрочитанного не было».
+ */
+async function readAll(auth: Auth, filter: Record<string, string> = {}): Promise<number> {
+  const res = await inject('POST', '/api/v1/service-requests/messages/read-all', auth, filter);
+  expect(res.statusCode, res.body).toBe(200);
+  return (res.json() as { count: number }).count;
 }
 
 /** Блок `chat` карточки: то, из чего портал рисует обе метки. */
@@ -910,26 +979,8 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       await said(ctx.admin.auth, id, `старое сообщение ${i}`, { sides: ['all'] });
     }
 
-    const { hashPassword } = await import('../src/auth/password');
-    const email = `db-chat-newbie-${RUN}@example.invalid`;
-    const created = await ctx.db.execute<{ id: string }>(sql`
-      INSERT INTO users (email, last_name, first_name, middle_name, password_hash, role,
-                         is_active, email_verified_at)
-      VALUES (${email}, 'Тестовый', 'Участник', 'newbie', ${await hashPassword(PASSWORD)},
-              'shtab'::role, true, now())
-      RETURNING id`);
-    const newbieId = created.rows[0]!.id;
-    await ctx.db.execute(sql`
-      INSERT INTO user_construction_objects (user_id, construction_object_id)
-      VALUES (${newbieId}, ${ctx.freshObjectId})`);
-    const login = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/login',
-      payload: { email, password: PASSWORD },
-      remoteAddress: nextAddress(),
-    });
-    expect(login.statusCode, login.body).toBe(200);
-    const newbie: Auth = { authorization: `Bearer ${login.json().accessToken}` };
+    // Учётка заводится ПОСЛЕ этих четырёх реплик — в этом весь случай.
+    const newbie = (await makeNewcomer('newbie', [ctx.freshObjectId])).auth;
 
     // Заявку он видит, ленту читает — но непрочитанного у него нет: всё это написано до него.
     const before = await chatOf(newbie, id);
@@ -1572,5 +1623,224 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       // Ответ при этом правильный: ИТ-служба видит все засеянные заявки непрочитанными.
       expect(await unreadCount(ctx.itSupport.auth)).toBeGreaterThanOrEqual(5000);
     }, 300_000);
+  });
+
+  // ── п. 17. «Отметить все прочитанными» ──
+
+  /**
+   * Кнопка тулбара списка (§3.4) и её ответ. Ручка `POST /messages/read-all` серверными тестами не
+   * проверялась вовсе — и ровно в ней ревью нашло дефект: `ON CONFLICT … DO UPDATE` без предиката
+   * обновляет КАЖДУЮ совпавшую строку, и `rowCount` считал заодно заявки, где курсор уже стоял на
+   * `lastSeq` и не двигался ни на шаг. Портал показывает это число словами «Отмечено прочитанными
+   * заявок: N» и нулём отличает «непрочитанного не было» от «ручка не сработала» — а второе нажатие
+   * подряд снова отвечало «1».
+   *
+   * СВОЙ УГОЛ ПОРТАЛА: две учётки, заведённые здесь, и своя площадка на каждый случай. Ответ ручки —
+   * число по всей области субъекта, и на общей площадке фикстуры ожидаемое «2» зависело бы от того,
+   * что оставили после себя полтора десятка соседних случаев, а не от предмета проверки.
+   */
+  describe('п. 17. «Отметить все прочитанными» гасит отбор и считает только сдвиги', () => {
+    /** Тот, кто нажимает кнопку: автор всех заявок угла, то есть сторона `customer`. */
+    let reader: TestUser;
+    /** Сосед по площадке: его курсоры чужая кнопка трогать не должна. */
+    let mate: TestUser;
+    /** Второй тип техники: им проверяется, что отбор списка кнопка понимает целиком, а не наполовину. */
+    let printerTypeId: string;
+
+    beforeAll(async () => {
+      reader = await makeNewcomer('reader', []);
+      mate = await makeNewcomer('mate', []);
+      const type = await ctx.db.execute<{ id: string }>(
+        sql`SELECT id FROM office_equipment_types WHERE code = 'printer'`,
+      );
+      printerTypeId = type.rows[0]!.id;
+    });
+
+    /** Площадка случая: она в области у обеих учёток угла — и ни у кого больше. */
+    async function ownObject(tag: string): Promise<string> {
+      const objectId = await makeObject(tag);
+      await ctx.db.execute(sql`
+        INSERT INTO user_construction_objects (user_id, construction_object_id)
+        VALUES (${reader.id}, ${objectId}), (${mate.id}, ${objectId})`);
+      return objectId;
+    }
+
+    /** Заявка угла: заводит её сам читатель — иначе он наблюдатель, и писать в неё некому. */
+    const ask = (tag: string, objectId: string, typeId?: string): Promise<string> =>
+      makeRequest({ tag, status: 'new', objectId, typeId, createdBy: reader.id });
+
+    it('повторное нажатие подряд даёт 0: в счёт идут только сдвинувшиеся курсоры', async () => {
+      const objectId = await ownObject('RA');
+      const talky = await ask('кнопка две реплики', objectId);
+      const quiet = await ask('кнопка одна реплика', objectId);
+      await said(ctx.admin.auth, talky, 'первое', { sides: ['customer'] });
+      await said(ctx.admin.auth, talky, 'второе', { sides: ['customer'] });
+      await said(ctx.admin.auth, quiet, 'единственное', { sides: ['customer'] });
+
+      // Обе заявки видит первое нажатие: курсора у читателя не было ни по одной — это вставки.
+      expect(await readAll(reader.auth, { objectId })).toBe(2);
+      // ВОТ ОН, ДЕФЕКТ РЕВЮ. Без предиката у `DO UPDATE` обе строки обновились бы снова, и ручка
+      // ответила бы «2» на нажатие, которое ничего не изменило: ноль не наступал бы никогда.
+      expect(await readAll(reader.auth, { objectId })).toBe(0);
+
+      const first = await chatOf(reader.auth, talky);
+      expect(first.unreadMine).toBe(0);
+      expect(first.readThroughSeq).toBe(2);
+      expect((await chatOf(reader.auth, quiet)).readThroughSeq).toBe(1);
+
+      // Пришло новое в одну заявку — и в счёт идёт ровно она: вторая стоит на `lastSeq`.
+      await said(ctx.admin.auth, quiet, 'а вот и второе', { sides: ['customer'] });
+      expect(await readAll(reader.auth, { objectId })).toBe(1);
+      expect((await chatOf(reader.auth, quiet)).readThroughSeq).toBe(2);
+    });
+
+    it('гасит только заявки отбора: соседняя площадка и другой тип техники остаются', async () => {
+      const objectId = await ownObject('RB');
+      const aside = await ownObject('RC');
+      const inScope = await ask('кнопка в отборе', objectId);
+      const otherObject = await ask('кнопка чужая площадка', aside);
+      const otherType = await ask('кнопка чужой тип', objectId, printerTypeId);
+      for (const id of [inScope, otherObject, otherType]) {
+        await said(ctx.admin.auth, id, 'посмотрите, пожалуйста', { sides: ['customer'] });
+      }
+
+      // Отбор — площадка И тип: за вторую половину отвечает соединение с `office_equipment` внутри
+      // ручки, и без него кнопка гасила бы то, чего человек на экране не видит.
+      expect(await readAll(reader.auth, { objectId, equipmentTypeId: ctx.typeId })).toBe(1);
+      expect((await chatOf(reader.auth, inScope)).unreadMine).toBe(0);
+
+      for (const id of [otherObject, otherType]) {
+        const summary = await chatOf(reader.auth, id);
+        expect(summary.unreadMine).toBe(1);
+        // Курсора нет вовсе: кнопка не поставила его даже на ноль.
+        expect(summary.readThroughSeq).toBe(0);
+      }
+
+      // Другой отбор — и гаснет ровно заявка соседней площадки, а третья по-прежнему ждёт.
+      expect(await readAll(reader.auth, { objectId: aside })).toBe(1);
+      expect((await chatOf(reader.auth, otherObject)).unreadMine).toBe(0);
+      expect((await chatOf(reader.auth, otherType)).unreadMine).toBe(1);
+    });
+
+    it('чужие курсоры не двигаются: у соседа по площадке непрочитанное остаётся', async () => {
+      const objectId = await ownObject('RD');
+      const id = await ask('кнопка и сосед', objectId);
+      await said(ctx.admin.auth, id, 'вопрос заявителю', { sides: ['customer'] });
+      await said(ctx.admin.auth, id, 'и ещё один', { sides: ['customer'] });
+      // Адресат «Заявителю» бьёт по всей стороне заказчика: непрочитано у обоих.
+      expect((await chatOf(reader.auth, id)).unreadMine).toBe(2);
+      expect((await chatOf(mate.auth, id)).unreadMine).toBe(2);
+
+      expect(await readAll(reader.auth, { objectId })).toBe(1);
+      expect((await chatOf(reader.auth, id)).unreadMine).toBe(0);
+
+      const untouched = await chatOf(mate.auth, id);
+      expect(untouched.unreadMine).toBe(2);
+      expect(untouched.readThroughSeq).toBe(0);
+      // И его собственное нажатие — настоящий сдвиг, а не «уже прочитано»: курсоры у людей свои.
+      expect(await readAll(mate.auth, { objectId })).toBe(1);
+      expect((await chatOf(mate.auth, id)).unreadMine).toBe(0);
+
+      const cursors = await ctx.db.execute<{ c: number }>(sql`
+        SELECT count(*)::int AS c FROM service_request_message_reads WHERE request_id = ${id}`);
+      expect(Number(cursors.rows[0]!.c)).toBe(2);
+    });
+
+    it('заявка, дочитанная окном до последней реплики, в счёт не идёт', async () => {
+      const objectId = await ownObject('RE');
+      const seen = await ask('кнопка дочитанная', objectId);
+      const fresh = await ask('кнопка непрочитанная', objectId);
+      await said(ctx.admin.auth, seen, 'это прочитают окном', { sides: ['customer'] });
+      await said(ctx.admin.auth, fresh, 'а это нет', { sides: ['customer'] });
+
+      // Курсор двигает окно заявки — обычной ручкой `messages/read`, а не кнопкой списка.
+      const readAt = async (): Promise<string> =>
+        new Date(
+          (
+            await ctx.db.execute<{ read_at: Date }>(sql`
+              SELECT read_at FROM service_request_message_reads
+               WHERE request_id = ${seen} AND user_id = ${reader.id}`)
+          ).rows[0]!.read_at,
+        ).toISOString();
+      expect((await markRead(reader.auth, seen, 1)).json()).toEqual({ readThroughSeq: 1, lastSeq: 1 });
+      const before = await readAt();
+
+      // Кнопка находит в отборе обе заявки, а двигает одну: вторая уже стоит на `lastSeq`.
+      expect(await readAll(reader.auth, { objectId })).toBe(1);
+      expect((await chatOf(reader.auth, fresh)).readThroughSeq).toBe(1);
+      // Неподвижную строку нажатие не трогает вовсе. `read_at` разбирает жалобы «я это не читал»,
+      // и переписывать его нажатием, которое ничего не прочло, значило бы стирать свидетельство.
+      expect(await readAt()).toBe(before);
+    });
+  });
+
+  // ── п. 18. Бейдж раздела ──
+
+  /**
+   * `GET /unread-count` — число на пункте меню. До ревью оно тоже не сверялось ни разу: п. 16 гоняет
+   * ту же ручку `EXPLAIN`'ом, то есть измеряет её стоимость, а не ответ.
+   *
+   * Свой человек на своей площадке — по той же причине, что в п. 17: счёт идёт по ВСЕЙ области
+   * субъекта, и на общей площадке фикстуры ответ зависел бы от соседних случаев.
+   */
+  describe('п. 18. счётчик бейджа считает заявки, а не реплики', () => {
+    let reader: TestUser;
+    let objectId: string;
+
+    beforeAll(async () => {
+      objectId = await makeObject('UC');
+      reader = await makeNewcomer('badge', [objectId]);
+    });
+
+    const ask = (tag: string): Promise<string> =>
+      makeRequest({ tag, status: 'new', objectId, createdBy: reader.id });
+
+    it('две непрочитанные реплики одной заявки — это единица, а не двойка', async () => {
+      const first = await ask('бейдж две реплики');
+      await said(ctx.admin.auth, first, 'первое', { sides: ['customer'] });
+      await said(ctx.admin.auth, first, 'второе', { sides: ['customer'] });
+
+      // Бейдж ведёт в список, и «1» обязано означать одну строку, к которой надо подойти: реплики
+      // считает яркая метка в самой строке, и путать их местами нельзя.
+      expect((await chatOf(reader.auth, first)).unreadMine).toBe(2);
+      expect(await unreadCount(reader.auth)).toBe(1);
+
+      const second = await ask('бейдж вторая заявка');
+      await said(ctx.admin.auth, second, 'и здесь тоже', { sides: ['customer'] });
+      expect(await unreadCount(reader.auth)).toBe(2);
+    });
+
+    it('заявка вне области видимости в счёт не идёт', async () => {
+      const before = await unreadCount(reader.auth);
+      // Заявка фикстурной площадки: читателю она не видна, а реплика в ней — самая настоящая, и
+      // тому, кто площадку ведёт, она приходит непрочитанной.
+      const alien = await makeFullRequest('бейдж чужая площадка');
+      await said(ctx.admin.auth, alien, 'всем участникам', { sides: ['all'] });
+      expect((await chatOf(ctx.author.auth, alien)).unreadMine).toBe(1);
+
+      // Бейдж ведёт в список, отобранный той же `visibility`: разойдись они, он звал бы в пустоту.
+      expect(await unreadCount(reader.auth)).toBe(before);
+    });
+
+    it('своё сообщение себя не подсвечивает', async () => {
+      const before = await unreadCount(reader.auth);
+      const id = await ask('бейдж своё сообщение');
+      await said(reader.auth, id, 'записал для ведения', { sides: ['operator'] });
+      // Реплика настоящая — «Ведению» она приходит яркой; себя автор ею не зажигает.
+      expect((await chatOf(ctx.admin.auth, id)).unreadMine).toBe(1);
+      expect((await chatOf(reader.auth, id)).unreadMine).toBe(0);
+      expect(await unreadCount(reader.auth)).toBe(before);
+    });
+
+    it('после «Отметить все прочитанными» бейдж гаснет, а новая реплика зажигает его снова', async () => {
+      expect(await unreadCount(reader.auth)).toBeGreaterThan(0);
+      // Без отбора — то есть по всей области: ровно так кнопку нажимают в списке без фильтров.
+      expect(await readAll(reader.auth)).toBeGreaterThan(0);
+      expect(await unreadCount(reader.auth)).toBe(0);
+
+      const id = await ask('бейдж после кнопки');
+      await said(ctx.admin.auth, id, 'а это уже после', { sides: ['customer'] });
+      expect(await unreadCount(reader.auth)).toBe(1);
+    });
   });
 });

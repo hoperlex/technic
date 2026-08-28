@@ -122,7 +122,9 @@ export function serviceRequestColumns(
                 видно, что по заявке написали. */}
             <ServiceChatMark request={r} onOpen={opts.onChat} />
           </Space>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {/* Строкой ниже, а не следом за номером: `Space` и текст оба строчные, и без блока
+              подпись приклеивается к номеру вплотную — «СО-10завёл Иванов». */}
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
             завёл {r.createdByName}
           </Typography.Text>
         </div>

@@ -24,6 +24,12 @@ export interface ServiceChatFeedState {
   isError: boolean;
   /** Своя отправленная реплика: показывается сразу, не дожидаясь следующего опроса. */
   append: (message: ServiceChatMessageDto, lastSeq: number) => void;
+  /**
+   * Сколько своих реплик отправлено за это открытие окна. Числом, а не флагом: лента ведёт себя
+   * по нему (уходит вниз, к только что сказанному), и второй отправке нужен второй повод —
+   * булев «уже отправляли» после первой реплики замер бы навсегда.
+   */
+  sentCount: number;
 }
 
 /** Слияние по номеру: страницы перекрываются (опрос + инвалидация головы), дубль в ленте недопустим. */
@@ -66,6 +72,8 @@ export function useServiceChatFeed(requestId: string): ServiceChatFeedState {
   const [newer, setNewer] = useState<ServiceChatMessageDto[]>([]);
   const [lastSeq, setLastSeq] = useState(0);
   const [readThroughSeq, setReadThroughSeq] = useState(0);
+  /** Счётчик своих отправленных реплик: по нему лента уходит вниз (§3.7). */
+  const [sentCount, setSentCount] = useState(0);
   /** Граница «Новых», снятая с первого успешного ответа и больше не меняющаяся. */
   const newFrom = useRef<number | null>(null);
   const [visible, setVisible] = useState(
@@ -159,9 +167,15 @@ export function useServiceChatFeed(requestId: string): ServiceChatFeedState {
     markReadMutate(lastSeq);
   }, [head.isSuccess, visible, lastSeq, readThroughSeq, markReadMutate]);
 
+  /*
+   * Своя реплика приходит сюда, а пришедшая опросом — прямо в `setNewer`: разница не в данных, а
+   * в том, чего человек ждёт. Своё сказанное он ищет глазами внизу ленты, а чужое, пришедшее
+   * само, не должно утаскивать его с того места, где он читает.
+   */
   const append = useCallback((message: ServiceChatMessageDto, freshLastSeq: number) => {
     setNewer((prev) => mergeBySeq(prev, [message]));
     setLastSeq((prev) => Math.max(prev, freshLastSeq));
+    setSentCount((prev) => prev + 1);
   }, []);
 
   return {
@@ -173,5 +187,6 @@ export function useServiceChatFeed(requestId: string): ServiceChatFeedState {
     isPending: head.isPending,
     isError: head.isError,
     append,
+    sentCount,
   };
 }

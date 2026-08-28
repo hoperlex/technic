@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { Navigate, Route, Routes } from 'react-router';
 import type {
@@ -185,6 +185,35 @@ describe('лента обсуждения', () => {
     expect(http.calls.some((call) => call.query.get('beforeSeq') === '5')).toBe(true);
   });
 
+  it('реплика адаптера подписана автором и точным временем — пометка не отнимает имени', async () => {
+    renderTab([serviceRequest({ status: 'in_work' })], {
+      [MESSAGES]: () =>
+        json(
+          chatPage([
+            chatMessage({
+              // Адаптер `PATCH /:id/service-comment` (§3.10): текст пришёл из поля примечания, но
+              // писал его живой человек — сервер пишет и `author_id` принципала, и `now()`.
+              origin: 'import',
+              authorId: 'u-9',
+              authorName: 'Сисадминов И. П.',
+              body: 'через старое поле примечания',
+            }),
+          ]),
+        ),
+      [READ]: () => json({ readThroughSeq: 1, lastSeq: 1 }),
+    });
+    await screen.findByText('СО-14');
+    await openChatFromRow();
+    await screen.findByText('через старое поле примечания');
+
+    // Пометка о происхождении верна и здесь — текст правда из примечания...
+    expect(chatWindow().getByText('перенесено из примечания исполнителя')).toBeDefined();
+    // ...но имя и точное время известны, и стирать их нельзя: история той же заявки автора
+    // показывает, и два экрана портала разошлись бы об одном событии.
+    expect(chatWindow().getByText('Сисадминов И. П.')).toBeDefined();
+    expect(chatWindow().queryByText(/дата приблизительная/)).toBeNull();
+  });
+
   it('перенесённая реплика подписана пометкой и БЕЗ имени', async () => {
     renderTab([serviceRequest({ status: 'in_work' })], {
       [MESSAGES]: () =>
@@ -208,6 +237,168 @@ describe('лента обсуждения', () => {
     // общее поле заявки, и через месяц там стоит тот, кто последним двигал статус.
     expect(await screen.findByText('перенесено из примечания исполнителя')).toBeDefined();
     expect(chatWindow().getByText(/дата приблизительная/)).toBeDefined();
+  });
+});
+
+/**
+ * Куда встаёт лента (§3.7): к полосе «Новые» при открытии, вниз после своей отправки и никуда —
+ * при подгрузке вверх.
+ *
+ * **Что здесь проверяемо, а что нет.** jsdom раскладки не считает: `scrollHeight` и `offsetTop`
+ * в нём всегда нули, а запись в `scrollTop` молча теряется. Поэтому геометрия подменена простой
+ * моделью — реплика ростом в `ROW`, окно высотой `VIEW` — и проверяется ровно то, что в такой
+ * модели честно: КУДА лента просит себя увести, получив эти высоты. Настоящие высоты (46vh,
+ * переносы строк, шрифты) считает браузер; здесь их нет, и они проверены глазами на живом
+ * контуре, а не этим файлом.
+ */
+describe('куда встаёт лента', () => {
+  /** Высота реплики и высота видимой части — в условных пикселях подменённой раскладки. */
+  const ROW = 100;
+  const VIEW = 250;
+  /** Столько прочитанного лента оставляет над полосой «Новые» (`CONTEXT_ABOVE_BOUNDARY`). */
+  const CONTEXT = 24;
+
+  const patched: [object, string, PropertyDescriptor | null][] = [];
+  function patch(target: object, prop: string, descriptor: PropertyDescriptor) {
+    patched.push([target, prop, Object.getOwnPropertyDescriptor(target, prop) ?? null]);
+    Object.defineProperty(target, prop, { configurable: true, ...descriptor });
+  }
+
+  /** Тела реплик внутри ленты: по ним и считается модельная высота. */
+  const bodies = (box: Element) => [...box.querySelectorAll('div[style*="pre-wrap"]')];
+  const isFeed = (el: Element) => el.classList.contains('service-chat-feed');
+
+  beforeEach(() => {
+    patch(Element.prototype, 'scrollTop', {
+      get(this: Element & { приведеноК?: number }) {
+        return this.приведеноК ?? 0;
+      },
+      set(this: Element & { приведеноК?: number }, value: number) {
+        this.приведеноК = value;
+      },
+    });
+    patch(Element.prototype, 'scrollHeight', {
+      get(this: Element) {
+        return isFeed(this) ? bodies(this).length * ROW : 0;
+      },
+    });
+    patch(Element.prototype, 'clientHeight', {
+      get(this: Element) {
+        return isFeed(this) ? VIEW : 0;
+      },
+    });
+    patch(HTMLElement.prototype, 'offsetTop', {
+      get(this: HTMLElement) {
+        const box = this.closest('.service-chat-feed');
+        if (!box) return 0;
+        // Сколько реплик началось ВЫШЕ этого узла — столько «строк» до него и накопилось.
+        return (
+          bodies(box).filter(
+            (body) => this.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_PRECEDING,
+          ).length * ROW
+        );
+      },
+    });
+  });
+
+  afterEach(() => {
+    for (const [target, prop, descriptor] of patched.splice(0).reverse()) {
+      if (descriptor) Object.defineProperty(target, prop, descriptor);
+      else delete (target as Record<string, unknown>)[prop];
+    }
+  });
+
+  function feed(): HTMLElement {
+    const box = document.querySelector<HTMLElement>('.service-chat-feed');
+    if (!box) throw new Error('ленты на экране нет');
+    return box;
+  }
+
+  const thread = (count: number, from = 1) =>
+    Array.from({ length: count }, (_, i) =>
+      chatMessage({ id: `m-${from + i}`, seq: from + i, body: `реплика ${from + i}` }),
+    );
+
+  it('с непрочитанным — к полосе «Новые», а не на самый верх', async () => {
+    renderTab(
+      [serviceRequest({ status: 'in_work', chat: chatSummary({ unreadMine: 2, lastSeq: 5 }) })],
+      {
+        // Дочитано до третьей: полоса встаёт перед четвёртой.
+        [MESSAGES]: () => json(chatPage(thread(5), { readThroughSeq: 3 })),
+        [READ]: () => json({ readThroughSeq: 5, lastSeq: 5 }),
+      },
+    );
+    await screen.findByText('СО-14');
+    await openChatFromRow();
+    await screen.findByText('реплика 1');
+
+    // Три реплики до полосы, минус оставленный над ней контекст: реплика-ответ без предыдущей —
+    // половина разговора.
+    expect(feed().scrollTop).toBe(3 * ROW - CONTEXT);
+  });
+
+  it('без непрочитанного — к последней реплике, в самый низ', async () => {
+    renderTab([serviceRequest({ status: 'in_work', chat: chatSummary({ lastSeq: 5 }) })], {
+      [MESSAGES]: () => json(chatPage(thread(5), { readThroughSeq: 5 })),
+      [READ]: () => json({ readThroughSeq: 5, lastSeq: 5 }),
+    });
+    await screen.findByText('СО-14');
+    await openChatFromRow();
+    await screen.findByText('реплика 1');
+
+    // Полосы «Новые» нет вовсе — и лента просится в самый низ. Браузер прижмёт `scrollTop` к
+    // `scrollHeight - clientHeight`; jsdom высот не считает и оставляет запрошенное число.
+    expect(chatWindow().queryByText('Новые')).toBeNull();
+    expect(feed().scrollTop).toBe(5 * ROW);
+  });
+
+  it('подгрузка вверх держит место: содержимое не уезжает из-под глаз', async () => {
+    renderTab([serviceRequest({ status: 'in_work', chat: chatSummary({ lastSeq: 6 }) })], {
+      [MESSAGES]: ({ query }) =>
+        query.get('beforeSeq') === '4'
+          ? json(chatPage(thread(3), { lastSeq: 6 }))
+          : json(chatPage(thread(3, 4), { hasMore: true, readThroughSeq: 6, lastSeq: 6 })),
+      [READ]: () => json({ readThroughSeq: 6, lastSeq: 6 }),
+    });
+    await screen.findByText('СО-14');
+    await openChatFromRow();
+    await screen.findByText('реплика 4');
+
+    // Человек ушёл к самому верху — там и стоит кнопка «Показать более ранние».
+    feed().scrollTop = 0;
+    fireEvent.click(chatWindow().getByRole('button', { name: 'Показать более ранние' }));
+    await screen.findByText('реплика 1');
+
+    // Сверху встали три реплики — ровно на их высоту и сдвинулось смещение: то, что человек
+    // читал, осталось на месте. Начальная проводка при этом НЕ повторилась: она увела бы ленту
+    // вниз (600) или к полосе, а не на 300.
+    await waitFor(() => expect(feed().scrollTop).toBe(3 * ROW));
+  });
+
+  it('после своей отправки — вниз, к только что сказанному', async () => {
+    renderTab([serviceRequest({ status: 'in_work', chat: chatSummary({ lastSeq: 3 }) })], {
+      [MESSAGES]: () => json(chatPage(thread(3), { readThroughSeq: 3 })),
+      [READ]: () => json({ readThroughSeq: 3, lastSeq: 3 }),
+      [SEND]: () =>
+        json({
+          message: chatMessage({ id: 'm-4', seq: 4, body: 'мастер выедет 3-го' }),
+          lastSeq: 4,
+        }),
+    });
+    await screen.findByText('СО-14');
+    await openChatFromRow();
+    await screen.findByText('реплика 1');
+
+    // Человек ушёл читать начало разговора и оттуда ответил.
+    feed().scrollTop = 0;
+    fireEvent.change(screen.getByLabelText('Сообщение'), {
+      target: { value: 'мастер выедет 3-го' },
+    });
+    fireEvent.click(chatWindow().getByRole('button', { name: 'Отправить' }));
+    await screen.findByText('мастер выедет 3-го');
+
+    // Своя реплика, уехавшая за нижний край, читается как «не отправилось».
+    await waitFor(() => expect(feed().scrollTop).toBe(4 * ROW));
   });
 });
 

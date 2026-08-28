@@ -700,9 +700,20 @@ export async function markChatRead(
  * загорелись открытые заявки, — гасить он идёт то, что видит на экране. Кнопка, гасящая невидимое,
  * однажды съела бы ровно ту заявку, ради которой её и нажали.
  *
- * Одним запросом: курсор ставится на `max(seq)` каждой заявки отбора, и `GREATEST` в `ON CONFLICT`
- * держит ту же монотонность, что и одиночная отметка. Возвращается число тронутых заявок — портал
- * показывает его человеку, а «ничего не изменилось» отличается от «ручка не сработала».
+ * Одним запросом: курсор ставится на `max(seq)` каждой заявки отбора.
+ *
+ * ПРЕДИКАТ У `DO UPDATE` — ЭТО И ЕСТЬ ОТВЕТ РУЧКИ. Возвращается число ДВИНУВШИХСЯ курсоров, и портал
+ * показывает его словами «Отмечено прочитанными заявок: N», отличая нулём «непрочитанного не было»
+ * от «ручка не сработала». Но `ON CONFLICT … DO UPDATE` без предиката обновляет КАЖДУЮ совпавшую
+ * строку — в том числе ту, где курсор уже стоял на `lastSeq`, — и `rowCount` считал бы её тоже:
+ * второе нажатие подряд снова отвечало бы «1», а ноль не наступал бы никогда. Поэтому неподвижные
+ * строки отсекает `WHERE …read_through_seq < excluded.read_through_seq`, и в счёт идут только
+ * вставки (первое прочтение заявки) и настоящие сдвиги.
+ *
+ * `GREATEST` при этом СНЯТ, и это не упрощение: монотонность держит тот же предикат — строке,
+ * которой есть куда двигаться только назад, условие не даёт обновиться вовсе. Оставь мы оба, у
+ * одного правила было бы две записи — предикат решал бы, обновлять ли строку, а `GREATEST` решал бы
+ * то же самое ещё раз при присваивании, — и правка одной из них разошлась бы с другой молча.
  */
 export async function markAllChatRead(p: Principal, scope: SQL | undefined): Promise<number> {
   const result = await db.execute(sql`
@@ -720,11 +731,9 @@ export async function markAllChatRead(p: Principal, scope: SQL | undefined): Pro
      )
      GROUP BY m.request_id
     ON CONFLICT (request_id, user_id) DO UPDATE
-      SET read_through_seq = GREATEST(
-            ${serviceRequestMessageReads}.read_through_seq,
-            excluded.read_through_seq
-          ),
+      SET read_through_seq = excluded.read_through_seq,
           read_at = now()
+     WHERE ${serviceRequestMessageReads}.read_through_seq < excluded.read_through_seq
   `);
   return result.rowCount ?? 0;
 }
