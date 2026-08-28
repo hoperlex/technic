@@ -43,6 +43,9 @@ function renderMenu(user: AuthUser) {
     'GET /users/pending-count': () => json({ count: 0 }),
     'GET /releases': () => json([]),
     'GET /service-requests/waiting-count': () => json({ count: 0 }),
+    // Непрочитанное в обсуждениях заявок (ADR 0141): второй счётчик каркаса, и спрашивает его
+    // каждый, кому видны заявки, — иначе каркас остался бы без ответа на живой запрос.
+    'GET /service-requests/unread-count': () => json({ count: 0 }),
   });
   return renderWithUser(
     <Routes>

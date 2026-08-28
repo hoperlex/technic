@@ -12,6 +12,7 @@ import {
   statusAgeLabel,
   UrgentTag,
 } from '@entities/service-request';
+import { ServiceChatMark } from '@features/service-chat';
 import { actionsColumn, type ActionSheetItem, type CardConfig, ExpandableCell } from '@shared/ui';
 import { DocumentsCell, EquipmentCell } from './serviceRequestCells';
 import { textColumn } from '@shared/ui';
@@ -79,6 +80,12 @@ export interface ServiceGridOptions {
   primaryAction?: (request: ServiceRequestDto) => (() => void) | null;
   actions: (request: ServiceRequestDto) => ActionSheetItem[];
   onOpen: (request: ServiceRequestDto) => void;
+  /**
+   * Открыть обсуждение прямо из строки (ADR 0141): метка непрочитанного у номера ведёт в него, а
+   * не в карточку. Окно при этом принадлежит набору окон СТРАНИЦЫ, а не карточки: карточка здесь
+   * не открыта, и вкладывать переписку некуда.
+   */
+  onChat: (request: ServiceRequestDto) => void;
 }
 
 /** Итог заявки: пока работы не закрыты — согласованная смета, после — то, что по акту. */
@@ -110,6 +117,10 @@ export function serviceRequestColumns(
             {/* Срочность — у номера, а не в отдельной колонке: список читают слева направо, и
                 признак, ради которого заявку берут вне очереди, обязан попасться первым. */}
             {r.isUrgent && <UrgentTag reason={r.urgencyReason} />}
+            {/* Непрочитанное обсуждение — там же и по той же причине: колонки с текстом реплик в
+                списке нет вовсе (решение опроса), и метка у номера — единственное место, где
+                видно, что по заявке написали. */}
+            <ServiceChatMark request={r} onOpen={opts.onChat} />
           </Space>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             завёл {r.createdByName}
@@ -338,6 +349,9 @@ export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<Service
     title: (r) => r.displayNumber,
     badge: (r) => (
       <Space size={4}>
+        {/* Метка обсуждения и на телефоне у номера: тап по ней открывает переписку, тап по
+            карточке — саму заявку. Второго места для непрочитанного здесь нет — колонок нет. */}
+        <ServiceChatMark request={r} onOpen={opts.onChat} />
         {r.isUrgent && <UrgentTag reason="" />}
         <ServiceStatusTag status={r.status} />
       </Space>

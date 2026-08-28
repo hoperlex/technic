@@ -17,7 +17,7 @@
     "src/pages/directories/VehicleTypesTab.tsx": 728,
     "src/pages/directories/VehiclesTab.tsx": 741,
     "src/pages/directories/WasteTariffsTab.tsx": 926,
-    "src/pages/service/serviceRequestActions.tsx": 456,
+    "src/pages/service/serviceRequestActions.tsx": 455,
     "src/pages/vehicle/VehicleAssignModal.tsx": 1968,
     "src/pages/vehicle/VehicleDayRouteModal.tsx": 436,
     "src/pages/vehicle/VehicleRequestDays.tsx": 460,

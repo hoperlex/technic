@@ -7,7 +7,7 @@ import { officeEquipmentKeys } from '@entities/office-equipment';
 import { AssignServiceModal } from '@features/assign-service';
 import { EstimateEditorModal } from '@features/estimate-editor';
 import { EstimateApprovalModal } from '@features/estimate-approval';
-import { ServiceCommentModal } from '@features/service-comment';
+import { ServiceChatModal } from '@features/service-chat';
 import { ServiceCompleteModal } from '@features/service-complete';
 import { ServiceConsumablesIssueModal } from '@features/service-consumables-issue';
 import { ServiceAcceptModal, type AcceptMode } from '@features/service-accept';
@@ -31,7 +31,8 @@ export interface ServiceRequestModals {
   accept: (request: ServiceRequestDto, mode: AcceptMode) => void;
   hold: (request: ServiceRequestDto, mode: HoldMode) => void;
   urgency: (request: ServiceRequestDto) => void;
-  comment: (request: ServiceRequestDto) => void;
+  /** Обсуждение заявки (ADR 0141): лента реплик, а не перезаписываемое примечание. */
+  chat: (request: ServiceRequestDto) => void;
   itApproval: (request: ServiceRequestDto) => void;
   moveEquipment: (request: ServiceRequestDto) => void;
   /** Переход, у которого из содержания только причина: отказ, отмена, откат (§5.3). */
@@ -78,7 +79,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
     mode: HoldMode;
   } | null>(null);
   const [urgencyTarget, setUrgencyTarget] = useState<ServiceRequestDto | null>(null);
-  const [commentTarget, setCommentTarget] = useState<ServiceRequestDto | null>(null);
+  const [chatTarget, setChatTarget] = useState<ServiceRequestDto | null>(null);
   const [itTarget, setItTarget] = useState<ServiceRequestDto | null>(null);
   const [moveTarget, setMoveTarget] = useState<ServiceRequestDto | null>(null);
   const [prompt, setPrompt] = useState<ReasonPrompt | null>(null);
@@ -106,7 +107,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
     setAcceptTarget(null);
     setHoldTarget(null);
     setUrgencyTarget(null);
-    setCommentTarget(null);
+    setChatTarget(null);
     setItTarget(null);
     setMoveTarget(null);
     setPrompt(null);
@@ -121,7 +122,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
     accept: (request, mode) => setAcceptTarget({ request, mode }),
     hold: (request, mode) => setHoldTarget({ request, mode }),
     urgency: setUrgencyTarget,
-    comment: setCommentTarget,
+    chat: setChatTarget,
     itApproval: setItTarget,
     moveEquipment: setMoveTarget,
     ask: setPrompt,
@@ -148,7 +149,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
           onClose={() => setHoldTarget(null)}
         />
         <ServiceUrgencyModal request={urgencyTarget} onClose={() => setUrgencyTarget(null)} />
-        <ServiceCommentModal request={commentTarget} onClose={() => setCommentTarget(null)} />
+        <ServiceChatModal request={chatTarget} onClose={() => setChatTarget(null)} />
         <ItApprovalModal request={itTarget} onClose={() => setItTarget(null)} />
         {moveTarget && (
           <EquipmentMoveFromRequest

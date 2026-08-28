@@ -25,6 +25,7 @@ import { usersApi } from '../api/resources';
 import { useAuth } from '../auth/AuthContext';
 import { UtilityMenu, useUtilityMenu } from '@widgets/utility-menu';
 import { useServiceWaitingCount } from '@features/service-waiting-badge';
+import { useServiceChatUnreadCount } from '@features/service-chat';
 import { readSiderCollapsed, useIsMobile, writeSiderCollapsed } from '@shared/lib';
 import { MobileAppBar } from './MobileAppBar';
 import { MobileNav, type MobileNavItem } from './MobileNav';
@@ -82,6 +83,7 @@ export function AppLayout() {
   });
 
   const waitingServiceCount = useServiceWaitingCount();
+  const unreadChatCount = useServiceChatUnreadCount();
 
   /**
    * Бейдж ведёт не в раздел, а в саму очередь «Требуют решения» — тот же пресет списка, что и
@@ -89,7 +91,7 @@ export function AppLayout() {
    * пункт меню и открывает раздел целиком. Ставится он только на зажжённый бейдж — у погасшего
    * иконка обязана вести туда же, куда весь пункт.
    */
-  const serviceMenuIcon =
+  const waitingBadge =
     waitingServiceCount > 0 ? (
       <span
         title="Требуют решения"
@@ -104,6 +106,35 @@ export function AppLayout() {
       </span>
     ) : (
       SECTION_ICONS['office-equipment']
+    );
+
+  /**
+   * Второй бейдж — синий, о непрочитанном в обсуждениях заявок (ADR 0141). Отдельный от золотого,
+   * и СКЛАДЫВАТЬ ИХ НЕЛЬЗЯ: «где меня ждут» и «где мне написали» — разные вопросы, а сумма не
+   * отвечает ни на один и вела бы в очередь, отобранную не тем фильтром. Отсюда и два цвета:
+   * одинаковые кружки рядом читались бы как одно число, разбитое надвое.
+   *
+   * Своей ссылки у него нет: отбора «где мне написали» в списке не существует — непрочитанное
+   * показано меткой у номера, а не колонкой, — и нажатие остаётся нажатием на пункт меню.
+   *
+   * На телефоне — точка вместо числа, как у новостей выпуска (ADR 0077): пункт нижней навигации
+   * шириной в четверть экрана несёт подпись и иконку, и число поверх них не читается. Дальше
+   * человек всё равно идёт в раздел, где метка стоит у самой заявки.
+   */
+  const serviceMenuIcon =
+    unreadChatCount > 0 ? (
+      <Badge
+        count={isMobile ? undefined : unreadChatCount}
+        dot={isMobile}
+        size="small"
+        offset={isMobile ? [2, 2] : [4, 14]}
+        color="blue"
+        title={`Непрочитанных обсуждений: ${unreadChatCount}`}
+      >
+        {waitingBadge}
+      </Badge>
+    ) : (
+      waitingBadge
     );
 
   /**

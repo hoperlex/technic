@@ -78,6 +78,9 @@ function renderMenu(subject: ScopedSubject | Role | null, viewport?: Viewport) {
     // отвечаем нулём, чтобы бейдж не подмешивал число в подписи пунктов; чей это запрос и у кого
     // его не бывает вовсе, проверяет `service-waiting-badge.test.tsx`.
     'GET /service-requests/waiting-count': () => json({ count: 0 }),
+    // Непрочитанное в обсуждениях заявок (ADR 0141): второй счётчик каркаса, и спрашивает его
+    // каждый, кому видны заявки, — иначе каркас остался бы без ответа на живой запрос.
+    'GET /service-requests/unread-count': () => json({ count: 0 }),
   });
   return renderWithUser(
     <Routes>

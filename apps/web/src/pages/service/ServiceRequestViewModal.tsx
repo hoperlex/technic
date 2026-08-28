@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Button, Dropdown, Spin, Tabs, Typography } from 'antd';
+import { Badge, Button, Dropdown, Spin, Tabs, Typography } from 'antd';
+import { MessageOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
   type RequestHistoryEntryDto,
@@ -136,7 +137,16 @@ export function ServiceRequestViewModal({
    * переходов — и второй раз этот вопрос в портале не задаётся.
    */
   const assign = allActions.find((item) => item.key === 'assign');
-  const actionItems = allActions.filter((item) => item.key !== 'assign');
+  /*
+   * Обсуждение (ADR 0141) тем же приёмом уходит из меню в подвал: у него есть счётчик, а меню
+   * счётчиков не показывает — «есть ли там что-то новое» человек обязан видеть, не открывая
+   * список действий. Пункт берётся готовым, а не строится заново: где обсуждение доступно, решает
+   * тот же набор действий, что и для строки списка.
+   */
+  const chat = allActions.find((item) => item.key === 'chat');
+  const actionItems = allActions.filter(
+    (item) => item.key !== 'assign' && item.key !== 'chat',
+  );
 
   const fields = request
     ? serviceRequestViewFields({
@@ -157,6 +167,18 @@ export function ServiceRequestViewModal({
       // отношения не имеют.
       destroyOnHidden
       footer={[
+        ...(request && chat
+          ? [
+              // Счётчик — двумя числами о разном: сколько всего сказано (подпись) и сколько
+              // адресовано мне и не прочитано (бейдж). Одним числом они не складываются: «12»
+              // на кнопке ничего не сообщало бы тому, кому написали только что.
+              <Badge key="chat" count={request.chat.unreadMine} size="small" offset={[-8, 4]}>
+                <Button icon={<MessageOutlined />} onClick={chat.onClick}>
+                  {request.chat.total > 0 ? `Обсуждение · ${request.chat.total}` : 'Обсуждение'}
+                </Button>
+              </Badge>,
+            ]
+          : []),
         ...(actionItems.length > 0
           ? [
               // На телефоне действия открываются шитом снизу (ADR 0030), на десктопе — меню:

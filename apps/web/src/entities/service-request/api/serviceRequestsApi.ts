@@ -13,6 +13,10 @@ import type {
   ServiceFileKind,
   ApproveServiceItInput,
   ServiceRequestDto,
+  MarkServiceChatReadInput,
+  SendServiceChatMessageInput,
+  ServiceChatMessageDto,
+  ServiceChatPageDto,
   ServiceStatusChangeInput,
   ServiceWarrantyRowDto,
   SetServiceConsumablesIssuedInput,
@@ -99,6 +103,41 @@ export const serviceRequestsApi = {
   waitingCount: () => apiFetch<{ count: number }>(`${PATH}/waiting-count`),
 
   /**
+   * Обсуждение заявки (ADR 0141). Лента страничная и курсорная: `beforeSeq` — подгрузка вверх,
+   * `afterSeq` — инкрементальный опрос открытого окна. Смещения у ленты нет и быть не может — она
+   * только растёт, и номер страницы съезжал бы на каждую пришедшую реплику.
+   */
+  chatPage: (id: string, query: { beforeSeq?: number; afterSeq?: number; limit?: number } = {}) =>
+    apiFetch<ServiceChatPageDto>(`${PATH}/${id}/messages`, { query }),
+  /** Ответ — только созданная реплика и новый `lastSeq`: возвращать полсотни ради одной незачем. */
+  sendChatMessage: (id: string, body: SendServiceChatMessageInput) =>
+    apiFetch<{ message: ServiceChatMessageDto; lastSeq: number }>(`${PATH}/${id}/messages`, {
+      method: 'POST',
+      body,
+    }),
+  /**
+   * Подтверждение прочтения — курсор, а не отметка времени (ADR 0141, решение 5). Зовётся ПОСЛЕ
+   * успешного показа ленты: отметка на открытии гасила бы разговор и тогда, когда загрузка упала и
+   * человек не увидел ничего.
+   */
+  markChatRead: (id: string, body: MarkServiceChatReadInput) =>
+    apiFetch<{ readThroughSeq: number; lastSeq: number }>(`${PATH}/${id}/messages/read`, {
+      method: 'POST',
+      body,
+    }),
+  /**
+   * «Отметить все прочитанными» по заявкам текущего отбора. Тело — те же параметры, что у списка:
+   * кнопка обязана гасить ровно то, что человек видит, а не всё подряд.
+   */
+  markAllChatRead: (query: Query) =>
+    apiFetch<{ count: number }>(`${PATH}/messages/read-all`, { method: 'POST', body: query }),
+  /**
+   * Сколько заявок несут непрочитанное, адресованное мне, — число для синего бейджа раздела.
+   * Отдельно от «ждут меня» (`waitingCount`): вопросы разные, и сумма не отвечает ни на один.
+   */
+  chatUnreadCount: () => apiFetch<{ count: number }>(`${PATH}/unread-count`),
+
+  /**
    * Исполнители заявки одним действием (Н5, Н6): список своих сотрудников **и**
    * исполнитель-контрагент. Оба поля уходят целиком — это состав, а не добавление: «прислать
    * одного» означало бы, что сервер угадывает, снимали ли кого-то.
@@ -177,9 +216,6 @@ export const serviceRequestsApi = {
   /** Отмена и откаты: ответ несёт исход письма — отменённую заявку служба тоже должна узнать. */
   changeStatus: (id: string, body: ServiceStatusChangeInput) =>
     patch<ServiceRequestWithMailDto>(id, '/status', body),
-  /** Примечание исполнителя: заявку не редактирует, границу сторон не двигает (приём ADR 0053). */
-  saveServiceComment: (id: string, body: { serviceComment: string; version: number }) =>
-    patch<ServiceRequestDto>(id, '/service-comment', body),
   /**
    * Срочность своей ручкой, а не полем правки (Р56): её ставят и снимают до самого закрытия, в том
    * числе когда саму заявку править уже нельзя.

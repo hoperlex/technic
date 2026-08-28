@@ -50,6 +50,10 @@ function renderMenu(user: AuthUser, count = 3): HttpMock {
     // точкой синхронизации: его ответ означает, что запросы каркаса на монтировании уже ушли.
     'GET /releases': () => json([]),
     [WAITING_COUNT]: () => json({ count }),
+    // Второй счётчик каркаса — непрочитанное в обсуждениях заявок (ADR 0141). Здесь он нулевой
+    // намеренно: файл про золотой бейдж, а синий проверяется своим (`service-chat.test.tsx`), — но
+    // ответить ему надо, иначе запрос остался бы без мока и тест упал бы не на своём смысле.
+    'GET /service-requests/unread-count': () => json({ count: 0 }),
   });
   renderWithUser(
     <Routes>

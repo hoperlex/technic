@@ -593,6 +593,20 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'PATCH /api/v1/service-requests/:id/service-comment': {
     payload: { serviceComment: 'будем во вторник', version: 1 },
   },
+  /*
+   * Обсуждение заявки (ADR 0141). Тело нужно обеим ручкам не ради содержания, а ради порядка
+   * проверок: схема разбирается ДО `preHandler`, и запрос без тела упёрся бы в 400 раньше стража —
+   * то есть перебор проверял бы валидацию, а не доступ.
+   *
+   * Отправка объявлена условной (`conditionalPermissions` с пустым перечнем): условие у неё —
+   * участие в разговоре, а не право, и телом запроса оно не выражается. Перебор поэтому проверяет
+   * базовую половину (`serviceRequests.read`), а «наблюдателю 403, в закрытой заявке 409»
+   * доказывают db-тесты ленты.
+   */
+  'POST /api/v1/service-requests/:id/messages': {
+    payload: { body: 'ждём запчасть', addressees: { sides: ['all'], users: [] } },
+  },
+  'POST /api/v1/service-requests/:id/messages/read': { payload: { throughSeq: 0 } },
   // «Принять в работу» и отказ — дуги исполнителя (`assigned → in_work` и `assigned → new`), а в
   // выборе прав маршрута стоит право хода: открывает дугу не оно, поэтому добавка остаётся.
   'PATCH /api/v1/service-requests/:id/start': {

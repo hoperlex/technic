@@ -1,4 +1,4 @@
-import { eq, inArray, isNotNull, isNull, or, type AnyColumn, type SQL } from 'drizzle-orm';
+import { eq, inArray, isNotNull, isNull, or, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import {
   actsForCounterparty,
   allowedVehicleRequestTypes,
@@ -514,6 +514,63 @@ export function assertServiceRequestScope(p: Principal, place: ServiceRequestPla
       throw err.forbidden(`${roleLabels[p.role!]} работает только с заявками своих отделов`);
     }
   }
+}
+
+/**
+ * Видна ли заявка учётке **со стороны заказчика** — ролью отдела или ролью площадки (ADR 0141,
+ * §3.1). Ответ уходит фактом `inCustomerScope` в `ServiceChatFacts`, а по нему считается аудитория
+ * адресата «Заявителю»: она шире автора намеренно — чтобы вопрос не завис, пока автор в отпуске.
+ *
+ * Источник тот же, что у `serviceRequestScopeWhere` и `assertServiceRequestScope`: те же две оси
+ * (`isObjectScopedRole` / `isDepartmentScopedRole`) и те же наборы областей принципала. Своё
+ * правило рядом с ними разошлось бы молча — подсветка «Заявителю» загоралась бы у одних, а сама
+ * заявка была бы видна другим.
+ *
+ * **Сквозной области здесь нет, и это не забытая ветка.** `hasModuleWideScope` открывает согласующему
+ * от ИТ заявки всей компании (Р54), но открывает их **набором**, а не отделом и не площадкой: он
+ * видит заявку не потому, что она его. Считай мы такую видимость стороной заказчика, ИТ-служба
+ * получала бы яркую метку на каждую реплику «Заявителю» по всей компании — то есть бейдж, который
+ * невозможно погасить работой, и ровно у той стороны, у которой есть собственный адресат.
+ *
+ * Область сервисной компании (`serviceExecutorVisibilityWhere`) сюда тоже не входит: подрядчик — это
+ * сторона `service`, и совпадать со стороной заказчика он не должен ни при каком назначении.
+ */
+export function inServiceRequestCustomerScope(p: Principal, place: ServiceRequestPlace): boolean {
+  if (isObjectScopedRole(p.role)) return p.constructionObjectIds.includes(place.objectId);
+  if (isDepartmentScopedRole(p.role)) {
+    const own = (id: string | null): boolean => !!id && p.departmentIds.includes(id);
+    return own(place.customerDepartmentId) || own(place.equipmentDepartmentId);
+  }
+  return false;
+}
+
+/**
+ * То же правило предикатом выборки — для счётчика непрочитанного, который не может перебрать заявки
+ * поштучно (ADR 0141, §3.5): он считает их сразу по всей области субъекта.
+ *
+ * Две записи одного правила — цена того, что одна отвечает по строке, а другая внутри SQL; держатся
+ * они рядом и читаются вместе. Расхождение между ними означало бы, что бейдж считает не то, что
+ * подсвечивает карточка.
+ */
+export function serviceRequestCustomerScopeWhere(
+  p: Principal,
+  objectIdColumn: AnyColumn,
+  customerDepartmentIdColumn: AnyColumn,
+  equipmentDepartmentIdColumn: AnyColumn,
+): SQL {
+  if (isObjectScopedRole(p.role)) {
+    const ids = p.constructionObjectIds;
+    return ids.length > 0 ? inArray(objectIdColumn, ids) : sql`false`;
+  }
+  if (isDepartmentScopedRole(p.role)) {
+    const ids = p.departmentIds;
+    if (ids.length === 0) return sql`false`;
+    return or(
+      inArray(customerDepartmentIdColumn, ids),
+      inArray(equipmentDepartmentIdColumn, ids),
+    )!;
+  }
+  return sql`false`;
 }
 
 /**

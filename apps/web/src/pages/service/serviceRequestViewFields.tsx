@@ -297,17 +297,12 @@ export function serviceRequestViewFields({
       label: 'Автор',
       children: `${request.createdByName} · ${formatDateTime(request.createdAt)}`,
     },
+    /*
+     * «Комментарий» заявителя остался, а «Примечание исполнителя» ушло (ADR 0141): первое — часть
+     * постановки задачи, его пишут до того, как заявка кому-либо адресована; второе было
+     * перезаписываемым полем на всю заявку, и его заменила лента обсуждения, где видно, кто, когда
+     * и кому сказал. Двух мест для одного текста у карточки больше нет.
+     */
     { key: 'comment', label: 'Комментарий', full: true, children: request.comment || '—' },
-    // Примечание исполнителя (приём ADR 0053): его строка в заявке, заявку она не редактирует.
-    ...(request.serviceComment
-      ? [
-          {
-            key: 'serviceComment',
-            label: 'Примечание исполнителя',
-            full: true,
-            children: request.serviceComment,
-          },
-        ]
-      : []),
   ];
 }

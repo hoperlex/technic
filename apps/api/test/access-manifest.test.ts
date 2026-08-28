@@ -235,23 +235,37 @@ describe('манифест доступа маршрутов', () => {
     const conditional = Object.entries(manifest).filter(
       ([, c]) => c.kind === 'conditionalPermissions',
     );
-    // Условных мест в модели четыре. Два в «Вывозе мусора»: заведение и правка заявки требуют
+    // Условных мест в модели пять. Два в «Вывозе мусора»: заведение и правка заявки требуют
     // `wasteRequests.assignOperator` только при присутствии `operatorCounterpartyId`. Ещё два —
     // заведение расходника оргтехники и заведение автозапчасти: ненулевой начальный остаток требует
     // права на склад (`officeEquipmentConsumables.stock`, `autoParts.stock`) сверх `manage`, потому
     // что это уже утверждение о складе, а не о номенклатуре. Эти два отличаются от первых способом
     // проверки: право спрашивается по ЗНАЧЕНИЮ (`quantity > 0`), а не по присутствию поля, —
     // `quantity` приезжает умолчанием схемы и в теле есть всегда.
-    // Список поимённый: пятое такое место обязано попасть в ревью, а не приехать молча.
+    // Список поимённый: шестое такое место обязано попасть в ревью, а не приехать молча.
     expect(conditional.map(([key]) => key).sort()).toEqual([
       'PATCH /api/v1/waste-requests/:id',
       'POST /api/v1/auto-parts',
       'POST /api/v1/office-equipment-consumables',
+      'POST /api/v1/service-requests/:id/messages',
       'POST /api/v1/waste-requests',
     ]);
+    /*
+     * Пятое место — отправка реплики в обсуждение заявки (ADR 0141) — единственное с ПУСТЫМ
+     * `conditionalAllOf`, и пустота эта содержательна. Условие там не право, а участие в разговоре:
+     * сторона считается из фактов заявки (автор ли я, в области ли заказчика, назначен ли подрядчик,
+     * назван ли я поимённо), и записать её правом невозможно по построению. Требуй тест непустого
+     * перечня у всех подряд — условие пришлось бы либо выдумать правом, которого нет, либо спрятать
+     * маршрут в `permissions` и потерять пометку «сверх базового спрашивается ещё кое-что».
+     */
+    const emptyConditional = conditional
+      .filter(
+        ([, c]) => c.kind === 'conditionalPermissions' && c.conditionalAllOf.length === 0,
+      )
+      .map(([key]) => key);
+    expect(emptyConditional).toEqual(['POST /api/v1/service-requests/:id/messages']);
     for (const [key, condition] of conditional) {
       if (condition.kind !== 'conditionalPermissions') continue;
-      expect(condition.conditionalAllOf.length, key).toBeGreaterThan(0);
       // Пока условие спрашивается внутри обработчика, в `guard.authz` его нет вовсе — и делать
       // вид, что сверка «манифест ↔ факт» покрыла условную половину, нельзя. Когда страж получит
       // структурную декларацию, пометка станет `true`, и здесь появится сравнение с фактом.

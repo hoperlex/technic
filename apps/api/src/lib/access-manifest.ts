@@ -690,6 +690,49 @@ export const ACCESS_MANIFEST = {
     allOf: ['serviceRequests.read'],
   },
   /*
+   * Обсуждение заявки (ADR 0141). Пять маршрутов, и НОВЫХ ПРАВ переписка не заводит вовсе (решение 4
+   * ADR): все стоят на чтении модуля. Отдельное «право переписки» пришлось бы выдавать руками рядом
+   * с правом видеть заявку, и первая же забытая выдача дала бы участника цикла, который заявку
+   * ведёт, но написать по ней не может, — причём без единого следа в интерфейсе.
+   *
+   * Чтение ленты, курсор и счётчик — просто `serviceRequests.read`: текст реплик видят все, кому
+   * видна заявка (адресат — пометка, а не ограничение видимости), а курсор прочтения есть даже у
+   * наблюдателя, который писать не может.
+   */
+  'GET /api/v1/service-requests/:id/messages': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.read'],
+  },
+  /*
+   * Отправка — условная, и условие у неё не право, а УЧАСТИЕ в разговоре: пишут стороны цикла и
+   * автор заявки, остальные читают. Выразить это правом нельзя по построению — сторона считается из
+   * фактов заявки (автор ли я, в области ли заказчика, назначен ли подрядчик, назван ли я поимённо),
+   * а не из матрицы, — поэтому `conditionalAllOf` пуст, и это единственное такое место.
+   *
+   * Условие живёт в обработчике: `canWriteChat` внутри транзакции, под блокировкой заявки —
+   * назначение и статус к моменту отправки успевают измениться. Отсюда `conditionDeclaredOnRoute:
+   * false`: сверять с фактом можно только `baseAllOf`, а условную половину доказывают db-тесты
+   * ленты (`service-request-chat.db.test.ts`) — 403 наблюдателю, 409 в закрытой заявке.
+   */
+  'POST /api/v1/service-requests/:id/messages': {
+    kind: 'conditionalPermissions',
+    baseAllOf: ['serviceRequests.read'],
+    conditionalAllOf: [],
+    conditionDeclaredOnRoute: false,
+  },
+  'POST /api/v1/service-requests/:id/messages/read': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.read'],
+  },
+  'POST /api/v1/service-requests/messages/read-all': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.read'],
+  },
+  'GET /api/v1/service-requests/unread-count': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.read'],
+  },
+  /*
    * Заморозка и возврат: право спрашивает **обработчик** предикатом контрактов `canHoldService`
    * («есть `hold` **или** есть `status`»), а не страж. Дизъюнкции в манифесте нет и заводить её
    * ради двух маршрутов нельзя, поэтому условие маршрута — чтение модуля, а решение — за

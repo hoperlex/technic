@@ -58,6 +58,8 @@ import { errorMessage } from '../../utils/format';
 export function useServiceRequestActions(): {
   actionsFor: (request: ServiceRequestDto) => ActionSheetItem[];
   modals: ReactNode;
+  /** Открыть обсуждение помимо меню: этим живёт адрес `?open=<id>&chat=1` (ADR 0141, §3.7). */
+  openChat: (request: ServiceRequestDto) => void;
   /** Погасить все окна набора: нужно тому, чьи окна живут внутри карточки (ADR 0140). */
   close: () => void;
   pending: boolean;
@@ -385,24 +387,21 @@ export function useServiceRequestActions(): {
     }
 
     /*
-     * Примечание исполнителя (приём ADR 0053) — не переход и не правка заявки: исполнитель пишет
-     * своё слово в чужую заявку, а сама заявка правится заказчиком и только в двух статусах.
-     * Поэтому спрашивается право работы исполнителя, а не коридор: одной ручкой пользуются и
-     * сервис, и администратор, и у обоих она открыта до самого закрытия.
+     * Обсуждение (ADR 0141) — вместо «Примечания исполнителя», которое оно заменяет, а не
+     * дополняет: два места для одного текста означали бы вопрос «а где написать» у каждого, кто
+     * открыл заявку, и два расходящихся ответа на «что сказал сервис».
      *
-     * Отложенной примечание пишут наравне с прочими (Р110): «запчасть будет 3-го» — это ответ
-     * ровно на тот вопрос, из-за которого заявку и остановили, и убрать пункт в `on_hold` значило
-     * бы закрыть поле в единственный момент, когда оно и нужно. Не показывается он только у
-     * закрытой заявки: там сервер отвечает отказом.
+     * Пункт стоит у ВСЕХ и во всех статусах, включая закрытые: текст реплик видят все, кому видна
+     * заявка (решение 2 ADR), — адресат управляет подсветкой, а не видимостью. Писать может не
+     * всякий, но это вопрос кнопки отправки внутри окна, а не входа в него: спрятанную переписку
+     * читателю нечем и заменить — колонки с текстом реплик в списке нет.
      */
-    if (!closed && hasPermission(user, 'serviceRequests.estimate')) {
-      items.push({
-        key: 'service-comment',
-        label: 'Примечание исполнителя',
-        icon: <MessageOutlined />,
-        onClick: () => modals.comment(request),
-      });
-    }
+    items.push({
+      key: 'chat',
+      label: 'Обсуждение',
+      icon: <MessageOutlined />,
+      onClick: () => modals.chat(request),
+    });
 
     /*
      * Переезд техники, вызванный ремонтом (Р61): «увезли в сервис» и «вернулась». Ход заявки
@@ -451,5 +450,5 @@ export function useServiceRequestActions(): {
   };
 
   const pending = modals.pending || startMutation.isPending;
-  return { actionsFor, modals: modals.node, close: modals.close, pending };
+  return { actionsFor, modals: modals.node, openChat: modals.chat, close: modals.close, pending };
 }

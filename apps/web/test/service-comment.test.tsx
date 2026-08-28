@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { AuthUser, ServiceRequestDto } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
@@ -10,17 +10,19 @@ import { objectDto } from './factories/waste';
 import { RequestsTab } from '../src/pages/service/RequestsTab';
 
 /**
- * Примечание исполнителя (приём ADR 0053): строка сервисной компании в чужой заявке.
+ * «Примечания исполнителя» в портале больше нет: его заменило обсуждение (ADR 0141, решение 1).
  *
- * Проверяется то, что расходится молча. Ручка на сервере была с самого модуля, а окна не было —
- * заявку исполнитель не редактирует, и поле, приделанное к правке заявки, ему бы не открылось.
- * Отсюда три вещи, которые ломаются беззвучно: пустое значение здесь не отказ формы, а способ
- * снять устаревшую запись; предзаполнение прежним текстом отличает «дополнить» от «набрать
- * заново»; и пункт обязан жить у отложенной заявки (Р110) — именно тогда пишут «запчасть будет
- * 3-го», — но исчезать у закрытой, где сервер отвечает отказом.
+ * Файл переписан целиком и оставлен на месте намеренно — он сторожит именно **снятие**. Заменить
+ * одно другим мало: два места для одного текста означали бы вопрос «а где написать» у каждого, кто
+ * открыл заявку, и два расходящихся ответа на «что сказал сервис». Поэтому проверяется, что окна
+ * нет, пункта нет и строки в карточке нет, — а не то, что рядом появилось обсуждение (это дело
+ * `service-chat.test.tsx`).
+ *
+ * Поле `serviceComment` при этом **живо в DTO и на сервере**: ручка-адаптер работает до выпуска C
+ * (§3.10 плана) — старый бандл в браузере продолжает её звать, и снимать её вместе с окном нельзя.
+ * Отсюда главный сценарий файла: непустое значение приходит, а карточка его не показывает.
  */
 
-/** Исполнитель: право `serviceRequests.estimate` даёт ему тип контрагента, а не роль (ADR 0038). */
 const EXECUTOR: AuthUser = serviceExecutor();
 
 function renderTab(
@@ -30,6 +32,9 @@ function renderTab(
 ): HttpMock {
   const http = mockHttp({
     'GET /service-requests': () => json(list(items)),
+    'GET /service-requests/:id': ({ params }) =>
+      json(items.find((r) => r.id === params.id) ?? items[0]!),
+    'GET /service-requests/:id/history': () => json([]),
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
     'GET /counterparties': () => json(emptyList()),
@@ -54,94 +59,56 @@ async function rowActionLabels(): Promise<string[]> {
   );
 }
 
-/** Открыть окно примечания из меню строки. */
-async function openCommentModal(): Promise<void> {
-  await rowActionLabels();
-  fireEvent.click(await screen.findByText('Примечание исполнителя'));
-  await screen.findByLabelText('Примечание исполнителя');
-}
-
-describe('окно «Примечание исполнителя»', () => {
-  it('текст уходит на сервер вместе с версией заявки', async () => {
-    const saved = vi.fn();
-    const request = serviceRequest({ status: 'diagnostics' });
-    const http = renderTab([request], {
-      'PATCH /service-requests/:id/service-comment': ({ body }) => {
-        saved(body);
-        return json({ ...request, serviceComment: 'запчасть будет 3-го' });
-      },
-    });
-    await screen.findByText('СО-14');
-
-    await openCommentModal();
-    fireEvent.change(screen.getByLabelText('Примечание исполнителя'), {
-      target: { value: 'запчасть будет 3-го' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
-
-    await waitFor(() => expect(saved).toHaveBeenCalled());
-    // Версия — оптимистическая блокировка (Р30): между открытием окна и нажатием заявку мог
-    // подвинуть другой человек, и молча затирать его решение нельзя.
-    expect(saved.mock.calls[0]![0]).toMatchObject({
-      serviceComment: 'запчасть будет 3-го',
-      version: 3,
-    });
-    expect(http.countOf('PATCH /service-requests/:id/service-comment')).toBe(1);
-  });
-
-  it('поле открывается с прежней записью: её дополняют, а не набирают заново', async () => {
+describe('окна «Примечание исполнителя» больше нет', () => {
+  it('в меню строки его место занято обсуждением', async () => {
     renderTab([serviceRequest({ status: 'in_work', serviceComment: 'ждём поставку' })]);
     await screen.findByText('СО-14');
 
-    await openCommentModal();
-
-    // Пустое поле поверх существующей записи означало бы, что «дописать пару слов» невозможно:
-    // человек либо перепечатывает прежний текст, либо молча стирает его сохранением.
-    expect((screen.getByLabelText('Примечание исполнителя') as HTMLTextAreaElement).value).toBe(
-      'ждём поставку',
-    );
+    const labels = await rowActionLabels();
+    expect(labels).not.toContain('Примечание исполнителя');
+    expect(labels).toContain('Обсуждение');
   });
 
-  it('устаревшую запись стирают тем же окном — уходит пустая строка', async () => {
-    const saved = vi.fn();
-    const request = serviceRequest({ status: 'in_work', serviceComment: 'ждём поставку' });
-    renderTab([request], {
-      'PATCH /service-requests/:id/service-comment': ({ body }) => {
-        saved(body);
-        return json({ ...request, serviceComment: '' });
-      },
-    });
+  it('у отложенной заявки — то же: писать туда по-прежнему надо, но уже репликой (Р110)', async () => {
+    renderTab([heldServiceRequest('in_work')]);
     await screen.findByText('СО-14');
 
-    await openCommentModal();
-    fireEvent.change(screen.getByLabelText('Примечание исполнителя'), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
-
-    // Пустое значение — обычный ход, а не отказ формы: деталь приехала, и «ждём поставку» в
-    // карточке врёт. Другого способа снять строку у исполнителя нет.
-    await waitFor(() => expect(saved).toHaveBeenCalled());
-    expect(saved.mock.calls[0]![0]).toMatchObject({ serviceComment: '', version: 3 });
-  });
-});
-
-describe('где пункт «Примечание исполнителя» есть, а где его нет', () => {
-  it('у отложенной заявки пункт остаётся: тогда его и пишут (Р110)', async () => {
-    renderTab([heldServiceRequest('diagnostics')]);
-    await screen.findByText('СО-14');
-
-    // Заморозка останавливает ход заявки, а не жизнь вокруг неё: «запчасть будет 3-го» — ответ
-    // ровно на тот вопрос, из-за которого заявку и остановили.
-    expect(await rowActionLabels()).toContain('Примечание исполнителя');
+    const labels = await rowActionLabels();
+    expect(labels).not.toContain('Примечание исполнителя');
+    expect(labels).toContain('Обсуждение');
   });
 
-  it('у принятой заявки пункта нет: сервер закрытую не принимает', async () => {
-    // Смотрит администратор, а не исполнитель, и это существенно: право `serviceRequests.estimate`
-    // у него есть, а меню принятой заявки у исполнителя пусто и без него — тогда проверка ничего
-    // бы не сказала про сам пункт. Пропадает он именно от закрытости заявки.
+  it('у закрытой заявки обсуждение остаётся, хотя примечания там не было вовсе', async () => {
+    // Прежний пункт у принятой заявки исчезал: сервер отвечал на запись отказом. Лента же
+    // замерзает, а не прячется — читать спор с подрядчиком после приёмки и надо (решение 3 ADR).
     renderTab([serviceRequest({ status: 'accepted' })], {}, authUser({ role: 'admin' }));
     await screen.findByText('СО-14');
 
-    // Показать пункт здесь значило бы предложить окно, из которого нельзя выйти сохранением.
-    expect(await rowActionLabels()).not.toContain('Примечание исполнителя');
+    expect(await rowActionLabels()).toContain('Обсуждение');
+  });
+});
+
+describe('карточка не показывает примечание, даже когда оно пришло с сервера', () => {
+  it('непустое `serviceComment` строкой не выводится: поле живёт адаптером, а не интерфейсом', async () => {
+    const http = renderTab([
+      serviceRequest({ status: 'in_work', serviceComment: 'ждём поставку' }),
+    ]);
+    fireEvent.click(await screen.findByText('СО-14'));
+
+    const card = await waitFor(() => {
+      const wrap = [...document.querySelectorAll<HTMLElement>('.ant-modal-wrap')]
+        .filter((el) => el.style.display !== 'none')
+        .find((el) => el.querySelector('.ant-modal-title')?.textContent === 'Заявка СО-14');
+      if (!wrap) throw new Error('карточка не открылась');
+      return within(wrap);
+    });
+
+    // Ни подписи поля, ни его значения: иначе «что сказал сервис» отвечалось бы из двух мест.
+    expect(card.queryByText('Примечание исполнителя')).toBeNull();
+    expect(card.queryByText('ждём поставку')).toBeNull();
+    // «Комментарий» заявителя остался: он не реплика, а часть постановки задачи (решение 1 ADR).
+    expect(card.getByText('Комментарий')).toBeDefined();
+    // И самой ручки портал не зовёт больше нигде: она дожидается выпуска C ради старого бандла.
+    expect(http.countOf('PATCH /service-requests/:id/service-comment')).toBe(0);
   });
 });

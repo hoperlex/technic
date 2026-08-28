@@ -78,6 +78,17 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     replacementRecommended: false,
     comment: '',
     serviceComment: '',
+    // Обсуждение (ADR 0141): у заявки, по которой не сказано ни слова, блок не отсутствует — он
+    // пуст. Сценарию про подсветку никто не мешает передать свои числа.
+    chat: {
+      canWrite: false,
+      participantSides: [],
+      total: 0,
+      unreadMine: 0,
+      unreadOthers: false,
+      lastSeq: 0,
+      readThroughSeq: 0,
+    },
     files: [],
     createdByName: 'Штабов С. И.',
     createdAt: '2026-08-05T09:00:00.000Z',

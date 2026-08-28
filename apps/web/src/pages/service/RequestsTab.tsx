@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { App, Button, Segmented, Space } from 'antd';
+import { useSearchParams } from 'react-router';
 import { PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -9,6 +10,7 @@ import {
 } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { officeEquipmentKeys, officeEquipmentOptionsQuery } from '@entities/office-equipment';
+import { MarkAllChatReadButton } from '@features/service-chat';
 import { DataTable, PageTableLayout, sortOptionsFrom, type ActionSheetItem } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
@@ -115,12 +117,38 @@ export function RequestsTab() {
   const [viewRecord, setViewRecord] = useState<ServiceRequestDto | null>(null);
 
   /** Заявка, названная в адресе: по ссылке из письма и из соседнего списка. */
+  const activeTab = useActiveTabKey() === 'requests';
   const opened = useOpenedRecord<ServiceRequestDto>({
-    active: useActiveTabKey() === 'requests',
+    active: activeTab,
     queryKey: (id) => serviceRequestKeys.detail(id),
     fetch: (id) => serviceRequestsApi.get(id),
   });
   const shown = viewRecord ?? opened.record;
+
+  /*
+   * `?open=<id>&chat=1` — карточка с раскрытым обсуждением (§3.7). Заведено не сегодняшнему
+   * порталу, а завтрашнему письму «перейти к обсуждению»: адрес обязан существовать раньше
+   * ссылки, иначе первое же письмо потребует выката портала.
+   *
+   * Окно открывается набором КАРТОЧКИ (ADR 0140) — карточка тут открыта, и снаружи переписка
+   * ушла бы под неё. Параметр после открытия снимается: оставленный, он выкидывал бы окно заново
+   * при каждом закрытии — человек закрыл переписку, а адрес просит её открыть.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const chatRequested = activeTab && searchParams.get('chat') === '1';
+  const openCardChat = cardActions.openChat;
+  useEffect(() => {
+    if (!chatRequested || !shown) return;
+    openCardChat(shown);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('chat');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [chatRequested, shown, openCardChat, setSearchParams]);
 
   /*
    * Закрылась карточка — гаснут и её окна (ADR 0140). Карточку закрывают не только её кнопками:
@@ -227,6 +255,9 @@ export function RequestsTab() {
       actions.actionsFor(r).find((item) => item.primary)?.onClick ?? null,
     actions: rowActions,
     onOpen: (request: ServiceRequestDto) => setViewRecord(request),
+    // Метка непрочитанного ведёт в окно набора СТРАНИЦЫ: карточка при нажатии на строку ещё не
+    // открыта, и вкладывать переписку не во что.
+    onChat: actions.openChat,
   };
   const columns = serviceRequestColumns(grid);
 
@@ -263,8 +294,12 @@ export function RequestsTab() {
         />
       }
       toolbar={
-        // Пресеты стоят над таблицей и на телефоне тоже: это вход в работу, а не фильтр.
-        <Segmented options={[...QUEUES]} value={queue} onChange={(v) => setQueue(String(v))} />
+        <Space wrap>
+          {/* Пресеты стоят над таблицей и на телефоне тоже: это вход в работу, а не фильтр. */}
+          <Segmented options={[...QUEUES]} value={queue} onChange={(v) => setQueue(String(v))} />
+          {/* Отбор уходит тот же, которым отобран список: кнопка гасит ровно то, что видно. */}
+          <MarkAllChatReadButton filters={query} />
+        </Space>
       }
       mobile={{
         search: {

@@ -1,18 +1,31 @@
-import { desc, eq } from 'drizzle-orm';
-import type {
-  RequestChangeDto,
-  RequestHistoryEntryDto,
-  RequestHistoryKind,
-  ServiceRequestStatus,
+import { desc, eq, inArray } from 'drizzle-orm';
+import {
+  serviceChatSideLabels,
+  type RequestChangeDto,
+  type RequestHistoryEntryDto,
+  type RequestHistoryKind,
+  type ServiceChatSide,
+  type ServiceRequestStatus,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { serviceRequestStatusHistory, users } from '../db/schema';
+import {
+  serviceRequestMessageAddressees,
+  serviceRequestMessages,
+  serviceRequestStatusHistory,
+  users,
+} from '../db/schema';
 import { HISTORY_LIMIT, loadAuditEvents } from './request-history';
+import { short } from './request-diff';
 
-// История заявки на обслуживание оргтехники (ADR 0012, ADR 0085). Источников два, и оба уже
-// пишутся: своя таблица переходов (там есть переход, причина и ревизия сметы) и общий аудит
-// (что именно изменила правка — снимком в metadata). Третьей таблицы нет по той же причине, что
-// у двух действующих модулей: она была бы ещё одной точкой правды о тех же событиях.
+// История заявки на обслуживание оргтехники (ADR 0012, ADR 0085). Источников три, и все три уже
+// пишутся своими таблицами: переходы статусов (там есть переход, причина и ревизия сметы), общий
+// аудит (что именно изменила правка — снимком в metadata) и лента обсуждения (ADR 0141). Своей
+// таблицы у истории нет по той же причине, что у двух действующих модулей: она была бы ещё одной
+// точкой правды о тех же событиях.
+//
+// Реплику аудит не пишет и писать не должен: событие уже хранится таблицей ленты — с автором,
+// временем и текстом, — и вторая его копия расходилась бы с первой ровно тогда, когда на переписку
+// сошлются в споре.
 
 /**
  * Событие истории этого модуля.
@@ -222,6 +235,90 @@ function revisionOf(metadata: unknown): number | null {
 }
 
 /**
+ * Реплики обсуждения — третий источник истории (ADR 0141, §3.8).
+ *
+ * Живёт по правилам первых двух: свой `.limit(HISTORY_LIMIT)`, и только потом общий список
+ * сортируется и режется тем же числом. Без этого длинная переписка вернула бы историю к
+ * неограниченной выдаче — той самой болезни, от которой саму ленту лечит постраничность.
+ *
+ * Берутся ПОСЛЕДНИЕ реплики (`desc` плюс лимит), а не первые: история отвечает на вопрос «что
+ * происходило недавно», и обрезать её с конца значило бы показывать самое старое.
+ *
+ * Сортировка по `created_at`, а не по `seq`, — и индекс `(request_id, created_at)` заведён ровно под
+ * это. Порядок по номеру здесь не годится: у перенесённых реплик время приблизительное (§3.9) и с
+ * номером не согласовано, а общий список всё равно сшивается по времени с двумя другими
+ * источниками.
+ */
+async function loadChatEvents(requestId: string): Promise<ServiceRequestHistoryEntryDto[]> {
+  const rows = await db
+    .select({
+      id: serviceRequestMessages.id,
+      body: serviceRequestMessages.body,
+      at: serviceRequestMessages.createdAt,
+      actorId: serviceRequestMessages.authorId,
+      actorName: users.fullName,
+    })
+    .from(serviceRequestMessages)
+    .leftJoin(users, eq(serviceRequestMessages.authorId, users.id))
+    .where(eq(serviceRequestMessages.requestId, requestId))
+    .orderBy(desc(serviceRequestMessages.createdAt))
+    .limit(HISTORY_LIMIT);
+  if (rows.length === 0) return [];
+
+  // Адресаты — второй выборкой по идентификаторам уже отобранных реплик: соединением они размножили
+  // бы строку события на две-три (у реплики адресатов несколько), и история показала бы одно
+  // сообщение трижды.
+  const addressees = await db
+    .select({
+      messageId: serviceRequestMessageAddressees.messageId,
+      side: serviceRequestMessageAddressees.side,
+      fullName: users.fullName,
+    })
+    .from(serviceRequestMessageAddressees)
+    .leftJoin(users, eq(serviceRequestMessageAddressees.userId, users.id))
+    .where(
+      inArray(
+        serviceRequestMessageAddressees.messageId,
+        rows.map((row) => row.id),
+      ),
+    );
+  const targets = new Map<string, string[]>();
+  for (const row of addressees) {
+    const list = targets.get(row.messageId) ?? [];
+    // Поимённый адресат — с пометкой «лично» и ИМЕНЕМ КАК ЕСТЬ, без склонения: у сторон ярлык
+    // словарный и уже в дательном падеже, а фамилию портал склонять не умеет — и не должен.
+    // Неправильно просклонённая фамилия в истории, на которую ссылаются в споре, хуже именительной.
+    list.push(row.side ? sideTarget(row.side) : `лично ${row.fullName ?? ''}`);
+    targets.set(row.messageId, list);
+  }
+
+  return rows.map((row) => ({
+    id: row.id,
+    kind: 'chatMessage' as RequestHistoryKind,
+    at: row.at.toISOString(),
+    actorId: row.actorId,
+    // Пусто у перенесённых из примечания: автора там не восстановить, и подставлять «кого-нибудь»
+    // хуже, чем промолчать.
+    actorName: row.actorName,
+    fromStatus: null,
+    toStatus: null,
+    estimateRevision: null,
+    // Строка события целиком: «сообщение сервисному центру: „ждём запчасть“». Кому и что — вместе,
+    // потому что вместе они и читаются; `changes` тут нечем заполнить — у реплики нет «было».
+    comment: `сообщение ${(targets.get(row.id) ?? []).join(', ') || 'без адресата'}: «${short(
+      row.body,
+    )}»`,
+    changes: [],
+  }));
+}
+
+/** Ярлык стороны в дательном падеже — тот же, что рисует лента: «Сервисному центру» → строчными. */
+function sideTarget(side: ServiceChatSide): string {
+  const label = serviceChatSideLabels[side];
+  return label.charAt(0).toLowerCase() + label.slice(1);
+}
+
+/**
  * История заявки в хронологическом порядке. `created` — запасной вариант для заведения заявки:
  * обычно оно есть в истории статусов (переход «— → Новая»), но у записей, заведённых в БД помимо
  * приложения, его может не быть.
@@ -230,7 +327,7 @@ export async function loadServiceRequestHistory(
   requestId: string,
   created: { at: Date; actorId: string; actorName: string },
 ): Promise<ServiceRequestHistoryEntryDto[]> {
-  const [statusRows, auditRows] = await Promise.all([
+  const [statusRows, auditRows, chatRows] = await Promise.all([
     db
       .select({
         id: serviceRequestStatusHistory.id,
@@ -248,6 +345,7 @@ export async function loadServiceRequestHistory(
       .orderBy(desc(serviceRequestStatusHistory.changedAt))
       .limit(HISTORY_LIMIT),
     loadAuditEvents('serviceRequest', requestId, AUDIT_ACTIONS),
+    loadChatEvents(requestId),
   ]);
 
   const entries: ServiceRequestHistoryEntryDto[] = [
@@ -276,6 +374,7 @@ export async function loadServiceRequestHistory(
       comment: '',
       changes: changesOf(row.action, row.metadata),
     })),
+    ...chatRows,
   ];
 
   // Обрезанную историю дополнять заведением нельзя: его запись просто не попала в выборку.

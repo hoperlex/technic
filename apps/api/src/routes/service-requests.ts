@@ -66,6 +66,9 @@ import {
   serviceRequestNeedsClosingDocument,
   serviceRequestStatusLabels,
   serviceRequestWaitingOn,
+  serviceChatPageQuerySchema,
+  markServiceChatReadSchema,
+  sendServiceChatMessageSchema,
   serviceResetOnTransition,
   serviceResumeSchema,
   serviceResumeTarget,
@@ -90,6 +93,7 @@ import {
   type ServiceRequestKind,
   type ServiceWaitingOn,
   type ServiceWarrantyRowDto,
+  type ServiceRequestChatSummaryDto,
   type ServiceRequestDto,
   type ServiceRequestExecutorDto,
   type ServiceRequestFileDto,
@@ -156,6 +160,15 @@ import {
   serviceRequestTitle,
 } from '../services/service-request-diff';
 import { loadServiceRequestHistory } from '../services/service-request-history';
+import {
+  chatSummaryByRequest,
+  chatUnreadCount,
+  importServiceCommentMessage,
+  markAllChatRead,
+  markChatRead,
+  postChatMessage,
+  readChatPage,
+} from '../services/service-request-chat';
 
 /**
  * Заявки на обслуживание оргтехники (ADR 0085).
@@ -452,6 +465,7 @@ function toDto(
   fileList: ServiceRequestFileDto[],
   executors: ServiceRequestExecutorDto[],
   consumables: ServiceRequestConsumableDto[],
+  chat: ServiceRequestChatSummaryDto,
 ): ServiceRequestDto {
   const r = row.r;
   return {
@@ -556,6 +570,10 @@ function toDto(
     replacementRecommended: r.replacementRecommended,
     comment: r.comment,
     serviceComment: r.serviceComment,
+    // Обсуждение (ADR 0141): счёт и мои стороны считает сервер — портал правил сторон не
+    // воспроизводит вовсе (§3.2). Блок есть у каждой заявки, в том числе у той, где не сказано ещё
+    // ни слова: «переписки нет» — это `total: 0`, а не отсутствующее поле.
+    chat,
     files: fileList,
     createdByName: row.createdByName,
     createdAt: r.createdAt.toISOString(),
@@ -565,7 +583,17 @@ function toDto(
   };
 }
 
-async function loadDtos(rows: HeaderRow[]): Promise<ServiceRequestDto[]> {
+/**
+ * Заявки страницы со всем, что к ним подшито. Принципал нужен ровно одному блоку — обсуждению
+ * (ADR 0141): «моё непрочитанное» и «мои стороны» — свойства пары «человек ↔ заявка», а не самой
+ * заявки, и посчитать их без читателя нельзя. Остальные блоки от него не зависят и не должны:
+ * состав сметы и вложений у всех один.
+ *
+ * Сводка чата считается ПОСЛЕ исполнителей, а не рядом с ними: поимённое назначение — один из
+ * четырёх фактов разговора (`chatFactsFor`), и второй запрос за теми же строками означал бы два
+ * ответа на вопрос «кто назначен» в одном ответе API.
+ */
+async function loadDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceRequestDto[]> {
   const ids = rows.map((row) => row.r.id);
   const [items, fileMap, executorMap, consumableMap] = await Promise.all([
     itemsByRequest(ids),
@@ -573,6 +601,13 @@ async function loadDtos(rows: HeaderRow[]): Promise<ServiceRequestDto[]> {
     executorsByRequest(ids),
     consumablesByRequest(ids),
   ]);
+  const chatMap = await chatSummaryByRequest(
+    p,
+    rows.map((row) => ({
+      row: row.r,
+      executorIds: (executorMap.get(row.r.id) ?? []).map((e) => e.userId),
+    })),
+  );
   return rows.map((row) =>
     toDto(
       row,
@@ -580,14 +615,15 @@ async function loadDtos(rows: HeaderRow[]): Promise<ServiceRequestDto[]> {
       fileMap.get(row.r.id) ?? [],
       executorMap.get(row.r.id) ?? [],
       consumableMap.get(row.r.id) ?? [],
+      chatMap.get(row.r.id)!,
     ),
   );
 }
 
-async function getDto(id: string): Promise<ServiceRequestDto | null> {
+async function getDto(p: Principal, id: string): Promise<ServiceRequestDto | null> {
   const [row] = await requestQuery().where(eq(serviceRequests.id, id));
   if (!row) return null;
-  const [dto] = await loadDtos([row]);
+  const [dto] = await loadDtos(p, [row]);
   return dto ?? null;
 }
 
@@ -1753,10 +1789,13 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     return parts.length === 1 ? parts[0]! : or(...parts)!;
   }
 
-  // ── Список ──
-  r.get('/', { ...auth, schema: { querystring: serviceRequestListQuerySchema } }, async (req) => {
-    const p = requirePrincipal(req);
-    const q = req.query;
+  /**
+   * Условие отбора списка — своей функцией, потому что читателей у него теперь двое: сам список и
+   * кнопка «Отметить все прочитанными» (ADR 0141, §3.4). Кнопка обязана гасить РОВНО то, что человек
+   * видит на экране; собери она свой отбор — однажды съела бы заявку, которой в списке не было, и
+   * заметили бы это только по пропавшему разговору.
+   */
+  function listWhere(p: Principal, q: z.infer<typeof serviceRequestListQuerySchema>): SQL | undefined {
     const mine = waitingOnMeWhere(p);
     // «Предъявлена или принята, а закрывающих документов нет ни одного» — очередь «Ожидаются
     // документы» (Р114). Планка та же, что у приёмки (Р112): её снимает любой из трёх видов, и
@@ -1832,6 +1871,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             serviceRequests.equipmentInventoryNumber,
           ]),
     );
+    return where;
+  }
+
+  // ── Список ──
+  r.get('/', { ...auth, schema: { querystring: serviceRequestListQuerySchema } }, async (req) => {
+    const p = requirePrincipal(req);
+    const q = req.query;
+    const where = listWhere(p, q);
 
     const sortColumns = {
       num: serviceRequests.num,
@@ -1864,7 +1911,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         .where(where),
     ]);
     return {
-      items: await loadDtos(rows),
+      items: await loadDtos(p, rows),
       total: Number(totalRows[0]!.c),
       page: pg.page,
       pageSize: pg.pageSize,
@@ -2100,6 +2147,47 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     return { count: Number(row!.c) };
   });
 
+  // ── Обсуждение заявки: счётчик и «отметить все прочитанными» (ADR 0141) ──
+  /**
+   * Сколько заявок области несут непрочитанное, адресованное МНЕ, — число для бейджа раздела.
+   *
+   * Бейдж этот ОТДЕЛЬНЫЙ от золотого «ждёт меня»: сумма двух не отвечает ни на один из двух
+   * вопросов — «где меня ждут» и «где мне написали» — и вела бы в список, отобранный не тем
+   * фильтром. Считается только яркое (адресованное мне); чужая переписка живёт блёклой точкой в
+   * строке и в бейдж не идёт — иначе у «Ведения», видящего все заявки модуля, он горел бы всегда.
+   *
+   * Область — та же `visibility`, что у списка и у `waiting-count`, по той же причине.
+   *
+   * Путь статический и стоит **до** `/:id`: параметр перехватил бы его первым.
+   */
+  r.get('/unread-count', auth, async (req) => {
+    const p = requirePrincipal(req);
+    return { count: await chatUnreadCount(p, visibility(p)) };
+  });
+
+  /**
+   * «Отметить все прочитанными» по заявкам ТЕКУЩЕГО ОТБОРА.
+   *
+   * Ручка заведена под редкий, но неустранимый случай (§3.4): человеку сегодня выдали набор
+   * «Ведение», стороны считаются динамически — и открытые заявки загорелись у него разом. Отсечка по
+   * дате заведения учётки этот случай не ловит: учётка старая, новые у неё права.
+   *
+   * Отбор приходит теми же параметрами, что и список, и разбирается той же схемой: кнопка обязана
+   * гасить ровно то, что человек видит. `POST`, а не `PATCH`: тело — это фильтр, а не изменяемая
+   * запись, и адреса записи у этой ручки нет вовсе.
+   *
+   * Путь статический и стоит **до** `/:id` — иначе параметр прочитал бы `messages` как
+   * идентификатор заявки.
+   */
+  r.post(
+    '/messages/read-all',
+    { ...auth, schema: { body: serviceRequestListQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      return { count: await markAllChatRead(p, listWhere(p, req.body)) };
+    },
+  );
+
   /**
    * Кандидаты в поимённые исполнители — те, кого вообще можно назначить на заявку (§7.1): учётка с
    * правом `serviceRequests.execute`, живая и не удалённая.
@@ -2143,7 +2231,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     // здесь: архив — 404, чужая область — 403.
     assertArchiveVisible(p, row.deletedAt, NOT_FOUND);
     assertScope(p, row);
-    return (await getDto(row.id))!;
+    return (await getDto(p, row.id))!;
   });
 
   // ── История: статусы и аудит (ADR 0012) ──
@@ -2164,6 +2252,71 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       actorName: author?.fullName ?? '',
     });
   });
+
+  // ── Обсуждение заявки (ADR 0141) ──
+  /**
+   * Страница ленты. Право то же, что у карточки: текст реплик видят ВСЕ, кому видна заявка, —
+   * адресат управляет подсветкой, а не видимостью (решение 2 ADR). Границы те же, что у самой
+   * заявки: архив — 404, чужая область — 403.
+   *
+   * Страничная и курсорная (§3.6): первая редакция плана возвращала всю ленту и в `GET`, и в `POST`,
+   * и повторяла это каждые двадцать секунд — стоимость росла как «реплики × открытые клиенты».
+   */
+  r.get(
+    '/:id/messages',
+    { ...auth, schema: { params: idParams, querystring: serviceChatPageQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const row = await loadRow(req.params.id);
+      assertArchiveVisible(p, row.deletedAt, NOT_FOUND);
+      assertScope(p, row);
+      return readChatPage(p, row.id, req.query);
+    },
+  );
+
+  /**
+   * Отправка реплики.
+   *
+   * Страж — чтение модуля: новых прав переписка не заводит вовсе (решение 4 ADR). Отдельное «право
+   * переписки» пришлось бы выдавать руками рядом с правом видеть заявку, и первая же забытая выдача
+   * дала бы участника цикла, который заявку ведёт, но написать по ней не может, — причём без
+   * единого следа в интерфейсе. Кто перед ручкой на ЭТОЙ заявке, решает `canWriteChat` внутри
+   * транзакции, под блокировкой: назначение и статус к моменту отправки успевают измениться.
+   *
+   * Ответ — ТОЛЬКО созданная реплика и новый `lastSeq`, а не вся лента: отправка стоит одной
+   * строки, и возвращать полсотни ради одной значило бы удваивать трафик на каждое сообщение.
+   */
+  r.post(
+    '/:id/messages',
+    { ...auth, schema: { params: idParams, body: sendServiceChatMessageSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const row = await loadRow(req.params.id);
+      assertArchiveVisible(p, row.deletedAt, NOT_FOUND);
+      assertScope(p, row);
+      return postChatMessage(p, row.id, req.body);
+    },
+  );
+
+  /**
+   * Подтверждение прочтения. Зовётся ПОСЛЕ успешного показа ленты, а не при открытии окна: отметка,
+   * поставленная на открытии, гасила бы разговор и тогда, когда загрузка упала и человек не увидел
+   * ничего (§3.4).
+   *
+   * Право то же, что у чтения ленты: курсор — свойство читателя, и двигать его вправе каждый, кому
+   * заявка видна, включая наблюдателя, который писать не может.
+   */
+  r.post(
+    '/:id/messages/read',
+    { ...auth, schema: { params: idParams, body: markServiceChatReadSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const row = await loadRow(req.params.id);
+      assertArchiveVisible(p, row.deletedAt, NOT_FOUND);
+      assertScope(p, row);
+      return markChatRead(p, row.id, req.body.throughSeq);
+    },
+  );
 
   // ── Заведение ──
   /**
@@ -2314,7 +2467,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         return { ...request, mailFailed: transition.mailFailed, requester };
       });
 
-      const dto = (await getDto(created.id))!;
+      const dto = (await getDto(p, created.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.create',
@@ -2533,7 +2686,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           status: 'Заявка отложена',
         });
       }
-      const before = (await getDto(row.id))!;
+      const before = (await getDto(p, row.id))!;
 
       /**
        * «Поле пришло» и «значение изменилось» — разные события (Р12б). Форма присылает заказчика
@@ -2598,7 +2751,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         if (!updated) throw err.conflict();
       });
 
-      const after = (await getDto(row.id))!;
+      const after = (await getDto(p, row.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.update',
@@ -2642,7 +2795,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         });
       }
 
-      const before = (await getDto(row.id))!;
+      const before = (await getDto(p, row.id))!;
       await db.transaction(async (tx) => {
         const [updated] = await tx
           .update(serviceRequests)
@@ -2658,7 +2811,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         if (!updated) throw err.conflict();
       });
 
-      const after = (await getDto(row.id))!;
+      const after = (await getDto(p, row.id))!;
       // Возраст в статусе срочность не сбрасывает: она не ожидание, и очередь «дольше всех ждут»
       // не должна обнуляться от того, что заявку пометили красным.
       await writeAudit({
@@ -2873,7 +3026,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         });
       }
       return {
-        request: (await getDto(row.id))!,
+        request: (await getDto(p, row.id))!,
         mail: mailFailed ? 'mail_failed' : mailPlan.outcome,
       };
     },
@@ -3053,7 +3206,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           ...(body.approved ? {} : { replacementRecommended: true }),
         },
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -3181,7 +3334,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           returnedToNew: outcome.returned,
         },
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -3208,7 +3361,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           actor: p,
         });
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -3257,7 +3410,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         // Откуда отложили — в metadata: после возврата заявка этого уже не помнит, поля чистятся.
         metadata: { from: row.status, reason: body.reason },
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -3309,7 +3462,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         // Куда вернули: в самой заявке после возврата от заморозки не остаётся ничего.
         metadata: { to: target },
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -3346,7 +3499,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           `Ревизия сметы ${row.estimateRevision} согласована — верните смету в правку, прежде чем менять состав`,
         );
       }
-      const before = (await getDto(row.id))!;
+      const before = (await getDto(p, row.id))!;
 
       await db.transaction(async (tx) => {
         await assertEstimateReplaceable(tx, row.id);
@@ -3373,7 +3526,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         if (!updated) throw err.conflict();
       });
 
-      const after = (await getDto(row.id))!;
+      const after = (await getDto(p, row.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.estimate_update',
@@ -3451,7 +3604,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityId: row.id,
         metadata: { revision, total, warrantyRepair: body.warrantyRepair },
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -3518,7 +3671,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityId: row.id,
         metadata: { revision: row.estimateRevision, reason: body.reason ?? '' },
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -3591,7 +3744,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityId: row.id,
         metadata: { revision: row.estimateRevision, reason: body.reason },
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -3635,7 +3788,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           status: 'Заявка отложена',
         });
       }
-      const before = (await getDto(row.id))!;
+      const before = (await getDto(p, row.id))!;
 
       await db.transaction(async (tx) => {
         const locked = await lockRequest(tx, row.id);
@@ -3668,7 +3821,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         if (!updated) throw err.conflict();
       });
 
-      const after = (await getDto(row.id))!;
+      const after = (await getDto(p, row.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.consumables_update',
@@ -3764,7 +3917,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         // аудит заявки — «кто и когда это сделал по ней».
         metadata: { movements },
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -3972,7 +4125,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         return { total, works, movements };
       });
 
-      const after = (await getDto(row.id))!;
+      const after = (await getDto(p, row.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.complete',
@@ -4049,7 +4202,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityId: row.id,
         metadata: { total: num(row.finalTotalAmount) },
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -4083,7 +4236,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         // иначе показала бы «гарантия была» без даты, до которой её обещали (Р77).
         metadata: { reason: body.reason, clearedWarranties: reworked.clearedWarranties },
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -4158,7 +4311,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         });
       }
       return {
-        request: (await getDto(row.id))!,
+        request: (await getDto(p, row.id))!,
         mail: transition.mailFailed ? 'mail_failed' : mailPlan.outcome,
       };
     },
@@ -4246,8 +4399,23 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     },
   );
 
-  // ── Примечание исполнителя (приём ADR 0053) ──
-  // Ход заявки оно не меняет и возраст ожидания не сбрасывает: это строка сервиса в карточке.
+  // ── Примечание исполнителя (приём ADR 0053) — АДАПТЕР СОВМЕСТИМОСТИ ──
+  /**
+   * Ручка живёт ровно столько, сколько работает сервер выпуска A (ADR 0141, решение 7, §3.10):
+   * браузер держит СТАРЫЙ бандл и после выката чата продолжает звать её, а откат релиза возвращает
+   * сервер, который о ленте не знает. Снимается она выпуском B — вместе со слайсом портала, полем
+   * DTO и колонкой в `schema.ts`; сама колонка уходит из базы ещё выпуском позже.
+   *
+   * Пока она жива, делает две вещи ОДНОЙ транзакцией: обновляет колонку, как раньше, и вставляет
+   * ту же строку репликой `origin='import'` с хешем текста — так написанное старым клиентом сразу
+   * видно в обсуждении, а повторный перенос выпуска C на том же хеше дубля не создаст.
+   *
+   * Транзакция — верхнеуровневая (`db.transaction`), и это требование схемы, а не стиль: адресата
+   * можно вставить только в транзакции, создавшей реплику, а `xmin` строки из savepoint'а
+   * триггер не признаёт (§3.3).
+   *
+   * Ход заявки примечание не меняет и возраст ожидания не сбрасывает: это строка сервиса в карточке.
+   */
   r.patch(
     '/:id/service-comment',
     { ...canEstimate, schema: { params: idParams, body: serviceCommentSchema } },
@@ -4262,6 +4430,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         );
       }
       await db.transaction(async (tx) => {
+        // Блокировка строки — та же, под которой номер выдаёт обычная отправка: без неё два
+        // одновременных примечания получили бы один `seq` и столкнулись на уникальном индексе.
+        await lockRequest(tx, row.id);
         const [updated] = await tx
           .update(serviceRequests)
           .set({
@@ -4273,6 +4444,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           .where(and(eq(serviceRequests.id, row.id), eq(serviceRequests.version, body.version)))
           .returning({ id: serviceRequests.id });
         if (!updated) throw err.conflict();
+        // Пустое значение — старый способ «стереть примечание». Колонку он чистит, а ленту стирать
+        // нечем: реплики не правятся и не удаляются (решение 6 ADR), и пустая строка в разговоре
+        // не значила бы ничего.
+        if (body.serviceComment !== '') {
+          await importServiceCommentMessage(tx, p.id, row.id, body.serviceComment);
+        }
       });
       await writeAudit({
         actorUserId: p.id,
@@ -4280,7 +4457,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityType: 'serviceRequest',
         entityId: row.id,
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -4314,7 +4491,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityId: row.id,
         metadata: { kind, fileIds },
       });
-      return (await getDto(row.id))!;
+      return (await getDto(p, row.id))!;
     },
   );
 
@@ -4415,7 +4592,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       entityId: row.id,
       metadata: { kind: detached.kind, fileIds: [fileId] },
     });
-    return (await getDto(row.id))!;
+    return (await getDto(p, row.id))!;
   });
 
   // ── Восстановление из архива ──
@@ -4467,7 +4644,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           entityId: req.params.id,
         });
       }
-      return (await getDto(req.params.id))!;
+      return (await getDto(p, req.params.id))!;
     },
   );
 

@@ -62,6 +62,9 @@ function renderLayout(
     // Счётчик «ждут меня» на разделе оргтехники (ADR 0085) спрашивает администратор: к меню
     // помощи он отношения не имеет, чей это запрос — предмет `service-waiting-badge.test.tsx`.
     'GET /service-requests/waiting-count': () => json({ count: 0 }),
+    // Непрочитанное в обсуждениях заявок (ADR 0141): второй счётчик каркаса, и спрашивает его
+    // каждый, кому видны заявки, — иначе каркас остался бы без ответа на живой запрос.
+    'GET /service-requests/unread-count': () => json({ count: 0 }),
     'GET /manuals': ({ query }) => {
       const isActive = query.get('isActive');
       return json(
