@@ -401,20 +401,20 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
 
           {/* Прицеп нового рейса: у готового реквизиты выезда свои, а у формы № 3 граф прицепа нет
             вовсе (ADR 0071). Галочка поднимает требование до CE и пересобирает список выше. */}
-          {!joined && selectedVehicle?.waybillFormCode !== 'leg3' && (
-            <TrailerFields
-              key={`${request?.id}:${date}`}
-              withTrailer={withTrailer}
-              checkboxLabel="Рейс с прицепом"
-              checkboxFullWidth
-              modelPlaceholder="СЗАП-8551"
-              regNumberPlaceholder="АВ1234 77"
-              secondPlaceholder="Если прицепов два"
-              hitched={suggestion?.hitched}
-              vehicleId={vehicleId}
-              vehicleTypeId={selectedVehicle?.vehicleTypeId}
-            />
-          )}
+          <TrailerFields
+            key={`${request?.id}:${date}`}
+            withTrailer={withTrailer}
+            checkboxLabel="Рейс с прицепом"
+            checkboxFullWidth
+            modelPlaceholder="СЗАП-8551"
+            regNumberPlaceholder="АВ1234 77"
+            secondPlaceholder="Если прицепов два"
+            hitched={suggestion?.hitched}
+            vehicleId={vehicleId}
+            vehicleTypeId={selectedVehicle?.vehicleTypeId}
+            // Условие показа — пропом: снятый с экрана блок уносил вопрос, но не ответ (§14, Р20).
+            asks={!joined && selectedVehicle?.waybillFormCode !== 'leg3'}
+          />
 
           {/* Прошедший день — под правом и с причиной (ADR 0101 п. 4). Строки в журнале коррекций
             постановка дня не заводит: номер строгой отчётности она не расходует, и объяснение

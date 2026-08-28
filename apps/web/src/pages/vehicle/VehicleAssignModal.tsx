@@ -1920,22 +1920,22 @@ export function VehicleAssignModal({
                   нарочно (ADR 0048): за руль садится человек, а не заполняется графа шапки, и
                   меняют его тем же движением, каким меняют машину. Прицеп поднимает требуемую
                   категорию водителя, поэтому список выше пересобирается при его включении. */}
+                  {/* Блок граф — СНАРУЖИ условия: рисовать себя решает он сам по `asks` (§14, Р20).
+                  Внутри он размонтировался бы вместе с ответом, а рейс запирает машину своей. */}
+                  <TrailerFields
+                    key={targetId}
+                    withTrailer={withTrailer}
+                    checkboxLabel="Рейс с прицепом"
+                    modelPlaceholder="МАЗ-8926"
+                    regNumberPlaceholder="8062 ЕН 77"
+                    secondPlaceholder="Если прицепов два"
+                    hitched={suggestion?.hitched}
+                    vehicleId={vehicleId}
+                    vehicleTypeId={selected?.vehicleTypeId}
+                    asks={!joiningRoute}
+                  />
                   {!joiningRoute && (
                     <>
-                      {/* Обе пары граф наследуются от прошлого рейса тем же движением, а у машины
-                      с закреплённым прицепом их ставит закрепление — оно старше истории. */}
-                      <TrailerFields
-                        key={targetId}
-                        withTrailer={withTrailer}
-                        checkboxLabel="Рейс с прицепом"
-                        modelPlaceholder="МАЗ-8926"
-                        regNumberPlaceholder="8062 ЕН 77"
-                        secondPlaceholder="Если прицепов два"
-                        hitched={suggestion?.hitched}
-                        vehicleId={vehicleId}
-                        vehicleTypeId={selected?.vehicleTypeId}
-                      />
-
                       <Form.Item name="garageNumber" label="Гаражный номер">
                         <Input placeholder="00000389" />
                       </Form.Item>

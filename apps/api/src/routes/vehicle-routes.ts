@@ -477,7 +477,11 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
       return {
         routes: await loadRouteDtos(db, rows),
         trip: await lastTripFields(req.query.vehicleId),
-        hitched: await hitchedTrailersOf(req.query.vehicleId),
+        // Ключ сравнения госномера (`regKey`) в подсказку не идёт: он нужен выписке, а лишнее
+        // поле в ответе — это поле, которое однажды покажут.
+        hitched: (await hitchedTrailersOf(db, req.query.vehicleId)).map(
+          ({ regKey: _regKey, ...dto }) => dto,
+        ),
       };
     },
   );

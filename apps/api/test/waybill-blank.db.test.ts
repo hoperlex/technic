@@ -2,7 +2,11 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { moscowDateKeyOf } from '@technic/contracts';
+import {
+  moscowDateKeyOf,
+  WAYBILL_ACK_REQUIRED_CODE,
+  type WaybillAckRequiredDetails,
+} from '@technic/contracts';
 import { runSeed, snilsOf } from './db-identity';
 import { applyMigrations } from '../src/db/migration-journal';
 import { issueRouteWaybill } from './waybill-issue-helper';
@@ -30,6 +34,16 @@ import type { db as AppDb } from '../src/db/client';
  */
 
 const DB_URL = process.env.TEST_DATABASE_URL;
+
+/**
+ * Госномер прицепа в двух написаниях: в реестре — латиницей, в графах рейса — кириллицей, строчными
+ * и с пробелом. `vehicle_reg_normalize` сводит их к одному ключу, `LOWER` — нет.
+ *
+ * Буквы `Z` в разрешённом наборе госномеров нет вовсе, поэтому уборка по `LIKE 'ZZ%'` не заденет
+ * ни одной настоящей записи, как бы её ни завели соседи по общей базе.
+ */
+const LATIN_REG = 'ZZEH806277';
+const CYRILLIC_REG = 'zz ен 806277';
 
 /** Тестовый водитель: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
 // Свой на прогон, а не общая константа: пять файлов заводили водителя по одному номеру, и
@@ -280,6 +294,9 @@ describe.skipIf(!DB_URL)('пустой путевой лист по рейсу �
       await ctx.db.execute(sql`DELETE FROM vehicle_routes WHERE id IN (${ourRoutes})`);
       // Журнал — по автору: писали в него только здешние учётки, а видов записей у них несколько.
       await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+      // Прицепы файла — по метке `ZZ`, которой в настоящих госномерах не бывает: буквы `Z` в
+      // разрешённом наборе нет вовсе. Уборка добирает и хвосты упавших прогонов.
+      await ctx.db.execute(sql`DELETE FROM vehicle_trailers WHERE registration_number LIKE 'ZZ%'`);
     }
     await ctx?.app.close();
     await ctx?.closeDb();
@@ -474,5 +491,116 @@ describe.skipIf(!DB_URL)('пустой путевой лист по рейсу �
     });
     expect(denied.statusCode, denied.body).toBe(422);
     expect(denied.json().message).toMatch(/водителя/);
+  });
+
+  /*
+   * Сверка граф рейса с реестром прицепов (план прицепов §14.5, Р22) — **на живой базе и только
+   * на ней**. Чистое правило сравнивает готовые ключи и о том, кто их посчитал, не знает ничего;
+   * утверждение «ключ считает `vehicle_reg_normalize`, та же функция, по которой стоит уникальный
+   * индекс реестра» проверяется только здесь. Юнит его подтвердить не может по устройству.
+   *
+   * Расхождение написаний берётся настоящее: в реестре прицеп заведён латиницей (`EH806277` —
+   * так его набирают с латинской раскладки), а в графах рейса стоит кириллица со строчными
+   * буквами и пробелом. Для человека это один прицеп, для `LOWER(...)` — два разных, и своя
+   * нормализация на TypeScript ошиблась бы ровно тут.
+   */
+  describe('сверка с реестром идёт нормализованным госномером', () => {
+    /** Своя машина без единого закрепления: слоты у прицепа уникальны, и чужие трогать нельзя. */
+    async function freeVehicle(): Promise<string> {
+      const rows = await ctx.db.execute<{ id: string }>(sql`
+        SELECT v.id
+        FROM vehicles v
+        JOIN vehicle_types vt ON vt.id = v.vehicle_type_id
+        WHERE v.ownership = 'own' AND v.status = 'active' AND v.deleted_at IS NULL
+          AND vt.waybill_form_code = '4p'
+          AND NOT EXISTS (SELECT 1 FROM vehicle_trailers t WHERE t.hitched_vehicle_id = v.id)
+        LIMIT 1`);
+      const id = rows.rows[0]?.id;
+      if (!id) throw new Error('В базе нет своей 4-П машины без закреплённых прицепов');
+      return id;
+    }
+
+    /**
+     * Прицеп файла: госномер латиницей и метка `ZZ`, которой в настоящих номерах не бывает.
+     * Номер у каждого случая свой — среди живых он уникален по нормализованному ключу.
+     */
+    async function hitchTrailer(vehicleId: string, reg: string): Promise<string> {
+      const rows = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO vehicle_trailers
+          (kind, model, registration_number, status, note, hitched_vehicle_id, hitch_position)
+        VALUES ('semi_trailer', 'КРОНА SDP27', ${reg}, 'active',
+                'ТЕСТОВЫЕ ДАННЫЕ: сверка госномера при выписке', ${vehicleId}, 1)
+        RETURNING id`);
+      return rows.rows[0]!.id;
+    }
+
+    /** Рейс на выбранную машину: `emptyRoute` заводит их только на общую машину файла. */
+    async function routeOn(vehicleId: string, trip: Record<string, unknown>) {
+      const created = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/v1/vehicle-routes',
+        headers: ctx.admin,
+        payload: {
+          vehicleId,
+          routeDate: ctx.routeDate,
+          driverPersonId: ctx.personId,
+          trip: { communicationKind: 'городское', ...trip },
+        },
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      return created.json() as { id: string; version: number };
+    }
+
+    /** Коды предупреждений отказа рукопожатия: их и печатает окно подтверждения (Р21). */
+    async function warningCodes(route: { id: string; version: number }): Promise<string[]> {
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/vehicle-routes/${route.id}/waybill`,
+        headers: ctx.admin,
+        payload: { version: route.version },
+      });
+      expect(res.statusCode, res.body).toBe(409);
+      const body = res.json() as { code: string; details: WaybillAckRequiredDetails };
+      expect(body.code).toBe(WAYBILL_ACK_REQUIRED_CODE);
+      return body.details.warnings.map((w) => w.facts.code);
+    }
+
+    it('кириллица в графах и латиница в реестре — один прицеп, и портал молчит', async () => {
+      const vehicleId = await freeVehicle();
+      await hitchTrailer(vehicleId, LATIN_REG);
+      const route = await routeOn(vehicleId, {
+        withTrailer: true,
+        trailer1Model: 'КРОНА SDP27',
+        trailer1RegNumber: CYRILLIC_REG,
+      });
+      const codes = await warningCodes(route);
+      expect(codes, 'закреплённый прицеп стоит в графах — говорить не о чем').not.toContain(
+        'hitched_trailer_missing',
+      );
+      // Пустой рейс своё предупреждение всё же поднимает: им и держится 409 выше.
+      expect(codes).toContain('blank_task');
+    });
+
+    it('другой госномер в графах — о закреплённом прицепе портал говорит', async () => {
+      const vehicleId = await freeVehicle();
+      await hitchTrailer(vehicleId, `${LATIN_REG}8`);
+      const route = await routeOn(vehicleId, {
+        withTrailer: true,
+        trailer1Model: 'ШМИТЦ SPR-24',
+        trailer1RegNumber: 'ВХ933277',
+      });
+      expect(await warningCodes(route)).toContain('hitched_trailer_missing');
+    });
+
+    it('пустые графы при закреплении: говорится о реестре, а не о бланке', async () => {
+      const vehicleId = await freeVehicle();
+      await hitchTrailer(vehicleId, `${LATIN_REG}9`);
+      const route = await routeOn(vehicleId, { withTrailer: true });
+      const codes = await warningCodes(route);
+      expect(codes).toContain('hitched_trailer_missing');
+      expect(codes, 'одно предупреждение на одну новость (§14.5)').not.toContain(
+        'trailer_graphs_blank',
+      );
+    });
   });
 });

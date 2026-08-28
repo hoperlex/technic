@@ -913,6 +913,13 @@ export const WAYBILL_WARNING_CODES = [
   // В листе больше одного объекта затрат — шапка называет первый (Р26).
   'multiple_cost_targets',
   'blank_task',
+  // ── Прицеп (план прицепов, §14.5, Р22) ──
+  // Рейс помечен как с прицепом, а обе пары граф пусты: бланк напечатает пустые линии.
+  'trailer_graphs_blank',
+  // В паре заполнена одна графа из двух: «марка есть, госномера нет» — для бумаги такой же дефект.
+  'trailer_graphs_incomplete',
+  // За машиной закреплён прицеп, которого в графах рейса нет.
+  'hitched_trailer_missing',
 ] as const;
 export type WaybillWarningCode = (typeof WAYBILL_WARNING_CODES)[number];
 
@@ -941,7 +948,20 @@ export type WaybillWarningFacts =
     }
   | { code: 'task_row_overflow'; ref: TaskRef; slot: number; hidden: string[] }
   | { code: 'multiple_cost_targets'; targetKeys: string[]; headerKey: string }
-  | { code: 'blank_task'; routeId: string };
+  | { code: 'blank_task'; routeId: string }
+  | { code: 'trailer_graphs_blank'; routeId: string }
+  /*
+   * Слот и недостающая половина — в фактах, а не только в тексте: без них переезд дефекта из
+   * первой пары граф во вторую или смена недостающей половины оставили бы рукопожатие в силе, и
+   * человек подтвердил бы не то, что печатает.
+   */
+  | {
+      code: 'trailer_graphs_incomplete';
+      routeId: string;
+      slot: TrailerSlotNumber;
+      missing: 'model' | 'registrationNumber';
+    }
+  | { code: 'hitched_trailer_missing'; routeId: string; trailerId: string };
 
 export interface WaybillWarning {
   facts: WaybillWarningFacts;
@@ -983,6 +1003,50 @@ export interface WaybillIssueSource {
   sourceAddresses?: ReadonlyMap<string, string>;
   /** Объект затрат заявки по её идентификатору (Р25): у ездки и линейного дня он заявкин. */
   costTargets?: ReadonlyMap<string, CostTarget>;
+  /** Прицеп рейса и закрепление реестра (§14.5); не передан — предупреждений о прицепе нет. */
+  trailer?: WaybillTrailerSource;
+}
+
+/** Номер пары граф прицепа в бланке 4-П: 1 — первая, 2 — вторая. */
+export type TrailerSlotNumber = 1 | 2;
+
+/**
+ * Пара граф прицепа так, как её видят предупреждения: что напечатается и чем это сравнивать.
+ *
+ * `regKey` приходит **готовым** — его считает `vehicle_reg_normalize` в запросе, собирающем
+ * контекст выписки. Своей нормализации здесь нет и быть не должно: тождество госномера в этой базе
+ * решает та функция (по ней стоит уникальный индекс реестра прицепов), и вторая реализация на
+ * TypeScript разошлась бы с ней на первом же кириллическом двойнике латиницы («ЕН» против «EH»).
+ */
+export interface WaybillTrailerSlotSource {
+  slot: TrailerSlotNumber;
+  model: string;
+  registrationNumber: string;
+  regKey: string;
+}
+
+/** Закрепление реестра глазами предупреждений — с тем же ключом сравнения, что у граф. */
+export interface WaybillHitchedTrailerSource {
+  trailerId: string;
+  model: string;
+  registrationNumber: string;
+  regKey: string;
+}
+
+/** Прицеп рейса целиком: графы бланка и закрепление машины (§14.5). */
+export interface WaybillTrailerSource {
+  /** Галочка «рейс с прицепом»: ею гаснут предупреждения о самих графах, но не о реестре. */
+  withTrailer: boolean;
+  /** Обе пары граф, по порядку бланка. */
+  slots: readonly WaybillTrailerSlotSource[];
+  /**
+   * Что закреплено за машиной **сейчас**; `null` — закрепление не спрашивали.
+   *
+   * `null` приходит у листа задним числом: реестр хранит сегодняшнее решение, а коррекция правит
+   * состоявшийся день, и «сейчас закреплён» о прошлом вторнике не говорит ничего. Решает это
+   * вызывающий — правило ни дат, ни часов не знает вовсе.
+   */
+  hitched: readonly WaybillHitchedTrailerSource[] | null;
 }
 
 /**
@@ -1104,6 +1168,95 @@ export function waybillIssueWarnings(source: WaybillIssueSource): WaybillWarning
       // Текст тот же, которым пустой бланк подтверждается сегодня (ADR 0071): расходиться
       // формулировкам одного и того же решения негде.
       message: BLANK_WAYBILL_CONFIRM,
+      entities: [source.routeNumber],
+    });
+  }
+
+  warnings.push(...trailerWarnings(source));
+  return warnings;
+}
+
+/** Прицеп строкой человека: «КРОНА SDP27 ЕН806277», а пустая половина не превращается в пробел. */
+function trailerTitle(t: { model: string; registrationNumber: string }): string {
+  return [t.model.trim(), t.registrationNumber.trim()].filter(Boolean).join(' ');
+}
+
+/**
+ * Предупреждения о прицепе (§14.5, Р22).
+ *
+ * **Только бланк с графами прицепа.** У формы № 3 и ЭСМ-2 их нет вовсе (ADR 0071), и «напечатаются
+ * пустыми» было бы там неправдой — считается это только для 4-П.
+ *
+ * **Одно предупреждение на одну новость.** У пустых граф при живом закреплении говорится только
+ * про реестр — по строке на прицеп; `trailer_graphs_blank` подавляется. «Графы напечатаются
+ * пустыми» ничего не добавляет к «закреплён КРОНА SDP27 ЕН806277, а в графах его нет»: второе
+ * говорит то же самое и конкретнее, а три строки об одном рейсе человек читать не станет.
+ *
+ * **Про реестр говорится и без галочки.** Рейс, помеченный как «без прицепа», графы не печатает —
+ * и предупреждений о них не получает; но закреплённый за машиной полуприцеп, которого в рейсе нет,
+ * назван всё равно. Именно так выглядел случай, ради которого работа и делалась: заявку положили в
+ * готовый рейс, галочка осталась снятой, и лист уехал без прицепа молча. Голый тягач в ремонт —
+ * законный выезд, и предупреждение он получит; подтверждается оно одним нажатием и остаётся в
+ * листе следом того, что человек это видел.
+ */
+function trailerWarnings(source: WaybillIssueSource): WaybillWarning[] {
+  const trailer = source.trailer;
+  // Бланк без граф прицепа сравнивать не с чем: печатать закрепление ему всё равно негде.
+  if (!trailer || source.formCode !== '4p') return [];
+
+  const warnings: WaybillWarning[] = [];
+  const filled = trailer.slots.filter(
+    (slot) => slot.model.trim() !== '' || slot.registrationNumber.trim() !== '',
+  );
+
+  if (trailer.withTrailer) {
+    for (const slot of trailer.slots) {
+      const model = slot.model.trim();
+      const reg = slot.registrationNumber.trim();
+      // Пара либо заполнена целиком, либо пуста целиком — обе крайности законны, дефект между.
+      if ((model === '') === (reg === '')) continue;
+      const missing = model === '' ? 'model' : 'registrationNumber';
+      warnings.push({
+        facts: {
+          code: 'trailer_graphs_incomplete',
+          routeId: source.routeId,
+          slot: slot.slot,
+          missing,
+        },
+        message:
+          `Прицеп ${slot.slot}: заполнена одна графа из двух — ` +
+          `${missing === 'model' ? 'марки нет' : 'госномера нет'}. ` +
+          `В бланке эта графа напечатается пустой.`,
+        entities: [trailerTitle(slot) || source.routeNumber],
+      });
+    }
+  }
+
+  const missingHitched = (trailer.hitched ?? []).filter(
+    (hitched) =>
+      !trailer.slots.some((slot) => slot.regKey !== '' && slot.regKey === hitched.regKey),
+  );
+  for (const hitched of missingHitched) {
+    warnings.push({
+      facts: {
+        code: 'hitched_trailer_missing',
+        routeId: source.routeId,
+        trailerId: hitched.trailerId,
+      },
+      message:
+        `За машиной закреплён прицеп ${trailerTitle(hitched)}, а в графах рейса его нет: ` +
+        `в бланк он не попадёт.`,
+      entities: [trailerTitle(hitched)],
+    });
+  }
+
+  // Совсем пустые графы при стоящей галочке — и только когда о реестре сказать нечего.
+  if (trailer.withTrailer && filled.length === 0 && missingHitched.length === 0) {
+    warnings.push({
+      facts: { code: 'trailer_graphs_blank', routeId: source.routeId },
+      message:
+        'Рейс помечен как с прицепом, а марка и госномер не заполнены: ' +
+        'в бланке графы прицепа напечатаются пустыми.',
       entities: [source.routeNumber],
     });
   }

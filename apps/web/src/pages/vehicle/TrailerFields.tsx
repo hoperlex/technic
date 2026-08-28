@@ -1,22 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
-import { Checkbox, Form, Input, Typography } from 'antd';
-import { useQuery } from '@tanstack/react-query';
+import { Checkbox, Form, Typography } from 'antd';
 import type { HitchedTrailerDto } from '@technic/contracts';
 import { FormGrid } from '@shared/ui';
 import {
   graphsAreHitched,
-  hitchedTrailerGraphs,
   hitchedTrailerNote,
-  MANUAL_TRAILER_MODES,
-  substitutedTrailerModes,
   TRACTOR_TRAILER_HINT,
-  TRACTOR_TRAILERS_TYPE_CODE,
-  type TrailerSlotMode,
-  type TrailerSlotModes,
-  vehicleTypesForTrailerKey,
+  type TrailerGraphs,
 } from '@entities/vehicle-route';
-import { vehicleTypesApi } from '../../api/resources';
-import { TrailerPicker } from './TrailerPicker';
+import { TrailerSlot } from './TrailerSlot';
+import { useTrailerGraphs } from './useTrailerGraphs';
 
 /**
  * Графы прицепа в форме рейса: галочка «с прицепом», две пары «марка / госномер» под ней и подпись
@@ -43,6 +35,10 @@ import { TrailerPicker } from './TrailerPicker';
  * Подписи и подсказки различаются по окнам намеренно и приходят пропсами: коррекция говорит о
  * рейсе в прошедшем времени, а примеры в подсказках у каждого окна свои — переписывать их заодно
  * с выносом значило бы менять экран под предлогом рефакторинга.
+ *
+ * Сама пара граф живёт соседним файлом (`TrailerSlot.tsx`): здесь — правило, что и когда встаёт в
+ * графы, там — как их показать и переключить. Разделены они бюджетом длины, но граница вышла по
+ * смыслу: правило читают вместе с планом, а показ — вместе с экраном.
  */
 export function TrailerFields({
   withTrailer,
@@ -56,6 +52,8 @@ export function TrailerFields({
   vehicleTypeId,
   keepOwnGraphs = false,
   substituteOnOpen = true,
+  record,
+  asks = true,
 }: {
   /**
    * Состояние галочки, каким его видит форма прямо сейчас (`Form.useWatch('withTrailer', form)`).
@@ -95,10 +93,14 @@ export function TrailerFields({
   /** Тип этой машины: по нему встаёт галочка у седельного тягача (§4.4 (а)). */
   vehicleTypeId?: string | null;
   /**
-   * Не трогать графы, которые уже заполнены, пока машину не сменили. Так открывается окно правки
-   * рейса: его графы пришли из самого рейса, и переписать их закреплением значило бы подменить
-   * запись, которую человек открыл править. Пустые графы правка подставить даёт — там подстановка
-   * ничего не вытесняет.
+   * Не вытеснять то, что уже описано записью: так открывается окно правки рейса — его графы пришли
+   * из самого рейса, и переписать их закреплением значило бы подменить запись, которую человек
+   * открыл править.
+   *
+   * «Описано» — это заполненные графы **или** снятая галочка (Р20): рейс без прицепа описан так же
+   * определённо, как рейс с полуприцепом. А галочка при пустых графах не описывает ничего, и
+   * подставить в них закрепление правка обязана — иначе тягач, у которого галочка встаёт сама,
+   * остаётся с пустыми графами навсегда.
    */
   keepOwnGraphs?: boolean;
   /**
@@ -110,108 +112,68 @@ export function TrailerFields({
    * лучшее, что портал о ней знает.
    */
   substituteOnOpen?: boolean;
+  /**
+   * Графы рейса, который окно открыло править, — **барьер готовности формы** (Р21).
+   *
+   * Подстановка ждёт, пока графы формы не совпадут с ними: эффекты блока выполняются раньше
+   * заполняющего эффекта окна, и до барьера решение принималось по форме, ещё занятой **прежней
+   * записью**, — прочитав чужое «без прицепа», подстановка молчала, помечала источник применённым
+   * и второй раз к решению не возвращалась. Окно живёт дольше записи (antd не размонтирует
+   * закрытое), так что «прежняя» — это не редкость, а второй открытый подряд рейс.
+   *
+   * Ждёт только до смены машины: после неё графы описывают уже не ту единицу, и сверять форму с
+   * записью незачем — решение принимает сама смена.
+   *
+   * Окна заведения записи не правят и проп не передают: сверять там не с чем.
+   */
+  record?: TrailerGraphs | null;
+  /**
+   * Спрашивать ли прицеп вообще. `false` — бланк выбранной машины его не печатает (форма № 3,
+   * ADR 0071) либо реквизиты выезда у рейса уже свои: блок не рисуется, **а графы очищаются**.
+   *
+   * Пропом, а не условием у вызова: скрытые поля rc-field-form хранит (`preserve`), и снятый с
+   * экрана блок уносил бы с собой только вопрос, но не ответ — полуприцеп прежней машины уезжал
+   * в тело рейса молча. Условие переехало сюда целиком, поэтому очистка не может быть забыта в
+   * очередном окне.
+   */
+  asks?: boolean;
 }) {
   const form = Form.useFormInstance();
   const trailer1Model = Form.useWatch('trailer1Model', form);
   const trailer1RegNumber = Form.useWatch('trailer1RegNumber', form);
   const trailer2Model = Form.useWatch('trailer2Model', form);
   const trailer2RegNumber = Form.useWatch('trailer2RegNumber', form);
+  const graphs: TrailerGraphs = {
+    withTrailer,
+    trailer1Model: trailer1Model ?? '',
+    trailer1RegNumber: trailer1RegNumber ?? '',
+    trailer2Model: trailer2Model ?? '',
+    trailer2RegNumber: trailer2RegNumber ?? '',
+  };
 
-  /**
-   * Режим каждой пары граф (Р17): состояние окна, а не поле формы — в бланке его нет, а рейс
-   * помнит графы, а не то, каким движением их заполнили (Р11). Слоты переключаются порознь:
-   * закреплённый полуприцеп берут из реестра, а разовый прицеп вписывают руками, и наоборот.
+  /*
+   * Подстановка, очистка и галочка тягача — соседним файлом (`useTrailerGraphs`). Здесь остаётся
+   * разметка: правило и порядок его применения читают вместе с планом, а пару граф — вместе с
+   * экраном. Зовётся хук **до** отказа рисовать (`asks`): им же графы и очищаются, а хук,
+   * пропущенный вместе с разметкой, оставил бы в форме прицеп чужой машины.
    */
-  const [modes, setModes] = useState<TrailerSlotModes>(MANUAL_TRAILER_MODES);
-  const setMode = (slot: 1 | 2, mode: TrailerSlotMode) =>
-    setModes((prev) => ({ ...prev, [`slot${slot}`]: mode }));
-
-  /**
-   * Типы техники — ради одного вопроса: этот тип седельный тягач или нет. Спрашивается справочник
-   * целиком, потому что в карточке машины (`VehicleDto`) кода типа нет — есть идентификатор и
-   * наименование, а наименование в условии было бы сверкой по написанию. Запрос один на портал:
-   * ключ общий, ответ кэшируется, и пять окон делят одну загрузку.
-   */
-  const { data: tractorTypeIds } = useQuery({
-    queryKey: vehicleTypesForTrailerKey,
-    queryFn: () => vehicleTypesApi.list({ page: 1, pageSize: 500 }),
-    staleTime: 5 * 60 * 1000,
-    select: (page) =>
-      new Set(page.items.filter((t) => t.code === TRACTOR_TRAILERS_TYPE_CODE).map((t) => t.id)),
+  const { modes, setMode, isTractor, noteWithTrailerTouched } = useTrailerGraphs({
+    form,
+    asks,
+    hitched,
+    vehicleId,
+    vehicleTypeId,
+    keepOwnGraphs,
+    substituteOnOpen,
+    record,
+    watched: graphs,
   });
-  const isTractor = !!vehicleTypeId && !!tractorTypeIds?.has(vehicleTypeId);
-
-  /**
-   * Отпечаток закрепления: подстановка повторяется, когда сменилась машина или её состав прицепов,
-   * и не повторяется больше никогда. Иначе снятая рукой галочка вставала бы обратно на каждой
-   * перерисовке формы — а снимаемой она обязана быть (§4.4).
-   */
-  const signature = (hitched ?? [])
-    .map((t) => `${t.position}:${t.id}:${t.model}:${t.registrationNumber}:${t.status}`)
-    .join('|');
-
-  const applied = useRef<string | null>(null);
-  /** Машина, с которой окно открылось, и признак того, что её меняли: ими живёт `substituteOnOpen`. */
-  const openVehicle = useRef<string | null | undefined>(undefined);
-  const vehicleChanged = useRef(false);
-
-  useEffect(() => {
-    // Машину сняли — форму сбросили после заведения рейса. Память о подстановке снимается вместе
-    // с ней: иначе второй рейс подряд на ту же единицу уехал бы с пустыми графами.
-    if (!vehicleId) {
-      applied.current = null;
-      openVehicle.current = undefined;
-      vehicleChanged.current = false;
-      // Режим снимается вместе с графами: следующий рейс заводят с чистой формы, а список,
-      // оставшийся открытым над пустыми графами, обещал бы выбор, которого не делали.
-      setModes(MANUAL_TRAILER_MODES);
-      return;
-    }
-    // Ответа сервера ещё нет: пустых граф это не значит — значит «пока не знаем».
-    if (hitched === undefined) return;
-    if (openVehicle.current === undefined) openVehicle.current = vehicleId;
-    else if (vehicleId !== openVehicle.current) vehicleChanged.current = true;
-
-    const source = `${vehicleId}|${signature}|${isTractor}`;
-    if (applied.current === source) return;
-    applied.current = source;
-
-    if (!substituteOnOpen && !vehicleChanged.current) return;
-
-    const graphs = hitchedTrailerGraphs(hitched);
-    const own =
-      !!form.getFieldValue('withTrailer') ||
-      !!form.getFieldValue('trailer1Model') ||
-      !!form.getFieldValue('trailer1RegNumber') ||
-      !!form.getFieldValue('trailer2Model') ||
-      !!form.getFieldValue('trailer2RegNumber');
-    if (keepOwnGraphs && !vehicleChanged.current && own) return;
-
-    if (graphs) {
-      form.setFieldsValue(graphs);
-      // Подстановка включает режим справочника (Р17, пункт 1) — этого и просили: портал повторяет
-      // решение, принятое в карточке прицепа, и показывает его тем же списком, каким человек
-      // выбрал бы сам. Заодно видно чужое закрепление, если подставленное им и оказалось.
-      setModes(substitutedTrailerModes(hitched));
-    }
-    // Закрепления нет — новой подстановки не бывает (§4.2.2, пункт 2), но галочка тягача встаёт:
-    // она про категорию прав и бланк, а не про то, чем машина сегодня укомплектована (§4.4 (а)).
-    else if (isTractor) form.setFieldsValue({ withTrailer: true });
-    // Зависимости — источник подстановки, а не форма: `form` у окна один и тот же всё время.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicleId, signature, isTractor, hitched === undefined]);
 
   /**
    * Подпись говорит о том, что в графах стоит **сейчас**, а не о том, что портал когда-то
    * подставил: вписал человек другой прицеп — подпись уходит, и врать ей нечем.
    */
-  const note = graphsAreHitched(hitched, {
-    withTrailer,
-    trailer1Model,
-    trailer1RegNumber,
-    trailer2Model,
-    trailer2RegNumber,
-  })
+  const note = graphsAreHitched(hitched, graphs)
     ? hitchedTrailerNote(hitched)
     : isTractor && withTrailer
       ? TRACTOR_TRAILER_HINT
@@ -219,9 +181,15 @@ export function TrailerFields({
 
   const checkbox = (
     <Form.Item name="withTrailer" valuePropName="checked">
-      <Checkbox>{checkboxLabel}</Checkbox>
+      {/* Свой `onChange` живёт рядом с формовым: `Form.Item` оборачивает его, а не заменяет. Им
+        взводится барьер «галочку трогал человек» — умолчание тягача после этого молчит. */}
+      <Checkbox onChange={noteWithTrailerTouched}>{checkboxLabel}</Checkbox>
     </Form.Item>
   );
+
+  // Вопроса нет — нет и разметки. Стоит **после** хука: очистку граф делает он, и пропущенный
+  // вместе с разметкой хук оставил бы в форме прицеп чужой машины.
+  if (!asks) return null;
 
   return (
     <>
@@ -255,74 +223,6 @@ export function TrailerFields({
           )}
         </>
       )}
-    </>
-  );
-}
-
-/**
- * Одна пара граф бланка: чекбокс «Из справочника» над ней и два вида ввода под ним (Р17).
- *
- * Слоты одинаковы во всём, кроме номера, поэтому описаны одним компонентом: правило «пара граф
- * переключается целиком» иначе стояло бы в двух экземплярах, и второй прицеп повторил бы историю
- * §2 — то, что заводили копированием, разошлось с оригиналом.
- */
-function TrailerSlot({
-  slot,
-  mode,
-  onMode,
-  modelPlaceholder,
-  regNumberPlaceholder,
-  vehicleId,
-  excludeRegNumber,
-}: {
-  slot: 1 | 2;
-  mode: TrailerSlotMode;
-  onMode: (mode: TrailerSlotMode) => void;
-  modelPlaceholder: string;
-  regNumberPlaceholder: string;
-  vehicleId?: string | null;
-  excludeRegNumber?: string;
-}) {
-  return (
-    <>
-      {/* Чекбокс стоит НАД графами и в своём блоке, а не в подписи поля: `<label>` внутри
-        `<label>` отправляет клик в поле — вместо переключения открывался бы список. Тот же приём и
-        по той же причине, что у выбора адреса (`features/address-input/ui/AddressField.tsx`). */}
-      <FormGrid.Full>
-        <Checkbox
-          checked={mode === 'directory'}
-          onChange={(e) => onMode(e.target.checked ? 'directory' : 'manual')}
-        >
-          Из справочника
-        </Checkbox>
-      </FormGrid.Full>
-      {mode === 'directory' && (
-        /* Список занимает строку целиком: подпись строки — марка, госномер и метка состояния, и в
-           половине ширины она обрезается ровно на госномере, ради которого её и читают. */
-        <FormGrid.Full>
-          <TrailerPicker slot={slot} vehicleId={vehicleId} excludeRegNumber={excludeRegNumber} />
-        </FormGrid.Full>
-      )}
-      {/* Графы остаются полями формы в обоих режимах и в справочнике лишь прячутся — убрать их
-        со страницы значило бы убрать из отправки: `onFinish` получает значения **заведённых**
-        полей, а не весь склад формы (rc-field-form: `validateFields` собирает `getFieldEntities`).
-        Ровно так рейс уже уезжал с половиной состава прицепов (§2, расхождение 1), и повторять это
-        под новым предлогом нельзя. Заодно отсюда и «переключение не теряет набранного»: поле не
-        подменяется списком, а заполняется им. */}
-      <Form.Item
-        name={`trailer${slot}Model`}
-        label={`Прицеп ${slot}: марка`}
-        hidden={mode === 'directory'}
-      >
-        <Input placeholder={modelPlaceholder} />
-      </Form.Item>
-      <Form.Item
-        name={`trailer${slot}RegNumber`}
-        label={`Прицеп ${slot}: госномер`}
-        hidden={mode === 'directory'}
-      >
-        <Input placeholder={regNumberPlaceholder} />
-      </Form.Item>
     </>
   );
 }

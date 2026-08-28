@@ -17,6 +17,10 @@ export {
   TRACTOR_TRAILERS_TYPE_CODE,
   TRAILER_DIRECTORY_HINT,
   type TrailerGraphs,
+  type TrailerGraphsAction,
+  trailerGraphsFilled,
   type TrailerSlotMode,
   type TrailerSlotModes,
+  type TrailerSubstitution,
+  trailerSubstitution,
 } from './model/hitchedTrailers';

@@ -1174,6 +1174,11 @@ export async function lastTripFields(vehicleId: string): Promise<RouteTripFields
   return row ?? null;
 }
 
+/** Закрепление плюс ключ сравнения госномера: DTO подсказки его не несёт, а выписке он нужен. */
+export interface HitchedTrailerRow extends HitchedTrailerDto {
+  regKey: string;
+}
+
 /**
  * Прицепы, закреплённые за этой машиной, — по слотам бланка (план `docs/vehicle-trailers-plan.md`,
  * §4.2.2, §4.2.3). Их отдаёт `GET /vehicle-routes/suggest` **отдельным полем** `hitched`, рядом с
@@ -1206,14 +1211,24 @@ export async function lastTripFields(vehicleId: string): Promise<RouteTripFields
  * прежнему поведению вместо предупреждения. Списанного (`retired`) прицепа тут не бывает по той же
  * причине, что и удалённого: списание снимает привязку.
  */
-export async function hitchedTrailersOf(vehicleId: string): Promise<HitchedTrailerDto[]> {
-  const rows = await db
+export async function hitchedTrailersOf(
+  reader: Reader,
+  vehicleId: string,
+): Promise<HitchedTrailerRow[]> {
+  const rows = await reader
     .select({
       id: vehicleTrailers.id,
       position: vehicleTrailers.hitchPosition,
       model: vehicleTrailers.model,
       registrationNumber: vehicleTrailers.registrationNumber,
       status: vehicleTrailers.status,
+      /*
+       * Ключ сравнения госномера — генерируемая колонка реестра (`vehicle_reg_normalize`,
+       * миграция 0208). Тот же ключ, по которому стоит уникальный индекс: сравнивать графы рейса
+       * с закреплением второй, своей нормализацией значило бы завести третье правило тождества
+       * госномера в портале (план §14.5).
+       */
+      regKey: vehicleTrailers.registrationNumberNormalized,
     })
     .from(vehicleTrailers)
     .where(and(eq(vehicleTrailers.hitchedVehicleId, vehicleId), isNull(vehicleTrailers.deletedAt)))
@@ -1225,6 +1240,8 @@ export async function hitchedTrailersOf(vehicleId: string): Promise<HitchedTrail
     // перевод этого ограничения на язык типов: колонка объявлена допускающей NULL, потому что у
     // отцепленного прицепа она пуста, а отцепленных этот запрос не выбирает.
     position: row.position!,
+    // Нормализованный госномер пуст только у пустого: колонка `NULLIF(..., '')`.
+    regKey: row.regKey ?? '',
   }));
 }
 

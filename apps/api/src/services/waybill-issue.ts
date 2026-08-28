@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
   canonicalWarningPayload,
   type CostTarget,
@@ -9,6 +9,7 @@ import {
   formatPhone,
   formatWaybillDate,
   type IssueBlocker,
+  moscowDateKeyOf,
   licenseNumberLabel,
   routeCargoWithNote,
   routeContactsLabel,
@@ -34,6 +35,7 @@ import {
   type WaybillSnapshotKey,
   type WaybillTaskRow,
   waybillTaskRows,
+  type WaybillTrailerSource,
   type WaybillWarning,
   type RouteTripFields,
 } from '@technic/contracts';
@@ -57,6 +59,7 @@ import {
 import { err } from '../lib/errors';
 import { selectDrivers } from './drivers';
 import { loadRoutePoints, routeTaskRefs } from './route-points';
+import { hitchedTrailersOf } from './vehicle-routes';
 import { findSeriesByCode, takeNextNumber } from './waybill-numbers';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -486,6 +489,12 @@ export interface WaybillIssueContext {
   /** Адреса самих строк задания по `taskAddressKey`: с ними сверяются адреса точек (Р11б). */
   sourceAddresses: Map<string, string>;
   /**
+   * Прицеп рейса и закрепление машины на сегодня (план прицепов §14.5). Читается сюда, в контекст,
+   * а не спрашивается предупреждениями самостоятельно (Р22): графы, ключи их сравнения и реестр
+   * обязаны быть прочитаны одной транзакцией — иначе подтверждают одно, а печатают другое.
+   */
+  trailer: WaybillTrailerSource;
+  /**
    * Строки задания **состава** — все ездки живых заявок рейса и все дни линейных заказов, включая
    * те, что в маршруте ещё не разложены (Р11). Ими считается ёмкость бланка: считать разложенные
    * значило бы не заметить забытую ездку — ту самую, из-за которой лист и не выписать.
@@ -737,6 +746,7 @@ export async function loadWaybillIssueContext(
    * сам рейс, а не строки.
    */
   const composition = await routeTaskRefs(tx, route.routeId);
+  const trailer = await loadTrailerSource(tx, route);
 
   /*
    * Шапка «в чьё распоряжение» называет заказчика первой строки задания (Р26), а не первой строки
@@ -771,10 +781,63 @@ export async function loadWaybillIssueContext(
     points,
     notes,
     sourceAddresses,
+    trailer,
     composition,
     rows,
     requests,
     header: headerRequestId ? (requests.get(headerRequestId) ?? null) : null,
+  };
+}
+
+/**
+ * Прицеп рейса глазами предупреждений (§14.5): графы бланка с ключами сравнения и закрепление.
+ *
+ * **Ключи считает Postgres, а не портал.** `vehicle_reg_normalize` — та самая функция, которой в
+ * этой базе решается тождество госномера (по ней стоит уникальный индекс реестра прицепов), и
+ * второй реализации у портала быть не должно: она разошлась бы с индексом на первом же
+ * кириллическом двойнике латиницы. Поэтому графы рейса нормализует тот же запрос, а закрепление
+ * приносит свою генерируемую колонку.
+ *
+ * **Закрепление спрашивается только у листа за сегодня и вперёд.** Реестр хранит сегодняшнее
+ * решение человека, а коррекция правит состоявшийся день: «сейчас закреплён» о прошлом вторнике не
+ * говорит ничего, и подтверждать такое предупреждение человеку не за что. Решает это здесь,
+ * вызывающий, — правило в контрактах ни дат, ни часов не знает вовсе.
+ */
+async function loadTrailerSource(
+  tx: Tx,
+  route: RouteWaybillContext,
+): Promise<WaybillTrailerSource> {
+  const fields = route.trip;
+  const keys = await tx.execute<{ t1: string | null; t2: string | null }>(
+    sql`SELECT vehicle_reg_normalize(${fields.trailer1RegNumber}) AS t1,
+               vehicle_reg_normalize(${fields.trailer2RegNumber}) AS t2`,
+  );
+  const key = keys.rows[0] ?? { t1: null, t2: null };
+  const historical = route.routeDate < moscowDateKeyOf(new Date());
+  const hitched = historical ? null : await hitchedTrailersOf(tx, route.vehicleId);
+  return {
+    withTrailer: fields.withTrailer,
+    slots: [
+      {
+        slot: 1,
+        model: fields.trailer1Model,
+        registrationNumber: fields.trailer1RegNumber,
+        regKey: key.t1 ?? '',
+      },
+      {
+        slot: 2,
+        model: fields.trailer2Model,
+        registrationNumber: fields.trailer2RegNumber,
+        regKey: key.t2 ?? '',
+      },
+    ],
+    hitched:
+      hitched?.map((row) => ({
+        trailerId: row.id,
+        model: row.model,
+        registrationNumber: row.registrationNumber,
+        regKey: row.regKey,
+      })) ?? null,
   };
 }
 
@@ -853,6 +916,7 @@ export function issueWarningsOf(context: WaybillIssueContext): WaybillWarning[] 
         request.costTarget ? [[id, request.costTarget] as const] : [],
       ),
     ),
+    trailer: context.trailer,
   });
   if (!context.route.relocation) return warnings;
   return warnings.filter((warning) => warning.facts.code !== 'blank_task');

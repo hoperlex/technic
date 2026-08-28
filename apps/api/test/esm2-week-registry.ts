@@ -478,6 +478,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: 'задание 4-П для дня линейного заказа; ЭСМ-2 — одна строка 248',
   },
   {
+    file: 'waybill-trailer-warnings.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note: 'предупреждения о прицепе считаются только для 4-П; ЭСМ-2 назван случаем «молчит»',
+  },
+  {
     file: 'waybill-task-rows.test.ts',
     klass: 'mention',
     status: 'done',

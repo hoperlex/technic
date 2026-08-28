@@ -721,19 +721,19 @@ function CreateRouteModal({
           )}
           {/* У формы № 3 граф прицепа нет вовсе (ADR 0071). Блок стоит перед водителем намеренно:
             галочка меняет требуемую категорию, и список под ней пересобирается. */}
-          {selectedVehicle?.waybillFormCode !== 'leg3' && (
-            <TrailerFields
-              withTrailer={withTrailer}
-              checkboxLabel="Рейс с прицепом"
-              checkboxFullWidth
-              modelPlaceholder="СЗАП-8551"
-              regNumberPlaceholder="АВ1234 77"
-              secondPlaceholder="Если прицепов два"
-              hitched={suggestion?.hitched}
-              vehicleId={vehicleId}
-              vehicleTypeId={selectedVehicle?.vehicleTypeId}
-            />
-          )}
+          <TrailerFields
+            withTrailer={withTrailer}
+            checkboxLabel="Рейс с прицепом"
+            checkboxFullWidth
+            modelPlaceholder="СЗАП-8551"
+            regNumberPlaceholder="АВ1234 77"
+            secondPlaceholder="Если прицепов два"
+            hitched={suggestion?.hitched}
+            vehicleId={vehicleId}
+            vehicleTypeId={selectedVehicle?.vehicleTypeId}
+            // Условие показа — пропом: снятый блок уносил вопрос, но не ответ (§14, Р20).
+            asks={selectedVehicle?.waybillFormCode !== 'leg3'}
+          />
 
           <FormGrid.Full>
             <Form.Item
