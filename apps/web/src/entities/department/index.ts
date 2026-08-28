@@ -5,4 +5,8 @@
  */
 export { departmentsApi } from './api/departmentsApi';
 export { departmentKeys } from './api/keys';
-export { departmentOptionsQuery, departmentPlatformQuery } from './api/queries';
+export {
+  departmentOptionsQuery,
+  departmentPlatformQuery,
+  departmentRecordsQuery,
+} from './api/queries';
