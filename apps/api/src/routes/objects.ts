@@ -10,7 +10,7 @@ import {
 import { db } from '../db/client';
 import {
   constructionObjects,
-  departments,
+  departmentConstructionObjects,
   type ObjectRow,
   userConstructionObjects,
 } from '../db/schema';
@@ -200,13 +200,19 @@ export default async function objectsRoutes(app: FastifyInstance): Promise<void>
           `Объект привязан к учётным записям (${linked}) — снимите привязку и повторите`,
         );
       }
-      // Площадка отдела (ADR 0062) — тот же довод, но привязка держится внешним ключом: RESTRICT
-      // удалению помешает и сам, только ответит нарушением целостности. Отдел на этой площадке
-      // даёт своим сотрудникам права по вывозу мусора, и снимают их в карточке отдела.
+      // Площадка отдела (ADR 0062, кардинальность — ADR 0144) — тот же довод, но привязка
+      // держится внешним ключом: RESTRICT удалению помешает и сам, только ответит нарушением
+      // целостности. Отдел на этой площадке даёт своим сотрудникам права по вывозу мусора, и
+      // снимают их в карточке отдела.
+      //
+      // Счёт по таблице связи, а не по колонке `departments.construction_object_id`: колонка
+      // осталась совместимой проекцией набора на один релиз и при наборе из нескольких площадок
+      // равна `NULL`. Считай мы по ней — отдел с тремя гарантийными объектами не насчитался бы
+      // вовсе, и человек получил бы вместо внятного отказа нарушение целостности от RESTRICT.
       const departmentsOnObject = await tx
         .select({ c: count() })
-        .from(departments)
-        .where(eq(departments.constructionObjectId, row.id));
+        .from(departmentConstructionObjects)
+        .where(eq(departmentConstructionObjects.constructionObjectId, row.id));
       const linkedDepartments = Number(departmentsOnObject[0]!.c);
       if (linkedDepartments > 0) {
         throw err.conflict(

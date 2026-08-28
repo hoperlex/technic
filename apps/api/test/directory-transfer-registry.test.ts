@@ -12,7 +12,30 @@ import { DIRECTORY_ID_COLUMN, DIRECTORY_KEYS, directoryTitles } from '@technic/c
  * База подменена: реестр только собирается, запросов на этом не делает.
  */
 
+// Конфиг ставится до импортов: описание отделов с ADR 0144 пишет журнал доступа (`lib/audit`), а
+// тот тянет логгер, читающий конфиг при загрузке модуля. Подменять ради этого сам журнал было бы
+// хуже — проверяется здесь состав реестра, и чем меньше в нём подменено, тем ближе он к рабочему
+// (приём остальных проверок обмена: `directory-transfer-org.test.ts`).
+vi.hoisted(() => {
+  Object.assign(process.env, {
+    NODE_ENV: 'test',
+    PUBLIC_ORIGIN: 'https://portal.test',
+    DATABASE_URL: 'postgres://user:pass@localhost:5432/technic_test',
+    JWT_PUBLIC_KEY_PEM: '-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----',
+    COOKIE_SECRET: 'test-cookie-secret-value',
+    CSRF_SECRET: 'test-csrf-secret-value',
+    S3_ENDPOINT: 'https://s3.test.local',
+    S3_BUCKET: 'test-bucket',
+    S3_ACCESS_KEY_ID: 'test-key',
+    S3_SECRET_ACCESS_KEY: 'test-secret',
+  });
+});
+
 vi.mock('../src/db/client', () => ({ db: {} }));
+// Модуль сессий подменён по той же причине и тем же приёмом. `user-scopes` с ADR 0144 гасит сессии
+// сам, в своей транзакции, поэтому импортирует `auth/sessions`, а тот читает конфиг при загрузке —
+// и валится на пустом окружении, куда бы его ни притащили. Проверяемого здесь он не касается вовсе.
+vi.mock('../src/auth/sessions', () => ({ revokeAllForUsersTx: async () => {} }));
 
 const { directories, directoryFor } = await import('../src/services/directory-transfer/registry');
 

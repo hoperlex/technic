@@ -4,6 +4,7 @@ import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-d
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateDepartmentInput, DepartmentDto } from '@technic/contracts';
 import { DataTable, type CardConfig } from '@shared/ui';
+import { ExpandableCell } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
@@ -41,7 +42,7 @@ export function DepartmentsTab() {
     queryFn: () => departmentsApi.list(params),
   });
 
-  // Площадка отдела (ADR 0062). Неактивные объекты в списке есть: привязка описывает зону
+  // Площадки отдела (ADR 0144). Неактивные объекты в списке есть: привязка описывает зону
   // ответственности, а не готовность принимать заявки — закрытую площадку отдел ещё доубирает.
   const { data: objectOptions = [], isFetching: objectsLoading } = useQuery(
     objectOptionsQuery({ activeOnly: false }),
@@ -62,7 +63,7 @@ export function DepartmentsTab() {
     form.resetFields();
     form.setFieldsValue({
       isActive: true,
-      constructionObjectId: null,
+      constructionObjectIds: [],
       headUserIds: [],
     } as Partial<CreateDepartmentInput>);
     setOpen(true);
@@ -74,9 +75,10 @@ export function DepartmentsTab() {
       code: r.code,
       name: r.name,
       isActive: r.isActive,
-      // `null`, а не `undefined`: отсутствие поля сервер читает как «не трогать площадку», и
-      // снять её из формы стало бы нечем (ADR 0062).
-      constructionObjectId: r.object?.id ?? null,
+      // Набор целиком (ADR 0144), а не устаревшая проекция `r.object`: при нескольких площадках
+      // сервер отдаёт в ней `null`, и форма показала бы отдел без площадок — а сохранение,
+      // отправив пустой набор, их бы и сняло.
+      constructionObjectIds: r.objects.map((o) => o.id),
       headUserIds: r.heads.map((h) => h.id),
     });
     setOpen(true);
@@ -124,19 +126,33 @@ export function DepartmentsTab() {
     textColumn<DepartmentDto>({ key: 'code', title: 'Код', dataIndex: 'code', width: 160 }),
     textColumn<DepartmentDto>({ key: 'name', title: 'Название', dataIndex: 'name' }),
     textColumn<DepartmentDto>({
-      key: 'object',
-      title: 'Площадка',
-      dataIndex: 'object',
+      key: 'objects',
+      title: 'Площадки',
+      dataIndex: 'objects',
       sortable: false,
       searchable: false,
-      width: 220,
-      // Пусто — рабочее состояние, а не пропуск: у ПТО и АХО площадки нет, и вывоз мусора им
-      // закрыт именно поэтому (ADR 0062).
+      width: 260,
+      /*
+       * Набор — тегами, а длинный набор сворачивается той же ячейкой, что и состав недели с
+       * контактами заявки (`ExpandableCell`): свёрнутой видно две строки тегов, остальное
+       * открывается нажатием. Своего «первые три и ещё N» здесь нет намеренно — приём в портале
+       * уже есть, и второй, считающий «сколько поместилось» по-своему, разошёлся бы с ним на
+       * первой же смене ширины колонки.
+       *
+       * Пусто — рабочее состояние, а не пропуск: у ПТО и АХО площадок нет, и вывоз мусора им
+       * закрыт именно поэтому (ADR 0144).
+       */
       render: (_v, r) =>
-        r.object ? (
-          `${r.object.code} — ${r.object.name}`
-        ) : (
+        r.objects.length === 0 ? (
           <Typography.Text type="secondary">Нет</Typography.Text>
+        ) : (
+          <ExpandableCell>
+            <div>
+              {r.objects.map((o) => (
+                <Tag key={o.id} style={{ marginInlineEnd: 4 }}>{`${o.code} — ${o.name}`}</Tag>
+              ))}
+            </div>
+          </ExpandableCell>
         ),
     }),
     textColumn<DepartmentDto>({
@@ -191,7 +207,12 @@ export function DepartmentsTab() {
     badge: (r) => <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Да' : 'Нет'}</Tag>,
     primary: (r) => r.name,
     lines: [
-      (r) => (r.object ? `Площадка: ${r.object.code} — ${r.object.name}` : 'Площадки нет'),
+      // Перечислением, без сокращения «и ещё N»: карточка и открывается затем, чтобы увидеть
+      // отдел целиком, а строк у неё столько, сколько нужно (ADR 0042).
+      (r) =>
+        r.objects.length > 0
+          ? `Площадки: ${r.objects.map((o) => `${o.code} — ${o.name}`).join(' · ')}`
+          : 'Площадок нет',
       (r) =>
         r.heads.length > 0
           ? `Руководители: ${r.heads.map((h) => h.fullName).join(' · ')}`
@@ -271,13 +292,16 @@ export function DepartmentsTab() {
         confirmLoading={saveMut.isPending}
         width={480}
       >
-        {/* Очистка Select даёт `undefined`, а сервер читает отсутствие поля как «площадку не
-            трогать» (ADR 0062): без этого снять её из формы было бы нечем. */}
+        {/* Набор площадок уходит массивом ВСЕГДА, даже пустым (ADR 0144). Для сервера это два
+            разных ответа: поля нет — «набор не трогать», пустой массив — «снять все», и второе
+            меняет область сотрудникам отдела и гасит их сессии. Очищенный Select отдаёт форме
+            `undefined`, то есть ровно первое; не подставь мы здесь пустой массив, снять последнюю
+            площадку из формы было бы нечем — сохранение молча возвращало бы прежний набор. */}
         <Form
           form={form}
           layout="vertical"
           onFinish={(v) =>
-            saveMut.mutate({ ...v, constructionObjectId: v.constructionObjectId ?? null })
+            saveMut.mutate({ ...v, constructionObjectIds: v.constructionObjectIds ?? [] })
           }
         >
           <Form.Item name="code" label="Код" rules={[{ required: true, message: 'Укажите код' }]}>
@@ -291,18 +315,21 @@ export function DepartmentsTab() {
             <Input />
           </Form.Item>
           <Form.Item
-            name="constructionObjectId"
-            label="Площадка"
-            tooltip="Объект, на котором работает отдел: его сотрудники ведут вывоз мусора с этой площадки наравне со штабом"
-            extra="Смена площадки закрывает открытые сессии всех учёток отдела — у них меняется область"
+            name="constructionObjectIds"
+            label="Площадки"
+            tooltip="Объекты, на которых работает отдел: его сотрудники ведут вывоз мусора с этих площадок наравне со штабом"
+            extra="Смена площадок закрывает открытые сессии всех учёток отдела — у них меняется область"
           >
             <Select
+              // Множественный выбор (ADR 0144): у гарантийного отдела объектов несколько, и
+              // список их меняется — одним полем такой набор не выражается.
+              mode="multiple"
               options={objectOptions}
               loading={objectsLoading}
               showSearch
               allowClear
               optionFilterProp="label"
-              placeholder="Нет — отдел без площадки"
+              placeholder="Нет — отдел без площадок"
             />
           </Form.Item>
           <Form.Item

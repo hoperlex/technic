@@ -481,20 +481,20 @@ export function VehicleRequestsTab() {
   const customerLocked = !!record && record.status !== 'new';
 
   /**
-   * Что предложить первой строкой в списке мест (ADR 0069): площадку заявки, затем площадки
-   * учётки. Заказчика меняют, не закрывая форму, поэтому пара берётся из самой формы, а не из
-   * заявки; у заказчика-отдела своей площадки в форме нет — её даёт карта отделов (ADR 0062).
-   *
-   * Список короткий и без записей без адреса: чего в справочнике мест нет, того и предлагать
-   * нечем — этим занимается сам компонент поля.
+   * Что предложить первой строкой в списке мест (ADR 0069): площадку заявки, затем ВСЕ площадки
+   * отдела-заказчика (ADR 0144), затем площадки учётки; пара берётся из формы — заказчика меняют,
+   * не закрывая её, а своей площадки у отдела в ней нет, её даёт карта отделов. Набор идёт целиком:
+   * «главной» площадки в нём нет, порядок задан кодом объекта, и одна оставленная скрыла бы прочие.
+   * Доступа это не расширяет — подсказка про адрес, а не про область: состав списка даёт справочник
+   * объектов, первые строки лишь меняют порядок, а записи без адреса не пускает сам компонент поля.
    */
   const formCustomer = customer.customerPairOf(Form.useWatch('customerKey', form));
   const { data: departmentPlatforms } = useQuery(departmentPlatformQuery());
   const suggestObjectIds = useMemo(() => {
-    const departmentObjectId = formCustomer.departmentId
-      ? departmentPlatforms?.get(formCustomer.departmentId)
-      : undefined;
-    const ids = [formCustomer.objectId, departmentObjectId, ...ownObjectIds];
+    const departmentObjectIds = formCustomer.departmentId
+      ? (departmentPlatforms?.get(formCustomer.departmentId) ?? [])
+      : [];
+    const ids = [formCustomer.objectId, ...departmentObjectIds, ...ownObjectIds];
     return [...new Set(ids.filter((id): id is string => !!id))];
   }, [formCustomer.objectId, formCustomer.departmentId, departmentPlatforms, ownObjectIds]);
 

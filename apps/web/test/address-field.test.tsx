@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import type { VehicleRequestDto, WarehouseDto } from '@technic/contracts';
+import type { AuthUser, DepartmentDto, VehicleRequestDto, WarehouseDto } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
-import { typeDate } from './antd';
+import { selectOption, typeDate } from './antd';
 import {
   classification,
   freightRequest,
@@ -77,7 +77,34 @@ const WAREHOUSE_OF_STOPPED_SUPPLIER = {
   supplier: { ...WAREHOUSE.supplier, id: 'cp-2', name: 'ООО «Бывший»', isActive: false },
 } as WarehouseDto;
 
-function renderTab(over: RouteMap = {}, items: VehicleRequestDto[] = []): HttpMock {
+/**
+ * Отдел-заказчик с двумя площадками (ADR 0144): ими и проверяется, что подсказка берёт набор
+ * целиком. Устаревшая проекция `object` при наборе из нескольких приходит с сервера пустой — так
+ * же, как здесь: читай портал её, подсказка у такого отдела исчезла бы вовсе.
+ */
+const WARRANTY_DEPARTMENT: DepartmentDto = {
+  id: 'dep-1',
+  code: 'ГАР',
+  name: 'Гарантийный',
+  isActive: true,
+  objects: [
+    { id: OWN_OBJECT.id, code: OWN_OBJECT.code, name: OWN_OBJECT.name },
+    { id: OTHER_OBJECT.id, code: OTHER_OBJECT.code, name: OTHER_OBJECT.name },
+  ],
+  object: null,
+  heads: [],
+  createdAt: '2026-08-01T10:00:00.000Z',
+  updatedAt: '2026-08-01T10:00:00.000Z',
+};
+
+/** Штаб своей площадки — умолчание сценариев: у него есть и объект заявки, и своя площадка. */
+const SHTAB = authUser({ role: 'shtab', constructionObjectIds: ['obj-1'] });
+
+function renderTab(
+  over: RouteMap = {},
+  items: VehicleRequestDto[] = [],
+  user: AuthUser = SHTAB,
+): HttpMock {
   const http = mockHttp({
     'GET /vehicle-requests/summary': () => json(vehicleSummary({ new: items.length })),
     'GET /vehicle-requests/feed': () => json(vehicleFeed(items)),
@@ -108,11 +135,9 @@ function renderTab(over: RouteMap = {}, items: VehicleRequestDto[] = []): HttpMo
     'POST /vehicle-requests': ({ body }) => json({ ...freightRequest(), ...(body as object) }, 201),
     ...over,
   });
-  // Штаб своей площадки: у него есть и объект заявки, и своя площадка — на них и строятся
-  // подсказки. Диспетчеру подсказывать нечем: объектов у роли нет.
-  renderWithUser(<VehicleRequestsTab />, {
-    user: authUser({ role: 'shtab', constructionObjectIds: ['obj-1'] }),
-  });
+  // Кто смотрит, задаёт и подсказки: у штаба они от своей площадки, у диспетчера своих
+  // объектов нет вовсе — там подсказку даёт только заказчик заявки.
+  renderWithUser(<VehicleRequestsTab />, { user });
   return http;
 }
 
@@ -178,6 +203,25 @@ function groupTexts(): string[] {
   return [...openDropdown().querySelectorAll('.ant-select-item-group')].map(
     (g) => g.textContent ?? '',
   );
+}
+
+/**
+ * Подписи вариантов первой группы списка — той самой «Подсказки».
+ *
+ * Отдельно от `optionTexts`: тот отдаёт варианты всех групп подряд, и запись, стоящая в общем
+ * справочнике, в нём неотличима от предложенной. Ровно на этом различии и держится проверка
+ * набора площадок отдела — иначе «предложили обе» проходило бы и тогда, когда предложена одна, а
+ * вторая просто нашлась в группе «Объекты» следом.
+ */
+function firstGroupTexts(): string[] {
+  const items = [...openDropdown().querySelectorAll('.ant-select-item')];
+  const start = items.findIndex((i) => i.classList.contains('ant-select-item-group'));
+  const texts: string[] = [];
+  for (const item of items.slice(start + 1)) {
+    if (item.classList.contains('ant-select-item-group')) break;
+    texts.push(item.textContent ?? '');
+  }
+  return texts;
 }
 
 /** Режим поля виден по чекбоксу: он и переключает набор адреса на выбор из справочника. */
@@ -302,6 +346,32 @@ describe('подсказки первой строкой (ADR 0069)', () => {
     expect(optionTexts().filter((t) => t.includes('ЖК Северный'))).toHaveLength(1);
     // Само поле при этом пустое: подсказка — первая строка списка, а не подставленный ответ.
     expect(addressInput(addressField('Место погрузки')).value).toBe('');
+  });
+
+  it('у заказчика-отдела подсказывает все его площадки, а не первую (ADR 0144)', async () => {
+    /*
+     * Диспетчер: ни объектной оси, ни отдельской — в подборе заказчика видны и объекты, и отделы,
+     * и отдел выбирается руками. Своих площадок у роли нет, поэтому в подсказках останется ровно
+     * то, что дал отдел, — и подмена набора одной площадкой была бы видна сразу.
+     *
+     * Область при этом не меняется ни на строку: список мест остаётся тем же справочником
+     * объектов, подсказки лишь ставят две его записи первыми.
+     */
+    renderTab({ 'GET /departments': () => json(list([WARRANTY_DEPARTMENT])) }, [], authUser());
+    await openFreightForm();
+    await selectOption('Объект/отдел', /Гарантийный/);
+    await openDirectory('Место погрузки');
+
+    expect(groupTexts()[0]).toBe('Подсказки');
+    // Обе площадки отдела — и только они, в том порядке, в каком их отдал сервер (по коду
+    // объекта). Именно в самой группе подсказок: ниже, в общем справочнике, они были и раньше.
+    const suggested = firstGroupTexts();
+    expect(suggested).toHaveLength(2);
+    expect(suggested[0]).toContain('ЖК Северный');
+    expect(suggested[1]).toContain('ЖК Южный');
+    // И ни одна не задваивается: предложенные вычтены из общей группы.
+    expect(optionTexts().filter((t) => t.includes('ЖК Северный'))).toHaveLength(1);
+    expect(optionTexts().filter((t) => t.includes('ЖК Южный'))).toHaveLength(1);
   });
 
   it('после набора группа подсказок уходит, а записи остаются доступны', async () => {

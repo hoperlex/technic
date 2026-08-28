@@ -189,8 +189,11 @@ export const counterpartyTypeEnum = pgEnum('counterparty_type', [
   'service',
 ]);
 // Кем человек назвал себя при регистрации (ADR 0034). Это пожелание, не роль: права даёт
-// только `users.role`, назначаемая администратором. Двум значениям роли в портале не
-// соответствуют вовсе — арендодателю техники и «другому».
+// только `users.role`, назначаемая администратором, а соответствие «пожелание → роль плюс наборы»
+// живёт в контрактах. Значения называют ДОЛЖНОСТЬ, а не роль портала, — поэтому они переживают
+// слияние ролей реформы. Порядок значений здесь и в базе (миграции 0057, 0067, 0130, 0218) не
+// совпадает и совпадать не обязан: сортировок по этому типу нет ни одной, порядок на экране задаёт
+// массив в контрактах, а сверка кода с базой сравнивает множества значений.
 export const registrationRoleRequestEnum = pgEnum('registration_role_request', [
   'dispatcher',
   'rukstroy',
@@ -201,6 +204,14 @@ export const registrationRoleRequestEnum = pgEnum('registration_role_request', [
   // Водитель (ADR 0102, миграция 0130): единственное пожелание, чья роль совпадает с ним
   // буквально. Отдельной кнопки на экране входа нет — человек выбирает себя в общем списке.
   'driver',
+  // Отдел и сервисная компания (миграции 0218/0219). Подразделение у сотрудника и руководителя
+  // отдела пишется в ту же колонку `requested_object`, что и объект: у неё смысл «подразделение,
+  // где человек работает». `service_company` называет человека — сотрудника или представителя
+  // сервисной компании по оргтехнике (ADR 0085), а не саму организацию; от лица какой именно он
+  // работает, говорит `requested_company`.
+  'department_staff',
+  'department_head',
+  'service_company',
   'other',
 ]);
 
@@ -240,6 +251,13 @@ export const departments = pgTable(
      * (ПТО, АХО) объектных прав не даёт вовсе.
      *
      * Колонка у отдела, а не набор у учётки: у объекта отделов несколько, у отдела объект — один.
+     *
+     * С ADR 0144 (миграция 0221) это СОВМЕСТИМАЯ ПРОЕКЦИЯ набора `department_construction_objects`,
+     * а не источник области: здесь лежит единственная площадка набора, если она одна, и NULL, если
+     * площадок ноль или больше одной. Прямое направление (колонка → набор) держит триггер
+     * `department_object_sync_trg`, обратное (набор → колонка) — `replaceDepartmentObjects`.
+     * Колонка живёт один переходный релиз — ради кода предыдущей версии, работающего на новой
+     * схеме в окне выката, — и снимается вместе с триггером. Новым кодом не читается и не пишется.
      */
     constructionObjectId: uuid('construction_object_id').references(() => constructionObjects.id, {
       onDelete: 'restrict',
@@ -1077,6 +1095,44 @@ export const userConstructionObjects = pgTable(
     pk: primaryKey({ columns: [t.userId, t.constructionObjectId] }),
     // «Кто работает на объекте» — вопрос с обратной стороны; PK покрывает только проход от учётки.
     objectIdx: index('user_construction_objects_object_idx').on(t.constructionObjectId),
+  }),
+);
+
+/**
+ * Площадки отдела (ADR 0144, миграция 0221) — набор объектов, на которых сотрудники отдела
+ * работают наравне со штабом: заказывают вывоз мусора. Пришёл на смену колонке
+ * `departments.construction_object_id` (ADR 0062, его решение 1 отменено в части кардинальности):
+ * у гарантийного отдела гарантийных объектов несколько, и список меняется.
+ *
+ * Устроен как объекты учётки (ADR 0039) — своя таблица, а не массив в `departments`: набор правят
+ * из карточки отдела и обменом файлами, и у каждой привязки есть свои автор и время.
+ *
+ * Объект — `restrict`, а не `cascade`, как у учётки: каскад молча снял бы площадку у ЦЕЛОГО отдела
+ * мимо карточки, в которой её задавали. Удаление объекта насовсем (ADR 0060) отказывает
+ * сообщением, а ограничение стоит за ним последней преградой.
+ *
+ * Единственный писатель — `replaceDepartmentObjects`: он держит канонизацию набора, порог, разницу
+ * для аудита, `auth_version` и отзыв сессий одной транзакцией.
+ */
+export const departmentConstructionObjects = pgTable(
+  'department_construction_objects',
+  {
+    departmentId: uuid('department_id')
+      .notNull()
+      .references(() => departments.id, { onDelete: 'cascade' }),
+    constructionObjectId: uuid('construction_object_id')
+      .notNull()
+      .references(() => constructionObjects.id, { onDelete: 'restrict' }),
+    // Пусто у перенесённых миграцией привязок и у записи триггера совместимости: там автора нет —
+    // есть код предыдущей версии, писавший колонку.
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.departmentId, t.constructionObjectId] }),
+    // «Какие отделы у этой площадки» — вопрос карточки объекта и проверки перед удалением
+    // насовсем; PK покрывает только проход от отдела.
+    objectIdx: index('department_construction_objects_object_idx').on(t.constructionObjectId),
   }),
 );
 
@@ -2729,6 +2785,219 @@ export const serviceRequestStatusHistory = pgTable(
           AND (${t.actorSource} = 'user') = (${t.changedBy} IS NOT NULL)`,
     ),
     requestIdx: index('service_request_status_history_request_idx').on(t.requestId, t.changedAt),
+  }),
+);
+
+/**
+ * Обсуждение заявки — лента реплик (миграция 0216, план `docs/office-equipment-chat-plan.md`).
+ *
+ * Заменяет собой `serviceRequests.serviceComment`: одно поле на всю заявку затирается следующей
+ * записью, не говорит, кому адресовано, и никого ни о чём не извещает. Колонка при этом остаётся до
+ * выпуска C — выкат идёт expand → contract кода → contract схемы (§3.10), и снять её раньше, чем
+ * перестанет выбирать код, значит уронить весь модуль: `requestQuery` берёт строку заявки целиком.
+ *
+ * `seq` — НОМЕР ВНУТРИ ЗАЯВКИ, А НЕ ГЛОБАЛЬНАЯ IDENTITY, и на этом держится весь протокол прочтения
+ * (§3.4). Курсор «дочитал до N» осмыслен ровно тогда, когда всё последующее получает номер больше N.
+ * Глобальная последовательность такого не обещает: значение из неё выдаётся до коммита и вне
+ * транзакции, поэтому реплика с меньшим номером может стать видимой ПОЗЖЕ большего — и навсегда
+ * останется непрочитанной, считаясь прочитанной. Номер выдаётся под той же блокировкой строки
+ * заявки (`FOR UPDATE`), под которой идут остальные её мутации, как `MAX(seq)+1`; уникальный индекс
+ * `(request_id, seq)` — страховка от гонки, а не основной механизм.
+ *
+ * Отправка реплики НЕ трогает `version`, `updated_at` и `updated_by` заявки: сообщение — не правка
+ * заявки, и поднимай оно версию, каждое чужое сообщение давало бы конфликт в чьей-то открытой форме.
+ *
+ * Лента только растёт, и это свойство БАЗЫ, а не маршрута: миграция ставит `BEFORE UPDATE` с
+ * безусловным отказом, условный `BEFORE DELETE` (удаление проходит, только если заявки-родителя уже
+ * нет, — то есть внутри каскада от «удалить насовсем») и отложенный constraint-триггер «у реплики
+ * есть хотя бы один адресат». Отсюда требование к коду: реплику и её адресатов пишет одна
+ * транзакция, БЕЗ вложенной, — см. комментарий у адресатов.
+ */
+export const serviceRequestMessages = pgTable(
+  'service_request_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** `cascade`: переписка — часть заявки, а не отдельный документ. Это единственная законная
+     * дверь к удалению её строк — прямое удаление отбивает триггер. */
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => serviceRequests.id, { onDelete: 'cascade' }),
+    seq: integer('seq').notNull(),
+    /**
+     * `restrict`, как `created_by` у самой заявки: на переписку ссылаются в споре с подрядчиком, и
+     * удаление учётки портал обязан отклонить словами, а не обезличить реплику молча. Пусто —
+     * только у перенесённых, где автора действительно не восстановить: `updated_by` заявки к
+     * моменту переноса означает «кто последним двигал статус», а аудит примечания пишется вне
+     * транзакции и текста не несёт.
+     */
+    authorId: uuid('author_id').references(() => users.id, { onDelete: 'restrict' }),
+    /** `chat` — написано в портале, `import` — перенесено из «Примечания исполнителя» (§3.9). */
+    origin: text('origin').$type<'chat' | 'import'>().notNull().default('chat'),
+    /**
+     * `md5` перенесённого текста. Идемпотентность переноса держится на нём, а не на признаке «эту
+     * заявку уже переносили»: повторный прогон в выпуске C не обязан знать, что изменилось после
+     * первого, — изменившийся текст даёт другой хеш и потому новую реплику.
+     */
+    importedHash: text('imported_hash'),
+    body: text('body').notNull(),
+    /**
+     * Без `defaultNow()`: у перенесённых время берётся от заявки (`updated_at`, а его нет —
+     * `created_at`) и помечается в интерфейсе приблизительным. Умолчание превратило бы пропущенное
+     * поле в «перенесено сегодня».
+     */
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  },
+  (t) => ({
+    originCheck: check(
+      'service_request_messages_origin_check',
+      sql`${t.origin} IN ('chat','import')`,
+    ),
+    // Нумерация с единицы: `readThroughSeq = 0` означает «не читал ничего», и реплика с нулевым
+    // номером родилась бы прочитанной у всех.
+    seqCheck: check('service_request_messages_seq_check', sql`${t.seq} > 0`),
+    // Равенство, а не «одно из двух»: хеш у написанной в портале реплики означал бы ложную
+    // идемпотентность, а перенесённая без хеша при повторном прогоне удвоилась бы.
+    importCheck: check(
+      'service_request_messages_import_check',
+      sql`(${t.origin} = 'import') = (${t.importedHash} IS NOT NULL)`,
+    ),
+    // Анонимность — привилегия только переноса: у реплики из портала принципал под рукой всегда.
+    authorCheck: check(
+      'service_request_messages_author_check',
+      sql`${t.origin} <> 'chat' OR ${t.authorId} IS NOT NULL`,
+    ),
+    bodyCheck: check(
+      'service_request_messages_body_check',
+      sql`btrim(${t.body}) <> '' AND length(${t.body}) <= 2000`,
+    ),
+    // Лента и счёт непрочитанного — он же страховка от гонки при выдаче номера: два вопроса, один
+    // объект.
+    requestSeqUnique: uniqueIndex('service_request_messages_request_seq_unique').on(
+      t.requestId,
+      t.seq,
+    ),
+    // История заявки сортирует события по времени, а не по номеру (§3.8): у перенесённых реплик
+    // номер с временем не согласован.
+    requestCreatedIdx: index('service_request_messages_request_created_idx').on(
+      t.requestId,
+      t.createdAt,
+    ),
+    // Частичный — и потому `ON CONFLICT` переноса обязан повторять предикат дословно, иначе
+    // PostgreSQL индекс не выведет.
+    importUnique: uniqueIndex('service_request_messages_import_unique')
+      .on(t.requestId, t.importedHash)
+      .where(sql`${t.origin} = 'import'`),
+  }),
+);
+
+/**
+ * Кому адресована реплика (миграция 0216). Адресат — ПОМЕТКА, а не ограничение видимости: текст
+ * видит каждый, кому видна заявка, а строка управляет подсветкой и будущим письмом (§2, §3.12).
+ *
+ * СТРОКАМИ, А НЕ МАССИВОМ В `jsonb` — по доводу миграции 0210: карта не проверяет ни имени стороны,
+ * ни существования учётки, ни принадлежности реплике. Здесь у неё есть и вторая беда: счётчик
+ * непрочитанного спрашивают все открытые клиенты раз в минуту, и он ходит по этим строкам индексом,
+ * а не разворачивает массив у каждой реплики; и третья — «кому уходит письмо по этой реплике»
+ * отвечается соединением, пока адресаты строки, и разбором документа, как только они станут полем.
+ *
+ * ГРАНИЦА, КОТОРУЮ ОБЯЗАН СОБЛЮДАТЬ КОД ОТПРАВКИ: реплика и её адресаты пишутся одной транзакцией,
+ * и реплика вставляется НА ВЕРХНЕМ ЕЁ УРОВНЕ. Триггер `..._same_xact` сверяет `xmin` строки реплики
+ * с `pg_current_xact_id()`, а тот возвращает идентификатор верхней транзакции — строка, вставленная
+ * внутри savepoint'а (вложенный `tx.transaction`, блок с `EXCEPTION`), получает идентификатор
+ * подтранзакции, и вставка адресата будет отбита. Проверено на dev-базе. Без этого триггера
+ * подсветку можно было бы переписать задним числом, не тронув ни текста, ни строк ленты.
+ */
+export const serviceRequestMessageAddressees = pgTable(
+  'service_request_message_addressees',
+  {
+    messageId: uuid('message_id')
+      .notNull()
+      .references(() => serviceRequestMessages.id, { onDelete: 'cascade' }),
+    /**
+     * Сторона цикла или `all`. Две колонки вместо одной «кому» с разбором по префиксу: сторону
+     * проверяет словарный `CHECK`, учётку — внешний ключ, и ни того, ни другого из строки вида
+     * `user:<uuid>` не проверить.
+     */
+    side: text('side').$type<'all' | 'customer' | 'operator' | 'it' | 'service'>(),
+    /**
+     * Поимённый адресат. `restrict`, как у автора и у назначения исполнителя: адресованная человеку
+     * реплика без имени адресата перестаёт отвечать на вопрос, ради которого её адресовали.
+     */
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    // Ни пустой строки («адресовано никому» — это отсутствие строки), ни обеих сразу: «стороне и
+    // вот этому человеку» — две строки, и в счёте они участвуют по-разному.
+    targetCheck: check(
+      'service_request_message_addressees_target_check',
+      sql`(${t.side} IS NULL) <> (${t.userId} IS NULL)`,
+    ),
+    // Словарь закрыт схемой, а не доверием к клиенту: опечатка в стороне стала бы репликой, яркой
+    // ни для кого, и заметили бы её через месяц.
+    sideCheck: check(
+      'service_request_message_addressees_side_check',
+      sql`${t.side} IS NULL OR ${t.side} IN ('all','customer','operator','it','service')`,
+    ),
+    // Частичные, а не обычные `unique`: в обычном NULL'ы различны, и «сторона `it` дважды» такой
+    // ключ не поймал бы — строки отличал бы друг от друга пустой `user_id`.
+    sideUnique: uniqueIndex('service_request_message_addressees_side_unique')
+      .on(t.messageId, t.side)
+      .where(sql`${t.side} IS NOT NULL`),
+    userUnique: uniqueIndex('service_request_message_addressees_user_unique')
+      .on(t.messageId, t.userId)
+      .where(sql`${t.userId} IS NOT NULL`),
+    // Под счётчик (§3.5): оба вопроса («есть ли адресат из моих сторон», «есть ли адресат — я») идут
+    // от адресата к реплике, а не наоборот, — от реплики читают уникальные индексы выше.
+    sideIdx: index('service_request_message_addressees_side_idx').on(t.side, t.messageId),
+    userIdx: index('service_request_message_addressees_user_idx')
+      .on(t.userId, t.messageId)
+      .where(sql`${t.userId} IS NOT NULL`),
+  }),
+);
+
+/**
+ * Докуда человек дочитал ленту заявки (миграция 0216).
+ *
+ * КУРСОР, А НЕ ОТМЕТКА ВРЕМЕНИ (§3.4), и это не вкус. `readAt = now()` теряет реплику двумя
+ * воспроизводимыми способами. Первый: отправка началась раньше открытия окна, а закоммитилась позже
+ * отметки — её `createdAt` меньше отметки, и она рождается прочитанной, хотя её никто не видел.
+ * Второй: окно ставит отметку при открытии, а загрузка ленты падает — человек не увидел ничего,
+ * портал считает прочитанным всё. Номер от обеих бед свободен: он выдаётся под блокировкой заявки и
+ * растёт строго монотонно, поэтому «дочитал до N» остаётся верным и через год. `readAt` рядом
+ * остаётся, но отвечает только на вопрос «когда двигали», для разбора жалоб.
+ *
+ * Курсор двигает клиент ПОСЛЕ показа ленты, сервер пишет `GREATEST(текущий, throughSeq)` и требует
+ * `0 ≤ throughSeq ≤ lastSeq`: `GREATEST` спасает от отката назад, но не от `throughSeq = 1000000`,
+ * который погасил бы весь будущий разговор.
+ *
+ * Ключ — пара «заявка + человек», без суррогатного `id`: второго курсора у того же человека в той
+ * же заявке не бывает, а с `id` их стало бы два и «докуда дочитано» перестало бы иметь ответ.
+ */
+export const serviceRequestMessageReads = pgTable(
+  'service_request_message_reads',
+  {
+    /**
+     * Обе ссылки `cascade`, в отличие от автора и адресата: курсор — не история и не
+     * свидетельство, он говорит только «докуда дочитал живой человек в живой заявке». `restrict`
+     * означал бы, что удаление уволенного упирается в его же закладку.
+     */
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => serviceRequests.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    readThroughSeq: integer('read_through_seq').notNull(),
+    readAt: timestamp('read_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({
+      name: 'service_request_message_reads_pkey',
+      columns: [t.requestId, t.userId],
+    }),
+    // Ноль законен и означает «открывал, но не дочитал ни до чего»; отрицательного курсора нет.
+    seqCheck: check('service_request_message_reads_seq_check', sql`${t.readThroughSeq} >= 0`),
   }),
 );
 
@@ -6905,6 +7174,9 @@ export type ServiceRequestFileRow = typeof serviceRequestFiles.$inferSelect;
 export type ServiceRequestExecutorRow = typeof serviceRequestExecutors.$inferSelect;
 export type ServiceRequestConsumableRow = typeof serviceRequestConsumables.$inferSelect;
 export type ServiceRequestStatusHistoryRow = typeof serviceRequestStatusHistory.$inferSelect;
+export type ServiceRequestMessageRow = typeof serviceRequestMessages.$inferSelect;
+export type ServiceRequestMessageAddresseeRow = typeof serviceRequestMessageAddressees.$inferSelect;
+export type ServiceRequestMessageReadRow = typeof serviceRequestMessageReads.$inferSelect;
 export type ObjectOperatorRow = typeof constructionObjectOperators.$inferSelect;
 export type PersonRow = typeof persons.$inferSelect;
 export type PersonEmploymentRow = typeof personEmployments.$inferSelect;

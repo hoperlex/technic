@@ -15,6 +15,7 @@ import {
   constructionObjects,
   counterparties,
   counterpartySynonyms,
+  departmentConstructionObjects,
   departments,
   organizations,
   warehouses,
@@ -23,8 +24,17 @@ import {
   type ObjectRow,
   type WarehouseRow,
 } from '../../../db/schema';
-import { markDepartmentScopeChanged } from '../../user-scopes';
-import { boolCell, listCell, parseBool, parseChoice, parseList } from '../cells';
+import { writeAuditTx } from '../../../lib/audit';
+import { err } from '../../../lib/errors';
+import { replaceDepartmentObjects } from '../../user-scopes';
+import {
+  boolCell,
+  listCell,
+  parseBool,
+  parseChoice,
+  parseList,
+  parseSemicolonList,
+} from '../cells';
 import { directory, type AnyDirectory, type RowContext, type Tx } from '../types';
 
 /**
@@ -190,30 +200,133 @@ const objectsDirectory = directory<ObjectRow, ObjectModel, NoEnv>({
 
 // ── Отделы ──
 
+/**
+ * Порог набора площадок (ADR 0144, Р5). Число живёт в трёх местах, и это осознанно: контракт
+ * (`departmentObjectIdsSchema`) отвечает за тело запроса, `replaceDepartmentObjects` — за
+ * единственного писателя, а здесь стоит ради ТЕКСТА отказа. Служебный 400 от сервиса не назвал бы
+ * строку файла, а человек с книгой на сотню отделов ищет именно её: «строка 47» он поправит, а
+ * «Площадок у отдела не больше 50» без номера строки заставит пересматривать файл целиком.
+ * Меняют порог — меняют все три.
+ */
+const DEPARTMENT_OBJECTS_LIMIT = 50;
+
+/** Как колонка площадок называется сейчас; вынесена, чтобы отказ выгрузки называл её дословно. */
+const DEPARTMENT_OBJECTS_HEADER = 'Площадки (коды объектов)';
+
 interface DepartmentModel {
   code: string;
   name: string;
-  /** Площадка отдела кодом объекта (ADR 0062); пустая строка — отдел без площадки. */
-  objectCode: string;
+  /**
+   * Площадки отдела кодами объектов (ADR 0144, развивает ADR 0062); пустой список — отдел без
+   * площадок, рабочее состояние большинства отделов.
+   *
+   * Хранится КАНОНИЧЕСКИ — без повторов и по коду (§6 п. 3 плана). Иначе перестановка кодов в
+   * ячейке («СЕВ; АЛ13» вместо «АЛ13; СЕВ») сравнилась бы с заведённым набором как правка:
+   * предпросмотр показал бы изменение, которого человек не делал, загрузка погасила бы сессии
+   * всему отделу, а в журнал доступа ушло бы событие с пустой разницей — «область меняли, но
+   * ничего не изменилось».
+   */
+  objectCodes: string[];
   isActive: boolean;
 }
 
 interface DepartmentEnv {
   objectIdByCode: Map<string, string>;
-  objectCodeById: Map<string, string>;
+  /**
+   * Набор площадок каждого отдела кодами — источником служит таблица связи, а не колонка
+   * `departments.construction_object_id`: колонка живёт один релиз совместимой ПРОЕКЦИЕЙ набора
+   * (ADR 0144, решение 4) и при наборе из нескольких площадок стоит в `NULL`. Читай мы её,
+   * выгрузка показывала бы пустую ячейку у отдела с тремя площадками, а загрузка того же файла
+   * ничего бы не заметила — пустая ячейка набор не трогает.
+   */
+  objectCodesByDepartmentId: Map<string, string[]>;
+}
+
+/**
+ * Канонический вид набора: без повторов и по коду. Один и тот же порядок обязан получаться и из
+ * базы (`env`), и из ячейки (`set`) — сравнение «что изменится» идёт по тексту ячейки, и разойдись
+ * эти два пути хоть порядком, файл показывал бы правку сам себе.
+ *
+ * Сортировка русской раскладкой — та же, что у разницы набора в `replaceDepartmentObjects`: коды
+ * заведены кириллицей, и порядок кодовых точек поставил бы «Ё» после «Я».
+ */
+function canonicalObjectCodes(codes: readonly string[]): string[] {
+  return [...new Set(codes)].sort((a, b) => a.localeCompare(b, 'ru'));
+}
+
+/**
+ * Набор площадок в ячейку — с предполётной проверкой (§6 п. 2 плана).
+ *
+ * Разделитель списка — «;», и экранирования у него нет намеренно: неявные правила разбора дают
+ * молчаливые потери — файл, собранный по одному правилу и прочитанный по другому, теряет половину
+ * значения, ничего об этом не сказав. Поэтому код объекта с «;» внутри — не задача разбора, а
+ * состояние справочника объектов, при котором набор в одну ячейку не записывается вовсе. Обмен
+ * отказывается, и отказывается ДО того, как соберётся книга: `exportDirectory` собирает все ячейки
+ * и лишь потом пишет файл, а событие журнала «справочник выгружен» ставится и вовсе после
+ * возврата, — то есть ни файла, ни записи о выгрузке не появится.
+ *
+ * Проверка стоит здесь, а не в `env()`, по одной причине: `env()` зовёт ещё и `countDirectory` —
+ * то самое, чем портал рисует список справочников со счётчиками. Отказ оттуда закрыл бы всю
+ * вкладку обмена из-за одного кода в одном объекте.
+ *
+ * `AppError`, а не `DirectoryFileError`: тот переводится в человеческий текст только на загрузке
+ * (`routes/directory-transfer.ts`), и выгрузка отдала бы 500 со стек-трейсом в логах вместо
+ * объяснения. `AppError` обрабатывает общий обработчик, и человек читает сообщение целиком.
+ */
+function objectCodesCell(m: DepartmentModel): string {
+  const broken = m.objectCodes.find((code) => code.includes(';'));
+  if (broken !== undefined) {
+    throw err.unprocessable(
+      `Обмен справочником отделов невозможен: у отдела «${m.name || m.code}» код площадки «${broken}» содержит точку с запятой, а ею в колонке «${DEPARTMENT_OBJECTS_HEADER}» разделяются коды набора. Экранирования нет намеренно — переименуйте объект в справочнике объектов и повторите.`,
+    );
+  }
+  return listCell(m.objectCodes);
+}
+
+/**
+ * Коды набора в идентификаторы. Неизвестный код сюда не доходит: его завернула `check()` — она
+ * зовётся до записи и на предпросмотре, поэтому человек читает «площадка «ХХ» не найдена» с
+ * номером строки, а не общий отказ внешнего ключа на половине файла.
+ */
+function departmentObjectIds(m: DepartmentModel, env: DepartmentEnv): string[] {
+  return m.objectCodes
+    .map((code) => env.objectIdByCode.get(code))
+    .filter((id): id is string => id !== undefined);
 }
 
 const departmentsDirectory = directory<DepartmentRow, DepartmentModel, DepartmentEnv>({
   key: 'departments',
-  // Справочник объектов читается один раз на файл: ссылка в нём указана кодом, а записать нужно
-  // идентификатор — запрос на каждую строку означал бы сотню запросов на сотню отделов.
+  // Справочник объектов и привязки площадок читаются один раз на файл: ссылка в нём указана
+  // кодом, а записать нужно идентификатор — запрос на каждую строку означал бы сотню запросов на
+  // сотню отделов.
   env: async () => {
-    const rows = await db
-      .select({ id: constructionObjects.id, code: constructionObjects.code })
-      .from(constructionObjects);
+    const [objects, links] = await Promise.all([
+      db
+        .select({ id: constructionObjects.id, code: constructionObjects.code })
+        .from(constructionObjects),
+      db
+        .select({
+          departmentId: departmentConstructionObjects.departmentId,
+          code: constructionObjects.code,
+        })
+        .from(departmentConstructionObjects)
+        .innerJoin(
+          constructionObjects,
+          eq(departmentConstructionObjects.constructionObjectId, constructionObjects.id),
+        ),
+    ]);
+    const objectCodesByDepartmentId = new Map<string, string[]>();
+    for (const link of links) {
+      const list = objectCodesByDepartmentId.get(link.departmentId);
+      if (list) list.push(link.code);
+      else objectCodesByDepartmentId.set(link.departmentId, [link.code]);
+    }
+    for (const [departmentId, list] of objectCodesByDepartmentId) {
+      objectCodesByDepartmentId.set(departmentId, canonicalObjectCodes(list));
+    }
     return {
-      objectIdByCode: new Map(rows.map((r) => [r.code, r.id])),
-      objectCodeById: new Map(rows.map((r) => [r.id, r.code])),
+      objectIdByCode: new Map(objects.map((r) => [r.code, r.id])),
+      objectCodesByDepartmentId,
     };
   },
   columns: () => [
@@ -238,16 +351,38 @@ const departmentsDirectory = directory<DepartmentRow, DepartmentModel, Departmen
       },
     },
     {
-      header: 'Площадка (код объекта)',
-      width: 22,
-      hint: 'Код объекта из справочника объектов; пусто — у отдела площадки нет, и это рабочее состояние. Снять заведённую площадку файлом нельзя — это делают в карточке отдела.',
-      get: (m) => m.objectCode,
-      // Пустая ячейка площадку не снимает, хотя пустая площадка законна: снятие меняет область
-      // видимости всем сотрудникам отдела (ADR 0062), и «в файле ячейку не заполнили» не должно
-      // означать того же, что осознанное решение в карточке.
+      header: DEPARTMENT_OBJECTS_HEADER,
+      /*
+       * Прежнее имя колонки — «Площадка (код объекта)», когда площадка у отдела была одна
+       * (ADR 0062). Псевдоним обязателен: незнакомый заголовок отвергает файл целиком, и без него
+       * всякая книга, выгруженная до выката набора, перестала бы грузиться — а выгружают их
+       * заранее и правят неделями.
+       *
+       * Старый файл несёт в этой колонке ОДИН код, и прочитан он будет как набор из одного, то
+       * есть у отдела с тремя площадками загрузка оставит одну. Молчаливой потерей это не станет:
+       * в отличие от старой формы карточки (там тот же случай отвечает 409 — ADR 0144, решение 5),
+       * загрузка сначала показывает предпросмотр, и человек видит строкой отчёта
+       * «АЛ13; СЕВ → АЛ13» до того, как что-либо записано.
+       */
+      aliases: ['Площадка (код объекта)'],
+      width: 34,
+      hint: 'Коды объектов через «;»: «АЛ13; СЕВ». Запятая разделителем не считается — она бывает частью кода. Порядок не важен: портал пишет набор по алфавиту. Пусто — набор не меняется; снимают площадки в карточке отдела.',
+      get: objectCodesCell,
+      /*
+       * Пустая ячейка набор не трогает, хотя пустой набор законен. Причина та же, по которой это
+       * правило стояло у одной площадки, и с набором она только весомее: снятие площадок меняет
+       * область видимости всему отделу разом, гасит выданные токены и отзывает сессии его
+       * сотрудникам (ADR 0144, решение 6). «В файле ячейку не заполнили» — а её не заполняют, когда
+       * правят одно наименование, и колонку вообще вправе удалить, — не должно означать того же,
+       * что осознанное снятие площадок в карточке отдела.
+       *
+       * Непустая ячейка задаёт набор ЦЕЛИКОМ, а не добавляет к заведённому: файл показывает
+       * человеку то, что будет, и «в ячейке три кода, а в портале станет пять» читалось бы как
+       * ошибка портала.
+       */
       set: (m, text) => {
         const v = text.trim();
-        if (v !== '') m.objectCode = v;
+        if (v !== '') m.objectCodes = canonicalObjectCodes(parseSemicolonList(v));
       },
     },
     {
@@ -263,8 +398,9 @@ const departmentsDirectory = directory<DepartmentRow, DepartmentModel, Departmen
   ],
   help: () => [
     'Отделы — офисные подразделения (ПТО, АХО, снабжение): от их имени заводят заявки.',
-    'Ключ строки — код. Площадка указывается кодом объекта и чаще всего пуста: площадки нет у большинства отделов (ADR 0062).',
-    'Смена площадки меняет область видимости сотрудников отдела: выданные им токены после загрузки перестают действовать, и портал выдаёт новые.',
+    'Ключ строки — код. Площадки указываются кодами объектов через «;» и чаще всего их нет вовсе: площадок нет у большинства отделов (ADR 0144, развивает ADR 0062).',
+    'Заполненная ячейка задаёт набор площадок целиком: чего в ней нет, то будет снято. Пустая ячейка набор не меняет — снимают площадки в карточке отдела.',
+    'Смена набора площадок меняет область видимости сотрудников отдела: выданные им токены после загрузки перестают действовать, вход в портал придётся повторить.',
     'Руководители отдела файлом не правятся — это привязка учётной записи, а не поле справочника.',
   ],
   load: () => db.select().from(departments).orderBy(departments.code),
@@ -272,47 +408,110 @@ const departmentsDirectory = directory<DepartmentRow, DepartmentModel, Departmen
   model: (row, env) => ({
     code: row.code,
     name: row.name,
-    objectCode:
-      row.constructionObjectId === null
-        ? ''
-        : (env.objectCodeById.get(row.constructionObjectId) ?? ''),
+    // Копия, а не сам список из окружения: одну и ту же строку `model()` собирает дважды — «как
+    // было» и «что станет», — и общий массив у двух моделей означал бы, что правка одной видна в
+    // другой. Сегодня `set` список заменяет целиком и вреда бы не было; копия стоит здесь, чтобы
+    // его не было и завтра.
+    objectCodes: [...(env.objectCodesByDepartmentId.get(row.id) ?? [])],
     isActive: row.isActive,
   }),
-  blank: () => ({ code: '', name: '', objectCode: '', isActive: true }),
+  blank: () => ({ code: '', name: '', objectCodes: [], isActive: true }),
   keyOf: (m) => m.code,
   titleOf: (m) => m.name || m.code,
   check: (m, ctx, env) => {
     if (m.code === '') ctx.fail('строка без кода не заводится: по нему она и ищется в справочнике');
     if (m.name === '') ctx.fail('строка без наименования не заводится');
-    if (m.objectCode !== '' && !env.objectIdByCode.has(m.objectCode)) {
-      ctx.fail(`площадка «${m.objectCode}» не найдена — сначала загрузите справочник объектов`);
+    /*
+     * Порог спрашивается ПЕРВЫМ и здесь, а не только в сервисе: сервис проверяет его тоже (он
+     * единственный писатель и обязан держать правило при любом вызывающем), но отвечает служебным
+     * 400 без номера строки. Строку файла человеку и нужно назвать — иначе он ищет её в книге
+     * сам. Порядок тот же, что в сервисе: длинный список из неизвестных кодов ответил бы сотней
+     * жалоб «площадка не найдена», из которых не поймёшь, что дело в длине.
+     */
+    if (m.objectCodes.length > DEPARTMENT_OBJECTS_LIMIT) {
+      ctx.fail(
+        `площадок у отдела не больше ${DEPARTMENT_OBJECTS_LIMIT}, а в строке их ${m.objectCodes.length}`,
+      );
+      return;
+    }
+    for (const code of m.objectCodes) {
+      if (!env.objectIdByCode.has(code)) {
+        ctx.fail(`площадка «${code}» не найдена — сначала загрузите справочник объектов`);
+      }
     }
   },
-  create: async (tx, m, env) => {
-    await tx.insert(departments).values({
-      code: m.code,
-      name: m.name,
-      constructionObjectId:
-        m.objectCode === '' ? null : (env.objectIdByCode.get(m.objectCode) ?? null),
-      isActive: m.isActive,
+  /*
+   * Набор площадок пишется ТОЛЬКО через `replaceDepartmentObjects` — единственного писателя
+   * (ADR 0144, Р3). Своей записи в таблицу связи и в колонку совместимости у обмена нет, и это не
+   * стилистика: писателей два — карточка справочника и этот файл, — а на смене области отдела
+   * висит ещё пять обязательств (блокировка отдела, проверка объектов, порог, проекция в колонку
+   * под триггером совместимости, `authVersion + 1` с отзывом сессий в той же транзакции).
+   * Обязательство, оставленное вызывающему, второму вызывающему не достаётся: первый же импорт
+   * сменил бы область молча, не погасив ни одной сессии.
+   *
+   * Отсюда же и запись в журнал доступа. Событие предметное — `department.create` /
+   * `department.update` с разницей набора кодами (ADR 0144, решение 8): сводное `directory.import`
+   * (`routes/directory-transfer.ts`) считает строки файла и на вопрос «кто и когда снял отделу эту
+   * площадку» не отвечает — а больше нигде разница не хранится, карточка показывает только
+   * «сейчас». Одно другого не заменяет: сводное остаётся.
+   *
+   * `writeAuditTx`, а не `writeAudit`: сбой записи обязан откатить саму правку. Область, изменённая
+   * без события, — ровно то состояние, ради которого журнал заведён; отказ же виден сразу, и
+   * загрузку повторят.
+   */
+  create: async (tx, m, env, actorUserId) => {
+    // Отдел заводится без площадок, набор ставится следом: колонку `construction_object_id` пишет
+    // проекцией сам сервис, и вписать её здесь значило бы завести второй источник одного значения.
+    const [row] = await tx
+      .insert(departments)
+      .values({ code: m.code, name: m.name, isActive: m.isActive })
+      .returning({ id: departments.id });
+    const objects = await replaceDepartmentObjects(
+      tx,
+      row!.id,
+      departmentObjectIds(m, env),
+      actorUserId,
+    );
+    await writeAuditTx(tx, {
+      actorUserId,
+      action: 'department.create',
+      entityType: 'department',
+      entityId: row!.id,
+      metadata: { objects },
     });
   },
-  update: async (tx, row, m, env) => {
-    const objectId = m.objectCode === '' ? null : (env.objectIdByCode.get(m.objectCode) ?? null);
+  update: async (tx, row, m, env, actorUserId) => {
     await tx
       .update(departments)
-      .set({
-        code: m.code,
-        name: m.name,
-        constructionObjectId: objectId,
-        isActive: m.isActive,
-        updatedAt: new Date(),
-      })
+      .set({ code: m.code, name: m.name, isActive: m.isActive, updatedAt: new Date() })
       .where(eq(departments.id, row.id));
-    // Площадка сменилась — область сотрудников отдела стала другой (ADR 0062), и выданный им
-    // токен обещал бы прежнюю до самого истечения. Тот же приём, что в карточке отдела: счётчик
-    // версии учётки, а не чистка сессий, — она живёт вне транзакции и откату не подлежит.
-    if (objectId !== row.constructionObjectId) await markDepartmentScopeChanged(tx, row.id);
+    /*
+     * Набор передаётся всегда, даже когда файл его не трогал: у заведённой записи модель собрана
+     * из базы, пустая ячейка её не меняет, — и сервис на совпавшем наборе не пишет ничего, не
+     * поднимает `authVersion` и не гасит сессий. Отдельного «менялись ли площадки» здесь поэтому
+     * нет: сравнивать набор второй раз своими руками значило бы завести вторую редакцию того же
+     * сравнения, расходящуюся с первой при первой же правке.
+     *
+     * `markDepartmentScopeChanged` отсюда убран: версию доступа поднимает и сессии отзывает сам
+     * сервис, в этой же транзакции. Прежний довод «чистка сессий живёт вне транзакции, потому что
+     * откату не подлежит» пересмотрен (ADR 0144, решение 6): он верен для вызова мимо транзакции,
+     * а `refresh_sessions` — обычная таблица, и откат правки обязан откатывать отзыв.
+     */
+    const objects = await replaceDepartmentObjects(
+      tx,
+      row.id,
+      departmentObjectIds(m, env),
+      actorUserId,
+    );
+    await writeAuditTx(tx, {
+      actorUserId,
+      action: 'department.update',
+      entityType: 'department',
+      entityId: row.id,
+      // `headsChanged` стоит и здесь, всегда ложью: событие обязано читаться одинаково, кто бы его
+      // ни записал, а руководителей файл не правит вовсе — это привязка учётной записи.
+      metadata: { headsChanged: false, objects },
+    });
   },
 });
 

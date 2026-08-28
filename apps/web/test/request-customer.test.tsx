@@ -53,6 +53,9 @@ function department(over: Partial<DepartmentDto> = {}): DepartmentDto {
     code: 'ПТО',
     name: 'Производственно-технический',
     isActive: true,
+    // Площадки набором (ADR 0144); `object` — устаревшая проекция набора: при пустом
+    // наборе и при наборе из нескольких сервер отдаёт в ней `null`.
+    objects: [],
     object: null,
     heads: [],
     createdAt: '2026-08-01T10:00:00.000Z',
