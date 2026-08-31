@@ -1,13 +1,17 @@
-import { Empty, Space, Spin, Tag, Typography } from 'antd';
+import { Space, Tag, Tooltip, Typography } from 'antd';
 import { Link } from 'react-router';
 import type { OfficeEquipmentConsumableStockEntryDto } from '@technic/contracts';
 import { formatDateTime } from '../../utils/format';
 
 /**
- * Лента журнала остатка в карточке расходника (план
- * `docs/office-equipment-consumables-plan.md`, Р7, §6): насколько сдвинулся остаток, было → стало,
- * причина, кто и когда. У движения по заявке рядом стоит её номер ссылкой — «−2, выдано по
- * СО-1234» (наброски переработки заявок, Р10): без него лента отвечает «сколько», но не «куда».
+ * Лента журнала остатка строками: насколько сдвинулся остаток, было → стало, причина, кто и когда
+ * (план `docs/office-equipment-consumables-plan.md`, Р7; план
+ * `docs/office-equipment-consumables-and-purchase-plan.md`, Р4).
+ *
+ * ТОЛЬКО ПРЕДСТАВЛЕНИЕ, БЕЗ ЗАПРОСА. Страницу приносит окно «История остатка» — оно же держит
+ * отбор по виду события и постраничность, — а здесь остаётся то, как строка читается. Разделение
+ * то же самое, что у перечня позиций (`officeEquipmentConsumableGrid` отдельно от окна): описание
+ * строки читается целиком, не пролистывая мутации и состояния загрузки.
  *
  * Только чтение, и это свойство самой записи, а не скупость экрана: строки журнала неизменяемы —
  * правку и удаление отбивает триггер базы (Р11). Ошибку исправляют следующим событием («ошиблись,
@@ -15,11 +19,6 @@ import { formatDateTime } from '../../utils/format';
  *
  * Порядок задаёт сервер (`seq`, а не время: две правки одной секунды по `createdAt`
  * неразличимы) — на портале строки не пересортировываются вовсе.
- *
- * Данные приходят пропсом, а не своим запросом: ленту приносит карточка расходника вместе с самой
- * записью (`GET /:id`), и второй запрос за тем же ответом означал бы две версии одного числа на
- * одном экране. Отдельной ручки под журнал нет намеренно (§8): вторая дверь к тем же данным — это
- * второе место, где решают, что показывать и в каком порядке.
  */
 
 /**
@@ -38,26 +37,65 @@ const ENTRY_KIND_LABELS: Record<
   return: 'Возврат',
 };
 
+/** Почему номер заявки бывает не ссылкой — словами, а не молчанием (Р4). */
+const NO_ACCESS_HINT =
+  'Эта заявка вам не открыта: журнал склада один на компанию, а видимость заявок складывается из области роли и назначенной сервисной компании. Номер оставлен, чтобы было с чем прийти к ИТ-службе.';
+
 /**
- * Номер заявки ссылкой (Р10): «−2, выдано по СО-1234».
+ * Номер заявки: ссылкой тому, кто её откроет, и обычным текстом всем остальным (Р4).
  *
- * Ссылка ведёт в раздел и открывает ту самую заявку (ADR 0074, приём истории обслуживания в
- * карточке аппарата) — «кому и зачем выдали» читают в ней, а не в справочнике. Куда именно ушли
- * картриджи, журнал склада не знает и знать не должен: это вопрос к заявке.
+ * ПРИЗНАК ПРИХОДИТ С СЕРВЕРА (`requestAccessible`), И СЧИТАТЬ ЕГО ЗДЕСЬ НЕЛЬЗЯ. Остаток на складе
+ * глобален — он один на компанию, — а заявки нет: их видимость складывается из области роли и
+ * назначения сервисной компании, и ни того ни другого на портале нет вовсе. Отсюда два разных
+ * отказа, которые признак и закрывает: у менеджера есть `officeEquipment.read` и нет
+ * `serviceRequests.read` — ссылка вела бы в 403; у роли площадки право есть, но событие может быть
+ * по заявке чужой площадки — ссылка вела бы туда же. До Р4 лента рисовала ссылку всегда, и это был
+ * существующий дефект, а не новое требование.
+ *
+ * НОМЕР ПРИ ЭТОМ НЕ ПРЯЧЕТСЯ. Журнал склада один на компанию, и «−2, выдано по СО-1234» — это и
+ * есть ответ на вопрос, ради которого сюда пришли: куда делись картриджи. Скрыв номер, лента
+ * оставила бы человека с «−2» и без единой зацепки, хотя спрятать всё равно нечего — та же строка
+ * причины, написанная сервером, называет тот же номер.
  *
  * Номер приходит с сервера готовым, а не склеивается здесь из идентификатора: в причине события
- * стоит тот же самый номер, написанный сервером, и второе место, где его собирают, разошлось бы с
- * первым на первой же смене префикса.
+ * стоит тот же самый номер, и второе место, где его собирают, разошлось бы с первым на первой же
+ * смене префикса.
  *
- * Строка без ссылки бывает: это ручная правка кладовщика, у неё заявки нет вовсе.
+ * Строка без заявки бывает: это ручная правка кладовщика, у неё заявки нет вовсе.
  */
-function RequestLink({ entry }: { entry: OfficeEquipmentConsumableStockEntryDto }) {
+function RequestRef({ entry }: { entry: OfficeEquipmentConsumableStockEntryDto }) {
   if (!entry.serviceRequestId || !entry.serviceRequestNumber) return null;
+  if (!entry.requestAccessible)
+    return (
+      <Tooltip title={NO_ACCESS_HINT}>
+        <Typography.Text type="secondary">{entry.serviceRequestNumber}</Typography.Text>
+      </Tooltip>
+    );
+  // Ссылка ведёт в раздел и открывает ту самую заявку (ADR 0074, приём истории обслуживания в
+  // карточке аппарата): «кому и зачем выдали» читают в ней, а не в справочнике склада.
   return (
     <Link to={`/office-equipment?tab=requests&open=${entry.serviceRequestId}`}>
       {entry.serviceRequestNumber}
     </Link>
   );
+}
+
+/**
+ * Подпись автора: имя, роль и наборы полномочий модуля перечнем — «Иванов И. И. · Штаб ·
+ * Оргтехника: ведение» (Р4).
+ *
+ * НАБОРЫ ПЕРЕЧНЕМ, БЕЗ ПРИОРИТЕТА: их у учётки бывает несколько («Оргтехника: ведение» вместе с
+ * «Оргтехника: номенклатура» — обычная пара), выбор «главного» был бы выдумкой портала, а роль
+ * одна и есть всегда. Пустой перечень наборов — обычное дело: остаток правит и тот, кому права
+ * пришли ролью, и лишних разделителей в такой подписи быть не должно.
+ *
+ * Прочерк вместо имени нарисован на случай правки базы руками: `changed_by` стоит на
+ * `ON DELETE RESTRICT`, и в работе портала автор события исчезнуть не может.
+ */
+function authorLine(entry: OfficeEquipmentConsumableStockEntryDto): string {
+  return [entry.changedByName || '—', entry.changedByRoleLabel, ...entry.changedByGrants]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 /**
@@ -74,49 +112,39 @@ function deltaOf(entry: OfficeEquipmentConsumableStockEntryDto): string {
 
 export function OfficeEquipmentStockJournal({
   entries,
-  loading,
 }: {
-  entries: OfficeEquipmentConsumableStockEntryDto[] | undefined;
-  loading?: boolean;
+  entries: OfficeEquipmentConsumableStockEntryDto[];
 }) {
   return (
-    <>
-      <Typography.Title level={5} style={{ marginTop: 8 }}>
-        Журнал остатка
-      </Typography.Title>
-      {loading && !entries ? (
-        <Spin size="small" />
-      ) : !entries || entries.length === 0 ? (
-        // «Движений не было» — это и ответ на «почему карточку ещё можно удалить» (Р11).
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Остаток ещё не меняли" />
-      ) : (
-        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          {entries.map((entry) => (
-            <div key={entry.id}>
-              <Space size={8} wrap>
-                <Typography.Text type="secondary">
-                  {formatDateTime(entry.createdAt)}
-                </Typography.Text>
-                <Typography.Text>{entry.changedByName}</Typography.Text>
-                {ENTRY_KIND_LABELS[entry.entryKind] && (
-                  <Tag color="blue">{ENTRY_KIND_LABELS[entry.entryKind]}</Tag>
-                )}
-                <RequestLink entry={entry} />
-                <Typography.Text strong>{deltaOf(entry)}</Typography.Text>
-                <Typography.Text type="secondary">
-                  {entry.quantityBefore} → {entry.quantityAfter}
-                </Typography.Text>
-              </Space>
-              {/* Причина — половина смысла строки: «12 → 4» без неё через месяц читать нечем. */}
-              <div>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {entry.reason}
-                </Typography.Text>
-              </div>
-            </div>
-          ))}
-        </Space>
-      )}
-    </>
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      {entries.map((entry) => (
+        <div key={entry.id}>
+          <Space size={8} wrap>
+            <Typography.Text type="secondary">{formatDateTime(entry.createdAt)}</Typography.Text>
+            {ENTRY_KIND_LABELS[entry.entryKind] && (
+              <Tag color="blue">{ENTRY_KIND_LABELS[entry.entryKind]}</Tag>
+            )}
+            <RequestRef entry={entry} />
+            <Typography.Text strong>{deltaOf(entry)}</Typography.Text>
+            <Typography.Text type="secondary">
+              {entry.quantityBefore} → {entry.quantityAfter}
+            </Typography.Text>
+          </Space>
+          {/* Причина — половина смысла строки: «12 → 4» без неё через месяц читать нечем. */}
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {entry.reason}
+            </Typography.Text>
+          </div>
+          {/* Автор отдельной строкой, а не в одном ряду с числами: с ролью и наборами подпись
+              длиннее самого события, и в общем ряду она вытесняла бы «было → стало» на перенос. */}
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {authorLine(entry)}
+            </Typography.Text>
+          </div>
+        </div>
+      ))}
+    </Space>
   );
 }

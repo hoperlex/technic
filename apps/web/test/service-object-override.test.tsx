@@ -109,7 +109,7 @@ const overrideBox = async () =>
  * у заявителя две (Н11), — а две они ради сценария про область поля объекта.
  */
 async function submit(): Promise<void> {
-  fireEvent.change(screen.getByLabelText('Что случилось'), {
+  fireEvent.change(screen.getByLabelText('Описание'), {
     target: { value: 'Не захватывает бумагу' },
   });
   await selectOption('Откуда обращаетесь', /ЖК Северный/);

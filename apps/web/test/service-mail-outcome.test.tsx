@@ -114,9 +114,10 @@ function renderForm(mail: ModuleMailOutcome): HttpMock {
  */
 async function submitForm(): Promise<void> {
   await screen.findAllByText('Kyocera M3145 · инв. 0012345');
-  // Подпись описания у ремонта — «Что случилось» (Р17): форма спрашивает вопросом, а не именем
-  // реквизита. Здесь она нужна лишь как дорога до кнопки — сам разбор подписей в service-consumables.
-  fireEvent.change(screen.getByLabelText('Что случилось'), {
+  // Подпись описания одна на оба вида — «Описание» (Р2): кинд-зависимые «Что случилось / Что
+  // нужно» из Р17 ADR 0145 отменены. Здесь поле нужно лишь как дорога до кнопки — сам разбор
+  // подписей в service-consumables.
+  fireEvent.change(screen.getByLabelText('Описание'), {
     target: { value: 'Не захватывает бумагу' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));

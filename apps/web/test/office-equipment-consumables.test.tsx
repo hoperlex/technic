@@ -90,6 +90,12 @@ function consumableDto(
     // Сколько аппаратов этой позиции видит смотрящий (Р12): фикстуре хватает единицы — окно
     // печатает число как есть, а его подсчёт проверяется на стороне API.
     equipmentCount: 1,
+    /*
+     * Когда остаток правили руками (Р3 плана расходников и закупки). Значение отдельное от
+     * `updatedAt` намеренно: столбец считается только по ручным правкам, и совпади они в фикстуре,
+     * проверка не отличила бы «дату сверки полки» от «даты последней правки карточки».
+     */
+    lastManualStockAt: '2026-08-20T09:00:00.000Z',
     createdAt: '2026-08-01T00:00:00.000Z',
     updatedAt: '2026-08-20T09:00:00.000Z',
     ...over,
@@ -104,23 +110,44 @@ const ENTRY: OfficeEquipmentConsumableStockEntryDto = {
   serviceRequestId: null,
   serviceRequestConsumableId: null,
   serviceRequestNumber: null,
+  // Заявки у ручной правки нет вовсе, поэтому и открывать нечего: признак считает сервер (Р4).
+  requestAccessible: false,
   quantityBefore: 15,
   quantityAfter: 12,
   reason: 'выдано на АЛ13',
   changedByName: 'Иванов И. И.',
+  // Роль и наборы полномочий — сегодняшние (Р4): историческую роль портал не хранит вовсе.
+  changedByRoleLabel: 'Штаб',
+  changedByGrants: ['Оргтехника: ведение'],
   createdAt: '2026-08-20T09:00:00.000Z',
 };
 
+/**
+ * Карточка позиции: с Р4 она ровно то же, что строка списка, — ленту журнала `GET /:id` больше не
+ * возит, та уехала в свою ручку со страницами. Фикстура оставлена отдельным именем не для красоты:
+ * ответ карточки в тестах подменяют своим (перечитанный после 409 остаток), и звать это «строкой
+ * списка» значило бы путать два разных ответа сервера.
+ */
 function detailDto(
   over: Partial<OfficeEquipmentConsumableDto> = {},
 ): OfficeEquipmentConsumableDetailDto {
-  return { ...consumableDto(over), stockEntries: [ENTRY] };
+  return consumableDto(over);
 }
 
 const LIST = 'GET /office-equipment-consumables';
 const DETAIL = 'GET /office-equipment-consumables/:id';
 const PATCH = 'PATCH /office-equipment-consumables/:id';
 const STOCK = 'POST /office-equipment-consumables/:id/stock';
+const ENTRIES = 'GET /office-equipment-consumables/:id/stock-entries';
+
+/** Страница журнала: ровно та форма, которой отвечает новая ручка ленты (Р4). */
+function entriesPage(
+  items: OfficeEquipmentConsumableStockEntryDto[] = [ENTRY],
+  total = items.length,
+  page = 1,
+) {
+  return { items, total, page, pageSize: 50 };
+}
 
 /** Тот же оператор, но с одним из двух прав: права проверяются независимо (Р10). */
 function withOnly(permission: 'manage' | 'stock'): AuthUser {
@@ -134,6 +161,7 @@ function renderConsumables(over: RouteMap = {}, user: AuthUser = OPERATOR): Http
     // Перечень моделей: он же отбор «модель» в шапке и он же поле «Подходит к» в карточке.
     'GET /office-equipment-models': () => json(list([MODEL])),
     [DETAIL]: () => json(detailDto()),
+    [ENTRIES]: () => json(entriesPage()),
     ...over,
   });
   renderWithUser(<OfficeEquipmentConsumablesModal open onClose={() => {}} />, { user });
@@ -279,7 +307,7 @@ describe('окно картриджей и тонеров', () => {
     expect(screen.queryByText('Добавить расходник')).toBeNull();
     expect(rowButton('Удалить')).toBeUndefined();
 
-    // Карточка открывается — в ней журнал, по которому и понимают, что считать, — но заперта.
+    // Карточка открывается — остаток и «В парке» в ней читают все, — но заперта на правку.
     await openCard('Открыть карточку', 'Карточка расходника');
     expect((document.getElementById('code') as HTMLInputElement).disabled).toBe(true);
     const save = screen.getByRole('button', { name: 'Сохранить' }) as HTMLButtonElement;
@@ -382,6 +410,146 @@ describe('окно картриджей и тонеров', () => {
     // по кругу, а сервер так и не узнал бы, что правку подтвердили осознанно.
     expect(body.expectedQuantity).toBe(8);
     expect(body.quantity).toBe(6);
+  });
+});
+
+/**
+ * Окно «История остатка» (план `docs/office-equipment-consumables-and-purchase-plan.md`, Р4).
+ *
+ * Лента уехала из карточки в своё окно, открываемое действием строки, и вместе с ней уехали два
+ * свойства, которых у секции карточки не было и которые ломаются молча: страницы и отбор по виду
+ * события. Молча — потому что портал, забывший сбросить страницу или отправить отбор, покажет
+ * СТРОКИ ЖУРНАЛА, просто не те: человек прочитает чужой ответ как свой и пойдёт спрашивать, куда
+ * делись картриджи, у того, кто их не брал.
+ *
+ * Право здесь не проверяется намеренно: своего у чтения журнала нет вовсе — он открыт всякому,
+ * кому открыт перечень (Р4), и это закреплено самим набором действий строки.
+ */
+
+/** Окно журнала среди прочих: узнаётся по заголовку — он один такой. */
+function historyWindow(): HTMLElement {
+  const found = [...document.querySelectorAll<HTMLElement>('.ant-modal')].find((m) =>
+    m.querySelector('.ant-modal-title')?.textContent?.includes('История остатка'),
+  );
+  if (!found) throw new Error('окно истории остатка не открыто');
+  return found;
+}
+
+/** Открыть журнал действием строки — тем самым, которым его открывают в работе. */
+async function openHistory(): Promise<void> {
+  await screen.findByText('Тонер Ricoh 201 (шт)', undefined, { timeout: 5000 });
+  fireEvent.click(rowButton('История остатка')!);
+  await waitFor(() => historyWindow(), { timeout: 5000 });
+}
+
+describe('окно «История остатка»', () => {
+  it('открывается из строки, называет позицию и спрашивает журнал своей ручкой', async () => {
+    const http = renderConsumables();
+
+    await openHistory();
+
+    // Своей ручкой, а не карточкой: `GET /:id` ленту больше не возит вовсе (Р4).
+    await waitFor(() => expect(http.countOf(ENTRIES)).toBe(1), { timeout: 5000 });
+    const win = within(historyWindow());
+    // Заголовок называет наименование и код: окно всегда про одну позицию, общего журнала нет.
+    expect(historyWindow().querySelector('.ant-modal-title')!.textContent).toContain(
+      'Тонер Ricoh 201 (шт)',
+    );
+    expect(historyWindow().querySelector('.ant-modal-title')!.textContent).toContain('Д0000093569');
+    // Строка ленты на месте: сдвиг знаком, пара «было → стало» и причина.
+    expect(win.getByText('-3')).toBeTruthy();
+    expect(win.getByText('15 → 12')).toBeTruthy();
+    expect(win.getByText('выдано на АЛ13')).toBeTruthy();
+    /*
+     * Подпись автора — имя, роль и наборы перечнем, и словами сказано, что они СЕГОДНЯШНИЕ
+     * (решение заказчика): без этой оговорки подпись читается как снимок того дня, когда событие
+     * записывали, — а портал истории роли не хранит вовсе.
+     */
+    expect(win.getByText('Иванов И. И. · Штаб · Оргтехника: ведение')).toBeTruthy();
+    expect(win.getByText(/показаны сегодняшние/u)).toBeTruthy();
+  });
+
+  it('листается страницами и отбирается по виду события, начиная отбор с первой страницы', async () => {
+    // Событий больше страницы: у ходовой позиции их сотни — ради этого страницы и завели.
+    const http = renderConsumables({
+      [ENTRIES]: ({ query }) => json(entriesPage([ENTRY], 120, Number(query.get('page') ?? '1'))),
+    });
+
+    await openHistory();
+    await waitFor(() => expect(http.countOf(ENTRIES)).toBe(1), { timeout: 5000 });
+    // Первая страница просится явно, а размер — из общего перечня портала: свой сервер не примет.
+    expect(http.lastCall(ENTRIES)!.query.get('page')).toBe('1');
+    expect(http.lastCall(ENTRIES)!.query.get('pageSize')).toBe('50');
+    // Отбора нет — это «все виды», а не какой-то из них: поле в запрос не уходит вовсе.
+    expect(http.lastCall(ENTRIES)!.query.get('entryKind')).toBeNull();
+
+    fireEvent.click(within(historyWindow()).getByTitle('2'));
+    await waitFor(() => expect(http.lastCall(ENTRIES)!.query.get('page')).toBe('2'), {
+      timeout: 5000,
+    });
+
+    fireEvent.click(within(historyWindow()).getByText('Ручные правки'));
+    await waitFor(() => expect(http.lastCall(ENTRIES)!.query.get('entryKind')).toBe('manual'), {
+      timeout: 5000,
+    });
+    /*
+     * И страница вернулась к первой. Иначе отбор сужает ленту, а номер страницы остаётся от
+     * прошлого захода: человек нажимает «Ручные правки» и видит пустоту там, где правки есть.
+     */
+    expect(http.lastCall(ENTRIES)!.query.get('page')).toBe('1');
+  });
+});
+
+/**
+ * Столбец «Правка остатка» (Р3): когда полку последний раз пересчитывали руками.
+ *
+ * Пусто — это ответ, а не недогруженные данные: у позиции, заведённой с нулевым остатком, ручных
+ * событий нет по построению («0 → 0» журнал не пропускает). Пустая ячейка на этом месте читалась
+ * бы как «портал не досчитал», и по ней пошли бы пересчитывать то, что пересчитывать не надо.
+ */
+describe('столбец «Правка остатка»', () => {
+  it('показывает дату последней ручной правки — до минут, как её сверяют с журналом', async () => {
+    const http = renderConsumables();
+
+    await screen.findByText('Тонер Ricoh 201 (шт)');
+    // По Москве и со временем: дату сверяют со строкой журнала, а у неё время есть, и две разные
+    // точности заставляли бы гадать, та ли это правка.
+    expect(screen.getByText('20.08.2026 12:00')).toBeTruthy();
+    // И это не `updatedAt` карточки: он в фикстуре другой, и его в таблице нет вовсе.
+    expect(screen.queryByText('20.08.2026 09:00')).toBeNull();
+
+    /*
+     * И столбец сортируемый — ради того же, ради чего заведён: найти позиции, полку которых давно
+     * не пересчитывали. Поле уходит на сервер тем именем, которое он принимает; ошибись портал в
+     * нём, маршрут ответил бы 400, а список молча остался бы прежним.
+     */
+    // По самому заголовку столбца, а не по тексту: заголовок здесь — разметка с подсказкой, и
+    // текст в разметке таблицы встречается дважды.
+    const header = [...document.querySelectorAll('th')].find((th) =>
+      th.textContent?.includes('Правка остатка'),
+    );
+    fireEvent.click(header!);
+    await waitFor(
+      () => expect(http.lastCall(LIST)!.query.get('sortBy')).toBe('lastManualStockAt'),
+      { timeout: 5000 },
+    );
+  });
+
+  it('у позиции без ручных правок рисует прочерк, а не пустую ячейку', async () => {
+    /*
+     * Цвет заполнен намеренно: прочерк рисует и он — на «у чёрно-белой позиции цвета не бывает».
+     * Заполнив его, оставляем в строке ровно один прочерк, и проверка держится за наш столбец, а
+     * не за соседний.
+     */
+    renderConsumables({
+      [LIST]: () => json(list([consumableDto({ color: 'голубой', lastManualStockAt: null })])),
+    });
+
+    await screen.findByText('Тонер Ricoh 201 (шт)');
+    const dashes = [...document.querySelectorAll('table tbody td')].filter(
+      (td) => td.textContent === '—',
+    );
+    expect(dashes).toHaveLength(1);
   });
 });
 

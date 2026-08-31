@@ -43,8 +43,21 @@ export const SERVICE_REQUEST_KINDS = ['repair', 'consumable'] as const;
 export const serviceRequestKindSchema = z.enum(SERVICE_REQUEST_KINDS);
 export type ServiceRequestKind = (typeof SERVICE_REQUEST_KINDS)[number];
 
+/**
+ * Подписи видов для человека. `repair` подписан «Обслуживанием» (Р1, просьба 7): заказчик просит
+ * слово пошире — заявка этого вида не всегда про поломку, ею же просят настроить, подключить и
+ * заправить, и узкое «Ремонт» отговаривало заводить такую заявку вовсе.
+ *
+ * Само значение `repair` при этом не меняется нигде — ни в базе, ни в контракте, ни в индексах,
+ * ни в `CHECK`: переименование значения потребовало бы миграции данных ради слова на экране, а
+ * читают это слово только три места — переключатель «Чем помочь» в форме, тег вида в карточке и
+ * текст 409 «по этой технике уже есть незакрытая заявка (обслуживание)».
+ *
+ * Слово «ремонт» в гарантиях (`warrantyClaimSourceLabels.item`, `warrantyBearerLabels.repair`)
+ * намеренно осталось: там оно про уже выполненную работу, а не про вид заявки.
+ */
 export const serviceRequestKindLabels: Record<ServiceRequestKind, string> = {
-  repair: 'Ремонт',
+  repair: 'Обслуживание',
   consumable: 'Расходники',
 };
 
@@ -1346,7 +1359,11 @@ export const SERVICE_REQUEST_SORT_FIELDS = [
   'createdAt',
 ] as const;
 
-const descriptionSchema = z.string().trim().min(5, 'Опишите неисправность').max(4000);
+// Сообщение схемы нейтрально к виду заявки (Р2): одна и та же схема проверяет и обслуживание, и
+// расходники, а «Опишите неисправность» в ответ на заявку про закончившийся тонер читалось как
+// придирка не по адресу. Заодно слова «неисправность» не остаётся и в ответах API — критерий
+// просьбы 7 про портал целиком, а не только про подписи на экране.
+const descriptionSchema = z.string().trim().min(5, 'Опишите, о чём заявка').max(4000);
 
 export const serviceRequestListQuerySchema = baseListQuery(SERVICE_REQUEST_SORT_FIELDS).extend({
   status: serviceRequestStatusSchema.optional(),
@@ -2298,7 +2315,11 @@ export const SERVICE_REQUEST_PERMISSIONS: readonly Permission[] = [
  * истории всё равно, какая ручка породила строку, — ему важно, что именно изменилось.
  */
 export const serviceRequestChangeLabels: Record<string, string> = {
-  description: 'Неисправность',
+  // «Описание» — общая подпись на оба вида (Р2, просьба 7): заказчик просит единообразия, и
+  // кинд-зависимость, введённая Р17 ADR 0145, отменена целиком. Ключ поля прежний, поэтому
+  // подпись переименовывает и записи прошлых месяцев — это верно: поле осталось тем же, менялось
+  // только его имя для читателя.
+  description: 'Описание',
   // Поле убрано отовсюду (Р115), а подпись осталась (Р121): история строится из событий аудита, и
   // записи прошлых месяцев несут ключ `dueDate`. Без строки словаря `RequestHistory` показывает
   // `labels[field] ?? field` — то есть сырое имя поля в строке, которую читает человек.

@@ -79,6 +79,9 @@ function consumable(
     models: [{ id: MODEL.id, name: MODEL.name }],
     equipmentCount: 1,
     hasStockHistory: false,
+    // Ручных правок остатка у позиции не было (Р3): движения по ней шли только заявками, а их
+    // столбец «Правка остатка» не считает вовсе — здесь это и означает `null`, а не «не знаем».
+    lastManualStockAt: null,
     createdAt: '2026-08-01T09:00:00.000Z',
     updatedAt: '2026-08-01T09:00:00.000Z',
     ...over,
@@ -168,30 +171,42 @@ function bodyOf(http: HttpMock, route: string): Record<string, unknown> {
 }
 
 /**
+ * Плейсхолдер поля описания. Подпись у поля одна на оба вида (Р2), а вот подсказка внутри
+ * по-прежнему ветвится — она и служит признаком «переключение вида доехало до поля»: по подписи
+ * этого больше не увидеть.
+ */
+function descriptionPlaceholder(): string {
+  return screen.getByLabelText('Описание').getAttribute('placeholder') ?? '';
+}
+
+/**
  * Заведение после Р15. Прежние три сценария проверяли выбор позиций **в форме заведения** —
  * подстановку по модели, отказ пустого списка и отсутствие блока у ремонта. Блока в форме больше
  * нет ни у одного вида: заявитель номенклатуры не знает, и его дело — сказать словами, чего не
  * хватает. Подстановка и запрет пустого списка никуда не делись, но переехали в редактор состава
  * (`ServiceRequestConsumablesModal`) — там они и проверяются ниже, у своего окна.
  */
-describe('заведение заявки на расходники (Н1, Р15, Р17)', () => {
+describe('заведение заявки на расходники (Н1, Р15, Р2)', () => {
   const create = {
     'POST /service-requests': () =>
       json({ request: consumableRequest('new', [line()]), mail: 'queued' }, 201),
   };
 
-  it('номенклатуры форма не спрашивает: заявитель отвечает словами на «Что нужно»', async () => {
+  it('номенклатуры форма не спрашивает: заявитель отвечает словами в «Описании»', async () => {
     const http = renderForm(create);
+    await screen.findByLabelText('Описание');
     chooseKind('Расходники');
 
+    // Ждём не подписи — она у обоих видов одна, — а плейсхолдера: только он и говорит, что
+    // переключение вида доехало, а проверки ниже ищут отсутствие блока уже у расходников.
+    await waitFor(() => expect(descriptionPlaceholder()).toContain('чёрный тонер'));
     // Блока позиций нет вовсе — ни кнопки, ни полей строки: спрашивать нечего.
-    await screen.findByLabelText('Что нужно');
     expect(screen.queryByRole('button', { name: /Добавить позицию/ })).toBeNull();
     expect(screen.queryByLabelText('Позиция номенклатуры')).toBeNull();
     // И справочник расходников формой не тревожится: подбирать позиции ей не для чего.
     expect(http.countOf('GET /office-equipment-consumables')).toBe(0);
 
-    fireEvent.change(screen.getByLabelText('Что нужно'), {
+    fireEvent.change(screen.getByLabelText('Описание'), {
       target: { value: 'Закончился чёрный тонер, печатать нечем' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
@@ -205,11 +220,20 @@ describe('заведение заявки на расходники (Н1, Р15, 
     expect(body.description).toBe('Закончился чёрный тонер, печатать нечем');
   });
 
-  it('у ремонта тот же вопрос звучит как «Что случилось», и строк нет тоже', async () => {
+  it('подпись описания одна на оба вида, ветвится только подсказка, и строк нет ни у одного', async () => {
     renderForm(create);
-    // Умолчание вида — ремонт: описание на месте под своей подписью (Р17), позиций нет.
-    expect(await screen.findByLabelText('Что случилось')).toBeDefined();
-    expect(screen.queryByLabelText('Что нужно')).toBeNull();
+    // Умолчание вида — обслуживание: описание на месте, позиций нет (Р15).
+    expect(await screen.findByLabelText('Описание')).toBeDefined();
+    expect(descriptionPlaceholder()).toContain('мнёт бумагу');
+    expect(screen.queryByRole('button', { name: /Добавить позицию/ })).toBeNull();
+
+    chooseKind('Расходники');
+
+    // Предмет проверки: смена вида подписи не трогает (Р2). Кинд-зависимые «Что случилось / Что
+    // нужно» из Р17 ADR 0145 отменены — поле одно, и спрашивает оно обоими видами одинаково.
+    // Плейсхолдер при этом сменился, и это не недоделка: он подсказывает, а не называет.
+    await waitFor(() => expect(descriptionPlaceholder()).toContain('чёрный тонер'));
+    expect(screen.getByLabelText('Описание')).toBeDefined();
     expect(screen.queryByRole('button', { name: /Добавить позицию/ })).toBeNull();
   });
 });

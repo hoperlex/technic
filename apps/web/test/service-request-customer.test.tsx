@@ -358,7 +358,7 @@ describe('подразделение заявителя (Н11)', () => {
     const http = renderForm(DEP_USER, { routes: create });
     await selectOption('Какой аппарат', /Kyocera/);
     await selectOption('Для кого заявка', PTO_LABEL);
-    fireEvent.change(screen.getByLabelText('Что случилось'), {
+    fireEvent.change(screen.getByLabelText('Описание'), {
       target: { value: 'Не захватывает бумагу' },
     });
     await selectOption('Откуда обращаетесь', PTO_LABEL);
@@ -391,7 +391,7 @@ describe('заведение шлёт осознанное значение (Р1
     const http = renderForm(OPERATOR, { routes: create });
     await selectOption('Какой аппарат', /Kyocera/);
     await waitFor(() => expect(shownCustomer()).toBe(NORTH_LABEL));
-    fireEvent.change(screen.getByLabelText('Что случилось'), {
+    fireEvent.change(screen.getByLabelText('Описание'), {
       target: { value: 'Не захватывает бумагу' },
     });
 
@@ -409,7 +409,7 @@ describe('заведение шлёт осознанное значение (Р1
     const http = renderForm(OPERATOR, { routes: create });
     await selectOption('Какой аппарат', /Kyocera/);
     await selectOption('Для кого заявка', PTO_LABEL);
-    fireEvent.change(screen.getByLabelText('Что случилось'), {
+    fireEvent.change(screen.getByLabelText('Описание'), {
       target: { value: 'Не захватывает бумагу' },
     });
 

@@ -3,8 +3,10 @@ import {
   baseListQuery,
   createOfficeEquipmentConsumableSchema,
   OFFICE_EQUIPMENT_CONSUMABLE_SORT_FIELDS,
+  OFFICE_EQUIPMENT_CONSUMABLE_STOCK_ENTRY_KINDS,
   OFFICE_EQUIPMENT_CONSUMABLE_STOCK_FILTERS,
   officeEquipmentConsumableListQuerySchema,
+  officeEquipmentConsumableStockEntriesQuerySchema,
   type OfficeEquipmentConsumableStockEntryDto,
   officeEquipmentConsumableStockSchema,
   updateOfficeEquipmentConsumableSchema,
@@ -389,7 +391,10 @@ describe('контракт правки остатка', () => {
       quantityBefore: 0,
       quantityAfter: 12,
       reason: 'первичный ввод остатка',
+      requestAccessible: false,
       changedByName: 'Иванов И. И.',
+      changedByRoleLabel: 'Штаб',
+      changedByGrants: ['Оргтехника: ведение', 'Оргтехника: номенклатура'],
       createdAt: '2026-08-21T10:00:00.000Z',
     };
     /*
@@ -403,6 +408,67 @@ describe('контракт правки остатка', () => {
     expect(manual.serviceRequestConsumableId).toBeNull();
     // Первое событие карточки начинается с нуля: до него в журнале пусто, а пустой журнал значит ноль.
     expect(manual.quantityBefore).toBe(0);
+    // Открывать у ручной правки нечего: признак ложен не потому, что смотрящему не хватает прав, —
+    // а потому, что заявки не существует (Р4).
+    expect(manual.requestAccessible).toBe(false);
+    // Подпись автора — роль и наборы модуля ПЕРЕЧНЕМ (Р4): наборов бывает несколько, приоритета
+    // между ними нет, и «главный» из них портал не выбирает.
+    expect(Array.isArray(manual.changedByGrants)).toBe(true);
+    expect(manual.changedByGrants).toHaveLength(2);
+    expect(manual.changedByRoleLabel).toBe('Штаб');
+  });
+
+  /**
+   * Виды события — общим перечнем, а не тремя строками по месту: ими же отбирают ленту, и второй
+   * список тех же слов разошёлся бы с `CHECK` базы (`…_stock_kind_check`) молча.
+   */
+  it('виды события объявлены перечнем и совпадают с тем, что принимает отбор ленты', () => {
+    expect(OFFICE_EQUIPMENT_CONSUMABLE_STOCK_ENTRY_KINDS).toEqual(['manual', 'issue', 'return']);
+    for (const entryKind of OFFICE_EQUIPMENT_CONSUMABLE_STOCK_ENTRY_KINDS) {
+      expect(
+        officeEquipmentConsumableStockEntriesQuerySchema.parse({ entryKind }).entryKind,
+        entryKind,
+      ).toBe(entryKind);
+    }
+    expect(
+      officeEquipmentConsumableStockEntriesQuerySchema.safeParse({ entryKind: 'writeoff' }).success,
+    ).toBe(false);
+  });
+});
+
+describe('контракт ленты журнала остатка', () => {
+  it('страницы те же, что у всех списков портала: первая, сто строк, размер из перечня', () => {
+    const q = officeEquipmentConsumableStockEntriesQuerySchema.parse({});
+    expect(q.page).toBe(1);
+    expect(q.pageSize).toBe(100);
+    // Размер — из общего перечня, а не любое число: своим числом клиент выгрузил бы весь журнал
+    // одним запросом мимо правила, общего для всех списков.
+    expect(
+      officeEquipmentConsumableStockEntriesQuerySchema.parse({ pageSize: '200' }).pageSize,
+    ).toBe(200);
+    expect(
+      officeEquipmentConsumableStockEntriesQuerySchema.safeParse({ pageSize: '150' }).success,
+    ).toBe(false);
+    expect(officeEquipmentConsumableStockEntriesQuerySchema.safeParse({ page: '0' }).success).toBe(
+      false,
+    );
+  });
+
+  it('отбор по виду необязателен, а сортировки и поиска у ленты нет вовсе', () => {
+    // Отсутствие отбора — «все виды», а не какой-то из них: лента заведена ради связного рассказа.
+    expect(officeEquipmentConsumableStockEntriesQuerySchema.parse({}).entryKind).toBeUndefined();
+    /*
+     * Порядок ленты задан жёстко — `seq` вниз, — и поле сортировки, которое сервер обязан
+     * игнорировать, было бы обещанием, которого он не выполняет. Проверяется не «поле отбито», а
+     * то, что его нет в разобранном запросе: лишний ключ базовая схема просто отбрасывает, и
+     * `safeParse` на нём зеленел бы, ничего не проверив.
+     */
+    const parsed = officeEquipmentConsumableStockEntriesQuerySchema.parse({
+      sortBy: 'createdAt',
+      sortOrder: 'asc',
+      search: 'картридж',
+    });
+    expect(Object.keys(parsed).sort()).toEqual(['page', 'pageSize']);
   });
 });
 
@@ -425,12 +491,15 @@ describe('контракт списка расходников', () => {
     expect(officeEquipmentConsumableListQuerySchema.parse({ sortBy: 'name' }).sortBy).toBe('name');
   });
 
-  it('сортируют четырьмя полями, и счётчика «в парке» среди них нет (Р9, Р12)', () => {
+  it('сортируют пятью полями, и счётчика «в парке» среди них нет (Р9, Р12)', () => {
+    // Пятое — «Правка остатка» (Р3 плана расходников и закупки): по нему ищут позиции, полку
+    // которых давно не пересчитывали, и без него столбец был бы декорацией.
     expect(OFFICE_EQUIPMENT_CONSUMABLE_SORT_FIELDS).toEqual([
       'name',
       'code',
       'quantity',
       'updatedAt',
+      'lastManualStockAt',
     ]);
     for (const sortBy of OFFICE_EQUIPMENT_CONSUMABLE_SORT_FIELDS) {
       expect(officeEquipmentConsumableListQuerySchema.parse({ sortBy }).sortBy, sortBy).toBe(

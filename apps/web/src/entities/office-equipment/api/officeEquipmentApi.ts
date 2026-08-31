@@ -7,6 +7,8 @@ import type {
   MoveOfficeEquipmentInput,
   OfficeEquipmentConsumableDetailDto,
   OfficeEquipmentConsumableDto,
+  OfficeEquipmentConsumableStockEntriesQuery,
+  OfficeEquipmentConsumableStockEntryDto,
   OfficeEquipmentConsumableStockInput,
   OfficeEquipmentConsumableStockResultDto,
   OfficeEquipmentConsumableUsageDto,
@@ -26,6 +28,7 @@ import {
   createListApi,
   createRemoveApi,
   createWriteApi,
+  type ListResult,
 } from '@shared/api';
 
 const PATH = '/office-equipment';
@@ -120,9 +123,11 @@ export const officeEquipmentModelsApi = {
  * номенклатуры учётной системы, наименование, остаток на складе и перечень моделей, которым
  * расходник подходит. Права те же, что у справочника техники (Р10).
  *
- * Карточка (`get`) заведена не для симметрии: только она приносит ленту журнала остатка — в
- * списке её нет, и без отдельного запроса окно правки остатка показывало бы число, ничем не
- * объяснённое.
+ * Карточка (`get`) заведена не для симметрии: она перечитывает остаток по идентификатору, и это
+ * половина ответа на 409 — окно правки показывает то число, с которым уйдёт следующая попытка, а
+ * строку списка из выдачи мог унести отбор «нет в наличии». Ленты журнала она больше не возит:
+ * та уехала в свою ручку `stockEntries` (план `…-and-purchase-plan.md`, Р4), и второго места, где
+ * решают, что показывать в журнале, у портала нет намеренно.
  *
  * Остатка в `update` нет вовсе, и это правило контракта, а не экономия: количество меняется
  * событием с причиной и автором (Р7). Приняв его формой правки, портал соврал бы человеку —
@@ -168,6 +173,23 @@ export const officeEquipmentConsumablesApi = {
       method: 'POST',
       body,
     }),
+  /**
+   * Журнал остатка позиции страницами (план `docs/office-equipment-consumables-and-purchase-plan.md`,
+   * Р4) — то, чем живёт окно «История остатка».
+   *
+   * СВОЯ РУЧКА, А НЕ СРЕЗ КАРТОЧКИ: до Р4 ленту возил `GET /:id`, и с переездом её в отдельное окно
+   * она оттуда убрана совсем. Две двери к одному журналу разошлись бы на первой же правке — вот на
+   * этом самом отборе по виду события, которого у карточки не было бы.
+   *
+   * Порядок задаёт сервер (`seq` вниз, а не время: две правки одной секунды по `createdAt`
+   * неразличимы), и портал строки не пересортировывает вовсе. Права своего у ленты нет: её читает
+   * тот же, кому открыт сам перечень.
+   */
+  stockEntries: (id: string, query: OfficeEquipmentConsumableStockEntriesQuery) =>
+    apiFetch<ListResult<OfficeEquipmentConsumableStockEntryDto>>(
+      `${CONSUMABLES_PATH}/${id}/stock-entries`,
+      { query },
+    ),
   /**
    * Расход за период (Р10, опрос В18): кто, сколько, на какие аппараты и по каким заявкам.
    *

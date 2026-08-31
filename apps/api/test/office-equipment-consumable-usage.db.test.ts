@@ -7,6 +7,7 @@ import {
   moscowDateKeyOf,
   type OfficeEquipmentConsumableDetailDto,
   type OfficeEquipmentConsumableDto,
+  type OfficeEquipmentConsumableStockEntryDto,
   type OfficeEquipmentConsumableUsageDto,
   type OfficeEquipmentConsumableUsageRowDto,
   type ServiceRequestDto,
@@ -71,7 +72,18 @@ interface Ctx {
   closeDb: () => Promise<void>;
   /** Администратор: у его роли весь словарь прав, включая `serviceRequests.execute`. */
   admin: { id: string; fullName: string; email: string; auth: Auth };
+  /**
+   * Менеджер — тот самый случай Р4: `officeEquipment.read` у него есть, `serviceRequests.read`
+   * нет. Склад ему открыт целиком, а заявка, названная в ленте, — нет, и ссылка вела бы в 403.
+   */
+  manager: { id: string; email: string; auth: Auth };
+  /**
+   * Роль площадки, но ЧУЖОЙ: право читать заявки у неё есть, а эта заявка не её. Второй отказ Р4 —
+   * тот, который правом не ловится вовсе, только областью.
+   */
+  foreignSite: { id: string; email: string; auth: Auth };
   objectId: string;
+  foreignObjectId: string;
   typeId: string;
 }
 
@@ -114,11 +126,14 @@ function inject(
   method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
   url: string,
   payload?: unknown,
+  // Умолчание — администратор: сценарий файла ведёт он. Своя учётка передаётся там, где предмет
+  // случая — сам смотрящий (доступность заявки в ленте, Р4).
+  auth: Auth = ctx.admin.auth,
 ) {
   return ctx.app.inject({
     method,
     url,
-    headers: ctx.admin.auth,
+    headers: auth,
     remoteAddress: nextAddress(),
     ...(payload ? { payload } : {}),
   });
@@ -158,6 +173,41 @@ async function makeEquipment(): Promise<string> {
   });
   expect(res.statusCode, res.body).toBe(201);
   return res.json().id as string;
+}
+
+/** Карточка позиции: ленты журнала в ней с Р4 нет, зато есть «Правка остатка». */
+async function consumableCard(id: string): Promise<OfficeEquipmentConsumableDetailDto> {
+  const res = await inject('GET', `/api/v1/office-equipment-consumables/${id}`);
+  expect(res.statusCode, res.body).toBe(200);
+  return res.json() as OfficeEquipmentConsumableDetailDto;
+}
+
+/** Лента журнала — своей ручкой со страницами (Р4): карточка её больше не возит. */
+async function stockEntriesOf(
+  id: string,
+  auth?: Auth,
+): Promise<OfficeEquipmentConsumableStockEntryDto[]> {
+  const res = await inject(
+    'GET',
+    `/api/v1/office-equipment-consumables/${id}/stock-entries`,
+    undefined,
+    auth,
+  );
+  expect(res.statusCode, res.body).toBe(200);
+  return (res.json() as { items: OfficeEquipmentConsumableStockEntryDto[] }).items;
+}
+
+/**
+ * «Когда правили руками» ПРЯМЫМ запросом по журналу — то, с чем сверяется столбец ответа (Р3).
+ * Именно прямым: второй такой же коррелированный подзапрос соврал бы вместе с первым.
+ */
+async function lastManualAtOf(id: string): Promise<string | null> {
+  const res = await ctx.db.execute<{ at: Date | null }>(sql`
+    SELECT max(created_at) AS at
+      FROM office_equipment_consumable_stock_entries
+     WHERE consumable_id = ${id} AND entry_kind = 'manual'`);
+  const at = res.rows[0]?.at ?? null;
+  return at === null ? null : new Date(at).toISOString();
 }
 
 async function card(id: string): Promise<ServiceRequestDto> {
@@ -267,17 +317,43 @@ describe.skipIf(!DB_URL)('расход расходников: отчёт и с�
     const { hashPassword } = await import('../src/auth/password');
     const { buildApp } = await import('../src/app');
 
+    const passwordHash = await hashPassword(PASSWORD);
+    /** Учётки заводятся SQL: их форма — предмет своих тестов, здесь они декорации. */
+    async function makeUser(
+      tag: string,
+      role: string,
+    ): Promise<{ id: string; fullName: string; email: string }> {
+      const mail = `db-usg-${tag}-${RUN}@example.invalid`;
+      const row = await db.execute<{ id: string; full_name: string }>(sql`
+        INSERT INTO users (email, last_name, first_name, middle_name, password_hash, role,
+                           is_active, email_verified_at)
+        VALUES (${mail}, 'Тестовый', 'Пользователь', ${tag}, ${passwordHash},
+                ${sql.raw(`'${role}'::role`)}, true, now())
+        RETURNING id, full_name`);
+      return { id: row.rows[0]!.id, fullName: row.rows[0]!.full_name, email: mail };
+    }
     const email = `db-usg-admin-${RUN}@example.invalid`;
     const user = await db.execute<{ id: string; full_name: string }>(sql`
       INSERT INTO users (email, last_name, first_name, middle_name, password_hash, role,
                          is_active, email_verified_at)
-      VALUES (${email}, 'Тестовый', 'Администратор', 'Расхода', ${await hashPassword(PASSWORD)},
+      VALUES (${email}, 'Тестовый', 'Администратор', 'Расхода', ${passwordHash},
               'admin'::role, true, now())
       RETURNING id, full_name`);
+    // Два смотрящих Р4: у первого нет права читать заявки, у второго право есть, а заявка чужая.
+    const manager = await makeUser('manager', 'manager');
+    const foreignSite = await makeUser('foreign', 'shtab');
     const objectRow = await db.execute<{ id: string }>(sql`
       INSERT INTO construction_objects (code, name, address)
       VALUES (${`USG-${RUN}`}, ${`Площадка расхода ${RUN}`}, 'г Москва, ул Тестовая, д 1')
       RETURNING id`);
+    const foreignObjectRow = await db.execute<{ id: string }>(sql`
+      INSERT INTO construction_objects (code, name, address)
+      VALUES (${`USG-${RUN}-F`}, ${`Чужая площадка расхода ${RUN}`},
+              'г Москва, ул Тестовая, д 2')
+      RETURNING id`);
+    await db.execute(sql`
+      INSERT INTO user_construction_objects (user_id, construction_object_id)
+      VALUES (${foreignSite.id}, ${foreignObjectRow.rows[0]!.id})`);
     const typeRow = await db.execute<{ id: string }>(
       sql`SELECT id FROM office_equipment_types WHERE code = 'mfp'`,
     );
@@ -285,13 +361,16 @@ describe.skipIf(!DB_URL)('расход расходников: отчёт и с�
       throw new Error('в базе нет типов оргтехники: миграция 0104 не применена');
 
     const app = await buildApp();
-    const login = await app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/login',
-      payload: { email, password: PASSWORD },
-      remoteAddress: nextAddress(),
-    });
-    expect(login.statusCode, login.body).toBe(200);
+    async function login(mail: string): Promise<Auth> {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/login',
+        payload: { email: mail, password: PASSWORD },
+        remoteAddress: nextAddress(),
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      return { authorization: `Bearer ${res.json().accessToken}` };
+    }
 
     ctx = {
       app,
@@ -301,9 +380,16 @@ describe.skipIf(!DB_URL)('расход расходников: отчёт и с�
         id: user.rows[0]!.id,
         fullName: user.rows[0]!.full_name,
         email,
-        auth: { authorization: `Bearer ${login.json().accessToken}` },
+        auth: await login(email),
+      },
+      manager: { id: manager.id, email: manager.email, auth: await login(manager.email) },
+      foreignSite: {
+        id: foreignSite.id,
+        email: foreignSite.email,
+        auth: await login(foreignSite.email),
       },
       objectId: objectRow.rows[0]!.id,
+      foreignObjectId: foreignObjectRow.rows[0]!.id,
       typeId: typeRow.rows[0]!.id,
     };
   }, 180_000);
@@ -345,7 +431,8 @@ describe.skipIf(!DB_URL)('расход расходников: отчёт и с�
     await ctx.db.execute(
       sql`DELETE FROM users WHERE email LIKE ${`db-usg-%-${RUN}@example.invalid`}`,
     );
-    await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code = ${`USG-${RUN}`}`);
+    // Площадок теперь две — своя и чужая (Р4), поэтому отбор по префиксу, а не по точному коду.
+    await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code LIKE ${`USG-${RUN}%`}`);
     await ctx.closeDb();
   }, 120_000);
 
@@ -411,31 +498,129 @@ describe.skipIf(!DB_URL)('расход расходников: отчёт и с�
      * `formatServiceRequestNumber`, каким он пишет причину события: разойдись они, лента показала
      * бы «выдано по СО-1234» рядом с причиной «Выдано по заявке 1234». Портал по этому номеру
      * ставит ссылку, поэтому рядом обязан лежать и идентификатор заявки.
+     *
+     * Спрашивается лента у СВОЕЙ ручки: с Р4 плана расходников и закупки карточка её не возит —
+     * два места для одной ленты разошлись бы на первой же правке.
      */
     const number = formatServiceRequestNumber(state.request.num);
-    const issue = consumable.stockEntries.find((entry) => entry.entryKind === 'issue');
+    const entries = await stockEntriesOf(state.toner.id);
+    const issue = entries.find((entry) => entry.entryKind === 'issue');
     expect(issue).toBeDefined();
     expect(issue!.serviceRequestNumber).toBe(number);
     expect(issue!.serviceRequestId).toBe(state.request.id);
     expect(issue!.reason).toBe(`Выдано по заявке ${number}`);
+    /*
+     * Ссылку рисуют по признаку, а не по наличию номера (Р4): у администратора есть и
+     * `serviceRequests.read`, и сквозная область, поэтому заявка ему открывается — признак
+     * истинен. Ложным он у него бывает ровно в одном случае — когда заявки нет вовсе.
+     */
+    expect(issue!.requestAccessible).toBe(true);
+    // Подпись автора события: роль есть всегда, наборы — перечнем (у администратора их нет).
+    expect(issue!.changedByRoleLabel).toBe('Администратор');
+    expect(Array.isArray(issue!.changedByGrants)).toBe(true);
 
-    const back = consumable.stockEntries.find((entry) => entry.entryKind === 'return');
+    const back = entries.find((entry) => entry.entryKind === 'return');
     expect(back!.serviceRequestNumber).toBe(number);
+    expect(back!.requestAccessible).toBe(true);
 
-    // У заведения карточки заявки нет вовсе — ни ссылки, ни номера: это ручная правка.
-    const manual = consumable.stockEntries.find((entry) => entry.entryKind === 'manual');
+    // У заведения карточки заявки нет вовсе — ни ссылки, ни номера: это ручная правка. Открывать
+    // нечего, поэтому и признак доступности у неё ложен по построению.
+    const manual = entries.find((entry) => entry.entryKind === 'manual');
     expect(manual!.serviceRequestNumber).toBeNull();
     expect(manual!.serviceRequestId).toBeNull();
+    expect(manual!.requestAccessible).toBe(false);
+  });
+
+  it('ссылку на заявку лента даёт только тому, кто эту заявку откроет (Р4)', async () => {
+    /*
+     * ТРИ СМОТРЯЩИХ НА ОДНУ И ТУ ЖЕ СТРОКУ ЖУРНАЛА. Остаток на складе глобален — он один на
+     * компанию, — а заявки нет, и потому признак доступности считает сервер: на портале области нет
+     * вовсе, и решить там этот вопрос нечем.
+     *
+     * Номер заявки при этом виден ВСЕМ ТРОИМ, и это не оплошность: движение склада — общая правда
+     * компании, и прятать «выдано по СО-1234» от того, кому открыт сам склад, не за что. Прячется
+     * не номер, а ссылка — портал рисует её по признаку, а без него показывает тот же номер
+     * обычным текстом.
+     */
+    const number = formatServiceRequestNumber(state.request.num);
+    const issueOf = (entries: OfficeEquipmentConsumableStockEntryDto[]) => {
+      const entry = entries.find((row) => row.entryKind === 'issue');
+      expect(entry, 'в ленте нет события выдачи — проверять доступность нечему').toBeDefined();
+      return entry!;
+    };
+
+    // Администратор: право есть, область сквозная — ссылка живая.
+    const forAdmin = issueOf(await stockEntriesOf(state.toner.id));
+    expect(forAdmin.serviceRequestNumber).toBe(number);
+    expect(forAdmin.requestAccessible).toBe(true);
+
+    /*
+     * Менеджер: `officeEquipment.read` есть, `serviceRequests.read` нет. Ссылка вела бы в 403 на
+     * самом пороге модуля, поэтому признак ложен — и ложен он ДО всякого разбора области: спрашивать
+     * «чья заявка» у того, кому закрыт весь модуль, незачем.
+     */
+    const forManager = issueOf(await stockEntriesOf(state.toner.id, ctx.manager.auth));
+    expect(forManager.serviceRequestNumber).toBe(number);
+    expect(forManager.requestAccessible).toBe(false);
+
+    /*
+     * Роль ЧУЖОЙ площадки: право читать заявки у неё есть, а эта заявка не её — предикат области
+     * тот же самый, каким её отбирает список заявок. Второй отказ Р4, и правом он не ловится вовсе.
+     */
+    const forForeign = issueOf(await stockEntriesOf(state.toner.id, ctx.foreignSite.auth));
+    expect(forForeign.serviceRequestNumber).toBe(number);
+    expect(forForeign.requestAccessible).toBe(false);
+    // И это не «лента пуста у чужого»: сами события склада ей видны все до одного.
+    expect((await stockEntriesOf(state.toner.id, ctx.foreignSite.auth)).length).toBe(
+      (await stockEntriesOf(state.toner.id)).length,
+    );
+
+    /*
+     * Признак — не украшение ответа, а именно та дверь, за которой стоит отказ: та же заявка,
+     * запрошенная теми же двумя учётками напрямую, отвечает 403. Без этой пары случай проверял бы
+     * только сам себя.
+     */
+    const managerTry = await inject(
+      'GET',
+      `/api/v1/service-requests/${state.request.id}`,
+      undefined,
+      ctx.manager.auth,
+    );
+    expect(managerTry.statusCode).toBe(403);
+    const foreignTry = await inject(
+      'GET',
+      `/api/v1/service-requests/${state.request.id}`,
+      undefined,
+      ctx.foreignSite.auth,
+    );
+    expect(foreignTry.statusCode).toBe(403);
   });
 
   it('ручная правка остатка расходом не считается', async () => {
     const before = rowOf(await usage({}), state.toner.id);
+    /*
+     * «Правка остатка» ДО этой правки (Р3 плана расходников и закупки): к этому моменту по позиции
+     * прошли и выдача, и возврат по заявке, а столбец обязан по-прежнему показывать время
+     * ЗАВЕДЕНИЯ карточки — единственного ручного события. Иначе позиция, из которой каждую неделю
+     * выдают, выглядела бы вечно свёренной.
+     */
+    const beforeManualAt = (await consumableCard(state.toner.id)).lastManualStockAt;
+    expect(beforeManualAt).not.toBeNull();
+    expect(beforeManualAt).toBe(await lastManualAtOf(state.toner.id));
+
     const res = await inject(
       'POST',
       `/api/v1/office-equipment-consumables/${state.toner.id}/stock`,
       { quantity: 20, expectedQuantity: 9, reason: 'приняли поставку' },
     );
     expect(res.statusCode, res.body).toBe(200);
+
+    // А вот ручная правка его двигает — ради этого столбец и заведён.
+    const afterManualAt = (await consumableCard(state.toner.id)).lastManualStockAt;
+    expect(new Date(afterManualAt!).getTime()).toBeGreaterThan(new Date(beforeManualAt!).getTime());
+    // Сверка с ПРЯМЫМ запросом по журналу, а не со вторым таким же подзапросом: сломанная
+    // корреляция соврала бы одинаково обоим, и проверка зеленела бы на неправде.
+    expect(afterManualAt).toBe(await lastManualAtOf(state.toner.id));
 
     const report = await usage({});
     const after = rowOf(report, state.toner.id);

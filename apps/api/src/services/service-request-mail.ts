@@ -490,7 +490,9 @@ export function renderServiceLetter(
         ? [{ kind: 'paragraph' as const, text: `Срочно: ${data.urgencyReason}` }]
         : []),
       { kind: 'lines' as const, lines },
-      { kind: 'heading' as const, text: 'Что случилось' },
+      // Заголовок блока совпадает с подписью поля в портале (Р2, просьба 7): письмо и карточка
+      // называют одно и то же одинаково, а на заявке про расходники «Что случилось» было мимо.
+      { kind: 'heading' as const, text: 'Описание' },
       { kind: 'paragraph' as const, text: data.description },
       {
         kind: 'link' as const,

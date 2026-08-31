@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
   OfficeEquipmentConsumableDetailDto,
   OfficeEquipmentConsumableDto,
+  OfficeEquipmentConsumableStockEntryDto,
   OfficeEquipmentConsumableStockResultDto,
   OfficeEquipmentDto,
   OfficeEquipmentModelDto,
@@ -285,6 +286,36 @@ async function detailOf(id: string, auth?: Auth): Promise<OfficeEquipmentConsuma
   return res.json() as OfficeEquipmentConsumableDetailDto;
 }
 
+/**
+ * Страница журнала остатка — та самая ручка, которой живёт окно «История остатка» (Р4 плана
+ * расходников и закупки). С неё же читается лента: карточка её больше не возит, и спрашивать
+ * журнал больше негде.
+ */
+async function stockEntriesOf(
+  id: string,
+  query: Record<string, string> = {},
+  auth?: Auth,
+): Promise<{
+  items: OfficeEquipmentConsumableStockEntryDto[];
+  total: number;
+  page: number;
+  pageSize: number;
+}> {
+  const qs = new URLSearchParams(query).toString();
+  const res = await inject(
+    'GET',
+    `/api/v1/office-equipment-consumables/${id}/stock-entries${qs ? `?${qs}` : ''}`,
+    auth ?? ctx.admin.auth,
+  );
+  expect(res.statusCode, res.body).toBe(200);
+  return res.json() as {
+    items: OfficeEquipmentConsumableStockEntryDto[];
+    total: number;
+    page: number;
+    pageSize: number;
+  };
+}
+
 /** Перечень одной строкой запроса: `search`, `modelId`, `stock` — те же параметры, что у окна (Р9). */
 async function listConsumables(
   query: Record<string, string>,
@@ -410,6 +441,20 @@ interface StockEntryRow {
 }
 
 /** Журнал расходника снизу вверх — в том порядке, в котором строилась цепочка. */
+/**
+ * «Когда правили руками» ПРЯМЫМ запросом по журналу — то, с чем сверяется столбец ответа. Именно
+ * прямым, а не вторым таким же подзапросом: сломанная корреляция соврала бы одинаково обоим, и
+ * сверка зеленела бы на неправде (Р3).
+ */
+async function lastManualAtOf(id: string): Promise<string | null> {
+  const res = await ctx.db.execute<{ at: Date | null }>(sql`
+    SELECT max(created_at) AS at
+      FROM office_equipment_consumable_stock_entries
+     WHERE consumable_id = ${id} AND entry_kind = 'manual'`);
+  const at = res.rows[0]?.at ?? null;
+  return at === null ? null : new Date(at).toISOString();
+}
+
 async function journalOf(id: string): Promise<StockEntryRow[]> {
   const res = await ctx.db.execute<{
     id: string;
@@ -1379,6 +1424,7 @@ describe.skipIf(!DB_URL)('расходники оргтехники: журна�
     // `updated_at` карточки не должен сдвигаться — правки не было.
     const c = await createConsumable({ quantity: 5 });
     const before = await detailOf(c.id);
+    const beforeEntries = await stockEntriesOf(c.id);
 
     const same = await stockOk(c.id, {
       quantity: 5,
@@ -1389,8 +1435,10 @@ describe.skipIf(!DB_URL)('расходники оргтехники: журна�
     expect(same.consumable.quantity).toBe(5);
 
     const after = await detailOf(c.id);
-    expect(after.stockEntries).toHaveLength(before.stockEntries.length);
+    expect((await stockEntriesOf(c.id)).total).toBe(beforeEntries.total);
     expect(after.updatedAt).toBe(before.updatedAt);
+    // И «Правка остатка» не сдвинулась: события не было, а столбец считается по событиям.
+    expect(after.lastManualStockAt).toBe(before.lastManualStockAt);
   });
 
   it('два соединения правят остаток прямым SQL: двух строк с одним «было» не выходит', async () => {
@@ -1612,14 +1660,158 @@ describe.skipIf(!DB_URL)('расходники оргтехники: журна�
     const movedDetail = await detailOf(moved.id);
     const untouchedDetail = await detailOf(untouched.id);
     expect(movedDetail.hasStockHistory).toBe(true);
-    expect(movedDetail.stockEntries).toHaveLength(1);
+    expect((await stockEntriesOf(moved.id)).total).toBe(1);
     expect(untouchedDetail.hasStockHistory).toBe(false);
-    expect(untouchedDetail.stockEntries).toHaveLength(0);
+    expect((await stockEntriesOf(untouched.id)).total).toBe(0);
 
     const [movedRow] = await listConsumables({ search: moved.code });
     const [untouchedRow] = await listConsumables({ search: untouched.code });
     expect(movedRow!.hasStockHistory).toBe(movedDetail.hasStockHistory);
     expect(untouchedRow!.hasStockHistory).toBe(untouchedDetail.hasStockHistory);
+  });
+
+  // ── 7б. «Правка остатка»: дата последнего РУЧНОГО события (Р3 плана расходников и закупки) ──
+
+  it('«Правка остатка» пуста без ручных событий, двигается правкой и сходится с журналом', async () => {
+    /*
+     * ЛОВУШКА ТА ЖЕ, ЧТО У ПРИЗНАКА ДВИЖЕНИЯ, и потому случай стоит рядом: столбец собран
+     * коррелированным подзапросом, а вписанная на месте колонка превратила бы его условие в
+     * `consumable_id = id` самой строки журнала — сравнение двух чужих колонок, всегда ложное.
+     * Наружу это вышло бы прочерком у КАЖДОЙ позиции, то есть «пора пересчитать весь склад».
+     * Поэтому значение сверяется не с самим собой, а с ПРЯМЫМ запросом по журналу, и сверяется у
+     * обеих дверей — в списке и в карточке.
+     */
+    const untouched = await createConsumable({ quantity: 0 });
+    // Ручных событий нет вовсе — прочерк, а не сегодняшняя дата: «руками не трогали» это ответ.
+    expect((await detailOf(untouched.id)).lastManualStockAt).toBeNull();
+
+    // Заведение с остатком — уже ручное событие: его пишет маршрут видом `manual`.
+    const c = await createConsumable({ quantity: 12 });
+    const afterCreate = await detailOf(c.id);
+    expect(afterCreate.lastManualStockAt).not.toBeNull();
+    expect(afterCreate.lastManualStockAt).toBe(await lastManualAtOf(c.id));
+
+    await stockOk(c.id, {
+      quantity: 9,
+      expectedQuantity: 12,
+      reason: 'пересчитали полку, трёх не хватает',
+    });
+    const afterEdit = await detailOf(c.id);
+    // Правка руками столбец двигает — ради этого он и заведён.
+    expect(new Date(afterEdit.lastManualStockAt!).getTime()).toBeGreaterThan(
+      new Date(afterCreate.lastManualStockAt!).getTime(),
+    );
+    expect(afterEdit.lastManualStockAt).toBe(await lastManualAtOf(c.id));
+
+    // Список отвечает тем же числом, что карточка: столбец читают в перечне, а сортируют по нему
+    // там же — разойдись эти два ответа, порядок строк перестал бы соответствовать показанному.
+    const [row] = await listConsumables({ search: c.code });
+    expect(row!.lastManualStockAt).toBe(afterEdit.lastManualStockAt);
+    const [untouchedRow] = await listConsumables({ search: untouched.code });
+    expect(untouchedRow!.lastManualStockAt).toBeNull();
+  });
+
+  // ── 7в. Журнал страницами: своя ручка, свой отбор, свой порядок (Р4) ──
+
+  it('лента идёт по `seq` вниз, режется страницами и отбирается по виду события', async () => {
+    const c = await createConsumable({ quantity: 10 });
+    for (const [quantity, expectedQuantity] of [
+      [9, 10],
+      [8, 9],
+      [7, 8],
+    ]) {
+      await stockOk(c.id, {
+        quantity: quantity!,
+        expectedQuantity: expectedQuantity!,
+        reason: `сверка полки до ${quantity}`,
+      });
+    }
+
+    const page = await stockEntriesOf(c.id);
+    expect(page.total).toBe(4);
+    expect(page.page).toBe(1);
+    /*
+     * ПОРЯДОК ПО `seq`, А НЕ ПО ВРЕМЕНИ, и проверяется он именно так: четыре события выше
+     * записаны одним прогоном и по `created_at` неразличимы до миллисекунд — две правки одной
+     * секунды в ленте, упорядоченной временем, встали бы как попало, и цепочка «было — стало»
+     * читалась бы задом наперёд через раз.
+     */
+    expect(page.items.map((e) => e.seq)).toEqual(
+      [...page.items].map((e) => e.seq).sort((a, b) => b - a),
+    );
+    expect(page.items[0]!.quantityAfter).toBe(7);
+    expect(page.items[3]!.quantityBefore).toBe(0);
+    // Цепочка сходится: «стало» каждого следующего события — это «было» предыдущего.
+    for (let i = 0; i + 1 < page.items.length; i += 1) {
+      expect(page.items[i]!.quantityBefore).toBe(page.items[i + 1]!.quantityAfter);
+    }
+
+    // Страница режет ленту, а `total` считает её целиком: иначе обрезанный список читался бы как
+    // весь журнал.
+    const first = await stockEntriesOf(c.id, { pageSize: '50', page: '1' });
+    expect(first.total).toBe(4);
+    expect(first.pageSize).toBe(50);
+    const beyond = await stockEntriesOf(c.id, { pageSize: '50', page: '2' });
+    expect(beyond.items).toHaveLength(0);
+    expect(beyond.total).toBe(4);
+
+    // Отбор по виду: все четыре события ручные, выдач нет вовсе.
+    expect((await stockEntriesOf(c.id, { entryKind: 'manual' })).total).toBe(4);
+    expect((await stockEntriesOf(c.id, { entryKind: 'issue' })).total).toBe(0);
+    expect((await stockEntriesOf(c.id, { entryKind: 'return' })).total).toBe(0);
+    // Пятого вида не бывает: перечень один со схемой базы.
+    const wrong = await inject(
+      'GET',
+      `/api/v1/office-equipment-consumables/${c.id}/stock-entries?entryKind=writeoff`,
+      ctx.admin.auth,
+    );
+    expect(wrong.statusCode).toBe(400);
+  });
+
+  it('лента называет автора, его роль и наборы, а у ручной правки заявка недоступна по построению', async () => {
+    /*
+     * Подпись автора — роль и наборы модуля перечнем (Р4). Значения СЕГОДНЯШНИЕ: истории ролей и
+     * выдач портал не хранит, и подпись отвечает «кто это сейчас».
+     *
+     * Берётся здесь носитель одного набора «Расходники: stock …» — того самого, которым файл
+     * разводит два права. Набор собран администратором (не системный), но модуль у него тот же:
+     * право `officeEquipmentConsumables.stock` лежит в модуле справочника оргтехники, и подпись
+     * обязана его назвать — иначе перечень молчал бы ровно о том полномочии, которым событие и
+     * записано.
+     */
+    const c = await createConsumable({ quantity: 6 });
+    await stockOk(
+      c.id,
+      { quantity: 4, expectedQuantity: 6, reason: 'выдали два в кабинет 214' },
+      ctx.stockUser.auth,
+    );
+
+    const [entry] = (await stockEntriesOf(c.id)).items;
+    expect(entry!.changedByName).toContain('Тестовый');
+    // Роль одна и есть всегда: у носителя `stock` это «Штаб».
+    expect(entry!.changedByRoleLabel).toBe('Штаб');
+    // Набор модуля — перечнем; свой набор прогона назван по имени, чужих в перечне нет.
+    expect(entry!.changedByGrants).toContain(`Расходники: stock ${RUN}`);
+    /*
+     * У ручной правки заявки нет вовсе — обе ссылки пусты по `CHECK`у связок, — и признак
+     * доступности ложен не потому, что смотрящему не хватает прав, а потому, что открывать нечего.
+     * Проверяется он у администратора: у него есть и `serviceRequests.read`, и сквозная область,
+     * то есть отказать ему может только отсутствие самой заявки.
+     */
+    expect(entry!.requestAccessible).toBe(false);
+    expect(entry!.serviceRequestId).toBeNull();
+    expect(entry!.serviceRequestNumber).toBeNull();
+  });
+
+  it('ленты несуществующей позиции нет: 404 словами, а не пустая страница', async () => {
+    // «Позиции нет» и «журнал пуст» — разные новости, и пустая страница выдала бы первое за второе.
+    const res = await inject(
+      'GET',
+      `/api/v1/office-equipment-consumables/${randomUUID()}/stock-entries`,
+      ctx.admin.auth,
+    );
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body).message).toBe('Расходник не найден');
   });
 
   // ── 8. Удаление и гашение (Р11) ──

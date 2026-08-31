@@ -2,7 +2,6 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type {
   AuthUser,
-  OfficeEquipmentConsumableDetailDto,
   OfficeEquipmentConsumableDto,
   OfficeEquipmentConsumableStockEntryDto,
   OfficeEquipmentConsumableUsageDto,
@@ -44,23 +43,51 @@ const CONSUMABLE: OfficeEquipmentConsumableDto = {
   models: [],
   equipmentCount: 4,
   hasStockHistory: true,
+  // Когда полку последний раз пересчитывали руками (Р3): выдачи по заявкам в это число не входят.
+  lastManualStockAt: '2026-08-20T09:00:00.000Z',
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-21T09:00:00.000Z',
 };
 
-/** Выдача по заявке: обе ссылки заполнены, номер собран сервером — как их пишет маршрут закрытия. */
+/**
+ * Выдача по заявке, которую смотрящий откроет: обе ссылки заполнены, номер собран сервером — как их
+ * пишет маршрут закрытия, — и признак доступности заявки истинный.
+ *
+ * Признак приходит с сервера и на портале не считается (Р4): область заявок складывается из роли и
+ * назначенной сервисной компании, и ни того ни другого у портала нет.
+ */
 const ISSUE: OfficeEquipmentConsumableStockEntryDto = {
-  id: 'oes-2',
-  seq: 2,
+  id: 'oes-3',
+  seq: 3,
   entryKind: 'issue',
   serviceRequestId: 'req-1',
   serviceRequestConsumableId: 'line-1',
   serviceRequestNumber: 'СО-1234',
+  requestAccessible: true,
   quantityBefore: 12,
   quantityAfter: 10,
   reason: 'Выдано по заявке СО-1234',
   changedByName: 'Иванов И. И.',
+  changedByRoleLabel: 'Штаб',
+  changedByGrants: ['Оргтехника: ведение'],
   createdAt: '2026-08-21T09:00:00.000Z',
+};
+
+/**
+ * Выдача по ЧУЖОЙ заявке: склад один на компанию, и событие по площадке, которой смотрящий не
+ * видит, в его ленте законно. Ссылка вела бы в 403, а номер — часть ответа «куда делись картриджи».
+ */
+const FOREIGN_ISSUE: OfficeEquipmentConsumableStockEntryDto = {
+  ...ISSUE,
+  id: 'oes-2',
+  seq: 2,
+  serviceRequestId: 'req-2',
+  serviceRequestConsumableId: 'line-2',
+  serviceRequestNumber: 'СО-9999',
+  requestAccessible: false,
+  quantityBefore: 14,
+  quantityAfter: 12,
+  reason: 'Выдано по заявке СО-9999',
 };
 
 /** Ручная правка кладовщика: заявки у неё нет вовсе — ни ссылки, ни номера. */
@@ -72,15 +99,19 @@ const MANUAL: OfficeEquipmentConsumableStockEntryDto = {
   serviceRequestId: null,
   serviceRequestConsumableId: null,
   serviceRequestNumber: null,
+  requestAccessible: false,
   quantityBefore: 0,
   quantityAfter: 12,
   reason: 'Заведение карточки: начальный остаток',
   createdAt: '2026-08-20T09:00:00.000Z',
 };
 
-const DETAIL: OfficeEquipmentConsumableDetailDto = {
-  ...CONSUMABLE,
-  stockEntries: [ISSUE, MANUAL],
+/** Страница ленты в том виде, в каком её отдаёт ручка журнала (Р4). */
+const ENTRIES_PAGE = {
+  items: [ISSUE, FOREIGN_ISSUE, MANUAL],
+  total: 3,
+  page: 1,
+  pageSize: 50,
 };
 
 const USAGE: OfficeEquipmentConsumableUsageDto = {
@@ -113,7 +144,7 @@ const USAGE: OfficeEquipmentConsumableUsageDto = {
 const LIST = 'GET /office-equipment-consumables';
 const USAGE_ROUTE = 'GET /office-equipment-consumables/usage-report';
 const EXPORT_ROUTE = 'GET /office-equipment-consumables/usage-report.xlsx';
-const DETAIL_ROUTE = 'GET /office-equipment-consumables/:id';
+const ENTRIES_ROUTE = 'GET /office-equipment-consumables/:id/stock-entries';
 
 /**
  * Оператор оргтехники: расход открыт правом на сам справочник (`officeEquipment.read`), а не
@@ -143,7 +174,7 @@ function renderModal(over: RouteMap = {}): HttpMock {
     // маршрутизатор Fastify сам.
     [USAGE_ROUTE]: () => json(USAGE),
     [EXPORT_ROUTE]: () => json({}),
-    [DETAIL_ROUTE]: () => json(DETAIL),
+    [ENTRIES_ROUTE]: () => json(ENTRIES_PAGE),
     ...over,
   });
   renderWithUser(<OfficeEquipmentConsumablesModal open onClose={() => {}} />, { user: USER });
@@ -173,28 +204,44 @@ beforeAll(() => {
   URL.revokeObjectURL = () => {};
 });
 
+/**
+ * Ссылка на заявку в ленте — ровно та, которую смотрящий откроет (Р4).
+ *
+ * Дефект был существующий: до Р4 лента рисовала ссылку всегда, и вела она в 403 сразу по двум
+ * поводам — у менеджера есть `officeEquipment.read` и нет `serviceRequests.read`, а у роли площадки
+ * право есть, но событие в журнале может быть по заявке чужой площадки. Остаток на складе один на
+ * компанию, заявки — нет, и считать это различие портал не может: области у него нет.
+ *
+ * Второе, что здесь закреплено, — номер НЕ ПРЯЧЕТСЯ, когда ссылки нет. Журнал склада один на всех,
+ * и «−2, выдано по СО-9999» — это и есть ответ на вопрос, ради которого сюда пришли; спрятав
+ * номер, лента оставила бы человека с одним числом и без единой зацепки.
+ */
 describe('журнал остатка: движение по заявке', () => {
-  it('выдача подписана и ведёт ссылкой в заявку, ручная правка — без ссылки', async () => {
+  it('ссылку рисует только там, где заявка откроется, а номер оставляет везде', async () => {
     renderModal();
 
     await screen.findByText(CONSUMABLE.name, undefined, { timeout: 5000 });
-    // У смотрящего нет ведения номенклатуры, поэтому карточка открывается на чтение — журнал в
-    // ней виден тот же: лента открыта всем, кому открыт справочник.
+    // Журнал открыт всем, кому открыт перечень: своего права у чтения ленты нет (Р4), и у этого
+    // смотрящего нет даже ведения номенклатуры.
     fireEvent.click(
       [...document.querySelectorAll<HTMLButtonElement>('table button')].find(
-        (b) => b.getAttribute('aria-label') === 'Открыть карточку',
+        (b) => b.getAttribute('aria-label') === 'История остатка',
       )!,
     );
-    await screen.findByText('Журнал остатка', undefined, { timeout: 5000 });
+    await screen.findByText('Заведение карточки: начальный остаток', undefined, { timeout: 5000 });
 
     // Вид события назван словом: «12 → 10» само по себе не отвечает, выдача это или пересчёт полки.
-    expect(screen.getByText('Выдача')).toBeDefined();
+    expect(screen.getAllByText('Выдача')).toHaveLength(2);
     // Ссылка ведёт в раздел заявок и открывает ту самую заявку (ADR 0074).
     const link = screen.getByRole('link', { name: 'СО-1234' }) as HTMLAnchorElement;
     expect(link.getAttribute('href')).toBe('/office-equipment?tab=requests&open=req-1');
     // Насколько сдвинулся остаток — знаком и числом: вычитать в уме при беглом чтении не нужно.
-    expect(screen.getByText('-2')).toBeDefined();
-    // У ручной правки заявки нет вовсе, и ссылка на неё в ленте одна — от выдачи.
+    expect(screen.getAllByText('-2')).toHaveLength(2);
+
+    // Чужая заявка: ссылки нет — она вела бы в 403, — а номер на месте и читается глазами.
+    expect(screen.queryByRole('link', { name: 'СО-9999' })).toBeNull();
+    expect(screen.getByText('СО-9999')).toBeDefined();
+    // Ссылка в ленте ровно одна: у ручной правки заявки нет вовсе, у чужой — доступа.
     expect(screen.getAllByRole('link', { name: /СО-/u })).toHaveLength(1);
   });
 });

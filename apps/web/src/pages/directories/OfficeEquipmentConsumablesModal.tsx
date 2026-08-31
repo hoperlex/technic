@@ -21,6 +21,7 @@ import {
 import { useAuth } from '../../auth/AuthContext';
 import { OfficeEquipmentConsumableFormModal } from './OfficeEquipmentConsumableFormModal';
 import { OfficeEquipmentStockModal } from './OfficeEquipmentStockModal';
+import { OfficeEquipmentStockHistoryModal } from './OfficeEquipmentStockHistoryModal';
 import { OfficeEquipmentConsumableUsageModal } from './OfficeEquipmentConsumableUsageModal';
 import {
   officeEquipmentConsumableCard,
@@ -28,6 +29,13 @@ import {
   PARK_COUNT_HINT,
   STOCK_HINT,
 } from './officeEquipmentConsumableGrid';
+
+/**
+ * Подпись поля сортировки для шита на телефоне. Заголовок этого столбца — разметка с подсказкой, а
+ * `sortOptionsFrom` берёт в шит только строковые: без этой пары «Правка остатка» пропала бы из
+ * сортировки ровно там, где ею и пользуются — у полки, с телефоном в руках.
+ */
+const SORT_LABELS = { lastManualStockAt: 'Правка остатка' };
 
 /**
  * Ведение картриджей и тонеров — окном из вкладки «Оргтехника» (план
@@ -108,6 +116,13 @@ export function OfficeEquipmentConsumablesModal({ open, onClose }: Props) {
   /** Расходник, которому правят остаток; `null` — окно остатка закрыто. */
   const [stockOf, setStockOf] = useState<OfficeEquipmentConsumableDto | null>(null);
 
+  /**
+   * Расходник, чей журнал читают; `null` — окно истории закрыто (Р4). Отдельным состоянием от
+   * `stockOf`, а не общим «открытая позиция»: окна разные и открываются они порознь — правку
+   * остатка держит своё право, а журнал открыт всем, кому открыт перечень.
+   */
+  const [historyOf, setHistoryOf] = useState<OfficeEquipmentConsumableDto | null>(null);
+
   /** Отчёт по расходу за период (Р10): состояние, а не адрес — окно и так открыто поверх вкладки. */
   const [usageOpen, setUsageOpen] = useState(false);
 
@@ -155,6 +170,7 @@ export function OfficeEquipmentConsumablesModal({ open, onClose }: Props) {
     canStock,
     onOpen: openCard,
     onStock: setStockOf,
+    onHistory: setHistoryOf,
     onDelete: confirmDelete,
   };
   const columns = officeEquipmentConsumableColumns(grid);
@@ -275,7 +291,7 @@ export function OfficeEquipmentConsumablesModal({ open, onClose }: Props) {
           }}
           filters={mobileFilters}
           sort={{
-            options: sortOptionsFrom(columns),
+            options: sortOptionsFrom(columns, SORT_LABELS),
             sortBy: params.sortBy,
             sortOrder: params.sortOrder,
             onChange: setSort,
@@ -330,6 +346,12 @@ export function OfficeEquipmentConsumablesModal({ open, onClose }: Props) {
       {/* Окно остатка — соседом формы, а не внутри неё: у права `stock` без `manage` карточка
           открывается только на чтение, а остаток правится из строки таблицы. */}
       <OfficeEquipmentStockModal consumable={stockOf} onClose={() => setStockOf(null)} />
+
+      {/* История остатка — тем же соседством и по той же причине (ADR 0140): окно, вызванное из
+          карточки, живёт внутри неё, иначе antd оставит его под родителем — на телефоне под
+          шторкой списка, на десктопе под затемнением. Прав рядом нет: журнал открыт всякому,
+          кому открыт сам перечень (Р4). */}
+      <OfficeEquipmentStockHistoryModal consumable={historyOf} onClose={() => setHistoryOf(null)} />
 
       {/* Отчёт — тем же соседством и по той же причине, что и остальные окна списка: antd поднимает
           z-index вложенного окна над родительским по контексту. */}

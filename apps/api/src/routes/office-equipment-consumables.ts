@@ -1,34 +1,62 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, count, desc, eq, inArray, ne, notInArray, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  notInArray,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  can,
   createOfficeEquipmentConsumableSchema,
   formatServiceRequestNumber,
+  isPermission,
   officeEquipmentConsumableListQuerySchema,
+  officeEquipmentConsumableStockEntriesQuerySchema,
   officeEquipmentConsumableStockSchema,
   officeEquipmentConsumableUsageQuerySchema,
+  PERMISSION_CATALOG,
+  roleLabels,
   type OfficeEquipmentConsumableDetailDto,
   type OfficeEquipmentConsumableDto,
+  type OfficeEquipmentConsumableStockEntriesQuery,
   type OfficeEquipmentConsumableStockEntryDto,
   type OfficeEquipmentConsumableStockResultDto,
   type OfficeEquipmentConsumableUsageDto,
   type OfficeEquipmentModelRefDto,
+  type PermissionModule,
   updateOfficeEquipmentConsumableSchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
+  grantPermissions,
+  grantRoles,
+  grants,
   officeEquipment,
   officeEquipmentConsumableModels,
   officeEquipmentConsumableStockEntries,
   officeEquipmentConsumables,
   officeEquipmentModels,
   serviceRequests,
+  userGrants,
   users,
 } from '../db/schema';
 import type { Principal } from '../auth/principal';
 import { requirePrincipal } from '../auth/plugin';
-import { assertCan, officeEquipmentScopeWhere } from '../lib/access';
+import {
+  assertCan,
+  officeEquipmentScopeWhere,
+  serviceExecutorVisibilityWhere,
+  serviceRequestScopeWhere,
+} from '../lib/access';
 import { writeAudit } from '../lib/audit';
 import { err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
@@ -161,6 +189,45 @@ const hasStockHistoryExpr = sql<boolean>`EXISTS (
 )`;
 
 /**
+ * «Правка остатка» — когда полку последний раз пересчитывали РУКАМИ (план
+ * `docs/office-equipment-consumables-and-purchase-plan.md`, Р3).
+ *
+ * ТОЛЬКО `manual`, И ЭТО ВЕСЬ СМЫСЛ СТОЛБЦА. Вопрос, ради которого его завели, — «когда мы
+ * последний раз сверяли склад», а не «когда со склада брали». Выдачи и возвраты по заявкам двигают
+ * остаток сами и о достоверности числа не говорят ничего: считай мы дату по всем видам событий,
+ * позиция, из которой выдают каждую неделю, выглядела бы вечно свежей — то есть столбец отвечал бы
+ * «сверено вчера» именно там, где полку не пересчитывали год, и заказ составили бы по ненадёжному
+ * числу. Отсюда же и `NULL` у позиции с непустым журналом выдач: ручных событий не было, сверки не
+ * было, и ответ здесь — прочерк, а не дата последней выдачи.
+ *
+ * ВРЕМЯ, А НЕ СОБЫТИЕ: спрашивается `max(created_at)`, а не «строка с наибольшим `seq`». Столбцу
+ * нужна одна дата, а не строка целиком, и `max` берёт её одним проходом по тому же ключу
+ * `(consumable_id, seq DESC)`. Порядок самой ленты этим не задаётся — там по-прежнему `seq`
+ * (см. ручку журнала): две правки одной секунды по времени неразличимы, а по номеру — нет.
+ *
+ * КОРРЕЛЯЦИЯ — ТЕМ ЖЕ `consumableIdRef`, что и у признака движения, и это не вкус, а условие
+ * правильности: выражение стоит в СПИСКЕ СТОЛБЦОВ односоставного запроса, где drizzle переписывает
+ * колоночные чанки в голые идентификаторы (разбор — у `equipmentModelIdRef` ниже). Вписанная на
+ * месте колонка дала бы `consumable_id = id` самой строки журнала — сравнение двух её собственных
+ * колонок, законное и всегда ложное, — то есть прочерк у КАЖДОЙ позиции. Ошибка молчаливая: отказа
+ * не будет, а столбец, отвечающий «руками не трогали» по всему справочнику, читается как «пора
+ * пересчитать всё».
+ *
+ * `mapWith` обязателен и обойтись без него нельзя (тот же урок, что у `lastAtExpr` отчёта о
+ * расходе): расшифровку по типу колонки drizzle применяет к КОЛОНКАМ, а не к выражениям, и у
+ * голого `sql` драйвер отдал бы `timestamptz` строкой «2026-08-21 09:00:00.123+03». Разбирать её
+ * своим `new Date(...)` значило бы полагаться на нестандартный разбор дат в V8; берётся готовая
+ * расшифровка той самой колонки, из которой значение и пришло. Пустой ответ подзапроса при этом
+ * остаётся `null`: расшифровщика drizzle зовёт только на непустом значении.
+ */
+const lastManualStockAtExpr = sql<Date>`(
+  SELECT max(${officeEquipmentConsumableStockEntries.createdAt})
+    FROM ${officeEquipmentConsumableStockEntries}
+   WHERE ${officeEquipmentConsumableStockEntries.consumableId} = ${consumableIdRef}
+     AND ${officeEquipmentConsumableStockEntries.entryKind} = 'manual'
+)`.mapWith(officeEquipmentConsumableStockEntries.createdAt);
+
+/**
  * Ссылка на модель КАРТОЧКИ ТЕХНИКИ изнутри счётчика — тем же приёмом, что выше (отдельный
  * `sql`-объект). Но сказать про неё надо ровно то, что замерено, и не больше.
  *
@@ -249,6 +316,7 @@ function dtoColumns(p: Principal) {
     color: officeEquipmentConsumables.color,
     comment: officeEquipmentConsumables.comment,
     hasStockHistory: hasStockHistoryExpr,
+    lastManualStockAt: lastManualStockAtExpr,
     equipmentCount: equipmentCountExpr(p),
     createdAt: officeEquipmentConsumables.createdAt,
     updatedAt: officeEquipmentConsumables.updatedAt,
@@ -264,6 +332,9 @@ interface DtoRow {
   color: string | null;
   comment: string;
   hasStockHistory: boolean;
+  // Пусто у позиции, которую руками не правили ни разу: `max` по пустому отбору — это `NULL`, и
+  // тип обязан это признавать, хотя расшифровщик колонки объявляет `Date`.
+  lastManualStockAt: Date | null;
   equipmentCount: number;
   createdAt: Date;
   updatedAt: Date;
@@ -280,6 +351,9 @@ function toDto(r: DtoRow, models: OfficeEquipmentModelRefDto[]): OfficeEquipment
     comment: r.comment,
     models,
     hasStockHistory: r.hasStockHistory,
+    // Прочерк в ячейке — это `null`, а не сегодняшняя дата и не пустая строка: «руками не трогали»
+    // и «правили только что» — разные новости, и путать их столбцу нельзя.
+    lastManualStockAt: r.lastManualStockAt?.toISOString() ?? null,
     // `count(*)` приезжает из pg строкой (bigint), как у счётчиков моделей и типов ТС.
     equipmentCount: Number(r.equipmentCount),
     createdAt: r.createdAt.toISOString(),
@@ -331,13 +405,186 @@ async function getDto(id: string, p: Principal): Promise<OfficeEquipmentConsumab
 }
 
 /**
- * Лента журнала (Р7). Порядок — по `seq` вниз, а не по времени: две правки одной секунды по
- * `created_at` неразличимы, и цепочка «было — стало» в такой ленте читалась бы задом наперёд через
- * раз.
+ * Подпись автора события: роль учётки и наборы полномочий модуля «Орг.техника», выданные ей (Р4
+ * плана расходников и закупки). В окне журнала читается одной строкой — «Иванов И. И. · Штаб ·
+ * Оргтехника: ведение».
  *
- * Страниц у ленты нет намеренно: остаток правят руками и редко (склад ИТ-службы — полтора десятка
- * позиций), а карточка обязана показывать историю целиком — «куда делись двенадцать картриджей»
- * отвечает только весь журнал, а не его хвост.
+ * НАБОРОВ БЫВАЕТ НЕСКОЛЬКО, И ПРИОРИТЕТА МЕЖДУ НИМИ НЕТ. «Оргтехника: ведение» вместе с
+ * «Оргтехника: номенклатура» — обычная пара, и выбрать из неё «главный» набор нечем: они делят
+ * работу, а не выстраиваются в старшинство. Поэтому наружу уходит перечень, а не одна подпись, и
+ * склеивает его в строку портал — он же и решает, как переносить её по ширине окна.
+ *
+ * ЗНАЧЕНИЯ СЕГОДНЯШНИЕ, а не на момент события: истории ролей и выдач портал не хранит (решение
+ * заказчика), и подпись отвечает «кто это сейчас». Окно обязано сказать это словами — иначе роль,
+ * поменявшаяся с марта, читалась бы как снимок марта.
+ */
+interface AuthorSignature {
+  roleLabel: string;
+  grants: string[];
+}
+
+/**
+ * Какие наборы считать «наборами модуля «Орг.техника»».
+ *
+ * Модулей витрины прав здесь ДВА, и это не оплошность списка: справочник техники и заявки на
+ * обслуживание разведены по разным модулям каталога (`officeEquipment` и `service`), а человек
+ * зовёт «Орг.техникой» и то и другое — подписи модулей так и читаются, «Орг.техника: справочник» и
+ * «Орг.техника: заявки». Набор «Оргтехника: ведение» стоит ровно поперёк этой границы: справочник
+ * он ведёт, а решения по заявке принимает тем же составом прав. Оставь мы один модуль — из подписи
+ * пропал бы самый частый набор у авторов ленты.
+ *
+ * СЧИТАЕТСЯ ПО СОСТАВУ НАБОРА, а не по списку кодов. Код в перечне пришлось бы дописывать при
+ * каждом новом наборе модуля, и первый же забытый превратился бы в подпись, молчащую о полномочии,
+ * которое у человека есть; состав же — то, чем набор и является. Заодно это ловит набор, собранный
+ * администратором вручную: он не системный, кода в контрактах у него нет вовсе, а к остатку
+ * расходника отношение имеет самое прямое.
+ */
+const OFFICE_EQUIPMENT_GRANT_MODULES: readonly PermissionModule[] = ['officeEquipment', 'service'];
+
+/**
+ * Подписи авторов для целой страницы ленты — ОДНИМ запросом на страницу, а не запросом на строку
+ * (приём «моделей к странице списка» выше). Строк в ленте сотни, авторов у них единицы, и запрос на
+ * событие превратил бы окно журнала в сотню запросов ради трёх имён.
+ *
+ * СОВМЕСТИМОСТЬ НАБОРА С РОЛЬЮ спрашивается тем же соединением с `grant_roles`, что стоит гейтом в
+ * выражении эффективных прав (`grantPermissionsExpr`). Назначение, несовместимое с нынешней ролью
+ * держателя, живёт в базе, но прав не даёт вовсе (`roleMismatch` в карточке учётки), и подпись,
+ * называющая такой набор, обещала бы полномочие, которого у человека нет. Мягко удалённый набор
+ * отсеивается по той же причине: он не действует ни у кого.
+ *
+ * Порядок — по коду набора: перечень из двух названий, собранный то так, то этак, читался бы как
+ * изменение состава. Повторы сводятся — набор приходит из соединения по числу своих прав, и без
+ * сведения «Оргтехника: ведение» назвалось бы в подписи шесть раз.
+ */
+async function authorSignaturesOf(userIds: string[]): Promise<Map<string, AuthorSignature>> {
+  const map = new Map<string, AuthorSignature>();
+  if (userIds.length === 0) return map;
+  const ids = [...new Set(userIds)];
+  const rows = await db
+    .select({
+      userId: users.id,
+      role: users.role,
+      grantName: grants.name,
+      /**
+       * Совпала ли роль держателя с ролями набора. Ответом соединения, а не отдельным запросом:
+       * `NULL` здесь и означает «набор не действует», и различить это иначе снаружи нечем.
+       */
+      compatibleRole: grantRoles.role,
+      permission: grantPermissions.permission,
+    })
+    .from(users)
+    /*
+     * Левым соединением вся цепочка наборов: автор без единого набора модуля — обычное дело
+     * (остаток правит и тот, кому права пришли ролью), а внутреннее соединение выбросило бы его из
+     * ответа целиком — вместе с ролью, которая есть всегда.
+     */
+    .leftJoin(userGrants, eq(userGrants.userId, users.id))
+    .leftJoin(grants, and(eq(grants.id, userGrants.grantId), isNull(grants.deletedAt)))
+    .leftJoin(
+      grantRoles,
+      and(eq(grantRoles.grantId, userGrants.grantId), eq(grantRoles.role, users.role)),
+    )
+    .leftJoin(grantPermissions, eq(grantPermissions.grantId, userGrants.grantId))
+    .where(inArray(users.id, ids))
+    .orderBy(grants.code);
+  for (const row of rows) {
+    const signature = map.get(row.userId) ?? {
+      // Роль у живой учётки есть всегда; пусто она бывает у нерассмотренной заявки на регистрацию,
+      // а такая учётка ничего не правит — войти в портал ей нечем. Прочерк здесь стоит не ради
+      // этого случая, а ради правки базы руками: подпись обязана остаться строкой.
+      roleLabel: row.role ? roleLabels[row.role] : '',
+      grants: [],
+    };
+    map.set(row.userId, signature);
+    // Наборов у автора нет вовсе — левое соединение отдало пустые колонки, и подпись остаётся одной
+    // ролью.
+    if (row.grantName === null || row.permission === null) continue;
+    /*
+     * Набор выдан, но с нынешней ролью держателя несовместим (`grant_roles` не совпал): назначение
+     * живо, а прав по нему набор не даёт вовсе — то же, что показывает `roleMismatch` в карточке
+     * учётки. Подпись, называющая такой набор, обещала бы полномочие, которого у человека нет.
+     */
+    if (row.compatibleRole === null) continue;
+    /*
+     * Право, снятое выкатом, остаётся в `grant_permissions` сиротой — словарь прав закрыт, а строка
+     * его переживает (см. комментарий у таблицы). `isPermission` отсекает такие: доступа они не
+     * дают, и решать по ним, из какого набор модуля, значило бы читать каталог по ключу, которого
+     * в нём нет.
+     */
+    if (!isPermission(row.permission)) continue;
+    if (!OFFICE_EQUIPMENT_GRANT_MODULES.includes(PERMISSION_CATALOG[row.permission].module)) {
+      continue;
+    }
+    if (!signature.grants.includes(row.grantName)) signature.grants.push(row.grantName);
+  }
+  return map;
+}
+
+/**
+ * Может ли СМОТРЯЩИЙ открыть заявку, на которую ссылается событие журнала (Р4).
+ *
+ * ПОЧЕМУ ЭТО СЧИТАЕТ СЕРВЕР. Остаток на складе глобален — он один на компанию, — а заявки нет:
+ * видимость заявки складывается из области роли и назначения сервисной компании, и ни того ни
+ * другого на портале не существует. Отсюда два отказа, в которые вела бы ссылка, нарисованная без
+ * спроса: у менеджера есть `officeEquipment.read` и нет `serviceRequests.read` — 403 на самом
+ * пороге модуля; у роли площадки право есть, но в журнале общего склада ей попадается событие по
+ * заявке ЧУЖОЙ площадки — тот же 403, только после перехода. До Р4 лента рисовала ссылку всегда, и
+ * это существующий дефект, который здесь и чинится.
+ *
+ * СОБРАНО ТЕМ ЖЕ, ЧЕМ ОТБИРАЕТ СПИСОК ЗАЯВОК, а не похожим на него: обе оси видимости —
+ * `serviceRequestScopeWhere` по трём колонкам заказчика и `serviceExecutorVisibilityWhere` по
+ * назначенному подрядчику — берутся у тех же функций и в том же порядке, что `visibility(p)` в
+ * `routes/service-requests.ts`. Своя копия правила разошлась бы с оригиналом молча, и признак
+ * обещал бы доступ там, где сам модуль отвечает 403.
+ *
+ * ТРЕТЬЯ ОСЬ — АРХИВ, и она не часть области. Карточка заявки спрашивает её отдельным
+ * `assertArchiveVisible`: удалённая заявка отвечает 404 всем, кроме держателей `archive.read`.
+ * Признак повторяет ровно это, потому что обещает он не «моя область», а «откроется» — а ссылка на
+ * удалённую заявку открывается ровно у того, у кого открыт архив.
+ *
+ * ВЫРАЖЕНИЕМ, А НЕ РАЗБОРОМ СТРОК В TypeScript: те же функции области отдают `SQL`, и второй их
+ * вид «по одной записи» пришлось бы писать здесь заново — то есть завести ту самую копию, которой
+ * правило и избегает. Правило файла про голые колонки на него не распространяется: это не
+ * коррелированный подзапрос, а условие по СОЕДИНЁННЫМ таблицам, и в запросе с соединением
+ * квалификация сохраняется (замерено, см. `consumableIdRef`); вдобавок всё выражение завёрнуто в
+ * `sql`-объект, внутрь которого переписывание списка столбцов не заходит вовсе.
+ */
+function requestAccessibleExpr(p: Principal): SQL<boolean> {
+  // Права нет — ссылка ведёт в 403 у любой заявки, и спрашивать область незачем.
+  if (!can(p, 'serviceRequests.read')) return sql<boolean>`false`;
+  const visible = and(
+    // У ручной правки заявки нет вовсе (обе ссылки пусты по `CHECK`у связок), и левое соединение
+    // отдаёт пустую строку: открывать нечего, признак ложен.
+    isNotNull(serviceRequests.id),
+    serviceRequestScopeWhere(
+      p,
+      serviceRequests.equipmentObjectId,
+      serviceRequests.customerDepartmentId,
+      serviceRequests.equipmentDepartmentId,
+    ),
+    serviceExecutorVisibilityWhere(p, serviceRequests.serviceCounterpartyId),
+    can(p, 'archive.read') ? undefined : isNull(serviceRequests.deletedAt),
+  )!;
+  // `coalesce` — не от неопределённости условия, а от неопределённости его слагаемых: сравнение с
+  // `NULL` в пустой строке соединения даёт `NULL`, а признак в теле ответа обязан быть булевым.
+  return sql<boolean>`coalesce(${visible}, false)`;
+}
+
+/**
+ * Страница журнала остатка (Р4). Порядок — по `seq` вниз, а не по времени: две правки одной секунды
+ * по `created_at` неразличимы, и цепочка «было — стало» в такой ленте читалась бы задом наперёд
+ * через раз. Тот же ключ `(consumable_id, seq DESC)` её и обслуживает.
+ *
+ * СТРАНИЦЫ У ЛЕНТЫ ПОЯВИЛИСЬ, ХОТЯ §8 ПЛАНА РАСХОДНИКОВ ИХ ОТВЕРГАЛ, и отвергал не зря: пока лента
+ * была приложением к карточке, «куда делись двенадцать картриджей» отвечал только весь журнал, а не
+ * его хвост. Обстоятельства изменились дважды. Во-первых, лента перестала быть приложением: она
+ * уехала в своё окно, открываемое действием строки, и вопрос «покажи последние правки» стал у неё
+ * основным. Во-вторых, журнал перестал помещаться на экран — с выдачами и возвратами по заявкам
+ * событий у ходовой позиции сотни, и страницы записаны в границы того же плана с пометкой «пора».
+ *
+ * ВТОРАЯ ДВЕРЬ К ТЕМ ЖЕ ДАННЫМ ПРИ ЭТОМ НЕ ЗАВЕЛАСЬ, и это условие, при котором довод §8 снят:
+ * `GET /:id` ленту больше не возит вовсе. Два места, решающих, что показывать в журнале, разошлись
+ * бы на первой же правке — например, на этом самом отборе по виду события.
  *
  * `innerJoin` по автору законен: `changed_by` объявлен `NOT NULL` и стоит с `RESTRICT` — учётку,
  * менявшую остаток, из портала не удалить (Р11), поэтому строка без автора не существует.
@@ -348,42 +595,77 @@ async function getDto(id: string, p: Principal): Promise<OfficeEquipmentConsumab
  * `formatServiceRequestNumber`, каким его пишет в причину маршрут заявки: разойдись они, лента
  * показала бы «выдано по СО-1234» рядом с причиной «Выдано по заявке 1234».
  */
-async function stockEntriesOf(id: string): Promise<OfficeEquipmentConsumableStockEntryDto[]> {
-  const rows = await db
-    .select({
-      id: officeEquipmentConsumableStockEntries.id,
-      seq: officeEquipmentConsumableStockEntries.seq,
-      entryKind: officeEquipmentConsumableStockEntries.entryKind,
-      serviceRequestId: officeEquipmentConsumableStockEntries.serviceRequestId,
-      serviceRequestConsumableId: officeEquipmentConsumableStockEntries.serviceRequestConsumableId,
-      requestNum: serviceRequests.num,
-      quantityBefore: officeEquipmentConsumableStockEntries.quantityBefore,
-      quantityAfter: officeEquipmentConsumableStockEntries.quantityAfter,
-      reason: officeEquipmentConsumableStockEntries.reason,
-      changedByName: users.fullName,
-      createdAt: officeEquipmentConsumableStockEntries.createdAt,
-    })
-    .from(officeEquipmentConsumableStockEntries)
-    .innerJoin(users, eq(officeEquipmentConsumableStockEntries.changedBy, users.id))
-    .leftJoin(
-      serviceRequests,
-      eq(officeEquipmentConsumableStockEntries.serviceRequestId, serviceRequests.id),
-    )
-    .where(eq(officeEquipmentConsumableStockEntries.consumableId, id))
-    .orderBy(desc(officeEquipmentConsumableStockEntries.seq));
-  return rows.map((r) => ({
-    id: r.id,
-    seq: r.seq,
-    entryKind: r.entryKind,
-    serviceRequestId: r.serviceRequestId,
-    serviceRequestConsumableId: r.serviceRequestConsumableId,
-    serviceRequestNumber: r.requestNum === null ? null : formatServiceRequestNumber(r.requestNum),
-    quantityBefore: r.quantityBefore,
-    quantityAfter: r.quantityAfter,
-    reason: r.reason,
-    changedByName: r.changedByName,
-    createdAt: r.createdAt.toISOString(),
-  }));
+async function stockEntriesPage(
+  id: string,
+  p: Principal,
+  q: OfficeEquipmentConsumableStockEntriesQuery,
+): Promise<{
+  items: OfficeEquipmentConsumableStockEntryDto[];
+  total: number;
+  page: number;
+  pageSize: number;
+}> {
+  const where = and(
+    eq(officeEquipmentConsumableStockEntries.consumableId, id),
+    q.entryKind === undefined
+      ? undefined
+      : eq(officeEquipmentConsumableStockEntries.entryKind, q.entryKind),
+  );
+  const p2 = pageParams(q);
+  const [rows, totalRows] = await Promise.all([
+    db
+      .select({
+        id: officeEquipmentConsumableStockEntries.id,
+        seq: officeEquipmentConsumableStockEntries.seq,
+        entryKind: officeEquipmentConsumableStockEntries.entryKind,
+        serviceRequestId: officeEquipmentConsumableStockEntries.serviceRequestId,
+        serviceRequestConsumableId:
+          officeEquipmentConsumableStockEntries.serviceRequestConsumableId,
+        requestNum: serviceRequests.num,
+        requestAccessible: requestAccessibleExpr(p),
+        quantityBefore: officeEquipmentConsumableStockEntries.quantityBefore,
+        quantityAfter: officeEquipmentConsumableStockEntries.quantityAfter,
+        reason: officeEquipmentConsumableStockEntries.reason,
+        changedBy: officeEquipmentConsumableStockEntries.changedBy,
+        changedByName: users.fullName,
+        createdAt: officeEquipmentConsumableStockEntries.createdAt,
+      })
+      .from(officeEquipmentConsumableStockEntries)
+      .innerJoin(users, eq(officeEquipmentConsumableStockEntries.changedBy, users.id))
+      .leftJoin(
+        serviceRequests,
+        eq(officeEquipmentConsumableStockEntries.serviceRequestId, serviceRequests.id),
+      )
+      .where(where)
+      .orderBy(desc(officeEquipmentConsumableStockEntries.seq))
+      .limit(p2.limit)
+      .offset(p2.offset),
+    db.select({ c: count() }).from(officeEquipmentConsumableStockEntries).where(where),
+  ]);
+  const signatures = await authorSignaturesOf(rows.map((r) => r.changedBy));
+  return {
+    items: rows.map((r) => ({
+      id: r.id,
+      seq: r.seq,
+      entryKind: r.entryKind,
+      serviceRequestId: r.serviceRequestId,
+      serviceRequestConsumableId: r.serviceRequestConsumableId,
+      serviceRequestNumber: r.requestNum === null ? null : formatServiceRequestNumber(r.requestNum),
+      requestAccessible: r.requestAccessible,
+      quantityBefore: r.quantityBefore,
+      quantityAfter: r.quantityAfter,
+      reason: r.reason,
+      changedByName: r.changedByName,
+      // Подпись автора берётся из карты страницы; пустая означает «учётка есть, наборов модуля у
+      // неё нет» — обычное состояние того, кому права пришли ролью.
+      changedByRoleLabel: signatures.get(r.changedBy)?.roleLabel ?? '',
+      changedByGrants: signatures.get(r.changedBy)?.grants ?? [],
+      createdAt: r.createdAt.toISOString(),
+    })),
+    total: Number(totalRows[0]!.c),
+    page: p2.page,
+    pageSize: p2.pageSize,
+  };
 }
 
 /**
@@ -563,6 +845,17 @@ export default async function officeEquipmentConsumablesRoutes(
         code: officeEquipmentConsumables.code,
         quantity: officeEquipmentConsumables.quantity,
         updatedAt: officeEquipmentConsumables.updatedAt,
+        /*
+         * «Правка остатка» (Р3) — по нему ищут то, что давно не пересчитывали, и это тот же самый
+         * подзапрос, что стоит в столбцах ответа: сортировка обязана упорядочивать ровно то число,
+         * которое человек видит в ячейке. Второе выражение «про то же самое» разошлось бы с первым
+         * молча, и список пришёл бы отсортированным не по тому столбцу, что показан.
+         *
+         * Позиции без ручных правок собираются в один конец: у `NULL` порядок задаёт умолчание
+         * Postgres — вверху при `DESC`, внизу при `ASC`. Это ответ, а не пропуск: «руками не
+         * трогали» — крайнее значение вопроса «когда трогали последний раз».
+         */
+        lastManualStockAt: lastManualStockAtExpr,
       };
       // Умолчание — наименование по возрастанию (Р9): справочник читают алфавитом, а не «последнее
       // заведённое сверху», как перечень техники. Направление по умолчанию задаёт контракт
@@ -642,15 +935,57 @@ export default async function officeEquipmentConsumablesRoutes(
     },
   );
 
-  /** Карточка целиком: сама запись и лента её журнала (§6). */
+  /**
+   * Карточка. Ленты журнала в ней БОЛЬШЕ НЕТ (Р4): она уехала в своё окно и свою ручку со
+   * страницами — соседнюю, `GET /:id/stock-entries`.
+   *
+   * Убрана она отсюда не ради экономии запроса, а ради единственности: пока лента ехала обеими
+   * дверями, два места решали, что в ней показывать, — и первая же правка одной из них (отбор по
+   * виду события, страница, признак доступности заявки) разводила ответы. Карточка от этого стала
+   * ровно строкой списка, и это верно: всё, что у неё было сверх строки, — журнал.
+   */
   r.get(
     '/:id',
     { preHandler: [app.authenticate, canRead], schema: { params: idParams } },
     async (req): Promise<OfficeEquipmentConsumableDetailDto> => {
       const p = requirePrincipal(req);
+      return await getDto(req.params.id, p);
+    },
+  );
+
+  /**
+   * Журнал остатка страницами (Р4) — то, чем живёт окно «История остатка».
+   *
+   * ПРАВО ТО ЖЕ, ЧТО У КАРТОЧКИ, и отдельного у ленты нет намеренно: она не показывает ничего, чего
+   * не показывала бы карточка до Р4, — те же события, те же имена, те же номера заявок. Завести под
+   * ту же правду второе право значило бы открыть человеку позицию и запретить смотреть, откуда у
+   * неё это число.
+   *
+   * ОТКУДА У ЛЕНТЫ ОБЛАСТЬ, ЕСЛИ У СПРАВОЧНИКА ЕЁ НЕТ. Область у неё не своя, а заимствованная и
+   * ровно в одном месте — в признаке `requestAccessible` каждой строки: остаток глобален, а заявки
+   * нет (см. `requestAccessibleExpr`). Сами события лента прячет не от кого: движение склада — это
+   * общая правда компании, и скрывать «кто-то выдал два картриджа» от того, кому открыт сам
+   * склад, не за что.
+   *
+   * СУЩЕСТВОВАНИЕ ПОЗИЦИИ СПРАШИВАЕТСЯ ОТДЕЛЬНО, хотя лента и без того ответила бы пустой
+   * страницей: у окна, открытого по устаревшей ссылке, «позиции нет» и «журнал пуст» — разные
+   * новости, а пустая страница выдала бы первое за второе.
+   */
+  r.get(
+    '/:id/stock-entries',
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { params: idParams, querystring: officeEquipmentConsumableStockEntriesQuerySchema },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
       const { id } = req.params;
-      const consumable = await getDto(id, p);
-      return { ...consumable, stockEntries: await stockEntriesOf(id) };
+      const [row] = await db
+        .select({ id: officeEquipmentConsumables.id })
+        .from(officeEquipmentConsumables)
+        .where(eq(officeEquipmentConsumables.id, id));
+      if (!row) throw err.notFound(NOT_FOUND);
+      return await stockEntriesPage(id, p, req.query);
     },
   );
 
@@ -939,6 +1274,14 @@ export default async function officeEquipmentConsumablesRoutes(
           },
         });
       }
+      /*
+       * Подпись автора события — ТЕМ ЖЕ загрузчиком, что у ленты, и по одному человеку: ФИО и роль
+       * лежат прямо в субъекте, а вот названия наборов — нет (в токене живут их коды, а не имена),
+       * и собирать перечень «Оргтехника: ведение, Оргтехника: номенклатура» второй раз по своим
+       * правилам значило бы завести две подписи одного человека, расходящиеся на первой же правке
+       * состава модуля. Запрос один и только при записанном событии.
+       */
+      const signature = written ? (await authorSignaturesOf([p.id])).get(p.id) : undefined;
       return {
         consumable: await getDto(id, p),
         // Автор события — тот, кто его только что записал, и второй запрос за его ФИО был бы
@@ -947,9 +1290,14 @@ export default async function officeEquipmentConsumablesRoutes(
           ? {
               ...written.entry,
               changedByName: p.fullName,
+              changedByRoleLabel: signature?.roleLabel ?? '',
+              changedByGrants: signature?.grants ?? [],
               // Номер заявки у ручной правки пуст по построению: обе ссылки на заявку она пишет
               // пустыми, и брать его неоткуда — не «пока неизвестен», а «его нет».
               serviceRequestNumber: null,
+              // Открывать нечего: заявки у ручной правки нет вовсе, и признак ложен не потому, что
+              // смотрящему не хватает прав, — а потому, что ссылки не существует.
+              requestAccessible: false,
               createdAt: written.entry.createdAt.toISOString(),
             }
           : null,
