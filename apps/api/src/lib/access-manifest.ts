@@ -572,6 +572,14 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['officeEquipment.read'],
   },
+  // Лента журнала остатка (Р4 плана вкладки и закупки): читается тем же широким правом, что и сама
+  // карточка, — отдельного права у журнала нет и не должно быть. Он не показывает ничего, чего не
+  // показывала бы карточка до переезда ленты в своё окно, а видимость ЗАЯВОК, на которые лента
+  // ссылается, признак `requestAccessible` считает внутри — правом ручки её не подменить.
+  'GET /api/v1/office-equipment-consumables/:id/stock-entries': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read'],
+  },
   'PATCH /api/v1/office-equipment-consumables/:id': {
     kind: 'permissions',
     allOf: ['officeEquipmentConsumables.manage'],
