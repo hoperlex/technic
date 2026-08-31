@@ -3,28 +3,35 @@ import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { serviceItemKindLabels, type ServiceItemKind } from '@technic/contracts';
 import { rowAmount, type EstimateRow } from '../model/rows';
 
-/** Денежная сумма в строке редактора: тот же вид, что в карточке заявки и в смете на согласовании. */
+/** Денежная сумма в строке редактора: тот же вид, что в карточке заявки и в окне согласования. */
 function money(value: number): string {
   return `${value.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
 }
 
 /**
- * Группа сметы: «Запчасти» или «Услуги» (§9.3). Группы разведены не для красоты — по ним читают
- * смету: заказчик спрашивает «что за детали» отдельно от «сколько стоит работа», и в общем
+ * Группа объёма работ: «Запчасти» или «Услуги» (§9.3). Группы разведены не для красоты — по ним
+ * читают объём: заказчик спрашивает «что за детали» отдельно от «сколько стоит работа», и в общем
  * списке эти два вопроса перемешиваются.
  *
  * Поля строки на телефоне переносятся сами (`Row` с разными долями на xs и sm): редактор
- * открывают и с телефона — сервис вводит смету, стоя у аппарата.
+ * открывают и с телефона — сервис вводит объём работ, стоя у аппарата.
  */
 export function EstimateRowsGroup({
   kind,
   rows,
+  disabled = false,
   onAdd,
   onChange,
   onRemove,
 }: {
   kind: ServiceItemKind;
   rows: EstimateRow[];
+  /**
+   * Правка закрыта висящим предъявлением (Р9). Поля гасятся, а не прячутся: состав остаётся
+   * виден — по нему и решают, отзывать ли предъявление, — но набранное в нём сохранить нечем, и
+   * живое поле обещало бы правку, которую сервер не примет.
+   */
+  disabled?: boolean;
   onAdd: (kind: ServiceItemKind) => void;
   onChange: (key: string, patch: Partial<EstimateRow>) => void;
   onRemove: (key: string) => void;
@@ -43,6 +50,7 @@ export function EstimateRowsGroup({
         <Row key={row.key} gutter={8} align="middle" style={{ marginTop: 8 }}>
           <Col xs={24} sm={9}>
             <Input
+              disabled={disabled}
               value={row.name}
               maxLength={255}
               placeholder={
@@ -55,6 +63,7 @@ export function EstimateRowsGroup({
           <Col xs={8} sm={3}>
             <InputNumber
               style={{ width: '100%' }}
+              disabled={disabled}
               min={0.01}
               max={9999}
               value={row.quantity}
@@ -66,6 +75,7 @@ export function EstimateRowsGroup({
           <Col xs={8} sm={4}>
             <InputNumber
               style={{ width: '100%' }}
+              disabled={disabled}
               min={0}
               max={99_999_999}
               value={row.unitPrice}
@@ -79,6 +89,7 @@ export function EstimateRowsGroup({
                 работ — до закрытия заявки её попросту нет. */}
             <InputNumber
               style={{ width: '100%' }}
+              disabled={disabled}
               min={1}
               max={120}
               value={row.warrantyMonths}
@@ -94,6 +105,7 @@ export function EstimateRowsGroup({
             <Button
               type="text"
               danger
+              disabled={disabled}
               icon={<DeleteOutlined />}
               aria-label="Удалить строку"
               onClick={() => onRemove(row.key)}
@@ -104,6 +116,7 @@ export function EstimateRowsGroup({
       <Button
         type="link"
         size="small"
+        disabled={disabled}
         icon={<PlusOutlined />}
         style={{ paddingInlineStart: 0, marginTop: 4 }}
         onClick={() => onAdd(kind)}

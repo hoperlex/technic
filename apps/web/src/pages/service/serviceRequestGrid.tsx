@@ -13,9 +13,9 @@ import {
   UrgentTag,
 } from '@entities/service-request';
 import { ServiceChatMark } from '@features/service-chat';
-import { actionsColumn, type ActionSheetItem, type CardConfig, ExpandableCell } from '@shared/ui';
-import { DocumentsCell, EquipmentCell } from './serviceRequestCells';
-import { textColumn } from '@shared/ui';
+import { actionsColumn, type CardConfig, ExpandableCell, textColumn } from '@shared/ui';
+import type { ActionSheetItem } from '@shared/ui';
+import { DocumentsCell, EquipmentCell, StartWorkButton } from './serviceRequestCells';
 import { PhoneLink } from '../../components/PhoneField';
 import { formatMoney } from '../../utils/format';
 
@@ -28,10 +28,9 @@ import { formatMoney } from '../../utils/format';
  * десятка, и список перестаёт читаться на любом экране.
  *
  * Вопрос «кто тянет и что требуется от меня» набора не имеет вовсе: на него отвечает общий столбец
- * состояния (Р100) — он в ядре и подписан для каждой стороны по-своему.
- *
- * Набор выбирается **правами**, а не именем роли: оператор оргтехники — это надстройка над штабом
- * или отделом (ADR 0086), а сервис — тип контрагента (ADR 0038), и списком ролей их не описать.
+ * состояния (Р100) — он в ядре и подписан для каждой стороны по-своему. Набор выбирается
+ * **правами**, а не именем роли: оператор оргтехники — это надстройка над штабом или отделом
+ * (ADR 0086), а сервис — тип контрагента (ADR 0038), и списком ролей их не описать.
  */
 
 export interface ServiceGridView {
@@ -72,10 +71,10 @@ export interface ServiceGridOptions {
    */
   user: AuthUser | null;
   /**
-   * Главный шаг статуса — то самое действие, к которому зовёт подпись «Вам: …» (Р117). Строит его
-   * коридор переходов (признак `primary` у пункта меню), а не вторая карта «статус → окно»: та
-   * разошлась бы с коридором на первом же новом статусе. Вернуло `null` либо не передано вовсе —
-   * подпись остаётся текстом: пункта в меню нет, и звать некуда.
+   * Главный шаг состояния — то самое действие, к которому зовёт подпись «Вам: …» (Р117). Строит его
+   * набор действий (признак `primary` у пункта), а не вторая карта «статус → окно»: та разошлась бы
+   * с набором на первом же изменении цикла. Вернуло `null` либо не передано вовсе — подпись
+   * остаётся текстом: пункта нет, и звать некуда.
    */
   primaryAction?: (request: ServiceRequestDto) => (() => void) | null;
   actions: (request: ServiceRequestDto) => ActionSheetItem[];
@@ -88,13 +87,13 @@ export interface ServiceGridOptions {
   onChat: (request: ServiceRequestDto) => void;
 }
 
-/** Итог заявки: пока работы не закрыты — согласованная смета, после — то, что по акту. */
+/** Итог заявки: пока работы не закрыты — предъявленный объём работ, после — то, что по акту. */
 function amountLabel(request: ServiceRequestDto): { value: string; hint: string } {
   if (request.completion?.totalAmount != null) {
     return { value: formatMoney(request.completion.totalAmount), hint: 'по акту' };
   }
   if (request.estimatedTotalAmount != null) {
-    return { value: formatMoney(request.estimatedTotalAmount), hint: 'по смете' };
+    return { value: formatMoney(request.estimatedTotalAmount), hint: 'по объёму работ' };
   }
   return { value: '—', hint: '' };
 }
@@ -205,7 +204,8 @@ export function serviceRequestColumns(
       ? [
           {
             key: 'description',
-            title: 'Неисправность',
+            // Общая на оба вида (Р17): «Неисправность» врала в строках про картриджи.
+            title: 'Что случилось',
             dataIndex: 'description',
             width: 240,
             render: (_v: unknown, r: ServiceRequestDto) => (
@@ -303,7 +303,9 @@ export function serviceRequestColumns(
       : []),
     {
       key: 'statusChangedAt',
-      title: 'В статусе',
+      // Не «В статусе» (Р4): меряется возраст ТЕКУЩЕГО ОЖИДАНИЯ — назначение, предъявление объёма
+      // работ и согласование статуса не меняют, а ожидание начинают заново. Так же подписан тег.
+      title: 'Ждёт',
       dataIndex: 'statusChangedAt',
       width: 120,
       sorter: true,
@@ -313,6 +315,8 @@ export function serviceRequestColumns(
       const items = opts.actions(r);
       return (
         <Space size={4}>
+          {/* «Принять в работу» — быстрой кнопкой в строке (Р6): пункт берётся готовым. */}
+          <StartWorkButton item={items.find((item) => item.key === 'start')} />
           <Tooltip title="Открыть карточку">
             <Button
               size="small"
@@ -374,7 +378,8 @@ export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<Service
         const { value, hint } = amountLabel(r);
         return value === '—' ? null : `${value} ${hint}`;
       },
-      (r) => `В статусе: ${statusAgeLabel(r.statusChangedAt)}`,
+      // «Ждёт», а не «в статусе» (Р4): возраст меряет ожидание, а не статус.
+      (r) => `Ждёт: ${statusAgeLabel(r.statusChangedAt)}`,
       // Подсказок на телефоне нет, поэтому состояние выносится строкой — той же, что во второй
       // строке столбца на десктопе. Текстом, а не ссылкой (Р117): тап по карточке открывает
       // карточку, и второй смысл у того же жеста спорил бы с первым — действия здесь в шите.

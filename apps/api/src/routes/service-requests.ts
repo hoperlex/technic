@@ -25,19 +25,24 @@ import {
   acceptServiceRequestSchema,
   actsForCounterparty,
   approveServiceEstimateSchema,
-  approveServiceItSchema,
   attachServiceFilesSchema,
   can,
+  canApproveServiceEstimate,
+  canAssignServiceExecutors,
+  canDeclineServiceRequest,
   canHoldService,
+  canReopenServiceEstimate,
   canResumeService,
+  canSubmitServiceEstimate,
   canTransitionServiceStatus,
   completeServiceRequestSchema,
   createServiceRequestSchema,
   declineServiceRequestSchema,
   formatServiceRequestNumber,
-  hasCurrentItApproval,
+  hasModuleWideScope,
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
+  isObjectScopedRole,
   isServiceExecutor,
   isServiceRequestClosed,
   isWarrantyActive,
@@ -60,8 +65,13 @@ import {
   SERVICE_REQUEST_STATUSES,
   SERVICE_WAITING_ON,
   serviceCommentSchema,
+  canStartServiceWork,
+  serviceEstimatePending,
   serviceFileKindLabels,
+  serviceHasExecutors,
   serviceHoldSchema,
+  serviceIsFirstAssignment,
+  serviceMailRepeatable,
   serviceRequestListQuerySchema,
   serviceRequestNeedsClosingDocument,
   serviceRequestStatusLabels,
@@ -88,6 +98,7 @@ import {
   warrantyState,
   warrantyToday,
   type ServiceExecutorAssignment,
+  type ServiceExecutorsRow,
   type ServiceFileKind,
   type ServiceRequestConsumableDto,
   type ServiceRequestKind,
@@ -100,6 +111,7 @@ import {
   type ServiceRequestItemDto,
   type ServiceRequestRequesterPlaceDto,
   type ServiceRequestStatus,
+  type ServiceWaitingRequest,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -242,13 +254,22 @@ const claimedItems = alias(serviceRequestItems, 'service_claimed_items');
  *
  * Реквизиты предмета берутся из **заявки**, а не из справочника: единицу переносят и
  * переименовывают, а заявка обязана остаться рассказом о том, что чинили тогда (ADR 0085 §7).
- * Из справочника приходит только название типа — его в снимке нет.
+ * Из справочника приходит только название типа и — единственным исключением — текущий объект
+ * карточки: по нему считается расхождение (Р16), а расхождение и есть вопрос «снимок ещё
+ * расходится с тем, где аппарат стоит сейчас».
  */
 function requestQuery() {
   return db
     .select({
       r: serviceRequests,
       typeName: officeEquipmentTypes.name,
+      /**
+       * Где единица числится **сейчас**. Не снимок и не реквизит карточки заявки: живое значение
+       * справочника, нужное ровно затем, чтобы погасить пометку расхождения, когда технику
+       * перенесут (Р16). Соединением, а не колонкой, — иначе гасить её пришлось бы вторым
+       * действием и человеком, который обязан не забыть.
+       */
+      equipmentCardObjectId: officeEquipment.objectId,
       objectId: constructionObjects.id,
       objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
@@ -405,7 +426,9 @@ async function consumablesByRequest(
  * выборкой, а не соединением в `requestQuery`: их несколько на заявку, и `leftJoin` размножил бы
  * строки заголовка, испортив и `count`, и страницу.
  */
-async function executorsByRequest(ids: string[]): Promise<Map<string, ServiceRequestExecutorDto[]>> {
+async function executorsByRequest(
+  ids: string[],
+): Promise<Map<string, ServiceRequestExecutorDto[]>> {
   const map = new Map<string, ServiceRequestExecutorDto[]>();
   if (ids.length === 0) return map;
   const rows = await db
@@ -443,19 +466,44 @@ function requesterPlaceOf(r: RequestRow): ServiceRequestRequesterPlaceDto | null
 }
 
 /**
- * Строка, по которой считается очередь (`serviceRequestWaitingOn`). Три поля вместо статуса: у
- * «Сметы на согласовании» две очереди подряд, и границу между ними проводит только ревизионная
- * виза ИТ (Н3).
+ * Строка, по которой считается очередь (`serviceRequestWaitingOn`). Три поля вместо статуса, но уже
+ * не те, что были: снятые статусы (Р1) означали состав исполнителей и непогашенное предъявление, и
+ * ровно этими двумя признаками очередь теперь и различает оба рабочих статуса (Р2). Ось визы ИТ
+ * ушла вместе с самой визой (Р10) — `hasCurrentItApproval` этой строке больше не годится и здесь не
+ * зовётся.
+ *
+ * Состав исполнителей приходит **посчитанным**: в самой строке заявки лежит только контрагент, а
+ * поимённые исполнители живут своей таблицей и выбираются рядом с остальными блоками карточки
+ * (`executorsByRequest`). Тот же приём, что у `ServiceExecutorAssignment`: чего в строке нет,
+ * предикат принимает готовым.
  */
-function waitingRowOf(r: RequestRow): {
-  status: ServiceRequestStatus;
-  estimateRevision: number;
-  itApprovedEstimateRevision: number | null;
-} {
+function waitingRowOf(r: RequestRow, executorCount: number): ServiceWaitingRequest {
   return {
     status: r.status,
-    estimateRevision: r.estimateRevision,
-    itApprovedEstimateRevision: r.itApprovedEstimateRevision,
+    hasExecutors: serviceHasExecutors({
+      serviceCounterpartyId: r.serviceCounterpartyId,
+      executorCount,
+    }),
+    estimatePendingRevision: r.estimatePendingRevision,
+  };
+}
+
+/**
+ * Состав исполнителей заявки строкой (Р2) — пара «контрагент + число поимённых строк», которую
+ * ждут `serviceHasExecutors` и `serviceIsFirstAssignment`.
+ *
+ * Своим запросом, а не соединением: поимённых исполнителей у заявки несколько, и `leftJoin` в
+ * заголовке размножил бы строки. Зовут её ручки, которым состав нужен ради решения, а не ради
+ * показа, — правка заявки (Р14) и назначение (Р5); карточка тот же состав уже везёт списком.
+ */
+async function executorsRowOf(row: RequestRow): Promise<ServiceExecutorsRow> {
+  const [counted] = await db
+    .select({ c: count() })
+    .from(serviceRequestExecutors)
+    .where(eq(serviceRequestExecutors.requestId, row.id));
+  return {
+    serviceCounterpartyId: row.serviceCounterpartyId,
+    executorCount: Number(counted!.c),
   };
 }
 
@@ -478,11 +526,11 @@ function toDto(
     /**
      * Кого ждут — считает сервер: правило одно на список, карточку и бейдж раздела (Р35).
      *
-     * По **строке**, а не по статусу (Н3): в «Смете на согласовании» ждут двоих по очереди —
-     * сперва ИТ («чинить или менять»), потом «Ведение» («согласны на эту сумму»), — и различает
-     * их только ревизионная виза.
+     * По **строке**, а не по статусу (Р2): «Новая» отвечает составом исполнителей — нет никого,
+     * ждут распределения; есть, ждут, что за неё возьмутся, — а «В работе» отвечает непогашенным
+     * предъявлением: висит, ждут подписи под объёмом работ; не висит, ждут самих работ.
      */
-    waitingOn: serviceRequestWaitingOn(waitingRowOf(r)),
+    waitingOn: serviceRequestWaitingOn(waitingRowOf(r, executors.length)),
     // Заморозка ходит парой (Р104, Р107): при `on_hold` оба поля непусты, в остальных статусах
     // пусты оба — этого требует CHECK в базе. По `heldFromStatus` считается и «эффективный»
     // статус: виды документов отложенной «Диагностики» — те же, что у неё (Р110).
@@ -497,6 +545,28 @@ function toDto(
       location: r.equipmentLocation,
     },
     object: { id: row.objectId, code: row.objectCode, name: row.objectName },
+    /**
+     * «Не тот объект» (Р16): объект заявки назвал человек, а не подставила карточка техники. Факт
+     * заявления, и только он — историчный, как остальные снимки заявки.
+     */
+    objectOverridden: r.objectOverridden,
+    /**
+     * Расхождение **не устранено**: заявили и до сих пор не перенесли. Конъюнкция хранимой пометки
+     * и живого сравнения со справочником — порознь оба признака отвечают неверно. Хранимый сам не
+     * гаснет ничем: ИТ-служба перенесёт единицу, а флаг у заявки останется `true` навсегда, и
+     * отбор через месяц станет списком всего, что когда-либо поправляли. Вычисляемого мало:
+     * технику возят, и у прошлогодних заявок снимок расходится с карточкой сплошь и рядом, хотя
+     * никто ничего не заявлял.
+     *
+     * Сравнивается **снимок заявки**, а не объект из соединения с площадкой: `equipmentObjectId` и
+     * есть то, что заявка помнит о месте аппарата, и второй путь к тому же значению разошёлся бы с
+     * первым на первой же правке соединений.
+     *
+     * У закрытой заявки признак остаётся честным — «расхождение было и не устранено»: DTO
+     * рассказывает о заявке, а не о том, стоит ли она в чьей-то очереди. Из очереди ИТ-службы
+     * закрытые убирает отбор списка, где к этой паре добавлено третье условие.
+     */
+    objectMismatch: r.objectOverridden && row.equipmentCardObjectId !== r.equipmentObjectId,
     customerDepartment: row.customerDepartmentId
       ? {
           id: row.customerDepartmentId,
@@ -539,6 +609,15 @@ function toDto(
         }
       : null,
     estimateRevision: r.estimateRevision,
+    /**
+     * Непогашенное предъявление (Р2) — то, что означала «Смета на согласовании». Полем DTO, а не
+     * выводом портала из даты: по нему портал считает доступность четырёх действий (согласовать,
+     * вернуть в правку, предъявить заново, переназначить), и посчитанный им по-своему ответ
+     * разошёлся бы с сервером молча.
+     */
+    estimatePendingRevision: r.estimatePendingRevision,
+    // Когда предъявляли в последний раз. Активным предъявлением НЕ является (Р9): возврат в правку
+    // эту дату не трогает, и у отозванного она непуста.
     estimateSubmittedAt: r.estimateSubmittedAt ? r.estimateSubmittedAt.toISOString() : null,
     estimatedTotalAmount: num(r.estimatedTotalAmount),
     approval:
@@ -568,6 +647,12 @@ function toDto(
     // он как «принято человеком», и ни портал, ни отчёт не должны считать иначе.
     acceptanceSource: r.acceptanceSource,
     replacementRecommended: r.replacementRecommended,
+    /**
+     * Решение при отказе по объёму работ (Р12): что делаем вместо ремонта. Показывается само по
+     * себе, рядом с пометкой замены, а не «под причиной»: причины отмены в DTO нет вовсе — она
+     * уходит комментарием перехода и живёт на вкладке истории, где её и читают.
+     */
+    rejectionResolution: r.rejectionResolution,
     comment: r.comment,
     serviceComment: r.serviceComment,
     // Обсуждение (ADR 0141): счёт и мои стороны считает сервер — портал правил сторон не
@@ -825,7 +910,9 @@ async function assertConsumableIssuer(p: Principal, row: RequestRow): Promise<vo
   if (isServiceExecutor(p, await executorAssignment(p, row))) return;
   if (can(p, 'serviceRequests.status')) return;
   const who = p.role ? roleLabels[p.role] : 'Учётная запись';
-  throw err.forbidden(`${who} не отмечает выдачу по этой заявке — это шаг назначенного исполнителя`);
+  throw err.forbidden(
+    `${who} не отмечает выдачу по этой заявке — это шаг назначенного исполнителя`,
+  );
 }
 
 /**
@@ -839,7 +926,7 @@ async function assertConsumableIssuer(p: Principal, row: RequestRow): Promise<vo
  */
 function assertRepairKind(row: RequestRow, action: string): void {
   if (row.kind !== 'consumable') return;
-  throw err.unprocessable(`Заявка на расходники сметы не имеет: ${action} нечего`, {
+  throw err.unprocessable(`Заявка на расходники объёма работ не имеет: ${action} нечего`, {
     kind: 'Не тот вид заявки',
   });
 }
@@ -872,7 +959,7 @@ async function assertEstimateReplaceable(tx: Tx, requestId: string): Promise<voi
   const nums = await claimingRequestNumbers(tx, requestId);
   if (nums.length === 0) return;
   throw err.conflict(
-    `По гарантии этой сметы обратились: ${nums.join(', ')} — менять её состав нельзя`,
+    `По гарантии этого объёма работ обратились: ${nums.join(', ')} — менять его состав нельзя`,
   );
 }
 
@@ -1326,6 +1413,10 @@ async function applyTransition(
     set.estimateRevision = 0;
     set.estimateSubmittedAt = null;
     set.estimatedTotalAmount = null;
+    // Непогашенное предъявление гасится вместе со сметой, и не только ради очереди (Р2): ревизия
+    // уходит в `0`, а оставленная pending-ревизия уронила бы саму запись —
+    // `service_requests_estimate_pending_check` требует их равенства.
+    set.estimatePendingRevision = null;
   }
   if (reset.approval) {
     set.approvedEstimateRevision = null;
@@ -1382,10 +1473,16 @@ async function applyTransition(
     // уронил бы накат M9 — там связка «источник есть ровно у принятой» становится ограничением.
     set.acceptanceSource = null;
   }
-  if (reset.replacement) {
-    // Пометка «рекомендована замена» живёт только у отменённой заявки (M5): возврат в «Новую»
-    // обязан её снять, иначе `service_requests_replacement_check` встретит откат ошибкой БД.
+  if (reset.rejection) {
+    /**
+     * Обе пометки отказа разом (Р12). Они живут и умирают вместе: и «рекомендована замена», и
+     * решение, принятое вместо ремонта, объясняют, почему заявку закрыли без ремонта, — и обе
+     * относятся к отмене, которой после возврата в «Новую» больше нет. Сними мы одну, откат упёрся
+     * бы в `service_requests_replacement_check` либо в
+     * `service_requests_rejection_resolution_check` ошибкой БД.
+     */
     set.replacementRecommended = false;
+    set.rejectionResolution = '';
   }
   if (reset.hold) {
     // Выход из заморозки чистит её поля — при возобновлении, при отмене отложенной и на любом
@@ -1512,14 +1609,22 @@ async function estimateItems(tx: Tx, requestId: string) {
  * В каких статусах вид документа принимают. Правило одной строкой: до терминального статуса файлы
  * живут обычной жизнью, после него заявка принимает бумаги и ничего не отдаёт (Р16, Р29).
  *
- * Смета — вид исполнителя, и после предъявления она заперта вместе со строками. Акт и счёт
- * приходят от «В работе» и позже, гарантийный талон — от предъявления работ: раньше гарантировать
- * нечего.
+ * Объём работ — вид исполнителя. Акт и счёт приходят от «В работе» и позже, гарантийный талон — от
+ * предъявления работ: раньше гарантировать нечего.
+ *
+ * Мёртвых статусов в перечнях больше нет (Р14): «Назначена» и «Смета на согласовании» сняты
+ * миграцией `0224`, заявок в них не бывает, и строка под них отвечала бы на вопрос, которого никто
+ * не задаёт. Набор заявок при этом не изменился — обе слились с живыми соседями, которые в
+ * перечнях уже стояли.
  */
 const FILE_KIND_STATUSES: Record<ServiceFileKind, ServiceRequestStatus[]> = {
-  attachment: ['new', 'assigned', 'estimate_review', 'in_work', 'done'],
-  // Смета предъявляется из «В работе» (Н2), значит и файл сметы прикладывают оттуда же;
-  estimate: ['in_work', 'estimate_review'],
+  attachment: ['new', 'in_work', 'done'],
+  /**
+   * Объём работ ведут в «В работе» (Р8) — оттуда же прикладывают и файл к нему. Второго статуса у
+   * этого вида больше нет: предъявление статуса не меняет, и заявка с висящей подписью — та же «В
+   * работе». Запрет менять состав под предъявлением держит не перечень видов, а замок Р9.
+   */
+  estimate: ['in_work'],
   act: ['in_work', 'done', 'accepted', 'cancelled'],
   invoice: ['in_work', 'done', 'accepted', 'cancelled'],
   /**
@@ -1600,20 +1705,49 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       app.authenticate,
       app.requireAnyPermission(
         ['serviceRequests.estimate', 'serviceRequests.execute'],
-        'Смету ведёт исполнитель',
+        'Объём работ ведёт исполнитель',
       ),
     ],
   };
+  /**
+   * Согласование объёма работ (Р3). Страж «одно из перечисленных», как у сметы и отказа, и по той
+   * же причине: согласуют двое — «Ведение» правом `serviceRequests.approveEstimate` и назначенный
+   * поимённо сотрудник, у которого есть только `serviceRequests.execute` (ответ В2). Записанное
+   * одним правом, условие отобрало бы ручку у второго, а «я в списке назначенных» — свойство
+   * заявки, и стражу оно не видно.
+   *
+   * Что субъекту доступно **на этой заявке**, решает предикат `canApproveServiceEstimate` в теле
+   * ручки: держатель `execute` без строки в заявке получает отказ от него, а не отсюда, — а
+   * оператор подрядчика исключается им же, чтобы не подписывать собственный счёт.
+   */
   const canApproveEstimate = {
     preHandler: [
       app.authenticate,
-      app.requirePermission('serviceRequests.approveEstimate', 'Смету согласует заказчик'),
+      app.requireAnyPermission(
+        ['serviceRequests.approveEstimate', 'serviceRequests.execute'],
+        'Объём работ согласует тот, кто ведёт заявку',
+      ),
     ],
   };
-  const canApproveIt = {
+  /**
+   * Состав номенклатуры расходников (Р15). Пара прав — **`serviceRequests.estimate` +
+   * `serviceRequests.execute`**, та же, что у ручек объёма работ, и выбрана она не по смыслу слова
+   * «смета», а потому что это и есть «сторона исполнителя» в матрице: у сервисной компании набор —
+   * `read`, `estimate`, `status`, `files`, и ни `update`, ни `execute` в нём нет. Возьми мы
+   * напрашивающуюся пару `update` + `execute`, назначенный подрядчик не смог бы заполнить
+   * номенклатуру вовсе — то есть исполнитель, ради которого правка и делается, остался бы без
+   * ручки.
+   *
+   * Своим стражем, а не общим с `canEstimate`: права те же, а отказ разный — «Смету ведёт
+   * исполнитель» у заявки на расходники читалось бы как ошибка сервера.
+   */
+  const canConsumables = {
     preHandler: [
       app.authenticate,
-      app.requirePermission('serviceRequests.approveIt', 'Заявку визирует отдел ИТ'),
+      app.requireAnyPermission(
+        ['serviceRequests.estimate', 'serviceRequests.execute'],
+        'Состав заполняет исполнитель',
+      ),
     ],
   };
   const canChangeStatus = {
@@ -1705,48 +1839,111 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
   }
 
   /**
-   * Виза ИТ стоит на **текущей** ревизии сметы — то же равенство, что в `hasCurrentItApproval`
-   * (Н3), переведённое на SQL: очередь отбирается выборкой, а предикат контрактов считает по
-   * строке. Разъехаться им нечем — обе половины сравнивают ровно эти две колонки.
+   * У заявки есть исполнители — то же, что `serviceHasExecutors` (Р2), переведённое на SQL:
+   * очередь отбирается выборкой, а предикат контрактов считает по строке. Дизъюнкция, а не «строки
+   * есть»: у сервисной компании поимённых строк не бывает вовсе, и заявка, отданная подрядчику,
+   * числилась бы вечно нераспределённой.
+   *
+   * Корреляция стоит в `WHERE`, а не в списке столбцов, — там подмена квалификации drizzle не
+   * достаёт (`office-equipment-sql-correlation.test.ts`).
    */
-  const currentItApproval = sql`${serviceRequests.itApprovedEstimateRevision} IS NOT NULL
-      AND ${serviceRequests.itApprovedEstimateRevision} = ${serviceRequests.estimateRevision}`;
+  /*
+   * ФУНКЦИЯМИ, А НЕ КОНСТАНТАМИ, и это не стиль. `db.select(...)` строит запрос **в момент вызова**,
+   * и вычисленное на уровне регистрации плагина оно выполняется при каждой загрузке маршрутов —
+   * то есть у всякого, кто поднимает приложение с подменённым клиентом БД. Первая редакция держала
+   * здесь константы, и `readings-export.test.ts` падал на разборе `{ x: 1 }`: его двойник ловит
+   * запросы по списку столбцов и о чужом подзапросе не знает. Прод от этого не страдал (строится
+   * builder, а не выполняется запрос), но побочный эффект на регистрации — сам по себе не то, чего
+   * ждут от описания условия.
+   */
+  const hasExecutorsHere = () =>
+    or(
+      isNotNull(serviceRequests.serviceCounterpartyId),
+      exists(
+        db
+          .select({ x: sql`1` })
+          .from(serviceRequestExecutors)
+          .where(eq(serviceRequestExecutors.requestId, serviceRequests.id)),
+      ),
+    )!;
+  /** Заявка ничья: ни контрагента, ни поимённых строк — то, что «Новая» означала до слияния. */
+  const notAssigned = () => not(hasExecutorsHere());
+
+  /** Непогашенное предъявление объёма работ — `serviceEstimatePending` (Р2) на SQL. */
+  const pendingHere = () => isNotNull(serviceRequests.estimatePendingRevision);
+  const noPendingHere = () => isNull(serviceRequests.estimatePendingRevision);
+
+  /**
+   * Четыре сочетания двух булевых осей, по которым очередь различает состояния внутри одного
+   * статуса (Р2): состав исполнителей и непогашенное предъявление. Ось визы ИТ ушла отсюда вместе с
+   * самой визой (Р10).
+   *
+   * Каждое сочетание несёт свои половины условия готовыми — и прямую, и отрицание. Порождённые
+   * циклом по двум флагам, они прятали бы отрицание в тернарник, а перепутанное отрицание в очереди
+   * не падает: оно тихо показывает чужие заявки.
+   */
+  const WAITING_AXES = [
+    { hasExecutors: false, estimatePendingRevision: null, where: [notAssigned, noPendingHere] },
+    { hasExecutors: false, estimatePendingRevision: 1, where: [notAssigned, pendingHere] },
+    { hasExecutors: true, estimatePendingRevision: null, where: [hasExecutorsHere, noPendingHere] },
+    { hasExecutors: true, estimatePendingRevision: 1, where: [hasExecutorsHere, pendingHere] },
+  ] as const;
 
   /**
    * Условие «в этом состоянии ждут такую-то сторону». Статусы не перечисляются руками, а
-   * **выводятся** из `serviceRequestWaitingOn`: та же функция, что отвечает в карточке, опрашивается
-   * на обоих исходах визы, и статусы раскладываются на три кучки — «ждут всегда», «ждут только с
-   * визой» и «ждут только без визы». Вторая и третья существуют ровно из-за «Сметы на
-   * согласовании»: там две очереди подряд.
+   * **выводятся** из `serviceRequestWaitingOn`: та же функция, что отвечает в карточке,
+   * опрашивается по каждому статусу на всех четырёх сочетаниях двух признаков, и статусы
+   * раскладываются по получившимся маскам. Переписать её на ручной перечень нельзя ни при каком
+   * упрощении: ровно эта выведенность и держит согласие карточки со списком — разойдись они, бейдж
+   * вёл бы в очередь, где заявки нет.
+   *
+   * Маска — четыре бита, по одному на сочетание. Прежде кучек было три и назывались они словами
+   * («ждут всегда», «ждут с визой», «ждут без визы»); осей стало две, и словарь пришлось бы завести
+   * на девять случаев — поэтому кучки считаются, а не перечисляются.
    */
   function waitingSideWhere(side: ServiceWaitingOn): SQL | undefined {
-    const always: ServiceRequestStatus[] = [];
-    const signed: ServiceRequestStatus[] = [];
-    const unsigned: ServiceRequestStatus[] = [];
+    const byMask = new Map<number, ServiceRequestStatus[]>();
     for (const status of SERVICE_REQUEST_STATUSES) {
-      const withIt =
-        serviceRequestWaitingOn({ status, estimateRevision: 1, itApprovedEstimateRevision: 1 }) ===
-        side;
-      const withoutIt =
-        serviceRequestWaitingOn({
-          status,
-          estimateRevision: 1,
-          itApprovedEstimateRevision: null,
-        }) === side;
-      if (withIt && withoutIt) always.push(status);
-      else if (withIt) signed.push(status);
-      else if (withoutIt) unsigned.push(status);
+      let mask = 0;
+      WAITING_AXES.forEach((axis, bit) => {
+        if (serviceRequestWaitingOn({ status, ...axis }) === side) mask |= 1 << bit;
+      });
+      if (mask === 0) continue;
+      byMask.set(mask, [...(byMask.get(mask) ?? []), status]);
     }
-    const parts = [
-      always.length > 0 ? inArray(serviceRequests.status, always) : undefined,
-      signed.length > 0
-        ? and(inArray(serviceRequests.status, signed), currentItApproval)
-        : undefined,
-      unsigned.length > 0
-        ? and(inArray(serviceRequests.status, unsigned), not(currentItApproval))
-        : undefined,
-    ].filter((part): part is SQL => part !== undefined);
+    const parts = [...byMask].map(([mask, statuses]) =>
+      and(inArray(serviceRequests.status, statuses), axesWhere(mask)),
+    );
     return parts.length > 0 ? or(...parts) : undefined;
+  }
+
+  /**
+   * Условие по признакам для одной маски. Оси, от которых ответ не зависит, из условия **уходят**:
+   * маска «ждут при любом предъявлении, но только с исполнителями» — это `hasExecutors`, а не
+   * дизъюнкция двух сочетаний, и записанная дизъюнкцией она читалась бы как правило, которого нет.
+   *
+   * `undefined` — ответ не зависит ни от одной оси: статус отвечает сам (приёмка, заморозка,
+   * закрытые), и лишнее условие в SQL только мешало бы читать план запроса.
+   */
+  function axesWhere(mask: number): SQL | undefined {
+    const bits = WAITING_AXES.map((_, bit) => (mask & (1 << bit)) !== 0);
+    // Ось «свободна», если ответ одинаков при обоих её значениях, — тогда её половина условия и не
+    // нужна. Соседи по оси исполнителей отстоят на два бита, по оси предъявления — на один.
+    const freeExecutors = bits[0] === bits[2] && bits[1] === bits[3];
+    const freePending = bits[0] === bits[1] && bits[2] === bits[3];
+    if (freeExecutors && freePending) return undefined;
+    const halves = WAITING_AXES.map((axis, bit) =>
+      bits[bit]
+        ? and(
+            ...[
+              freeExecutors ? undefined : axis.where[0](),
+              freePending ? undefined : axis.where[1](),
+            ],
+          )
+        : undefined,
+    ).filter((part): part is SQL => part !== undefined);
+    // Одинаковые половины после выброшенных осей повторяются — берётся любая: они тождественны.
+    return freeExecutors || freePending ? halves[0] : or(...halves);
   }
 
   /** Субъект значится поимённым исполнителем этой заявки (Н5). */
@@ -1780,10 +1977,21 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const where = waitingSideWhere(side);
       if (where) parts.push(where);
     }
+    /*
+     * Поимённый исполнитель добирается соединением — и сторон у него теперь ДВЕ (Р3). К прежней
+     * «ждут исполнителя» добавилось «ждут согласования»: по ответу В2 объём работ согласует
+     * назначенный сотрудник, а `isWaitingOn` его не видит и видеть не может — «я в списке
+     * назначенных» это свойство заявки, а не субъекта.
+     *
+     * Оставь мы здесь одну сторону `service`, согласующий не увидел бы свою же заявку в «Ждут
+     * меня» вовсе: в очередь она попадает ровно этой веткой, а сторона у неё — `approval`.
+     */
     if (can(p, 'serviceRequests.execute')) {
-      const service = waitingSideWhere('service');
-      const named = service ? and(service, namedExecutorHere(p)) : undefined;
-      if (named) parts.push(named);
+      for (const side of ['service', 'approval'] as const) {
+        const where = waitingSideWhere(side);
+        const named = where ? and(where, namedExecutorHere(p)) : undefined;
+        if (named) parts.push(named);
+      }
     }
     if (parts.length === 0) return null;
     return parts.length === 1 ? parts[0]! : or(...parts)!;
@@ -1795,7 +2003,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * видит на экране; собери она свой отбор — однажды съела бы заявку, которой в списке не было, и
    * заметили бы это только по пропавшему разговору.
    */
-  function listWhere(p: Principal, q: z.infer<typeof serviceRequestListQuerySchema>): SQL | undefined {
+  function listWhere(
+    p: Principal,
+    q: z.infer<typeof serviceRequestListQuerySchema>,
+  ): SQL | undefined {
     const mine = waitingOnMeWhere(p);
     // «Предъявлена или принята, а закрывающих документов нет ни одного» — очередь «Ожидаются
     // документы» (Р114). Планка та же, что у приёмки (Р112): её снимает любой из трёх видов, и
@@ -1836,6 +2047,27 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           (mine ?? sql`false`)
         : undefined,
       q.mine ? eq(serviceRequests.createdBy, p.id) : undefined,
+      /**
+       * Очередь расхождений по объекту (Р16) — конъюнкция трёх условий, и каждое обязательно.
+       *
+       * **Заявлено** (`object_overridden`): без него в очередь попало бы всё, у чего снимок
+       * разошёлся с карточкой сам собой, — а таких большинство, технику возят. **Не устранено**
+       * (снимок ≠ карточка): без него пометка не гасилась бы ничем, и через месяц отбор перестал бы
+       * быть очередью, став списком всего, что когда-либо поправляли. **Заявка открыта**: без него
+       * ИТ-служба разбирала бы прошлогодние закрытые заявки, у которых расхождение законно —
+       * аппарат с тех пор переехал, и переносить в справочнике нечего.
+       *
+       * Соединением с карточкой, а не колонкой: перенос единицы гасит очередь сам, без второго
+       * действия и без человека, который обязан не забыть. Соединение здесь уже есть — его держит
+       * отбор по типу оргтехники, и оба читателя `listWhere` его ставят.
+       */
+      q.objectMismatch
+        ? and(
+            eq(serviceRequests.objectOverridden, true),
+            ne(serviceRequests.equipmentObjectId, officeEquipment.objectId),
+            notInArray(serviceRequests.status, ['accepted', 'cancelled']),
+          )
+        : undefined,
       q.awaitingDocuments
         ? and(inArray(serviceRequests.status, ['done', 'accepted']), not(hasClosingDocument))
         : undefined,
@@ -2357,7 +2589,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         customerDepartmentId,
         equipmentDepartmentId: equipment.ownerDepartmentId,
       });
-
+      // Где аппарат стоит на самом деле (Р16). Спрашивается ПОСЛЕ области по карточке: заявку
+      // заводят на технику своей области, а чекбокс лишь поправляет объект внутри неё.
+      const equipmentObjectId = await resolveEquipmentObject(p, body, equipment);
 
       /**
        * Адресаты и обратные адреса считаются **до** транзакции (Р67): здесь ходят в базу и в
@@ -2396,7 +2630,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           .insert(serviceRequests)
           .values({
             officeEquipmentId: equipment.id,
-            equipmentObjectId: equipment.objectId,
+            /**
+             * Объект заявки — снимок, как и остальные реквизиты предмета, и при поднятой пометке
+             * его называет человек (Р16, ответ В3). Справочник заявка при этом НЕ правит: перенос
+             * единицы — решение ИТ-службы после проверки, а карточку заводит всякий заявитель, и
+             * опечатка в заявке возила бы аппараты по объектам.
+             */
+            equipmentObjectId,
+            objectOverridden: body.objectOverridden,
             customerDepartmentId,
             equipmentDepartmentId: equipment.ownerDepartmentId,
             equipmentName: equipment.name,
@@ -2477,7 +2718,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           num: created.num,
           kind,
           title: serviceRequestTitle(dto),
-          objectId: equipment.objectId,
+          // Объект заявки, а не карточки: при поднятой пометке они расходятся, и журнал обязан
+          // помнить, куда заявку в итоге записали (Р16).
+          objectId: equipmentObjectId,
+          objectOverridden: body.objectOverridden,
           customerDepartmentId,
           warrantyClaim: dto.warrantyClaim?.source ?? null,
           isUrgent: dto.isUrgent,
@@ -2562,6 +2806,55 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     return null;
   }
 
+  /**
+   * Где аппарат стоит на самом деле (Р16, ответ В3). Пометки нет — объект берётся из карточки
+   * техники, как и прежде; пометка есть — из тела, и схема заведения уже сверила пару между собой
+   * (объект без пометки ничего не объявляет, пометка без объекта не говорит, где аппарат).
+   *
+   * **Список ограничен областью заявителя, и это не удобство поля, а его единственное безопасное
+   * устройство.** `equipment_object_id` задаёт область видимости роли объекта
+   * (`serviceRequestScopeWhere`): свободный выбор означал бы, что заявку можно отправить в чужую
+   * область — и увести из своей, оставив автора без собственной заявки. Портал показывает тот же
+   * отбор по привязкам автора, но портал не защита.
+   *
+   * Ось у проверки одна — объектная, и берётся она у того же источника, что `assertServiceRequestScope`:
+   * у роли отдела и у штаба область считается отделами либо не считается ничем, и объект её не
+   * сужает — запрещать им выбор значило бы отобрать поле у тех, кто заводит заявки за сотрудников.
+   * Сквозная область модуля (Р54) открывает выбор целиком: согласующий от ИТ решает по всему парку.
+   *
+   * 422, а не 403: право заводить заявку у человека есть, негодно присланное значение — ровно тот
+   * же код, каким отвечает чужой отдел заявителя (`resolveRequesterPlace`).
+   */
+  async function resolveEquipmentObject(
+    p: Principal,
+    body: { objectId?: string; objectOverridden: boolean },
+    equipment: { objectId: string },
+  ): Promise<string> {
+    if (!body.objectOverridden || !body.objectId) return equipment.objectId;
+    const chosen = body.objectId;
+    // Существование, а не активность: закрывающаяся площадка всё ещё может держать у себя аппарат,
+    // и запрет выбирать её означал бы заявку, которую негде записать. Тот же разбор, что у
+    // площадки заявителя рядом (`resolveRequesterPlace`).
+    const [object] = await db
+      .select({ id: constructionObjects.id })
+      .from(constructionObjects)
+      .where(eq(constructionObjects.id, chosen));
+    if (!object) {
+      throw err.unprocessable('Объект не найден', { objectId: 'Не найден' });
+    }
+    if (
+      !hasModuleWideScope(p.grantCodes, 'serviceRequests') &&
+      isObjectScopedRole(p.role) &&
+      !p.constructionObjectIds.includes(chosen)
+    ) {
+      throw err.unprocessable(
+        'Аппарат можно записать только на свой объект — на чужом заявку не увидит и сам заявитель',
+        { objectId: 'Чужой объект' },
+      );
+    }
+    return object.id;
+  }
+
   /** Подразделение заявителя: пара «ссылка + снимок названия», заполненная максимум одна. */
   interface RequesterPlace {
     departmentId: string | null;
@@ -2609,7 +2902,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         .select({ name: departments.name })
         .from(departments)
         .where(eq(departments.id, id));
-      if (!row) throw err.unprocessable('Отдел заявителя не найден', { requesterDepartmentId: 'Не найден' });
+      if (!row)
+        throw err.unprocessable('Отдел заявителя не найден', {
+          requesterDepartmentId: 'Не найден',
+        });
       return { ...NO_REQUESTER_PLACE, departmentId: id, departmentName: row.name };
     };
     const object = async (id: string): Promise<RequesterPlace> => {
@@ -2617,7 +2913,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         .select({ name: constructionObjects.name })
         .from(constructionObjects)
         .where(eq(constructionObjects.id, id));
-      if (!row) throw err.unprocessable('Площадка заявителя не найдена', { requesterObjectId: 'Не найдена' });
+      if (!row)
+        throw err.unprocessable('Площадка заявителя не найдена', {
+          requesterObjectId: 'Не найдена',
+        });
       return { ...NO_REQUESTER_PLACE, objectId: id, objectName: row.name };
     };
 
@@ -2670,9 +2969,20 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const body = req.body;
       const row = await requireEditable(p, req.params.id);
-      // Со стороны заказчика правится только «Новая»: дальше за заявкой стоят договорённости с
-      // исполнителем. Закрытую не правит никто — её предмет уже стал историей.
-      assertServiceRequestEditable(p, row.status, 'редактировать');
+      /**
+       * Со стороны заказчика правится «Новая», у которой ещё нет исполнителей (Р14): после
+       * назначения за заявкой стоят договорённости с исполнителем, и менять её предмет задним
+       * числом нельзя. Закрытую не правит никто — её предмет уже стал историей.
+       *
+       * Строкой, а не статусом: пока «Новая» означала «ещё не назначена», на этот вопрос отвечал
+       * статус, а после слияния (Р1) он половину ответа потерял бы молча — правка открылась бы у
+       * заявки, которую исполнитель уже прочитал.
+       */
+      assertServiceRequestEditable(
+        p,
+        { ...(await executorsRowOf(row)), status: row.status },
+        'редактировать',
+      );
       if (isServiceRequestClosed(row.status)) {
         throw err.unprocessable(
           `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» не правится`,
@@ -2854,10 +3164,20 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * обычный случай постановки, и разложенный на два запроса он давал бы промежуточное состояние,
    * в котором заявка уже переназначена, но ещё наполовину.
    *
-   * Переназначение — тот же статус, другой исполнитель: заявка не откатывается назад, но её
-   * возраст в статусе обнуляется (`touchStatusAt`), иначе новый исполнитель наследовал бы чужое
-   * ожидание. Матрица `serviceResetOnTransition` эту дугу не покрывает и покрыть не может: она
-   * отвечает на вопрос «куда перешла заявка», а здесь заявка никуда не переходила.
+   * **Назначение перестало быть переходом** (Р5). Статуса оно не меняет: «Назначена» снята
+   * миграцией `0224`, и то, что она означала, называет теперь состав исполнителей
+   * (`serviceHasExecutors`). Строка истории кладётся `from = to` — тем же приёмом, каким писалась
+   * снятая виза ИТ, — иначе «исполнителей поменяли» осталось бы событием без следа.
+   *
+   * **Исключение одно: переназначение из «В работе» возвращает заявку в «Новую».** Иначе новый
+   * исполнитель унаследовал бы чужое «взялся» и никогда не нажал бы «Принять в работу»: заявка
+   * стояла бы в «В работе» у человека, который её ещё не открывал. Требовать от «Ведения» сперва
+   * откатить статус, а потом назначить — два действия на одно намерение ровно в том модуле, из
+   * которого мы убираем лишние нажатия.
+   *
+   * Возраст в текущем ожидании обнуляется всегда (`touchStatusAt`, Р4) — и на первом назначении, и
+   * на переназначении: сторона у второго та же, а ждут после него другого, и унаследованный возраст
+   * соврал бы о нём в очереди «кто тянет».
    *
    * Порядок блокировок общий для назначения, отказа и смены статуса (Н5): сначала `FOR UPDATE`
    * строки заявки, затем работа со строками исполнителей. Никогда наоборот — иначе назначение,
@@ -2869,9 +3189,35 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      assertSideAllowed(p, 'assigned', ['new', 'assigned', 'in_work']);
       const row = await requireEditable(p, req.params.id);
-      assertTransition(p, row.status, 'assigned');
+      /**
+       * Доступность спрашивается предикатом, а не коридором (Р11): дуги у назначения больше нет, а
+       * `assertSideAllowed` с `assertTransition` умеют отвечать только про дуги. Предикат отвечает
+       * тем же составом условий — статус («Новая» либо «В работе»), право `serviceRequests.assign`
+       * и отсутствие висящего предъявления, — и той же функцией отвечает портал, рисуя пункт меню.
+       *
+       * Запрет переназначения под висящим предъявлением — сегодняшнее правило, а не новое: из
+       * «Сметы на согласовании» переназначить было нельзя, потому что цифры принадлежат прежнему
+       * исполнителю и переданная заявка оставила бы новому чужой счёт. После слияния это же
+       * состояние зовётся «В работе» + предъявление, и не войди условие в предикат — запрет тихо
+       * исчез бы вместе со статусом.
+       */
+      // Состояние отвечает своим кодом, а право и статус — предикатом: коды отказов в модуле
+      // разведены (403 — право, область и сторона; 422 — состояние записи), и один общий отказ от
+      // предиката стёр бы это различие как раз там, где человеку надо не «просить прав», а дождаться
+      // ответа по объёму работ.
+      if (serviceEstimatePending(row)) {
+        throw err.unprocessable(
+          'Объём работ предъявлен и ждёт ответа — переназначить заявку можно, когда по нему решат',
+          { status: 'Объём работ на согласовании' },
+        );
+      }
+      if (!canAssignServiceExecutors(row, p)) {
+        const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+        throw err.forbidden(
+          `${who} не назначает исполнителей заявке в статусе «${serviceRequestStatusLabels[row.status]}»`,
+        );
+      }
 
       const userIds = [...new Set(body.userIds)];
       if (userIds.length === 0 && !body.serviceCounterpartyId) {
@@ -2903,14 +3249,25 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const counterpartyId = service?.id ?? null;
       const counterpartyChanged = row.serviceCounterpartyId !== counterpartyId;
       const changed = removed.length > 0 || added.length > 0 || counterpartyChanged;
-      // «Назначена» и тот же состав — не назначение, а повтор нажатия. Из остальных статусов тот
-      // же состав означает возврат заявки к исполнителям, и он законен.
-      if (!changed && row.status === 'assigned') {
+      /**
+       * Первое ли это назначение — по СОСТАВУ, а не по статусу (Р11). Прежнее `row.status === 'new'`
+       * было верно лишь потому, что статус с составом совпадал: назначение уводило заявку в
+       * «Назначенную». Совпадать больше нечему, и признак становится тем, чем был по смыслу —
+       * «исполнителей у заявки ещё не было». Той же функцией отвечает окно назначения, решая,
+       * спрашивать ли причину: разойдись они, окно требовало бы причину там, где она не нужна, либо
+       * отправляло запрос, на который придёт 422.
+       */
+      const first = serviceIsFirstAssignment({
+        serviceCounterpartyId: row.serviceCounterpartyId,
+        executorCount: current.length,
+      });
+      // Тот же состав у «Новой» — не назначение, а повтор нажатия. Из «В работе» тот же состав
+      // означает возврат заявки к назначенным (ниже она уходит в «Новую»), и он законен.
+      if (!changed && row.status === 'new') {
         throw err.unprocessable('Эти исполнители уже назначены на заявку');
       }
       // Первое назначение причины не требует, переназначение требует: у прежнего исполнителя
       // отбирают работу, и в истории обязано остаться, почему.
-      const first = row.status === 'new';
       if (!first && !body.reason) {
         throw err.unprocessable(
           'Укажите причину переназначения — у прежнего исполнителя отбирают работу',
@@ -2941,6 +3298,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        */
       const handedOver =
         removed.length > 0 || (row.serviceCounterpartyId !== null && counterpartyChanged);
+
+      /**
+       * Куда уходит заявка. Назначение статуса не меняет — кроме переназначения из «В работе»:
+       * оно возвращает её в «Новую», чтобы новый исполнитель нажал «Принять в работу» сам (Р5).
+       * Исполнителей эта дуга НЕ снимает (`serviceResetOnTransition`): строки пишутся ниже, до
+       * помощника перехода, и сброс, идущий следом, оставил бы заявку ничьей — молча, потому что
+       * отложенный `service_requests_executor_present` для «Новой» возвращается сразу.
+       */
+      const to: ServiceRequestStatus = row.status === 'in_work' ? 'new' : row.status;
 
       const mailFailed = await db.transaction(async (tx) => {
         const locked = await lockRequest(tx, row.id);
@@ -2974,12 +3340,20 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         }
 
         const patch: RequestPatch = { serviceCounterpartyId: counterpartyId };
-        if (handedOver && !first) {
+        // `!first` здесь больше не проверяется, и это не пропуск: у первого назначения нет ни
+        // снятых строк, ни прежнего контрагента, — то есть `handedOver` при нём ложен по
+        // построению, и вторая половина условия отвечала бы на вопрос, которого не бывает.
+        if (handedOver) {
           await assertEstimateReplaceable(tx, locked.id);
           await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, locked.id));
           patch.estimateRevision = 0;
           patch.estimateSubmittedAt = null;
           patch.estimatedTotalAmount = null;
+          // Ревизия уходит в `0`, и оставленное предъявление уронило бы саму запись
+          // (`service_requests_estimate_pending_check` требует их равенства). До этой строки оно
+          // тут и не окажется — переназначение под висящим предъявлением запрещено предикатом
+          // выше, — но защита не должна держаться на выводе о соседней проверке (Р2).
+          patch.estimatePendingRevision = null;
           patch.approvedEstimateRevision = null;
           patch.estimateApprovedBy = null;
           patch.estimateApprovedAt = null;
@@ -2987,11 +3361,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
 
         const transition = await applyTransition(tx, {
           row: locked,
-          to: 'assigned',
+          to,
           version: body.version,
           actor: p,
           comment: body.reason ?? body.comment,
           patch,
+          // Возраст обнуляется и при `to === from`: сторона та же, а ждут другого (Р4).
           touchStatusAt: true,
           mail: mailPlan.plan,
         });
@@ -3101,114 +3476,19 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
 
   // ── Назначение контрагента: совместимый адаптер выпуска 1 ──
 
-  // ── Виза отдела ИТ по смете (Н3) ──
+  // ── Виза отдела ИТ упразднена (Р10) ──
   /**
-   * Решение переехало со входа на смету: «чинить за эти деньги или менять аппарат». Одна ручка на
-   * оба исхода — право одно (`serviceRequests.approveIt`), область одна и момент решения один, тот
-   * же приём, что у согласования сметы.
+   * Ручка `PATCH /:id/it-approval` снята вместе с самой визой: согласует объём работ назначенный
+   * сотрудник, и вопрос «чинить или менять» задаёт себе тот же человек, что смотрит на счёт (ответ
+   * В2). Двух подписей по порядку больше нет, `SERVICE_IT_TRANSITIONS` пуста, третья ось очереди
+   * ушла вместе с ней.
    *
-   * Первый исход **статуса не меняет**: он подписывает текущую ревизию сметы, и заявка остаётся в
-   * «Смете на согласовании» — дальше её двигает согласование суммы. Поэтому коридора у него нет и
-   * `assertSideAllowed` спрашивается только у второго.
-   *
-   * Второй закрывает заявку отменой с пометкой «рекомендована замена» (В21): своего терминального
-   * статуса у него нет, «закрыта без результата» у модуля уже есть (Р53), а второе имя для того же
-   * состояния делило бы отчёты пополам. Причина обязательна — из пометки собирается список «что
-   * пора менять», и «ИТ отказал» без объяснения заказчик прочитает как молчание.
+   * Поля `it_approved_*` при этом остались снимком истории — подпись от 22.08 правдива, и стирать
+   * её нечем: карточка показывает её по-прежнему, а решающих мест у неё больше нет. Право
+   * `serviceRequests.approveIt` тоже остаётся в матрице и перестаёт давать ходы: уборка выданных
+   * наборов — отдельный откат, и делать её в одном выпуске с переделкой цикла значило бы смешать
+   * два разных (§8).
    */
-  r.patch(
-    '/:id/it-approval',
-    { ...canApproveIt, schema: { params: idParams, body: approveServiceItSchema } },
-    async (req) => {
-      const p = requirePrincipal(req);
-      const body = req.body;
-      if (!body.approved) assertSideAllowed(p, 'cancelled', ['estimate_review']);
-      const row = await requireEditable(p, req.params.id);
-      assertRepairKind(row, 'визировать');
-      // Визируют **смету**, а не заявку: до предъявления согласовывать нечего — предмет решения
-      // (счёт инженера) появляется позже.
-      if (row.status !== 'estimate_review') {
-        throw err.unprocessable(
-          `Визу ИТ ставят на предъявленную смету, а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
-          { status: 'Смета не предъявлена' },
-        );
-      }
-      if (!body.approved) assertTransition(p, row.status, 'cancelled');
-
-      if (body.approved) {
-        // Порядок подписей жёсткий: сперва ИТ, потом деньги. Второй раз подписывать ту же ревизию
-        // нечего — согласие уже стоит, и повтор лишь переписал бы дату решения.
-        if (hasCurrentItApproval(waitingRowOf(row))) {
-          throw err.unprocessable(
-            `Виза ИТ на ревизию сметы ${row.estimateRevision} уже стоит — дальше решают по сумме`,
-            { approved: 'Виза уже стоит' },
-          );
-        }
-        const now = new Date();
-        await db.transaction(async (tx) => {
-          const locked = await lockRequest(tx, row.id);
-          const [updated] = await tx
-            .update(serviceRequests)
-            .set({
-              itApprovedBy: p.id,
-              itApprovedAt: now,
-              // Ревизия — то, **что именно** подписано (Н3): следующее предъявление поднимет её и
-              // обесценит подпись, не стирая её. `NULL` осталась бы «входной визой старого
-              // образца», то есть визой сметы не считалась бы вовсе.
-              itApprovedEstimateRevision: locked.estimateRevision,
-              // Автовизы больше нет ни при заведении, ни здесь: виза по смете — решение по чужому
-              // счёту, и автоматической быть не может.
-              itApprovedAuto: false,
-              updatedBy: p.id,
-              updatedAt: now,
-              version: locked.version + 1,
-            })
-            .where(
-              and(eq(serviceRequests.id, locked.id), eq(serviceRequests.version, body.version)),
-            )
-            .returning({ id: serviceRequests.id });
-          if (!updated) throw err.conflict();
-          // Строка истории у визы своя, хотя статус не меняется: «кто и когда подписал ревизию» —
-          // событие цикла, и без неё лента показывала бы прыжок из «Сметы» в «В работе» без
-          // объяснения, кто по дороге сказал «чинить».
-          await recordServiceStatusTransition(tx, {
-            requestId: locked.id,
-            fromStatus: locked.status,
-            toStatus: locked.status,
-            estimateRevision: locked.estimateRevision,
-            actorId: p.id,
-            comment: body.reason ?? '',
-          });
-        });
-      } else {
-        await db.transaction(async (tx) => {
-          await applyTransition(tx, {
-            row,
-            to: 'cancelled',
-            version: body.version,
-            actor: p,
-            comment: body.reason,
-            // Пометка живёт только у отменённой заявки (M5) и объясняет, почему её закрыли без
-            // ремонта. Возврат в «Новую» снимает её матрицей сброса.
-            patch: { replacementRecommended: true },
-          });
-        });
-      }
-
-      await writeAudit({
-        actorUserId: p.id,
-        action: body.approved ? 'serviceRequest.it_approve' : 'serviceRequest.it_reject',
-        entityType: 'serviceRequest',
-        entityId: row.id,
-        metadata: {
-          revision: row.estimateRevision,
-          reason: body.reason ?? '',
-          ...(body.approved ? {} : { replacementRecommended: true }),
-        },
-      });
-      return (await getDto(p, row.id))!;
-    },
-  );
 
   // ── Отказ исполнителя (Н5, §4.2) ──
   /**
@@ -3219,11 +3499,26 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * - **оператор сервисной компании** снимает **всю компанию** — назначена была она, а не человек,
    *   поимённых строк у её сотрудников нет вовсе, и «часть подрядчика» отказаться не может.
    *
-   * Заявка возвращается в «Новую», только если не осталось **ни строк, ни контрагента**. Осталось
-   * хоть что-то — статус не меняется, и в истории остаётся строка о том, кто ушёл: пара переходов
-   * без неё не объяснила бы, почему исполнителей стало меньше.
+   * **Статуса отказ не меняет вовсе** (Р7). Прежде он ходил `assigned → new`, и статус сам
+   * различал два исхода; после слияния (Р1) отказавшийся и так стоит в «Новой», а различает исходы
+   * состав: ушёл последний — заявка ждёт распределения, кто-то остался — она по-прежнему ждёт
+   * исполнителя. Строка истории пишется прежняя (`from = to` с причиной): без неё «исполнителей
+   * стало меньше» ничем не объяснено, а спорят с подрядчиком именно по ней.
    *
-   * Возврат идёт в «Новую», а не к визе ИТ (Н3): визы на входе больше нет.
+   * **Исполнителя снимает сама ручка, а не матрица сброса.** Дуги, на которой стоял `reset.executor`,
+   * больше нет, и на `in_work → new` сброс не ставится намеренно (Р5, п. 2) — иначе он ломал бы
+   * переназначение и откат «принял в работу». Значит контрагента снимает здешний `patch`, а строки
+   * — здешний `DELETE`: понадеявшись на матрицу, мы оставили бы отказавшуюся компанию в заявке
+   * молча.
+   *
+   * **Возраст ожидания сбрасывается условно** (Р4): при полном отказе сторона меняется
+   * (`service → operator`) и возраст обнуляется, при частичном — нет. Обнули мы его и там, уход
+   * одного из троих сисадминов прятал бы заявку из очереди «кто тянет» на неделю, хотя те, кто
+   * остался, ждут её ровно столько же, сколько ждали.
+   *
+   * Отказ **взявшегося** (из «В работе») ручка не открывает (Р7): сегодня его нет, и заводить его
+   * заодно значило бы расширение, о котором не просили, — такую заявку возвращает переназначение
+   * либо откат «Ведения».
    */
   r.patch(
     '/:id/decline',
@@ -3231,10 +3526,42 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      assertSideAllowed(p, 'new', ['assigned']);
       const row = await requireEditable(p, req.params.id);
       const assignment = await executorAssignment(p, row);
-      assertTransition(p, row.status, 'new', assignment);
+      // Дуги у отказа больше нет — доступность спрашивает предикат Р11 (той же функцией отвечает
+      // пункт меню в портале). Сторона считается по строке заявки, а не по правам: отказывается
+      // назначенный, и `assertSideAllowed` до чтения заявки ответить на это не мог никогда.
+      if (row.status !== 'new') {
+        throw err.unprocessable(
+          `От заявки в статусе «${serviceRequestStatusLabels[row.status]}» не отказываются — взявшегося исполнителя меняет переназначение`,
+          { status: 'Другой статус' },
+        );
+      }
+      /*
+       * «Есть от чего отказываться» — своей проверкой и своим текстом, хотя предикат это условие
+       * тоже держит (найдено db-тестами). Разведены они по причине, общей для всей ручки (§Г
+       * реализации): предикат отвечает одним «нет», а коды здесь разные — 422 у состояния заявки и
+       * 403 у стороны. Слей мы их, отказ по нераспределённой заявке приходил бы как «вы не
+       * назначенный исполнитель», хотя дело не в субъекте: отказываться просто не от чего.
+       */
+      if (!serviceHasExecutors(await executorsRowOf(row))) {
+        throw err.unprocessable(
+          'От заявки, которую никому не отдали, отказываться нечего — её ещё распределяют',
+          { status: 'Исполнителей нет' },
+        );
+      }
+      if (
+        !canDeclineServiceRequest(
+          { ...(await executorsRowOf(row)), status: row.status },
+          p,
+          assignment,
+        )
+      ) {
+        const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+        throw err.forbidden(
+          `${who} не отказывается от этой заявки — это шаг назначенного исполнителя`,
+        );
+      }
 
       const outcome = await db.transaction(async (tx) => {
         // Порядок блокировок тот же, что у назначения (Н5): сперва заявка, потом её исполнители.
@@ -3269,24 +3596,21 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         else if (wholeCounterparty) restCounterparty = null;
         else {
           // Ни строкой, ни компанией субъект в заявке не значится — сюда доходит только тот, кому
-          // коридор открыт правом сметы, то есть администратор, доводящий чужую заявку. Отказ за
+          // предикат открыт правом сметы, то есть администратор, доводящий чужую заявку. Отказ за
           // всех: выбирать, чью именно строку снять, ему не по чему.
           restNamed = [];
           restCounterparty = null;
         }
 
-        if (restNamed.length === 0 && restCounterparty === null) {
-          // Оба слоя снимает матрица возвратов (`reset.executor`): и контрагента, и строки.
-          await applyTransition(tx, {
-            row: locked,
-            to: 'new',
-            version: body.version,
-            actor: p,
-            comment: body.reason,
-          });
-          return { returned: true, wholeCounterparty, ownRow };
-        }
-
+        /**
+         * Свои строки ручка снимает сама — и поимённые, и всю компанию. Раньше полный отказ
+         * доверял это матрице сброса (`reset.executor` на дуге `assigned → new`), но дуги больше
+         * нет, а `in_work → new` сброса не несёт и нести не должна (Р5, п. 2): она обслуживает
+         * переназначение и откат «принял в работу», которым исполнителей терять нельзя.
+         *
+         * Поимённые строки удаляются **до** помощника перехода — тем же порядком блокировок, что у
+         * назначения (Н5): сперва заявка, потом её исполнители.
+         */
         if (ownRow) {
           await tx
             .delete(serviceRequestExecutors)
@@ -3296,29 +3620,32 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
                 eq(serviceRequestExecutors.userId, p.id),
               ),
             );
+        } else if (!wholeCounterparty) {
+          await tx
+            .delete(serviceRequestExecutors)
+            .where(eq(serviceRequestExecutors.requestId, locked.id));
         }
-        const [updated] = await tx
-          .update(serviceRequests)
-          .set({
-            serviceCounterpartyId: restCounterparty,
-            updatedBy: p.id,
-            updatedAt: new Date(),
-            version: locked.version + 1,
-          })
-          .where(and(eq(serviceRequests.id, locked.id), eq(serviceRequests.version, body.version)))
-          .returning({ id: serviceRequests.id });
-        if (!updated) throw err.conflict();
-        // Статус тот же — строка истории всё равно пишется: иначе «исполнителей стало меньше»
-        // осталось бы событием без следа, а спорят с подрядчиком именно по нему.
-        await recordServiceStatusTransition(tx, {
-          requestId: locked.id,
-          fromStatus: locked.status,
-          toStatus: locked.status,
-          estimateRevision: locked.estimateRevision,
-          actorId: p.id,
-          comment: body.reason,
+
+        const left = serviceHasExecutors({
+          serviceCounterpartyId: restCounterparty,
+          executorCount: restNamed.length,
         });
-        return { returned: false, wholeCounterparty, ownRow };
+        await applyTransition(tx, {
+          row: locked,
+          // Статуса отказ не меняет (Р7): и полный, и частичный оставляют заявку «Новой», а
+          // различает их состав. Строка истории `from = to` при этом пишется — без неё
+          // «исполнителей стало меньше» осталось бы событием без следа.
+          to: locked.status,
+          version: body.version,
+          actor: p,
+          comment: body.reason,
+          patch: { serviceCounterpartyId: restCounterparty },
+          // Условный сброс возраста (Р4): ушёл последний — ждут уже распределяющего, и отсчёт
+          // начинается заново; кто-то остался — работу никому не передавали, и оставшиеся ждут её
+          // ровно столько же, сколько ждали.
+          touchStatusAt: !left,
+        });
+        return { left, wholeCounterparty, ownRow };
       });
 
       await writeAudit({
@@ -3331,7 +3658,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           serviceCounterpartyId: row.serviceCounterpartyId,
           // Что именно сняли и осталась ли заявка у кого-то: по одной причине этого не восстановить.
           scope: outcome.ownRow ? 'self' : outcome.wholeCounterparty ? 'counterparty' : 'all',
-          returnedToNew: outcome.returned,
+          // Не `returnedToNew`, как прежде: возвращать больше некуда — статуса отказ не меняет
+          // (Р7), — а спрашивают у журнала ровно то же самое: осталась ли заявка у кого-нибудь.
+          leftUnassigned: !outcome.left,
         },
       });
       return (await getDto(p, row.id))!;
@@ -3343,16 +3672,42 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
   // строка аудита повторила бы строку истории статусов слово в слово.
   //
   // Отдельного статуса «Диагностика» больше нет (Н2): взявшийся за заявку стоит в «В работе» и
-  // оттуда же предъявляет смету.
+  // оттуда же предъявляет объём работ.
+  //
+  // Коридор теперь `new → in_work` вместо `assigned → in_work` (Р6): промежуточной «Назначенной»
+  // между заведением и работой не стало. Открывает ход всё тот же **факт назначения**, а не право,
+  // — и он же сам собой закрывает ход у нераспределённой заявки: у «Новой» без исполнителей
+  // назначенных нет, и `isServiceExecutor` ложен при любом праве.
   r.patch(
     '/:id/start',
     { ...canExecutorStatus, schema: { params: idParams, body: startServiceRequestSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      assertSideAllowed(p, 'in_work', ['assigned']);
+      assertSideAllowed(p, 'in_work', ['new']);
       const row = await requireEditable(p, req.params.id);
       const assignment = await executorAssignment(p, row);
+      const executors = await executorsRowOf(row);
+      /*
+       * «Есть кому браться» — своей проверкой и своим 422, как у отказа. Найдено db-тестами:
+       * прежде запрет держал статус (коридор был `assigned → in_work`, и у «Новой» дуг не было), а
+       * после Р6 держать стало нечем — коридор открывает дизъюнкция, вторая половина которой,
+       * право на объём работ, назначения не спрашивает. Заявку без исполнителей администратор
+       * переводил в «В работе», и ловил это отложенный `service_requests_executor_present` на
+       * `COMMIT`: данные целы, но наружу уходило 500 вместо отказа.
+       */
+      if (!serviceHasExecutors(executors)) {
+        throw err.unprocessable(
+          'Заявку сначала распределяют — брать в работу нераспределённую некому',
+          { status: 'Исполнителей нет' },
+        );
+      }
       assertTransition(p, row.status, 'in_work', assignment);
+      if (!canStartServiceWork({ ...executors, status: row.status }, p, assignment)) {
+        const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+        throw err.forbidden(
+          `${who} не берёт эту заявку в работу — это шаг назначенного исполнителя`,
+        );
+      }
       await db.transaction(async (tx) => {
         await applyTransition(tx, {
           row,
@@ -3487,16 +3842,30 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const body = req.body;
       const row = await requireEditable(p, req.params.id);
-      await assertExecutorSide(p, row, 'ведёт смету этой заявки');
+      await assertExecutorSide(p, row, 'ведёт объём работ этой заявки');
       assertRepairKind(row, 'править');
       if (row.status !== 'in_work') {
         throw err.conflict(
-          `Смета правится только в статусе «${serviceRequestStatusLabels.in_work}»`,
+          `Объём работ правится только в статусе «${serviceRequestStatusLabels.in_work}»`,
+        );
+      }
+      /**
+       * **Первый замок Р9.** Прежде правку предъявленного состава запирал сам статус: предъявленная
+       * смета стояла в «Смете на согласовании», а эта ручка работала только из «В работе». Статус
+       * снят (Р1), и, не заведи мы замок заново, исполнитель молча менял бы цифры под висящей
+       * подписью — согласующий подписал бы не то, что видел.
+       *
+       * Ключ от замка один — «вернуть объём работ в правку» (`/estimate/reopen`): отзывает своё
+       * предъявление тот, кто его подал.
+       */
+      if (serviceEstimatePending(row)) {
+        throw err.conflict(
+          `Объём работ ревизии ${row.estimateRevision} предъявлен и ждёт ответа — верните его в правку, прежде чем менять состав`,
         );
       }
       if (row.estimateRevision > 0 && row.approvedEstimateRevision === row.estimateRevision) {
         throw err.conflict(
-          `Ревизия сметы ${row.estimateRevision} согласована — верните смету в правку, прежде чем менять состав`,
+          `Ревизия ${row.estimateRevision} согласована — верните объём работ в правку, прежде чем менять состав`,
         );
       }
       const before = (await getDto(p, row.id))!;
@@ -3540,19 +3909,47 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     },
   );
 
-  // ── Предъявление сметы ──
+  // ── Предъявление объёма работ ──
+  /**
+   * **Предъявление перестало быть переходом** (Р8): заявка всё это время стоит в «В работе» — ровно
+   * как просил заказчик, — а ожидание подписи открывает своя колонка `estimate_pending_revision`.
+   * Ревизия при этом по-прежнему поднимается: на ней держится обесценивание подписи.
+   *
+   * **Второй замок Р9 — здесь, и пропустить его легче всего.** Повторное предъявление запирал сам
+   * статус: из «Сметы на согласовании» эта ручка была недоступна. Сняв его, мы позволили бы
+   * исполнителю поднять ревизию и подменить снимок суммы под уже открытым окном согласования —
+   * согласующий нажал бы «Согласовать» по цифрам, которых больше нет, а сверка ревизий на закрытии
+   * этого не поймала бы: ревизия-то согласована свежая.
+   */
   r.patch(
     '/:id/estimate/submit',
     { ...canEstimate, schema: { params: idParams, body: submitServiceEstimateSchema } },
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      // Смета предъявляется из «В работе» (Н2).
-      assertSideAllowed(p, 'estimate_review', ['in_work']);
       const row = await requireEditable(p, req.params.id);
       assertRepairKind(row, 'предъявлять');
       const assignment = await executorAssignment(p, row);
-      assertTransition(p, row.status, 'estimate_review', assignment);
+      // Объём работ предъявляют из «В работе» (Р8). Дуги у действия больше нет, поэтому статус
+      // спрашивается прямо, а сторону исполнителя — предикат Р11, тот же, каким портал решает,
+      // рисовать ли кнопку.
+      if (row.status !== 'in_work') {
+        throw err.unprocessable(
+          `Объём работ предъявляют из «${serviceRequestStatusLabels.in_work}», а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
+          { status: 'Другой статус' },
+        );
+      }
+      if (serviceEstimatePending(row)) {
+        throw err.conflict(
+          `Объём работ ревизии ${row.estimateRevision} уже предъявлен и ждёт ответа — верните его в правку, если нужно предъявить заново`,
+        );
+      }
+      if (!canSubmitServiceEstimate(row, p, assignment)) {
+        const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+        throw err.forbidden(
+          `${who} не предъявляет объём работ по этой заявке — это шаг исполнителя`,
+        );
+      }
       // Гарантийный ремонт — не пустая смета, а осознанное «чиним по гарантии, денег нет», и без
       // названного источника гарантии он ничем не подтверждён (Р27).
       if (body.warrantyRepair && !row.warrantyClaimSource) {
@@ -3578,21 +3975,29 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         }
         const items = await estimateItems(tx, row.id);
         if (items.length === 0) {
-          throw err.unprocessable('Смета пуста — добавьте хотя бы одну строку');
+          throw err.unprocessable('Объём работ пуст — добавьте хотя бы одну строку');
         }
         const amount = sumAmounts(items);
         await applyTransition(tx, {
           row,
-          to: 'estimate_review',
+          // Статус тот же (Р8). Через помощник перехода ручка всё равно идёт: он — единственная
+          // точка, где заявка пишет строку истории и сбрасывает возраст ожидания, и второго пути
+          // писать эти две вещи модуль не заводит (Р4).
+          to: row.status,
           version: body.version,
           actor: p,
           comment: body.comment,
           patch: {
             estimateRevision: revision,
+            // Этим и открывается ожидание подписи (Р2): колонка равна поднятой ревизии, и
+            // `CHECK` в базе сторожит, что предъявлена именно текущая.
+            estimatePendingRevision: revision,
             estimateSubmittedAt: new Date(),
             // Снимок предъявленной суммы: по нему потом и сверяется закрытие.
             estimatedTotalAmount: money(amount),
           },
+          // Ход перешёл к согласующему (`service → approval`) — возраст ожидания начинается заново.
+          touchStatusAt: true,
         });
         return amount;
       });
@@ -3608,19 +4013,32 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     },
   );
 
-  // ── Согласование сметы ──
+  // ── Согласование объёма работ ──
   /**
    * Одна ручка на «да» и «нет»: у них одно право, одна область и один момент. Согласие пишет
    * снимок из трёх полей — кто, когда и какую ревизию, — потому что по отдельности ни одно из них
-   * не отвечает на вопрос «что именно согласовали». Причину отказа требует тело ручки.
+   * не отвечает на вопрос «что именно согласовали». Причину и решение при отказе требует тело ручки.
    *
-   * Оба исхода ведут в **один статус** — «В работе» (Н2): «Диагностики», куда возвращалась
-   * отклонённая смета, больше нет, и различает исходы не пара «откуда → куда», а само тело. Стирать
-   * при отказе нечего: обе подписи обесценивает подъём ревизии на следующем предъявлении (Н3).
+   * **Исходы разошлись** (Р8, В1). «Согласовано» статуса не меняет вовсе — заявка стоит в «В
+   * работе», ровно как просил заказчик. «Не согласовано» уводит её в «Отменена»: своего
+   * терминального статуса у отказа нет, «закрыта без результата» у модуля уже есть (Р53), а второе
+   * имя для того же состояния делило бы отчёты пополам.
    *
-   * **Порядок подписей жёсткий: сперва ИТ, потом деньги** (Н3). Иначе «Ведение» согласовывало бы
-   * сумму ремонта, который через минуту признают ненужным. Проверяет порядок сервер, а не скрытая
-   * кнопка портала.
+   * Оба исхода гасят предъявление (`estimate_pending_revision → NULL`): ответ получен, и заявка
+   * уходит из очереди согласования. У отказа это не формальность — оставленное предъявление
+   * держало бы отменённую заявку в очереди подписи, и `canApproveServiceEstimate` пришлось бы
+   * отбивать её вторым правилом рядом с перечнем статусов.
+   *
+   * **Порядок подписей снят вместе с визой ИТ** (Р10): согласует назначенный сотрудник, и вопрос
+   * «чинить или менять» он задаёт себе сам, глядя на тот же счёт. Проверки «сумму согласуют после
+   * визы» здесь больше нет — не потому, что её ослабили, а потому, что второй подписи не стало.
+   *
+   * **Коридор эту дугу не сторожит, и это осознанно.** Отмена по `SERVICE_OPERATOR_TRANSITIONS`
+   * требует `serviceRequests.status`, а согласующим по ответу В2 бывает поимённый исполнитель, у
+   * которого только `serviceRequests.execute`. Спроси мы здесь `assertTransition`, сторона Р3
+   * получила бы ручку и не смогла бы ею воспользоваться. Кто перед нами, отвечает предикат
+   * `canApproveServiceEstimate` — он же исключает оператора подрядчика: объём работ предъявил он, и
+   * подпись под собственным счётом не согласование, а его копия.
    */
   r.patch(
     '/:id/estimate/approval',
@@ -3628,37 +4046,58 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      const to: ServiceRequestStatus = 'in_work';
-      assertSideAllowed(p, to, ['estimate_review']);
       const row = await requireEditable(p, req.params.id);
       assertRepairKind(row, 'согласовывать');
-      assertTransition(p, row.status, to);
-      if (row.status !== 'estimate_review') {
+      const assignment = await executorAssignment(p, row);
+      if (row.status !== 'in_work') {
         throw err.unprocessable(
-          `Согласуют смету, предъявленную на согласование, а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
+          `Объём работ согласуют в «${serviceRequestStatusLabels.in_work}», а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
+          { status: 'Другой статус' },
         );
       }
-      if (body.approved && !hasCurrentItApproval(waitingRowOf(row))) {
-        throw err.unprocessable(
-          'Сумму согласуют после визы ИТ по этой ревизии сметы — сперва отдел ИТ решает, чинить или менять аппарат',
-          { approved: 'Нет визы ИТ' },
+      if (!serviceEstimatePending(row)) {
+        throw err.unprocessable('Объём работ не предъявлен — согласовывать нечего', {
+          status: 'Объём работ не предъявлен',
+        });
+      }
+      if (!canApproveServiceEstimate(row, p, assignment)) {
+        const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+        throw err.forbidden(
+          `${who} не согласует объём работ по этой заявке — это шаг того, кто её ведёт`,
         );
       }
 
       await db.transaction(async (tx) => {
         await applyTransition(tx, {
           row,
-          to,
+          // «Согласовано» — тот же статус, «не согласовано» — отмена (В1).
+          to: body.approved ? row.status : 'cancelled',
           version: body.version,
           actor: p,
+          // Причина уходит комментарием перехода — туда же, куда у всякого перехода с объяснением.
+          // Решение остаётся полем заявки: с него начинается разбор отклонённой заявки через месяц.
           comment: body.reason ?? '',
           patch: body.approved
             ? {
                 approvedEstimateRevision: row.estimateRevision,
                 estimateApprovedBy: p.id,
                 estimateApprovedAt: new Date(),
+                estimatePendingRevision: null,
               }
-            : {},
+            : {
+                estimatePendingRevision: null,
+                /**
+                 * Пометка замены больше НЕ ставится за человека (Р8). Прежде отказ ИТ означал «не
+                 * чинить, значит менять», и флаг проставляла сама ручка; после слияния подписей «не
+                 * согласовано» означает много чего ещё, и проставленный автоматически флаг был бы
+                 * решением, которого никто не принимал.
+                 */
+                replacementRecommended: body.replacementRecommended,
+                rejectionResolution: body.resolution ?? '',
+              },
+          // Ход возвращается исполнителю (`approval → service`) — возраст начинается заново. У
+          // отказа возраст обнуляет сама смена статуса.
+          touchStatusAt: body.approved,
         });
       });
 
@@ -3669,26 +4108,47 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           : 'serviceRequest.estimate_reject',
         entityType: 'serviceRequest',
         entityId: row.id,
-        metadata: { revision: row.estimateRevision, reason: body.reason ?? '' },
+        metadata: {
+          revision: row.estimateRevision,
+          reason: body.reason ?? '',
+          ...(body.approved
+            ? {}
+            : {
+                replacementRecommended: body.replacementRecommended,
+                /**
+                 * Решение пишется элементом `changes`, а не полем рядом (Р12). Сборка истории
+                 * извлекает содержание события только из `metadata.changes`
+                 * (`service-request-history.ts`): произвольное поле рядом с `revision` и `reason`
+                 * она молча пропустит, и подпись `rejectionResolution` в словаре изменений осталась
+                 * бы неиспользованной. Своя ветка в `changesOf` по имени действия отвергнута — она
+                 * заводит исключение ради одного поля там, где общий канал уже работает.
+                 */
+                changes: [{ field: 'rejectionResolution', from: '', to: body.resolution ?? '' }],
+              }),
+        },
       });
       return (await getDto(p, row.id))!;
     },
   );
 
-  // ── Возврат сметы в правку ──
+  // ── Возврат объёма работ в правку ──
   /**
-   * Единственный путь изменить **согласованную** смету (Р14). Статуса заявка при этом не меняет:
-   * «Диагностики», куда она откатывалась прежде, больше нет (Н2), а второй дуги `in_work →
-   * estimate_review` заводить нельзя — она сделала бы необязательным подъём ревизии, на котором
-   * держится обесценивание обеих подписей (Н3).
+   * **Ключ от обоих замков Р9.** Ручка снимает ДВЕ отметки: снимок согласования (как и прежде) и
+   * само предъявление — `estimate_pending_revision → NULL`. Отсюда и предусловие «есть что
+   * снимать»: подпись ЛИБО непогашенное предъявление; прежнего «согласование есть» после Р9 мало —
+   * иначе отозвать собственное предъявление было бы нечем, и оба замка заперли бы исполнителя
+   * снаружи собственной сметы.
    *
-   * Поэтому ручка делает ровно одно: **снимает снимок согласования**. Дальше исполнитель правит
-   * состав обычной ручкой сметы и предъявляет её заново — с ревизией +1, как любое предъявление.
-   * Снимок согласования и есть то, что запирает правку: подпись под цифрами, которых уже нет, была
-   * бы согласием, которого никто не давал.
+   * Статуса заявка при этом не меняет и не меняла: второй дуги в предъявление заводить нельзя — она
+   * сделала бы необязательным подъём ревизии, на котором держится обесценивание подписи (Р9).
+   * Дальше исполнитель правит состав обычной ручкой и предъявляет заново — с ревизией +1.
    *
-   * Визу ИТ ручка не трогает: обесценит её тот же подъём ревизии. Стереть её здесь значило бы
-   * завести второе правило рядом с ревизионным — и разойтись с ним на первой же правке.
+   * **Дату предъявления ручка НЕ трогает.** `estimate_submitted_at` сохраняет прежний смысл —
+   * «когда предъявляли в последний раз», — и чистит её только полный сброс сметы. Активное
+   * состояние определяет исключительно `estimatePendingRevision`: считай портал активным сам факт
+   * непустой даты, у отозванного предъявления он показывал бы «предъявлено» (Р9).
+   *
+   * Визу ИТ ручка не трогает по-прежнему: подпись от 22.08 — снимок истории, стирать её нечем (Р10).
    */
   r.patch(
     '/:id/estimate/reopen',
@@ -3697,44 +4157,49 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const body = req.body;
       const row = await requireEditable(p, req.params.id);
-      await assertExecutorSide(p, row, 'возвращает смету в правку');
       assertRepairKind(row, 'возвращать в правку');
+      const assignment = await executorAssignment(p, row);
       if (row.status !== 'in_work') {
         throw err.unprocessable(
-          `Смету возвращают в правку из «${serviceRequestStatusLabels.in_work}», а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
+          `Объём работ возвращают в правку из «${serviceRequestStatusLabels.in_work}», а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
           { status: 'Другой статус' },
         );
       }
-      if (row.approvedEstimateRevision === null) {
+      if (!serviceEstimatePending(row) && row.approvedEstimateRevision === null) {
         throw err.unprocessable(
-          'Согласования у этой сметы нет — снимать нечего, правьте состав и предъявляйте её заново',
-          { status: 'Смета не согласована' },
+          'У этого объёма работ нет ни предъявления, ни согласования — снимать нечего, правьте состав и предъявляйте заново',
+          { status: 'Снимать нечего' },
+        );
+      }
+      if (!canReopenServiceEstimate(row, p, assignment)) {
+        const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+        throw err.forbidden(
+          `${who} не возвращает объём работ в правку по этой заявке — это шаг исполнителя`,
         );
       }
       await db.transaction(async (tx) => {
-        const locked = await lockRequest(tx, row.id);
-        const [updated] = await tx
-          .update(serviceRequests)
-          .set({
+        await applyTransition(tx, {
+          row,
+          // Статус тот же, событие своё: «предъявление отозвано» и «согласование снято» обязаны
+          // быть видны в ленте — иначе между двумя согласованиями одной заявки не понять, что
+          // произошло. Пишет строку тот же помощник перехода, что и у остальных ходов (Р4).
+          to: row.status,
+          version: body.version,
+          actor: p,
+          comment: body.reason,
+          patch: {
             approvedEstimateRevision: null,
             estimateApprovedBy: null,
             estimateApprovedAt: null,
-            updatedBy: p.id,
-            updatedAt: new Date(),
-            version: locked.version + 1,
-          })
-          .where(and(eq(serviceRequests.id, locked.id), eq(serviceRequests.version, body.version)))
-          .returning({ id: serviceRequests.id });
-        if (!updated) throw err.conflict();
-        // Статус тот же, событие своё: «согласование снято» обязано быть видно в ленте — иначе
-        // между двумя согласованиями одной заявки не понять, что произошло.
-        await recordServiceStatusTransition(tx, {
-          requestId: locked.id,
-          fromStatus: locked.status,
-          toStatus: locked.status,
-          estimateRevision: locked.estimateRevision,
-          actorId: p.id,
-          comment: body.reason,
+            estimatePendingRevision: null,
+          },
+          /**
+           * Условный сброс возраста (Р4), и условие здесь не «сменилась ли сторона вообще», а какое
+           * из двух предусловий сработало. Отзыв ВИСЯЩЕГО предъявления возвращает ход исполнителю
+           * (`approval → service`) — отсчёт начинается заново. Снятие подписи с уже согласованного
+           * объёма не двигает ничего: до него ждали исполнителя и после него ждут его же.
+           */
+          touchStatusAt: serviceEstimatePending(row),
         });
       });
       await writeAudit({
@@ -3753,9 +4218,21 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * Состав передаётся целиком, как и смета: это список того, что просят, и «добавить одну позицию»
    * без остальных заставляло бы сервер угадывать, снимали ли что-то.
    *
-   * Право — `serviceRequests.update` (план §7.3): состав заявки на расходники это её **предмет**,
-   * ровно как описание неисправности у ремонта, и правит его тот же субъект по тому же правилу
-   * («заказчик — пока заявку никому не отдали»).
+   * **Состав заполняет исполнитель, а не заказчик** (Р15). Заявитель номенклатуры не знает — его
+   * дело сказать словами, чего не хватает, — и требование позиций ушло из схемы заведения. Значит
+   * ушло и прежнее правило доступа («заказчик, пока заявку никому не отдали»): правит теперь
+   * назначенный, пока не отмечена выдача. Заказчик состав **видит** — это ответ на его «что мне
+   * привезут» — и не правит.
+   *
+   * Пара прав — `serviceRequests.estimate` + `serviceRequests.execute`, та же, что у ручек объёма
+   * работ, и выбрана она не по смыслу слова «смета», а потому что это и есть «сторона исполнителя»
+   * в матрице (страж `canConsumables`). Назначение **на эту заявку** проверяет тело ручки
+   * (`assertExecutorSide`), как и у объёма работ: держатель `execute` без строки в заявке получает
+   * отказ от него, а не от `preHandler`.
+   *
+   * Статусов два — «Новая» (уже назначенная) и «В работе»: состав нужен исполнителю ровно тогда,
+   * когда он собирается ехать. Дальше «В работе» его не правят — там идёт выдача, у которой своя
+   * ручка (Р6).
    *
    * ПОКА ВЫДАЧИ НЕ БЫЛО. Строку, за которой числится движение склада, не удаляет ни маршрут, ни
    * каскад (`ON DELETE RESTRICT` составного ключа журнала), и замена состава упёрлась бы в неё
@@ -3764,7 +4241,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    */
   r.put(
     '/:id/consumables',
-    { ...canUpdate, schema: { params: idParams, body: putServiceConsumablesSchema } },
+    { ...canConsumables, schema: { params: idParams, body: putServiceConsumablesSchema } },
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
@@ -3774,19 +4251,22 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           items: 'Не тот вид заявки',
         });
       }
-      // Действие — глаголом: отказ складывается в «… может править заявку только до назначения
-      // сервиса», и «править состав» дало бы «править состав заявку».
-      assertServiceRequestEditable(p, row.status, 'править');
-      if (isServiceRequestClosed(row.status)) {
+      // Действие — глаголом: отказ складывается в «… не ведёт состав этой заявки — это шаг
+      // назначенного исполнителя».
+      await assertExecutorSide(p, row, 'ведёт состав этой заявки');
+      /**
+       * Перечень статусов поимённо, а не «лишь бы не закрыта» (тот же приём, что у правки факта
+       * выдачи). Отложенная попадает во вторую ветку по общему правилу Р110: под разбирательством о
+       * задержке состав — предмет спора, а не поле формы. Закрытой оставлен свой текст: там
+       * человеку нужен не список статусов, а то, что менять уже нечего.
+       */
+      if (row.status !== 'new' && row.status !== 'in_work') {
         throw err.unprocessable(
-          `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» не правится`,
+          isServiceRequestClosed(row.status)
+            ? `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» закрыта — состав ей уже не меняют`
+            : `Состав правят в статусах «${serviceRequestStatusLabels.new}» и «${serviceRequestStatusLabels.in_work}», а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
+          { status: isServiceRequestClosed(row.status) ? 'Заявка закрыта' : 'Другой статус' },
         );
-      }
-      // Отложенную не правит и администратор (Р110) — то же правило, что у прочей правки заявки.
-      if (row.status === 'on_hold') {
-        throw err.unprocessable('Отложенную заявку не правят — сначала возобновите её', {
-          status: 'Заявка отложена',
-        });
       }
       const before = (await getDto(p, row.id))!;
 
@@ -3949,7 +4429,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       // ни одна заявка на расходники не закрылась бы никогда.
       if (row.kind === 'repair' && row.approvedEstimateRevision !== row.estimateRevision) {
         throw err.conflict(
-          `Согласована ревизия сметы ${row.approvedEstimateRevision ?? 0}, а в заявке ${row.estimateRevision} — согласуйте её заново`,
+          `Согласована ревизия ${row.approvedEstimateRevision ?? 0}, а в заявке ${row.estimateRevision} — согласуйте объём работ заново`,
         );
       }
       // Дата выполнения не бывает в будущем: от неё отсчитываются гарантии, и «закрыто 2027-м»
@@ -4006,7 +4486,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         const rows = await estimateItems(tx, row.id);
         const sent = new Map(body.items.map((item) => [item.id, item]));
         if (sent.size !== rows.length) {
-          throw err.unprocessable('Отметка о выполнении нужна по каждой строке сметы', {
+          throw err.unprocessable('Отметка о выполнении нужна по каждой строке объёма работ', {
             items: 'Заполните все строки',
           });
         }
@@ -4084,7 +4564,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         const approved = num(row.estimatedTotalAmount);
         if (approved !== null && total > approved) {
           throw err.conflict(
-            `Итог по акту (${money(total)}) больше согласованной сметы (${money(approved)})`,
+            `Итог по акту (${money(total)}) больше согласованного объёма работ (${money(approved)})`,
           );
         }
 
@@ -4341,6 +4821,23 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           status: 'Нечего повторять',
         });
       }
+      /**
+       * Повтор запирается не только статусом, но и составом исполнителей (Р14). Письмо «Новой»
+       * зовёт службу РАЗОБРАТЬ заявку, и повторять его после назначения незачем: задание
+       * исполнителю ушло своим письмом, привязанным к действию, а не к статусу. Пока «Новая»
+       * означала «ещё не назначена», на этот вопрос отвечал сам статус; после слияния (Р1) он
+       * половину ответа потерял бы молча — кнопка осталась бы на месте, а письмо звало бы разбирать
+       * заявку, которую уже разобрали.
+       *
+       * Предикат тот же, каким портал решает, показывать ли кнопку: разойдись они — либо кнопка
+       * вела бы в 422, либо повтор оставался бы недоступным там, где сервер его позволяет.
+       */
+      if (!serviceMailRepeatable({ ...(await executorsRowOf(row)), status: row.status })) {
+        throw err.unprocessable(
+          'Заявку уже разобрали и назначили исполнителя — письмо службе повторять незачем',
+          { status: 'Нечего повторять' },
+        );
+      }
 
       const [entry] = await db
         .select({ id: serviceRequestStatusHistory.id })
@@ -4535,10 +5032,29 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       if (isServiceRequestClosed(status) && !manageAny) {
         throw err.forbidden('Из закрытой заявки документы не снимают');
       }
-      if (link.kind === 'estimate' && status !== 'in_work' && !manageAny) {
+      /*
+       * ТРЕТИЙ ЗАМОК ВИСЯЩЕГО ПРЕДЪЯВЛЕНИЯ (Р9), и держал его раньше статус.
+       *
+       * Прежнее условие звучало «снимать можно только из „В работе“», и этого хватало: предъявление
+       * уводило заявку в «Смету на согласовании», откуда условие и отбивало снятие. Предъявление
+       * статуса менять перестало (Р8) — заявка остаётся в «В работе», прежнее условие обращается в
+       * ложь, и исполнитель вынимает предъявленный файл из-под открытого окна согласования:
+       * согласующий смотрит на цифры, документа под которыми уже нет.
+       *
+       * Поэтому условий теперь два, и они про разное. `status !== 'in_work'` — прежнее правило:
+       * из «Решена», «Новой» и прочего предъявление не трогают вовсе. `serviceEstimatePending` —
+       * то, что статус держал молча: пока ответа на предъявление нет, бумага под ним неприкосновенна.
+       * Ключ от замка тот же, что у двух других (правки состава и повторного предъявления), —
+       * «Вернуть объём работ в правку»: он гасит предъявление, и файл снова снимается.
+       *
+       * Найдено db-тестами при реализации; в Р9 плана этого замка не было — он разбирал состав и
+       * повторное предъявление, а про документы говорил только перечнем видов (Р14).
+       */
+      const estimateLocked = status !== 'in_work' || serviceEstimatePending(locked);
+      if (link.kind === 'estimate' && estimateLocked && !manageAny) {
         throw err.unprocessable(
-          'Предъявленная смета не снимается — верните заявку в работу и предъявите смету заново',
-          { kind: 'Смета предъявлена' },
+          'Предъявленный объём работ не снимается — верните его в правку и предъявите заново',
+          { kind: 'Объём работ предъявлен' },
         );
       }
       if (link.attachedBy !== p.id && !manageAny) {

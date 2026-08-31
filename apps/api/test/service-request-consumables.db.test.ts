@@ -76,6 +76,11 @@ interface Ctx {
   closeDb: () => Promise<void>;
   /** Администратор: у его роли весь словарь прав, включая `serviceRequests.execute`. */
   admin: { id: string; email: string; auth: Auth };
+  /**
+   * Заказчик — штаб своей площадки. Нужен ровно для Р15: состав номенклатуры перестал быть его
+   * делом, и увидеть это на одном администраторе нельзя — у него есть все права разом.
+   */
+  customer: { id: string; email: string; auth: Auth };
   objectId: string;
   typeId: string;
 }
@@ -119,11 +124,12 @@ function inject(
   method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
   url: string,
   payload?: unknown,
+  auth: Auth = ctx.admin.auth,
 ) {
   return ctx.app.inject({
     method,
     url,
-    headers: ctx.admin.auth,
+    headers: auth,
     remoteAddress: nextAddress(),
     ...(payload ? { payload } : {}),
   });
@@ -416,14 +422,33 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
     );
     if (!typeRow.rows[0]) throw new Error('в базе нет типов оргтехники: миграция 0104 не применена');
 
+    /**
+     * Заказчик — штаб своей площадки, и заведён он ради одного вопроса: **состав заполняет
+     * исполнитель, а не он** (Р15). Прежде правило звучало «заказчик, пока заявку никому не
+     * отдали», и проверить смену стороны на одном администраторе нельзя — у него есть всё.
+     */
+    const customerEmail = `db-src-cust-${RUN}@example.invalid`;
+    const customerRow = await db.execute<{ id: string }>(sql`
+      INSERT INTO users (email, last_name, first_name, middle_name, password_hash, role,
+                         is_active, email_verified_at)
+      VALUES (${customerEmail}, 'Тестовый', 'Заказчик', 'Расходников',
+              ${await hashPassword(PASSWORD)}, 'shtab'::role, true, now())
+      RETURNING id`);
+    await db.execute(sql`
+      INSERT INTO user_construction_objects (user_id, construction_object_id)
+      VALUES (${customerRow.rows[0]!.id}, ${objectRow.rows[0]!.id})`);
+
     const app = await buildApp();
-    const login = await app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/login',
-      payload: { email, password: PASSWORD },
-      remoteAddress: nextAddress(),
-    });
-    expect(login.statusCode, login.body).toBe(200);
+    const signIn = async (mail: string) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/login',
+        payload: { email: mail, password: PASSWORD },
+        remoteAddress: nextAddress(),
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      return { authorization: `Bearer ${res.json().accessToken}` } as const;
+    };
 
     ctx = {
       app,
@@ -432,7 +457,12 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
       admin: {
         id: user.rows[0]!.id,
         email,
-        auth: { authorization: `Bearer ${login.json().accessToken}` },
+        auth: await signIn(email),
+      },
+      customer: {
+        id: customerRow.rows[0]!.id,
+        email: customerEmail,
+        auth: await signIn(customerEmail),
       },
       objectId: objectRow.rows[0]!.id,
       typeId: typeRow.rows[0]!.id,
@@ -576,6 +606,106 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
     );
   });
 
+  /**
+   * **Заявитель номенклатуры не знает — и подбирать её больше не обязан** (Р15). Блок позиций ушёл
+   * из формы заведения целиком, а требование «хотя бы одна строка» — из схемы: предмет такой заявки
+   * теперь описание словами («закончился чёрный тонер, печатать нечем»).
+   *
+   * Принимать строки заведение продолжает, и это не остаток прежнего правила: заявку заводит и
+   * ИТ-служба за сотрудника, зная состав сразу, — запретив, мы заставили бы её делать два шага
+   * там, где хватало одного. Обе формы проверяются рядом, иначе «позиции необязательны» легко
+   * прочиталось бы как «позиции больше не принимаются».
+   */
+  it('заявку на расходники заводят без единой позиции — состав заполнят потом', async () => {
+    const created = await inject(
+      'POST',
+      '/api/v1/service-requests',
+      {
+        officeEquipmentId: await makeEquipment(),
+        kind: 'consumable',
+        description: 'Закончился чёрный тонер, печатать нечем',
+        responsibleName: 'Иванов Иван Иванович',
+        responsiblePhone: '+79990000000',
+      },
+      ctx.customer.auth,
+    );
+    expect(created.statusCode, created.body).toBe(201);
+    const dto = (created.json() as { request: ServiceRequestDto }).request;
+    expect(dto.kind).toBe('consumable');
+    expect(dto.consumables).toEqual([]);
+
+    // Обратная проверка осталась: строки у РЕМОНТА — это состав, который никто не выдаст и не
+    // спишет, потому что формы у него нет.
+    const repair = await inject(
+      'POST',
+      '/api/v1/service-requests',
+      {
+        officeEquipmentId: await makeEquipment(),
+        kind: 'repair',
+        consumables: [{ consumableId: state.toner, requestedQuantity: 1 }],
+        description: 'Не берёт бумагу',
+        responsibleName: 'Иванов Иван Иванович',
+        responsiblePhone: '+79990000000',
+      },
+      ctx.customer.auth,
+    );
+    expect(repair.statusCode, repair.body).toBe(400);
+  });
+
+  /**
+   * **Состав ведёт исполнитель, а не заказчик** (Р15). Прежнее правило доступа звучало «заказчик,
+   * пока заявку никому не отдали», и вместе с блоком номенклатуры из формы оно ушло: правит теперь
+   * назначенный, пока не отмечена выдача, а заказчик состав ВИДИТ — это ответ на его «что мне
+   * привезут» — и не правит.
+   *
+   * Пара прав у стража — `serviceRequests.estimate` + `serviceRequests.execute`, та же, что у
+   * ручек объёма работ, и выбрана она не по смыслу слова «смета», а потому что это и есть «сторона
+   * исполнителя» в матрице: у сервисной компании набор — `read`, `estimate`, `status`, `files`, и
+   * ни `update`, ни `execute` в нём нет. Возьми правка напрашивающуюся пару `update` + `execute`,
+   * назначенный подрядчик не заполнил бы номенклатуру вовсе.
+   */
+  it('состав ведёт исполнитель: заказчику ручка закрыта, а карточку он видит', async () => {
+    const spare = await makeConsumable('Тонер заказчика', 5);
+    const created = await inject(
+      'POST',
+      '/api/v1/service-requests',
+      {
+        officeEquipmentId: await makeEquipment(),
+        kind: 'consumable',
+        description: 'Нужен тонер',
+        responsibleName: 'Иванов Иван Иванович',
+        responsiblePhone: '+79990000000',
+      },
+      ctx.customer.auth,
+    );
+    expect(created.statusCode, created.body).toBe(201);
+    const dto = (created.json() as { request: ServiceRequestDto }).request;
+
+    // 403 от стража маршрута: ни `estimate`, ни `execute` у штаба нет, и правило это — про право,
+    // а не про состояние заявки. Заявка при этом ещё никому не отдана — то есть отказывает именно
+    // смена стороны, а не «заявку уже забрали».
+    const byCustomer = await inject(
+      'PUT',
+      `/api/v1/service-requests/${dto.id}/consumables`,
+      { items: [{ consumableId: spare, requestedQuantity: 2 }], version: dto.version },
+      ctx.customer.auth,
+    );
+    expect(byCustomer.statusCode, byCustomer.body).toBe(403);
+
+    // Исполнитель — заполняет: администратор проходит веткой `serviceRequests.estimate`.
+    const byExecutor = await inject('PUT', `/api/v1/service-requests/${dto.id}/consumables`, {
+      items: [{ consumableId: spare, requestedQuantity: 2 }],
+      version: dto.version,
+    });
+    expect(byExecutor.statusCode, byExecutor.body).toBe(200);
+
+    // А ВИДИТ состав заказчик по-прежнему: это ответ на его «что мне привезут».
+    const seen = await inject('GET', `/api/v1/service-requests/${dto.id}`, undefined, ctx.customer.auth);
+    expect(seen.statusCode, seen.body).toBe(200);
+    expect((seen.json() as ServiceRequestDto).consumables).toHaveLength(1);
+    expect(lineOf(seen.json() as ServiceRequestDto, spare).requestedQuantity).toBe(2);
+  });
+
   it('состав правится, пока по заявке не было выдачи', async () => {
     const spare = await makeConsumable('Тонер запасной', 5);
     const equipmentId = await makeEquipment();
@@ -604,13 +734,34 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
 
     // А по заявке, где выдача уже отмечена, состав не меняют вовсе: это уже не список пожеланий, а
     // основание записи на складе.
-    const closed = await card(state.overRequest.id);
+    //
+    // Заявка для этого берётся СВЕЖАЯ и остаётся в «В работе», а выдача отмечается своей ручкой
+    // (`/consumables/issued`). Прежде здесь стояла закрытая заявка `state.overRequest`, и после
+    // Р15 она проверяла бы не тот замок: перечень статусов у `PUT /:id/consumables` стоит ВЫШЕ
+    // отбоя по выдаче и ответил бы 422 «Состав правят в статусах …» раньше, чем дело дошло бы до
+    // строк склада. Своя позиция номенклатуры — чтобы движение остатка не сбило счёт соседних
+    // сценариев, которые сверяют склад до единицы.
+    const marked = await makeConsumable('Тонер отмеченный', 4);
+    const issuedRequest = await makeRequest([{ consumableId: marked, requestedQuantity: 2 }]);
+    const issuedLine = lineOf(issuedRequest, marked);
+    const issued = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${issuedRequest.id}/consumables/issued`,
+      {
+        items: [{ id: issuedLine.id, issuedQuantity: 2 }],
+        version: issuedRequest.version,
+      },
+    );
+    expect(issued.statusCode, issued.body).toBe(200);
+    const withIssue = issued.json() as ServiceRequestDto;
+    expect(withIssue.status).toBe('in_work');
+
     const refused = await inject(
       'PUT',
-      `/api/v1/service-requests/${state.overRequest.id}/consumables`,
+      `/api/v1/service-requests/${issuedRequest.id}/consumables`,
       {
-        items: [{ consumableId: state.over, requestedQuantity: 1 }],
-        version: closed.version,
+        items: [{ consumableId: marked, requestedQuantity: 1 }],
+        version: withIssue.version,
       },
     );
     expect(refused.statusCode, refused.body).toBe(409);
@@ -966,25 +1117,28 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
    * знание защитой не является: 422 отдаёт сервер, к нему ходят и мимо портала.
    */
 
-  it('смета по заявке на расходники отбита во всех пяти дверях сметного круга', async () => {
+  it('объём работ по заявке на расходники отбит во всех четырёх дверях сметного круга', async () => {
     const consumable = await makeConsumable('Тонер стражевой', 10);
     const request = await makeRequest([{ consumableId: consumable, requestedQuantity: 1 }]);
     const base = `/api/v1/service-requests/${request.id}`;
 
-    // Достижимы снаружи только эти две: остальные три требуют «Смету на согласовании», куда без
-    // предъявления не попасть. Проверяются всё равно все — страж не должен зависеть от того, что
-    // соседняя дверь заперта.
+    // Дверей стало четыре: пятая — виза ИТ (`PATCH /:id/it-approval`) — снята вместе с самой визой
+    // (Р10, ADR 0145), и проверять её отбой не на чем — маршрута больше нет. Остальные четыре
+    // проверяются все, хотя две из них заперты и соседними условиями: отбой по ВИДУ заявки не
+    // должен зависеть от того, что рядом заперт статус.
     const doors: [string, string, object][] = [
       ['PUT', `${base}/estimate`, { items: [], version: request.version }],
       ['PATCH', `${base}/estimate/submit`, { warrantyRepair: false, version: request.version }],
       ['PATCH', `${base}/estimate/approval`, { approved: true, version: request.version }],
       ['PATCH', `${base}/estimate/reopen`, { reason: 'вернуть в правку', version: request.version }],
-      ['PATCH', `${base}/it-approval`, { approved: true, version: request.version }],
     ];
     for (const [method, url, body] of doors) {
       const res = await inject(method, url, body);
       expect(res.statusCode, `${method} ${url}: ${res.body}`).toBe(422);
-      expect(message(res), `${method} ${url}`).toContain('Заявка на расходники сметы не имеет');
+      // Подпись сплошь переименована «Смета» → «Объём работ» (Р17); имена в коде и путях остались.
+      expect(message(res), `${method} ${url}`).toContain(
+        'Заявка на расходники объёма работ не имеет',
+      );
     }
 
     // Заявка после всех попыток там же, где была, и склад не тронут.
@@ -992,7 +1146,7 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
     expect(await stockOf(consumable)).toBe(10);
   });
 
-  it('выдача не отмечается до начала работ — ни в «Новой», ни в «Назначена»', async () => {
+  it('выдача не отмечается до начала работ — ни до назначения, ни после него', async () => {
     const consumable = await makeConsumable('Тонер дозаказный', 10);
     const equipmentId = await makeEquipment();
     const created = await inject('POST', '/api/v1/service-requests', {
@@ -1028,7 +1182,10 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
     expect(assigned.statusCode, assigned.body).toBe(200);
     const assignedVersion = (assigned.json() as { request: ServiceRequestDto }).request.version;
 
-    // «Назначена»: исполнитель уже есть — то есть отсекает именно статус, а не отсутствие прав.
+    // Заявка назначена и по-прежнему «Новая» (Р5: назначение статуса не меняет), исполнитель у неё
+    // уже есть — то есть отсекает именно статус, а не отсутствие прав. Прежде это состояние звалось
+    // «Назначена», и различие держал статус; теперь оно называется составом исполнителей.
+    expect((assigned.json() as { request: ServiceRequestDto }).request.status).toBe('new');
     const inAssigned = await issued(assignedVersion);
     expect(inAssigned.statusCode, inAssigned.body).toBe(422);
     expect(message(inAssigned)).toContain('Выдачу отмечают в статусах');

@@ -1,15 +1,19 @@
-import { useState } from 'react';
-import { Button, Checkbox, Col, Form, InputNumber, Row, Typography } from 'antd';
+import { useEffect, useState } from 'react';
+import { App, Button, Checkbox, Col, Form, InputNumber, Row, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
-import { queryOptions, useQuery } from '@tanstack/react-query';
-import type { ServiceRequestConsumableDto } from '@technic/contracts';
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { ServiceRequestConsumableDto, ServiceRequestDto } from '@technic/contracts';
 import {
   officeEquipmentConsumableKeys,
   officeEquipmentConsumablesApi,
+  officeEquipmentKeys,
+  officeEquipmentOptionsQuery,
 } from '@entities/office-equipment';
-import { consumableLabel } from '@entities/service-request';
-import { AutoSelect } from '@shared/ui';
+import { consumableLabel, serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
+import { AutoSelect, FormModal } from '@shared/ui';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
+import { useAuth } from '../../auth/AuthContext';
+import { errorMessage } from '../../utils/format';
 
 /** Строка формы: позиция справочника и сколько её просят. Пустая строка — только что добавленная. */
 export interface ConsumableLineValue {
@@ -51,14 +55,17 @@ const consumableOptionsQuery = (modelId: string | undefined) => {
 };
 
 /**
- * Строки номенклатуры в форме заявки на расходники (Н9, Н10).
+ * Строки номенклатуры заявки на расходники (Н9, Н10) — **окна исполнителя**, а не формы заведения.
  *
- * Аппарат выбирается первым, и по его модели портал предлагает подходящие позиции — та самая
- * подстановка, ради которой заводился справочник моделей: сотрудник выбирает МФУ, а картридж
- * подставляется сам, если он у модели один (`AutoSelect`).
+ * Из формы заведения блок ушёл целиком (Р15): заявитель номенклатуры не знает, и его дело —
+ * сказать словами, чего не хватает. Состав заполняет тот, кто повезёт: он же и отвечает на вопрос
+ * «что по заявке пойдёт», ровно как исполнитель ремонта отвечает на него объёмом работ.
+ *
+ * Позиции подбираются по модели аппарата — та самая подстановка, ради которой заводился справочник
+ * моделей: у модели один картридж — он и подставится (`AutoSelect`).
  *
  * Строк несколько (В11): четыре тонера цветного аппарата — одна заявка, один выезд, одно
- * списание. Отдельного поля «цвет» в форме нет вовсе (Р9): цвета — это разные позиции справочника
+ * списание. Отдельного поля «цвет» здесь нет вовсе (Р9): цвета — это разные позиции справочника
  * с разными кодами и остатками, и «отметьте цвета» при одной позиции «на комплект» сделало бы
  * остаток неправильным в тот же день.
  *
@@ -67,21 +74,15 @@ const consumableOptionsQuery = (modelId: string | undefined) => {
  */
 export function ServiceRequestConsumablesField({
   modelId,
-  disabled,
-  disabledReason,
   enabled,
 }: {
-  /** Модель выбранного аппарата; `undefined` — модели у карточки нет (наследие выпуска A). */
+  /** Модель аппарата заявки; `undefined` — модели у карточки нет (наследие выпуска A). */
   modelId: string | undefined;
-  /** Состав правке не подлежит: по заявке уже отмечена выдача, и она — основание записи склада. */
-  disabled?: boolean;
-  disabledReason?: string;
-  /** Блок показан: заявка на расходники и окно открыто. */
+  /** Блок показан: окно открыто. */
   enabled: boolean;
 }) {
   const form = Form.useFormInstance();
   const lines: ConsumableLineValue[] = Form.useWatch('consumables', form) ?? [];
-  const equipmentChosen = !!Form.useWatch('officeEquipmentId', form);
   // Признак «показать всё» — состояние поля, а не значение формы: он про то, из чего выбирают, а
   // не про то, что просят, и в теле запроса ему делать нечего.
   const [showAll, setShowAll] = useState(false);
@@ -94,42 +95,42 @@ export function ServiceRequestConsumablesField({
   const chosen = lines.map((line) => line?.consumableId).filter(Boolean);
   const optionsFor = (index: number) =>
     options.filter(
-      (option) =>
-        option.value === lines[index]?.consumableId || !chosen.includes(option.value),
+      (option) => option.value === lines[index]?.consumableId || !chosen.includes(option.value),
     );
 
   /*
-   * Подсказка отвечает на «почему в списке это»: аппарат ещё не выбран, у него нет модели или к
-   * модели ничего не привязано. Три разных состояния, и общее «ничего не нашлось» не отвечает ни
-   * на одно — человек ищет ошибку у себя, а её нет.
+   * Подсказка отвечает на «почему в списке это»: у аппарата нет модели либо к модели ничего не
+   * привязано. Общее «ничего не нашлось» не отвечает ни на одно из двух — человек ищет ошибку у
+   * себя, а её нет.
    */
-  const hint = !equipmentChosen
-    ? 'Сначала выберите аппарат — позиции подберутся по его модели.'
-    : !modelId
-      ? 'У аппарата не указана модель — показан весь перечень расходников.'
-      : options.length === 0 && !isFetching && !showAll
-        ? 'К этой модели расходники не привязаны — включите весь перечень или скажите ИТ-службе, чего не хватает.'
-        : null;
+  const hint = !modelId
+    ? 'У аппарата не указана модель — показан весь перечень расходников.'
+    : options.length === 0 && !isFetching && !showAll
+      ? 'К этой модели расходники не привязаны — включите весь перечень или скажите ИТ-службе, чего не хватает.'
+      : null;
 
   return (
     <Form.Item
-      label="Что нужно"
-      required
+      label="Что пойдёт по заявке"
       tooltip="Позиции подобраны по модели аппарата"
       style={{ marginBottom: 8 }}
     >
-      {/* Пустой список запирает отправку правилом самого списка, а не подсказкой под ним: сервер
-          заявку без строк не принимает (`createServiceRequestSchema`), и форма, отпустившая её,
-          отвечала бы человеку 422 после заполнения всех остальных полей. */}
+      {/*
+        «Хотя бы одна позиция» — правило РЕДАКТОРА, и оно то же, что на сервере
+        (`putServiceConsumablesSchema` держит `.min(1)`). Делится оно с заведением по границе Р15:
+        при заведении позиций может не быть вовсе — их заполняет исполнитель, и форма заведения
+        этого блока больше не показывает; в редакторе пустой список запрещён — сохранённый, он
+        оставил бы заявку на расходники без предмета, а портал, разрешивший его, разошёлся бы с
+        сервером ровно там, где модуль от расхождений и защищается.
+      */}
       <Form.List
         name="consumables"
         rules={[
           {
-            validator: async (_rule, value: ConsumableLineValue[] | undefined) => {
-              if (!value || value.length === 0) {
-                throw new Error('Добавьте хотя бы одну позицию: без них заявка не заводится');
-              }
-            },
+            validator: (_rule, lines: ConsumableLineValue[] | undefined) =>
+              lines && lines.length > 0
+                ? Promise.resolve()
+                : Promise.reject(new Error('Добавьте хотя бы одну позицию')),
           },
         ]}
       >
@@ -148,7 +149,6 @@ export function ServiceRequestConsumablesField({
                       optionFilterProp="label"
                       loading={isFetching}
                       options={optionsFor(index)}
-                      disabled={disabled}
                       placeholder="Наименование или код номенклатуры"
                       aria-label="Позиция номенклатуры"
                     />
@@ -166,7 +166,6 @@ export function ServiceRequestConsumablesField({
                       max={1000}
                       precision={0}
                       addonBefore="шт"
-                      disabled={disabled}
                       aria-label="Сколько нужно"
                     />
                   </Form.Item>
@@ -176,7 +175,6 @@ export function ServiceRequestConsumablesField({
                     type="text"
                     danger
                     icon={<DeleteOutlined />}
-                    disabled={disabled}
                     aria-label="Убрать позицию"
                     onClick={() => remove(field.name)}
                   />
@@ -188,11 +186,12 @@ export function ServiceRequestConsumablesField({
               size="small"
               icon={<PlusOutlined />}
               style={{ paddingInlineStart: 0 }}
-              disabled={disabled}
               onClick={() => add({})}
             >
               Добавить позицию
             </Button>
+            {/* Отказ по списку целиком стоит у самого списка: помечать нечего — поля, которое не
+                заполнили, ещё не существует. */}
             <Form.ErrorList errors={errors} />
           </>
         )}
@@ -205,16 +204,9 @@ export function ServiceRequestConsumablesField({
           </Typography.Text>
         </div>
       )}
-      {disabledReason && (
-        <div>
-          <Typography.Text type="warning" style={{ fontSize: 12 }}>
-            {disabledReason}
-          </Typography.Text>
-        </div>
-      )}
       {/* Полный перечень — на случай, когда совместимость ещё не размечена: заявку заводят
           сегодня, а разметку ИТ-служба довозит потом (Р6 плана расходников). */}
-      {!!modelId && !disabled && (
+      {!!modelId && (
         <Checkbox checked={showAll} onChange={(e) => setShowAll(e.target.checked)}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             Показать все позиции, не только подходящие модели
@@ -247,17 +239,84 @@ export function consumableLinesFrom(
   }));
 }
 
-/** Состав тронули: `PUT` уходит только тогда, иначе правка телефона поднимала бы версию дважды. */
-export function consumableLinesChanged(
-  next: readonly ConsumableLineValue[] | undefined,
-  saved: readonly ServiceRequestConsumableDto[],
-): boolean {
-  const a = consumableLinesPayload(next);
-  if (a.length !== saved.length) return true;
-  return a.some((line, index) => {
-    const was = saved[index]!;
-    return (
-      line.consumableId !== was.consumableId || line.requestedQuantity !== was.requestedQuantity
-    );
+/**
+ * Окно состава номенклатуры (Р15) — то же по устройству, каким у ремонта правят объём работ:
+ * кнопка на вкладке предмета заявки и окно, в котором собирают строки.
+ *
+ * Симметрия здесь не украшение. У обоих видов заявки исполнитель отвечает на один вопрос — «что по
+ * ней пойдёт», — и два разных окна для одного вопроса разошлись бы на первой же правке: у ремонта
+ * подпись стала бы одной, у расходников другой, а человек, ведущий и то и другое, каждый раз
+ * вспоминал бы, где он сейчас.
+ *
+ * Кто вправе, окно не решает: оно открывается готовым пунктом действий (`serviceRequestActions`),
+ * а тот спрашивает сторону исполнителя и отсутствие отметки о выдаче — ровно теми же условиями, что
+ * и сервер. Спроси окно само, и это была бы вторая карта прав.
+ */
+export function ServiceRequestConsumablesModal({
+  request,
+  onClose,
+}: {
+  /** `null` — окно закрыто. */
+  request: ServiceRequestDto | null;
+  onClose: () => void;
+}) {
+  const { message } = App.useApp();
+  const { can } = useAuth();
+  const qc = useQueryClient();
+  const [form] = Form.useForm<{ consumables: ConsumableLineValue[] }>();
+
+  /**
+   * Модель аппарата заявки — по ней подбираются позиции (Н10). Тем же запросом и тем же ключом, что
+   * и список техники в форме: второй проекцией уже загруженного ответа, а не вторым обращением к
+   * серверу. Справочник открыт не всякому — сервисной компании он закрыт целиком (Р7), — и тогда
+   * модель просто неизвестна, а поле показывает весь перечень расходников.
+   */
+  const { data: modelOf } = useQuery({
+    ...officeEquipmentOptionsQuery(),
+    enabled: !!request && can('officeEquipment.read'),
+    select: (r) => new Map(r.items.map((item) => [item.id, item.model?.id])),
   });
+
+  useEffect(() => {
+    // Правка открывается тем, что уже записано: состав правят, а не набирают заново.
+    if (request) form.setFieldsValue({ consumables: consumableLinesFrom(request.consumables) });
+  }, [request, form]);
+
+  const mutation = useMutation({
+    mutationFn: (values: { consumables: ConsumableLineValue[] }) =>
+      serviceRequestsApi.putConsumables(request!.id, {
+        items: consumableLinesPayload(values.consumables),
+        version: request!.version,
+      }),
+    onSuccess: () => {
+      message.success('Состав номенклатуры сохранён');
+      void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+      onClose();
+    },
+    onError: (e) => message.error(errorMessage(e)),
+  });
+
+  return (
+    <FormModal
+      title={request ? `Номенклатура заявки ${request.displayNumber}` : 'Номенклатура'}
+      open={!!request}
+      onCancel={onClose}
+      onSubmit={() => form.submit()}
+      confirmLoading={mutation.isPending}
+      width={620}
+    >
+      <Form form={form} layout="vertical" onFinish={(v) => mutation.mutate(v)}>
+        <ServiceRequestConsumablesField
+          modelId={request ? modelOf?.get(request.equipment.id) : undefined}
+          enabled={!!request}
+        />
+        {/* Заказчик состав ВИДИТ и не правит (Р15) — это ответ на его «что мне привезут». Строка
+            стоит здесь, у того, кто состав пишет: он должен знать, что список читают. */}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          Состав виден заказчику: по нему он и поймёт, что ему привезут.
+        </Typography.Text>
+      </Form>
+    </FormModal>
+  );
 }

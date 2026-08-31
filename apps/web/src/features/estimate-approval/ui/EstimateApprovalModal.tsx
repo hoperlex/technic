@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Alert, App, Button, Form, Input, Space, Typography } from 'antd';
+import { Alert, App, Checkbox, Form, Input, Space, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
 import {
@@ -9,136 +9,191 @@ import {
   serviceRequestsApi,
 } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
-import { useFormBlockers, ViewModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 import { FileLinkList } from '../../../components/FileLinks';
 
-/** Итог сметы: сервер зафиксировал его при предъявлении — пересчитывать по строкам нельзя. */
+/** Итог: сервер зафиксировал его при предъявлении — пересчитывать по строкам нельзя. */
 function totalLabel(request: ServiceRequestDto): string {
   const total = request.estimatedTotalAmount;
   if (total == null) return '—';
   return `${total.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
 }
 
+/** Поля отказа. Согласия у окна нет вовсе — у него нет содержания, кроме уже видной суммы. */
+interface Values {
+  reason?: string;
+  resolution?: string;
+  replacementRecommended?: boolean;
+}
+
 /**
- * Согласование сметы (§9.3) — решение оператора о деньгах.
+ * Отказ по объёму работ (Р8, Р11, Р12) — «не согласовано» и только оно.
  *
- * Одно окно на «да» и «нет»: и то и другое — ответ на одну и ту же предъявленную ревизию, и
- * принимают его, глядя на одни и те же строки. Разведи их по двум окнам — отказ пришлось бы
- * давать вслепую, по одной сумме из списка.
+ * **Окно одноисходное, и это исправление, а не сужение.** Согласие содержания не имеет: есть
+ * ревизия и сумма, которые человек только что видел, — и оно идёт подтверждением прямо из набора
+ * действий (`serviceRequestActions`), как и просил заказчик кнопкой в разделе. Оставь мы обе
+ * кнопки здесь, пункт «Не согласовано» открывал бы окно, где заново спрашивают, согласовать или
+ * нет; а «Согласовать» существовало бы двумя дорогами с разными телами запроса.
  *
- * Номер ревизии показан крупно и не случайно: согласована именно та версия, которую видели, и
- * к работам сервер пустит только по совпадению ревизий (Р14). Документы предъявления — здесь же:
- * смета часто приходит файлом от сервиса, и решение принимают по нему, а не по строкам.
+ * У отказа содержание есть, и его два: причина («почему») и решение («что делаем вместо», Р12).
+ * Расходятся они и путём — причина уходит комментарием перехода в историю, решение остаётся полем
+ * заявки, — и с решения через месяц начинается разбор отклонённой. Спрашиваются оба здесь, потому
+ * что заявка после отказа закрыта (В1, «Отменена») и дописать пропущенное будет уже негде.
+ *
+ * Галочка замены — рукой, а не ручкой сервера: прежде отказ ИТ означал «не чинить, значит менять»,
+ * теперь «не согласовано» означает много чего ещё, и флаг, проставленный за человека, был бы
+ * решением, которого он не принимал (Р8, Р10 — виза упразднена).
+ *
+ * Номер ревизии показан крупно и не случайно: отказывают именно той версии, которую видели. Строки
+ * и документы предъявления — здесь же: объём работ часто приходит файлом от сервиса, и решение
+ * принимают по нему, а не по таблице.
  */
 export function EstimateApprovalModal({
   request,
   onClose,
 }: {
-  /** `null` — окно закрыто. Открывается в статусе «Смета на согласовании». */
+  /**
+   * `null` — окно закрыто. Открывается в «В работе» при непогашенном предъявлении: доступность
+   * решает `canApproveServiceEstimate` у зовущего — и у кнопки «Не согласовано» под таблицей
+   * объёма работ, и у пункта меню «Действия» (Р11).
+   */
   request: ServiceRequestDto | null;
   onClose: () => void;
 }) {
   const { message } = App.useApp();
   const qc = useQueryClient();
-  const [form] = Form.useForm<{ reason?: string }>();
+  const [form] = Form.useForm<Values>();
   const blockers = useFormBlockers(form);
-  /** Причина живёт формой, а не окном: на ней же показывается отказ (ADR 0094). */
-  const reason = () => (form.getFieldValue('reason') as string | undefined) ?? '';
 
   useEffect(() => {
     if (request) form.resetFields();
-  }, [request]);
+  }, [request, form]);
 
   const mutation = useMutation({
-    mutationFn: (approved: boolean) =>
+    mutationFn: (values: Values) =>
       serviceRequestsApi.decideEstimate(request!.id, {
-        approved,
-        reason: reason().trim() || undefined,
+        // Исход у окна один. `approved: false` — не значение поля, а само назначение окна, и
+        // читать его из формы значило бы завести в ней состояние, которого у человека нет.
+        approved: false,
+        reason: values.reason?.trim(),
+        resolution: values.resolution?.trim(),
+        // Поле обязательно и в схеме (`approveServiceEstimateSchema`): у него есть умолчание, но в
+        // выводимом типе оно required, и «не слать, раз галочка не стоит» тело сломало бы.
+        replacementRecommended: !!values.replacementRecommended,
         version: request!.version,
       }),
-    onSuccess: (_dto, approved) => {
-      message.success(approved ? 'Смета согласована — заявка в работе' : 'Смета отклонена');
+    onSuccess: () => {
+      // Что стало с заявкой — в самом тосте: отказ её закрывает, и человек, искавший «объём в
+      // правке», должен узнать про «Отменена» здесь, а не по пропавшей заявке в списке.
+      message.success('Объём работ не согласован — заявка отменена');
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e) => {
+      // Оба текста проверяет и сервер (`superRefine` схемы). Ответ ложится на поле, а не тостом:
+      // отказ формы называет поле (ADR 0094).
+      if (!blockers.fromApi(e)) message.error(errorMessage(e));
+    },
   });
 
-  const reject = () => {
-    // Причина отказа обязательна и на сервере: без неё исполнитель не узнает, что переделывать.
-    if (blockers.raise({ reason: !reason().trim() && 'Укажите причину отклонения' })) return;
-    mutation.mutate(false);
-  };
+  return (
+    <FormModal
+      title={request ? `Отказ по объёму работ ${request.displayNumber}` : 'Отказ по объёму работ'}
+      open={!!request}
+      onCancel={onClose}
+      onSubmit={() => form.submit()}
+      confirmLoading={mutation.isPending}
+      okText="Не согласовано"
+      okDanger
+      width={900}
+    >
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={(values) => mutation.mutate(values)}
+        {...blockers.formProps}
+      >
+        {request && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 12 }}>
+            {/* Деньги согласуют, видя предмет: что за аппарат и где он стоит (Р57). */}
+            <ServiceRequestContext request={request} />
+            <Alert
+              type="warning"
+              showIcon
+              message={`Ревизия ${request.estimateRevision} · ${totalLabel(request)}`}
+              description={
+                <Space direction="vertical" size={0}>
+                  <span>
+                    {request.service?.name ?? 'Исполнитель не назначен'} · {request.equipment.name}
+                  </span>
+                  <Typography.Text type="secondary">
+                    Отказ закрывает заявку — она уходит в «Отменена», и вернуть её оттуда может
+                    только «Ведение». Если объём нужно лишь переделать, вернитесь и выберите
+                    «Вернуть в правку»: заявка останется в работе.
+                  </Typography.Text>
+                </Space>
+              }
+            />
 
-  // Документы, на которые смотрят при решении: предъявленная смета файлом и вложения сторон.
-  const files = (request?.files ?? []).filter(
+            <ServiceEstimateTable items={request.items} />
+
+            <EstimateFiles request={request} />
+          </div>
+        )}
+
+        <Form.Item
+          name="reason"
+          label="Причина"
+          extra="Уйдёт комментарием в историю заявки: по ней и разбирают отказ"
+          rules={[
+            { required: true, message: 'Укажите, почему объём работ не согласован' },
+            { min: 3, message: 'Напишите подробнее' },
+          ]}
+        >
+          <Input.TextArea
+            rows={2}
+            maxLength={1000}
+            placeholder="Например: ремонт вдвое дороже нового аппарата"
+          />
+        </Form.Item>
+        <Form.Item
+          name="resolution"
+          label="Решение"
+          extra="Что делаем вместо ремонта. Остаётся полем заявки: с него начинают разбор отклонённой заявки через месяц"
+          rules={[{ required: true, message: 'Опишите решение: что делаем вместо ремонта' }]}
+        >
+          <Input.TextArea
+            rows={2}
+            maxLength={500}
+            showCount
+            placeholder="Например: меняем аппарат, заявка на закупку заведена"
+          />
+        </Form.Item>
+        <Form.Item
+          name="replacementRecommended"
+          valuePropName="checked"
+          extra="По этой пометке собирают список того, что пора обновить. Ставится рукой: «не согласовано» само по себе не значит «менять»"
+          style={{ marginBottom: 0 }}
+        >
+          <Checkbox>Рекомендована замена аппарата</Checkbox>
+        </Form.Item>
+      </Form>
+    </FormModal>
+  );
+}
+
+/** Документы, на которые смотрят при решении: предъявленный объём файлом и вложения сторон. */
+function EstimateFiles({ request }: { request: ServiceRequestDto }) {
+  const files = request.files.filter(
     (file) => file.kind === 'estimate' || file.kind === 'attachment',
   );
-
+  if (files.length === 0) return null;
   return (
-    <ViewModal
-      title={request ? `Согласование сметы ${request.displayNumber}` : 'Согласование сметы'}
-      open={!!request}
-      onClose={onClose}
-      width={900}
-      destroyOnHidden
-      footer={[
-        <Button key="reject" danger loading={mutation.isPending} onClick={reject}>
-          Отклонить
-        </Button>,
-        <Button
-          key="approve"
-          type="primary"
-          loading={mutation.isPending}
-          onClick={() => mutation.mutate(true)}
-        >
-          Согласовать
-        </Button>,
-      ]}
-    >
-      {request && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {/* Деньги согласуют, видя предмет: что за аппарат и где он стоит (Р57). */}
-          <ServiceRequestContext request={request} />
-          <Alert
-            type="info"
-            showIcon
-            message={`Ревизия ${request.estimateRevision} · ${totalLabel(request)}`}
-            description={
-              <Space direction="vertical" size={0}>
-                <span>
-                  {request.service?.name ?? 'Исполнитель не назначен'} · {request.equipment.name}
-                </span>
-                <Typography.Text type="secondary">
-                  Согласование пускает к работам именно эту ревизию: изменить смету после можно
-                  только переоткрытием.
-                </Typography.Text>
-              </Space>
-            }
-          />
-
-          <ServiceEstimateTable items={request.items} />
-
-          {files.length > 0 && (
-            <div>
-              <Typography.Text strong>Документы</Typography.Text>
-              <FileLinkList files={files} maxNameWidth={420} />
-            </div>
-          )}
-
-          <Form form={form} layout="vertical" {...blockers.formProps}>
-            <Form.Item name="reason" label="Причина отклонения" style={{ marginBottom: 0 }}>
-              <Input.TextArea
-                rows={2}
-                maxLength={1000}
-                placeholder="Обязательна при отказе: что именно не так со сметой"
-              />
-            </Form.Item>
-          </Form>
-        </div>
-      )}
-    </ViewModal>
+    <div>
+      <Typography.Text strong>Документы</Typography.Text>
+      <FileLinkList files={files} maxNameWidth={420} />
+    </div>
   );
 }

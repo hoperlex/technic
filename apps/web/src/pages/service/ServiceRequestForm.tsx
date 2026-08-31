@@ -17,10 +17,6 @@ import {
   ServiceRequestAttachments,
   useServiceRequestAttachments,
 } from './ServiceRequestAttachments';
-import {
-  consumableLinesFrom,
-  ServiceRequestConsumablesField,
-} from './ServiceRequestConsumables';
 import { submitServiceRequest, type ServiceFormValues } from './serviceRequestSubmit';
 import { ServiceRequestEquipmentField } from './ServiceRequestEquipmentField';
 import { ServiceRequestWarrantyClaim } from './ServiceRequestWarrantyClaim';
@@ -41,7 +37,7 @@ type Values = ServiceFormValues;
 export interface WarrantyClaimPreset {
   equipmentId: string;
   source: WarrantyClaimSource;
-  /** Позиция сметы прошлой заявки; у гарантии поставщика её нет (Р26). */
+  /** Позиция объёма работ прошлой заявки; у гарантии поставщика её нет (Р26). */
   itemId: string | null;
   /** На что гарантия — подпись для подсказки: человек должен видеть, на что ссылается. */
   subject: string;
@@ -54,9 +50,14 @@ export interface WarrantyClaimPreset {
  * заказчик не может ответить на главный вопрос — платный это ремонт или гарантийный. Обращение
  * по гарантии — не флажок «гарантийная», а источник: по чьей именно гарантии обращаются (Р26).
  *
- * Правится только «Новая» (`isServiceRequestEditable`): дальше за заявкой стоят договорённости с
- * исполнителем, и менять её предмет задним числом нельзя. Технику при правке не меняют вовсе —
- * это другая заявка; вложения после заведения живут вкладкой «Документы» карточки.
+ * Правится только «Новая», за которой ещё никто не стоит (`isServiceRequestEditable`, Р14): после
+ * назначения за заявкой стоят договорённости с исполнителем, и менять её предмет задним числом
+ * нельзя. Технику при правке не меняют вовсе — это другая заявка; вложения после заведения живут
+ * вкладкой «Документы» карточки.
+ *
+ * Номенклатуры форма не спрашивает ни у заведения, ни у правки (Р15): заявитель её не знает, и его
+ * дело — сказать словами, чего не хватает. Состав заполняет исполнитель, окном вкладки
+ * «Номенклатура»; подписи полей — по таблице Р17, вопросами, а не именами реквизитов.
  */
 export function ServiceRequestForm({
   open,
@@ -88,18 +89,6 @@ export function ServiceRequestForm({
     enabled: open && can('officeEquipment.read'),
   });
 
-  /**
-   * Модель выбранного аппарата — по ней подбираются позиции номенклатуры (Н10). Тем же запросом и
-   * тем же ключом, что и список техники: второй проекцией уже загруженного ответа, а не вторым
-   * обращением к серверу. В подписи опции модели нет, а идентификатор нужен именно её — «Тонер
-   * Ricoh 201» привязан к модели, а не к инвентарному номеру.
-   */
-  const { data: modelOf } = useQuery({
-    ...officeEquipmentOptionsQuery(),
-    enabled: open && can('officeEquipment.read'),
-    select: (r) => new Map(r.items.map((item) => [item.id, item.model?.id])),
-  });
-
   const selected = equipmentOptions.find((option) => option.value === equipmentId);
   const warrantyActive = isWarrantyActive(selected?.warrantyUntil);
 
@@ -124,13 +113,12 @@ export function ServiceRequestForm({
    * ставшая ремонтной, — это другая заявка, и схема правки вида не принимает вовсе. Обращение по
    * гарантии — всегда ремонт: гарантии на картридж со своего склада не бывает.
    */
-  const kind: ServiceRequestKind = request ? request.kind : claim ? 'repair' : (chosenKind ?? 'repair');
+  const kind: ServiceRequestKind = request
+    ? request.kind
+    : claim
+      ? 'repair'
+      : (chosenKind ?? 'repair');
   const consumable = kind === 'consumable';
-  /**
-   * По заявке уже отмечена выдача — состав строк замер (сервер отвечает 409). Это не «нет прав», а
-   * «список пожеланий стал основанием записи на складе», и сказать это надо словами.
-   */
-  const issued = !!request?.consumables.some((line) => line.issuedQuantity !== null);
 
   useEffect(() => {
     if (!open) return;
@@ -139,8 +127,6 @@ export function ServiceRequestForm({
     if (request) {
       form.setFieldsValue({
         officeEquipmentId: request.equipment.id,
-        // Строки правятся тем же составом, каким их читают: правка открывается тем, что просили.
-        consumables: consumableLinesFrom(request.consumables),
         description: request.description,
         // Заказчик правки — ключом от подбора (К7): он собран по снимкам самой заявки, а не по
         // действующему справочнику, и держится в списке, даже выпав из состава поля.
@@ -158,7 +144,9 @@ export function ServiceRequestForm({
       // Вид по умолчанию — ремонт: он же стоит умолчанием колонки в базе, и «поля нет» читается
       // сервером так же.
       kind: 'repair',
-      consumables: [],
+      // Пара «не тот объект» (Р16) заводится выключенной: умолчание заявки — объект из карточки
+      // техники, и заявленным расхождение становится только нажатием.
+      objectOverridden: false,
       // Единственный отдел учётки подставляется сам — как и до подбора (ADR 0085 §8). Иначе поле
       // заполнилось бы площадкой выбранной единицы, и заявка сотрудника отдела о своём же принтере
       // молча стала бы заявкой от площадки.
@@ -226,7 +214,7 @@ export function ServiceRequestForm({
         {/* Вид заявки (Н1) — первым: от него зависит, о чём форма спрашивает дальше. При правке
             и в обращении по гарантии выбора нет — вид у заявки уже есть и меняться не может. */}
         {!request && !claim && (
-          <Form.Item name="kind" label="Что нужно сделать">
+          <Form.Item name="kind" label="Чем помочь">
             <Segmented
               options={SERVICE_REQUEST_KINDS.map((value) => ({
                 value,
@@ -245,20 +233,8 @@ export function ServiceRequestForm({
           open={open}
         />
 
-        {/* Строки номенклатуры — сразу под аппаратом (Н10): позиции подбираются по его модели, и
-            между вопросом «какой аппарат» и ответом «что к нему подходит» ничему стоять не надо. */}
-        {consumable && (
-          <ServiceRequestConsumablesField
-            modelId={equipmentId ? modelOf?.get(equipmentId) : undefined}
-            disabled={issued}
-            disabledReason={
-              issued
-                ? 'По заявке уже отмечена выдача — состав больше не меняют, правьте выданное количество'
-                : undefined
-            }
-            enabled={open}
-          />
-        )}
+        {/* Строк номенклатуры здесь больше нет (Р15): заявитель не выбирает позиции справочника —
+            он говорит словами, чего не хватает, а состав заполняет исполнитель, которому везти. */}
 
         {/* Гарантия — вопрос ремонта: картридж со своего склада ни по чьей гарантии не выдают. */}
         {!consumable && (
@@ -269,13 +245,18 @@ export function ServiceRequestForm({
           />
         )}
 
+        {/* Главное поле заявки на расходники (Р15): прежде оно называлось «Зачем нужно» и стояло
+            под списком позиций — то есть спрашивало объяснение к уже сделанному выбору. Выбора
+            больше нет, и вопрос стал единственным: «Что нужно», своими словами. */}
         <Form.Item
           name="description"
-          label={consumable ? 'Зачем нужно' : 'Неисправность'}
+          label={consumable ? 'Что нужно' : 'Что случилось'}
           rules={[
             {
               required: true,
-              message: consumable ? 'Скажите, зачем нужны расходники' : 'Опишите неисправность',
+              message: consumable
+                ? 'Скажите своими словами, чего не хватает'
+                : 'Опишите, что случилось',
             },
             { min: 5, message: 'Напишите подробнее' },
           ]}
@@ -285,7 +266,9 @@ export function ServiceRequestForm({
             maxLength={4000}
             showCount
             placeholder={
-              consumable ? 'Например: закончился чёрный тонер, печатать нечем' : 'Что случилось'
+              consumable
+                ? 'Например: закончился чёрный тонер, печатать нечем'
+                : 'Например: мнёт бумагу на каждой второй странице'
             }
           />
         </Form.Item>
@@ -295,7 +278,7 @@ export function ServiceRequestForm({
             статусе — он и сортируется, и точнее отвечает на вопрос «кто тянет». */}
         <Form.Item
           name="customer"
-          label="Заказчик"
+          label="Для кого заявка"
           // Пустого состояния у поля нет (Р12а): «от площадки» — такой же выбор, как отдел, а не
           // незаполненное поле, и уходит он явным `null`.
           rules={[{ required: true, message: 'Выберите заказчика заявки' }]}
@@ -310,8 +293,8 @@ export function ServiceRequestForm({
         <ResponsibleFields
           nameField="responsibleName"
           phoneField="responsiblePhone"
-          nameLabel="Заявитель"
-          phoneLabel="Контактный телефон"
+          nameLabel="Кто обращается"
+          phoneLabel="Телефон для связи"
         />
 
         {/* Откуда сам заявитель (Н11) — рядом с его контактом, а не рядом с заказчиком: это два
@@ -341,7 +324,7 @@ export function ServiceRequestForm({
           </Form.Item>
         )}
 
-        <Form.Item name="comment" label="Комментарий">
+        <Form.Item name="comment" label="Что ещё важно знать">
           <Input.TextArea rows={2} maxLength={2000} placeholder="Необязательно" />
         </Form.Item>
 

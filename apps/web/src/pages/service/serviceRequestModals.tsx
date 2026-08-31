@@ -13,8 +13,8 @@ import { ServiceConsumablesIssueModal } from '@features/service-consumables-issu
 import { ServiceAcceptModal, type AcceptMode } from '@features/service-accept';
 import { ServiceHoldModal, type HoldMode } from '@features/service-hold';
 import { EquipmentMoveFromRequest } from '@features/equipment-move';
-import { ItApprovalModal } from '@features/it-approval';
 import { ServiceUrgencyModal } from '@features/service-urgency';
+import { ServiceRequestConsumablesModal } from './ServiceRequestConsumables';
 import { reportServiceMail } from './serviceMailNotice';
 import type { ReasonPrompt } from './serviceRequestPrompts';
 import { ReasonModal } from '../../components/CancelReasonModal';
@@ -23,8 +23,18 @@ import { errorMessage } from '../../utils/format';
 /** Чем открывается каждое окно заявки: заявкой, а у двойных — ещё и стороной действия. */
 export interface ServiceRequestModals {
   assign: (request: ServiceRequestDto) => void;
+  /** Редактор объёма работ исполнителя: строки, сумма и предъявление (Р8). */
   estimate: (request: ServiceRequestDto) => void;
+  /**
+   * Отказ по объёму работ (Р8, Р12): причина, решение и галочка замены. Согласие сюда не заходит —
+   * содержания у него нет, и оно идёт подтверждением прямо из набора действий.
+   */
   approval: (request: ServiceRequestDto) => void;
+  /**
+   * Состав номенклатуры заявки на расходники (Р15) — то же окно, каким у ремонта правят объём
+   * работ: у обоих видов заявки исполнитель отвечает на один вопрос, «что по ней пойдёт».
+   */
+  consumables: (request: ServiceRequestDto) => void;
   complete: (request: ServiceRequestDto) => void;
   /** Правка факта выдачи расходников (Р6): склад двигает она, а не смена статуса. */
   issue: (request: ServiceRequestDto) => void;
@@ -33,7 +43,6 @@ export interface ServiceRequestModals {
   urgency: (request: ServiceRequestDto) => void;
   /** Обсуждение заявки (ADR 0141): лента реплик, а не перезаписываемое примечание. */
   chat: (request: ServiceRequestDto) => void;
-  itApproval: (request: ServiceRequestDto) => void;
   moveEquipment: (request: ServiceRequestDto) => void;
   /** Переход, у которого из содержания только причина: отказ, отмена, откат (§5.3). */
   ask: (prompt: ReasonPrompt) => void;
@@ -68,6 +77,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
   const [assignTarget, setAssignTarget] = useState<ServiceRequestDto | null>(null);
   const [estimateTarget, setEstimateTarget] = useState<ServiceRequestDto | null>(null);
   const [approvalTarget, setApprovalTarget] = useState<ServiceRequestDto | null>(null);
+  const [consumablesTarget, setConsumablesTarget] = useState<ServiceRequestDto | null>(null);
   const [completeTarget, setCompleteTarget] = useState<ServiceRequestDto | null>(null);
   const [issueTarget, setIssueTarget] = useState<ServiceRequestDto | null>(null);
   const [acceptTarget, setAcceptTarget] = useState<{
@@ -80,7 +90,6 @@ export function useServiceRequestModals(): ServiceRequestModals {
   } | null>(null);
   const [urgencyTarget, setUrgencyTarget] = useState<ServiceRequestDto | null>(null);
   const [chatTarget, setChatTarget] = useState<ServiceRequestDto | null>(null);
-  const [itTarget, setItTarget] = useState<ServiceRequestDto | null>(null);
   const [moveTarget, setMoveTarget] = useState<ServiceRequestDto | null>(null);
   const [prompt, setPrompt] = useState<ReasonPrompt | null>(null);
 
@@ -102,13 +111,13 @@ export function useServiceRequestModals(): ServiceRequestModals {
     setAssignTarget(null);
     setEstimateTarget(null);
     setApprovalTarget(null);
+    setConsumablesTarget(null);
     setCompleteTarget(null);
     setIssueTarget(null);
     setAcceptTarget(null);
     setHoldTarget(null);
     setUrgencyTarget(null);
     setChatTarget(null);
-    setItTarget(null);
     setMoveTarget(null);
     setPrompt(null);
   }, []);
@@ -117,13 +126,13 @@ export function useServiceRequestModals(): ServiceRequestModals {
     assign: setAssignTarget,
     estimate: setEstimateTarget,
     approval: setApprovalTarget,
+    consumables: setConsumablesTarget,
     complete: setCompleteTarget,
     issue: setIssueTarget,
     accept: (request, mode) => setAcceptTarget({ request, mode }),
     hold: (request, mode) => setHoldTarget({ request, mode }),
     urgency: setUrgencyTarget,
     chat: setChatTarget,
-    itApproval: setItTarget,
     moveEquipment: setMoveTarget,
     ask: setPrompt,
     close,
@@ -133,11 +142,12 @@ export function useServiceRequestModals(): ServiceRequestModals {
         <AssignServiceModal request={assignTarget} onClose={() => setAssignTarget(null)} />
         <EstimateEditorModal request={estimateTarget} onClose={() => setEstimateTarget(null)} />
         <EstimateApprovalModal request={approvalTarget} onClose={() => setApprovalTarget(null)} />
-        <ServiceCompleteModal request={completeTarget} onClose={() => setCompleteTarget(null)} />
-        <ServiceConsumablesIssueModal
-          request={issueTarget}
-          onClose={() => setIssueTarget(null)}
+        <ServiceRequestConsumablesModal
+          request={consumablesTarget}
+          onClose={() => setConsumablesTarget(null)}
         />
+        <ServiceCompleteModal request={completeTarget} onClose={() => setCompleteTarget(null)} />
+        <ServiceConsumablesIssueModal request={issueTarget} onClose={() => setIssueTarget(null)} />
         <ServiceAcceptModal
           request={acceptTarget?.request ?? null}
           mode={acceptTarget?.mode ?? 'accept'}
@@ -150,7 +160,6 @@ export function useServiceRequestModals(): ServiceRequestModals {
         />
         <ServiceUrgencyModal request={urgencyTarget} onClose={() => setUrgencyTarget(null)} />
         <ServiceChatModal request={chatTarget} onClose={() => setChatTarget(null)} />
-        <ItApprovalModal request={itTarget} onClose={() => setItTarget(null)} />
         {moveTarget && (
           <EquipmentMoveFromRequest
             equipmentId={moveTarget.equipment.id}

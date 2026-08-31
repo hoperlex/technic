@@ -606,14 +606,21 @@ export const ACCESS_MANIFEST = {
 
   // ── Заявки на обслуживание ──
   // Права нарезаны по сторонам процесса, а не по глаголам HTTP: `serviceRequests.estimate` — это
-  // «служба работает по заявке» (смета, её подача и переоткрытие, закрытие работ, примечание
-  // сервиса), `serviceRequests.status` — ход заявки, `approveEstimate` и `approveIt` — две визы.
+  // «служба работает по заявке» (смета, её подача и переоткрытие, состав расходников, закрытие
+  // работ, примечание сервиса), `serviceRequests.status` — ход заявки, `approveEstimate` — подпись
+  // под объёмом работ.
   //
-  // Семь ручек исполнителя объявлены дизъюнкцией (`anyOf`): у стороны это её собственное право, а у
+  // Подпись теперь ОДНА: виза ИТ упразднена (план упрощения цикла, Р10) вместе с ручкой
+  // `PATCH /:id/it-approval`, и строки под неё в манифесте нет. Право `serviceRequests.approveIt`
+  // при этом из матрицы и наборов не снимается (§8 «Границы») — оно просто перестало открывать
+  // маршруты, а уборка наборов идёт отдельным выпуском.
+  //
+  // Ручки исполнителя объявлены дизъюнкцией (`anyOf`): у стороны это её собственное право, а у
   // поимённого исполнителя — `serviceRequests.execute`, которым он значится в заявке. Условие
-  // отвечает на вопрос «пускать ли к ручке вообще»; какая дуга субъекту доступна на самой заявке,
-  // решает коридор контрактов (`isServiceExecutor`), и держатель `execute` без назначения получает
-  // отказ от него, а не от стража.
+  // отвечает на вопрос «пускать ли к ручке вообще»; чей это ход на самой заявке, решает предикат
+  // контрактов (`isServiceExecutor` и таблица действий Р11), и держатель `execute` без назначения
+  // получает отказ от него, а не от стража. Числа ручек в этом абзаце нет намеренно: оно устаревало
+  // на каждой правке модуля, а проверяет соответствие всё равно `access-manifest.test.ts`.
   'GET /api/v1/service-requests': { kind: 'permissions', allOf: ['serviceRequests.read'] },
   'POST /api/v1/service-requests': { kind: 'permissions', allOf: ['serviceRequests.create'] },
   // Кандидаты в поимённые исполнители: страж — право назначения, а не `users.manage`. Иначе поле
@@ -633,14 +640,26 @@ export const ACCESS_MANIFEST = {
   'PATCH /api/v1/service-requests/:id/complete': {
     kind: 'anyOf',
     anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
-    why: 'работа исполнителя: у стороны — право сметы, у поимённого — назначение',
+    why: 'работа исполнителя: у стороны — право на объём работ, у поимённого — назначение',
   },
-  // Состав заявки на расходники — её ПРЕДМЕТ, ровно как описание неисправности у ремонта, и правит
-  // его то же право (план §7.3). Кто именно и в каком статусе — решает обработчик тем же правилом,
-  // что и правку заявки (`assertServiceRequestEditable`).
+  // Состав заявки на расходники заполняет ИСПОЛНИТЕЛЬ, а не заявитель (план упрощения цикла, Р15):
+  // заявитель говорит словами («закончился чёрный тонер»), номенклатуру подбирает тот, кто повезёт.
+  // Право поэтому сменилось с «заказчик, пока заявку никому не отдали» на пару стороны исполнителя.
+  //
+  // Пара — `estimate` + `execute`, и выбрана она НЕ по смыслу слова «смета». У сервисной компании
+  // набор прав — `read`, `estimate`, `status`, `files` (роль `service` в
+  // `packages/contracts/src/permissions.ts`), и ни `update`, ни `execute` в нём нет вовсе. Возьми мы
+  // напрашивающуюся пару `update` + `execute`, назначенный подрядчик — то есть ровно тот, ради кого
+  // ручка и переписывалась, — не смог бы заполнить состав ни одной веткой. `estimate` + `execute`
+  // читается как «сторона исполнителя» — та же пара стоит у трёх ручек сметы и у `complete`.
+  //
+  // Заводить третье право под номенклатуру нельзя (Р17, §8 «Границы»): выданные наборы пришлось бы
+  // переписывать ради названия. Назначение на ЭТУ заявку и здесь проверяет тело ручки
+  // (`assertExecutorSide`), а страж только отсеивает посторонних.
   'PUT /api/v1/service-requests/:id/consumables': {
-    kind: 'permissions',
-    allOf: ['serviceRequests.update'],
+    kind: 'anyOf',
+    anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
+    why: 'состав подбирает исполнитель: у стороны — право на объём работ, у поимённого — назначение',
   },
   // Правка факта выдачи (Р6). Дизъюнкция та же, что у статусных ходов исполнителя: у оператора
   // назначенного контрагента и у «Ведения» это `serviceRequests.status`, у поимённого исполнителя —
@@ -661,21 +680,31 @@ export const ACCESS_MANIFEST = {
   'PUT /api/v1/service-requests/:id/estimate': {
     kind: 'anyOf',
     anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
-    why: 'работа исполнителя: у стороны — право сметы, у поимённого — назначение',
+    why: 'работа исполнителя: у стороны — право на объём работ, у поимённого — назначение',
   },
+  // Согласование объёма работ (план упрощения цикла, Р3). Согласует НАЗНАЧЕННЫЙ сотрудник, а не
+  // только «Ведение», — поэтому пара та же, что у `decline`: у стороны согласования это её
+  // собственное право, у поимённого исполнителя — `serviceRequests.execute`, которым он значится в
+  // заявке. Оставь мы один `approveEstimate`, назначенный сотрудник, ради которого правка и
+  // делалась, упёрся бы в стража ещё до предиката.
+  //
+  // Назначение **на эту заявку** проверяет тело ручки, а не страж: держатель `execute` без строки в
+  // заявке получает отказ от предиката (`canApproveServiceEstimate`), и это то же разделение труда,
+  // что у прочих ручек исполнителя.
   'PATCH /api/v1/service-requests/:id/estimate/approval': {
-    kind: 'permissions',
-    allOf: ['serviceRequests.approveEstimate'],
+    kind: 'anyOf',
+    anyOf: ['serviceRequests.approveEstimate', 'serviceRequests.execute'],
+    why: 'согласует назначенный сотрудник: у стороны — право согласования, у поимённого — назначение',
   },
   'PATCH /api/v1/service-requests/:id/estimate/reopen': {
     kind: 'anyOf',
     anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
-    why: 'работа исполнителя: у стороны — право сметы, у поимённого — назначение',
+    why: 'работа исполнителя: у стороны — право на объём работ, у поимённого — назначение',
   },
   'PATCH /api/v1/service-requests/:id/estimate/submit': {
     kind: 'anyOf',
     anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
-    why: 'работа исполнителя: у стороны — право сметы, у поимённого — назначение',
+    why: 'работа исполнителя: у стороны — право на объём работ, у поимённого — назначение',
   },
   'POST /api/v1/service-requests/:id/files': {
     kind: 'permissions',
@@ -746,10 +775,6 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['serviceRequests.read'],
   },
-  'PATCH /api/v1/service-requests/:id/it-approval': {
-    kind: 'permissions',
-    allOf: ['serviceRequests.approveIt'],
-  },
   'POST /api/v1/service-requests/:id/notify': {
     kind: 'permissions',
     allOf: ['serviceRequests.status'],
@@ -771,7 +796,7 @@ export const ACCESS_MANIFEST = {
   'PATCH /api/v1/service-requests/:id/service-comment': {
     kind: 'anyOf',
     anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
-    why: 'работа исполнителя: у стороны — право сметы, у поимённого — назначение',
+    why: 'работа исполнителя: у стороны — право на объём работ, у поимённого — назначение',
   },
   'PATCH /api/v1/service-requests/:id/start': {
     kind: 'anyOf',

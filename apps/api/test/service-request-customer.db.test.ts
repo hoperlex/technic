@@ -54,6 +54,8 @@ interface Ctx {
   /** Согласующий от ИТ: роль отдела плюс сквозная область модуля (ADR 0106, решение 2). */
   itApprover: Auth;
   objectId: string;
+  /** Соседняя площадка: на неё роль отдела заявку записать вправе — объектной оси у неё нет. */
+  otherObjectId: string;
   /** Отдел учёток `dept` и `multiDept`. */
   ownDepartmentId: string;
   /** Второй отдел `multiDept`: за ним числится техника, дающая подсказку. */
@@ -176,6 +178,17 @@ describe.skipIf(!DB_URL)('заказчик заявки на обслужива�
       VALUES (${`SRC-${RUN}`}, ${`Площадка заказчика ${RUN}`}, 'г Москва, ул Тестовая, д 1')
       RETURNING id`);
     const objectId = objectRow.rows[0]!.id;
+    /**
+     * Вторая площадка — ради оси, которой у ролей этого файла НЕТ. «Не тот объект» (Р16) отбивает
+     * чужой объект только у объектных ролей; у роли отдела область считается отделами, и объект её
+     * не сужает — запрещать ей выбор значило бы отобрать поле у тех, кто заводит заявки за
+     * сотрудников. Проверить это можно лишь площадкой, к которой учётка заведомо не привязана.
+     */
+    const otherObjectRow = await db.execute<{ id: string }>(sql`
+      INSERT INTO construction_objects (code, name, address)
+      VALUES (${`SRC2-${RUN}`}, ${`Соседняя площадка ${RUN}`}, 'г Москва, ул Тестовая, д 2')
+      RETURNING id`);
+    const otherObjectId = otherObjectRow.rows[0]!.id;
 
     const makeDepartment = async (tag: string): Promise<string> => {
       const row = await db.execute<{ id: string }>(sql`
@@ -263,6 +276,7 @@ describe.skipIf(!DB_URL)('заказчик заявки на обслужива�
       multiDept: await login(multiDept.email),
       itApprover: await login(itApprover.email),
       objectId,
+      otherObjectId,
       ownDepartmentId,
       secondDepartmentId,
       itDepartmentId,
@@ -304,7 +318,7 @@ describe.skipIf(!DB_URL)('заказчик заявки на обслужива�
       // Отделы раньше площадок: у отдела бывает своя площадка (ADR 0062), и ссылка на неё —
       // `RESTRICT`. У отделов этого файла её нет, но порядок не должен зависеть от этого.
       await ctx.db.execute(sql`DELETE FROM departments WHERE code LIKE ${`SRC-%${RUN}`}`);
-      await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code = ${`SRC-${RUN}`}`);
+      await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code LIKE ${`SRC%-${RUN}`}`);
     }
     await ctx?.closeDb();
   });
@@ -419,6 +433,32 @@ describe.skipIf(!DB_URL)('заказчик заявки на обслужива�
     const after = res.json() as ServiceRequestDto;
     expect(after.responsiblePhone).toBe('9992223344');
     expect(after.customerDepartment?.id).toBe(ctx.ownDepartmentId);
+  });
+
+  // ── «Аппарат стоит не на том объекте» на отдельской оси (Р16) ──
+
+  /**
+   * Отбор объектов ограничен **областью заявителя**, и ось у него ровно одна — объектная. У ролей
+   * этого файла её нет: они работают в пределах отдела, а отдел с объектами не пересекается, —
+   * значит выбор им открыт целиком. Запрет здесь означал бы отобрать поле у тех, кто заводит
+   * заявки за сотрудников, а сама защита не усилилась бы ни на шаг: чужого объекта у роли, которой
+   * объекты область не задают, не бывает.
+   *
+   * Случай парный к `service-request-flow.db`, где та же ручка отвечает 422 объектной роли (штабу)
+   * на чужой площадке. Порознь эти два ответа читаются как противоречие; вместе — как одно
+   * правило, спрашивающее ось, а не роль.
+   */
+  it('роль отдела записывает аппарат на соседнюю площадку: объектной оси у неё нет', async () => {
+    const dto = await createOk(ctx.dept, await ctx.newEquipment('other-object'), {
+      customerDepartmentId: ctx.ownDepartmentId,
+      objectId: ctx.otherObjectId,
+      objectOverridden: true,
+    });
+    expect(dto.object.id).toBe(ctx.otherObjectId);
+    // Хранится ЗАЯВЛЕНИЕ; расхождение вычисляется соединением с карточкой, которая по-прежнему
+    // числится на исходной площадке, — и гаснет оно само, когда ИТ-служба перенесёт единицу.
+    expect(dto.objectOverridden).toBe(true);
+    expect(dto.objectMismatch).toBe(true);
   });
 
   it('смена заказчика на чужой отдел у того же держателя — 403', async () => {

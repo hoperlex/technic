@@ -4,7 +4,8 @@ import {
   type ServiceFileKind,
   type ServiceRequestDto,
   type ServiceRequestFileDto,
-  serviceWaitingOn,
+  serviceHasExecutors,
+  serviceRequestWaitingOn,
 } from '@technic/contracts';
 import { authUser } from './auth';
 
@@ -15,14 +16,20 @@ import { authUser } from './auth';
  * очередная правка DTO чинится в четырёх местах, — так и вышло с уходом «Желаемого срока» и
  * приходом полей заморозки (Р115, Р104).
  *
- * `waitingOn` не задаётся руками, а считается тем же `serviceWaitingOn`, которым отвечает сервер:
- * подпись состояния (`serviceStatusLine`) читает именно это поле, и фикстура «статус „Диагностика“,
- * ждут оператора» описывала бы заявку, которой в портале не бывает. Сценарию, который проверяет
- * расхождение, никто не мешает передать `waitingOn` явно.
+ * `waitingOn` не задаётся руками, а считается тем же `serviceRequestWaitingOn`, которым отвечает
+ * сервер: подпись состояния (`serviceStatusLine`) читает именно это поле, и фикстура «статус
+ * „Диагностика“, ждут оператора» описывала бы заявку, которой в портале не бывает. Сценарию,
+ * который проверяет расхождение, никто не мешает передать `waitingOn` явно.
+ *
+ * Считается он ПОСЛЕ применения overrides и по трём полям, а не по одному статусу (Р2): после
+ * снятия «Назначенной» и «Сметы на согласовании» ответ на «кого ждут» держат состав исполнителей и
+ * непогашенное предъявление. Прежний `serviceWaitingOn(status)` дал бы «Новой» с назначенным
+ * исполнителем ответ нетронутой заявки — то есть фикстуру, которой на сервере не бывает, и весь
+ * столбец состояния проверялся бы по ней вхолостую.
  */
 export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): ServiceRequestDto {
   const status = overrides.status ?? 'new';
-  return {
+  const request: ServiceRequestDto = {
     id: 'sr-1',
     num: 14,
     displayNumber: 'СО-14',
@@ -32,7 +39,8 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     kind: 'repair',
     status,
     statusChangedAt: '2026-08-05T09:00:00.000Z',
-    waitingOn: serviceWaitingOn(status),
+    // Значение-заглушка: настоящее считается ниже, когда overrides уже применены.
+    waitingOn: 'nobody',
     // Заморозка (Р104, Р107): поля ходят парой и в обычных статусах пусты оба — это и есть CHECK
     // базы, перенесённый в фикстуру.
     heldFromStatus: null,
@@ -46,6 +54,11 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
       location: 'Корпус 3, каб. 214',
     },
     object: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
+    // Объект подставила карточка техники, и расхождения нет (Р16). Пара ходит вместе: заявленный
+    // факт хранится, а расхождение сервер вычисляет соединением с карточкой — «спокойная» заявка
+    // это `false` в обоих полях, и сценарий про плашку обязан поднимать оба, а не одно.
+    objectOverridden: false,
+    objectMismatch: false,
     customerDepartment: null,
     equipmentDepartment: null,
     // Подразделение заявителя (Н11): у учётки без отделов и площадок его нет вовсе — законное
@@ -62,6 +75,10 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     itApproval: null,
     warrantyClaim: null,
     estimateRevision: 0,
+    // Висящего предъявления нет (Р2): `null` — «ответа ждать нечего». Именно это поле, а не статус,
+    // делает заявку «ждущей подписи» после снятия `estimate_review` (Р1), поэтому умолчание тут
+    // молчаливое: сценарий про согласование обязан назвать ревизию сам.
+    estimatePendingRevision: null,
     estimateSubmittedAt: null,
     estimatedTotalAmount: null,
     approval: null,
@@ -76,6 +93,9 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     // «человек» — таким его оставляет старый код в окне выката.
     acceptanceSource: null,
     replacementRecommended: false,
+    // Решение при отказе (Р12): непустым оно бывает только у отменённой заявки — это `CHECK` базы,
+    // и пустая строка здесь означает «отказа не было», а не незаполненную фикстуру.
+    rejectionResolution: '',
     comment: '',
     serviceComment: '',
     // Обсуждение (ADR 0141): у заявки, по которой не сказано ни слова, блок не отсутствует — он
@@ -97,11 +117,68 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     version: 3,
     ...overrides,
   };
+  return {
+    ...request,
+    waitingOn:
+      overrides.waitingOn ??
+      serviceRequestWaitingOn({
+        status,
+        hasExecutors: serviceHasExecutors({
+          serviceCounterpartyId: request.service?.id ?? null,
+          executorCount: request.executors.length,
+        }),
+        estimatePendingRevision: request.estimatePendingRevision,
+      }),
+  };
 }
 
-/** Отложенная заявка: статус, исходный статус и причина — три факта, которые не бывают порознь. */
+/**
+ * Заявка, за которую уже кто-то отвечает, — то, что до Р1 называлось статусом «Назначена».
+ *
+ * Статус у неё «Новая»: назначение перестало быть переходом, и «назначенность» держит СОСТАВ
+ * исполнителей (Р2, Р5). Фикстура отдельная, потому что пара «`new` + непустые исполнители» —
+ * основание доброго десятка сценариев (быстрая кнопка «Принять в работу», отказ, очередь «ждёт
+ * исполнителя»), и написанная в каждом заново она разъехалась бы на первой же правке.
+ */
+export function assignedServiceRequest(
+  overrides: Partial<ServiceRequestDto> = {},
+): ServiceRequestDto {
+  return serviceRequest({
+    status: 'new',
+    executors: [
+      { userId: 'user-9', name: 'Сисадминов С. С.', assignedAt: '2026-08-05T10:00:00.000Z' },
+    ],
+    ...overrides,
+  });
+}
+
+/**
+ * Заявка с висящим предъявлением объёма работ — то, что до Р1 называлось «Сметой на согласовании».
+ *
+ * Статус «В работе», а состояние держит `estimatePendingRevision` (Р2, Р8): предъявление ревизии
+ * есть, ответа на неё нет. Ревизия и снимок предъявления идут вместе — предъявленной без даты
+ * заявки не бывает.
+ */
+export function estimatePendingServiceRequest(
+  overrides: Partial<ServiceRequestDto> = {},
+): ServiceRequestDto {
+  return serviceRequest({
+    status: 'in_work',
+    estimateRevision: 1,
+    estimatePendingRevision: 1,
+    estimateSubmittedAt: '2026-08-06T09:00:00.000Z',
+    ...overrides,
+  });
+}
+
+/**
+ * Отложенная заявка: статус, исходный статус и причина — три факта, которые не бывают порознь.
+ *
+ * Умолчание исходного статуса — «В работе», а не «Диагностика»: последняя мёртвая с 0197, и
+ * отложить оттуда нечего — заявок в этом статусе не бывает.
+ */
 export function heldServiceRequest(
-  heldFrom: ServiceRequestDto['status'] = 'diagnostics',
+  heldFrom: ServiceRequestDto['status'] = 'in_work',
   overrides: Partial<ServiceRequestDto> = {},
 ): ServiceRequestDto {
   return serviceRequest({
@@ -146,9 +223,20 @@ export function serviceExecutor(overrides: Partial<AuthUser> = {}): AuthUser {
   return authUser({ role: 'operator' as Role, counterpartyType: 'service', ...overrides });
 }
 
-/** Согласующий от ИТ (Р51): та же базовая роль, но своя надстройка — она даёт визу. */
-export function serviceItApprover(overrides: Partial<AuthUser> = {}): AuthUser {
+/**
+ * Свой сисадмин ИТ-службы: та же надстройка `office_equipment_it_approver`, но описывает она уже
+ * не согласующего — виза упразднена целиком вместе с ручкой `it-approval` (Р10), и подпись под
+ * объёмом работ теперь одна. Право `serviceRequests.approveIt` в наборе осталось (его снятие —
+ * отдельная уборка) и ходов не даёт ни одного.
+ *
+ * Фикстура нужна ровно для ОДНОГО: показать, что ходы исполнителя открывает **поимённое
+ * назначение**, а не право. `execute` у надстройки есть всегда, и заявка без его строки в
+ * исполнителях обязана оставлять его ни с чем — у оператора контрагента-сервиса эта разница не
+ * видна, портал считает его назначенным по типу контрагента.
+ */
+export function serviceInHouseExecutor(overrides: Partial<AuthUser> = {}): AuthUser {
   return authUser({
+    id: 'user-9',
     role: 'shtab' as Role,
     constructionObjectIds: ['obj-1'],
     addons: ['office_equipment_it_approver'],

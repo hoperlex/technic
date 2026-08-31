@@ -5,11 +5,6 @@ import type {
   WarrantyClaimSource,
 } from '@technic/contracts';
 import { serviceRequestsApi } from '@entities/service-request';
-import {
-  consumableLinesChanged,
-  consumableLinesPayload,
-  type ConsumableLineValue,
-} from './ServiceRequestConsumables';
 import type { WarrantyClaimPreset } from './ServiceRequestForm';
 
 /** Значения формы заявки: то, что человек заполнил, а не то, что уйдёт на сервер. */
@@ -17,8 +12,13 @@ export interface ServiceFormValues {
   officeEquipmentId: string;
   /** Вид заявки (Н1): ремонт или расходники. При правке не спрашивается — это другая заявка. */
   kind?: ServiceRequestKind;
-  /** Строки номенклатуры — только у расходников (Н9). */
-  consumables?: ConsumableLineValue[];
+  /**
+   * «Аппарат стоит на другом объекте» (Р16) — пара, а не одно поле, и уходит она только целиком:
+   * пометка без объекта и объект без пометки схему заведения не проходят (422). При правке пары нет
+   * вовсе — заявленный факт историчен и правке не подлежит.
+   */
+  objectOverridden?: boolean;
+  objectId?: string;
   description: string;
   /** Заказчик ключом `CostTargetKey` (Р2): площадка выбранной единицы либо отдел. */
   customer?: string;
@@ -54,6 +54,10 @@ export interface ServiceFormContext {
  *
  * Вид заявки при правке берётся из самой заявки, а не из формы: `kind` менять нельзя вовсе — это
  * другая заявка, — и схема правки его не принимает.
+ *
+ * Номенклатуры здесь больше нет ни у заведения, ни у правки (Р15): состав заполняет исполнитель
+ * своей ручкой `PUT /:id/consumables`. Принимать строки заведение не перестало — ИТ-служба заводит
+ * заявку за сотрудника, зная состав сразу, — но форма портала их не спрашивает, и слать ей нечего.
  */
 export async function submitServiceRequest(
   values: ServiceFormValues,
@@ -89,39 +93,26 @@ export async function submitServiceRequest(
       ...common,
       version: ctx.request.version,
     });
-    /**
-     * Состав строк номенклатуры — своей ручкой и только когда его тронули: правка заявки такого
-     * поля не имеет вовсе, а лишний `PUT` поднимал бы версию второй раз на правке телефона.
-     * Версия берётся из ответа первой ручки — та её уже подняла, и старая дала бы 409 на ровном
-     * месте.
-     *
-     * По заявке с отметкой о выдаче сервер отвечает 409: состав уже стал основанием записи на
-     * складе. Форма до этого не доводит — блок строк в таком состоянии не правится.
-     */
-    if (kind === 'consumable' && consumableLinesChanged(values.consumables, ctx.request.consumables)) {
-      const withLines = await serviceRequestsApi.putConsumables(saved.id, {
-        items: consumableLinesPayload(values.consumables),
-        version: saved.version,
-      });
-      return { request: withLines, mail: null };
-    }
     // Правка письма службе не шлёт: заявка никуда не переходила, а «исправили формулировку» — не
     // событие. Исход у неё поэтому всегда «письмо не требовалось».
     return { request: saved, mail: null };
   }
 
+  const objectOverridden = !!values.objectOverridden;
   return serviceRequestsApi.create({
     ...common,
     // Подразделение заявителя — выбором из своих и только когда выбор был (Н11).
     ...ctx.requesterPlace,
     officeEquipmentId: values.officeEquipmentId,
     kind,
-    /**
-     * Строки уходят **заведением**, а не отдельным `PUT` следом: заявка на расходники без строк
-     * запрещена постановкой, и разложенное на два запроса заведение оставляло бы её в этом
-     * состоянии всякий раз, когда второй запрос не дошёл.
+    /*
+     * Пара «не тот объект» (Р16) уходит целиком и только вместе: пометка без объекта и объект без
+     * пометки одинаково отвергаются схемой. Снятая галочка не шлёт ни того ни другого — умолчание
+     * заявки — объект из карточки техники, и присланный вместе с ним `objectId` сервер прочёл бы
+     * как заявление о расхождении, которого никто не делал.
      */
-    consumables: kind === 'consumable' ? consumableLinesPayload(values.consumables) : undefined,
+    objectOverridden,
+    objectId: objectOverridden ? values.objectId : undefined,
     fileIds: ctx.fileIds,
   });
 }

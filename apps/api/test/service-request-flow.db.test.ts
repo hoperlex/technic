@@ -370,24 +370,9 @@ async function createRequest(
   return (res.json() as { request: ServiceRequestDto }).request;
 }
 
-/**
- * Виза отдела ИТ по смете (Н3). Со входа цикла она уехала на смету: визируют **предъявленную**
- * смету, и до неё согласовывать нечего. Помощник поэтому зовётся не первым шагом, а из
- * «Сметы на согласовании» — и молчит, если виза текущей ревизии уже стоит: заявка, вернувшаяся
- * от «Ведения» без нового предъявления, подпись сохраняет.
- */
-async function approveByIt(id: string): Promise<void> {
-  const before = await card(id, ctx.itApprover.auth);
-  if (before.status !== 'estimate_review') return;
-  if (before.itApproval && before.waitingOn !== 'it') return;
-  const res = await inject(
-    'PATCH',
-    `/api/v1/service-requests/${id}/it-approval`,
-    ctx.itApprover.auth,
-    { approved: true, version: before.version },
-  );
-  expect(res.statusCode, res.body).toBe(200);
-}
+// Помощник `approveByIt` снят вместе с самой визой (Р10, ADR 0145): ручки `PATCH /:id/it-approval`
+// больше нет, порядка двух подписей — тоже. Объём работ согласует один человек, и делает он это
+// ручкой `PATCH /:id/estimate/approval`.
 
 /**
  * Заявка, взятая исполнителем в работу: назначение и «принять в работу». Прежде помощник
@@ -417,11 +402,12 @@ async function toInWork(id: string): Promise<void> {
 /**
  * Рабочие статусы, из которых заявку откладывают (Р106): всё, кроме «Закрыта» и «Отменена».
  *
- * `it_approved` и `diagnostics` из перечня ушли вместе с единым циклом (Н2, Н4): значения остались
- * в типе мёртвыми, ни одна ручка в них больше не заводит, и собрать такую заявку помощнику нечем.
- * Право на заморозку из них не отобрано — коридор контрактов их по-прежнему знает (legacy до
- * выпуска 2), — но проверять это на живой схеме можно будет только заявкой, поставленной в мёртвый
- * статус прямым `UPDATE`; такой тест заводит волна В7 вместе с остальными legacy-случаями.
+ * Четыре мёртвых значения в перечень не входят. `it_approved` и `diagnostics` умерли с единым
+ * циклом (Н2, Н4), `assigned` и `estimate_review` — миграцией 0224 (Р1): заявок в них не бывает,
+ * `service_requests_dead_status_check` их запрещает, и собрать такую заявку помощнику нечем.
+ * Ожидания, которые они означали, стали признаками строки — состав исполнителей и непогашенное
+ * предъявление, — и заморозка их не различает: заявка «Новая с исполнителями» откладывается тем
+ * же ходом, что и «Новая» без них, и возвращается в тот же статус.
  *
  * **`done` из перечня ушла не по той же причине, и это расхождение, а не решение.** План (§6.2)
  * требует заморозку из «Решена» прямо и дважды: сегодняшнее поведение (Р106 ADR 0125) и
@@ -430,12 +416,7 @@ async function toInWork(id: string): Promise<void> {
  * исправлена, гонять этот статус через помощника значило бы закрепить в тесте поведение, которого
  * план не разрешал.
  */
-const WORKING_STATUSES = [
-  'new',
-  'assigned',
-  'estimate_review',
-  'in_work',
-] as const satisfies readonly ServiceRequestStatus[];
+const WORKING_STATUSES = ['new', 'in_work'] as const satisfies readonly ServiceRequestStatus[];
 
 /**
  * Заявка, доведённая до нужного рабочего статуса своими ручками.
@@ -454,7 +435,7 @@ async function driveTo(id: string, target: ServiceRequestStatus): Promise<void> 
     { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: await version(id) },
   );
   expect(assigned.statusCode, assigned.body).toBe(200);
-  if (target === 'assigned') return;
+  // Назначение статуса не меняет (Р5): «Назначена» снята, и цели `assigned` у помощника нет вовсе.
 
   const started = await inject('PATCH', `/api/v1/service-requests/${id}/start`, ctx.service.auth, {
     version: (assigned.json() as { request: ServiceRequestDto }).request.version,
@@ -481,10 +462,9 @@ async function driveTo(id: string, target: ServiceRequestStatus): Promise<void> 
     { version: put.json().version },
   );
   expect(submitted.statusCode, submitted.body).toBe(200);
-  if (target === 'estimate_review') return;
 
-  // Порядок подписей жёсткий (Н3): сперва ИТ — «чинить или менять», — потом деньги.
-  await approveByIt(id);
+  // Подпись одна (Р10): виза ИТ упразднена, порядка двух подписей больше нет. Согласие статуса не
+  // меняет — заявка как стояла в «В работе», так и стоит, — и гасит предъявление.
   const approved = await inject(
     'PATCH',
     `/api/v1/service-requests/${id}/estimate/approval`,
@@ -565,6 +545,81 @@ async function requestIn(
   const dto = await createRequest(ctx.customer.auth, await freshUnit(), description);
   await driveTo(dto.id, status);
   return card(dto.id);
+}
+
+/**
+ * Заявка **распределённая, но не взятая в работу** — то, что прежде звалось статусом «Назначена».
+ * Своим помощником, а не целью `driveTo`: статуса у этого состояния больше нет (Р1), и называет
+ * его теперь состав исполнителей — «Новая», у которой они есть (Р2). Помощник это и утверждает
+ * сразу: статус «Новая», сервис назначен, ждут исполнителя.
+ */
+async function assignedRequest(description: string): Promise<ServiceRequestDto> {
+  const dto = await createRequest(ctx.customer.auth, await freshUnit(), description);
+  const assigned = await inject(
+    'PUT',
+    `/api/v1/service-requests/${dto.id}/executors`,
+    ctx.operator.auth,
+    { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: dto.version },
+  );
+  expect(assigned.statusCode, assigned.body).toBe(200);
+  const after = (assigned.json() as { request: ServiceRequestDto }).request;
+  expect(after.status).toBe('new');
+  expect(after.waitingOn).toBe('service');
+  return after;
+}
+
+/**
+ * Предъявить объём работ заново по заявке в «В работе»: снять то, что мешает (подпись либо своё
+ * же висящее предъявление), заменить состав и предъявить. Одним помощником, потому что после Р9
+ * замков стало два и оба открываются одним ключом — «вернуть объём работ в правку».
+ *
+ * Статуса ни один из трёх шагов не меняет (Р8): всё это время заявка стоит в «В работе», а
+ * ожидание подписи открывает и гасит колонка `estimate_pending_revision`.
+ */
+async function submitEstimate(
+  id: string,
+  items: Record<string, unknown>[] = [
+    { kind: 'service', name: 'Замена ролика', quantity: 1, unitPrice: 1200, warrantyMonths: 3 },
+  ],
+): Promise<ServiceRequestDto> {
+  const before = await card(id);
+  if (before.estimatePendingRevision !== null || before.approval !== null) {
+    const reopened = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${id}/estimate/reopen`,
+      ctx.service.auth,
+      { reason: 'Пересчитываем состав', version: before.version },
+    );
+    expect(reopened.statusCode, reopened.body).toBe(200);
+  }
+  const put = await inject('PUT', `/api/v1/service-requests/${id}/estimate`, ctx.service.auth, {
+    items,
+    version: await version(id),
+  });
+  expect(put.statusCode, put.body).toBe(200);
+  const submitted = await inject(
+    'PATCH',
+    `/api/v1/service-requests/${id}/estimate/submit`,
+    ctx.service.auth,
+    { version: (put.json() as ServiceRequestDto).version },
+  );
+  expect(submitted.statusCode, submitted.body).toBe(200);
+  const after = submitted.json() as ServiceRequestDto;
+  expect(after.status).toBe('in_work');
+  expect(after.estimatePendingRevision).toBe(after.estimateRevision);
+  expect(after.waitingOn).toBe('approval');
+  return after;
+}
+
+/**
+ * Заявка с **предъявленным и непогашенным объёмом работ** — то, что прежде звалось «Смета на
+ * согласовании». Статуса у состояния нет (Р1): заявка стоит в «В работе», а ожидание подписи
+ * держит колонка `estimate_pending_revision` (Р2).
+ */
+async function pendingEstimateRequest(description: string): Promise<ServiceRequestDto> {
+  const dto = await createRequest(ctx.customer.auth, await freshUnit(), description);
+  await driveTo(dto.id, 'in_work');
+  return submitEstimate(dto.id);
 }
 
 /** Заморозка: причина обязательна (Р107), а куда вернуть — сервер берёт из самой заявки (Р104). */
@@ -1029,22 +1084,13 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(direct.statusCode, direct.body).toBe(403);
   });
 
-  // ── Шаг 2. Виза отдела ИТ уехала на смету (Н3) ──
-
-  it('визу ИТ на «Новую» не ставят: решают по предъявленной смете, а не на входе', async () => {
-    // Прежде это был первый шаг цикла: `new → it_approved`, и без визы сервис не назначали.
-    // Заказчик порядок снял — на распределении согласовывать нечего, предмет решения (счёт
-    // инженера) появляется позже. 422, а не 403: право у согласующего есть, не годится состояние.
-    const res = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${state.main.id}/it-approval`,
-      ctx.itApprover.auth,
-      { approved: true, version: await version(state.main.id, ctx.itApprover.auth) },
-    );
-    expect(res.statusCode, res.body).toBe(422);
-    expect(res.json().message).toContain('Визу ИТ ставят на предъявленную смету');
-    expect((await card(state.main.id)).status).toBe('new');
-  });
+  // ── Шаг 2. Виза отдела ИТ упразднена (Р10) ──
+  //
+  // Случай «визу ИТ на „Новую“ не ставят» снят: ставить нечего и нечем — ручка `PATCH
+  // /:id/it-approval` удалена, `SERVICE_IT_TRANSITIONS` пуста, а вопрос «чинить или менять» задаёт
+  // себе тот же человек, что смотрит на объём работ (ответ В2). Область согласующего от ИТ при
+  // этом никуда не делась — её проверяет случай ниже, — потому что надстройка модуля даёт не визу,
+  // а видимость чужих площадок.
 
   it('согласующий от ИТ видит чужую площадку: область даёт надстройка, а не роль', async () => {
     // Учётка ИТ приписана к постороннему отделу и не имеет ни одного объекта: по своей роли она не
@@ -1086,53 +1132,71 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(await listIds(ctx.itApprover.auth, '&waitingOnMe=true')).toContain(state.main.id);
   });
 
-  it('оператор визы не имеет: подписать заявку себе он не может', async () => {
-    const res = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${state.main.id}/it-approval`,
-      ctx.operator.auth,
-      { approved: true, version: await version(state.main.id) },
-    );
-    expect(res.statusCode, res.body).toBe(403);
-  });
+  // Случай «оператор визы не имеет» снят вместе с визой (Р10): проверять разделение двух подписей
+  // не на чем — подпись осталась одна. Кто её ставит, разбирает согласование объёма работ ниже:
+  // оператор подрядчика исключён из согласующих явно (Р3), и это отдельный случай.
 
-  it('«менять аппарат» закрывает заявку с причиной и пометкой, и без причины его не принимают', async () => {
+  /**
+   * «Не согласовано» — второй исход единственной оставшейся подписи (Р8, В1), и спрашивает он
+   * теперь ТРИ вещи вместо одной. Причина отвечает, почему объём не согласован, и уходит
+   * комментарием перехода в историю; решение («что делаем вместо») остаётся полем заявки, потому
+   * что с него начинается разбор отклонённой через месяц; галочка замены стала ответом человека, а
+   * не выводом ручки — прежде отказ ИТ означал «не чинить, значит менять», и флаг проставлялся сам.
+   *
+   * Проверяются все три и жизненный цикл решения: `CHECK` в базе держит его только у отменённой,
+   * а откат «Отменена → Новая» обязан снять обе пометки разом — не сними он решение, откат упёрся
+   * бы в `service_requests_rejection_resolution_check` ошибкой БД (Р12).
+   */
+  it('«не согласовано» закрывает заявку причиной, решением и пометкой замены — и все три обязательны', async () => {
     const dto = await createRequest(
       ctx.customer.auth,
       ctx.choicePrinter.id,
       'Хочу второй монитор к рабочему месту',
     );
-    // Второй исход визы возможен только по предъявленной смете: решают «чинить за эти деньги или
-    // менять аппарат», и без сметы у решения нет предмета.
-    await driveTo(dto.id, 'estimate_review');
+    // Решают «чинить за эти деньги или менять аппарат», и без предъявленного объёма работ у
+    // решения нет предмета: согласование требует непогашенного предъявления (Р11).
+    await driveTo(dto.id, 'in_work');
+    const submitted = await submitEstimate(dto.id);
+    expect(submitted.estimatePendingRevision).toBe(submitted.estimateRevision);
 
     const silent = await inject(
       'PATCH',
-      `/api/v1/service-requests/${dto.id}/it-approval`,
-      ctx.itApprover.auth,
-      { approved: false, version: await version(dto.id, ctx.itApprover.auth) },
+      `/api/v1/service-requests/${dto.id}/estimate/approval`,
+      ctx.operator.auth,
+      { approved: false, version: await version(dto.id) },
     );
-    // Причина обязательна схемой: «ИТ отказал» без объяснения заказчик прочитает как молчание.
+    // Оба текста обязательны схемой: «не согласовано» без объяснения заказчик прочитает как
+    // молчание, а без решения спор по заявке через месяц начинается с нуля (Р12).
     expect(silent.statusCode, silent.body).toBe(400);
+    const fields = (silent.json() as { fields?: Record<string, string> }).fields ?? {};
+    expect(Object.keys(fields).sort()).toEqual(['reason', 'resolution']);
 
     const rejected = await inject(
       'PATCH',
-      `/api/v1/service-requests/${dto.id}/it-approval`,
-      ctx.itApprover.auth,
+      `/api/v1/service-requests/${dto.id}/estimate/approval`,
+      ctx.operator.auth,
       {
         approved: false,
-        reason: 'Ремонт дороже нового аппарата — меняем',
-        version: await version(dto.id, ctx.itApprover.auth),
+        reason: 'Ремонт дороже нового аппарата',
+        resolution: 'Меняем аппарат, заявка на закупку заведена',
+        replacementRecommended: true,
+        version: await version(dto.id),
       },
     );
     expect(rejected.statusCode, rejected.body).toBe(200);
     // Своего терминального статуса у отказа нет (Р53): заявка закрыта тем же «Отменена», а
-    // отличают его событие истории и пометка «рекомендована замена» (В21).
-    expect(rejected.json().status).toBe('cancelled');
-    expect(rejected.json().replacementRecommended).toBe(true);
-    expect(rejected.json().itApproval).toBeNull();
+    // отличают его событие истории, решение и пометка «рекомендована замена» (В21).
+    const after = rejected.json() as ServiceRequestDto;
+    expect(after.status).toBe('cancelled');
+    expect(after.replacementRecommended).toBe(true);
+    expect(after.rejectionResolution).toBe('Меняем аппарат, заявка на закупку заведена');
+    // Ответ получен — предъявление погашено: иначе отменённая заявка осталась бы в очереди подписи.
+    expect(after.estimatePendingRevision).toBeNull();
+    expect(after.waitingOn).toBe('nobody');
 
-    // Возврат отменённой в «Новую» пометку снимает: она относилась к отмене, которой больше нет.
+    // Возврат отменённой в «Новую» снимает ОБЕ пометки разом (флаг `rejection` матрицы сброса,
+    // Р12): они всегда живут и умирают вместе, а решение вдобавок держит `CHECK` — оставленное, оно
+    // уронило бы сам откат ошибкой БД.
     const back = await inject(
       'PATCH',
       `/api/v1/service-requests/${dto.id}/status`,
@@ -1142,6 +1206,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(back.statusCode, back.body).toBe(200);
     const returned = (back.json() as { request: ServiceRequestDto }).request;
     expect(returned.replacementRecommended).toBe(false);
+    expect(returned.rejectionResolution).toBe('');
     expect(returned.status).toBe('new');
     const closed = await inject(
       'PATCH',
@@ -1151,13 +1216,23 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     );
     expect(closed.statusCode, closed.body).toBe(200);
 
+    // Решение доходит до ленты элементом `changes`, а не полем рядом с `revision` (Р12): сборка
+    // истории читает только `metadata.changes`, и положенное иначе она молча пропустила бы.
     const history = await inject(
       'GET',
       `/api/v1/service-requests/${dto.id}/history`,
       ctx.itApprover.auth,
     );
-    const kinds = (history.json() as { kind: string; comment: string }[]).map((e) => e.kind);
-    expect(kinds).toContain('itRejected');
+    const events = history.json() as {
+      kind: string;
+      changes?: { field: string; to: string }[];
+    }[];
+    expect(events.map((e) => e.kind)).toContain('estimateRejected');
+    const rejection = events.find((e) => e.kind === 'estimateRejected')!;
+    expect(rejection.changes?.map((c) => c.field)).toContain('rejectionResolution');
+    expect(rejection.changes?.find((c) => c.field === 'rejectionResolution')?.to).toBe(
+      'Меняем аппарат, заявка на закупку заведена',
+    );
   });
 
   it('автовизы при заведении больше нет: заявка согласующего от ИТ тоже «Новая»', async () => {
@@ -1192,9 +1267,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     }
   });
 
-  // ── Шаг 3. Исполнитель назначен ──
+  // ── Шаг 3. Исполнитель назначен — но статуса это не меняет (Р5) ──
 
-  it('оператор назначает сервис — заявка становится видна исполнителю', async () => {
+  it('оператор назначает сервис — заявка остаётся «Новой» и становится видна исполнителю', async () => {
     const res = await inject(
       'PUT',
       `/api/v1/service-requests/${state.main.id}/executors`,
@@ -1208,11 +1283,171 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(res.statusCode, res.body).toBe(200);
     // Назначение отвечает парой «заявка + исход письма исполнителям» (Н13).
     const dto = (res.json() as { request: ServiceRequestDto }).request;
-    expect(dto.status).toBe('assigned');
+    /*
+     * Статуса назначение не меняет (Р5): «Назначена» означала не состояние заявки, а ожидание
+     * нажатия кнопки исполнителем, и видно это ожидание без статуса — по составу исполнителей.
+     * Поэтому проверяется пара: статус прежний, а очередь уже другая — ждут не распределяющего, а
+     * того, кто возьмётся (`serviceRequestWaitingOn`, таблица Р2).
+     */
+    expect(dto.status).toBe('new');
     expect(dto.waitingOn).toBe('service');
     expect(dto.service?.id).toBe(ctx.serviceCounterpartyId);
 
+    // Событие в ленте всё равно есть: строка истории кладётся `from = to`, иначе «у заявки
+    // появился исполнитель» осталось бы без следа.
+    const history = await inject(
+      'GET',
+      `/api/v1/service-requests/${state.main.id}/history`,
+      ctx.operator.auth,
+    );
+    const statuses = (
+      history.json() as { kind: string; fromStatus: string | null; toStatus: string | null }[]
+    )
+      .filter((e) => e.kind === 'status')
+      .map((e) => `${e.fromStatus}→${e.toStatus}`);
+    expect(statuses).toContain('new→new');
+
     expect(await listIds(ctx.service.auth)).toContain(state.main.id);
+  });
+
+  /**
+   * **Заказчик правит заявку, пока её никому не отдали** (Р14). Прежде на этот вопрос отвечал сам
+   * статус: назначение уводило заявку в «Назначенную», а правка была открыта только в «Новой».
+   * После слияния (Р1) оба состояния зовутся «Новой», и, оставь предикат `status === 'new'`,
+   * правка молча открылась бы у заявки, которую исполнитель уже прочитал и по которой договорился.
+   *
+   * Удаление при этом — СВОЁ правило, а не «то же, что правка» (В20): назначенную заявку удалять
+   * можно, работа по ней не начиналась. Проверяются оба рядом, иначе следующая правка приняла бы
+   * их совпадение по статусу за один общий перечень.
+   */
+  it('назначенную заявку заказчик уже не правит, но ещё удаляет (Р14)', async () => {
+    const dto = await createRequest(
+      ctx.customer.auth,
+      await freshUnit(),
+      'Правка заказчиком до и после назначения',
+    );
+
+    const before = await inject('PATCH', `/api/v1/service-requests/${dto.id}`, ctx.customer.auth, {
+      description: 'Уточнил неисправность до назначения',
+      version: dto.version,
+    });
+    expect(before.statusCode, before.body).toBe(200);
+
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${dto.id}/executors`,
+      ctx.operator.auth,
+      {
+        userIds: [],
+        serviceCounterpartyId: ctx.serviceCounterpartyId,
+        version: (before.json() as ServiceRequestDto).version,
+      },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    const after = (assigned.json() as { request: ServiceRequestDto }).request;
+    expect(after.status).toBe('new');
+
+    const late = await inject('PATCH', `/api/v1/service-requests/${dto.id}`, ctx.customer.auth, {
+      description: 'А теперь ещё и сканер не работает',
+      version: after.version,
+    });
+    expect(late.statusCode, late.body).toBe(403);
+    expect(late.json().message).toContain('только до назначения сервиса');
+    expect((await card(dto.id)).description).toBe('Уточнил неисправность до назначения');
+
+    // Удаление той же назначенной заявки проходит: набор заявок, который покрывал прежний перечень
+    // «Новая + Назначена», после слияния покрывает один `new`.
+    const removed = await inject(
+      'DELETE',
+      `/api/v1/service-requests/${dto.id}`,
+      ctx.customer.auth,
+    );
+    expect(removed.statusCode, removed.body).toBe(200);
+    expect((removed.json() as { ok: boolean }).ok).toBe(true);
+  });
+
+  /**
+   * **Нераспределённую заявку в работу не берут** — третий запрет, который держал снятый статус
+   * (после третьего замка предъявления на файле объёма работ и «есть от чего отказываться» у
+   * `decline`). Закрыт шестым предикатом Р11 — `canStartServiceWork`.
+   *
+   * Р6 плана утверждал, что перечня статусов здесь не нужно: «ход открывает факт назначения, а не
+   * право, и он же сам собой закрывает ход у нераспределённой — `isServiceExecutor` ложен при любом
+   * праве». Верна половина: `isServiceExecutor` действительно ложен. Но коридор исполнителя
+   * открывает **дизъюнкция**, и вторая её половина — право на объём работ — назначения не
+   * спрашивает вовсе. Пока коридор был `assigned → in_work`, это ничего не значило: у «Новой» дуг
+   * не было. После Р6 коридор стал `new → in_work`, и запрет исчез вместе со статусом.
+   *
+   * **Проверяется не только код, но и то, что отложенный триггер молчит.** В этом и была авария:
+   * заявка уезжала в «В работе» без единого исполнителя, `service_requests_executor_present` (0178)
+   * ловил это на `COMMIT` ошибкой БД, и наружу уходило 500 — данные целы, но человеку вместо
+   * «сначала распределите заявку» показывали «что-то пошло не так».
+   */
+  it('нераспределённую «Новую» в работу не берут — 422 до всякой транзакции', async () => {
+    const dto = await createRequest(
+      ctx.customer.auth,
+      await freshUnit(),
+      'Принять в работу нераспределённую',
+    );
+    expect(dto.status).toBe('new');
+    expect(dto.service).toBeNull();
+    expect(dto.executors).toEqual([]);
+
+    const res = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${dto.id}/start`,
+      ctx.admin.auth,
+      { version: dto.version },
+    );
+    // 422, а не 500 и не 403. Не 500 — до транзакции дело не доходит вовсе; не 403 — право у
+    // держателя есть, и просить его не надо: заявку надо сперва распределить.
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().message).toContain('сначала распределяют');
+    expect(res.json().fields?.status).toBe('Исполнителей нет');
+    // Именно отказ, а не авария: `internal_error` означал бы, что запрет держит только БД.
+    expect(res.json().code).not.toBe('internal_error');
+
+    // 1. Отложенный триггер не срабатывал, потому что срабатывать было не на чем: заявка не
+    //    двигалась. Возраст ожидания и версия — на месте.
+    const after = await card(dto.id);
+    expect(after.status).toBe('new');
+    expect(after.statusChangedAt).toBe(dto.statusChangedAt);
+    expect(after.version).toBe(dto.version);
+
+    // 2. Лента чиста: перехода `new → in_work` в ней нет, есть только заведение.
+    const history = await inject(
+      'GET',
+      `/api/v1/service-requests/${dto.id}/history`,
+      ctx.admin.auth,
+    );
+    const events = history.json() as {
+      kind: string;
+      fromStatus: string | null;
+      toStatus: string | null;
+    }[];
+    expect(events.map((e) => e.kind)).toEqual(['created']);
+    expect(events.filter((e) => e.toStatus === 'in_work')).toEqual([]);
+
+    // 3. А распределённую ту же заявку исполнитель берёт в работу тем же ходом: решает состав
+    //    исполнителей, а не субъект и не статус — оба до и после одинаковы.
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${dto.id}/executors`,
+      ctx.operator.auth,
+      { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: dto.version },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    const ready = (assigned.json() as { request: ServiceRequestDto }).request;
+    expect(ready.status).toBe('new');
+
+    const started = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${dto.id}/start`,
+      ctx.service.auth,
+      { version: ready.version },
+    );
+    expect(started.statusCode, started.body).toBe(200);
+    expect((started.json() as ServiceRequestDto).status).toBe('in_work');
   });
 
   // ── Шаг 3. Коридоры: у каждой стороны свои дуги (Р17) ──
@@ -1240,7 +1475,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       { version: await version(state.main.id) },
     );
     expect(submit.statusCode, submit.body).toBe(403);
-    expect(submit.json().message).toContain('Смету ведёт исполнитель');
+    expect(submit.json().message).toContain('Объём работ ведёт исполнитель');
 
     const complete = await inject(
       'PATCH',
@@ -1249,7 +1484,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       { completedOn: TODAY, items: [], version: await version(state.main.id) },
     );
     expect(complete.statusCode, complete.body).toBe(403);
-    expect(complete.json().message).toContain('Смету ведёт исполнитель');
+    expect(complete.json().message).toContain('Объём работ ведёт исполнитель');
   });
 
   it('сервис не согласует смету, не принимает работу и не отменяет заявку — 403', async () => {
@@ -1260,7 +1495,10 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       { approved: true, version: await version(state.main.id) },
     );
     expect(approve.statusCode, approve.body).toBe(403);
-    expect(approve.json().message).toContain('Смету согласует заказчик');
+    // Оператор подрядчика исключён из согласующих явно и раньше обеих веток (Р3): объём работ
+    // предъявил он, и подпись под собственным счётом — не согласование, а его копия. Отказ здесь
+    // даёт страж маршрута: права согласования в наборе подрядчика нет вовсе.
+    expect(approve.json().message).toContain('Объём работ согласует тот, кто ведёт заявку');
 
     // Право статуса у исполнителя есть — и приёмку, и отмену закрывает именно коридор.
     const accept = await inject(
@@ -1380,7 +1618,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect((await card(state.main.id)).items).toHaveLength(3);
   });
 
-  it('сервис предъявляет смету: ревизия 1, сумма зафиксирована, смета заперта', async () => {
+  it('сервис предъявляет объём работ: ревизия 1, сумма зафиксирована, статус прежний', async () => {
     const res = await inject(
       'PATCH',
       `/api/v1/service-requests/${state.main.id}/estimate/submit`,
@@ -1389,10 +1627,18 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     );
     expect(res.statusCode, res.body).toBe(200);
     const dto = res.json() as ServiceRequestDto;
-    expect(dto.status).toBe('estimate_review');
-    // Первым по смете отвечает ИТ — «чинить или менять», — и только потом деньги (Н3). Очередь
-    // различает эти два состояния ревизионной визой, а не подстатусом.
-    expect(dto.waitingOn).toBe('it');
+    /*
+     * Предъявление переходом быть перестало (Р8): «Смета на согласовании» означала не состояние
+     * заявки, а ожидание ответа на предъявленный счёт, — и заявка всё это время стоит в «В
+     * работе», ровно как просил заказчик. Само ожидание открывает своя колонка
+     * `estimate_pending_revision`, равная только что поднятой ревизии (`CHECK` в базе сторожит
+     * равенство), и очередь считается по ней.
+     */
+    expect(dto.status).toBe('in_work');
+    expect(dto.estimatePendingRevision).toBe(1);
+    // Сторона `approval` — новая (Р3): согласующий не совпадает ни с одной старой, и оставь его
+    // очередь на `operator`, поимённый исполнитель не увидел бы заявку в «Ждут меня» вовсе.
+    expect(dto.waitingOn).toBe('approval');
     expect(dto.estimateRevision).toBe(1);
     // Снимок предъявленной суммы: по нему потом сверяется закрытие.
     expect(dto.estimatedTotalAmount).toBe(6000);
@@ -1400,10 +1646,17 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(dto.approval).toBeNull();
   });
 
-  it('предъявленная смета правке не подлежит — 409 (Р14)', async () => {
-    // 409, а не 422: смету запер не сам исполнитель, а её предъявление, — и человеку нужно
-    // обновить окно, а не исправить данные.
-    const res = await inject(
+  it('предъявленный объём работ правке не подлежит, и предъявить его заново нельзя — 409 (Р9)', async () => {
+    /*
+     * **Два замка, а не один.** Прежде оба держал сам статус: из «Сметы на согласовании» и правка
+     * состава, и повторное предъявление были недоступны. Статус снят — и, не заведи мы замки
+     * заново, исполнитель менял бы цифры под висящей подписью либо поднимал ревизию, подменяя
+     * снимок суммы под уже открытым окном согласования.
+     *
+     * 409, а не 422: состав запер не сам исполнитель, а его предъявление, — и человеку нужно
+     * обновить окно либо вернуть объём в правку, а не исправить данные.
+     */
+    const edited = await inject(
       'PUT',
       `/api/v1/service-requests/${state.main.id}/estimate`,
       ctx.service.auth,
@@ -1412,51 +1665,61 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         version: await version(state.main.id),
       },
     );
-    expect(res.statusCode, res.body).toBe(409);
-    expect((await card(state.main.id)).estimatedTotalAmount).toBe(6000);
-  });
+    expect(edited.statusCode, edited.body).toBe(409);
+    expect(edited.json().message).toContain('верните его в правку');
 
-  // ── Шаг 5. Виза ИТ по смете, согласование и вторая ревизия ──
-
-  it('до визы ИТ сумму не согласуют: порядок подписей жёсткий (Н3)', async () => {
-    const res = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${state.main.id}/estimate/approval`,
-      ctx.operator.auth,
-      { approved: true, version: await version(state.main.id) },
-    );
-    expect(res.statusCode, res.body).toBe(422);
-    expect(res.json().message).toContain('после визы ИТ');
-    expect((await card(state.main.id)).status).toBe('estimate_review');
-  });
-
-  it('отдел ИТ визирует смету: подпись с ревизией, дальше ход у оператора', async () => {
-    const res = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${state.main.id}/it-approval`,
-      ctx.itApprover.auth,
-      { approved: true, version: await version(state.main.id, ctx.itApprover.auth) },
-    );
-    expect(res.statusCode, res.body).toBe(200);
-    const dto = res.json() as ServiceRequestDto;
-    // Виза статуса не меняет: она подписывает текущую ревизию сметы, а дальше решают по сумме.
-    expect(dto.status).toBe('estimate_review');
-    expect(dto.waitingOn).toBe('operator');
-    expect(dto.itApproval?.by).toBe(ctx.itApprover.id);
-    expect(dto.itApproval?.auto).toBe(false);
-    expect(dto.itApproval?.byName).toBeTruthy();
-
-    // Второй раз ту же ревизию не подписывают: согласие уже стоит.
     const again = await inject(
       'PATCH',
-      `/api/v1/service-requests/${state.main.id}/it-approval`,
-      ctx.itApprover.auth,
-      { approved: true, version: await version(state.main.id, ctx.itApprover.auth) },
+      `/api/v1/service-requests/${state.main.id}/estimate/submit`,
+      ctx.service.auth,
+      { version: await version(state.main.id) },
     );
-    expect(again.statusCode, again.body).toBe(422);
+    expect(again.statusCode, again.body).toBe(409);
+    expect(again.json().message).toContain('уже предъявлен и ждёт ответа');
+
+    // Ни ревизия, ни снимок суммы от двух отказов не сдвинулись.
+    const after = await card(state.main.id);
+    expect(after.estimatedTotalAmount).toBe(6000);
+    expect(after.estimateRevision).toBe(1);
+    expect(after.estimatePendingRevision).toBe(1);
   });
 
-  it('оператор согласует смету: снимок «кто, когда, какая ревизия»', async () => {
+  // ── Шаг 5. Согласование и вторая ревизия ──
+  //
+  // Порядок двух подписей («сперва ИТ, потом деньги») снят вместе с визой (Р10): подпись осталась
+  // одна, и вопрос «чинить или менять» задаёт себе тот же человек, что смотрит на объём работ.
+  // Проверять «до визы ИТ сумму не согласуют» и «ИТ визирует смету» больше не на чем — ручки нет.
+  //
+  // Переназначение под висящим предъявлением при этом по-прежнему запрещено, и запрет переехал из
+  // пустого коридора «Сметы на согласовании» в сам предикат (Р11) — свой случай ниже.
+
+  it('под висящим предъявлением заявку не переназначают — 422 (Р11)', async () => {
+    const res = await inject(
+      'PUT',
+      `/api/v1/service-requests/${state.main.id}/executors`,
+      ctx.operator.auth,
+      {
+        userIds: [ctx.namedExecutor.id],
+        serviceCounterpartyId: null,
+        reason: 'Забираем у подрядчика',
+        version: await version(state.main.id),
+      },
+    );
+    /*
+     * Правило сегодняшнее, а не новое: цифры предъявленного объёма принадлежат прежнему
+     * исполнителю, и переданная заявка оставила бы новому чужой счёт. Прежде его держал пустой
+     * `SERVICE_ASSIGNER_TRANSITIONS.estimate_review`; после слияния это же состояние зовётся «В
+     * работе» + предъявление, и не войди условие в предикат — запрет исчез бы вместе со статусом.
+     *
+     * 422, а не 403: право у распределяющего есть, и просить его не надо — надо дождаться ответа
+     * по объёму работ.
+     */
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().message).toContain('ждёт ответа');
+    expect((await card(state.main.id)).service?.id).toBe(ctx.serviceCounterpartyId);
+  });
+
+  it('оператор согласует объём работ: снимок «кто, когда, какая ревизия», статус прежний', async () => {
     const res = await inject(
       'PATCH',
       `/api/v1/service-requests/${state.main.id}/estimate/approval`,
@@ -1465,16 +1728,19 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     );
     expect(res.statusCode, res.body).toBe(200);
     const dto = res.json() as ServiceRequestDto;
+    // «Согласовано» статуса не меняет вовсе (Р8): заявка как стояла в «В работе», так и стоит —
+    // ровно как просил заказчик, — а из очереди подписи её выводит погашенное предъявление.
     expect(dto.status).toBe('in_work');
+    expect(dto.estimatePendingRevision).toBeNull();
     expect(dto.waitingOn).toBe('service');
     expect(dto.approval).toMatchObject({ by: ctx.operator.id, revision: 1 });
   });
 
-  it('согласованную смету правят, только вернув её в правку: статус при этом не меняется', async () => {
-    // Единственный путь изменить согласованную смету (Р14). Прежде он откатывал заявку в
-    // «Диагностику»; та слилась с «В работе» (Н2), и второй дуги `in_work → estimate_review`
-    // заводить нельзя — она сделала бы необязательным подъём ревизии, на котором держится
-    // обесценивание обеих подписей (Н3). Поэтому ручка снимает только снимок согласования.
+  it('согласованный объём работ правят, только вернув его в правку: статус при этом не меняется', async () => {
+    // Единственный путь изменить согласованный объём работ (Р9). Прежде он откатывал заявку в
+    // «Диагностику»; та слилась с «В работе» (Н2), а второй дуги в предъявление заводить нельзя —
+    // она сделала бы необязательным подъём ревизии, на котором держится обесценивание подписи.
+    // Поэтому ручка снимает только снимок согласования и само предъявление, а статус не трогает.
     const locked = await inject(
       'PUT',
       `/api/v1/service-requests/${state.main.id}/estimate`,
@@ -1499,11 +1765,15 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(res.statusCode, res.body).toBe(200);
     const dto = res.json() as ServiceRequestDto;
     expect(dto.status).toBe('in_work');
-    // Снимок согласования недействителен, а смета остаётся черновиком той же ревизии.
+    // Снимок согласования недействителен, а объём работ остаётся черновиком той же ревизии.
     expect(dto.approval).toBeNull();
+    expect(dto.estimatePendingRevision).toBeNull();
     expect(dto.estimateRevision).toBe(1);
     expect(dto.items).toHaveLength(3);
     expect(dto.estimatedTotalAmount).toBe(6000);
+    // Дату предъявления возврат НЕ трогает (Р9): она сохраняет смысл «когда предъявляли в
+    // последний раз», а активное состояние определяет исключительно `estimatePendingRevision`.
+    expect(dto.estimateSubmittedAt).not.toBeNull();
   });
 
   it('сервис меняет состав и предъявляет ревизию 2', async () => {
@@ -1548,35 +1818,33 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(dto.approval).toBeNull();
   });
 
-  it('до повторного согласования работы не закрываются', async () => {
-    // Заявка стоит в «Смете на согласовании», и закрытие упирается в коридор исполнителя: из этого
-    // статуса у него дуг нет вовсе. Проверка совпадения ревизий (409) сюда не доходит и дойти не
-    // может — она сторожит другое состояние, и оно проверяется следующим тестом.
+  it('до повторного согласования работы не закрываются — отбивает ревизия, а не коридор', async () => {
+    /*
+     * **Отказ сменил основание, и это следствие Р1.** Прежде заявка стояла в «Смете на
+     * согласовании», у которой дуг исполнителя не было вовсе, и закрытие отбивал коридор (403).
+     * Статуса больше нет: заявка стоит в «В работе», откуда `in_work → done` исполнителю открыт, —
+     * и до отказа теперь доходит сверка ревизий (409). Предъявленная ревизия 2 не подписана
+     * никем: подпись стояла на ревизии 1 и снята возвратом в правку.
+     *
+     * Ослаблением это не является: закрыть работы под висящим предъявлением по-прежнему нельзя, а
+     * 409 вместо 403 человеку честнее — просить прав не надо, надо дождаться подписи.
+     */
+    const before = await card(state.main.id);
+    expect(before.status).toBe('in_work');
+    expect(before.estimatePendingRevision).toBe(2);
     const res = await inject(
       'PATCH',
       `/api/v1/service-requests/${state.main.id}/complete`,
       ctx.service.auth,
-      { completedOn: TODAY, items: [], version: await version(state.main.id) },
+      { completedOn: TODAY, items: [], version: before.version },
     );
-    expect(res.statusCode, res.body).toBe(403);
-    // Отказ по коридору, а не по праву: закрывать работы исполнителю можно, но не из этого статуса.
-    expect(res.json().message).toContain('не может перевести заявку');
+    expect(res.statusCode, res.body).toBe(409);
+    expect(res.json().message).toContain('Согласована ревизия');
   });
 
-  it('оператор согласует ревизию 2 — но только после новой визы ИТ', async () => {
-    // Подъём ревизии обесценил обе подписи разом (Н3): прошлая виза ИТ стояла на ревизии 1, и
-    // визой сметы она больше не считается.
-    const early = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${state.main.id}/estimate/approval`,
-      ctx.operator.auth,
-      { approved: true, version: await version(state.main.id) },
-    );
-    expect(early.statusCode, early.body).toBe(422);
-    expect(early.json().message).toContain('после визы ИТ');
-    expect((await card(state.main.id)).waitingOn).toBe('it');
-
-    await approveByIt(state.main.id);
+  it('оператор согласует ревизию 2 — подпись одна, порядка двух больше нет', async () => {
+    // Подъём ревизии обесценил подпись (Н3): прошлая стояла на ревизии 1. Второй подписи, которой
+    // прежде полагалось идти первой, больше не существует (Р10) — согласует один человек и сразу.
     const res = await inject(
       'PATCH',
       `/api/v1/service-requests/${state.main.id}/estimate/approval`,
@@ -1584,8 +1852,113 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       { approved: true, version: await version(state.main.id) },
     );
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().status).toBe('in_work');
-    expect(res.json().approval.revision).toBe(2);
+    const dto = res.json() as ServiceRequestDto;
+    expect(dto.status).toBe('in_work');
+    expect(dto.approval?.revision).toBe(2);
+    expect(dto.estimatePendingRevision).toBeNull();
+    expect(dto.waitingOn).toBe('service');
+  });
+
+  /**
+   * **Очередь списком обязана сойтись с очередью карточки** — и на новой стороне `approval` это
+   * не формальность (Р2, Р3). Карточка отвечает предикатом `serviceRequestWaitingOn` по строке, а
+   * список — SQL-условием `waitingSideWhere`, выведенным из того же предиката перебором статусов
+   * по двум булевым осям. Оси после Р2 другие (`hasExecutors` и непогашенное предъявление), и
+   * разъедься эти два расчёта — заявка стояла бы в карточке «Ждёт согласования», а в «Ждут меня» у
+   * согласующего не показывалась вовсе.
+   *
+   * Вторая половина случая — про то, кого сторона `approval` НЕ включает: оператор подрядчика
+   * исключён из неё явно (Р3), потому что объём работ предъявил он, и подпись под собственным
+   * счётом не согласование, а его копия. По стороне `service` он ту же заявку до предъявления
+   * видел — значит проверка отличает «исключили согласующего-подрядчика» от «список ему пуст».
+   */
+  it('заявка с висящим предъявлением встаёт в «Ждут меня» согласующему, но не подрядчику', async () => {
+    const dto = await createRequest(
+      ctx.customer.auth,
+      await freshUnit(),
+      'Очередь согласования: список против карточки',
+    );
+    await driveTo(dto.id, 'in_work');
+
+    // До предъявления заявку ждёт исполнитель — и в списке она стоит именно у него.
+    expect(await listIds(ctx.service.auth, '&waitingOnMe=true')).toContain(dto.id);
+
+    const submitted = await submitEstimate(dto.id);
+    expect(submitted.waitingOn).toBe('approval');
+
+    const beforeCount = await waitingCount(ctx.operator.auth);
+    expect(await listIds(ctx.operator.auth, '&waitingOnMe=true')).toContain(dto.id);
+    // Исполнитель из очереди вышел: ход не за ним, пока по счёту не ответили.
+    expect(await listIds(ctx.service.auth, '&waitingOnMe=true')).not.toContain(dto.id);
+
+    // Ответ по объёму работ возвращает ход исполнителю — и обе очереди меняются вместе.
+    const approved = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${dto.id}/estimate/approval`,
+      ctx.operator.auth,
+      { approved: true, version: submitted.version },
+    );
+    expect(approved.statusCode, approved.body).toBe(200);
+    expect(await listIds(ctx.operator.auth, '&waitingOnMe=true')).not.toContain(dto.id);
+    expect(await listIds(ctx.service.auth, '&waitingOnMe=true')).toContain(dto.id);
+    // Бейдж раздела считает ту же очередь своей ручкой: разойдись они, число вело бы в пустой
+    // список.
+    expect(await waitingCount(ctx.operator.auth)).toBe(beforeCount - 1);
+  });
+
+  /**
+   * **Возраст ожидания у возврата в правку — условный, и условие здесь не «сменилась ли сторона
+   * вообще»** (Р4). У ручки два предусловия, и сторону меняет только одно: отзыв ВИСЯЩЕГО
+   * предъявления возвращает ход исполнителю (`approval → service`) — отсчёт начинается заново;
+   * снятие подписи с уже согласованного объёма не двигает ничего — до него ждали исполнителя и
+   * после него ждут его же.
+   *
+   * Своей заявкой, а не на главной цепочке: сравниваются два вызова одной ручки, и разделить их
+   * можно только на состояниях, собранных подряд.
+   */
+  it('возврат в правку обнуляет возраст только у висящего предъявления (Р4)', async () => {
+    const pending = await pendingEstimateRequest('Возраст ожидания при возврате в правку');
+    expect(pending.waitingOn).toBe('approval');
+
+    // 1. Отзыв ВИСЯЩЕГО предъявления: ход вернулся исполнителю — возраст начинается заново.
+    const withdrawn = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${pending.id}/estimate/reopen`,
+      ctx.service.auth,
+      { reason: 'посчитал заново, отзываю', version: pending.version },
+    );
+    expect(withdrawn.statusCode, withdrawn.body).toBe(200);
+    const afterWithdraw = withdrawn.json() as ServiceRequestDto;
+    expect(afterWithdraw.estimatePendingRevision).toBeNull();
+    expect(afterWithdraw.waitingOn).toBe('service');
+    expect(new Date(afterWithdraw.statusChangedAt).getTime()).toBeGreaterThan(
+      new Date(pending.statusChangedAt).getTime(),
+    );
+
+    // 2. Предъявляем и СОГЛАСОВЫВАЕМ — теперь снимать будем подпись, а не предъявление.
+    const resubmitted = await submitEstimate(pending.id);
+    const approved = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${pending.id}/estimate/approval`,
+      ctx.operator.auth,
+      { approved: true, version: resubmitted.version },
+    );
+    expect(approved.statusCode, approved.body).toBe(200);
+    const signed = approved.json() as ServiceRequestDto;
+    expect(signed.approval?.revision).toBe(resubmitted.estimateRevision);
+
+    // 3. Снятие подписи с согласованного объёма сторону не меняет — возраст стоит на месте.
+    const unsigned = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${pending.id}/estimate/reopen`,
+      ctx.service.auth,
+      { reason: 'нужен ещё термоузел', version: signed.version },
+    );
+    expect(unsigned.statusCode, unsigned.body).toBe(200);
+    const afterUnsign = unsigned.json() as ServiceRequestDto;
+    expect(afterUnsign.approval).toBeNull();
+    expect(afterUnsign.waitingOn).toBe('service');
+    expect(afterUnsign.statusChangedAt).toBe(signed.statusChangedAt);
   });
 
   it('работы по несогласованной ревизии сметы не закрываются — 409', async () => {
@@ -1605,7 +1978,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       { completedOn: TODAY, items: [], version: before.version },
     );
     expect(res.statusCode, res.body).toBe(409);
-    expect(res.json().message).toContain('Согласована ревизия сметы 2');
+    expect(res.json().message).toContain('Согласована ревизия 2');
 
     await ctx.db.execute(sql`
       UPDATE service_requests SET estimate_revision = ${before.estimateRevision}
@@ -2053,9 +2426,10 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
   });
 
   it('сервис видит только назначенные ему заявки', async () => {
-    // Заявку отдела назначают другому исполнителю: она перестаёт быть «Новой», но нашему сервису
-    // от этого видна не становится — область исполнителя считается по контрагенту, а не по статусу.
-    await approveByIt(state.deptOwned.id);
+    // Заявку отдела назначают ДРУГОМУ исполнителю: нашему сервису она от этого видна не становится
+    // — область исполнителя считается по контрагенту. Статуса назначение не меняет вовсе (Р5), и
+    // это делает проверку строже прежней: раньше заявка уходила в «Назначена», и «не видна» можно
+    // было списать на смену статуса.
     const assigned = await inject(
       'PUT',
       `/api/v1/service-requests/${state.deptOwned.id}/executors`,
@@ -2153,10 +2527,22 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     ]);
   });
 
-  it('смету снимают в «Диагностике» и не снимают после предъявления', async () => {
-    // Заявка на сканере стоит в «Диагностике» со своей строкой сметы — на ней и проверяется
-    // единственное исключение из «вложение снимает приложивший»: предъявленную смету не вынимают
-    // из карточки, её возвращают в диагностику (Р14).
+  /**
+   * **ТРЕТИЙ ЗАМОК ВИСЯЩЕГО ПРЕДЪЯВЛЕНИЯ — на файле объёма работ** (Р9 + правка, найденная этим
+   * файлом).
+   *
+   * Правило «предъявленный объём работ не вынимают из карточки» держал СТАТУС: страж снятия
+   * сравнивал статус с «В работе», а предъявление уводило заявку в «Смету на согласовании».
+   * Предъявление статуса менять перестало (Р8) — заявка остаётся в «В работе», прежнее условие
+   * обращается в ложь, и исполнитель вынимал бы бумагу из-под открытого окна согласования:
+   * согласующий смотрит на цифры, документа под которыми уже нет. Условий поэтому теперь два:
+   * прежнее (`status !== 'in_work'`) сохранено целиком, а рядом встал признак предъявления.
+   *
+   * Проверяется всё четвёрками, и **ключ важнее замка**: замок без ключа был бы просто новым
+   * тупиком, из которого исполнителю не выбраться. Ключ тот же, что у двух других замков Р9, —
+   * «Вернуть объём работ в правку».
+   */
+  it('файл объёма работ заперт висящим предъявлением, а «вернуть в правку» его отпирает', async () => {
     const attach = async (filename: string) => {
       const fileId = await uploadedFile(ctx.service.id, filename);
       const res = await inject(
@@ -2168,13 +2554,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect(res.statusCode, res.body).toBe(200);
       return fileId;
     };
-    const detach = (fileId: string) =>
-      inject(
-        'DELETE',
-        `/api/v1/service-requests/${state.otherUnit.id}/files/${fileId}`,
-        ctx.service.auth,
-      );
+    const detach = (fileId: string, auth: Auth = ctx.service.auth) =>
+      inject('DELETE', `/api/v1/service-requests/${state.otherUnit.id}/files/${fileId}`, auth);
 
+    // Черновик, предъявления по которому ещё не было, снимается свободно: замок ставит не вид
+    // документа, а состояние заявки.
     const draft = await attach('kp-chernovik.pdf');
     const removed = await detach(draft);
     expect(removed.statusCode, removed.body).toBe(200);
@@ -2188,12 +2572,71 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       { version: await version(state.otherUnit.id) },
     );
     expect(submitted.statusCode, submitted.body).toBe(200);
-    expect(submitted.json().status).toBe('estimate_review');
+    // Предъявление статуса не меняет (Р8): заявка осталась в «В работе», а ожидание подписи держит
+    // своя колонка — значит и запирает файл именно она, а не статус.
+    expect(submitted.json().status).toBe('in_work');
+    expect(submitted.json().estimatePendingRevision).toBe(submitted.json().estimateRevision);
 
+    // 1. ЗАМОК. Статус к снятию располагает, и отбивает только признак предъявления.
     const locked = await detach(final);
     expect(locked.statusCode, locked.body).toBe(422);
-    expect(locked.json().message).toContain('Предъявленная смета не снимается');
+    expect(locked.json().message).toContain('верните его в правку и предъявите заново');
     expect((await card(state.otherUnit.id)).files).toHaveLength(1);
+
+    // 2. ОГОВОРКА `!manageAny` не тронута: распорядитель чужих файлов проходит сквозь оба условия.
+    //    Проверяется отказом соседней двери — «снять вложение может тот, кто его приложил»: до неё
+    //    администратор доходит, то есть замок объёма работ его пропустил.
+    const byManager = await detach(final, ctx.admin.auth);
+    expect(byManager.statusCode, byManager.body).toBe(200);
+    expect((byManager.json() as ServiceRequestDto).files).toEqual([]);
+
+    // 3. КЛЮЧ. Возвращаем бумагу и отзываем предъявление — файл снимается снова, и снимает его сам
+    //    исполнитель. Без этого шага замок был бы тупиком: править состав нельзя, предъявить заново
+    //    нельзя, снять бумагу нельзя — и выйти из состояния нечем.
+    const again = await attach('kp-2.pdf');
+    const reopened = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${state.otherUnit.id}/estimate/reopen`,
+      ctx.service.auth,
+      { reason: 'отзываю предъявление, меняю бумагу', version: await version(state.otherUnit.id) },
+    );
+    expect(reopened.statusCode, reopened.body).toBe(200);
+    expect((reopened.json() as ServiceRequestDto).estimatePendingRevision).toBeNull();
+
+    const unlocked = await detach(again);
+    expect(unlocked.statusCode, unlocked.body).toBe(200);
+    expect((unlocked.json() as ServiceRequestDto).files).toEqual([]);
+
+    // 4. ПРЕЖНЯЯ ПОЛОВИНА ПРАВИЛА НЕ ПОТЕРЯНА: из «Решена» файл не снимается, и держит это уже не
+    //    предъявление — оно погашено согласованием, — а сам статус.
+    const third = await attach('kp-3.pdf');
+    const resubmitted = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${state.otherUnit.id}/estimate/submit`,
+      ctx.service.auth,
+      { version: await version(state.otherUnit.id) },
+    );
+    expect(resubmitted.statusCode, resubmitted.body).toBe(200);
+    const approved = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${state.otherUnit.id}/estimate/approval`,
+      ctx.operator.auth,
+      { approved: true, version: await version(state.otherUnit.id) },
+    );
+    expect(approved.statusCode, approved.body).toBe(200);
+    expect((approved.json() as ServiceRequestDto).estimatePendingRevision).toBeNull();
+    await attachClosingDocument(state.otherUnit.id);
+    const completed = await completeWork(state.otherUnit.id);
+    expect(completed.statusCode, completed.body).toBe(200);
+    expect((completed.json() as ServiceRequestDto).status).toBe('done');
+
+    const byStatus = await detach(third);
+    expect(byStatus.statusCode, byStatus.body).toBe(422);
+    expect(byStatus.json().message).toContain('не снимается');
+    expect((await card(state.otherUnit.id)).files.map((f) => f.kind).sort()).toEqual([
+      'act',
+      'estimate',
+    ]);
   });
 
   // ── Шаг 15. От чьего имени заявка: выбор отдела заказчика (Р5) ──
@@ -2288,6 +2731,97 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     // работать не положено вовсе (`resolveCustomerDepartment`, Р5).
     expect(res.statusCode, res.body).toBe(403);
     expect(res.json().message).toContain('только от своих отделов');
+  });
+
+  // ── Шаг 15а. «Аппарат стоит не на том объекте» (Р16) ──
+  //
+  // Признаков два, и делят они работу так: ХРАНИМЫЙ `objectOverridden` — факт заявления («объект в
+  // этой заявке указал человек, а не подставила карточка»), он историчен и не гаснет ничем;
+  // РАСХОЖДЕНИЕ `objectMismatch` — величина вычисляемая, соединением с карточкой, и гаснет само,
+  // когда ИТ-служба перенесёт единицу в справочнике. Одного хранимого мало — он не гаснет; одного
+  // вычисляемого мало — технику возят, и у прошлогодних заявок снимок расходится с карточкой
+  // сплошь и рядом, никто этого не заявлял.
+
+  it('пометка «не тот объект» и объект — одно утверждение: порознь их не принимают', async () => {
+    const body = (extra: Record<string, unknown>) => ({
+      officeEquipmentId: '',
+      description: 'Аппарат переехал, а карточка нет',
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+      ...extra,
+    });
+
+    // Пометка без объекта не говорит, где аппарат стоит на самом деле.
+    const noObject = await inject('POST', '/api/v1/service-requests', ctx.customer.auth, {
+      ...body({ objectOverridden: true }),
+      officeEquipmentId: await freshUnit(),
+    });
+    expect(noObject.statusCode, noObject.body).toBe(400);
+
+    // А объект без пометки — молчаливая подмена области видимости заявки.
+    const noFlag = await inject('POST', '/api/v1/service-requests', ctx.customer.auth, {
+      ...body({ objectId: ctx.objectId }),
+      officeEquipmentId: await freshUnit(),
+    });
+    expect(noFlag.statusCode, noFlag.body).toBe(400);
+  });
+
+  it('объект вне области заявителя — 422, и заявка не заводится', async () => {
+    /*
+     * `equipment_object_id` задаёт область видимости роли объекта: свободный выбор означал бы, что
+     * заявку можно отправить в чужую область — и увести из своей, оставив автора без собственной
+     * заявки. Отбор считает сервер по привязкам `created_by`; портал показывает то же самое, но
+     * портал не защита.
+     *
+     * 422, а не 403: право заводить заявку у штаба есть, негодно присланное значение — ровно тот же
+     * код, каким отвечает чужой отдел заявителя.
+     */
+    const equipmentId = await freshUnit();
+    const res = await inject('POST', '/api/v1/service-requests', ctx.customer.auth, {
+      officeEquipmentId: equipmentId,
+      description: 'Аппарат уехал на чужую площадку',
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+      objectId: ctx.foreignObjectId,
+      objectOverridden: true,
+    });
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().message).toContain('только на свой объект');
+
+    // Заявка не завелась вовсе: та же единица принимает следующую без «уже есть незакрытая» (Р21).
+    const ok = await createRequest(ctx.customer.auth, equipmentId, 'Обычная заявка на ту же единицу');
+    expect(ok.objectOverridden).toBe(false);
+    expect(ok.object.id).toBe(ctx.objectId);
+  });
+
+  it('заявленный объект хранится, а расхождение считается по карточке', async () => {
+    // Ось у проверки одна — объектная: у роли администратора области нет вовсе, и объект её не
+    // сужает. Ему выбор открыт целиком — ровно как и держателю сквозной области модуля.
+    const equipmentId = await freshUnit();
+    const dto = await createRequest(ctx.admin.auth, equipmentId, 'Аппарат стоит на соседней площадке', {
+      objectId: ctx.foreignObjectId,
+      objectOverridden: true,
+    });
+    expect(dto.object.id).toBe(ctx.foreignObjectId);
+    // Хранится ЗАЯВЛЕНИЕ, а расхождение вычисляется: снимок заявки разошёлся с карточкой техники,
+    // которая по-прежнему числится на своей площадке.
+    expect(dto.objectOverridden).toBe(true);
+    expect(dto.objectMismatch).toBe(true);
+
+    // Справочник заявка НЕ правит: перенос единицы — решение ИТ-службы после проверки, а карточку
+    // заводит всякий заявитель, и опечатка в заявке возила бы аппараты по объектам.
+    const equipment = await inject(
+      'GET',
+      `/api/v1/office-equipment/${equipmentId}`,
+      ctx.operator.auth,
+    );
+    expect(equipment.statusCode, equipment.body).toBe(200);
+    expect(equipment.json().object.id).toBe(ctx.objectId);
+
+    // Заявка без пометки расхождения не заявляет: обычная заявка на ту же площадку молчит.
+    const plain = await createRequest(ctx.admin.auth, await freshUnit(), 'Обычная заявка');
+    expect(plain.objectOverridden).toBe(false);
+    expect(plain.objectMismatch).toBe(false);
   });
 
   // ── Шаг 16. Область справочника оргтехники (Р7) ──
@@ -2865,8 +3399,50 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       }
     }, 120_000);
 
+    /**
+     * Прежде перечень рабочих статусов включал «Назначена» и «Смету на согласовании», и заморозка
+     * из них проверялась общим циклом выше. Статусов больше нет (Р1), а состояния — есть, и
+     * называют их теперь признаки строки. Значит и проверять надо признаки: заморозка обязана
+     * возвращать заявку не просто в тот же статус, а в то же ОЖИДАНИЕ — иначе отложенная под
+     * висящей подписью возвращалась бы обычной «В работе», и предъявленный счёт молча выпадал бы
+     * из очереди согласования.
+     */
+    it('заморозка возвращает заявку в то же ожидание, а не только в тот же статус', async () => {
+      const pending = await pendingEstimateRequest('Заморозка под висящим предъявлением');
+      expect(pending.waitingOn).toBe('approval');
+
+      const frozenRes = await hold(pending.id, 'Ждём решения по деньгам');
+      expect(frozenRes.statusCode, frozenRes.body).toBe(200);
+      const frozen = frozenRes.json() as ServiceRequestDto;
+      expect(frozen.status).toBe('on_hold');
+      expect(frozen.heldFromStatus).toBe('in_work');
+      // Заморозка снимает заявку со всех очередей — но предъявление не гасит: ответа по нему как
+      // не было, так и нет.
+      expect(frozen.waitingOn).toBe('hold');
+      expect(frozen.estimatePendingRevision).toBe(pending.estimateRevision);
+
+      const backRes = await resume(pending.id);
+      expect(backRes.statusCode, backRes.body).toBe(200);
+      const back = backRes.json() as ServiceRequestDto;
+      expect(back.status).toBe('in_work');
+      expect(back.estimatePendingRevision).toBe(pending.estimateRevision);
+      expect(back.waitingOn).toBe('approval');
+
+      // И согласовать её после возврата можно тем же ходом: предъявление дожило целиком.
+      const approved = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${pending.id}/estimate/approval`,
+        ctx.operator.auth,
+        { approved: true, version: back.version },
+      );
+      expect(approved.statusCode, approved.body).toBe(200);
+      expect((approved.json() as ServiceRequestDto).approval?.revision).toBe(
+        pending.estimateRevision,
+      );
+    });
+
     it('заморозка без причины не проходит: ни пустой, ни из пробелов (Р107)', async () => {
-      const dto = await requestIn('assigned', 'Причина заморозки обязательна');
+      const dto = await assignedRequest('Причина заморозки обязательна');
       for (const reason of ['', '   ']) {
         const res = await inject(
           'PATCH',
@@ -2881,7 +3457,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         // причина, и «Отложена · 12 дней» без неё не читается никак.
         expect(res.statusCode, res.body).toBe(400);
       }
-      expect((await card(dto.id)).status).toBe('assigned');
+      expect((await card(dto.id)).status).toBe('new');
     });
 
     it('исполнитель заявку не откладывает и не возвращает — заморозку ставит тот, кто её ведёт (Р105)', async () => {
@@ -2926,7 +3502,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     });
 
     it('отложенную не правят, срочность ей не меняют и обычных ходов у неё нет (Р110, Р119)', async () => {
-      const dto = await requestIn('assigned', 'Матрица действий отложенной заявки');
+      const dto = await assignedRequest('Матрица действий отложенной заявки');
       // Срочность спрашивает своё право (Н12), и до волны В5 его держит только администратор.
       const urgent = await inject(
         'PATCH',
@@ -2943,8 +3519,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       const frozen = await hold(dto.id, 'Нет денег до начала квартала');
       expect(frozen.statusCode, frozen.body).toBe(200);
 
-      // Правка предмета — ход мимо остановки: правка открыта в «Новой» и «Согласована ИТ», и
-      // `on_hold` в этот список не входит. Отложенную из «Новой» правят, вернув её в работу.
+      // Правка предмета — ход мимо остановки: `on_hold` в перечень правимых не входит, и
+      // отложенную правят, вернув её в работу. Заявка вдобавок уже распределена, а после Р14
+      // назначенную не правят и в «Новой»: за ней стоят договорённости с исполнителем.
       const edited = await inject(
         'PATCH',
         `/api/v1/service-requests/${dto.id}`,
@@ -2992,24 +3569,27 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       // Ни одна отклонённая попытка заявку не сдвинула.
       const after = await card(dto.id);
       expect(after.status).toBe('on_hold');
-      expect(after.heldFromStatus).toBe('assigned');
+      // Отложили распределённую «Новую» — в неё же и вернут: «Назначена» снята (Р1), и признак
+      // «исполнители есть» заморозку переживает наравне с остальными полями заявки.
+      expect(after.heldFromStatus).toBe('new');
+      expect(after.service?.id).toBe(ctx.serviceCounterpartyId);
       expect(after.description).toBe('Матрица действий отложенной заявки');
     });
 
     it('отложенная принимает документы исходного статуса и примечание исполнителя (Р110)', async () => {
-      const dto = await requestIn('assigned', 'Отложенная живёт обычной жизнью');
+      const dto = await assignedRequest('Отложенная живёт обычной жизнью');
       const frozen = await hold(dto.id, 'Ждём решения заказчика по деньгам');
       expect(frozen.statusCode, frozen.body).toBe(200);
 
       // Вид документа решает «эффективный» статус (Р110) — тот, из которого отложили: вложение
-      // принадлежит «Назначенной», и заморозка его вида не меняет. Тот же расчёт делает портал, и
+      // принадлежит «Новой», и заморозка его вида не меняет. Тот же расчёт делает портал, и
       // разойдись они — портал предлагал бы вид, на котором придёт отказ.
       const attachment = await attach(dto.id, 'attachment', 'foto-otlozhennoy.pdf');
       expect(attachment.res.statusCode, attachment.res.body).toBe(200);
 
       // А вид, которого исходный статус не знает, по-прежнему не принимают: заморозка правила
-      // видов не отменяет — она их не меняет. Смету предъявляют из «В работе» (Н2), а талон
-      // подшивают начиная с неё же (§7.3) — «Назначенная» не знает ни того, ни другого.
+      // видов не отменяет — она их не меняет. Объём работ ведут из «В работе» (Р8), и талон
+      // подшивают начиная с неё же (§7.3) — «Новая» не знает ни того, ни другого.
       const estimate = await attach(dto.id, 'estimate', 'kp-ranshe-vremeni.pdf');
       expect(estimate.res.statusCode, estimate.res.body).toBe(422);
       const warranty = await attach(dto.id, 'warranty_card', 'talon-ranshe-vremeni.pdf');
@@ -3078,7 +3658,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       // Обычная заявка заводится **первой**: список берётся по номеру по возрастанию, и без
       // правила «срочные вперёд» она стоит выше. Всплывёт срочная — значит правило сработало, и
       // проверка отличает «отложенную не подняли» от «сортировки нет вовсе».
-      const ordinary = await requestIn('assigned', 'Обычная заявка для сравнения порядка');
+      const ordinary = await assignedRequest('Обычная заявка для сравнения порядка');
       const urgent = await createRequest(
         ctx.customer.auth,
         await freshUnit(),
@@ -3477,10 +4057,17 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
 
   /**
    * Смешанное назначение «свой сотрудник + сервисная компания» — обычный случай постановки, и у
-   * него своё правило отказа (§4.2 плана): «снять только отказавшегося» применимо к поимённым, а у
-   * сервиса поимённых строк нет вовсе — отказ его оператора снимает **всю компанию**. Заявка при
-   * этом остаётся у второго слоя и статуса не меняет; в «Новую» она возвращается, только когда не
-   * осталось ни строк, ни контрагента.
+   * него своё правило отказа (§4.2 плана, Р7): «снять только отказавшегося» применимо к поимённым,
+   * а у сервиса поимённых строк нет вовсе — отказ его оператора снимает **всю компанию**.
+   *
+   * **Статуса отказ не меняет ни при одном исходе** (Р7): прежде различие держал сам статус —
+   * полный отказ уводил заявку из «Назначена» в «Новую», частичный оставлял в «Назначена». После
+   * слияния (Р1) отказавшийся и так стоит в «Новой», и различает исходы состав исполнителей:
+   * остался кто-то — заявка ждёт исполнителя, не осталось никого — распределяющего.
+   *
+   * Контрагента при этом снимает **сама ручка**, а не матрица сброса: дуги, на которой стоял
+   * `reset.executor`, больше нет, и на `in_work → new` сброс не ставится намеренно (Р5, п. 2) —
+   * иначе он ломал бы переназначение и откат «принял в работу».
    */
   describe('смешанное назначение: свой сотрудник и сервисная компания', () => {
     async function assignedToBoth(description: string): Promise<ServiceRequestDto> {
@@ -3499,7 +4086,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       return card(dto.id);
     }
 
-    it('отказ сервиса снимает компанию, но заявка остаётся у своего и статуса не меняет', async () => {
+    it('отказ подрядчика снимает контрагента сам — заявка остаётся у своего, статус прежний', async () => {
       const both = await assignedToBoth('Смешанное назначение: отказывается подрядчик');
       expect(both.executors.map((e) => e.userId)).toEqual([ctx.namedExecutor.id]);
       expect(both.service?.id).toBe(ctx.serviceCounterpartyId);
@@ -3513,10 +4100,13 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect(declined.statusCode, declined.body).toBe(200);
 
       const after = await card(both.id);
+      // Контрагента снял `patch` самой ручки: понадейся она на матрицу сброса, отказавшаяся
+      // компания осталась бы в заявке молча — дуги, на которой стоял сброс, больше нет (Р5, п. 2).
       expect(after.service).toBeNull();
-      // Свой сотрудник остался — и заявка вместе с ним осталась распределённой.
+      // Свой сотрудник остался — и заявка вместе с ним по-прежнему ждёт исполнителя.
       expect(after.executors.map((e) => e.userId)).toEqual([ctx.namedExecutor.id]);
-      expect(after.status).toBe('assigned');
+      expect(after.status).toBe('new');
+      expect(after.waitingOn).toBe('service');
     });
 
     it('отказ своего снимает его строку, а компания продолжает вести заявку', async () => {
@@ -3532,10 +4122,105 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       const after = await card(both.id);
       expect(after.executors).toEqual([]);
       expect(after.service?.id).toBe(ctx.serviceCounterpartyId);
-      expect(after.status).toBe('assigned');
+      expect(after.status).toBe('new');
+      expect(after.waitingOn).toBe('service');
     });
 
-    it('отказ последнего из двух возвращает заявку в «Новую»', async () => {
+    /**
+     * **От заявки, которую никому не отдали, отказываться нечего** — второй запрет, который держал
+     * снятый статус (первый — третий замок предъявления на файле объёма работ).
+     *
+     * Прежде это держала сама дуга: отказ ходил `assigned → new`, и нераспределённая заявка стояла
+     * в «Новой», то есть до ручки не доходила вовсе. После слияния (Р1) перечень стал `new`, и
+     * нераспределённая проходит его наравне с назначенной; сторона её тоже не отбивает — держатель
+     * `serviceRequests.estimate` (вне контрагента-сервиса это администратор) проходит
+     * `actsAsServiceExecutor` ПО ПРАВУ, а не по назначению.
+     *
+     * **Проверяется след, а не только код.** Вреден дефект был не двухсоткой, а тем, что оставлял
+     * после себя: возраст ожидания обнулялся — заявка молодела в очереди распределения, хотя её
+     * никто не трогал, — а в ленту ложились переход `new → new` и событие «исполнителей стало
+     * меньше» там, где их не было ни одного.
+     */
+    it('от нераспределённой «Новой» отказываться нечего — 422 и ни следа после', async () => {
+      const dto = await createRequest(
+        ctx.customer.auth,
+        await freshUnit(),
+        'Отказ по нераспределённой заявке',
+      );
+      expect(dto.status).toBe('new');
+      expect(dto.service).toBeNull();
+      expect(dto.executors).toEqual([]);
+
+      const res = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/decline`,
+        ctx.admin.auth,
+        { reason: 'отказываюсь, хотя заявку никто не брал', version: dto.version },
+      );
+      // 422 у состояния заявки, а не 403 у стороны: дело не в субъекте — отказываться просто не от
+      // чего. Текст обязан говорить про исполнителей, иначе администратор пошёл бы просить прав.
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().message).toContain('никому не отдали');
+      expect(res.json().message).not.toContain('назначенного исполнителя');
+      expect(res.json().fields?.status).toBe('Исполнителей нет');
+
+      // 1. Возраст ожидания не сдвинулся: заявка стоит в очереди распределения ровно столько же.
+      const after = await card(dto.id);
+      expect(after.status).toBe('new');
+      expect(after.statusChangedAt).toBe(dto.statusChangedAt);
+      expect(after.version).toBe(dto.version);
+
+      // 2. Лента чиста: ни перехода `from = to`, ни события отказа — только заведение.
+      const history = await inject(
+        'GET',
+        `/api/v1/service-requests/${dto.id}/history`,
+        ctx.admin.auth,
+      );
+      const events = history.json() as {
+        kind: string;
+        fromStatus: string | null;
+        toStatus: string | null;
+      }[];
+      expect(events.map((e) => e.kind)).toEqual(['created']);
+      expect(
+        events.filter((e) => e.kind === 'status' && e.fromStatus === 'new' && e.toStatus === 'new'),
+      ).toEqual([]);
+
+      // 3. В аудите — ничего, кроме заведения: `writeAudit` ходит МИМО транзакции, и запись,
+      //    сделанная до отказа, пережила бы его. Проверять поэтому надо саму таблицу, а не только
+      //    ответ ручки; сверяется полный список действий, чтобы `decline` не спрятался за счётом.
+      const audit = await ctx.db.execute<{ action: string }>(sql`
+        SELECT action FROM audit_log
+         WHERE entity_type = 'serviceRequest' AND entity_id = ${dto.id}
+         ORDER BY action`);
+      expect(audit.rows.map((r) => r.action)).toEqual(['serviceRequest.create']);
+    });
+
+    /**
+     * **Коды не схлопнулись.** Новый 422 отвечает за состояние заявки, прежний 403 — за сторону, и
+     * различить их можно только парой: та же ручка, тот же статус, разница ровно в составе
+     * исполнителей. `strayExecutor` держит набор «Оргтехника: ИТ-служба» (то есть страж маршрута
+     * его пускает) и не назначен ни на что — значит отказывает ему именно предикат стороны.
+     */
+    it('субъект без стороны по заявке С исполнителями получает 403, а не новый 422', async () => {
+      const both = await assignedToBoth('Отказ посторонним держателем набора');
+      const res = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${both.id}/decline`,
+        ctx.strayExecutor.auth,
+        { reason: 'я тут ни при чём', version: both.version },
+      );
+      expect(res.statusCode, res.body).toBe(403);
+      expect(res.json().message).toContain('это шаг назначенного исполнителя');
+      expect(res.json().message).not.toContain('никому не отдали');
+
+      // Состав от чужой попытки не пострадал.
+      const after = await card(both.id);
+      expect(after.service?.id).toBe(ctx.serviceCounterpartyId);
+      expect(after.executors.map((e) => e.userId)).toEqual([ctx.namedExecutor.id]);
+    });
+
+    it('отказ последнего из двух оставляет заявку без исполнителей — ждать её начинает оператор', async () => {
       const both = await assignedToBoth('Смешанное назначение: отказываются оба');
       const first = await inject(
         'PATCH',
@@ -3556,11 +4241,144 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
 
       const after = await card(both.id);
       // Ни строк, ни контрагента — заявке некому её вести, и она уходит на распределение заново.
+      // Статус при этом не менялся ни разу: и до, и после она «Новая» (Р7).
       expect(after.executors).toEqual([]);
       expect(after.service).toBeNull();
       expect(after.status).toBe('new');
+      expect(after.waitingOn).toBe('operator');
     });
 
+    /**
+     * **Возраст ожидания обнуляется от смены того, кого ждут, а не от смены статуса** (Р4). Отказ
+     * — единственная ручка, где флаг сброса условен: ушёл последний исполнитель — ждать начинает
+     * распределяющий, и отсчёт идёт заново; кто-то остался — работу никому не передавали, и
+     * оставшиеся ждут её ровно столько же, сколько ждали.
+     *
+     * Обнули мы возраст и при частичном отказе, уход одного из троих сисадминов прятал бы заявку
+     * из очереди «кто тянет» на неделю. Статусом это правило больше не выражается вовсе — оба
+     * исхода оставляют заявку «Новой», — поэтому проверять его надо здесь и явно.
+     */
+    it('частичный отказ возраст ожидания не обнуляет, а полный — обнуляет (Р4)', async () => {
+      const both = await assignedToBoth('Возраст ожидания при частичном и полном отказе');
+      const started = both.statusChangedAt;
+
+      const partial = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${both.id}/decline`,
+        ctx.service.auth,
+        { reason: 'подрядчик уходит, свой остаётся', version: both.version },
+      );
+      expect(partial.statusCode, partial.body).toBe(200);
+      const afterPartial = await card(both.id);
+      expect(afterPartial.executors.map((e) => e.userId)).toEqual([ctx.namedExecutor.id]);
+      expect(afterPartial.statusChangedAt).toBe(started);
+
+      const full = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${both.id}/decline`,
+        ctx.namedExecutor.auth,
+        { reason: 'и свой следом', version: afterPartial.version },
+      );
+      expect(full.statusCode, full.body).toBe(200);
+      const afterFull = await card(both.id);
+      expect(afterFull.service).toBeNull();
+      expect(afterFull.executors).toEqual([]);
+      expect(new Date(afterFull.statusChangedAt).getTime()).toBeGreaterThan(
+        new Date(started).getTime(),
+      );
+    });
+
+    /**
+     * **Переназначение из «В работе» возвращает заявку в «Новую» и СОХРАНЯЕТ назначенных** (Р5).
+     * Ловушка здесь та, из-за которой правилось само решение: прежняя редакция плана вешала на эту
+     * дугу сброс исполнителя, а сброс — это `DELETE ... WHERE request_id = …` по всей заявке, и
+     * шёл бы он ПОСЛЕ вставки новых строк. Заявка оставалась бы ничьей молча: отложенный
+     * `service_requests_executor_present` для эффективного статуса `new` возвращается сразу и
+     * такого не ловит.
+     */
+    it('переназначение из «В работе» возвращает заявку в «Новую» и сохраняет новых исполнителей', async () => {
+      const dto = await createRequest(
+        ctx.customer.auth,
+        await freshUnit(),
+        'Переназначение из «В работе»',
+      );
+      await driveTo(dto.id, 'in_work');
+      const inWork = await card(dto.id);
+      expect(inWork.status).toBe('in_work');
+      expect(inWork.service?.id).toBe(ctx.serviceCounterpartyId);
+
+      const reassigned = await inject(
+        'PUT',
+        `/api/v1/service-requests/${dto.id}/executors`,
+        ctx.operator.auth,
+        {
+          userIds: [ctx.namedExecutor.id],
+          serviceCounterpartyId: null,
+          reason: 'Забираем у подрядчика, чинит свой сисадмин',
+          version: inWork.version,
+        },
+      );
+      expect(reassigned.statusCode, reassigned.body).toBe(200);
+      const after = (reassigned.json() as { request: ServiceRequestDto }).request;
+      // Заявка вернулась в «Новую», чтобы новый исполнитель нажал «Принять в работу» сам, — иначе
+      // он унаследовал бы чужое «взялся» и не нажал бы её никогда.
+      expect(after.status).toBe('new');
+      // И вернулась ВМЕСТЕ с только что назначенными: сброс на этой дуге не стоит намеренно.
+      expect(after.executors.map((e) => e.userId)).toEqual([ctx.namedExecutor.id]);
+      expect(after.service).toBeNull();
+      expect(after.waitingOn).toBe('service');
+      // Смету прежнего исполнителя стёрло правило `handedOver` — вместе с ней ушло и предъявление:
+      // ревизия уходит в 0, и оставленная pending-ревизия уронила бы саму запись (`CHECK`).
+      expect(after.estimateRevision).toBe(0);
+      expect(after.estimatePendingRevision).toBeNull();
+      expect(after.approval).toBeNull();
+      expect(after.items).toEqual([]);
+    });
+
+    /**
+     * **Откат «принял в работу» обязан вернуть заявку назначенным, не теряя их** (Р13, Р5 п. 2).
+     * Прежде эта дуга звалась `in_work → assigned` и не сбрасывала ничего; после слияния она зовётся
+     * `in_work → new`, и поставь мы на неё сброс — откат «взялся» превратился бы в откат «назначил»,
+     * то есть в другое действие, которого в цикле больше нет.
+     */
+    it('откат «принял в работу» возвращает заявку назначенным, не теряя их', async () => {
+      const dto = await createRequest(
+        ctx.customer.auth,
+        await freshUnit(),
+        'Откат «принял в работу»',
+      );
+      await driveTo(dto.id, 'in_work');
+      const inWork = await card(dto.id);
+
+      const rolled = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/status`,
+        ctx.admin.auth,
+        {
+          status: 'new',
+          reason: 'Взялись по ошибке — вернуть исполнителю',
+          version: await version(dto.id, ctx.admin.auth),
+        },
+      );
+      expect(rolled.statusCode, rolled.body).toBe(200);
+      const after = (rolled.json() as { request: ServiceRequestDto }).request;
+      expect(after.status).toBe('new');
+      expect(after.service?.id).toBe(ctx.serviceCounterpartyId);
+      expect(after.waitingOn).toBe('service');
+      // Смета отката не касается: заявку вернули тому же исполнителю, и его работа никуда не делась.
+      expect(after.estimateRevision).toBe(inWork.estimateRevision);
+      expect(after.items).toHaveLength(inWork.items.length);
+
+      // И «Принять в работу» ей снова доступно — тем же ходом `new → in_work`.
+      const again = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/start`,
+        ctx.service.auth,
+        { version: after.version },
+      );
+      expect(again.statusCode, again.body).toBe(200);
+      expect((again.json() as ServiceRequestDto).status).toBe('in_work');
+    });
   });
 
   /**
@@ -3623,14 +4441,16 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       return card(dto.id);
     }
 
-    /** Смета из одной строки: предмет проверки — кто её пишет, а не что в ней. */
+    /** Объём работ из одной строки: предмет проверки — кто его пишет, а не что в нём. */
     const ESTIMATE_ITEMS = [
       { kind: 'service', name: 'Чистка узла подачи', quantity: 1, unitPrice: 1000 },
     ];
 
-    it('назначенный поимённо проходит «принять в работу», смету и закрытие работ', async () => {
+    it('назначенный поимённо проходит «принять в работу», объём работ и закрытие работ', async () => {
       const assigned = await assignedToNamed('Поимённый исполнитель: чинит свой сисадмин');
-      expect(assigned.status).toBe('assigned');
+      // Назначение статуса не меняет (Р5): заявка «Новая», а «Назначена» её называет состав.
+      expect(assigned.status).toBe('new');
+      expect(assigned.waitingOn).toBe('service');
       expect(assigned.executors.map((e) => e.userId)).toEqual([ctx.namedExecutor.id]);
       expect(assigned.service).toBeNull();
 
@@ -3657,10 +4477,12 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         { version: (put.json() as ServiceRequestDto).version },
       );
       expect(submitted.statusCode, submitted.body).toBe(200);
+      // Предъявление статуса не меняет: заявка стоит в «В работе», а ход перешёл к согласующему.
+      expect((submitted.json() as ServiceRequestDto).status).toBe('in_work');
+      expect((submitted.json() as ServiceRequestDto).waitingOn).toBe('approval');
 
-      // Обе подписи ставит не исполнитель: виза ИТ и согласие по деньгам — чужие стороны, и
-      // набором ИТ-службы они как раз и не открываются (виза — открывается, деньги — нет).
-      await approveByIt(assigned.id);
+      // Подпись осталась одна (Р10): визы ИТ больше нет вовсе, а согласие по деньгам — чужая
+      // сторона, и набором ИТ-службы она не открывается.
       const approved = await inject(
         'PATCH',
         `/api/v1/service-requests/${assigned.id}/estimate/approval`,
@@ -3695,7 +4517,10 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
 
     it('тот же набор без назначения не проходит ни один ход — и отказывает ему коридор, а не страж', async () => {
       /** Отказ обязан быть чужим для стража: его текст жёстко задан `requireAnyPermission`. */
-      const GUARD_REFUSALS = ['Недостаточно прав для смены статуса', 'Смету ведёт исполнитель'];
+      const GUARD_REFUSALS = [
+        'Недостаточно прав для смены статуса',
+        'Объём работ ведёт исполнитель',
+      ];
       const refused = (res: { statusCode: number; body: string }, contains: string): void => {
         expect(res.statusCode, res.body).toBe(403);
         const message = (res.json() as { message: string }).message;
@@ -3704,18 +4529,25 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       };
 
       const assigned = await assignedToNamed('Поимённый исполнитель: посторонний держатель набора');
+      expect(assigned.status).toBe('new');
 
-      // «Принять в работу»: страж пускает по `execute`, а коридор спрашивает назначение по строке
-      // заявки — и не находит его.
-      refused(
-        await inject(
-          'PATCH',
-          `/api/v1/service-requests/${assigned.id}/start`,
-          ctx.strayExecutor.auth,
-          { version: assigned.version },
-        ),
-        'не может перевести заявку',
+      /*
+       * «Принять в работу»: страж пускает по `execute`, а назначение спрашивается по строке заявки
+       * — и не находится. Коридор теперь `new → in_work` (Р6), а не `assigned → in_work`.
+       *
+       * **Коды при этом не схлопнулись**, и это половина случая: у заявки С исполнителями отказ
+       * приходит про СУБЪЕКТА (403 «не может перевести заявку»), а новый 422 «сначала распределяют»
+       * отвечает про ЗАЯВКУ и только у нераспределённой. Слейся они, посторонний держатель набора
+       * читал бы «заявку сначала распределяют» у распределённой заявки.
+       */
+      const strayStart = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${assigned.id}/start`,
+        ctx.strayExecutor.auth,
+        { version: assigned.version },
       );
+      refused(strayStart, 'не может перевести заявку');
+      expect(strayStart.json().message).not.toContain('сначала распределяют');
 
       const started = await inject(
         'PATCH',
@@ -3734,7 +4566,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
           ctx.strayExecutor.auth,
           { items: ESTIMATE_ITEMS, version: await version(assigned.id) },
         ),
-        'не ведёт смету этой заявки',
+        'не ведёт объём работ этой заявки',
       );
       refused(
         await inject(
@@ -3761,7 +4593,6 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         { version: (put.json() as ServiceRequestDto).version },
       );
       expect(submitted.statusCode, submitted.body).toBe(200);
-      await approveByIt(assigned.id);
       const approved = await inject(
         'PATCH',
         `/api/v1/service-requests/${assigned.id}/estimate/approval`,
@@ -3770,7 +4601,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       );
       expect(approved.statusCode, approved.body).toBe(200);
 
-      // Возврат сметы в правку статуса не меняет — сторону и у него спрашивает обработчик.
+      // Возврат объёма работ в правку статуса не меняет — сторону и у него спрашивает обработчик.
       refused(
         await inject(
           'PATCH',
@@ -3778,7 +4609,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
           ctx.strayExecutor.auth,
           { reason: 'мне кажется, там ещё термоузел', version: await version(assigned.id) },
         ),
-        'не возвращает смету в правку',
+        'не возвращает объём работ в правку',
       );
 
       const before = await card(assigned.id);

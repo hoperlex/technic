@@ -14,6 +14,8 @@ import {
   isServiceRequestDeletable,
   isServiceRequestEditable,
   parseServiceRequestNumberSearch,
+  serviceHasExecutors,
+  serviceMailRepeatable,
   putServiceEstimateSchema,
   reopenServiceEstimateSchema,
   reworkServiceRequestSchema,
@@ -231,21 +233,33 @@ describe('заведение и правка заявки', () => {
     expect(setServiceUrgencySchema.safeParse({ isUrgent: false, version: 1 }).success).toBe(true);
   });
 
-  /** Правка заявки — только «Новой» (§6.1): дальше за заявкой стоят договорённости с исполнителем. */
-  it('правится заявка, которую ещё не начали вести', () => {
-    expect(isServiceRequestEditable('new')).toBe(true);
-    // Мёртвый статус (`0197`) правке не подлежит наравне с прочими: заявок в нём не бывает.
-    expect(isServiceRequestEditable('it_approved')).toBe(false);
-    // «Назначенную» уже не правят: предмет заявки исполнитель прочитал и по нему договорился.
-    expect(isServiceRequestEditable('assigned')).toBe(false);
+  /**
+   * Правка заявки — только «Новой», за которую ещё никто не отвечает (§6.1, Р14). Условие
+   * СМЕНИЛО ОСНОВАНИЕ: пока «Новая» означала «ещё не назначена», на вопрос отвечал статус, а после
+   * слияния (Р2) назначенная заявка тоже зовётся «Новой» — и `status === 'new'` молча открыл бы
+   * правку заявки, которую исполнитель уже прочитал и по которой договорился. Поэтому предикат
+   * принимает СТРОКУ, и проверяется здесь именно вторая половина условия.
+   */
+  it('правится «Новая», за которую ещё никто не отвечает', () => {
+    const unassigned = { serviceCounterpartyId: null, executorCount: 0 };
+    expect(isServiceRequestEditable({ status: 'new', ...unassigned })).toBe(true);
+    // Назначенная сервисная компания закрывает правку, поимённых строк у неё не бывает вовсе.
+    expect(
+      isServiceRequestEditable({ status: 'new', serviceCounterpartyId: UUID, executorCount: 0 }),
+    ).toBe(false);
+    // Поимённый исполнитель — то же самое: договорённость уже есть.
+    expect(
+      isServiceRequestEditable({ status: 'new', serviceCounterpartyId: null, executorCount: 1 }),
+    ).toBe(false);
     // Отложенную не правят (Р110): заморозка останавливает ход заявки, и правка её предмета была
     // бы ходом мимо остановки — даже если отложили как раз «Новую». Такую возвращают и правят.
-    expect(isServiceRequestEditable('on_hold')).toBe(false);
+    expect(isServiceRequestEditable({ status: 'on_hold', ...unassigned })).toBe(false);
     // И закрытой она при этом не считается (Р109): техника ждёт этого же ремонта, и вторую заявку
     // на ту же единицу завести нельзя.
     expect(isServiceRequestClosed('on_hold')).toBe(false);
+    // Ни один другой статус правки не открывает — включая мёртвые: заявок в них не бывает.
     for (const status of SERVICE_REQUEST_STATUSES.filter((s) => s !== 'new')) {
-      expect(isServiceRequestEditable(status), status).toBe(false);
+      expect(isServiceRequestEditable({ status, ...unassigned }), status).toBe(false);
     }
     // Закрытая заявка — «Закрыта» и «Отменена»: ни хода, ни правки ей больше не положено.
     expect(isServiceRequestClosed('accepted')).toBe(true);
@@ -258,27 +272,62 @@ describe('заведение и правка заявки', () => {
   });
 
   /**
-   * Удаление отвязано от правки (В20): «Назначенную» заявку удалить можно, а править уже нельзя —
-   * работа по ней не начиналась, но её предмет исполнитель прочитал. Два решения заказчика, и
-   * держись они на одном списке статусов, разъехались бы на первой же правке любого из них.
+   * Повтор письма спрашивается тем же составом исполнителей (Р14), и это не копия предыдущего
+   * правила, а второй его повод: письмо «Новой» зовёт службу РАЗОБРАТЬ заявку, и повторять его
+   * после назначения незачем — задание исполнителю ушло своим письмом, привязанным к действию.
+   * Оставь мы `status === 'new'`, кнопка осталась бы на месте, а письмо звало бы разбирать заявку,
+   * которую уже разобрали.
    */
-  it('удаляются «Новая» и «Назначенная», и дальше — ни одна', () => {
+  it('повторяется письмо «Новой» без исполнителей и письмо отмены', () => {
+    expect(
+      serviceMailRepeatable({ status: 'new', serviceCounterpartyId: null, executorCount: 0 }),
+    ).toBe(true);
+    expect(
+      serviceMailRepeatable({ status: 'new', serviceCounterpartyId: UUID, executorCount: 0 }),
+    ).toBe(false);
+    expect(
+      serviceMailRepeatable({ status: 'new', serviceCounterpartyId: null, executorCount: 1 }),
+    ).toBe(false);
+    // Отмена повторяется при любом составе: письмо шлют, чтобы не выезжали зря, — и как раз тому,
+    // кого успели назначить.
+    expect(
+      serviceMailRepeatable({ status: 'cancelled', serviceCounterpartyId: UUID, executorCount: 2 }),
+    ).toBe(true);
+    // Событие письма привязано ко входу в статус, и повторяются ровно эти два.
+    for (const status of SERVICE_REQUEST_STATUSES.filter((s) => s !== 'new' && s !== 'cancelled')) {
+      expect(
+        serviceMailRepeatable({ status, serviceCounterpartyId: null, executorCount: 0 }),
+        status,
+      ).toBe(false);
+    }
+  });
+
+  /**
+   * Удаление отвязано от правки (В20), и слияние статусов этого НЕ ИЗМЕНИЛО: удаляли «Новую» и
+   * «Назначенную» — то есть заявку до того, как за неё взялись, — оба состояния теперь зовутся
+   * «Новой», и один `new` покрывает ровно тот же набор заявок, что покрывала прежняя пара. Записано
+   * это здесь затем, чтобы следующая правка не приняла совпадение с правкой за недосмотр: условия
+   * РАЗНЫЕ — правка требует ещё и отсутствия исполнителей, и расходятся они теперь не на статусе, а
+   * на составе.
+   */
+  it('удаляется «Новая» — в том числе назначенная, и дальше ни одна', () => {
     expect(isServiceRequestDeletable('new')).toBe(true);
-    expect(isServiceRequestDeletable('assigned')).toBe(true);
-    // Мёртвый статус (`0197`): не удаляется, потому что заявок в нём не бывает.
+    // Мёртвые статусы (`0197`, `0224`) не удаляются: заявок в них не бывает. «Назначенная» среди
+    // них — её набор заявок целиком перешёл к «Новой».
+    expect(isServiceRequestDeletable('assigned')).toBe(false);
     expect(isServiceRequestDeletable('it_approved')).toBe(false);
     // Дальше — ни при каких условиях: с «В работе» по заявке уже могли списать расходники (Р6), и
     // архивная заявка означала бы списание без основания.
-    for (const status of SERVICE_REQUEST_STATUSES.filter(
-      (s) => s !== 'new' && s !== 'assigned',
-    )) {
+    for (const status of SERVICE_REQUEST_STATUSES.filter((s) => s !== 'new')) {
       expect(isServiceRequestDeletable(status), status).toBe(false);
     }
-    // Списки правки и удаления расходятся ровно на «Назначенной» — иначе одно из двух правил
-    // молча стало бы копией другого.
-    const editable = SERVICE_REQUEST_STATUSES.filter(isServiceRequestEditable);
-    const deletable = SERVICE_REQUEST_STATUSES.filter(isServiceRequestDeletable);
-    expect(deletable.filter((s) => !editable.includes(s))).toEqual(['assigned']);
+    // Два правила расходятся на назначенной «Новой»: удалить её можно — работа не начиналась, —
+    // а править уже нельзя. Держись они на одном условии, разъехались бы на первой же правке.
+    const assigned = { status: 'new', serviceCounterpartyId: UUID, executorCount: 0 } as const;
+    expect(isServiceRequestDeletable(assigned.status)).toBe(true);
+    expect(isServiceRequestEditable(assigned)).toBe(false);
+    // Признак у обоих правил один и тот же, и спрашивается он по строке, а не по статусу.
+    expect(serviceHasExecutors(assigned)).toBe(true);
   });
 
   it('правка приходит частями: менять одно поле, не пересылая остальные', () => {
@@ -407,34 +456,85 @@ describe('закрытие работ', () => {
 });
 
 /**
- * Согласование сметы — одна ручка на «да» и «нет»: у них одно право, одна область и один момент.
- * Причина обязательна только у отказа: «согласовано» объяснений не требует, а «отклонено» без них
- * оставляет сервис гадать, что переделывать.
+ * Согласование объёма работ — одна ручка на «да» и «нет»: у них одно право, одна область и один
+ * момент. Статуса «согласовано» не меняет (Р8) — заявка остаётся в «В работе», — а «не согласовано»
+ * закрывает её отменой, и потому спрашивает не одно объяснение, а два.
  */
-describe('согласование сметы', () => {
-  it('отказ без причины не проходит, согласие без причины — проходит', () => {
+describe('согласование объёма работ', () => {
+  /**
+   * Причина и решение — РАЗНЫЕ вопросы (Р12), и одним полем они не отвечаются: причина говорит,
+   * *почему* объём не согласован («вдвое дороже нового аппарата»), решение — *что делаем вместо*
+   * («меняем, заявка на закупку заведена»). Причина уходит комментарием в историю, решение — своей
+   * колонкой заявки, и спор по отклонённой заявке начинается именно с решения.
+   */
+  it('отказ без причины и без решения не проходит, согласие без них — проходит', () => {
     expect(approveServiceEstimateSchema.safeParse({ approved: false, version: 2 }).success).toBe(
       false,
     );
+    // Одной причины мало: без решения отменённая заявка не отвечает, что делают вместо ремонта.
     expect(
       approveServiceEstimateSchema.safeParse({
         approved: false,
         reason: 'ищем дешевле',
         version: 2,
       }).success,
+    ).toBe(false);
+    // И одного решения мало: причина уходит в историю, и без неё пара строк перехода не объясняет
+    // ничего.
+    expect(
+      approveServiceEstimateSchema.safeParse({
+        approved: false,
+        resolution: 'меняем аппарат, заявка на закупку заведена',
+        version: 2,
+      }).success,
+    ).toBe(false);
+    expect(
+      approveServiceEstimateSchema.safeParse({
+        approved: false,
+        reason: 'ищем дешевле',
+        resolution: 'меняем аппарат, заявка на закупку заведена',
+        version: 2,
+      }).success,
     ).toBe(true);
     expect(approveServiceEstimateSchema.safeParse({ approved: true, version: 2 }).success).toBe(
       true,
     );
-    // Ошибка адресована полю причины: форме нужно подсветить именно его.
+    // Ошибки адресованы своим полям: форме нужно подсветить именно их, а не общий заголовок.
     const failed = approveServiceEstimateSchema.safeParse({ approved: false, version: 2 });
     expect(failed.success).toBe(false);
-    if (!failed.success) expect(failed.error.issues[0]?.path).toEqual(['reason']);
+    if (!failed.success) {
+      expect(failed.error.issues.map((issue) => issue.path)).toEqual([['reason'], ['resolution']]);
+    }
+  });
+
+  /**
+   * Пометка «ремонт нецелесообразен, аппарат под замену» — теперь ОТВЕТ ЧЕЛОВЕКА, а не вывод ручки
+   * (Р12): визы ИТ, которая ставила её сама, больше нет, и решение «менять» принимает тот же, кто
+   * смотрит на объём работ. Умолчание при этом ложное: молчание формы — это «не рекомендована».
+   */
+  it('замена аппарата приходит галочкой и по умолчанию не рекомендована', () => {
+    expect(
+      approveServiceEstimateSchema.parse({ approved: true, version: 2 }).replacementRecommended,
+    ).toBe(false);
+    expect(
+      approveServiceEstimateSchema.parse({
+        approved: false,
+        reason: 'дороже нового аппарата',
+        resolution: 'меняем, заявка на закупку заведена',
+        replacementRecommended: true,
+        version: 2,
+      }).replacementRecommended,
+    ).toBe(true);
   });
 
   it('причина — объяснение, а не отписка из двух букв', () => {
     expect(
-      approveServiceEstimateSchema.safeParse({ approved: false, reason: 'не', version: 2 }).success,
+      approveServiceEstimateSchema.safeParse({
+        approved: false,
+        reason: 'не',
+        resolution: 'меняем аппарат',
+        version: 2,
+      }).success,
     ).toBe(false);
     // То же правило у остальных ручек с причиной: отказ, переоткрытие и возврат на доработку.
     expect(declineServiceRequestSchema.safeParse({ reason: '  ', version: 1 }).success).toBe(false);

@@ -24,8 +24,14 @@ import { RequestsTab } from '../src/pages/service/RequestsTab';
 
 const OPERATOR: AuthUser = serviceOperator();
 
-/** Отложенная из «Диагностики»: вернётся она ровно туда, и другого пути назад нет (Р104). */
-const HELD = heldServiceRequest('diagnostics');
+/**
+ * Отложенная из «В работе»: вернётся она ровно туда, и другого пути назад нет (Р104).
+ *
+ * Исходный статус — живой. «Диагностика», стоявшая здесь прежде, мёртвая с 0197: заявок в ней не
+ * бывает, и заморозить оттуда нечего — фикстура описывала состояние, до которого в портале не
+ * дойти, а подпись возврата обещала статус, которого никто не увидит.
+ */
+const HELD = heldServiceRequest('in_work');
 
 /** Причина отказа под полем: её рисует `Form.Item`, а не заголовок и не тост (ADR 0094). */
 function fieldError(labelText: string): string | null {
@@ -47,7 +53,7 @@ function renderHold(mode: 'hold' | 'resume', request = HELD, routes: RouteMap = 
 
 describe('окно «Отложить» требует причину (Р107)', () => {
   it('пустая причина помечает поле, а на сервер ничего не уходит', async () => {
-    const { http } = renderHold('hold', serviceRequest({ status: 'diagnostics' }));
+    const { http } = renderHold('hold', serviceRequest({ status: 'in_work' }));
 
     fireEvent.click(await screen.findByRole('button', { name: 'Отложить' }));
 
@@ -60,16 +66,16 @@ describe('окно «Отложить» требует причину (Р107)', 
   });
 
   it('до нажатия окно называет статус, в который заявку потом вернут', async () => {
-    renderHold('hold', serviceRequest({ status: 'diagnostics' }));
+    renderHold('hold', serviceRequest({ status: 'in_work' }));
 
     // Заморозку делают из текущего статуса, и обратный путь у неё один — человеку полезно видеть
     // это до нажатия, а не после.
-    expect(await screen.findByText(/Вернуть её можно будет только в «Диагностика»/)).toBeDefined();
+    expect(await screen.findByText(/Вернуть её можно будет только в «В работе»/)).toBeDefined();
   });
 
   it('заполненная причина уходит на сервер вместе с версией заявки', async () => {
     const held = vi.fn();
-    const { http, onClose } = renderHold('hold', serviceRequest({ status: 'diagnostics' }), {
+    const { http, onClose } = renderHold('hold', serviceRequest({ status: 'in_work' }), {
       'PATCH /service-requests/:id/hold': ({ body }) => {
         held(body);
         return json(HELD);
@@ -97,7 +103,7 @@ describe('окно «Возобновить» называет статус во
   it('статус и причина заморозки видны прямо в окне', async () => {
     renderHold('resume');
 
-    expect(await screen.findByText(/Заявка вернётся в «Диагностика»/)).toBeDefined();
+    expect(await screen.findByText(/Заявка вернётся в «В работе»/)).toBeDefined();
     // Причина видна ровно здесь: после возврата заявка её не помнит — hold-поля чистит сам
     // переход (Р118).
     expect(screen.getByText(/Отложена: ждём запчасть от поставщика/)).toBeDefined();
@@ -108,7 +114,7 @@ describe('окно «Возобновить» называет статус во
     const { onClose } = renderHold('resume', HELD, {
       'PATCH /service-requests/:id/resume': ({ body }) => {
         resumed(body);
-        return json(serviceRequest({ status: 'diagnostics' }));
+        return json(serviceRequest({ status: 'in_work' }));
       },
     });
 

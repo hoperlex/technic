@@ -510,9 +510,11 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     selfRefusal: CORRIDOR_REFUSAL,
   },
   /*
-   * Состав строк заявки на расходники: право маршрута — правка заявки, и ею же дуга открыта. До
-   * первого запроса в БД обработчик спрашивает только вид заявки, а он читается из строки — то есть
-   * уже за подменённой БД.
+   * Состав строк заявки на расходники заполняет ИСПОЛНИТЕЛЬ, а не заявитель (план упрощения цикла,
+   * Р15): маршрут переведён с «правки заявки» на дизъюнкцию стороны исполнителя — право сметы либо
+   * `serviceRequests.execute`, — и оба члена проверяются поодиночке. До первого запроса в БД
+   * обработчик спрашивает только вид заявки, а он читается из строки — то есть уже за подменённой
+   * БД.
    */
   'PUT /api/v1/service-requests/:id/consumables': {
     payload: {
@@ -531,10 +533,15 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
       version: 1,
     },
   },
+  /*
+   * Отказ перестал быть переходом (план упрощения цикла, Р7): дуги `assigned → new` нет, коридорного
+   * отсева `assertSideAllowed` у ручки не осталось, и первым делом обработчик читает заявку — то
+   * есть упирается в подменённую БД. Поэтому ни добавки «нужно обработчику», ни `selfRefusal` здесь
+   * больше нет: отказывать до БД стало нечему, а сторону считает предикат `canDeclineServiceRequest`
+   * по строке заявки — его доказывает db-тест цикла.
+   */
   'PATCH /api/v1/service-requests/:id/decline': {
     payload: { reason: 'заняты до конца месяца', version: 1 },
-    handlerNeeds: ['serviceRequests.estimate'],
-    selfRefusal: CORRIDOR_REFUSAL,
   },
   'PUT /api/v1/service-requests/:id/estimate': {
     payload: {
@@ -542,10 +549,15 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
       version: 1,
     },
   },
+  /*
+   * Согласование объёма работ (Р3, Р8). Статуса оно больше не меняет, коридора у него нет, и страж
+   * стал дизъюнкцией «право согласования **или** назначение» — согласует назначенный сотрудник, а
+   * не только «Ведение». До первого запроса в БД обработчик ничего не спрашивает: и сторону, и
+   * висящее предъявление считает `canApproveServiceEstimate` по строке заявки, уже за подменённой
+   * БД. Отсюда и снятые добавка с `selfRefusal`.
+   */
   'PATCH /api/v1/service-requests/:id/estimate/approval': {
     payload: { approved: true, version: 1 },
-    handlerNeeds: ['serviceRequests.status'],
-    selfRefusal: CORRIDOR_REFUSAL,
   },
   /*
    * Возврат сметы в правку статуса не меняет (Н3): коридора у него нет, и добавка «нужно
@@ -557,13 +569,14 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { reason: 'нужен ещё термоузел', version: 1 },
   },
   /*
-   * Предъявление сметы — дуга исполнителя `in_work → estimate_review`, и открывает её любой член
-   * выбора, которым закрыт маршрут: право сметы у стороны, `serviceRequests.execute` у поимённого
-   * исполнителя. `serviceRequests.status` здесь больше ни при чём.
+   * Предъявление объёма работ дугой быть перестало (Р8): оно поднимает ревизию и ставит
+   * `estimate_pending_revision`, оставляя заявку в «В работе». Коридорного отсева у ручки поэтому
+   * нет, маршрут закрыт выбором прав исполнителя — право сметы у стороны, `serviceRequests.execute`
+   * у поимённого, — а «не поверх висящего» и «сторона» спрашиваются предикатом
+   * `canSubmitServiceEstimate` уже за подменённой БД.
    */
   'PATCH /api/v1/service-requests/:id/estimate/submit': {
     payload: { version: 1 },
-    selfRefusal: CORRIDOR_REFUSAL,
   },
   'POST /api/v1/service-requests/:id/files': { payload: { fileIds: [RECORD_ID], kind: 'act' } },
   /*
@@ -581,14 +594,23 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { version: 1 },
     selfRefusal: HOLD_REFUSAL,
   },
-  'PATCH /api/v1/service-requests/:id/it-approval': { payload: { approved: true, version: 1 } },
+  /*
+   * СНЯТО: фикстура `PATCH /:id/it-approval`. Виза ИТ упразднена (план упрощения цикла, Р10) вместе
+   * с самой ручкой, и строки под неё в манифесте нет — а фикстура на маршрут, которого не бывает,
+   * ничего не проверяет и роняет сторожа «фикстуры описывают только живые маршруты».
+   */
   'POST /api/v1/service-requests/:id/notify': { payload: { idempotencyKey: RECORD_ID } },
   'PATCH /api/v1/service-requests/:id/rework': {
     payload: { reason: 'подача по-прежнему не работает', version: 1 },
   },
+  /*
+   * Назначение перестало быть переходом (Р5): статуса оно не меняет, коридорного отсева у ручки нет,
+   * и первым делом обработчик читает заявку. Доступность считает предикат
+   * `canAssignServiceExecutors` — статус, право и «предъявление не висит», — то есть уже за
+   * подменённой БД.
+   */
   'PUT /api/v1/service-requests/:id/executors': {
     payload: { userIds: [], serviceCounterpartyId: COUNTERPARTY_ID, version: 1 },
-    selfRefusal: CORRIDOR_REFUSAL,
   },
   'PATCH /api/v1/service-requests/:id/service-comment': {
     payload: { serviceComment: 'будем во вторник', version: 1 },
@@ -607,8 +629,10 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { body: 'ждём запчасть', addressees: { sides: ['all'], users: [] } },
   },
   'POST /api/v1/service-requests/:id/messages/read': { payload: { throughSeq: 0 } },
-  // «Принять в работу» и отказ — дуги исполнителя (`assigned → in_work` и `assigned → new`), а в
-  // выборе прав маршрута стоит право хода: открывает дугу не оно, поэтому добавка остаётся.
+  // «Принять в работу» — единственный шаг исполнителя, у которого дуга осталась: после упрощения
+  // цикла она ведёт из «Новой» (`new → in_work`, Р6), а не из снятой «Назначенной». Коридорный
+  // отсев `assertSideAllowed` у ручки поэтому жив, а в выборе прав маршрута стоит право хода —
+  // открывает дугу не оно, и добавка «нужно обработчику» остаётся.
   'PATCH /api/v1/service-requests/:id/start': {
     payload: { version: 1 },
     handlerNeeds: ['serviceRequests.estimate'],

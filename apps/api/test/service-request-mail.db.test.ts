@@ -124,7 +124,7 @@ function nextAddress(): string {
 }
 
 function inject(
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   url: string,
   auth: Auth,
   payload?: unknown,
@@ -461,13 +461,18 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
 
   /**
    * Назначение так, как его сделает ручка `PUT /:id/executors`: строки исполнителей и контрагент
-   * пишутся **до** перехода, и всё это — одной транзакцией вместе с письмами.
+   * пишутся **до** помощника перехода, и всё это — одной транзакцией вместе с письмами.
    *
    * Порядок здесь не декорация. Данные письма (`loadServiceLetterData`) читаются той же
-   * транзакцией и берут исполнителей из `service_request_executors`: запиши их после перехода — и
-   * письмо о назначении соберётся без единого имени. Инвариант «в рабочем статусе есть
-   * исполнитель» отложенный (`0178`), поэтому любой порядок шагов внутри транзакции законен, и
-   * поймать эту ошибку базой нельзя — её ловит сборка тела.
+   * транзакцией и берут исполнителей из `service_request_executors`: запиши их после — и письмо о
+   * назначении соберётся без единого имени. Инвариант «в рабочем статусе есть исполнитель»
+   * отложенный (`0178`), поэтому любой порядок шагов внутри транзакции законен, и поймать эту
+   * ошибку базой нельзя — её ловит сборка тела.
+   *
+   * **Статуса назначение больше не меняет** (Р5, миграция 0224): «Назначена» снята, заявка остаётся
+   * «Новой», а строка истории кладётся `from = to`. Прежний `UPDATE … status = 'assigned'` теперь
+   * упёрся бы в `service_requests_dead_status_check` — и правильно: обойти дверь значило бы
+   * проверять письмо на состоянии, которого в модуле не бывает.
    */
   async function assignAndMail(params: {
     requestId: string;
@@ -486,12 +491,9 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
           INSERT INTO service_request_executors (request_id, user_id, assigned_by)
           VALUES (${params.requestId}, ${userId}, ${ctx.people.admin.id})`);
       }
-      await tx.execute(
-        sql`UPDATE service_requests SET status = 'assigned' WHERE id = ${params.requestId}`,
-      );
       const history = await tx.execute<{ id: string }>(sql`
         INSERT INTO service_request_status_history (request_id, from_status, to_status, changed_by)
-        VALUES (${params.requestId}, 'new', 'assigned', ${ctx.people.admin.id})
+        VALUES (${params.requestId}, 'new', 'new', ${ctx.people.admin.id})
         RETURNING id`);
       const data = await ctx.mail.loadServiceLetterData(tx, params.requestId);
       await ctx.mail.queueServiceMails(tx, {
@@ -631,10 +633,51 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
   });
 
   /**
-   * Статус выбран заморозкой, а не визой ИТ: виза переехала со входа заявки на смету (Н3 плана
-   * переработки), и «Согласована ИТ» из «Новой» администратору больше не доступна. Проверяется
-   * здесь не эта дуга, а то, что повтор письма привязан к событию: у статуса без письма повторять
-   * нечего, и портал обязан сказать это словами, а не молча ничего не отправить.
+   * Повтор письма службе запирается не только статусом, но и **составом исполнителей** (Р14,
+   * `serviceMailRepeatable`). Пока «Новая» означала «ещё не назначена», на этот вопрос отвечал сам
+   * статус: назначенная заявка стояла в «Назначена», и до этой ручки не доходила. После слияния
+   * (Р1) статус половину ответа потерял бы молча — кнопка осталась бы на месте, а письмо звало бы
+   * службу разбирать заявку, которую уже разобрали.
+   *
+   * Проверяется поэтому пара «до и после» на одной заявке: до назначения повтор проходит, после —
+   * 422, и заявка при этом по-прежнему «Новая», то есть отбил её именно состав.
+   */
+  it('после назначения исполнителей повтор письма службе закрыт — 422', async () => {
+    const { request } = await createRequest(
+      await ctx.newEquipment('reassigned'),
+      'Заминает бумагу на выходе',
+    );
+    const before = await inject(
+      'POST',
+      `/api/v1/service-requests/${request.id}/notify`,
+      ctx.admin,
+      { idempotencyKey: randomUUID() },
+    );
+    expect(before.statusCode, before.body).toBe(200);
+
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: request.version },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    // Статус не сменился — назначение переходом быть перестало (Р5): значит повтор ниже отобьёт
+    // именно состав исполнителей, а не «другой статус».
+    expect((assigned.json() as { request: ServiceRequestDto }).request.status).toBe('new');
+
+    const after = await inject('POST', `/api/v1/service-requests/${request.id}/notify`, ctx.admin, {
+      idempotencyKey: randomUUID(),
+    });
+    expect(after.statusCode, after.body).toBe(422);
+    expect(after.json().message).toContain('уже разобрали');
+  });
+
+  /**
+   * Статус выбран заморозкой, а не визой ИТ: виза упразднена вовсе (Р10), и «Согласована ИТ» из
+   * «Новой» администратору не доступна. Проверяется здесь не эта дуга, а то, что повтор письма
+   * привязан к событию: у статуса без письма повторять нечего, и портал обязан сказать это
+   * словами, а не молча ничего не отправить.
    */
   it('в статусе без события повторять нечего — 422', async () => {
     const { request } = await createRequest(await ctx.newEquipment('held'), 'Не сканирует');

@@ -34,6 +34,19 @@ export interface ServiceListFilters {
   awaitingDocuments?: string;
   warrantyClaim?: string;
   urgent?: string;
+  /**
+   * Расхождение по объекту (Р16): заявитель сказал, что аппарат стоит не там, где записано в его
+   * карточке, и справочник до сих пор говорит своё. Отбор — конъюнкция ДВУХ признаков плюс «заявка
+   * открыта», и считает её сервер: хранимая пометка `object_overridden` (факт заявления) и
+   * вычисляемое расхождение (`equipment_object_id` заявки против объекта карточки).
+   *
+   * Одного признака мало ни в ту, ни в другую сторону. Хранимый сам не гаснет ничем — ИТ-служба
+   * перенесёт единицу, а флаг у заявки останется навсегда, — и через месяц отбор перестал бы быть
+   * очередью, став списком всего, что когда-либо поправляли. Вычисляемого мало, потому что технику
+   * возят: у прошлогодних заявок снимок расходится с карточкой сплошь и рядом, и никто этого не
+   * заявлял.
+   */
+  objectMismatch?: string;
   createdFrom?: string;
   createdTo?: string;
 }
@@ -55,6 +68,7 @@ export const SERVICE_FILTER_FIELDS = [
   'awaitingDocuments',
   'warrantyClaim',
   'urgent',
+  'objectMismatch',
   'createdFrom',
   'createdTo',
 ] as const satisfies readonly (keyof ServiceListFilters)[];
@@ -219,6 +233,18 @@ export function useServiceRequestFilters({
       label: 'Только гарантийные',
       value: params.warrantyClaim === 'true',
       onChange: (v) => apply({ warrantyClaim: flag(v) }),
+    },
+    /*
+     * Очередь ИТ-службы «разобрать расхождения» (Р16): по ней и переносят единицы в справочнике —
+     * руками, разобравшись, а не по чекбоксу заявителя. Стоит рядом с прочими признаками-очередями,
+     * потому что это такой же вход в работу, а не срез списка.
+     */
+    {
+      kind: 'toggle',
+      key: 'objectMismatch',
+      label: 'Расхождение по объекту',
+      value: params.objectMismatch === 'true',
+      onChange: (v) => apply({ objectMismatch: flag(v) }),
     },
     {
       kind: 'dateRange',

@@ -170,13 +170,13 @@ function customerLocked(): boolean {
 
 /** Подписи вариантов подбора — в порядке показа, из выпадашки этого поля. */
 async function customerOptions(): Promise<string[]> {
-  const options = await openSelectOptions('Заказчик');
+  const options = await openSelectOptions('Для кого заявка');
   return options.map((option) => option.textContent ?? '');
 }
 
 /** Заголовки групп подбора: «Площадка» и «Отделы» — по ним и видно состав поля. */
 async function customerGroups(): Promise<string[]> {
-  const [first] = await openSelectOptions('Заказчик');
+  const [first] = await openSelectOptions('Для кого заявка');
   const dropdown = first!.closest('.ant-select-dropdown')!;
   return [...dropdown.querySelectorAll('.ant-select-item-group')].map((el) => el.textContent ?? '');
 }
@@ -192,22 +192,22 @@ describe('смена единицы пересобирает площадку (�
     // До выбора единицы площадки нет вовсе, и поле заперто (Р11).
     expect(customerLocked()).toBe(true);
 
-    await selectOption('Техника', /Kyocera/);
+    await selectOption('Какой аппарат', /Kyocera/);
     await waitFor(() => expect(customerLocked()).toBe(false));
     await waitFor(() => expect(shownCustomer()).toBe(NORTH_LABEL));
 
     // Прежний ключ (`object:obj-1`) остался бы заявкой на чужой объект: техника уже на другой
     // площадке, а объект в заявку уходит снимком выбранной единицы.
-    await selectOption('Техника', /Brother/);
+    await selectOption('Какой аппарат', /Brother/);
     await waitFor(() => expect(shownCustomer()).toBe(STORE_LABEL));
   });
 
   it('отдел-заказчик сменой единицы не трогается', async () => {
     renderForm(OPERATOR);
 
-    await selectOption('Техника', /Kyocera/);
-    await selectOption('Заказчик', PTO_LABEL);
-    await selectOption('Техника', /Brother/);
+    await selectOption('Какой аппарат', /Kyocera/);
+    await selectOption('Для кого заявка', PTO_LABEL);
+    await selectOption('Какой аппарат', /Brother/);
 
     // Отдел про то, кто просит, а не про то, где стоит аппарат: единицу сменили — заказчик прежний.
     expect(shownCustomer()).toBe(PTO_LABEL);
@@ -217,7 +217,7 @@ describe('смена единицы пересобирает площадку (�
 
   it('объектной роли видны все действующие отделы (Р11б)', async () => {
     renderForm(OPERATOR);
-    await selectOption('Техника', /Kyocera/);
+    await selectOption('Какой аппарат', /Kyocera/);
 
     // Ось учётки объектная, но заказчиком она называет отдел: это «от чьего имени просят», а не
     // «чья площадка», и сужать состав своей осью здесь нечем.
@@ -272,7 +272,7 @@ describe('площадка роли отдела ограничена прина
 
   it('по технике своего отдела площадка предлагается', async () => {
     renderForm(DEP_USER, { units: [own, foreign, unmarked] });
-    await selectOption('Техника', /Kyocera/);
+    await selectOption('Какой аппарат', /Kyocera/);
 
     expect(await customerGroups()).toEqual(['Площадка', 'Отделы']);
     expect(await customerOptions()).toEqual([NORTH_LABEL, PTO_LABEL, SNB_LABEL]);
@@ -280,7 +280,7 @@ describe('площадка роли отдела ограничена прина
 
   it('по чужой технике площадки нет: сервер ответил бы на неё 403', async () => {
     renderForm(DEP_USER, { units: [own, foreign, unmarked] });
-    await selectOption('Техника', /HP LaserJet/);
+    await selectOption('Какой аппарат', /HP LaserJet/);
 
     expect(await customerGroups()).toEqual(['Отделы']);
     expect(await customerOptions()).toEqual([PTO_LABEL, SNB_LABEL]);
@@ -288,7 +288,7 @@ describe('площадка роли отдела ограничена прина
 
   it('по неразмеченной технике площадки нет тоже', async () => {
     renderForm(DEP_USER, { units: [own, foreign, unmarked] });
-    await selectOption('Техника', /Brother/);
+    await selectOption('Какой аппарат', /Brother/);
 
     // Без отдела-заказчика такую заявку не держит ни одна отдельская колонка: автор перестал бы
     // видеть то, что сам завёл, — потому сервер и отвечает на неё 403.
@@ -356,12 +356,12 @@ describe('подразделение заявителя (Н11)', () => {
 
   it('у двух отделов форма спрашивает свой и шлёт его идентификатором', async () => {
     const http = renderForm(DEP_USER, { routes: create });
-    await selectOption('Техника', /Kyocera/);
-    await selectOption('Заказчик', PTO_LABEL);
-    fireEvent.change(screen.getByLabelText('Неисправность'), {
+    await selectOption('Какой аппарат', /Kyocera/);
+    await selectOption('Для кого заявка', PTO_LABEL);
+    fireEvent.change(screen.getByLabelText('Что случилось'), {
       target: { value: 'Не захватывает бумагу' },
     });
-    await selectOption('Отдел заявителя', PTO_LABEL);
+    await selectOption('Откуда обращаетесь', PTO_LABEL);
 
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
     await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
@@ -376,7 +376,7 @@ describe('подразделение заявителя (Н11)', () => {
     // Оператор с одним объектом и без отделов — самый частый случай, и лишнее поле в форме тут
     // означало бы вопрос, ответ на который известен заранее.
     renderForm(OPERATOR, { routes: create });
-    await selectOption('Техника', /Kyocera/);
+    await selectOption('Какой аппарат', /Kyocera/);
 
     expect(document.getElementById('requesterPlaceId')).toBeNull();
   });
@@ -389,9 +389,9 @@ describe('заведение шлёт осознанное значение (Р1
 
   it('заявка от площадки уходит явным `null`', async () => {
     const http = renderForm(OPERATOR, { routes: create });
-    await selectOption('Техника', /Kyocera/);
+    await selectOption('Какой аппарат', /Kyocera/);
     await waitFor(() => expect(shownCustomer()).toBe(NORTH_LABEL));
-    fireEvent.change(screen.getByLabelText('Неисправность'), {
+    fireEvent.change(screen.getByLabelText('Что случилось'), {
       target: { value: 'Не захватывает бумагу' },
     });
 
@@ -407,9 +407,9 @@ describe('заведение шлёт осознанное значение (Р1
 
   it('выбранный отдел уходит идентификатором из опции', async () => {
     const http = renderForm(OPERATOR, { routes: create });
-    await selectOption('Техника', /Kyocera/);
-    await selectOption('Заказчик', PTO_LABEL);
-    fireEvent.change(screen.getByLabelText('Неисправность'), {
+    await selectOption('Какой аппарат', /Kyocera/);
+    await selectOption('Для кого заявка', PTO_LABEL);
+    fireEvent.change(screen.getByLabelText('Что случилось'), {
       target: { value: 'Не захватывает бумагу' },
     });
 

@@ -64,11 +64,12 @@ export function serviceRequestViewFields({
           {request.kind === 'consumable' && (
             <Tag color="cyan">{serviceRequestKindLabels.consumable}</Tag>
           )}
-          {/* Второй исход визы ИТ (Н3, В21): заявку закрыли не потому, что починили, а потому что
-              чинить нецелесообразно. Пометка стоит рядом со статусом, а не в истории: по ней
-              собирают список «что пора менять», и в отменённых заявках её ищут глазами. */}
+          {/* Второй исход согласования (Р8, В21): заявку закрыли не потому, что починили, а потому
+              что чинить нецелесообразно. Пометка стоит рядом со статусом, а не в истории: по ней
+              собирают список «что пора менять», и в отменённых заявках её ищут глазами.
+              Ставит её теперь человек галочкой при отказе, а не снятая виза ИТ (Р10). */}
           {request.replacementRecommended && (
-            <Tooltip title="Решение ИТ по смете: ремонт нецелесообразен, аппарат под замену">
+            <Tooltip title="При отказе по объёму работ отмечено: ремонт нецелесообразен, аппарат под замену">
               <Tag color="volcano">Рекомендована замена</Tag>
             </Tooltip>
           )}
@@ -78,8 +79,12 @@ export function serviceRequestViewFields({
             ) : (
               <Typography.Text type="secondary">{statusLine.text}</Typography.Text>
             ))}
+          {/* Не «в статусе»: возраст обнуляется от смены того, кого ждут, а не статуса (Р4) —
+              предъявленный объём работ и переданная другому исполнителю заявка статуса не меняют, а
+              ожидание начинают заново. Подпись обязана называть то, что показано, — и та же
+              формулировка стоит подсказкой у тега состояния. */}
           <Typography.Text type="secondary">
-            в статусе {statusAgeLabel(request.statusChangedAt)}
+            ждёт {statusAgeLabel(request.statusChangedAt)}
           </Typography.Text>
         </Space>
       ),
@@ -104,9 +109,29 @@ export function serviceRequestViewFields({
           },
         ]
       : []),
+    /*
+     * Решение при отказе по объёму работ (Р12) — САМО ПО СЕБЕ, полем заявки рядом с пометкой
+     * замены, а не «под причиной». Причины отмены в карточке нет вовсе: она уходит комментарием
+     * перехода и живёт на вкладке «История», где её и читают, — а `serviceRequestViewFields` видит
+     * одну заявку. Тянуть её сюда отдельным запросом за последним отменяющим переходом значило бы
+     * вторую дорогу к тому, что уже показано вкладкой рядом.
+     *
+     * Строки нет, когда решения нет: непустым оно бывает только у отменённой заявки (`CHECK` в БД),
+     * и прочерк у всех остальных читался бы как «поле забыли заполнить».
+     */
+    ...(request.rejectionResolution
+      ? [
+          {
+            key: 'rejectionResolution',
+            label: 'Решение',
+            full: true,
+            children: request.rejectionResolution,
+          },
+        ]
+      : []),
     {
       key: 'equipment',
-      label: 'Техника',
+      label: 'Какой аппарат',
       full: true,
       children: (
         <Space direction="vertical" size={2}>
@@ -150,13 +175,23 @@ export function serviceRequestViewFields({
     },
     {
       key: 'customer',
-      label: 'Объект и заказчик',
+      label: 'Где стоит и для кого',
       full: true,
       children: (
         <Space size={8} wrap>
           <span>
             {request.object.code} — {request.object.name}
           </span>
+          {/* «Не тот объект» (Р16): объект в этой заявке назвал человек, а не подставила карточка
+              техники. Пометка историчная и неизменная — это факт заявления, а не расхождение:
+              расхождение вычисляется соединением с карточкой на сервере и гаснет само, когда
+              ИТ-служба перенесёт единицу. Поэтому подпись говорит про заявление, а не про то, что
+              аппарат «стоит не там»: к моменту чтения его могли уже перенести. */}
+          {request.objectOverridden && (
+            <Tooltip title="Заявитель указал, что аппарат стоит на другом объекте: справочник этим не правится — единицу переносит ИТ-служба, разобрав отбор расхождений">
+              <Tag color="gold">Объект указан заявителем</Tag>
+            </Tooltip>
+          )}
           {/* Место внутри объекта — снимок на момент заведения (Р57): по нему сервис и едет,
               а карточка единицы к моменту ремонта могла уже переехать. */}
           {request.equipment.location && (
@@ -176,13 +211,15 @@ export function serviceRequestViewFields({
     },
     {
       key: 'description',
-      label: 'Неисправность',
+      // Подпись по виду заявки (Р17): у ремонта спрашивали «что случилось», у расходников — «что
+      // нужно», и общая «Неисправность» врала на каждой второй заявке про картриджи.
+      label: request.kind === 'consumable' ? 'Что нужно' : 'Что случилось',
       full: true,
       children: request.description,
     },
     {
       key: 'responsible',
-      label: 'Заявитель',
+      label: 'Кто обращается',
       children: (
         <ResponsibleValue name={request.responsibleName} phone={request.responsiblePhone} />
       ),
@@ -202,7 +239,7 @@ export function serviceRequestViewFields({
       ? [
           {
             key: 'requesterPlace',
-            label: 'Подразделение',
+            label: 'Откуда обращаются',
             children: (
               <Space size={8} wrap>
                 <span>{request.requesterPlace.name}</span>
@@ -303,6 +340,11 @@ export function serviceRequestViewFields({
      * перезаписываемым полем на всю заявку, и его заменила лента обсуждения, где видно, кто, когда
      * и кому сказал. Двух мест для одного текста у карточки больше нет.
      */
-    { key: 'comment', label: 'Комментарий', full: true, children: request.comment || '—' },
+    {
+      key: 'comment',
+      label: 'Что ещё важно знать',
+      full: true,
+      children: request.comment || '—',
+    },
   ];
 }

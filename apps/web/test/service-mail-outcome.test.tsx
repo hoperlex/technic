@@ -39,7 +39,7 @@ const TYPE: OfficeEquipmentTypeDto = {
   updatedAt: '2026-08-01T00:00:00.000Z',
 };
 
-/** Единица в справочнике одна: `AutoSelect` подставит её сам — заполнять в форме нужно неисправность. */
+/** Единица в справочнике одна: `AutoSelect` подставит её сам — заполнять в форме нужно описание. */
 const EQUIPMENT: OfficeEquipmentDto = {
   id: 'oe-1',
   type: { id: TYPE.id, name: TYPE.name, isActive: true },
@@ -114,7 +114,9 @@ function renderForm(mail: ModuleMailOutcome): HttpMock {
  */
 async function submitForm(): Promise<void> {
   await screen.findAllByText('Kyocera M3145 · инв. 0012345');
-  fireEvent.change(screen.getByLabelText('Неисправность'), {
+  // Подпись описания у ремонта — «Что случилось» (Р17): форма спрашивает вопросом, а не именем
+  // реквизита. Здесь она нужна лишь как дорога до кнопки — сам разбор подписей в service-consumables.
+  fireEvent.change(screen.getByLabelText('Что случилось'), {
     target: { value: 'Не захватывает бумагу' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));

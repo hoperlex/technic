@@ -163,12 +163,17 @@ describe.skipIf(!DB_URL)('обходы, закрытые схемой выпус
     await ctx.closeDb();
   }, 60_000);
 
-  // ── M8: мёртвые статусы ──
+  // ── M8 + 0224: мёртвые статусы ──
+  //
+  // Значений стало четыре: к `it_approved` и `diagnostics` (0197) миграция 0224 добавила `assigned`
+  // и `estimate_review` (Р1). Дверь та же — `service_requests_dead_status_check`, снятая и
+  // поставленная заново на все четыре значения, — и проверять её надо целиком: поставь 0224 своё
+  // ограничение под новым именем, обе половины разъехались бы молча.
 
   it('мёртвый статус не поставить заявке ни прямым UPDATE, ни через заморозку', async () => {
     const id = await makeRequest('dead');
 
-    for (const status of ['it_approved', 'diagnostics']) {
+    for (const status of ['it_approved', 'diagnostics', 'assigned', 'estimate_review']) {
       const res = await refusal(
         ctx.db.execute(
           sql`UPDATE service_requests SET status = ${status}::service_request_status
@@ -198,6 +203,78 @@ describe.skipIf(!DB_URL)('обходы, закрытые схемой выпус
       sql`SELECT status FROM service_requests WHERE id = ${id}::uuid`,
     );
     expect(row.rows[0]!.status).toBe('on_hold');
+  });
+
+  // ── 0224: ожидание подписи и решение при отказе ──
+
+  /**
+   * Признак «объём работ предъявлен, ответа нет» живёт **своей** колонкой (Р2), и у неё есть
+   * инвариант: ждать можно только подписи под ТЕКУЩЕЙ ревизией. Предъявление поднимает ревизию и
+   * тут же ставит сюда тот же номер, а повторное предъявление под висящим счётом запрещено
+   * маршрутом; равенство, а не `<=`, потому что согласованной бывает и устаревшая ревизия, а
+   * ожидающей — только предъявленная сейчас.
+   *
+   * Проверяется базой, а не маршрутом, ровно потому же, почему и весь этот файл: колонку правит и
+   * скрипт обслуживания, а `NULL` из старого кода ограничению удовлетворяет при любой ревизии.
+   */
+  it('ожидать можно только подписи под текущей ревизией объёма работ', async () => {
+    const id = await makeRequest('pend');
+    await ctx.db.execute(
+      sql`UPDATE service_requests SET estimate_revision = 2 WHERE id = ${id}::uuid`,
+    );
+
+    for (const pending of [1, 3]) {
+      const res = await refusal(
+        ctx.db.execute(sql`
+          UPDATE service_requests SET estimate_pending_revision = ${pending}
+           WHERE id = ${id}::uuid`),
+      );
+      expect(res.code, String(pending)).toBe('23514');
+      expect(res.constraint, String(pending)).toBe('service_requests_estimate_pending_check');
+    }
+
+    // Обе законные формы проходят: равная ревизия и `NULL` («ответ получен» либо старый код).
+    await ctx.db.execute(sql`
+      UPDATE service_requests SET estimate_pending_revision = 2 WHERE id = ${id}::uuid`);
+    await ctx.db.execute(sql`
+      UPDATE service_requests SET estimate_pending_revision = NULL WHERE id = ${id}::uuid`);
+  });
+
+  /**
+   * Решение при отказе (`rejection_resolution`, Р12) — объяснение ОТМЕНЫ, а не свойство заявки: у
+   * живой заполненное решение означало бы «делаем вместо ремонта то, о чём уже договорились», пока
+   * ремонт идёт. Отсюда и обязанность матрицы сброса гасить поле на откате «Отменена → Новая» —
+   * не сними она его, откат упёрся бы в это самое ограничение ошибкой БД.
+   */
+  it('решение при отказе бывает только у отменённой заявки', async () => {
+    const id = await makeRequest('resolution');
+
+    const alive = await refusal(
+      ctx.db.execute(sql`
+        UPDATE service_requests SET rejection_resolution = 'Меняем аппарат'
+         WHERE id = ${id}::uuid`),
+    );
+    expect(alive.code).toBe('23514');
+    expect(alive.constraint).toBe('service_requests_rejection_resolution_check');
+
+    // У отменённой — проходит.
+    await ctx.db.execute(sql`
+      UPDATE service_requests SET status = 'cancelled', rejection_resolution = 'Меняем аппарат'
+       WHERE id = ${id}::uuid`);
+
+    // А вернуть её в живой статус с непустым решением нельзя: откат обязан снять поле вместе с
+    // пометкой замены — обе объясняют отмену, которой после отката больше нет.
+    const back = await refusal(
+      ctx.db.execute(sql`
+        UPDATE service_requests SET status = 'new' WHERE id = ${id}::uuid`),
+    );
+    expect(back.constraint).toBe('service_requests_rejection_resolution_check');
+    await ctx.db.execute(sql`
+      UPDATE service_requests SET status = 'new', rejection_resolution = ''
+       WHERE id = ${id}::uuid`);
+    const row = await ctx.db.execute<{ status: string; rejection_resolution: string }>(sql`
+      SELECT status, rejection_resolution FROM service_requests WHERE id = ${id}::uuid`);
+    expect(row.rows[0]).toMatchObject({ status: 'new', rejection_resolution: '' });
   });
 
   // ── M9: приёмка и её источник ──

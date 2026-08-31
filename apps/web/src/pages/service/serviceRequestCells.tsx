@@ -1,4 +1,5 @@
-import { Space, Tag, Tooltip, Typography } from 'antd';
+import { Button, Space, Tag, Tooltip, Typography } from 'antd';
+import { PlayCircleOutlined } from '@ant-design/icons';
 import {
   serviceFileKindLabels,
   type ServiceRequestDto,
@@ -6,6 +7,7 @@ import {
 } from '@technic/contracts';
 import { isAwaitingDocuments, serviceDocumentCounts } from '@entities/service-request';
 import { WarrantyTag } from '@entities/office-equipment';
+import type { ActionSheetItem } from '@shared/ui';
 
 /**
  * Ячейки списка заявок, которые собирают несколько признаков в одну колонку: реквизиты техники с
@@ -16,7 +18,6 @@ import { WarrantyTag } from '@entities/office-equipment';
  * недостающим. Объяснения к ним длиннее самой разметки, и в файле колонок они тонули.
  */
 
-/** Реквизиты единицы: модель сверху, номер и тип — подписью. Ими технику и опознают. */
 /** Реквизиты единицы: модель сверху, номер и тип — подписью. Ими технику и опознают. */
 export function EquipmentCell({
   request,
@@ -91,5 +92,37 @@ export function DocumentsCell({ request }: { request: ServiceRequestDto }) {
         </Tag>
       )}
     </Space>
+  );
+}
+
+/**
+ * «Принять в работу» прямо из строки списка (Р6) — первое из трёх мест, где заявка попадается на
+ * глаза; два других — шапка карточки и меню «Действия».
+ *
+ * Быстрой кнопкой, потому что ход этот без содержания: подтверждать нечего, есть только версия
+ * заявки. Прежде он требовал открыть меню строки ради одного нажатия — и очередь «назначено, но
+ * никто не взялся» жила ровно на том, что это нажатие откладывали.
+ *
+ * Видна кнопка только назначенному, и решает это не она: пункт `start` набор действий отдаёт лишь
+ * тому, за кем ход, — коридор исполнителя открывает факт назначения, а не право (Р6). Нет пункта —
+ * нет и кнопки; спроси ячейка сама, кому «принять» положено, это была бы вторая карта правил.
+ */
+export function StartWorkButton({ item }: { item: ActionSheetItem | undefined }) {
+  if (!item) return null;
+  return (
+    <Tooltip title={item.label}>
+      <Button
+        size="small"
+        type="primary"
+        icon={<PlayCircleOutlined />}
+        aria-label={item.label}
+        // Клик не всплывает: по строке списка нажимают, чтобы открыть карточку, и второй смысл у
+        // того же жеста означал бы «взял в работу вместо того, чтобы посмотреть».
+        onClick={(e) => {
+          e.stopPropagation();
+          item.onClick();
+        }}
+      />
+    </Tooltip>
   );
 }

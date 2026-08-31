@@ -5,10 +5,12 @@ import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList, list } from './factories/common';
 import {
+  assignedServiceRequest,
+  estimatePendingServiceRequest,
   heldServiceRequest,
   serviceCustomer,
   serviceExecutor,
-  serviceItApprover,
+  serviceInHouseExecutor,
   serviceOperator,
   serviceRequest,
   serviceRequestFile,
@@ -29,8 +31,9 @@ import { RequestsTab } from '../src/pages/service/RequestsTab';
  */
 
 const OPERATOR: AuthUser = serviceOperator();
-const IT_APPROVER: AuthUser = serviceItApprover();
 const EXECUTOR: AuthUser = serviceExecutor();
+/** Свой сисадмин: ходы исполнителя ему открывает поимённая строка, а не право (Н5). */
+const IN_HOUSE: AuthUser = serviceInHouseExecutor();
 /** Заказчик: тот же штаб, но без надстройки — шага в цикле у него нет вовсе (Р102). */
 const CUSTOMER: AuthUser = serviceCustomer();
 
@@ -96,17 +99,26 @@ describe('список заявок на обслуживание: колонк�
     expect(shown('Документы')).toBe(true);
     expect(shown('Статус')).toBe(true);
     /*
-     * Три колонки про одно и то же сведены в одну (Р100): «Ждёт» и «От вас требуется» отвечали на
-     * тот же вопрос, что и статус, а читались как три разных факта. «Срок» ушёл вместе с самим
-     * полем (Р115) — давность заявки читается возрастом в статусе.
+     * Три колонки про одно и то же сведены в одну (Р100): прежние «Ждёт» и «От вас требуется»
+     * отвечали на тот же вопрос, что и статус, а читались как три разных факта. «Срок» ушёл вместе
+     * с самим полем (Р115).
      */
-    expect(shown('Ждёт')).toBe(false);
     expect(shown('От вас требуется')).toBe(false);
     expect(shown('Срок')).toBe(false);
+    /*
+     * Колонка «Ждёт» на экране есть, но это уже НЕ прежняя «кого ждут»: она меряет возраст
+     * ТЕКУЩЕГО ОЖИДАНИЯ (Р4), и подписана так именно потому, что «В статусе» после Р1 неправда —
+     * назначение, предъявление объёма работ и согласование ожидание начинают заново, статуса не
+     * трогая. Проверяется поэтому не заголовок, а содержимое: в клетке возраст, а не сторона.
+     */
+    expect(shown('Ждёт')).toBe(true);
+    expect(shown('Ждёт оператора')).toBe(false);
+    expect(shown('В статусе')).toBe(false);
   });
 
   it('исполнитель видит объект, контакт и свой следующий шаг подписью статуса', async () => {
-    renderTab(EXECUTOR, [serviceRequest({ status: 'assigned' })]);
+    // «Назначенная» — это «Новая» с исполнителями (Р1, Р2): статуса `assigned` больше нет.
+    renderTab(EXECUTOR, [assignedServiceRequest()]);
     expect(await screen.findByText('СО-14')).toBeDefined();
     expect(shown('Объект')).toBe(true);
     expect(shown('Контакт')).toBe(true);
@@ -147,7 +159,9 @@ describe('столбец состояния подписан лицом смот
   it('заказчику подпись всегда чужая: шага в цикле у него нет', async () => {
     // Ход за оператором, а не за сервисом: даже там, где решение принимает «своя» сторона
     // заказчика, `SERVICE_WAITING_ON` его не знает — строка остаётся серой (Р102).
-    renderTab(CUSTOMER, [serviceRequest({ status: 'it_approved' })]);
+    // Статус — нераспределённая «Новая»: прежняя «Согласована ИТ» мёртвая (0197), а заявок в
+    // мёртвом статусе не бывает — очередь ответила бы «Ждёт оператора» по строке истории.
+    renderTab(CUSTOMER, [serviceRequest()]);
     await screen.findByText('СО-14');
     expect(shown('Ждёт оператора')).toBe(true);
     expect(statusLink('Ждёт оператора')).toBeNull();
@@ -229,7 +243,7 @@ describe('подпись состояния ведёт в действие (Р11
   });
 
   it('шаг без окна уходит на сервер сразу — как и одноимённый пункт меню', async () => {
-    const http = renderTab(EXECUTOR, [serviceRequest({ status: 'assigned' })], {
+    const http = renderTab(EXECUTOR, [assignedServiceRequest()], {
       'PATCH /service-requests/:id/start': () => json(serviceRequest({ status: 'in_work' })),
     });
     await screen.findByText('СО-14');
@@ -301,60 +315,121 @@ describe('ячейка документов', () => {
   });
 });
 
-describe('действия строятся из коридора переходов', () => {
+/*
+ * Три сценария про визу ИТ («на „Новой“ решения ИТ не предлагают», «на смете решение ИТ предлагают»
+ * и «подписанную смету ИТ второй раз не визирует») удалены целиком вместе с самой визой (Р10):
+ * ручки `PATCH /:id/it-approval` нет, фичи `it-approval` нет, `SERVICE_IT_TRANSITIONS` пуста, а
+ * пункта «Решение ИТ по смете» портал не рисует ни в одном статусе. Проверять там нечего:
+ * переписанные «на отсутствие пункта», они были бы зелёными при любой поломке — искали бы то, чего
+ * нет в коде вовсе. Подпись под объёмом работ теперь одна, и её сторону держит
+ * `canApproveServiceEstimate` — она и проверяется ниже.
+ */
+describe('действия ищутся предикатами, а не дугами (Р11)', () => {
   it('оператору «Новая» предлагает распределение — и ничего чужого', async () => {
-    /*
-     * Раньше этот случай назывался «назначения не предлагает: сначала виза ИТ» и искал подписи
-     * «Назначить сервис» и «Согласование ИТ». После ADR 0133 обеих нет в портале вовсе — то есть
-     * тест остался бы зелёным, охраняя отменённое правило и не проверяя ничего. Поэтому он
-     * переписан на положительное утверждение: с «Новой» начинается распределение, а не виза.
-     */
     renderTab(OPERATOR, [serviceRequest()]);
     await openRowActions();
     expect(await screen.findByText('Назначить исполнителей')).toBeDefined();
     expect(screen.getByText('Отменить заявку')).toBeDefined();
-    // Виза — не его решение и не этого статуса: она ждёт предъявленной сметы (Н3).
-    expect(screen.queryByText('Решение ИТ по смете')).toBeNull();
-    // Шаги исполнителя оператору недоступны ни через портал, ни через сервер (Р17).
+    // Шаги исполнителя оператору недоступны ни через портал, ни через сервер: их открывает факт
+    // назначения, а у нераспределённой заявки назначенных нет (Р6).
     expect(screen.queryByText('Принять в работу')).toBeNull();
   });
 
-  it('«Новую» заявку оператор распределяет по исполнителям', async () => {
-    // Виза уехала на смету (Н3), и «Новая» ждёт не её, а распределения: заявка, ещё не бывшая ни у
-    // кого, — это главный шаг того, кто ведёт модуль.
-    renderTab(OPERATOR, [serviceRequest()]);
-    await openRowActions();
-    expect(await screen.findByText('Назначить исполнителей')).toBeDefined();
+  it('назначение видно по составу исполнителей, а не по статусу: второе — уже переназначение', async () => {
+    // Заявка та же «Новая», разница только в исполнителях — и она одна меняет подпись пункта
+    // (`serviceIsFirstAssignment`, Р11). Прежде на этот же вопрос отвечал статус `assigned`.
+    renderTab(OPERATOR, [assignedServiceRequest()]);
+    const labels = await rowActionLabels();
+    expect(labels).toContain('Изменить исполнителей');
+    expect(labels).not.toContain('Назначить исполнителей');
   });
 
-  it('на «Новой» решения ИТ не предлагают: счёта ещё нет', async () => {
-    // Виза уехала со входа на смету (Н3): вопрос «чинить или менять» задаётся, когда есть сумма.
-    renderTab(IT_APPROVER, [serviceRequest()]);
-    await openRowActions();
-    expect(screen.queryByText('Решение ИТ по смете')).toBeNull();
+  it('висящее предъявление запирает переназначение, хотя статус тот же «В работе»', async () => {
+    // Прежде запрет держал статус «Смета на согласовании» — пустая строка коридора. Статуса нет, и
+    // запрет живёт в самом предикате (`canAssignServiceExecutors`): цифры предъявленного объёма
+    // принадлежат прежнему исполнителю, и переданная заявка оставила бы новому чужой счёт.
+    renderTab(OPERATOR, [
+      estimatePendingServiceRequest({ service: { id: 'cp-1', name: 'КопиЛайт' } }),
+    ]);
+    const labels = await rowActionLabels();
+    expect(labels).not.toContain('Изменить исполнителей');
+    expect(labels).not.toContain('Назначить исполнителей');
   });
 
-  it('на смете решение ИТ предлагают, пока подписи текущей ревизии нет', async () => {
-    renderTab(IT_APPROVER, [serviceRequest({ status: 'estimate_review', waitingOn: 'it' })]);
-    await openRowActions();
-    expect(await screen.findByText('Решение ИТ по смете')).toBeDefined();
+  it('согласование объёма работ предлагают, пока предъявление висит', async () => {
+    // Основание — колонка `estimatePendingRevision`, а не статус (Р2, Р8): исходов у согласования
+    // два, и оба стоят пунктами — «Согласовано» статуса не меняет, отказ уводит в «Отменена».
+    renderTab(OPERATOR, [estimatePendingServiceRequest()]);
+    const labels = await rowActionLabels();
+    expect(labels).toContain('Согласовать объём работ');
+    expect(labels).toContain('Не согласовать объём работ');
   });
 
-  it('подписанную смету ИТ второй раз не визирует: ход ушёл к деньгам', async () => {
-    // `waitingOn: 'operator'` на том же статусе означает «виза текущей ревизии уже стоит» — сервер
-    // считает это по строке заявки, сверяя ревизии, и повторную подпись отбивает 422.
-    renderTab(IT_APPROVER, [serviceRequest({ status: 'estimate_review', waitingOn: 'operator' })]);
-    await openRowActions();
-    expect(screen.queryByText('Решение ИТ по смете')).toBeNull();
+  it('погашенное предъявление согласования не предлагает: отвечать не на что', async () => {
+    // Та же заявка и тот же статус, разница ровно в `estimatePendingRevision`: `null` значит
+    // «ответ получен либо предъявление отозвано». Пара с предыдущим сценарием и держит утверждение
+    // «основание — колонка, а не статус».
+    renderTab(OPERATOR, [estimatePendingServiceRequest({ estimatePendingRevision: null })]);
+    const labels = await rowActionLabels();
+    expect(labels).not.toContain('Согласовать объём работ');
+    expect(labels).not.toContain('Не согласовать объём работ');
   });
 
   it('исполнителю назначенная заявка предлагает работу и отказ, но не распределение', async () => {
-    renderTab(EXECUTOR, [serviceRequest({ status: 'assigned' })]);
+    renderTab(EXECUTOR, [assignedServiceRequest()]);
     await openRowActions();
     expect(await screen.findByText('Принять в работу')).toBeDefined();
     expect(screen.getByText('Отказаться от заявки')).toBeDefined();
     expect(screen.queryByText('Назначить исполнителей')).toBeNull();
     expect(screen.queryByText('Отменить заявку')).toBeNull();
+  });
+
+  /**
+   * Р6: «Принять в работу» вышло из меню быстрой кнопкой прямо в строку списка — очередь
+   * «назначено, но никто не взялся» жила ровно на том, что ради одного нажатия открывали меню.
+   *
+   * Проверяется не наличие кнопки, а её основание: рисуется она пунктом `start` набора действий,
+   * и у того, кому пункт не положен, её нет вовсе. Спроси ячейка сама, кому «принять» разрешено,
+   * это была бы вторая карта правил.
+   */
+  it('быстрая кнопка «Принять в работу» видна назначенному — и только ему', async () => {
+    const http = renderTab(EXECUTOR, [assignedServiceRequest()], {
+      'PATCH /service-requests/:id/start': () => json(serviceRequest({ status: 'in_work' })),
+    });
+    const button = await screen.findByRole('button', { name: 'Принять в работу' });
+
+    fireEvent.click(button);
+    await waitFor(() => expect(http.countOf('PATCH /service-requests/:id/start')).toBe(1));
+  });
+
+  it('оператору быстрой кнопки нет: ход не его, хотя заявка та же', async () => {
+    renderTab(OPERATOR, [assignedServiceRequest()]);
+    await screen.findByText('СО-14');
+    expect(screen.queryByRole('button', { name: 'Принять в работу' })).toBeNull();
+  });
+
+  /*
+   * Основание кнопки — назначение, а не право, и видно это на СВОЁМ сисадмине: `execute` у него
+   * есть на любой заявке, а поимённой строки нет. У оператора контрагента-сервиса эта разница не
+   * проверяема вовсе — портал считает его назначенным по типу контрагента
+   * (`serviceExecutorAssignment`), потому что `counterpartyId` в `AuthUser` не приезжает, а
+   * нераспределённую заявку сервис и не видит (`assertExecutorScope`).
+   */
+  it('своему сисадмину кнопка есть, когда он в исполнителях', async () => {
+    renderTab(IN_HOUSE, [assignedServiceRequest()]);
+    expect(await screen.findByRole('button', { name: 'Принять в работу' })).toBeDefined();
+  });
+
+  it('и пропадает, когда назначен не он: право `execute` осталось прежним', async () => {
+    renderTab(IN_HOUSE, [
+      assignedServiceRequest({
+        executors: [
+          { userId: 'user-other', name: 'Сервисов С. С.', assignedAt: '2026-08-05T10:00:00.000Z' },
+        ],
+      }),
+    ]);
+    await screen.findByText('СО-14');
+    expect(screen.queryByRole('button', { name: 'Принять в работу' })).toBeNull();
   });
 });
 
@@ -371,7 +446,7 @@ describe('назначение исполнителей', () => {
       'GET /counterparties': () =>
         json(list([operator({ id: 'cp-9', name: 'КопиЛайт', type: 'service' })])),
       'PUT /service-requests/:id/executors': () =>
-        json({ request: serviceRequest({ status: 'assigned' }), mail: 'queued' }),
+        json({ request: assignedServiceRequest(), mail: 'queued' }),
     });
     await screen.findByText('СО-14');
     await openRowActions();
@@ -418,14 +493,14 @@ describe('объект и срочность в списке', () => {
   });
 
   it('оператор ставит и снимает срочность, исполнитель — не трогает вовсе', async () => {
-    renderTab(OPERATOR, [serviceRequest({ status: 'assigned' })]);
+    renderTab(OPERATOR, [assignedServiceRequest()]);
     await openRowActions();
     // Срочность — не переход: она доступна оператору и после назначения сервиса.
     expect(await screen.findByText('Отметить срочной')).toBeDefined();
   });
 
   it('исполнителю срочности не предлагают: признак заказывающей стороны', async () => {
-    renderTab(EXECUTOR, [serviceRequest({ status: 'assigned' })]);
+    renderTab(EXECUTOR, [assignedServiceRequest()]);
     await openRowActions();
     await screen.findByText('Принять в работу');
     expect(screen.queryByText('Отметить срочной')).toBeNull();

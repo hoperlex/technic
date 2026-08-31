@@ -17,6 +17,7 @@ import { ServiceRequestViewModal } from '../src/pages/service/ServiceRequestView
 import { RequestsTab } from '../src/pages/service/RequestsTab';
 import { ServiceCompleteModal } from '../src/features/service-complete/ui/ServiceCompleteModal';
 import { ServiceConsumablesIssueModal } from '../src/features/service-consumables-issue/ui/ServiceConsumablesIssueModal';
+import { ServiceRequestConsumablesModal } from '../src/pages/service/ServiceRequestConsumables';
 
 /**
  * Заявка на расходники (выпуск 3 плана `docs/office-equipment-requests-rework-plan.md`, §6.2).
@@ -24,8 +25,9 @@ import { ServiceConsumablesIssueModal } from '../src/features/service-consumable
  * Проверяется то, что молча расходится с сервером и со складом:
  *
  * 1. **подстановка позиций по модели аппарата** (Н10) — то, ради чего заводился справочник
- *    моделей: сотрудник выбирает МФУ, а картридж подставляется сам. Спроси портал позиции не по
- *    модели, а «все», и человек выбирал бы тонер, который в этот аппарат не встаёт;
+ *    моделей: картридж подставляется сам. Спроси портал позиции не по модели, а «все», и человек
+ *    выбирал бы тонер, который в этот аппарат не встаёт. Спрашивают их теперь в редакторе состава,
+ *    а не в форме заведения (Р15): заявитель говорит словами, состав пишет исполнитель;
  * 2. **умолчание факта подставляет форма, а не сервер** (Р3): по молчанию клиента сервер со склада
  *    не списывает и отвечает 422 «нет отметки о выдаче». Уйди закрытие без строк — работы не
  *    закрылись бы вовсе;
@@ -63,7 +65,9 @@ const UNIT: OfficeEquipmentDto = {
   deletedAt: null,
 };
 
-function consumable(over: Partial<OfficeEquipmentConsumableDto> = {}): OfficeEquipmentConsumableDto {
+function consumable(
+  over: Partial<OfficeEquipmentConsumableDto> = {},
+): OfficeEquipmentConsumableDto {
   return {
     id: 'oec-1',
     code: 'Д0000093569',
@@ -163,17 +167,78 @@ function bodyOf(http: HttpMock, route: string): Record<string, unknown> {
   return http.lastCall(route)?.body as Record<string, unknown>;
 }
 
-describe('заведение заявки на расходники (Н1, Н9, Н10)', () => {
+/**
+ * Заведение после Р15. Прежние три сценария проверяли выбор позиций **в форме заведения** —
+ * подстановку по модели, отказ пустого списка и отсутствие блока у ремонта. Блока в форме больше
+ * нет ни у одного вида: заявитель номенклатуры не знает, и его дело — сказать словами, чего не
+ * хватает. Подстановка и запрет пустого списка никуда не делись, но переехали в редактор состава
+ * (`ServiceRequestConsumablesModal`) — там они и проверяются ниже, у своего окна.
+ */
+describe('заведение заявки на расходники (Н1, Р15, Р17)', () => {
   const create = {
     'POST /service-requests': () =>
       json({ request: consumableRequest('new', [line()]), mail: 'queued' }, 201),
   };
 
-  it('позиции подбираются по модели аппарата, а единственная подставляется сама', async () => {
+  it('номенклатуры форма не спрашивает: заявитель отвечает словами на «Что нужно»', async () => {
     const http = renderForm(create);
     chooseKind('Расходники');
 
-    // Аппарат выбран (он единственный), и вслед за ним ушёл запрос позиций **его модели**.
+    // Блока позиций нет вовсе — ни кнопки, ни полей строки: спрашивать нечего.
+    await screen.findByLabelText('Что нужно');
+    expect(screen.queryByRole('button', { name: /Добавить позицию/ })).toBeNull();
+    expect(screen.queryByLabelText('Позиция номенклатуры')).toBeNull();
+    // И справочник расходников формой не тревожится: подбирать позиции ей не для чего.
+    expect(http.countOf('GET /office-equipment-consumables')).toBe(0);
+
+    fireEvent.change(screen.getByLabelText('Что нужно'), {
+      target: { value: 'Закончился чёрный тонер, печатать нечем' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    const body = bodyOf(http, 'POST /service-requests');
+    expect(body.kind).toBe('consumable');
+    // Заявка ушла БЕЗ строк — и это главное отличие от прежней модели: пустой состав здесь
+    // законен, его заполнит исполнитель своей ручкой.
+    expect(body.consumables).toBeUndefined();
+    expect(body.description).toBe('Закончился чёрный тонер, печатать нечем');
+  });
+
+  it('у ремонта тот же вопрос звучит как «Что случилось», и строк нет тоже', async () => {
+    renderForm(create);
+    // Умолчание вида — ремонт: описание на месте под своей подписью (Р17), позиций нет.
+    expect(await screen.findByLabelText('Что случилось')).toBeDefined();
+    expect(screen.queryByLabelText('Что нужно')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Добавить позицию/ })).toBeNull();
+  });
+});
+
+// ── Состав номенклатуры: окно исполнителя ──────────────────────────────────
+
+function renderConsumablesModal(request: ServiceRequestDto, routes: RouteMap = {}): HttpMock {
+  const http = mockHttp({
+    'GET /office-equipment': () => json(list([UNIT])),
+    // Отбор по модели — на стороне сервера: портал шлёт `modelId`, и проверяется именно это.
+    'GET /office-equipment-consumables': ({ query }) =>
+      json(list(query.get('modelId') === MODEL.id ? [FITTING] : [FITTING, FOREIGN])),
+    ...routes,
+  });
+  renderWithUser(<ServiceRequestConsumablesModal request={request} onClose={() => {}} />, {
+    user: OPERATOR,
+  });
+  return http;
+}
+
+describe('редактор состава номенклатуры (Н10, Р15)', () => {
+  const saved = {
+    'PUT /service-requests/:id/consumables': () => json(consumableRequest('in_work', [line()])),
+  };
+
+  it('позиции подбираются по модели аппарата заявки, а единственная подставляется сама', async () => {
+    const http = renderConsumablesModal(consumableRequest('in_work', []), saved);
+
+    // Модель берётся у аппарата ЗАЯВКИ, а не спрашивается человеком: запрос ушёл с её `modelId`.
     await waitFor(() =>
       expect(http.lastCall('GET /office-equipment-consumables')?.query.get('modelId')).toBe(
         MODEL.id,
@@ -181,7 +246,7 @@ describe('заведение заявки на расходники (Н1, Н9, �
     );
 
     fireEvent.click(await screen.findByRole('button', { name: /Добавить позицию/ }));
-    // Та самая подстановка: к модели подходит одна позиция, и человеку её выбирать не из чего.
+    // Та самая подстановка: к модели подходит одна позиция, и выбирать её не из чего.
     await waitFor(() => expect(chosenConsumable()).toContain('Тонер Ricoh 201'));
     // Код и остаток стоят в подписи: заказывая четыре тонера, человек видит, что на складе их
     // четыре, а сверять со счётом будут по коду.
@@ -189,37 +254,25 @@ describe('заведение заявки на расходники (Н1, Н9, �
     expect(chosenConsumable()).toContain('на складе 4');
 
     fireEvent.change(screen.getByLabelText('Сколько нужно'), { target: { value: '2' } });
-    fireEvent.change(screen.getByLabelText('Зачем нужно'), {
-      target: { value: 'Закончился чёрный тонер' },
-    });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
-    const body = bodyOf(http, 'POST /service-requests');
-    expect(body.kind).toBe('consumable');
-    // Строки уходят заведением, а не отдельным PUT следом: заявка без них запрещена постановкой.
-    expect(body.consumables).toEqual([{ consumableId: 'oec-1', requestedQuantity: 2 }]);
+    await waitFor(() => expect(http.countOf('PUT /service-requests/:id/consumables')).toBe(1));
+    const body = bodyOf(http, 'PUT /service-requests/:id/consumables');
+    // Состав уходит списком целиком и с версией: ручка принимает предмет заявки, а не приращение.
+    expect(body.items).toEqual([{ consumableId: 'oec-1', requestedQuantity: 2 }]);
+    expect(body.version).toBe(3);
   });
 
-  it('без строк форма не отпускает: заявка на расходники без них не заводится', async () => {
-    const http = renderForm(create);
-    chooseKind('Расходники');
-    fireEvent.change(await screen.findByLabelText('Зачем нужно'), {
-      target: { value: 'Закончился чёрный тонер' },
-    });
+  it('пустой список редактор не отпускает — в отличие от формы заведения (Р15)', async () => {
+    const http = renderConsumablesModal(consumableRequest('in_work', []), saved);
+    await screen.findByRole('button', { name: /Добавить позицию/ });
+
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 
-    expect(
-      await screen.findByText('Добавьте хотя бы одну позицию: без них заявка не заводится'),
-    ).toBeDefined();
-    expect(http.countOf('POST /service-requests')).toBe(0);
-  });
-
-  it('у ремонта строк номенклатуры нет вовсе — их и не спрашивают', async () => {
-    renderForm(create);
-    // Умолчание вида — ремонт: поле неисправности на месте, строк нет.
-    expect(await screen.findByLabelText('Неисправность')).toBeDefined();
-    expect(screen.queryByRole('button', { name: /Добавить позицию/ })).toBeNull();
+    // Правило то же, что на сервере (`putServiceConsumablesSchema` держит `.min(1)`): сохранённый
+    // пустой состав оставил бы заявку на расходники без предмета.
+    expect(await screen.findByText('Добавьте хотя бы одну позицию')).toBeDefined();
+    expect(http.countOf('PUT /service-requests/:id/consumables')).toBe(0);
   });
 });
 
@@ -391,7 +444,14 @@ describe('строки расходников в карточке заявки (
   it('показывают, что просили, что выдали и почему разошлось — и только на чтение', async () => {
     const request = consumableRequest('accepted', [
       line({ requestedQuantity: 2, issuedQuantity: 1, issueNote: 'на складе был один' }),
-      line({ id: 'src-2', consumableId: FOREIGN.id, code: FOREIGN.code, name: FOREIGN.name, color: 'голубой', requestedQuantity: 1 }),
+      line({
+        id: 'src-2',
+        consumableId: FOREIGN.id,
+        code: FOREIGN.code,
+        name: FOREIGN.name,
+        color: 'голубой',
+        requestedQuantity: 1,
+      }),
     ]);
     mockHttp({
       'GET /service-requests/:id': () => json(request),
@@ -401,9 +461,10 @@ describe('строки расходников в карточке заявки (
       user: OPERATOR,
     });
 
-    // У расходников вкладки «Смета» нет вовсе: предмет заявки — либо смета, либо номенклатура.
+    // У расходников вкладки «Объём работ» нет вовсе (Р17 переименовал «Смету»): предмет заявки —
+    // либо объём работ, либо номенклатура, и двух списков предмета у одной заявки не бывает.
     fireEvent.click(await screen.findByRole('tab', { name: 'Номенклатура' }));
-    expect(screen.queryByRole('tab', { name: 'Смета' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Объём работ' })).toBeNull();
 
     expect(await screen.findByText('Тонер Ricoh 201')).toBeDefined();
     expect(screen.getByText('на складе был один')).toBeDefined();
@@ -450,8 +511,8 @@ describe('отметка о выдаче в меню заявки (§6.2, Р6)',
 
     const labels = await rowActionLabels();
     expect(labels).toContain('Отметить выдачу');
-    // Сметы у расходников нет вовсе: согласовывать картридж со своего склада не с кем.
-    expect(labels).not.toContain('Смета');
+    // Объёма работ у расходников нет вовсе: согласовывать картридж со своего склада не с кем.
+    expect(labels).not.toContain('Объём работ');
   });
 
   it('у закрытой заявки пункта нет: строки замерли, остаток правят вручную (Р8)', async () => {

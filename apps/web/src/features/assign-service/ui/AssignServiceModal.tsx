@@ -3,8 +3,8 @@ import { Alert, App, Form, Input, Select, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   moduleMailOutcomeLabels,
+  serviceIsFirstAssignment,
   type ServiceRequestDto,
-  type ServiceRequestStatus,
 } from '@technic/contracts';
 import {
   serviceCompanyOptionsQuery,
@@ -36,12 +36,23 @@ interface Values {
 }
 
 /**
- * Первое назначение или переназначение. Считается по **статусу**, а не по наличию исполнителя:
- * ровно так решает сервер (`first` в `PUT /:id/executors`), и разойдись портал с ним — окно либо
- * требовало бы причину там, где она не нужна, либо отправляло бы запрос, на который придёт 422.
+ * Первое назначение или переназначение — по **составу исполнителей**, и одним предикатом с
+ * сервером (`serviceIsFirstAssignment` контрактов, Р11).
+ *
+ * Прежде вопрос решался статусом (`status === 'new'`), и это было верно ровно пока «Назначена»
+ * существовала: статус с составом СОВПАДАЛ. После слияния статусов (Р2) «Новая» бывает и с
+ * исполнителями — назначение перестало быть переходом (Р5), — и прежняя строка называла бы первым
+ * назначением всякую замену исполнителя, сделанную до того, как за заявку взялись. Окно не
+ * спросило бы причину, а сервер ответил бы 422 на запрос без неё.
+ *
+ * Пара «контрагент + число поимённых строк» собирается здесь, потому что общего типа у строки БД и
+ * карточки нет: сервер читает те же два поля из своих таблиц.
  */
-function isFirstAssignment(status: ServiceRequestStatus): boolean {
-  return status === 'new';
+function isFirstAssignment(request: ServiceRequestDto): boolean {
+  return serviceIsFirstAssignment({
+    serviceCounterpartyId: request.service?.id ?? null,
+    executorCount: request.executors.length,
+  });
 }
 
 /**
@@ -73,7 +84,13 @@ function keepSingleCompany(next: string[] = []): string[] {
  * уже переназначена, но ещё наполовину.
  *
  * Причина обязательна при переназначении: у прежнего исполнителя отбирают работу, и вместе с ним
- * уходит его смета.
+ * уходит его объём работ.
+ *
+ * Переходом назначение быть перестало (Р5) — статуса оно не меняет, а состав пишет и кладёт строку
+ * истории `from = to`. Исключение одно: переназначение **из «В работе»** возвращает заявку в
+ * «Новую», иначе новый исполнитель унаследовал бы чужое «взялся» и никогда не нажал бы «Принять в
+ * работу». Про это окно говорит вслух — заявка, ушедшая из «В работе» молча, читалась бы как
+ * откат, которого никто не делал.
  */
 export function AssignServiceModal({
   request,
@@ -87,7 +104,7 @@ export function AssignServiceModal({
   const { can } = useAuth();
   const qc = useQueryClient();
   const [form] = Form.useForm<Values>();
-  const first = request ? isFirstAssignment(request.status) : true;
+  const first = request ? isFirstAssignment(request) : true;
 
   const { data: companies = [], isFetching: companiesLoading } = useQuery({
     ...serviceCompanyOptionsQuery(),
@@ -210,13 +227,22 @@ export function AssignServiceModal({
       {/* О какой заявке речь (Р57): исполнителя выбирают по тому, что чинят и где оно стоит, —
           до этой шапки в окне не было ни техники, ни объекта. */}
       {request && <ServiceRequestContext request={request} />}
+      {/*
+       * Что именно теряет заявка при замене — до нажатия, а не после. Возврат в «Новую» назван
+       * отдельной строкой и только там, где он случается (Р5): у заявки, которая и так «Новая»,
+       * такой фразы быть не должно — она обещала бы ход, которого не будет.
+       */}
       {!first && (
         <Alert
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
           message="У снятого исполнителя заявку заберут"
-          description="Его смета и согласование будут стёрты, а отсчёт ожидания начнётся заново: новый исполнитель не наследует чужое время. Оставшиеся назначенные продолжают вести заявку."
+          description={
+            request?.status === 'in_work'
+              ? 'Заявка вернётся в «Новую»: новый исполнитель сам нажмёт «Принять в работу» — чужое «взялся» он не наследует. Объём работ и согласование прежнего исполнителя будут стёрты, а отсчёт ожидания начнётся заново. Оставшиеся назначенные продолжают вести заявку.'
+              : 'Его объём работ и согласование будут стёрты, а отсчёт ожидания начнётся заново: новый исполнитель не наследует чужое время. Оставшиеся назначенные продолжают вести заявку.'
+          }
         />
       )}
       <Form form={form} layout="vertical" onFinish={(v) => mutation.mutate(v)}>

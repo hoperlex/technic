@@ -5,7 +5,7 @@ import type {
 } from '@technic/contracts';
 
 /**
- * Строка сметы в редакторе. Своя от DTO: у набираемой строки ещё нет идентификатора (смета
+ * Строка объёма работ в редакторе. Своя от DTO: у набираемой строки ещё нет идентификатора (состав
  * уходит на сервер целиком и пересоздаётся), зато нужен ключ для React, а количество и цена
  * живут «наполовину введёнными» — поле `InputNumber` отдаёт `null`, пока в нём пусто, и
  * подменять это нулём нельзя: «0» и «не введено» отличаются как раз тем, что второе — ошибка.
@@ -35,7 +35,7 @@ export function newEstimateRow(kind: ServiceItemKind): EstimateRow {
   };
 }
 
-/** Строки уже заведённой сметы: черновик ревизии, которую исполнитель дописывает. */
+/** Строки уже заведённого объёма работ: черновик ревизии, которую исполнитель дописывает. */
 export function rowsFromItems(items: readonly ServiceRequestItemDto[]): EstimateRow[] {
   return items.map((item) => {
     sequence += 1;
@@ -50,7 +50,7 @@ export function rowsFromItems(items: readonly ServiceRequestItemDto[]): Estimate
   });
 }
 
-/** Сумма строки: количество × цена. Считается на глазах — итог сметы виден до её отправки. */
+/** Сумма строки: количество × цена. Считается на глазах — итог виден до предъявления. */
 export function rowAmount(row: EstimateRow): number {
   return (row.quantity ?? 0) * (row.unitPrice ?? 0);
 }
@@ -60,7 +60,7 @@ export function rowsTotal(rows: readonly EstimateRow[]): number {
 }
 
 /**
- * Чего не хватает строкам. Одним сообщением, а не подсветкой каждого поля: строк в смете
+ * Чего не хватает строкам. Одним сообщением, а не подсветкой каждого поля: строк в объёме работ
  * немного, а список ошибок под кнопкой читается целиком.
  *
  * Проверки те же, что у схемы контрактов (`serviceEstimateItemSchema`): наименование от двух
@@ -77,7 +77,7 @@ export function estimateIssue(rows: readonly EstimateRow[]): string | null {
   return null;
 }
 
-/** Тело `PUT /estimate`: состав целиком — смета документ, и по строке её не правят. */
+/** Тело `PUT /estimate`: состав целиком — объём работ документ, и по строке его не правят. */
 export function rowsToPayload(rows: readonly EstimateRow[]): ServiceEstimateItemInput[] {
   return rows.map((row) => ({
     kind: row.kind,
@@ -89,7 +89,7 @@ export function rowsToPayload(rows: readonly EstimateRow[]): ServiceEstimateItem
 }
 
 /**
- * Изменился ли состав по сравнению с тем, что лежит на сервере. Не косметика: неизменённую смету
+ * Изменился ли состав по сравнению с тем, что лежит на сервере. Не косметика: неизменённый состав
  * не нужно перезаписывать перед предъявлением — лишний `PUT` поднял бы версию заявки и отобрал
  * бы её у того, кто в этот момент смотрит карточку.
  */
