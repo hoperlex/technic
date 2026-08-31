@@ -1,0 +1,103 @@
+/**
+ * Версия контракта клиента: заголовки, которые портал ставит КАЖДОМУ запросу к своему API, и
+ * состояние «сервер потребовал обновиться».
+ *
+ * **Зачем отдельный модуль.** Через `http.ts` идут не все запросы: обновление сессии зовёт `fetch`
+ * напрямую (`session.ts`), потому что решение «сессия кончилась» принимает она сама, а не
+ * транспорт. Заголовок, поставленный в одной обёртке, до второго вызова не доехал бы — и сервер
+ * отбил бы обновление сессии, а старый код прочитал бы отказ как конец сессии и выкинул человека
+ * из портала. Поэтому заголовки живут здесь, а обе двери берут их отсюда.
+ *
+ * **Что НЕ обслуживается этим модулем.** Запросы в S3 (загрузка вложения по presigned-ссылке),
+ * в DaData (подсказки адресов) и за `/version.json` — это не наш API: заголовков они не несут и
+ * гейту не подлежат.
+ *
+ * План: `docs/office-equipment-consumables-and-purchase-plan.md`, Р8; ADR 0146, решение 7.
+ */
+
+/**
+ * Версия контракта этой сборки портала — монотонное целое, а не идентификатор сборки.
+ *
+ * `__BUILD_ID__` для гейта не годится: это короткий commit SHA, и отношения «ниже/выше» у него
+ * нет вовсе — `a731bc2` и `f0184de` несравнимы. Поэтому число отдельное, и растёт оно ВРУЧНУЮ И
+ * РЕДКО: ровно тогда, когда ответ сервера перестаёт быть читаемым кодом предыдущих сборок.
+ * Поднявший число обязан поднять и пол на сервере (`MIN_CLIENT_CONTRACT`) — отдельным действием
+ * и уже после того, как новая статика раздаётся.
+ *
+ * Числа с сервером намеренно НЕ общие: портал вшивает своё в бандл, сервер читает своё из
+ * окружения. Общий модуль связал бы две стороны в один выкат — а весь смысл двух фаз в том, что
+ * они разъезжаются.
+ */
+export const CLIENT_CONTRACT = 1;
+
+/** Диагностика: какая сборка прислала запрос. Гейт этот заголовок не толкует. */
+export const CLIENT_BUILD_HEADER = 'X-Client-Build';
+
+/** Гейт: версия контракта клиента. Сервер сравнивает её со своим полом. */
+export const CLIENT_CONTRACT_HEADER = 'X-Client-Contract';
+
+/**
+ * Код отказа гейта. Тот же литерал носит 409 предпросмотра смены техники
+ * (`pages/vehicle/ReassignPreview.tsx`), поэтому разбирается ПАРА «статус + код», а не код
+ * в одиночку: разговор у этих двух отказов разный.
+ */
+export const CLIENT_UPGRADE_REQUIRED = 'client_upgrade_required';
+
+/** 426 Upgrade Required — статус, которым сервер отбивает сборку ниже пола. */
+export const CLIENT_UPGRADE_STATUS = 426;
+
+/**
+ * Заголовки клиента для запроса к своему API.
+ *
+ * `typeof __BUILD_ID__` — не перестраховка: константу подставляет сборка (`vite.config.ts`,
+ * `define`), а в прогоне тестов её нет вовсе, и голое обращение упало бы на ReferenceError.
+ */
+export function clientRequestHeaders(): Record<string, string> {
+  const build = typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev';
+  return {
+    [CLIENT_BUILD_HEADER]: build,
+    [CLIENT_CONTRACT_HEADER]: String(CLIENT_CONTRACT),
+  };
+}
+
+/** Тот ли это отказ гейта: 426 **и** его код. */
+export function isClientUpgradeResponse(status: number, code: string | undefined): boolean {
+  return status === CLIENT_UPGRADE_STATUS && code === CLIENT_UPGRADE_REQUIRED;
+}
+
+let upgradeRequired = false;
+let handlers: (() => void)[] = [];
+
+/**
+ * Сервер отказал этой вкладке по версии. Состояние одностороннее и необратимое: «обратно
+ * совместимым» ответ уже не станет, а перезагрузить страницу за человека портал не может — только
+ * потребовать.
+ */
+export function requireClientUpgrade(): void {
+  if (upgradeRequired) return;
+  upgradeRequired = true;
+  for (const handler of handlers) handler();
+}
+
+/** Требует ли сервер обновления прямо сейчас. */
+export function isClientUpgradeRequired(): boolean {
+  return upgradeRequired;
+}
+
+/**
+ * Подписка на требование обновиться; возвращает функцию отписки. Подпиской, а не полем результата
+ * запроса, — по тому же устройству, что у `onExpired` в `session.ts`: отказ приходит посреди
+ * работы, любому запросу, и знать о нём должен экран, а не тот, кто этот запрос отправлял.
+ */
+export function onClientUpgradeRequired(handler: () => void): () => void {
+  handlers = [...handlers, handler];
+  return () => {
+    handlers = handlers.filter((h) => h !== handler);
+  };
+}
+
+/** Тестам: вернуть модуль в состояние «сервер ничего не требовал». */
+export function __resetClientContractForTests(): void {
+  upgradeRequired = false;
+  handlers = [];
+}

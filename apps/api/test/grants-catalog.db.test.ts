@@ -96,17 +96,26 @@ const DECLARED: ReadonlyMap<
   ...MODULE_GRANT_CODES.map((code) => [code as string, MODULE_GRANTS[code]] as const),
 ]);
 
-/** Состав набора в базе, отсортированный: порядок строк `INSERT`'а свойством каталога не является. */
+/**
+ * Состав набора в базе, отсортированный: порядок строк `INSERT`'а свойством каталога не является.
+ *
+ * Сортировка в JS, а не в `ORDER BY`, — по той же причине, что у ролей ниже, только причина здесь
+ * не enum, а язык сравнения. Postgres упорядочивает текст правилами локали базы, и точка в них не
+ * символ, а знак препинания: `officeEquipment.write` и `officeEquipmentPurchases.manage` — оба
+ * права набора «Оргтехника: ведение» (ADR 0146) — база отдаёт в обратном тому порядке, в каком их
+ * ставит `Array.prototype.sort`, сравнивающий кодовые единицы. Сравнивать надо два списка,
+ * отсортированных ОДНИМ правилом, иначе страж падает на порядке и молчит о составе — то есть врёт
+ * ровно там, где обязан быть точным.
+ */
 async function permissionsOf(code: string): Promise<string[]> {
   const { rows } = await client.query<{ permission: string }>(
     `SELECT gp.permission
        FROM grant_permissions gp
        JOIN grants g ON g.id = gp.grant_id
-      WHERE g.code = $1
-      ORDER BY gp.permission`,
+      WHERE g.code = $1`,
     [code],
   );
-  return rows.map((r) => r.permission);
+  return rows.map((r) => r.permission).sort();
 }
 
 /**

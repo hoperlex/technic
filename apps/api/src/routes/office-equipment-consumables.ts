@@ -65,6 +65,12 @@ import {
   consumableUsageWorkbook,
   loadConsumableUsage,
 } from '../services/office-equipment-consumable-usage';
+import {
+  alreadyOrderedExpr,
+  assertNoOpenPurchaseForConsumable,
+  assertNoPurchaseLinesForConsumable,
+  deficitExpr,
+} from '../services/office-equipment-purchases';
 
 /**
  * Справочник расходников оргтехники — картриджей и тонеров (план
@@ -228,6 +234,44 @@ const lastManualStockAtExpr = sql<Date>`(
 )`.mapWith(officeEquipmentConsumableStockEntries.createdAt);
 
 /**
+ * Потребность и остаток ССЫЛКАМИ ТОГО ЖЕ ВИДА, что и `consumableIdRef`, — отдельными
+ * `sql`-объектами, а не колонками, вписанными в выражение дефицита.
+ *
+ * Здесь они, в отличие от корреляции выше, ничего не спасают: обе колонки — свои собственные, и
+ * потерявшее квалификацию `"required_quantity"` в списке столбцов односоставного запроса
+ * разрешается в ту же самую таблицу. Стоят они так по правилу файла, которое обязано быть одним:
+ * дефицит — выражение составное, и первое же его перемещение внутрь подзапроса (например, в отбор
+ * «есть дефицит», переписанный через `EXISTS`) превратило бы вписанную на месте колонку в ссылку
+ * на чужую строку. Разбор — у `consumableIdRef` выше.
+ */
+const consumableRequiredRef = sql`${officeEquipmentConsumables}."required_quantity"`;
+const consumableQuantityRef = sql`${officeEquipmentConsumables}."quantity"`;
+
+/**
+ * «Уже заказано» и дефицит (план `docs/office-equipment-consumables-and-purchase-plan.md`, Р15).
+ *
+ * ВЫРАЖЕНИЯ ВЗЯТЫ У СЛУЖЕБНОГО МОДУЛЯ ЗАКУПОК, а не написаны здесь, и это требование Р15
+ * дословно: «два места, считающие дефицит, разойдутся, а по этому числу заказывают». Тот же
+ * вычислитель обслуживает предзаполнение формы и пересчёт под блокировкой при сохранении (Р17), и
+ * разойдись перечень с формой — человек увидел бы в табличке одно число, а в форме другое, и
+ * заказал бы по тому, которое ему больше понравилось.
+ *
+ * ОБА ЧИСЛА СТОЯТ В ОТВЕТЕ РЯДОМ, и «уже заказано» не спрятано в формулу дефицита: число, которое
+ * влияет на заказ, обязано быть видно (Р15). Иначе «дефицит 0» у позиции с пустой полкой читается
+ * как ошибка портала, а не как «уже везут».
+ *
+ * ЗАКРЫТАЯ ЗАКУПКА ПЕРЕСТАЁТ ВЫЧИТАТЬСЯ — и отсюда правило Р11, которое портал обязан проговорить
+ * словами в форме закрытия: сначала занесите приход ручной правкой остатка, потом закрывайте.
+ * Закрытие раньше прихода вернёт дефицит на экран и позовёт заказывать второй раз.
+ */
+const alreadyOrderedColumn = alreadyOrderedExpr(consumableIdRef);
+const deficitColumn = deficitExpr(
+  consumableRequiredRef,
+  consumableQuantityRef,
+  alreadyOrderedColumn,
+);
+
+/**
  * Ссылка на модель КАРТОЧКИ ТЕХНИКИ изнутри счётчика — тем же приёмом, что выше (отдельный
  * `sql`-объект). Но сказать про неё надо ровно то, что замерено, и не больше.
  *
@@ -312,6 +356,9 @@ function dtoColumns(p: Principal) {
     code: officeEquipmentConsumables.code,
     name: officeEquipmentConsumables.name,
     quantity: officeEquipmentConsumables.quantity,
+    requiredQuantity: officeEquipmentConsumables.requiredQuantity,
+    alreadyOrdered: alreadyOrderedColumn,
+    deficit: deficitColumn,
     isActive: officeEquipmentConsumables.isActive,
     color: officeEquipmentConsumables.color,
     comment: officeEquipmentConsumables.comment,
@@ -328,6 +375,11 @@ interface DtoRow {
   code: string;
   name: string;
   quantity: number;
+  requiredQuantity: number;
+  // Оба считаются подзапросами и приезжают приведёнными к `int` (`::int` у сумм в служебном
+  // модуле): без приведения `sum(integer)` уехал бы в JS строкой bigint.
+  alreadyOrdered: number;
+  deficit: number;
   isActive: boolean;
   color: string | null;
   comment: string;
@@ -346,6 +398,9 @@ function toDto(r: DtoRow, models: OfficeEquipmentModelRefDto[]): OfficeEquipment
     code: r.code,
     name: r.name,
     quantity: r.quantity,
+    requiredQuantity: r.requiredQuantity,
+    alreadyOrdered: Number(r.alreadyOrdered),
+    deficit: Number(r.deficit),
     isActive: r.isActive,
     color: r.color,
     comment: r.comment,
@@ -832,6 +887,22 @@ export default async function officeEquipmentConsumablesRoutes(
           : q.stock === 'in_stock'
             ? sql`${officeEquipmentConsumables.quantity} > 0`
             : eq(officeEquipmentConsumables.quantity, 0),
+        /*
+         * «Есть дефицит» (Р15) — срез, ради которого на вкладку и заходят перед закупкой.
+         *
+         * ТЕМ ЖЕ ВЫРАЖЕНИЕМ, ЧТО И СТОЛБЕЦ, а не «потребность больше остатка»: сокращённое условие
+         * забыло бы про уже заказанное и показывало бы в срезе позиции, которые уже везут, — то
+         * есть звало бы заказать их второй раз. Ровно этот дефект Р15 и закрывает.
+         *
+         * Строгое неравенство и точный ноль, а не одно условие с отрицанием: `deficit > 0` и
+         * `deficit = 0` покрывают все значения, потому что `GREATEST(0, …)` отрицательного не
+         * отдаёт.
+         */
+        q.hasDeficit === undefined
+          ? undefined
+          : q.hasDeficit
+            ? sql`${deficitColumn} > 0`
+            : sql`${deficitColumn} = 0`,
         q.isActive === undefined ? undefined : eq(officeEquipmentConsumables.isActive, q.isActive),
         // Ищут обеими половинами карточки (Р9): «Pantum» и «Д0000337733» обязаны находить одну и ту
         // же строку — код спрашивают у счёта, наименование помнят на слух.
@@ -856,6 +927,20 @@ export default async function officeEquipmentConsumablesRoutes(
          * трогали» — крайнее значение вопроса «когда трогали последний раз».
          */
         lastManualStockAt: lastManualStockAtExpr,
+        /*
+         * Потребность, «уже заказано» и дефицит — теми же выражениями, что стоят в столбцах ответа
+         * (Р15). Довод тот же, что у «Правки остатка» выше: сортировка обязана упорядочивать ровно
+         * то число, которое человек видит в ячейке, а второе выражение «про то же самое»
+         * разошлось бы с первым молча.
+         *
+         * Сортировка по считаемому столбцу стоит дороже сортировки по колонке — подзапрос
+         * считается для каждой строки отбора, а не только для показанной страницы, — и это цена
+         * вопроса «с чего начинать заказ»: ответить на него, посмотрев одну страницу из десяти,
+         * нельзя.
+         */
+        requiredQuantity: officeEquipmentConsumables.requiredQuantity,
+        alreadyOrdered: alreadyOrderedColumn,
+        deficit: deficitColumn,
       };
       // Умолчание — наименование по возрастанию (Р9): справочник читают алфавитом, а не «последнее
       // заведённое сверху», как перечень техники. Направление по умолчанию задаёт контракт
@@ -1054,6 +1139,10 @@ export default async function officeEquipmentConsumablesRoutes(
               // сверяют глазами со счётом, и «причёсанное» имя эту сверку ломает (Р5).
               name: b.name,
               quantity: b.quantity,
+              // Потребность — обычное поле карточки, и права склада ей не нужно (Р13): остаток —
+              // предмет учёта с журналом и причиной, потребность — намерение, которое правят по
+              // обстоятельствам. Ноль умолчанием означает «не следим».
+              requiredQuantity: b.requiredQuantity,
               isActive: b.isActive,
               color: b.color,
               comment: b.comment,
@@ -1092,7 +1181,14 @@ export default async function officeEquipmentConsumablesRoutes(
         entityId: created.id,
         // Код пишется нормализованным — тем видом, в котором он лёг в справочник, а не тем, который
         // набрали в форме: по журналу ищут заведённую строку, а не ввод.
-        metadata: { code: created.code, name: b.name, quantity: b.quantity },
+        metadata: {
+          code: created.code,
+          name: b.name,
+          quantity: b.quantity,
+          // Потребность — в журнал наравне с остатком: по ней считают дефицит, и «почему нам
+          // предложили заказать двенадцать» разбирают в том числе вопросом «кто поставил двадцать».
+          requiredQuantity: b.requiredQuantity,
+        },
       });
       reply.code(201);
       return await getDto(created.id, p);
@@ -1106,7 +1202,15 @@ export default async function officeEquipmentConsumablesRoutes(
    *
    * Строка читается `FOR UPDATE` не ради остатка, а ради самой карточки: правка кода двумя людьми
    * и правка кода против гашения обязаны увидеть результат друг друга, а не разойтись по своим
-   * снимкам. Заодно под этой же блокировкой стоит проверка занятости кода.
+   * снимкам. Заодно под этой же блокировкой стоят проверка занятости кода и отказ в гашении
+   * позиции с открытой закупкой (Р18).
+   *
+   * ПОТРЕБНОСТЬ ПРАВИТСЯ ЗДЕСЬ ЖЕ, и своей ручки у неё нет (Р13) — в отличие от остатка. Разница
+   * не в важности числа, а в его природе: остаток — предмет учёта, у него журнал, причина и сверка
+   * «того, что человек видел»; потребность — намерение, и на вопрос «кто поменял план» отвечает
+   * обычный аудит карточки. Две двери к колонке — форма справочника и быстрое действие на вкладке
+   * «Расходники» — ведут в эту же ручку: вторая ручка ради одного числа разошлась бы с первой на
+   * первой же проверке.
    */
   r.patch(
     '/:id',
@@ -1122,11 +1226,33 @@ export default async function officeEquipmentConsumablesRoutes(
       await db
         .transaction(async (tx) => {
           const [row] = await tx
-            .select({ id: officeEquipmentConsumables.id })
+            .select({
+              id: officeEquipmentConsumables.id,
+              isActive: officeEquipmentConsumables.isActive,
+            })
             .from(officeEquipmentConsumables)
             .where(eq(officeEquipmentConsumables.id, id))
             .for('update');
           if (!row) throw err.notFound(NOT_FOUND);
+          /*
+           * ГАШЕНИЕ ПОЗИЦИИ С ОТКРЫТОЙ ЗАКУПКОЙ ОТБИВАЕТСЯ СЛОВАМИ (Р18): «больше не покупаем» и
+           * «уже заказали и ждём» — прямое противоречие, и назвать его портал обязан в момент
+           * действия, а не оставить в данных, где его разберут через месяц по расхождению счёта со
+           * справочником. Текст несёт номер «ЗК-N»: человеку надо открыть именно эту закупку и
+           * решить, закрыть её или отменить, — без номера он пошёл бы перебирать состав всех.
+           *
+           * Условие — ПЕРЕХОД из активного в погашенное, а не «присланное поле равно false».
+           * Повторно присланный `false` у уже погашенной позиции ничего не меняет, и отбивать
+           * правку комментария у такой карточки было бы отказом не по делу. Открытой закупки у
+           * погашенной позиции при этом взяться неоткуда: в предзаполнение она не попадает, а
+           * заведение и правка закупки погашенное отбивают (Р13).
+           *
+           * Базой это не держится и держаться не может: `RESTRICT` строки закупки запирает
+           * УДАЛЕНИЕ позиции, а гашение — обычная правка флага.
+           */
+          if (b.isActive === false && row.isActive) {
+            await assertNoOpenPurchaseForConsumable(tx, id);
+          }
           // С исключением себя: правка «д0000337741» → «Д0000337741» — это исправление написания,
           // а не двойник. Сама запись при этом всё равно уедет нормализованной — базе безразлично,
           // изменилось написание или нет.
@@ -1141,6 +1267,7 @@ export default async function officeEquipmentConsumablesRoutes(
               ...(b.code === undefined ? {} : { code: normalizedCode(b.code) }),
               ...(b.name === undefined ? {} : { name: b.name }),
               ...(b.isActive === undefined ? {} : { isActive: b.isActive }),
+              ...(b.requiredQuantity === undefined ? {} : { requiredQuantity: b.requiredQuantity }),
               ...(b.color === undefined ? {} : { color: b.color }),
               ...(b.comment === undefined ? {} : { comment: b.comment }),
               updatedBy: p.id,
@@ -1162,6 +1289,10 @@ export default async function officeEquipmentConsumablesRoutes(
           ...(b.code === undefined ? {} : { code: b.code }),
           ...(b.name === undefined ? {} : { name: b.name }),
           ...(b.isActive === undefined ? {} : { isActive: b.isActive }),
+          // Потребность — присланное поле наравне с прочими, и в журнал она обязана попасть (Р13):
+          // своего журнала у неё нет намеренно, и аудит карточки — единственный ответ на «кто и
+          // когда решил, что этих картриджей надо держать двадцать».
+          ...(b.requiredQuantity === undefined ? {} : { requiredQuantity: b.requiredQuantity }),
           // Цвет и комментарий — такие же присланные поля: обещание «показываем, что именно
           // просили изменить» не выполняется выборочно, а смена цвета у позиции меняет то, какую
           // тубу по ней выдадут.
@@ -1344,6 +1475,10 @@ export default async function officeEquipmentConsumablesRoutes(
         if (moved.length > 0) {
           throw err.conflict('По расходнику есть движение, снимите «Активен» вместо удаления');
         }
+        // Вторая дверь к той же позиции — строка плановой закупки (Р18). Спрашивается отдельно от
+        // журнала: движения остатка у позиции может не быть вовсе, а закупка на неё уже заведена, —
+        // и без этой проверки `RESTRICT` ссылки отвечал бы человеку пятисоткой вместо номера ЗК.
+        await assertNoPurchaseLinesForConsumable(tx, id);
         await tx.delete(officeEquipmentConsumables).where(eq(officeEquipmentConsumables.id, id));
         return row;
       });

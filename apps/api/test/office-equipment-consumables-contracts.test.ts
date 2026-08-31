@@ -491,15 +491,24 @@ describe('контракт списка расходников', () => {
     expect(officeEquipmentConsumableListQuerySchema.parse({ sortBy: 'name' }).sortBy).toBe('name');
   });
 
-  it('сортируют пятью полями, и счётчика «в парке» среди них нет (Р9, Р12)', () => {
+  it('сортируют восемью полями, и счётчика «в парке» среди них нет (Р9, Р12)', () => {
     // Пятое — «Правка остатка» (Р3 плана расходников и закупки): по нему ищут позиции, полку
     // которых давно не пересчитывали, и без него столбец был бы декорацией.
+    //
+    // Три последних пришли с потребностью и плановой закупкой (Р13, Р15 того же плана). Вопрос у
+    // них один — «с чего начинать заказ», и без сортировки по дефициту ответить на него, глядя на
+    // одну страницу из десяти, было бы нельзя. Два из трёх при этом СЧИТАЮТСЯ, а не хранятся, и
+    // сортировка по ним идёт тем же выражением, что отдаёт столбец: второе выражение «про то же
+    // самое» упорядочило бы список не по тому числу, что показано в ячейке.
     expect(OFFICE_EQUIPMENT_CONSUMABLE_SORT_FIELDS).toEqual([
       'name',
       'code',
       'quantity',
       'updatedAt',
       'lastManualStockAt',
+      'requiredQuantity',
+      'alreadyOrdered',
+      'deficit',
     ]);
     for (const sortBy of OFFICE_EQUIPMENT_CONSUMABLE_SORT_FIELDS) {
       expect(officeEquipmentConsumableListQuerySchema.parse({ sortBy }).sortBy, sortBy).toBe(

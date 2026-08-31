@@ -19,23 +19,17 @@ import {
   officeEquipmentModelPickerQuery,
 } from '@entities/office-equipment';
 import { useAuth } from '../../auth/AuthContext';
-import { OfficeEquipmentConsumableFormModal } from './OfficeEquipmentConsumableFormModal';
-import { OfficeEquipmentStockModal } from './OfficeEquipmentStockModal';
-import { OfficeEquipmentStockHistoryModal } from './OfficeEquipmentStockHistoryModal';
-import { OfficeEquipmentConsumableUsageModal } from './OfficeEquipmentConsumableUsageModal';
 import {
+  CONSUMABLE_SORT_LABELS,
   officeEquipmentConsumableCard,
   officeEquipmentConsumableColumns,
+  OfficeEquipmentStockHistoryModal,
+  OfficeEquipmentStockModal,
   PARK_COUNT_HINT,
   STOCK_HINT,
-} from './officeEquipmentConsumableGrid';
-
-/**
- * Подпись поля сортировки для шита на телефоне. Заголовок этого столбца — разметка с подсказкой, а
- * `sortOptionsFrom` берёт в шит только строковые: без этой пары «Правка остатка» пропала бы из
- * сортировки ровно там, где ею и пользуются — у полки, с телефоном в руках.
- */
-const SORT_LABELS = { lastManualStockAt: 'Правка остатка' };
+} from '@features/office-equipment-consumables';
+import { OfficeEquipmentConsumableFormModal } from './OfficeEquipmentConsumableFormModal';
+import { OfficeEquipmentConsumableUsageModal } from './OfficeEquipmentConsumableUsageModal';
 
 /**
  * Ведение картриджей и тонеров — окном из вкладки «Оргтехника» (план
@@ -165,13 +159,21 @@ export function OfficeEquipmentConsumablesModal({ open, onClose }: Props) {
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
+  /*
+   * Что здесь можно сделать со строкой — этой дверью, а не вообще (Р14). Действие приходит в грид
+   * обработчиком или не приходит вовсе: заведение, правку и удаление позиций держит справочник, и
+   * именно здесь `onOpen` и `onDelete` появляются. У соседней двери — вкладки «Расходники» — их
+   * нет, и грид от этого меняется сам, без второго перечня колонок.
+   *
+   * Права по-прежнему раздельные (Р10): без ведения номенклатуры карточка открывается на чтение
+   * (`onOpen` остаётся, подпись честная), а удалять нечего — кнопки нет вовсе.
+   */
   const grid = {
     canManage,
-    canStock,
     onOpen: openCard,
-    onStock: setStockOf,
+    onStock: canStock ? setStockOf : undefined,
     onHistory: setHistoryOf,
-    onDelete: confirmDelete,
+    onDelete: canManage ? confirmDelete : undefined,
   };
   const columns = officeEquipmentConsumableColumns(grid);
   const card = officeEquipmentConsumableCard(grid);
@@ -291,7 +293,7 @@ export function OfficeEquipmentConsumablesModal({ open, onClose }: Props) {
           }}
           filters={mobileFilters}
           sort={{
-            options: sortOptionsFrom(columns, SORT_LABELS),
+            options: sortOptionsFrom(columns, CONSUMABLE_SORT_LABELS),
             sortBy: params.sortBy,
             sortOrder: params.sortOrder,
             onChange: setSort,

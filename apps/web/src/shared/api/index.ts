@@ -4,6 +4,7 @@
  */
 export { createQueryKeys } from './createQueryKeys';
 export type { QueryKeyDefinitions, QueryKeys } from './createQueryKeys';
+export * from './clientContract';
 export * from './http';
 export * from './resource';
 export * from './session';

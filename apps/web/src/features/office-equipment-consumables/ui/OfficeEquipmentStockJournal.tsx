@@ -1,7 +1,7 @@
 import { Space, Tag, Tooltip, Typography } from 'antd';
 import { Link } from 'react-router';
 import type { OfficeEquipmentConsumableStockEntryDto } from '@technic/contracts';
-import { formatDateTime } from '../../utils/format';
+import { formatDateTime } from '../../../utils/format';
 
 /**
  * Лента журнала остатка строками: насколько сдвинулся остаток, было → стало, причина, кто и когда

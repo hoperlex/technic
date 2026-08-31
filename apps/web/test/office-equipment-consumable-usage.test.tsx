@@ -37,6 +37,14 @@ const CONSUMABLE: OfficeEquipmentConsumableDto = {
   code: 'Д0000093569',
   name: 'Тонер Ricoh 201 (шт)',
   quantity: 10,
+  /*
+   * Потребность, «уже заказано» и дефицит (Р13, Р15 плана расходников и закупки). Отчёт о расходе
+   * их не показывает вовсе — он про движение за период, а не про запас, — но DTO у справочника
+   * один на все двери, и фикстура обязана быть целой карточкой, а не её половиной.
+   */
+  requiredQuantity: 0,
+  alreadyOrdered: 0,
+  deficit: 0,
   isActive: true,
   color: null,
   comment: '',

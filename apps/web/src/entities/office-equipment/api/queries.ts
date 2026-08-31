@@ -182,3 +182,33 @@ export const officeEquipmentConsumablePickerQuery = () =>
       }),
     select: (r) => r.items.map((c) => ({ value: c.id, label: `${c.name} · ${c.code}` })),
   });
+
+/**
+ * Действующие позиции номенклатуры ЦЕЛИКОМ — для дописывания строк в форме плановой закупки (план
+ * `docs/office-equipment-consumables-and-purchase-plan.md`, Р16).
+ *
+ * ОТЛИЧАЕТСЯ ОТ СОСЕДНЕГО ПОДБОРА ДВУМЯ ВЕЩАМИ, и обе существенны.
+ *
+ * Первое: только действующие. Погашенная позиция означает «больше не покупаем», и закупка
+ * погашенного — это забытая галочка, а не заказ (Р13); сервер такую строку и не примет. Подбор
+ * отчёта по расходу, наоборот, показывает и погашенные — он смотрит в прошлое.
+ *
+ * Второе: сюда приходят сами позиции, а не пара «значение — подпись». Форме нужны их числа —
+ * потребность, остаток и «уже заказано»: они и составляют снимок расчёта дописанной строки (Р17).
+ * Считает их тот же сервер тем же выражением, что и предзаполнение, и второго вычислителя дефицита
+ * на портале нет намеренно.
+ */
+export const officeEquipmentActiveConsumablesQuery = () =>
+  queryOptions({
+    queryKey: officeEquipmentConsumableKeys.list({ picker: 'purchase' }),
+    queryFn: () =>
+      officeEquipmentConsumablesApi.list({
+        page: 1,
+        pageSize: DICTIONARY_PAGE_SIZE,
+        isActive: 'true',
+        // Алфавит явно: умолчание `baseListQuery` — `desc`, и перечень пришёл бы задом наперёд.
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+    select: (r) => r.items,
+  });

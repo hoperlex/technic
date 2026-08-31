@@ -12,13 +12,21 @@ export {
   officeEquipmentModelsApi,
   officeEquipmentTypesApi,
 } from './api/officeEquipmentApi';
+/**
+ * Плановая закупка расходников (ADR 0146). В этом же слайсе, а не в своём: документ живёт только
+ * при номенклатуре — он состоит из её позиций, считается по её остатку и потребности и открывается
+ * с той же вкладки. Отдельный слайс развёл бы по двум входам то, что всегда зовут вместе.
+ */
+export { officeEquipmentPurchasesApi } from './api/officeEquipmentPurchasesApi';
 export {
   officeEquipmentConsumableKeys,
   officeEquipmentKeys,
   officeEquipmentModelKeys,
+  officeEquipmentPurchaseKeys,
   officeEquipmentTypeKeys,
 } from './api/keys';
 export {
+  officeEquipmentActiveConsumablesQuery,
   officeEquipmentConsumablePickerQuery,
   officeEquipmentModelOptionsQuery,
   officeEquipmentModelPickerQuery,

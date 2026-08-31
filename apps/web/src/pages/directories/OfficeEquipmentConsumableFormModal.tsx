@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { App, Button, Form, Input, Space, Switch, Typography } from 'antd';
+import { App, Button, Form, Input, InputNumber, Space, Switch, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { OfficeEquipmentConsumableDto } from '@technic/contracts';
 import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
@@ -10,6 +10,7 @@ import {
   officeEquipmentKeys,
   officeEquipmentModelKeys,
   officeEquipmentModelPickerQuery,
+  officeEquipmentPurchaseKeys,
 } from '@entities/office-equipment';
 
 /**
@@ -58,6 +59,8 @@ interface Values {
   name: string;
   /** Пустая строка означает «цвета нет» и уходит на сервер как `null` (Р5). */
   color: string;
+  /** Сколько позиции хотим держать на полке; ноль — «не следим» (Р13). */
+  requiredQuantity: number;
   comment: string;
   isActive: boolean;
   /** К чему подходит: полный набор моделей, а не пара «привязать/отвязать» (Р6). */
@@ -114,6 +117,9 @@ export function OfficeEquipmentConsumableFormModal({
       code: record?.code ?? '',
       name: record?.name ?? '',
       color: record?.color ?? '',
+      // Ноль у новой позиции — это «не следим», а не незаполненное поле: пока за расходником не
+      // следят, плановая закупка его не предложит (Р13).
+      requiredQuantity: record?.requiredQuantity ?? 0,
       comment: record?.comment ?? '',
       isActive: record?.isActive ?? true,
       modelIds: record?.models.map((m) => m.id) ?? [],
@@ -132,6 +138,16 @@ export function OfficeEquipmentConsumableFormModal({
         color: values.color?.trim() ? values.color.trim() : null,
         comment: values.comment ?? '',
         isActive: values.isActive,
+        /*
+         * Потребность (Р13) — обычное поле карточки: своего журнала у неё нет, правка идёт тем же
+         * аудитом, что цвет и комментарий. Значение берётся из формы, а не из строки списка: с
+         * появлением поля «то, что стоит сейчас» затирало бы набранное человеком.
+         *
+         * ЭТО ОДНА ИЗ ДВУХ ДВЕРЕЙ К ЧИСЛУ, И ОБЕ ВЕДУТ СЮДА ЖЕ. Вторая — быстрое действие
+         * «Потребность» на вкладке «Расходники»; ручка у обеих одна (`PATCH /:id`), потому что
+         * вторая ручка ради одного числа разошлась бы с первой на первой же проверке.
+         */
+        requiredQuantity: values.requiredQuantity,
         modelIds: values.modelIds ?? [],
       };
       return record
@@ -152,6 +168,11 @@ export function OfficeEquipmentConsumableFormModal({
        * «Удалить» вернёт 409 — то есть портал позовёт человека на отказ.
        */
       void qc.invalidateQueries({ queryKey: officeEquipmentModelKeys.root });
+      /*
+       * И закупки: потребность и гашение позиции задают предзаполнение формы закупки (Р13, Р15),
+       * а открытая рядом форма, собранная до сохранения, предложила бы старые количества.
+       */
+      void qc.invalidateQueries({ queryKey: officeEquipmentPurchaseKeys.root });
       onCancel();
     },
     /*
@@ -251,6 +272,19 @@ export function OfficeEquipmentConsumableFormModal({
           extra="Заполняется у цветных серий: чёрный, голубой, пурпурный, жёлтый — или «комплект», если у поставщика один код на все тубы. У чёрно-белой техники поле остаётся пустым"
         >
           <Input maxLength={60} placeholder="Например: голубой" />
+        </Form.Item>
+        <Form.Item
+          name="requiredQuantity"
+          label="Потребность"
+          rules={[{ required: true, message: 'Укажите потребность' }]}
+          /*
+           * Ноль объяснён словами, потому что он значим и не равен «не заполнили»: за позицией с
+           * нулём не следят, и в предзаполнение плановой закупки она не попадает вовсе — даже с
+           * пустой полкой (Р13). Без этой строки ноль читался бы как «нужно ноль штук».
+           */
+          extra="Сколько держим на полке. Ноль означает «не следим»: такую позицию плановая закупка не предложит"
+        >
+          <InputNumber min={0} max={1_000_000} precision={0} style={{ width: '100%' }} />
         </Form.Item>
         <Form.Item
           name="modelIds"

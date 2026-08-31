@@ -10,6 +10,11 @@
  * делает сам и без заголовка `Authorization` — сервер отвечает 401 прямо в новой вкладке, вместо
  * файла. Скачивание идёт через `apiDownload`.
  */
+import {
+  clientRequestHeaders,
+  isClientUpgradeResponse,
+  requireClientUpgrade,
+} from './clientContract';
 import { expireIfCurrent, getToken, refresh } from './session';
 
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
@@ -65,7 +70,8 @@ function buildUrl(path: string, query?: Record<string, unknown>): string {
 async function doFetch(url: string, options: RequestOptions): Promise<Response> {
   // Свои заголовки идут первыми: тип тела и токен транспорт ставит сам, и подменять их вызывающему
   // нечем — иначе один экран смог бы отправить запрос от чужого имени или в чужой кодировке.
-  const headers: Record<string, string> = { ...options.headers };
+  // Версия клиента — там же и по той же причине: её объявляет сборка, а не экран.
+  const headers: Record<string, string> = { ...options.headers, ...clientRequestHeaders() };
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   const token = getToken();
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -103,6 +109,13 @@ async function request(path: string, options: RequestOptions): Promise<Response>
     } catch {
       body = { code: 'error', message: res.statusText };
     }
+    /*
+     * Гейт версии клиента (ADR 0146, решение 7): сборка вкладки ниже пола сервера, и дальше она
+     * работать не будет — ни этот запрос, ни следующие. Отказ при этом бросается дальше как
+     * обычная ошибка: вызывающий про гейт не знает и знать не должен, а разговор с человеком
+     * ведёт экран поверх всего (`components/AppUpdateBanner.tsx`).
+     */
+    if (isClientUpgradeResponse(res.status, body.code)) requireClientUpgrade();
     throw {
       code: body.code ?? 'error',
       message: body.message ?? 'Ошибка запроса',

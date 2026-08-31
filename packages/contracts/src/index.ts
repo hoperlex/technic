@@ -41,6 +41,7 @@ export * from './warranty';
 export * from './office-equipment';
 export * from './office-equipment-models';
 export * from './office-equipment-consumables';
+export * from './office-equipment-purchases';
 export * from './office-equipment-history';
 export * from './service-requests';
 export * from './container-types';

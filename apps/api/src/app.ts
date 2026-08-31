@@ -11,6 +11,7 @@ import {
 import { config } from './config';
 import { logger } from './logger';
 import { errorHandler, notFoundHandler } from './lib/error-handler';
+import clientContractGate from './lib/client-contract';
 import authPlugin from './auth/plugin';
 import healthRoutes from './routes/health';
 import authRoutes from './routes/auth';
@@ -24,6 +25,7 @@ import warehousesRoutes from './routes/warehouses';
 import officeEquipmentTypesRoutes from './routes/office-equipment-types';
 import officeEquipmentModelsRoutes from './routes/office-equipment-models';
 import officeEquipmentConsumablesRoutes from './routes/office-equipment-consumables';
+import officeEquipmentPurchasesRoutes from './routes/office-equipment-purchases';
 import officeEquipmentRoutes from './routes/office-equipment';
 import serviceRequestsRoutes from './routes/service-requests';
 import containerTypesRoutes from './routes/container-types';
@@ -120,6 +122,16 @@ export async function buildApp(options: BuildAppOptions = {}) {
     max: Number.isFinite(rateLimitMax) && rateLimitMax > 0 ? rateLimitMax : 300,
     timeWindow: '1 minute',
   });
+  /*
+   * Гейт минимальной версии клиента (ADR 0146, решение 7) — ДО авторизации и до маршрутов: вкладка
+   * со сборкой ниже пола не должна доходить ни до стража прав, ни до обработчика. Пол берётся из
+   * `MIN_CLIENT_CONTRACT`, умолчание `1` — фаза A, в которой не блокируется никто.
+   *
+   * Рядом с лимитом частоты, а не среди маршрутов: это свойство всего API, а не какого-то из
+   * модулей. Ручки, выведенные из-под гейта насовсем (`/auth/refresh`, `/auth/logout`), и границы
+   * его области (`/health/*`, `/internal/*` вне гейта) названы в самом плагине.
+   */
+  await app.register(clientContractGate);
   await app.register(authPlugin);
 
   if (options.onRoute) app.addHook('onRoute', options.onRoute);
@@ -158,6 +170,15 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // совместимость расходника выражается ссылками на них.
   await app.register(officeEquipmentConsumablesRoutes, {
     prefix: '/api/v1/office-equipment-consumables',
+  });
+  // Плановая закупка расходников (ADR 0146, Р9) — САМОСТОЯТЕЛЬНЫЙ ДОКУМЕНТ со своим префиксом, а не
+  // ветка расходников и не вид заявки. Своим он стал потому, что у него нет ни техники, ни области
+  // видимости: остаток расходников один на компанию, значит потребность, дефицит и заказ по
+  // дефициту глобальны — ни площадки, ни отдела у такого документа не бывает, и оба довода ADR 0133
+  // об одной таблице заявок здесь не работают. После расходников, потому что состав закупки — это
+  // ссылки на их позиции.
+  await app.register(officeEquipmentPurchasesRoutes, {
+    prefix: '/api/v1/office-equipment-purchases',
   });
   await app.register(officeEquipmentRoutes, { prefix: '/api/v1/office-equipment' });
   // Заявки на обслуживание оргтехники (ADR 0085) — третий модуль заявок: свой префикс, свои права

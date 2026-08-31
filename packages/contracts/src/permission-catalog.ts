@@ -319,6 +319,17 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'manage',
     label: 'Правит остаток расходника вручную',
   },
+  /*
+   * Модуль витрины — тот же, что у оргтехники, а не свой (план расходников и закупки, Р12).
+   * Закупка живёт вкладкой раздела «Орг.техника» и собирается из его же номенклатуры; свой модуль
+   * означал бы своё входное право (`MODULE_ENTRY_PERMISSION`), а входа у закупки нет — она
+   * открывается тем же `officeEquipment.read`, который ей и объявлен требованием.
+   */
+  'officeEquipmentPurchases.manage': {
+    module: 'officeEquipment',
+    action: 'manage',
+    label: 'Ведёт плановые закупки расходников',
+  },
 
   'garage.read': { module: 'garage', action: 'read', label: 'Смотрит день гаража' },
   'autoParts.manage': {

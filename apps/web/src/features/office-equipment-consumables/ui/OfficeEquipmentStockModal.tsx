@@ -9,6 +9,7 @@ import {
   officeEquipmentConsumableKeys,
   officeEquipmentConsumablesApi,
   officeEquipmentKeys,
+  officeEquipmentPurchaseKeys,
 } from '@entities/office-equipment';
 
 /**
@@ -97,6 +98,12 @@ export function OfficeEquipmentStockModal({ consumable, onClose }: Props) {
       // Матрица Р14: остаток стоит в карточке единицы оргтехники — «чем заправлять и сколько
       // этого на складе» (Р15).
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+      /*
+       * И закупки: дефицит считается по остатку (Р15 плана расходников и закупки), а форма
+       * закупки, собранная до этой правки, предложила бы количества по вчерашней полке — и её
+       * снимок разошёлся бы с сервером при сохранении (Р17).
+       */
+      void qc.invalidateQueries({ queryKey: officeEquipmentPurchaseKeys.root });
       onClose();
     },
     onError: (e) => {

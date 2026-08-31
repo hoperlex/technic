@@ -12,6 +12,8 @@
  * уже нового пользователя. Поэтому у сессии есть номер, и каждый результат сверяется с ним.
  */
 
+import { clientRequestHeaders } from './clientContract';
+
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
 
 /** Чем кончилось обновление токена. */
@@ -134,7 +136,19 @@ export async function refresh(): Promise<RefreshOutcome> {
   /** Ответ пришёл к другой сессии — его результат не наш. */
   const stale = () => startedAt !== generation;
 
-  refreshing = fetch(`${BASE}/auth/refresh`, { method: 'POST', credentials: 'include' })
+  /*
+   * Заголовки версии клиента ставятся и здесь, а не только в транспорте: этот `fetch` идёт мимо
+   * `http.ts`, и без них сервер видел бы обновление сессии как запрос неизвестной сборки. Сама
+   * ручка `/auth/refresh` из-под гейта выведена насовсем (ADR 0146, решение 7) — иначе отказ
+   * попал бы в ветку `!res.ok` ниже и был бы прочитан как конец сессии, то есть гейт разлогинивал
+   * бы живых людей. Заголовки при этом уходят всё равно: диагностика в журнале сервера нужна и
+   * тут, а «освобождено» не значит «безымянно».
+   */
+  refreshing = fetch(`${BASE}/auth/refresh`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: clientRequestHeaders(),
+  })
     .then(async (res): Promise<RefreshOutcome> => {
       if (stale()) return { status: 'stale' };
       if (!res.ok) {

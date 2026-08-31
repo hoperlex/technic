@@ -592,6 +592,60 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['officeEquipmentConsumables.stock'],
   },
+  // Плановая закупка расходников (ADR 0146, Р12): ОДНО право на все семь ручек — чтение списка,
+  // карточка, предзаполнение, заведение, правка черновика и три хода цикла.
+  //
+  // ОДНО, А НЕ ПАРА «ЧИТАТЬ / ВЕСТИ», потому что у закупки одна сторона. Права разводят там, где
+  // разные люди делают разные работы: у расходников это «вести номенклатуру» и «пересчитать
+  // коробки на полке». Здесь же заводит, проводит, закрывает и отменяет один и тот же человек, и
+  // второе право означало бы должность, которой нет.
+  //
+  // ЧТЕНИЕ СПРАВОЧНИКА В УСЛОВИИ НЕ ПОВТОРЯЕТСЯ, хотя закупка и показывает номенклатуру: связь
+  // объявлена в `PERMISSION_REQUIRES` (`officeEquipmentPurchases.manage` → `officeEquipment.read`)
+  // и проверяется при ВЫДАЧЕ набора, а не на каждом запросе. Записав её вторым членом здесь, мы
+  // получили бы то же правило в двух местах — и первая же правка одного из них разошлась бы со
+  // вторым молча.
+  //
+  // ОБЛАСТИ У УСЛОВИЯ НЕТ И БЫТЬ НЕ ДОЛЖНО (Р9): остаток расходников один на компанию, значит
+  // потребность, дефицит и заказ по дефициту глобальны — ни площадки, ни отдела у такого документа
+  // не бывает, и предиката области в маршруте нет ни одного.
+  'GET /api/v1/office-equipment-purchases': {
+    kind: 'permissions',
+    allOf: ['officeEquipmentPurchases.manage'],
+  },
+  // Предзаполнение формы (Р16) — под тем же правом, что и заведение, а не под чтением справочника:
+  // оно отвечает не «что у нас есть», а «что заказать прямо сейчас», то есть готовит документ.
+  'GET /api/v1/office-equipment-purchases/prefill': {
+    kind: 'permissions',
+    allOf: ['officeEquipmentPurchases.manage'],
+  },
+  'GET /api/v1/office-equipment-purchases/:id': {
+    kind: 'permissions',
+    allOf: ['officeEquipmentPurchases.manage'],
+  },
+  'POST /api/v1/office-equipment-purchases': {
+    kind: 'permissions',
+    allOf: ['officeEquipmentPurchases.manage'],
+  },
+  'PATCH /api/v1/office-equipment-purchases/:id': {
+    kind: 'permissions',
+    allOf: ['officeEquipmentPurchases.manage'],
+  },
+  // Три хода цикла (Р10). Условия «можно ли отсюда» в манифесте нет намеренно: это коридор
+  // состояний, а не доступ, и держит его условная запись с `ROW_COUNT = 1` в обработчике. Манифест
+  // отвечает на вопрос «что нужно, чтобы обработчик вообще начал работать».
+  'POST /api/v1/office-equipment-purchases/:id/submit': {
+    kind: 'permissions',
+    allOf: ['officeEquipmentPurchases.manage'],
+  },
+  'POST /api/v1/office-equipment-purchases/:id/close': {
+    kind: 'permissions',
+    allOf: ['officeEquipmentPurchases.manage'],
+  },
+  'POST /api/v1/office-equipment-purchases/:id/cancel': {
+    kind: 'permissions',
+    allOf: ['officeEquipmentPurchases.manage'],
+  },
   'GET /api/v1/office-equipment': { kind: 'permissions', allOf: ['officeEquipment.read'] },
   'POST /api/v1/office-equipment': { kind: 'permissions', allOf: ['officeEquipment.write'] },
   'GET /api/v1/office-equipment/:id': { kind: 'permissions', allOf: ['officeEquipment.read'] },

@@ -469,6 +469,51 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'GET /api/v1/office-equipment-consumables/usage-report.xlsx': {
     query: `from=${PAST_DATE}&to=${PAST_DATE}`,
   },
+  /*
+   * Плановая закупка (ADR 0146). Схема тела у неё строгая с обеих сторон — состав непустой, снимок
+   * расчёта по каждой строке, версия содержимого у правки и «Провести», подтверждение у закрытия,
+   * причина у отмены, — и без полного тела перебор упирался бы в 400 схемы, не доехав до стража.
+   *
+   * Ключ идемпотентности перебору НЕ НУЖЕН, хотя маршрут и требует его: и заголовок, и тело
+   * читаются уже В ОБРАБОТЧИКЕ, то есть после `preHandler`, а страж стоит именно там. Отказ по
+   * праву обязан случиться раньше — и случается: субъект без права получает 403 и без заголовка.
+   */
+  'POST /api/v1/office-equipment-purchases': {
+    payload: {
+      items: [
+        {
+          consumableId: RECORD_ID,
+          quantity: 12,
+          expectedRequired: 20,
+          expectedStock: 8,
+          expectedAlreadyOrdered: 0,
+        },
+      ],
+    },
+  },
+  'PATCH /api/v1/office-equipment-purchases/:id': {
+    payload: {
+      contentVersion: 1,
+      items: [
+        {
+          consumableId: RECORD_ID,
+          quantity: 12,
+          expectedRequired: 20,
+          expectedStock: 8,
+          expectedAlreadyOrdered: 0,
+        },
+      ],
+    },
+  },
+  'POST /api/v1/office-equipment-purchases/:id/submit': { payload: { expectedVersion: 1 } },
+  // Подтверждение «приход занесён» объявлено литералом `true` (Р11): снятая галочка — это «не
+  // закрывать», а не «закрыть без подтверждения», и другого значения схема не примет вовсе.
+  'POST /api/v1/office-equipment-purchases/:id/close': {
+    payload: { stockReceiptConfirmed: true },
+  },
+  'POST /api/v1/office-equipment-purchases/:id/cancel': {
+    payload: { reason: 'заказали по другому каналу' },
+  },
   'POST /api/v1/office-equipment': {
     payload: {
       equipmentTypeId: RECORD_ID,
