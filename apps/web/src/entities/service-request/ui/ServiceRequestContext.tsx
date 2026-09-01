@@ -1,5 +1,6 @@
 import { Descriptions, Space, Tag, Typography } from 'antd';
 import type { ServiceRequestDto } from '@technic/contracts';
+import { serviceRequestEquipmentName, serviceRequestObjectLabel } from '../model/subject';
 
 /**
  * Шапка окна действия: о какой заявке речь (план модернизации, Р57).
@@ -19,11 +20,20 @@ import type { ServiceRequestDto } from '@technic/contracts';
  * сейчас подтверждают, — подпись действия остаётся заголовком самого окна.
  */
 export function ServiceRequestContext({ request }: { request: ServiceRequestDto }) {
-  const { equipment, object } = request;
+  const { equipment } = request;
   const numbers = [
-    equipment.inventoryNumber && `инв. ${equipment.inventoryNumber}`,
-    equipment.serialNumber && `SN ${equipment.serialNumber}`,
+    equipment?.inventoryNumber && `инв. ${equipment.inventoryNumber}`,
+    equipment?.serialNumber && `SN ${equipment.serialNumber}`,
   ].filter(Boolean);
+  /*
+   * «Где стоит» у заявки без аппарата не существует: снимка места нет, а площадки может не быть
+   * вовсе (заявка «от отдела», Р8). Вопрос окна при этом остаётся — деньги согласуют, зная, ДЛЯ
+   * КОГО работа, — и на него отвечает отдел-заказчик: у заявки без аппарата заказчик ровно один,
+   * площадка либо отдел (`CHECK` предмета, Р7). Поэтому строка не пропадает, а меняет подпись:
+   * пустая «Где стоит» читалась бы как недогруженная карточка.
+   */
+  const objectLabel = serviceRequestObjectLabel(request);
+  const customer = objectLabel ?? request.customerDepartment?.name ?? null;
 
   return (
     <Descriptions
@@ -37,7 +47,9 @@ export function ServiceRequestContext({ request }: { request: ServiceRequestDto 
           label: 'Какой аппарат',
           children: (
             <Space size={8} wrap>
-              <span>{equipment.name}</span>
+              {/* Слова, а не пустое место: заявка без аппарата — законное состояние, и молчание
+                  здесь прочиталось бы как «реквизиты не догрузились» (Р8). */}
+              <span>{serviceRequestEquipmentName(request)}</span>
               {numbers.length > 0 && (
                 <Typography.Text type="secondary">{numbers.join(' · ')}</Typography.Text>
               )}
@@ -45,21 +57,24 @@ export function ServiceRequestContext({ request }: { request: ServiceRequestDto 
             </Space>
           ),
         },
-        {
-          key: 'object',
-          label: 'Где стоит',
-          children: (
-            <Space size={8} wrap>
-              <span>
-                {object.code} — {object.name}
-              </span>
-              {/* Место внутри объекта — снимок на момент заведения: мастер едет по нему. */}
-              {equipment.location && (
-                <Typography.Text type="secondary">{equipment.location}</Typography.Text>
-              )}
-            </Space>
-          ),
-        },
+        ...(customer
+          ? [
+              {
+                key: 'object',
+                label: objectLabel ? 'Где стоит' : 'Для кого',
+                children: (
+                  <Space size={8} wrap>
+                    <span>{customer}</span>
+                    {/* Место внутри объекта — снимок на момент заведения: мастер едет по нему.
+                        У заявки без аппарата снимка нет — показывать нечего. */}
+                    {equipment?.location && (
+                      <Typography.Text type="secondary">{equipment.location}</Typography.Text>
+                    )}
+                  </Space>
+                ),
+              },
+            ]
+          : []),
       ]}
     />
   );

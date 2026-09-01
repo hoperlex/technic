@@ -245,7 +245,8 @@ describe.skipIf(!DB_URL)('разметка ТО у типа техники (жи
 
     const on = await patchType(created.id as string, { maintenanceBasis: 'odometer' });
     expect(on.statusCode, on.body).toBe(200);
-    expect(on.json().maintenanceBasis).toBe('odometer');
+    // Карточка лежит в `type`: ответ ручки — исход правки (`UpdateVehicleTypeResult`), а не сам тип.
+    expect(on.json().type.maintenanceBasis).toBe('odometer');
     const audit = await lastAudit(created.id as string);
     expect(audit.action).toBe('vehicle_type.maintenance_basis');
     expect(audit.metadata).toMatchObject({
@@ -257,7 +258,7 @@ describe.skipIf(!DB_URL)('разметка ТО у типа техники (жи
     // он ничего не переписывает у заявок в работе (в отличие от линейности).
     const off = await patchType(created.id as string, { maintenanceBasis: 'none' });
     expect(off.statusCode, off.body).toBe(200);
-    expect(off.json().maintenanceBasis).toBe('none');
+    expect(off.json().type.maintenanceBasis).toBe('none');
 
     // Правка соседнего поля признак не роняет и событием разметки не является.
     const renamed = await patchType(created.id as string, {
@@ -265,7 +266,7 @@ describe.skipIf(!DB_URL)('разметка ТО у типа техники (жи
       maintenanceBasis: 'none',
     });
     expect(renamed.statusCode, renamed.body).toBe(200);
-    expect(renamed.json().maintenanceBasis).toBe('none');
+    expect(renamed.json().type.maintenanceBasis).toBe('none');
     expect((await lastAudit(created.id as string)).action).toBe('vehicle_type.update');
   });
 

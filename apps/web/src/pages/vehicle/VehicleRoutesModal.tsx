@@ -36,7 +36,7 @@ import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { vehicleRequestViewLink, waybillLink } from '../../utils/links';
 import { useAuth } from '../../auth/AuthContext';
-import { useRouteModal } from './routeModal';
+import { useRouteModal } from '@features/route-modal';
 import { formatDateOnly, useDriverOptions, useOwnVehicleOptions } from './shared';
 import { TrailerFields, trailerTripBody } from './TrailerFields';
 
@@ -164,7 +164,7 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
       // лупа в заголовке одного столбца обещала бы поиск только по нему.
       searchable: false,
       render: (_v, r) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <Space size={6}>
             <span>{r.displayNumber}</span>
             {/* Перегон техники стоит в том же списке, что и грузовые рейсы: это тот же рейс той
@@ -189,7 +189,7 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
       sortable: false,
       searchable: false,
       render: (_v, r) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <span>{r.vehicleLabel}</span>
           {r.withTrailer && (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -223,7 +223,7 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
         const source = r.sourceRequest;
         // У перегона состава нет: он едет по одной заявке, а «откуда — куда» и есть его задание.
         return isRelocationPurpose(r.purpose) ? (
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             <span>
               {source ? (
                 <EntityLink
@@ -244,7 +244,7 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
         ) : r.requests.length === 0 ? (
           <Typography.Text type="secondary">рейс пуст</Typography.Text>
         ) : (
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             {/* Номер заявки открывает её карточку окном поверх списка: состав рейса читают
                 вопросом «а что там за заявка», и до сих пор на него отвечали переключением вкладки
                 и поиском номера. Ссылка при этом остаётся настоящей — её открывают Ctrl'ом
@@ -279,7 +279,7 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
       width: 240,
       render: (_v, r) =>
         r.waybill ? (
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             {/* Номер ведёт в журнал учёта с этим же номером в поиске: карточки у листа нет —
                 строка журнала и отвечает, что с бланком стало и чем он подшит (ADR 0037). */}
             <span>

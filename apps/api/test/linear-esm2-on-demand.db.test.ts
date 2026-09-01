@@ -529,13 +529,19 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       expect(res.statusCode, res.body).toBe(200);
 
       const sheets = await sheetsOf(request.id);
-      expect(sheets).toHaveLength(1);
+      // Листов столько, на сколько месяц разрезал названную неделю (`askedPeriods`, ADR 0142).
+      // Цифрой это число писать нельзя: в середине месяца просьба даёт один бланк, а в неделю,
+      // где месяц кончается, — два, и «ровно один» краснел бы раз в месяц без правки кода.
+      expect(sheets).toHaveLength(askedPeriods(ctx.dateFrom).length);
       // Первая неделя срока обрывается воскресеньем, а начинается днём начала работ, а не
-      // понедельником: в графе «Период работы» стоят фактические рабочие дни.
+      // понедельником: в графе «Период работы» стоят фактические рабочие дни. Края бумаги те же и
+      // после разреза — просто держат их первый и последний лист просьбы, а не единственный.
       expect(sheets[0]!.period_from).toBe(ctx.dateFrom);
-      expect(sheets[0]!.period_to).toBe(shiftDateKey(weekStartKey(ctx.dateFrom), 6));
-      expect(sheets[0]!.vehicle_id).toBe(ctx.vehicleId);
-      expect(sheets[0]!.driver_person_id).toBe(ctx.driverA);
+      expect(sheets.at(-1)!.period_to).toBe(shiftDateKey(weekStartKey(ctx.dateFrom), 6));
+      // Машина и машинист — названные, и на каждом листе просьбы: разрез бумаги их не меняет, а
+      // проверка одного только первого листа второй бланк переходной недели не покрыла бы.
+      expect(sheets.every((s) => s.vehicle_id === ctx.vehicleId)).toBe(true);
+      expect(sheets.every((s) => s.driver_person_id === ctx.driverA)).toBe(true);
 
       // Событие своё: «человек попросил бланк» нельзя смешивать со «сверка переоформила бумагу».
       const audit = await ctx.db.execute<{ action: string; metadata: Record<string, unknown> }>(sql`
@@ -552,7 +558,9 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
         headers: ctx.auth,
       });
       expect(listed.statusCode, listed.body).toBe(200);
-      expect(listed.json()).toHaveLength(1);
+      // Ручка карточки показывает ту же бумагу, что лежит в журнале, — значит и считать её надо
+      // так же, разрезом периодов, а не цифрой.
+      expect(listed.json()).toHaveLength(askedPeriods(ctx.dateFrom).length);
       expect(listed.json()[0].formCode).toBe('esm2');
     });
 
@@ -583,7 +591,10 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       });
       expect(again.statusCode).toBe(409);
       expect(again.json().message).toMatch(/уже выписан действующий лист ЭСМ-2 № /);
-      expect(await sheetsOf(request.id)).toHaveLength(1);
+      // Второй бумаги не родилось: листов ровно столько, сколько выписала первая просьба, — один
+      // или два, если её неделю разрезал месяц. Цифра здесь солгала бы про сам отказ: на
+      // переходной неделе «один лист» не выполняется и после успешной первой просьбы.
+      expect(await sheetsOf(request.id)).toHaveLength(askedPeriods(ctx.dateFrom).length);
     });
 
     it('ту же неделю второй машиной — можно: неделя уникальна на машину', async () => {
@@ -601,7 +612,10 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       });
       expect(second.statusCode, second.body).toBe(200);
       const sheets = await sheetsOf(request.id);
-      expect(sheets).toHaveLength(2);
+      // По комплекту листов на каждую из двух машин: комплект — это периоды недели, а не один
+      // бланк. Записанная цифрой двойка означала бы «неделя = одна бумага» и на переходной неделе
+      // приняла бы законный разрез за лишние листы.
+      expect(sheets).toHaveLength(askedPeriods(ctx.dateFrom).length * 2);
       expect(new Set(sheets.map((s) => s.vehicle_id))).toEqual(
         new Set([ctx.vehicleId, ctx.otherVehicleId]),
       );
@@ -728,7 +742,9 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       expect(second.statusCode, second.body).toBe(200);
 
       const issued = (await sheetsOf(request.id)).filter((s) => s.status === 'issued');
-      expect(issued).toHaveLength(2);
+      // Действующей осталась вся бумага обеих машин: по комплекту периодов недели на каждую
+      // (`askedPeriods`, ADR 0142) — ни один лист друг друга не погасил.
+      expect(issued).toHaveLength(askedPeriods(ctx.dateFrom).length * 2);
       expect(new Set(issued.map((s) => s.vehicle_id))).toEqual(
         new Set([ctx.vehicleId, ctx.otherVehicleId]),
       );
@@ -745,10 +761,18 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       });
       expect(changed.statusCode, changed.body).toBe(200);
 
-      // Срок идёт две недели, а листов по-прежнему один: вторую неделю никто не просил.
+      // Срок идёт две недели, а бумага осталась ровно та, что просили на первую: вторую неделю
+      // никто не просил, и сверка её не завела. Число листов первой недели берётся у `esm2Periods`:
+      // цифра «один» приняла бы за самовольную выписку законный второй бланк переходной недели.
       const issued = (await sheetsOf(request.id)).filter((s) => s.status === 'issued');
-      expect(issued).toHaveLength(1);
+      expect(issued).toHaveLength(askedPeriods(ctx.dateFrom).length);
       expect(issued[0]!.period_from).toBe(ctx.dateFrom);
+      // И это именно первая неделя: за её воскресенье не вышел ни один лист. Одного лишь числа
+      // листов для утверждения теперь мало — на переходной неделе их столько же, сколько дала бы
+      // пара «первая неделя + вторая», а смысл был бы противоположный.
+      expect(issued.every((s) => s.period_to <= shiftDateKey(weekStartKey(ctx.dateFrom), 6))).toBe(
+        true,
+      );
     });
 
     /**
@@ -782,9 +806,20 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       expect(decided.statusCode, decided.body).toBe(200);
 
       const sheets = await sheetsOf(request.id);
-      // Сгорел ровно один — тот, чьи дни вышли за новый срок; остальные листы просьбы (их бывает
-      // два, если неделю разрезал месяц) сошлись и остались нетронутыми.
-      expect(sheets.filter((s) => s.status === 'cancelled')).toHaveLength(1);
+      /*
+       * Сгорели ровно те листы, чьи дни вышли за новый срок, — и признак этот считается, а не
+       * пишется единицей.
+       *
+       * «Ровно один» верно, пока разрез месяца не попал МЕЖДУ новым концом срока и воскресеньем:
+       * тогда за срок выходит и второй лист недели, и первый, портал законно жжёт оба и
+       * перевыписывает первый по новую границу. Перебором по трёхлетию таких дней 105 из 1095 —
+       * то есть цифра «один» зеленела бы девять месяцев в году и краснела бы в оставшиеся три без
+       * единой правки кода. Формулировка ниже — дословно та же, что и в этом объяснении: лист
+       * горит тогда, когда его последний день позже нового конца срока.
+       */
+      expect(sheets.filter((s) => s.status === 'cancelled')).toHaveLength(
+        askedPeriods(nextMonday).filter((p) => p.to > newDateTo).length,
+      );
       const issued = sheets.filter((s) => s.status === 'issued');
       // Бумага покрывает новый срок и не выходит за него: первый лист начинается понедельником,
       // последний кончается новым концом срока.
@@ -818,8 +853,11 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       expect(cancelled.statusCode, cancelled.body).toBe(200);
 
       const sheets = await sheetsOf(request.id);
-      expect(sheets).toHaveLength(1);
-      expect(sheets[0]!.status).toBe('cancelled');
+      // Листов столько, сколько выписала просьба (на переходной неделе — два, ADR 0142), и сгорели
+      // они все до одного: отмена заявки не вправе оставить действующую бумагу ни на один день.
+      // Проверка первого листа при записанной цифрой единице второй бланк просто не увидела бы.
+      expect(sheets).toHaveLength(askedPeriods(ctx.dateFrom).length);
+      expect(sheets.every((s) => s.status === 'cancelled')).toBe(true);
     });
   });
 });

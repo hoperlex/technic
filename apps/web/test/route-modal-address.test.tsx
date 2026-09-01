@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { Route, Routes, useLocation, useNavigate } from 'react-router';
 import { moscowDateKeyOf, type AuthUser, type VehicleRouteDto } from '@technic/contracts';
+import { useRouteModal } from '@features/route-modal';
 import { apiError, json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { vehicleRequest } from './factories/vehicle';
-import { RouteModalProvider, useRouteModal } from '../src/pages/vehicle/routeModal';
+import { RouteModalProvider } from '../src/pages/vehicle/routeModal';
 
 /**
  * Адресация окон рейса, списка рейсов и заявки (ADR 0120, план `docs/vehicle-routes-modal-plan.md`).

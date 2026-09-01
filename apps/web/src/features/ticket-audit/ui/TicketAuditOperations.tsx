@@ -39,7 +39,7 @@ export function TicketAuditOperations({ enabled }: { enabled: boolean }) {
   );
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       {/* На месте полосы периода — объяснение, почему её нет. Видно всегда, а не подсказкой:
           спрашивают об этом, не найдя календаря глазами, и наводить мышь будет некуда. */}
       <Typography.Text type="secondary">— {OPERATIONS_NO_PERIOD_NOTE}</Typography.Text>
@@ -48,7 +48,7 @@ export function TicketAuditOperations({ enabled }: { enabled: boolean }) {
         <Alert
           type="error"
           showIcon
-          message="Состояние подсистемы не загрузилось"
+          title="Состояние подсистемы не загрузилось"
           description={errorMessage(error)}
           // Кнопка, а не молчаливое повторение: не загрузился ОТЧЁТ о подсистеме, а не сама
           // подсистема, и путать эти две беды нельзя — решает человек, ждать ли ему ещё.
@@ -67,7 +67,7 @@ export function TicketAuditOperations({ enabled }: { enabled: boolean }) {
 /** Тело экрана: состояние словом, окно вызовов, очередь. */
 function OperationsBody({ data, isMobile }: { data: TicketAuditOperationsDto; isMobile: boolean }) {
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       <StateHeader data={data} />
       <OperationsWindow window={data.window} isMobile={isMobile} />
       <OperationsQueue
@@ -91,7 +91,7 @@ function StateHeader({ data }: { data: TicketAuditOperationsDto }) {
   const state = OPERATIONS_STATES[data.state];
   const failures = failuresLastHourView(data.failuresLastHour);
   return (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={4} style={{ width: '100%' }}>
       <Space size={8} wrap>
         <Typography.Text strong>Состояние:</Typography.Text>
         <Tooltip title={state.hint}>

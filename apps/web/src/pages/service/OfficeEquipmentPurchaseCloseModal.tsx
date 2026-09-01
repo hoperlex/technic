@@ -128,7 +128,7 @@ export function OfficeEquipmentPurchaseCloseModal({ purchase, onClose }: Props) 
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="Сначала приход, потом закрытие"
+        title="Сначала приход, потом закрытие"
         /*
          * Правило проговаривается словами, а не подразумевается: закрытая закупка перестаёт
          * вычитаться из дефицита, и порядок здесь — не формальность, а условие того, чтобы портал

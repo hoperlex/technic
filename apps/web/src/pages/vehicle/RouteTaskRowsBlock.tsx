@@ -15,7 +15,7 @@ import { EntityLink } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
 import { vehicleRequestViewLink } from '../../utils/links';
 import { blockerMessage, reorderedPointRoles, type RouteAssembly } from './routeAssembly';
-import { useRouteModal } from './routeModal';
+import { useRouteModal } from '@features/route-modal';
 
 /**
  * «Задание листа» — то же самое, но глазами бумаги (§4.3, Р11 плана `docs/route-trips-plan.md`).
@@ -153,7 +153,7 @@ export function RouteTaskRowsBlock({
             </Space>
           ),
           children: (
-            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+            <Space orientation="vertical" size={6} style={{ width: '100%' }}>
               {/* Форма № 3 задание не печатает (ADR 0071): порядок выполнения у легкового не
                 гарантирован, и бланк выходит с реквизитами и пустым оборотом. Сказать об этом
                 нужно там, где на задание смотрят, — иначе расхождение бумаги с рейсом обнаружат

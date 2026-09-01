@@ -39,7 +39,7 @@ export function OfficeEquipmentServiceHistory({ equipmentId }: { equipmentId: st
       {data.serviceHistory.length === 0 ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Заявок на обслуживание не было" />
       ) : (
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           {data.serviceHistory.map((entry) => (
             <ServiceEntry key={entry.id} entry={entry} />
           ))}

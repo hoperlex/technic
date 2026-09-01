@@ -53,7 +53,7 @@ export function IntakeLevelDot({ issues }: { issues: readonly IntakeIssue[] }) {
 export function IntakeIssues({ issues }: { issues: readonly IntakeIssue[] }) {
   if (issues.length === 0) return null;
   return (
-    <Space direction="vertical" size={2} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={2} style={{ display: 'flex' }}>
       {issues.map((issue, index) => (
         <Tag
           key={`${issue.code}-${index}`}
@@ -70,7 +70,7 @@ export function IntakeIssues({ issues }: { issues: readonly IntakeIssue[] }) {
 /** Когда показание передали. Нет показания — нет и времени: строка ждёт, а не молчит по ошибке. */
 function PersonCell({ row }: { row: ReadingIntakeRow }) {
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <span>{row.personName || '—'}</span>
       <Typography.Text type="secondary" style={secondary}>
         {row.reading
@@ -102,7 +102,7 @@ export const intakeColumns: TableColumnType<ReadingIntakeRow>[] = [
     title: 'День и смена',
     width: 200,
     render: (_v, r) => (
-      <Space direction="vertical" size={0}>
+      <Space orientation="vertical" size={0}>
         <span>{dayjs(r.reportDate).format(SHOWN_DATE)}</span>
         <Space size={6} wrap>
           <Typography.Text type="secondary" style={secondary}>

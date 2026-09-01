@@ -63,7 +63,7 @@ export function VehicleReadingCard({ vehicleId, vehicleLabel, from, to, onClose 
   const label = data?.vehicleLabel || vehicleLabel || 'Показания машины';
 
   const title = (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <span>{label}</span>
       <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 'normal' }}>
         показания за {dayjs(from).format(SHOWN_DATE)} — {dayjs(to).format(SHOWN_DATE)}
@@ -74,7 +74,7 @@ export function VehicleReadingCard({ vehicleId, vehicleLabel, from, to, onClose 
   return (
     <ViewModal title={title} open onClose={onClose} width={1040} destroyOnHidden>
       {data ? (
-        <Space direction="vertical" size={16} style={{ display: 'flex' }}>
+        <Space orientation="vertical" size={16} style={{ display: 'flex' }}>
           <ReadingCardCounters card={data} />
           <ReadingCardTotals total={data.total} />
           <ReadingCardMonths months={data.months} total={data.total} />

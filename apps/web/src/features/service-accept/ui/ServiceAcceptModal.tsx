@@ -129,12 +129,12 @@ export function ServiceAcceptModal({
       width={520}
     >
       {shown && (
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           <ServiceRequestContext request={shown} />
           <Alert
             type={rework ? 'warning' : 'info'}
             showIcon
-            message={
+            title={
               rework
                 ? 'Факт закрытия будет стёрт'
                 : `Предъявлено ${money(shown.completion?.totalAmount ?? null)}`
@@ -152,7 +152,7 @@ export function ServiceAcceptModal({
                 <Alert
                   type="warning"
                   showIcon
-                  message={SERVICE_CLOSING_DOCUMENT_HINT}
+                  title={SERVICE_CLOSING_DOCUMENT_HINT}
                   description="Работа предъявлена без бумаги — её стоит запросить у исполнителя. Подшить можно прямо здесь; принять работу портал не мешает, но заявка сама уже не закроется."
                 />
               )}

@@ -128,7 +128,7 @@ function TicketScanModal({
       }}
     >
       {error ? (
-        <Alert type="error" showIcon message="Скан не открылся" description={error} />
+        <Alert type="error" showIcon title="Скан не открылся" description={error} />
       ) : url === null ? (
         <Spin />
       ) : (

@@ -68,12 +68,12 @@ export function WeeklyRequestBanners(props: Props) {
         <Alert
           type="error"
           showIcon
-          message="Заявка отклонена и возвращена в черновик"
+          title="Заявка отклонена и возвращена в черновик"
           description={props.rejection}
         />
       )}
       {request.status === 'cancelled' && (
-        <Alert type="warning" showIcon message={`Заявка снята: ${request.cancelReason}`} />
+        <Alert type="warning" showIcon title={`Заявка снята: ${request.cancelReason}`} />
       )}
       {/* Черновик дожил до своей недели, а прошлое читающему закрыто — права нет вовсе либо не
           хватает его глубины: подать и завизировать нельзя, отменить можно всегда (§8). Одного 422
@@ -82,7 +82,7 @@ export function WeeklyRequestBanners(props: Props) {
         <Alert
           type="error"
           showIcon
-          message={props.weekBlocker}
+          title={props.weekBlocker}
           description={
             <>
               {/* Два отказа, а не один, и зовут они разных людей. Права прошлого нет вовсе — звать
@@ -114,7 +114,7 @@ export function WeeklyRequestBanners(props: Props) {
         <Alert
           type="warning"
           showIcon
-          message={`Неделя ${request.weekLabel} уже ${weeklyOverdueWord(request.weekStart)} — виза по ней станет операцией задним числом`}
+          title={`Неделя ${request.weekLabel} уже ${weeklyOverdueWord(request.weekStart)} — виза по ней станет операцией задним числом`}
           description={
             <>
               <div>
@@ -135,7 +135,7 @@ export function WeeklyRequestBanners(props: Props) {
         <Alert
           type="error"
           showIcon
-          message="Применение не прошло — неделя осталась там, где была"
+          title="Применение не прошло — неделя осталась там, где была"
           description={
             <>
               <div>{props.applyError}</div>
@@ -148,7 +148,7 @@ export function WeeklyRequestBanners(props: Props) {
         <Alert
           type="warning"
           showIcon
-          message="Решение не принято ни по одной единице"
+          title="Решение не принято ни по одной единице"
           description="Недельная заявка отвечает на вопрос, что делать с каждой машиной: отметьте, что остаётся и что уезжает, либо закажите технику дополнительно."
         />
       )}
@@ -156,14 +156,14 @@ export function WeeklyRequestBanners(props: Props) {
         <Alert
           type="info"
           showIcon
-          message="Вся техника уезжает — на неделе на площадке не останется ничего"
+          title="Вся техника уезжает — на неделе на площадке не останется ничего"
         />
       )}
       {composable && props.undecided > 0 && (
         <Alert
           type="info"
           showIcon
-          message={`Решение не принято по ${props.undecided} ед. — в состав они не войдут`}
+          title={`Решение не принято по ${props.undecided} ед. — в состав они не войдут`}
         />
       )}
     </div>

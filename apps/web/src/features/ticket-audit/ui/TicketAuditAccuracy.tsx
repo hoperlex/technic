@@ -50,7 +50,7 @@ export function TicketAuditAccuracy({ period, onPeriodChange, enabled }: Props) 
   );
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       <Typography.Title level={5} style={{ margin: 0 }}>
         {ACCURACY_TITLE}
       </Typography.Title>
@@ -62,7 +62,7 @@ export function TicketAuditAccuracy({ period, onPeriodChange, enabled }: Props) 
         <Alert
           type="error"
           showIcon
-          message="Точность не загрузилась"
+          title="Точность не загрузилась"
           description={errorMessage(error)}
           // Кнопка, а не молчаливое повторение: сеть отвалилась на минуту — человек решает сам,
           // ждать ли ему ещё; отчёт за прошедший период никуда не убежит.
@@ -92,14 +92,14 @@ function AccuracyBody({ data, isMobile }: { data: TicketAuditAccuracyDto; isMobi
   const totals = accuracyTotals(data.fields);
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       {/*
        * Предупреждение о смещении стоит НАД числами и видно всегда — не подсказкой и не сноской.
        * Текст дословно из §3: выборка смещена в сторону неисправленных талонов, и процент под ней
        * ожидаемо оптимистичен. Прочитанный без этой строки, он отвечает не на тот вопрос, который
        * задан; поэтому строки нет ровно там, где нет и числа, — в пустом состоянии выше.
        */}
-      <Alert type="warning" showIcon message={ACCURACY_BIAS_NOTE} />
+      <Alert type="warning" showIcon title={ACCURACY_BIAS_NOTE} />
       <Queues data={data} />
       <Total totals={totals} />
       {isMobile ? <AccuracyCards rows={rows} /> : <AccuracyTable rows={rows} />}
@@ -120,16 +120,16 @@ function AccuracyBody({ data, isMobile }: { data: TicketAuditAccuracyDto; isMobi
 function Queues({ data }: { data: TicketAuditAccuracyDto }) {
   const queue = accuracyQueue(data);
   return (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={4} style={{ width: '100%' }}>
       <Typography.Text strong>Выдано проверок {queue.issued}</Typography.Text>
-      <Space direction="vertical" size={4} style={{ width: '100%', paddingLeft: 16 }}>
+      <Space orientation="vertical" size={4} style={{ width: '100%', paddingLeft: 16 }}>
         <StatLine
           label="из них вернулись"
           hint="Проверяющий прислал своё чтение. Часть из них совпала с машинным, часть разошлась"
         >
           <Typography.Text>{queue.returned}</Typography.Text>
         </StatLine>
-        <Space direction="vertical" size={4} style={{ width: '100%', paddingLeft: 16 }}>
+        <Space orientation="vertical" size={4} style={{ width: '100%', paddingLeft: 16 }}>
           <StatLine
             label="из них ждут арбитража"
             hint="Вернувшиеся проверки, где чтения разошлись, а верное значение ещё никто не назвал. В точность они не идут ни верными, ни неверными"
@@ -159,7 +159,7 @@ function Queues({ data }: { data: TicketAuditAccuracyDto }) {
 function Total({ totals }: { totals: AccuracyTotals }) {
   const interval = accuracyIntervalView(totals.right, totals.n);
   return (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={4} style={{ width: '100%' }}>
       <Space size={8} wrap>
         <Typography.Text strong>Всего</Typography.Text>
         <Ratio view={accuracyTotalView(totals)} />
@@ -214,7 +214,7 @@ function Outcomes({ totals }: { totals: AccuracyTotals }) {
   ];
 
   return (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={4} style={{ width: '100%' }}>
       {/* Заголовок называет обе доли расхождений сразу: разобранные и ждущие. Без второго числа
           три исхода под ним читались бы как весь итог, а он неполон, пока арбитраж не прошёл. */}
       <Typography.Text strong>
@@ -225,7 +225,7 @@ function Outcomes({ totals }: { totals: AccuracyTotals }) {
           Ни одно расхождение ещё не разобрано: кто был прав, неизвестно
         </Typography.Text>
       ) : (
-        <Space direction="vertical" size={4} style={{ width: '100%', paddingLeft: 16 }}>
+        <Space orientation="vertical" size={4} style={{ width: '100%', paddingLeft: 16 }}>
           {items.map((item) => (
             <StatLine key={item.label} label={item.label} hint={item.hint}>
               <Typography.Text>{item.value}</Typography.Text>

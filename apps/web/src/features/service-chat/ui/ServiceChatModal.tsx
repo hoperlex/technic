@@ -14,7 +14,7 @@ import { ServiceChatFeed } from './ServiceChatFeed';
 function ServiceChatBody({ request }: { request: ServiceRequestDto }) {
   const feed = useServiceChatFeed(request.id);
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       {/* Шапка та же, что у окон действий (Р57): решение принимает и тот, кто пришёл по ссылке из
           письма, — он не помнит, что за заявка, а спорит в ней о конкретном аппарате. */}
       <ServiceRequestContext request={request} />

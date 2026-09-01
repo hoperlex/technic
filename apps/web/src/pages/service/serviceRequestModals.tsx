@@ -139,28 +139,60 @@ export function useServiceRequestModals(): ServiceRequestModals {
     pending: reasonMutation.isPending,
     node: (
       <>
-        <AssignServiceModal request={assignTarget} onClose={() => setAssignTarget(null)} />
-        <EstimateEditorModal request={estimateTarget} onClose={() => setEstimateTarget(null)} />
-        <EstimateApprovalModal request={approvalTarget} onClose={() => setApprovalTarget(null)} />
-        <ServiceRequestConsumablesModal
-          request={consumablesTarget}
-          onClose={() => setConsumablesTarget(null)}
-        />
-        <ServiceCompleteModal request={completeTarget} onClose={() => setCompleteTarget(null)} />
-        <ServiceConsumablesIssueModal request={issueTarget} onClose={() => setIssueTarget(null)} />
-        <ServiceAcceptModal
-          request={acceptTarget?.request ?? null}
-          mode={acceptTarget?.mode ?? 'accept'}
-          onClose={() => setAcceptTarget(null)}
-        />
-        <ServiceHoldModal
-          request={holdTarget?.request ?? null}
-          mode={holdTarget?.mode ?? 'hold'}
-          onClose={() => setHoldTarget(null)}
-        />
-        <ServiceUrgencyModal request={urgencyTarget} onClose={() => setUrgencyTarget(null)} />
-        <ServiceChatModal request={chatTarget} onClose={() => setChatTarget(null)} />
-        {moveTarget && (
+        {/* Каждое окно монтируется только под свою цель, а не сразу всё одиннадцать с
+          `request={null}`. Так уже был устроен перенос ниже, и причина у остальных та же: пустое
+          окно всё равно заводит экземпляр `Form.useForm`, а `<Form>` внутри себя не рендерит —
+          antd на это и жалуется («Instance created by `useForm` is not connected to any Form
+          element»). Значений это не теряло (rc-form держит их в своём store и до монтажа поля),
+          но десять мёртвых форм на каждом списке заявок — цена ни за что. */}
+        {assignTarget && (
+          <AssignServiceModal request={assignTarget} onClose={() => setAssignTarget(null)} />
+        )}
+        {estimateTarget && (
+          <EstimateEditorModal request={estimateTarget} onClose={() => setEstimateTarget(null)} />
+        )}
+        {approvalTarget && (
+          <EstimateApprovalModal request={approvalTarget} onClose={() => setApprovalTarget(null)} />
+        )}
+        {consumablesTarget && (
+          <ServiceRequestConsumablesModal
+            request={consumablesTarget}
+            onClose={() => setConsumablesTarget(null)}
+          />
+        )}
+        {completeTarget && (
+          <ServiceCompleteModal request={completeTarget} onClose={() => setCompleteTarget(null)} />
+        )}
+        {issueTarget && (
+          <ServiceConsumablesIssueModal
+            request={issueTarget}
+            onClose={() => setIssueTarget(null)}
+          />
+        )}
+        {acceptTarget && (
+          <ServiceAcceptModal
+            request={acceptTarget.request}
+            mode={acceptTarget.mode}
+            onClose={() => setAcceptTarget(null)}
+          />
+        )}
+        {holdTarget && (
+          <ServiceHoldModal
+            request={holdTarget.request}
+            mode={holdTarget.mode}
+            onClose={() => setHoldTarget(null)}
+          />
+        )}
+        {urgencyTarget && (
+          <ServiceUrgencyModal request={urgencyTarget} onClose={() => setUrgencyTarget(null)} />
+        )}
+        {chatTarget && (
+          <ServiceChatModal request={chatTarget} onClose={() => setChatTarget(null)} />
+        )}
+        {/* Аппарат здесь есть всегда: пункт «Записать перемещение техники» у заявки без него не
+            заводится вовсе (Р8). Проверка не защита, а способ сказать это типом — окно перемещения
+            без единицы бессмысленно, и открывать его «на всякий случай» не нужно. */}
+        {moveTarget?.equipment && (
           <EquipmentMoveFromRequest
             equipmentId={moveTarget.equipment.id}
             serviceRequestId={moveTarget.id}

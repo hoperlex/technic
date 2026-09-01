@@ -30,7 +30,7 @@ export function TicketRecognitionBanner({ enabled }: { enabled: boolean }) {
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="Распознавание талонов выключено"
+        title="Распознавание талонов выключено"
         description="Талоны разбираются вручную: откройте скан и заведите строку кнопкой «Добавить талон вручную». Проверки объёма, даты и номера считаются по заведённым талонам."
       />
     );
@@ -42,7 +42,7 @@ export function TicketRecognitionBanner({ enabled }: { enabled: boolean }) {
         type="error"
         showIcon
         style={{ marginBottom: 12 }}
-        message="Распознавание талонов не настроено"
+        title="Распознавание талонов не настроено"
         description={
           <>
             {data.code ? `Отказ доступа (${data.code})` : 'Сервис отвергает запросы портала'}
@@ -59,7 +59,7 @@ export function TicketRecognitionBanner({ enabled }: { enabled: boolean }) {
       type="warning"
       showIcon
       style={{ marginBottom: 12 }}
-      message="Распознавание талонов временно недоступно"
+      title="Распознавание талонов временно недоступно"
       description={
         <>
           {since ? `С ${since}. ` : ''}

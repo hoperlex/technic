@@ -109,12 +109,12 @@ export function ReassignPreview({ preview, staleReason }: Props) {
   const cleared = preview.clearedShiftDays;
 
   return (
-    <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
       {staleReason && (
         <Alert
           type="warning"
           showIcon
-          message="Последствия пересчитаны"
+          title="Последствия пересчитаны"
           description={staleReason}
         />
       )}
@@ -126,7 +126,7 @@ export function ReassignPreview({ preview, staleReason }: Props) {
         <Alert
           type="error"
           showIcon
-          message="Сменить технику нельзя: дни уже подписаны объектом"
+          title="Сменить технику нельзя: дни уже подписаны объектом"
           description={
             <>
               <div>

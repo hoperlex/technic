@@ -373,7 +373,7 @@ export function useActivationDefaults(params: Params): ActivationControl {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message={[
+        title={[
           `При регистрации указал: ${requestRoleTitle(record.requestedRole)}`,
           requestedDetailText(record),
           // Тот же признак, что и пометкой в списке (ADR 0090): решение принимается в этом окне,

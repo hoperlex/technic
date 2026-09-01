@@ -92,7 +92,7 @@ export function AccessGrantsTab() {
       searchable: false,
       width: 260,
       render: (_v, r) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <span>{r.name}</span>
           {/* Код — то, чем набор зовут журнал, реестр выдач и таблицы кода; в строке он вторичен. */}
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -186,7 +186,7 @@ export function AccessGrantsTab() {
   };
 
   const filterBar = (
-    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={8} style={{ width: '100%' }}>
       <SummaryBar
         title="Полномочий"
         items={[

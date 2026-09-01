@@ -92,7 +92,7 @@ function CounterCell({
 }) {
   if (value === null && !anomaly) return <Typography.Text type="secondary">—</Typography.Text>;
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <span>{value === null ? '—' : `${decimal(value, unit === 'км' ? 0 : 1)} ${unit}`}</span>
       {/* Прочерк вместо прироста — начало ряда либо разрыв: догадка тут была бы хуже пустоты. */}
       <Typography.Text type="secondary" style={secondary}>
@@ -112,7 +112,7 @@ function EditsCell({ edits }: { edits: VehicleReadingJournalRow['edits'] }) {
     <Popover
       trigger="click"
       content={
-        <Space direction="vertical" size={4} style={{ maxWidth: 320 }}>
+        <Space orientation="vertical" size={4} style={{ maxWidth: 320 }}>
           {edits.map((edit, index) => (
             <Typography.Text key={`${edit.changedAt}-${index}`} style={secondary}>
               {dayjs(edit.changedAt).format('DD.MM.YYYY HH:mm')} ·{' '}
@@ -133,7 +133,7 @@ function ReadingStateCell({ row }: { row: VehicleReadingJournalRow }) {
   if (!row.reading) return <Tag color="gold">не сдано</Tag>;
   if (row.reading.kind === 'no_data') {
     return (
-      <Space direction="vertical" size={0}>
+      <Space orientation="vertical" size={0}>
         <Tag color="orange" style={{ marginInlineEnd: 0 }}>
           нет данных
         </Tag>
@@ -144,7 +144,7 @@ function ReadingStateCell({ row }: { row: VehicleReadingJournalRow }) {
     );
   }
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <Typography.Text type="secondary" style={secondary}>
         {row.reading.source === 'staff' ? 'внесено персоналом' : 'передано водителем'}
       </Typography.Text>
@@ -163,7 +163,7 @@ const columns: TableColumnType<VehicleReadingJournalRow>[] = [
     title: 'День',
     width: 130,
     render: (_v, r) => (
-      <Space direction="vertical" size={0}>
+      <Space orientation="vertical" size={0}>
         <span>{dayjs(r.reportDate).format(SHOWN_DATE)}</span>
         <Typography.Text type="secondary" style={secondary}>
           смена {r.shiftOrder}
@@ -176,7 +176,7 @@ const columns: TableColumnType<VehicleReadingJournalRow>[] = [
     title: 'Смена',
     width: 200,
     render: (_v, r) => (
-      <Space direction="vertical" size={0}>
+      <Space orientation="vertical" size={0}>
         <Space size={6} wrap>
           <span>{r.sourceLabel || '—'}</span>
           {r.sourceKind === 'esm2' && <Tag>ЭСМ-2</Tag>}
@@ -318,7 +318,7 @@ export function VehicleReadingsJournal({
       width={1040}
       destroyOnHidden
     >
-      <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+      <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
         <DatePicker.RangePicker
           format={SHOWN_DATE}
           allowClear={false}

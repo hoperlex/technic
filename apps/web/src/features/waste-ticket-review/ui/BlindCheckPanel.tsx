@@ -102,7 +102,7 @@ export function BlindCheckPanel({
               }
               const diverged = new Set(divergedFields(row));
               return (
-                <Space direction="vertical" size={0}>
+                <Space orientation="vertical" size={0}>
                   {(['number', 'issuedOn', 'volumeM3'] as const).map((field) => (
                     <Typography.Text
                       key={field}
@@ -125,7 +125,7 @@ export function BlindCheckPanel({
             key: 'people',
             width: 200,
             render: (_, row) => (
-              <Space direction="vertical" size={0}>
+              <Space orientation="vertical" size={0}>
                 {row.checkerName && (
                   <Typography.Text style={{ fontSize: 12 }}>
                     прочитал: {row.checkerName}

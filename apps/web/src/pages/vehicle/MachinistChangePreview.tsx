@@ -65,12 +65,12 @@ export function MachinistChangePreview({ preview, cancelling, driverName, staleR
   const { cancel, issue } = preview.plan;
 
   return (
-    <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
       {staleReason && (
         <Alert
           type="warning"
           showIcon
-          message="Последствия пересчитаны"
+          title="Последствия пересчитаны"
           description={staleReason}
         />
       )}
@@ -172,7 +172,7 @@ export function MachinistForbiddenAlert({ message }: { message: string }) {
     <Alert
       type="error"
       showIcon
-      message="Команду не провести: не хватает прав"
+      title="Команду не провести: не хватает прав"
       description={
         <>
           <div>{message}</div>
@@ -215,7 +215,7 @@ function CancelGroupAlert({
     <Alert
       type="warning"
       showIcon
-      message={`Погаснет решение с ${formatDateOnly(segment.from)}`}
+      title={`Погаснет решение с ${formatDateOnly(segment.from)}`}
       description={
         <>
           <div>

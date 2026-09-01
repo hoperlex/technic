@@ -33,7 +33,7 @@ export function SummaryBar({ title, items }: Props) {
       >
         {items.map((item, i) => (
           <div key={item.label} style={{ display: 'flex', alignItems: 'center' }}>
-            {i > 0 && <Divider type="vertical" style={{ margin: 0 }} />}
+            {i > 0 && <Divider orientation="vertical" style={{ margin: 0 }} />}
             <span style={{ padding: '0 8px' }}>
               <Typography.Text type="secondary">{item.label}: </Typography.Text>
               <Typography.Text strong>{item.value}</Typography.Text>

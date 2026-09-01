@@ -132,13 +132,13 @@ export function IntakeReportModal({
         <Alert
           type="error"
           showIcon
-          message="Отчёт не открылся"
+          title="Отчёт не открылся"
           description={errorMessage(error)}
         />
       ) : !report ? (
         <Skeleton active paragraph={{ rows: 6 }} />
       ) : (
-        <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+        <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
           <Space size={8} wrap>
             <Tag color={STATE_COLORS[report.state]} style={{ marginInlineEnd: 0 }}>
               {driverReportStateLabels[report.state]}
@@ -169,9 +169,9 @@ export function IntakeReportModal({
             <Alert
               type="warning"
               showIcon
-              message="Принять этот день нельзя"
+              title="Принять этот день нельзя"
               description={
-                <Space direction="vertical" size={0} style={{ display: 'flex' }}>
+                <Space orientation="vertical" size={0} style={{ display: 'flex' }}>
                   {report.blockers.map((blocker) => (
                     <span key={blocker}>{blocker}</span>
                   ))}

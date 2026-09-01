@@ -175,7 +175,7 @@ export function VehiclePeriodModal({
       width={720}
     >
       <Form form={form} layout="vertical" onFinish={submit}>
-        <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+        <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
           {before && after && <PeriodChange before={before} after={after} />}
 
           {preview.isPending && <Skeleton active paragraph={{ rows: 4 }} />}
@@ -183,7 +183,7 @@ export function VehiclePeriodModal({
             <Alert
               type="error"
               showIcon
-              message="Последствия посчитать не удалось"
+              title="Последствия посчитать не удалось"
               description={errorMessage(preview.error)}
             />
           )}
@@ -265,7 +265,7 @@ function PeriodChange({
 function PeriodConsequences({ preview }: { preview: PeriodPreviewDto }) {
   const { cancel, issue } = preview.plan;
   return (
-    <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
       <div>
         <Typography.Text strong>Путевые листы</Typography.Text>
         {cancel.length === 0 && issue.length === 0 ? (
@@ -297,7 +297,7 @@ function PeriodConsequences({ preview }: { preview: PeriodPreviewDto }) {
         <Alert
           type="warning"
           showIcon
-          message="При сокращении срока погаснут записи о технике"
+          title="При сокращении срока погаснут записи о технике"
           description={
             <>
               <div>

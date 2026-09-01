@@ -63,7 +63,7 @@ export function confirmWaybillWarnings(
     title: 'Выписать лист с предупреждениями?',
     width: 560,
     content: (
-      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={8} style={{ width: '100%' }}>
         <ul style={{ margin: 0, paddingInlineStart: 20 }}>
           {details.warnings.map((warning) => (
             // Ключом — код и объект, о котором предупреждение: индекс переставился бы вместе со

@@ -97,14 +97,14 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
   });
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       {/* Планка одна и та же везде (Р112): перечисление недостающих видов читалось бы как
           «нужны все три», а приёмку снимает любой один. */}
       {isAwaitingDocuments(request) && (
         <Alert
           type="warning"
           showIcon
-          message={SERVICE_CLOSING_DOCUMENT_HINT}
+          title={SERVICE_CLOSING_DOCUMENT_HINT}
           description="Пока нет ни одного, заявка стоит в очереди «Ожидаются документы»: работу сервисной компании без закрывающего документа не закрыть, и портал такую заявку не закроет сам — сутки на возражение отсчитываются от подшитой бумаги."
         />
       )}

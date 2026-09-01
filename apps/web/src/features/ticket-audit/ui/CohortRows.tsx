@@ -106,7 +106,7 @@ export function CohortCards({ rows }: { rows: TicketAuditCohortRow[] }) {
           </Space>
         ),
         children: (
-          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={4} style={{ width: '100%' }}>
             <CardLine title="Эскалация" hint={COLUMN_HINTS.escalation}>
               <ModelCell view={escalationModelView(row)} />
             </CardLine>

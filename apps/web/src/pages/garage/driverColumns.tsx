@@ -86,7 +86,7 @@ export function driverColumns({
           // `display: flex` у обёртки не украшение: `Space` иначе inline-flex, ширина у него по
           // содержимому, и однострочному ФИО было бы не от чего отрезаться — оно вылезло бы в
           // соседнюю колонку вместо многоточия.
-          <Space direction="vertical" size={0} style={{ display: 'flex' }}>
+          <Space orientation="vertical" size={0} style={{ display: 'flex' }}>
             {/* ФИО — строго в одну строку: ячейка обязана остаться двухстрочной (имя и «таб. № …
                 телефон»), иначе строки пляшут высотой от длины фамилии. Обрез отдан antd тем же
                 приёмом, что у подписи машины (`BusyVehicleCell`), и подсказка у него всплывает по
@@ -124,7 +124,7 @@ export function driverColumns({
       sorter: true,
       defaultSortOrder: 'ascend',
       render: (_v, r) => (
-        <Space direction="vertical" size={2}>
+        <Space orientation="vertical" size={2}>
           <Tag color={garageDriverStateColors[r.state]} style={{ marginInlineEnd: 0 }}>
             {garageDriverStateLabels[r.state]}
           </Tag>

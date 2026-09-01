@@ -81,6 +81,19 @@ interface Ctx {
 
 let ctx: Ctx;
 
+/*
+ * Приложение и пул держатся ОТДЕЛЬНО от `ctx`, хотя и лежат в нём же.
+ *
+ * `ctx` собирается одним присваиванием в самом конце `beforeAll`, и подготовка, упавшая на
+ * середине (нет своей техники, не завёлся человек, не прошёл вход), оставила бы уже поднятые
+ * приложение и пул незакрытыми — а закрывать надо то, что успело подняться. Дальше механика своей
+ * базы сносит её `DROP DATABASE ... WITH (FORCE)`, FORCE обрывает оставленные соединения, и `pg`
+ * бросает `terminating connection due to administrator command` некому: прогон получает
+ * необработанное исключение вместо внятной причины падения.
+ */
+let builtApp: Awaited<ReturnType<typeof buildApp>> | null = null;
+let closePool: (() => Promise<void>) | null = null;
+
 function prepareEnv(databaseUrl: string): void {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   process.env.DATABASE_URL = databaseUrl;
@@ -263,8 +276,12 @@ describe.skipIf(!DB_URL)('даты заявок задним числом (жи�
     const personId = await seedPerson();
 
     const { buildApp } = await import('../src/app');
-    const { db } = await import('../src/db/client');
+    const { db, closeDb } = await import('../src/db/client');
+    // Закрывалки запоминаются сразу, как только есть что закрывать: до `ctx` отсюда ещё десяток
+    // шагов, и любой из них может не дойти.
+    closePool = closeDb;
     const app = await buildApp();
+    builtApp = app;
 
     // Роль возвращается на место и здесь: `seedUser` заведённую учётку не переписывает, а прежний
     // прогон мог оборваться между двумя попытками случая с отобранным правом.
@@ -320,44 +337,60 @@ describe.skipIf(!DB_URL)('даты заявок задним числом (жи�
   }, 120_000);
 
   afterAll(async () => {
-    if (!ctx?.db) return;
-    /*
-     * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а здесь каждый
-     * случай заводит заказ — за прогон в ней оседало по десятку заказов и по десятку следов
-     * операций.
-     *
-     * Метка — собственные учётки файла: всё, что тут заводится, заводят они, а чужого под ними не
-     * бывает. Списком заведённого уборка не пользуется намеренно — прибирать надо и за упавшим
-     * прогоном, который до записи в список мог не дойти. Сами учётки уборка не трогает: их
-     * `beforeAll` ищет по адресам и заводит один раз на все прогоны — он же возвращает на место
-     * роль той, у которой право отбирали.
-     *
-     * Порядок обратен ссылкам: лист держит заказ и рейс ключами `restrict`, состав рейса — заказ,
-     * след операции — автора. Связь следа с заказом, детали и история заказа уходят каскадом со
-     * своей головной строкой.
-     *
-     * Человек и его документы остаются: он ищется по СНИЛС и заводится один раз на все прогоны —
-     * то есть не накапливается.
-     */
-    const ourUsers = sql`
-      SELECT id FROM users
-      WHERE email IN (${ADMIN_EMAIL}, ${DISPATCHER_EMAIL}, ${MANAGER_EMAIL}, ${REVOKED_EMAIL})`;
-    const ourRequests = sql`SELECT id FROM vehicle_requests WHERE created_by IN (${ourUsers})`;
-    await ctx.db.execute(sql`
-      DELETE FROM waybills
-      WHERE source_request_id IN (${ourRequests})
-         OR id IN (SELECT waybill_id FROM waybill_requests WHERE request_id IN (${ourRequests}))
-         OR route_id IN (SELECT id FROM vehicle_routes
-                          WHERE source_request_id IN (${ourRequests}))`);
-    await ctx.db.execute(sql`
-      DELETE FROM vehicle_route_requests WHERE request_id IN (${ourRequests})`);
-    await ctx.db.execute(sql`
-      DELETE FROM vehicle_routes WHERE source_request_id IN (${ourRequests})`);
-    await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
-    await ctx.db.execute(sql`
-      DELETE FROM waybill_corrections WHERE actor_user_id IN (${ourUsers})`);
-    // Журнал — по автору: писали в него только здешние учётки, а видов записей у них несколько.
-    await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+    try {
+      if (!ctx?.db) return;
+      /*
+       * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а здесь каждый
+       * случай заводит заказ — за прогон в ней оседало по десятку заказов и по десятку следов
+       * операций.
+       *
+       * Метка — собственные учётки файла: всё, что тут заводится, заводят они, а чужого под ними не
+       * бывает. Списком заведённого уборка не пользуется намеренно — прибирать надо и за упавшим
+       * прогоном, который до записи в список мог не дойти. Сами учётки уборка не трогает: их
+       * `beforeAll` ищет по адресам и заводит один раз на все прогоны — он же возвращает на место
+       * роль той, у которой право отбирали.
+       *
+       * Порядок обратен ссылкам: лист держит заказ и рейс ключами `restrict`, состав рейса — заказ,
+       * след операции — автора. Связь следа с заказом, детали и история заказа уходят каскадом со
+       * своей головной строкой.
+       *
+       * Человек и его документы остаются: он ищется по СНИЛС и заводится один раз на все прогоны —
+       * то есть не накапливается.
+       */
+      const ourUsers = sql`
+        SELECT id FROM users
+        WHERE email IN (${ADMIN_EMAIL}, ${DISPATCHER_EMAIL}, ${MANAGER_EMAIL}, ${REVOKED_EMAIL})`;
+      const ourRequests = sql`SELECT id FROM vehicle_requests WHERE created_by IN (${ourUsers})`;
+      await ctx.db.execute(sql`
+        DELETE FROM waybills
+        WHERE source_request_id IN (${ourRequests})
+           OR id IN (SELECT waybill_id FROM waybill_requests WHERE request_id IN (${ourRequests}))
+           OR route_id IN (SELECT id FROM vehicle_routes
+                            WHERE source_request_id IN (${ourRequests}))`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_route_requests WHERE request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_routes WHERE source_request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
+      await ctx.db.execute(sql`
+        DELETE FROM waybill_corrections WHERE actor_user_id IN (${ourUsers})`);
+      // Журнал — по автору: писали в него только здешние учётки, а видов записей у них несколько.
+      await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+    } finally {
+      /*
+       * Договор помощника своей базы ([assignment-read-mode.ts](assignment-read-mode.ts)): пул
+       * файла обязан закрыться раньше, чем база исчезнет. Закрывается он и тогда, когда уборка
+       * не удалась, — иначе одна ошибка порождала бы вторую, уже необработанную, поверх
+       * настоящей причины.
+       *
+       * Порядок обратен подъёму: сперва приложение (у него на пуле висят живые запросы), потом
+       * сам пул.
+       */
+      await builtApp?.close();
+      builtApp = null;
+      await closePool?.();
+      closePool = null;
+    }
   }, 60_000);
 
   describe('заведение задним числом (Р15)', () => {

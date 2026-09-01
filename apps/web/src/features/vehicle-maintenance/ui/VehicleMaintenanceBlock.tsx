@@ -154,7 +154,7 @@ export function VehicleMaintenanceBlock({
       <Alert
         type="warning"
         showIcon
-        message="Сводку обслуживания загрузить не удалось"
+        title="Сводку обслуживания загрузить не удалось"
         description={errorMessage(summaryQuery.error)}
       />
     );
@@ -184,7 +184,7 @@ export function VehicleMaintenanceBlock({
     });
 
   return (
-    <Space direction="vertical" size={8} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={8} style={{ display: 'flex' }}>
       <Space size={8} wrap>
         <Typography.Text strong>Обслуживание</Typography.Text>
         <Tag color={maintenanceStateColors[summary.state]} style={{ marginInlineEnd: 0 }}>
@@ -208,7 +208,7 @@ export function VehicleMaintenanceBlock({
             key: 'last',
             label: 'Последнее ТО',
             children: summary.lastMaintenance ? (
-              <Space direction="vertical" size={0}>
+              <Space orientation="vertical" size={0}>
                 <span>{dayjs(summary.lastMaintenance.performedOn).format(SHOWN_DATE)}</span>
                 {summary.lastMaintenance.documentNumber && (
                   <Typography.Text type="secondary" style={secondary}>
@@ -251,7 +251,7 @@ export function VehicleMaintenanceBlock({
             // нечем проверить.
             label: on ? 'Одометр на конец периода' : 'Последний одометр',
             children: summary.lastOdometer ? (
-              <Space direction="vertical" size={0}>
+              <Space orientation="vertical" size={0}>
                 <span>{kmText(summary.lastOdometer.km)}</span>
                 <Typography.Text type="secondary" style={secondary}>
                   снято {dayjs(summary.lastOdometer.measuredOn).format(SHOWN_DATE)}

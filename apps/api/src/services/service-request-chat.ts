@@ -55,7 +55,8 @@ export interface ChatRequestRow {
   id: string;
   status: ServiceRequestStatus;
   createdBy: string;
-  equipmentObjectId: string;
+  /** Площадка предмета; `null` — заявка без аппарата, заведённая от отдела (Р6, Р8). */
+  equipmentObjectId: string | null;
   customerDepartmentId: string | null;
   equipmentDepartmentId: string | null;
   serviceCounterpartyId: string | null;
@@ -725,7 +726,12 @@ export async function markAllChatRead(p: Principal, scope: SQL | undefined): Pro
         -- Соединение с единицей техники — не украшение: отбор списка умеет фильтровать по типу
         -- оргтехники, а колонка эта живёт в справочнике. Тот же join стоит и в счётчике страницы
         -- списка, и разойтись им нельзя: кнопка обязана гасить ровно то, что человек видит.
-        INNER JOIN ${officeEquipment}
+        --
+        -- ЛЕВОЕ, как и там (Р8, ADR 0146, решение 7): заявка без аппарата (выпуск 2б) при
+        -- внутреннем соединении просто не попала бы в отбор — человек нажал бы «Отметить все
+        -- прочитанными», получил бы «Отмечено: 5» и оставил бы шестую заявку гореть, не понимая,
+        -- почему кнопка её не берёт. Сегодня таких заявок нет, и отбор от замены не меняется.
+        LEFT JOIN ${officeEquipment}
            ON ${officeEquipment.id} = ${serviceRequests.officeEquipmentId}
         ${scope ? sql`WHERE ${scope}` : sql``}
      )

@@ -28,7 +28,7 @@ export function TailResolutionField({
       extra="Пока это не решено, срок продлить нельзя: листы выписались бы на машину истории, хотя работа и ставки относятся к машине назначения."
     >
       <Radio.Group>
-        <Space direction="vertical" size={4}>
+        <Space orientation="vertical" size={4}>
           <Radio value="assignment_wins">
             Дальше работает машина назначения — «{tail.assignmentVehicleName}»
           </Radio>
@@ -61,16 +61,16 @@ export function KnownFillFields({
 }) {
   if (gaps.length === 0) return null;
   return (
-    <Space direction="vertical" size={8} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={8} style={{ display: 'flex' }}>
       <Typography.Text strong>Кто работал в неизвестные дни</Typography.Text>
       <Alert
         type="info"
         showIcon
-        message="За эти дни листов нет вовсе — они выпишутся задним числом"
+        title="За эти дни листов нет вовсе — они выпишутся задним числом"
         description="Дни закрыты: бумагу на них уже не отменить, и назвать человека можно только здесь. Как только он назван, портал выпишет недостающие бланки ЭСМ-2 на прошедшие даты — номера будут показаны до нажатия."
       />
       {gaps.map((gap) => (
-        <Space key={gap.from} direction="vertical" size={4} style={{ display: 'flex' }}>
+        <Space key={gap.from} orientation="vertical" size={4} style={{ display: 'flex' }}>
           <Space size={8} wrap align="end">
             {/* Тот же вопрос и та же подпись, что у якорей: человек отвечает на один вопрос — кто
               работал в эти дни, — а чем портал починит историю, решает не он. */}
@@ -90,8 +90,19 @@ export function KnownFillFields({
               />
             </Form.Item>
             {/* Границы — внутри промежутка и только внутри: чужая граница приходит 422-м, и
-              человек, сузивший окно на день, не понял бы, какой из отрезков сервер счёл чужим. */}
-            <Form.Item name={['fills', gap.from, 'range']} noStyle>
+              человек, сузивший окно на день, не понял бы, какой из отрезков сервер счёл чужим.
+
+              Предложены они `initialValue` у самого `Form.Item`, а не `initialValues` формы и не
+              `defaultValue` пикера. `defaultValue` управляемое поле выбрасывает — antd о том и
+              предупреждает, — и человек видел пустые даты там, где задумывались границы (данные
+              при этом целы: `draftOf` подставляет `gap.from`/`gap.to` сам). `initialValues` формы
+              тоже не годятся: промежутки приходят из запроса, этот блок монтируется только после
+              ответа, а форма свои начальные значения после первого монтажа уже не перечитывает. */}
+            <Form.Item
+              name={['fills', gap.from, 'range']}
+              noStyle
+              initialValue={[dayjs(gap.from), dayjs(gap.to)]}
+            >
               <DatePicker.RangePicker
                 format="DD.MM.YYYY"
                 allowClear={false}
@@ -99,7 +110,6 @@ export function KnownFillFields({
                   const key = d.format('YYYY-MM-DD');
                   return key < gap.from || key > gap.to;
                 }}
-                defaultValue={[dayjs(gap.from), dayjs(gap.to)]}
               />
             </Form.Item>
           </Space>
@@ -129,7 +139,7 @@ export function KnownFillsMade({
 }) {
   if (fills.length === 0) return null;
   return (
-    <Space direction="vertical" size={8} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={8} style={{ display: 'flex' }}>
       <Typography.Text strong>Заполнено ранее</Typography.Text>
       {fills.map(({ changeGroupId, segment }) => {
         const personId = segment.driver?.state === 'set' ? segment.driver.personId : null;

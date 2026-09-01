@@ -34,7 +34,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { canOpenRoute, vehicleRequestViewLink } from '../../utils/links';
 import { assembleRoute, blockerMessage } from './routeAssembly';
-import { useRouteModal } from './routeModal';
+import { useRouteModal } from '@features/route-modal';
 import { RoutePointsBlock } from './RoutePointsBlock';
 import { RouteRequestRow } from './RouteRequestRow';
 import { RouteTaskRowsBlock } from './RouteTaskRowsBlock';
@@ -294,7 +294,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
     modal.confirm({
       title: `Выписать лист за ${route ? formatDateOnly(route.routeDate) : 'прошедший день'}?`,
       content: (
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <Space orientation="vertical" style={{ width: '100%' }}>
           <Typography.Text type="secondary">
             День уже прошёл: лист уйдёт в журнал с меткой коррекции, вашим именем и этой причиной.
             {blank ? ` ${BLANK_WAYBILL_CONFIRM}` : ''}
@@ -343,7 +343,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
     modal.confirm({
       title: `Аннулировать лист ${route?.waybill?.number}?`,
       content: (
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <Space orientation="vertical" style={{ width: '100%' }}>
           <Typography.Text type="secondary">
             Номер бланка сгорит: после правки рейса выпишется новый.
           </Typography.Text>
@@ -557,7 +557,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
       }
     >
       {route && (
-        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={16} style={{ width: '100%' }}>
           <Descriptions column={1} size="small">
             <Descriptions.Item label="Техника">
               {route.vehicleLabel}
@@ -602,9 +602,9 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
             </Descriptions.Item>
           </Descriptions>
 
-          {frozen && <Alert type="info" showIcon message={ROUTE_FROZEN_MESSAGE} />}
+          {frozen && <Alert type="info" showIcon title={ROUTE_FROZEN_MESSAGE} />}
           {!frozen && readiness && !readiness.ok && (relocation || route.requests.length > 0) && (
-            <Alert type="warning" showIcon message={readiness.reason} />
+            <Alert type="warning" showIcon title={readiness.reason} />
           )}
           {/* Пробелы документов водителя — до нажатия «Выписать лист», а не в подтверждении:
             назначить другого человека проще, пока бланк не израсходован. Замороженный рейс
@@ -613,7 +613,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
             <Alert
               type="warning"
               showIcon
-              message="Документы водителя внесены не полностью"
+              title="Документы водителя внесены не полностью"
               description={driverGaps}
             />
           )}
@@ -658,7 +658,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
                     ' Либо выпишите пустой лист — с машиной, водителем и датой, но без задания.'}
                 </Typography.Paragraph>
               )}
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space orientation="vertical" size={8} style={{ width: '100%' }}>
                 {route.requests.map((item) => (
                   <RouteRequestRow
                     key={item.requestId}
@@ -687,7 +687,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
           )}
 
           {canAddRequest && (
-            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Space orientation="vertical" size={4} style={{ width: '100%' }}>
               <Space.Compact style={{ width: '100%' }}>
                 <AutoSelect
                   style={{ width: '100%' }}

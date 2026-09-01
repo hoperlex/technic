@@ -159,7 +159,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
         }}
         {...blockers.formProps}
       >
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           <Typography.Text type="secondary">
             Рейсы {request?.route ? `на ту же дату, что и ${request.route.displayNumber},` : 'дня'}{' '}
             со свободной строкой задания — все, без отбора по технике. Сначала заказанный тип, потом
@@ -201,7 +201,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
             <Alert
               type={targetSubstitution?.level === 'warning' ? 'warning' : 'info'}
               showIcon
-              message="Заявка поедет машиной выбранного рейса"
+              title="Заявка поедет машиной выбранного рейса"
               description={
                 `Назначенная техника сменится на ${target.vehicleLabel}. ` +
                 (targetSubstitution ? `${targetSubstitution.text} ` : '') +

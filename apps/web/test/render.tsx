@@ -6,8 +6,8 @@ import { App as AntApp, ConfigProvider } from 'antd';
 import ruRU from 'antd/locale/ru_RU';
 import { MemoryRouter } from 'react-router';
 import type { AuthUser } from '@technic/contracts';
+import { RouteModalContext, type RouteModalApi } from '@features/route-modal';
 import { AuthContext, AuthProvider, permissionChecks } from '../src/auth/AuthContext';
-import { RouteModalContext, type RouteModalApi } from '../src/pages/vehicle/routeModal';
 import { themeFor } from '../src/theme';
 import { FORM_VALIDATE_MESSAGES } from '../src/shared/config';
 import { setViewport, DESKTOP_VIEWPORT, type Viewport } from './viewport';
@@ -59,7 +59,7 @@ export interface RenderOptions {
 /**
  * Заглушка окон рейса, списка рейсов и заявки — контекст, а не провайдер, и это существенно.
  *
- * `useRouteModal` бросает вне провайдера (`pages/vehicle/routeModal`): отсутствие контекста там —
+ * `useRouteModal` бросает вне провайдера (`@features/route-modal`): отсутствие контекста там —
  * ошибка сборки приложения, а не «нет прав», и молча проглоченный клик по номеру рейса читался бы
  * как поломка самого рейса. Зовут его нынче отовсюду — обе вкладки гаража, список и карточка
  * заявки, дни линейного заказа, журнал путевых листов, — поэтому контекст стоит в общей оболочке:

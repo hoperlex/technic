@@ -11,7 +11,9 @@ services:
       POSTGRES_USER: technic
       POSTGRES_PASSWORD: technic
     ports:
-      - '5432:5432'
+      # 5433, а не 5432: на машине разработчика штатный порт обычно уже занят системным
+      # postgres, и контейнер молча не поднялся бы. Тот же порт стоит в `.env.dev` и в db-тестах.
+      - '5433:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro

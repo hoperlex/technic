@@ -49,7 +49,7 @@ export function FileState({ file }: { file: WasteTicketFileDto }) {
   // закрывали. Это не сбой и не ожидание — это работа, которая ждёт человека.
   if (file.status === 'not_queued') {
     return (
-      <Space direction="vertical" size={0}>
+      <Space orientation="vertical" size={0}>
         <Typography.Text type="warning">
           {file.filename || 'Талон'}: в разбор не поступал
         </Typography.Text>
@@ -61,7 +61,7 @@ export function FileState({ file }: { file: WasteTicketFileDto }) {
   }
   if (file.status === 'done') {
     return (
-      <Space direction="vertical" size={0}>
+      <Space orientation="vertical" size={0}>
         <Typography.Text>Файл разобран</Typography.Text>
         {pagesLine}
       </Space>
@@ -69,7 +69,7 @@ export function FileState({ file }: { file: WasteTicketFileDto }) {
   }
   if (file.status === 'pending') {
     return (
-      <Space direction="vertical" size={0}>
+      <Space orientation="vertical" size={0}>
         <Typography.Text>
           Распознаётся…
           {!file.activeJob && (
@@ -85,7 +85,7 @@ export function FileState({ file }: { file: WasteTicketFileDto }) {
     );
   }
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <Typography.Text type="danger">{file.reason || 'Файл не распознан'}</Typography.Text>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         {file.errorClass === 'transient'
@@ -122,7 +122,7 @@ export function ChecksStrip({
       <Alert
         type="warning"
         showIcon
-        message="Талоны не разобраны — сверять нечего"
+        title="Талоны не разобраны — сверять нечего"
         description="Ни одного талона по этой заявке не заведено: ни машиной, ни человеком. Объём, дата и номер не проверены."
       />
     );
@@ -132,12 +132,12 @@ export function ChecksStrip({
       <Alert
         type="success"
         showIcon
-        message={preliminary ? 'Расхождений нет (предварительно)' : 'Расхождений нет'}
+        title={preliminary ? 'Расхождений нет (предварительно)' : 'Расхождений нет'}
       />
     );
   }
   return (
-    <Space direction="vertical" size={6} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={6} style={{ width: '100%' }}>
       {checks.map((check) => (
         <Alert
           key={`${check.code}:${check.subjectKey}`}
@@ -145,7 +145,7 @@ export function ChecksStrip({
           // что расхождение было и кто его принял, иначе он начнёт разбираться с нуля.
           type={check.resolution ? 'info' : check.severity === 'error' ? 'error' : 'warning'}
           showIcon
-          message={check.message}
+          title={check.message}
           description={
             check.resolution
               ? `Принято: ${check.resolution.acceptedByName} · ${check.resolution.comment}`

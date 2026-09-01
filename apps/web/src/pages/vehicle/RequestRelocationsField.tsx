@@ -15,7 +15,7 @@ import { EntityLink } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { vehicleRouteLink } from '../../utils/links';
-import { useRouteModal } from './routeModal';
+import { useRouteModal } from '@features/route-modal';
 import { formatDateOnly } from './shared';
 import { VehicleRelocationModal } from './VehicleRelocationModal';
 
@@ -93,7 +93,7 @@ export function RequestRelocationsField({ request }: Props) {
   const missing = PURPOSES.filter((purpose) => !existing.some((r) => r.purpose === purpose));
 
   return (
-    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={8} style={{ width: '100%' }}>
       <Typography.Text type="secondary">
         Перегон — отдельный рейс с путевым листом 4-П, и правки здесь применяются сразу, не
         дожидаясь «Сохранить». Технику везут тралом — перегона не заводят вовсе.

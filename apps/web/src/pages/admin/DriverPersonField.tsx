@@ -240,7 +240,7 @@ export function DriverPersonField({ form, account: base, name = 'personId' }: Fi
           }
         />
       </Form.Item>
-      {notice ? <Alert type="info" showIcon style={{ marginBottom: 16 }} message={notice} /> : null}
+      {notice ? <Alert type="info" showIcon style={{ marginBottom: 16 }} title={notice} /> : null}
       {nameMismatch ? (
         // Отдельной строкой, а не одной из ошибок поля: смена фамилии — обычное дело, случайный
         // однофамилец — редкое, и различить их может только человек. Сервер без этой галочки
@@ -302,7 +302,7 @@ export function DriverRestoreModal({ account, onCancel, onSubmit, confirmLoading
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="Учётная запись водителя живёт при карточке работника — выберите его. Учётка вернётся неактивной: доступ включает обычная правка карточки"
+          title="Учётная запись водителя живёт при карточке работника — выберите его. Учётка вернётся неактивной: доступ включает обычная правка карточки"
         />
         {account ? <DriverPersonField form={form} account={account} /> : null}
       </Form>

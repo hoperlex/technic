@@ -1,5 +1,6 @@
 import { Button, Space, Tag, Typography, type TableColumnType } from 'antd';
 import {
+  SERVICE_REQUEST_NO_EQUIPMENT,
   warrantyRowKindLabels,
   type ServiceWarrantyRowDto,
   type WarrantyRowKind,
@@ -28,6 +29,16 @@ const kindColors: Record<WarrantyRowKind, string> = {
   equipment: 'blue',
   repair: 'purple',
 };
+
+/**
+ * Как названа техника строки. У гарантии на работу по заявке БЕЗ аппарата (Р8) наименование пусто
+ * строкой — снимок брать было неоткуда, — и реестр называет её теми же словами, что заявка и
+ * письмо: строка обязана остаться видимой и опознаваемой, а пустая клетка читалась бы как сбой
+ * выдачи. Гарантия на работу существует и там, где предмета в справочнике нет вовсе.
+ */
+function equipmentTitle(row: ServiceWarrantyRowDto): string {
+  return row.equipmentName || SERVICE_REQUEST_NO_EQUIPMENT;
+}
 
 /** Номера второй строкой — ими единицу опознают, а называют её моделью. */
 function numbers(row: ServiceWarrantyRowDto): string {
@@ -62,7 +73,7 @@ export function warrantyColumns({
       searchable: true,
       render: (_v, r) => (
         <>
-          {r.equipmentName}
+          {equipmentTitle(r)}
           <br />
           <Typography.Text type="secondary">{numbers(r)}</Typography.Text>
         </>
@@ -102,7 +113,7 @@ export function warrantyColumns({
       sortable: false,
       searchable: false,
       render: (_v, r) => (
-        <Space direction="vertical" size={2}>
+        <Space orientation="vertical" size={2}>
           <Tag color={kindColors[r.kind]}>{warrantyRowKindLabels[r.kind]}</Tag>
           <span>{r.subject}</span>
         </Space>
@@ -115,7 +126,7 @@ export function warrantyColumns({
       searchable: false,
       width: 200,
       render: (_v, r) => (
-        <Space direction="vertical" size={2}>
+        <Space orientation="vertical" size={2}>
           <WarrantyTag until={r.warrantyUntil} />
           <Typography.Text type="secondary">{daysLeftText(r.daysLeft)}</Typography.Text>
         </Space>
@@ -145,11 +156,15 @@ export function warrantyColumns({
             key: 'claim',
             title: '',
             width: 190,
-            render: (_v: unknown, r: ServiceWarrantyRowDto) => (
-              <Button size="small" onClick={() => onClaim(r)}>
-                Заявка по гарантии
-              </Button>
-            ),
+            // Кнопки нет у строки без единицы (Р8): обращение по гарантии заводится выбором
+            // аппарата, и предлагать его там, где аппарата не существует, значило бы обещать окно,
+            // которое не откроется. Сама строка остаётся — гарантия на работу от этого не исчезает.
+            render: (_v: unknown, r: ServiceWarrantyRowDto) =>
+              r.equipmentId && (
+                <Button size="small" onClick={() => onClaim(r)}>
+                  Заявка по гарантии
+                </Button>
+              ),
           },
         ]
       : []),
@@ -166,7 +181,7 @@ export function warrantyCard({
   onOpenRequest,
 }: WarrantyGridActions): CardConfig<ServiceWarrantyRowDto> {
   return {
-    title: (r) => r.equipmentName,
+    title: (r) => equipmentTitle(r),
     badge: (r) => <WarrantyTag until={r.warrantyUntil} />,
     primary: (r) => r.subject,
     lines: [
@@ -176,7 +191,8 @@ export function warrantyCard({
       (r) => (r.daysLeft === null ? null : `Осталось: ${daysLeftText(r.daysLeft)}`),
     ],
     actions: (r) => [
-      ...(canClaim
+      // То же правило, что и в колонке: без единицы обращение заводить нечем (Р8).
+      ...(canClaim && r.equipmentId
         ? [{ key: 'claim', label: 'Заявка по гарантии', onClick: () => onClaim(r) }]
         : []),
       ...(r.requestId

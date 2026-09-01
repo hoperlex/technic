@@ -168,7 +168,7 @@ export function WeeklyRequestChecklist({
     <Alert
       type={documents.skipped > 0 ? 'warning' : 'success'}
       showIcon
-      message={`Применено ${documents.applied}, пропущено ${documents.skipped}`}
+      title={`Применено ${documents.applied}, пропущено ${documents.skipped}`}
       description={
         documents.skipped > 0
           ? 'Пропущенные строки объяснены причиной: это то, что площадка просила и не получила.'

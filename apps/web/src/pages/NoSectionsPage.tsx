@@ -42,7 +42,7 @@ export function NoSectionsPage() {
       <Empty
         image={Empty.PRESENTED_IMAGE_SIMPLE}
         description={
-          <Space direction="vertical" size={4} style={{ maxWidth: 420 }}>
+          <Space orientation="vertical" size={4} style={{ maxWidth: 420 }}>
             <Typography.Title level={4} style={{ marginBottom: 0 }}>
               Разделы портала вам пока не назначены
             </Typography.Title>

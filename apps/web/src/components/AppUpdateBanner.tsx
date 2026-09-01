@@ -67,9 +67,9 @@ export function AppUpdateBanner() {
           type="warning"
           showIcon
           style={{ maxWidth: 520, boxShadow: '0 8px 32px rgba(0, 0, 0, 0.25)' }}
-          message="Портал обновился"
+          title="Портал обновился"
           description={
-            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
               <Typography.Text>
                 Эта вкладка работает на устаревшей версии, и продолжать на ней нельзя: сервер
                 отвечает на её запросы отказом. Обновите страницу — портал откроется заново.
@@ -113,7 +113,7 @@ export function AppUpdateBanner() {
       <Alert
         type="info"
         showIcon
-        message="Доступна новая версия приложения"
+        title="Доступна новая версия приложения"
         style={{ pointerEvents: 'auto', boxShadow: '0 4px 16px rgba(0, 0, 0, 0.15)' }}
         action={
           <Space>

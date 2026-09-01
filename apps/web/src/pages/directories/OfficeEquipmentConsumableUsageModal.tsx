@@ -14,6 +14,7 @@ import dayjs from 'dayjs';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   officeEquipmentTitle,
+  SERVICE_REQUEST_NO_EQUIPMENT,
   type OfficeEquipmentConsumableUsageRowDto,
 } from '@technic/contracts';
 import { Link } from 'react-router';
@@ -73,12 +74,23 @@ function columnsOf(): TableColumnsType<OfficeEquipmentConsumableUsageRowDto> {
     {
       key: 'equipment',
       title: 'Аппарат',
-      render: (_v, row) =>
-        officeEquipmentTitle({
-          name: row.equipmentName,
-          inventoryNumber: row.equipmentInventoryNumber,
-          serialNumber: row.equipmentSerialNumber,
-        }),
+      /*
+       * Выдача бывает и по заявке БЕЗ аппарата — отдел просит тонер «на склад» (Р8). Строка обязана
+       * остаться в отчёте: итоги считаются по журналу целиком, и потеряй отчёт такую строку, суммы
+       * под ним перестали бы сходиться с показанным — спор о числах разбирают глазами.
+       *
+       * Поэтому не прочерк и не пустая клетка, а те же слова, что стоят в заявке и в письме: пустое
+       * место здесь читалось бы как «аппарат не записали», то есть как дефект учёта.
+       */
+      render: (_v, row) => {
+        // Три поля проверяются вместе, а не одно из них: по контракту они пустеют разом — это один
+        // аппарат, а не три независимых реквизита, и «имя есть, номеров нет» означало бы, что
+        // сервер отдал полстроки.
+        const { equipmentName: name, equipmentInventoryNumber: inv } = row;
+        const sn = row.equipmentSerialNumber;
+        if (name === null || inv === null || sn === null) return SERVICE_REQUEST_NO_EQUIPMENT;
+        return officeEquipmentTitle({ name, inventoryNumber: inv, serialNumber: sn });
+      },
     },
     { key: 'position', title: 'Позиция', render: (_v, row) => positionOf(row) },
     {
@@ -93,7 +105,7 @@ function columnsOf(): TableColumnsType<OfficeEquipmentConsumableUsageRowDto> {
        * (съездили, выдали, вернули), и он обязан читаться именно так, а не как «ничего не было».
        */
       render: (_v, row) => (
-        <Space direction="vertical" size={0} style={{ alignItems: 'flex-end' }}>
+        <Space orientation="vertical" size={0} style={{ alignItems: 'flex-end' }}>
           <Typography.Text strong>{row.quantity}</Typography.Text>
           {row.returned > 0 && (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>

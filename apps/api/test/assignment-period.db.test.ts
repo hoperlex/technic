@@ -98,6 +98,16 @@ const TERM_TO = shiftDateKey(MONDAY, 6);
 /** Конец срока после продления — воскресенье следующей недели. */
 const EXTENDED_TO = shiftDateKey(NEXT, 6);
 /**
+ * Периоды бумаги базового срока — тем же расчётом, каким режет портал (`esm2Periods`).
+ *
+ * Границы срока остаются понедельниками — сцена обязана задавать их сама, иначе проверять было бы
+ * нечего, — а вот **сколько документов** из этих границ выходит, решает портал: лист режет не
+ * только воскресенье, но и конец месяца (ADR 0142). Две недели срока дают два листа, а если месяц
+ * кончается в середине — три. Число, записанное цифрой, и состав, записанный парой строк, зеленели
+ * бы три недели из четырёх и краснели бы в последнюю без всякой правки кода.
+ */
+const TERM_PERIODS = esm2Periods(TERM_FROM, TERM_TO);
+/**
  * Периоды бумаги, которые добавляет продление, — тем же расчётом, каким режет портал.
  *
  * Считаются, а не пишутся одной неделей: лист режет и конец месяца (ADR 0142), и продление на
@@ -570,7 +580,8 @@ describeReadModes(readMode, 'правка срока: продление и со
   it('продление добавляет неделю бумаги, истории не трогает и журнала не заводит', async () => {
     await inScene({ status: 'confirmed', issueSheets: true }, async (tx, scene) => {
       const before = await sheetsOf(tx, scene.requestId);
-      expect(activeSheets(before)).toHaveLength(2);
+      // Сколько бумаги у нетронутого срока — считает портал, а не цифра: см. `TERM_PERIODS`.
+      expect(activeSheets(before)).toHaveLength(TERM_PERIODS.length);
 
       const command: PeriodCommand = { version: 0, dateTo: EXTENDED_TO };
       const preview = await previewPeriod(tx, scene, DISPATCHER, command);
@@ -594,8 +605,7 @@ describeReadModes(readMode, 'правка срока: продление и со
        * переключения (Б1): расходиться исполнители обязаны только там, где недельная единица врёт.
        */
       expect(compositionOf(await sheetsOf(tx, scene.requestId))).toEqual([
-        `${PREV}—${shiftDateKey(PREV, 6)}|${scene.vehicleA}|${scene.personA}`,
-        `${MONDAY}—${TERM_TO}|${scene.vehicleA}|${scene.personA}`,
+        ...TERM_PERIODS.map((p) => `${p.from}—${p.to}|${scene.vehicleA}|${scene.personA}`),
         ...ADDED_PERIODS.map((p) => `${p.from}—${p.to}|${scene.vehicleA}|${scene.personA}`),
       ]);
       // История не тронута: продление её не пишет вовсе — оно лишь открывает дни.
@@ -619,13 +629,24 @@ describeReadModes(readMode, 'правка срока: продление и со
      */
     const splitAt = shiftDateKey(PREV, 3);
     const extendedTo = shiftDateKey(PREV, 4);
+    /**
+     * Бумага двухдневного срока сцены и бумага открытых продлением дней — обе считаются порталом.
+     *
+     * Границы называет сцена (понедельник–вторник прошлой недели и четверг–пятница той же), а
+     * сколько документов из этих границ выходит — ответ ADR 0142: месяц режет и двухдневный
+     * отрезок. Прошлый понедельник бывает последним числом месяца, четверг — тоже, и тогда каждый
+     * из отрезков становится двумя листами. Записанные одной строкой, оба ожидания краснели бы 35
+     * и 28 дней из 1095 соответственно — без единой правки кода.
+     */
+    const scenePeriods = esm2Periods(PREV, shiftDateKey(PREV, 1));
+    const openedPeriods = esm2Periods(splitAt, extendedTo);
     await inScene(
       { status: 'done', dateTo: shiftDateKey(PREV, 1), splitAt, issueSheets: true },
       async (tx, scene) => {
         const before = compositionOf(await sheetsOf(tx, scene.requestId));
-        expect(before).toEqual([
-          `${PREV}—${shiftDateKey(PREV, 1)}|${scene.vehicleB}|${scene.personA}`,
-        ]);
+        expect(before).toEqual(
+          scenePeriods.map((p) => `${p.from}—${p.to}|${scene.vehicleB}|${scene.personA}`),
+        );
 
         const command: PeriodCommand = { version: 0, dateTo: extendedTo };
         const preview = await previewPeriod(tx, scene, DISPATCHER, command);
@@ -636,9 +657,9 @@ describeReadModes(readMode, 'правка срока: продление и со
          * шире исполнения — недельная сверка этот отрезок не выпишет, — и ровно это расхождение
          * cutover и закрывает.
          */
-        expect(preview.plan.issue.map((i) => `${i.from}—${i.to}`)).toEqual([
-          `${splitAt}—${extendedTo}`,
-        ]);
+        expect(preview.plan.issue.map((i) => `${i.from}—${i.to}`)).toEqual(
+          openedPeriods.map((p) => `${p.from}—${p.to}`),
+        );
         // Подтверждать надо и пустое множество разблокировок (Д4): лист за вторник в область
         // сверки не попал — область продления это только открытые им дни (Р11).
         expect(preview.unlockFingerprint).not.toBeNull();
@@ -669,12 +690,20 @@ describeReadModes(readMode, 'правка срока: продление и со
              * Отрезковый план выписывает документ ровно на новый отрезок — со среды по пятницу, на
              * машину и человека, которых история этих дней и называет. Лист за вторник при этом не
              * тронут: он вне области, и переоформлять его никто не просил.
+             *
+             * «Документ» здесь единственного числа по обыкновению, а не по расчёту: если четверг
+             * окажется последним числом месяца, тот же отрезок выйдет двумя бланками (ADR 0142), и
+             * предмет случая — что открытые дни получили СВОЮ бумагу, а не долепились к запертому
+             * листу за вторник — от этого не меняется.
              */
-            history: [...before, `${splitAt}—${extendedTo}|${scene.vehicleB}|${scene.personB}`],
+            history: [
+              ...before,
+              ...openedPeriods.map((p) => `${p.from}—${p.to}|${scene.vehicleB}|${scene.personB}`),
+            ],
           }),
         );
         expect(outcome.paper?.esm2.issued).toHaveLength(
-          byReadMode(mode, { legacy: 0, history: 1 }),
+          byReadMode(mode, { legacy: 0, history: openedPeriods.length }),
         );
 
         /*
@@ -744,10 +773,11 @@ describeReadModes(readMode, 'правка срока: продление и со
          * расхождение исполнителей начинается там, где документ попадает в область (см. блок
          * «права по исходу»).
          */
-        expect(compositionOf(await sheetsOf(tx, scene.requestId))).toEqual([
-          `${PREV}—${shiftDateKey(PREV, 6)}|${scene.vehicleB}|${scene.personA}`,
-          `${MONDAY}—${TERM_TO}|${scene.vehicleB}|${scene.personA}`,
-        ]);
+        expect(compositionOf(await sheetsOf(tx, scene.requestId))).toEqual(
+          // Перечень считается, а не пишется двумя строками: у нового конца срока ровно та бумага,
+          // какую портал из него и режет, — в переходную неделю на лист больше (ADR 0142).
+          TERM_PERIODS.map((p) => `${p.from}—${p.to}|${scene.vehicleB}|${scene.personA}`),
+        );
         // Р17: назначение — «чем заявка закрыта сейчас» — правкой срока не двигается, и хвост
         // истории после гашения **законно** расходится с ним (Р30, Р31).
         expect(await assignmentOf(tx, scene.requestId)).toBe(scene.vehicleB);
@@ -942,13 +972,22 @@ describeReadModes(readMode, 'правка срока: права по исход
          *
          * Тест, сверяющий только `period_from—period_to`, обе картины считает одинаковыми: границы
          * совпадают до дня. Поэтому здесь и стоит состав.
+         *
+         * А вот ЧИСЛО документов у укороченного срока — снова ответ портала, а не сцены: месяц
+         * режет и два дня (ADR 0142), и если прошлый понедельник окажется последним числом, листов
+         * станет два. Разница между режимами от этого не зависит — машина в обоих листах одна и та
+         * же, — поэтому `byReadMode` вынесен из перечня, а перечень выведен из `esm2Periods`.
+         * Одной строкой он краснел бы 35 дней из 1095.
          */
-        expect(compositionOf(await sheetsOf(tx, scene.requestId))).toEqual([
-          byReadMode(mode, {
-            legacy: `${PREV}—${shiftDateKey(splitAt, -1)}|${scene.vehicleB}|${scene.personA}`,
-            history: `${PREV}—${shiftDateKey(splitAt, -1)}|${scene.vehicleA}|${scene.personA}`,
-          }),
-        ]);
+        const vehicleInSheets = byReadMode(mode, {
+          legacy: scene.vehicleB,
+          history: scene.vehicleA,
+        });
+        expect(compositionOf(await sheetsOf(tx, scene.requestId))).toEqual(
+          esm2Periods(PREV, shiftDateKey(splitAt, -1)).map(
+            (p) => `${p.from}—${p.to}|${vehicleInSheets}|${scene.personA}`,
+          ),
+        );
       },
     );
   });

@@ -9,6 +9,8 @@ import {
 } from '@technic/contracts';
 import {
   ServiceStatusTag,
+  serviceRequestEquipmentName,
+  serviceRequestObjectLabel,
   serviceStatusLine,
   statusAgeLabel,
   UrgentTag,
@@ -50,6 +52,8 @@ export function serviceRequestViewFields({
 }): ViewField[] {
   // Подпись — та же, что во второй строке столбца (Р100); у отложенной её разбирает строка ниже.
   const statusLine = request.status !== 'on_hold' ? serviceStatusLine(request, user) : null;
+  // Площадка заявки; `null` — её нет вовсе, и от этого зависит и подпись строки, и её состав (Р8).
+  const objectLabel = serviceRequestObjectLabel(request);
 
   return [
     {
@@ -135,21 +139,29 @@ export function serviceRequestViewFields({
       label: 'Какой аппарат',
       full: true,
       children: (
-        <Space direction="vertical" size={2}>
-          <span>{request.equipment.name}</span>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {[
-              request.equipment.typeName,
-              request.equipment.inventoryNumber && `инв. ${request.equipment.inventoryNumber}`,
-              request.equipment.serialNumber && `SN ${request.equipment.serialNumber}`,
-            ]
-              .filter(Boolean)
-              .join(' · ')}
-          </Typography.Text>
+        <Space orientation="vertical" size={2}>
+          {/* «Без аппарата» словами (Р8): предмета у заявки может не быть вовсе, и это законное
+              состояние — прочерк на его месте читался бы как незаполненное поле. Реквизитов у
+              такой заявки нет ни одного: ни номеров, ни типа, ни гарантии — вторая строка и теги
+              ниже не пустеют, а не рисуются. */}
+          <span>{serviceRequestEquipmentName(request)}</span>
+          {request.equipment && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {[
+                request.equipment.typeName,
+                request.equipment.inventoryNumber && `инв. ${request.equipment.inventoryNumber}`,
+                request.equipment.serialNumber && `SN ${request.equipment.serialNumber}`,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </Typography.Text>
+          )}
           {/* Два разных признака (§9.2): состояние гарантии самой техники и пометка о том,
               что заявку завели по гарантии. Первое известно только тому, кому виден
-              справочник, второе — всем. */}
-          {equipmentWarrantyUntil !== undefined && (
+              справочник, второе — всем. У заявки без аппарата обоих нет вовсе: гарантия единицы
+              не «неизвестна», а не существует, и обращение по гарантии заводится выбором аппарата
+              (Р7 закрывает эту дверь на сервере). */}
+          {request.equipment && equipmentWarrantyUntil !== undefined && (
             <Space size={8} wrap>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 гарантия на технику:
@@ -176,18 +188,24 @@ export function serviceRequestViewFields({
     },
     {
       key: 'customer',
-      label: 'Где стоит и для кого',
+      /*
+       * Подпись зависит от того, есть ли чему стоять. У заявки без аппарата площадки может не быть
+       * вовсе (заявка «от отдела», Р8), и «Где стоит» в ней было бы неправдой: стоять нечему.
+       * Заказчик при этом есть всегда и ровно один — площадка либо отдел (`CHECK` предмета, Р7), —
+       * поэтому строка не исчезает, а сужается до вопроса «для кого».
+       */
+      label: objectLabel ? 'Где стоит и для кого' : 'Для кого',
       full: true,
       children: (
         <Space size={8} wrap>
-          <span>
-            {request.object.code} — {request.object.name}
-          </span>
+          {objectLabel && <span>{objectLabel}</span>}
           {/* «Не тот объект» (Р16): объект в этой заявке назвал человек, а не подставила карточка
               техники. Пометка историчная и неизменная — это факт заявления, а не расхождение:
               расхождение вычисляется соединением с карточкой на сервере и гаснет само, когда
               ИТ-служба перенесёт единицу. Поэтому подпись говорит про заявление, а не про то, что
-              аппарат «стоит не там»: к моменту чтения его могли уже перенести. */}
+              аппарат «стоит не там»: к моменту чтения его могли уже перенести.
+              У заявки без аппарата этой пары не бывает: спорить с карточкой техники, которой нет,
+              не о чем — дверь закрыта на сервере (Р7). */}
           {request.objectOverridden && (
             <Tooltip title="Заявитель указал, что аппарат стоит на другом объекте: справочник этим не правится — единицу переносит ИТ-служба, разобрав отбор расхождений">
               <Tag color="gold">Объект указан заявителем</Tag>
@@ -195,7 +213,7 @@ export function serviceRequestViewFields({
           )}
           {/* Место внутри объекта — снимок на момент заведения (Р57): по нему сервис и едет,
               а карточка единицы к моменту ремонта могла уже переехать. */}
-          {request.equipment.location && (
+          {request.equipment?.location && (
             <Typography.Text type="secondary">{request.equipment.location}</Typography.Text>
           )}
           {request.customerDepartment && <Tag>{request.customerDepartment.name}</Tag>}

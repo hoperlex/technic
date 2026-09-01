@@ -239,7 +239,7 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
                 type="warning"
                 showIcon
                 style={{ marginBottom: 16 }}
-                message={pendingShifts}
+                title={pendingShifts}
                 description={pendingDays.length > 0 ? listDays(pendingDays) : undefined}
               />
             )}

@@ -139,12 +139,21 @@ export type WarrantyListQuery = z.infer<typeof warrantyListQuerySchema>;
 export interface ServiceWarrantyRowDto {
   id: string;
   kind: WarrantyRowKind;
-  equipmentId: string;
+  /**
+   * Носитель гарантии со стороны техники. У строки `equipment` заполнен всегда — она и есть
+   * карточка единицы. У строки `repair` он `null`, если ремонт вели по заявке БЕЗ аппарата (Р8
+   * плана `office-equipment-consumables-and-purchase-plan.md`, ADR 0146, решение 7): гарантия на
+   * работу существует и там, где предмета в справочнике нет вовсе, — и потерять её реестру нельзя.
+   *
+   * Тип и площадка приходят из справочника и пустеют вместе с аппаратом; наименование и номера —
+   * снимок самой заявки, и у заявки без аппарата они пусты строками, а не отсутствуют.
+   */
+  equipmentId: string | null;
   equipmentName: string;
   serialNumber: string;
   inventoryNumber: string;
-  typeName: string;
-  objectName: string;
+  typeName: string | null;
+  objectName: string | null;
   departmentName: string | null;
   /** На что гарантия: «Гарантия поставщика» либо наименование позиции ремонта. */
   subject: string;

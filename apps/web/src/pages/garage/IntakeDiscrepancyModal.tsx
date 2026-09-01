@@ -111,7 +111,7 @@ export function IntakeDiscrepancyModal({
         onFinish={(values) => resolve.mutate(values)}
       >
         {/* Текст расхождения — серверный и целиком (Р7): портал своих слов сюда не сочиняет. */}
-        <Alert type="warning" showIcon message={discrepancy.message} style={{ marginBottom: 16 }} />
+        <Alert type="warning" showIcon title={discrepancy.message} style={{ marginBottom: 16 }} />
 
         {/* Действует последнее решение, а не первое: что стоит сейчас — видно до того, как его
             заменят. Иначе «изменить» означало бы менять неизвестно что. */}
@@ -123,10 +123,10 @@ export function IntakeDiscrepancyModal({
 
         <Form.Item name="resolution" label="Что делаем">
           <Radio.Group>
-            <Space direction="vertical" size={8}>
+            <Space orientation="vertical" size={8}>
               {choices.map((choice) => (
                 <Radio key={choice.value} value={choice.value}>
-                  <Space direction="vertical" size={0}>
+                  <Space orientation="vertical" size={0}>
                     <span>{choice.label}</span>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       {choice.hint}

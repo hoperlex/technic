@@ -210,7 +210,7 @@ export function OfficeEquipmentPurchaseFormModal({ open, purchase, onClose, onSa
           type="error"
           showIcon
           style={{ marginBottom: 12 }}
-          message="Ключ этой отправки уже занят другой командой"
+          title="Ключ этой отправки уже занят другой командой"
           /*
            * Единственный из трёх отказов, который повторной отправкой не лечится: ключ описывает
            * попытку, и если под ним уже принято другое тело, повторять нечего — нужна новая
@@ -224,7 +224,7 @@ export function OfficeEquipmentPurchaseFormModal({ open, purchase, onClose, onSa
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message="Закупку уже провели"
+          title="Закупку уже провели"
           description={`${conflict.message}. Состав правится только в «Новой»: закройте окно и посмотрите карточку — там видно, кто и когда её провёл.`}
         />
       )}
@@ -233,7 +233,7 @@ export function OfficeEquipmentPurchaseFormModal({ open, purchase, onClose, onSa
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message="Черновик изменил другой человек"
+          title="Черновик изменил другой человек"
           description={
             <>
               <div>
@@ -254,7 +254,7 @@ export function OfficeEquipmentPurchaseFormModal({ open, purchase, onClose, onSa
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message="Числа по складу изменились, пока форма была открыта"
+          title="Числа по складу изменились, пока форма была открыта"
           /*
            * Отдельной галочки «подтверждаю» нет намеренно (Р17): повторная отправка со свежим
            * снимком и есть подтверждение. Поэтому текст говорит ровно это — посмотрите новые числа
@@ -268,7 +268,7 @@ export function OfficeEquipmentPurchaseFormModal({ open, purchase, onClose, onSa
         <Alert
           type="info"
           showIcon
-          message="Заказывать нечего"
+          title="Заказывать нечего"
           /*
            * Законный ответ, а не пустой экран (Р16): дефицита нет — значит по всем позициям, за
            * которыми следят, потребность закрыта остатком и уже сделанными заказами. Позиции с
@@ -298,7 +298,7 @@ export function OfficeEquipmentPurchaseFormModal({ open, purchase, onClose, onSa
         />
       )}
 
-      <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 12 }}>
+      <Space orientation="vertical" size={8} style={{ width: '100%', marginTop: 12 }}>
         <Select
           showSearch
           allowClear

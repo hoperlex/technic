@@ -58,13 +58,13 @@ export function ServiceRequestEstimate({
   }
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       <Alert
         // Три состояния, а не два: «ждёт решения» отличается от «согласовано» и от «в правке» тем,
         // что ход сейчас за согласующим, — и именно об этом вкладку и спрашивают.
         type={pending ? 'warning' : approval ? 'success' : 'info'}
         showIcon
-        message={
+        title={
           pending
             ? `Ревизия ${request.estimateRevision} предъявлена — ждём решения`
             : approval
@@ -111,7 +111,7 @@ export function ServiceRequestEstimate({
 
       <ServiceEstimateTable items={request.items} showFact={showFact} />
 
-      <Space direction="vertical" size={2} style={{ alignItems: 'flex-end', width: '100%' }}>
+      <Space orientation="vertical" size={2} style={{ alignItems: 'flex-end', width: '100%' }}>
         <span>
           <Typography.Text type="secondary">По объёму работ: </Typography.Text>
           <Typography.Text strong>{formatMoney(request.estimatedTotalAmount)}</Typography.Text>

@@ -116,7 +116,7 @@ export function OfficeEquipmentStockJournal({
   entries: OfficeEquipmentConsumableStockEntryDto[];
 }) {
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       {entries.map((entry) => (
         <div key={entry.id}>
           <Space size={8} wrap>

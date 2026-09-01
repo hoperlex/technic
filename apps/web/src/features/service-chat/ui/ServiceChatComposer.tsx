@@ -82,7 +82,7 @@ export function ServiceChatComposer({
   if (!request.chat.canWrite) return <WhyReadOnly request={request} />;
 
   return (
-    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={8} style={{ width: '100%' }}>
       <div>
         <label htmlFor={ADDRESSEE_FIELD}>Кому</label>
         <Select<AddresseeValue[]>

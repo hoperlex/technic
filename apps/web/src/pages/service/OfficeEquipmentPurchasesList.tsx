@@ -129,7 +129,7 @@ export function OfficeEquipmentPurchasesList({ onOpen }: Props) {
   ];
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       <Segmented
         value={params.status ?? ''}
         options={SLICES}

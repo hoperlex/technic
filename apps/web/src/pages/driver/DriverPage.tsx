@@ -211,7 +211,7 @@ export function DriverPage() {
       <Alert
         type="error"
         showIcon
-        message="Задание не загрузилось"
+        title="Задание не загрузилось"
         description={errorMessage(error)}
       />
     );
@@ -231,7 +231,7 @@ export function DriverPage() {
   // Копия перед сортировкой: `entries` лежит в кэше запроса, и сортировка на месте переставила бы
   // строки всем, кто их читает, — включая страницу показаний.
   return (
-    <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
       {[...data.entries].sort(byShiftOrder).map((entry) => (
         <EntryCard key={`${entry.sourceKind}-${entry.sourceId}`} entry={entry} />
       ))}

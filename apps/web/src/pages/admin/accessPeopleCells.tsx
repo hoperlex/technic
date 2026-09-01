@@ -45,7 +45,7 @@ export function roleTags(user: UserAccountDto) {
 
 export function personCell(user: UserAccountDto) {
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <span>{user.fullName}</span>
       <Typography.Text type="secondary">{user.email}</Typography.Text>
     </Space>
@@ -55,7 +55,7 @@ export function personCell(user: UserAccountDto) {
 export function scopeCell(user: UserAccountDto) {
   const anomaly = scopeAnomaly(user);
   return (
-    <Space direction="vertical" size={2}>
+    <Space orientation="vertical" size={2}>
       <span>{scopeText(user)}</span>
       {/* Учётка, которая не видит ничего: роль требует области, а области нет. Ради таких строк
           срез и читают, поэтому они помечены предупреждением, а не пропуском. */}

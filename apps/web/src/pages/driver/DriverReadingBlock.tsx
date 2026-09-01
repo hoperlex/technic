@@ -273,7 +273,7 @@ export function ReadingBlock({
         <Alert
           type="info"
           showIcon
-          message="Строку закрыл диспетчер"
+          title="Строку закрыл диспетчер"
           description={item.reading?.noDataReason}
         />
       )}
@@ -286,7 +286,7 @@ export function ReadingBlock({
         <Alert
           type="warning"
           showIcon
-          message="Проверьте показание перед отправкой"
+          title="Проверьте показание перед отправкой"
           description={
             <>
               {notes.map((note) => (

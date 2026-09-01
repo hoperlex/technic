@@ -362,7 +362,10 @@ export function RequestsTab() {
 
       <ServiceRequestViewModal
         request={shown}
-        equipmentWarrantyUntil={shown ? warrantyOf(shown.equipment.id) : undefined}
+        // Гарантия — вопрос к справочнику по конкретной единице: у заявки без аппарата спрашивать
+        // не о чем, и `undefined` означает здесь то же, что и закрытый справочник, — блок гарантии
+        // в карточке не рисуется вовсе (Р8).
+        equipmentWarrantyUntil={shown?.equipment ? warrantyOf(shown.equipment.id) : undefined}
         // Действия карточки — те же, что у строки: их строит коридор переходов, и разойтись
         // они не могут. Разные у них только окна: карточкины живут внутри неё (ADR 0140).
         actions={cardRowActions}

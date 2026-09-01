@@ -107,7 +107,7 @@ export function ReadingCardChart({ months }: { months: readonly ReadingMonthRow[
   const hasEmpty = points.some((point) => point.value === null);
 
   return (
-    <Space direction="vertical" size={8} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={8} style={{ display: 'flex' }}>
       <Space size={12} wrap>
         <Typography.Text strong>Помесячно</Typography.Text>
         <Segmented<MetricKey>
@@ -126,7 +126,7 @@ export function ReadingCardChart({ months }: { months: readonly ReadingMonthRow[
               justifyContent: 'center',
             }}
           >
-            <Space direction="vertical" align="center" size={8}>
+            <Space orientation="vertical" align="center" size={8}>
               <Spin />
               <Typography.Text type="secondary">Диаграмма загружается</Typography.Text>
             </Space>

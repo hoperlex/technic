@@ -4,6 +4,7 @@ import tseslint from 'typescript-eslint';
 import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
 import boundaries from 'eslint-plugin-boundaries';
+import globals from 'globals';
 
 /**
  * Слои фронтенда снизу вверх. `shared` разбит на сегменты: направление внутри него задаётся
@@ -149,10 +150,18 @@ export default tseslint.config(
     },
   },
   {
-    // Служебные скрипты фронтенда выполняются Node, а не браузером: у них свои глобальные имена.
-    files: ['apps/web/scripts/**/*.mjs'],
+    /*
+     * Служебные скрипты фронтенда и генераторы документов выполняются Node, а не браузером: у них
+     * свои глобальные имена, и без разметки `no-undef` считает каждое из них опечаткой.
+     *
+     * Набор целиком (`globals.node`), а не перечень имён. Перечень уже подводил: он знал `process`
+     * и `console`, а первый же генератор, собирающий ссылку через `URL`, дал три ошибки — и так
+     * будет с каждым следующим именем платформы (`Buffer`, `fetch`, `structuredClone`). Список,
+     * который надо дописывать вслед за кодом, гарантированно от него отстаёт.
+     */
+    files: ['apps/web/scripts/**/*.mjs', 'docs/**/*.mjs'],
     languageOptions: {
-      globals: { process: 'readonly', console: 'readonly' },
+      globals: globals.node,
     },
   },
   {
@@ -175,7 +184,41 @@ export default tseslint.config(
               group: ['@entities/*/*'],
               message: 'Вход в слайс — только через @entities/<слайс>, а не вглубь него.',
             },
+            {
+              // Тот же запрет на слое сценариев. Он не лишний рядом с `boundaries`: файлы вне
+              // слоёв (`App.tsx`, `utils/*`) правилом границ не размечены, и глубокий импорт из
+              // них прошёл бы молча — а зовут `features` как раз оттуда.
+              group: ['@features/*/*'],
+              message: 'Вход в слайс — только через @features/<слайс>, а не вглубь него.',
+            },
           ],
+        },
+      ],
+    },
+  },
+  {
+    /*
+     * Образцы, снятые волной перехода на antd 6 (этап Э8 плана `docs/test-gates-plan.md`).
+     * `Space direction` и `Divider type` были самыми частыми — 216 и 1 место, но 6649 из 7254
+     * предупреждений за прогон, — и возвращаются они не размышлением, а копипастой соседнего
+     * блока. Общее число устаревшего держит бюджет (`antdDeprecated` в quality.mjs), но бюджет
+     * говорит «стало на одно больше» и не показывает где; линт называет строку сразу.
+     *
+     * Правило смотрит на имя элемента, а не на текст: `direction` законен у `Flex`, `type` — у
+     * `Button`, `Tag`, `Typography.Text`. `Space.Compact` под селектор не попадает — у него имя
+     * не `JSXIdentifier`, — и это правильно: там `direction` свой.
+     */
+    files: ['apps/web/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "JSXOpeningElement[name.name='Space'] > JSXAttribute[name.name='direction']",
+          message: 'У Space пропс direction устарел: пишите orientation="vertical" | "horizontal".',
+        },
+        {
+          selector: "JSXOpeningElement[name.name='Divider'] > JSXAttribute[name.name='type']",
+          message: 'У Divider пропс type устарел: пишите orientation="vertical" | "horizontal".',
         },
       ],
     },

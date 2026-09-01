@@ -52,7 +52,7 @@ export function OperationsWindow({
   ];
 
   return (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={4} style={{ width: '100%' }}>
       <Typography.Text strong>{windowLabel(window.days)}</Typography.Text>
       {/* Ни одного вызова — это не четыре нуля: нулевые отказы при нулевых вызовах читаются как
           «всё хорошо», а правда — «подсистему не звали ни разу, и о её работоспособности эти
@@ -60,7 +60,7 @@ export function OperationsWindow({
       {window.calls === 0 ? (
         <Typography.Text type="secondary">{WINDOW_EMPTY_NOTE}</Typography.Text>
       ) : isMobile ? (
-        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={4} style={{ width: '100%' }}>
           {items.map((item) => (
             <StatLine key={item.label} label={item.label} hint={item.hint}>
               <Typography.Text>{formatCount(item.value)}</Typography.Text>
@@ -135,7 +135,7 @@ export function OperationsQueue({
 }) {
   const items = queueItems(queue);
   const body = isMobile ? (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={4} style={{ width: '100%' }}>
       {items.map((item) => (
         <StatLine key={item.label} label={item.label} hint={item.hint}>
           <Typography.Text>{formatCount(item.value)}</Typography.Text>
@@ -156,7 +156,7 @@ export function OperationsQueue({
   );
 
   return (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={4} style={{ width: '100%' }}>
       <Typography.Text strong>Очередь разбора</Typography.Text>
       {isMobile ? (
         <Collapse

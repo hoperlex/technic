@@ -283,7 +283,7 @@ function GrantsField({
       validateStatus={errors.length > 0 ? 'error' : undefined}
       help={
         errors.length > 0 ? (
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             {errors.map((text) => (
               <span key={text}>{text}</span>
             ))}
@@ -292,7 +292,7 @@ function GrantsField({
       }
       extra={
         blocked ? undefined : (
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             {/* Что полномочия дают сверх должности — двумя субъектами, а не вычитанием из прав
                 записи: у заявки их нет вовсе, а при смене роли они описывают прежнего человека. */}
             {value.length > 0 ? (
@@ -312,9 +312,9 @@ function GrantsField({
         <Alert
           type="warning"
           showIcon
-          message="Список полномочий загрузился не полностью"
+          title="Список полномочий загрузился не полностью"
           description={
-            <Space direction="vertical" size={4}>
+            <Space orientation="vertical" size={4}>
               <span>
                 Пока он неполон, полномочия и роль не правятся: сохранение оставит назначения
                 нетронутыми. Снять и выдать наборы можно во вкладке «Права».
@@ -333,7 +333,7 @@ function GrantsField({
         </Typography.Text>
       ) : (
         <Checkbox.Group<string> value={value} onChange={onChange}>
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             {catalog.map((grant) => (
               <Checkbox key={grant.id} value={grant.id} disabled={locked.has(grant.id)}>
                 <Tooltip title={grantCompositionText(grant)}>

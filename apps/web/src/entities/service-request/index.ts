@@ -33,6 +33,11 @@ export {
   SERVICE_CLOSING_DOCUMENT_HINT,
   serviceDocumentCounts,
 } from './model/documents';
+export {
+  serviceRequestEquipmentName,
+  serviceRequestObjectLabel,
+  serviceRequestPlaceLine,
+} from './model/subject';
 export { ServiceConsumableFactRows } from './ui/ServiceConsumableFactRows';
 export { ServiceConsumablesTable } from './ui/ServiceConsumablesTable';
 export { ServiceDocumentUpload } from './ui/ServiceDocumentUpload';

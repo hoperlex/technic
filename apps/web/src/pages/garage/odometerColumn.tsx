@@ -61,7 +61,7 @@ export function odometerColumn<T extends GarageVehicleDto>(): TableColumnType<T>
       // и догадка про пробег была бы хуже пустоты.
       if (!last) return <Typography.Text type="secondary">—</Typography.Text>;
       return (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <span>{kmText(last.km)}</span>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             снято {dayjs(last.measuredOn).format(SHOWN_DATE)}

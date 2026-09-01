@@ -153,7 +153,7 @@ export function ServiceChatFeed({
       <Alert
         type="error"
         showIcon
-        message="Обсуждение не загрузилось"
+        title="Обсуждение не загрузилось"
         // Курсор прочтения при этом НЕ двигается (§3.4): непрочитанное остаётся непрочитанным,
         // и метка в списке продолжает звать сюда. Об этом и говорится словами — иначе человек
         // решит, что подсветка врёт.
@@ -179,7 +179,7 @@ export function ServiceChatFeed({
       // самой ленты, и проводка к ней не зависит от того, что творится с предками (см. эффект).
       style={{ maxHeight: '46vh', overflowY: 'auto', paddingInlineEnd: 4, position: 'relative' }}
     >
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={12} style={{ width: '100%' }}>
         {feed.hasMore && (
           <Button size="small" onClick={feed.loadOlder} loading={feed.loadingOlder} block>
             Показать более ранние

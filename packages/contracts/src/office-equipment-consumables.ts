@@ -538,11 +538,24 @@ export interface OfficeEquipmentConsumableUsageRowDto {
   /** Заявка: идентификатор для ссылки и номер для чтения. */
   requestId: string;
   displayNumber: string;
-  /** Аппарат, ради которого расходник выдали (В18: «на какие аппараты»). */
-  equipmentId: string;
-  equipmentName: string;
-  equipmentInventoryNumber: string;
-  equipmentSerialNumber: string;
+  /**
+   * Аппарат, ради которого расходник выдали (В18: «на какие аппараты»).
+   *
+   * `null` — выдача по заявке БЕЗ аппарата (Р8 плана
+   * `office-equipment-consumables-and-purchase-plan.md`, ADR 0146, решение 7): отдел просит тонер
+   * «на склад», и предмета у такой заявки нет. Четыре поля пустеют вместе — это один аппарат, а не
+   * четыре независимых реквизита.
+   *
+   * Поля стали необязательными в выпуске 2а, который таких заявок ещё не заводит, и это не
+   * предусмотрительность впрок: отчёт строится ВНУТРЕННИМ соединением с карточкой, и заявка без
+   * аппарата выпала бы из него молча — вместе со своей выдачей. Итог отчёта при этом считается по
+   * голому журналу и остался бы верным, то есть строки перестали бы сходиться с суммой под ними.
+   * Спор о числах разбирают глазами, и такой отчёт был бы хуже, чем никакого.
+   */
+  equipmentId: string | null;
+  equipmentName: string | null;
+  equipmentInventoryNumber: string | null;
+  equipmentSerialNumber: string | null;
   consumableId: string;
   code: string;
   name: string;

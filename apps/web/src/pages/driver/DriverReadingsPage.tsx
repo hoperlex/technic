@@ -333,7 +333,7 @@ export function DriverReadingsPage() {
 
   return (
     <>
-      <Space direction="vertical" size={12} style={driverContentStyle}>
+      <Space orientation="vertical" size={12} style={driverContentStyle}>
         <Typography.Title level={5} style={{ margin: 0 }}>
           {`Показания за ${dayjs(date).format('D MMMM')}`}
         </Typography.Title>
@@ -362,7 +362,7 @@ export function DriverReadingsPage() {
               <Alert
                 type="info"
                 showIcon
-                message="За этот день передавать нечего: выездов не осталось"
+                title="За этот день передавать нечего: выездов не осталось"
               />
             )}
             <DayRows

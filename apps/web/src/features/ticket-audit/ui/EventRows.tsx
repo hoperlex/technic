@@ -66,7 +66,7 @@ export function EventTable({ rows }: { rows: readonly TicketAuditEventRow[] }) {
       title: 'Событие',
       width: WIDTHS.event,
       render: (_v, row) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <EventLabel row={row} />
           <ActorLine row={row} />
         </Space>
@@ -83,7 +83,7 @@ export function EventTable({ rows }: { rows: readonly TicketAuditEventRow[] }) {
       title: 'Модель',
       width: WIDTHS.model,
       render: (_v, row) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <ModelCell view={modelSnapshotView(row.model)} />
           <Typography.Text type="secondary">{versionsLabel(row)}</Typography.Text>
         </Space>
@@ -127,7 +127,7 @@ export function EventCards({ rows }: { rows: readonly TicketAuditEventRow[] }) {
       items={rows.map((row) => ({
         key: row.id,
         label: (
-          <Space direction="vertical" size={2} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={2} style={{ width: '100%' }}>
             <Space size={8} wrap>
               <MomentCell at={row.at} inline />
               <Typography.Text strong>{wasteTicketFieldLabels[row.field]}</Typography.Text>
@@ -137,7 +137,7 @@ export function EventCards({ rows }: { rows: readonly TicketAuditEventRow[] }) {
           </Space>
         ),
         children: (
-          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={4} style={{ width: '100%' }}>
             <CardLine title="Модель">
               <ModelCell view={modelSnapshotView(row.model)} />
             </CardLine>
@@ -183,7 +183,7 @@ function MomentCell({ at, inline = false }: { at: string; inline?: boolean }) {
       </Typography.Text>
     );
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <Typography.Text>{moment.day}</Typography.Text>
       <Typography.Text type="secondary">{moment.time}</Typography.Text>
     </Space>
@@ -239,7 +239,7 @@ function RequestCell({ num }: { num: string | null }) {
  */
 function ValueLines({ row }: { row: TicketAuditEventRow }) {
   return (
-    <Space direction="vertical" size={0} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={0} style={{ width: '100%' }}>
       {eventValueLines(row).map((line) => (
         <ValueLine key={line.label} line={line} />
       ))}

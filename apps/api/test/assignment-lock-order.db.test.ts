@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
+import { esm2Periods, moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
 import { issueRequestEsm2 } from './waybill-issue-helper';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -18,8 +18,13 @@ import type { db as AppDb } from '../src/db/client';
  *
  * Что разрез всё же задевает: `weekOf` в теле ручной выписки (`POST /:id/esm2`) — это **ключ
  * недели**, а не начало листа, и таким останется: недельный бланк выписывается на неделю, в которую
- * попадает названный день. Проверено прогоном: случай ручной выписки зелёный и от длины листа не
- * зависит — он про то, кто первым взял строку заявки.
+ * попадает названный день. От длины самого листа случай не зависит — он про то, кто первым взял
+ * строку заявки.
+ *
+ * А вот от **числа** листов недели он зависел, и это выяснилось не сразу: в переходную неделю
+ * просьба отдаёт два бланка, право спрашивается по концу первого, и с прежним началом срока дверь
+ * становилась операцией заднего числа — 422 вместо очереди. Лечится это началом срока, которое
+ * подбирается календарём (`termStartOf`), а не пишется прошлым понедельником.
  */
 
 /*
@@ -104,7 +109,8 @@ interface Ctx {
   version: number;
   /** День, за который ведутся смены: сегодняшний — он и внутри срока, и уже наступил. */
   today: string;
-  pastFrom: string;
+  /** Начало срока заказа — подобранное, а не написанное: см. `termStartOf`. */
+  termFrom: string;
 }
 
 let ctx: Ctx;
@@ -206,13 +212,53 @@ async function createType(kindId: string): Promise<string> {
 }
 
 /**
- * Заказ, заведённый задним числом и сразу переведённый в работу.
+ * Начало срока заказа — понедельник прошлой недели, а в дни месячного разреза начало того куска
+ * недели, который идёт прямо сейчас.
  *
- * Задним числом — чтобы срок начинался на прошлой неделе: тогда сегодняшний день заведомо внутри
- * срока при любом дне запуска, а неделя ручной выписки обрезается сроком и кончается сегодня, то
- * есть выписка идёт обычной дверью, а не операцией коррекции.
+ * ПОЧЕМУ ЭТОТ ДЕНЬ ПОДБИРАЕТСЯ, А НЕ ПИШЕТСЯ. Файлу нужно, чтобы ручная выписка приходила в дверь
+ * **обычной работой**: предмет случая — кто первым взял строку заявки, и отказ 422 «укажите
+ * причину» кончил бы его до всякой очереди. Прежде для этого хватало прошлого понедельника: срок
+ * кончается сегодня, значит и недельный лист кончался сегодня, то есть прошлым не был.
+ *
+ * Месячный разрез (ADR 0142) это сломал. Просьба адресована неделе целиком (`onDemandPeriodsOf`) и
+ * отдаёт все её куски, попавшие в срок, а право спрашивается по концу **первого** из них. В
+ * переходную неделю первым идёт односуточный кусок вроде «31–31 августа» — вчерашний, — и дверь
+ * законно становится операцией заднего числа. Красной при этом делается посылка сцены, а не
+ * порядок захвата: портал прав.
+ *
+ * Поэтому в такие дни срок начинается с первого дня куска, который ещё не кончился, — и просьба
+ * снова целиком лежит в настоящем. Кусок ищется тем же `esm2Periods`, каким режет бумагу портал:
+ * повторять здесь «первое число месяца» значило бы завести второе правило разреза.
+ *
+ * ЧТО ПОКРАСНЕЛО БЫ, ОСТАВЬ МЫ ПРОШЛЫЙ ПОНЕДЕЛЬНИК ЦИФРОЙ. Перебор дней 2025–2027: 107 дней из
+ * 1095 — те, где первое число месяца попадает в текущую неделю позже понедельника и не позже
+ * сегодня. На таком дне (вторник 1 сентября 2026-го) случай ручной выписки и покраснел.
+ *
+ * ЧТО ОТ ПОДБОРА НЕ МЕНЯЕТСЯ. Сегодняшний день внутри срока при любом дне запуска — на нём стоят
+ * все ручки смен файла, — а лист у просьбы по-прежнему один: срок кончается сегодня, за ним
+ * периодов нет, и подбор убирает только те, что кончились раньше сегодняшнего дня. Очередь за
+ * строкой заявки от длины срока не зависит вовсе.
+ */
+function termStartOf(today: string): string {
+  const monday = weekStartKey(today);
+  const running = esm2Periods(monday, shiftDateKey(monday, 6)).find((period) => period.to >= today);
+  if (!running) throw new Error('в текущей неделе не нашлось куска, который не кончился бы вчера');
+  return running.from === monday ? shiftDateKey(monday, -7) : running.from;
+}
+
+/**
+ * Заказ со сроком, начавшимся раньше сегодняшнего дня, — и сразу переведённый в работу.
+ *
+ * Начало в прошлом даёт сцене два свойства сразу: сегодняшний день заведомо внутри срока при
+ * любом дне запуска, а неделя ручной выписки обрезается сроком и кончается сегодня — то есть
+ * выписка идёт обычной дверью, а не операцией коррекции.
+ *
+ * Причина и ключ операции прикладываются только тогда, когда срок и правда начинается в прошлом:
+ * подобранное начало (`termStartOf`) раз в месяц-другой совпадает с сегодняшним днём, и заведение
+ * в такой день идёт обычным — задним числом ему быть незачем.
  */
 async function seedRequest(): Promise<{ id: string; version: number }> {
+  const backdated = ctx.termFrom < ctx.today;
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-requests',
@@ -221,12 +267,16 @@ async function seedRequest(): Promise<{ id: string; version: number }> {
       requestType: 'special_equipment',
       objectId: ctx.objectId,
       vehicleTypeId: ctx.typeId,
-      dateFrom: ctx.pastFrom,
+      dateFrom: ctx.termFrom,
       dateTo: ctx.today,
       responsibleName: 'Иванов Иван Иванович',
       responsiblePhone: '+79990000000',
-      backdateReason: 'Техника вышла раньше, чем оформили заявку',
-      operationId: crypto.randomUUID(),
+      ...(backdated
+        ? {
+            backdateReason: 'Техника вышла раньше, чем оформили заявку',
+            operationId: crypto.randomUUID(),
+          }
+        : {}),
     },
   });
   expect(created.statusCode, created.body).toBe(201);
@@ -254,7 +304,7 @@ async function seedRequest(): Promise<{ id: string; version: number }> {
         pricePerShift: null,
         shiftHours: null,
       },
-      schedule: { requestType: 'special_equipment', dateFrom: ctx.pastFrom, dateTo: ctx.today },
+      schedule: { requestType: 'special_equipment', dateFrom: ctx.termFrom, dateTo: ctx.today },
     },
   });
   expect(confirmed.statusCode, confirmed.body).toBe(200);
@@ -473,8 +523,7 @@ describe.skipIf(!DB_URL)('порядок блокировок дверей см�
       requestId: '',
       version: 0,
       today,
-      // Понедельник прошлой недели: срок заведомо накрывает сегодня при любом дне запуска.
-      pastFrom: shiftDateKey(weekStartKey(today), -7),
+      termFrom: termStartOf(today),
     };
     ctx.typeId = await createType(vehicle.kind_id);
     const request = await seedRequest();

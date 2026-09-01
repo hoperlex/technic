@@ -49,7 +49,7 @@ function snapshotCell(
 ) {
   if (!last) return <Typography.Text type="secondary">—</Typography.Text>;
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <span>{text(last.value)}</span>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         снято {dayjs(last.measuredOn).format(SHOWN_DATE)}

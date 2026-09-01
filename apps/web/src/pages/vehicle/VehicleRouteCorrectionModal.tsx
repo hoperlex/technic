@@ -262,7 +262,7 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
               <Alert
                 type="error"
                 showIcon
-                message="Рейс сейчас не исправить"
+                title="Рейс сейчас не исправить"
                 description={
                   <>
                     {preview.blocking.reason}

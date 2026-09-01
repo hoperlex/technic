@@ -50,7 +50,7 @@ import { PhoneLink } from '../../components/PhoneField';
 import { calendarDaysLabel } from '../../utils/date';
 import { formatDate, formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { formatDateOnly, tripsCountLabel } from './shared';
-import { useRouteModal } from './routeModal';
+import { useRouteModal } from '@features/route-modal';
 import { VehicleRequestDays } from './VehicleRequestDays';
 import { VehicleShiftsView } from './VehicleShiftsView';
 import { weeklyRequestPath } from './weeklyShared';
@@ -550,7 +550,7 @@ export function VehicleRequestViewModal({
           children: request.approvedAt ? (
             // Подпись — строкой под тегом, а не рядом: в узком окне на ФИО рядом с тегом
             // остаётся столбец в пару букв, и оно переносится по слогам.
-            <Space direction="vertical" size={4}>
+            <Space orientation="vertical" size={4}>
               <Tag color="green" icon={<CheckCircleOutlined />} style={{ marginInlineEnd: 0 }}>
                 Завизирована
               </Tag>
@@ -598,7 +598,7 @@ export function VehicleRequestViewModal({
                 label: 'Режим заказа',
                 full: true,
                 children: (
-                  <Space direction="vertical" size={4}>
+                  <Space orientation="vertical" size={4}>
                     <Tag color="gold" style={{ marginInlineEnd: 0 }}>
                       прежний режим: {request.linearFrozen.isLinear ? 'по дням' : 'по неделям'}, с{' '}
                       {formatDate(request.linearFrozen.at)}
@@ -756,7 +756,7 @@ export function VehicleRequestViewModal({
           label: 'Техника',
           full: true,
           children: request.assignment ? (
-            <Space direction="vertical" size={2}>
+            <Space orientation="vertical" size={2}>
               <Space size={8} wrap>
                 <span>{assignmentTitle(request.assignment)}</span>
                 {/* Чем закрыли заявку, когда это не то, что заказывали (ADR 0045, ADR 0059):
@@ -909,7 +909,7 @@ export function VehicleRequestViewModal({
                 label: (waybills?.length ?? 0) > 1 ? 'Путевые листы' : 'Путевой лист',
                 full: true,
                 children: (
-                  <Space direction="vertical" size={4}>
+                  <Space orientation="vertical" size={4}>
                     {(waybills ?? []).map((waybill) => (
                       <Space key={waybill.id} size={8} wrap>
                         {waybill.periodFrom && waybill.periodTo && (
@@ -975,7 +975,7 @@ export function VehicleRequestViewModal({
                 label: 'Перегон техники',
                 full: true,
                 children: (
-                  <Space direction="vertical" size={4}>
+                  <Space orientation="vertical" size={4}>
                     {(relocations ?? []).map((route) => (
                       <Space key={route.id} size={8} wrap>
                         <Tag color={route.purpose === 'delivery' ? 'blue' : 'gold'}>
@@ -1053,7 +1053,7 @@ export function VehicleRequestViewModal({
                 label: 'Выполнение',
                 full: true,
                 children: (
-                  <Space direction="vertical" size={2}>
+                  <Space orientation="vertical" size={2}>
                     <Space size={8} wrap>
                       <Typography.Text strong>
                         {formatMoney(request.completion.totalCost)}

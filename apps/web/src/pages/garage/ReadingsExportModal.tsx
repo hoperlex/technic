@@ -171,7 +171,7 @@ export function ReadingsExportModal({ from, to, vehicles, vehicleId, onClose }: 
       mask={{ closable: false }}
       styles={{ body: { maxHeight: '60dvh', overflowY: 'auto' } }}
     >
-      <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+      <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
         <Typography.Text type="secondary">
           Период — тот же, что на экране: {dayjs(from).format(SHOWN_DATE)} —{' '}
           {dayjs(to).format(SHOWN_DATE)}. Нужен другой — поменяйте его над таблицей.
@@ -186,7 +186,7 @@ export function ReadingsExportModal({ from, to, vehicles, vehicleId, onClose }: 
             setFailure(null);
           }}
         >
-          <Space direction="vertical" size={10}>
+          <Space orientation="vertical" size={10}>
             {READING_EXPORT_KINDS.map((item) => {
               const lack = missing(item);
               return (
@@ -209,7 +209,7 @@ export function ReadingsExportModal({ from, to, vehicles, vehicleId, onClose }: 
         </Radio.Group>
 
         {needsVehicle && vehicles.length > 0 && (
-          <Space direction="vertical" size={4} style={{ display: 'flex' }}>
+          <Space orientation="vertical" size={4} style={{ display: 'flex' }}>
             <label htmlFor={VEHICLE_FIELD}>
               <Typography.Text strong>Машина</Typography.Text>
             </label>
@@ -232,7 +232,7 @@ export function ReadingsExportModal({ from, to, vehicles, vehicleId, onClose }: 
         )}
 
         {failure && (
-          <Alert type="error" showIcon message="Книга не собрана" description={failure} />
+          <Alert type="error" showIcon title="Книга не собрана" description={failure} />
         )}
       </Space>
     </Modal>

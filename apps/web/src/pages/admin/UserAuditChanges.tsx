@@ -57,7 +57,7 @@ export function AuditChangeLines({ entry }: { entry: AuditEntryDto }) {
  */
 export function AuditEventCell({ entry }: { entry: AuditEntryDto }) {
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <Typography.Text>{describeAuditEntry(entry)}</Typography.Text>
       <AuditChangeLines entry={entry} />
     </Space>

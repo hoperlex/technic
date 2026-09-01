@@ -90,7 +90,7 @@ function TrailerSlotList({
     return <Typography.Text type="secondary">Прицепов за машиной нет</Typography.Text>;
 
   return (
-    <Space direction="vertical" size={2}>
+    <Space orientation="vertical" size={2}>
       {trailers.map((t) => (
         <Space key={t.id} size={8} wrap>
           {/* Слот — не порядок в списке, а пара граф бланка: «Прицеп 2» печатается своей. */}

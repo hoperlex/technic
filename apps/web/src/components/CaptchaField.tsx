@@ -240,7 +240,7 @@ export function CaptchaField({ onChange, id, resetToken = 0 }: Props) {
   if (status === 'error') {
     return (
       <Placeholder id={id}>
-        <Space direction="vertical" size={4} align="center">
+        <Space orientation="vertical" size={4} align="center">
           <Typography.Text type="danger">Проверка не загрузилась.</Typography.Text>
           <Button size="small" icon={<ReloadOutlined />} onClick={captcha.retry}>
             Повторить
@@ -251,7 +251,7 @@ export function CaptchaField({ onChange, id, resetToken = 0 }: Props) {
   }
 
   return (
-    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={8} style={{ width: '100%' }}>
       <div style={{ position: 'relative', minHeight: WIDGET_HEIGHT }}>
         {/*
           Контейнер виджета: детей у него нет и быть не должно — содержимое создаёт скрипт Яндекса,

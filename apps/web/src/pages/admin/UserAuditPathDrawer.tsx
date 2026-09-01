@@ -91,7 +91,7 @@ function pathItem(entry: AuditEntryDto) {
   return {
     key: entry.id,
     children: (
-      <Space direction="vertical" size={0}>
+      <Space orientation="vertical" size={0}>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {formatDateTime(entry.createdAt)}
         </Typography.Text>

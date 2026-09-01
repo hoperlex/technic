@@ -12,7 +12,7 @@ import { StatLine } from './StatLine';
  */
 export function TicketAuditCascadeBlock({ cascade }: { cascade: Cascade }) {
   return (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={4} style={{ width: '100%' }}>
       <Typography.Text strong>
         Каскад
         {cascade.runsWithEscalation > 0
@@ -37,7 +37,7 @@ function CascadeBody({ cascade }: { cascade: Cascade }) {
     );
 
   return (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={4} style={{ width: '100%' }}>
       <StatLine
         label="пустых после первого прохода"
         hint="Полей, которые первый проход не прочитал, — среди разборов, где включалась вторая ступень"
@@ -98,7 +98,7 @@ function DisputeOutcomes({ cascade }: { cascade: Cascade }) {
   ];
 
   return (
-    <Space direction="vertical" size={4} style={{ width: '100%', paddingLeft: 16 }}>
+    <Space orientation="vertical" size={4} style={{ width: '100%', paddingLeft: 16 }}>
       {outcomes.map((outcome) => (
         <StatLine key={outcome.label} label={outcome.label} hint={outcome.hint}>
           <Ratio view={cascadeOutcomeView(outcome.value, cascade.disputes)} />

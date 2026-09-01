@@ -64,11 +64,11 @@ export function BlindCheckQueue() {
   const items = data?.items ?? [];
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       <Alert
         type="info"
         showIcon
-        message="Прочитайте талон сами, не заглядывая в карточку заявки"
+        title="Прочитайте талон сами, не заглядывая в карточку заявки"
         description="Так измеряется, насколько верно машина читает рукопись. Совпадёт — задание закроется само; разойдётся — талон посмотрит третий человек."
       />
 
@@ -86,7 +86,7 @@ export function BlindCheckQueue() {
               key: 'request',
               width: 220,
               render: (_, row) => (
-                <Space direction="vertical" size={0}>
+                <Space orientation="vertical" size={0}>
                   <Typography.Text>М-{row.requestNum}</Typography.Text>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                     {row.objectName}
@@ -98,7 +98,7 @@ export function BlindCheckQueue() {
               title: 'Что читать',
               key: 'what',
               render: (_, row) => (
-                <Space direction="vertical" size={0}>
+                <Space orientation="vertical" size={0}>
                   <Typography.Text style={{ fontSize: 12 }}>
                     {row.filename || 'файл без имени'}
                     {row.pageNo != null ? `, страница ${row.pageNo}` : ''}

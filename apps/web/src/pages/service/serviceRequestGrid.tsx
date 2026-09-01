@@ -8,6 +8,8 @@ import {
 } from '@technic/contracts';
 import {
   ServiceStatusTag,
+  serviceRequestEquipmentName,
+  serviceRequestPlaceLine,
   serviceStatusLine,
   statusAgeLabel,
   UrgentTag,
@@ -15,9 +17,14 @@ import {
 import { ServiceChatMark } from '@features/service-chat';
 import { actionsColumn, type CardConfig, ExpandableCell, textColumn } from '@shared/ui';
 import type { ActionSheetItem } from '@shared/ui';
-import { DocumentsCell, EquipmentCell, StartWorkButton } from './serviceRequestCells';
+import {
+  amountLabel,
+  DocumentsCell,
+  EquipmentCell,
+  PlaceCell,
+  StartWorkButton,
+} from './serviceRequestCells';
 import { PhoneLink } from '../../components/PhoneField';
-import { formatMoney } from '../../utils/format';
 
 /**
  * Список заявок на обслуживание: ядро колонок одно, а вопросы у ролей разные (§9.2).
@@ -85,17 +92,6 @@ export interface ServiceGridOptions {
    * не открыта, и вкладывать переписку некуда.
    */
   onChat: (request: ServiceRequestDto) => void;
-}
-
-/** Итог заявки: пока работы не закрыты — предъявленный объём работ, после — то, что по акту. */
-function amountLabel(request: ServiceRequestDto): { value: string; hint: string } {
-  if (request.completion?.totalAmount != null) {
-    return { value: formatMoney(request.completion.totalAmount), hint: 'по акту' };
-  }
-  if (request.estimatedTotalAmount != null) {
-    return { value: formatMoney(request.estimatedTotalAmount), hint: 'по объёму работ' };
-  }
-  return { value: '—', hint: '' };
 }
 
 export function serviceRequestColumns(
@@ -176,8 +172,14 @@ export function serviceRequestColumns(
       title: 'Техника',
       dataIndex: 'equipment',
       width: 260,
+      // Гарантию спрашивают только у существующей единицы: у заявки без аппарата её не «не знают»,
+      // её не бывает — и `undefined` здесь означает то же молчание ячейки, что и закрытый
+      // справочник (Р8).
       render: (_v, r) => (
-        <EquipmentCell request={r} warrantyUntil={opts.warrantyOf(r.equipment.id)} />
+        <EquipmentCell
+          request={r}
+          warrantyUntil={r.equipment ? opts.warrantyOf(r.equipment.id) : undefined}
+        />
       ),
     }),
     // Объект — колонка ядра, а не набора сервиса (Р57). До этого её видел только исполнитель, и
@@ -189,16 +191,9 @@ export function serviceRequestColumns(
       dataIndex: 'object',
       width: 200,
       sorter: true,
-      render: (_v: unknown, r: ServiceRequestDto) => (
-        <div style={{ lineHeight: 1.35 }}>
-          <div>
-            {r.object.code} — {r.object.name}
-          </div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {[r.equipment.location, r.customerDepartment?.name].filter(Boolean).join(' · ')}
-          </Typography.Text>
-        </div>
-      ),
+      // Ячейка отдельным модулем: у заявки без аппарата верхнюю строку занимает отдел-заказчик, и
+      // объяснение этому длиннее самой разметки (Р8).
+      render: (_v: unknown, r: ServiceRequestDto) => <PlaceCell request={r} />,
     },
     ...(view.customer
       ? [
@@ -363,15 +358,19 @@ export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<Service
       </Space>
     ),
     primary: (r) =>
-      [r.equipment.name, r.equipment.inventoryNumber && `инв. ${r.equipment.inventoryNumber}`]
+      [
+        serviceRequestEquipmentName(r),
+        r.equipment?.inventoryNumber && `инв. ${r.equipment.inventoryNumber}`,
+      ]
         .filter(Boolean)
         .join(' · '),
     lines: [
       // Подсказок на телефоне нет, поэтому причина срочности выносится строкой — иначе красная
       // метка сообщала бы «срочно», не отвечая «почему».
       (r) => (r.isUrgent ? `Срочно: ${r.urgencyReason}` : null),
-      (r) =>
-        [`${r.object.code} — ${r.object.name}`, r.equipment.location].filter(Boolean).join(' · '),
+      // Площадки у заявки «от отдела» нет вовсе: строка пропускается целиком — пустые карточка не
+      // рисует, — а прочерк на телефоне читался бы как недогруженная запись (Р8).
+      (r) => serviceRequestPlaceLine(r),
       (r) => r.description,
       (r) => (r.service ? `Сервис: ${r.service.name}` : 'Сервис не назначен'),
       (r) => {

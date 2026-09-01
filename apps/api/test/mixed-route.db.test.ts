@@ -40,7 +40,8 @@ type Tx = Parameters<Parameters<typeof AppDb.transaction>[0]>[0];
 
 interface Ctx {
   db: typeof AppDb;
-  closeDb: () => Promise<void>;
+  /** Учётка-автор сцены: её заводит сам файл, см. `AUTHOR_EMAIL`. */
+  authorId: string;
   placeRequestTrips: (typeof import('../src/services/route-points'))['placeRequestTrips'];
   placeLinearDay: (typeof import('../src/services/route-points'))['placeLinearDay'];
   loadRoutePoints: (typeof import('../src/services/route-points'))['loadRoutePoints'];
@@ -50,6 +51,33 @@ interface Ctx {
 }
 
 let ctx: Ctx;
+
+/*
+ * Пул держится ОТДЕЛЬНО от `ctx`: `ctx` собирается одним присваиванием в самом конце `beforeAll`,
+ * и подготовка, упавшая на середине, оставила бы уже открытый пул незакрытым — а закрывать надо
+ * то, что успело подняться (тот же договор, что в `request-backdate.db.test.ts`).
+ */
+let closePool: (() => Promise<void>) | null = null;
+
+/**
+ * Учётка-автор сцены: своя, с постоянным адресом-меткой.
+ *
+ * ПОЧЕМУ ЕЁ НЕЛЬЗЯ БРАТЬ ИЗ БАЗЫ «первой попавшейся». Справочники этого файла приходят из двух
+ * разных источников, и только один из них — часть схемы. Парк (`vehicles`), виды техники и объекты
+ * строительства сеют сами миграции (0028, 0047, 0073, 0081 и соседние) — они есть в любой базе,
+ * собранной одним `applyMigrations`, и брать их оттуда законно. А учётки не сеет ни одна миграция:
+ * первого администратора заводит отдельная команда `seed:admin`, и в прогоне тестов её никто не
+ * вызывает. `SELECT id FROM users LIMIT 1` поэтому отвечал пусто на всякой чистой базе, а файл
+ * проходил ровно до тех пор, пока сосед по общей `TEST_DATABASE_URL` успевал завести учётку раньше
+ * него. Это та самая опасность, о которой предупреждает комментарий `inMixedDay`, только
+ * направленная в другую сторону: не мы портим соседям справочник, а соседи молча чинят нам сцену.
+ *
+ * Адрес постоянный, а не свой на каждый прогон: уборка ищет заведённое по метке и обязана добирать
+ * хвост прогона, который до `afterAll` не дошёл, — иначе учётки копились бы в общей базе.
+ */
+const AUTHOR_EMAIL = 'mixed-route.db-test@technic.local';
+/** Колонка хеша непустая и обязательная, а входом файл не пользуется вовсе — он сервисный. */
+const AUTHOR_PASSWORD_HASH = 'вход не используется: файл работает сервисным уровнем';
 
 beforeAll(async () => {
   if (!DB_URL) return;
@@ -77,11 +105,34 @@ beforeAll(async () => {
     await client.end();
   }
   const { db, closeDb } = await import('../src/db/client');
+  // Закрывалка запоминается сразу, как только есть что закрывать: до `ctx` отсюда ещё несколько
+  // шагов, и любой из них может не дойти.
+  closePool = closeDb;
   const points = await import('../src/services/route-points');
   const routes = await import('../src/services/vehicle-routes');
+
+  /*
+   * Учётка заводится ДО сцены и живёт ВНЕ её транзакции. Внутрь её не убрать: сцена всегда
+   * откатывается, а автор нужен внешним ключом каждой её строке — рейсу, обеим заявкам. Заведённое
+   * прошлым прогоном переиспользуется, а не переписывается: адрес постоянный, и прогон, оборвавшийся
+   * до уборки, оставляет ровно эту строку.
+   */
+  const found = await db.execute<{ id: string }>(
+    sql`SELECT id FROM users WHERE email = ${AUTHOR_EMAIL} AND deleted_at IS NULL`,
+  );
+  const authorId =
+    found.rows[0]?.id ??
+    (
+      await db.execute<{ id: string }>(sql`
+        INSERT INTO users (email, last_name, first_name, middle_name, password_hash, role, is_active)
+        VALUES (${AUTHOR_EMAIL}, 'Смешанный', 'День', 'Тестович', ${AUTHOR_PASSWORD_HASH},
+                'admin', true)
+        RETURNING id`)
+    ).rows[0]!.id;
+
   ctx = {
     db,
-    closeDb,
+    authorId,
     placeRequestTrips: points.placeRequestTrips,
     placeLinearDay: points.placeLinearDay,
     loadRoutePoints: points.loadRoutePoints,
@@ -92,7 +143,20 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await ctx?.closeDb();
+  try {
+    /*
+     * Уборка по постоянной метке — адресу учётки. Сама сцена следов не оставляет (транзакция
+     * всегда откатывается), а автор сцены живёт вне транзакции, и убирать его приходится руками.
+     * Отбор идёт по метке, а не по запомненному `authorId`: прибирать надо и за прогоном, который
+     * упал раньше, чем что-нибудь запомнил.
+     */
+    if (ctx?.db) await ctx.db.execute(sql`DELETE FROM users WHERE email = ${AUTHOR_EMAIL}`);
+  } finally {
+    // Пул закрывается и тогда, когда уборка не удалась: иначе одна ошибка породила бы вторую, уже
+    // необработанную, поверх настоящей причины.
+    await closePool?.();
+    closePool = null;
+  }
 });
 
 /**
@@ -154,19 +218,35 @@ async function inMixedDay<T>(run: (scene: Scene) => Promise<T>): Promise<T> {
         return row;
       };
 
-      const user = await one<{ id: string }>(sql`SELECT id FROM users LIMIT 1`);
-      const veh = await one<{ id: string }>(sql`SELECT id FROM vehicles LIMIT 1`);
-      const vt = await one<{ id: string }>(sql`SELECT id FROM vehicle_types LIMIT 1`);
+      /*
+       * Автор всех строк сцены — своя учётка файла (`AUTHOR_EMAIL`), заведённая в `beforeAll`.
+       * Прежний `SELECT id FROM users LIMIT 1` брал «первую попавшуюся», а на базе, собранной
+       * одними миграциями, `users` пуст — почему именно так, разобрано у самой константы.
+       *
+       * Парк, виды техники и объекты — наоборот, законно берутся из миграционных сидов: их сеют
+       * сами миграции, и на любой промигрированной базе они на месте. Своих заводить незачем —
+       * лишняя единица техники в общей базе мешала бы соседям ровно так же, как чужая мешает нам.
+       *
+       * Порядок отбора задан явно. Без `ORDER BY` строка приходила бы та, какую первой вернёт
+       * чтение таблицы, — и один и тот же отказ пришлось бы разбирать на разной технике в разных
+       * прогонах.
+       */
+      const veh = await one<{ id: string }>(
+        sql`SELECT id FROM vehicles WHERE deleted_at IS NULL ORDER BY id LIMIT 1`,
+      );
+      const vt = await one<{ id: string }>(sql`SELECT id FROM vehicle_types ORDER BY id LIMIT 1`);
       // Объект с непустым именем: из «имя, адрес» и складывается адрес точки линейного дня, а
       // точка без адреса не заводится вовсе (CHECK `location_not_blank`).
       const obj = await one<{ id: string; name: string; address: string | null }>(
-        sql`SELECT id, name, address FROM construction_objects WHERE btrim(name) <> '' LIMIT 1`,
+        sql`SELECT id, name, address FROM construction_objects
+            WHERE btrim(name) <> '' ORDER BY id LIMIT 1`,
       );
 
       const addRoute = async (offsetDays: number) => {
         const row = await one<{ id: string; route_date: string }>(sql`
           INSERT INTO vehicle_routes (vehicle_id, route_date, purpose, created_by)
-          VALUES (${veh.id}, CURRENT_DATE + (${BASE_OFFSET + offsetDays})::int, 'freight', ${user.id})
+          VALUES (${veh.id}, CURRENT_DATE + (${BASE_OFFSET + offsetDays})::int, 'freight',
+                  ${ctx.authorId})
           RETURNING id, route_date::text AS route_date`);
         return { id: row.id, date: row.route_date };
       };
@@ -175,14 +255,16 @@ async function inMixedDay<T>(run: (scene: Scene) => Promise<T>): Promise<T> {
 
       const freight = await one<{ id: string }>(sql`
         INSERT INTO vehicle_requests (request_type, object_id, vehicle_type_id, status, created_by)
-        VALUES ('freight_transport', ${obj.id}, ${vt.id}, 'confirmed', ${user.id}) RETURNING id`);
+        VALUES ('freight_transport', ${obj.id}, ${vt.id}, 'confirmed', ${ctx.authorId})
+        RETURNING id`);
       await tx.execute(sql`
         INSERT INTO freight_transport_request_details (request_id, scheduled_at)
         VALUES (${freight.id}, (${`${route.date}T${REQUEST_TIME}:00+03:00`})::timestamptz)`);
 
       const linear = await one<{ id: string }>(sql`
         INSERT INTO vehicle_requests (request_type, object_id, vehicle_type_id, status, created_by)
-        VALUES ('special_equipment', ${obj.id}, ${vt.id}, 'confirmed', ${user.id}) RETURNING id`);
+        VALUES ('special_equipment', ${obj.id}, ${vt.id}, 'confirmed', ${ctx.authorId})
+        RETURNING id`);
       // Срок заказа с запасом вперёд: перенос рейса на другую дату упирается в него первым
       // (`assertLinearDaysMovable`), и тесной рамкой мы проверяли бы срок, а не перенос.
       await tx.execute(sql`

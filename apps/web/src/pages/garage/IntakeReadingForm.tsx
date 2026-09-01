@@ -304,7 +304,7 @@ export function IntakeReadingForm({
             type="warning"
             showIcon
             style={{ marginBottom: 16 }}
-            message="Проверьте показание"
+            title="Проверьте показание"
             description={
               <>
                 {soft.map((w) => (

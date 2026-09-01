@@ -87,13 +87,13 @@ export function ServiceUrgencyModal({
       width={520}
     >
       {request && (
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           <ServiceRequestContext request={request} />
           {clearing ? (
             <Alert
               type="warning"
               showIcon
-              message="Заявка перестанет стоять первой в очередях и в письмах"
+              title="Заявка перестанет стоять первой в очередях и в письмах"
               description={
                 request.urgencyReason
                   ? `Указанная причина: ${request.urgencyReason}`

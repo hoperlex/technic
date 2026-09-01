@@ -40,20 +40,28 @@ import type { db as AppDb } from '../src/db/client';
  */
 const readMode = useReadModeDatabase('garage');
 /*
- * ИЗВЕСТНОЕ ПАДЕНИЕ, НЕ СВЯЗАННОЕ С РАЗРЕЗОМ. Случай «сводка водителей сужается теми же фильтрами»
- * требует, чтобы у отбора было **больше одного** водителя, а на чистой базе их ровно один — сцена
- * файла его не заводит, он приходит из данных, накопленных соседними файлами общей
- * `TEST_DATABASE_URL`. Проверено: версия файла из `HEAD`, без единой моей правки, падает на чистой
- * базе тем же утверждением.
- *
- * То есть файл молча зависел от чужих данных и до перевода на свою базу — перевод лишь сделал эту
- * зависимость видимой. Чинится сценой (завести второго водителя своими руками), но это правка не
- * про разрез, и делать её заодно значило бы смешать два разных изменения в одном диффе.
+ * ЗАКРЫТОЕ ПАДЕНИЕ (этап Э5 плана [test-gates-plan.md](../../../docs/test-gates-plan.md)). Случай
+ * «сводка водителей сужается теми же фильтрами» требует, чтобы у отбора было **больше одного**
+ * водителя, а сцена файла заводила ровно одного: второй приходил из данных, накопленных соседними
+ * файлами общей `TEST_DATABASE_URL`. На чистой базе его не оказывалось, и случай падал сравнением
+ * «1 меньше 1» — то есть файл молча зависел от чужих данных, а перевод на свою базу лишь сделал эту
+ * зависимость видимой. Теперь второго водителя заводит сама сцена (`OTHER_DRIVER_*` и фикстуры
+ * блока отбора), и сужение сверяется с ним, а не с фоном базы.
  */
 const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 /** Тестовый водитель гаража: свой СНИЛС, чтобы не пересечься с водителем соседнего db-теста. */
 const DRIVER_SNILS = '22222222290';
+/**
+ * Второй водитель прогона — тот, с кем сверяется сужение сводки по площадке.
+ *
+ * Метка-комментарий постоянная, а не своя на прогон: уборка ищет заведённое по меткам и обязана
+ * добирать хвосты упавших прогонов (см. `afterAll`), а машины она чистит ровно так же — по
+ * приставке гаражного номера, взятой шире одного прогона.
+ */
+const OTHER_DRIVER_COMMENT = 'ТЕСТОВЫЕ ДАННЫЕ: срез гаража, второй водитель';
+/** Его СНИЛС — свой, по той же причине, что и у первого: человек в базе опознаётся по нему. */
+const OTHER_DRIVER_SNILS = '22222222291';
 const ADMIN_EMAIL = 'garage-db-test@example.invalid';
 const ADMIN_PASSWORD = 'garage-db-test-password-123';
 
@@ -279,6 +287,41 @@ async function addRequest(input: {
         RETURNING id`,
   );
   return rows.rows[0]!.id;
+}
+
+/**
+ * Второй водитель сцены — свой, а не первый попавшийся из справочника.
+ *
+ * В перечень гаража человек попадает по действующей специализации водителя (`driverCondition`), а
+ * трудовое отношение даёт ему табельный номер и должность — ту самую, которой выбирается вид
+ * документа (ADR 0095). Ни того, ни другого «просто человек» не имеет, поэтому заводятся все три
+ * строки сразу: без специализации его в срезе не было бы вовсе, и сверять сужение сводки было бы
+ * снова не с кем.
+ *
+ * Удостоверения ему не заводится намеренно: комплект документов сводку **не сужает** (это одна из
+ * её цифр, а не отбор), а сценарию нужен ровно факт занятости в дне — пробелы комплекта он не
+ * спрашивает ни у кого, кроме первого водителя. Уборка забирает его по метке-комментарию, а
+ * специализация с трудовым отношением уходят каскадом за человеком.
+ */
+async function addOtherDriver(): Promise<string> {
+  const rows = await ctx.db.execute<{ id: string }>(
+    sql`INSERT INTO persons (last_name, first_name, middle_name, snils, comment)
+        VALUES ('Соседний', 'Водитель', 'Тестович', ${OTHER_DRIVER_SNILS},
+                ${OTHER_DRIVER_COMMENT})
+        RETURNING id`,
+  );
+  const personId = rows.rows[0]!.id;
+  await ctx.db.execute(
+    sql`INSERT INTO person_specializations (person_id, specialization_id, is_primary, started_on)
+        SELECT ${personId}::uuid, id, true, '2024-01-15'
+          FROM specializations WHERE code = 'driver'`,
+  );
+  await ctx.db.execute(
+    sql`INSERT INTO person_employments (person_id, employment_type, personnel_no, job_title,
+                                        started_on)
+        VALUES (${personId}::uuid, 'staff', 'Г-200', 'Водитель', '2024-01-15')`,
+  );
+  return personId;
 }
 
 /**
@@ -758,7 +801,8 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
    * `deleted_at IS NULL`), но база у db-тестов общая и живёт месяцами: за прогон в ней оседало по
    * три машины, заказ и лист, и через полгода парк насчитывал их сотнями. Правильный ответ —
    * снести всю цепочку целиком, в порядке, обратном ссылкам: лист, состав рейса, рейс, заявка и
-   * только потом машины.
+   * только потом машины — а за ними и второй водитель сцены, на которого ссылался его рейс
+   * (специализация и трудовое отношение уходят каскадом за человеком).
    *
    * Опознаётся заведённое по меткам — гаражному номеру и собственной учётке файла, — а не по
    * спискам: прибирать надо и за упавшим прогоном, который до записи в список мог не дойти. Метка
@@ -785,6 +829,11 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
         WHERE vehicle_id IN (${ourVehicles}) OR source_request_id IN (${ourRequests})`);
       await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
       await ctx.db.execute(sql`DELETE FROM vehicles WHERE id IN (${ourVehicles})`);
+      // Второй водитель — по своей метке-комментарию и только он: первого сцена заводит один раз и
+      // подхватывает по СНИЛСу на следующем прогоне (`seed`), а этот заводится заново каждый раз, и
+      // оставленный он копился бы в базе так же, как копились машины до уборки. Строкой позже
+      // машин: его рейс уже снесён вместе с ними, и ссылаться на человека больше нечему.
+      await ctx.db.execute(sql`DELETE FROM persons WHERE comment = ${OTHER_DRIVER_COMMENT}`);
       // Журнал — по автору: писала в него только здешняя учётка, а видов записей у неё несколько.
       await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
     }
@@ -1156,6 +1205,11 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
       passengerVehicleId: string;
       specialVehicleId: string;
       esm2VehicleId: string;
+      /**
+       * Второй водитель, занятый в `compositionDay` **не** на `routeObject`: с ним и сверяется
+       * сужение сводки по площадке — не с тем, кого случайно занесло в базу соседним прогоном.
+       */
+      otherDriverPersonId: string;
     }
     let f: FilterCtx;
 
@@ -1207,6 +1261,8 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
         on: string;
         purpose: 'freight' | 'delivery' | 'pickup';
         sourceRequestId?: string;
+        /** Водитель рейса; по умолчанию — водитель файла, которого и ищут все сценарии отбора. */
+        driverPersonId?: string;
       }): Promise<string> => {
         const relocation = input.purpose !== 'freight';
         const rows = await ctx.db.execute<{ id: string }>(
@@ -1215,7 +1271,7 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
               VALUES (${input.vehicleId}::uuid, ${input.on}::date, ${input.purpose},
                       ${input.sourceRequestId ?? null}::uuid,
                       ${relocation ? 'База' : ''}, ${relocation ? 'Объект' : ''},
-                      ${ctx.personId}::uuid, ${adminId}::uuid)
+                      ${input.driverPersonId ?? ctx.personId}::uuid, ${adminId}::uuid)
               RETURNING id`,
         );
         return rows.rows[0]!.id;
@@ -1238,6 +1294,32 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
       await addRouteRequest(
         await addRoute({ vehicleId: ctx.routeVehicle.id, on: compositionDay, purpose: 'freight' }),
         compositionRequest,
+      );
+
+      /*
+       * Второй занятый водитель того же дня — на площадке первого сценария (`ctx.objectId`), а не
+       * на `routeObject`: четыре площадки блока отобраны условием `id <> ctx.objectId`, так что
+       * «другая» здесь гарантирована отбором, а не совпадением справочника.
+       *
+       * Он и есть предмет проверки «сводка сузилась»: без него в срезе дня стоит ровно один
+       * водитель, суженный и несуженный счётчики равны единице, и утверждение держится на том,
+       * занял ли кто-нибудь посторонний этот день в общей базе. Своими руками — рейс с составом,
+       * своя машина и своя заявка: только так «сузилась» означает работу отбора, а не везение.
+       */
+      const otherDriverPersonId = await addOtherDriver();
+      const otherDriverRequest = await addRequest({
+        requestType: 'freight_transport',
+        vehicleTypeId: freightType.id,
+        objectId: ctx.objectId,
+      });
+      await addRouteRequest(
+        await addRoute({
+          vehicleId: await addVehicle(ctx.db, freightType.id, null),
+          on: compositionDay,
+          purpose: 'freight',
+          driverPersonId: otherDriverPersonId,
+        }),
+        otherDriverRequest,
       );
 
       // Перегон на **легковой** машине: площадку называет заявка-основание, бланк всё равно 4-П.
@@ -1336,6 +1418,7 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
         passengerVehicleId,
         specialVehicleId,
         esm2VehicleId,
+        otherDriverPersonId,
       };
     }, 120_000);
 
@@ -1411,9 +1494,17 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
      * одной из его цифр (в отличие от состояния и комплекта документов).
      *
      * Числа сверяются со списком того же отбора, а не с константой: база у db-тестов общая, и на
-     * отобранный день соседний тест мог завести своего водителя. Инвариантов два, и они не зависят
-     * от чужих данных: счётчик сводки равен счётчику списка, а свободных в отборе не бывает вовсе —
-     * у каждой отобранной строки работа в этот день есть по построению.
+     * отобранный день соседний тест мог завести своего водителя. Инварианты от чужих данных не
+     * зависят: счётчик сводки равен счётчику списка, свободных в отборе не бывает вовсе (у каждой
+     * отобранной строки работа в этот день есть по построению), а само сужение показано **двумя
+     * своими** водителями — оба заняты в этот день, и площадки у их работ разные.
+     *
+     * Именно на последнем случай и падал: раньше «сузилась» проверялось одним лишь `total` суженной
+     * сводки против несуженной, и второго водителя в дне приносила общая засорённая база. На чистой
+     * его не оказывалось, обе цифры сходились в единицу, и красным становился день, а не портал
+     * (§2.4 плана [test-gates-plan.md](../../../docs/test-gates-plan.md)). Поэтому сверка идёт не с
+     * цифрой фона, а с человеком, которого сцена завела сама: он обязан стоять в несуженном
+     * перечне и обязан выпасть из суженного.
      */
     it('сводка водителей сужается теми же фильтрами, что таблица', async () => {
       const summaryOf = async (query: string, on: string) => {
@@ -1429,7 +1520,19 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
       const all = await summaryOf('', f.compositionDay);
       const byObject = await summaryOf(objectsQuery([f.routeObject]), f.compositionDay);
       const objectList = await driverList(objectsQuery([f.routeObject]), f.compositionDay);
+      const allList = await driverList('', f.compositionDay);
       expect(byObject.total).toBe(objectList.total);
+
+      // Оба своих водителя заняты в этот день, поэтому несуженный перечень держит обоих.
+      const everyone = allList.items.map((row) => row.personId);
+      expect(everyone).toContain(ctx.personId);
+      expect(everyone).toContain(f.otherDriverPersonId);
+      // А отбор по площадке рейса оставляет ровно того, чья работа на ней и стоит: второй занят на
+      // площадке первого сценария, и в суженном перечне ему делать нечего.
+      const onObject = objectList.items.map((row) => row.personId);
+      expect(onObject).toContain(ctx.personId);
+      expect(onObject).not.toContain(f.otherDriverPersonId);
+
       expect(byObject.total).toBeLessThan(all.total);
       expect(byObject.free).toBe(0);
       expect(byObject.assigned).toBe(byObject.total);

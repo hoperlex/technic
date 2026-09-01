@@ -103,11 +103,11 @@ export function ServiceConsumablesIssueModal({
           <Alert
             type="info"
             showIcon
-            message="Со склада уйдёт разница, а не всё количество"
+            title="Со склада уйдёт разница, а не всё количество"
             description="Было выдано 2, стало 3 — спишется одна штука; было 2, стало 0 — вернутся две. Расхождение с запрошенным объясняется причиной."
           />
           <ServiceConsumableFactRows rows={rows} onChange={changeRow} showDelta />
-          {failure && <Alert type="error" showIcon message={failure} />}
+          {failure && <Alert type="error" showIcon title={failure} />}
           {issue ? (
             <Typography.Text type="warning">{issue}</Typography.Text>
           ) : (

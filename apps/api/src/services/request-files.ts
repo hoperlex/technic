@@ -130,6 +130,12 @@ export async function isFileLinked(fileId: string): Promise<boolean> {
 /**
  * Помечает файлы удалёнными (status='deleted') и ставит задачу удаления из S3.
  * immediate=false — отложенно (+30 дней, при отвязке); true — немедленно.
+ *
+ * Основную связь вызывающий к этому моменту уже снял, но это не доказывает, что файл свободен:
+ * тот же объект может удерживать журнал качества распознавания или другой модуль. Повторная
+ * проверка здесь — последняя граница перед необратимым заданием. Задачи ставятся только по строкам,
+ * которые действительно обновились, иначе связанный файл остался бы активным в БД, но всё равно
+ * уехал из S3.
  */
 export async function scheduleFilesDeletion(
   tx: Tx,
@@ -138,12 +144,13 @@ export async function scheduleFilesDeletion(
 ): Promise<void> {
   if (fileRows.length === 0) return;
   const ids = fileRows.map((f) => f.id);
-  await tx
+  const deletable = await tx
     .update(files)
     .set({ status: 'deleted', deletedAt: new Date() })
-    .where(inArray(files.id, ids));
+    .where(and(inArray(files.id, ids), sql`NOT file_is_linked(${files.id})`))
+    .returning({ id: files.id, objectKey: files.objectKey });
   const runAt = immediate ? new Date() : new Date(Date.now() + S3_DELETE_DELAY_MS);
-  for (const f of fileRows) {
+  for (const f of deletable) {
     await tx.insert(jobs).values({
       type: JOB_DELETE_S3_OBJECT,
       payload: { objectKey: f.objectKey },
@@ -155,19 +162,29 @@ export async function scheduleFilesDeletion(
 /**
  * Физически удаляет строки files (при hard-delete заявки, когда связи уже сняты каскадом)
  * и ставит немедленную задачу удаления из S3.
+ *
+ * Как и отложенная ветка, повторно спрашивает единый реестр связей в самом удаляющем запросе.
+ * `RETURNING` связывает outbox с фактом удаления: файл, который удержала хотя бы одна связь, не
+ * получает задачу на снос объекта.
  */
 export async function hardDeleteFiles(
   tx: Tx,
   fileRows: { id: string; objectKey: string }[],
 ): Promise<void> {
   if (fileRows.length === 0) return;
-  await tx.delete(files).where(
-    inArray(
-      files.id,
-      fileRows.map((f) => f.id),
-    ),
-  );
-  for (const f of fileRows) {
+  const deleted = await tx
+    .delete(files)
+    .where(
+      and(
+        inArray(
+          files.id,
+          fileRows.map((f) => f.id),
+        ),
+        sql`NOT file_is_linked(${files.id})`,
+      ),
+    )
+    .returning({ id: files.id, objectKey: files.objectKey });
+  for (const f of deleted) {
     await tx.insert(jobs).values({
       type: JOB_DELETE_S3_OBJECT,
       payload: { objectKey: f.objectKey },

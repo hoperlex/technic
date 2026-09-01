@@ -78,7 +78,7 @@ export function WaybillFilesCell({
       open={open}
       onOpenChange={setOpen}
       content={
-        <Space direction="vertical" style={{ minWidth: 280 }}>
+        <Space orientation="vertical" style={{ minWidth: 280 }}>
           <FileLinkList
             files={files}
             maxNameWidth={220}

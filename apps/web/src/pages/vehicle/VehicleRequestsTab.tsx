@@ -133,7 +133,7 @@ import { VehicleRelocationModal } from './VehicleRelocationModal';
 import { RequestRelocationsField } from './RequestRelocationsField';
 import { VehicleBackdateFields } from './VehicleBackdateFields';
 import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
-import { useRouteModal } from './routeModal';
+import { useRouteModal } from '@features/route-modal';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import { MOSCOW_TZ } from '@shared/config';

@@ -42,7 +42,7 @@ function partTitle(part: VehicleMaintenancePartDto): string {
 function MaintenanceRowDetails({ record }: { record: VehicleMaintenanceDto }) {
   return (
     <Space
-      direction="vertical"
+      orientation="vertical"
       size={8}
       style={{
         display: 'flex',
@@ -55,7 +55,7 @@ function MaintenanceRowDetails({ record }: { record: VehicleMaintenanceDto }) {
         <Alert
           type="warning"
           showIcon
-          message={`Акт аннулирован — ${record.voidedByName || 'без подписи'}, ${dayjs(
+          title={`Акт аннулирован — ${record.voidedByName || 'без подписи'}, ${dayjs(
             record.voidedAt,
           ).format(`${SHOWN_DATE} HH:mm`)}`}
           description={`Причина: ${record.voidReason}. Позиции возвращены на склад, в расчёт «пробег с ТО» акт не входит.`}
@@ -111,7 +111,7 @@ export function MaintenanceHistoryTable({
       title: 'Дата ТО',
       width: 140,
       render: (_v, r) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <span>{dayjs(r.performedOn).format(SHOWN_DATE)}</span>
           {/* Пометка стоит первой колонкой, а не в раскрытии: аннулированный акт обязан читаться
               как аннулированный до того, как по нему начнут считать. */}
@@ -165,7 +165,7 @@ export function MaintenanceHistoryTable({
       title: 'Кто внёс',
       width: 190,
       render: (_v, r) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <span>{r.createdByName}</span>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {dayjs(r.createdAt).format(`${SHOWN_DATE} HH:mm`)}

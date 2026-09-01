@@ -76,7 +76,7 @@ export function EquipmentNotFoundLink({
           type="info"
           showIcon
           style={{ marginTop: 8 }}
-          message="Карточки нет в справочнике"
+          title="Карточки нет в справочнике"
           description={
             <>
               <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>

@@ -55,7 +55,7 @@ export function SortSheet({ open, onClose, options, sortBy, sortOrder, onApply }
         </div>
       }
     >
-      <Space direction="vertical" size="middle" style={{ display: 'flex' }}>
+      <Space orientation="vertical" size="middle" style={{ display: 'flex' }}>
         <Segmented<'asc' | 'desc'>
           block
           value={order}

@@ -218,14 +218,14 @@ export function EstimateEditorModal({
             <Alert
               type="warning"
               showIcon
-              message={`Ревизия ${request.estimatePendingRevision} предъявлена и ждёт ответа — правка закрыта`}
+              title={`Ревизия ${request.estimatePendingRevision} предъявлена и ждёт ответа — правка закрыта`}
               description={`Пока предъявление висит, сервер не примет ни изменённый состав, ни повторное предъявление: согласующий подписывает то, что видит. ${LOCKED_HINT}`}
             />
           ) : (
             <Alert
               type="info"
               showIcon
-              message={
+              title={
                 request.estimateRevision > 0
                   ? `Ревизия ${request.estimateRevision} уже предъявлялась — следующее предъявление уйдёт ревизией ${request.estimateRevision + 1}`
                   : 'Черновик можно сохранять сколько угодно: на согласование уйдёт то, что предъявите'

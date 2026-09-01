@@ -43,7 +43,7 @@ const dayEnd = (date: string | undefined): string | undefined =>
 function targetCell(entry: AuditEntryDto) {
   if (!entry.targetName && !entry.targetEmail) return '—';
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <span>{entry.targetName ?? '—'}</span>
       {entry.targetEmail ? (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>

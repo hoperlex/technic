@@ -141,7 +141,7 @@ export function MaintenancePartsBlock({
           type="warning"
           showIcon
           style={{ marginBottom: 8 }}
-          message="Проверьте расход: акт раньше даты заведения выбранной позиции"
+          title="Проверьте расход: акт раньше даты заведения выбранной позиции"
           description={late
             .map(
               (card) =>
@@ -298,7 +298,7 @@ export function MaintenancePartsBlock({
                 type="success"
                 showIcon
                 style={{ marginTop: 12 }}
-                message={`После сохранения: ${movesText(moves)}`}
+                title={`После сохранения: ${movesText(moves)}`}
               />
             )}
           </>

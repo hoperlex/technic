@@ -490,7 +490,17 @@ export function serviceExecutorVisibilityWhere(
 
 /** Заявка на обслуживание: то, чем определяется её принадлежность области учётки. */
 export interface ServiceRequestPlace {
-  objectId: string;
+  /**
+   * Площадка предмета. `null` — заявка без аппарата, заведённая ОТ ОТДЕЛА (Р6, Р8 плана
+   * `office-equipment-consumables-and-purchase-plan.md`): места у неё нет ни откуда, и её область
+   * считается отделом-заказчиком.
+   *
+   * Предикат выборки (`serviceRequestScopeWhere`) от этого не меняется — `IN (...)` по колонке
+   * `NULL` и так не выбирает, — а вот проверки по ОДНОЙ строке ниже обязаны сказать это вслух:
+   * `includes(null)` отвечает «нет» случайно, а не по правилу, и первая же правка сравнения
+   * превратила бы случайность в дыру.
+   */
+  objectId: string | null;
   customerDepartmentId: string | null;
   equipmentDepartmentId: string | null;
 }
@@ -504,7 +514,9 @@ export function assertServiceRequestScope(p: Principal, place: ServiceRequestPla
   // Тем же источником, что в `serviceRequestScopeWhere`, и по той же причине.
   if (hasModuleWideScope(p.grantCodes, 'serviceRequests')) return;
   if (isObjectScopedRole(p.role)) {
-    if (!p.constructionObjectIds.includes(place.objectId)) {
+    // Пустая площадка для объектной роли — ОТКАЗ, а не пропуск (Р6): заявка «от отдела» без
+    // аппарата к её площадкам не относится никак, и «нет площадки» не значит «ничья, можно всем».
+    if (place.objectId === null || !p.constructionObjectIds.includes(place.objectId)) {
       throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
     }
     return;
@@ -537,7 +549,11 @@ export function assertServiceRequestScope(p: Principal, place: ServiceRequestPla
  * сторона `service`, и совпадать со стороной заказчика он не должен ни при каком назначении.
  */
 export function inServiceRequestCustomerScope(p: Principal, place: ServiceRequestPlace): boolean {
-  if (isObjectScopedRole(p.role)) return p.constructionObjectIds.includes(place.objectId);
+  // Пустая площадка — «не моя» (Р6), тем же правилом, что и у проверки выше: стороной заказчика
+  // роль площадки становится по совпадению площадок, а совпадать с отсутствующей нечему.
+  if (isObjectScopedRole(p.role)) {
+    return place.objectId !== null && p.constructionObjectIds.includes(place.objectId);
+  }
   if (isDepartmentScopedRole(p.role)) {
     const own = (id: string | null): boolean => !!id && p.departmentIds.includes(id);
     return own(place.customerDepartmentId) || own(place.equipmentDepartmentId);

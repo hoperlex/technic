@@ -227,7 +227,7 @@ export function AccessPeopleTab() {
           <Alert
             type="warning"
             showIcon
-            message={`Учётных записей ${total}, показаны первые ${users.length}: витрина берёт список одной страницей.`}
+            title={`Учётных записей ${total}, показаны первые ${users.length}: витрина берёт список одной страницей.`}
           />
         ) : null
       }

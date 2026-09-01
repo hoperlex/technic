@@ -66,6 +66,7 @@ import {
   users,
   wasteRequestCompletions,
   wasteRequests,
+  wasteTicketFieldEvents,
   wasteTypes,
 } from '../db/schema';
 import { err } from '../lib/errors';
@@ -621,6 +622,42 @@ async function unlinkFiles(tx: Tx, requestId: string, fileIds: string[]): Promis
     .delete(requestFiles)
     .where(and(eq(requestFiles.requestId, requestId), inArray(requestFiles.fileId, ids)));
   await scheduleFilesDeletion(tx, linked, false);
+}
+
+/**
+ * Готовит все файлы заявки к её полному удалению.
+ *
+ * Обычные вложения находятся через `request_files`. Этого недостаточно после отката заявки:
+ * талонная связь уже снята, а скан продолжает жить единственной ссылкой
+ * `waste_ticket_field_events.file_id`. Поэтому набор собирается объединением обеих связей до
+ * удаления заявки, пока `request_id` события ещё не обнулён внешним ключом.
+ *
+ * Ссылка аудита снимается здесь явно — это доменное решение Р6, а не обход общего файлового
+ * сервиса. После удаления заявки каскад снимет `request_files`, и защищённый `hardDeleteFiles`
+ * увидит действительно свободные строки. Все шаги вызываются внутри одной транзакции.
+ */
+async function prepareFilesForFullWasteRequestDeletion(
+  tx: Tx,
+  requestId: string,
+): Promise<{ id: string; objectKey: string }[]> {
+  const linked = await tx.select({ id: files.id, objectKey: files.objectKey }).from(files)
+    .where(sql`
+      EXISTS (
+        SELECT 1 FROM ${requestFiles} rf
+         WHERE rf.request_id = ${requestId} AND rf.file_id = ${files.id}
+      )
+      OR EXISTS (
+        SELECT 1 FROM ${wasteTicketFieldEvents} e
+         WHERE e.request_id = ${requestId} AND e.file_id = ${files.id}
+      )
+    `);
+
+  await tx
+    .update(wasteTicketFieldEvents)
+    .set({ fileId: null })
+    .where(eq(wasteTicketFieldEvents.requestId, requestId));
+
+  return linked;
 }
 
 /**
@@ -1803,14 +1840,10 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     assertObjectRoleEditable(p, existing.status, 'удалять');
 
     if (existing.status === 'new') {
-      // hard delete + физическое удаление файлов: и вложений заявки, и её талонов — с ADR 0024
-      // те и другие лежат в request_files, отдельного места у талонов машин больше нет.
+      // Hard delete уносит и обычные вложения, и сканы талонов. После отката талон уже отвязан от
+      // заявки, но остаётся источником наблюдения аудита, поэтому набор собирается по обеим связям.
       await db.transaction(async (tx) => {
-        const linked = await tx
-          .select({ id: files.id, objectKey: files.objectKey })
-          .from(requestFiles)
-          .innerJoin(files, eq(requestFiles.fileId, files.id))
-          .where(eq(requestFiles.requestId, id));
+        const linked = await prepareFilesForFullWasteRequestDeletion(tx, id);
         // Машины уходят каскадом вместе с заявкой, но строки files каскад не трогает.
         await tx.delete(wasteRequests).where(eq(wasteRequests.id, id));
         await hardDeleteFiles(tx, linked);
@@ -1895,11 +1928,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     },
     isDown: (row) => !!row.deletedAt,
     remove: async (tx, row) => {
-      const linked = await tx
-        .select({ id: files.id, objectKey: files.objectKey })
-        .from(requestFiles)
-        .innerJoin(files, eq(requestFiles.fileId, files.id))
-        .where(eq(requestFiles.requestId, row.id));
+      const linked = await prepareFilesForFullWasteRequestDeletion(tx, row.id);
       await tx.delete(wasteRequests).where(eq(wasteRequests.id, row.id));
       await hardDeleteFiles(tx, linked);
     },

@@ -121,7 +121,7 @@ export function AccessPermissionsTab() {
       searchable: false,
       width: 300,
       render: (_v, r) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <span>{r.label}</span>
           {/* Код — то, по чему право ищут в коде и в документации; в строке он вторичен. */}
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -224,7 +224,7 @@ export function AccessPermissionsTab() {
    * построчно — и уже не сводкой, а листанием полусотни строк.
    */
   const filterBar = (
-    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={8} style={{ width: '100%' }}>
       <SummaryBar
         title="Прав"
         items={[
@@ -288,7 +288,7 @@ export function AccessPermissionsTab() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message={`Учтены не все учётки: показаны первые ${users.length} из ${total}`}
+          title={`Учтены не все учётки: показаны первые ${users.length} из ${total}`}
           description="Число держателей и пометка «ни у кого из живых» посчитаны по этой части списка — право могло остаться без держателей только из-за среза."
         />
       )}

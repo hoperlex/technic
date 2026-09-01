@@ -96,7 +96,7 @@ export function FilePreviewModal({
       }}
     >
       {error ? (
-        <Alert type="error" message="Не удалось открыть файл" description={error} showIcon />
+        <Alert type="error" title="Не удалось открыть файл" description={error} showIcon />
       ) : !url ? (
         <Spin />
       ) : isImage ? (

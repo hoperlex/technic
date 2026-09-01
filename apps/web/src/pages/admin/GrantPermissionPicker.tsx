@@ -62,7 +62,7 @@ export function GrantPermissionPicker({
     onChange(checked ? [...value, permission] : value.filter((current) => current !== permission));
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       {!readOnly && (
         <Input
           allowClear
@@ -90,7 +90,7 @@ export function GrantPermissionPicker({
                 {/* Счётчик отмеченного в модуле: по нему видно, где набор уже что-то открывает. */}
                 {checkedCount > 0 && <Tag color="blue">{checkedCount}</Tag>}
               </Space>
-              <Space direction="vertical" size={2} style={{ width: '100%', marginTop: 4 }}>
+              <Space orientation="vertical" size={2} style={{ width: '100%', marginTop: 4 }}>
                 {group.permissions.map((permission) =>
                   readOnly ? (
                     <Typography.Text key={permission}>

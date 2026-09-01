@@ -36,7 +36,7 @@ export function TicketAuditCohorts({ period, onPeriodChange, enabled }: Props) {
   );
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       {/* Период тот же и в том же виде, что на сводке: экран меняется, отчёт остаётся одним. */}
       <PeriodBar period={period} onChange={onPeriodChange} />
       {isLoading ? <Skeleton active paragraph={{ rows: 6 }} /> : null}
@@ -44,7 +44,7 @@ export function TicketAuditCohorts({ period, onPeriodChange, enabled }: Props) {
         <Alert
           type="error"
           showIcon
-          message="Когорты не загрузились"
+          title="Когорты не загрузились"
           description={errorMessage(error)}
           // Кнопка, а не молчаливое повторение: сеть отвалилась на минуту — человек решает сам,
           // ждать ли ему ещё; отчёт за прошедший период никуда не убежит.
@@ -75,7 +75,7 @@ function CohortsBody({ data, isMobile }: { data: TicketAuditCohortsDto; isMobile
   const rows = sortCohorts(data.cohorts);
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       {isMobile ? <CohortCards rows={rows} /> : <CohortTable rows={rows} />}
       {/* Подпись стоит под таблицей и видна всегда: это не сноска про оформление, а условие, при
           котором эти доли вообще можно читать. */}

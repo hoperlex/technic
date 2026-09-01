@@ -60,8 +60,8 @@ export function TicketAuditEvents({ period, onPeriodChange, enabled }: Props) {
   });
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={4} style={{ width: '100%' }}>
         <PeriodBar period={period} onChange={onPeriodChange} subject="events" />
         {/* Пояснение видно всегда: человек приходит сюда со сводки, где те же даты означают другое,
             и различие держится только на этих словах. */}
@@ -92,7 +92,7 @@ export function TicketAuditEvents({ period, onPeriodChange, enabled }: Props) {
         <Alert
           type="error"
           showIcon
-          message="Лента не загрузилась"
+          title="Лента не загрузилась"
           description={errorMessage(error)}
           // Кнопка, а не молчаливое повторение: сеть отвалилась на минуту — человек решает сам,
           // ждать ли ему ещё; журнал за прошедшие дни никуда не убежит.
@@ -144,7 +144,7 @@ function EventsBody({
     );
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       {isMobile ? <EventCards rows={data.rows} /> : <EventTable rows={data.rows} />}
       {/*
        * Постраничность общая для таблицы и карточек: страница приходит из ответа, а не из

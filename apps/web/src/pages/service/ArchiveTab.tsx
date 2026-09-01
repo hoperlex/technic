@@ -4,7 +4,9 @@ import { DeleteFilled, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
 import {
+  serviceRequestEquipmentName,
   serviceRequestKeys,
+  serviceRequestObjectLabel,
   serviceRequestsApi,
   ServiceStatusTag,
 } from '@entities/service-request';
@@ -123,11 +125,18 @@ export function ServiceArchiveTab() {
       dataIndex: 'equipment',
       searchable: false,
       width: 260,
+      /*
+       * Аппарата и площадки у заявки может не быть вовсе (Р8): в архиве это встречается наравне с
+       * прочим, и «Без аппарата» здесь называется теми же словами, что в рабочем списке. Вторая
+       * строка у такой заявки — отдел-заказчик: он и есть то, чем она была подписана при жизни, а
+       * пустая подпись читалась бы как потерянная при удалении. Пустой она остаётся, только если
+       * нет ни площадки, ни отдела, — а такой заявки не бывает (`CHECK` предмета, Р7).
+       */
       render: (_v, r) => (
         <div style={{ lineHeight: 1.35 }}>
-          <div>{r.equipment.name}</div>
+          <div>{serviceRequestEquipmentName(r)}</div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {r.object.code} — {r.object.name}
+            {serviceRequestObjectLabel(r) ?? r.customerDepartment?.name ?? ''}
           </Typography.Text>
         </div>
       ),
@@ -182,9 +191,11 @@ export function ServiceArchiveTab() {
   const card: CardConfig<ServiceRequestDto> = {
     title: (r) => r.displayNumber,
     badge: (r) => <ServiceStatusTag status={r.status} />,
-    primary: (r) => r.equipment.name,
+    primary: (r) => serviceRequestEquipmentName(r),
     lines: [
-      (r) => `${r.object.code} — ${r.object.name}`,
+      // Пустых строк карточка не рисует: у заявки «от отдела» площадки нет, и вместо неё встаёт
+      // отдел — а не прочерк, который читался бы как недогруженная запись (Р8).
+      (r) => serviceRequestObjectLabel(r) ?? r.customerDepartment?.name ?? null,
       (r) => `Удалена: ${formatDateTime(r.deletedAt)}`,
     ],
     onOpen: (r) => setViewRecord(r),

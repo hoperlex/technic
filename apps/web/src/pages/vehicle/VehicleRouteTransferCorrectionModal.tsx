@@ -195,7 +195,7 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
               <Alert
                 type="error"
                 showIcon
-                message="Перенести сейчас нельзя"
+                title="Перенести сейчас нельзя"
                 description={
                   <>
                     {blocking.reason}
@@ -252,7 +252,7 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
             <Alert
               type="warning"
               showIcon
-              message="Что произойдёт с двумя рейсами"
+              title="Что произойдёт с двумя рейсами"
               description={
                 <ul style={{ margin: 0, paddingInlineStart: 20 }}>
                   <li>

@@ -93,13 +93,13 @@ export function RoutePointSplitModal({ route, point, onClose, onSaved }: Props) 
       okText="Разнести"
       width={560}
     >
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={12} style={{ width: '100%' }}>
         <Typography.Text type="secondary">
           Отмеченное уедет в новую остановку — сразу за этой, с тем же адресом. Остальное останется
           здесь.
         </Typography.Text>
         <Checkbox.Group value={picked} onChange={(v) => setPicked(v as string[])}>
-          <Space direction="vertical" size={6}>
+          <Space orientation="vertical" size={6}>
             {actions.map((action) => (
               <Checkbox key={roleKey(action)} value={roleKey(action)}>
                 {actionLabel(action)}

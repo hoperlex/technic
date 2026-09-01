@@ -17,7 +17,7 @@ import {
   waybillLink,
 } from '../../utils/links';
 import { useAuth } from '../../auth/AuthContext';
-import { useRouteModal } from '../vehicle/routeModal';
+import { useRouteModal } from '@features/route-modal';
 
 /**
  * Общее двух вкладок гаража: чем занят день — строками со ссылками на записи, которыми эта работа
@@ -173,7 +173,7 @@ export function BusyHead({ entry, children }: { entry: GarageBusyEntry; children
 function BusyEntry({ entry }: { entry: GarageBusyEntry }) {
   if (entry.kind === 'route')
     return (
-      <Space direction="vertical" size={0}>
+      <Space orientation="vertical" size={0}>
         {/* Бланк уже выписан — значит рейс заморожен, и это первое, что о нём спрашивают. */}
         <BusyHead entry={entry}>
           {entry.waybill && <WaybillNumber number={entry.waybill.number} />}
@@ -195,14 +195,14 @@ function BusyEntry({ entry }: { entry: GarageBusyEntry }) {
     );
   if (entry.kind === 'special')
     return (
-      <Space direction="vertical" size={0}>
+      <Space orientation="vertical" size={0}>
         <BusyHead entry={entry} />
         <Typography.Text {...SUB}>{specialLine(entry)}</Typography.Text>
       </Space>
     );
 
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <BusyHead entry={entry} />
       <Typography.Text {...SUB}>
         {shortDate(entry.periodFrom)} – {shortDate(entry.periodTo)}
@@ -222,7 +222,7 @@ function BusyEntry({ entry }: { entry: GarageBusyEntry }) {
 export function BusyCell({ entries }: BusyCellProps) {
   if (entries.length === 0) return DASH;
   return (
-    <Space direction="vertical" size={4} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={4} style={{ display: 'flex' }}>
       {entries.map((entry) => (
         <BusyEntry key={busyKey(entry)} entry={entry} />
       ))}

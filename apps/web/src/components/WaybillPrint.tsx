@@ -138,7 +138,7 @@ export function WaybillPrintModal({ target, onClose }: Props) {
       }}
     >
       {error ? (
-        <Alert type="error" message="Бланк не подготовился к печати" description={error} showIcon />
+        <Alert type="error" title="Бланк не подготовился к печати" description={error} showIcon />
       ) : !url ? (
         <Spin tip="Готовим бланк…" />
       ) : (

@@ -10,6 +10,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { db as AppDb } from '../src/db/client';
 import type * as SchemaNs from '../src/db/schema';
 import type * as WasteTicketsNs from '../src/services/waste-tickets';
+import type { buildApp } from '../src/app';
 
 /**
  * Стык заявки на вывоз с распознаванием талонов: постановка задач при закрытии и уборка при
@@ -41,6 +42,7 @@ import type * as WasteTicketsNs from '../src/services/waste-tickets';
 const DB_URL = process.env.TEST_DATABASE_URL;
 
 const ADMIN_EMAIL = 'db-waste-ticket-reset-admin@example.invalid';
+const ADMIN_PASSWORD = 'db-test-password-123';
 /** Метка своих заявок: база у db-тестов общая и переживает повторный запуск. */
 const MARK = 'ТЕСТОВЫЕ ДАННЫЕ: уборка распознанного';
 /** Общий префикс ключей объектов — по нему же идёт уборка файлов. */
@@ -53,10 +55,12 @@ const KEY_PREFIX = 'db-waste-ticket-reset/';
 const SHA_PREFIX = 'dbfeed';
 
 interface Ctx {
+  app: Awaited<ReturnType<typeof buildApp>>;
   db: typeof AppDb;
   schema: typeof SchemaNs;
   service: typeof WasteTicketsNs;
   closeDb: () => Promise<void>;
+  auth: { authorization: string };
   adminId: string;
   objectId: string;
 }
@@ -99,11 +103,24 @@ async function migrate(databaseUrl: string): Promise<void> {
  */
 async function cleanup(db: typeof AppDb): Promise<void> {
   const admin = sql`(SELECT id FROM users WHERE email = ${ADMIN_EMAIL})`;
+  // Наблюдения переживают заявку и файл намеренно, поэтому метка страницы — единственный надёжный
+  // способ убрать и следы уже полностью удалённой заявки прошлого прогона.
+  await db.execute(sql`
+    DELETE FROM waste_ticket_field_events
+     WHERE observation_id IN (
+       SELECT id FROM waste_ticket_field_events WHERE page_sha256 LIKE ${`${SHA_PREFIX}%`})`);
+  await db.execute(
+    sql`DELETE FROM waste_ticket_field_events WHERE page_sha256 LIKE ${`${SHA_PREFIX}%`}`,
+  );
   await db.execute(sql`
     DELETE FROM jobs
      WHERE type = 'recognize_waste_ticket_file'
        AND payload->>'requestId' IN (
              SELECT id::text FROM waste_requests WHERE created_by IN ${admin})`);
+  await db.execute(sql`
+    DELETE FROM jobs
+     WHERE type = 'delete_s3_object'
+       AND payload->>'objectKey' LIKE ${`${KEY_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM waste_requests WHERE created_by IN ${admin}`);
   await db.execute(sql`DELETE FROM files WHERE object_key LIKE ${`${KEY_PREFIX}%`}`);
   await db.execute(
@@ -121,7 +138,7 @@ async function seedAdmin(db: typeof AppDb, schema: typeof SchemaNs): Promise<str
       lastName: 'Тестовый',
       firstName: 'Администратор',
       middleName: 'Талонов',
-      passwordHash: await hashPassword('db-test-password-123'),
+      passwordHash: await hashPassword(ADMIN_PASSWORD),
       role: 'admin',
       isActive: true,
     })
@@ -176,6 +193,7 @@ interface Recognized {
   pageId: string;
   attemptId: string;
   ticketId: string;
+  observationId: string;
 }
 
 /**
@@ -235,7 +253,30 @@ async function seedRecognized(requestId: string): Promise<Recognized> {
     acceptedBy: ctx.adminId,
     comment: 'Повтор номера принят: талон перевыставлен перевозчиком',
   });
-  return { fileId, pageId: page!.id, attemptId: attempt!.id, ticketId: ticket!.id };
+  const [observation] = await ctx.db
+    .insert(ctx.schema.wasteTicketFieldEvents)
+    .values({
+      ticketId: ticket!.id,
+      requestId,
+      pageSha256: sha,
+      event: 'recognized',
+      field: 'volumeM3',
+      newValue: '8',
+      readState: 'read',
+      model: 'stub',
+      modelReported: 'stub',
+      fileId,
+      pageNo: 1,
+      collectionVersion: 2,
+    })
+    .returning({ id: ctx.schema.wasteTicketFieldEvents.id });
+  return {
+    fileId,
+    pageId: page!.id,
+    attemptId: attempt!.id,
+    ticketId: ticket!.id,
+    observationId: observation!.id,
+  };
 }
 
 /** Что осталось у заявки после уборки — одним запросом на каждую таблицу контура. */
@@ -279,6 +320,56 @@ async function jobsOf(requestId: string) {
   return res.rows;
 }
 
+async function requestVersion(requestId: string): Promise<number> {
+  const res = await ctx.db.execute<{ version: number }>(
+    sql`SELECT version FROM waste_requests WHERE id = ${requestId}`,
+  );
+  return res.rows[0]!.version;
+}
+
+/** Настоящий откат `done → confirmed → new`; работу стирает второй переход. */
+async function rollbackToNew(requestId: string): Promise<void> {
+  for (const status of ['confirmed', 'new'] as const) {
+    const res = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/waste-requests/${requestId}/status`,
+      headers: ctx.auth,
+      payload: {
+        status,
+        version: await requestVersion(requestId),
+        comment: 'Закрыли не ту заявку',
+      },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+  }
+}
+
+async function observationState(observationId: string) {
+  const res = await ctx.db.execute<{
+    file_id: string | null;
+    request_id: string | null;
+    ticket_id: string | null;
+  }>(sql`
+    SELECT file_id, request_id, ticket_id
+      FROM waste_ticket_field_events
+     WHERE id = ${observationId}`);
+  return res.rows[0];
+}
+
+async function fileState(fileId: string) {
+  const res = await ctx.db.execute<{ status: string; deleted_at: Date | null; object_key: string }>(
+    sql`SELECT status, deleted_at, object_key FROM files WHERE id = ${fileId}`,
+  );
+  return res.rows[0];
+}
+
+async function deletionJobs(objectKey: string) {
+  const res = await ctx.db.execute<{ id: string }>(sql`
+    SELECT id FROM jobs
+     WHERE type = 'delete_s3_object' AND payload->>'objectKey' = ${objectKey}`);
+  return res.rows;
+}
+
 describe.skipIf(!DB_URL)('заявка на вывоз ↔ распознавание талонов (живая схема)', () => {
   beforeAll(async () => {
     prepareEnv(DB_URL!);
@@ -290,18 +381,108 @@ describe.skipIf(!DB_URL)('заявка на вывоз ↔ распознава�
     await cleanup(db);
 
     const adminId = await seedAdmin(db, schema);
+    const { buildApp } = await import('../src/app');
+    const app = await buildApp();
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
+    });
+    expect(login.statusCode, login.body).toBe(200);
     const objects = await db.execute<{ id: string }>(
       sql`SELECT id FROM construction_objects WHERE is_active ORDER BY id LIMIT 1`,
     );
     if (!objects.rows[0]) throw new Error('В базе нет действующего объекта');
 
-    ctx = { db, schema, service, closeDb, adminId, objectId: objects.rows[0].id };
+    ctx = {
+      app,
+      db,
+      schema,
+      service,
+      closeDb,
+      auth: { authorization: `Bearer ${login.json().accessToken as string}` },
+      adminId,
+      objectId: objects.rows[0].id,
+    };
   }, 180_000);
 
   afterAll(async () => {
     if (!ctx) return;
     await cleanup(ctx.db);
+    await ctx.app.close();
     await ctx.closeDb();
+  });
+
+  describe('скан наблюдения при откате и полном удалении заявки (Э1)', () => {
+    it('откат сохраняет активный файл и не ставит задание удаления', async () => {
+      const requestId = await newRequest();
+      const recognized = await seedRecognized(requestId);
+      const before = await fileState(recognized.fileId);
+
+      await rollbackToNew(requestId);
+
+      expect(await observationState(recognized.observationId)).toEqual({
+        file_id: recognized.fileId,
+        request_id: requestId,
+        ticket_id: null,
+      });
+      expect(await fileState(recognized.fileId)).toMatchObject({
+        status: 'active',
+        deleted_at: null,
+      });
+      expect(await deletionJobs(before!.object_key)).toHaveLength(0);
+    });
+
+    it('hard-delete «Новой» после отката удаляет и скан, найденный только через аудит', async () => {
+      const requestId = await newRequest();
+      const recognized = await seedRecognized(requestId);
+      const before = await fileState(recognized.fileId);
+      await rollbackToNew(requestId);
+
+      const removed = await ctx.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/waste-requests/${requestId}`,
+        headers: ctx.auth,
+      });
+
+      expect(removed.statusCode, removed.body).toBe(200);
+      expect(removed.json().mode).toBe('hard');
+      expect(await observationState(recognized.observationId)).toEqual({
+        file_id: null,
+        request_id: null,
+        ticket_id: null,
+      });
+      expect(await fileState(recognized.fileId)).toBeUndefined();
+      expect(await deletionJobs(before!.object_key)).toHaveLength(1);
+    });
+
+    it('purge архивной заявки удаляет скан, но сохраняет наблюдение', async () => {
+      const requestId = await newRequest();
+      const recognized = await seedRecognized(requestId);
+      const before = await fileState(recognized.fileId);
+      const archived = await ctx.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/waste-requests/${requestId}`,
+        headers: ctx.auth,
+      });
+      expect(archived.statusCode, archived.body).toBe(200);
+      expect(archived.json().mode).toBe('soft');
+
+      const purged = await ctx.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/waste-requests/${requestId}/purge`,
+        headers: ctx.auth,
+      });
+
+      expect(purged.statusCode, purged.body).toBe(200);
+      expect(await observationState(recognized.observationId)).toEqual({
+        file_id: null,
+        request_id: null,
+        ticket_id: null,
+      });
+      expect(await fileState(recognized.fileId)).toBeUndefined();
+      expect(await deletionJobs(before!.object_key)).toHaveLength(1);
+    });
   });
 
   describe('откат «В работе» → «Новая»: уборка распознанного (Р22)', () => {

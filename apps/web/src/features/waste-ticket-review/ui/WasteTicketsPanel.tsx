@@ -109,7 +109,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
     modal.confirm({
       title: 'Это разные бумаги?',
       content: (
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <Space orientation="vertical" style={{ width: '100%' }}>
           <Typography.Text>{reason}</Typography.Text>
           <Typography.Text type="secondary">
             Если номера совпали случайно (разные книжки перевозчика), опишите это — причина уйдёт в
@@ -153,7 +153,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
   };
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       <ChecksStrip
         checks={data.checks}
         preliminary={data.preliminary}
@@ -172,7 +172,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
           «эта бумага разобрана?» — а рядом с номерами отвечает: видно и сколько талонов на кадре,
           и что файл вовсе не читали. */}
       {data.files.length > 0 && (
-        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={4} style={{ width: '100%' }}>
           {data.files.map((file) => {
             const pageIds = data.pages.filter((pg) => pg.fileId === file.fileId).map((pg) => pg.id);
             const found = data.tickets.filter(
@@ -215,7 +215,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
         // Карточкой на талон, а не строкой таблицы: человек сверяет с бумагой поле за полем, и
         // читать четыре значения по вертикали быстрее, чем выцеплять их из строки среди служебных
         // колонок. Один кадр с двумя талонами даёт две карточки — разбивка видна сразу.
-        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={8} style={{ width: '100%' }}>
           {data.tickets.map((row) => (
             <TicketCard
               key={row.id}
@@ -254,7 +254,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
         <Alert
           type="info"
           showIcon
-          message="На некоторых кадрах больше одного талона"
+          title="На некоторых кадрах больше одного талона"
           description={data.pages
             .filter((page) => page.ticketsFound > 1)
             .map((page) => `страница ${page.pageNo}: ${page.ticketsFound}`)
@@ -276,7 +276,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
               key: 'files',
               label: 'Файлы и попытки распознавания',
               children: (
-                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <Space orientation="vertical" size={8} style={{ width: '100%' }}>
                   {data.files.map((file) => (
                     <Space key={file.fileId} size={8} wrap>
                       <FileState file={file} />

@@ -1332,7 +1332,7 @@ export function VehicleAssignModal({
                       type="warning"
                       showIcon
                       style={{ marginBottom: 16 }}
-                      message="Правка прошедших дней"
+                      title="Правка прошедших дней"
                       description={
                         <>
                           Подписи объекта под днями работы будут сняты — часы останутся, подтвердить
@@ -1424,7 +1424,7 @@ export function VehicleAssignModal({
                       <Alert
                         type="info"
                         showIcon
-                        message="Линейная техника: ЭСМ-2 выписывается по требованию"
+                        title="Линейная техника: ЭСМ-2 выписывается по требованию"
                         description="Недельные листы портал сам не выписывает — их выписывают из карточки заявки, по неделе за раз. Работа каждого дня печатается своим 4-П. Перегона у такой техники нет: вечером она возвращается на базу."
                       />
                     </FormGrid.Full>
@@ -1769,7 +1769,7 @@ export function VehicleAssignModal({
                           <Alert
                             type="warning"
                             showIcon
-                            message="Документы водителя перегона неполные"
+                            title="Документы водителя перегона неполные"
                             description={deliveryDriverGaps}
                           />
                         </FormGrid.Full>
@@ -1810,7 +1810,7 @@ export function VehicleAssignModal({
                     type="info"
                     showIcon
                     style={{ marginTop: 16 }}
-                    message="Маршрут не ведётся"
+                    title="Маршрут не ведётся"
                     description={requirement.reason}
                   />
                 </FormGrid.Full>
@@ -1883,7 +1883,7 @@ export function VehicleAssignModal({
                       <Alert
                         type={joinedRouteNote.type}
                         showIcon
-                        message={joinedRouteNote.message}
+                        title={joinedRouteNote.message}
                         description={joinedRouteNote.description}
                       />
                     </FormGrid.Full>
@@ -1898,7 +1898,7 @@ export function VehicleAssignModal({
                       <Alert
                         type="warning"
                         showIcon
-                        message="Документы водителя внесены не полностью"
+                        title="Документы водителя внесены не полностью"
                         description={driverGaps}
                       />
                     </FormGrid.Full>
@@ -1909,7 +1909,7 @@ export function VehicleAssignModal({
                       <Alert
                         type="warning"
                         showIcon
-                        message="Категория прав не совпадает с требованием машины"
+                        title="Категория прав не совпадает с требованием машины"
                         description={driverCategoryMismatch}
                       />
                     </FormGrid.Full>

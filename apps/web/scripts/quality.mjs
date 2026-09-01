@@ -21,6 +21,7 @@
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import { walkTs, hasRawQueryKey, isEntityKeysFile } from './lib/source-scan.mjs';
 
 const WEB = path.resolve(process.cwd());
@@ -32,6 +33,71 @@ const LINE_LIMIT = 400;
 
 /** Каталоги, оставшиеся от раскладки до FSD. Новый файл здесь — повод решить, куда он относится. */
 const LEGACY_DIRS = ['hooks', 'utils', 'components'];
+
+/**
+ * Устаревшее в antd 6: пропсы, которых в следующем мажоре не будет.
+ *
+ * Ключ — имя элемента ровно так, как оно написано в JSX. Это не педантизм: `direction` законен у
+ * `Flex`, `type` — у `Button` и `Typography.Text`, `message` — у `Form.Item`, `width` — у `Modal`.
+ * Текстовый греп посчитал бы всё это долгом, число перестало бы что-либо значить, и ратчет
+ * пришлось бы отключить первым же честным `<Flex direction=…>`.
+ */
+const DEPRECATED_PROPS = {
+  Space: ['direction', 'split'],
+  Divider: ['type'],
+  Alert: ['message'],
+  Descriptions: ['labelStyle'],
+  Drawer: ['width', 'destroyOnClose'],
+  Dropdown: ['destroyOnClose'],
+  InputNumber: ['addonBefore', 'addonAfter'],
+  Select: ['onDropdownVisibleChange'],
+  Spin: ['tip'],
+};
+
+/** `List` уходит целиком, а не пропсом: каждое употребление — место будущей замены вёрсткой. */
+const DEPRECATED_TAGS = ['List', 'List.Item', 'List.Item.Meta'];
+
+/**
+ * Пункты `Timeline` строятся не в теге, а в помощнике-`map`, и привязать ключ объекта к тегу
+ * статически нечем. Отличаем по соседям: у пункта `Timeline` подписи нет вовсе (`label` там тоже
+ * устарел), а у пункта `Descriptions`, где `children` совершенно законен, она есть всегда.
+ * Правило заведомо неполное — пункт с `label` и `children` мы пропустим, — но лучше недосчитать,
+ * чем записать в долг чужой законный ключ.
+ */
+function isTimelineItemChildren(node, sf) {
+  if (!ts.isPropertyAssignment(node) || node.name.getText(sf) !== 'children') return false;
+  const owner = node.parent;
+  return (
+    ts.isObjectLiteralExpression(owner) &&
+    !owner.properties.some((p) => p.name && p.name.getText(sf) === 'label')
+  );
+}
+
+/** Сколько устаревших пропсов и компонентов antd в одном файле. */
+function countAntdDeprecated(file, code) {
+  // Вид файла — по расширению, а не всегда TSX: в `.ts` разбор как TSX ломается на обобщённой
+  // стрелке `<T>(x: T) => x`, и дерево после этого считать нельзя.
+  const kind = file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const sf = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true, kind);
+  const hasTimeline = /<Timeline[\s/>]/.test(code);
+  let found = 0;
+
+  const visit = (node) => {
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const tag = node.tagName.getText(sf);
+      if (DEPRECATED_TAGS.includes(tag)) found += 1;
+      const props = DEPRECATED_PROPS[tag] ?? [];
+      if (props.length > 0)
+        for (const attr of node.attributes.properties)
+          if (ts.isJsxAttribute(attr) && props.includes(attr.name.getText(sf))) found += 1;
+    }
+    if (hasTimeline && isTimelineItemChildren(node, sf)) found += 1;
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sf);
+  return found;
+}
 
 // --- замер -----------------------------------------------------------------
 
@@ -46,18 +112,20 @@ function measure() {
   }
 
   let rawKeyFiles = 0;
+  let antdDeprecated = 0;
   const maxLines = {};
   for (const file of walkTs(SRC)) {
     const rel = path.relative(WEB, file);
     const code = readFileSync(file, 'utf8');
 
     if (!isEntityKeysFile(path.relative(SRC, file)) && hasRawQueryKey(code)) rawKeyFiles += 1;
+    antdDeprecated += countAntdDeprecated(file, code);
 
     const lines = code.split('\n').length;
     if (lines > LINE_LIMIT) maxLines[rel] = lines;
   }
 
-  return { legacyFiles, rawKeyFiles, maxLines };
+  return { legacyFiles, rawKeyFiles, antdDeprecated, maxLines };
 }
 
 // --- сравнение с бюджетом ---------------------------------------------------
@@ -90,6 +158,21 @@ function compare(actual, budget) {
     );
   if (actual.rawKeyFiles < budget.rawKeyFiles)
     improved.push(`сырые ключи: ${budget.rawKeyFiles} → ${actual.rawKeyFiles}`);
+
+  // Волна Э8 сняла `Space direction`, `Divider type` и `Alert message` до нуля; на `Space` и
+  // `Divider` сверху стоит ещё и no-restricted-syntax. Остальное — `List`, `Drawer width`,
+  // `InputNumber addon*` и мелочь — чинится по мере касания, а число держит, чтобы долг не рос:
+  // портал уже на antd 6.5, и в следующем мажоре этих пропсов не будет.
+  // Число новое, и в бюджете его может ещё не быть. Это не рост: в `grown` оно бы заблокировало
+  // сам `quality:update`, которым его и записывают, — поэтому идёт в `improved`.
+  if (budget.antdDeprecated === undefined)
+    improved.push(`устаревшее antd: бюджет числа не знает → ${actual.antdDeprecated}`);
+  else if (actual.antdDeprecated > budget.antdDeprecated)
+    grown.push(
+      `устаревших пропсов antd: ${actual.antdDeprecated}, бюджет ${budget.antdDeprecated} — новый код пишется на нынешних именах (см. DEPRECATED_PROPS в этом файле)`,
+    );
+  else if (actual.antdDeprecated < budget.antdDeprecated)
+    improved.push(`устаревшее antd: ${budget.antdDeprecated} → ${actual.antdDeprecated}`);
 
   const budgetLines = budget.maxLines ?? {};
   for (const [file, now] of Object.entries(actual.maxLines)) {

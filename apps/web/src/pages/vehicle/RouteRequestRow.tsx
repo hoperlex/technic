@@ -8,7 +8,7 @@ import {
 import { EntityLink } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
 import { vehicleRequestViewLink } from '../../utils/links';
-import { useRouteModal } from './routeModal';
+import { useRouteModal } from '@features/route-modal';
 import { formatDateOnly } from './shared';
 
 /**

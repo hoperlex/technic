@@ -96,7 +96,7 @@ export function MaintenanceVoidModal({
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message="Все позиции акта вернутся на склад"
+          title="Все позиции акта вернутся на склад"
           description={
             record.parts.length > 0 ? (
               <Typography.Text>

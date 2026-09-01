@@ -241,6 +241,17 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'create',
     label: 'Заводит заявку на обслуживание',
   },
+  /*
+   * Вид действия — «Создание», как у соседней строки, а не «Особые» (план расходников и закупки,
+   * Р5). Две клетки в одной колонке сетку не ломают — так же стоят четыре права в «Особых»
+   * модуля, — а вот в «Особых» право читалось бы как отдельная работа, тогда как это оговорка к
+   * заведению: та же ручка, тот же страж, разрешено лишь оставить аппарат пустым.
+   */
+  'serviceRequests.createWithoutEquipment': {
+    module: 'service',
+    action: 'create',
+    label: 'Заводит заявку без аппарата',
+  },
   'serviceRequests.update': {
     module: 'service',
     action: 'update',

@@ -143,12 +143,12 @@ export function RollbackReasonModal({ subject, erases, blocker, ...rest }: Rollb
       notice={
         <>
           {blocker && (
-            <Alert type="error" showIcon message={blocker} style={{ marginBottom: 12 }} />
+            <Alert type="error" showIcon title={blocker} style={{ marginBottom: 12 }} />
           )}
           <Alert
             type="warning"
             showIcon
-            message="Заявка вернётся в состояние только что заведённой"
+            title="Заявка вернётся в состояние только что заведённой"
             description={
               erases.length > 0 ? (
                 <>

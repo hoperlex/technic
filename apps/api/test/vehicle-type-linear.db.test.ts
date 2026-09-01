@@ -232,7 +232,8 @@ describe.skipIf(!DB_URL)('линейная техника: признак тип
     // Правка соседнего поля признака не роняет: PATCH правит названное, а не всю запись.
     const renamed = await patchType(created.id as string, { name: 'Тип переименованный' });
     expect(renamed.statusCode, renamed.body).toBe(200);
-    expect(renamed.json().isLinear).toBe(true);
+    // Карточка лежит в `type`: ответ ручки — исход правки (`UpdateVehicleTypeResult`), а не сам тип.
+    expect(renamed.json().type.isLinear).toBe(true);
 
     // А вот сам признак этой ручкой не переключается: у переключения свой протокол —
     // предпросмотр и подтверждение (ADR 0107, решение 5). Отказ именно 422 и с объяснением, куда
@@ -251,7 +252,7 @@ describe.skipIf(!DB_URL)('линейная техника: признак тип
     const created = await createType({ isLinear: true });
     const res = await patchType(created.id as string, { isActive: false });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().isLinear).toBe(true);
+    expect(res.json().type.isLinear).toBe(true);
     expect((await lastAudit(created.id as string)).action).toBe('vehicle_type.deactivate');
   });
 
@@ -287,7 +288,7 @@ describe.skipIf(!DB_URL)('линейная техника: признак тип
     // совпадающее значение обязано проходить: иначе переименовать линейный тип стало бы нельзя.
     const res = await patchType(created.id as string, { isLinear: true, name: 'Тот же признак' });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().isLinear).toBe(true);
+    expect(res.json().type.isLinear).toBe(true);
     expect((await lastAudit(created.id as string)).action).toBe('vehicle_type.update');
   });
 });

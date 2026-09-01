@@ -248,9 +248,29 @@ const claimRequests = alias(serviceRequests, 'service_claim_requests');
 const claimedItems = alias(serviceRequestItems, 'service_claimed_items');
 
 /**
- * Тип единицы и её объект есть всегда (`NOT NULL` и `RESTRICT`), поэтому они `innerJoin`. Отделы,
- * исполнитель и снимки решений необязательны — `leftJoin` здесь означает ровно «этого ещё не
- * произошло», а не потерянную ссылку.
+ * ВСЕ СОЕДИНЕНИЯ, КРОМЕ АВТОРА, — ЛЕВЫЕ, И ПРЕДМЕТ ЗАЯВКИ В ТОМ ЧИСЛЕ (Р8, ADR 0146, решение 7).
+ *
+ * Аппарат, его тип и площадка соединялись `innerJoin` — «они есть всегда». Правило это перестаёт
+ * быть верным: заявку разрешают заводить без аппарата, а у заявки «от отдела» пуста и площадка —
+ * снимок места брать неоткуда. Внутреннее соединение отвечает на такую строку не ошибкой, а
+ * МОЛЧАНИЕМ: заявка пропадает из списка, из счётчика, из карточки, из отбора «отметить все
+ * прочитанными» — и пропадает бесследно, потому что ни один ответ при этом не ломается и никто
+ * ничего не замечает.
+ *
+ * ПОЧЕМУ ЛЕВОЕ СОЕДИНЕНИЕ ПРИХОДИТ РАНЬШЕ САМИХ ТАКИХ ЗАЯВОК — и это половина смысла выпуска.
+ * Заводить их сегодня нечем: права нет, форма не спрашивает, ни одной строки без аппарата в базе
+ * не существует. Значит на боевых данных `leftJoin` возвращает РОВНО ТО ЖЕ, что возвращал
+ * `innerJoin`: аппарат есть у всякой заявки, внешний ключ `RESTRICT` гарантирует совпадение, и ни
+ * одна строка не приходит пустой — ответы ручек до и после правки совпадают значение в значение.
+ * Выпуск не включает ничего; он делает безопасным следующий. Обратный порядок означал бы, что
+ * первую заявку без предмета встречает сервер, который её теряет, — а узнают об этом не по ошибке
+ * в журнале, а по звонку «моя заявка пропала».
+ *
+ * Автор при этом остаётся `innerJoin`, и это не недосмотр: `created_by` — `NOT NULL` с `RESTRICT`,
+ * и заявки без автора не бывает ни сейчас, ни после выпуска 2б. Пустеет предмет, а не человек.
+ *
+ * Отделы, исполнитель и снимки решений необязательны и были левыми всегда — там `leftJoin`
+ * означает ровно «этого ещё не произошло», а не потерянную ссылку.
  *
  * Реквизиты предмета берутся из **заявки**, а не из справочника: единицу переносят и
  * переименовывают, а заявка обязана остаться рассказом о том, что чинили тогда (ADR 0085 §7).
@@ -288,9 +308,9 @@ function requestQuery() {
       claimRequestNum: claimRequests.num,
     })
     .from(serviceRequests)
-    .innerJoin(officeEquipment, eq(serviceRequests.officeEquipmentId, officeEquipment.id))
-    .innerJoin(officeEquipmentTypes, eq(officeEquipment.equipmentTypeId, officeEquipmentTypes.id))
-    .innerJoin(constructionObjects, eq(serviceRequests.equipmentObjectId, constructionObjects.id))
+    .leftJoin(officeEquipment, eq(serviceRequests.officeEquipmentId, officeEquipment.id))
+    .leftJoin(officeEquipmentTypes, eq(officeEquipment.equipmentTypeId, officeEquipmentTypes.id))
+    .leftJoin(constructionObjects, eq(serviceRequests.equipmentObjectId, constructionObjects.id))
     .innerJoin(creators, eq(serviceRequests.createdBy, creators.id))
     .leftJoin(customerDepartments, eq(serviceRequests.customerDepartmentId, customerDepartments.id))
     .leftJoin(
@@ -536,15 +556,43 @@ function toDto(
     // статус: виды документов отложенной «Диагностики» — те же, что у неё (Р110).
     heldFromStatus: r.heldFromStatus,
     holdReason: r.holdReason,
-    equipment: {
-      id: r.officeEquipmentId,
-      name: r.equipmentName,
-      serialNumber: r.equipmentSerialNumber,
-      inventoryNumber: r.equipmentInventoryNumber,
-      typeName: row.typeName,
-      location: r.equipmentLocation,
-    },
-    object: { id: row.objectId, code: row.objectCode, name: row.objectName },
+    /**
+     * Предмет заявки. `null` — заявка заведена без аппарата (Р8); на боевых данных этой ветки
+     * сегодня не берёт ни одна строка — заводить такие заявки нечем, — и в том её смысл: сервер
+     * учится читать раньше, чем появляется что читать.
+     *
+     * Спрашивается САМА ЗАЯВКА (`office_equipment_id`), а не соединение: предмет заявки — её
+     * собственный снимок, а справочник добавляет к нему одно лишь название типа. Вывод «не пришёл
+     * тип — значит аппарата нет» был бы вторым ответом на тот же вопрос, и разошёлся бы с первым на
+     * первой же испорченной карточке.
+     *
+     * Название типа поэтому `?? ''`, а не `!`: соединение с типом стоит ЗА соединением с карточкой,
+     * и утверждать «здесь точно не пусто» значило бы положиться на два внешних ключа разом.
+     * Испорченная карточка — не повод потерять заявку; остальные реквизиты снимка (`equipment_name`
+     * и соседи) — колонки самой заявки, `NOT NULL`, и пустеют они пустой СТРОКОЙ, а не `NULL`:
+     * у заявки без аппарата в них записано «ничего», и читаются они без оговорок.
+     */
+    equipment:
+      r.officeEquipmentId === null
+        ? null
+        : {
+            id: r.officeEquipmentId,
+            name: r.equipmentName,
+            serialNumber: r.equipmentSerialNumber,
+            inventoryNumber: r.equipmentInventoryNumber,
+            typeName: row.typeName ?? '',
+            location: r.equipmentLocation,
+          },
+    /**
+     * Площадка предмета. Пустеет вместе с аппаратом: у заявки «от отдела» снимка места нет вовсе
+     * (Р8). Признак — СОЕДИНЕНИЕ, а не колонка заявки, и это не то же самое, что у аппарата выше:
+     * все три поля объекта приходят из справочника площадок одной строкой, и спрашивать её наличие
+     * у другого источника значило бы допустить ответ «объект есть, а названия у него нет».
+     */
+    object:
+      row.objectId === null
+        ? null
+        : { id: row.objectId, code: row.objectCode!, name: row.objectName! },
     /**
      * «Не тот объект» (Р16): объект заявки назвал человек, а не подставила карточка техники. Факт
      * заявления, и только он — историчный, как остальные снимки заявки.
@@ -566,7 +614,14 @@ function toDto(
      * рассказывает о заявке, а не о том, стоит ли она в чьей-то очереди. Из очереди ИТ-службы
      * закрытые убирает отбор списка, где к этой паре добавлено третье условие.
      */
-    objectMismatch: r.objectOverridden && row.equipmentCardObjectId !== r.equipmentObjectId,
+    // У заявки без аппарата расхождения не бывает по определению: сравнивать снимок не с чем, и
+    // карточки, которую «надо перенести», не существует. Условие названо первым явно, а не оставлено
+    // на волю сравнения двух `NULL`: `NULL !== NULL` в JavaScript даёт `false` случайно, а не по
+    // смыслу, и первая же правка сравнения превратила бы случайность в дефект.
+    objectMismatch:
+      r.officeEquipmentId !== null &&
+      r.objectOverridden &&
+      row.equipmentCardObjectId !== r.equipmentObjectId,
     customerDepartment: row.customerDepartmentId
       ? {
           id: row.customerDepartmentId,
@@ -981,10 +1036,24 @@ interface WarrantyClaimColumns {
 async function resolveWarrantyClaim(
   tx: Tx,
   claim: { source?: 'equipment' | 'item' | null; itemId?: string | null } | undefined,
-  equipment: { id: string; warrantyUntil: string | null },
+  /**
+   * Аппарат заявки; `null` — заявка без аппарата (Р8). Спор о гарантии ведут о КОНКРЕТНОЙ единице:
+   * либо о её гарантии поставщика, либо о работе, выполненной на ней же, — и обе проверки ниже
+   * начинаются со сравнения «та ли это техника». Без аппарата сравнивать не с чем.
+   */
+  equipment: { id: string; warrantyUntil: string | null } | null,
   currentRequestId: string | null,
 ): Promise<WarrantyClaimColumns> {
   if (!claim?.source) return { source: null, itemId: null };
+  // Дверь, закрытая раньше, чем в неё постучали (Р7): заявку без аппарата ещё нечем завести, но
+  // отказ здесь уже стоит — иначе первая же такая заявка получила бы обращение по гарантии
+  // неизвестно чего, и разбирали бы это в споре с сервисом, а не в портале.
+  if (!equipment) {
+    throw err.unprocessable(
+      'Обращаются по гарантии конкретного аппарата, а у этой заявки аппарата нет',
+      { warrantyClaim: 'Заявка без аппарата' },
+    );
+  }
   const today = warrantyToday();
 
   if (claim.source === 'equipment') {
@@ -2139,7 +2208,11 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       db
         .select({ c: count() })
         .from(serviceRequests)
-        .innerJoin(officeEquipment, eq(serviceRequests.officeEquipmentId, officeEquipment.id))
+        // Соединение с карточкой держит отбор по типу оргтехники и очередь расхождений — колонки
+        // эти живут в справочнике. ЛЕВОЕ, как и в самой выборке страницы (Р8): останься оно
+        // внутренним, счётчик считал бы одно, а страница показывала бы другое — «показано 20 из
+        // 19». Расходиться этим двум запросам нельзя ни на строку.
+        .leftJoin(officeEquipment, eq(serviceRequests.officeEquipmentId, officeEquipment.id))
         .where(where),
     ]);
     return {
@@ -2258,12 +2331,23 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           })
           .from(serviceRequestItems)
           .innerJoin(serviceRequests, eq(serviceRequestItems.requestId, serviceRequests.id))
-          .innerJoin(officeEquipment, eq(serviceRequests.officeEquipmentId, officeEquipment.id))
-          .innerJoin(
+          /*
+           * Карточка техники, её тип и площадка — ЛЕВЫМИ соединениями, по той же причине, что и в
+           * базовой выборке заявки (Р8, ADR 0146, решение 7). Носитель строки здесь — ВЫПОЛНЕННАЯ
+           * ПОЗИЦИЯ РЕМОНТА, а не аппарат: гарантия на работу существует и у заявки без аппарата
+           * («поставили розетку», «заменили блок питания, привезённого своим»), и при внутреннем
+           * соединении такая строка исчезла бы из реестра молча — то есть человек, пришедший
+           * спорить с сервисом по гарантии, увидел бы, что гарантии нет.
+           *
+           * Отбор по типу оргтехники (`q.equipmentTypeId`) ниже соединение не превращает обратно во
+           * внутреннее: спросив тип, человек и просит только те строки, у которых аппарат есть.
+           */
+          .leftJoin(officeEquipment, eq(serviceRequests.officeEquipmentId, officeEquipment.id))
+          .leftJoin(
             officeEquipmentTypes,
             eq(officeEquipment.equipmentTypeId, officeEquipmentTypes.id),
           )
-          .innerJoin(
+          .leftJoin(
             constructionObjects,
             eq(serviceRequests.equipmentObjectId, constructionObjects.id),
           )
@@ -2333,7 +2417,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       rows.sort((a, b) => {
         const byField =
           q.sortBy === 'equipment'
-            ? a.equipmentName.localeCompare(b.equipmentName)
+            ? // Наименование остаётся строкой и у ремонта по заявке без аппарата — там оно пустое
+              // (снимок заявки, `NOT NULL`). Такие строки собираются в начале списка и из
+              // сортировки не выпадают: сравнивать пустую строку можно, порядок от неё не рушится.
+              a.equipmentName.localeCompare(b.equipmentName)
             : a.warrantyUntil.localeCompare(b.warrantyUntil);
         return desc ? -byField : byField;
       });
@@ -2562,36 +2649,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const body = req.body;
 
-      const [equipment] = await db
-        .select({
-          id: officeEquipment.id,
-          name: officeEquipment.name,
-          serialNumber: officeEquipment.serialNumber,
-          inventoryNumber: officeEquipment.inventoryNumber,
-          objectId: officeEquipment.objectId,
-          ownerDepartmentId: officeEquipment.ownerDepartmentId,
-          location: officeEquipment.location,
-          warrantyUntil: officeEquipment.warrantyUntil,
-        })
-        .from(officeEquipment)
-        .where(
-          and(eq(officeEquipment.id, body.officeEquipmentId), isNull(officeEquipment.deletedAt)),
-        );
-      if (!equipment) {
-        throw err.badRequest('Единица оргтехники не найдена', { officeEquipmentId: 'Не найдена' });
-      }
-
-      const customerDepartmentId = await resolveCustomerDepartment(p, body, equipment);
-      // Область — по заказчику будущей заявки: объектная роль заводит заявку на технику своих
-      // площадок, роль отдела — от имени своего отдела либо на технику своего отдела.
-      assertServiceRequestScope(p, {
-        objectId: equipment.objectId,
-        customerDepartmentId,
-        equipmentDepartmentId: equipment.ownerDepartmentId,
-      });
-      // Где аппарат стоит на самом деле (Р16). Спрашивается ПОСЛЕ области по карточке: заявку
-      // заводят на технику своей области, а чекбокс лишь поправляет объект внутри неё.
-      const equipmentObjectId = await resolveEquipmentObject(p, body, equipment);
+      // Предмет заявки и её заказчик — одним разбором (Р5, Р6, Р7): у заявки с аппаратом они
+      // считаются от карточки единицы, у заявки без аппарата — от оси роли заводящего.
+      const { equipment, equipmentObjectId, customerDepartmentId } = await resolveRequestSubject(
+        p,
+        body,
+      );
 
       /**
        * Адресаты и обратные адреса считаются **до** транзакции (Р67): здесь ходят в базу и в
@@ -2613,7 +2676,11 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const consumables = body.consumables ?? [];
 
       const created = await db.transaction(async (tx) => {
-        await assertNoOpenRequest(tx, equipment.id, kind);
+        // Замок «одна открытая заявка вида на аппарат» (Р21) без аппарата не зовётся, и это не
+        // послабление, а буквальное прочтение правила: запирается ЕДИНИЦА, а её здесь нет. Тем же
+        // читаются и частичные уникальные индексы под ним — в B-tree `NULL` не равен `NULL`, и
+        // открытых заявок без аппарата бывает сколько угодно (миграция 0230).
+        if (equipment) await assertNoOpenRequest(tx, equipment.id, kind);
         await assertConsumablesExist(
           tx,
           consumables.map((line) => line.consumableId),
@@ -2629,23 +2696,40 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         const [row] = await tx
           .insert(serviceRequests)
           .values({
-            officeEquipmentId: equipment.id,
+            officeEquipmentId: equipment?.id ?? null,
             /**
              * Объект заявки — снимок, как и остальные реквизиты предмета, и при поднятой пометке
              * его называет человек (Р16, ответ В3). Справочник заявка при этом НЕ правит: перенос
              * единицы — решение ИТ-службы после проверки, а карточку заводит всякий заявитель, и
              * опечатка в заявке возила бы аппараты по объектам.
+             *
+             * У заявки без аппарата в этой же колонке лежит ЗАКАЗЧИК-ПЛОЩАДКА (Р6) либо `NULL`,
+             * если заказчик — отдел: колонка одна, потому что областью роли площадки заведует
+             * именно она.
              */
             equipmentObjectId,
             objectOverridden: body.objectOverridden,
             customerDepartmentId,
-            equipmentDepartmentId: equipment.ownerDepartmentId,
-            equipmentName: equipment.name,
-            equipmentSerialNumber: equipment.serialNumber,
-            equipmentInventoryNumber: equipment.inventoryNumber,
+            /**
+             * Отдел-владелец единицы — третий снимок области (ADR 0085 §8). У заявки без аппарата
+             * он пуст ВСЕГДА, и не «потому что неоткуда взять»: владельца у несуществующей единицы
+             * нет вовсе, а подставь мы сюда отдел-заказчик, роль отдела видела бы заявку дважды по
+             * двум разным основаниям — и первая же правка заказчика оставила бы её видимой по
+             * второму.
+             */
+            equipmentDepartmentId: equipment?.ownerDepartmentId ?? null,
+            /*
+             * Снимок предмета у заявки без аппарата ПУСТЫМИ СТРОКАМИ, а не «Без аппарата» словами
+             * (§5 плана): колонки эти — копия справочника, и подпись для человека в них означала
+             * бы, что поиск по названию техники находит заявку, у которой техники нет. Как её
+             * называть на экране, решает портал по `equipment: null` (`SERVICE_REQUEST_NO_EQUIPMENT`).
+             */
+            equipmentName: equipment?.name ?? '',
+            equipmentSerialNumber: equipment?.serialNumber ?? '',
+            equipmentInventoryNumber: equipment?.inventoryNumber ?? '',
             // Место — часть того же снимка: сервис поедет по нему, а карточка к тому времени
             // могла переехать (Р57).
-            equipmentLocation: equipment.location,
+            equipmentLocation: equipment?.location ?? '',
             kind,
             description: body.description,
             responsibleName: body.responsibleName,
@@ -2744,6 +2828,199 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       return { request: dto, mail: created.mailFailed ? 'mail_failed' : mailPlan.outcome };
     },
   );
+
+  // ── Предмет и заказчик заводимой заявки (Р5, Р6, Р7) ──
+
+  /** Карточка единицы на момент заведения: из неё снимаются снимки предмета и обе оси области. */
+  interface EquipmentSnapshot {
+    id: string;
+    name: string;
+    serialNumber: string;
+    inventoryNumber: string;
+    objectId: string;
+    ownerDepartmentId: string | null;
+    location: string;
+    warrantyUntil: string | null;
+  }
+
+  /** Что заявка получит в трёх колонках области: предмет, площадка и отдел-заказчик. */
+  interface RequestSubject {
+    /** `null` — заявка без аппарата: снимки предмета пустые, отдел-владелец пуст всегда. */
+    equipment: EquipmentSnapshot | null;
+    equipmentObjectId: string | null;
+    customerDepartmentId: string | null;
+  }
+
+  /**
+   * Предмет заявки и её заказчик — одним разбором, потому что это один вопрос («чья заявка»), у
+   * которого два разных источника ответа.
+   *
+   * С АППАРАТОМ ответ приходит из справочника: площадка — из карточки единицы, отдел-владелец —
+   * оттуда же, отдел-заказчик подсказывается ими и уточняется человеком. Порядок шагов прежний и
+   * не переставлен: сперва область по карточке, потом пометка «не тот объект» внутри неё.
+   *
+   * БЕЗ АППАРАТА справочника нет, и ответ даёт **сам заводящий** — выбором заказчика по оси своей
+   * роли (Р6). Отсюда и страж права здесь же: «аппарат не прислали» — это не пропущенное поле, а
+   * другой способ завести заявку, и разрешение на него отдельное.
+   */
+  async function resolveRequestSubject(
+    p: Principal,
+    body: {
+      officeEquipmentId?: string | null;
+      objectId?: string;
+      objectOverridden: boolean;
+      customerDepartmentId?: string | null;
+    },
+  ): Promise<RequestSubject> {
+    if (body.officeEquipmentId == null) {
+      /**
+       * 403, А НЕ 422 (Р5). Право `serviceRequests.createWithoutEquipment` спрашивается ЗДЕСЬ, а
+       * не схемой и не стражем маршрута:
+       *
+       *   * схемой нельзя — она одна на все учётки и прав не видит вовсе, а «заполните аппарат» в
+       *     ответ рядовому заявителю означало бы «вы ошиблись полем» там, где человек не ошибся
+       *     ничем: ему просто не положено;
+       *   * стражем маршрута нельзя — дверь у ручки одна на оба способа заведения, и требование
+       *     права на ней отобрало бы у всей компании обычную заявку с аппаратом.
+       */
+      if (!can(p, 'serviceRequests.createWithoutEquipment')) {
+        throw err.forbidden(
+          'Заявку без аппарата заводит тот, кому это разрешено отдельно — выберите аппарат из справочника',
+        );
+      }
+      const customer = await resolveEmptySubjectCustomer(p, body);
+      // Второй рубеж под тем же правилом: разбор выше выбирает заказчика по оси роли, а эта
+      // проверка спрашивает у общего источника области, попала ли заявка к самому автору. Разойдись
+      // они однажды — человек отправил бы заявку и не увидел её в списке.
+      assertServiceRequestScope(p, {
+        objectId: customer.equipmentObjectId,
+        customerDepartmentId: customer.customerDepartmentId,
+        equipmentDepartmentId: null,
+      });
+      return { equipment: null, ...customer };
+    }
+
+    const [equipment] = await db
+      .select({
+        id: officeEquipment.id,
+        name: officeEquipment.name,
+        serialNumber: officeEquipment.serialNumber,
+        inventoryNumber: officeEquipment.inventoryNumber,
+        objectId: officeEquipment.objectId,
+        ownerDepartmentId: officeEquipment.ownerDepartmentId,
+        location: officeEquipment.location,
+        warrantyUntil: officeEquipment.warrantyUntil,
+      })
+      .from(officeEquipment)
+      .where(
+        and(eq(officeEquipment.id, body.officeEquipmentId), isNull(officeEquipment.deletedAt)),
+      );
+    if (!equipment) {
+      throw err.badRequest('Единица оргтехники не найдена', { officeEquipmentId: 'Не найдена' });
+    }
+
+    const customerDepartmentId = await resolveCustomerDepartment(p, body, equipment);
+    // Область — по заказчику будущей заявки: объектная роль заводит заявку на технику своих
+    // площадок, роль отдела — от имени своего отдела либо на технику своего отдела.
+    assertServiceRequestScope(p, {
+      objectId: equipment.objectId,
+      customerDepartmentId,
+      equipmentDepartmentId: equipment.ownerDepartmentId,
+    });
+    // Где аппарат стоит на самом деле (Р16). Спрашивается ПОСЛЕ области по карточке: заявку
+    // заводят на технику своей области, а чекбокс лишь поправляет объект внутри неё.
+    const equipmentObjectId = await resolveEquipmentObject(p, body, equipment);
+    return { equipment, equipmentObjectId, customerDepartmentId };
+  }
+
+  /**
+   * Заказчик заявки БЕЗ АППАРАТА — по ОСИ РОЛИ заводящего (Р6, ADR 0146, решение 6).
+   *
+   * **Это не удобство поля, а условие работоспособности заявки.** У заявки с аппаратом площадка
+   * приходит из карточки единицы, и роль площадки, выбравшая заказчиком чужой отдел, всё равно
+   * остаётся в своей области — заявку она видит по объекту. Без аппарата такой опоры нет: три
+   * колонки области заполняет сам человек, и выбор поперёк своей оси создаёт заявку **вне
+   * собственной области автора** — он потеряет её сразу после отправки, а искать её будет некому,
+   * потому что и остальные роли этой оси её не увидят.
+   *
+   * Поэтому:
+   *
+   *   | роль площадки | только свой объект     | `equipment_object_id`     |
+   *   | роль отдела   | только свой отдел      | `customer_department_id`  |
+   *   | ИТ-служба     | и то и другое          | соответственно            |
+   *
+   * ИТ-служба здесь — не исключение из правила, а то же правило: сквозная область модуля (Р54)
+   * означает, что её ось — вся компания, и заявку она не теряет ни при каком выборе. Тем же
+   * читаются роли без осей вовсе (администратор): предикат области им ничего не сужает.
+   *
+   * 422 с именем поля, а не 403: право заводить заявку без аппарата у человека есть — не годится
+   * присланное значение. Тот же код и та же форма ответа, что у чужого объекта в пометке «не тот
+   * объект» и у чужого подразделения заявителя.
+   */
+  async function resolveEmptySubjectCustomer(
+    p: Principal,
+    body: { objectId?: string; customerDepartmentId?: string | null },
+  ): Promise<{ equipmentObjectId: string | null; customerDepartmentId: string | null }> {
+    // Источник тот же, что у `serviceRequestScopeWhere` и `assertServiceRequestScope`, и спрошен он
+    // в том же порядке: сквозная область снимает ось целиком, и только под ней спрашивается роль.
+    const wide = hasModuleWideScope(p.grantCodes, 'serviceRequests');
+    const objectAxis = !wide && isObjectScopedRole(p.role);
+    const departmentAxis = !wide && isDepartmentScopedRole(p.role);
+    const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+
+    if (body.objectId) {
+      if (departmentAxis) {
+        throw err.unprocessable(
+          `${who} заводит заявку без аппарата от своего отдела: заявку от площадки она сама потом не увидит`,
+          { objectId: 'Заявка заводится от отдела' },
+        );
+      }
+      if (objectAxis && !p.constructionObjectIds.includes(body.objectId)) {
+        throw err.unprocessable(
+          'Заявку можно завести только от своего объекта — заявку от чужого не увидит и сам заявитель',
+          { objectId: 'Чужой объект' },
+        );
+      }
+      // Существование, а не активность: закрывающаяся площадка ещё работает, и заявки с неё
+      // приходят до последнего дня. Тот же разбор, что у пометки «не тот объект» рядом.
+      const [object] = await db
+        .select({ id: constructionObjects.id })
+        .from(constructionObjects)
+        .where(eq(constructionObjects.id, body.objectId));
+      if (!object) throw err.unprocessable('Объект не найден', { objectId: 'Не найден' });
+      return { equipmentObjectId: object.id, customerDepartmentId: null };
+    }
+
+    // Схема сверила: заказчик ровно один (Р7). Раз это не объект — значит отдел, и пустым он здесь
+    // быть не может. Утверждение поэтому проверяется, а не подразумевается: разойдись схема с этим
+    // разбором, заявка ушла бы в базу с нулём заказчиков и упёрлась бы в `CHECK` кодом 23514.
+    const chosenDepartment = body.customerDepartmentId;
+    if (!chosenDepartment) {
+      throw err.unprocessable('Укажите, для кого заявка: объект или отдел', {
+        objectId: 'Заказчик не указан',
+      });
+    }
+    if (objectAxis) {
+      throw err.unprocessable(
+        `${who} заводит заявку без аппарата от своей площадки: заявку от отдела она сама потом не увидит`,
+        { customerDepartmentId: 'Заявка заводится от площадки' },
+      );
+    }
+    /*
+     * Свой отдел проверяет общий разбор заказчика — тот же, что у заявки с аппаратом: чужой отдел
+     * там отвечает 403, и заводить рядом второй ответ на тот же вопрос нельзя. Подсказок он здесь
+     * не применяет ни одной — ветка «поле пришло со значением» до них не доходит, — и это верно:
+     * подсказывать заказчика неоткуда, когда предмета нет.
+     */
+    return {
+      equipmentObjectId: null,
+      customerDepartmentId: await resolveCustomerDepartment(
+        p,
+        { customerDepartmentId: chosenDepartment },
+        { ownerDepartmentId: null },
+      ),
+    };
+  }
 
   /**
    * От чьего имени заявка (Р5). Значение по умолчанию — подсказка, а не фиксация: сотрудник
@@ -3009,6 +3286,37 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const customerChanged =
         body.customerDepartmentId !== undefined &&
         (body.customerDepartmentId ?? null) !== row.customerDepartmentId;
+      /**
+       * У ЗАЯВКИ БЕЗ АППАРАТА ЗАКАЗЧИК НЕ МЕНЯЕТ ОСЬ (Р6, Р7). Технику при правке не меняют вовсе —
+       * это было верно и раньше, — а вот заказчик правится, и без этих двух отказов он утащил бы
+       * заявку туда, где `service_requests_subject_check` её уже не пускает:
+       *
+       *   * заявка ОТ ПЛОЩАДКИ + присланный отдел = два заказчика сразу, и заявку считали бы своей
+       *     обе роли;
+       *   * заявка ОТ ОТДЕЛА + присланный `null` («заявка от площадки») = ноль заказчиков, и её не
+       *     увидит никто.
+       *
+       * База обе строки отвергнет, но ответом `23514` — то есть 500 вместо фразы. Внутри своей оси
+       * правка при этом остаётся: отдел на соседний отдел меняется, и чужой из них отбивает общий
+       * разбор заказчика (403), как у заявки с аппаратом.
+       *
+       * Заявка с аппаратом сюда не попадает вовсе: у неё площадка заполнена всегда (первая ветвь
+       * того же `CHECK`), и отдел-заказчик рядом с ней законен и обязателен не бывает.
+       */
+      if (customerChanged && row.officeEquipmentId === null) {
+        if (row.equipmentObjectId !== null) {
+          throw err.unprocessable(
+            'Заявка без аппарата заведена от площадки — отдел-заказчик ей не назначается',
+            { customerDepartmentId: 'Заявка от площадки' },
+          );
+        }
+        if (body.customerDepartmentId === null) {
+          throw err.unprocessable(
+            'У заявки без аппарата заказчик обязателен: без него её не увидит никто, включая заявителя',
+            { customerDepartmentId: 'Заказчик обязателен' },
+          );
+        }
+      }
       const customerDepartmentId = customerChanged
         ? await resolveCustomerDepartment(p, body, {
             ownerDepartmentId: row.equipmentDepartmentId,
@@ -3042,14 +3350,24 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         if (body.warrantyClaim !== undefined) {
           // Обращение по гарантии проверяется заново: за время правки срок мог кончиться, а
           // заявка-источник — уехать в архив.
-          const [equipment] = await tx
-            .select({
-              id: officeEquipment.id,
-              warrantyUntil: officeEquipment.warrantyUntil,
-            })
-            .from(officeEquipment)
-            .where(eq(officeEquipment.id, row.officeEquipmentId));
-          const claim = await resolveWarrantyClaim(tx, body.warrantyClaim, equipment!, row.id);
+          // У заявки без аппарата спрашивать справочник не о чем, и запрос не делается вовсе:
+          // отказ (или снятие обращения) разбирает `resolveWarrantyClaim` по пустому аппарату.
+          const [equipment] =
+            row.officeEquipmentId === null
+              ? []
+              : await tx
+                  .select({
+                    id: officeEquipment.id,
+                    warrantyUntil: officeEquipment.warrantyUntil,
+                  })
+                  .from(officeEquipment)
+                  .where(eq(officeEquipment.id, row.officeEquipmentId));
+          const claim = await resolveWarrantyClaim(
+            tx,
+            body.warrantyClaim,
+            equipment ?? null,
+            row.id,
+          );
           patch.warrantyClaimSource = claim.source;
           patch.warrantyClaimItemId = claim.itemId;
         }
@@ -5136,7 +5454,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         // заявку в обход `serviceRequests.read`.
         assertScope(p, row);
         if (!row.deletedAt) return false;
-        if (!isServiceRequestClosed(row.status)) {
+        // Место в очереди по единице занимает только заявка С аппаратом. Правило «одна открытая
+        // заявка на единицу и вид» (Р21) держат уникальные частичные индексы по
+        // `office_equipment_id`, а `NULL` в уникальном индексе PostgreSQL считает отличным от
+        // всякого другого `NULL` — заявки без аппарата (Р8) друг другу не мешают и мешать не
+        // должны: «одна заявка на аппарат» без аппарата означало бы «одна заявка на всю компанию».
+        // Условие названо явно, а не оставлено базе: сравнение `office_equipment_id = NULL` и так
+        // не находит ничего, но отвечает это «ничего» случайностью трёхзначной логики, а не
+        // правилом, — и первая же правка запроса превратила бы случайность в дефект.
+        if (!isServiceRequestClosed(row.status) && row.officeEquipmentId !== null) {
           await assertNoOpenRequest(tx, row.officeEquipmentId, row.kind, row.id);
         }
         await tx

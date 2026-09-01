@@ -170,13 +170,25 @@ export function WarrantiesTab() {
 
   const grid = {
     canClaim: can('serviceRequests.create'),
-    onClaim: (row: ServiceWarrantyRowDto) =>
+    /*
+     * Обращение заводится ПО АППАРАТУ: форма ставит его в поле «Какой аппарат» и не даёт менять
+     * (Р26). У гарантии на работу по заявке БЕЗ аппарата (Р8) ставить туда нечего, поэтому строка
+     * такую кнопку и не показывает — решает это `warrantyGrid` по тому же признаку. Здесь стоит
+     * вторая половина того же правила: без единицы обращение не открывается вовсе, и молчание
+     * честнее окна с пустым обязательным полем.
+     *
+     * Сама строка при этом остаётся в реестре: гарантия на работу существует и там, где предмета в
+     * справочнике нет, — потеряй её реестр, спорить с сервисом было бы нечем.
+     */
+    onClaim: (row: ServiceWarrantyRowDto) => {
+      if (!row.equipmentId) return;
       setClaim({
         equipmentId: row.equipmentId,
         source: row.kind === 'equipment' ? 'equipment' : 'item',
         itemId: row.itemId,
         subject: row.subject,
-      }),
+      });
+    },
     onOpenRequest: openSourceRequest,
   };
   const columns = warrantyColumns(grid);

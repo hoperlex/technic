@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
 import { objectOptionsQuery } from '@entities/object';
 import { WarrantyTag } from '@entities/office-equipment';
+import { serviceRequestEquipmentName, serviceRequestPlaceLine } from '@entities/service-request';
 import { AutoSelect } from '@shared/ui';
 import { useObjectScope } from '../../hooks/useObjectScope';
 
@@ -38,6 +39,7 @@ export function ServiceRequestSubject({
   const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
   if (request) {
+    const place = serviceRequestPlaceLine(request);
     return (
       <Descriptions
         size="small"
@@ -45,33 +47,43 @@ export function ServiceRequestSubject({
         style={{ marginBottom: 16 }}
         labelStyle={{ width: 140 }}
         items={[
-          { key: 'name', label: 'Аппарат', children: request.equipment.name },
-          {
-            key: 'numbers',
-            label: 'Номера',
-            children: `инв. № ${request.equipment.inventoryNumber || '—'} · сер. № ${
-              request.equipment.serialNumber || '—'
-            }`,
-          },
-          {
-            key: 'object',
-            label: 'Где стоит',
-            children: (
-              <Space size={8} wrap>
-                <span>
-                  {[`${request.object.code} — ${request.object.name}`, request.equipment.location]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </span>
-                {/* Пометка «не тот объект» историчная и правке не подлежит (Р16): это факт
-                    заявления, а не состояние. Строкой, а не чекбоксом: правка заявки объекта не
-                    меняет — единицу переносит ИТ-служба в справочнике, разобрав отбор расхождений. */}
-                {request.objectOverridden && (
-                  <Typography.Text type="secondary">объект указал заявитель</Typography.Text>
-                )}
-              </Space>
-            ),
-          },
+          // «Без аппарата» словами (Р8): у правимой заявки предмета может не быть вовсе, и пустое
+          // поле в форме прочиталось бы как «реквизиты не подтянулись».
+          { key: 'name', label: 'Аппарат', children: serviceRequestEquipmentName(request) },
+          // Номеров и места без аппарата не существует — строки не пустеют, а не рисуются: строка
+          // «инв. № — · сер. № —» утверждала бы, что у аппарата их не заполнили.
+          ...(request.equipment
+            ? [
+                {
+                  key: 'numbers',
+                  label: 'Номера',
+                  children: `инв. № ${request.equipment.inventoryNumber || '—'} · сер. № ${
+                    request.equipment.serialNumber || '—'
+                  }`,
+                },
+              ]
+            : []),
+          ...(place
+            ? [
+                {
+                  key: 'object',
+                  label: 'Где стоит',
+                  children: (
+                    <Space size={8} wrap>
+                      <span>{place}</span>
+                      {/* Пометка «не тот объект» историчная и правке не подлежит (Р16): это факт
+                          заявления, а не состояние. Строкой, а не чекбоксом: правка заявки объекта
+                          не меняет — единицу переносит ИТ-служба в справочнике, разобрав отбор
+                          расхождений. У заявки без аппарата пары не бывает вовсе (Р7), и живёт она
+                          поэтому внутри строки площадки. */}
+                      {request.objectOverridden && (
+                        <Typography.Text type="secondary">объект указал заявитель</Typography.Text>
+                      )}
+                    </Space>
+                  ),
+                },
+              ]
+            : []),
         ]}
       />
     );

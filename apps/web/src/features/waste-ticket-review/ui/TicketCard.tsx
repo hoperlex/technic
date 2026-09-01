@@ -71,7 +71,7 @@ export function TicketCard({
 
   return (
     <Card size="small" styles={{ body: { padding: 12 } }}>
-      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={6} style={{ width: '100%' }}>
         <Space size={8} wrap style={{ justifyContent: 'space-between', width: '100%' }}>
           <Space size={8} wrap>
             <TicketState ticket={ticket} />
@@ -188,7 +188,7 @@ function Proposal({
   }
   if (p.addressRaw !== ticket.addressRaw) diffs.push('адрес');
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <Tooltip title="Новый проход прочитал иначе. Талон не менялся — решать вам">
         <Tag color="purple" style={{ marginInlineEnd: 0 }}>
           новое чтение
@@ -227,7 +227,7 @@ function Disputed({
     <Tooltip
       title={
         own.length > 0 ? (
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             <span>Прочитали по-разному:</span>
             {own.map((c, i) => (
               <span key={`${c.model}-${i}`}>

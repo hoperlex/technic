@@ -187,11 +187,11 @@ export function GrantBuilderModal({ open, grant, draft, onClose, onCopy }: Props
         <Row gutter={[16, 16]}>
           <Col xs={24} md={7}>
             {readOnly ? (
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space orientation="vertical" size={8} style={{ width: '100%' }}>
                 <Alert
                   type="info"
                   showIcon
-                  message="Только просмотр"
+                  title="Только просмотр"
                   description="Состав и код системного полномочия живут в коде портала: правка в базе отвязала бы набор от таблиц кода и сломала бы обратимость перевода ролей. Копия заводится обычным пользовательским набором — с тем же составом, но без сквозной области."
                 />
                 <div>
@@ -267,7 +267,7 @@ export function GrantBuilderModal({ open, grant, draft, onClose, onCopy }: Props
                   <Alert
                     type="warning"
                     showIcon
-                    message={`Набор выдан учётным записям: ${grant.holderCount}`}
+                    title={`Набор выдан учётным записям: ${grant.holderCount}`}
                     description="Правка меняет их доступ сразу — перед сохранением портал покажет, кого и как именно."
                   />
                 )}

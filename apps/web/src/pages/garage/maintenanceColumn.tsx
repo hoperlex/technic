@@ -60,7 +60,7 @@ function cell(summary: VehicleMaintenanceSummaryDto, href: string): ReactNode {
   const hint = maintenanceStateHint(summary);
   const last = summary.lastMaintenance;
   return (
-    <Space direction="vertical" size={2} align="start">
+    <Space orientation="vertical" size={2} align="start">
       {/* Объяснение — на самом теге: в колонку оно не помещается, а «неизвестно» без него
           читается как поломка портала, хотя означает две разные вещи (Р11в). */}
       <span title={hint}>

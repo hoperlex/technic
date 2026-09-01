@@ -189,7 +189,7 @@ export function OrphanBlock({ item, savedAt, origin, targets, onTransfer }: Orph
         <Alert
           type="info"
           showIcon
-          message="Перенести некуда"
+          title="Перенести некуда"
           description="Ни одна строка этого дня не открыта для правки. Числа никуда не денутся — продиктуйте их диспетчеру."
         />
       ) : (
@@ -211,13 +211,13 @@ export function OrphanBlock({ item, savedAt, origin, targets, onTransfer }: Orph
           </Button>,
         ]}
       >
-        <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+        <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
           {targets.length > 1 && (
             <Radio.Group
               value={target?.key ?? null}
               onChange={(e) => setChosenKey(e.target.value as string)}
             >
-              <Space direction="vertical">
+              <Space orientation="vertical">
                 {targets.map((entry) => (
                   <Radio key={entry.key} value={entry.key}>
                     {entry.label}
@@ -232,7 +232,7 @@ export function OrphanBlock({ item, savedAt, origin, targets, onTransfer }: Orph
               <Alert
                 type="warning"
                 showIcon
-                message="В этой строке уже есть введённое"
+                title="В этой строке уже есть введённое"
                 description="Перенос заменит его целиком, вместе с файлами. Подтверждение аномалии придётся поставить заново: подтверждают показанное, а показывают его после переноса."
               />
               <Comparison current={target.occupied} next={item} />

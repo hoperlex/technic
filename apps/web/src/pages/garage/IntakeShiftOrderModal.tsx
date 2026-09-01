@@ -158,7 +158,7 @@ export function IntakeShiftOrderModal({
             type="error"
             showIcon
             style={{ marginBottom: 16 }}
-            message="День не поместился на страницу журнала — порядок отсюда не менять"
+            title="День не поместился на страницу журнала — порядок отсюда не менять"
           />
         )}
 
@@ -169,7 +169,7 @@ export function IntakeShiftOrderModal({
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
-            message="За этот день у машины одна смена — переставлять нечего"
+            title="За этот день у машины одна смена — переставлять нечего"
           />
         )}
 
@@ -178,7 +178,7 @@ export function IntakeShiftOrderModal({
         {isLoading || !versionsReady ? (
           <Skeleton active paragraph={{ rows: 3 }} />
         ) : (
-          <Space direction="vertical" size={8} style={{ display: 'flex', marginBottom: 16 }}>
+          <Space orientation="vertical" size={8} style={{ display: 'flex', marginBottom: 16 }}>
             {order.map((itemId, index) => {
               const row = byId.get(itemId);
               if (!row) return null;

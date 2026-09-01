@@ -80,9 +80,11 @@ function apply(d: AnyDirectory, env: unknown, model: unknown, cells: Cells): App
     warn: (message) => warnings.push(message),
   };
   for (const column of d.columns(env)) {
-    const text = cells[column.header];
-    if (text === undefined || !column.set) continue;
-    column.set(model, text, ctx);
+    // Колонка отзывается и на прежние свои имена (`aliases`) — так её ищет движок (`mapHeader`),
+    // и без этого файл, выгруженный до переименования колонки, здесь бы не проверялся.
+    const named = [column.header, ...(column.aliases ?? [])].find((h) => cells[h] !== undefined);
+    if (named === undefined || !column.set) continue;
+    column.set(model, cells[named]!, ctx);
   }
   d.check?.(model, ctx, env);
   return {
@@ -119,16 +121,36 @@ const objectRow = {
   isActive: true,
 };
 
+/** Заголовок колонки площадок — он же ключ ячейки в проверках ниже. */
+const OBJECTS_HEADER = 'Площадки (коды объектов)';
+
+/**
+ * Окружение справочника отделов (ADR 0144). Набор площадок приходит отдельной картой, а не из
+ * колонки строки: колонка `construction_object_id` живёт совместимой проекцией и при наборе из
+ * нескольких площадок стоит в `NULL`.
+ *
+ * Коды нарочно разные по устройству: «МЫТ, К2» с запятой внутри — тот случай, ради которого
+ * разделителем взята только точка с запятой, «ПЛОХ;ОЙ» — тот, который выгрузка обязана отвергнуть.
+ */
 const departmentEnv = {
-  objectIdByCode: new Map([['АЛ13', 'obj-1']]),
-  objectCodeById: new Map([['obj-1', 'АЛ13']]),
+  objectIdByCode: new Map([
+    ['АЛ13', 'obj-1'],
+    ['СЕВ', 'obj-2'],
+    ['МЫТ, К2', 'obj-3'],
+    ['ПЛОХ;ОЙ', 'obj-4'],
+  ]),
+  objectCodesByDepartmentId: new Map([
+    ['dep-1', ['АЛ13', 'СЕВ']],
+    ['dep-3', ['ПЛОХ;ОЙ']],
+  ]),
 };
 
 const departmentRow = {
   id: 'dep-1',
   code: 'ПТО',
   name: 'Производственно-технический отдел',
-  constructionObjectId: 'obj-1',
+  // При наборе из нескольких площадок проекция пуста — и модель обязана собираться не из неё.
+  constructionObjectId: null,
   isActive: true,
 };
 
@@ -250,35 +272,88 @@ describe('отделы', () => {
     roundTrip(d, departmentEnv, departmentRow);
   });
 
-  it('площадка выгружается кодом объекта, а не идентификатором', () => {
+  it('набор выгружается кодами объектов через «;», а не идентификаторами', () => {
     const cells = cellsOf(d, departmentEnv, d.model(departmentRow, departmentEnv));
-    expect(cells['Площадка (код объекта)']).toBe('АЛ13');
+    expect(cells[OBJECTS_HEADER]).toBe('АЛ13; СЕВ');
+    // Колонка-проекция у этого отдела пуста (набор из двух), а ячейка полна: модель собрана из
+    // набора, а не из `construction_object_id`.
+    expect(departmentRow.constructionObjectId).toBeNull();
     expect(Object.values(cells)).not.toContain('obj-1');
+  });
+
+  it('прежний заголовок остался псевдонимом: файл, выгруженный до набора, читается', () => {
+    const aliases = new Map(d.columns(departmentEnv).map((c) => [c.header, c.aliases ?? []]));
+    expect(aliases.get(OBJECTS_HEADER)).toEqual(['Площадка (код объекта)']);
+
+    // Старый файл несёт один код, и он читается как набор из одного: у отдела с двумя площадками
+    // останется названная. Молчаливой потерей это не станет — правку показывает предпросмотр.
+    const applied = apply(d, departmentEnv, d.model(departmentRow, departmentEnv), {
+      'Площадка (код объекта)': 'СЕВ',
+    });
+    expect(applied.problems).toEqual([]);
+    expect(applied.cells[OBJECTS_HEADER]).toBe('СЕВ');
   });
 
   it('неизвестный код площадки — ошибка со ссылкой на справочник объектов', () => {
     const applied = apply(d, departmentEnv, d.model(departmentRow, departmentEnv), {
-      'Площадка (код объекта)': 'obj7',
+      [OBJECTS_HEADER]: 'АЛ13; obj7',
     });
     expect(applied.problems).toEqual([
       'площадка «obj7» не найдена — сначала загрузите справочник объектов',
     ]);
   });
 
-  it('пустая ячейка заведённую площадку не снимает', () => {
+  it('пустая ячейка заведённый набор не снимает', () => {
     const applied = apply(d, departmentEnv, d.model(departmentRow, departmentEnv), {
-      'Площадка (код объекта)': '',
+      [OBJECTS_HEADER]: '',
     });
     expect(applied.problems).toEqual([]);
-    expect(applied.cells['Площадка (код объекта)']).toBe('АЛ13');
+    expect(applied.cells[OBJECTS_HEADER]).toBe('АЛ13; СЕВ');
   });
 
-  it('отдел без площадки — рабочее состояние, а не ошибка строки', () => {
-    const office = { ...departmentRow, id: 'dep-2', code: 'АХО', constructionObjectId: null };
+  it('отдел без площадок — рабочее состояние, а не ошибка строки', () => {
+    const office = { ...departmentRow, id: 'dep-2', code: 'АХО' };
     roundTrip(d, departmentEnv, office);
     const applied = apply(d, departmentEnv, d.model(office, departmentEnv), {});
     expect(applied.problems).toEqual([]);
-    expect(applied.cells['Площадка (код объекта)']).toBe('');
+    expect(applied.cells[OBJECTS_HEADER]).toBe('');
+  });
+
+  it('перестановка и повтор кодов в ячейке изменением не считаются', () => {
+    const before = d.model(departmentRow, departmentEnv);
+    const applied = apply(d, departmentEnv, d.model(departmentRow, departmentEnv), {
+      [OBJECTS_HEADER]: ' СЕВ ;АЛ13; АЛ13 ',
+    });
+    expect(applied.problems).toEqual([]);
+    // Сравнение движка идёт по тексту ячейки: совпал — правки в отчёте нет, сессии отдела живы, а
+    // в журнал доступа не уходит события с пустой разницей.
+    expect(applied.cells[OBJECTS_HEADER]).toBe(cellsOf(d, departmentEnv, before)[OBJECTS_HEADER]);
+  });
+
+  it('запятая внутри кода объекта разделителем не считается', () => {
+    const applied = apply(d, departmentEnv, d.model(departmentRow, departmentEnv), {
+      [OBJECTS_HEADER]: 'МЫТ, К2',
+    });
+    expect(applied.problems).toEqual([]);
+    expect(applied.cells[OBJECTS_HEADER]).toBe('МЫТ, К2');
+  });
+
+  it('порог в 50 площадок называет строку файла, а не падает служебным отказом', () => {
+    const codes = Array.from({ length: 51 }, (_, i) => `К${i + 1}`);
+    const applied = apply(d, departmentEnv, d.model(departmentRow, departmentEnv), {
+      [OBJECTS_HEADER]: codes.join('; '),
+    });
+    // Ровно одна жалоба: о длине. Полсотни «площадка не найдена» рядом с ней скрыли бы причину.
+    expect(applied.problems).toEqual(['площадок у отдела не больше 50, а в строке их 51']);
+  });
+
+  it('код объекта с «;» внутри останавливает выгрузку внятным текстом', () => {
+    const broken = { ...departmentRow, id: 'dep-3', code: 'ГАР', name: 'Гарантийный отдел' };
+    // Экранирования нет намеренно: файл, собранный по одному правилу и прочитанный по другому,
+    // потерял бы половину кода молча. Отказ приходит до того, как соберётся книга.
+    expect(() => cellsOf(d, departmentEnv, d.model(broken, departmentEnv))).toThrow(
+      /точку с запятой/u,
+    );
   });
 });
 

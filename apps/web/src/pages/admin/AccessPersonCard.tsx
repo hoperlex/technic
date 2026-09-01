@@ -122,7 +122,7 @@ export function AccessCard({ user, onClose }: CardProps) {
     >
       {user && subject && origins && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <Space direction="vertical" size={4}>
+          <Space orientation="vertical" size={4}>
             <Typography.Text type="secondary">{user.email}</Typography.Text>
             {roleTags(user)}
           </Space>
@@ -135,7 +135,7 @@ export function AccessCard({ user, onClose }: CardProps) {
                 Наборов нет: всё, что человек может, идёт от должности.
               </Typography.Text>
             ) : (
-              <Space direction="vertical" size={4}>
+              <Space orientation="vertical" size={4}>
                 {grantTags(user)}
                 {/* Ограничение названо прямо: витрина знает, какие наборы выданы, но не знает их
                     состава — сервер отдаёт объединение прав, а не разбивку по наборам. Догадка «это
@@ -176,7 +176,7 @@ export function AccessCard({ user, onClose }: CardProps) {
                 Прав нет ни одного: без роли учётка для портала — никто.
               </Typography.Text>
             ) : (
-              <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+              <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
                 {open.map(({ module, granted }) => (
                   <div key={module}>
                     <Typography.Text strong>{permissionModuleLabels[module]}</Typography.Text>

@@ -4,6 +4,7 @@ import {
   DEFAULT_MAIL_ACCOUNT,
   formatServiceRequestNumber,
   moduleMailEventLabels,
+  SERVICE_REQUEST_NO_EQUIPMENT,
   serviceRequestStatusLabels,
   type ModuleMailEvent,
   type ModuleMailOutcome,
@@ -337,12 +338,24 @@ export interface ServiceLetterData {
   description: string;
   responsibleName: string;
   responsiblePhone: string;
+  /**
+   * Аппарат заявки: `null` — заявки без аппарата (Р8, ADR 0146, решение 7). Признак стоит отдельным
+   * полем, а не выводится из пустых реквизитов: пустое наименование бывает и у испорченной карточки,
+   * а письмо обязано различать «аппарата нет» и «аппарат есть, но мы про него ничего не написали».
+   */
+  officeEquipmentId: string | null;
   equipmentName: string;
   equipmentSerialNumber: string;
   equipmentInventoryNumber: string;
   equipmentLocation: string;
-  objectCode: string;
-  objectName: string;
+  /**
+   * Площадка предмета. Пустеет вместе с аппаратом — снимок места у заявки «от отдела» брать
+   * неоткуда, — и приезжает из ЛЕВОГО соединения: внутреннее уронило бы сборку письма целиком
+   * («Заявка … не найдена при сборке письма»), то есть заведение такой заявки отвечало бы
+   * `mail_failed` на ровном месте.
+   */
+  objectCode: string | null;
+  objectName: string | null;
   departmentName: string | null;
   attachments: number;
   authorName: string | null;
@@ -391,7 +404,7 @@ export async function loadServiceLetterData(tx: Tx, requestId: string): Promise<
       )`,
     })
     .from(serviceRequests)
-    .innerJoin(constructionObjects, eq(serviceRequests.equipmentObjectId, constructionObjects.id))
+    .leftJoin(constructionObjects, eq(serviceRequests.equipmentObjectId, constructionObjects.id))
     .leftJoin(departments, eq(serviceRequests.customerDepartmentId, departments.id))
     .leftJoin(users, eq(serviceRequests.createdBy, users.id))
     .leftJoin(counterparties, eq(serviceRequests.serviceCounterpartyId, counterparties.id))
@@ -407,6 +420,9 @@ export async function loadServiceLetterData(tx: Tx, requestId: string): Promise<
     description: row.r.description,
     responsibleName: row.r.responsibleName,
     responsiblePhone: row.r.responsiblePhone,
+    // Колонка ещё `NOT NULL` (снимает выпуск 2б) — расширение до `string | null` записано в типе
+    // поля, а не здесь: значение придёт пустым позже, чем ветка «аппарата нет» понадобится.
+    officeEquipmentId: row.r.officeEquipmentId,
     equipmentName: row.r.equipmentName,
     equipmentSerialNumber: row.r.equipmentSerialNumber,
     equipmentInventoryNumber: row.r.equipmentInventoryNumber,
@@ -423,6 +439,8 @@ export async function loadServiceLetterData(tx: Tx, requestId: string): Promise<
 
 /** Номера единицы одной строкой: их печатает производитель и клеит бухгалтерия. */
 function numbersOf(data: ServiceLetterData): string {
+  // У заявки без аппарата номеров нет вовсе, и спрашивать снимок незачем: он пуст.
+  if (data.officeEquipmentId === null) return '';
   const parts = [
     data.equipmentInventoryNumber ? `инв. ${data.equipmentInventoryNumber}` : '',
     data.equipmentSerialNumber ? `SN ${data.equipmentSerialNumber}` : '',
@@ -469,10 +487,24 @@ export function renderServiceLetter(
   const lines = [
     `Статус: ${serviceRequestStatusLabels[data.status]}`,
     ...(assignment ? [`Назначены: ${assigneesOf(data)}`] : []),
-    `Техника: ${data.equipmentName}${numbersOf(data) ? ` · ${numbersOf(data)}` : ''}`,
-    `Где стоит: ${data.objectCode} — ${data.objectName}${
-      data.equipmentLocation ? `, ${data.equipmentLocation}` : ''
-    }`,
+    /**
+     * Предмет заявки. У заявки без аппарата (Р8) строка не исчезает, а говорит это словами: письмо
+     * читают в сервисной компании, у которой портала может не быть вовсе, и пропавшая строка была
+     * бы прочитана как потерянные данные, а не как законное состояние.
+     */
+    `Техника: ${data.officeEquipmentId === null ? SERVICE_REQUEST_NO_EQUIPMENT : `${data.equipmentName}${numbersOf(data) ? ` · ${numbersOf(data)}` : ''}`}`,
+    /**
+     * А вот «Где стоит» без площадки уходит целиком, и это не то же самое: у заявки без аппарата
+     * места нет ни в каком виде, и строка «Где стоит: —» отвечала бы на вопрос, которого никто не
+     * задавал. Откуда заявка, читается строкой «Отдел» ниже.
+     */
+    ...(data.objectCode !== null || data.objectName !== null
+      ? [
+          `Где стоит: ${data.objectCode ?? ''} — ${data.objectName ?? ''}${
+            data.equipmentLocation ? `, ${data.equipmentLocation}` : ''
+          }`,
+        ]
+      : []),
     ...(data.departmentName ? [`Отдел: ${data.departmentName}`] : []),
     ...(data.responsibleName || data.responsiblePhone
       ? [`Контакт: ${[data.responsibleName, data.responsiblePhone].filter(Boolean).join(', ')}`]

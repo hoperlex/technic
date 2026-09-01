@@ -288,12 +288,16 @@ export function DriverLayout({ children }: { children?: ReactNode }) {
    *
    * Вложенный `App` рядом с ней — ради сообщений: `App.useApp()` страницы показаний берёт ближайший
    * контекст, и без него отказ хранилища и «Показания переданы» остались бы портальными 16 px
-   * посреди экрана, набранного двадцатым. `component={false}` — чтобы обёртка не завела лишний
-   * блок между `main` и высотой в 100dvh, на которой держится закреплённый подвал.
+   * посреди экрана, набранного двадцатым. Узел ему нужен свой: в antd 6 включён `cssVar`, и при
+   * `component={false}` класс с переменными темы вешать не на что — вложенный `App` оставался без
+   * `driverTheme`, а сообщения кабинета снова набирались портальным размером. Отсюда
+   * `component="div"` со `style={{ display: 'contents' }}`: узел для класса есть, а лишнего блока
+   * между `main` и высотой в 100dvh, на которой держится закреплённый подвал, он не заводит —
+   * коробки у такого элемента нет вовсе, дети встают в поток родителя.
    */
   return (
     <ConfigProvider theme={driverTheme}>
-      <AntApp component={false}>
+      <AntApp component="div" style={{ display: 'contents' }}>
         <div className="driver-shell" style={shellStyle}>
           <header style={headerStyle}>
             <div style={rowStyle}>

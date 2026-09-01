@@ -27,7 +27,7 @@ function CounterValue({ text, measuredOn }: { text: string | null; measuredOn: s
     return <Typography.Text type="secondary">— снимков нет</Typography.Text>;
   }
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <span>{text}</span>
       <Typography.Text type="secondary" style={secondary}>
         снято {dayjs(measuredOn).format(SHOWN_DATE)}
@@ -40,7 +40,7 @@ export function ReadingCardCounters({ card }: { card: VehicleReadingCardDto }) {
   const { lastOdometer, lastEngineHours } = card;
 
   return (
-    <Space direction="vertical" size={6} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={6} style={{ display: 'flex' }}>
       <ViewFields
         items={[
           {

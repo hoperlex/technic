@@ -87,7 +87,7 @@ export function documentColumns(type: CredentialTypeCode): TableColumnType<Drive
         );
         if (!license) {
           return (
-            <Space direction="vertical" size={0}>
+            <Space orientation="vertical" size={0}>
               <Typography.Text type="secondary">Не заведено</Typography.Text>
               {missing}
             </Space>
@@ -98,7 +98,7 @@ export function documentColumns(type: CredentialTypeCode): TableColumnType<Drive
         // с осиротевшего разделителя, и «не внесено» читалось бы как сбой вёрстки.
         const noRequisites = licenseRequisitesMissing(licenseNumberLabel(license));
         return (
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             <span>
               {noRequisites ? (
                 <Typography.Text type="warning">Серия и номер не внесены</Typography.Text>
@@ -243,7 +243,7 @@ export function documentsBlock(
             : 'Не заведено. По должности этот документ от человека и не требуется.'}
         </Typography.Paragraph>
       )}
-      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={4} style={{ width: '100%' }}>
         {licenses.map((l, i) => {
           const defect = licenseDefect(l, today());
           return (

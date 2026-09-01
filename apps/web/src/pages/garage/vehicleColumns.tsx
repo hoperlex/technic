@@ -51,7 +51,7 @@ type VehicleColumnsDeps = {
 /** Состояние дня плюс причина недоступности: «в ремонте» объясняет тег, а не повторяет его. */
 function stateCell(r: GarageVehicleDto) {
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <Tag color={garageVehicleStateColors[r.state]} style={{ marginInlineEnd: 0 }}>
         {garageVehicleStateLabels[r.state]}
       </Tag>
@@ -85,7 +85,7 @@ export function vehicleColumns({
         dataIndex: 'label',
         width: 210,
         render: (_v, r) => (
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             <span>{r.label}</span>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {[r.modelName, r.garageNumber ? `гар. № ${r.garageNumber}` : null]
@@ -130,7 +130,7 @@ export function vehicleColumns({
        * Журнал отвечает «что было по сменам», карточка — «сколько вышло за период» (§7).
        */
       render: (_v, r) => (
-        <Space direction="vertical" size={2} align="start">
+        <Space orientation="vertical" size={2} align="start">
           <Tag color={vehicleReadingDayStateColors[r.readingState]} style={{ marginInlineEnd: 0 }}>
             {vehicleReadingDayStateLabels[r.readingState]}
           </Tag>
@@ -165,7 +165,7 @@ export function vehicleColumns({
         r.drivers.length === 0 ? (
           <Typography.Text type="secondary">—</Typography.Text>
         ) : (
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             {r.drivers.map((driver) => (
               <span key={driver.personId}>{driver.fullName}</span>
             ))}

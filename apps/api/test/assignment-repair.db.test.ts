@@ -103,6 +103,17 @@ const MONDAY = weekStartKey(TODAY);
 const PREV_MONDAY = shiftDateKey(MONDAY, -7);
 /** Воскресенье текущей недели — конец срока бумажной сцены: две недели работы. */
 const PAPER_TO = shiftDateKey(MONDAY, 6);
+/**
+ * Периоды бумаги этого срока — тем же расчётом, каким режет портал (`esm2Periods`).
+ *
+ * Оговорка выше про «недельный календарь» остаётся в силе и этим не нарушается: границы сцены
+ * по-прежнему заданы понедельниками руками, и разрез, которого ждут от двери, сцена себе не рисует.
+ * Здесь считается другое — **сколько документов** прежняя сверка кладёт из этих границ, а это её
+ * собственный ответ: лист режет не только воскресенье, но и конец месяца (ADR 0142), и две недели
+ * дают то два листа, то три. Записанные цифрой, они краснели бы в последнюю неделю месяца без
+ * всякой правки кода. Ровно так же считает свой состав соседний случай частичного ремонта.
+ */
+const PAPER_PERIODS = esm2Periods(PREV_MONDAY, PAPER_TO);
 /** Понедельник следующей недели. */
 const NEXT_MONDAY = shiftDateKey(MONDAY, 7);
 /** Воскресенье следующей недели: срок сцены частичного ремонта — три недели. */
@@ -1681,10 +1692,11 @@ describeReadModes(readMode, 'бумага починенной истории (�
       issueSheets: { driverPersonId: ctx.personA },
     });
     const before = await sheetsOf(scene.requestId);
-    expect(compositionOf(before)).toEqual([
-      `${PREV_MONDAY}|${shiftDateKey(PREV_MONDAY, 6)}|${ctx.ownVehicle.id}|${ctx.personA}`,
-      `${MONDAY}|${PAPER_TO}|${ctx.ownVehicle.id}|${ctx.personA}`,
-    ]);
+    expect(compositionOf(before)).toEqual(
+      PAPER_PERIODS.map(
+        (period) => `${period.from}|${period.to}|${ctx.ownVehicle.id}|${ctx.personA}`,
+      ),
+    );
 
     const body = {
       mode: 'repair',
@@ -1709,8 +1721,12 @@ describeReadModes(readMode, 'бумага починенной истории (�
      */
     expect(dto.paperFree).toBe(false);
     expect(dto.stateAfter).toBe('ready');
-    // Отработанная неделя заперта (Р21) и потому названа поимённо; текущая ещё не кончилась.
-    expect(dto.requiredUnlocks.map((sheet) => sheet.waybillId)).toEqual([before[0]!.id]);
+    // Отработанное заперто (Р21) и потому названо поимённо; неоконченное — нет. Перечень выводится
+    // тем же правилом, каким его считает портал (`canCancelWaybill`): в переходную неделю
+    // отработанным успевает стать и августовский кусок текущей (ADR 0142), а не только прошлая.
+    expect(dto.requiredUnlocks.map((sheet) => sheet.waybillId)).toEqual(
+      before.filter((sheet) => sheet.period_to < TODAY).map((sheet) => sheet.id),
+    );
     expect(dto.unlockFingerprint).not.toBeNull();
 
     const applied = await postRepair(ctx.admin, scene.requestId, {
@@ -1734,19 +1750,18 @@ describeReadModes(readMode, 'бумага починенной истории (�
         events: 0,
       },
       /*
-       * После переключения тот же ремонт переоформляет обе недели: история говорит, что работал
-       * сменщик, — бумага обязана говорить то же. Листов при этом снова два, и потому проверяется
-       * СОСТАВ: сменился человек, а не количество документов.
+       * После переключения тот же ремонт переоформляет весь срок: история говорит, что работал
+       * сменщик, — бумага обязана говорить то же. Границы документов при этом те же самые, что и
+       * были, и потому проверяется СОСТАВ: сменился человек, а не количество документов.
        *
        * Прошлая неделя выписывается заново законно: её лист гасит **эта же** сверка, названная
        * поимённо разблокировкой (Р11, Ю84), — дырой в прошлом такая выписка не является.
        */
       history: {
-        composition: [
-          `${PREV_MONDAY}|${shiftDateKey(PREV_MONDAY, 6)}|${ctx.ownVehicle.id}|${ctx.personB}`,
-          `${MONDAY}|${PAPER_TO}|${ctx.ownVehicle.id}|${ctx.personB}`,
-        ],
-        burned: [before[0]!.id, before[1]!.id].sort(),
+        composition: PAPER_PERIODS.map(
+          (period) => `${period.from}|${period.to}|${ctx.ownVehicle.id}|${ctx.personB}`,
+        ),
+        burned: before.map((sheet) => sheet.id).sort(),
         events: 1,
       },
     });
@@ -1758,8 +1773,9 @@ describeReadModes(readMode, 'бумага починенной истории (�
     if (events.length > 0) {
       // Причина события — причина операции: ею и объясняется разрыв нумерации бланков (Р35).
       expect(events[0]!.metadata.reason).toBe('По табелю обе недели отработал сменщик');
-      expect(events[0]!.metadata.issued).toHaveLength(2);
-      expect(events[0]!.metadata.cancelled).toHaveLength(2);
+      // Сгорело и выписалось столько документов, сколько портал режет из срока, — не «два».
+      expect(events[0]!.metadata.issued).toHaveLength(PAPER_PERIODS.length);
+      expect(events[0]!.metadata.cancelled).toHaveLength(PAPER_PERIODS.length);
     }
   });
 
@@ -1843,12 +1859,21 @@ describeReadModes(readMode, 'бумага починенной истории (�
        * понедельника до сегодня. Дни со снятым машинистом (с завтра и до конца срока) остаются без
        * бумаги вовсе, и лист следующей недели сгорает без замены: истории, которая назвала бы его
        * человека, нет.
+       *
+       * ПОЧЕМУ СОСТАВ СЧИТАЕТСЯ, А НЕ ПИШЕТСЯ ДВУМЯ СТРОКАМИ. Предмет случая — **границы отрезка**:
+       * бумага начинается там же, где починенная история (`PREV_MONDAY`), и обрывается последним
+       * днём, у которого машинист известен (`TODAY`). Эти две даты сцена по-прежнему называет
+       * сама, и проверять было бы нечего, считай она их из ответа портала. А вот сколько
+       * документов выходит из отрезка — ответ портала, и он же ADR 0142: месяц режет отрезок так
+       * же, как воскресенье. Пара строк «прошлая неделя целиком + понедельник…сегодня» это молча
+       * отрицала и была верна ровно до того дня, когда отрезок наехал на первое число: 31 августа
+       * он был однодневным и совпадал, 1 сентября разошёлся на «31–31 августа» и «1–1 сентября».
+       * Перебором по трёхлетию таких дней 317 из 1095 — почти каждый третий.
        */
       history: {
-        composition: [
-          `${PREV_MONDAY}|${shiftDateKey(PREV_MONDAY, 6)}|${ctx.ownVehicle.id}|${ctx.personB}`,
-          `${MONDAY}|${TODAY}|${ctx.ownVehicle.id}|${ctx.personB}`,
-        ],
+        composition: esm2Periods(PREV_MONDAY, TODAY).map(
+          (period) => `${period.from}|${period.to}|${ctx.ownVehicle.id}|${ctx.personB}`,
+        ),
         burned: before.map((sheet) => sheet.id).sort(),
         events: 1,
         paperBeyondToday: false,

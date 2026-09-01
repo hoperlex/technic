@@ -96,7 +96,7 @@ export function IntakeRebaseModal({
       width={560}
     >
       <Form form={form} layout="vertical" onFinish={(values) => rebase.mutate(values)}>
-        <Alert type="warning" showIcon message={discrepancy.message} style={{ marginBottom: 16 }} />
+        <Alert type="warning" showIcon title={discrepancy.message} style={{ marginBottom: 16 }} />
 
         {/* Последствие названо целиком: это не правка внутри дня, а переезд учётного числа к
             другому человеку — и адресат назван по имени, а не «тому, кто ехал». */}
@@ -104,7 +104,7 @@ export function IntakeRebaseModal({
           type="error"
           showIcon
           style={{ marginBottom: 16 }}
-          message={
+          title={
             destination ? `Строка переедет в отчёт: ${destination}` : 'Строка уедет в чужой отчёт'
           }
           description={

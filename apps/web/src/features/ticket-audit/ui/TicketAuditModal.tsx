@@ -52,7 +52,7 @@ export function TicketAuditModal({ allowed }: { allowed: boolean }) {
       destroyOnHidden
       footer={null}
     >
-      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={16} style={{ width: '100%' }}>
         {/* Переключатель экранов. Сегментированный, а не вкладки: все пять — один отчёт с разных
             сторон, а вкладки читались бы как разные документы.
             На телефоне он уезжает в выпадающий список — так и сказано в §5, и с пятью подписями это

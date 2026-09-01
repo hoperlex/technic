@@ -44,7 +44,7 @@ export function OfficeEquipmentSupplies({ equipmentId }: { equipmentId: string }
           description="К модели этого аппарата не привязан ни один картридж или тонер"
         />
       ) : (
-        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={6} style={{ width: '100%' }}>
           {data.consumables.map((item) => (
             <SupplyRow key={item.id} item={item} />
           ))}

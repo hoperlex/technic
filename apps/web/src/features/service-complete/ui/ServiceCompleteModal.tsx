@@ -139,14 +139,14 @@ export function ServiceCompleteModal({
             <Alert
               type="info"
               showIcon
-              message="Отметьте, сколько выдали"
+              title="Отметьте, сколько выдали"
               description="Умолчание — сколько просили. Расхождение объясняется причиной: выдали больше, меньше или не выдали вовсе. Закрывающий документ у расходников не требуется."
             />
           ) : (
             <Alert
               type="info"
               showIcon
-              message={`Согласована ревизия ${request.approval?.revision ?? request.estimateRevision} на ${money(request.estimatedTotalAmount ?? 0)}`}
+              title={`Согласована ревизия ${request.approval?.revision ?? request.estimateRevision} на ${money(request.estimatedTotalAmount ?? 0)}`}
               description="Снимите отметку с того, что не понадобилось: гарантия проставляется только выполненным строкам."
             />
           )}
@@ -206,7 +206,7 @@ export function ServiceCompleteModal({
             onChange={(e) => setComment(e.target.value)}
           />
           {/* Отказ сервера показывается как есть (Р7): в нём названы позиция, остаток и выход. */}
-          {failure && <Alert type="error" showIcon message={failure} />}
+          {failure && <Alert type="error" showIcon title={failure} />}
           {issue && <Typography.Text type="warning">{issue}</Typography.Text>}
         </div>
       )}

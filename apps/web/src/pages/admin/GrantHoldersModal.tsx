@@ -191,7 +191,7 @@ export function GrantHoldersModal({ open, grant, onClose }: Props) {
           </Space>
         }
       >
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           <div>
             <Typography.Text type="secondary">
               {grant.code} · {grant.isSystem ? 'системное' : 'пользовательское'} · прав в наборе:{' '}
@@ -207,7 +207,7 @@ export function GrantHoldersModal({ open, grant, onClose }: Props) {
             <Alert
               type="info"
               showIcon
-              message="Выдавать этот набор некому"
+              title="Выдавать этот набор некому"
               description="Совместимых ролей у него нет: отметьте роли в конструкторе, иначе набор не откроет ничего никому."
             />
           ) : (

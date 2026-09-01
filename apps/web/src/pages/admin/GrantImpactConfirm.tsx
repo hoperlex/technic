@@ -144,24 +144,24 @@ export function GrantImpactConfirm({
         </Space>
       }
     >
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={12} style={{ width: '100%' }}>
         {stale && (
           <Alert
             type="warning"
             showIcon
-            message={stale}
+            title={stale}
             description="Предпросмотр перечитан заново: посмотрите, что изменилось, и подтвердите ещё раз."
           />
         )}
-        {applyError && <Alert type="error" showIcon message={applyError} />}
-        {loadError && <Alert type="error" showIcon message={loadError} />}
+        {applyError && <Alert type="error" showIcon title={applyError} />}
+        {loadError && <Alert type="error" showIcon title={loadError} />}
         {blocked && (
           <Alert
             type="error"
             showIcon
-            message="Так сохранить нельзя"
+            title="Так сохранить нельзя"
             description={
-              <Space direction="vertical" size={4}>
+              <Space orientation="vertical" size={4}>
                 {violations.map((text) => (
                   <span key={text}>{text}</span>
                 ))}
@@ -174,7 +174,7 @@ export function GrantImpactConfirm({
           <>
             <Typography.Text strong>{impactSummaryText(impact)}</Typography.Text>
             {impact.users.length > 0 && (
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space orientation="vertical" size={8} style={{ width: '100%' }}>
                 {impact.users.map((user) => (
                   <div key={user.userId}>
                     <Space size={6} wrap>

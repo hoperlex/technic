@@ -96,6 +96,14 @@ const W5 = shiftDateKey(CUR_MON, 35);
  */
 const SRC_END = CUR_SAT >= TODAY ? CUR_SAT : TODAY;
 const RUNS_ON_SUNDAY = SRC_END === CUR_SUN;
+/**
+ * Периоды бумаги заказа-основания — тем же расчётом и по той же причине, что и `W1_PERIODS`.
+ *
+ * Заказ `makeOrder` живёт с сегодня по `SRC_END`, и листов у него столько, на сколько месяц
+ * разрезал этот срок (ADR 0142): в середине месяца один, в неделю с концом месяца два. Записанная
+ * цифрой единица зеленела бы три недели из четырёх и краснела бы в последнюю — без правки кода.
+ */
+const SRC_PERIODS = esm2Periods(TODAY, SRC_END);
 
 interface Auth {
   authorization: string;
@@ -1030,7 +1038,9 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         const objectId = await freshObject();
         const order = await makeOrder({ objectId });
         const before = await sheetsOf(order.id);
-        expect(before.filter((s) => s.status !== 'cancelled')).toHaveLength(1);
+        // Сколько бумаги у заказа до продления — считает `esm2Periods`, а не цифра: срок кончается
+        // субботой текущей недели, и если месяц кончается внутри неё, портал уже выписал два листа.
+        expect(before.filter((s) => s.status !== 'cancelled')).toHaveLength(SRC_PERIODS.length);
 
         const weekly = await makeWeekly(ctx.admin.auth, {
           objectId,
@@ -1050,12 +1060,20 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
 
         const after = await sheetsOf(order.id);
         expect(after.filter((s) => s.status === 'cancelled')).toHaveLength(1);
+        // Действующая бумага покрывает новый срок целиком, по листу на период. Пара «текущая
+        // неделя одним листом + целевая» тем же расчётом и записывается: на переходной неделе
+        // `TODAY..CUR_SUN` — это два периода, и записанный руками единый отрезок недосчитался бы
+        // одного бланка, хотя портал выписал их правильно.
         expect(
           after
             .filter((s) => s.status !== 'cancelled')
             .map((s) => `${s.period_from}..${s.period_to}`)
             .sort(),
-        ).toEqual([`${TODAY}..${CUR_SUN}`, ...W1_PERIODS.map((p) => `${p.from}..${p.to}`)].sort());
+        ).toEqual(
+          esm2Periods(TODAY, W1_END)
+            .map((p) => `${p.from}..${p.to}`)
+            .sort(),
+        );
 
         // Сгоревший номер объясняется не только строкой ответа: аудит переписанной бумаги пишется
         // по каждому затронутому заказу.
@@ -1085,6 +1103,17 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
           SET period_from = ${prevWed}::date, period_to = ${prevSun}::date,
               issued_for_date = ${prevWed}::date
           WHERE id = ${sheet!.id}`);
+        /*
+         * Переклеивать надо всю бумагу заказа, а не первый лист: у недели, в середине которой
+         * кончается месяц, портал уже выписал два (ADR 0142). Оставленный второй лист висел бы на
+         * днях текущей недели с прежней геометрией, сверка честно сочла бы его разошедшимся с
+         * продлённым сроком и сожгла — а тест прочитал бы этот сгоревший номер как нарушение
+         * неприкосновенности прошлого, которого не было. Состояние, ради которого сцена и
+         * ставится, — ровно один лист, и тот в прошедшей неделе.
+         */
+        await ctx.db.execute(sql`
+          DELETE FROM waybills
+          WHERE source_request_id = ${order.id} AND form_code = 'esm2' AND id <> ${sheet!.id}`);
 
         const weekly = await makeWeekly(ctx.admin.auth, {
           objectId,
@@ -1094,11 +1123,19 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         const { approval } = await submitAndApprove(weekly);
         expect(approval.statusCode, approval.body).toBe(200);
 
+        /*
+         * Что сверка обязана выписать: периоды продлённого срока, кроме уже прошедших — неделю,
+         * кончившуюся до сегодня, она не заводит (`esm2SyncPlan` отбирает `p.to >= today`).
+         * Считается расчётом портала, а не парой «текущая неделя + целевая»: месяц режет неделю
+         * надвое, и записанная цифрой единица текущей недели недосчиталась бы одного бланка.
+         */
+        const toIssue = esm2Periods(prevWed, W1_END).filter((p) => p.to >= TODAY);
+
         // Отработанная неделя неприкосновенна: её лист не аннулируется, и второго на неё не
         // выписывается — иначе на одну работу вышло бы два документа.
         const esm2 = approval.json().apply.esm2;
         expect(esm2[0].cancelled).toHaveLength(0);
-        expect(esm2[0].issued).toBe(1 + W1_PERIODS.length);
+        expect(esm2[0].issued).toBe(toIssue.length);
 
         const after = await sheetsOf(order.id);
         const old = after.find((s) => s.id === sheet!.id)!;
@@ -1110,11 +1147,9 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
             .map((s) => `${s.period_from}..${s.period_to}`)
             .sort(),
         ).toEqual(
-          [
-            `${prevWed}..${prevSun}`,
-            `${CUR_MON}..${CUR_SUN}`,
-            ...W1_PERIODS.map((p) => `${p.from}..${p.to}`),
-          ].sort(),
+          // Прошлый лист остаётся своей геометрией — той, что ему переклеили, — а к нему
+          // добавляется ровно то, что выписала сверка.
+          [`${prevWed}..${prevSun}`, ...toIssue.map((p) => `${p.from}..${p.to}`)].sort(),
         );
       },
       60_000,
@@ -2332,7 +2367,20 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         const periods = (await sheetsOf(order.id))
           .filter((row) => row.status !== 'cancelled')
           .map((row) => `${row.period_from}..${row.period_to}`);
-        expect(periods).toContain(`${prevMon}..${prevSun}`);
+        /*
+         * Ждём весь набор периодов, каким портал режет эту неделю, а не один отрезок
+         * «понедельник..воскресенье»: месяц режет прошедшую неделю так же, как любую другую
+         * (ADR 0142), и тогда её закрывают два бланка, из которых ни один этому отрезку не равен.
+         * Записанный руками, он краснел бы 180 дней из 1095 — при том что бумага выписана
+         * правильно, и предмет случая (контекст коррекции доехал до недели, которую сверка сама
+         * не выписала бы) выполнен.
+         *
+         * Проверка остаётся «содержит», а не «равно»: у заказа есть ещё лист позапрошлой недели,
+         * который сцена переклеила руками, и он к предмету не относится.
+         */
+        expect(periods).toEqual(
+          expect.arrayContaining(esm2Periods(prevMon, prevSun).map((p) => `${p.from}..${p.to}`)),
+        );
       },
       60_000,
     );

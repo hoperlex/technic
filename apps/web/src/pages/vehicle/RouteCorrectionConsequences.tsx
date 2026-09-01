@@ -42,7 +42,7 @@ export function RouteCorrectionConsequences({ route, preview, sheet, vehicleId }
     <Alert
       type="warning"
       showIcon
-      message={`Что произойдёт с рейсом за ${route ? formatDateOnly(route.routeDate) : ''}`}
+      title={`Что произойдёт с рейсом за ${route ? formatDateOnly(route.routeDate) : ''}`}
       description={
         <ul style={{ margin: 0, paddingInlineStart: 20 }}>
           <li>

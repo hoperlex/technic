@@ -141,7 +141,7 @@ export function AutoPartStockJournal({
         // «Движений не было» — это и ответ на «почему позицию ещё можно удалить» (Р11).
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Остаток ещё не меняли" />
       ) : isMobile ? (
-        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={10} style={{ width: '100%' }}>
           {entries.map(entryCard)}
         </Space>
       ) : (

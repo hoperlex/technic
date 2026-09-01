@@ -26,7 +26,7 @@ import { errorMessage } from '../../utils/format';
 import { vehicleRouteLink, waybillLink } from '../../utils/links';
 import { garageKeys } from '@entities/garage';
 import { formatDateOnly } from './shared';
-import { useRouteModal } from './routeModal';
+import { useRouteModal } from '@features/route-modal';
 import { VehicleDayRouteModal } from './VehicleDayRouteModal';
 
 /**
@@ -383,7 +383,7 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
 
   // Дней у этой заявки не ведут вовсе — и таблица объясняет это словами сервера, а не пустотой:
   // у арендного заказа рейсы ведёт арендодатель, и ждать от портала строк бессмысленно (план У14).
-  if (data?.blocker) return <Alert type="info" showIcon message={data.blocker} />;
+  if (data?.blocker) return <Alert type="info" showIcon title={data.blocker} />;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

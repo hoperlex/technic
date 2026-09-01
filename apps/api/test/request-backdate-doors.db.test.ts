@@ -3,7 +3,7 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { describeReadModes, useReadModeDatabase } from './assignment-read-mode';
-import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
+import { esm2Periods, moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
 import { issueRequestEsm2 } from './waybill-issue-helper';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -82,6 +82,11 @@ interface Ctx {
   /** Прошлая календарная неделя целиком: её конец — вчерашнее воскресенье при любом дне прогона. */
   pastFrom: string;
   pastTo: string;
+  /**
+   * Начало срока у заказа, на котором проверяется обычная работа текущей недели: почти всегда тот
+   * же `pastFrom`, но в дни месячного разреза — подобранный (`ongoingTermFrom`).
+   */
+  ongoingFrom: string;
   /** Конец срока заказов файла: неделя вперёд, чтобы в срок попали и прошлое, и сегодня. */
   dateTo: string;
 }
@@ -204,6 +209,47 @@ function uuid(): string {
 }
 
 /**
+ * Начало срока у заказа, которому просьба «выписать за неделю сегодняшнего дня» обязана достаться
+ * обычной работой, а не операцией заднего числа.
+ *
+ * ПОЧЕМУ ДЕНЬ ПОДБИРАЕТСЯ, А НЕ ПИШЕТСЯ. Срок здешних сцен начинается в прошлой неделе
+ * (`pastFrom`) — иначе ни прошедшей недели ЭСМ-2, ни прошедшего дня у заказа не будет вовсе. Но
+ * просьба о бумаге адресована **неделе**, а не дню (`onDemandPeriodsOf`), и отдаёт все её куски,
+ * попавшие в срок; месячный разрез (ADR 0142) делает кусков два, а право спрашивается по строгому
+ * из них — концу первого (`POST /:id/esm2`: «эффективная дата — конец первого периода»). В
+ * переходную неделю первым оказывается односуточный лист вроде «31–31 августа», у которого
+ * `periodTo` вчерашний, и портал отвечает 422 «укажите причину». Отвечает он верно — бланк за
+ * вчера действительно операция; неверна посылка «неделя ещё идёт, значит `periodTo` не раньше
+ * сегодня»: она держится лишь тогда, когда неделю не режет месяц.
+ *
+ * ЧТО ВМЕСТО. Пока текущую неделю месяц не разрезал раньше сегодняшнего дня, срок начинается
+ * прошлым понедельником, как у остальных сцен файла. В дни разреза он начинается первым днём того
+ * куска, который **идёт прямо сейчас**, — и первым листом просьбы снова становится незакрытый.
+ * Кусок недели ищется тем же `esm2Periods`, каким режет портал: знать, что режущая граница это
+ * первое число месяца, тесту незачем — сменится правило нарезки, и сцена поедет за ним сама.
+ *
+ * ЧТО ПОКРАСНЕЛО БЫ, ЗАФИКСИРУЙ МЫ `pastFrom`. Перебор дней 2025–2027: 107 дней из 1095 — ровно
+ * те, где первое число месяца попадает в текущую неделю позже понедельника и не позже сегодня, — и
+ * краснели бы обе ветки режима чтения сразу, без единой правки кода.
+ *
+ * ЧЕГО СЦЕНА НЕ ТЕРЯЕТ. Лист, накрывающий уже отработанные дни (а именно на них держится смысл
+ * случая: дверь смотрит на конец периода, а не на его начало), остаётся у сцены везде, где он
+ * вообще возможен. Тот же перебор: 186 дней из 1095 — 156 понедельников и 36 первых чисел, минус 6
+ * совпавших, — период, накрывающий сегодня, сегодня же и начинается, и отработанных дней у него не
+ * бывает ни при каком сроке, хоть от прошлого года. Подбор эти 186 не увеличивает ни на день.
+ *
+ * И разрез сцена не обходит: в дни разреза она просит бумагу той же переходной недели — просто не
+ * просит вдобавок августовский лист, который к сегодняшнему дню стал прошлым по-настоящему и
+ * проверяется соседним случаем («с правом, причиной и ключом лист выписан, помечен коррекцией»).
+ */
+function ongoingTermFrom(today: string): string {
+  const monday = weekStartKey(today);
+  const running = esm2Periods(monday, shiftDateKey(monday, 6)).find((period) => period.to >= today);
+  if (!running) throw new Error('в текущей неделе не нашлось куска, который не кончился бы вчера');
+  return running.from === monday ? shiftDateKey(monday, -7) : running.from;
+}
+
+/**
  * Заказ техники на объект, доведённый до работы. Срок начинается в прошлой неделе — иначе ни
  * прошедшей недели ЭСМ-2, ни прошедшего дня у заказа не будет вовсе, — и потому само заведение
  * идёт задним числом, с причиной и ключом (Р15).
@@ -267,7 +313,8 @@ async function requestInProgress(
   return { id: request.id as string, version: confirmed.json().version as number };
 }
 
-const linearInProgress = () => requestInProgress(ctx.linearTypeId);
+const linearInProgress = (options: { dateFrom?: string } = {}) =>
+  requestInProgress(ctx.linearTypeId, options);
 
 interface Esm2Body {
   weekOf: string;
@@ -444,6 +491,7 @@ describe.skipIf(!DB_URL)('двери заднего числа со сторон
       today,
       pastFrom: shiftDateKey(monday, -7),
       pastTo: shiftDateKey(monday, -1),
+      ongoingFrom: ongoingTermFrom(today),
       dateTo: shiftDateKey(today, 7),
     };
     ctx.linearTypeId = await createType(vehicle.kind_id, true);
@@ -659,18 +707,40 @@ describe.skipIf(!DB_URL)('двери заднего числа со сторон
     });
 
     it('лист текущей недели операцией не является: ни причины, ни ключа, ни метки', async () => {
-      const request = await linearInProgress();
+      /*
+       * Срок берётся подобранный (`ongoingTermFrom`), а не прошлонедельный: просьба идёт о неделе
+       * целиком, и в дни месячного разреза прошлонедельный срок добавил бы к ней уже закрытый
+       * августовский кусок — тогда 422 портала был бы законен, а красной оказалась бы посылка
+       * случая, а не дверь. Подробности и цена подбора — над самой функцией.
+       */
+      const request = await linearInProgress({ dateFrom: ctx.ongoingFrom });
 
-      // Неделя ещё идёт: `periodTo` у неё не раньше сегодня, и guard отвечает «обычная работа».
+      // Лист, которым кончается просьба, ещё не отработан: его `periodTo` не раньше сегодняшнего
+      // дня, и guard отвечает «обычная работа» — ни права, ни причины не спрашивая.
       const res = await issueEsm2(ctx.dispatcher, request.id, {
         weekOf: ctx.today,
         version: request.version,
       });
       expect(res.statusCode, res.body).toBe(200);
 
-      const [sheet] = await sheetsOf(request.id);
-      expect(sheet!.correction_id).toBeNull();
-      expect(sheet!.correction_reason).toBe('');
+      /*
+       * Проверяются **все** листы просьбы, а не первый: неделя, у которой месяц кончается позже
+       * сегодняшнего дня, отдаёт сразу два бланка (ADR 0142), и метка коррекции на втором из них
+       * прошла бы мимо `[sheet]`. Сам их состав спрашивается у `esm2Periods` — тем же расчётом,
+       * каким режет портал: записанная цифрой единица краснела бы 106 дней из 1095 (перебор
+       * 2025–2027) — ровно в те, когда месяц кончается внутри недели позже сегодняшнего дня.
+       */
+      const monday = weekStartKey(ctx.today);
+      const week = { from: monday, to: shiftDateKey(monday, 6) };
+      const asked = esm2Periods(ctx.ongoingFrom, ctx.dateTo).filter(
+        (period) => period.from <= week.to && week.from <= period.to,
+      );
+      const sheets = await sheetsOf(request.id);
+      expect(sheets.map((sheet) => sheet.period_to)).toEqual(asked.map((period) => period.to));
+      for (const sheet of sheets) {
+        expect(sheet.correction_id).toBeNull();
+        expect(sheet.correction_reason).toBe('');
+      }
       expect(await correctionsOfRequest(request.id)).toEqual([]);
     });
   });

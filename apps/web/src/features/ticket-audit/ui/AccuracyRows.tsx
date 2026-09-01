@@ -121,7 +121,7 @@ export function AccuracyCards({ rows }: { rows: TicketAuditAccuracyField[] }) {
           </Space>
         ),
         children: (
-          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={4} style={{ width: '100%' }}>
             <CardLine title="Совпало" hint={COLUMN_HINTS.matched}>
               <Typography.Text>{row.matched}</Typography.Text>
             </CardLine>

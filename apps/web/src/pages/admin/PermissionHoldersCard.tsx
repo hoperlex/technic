@@ -19,7 +19,7 @@ import { FULL_ACCESS, type PermissionRow } from './permissionRows';
 /** Кто владеет правом: профили матрицы и живые учётки под ними. */
 export function PermissionDetails({ row, pending }: { row: PermissionRow; pending: boolean }) {
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       <div>
         <Typography.Text type="secondary">
           {row.permission} · {permissionModuleLabels[row.module]} ·{' '}
@@ -57,7 +57,7 @@ export function PermissionDetails({ row, pending }: { row: PermissionRow; pendin
             // сразу, и без неё список не отвечает, кто из них кто. Держателю, которому право дала не
             // должность, дописано «набором» — это ответ на «почему он здесь», и без него строка
             // выглядела бы ошибкой матрицы.
-            <Space direction="vertical" size={0} style={{ width: '100%' }}>
+            <Space orientation="vertical" size={0} style={{ width: '100%' }}>
               {row.holders.map(({ user, byGrant }) => (
                 <div key={user.id}>
                   {user.fullName}{' '}

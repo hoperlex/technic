@@ -116,14 +116,14 @@ export function RoutePointsBlock({ route, assembly, frozen, onChanged, onFail }:
         </Typography.Paragraph>
       )}
 
-      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={8} style={{ width: '100%' }}>
         {!frozen &&
           listBlockers.map((blocker) => (
             <Alert
               key={blocker.code}
               type={blocker.code === 'capacity_exceeded' ? 'error' : 'warning'}
               showIcon
-              message={blockerMessage(blocker, assembly)}
+              title={blockerMessage(blocker, assembly)}
             />
           ))}
         {/* Подсказка совмещения (Р9а): точки одного адреса. Автоматически не склеивается ничего —
@@ -135,7 +135,7 @@ export function RoutePointsBlock({ route, assembly, frozen, onChanged, onFail }:
               key={hint.pointIds.join(':')}
               type="info"
               showIcon
-              message={mergeHintMessage(hint)}
+              title={mergeHintMessage(hint)}
               action={
                 <Button
                   size="small"
@@ -275,7 +275,7 @@ function RoutePointRow({
               style={{ marginTop: 6 }}
               type="error"
               showIcon
-              message={blockerMessage(blocker, assembly)}
+              title={blockerMessage(blocker, assembly)}
               action={
                 <Button size="small" onClick={onEdit}>
                   Править точку

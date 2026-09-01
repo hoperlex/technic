@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactElement } from 'react';
 import { App, Button, Skeleton } from 'antd';
 import { Outlet, useSearchParams } from 'react-router';
@@ -7,6 +7,7 @@ import type { VehicleRequestDto, VehicleRouteDto } from '@technic/contracts';
 import { garageKeys } from '@entities/garage';
 import { ViewModal } from '@shared/ui';
 import { useOpenedRecord } from '@shared/lib';
+import { RouteModalContext, type RouteModalApi } from '@features/route-modal';
 import { vehicleRequestsApi, vehicleRoutesApi } from '../../api/resources';
 import { useAuth } from '../../auth/AuthContext';
 import { canOpenRoute } from '../../utils/links';
@@ -27,6 +28,10 @@ import { VehicleRoutesModal } from './VehicleRoutesModal';
  * Состояние окон — сам адрес, и ничего кроме: `openRoute` — это запись параметра. Продублируй его
  * React-состоянием, и «назад» разошлась бы с экраном на первом же переходе; а ссылку на рейс,
  * которую рассылают письмами и кладут в закладки, было бы неоткуда взять.
+ *
+ * Контракт окон и хук доступа к ним живут отдельно (`@features/route-modal`). Провайдер остался
+ * здесь вынужденно: он рисует четыре окна этого же слайса, и переезд целиком лишь перенёс бы
+ * зависимость от `pages` на этаж ниже. Зовущей стороне провайдер и не нужен — ей нужен хук.
  */
 
 /**
@@ -37,43 +42,6 @@ import { VehicleRoutesModal } from './VehicleRoutesModal';
 const ROUTE_PARAM = 'route';
 const LIST_PARAM = 'routes';
 const REQUEST_PARAM = 'request';
-
-export interface RouteModalApi {
-  /** Карточка рейса поверх текущей страницы. Заявку, если она открыта, вытесняет (см. ниже). */
-  openRoute: (routeId: string) => void;
-  /**
-   * Список рейсов. `focusDate` — просьба встать на этот день: пришли из рейса позавчерашнего дня,
-   * и список, оставшийся на сегодняшнем, этого рейса не показал бы вовсе.
-   */
-  openRoutesList: (options?: { focusDate?: string }) => void;
-  /** Карточка заявки на чтение — ложится поверх рейса или списка, из которых её открыли. */
-  openRequest: (requestId: string) => void;
-  /**
-   * Правка реквизитов рейса — окном поверх того, откуда её позвали: карточки рейса или строки
-   * списка. Единственный метод контракта, который адреса не трогает вовсе: правка — шаг внутри
-   * окна, а не место, куда ходят по ссылке (§3.1 плана).
-   */
-  editRoute: (route: VehicleRouteDto) => void;
-}
-
-/**
- * Экспортируется ради тестов — по той же причине, что и `AuthContext`: они подставляют заглушку
- * значением контекста, а не поднимают провайдер с настоящими окнами и запросами внутри.
- */
-export const RouteModalContext = createContext<RouteModalApi | undefined>(undefined);
-
-/**
- * Чем открыть рейс, список рейсов и заявку с любого экрана портала.
- *
- * Отсутствие контекста — ошибка монтажа, а не «нет прав»: провайдер стоит над всей веткой
- * `AppLayout`, и любая страница портала под ним. Молча проглоченный клик по номеру рейса читался
- * бы как поломка самого рейса, а не сборки приложения, — поэтому падаем громко.
- */
-export function useRouteModal(): RouteModalApi {
-  const ctx = useContext(RouteModalContext);
-  if (!ctx) throw new Error('useRouteModal должен использоваться внутри RouteModalProvider');
-  return ctx;
-}
 
 export function RouteModalProvider(): ReactElement {
   const [searchParams, setSearchParams] = useSearchParams();

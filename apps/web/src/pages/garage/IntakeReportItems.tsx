@@ -61,7 +61,7 @@ function Counter({
   delta?: number | null;
 }) {
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <Typography.Text type="secondary" style={secondary}>
         {label}
       </Typography.Text>
@@ -148,7 +148,7 @@ function Reading({
   pending: boolean;
 }) {
   return (
-    <Space direction="vertical" size={6} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={6} style={{ display: 'flex' }}>
       {reading.kind === 'no_data' ? (
         // «Нет данных» — это закрытие строки с причиной, а не пустое место (ADR 0103): причину
         // написал человек, и она показывается там же, где стояли бы числа.
@@ -175,7 +175,7 @@ function Reading({
       )}
 
       {(reading.odometerAnomaly || reading.engineHoursAnomaly) && (
-        <Space direction="vertical" size={2} style={{ display: 'flex' }}>
+        <Space orientation="vertical" size={2} style={{ display: 'flex' }}>
           {reading.odometerAnomaly && (
             <Anomaly
               counter="Одометр"
@@ -239,11 +239,11 @@ export function IntakeReportItems({
   }
 
   return (
-    <Space direction="vertical" size={8} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={8} style={{ display: 'flex' }}>
       {items.map((item) => (
         <div key={item.id} style={blockStyle}>
           <Space size={8} wrap style={{ justifyContent: 'space-between' }}>
-            <Space direction="vertical" size={0}>
+            <Space orientation="vertical" size={0}>
               <Space size={6} wrap>
                 <Typography.Text strong>{item.sourceLabel || '—'}</Typography.Text>
                 {item.sourceKind === 'esm2' && <Tag style={{ marginInlineEnd: 0 }}>ЭСМ-2</Tag>}

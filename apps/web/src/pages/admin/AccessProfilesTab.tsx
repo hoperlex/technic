@@ -52,7 +52,7 @@ function usersCell(row: ProfileRow, pending: boolean) {
   if (pending) return '…';
   if (row.users.length > 0) return row.users.length;
   return (
-    <Space direction="vertical" size={0}>
+    <Space orientation="vertical" size={0}>
       <Tag>не занят</Tag>
       {row.roleUsers > 0 ? (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -113,7 +113,7 @@ function ProfileDetails({ row }: { row: ProfileRow }) {
   })).filter((group) => group.permissions.length > 0);
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       {/* Строка вне матрицы объясняется первой строкой карточки: администратор открывает её как раз
           с вопросом «что это такое», и ответ «доступ собран наборами» должен стоять до прав. */}
       {row.offMatrix ? (
@@ -285,7 +285,7 @@ export function AccessProfilesTab() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message={`Учтены не все учётки: показаны первые ${users.length} из ${total}`}
+          title={`Учтены не все учётки: показаны первые ${users.length} из ${total}`}
           description="Счётчики людей и пометка «не занят» посчитаны по этой части списка — профиль мог остаться пустым только из-за среза."
         />
       )}

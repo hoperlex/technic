@@ -18,6 +18,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "pnpm -r test",
+    "check": "node scripts/check.mjs",
+    "check:db": "node scripts/check-db.mjs",
     "db:generate": "pnpm --filter @technic/api db:generate",
     "db:migrate": "pnpm --filter @technic/api db:migrate",
     "seed:admin": "pnpm --filter @technic/api seed:admin",
@@ -30,6 +32,7 @@
     "eslint-plugin-boundaries": "7.1.0",
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.11.0",
     "prettier": "3.9.6",
     "typescript": "6.0.3",
     "typescript-eslint": "8.65.0"

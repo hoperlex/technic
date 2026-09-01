@@ -31,6 +31,19 @@ if (!Element.prototype.scroll) {
   Element.prototype.scroll = () => {};
 }
 
+/*
+ * Псевдоэлементы jsdom не реализует вовсе: `getComputedStyle(el, '::before')` он не считает, а
+ * печатает «Not implemented» в вывод — по строке на каждый вызов, и от одного прогона кабинета
+ * водителя их набегала тысяча. Заглушка законна именно поэтому: вернуть она может только то же
+ * пустое объявление, что вернул бы jsdom, — вычислять там нечего, стилей псевдоэлементов в нём
+ * нет. Вызовы без псевдоэлемента идут в родной метод и считаются как раньше.
+ */
+const computedStyle = window.getComputedStyle.bind(window);
+window.getComputedStyle = ((element: Element, pseudoElement?: string | null) =>
+  pseudoElement
+    ? ({ getPropertyValue: () => '' } as unknown as CSSStyleDeclaration)
+    : computedStyle(element)) as typeof window.getComputedStyle;
+
 if (!globalThis.ResizeObserver) {
   globalThis.ResizeObserver = class {
     observe() {}

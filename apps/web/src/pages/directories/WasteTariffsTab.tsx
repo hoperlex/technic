@@ -388,7 +388,7 @@ export function WasteTariffsTab() {
   const operatorColumns: TableColumnType<WasteTariffGridRow>[] = columnOperators.map((op) => ({
     key: `operator:${op.id}`,
     title: (
-      <Space direction="vertical" size={0}>
+      <Space orientation="vertical" size={0}>
         <span>{op.name}</span>
         <span style={{ fontWeight: 400, fontSize: 12, opacity: 0.65 }}>
           {op.isActive ? '₽/м³' : '₽/м³ · неактивен'}
@@ -619,7 +619,7 @@ export function WasteTariffsTab() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message="Операторы не заведены"
+          title="Операторы не заведены"
           description="Цена вывоза принадлежит оператору — заведите контрагента типа «Оператор» в справочнике контрагентов."
         />
       )}
@@ -628,7 +628,7 @@ export function WasteTariffsTab() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message={`Показаны первые ${tariffs.length} позиций прайса из ${data?.total ?? 0}`}
+          title={`Показаны первые ${tariffs.length} позиций прайса из ${data?.total ?? 0}`}
           description="Отфильтруйте справочник по типу мусора — иначе часть цен в таблицу не попала."
         />
       )}
@@ -739,7 +739,7 @@ export function WasteTariffsTab() {
                   type="warning"
                   showIcon
                   style={{ marginBottom: 16 }}
-                  message="Есть похожие типы"
+                  title="Есть похожие типы"
                   description={
                     <>
                       <div>Если речь об одном и том же — выберите заведённый тип:</div>

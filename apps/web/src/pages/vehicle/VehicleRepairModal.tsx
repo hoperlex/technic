@@ -261,7 +261,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
       width={860}
     >
       <Form form={form} layout="vertical">
-        <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+        <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
           {forbidden && <MachinistForbiddenAlert message={forbidden} />}
 
           {state.isPending && <Skeleton active paragraph={{ rows: 3 }} />}
@@ -270,7 +270,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
             <Alert
               type="error"
               showIcon
-              message="Осмотреть историю не удалось"
+              title="Осмотреть историю не удалось"
               description={errorMessage(state.error)}
             />
           )}
@@ -283,7 +283,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
                 <Alert
                   type="warning"
                   showIcon
-                  message="Заявка в архиве"
+                  title="Заявка в архиве"
                   description={
                     seen.restoreRequired
                       ? 'Бумага по ней осталась действующей, поэтому ремонт пройдёт только вместе с выводом заявки из архива — это произойдёт той же операцией.'

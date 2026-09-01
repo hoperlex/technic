@@ -308,7 +308,7 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
       width={860}
     >
       <Form form={form} layout="vertical" onFinish={submitForm}>
-        <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+        <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
           {forbidden && <MachinistForbiddenAlert message={forbidden} />}
 
           {/* Состав по датам виден на всех шагах, кроме подтверждения: там человек читает цену
@@ -332,7 +332,7 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
             <Alert
               type="error"
               showIcon
-              message="Состав по датам прочитать не удалось"
+              title="Состав по датам прочитать не удалось"
               description={errorMessage(history.error)}
             />
           )}

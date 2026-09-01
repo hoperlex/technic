@@ -1,8 +1,15 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 
-const OUT = resolve(process.argv[2] ?? '/tmp/auto-parts-ui-instruction-pages');
-mkdirSync(OUT, { recursive: true });
+const require = createRequire(new URL('../apps/api/package.json', import.meta.url));
+const { PDFDocument } = require('pdf-lib');
+
+const OUTPUT = resolve(process.argv[2] ?? 'docs/Инструкция_Автозапчасти_в_гараже.pdf');
+const WORK = mkdtempSync(join(tmpdir(), 'auto-parts-guide-'));
+const TOTAL = 6;
 
 const W = 1123;
 const H = 1588;
@@ -175,12 +182,12 @@ function pageHeader(page, titleValue, kicker) {
     text(70, 77, 'A', 29, { fill: '#fff', weight: 700, anchor: 'middle' }),
     text(110, 54, kicker.toUpperCase(), 15, { fill: C.blue, weight: 700, letter: 1.4 }),
     text(110, 91, titleValue, 34, { fill: C.ink, weight: 700 }),
-    text(1055, 67, String(page).padStart(2, '0'), 17, { fill: C.faint, weight: 600, anchor: 'end' }),
+    text(1055, 67, `${String(page).padStart(2, '0')} / ${String(TOTAL).padStart(2, '0')}`, 17, { fill: C.faint, weight: 600, anchor: 'end' }),
     line(55, 119, 1068, 119, { stroke: C.line }),
   ].join('');
 }
 
-function footer(label = 'Концепт интерфейса • 24.08.2026') {
+function footer(label = 'Пользовательская инструкция • 25.08.2026') {
   return line(55, 1530, 1068, 1530, { stroke: C.line }) + text(55, 1560, label, 14, { fill: C.faint }) + text(1068, 1560, 'АВТО', 14, { fill: C.blue, weight: 700, anchor: 'end', letter: 1.2 });
 }
 
@@ -319,13 +326,13 @@ function page1() {
   b += circle(76, 82, 30, { fill: C.blue });
   b += text(76, 93, 'A', 35, { fill: '#fff', weight: 700, anchor: 'middle' });
   b += text(120, 72, 'АВТО • ГАРАЖ • АВТОЗАПЧАСТИ', 16, { fill: C.blue, weight: 700, letter: 1.6 });
-  b += text(120, 101, 'Концепт интерфейса', 17, { fill: C.muted, weight: 500 });
-  const draft = pill(835, 63, 'ДО РЕАЛИЗАЦИИ', { fill: C.orangeSoft, color: C.orange, stroke: '#ffd591', size: 14, pad: 13 });
-  b += draft.svg;
+  b += text(120, 101, 'Краткая пользовательская инструкция', 17, { fill: C.muted, weight: 500 });
+  const ready = pill(803, 63, 'РАБОЧИЙ СЦЕНАРИЙ', { fill: C.greenSoft, color: C.green, stroke: '#b7eb8f', size: 14, pad: 13 });
+  b += ready.svg;
 
   b += text(55, 205, 'Автозапчасти', 57, { fill: C.ink, weight: 700, letter: -1 });
   b += text(55, 270, 'в гараже', 57, { fill: C.ink, weight: 700, letter: -1 });
-  b += paragraph(58, 324, 'Как выглядит дополнительная вкладка и как механик ведёт остаток и списывает детали через акт обслуживания.', 850, 24, { fill: C.muted, lineHeight: 34 });
+  b += paragraph(58, 324, 'Как найти позицию, изменить остаток и списать установленную деталь через акт обслуживания.', 850, 24, { fill: C.muted, lineHeight: 34 });
 
   b += mainScreen(55, 425, 1013, 646, false);
 
@@ -344,26 +351,26 @@ function page1() {
   b += text(755, 1180, 'Списание через акт', 21, { fill: C.ink, weight: 700 });
   b += paragraph(755, 1210, 'Поставленная деталь видна и на складе, и в истории конкретной машины.', 300, 16, { fill: C.muted, lineHeight: 23 });
 
-  b += rect(55, 1360, 1013, 105, { fill: C.graySoft, stroke: C.line, r: 14 });
-  b += text(82, 1402, 'Основание', 16, { fill: C.blue, weight: 700 });
-  b += paragraph(82, 1431, 'docs/auto-parts-plan.md · редакция 4 от 24.08.2026. Все замечания и развилки закрыты; план состоит из шести этапов и готов к реализации.', 940, 15, { fill: C.muted, lineHeight: 22 });
+  b += rect(55, 1360, 1013, 105, { fill: C.bluePale, stroke: '#bae0ff', r: 14 });
+  b += text(82, 1402, 'Кому доступно', 16, { fill: C.blue, weight: 700 });
+  b += paragraph(82, 1431, 'Остаток и номенклатуру ведут механик и главный механик. Остальные пользователи «Гаража» могут открыть склад, карточку позиции и историю — без кнопок изменения.', 940, 15, { fill: C.muted, lineHeight: 22 });
   b += footer();
   return document(b);
 }
 
 function page2() {
-  let b = pageHeader(2, 'Новая вкладка «Автозапчасти»', '1. Где находится');
+  let b = pageHeader(2, 'Вкладка «Автозапчасти»', '1. Найти или добавить');
   b += rect(55, 147, 1013, 90, { fill: C.bluePale, stroke: '#bae0ff', r: 14 });
   b += circle(90, 192, 20, { fill: C.blue });
   b += text(90, 200, 'i', 23, { fill: '#fff', weight: 700, anchor: 'middle' });
-  b += text(127, 183, 'Четвёртая вкладка — сразу после «Показаний»', 21, { fill: C.ink, weight: 700 });
+  b += text(127, 183, 'Откройте «Гараж» → «Автозапчасти»', 21, { fill: C.ink, weight: 700 });
   b += text(127, 212, 'У неё нет календаря дня: склад показывает текущее состояние.', 16, { fill: C.muted });
   b += mainScreen(55, 272, 1013, 650, true);
 
   b += callout(55, 965, 493, 120, '1', 'Поиск', 'Ищет одновременно по названию и номенклатурному коду.');
   b += callout(575, 965, 493, 120, '2', 'Фильтры', 'Наличие, активность, модель или тип техники.');
   b += callout(55, 1105, 493, 120, '3', 'Открыть карточку', 'Нажмите строку — откроются реквизиты, применимость и журнал.');
-  b += callout(575, 1105, 493, 120, '4', 'Добавить позицию', 'Кнопка видна механику и главному механику; диспетчер только читает.');
+  b += callout(575, 1105, 493, 120, '4', 'Добавить позицию', 'Укажите название и единицу. Код и применимость можно оставить пустыми; начальный остаток — при наличии права склада.');
 
   b += rect(55, 1265, 1013, 172, { fill: C.orangeSoft, stroke: '#ffd591', r: 14 });
   b += text(82, 1305, 'Как читать остаток', 19, { fill: C.orange, weight: 700 });
@@ -371,7 +378,7 @@ function page2() {
   b += text(179, 1352, 'есть в наличии', 16, { fill: C.text, weight: 500 });
   b += stockBadge(380, 1330, '0', 'шт', true);
   b += text(463, 1352, 'нет в наличии — строка выделена', 16, { fill: C.text, weight: 500 });
-  b += paragraph(82, 1400, 'Ноль — сигнал к закупке только визуально. Минимальный остаток и автоматические уведомления в текущий план не входят.', 930, 15, { fill: C.muted, lineHeight: 22 });
+  b += paragraph(82, 1400, 'Нажмите красный счётчик «Нет в наличии», чтобы оставить в списке только позиции с нулевым остатком. Автоматического заказа или уведомления нет.', 930, 15, { fill: C.muted, lineHeight: 22 });
   b += footer();
   return document(b);
 }
@@ -417,7 +424,7 @@ function page3() {
   b += text(110, 705, 'Движение остатка', 18, { fill: C.ink, weight: 700 });
   b += tableHeader(110, 730, [145, 122, 335, 175, 135], ['Дата', 'Было → стало', 'Причина', 'Автор', 'Документ']);
   const moves = [
-    ['24.08.2026 11:42', '20 → 12', 'Списание по акту обслуживания', 'Иванов И.И.', 'Акт 128'],
+        ['24.08.2026 11:42', '20 → 12', 'Списание по акту обслуживания', 'Иванов И.И.', 'Акт от 24.08'],
     ['22.08.2026 09:15', '10 → 20', 'Приход по накладной 406', 'Петров А.А.', '—'],
     ['04.08.2026 16:03', '12 → 10', 'Пересчёт; повреждены 2 шт', 'Иванов И.И.', '—'],
   ];
@@ -503,13 +510,13 @@ function page5() {
   b += text(120, 314, 'Запись о ТО — КАМАЗ 65115 · В613ВУ197', 22, { fill: C.ink, weight: 700 });
   b += line(118, 340, 1005, 340, { stroke: C.line });
 
-  b += input(120, 380, 280, 'Дата обслуживания', '12.08.2026');
+  b += input(120, 380, 280, 'Дата обслуживания', '24.08.2026');
   b += input(425, 380, 280, 'Пробег на момент ТО, км', '128 400');
   b += input(730, 380, 275, 'Номер документа', 'Акт № 128');
   b += input(120, 482, 885, 'Примечание', 'Плановое ТО: масло и фильтры', { h: 58 });
 
-  b += rect(120, 557, 885, 50, { fill: C.orangeSoft, stroke: '#ffd591', r: 8 });
-  b += text(142, 588, 'Проверьте расход: акт раньше даты заведения выбранной позиции.', 14, { fill: C.orange, weight: 600 });
+  b += rect(120, 557, 885, 50, { fill: C.bluePale, stroke: '#bae0ff', r: 8 });
+  b += text(142, 588, 'Подходящие детали показаны первыми; при необходимости можно выбрать любую активную позицию.', 14, { fill: C.blue, weight: 600 });
 
   b += rect(112, 625, 900, 357, { fill: C.bluePale, stroke: '#91caff', sw: 2, r: 12 });
   b += text(140, 670, 'Автозапчасти', 21, { fill: C.ink, weight: 700 });
@@ -597,7 +604,8 @@ function page6() {
   b += text(260, 924, '12 → 11', 16, { fill: C.red, weight: 700 });
   b += paragraph(415, 906, 'Списание по акту обслуживания', 315, 14, { fill: C.text, weight: 500, lineHeight: 20 });
   b += text(760, 924, 'Иванов И.И.', 13, { fill: C.text });
-  b += text(930, 924, 'Акт № 128', 13, { fill: C.blue, weight: 600 });
+  b += text(930, 916, 'Акт от 24.08', 12, { fill: C.blue, weight: 600 });
+  b += text(930, 936, 'КАМАЗ 65115', 12, { fill: C.blue, weight: 600 });
   b += text(85, 1008, 'Ссылка открывает именно этот акт; запись журнала изменить или удалить нельзя.', 14, { fill: C.muted });
 
   b += text(55, 1120, 'Если в акте ошибка', 24, { fill: C.ink, weight: 700 });
@@ -612,64 +620,42 @@ function page6() {
   return document(b);
 }
 
-function decisionRow(y, n, titleValue, body, level = 'open') {
-  const map = {
-    critical: { fill: C.orangeSoft, stroke: '#ffd591', color: C.orange, label: 'РЕШИТЬ ДО СТАРТА' },
-    open: { fill: '#fff', stroke: C.line, color: C.blue, label: 'СОГЛАСОВАТЬ' },
-    later: { fill: C.graySoft, stroke: C.line, color: C.muted, label: 'МОЖНО ПОЗЖЕ' },
-    confirmed: { fill: C.greenSoft, stroke: '#b7eb8f', color: C.green, label: 'СОГЛАСОВАНО' },
-  };
-  const m = map[level];
-  let out = rect(55, y, 1013, 116, { fill: m.fill, stroke: m.stroke, r: 12 });
-  out += circle(87, y + 36, 19, { fill: m.color });
-  out += text(87, y + 43, n, 18, { fill: '#fff', weight: 700, anchor: 'middle' });
-  out += text(122, y + 34, titleValue, 17, { fill: C.ink, weight: 700 });
-  out += paragraph(122, y + 64, body, 720, 14, { fill: C.muted, lineHeight: 20, maxLines: 2 });
-  const p = pill(880, y + 23, m.label, { fill: level === 'critical' || level === 'later' ? '#fff' : level === 'confirmed' ? C.greenSoft : C.blueSoft, color: m.color, stroke: m.stroke, size: 11, pad: 9 });
-  out += p.svg;
-  return out;
+const pages = [page1(), page2(), page3(), page4(), page5(), page6()];
+
+for (const [index, svg] of pages.entries()) {
+  const stem = `auto-parts-guide-${String(index + 1).padStart(2, '0')}`;
+  const svgPath = join(WORK, `${stem}.svg`);
+  const pngPath = join(WORK, `${stem}.png`);
+  writeFileSync(svgPath, svg);
+  const rendered = spawnSync(
+    'python3',
+    [resolve('docs/render-svg-to-png.py'), svgPath, pngPath, String(W)],
+    { encoding: 'utf8' },
+  );
+  if (rendered.status !== 0) {
+    throw new Error(`Page ${index + 1} render failed:\n${rendered.stdout}\n${rendered.stderr}`);
+  }
 }
 
-function page7() {
-  let b = pageHeader(7, 'План готов к реализации', '6. Итог рассмотрения редакции 4');
-  b += rect(55, 150, 1013, 130, { fill: C.greenSoft, stroke: '#b7eb8f', r: 14 });
-  b += circle(92, 215, 25, { fill: C.green });
-  b += check(80, 216, '#fff');
-  b += text(135, 195, 'Открытых вопросов не осталось', 22, { fill: C.ink, weight: 700 });
-  b += paragraph(135, 228, 'Все замечания ревью, технические оговорки и четыре предметные развилки закрыты. Реализация разбита на шесть проверяемых этапов.', 880, 15, { fill: C.muted, lineHeight: 22 });
+const pdf = await PDFDocument.create();
+pdf.setTitle('Автозапчасти в гараже — краткая пользовательская инструкция');
+pdf.setSubject('Поиск автозапчастей, ведение остатка и списание через акт обслуживания');
+pdf.setKeywords(['автозапчасти', 'гараж', 'остаток', 'акт обслуживания', 'инструкция']);
+pdf.setAuthor('АВТО');
+pdf.setCreator('SVG guide generator + librsvg + pdf-lib');
+pdf.setProducer('pdf-lib');
+const fixedDate = new Date('2026-08-25T12:00:00+05:00');
+pdf.setCreationDate(fixedDate);
+pdf.setModificationDate(fixedDate);
 
-  b += decisionRow(315, '1', 'Код номенклатуры необязателен', 'Постоянная идентичность позиции — пара «наименование + код»; фиктивные коды не нужны.', 'confirmed');
-  b += decisionRow(447, '2', 'Склад виден всем пользователям гаража', 'Менеджер и диспетчер читают остатки и расход акта; изменяют их только механики.', 'confirmed');
-  b += decisionRow(579, '3', 'Справочник наполняют механики', 'Позиции заводятся по ходу работы с начальным остатком; пустой первый экран — норма.', 'confirmed');
-  b += decisionRow(711, '4', 'Минимального остатка пока нет', 'Что заказывать, показывают сортировка по остатку и быстрый фильтр «Нет в наличии».', 'confirmed');
-
-  b += rect(55, 858, 1013, 176, { fill: C.graySoft, stroke: C.line, r: 14 });
-  b += text(82, 899, 'После выката уточнить у эксплуатации', 18, { fill: C.blue, weight: 700 });
-  b += paragraph(82, 934, 'Какие типы техники размечены признаком «ТО по пробегу» и с какого дня механики начинают вести склад. Эти вопросы не блокируют реализацию.', 940, 15, { fill: C.text, lineHeight: 23 });
-
-  b += text(55, 1090, 'UX-рекомендации к этапу портала', 23, { fill: C.ink, weight: 700 });
-  const tips = [
-    'Вынести нулевой остаток в красный статус и дать быстрый фильтр «Нет в наличии».',
-    'В подборе для ТО показывать остаток и единицу прямо в строке результата.',
-    'После сохранения акта явно сообщать, какие позиции и на сколько изменили склад.',
-    'Для акта с движением заранее заменять «Удалить» на «Аннулировать».',
-  ];
-  tips.forEach((tip, i) => {
-    const yy = 1132 + i * 58;
-    b += circle(70, yy + 3, 11, { fill: C.blueSoft, stroke: '#91caff' });
-    b += check(63, yy + 4, C.blue);
-    b += paragraph(95, yy + 9, tip, 940, 15, { fill: C.text, lineHeight: 21, maxLines: 2 });
-  });
-
-  b += rect(55, 1441, 1013, 51, { fill: C.blue, r: 10 });
-  b += text(561, 1474, 'Следующий шаг: этап 1 — ADR, контракты, права и актуальные номера миграций', 15, { fill: '#fff', weight: 600, anchor: 'middle' });
-  b += footer('Рассмотрение docs/auto-parts-plan.md • 24.08.2026');
-  return document(b);
+for (let index = 0; index < pages.length; index += 1) {
+  const stem = `auto-parts-guide-${String(index + 1).padStart(2, '0')}`;
+  const png = await pdf.embedPng(readFileSync(join(WORK, `${stem}.png`)));
+  const page = pdf.addPage([595.28, 841.89]);
+  page.drawImage(png, { x: 0, y: 0, width: 595.28, height: 841.89 });
 }
 
-const pages = [page1(), page2(), page3(), page4(), page5(), page6(), page7()];
-pages.forEach((svg, i) => {
-  writeFileSync(resolve(OUT, `auto-parts-ui-${String(i + 1).padStart(2, '0')}.svg`), svg);
-});
-
-console.log(OUT);
+mkdirSync(dirname(OUTPUT), { recursive: true });
+writeFileSync(OUTPUT, await pdf.save({ useObjectStreams: false }));
+rmSync(WORK, { recursive: true, force: true });
+console.log(OUTPUT);

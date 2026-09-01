@@ -68,7 +68,7 @@ export function ReadingCardTotals({ total }: { total: ReadingTotals }) {
   ];
 
   return (
-    <Space direction="vertical" size={6} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={6} style={{ display: 'flex' }}>
       {/* Полосы переносятся, а не сжимаются: на телефоне они встают одна под другой, и качество
           данных остаётся на том же экране, что и итог. Счётчики внутри полосы не переносятся
           никогда («Пробег, км: 1 240» не должен ломаться посреди числа), поэтому узкому экрану

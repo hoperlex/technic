@@ -28,6 +28,7 @@ import {
   type AccessSubject,
   type CounterpartyType,
   type Permission,
+  type RequestStatus,
   type Role,
 } from '@technic/contracts';
 
@@ -867,11 +868,16 @@ describe('заявки на обслуживание оргтехники (ADR 0
    * «открыт ли раздел», и тестам. Разъехавшись с матрицей, он молча перестал бы кого-нибудь
    * закрывать.
    */
-  it('прав у модуля тринадцать, и список модуля выводится из матрицы', () => {
+  it('прав у модуля четырнадцать, и список модуля выводится из матрицы', () => {
+    // Четырнадцатым пришло «заводит заявку без аппарата»
+    // (`serviceRequests.createWithoutEquipment`, ADR 0146, решение 6): своей двери у права нет —
+    // заведение идёт через тот же `POST /service-requests`, и право лишь снимает с него требование
+    // обязательного аппарата. В матрице его нет ни у одной роли: приходит оно двумя наборами
+    // оргтехники — «Ведение» и «ИТ-служба».
     expect([...SERVICE_REQUEST_PERMISSIONS]).toEqual(
       PERMISSIONS.filter((p) => p.startsWith('serviceRequests.')),
     );
-    expect(SERVICE_REQUEST_PERMISSIONS).toHaveLength(13);
+    expect(SERVICE_REQUEST_PERMISSIONS).toHaveLength(14);
     // Право без единого держателя — мёртвая строка матрицы: она выглядит как раздача доступа, а
     // означает «этого не может никто».
     for (const permission of SERVICE_REQUEST_PERMISSIONS) {
@@ -969,9 +975,14 @@ describe('заявки на обслуживание оргтехники (ADR 0
       expect(can(subject, 'serviceRequests.status'), label).toBe(false);
       // Ходы исполнителя приходят парой «назначение + execute», а не статусом.
       expect(can(subject, 'serviceRequests.execute'), label).toBe(true);
-      // Согласование сметы — подпись под деньгами, у ИТ-службы её нет: она решает «чинить или
-      // менять», и это другое право.
+      // Подписи под деньгами у ИТ-службы нет: своё право `serviceRequests.approveEstimate` несёт
+      // надстройка «Ведения». К ручке согласования она с упрощением цикла проходит — но по
+      // `serviceRequests.execute`, то есть как назначенный исполнитель, а не как согласующая
+      // сторона: в очередь «Ждут меня» подпись ей не приходит (`isWaitingOn(_, 'approval')`).
       expect(can(subject, 'serviceRequests.approveEstimate'), label).toBe(false);
+      // Виза ИТ упразднена (план упрощения цикла, Р10), а право осталось: уборка выданных наборов
+      // идёт отдельным выпуском, и до неё оно живёт, не открывая ни ручек, ни ходов. Что ходов оно
+      // не даёт, проверяет `service-corridors.test.ts`; здесь — что состав набора не менялся.
       expect(can(subject, 'serviceRequests.approveIt'), label).toBe(true);
     }
     // Удаление надстройка не добавляет никому: у трёх профилей выше оно есть, но приходит РОЛЬЮ —
@@ -1085,5 +1096,27 @@ describe('переходы статусов следуют из прав', () =>
       'done',
       'cancelled',
     ]);
+  });
+
+  /**
+   * Статус, которого нет в словаре сборки, — не выдумка теста, а обычное состояние выката: база
+   * получает новое значение миграцией и сразу переводит в него заявки, а вкладка у человека
+   * открыта прошлым выпуском портала. Ровно так «Завершена» (ADR 0135, миграции 0194/0195) уронила
+   * список заявок на вывоз: спред `undefined` бросал `TypeError` при отрисовке первой же строки, и
+   * страница гасла целиком.
+   *
+   * Проверяется у всех троих, кто читает таблицы: у общего цикла, у права отката (там спредов два)
+   * и у своего коридора исполнителя. Пустой список — верный ответ: предложить ход по незнакомому
+   * статусу порталу нечем, а решает переход всё равно сервер.
+   */
+  it('незнакомый статус не роняет портал, а закрывает переходы', () => {
+    const unknown = 'archived' as RequestStatus;
+    for (const module of ['waste', 'vehicle'] as const) {
+      expect(allowedStatusTransitions(unknown, of('manager'), module), module).toEqual([]);
+      expect(can(of('admin'), 'requests.rollbackStatus')).toBe(true);
+      expect(allowedStatusTransitions(unknown, of('admin'), module), module).toEqual([]);
+      expect(canTransitionStatus(unknown, 'new', of('admin'), module), module).toBe(false);
+    }
+    expect(allowedStatusTransitions(unknown, wasteOperator, 'waste')).toEqual([]);
   });
 });

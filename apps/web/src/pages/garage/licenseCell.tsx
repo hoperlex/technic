@@ -74,7 +74,7 @@ export function LicenseCell({ row, on }: { row: GarageDriverDto; on: string }) {
   return (
     // `display: flex` у обёртки не украшение: `Space` иначе inline-flex, ширина у него по
     // содержимому, и обрезаться строкам было бы не от чего — они вылезли бы в соседнюю графу.
-    <Space direction="vertical" size={0} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={0} style={{ display: 'flex' }}>
       <Typography.Text ellipsis={{ tooltip: number ?? '' }}>{number ?? '—'}</Typography.Text>
       {sub && (
         <Typography.Text {...SUB} type={cellType(state)} ellipsis={{ tooltip: sub }}>

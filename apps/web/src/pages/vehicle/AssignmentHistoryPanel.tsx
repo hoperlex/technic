@@ -65,7 +65,7 @@ export function AssignmentHistoryPanel({
   const tail = tailVehicleMismatch(segments, term, assignment);
 
   return (
-    <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
       <Typography.Text strong>Состав по датам</Typography.Text>
 
       {/* Расхождение хвоста (Р31) — первым: оно про то, чем заявка закрыта **после** конца срока,
@@ -77,7 +77,7 @@ export function AssignmentHistoryPanel({
           Отрезков пока нет: история заявки не заведена.
         </Typography.Text>
       ) : (
-        <Space direction="vertical" size={8} style={{ display: 'flex' }}>
+        <Space orientation="vertical" size={8} style={{ display: 'flex' }}>
           {segments.map((segment) => (
             <SegmentRow
               key={segment.from}
@@ -96,7 +96,7 @@ export function AssignmentHistoryPanel({
         <Alert
           type="warning"
           showIcon
-          message="История заявки неполна"
+          title="История заявки неполна"
           description={
             <>
               {note && <div>{note}</div>}
@@ -137,7 +137,7 @@ export function TailMismatchAlert({
     <Alert
       type="warning"
       showIcon
-      message="Не решено, чем заявка закрыта после конца срока"
+      title="Не решено, чем заявка закрыта после конца срока"
       description={
         <>
           <div>

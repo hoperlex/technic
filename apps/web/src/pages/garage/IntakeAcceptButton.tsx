@@ -69,7 +69,7 @@ export function IntakeAcceptButton({ reports }: { reports: readonly ReadingIntak
           title,
           width: 520,
           content: (
-            <Space direction="vertical" size={4} style={{ display: 'flex' }}>
+            <Space orientation="vertical" size={4} style={{ display: 'flex' }}>
               <Typography.Text type="secondary">
                 Эти отчёты остались непринятыми — их состояние изменилось, пока реестр был открыт:
               </Typography.Text>

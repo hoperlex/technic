@@ -297,7 +297,7 @@ export function MaintenanceFormModal({
             type="warning"
             showIcon
             style={{ marginBottom: 16 }}
-            message="После прошлого ТО счётчик был больше — заменяли прибор?"
+            title="После прошлого ТО счётчик был больше — заменяли прибор?"
             description={`На ${dayjs(previous.performedOn).format(SHOWN_DATE)} в акте стояло ${kmText(
               previous.km,
             )}. Записать можно и так: монотонности от одометра не требуется, но пробег с ТО через замену считается только снизу.`}

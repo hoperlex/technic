@@ -308,7 +308,10 @@ export function ServiceRequestConsumablesModal({
     >
       <Form form={form} layout="vertical" onFinish={(v) => mutation.mutate(v)}>
         <ServiceRequestConsumablesField
-          modelId={request ? modelOf?.get(request.equipment.id) : undefined}
+          // Без аппарата нет и модели — как и там, где справочник закрыт: поле показывает весь
+          // перечень расходников, а не пустой (Р8). Заявка «на склад» тем и живёт, что аппарат ей
+          // не нужен.
+          modelId={request?.equipment ? modelOf?.get(request.equipment.id) : undefined}
           enabled={!!request}
         />
         {/* Заказчик состав ВИДИТ и не правит (Р15) — это ответ на его «что мне привезут». Строка

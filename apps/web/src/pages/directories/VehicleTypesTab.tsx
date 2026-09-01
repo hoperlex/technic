@@ -207,7 +207,7 @@ export function VehicleTypesTab() {
         title: `Переключить режим заказов типа «${typeName}»?`,
         width: 560,
         content: (
-          <Space direction="vertical" size={8} style={{ display: 'flex' }}>
+          <Space orientation="vertical" size={8} style={{ display: 'flex' }}>
             <span>{switchConsequence(preview.next, preview.count)}</span>
             {preview.requests.length > 0 && (
               <ul style={{ margin: 0, paddingInlineStart: 20 }}>
@@ -452,7 +452,7 @@ export function VehicleTypesTab() {
       render: (_v, r) => {
         const type = typeById.get(r.vehicleTypeId);
         return (
-          <Space direction="vertical" size={2}>
+          <Space orientation="vertical" size={2}>
             {type?.isLinear ? <Tag color="blue">по дням</Tag> : <span>—</span>}
             {/* Заявки, застигнутые переключением: они дорабатывают тем режимом, которым их
                 завели, и колонка отвечает на вопрос «почему две заявки одного типа ведут себя

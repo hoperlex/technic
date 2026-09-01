@@ -126,7 +126,9 @@ export function ServiceRequestForm({
     resetAttachments();
     if (request) {
       form.setFieldsValue({
-        officeEquipmentId: request.equipment.id,
+        // У заявки без аппарата поле пустое — и остаётся таким: технику при правке не меняют
+        // вовсе (её выбор выключен), а подставить сюда нечего (Р8).
+        officeEquipmentId: request.equipment?.id,
         description: request.description,
         // Заказчик правки — ключом от подбора (К7): он собран по снимкам самой заявки, а не по
         // действующему справочнику, и держится в списке, даже выпав из состава поля.

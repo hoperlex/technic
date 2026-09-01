@@ -132,7 +132,7 @@ export function EquipmentMoveModal({
             type="warning"
             showIcon
             style={{ marginBottom: 16 }}
-            message="Техника уйдёт с вашей площадки"
+            title="Техника уйдёт с вашей площадки"
             description="После записи она пропадёт из вашего справочника и появится у принимающей стороны. Вернуть её сможет тот, к кому она приехала."
           />
         )}

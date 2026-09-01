@@ -36,7 +36,7 @@ export function TicketAuditSummary({ period, onPeriodChange, enabled }: Props) {
   );
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       <PeriodBar
         period={period}
         onChange={onPeriodChange}
@@ -47,7 +47,7 @@ export function TicketAuditSummary({ period, onPeriodChange, enabled }: Props) {
         <Alert
           type="error"
           showIcon
-          message="Сводка не загрузилась"
+          title="Сводка не загрузилась"
           description={errorMessage(error)}
           // Кнопка, а не молчаливое повторение: сеть отвалилась на минуту — человек решает сам,
           // ждать ли ему ещё; отчёт за прошедший период никуда не убежит.
@@ -80,7 +80,7 @@ function SummaryBody({ data, isMobile }: { data: TicketAuditSummaryDto; isMobile
   );
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       <LostWarning share={data.lostShare} outcomes={data.observations} />
       <Outcomes counts={data.observations} />
       {isMobile ? <FieldCards rows={rows} /> : <FieldTable rows={rows} />}
@@ -102,7 +102,7 @@ function LostWarning({ share, outcomes }: { share: number; outcomes: TicketAudit
     <Alert
       type="warning"
       showIcon
-      message={`Потеряно исходов: ${outcomes.lost} из ${outcomes.total} — ${percent} % при пороге ${threshold} %`}
+      title={`Потеряно исходов: ${outcomes.lost} из ${outcomes.total} — ${percent} % при пороге ${threshold} %`}
       description="Талоны удалены раньше, чем по их чтению что-то решили. Доли ниже посчитаны без этих наблюдений."
     />
   );

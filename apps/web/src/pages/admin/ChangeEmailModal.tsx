@@ -84,7 +84,7 @@ export function ChangeEmailModal({ open, user, self, onCancel, onSubmit, confirm
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message="Адрес учётной записи — это логин"
+          title="Адрес учётной записи — это логин"
           description={
             <ul style={{ margin: 0, paddingInlineStart: 18 }}>
               <li>Вход по прежнему адресу перестанет работать сразу.</li>
@@ -139,7 +139,7 @@ export function ChangeEmailModal({ open, user, self, onCancel, onSubmit, confirm
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
-            message="Адрес вне доменов компании — проверьте, что он написан верно"
+            title="Адрес вне доменов компании — проверьте, что он написан верно"
           />
         ) : null}
         {/* Поле пароля есть только у своей учётки: чужую сервер паролем не защищает, и выключенное

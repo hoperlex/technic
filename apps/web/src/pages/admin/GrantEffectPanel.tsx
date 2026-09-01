@@ -42,14 +42,14 @@ export function GrantEffectPanel({ permissions, roles, violations, unknownPermis
   })).filter((group) => group.chosen.length > 0);
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       {violations.length > 0 && (
         <Alert
           type="error"
           showIcon
-          message="Так сохранить нельзя"
+          title="Так сохранить нельзя"
           description={
-            <Space direction="vertical" size={4}>
+            <Space orientation="vertical" size={4}>
               {violations.map((text) => (
                 <span key={text}>{text}</span>
               ))}
@@ -62,7 +62,7 @@ export function GrantEffectPanel({ permissions, roles, violations, unknownPermis
         <Alert
           type="warning"
           showIcon
-          message="В наборе есть права, которых портал больше не знает"
+          title="В наборе есть права, которых портал больше не знает"
           // Доступа сирота не даёт никогда, но и молчать о ней нельзя: правка состава уносит её, и
           // администратор должен знать, что состав в базе не совпадал с показанным.
           description={`${unknownPermissions.join(', ')} — правка состава уберёт эти строки из набора.`}
@@ -91,7 +91,7 @@ export function GrantEffectPanel({ permissions, roles, violations, unknownPermis
             </Typography.Text>
           </div>
         ) : (
-          <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 4 }}>
+          <Space orientation="vertical" size={8} style={{ width: '100%', marginTop: 4 }}>
             {modules.map((group) => {
               const { read, act } = splitByAccess(group.chosen);
               /*

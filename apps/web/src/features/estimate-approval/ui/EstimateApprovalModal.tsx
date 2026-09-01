@@ -5,6 +5,7 @@ import type { ServiceRequestDto } from '@technic/contracts';
 import {
   ServiceEstimateTable,
   ServiceRequestContext,
+  serviceRequestEquipmentName,
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
@@ -122,11 +123,12 @@ export function EstimateApprovalModal({
             <Alert
               type="warning"
               showIcon
-              message={`Ревизия ${request.estimateRevision} · ${totalLabel(request)}`}
+              title={`Ревизия ${request.estimateRevision} · ${totalLabel(request)}`}
               description={
-                <Space direction="vertical" size={0}>
+                <Space orientation="vertical" size={0}>
                   <span>
-                    {request.service?.name ?? 'Исполнитель не назначен'} · {request.equipment.name}
+                    {request.service?.name ?? 'Исполнитель не назначен'} ·{' '}
+                    {serviceRequestEquipmentName(request)}
                   </span>
                   <Typography.Text type="secondary">
                     Отказ закрывает заявку — она уходит в «Отменена», и вернуть её оттуда может

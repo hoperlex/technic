@@ -429,7 +429,7 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
         ) : undefined
       }
     >
-      <Space direction="vertical" size="large" style={{ display: 'flex' }}>
+      <Space orientation="vertical" size="large" style={{ display: 'flex' }}>
         {/* Реквизиты документооборота типа: бланк листа (ADR 0065) и режим заказа на объект.
             Правятся они в форме справочника, а спрашивают о них здесь — карточка и так открыта
             ради ТТХ и категорий, и «по какому листу ходит эта техника» выясняется тем же

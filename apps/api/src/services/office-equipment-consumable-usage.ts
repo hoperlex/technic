@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-or
 import {
   formatServiceRequestNumber,
   officeEquipmentTitle,
+  SERVICE_REQUEST_NO_EQUIPMENT,
   type OfficeEquipmentConsumableUsageDto,
   type OfficeEquipmentConsumableUsageQuery,
 } from '@technic/contracts';
@@ -137,10 +138,19 @@ export async function loadConsumableUsage(
       })
       .from(officeEquipmentConsumableStockEntries)
       /*
-       * Все соединения внутренние, и ни одно из них строк не теряет: у события вида `issue`/`return`
-       * ссылка на заявку обязательна (`…request_links_check`) и стоит внешним ключом, заявка всегда
-       * привязана к единице техники, а автор события — `NOT NULL` с `RESTRICT`. Поэтому итоги,
-       * посчитанные по голой таблице журнала (ниже), сходятся с суммой строк отчёта.
+       * Соединения подобраны так, чтобы ни одно из них не теряло строк, — иначе итоги, посчитанные
+       * по голой таблице журнала (ниже), перестали бы сходиться с суммой строк отчёта.
+       *
+       * Внутренние — позиция, заявка и автор: у события вида `issue`/`return` ссылка на заявку
+       * обязательна (`…request_links_check`) и стоит внешним ключом, а автор события — `NOT NULL`
+       * с `RESTRICT`.
+       *
+       * КАРТОЧКА ТЕХНИКИ — ЛЕВОЕ (Р8, ADR 0146, решение 7). Утверждение «заявка всегда привязана к
+       * единице техники» перестаёт быть верным в выпуске 2б: отдел попросит тонер без аппарата, и
+       * выдача по такой заявке при внутреннем соединении исчезла бы из отчёта — вместе со своими
+       * штуками. Итог остался бы прежним, потому что считается он по журналу, и отчёт начал бы сам
+       * себе противоречить: сумма столбца не сошлась бы с числом внизу. Сегодня заявок без аппарата
+       * нет, и замена соединения не двигает ни одной строки.
        */
       .innerJoin(
         officeEquipmentConsumables,
@@ -150,7 +160,7 @@ export async function loadConsumableUsage(
         serviceRequests,
         eq(officeEquipmentConsumableStockEntries.serviceRequestId, serviceRequests.id),
       )
-      .innerJoin(officeEquipment, eq(serviceRequests.officeEquipmentId, officeEquipment.id))
+      .leftJoin(officeEquipment, eq(serviceRequests.officeEquipmentId, officeEquipment.id))
       .innerJoin(users, eq(officeEquipmentConsumableStockEntries.changedBy, users.id))
       .where(where)
       // Группировка по ключам таблиц, а не по всем показанным колонкам: остальные поля от них
@@ -236,11 +246,15 @@ export function consumableUsageWorkbook(report: OfficeEquipmentConsumableUsageDt
     ...report.rows.map((row) => [
       ru(row.at),
       row.displayNumber,
-      officeEquipmentTitle({
-        name: row.equipmentName,
-        inventoryNumber: row.equipmentInventoryNumber,
-        serialNumber: row.equipmentSerialNumber,
-      }),
+      // Пустая ячейка вместо аппарата читалась бы как «данные не выгрузились», поэтому у заявки без
+      // аппарата (Р8) книга говорит это словами — теми же, что портал и письмо.
+      row.equipmentName === null
+        ? SERVICE_REQUEST_NO_EQUIPMENT
+        : officeEquipmentTitle({
+            name: row.equipmentName,
+            inventoryNumber: row.equipmentInventoryNumber ?? '',
+            serialNumber: row.equipmentSerialNumber ?? '',
+          }),
       row.code,
       row.name,
       row.color ?? '',

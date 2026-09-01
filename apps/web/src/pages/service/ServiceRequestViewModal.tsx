@@ -287,7 +287,7 @@ export function ServiceRequestViewModal({
                   key: 'consumables',
                   label: 'Номенклатура',
                   children: (
-                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
                       <ServiceConsumablesTable lines={request.consumables} />
                       {consumables && (
                         <Button

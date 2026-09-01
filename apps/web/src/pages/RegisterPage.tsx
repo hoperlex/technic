@@ -188,7 +188,7 @@ export function RegisterPage() {
               type="warning"
               showIcon
               style={{ marginBottom: 24 }}
-              message="Указан адрес внешней почтовой службы"
+              title="Указан адрес внешней почтовой службы"
               description={`Заявка с такого адреса рассматривается дольше и может быть отклонена. Если у вас есть рабочая почта в домене ${INTERNAL_EMAIL_DOMAINS.join(', ')} — укажите её.`}
             />
           ) : null}

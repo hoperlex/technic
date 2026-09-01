@@ -110,7 +110,7 @@ export function WeeklyRequestConductModal({ request, onClose, onConduct, pending
             type="error"
             showIcon
             style={{ marginBottom: 16 }}
-            message="Эту неделю сейчас не провести"
+            title="Эту неделю сейчас не провести"
             description={preview!.blockedReason}
           />
         )}
@@ -120,7 +120,7 @@ export function WeeklyRequestConductModal({ request, onClose, onConduct, pending
             type="warning"
             showIcon
             style={{ marginBottom: 16 }}
-            message={`Что произойдёт с неделей ${preview.weekLabel}`}
+            title={`Что произойдёт с неделей ${preview.weekLabel}`}
             description={
               <ul style={{ margin: 0, paddingInlineStart: 20 }}>
                 <li>

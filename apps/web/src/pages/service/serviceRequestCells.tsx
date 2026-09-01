@@ -5,18 +5,49 @@ import {
   type ServiceRequestDto,
   warrantyClaimSourceLabels,
 } from '@technic/contracts';
-import { isAwaitingDocuments, serviceDocumentCounts } from '@entities/service-request';
+import {
+  isAwaitingDocuments,
+  serviceDocumentCounts,
+  serviceRequestEquipmentName,
+  serviceRequestObjectLabel,
+} from '@entities/service-request';
 import { WarrantyTag } from '@entities/office-equipment';
 import type { ActionSheetItem } from '@shared/ui';
+import { formatMoney } from '../../utils/format';
 
 /**
  * Ячейки списка заявок, которые собирают несколько признаков в одну колонку: реквизиты техники с
- * двумя разными гарантиями и состояние документов.
+ * двумя разными гарантиями, «где стоит» и состояние документов.
  *
  * Отдельным модулем от самих колонок: обе отвечают на вопрос «что здесь на самом деле показано», и
  * путают их постоянно — гарантию техники с пометкой «заявка по гарантии», подшитый акт с
  * недостающим. Объяснения к ним длиннее самой разметки, и в файле колонок они тонули.
  */
+
+/**
+ * Неразрывный пробел вместо пустой подписи (Р8). Обе ячейки списка двухстрочные, и у заявки без
+ * аппарата второй строке взяться неоткуда: ни номеров, ни типа, ни места внутри объекта у неё нет.
+ * Схлопнись строка — ячейка стала бы на строку ниже соседних, и в списке это читается не как «тут
+ * пусто», а как недорисованная таблица. Пробел держит высоту, ничего при этом не утверждая:
+ * прочерк на его месте означал бы «данные потерялись».
+ */
+const KEEP_LINE = '\u00A0';
+
+/**
+ * Итог заявки: пока работы не закрыты — предъявленный объём работ, после — то, что по акту.
+ *
+ * Здесь, а не в модуле колонок: ответ нужен и столбцу «Сумма», и строке мобильной карточки, а сам
+ * файл колонок упирается в предел длины.
+ */
+export function amountLabel(request: ServiceRequestDto): { value: string; hint: string } {
+  if (request.completion?.totalAmount != null) {
+    return { value: formatMoney(request.completion.totalAmount), hint: 'по акту' };
+  }
+  if (request.estimatedTotalAmount != null) {
+    return { value: formatMoney(request.estimatedTotalAmount), hint: 'по объёму работ' };
+  }
+  return { value: '—', hint: '' };
+}
 
 /** Реквизиты единицы: модель сверху, номер и тип — подписью. Ими технику и опознают. */
 export function EquipmentCell({
@@ -27,16 +58,17 @@ export function EquipmentCell({
   warrantyUntil: string | null | undefined;
 }) {
   const equipment = request.equipment;
-  const number = equipment.inventoryNumber
+  const number = equipment?.inventoryNumber
     ? `инв. ${equipment.inventoryNumber}`
-    : equipment.serialNumber
+    : equipment?.serialNumber
       ? `SN ${equipment.serialNumber}`
       : '';
   return (
     <div style={{ lineHeight: 1.35 }}>
-      <div>{equipment.name}</div>
+      {/* «Без аппарата» словами: заявка без предмета — законное состояние, а не пробел в ответе. */}
+      <div>{serviceRequestEquipmentName(request)}</div>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        {[number, equipment.typeName].filter(Boolean).join(' · ')}
+        {[number, equipment?.typeName].filter(Boolean).join(' · ') || KEEP_LINE}
       </Typography.Text>
       <div style={{ marginTop: 2 }}>
         <Space size={4} wrap>
@@ -63,6 +95,34 @@ export function EquipmentCell({
           )}
         </Space>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Где заявка «стоит»: площадка сверху, место внутри неё и отдел-заказчик — подписью.
+ *
+ * У заявки без аппарата площадки может не быть вовсе (заявка «от отдела», Р8), и верхняя строка
+ * тогда достаётся отделу-заказчику: он и есть область такой заявки, а заказчик у неё ровно один —
+ * площадка либо отдел (`CHECK` предмета, Р7). Пустая верхняя строка над подписью читалась бы как
+ * непрогрузившаяся ячейка, а прочерк — как «объект потеряли», хотя объекта у такой заявки не
+ * бывает по устройству.
+ *
+ * Отдел в подписи при этом не повторяется: поднявшись наверх, он уходит из нижней строки — иначе
+ * ячейка называла бы его дважды подряд.
+ */
+export function PlaceCell({ request }: { request: ServiceRequestDto }) {
+  const objectLabel = serviceRequestObjectLabel(request);
+  const department = request.customerDepartment?.name;
+  const hint = [request.equipment?.location, objectLabel && department].filter(Boolean).join(' · ');
+  return (
+    <div style={{ lineHeight: 1.35 }}>
+      {/* Ни площадки, ни отдела не бывает (`CHECK` предмета): держать высоту здесь — не запасной
+          ответ, а отказ гадать, если база когда-нибудь скажет иначе. */}
+      <div>{objectLabel ?? department ?? KEEP_LINE}</div>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {hint || KEEP_LINE}
+      </Typography.Text>
     </div>
   );
 }

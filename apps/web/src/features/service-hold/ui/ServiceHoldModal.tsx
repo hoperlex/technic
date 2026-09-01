@@ -104,12 +104,12 @@ export function ServiceHoldModal({
       width={520}
     >
       {request && (
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           <ServiceRequestContext request={request} />
           <Alert
             type="info"
             showIcon
-            message={
+            title={
               resuming
                 ? `Заявка вернётся в «${serviceRequestStatusLabels[target!]}»`
                 : 'Заявка остановится: ход по ней станет невозможен'

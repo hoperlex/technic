@@ -69,7 +69,7 @@ export function DayFailure({
     <Alert
       type="error"
       showIcon
-      message="Не удалось открыть день"
+      title="Не удалось открыть день"
       description={message}
       action={
         onRetry ? (
@@ -94,7 +94,7 @@ export function DayNotice({ day, href }: { day: DayState; href: string | null })
     <Alert
       type="info"
       showIcon
-      message={day.notice}
+      title={day.notice}
       description={href ? <Link to={href}>Открыть задание</Link> : null}
     />
   );
@@ -111,7 +111,7 @@ export function PendingMark({ row }: { row: PendingRow }) {
     <Alert
       type="warning"
       showIcon
-      message="Введено, но не передано"
+      title="Введено, но не передано"
       description={`${row.text} · сохранено ${formatDateTime(new Date(row.savedAt).toISOString())}`}
     />
   );

@@ -26,11 +26,20 @@ docs                runbook, схема БД, setup Yandex/cloud.ru
 
 ```bash
 pnpm install
-cp .env.example .env            # заполнить значения
+docker compose -f deploy/docker-compose.dev.yml -p technic-dev up -d   # postgres :5433 + minio :9000
+cp .env.example .env.dev        # заполнить локальными значениями
 pnpm db:migrate                 # применить SQL-миграции
-pnpm seed:admin                 # создать первого администратора
+ADMIN_EMAIL=admin@dev.local ADMIN_PASSWORD=... pnpm seed:admin
 pnpm dev                        # api + worker + web параллельно
 ```
+
+Локальные переменные лежат в `.env.dev`, и dev-скрипты читают его сами
+(`tsx --env-file-if-exists=../../.env.dev`): ни api, ни worker не тянут dotenv, а окружения у
+`pnpm dev` своего нет — без этого файла оба поднимались бы с пустым `DATABASE_URL` и падали до
+первой строки лога. Флаг `-if-exists` и приоритет настоящего окружения над файлом оставляют прод и
+CI нетронутыми: там переменные приходят из host env-файла, а `.env.dev` попросту отсутствует.
+Почта в нём выключена, S3 смотрит в MinIO, распознавание талонов — заглушка: наружу локальный
+контур не ходит.
 
 Сервер при старте сверяет схему с кодом и отказывается подниматься, если миграции не применены:
 неприменённая миграция иначе роняет первое же действие человека пятисоткой из середины

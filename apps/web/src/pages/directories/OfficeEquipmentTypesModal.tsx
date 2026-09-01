@@ -149,7 +149,7 @@ export function OfficeEquipmentTypesModal({ open, onClose }: Props) {
         footer={<Button onClick={onClose}>Закрыть</Button>}
         styles={{ body: { maxHeight: '60dvh', overflowY: 'auto' } }}
       >
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           <Typography.Text type="secondary">
             Чем называют технику в списке и в заявке: МФУ, принтер, ноутбук, монитор. Порядок задаёт
             место типа в выпадающих списках.

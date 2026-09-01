@@ -220,7 +220,7 @@ export function RequestTripsBlock({
   return (
     <FormGrid.Full>
       <Form.Item label="Ездки заявки">
-        <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+        <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
           {rows.map((row, index) => {
             const saved = row.id ? savedById.get(row.id) : undefined;
             return (

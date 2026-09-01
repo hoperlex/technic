@@ -5,6 +5,7 @@
     "components": 22
   },
   "rawKeyFiles": 45,
+  "antdDeprecated": 19,
   "maxLines": {
     "src/api/resources.ts": 1313,
     "src/pages/WasteRequestsPage.tsx": 2004,
@@ -26,7 +27,7 @@
     "src/pages/vehicle/VehicleRouteModal.tsx": 796,
     "src/pages/vehicle/VehicleRoutesModal.tsx": 776,
     "src/pages/vehicle/WeeklyRequestPage.tsx": 431,
-    "src/pages/vehicle/routeModal.tsx": 436,
+    "src/pages/vehicle/routeModal.tsx": 404,
     "src/pages/vehicle/shared.tsx": 645,
     "src/pages/vehicle/weeklyComposition.ts": 411,
     "src/pages/waste/WasteDoneModal.tsx": 464,

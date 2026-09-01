@@ -23,11 +23,11 @@ import { formatDateOnly } from './shared';
 export function RollbackPreview({ preview }: { preview: VehicleRequestStatusPreviewDto }) {
   const { issue, cancel } = preview.esm2;
   return (
-    <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
       <Alert
         type="info"
         showIcon
-        message={preview.mode === 'daily' ? 'Заказ пойдёт по дням' : 'Заказ пойдёт по неделям'}
+        title={preview.mode === 'daily' ? 'Заказ пойдёт по дням' : 'Заказ пойдёт по неделям'}
         description={
           preview.mode === 'daily'
             ? 'Работа планируется днями: на каждый день заводится рейс и печатается 4-П, а недельные листы ЭСМ-2 портал сам не выписывает — их просят по требованию.'

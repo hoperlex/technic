@@ -51,10 +51,10 @@ export function IntakeReportDiscrepancies({
   if (report.discrepancies.length === 0) return null;
 
   return (
-    <Space direction="vertical" size={6} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={6} style={{ display: 'flex' }}>
       <Typography.Text strong>Расхождения с заданием</Typography.Text>
       {report.discrepancies.map((d) => (
-        <Space key={keyOf(d)} direction="vertical" size={0}>
+        <Space key={keyOf(d)} orientation="vertical" size={0}>
           <Space size={8} wrap>
             <Tag
               color={d.resolved ? 'default' : 'red'}

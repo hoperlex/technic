@@ -80,11 +80,16 @@ function labelOf(at: { code: string; name: string }): string {
 function savedCustomerOf({
   customerDepartment: dep,
   object,
-}: ServiceRequestCustomerSnapshot): RequestCustomerSaved {
-  return {
-    target: dep ? { kind: 'department', id: dep.id } : { kind: 'object', id: object.id },
-    label: labelOf(dep ?? object),
-  };
+}: ServiceRequestCustomerSnapshot): RequestCustomerSaved | null {
+  if (dep) return { target: { kind: 'department', id: dep.id }, label: labelOf(dep) };
+  if (object) return { target: { kind: 'object', id: object.id }, label: labelOf(object) };
+  /*
+   * Ни отдела, ни площадки — заявки без заказчика не бывает: у заявки с аппаратом площадка есть
+   * всегда, у заявки без него заказчик ровно один из двух (`CHECK` предмета, Р7). Возвращается
+   * `null`, а не выдуманный пункт: поле откроется без сохранённого значения — человек выберет
+   * заказчика сам, — и это честнее, чем упасть на правке или подставить чужую площадку.
+   */
+  return null;
 }
 
 export function useServiceRequestCustomer({
@@ -103,8 +108,11 @@ export function useServiceRequestCustomer({
    * считается объектом техники либо не считается ничем.
    */
   const owner = (request ? request.equipmentDepartment?.id : equipment?.departmentId) ?? null;
+  // Площадки у правимой заявки может не быть вовсе (заявка «от отдела» без аппарата, Р8): группа
+  // площадок тогда пуста, и заказчик выбирается по оси отделов — предлагать чужую площадку было бы
+  // предложением увести заявку из своей области.
   const stands = request
-    ? { id: request.object.id, label: labelOf(request.object) }
+    ? request.object && { id: request.object.id, label: labelOf(request.object) }
     : equipment && { id: equipment.objectId, label: equipment.objectLabel };
   const ownTech = !!owner && scope.ownDepartmentIds.includes(owner);
   const site = stands && (!scope.isDepartmentRole || ownTech) ? stands : null;

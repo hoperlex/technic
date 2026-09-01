@@ -2,6 +2,7 @@ import {
   formatPhone,
   officeEquipmentTitle,
   type RequestChangeDto,
+  SERVICE_REQUEST_NO_EQUIPMENT,
   serviceFileKindLabels,
   type ServiceRequestFileDto,
   serviceItemKindLabels,
@@ -145,11 +146,20 @@ export function diffServiceCompletion(items: readonly ServiceRequestItemDto[]): 
   return diff.changes;
 }
 
-/** Как заявка называется в письмах и подсказках: номер плюс предмет. */
+/**
+ * Как заявка называется в письмах, подсказках и заголовках действий журнала: номер плюс предмет.
+ *
+ * У заявки без аппарата (Р8) предмета нет, и вторая половина заголовка говорит это словами. Не
+ * одним номером: заголовок читают в ленте аудита вперемешку с чужими, и «СО-14» без продолжения
+ * там неотличим от заголовка, у которого предмет потерялся при сборке.
+ */
 export function serviceRequestTitle(request: ServiceRequestDto): string {
-  return `${request.displayNumber} · ${officeEquipmentTitle({
-    name: request.equipment.name,
-    inventoryNumber: request.equipment.inventoryNumber,
-    serialNumber: request.equipment.serialNumber,
-  })}`;
+  const subject = request.equipment
+    ? officeEquipmentTitle({
+        name: request.equipment.name,
+        inventoryNumber: request.equipment.inventoryNumber,
+        serialNumber: request.equipment.serialNumber,
+      })
+    : SERVICE_REQUEST_NO_EQUIPMENT;
+  return `${request.displayNumber} · ${subject}`;
 }

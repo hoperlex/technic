@@ -658,7 +658,7 @@ export function VehiclesTab() {
               <Space
                 style={{ width: '100%' }}
                 size="middle"
-                direction={isMobile ? 'vertical' : 'horizontal'}
+                orientation={isMobile ? 'vertical' : 'horizontal'}
               >
                 <Form.Item
                   name="pricePerHour"
@@ -709,7 +709,7 @@ export function VehiclesTab() {
               <Space
                 style={{ width: '100%' }}
                 size="middle"
-                direction={isMobile ? 'vertical' : 'horizontal'}
+                orientation={isMobile ? 'vertical' : 'horizontal'}
               >
                 <Form.Item name="registrationNumber" label="Госномер" style={{ flex: 1 }}>
                   <Input maxLength={50} />

@@ -26,7 +26,7 @@ import { EntityLink } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
-import { useRouteModal } from './vehicle/routeModal';
+import { useRouteModal } from '@features/route-modal';
 import { useDriverOptions, useOwnVehicleOptions } from './vehicle/shared';
 import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from './waybills/filters';
 import {
@@ -175,7 +175,7 @@ export function WaybillsPage() {
       title: `Аннулировать лист ${w.number}?`,
       // Номер сгорает — для бланка строгой отчётности это норма, но человек должен знать заранее.
       content: (
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <Space orientation="vertical" style={{ width: '100%' }}>
           <Typography.Text type="secondary">
             Номер бланка сгорит, а маршрут разморозится: новый лист выписывают с него, когда состав
             рейса пересобран.
@@ -238,7 +238,7 @@ export function WaybillsPage() {
       // Поиск переехал в панель над таблицей: там его видно вместе с остальными сужениями.
       searchable: false,
       render: (_v, r) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <span>{r.number}</span>
           {/* Метка стоит у номера, а не в столбце статуса: статус отвечает, действует ли бланк, а
               это — откуда он такой взялся. Признак считает сервер по ссылке на операцию, поэтому
@@ -287,7 +287,7 @@ export function WaybillsPage() {
       sortable: false,
       searchable: false,
       render: (_v, r) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <span>{r.vehicleLabel}</span>
           {r.withTrailer && (
             <Typography.Text type="secondary">с прицепом {r.trailerLabel}</Typography.Text>
@@ -362,7 +362,7 @@ export function WaybillsPage() {
         r.requests.length === 0 ? (
           <Typography.Text type="secondary">—</Typography.Text>
         ) : (
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             {/* Номер талона ведёт к самой заявке: журнал отвечает, что за бланк выдан, а «что в
                 нём за работа» спрашивают у заявки — и до сих пор искали её номер руками.
 

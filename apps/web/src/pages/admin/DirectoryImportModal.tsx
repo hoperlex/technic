@@ -193,7 +193,7 @@ export function DirectoryImportModal({ directory, onClose, onImported }: Props) 
       width={640}
       footer={footer}
     >
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={12} style={{ width: '100%' }}>
         {!done && (
           <Space wrap>
             <Upload
@@ -218,7 +218,7 @@ export function DirectoryImportModal({ directory, onClose, onImported }: Props) 
           <Alert
             type="error"
             showIcon
-            message="Файл не разобран"
+            title="Файл не разобран"
             // Сервер перечисляет негодные строки списком: переносы здесь и есть отчёт, а собранные
             // в абзац они читаются как одна длинная фраза.
             description={
@@ -244,7 +244,7 @@ export function DirectoryImportModal({ directory, onClose, onImported }: Props) 
               <Alert
                 type="success"
                 showIcon
-                message={`Заведено ${done.created.length}, изменено ${done.updated.length}`}
+                title={`Заведено ${done.created.length}, изменено ${done.updated.length}`}
               />
             )}
 
@@ -277,7 +277,7 @@ export function DirectoryImportModal({ directory, onClose, onImported }: Props) 
               <Alert
                 type="error"
                 showIcon
-                message="Пока это не исправлено, файл не применяется — ни одной строкой"
+                title="Пока это не исправлено, файл не применяется — ни одной строкой"
                 description={
                   <div style={{ whiteSpace: 'pre-line', maxHeight: 260, overflowY: 'auto' }}>
                     {report.problems.join('\n')}
@@ -290,7 +290,7 @@ export function DirectoryImportModal({ directory, onClose, onImported }: Props) 
               <Alert
                 type="warning"
                 showIcon
-                message="Прочитайте перед применением — загрузке это не мешает"
+                title="Прочитайте перед применением — загрузке это не мешает"
                 description={
                   <div style={{ whiteSpace: 'pre-line', maxHeight: 200, overflowY: 'auto' }}>
                     {report.warnings.join('\n')}

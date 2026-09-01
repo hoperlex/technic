@@ -161,7 +161,7 @@ export function BusyRouteCell({
     <div style={{ overflowWrap: 'anywhere' }}>
       <div className={stackClass(shown)}>
         {shown.map((entry) => (
-          <Space key={busyKey(entry)} direction="vertical" size={0} style={{ display: 'flex' }}>
+          <Space key={busyKey(entry)} orientation="vertical" size={0} style={{ display: 'flex' }}>
             {entry.kind === 'special' ? DASH : <BusyHead entry={entry} />}
             {entry.kind === 'route' && entry.waybill && (
               <Typography.Text {...SUB}>
@@ -221,7 +221,7 @@ export function BusyVehicleCell({
         // Обёртка блочная (`display: flex` у `Space`): высоту сетки меряют по ней, а
         // `Typography.Text` — строчный элемент, и от его ширины по содержимому обрезаться было бы
         // нечему.
-        <Space key={busyKey(entry)} direction="vertical" size={0} style={{ display: 'flex' }}>
+        <Space key={busyKey(entry)} orientation="vertical" size={0} style={{ display: 'flex' }}>
           <Typography.Text ellipsis={{ tooltip: entry.vehicleLabel }}>
             <EntityLink to={hrefOf(entry.vehicleId)} title="Открыть журнал показаний">
               {entry.vehicleLabel}

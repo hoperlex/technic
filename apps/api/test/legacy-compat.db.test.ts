@@ -38,9 +38,23 @@ import { applyMigrations, readMigration } from '../src/db/migration-journal';
  * Копия — не «база как есть», а база «как была бы на выкате»: см. `dropSkeletonRequests`, где с
  * неё снимается то, чего в проде в этот момент существовать не может.
  *
+ * ЗАКРЫТОЕ ПАДЕНИЕ (класс «тест опирается на среду», §2.4 плана
+ * [test-gates-plan.md](../../../docs/test-gates-plan.md)). На чистой базе файл падал в `beforeAll`
+ * двумя разными способами, и оба — об одном: он считал накопленное данностью.
+ *
+ *  - Копия снималась с базы, на которую миграции ещё никто не накатывал, и первый же запрос по ней
+ *    отвечал `relation "freight_transport_request_details" does not exist`. Схему приносил сосед по
+ *    общей `TEST_DATABASE_URL`, успевший накатить миграции раньше, — то есть проходимость файла
+ *    зависела от того, кого vitest поставил первым. Теперь миграции на источник накатывает сам
+ *    файл, как это делают все соседние db-тесты.
+ *  - Автор строк и водитель листа брались из базы «первыми попавшимися», а `users` и `persons` не
+ *    сеет ни одна миграция: `SELECT id FROM users … LIMIT 1` отвечал пусто. Теперь и то и другое
+ *    файл заводит себе сам — на копии, которая всё равно уходит `DROP DATABASE`.
+ *
  * Запуск (нужны `pg_dump` и `psql` в PATH — копия снимается ими, а не `CREATE DATABASE …
  * TEMPLATE`: шаблон требует, чтобы к источнику не было ни одного подключения, а соседние db-тесты
- * идут параллельно и держат его открытым):
+ * идут параллельно и держат его открытым). База-источник — накопленная либо чистая, миграции файл
+ * накатывает сам:
  *
  *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/technic_archive_test \
  *     pnpm --filter @technic/api test legacy-compat
@@ -54,6 +68,25 @@ const DB_URL = process.env.TEST_DATABASE_URL;
 const CUTOVER = '0136_route_trips.sql';
 /** Позиция роли внутри точки: заведена после ревью и едет отдельным обычным деплоем (§12б). */
 const ROLE_POSITIONS = '0146_route_role_positions.sql';
+
+/**
+ * Действующие лица сценария — свои: автор заявок и водитель выданного листа.
+ *
+ * Ни учёток, ни людей не сеет ни одна миграция (парк, объекты, организацию, серии бланков и виды
+ * техники — сеют, и они берутся из базы законно). Первого администратора заводит отдельная команда
+ * `seed:admin`, в прогоне тестов её никто не вызывает, и «первый попавшийся пользователь» на базе,
+ * собранной одним накатом, просто не существует.
+ *
+ * Заводятся они НА КОПИИ, и потому уборки им не нужно вовсе: копия целиком уходит `DROP DATABASE`
+ * в `afterAll`. Источник этот файл не пачкает ничем — он его только читает, и правило это стоит
+ * держать: источник он снимает целиком, а значит всё, что туда положит, вернётся к нему же — и в
+ * фикстуру, и в счета по всей базе.
+ */
+const ACTOR_EMAIL = 'legacy-compat.db-test@technic.local';
+/** Колонка хеша обязательная, а входом файл не пользуется: он работает прямым SQL и командами. */
+const ACTOR_PASSWORD_HASH = 'вход не используется: файл работает прямым SQL';
+/** Метка человека — чтобы в копии было видно, чей он, если до копии дойдут руками. */
+const ACTOR_MARK = 'ТЕСТОВЫЕ ДАННЫЕ: совместимость переработки';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /** `test` → `apps/api`: отсюда запускаются штатные команды пакета. */
@@ -150,6 +183,19 @@ interface Ctx {
 
 let ctx: Ctx;
 
+/*
+ * Имя копии и соединение с ней держатся ОТДЕЛЬНО от `ctx`.
+ *
+ * `ctx` собирается одним присваиванием в самом конце `beforeAll`, а до него — снятие копии, откат
+ * за границу, сценарии, снимки и два наката миграций. Упади любой из этих шагов — прежний
+ * `afterAll` уходил по `if (!ctx) return` **до** сноса копии, и копия оставалась на кластере
+ * навсегда. Копятся такие молча и видны только в `\l`: на деве от прошлых прогонов их набралось
+ * два десятка. Поэтому снос идёт по тому, что успело появиться, а не по тому, что успело
+ * собраться (тот же приём, что в `request-backdate.db.test.ts`).
+ */
+let copyName: string | null = null;
+let copyClient: pg.Client | null = null;
+
 // ── Служебное: копия базы, откат за границу, запуск штатных команд ────────────────────────────
 
 /** Копия базы: имя источника с суффиксом — её видно в `\l`, и понятно, чья она и зачем. */
@@ -188,6 +234,25 @@ function run(
     child.on('error', reject);
     child.on('close', (code) => resolve({ code: code ?? -1, out }));
   });
+}
+
+/**
+ * Накат миграций на базу-ИСТОЧНИК — тем же помощником, каким его делают все соседние db-файлы.
+ *
+ * Копия снимается с источника как есть, и отставшая схема доезжает до неё отставшей. Сам файл
+ * миграций не накатывал никогда: писался он под накопленную `technic_archive_test`, где схема уже
+ * на месте. На чистой базе схему приносил тот сосед, кого vitest поставил первым, — а поставь он
+ * первым этот файл, копия выходила пустой, и `dropSkeletonRequests` падал на несуществующей
+ * таблице деталей.
+ */
+async function migrate(databaseUrl: string): Promise<void> {
+  const client = new pg.Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    await applyMigrations(client);
+  } finally {
+    await client.end();
+  }
 }
 
 /** Копия базы `pg_dump | psql`: поток идёт мимо диска, 80 МБ тестовой базы копируются за секунды. */
@@ -374,14 +439,24 @@ async function seedLegacy(db: pg.Client): Promise<Scenario> {
     return row;
   };
 
+  // Автор и водитель — свои (`ACTOR_*`): их не сеет ни одна миграция, и «первый попавшийся» на
+  // чистой базе не находится вовсе. Заводятся прямо здесь, на копии; почему им не нужно ни метки
+  // в источнике, ни уборки — разобрано у самих констант.
   const user = await one<{ id: string }>(
-    `SELECT id FROM users WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1`,
-  );
-  const vehicle = await one<{ id: string }>(
-    `SELECT id FROM vehicles WHERE deleted_at IS NULL ORDER BY id LIMIT 1`,
+    `INSERT INTO users (email, last_name, first_name, middle_name, password_hash, role, is_active)
+     VALUES ($1, 'Совместимый', 'Автор', 'Тестович', $2, 'admin', true)
+     RETURNING id`,
+    [ACTOR_EMAIL, ACTOR_PASSWORD_HASH],
   );
   const person = await one<{ id: string }>(
-    `SELECT id FROM persons WHERE deleted_at IS NULL ORDER BY id LIMIT 1`,
+    `INSERT INTO persons (last_name, first_name, middle_name, comment)
+     VALUES ('Водителев', 'Водитель', 'Водителевич', $1) RETURNING id`,
+    [ACTOR_MARK],
+  );
+  // Дальше — то, что сеют сами миграции: парк, организация, серии бланков, объекты и виды техники.
+  // Это часть схемы, а не чужие данные, и брать их из базы законно на любом накате.
+  const vehicle = await one<{ id: string }>(
+    `SELECT id FROM vehicles WHERE deleted_at IS NULL ORDER BY id LIMIT 1`,
   );
   const organization = await one<{ id: string }>(
     `SELECT id FROM organizations ORDER BY id LIMIT 1`,
@@ -622,8 +697,13 @@ async function printedTask(db: pg.Client, waybillId: string): Promise<string> {
 
 beforeAll(async () => {
   if (!DB_URL) return;
+  // Первое действие файла: схема источника обязана быть на голове, иначе копировать нечего.
+  await migrate(DB_URL);
+
   const copyUrl = copyUrlOf(DB_URL);
-  const copyName = databaseNameOf(copyUrl);
+  // Имя запоминается ДО создания базы, а не после: `DROP DATABASE IF EXISTS` по несозданной
+  // безвреден, а вот пропустить снос уже созданной — нет.
+  copyName = databaseNameOf(copyUrl);
 
   const admin = new pg.Client({ connectionString: maintenanceUrlOf(DB_URL) });
   await admin.connect();
@@ -637,6 +717,10 @@ beforeAll(async () => {
 
   const db = new pg.Client({ connectionString: copyUrl });
   await db.connect();
+  // Соединение запоминается сразу, как только оно есть: `DROP DATABASE ... WITH (FORCE)` прибил бы
+  // его и сам, но `pg` бросил бы на этом `terminating connection due to administrator command`
+  // некому, и прогон получил бы необработанное исключение поверх настоящей причины падения.
+  copyClient = db;
   // До отката: скелеты соседей откат и роняют, а после него их уже не распознать — колонок ездок
   // в откаченной схеме нет.
   const skeletons = await dropSkeletonRequests(db, DB_URL);
@@ -764,16 +848,31 @@ beforeAll(async () => {
 }, 600_000);
 
 afterAll(async () => {
-  if (!ctx) return;
-  await ctx.db.end();
-  const admin = new pg.Client({ connectionString: maintenanceUrlOf(DB_URL!) });
-  await admin.connect();
+  /*
+   * Уборка идёт по `copyName`/`copyClient`, а не по `ctx`: подготовка, упавшая на середине,
+   * оставляла копию на кластере навсегда — снос стоял за проверкой `if (!ctx) return`, до которой
+   * дело как раз и не доходило. Порядок обратен подъёму: сперва соединение, потом сама база; и
+   * `finally` — чтобы неудача первого шага не отменила второй.
+   */
   try {
-    await admin.query(`DROP DATABASE IF EXISTS ${databaseNameOf(ctx.copyUrl)} WITH (FORCE)`);
+    await copyClient?.end();
+    copyClient = null;
   } finally {
-    await admin.end();
+    if (copyName) {
+      const admin = new pg.Client({ connectionString: maintenanceUrlOf(DB_URL!) });
+      await admin.connect();
+      try {
+        // `WITH (FORCE)` остаётся в своей роли: соединения штатных команд (`db:cutover-down`,
+        // `backfill:trips`) уходят вместе с их процессами, но ждать этой опрятности от упавшего
+        // прогона нельзя.
+        await admin.query(`DROP DATABASE IF EXISTS ${copyName} WITH (FORCE)`);
+      } finally {
+        await admin.end();
+        copyName = null;
+      }
+    }
   }
-});
+}, 60_000);
 
 /** Ездка заявки, о которой спрашивают: у каждой из сценарных она обязана быть ровно одна. */
 function onlyTrip(requestId: string): MigratedTrip {
