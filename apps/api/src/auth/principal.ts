@@ -36,7 +36,7 @@ export interface Principal extends AccessSubject {
   /**
    * Объекты учётки (ADR 0039): область видимости объектной роли. Набор, а не один объект —
    * штаб ведёт несколько площадок. Пустой набор у объектной роли означает «не видит ничего»
-   * (`wasteRequestVisibilityWhere`), а не «видит всё»: активировать такую учётку API не даёт.
+   * (`placeObjectVisibilityWhere`), а не «видит всё»: активировать такую учётку API не даёт.
    */
   constructionObjectIds: string[];
   /**

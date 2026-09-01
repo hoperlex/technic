@@ -26,7 +26,7 @@ import {
   type ServiceRequestStatus,
   type VehicleRequestType,
   vehicleRequestTypeLabels,
-  wasteObjectScopeIds,
+  placeObjectScopeIds,
   weeklyApprovalPermission,
 } from '@technic/contracts';
 import type { Principal } from '../auth/principal';
@@ -81,30 +81,31 @@ function assertCounterpartyScope(
 }
 
 /**
- * Ограничение видимости заявок **вывоза мусора** по области учётки: объектная роль («Штаб»,
- * «Комендант», ADR 0025) видит заявки своих объектов, роль отдела — заявки площадки своего отдела
- * (ADR 0062), остальные — все.
+ * Ограничение видимости по **площадке записи**: объектная роль («Штаб», «Комендант», ADR 0025)
+ * видит записи своих объектов, роль отдела — записи площадок своего отдела (ADR 0062, набором —
+ * ADR 0144), остальные — все.
  *
- * Имя называет модуль намеренно: у роли отдела объектная область есть только здесь, а в «Заказе
- * ТС» её заказчик — отдел (ADR 0062 п. 3). Применить эту функцию там значило бы молча отдать
- * роли отдела объектные заявки на технику; у того модуля своя — `vehicleRequestVisibilityWhere`.
+ * Имя называет **ось, а не модуль**: так работают «Вывоз мусора» и «Механизация», у которых
+ * площадка есть у каждой записи. В «Заказе ТС» иначе — там заказчиком бывает сам отдел
+ * (ADR 0062 п. 3), и применить эту функцию значило бы молча отдать роли отдела объектные заявки
+ * на технику; у того модуля своя — `vehicleRequestVisibilityWhere`.
  *
  * Пустая область означает «не видит ничего», а не «видит всё»: у роли отдела без площадки это
  * рабочее состояние, а у объектной роли — состояние, которого API не допускает, но выборка не
  * должна зависеть от того, удержалась ли та проверка.
  */
-export function wasteRequestVisibilityWhere(
+export function placeObjectVisibilityWhere(
   p: Principal,
   objectIdColumn: AnyColumn,
 ): SQL | undefined {
-  const ids = wasteObjectScopeIds(p);
+  const ids = placeObjectScopeIds(p);
   if (ids === null) return undefined;
   return ids.length > 0 ? inArray(objectIdColumn, ids) : eq(objectIdColumn, NEVER_MATCH);
 }
 
 /**
  * Видимость заявок вывоза для оператора (ADR 0010): только заявки, назначенные его контрагенту.
- * Отдельно от wasteRequestVisibilityWhere — колонка оператора есть только у «Вывоза мусора».
+ * Отдельно от placeObjectVisibilityWhere — колонка оператора есть только у «Вывоза мусора».
  */
 export function operatorVisibilityWhere(p: Principal, operatorColumn: AnyColumn): SQL | undefined {
   return counterpartyVisibilityWhere(p, 'operator', operatorColumn);
@@ -173,7 +174,7 @@ export interface RequestCustomer {
  * ничего», а не «видит всё»: активировать такую учётку API не даёт, но выборка не должна
  * зависеть от того, удержалась ли эта проверка.
  *
- * Отдельно от `wasteRequestVisibilityWhere`, и не только из-за колонок: роль отдела здесь
+ * Отдельно от `placeObjectVisibilityWhere`, и не только из-за колонок: роль отдела здесь
  * сравнивается со **своим отделом**, а площадка отдела (ADR 0062) в этот модуль не приходит —
  * заявку на технику отдел заводит от себя, и заказчиков у неё по-прежнему двое на выбор.
  */
@@ -225,22 +226,33 @@ export function approvesOwnRequestOnCreate(p: Principal, customer: RequestCustom
 }
 
 /**
- * Работа с конкретным объектом в модуле «Вывоз мусора»: объектная роль — только со своими
- * объектами, роль отдела — только с площадкой своего отдела (ADR 0062).
+ * Работа с конкретной площадкой: объектная роль — только со своими объектами, роль отдела — только
+ * с площадками своего отдела (ADR 0062, набором — ADR 0144).
  *
  * Отказ здесь, а не в отсутствии прав: права на модуль у обеих ролей как раз есть, и без этой
- * проверки заявку заводили бы на любой объект компании. Имя называет модуль по той же причине,
- * что и у `wasteRequestVisibilityWhere`: в «Заказе ТС» область роли отдела — другая.
+ * проверки заявку заводили бы на любой объект компании.
+ *
+ * `moduleLabel` — **подпись модуля в сообщении об отказе**, а не украшение. Сообщение о доступе
+ * это разговор с человеком, и «ведёт вывоз мусора» говорит ему, куда именно он не попал; общее
+ * «работает только со своими площадками» отвечало бы вопросом на вопрос. Параметром, а не зашитой
+ * строкой, потому что спрашивающих модулей стало двое.
  */
-export function assertWasteObjectScope(p: Principal, objectId: string): void {
-  const ids = wasteObjectScopeIds(p);
+/**
+ * Подписи модулей для `assertPlaceObjectScope`. Здесь, а не в каждом маршруте: текст отказа один на
+ * модуль, и разъехавшиеся формулировки читались бы как разные правила.
+ */
+export const WASTE_SCOPE_LABEL = 'вывоз мусора';
+export const MECH_SCOPE_LABEL = 'механизацию';
+
+export function assertPlaceObjectScope(p: Principal, objectId: string, moduleLabel: string): void {
+  const ids = placeObjectScopeIds(p);
   if (ids === null) return;
   if (ids.includes(objectId)) return;
   // Пустая область у роли отдела — рабочее состояние, а не чужой объект: площадки у отдела нет
   // вовсе. «Работает только со своими объектами» на это отвечало бы загадкой — своих ноль.
   if (isDepartmentScopedRole(p.role) && ids.length === 0) {
     throw err.forbidden(
-      `${roleLabels[p.role!]} ведёт вывоз мусора только на площадке своего отдела`,
+      `${roleLabels[p.role!]} ведёт ${moduleLabel} только на площадке своего отдела`,
     );
   }
   throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);

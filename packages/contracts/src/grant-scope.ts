@@ -156,7 +156,7 @@ export const GRANT_SCOPE_MATRIX: Record<PermissionModule, Record<RoleScopeAxis, 
   /**
    * Вывоз мусора — модуль с самой полной областью: объектная роль ограничена своими объектами,
    * роль отдела — площадкой своего отдела (ADR 0062), исполнитель — своим контрагентом.
-   * Предикаты: `wasteRequestVisibilityWhere`, `assertWasteObjectScope`, `operatorVisibilityWhere`.
+   * Предикаты: `placeObjectVisibilityWhere`, `assertPlaceObjectScope`, `operatorVisibilityWhere`.
    */
   waste: {
     object: 'scoped',
@@ -293,7 +293,7 @@ export const GRANT_SCOPE_MATRIX: Record<PermissionModule, Record<RoleScopeAxis, 
    * `archive.read` области не отменяет: `archiveWhere` встаёт рядом с предикатами модуля-хозяина
    * одним `and`, и удалённые строки приходят из своей же области. `archive.restore` тоже: все
    * четыре ручки возврата, у сущности которых область есть, спрашивают её теми же функциями, что
-   * карточка и правка (`assertWasteObjectScope` + `assertOperatorScope`, `assertRequestScope` +
+   * карточка и правка (`assertPlaceObjectScope` + `assertOperatorScope`, `assertRequestScope` +
    * `assertLessorScope`, `assertServiceRequestScope` + исполнитель, `assertOfficeEquipmentScope`),
    * и спрашивают до разбора «удалена ли строка»; у контрагентов, техники и учёток области нет ни у
    * одного действия модуля, и проверять там нечего.

@@ -79,10 +79,11 @@ import {
   assertCan,
   assertOperatorScope,
   assertObjectRoleEditable,
-  assertWasteObjectScope,
+  assertPlaceObjectScope,
+  WASTE_SCOPE_LABEL,
   assertTransitionAllowed,
   operatorVisibilityWhere,
-  wasteRequestVisibilityWhere,
+  placeObjectVisibilityWhere,
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { nextRequestContact } from '../lib/request-contact';
@@ -872,7 +873,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // Архив (ADR 0070): вкладка «Архив» просит `only`, обычный список — умолчание `exclude`.
       // Границы видимости при этом те же: свой объект, свои заявки, — архив их не расширяет.
       archiveWhere(p, q.archive, wasteRequests.deletedAt),
-      wasteRequestVisibilityWhere(p, wasteRequests.objectId),
+      placeObjectVisibilityWhere(p, wasteRequests.objectId),
       operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
       q.status ? eq(wasteRequests.status, q.status) : undefined,
       q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
@@ -1009,7 +1010,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       const q = req.query;
       const where = and(
         isNull(wasteRequests.deletedAt),
-        wasteRequestVisibilityWhere(p, wasteRequests.objectId),
+        placeObjectVisibilityWhere(p, wasteRequests.objectId),
         operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
         inArray(wasteRequests.id, db.select({ id: presentContainers.id }).from(presentContainers)),
         q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
@@ -1061,7 +1062,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     { ...auth, schema: { querystring: presentContainerGroupsQuerySchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      assertWasteObjectScope(p, req.query.objectId);
+      assertPlaceObjectScope(p, req.query.objectId, WASTE_SCOPE_LABEL);
       return loadPresentGroups(req.query.objectId);
     },
   );
@@ -1082,7 +1083,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         .where(
           and(
             isNull(wasteRequests.deletedAt),
-            wasteRequestVisibilityWhere(p, wasteRequests.objectId),
+            placeObjectVisibilityWhere(p, wasteRequests.objectId),
             operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
             req.query.objectId ? eq(wasteRequests.objectId, req.query.objectId) : undefined,
           ),
@@ -1113,7 +1114,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // журнал отвечает про состоявшееся. Параметра `archive` у него поэтому нет.
       isNull(wasteRequests.deletedAt),
       inArray(wasteRequests.status, statuses),
-      wasteRequestVisibilityWhere(p, wasteRequests.objectId),
+      placeObjectVisibilityWhere(p, wasteRequests.objectId),
       operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
       q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
       q.containerTypeId ? eq(wasteRequests.containerTypeId, q.containerTypeId) : undefined,
@@ -1251,7 +1252,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const dto = await getRequestDto(req.params.id);
     if (!dto) throw err.notFound('Заявка не найдена');
     assertArchiveVisible(p, dto.deletedAt, 'Заявка не найдена');
-    assertWasteObjectScope(p, dto.objectId);
+    assertPlaceObjectScope(p, dto.objectId, WASTE_SCOPE_LABEL);
     assertOperatorScope(p, dto.operatorCounterpartyId);
     return dto;
   });
@@ -1275,7 +1276,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       .where(eq(wasteRequests.id, req.params.id));
     if (!row) throw err.notFound('Заявка не найдена');
     assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
-    assertWasteObjectScope(p, row.objectId);
+    assertPlaceObjectScope(p, row.objectId, WASTE_SCOPE_LABEL);
     assertOperatorScope(p, row.operatorCounterpartyId);
     return loadWasteRequestHistory(row.id, {
       at: row.createdAt,
@@ -1287,7 +1288,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   r.post('/', { ...canCreate, schema: { body: createWasteRequestSchema } }, async (req, reply) => {
     const p = requirePrincipal(req);
     const body = req.body;
-    assertWasteObjectScope(p, body.objectId);
+    assertPlaceObjectScope(p, body.objectId, WASTE_SCOPE_LABEL);
     // Исполнителя можно указать прямо в форме заявки, но это по-прежнему назначение оператора:
     // без отдельной проверки роль с правом на заявку (штаб) назначала бы его в обход
     // `PATCH /:id/operator`, где право спрашивают. Право требуется по факту присутствия поля,
@@ -1375,9 +1376,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // истории — названия справочников и суммы там уже собраны (см. waste-request-history).
       const before = await getRequestDto(id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
-      assertWasteObjectScope(p, before.objectId);
+      assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
       assertObjectRoleEditable(p, before.status, 'редактировать');
-      if (body.objectId) assertWasteObjectScope(p, body.objectId);
+      if (body.objectId) assertPlaceObjectScope(p, body.objectId, WASTE_SCOPE_LABEL);
 
       const rt = body.requestType ?? before.requestType;
       const objectId = body.objectId ?? before.objectId;
@@ -1569,7 +1570,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // Своя заявка — для исполнителя; для менеджера и диспетчера обе проверки ничего не сужают.
       // Область спрашивается и по объекту: право и область выдаются порознь, и «право выдали, а
       // область не написана» означало бы доступ ко всем заявкам сразу.
-      assertWasteObjectScope(p, before.objectId);
+      assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, before.operatorCounterpartyId);
       if (!wasteOperatorCommentEditable(before.status)) {
         throw err.badRequest('Заявка закрыта — примечание исполнителя больше не меняют', {
@@ -1609,7 +1610,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // Состояние «до» берётся как DTO: по нему и проверки, и дифф факта для истории.
       const before = await getRequestDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
-      assertWasteObjectScope(p, before.objectId);
+      assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, before.operatorCounterpartyId);
       if (before.status === status) return before;
       assertTransitionAllowed(p, before.status, status, 'waste');
@@ -1839,7 +1840,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const { id } = req.params;
     const [existing] = await db.select().from(wasteRequests).where(eq(wasteRequests.id, id));
     if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
-    assertWasteObjectScope(p, existing.objectId);
+    assertPlaceObjectScope(p, existing.objectId, WASTE_SCOPE_LABEL);
     assertObjectRoleEditable(p, existing.status, 'удалять');
 
     if (existing.status === 'new') {
@@ -1897,7 +1898,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // её карточку целиком, и без проверки здесь `archive.restore` читал бы чужие заявки в обход
       // `wasteRequests.read`. Проверки те же, что у карточки (`GET /:id`), и обе работают по
       // реквизитам строки — удалённость на них не влияет.
-      assertWasteObjectScope(p, existing.objectId);
+      assertPlaceObjectScope(p, existing.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, existing.operatorCounterpartyId);
       if (existing.deletedAt) {
         await db

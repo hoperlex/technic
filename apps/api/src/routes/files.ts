@@ -37,7 +37,7 @@ import {
   operatorVisibilityWhere,
   serviceExecutorVisibilityWhere,
   serviceRequestScopeWhere,
-  wasteRequestVisibilityWhere,
+  placeObjectVisibilityWhere,
   vehicleRequestVisibilityWhere,
 } from '../lib/access';
 import { isFileLinked } from '../services/request-files';
@@ -230,7 +230,7 @@ async function canAccessFile(
         and(
           eq(requestFiles.fileId, fileId),
           isNull(wasteRequests.deletedAt),
-          wasteRequestVisibilityWhere(p, wasteRequests.objectId),
+          placeObjectVisibilityWhere(p, wasteRequests.objectId),
           operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
         ),
       )

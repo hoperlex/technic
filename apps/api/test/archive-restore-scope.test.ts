@@ -17,7 +17,8 @@ import {
   assertOperatorScope,
   assertRequestScope,
   assertServiceRequestScope,
-  assertWasteObjectScope,
+  assertPlaceObjectScope,
+  WASTE_SCOPE_LABEL,
 } from '../src/lib/access';
 import type { Principal } from '../src/auth/principal';
 
@@ -434,7 +435,7 @@ describe('сегодняшние держатели `archive.restore` облас
         authVersion: 1,
       };
       expect(() => {
-        assertWasteObjectScope(p, ROW_OBJECT);
+        assertPlaceObjectScope(p, ROW_OBJECT, WASTE_SCOPE_LABEL);
         assertOperatorScope(p, ROW_COUNTERPARTY);
         assertRequestScope(p, { objectId: ROW_OBJECT, departmentId: ROW_DEPARTMENT });
         assertLessorScope(p, ROW_COUNTERPARTY);

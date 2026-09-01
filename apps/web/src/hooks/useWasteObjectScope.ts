@@ -1,4 +1,4 @@
-import { wasteObjectScopeIds } from '@technic/contracts';
+import { placeObjectScopeIds } from '@technic/contracts';
 import { useAuth } from '../auth/AuthContext';
 
 /**
@@ -14,11 +14,11 @@ import { useAuth } from '../auth/AuthContext';
  * список вышел бы заведомо пустым.
  *
  * Портал сужает выбор, но не решает доступ: чужой объект сервер всё равно отдаёт как 403
- * (`assertWasteObjectScope`), а список — как пустую выборку (`wasteRequestVisibilityWhere`).
+ * (`assertPlaceObjectScope`), а список — как пустую выборку (`placeObjectVisibilityWhere`).
  */
 export function useWasteObjectScope() {
   const { user } = useAuth();
-  const scopeIds = wasteObjectScopeIds(user);
+  const scopeIds = placeObjectScopeIds(user);
   /** `null` — «областью не ограничен»: диспетчер, менеджер, наблюдатель, администратор. */
   const isScoped = scopeIds !== null;
   const ownObjectIds = scopeIds ?? [];

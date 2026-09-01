@@ -50,9 +50,10 @@ import {
 import { requirePrincipal } from '../auth/plugin';
 import {
   assertOperatorScope,
-  assertWasteObjectScope,
+  assertPlaceObjectScope,
+  WASTE_SCOPE_LABEL,
   operatorVisibilityWhere,
-  wasteRequestVisibilityWhere,
+  placeObjectVisibilityWhere,
 } from '../lib/access';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
@@ -287,7 +288,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
   function visibilityFor(principal: ReturnType<typeof requirePrincipal>): RequestVisibility {
     return (objectId, operatorCounterpartyId) => {
       try {
-        assertWasteObjectScope(principal, objectId);
+        assertPlaceObjectScope(principal, objectId, WASTE_SCOPE_LABEL);
         assertOperatorScope(principal, operatorCounterpartyId);
         return true;
       } catch {
@@ -304,7 +305,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
   ) {
     let visible = true;
     try {
-      assertWasteObjectScope(principal, neighbour.objectId);
+      assertPlaceObjectScope(principal, neighbour.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(principal, neighbour.operatorCounterpartyId);
     } catch {
       visible = false;
@@ -368,7 +369,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
   r.get('/:id/tickets', { ...canReview, schema: { params: requestParams } }, async (req) => {
     const p = requirePrincipal(req);
     const request = await loadRequest(req.params.id);
-    assertWasteObjectScope(p, request.objectId);
+    assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
     assertOperatorScope(p, request.operatorCounterpartyId);
 
     // Вход сверки и всё, что нужно только этому экрану, читаются параллельно: первое — общим
@@ -705,7 +706,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     async (req) => {
       const p = requirePrincipal(req);
       const request = await loadRequest(req.params.id);
-      assertWasteObjectScope(p, request.objectId);
+      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, request.operatorCounterpartyId);
       assertReviewOpen(request);
 
@@ -828,7 +829,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     async (req) => {
       const p = requirePrincipal(req);
       const request = await loadRequest(req.params.id);
-      assertWasteObjectScope(p, request.objectId);
+      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, request.operatorCounterpartyId);
       assertReviewOpen(request);
 
@@ -951,7 +952,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     async (req) => {
       const p = requirePrincipal(req);
       const request = await loadRequest(req.params.id);
-      assertWasteObjectScope(p, request.objectId);
+      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, request.operatorCounterpartyId);
       assertReviewOpen(request);
 
@@ -1005,7 +1006,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     async (req) => {
       const p = requirePrincipal(req);
       const request = await loadRequest(req.params.id);
-      assertWasteObjectScope(p, request.objectId);
+      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, request.operatorCounterpartyId);
       assertReviewOpen(request);
 
@@ -1126,7 +1127,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     async (req) => {
       const p = requirePrincipal(req);
       const request = await loadRequest(req.params.id);
-      assertWasteObjectScope(p, request.objectId);
+      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, request.operatorCounterpartyId);
       assertReviewOpen(request);
 
@@ -1187,7 +1188,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     async (req, reply) => {
       const p = requirePrincipal(req);
       const request = await loadRequest(req.params.id);
-      assertWasteObjectScope(p, request.objectId);
+      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, request.operatorCounterpartyId);
       assertReviewOpen(request);
 
@@ -1297,7 +1298,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     async (req) => {
       const p = requirePrincipal(req);
       const request = await loadRequest(req.params.id);
-      assertWasteObjectScope(p, request.objectId);
+      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, request.operatorCounterpartyId);
       assertReviewOpen(request);
 
@@ -1372,7 +1373,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     async (req) => {
       const p = requirePrincipal(req);
       const request = await loadRequest(req.params.id);
-      assertWasteObjectScope(p, request.objectId);
+      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, request.operatorCounterpartyId);
       if (request.status !== 'done') {
         throw err.badRequest('Талоны разбираются у выполненной заявки');
@@ -1467,7 +1468,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
             // второй раз нечего, а строка перепроверки живёт до уборки заявки.
             ne(wasteTickets.status, 'dismissed'),
             sql`${wasteTickets.confirmedBy} IS DISTINCT FROM ${p.id}`,
-            wasteRequestVisibilityWhere(p, wasteRequests.objectId),
+            placeObjectVisibilityWhere(p, wasteRequests.objectId),
             operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
           ),
         )
@@ -1510,7 +1511,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     async (req) => {
       const p = requirePrincipal(req);
       const request = await loadRequest(req.params.id);
-      assertWasteObjectScope(p, request.objectId);
+      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, request.operatorCounterpartyId);
 
       // Талон обязан принадлежать ЭТОЙ заявке: право `ticketReview` говорит, что человек разбирает
@@ -1581,7 +1582,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     async (req) => {
       const p = requirePrincipal(req);
       const request = await loadRequest(req.params.id);
-      assertWasteObjectScope(p, request.objectId);
+      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, request.operatorCounterpartyId);
 
       // Строка перепроверки обязана принадлежать этой заявке, а разбирающий — не быть ни

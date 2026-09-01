@@ -38,7 +38,7 @@ import type * as TokensNs from '../src/auth/tokens';
  *    состояния: и то и другое сравнивает присланное с ТЕКУЩИМ набором из базы.
  *
  * **Чего файл не проверяет.** Порядок блокировок `users` → `refresh_sessions` под конкуренцией —
- * `session-locking.db.test.ts`; область как функцию (`canUse`, `wasteObjectScopeIds`) —
+ * `session-locking.db.test.ts`; область как функцию (`canUse`, `placeObjectScopeIds`) —
  * `access-scope.test.ts`; обмен справочниками — `directory-transfer-org.test.ts`.
  *
  * Запуск (миграции тест накатывает сам):

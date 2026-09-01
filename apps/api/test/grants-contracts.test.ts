@@ -836,7 +836,7 @@ describe('одноцелевой набор аудита распознаван�
    * **Роли набора — только без своей оси, и это условие безопасности, а не вкусовщина.** Журнал
    * наблюдений предикатами вывоза не фильтруется вовсе: он живёт своей таблицей и переживает и
    * талон, и заявку. Матрица осей этого не выражает — клетка `waste × object` стоит `scoped`
-   * потому, что заявки фильтрует `wasteRequestVisibilityWhere`, — значит барьер выдачи роль с осью
+   * потому, что заявки фильтрует `placeObjectVisibilityWhere`, — значит барьер выдачи роль с осью
    * пропустит, и единственное, что стоит между площадкой и сквозной картиной по компании, — этот
    * список ролей. `admin` в нём отсутствует по другой причине: право у него уже есть, и строка
    * означала бы набор, выдача которого ничего не меняет.
@@ -1227,7 +1227,7 @@ const EXPECTED_AXIS: Record<Role, RoleScopeAxis> = {
  * новый модуль витрины обязан получить ответ «где у него область», а не унаследовать чужой.
  */
 const SCOPED_AXES_BY_MODULE: Partial<Record<PermissionModule, readonly RoleScopeAxis[]>> = {
-  // wasteRequestVisibilityWhere + assertWasteObjectScope (объект, площадка отдела), operatorVisibilityWhere.
+  // placeObjectVisibilityWhere + assertPlaceObjectScope (объект, площадка отдела), operatorVisibilityWhere.
   waste: ['object', 'department', 'counterparty'],
   // vehicleRequestVisibilityWhere + assertRequestScope, lessorVisibilityWhere.
   vehicle: ['object', 'department', 'counterparty'],

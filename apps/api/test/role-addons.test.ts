@@ -15,7 +15,7 @@ import {
   roleAddonLabels,
   roleAddonsSchema,
   ROLES,
-  wasteObjectScopeIds,
+  placeObjectScopeIds,
   type AccessSubject,
   type RoleAddon,
 } from '@technic/contracts';
@@ -246,14 +246,14 @@ describe('надстройка в проверке прав', () => {
    */
   it('надстройка не меняет область: она отвечает на «что», а не на «над чем»', () => {
     expect(
-      wasteObjectScopeIds({
+      placeObjectScopeIds({
         role: 'shtab',
         addons: OFFICE_ADDONS,
         constructionObjectIds: [OBJECT_A],
       }),
     ).toEqual([OBJECT_A]);
     // Пустая область остаётся пустой: надстройка не делает роль «сквозной».
-    expect(wasteObjectScopeIds({ role: 'shtab', addons: OFFICE_ADDONS })).toEqual([]);
+    expect(placeObjectScopeIds({ role: 'shtab', addons: OFFICE_ADDONS })).toEqual([]);
     expect(canUse({ role: 'shtab', addons: OFFICE_ADDONS }, 'wasteRequests.read')).toBe(false);
     expect(
       canUse(

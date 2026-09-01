@@ -16,7 +16,8 @@ import {
   assertLessorScope,
   assertOperatorScope,
   assertObjectRoleEditable,
-  assertWasteObjectScope,
+  assertPlaceObjectScope,
+  WASTE_SCOPE_LABEL,
   assertTransitionAllowed,
   assertRequestScope,
   assertVehicleRequestTypeAllowed,
@@ -33,7 +34,7 @@ import {
   assertOfficeEquipmentScope,
   assertServiceRequestScope,
   serviceRequestScopeWhere,
-  wasteRequestVisibilityWhere,
+  placeObjectVisibilityWhere,
 } from '../src/lib/access';
 import {
   officeEquipment,
@@ -102,7 +103,7 @@ const onObject = (objectId: string) => ({ objectId, departmentId: null });
 const onDepartment = (departmentId: string) => ({ objectId: null, departmentId });
 
 /** Параметры готового SQL-условия: по ним видно, с чем именно сравнивается колонка. */
-function paramsOf(condition: ReturnType<typeof wasteRequestVisibilityWhere>): unknown[] {
+function paramsOf(condition: ReturnType<typeof placeObjectVisibilityWhere>): unknown[] {
   expect(condition).toBeDefined();
   return dialect.sqlToQuery(condition!).params;
 }
@@ -120,28 +121,28 @@ function statusOf(fn: () => void): number {
 describe('видимость заявок по объекту', () => {
   it('штаб видит только свой объект', () => {
     const p = principal('shtab', { constructionObjectIds: [OBJECT_A] });
-    expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
+    expect(paramsOf(placeObjectVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
   });
 
   it('штаб без объекта не видит ничего, а не всё', () => {
     const p = principal('shtab');
-    expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId))).toEqual([NEVER_MATCH]);
+    expect(paramsOf(placeObjectVisibilityWhere(p, wasteRequests.objectId))).toEqual([NEVER_MATCH]);
   });
 
   it('руководитель строительства тоже видит только свой объект (ADR 0025)', () => {
     const p = principal('rukstroy', { constructionObjectIds: [OBJECT_A] });
-    expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
+    expect(paramsOf(placeObjectVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
   });
 
   it('комендант сужен теми же объектами: модуль у него один, а область та же', () => {
     const p = principal('commandant', { constructionObjectIds: [OBJECT_A] });
-    expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
+    expect(paramsOf(placeObjectVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
   });
 
   it('остальные роли видят все объекты', () => {
     for (const role of ['admin', 'manager', 'dispatcher', 'operator'] as Role[]) {
       expect(
-        wasteRequestVisibilityWhere(principal(role), wasteRequests.objectId),
+        placeObjectVisibilityWhere(principal(role), wasteRequests.objectId),
         role,
       ).toBeUndefined();
     }
@@ -155,7 +156,7 @@ describe('видимость заявок по объекту', () => {
         departmentIds: [DEPARTMENT_A],
         departmentObjectIds: [OBJECT_A],
       });
-      expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
+      expect(paramsOf(placeObjectVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
         OBJECT_A,
       ]);
     }
@@ -167,7 +168,7 @@ describe('видимость заявок по объекту', () => {
   it('роль отдела без площадки не видит ничего, а не всё', () => {
     for (const role of ['department', 'department_head'] as Role[]) {
       const p = principal(role, { departmentIds: [DEPARTMENT_A] });
-      expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
+      expect(paramsOf(placeObjectVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
         NEVER_MATCH,
       ]);
     }
@@ -177,7 +178,7 @@ describe('видимость заявок по объекту', () => {
   it('с несколькими объектами условие перечисляет их все, а не первый из набора', () => {
     for (const role of ['shtab', 'rukstroy', 'commandant'] as Role[]) {
       const p = principal(role, { constructionObjectIds: [OBJECT_A, OBJECT_B] });
-      expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
+      expect(paramsOf(placeObjectVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
         OBJECT_A,
         OBJECT_B,
       ]);
@@ -339,11 +340,11 @@ describe('работа с конкретной записью', () => {
     for (const role of ['shtab', 'rukstroy', 'commandant'] as Role[]) {
       const p = principal(role, { constructionObjectIds: [OBJECT_A] });
       expect(
-        statusOf(() => assertWasteObjectScope(p, OBJECT_A)),
+        statusOf(() => assertPlaceObjectScope(p, OBJECT_A, WASTE_SCOPE_LABEL)),
         role,
       ).toBe(200);
       expect(
-        statusOf(() => assertWasteObjectScope(p, OBJECT_B)),
+        statusOf(() => assertPlaceObjectScope(p, OBJECT_B, WASTE_SCOPE_LABEL)),
         role,
       ).toBe(403);
     }
@@ -353,17 +354,17 @@ describe('работа с конкретной записью', () => {
     for (const role of ['shtab', 'rukstroy', 'commandant'] as Role[]) {
       const p = principal(role, { constructionObjectIds: [OBJECT_A, OBJECT_B] });
       expect(
-        statusOf(() => assertWasteObjectScope(p, OBJECT_A)),
+        statusOf(() => assertPlaceObjectScope(p, OBJECT_A, WASTE_SCOPE_LABEL)),
         role,
       ).toBe(200);
       expect(
-        statusOf(() => assertWasteObjectScope(p, OBJECT_B)),
+        statusOf(() => assertPlaceObjectScope(p, OBJECT_B, WASTE_SCOPE_LABEL)),
         role,
       ).toBe(200);
       // Пустой набор — не «работает везде»: активировать такую учётку API не даёт, но проверка
       // не должна зависеть от того, удержался ли этот запрет.
       expect(
-        statusOf(() => assertWasteObjectScope(principal(role), OBJECT_A)),
+        statusOf(() => assertPlaceObjectScope(principal(role, WASTE_SCOPE_LABEL), OBJECT_A)),
         role,
       ).toBe(403);
     }
@@ -376,13 +377,13 @@ describe('работа с конкретной записью', () => {
         departmentObjectIds: [OBJECT_A],
       });
       expect(
-        statusOf(() => assertWasteObjectScope(p, OBJECT_A)),
+        statusOf(() => assertPlaceObjectScope(p, OBJECT_A, WASTE_SCOPE_LABEL)),
         role,
       ).toBe(200);
       // Отказ обязателен именно здесь: права на модуль у отдела есть, и без этой ветки сотрудник
       // отдела заводил бы заявки на любой объект компании.
       expect(
-        statusOf(() => assertWasteObjectScope(p, OBJECT_B)),
+        statusOf(() => assertPlaceObjectScope(p, OBJECT_B, WASTE_SCOPE_LABEL)),
         role,
       ).toBe(403);
     }
@@ -392,7 +393,7 @@ describe('работа с конкретной записью', () => {
     for (const role of ['department', 'department_head'] as Role[]) {
       const p = principal(role, { departmentIds: [DEPARTMENT_A] });
       expect(
-        statusOf(() => assertWasteObjectScope(p, OBJECT_A)),
+        statusOf(() => assertPlaceObjectScope(p, OBJECT_A, WASTE_SCOPE_LABEL)),
         role,
       ).toBe(403);
     }
@@ -401,7 +402,7 @@ describe('работа с конкретной записью', () => {
   it('остальным ролям объект заявки не ограничивает работу', () => {
     for (const role of ['admin', 'manager', 'dispatcher', 'operator'] as Role[]) {
       expect(
-        statusOf(() => assertWasteObjectScope(principal(role), OBJECT_B)),
+        statusOf(() => assertPlaceObjectScope(principal(role, WASTE_SCOPE_LABEL), OBJECT_B)),
         role,
       ).toBe(200);
     }
@@ -696,7 +697,7 @@ describe('сквозная область модуля оргтехники у �
   });
 
   it('в соседних модулях он остаётся собой: вывоз и заявки ТС сужены его отделом', () => {
-    const waste = wasteRequestVisibilityWhere(itApprover, wasteRequests);
+    const waste = placeObjectVisibilityWhere(itApprover, wasteRequests);
     expect(waste, 'вывоз мусора сужен').toBeDefined();
     const vehicle = vehicleRequestVisibilityWhere(itApprover, vehicleRequests);
     expect(vehicle, 'заявки ТС сужены').toBeDefined();

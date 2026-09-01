@@ -1321,7 +1321,7 @@ export interface ScopedSubject extends AccessSubject {
  * Только этот модуль: в «Заказе ТС» у роли отдела заказчик — отдел, и объектной области у неё
  * там нет вовсе (ADR 0062 п. 3).
  */
-export function wasteObjectScopeIds(
+export function placeObjectScopeIds(
   subject: ScopedSubject | null | undefined,
 ): readonly string[] | null {
   const role = subject?.role;
@@ -1330,8 +1330,8 @@ export function wasteObjectScopeIds(
   return null;
 }
 
-function hasWasteObjectScope(subject: ScopedSubject): boolean {
-  const ids = wasteObjectScopeIds(subject);
+function hasPlaceObjectScope(subject: ScopedSubject): boolean {
+  const ids = placeObjectScopeIds(subject);
   return ids === null || ids.length > 0;
 }
 
@@ -1341,7 +1341,7 @@ function hasWasteObjectScope(subject: ScopedSubject): boolean {
  * оно есть, кроме тех, кому его сузили осознанно, строкой здесь.
  */
 const MODULE_SCOPE = new Map<Permission, (subject: ScopedSubject) => boolean>(
-  WASTE_REQUEST_PERMISSIONS.map((permission) => [permission, hasWasteObjectScope]),
+  WASTE_REQUEST_PERMISSIONS.map((permission) => [permission, hasPlaceObjectScope]),
 );
 
 /**
