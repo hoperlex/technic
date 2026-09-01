@@ -13,6 +13,7 @@ import {
   RightOutlined,
   ScheduleOutlined,
   TeamOutlined,
+  ToolOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router';
 import {
@@ -47,6 +48,9 @@ const SECTION_ICONS: Record<PortalShellSectionId, ReactNode> = {
   'vehicle-requests': <CarOutlined />,
   waybills: <ProfileOutlined />,
   garage: <ScheduleOutlined />,
+  // Ключ, а не машина: механизация — это виброплиты, компрессоры и пушки, которые привозят на
+  // площадку, и `CarOutlined` соседнего «Заказа ТС» читался бы как второй раздел про транспорт.
+  mechanization: <ToolOutlined />,
   'office-equipment': <PrinterOutlined />,
   directories: <DatabaseOutlined />,
   admin: <TeamOutlined />,

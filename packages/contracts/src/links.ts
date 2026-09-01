@@ -79,6 +79,43 @@ export function vehicleRoutePath(routeId: string): string {
 }
 
 /**
+ * Ключи вкладок раздела «Механизация» (план `docs/mechanization-module-plan.md`, §7): заявки,
+ * действующие аренды, журнал закрытых и архив.
+ *
+ * `rental` — не статус, а предикат Р2 («выдано и не возвращено»), и вкладкой он стал потому, что
+ * это главный вопрос модуля: что мы арендуем сейчас и до какого числа.
+ */
+export type MechTab = 'requests' | 'rental' | 'history' | 'archive';
+
+/**
+ * Вкладка, на которой заявку на механизацию показывают сейчас: пока её ведут — в списке, закрытую
+ * — в журнале, удалённую — в архиве (ADR 0070).
+ *
+ * Действующая аренда ведёт в «Заявки», а не в «В аренде», и это выбор: карточку открывают, чтобы
+ * прочитать заявку целиком, а вкладка присутствия отвечает на другой вопрос — «что стоит на
+ * площадках», — и одной строкой её содержимое не объясняется.
+ */
+export function mechRequestTab(status: RequestStatus, deleted = false): MechTab {
+  if (deleted) return 'archive';
+  return isClosedRequestStatus(status) ? 'history' : 'requests';
+}
+
+/**
+ * Путь к карточке заявки на механизацию. Параметр `open` читает `useOpenedRecord` — тот же
+ * механизм, которым карточку открывают ссылки внутри портала и номера из писем.
+ */
+export function mechRequestPath(request: {
+  id: string;
+  status: RequestStatus;
+  deleted?: boolean;
+}): string {
+  return `/mech?tab=${mechRequestTab(request.status, request.deleted)}&open=${request.id}`;
+}
+
+/** Вкладка «В аренде» — выданное и не возвращённое: полный список того, что стоит на площадках. */
+export const MECH_RENTAL_PATH = '/mech?tab=rental';
+
+/**
  * Путь к путевому листу: журнал учёта с поиском по номеру. Карточки у листа нет — журнал и есть
  * карточка: строка отвечает, на какую машину лист выписан, что с ним стало и чем подшит (ADR 0037).
  */

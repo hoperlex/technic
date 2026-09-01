@@ -690,6 +690,36 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { isUrgent: true, urgencyReason: 'печатают акты приёмки', version: 1 },
   },
 
+  // ── Механизация (план `docs/mechanization-module-plan.md`) ──
+  // Условных полей нет ни одного: всё, за чем стоят деньги, вынесено из общей формы в свои ручки со
+  // своим правом (Р19), — поэтому у каждого тела здесь одна задача, пройти схему, чтобы отказ
+  // пришёл ОТ СТРАЖА, а не от валидации.
+  'POST /api/v1/mech-requests': {
+    payload: {
+      objectId: OBJECT_ID,
+      kindName: 'Виброплита',
+      plannedFrom: FUTURE_DATE,
+      plannedTo: FUTURE_DATE,
+      ...CONTACT,
+    },
+  },
+  // Версия обязательна у всякой мутации существующей строки (Р21), и у маршрутов без тела она едет
+  // строкой запроса: `DELETE` тела не носит.
+  'PATCH /api/v1/mech-requests/:id': { payload: { version: 1 } },
+  'PATCH /api/v1/mech-requests/:id/deal': {
+    payload: { lessorId: COUNTERPARTY_ID, rate: 1200, rateUnit: 'hour', version: 1 },
+  },
+  'PATCH /api/v1/mech-requests/:id/status': { payload: { status: 'confirmed', version: 1 } },
+  // Фактическая дата не бывает в будущем (Р2), и проверяет это схема: `FUTURE_DATE` дал бы 400
+  // раньше стража.
+  'POST /api/v1/mech-requests/:id/issue': { payload: { actualFrom: PAST_DATE, version: 1 } },
+  'POST /api/v1/mech-requests/:id/issue-revoke': {
+    payload: { reason: 'отметили не ту заявку', version: 1 },
+  },
+  'DELETE /api/v1/mech-requests/:id': { query: 'version=1' },
+  'POST /api/v1/mech-requests/:id/restore': { payload: { version: 1 } },
+  'DELETE /api/v1/mech-requests/:id/purge': { query: 'version=1' },
+
   // ── Вывоз мусора ──
   'POST /api/v1/waste-requests': {
     payload: {

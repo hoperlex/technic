@@ -18,6 +18,7 @@ import { db } from '../db/client';
 import {
   counterparties,
   counterpartySynonyms,
+  mechRequests,
   users,
   vehicles,
   warehouses,
@@ -255,6 +256,33 @@ async function assertTypeChangeAllowed(
     if (n > 0) {
       throw err.conflict(
         `На контрагента ссылаются предложения аренды (${n}) — удалите их перед сменой типа`,
+      );
+    }
+  }
+
+  if (before === 'mech_lessor' || before === 'vehicle_lessor') {
+    // Арендодателем в заявке механизации бывает контрагент обоих этих типов (план
+    // `docs/mechanization-module-plan.md`, Р6), и его тип лежит в самой заявке служебной копией под
+    // составным FK на `counterparties (id, type, is_active)` — приёмом ADR 0018. Ключ объявлен
+    // `ON UPDATE CASCADE`, поэтому смена типа не упёрлась бы в ссылку, а доехала бы до заявок и
+    // разбилась там о `mech_requests_lessor_type_check` — человек получил бы ошибку целостности
+    // вместо объяснения.
+    //
+    // Бьём по любой смене типа, а не только по той, что нарушила бы CHECK: пара
+    // `mech_lessor` ↔ `vehicle_lessor` каскад пережила бы, но переписала бы арендодателя у уже
+    // закрытых аренд задним числом, а правило «эти типы менять можно, а те нельзя» человеку в
+    // сообщении не объяснить.
+    //
+    // Считаем и архивные: soft-delete оставляет строку, а каскад с CHECK работают по физическим
+    // строкам и про `deleted_at` ничего не знают.
+    const [rented] = await tx
+      .select({ c: count() })
+      .from(mechRequests)
+      .where(eq(mechRequests.lessorId, id));
+    const n = Number(rented?.c ?? 0);
+    if (n > 0) {
+      throw err.conflict(
+        `На контрагента ссылаются заявки на механизацию (${n}, вместе с архивными) — удалите их насовсем перед сменой типа`,
       );
     }
   }

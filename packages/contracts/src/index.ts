@@ -83,6 +83,11 @@ export * from './vehicle-request-shifts';
 export * from './vehicle-request-days';
 export * from './vehicle-requests';
 export * from './vehicle-request-feed';
+/* Механизация (`mech-requests.ts`) — после заявки на технику, потому что читается с ней рядом и
+ * заимствует у неё две вещи: склонение отработанного и набор закрытых статусов. Отдельным файлом,
+ * а не частью «Заказа ТС», потому что общего у модулей только это: у аренды малой механизации свой
+ * цикл, своя область и свой заказчик (план `docs/mechanization-module-plan.md`, Р1, Р10). */
+export * from './mech-requests';
 export * from './weekly-vehicle-requests';
 export * from './waybills';
 /* Бюджет печати (`print-budget.ts`) — сразу за путевым листом: печатают именно его, и лестница

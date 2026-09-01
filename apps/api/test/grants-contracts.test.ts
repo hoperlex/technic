@@ -142,7 +142,7 @@ describe('невыдаваемые права: пять, и именно эти'
   });
 });
 
-describe('назначаемые права: 64 из 69', () => {
+describe('назначаемые права: 70 из 75', () => {
   /**
    * То самое число из ADR. Считается вычитанием, а не записано «50»: право, добавленное в словарь,
    * обязано пополнить назначаемые — и одновременно оба слагаемых закреплены явно, иначе тест
@@ -191,13 +191,21 @@ describe('назначаемые права: 64 из 69', () => {
     // оргтехники двух дыр. Назначаемым оно стало сразу — иначе два набора оргтехники, в которые
     // его кладёт решение заказчика, стало бы нечем собрать. Запрет от этого не вырос: право
     // ничего не открывает без `serviceRequests.create`, которое ему объявлено требованием.
-    // Шестьдесят девять и шестьдесят четыре расходятся ровно на длину запрета, и это третье
+    // С семидесятого по семьдесят пятое пришли шесть прав механизации — аренды малой механизации
+    // (план `docs/mechanization-module-plan.md`, Р9), и это первый с ADR 0106 случай, когда словарь
+    // пополняет **целый модуль**, а не оговорка внутри существующего: у аренды свой раздел, свой
+    // цикл и своя область. Пять из шести устроены как у соседних модулей; шестое — продление
+    // (`mechRequests.extend`) — разведено со сменой статуса намеренно, ровно затем, чтобы его можно
+    // было **не выдать**: продлить аренду значит согласиться платить дальше, и решением заказчика
+    // это делает диспетчер, а не всякий, кто ведёт аренду. Назначаемыми стали все шесть: модуль
+    // закрывается своим чтением, и попади хоть одно в запрет, набор с ним стало бы нечем собрать.
+    // Семьдесят пять и семьдесят расходятся ровно на длину запрета, и это третье
     // равенство здесь не лишнее: без него тест согласился бы с правом, добавленным в словарь и
     // тихо попавшим в запрет.
-    expect(PERMISSIONS).toHaveLength(69);
+    expect(PERMISSIONS).toHaveLength(75);
     const grantable = PERMISSIONS.filter(isGrantable);
     expect(grantable).toHaveLength(PERMISSIONS.length - NON_GRANTABLE_PERMISSIONS.length);
-    expect(grantable).toHaveLength(64);
+    expect(grantable).toHaveLength(70);
   });
 
   /**
@@ -1233,6 +1241,11 @@ const SCOPED_AXES_BY_MODULE: Partial<Record<PermissionModule, readonly RoleScope
   vehicle: ['object', 'department', 'counterparty'],
   // weeklyRequestReadScope + assertWeeklyRequestScope: обе площадочные оси и арендодатель.
   weekly: ['object', 'department', 'counterparty'],
+  // Механизация берёт предикаты вывоза как есть — `placeObjectVisibilityWhere` и
+  // `assertPlaceObjectScope`: ось у модуля одна, `object_id` места эксплуатации (план
+  // `docs/mechanization-module-plan.md`, Р10). Ветки контрагента у неё нет и не будет: арендодатель
+  // механизации в портал не входит вовсе, учёток за таким типом не заводят (Р6).
+  mech: ['object', 'department'],
   // serviceRequestScopeWhere + assertServiceRequestScope, serviceExecutorVisibilityWhere.
   service: ['object', 'department', 'counterparty'],
   // officeEquipmentScopeWhere + assertOfficeEquipmentScope — только две площадочные оси: ветки

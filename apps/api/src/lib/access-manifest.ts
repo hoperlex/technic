@@ -885,6 +885,42 @@ export const ACCESS_MANIFEST = {
     allOf: ['serviceRequests.read'],
   },
 
+  // ── Механизация: аренда малой механизации (план `docs/mechanization-module-plan.md`) ──
+  // Условных строк здесь нет ни одной, и это следствие Р19: всё, за чем стоят деньги, вынесено из
+  // общей формы в свои ручки со своим правом. Договорённость правит `mechRequests.status` — тот же,
+  // которым её и поставили; отметка выдачи и её снятие им же. Форма остаётся под `update`, и
+  // спрашивать в ней второе право не за что: чужого действия она больше не несёт.
+  //
+  // `mechRequests.extend` в манифесте не появляется до Э2: продление разведено со сменой статуса
+  // отдельным правом (диспетчер), но маршрута у него пока нет, а строка без маршрута роняет
+  // обратную половину сверки.
+  'GET /api/v1/mech-requests': { kind: 'permissions', allOf: ['mechRequests.read'] },
+  'GET /api/v1/mech-requests/summary': { kind: 'permissions', allOf: ['mechRequests.read'] },
+  // Подсказка ранее вводившихся видов строится по той же области, что и список: право у неё то же
+  // самое, а не «справочное» — иначе площадка читала бы по подсказке, что арендуют соседние
+  // объекты.
+  'GET /api/v1/mech-requests/kinds': { kind: 'permissions', allOf: ['mechRequests.read'] },
+  'GET /api/v1/mech-requests/:id': { kind: 'permissions', allOf: ['mechRequests.read'] },
+  'GET /api/v1/mech-requests/:id/history': { kind: 'permissions', allOf: ['mechRequests.read'] },
+  'POST /api/v1/mech-requests': { kind: 'permissions', allOf: ['mechRequests.create'] },
+  // «Дублировать» — это заведение новой заявки, а не копия строки: право то же, и пара
+  // «отдел — площадка» проверяется заново.
+  'POST /api/v1/mech-requests/:id/duplicate': {
+    kind: 'permissions',
+    allOf: ['mechRequests.create'],
+  },
+  'PATCH /api/v1/mech-requests/:id': { kind: 'permissions', allOf: ['mechRequests.update'] },
+  'PATCH /api/v1/mech-requests/:id/deal': { kind: 'permissions', allOf: ['mechRequests.status'] },
+  'PATCH /api/v1/mech-requests/:id/status': { kind: 'permissions', allOf: ['mechRequests.status'] },
+  'POST /api/v1/mech-requests/:id/issue': { kind: 'permissions', allOf: ['mechRequests.status'] },
+  'POST /api/v1/mech-requests/:id/issue-revoke': {
+    kind: 'permissions',
+    allOf: ['mechRequests.status'],
+  },
+  'DELETE /api/v1/mech-requests/:id': { kind: 'permissions', allOf: ['mechRequests.delete'] },
+  'POST /api/v1/mech-requests/:id/restore': { kind: 'permissions', allOf: ['archive.restore'] },
+  'DELETE /api/v1/mech-requests/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
+
   // ── Вывоз мусора ──
   // Два маршрута условные: назначить исполнителя прямо в форме заявки — то же назначение
   // оператора, что и `PATCH /:id/operator`, поэтому право спрашивается по факту присутствия поля.

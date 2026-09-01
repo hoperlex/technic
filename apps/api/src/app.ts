@@ -55,6 +55,7 @@ import vehicleMaintenanceRoutes from './routes/vehicle-maintenance';
 import wasteRequestsRoutes from './routes/waste-requests';
 import wasteTicketsRoutes from './routes/waste-tickets';
 import ticketAuditRoutes from './routes/ticket-audit';
+import mechRequestsRoutes from './routes/mech-requests';
 import wasteTypesRoutes from './routes/waste-types';
 import wasteTariffsRoutes from './routes/waste-tariffs';
 import filesRoutes from './routes/files';
@@ -246,6 +247,10 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // вложен в заявку и проходит область объекта с оператором, а сводка сквозная по всему порталу
   // и закрыта своим правом `wasteRequests.ticketAudit`, которое выдаётся поимённо (§4.1).
   await app.register(ticketAuditRoutes, { prefix: '/api/v1/waste-requests' });
+  // Аренда малой механизации (план `docs/mechanization-module-plan.md`) — свой префикс и свои
+  // права: с вывозом мусора модуль делит только ось области (площадка эксплуатации), а цикл,
+  // заявитель и предмет у него собственные.
+  await app.register(mechRequestsRoutes, { prefix: '/api/v1/mech-requests' });
   await app.register(wasteTypesRoutes, { prefix: '/api/v1/waste-types' });
   await app.register(wasteTariffsRoutes, { prefix: '/api/v1/waste-tariffs' });
   await app.register(filesRoutes, { prefix: '/api/v1/files' });

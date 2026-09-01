@@ -20,6 +20,7 @@ import {
   OPERATOR_STATUS_TRANSITIONS,
   PERMISSIONS,
   permissionsFor,
+  REQUEST_STATUSES,
   profilesWith,
   ROLE_ADDON_PERMISSIONS,
   ROLE_PERMISSIONS,
@@ -139,7 +140,7 @@ describe('права ролей', () => {
    * расхождение держится списком: право, тихо просочившееся в одну из ролей, обязано уронить тест,
    * а разошедшееся осознанно — прийти сюда строкой с объяснением, за что оно у диспетчера.
    */
-  it('диспетчер ведёт справочники наравне с менеджером и расходится с ним четырьмя правами', () => {
+  it('диспетчер ведёт справочники наравне с менеджером и расходится с ним пятью правами', () => {
     expect(can(of('dispatcher'), 'directories.write')).toBe(true);
     const DISPATCHER_ONLY: Permission[] = [
       // Коррекция задним числом (ADR 0101, Р4): расхождение «в портале одно, в жизни другое»
@@ -152,6 +153,10 @@ describe('права ролей', () => {
       // её за администратором значило бы ходить к нему за каждым окном дней.
       'mailings.read',
       'mailings.manage',
+      // Продление аренды механизации (план `docs/mechanization-module-plan.md`, Р9) — пятое
+      // расхождение и решение заказчика: продлить значит согласиться платить дальше, а звонит
+      // арендодателю диспетчер. Ведение аренды у ролей общее — расходятся они ровно продлением.
+      'mechRequests.extend',
     ];
     expect(
       [...ROLE_PERMISSIONS.dispatcher].filter((p) => !DISPATCHER_ONLY.includes(p)).sort(),
@@ -388,6 +393,8 @@ describe('права ролей', () => {
     // которые наблюдатель и так видит, — но ни собрать неделю, ни завизировать он не может.
     expect([...permissionsFor(of('observer'))].sort()).toEqual([
       'directories.read',
+      // Четвёртый модуль заявок — механизация (Р9): тем же одним чтением, что и три предыдущих.
+      'mechRequests.read',
       'officeEquipment.read',
       'serviceRequests.read',
       'vehicleRequests.read',
@@ -453,6 +460,13 @@ describe('права ролей', () => {
     }
     expect([...permissionsFor(of('commandant'))].sort()).toEqual([
       'directories.read',
+      // Механизация (Р9) — второй модуль коменданта, и это не расширение должности, а её предмет:
+      // компрессор и тепловая пушка нужны тому же, кто отвечает за быт площадки. Ход аренды ему
+      // по-прежнему не выдан — набор заказчика тот же, что в вывозе.
+      'mechRequests.create',
+      'mechRequests.delete',
+      'mechRequests.read',
+      'mechRequests.update',
       'wasteRequests.create',
       'wasteRequests.delete',
       'wasteRequests.read',
@@ -567,6 +581,133 @@ describe('права ролей', () => {
         expect(perms, role).toContain('waybills.cancel');
       }
     }
+  });
+});
+
+/**
+ * Механизация (план `docs/mechanization-module-plan.md`, Р9) — четвёртый модуль заявок, и раздача
+ * прав в нём устроена не так, как в трёх соседних: шестым правом заведено продление, разведённое
+ * со сменой статуса. Проверяется здесь раздача и два её следствия — область раздела (Р10) и
+ * перевод права статуса на модульную таблицу.
+ */
+describe('механизация: аренда малой механизации (Р9)', () => {
+  /** Права модуля у субъекта — так их сравнивать между сторонами. */
+  const mechOf = (subject: AccessSubject) =>
+    permissionsFor(subject)
+      .filter((p) => p.startsWith('mechRequests.'))
+      .sort();
+
+  /** Набор заказчика: просит технику, правит и удаляет свою просьбу, пока она «Новая». */
+  const MECH_CUSTOMER = [
+    'mechRequests.create',
+    'mechRequests.delete',
+    'mechRequests.read',
+    'mechRequests.update',
+  ];
+
+  /**
+   * Шесть ролей-заказчиков сравнением, а не шестью перечислениями: разойдись наборы, два заказчика
+   * одной площадки получили бы разный портал на одну и ту же аренду. Комендант здесь наравне с
+   * остальными — компрессор и тепловая пушка нужны тому же, кто отвечает за быт площадки.
+   */
+  it('заказчики просят технику, а ход аренды решает офис', () => {
+    for (const role of [
+      'shtab',
+      'rukstroy',
+      'commandant',
+      'site',
+      'department',
+      'department_head',
+    ] as Role[]) {
+      expect(mechOf(of(role)), role).toEqual(MECH_CUSTOMER);
+    }
+    // Офис ведёт аренду: договорённость с арендодателем, отметка выдачи, завершение с фактом.
+    expect(mechOf(of('manager'))).toEqual([...MECH_CUSTOMER, 'mechRequests.status'].sort());
+    expect(mechOf(of('dispatcher'))).toEqual(
+      [...MECH_CUSTOMER, 'mechRequests.status', 'mechRequests.extend'].sort(),
+    );
+    expect(mechOf(of('observer'))).toEqual(['mechRequests.read']);
+    // Служба главного механика модуля не получает вовсе: своей техники у механизации нет ни
+    // единицы, а чужая аренда — не парк компании.
+    expect(mechOf(of('mechanic'))).toEqual([]);
+    expect(mechOf(of('chief_mechanic'))).toEqual([]);
+    // Внешнему исполнителю модуль закрыт целиком: учёток арендодателю механизации не заводят (Р6).
+    for (const subject of [wasteOperator, vehicleLessor, serviceCompany]) {
+      expect(mechOf(subject), accessProfileLabel(subject)).toEqual([]);
+    }
+  });
+
+  /**
+   * Продление — решение заказчика, а не нарезка прав: продлить аренду значит согласиться платить
+   * дальше, и звонит арендодателю диспетчер. Обратным поиском: держателей ровно двое, и третий,
+   * появившийся по недосмотру, обязан уронить тест — иначе право растворилось бы в «ведении».
+   */
+  it('продлевает аренду диспетчер, и больше никто, кроме администратора', () => {
+    expect(rolesWith('mechRequests.extend')).toEqual(['admin', 'dispatcher']);
+    expect(can(of('manager'), 'mechRequests.extend')).toBe(false);
+    // Ведение аренды при этом у менеджера с диспетчером общее — расходятся они ровно продлением.
+    expect(can(of('manager'), 'mechRequests.status')).toBe(true);
+  });
+
+  /**
+   * Правило видимости раздела (ADR 0062, Р10) — то самое, ради чего права модуля стоят в
+   * `MODULE_SCOPE`: отдел без площадок раздела не видит вовсе. Обе стороны проверяются вместе,
+   * иначе строка `MODULE_SCOPE` могла бы просто отсутствовать и тест этого не заметил бы.
+   */
+  it('раздел открыт площадке и отделу с площадками — и закрыт отделу без них', () => {
+    for (const role of ['department', 'department_head'] as Role[]) {
+      expect(canUse({ ...of(role), departmentObjectIds: [OBJECT_A] }, 'mechRequests.read')).toBe(
+        true,
+      );
+      // Право у роли есть, работать им не над чем: арендовать некуда.
+      expect(can(of(role), 'mechRequests.read'), role).toBe(true);
+      expect(canUse(of(role), 'mechRequests.read'), role).toBe(false);
+    }
+    expect(canUse({ role: 'shtab', constructionObjectIds: [OBJECT_A] }, 'mechRequests.read')).toBe(
+      true,
+    );
+    expect(canUse({ role: 'shtab' }, 'mechRequests.read')).toBe(false);
+    // Офису область не сужает ничего: своей оси у роли нет.
+    for (const role of ['manager', 'dispatcher', 'observer'] as Role[]) {
+      expect(canUse(of(role), 'mechRequests.read'), role).toBe(true);
+    }
+  });
+
+  /**
+   * Право статуса спрашивается **по модулю** (Р9): до механизации коридор считался дизъюнкцией
+   * прав вывоза и техники, и третьему модулю его собственное `mechRequests.status` не открыло бы
+   * ни одного хода.
+   *
+   * Вторая половина проверки — обещание, что перевод на таблицу ничего не сдвинул у живых
+   * субъектов. Держится оно не на слово: у всех, кроме идущих своим коридором, права двух прежних
+   * модулей есть вместе или отсутствуют вместе, а значит дизъюнкция и таблица отвечают одинаково.
+   * Выдай завтра кому-нибудь одно право из двух — тест упадёт здесь, а не обнаружится коридором,
+   * открывшимся не в том модуле.
+   */
+  it('ход аренды идёт своим правом, а коридоры вывоза и техники не сдвинулись', () => {
+    expect(allowedStatusTransitions('new', of('manager'), 'mech')).toEqual([
+      'confirmed',
+      'cancelled',
+    ]);
+    expect(allowedStatusTransitions('new', of('shtab'), 'mech')).toEqual([]);
+    // Откат — тем же правом, что у соседей: диспетчер снимает заявку с работы, а закрытую аренду
+    // возвращает в работу для повторного завершения (Р11).
+    expect(allowedStatusTransitions('done', of('dispatcher'), 'mech')).toEqual(['confirmed']);
+    expect(allowedStatusTransitions('done', of('manager'), 'mech')).toEqual([]);
+    // «Завершена» у аренды не бывает вовсе (Р8): хода в неё нет ни у кого, включая администратора.
+    for (const from of REQUEST_STATUSES) {
+      expect(allowedStatusTransitions(from, of('admin'), 'mech'), from).not.toContain('completed');
+    }
+    for (const profile of ACCESS_PROFILES) {
+      // Исполнитель идёт своим коридором и модульной таблицы не касается: модуль ему выбирает тип
+      // контрагента, а не право (`ROLE_STATUS_TRANSITIONS`), и его единственный ход — ниже.
+      if (profile.role === 'operator') continue;
+      expect(can(profile, 'wasteRequests.status'), accessProfileLabel(profile)).toBe(
+        can(profile, 'vehicleRequests.status'),
+      );
+    }
+    expect(allowedStatusTransitions('confirmed', wasteOperator, 'waste')).toEqual(['done']);
+    expect(allowedStatusTransitions('confirmed', vehicleLessor, 'vehicle')).toEqual(['done']);
   });
 });
 
@@ -989,12 +1130,14 @@ describe('заявки на обслуживание оргтехники (ADR 0
     // ровно тем же правом заказчика, что и без надстройки. Сравнение с голой ролью это и говорит.
     for (const role of ['shtab', 'site', 'department'] as const) {
       const withAddon: AccessSubject = { role, addons: ['office_equipment_it_approver'] };
-      expect(can(withAddon, 'serviceRequests.delete'), role).toBe(can(of(role), 'serviceRequests.delete'));
+      expect(can(withAddon, 'serviceRequests.delete'), role).toBe(
+        can(of(role), 'serviceRequests.delete'),
+      );
     }
     // И ни одна надстройка модуля не раздаёт `delete` сама по себе — профиль без роли пуст.
-    expect(can({ role: null, addons: ['office_equipment_it_approver'] }, 'serviceRequests.delete')).toBe(
-      false,
-    );
+    expect(
+      can({ role: null, addons: ['office_equipment_it_approver'] }, 'serviceRequests.delete'),
+    ).toBe(false);
   });
 
   /**

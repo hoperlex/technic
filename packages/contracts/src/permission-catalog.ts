@@ -33,6 +33,13 @@ export const PERMISSION_MODULES = [
   'waste',
   'vehicle',
   'weekly',
+  /**
+   * Механизация (план `docs/mechanization-module-plan.md`, Р9) — свой модуль витрины, а не строки
+   * внутри «Заказа ТС»: у аренды малой механизации свой раздел, свой цикл и своя область, а
+   * общая с техникой строка сказала бы держателю, что заказ самосвала и аренда виброплиты
+   * открываются одним доступом.
+   */
+  'mech',
   'service',
   'officeEquipment',
   'garage',
@@ -66,6 +73,7 @@ export const permissionModuleLabels: Record<PermissionModule, string> = {
   waste: 'Вывоз мусора',
   vehicle: 'Заказ ТС',
   weekly: 'Недельная заявка',
+  mech: 'Механизация',
   service: 'Орг.техника: заявки',
   officeEquipment: 'Орг.техника: справочник',
   garage: 'Гараж',
@@ -207,6 +215,43 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     module: 'weekly',
     action: 'approve',
     label: 'Визирует недельную заявку',
+  },
+
+  'mechRequests.read': { module: 'mech', action: 'read', label: 'Видит заявки на механизацию' },
+  'mechRequests.create': {
+    module: 'mech',
+    action: 'create',
+    label: 'Заводит заявку на механизацию',
+  },
+  'mechRequests.update': {
+    module: 'mech',
+    action: 'update',
+    label: 'Правит заявку на механизацию',
+  },
+  'mechRequests.delete': {
+    module: 'mech',
+    action: 'delete',
+    label: 'Удаляет заявку на механизацию',
+  },
+  /*
+   * Ход аренды: договорённость с арендодателем, отметка выдачи и её снятие, завершение с фактом.
+   * Действие `status`, потому что все они двигают заявку по её же циклу (Р2) — состояние аренды
+   * различается полями, а не четвёртым статусом.
+   */
+  'mechRequests.status': {
+    module: 'mech',
+    action: 'status',
+    label: 'Ведёт аренду механизации: договорённость, выдача, завершение',
+  },
+  /*
+   * Продление — «Особые», а не «Ход»: срок аренды не двигает заявку по циклу вовсе, а означает
+   * согласие платить дальше (Р9). Попади право в «Ход», витрина сказала бы, что продлевает всякий,
+   * кто ведёт аренду, — то есть ровно то смешение с `.status`, ради которого право и разведено.
+   */
+  'mechRequests.extend': {
+    module: 'mech',
+    action: 'manage',
+    label: 'Продлевает аренду механизации',
   },
 
   'drivers.read': { module: 'drivers', action: 'read', label: 'Читает карточки водителей' },
@@ -425,6 +470,7 @@ export const MODULE_ENTRY_PERMISSION: Record<PermissionModule, Permission> = {
   waste: 'wasteRequests.read',
   vehicle: 'vehicleRequests.read',
   weekly: 'weeklyRequests.read',
+  mech: 'mechRequests.read',
   service: 'serviceRequests.read',
   officeEquipment: 'officeEquipment.read',
   garage: 'garage.read',
@@ -501,7 +547,7 @@ const SCOPE_RULES: readonly AccessScopeRule[] = [
   },
   {
     applies: (s) => isDepartmentScopedRole(s.role),
-    text: 'Видит только заявки своих отделов; вывоз мусора — по площадкам этих отделов',
+    text: 'Видит только заявки своих отделов; вывоз мусора и механизацию — по площадкам этих отделов',
   },
   {
     applies: (s) => isDepartmentScopedRole(s.role),

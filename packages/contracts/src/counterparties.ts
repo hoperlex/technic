@@ -11,6 +11,22 @@ export const COUNTERPARTY_TYPES = [
   'vehicle_lessor',
   'supplier',
   'service',
+  /*
+   * Арендодатель механизации (план `docs/mechanization-module-plan.md`, Р6). Свой тип, а не
+   * расширение `vehicle_lessor`: тип у контрагента один, ИНН уникален, и компания, сдающая и ТС, и
+   * виброплиты, обоими типами быть не может. Арендодателем в заявке механизации допускаются оба —
+   * уже заведённому арендодателю ТС тип не меняют, иначе сломались бы права его учёток и его
+   * техника.
+   *
+   * Учёток за таким контрагентом не заводят вовсе: список прав типа пуст
+   * (`COUNTERPARTY_TYPE_PERMISSIONS`), и `COUNTERPARTY_TYPES_WITH_ACCOUNTS` считается из непустых.
+   *
+   * Стоит последним, а не рядом с арендодателем ТС: порядок значений здесь повторяет порядок
+   * enum'а в базе, а `ALTER TYPE ... ADD VALUE` без `BEFORE` дописывает значение в конец (так
+   * пришли `supplier` и `service`). Разойдись они — фильтр справочника предлагал бы типы в одном
+   * порядке, а сортировка по колонке `type` возвращала бы в другом.
+   */
+  'mech_lessor',
 ] as const;
 export const counterpartyTypeSchema = z.enum(COUNTERPARTY_TYPES);
 export type CounterpartyType = (typeof COUNTERPARTY_TYPES)[number];
@@ -20,6 +36,9 @@ export const counterpartyTypeLabels: Record<CounterpartyType, string> = {
   contractor: 'Подрядчик',
   operator: 'Оператор (вывоз мусора)',
   vehicle_lessor: 'Арендодатель (ТС)',
+  // Модуль в подписи назван по той же причине, что и у арендодателя ТС: типов аренды в справочнике
+  // два, и без уточнения строка «Арендодатель» не отвечает, что именно контрагент сдаёт.
+  mech_lessor: 'Арендодатель механизации',
   // Модуль в подписи не назван: поставщик — сторона договора поставки, а не исполнитель в
   // портале. Его склады (ADR 0051) ведёт снабжение, сам он в портале не работает.
   supplier: 'Поставщик',
@@ -33,6 +52,9 @@ export const counterpartyTypeColors: Record<CounterpartyType, string> = {
   contractor: 'blue',
   operator: 'green',
   vehicle_lessor: 'orange',
+  // Не второй оттенок оранжевого: оба арендодателя стоят в одном столбце справочника друг под
+  // другом, и различать их надо с одного взгляда. `gold` свободен среди типов контрагента.
+  mech_lessor: 'gold',
   supplier: 'cyan',
   service: 'volcano',
 };

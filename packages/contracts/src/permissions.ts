@@ -3,6 +3,7 @@ import {
   isDepartmentScopedRole,
   isObjectScopedRole,
   OPERATOR_STATUS_TRANSITIONS,
+  REQUEST_MODULES,
   requestStatusRollbacks,
   requestStatusTransitions,
   roleLabels,
@@ -162,6 +163,27 @@ export const PERMISSIONS = [
   'weeklyRequests.create',
   'weeklyRequests.update',
   'weeklyRequests.approve',
+
+  /**
+   * Механизация — аренда малой механизации (план `docs/mechanization-module-plan.md`, Р9).
+   * Заявка здесь и есть аренда (Р1): её заводит площадка или отдел, договорённость с
+   * арендодателем ставит офис, а фактическую выдачу и возврат отмечает он же.
+   *
+   * Пять прав устроены как у соседних модулей, шестое — своё. **Продление разведено со сменой
+   * статуса намеренно**: продлить аренду — это не «поправить срок», а согласие платить дальше, и
+   * звонит арендодателю с этим диспетчер (решение заказчика). Лежи продление внутри `.status`, его
+   * получил бы и менеджер, а отобрать его составом набора было бы нечем.
+   *
+   * Своей группы прав у арендодателя нет и не будет: учёток за таким контрагентом не заводят вовсе
+   * (Р6, пустая строка в `COUNTERPARTY_TYPE_PERMISSIONS`) — справочная запись нужна, чтобы заявка
+   * знала, кому звонить, и чтобы деньги складывались по арендодателям.
+   */
+  'mechRequests.read',
+  'mechRequests.create',
+  'mechRequests.update',
+  'mechRequests.delete',
+  'mechRequests.status',
+  'mechRequests.extend',
 
   // Водители (ADR 0037). Отдельно от справочников: в карточке водителя лежат персональные
   // данные — СНИЛС, номер удостоверения, — и открывать их каждому, кому нужен список типов ТС,
@@ -588,6 +610,43 @@ const VEHICLE_REQUEST_PERMISSIONS = [
 ] as const;
 
 /**
+ * Механизация глазами заказчика (план `docs/mechanization-module-plan.md`, Р9): просит технику,
+ * правит и удаляет свою просьбу, пока она «Новая». Ход аренды — договорённость, выдача, возврат —
+ * решает офис: за ними стоят деньги и звонок арендодателю, а не нужда площадки.
+ *
+ * Набор общий на все шесть ролей-заказчиков (площадка со своими переходными и обе роли отдела) —
+ * так же, как в вывозе мусора: разойдись он, два заказчика одной площадки получили бы разный
+ * портал на одну заявку.
+ */
+const MECH_REQUEST_CUSTOMER_PERMISSIONS = [
+  'mechRequests.read',
+  'mechRequests.create',
+  'mechRequests.update',
+  'mechRequests.delete',
+] as const;
+
+/**
+ * Механизация глазами офиса: то же плюс ход аренды. Продления здесь нет — оно у диспетчера
+ * поимённо (Р9), и общий набор раздал бы его менеджеру, то есть решил бы за заказчика вопрос,
+ * которого он не задавал.
+ */
+const MECH_REQUEST_OFFICE_PERMISSIONS = [
+  ...MECH_REQUEST_CUSTOMER_PERMISSIONS,
+  'mechRequests.status',
+] as const;
+
+/**
+ * Все шесть прав модуля — ими же он и сужается областью (`MODULE_SCOPE`, Р10). Отдельным списком,
+ * а не фильтром по префиксу: перечень читается как решение («вся механизация ходит по площадкам»),
+ * а фильтр молча подхватил бы завтрашнее сквозное право — так `wasteRequests.ticketAudit` попал бы
+ * под площадочную область, хотя заведён ровно наоборот, поперёк площадок.
+ */
+const MECH_REQUEST_PERMISSIONS = [
+  ...MECH_REQUEST_OFFICE_PERMISSIONS,
+  'mechRequests.extend',
+] as const;
+
+/**
  * **Ведение** недельных заявок — набор тех, кто неделю собирает: чтение вместе с правкой состава.
  * Общим списком, а не построчно у каждой роли, потому что у всех пяти он совпадает буквально:
  * кто ведёт модуль, тот и правит состав — и это осознанно. Развести чтение и правку внутри этого
@@ -630,6 +689,10 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     ...WAYBILL_PERMISSIONS,
     ...WASTE_REQUEST_PERMISSIONS,
     ...VEHICLE_REQUEST_PERMISSIONS,
+    // Механизация (Р9): менеджер ведёт аренду наравне с диспетчером — берёт в работу, отмечает
+    // выдачу и завершает. Продления у него нет: оно у диспетчера одного, и в этом всё расхождение
+    // двух ролей по модулю.
+    ...MECH_REQUEST_OFFICE_PERMISSIONS,
     // Недельные заявки менеджер и диспетчер заводят за площадку и правят состав: половина недель
     // собирается звонком на диспетчерскую, и оформлять их должен тот, кому позвонили. Визы у них
     // нет — она остаётся решением объекта.
@@ -665,6 +728,14 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'waybills.correct',
     ...WASTE_REQUEST_PERMISSIONS,
     ...VEHICLE_REQUEST_PERMISSIONS,
+    /*
+     * Механизация (Р9): ведение аренды — общее с менеджером, а продление — пятое расхождение с
+     * ним, и решение это заказчика, а не нарезка прав. Продлить аренду значит согласиться платить
+     * дальше; звонит арендодателю и договаривается диспетчер, поэтому право стоит здесь поимённо,
+     * а не в общем наборе офиса.
+     */
+    ...MECH_REQUEST_OFFICE_PERMISSIONS,
+    'mechRequests.extend',
     ...WEEKLY_REQUEST_PERMISSIONS,
     'garage.read',
     ...VEHICLE_READING_PERMISSIONS,
@@ -700,6 +771,9 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vehicleRequests.create',
     'vehicleRequests.update',
     'vehicleRequests.delete',
+    // Механизация (Р9) — тот же заказчик, что и в вывозе: виброплиту просит площадка, а
+    // договаривается о ней офис. Хода аренды у штаба нет, как и хода заявки вывоза.
+    ...MECH_REQUEST_CUSTOMER_PERMISSIONS,
     // Недельная заявка — рабочий инструмент штаба: он и решает каждую неделю, что из стоящей на
     // площадке техники остаётся. Продление, которое даёт применение, обходит запрет объектным
     // ролям править работающий заказ — и это осознанное исключение: продлевает не тот, кто просил,
@@ -724,6 +798,10 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vehicleRequests.update',
     'vehicleRequests.delete',
     'vehicleRequests.approve',
+    // Механизация — набором заказчика, тем же, что у штаба (ADR 0031): разойдись они, два
+    // заказчика одной площадки получили бы разный портал на одну аренду. Визы у механизации нет
+    // вовсе: аренду согласовывает не объект, а тот, кто за неё платит.
+    ...MECH_REQUEST_CUSTOMER_PERMISSIONS,
     // Неделю руководитель строительства собирает наравне со штабом и визирует один: его подпись —
     // единственное согласование на весь пакет, и она же двигает сроки. Своя заявка применяется в
     // момент подачи (правилом автовизы объектной роли); администратор под него не подпадает —
@@ -743,6 +821,10 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'wasteRequests.create',
     'wasteRequests.update',
     'wasteRequests.delete',
+    // Механизация (Р9) — второй модуль коменданта, и это не расширение его должности, а её
+    // предмет: компрессор и тепловая пушка нужны на площадке тому же, кто отвечает за её быт.
+    // «Заказ ТС» ему по-прежнему закрыт целиком — технику заказывают через штаб.
+    ...MECH_REQUEST_CUSTOMER_PERMISSIONS,
   ],
 
   /*
@@ -778,6 +860,9 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'wasteRequests.create',
     'wasteRequests.update',
     'wasteRequests.delete',
+    // Механизация (Р9) — второй модуль, общий у всех трёх старых объектных ролей: аренду просят и
+    // штаб, и руководитель строительства, и комендант, а ведёт её офис.
+    ...MECH_REQUEST_CUSTOMER_PERMISSIONS,
   ],
 
   // Отдел (ADR 0040) — заказчик со стороны офиса: заявки на технику заводит от отдела, а не от
@@ -798,6 +883,13 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vehicleRequests.create',
     'vehicleRequests.update',
     'vehicleRequests.delete',
+    /*
+     * Механизация (Р9, Р17): отдел просит технику **на свою площадку** — место эксплуатации
+     * обязательно и выбирается из площадок отдела (ADR 0144). Отсюда и следствие, ради которого
+     * права модуля стоят в `MODULE_SCOPE`: отдел, за которым площадок нет, раздела не видит вовсе
+     * — ни в меню, ни по прямой ссылке.
+     */
+    ...MECH_REQUEST_CUSTOMER_PERMISSIONS,
     // Только чтение недели, и только своих площадок (ADR 0062; набором — ADR 0144): отдел
     // работает на них наравне со штабом и должен понимать, чем они заняты на неделе вперёд.
     // Ведения и визы у него нет — неделю собирает и подписывает площадка. Сколько недель он
@@ -828,6 +920,9 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vehicleRequests.update',
     'vehicleRequests.delete',
     'vehicleRequests.approve',
+    // Механизация — тем же набором заказчика, что у сотрудника отдела: от него руководитель
+    // отдела отличается ровно визой заказа техники, и модуль аренды её не знает.
+    ...MECH_REQUEST_CUSTOMER_PERMISSIONS,
     'weeklyRequests.read',
   ],
 
@@ -847,6 +942,9 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vehicleRequests.read',
     // Третий модуль заявок — той же сквозной картиной по компании, без единого действия.
     'serviceRequests.read',
+    // Четвёртый — механизация (Р9): что арендуем сейчас и во сколько это обходится, видно тем же
+    // одним чтением. Ни завести, ни продлить, ни завершить аренду наблюдатель не может.
+    'mechRequests.read',
     // Недельная заявка живёт в общем списке «Заказ автотехники» и объясняет, откуда взялись
     // продления заказов, которые наблюдатель и так видит целиком. Одно право чтения, без набора
     // `WEEKLY_REQUEST_PERMISSIONS`: заводить и править неделю роль не может ничего.
@@ -946,6 +1044,18 @@ export const COUNTERPARTY_TYPE_PERMISSIONS: Record<CounterpartyType, readonly Pe
   // составе; область считает предикат, а не это право. Заводить и визировать неделю он не может:
   // площадка решает за себя сама, а состав документа он видит только своими строками.
   vehicle_lessor: ['vehicleRequests.read', 'vehicleRequests.status', 'weeklyRequests.read'],
+  /*
+   * Арендодатель механизации (план `docs/mechanization-module-plan.md`, Р6) — **пустой список, и
+   * это решение, а не заготовка**: учёток за таким контрагентом не заводят вовсе, вход в портал
+   * ему не открывают, а строка справочника нужна затем, чтобы заявка знала, кому звонить, и чтобы
+   * деньги складывались по арендодателям.
+   *
+   * Пустота здесь работает: `COUNTERPARTY_TYPES_WITH_ACCOUNTS` считается из непустых списков, и
+   * форма учётки такого контрагента не предложит. Впиши сюда `mechRequests.read` — и появился бы
+   * вход, которого никто не заводил, с областью, которой у модуля нет: своего предиката по
+   * арендодателю механизация не имеет, аренду видно по площадке.
+   */
+  mech_lessor: [],
   // Поставщик (ADR 0051) — сторона договора поставки: в портале за него никто не работает, его
   // склады ведут изнутри. Пустой список, как у генподрядчика и подрядчика; появится у поставщика
   // свой модуль — он будет строкой здесь, а не новой ролью.
@@ -1335,14 +1445,30 @@ function hasPlaceObjectScope(subject: ScopedSubject): boolean {
   return ids === null || ids.length > 0;
 }
 
+/** Права модуля, который весь ходит по площадкам, — одной строкой на модуль. */
+const placeScoped = (
+  permissions: readonly Permission[],
+): [Permission, (subject: ScopedSubject) => boolean][] =>
+  permissions.map((permission) => [permission, hasPlaceObjectScope]);
+
 /**
  * Права, применимость которых зависит от области (ADR 0062). Права, которого здесь нет, область
  * не сужает — тот же приём, что в `ROLE_VEHICLE_REQUEST_TYPES`: новое право открыто всем, у кого
  * оно есть, кроме тех, кому его сузили осознанно, строкой здесь.
  */
-const MODULE_SCOPE = new Map<Permission, (subject: ScopedSubject) => boolean>(
-  WASTE_REQUEST_PERMISSIONS.map((permission) => [permission, hasPlaceObjectScope]),
-);
+const MODULE_SCOPE = new Map<Permission, (subject: ScopedSubject) => boolean>([
+  ...placeScoped(WASTE_REQUEST_PERMISSIONS),
+  /*
+   * Механизация (план `docs/mechanization-module-plan.md`, Р10) — та же площадочная область, что
+   * у вывоза, и по той же причине: ось модуля одна, `object_id` места эксплуатации, а отдел
+   * работает на площадках своего отдела (ADR 0062, ADR 0144).
+   *
+   * **Именно эти строки и закрывают раздел отделу без площадок** — ответ заказчика «отдел без
+   * площадки не увидит даже вкладку модуля». Без них право у роли было бы, а работать им не над
+   * чем: `canUse` отвечал бы «да», пункт меню рисовался, а список приходил бы пустым всегда.
+   */
+  ...placeScoped(MECH_REQUEST_PERMISSIONS),
+]);
 
 /**
  * Открыт ли субъекту раздел: право **и** непустая область, в которой это право применимо
@@ -1456,9 +1582,37 @@ const ROLE_STATUS_TRANSITIONS: Partial<Record<Role, Record<RequestStatus, Reques
   operator: OPERATOR_STATUS_TRANSITIONS,
 };
 
-/** Смена статуса хотя бы в одном модуле — общий предикат для правил перехода. */
-function canChangeAnyStatus(subject: AccessSubject): boolean {
-  return can(subject, 'wasteRequests.status') || can(subject, 'vehicleRequests.status');
+/**
+ * Право «двигать заявку по статусам» — **по модулю** (план `docs/mechanization-module-plan.md`,
+ * Р9). Таблицей, а не дизъюнкцией `wasteRequests.status || vehicleRequests.status`, которая стояла
+ * здесь до механизации: та знала ровно два права, и третьему модулю его собственное
+ * `mechRequests.status` не открыло бы ни одного хода — коридор считался бы по чужим правам, а
+ * держатель прав вывоза получил бы ходы в аренде, которой не ведёт.
+ *
+ * `Record` по модулям: новый модуль заявок не соберётся, пока не ответит, каким правом он ходит.
+ */
+const REQUEST_STATUS_PERMISSION: Record<RequestModule, Permission> = {
+  waste: 'wasteRequests.status',
+  vehicle: 'vehicleRequests.status',
+  mech: 'mechRequests.status',
+};
+
+/**
+ * Смена статуса хотя бы в одном модуле заявок — гейт **только** для ролей со своим коридором
+ * (`ROLE_STATUS_TRANSITIONS`), то есть сегодня для внешнего исполнителя.
+ *
+ * Почему он не спрашивает модуль, хотя таблица выше есть. Модуль исполнителю выбирает не право, а
+ * тип его контрагента: оператор вывоза видит только заявки вывоза, арендодатель ТС — только
+ * заказы со своей машиной (ADR 0038), и до чужого модуля он не доходит ни ручкой, ни выборкой.
+ * Спроси мы здесь право модуля, ответ изменился бы ровно для несуществующего случая — «оператору
+ * вывоза про заказ техники», — то есть коридор сузился бы там, где его и так нет.
+ *
+ * Дизъюнкция считается **по той же таблице**, а не вторым перечнем прав: разойдись они, новый
+ * модуль открыл бы исполнителю ходы, о которых не спрашивали. Роль без контрагента (`operator` без
+ * типа) прав статуса не имеет вовсе — и своего коридора ей этот гейт не открывает.
+ */
+function canChangeAnyRequestStatus(subject: AccessSubject): boolean {
+  return REQUEST_MODULES.some((module) => can(subject, REQUEST_STATUS_PERMISSION[module]));
 }
 
 /**
@@ -1488,9 +1642,11 @@ function cycleTransitions(
   subject: AccessSubject,
   module: RequestModule,
 ): RequestStatus[] {
-  if (!canChangeAnyStatus(subject)) return [];
   const ownCorridor = subject.role ? ROLE_STATUS_TRANSITIONS[subject.role] : undefined;
-  if (ownCorridor) return corridorFrom(ownCorridor, from);
+  // Свой коридор заменяет общий целиком — вместе с вопросом о праве: у исполнителя оно приходит
+  // типом контрагента, и модуль ему выбирает заявка, а не право (см. `canChangeAnyRequestStatus`).
+  if (ownCorridor) return canChangeAnyRequestStatus(subject) ? corridorFrom(ownCorridor, from) : [];
+  if (!can(subject, REQUEST_STATUS_PERMISSION[module])) return [];
   const forward = corridorFrom(requestStatusTransitions[module], from);
   return can(subject, 'requests.rollbackStatus')
     ? [...forward, ...corridorFrom(requestStatusRollbacks[module], from)]

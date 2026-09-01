@@ -96,6 +96,12 @@ export const requestTypeEnum = pgEnum('request_type', [
   'metal_removal',
 ]);
 export const containerKindEnum = pgEnum('container_kind', ['cont', 'truck']);
+/**
+ * Единица ставки аренды малой механизации (миграция 0238): цена договаривается за час или за смену.
+ * Enum, а не текст: значений ровно два, они входят в расчёт `actualUnits × rate` и в подписи итогов
+ * — часы и смены между собой не складываются.
+ */
+export const mechRateUnitEnum = pgEnum('mech_rate_unit', ['hour', 'shift']);
 export const fileStatusEnum = pgEnum('file_status', ['pending', 'active', 'deleted']);
 export const jobStatusEnum = pgEnum('job_status', ['pending', 'running', 'done', 'failed', 'dead']);
 /**
@@ -187,6 +193,11 @@ export const counterpartyTypeEnum = pgEnum('counterparty_type', [
   'supplier',
   // Сервисная компания (ADR 0085, миграция 0103): исполнитель заявок на обслуживание оргтехники.
   'service',
+  // Арендодатель малой механизации (миграция 0237). Список прав у типа ПУСТ: учёток за таким
+  // контрагентом не заводят вовсе, поэтому размывать права нечем. Арендодателем заявки механизации
+  // при этом бывает и `vehicle_lessor` — у контрагента ровно один тип, и компанию, уже заведённую
+  // арендодателем ТС, переводить сюда значило бы сломать права её учёток и её технику в парке.
+  'mech_lessor',
 ]);
 // Кем человек назвал себя при регистрации (ADR 0034). Это пожелание, не роль: права даёт
 // только `users.role`, назначаемая администратором, а соответствие «пожелание → роль плюс наборы»
@@ -5528,6 +5539,288 @@ export const vehicleRequestStatusHistory = pgTable(
   },
   (t) => ({
     requestIdx: index('vehicle_request_status_history_request_idx').on(t.vehicleRequestId),
+  }),
+);
+
+// ── Механизация: аренда малой механизации (план `docs/mechanization-module-plan.md`) ──
+// Одна строка описывает просьбу, договорённость, аренду и её итог: отдельная запись состояния
+// понадобилась бы, если бы заявка порождала несколько аренд или аренда переживала свою заявку.
+// Статусы названы заказчиком, и четвёртого не будет, поэтому «договорились» и «техника стоит на
+// объекте» разводятся ПОЛЯМИ. Отсюда столько CHECK-ов: смысл строки держится на сочетании статуса,
+// договорённости и факта, а коридор переходов — это код, тогда как колонка принимает что угодно из
+// своего типа (миграция 0238).
+export const mechRequests = pgTable(
+  'mech_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Сквозной человекочитаемый номер (отображается как «МХ-<num>»).
+    num: integer('num').generatedAlwaysAsIdentity(),
+    // Площадка эксплуатации, она же ОСЬ ОБЛАСТИ: вся видимость модуля считается по этой одной
+    // колонке — объектная роль сравнивает со своими объектами, отдельская — с площадками своих
+    // отделов. Место обязательно: заявка без него не отвечает ни «куда везти», ни «чья она».
+    objectId: uuid('object_id')
+      .notNull()
+      .references(() => constructionObjects.id, { onDelete: 'restrict' }),
+    // Заявитель-отдел; пусто — заявку завела сама площадка. Колонки НЕ взаимоисключающие, в отличие
+    // от `vehicleRequests`, и это осознанное расхождение: там объект и отдел — два разных заказчика,
+    // здесь объект это МЕСТО, а отдел — тот, кто просит и на кого относятся расходы. Что пара
+    // связана в справочнике, стережёт сервер в момент её назначения: состав площадок отдела
+    // меняется, и перепроверка старой заявки запретила бы офису поправить у неё комментарий.
+    departmentId: uuid('department_id').references(() => departments.id, { onDelete: 'restrict' }),
+    // Вид техники — свободная строка: справочника видов заказчик пока не захотел.
+    kindName: text('kind_name').notNull(),
+    // Считает БД (STORED): по ключу строится подсказка видов и группируются отчёты, и второй точки
+    // правды по написанию быть не должно. Схлопывает регистр и повторные пробелы — и только:
+    // «Виброплита» и «Вибро плита» остаются разными позициями, разделять слова — работа
+    // справочника.
+    //
+    // Слеш здесь двойной не по прихоти: `sql` — тегированный шаблон, и `\s` в нём «сварился» бы в
+    // обычную `s`, то есть выражение колонки молча разошлось бы с миграцией 0238.
+    kindKey: text('kind_key').generatedAlwaysAs(
+      sql`lower(btrim(regexp_replace(kind_name, '\\s+', ' ', 'g')))`,
+    ),
+    // План. Факт живёт ниже и сходиться с планом не обязан: продление двигает `plannedTo`, а
+    // вернуть технику могут раньше срока.
+    plannedFrom: date('planned_from', { mode: 'string' }).notNull(),
+    plannedTo: date('planned_to', { mode: 'string' }).notNull(),
+    // Кто встречает технику на площадке; телефон — десять цифр без кода страны (ADR 0066). Старых
+    // строк у модуля нет ни одной, поэтому непустоту и формат держит база, а не один сервер, — в
+    // отличие от тех же полей в вывозе и заказе ТС.
+    responsibleName: text('responsible_name').notNull(),
+    responsiblePhone: text('responsible_phone').notNull(),
+    comment: text('comment').notNull().default(''),
+    // Тип общий на все модули заявок; у механизации коридор `new → confirmed → done` плюс отмена, а
+    // «Завершена» нет вовсе — держит `mechRequestsStatusCheck` ниже.
+    status: requestStatusEnum('status').notNull().default('new'),
+    // ── Договорённость: с кем и почём. Пять колонок живут и умирают вместе ──
+    lessorId: uuid('lessor_id'),
+    // Служебная: приложение пишет фактический тип контрагента. Существует ради составного FK — им
+    // инвариант «арендодатель именно арендодатель» становится физическим (приём ADR 0018).
+    lessorType: counterpartyTypeEnum('lessor_type'),
+    // Служебная: пишет не приложение, а каскад FK, как у `vehicles.lessorIsActive`. Копия
+    // активности нужна, чтобы ключ проверял и её, и не мог разойтись со справочником молча.
+    lessorIsActive: boolean('lessor_is_active'),
+    // Прайса у механизации нет: цена договаривается на каждую аренду.
+    rate: numeric('rate', { precision: 12, scale: 2 }),
+    rateUnit: mechRateUnitEnum('rate_unit'),
+    // ── Факт: что случилось на площадке ──
+    // Выдача. Она же признак присутствия — но всеми тремя частями сразу (`status = 'confirmed'`,
+    // выдача есть, возврата нет): откат «Выполнена → В работе» факт БЕРЕЖЁТ, и проверка по одному
+    // `actualFrom` вернула бы уже возвращённую технику в действующие аренды.
+    actualFrom: date('actual_from', { mode: 'string' }),
+    actualTo: date('actual_to', { mode: 'string' }),
+    // Сколько отработано, в тех же единицах, что ставка: только с ними расчёт `actualUnits × rate`
+    // есть всегда и расхождение с введённой суммой видно всегда.
+    actualUnits: numeric('actual_units', { precision: 10, scale: 2 }),
+    // Итог вводит человек: сколько смен отработала техника за две недели, знает площадка, а не
+    // календарь.
+    finalCost: numeric('final_cost', { precision: 14, scale: 2 }),
+    // Запрета будущих фактических дат здесь нет НАМЕРЕННО, и база его приняла бы. Не годится он
+    // потому, что `CURRENT_DATE` считает день по зоне сессии, а сессии приложения живут в UTC: с
+    // 00:00 до 03:00 МСК он отстаёт на сутки и отверг бы честное «выдана сегодня». Правило момента
+    // записи держит сервис, явно вычислив московский день, — тем же приёмом и по той же причине,
+    // что время доставки в вывозе мусора.
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    // Архив по ADR 0070: мягкое удаление, восстановление и `records.purge`.
+    deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    // Оптимистическая блокировка: все мутации модуля идут одним протоколом — замок, перепроверка
+    // состояния, сверка версии.
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Вид техники — единственное, чем заявка отличается от соседней: `NOT NULL` от пустой строки
+    // не спасает.
+    kindNotBlank: check('mech_requests_kind_not_blank_check', sql`btrim(${t.kindName}) <> ''`),
+    // Технику принимает человек, которому звонят с дороги.
+    responsible: check(
+      'mech_requests_responsible_check',
+      sql`btrim(${t.responsibleName}) <> '' AND ${t.responsiblePhone} ~ '^[0-9]{10}$'`,
+    ),
+    period: check('mech_requests_period_check', sql`${t.plannedTo} >= ${t.plannedFrom}`),
+    // У факта то же правило, но обе даты необязательны: пока техника не возвращена, `actualTo` пуст.
+    actualPeriod: check(
+      'mech_requests_actual_period_check',
+      sql`${t.actualTo} is null OR ${t.actualFrom} is null OR ${t.actualTo} >= ${t.actualFrom}`,
+    ),
+    // ДОГОВОРЁННОСТЬ ЦЕЛИКОМ ИЛИ ЕЁ НЕТ ВОВСЕ — заплата на дыре составного ключа, а не косметика.
+    // Внешний ключ проверяется в режиме MATCH SIMPLE: при `NULL` хотя бы в одной колонке ключ не
+    // проверяется ВООБЩЕ, и прямой SQL сохранил бы заявку с любым `lessorId`, правдоподобным типом
+    // и пустой активностью — с арендодателем, которого никто не сверял. Заодно закрыта половинчатая
+    // договорённость: цена без арендодателя и арендодатель без цены.
+    dealParts: check(
+      'mech_requests_deal_parts_check',
+      sql`num_nonnulls(${t.lessorId}, ${t.lessorType}, ${t.lessorIsActive}, ${t.rate}, ${t.rateUnit}) IN (0, 5)`,
+    ),
+    // Оба типа названы поимённо: компания, уже заведённая арендодателем ТС, сдаёт механизацию под
+    // своим типом, а прочие роли контрагента арендодателями не бывают — FK один их не отсёк бы.
+    lessorTypeAllowed: check(
+      'mech_requests_lessor_type_check',
+      sql`${t.lessorType} is null OR ${t.lessorType} IN ('mech_lessor', 'vehicle_lessor')`,
+    ),
+    // «Новая» — это просьба и ничего больше. Условие держит модульное правило: договорённость
+    // стирается при ЛЮБОМ входе в «Новую», в том числе цепочкой `confirmed → cancelled → new`.
+    newEmpty: check(
+      'mech_requests_new_empty_check',
+      sql`${t.status} <> 'new' OR (num_nonnulls(${t.lessorId}, ${t.lessorType}, ${t.lessorIsActive}, ${t.rate}, ${t.rateUnit}) = 0 AND ${t.actualFrom} is null)`,
+    ),
+    // «Взяли в работу, а с кем и почём договорились, не записали» — это не состояние заявки, а
+    // потерянные деньги.
+    deal: check(
+      'mech_requests_deal_check',
+      sql`${t.status} NOT IN ('confirmed', 'done') OR num_nonnulls(${t.lessorId}, ${t.lessorType}, ${t.lessorIsActive}, ${t.rate}, ${t.rateUnit}) = 5`,
+    ),
+    // Закрытая заявка отвечает на все четыре вопроса: когда выдали, когда вернули, сколько
+    // отработали и во что это обошлось.
+    done: check(
+      'mech_requests_done_check',
+      sql`${t.status} <> 'done' OR (${t.actualFrom} is not null AND ${t.actualTo} is not null AND ${t.actualUnits} is not null AND ${t.finalCost} is not null)`,
+    ),
+    // Отменить выданное нельзя: за простоявшую на объекте технику выставят счёт, и отмена означала
+    // бы, что аренды не было. Такую заявку завершают.
+    cancel: check(
+      'mech_requests_cancel_check',
+      sql`${t.status} <> 'cancelled' OR ${t.actualFrom} is null`,
+    ),
+    // Возврата без выдачи не бывает: пока техники не выдавали, ни дата возврата, ни отработанные
+    // единицы, ни сумма смысла не имеют.
+    issueFirst: check(
+      'mech_requests_issue_first_check',
+      sql`${t.actualFrom} is not null OR (${t.actualTo} is null AND ${t.actualUnits} is null AND ${t.finalCost} is null)`,
+    ),
+    // ФАКТ ВОЗВРАТА ЦЕЛИКОМ ИЛИ ЕГО НЕТ. Проверки статусов стерегут только `done`, и без этого
+    // условия строка «В работе» с единицами и суммой, но пустым `actualTo` считалась бы ДЕЙСТВУЮЩЕЙ
+    // арендой с уже проставленным итогом; симметрично разрешался бы возврат без денег. Вместе с
+    // `issueFirst` допустимых состояний факта остаётся ровно три: фактов нет, только выдача,
+    // выдача плюс полный возврат.
+    returnParts: check(
+      'mech_requests_return_parts_check',
+      sql`num_nonnulls(${t.actualTo}, ${t.actualUnits}, ${t.finalCost}) IN (0, 3)`,
+    ),
+    // Ноль в ставке — не «дали даром», а незаполненное поле, и отличить одно от другого потом будет
+    // нечем.
+    ratePositive: check(
+      'mech_requests_rate_positive_check',
+      sql`${t.rate} is null OR ${t.rate} > 0`,
+    ),
+    // Ноль отработанных единиц означает, что техника стояла: такую аренду закрывают снятием отметки
+    // выдачи, а не нулевым фактом.
+    unitsPositive: check(
+      'mech_requests_units_positive_check',
+      sql`${t.actualUnits} is null OR ${t.actualUnits} > 0`,
+    ),
+    // Нулевой ИТОГ, наоборот, законен: работу простили или списали на арендодателя. Отрицательный —
+    // не скидка, а ошибка ввода.
+    cost: check('mech_requests_cost_check', sql`${t.finalCost} is null OR ${t.finalCost} >= 0`),
+    // Статуса «Завершена» у механизации не бывает вовсе — тот же барьер и по той же причине, что
+    // `vehicle_requests_status_check` (миграция 0195): значение общего типа видно всем модулям, и
+    // строка с ним прошла бы мимо всех проверок выше, потому что они спрашивают `confirmed` и
+    // `done` поимённо.
+    statusAllowed: check('mech_requests_status_check', sql`${t.status} <> 'completed'`),
+    // Составной ключ вместо простого: им проверяется не только «такой контрагент есть», но и «он
+    // именно арендодатель и он активен». `onUpdate('cascade')` держит копию активности в
+    // синхронности сам. Инварианта «у неактивного арендодателя не бывает действующих аренд» здесь
+    // НЕТ, в отличие от `vehicles`: заявка — это история, и погашенный посреди аренды арендодатель
+    // не отменяет ни возврата техники, ни счёта за неё.
+    lessorFk: foreignKey({
+      columns: [t.lessorId, t.lessorType, t.lessorIsActive],
+      foreignColumns: [counterparties.id, counterparties.type, counterparties.isActive],
+      name: 'mech_requests_lessor_fk',
+    })
+      .onUpdate('cascade')
+      .onDelete('restrict'),
+    // Номер показывают человеку и по нему ищут; уникальность — свойство модуля, а не
+    // последовательности, и держать её должна база.
+    numUnique: uniqueIndex('mech_requests_num_unique').on(t.num),
+    statusIdx: index('mech_requests_status_idx').on(t.status),
+    // Вход области: любой список модуля начинается с отбора по площадкам роли.
+    objectIdx: index('mech_requests_object_idx').on(t.objectId),
+    // Второй вход области — отдельский; частичный, потому что у заявок площадок колонка пуста и в
+    // отборе по отделу такие строки не участвуют никогда.
+    departmentIdx: index('mech_requests_department_idx')
+      .on(t.departmentId)
+      .where(sql`${t.departmentId} is not null`),
+    // ДЕЙСТВУЮЩИЕ АРЕНДЫ — тот же предикат из трёх частей, что во вкладке «В аренде», в сводке, в
+    // расчёте просрочки и в проверке права на продление. Это пятое место, где он написан, и
+    // разойтись с остальными ему нельзя: разойдётся — и просрочка будет считаться по одному набору
+    // строк, а показываться по другому. По `plannedTo`, потому что вопрос к вкладке всегда один: у
+    // кого срок вышел или выходит.
+    activeRentIdx: index('mech_requests_active_rent_idx')
+      .on(t.plannedTo)
+      .where(
+        sql`${t.status} = 'confirmed' AND ${t.actualFrom} is not null AND ${t.actualTo} is null`,
+      ),
+    // Вход со стороны справочника: «что арендовали у этой компании» и проверка `restrict` при
+    // попытке её удалить.
+    lessorIdx: index('mech_requests_lessor_idx')
+      .on(t.lessorId)
+      .where(sql`${t.lessorId} is not null`),
+    // Подсказка видов и группировка отчётов идут по нормализованному ключу, а не по написанию.
+    kindKeyIdx: index('mech_requests_kind_key_idx').on(t.kindKey),
+    // Умолчательная сортировка реестра — свежие сверху.
+    createdAtIdx: index('mech_requests_created_at_idx').on(t.createdAt),
+    // Архив (ADR 0070): `archive=only` отбирает ровно по этой колонке и других условий не имеет.
+    deletedAtIdx: index('mech_requests_deleted_at_idx')
+      .on(t.deletedAt)
+      .where(sql`${t.deletedAt} IS NOT NULL`),
+  }),
+);
+
+// История статусов заявки механизации. СВОЯ таблица, а не общая `requestStatusHistory`: та
+// ссылается внешним ключом прямо на `wasteRequests` и вторым модулем не делится — ровно так же в
+// своё время завелась `vehicleRequestStatusHistory`.
+export const mechRequestStatusHistory = pgTable(
+  'mech_request_status_history',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Каскад: история — часть заявки, а не самостоятельный документ. То, что должно пережить строку
+    // при удалении насовсем, уходит в общий журнал аудита снимком.
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => mechRequests.id, { onDelete: 'cascade' }),
+    fromStatus: requestStatusEnum('from_status'),
+    toStatus: requestStatusEnum('to_status').notNull(),
+    // Обязателен, в отличие от соседней `requestStatusHistory`, где обязательность сняла миграция
+    // 0195: там она мешала записать перевод ВЫКАТОМ — переход без человека. У механизации таких
+    // переходов нет ни одного, все они решения людей, и запись без автора означала бы потерянную
+    // историю.
+    changedBy: uuid('changed_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+    // Комментарий к переходу; при отмене — обязательная причина, и держит её сервер.
+    comment: text('comment').notNull().default(''),
+  },
+  (t) => ({
+    // Единственный вопрос к таблице — «что было с этой заявкой».
+    requestIdx: index('mech_request_status_history_request_idx').on(t.requestId),
+  }),
+);
+
+// Связь заявка механизации ↔ файлы, по образцу `vehicleRequestFiles`. UNIQUE(file_id) — файл не в
+// двух заявках механизации сразу; кросс-модульную уникальность обеспечивает общий файловый сервис.
+// Модуль обязан быть перечислен в `file_is_linked(uuid)` (миграция 0238): о ком эта функция не
+// знает, тот отдаёт свои вложения загрузившему их человеку бессрочно — `decideFileAccess` считает
+// такой файл ничьим.
+export const mechRequestFiles = pgTable(
+  'mech_request_files',
+  {
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => mechRequests.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.requestId, t.fileId] }),
+    fileUnique: uniqueIndex('mech_request_files_file_unique').on(t.fileId),
   }),
 );
 

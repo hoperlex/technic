@@ -27,6 +27,7 @@ import { RouteModalProvider } from './pages/vehicle/routeModal';
 import { WeeklyRequestPage } from './pages/vehicle/WeeklyRequestPage';
 import { GaragePage } from './pages/GaragePage';
 import { ServiceRequestsPage } from './pages/service/ServiceRequestsPage';
+import { MechRequestsPage } from './pages/mech/MechRequestsPage';
 import { DirectoriesPage } from './pages/DirectoriesPage';
 import { AdministrationPage } from './pages/AdministrationPage';
 
@@ -59,6 +60,9 @@ const SECTION_PAGES: Record<PortalShellSectionId, ReactNode> = {
   'vehicle-requests': <VehicleRequestsPage />,
   waybills: <WaybillsPage />,
   garage: <GaragePage />,
+  // «Механизация» открывается списком заявок на аренду: вкладка присутствия «В аренде» (Р13
+  // плана `docs/mechanization-module-plan.md`) приходит следующим этапом и живёт внутри раздела.
+  mechanization: <MechRequestsPage />,
   // «Орг.техника» (ADR 0085) открывается заявками на обслуживание; парк техники — вкладка внутри.
   'office-equipment': <ServiceRequestsPage />,
   directories: <DirectoriesPage />,

@@ -15,6 +15,8 @@ import {
   driverDailyReports,
   files,
   type FileRow,
+  mechRequestFiles,
+  mechRequests,
   requestFiles,
   serviceRequestFiles,
   serviceRequests,
@@ -94,6 +96,16 @@ export interface FileLinkage {
    */
   visibleWaybill: boolean;
   /**
+   * Файл связан с видимой пользователю заявкой на аренду малой механизации (план
+   * `docs/mechanization-module-plan.md`, Р14).
+   *
+   * Область у модуля одна и считается одной колонкой — площадкой эксплуатации (Р10): объектная ось
+   * сравнивает её со своими объектами, отдельская — с площадками своих отделов. Своей оси по
+   * контрагенту здесь нет и быть не должно: арендодатель механизации в портал не входит вовсе
+   * (Р6), поэтому предикат берётся ровно тот же, каким модуль отбирает список.
+   */
+  visibleMech: boolean;
+  /**
    * Файл — скан акта техобслуживания (миграция 0147). Условие одно — связь, по той же причине, что
    * у путевых листов: журнал ТО не сужается ни объектом, ни контрагентом — парк у портала один, и
    * своей оси области у службы механика не заведено (`ACCESS_PROFILES`).
@@ -151,6 +163,7 @@ export function decideFileAccess(
   if (linkage.visibleVehicle && can(p, 'vehicleRequests.read')) return true;
   if (linkage.visibleService && can(p, 'serviceRequests.read')) return true;
   if (linkage.visibleWaybill && can(p, 'waybills.read')) return true;
+  if (linkage.visibleMech && can(p, 'mechRequests.read')) return true;
   if (linkage.visibleMaintenance && can(p, 'vehicleMaintenance.read')) return true;
   if (linkage.visibleReading && can(p, 'vehicleReadings.read')) return true;
   if (linkage.ownDriverReading && can(p, 'driverCabinet.read')) return true;
@@ -305,10 +318,40 @@ async function canAccessFile(
     visibleWaybill = waybill.length > 0;
   }
 
+  // Механизация идёт за уже перебранными модулями заявок, а её признак — тем же приёмом, что ниже
+  // у парка: цепочка отрицаний, свёрнутая в имя, вместо ещё одного слагаемого в каждом условии.
+  const foundBeforeMech = visibleWaste || visibleVehicle || visibleService || visibleWaybill;
+
+  let visibleMech = false;
+  if (!foundBeforeMech && can(p, 'mechRequests.read')) {
+    // Вложения заявки на аренду малой механизации (план механизации, Р14, миграция 0238). Ветка
+    // обязана быть здесь целиком: в `file_is_linked` модуль уже перечислен, то есть его файл
+    // перестал быть «ничьим» — без этой ветки его не открыл бы никто, включая тех, кому сама
+    // заявка видна. Область — одной колонкой места эксплуатации, тем же предикатом
+    // `placeObjectVisibilityWhere`, каким модуль отбирает список: своя копия правил разошлась бы
+    // с ним на первой же правке.
+    //
+    // Удалённая заявка вложений не отдаёт — как у вывоза, техники и оргтехники выше: архив
+    // открывает карточку, а не прямую ссылку на файл.
+    const mech = await db
+      .select({ id: mechRequests.id })
+      .from(mechRequestFiles)
+      .innerJoin(mechRequests, eq(mechRequestFiles.requestId, mechRequests.id))
+      .where(
+        and(
+          eq(mechRequestFiles.fileId, fileId),
+          isNull(mechRequests.deletedAt),
+          placeObjectVisibilityWhere(p, mechRequests.objectId),
+        ),
+      )
+      .limit(1);
+    visibleMech = mech.length > 0;
+  }
+
   // Дальше — вложения парка: скан акта ТО и фотографии показаний. Одна проверка «связь уже
   // нашлась» вместо растущей цепочки отрицаний: каждый следующий модуль иначе добавлял бы по
   // слагаемому в четыре условия.
-  const foundInRequests = visibleWaste || visibleVehicle || visibleService || visibleWaybill;
+  const foundInRequests = foundBeforeMech || visibleMech;
 
   let visibleMaintenance = false;
   if (!foundInRequests && can(p, 'vehicleMaintenance.read')) {
@@ -367,6 +410,7 @@ async function canAccessFile(
     visibleVehicle,
     visibleService,
     visibleWaybill,
+    visibleMech,
     visibleMaintenance,
     visibleReading,
     ownDriverReading,
