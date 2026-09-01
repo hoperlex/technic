@@ -47,6 +47,12 @@ function renderTab(user: AuthUser, items: ServiceRequestDto[], over: RouteMap = 
     'GET /counterparties': () => json(emptyList()),
     'GET /office-equipment': () => json(emptyList()),
     'GET /office-equipment-types': () => json(emptyList()),
+    // Кандидаты в поимённые исполнители: их спрашивает окно назначения, и спрашивает по праву
+    // НАЗНАЧЕНИЯ — то есть у всякого, кто это окно открывает. Прежде запрос гейтился на
+    // `users.manage`, которого у «Ведения» нет, и до сети дело не доходило вовсе; маршрут
+    // появился в моках вместе с починкой того гейта. Пустой список здесь намеренно: эти случаи
+    // про тело запроса и про слои «сотрудник / контрагент», а не про состав выпадающего списка.
+    'GET /service-requests/executor-candidates': () => json(emptyList()),
     ...over,
   });
   renderWithUser(<RequestsTab />, { user });

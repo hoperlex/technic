@@ -31,8 +31,9 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { URL } from 'node:url';
-import { ROOT, reportStamp, writeStamp } from './quality-stamp.mjs';
+import { URL, fileURLToPath } from 'node:url';
+/** Корень монорепо: каталог скриптов лежит ровно в нём, и на cwd опираться не нужно. */
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 const say = (text = '') => process.stdout.write(`${text}\n`);
 
@@ -40,8 +41,8 @@ const say = (text = '') => process.stdout.write(`${text}\n`);
  * Необязательный фильтр: `pnpm check:db file-linkage` прогонит на свежей базе только его. Нужен
  * тому, кто чинит один db-тест, — иначе каждая проверка правки стоила бы полного набора.
  *
- * Отметку о зелёном прогоне такой запуск НЕ пишет: прошла часть набора, а отметка утверждает про
- * весь. Разрешить ей писаться значило бы завести законный способ выкатить, прогнав один файл.
+ * Такой запуск проходит часть набора, а не набор: судить по нему о готовности к выкату нельзя,
+ * и в выводе это сказано вслух — иначе зелёная строчка про один файл читалась бы как «всё цело».
  */
 const filters = process.argv.slice(2).filter((arg) => !arg.startsWith('-'));
 const partial = filters.length > 0;
@@ -209,7 +210,7 @@ function suite(pkg, title) {
 say(`pnpm check:db — свежая база ${DB_NAME} в кластере ${adminUrl.host}.`);
 if (partial) {
   say(
-    `точечный прогон по фильтру: ${filters.join(', ')} — отметка о зелёном прогоне записана НЕ будет.`,
+    `точечный прогон по фильтру: ${filters.join(', ')} — это часть набора, а не набор.`,
   );
   say(
     'фильтр — подстрока пути, а не маска: под него может попасть и тест, которому база не нужна.',
@@ -256,7 +257,7 @@ if (results.some((result) => !result.ok)) {
     say();
     say('api покраснел: если он не дошёл до наката миграций, красное у воркера — его следствие.');
   }
-  say('ворота НЕ пройдены; отметка о зелёном прогоне не записана.');
+  say('ворота НЕ пройдены.');
   process.exit(1);
 }
 
@@ -265,9 +266,8 @@ if (partial) {
     say(`фильтр «${filters.join(' ')}» не нашёл ни одного файла — прогонять было нечего.`);
     process.exit(1);
   }
-  say('точечный прогон зелёный. Отметка не записана: прошла часть набора, а отметка — про весь.');
+  say('точечный прогон зелёный — но это часть набора, а не набор.');
   process.exit(0);
 }
 
 say('db-набор зелёный.');
-reportStamp('check:db', writeStamp('check:db'));

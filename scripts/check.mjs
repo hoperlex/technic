@@ -29,8 +29,9 @@
  * отдельное решение и отдельная правка: сегодня он всё ещё только считает.
  *
  * ЧЕГО ЗДЕСЬ НЕТ. `*.db.test.ts` — они в `pnpm check:db`: тем тестам нужна своя свежая база, и
- * прогон их на общей даёт ложные падения. Пропустить `check:db` перед выкатом с миграцией нельзя:
- * сегодняшняя потеря данных найдена именно db-тестом.
+ * прогон их на общей даёт ложные падения. Перед выкатом с миграцией `check:db` пропускать не стоит:
+ * сегодняшняя потеря данных найдена именно db-тестом. Обязанность это человека, а не деплоя —
+ * гейт из `deploy-auto` снят (ADR 0147, пересмотр 01.09.2026).
  *
  * План: docs/test-gates-plan.md, этап Э3. Решение: docs/adr/0147-quality-gates.md.
  */
@@ -39,7 +40,9 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ROOT, reportStamp, writeStamp } from './quality-stamp.mjs';
+import { URL, fileURLToPath } from 'node:url';
+/** Корень монорепо: каталог скриптов лежит ровно в нём, и на cwd опираться не нужно. */
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 const say = (text = '') => process.stdout.write(`${text}\n`);
 
@@ -231,10 +234,8 @@ say(lintLine);
 const broken = results.filter((result) => !result.ok && result.blocking);
 if (broken.length > 0) {
   say(`ворота НЕ пройдены: ${broken.map((result) => result.title).join(', ')}.`);
-  say('отметка о зелёном прогоне не записана — выкат с миграцией её потребует.');
   process.exit(1);
 }
 
 say('быстрый набор зелёный.');
-reportStamp('check', writeStamp('check'));
-say('перед выкатом с миграцией или окном --cutover нужен ещё pnpm check:db.');
+say('db-набор идёт отдельно: pnpm check:db — ему нужна своя база и минуты времени.');
