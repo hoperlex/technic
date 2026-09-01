@@ -4,6 +4,7 @@ import { DownloadOutlined, PrinterOutlined } from '@ant-design/icons';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   canPrintWaybill,
+  PRINT_BUDGET,
   WAYBILL_CANCELLED_PRINT_MESSAGE,
   type WaybillStatus,
 } from '@technic/contracts';
@@ -30,6 +31,13 @@ import { ViewModal } from '@shared/ui';
  * Выгрузка xlsx рядом остаётся: бланк иногда правят руками — вписывают то, чего портал не ведёт
  * (показания одометра, движение горючего), — и делают это в редакторе таблиц.
  */
+
+/**
+ * Причина отмены «портал перестал ждать» — отдельным классом, чтобы отличить её от закрытого окна.
+ * Обе отменяют один и тот же запрос, но человеку нужно сказать разное: про закрытое окно — ничего,
+ * про истёкший срок — что делать дальше.
+ */
+class PrintTookTooLong extends Error {}
 
 /** Что печатаем: один лист или пачку. `title` — заголовок окна и подпись документа. */
 export interface PrintTarget {
@@ -61,7 +69,19 @@ export function WaybillPrintModal({ target, onClose }: Props) {
     setUrl(null);
     setError(null);
 
-    const load = ids.length === 1 ? waybillsApi.printPdf(ids[0]!) : waybillsApi.printBatch(ids);
+    /*
+     * Верхняя ступень лестницы сроков (ADR 0148). Ждать вечно вкладка не должна: до этого срока
+     * дело доходит, только если промолчали все, кто ниже, — то есть при поломке, а не при большой
+     * пачке, которой отмерено меньше. Свой контроллер, а не голый `AbortSignal.timeout`, потому
+     * что отменять надо и по закрытию окна тоже.
+     */
+    const control = new AbortController();
+    const timer = setTimeout(() => control.abort(new PrintTookTooLong()), PRINT_BUDGET.clientMs);
+
+    const load =
+      ids.length === 1
+        ? waybillsApi.printPdf(ids[0]!, control.signal)
+        : waybillsApi.printBatch(ids, control.signal);
     void load
       .then((blob) => {
         if (cancelled) return;
@@ -72,11 +92,24 @@ export function WaybillPrintModal({ target, onClose }: Props) {
         void qc.invalidateQueries({ queryKey: ['waybills'] });
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(errorMessage(e));
-      });
+        // Окно закрыли — говорить уже некому и не о чем: отмена не ошибка.
+        if (cancelled) return;
+        setError(
+          control.signal.reason instanceof PrintTookTooLong
+            ? 'Бланк готовится слишком долго — портал перестал ждать. Повторите печать; если пачка большая, напечатайте её частями'
+            : errorMessage(e),
+        );
+      })
+      // Ответ пришёл — ждать больше нечего. Иначе таймер доживал бы до размонтирования и через три
+      // минуты отменял давно завершённый запрос: вреда нет, но и правды в таком сигнале нет тоже.
+      .finally(() => clearTimeout(timer));
 
     return () => {
       cancelled = true;
+      clearTimeout(timer);
+      // Закрытое окно прекращает и работу сервера (ADR 0148): без этого конвертер продолжал бы
+      // готовить бланк, который уже некому забрать, занимая место в очереди печати живых людей.
+      control.abort();
       // Копия живёт ровно пока открыто окно: закрыли — вкладка её отпускает.
       if (revoked) URL.revokeObjectURL(revoked);
     };

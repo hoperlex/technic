@@ -220,13 +220,13 @@ export const waybillsApi = {
    * Бланк, готовый к печати (ADR 0041): PDF показывается фреймом и печатается диалогом браузера,
    * не оседая файлом на машине. Не ссылкой, а телом ответа — фрейму его отдают из памяти вкладки.
    */
-  printPdf: (id: string) => apiFetchBlob(`/waybills/${id}/print`),
+  printPdf: (id: string, signal?: AbortSignal) => apiFetchBlob(`/waybills/${id}/print`, { signal }),
   /**
-   * Пачка листов одним документом: сервер собирает бланки подряд в один PDF, и диалог печати
-   * остаётся один на всю пачку. Порядок листов задаёт портал — тот же, в каком их видно в журнале.
+   * Пачка листов одним документом: сервер собирает бланки подряд в один PDF, диалог печати один на
+   * всю пачку, порядок задаёт портал. Сигнал отмены обязателен (ADR 0148) — см. `office-pdf.ts`.
    */
-  printBatch: (ids: string[]) =>
-    apiFetchBlob('/waybills/print-batch', { method: 'POST', body: { ids } }),
+  printBatch: (ids: string[], signal?: AbortSignal) =>
+    apiFetchBlob('/waybills/print-batch', { method: 'POST', body: { ids }, signal }),
   /**
    * Вложения к бланку: скан заполненного заказчиком оборота ЭСМ-2, отметки 4-П, акт. Файл сначала
    * уезжает в хранилище (`filesApi.upload`), сюда приходит только его идентификатор — тем же

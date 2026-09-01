@@ -85,6 +85,9 @@ export * from './vehicle-requests';
 export * from './vehicle-request-feed';
 export * from './weekly-vehicle-requests';
 export * from './waybills';
+/* Бюджет печати (`print-budget.ts`) — сразу за путевым листом: печатают именно его, и лестница
+ * сроков читается вместе с бланком, а не в разделе транспорта. */
+export * from './print-budget';
 /* Периоды назначения (`assignment-periods.ts`) — после заявки и путевого листа, потому что читаются
  * они вместе: история назначения объясняет, чей состав напечатан в каком бланке. Двери появляются на
  * этапе 3 плана `docs/assignment-periods-plan.md`; словарь и тела выписаны раньше — у фичи пять

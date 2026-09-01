@@ -55,6 +55,13 @@ export interface RequestOptions {
    * `Content-Type` ставит транспорт и здесь их не ждёт — они перекрываются намеренно последними.
    */
   headers?: Record<string, string>;
+  /**
+   * Отмена и срок запроса (ADR 0148). Нужен там, где ответа ждут долго, — сегодня это печать
+   * путевого листа: вкладка обязана и перестать ждать сама, и прекратить работу сервера, когда
+   * человек закрыл окно. Без сигнала запрос продолжает жить после закрытия: браузер держит
+   * соединение, сервер дописывает бланк, которого никто не заберёт.
+   */
+  signal?: AbortSignal;
 }
 
 function buildUrl(path: string, query?: Record<string, unknown>): string {
@@ -80,6 +87,7 @@ async function doFetch(url: string, options: RequestOptions): Promise<Response> 
     credentials: 'include',
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    signal: options.signal,
   });
 }
 

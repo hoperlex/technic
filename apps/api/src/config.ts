@@ -53,7 +53,14 @@ const rawSchema = z.object({
   // Печать путевого листа (ADR 0041): бланк переводит в PDF LibreOffice, поставленный в образ.
   // Путь настраиваемый — на рабочей машине разработчика он может лежать не в PATH.
   SOFFICE_BIN: z.string().default('soffice'),
-  SOFFICE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  // Сроки печати в `env` не задаются намеренно (ADR 0148): они связаны с таймаутами nginx и
+  // вкладки одной лестницей (`PRINT_BUDGET`), и переменная окружения, поднятая на одной машине,
+  // разъехалась бы с остальными слоями молча — ровно так дефект и появился.
+  //
+  // Одновременных запусков конвертера, наоборот, ровно столько, сколько тянет конкретная машина:
+  // это свойство железа, а не решения. Два — для VPS, который портал делит с соседями; на своём
+  // сервере поднимают по числу свободных ядер.
+  PRINT_CONCURRENCY: z.coerce.number().int().positive().default(2),
 
   // Почта (план `docs/mail-integration-plan.md`). Расписания, роли и состав рассылок сюда не
   // попадают: их меняет администратор во вкладке «Рассылки», и в `env` им делать нечего.
@@ -356,7 +363,9 @@ function loadConfig() {
     },
     soffice: {
       bin: env.SOFFICE_BIN,
-      timeoutMs: env.SOFFICE_TIMEOUT_MS,
+    },
+    print: {
+      concurrency: env.PRINT_CONCURRENCY,
     },
     mail: {
       enabled: env.MAIL_ENABLED,

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import {
   and,
@@ -28,6 +28,7 @@ import {
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
   moscowDateKeyOf,
+  PRINT_BUDGET,
   requestCustomerName,
   snapshotForPrint,
   trailerLabelOf,
@@ -61,7 +62,8 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams } from '../lib/pagination';
-import { renderPdf, renderPdfBatch } from '../services/office-pdf';
+import { PrintAborted, renderPdf, renderPdfBatch } from '../services/office-pdf';
+import { requestBudget } from '../lib/request-budget';
 import { renderOfficeTemplate } from '../services/office-template';
 import { mergePdfs } from '../services/pdf-merge';
 import {
@@ -579,6 +581,22 @@ async function assertStillPrintable(orderedIds: string[]): Promise<void> {
   if (notice) throw err.conflict(notice);
 }
 
+/**
+ * Конец печати, которую больше некому забрать (ADR 0148).
+ *
+ * Человек закрыл окно или ушёл со связи — соединения нет, и отвечать в него нечем: обычный путь
+ * ошибки записал бы в журнал сервера отказ, которого не было, и попытался бы отправить тело в
+ * закрытый сокет. `hijack` снимает с Fastify обязанность отвечать — запрос просто заканчивается.
+ *
+ * Аудит при этом не пишется намеренно, и это не потеря: отметка «печатали» означает, что бумага
+ * ушла из портала, а здесь она никуда не ушла.
+ */
+function abandonPrint(reply: FastifyReply, cause: unknown): FastifyReply {
+  if (!(cause instanceof PrintAborted)) throw cause;
+  reply.hijack();
+  return reply;
+}
+
 export default async function waybillsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const canRead = app.requirePermission('waybills.read');
@@ -734,26 +752,35 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
     },
     async (req, reply) => {
       const p = requirePrincipal(req);
-      const { rendered, id, displayNumber } = await renderWaybill(req.params.id);
-      const pdf = await renderPdf(rendered.bytes);
-      // Самое длинное окно гонки во всём портале: между проверкой статуса в `renderWaybill` и этой
-      // строкой лежит вся работа LibreOffice (Р39). Аудит печати ниже — только после проверки:
-      // отметка «печатали» не должна появляться у бумаги, которая никуда не ушла.
-      await assertStillPrintable([id]);
+      // Срок и отмена — на всю ручку целиком (ADR 0148), а не на один конвертер: между началом и
+      // ответом лежат ещё сборка бланка и проверка статуса, и они тоже идут под медленной базой.
+      const budget = requestBudget(req, reply, PRINT_BUDGET.handlerMs);
+      try {
+        const { rendered, id, displayNumber } = await renderWaybill(req.params.id);
+        const pdf = await renderPdf(rendered.bytes, budget.signal);
+        // Самое длинное окно гонки во всём портале: между проверкой статуса в `renderWaybill` и этой
+        // строкой лежит вся работа LibreOffice (Р39). Аудит печати ниже — только после проверки:
+        // отметка «печатали» не должна появляться у бумаги, которая никуда не ушла.
+        await assertStillPrintable([id]);
 
-      await writeAudit({
-        actorUserId: p.id,
-        action: 'waybill.print',
-        entityType: 'waybill',
-        entityId: id,
-        metadata: { missing: rendered.missing },
-      });
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'waybill.print',
+          entityType: 'waybill',
+          entityId: id,
+          metadata: { missing: rendered.missing },
+        });
 
-      const name = `Путевой лист ${displayNumber}.pdf`;
-      return reply
-        .type(PDF_TYPE)
-        .header('content-disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`)
-        .send(Buffer.from(pdf));
+        const name = `Путевой лист ${displayNumber}.pdf`;
+        return await reply
+          .type(PDF_TYPE)
+          .header('content-disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`)
+          .send(Buffer.from(pdf));
+      } catch (cause) {
+        return abandonPrint(reply, cause);
+      } finally {
+        budget.dispose();
+      }
     },
   );
 
@@ -786,49 +813,60 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       // Повторы убираются, а порядок первого появления сохраняется: дважды выбранный лист дал бы
       // лишнюю страницу в пачке, вторую запись в аудит и съел бы место в пределе.
       const ids = [...new Set(req.body.ids)];
+      // Тот же срок, что и у одиночной печати (ADR 0148): бюджет конвертера растёт с числом
+      // листов сам, а ручке пачка добавляет ещё и сборку бланков по одному.
+      const budget = requestBudget(req, reply, PRINT_BUDGET.handlerMs);
+      try {
+        const rows = await printGuardRows(ids);
 
-      const rows = await printGuardRows(ids);
+        const byId = new Map(rows.map((row) => [row.id, row]));
+        const missing = ids.filter((id) => !byId.has(id));
+        if (missing.length > 0) throw err.notFound('Часть листов не найдена — обновите журнал');
+        // Отбор до рендера: собирать полсотни бланков ради отказа незачем. Он же повторится после
+        // сборки — там уже против гонки с коррекцией (Р39), а не против выбора человека.
+        const notice = cancelledNotice(ids, rows);
+        if (notice) throw err.conflict(notice);
 
-      const byId = new Map(rows.map((row) => [row.id, row]));
-      const missing = ids.filter((id) => !byId.has(id));
-      if (missing.length > 0) throw err.notFound('Часть листов не найдена — обновите журнал');
-      // Отбор до рендера: собирать полсотни бланков ради отказа незачем. Он же повторится после
-      // сборки — там уже против гонки с коррекцией (Р39), а не против выбора человека.
-      const notice = cancelledNotice(ids, rows);
-      if (notice) throw err.conflict(notice);
+        // Бланки собираются по одному (снимок у каждого свой), а в PDF переводятся разом: запуск
+        // конвертера дороже самой конвертации. Сам файл бланка на всю пачку читается по разу на
+        // форму — их в пачке две-три, а листов до полусотни.
+        const templates = new Map<string, Uint8Array>();
+        const rendered = [];
+        for (const id of ids) rendered.push(await renderWaybill(id, templates));
+        const pdfs = await renderPdfBatch(
+          rendered.map((item) => item.rendered.bytes),
+          budget.signal,
+        );
+        const pdf = await mergePdfs(pdfs);
+        // По всем листам пачки, а не по первому: коррекция аннулирует один номер, а на бумагу уходит
+        // весь документ — и неполный комплект со стола заберут, не зная об этом (Р39).
+        await assertStillPrintable(ids);
 
-      // Бланки собираются по одному (снимок у каждого свой), а в PDF переводятся разом: запуск
-      // конвертера дороже самой конвертации. Сам файл бланка на всю пачку читается по разу на
-      // форму — их в пачке две-три, а листов до полусотни.
-      const templates = new Map<string, Uint8Array>();
-      const rendered = [];
-      for (const id of ids) rendered.push(await renderWaybill(id, templates));
-      const pdfs = await renderPdfBatch(rendered.map((item) => item.rendered.bytes));
-      const pdf = await mergePdfs(pdfs);
-      // По всем листам пачки, а не по первому: коррекция аннулирует один номер, а на бумагу уходит
-      // весь документ — и неполный комплект со стола заберут, не зная об этом (Р39).
-      await assertStillPrintable(ids);
+        await Promise.all(
+          rendered.map((item) =>
+            writeAudit({
+              actorUserId: p.id,
+              action: 'waybill.print',
+              entityType: 'waybill',
+              entityId: item.id,
+              metadata: { missing: item.rendered.missing, batch: ids.length },
+            }),
+          ),
+        );
 
-      await Promise.all(
-        rendered.map((item) =>
-          writeAudit({
-            actorUserId: p.id,
-            action: 'waybill.print',
-            entityType: 'waybill',
-            entityId: item.id,
-            metadata: { missing: item.rendered.missing, batch: ids.length },
-          }),
-        ),
-      );
-
-      const name =
-        rendered.length === 1
-          ? `Путевой лист ${rendered[0]!.displayNumber}.pdf`
-          : `Путевые листы (${rendered.length}).pdf`;
-      return reply
-        .type(PDF_TYPE)
-        .header('content-disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`)
-        .send(Buffer.from(pdf));
+        const name =
+          rendered.length === 1
+            ? `Путевой лист ${rendered[0]!.displayNumber}.pdf`
+            : `Путевые листы (${rendered.length}).pdf`;
+        return await reply
+          .type(PDF_TYPE)
+          .header('content-disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`)
+          .send(Buffer.from(pdf));
+      } catch (cause) {
+        return abandonPrint(reply, cause);
+      } finally {
+        budget.dispose();
+      }
     },
   );
 
