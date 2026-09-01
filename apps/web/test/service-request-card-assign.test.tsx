@@ -220,6 +220,22 @@ describe('кнопка назначения у поля «Исполнители
     expect(card.queryByRole('button', { name: /Назначить$/ })).toBeNull();
   });
 
+  it('«Ведению» список кандидатов запрашивается: страж ручки — право назначения', async () => {
+    // Окно спрашивало кандидатов по `users.manage` — праву на перечень УЧЁТОК, которого нет ни у
+    // «Ведения», ни у «ИТ-службы». Ручку `GET /service-requests/executor-candidates` завели ровно
+    // затем, чтобы поле наполнялось у того, кто заявки распределяет (её страж —
+    // `serviceRequests.assign`), но проверка в окне осталась от прежнего решения с общим
+    // `GET /users`. Итог: у обоих, кто назначает, список приходил пустым — назначить можно было
+    // только уже назначенных, а себя в исполнители не поставить.
+    const http = renderTab(OPERATOR, [serviceRequest()]);
+    await openCard();
+    const card = within(wrapOf('Заявка СО-14'));
+    fireEvent.click(card.getByRole('button', { name: /Назначить$/ }));
+    await waitFor(() =>
+      expect(http.countOf('GET /service-requests/executor-candidates')).toBeGreaterThan(0),
+    );
+  });
+
   it('исполнителю кнопки нет вовсе: назначение — не его ход', async () => {
     /*
      * Право у поля не спрашивается дважды: обработчик приходит готовым пунктом коридора переходов,
