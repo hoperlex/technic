@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import {
@@ -75,6 +76,43 @@ const MONTH_END = monthEndKey(TERM_FROM);
  */
 const NEXT_MONTH_DAY = shiftDateKey(MONTH_END, 1);
 
+/**
+ * Прошедшая неделя с концом месяца внутри — ею проверяется первая граница переоформления:
+ * отработанного листа не трогает никто и ни при какой дате.
+ */
+function pastCrossingWeek(): { monday: string; sunday: string } {
+  let monday = shiftDateKey(weekStartKey(TODAY), -14);
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const sunday = shiftDateKey(monday, 6);
+    if (sunday < TODAY && monthEndKey(monday) < sunday) return { monday, sunday };
+    monday = shiftDateKey(monday, -7);
+  }
+  throw new Error('за двенадцать недель назад не нашлось прошедшей недели с концом месяца внутри');
+}
+
+/**
+ * Работа миграции `0236` (ADR 0151) — **тем самым SQL**, который поедет в прод.
+ *
+ * Читается из файла, а не пересказывается запросом рядом: предмет проверки — переоформление,
+ * записанное в миграции, и копия в тесте зеленела бы ровно до первой правки оригинала. Запись
+ * выпуска (`INSERT INTO app_releases`) при этом остаётся за скобками: она уже применена накатом,
+ * и повтор упёрся бы в первичный ключ `seq`.
+ */
+const SPLIT_MIGRATION = ((): string => {
+  const file = readFileSync(
+    new URL('../drizzle/0236_esm2_month_split_backfill.sql', import.meta.url),
+    'utf8',
+  );
+  const open = file.indexOf('DO $esm2_split$');
+  const close = file.indexOf('$esm2_split$;');
+  // Границы блока — часть контракта теста: переименуют метку доллара, и `slice` молча вернул бы
+  // мусор, а файл продолжил бы зеленеть, ничего не проверяя.
+  if (open < 0 || close <= open) {
+    throw new Error('в миграции 0236 не найден блок DO $esm2_split$ — тест проверял бы пустоту');
+  }
+  return file.slice(open, close + '$esm2_split$;'.length);
+})();
+
 interface Ctx {
   db: typeof AppDb;
   closeDb: () => Promise<void>;
@@ -130,6 +168,25 @@ async function sheetsOf(tx: SceneTx, requestId: string): Promise<SheetRow[]> {
 
 const liveOf = (rows: readonly SheetRow[]): SheetRow[] =>
   rows.filter((row) => row.status !== 'cancelled');
+
+/** Серия ЭСМ-2: её счётчиком проверяется, что переоформление тратит бланки, а не рисует номера. */
+interface SeriesRow {
+  prefix: string;
+  width: number;
+  next: number;
+}
+
+async function seriesOf(tx: SceneTx): Promise<SeriesRow> {
+  const res = await tx.execute<{ prefix: string; width: string; next: string }>(sql`
+    SELECT prefix, number_width::text AS width, next_number::text AS next
+      FROM waybill_series WHERE code = 'esm2'`);
+  const row = res.rows[0]!;
+  return { prefix: row.prefix, width: Number(row.width), next: Number(row.next) };
+}
+
+/** Как номер напечатан на бланке и в журнале — тем же видом, что и `waybillDisplayNumber`. */
+const display = (series: SeriesRow, num: number): string =>
+  `${series.prefix}${String(num).padStart(series.width, '0')}`;
 
 /**
  * Заказ спецтехники в работе на срок «неделя с концом месяца внутри», без единого листа.
@@ -521,5 +578,177 @@ describeReadModes(readMode, 'месячный разрез листа ЭСМ-2 (
         ['w1'],
       ).kind,
     ).toBe('stray');
+  });
+
+  /*
+   * МИГРАЦИЯ 0236 (ADR 0151). Ту же работу, что и прогон, делает накат схемы — потому что шаг
+   * выката её один раз не сделал вовсе: он живёт в ветке «есть неприменённые миграции», и
+   * миграция, накатанная не выкатом, эту ветку закрывает навсегда.
+   *
+   * Проверяется здесь не пересказ, а сам SQL миграции (`SPLIT_MIGRATION`): у работы по данным
+   * второго шанса нет, и «зелёный тест при красном проде» — ровно то, чем кончилась прошлая
+   * попытка.
+   */
+  it('миграция 0236 переоформляет двухмесячный лист парой — тем же счётчиком серии', async () => {
+    if (!readMode.enabled) return;
+    await inScene(async (tx, scene) => {
+      const staleId = await staleSheet(tx, scene);
+      const series = await seriesOf(tx);
+      const nextBefore = series.next;
+
+      await tx.execute(sql.raw(SPLIT_MIGRATION));
+
+      const rows = await sheetsOf(tx, scene.requestId);
+      const live = liveOf(rows);
+      expect(live.map((row) => `${row.period_from}..${row.period_to}`)).toEqual([
+        `${TERM_FROM}..${MONTH_END}`,
+        `${NEXT_MONTH_DAY}..${TERM_TO}`,
+      ]);
+      expect(rows.find((row) => row.id === staleId)?.status).toBe('cancelled');
+
+      /*
+       * Номера — из той же строки счётчика, что тратит портал, и подряд. Это и есть ответ на
+       * возражение ADR 0149 §3: второго механизма расхода бланков строгой отчётности не заведено,
+       * у первого появился второй вызывающий.
+       */
+      expect((await seriesOf(tx)).next - nextBefore).toBe(2);
+      expect(live.map((row) => Number(row.number))).toEqual([nextBefore, nextBefore + 1]);
+      // И тем же видом номер напечатан в снимке бланка: журнал читают глазами, а не джойном.
+      expect(live.map((row) => row.data.waybill_number)).toEqual([
+        display(series, nextBefore),
+        display(series, nextBefore + 1),
+      ]);
+
+      /*
+       * Снимок пересобран ровно там, где он зависит от периода. Сцена делает это утверждение
+       * содержательным: заменяемый лист собран выпиской на **первую** половину недели и растянут
+       * до конца недели руками, то есть сетка чисел в нём августовская. Унаследуй её сентябрьский
+       * бланк — заказчик проставил бы часы напротив чужих дней.
+       */
+      const days = (row: SheetRow): string[] =>
+        [1, 2, 3, 4, 5, 6, 7].map((index) => row.data[`day${index}_date`] ?? '');
+      const filled = (row: SheetRow): number => days(row).filter((value) => value !== '').length;
+      expect(filled(live[0]!) + filled(live[1]!)).toBe(7);
+      expect(
+        days(live[0]!).filter((value, index) => value !== '' && days(live[1]!)[index] !== ''),
+      ).toEqual([]);
+      expect(live[0]!.data.period_month).toBe(TERM_FROM.slice(5, 7));
+      expect(live[1]!.data.period_month).toBe(TERM_TO.slice(5, 7));
+      expect(live[1]!.data.waybill_date).toBe(
+        `${NEXT_MONTH_DAY.slice(8, 10)}.${NEXT_MONTH_DAY.slice(5, 7)}.${NEXT_MONTH_DAY.slice(0, 4)}`,
+      );
+      // Всё, что от периода не зависит, — копия: справочники живут своей жизнью, а выданный бланк
+      // печатается тем, чем был выписан.
+      const stale = rows.find((row) => row.id === staleId)!;
+      expect(live[0]!.data.driver_fio).toBe(stale.data.driver_fio);
+      expect(live[0]!.data.object_line).toBe(stale.data.object_line);
+
+      /*
+       * Исчезнувший и появившиеся номера объяснены. У миграции нет ни двери, ни человека за ней,
+       * поэтому строка операции заводится всегда — иначе разрыв нумерации строгой отчётности не
+       * читается ничем. Заменой сгоревшему объявляет себя первый лист: связь одна на номер.
+       */
+      const links = await tx.execute<{
+        corrects: string;
+        kind: string;
+        actor: string;
+        cancel_correction: string;
+      }>(sql`
+        SELECT coalesce(w.corrects_waybill_id::text, '') AS corrects, c.kind,
+               c.actor_user_id::text AS actor,
+               coalesce(burned.cancel_correction_id::text, '') AS cancel_correction
+          FROM waybills w
+          JOIN waybill_corrections c ON c.id = w.correction_id
+          JOIN waybills burned ON burned.id = ${staleId}
+         WHERE w.source_request_id = ${scene.requestId} AND w.status <> 'cancelled'
+         ORDER BY w.period_from`);
+      expect(links.rows.map((row) => row.corrects)).toEqual([staleId, '']);
+      expect(links.rows.map((row) => row.kind)).toEqual(['esm2', 'esm2']);
+      // Подписывает замену тот, кто выписал заменяемый бланк: «системы» в журнале учёта строгой
+      // отчётности не бывает, а своей учётки у выката нет.
+      expect(links.rows.map((row) => row.actor)).toEqual([scene.userId, scene.userId]);
+      // Списавшая операция — в своей колонке у сгоревшего листа, и это та же операция.
+      expect(new Set(links.rows.map((row) => row.cancel_correction)).size).toBe(1);
+
+      // Талон заказчика: без него карточка заявки и журнал своих листов не находят.
+      const talons = await tx.execute<{ n: string }>(sql`
+        SELECT count(*)::text AS n FROM waybill_requests wr
+          JOIN waybills w ON w.id = wr.waybill_id
+         WHERE w.source_request_id = ${scene.requestId} AND w.status <> 'cancelled'`);
+      expect(talons.rows[0]!.n).toBe('2');
+
+      // Событие сверки — с честной пометкой источника: работу сделал накат, а не диспетчер.
+      const events = await tx.execute<{ source: string; issued: string; cancelled: string }>(sql`
+        SELECT metadata->>'source' AS source,
+               metadata->>'issued' AS issued, metadata->>'cancelled' AS cancelled
+          FROM audit_log
+         WHERE action = 'waybill.esm2_sync' AND entity_id = ${scene.requestId}
+           AND metadata->>'source' = 'migration 0236'`);
+      expect(events.rows).toHaveLength(1);
+      expect(JSON.parse(events.rows[0]!.issued)).toEqual([
+        display(series, nextBefore),
+        display(series, nextBefore + 1),
+      ]);
+      expect(JSON.parse(events.rows[0]!.cancelled)).toEqual([display(series, Number(stale.number))]);
+
+      // Повторный накат целей уже не находит: номеров не жжёт и строк не заводит.
+      const after = await sheetsOf(tx, scene.requestId);
+      await tx.execute(sql.raw(SPLIT_MIGRATION));
+      expect(await sheetsOf(tx, scene.requestId)).toEqual(after);
+      expect((await seriesOf(tx)).next - nextBefore).toBe(2);
+    });
+  });
+
+  it('миграция не трогает лист отработанной недели', async () => {
+    if (!readMode.enabled) return;
+    await inScene(async (tx, scene) => {
+      const staleId = await staleSheet(tx, scene);
+      // Тот же двухмесячный лист, но неделя его уже прошла: работа состоялась, заказчик заполнил
+      // оборот, и переписывать её ради нового разреза нельзя ни миграцией, ни прогоном.
+      const past = pastCrossingWeek();
+      await tx.execute(sql`
+        UPDATE waybills
+           SET period_from = ${past.monday}::date, period_to = ${past.sunday}::date,
+               issued_for_date = ${past.monday}::date
+         WHERE id = ${staleId}`);
+
+      const before = await sheetsOf(tx, scene.requestId);
+      const nextBefore = (await seriesOf(tx)).next;
+      await tx.execute(sql.raw(SPLIT_MIGRATION));
+
+      expect(await sheetsOf(tx, scene.requestId)).toEqual(before);
+      expect((await seriesOf(tx)).next).toBe(nextBefore);
+    });
+  });
+
+  it('половину недели закрывает другой лист — заявка пропускается целиком', async () => {
+    if (!readMode.enabled) return;
+    await inScene(async (tx, scene) => {
+      const staleId = await staleSheet(tx, scene);
+      /*
+       * Так выглядит заявка, которую между выкатом и накатом успела тронуть дверь портала:
+       * сентябрьская половина уже выписана отдельным номером. Переоформи миграция такую заявку —
+       * вставка упёрлась бы в `waybills_source_request_period_unique` и уронила бы весь выкат.
+       */
+      await tx.execute(sql`
+        INSERT INTO waybills (series_id, number, form_code, organization_id, vehicle_id,
+                              driver_person_id, issued_for_date, source_request_id,
+                              period_from, period_to, data, issued_by)
+        SELECT w.series_id, (SELECT next_number FROM waybill_series WHERE code = 'esm2'),
+               w.form_code, w.organization_id, w.vehicle_id, w.driver_person_id,
+               ${NEXT_MONTH_DAY}::date, w.source_request_id,
+               ${NEXT_MONTH_DAY}::date, ${TERM_TO}::date, w.data, w.issued_by
+          FROM waybills w WHERE w.id = ${staleId}`);
+      await tx.execute(
+        sql`UPDATE waybill_series SET next_number = next_number + 1 WHERE code = 'esm2'`,
+      );
+
+      const before = await sheetsOf(tx, scene.requestId);
+      const nextBefore = (await seriesOf(tx)).next;
+      await tx.execute(sql.raw(SPLIT_MIGRATION));
+
+      expect(await sheetsOf(tx, scene.requestId)).toEqual(before);
+      expect((await seriesOf(tx)).next).toBe(nextBefore);
+    });
   });
 });

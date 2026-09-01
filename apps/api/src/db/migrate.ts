@@ -45,6 +45,20 @@ async function statusCmd(client: pg.Client): Promise<void> {
 async function main(): Promise<void> {
   const mode = process.argv[2] ?? 'apply';
   const client = buildMigrationClient();
+  /*
+   * `RAISE NOTICE` из миграции — в лог выката.
+   *
+   * Без обработчика node-postgres уведомления молча выбрасывает, и миграция по данным (ADR 0151)
+   * отчитывалась бы в пустоту: «переоформлено 0» и «переоформлено 40» выглядели бы одинаково —
+   * тишиной. Ровно на этом прошлая попытка разреза и потерялась: работа не прошла, а сказать об
+   * этом было некому.
+   *
+   * Обработчик здесь, а не в `buildMigrationClient`: печать в консоль — свойство раннера, у
+   * которого есть лог, а не подключения, которым пользуются и служебные команды выката.
+   */
+  client.on('notice', (notice) => {
+    if (notice.message) console.log(`  ${notice.message}`);
+  });
   await client.connect();
   let code = 0;
   try {
