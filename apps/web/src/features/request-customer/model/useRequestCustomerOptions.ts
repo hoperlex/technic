@@ -64,10 +64,18 @@ export type RequestCustomerSaved = { target: CostTargetRef; label: string };
 
 export interface RequestCustomerInput {
   /**
-   * Откуда берутся объекты: `'scope'` — справочник по оси учётки (заказ ТС, Р3); готовая площадка —
+   * Откуда берутся объекты: `'scope'` — справочник по оси учётки (заказ ТС, Р3); `'wide'` —
+   * справочник целиком, потому что оси у смотрящего нет вовсе (оргтехника, Р6); готовая площадка —
    * объект выбранной единицы (оргтехника, Р11); `null` — единицу ещё не выбрали, площадки нет.
+   *
+   * `'wide'` заведён отдельным значением, а не признаком рядом, потому что отвечает на тот же
+   * вопрос «откуда объекты» и исключает прочие ответы. Сужать состав по оси роли он не должен
+   * дважды: сквозная область модуля (`GRANT_MODULE_WIDE_SCOPE`) снимает ось целиком — и у
+   * отдельской роли, которой объекты обычно не показывают вовсе, и у объектной, которой их
+   * показывают по привязкам. Решает это потребитель: знание о том, чья это область и в каком
+   * модуле, есть у него, а здесь его взять неоткуда.
    */
-  objects?: 'scope' | RequestCustomerSite | null;
+  objects?: 'scope' | 'wide' | RequestCustomerSite | null;
   /**
    * Какие отделы предлагать:
    *
@@ -142,7 +150,13 @@ export function useRequestCustomerOptions({
 
   // Оси спрашиваются готовыми хуками (ADR 0039, ADR 0040), а не по имени роли: предикат один на
   // портал, и вторая его копия здесь открыла бы чужую площадку молча — фильтром, а не отказом.
-  const wantObjects = objects === 'scope' && !isDepartmentRole;
+  //
+  // `'wide'` эти хуки не отменяет, а обходит: ось роли у смотрящего снята сквозной областью
+  // модуля, и справочник объектов ему положен целиком — потому и запрос включается, и сужение
+  // `limitObjectOptions` ниже к нему не применяется.
+  const wideObjects = objects === 'wide';
+  const fromObjectDirectory = objects === 'scope' || wideObjects;
+  const wantObjects = wideObjects || (objects === 'scope' && !isDepartmentRole);
   const wantDepartments = departments !== 'none' && !(departments === 'scope' && isObjectRole);
 
   const objectsQuery = useQuery({ ...objectOptionsQuery(), enabled: wantObjects });
@@ -151,13 +165,17 @@ export function useRequestCustomerOptions({
   // Те же два признака применяются и к данным, а не только к `enabled`: выключенный запрос всё
   // равно отдаёт то, что уже лежит в кэше от соседнего экрана, — и справочник, которого учётке
   // видеть не положено, вошёл бы в список сам собой.
-  const scopeObjects = wantObjects ? limitObjectOptions(objectsQuery.data ?? []) : [];
-  const objectLeaves =
-    objects === 'scope'
-      ? scopeObjects.map((o) => leafOf({ kind: 'object', id: o.value }, o.label))
-      : objects
-        ? [leafOf({ kind: 'object', id: objects.id }, objects.label)]
-        : [];
+  const allObjects = objectsQuery.data ?? [];
+  const scopeObjects = wantObjects
+    ? wideObjects
+      ? allObjects
+      : limitObjectOptions(allObjects)
+    : [];
+  const objectLeaves = fromObjectDirectory
+    ? scopeObjects.map((o) => leafOf({ kind: 'object', id: o.value }, o.label))
+    : objects
+      ? [leafOf({ kind: 'object', id: objects.id }, objects.label)]
+      : [];
   const departmentLeaves = wantDepartments
     ? limitDepartmentOptions(departmentsQuery.data ?? []).map((d) =>
         leafOf({ kind: 'department', id: d.value }, d.label),
@@ -187,7 +205,9 @@ export function useRequestCustomerOptions({
   const groups: RequestCustomerGroup[] = [];
   if (objectGroup.length) {
     groups.push({
-      label: objects === 'scope' ? OBJECTS_GROUP_LABEL : SITE_GROUP_LABEL,
+      // Из справочника — «Объекты»: там выбирают. Снимок единицы — «Площадка»: там выбора нет
+      // вовсе, и общее имя обещало бы его (Р11).
+      label: fromObjectDirectory ? OBJECTS_GROUP_LABEL : SITE_GROUP_LABEL,
       options: objectGroup,
     });
   }

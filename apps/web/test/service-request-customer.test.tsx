@@ -168,14 +168,28 @@ function customerLocked(): boolean {
   return !!field?.classList.contains('ant-select-disabled');
 }
 
+/**
+ * Дождаться собранного состава поля.
+ *
+ * Состав приезжает двумя справочниками, и до их ответа вариантов ноль — поле заперто (Р3а). У
+ * заявки без аппарата справочник отделов вдобавок спрашивается **не сразу**: пока аппарат не
+ * назван, роли площадки отделы не предлагаются вовсе (Р6), и запрос за ними уходит вместе с
+ * выбором единицы. Открывать выпадашку до этого момента бессмысленно — заперто.
+ */
+async function customerReady(): Promise<void> {
+  await waitFor(() => expect(customerLocked()).toBe(false));
+}
+
 /** Подписи вариантов подбора — в порядке показа, из выпадашки этого поля. */
 async function customerOptions(): Promise<string[]> {
+  await customerReady();
   const options = await openSelectOptions('Для кого заявка');
   return options.map((option) => option.textContent ?? '');
 }
 
 /** Заголовки групп подбора: «Площадка» и «Отделы» — по ним и видно состав поля. */
 async function customerGroups(): Promise<string[]> {
+  await customerReady();
   const [first] = await openSelectOptions('Для кого заявка');
   const dropdown = first!.closest('.ant-select-dropdown')!;
   return [...dropdown.querySelectorAll('.ant-select-item-group')].map((el) => el.textContent ?? '');
@@ -206,6 +220,7 @@ describe('смена единицы пересобирает площадку (�
     renderForm(OPERATOR);
 
     await selectOption('Какой аппарат', /Kyocera/);
+    await customerReady();
     await selectOption('Для кого заявка', PTO_LABEL);
     await selectOption('Какой аппарат', /Brother/);
 
@@ -357,6 +372,7 @@ describe('подразделение заявителя (Н11)', () => {
   it('у двух отделов форма спрашивает свой и шлёт его идентификатором', async () => {
     const http = renderForm(DEP_USER, { routes: create });
     await selectOption('Какой аппарат', /Kyocera/);
+    await customerReady();
     await selectOption('Для кого заявка', PTO_LABEL);
     fireEvent.change(screen.getByLabelText('Описание'), {
       target: { value: 'Не захватывает бумагу' },
@@ -408,6 +424,7 @@ describe('заведение шлёт осознанное значение (Р1
   it('выбранный отдел уходит идентификатором из опции', async () => {
     const http = renderForm(OPERATOR, { routes: create });
     await selectOption('Какой аппарат', /Kyocera/);
+    await customerReady();
     await selectOption('Для кого заявка', PTO_LABEL);
     fireEvent.change(screen.getByLabelText('Описание'), {
       target: { value: 'Не захватывает бумагу' },

@@ -22,9 +22,9 @@ import { ServiceRequestEquipmentField } from './ServiceRequestEquipmentField';
 import { ServiceRequestWarrantyClaim } from './ServiceRequestWarrantyClaim';
 import { useRequesterPlace } from './ServiceRequestRequesterPlace';
 import { reportServiceMail } from './serviceMailNotice';
+import { reportServiceRequestFailure } from './serviceRequestFailure';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage } from '../../utils/format';
 
 /** Поля формы объявлены рядом с отправкой (`serviceRequestSubmit`): они — её вход. */
 type Values = ServiceFormValues;
@@ -93,13 +93,30 @@ export function ServiceRequestForm({
   const warrantyActive = isWarrantyActive(selected?.warrantyUntil);
 
   /**
+   * Аппарат в форме не назван (Р5, Р7). У заведения это пустое поле, у правки — заявка, у которой
+   * предмета нет вовсе (Р8): технику при правке не меняют, и оба случая отвечают на один вопрос —
+   * показывать ли то, что бывает только у аппарата.
+   */
+  const noEquipment = request ? !request.equipment : !equipmentId;
+  /**
+   * Право заводить заявку без аппарата (Р5). Спрашивается как обычное право: своей двери у него
+   * нет — оно лишь снимает требование аппарата с общего заведения, а отказ по нему даёт маршрут.
+   */
+  const canSkipEquipment = can('serviceRequests.createWithoutEquipment');
+  /** Заявка заводится без аппарата: поле пусто, и оставить его пустым разрешено. */
+  const withoutEquipment = !request && noEquipment && canSkipEquipment;
+
+  /**
    * Заказчик заявки (Р11, Р11а, Р11б, Р12): площадка выбранной сейчас единицы либо отдел, от чьего
    * имени просят. Состав групп, границу площадки роли отдела, сохранённого заказчика правки и
    * запертость до выбора техники считает подбор — форме остаётся сказать, какую единицу выбрали
    * (опция справочника подходит под его тип целиком) и какую заявку правят: при правке единицу не
    * выбирают вовсе, и оба её снимка берутся из самой заявки.
+   *
+   * У заявки БЕЗ аппарата состав задаёт ось роли (Р6), и подбор считает её сам — форме остаётся
+   * сказать, что аппарата не будет: поле техники пусто, а право оставить его пустым есть.
    */
-  const customer = useServiceRequestCustomer({ request, equipment: selected });
+  const customer = useServiceRequestCustomer({ request, equipment: selected, withoutEquipment });
 
   // Подразделение заявителя (Н11): поле и тело запроса — из одной оси. Спрашивается только там,
   // где у учётки не одна привязка; при правке не спрашивается вовсе — оно снято снимком.
@@ -175,14 +192,20 @@ export function ServiceRequestForm({
   ]);
 
   const mutation = useMutation({
-    mutationFn: (values: Values) =>
-      submitServiceRequest(values, {
+    mutationFn: (values: Values) => {
+      // Обе половины пары, а не одна: у заявки без аппарата заказчиком бывает и площадка, и её
+      // идентификатор уходит тем же `objectId`, которым у заявки с аппаратом называют «не тот
+      // объект» (Р6). Какой из двух смыслов сегодня — знает отправка, и разбирается это там.
+      const pair = customer.customerPairOf(values.customer);
+      return submitServiceRequest(values, {
         request,
         claim,
-        customerDepartmentId: customer.customerPairOf(values.customer).departmentId,
+        customerDepartmentId: pair.departmentId,
+        customerObjectId: pair.objectId,
         requesterPlace: place.body(values.requesterPlaceId),
         fileIds: attachments.ids,
-      }),
+      });
+    },
     onSuccess: (res) => {
       message.success(request ? 'Заявка сохранена' : 'Заявка заведена');
       // Заявка заведена, но письмо службе не ушло — про это надо сказать сразу: служба читает
@@ -192,10 +215,13 @@ export function ServiceRequestForm({
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();
     },
-    onError: (e) => {
-      // 409 «по этой технике уже есть открытая заявка» (Р21) — обычный ответ, а не сбой.
-      if (!blockers.fromApi(e)) message.error(errorMessage(e));
-    },
+    // Отказ разбирает отдельный модуль: кодов три, и у каждого своё место на экране.
+    onError: (e, values) =>
+      reportServiceRequestFailure(e, {
+        withoutEquipment: !request && !values.officeEquipmentId,
+        blockers,
+        message,
+      }),
   });
 
   return (
@@ -229,6 +255,7 @@ export function ServiceRequestForm({
         <ServiceRequestEquipmentField
           request={request}
           claim={!!claim}
+          optional={canSkipEquipment}
           selected={selected}
           options={equipmentOptions}
           loading={equipmentLoading}
@@ -238,8 +265,13 @@ export function ServiceRequestForm({
         {/* Строк номенклатуры здесь больше нет (Р15): заявитель не выбирает позиции справочника —
             он говорит словами, чего не хватает, а состав заполняет исполнитель, которому везти. */}
 
-        {/* Гарантия — вопрос ремонта: картридж со своего склада ни по чьей гарантии не выдают. */}
-        {!consumable && (
+        {/* Гарантия — вопрос ремонта: картридж со своего склада ни по чьей гарантии не выдают.
+
+            И вопрос КОНКРЕТНОГО аппарата (Р7): обращаются либо по гарантии поставщика на него,
+            либо по работе, выполненной на нём же. Без аппарата блока нет вовсе — не «пока не
+            сделали», а «не бывает»: схема заведения такую пару отбивает, а форма не должна
+            показывать то, чего нельзя ни поставить, ни отправить. */}
+        {!consumable && !noEquipment && (
           <ServiceRequestWarrantyClaim
             active={warrantyActive}
             claim={claim}
@@ -285,7 +317,9 @@ export function ServiceRequestForm({
           name="customer"
           label="Для кого заявка"
           // Пустого состояния у поля нет (Р12а): «от площадки» — такой же выбор, как отдел, а не
-          // незаполненное поле, и уходит он явным `null`.
+          // незаполненное поле, и уходит он явным `null`. У заявки без аппарата обязательность
+          // держит уже не только форма: заказчик там — единственное, чем заявка попадает в чью-то
+          // область, и ни одного не назвав, её не примет ни схема, ни `CHECK` предмета (Р7).
           rules={[{ required: true, message: 'Выберите заказчика заявки' }]}
         >
           {/* Площадку поле пересобирает само на смене единицы (Р11а, К10): значение — про то,

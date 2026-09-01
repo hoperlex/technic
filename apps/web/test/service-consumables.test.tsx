@@ -218,6 +218,14 @@ describe('заведение заявки на расходники (Н1, Р15, 
     fireEvent.change(screen.getByLabelText('Описание'), {
       target: { value: 'Закончился чёрный тонер, печатать нечем' },
     });
+    // Заказчика форма подставляет сама — площадкой единственной единицы, — но лишь когда справочник
+    // приехал и единица встала в поле. Нажатие до этого момента упёрлось бы в обязательный подбор
+    // «Для кого заявка», и проверка про строки номенклатуры не состоялась бы вовсе.
+    await waitFor(() =>
+      expect(document.getElementById('customer')?.closest('.ant-select')?.textContent).toContain(
+        NORTH.name,
+      ),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 
     await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));

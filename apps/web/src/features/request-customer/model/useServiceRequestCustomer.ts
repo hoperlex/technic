@@ -1,5 +1,12 @@
-import { costTargetKey, type CostTargetKey, type ServiceRequestDto } from '@technic/contracts';
+import {
+  costTargetKey,
+  hasModuleWideScope,
+  type CostTargetKey,
+  type ServiceRequestDto,
+} from '@technic/contracts';
+import { useAuth } from '../../../auth/AuthContext';
 import { useDepartmentScope } from '../../../hooks/useDepartmentScope';
+import { useObjectScope } from '../../../hooks/useObjectScope';
 import {
   useRequestCustomerOptions,
   type RequestCustomerOptions,
@@ -18,6 +25,18 @@ import {
  * Площадку в этом поле не выбирают — её задаёт выбранная сейчас единица, и пунктов в группе ровно
  * один. Роли отдела он положен только по технике её отдела (Р12): на чужую и на неразмеченную
  * сервер отвечает 403, а предлагать в поле отвергаемое нельзя.
+ *
+ * У ЗАЯВКИ БЕЗ АППАРАТА состав другой (`withoutEquipment`, Р6 плана расходников и закупки, ADR
+ * 0146, решение 6): аппарата, от которого производна площадка, нет — и заказчика человек выбирает
+ * из справочника, но **только по оси своей роли**. Роль площадки называет свои объекты, роль
+ * отдела — свои отделы, держатель сквозной области модуля — и то и другое.
+ *
+ * Ограничение по оси здесь не удобство, а условие работоспособности: у заявки с аппаратом объект
+ * приходит из карточки единицы, и роль площадки, выбравшая заказчиком отдел, остаётся в своей
+ * области — заявку она видит по объекту. Без аппарата такой опоры нет, три колонки области
+ * заполняет сам человек, и выбор поперёк оси создал бы заявку **вне собственной области автора**:
+ * он потерял бы её сразу после отправки. Сервер такой выбор отбивает (422), и предлагать его в
+ * поле нельзя.
  *
  * Хук считает состав, а значение поля ставит `ServiceRequestCustomerField` — и оба ключа, которыми
  * форма открывает окно (сохранённый заказчик правки и единственный отдел учётки), она берёт
@@ -48,6 +67,13 @@ export interface ServiceRequestCustomerInput {
   request: ServiceRequestCustomerSnapshot | null;
   /** Единица, выбранная в справочнике сейчас; у правки её не выбирают вовсе. */
   equipment?: ServiceRequestCustomerEquipment | null;
+  /**
+   * Заводится заявка БЕЗ аппарата (Р5, Р6): поле техники пусто, и право оставить его пустым у
+   * заводящего есть. Признаком, а не выводом из пустого `equipment`: пустой бывает и единица,
+   * которую ещё не выбрали (тогда поле заперто, как и прежде), и та, чей справочник ещё едет.
+   * Различить эти три состояния может только форма — она одна знает и право, и поле.
+   */
+  withoutEquipment?: boolean;
 }
 
 export interface ServiceRequestCustomer extends RequestCustomerOptions {
@@ -95,8 +121,26 @@ function savedCustomerOf({
 export function useServiceRequestCustomer({
   request,
   equipment,
+  withoutEquipment = false,
 }: ServiceRequestCustomerInput): ServiceRequestCustomer {
   const scope = useDepartmentScope();
+  const objectScope = useObjectScope();
+  const { user } = useAuth();
+
+  /*
+   * Сквозная область модуля заявок (ADR 0106, решение 2) — то же, что спрашивает о смотрящем
+   * сервер, разбирая заказчика заявки без аппарата (`hasModuleWideScope(p.grantCodes, …)`).
+   *
+   * Спрашивается она по надстройкам учётки, а не по кодам наборов, потому что кодов портал не
+   * получает вовсе: сервер собирает их в `addons` тем же перечнем (`systemAddonsOf`), а таблица
+   * области у наборов и надстроек одна и та же по построению (`SYSTEM_GRANT_CODES satisfies
+   * readonly RoleAddon[]`). Своего предиката области здесь поэтому не заводится: вторая копия
+   * правила разошлась бы с серверной молча — не отказом, а лишним пунктом в списке.
+   */
+  const wideScope = hasModuleWideScope(user?.addons, 'serviceRequests');
+  // Ось роли (Р6). Сквозная область снимает её целиком — и объектную, и отдельскую: ровно тем же
+  // порядком проверок, что и сервер, где `wide` спрашивается раньше роли.
+  const objectAxis = !wideScope && objectScope.isObjectRole;
 
   /*
    * Оба снимка единицы — где стоит и чья она: при заведении их даёт справочник, при правке сама
@@ -121,14 +165,35 @@ export function useServiceRequestCustomer({
   // сохранённой опции правка начиналась бы с пустого обязательного поля, а сохранение отправило бы
   // изменение, которого человек не делал.
   const saved = request ? savedCustomerOf(request) : null;
-  const base = useRequestCustomerOptions({ objects: site, departments: 'requester', saved });
+  const base = useRequestCustomerOptions({
+    /*
+     * Без аппарата площадки-снимка нет, и объекты берутся из справочника: по оси учётки — а
+     * держателю сквозной области целиком, потому что оси у него нет ни одной. Отдельской роли
+     * `'scope'` объектов не даёт вовсе, и это ровно 422 сервера («заводит заявку от своего
+     * отдела»), высказанный составом поля, а не отказом после заполнения формы.
+     */
+    objects: withoutEquipment ? (wideScope ? 'wide' : 'scope') : site,
+    /*
+     * Отделы у объектной оси без аппарата отменяются целиком: заявка «от отдела» держится в
+     * области одним `customer_department_id`, и роль площадки, назвавшая отдел, завела бы её вне
+     * своей области. С аппаратом такого не бывает — заявку держит объект единицы, — и там отделы
+     * остаются составом «от чьего имени просят» (Р11б).
+     *
+     * Сужение внутри группы не трогается: отдельской роли `'requester'` и так оставляет только её
+     * отделы, а чужой отдел сервер отбивает 403 — и держателю сквозной области тоже, потому что
+     * граница эта про роль, а не про область модуля.
+     */
+    departments: withoutEquipment && objectAxis ? 'none' : 'requester',
+    saved,
+  });
 
   return {
     ...base,
     // До выбора единицы поле заперто (Р11): площадки без неё нет вовсе, а заказчик заявки на
-    // обслуживание начинается с техники. Дальше запертость считает подбор — по числу вариантов
-    // обеих групп сразу, а не по одной оси.
-    disabled: base.disabled || (!request && !equipment),
+    // обслуживание начинается с техники. У заявки БЕЗ аппарата всё наоборот — заказчик и есть
+    // единственный ответ на «чья заявка», и запирать поле нечем. Дальше запертость считает подбор
+    // — по числу вариантов обеих групп сразу, а не по одной оси.
+    disabled: base.disabled || (!request && !equipment && !withoutEquipment),
     siteKey: site ? costTargetKey({ kind: 'object', id: site.id }) : null,
     savedKey: saved ? costTargetKey(saved.target) : null,
     soleDepartmentKey: scope.soleDepartmentId
