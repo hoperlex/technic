@@ -21,6 +21,8 @@
 #                                   граница совместимости → подъём (docs/schema-cutover-protocol.md)
 #   deploy-auto --cutover-revert    откат незавершённого cutover (только пока граница не записана)
 #   deploy-auto --skip-check        выкатить без отметки о зелёном прогоне (пропуск пишется в отчёт)
+#   deploy-auto --client-floor      показать пол версии клиента и контракт раздаваемой сборки
+#   deploy-auto --client-floor=N    поднять/опустить пол (MIN_CLIENT_CONTRACT) и перезапустить api
 #
 # Запускать от владельца портала (corpsu) или от root: от root скрипт сам
 # перезапустится от владельца, иначе образы и state стали бы root-owned.
@@ -102,6 +104,12 @@ deploy-auto — деплой/обновление портала technic (auto.s
                                     только пока граница не записана и только если окно было
                                     узким — широкое откатывается --restore-db (протокол §6)
   deploy-auto --skip-check          выкатить без отметки о зелёном прогоне (.quality-check).
+  deploy-auto --client-floor        показать пол версии клиента (MIN_CLIENT_CONTRACT в prod.env)
+                                    и контракт раздаваемой сборки; ничего не меняет.
+  deploy-auto --client-floor=N      поднять/опустить пол и перезапустить technic-api. Отказывает,
+                                    если N выше контракта раздаваемой сборки: так портал закрылся
+                                    бы целиком. После перезапуска проверяет, что старый контракт
+                                    отбивается 426, а обновление сессии — нет (ADR 0146, реш. 7).
                                     Отметку спрашивают только выкаты без отката — те, что несут
                                     миграцию или идут окном --cutover; пропуск попадает в отчёт
   deploy-auto --help                эта справка
@@ -131,8 +139,8 @@ EOF
 # Разбор аргументов.
 # ---------------------------------------------------------------------------
 DO_PREVIOUS=0 DO_RESTORE_DB=0 DO_STATUS=0 NO_PRUNE=0 SKIP_MIGRATE=0 ALLOW_VHOST_DRIFT=0
-DO_CUTOVER=0 DO_CUTOVER_REVERT=0 SKIP_CHECK=0
-RESTORE_DB_ARG=""
+DO_CUTOVER=0 DO_CUTOVER_REVERT=0 SKIP_CHECK=0 DO_CLIENT_FLOOR=0
+RESTORE_DB_ARG="" CLIENT_FLOOR_ARG=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -146,6 +154,8 @@ for arg in "$@"; do
     --cutover)        DO_CUTOVER=1 ;;
     --cutover-revert) DO_CUTOVER_REVERT=1 ;;
     --skip-check)     SKIP_CHECK=1 ;;
+    --client-floor)   DO_CLIENT_FLOOR=1 ;;
+    --client-floor=*) DO_CLIENT_FLOOR=1; CLIENT_FLOOR_ARG="${arg#*=}" ;;
     -h|--help)        usage ;;
     *) echo "Неизвестный аргумент: $arg (см. --help)" >&2; exit 2 ;;
   esac
@@ -161,6 +171,22 @@ if [ "$DO_STATUS" -eq 1 ] \
 fi
 if [ "$SKIP_MIGRATE" -eq 1 ] && [ "$ROLLBACK_MODE" -eq 1 ]; then
   echo "--skip-migrate имеет смысл только при обычном деплое" >&2; exit 2
+fi
+# Пол версии клиента — своя операция, а не «деплой с флажком»: она не трогает ни код, ни схему, ни
+# образы, и смешивать её с выкатом нельзя. Смешанный запуск означал бы, что человек ждёт от одной
+# команды двух разных вещей, а порядок между ними как раз и есть весь смысл двух фаз (ADR 0146,
+# решение 7): пол поднимают ПОСЛЕ того, как новая статика раздаётся.
+if [ "$DO_CLIENT_FLOOR" -eq 1 ] \
+   && { [ "$ROLLBACK_MODE" -eq 1 ] || [ "$DO_STATUS" -eq 1 ] || [ "$SKIP_MIGRATE" -eq 1 ] \
+        || [ "$SKIP_CHECK" -eq 1 ] || [ "$DO_CUTOVER" -eq 1 ] || [ "$DO_CUTOVER_REVERT" -eq 1 ]; }; then
+  echo "--client-floor не сочетается с выкатом и откатом: это отдельная операция над prod.env" >&2
+  exit 2
+fi
+if [ "$DO_CLIENT_FLOOR" -eq 1 ] && [ -n "$CLIENT_FLOOR_ARG" ] \
+   && ! printf '%s' "$CLIENT_FLOOR_ARG" | grep -qE '^[1-9][0-9]*$'; then
+  echo "--client-floor=N: N — целое от 1. Ноль и пустое значение запрещены: запрос без заголовка" >&2
+  echo "читается как контракт 1, и пол ниже единицы не отличался бы от выключенного гейта." >&2
+  exit 2
 fi
 # Отметку о прогоне спрашивают только выкаты без отката. Откат и cutover-revert возвращают уже
 # проверенное прошлое, отметки у них не спрашивают вовсе — и обход того, чего нет, значит, что
@@ -579,12 +605,136 @@ sync_vhost() {
 # ---------------------------------------------------------------------------
 # --status: только чтение — ни lock, ни снимков, ни мутаций.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Пол версии клиента (ADR 0146, решение 7): `MIN_CLIENT_CONTRACT` в prod.env.
+#
+# ЗАЧЕМ ЭТО В deploy-auto, А НЕ РУЧНЫМ `sed`. У операции есть предусловие, которое человек глазами
+# не проверит: пол нельзя поднимать выше контракта той сборки, которая РАЗДАЁТСЯ. Подняли выше —
+# и `426` получают все, включая только что открытую вкладку: портал становится недоступен целиком,
+# а лечится это только обратной правкой того же файла. Ручной `sed` такого предусловия не знает.
+#
+# Второе, чего у `sed` нет: проверка исхода. После перезапуска надо убедиться не только в том, что
+# старый контракт отбивается, но и в том, что обновление сессии НЕ отбивается, — иначе гейт
+# выкидывает из портала живых людей (`/auth/refresh` выведен из-под него насовсем).
+# ---------------------------------------------------------------------------
+
+# Текущий пол из prod.env. Пусто — строки нет вовсе; сервер в этом случае берёт своё умолчание (1).
+client_floor_current() {
+  [ -r "$PROD_ENV" ] || return 1
+  sed -n 's/^MIN_CLIENT_CONTRACT=//p' "$PROD_ENV" | tail -n1 | tr -dc '0-9'
+}
+
+# Контракт РАЗДАВАЕМОЙ сборки — из исходника той ревизии, что записана запущенной (`current`).
+# Именно из ревизии, а не из HEAD рабочего дерева: раздаётся собранный образ, а дерево к этому
+# моменту могло уехать вперёд на несколько коммитов, и число в нём описывало бы будущее.
+client_contract_deployed() {
+  [ -n "${CURRENT_BEFORE:-}" ] || return 1
+  git_c show "$CURRENT_BEFORE:apps/web/src/shared/api/clientContract.ts" 2>/dev/null \
+    | sed -n 's/^export const CLIENT_CONTRACT = \([0-9]\{1,\}\);.*/\1/p' | head -1
+}
+
+# Строка для --status: пол, контракт сборки и вывод о том, согласованы ли они.
+client_floor_line() {
+  local floor served
+  floor="$(client_floor_current || true)"; served="$(client_contract_deployed || true)"
+  printf 'пол %s, раздаётся контракт %s%s' \
+    "${floor:-<не задан, умолчание 1>}" "${served:-<неизвестен>}" \
+    "$( [ -n "$floor" ] && [ -n "$served" ] && [ "$floor" -gt "$served" ] \
+        && printf ' — ПОЛ ВЫШЕ РАЗДАВАЕМОГО, портал закрыт для всех' || true )"
+}
+
+# Обращение к api изнутри контейнера (минуя infra-nginx, как health_check): печатает код ответа.
+client_floor_probe() {
+  local contract="$1" path="$2" method="$3"
+  "${COMPOSE[@]}" exec -T technic-api node -e \
+    "const c=process.argv[1]; \
+     fetch('http://127.0.0.1:3000'+process.argv[2], \
+       { method: process.argv[3], headers: c ? { 'X-Client-Contract': c } : {} }) \
+       .then(r => { console.log(r.status); process.exit(0); }) \
+       .catch(() => { console.log('err'); process.exit(0); });" \
+    "$contract" "$path" "$method" 2>/dev/null | tr -dc '0-9a-z' | tail -c 8
+}
+
+if [ "$DO_CLIENT_FLOOR" -eq 1 ]; then
+  FLOOR_NOW="$(client_floor_current || true)"
+  SERVED="$(client_contract_deployed || true)"
+
+  if [ -z "$CLIENT_FLOOR_ARG" ]; then
+    # Чтение. Печатаем обе стороны и прямо говорим, что можно сделать, — иначе человек пойдёт
+    # смотреть prod.env и исходник бандла руками, а это ровно те два места, где легко ошибиться.
+    echo "prod.env : $PROD_ENV"
+    echo "пол      : ${FLOOR_NOW:-<не задан> (сервер берёт умолчание 1)}"
+    echo "сборка   : контракт ${SERVED:-<неизвестен>} (ревизия ${CURRENT_BEFORE:-<нет>})"
+    if [ -n "$SERVED" ] && { [ -z "$FLOOR_NOW" ] || [ "$FLOOR_NOW" -lt "$SERVED" ]; }; then
+      echo "можно    : deploy-auto --client-floor=$SERVED  — отсечёт вкладки старее раздаваемой"
+    elif [ -n "$SERVED" ] && [ "$FLOOR_NOW" -eq "$SERVED" ]; then
+      echo "состояние: пол совпадает с раздаваемым контрактом — поднимать нечего"
+    fi
+    exit 0
+  fi
+
+  # Запись. Три отказа до всякой мутации.
+  [ -n "$SERVED" ] || fail "не удалось прочитать контракт раздаваемой сборки (current=${CURRENT_BEFORE:-<нет>}).
+  Без него нельзя проверить главное предусловие — что пол не выше того, что раздаётся."
+  if [ "$CLIENT_FLOOR_ARG" -gt "$SERVED" ]; then
+    fail "пол $CLIENT_FLOOR_ARG выше контракта раздаваемой сборки ($SERVED).
+  Так портал закрывается ДЛЯ ВСЕХ: 426 получит и только что открытая вкладка.
+  Сначала выкатите сборку с нужным контрактом, потом поднимайте пол."
+  fi
+  [ -f "$PROD_ENV" ] || fail "нет $PROD_ENV"
+
+  if [ -n "$FLOOR_NOW" ] && [ "$CLIENT_FLOOR_ARG" -lt "$FLOOR_NOW" ]; then
+    warn "пол ОПУСКАЕТСЯ с $FLOOR_NOW до $CLIENT_FLOOR_ARG — старые вкладки снова получат доступ."
+    warn "Это законный обратный ход, но данные новых выпусков они читать не умеют."
+  fi
+
+  log "пол версии клиента: ${FLOOR_NOW:-<не задан>} → $CLIENT_FLOOR_ARG (раздаётся контракт $SERVED)"
+
+  # Правка атомарная и с сохранением владельца и режима: prod.env лежит root:docker 0640, и
+  # потерять эти биты значит либо открыть секреты, либо оставить портал без конфигурации.
+  sudo sh -c '
+    set -eu
+    f="$1"; n="$2"
+    t="$(mktemp "${f}.XXXXXX")"
+    if grep -qE "^MIN_CLIENT_CONTRACT=" "$f"; then
+      sed "s/^MIN_CLIENT_CONTRACT=.*/MIN_CLIENT_CONTRACT=$n/" "$f" > "$t"
+    else
+      cat "$f" > "$t"; printf "MIN_CLIENT_CONTRACT=%s\n" "$n" >> "$t"
+    fi
+    chown --reference="$f" "$t"; chmod --reference="$f" "$t"
+    mv -f "$t" "$f"
+  ' _ "$PROD_ENV" "$CLIENT_FLOOR_ARG" || fail "не удалось записать $PROD_ENV (нужен sudo)"
+
+  # `--force-recreate`: env_file читается при СОЗДАНИИ контейнера, и обычный `up -d` мог бы счесть
+  # конфигурацию неизменной. Перерыв — секунды, и он честнее, чем перезапуск, не подхвативший файл.
+  log "перезапуск technic-api с новым полом"
+  "${COMPOSE[@]}" up -d --force-recreate --no-deps technic-api \
+    || fail "не удалось перезапустить technic-api — пол в $PROD_ENV уже $CLIENT_FLOOR_ARG"
+  health_check || fail "health не подтверждён после перезапуска. Откат: deploy-auto --client-floor=${FLOOR_NOW:-1}"
+
+  # Проверка исхода, а не только факта записи. Оба ответа важны, и второй важнее первого.
+  OLD_CONTRACT=$(( CLIENT_FLOOR_ARG - 1 ))
+  CODE_OLD="$(client_floor_probe "$OLD_CONTRACT" /api/v1/service-requests GET)"
+  CODE_NEW="$(client_floor_probe "$CLIENT_FLOOR_ARG" /api/v1/service-requests GET)"
+  CODE_REFRESH="$(client_floor_probe "" /api/v1/auth/refresh POST)"
+  echo
+  echo "контракт $OLD_CONTRACT на доменной ручке : $CODE_OLD  (ожидается 426)"
+  echo "контракт $CLIENT_FLOOR_ARG на доменной ручке : $CODE_NEW  (426 быть НЕ должно)"
+  echo "обновление сессии без заголовка  : $CODE_REFRESH  (426 быть НЕ должно)"
+  [ "$CODE_OLD" = "426" ] || warn "старый контракт не отбивается — гейт не действует, проверьте prod.env и логи api"
+  [ "$CODE_NEW" != "426" ] || warn "раздаваемый контракт тоже отбивается — портал закрыт для всех, немедленно опустите пол"
+  [ "$CODE_REFRESH" != "426" ] || warn "обновление сессии отбивается — гейт выкидывает людей из портала, опустите пол"
+  log "готово: пол $CLIENT_FLOOR_ARG"
+  exit 0
+fi
+
 if [ "$DO_STATUS" -eq 1 ]; then
   echo "portal   : $PORTAL_DIR"
   echo "current  : ${CURRENT_BEFORE:-<нет>}"
   echo "previous : ${PREVIOUS_BEFORE:-<нет>}"
   echo "cutover  : $(cutover_status_line)"
   echo "схема    : $(floor_status_line)"
+  echo "клиент   : $(client_floor_line)"
   echo "ветка    : $(git_c rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
   echo "HEAD     : $(git_c rev-parse --short HEAD 2>/dev/null || echo '?')"
   vhost_st=0; vhost_state || vhost_st=$?
@@ -1833,6 +1983,28 @@ EOF
   MIGRATION_ATTEMPTED=1
   "${COMPOSE[@]}" run --rm -T migrate || { REASON="миграция провалилась"; fail "$REASON"; }
   MIGRATION_ATTEMPTED=0
+
+  # Разовые работы по данным — то, что миграцией не делается (ADR 0149).
+  #
+  # Переоформление листов ЭСМ-2, выписанных «на два месяца» до ADR 0142. SQL-миграцией его не
+  # провести: номер бланка строгой отчётности и снимок его граф рождаются кодом выписки, а второй
+  # механизм расхода номеров рядом с первым разошёлся бы с ним молча. Поэтому выкат зовёт тот же
+  # прогон, что позвал бы человек, — сразу после наката и до подъёма сервисов: между новой бумагой
+  # и первым, кто её увидит, ничего не стоит.
+  #
+  # ШАГ ИДЕМПОТЕНТЕН И САМОГАСЯЩИЙСЯ: без заявок с двухмесячным листом прогон печатает «— 0» и
+  # выходит нулём. Держать его в выкате поэтому не вредно; убрать можно тогда, когда прод
+  # отчитается нулём, — вместе с самим прогоном.
+  #
+  # ПРОГОН НЕ ВАЛИТ ВЫКАТ. Код 2 означает «часть заявок пропущена и ждёт человека», код 1 — что
+  # прогон не запустился вовсе; и то и другое разбирается после деплоя, а миграции к этому моменту
+  # накатаны и сервисы обязаны подняться. Молчать при этом нельзя — отсюда громкий warn.
+  log "переоформление листов ЭСМ-2 переходной недели (ADR 0149)"
+  if ! "${COMPOSE[@]}" run --rm -T migrate \
+       pnpm --silent --filter @technic/api esm2:month-split -- --apply; then
+    warn "переоформление листов ЭСМ-2 прошло не полностью — разберите вывод выше."
+    warn "Повторить:  ${COMPOSE[*]} run --rm -T migrate pnpm --filter @technic/api esm2:month-split"
+  fi
 else
   # Кодовый выкат откатывается `--previous` за минуту — ждать ради него полного прогона дороже,
   # чем откатиться (решение Р1а). Ворота здесь не задерживают никого.
