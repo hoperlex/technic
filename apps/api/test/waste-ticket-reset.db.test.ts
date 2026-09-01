@@ -2,6 +2,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { RequestType } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает. Сервису распознавания это
@@ -146,8 +147,11 @@ async function seedAdmin(db: typeof AppDb, schema: typeof SchemaNs): Promise<str
   return created!.id;
 }
 
-/** Выполненная заявка на вывоз: только у неё бывают талоны распознавания (Р1). */
-async function newRequest(requestType: 'waste_removal' | 'metal_removal' = 'waste_removal') {
+/**
+ * Выполненная заявка. Тип — параметром и по умолчанию вывоз мусора: талоны читаются у заявок
+ * всех типов (ADR 0150), и разница между ними осталась только в том, что сверять у бумаги.
+ */
+async function newRequest(requestType: RequestType = 'waste_removal') {
   const [row] = await ctx.db
     .insert(ctx.schema.wasteRequests)
     .values({
@@ -567,7 +571,7 @@ describe.skipIf(!DB_URL)('заявка на вывоз ↔ распознава�
       const second = await newTicketFile(requestId);
 
       await ctx.db.transaction(async (tx) => {
-        await ctx.service.enqueueTicketRecognition(tx, requestId, 'waste_removal', [first, second]);
+        await ctx.service.enqueueTicketRecognition(tx, requestId, [first, second]);
       });
 
       const rows = await jobsOf(requestId);
@@ -589,7 +593,7 @@ describe.skipIf(!DB_URL)('заявка на вывоз ↔ распознава�
 
       await expect(
         ctx.db.transaction(async (tx) => {
-          await ctx.service.enqueueTicketRecognition(tx, requestId, 'waste_removal', [fileId]);
+          await ctx.service.enqueueTicketRecognition(tx, requestId, [fileId]);
           throw new Error('закрытие не удалось');
         }),
       ).rejects.toThrow('закрытие не удалось');
@@ -599,21 +603,35 @@ describe.skipIf(!DB_URL)('заявка на вывоз ↔ распознава�
       expect(await jobsOf(requestId)).toHaveLength(0);
     });
 
-    it('не ставит задач на закрытие металлолома: первый контур — только вывоз мусора (Р1)', async () => {
-      const requestId = await newRequest('metal_removal');
-      const fileId = await newTicketFile(requestId);
+    // Тип заявки бумагу больше не отбирает (ADR 0150). Прежде здесь стоял обратный тест —
+    // «металлолому задач не ставим»: довод был про сверку объёма, которой у весовой квитанции
+    // нет. Довод верен и сегодня, но отвечает не на тот вопрос: номер талона уникален у
+    // перевозчика (Р17), а день вывоза сверяется (Р19) независимо от того, чем меряли вывезенное,
+    // — и повторно предъявленную бумагу металлолома до этого не замечал никто.
+    it.each([
+      'metal_removal',
+      'container_install',
+      'container_replace',
+      'container_removal',
+    ] as const)(
+      'ставит задачу и на закрытие типа %s: тип бумагу не отбирает (ADR 0150)',
+      async (requestType) => {
+        const requestId = await newRequest(requestType);
+        const fileId = await newTicketFile(requestId);
 
-      await ctx.db.transaction(async (tx) => {
-        await ctx.service.enqueueTicketRecognition(tx, requestId, 'metal_removal', [fileId]);
-      });
+        await ctx.db.transaction(async (tx) => {
+          await ctx.service.enqueueTicketRecognition(tx, requestId, [fileId]);
+        });
 
-      expect(await jobsOf(requestId)).toHaveLength(0);
-    });
+        const rows = await jobsOf(requestId);
+        expect(rows.map((r) => r.file_id)).toEqual([fileId]);
+      },
+    );
 
     it('пустой список файлов задач не порождает', async () => {
       const requestId = await newRequest();
       await ctx.db.transaction(async (tx) => {
-        await ctx.service.enqueueTicketRecognition(tx, requestId, 'waste_removal', []);
+        await ctx.service.enqueueTicketRecognition(tx, requestId, []);
       });
       expect(await jobsOf(requestId)).toHaveLength(0);
     });

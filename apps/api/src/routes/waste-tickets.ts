@@ -111,7 +111,6 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         id: wasteRequests.id,
         num: wasteRequests.num,
         objectId: wasteRequests.objectId,
-        requestType: wasteRequests.requestType,
         status: wasteRequests.status,
         volumeM3: wasteRequests.volumeM3,
         deliveryAt: wasteRequests.deliveryAt,
@@ -1396,9 +1395,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
            WHERE rf.request_id = ${request.id} AND rf.file_id = ${req.params.fileId}
              AND rf.kind = 'ticket' AND f.deleted_at IS NULL`);
         if (linked.rows.length === 0) throw err.notFound('Талон не найден');
-        await enqueueTicketRecognition(tx, request.id, request.requestType, [req.params.fileId], {
-          forced: true,
-        });
+        await enqueueTicketRecognition(tx, request.id, [req.params.fileId], { forced: true });
       });
 
       await writeAudit({
