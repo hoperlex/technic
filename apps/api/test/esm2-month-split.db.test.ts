@@ -7,12 +7,14 @@ import {
   moscowDateKeyOf,
   shiftDateKey,
   weekStartKey,
+  type Esm2Period,
 } from '@technic/contracts';
 import { describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { db as AppDb } from '../src/db/client';
 import type * as Esm2 from '../src/services/waybill-esm2';
+import type * as Split from '../scripts/esm2-month-split';
 
 /**
  * Месячный разрез недельного листа ЭСМ-2 (ADR 0142, план `docs/esm2-month-split-plan.md`).
@@ -64,11 +66,21 @@ function crossingWeek(): { monday: string; sunday: string } {
 const { monday: TERM_FROM, sunday: TERM_TO } = crossingWeek();
 /** Последний день месяца внутри срока — вторая граница листа, ради которой всё и затевалось. */
 const MONTH_END = monthEndKey(TERM_FROM);
+/**
+ * Первый день нового месяца — им сцена изображает опоздавший прогон (Э6).
+ *
+ * Календарь сцены будущий, а проверить надо поведение **после** границы: в этот день первая
+ * половина недели уже отработана, а вторая ещё идёт. Даты сцены ради этого не сдвигаются — сверке
+ * передаётся `asOf`, тот же ключ, которым её зовут статусная ручка и сам прогон.
+ */
+const NEXT_MONTH_DAY = shiftDateKey(MONTH_END, 1);
 
 interface Ctx {
   db: typeof AppDb;
   closeDb: () => Promise<void>;
   esm2: typeof Esm2;
+  /** Разовый прогон переоформления: из него берётся вердикт о заднем ходе (Э6). */
+  split: typeof Split;
 }
 
 let ctx: Ctx;
@@ -76,7 +88,13 @@ let ctx: Ctx;
 beforeAll(async () => {
   if (!readMode.enabled) return;
   const { db, closeDb } = await import('../src/db/client');
-  ctx = { db, closeDb, esm2: await import('../src/services/waybill-esm2') };
+  ctx = {
+    db,
+    closeDb,
+    esm2: await import('../src/services/waybill-esm2'),
+    // Импорт прогона ничего не запускает: сам прогон идёт только из командной строки.
+    split: await import('../scripts/esm2-month-split'),
+  };
 }, 180_000);
 
 afterAll(async () => {
@@ -190,14 +208,67 @@ async function inScene<T>(run: (tx: SceneTx, scene: Scene) => Promise<T>): Promi
 }
 
 /** Сверка бумаги заявки — единственная дверь, которой файл пользуется. */
-function sync(tx: SceneTx, scene: Scene, reason: string): Promise<Esm2.Esm2SyncResult> {
+function sync(
+  tx: SceneTx,
+  scene: Scene,
+  reason: string,
+  /** День расчёта и проверенная операция — ими сцена изображает опоздавший прогон. */
+  as?: { asOf?: string; correctionId?: string },
+): Promise<Esm2.Esm2SyncResult> {
   return ctx.esm2.syncEsm2Waybills(tx, {
     requestId: scene.requestId,
     actor: { id: scene.userId },
     reason,
     driverPersonId: scene.personId,
-    asOf: TODAY,
+    asOf: as?.asOf ?? TODAY,
+    ...(as?.correctionId ? { correction: { id: as.correctionId, unlockWaybillIds: [] } } : {}),
   });
+}
+
+/**
+ * Бумага, выписанная прежним правилом: один лист на всю переходную неделю.
+ *
+ * Собирается из настоящей выписки, а не вставкой строки: у листа полтора десятка граф снимка, и
+ * сцена, написанная руками, проверяла бы переоформление бланка, которого портал не выписывал.
+ * Возвращает id того самого листа «на два месяца».
+ */
+async function staleSheet(tx: SceneTx, scene: Scene): Promise<string> {
+  await sync(tx, scene, 'перевод заявки в работу');
+  const [first, second] = liveOf(await sheetsOf(tx, scene.requestId));
+  await tx.execute(sql`
+    UPDATE waybills SET status = 'cancelled', cancelled_at = now(),
+                        cancel_reason = 'сцена теста: бумага прежнего разреза'
+     WHERE id = ${second!.id}`);
+  await tx.execute(sql`
+    UPDATE waybills SET period_to = ${TERM_TO}::date WHERE id = ${first!.id}`);
+  return first!.id;
+}
+
+/** Строка операции коррекции — та, что заводит прогон, получив `--backdate`. */
+async function correctionRow(tx: SceneTx, scene: Scene): Promise<string> {
+  const res = await tx.execute<{ id: string }>(sql`
+    INSERT INTO waybill_corrections (operation_id, fingerprint, kind, reason, actor_user_id)
+    VALUES (${randomUUID()}, ${randomUUID()}, 'esm2',
+            'Разрез листа ЭСМ-2 границей месяца (ADR 0142)', ${scene.userId})
+    RETURNING id`);
+  return res.rows[0]!.id;
+}
+
+/** План прогона: тот же вход, что считает и предпросмотр прогона, и его исполнение. */
+async function splitPlan(
+  tx: SceneTx,
+  scene: Scene,
+  asOf: string,
+): Promise<{ input: Esm2.Esm2SyncPlanInput; plan: { cancel: string[]; issue: Esm2Period[] } }> {
+  const built = await ctx.esm2.buildEsm2SyncPlan(tx, {
+    requestId: scene.requestId,
+    driverPersonId: scene.personId,
+    asOf,
+    // Тот же планировочный контекст, что и у прогона: задний ход в расчёте разрешён, названных
+    // листов нет — отработанное прошлое остаётся неприкосновенным.
+    correction: { id: '', unlockWaybillIds: [] },
+  });
+  return built!;
 }
 
 describeReadModes(readMode, 'месячный разрез листа ЭСМ-2 (ADR 0142)', () => {
@@ -269,14 +340,7 @@ describeReadModes(readMode, 'месячный разрез листа ЭСМ-2 (
     await inScene(async (tx, scene) => {
       // Так выглядит бумага, выписанная прежним правилом: один лист на всю переходную неделю.
       // Ровно её и переоформляет разовый прогон `scripts/esm2-month-split.ts` после выката.
-      await sync(tx, scene, 'перевод заявки в работу');
-      const [first, second] = liveOf(await sheetsOf(tx, scene.requestId));
-      await tx.execute(sql`
-        UPDATE waybills SET status = 'cancelled', cancelled_at = now(),
-                            cancel_reason = 'сцена теста: бумага прежнего разреза'
-         WHERE id = ${second!.id}`);
-      await tx.execute(sql`
-        UPDATE waybills SET period_to = ${TERM_TO}::date WHERE id = ${first!.id}`);
+      const staleId = await staleSheet(tx, scene);
       const stale = await tx.execute<{ n: string }>(sql`
         SELECT count(*)::text AS n FROM waybills
          WHERE source_request_id = ${scene.requestId} AND status <> 'cancelled'
@@ -296,8 +360,131 @@ describeReadModes(readMode, 'месячный разрез листа ЭСМ-2 (
         `${shiftDateKey(MONTH_END, 1)}..${TERM_TO}`,
       ]);
       // Прежний номер сгорел и объяснён причиной: бланк строгой отчётности не правят, а списывают.
-      const burned = (await sheetsOf(tx, scene.requestId)).find((row) => row.id === first!.id);
+      const burned = (await sheetsOf(tx, scene.requestId)).find((row) => row.id === staleId);
       expect(burned?.status).toBe('cancelled');
     });
+  });
+
+  /*
+   * ОПОЗДАВШИЙ ПРОГОН (Э6). Переоформление писалось под запуск до конца месяца, когда обе половины
+   * недели ещё впереди. Запущенное после границы, оно встречает лист, у которого первая половина
+   * уже отработана, — и вот что из этого следует.
+   */
+  it('после границы месяца сверка сожгла бы двухмесячный лист, не выписав замены прошедшим дням', async () => {
+    if (!readMode.enabled) return;
+    await inScene(async (tx, scene) => {
+      await staleSheet(tx, scene);
+
+      // Вердикт считается до сверки — на том состоянии, которое прогон и застаёт: лист «на два
+      // месяца» ещё цел. Ровно на нём прогон и решает, что без `--backdate` заявку трогать нельзя.
+      const built = await splitPlan(tx, scene, NEXT_MONTH_DAY);
+      const verdict = ctx.split.judgeBackdate(built.input, built.plan);
+      expect(verdict.kind).toBe('backdate');
+      expect(verdict.kind === 'backdate' ? verdict.past : []).toEqual([
+        { from: TERM_FROM, to: MONTH_END },
+      ]);
+
+      // А вот что случилось бы, тронь заявку обычная дверь: сверка без контекста операции.
+      const result = await sync(tx, scene, 'касание заявки после границы месяца', {
+        asOf: NEXT_MONTH_DAY,
+      });
+      expect(result.cancelled).toHaveLength(1);
+      // Выписан один лист — сентябрьский. Кончившийся период сверка не выписывает без проверенной
+      // операции (Р21, ADR 0101), и дни до границы остались бы вовсе без документа.
+      expect(result.issued).toHaveLength(1);
+      const live = liveOf(await sheetsOf(tx, scene.requestId));
+      expect(live.map((row) => `${row.period_from}..${row.period_to}`)).toEqual([
+        `${NEXT_MONTH_DAY}..${TERM_TO}`,
+      ]);
+    });
+  });
+
+  it('с контекстом операции опоздавший прогон выписывает обе половины и объясняет номера', async () => {
+    if (!readMode.enabled) return;
+    await inScene(async (tx, scene) => {
+      const staleId = await staleSheet(tx, scene);
+      const correctionId = await correctionRow(tx, scene);
+
+      const result = await sync(tx, scene, 'разрез листа ЭСМ-2 границей месяца (ADR 0142)', {
+        asOf: NEXT_MONTH_DAY,
+        correctionId,
+      });
+      expect(result.cancelled).toHaveLength(1);
+      expect(result.issued).toHaveLength(2);
+
+      const rows = await sheetsOf(tx, scene.requestId);
+      const live = liveOf(rows);
+      expect(live.map((row) => `${row.period_from}..${row.period_to}`)).toEqual([
+        `${TERM_FROM}..${MONTH_END}`,
+        `${NEXT_MONTH_DAY}..${TERM_TO}`,
+      ]);
+      expect(rows.find((row) => row.id === staleId)?.status).toBe('cancelled');
+
+      /*
+       * Разрыв нумерации за прошедшие дни объяснён, а не подразумевается: оба новых номера
+       * сослались на операцию, и её причина стоит в каждом. Без этого журнал строгой отчётности
+       * не отвечает, почему за уже отработанный день выписан новый бланк.
+       *
+       * Заменой сгоревшему объявляет себя только первый: связь «заменил» одна на номер
+       * (`waybills_corrects_unique`), и два листа, названные заменой одного, ей противоречат.
+       * Общее у пары — операция, и через неё второй бланк и находится.
+       */
+      const links = await tx.execute<{
+        correction_id: string;
+        corrects: string;
+        correction_reason: string;
+      }>(sql`
+        SELECT correction_id::text, coalesce(corrects_waybill_id::text, '') AS corrects,
+               correction_reason
+          FROM waybills WHERE source_request_id = ${scene.requestId} AND status <> 'cancelled'
+         ORDER BY period_from`);
+      expect(links.rows.map((row) => row.correction_id)).toEqual([correctionId, correctionId]);
+      expect(links.rows.map((row) => row.corrects)).toEqual([staleId, '']);
+      expect(links.rows.every((row) => row.correction_reason.trim() !== '')).toBe(true);
+    });
+  });
+
+  it('вердикт прогона: задний ход дальше сгорающего двухмесячного листа не идёт', async () => {
+    if (!readMode.enabled) return;
+    const today = '2026-09-01';
+    const sheet = {
+      id: 'w1',
+      periodFrom: '2026-08-31',
+      periodTo: '2026-09-06',
+      vehicleId: 'v1',
+      driverPersonId: 'd1',
+    };
+    const input = { existing: [sheet], today };
+
+    // Половина сгорающего листа — работа прогона.
+    expect(
+      ctx.split.judgeBackdate(input, {
+        cancel: ['w1'],
+        issue: [
+          { from: '2026-08-31', to: '2026-08-31' },
+          { from: '2026-09-01', to: '2026-09-06' },
+        ],
+      }),
+    ).toEqual({ kind: 'backdate', past: [{ from: '2026-08-31', to: '2026-08-31' }] });
+
+    // Давняя неделя, которой листа не было вовсе, — не его работа: контекст операции снимает
+    // защиту прошлого целиком, и такую заявку смотрит человек.
+    expect(
+      ctx.split.judgeBackdate(input, {
+        cancel: ['w1'],
+        issue: [
+          { from: '2026-08-24', to: '2026-08-30' },
+          { from: '2026-08-31', to: '2026-08-31' },
+        ],
+      }).kind,
+    ).toBe('stray');
+
+    // Прошлого в плане нет — задний ход не нужен, и операция не заводится.
+    expect(
+      ctx.split.judgeBackdate(input, {
+        cancel: ['w1'],
+        issue: [{ from: '2026-09-01', to: '2026-09-06' }],
+      }),
+    ).toEqual({ kind: 'plain' });
   });
 });
