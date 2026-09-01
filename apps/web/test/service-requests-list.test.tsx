@@ -507,6 +507,17 @@ describe('объект и срочность в списке', () => {
     expect(screen.queryByText('Снять срочность')).toBeNull();
   });
 
+  it('заказчику срочности не предлагают: у него право правки, но не право срочности', async () => {
+    // Пункт спрашивал `serviceRequests.update` — право ПРАВКИ, которое у заявителя на своей «Новой»
+    // есть, — а ручка закрыта отдельным `serviceRequests.urgency`, которого у него нет. Портал
+    // предлагал действие, на которое сервер отвечает 403. Прежние случаи этого не ловили: они
+    // проверяли оператора (право есть) и исполнителя (ему пункт закрыт другой веткой).
+    renderTab(CUSTOMER, [serviceRequest()]);
+    await openRowActions();
+    expect(screen.queryByText('Отметить срочной')).toBeNull();
+    expect(screen.queryByText('Снять срочность')).toBeNull();
+  });
+
   it('у помеченной заявки действие называется снятием', async () => {
     renderTab(OPERATOR, [serviceRequest({ isUrgent: true, urgencyReason: 'встала бухгалтерия' })]);
     await openRowActions();
