@@ -194,13 +194,19 @@ export async function assertMechPairAssignable(
  * Объектная роль отдел не называет вовсе: у неё заявитель — её собственная площадка.
  */
 export function assertMechRequesterAllowed(p: Principal, departmentId: string | null): void {
-  if (!departmentId) return;
   if (isDepartmentScopedRole(p.role)) {
-    if (!p.departmentIds.includes(departmentId)) {
+    // Пустой отдел у отдельской роли — не «заявка площадки», а заявка ЗА чужой счёт: заявитель
+    // выводится (отдел, если заполнен, иначе объект), и молча опущенная половина пары относит
+    // расходы на площадку. Портал такого не предлагает — группы «Объекты» у отдельской роли в
+    // подборе заявителя нет вовсе, — но правило держит сервер, а не форма: прямой запрос обошёл бы
+    // её ровно так же, как пару «чужой отдел + общая площадка». Тем же отвечает и «Заказ ТС»
+    // (`assertRequestScope`): у роли отдела заказчик — её отдел, и заявки без него у неё не бывает.
+    if (!departmentId || !p.departmentIds.includes(departmentId)) {
       throw err.forbidden(`${roleLabels[p.role!]} заводит заявку только от своего отдела`);
     }
     return;
   }
+  if (!departmentId) return;
   // У объектной роли отдельской оси нет вовсе: назвать заявителем отдел ей нечем, и заявка ушла бы
   // в расходы подразделения, к которому она отношения не имеет.
   if (isObjectScopedRole(p.role)) {
