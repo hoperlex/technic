@@ -370,27 +370,45 @@ describeReadModes(readMode, 'месячный разрез листа ЭСМ-2 (
    * недели ещё впереди. Запущенное после границы, оно встречает лист, у которого первая половина
    * уже отработана, — и вот что из этого следует.
    */
-  it('после границы месяца сверка сожгла бы двухмесячный лист, не выписав замены прошедшим дням', async () => {
+  it('прогон считает по датам листа: сегодняшний день выписал бы одну половину, дата листа — обе', async () => {
     if (!readMode.enabled) return;
     await inScene(async (tx, scene) => {
-      await staleSheet(tx, scene);
+      const staleId = await staleSheet(tx, scene);
 
-      // Вердикт считается до сверки — на том состоянии, которое прогон и застаёт: лист «на два
-      // месяца» ещё цел. Ровно на нём прогон и решает, что без `--backdate` заявку трогать нельзя.
-      const built = await splitPlan(tx, scene, NEXT_MONTH_DAY);
-      const verdict = ctx.split.judgeBackdate(built.input, built.plan);
-      expect(verdict.kind).toBe('backdate');
-      expect(verdict.kind === 'backdate' ? verdict.past : []).toEqual([
+      /*
+       * Два плана на одну и ту же бумагу — вся разница в дне расчёта.
+       *
+       * Сегодняшним днём (первое число нового месяца) первая половина недели уже кончилась:
+       * обычная сверка её не выпишет вовсе (ADR 0101, Р21), а прогон, посчитанный на этот день,
+       * отказывается от заявки — выписывать неделю раньше дня расчёта не его работа. Днём начала
+       * самого листа обе половины выписываются обычным порядком: в той точке времени вся неделя
+       * ещё впереди. Ровно поэтому прогон считает по датам листа, а не по календарю запуска.
+       */
+      const late = await splitPlan(tx, scene, NEXT_MONTH_DAY);
+      expect(ctx.split.judgeSplit(late.input, late.plan, [staleId])).toEqual({
+        kind: 'stray',
+        stray: [{ from: TERM_FROM, to: MONTH_END }],
+      });
+
+      const onSheetDates = await splitPlan(tx, scene, TERM_FROM);
+      expect(onSheetDates.plan.issue).toEqual([
         { from: TERM_FROM, to: MONTH_END },
+        { from: NEXT_MONTH_DAY, to: TERM_TO },
       ]);
+      expect(onSheetDates.plan.cancel).toEqual([staleId]);
+      // И этот план прогон исполняет целиком: чужого листа в нём не горит, недель раньше дня
+      // расчёта не выписывается.
+      expect(ctx.split.judgeSplit(onSheetDates.input, onSheetDates.plan, [staleId])).toEqual({
+        kind: 'plain',
+      });
 
-      // А вот что случилось бы, тронь заявку обычная дверь: сверка без контекста операции.
+      // А вот что случилось бы, тронь заявку обычная дверь сегодняшним днём.
       const result = await sync(tx, scene, 'касание заявки после границы месяца', {
         asOf: NEXT_MONTH_DAY,
       });
       expect(result.cancelled).toHaveLength(1);
-      // Выписан один лист — сентябрьский. Кончившийся период сверка не выписывает без проверенной
-      // операции (Р21, ADR 0101), и дни до границы остались бы вовсе без документа.
+      // Лист сгорел, а выписан один — сентябрьский: дни до границы остались бы без документа.
+      // Это не гипотеза о прогоне, а то, что делает **любая** дверь, тронувшая такую заявку.
       expect(result.issued).toHaveLength(1);
       const live = liveOf(await sheetsOf(tx, scene.requestId));
       expect(live.map((row) => `${row.period_from}..${row.period_to}`)).toEqual([
@@ -399,7 +417,7 @@ describeReadModes(readMode, 'месячный разрез листа ЭСМ-2 (
     });
   });
 
-  it('с контекстом операции опоздавший прогон выписывает обе половины и объясняет номера', async () => {
+  it('под строкой операции обе половины выписываются одним номером за раз и объяснены', async () => {
     if (!readMode.enabled) return;
     await inScene(async (tx, scene) => {
       const staleId = await staleSheet(tx, scene);
@@ -444,47 +462,64 @@ describeReadModes(readMode, 'месячный разрез листа ЭСМ-2 (
     });
   });
 
-  it('вердикт прогона: задний ход дальше сгорающего двухмесячного листа не идёт', async () => {
+  it('вердикт прогона: чужой лист не горит, чужая неделя не выписывается', async () => {
     if (!readMode.enabled) return;
-    const today = '2026-09-01';
-    const sheet = {
+    const asOf = '2026-08-31';
+    const stale = {
       id: 'w1',
       periodFrom: '2026-08-31',
       periodTo: '2026-09-06',
       vehicleId: 'v1',
       driverPersonId: 'd1',
     };
-    const input = { existing: [sheet], today };
+    const neighbour = { ...stale, id: 'w0', periodFrom: '2026-08-24', periodTo: '2026-08-30' };
 
-    // Половина сгорающего листа — работа прогона.
+    // Обе половины своего листа, посчитанные на его же дату, — работа прогона.
     expect(
-      ctx.split.judgeBackdate(input, {
-        cancel: ['w1'],
-        issue: [
-          { from: '2026-08-31', to: '2026-08-31' },
-          { from: '2026-09-01', to: '2026-09-06' },
-        ],
-      }),
-    ).toEqual({ kind: 'backdate', past: [{ from: '2026-08-31', to: '2026-08-31' }] });
-
-    // Давняя неделя, которой листа не было вовсе, — не его работа: контекст операции снимает
-    // защиту прошлого целиком, и такую заявку смотрит человек.
-    expect(
-      ctx.split.judgeBackdate(input, {
-        cancel: ['w1'],
-        issue: [
-          { from: '2026-08-24', to: '2026-08-30' },
-          { from: '2026-08-31', to: '2026-08-31' },
-        ],
-      }).kind,
-    ).toBe('stray');
-
-    // Прошлого в плане нет — задний ход не нужен, и операция не заводится.
-    expect(
-      ctx.split.judgeBackdate(input, {
-        cancel: ['w1'],
-        issue: [{ from: '2026-09-01', to: '2026-09-06' }],
-      }),
+      ctx.split.judgeSplit(
+        { existing: [stale], today: asOf },
+        {
+          cancel: ['w1'],
+          issue: [
+            { from: '2026-08-31', to: '2026-08-31' },
+            { from: '2026-09-01', to: '2026-09-06' },
+          ],
+        },
+        ['w1'],
+      ),
     ).toEqual({ kind: 'plain' });
+
+    /*
+     * Лист прошлой недели сегодняшний день защитил бы замком, а дата расчёта — уже нет. Прогон
+     * пришёл не за ним: заявка пропускается целиком, а не переоформляется наполовину.
+     */
+    expect(
+      ctx.split.judgeSplit(
+        { existing: [stale, neighbour], today: asOf },
+        {
+          cancel: ['w1', 'w0'],
+          issue: [
+            { from: '2026-08-31', to: '2026-08-31' },
+            { from: '2026-09-01', to: '2026-09-06' },
+          ],
+        },
+        ['w1'],
+      ),
+    ).toEqual({ kind: 'extra', extra: [{ from: '2026-08-24', to: '2026-08-30' }] });
+
+    // Неделя, кончившаяся раньше дня расчёта, — не его работа: бумагу за неё заводят руками.
+    expect(
+      ctx.split.judgeSplit(
+        { existing: [stale], today: asOf },
+        {
+          cancel: ['w1'],
+          issue: [
+            { from: '2026-08-24', to: '2026-08-30' },
+            { from: '2026-08-31', to: '2026-08-31' },
+          ],
+        },
+        ['w1'],
+      ).kind,
+    ).toBe('stray');
   });
 });
