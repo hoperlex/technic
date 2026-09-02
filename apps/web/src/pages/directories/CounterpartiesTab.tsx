@@ -17,6 +17,8 @@ import { counterpartiesApi } from '../../api/resources';
 import {
   CounterpartyFormFields,
   type CounterpartyFormValues,
+  counterpartyCreatePayload,
+  counterpartyUpdatePayload,
   typeOptions,
 } from './CounterpartyFormFields';
 import { DataTable, type CardConfig } from '@shared/ui';
@@ -106,22 +108,11 @@ export function CounterpartiesTab() {
 
   const saveMut = useMutation({
     mutationFn: (values: CounterpartyFormValues) => {
-      const payload = {
-        type: values.type,
-        name: values.name,
-        inn: values.inn,
-        synonyms: values.synonyms ?? [],
-        // У прочих типов поля в форме нет; пустой список сервер примет, непустой — отклонит.
-        objectIds: values.type === 'operator' ? (values.objectIds ?? []) : [],
-        // Адрес отправляется у любого типа: поле в форме показано только сервисной компании, но
-        // очищать его сменой типа нельзя — тип меняют, а ящик организации остаётся её ящиком.
-        email: values.email ?? '',
-        comment: values.comment ?? '',
-        isActive: values.isActive,
-      };
+      // Тело запроса собирает модуль полей: что показано, то и отправляется. У правки и заведения
+      // оно разное — правка чужого типа не трогает заведённый адрес (см. `counterpartyUpdatePayload`).
       return record
-        ? counterpartiesApi.update(record.id, payload)
-        : counterpartiesApi.create(payload);
+        ? counterpartiesApi.update(record.id, counterpartyUpdatePayload(values))
+        : counterpartiesApi.create(counterpartyCreatePayload(values));
     },
     onSuccess: () => {
       message.success('Сохранено');

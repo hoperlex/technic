@@ -43,6 +43,7 @@ const inn = (): string => String(7_000_000_000 + Math.floor(Math.random() * 999_
 const SERVICE_INN = inn();
 const EMPTY_INN = inn();
 const MAILBOX_INN = inn();
+const OPERATORS_INN = inn();
 
 /**
  * Общий ящик сервисной компании (ADR 0153) — адрес самой организации, а не её учётки. Ради него всё
@@ -86,6 +87,8 @@ interface Ctx {
     exec2: Person;
     /** Оператор сервисной компании: он читает почту за всю компанию (§4.2). */
     operator: Person;
+    /** Оператор компании без общего ящика. */
+    operatorNoMailbox: Person;
     /** Отключённая учётка: адресатом задания быть не может. */
     retired: Person;
   };
@@ -94,6 +97,8 @@ interface Ctx {
   emptyCounterpartyId: string;
   /** Компания без учёток, но с общим ящиком в карточке (ADR 0153). */
   mailboxCounterpartyId: string;
+  /** Компания с учётками и пустым полем адреса — зеркальный случай. */
+  operatorsCounterpartyId: string;
 }
 
 let ctx: Ctx;
@@ -282,6 +287,9 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
       MAILBOX_INN,
       MAILBOX_ONLY_CONTRACTOR,
     );
+    // Зеркальный случай: учётки есть, поле адреса пустое. Так выглядит подрядчик, заведённый до
+    // появления колонки, — и именно он не получал отмены.
+    const operatorsCounterpartyId = await makeService('Сервис только с учётками', OPERATORS_INN);
 
     const admin = await makeUser('admin', 'admin');
     const customer = await makeUser('cust', 'shtab');
@@ -291,6 +299,10 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
       exec1: await makeUser('exec1', 'shtab'),
       exec2: await makeUser('exec2', 'shtab'),
       operator: await makeUser('oper', 'operator', { counterpartyId: serviceCounterpartyId }),
+      /** Оператор компании без общего ящика: единственный, до кого доходит её почта. */
+      operatorNoMailbox: await makeUser('oper2', 'operator', {
+        counterpartyId: operatorsCounterpartyId,
+      }),
       retired: await makeUser('retired', 'shtab', { isActive: false }),
     };
     ctx = {
@@ -306,6 +318,7 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
       serviceCounterpartyId,
       emptyCounterpartyId,
       mailboxCounterpartyId,
+      operatorsCounterpartyId,
     };
   }, 120_000);
 
@@ -344,7 +357,8 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
       );
       // После учёток: на контрагенте висит `counterparty_id` оператора, и ссылка `restrict`.
       await ctx.db.execute(
-        sql`DELETE FROM counterparties WHERE inn IN (${SERVICE_INN}, ${EMPTY_INN}, ${MAILBOX_INN})`,
+        sql`DELETE FROM counterparties
+             WHERE inn IN (${SERVICE_INN}, ${EMPTY_INN}, ${MAILBOX_INN}, ${OPERATORS_INN})`,
       );
       await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code = ${`SM-${RUN}`}`);
       await ctx.closeDb();
@@ -450,6 +464,40 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     expect(removed.statusCode).toBe(204);
     // Ключ снятой копии из выборки не убирается намеренно: письма по ней уже составлены, и после
     // её удаления счёт следующих сценариев обязан сойтись сам — новых писем она не даёт.
+  });
+
+  /**
+   * Копия получает СВОЁ тело, потому что у неё свой режим обратного адреса (Р68). Прежде ей уходило
+   * тело службы с припиской «ответ уйдёт заявителю» — неправда у трёх режимов из четырёх: при
+   * `fixed` ответ уходит на заданный ящик, при `actor` — нажавшему, при `portal` — в никуда.
+   * Письмо, которое врёт про адрес ответа, хуже письма без приписки.
+   */
+  it('копия не обещает адрес ответа — у неё свой режим', async () => {
+    const added = await inject('POST', '/api/v1/admin/mail/recipients', ctx.admin, {
+      event: 'service_request_waiting_it',
+      toEmail: COPY_MAILBOX,
+      replyToMode: 'fixed',
+      replyToEmail: COPY_MAILBOX,
+    });
+    expect(added.statusCode, added.body).toBe(201);
+    const copyId = (added.json() as { id: string }).id;
+    ownRecipients.add(copyId);
+
+    const { request } = await createRequest(await ctx.newEquipment('copytext'), 'Гаснет экран');
+    const letters = await mailsOf(request.id);
+    const copy = letters.find((l) => l.to_email === COPY_MAILBOX)!;
+    const service = letters.find((l) => l.to_email === SERVICE_MAILBOX)!;
+
+    // Обратный адрес копии — её собственный, и тело больше не обещает чужой.
+    expect(copy.reply_to).toBe(COPY_MAILBOX);
+    expect(copy.body_text).toContain('настройке рассылки');
+    expect(copy.body_text).not.toContain('уйдёт заявителю');
+    // Письмо службе не изменилось: у неё вопросы к заявителю, и ответ идёт ему.
+    expect(service.reply_to).toBe(ctx.customerEmail);
+    expect(service.body_text).toContain('уйдёт заявителю');
+
+    const removed = await inject('DELETE', `/api/v1/admin/mail/recipients/${copyId}`, ctx.admin);
+    expect(removed.statusCode).toBe(204);
   });
 
   it('повтор кнопкой: тот же ключ — одно письмо, новый — второе', async () => {
@@ -809,6 +857,122 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
   });
 
   /**
+   * Сторона подрядчика — это его УЧЁТКИ И его ящик, а не один ящик. Письмо о назначении так и
+   * считало с самого начала, отмена — нет: компания с операторами в портале и пустым полем адреса
+   * получала задание и не получала отмены, а портал отвечал `queued`, потому что письмо службе в
+   * очередь встало. Ехали зря.
+   *
+   * Проверяются обе половины: у компании с учётками отмена доходит до оператора, а у компании без
+   * учёток и без ящика исход перестаёт быть `queued` — сказать было некому, и назначивший обязан
+   * узнать это сразу.
+   */
+  it('отмена доходит до операторов подрядчика, а не только до общего ящика', async () => {
+    const { request } = await createRequest(await ctx.newEquipment('cxl-op'), 'Не сканирует');
+    ownRecipients.add(ctx.people.operatorNoMailbox.id);
+
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      {
+        userIds: [],
+        serviceCounterpartyId: ctx.operatorsCounterpartyId,
+        version: request.version,
+      },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    const afterAssign = (assigned.json() as { request: ServiceRequestDto }).request;
+
+    const cancelled = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/status`,
+      ctx.admin,
+      { status: 'cancelled', reason: 'Аппарат списали', version: afterAssign.version },
+    );
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+    expect((cancelled.json() as { mail: string }).mail).toBe('queued');
+
+    const letters = (await mailsOf(request.id)).filter(
+      (l) => l.kind === 'service_request_cancelled',
+    );
+    expect(letters.map((l) => l.to_email).sort()).toEqual(
+      [SERVICE_MAILBOX, ctx.people.operatorNoMailbox.email].sort(),
+    );
+    const toOperator = letters.find((l) => l.to_email === ctx.people.operatorNoMailbox.email)!;
+    expect(toOperator.reply_to).toBe(SERVICE_MAILBOX);
+    expect(toOperator.body_text).toContain('выезд не требуется');
+  });
+
+  /**
+   * Обратная сторона той же проверки: сказать подрядчику нечем — и это не `queued`. Письмо службе
+   * при этом уходит: исход отвечает за сторону подрядчика, а не за всё письмо разом.
+   */
+  it('отмена, которую подрядчику некуда отправить, исходом это называет', async () => {
+    const { request } = await createRequest(await ctx.newEquipment('cxl-none'), 'Течёт тонер');
+
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      { userIds: [], serviceCounterpartyId: ctx.emptyCounterpartyId, version: request.version },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    const afterAssign = (assigned.json() as { request: ServiceRequestDto }).request;
+
+    const cancelled = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/status`,
+      ctx.admin,
+      { status: 'cancelled', reason: 'Передумали', version: afterAssign.version },
+    );
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+    expect((cancelled.json() as { mail: string }).mail).toBe('no_recipients');
+
+    // Служба оповещена: половина, которая могла уйти, ушла.
+    const letters = (await mailsOf(request.id)).filter(
+      (l) => l.kind === 'service_request_cancelled',
+    );
+    expect(letters.map((l) => l.to_email)).toEqual([SERVICE_MAILBOX]);
+  });
+
+  /**
+   * «Письма не требовалось» спрашивается ПЕРВЫМ — до почты и канала. Иначе правка состава, которая
+   * никого не назначила, отвечала бы «отправка писем выключена»: тревога про настройку сервера там,
+   * где письма и не требовалось. Это ровно то, что ломало смысл исхода `not_needed`.
+   *
+   * Почта гасится на время проверки: исход считается на живой конфигурации, и подменить её иначе,
+   * не подменяя весь модуль, нельзя.
+   */
+  it('«письма не требовалось» отвечается и при выключенной почте', async () => {
+    const { config } = await import('../src/config');
+    const was = config.mail.enabled;
+    config.mail.enabled = false;
+    try {
+      // Ничего не назначено и нечего отзывать: состояние сервера к делу не относится.
+      expect(await planAssignment([], null, null)).toEqual({ plan: null, outcome: 'not_needed' });
+      // А вот назначение при выключенной почте — по-прежнему «письма нет из-за настройки».
+      expect(await planAssignment([], ctx.mailboxCounterpartyId, null)).toEqual({
+        plan: null,
+        outcome: 'mail_disabled',
+      });
+    } finally {
+      config.mail.enabled = was;
+    }
+  });
+
+  /**
+   * Переназначение — два обязательства сразу: новому выдать, у прежнего забрать. Исход обязан
+   * отвечать за обе половины: иначе переназначение к подрядчику с ящиком отчитывалось бы `queued`,
+   * пока прежний, которому написать некуда, продолжал бы собирать выезд.
+   */
+  it('переназначение, где прежней компании писать некуда, не отчитывается «ушло»', async () => {
+    const planned = await planAssignment([], ctx.mailboxCounterpartyId, ctx.emptyCounterpartyId);
+    expect(planned.outcome).toBe('no_recipients');
+    // План при этом есть: новое задание уходит, потерян только отзыв.
+    expect(planned.plan!.recipients.map((r) => r.email)).toEqual([MAILBOX_ONLY_CONTRACTOR]);
+  });
+
+  /**
    * Отмена — второе событие, адресованное подрядчику (ADR 0153): он уже собрался ехать, а везти
    * нечего. Проверяется не только адрес, но и **два разных тела одного события**: службе уходит
    * прежнее письмо с ответом заявителю, подрядчику — своё, с ответом в службу и словами «выезд не
@@ -839,12 +1003,17 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     const letters = (await mailsOf(request.id)).filter(
       (l) => l.kind === 'service_request_cancelled',
     );
+    // Сторона подрядчика — обе её половины: общий ящик компании и её оператор в портале.
     expect(letters.map((l) => l.to_email).sort()).toEqual(
-      [SERVICE_MAILBOX, CONTRACTOR_MAILBOX].sort(),
+      [SERVICE_MAILBOX, CONTRACTOR_MAILBOX, ctx.people.operator.email].sort(),
     );
 
     const toService = letters.find((l) => l.to_email === SERVICE_MAILBOX)!;
     const toContractor = letters.find((l) => l.to_email === CONTRACTOR_MAILBOX)!;
+    const toOperator = letters.find((l) => l.to_email === ctx.people.operator.email)!;
+    // Оператору — то же тело подрядчика: приписка про адрес ответа важнее ссылки в портал.
+    expect(toOperator.reply_to).toBe(SERVICE_MAILBOX);
+    expect(toOperator.body_text).toContain('выезд не требуется');
     // Службе — как и раньше: ответ уходит заявителю, у неё вопросы к нему.
     expect(toService.reply_to).toBe(ctx.customerEmail);
     expect(toService.body_text).toContain('уйдёт заявителю');

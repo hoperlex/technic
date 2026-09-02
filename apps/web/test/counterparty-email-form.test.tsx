@@ -6,6 +6,8 @@ import { EMAIL_FORMAT_MESSAGE } from '@technic/contracts';
 import {
   CounterpartyFormFields,
   type CounterpartyFormValues,
+  counterpartyCreatePayload,
+  counterpartyUpdatePayload,
 } from '../src/pages/directories/CounterpartyFormFields';
 
 /** Поле сохраняет общий ящик, поэтому проверка обязана сработать до общего тоста API. */
@@ -85,5 +87,29 @@ describe('общий email сервисной компании', () => {
     // Значение уезжает как было: смена типа не стирает ящик организации (ADR 0153).
     expect(onFinish.mock.calls[0]![0].email).toBe('кривой адрес');
     expect(screen.queryByText(EMAIL_FORMAT_MESSAGE)).toBeNull();
+  });
+
+  /**
+   * Форма пропустила непроверенное значение — значит его не должно быть и в запросе. Иначе тихий
+   * отказ формы просто менялся бы на серверный: 400 на поле, которого человек не видит.
+   *
+   * Проверяется поэтому не вызов `onFinish`, а **тело запроса**: между ними и живёт ошибка.
+   */
+  it('правка карточки другого типа не отправляет скрытый адрес', () => {
+    const values: CounterpartyFormValues = {
+      type: 'supplier',
+      name: 'Поставщик',
+      inn: '7707083893',
+      email: 'кривой адрес',
+      isActive: true,
+    };
+    // Правка: поля нет вовсе — сервер прочтёт это как «не трогать заведённый ящик».
+    expect('email' in counterpartyUpdatePayload(values)).toBe(false);
+    // Сервисной компании — отправляется, иначе адрес нельзя было бы ни завести, ни очистить.
+    expect(counterpartyUpdatePayload({ ...values, type: 'service', email: '' })).toMatchObject({
+      email: '',
+    });
+    // Заведение требует полного тела, и беречь там нечего: карточки ещё нет.
+    expect(counterpartyCreatePayload(values).email).toBe('кривой адрес');
   });
 });

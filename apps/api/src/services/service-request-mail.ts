@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   COUNTERPARTY_SCOPED_ROLES,
   DEFAULT_MAIL_ACCOUNT,
@@ -95,10 +95,12 @@ export function serviceMailEventOf(status: ServiceRequestStatus): ModuleMailEven
  * способ ответить. Прежнему подрядчику нужно отдельное тело: это отзыв задания, а не новое
  * назначение.
  *
- * Копии из `module_mail_recipients` считаются `internal` независимо от адреса: копия — это
- * наблюдатель со стороны портала, и свой режим обратного адреса у неё уже есть.
+ * Копия из `module_mail_recipients` — четвёртая аудитория, и завелась она ровно из-за приписки. У
+ * копии СВОЙ режим обратного адреса (`author`, `actor`, `fixed`, `portal`), и любое тело, которое
+ * называет адрес ответа, для неё враньё: письмо обещало бы службу там, где ответ уйдёт заявителю
+ * или на фиксированный ящик. Поэтому копия получает тело, которое про ответ ничего не утверждает.
  */
-export type ServiceMailAudience = 'internal' | 'contractor' | 'contractor_withdrawn';
+export type ServiceMailAudience = 'internal' | 'contractor' | 'contractor_withdrawn' | 'copy';
 
 /** Получатель письма: ящик канала, назначенный исполнитель, подрядчик или заведённая копия. */
 interface Recipient {
@@ -218,16 +220,21 @@ export async function planServiceMail(
    * накопителя: первый источник побеждает, и адрес, заведённый ещё и копией, останется письмом
    * подрядчику со своим обратным адресом, а не наблюдательской копией.
    *
+   * **Сторона подрядчика — это ЕГО УЧЁТКИ И ЕГО ЯЩИК, а не один ящик.** Письмо о назначении так и
+   * считало с самого начала, а отмена — нет, и разница была тихой: компания с операторами в портале
+   * и пустым полем адреса получала задание и не получала отмены. Ехали зря, а портал отвечал
+   * `queued`, потому что письмо службе в очередь встало.
+   *
    * Обратный адрес — ящик службы, а не автор заявки: с внешней организацией переписывается служба.
    * Ответ подрядчика заявителю был бы письмом от чужой компании человеку, который её не знает, и
-   * ушёл бы мимо тех, кто ведёт заявку.
+   * ушёл бы мимо тех, кто ведёт заявку. По той же причине обе половины стороны подрядчика получают
+   * ТЕЛО ПОДРЯДЧИКА: оператору с учёткой ссылка в портал полезна, но приписка про адрес ответа
+   * важнее, а второе тело ради ссылки развело бы одно письмо на два.
    */
-  if (event === 'service_request_cancelled' && ctx.serviceCounterpartyId) {
-    const contractor = await contractorMailbox(ctx.serviceCounterpartyId);
-    if (contractor) {
-      to.add(`counterparty-${ctx.serviceCounterpartyId}`, contractor, channelEmail, 'contractor');
-    }
-  }
+  const contractorSide = ctx.serviceCounterpartyId
+    ? await contractorRecipients(event, ctx.serviceCounterpartyId)
+    : [];
+  for (const row of contractorSide) to.add(row.key, row.email, channelEmail, 'contractor');
 
   for (const row of copies) {
     to.add(
@@ -237,10 +244,43 @@ export async function planServiceMail(
         author: author?.email ?? '',
         actor: ctx.actor.email,
       }),
+      'copy',
     );
   }
 
-  return { plan: { event, kind: event as MailKind, recipients: to.list }, outcome: 'queued' };
+  /**
+   * Исход считается по СТОРОНЕ ПОДРЯДЧИКА, а не по всему письму. Ящик службы в адресатах есть
+   * всегда, и `queued` по нему был бы правдой про службу и ложью про того, кто собрался выезжать:
+   * заявку отменили, сказать об этом оказалось некому, и узнать это назначивший обязан сразу.
+   */
+  const contractorMissed =
+    event === 'service_request_cancelled' && !!ctx.serviceCounterpartyId
+      ? contractorSide.length === 0
+      : false;
+
+  return {
+    plan: { event, kind: event as MailKind, recipients: to.list },
+    outcome: contractorMissed ? 'no_recipients' : 'queued',
+  };
+}
+
+/**
+ * Сторона подрядчика для письма, адресованного компании: её живые операторы и общий ящик карточки.
+ *
+ * Отмену подрядчик получает только тогда, когда заявка у него; для остальных событий список пуст —
+ * «Новая» ждёт разбора службой, и подрядчику там нечего читать.
+ */
+async function contractorRecipients(
+  event: ModuleMailEvent,
+  counterpartyId: string,
+): Promise<{ key: string; email: string }[]> {
+  if (event !== 'service_request_cancelled') return [];
+  const operators = await liveCounterpartyOperators(counterpartyId);
+  const mailbox = await contractorMailbox(counterpartyId);
+  return [
+    ...operators.map((row) => ({ key: row.id, email: row.email })),
+    ...(mailbox ? [{ key: `counterparty-${counterpartyId}`, email: mailbox }] : []),
+  ];
 }
 
 /**
@@ -282,6 +322,22 @@ export async function planServiceAssignmentMail(
   ctx: { actor: { id: string; email: string }; authorId: string | null },
 ): Promise<ServiceMailPlanResult> {
   const event: ModuleMailEvent = 'service_request_assigned';
+
+  /**
+   * Было ли этим действием что-то выдано или отозвано. Спрашивается ПЕРВЫМ, до почты и канала: если
+   * писать не о чем, состояние сервера к делу не относится вовсе. Иначе правка состава, которая
+   * никого не назначила, отвечала бы «отправка писем выключена» — тревога про настройку там, где
+   * письма и не требовалось (это и ломало смысл `not_needed`).
+   *
+   * «Выдано» — это `userIds` или новая компания; «отозвано» — прежняя компания при переназначении.
+   * Нашлись ли у них адреса, здесь не спрашивается: тот вопрос решается ниже и отвечает другим
+   * исходом.
+   */
+  const hadNewAssignment =
+    assignment.userIds.length > 0 || assignment.serviceCounterpartyId !== null;
+  const hadWithdrawal = !!assignment.previousServiceCounterpartyId;
+  if (!hadNewAssignment && !hadWithdrawal) return { plan: null, outcome: 'not_needed' };
+
   if (!config.mail.enabled) return { plan: null, outcome: 'mail_disabled' };
 
   /**
@@ -299,56 +355,35 @@ export async function planServiceAssignmentMail(
   const authorEmail = author?.email ?? '';
 
   /**
-   * Условие живой учётки одно на обе стороны: задание адресуется тому, кто может войти в портал и
-   * принять заявку. Архивная и отключённая учётки — это ящик, за которым никого нет; молчаливо
-   * отправить туда письмо хуже, чем сказать назначившему «предупредите их сами».
+   * Задание адресуется тому, кто может войти в портал и принять заявку: архивная и отключённая
+   * учётки — это ящик, за которым никого нет, и молчаливо отправить туда письмо хуже, чем сказать
+   * назначившему «предупредите их сами».
    */
-  const alive = (...extra: (SQL | undefined)[]) =>
-    and(...extra, eq(users.isActive, true), isNull(users.deletedAt));
-
   const named = assignment.userIds.length
     ? await db
         .select({ id: users.id, email: users.email })
         .from(users)
-        .where(alive(inArray(users.id, assignment.userIds)))
+        .where(
+          and(
+            inArray(users.id, assignment.userIds),
+            eq(users.isActive, true),
+            isNull(users.deletedAt),
+          ),
+        )
         .orderBy(users.email)
     : [];
 
   /**
    * У сервисной компании поимённых строк нет (§4.2): назначается она целиком, а читают почту её
-   * операторы — учётки, у которых этот контрагент задаёт область видимости. Их может не быть ни
-   * одной, и это обычное дело: подрядчик без доступа в портал существует.
-   *
-   * Роль спрашивается вдобавок к контрагенту, а не вместо него: `users_operator_counterparty_check`
-   * (миграция 0023) односторонний — «оператор обязан иметь контрагента», но не наоборот, и у
-   * учётки, которую перевели на другую роль, привязка остаётся. Такой человек заявок компании уже
-   * не видит, и задание ему — письмо в никуда. Список ролей берётся из контрактов, чтобы вторая
-   * копия «кто работает от контрагента» не разошлась с первой.
+   * операторы. Их может не быть ни одной, и это обычное дело: подрядчик без доступа в портал
+   * существует. Отбор — общий на все письма модуля (`liveCounterpartyOperators`).
    */
   const operators = assignment.serviceCounterpartyId
-    ? await db
-        .select({ id: users.id, email: users.email })
-        .from(users)
-        .where(
-          alive(
-            eq(users.counterpartyId, assignment.serviceCounterpartyId),
-            inArray(users.role, [...COUNTERPARTY_SCOPED_ROLES]),
-          ),
-        )
-        .orderBy(users.email)
+    ? await liveCounterpartyOperators(assignment.serviceCounterpartyId)
     : [];
 
   const previousOperators = assignment.previousServiceCounterpartyId
-    ? await db
-        .select({ id: users.id, email: users.email })
-        .from(users)
-        .where(
-          alive(
-            eq(users.counterpartyId, assignment.previousServiceCounterpartyId),
-            inArray(users.role, [...COUNTERPARTY_SCOPED_ROLES]),
-          ),
-        )
-        .orderBy(users.email)
+    ? await liveCounterpartyOperators(assignment.previousServiceCounterpartyId)
     : [];
 
   /**
@@ -389,14 +424,8 @@ export async function planServiceAssignmentMail(
       'contractor',
     );
   }
-  /**
-   * Было ли этим действием **выдано** новое задание. Не то же самое, что «нашлись ли адресаты»:
-   * правка состава может никого не назначить вовсе — сняли сервисную компанию, оставив прежнего
-   * исполнителя, либо вернули заявку из «В работе» тем же составом. Тогда писать некому по
-   * построению, а не из-за незаведённого ящика, и исход этих случаев разный (см. возврат ниже).
-   */
-  const hadNewAssignment =
-    assignment.userIds.length > 0 || assignment.serviceCounterpartyId !== null;
+  // Половина письма про новое задание закончилась: дальше идёт отзыв, и его адресаты в этот счёт
+  // попадать не должны — иначе «задание дошло» подтверждалось бы письмом прежнему подрядчику.
   const newAssignmentReachedRecipient = to.list.length > 0;
   for (const row of previousOperators) {
     to.add(`withdrawn-${row.id}`, row.email, channelEmail, 'contractor_withdrawn');
@@ -409,37 +438,70 @@ export async function planServiceAssignmentMail(
       'contractor_withdrawn',
     );
   }
-  // Писем нет вовсе. Причин две, и человеку они говорят разное: задание выдали, но адреса у
-  // исполнителя нет (`no_recipients` — заведите ящик, позвоните), либо задания не было (`not_needed`
-  // — портал промолчит).
-  if (to.list.length === 0) {
-    return { plan: null, outcome: hadNewAssignment ? 'no_recipients' : 'not_needed' };
-  }
+  // Писем нет вовсе, хотя действие их требовало (случай «не требовалось» отсечён в самом начале):
+  // ни у назначенных, ни у той стороны, у которой работу забрали, нет ни одного живого адреса.
+  if (to.list.length === 0) return { plan: null, outcome: 'no_recipients' };
 
   const copies = await db
     .select()
     .from(moduleMailRecipients)
     .where(and(eq(moduleMailRecipients.event, event), eq(moduleMailRecipients.isEnabled, true)));
+  const withdrawalReachedRecipient = to.list.some((r) => r.audience === 'contractor_withdrawn');
+
   for (const row of copies) {
     to.add(
       row.id,
       row.toEmail,
       replyToOf(row.replyToMode, row.replyToEmail, { author: authorEmail, actor: ctx.actor.email }),
+      'copy',
     );
   }
 
+  /**
+   * Исход отвечает за ОБЕ половины письма, а не за ту, что дошла первой.
+   *
+   * Половины две и обе обязательны: новому исполнителю выдали задание, у прежней компании его
+   * забрали. Считай мы только новую — переназначение к подрядчику с ящиком отвечало бы `queued`,
+   * пока прежний, которому написать некуда, продолжал бы собирать выезд. Считай только старую —
+   * потерялось бы само задание. Поэтому недоставленной хватает любой.
+   */
+  const newAssignmentMissed = hadNewAssignment && !newAssignmentReachedRecipient;
+  const withdrawalMissed = hadWithdrawal && !withdrawalReachedRecipient;
+
   return {
     plan: { event, kind: event as MailKind, recipients: to.list },
-    /**
-     * Отзыв прежнему подрядчику ставится даже тогда, когда у нового исполнителя нет ни одного
-     * адреса. Ответ всё равно обязан предупредить назначившего: отзыв дошёл, новое задание — нет.
-     *
-     * Но только если задание вообще выдавали. Действие, которое лишь СНЯЛО компанию, отправляет
-     * один отзыв и ничего не теряет: `no_recipients` тут звал бы заводить ящик тому, кому больше
-     * не пишут.
-     */
-    outcome: !hadNewAssignment || newAssignmentReachedRecipient ? 'queued' : 'no_recipients',
+    outcome: newAssignmentMissed || withdrawalMissed ? 'no_recipients' : 'queued',
   };
+}
+
+/**
+ * Живые учётки, работающие от лица контрагента, — те, кто читает заявки этой компании в портале.
+ *
+ * Отбор один на все письма модуля намеренно: задание, отзыв задания и отмена адресуются одной и той
+ * же стороне, и разойдись эти три списка — подрядчик получал бы назначение, но не отмену, что и
+ * случилось до этой правки.
+ *
+ * Условие живой учётки: архивная и отключённая — это ящик, за которым никого нет. Роль спрашивается
+ * вдобавок к контрагенту, а не вместо него: `users_operator_counterparty_check` (миграция 0023)
+ * односторонний — «оператор обязан иметь контрагента», но не наоборот, и у учётки, переведённой на
+ * другую роль, привязка остаётся. Такой человек заявок компании уже не видит, и письмо ему — письмо
+ * в никуда.
+ */
+async function liveCounterpartyOperators(
+  counterpartyId: string,
+): Promise<{ id: string; email: string }[]> {
+  return db
+    .select({ id: users.id, email: users.email })
+    .from(users)
+    .where(
+      and(
+        eq(users.counterpartyId, counterpartyId),
+        inArray(users.role, [...COUNTERPARTY_SCOPED_ROLES]),
+        eq(users.isActive, true),
+        isNull(users.deletedAt),
+      ),
+    )
+    .orderBy(users.email);
 }
 
 /**
@@ -677,7 +739,8 @@ export function renderServiceLetter(
     ...(data.authorName ? [`Заявку завёл: ${data.authorName}`] : []),
     ...(data.attachments > 0
       ? [
-          audience === 'internal'
+          // «См. в портале» — только тем, у кого портал есть. Копия читает его наравне со службой.
+          audience === 'internal' || audience === 'copy'
             ? `Вложений в заявке: ${data.attachments} (см. в портале)`
             : `Вложений в заявке: ${data.attachments} (запросите их ответом на письмо)`,
         ]
@@ -697,7 +760,7 @@ export function renderServiceLetter(
       // называют одно и то же одинаково, а на заявке про расходники «Что случилось» было мимо.
       { kind: 'heading' as const, text: 'Описание' },
       { kind: 'paragraph' as const, text: data.description },
-      ...(audience === 'internal'
+      ...(audience === 'internal' || audience === 'copy'
         ? [
             {
               kind: 'link' as const,
@@ -710,28 +773,37 @@ export function renderServiceLetter(
         kind: 'note' as const,
         /**
          * Приписка обязана говорить правду про обратный адрес и доступ в портал — иначе внешний
-         * адресат получает неисполнимое указание. Отсюда четыре ветки (ADR 0153):
+         * адресат получает неисполнимое указание. Отсюда пять веток (ADR 0153):
          *
-         * 1. Своему исполнителю назначение предлагает открыть портал.
-         * 2. Внешнему подрядчику назначение предлагает подтвердить получение ответом на письмо.
-         * 3. Прежнему подрядчику прямо сообщается, что задание отозвано и выезд не требуется.
-         * 4. Подрядчику — ответ идёт в службу, и для отмены к этому добавлено главное: не выезжать.
+         * 1. **Копия про адрес ответа не утверждает ничего.** У строки настройки свой режим —
+         *    `author`, `actor`, `fixed` или `portal`, — и любая фраза «ответ уйдёт туда-то» для неё
+         *    неверна у трёх режимов из четырёх. Раньше копия получала тело службы и обещала ответ
+         *    заявителю, а по письму о назначении — службу; куда уйдёт ответ на самом деле, знала
+         *    только настройка.
+         * 2. Своему исполнителю назначение предлагает открыть портал.
+         * 3. Внешнему подрядчику назначение предлагает подтвердить получение ответом на письмо.
+         * 4. Прежнему подрядчику прямо сообщается, что задание отозвано и выезд не требуется.
+         * 5. Подрядчику — ответ идёт в службу, и для отмены к этому добавлено главное: не выезжать.
          *    Текст перечисляет события поимённо, а не пишет «отменена» на всякий подрядческий
          *    случай: заведи мы этой аудитории третье событие — приписка соврала бы молча.
          *    Своим у событий службы ответ по-прежнему идёт заявителю: у службы вопросы к нему.
          */
-        text: withdrawn
-          ? 'Заявка больше не назначена вашей компании — выезд не требуется. Ответ на это ' +
-            'письмо уйдёт в службу оргтехники.'
-          : assignment
-            ? audience === 'contractor'
-              ? 'Заявка назначена вашей компании. Подтвердите получение ответом на это письмо — ' +
-                'ответ уйдёт в службу оргтехники.'
-              : 'Заявка назначена вам — примите её в работу в портале. Ответ на это письмо ' +
-                'уйдёт в службу оргтехники.'
-            : audience === 'contractor'
-              ? `${event === 'service_request_cancelled' ? 'Заявка отменена — выезд не требуется. ' : ''}Ответ на это письмо уйдёт в службу оргтехники.`
-              : 'Ссылка работает у тех, у кого есть доступ в портал. Ответ на это письмо уйдёт заявителю.',
+        text:
+          audience === 'copy'
+            ? 'Это копия письма по заявке. Ссылка работает у тех, у кого есть доступ в портал; ' +
+              'ответ уйдёт по адресу, заданному в настройке рассылки.'
+            : withdrawn
+              ? 'Заявка больше не назначена вашей компании — выезд не требуется. Ответ на это ' +
+                'письмо уйдёт в службу оргтехники.'
+              : assignment
+                ? audience === 'contractor'
+                  ? 'Заявка назначена вашей компании. Подтвердите получение ответом на это ' +
+                    'письмо — ответ уйдёт в службу оргтехники.'
+                  : 'Заявка назначена вам — примите её в работу в портале. Ответ на это письмо ' +
+                    'уйдёт в службу оргтехники.'
+                : audience === 'contractor'
+                  ? `${event === 'service_request_cancelled' ? 'Заявка отменена — выезд не требуется. ' : ''}Ответ на это письмо уйдёт в службу оргтехники.`
+                  : 'Ссылка работает у тех, у кого есть доступ в портал. Ответ на это письмо уйдёт заявителю.',
       },
     ],
   };
@@ -763,6 +835,7 @@ export function renderServiceLetters(
     internal: renderServiceLetter(event, data, 'internal'),
     contractor: renderServiceLetter(event, data, 'contractor'),
     contractor_withdrawn: renderServiceLetter(event, data, 'contractor_withdrawn'),
+    copy: renderServiceLetter(event, data, 'copy'),
   };
 }
 

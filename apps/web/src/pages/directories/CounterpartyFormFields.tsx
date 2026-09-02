@@ -3,6 +3,8 @@ import type { FormInstance } from 'antd';
 import {
   COUNTERPARTY_TYPES,
   type CounterpartyType,
+  type CreateCounterpartyInput,
+  type UpdateCounterpartyInput,
   counterpartyTypeLabels,
   EMAIL_FORMAT_MESSAGE,
   INN_CHECKSUM_MESSAGE,
@@ -39,6 +41,43 @@ export const typeOptions = COUNTERPARTY_TYPES.map((t) => ({
   value: t,
   label: counterpartyTypeLabels[t],
 }));
+
+/**
+ * Что уходит на сервер из значений формы. Живёт рядом с полями, а не во вкладке, ровно потому, что
+ * зависит от них: поле `email` показано только сервисной компании, и правило «что видно, то и
+ * отправляем» должно меняться вместе с условием показа, а не через файл.
+ *
+ * **Правке карточки прочего типа адрес не отправляется вовсе.** Скрытое поле не проверяется (см.
+ * правило ниже), и отправлять непроверенное значение значило бы менять тихий отказ формы на
+ * серверный: адрес, доставшийся карточке из старых данных, отбивался бы 400-м на поле, которого
+ * человек не видит. Отсутствие поля в теле `PATCH` означает «не трогать» — ящик организации
+ * переживает смену типа ровно так, как обещано в ADR 0153, и очищают его там же, где заводят: в
+ * карточке сервисной компании.
+ *
+ * У ЗАВЕДЕНИЯ адрес отправляется всегда, потому что беречь нечего: карточки ещё нет, а `POST`
+ * требует полного тела. Непроверенному значению взяться там неоткуда — форма пустая.
+ */
+export function counterpartyCreatePayload(values: CounterpartyFormValues): CreateCounterpartyInput {
+  return { ...counterpartyFields(values), email: values.email ?? '' };
+}
+
+export function counterpartyUpdatePayload(values: CounterpartyFormValues): UpdateCounterpartyInput {
+  const fields = counterpartyFields(values);
+  return values.type === 'service' ? { ...fields, email: values.email ?? '' } : fields;
+}
+
+function counterpartyFields(values: CounterpartyFormValues) {
+  return {
+    type: values.type,
+    name: values.name,
+    inn: values.inn,
+    synonyms: values.synonyms ?? [],
+    // У прочих типов поля в форме нет; пустой список сервер примет, непустой — отклонит.
+    objectIds: values.type === 'operator' ? (values.objectIds ?? []) : [],
+    comment: values.comment ?? '',
+    isActive: values.isActive,
+  };
+}
 
 export function CounterpartyFormFields({
   form,
