@@ -529,9 +529,13 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
   }
 
   /** План письма о назначении: действует администратор, автор заявки — заказчик. */
-  function planAssignment(userIds: string[], serviceCounterpartyId: string | null) {
+  function planAssignment(
+    userIds: string[],
+    serviceCounterpartyId: string | null,
+    previousServiceCounterpartyId: string | null = null,
+  ) {
     return ctx.mail.planServiceAssignmentMail(
-      { userIds, serviceCounterpartyId },
+      { userIds, serviceCounterpartyId, previousServiceCounterpartyId },
       { actor: ctx.people.admin, authorId: ctx.people.customer.id },
     );
   }
@@ -671,6 +675,35 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
   it('назначенным писать некуда — письма нет вовсе, и исход это называет', async () => {
     const planned = await planAssignment([ctx.people.retired.id], ctx.emptyCounterpartyId);
     expect(planned).toEqual({ plan: null, outcome: 'no_recipients' });
+  });
+
+  /**
+   * «Писем нет» бывает двух разных смыслов, и путать их нельзя (ADR 0153).
+   *
+   * `no_recipients` выше — это задание, которое НЕ ДОШЛО: исполнителя назначили, а писать ему
+   * некуда, и назначивший обязан позвонить сам. Здесь — другое: правка состава никого не назначила
+   * (сняли сервисную компанию, оставив прежнего исполнителя), и адресатов у задания нет по
+   * построению. Совет «заведите ящик компании» в этом случае звал бы заводить адрес тому, кому
+   * больше не пишут, — поэтому исход свой, и портал по нему молчит.
+   *
+   * Проверяются обе половины разом: со снятой компанией отзыв УХОДИТ (`queued`, письмо только ей),
+   * а когда отзывать некого — писем нет вовсе (`not_needed`).
+   */
+  it('снятие компании без нового назначения: отзыв уходит, тревоги нет', async () => {
+    // Ровно то, что считает ручка состава, снимая компанию при неизменном поимённом составе:
+    // добавленных нет, новой компании нет, прежняя — та, у которой заявку забрали.
+    const withdrawal = await planAssignment([], null, ctx.serviceCounterpartyId);
+    expect(withdrawal.outcome).toBe('queued');
+    expect(withdrawal.plan!.recipients.map((r) => r.audience)).toEqual([
+      'contractor_withdrawn',
+      'contractor_withdrawn',
+    ]);
+    expect(withdrawal.plan!.recipients.map((r) => r.email).sort()).toEqual(
+      [ctx.people.operator.email, CONTRACTOR_MAILBOX].sort(),
+    );
+
+    // Тот же случай без прежней компании — возврат заявки прежнему составу: писать не о чем.
+    expect(await planAssignment([], null, null)).toEqual({ plan: null, outcome: 'not_needed' });
   });
 
   /**

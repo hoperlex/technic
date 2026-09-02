@@ -123,9 +123,22 @@ export function CounterpartyFormFields({
         hidden={watchType !== 'service'}
         normalize={normalizeEmail}
         validateTrigger="onBlur"
+        /**
+         * Правило спрашивается только у показанного поля. `hidden` у `Form.Item` — это стиль, а не
+         * снятие с учёта: скрытое поле по-прежнему проверяется на отправке, и кривой адрес, пришедший
+         * из старых данных, запер бы сохранение карточки другого типа сообщением, которого не видно
+         * — человек нажимал бы «Сохранить» впустую. Само значение при этом остаётся: адрес
+         * организации переживает смену типа, и в этом весь смысл `hidden` вместо условного вывода.
+         *
+         * Тип спрашивается у САМОЙ ФОРМЫ (`getFieldValue`), а не у `watchType` рядом. Разница не
+         * стилистическая: `useWatch` отдаёт значение через перерисовку и на первых кадрах возвращает
+         * `undefined`, так что проверка, повешенная на него, пропускала бы кривой адрес ровно тогда,
+         * когда карточку отправили быстро. `getFieldValue` читает хранилище формы и врать не может.
+         */
         rules={[
-          () => ({
+          ({ getFieldValue }) => ({
             validator: (_: unknown, value: unknown) =>
+              getFieldValue('type') !== 'service' ||
               optionalEmailSchema.safeParse(typeof value === 'string' ? value : '').success
                 ? Promise.resolve()
                 : Promise.reject(new Error(EMAIL_FORMAT_MESSAGE)),

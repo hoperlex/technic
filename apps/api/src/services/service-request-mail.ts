@@ -389,6 +389,14 @@ export async function planServiceAssignmentMail(
       'contractor',
     );
   }
+  /**
+   * Было ли этим действием **выдано** новое задание. Не то же самое, что «нашлись ли адресаты»:
+   * правка состава может никого не назначить вовсе — сняли сервисную компанию, оставив прежнего
+   * исполнителя, либо вернули заявку из «В работе» тем же составом. Тогда писать некому по
+   * построению, а не из-за незаведённого ящика, и исход этих случаев разный (см. возврат ниже).
+   */
+  const hadNewAssignment =
+    assignment.userIds.length > 0 || assignment.serviceCounterpartyId !== null;
   const newAssignmentReachedRecipient = to.list.length > 0;
   for (const row of previousOperators) {
     to.add(`withdrawn-${row.id}`, row.email, channelEmail, 'contractor_withdrawn');
@@ -401,7 +409,12 @@ export async function planServiceAssignmentMail(
       'contractor_withdrawn',
     );
   }
-  if (to.list.length === 0) return { plan: null, outcome: 'no_recipients' };
+  // Писем нет вовсе. Причин две, и человеку они говорят разное: задание выдали, но адреса у
+  // исполнителя нет (`no_recipients` — заведите ящик, позвоните), либо задания не было (`not_needed`
+  // — портал промолчит).
+  if (to.list.length === 0) {
+    return { plan: null, outcome: hadNewAssignment ? 'no_recipients' : 'not_needed' };
+  }
 
   const copies = await db
     .select()
@@ -417,9 +430,15 @@ export async function planServiceAssignmentMail(
 
   return {
     plan: { event, kind: event as MailKind, recipients: to.list },
-    // Отзыв прежнему подрядчику ставится даже тогда, когда у нового исполнителя нет ни одного
-    // адреса. Ответ всё равно обязан предупредить назначившего: отзыв дошёл, новое задание — нет.
-    outcome: newAssignmentReachedRecipient ? 'queued' : 'no_recipients',
+    /**
+     * Отзыв прежнему подрядчику ставится даже тогда, когда у нового исполнителя нет ни одного
+     * адреса. Ответ всё равно обязан предупредить назначившего: отзыв дошёл, новое задание — нет.
+     *
+     * Но только если задание вообще выдавали. Действие, которое лишь СНЯЛО компанию, отправляет
+     * один отзыв и ничего не теряет: `no_recipients` тут звал бы заводить ящик тому, кому больше
+     * не пишут.
+     */
+    outcome: !hadNewAssignment || newAssignmentReachedRecipient ? 'queued' : 'no_recipients',
   };
 }
 

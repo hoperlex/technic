@@ -9,16 +9,27 @@ import {
 } from '../src/pages/directories/CounterpartyFormFields';
 
 /** Поле сохраняет общий ящик, поэтому проверка обязана сработать до общего тоста API. */
-function FormHarness({ onFinish }: { onFinish: (value: CounterpartyFormValues) => void }) {
+function FormHarness({
+  onFinish,
+  type = 'service',
+  email,
+}: {
+  onFinish: (value: CounterpartyFormValues) => void;
+  /** Тип решает, показано ли поле: у прочих оно скрыто, но значение из карточки сохраняет. */
+  type?: CounterpartyFormValues['type'];
+  /** Готовое значение — так в карточку приезжает адрес, заведённый когда-то и не тронутый с тех пор. */
+  email?: string;
+}) {
   const [form] = Form.useForm<CounterpartyFormValues>();
   useEffect(() => {
     form.setFieldsValue({
-      type: 'service',
+      type,
       name: 'Сервис оргтехники',
       inn: '7707083893',
       isActive: true,
+      ...(email === undefined ? {} : { email }),
     });
-  }, [form]);
+  }, [form, type, email]);
 
   return (
     <>
@@ -55,5 +66,24 @@ describe('общий email сервисной компании', () => {
 
     await waitFor(() => expect(onFinish).toHaveBeenCalledTimes(1));
     expect(onFinish.mock.calls[0]![0].email).toBe('service@example.ru');
+  });
+
+  /**
+   * Поле скрыто у прочих типов, а `hidden` у `Form.Item` — это стиль, а не снятие с учёта: правило
+   * без оговорки проверяло бы и невидимое поле. Цена ошибки не «лишняя проверка», а запертая
+   * карточка: сообщение отрисовалось бы внутри скрытого поля, и человек нажимал бы «Сохранить»
+   * впустую, не видя причины. Кривой адрес взяться может только из старых данных — форма и API
+   * пишут проверенный, — но именно такие значения и запирают формы.
+   */
+  it('скрытое поле не запирает сохранение карточки другого типа', async () => {
+    const onFinish = vi.fn();
+    render(<FormHarness onFinish={onFinish} type="supplier" email="кривой адрес" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(onFinish).toHaveBeenCalledTimes(1));
+    // Значение уезжает как было: смена типа не стирает ящик организации (ADR 0153).
+    expect(onFinish.mock.calls[0]![0].email).toBe('кривой адрес');
+    expect(screen.queryByText(EMAIL_FORMAT_MESSAGE)).toBeNull();
   });
 });

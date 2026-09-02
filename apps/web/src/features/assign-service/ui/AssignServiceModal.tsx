@@ -211,8 +211,14 @@ export function AssignServiceModal({
        * единственный такой файл (`pages/service/serviceMailNotice.ts`) лежит слоем выше — feature
        * до него не дотянется. Смысл при этом не теряется: действие удалось, а письма нет, и красная
        * строка про это говорит громче тихой.
+       *
+       * Молчат два исхода, а не один: `not_needed` — это правка состава, которая никого не
+       * назначила (сняли компанию, оставив исполнителя), и красная строка про «письма нет» была бы
+       * тревогой на ровном месте.
        */
-      if (res.mail !== 'queued') message.error(moduleMailOutcomeLabels[res.mail]);
+      if (res.mail !== 'queued' && res.mail !== 'not_needed') {
+        message.error(moduleMailOutcomeLabels[res.mail]);
+      }
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();

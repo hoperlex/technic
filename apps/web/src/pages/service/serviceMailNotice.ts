@@ -17,13 +17,14 @@ type MessageApi = ReturnType<typeof App.useApp>['message'];
  * снять правило со всей формы заявки, со всех её полей разом. Здесь снимать нечего: поля нет, а
  * `ModuleMailOutcome` на входе не даёт модулю превратиться в общий вход для любых тостов.
  *
- * `queued` и пустой исход молчат: очередь — обычный ход, а `null` приходит от правки заявки,
- * которая письма и не шлёт.
+ * `queued`, `not_needed` и пустой исход молчат: очередь — обычный ход, `not_needed` означает, что
+ * писать было не о чем (состав никого не назначил), а `null` приходит от правки заявки, которая
+ * письма и не шлёт.
  */
 export function reportServiceMail(
   message: MessageApi,
   outcome: ModuleMailOutcome | null | undefined,
 ): void {
-  if (!outcome || outcome === 'queued') return;
+  if (!outcome || outcome === 'queued' || outcome === 'not_needed') return;
   message.warning(moduleMailOutcomeLabels[outcome]);
 }
