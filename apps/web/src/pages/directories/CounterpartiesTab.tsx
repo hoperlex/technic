@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, Button, Checkbox, Form, Input, Select, Space, Switch, Tag, Typography } from 'antd';
+import { App, Button, Checkbox, Form, Select, Space, Tag, Typography } from 'antd';
 import {
   DeleteFilled,
   DeleteOutlined,
@@ -9,17 +9,16 @@ import {
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  COUNTERPARTY_TYPES,
   type CounterpartyDto,
-  type CounterpartyType,
   counterpartyTypeColors,
   counterpartyTypeLabels,
-  INN_CHECKSUM_MESSAGE,
-  INN_MESSAGE,
-  isValidInn,
 } from '@technic/contracts';
 import { counterpartiesApi } from '../../api/resources';
-import { AutoSelect } from '@shared/ui';
+import {
+  CounterpartyFormFields,
+  type CounterpartyFormValues,
+  typeOptions,
+} from './CounterpartyFormFields';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -30,19 +29,6 @@ import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { objectsApi, objectKeys } from '@entities/object';
-
-interface CounterpartyFormValues {
-  type: CounterpartyType;
-  name: string;
-  inn: string;
-  synonyms?: string[];
-  /** Обслуживаемые объекты — только у типа «Оператор» (ADR 0010). */
-  objectIds?: string[];
-  comment?: string;
-  isActive: boolean;
-}
-
-const typeOptions = COUNTERPARTY_TYPES.map((t) => ({ value: t, label: counterpartyTypeLabels[t] }));
 
 export function CounterpartiesTab() {
   const { message, modal } = App.useApp();
@@ -91,8 +77,6 @@ export function CounterpartiesTab() {
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<CounterpartyDto | null>(null);
   const [form] = Form.useForm<CounterpartyFormValues>();
-  // Объекты обслуживает только оператор, поэтому поле следует за выбранным типом.
-  const watchType = Form.useWatch('type', form);
 
   const openCreate = () => {
     setRecord(null);
@@ -113,6 +97,7 @@ export function CounterpartiesTab() {
       inn: r.inn,
       synonyms: r.synonyms,
       objectIds: r.objects.map((o) => o.id),
+      email: r.email,
       comment: r.comment,
       isActive: r.isActive,
     });
@@ -128,6 +113,9 @@ export function CounterpartiesTab() {
         synonyms: values.synonyms ?? [],
         // У прочих типов поля в форме нет; пустой список сервер примет, непустой — отклонит.
         objectIds: values.type === 'operator' ? (values.objectIds ?? []) : [],
+        // Адрес отправляется у любого типа: поле в форме показано только сервисной компании, но
+        // очищать его сменой типа нельзя — тип меняют, а ящик организации остаётся её ящиком.
+        email: values.email ?? '',
         comment: values.comment ?? '',
         isActive: values.isActive,
       };
@@ -223,6 +211,18 @@ export function CounterpartiesTab() {
       width: 220,
       // Заполняется только у операторов; у остальных типов колонка намеренно пуста.
       render: (_v, r) => (r.objects.length === 0 ? '—' : r.objects.map((o) => o.code).join(' · ')),
+    }),
+    textColumn<CounterpartyDto>({
+      key: 'email',
+      title: 'Email',
+      dataIndex: 'email',
+      searchable: false,
+      width: 220,
+      ellipsis: true,
+      // Пусто у большинства типов, и это не дефект: письма по адресу шлёт сегодня один модуль
+      // (ADR 0153). Колонка нужна именно затем, чтобы видеть, у каких сервисных компаний ящик
+      // ещё не заведён, — иначе про пропавшее письмо узнаёшь от подрядчика.
+      render: (_v, r) => r.email || '—',
     }),
     textColumn<CounterpartyDto>({
       key: 'comment',
@@ -362,6 +362,7 @@ export function CounterpartiesTab() {
       (r) => (r.synonyms.length > 0 ? r.synonyms.join(' · ') : null),
       (r) => (r.inn ? `ИНН ${r.inn}` : null),
       (r) => (r.objects.length > 0 ? `Объекты: ${r.objects.map((o) => o.code).join(' · ')}` : null),
+      (r) => r.email || null,
       (r) => r.comment || null,
     ],
     onOpen: (r) => (r.deletedAt ? undefined : openEdit(r)),
@@ -436,87 +437,11 @@ export function CounterpartiesTab() {
         confirmLoading={saveMut.isPending}
         width={560}
       >
-        <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
-          <Form.Item name="type" label="Тип" rules={[{ required: true, message: 'Выберите тип' }]}>
-            <AutoSelect options={typeOptions} />
-          </Form.Item>
-          <Form.Item
-            name="name"
-            label="Наименование"
-            tooltip="Как называем контрагента мы; варианты из документов вносятся в синонимы"
-            rules={[{ required: true, message: 'Укажите наименование' }]}
-          >
-            <Input maxLength={255} />
-          </Form.Item>
-          <Form.Item
-            name="inn"
-            label="ИНН"
-            rules={[
-              { required: true, message: INN_MESSAGE },
-              {
-                validator: (_rule, v: string | undefined) => {
-                  if (!v) return Promise.resolve();
-                  if (!/^(\d{10}|\d{12})$/.test(v.trim())) {
-                    return Promise.reject(new Error(INN_MESSAGE));
-                  }
-                  // Контрольная сумма ловит опечатку в одной цифре — формат её не видит.
-                  return isValidInn(v.trim())
-                    ? Promise.resolve()
-                    : Promise.reject(new Error(INN_CHECKSUM_MESSAGE));
-                },
-              },
-            ]}
-          >
-            <Input maxLength={12} placeholder="10 или 12 цифр" />
-          </Form.Item>
-          <Form.Item
-            name="synonyms"
-            label="Синонимы наименования"
-            tooltip="Как контрагента пишут в накладных и выгрузках. Enter — добавить вариант"
-            extra="Один и тот же синоним не может принадлежать двум контрагентам"
-          >
-            <Select
-              mode="tags"
-              tokenSeparators={[';']}
-              open={false}
-              suffixIcon={null}
-              placeholder="ООО «Ромашка», Ромашка ООО…"
-            />
-          </Form.Item>
-          {watchType === 'operator' && (
-            <Form.Item
-              name="objectIds"
-              label="Обслуживаемые объекты"
-              tooltip="Объекты, с которых оператор вывозит мусор; из них подставляется исполнитель заявки"
-              extra="Пусто — оператор доступен только на объектах, где операторы не заданы"
-            >
-              <Select
-                mode="multiple"
-                options={objectOptions}
-                showSearch
-                optionFilterProp="label"
-                placeholder="Не ограничивать"
-              />
-            </Form.Item>
-          )}
-          <Form.Item name="comment" label="Комментарий">
-            <Input.TextArea rows={2} maxLength={2000} showCount />
-          </Form.Item>
-          <Form.Item
-            name="isActive"
-            label="Активен"
-            valuePropName="checked"
-            // У неактивного арендодателя не может быть активных предложений аренды (ADR 0018 §15):
-            // деактивация гасит их разом, обратное включение — по одной позиции вручную.
-            extra={
-              watchType === 'vehicle_lessor'
-                ? 'Деактивация выключит всю технику этого арендодателя, активация — вернёт ровно её (позиции, выключенные вручную, останутся выключенными)'
-                : undefined
-            }
-          >
-            <Switch />
-          </Form.Item>
-        </Form>
+        <CounterpartyFormFields
+          form={form}
+          objectOptions={objectOptions}
+          onFinish={(v) => saveMut.mutate(v)}
+        />
       </FormModal>
     </PageTableLayout>
   );

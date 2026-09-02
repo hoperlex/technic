@@ -1465,6 +1465,13 @@ export const counterparties = pgTable(
       sql`counterparty_name_normalize(name)`,
     ),
     inn: text('inn').notNull(),
+    /**
+     * Общий почтовый ящик организации (миграция 0241, ADR 0153). Письма по нему шлёт сегодня один
+     * модуль — «Орг.техника» сервисной компании, — но колонка общая для всех типов: тип контрагента
+     * меняют, а адрес организации осмыслен у любого. Пусто — адреса нет; учётки-операторы при этом
+     * письма получают по-прежнему, адрес их не заменяет.
+     */
+    email: citext('email').notNull().default(''),
     comment: text('comment').notNull().default(''),
     isActive: boolean('is_active').notNull().default(true),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),

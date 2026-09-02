@@ -1,11 +1,14 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import {
   counterpartyTypeLabels,
+  EMAIL_FORMAT_MESSAGE,
   formatPhone,
   INN_CHECKSUM_MESSAGE,
   INN_MESSAGE,
   isValidInn,
+  normalizeEmail,
   normalizePhone,
+  optionalEmailSchema,
   PHONE_FORMAT_MESSAGE,
   warehouseTitle,
   type CounterpartyType,
@@ -522,6 +525,8 @@ interface CounterpartyModel {
   type: CounterpartyType | '';
   name: string;
   inn: string;
+  /** Общий ящик организации; сервисной компании на него уходят задания и отмены. */
+  email: string;
   /** Как ту же организацию пишут в накладных; порядок — тот, что в ячейке файла. */
   synonyms: string[];
   comment: string;
@@ -651,6 +656,21 @@ const counterpartiesDirectory = directory<CounterpartyRow, CounterpartyModel, Co
       },
     },
     {
+      header: 'Email для заявок',
+      width: 30,
+      hint: 'Общий ящик организации. Сервисной компании на него уходят назначения и отмены; пустая ячейка заведённый адрес не стирает.',
+      get: (m) => m.email,
+      set: (m, text, ctx) => {
+        const v = normalizeEmail(text);
+        if (v === '' || v === m.email) return;
+        if (!optionalEmailSchema.safeParse(v).success) {
+          ctx.fail(`Email для заявок — ${EMAIL_FORMAT_MESSAGE}: «${text.trim()}»`);
+          return;
+        }
+        m.email = v;
+      },
+    },
+    {
       header: 'Комментарий',
       width: 40,
       hint: 'Пометка о контрагенте. Единственная колонка, где пустая ячейка означает «стереть».',
@@ -690,11 +710,22 @@ const counterpartiesDirectory = directory<CounterpartyRow, CounterpartyModel, Co
     type: row.type,
     name: row.name,
     inn: row.inn,
+    // Старые снимки и тестовые строки до миграции поля не содержат: в модели это тот же пустой
+    // адрес, иначе выгрузка и обратная загрузка расходятся на `undefined` против `''`.
+    email: row.email ?? '',
     synonyms: env.synonymsById.get(row.id) ?? [],
     comment: row.comment,
     isActive: row.isActive,
   }),
-  blank: () => ({ type: '', name: '', inn: '', synonyms: [], comment: '', isActive: true }),
+  blank: () => ({
+    type: '',
+    name: '',
+    inn: '',
+    email: '',
+    synonyms: [],
+    comment: '',
+    isActive: true,
+  }),
   keyOf: (m) => m.inn,
   titleOf: (m) => m.name || m.inn,
   check: (m, ctx, env) => {
@@ -734,6 +765,7 @@ const counterpartiesDirectory = directory<CounterpartyRow, CounterpartyModel, Co
         type: type!,
         name: m.name,
         inn: m.inn,
+        email: m.email,
         comment: m.comment,
         isActive: m.isActive,
         createdBy: actorUserId,
@@ -750,6 +782,7 @@ const counterpartiesDirectory = directory<CounterpartyRow, CounterpartyModel, Co
       .set({
         name: m.name,
         inn: m.inn,
+        email: m.email,
         comment: m.comment,
         isActive: m.isActive,
         updatedBy: actorUserId,

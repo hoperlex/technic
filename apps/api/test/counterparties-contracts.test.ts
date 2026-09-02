@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   allowedStatusTransitions,
   canTransitionStatus,
+  counterpartyListQuerySchema,
   createCounterpartySchema,
   createUserSchema,
   isValidInn,
@@ -75,6 +76,22 @@ describe('контракт контрагента', () => {
   it('пустой список синонимов означает «снять все», отсутствие поля — «не трогать»', () => {
     expect(updateCounterpartySchema.parse({ synonyms: [] }).synonyms).toEqual([]);
     expect(updateCounterpartySchema.parse({ name: 'Ромашка' }).synonyms).toBeUndefined();
+  });
+
+  it('общий email нормализуется и проверяется тем же контрактом, что остальные адреса', () => {
+    expect(
+      createCounterpartySchema.parse({
+        type: 'service',
+        name: 'Сервис оргтехники',
+        inn: '7707083893',
+        email: ' service@ example.ru ',
+      }).email,
+    ).toBe('service@example.ru');
+    expect(() => updateCounterpartySchema.parse({ email: 'не адрес' })).toThrow();
+  });
+
+  it('список контрагентов принимает сортировку по общему email', () => {
+    expect(counterpartyListQuerySchema.parse({ sortBy: 'email' }).sortBy).toBe('email');
   });
 });
 

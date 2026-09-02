@@ -140,7 +140,7 @@ import {
   planServiceAssignmentMail,
   planServiceMail,
   queueServiceMails,
-  renderServiceLetter,
+  renderServiceLetters,
   serviceMailEventOf,
   type ServiceMailPlan,
 } from '../services/service-request-mail';
@@ -1640,9 +1640,9 @@ async function recordServiceStatusTransition(
    * ответом и в аудит после commit. Ошибка вставки письма — отказ хранилища, и она летит наружу,
    * откатывая всё: прятать потерю письма мягким исходом нельзя.
    */
-  let letter: ReturnType<typeof renderServiceLetter>;
+  let letters: ReturnType<typeof renderServiceLetters>;
   try {
-    letter = renderServiceLetter(params.mail.event, data);
+    letters = renderServiceLetters(params.mail.event, data);
   } catch (e) {
     logServiceMailFailure(params.requestId, e);
     return { statusHistoryId: entry!.id, mailFailed: true };
@@ -1652,7 +1652,7 @@ async function recordServiceStatusTransition(
     plan: params.mail,
     statusHistoryId: entry!.id,
     requestId: params.requestId,
-    letter,
+    letters,
   });
   return { statusHistoryId: entry!.id, mailFailed: false };
 }
@@ -3594,17 +3594,20 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       }
 
       /**
-       * Письмо о назначении (Н13) — задание на работу, и уходит оно **только тем, кого назначили
-       * этим действием**: поимённо — новым строкам, компании — только если сменилась она сама.
-       * Иначе при каждом переназначении сервиса свои сисадмины, давно ведущие заявку, получали бы
-       * повторное «вам назначено» и перестали бы читать эти письма вовсе.
+       * Письмо о назначении (Н13) — задание на работу, и уходит оно новым исполнителям. Прежней
+       * сервисной компании при смене или снятии назначения уходит отдельный отзыв: новое задание
+       * другой компании само по себе не говорит старой, что выезд больше не требуется.
        *
-       * Обратный адрес — автор заявки: вопрос исполнителя про поломку адресован ему, а не
-       * назначившему. Считается до транзакции (Р67): адресаты ходят в базу и в конфигурацию, и
-       * упавшие внутри откатили бы саму заявку.
+       * Обратный адрес — ящик службы: внешний подрядчик отвечает тем, кто ведёт заявку, а не её
+       * автору. Считается до транзакции (Р67): адресаты ходят в базу и в конфигурацию, и упавшие
+       * внутри откатили бы саму заявку.
        */
       const mailPlan = await planServiceAssignmentMail(
-        { userIds: added, serviceCounterpartyId: counterpartyChanged ? counterpartyId : null },
+        {
+          userIds: added,
+          serviceCounterpartyId: counterpartyChanged ? counterpartyId : null,
+          previousServiceCounterpartyId: counterpartyChanged ? row.serviceCounterpartyId : null,
+        },
         { actor: p, authorId: row.createdBy },
       );
 
@@ -3690,7 +3693,6 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         });
         return transition.mailFailed;
       });
-
       await writeAudit({
         actorUserId: p.id,
         action: first ? 'serviceRequest.assign' : 'serviceRequest.reassign',
@@ -4385,9 +4387,27 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         );
       }
 
-      await db.transaction(async (tx) => {
-        await applyTransition(tx, {
+      /**
+       * Отказ по объёму работ отменяет заявку (В1) — значит ставит и письмо об отмене, как всякий
+       * ВХОД В «Отменённую» (Р65). До ADR 0153 эта дуга письма не ставила вовсе, и дыра была тихой:
+       * модуль объявляет событие привязанным к статусу, а не к ручке, и вторая дуга в тот же статус
+       * молча этого не делала. Заметно стало на подрядчике — счёт предъявил он, отказ отменяет его
+       * же работу, и узнать об этом ему было неоткуда.
+       *
+       * Согласование письма не ставит: статус у него не меняется, и события у «В работе» нет.
+       */
+      const mailPlan = body.approved
+        ? null
+        : await planServiceMail('cancelled', {
+            actor: p,
+            authorId: row.createdBy,
+            serviceCounterpartyId: row.serviceCounterpartyId,
+          });
+
+      const mailFailed = await db.transaction(async (tx) => {
+        const transition = await applyTransition(tx, {
           row,
+          mail: mailPlan?.plan ?? null,
           // «Согласовано» — тот же статус, «не согласовано» — отмена (В1).
           to: body.approved ? row.status : 'cancelled',
           version: body.version,
@@ -4417,7 +4437,13 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           // отказа возраст обнуляет сама смена статуса.
           touchStatusAt: body.approved,
         });
+        return transition.mailFailed;
       });
+      const mailOutcome = body.approved
+        ? null
+        : mailFailed
+          ? 'mail_failed'
+          : (mailPlan?.outcome ?? 'mail_failed');
 
       await writeAudit({
         actorUserId: p.id,
@@ -4429,6 +4455,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         metadata: {
           revision: row.estimateRevision,
           reason: body.reason ?? '',
+          ...(mailOutcome ? { mail: mailOutcome } : {}),
           ...(body.approved
             ? {}
             : {
@@ -4445,6 +4472,20 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
               }),
         },
       });
+      /**
+       * Исход почты уходит в аудит, а не в ответ, и это не потеря: ручка возвращает карточку
+       * заявки (`ServiceRequestDto`), и приписать ей поле значило бы менять контракт ради случая,
+       * у которого уже есть выход — кнопка «отправить ещё раз» по отменённой заявке (Р70).
+       */
+      if (mailOutcome && mailOutcome !== 'queued') {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'serviceRequest.mailFailed',
+          entityType: 'serviceRequest',
+          entityId: row.id,
+          metadata: { event: 'service_request_cancelled', outcome: mailOutcome },
+        });
+      }
       return (await getDto(p, row.id))!;
     },
   );
@@ -5070,9 +5111,17 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       /**
        * Письмо у этой ручки бывает дважды: отмена («не выезжайте») и откат в «Новую» — заявка
        * снова ждёт визы, и ждут её так же, как при заведении (Р65). Адресаты считаются до
-       * транзакции, автор письма для обратного адреса — автор самой заявки.
+       * транзакции; автор заявки остаётся обратным адресом письма службе, а подрядчик отвечает на
+       * ящик службы.
        */
-      const mailPlan = await planServiceMail(to, { actor: p, authorId: row.createdBy });
+      const mailPlan = await planServiceMail(to, {
+        actor: p,
+        authorId: row.createdBy,
+        // Отмену обязан узнать и тот, кто уже собрался ехать (ADR 0153). Берётся исполнитель
+        // ДО перехода: отмена состава не трогает, но читать его после записи означало бы зависеть
+        // от того, что этого не делает и соседняя дуга.
+        serviceCounterpartyId: row.serviceCounterpartyId,
+      });
 
       const transition = await db.transaction(async (tx) =>
         applyTransition(tx, {
@@ -5174,15 +5223,21 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         });
       }
 
-      const mailPlan = await planServiceMail(row.status, { actor: p, authorId: row.createdBy });
+      const mailPlan = await planServiceMail(row.status, {
+        actor: p,
+        authorId: row.createdBy,
+        // Повтор кнопкой шлёт то же письмо тем же адресатам, что и само событие: разойдись они,
+        // «отправить ещё раз» означало бы «отправить не всем».
+        serviceCounterpartyId: row.serviceCounterpartyId,
+      });
       if (!mailPlan.plan) return { mail: mailPlan.outcome, recipients: [] };
       const plan = mailPlan.plan;
 
       const failed = await db.transaction(async (tx) => {
         const data = await loadServiceLetterData(tx, row.id);
-        let letter: ReturnType<typeof renderServiceLetter>;
+        let letters: ReturnType<typeof renderServiceLetters>;
         try {
-          letter = renderServiceLetter(plan.event, data);
+          letters = renderServiceLetters(plan.event, data);
         } catch (e) {
           logServiceMailFailure(row.id, e);
           return true;
@@ -5191,7 +5246,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           plan,
           statusHistoryId: entry.id,
           requestId: row.id,
-          letter,
+          letters,
           idempotencyKey: req.body.idempotencyKey,
         });
         return false;

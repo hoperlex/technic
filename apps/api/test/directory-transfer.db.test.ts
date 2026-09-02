@@ -189,6 +189,33 @@ suite('обмен справочниками на живой схеме', () => 
     },
   );
 
+  it('«Контрагенты»: общий email выгружается и принимается обратно', async () => {
+    const def = ctx.directories.find((d) => d.key === 'counterparties')!;
+    const { rows } = await exportFit(def);
+    const header = rows[0]!;
+    const emailAt = header.indexOf('Email для заявок');
+    expect(emailAt, 'в выгрузке контрагентов нет общего email').toBeGreaterThan(0);
+
+    const target = rows[1];
+    expect(target, 'в справочнике нет годного контрагента для проверки email').toBeDefined();
+    const nextEmail = `directory-${randomUUID()}@example.invalid`;
+    const edited = rows.map((row, index) =>
+      index === 1 ? row.map((cell, at) => (at === emailAt ? nextEmail : cell)) : row,
+    );
+
+    const report = await ctx.engine.importDirectory(def, bookOf(edited), {
+      dryRun: true,
+      actorUserId: '00000000-0000-0000-0000-000000000000',
+    });
+    expect(report.problems).toEqual([]);
+    expect(report.updated).toHaveLength(1);
+    expect(report.updated[0]!.changes).toContainEqual({
+      column: 'Email для заявок',
+      from: target![emailAt] ?? '',
+      to: nextEmail,
+    });
+  });
+
   it(
     'правка ячейки доезжает до базы, а неизменённые строки остаются нетронутыми',
     { timeout: 30_000 },

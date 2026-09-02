@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { baseListQuery, uuidSchema } from './common';
+import { optionalEmailSchema } from './email';
 
 // ── Тип контрагента ──
 // Роль организации в проекте. У записи он один: контрагент опознаётся по ИНН, а ИНН уникален,
@@ -109,6 +110,7 @@ export const counterpartyObjectIdsSchema = z.array(uuidSchema).max(200);
 export const COUNTERPARTY_SORT_FIELDS = [
   'name',
   'inn',
+  'email',
   'type',
   'comment',
   'isActive',
@@ -129,10 +131,17 @@ export const counterpartyListQuerySchema = baseListQuery(COUNTERPARTY_SORT_FIELD
     .transform((v) => v === 'true'),
 });
 
+/**
+ * Общий ящик организации. Правило то же, что у адреса водителя: пусто — «не указан», но «-» или
+ * «нет» не годятся — такое поле выглядит заполненным, а письмо по нему не уйдёт.
+ */
+const counterpartyEmailSchema = optionalEmailSchema;
+
 export const createCounterpartySchema = z.object({
   type: counterpartyTypeSchema,
   name: nameSchema,
   inn: innSchema,
+  email: counterpartyEmailSchema.optional().default(''),
   comment: z.string().trim().max(2000).optional().default(''),
   synonyms: synonymsSchema.optional().default([]),
   objectIds: counterpartyObjectIdsSchema.optional().default([]),
@@ -144,6 +153,7 @@ export const updateCounterpartySchema = z.object({
   type: counterpartyTypeSchema.optional(),
   name: nameSchema.optional(),
   inn: innSchema.optional(),
+  email: counterpartyEmailSchema.optional(),
   comment: z.string().trim().max(2000).optional(),
   /** Полный список синонимов; отсутствие поля — не трогать синонимы. */
   synonyms: synonymsSchema.optional(),
@@ -170,6 +180,12 @@ export interface CounterpartyDto {
   type: CounterpartyType;
   name: string;
   inn: string;
+  /**
+   * Общий почтовый ящик организации; пусто — не указан. По нему уходят письма модуля
+   * «Орг.техника» сервисной компании (ADR 0153) — она читает почту, а учёток в портале у неё может
+   * не быть вовсе.
+   */
+  email: string;
   comment: string;
   /** Альтернативные наименования; основное в список не входит. */
   synonyms: string[];

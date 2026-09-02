@@ -11,7 +11,7 @@
     "src/pages/WasteRequestsPage.tsx": 2004,
     "src/pages/WaybillsPage.tsx": 584,
     "src/pages/admin/UsersTab.tsx": 1362,
-    "src/pages/directories/CounterpartiesTab.tsx": 524,
+    "src/pages/directories/CounterpartiesTab.tsx": 449,
     "src/pages/directories/DriversTab.tsx": 948,
     "src/pages/directories/VehicleSpecsTab.tsx": 481,
     "src/pages/directories/VehicleTypeCardDrawer.tsx": 641,

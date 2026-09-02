@@ -42,6 +42,15 @@ const ASSIGN_COPY_MAILBOX = `assign-copy-${RUN}@example.invalid`;
 const inn = (): string => String(7_000_000_000 + Math.floor(Math.random() * 999_999_999));
 const SERVICE_INN = inn();
 const EMPTY_INN = inn();
+const MAILBOX_INN = inn();
+
+/**
+ * Общий ящик сервисной компании (ADR 0153) — адрес самой организации, а не её учётки. Ради него всё
+ * и затевалось: подрядчик читает почту, а в портал не входит.
+ */
+const CONTRACTOR_MAILBOX = `contractor-${RUN}@example.invalid`;
+/** Тот же ящик у компании, за которой нет ни одной учётки: единственный адресат её заданий. */
+const MAILBOX_ONLY_CONTRACTOR = `contractor-solo-${RUN}@example.invalid`;
 
 interface Auth {
   authorization: string;
@@ -83,6 +92,8 @@ interface Ctx {
   /** Сервисная компания с оператором в портале и такая же — без единой учётки. */
   serviceCounterpartyId: string;
   emptyCounterpartyId: string;
+  /** Компания без учёток, но с общим ящиком в карточке (ADR 0153). */
+  mailboxCounterpartyId: string;
 }
 
 let ctx: Ctx;
@@ -222,10 +233,10 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     }
 
     /** Сервисная компания: исполнителем заявки бывает только контрагент типа `service`. */
-    async function makeService(name: string, innValue: string): Promise<string> {
+    async function makeService(name: string, innValue: string, email = ''): Promise<string> {
       const row = await db.execute<{ id: string }>(sql`
-        INSERT INTO counterparties (type, name, inn)
-        VALUES ('service', ${`${name} ${RUN}`}, ${innValue})
+        INSERT INTO counterparties (type, name, inn, email)
+        VALUES ('service', ${`${name} ${RUN}`}, ${innValue}, ${email})
         RETURNING id`);
       return row.rows[0]!.id;
     }
@@ -258,8 +269,19 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
       return { authorization: `Bearer ${res.json().accessToken}` };
     }
 
-    const serviceCounterpartyId = await makeService('Сервис писем', SERVICE_INN);
+    const serviceCounterpartyId = await makeService(
+      'Сервис писем',
+      SERVICE_INN,
+      CONTRACTOR_MAILBOX,
+    );
+    // Без учёток и без адреса: единственное состояние, при котором заданию уйти некуда.
     const emptyCounterpartyId = await makeService('Сервис без учёток', EMPTY_INN);
+    // Без учёток, но с ящиком — то самое, ради чего заведена колонка: подрядчик вне портала.
+    const mailboxCounterpartyId = await makeService(
+      'Сервис только с ящиком',
+      MAILBOX_INN,
+      MAILBOX_ONLY_CONTRACTOR,
+    );
 
     const admin = await makeUser('admin', 'admin');
     const customer = await makeUser('cust', 'shtab');
@@ -283,6 +305,7 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
       people,
       serviceCounterpartyId,
       emptyCounterpartyId,
+      mailboxCounterpartyId,
     };
   }, 120_000);
 
@@ -321,7 +344,7 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
       );
       // После учёток: на контрагенте висит `counterparty_id` оператора, и ссылка `restrict`.
       await ctx.db.execute(
-        sql`DELETE FROM counterparties WHERE inn IN (${SERVICE_INN}, ${EMPTY_INN})`,
+        sql`DELETE FROM counterparties WHERE inn IN (${SERVICE_INN}, ${EMPTY_INN}, ${MAILBOX_INN})`,
       );
       await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code = ${`SM-${RUN}`}`);
       await ctx.closeDb();
@@ -500,7 +523,7 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
         plan: params.plan,
         statusHistoryId: history.rows[0]!.id,
         requestId: params.requestId,
-        letter: ctx.mail.renderServiceLetter('service_request_assigned', data),
+        letters: ctx.mail.renderServiceLetters('service_request_assigned', data),
       });
     });
   }
@@ -541,12 +564,25 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     for (const recipient of plan.recipients) ownRecipients.add(recipient.key);
 
     expect(plan.recipients.map((r) => r.email).sort()).toEqual(
-      [ctx.people.exec1.email, ctx.people.exec2.email, ctx.people.operator.email].sort(),
+      [
+        ctx.people.exec1.email,
+        ctx.people.exec2.email,
+        ctx.people.operator.email,
+        CONTRACTOR_MAILBOX,
+      ].sort(),
     );
     expect(plan.recipients.map((r) => r.email)).not.toContain(SERVICE_MAILBOX);
     expect(plan.recipients.map((r) => r.email)).not.toContain(ctx.customerEmail);
-    // Обратный адрес один на всех — заявителя: вопрос исполнителя про поломку адресован ему.
-    expect([...new Set(plan.recipients.map((r) => r.replyTo))]).toEqual([ctx.customerEmail]);
+    /**
+     * Обратный адрес один на всех — **ящик службы** (ADR 0153). Прежде отвечали заявителю, и для
+     * своих сисадминов это было удобно; с появлением внешнего адресата так оставлять нельзя — ответ
+     * подрядчика ушёл бы от лица чужой организации человеку, который её не знает.
+     */
+    expect([...new Set(plan.recipients.map((r) => r.replyTo))]).toEqual([SERVICE_MAILBOX]);
+    // Общий ящик компании — аудитория «подрядчик»: у него своё тело письма.
+    const contractor = plan.recipients.find((r) => r.email === CONTRACTOR_MAILBOX)!;
+    expect(contractor.key).toBe(`counterparty-${ctx.serviceCounterpartyId}`);
+    expect(contractor.audience).toBe('contractor');
 
     await assignAndMail({
       requestId: request.id,
@@ -557,10 +593,15 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
 
     const letters = await assignmentLetters(request.id);
     expect(letters.map((l) => l.to_email).sort()).toEqual(
-      [ctx.people.exec1.email, ctx.people.exec2.email, ctx.people.operator.email].sort(),
+      [
+        ctx.people.exec1.email,
+        ctx.people.exec2.email,
+        ctx.people.operator.email,
+        CONTRACTOR_MAILBOX,
+      ].sort(),
     );
     // По письму на адресата, и каждое со своим ключом: общий ключ подавил бы всё, кроме первого.
-    expect(new Set(letters.map((l) => l.dedupe_key)).size).toBe(3);
+    expect(new Set(letters.map((l) => l.dedupe_key)).size).toBe(4);
     expect(letters[0]!.account).toBe('repair');
     expect(letters[0]!.subject).toContain(request.displayNumber);
     // Тело называет обе стороны: «свой сисадмин + подрядчик» — обычная постановка, а не редкость.
@@ -601,10 +642,10 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
       ctx.people.exec1.email,
       ASSIGN_COPY_MAILBOX,
     ]);
-    // Исполнитель остался исполнителем: ключ его, обратный адрес заявителя — а не «общий адрес
-    // портала», как просила бы строка настройки, победи она в дедупликации.
+    // Исполнитель остался исполнителем: ключ его, обратный адрес — ящик службы (ADR 0153), а не
+    // «общий адрес портала», как просила бы строка настройки, победи она в дедупликации.
     expect(plan.recipients[0]!.key).toBe(ctx.people.exec1.id);
-    expect(plan.recipients[0]!.replyTo).toBe(ctx.customerEmail);
+    expect(plan.recipients[0]!.replyTo).toBe(SERVICE_MAILBOX);
     expect(plan.recipients[1]!.replyTo).toBe('');
 
     await assignAndMail({ requestId: request.id, plan, userIds: [ctx.people.exec1.id] });
@@ -630,6 +671,154 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
   it('назначенным писать некуда — письма нет вовсе, и исход это называет', async () => {
     const planned = await planAssignment([ctx.people.retired.id], ctx.emptyCounterpartyId);
     expect(planned).toEqual({ plan: null, outcome: 'no_recipients' });
+  });
+
+  /**
+   * Ради этого случая колонка и заведена (ADR 0153, миграция 0241). Подрядчик без единой учётки в
+   * портале — обычное дело: он читает почту, а заявки ведёт офис. До решения такое назначение
+   * отвечало `no_recipients` — портал честно говорил «задание не ушло», и дальше его доносили
+   * голосом; теперь оно доходит на общий ящик компании из её карточки.
+   *
+   * Поимённых исполнителей здесь нет вовсе, и это не упрощение сценария, а его суть: единственный
+   * адресат письма — сама организация.
+   */
+  it('подрядчику без учёток задание уходит на общий ящик из карточки', async () => {
+    const { request } = await createRequest(await ctx.newEquipment('solo'), 'Не тянет бумагу');
+
+    const planned = await planAssignment([], ctx.mailboxCounterpartyId);
+    expect(planned.outcome).toBe('queued');
+    const plan = planned.plan!;
+    for (const recipient of plan.recipients) ownRecipients.add(recipient.key);
+
+    expect(plan.recipients).toHaveLength(1);
+    expect(plan.recipients[0]!.email).toBe(MAILBOX_ONLY_CONTRACTOR);
+    expect(plan.recipients[0]!.audience).toBe('contractor');
+    expect(plan.recipients[0]!.replyTo).toBe(SERVICE_MAILBOX);
+
+    await assignAndMail({
+      requestId: request.id,
+      plan,
+      userIds: [],
+      serviceCounterpartyId: ctx.mailboxCounterpartyId,
+    });
+
+    const letters = await assignmentLetters(request.id);
+    expect(letters).toHaveLength(1);
+    expect(letters[0]!.to_email).toBe(MAILBOX_ONLY_CONTRACTOR);
+    expect(letters[0]!.reply_to).toBe(SERVICE_MAILBOX);
+    // Тело обязано говорить правду про обратный адрес: подрядчик вне портала, и приписка — его
+    // единственный способ узнать, куда отвечать.
+    expect(letters[0]!.body_text).toContain('в службу оргтехники');
+    expect(letters[0]!.body_text).toContain('Подтвердите получение ответом');
+    expect(letters[0]!.body_text).not.toContain('портал');
+    expect(letters[0]!.body_text).not.toContain('уйдёт заявителю');
+    expect(letters[0]!.body_text).toContain(`Сервис только с ящиком ${RUN}`);
+  });
+
+  /**
+   * Переназначение — отзыв прежнего задания и выдача нового, а не одно письмо новой компании.
+   * Старый подрядчик уже мог собрать выезд по первому письму; без отдельного отзыва он не узнает,
+   * что заявка ушла другому. Тело отзыва не перечисляет новых исполнителей — это уже чужая работа.
+   */
+  it('переназначение отзывает задание у прежней сервисной компании', async () => {
+    const { request } = await createRequest(
+      await ctx.newEquipment('reassign-mail'),
+      'Периодически пропадает изображение',
+    );
+    ownRecipients.add(`counterparty-${ctx.mailboxCounterpartyId}`);
+    ownRecipients.add(`counterparty-withdrawn-${ctx.serviceCounterpartyId}`);
+    ownRecipients.add(`withdrawn-${ctx.people.operator.id}`);
+
+    const first = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: request.version },
+    );
+    expect(first.statusCode, first.body).toBe(200);
+    const afterFirst = (first.json() as { request: ServiceRequestDto }).request;
+
+    const second = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      {
+        userIds: [],
+        serviceCounterpartyId: ctx.mailboxCounterpartyId,
+        reason: 'Первый подрядчик не успевает',
+        version: afterFirst.version,
+      },
+    );
+    expect(second.statusCode, second.body).toBe(200);
+
+    const letters = await assignmentLetters(request.id);
+    const withdrawn = letters.find((l) =>
+      l.dedupe_key.includes(`counterparty-withdrawn-${ctx.serviceCounterpartyId}`),
+    );
+    const assigned = letters.find((l) =>
+      l.dedupe_key.includes(`counterparty-${ctx.mailboxCounterpartyId}`),
+    );
+    const withdrawnOperator = letters.find((l) =>
+      l.dedupe_key.includes(`withdrawn-${ctx.people.operator.id}`),
+    );
+    expect(withdrawn).toBeDefined();
+    expect(withdrawn!.to_email).toBe(CONTRACTOR_MAILBOX);
+    expect(withdrawn!.subject).toContain('Назначение сервисной компании отозвано');
+    expect(withdrawn!.body_text).toContain('выезд не требуется');
+    expect(withdrawn!.body_text).not.toContain(`Сервис только с ящиком ${RUN}`);
+    expect(withdrawn!.body_text).not.toContain('портал');
+    expect(withdrawnOperator).toBeDefined();
+    expect(withdrawnOperator!.to_email).toBe(ctx.people.operator.email);
+    expect(withdrawnOperator!.body_text).toContain('выезд не требуется');
+    expect(assigned).toBeDefined();
+    expect(assigned!.to_email).toBe(MAILBOX_ONLY_CONTRACTOR);
+    expect(assigned!.body_text).toContain(`Сервис только с ящиком ${RUN}`);
+  });
+
+  /**
+   * Отмена — второе событие, адресованное подрядчику (ADR 0153): он уже собрался ехать, а везти
+   * нечего. Проверяется не только адрес, но и **два разных тела одного события**: службе уходит
+   * прежнее письмо с ответом заявителю, подрядчику — своё, с ответом в службу и словами «выезд не
+   * требуется». Совпади тела — внешний адресат ответил бы человеку, который его не знает.
+   */
+  it('отмена назначенной заявки доходит до подрядчика — своим телом и с ответом в службу', async () => {
+    const { request } = await createRequest(await ctx.newEquipment('cxl'), 'Гудит и не печатает');
+    // Ключ подрядчика — наша подписка: письма по ней входят в выборку наравне с письмами канала.
+    ownRecipients.add(`counterparty-${ctx.serviceCounterpartyId}`);
+
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: request.version },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    const afterAssign = (assigned.json() as { request: ServiceRequestDto }).request;
+
+    const cancelled = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/status`,
+      ctx.admin,
+      { status: 'cancelled', reason: 'Аппарат увезли', version: afterAssign.version },
+    );
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+
+    const letters = (await mailsOf(request.id)).filter(
+      (l) => l.kind === 'service_request_cancelled',
+    );
+    expect(letters.map((l) => l.to_email).sort()).toEqual(
+      [SERVICE_MAILBOX, CONTRACTOR_MAILBOX].sort(),
+    );
+
+    const toService = letters.find((l) => l.to_email === SERVICE_MAILBOX)!;
+    const toContractor = letters.find((l) => l.to_email === CONTRACTOR_MAILBOX)!;
+    // Службе — как и раньше: ответ уходит заявителю, у неё вопросы к нему.
+    expect(toService.reply_to).toBe(ctx.customerEmail);
+    expect(toService.body_text).toContain('уйдёт заявителю');
+    // Подрядчику — своё тело: ответ в службу и главное первым делом.
+    expect(toContractor.reply_to).toBe(SERVICE_MAILBOX);
+    expect(toContractor.body_text).toContain('выезд не требуется');
+    expect(toContractor.body_text).not.toContain('уйдёт заявителю');
   });
 
   /**
