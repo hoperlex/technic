@@ -18,6 +18,7 @@ export {
   mechDayLabel,
   mechDaysLeftLabel,
   mechMoney,
+  mechMoneySum,
   mechRateLabel,
   mechRequesterLabel,
   mechTermLabel,

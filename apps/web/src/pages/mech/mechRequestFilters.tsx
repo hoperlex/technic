@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Checkbox, DatePicker, Input, Select, Space } from 'antd';
 import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
-import { REQUEST_STATUSES, requestStatusLabels } from '@technic/contracts';
+import { CLOSED_REQUEST_STATUSES, REQUEST_STATUSES, requestStatusLabels } from '@technic/contracts';
 import { mechKindOptionsQuery, mechLessorOptionsQuery } from '@entities/mech-request';
 import { objectOptionsQuery } from '@entities/object';
 import { useRequestCustomerOptions } from '@features/request-customer';
@@ -70,28 +70,52 @@ export const MECH_FILTER_FIELDS = [
 ] as const satisfies readonly (keyof MechListFilters)[];
 
 /**
- * Статусы перечисляются коридором целиком, кроме «Завершена»: у аренды её не бывает вовсе (Р8), и
- * вариант фильтра, на который сервер отвечает пустотой, хуже его отсутствия.
+ * Отборы журнала (Э3): те же, кроме «просрочен возврат». Просрочка — свойство **действующей**
+ * аренды (Р12): у закрытой заявки техника уже вернулась, и вопрос «не пора ли звонить
+ * арендодателю» к ней не задаётся вовсе.
+ *
+ * Вычитанием, а не вторым перечнем: новый отбор списка попадёт в журнал сам, и забыть его здесь
+ * нельзя — а забытый в копии он молча перестал бы запоминаться (ADR 0139).
  */
-const statusOptions = REQUEST_STATUSES.filter((s) => s !== 'completed').map((value) => ({
-  value,
-  label: requestStatusLabels[value],
-}));
+export const MECH_HISTORY_FILTER_FIELDS = MECH_FILTER_FIELDS.filter((field) => field !== 'overdue');
+
+/**
+ * Какие статусы предлагает отбор.
+ *
+ * `open` — коридор целиком, кроме «Завершена»: у аренды её не бывает вовсе (Р8), и вариант, на
+ * который сервер отвечает пустотой, хуже его отсутствия. `closed` — те же два статуса, что
+ * составляют журнал: заявка, по которой уже нечего решать.
+ */
+const statusOptionsOf = (scope: 'open' | 'closed') =>
+  (scope === 'closed'
+    ? CLOSED_REQUEST_STATUSES
+    : REQUEST_STATUSES.filter((s) => s !== 'completed')
+  ).map((value) => ({ value, label: requestStatusLabels[value] }));
 
 export function useMechRequestFilters({
   params,
   apply,
-  status = true,
+  status = 'open',
+  overdue = true,
 }: {
   params: MechListFilters;
   apply: (patch: MechListFilters) => void;
   /**
-   * Показывать ли отбор по статусу. Рабочему списку он нужен, вкладке «В аренде» — нет: там все
-   * строки в «В работе» по построению отбора (Р2), и выбор «Новая» отвечал бы пустотой на верно
-   * заданный вопрос. Прятать отбор честнее, чем оставлять вариант, которого в выдаче не бывает.
+   * Какие статусы предлагать — и предлагать ли вовсе.
+   *
+   * `open` — рабочий список; `closed` — журнал, где статусов ровно два и вопрос к ним другой
+   * («чем закончилась»); `false` — вкладка «В аренде»: там все строки в «В работе» по построению
+   * отбора (Р2), и выбор «Новая» отвечал бы пустотой на верно заданный вопрос. Прятать отбор
+   * честнее, чем оставлять вариант, которого в выдаче не бывает.
    */
-  status?: boolean;
+  status?: 'open' | 'closed' | false;
+  /**
+   * Показывать ли «просрочен возврат». Журналу он не нужен: просрочка — свойство действующей
+   * аренды (Р12), а у закрытой заявки техника уже вернулась, и отбор отвечал бы пустотой всегда.
+   */
+  overdue?: boolean;
 }): FilterDefinition[] {
+  const statusOptions = status ? statusOptionsOf(status) : [];
   const { data: objectOptions = [], isSuccess: objectsReady } = useQuery(
     objectOptionsQuery({ activeOnly: false }),
   );
@@ -184,10 +208,12 @@ export function useMechRequestFilters({
           {
             kind: 'select' as const,
             key: 'status',
-            label: 'Статус',
+            // В журнале статус отвечает не «что с заявкой сейчас», а «чем она кончилась»: тем же
+            // словом подписан этот отбор и у соседнего журнала вывоза.
+            label: status === 'closed' ? 'Чем закончилась' : 'Статус',
             value: params.status,
             options: statusOptions,
-            placeholder: 'Все статусы',
+            placeholder: status === 'closed' ? 'Выполненные и отменённые' : 'Все статусы',
             onChange: (v: string | undefined) => apply({ status: v }),
           },
         ]
@@ -212,18 +238,22 @@ export function useMechRequestFilters({
       to: params.periodTo,
       onChange: (periodFrom, periodTo) => apply({ periodFrom, periodTo }),
     },
-    {
-      /*
-       * «Просрочен возврат» — отбор сервера, а не подсветка строк (Р12): просрочка считается
-       * предикатом по московскому дню, и посчитать её на клиенте можно было бы только по той
-       * странице, что уже приехала, — то есть ответить «просроченных нет», пока они на второй.
-       */
-      kind: 'toggle',
-      key: 'overdue',
-      label: 'Просрочен возврат',
-      value: params.overdue === 'true',
-      onChange: (checked) => apply({ overdue: checked ? 'true' : undefined }),
-    },
+    ...(overdue
+      ? [
+          {
+            /*
+             * «Просрочен возврат» — отбор сервера, а не подсветка строк (Р12): просрочка считается
+             * предикатом по московскому дню, и посчитать её на клиенте можно было бы только по той
+             * странице, что уже приехала, — то есть ответить «просроченных нет», пока они на второй.
+             */
+            kind: 'toggle' as const,
+            key: 'overdue',
+            label: 'Просрочен возврат',
+            value: params.overdue === 'true',
+            onChange: (checked: boolean) => apply({ overdue: checked ? 'true' : undefined }),
+          },
+        ]
+      : []),
   ];
 }
 
@@ -297,10 +327,17 @@ export function MechFilterBar({
   filters,
   num,
   reset,
+  extra,
 }: {
   filters: FilterDefinition[];
   num: { text: string; onChange: (raw: string) => void };
   reset?: { active: boolean; onClick: () => void };
+  /**
+   * Действие над тем же срезом — выгрузка журнала. В этом же ряду, а не в шапке страницы: кнопка
+   * скачивает ровно то, что задано соседними полями, и уехав от них, она читалась бы как «выгрузи
+   * всё».
+   */
+  extra?: ReactNode;
 }) {
   return (
     <Space wrap>
@@ -313,6 +350,7 @@ export function MechFilterBar({
         onChange={(e) => num.onChange(e.target.value)}
       />
       {reset ? <FilterReset {...reset} /> : null}
+      {extra}
     </Space>
   );
 }

@@ -900,6 +900,19 @@ export const ACCESS_MANIFEST = {
   // самое, а не «справочное» — иначе площадка читала бы по подсказке, что арендуют соседние
   // объекты.
   'GET /api/v1/mech-requests/kinds': { kind: 'permissions', allOf: ['mechRequests.read'] },
+  // Журнал закрытых аренд и его итог (Э3) — то же право, что у списка: журнал не второй способ
+  // читать заявки, а тот же реестр с другого конца, и область у него та же самая. Выгрузка
+  // отдельной строкой, но с тем же условием: файл собирается той же выборкой, и спрашивать за него
+  // второе право значило бы, что портал показывает больше, чем отдаёт.
+  'GET /api/v1/mech-requests/history': { kind: 'permissions', allOf: ['mechRequests.read'] },
+  'GET /api/v1/mech-requests/history/summary': {
+    kind: 'permissions',
+    allOf: ['mechRequests.read'],
+  },
+  'GET /api/v1/mech-requests/history/export': {
+    kind: 'permissions',
+    allOf: ['mechRequests.read'],
+  },
   'GET /api/v1/mech-requests/:id': { kind: 'permissions', allOf: ['mechRequests.read'] },
   'GET /api/v1/mech-requests/:id/history': { kind: 'permissions', allOf: ['mechRequests.read'] },
   'POST /api/v1/mech-requests': { kind: 'permissions', allOf: ['mechRequests.create'] },

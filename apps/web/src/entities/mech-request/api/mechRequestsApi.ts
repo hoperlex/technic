@@ -4,13 +4,22 @@ import type {
   ExtendMechRequestInput,
   IssueMechRequestInput,
   MechRequestDto,
+  MechRequestHistorySummaryDto,
   MechRequestSummaryDto,
   RequestHistoryEntryDto,
   RevokeMechIssueInput,
   UpdateMechDealInput,
   UpdateMechRequestInput,
 } from '@technic/contracts';
-import { apiFetch, createGetApi, createListApi, createWriteApi, type Query } from '@shared/api';
+import {
+  apiDownload,
+  apiFetch,
+  createGetApi,
+  createListApi,
+  createWriteApi,
+  type ListResult,
+  type Query,
+} from '@shared/api';
 
 const PATH = '/mech-requests';
 
@@ -102,6 +111,26 @@ export const mechRequestsApi = {
 
   /** Четыре числа над списком (§7); из фильтров сводка знает только площадку. */
   summary: (query: Query) => apiFetch<MechRequestSummaryDto>(`${PATH}/summary`, { query }),
+
+  /**
+   * Журнал закрытых аренд (Э3): «Выполнена» и «Отменена». Своя ручка, а не список с фильтром по
+   * статусу: в рабочем списке закрытой заявки нет вовсе, и вопросы к журналу другие — не «что
+   * вести», а «сколько это стоило».
+   */
+  closedList: (query: Query) => apiFetch<ListResult<MechRequestDto>>(`${PATH}/history`, { query }),
+  /** Итог журнала по тем же отборам: без них он отвечал бы не про то, что человек видит. */
+  closedSummary: (query: Query) =>
+    apiFetch<MechRequestHistorySummaryDto>(`${PATH}/history/summary`, { query }),
+  /**
+   * Выгрузка журнала книгой. Отбор уходит тот же, что показан на экране, но без страницы: книгу
+   * собирают, чтобы посчитать в ней итог за период, и двадцать строк текущей страницы отвечали бы
+   * на другой вопрос.
+   *
+   * Имя файла приходит заголовком `content-disposition` — сервер один знает, за какой период и
+   * какой отбор внутри; здесь только запасное, на случай потери заголовка по дороге.
+   */
+  exportClosed: (query: Query) =>
+    apiDownload(`${PATH}/history/export`, 'Механизация — история.xlsx', { query }),
 
   /**
    * Подсказка ранее вводившихся видов (Р5). Строкой, а не парой «вид — счётчик»: порядок задаёт

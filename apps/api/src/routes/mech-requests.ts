@@ -1,27 +1,33 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, asc, count, eq } from 'drizzle-orm';
+import { and, asc, count, eq, type SQL } from 'drizzle-orm';
 import {
   changeMechRequestStatusSchema,
   createMechRequestSchema,
   duplicateMechRequestSchema,
   extendMechRequestSchema,
+  isClosedRequestStatus,
   isMechAwaitingIssue,
   isMechCompletionCorrection,
   isMechRentalRunning,
   issueMechRequestSchema,
   MECH_DELETE_RUNNING_MESSAGE,
   MECH_EXTEND_NOT_LATER_MESSAGE,
+  MECH_NO_COMPLETED_STATUS_MESSAGE,
   type MechRequestDto,
+  type MechRequestHistoryQuery,
   mechDeleteScope,
   mechEditScope,
   mechKindsQuerySchema,
+  mechRequestHistoryQuerySchema,
   mechRequestListQuerySchema,
   mechRequestSummaryQuerySchema,
   mechTransitionBlocker,
   mechTransitionResetsDeal,
   moscowDateKeyOf,
+  type RequestStatus,
+  requestStatusLabels,
   revokeMechIssueSchema,
   updateMechDealSchema,
   updateMechRequestSchema,
@@ -61,11 +67,15 @@ import {
   unlinkMechRequestFiles,
 } from '../services/mech-request-files';
 import {
+  loadMechHistorySummary,
   loadMechKinds,
   loadMechSummary,
+  mechHistorySortColumns,
+  mechHistoryWhere,
   mechListSortColumns,
   mechListWhere,
 } from '../services/mech-request-list';
+import { MECH_HISTORY_EXPORT_LIMIT, mechHistoryWorkbook } from '../services/mech-history-export';
 import { NO_MECH_FACT, planMechTransition } from '../services/mech-request-transition';
 import {
   diffMechRequests,
@@ -242,6 +252,137 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
     const p = requirePrincipal(req);
     return { items: await loadMechKinds(p, req.query.search) };
   });
+
+  // ── Журнал закрытых аренд: вкладка «История» (§7 п. 3, Э3) ──
+  //
+  // Отдельным маршрутом, а не фильтром общего списка, по той же причине, что и у вывоза
+  // (ADR 0135): вопросы к журналу другие. Не «что сейчас стоит на площадках», а «что за период
+  // арендовали, у кого и во сколько это обошлось» — отсюда свой итог, свои столбцы факта и своя
+  // выгрузка.
+  //
+  // Область и присутствие считаются теми же выражениями, что у списка (`mechHistoryWhere` рядом с
+  // `mechListWhere`): журнал — тот же реестр с другого конца, а не второй способ читать заявки.
+
+  /**
+   * Открытый статус в журнале — отказ, а не молчаливое расширение до обоих закрытых. Выдача, в
+   * которой отбор не сработал, отличается от правильной только числом строк, и по ней это не
+   * видно; отказ же называет вкладку, где такие заявки живут.
+   */
+  const assertMechHistoryStatus = (q: { status?: RequestStatus }): void => {
+    if (!q.status || isClosedRequestStatus(q.status)) return;
+    // «Завершена» — случай отдельный: у механизации такого статуса нет вовсе (Р8), и отправлять за
+    // ней в рабочую вкладку было бы ложью — там её тоже нет. Отвечает тот же текст, которым на
+    // неё отвечает схема смены статуса.
+    if (q.status === 'completed') {
+      throw err.badRequest(MECH_NO_COMPLETED_STATUS_MESSAGE, { status: 'Такого статуса нет' });
+    }
+    throw err.badRequest(
+      `Заявки в статусе «${requestStatusLabels[q.status]}» журналом не закрыты — они во вкладке «Заявки»`,
+      { status: 'Статус работы' },
+    );
+  };
+
+  /** Строки журнала: та же выборка, что и у списка, но с отбором и порядком журнала. */
+  const historyRows = (q: MechRequestHistoryQuery, where: SQL | undefined, limit: number) =>
+    mechBaseQuery()
+      .where(where)
+      // По плановому возврату, а не по дате заведения: журнал читают по времени, когда аренда
+      // кончалась, — так же его сводят со счетами. Плановая дата есть у каждой строки, в отличие
+      // от фактической: у отменённой заявки факта нет вовсе, и по нему все отмены слиплись бы в
+      // пустой хвост. Доводка `num + id` та же, что и в списке: сортировка по неуникальному
+      // столбцу сама по себе порядок строк не задаёт.
+      .orderBy(
+        orderByFrom(mechHistorySortColumns, q.sortBy, q.sortOrder, 'plannedTo'),
+        asc(mechRequests.num),
+        asc(mechRequests.id),
+      )
+      .limit(limit);
+
+  r.get(
+    '/history',
+    { ...auth, schema: { querystring: mechRequestHistoryQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const q = req.query;
+      assertMechHistoryStatus(q);
+      const where = mechHistoryWhere(p, q);
+      const page = pageParams(q);
+      const rows = await historyRows(q, where, page.limit).offset(page.offset);
+      const [totalRow] = await db
+        .select({ c: count() })
+        .from(mechRequests)
+        .innerJoin(constructionObjects, eq(mechRequests.objectId, constructionObjects.id))
+        .where(where);
+      const filesMap = await mechFilesByRequestIds(
+        db,
+        rows.map((row) => row.id),
+      );
+      return {
+        items: rows.map((row) => toMechRequestDto(row, filesMap.get(row.id) ?? [])),
+        total: Number(totalRow!.c),
+        page: page.page,
+        pageSize: page.pageSize,
+      };
+    },
+  );
+
+  /**
+   * Итог журнала за выбранные фильтры (Э3): сколько закрыто, сколько из них было арендами, сколько
+   * дней техника простояла, сколько отработала и во сколько обошлась.
+   *
+   * Считается по ТЕМ ЖЕ условиям, что и сам журнал, — включая `status`, в отличие от сводки над
+   * рабочим списком: там фильтр по статусу свёл бы сводку к самой себе, а здесь он сужает вопрос
+   * («во сколько обошлись отменённые» — законный вопрос к журналу).
+   */
+  r.get(
+    '/history/summary',
+    { ...auth, schema: { querystring: mechRequestHistoryQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      assertMechHistoryStatus(req.query);
+      return loadMechHistorySummary(p, req.query);
+    },
+  );
+
+  /**
+   * Тот же журнал файлом. Отдельной ручкой, а не параметром `format` у первой: у ответов разные
+   * типы содержимого и разные схемы, и ручка, отвечающая то JSON, то байтами, ломает типизацию
+   * обеим сторонам.
+   *
+   * Выборка и область — те же самые, вплоть до сортировки: файл, показывающий не то, что портал,
+   * спорит с ним, а спор разбирают глазами. Страниц у файла нет — его сверяют со счетами целиком,
+   * — но потолок есть, и, упёршись в него, книга говорит об этом последней строкой.
+   */
+  r.get(
+    '/history/export',
+    { ...auth, schema: { querystring: mechRequestHistoryQuerySchema } },
+    async (req, reply) => {
+      const p = requirePrincipal(req);
+      const q = req.query;
+      assertMechHistoryStatus(q);
+      const where = mechHistoryWhere(p, q);
+      // Лишняя строка сверх потолка — способ узнать, что отбор в файл не поместился, не считая его
+      // второй раз.
+      const rows = await historyRows(q, where, MECH_HISTORY_EXPORT_LIMIT + 1);
+      const book = mechHistoryWorkbook({
+        // Вложения в книгу не идут: файл сверяют со счетами, а не открывают из него документы.
+        rows: rows.slice(0, MECH_HISTORY_EXPORT_LIMIT).map((row) => toMechRequestDto(row, [])),
+        // Итог — по ВСЕМУ отбору, а не по попавшим в файл строкам: обрезанный список с обрезанной
+        // суммой читался бы как весь журнал.
+        summary: await loadMechHistorySummary(p, q),
+        truncated: rows.length > MECH_HISTORY_EXPORT_LIMIT,
+        periodFrom: q.periodFrom,
+        periodTo: q.periodTo,
+      });
+      return reply
+        .type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        .header(
+          'content-disposition',
+          `attachment; filename*=UTF-8''${encodeURIComponent(book.filename)}`,
+        )
+        .send(Buffer.from(book.bytes));
+    },
+  );
 
   r.get('/:id', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);

@@ -21,6 +21,19 @@ export const mechRequestKeys = createQueryKeys('mech-requests', {
   history: (id: string) => ['history', id],
   summary: (params: Query) => ['summary', params],
   kinds: (search: string) => ['kinds', search],
+  /**
+   * Журнал закрытых заявок и его итог (Э3): «Выполнена» и «Отменена» за выбранный отбор.
+   *
+   * Имя `closed`, а не `history`: `history` в этом же наборе занята лентой событий одной заявки, и
+   * два разных вопроса под одним префиксом гасили бы друг друга — отметка выдачи в карточке
+   * сбрасывала бы страницу журнала, открытую рядом.
+   *
+   * Итог — своё семейство, а не хвост списка: он считается по отбору целиком, без страницы и
+   * порядка, и общий ключ заставлял бы пересчитывать все шесть чисел на каждый переход по
+   * страницам.
+   */
+  closed: (params: Query) => ['closed', params],
+  closedSummary: (params: Query) => ['closed-summary', params],
 });
 
 /**
