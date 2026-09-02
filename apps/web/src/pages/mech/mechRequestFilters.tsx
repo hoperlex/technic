@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { DatePicker, Input, Select, Space } from 'antd';
+import { Checkbox, DatePicker, Input, Select, Space } from 'antd';
 import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import { REQUEST_STATUSES, requestStatusLabels } from '@technic/contracts';
@@ -39,6 +39,15 @@ export interface MechListFilters {
   /** Окно вопроса «что стояло на площадке в эти дни», а не срок самой заявки. */
   periodFrom?: string;
   periodTo?: string;
+  /**
+   * Просрочен возврат (Р12): действующая аренда, у которой плановая дата уже позади.
+   *
+   * Строкой `'true'`, а не булевым: значением отбора распоряжаются трое сразу — запрос
+   * (`booleanFlagSchema` ждёт `true`/`false`), память набора (ADR 0139 пишет только строки) и
+   * «Сбросить» (снимает в `undefined`). Булево `false` из хранилища не вернулось бы, и утром
+   * отбор молча оказывался бы снятым.
+   */
+  overdue?: string;
 }
 
 /**
@@ -57,6 +66,7 @@ export const MECH_FILTER_FIELDS = [
   'lessorId',
   'periodFrom',
   'periodTo',
+  'overdue',
 ] as const satisfies readonly (keyof MechListFilters)[];
 
 /**
@@ -71,9 +81,16 @@ const statusOptions = REQUEST_STATUSES.filter((s) => s !== 'completed').map((val
 export function useMechRequestFilters({
   params,
   apply,
+  status = true,
 }: {
   params: MechListFilters;
   apply: (patch: MechListFilters) => void;
+  /**
+   * Показывать ли отбор по статусу. Рабочему списку он нужен, вкладке «В аренде» — нет: там все
+   * строки в «В работе» по построению отбора (Р2), и выбор «Новая» отвечал бы пустотой на верно
+   * заданный вопрос. Прятать отбор честнее, чем оставлять вариант, которого в выдаче не бывает.
+   */
+  status?: boolean;
 }): FilterDefinition[] {
   const { data: objectOptions = [], isSuccess: objectsReady } = useQuery(
     objectOptionsQuery({ activeOnly: false }),
@@ -103,7 +120,14 @@ export function useMechRequestFilters({
    */
   usePruneMissingFilters(
     [
-      { key: 'status', value: params.status, options: statusOptions, ready: true },
+      // Скрытый отбор не проверяется: вкладка без него статуса и не задаёт, а сообщение «отбор
+      // снят, потому что значение исчезло» о невидимом поле человек прочесть не сможет.
+      {
+        key: 'status',
+        value: status ? params.status : undefined,
+        options: statusOptions,
+        ready: true,
+      },
       {
         key: 'placeObjectId',
         value: params.placeObjectId,
@@ -155,15 +179,19 @@ export function useMechRequestFilters({
       placeholder: 'Любая техника',
       onChange: (v) => apply({ kind: v }),
     },
-    {
-      kind: 'select',
-      key: 'status',
-      label: 'Статус',
-      value: params.status,
-      options: statusOptions,
-      placeholder: 'Все статусы',
-      onChange: (v) => apply({ status: v }),
-    },
+    ...(status
+      ? [
+          {
+            kind: 'select' as const,
+            key: 'status',
+            label: 'Статус',
+            value: params.status,
+            options: statusOptions,
+            placeholder: 'Все статусы',
+            onChange: (v: string | undefined) => apply({ status: v }),
+          },
+        ]
+      : []),
     {
       kind: 'select',
       key: 'lessorId',
@@ -183,6 +211,18 @@ export function useMechRequestFilters({
       from: params.periodFrom,
       to: params.periodTo,
       onChange: (periodFrom, periodTo) => apply({ periodFrom, periodTo }),
+    },
+    {
+      /*
+       * «Просрочен возврат» — отбор сервера, а не подсветка строк (Р12): просрочка считается
+       * предикатом по московскому дню, и посчитать её на клиенте можно было бы только по той
+       * странице, что уже приехала, — то есть ответить «просроченных нет», пока они на второй.
+       */
+      kind: 'toggle',
+      key: 'overdue',
+      label: 'Просрочен возврат',
+      value: params.overdue === 'true',
+      onChange: (checked) => apply({ overdue: checked ? 'true' : undefined }),
     },
   ];
 }
@@ -209,6 +249,19 @@ function renderFilter(filter: FilterDefinition): ReactNode {
           value={filter.value}
           onChange={(v) => filter.onChange(v)}
         />
+      );
+    case 'toggle':
+      // Флажком, а не переключателем: в панели десктопа он стоит в одном ряду с полями отбора, и
+      // подпись должна читаться слева направо вместе с ними — как у архива в реестре техники.
+      return (
+        <Checkbox
+          key={filter.key}
+          checked={filter.value}
+          disabled={filter.disabled}
+          onChange={(e) => filter.onChange(e.target.checked)}
+        >
+          {filter.label}
+        </Checkbox>
       );
     case 'dateRange':
       return (

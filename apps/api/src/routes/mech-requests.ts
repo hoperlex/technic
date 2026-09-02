@@ -6,11 +6,13 @@ import {
   changeMechRequestStatusSchema,
   createMechRequestSchema,
   duplicateMechRequestSchema,
+  extendMechRequestSchema,
   isMechAwaitingIssue,
   isMechCompletionCorrection,
   isMechRentalRunning,
   issueMechRequestSchema,
   MECH_DELETE_RUNNING_MESSAGE,
+  MECH_EXTEND_NOT_LATER_MESSAGE,
   type MechRequestDto,
   mechDeleteScope,
   mechEditScope,
@@ -70,6 +72,7 @@ import {
   mechAuditSnapshot,
   mechCompletionChanges,
   mechDealChanges,
+  mechExtendChanges,
   mechIssueChanges,
   mechIssueRevokeChanges,
 } from '../services/mech-request-diff';
@@ -99,8 +102,8 @@ import { loadMechRequestHistory } from '../services/mech-request-history';
  * Разведение ответов: **409 — «данные под тобой изменились, перечитай карточку»; 422 — «правило
  * запрещает это действие»**.
  *
- * Продления здесь нет: оно занимает своё право (`mechRequests.extend`, диспетчер) и едет этапом Э2.
- * Место в реестре аудита и в истории карточки за ним уже закреплено.
+ * Продление живёт своим правом (`mechRequests.extend`, диспетчер), а не `.status` и не `.update`:
+ * оно не двигает заявку по циклу и не правит форму — это согласие платить дальше (Р9).
  */
 
 const idParams = z.object({ id: z.string().uuid() });
@@ -176,6 +179,15 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
     preHandler: [
       app.authenticate,
       app.requirePermission('mechRequests.status', 'Недостаточно прав для смены статуса'),
+    ],
+  };
+  // Продление — своё право, и разведено оно со сменой статуса намеренно (Р9): срок не двигает
+  // заявку по циклу, а означает согласие платить дальше, и звонит арендодателю с этим диспетчер, а
+  // не менеджер. Спроси здесь `.status` — и право `.extend` перестало бы что-либо значить.
+  const canExtend = {
+    preHandler: [
+      app.authenticate,
+      app.requirePermission('mechRequests.extend', 'Недостаточно прав для продления аренды'),
     ],
   };
 
@@ -801,6 +813,74 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
           entityType: 'mech_request',
           entityId: id,
           metadata: { changes: mechIssueRevokeChanges(revokedFrom, reason) },
+        });
+        return (await loadMechRequestDto(tx, id))!;
+      });
+    },
+  );
+
+  /**
+   * Продление срока аренды (Р9, Р11). Не правка формы и не смена статуса: заявка остаётся ровно
+   * там, где была, а меняется обещание платить — поэтому и право своё, и событие своё.
+   *
+   * Три предметных правила, и каждое отвечает на свой вопрос:
+   *
+   * - **продлевают ДЕЙСТВУЮЩУЮ аренду** — весь предикат `isMechRentalRunning` целиком (Р2), а не
+   *   один заполненный `actual_from`. У заявки, которую ещё не подали, срок правится обычной
+   *   формой, пока она «Новая»; у коррекции завершения (откат «Выполнена → В работе» с целым
+   *   фактом) техника уже вернулась, и продлевать нечего — там ждут повторного завершения;
+   * - **новая дата строго больше прежней** (Р11): та же дата — не продление, а меньшая — сокращение
+   *   срока, и оно выражается завершением с фактической датой возврата, а не задним числом
+   *   передвинутым планом. Сравнить их может только сервер: прежней даты у схемы тела нет;
+   * - **причина обязательна** (схема тела). В комментарий заявки её не положить — он перезаписался
+   *   бы, — а без неё в истории осталась бы одна передвинутая дата без ответа «почему платим ещё».
+   *
+   * Аудит строгий и внутри транзакции (Р21): прежний срок строка не хранит — она помнит одно
+   * «сейчас», — и потерянное событие означало бы продление, которого будто не было.
+   */
+  r.patch(
+    '/:id/extend',
+    { ...canExtend, schema: { params: idParams, body: extendMechRequestSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { id } = req.params;
+      const { plannedTo, reason, version } = req.body;
+      return db.transaction(async (tx) => {
+        const row = assertMechRequestOpenable(p, await lockMechRequest(tx, id), version);
+        assertMechRequestLive(row, 'продлить аренду');
+        if (!isMechRentalRunning(row)) {
+          throw err.unprocessable(
+            'Продлевают действующую аренду: техника либо ещё не выдана, либо уже возвращена',
+          );
+        }
+        // Строгое сравнение строк `YYYY-MM-DD`: ключ сравнивается лексикографически ровно так же,
+        // как хронологически, и пересчёт в моменты времени вернул бы часовой пояс туда, откуда его
+        // убрали. Равенство отсекается тем же условием — повтор нажатия с актуальной версией
+        // должен ответить по делу, а не тихим успехом.
+        if (plannedTo <= row.plannedTo) {
+          throw err.unprocessable(MECH_EXTEND_NOT_LATER_MESSAGE, {
+            plannedTo: 'Позже прежней даты',
+          });
+        }
+        const [updated] = await tx
+          .update(mechRequests)
+          .set({
+            // Двигается ровно план возврата. `plannedFrom` и факт выдачи не трогаются вовсе:
+            // аренда уже идёт, и подвинутое начало переписало бы то, что случилось.
+            plannedTo,
+            updatedBy: p.id,
+            version: row.version + 1,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(mechRequests.id, id), eq(mechRequests.version, version)))
+          .returning({ id: mechRequests.id });
+        if (!updated) throw err.conflict();
+        await writeAuditTx(tx, {
+          actorUserId: p.id,
+          action: 'mech_request.extend',
+          entityType: 'mech_request',
+          entityId: id,
+          metadata: { changes: mechExtendChanges(row.plannedTo, plannedTo, reason) },
         });
         return (await loadMechRequestDto(tx, id))!;
       });

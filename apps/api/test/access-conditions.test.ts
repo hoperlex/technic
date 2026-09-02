@@ -710,6 +710,11 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { lessorId: COUNTERPARTY_ID, rate: 1200, rateUnit: 'hour', version: 1 },
   },
   'PATCH /api/v1/mech-requests/:id/status': { payload: { status: 'confirmed', version: 1 } },
+  // Продление — единственный маршрут модуля со своим правом (`.extend`, диспетчер, Р9): страж у
+  // него другой, чем у соседей, и тело обязано пройти схему, чтобы это было видно по отказу.
+  'PATCH /api/v1/mech-requests/:id/extend': {
+    payload: { plannedTo: FUTURE_DATE, reason: 'работы не закончены', version: 1 },
+  },
   // Фактическая дата не бывает в будущем (Р2), и проверяет это схема: `FUTURE_DATE` дал бы 400
   // раньше стража.
   'POST /api/v1/mech-requests/:id/issue': { payload: { actualFrom: PAST_DATE, version: 1 } },

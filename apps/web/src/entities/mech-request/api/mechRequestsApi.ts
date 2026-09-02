@@ -1,6 +1,7 @@
 import type {
   ChangeMechRequestStatusInput,
   CreateMechRequestInput,
+  ExtendMechRequestInput,
   IssueMechRequestInput,
   MechRequestDto,
   MechRequestSummaryDto,
@@ -80,6 +81,14 @@ export const mechRequestsApi = {
    */
   revokeIssue: (id: string, body: RevokeMechIssueInput) =>
     apiFetch<MechRequestDto>(`${PATH}/${id}/issue-revoke`, { method: 'POST', body }),
+
+  /**
+   * Продление аренды (Р9, Р11): своё право (`mechRequests.extend`), обязательная причина, своё
+   * событие истории. `PATCH`, а не `POST`, как у выдачи: продление правит уже существующее поле
+   * заявки (`planned_to`), а не отмечает новое событие в её жизни.
+   */
+  extend: (id: string, body: ExtendMechRequestInput) =>
+    apiFetch<MechRequestDto>(`${PATH}/${id}/extend`, { method: 'PATCH', body }),
 
   /**
    * Дублирование (Р3): «нужны две виброплиты» — две заявки, потому что ставка задаётся за единицу.

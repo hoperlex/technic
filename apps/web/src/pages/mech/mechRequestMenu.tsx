@@ -50,10 +50,16 @@ export interface MechMenuTargets {
   editDeal: (request: MechRequestDto) => void;
   issue: (request: MechRequestDto) => void;
   revokeIssue: (request: MechRequestDto) => void;
+  extend: (request: MechRequestDto) => void;
   complete: (request: MechRequestDto) => void;
   cancel: (request: MechRequestDto) => void;
   rollbackToNew: (request: MechRequestDto) => void;
-  edit: (request: MechRequestDto) => void;
+  /**
+   * Правка открывает форму заявки, а форма принадлежит вкладке. Необязательна поэтому: у вкладки
+   * «В аренде» формы нет вовсе — заявку там ведут не правкой, а продлением и завершением, — и
+   * пункт, открывающий несуществующее окно, был бы обещанием без содержания.
+   */
+  edit?: (request: MechRequestDto) => void;
 }
 
 /** Действия без окна: уходят прямо в запрос либо в подтверждение. */
@@ -69,6 +75,18 @@ export interface MechMenuOptions {
   open: MechMenuTargets;
   run: MechMenuRunners;
 }
+
+/**
+ * Что из этого меню показывает вкладка «В аренде»: два действия по существу присутствия (§7) —
+ * продлить и завершить. Остальное про ведение заявки и живёт в списке заявок.
+ *
+ * Перечень стоит здесь, а не во вкладке, ровно потому, что ключи проставляются в этом же файле
+ * двумя десятками строк ниже: переименование пункта видно вместе с его отбором, а не через файл.
+ *
+ * «Открыть заявку» в перечне нет: карточку вкладка открывает сама — это её собственное действие, а
+ * не пункт цикла заявки.
+ */
+export const MECH_RENTAL_ACTION_KEYS: readonly string[] = ['extend', 'status:done'];
 
 export function mechMenuItems(
   request: MechRequestDto,
@@ -138,6 +156,20 @@ export function mechMenuItems(
   }
 
   /*
+   * «Продлить» (Р9, Р11) — единственное действие модуля со **своим** правом: продление стоит денег
+   * так же, как сама аренда, и решает его тот, кто говорит с арендодателем, а не тот, кто ведёт
+   * заявку. Поэтому `mechRequests.extend`, а не `mayStatus`, — и пункта нет даже у того, кто эту
+   * же заявку взял в работу и выдал.
+   *
+   * Условие состояния — **весь** предикат действующей аренды: у заявки без отметки выдачи срок ещё
+   * не начался, а у коррекции завершения техника уже вернулась — продлевать в обоих случаях
+   * нечего. Стоит пункт рядом с выдачей, а не среди переходов: продление не двигает статус.
+   */
+  if (can(user, 'mechRequests.extend') && isMechRentalRunning(request)) {
+    items.push({ key: 'extend', label: 'Продлить', onClick: () => open.extend(request) });
+  }
+
+  /*
    * «Дублировать» (Р3): «нужны две виброплиты» — две заявки, потому что ставка задаётся за
    * единицу, а две единицы возвращают в разные дни и отрабатывают разное число часов. Право —
    * заведения: это и есть заведение новой заявки, а не копия строки.
@@ -154,12 +186,14 @@ export function mechMenuItems(
    * есть ровно при полном объёме правки (`all`), а комментарий закрытой аренды — работа офиса.
    */
   const editScope = mechEditScope(request);
+  const openEdit = open.edit;
   if (
+    openEdit &&
     can(user, 'mechRequests.update') &&
     editScope !== 'none' &&
     (!placeScoped || editScope === 'all')
   ) {
-    items.push({ key: 'edit', label: 'Редактировать', onClick: () => open.edit(request) });
+    items.push({ key: 'edit', label: 'Редактировать', onClick: () => openEdit(request) });
   }
 
   const deleteScope = mechDeleteScope(request);

@@ -891,9 +891,9 @@ export const ACCESS_MANIFEST = {
   // которым её и поставили; отметка выдачи и её снятие им же. Форма остаётся под `update`, и
   // спрашивать в ней второе право не за что: чужого действия она больше не несёт.
   //
-  // `mechRequests.extend` в манифесте не появляется до Э2: продление разведено со сменой статуса
-  // отдельным правом (диспетчер), но маршрута у него пока нет, а строка без маршрута роняет
-  // обратную половину сверки.
+  // Единственное исключение из «всё офисное — под `.status`» — продление: у него своё право
+  // (диспетчер), потому что срок аренды не двигает заявку по циклу, а означает согласие платить
+  // дальше (Р9). Спроси у него `.status` — и разведение прав перестало бы что-либо значить.
   'GET /api/v1/mech-requests': { kind: 'permissions', allOf: ['mechRequests.read'] },
   'GET /api/v1/mech-requests/summary': { kind: 'permissions', allOf: ['mechRequests.read'] },
   // Подсказка ранее вводившихся видов строится по той же области, что и список: право у неё то же
@@ -912,6 +912,7 @@ export const ACCESS_MANIFEST = {
   'PATCH /api/v1/mech-requests/:id': { kind: 'permissions', allOf: ['mechRequests.update'] },
   'PATCH /api/v1/mech-requests/:id/deal': { kind: 'permissions', allOf: ['mechRequests.status'] },
   'PATCH /api/v1/mech-requests/:id/status': { kind: 'permissions', allOf: ['mechRequests.status'] },
+  'PATCH /api/v1/mech-requests/:id/extend': { kind: 'permissions', allOf: ['mechRequests.extend'] },
   'POST /api/v1/mech-requests/:id/issue': { kind: 'permissions', allOf: ['mechRequests.status'] },
   'POST /api/v1/mech-requests/:id/issue-revoke': {
     kind: 'permissions',

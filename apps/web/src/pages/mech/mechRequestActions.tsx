@@ -11,6 +11,7 @@ import { mechFailureText, mechRequestKeys, mechRequestsApi } from '@entities/mec
 import { MechTakeInWorkModal } from '@features/mech-take-in-work';
 import { MechIssueModal, MechRevokeIssueModal } from '@features/mech-issue';
 import { MechCompleteModal } from '@features/mech-complete';
+import { MechExtendModal } from '@features/mech-extend';
 import type { ActionSheetItem } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
 import { useAuth } from '../../auth/AuthContext';
@@ -30,8 +31,11 @@ import { mechMenuItems } from './mechRequestMenu';
 export function useMechRequestActions({
   onEdit,
 }: {
-  /** Правка открывает форму, а форма принадлежит вкладке: набор действий ею не владеет. */
-  onEdit: (request: MechRequestDto) => void;
+  /**
+   * Правка открывает форму, а форма принадлежит вкладке: набор действий ею не владеет. Не передана
+   * — пункта «Редактировать» в меню нет: так вкладка «В аренде» и живёт, формы у неё нет.
+   */
+  onEdit?: (request: MechRequestDto) => void;
 }): {
   actionsFor: (request: MechRequestDto) => ActionSheetItem[];
   modals: ReactNode;
@@ -47,6 +51,7 @@ export function useMechRequestActions({
   const [dealMode, setDealMode] = useState<'start' | 'deal'>('start');
   const [issueTarget, setIssueTarget] = useState<MechRequestDto | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<MechRequestDto | null>(null);
+  const [extendTarget, setExtendTarget] = useState<MechRequestDto | null>(null);
   const [completeTarget, setCompleteTarget] = useState<MechRequestDto | null>(null);
   const [cancelTarget, setCancelTarget] = useState<MechRequestDto | null>(null);
   /**
@@ -60,6 +65,7 @@ export function useMechRequestActions({
     setDealTarget(null);
     setIssueTarget(null);
     setRevokeTarget(null);
+    setExtendTarget(null);
     setCompleteTarget(null);
     setCancelTarget(null);
     setRollbackTarget(null);
@@ -142,6 +148,7 @@ export function useMechRequestActions({
         },
         issue: setIssueTarget,
         revokeIssue: setRevokeTarget,
+        extend: setExtendTarget,
         complete: setCompleteTarget,
         cancel: setCancelTarget,
         rollbackToNew: setRollbackTarget,
@@ -163,6 +170,7 @@ export function useMechRequestActions({
       />
       <MechIssueModal request={issueTarget} onClose={() => setIssueTarget(null)} />
       <MechRevokeIssueModal request={revokeTarget} onClose={() => setRevokeTarget(null)} />
+      <MechExtendModal request={extendTarget} onClose={() => setExtendTarget(null)} />
       <MechCompleteModal request={completeTarget} onClose={() => setCompleteTarget(null)} />
       <CancelReasonModal
         open={!!cancelTarget}
