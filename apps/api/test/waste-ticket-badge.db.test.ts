@@ -135,6 +135,16 @@ async function seedTicketFile(requestId: string): Promise<string> {
   return file!.id;
 }
 
+/** Строка распознавания файла: ею отличается «лист прочитан» от «до листа не дошли» (ADR 0155). */
+async function seedRecognition(
+  requestId: string,
+  fileId: string,
+  status: 'pending' | 'done' | 'failed' | 'unsupported' = 'done',
+): Promise<void> {
+  const { db, schema } = ctx;
+  await db.insert(schema.wasteTicketFiles).values({ fileId, requestId, status });
+}
+
 async function seedTicket(
   requestId: string,
   opts: {
@@ -268,6 +278,8 @@ describe.skipIf(!DB_URL)('вход сверки талонов на живой �
     expect(state!.checks).toEqual([]);
     expect(state!.ticketsVolumeM3).toBe(40);
     expect(state!.badge).toEqual({
+      confirmable: 0,
+      confirmableFingerprint: '',
       errors: 0,
       warnings: 0,
       pendingConfirmation: 0,
@@ -360,9 +372,13 @@ describe.skipIf(!DB_URL)('вход сверки талонов на живой �
     expect(wasteTicketReviewBlocker(state!.badge)).toContain('приложенных талонов не разобрано: 1');
   });
 
-  it('подтверждённый талон гасит признак нетронутой бумаги, отклонённый — нет', async () => {
+  it('ручной талон закрывает ПРОЧИТАННЫЙ лист без талонов, отклонённый — не закрывает ничего', async () => {
+    // Пофайловое правило (ADR 0155): ручной талон страницы не имеет вовсе, и закрывает он только
+    // те листы, где машина отработала и талона не нашла, — единственный выход из тупика, когда
+    // разобрать бумагу можно лишь руками.
     const requestId = await seedRequest({ factVolumeM3: 40 });
-    await seedTicketFile(requestId);
+    const fileId = await seedTicketFile(requestId);
+    await seedRecognition(requestId, fileId, 'done');
     await seedTicket(requestId, { number: `G${suffix}`, volumeM3: 40, status: 'dismissed' });
 
     // «Это не талон» — не разбор бумаги, а вывод о том, что бумаги на кадре нет.
@@ -373,6 +389,19 @@ describe.skipIf(!DB_URL)('вход сверки талонов на живой �
     const confirmed = await badgeOf(requestId);
     expect(confirmed!.badge.unreviewedPaper).toBe(0);
     expect(wasteTicketReviewSettled(confirmed!.badge)).toBe(true);
+  });
+
+  it('к листу, до которого разбор не дошёл, ручной талон отношения не имеет', async () => {
+    // Тот же ручной талон, но лист не читали вовсе: строки распознавания нет. Прежнее правило
+    // гасило признак у всей заявки первым подтверждённым талоном — и вторая бумага пропадала из
+    // виду вместе с первой.
+    const requestId = await seedRequest({ factVolumeM3: 40 });
+    await seedTicketFile(requestId);
+    await seedTicket(requestId, { number: `I${suffix}`, volumeM3: 40 });
+
+    const state = await badgeOf(requestId);
+    expect(state!.badge.unreviewedPaper).toBe(1);
+    expect(wasteTicketReviewSettled(state!.badge)).toBe(false);
   });
 
   it('у заявки, чья бумага разбору не подлежит, приложенный талон значка не даёт', async () => {

@@ -11,6 +11,7 @@ import { createMailAccounts } from './mail-accounts';
 import { tickMailings } from './mail-scheduler';
 import {
   createEngineFrom,
+  markReviewStale,
   preprocessOptionsFrom,
   readTicketOcrConfig,
   runTicketRecognitionJob,
@@ -370,6 +371,24 @@ async function markMailFailed(job: Pick<JobRow, 'type' | 'payload'>, error: stri
   );
 }
 
+/**
+ * Задача распознавания, которая больше не выполнится: файл, который никто уже не прочитает. Для
+ * значка разбора мёртвая задача — тот же нечитаемый талон (числа `failures`), и заявка обязана
+ * остаться в «Требуют разбора», а не выглядеть разобранной (план
+ * `docs/waste-ticket-auto-confirm-plan.md`, Р20). Пересчитать числа воркер не умеет — правило
+ * сверки живёт в API, — поэтому он только объявляет состояние устаревшим.
+ *
+ * Ветка по типу задачи — как у `markMailFailed`, и по той же причине: очередь общая, а что значит
+ * смерть задачи, знает только её тип. Окончательный отказ SMTP сюда не приходит вовсе: его бросает
+ * одна отправка письма.
+ */
+async function markTicketReviewStale(job: Pick<JobRow, 'type' | 'payload'>): Promise<void> {
+  if (job.type !== JOB_RECOGNIZE_WASTE_TICKET_FILE) return;
+  const requestId = String(job.payload.requestId ?? '');
+  if (!requestId) return;
+  await markReviewStale(pool, [requestId]);
+}
+
 function backoffMs(attempts: number): number {
   const base = Math.min(300, 5 * 2 ** attempts); // сек, максимум 5 минут
   const jitter = Math.floor(Math.random() * 1000);
@@ -448,9 +467,14 @@ function startLeaseHeartbeat(held: Set<string>): () => void {
  * Возврат в очередь задач, чью аренду никто не продлил. Первым делом в такте — до захвата: иначе
  * задача, брошенная упавшим процессом, ждала бы своей очереди на такт дольше без всякой причины.
  *
- * Отдельно разбирается случай, когда возврат исчерпал попытки: письмо, задача которого ушла в
- * `dead`, обязано перестать быть `pending` в журнале — иначе `pending` там означает и «ждёт
- * очереди», и «уже никогда не уйдёт», а разбирают их по-разному (см. `markMailFailed`).
+ * Отдельно разбирается случай, когда возврат исчерпал попытки. Здесь `reclaimExpiredJobs` кладёт
+ * задачу в `dead` САМ, одним `UPDATE`, — мимо `killJob` и мимо разбора отказа в цикле. Значит, всё,
+ * что тянет за собой смерть задачи, должно быть повторено и тут, по одной ветке на тип:
+ *
+ *   - письмо, задача которого ушла в `dead`, обязано перестать быть `pending` в журнале — иначе
+ *     `pending` означает и «ждёт очереди», и «уже никогда не уйдёт» (см. `markMailFailed`);
+ *   - у распознавания талона мёртвая задача меняет числа значка разбора: файл остался
+ *     непрочитанным (см. `markTicketReviewStale`).
  */
 async function reclaimExpiredSafely(): Promise<void> {
   try {
@@ -463,6 +487,7 @@ async function reclaimExpiredSafely(): Promise<void> {
     );
     for (const job of dead) {
       await markMailFailed(job, 'Аренда задачи истекла, попытки исчерпаны');
+      await markTicketReviewStale(job);
       logger.error(
         { jobId: job.id, type: job.type, attempts: job.attempts },
         'Задача переведена в dead: аренда истекала столько раз, сколько было попыток',
@@ -536,6 +561,10 @@ async function processJobs(): Promise<number> {
             continue;
           }
           await markMailFailed(job, message);
+          // Только после `killJob`, признавшего задачу нашей. Не признай он — задача не умерла:
+          // её отобрала очередь, и файл прямо сейчас читает второй воркер. Пометка оттуда была бы
+          // о чужой работе, которая ещё идёт, и заставляла бы реестр пересчитывать заявку впустую.
+          await markTicketReviewStale(job);
           logger.error({ jobId: job.id, type: job.type }, `Задача переведена в dead: ${message}`);
         } else {
           const next = new Date(Date.now() + backoffMs(attempts));

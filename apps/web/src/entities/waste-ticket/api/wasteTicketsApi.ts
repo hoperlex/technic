@@ -58,6 +58,23 @@ export const wasteTicketsApi = {
       { method: 'POST', body },
     ),
 
+  /**
+   * Подтвердить разом все готовые талоны заявки — тот самый клик из строки списка (Р23, Р27).
+   *
+   * В теле отпечаток набора, а не число: между отрисовкой строки и кликом один талон может
+   * исчезнуть, а другой появиться — счёт совпадёт, набор будет другим, и человек подтвердил бы не
+   * то, что видел. Идентификаторы талонов сюда не годятся вовсе: в строке списка их нет, значок
+   * несёт только числа и отпечаток.
+   *
+   * Ручка отказывает 409 по тому же правилу, по которому портал нарисовал кнопку, — поэтому отказ
+   * здесь нормальный ход событий, а не сбой: сверка успела измениться.
+   */
+  confirmReady: (requestId: string, body: { fingerprint: string }) =>
+    apiFetch<{ ok: boolean; confirmed: number }>(
+      `/waste-requests/${requestId}/tickets/confirm-ready`,
+      { method: 'POST', body },
+    ),
+
   update: (requestId: string, ticketId: string, body: UpdateWasteTicketInput) =>
     apiFetch<{ ok: boolean }>(`/waste-requests/${requestId}/tickets/${ticketId}`, {
       method: 'PATCH',

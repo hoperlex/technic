@@ -36,6 +36,7 @@ import {
 } from '@technic/contracts';
 import { prepareTicketFile, PREPROCESSING_VERSION } from './preprocess';
 import { TicketFileError } from './errors';
+import { markReviewStale, markReviewStaleWithNeighbors } from './review-state';
 import { attemptCacheKey, PROXY_CHOOSES_MODEL } from './engine/keys';
 import type { PageImage, RecognitionEngine, RecognitionOutcome } from './engine/types';
 import { PROMPT_VERSION } from './engine/prompt';
@@ -183,6 +184,12 @@ async function beginFile(
                   active_job_id = $3, updated_at = now()`,
       [payload.fileId, payload.requestId, jobId],
     );
+    // Файловая строка — уже изменение значка разбора: у заявки появилась бумага, о которой кому-то
+    // отвечать. Считать числа воркер не умеет (правило сверки живёт в API), поэтому он объявляет
+    // состояние устаревшим — пересчитает ближайшее чтение реестра (Р20). Пометка идёт в ЭТОЙ
+    // транзакции и под уже взятым `lockRequest`: разойдись они, окно между записью строки и
+    // пометкой оставило бы значок с прежними числами до следующей мутации, то есть надолго.
+    await markReviewStale(client, [payload.requestId]);
     return link;
   });
 }
@@ -216,6 +223,9 @@ async function failFile(
         err.errorScope,
       ],
     );
+    // Отказ — такое же число значка, как талон: нечитаемый файл считается отдельно (`failures`), и
+    // без пометки заявка выглядела бы разобранной, хотя её бумагу не прочитал никто (Р20).
+    await markReviewStale(client, [payload.requestId]);
   });
   // Отказ по файлу — то, что человек увидит в карточке; в журнале он нужен той же строкой, чтобы
   // «у нас талон не читается» разбиралось без захода в базу.
@@ -485,6 +495,36 @@ async function saveResult(
       return false;
     }
 
+    // Ключи для поиска соседей собираются в ДВА захода, и первый из них — здесь, до единой записи.
+    // Соседа задевает не только то, что проход запишет, но и то, что он затрёт: перечитывание
+    // файла меняет номер нетронутого талона с A на B, и заявка, где предъявлен A, остаётся с
+    // замечанием о дубле, которого больше нет, — да ещё и со `stale = false`, то есть врёт до
+    // собственной следующей мутации. Поэтому метятся соседи и по старому, и по новому значению
+    // (Р12), а прочитать старое можно только сейчас: после `UPDATE` его уже нигде нет.
+    const neighborKeys = {
+      numberKeys: [] as string[],
+      numberFuzzy: [] as string[],
+      pageSha256: [] as string[],
+    };
+    const previousTickets = await client.query<{ number_key: string; number_fuzzy: string }>(
+      'SELECT number_key, number_fuzzy FROM waste_tickets WHERE request_id = $1',
+      [payload.requestId],
+    );
+    for (const row of previousTickets.rows) {
+      neighborKeys.numberKeys.push(row.number_key);
+      neighborKeys.numberFuzzy.push(row.number_fuzzy);
+    }
+    // Страницы берутся по заявке, а не через её талоны: лист, на котором модель не нашла ни одного
+    // талона, остаётся поводом для замечания о повторе скана — совпал он с чужим или нет, решает
+    // сверка, а не эта выборка.
+    const previousPages = await client.query<{ page_sha256: string }>(
+      'SELECT page_sha256 FROM waste_ticket_pages WHERE request_id = $1',
+      [payload.requestId],
+    );
+    for (const row of previousPages.rows) {
+      neighborKeys.pageSha256.push(row.page_sha256);
+    }
+
     for (const page of pages) {
       const inserted = await client.query<{ id: string }>(
         `INSERT INTO waste_ticket_pages
@@ -683,6 +723,27 @@ async function saveResult(
         pages.length,
       ],
     );
+
+    // Второй заход: ключи записанного. По ВСЕМ талонам прохода, а не только по строкам, которые
+    // запись действительно завела, — тронутый человеком талон новый проход не переписывает, но
+    // кладёт рядом предложение (Р13), и вопрос «не тот ли это номер, что у соседа» от этого никуда
+    // не девается. Лишняя пометка стоит одного пересчёта, пропущенная — молчащего предупреждения.
+    for (const page of pages) {
+      neighborKeys.pageSha256.push(page.sha256);
+      for (const ticket of page.tickets) {
+        const raw = ticket.number ?? '';
+        if (!raw) continue;
+        neighborKeys.numberKeys.push(wasteTicketNumberKey(raw));
+        neighborKeys.numberFuzzy.push(wasteTicketNumberFuzzy(raw));
+      }
+    }
+    // Последней записью транзакции и под тем же замком: к этому моменту записано всё, что меняет
+    // числа, — страницы, талоны, файловый статус. Соседи метятся вместе со своей заявкой, потому
+    // что замечание о дубле живёт в ЧУЖОЙ карточке: подтверждённый талон этой заявки делает дублем
+    // талон заявки Б, и Б узнает об этом, только если её состояние объявлено устаревшим (Р12, Р20).
+    // Пустые ключи и повторы отбрасывает сама пометка — старый и новый наборы пересекаются почти
+    // всегда, и без этого один и тот же сосед искался бы дважды.
+    await markReviewStaleWithNeighbors(client, payload.requestId, neighborKeys);
     return true;
   });
 }

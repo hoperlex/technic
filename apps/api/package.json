@@ -28,6 +28,7 @@
     "backfill:grants": "tsx src/backfill-grants.ts",
     "check:captcha": "tsx scripts/check-captcha.ts",
     "esm2:month-split": "tsx --env-file-if-exists=../../.env.dev scripts/esm2-month-split.ts",
+    "recompute:ticket-review": "tsx --env-file-if-exists=../../.env.dev scripts/recompute-ticket-review.ts",
     "check:grants-preflight": "tsx src/check-grants-preflight.ts",
     "check:mailing-audience": "tsx src/check-mailing-audience.ts",
     "check:role-migration": "tsx src/check-role-migration.ts",

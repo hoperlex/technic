@@ -6,6 +6,7 @@ import {
   acceptWasteTicketCheckSchema,
   acceptWasteTicketProposalSchema,
   arbitrateWasteTicketBlindCheckSchema,
+  confirmReadyWasteTicketsSchema,
   confirmWasteTicketSchema,
   createWasteTicketSchema,
   dismissWasteTicketProposalSchema,
@@ -16,6 +17,8 @@ import {
   wasteTicketBlindCheckSchema,
   wasteTicketNumberFuzzy,
   wasteTicketFieldLabels,
+  wasteTicketAutoConfirmBlocker,
+  wasteTicketAutoConfirmSettled,
   wasteTicketNumberKey,
   type WasteTicketAttemptDto,
   type WasteTicketBlindCheckDto,
@@ -56,11 +59,8 @@ import {
   placeObjectVisibilityWhere,
 } from '../lib/access';
 import { err } from '../lib/errors';
-import { writeAudit } from '../lib/audit';
-import {
-  blindBaselineFingerprint,
-  shouldSampleBlindCheck,
-} from '../services/waste-ticket-blind';
+import { writeAudit, writeAuditTx } from '../lib/audit';
+import { blindBaselineFingerprint, shouldSampleBlindCheck } from '../services/waste-ticket-blind';
 import { wasteTicketCheckFingerprint, wasteTicketChecks } from '../services/waste-ticket-checks';
 import {
   currentTicketObservations,
@@ -75,6 +75,11 @@ import {
   type RequestVisibility,
   type TicketCheckBundle,
 } from '../services/waste-ticket-inputs';
+import {
+  markTicketReviewStale,
+  neighbourRequestIds,
+  recomputeTicketReviewState,
+} from '../services/waste-ticket-review-state';
 import { enqueueTicketRecognition } from '../services/waste-tickets';
 
 /**
@@ -229,20 +234,134 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     return { byField, differs };
   }
 
+  /** Ключ замка области: перевозчик и консервативный номер — та же пара, что в частичном индексе. */
+  function numberAreaKey(operatorId: string | null, numberKey: string): string {
+    return `number:${operatorId ?? 'nobody'}:${numberKey}`;
+  }
+
   /**
-   * Замок области уникальности номера: два человека, одновременно подтверждающие один номер в
-   * разных заявках, иначе разойдутся на гонке между проверкой и вставкой, и один получит ошибку
-   * базы вместо внятного 409 с соседом (Р27).
+   * Все замки транзакции — одним местом и в едином порядке (ADR 0155, Р22).
+   *
+   * ПОЧЕМУ СРАЗУ ВСЕ. Пакетное подтверждение берёт несколько номеров, и два пакета с номерами
+   * «A, B» и «B, A» взяли бы их встречно — это дедлок на ровном месте, который в тесте одиночной
+   * ручки не виден вовсе. Ключи собираются заранее, сортируются и берутся до первой записи.
+   *
+   * ПОЧЕМУ ТРИ СЕМЕЙСТВА. Замечание о повторе рождается тремя разными совпадениями, и области у
+   * них разные: скан — `page_sha256` глобально (тот же лист не закрывает две заявки ни у кого),
+   * номер — `number_key` глобально (совпадение у ДРУГОГО перевозчика даёт своё замечание, а не
+   * молчание), похожий номер — пара «оператор + `number_fuzzy`». Замок по одной паре
+   * «оператор + номер» сериализовал бы только вторую причину из трёх.
    */
-  async function lockNumberArea(
-    tx: Tx,
+  async function lockNumberAreas(tx: Tx, keys: readonly string[]): Promise<void> {
+    const unique = [...new Set(keys.filter(Boolean))].sort();
+    for (const key of unique) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`);
+    }
+  }
+
+  /**
+   * Ключи замков для талона — по всем трём семействам и по ОБОИМ значениям, старому и новому:
+   * правка номера уводит бумагу от прежней области и приводит в новую, и обе должны быть заперты,
+   * иначе гонка случится ровно в той области, которую мы отпустили.
+   */
+  function ticketLockKeys(
+    ticket: { numberKey: string; numberFuzzy: string },
     operatorId: string | null,
-    numberKey: string,
+    pageSha256?: string | null,
+  ): string[] {
+    const keys = [numberAreaKey(operatorId, ticket.numberKey)];
+    if (ticket.numberKey) keys.push(`number-any:${ticket.numberKey}`);
+    if (ticket.numberFuzzy) keys.push(`fuzzy:${operatorId ?? 'nobody'}:${ticket.numberFuzzy}`);
+    if (pageSha256) keys.push(`page:${pageSha256}`);
+    return keys;
+  }
+
+  /** Хэш растра страницы: по нему запирается область «тот же лист» (Р22). */
+  async function pageShaOf(tx: Tx, pageId: string | null): Promise<string | null> {
+    if (!pageId) return null;
+    const [page] = await tx
+      .select({ sha: wasteTicketPages.pageSha256 })
+      .from(wasteTicketPages)
+      .where(eq(wasteTicketPages.id, pageId))
+      .limit(1);
+    return page?.sha ?? null;
+  }
+
+  /**
+   * Хвост всякой мутации разбора (ADR 0155, Р19, Р20): пересчитать состояние своей заявки и
+   * пометить устаревшими соседей.
+   *
+   * Соседи — не роскошь: замечание о повторе живёт в ЧУЖОЙ заявке, а рождается здесь, и без
+   * пометки та заявка осталась бы `stale = false` с числами, посчитанными по прежней бумаге.
+   * Ключи берутся по обоим значениям — до и после правки: изменённый номер уводит бумагу от
+   * прежнего соседа и приводит к новому.
+   */
+  async function refreshReviewState(
+    tx: Tx,
+    requestId: string,
+    touched: readonly { numberKey: string; numberFuzzy: string; pageId: string | null }[],
   ): Promise<void> {
-    if (!numberKey) return;
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtext(${`${operatorId ?? 'nobody'}:${numberKey}`}))`,
-    );
+    const numberKeys = [...new Set(touched.map((t) => t.numberKey).filter(Boolean))];
+    const numberFuzzies = [...new Set(touched.map((t) => t.numberFuzzy).filter(Boolean))];
+    const pageShas: string[] = [];
+    for (const item of touched) {
+      const sha = await pageShaOf(tx, item.pageId);
+      if (sha) pageShas.push(sha);
+    }
+    const neighbours = await neighbourRequestIds(tx, {
+      requestId,
+      numberKeys,
+      numberFuzzies,
+      pageShas,
+    });
+    // Своя строка помечается В ОБЩЕМ РЯДУ с соседями, и только потом пересчитывается. Порядок не
+    // косметика: `markTicketReviewStale` берёт строки по возрастанию `request_id`, и пересчёт,
+    // поставленный раньше, взял бы свою строку вне ряда — две встречные мутации соседних заявок
+    // (A метит B, B метит A) получили бы дедлок уже не на номерах талонов, а на самом состоянии.
+    await markTicketReviewStale(tx, [requestId, ...neighbours]);
+    await recomputeTicketReviewState(tx, requestId);
+  }
+
+  /**
+   * Заявка под замком — ПЕРВОЕ действие всякой мутации разбора (ADR 0155, Р22).
+   *
+   * До этого решения ручки талонов начинали с замка самого талона, а замок заявки брали только
+   * смена статуса и воркер распознавания. Комментарий в `waste-requests.ts` при этом обещал
+   * обратное, и обещание было ложным: правка талона могла разойтись с завершением заявки, а
+   * пакетное подтверждение — с только что дописанным воркером талоном.
+   *
+   * Статус проверяется ПОСЛЕ ожидания замка и по перечитанной строке: прочитанное до ожидания
+   * устарело по определению. Политика статуса приезжает параметром — слепая перепроверка и
+   * арбитраж намеренно работают и у завершённой заявки, они меряют качество чтения, а не ведут
+   * заявку.
+   */
+  async function lockRequestForReview(
+    tx: Tx,
+    requestId: string,
+    principal: ReturnType<typeof requirePrincipal>,
+    guard: 'review-open' | 'any-status' = 'review-open',
+  ) {
+    const rows = await tx
+      .select({
+        id: wasteRequests.id,
+        num: wasteRequests.num,
+        objectId: wasteRequests.objectId,
+        status: wasteRequests.status,
+        volumeM3: wasteRequests.volumeM3,
+        deliveryAt: wasteRequests.deliveryAt,
+        operatorCounterpartyId: wasteRequests.operatorCounterpartyId,
+        deletedAt: wasteRequests.deletedAt,
+      })
+      .from(wasteRequests)
+      .where(eq(wasteRequests.id, requestId))
+      .limit(1)
+      .for('update');
+    const request = rows[0];
+    if (!request || request.deletedAt) throw err.notFound('Заявка не найдена');
+    assertPlaceObjectScope(principal, request.objectId, WASTE_SCOPE_LABEL);
+    assertOperatorScope(principal, request.operatorCounterpartyId);
+    if (guard === 'review-open') assertReviewOpen(request);
+    return request;
   }
 
   /**
@@ -334,10 +453,16 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
   async function collectCheckInputs(
     principal: ReturnType<typeof requirePrincipal>,
     requestId: string,
+    /**
+     * Исполнитель: у мутации это ЕЁ транзакция (Р22). Без параметра «пересчёт под замком» читал бы
+     * мимо неё — по состоянию, которое замок как раз и держит, — и отпечаток принятия снялся бы с
+     * входа, которого в момент записи уже нет. Читающим ручкам сходит умолчание.
+     */
+    exec: Tx | typeof db = db,
   ): Promise<TicketCheckBundle> {
-    const row = await loadTicketCheckRequestRow(requestId);
+    const row = await loadTicketCheckRequestRow(requestId, exec);
     if (!row) throw err.notFound('Заявка не найдена');
-    const bundle = await loadTicketCheckInputs([row], { visible: visibilityFor(principal) });
+    const bundle = await loadTicketCheckInputs([row], { visible: visibilityFor(principal), exec });
     return (
       bundle.get(requestId) ?? {
         // Заявка без единой строки распознавания: талонов нет, сверять нечего — но замечания об
@@ -502,14 +627,8 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
               arbiterName: sql<string | null>`arbiter.full_name`,
             })
             .from(wasteTicketBlindChecks)
-            .leftJoin(
-              sql`users AS checker`,
-              sql`checker.id = ${wasteTicketBlindChecks.checkerId}`,
-            )
-            .leftJoin(
-              sql`users AS arbiter`,
-              sql`arbiter.id = ${wasteTicketBlindChecks.arbiterId}`,
-            )
+            .leftJoin(sql`users AS checker`, sql`checker.id = ${wasteTicketBlindChecks.checkerId}`)
+            .leftJoin(sql`users AS arbiter`, sql`arbiter.id = ${wasteTicketBlindChecks.arbiterId}`)
             .where(inArray(wasteTicketBlindChecks.ticketId, ticketIds))
         : Promise.resolve([]),
     ]);
@@ -533,65 +652,62 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     });
 
     return {
-      tickets: tickets.map(
-        (t): WasteTicketDto => ({
-          id: t.id,
-          requestId: t.requestId,
-          pageId: t.pageId,
-          seq: t.seq,
-          origin: t.origin,
-          status: t.status,
-          number: t.numberRaw,
-          issuedOn: t.issuedOn,
-          volumeM3: t.volumeM3 == null ? null : Number(t.volumeM3),
-          workKind: t.workKind,
-          addressRaw: t.addressRaw,
-          needsReviewFields: t.needsReviewFields as WasteTicketField[],
-          candidates: t.candidates as WasteTicketCandidateDto[],
-          operatorCounterpartyId: t.operatorCounterpartyId,
-          operatorName: t.operatorCounterpartyId
-            ? (operatorName.get(t.operatorCounterpartyId) ?? null)
+      tickets: tickets.map((t): WasteTicketDto => ({
+        id: t.id,
+        requestId: t.requestId,
+        pageId: t.pageId,
+        seq: t.seq,
+        origin: t.origin,
+        status: t.status,
+        number: t.numberRaw,
+        issuedOn: t.issuedOn,
+        volumeM3: t.volumeM3 == null ? null : Number(t.volumeM3),
+        workKind: t.workKind,
+        addressRaw: t.addressRaw,
+        needsReviewFields: t.needsReviewFields as WasteTicketField[],
+        candidates: t.candidates as WasteTicketCandidateDto[],
+        operatorCounterpartyId: t.operatorCounterpartyId,
+        operatorName: t.operatorCounterpartyId
+          ? (operatorName.get(t.operatorCounterpartyId) ?? null)
+          : null,
+        editedAt: t.editedAt?.toISOString() ?? null,
+        editedByName: t.editedBy ? (personName.get(t.editedBy) ?? null) : null,
+        confirmedAt: t.confirmedAt?.toISOString() ?? null,
+        confirmedByName: t.confirmedBy ? (personName.get(t.confirmedBy) ?? null) : null,
+        // Тройка клапана неразделима (её держит `CHECK`), поэтому и здесь она одним объектом:
+        // «снято, но без причины» — состояние, которого не бывает (Р17).
+        duplicateOverride:
+          t.duplicateOverrideAt && t.duplicateOverrideBy
+            ? {
+                at: t.duplicateOverrideAt.toISOString(),
+                byName: personName.get(t.duplicateOverrideBy) ?? '',
+                reason: t.duplicateOverrideReason,
+              }
             : null,
-          editedAt: t.editedAt?.toISOString() ?? null,
-          editedByName: t.editedBy ? (personName.get(t.editedBy) ?? null) : null,
-          confirmedAt: t.confirmedAt?.toISOString() ?? null,
-          confirmedByName: t.confirmedBy ? (personName.get(t.confirmedBy) ?? null) : null,
-          // Тройка клапана неразделима (её держит `CHECK`), поэтому и здесь она одним объектом:
-          // «снято, но без причины» — состояние, которого не бывает (Р17).
-          duplicateOverride:
-            t.duplicateOverrideAt && t.duplicateOverrideBy
-              ? {
-                  at: t.duplicateOverrideAt.toISOString(),
-                  byName: personName.get(t.duplicateOverrideBy) ?? '',
-                  reason: t.duplicateOverrideReason,
-                }
-              : null,
-          proposal: (() => {
-            const row = proposalOf.get(t.id);
-            return row
-              ? {
-                  ticketId: row.ticketId,
-                  number: row.numberRaw,
-                  issuedOn: row.issuedOn,
-                  volumeM3: row.volumeM3 == null ? null : Number(row.volumeM3),
-                  workKind: row.workKind,
-                  addressRaw: row.addressRaw,
-                  primaryAttemptId: row.primaryAttemptId,
-                  escalationAttemptId: row.escalationAttemptId,
-                  createdAt: row.createdAt.toISOString(),
-                }
-              : null;
-          })(),
-          createdAt: t.createdAt.toISOString(),
-          updatedAt: t.updatedAt.toISOString(),
-        }),
-      ),
+        proposal: (() => {
+          const row = proposalOf.get(t.id);
+          return row
+            ? {
+                ticketId: row.ticketId,
+                number: row.numberRaw,
+                issuedOn: row.issuedOn,
+                volumeM3: row.volumeM3 == null ? null : Number(row.volumeM3),
+                workKind: row.workKind,
+                addressRaw: row.addressRaw,
+                primaryAttemptId: row.primaryAttemptId,
+                escalationAttemptId: row.escalationAttemptId,
+                createdAt: row.createdAt.toISOString(),
+              }
+            : null;
+        })(),
+        createdAt: t.createdAt.toISOString(),
+        updatedAt: t.updatedAt.toISOString(),
+      })),
       pages: pageDtos,
       // Порядок: сперва то, что в разборе, затем приложенное и не поступившее. Второе — не
       // «пустая строка», а состояние, требующее человека: талон лежит, машина его не видела.
       files: [
-        ...fileRows.map(
-        (f): WasteTicketFileDto => ({
+        ...fileRows.map((f): WasteTicketFileDto => ({
           fileId: f.fileId,
           filename: f.filename ?? '',
           contentType: f.contentType ?? '',
@@ -617,71 +733,64 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           pages: pagesByFile.get(f.fileId) ?? [],
           createdAt: f.createdAt.toISOString(),
           updatedAt: f.updatedAt.toISOString(),
-        }),
-        ),
+        })),
         ...attachedRows
           .filter((a) => !fileRows.some((f) => f.fileId === a.fileId))
-          .map(
-            (a): WasteTicketFileDto => ({
-              fileId: a.fileId,
-              filename: a.filename,
-              contentType: a.contentType,
-              status: 'not_queued',
-              reason:
-                'Талон приложен, но в разбор не поступал: распознавание было выключено. ' +
-                'Прочитайте его сами кнопкой «Добавить талон вручную» или включите распознавание ' +
-                'и нажмите «Перераспознать».',
-              errorClass: null,
-              errorScope: null,
-              totalPages: 0,
-              processedPages: 0,
-              activeJob: null,
-              pages: [],
-              createdAt: a.createdAt.toISOString(),
-              updatedAt: a.createdAt.toISOString(),
-            }),
-          ),
+          .map((a): WasteTicketFileDto => ({
+            fileId: a.fileId,
+            filename: a.filename,
+            contentType: a.contentType,
+            status: 'not_queued',
+            reason:
+              'Талон приложен, но в разбор не поступал: распознавание было выключено. ' +
+              'Прочитайте его сами кнопкой «Добавить талон вручную» или включите распознавание ' +
+              'и нажмите «Перераспознать».',
+            errorClass: null,
+            errorScope: null,
+            totalPages: 0,
+            processedPages: 0,
+            activeJob: null,
+            pages: [],
+            createdAt: a.createdAt.toISOString(),
+            updatedAt: a.createdAt.toISOString(),
+          })),
       ],
       checks: checks.checks,
-      attempts: attempts.map(
-        (a): WasteTicketAttemptDto => ({
-          ...a,
-          errorClass: a.errorClass === '' ? null : a.errorClass,
-          errorScope: a.errorScope === '' ? null : a.errorScope,
-          createdAt: a.createdAt.toISOString(),
-        }),
-      ),
-      blindChecks: blindRows.map(
-        ({ row, checkerName, arbiterName }): WasteTicketBlindCheckDto => ({
-          id: row.id,
-          ticketId: row.ticketId,
-          requestId: request.id,
-          status: row.status,
-          checkerName: checkerName ?? null,
-          review: {
-            number: row.reviewNumberRaw,
-            issuedOn: row.reviewIssuedOn,
-            volumeM3: row.reviewVolumeM3 == null ? null : Number(row.reviewVolumeM3),
-          },
-          baseline: {
-            number: row.baselineNumberRaw,
-            issuedOn: row.baselineIssuedOn,
-            volumeM3: row.baselineVolumeM3 == null ? null : Number(row.baselineVolumeM3),
-          },
-          final:
-            row.status === 'arbitrated'
-              ? {
-                  number: row.finalNumberRaw,
-                  issuedOn: row.finalIssuedOn,
-                  volumeM3: row.finalVolumeM3 == null ? null : Number(row.finalVolumeM3),
-                }
-              : null,
-          resolvedFields: row.resolvedFields as WasteTicketBlindCheckField[],
-          arbiterName: arbiterName ?? null,
-          arbitratedAt: row.arbitratedAt?.toISOString() ?? null,
-          createdAt: row.createdAt.toISOString(),
-        }),
-      ),
+      attempts: attempts.map((a): WasteTicketAttemptDto => ({
+        ...a,
+        errorClass: a.errorClass === '' ? null : a.errorClass,
+        errorScope: a.errorScope === '' ? null : a.errorScope,
+        createdAt: a.createdAt.toISOString(),
+      })),
+      blindChecks: blindRows.map(({ row, checkerName, arbiterName }): WasteTicketBlindCheckDto => ({
+        id: row.id,
+        ticketId: row.ticketId,
+        requestId: request.id,
+        status: row.status,
+        checkerName: checkerName ?? null,
+        review: {
+          number: row.reviewNumberRaw,
+          issuedOn: row.reviewIssuedOn,
+          volumeM3: row.reviewVolumeM3 == null ? null : Number(row.reviewVolumeM3),
+        },
+        baseline: {
+          number: row.baselineNumberRaw,
+          issuedOn: row.baselineIssuedOn,
+          volumeM3: row.baselineVolumeM3 == null ? null : Number(row.baselineVolumeM3),
+        },
+        final:
+          row.status === 'arbitrated'
+            ? {
+                number: row.finalNumberRaw,
+                issuedOn: row.finalIssuedOn,
+                volumeM3: row.finalVolumeM3 == null ? null : Number(row.finalVolumeM3),
+              }
+            : null,
+        resolvedFields: row.resolvedFields as WasteTicketBlindCheckField[],
+        arbiterName: arbiterName ?? null,
+        arbitratedAt: row.arbitratedAt?.toISOString() ?? null,
+        createdAt: row.createdAt.toISOString(),
+      })),
       ticketsVolumeM3: checks.ticketsVolumeM3,
       preliminary: checks.preliminary,
       acceptanceAllowed: checks.acceptanceAllowed,
@@ -692,118 +801,157 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
   // ── Разбор ──
 
   /**
+   * Подтверждение ОДНОГО талона — общее тело одиночной ручки и пакетной (ADR 0155, Р24).
+   *
+   * Замки области номера сюда НЕ входят: их берёт вызывающий, одним местом и в едином порядке
+   * (Р22). Раньше замок брался здесь, и пакет из двух номеров ловил бы дедлок со встречным пакетом,
+   * взявшим те же два номера в обратном порядке.
+   *
+   * `sampleBlind` — продуктовое решение, а не деталь статистики (Р7): кнопка списка в слепую
+   * перепроверку не отбирает, потому что ждущая перепроверка снова закрыла бы завершение и
+   * обещанной «✓» человек не увидел бы в одном случае из двадцати. Флаг здесь, а не внутри
+   * `shouldSampleBlindCheck`: та отвечает на вопрос «годится ли талон в выборку», и спрятать в ней
+   * способ подтверждения значило бы спрятать решение в статистике.
+   */
+  async function confirmTicketTx(
+    tx: Tx,
+    params: {
+      request: { id: string; operatorCounterpartyId: string | null };
+      ticketId: string;
+      p: ReturnType<typeof requirePrincipal>;
+      reason: string;
+      sampleBlind: boolean;
+    },
+  ) {
+    const { request, p, reason, sampleBlind } = params;
+    const ticket = await loadTicket(tx, request.id, params.ticketId, { forUpdate: true });
+    if (ticket.status === 'dismissed') {
+      throw err.badRequest('Талон снят как «не талон» — подтверждать нечего');
+    }
+    if (ticket.needsReviewFields.length > 0) {
+      throw err.badRequest('Сначала разберите спорные поля', {
+        needsReviewFields: 'Модели прочитали по-разному',
+      });
+    }
+
+    const neighbour = await findNumberConflict(tx, {
+      ticketId: ticket.id,
+      operatorId: request.operatorCounterpartyId,
+      numberKey: ticket.numberKey,
+    });
+    // Причина без конфликта клапана НЕ создаёт: иначе первый же талон можно было бы вывести из
+    // индекса «на всякий случай», открыв его номер всем будущим дублям (Р28).
+    if (neighbour && !reason) throw numberConflictError(p, neighbour, ticket.numberRaw);
+    const overrideUsed = !!neighbour && !!reason;
+
+    const [updated] = await tx
+      .update(wasteTickets)
+      .set({
+        status: 'confirmed',
+        confirmedBy: p.id,
+        confirmedAt: new Date(),
+        // Снимок области уникальности — на момент подтверждения (Р17).
+        operatorCounterpartyId: request.operatorCounterpartyId,
+        ...(overrideUsed
+          ? {
+              duplicateOverrideAt: new Date(),
+              duplicateOverrideBy: p.id,
+              duplicateOverrideReason: reason,
+            }
+          : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(wasteTickets.id, ticket.id))
+      .returning({ id: wasteTickets.id });
+    if (!updated) throw err.conflict();
+
+    // Отбор в слепую перепроверку (Р31) — здесь и только здесь: подтверждение и есть момент,
+    // когда машинное чтение становится основанием сверки, и мерить качество надо именно его.
+    //
+    // Только НЕПРАВЛЕНЫЕ МАШИННЫЕ талоны: `baseline_*` — это чтение модели, а ручной или уже
+    // исправленный талон сравнивал бы человека с человеком, и метрика при этом называлась бы
+    // «ошибки OCR». Отбор случайный и без памяти: доля задана долей, а не квотой, — квота
+    // означала бы, что попадание талона в выборку зависит от того, сколько бумаг принесли
+    // соседи в тот же день.
+    const blind = sampleBlind && shouldSampleBlindCheck(ticket, config.ticketOcr.blindCheckRate);
+    if (blind) {
+      const [check] = await tx
+        .insert(wasteTicketBlindChecks)
+        .values({
+          ticketId: ticket.id,
+          // Снимок, а не ссылка на талон: талон после подтверждения правят, и сравнение с
+          // поехавшей величиной меряло бы не то, ради чего заведено.
+          baselineNumberRaw: ticket.numberRaw,
+          baselineNumberKey: ticket.numberKey,
+          baselineIssuedOn: ticket.issuedOn,
+          baselineVolumeM3: ticket.volumeM3,
+          baselineFingerprint: blindBaselineFingerprint(ticket),
+        })
+        .returning({ id: wasteTicketBlindChecks.id });
+      if (!check) throw err.conflict();
+
+      // Чем снят `baseline` — записывается здесь же, в той же транзакции (план §1.1). Позже
+      // связь взять неоткуда: арбитраж случается над талоном, который с момента отбора могли
+      // перечитать дважды, и «последнее наблюдение» приписало бы вердикт не той модели.
+      //
+      // Три поля, а не пять: перепроверка меряет чтение рукописи, а не разметку бланка.
+      const observations = await currentTicketObservations(tx, ticket.id);
+      const links = (['number', 'issuedOn', 'volumeM3'] as const)
+        .map((field) => ({ field, observationId: observations[field] }))
+        // Наблюдения нет у ручного талона — такой в выборку не попадает вовсе, но связь без
+        // наблюдения всё равно невозможна: составной ключ требует существующей строки.
+        .filter(
+          (link): link is { field: WasteTicketBlindCheckField; observationId: string } =>
+            link.observationId !== undefined,
+        )
+        .map((link) => ({ blindCheckId: check.id, ...link }));
+      if (links.length > 0) await tx.insert(wasteTicketBlindCheckObservations).values(links);
+    }
+    return { ticketId: ticket.id, number: ticket.numberRaw, overrideUsed, blind };
+  }
+
+  /**
    * Подтверждение талона: именно здесь распознанное становится основанием сверки.
    *
-   * Три вещи делаются в одной транзакции и ни одну нельзя вынести. Отказ при спорном поле — потому
-   * что подтвердить значение, которого нет, значит согласиться с пустотой (Р14). Снимок оператора
-   * берётся **сейчас**, а не при записи распознанного: до подтверждения строка в индекс не входит,
-   * а исполнителя выполненной заявки законно меняют (Р17). И проверка конфликта под замком области
-   * (Р27) — иначе двое, подтверждающие один номер, получат ошибку базы вместо внятного отказа.
+   * Порядок задан общим протоколом (Р22): сначала заявка `FOR UPDATE`, потом перечитанный статус и
+   * область, потом талон, потом все замки номеров — и только после этого записи. Отказ при спорном
+   * поле — потому что подтвердить значение, которого нет, значит согласиться с пустотой (Р14).
+   * Снимок оператора берётся в момент подтверждения: до него строка в индекс уникальности не
+   * входит, а исполнителя выполненной заявки законно меняют (Р17).
    */
   r.post(
     '/:id/tickets/:ticketId/confirm',
     { ...canReview, schema: { params: ticketParams, body: confirmWasteTicketSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const request = await loadRequest(req.params.id);
-      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, request.operatorCounterpartyId);
-      assertReviewOpen(request);
-
       const reason = req.body.duplicateOverrideReason?.trim() ?? '';
       const result = await db.transaction(async (tx) => {
+        const request = await lockRequestForReview(tx, req.params.id, p);
         const ticket = await loadTicket(tx, request.id, req.params.ticketId, { forUpdate: true });
-        if (ticket.status === 'dismissed') {
-          throw err.badRequest('Талон снят как «не талон» — подтверждать нечего');
-        }
-        if (ticket.needsReviewFields.length > 0) {
-          throw err.badRequest('Сначала разберите спорные поля', {
-            needsReviewFields: 'Модели прочитали по-разному',
-          });
-        }
-
-        await lockNumberArea(tx, request.operatorCounterpartyId, ticket.numberKey);
-        const neighbour = await findNumberConflict(tx, {
-          ticketId: ticket.id,
-          operatorId: request.operatorCounterpartyId,
-          numberKey: ticket.numberKey,
+        await lockNumberAreas(
+          tx,
+          ticketLockKeys(
+            ticket,
+            request.operatorCounterpartyId,
+            await pageShaOf(tx, ticket.pageId),
+          ),
+        );
+        const done = await confirmTicketTx(tx, {
+          request,
+          ticketId: req.params.ticketId,
+          p,
+          reason,
+          sampleBlind: true,
         });
-        // Причина без конфликта клапана НЕ создаёт: иначе первый же талон можно было бы вывести из
-        // индекса «на всякий случай», открыв его номер всем будущим дублям (Р28).
-        if (neighbour && !reason) throw numberConflictError(p, neighbour, ticket.numberRaw);
-        const overrideUsed = !!neighbour && !!reason;
-
-        const [updated] = await tx
-          .update(wasteTickets)
-          .set({
-            status: 'confirmed',
-            confirmedBy: p.id,
-            confirmedAt: new Date(),
-            // Снимок области уникальности — на момент подтверждения (Р17).
-            operatorCounterpartyId: request.operatorCounterpartyId,
-            ...(overrideUsed
-              ? {
-                  duplicateOverrideAt: new Date(),
-                  duplicateOverrideBy: p.id,
-                  duplicateOverrideReason: reason,
-                }
-              : {}),
-            updatedAt: new Date(),
-          })
-          .where(eq(wasteTickets.id, ticket.id))
-          .returning({ id: wasteTickets.id });
-        if (!updated) throw err.conflict();
-
-        // Отбор в слепую перепроверку (Р31) — здесь и только здесь: подтверждение и есть момент,
-        // когда машинное чтение становится основанием сверки, и мерить качество надо именно его.
-        //
-        // Только НЕПРАВЛЕНЫЕ МАШИННЫЕ талоны: `baseline_*` — это чтение модели, а ручной или уже
-        // исправленный талон сравнивал бы человека с человеком, и метрика при этом называлась бы
-        // «ошибки OCR». Отбор случайный и без памяти: доля задана долей, а не квотой, — квота
-        // означала бы, что попадание талона в выборку зависит от того, сколько бумаг принесли
-        // соседи в тот же день.
-        const blind = shouldSampleBlindCheck(ticket, config.ticketOcr.blindCheckRate);
-        if (blind) {
-          const [check] = await tx
-            .insert(wasteTicketBlindChecks)
-            .values({
-              ticketId: ticket.id,
-              // Снимок, а не ссылка на талон: талон после подтверждения правят, и сравнение с
-              // поехавшей величиной меряло бы не то, ради чего заведено.
-              baselineNumberRaw: ticket.numberRaw,
-              baselineNumberKey: ticket.numberKey,
-              baselineIssuedOn: ticket.issuedOn,
-              baselineVolumeM3: ticket.volumeM3,
-              baselineFingerprint: blindBaselineFingerprint(ticket),
-            })
-            .returning({ id: wasteTicketBlindChecks.id });
-          if (!check) throw err.conflict();
-
-          // Чем снят `baseline` — записывается здесь же, в той же транзакции (план §1.1). Позже
-          // связь взять неоткуда: арбитраж случается над талоном, который с момента отбора могли
-          // перечитать дважды, и «последнее наблюдение» приписало бы вердикт не той модели.
-          //
-          // Три поля, а не пять: перепроверка меряет чтение рукописи, а не разметку бланка.
-          const observations = await currentTicketObservations(tx, ticket.id);
-          const links = (['number', 'issuedOn', 'volumeM3'] as const)
-            .map((field) => ({ field, observationId: observations[field] }))
-            // Наблюдения нет у ручного талона — такой в выборку не попадает вовсе, но связь без
-            // наблюдения всё равно невозможна: составной ключ требует существующей строки.
-            .filter(
-              (link): link is { field: WasteTicketBlindCheckField; observationId: string } =>
-                link.observationId !== undefined,
-            )
-            .map((link) => ({ blindCheckId: check.id, ...link }));
-          if (links.length > 0) await tx.insert(wasteTicketBlindCheckObservations).values(links);
-        }
-        return { ticketId: ticket.id, number: ticket.numberRaw, overrideUsed, blind };
+        await refreshReviewState(tx, request.id, [ticket]);
+        return done;
       });
 
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.ticket_confirm',
         entityType: 'waste_request',
-        entityId: request.id,
+        entityId: req.params.id,
         metadata: {
           ticketId: result.ticketId,
           number: result.number,
@@ -812,6 +960,115 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         },
       });
       return { ok: true, duplicateOverrideApplied: result.overrideUsed };
+    },
+  );
+
+  /**
+   * Подтвердить всё, что сошлось, — кнопка из строки списка (ADR 0155, Р23).
+   *
+   * Ручка на заявку, а не на талон: человек нажимает одну кнопку в тесной строке, и вопроса «какой
+   * из трёх талонов подтвердить» у него в этот момент нет.
+   *
+   * `fingerprint` в теле — отпечаток набора, который человек ВИДЕЛ. Числа мало: между отрисовкой
+   * строки и нажатием один талон может исчезнуть, а другой появиться — счёт совпадёт, а подпись
+   * встанет под бумагой, которой человек не видел. Идентификаторы талонов порталу знать неоткуда,
+   * в строке списка их нет, поэтому сверяется отпечаток.
+   *
+   * ПОСТУСЛОВИЕ ПРОВЕРЯЕТСЯ ПОСЛЕ ЗАПИСИ (Р15). Неподтверждённый машинный талон заводится
+   * «ничьим», область номера получает в момент подтверждения — и вместе с ней может появиться
+   * предупреждение о похожем номере. Сверка смотрит вперёд и обычно показывает его заранее, но
+   * гарантия здесь: не сошлось — откат всей транзакции и 409. Кнопка обещает «✓», значит проверяет
+   * факт, а не намерение. Проверяется своим предикатом: `wasteTicketReviewSettled` предупреждения
+   * игнорирует, и по нему такая транзакция закоммитилась бы.
+   */
+  r.post(
+    '/:id/tickets/confirm-ready',
+    { ...canReview, schema: { params: requestParams, body: confirmReadyWasteTicketsSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const result = await db.transaction(async (tx) => {
+        const request = await lockRequestForReview(tx, req.params.id, p);
+
+        // Состояние читается ТОЙ ЖЕ транзакцией, под уже взятым замком заявки: прочитанное мимо неё
+        // устарело бы к записи — воркер успевает дописать талон, а человек в карточке — снять его.
+        const row = await loadTicketCheckRequestRow(request.id, tx);
+        const bundle = row
+          ? (await loadTicketCheckInputs([row], { exec: tx })).get(request.id)
+          : null;
+        const before = bundle ? wasteTicketChecks(bundle.inputs) : null;
+        const badge = before?.badge ?? null;
+        const blocker = wasteTicketAutoConfirmBlocker(
+          badge,
+          request.status,
+          badge?.confirmableFingerprint === req.body.fingerprint,
+        );
+        if (blocker) throw err.conflict(blocker);
+
+        // Готовые к подтверждению — тем же правилом, что нарисовало кнопку: `unconfirmed` без
+        // спорных полей и без живого предложения (Р16).
+        const ready = (bundle?.inputs.tickets ?? []).filter(
+          (ticket) => ticket.status === 'unconfirmed' && !ticket.disputed && !ticket.hasProposal,
+        );
+        const rows = bundle?.tickets.filter((r) => ready.some((t) => t.id === r.id)) ?? [];
+
+        // Все замки — до первой записи и в едином порядке (Р22): встречный пакет с теми же
+        // номерами в обратном порядке иначе даёт дедлок.
+        const shas: string[] = [];
+        for (const ticket of rows) {
+          const sha = await pageShaOf(tx, ticket.pageId);
+          if (sha) shas.push(sha);
+        }
+        await lockNumberAreas(
+          tx,
+          rows.flatMap((ticket, i) =>
+            ticketLockKeys(ticket, request.operatorCounterpartyId, shas[i] ?? null),
+          ),
+        );
+
+        const confirmed: { ticketId: string; number: string }[] = [];
+        for (const ticket of rows) {
+          // Причина клапана дубля здесь не спрашивается и не ставится никогда: спросить её у
+          // человека, который уже нажал и ушёл, не у кого. Конфликт номера роняет весь пакет.
+          const done = await confirmTicketTx(tx, {
+            request,
+            ticketId: ticket.id,
+            p,
+            reason: '',
+            sampleBlind: false,
+          });
+          confirmed.push({ ticketId: done.ticketId, number: done.number });
+        }
+
+        await refreshReviewState(tx, request.id, rows);
+
+        const after = await loadTicketCheckRequestRow(request.id, tx);
+        const afterBundle = after
+          ? (await loadTicketCheckInputs([after], { exec: tx })).get(request.id)
+          : null;
+        const afterBadge = afterBundle ? wasteTicketChecks(afterBundle.inputs).badge : null;
+        if (!wasteTicketAutoConfirmSettled(afterBadge)) {
+          throw err.conflict(
+            wasteTicketAutoConfirmBlocker(afterBadge, request.status) ??
+              'После подтверждения разбор оказался не закончен — откройте карточку заявки',
+          );
+        }
+
+        // Журнал — в той же транзакции (Р23): отдельное действие `ticket_auto_confirm` и есть
+        // единственный след того, что бумага принята не глядя (Р3), и потерять его нельзя.
+        // Обычный `writeAudit` ошибку записи намеренно глотает — здесь это стёрло бы происхождение.
+        await writeAuditTx(tx, {
+          actorUserId: p.id,
+          action: 'waste_request.ticket_auto_confirm',
+          entityType: 'waste_request',
+          entityId: request.id,
+          metadata: {
+            ticketIds: confirmed.map((c) => c.ticketId),
+            numbers: confirmed.map((c) => c.number),
+          },
+        });
+        return confirmed.length;
+      });
+      return { ok: true, confirmed: result };
     },
   );
 
@@ -828,25 +1085,40 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     { ...canReview, schema: { params: ticketParams, body: updateWasteTicketSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const request = await loadRequest(req.params.id);
-      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, request.operatorCounterpartyId);
-      assertReviewOpen(request);
-
       const body = req.body;
       const reason = body.duplicateOverrideReason?.trim() ?? '';
       const changed = await db.transaction(async (tx) => {
+        // Заявка `FOR UPDATE` — первым действием транзакции (Р22): статус, объект и оператор
+        // читаются заново, потому что прочитанное до ожидания замка устарело по определению.
+        const request = await lockRequestForReview(tx, req.params.id, p);
         // Под замком: событие правки адресуется чтению, которое стоит в талоне СЕЙЧАС, и без
         // `FOR UPDATE` воркер успел бы дописать новое чтение между этой строкой и записью события.
         const ticket = await loadTicket(tx, request.id, req.params.ticketId, { forUpdate: true });
         const nextNumber = body.number === undefined ? ticket.numberRaw : body.number.trim();
         const numberChanged = nextNumber !== ticket.numberRaw;
         const numberKey = nextNumber ? wasteTicketNumberKey(nextNumber) : '';
+        const numberFuzzy = nextNumber ? wasteTicketNumberFuzzy(nextNumber) : '';
+
+        // Все замки — одним местом до первой записи и по ОБОИМ значениям номера (Р22): правка
+        // уводит бумагу из прежней области и приводит в новую, и заперты должны быть обе, иначе
+        // гонка случится ровно в той, которую мы отпустили. Оператор берётся и с талона, и с
+        // заявки: у подтверждённого это его снимок области (Р17), у неподтверждённого оператора
+        // ещё нет вовсе — такой талон сверка считает в области заявки (Р16).
+        const sha = await pageShaOf(tx, ticket.pageId);
+        const areaOperators = [
+          ...new Set([ticket.operatorCounterpartyId, request.operatorCounterpartyId]),
+        ];
+        await lockNumberAreas(
+          tx,
+          areaOperators.flatMap((operatorId) => [
+            ...ticketLockKeys(ticket, operatorId, sha),
+            ...ticketLockKeys({ numberKey, numberFuzzy }, operatorId, sha),
+          ]),
+        );
 
         // Правка может ПРИВЕСТИ к конфликту — проверяем только когда талон уже подтверждён либо
         // номер поменялся: неподтверждённый талон в индекс не входит и мешать никому не может.
         if (numberChanged && ticket.status === 'confirmed') {
-          await lockNumberArea(tx, ticket.operatorCounterpartyId, numberKey);
           const neighbour = await findNumberConflict(tx, {
             ticketId: ticket.id,
             operatorId: ticket.operatorCounterpartyId,
@@ -866,7 +1138,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
               ? {
                   numberRaw: nextNumber,
                   numberKey,
-                  numberFuzzy: nextNumber ? wasteTicketNumberFuzzy(nextNumber) : '',
+                  numberFuzzy,
                 }
               : {}),
             ...(body.issuedOn !== undefined ? { issuedOn: body.issuedOn } : {}),
@@ -918,7 +1190,9 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
                 : field === 'issuedOn'
                   ? (body.issuedOn ?? null)
                   : field === 'volumeM3'
-                    ? (body.volumeM3 == null ? null : String(body.volumeM3))
+                    ? body.volumeM3 == null
+                      ? null
+                      : String(body.volumeM3)
                     : field === 'workKind'
                       ? (body.workKind ?? ticket.workKind)
                       : (body.addressRaw ?? ''),
@@ -931,6 +1205,12 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           actorId: p.id,
           changes: edits,
         });
+        // Хвост протокола (Р19, Р20): своё состояние пересчитывается, соседи помечаются по
+        // старому И новому номеру — правка уводит бумагу от прежнего соседа и приводит к новому.
+        await refreshReviewState(tx, request.id, [
+          ticket,
+          { numberKey, numberFuzzy, pageId: ticket.pageId },
+        ]);
         return { ticketId: ticket.id, touched, numberChanged };
       });
 
@@ -938,7 +1218,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         actorUserId: p.id,
         action: 'waste_request.ticket_edit',
         entityType: 'waste_request',
-        entityId: request.id,
+        entityId: req.params.id,
         metadata: { ticketId: changed.ticketId, fields: changed.touched },
       });
       return { ok: true };
@@ -951,13 +1231,21 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     { ...canReview, schema: { params: ticketParams, body: dismissWasteTicketSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const request = await loadRequest(req.params.id);
-      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, request.operatorCounterpartyId);
-      assertReviewOpen(request);
-
       await db.transaction(async (tx) => {
+        // Заявка `FOR UPDATE` — первым действием (Р22): «не талон» у завершённой заявки не
+        // проходит, и решает это перечитанный статус, а не прочитанный до ожидания замка.
+        const request = await lockRequestForReview(tx, req.params.id, p);
         const ticket = await loadTicket(tx, request.id, req.params.ticketId, { forUpdate: true });
+        // Области номера — до первой записи (Р22): снятие выводит бумагу из индекса дубля, и
+        // замечание о повторе в СОСЕДНЕЙ заявке рождается ровно этим. Оператор берётся и с
+        // талона (снимок области), и с заявки (там неподтверждённый талон считает сверка, Р16).
+        const sha = await pageShaOf(tx, ticket.pageId);
+        await lockNumberAreas(
+          tx,
+          [...new Set([ticket.operatorCounterpartyId, request.operatorCounterpartyId])].flatMap(
+            (operatorId) => ticketLockKeys(ticket, operatorId, sha),
+          ),
+        );
         await tx
           .update(wasteTickets)
           .set({ status: 'dismissed', updatedAt: new Date() })
@@ -976,12 +1264,13 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
             newValue: null,
           })),
         });
+        await refreshReviewState(tx, request.id, [ticket]);
       });
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.ticket_dismiss',
         entityType: 'waste_request',
-        entityId: request.id,
+        entityId: req.params.id,
         metadata: { ticketId: req.params.ticketId },
       });
       return { ok: true };
@@ -1005,14 +1294,14 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     { ...canReview, schema: { params: ticketParams, body: acceptWasteTicketProposalSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const request = await loadRequest(req.params.id);
-      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, request.operatorCounterpartyId);
-      assertReviewOpen(request);
-
       const reason = req.body.duplicateOverrideReason?.trim() ?? '';
       const result = await db.transaction(async (tx) => {
-        const ticket = await loadTicket(tx, request.id, req.params.ticketId);
+        // Заявка `FOR UPDATE` — первым действием (Р22): статус и область перечитываются под
+        // замком, прочитанное до ожидания устарело.
+        const request = await lockRequestForReview(tx, req.params.id, p);
+        // `FOR UPDATE`: по этой строке переписываются поля талона и пишется журнал разбора —
+        // между чтением и записью воркер успевает дописать новое чтение.
+        const ticket = await loadTicket(tx, request.id, req.params.ticketId, { forUpdate: true });
         const [proposal] = await tx
           .select()
           .from(wasteTicketProposals)
@@ -1021,10 +1310,25 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         if (!proposal) throw err.badRequest('Предложения нет: принимать нечего');
 
         const numberKey = proposal.numberRaw ? wasteTicketNumberKey(proposal.numberRaw) : '';
+        const numberFuzzy = proposal.numberRaw ? wasteTicketNumberFuzzy(proposal.numberRaw) : '';
         const numberChanged = numberKey !== ticket.numberKey;
+
+        // Все замки — одним местом до первой записи и по обоим значениям номера (Р22): принятие
+        // предложения меняет номер так же, как обычная правка, и уводит бумагу из прежней области
+        // в новую. Оператор — и с талона, и с заявки: у неподтверждённого талона своего нет (Р16).
+        const sha = await pageShaOf(tx, ticket.pageId);
+        await lockNumberAreas(
+          tx,
+          [...new Set([ticket.operatorCounterpartyId, request.operatorCounterpartyId])].flatMap(
+            (operatorId) => [
+              ...ticketLockKeys(ticket, operatorId, sha),
+              ...ticketLockKeys({ numberKey, numberFuzzy }, operatorId, sha),
+            ],
+          ),
+        );
+
         let overrideUsed = false;
         if (numberChanged && ticket.status === 'confirmed') {
-          await lockNumberArea(tx, ticket.operatorCounterpartyId, numberKey);
           const neighbour = await findNumberConflict(tx, {
             ticketId: ticket.id,
             operatorId: ticket.operatorCounterpartyId,
@@ -1039,7 +1343,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           .set({
             numberRaw: proposal.numberRaw,
             numberKey,
-            numberFuzzy: proposal.numberRaw ? wasteTicketNumberFuzzy(proposal.numberRaw) : '',
+            numberFuzzy,
             issuedOn: proposal.issuedOn,
             volumeM3: proposal.volumeM3,
             workKind: proposal.workKind,
@@ -1053,7 +1357,11 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
             editedAt: new Date(),
             editedBy: p.id,
             ...(numberChanged
-              ? { duplicateOverrideAt: null, duplicateOverrideBy: null, duplicateOverrideReason: '' }
+              ? {
+                  duplicateOverrideAt: null,
+                  duplicateOverrideBy: null,
+                  duplicateOverrideReason: '',
+                }
               : {}),
             ...(overrideUsed
               ? {
@@ -1079,11 +1387,19 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           event: 'proposal',
           actorId: p.id,
           changes: [
-            { field: 'number', oldValue: ticketFieldValue(ticket, 'number'), newValue: proposal.numberRaw || null },
+            {
+              field: 'number',
+              oldValue: ticketFieldValue(ticket, 'number'),
+              newValue: proposal.numberRaw || null,
+            },
             { field: 'issuedOn', oldValue: ticket.issuedOn, newValue: proposal.issuedOn },
             { field: 'volumeM3', oldValue: ticket.volumeM3, newValue: proposal.volumeM3 },
             { field: 'workKind', oldValue: ticket.workKind, newValue: proposal.workKind },
-            { field: 'addressRaw', oldValue: ticket.addressRaw || null, newValue: proposal.addressRaw || null },
+            {
+              field: 'addressRaw',
+              oldValue: ticket.addressRaw || null,
+              newValue: proposal.addressRaw || null,
+            },
           ] satisfies TicketFieldChange[],
           // Адресуется чтение ПРЕДЛОЖЕНИЯ: оно сделано своими попытками, и приписывать его исход
           // текущему чтению талона значило бы записать ошибку не той модели (план §1.1).
@@ -1092,6 +1408,12 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         });
         // Только теперь: связи уйдут каскадом, а исход уже закреплён событием.
         await tx.delete(wasteTicketProposals).where(eq(wasteTicketProposals.ticketId, ticket.id));
+        // Хвост протокола (Р19, Р20): соседи по СТАРОМУ и НОВОМУ номеру — принятое предложение
+        // меняет номер, и прежний сосед про дубль знать перестал, а новый ещё не знает.
+        await refreshReviewState(tx, request.id, [
+          ticket,
+          { numberKey, numberFuzzy, pageId: ticket.pageId },
+        ]);
         return { number: proposal.numberRaw, overrideUsed };
       });
 
@@ -1099,7 +1421,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         actorUserId: p.id,
         action: 'waste_request.ticket_proposal_accept',
         entityType: 'waste_request',
-        entityId: request.id,
+        entityId: req.params.id,
         metadata: {
           ticketId: req.params.ticketId,
           number: result.number,
@@ -1126,13 +1448,13 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     { ...canReview, schema: { params: ticketParams, body: dismissWasteTicketProposalSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const request = await loadRequest(req.params.id);
-      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, request.operatorCounterpartyId);
-      assertReviewOpen(request);
-
       await db.transaction(async (tx) => {
-        const ticket = await loadTicket(tx, request.id, req.params.ticketId);
+        // Заявка `FOR UPDATE` — первым действием (Р22): отклонение у завершённой заявки не
+        // проходит, и решает это перечитанный под замком статус.
+        const request = await lockRequestForReview(tx, req.params.id, p);
+        // `FOR UPDATE`: значения талона уходят в журнал как «было» — они обязаны быть теми, что
+        // человек видел, а не переписанными воркером между чтением и записью события.
+        const ticket = await loadTicket(tx, request.id, req.params.ticketId, { forUpdate: true });
         const [proposal] = await tx
           .select()
           .from(wasteTicketProposals)
@@ -1154,23 +1476,35 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           event: 'proposal_dismissed',
           actorId: p.id,
           changes: [
-            { field: 'number', oldValue: ticketFieldValue(ticket, 'number'), newValue: proposal.numberRaw || null },
+            {
+              field: 'number',
+              oldValue: ticketFieldValue(ticket, 'number'),
+              newValue: proposal.numberRaw || null,
+            },
             { field: 'issuedOn', oldValue: ticket.issuedOn, newValue: proposal.issuedOn },
             { field: 'volumeM3', oldValue: ticket.volumeM3, newValue: proposal.volumeM3 },
             { field: 'workKind', oldValue: ticket.workKind, newValue: proposal.workKind },
-            { field: 'addressRaw', oldValue: ticket.addressRaw || null, newValue: proposal.addressRaw || null },
+            {
+              field: 'addressRaw',
+              oldValue: ticket.addressRaw || null,
+              newValue: proposal.addressRaw || null,
+            },
           ] satisfies TicketFieldChange[],
           target: { kind: 'explicit', byField: links.byField },
           proposalDiffers: links.differs,
         });
         await tx.delete(wasteTicketProposals).where(eq(wasteTicketProposals.ticketId, ticket.id));
+        // Талон не менялся, но живое предложение держало его вне готовых к подтверждению —
+        // своё состояние после отказа другое. Соседи помечаются по ключам талона: номер и статус
+        // на месте, и пометка им скорее лишняя, чем нужная, — но пропущенная стоит дороже.
+        await refreshReviewState(tx, request.id, [ticket]);
       });
 
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.ticket_proposal_dismiss',
         entityType: 'waste_request',
-        entityId: request.id,
+        entityId: req.params.id,
         metadata: { ticketId: req.params.ticketId },
       });
       return { ok: true };
@@ -1187,17 +1521,17 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     { ...canReview, schema: { params: requestParams, body: createWasteTicketSchema } },
     async (req, reply) => {
       const p = requirePrincipal(req);
-      const request = await loadRequest(req.params.id);
-      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, request.operatorCounterpartyId);
-      assertReviewOpen(request);
-
       const body = req.body;
       const reason = body.duplicateOverrideReason?.trim() ?? '';
       const numberRaw = body.number.trim();
       const numberKey = wasteTicketNumberKey(numberRaw);
+      const numberFuzzy = wasteTicketNumberFuzzy(numberRaw);
 
       const created = await db.transaction(async (tx) => {
+        // Заявка `FOR UPDATE` — первым действием (Р22). Оператор нового талона берётся с
+        // перечитанной строки: исполнителя выполненной заявки законно меняют (Р17), и снимок,
+        // взятый до ожидания замка, посадил бы бумагу в чужую область уникальности.
+        const request = await lockRequestForReview(tx, req.params.id, p);
         if (body.pageId) {
           const page = await tx
             .select({ id: wasteTicketPages.id })
@@ -1209,7 +1543,16 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           if (!page[0]) throw err.badRequest('Страница не принадлежит этой заявке');
         }
 
-        await lockNumberArea(tx, request.operatorCounterpartyId, numberKey);
+        // Все три семейства замков — до первой записи (Р22): ручной талон встаёт и в область
+        // номера, и в область скана той страницы, на которую его посадили.
+        await lockNumberAreas(
+          tx,
+          ticketLockKeys(
+            { numberKey, numberFuzzy },
+            request.operatorCounterpartyId,
+            await pageShaOf(tx, body.pageId ?? null),
+          ),
+        );
         const neighbour = await findNumberConflict(tx, {
           ticketId: '00000000-0000-0000-0000-000000000000',
           operatorId: request.operatorCounterpartyId,
@@ -1238,7 +1581,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
             operatorCounterpartyId: request.operatorCounterpartyId,
             numberRaw,
             numberKey,
-            numberFuzzy: wasteTicketNumberFuzzy(numberRaw),
+            numberFuzzy,
             issuedOn: body.issuedOn ?? null,
             volumeM3: body.volumeM3 == null ? null : String(body.volumeM3),
             workKind: body.workKind,
@@ -1256,6 +1599,11 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
               : {}),
           })
           .returning({ id: wasteTickets.id });
+        // Новый подтверждённый талон — это и новая занятая область номера: соседи по нему обязаны
+        // пересчитаться, иначе про дубль узнает только тот, кто откроет карточку (Р20).
+        await refreshReviewState(tx, request.id, [
+          { numberKey, numberFuzzy, pageId: body.pageId ?? null },
+        ]);
         return { id: row!.id, overrideUsed };
       });
 
@@ -1263,7 +1611,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         actorUserId: p.id,
         action: 'waste_request.ticket_create',
         entityType: 'waste_request',
-        entityId: request.id,
+        entityId: req.params.id,
         metadata: { ticketId: created.id, number: numberRaw, manual: true },
       });
       reply.code(201);
@@ -1297,65 +1645,75 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     },
     async (req) => {
       const p = requirePrincipal(req);
-      const request = await loadRequest(req.params.id);
-      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, request.operatorCounterpartyId);
-      assertReviewOpen(request);
-
       const subjectKey = req.query.subjectKey ?? '';
-      const bundle = await collectCheckInputs(p, request.id);
-      const state = wasteTicketChecks(bundle.inputs);
-      if (!state.acceptanceAllowed) {
-        throw err.badRequest('Сначала разберите все талоны заявки', {
-          tickets: 'Есть неподтверждённые талоны',
-        });
-      }
-      const target = state.checks.find(
-        (c) => c.code === req.params.checkCode && (c.subjectKey ?? '') === subjectKey,
-      );
-      if (!target) throw err.badRequest('Этого расхождения у заявки нет');
 
-      // Отпечаток снимается с ТОГО ЖЕ входа, по которому только что посчитаны замечания (Р21):
-      // собери его вторым запросом — и он начнёт расходиться с показанным человеку.
-      const fingerprint = wasteTicketCheckFingerprint({
-        request: bundle.inputs.request,
-        completion: bundle.inputs.completion,
-        tickets: bundle.inputs.tickets,
-        checkCode: req.params.checkCode,
-        subjectKey,
-      });
+      // Транзакция здесь появилась ради замка (Р22): принятие снимает отпечаток с состояния
+      // заявки, и без замка между снимком и записью помещается чужое подтверждение — принято
+      // было бы одно расхождение, а записано другое.
+      await db.transaction(async (tx) => {
+        // Заявка `FOR UPDATE` — первым действием.
+        const request = await lockRequestForReview(tx, req.params.id, p);
 
-      await db
-        .insert(wasteTicketCheckResolutions)
-        .values({
-          requestId: request.id,
+        // Вход сверки читается ТОЙ ЖЕ транзакцией, под уже взятым замком: прочитанный мимо неё
+        // устарел бы к записи, а отпечаток обязан описывать ровно то, что принимают.
+        const bundle = await collectCheckInputs(p, request.id, tx);
+        const state = wasteTicketChecks(bundle.inputs);
+        if (!state.acceptanceAllowed) {
+          throw err.badRequest('Сначала разберите все талоны заявки', {
+            tickets: 'Есть неподтверждённые талоны',
+          });
+        }
+        const target = state.checks.find(
+          (c) => c.code === req.params.checkCode && (c.subjectKey ?? '') === subjectKey,
+        );
+        if (!target) throw err.badRequest('Этого расхождения у заявки нет');
+
+        // Отпечаток снимается с ТОГО ЖЕ входа, по которому только что посчитаны замечания (Р21):
+        // собери его вторым запросом — и он начнёт расходиться с показанным человеку.
+        const fingerprint = wasteTicketCheckFingerprint({
+          request: bundle.inputs.request,
+          completion: bundle.inputs.completion,
+          tickets: bundle.inputs.tickets,
           checkCode: req.params.checkCode,
           subjectKey,
-          inputFingerprint: fingerprint,
-          acceptedBy: p.id,
-          comment: req.body.comment,
-        })
-        .onConflictDoUpdate({
-          target: [
-            wasteTicketCheckResolutions.requestId,
-            wasteTicketCheckResolutions.checkCode,
-            wasteTicketCheckResolutions.subjectKey,
-          ],
-          // Повторное принятие переписывает отпечаток: расхождение изменилось, и человек принимает
-          // уже другое — старая запись описывала состояние, которого больше нет.
-          set: {
+        });
+
+        await tx
+          .insert(wasteTicketCheckResolutions)
+          .values({
+            requestId: request.id,
+            checkCode: req.params.checkCode,
+            subjectKey,
             inputFingerprint: fingerprint,
             acceptedBy: p.id,
             comment: req.body.comment,
-            acceptedAt: new Date(),
-          },
-        });
+          })
+          .onConflictDoUpdate({
+            target: [
+              wasteTicketCheckResolutions.requestId,
+              wasteTicketCheckResolutions.checkCode,
+              wasteTicketCheckResolutions.subjectKey,
+            ],
+            // Повторное принятие переписывает отпечаток: расхождение изменилось, и человек
+            // принимает уже другое — старая запись описывала состояние, которого больше нет.
+            set: {
+              inputFingerprint: fingerprint,
+              acceptedBy: p.id,
+              comment: req.body.comment,
+              acceptedAt: new Date(),
+            },
+          });
+
+        // Талоны не тронуты — соседям от чужого решения ничего не меняется, а своё состояние
+        // меняется: принятое расхождение гасит ⛔ в значке заявки (Р19).
+        await refreshReviewState(tx, request.id, []);
+      });
 
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.ticket_check_accept',
         entityType: 'waste_request',
-        entityId: request.id,
+        entityId: req.params.id,
         metadata: { checkCode: req.params.checkCode, subjectKey, comment: req.body.comment },
       });
       return { ok: true };
@@ -1372,23 +1730,21 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     { ...canReview, schema: { params: requestParams.extend({ fileId: z.string().uuid() }) } },
     async (req) => {
       const p = requirePrincipal(req);
-      const request = await loadRequest(req.params.id);
-      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, request.operatorCounterpartyId);
-      if (request.status !== 'done') {
-        throw err.badRequest('Талоны разбираются у выполненной заявки');
-      }
-      // Выключенный модуль задачу не заведёт (`enqueueTicketRecognition` выходит сразу), и без
-      // этой проверки кнопка отвечала бы «отправлено на распознавание», не отправив ничего.
-      // Обещание, которого никто не исполнит, хуже отказа: человек ждёт результата и не заводит
-      // талон руками.
-      if (!config.ticketOcr.enabled) {
-        throw err.badRequest(
-          'Распознавание талонов выключено: включите модуль либо заведите талон вручную',
-        );
-      }
-
       await db.transaction(async (tx) => {
+        // Заявка `FOR UPDATE` — первым действием (Р22). Транзакция была и раньше, замка в ней не
+        // было: постановка задачи расходилась с завершением заявки, и воркер брал в работу файл
+        // заявки, разбор которой закрыт. Своя проверка статуса заменена общей политикой —
+        // «разбор открыт только у выполненной» — и считается по перечитанной под замком строке.
+        const request = await lockRequestForReview(tx, req.params.id, p);
+        // Выключенный модуль задачу не заведёт (`enqueueTicketRecognition` выходит сразу), и без
+        // этой проверки кнопка отвечала бы «отправлено на распознавание», не отправив ничего.
+        // Обещание, которого никто не исполнит, хуже отказа: человек ждёт результата и не заводит
+        // талон руками.
+        if (!config.ticketOcr.enabled) {
+          throw err.badRequest(
+            'Распознавание талонов выключено: включите модуль либо заведите талон вручную',
+          );
+        }
         // Связь проверяется здесь же: право говорит «разбирает талоны», но не «этот файл».
         const linked = await tx.execute(sql`
           SELECT 1 FROM request_files rf
@@ -1397,13 +1753,16 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
              AND rf.kind = 'ticket' AND f.deleted_at IS NULL`);
         if (linked.rows.length === 0) throw err.notFound('Талон не найден');
         await enqueueTicketRecognition(tx, request.id, [req.params.fileId], { forced: true });
+        // Талонов задача пока не меняет, но состояние разбора — меняет: файловая строка уходит в
+        // ожидание, и без пересчёта список показывал бы прежнее до самого прихода воркера (Р20).
+        await refreshReviewState(tx, request.id, []);
       });
 
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.ticket_recognize',
         entityType: 'waste_request',
-        entityId: request.id,
+        entityId: req.params.id,
         metadata: { fileId: req.params.fileId, forced: true },
       });
       return { ok: true };
@@ -1478,22 +1837,20 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         .limit(req.query.limit);
 
       return {
-        items: rows.map(
-          (row): WasteTicketBlindCheckTaskDto => ({
-            id: row.id,
-            ticketId: row.ticketId,
-            requestId: row.requestId,
-            pageId: row.pageId,
-            fileId: row.fileId,
-            filename: row.filename ?? '',
-            pageNo: row.pageNo,
-            requestNum: row.requestNum,
-            objectName: row.objectName,
-            ticketsOnPage: row.ticketsOnPage ?? 0,
-            seq: row.seq,
-            createdAt: row.createdAt.toISOString(),
-          }),
-        ),
+        items: rows.map((row): WasteTicketBlindCheckTaskDto => ({
+          id: row.id,
+          ticketId: row.ticketId,
+          requestId: row.requestId,
+          pageId: row.pageId,
+          fileId: row.fileId,
+          filename: row.filename ?? '',
+          pageNo: row.pageNo,
+          requestNum: row.requestNum,
+          objectName: row.objectName,
+          ticketsOnPage: row.ticketsOnPage ?? 0,
+          seq: row.seq,
+          createdAt: row.createdAt.toISOString(),
+        })),
       };
     },
   );
@@ -1510,57 +1867,71 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     { ...canReview, schema: { params: ticketParams, body: wasteTicketBlindCheckSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const request = await loadRequest(req.params.id);
-      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, request.operatorCounterpartyId);
+      // Транзакция здесь появилась ради замка (Р22): ручка обходилась одним `UPDATE`, и заявку
+      // под ней в этот момент никто не держал — задание бралось у заявки, которую параллельно
+      // правили, а состояние разбора после записи не пересчитывал никто.
+      const result = await db.transaction(async (tx) => {
+        // Заявка `FOR UPDATE` — первым действием, но с guard `any-status`: слепая перепроверка
+        // намеренно работает и у ЗАВЕРШЁННОЙ заявки — она меряет качество чтения, а не ведёт
+        // заявку, и запрет «талоны разбирают у выполненной» к ней не относится (Р22).
+        const request = await lockRequestForReview(tx, req.params.id, p, 'any-status');
 
-      // Талон обязан принадлежать ЭТОЙ заявке: право `ticketReview` говорит, что человек разбирает
-      // талоны, но не говорит, чьи (Р26). Без проверки чужую бумагу можно было бы прочитать,
-      // прикрывшись своей заявкой.
-      const ticket = await loadTicket(db, request.id, req.params.ticketId);
-      // Проверяющий не может быть тем, кто талон подтвердил (Р31). Он уже видел эти цифры и
-      // согласился с ними — его «второе чтение» мерило бы память, а не рукопись. `CHECK` в базе
-      // этого не удержит: подтвердивший записан в другой таблице, подзапрос в `CHECK` невозможен.
-      if (ticket.confirmedBy === p.id) {
-        throw err.forbidden('Этот талон подтвердили вы — перепроверить его должен другой человек');
-      }
+        // Талон обязан принадлежать ЭТОЙ заявке: право `ticketReview` говорит, что человек
+        // разбирает талоны, но не говорит, чьи (Р26). Без проверки чужую бумагу можно было бы
+        // прочитать, прикрывшись своей заявкой.
+        const ticket = await loadTicket(tx, request.id, req.params.ticketId);
+        // Проверяющий не может быть тем, кто талон подтвердил (Р31). Он уже видел эти цифры и
+        // согласился с ними — его «второе чтение» мерило бы память, а не рукопись. `CHECK` в базе
+        // этого не удержит: подтвердивший записан в другой таблице, подзапрос в `CHECK` невозможен.
+        if (ticket.confirmedBy === p.id) {
+          throw err.forbidden(
+            'Этот талон подтвердили вы — перепроверить его должен другой человек',
+          );
+        }
 
-      const body = req.body;
-      const reviewKey = body.number ? wasteTicketNumberKey(body.number) : '';
-      const updated = await db
-        .update(wasteTicketBlindChecks)
-        .set({
-          checkerId: p.id,
-          reviewNumberRaw: body.number,
-          reviewNumberKey: reviewKey,
-          reviewIssuedOn: body.issuedOn,
-          reviewVolumeM3: body.volumeM3 == null ? null : String(body.volumeM3),
-          status: sql`CASE
+        const body = req.body;
+        const reviewKey = body.number ? wasteTicketNumberKey(body.number) : '';
+        const updated = await tx
+          .update(wasteTicketBlindChecks)
+          .set({
+            checkerId: p.id,
+            reviewNumberRaw: body.number,
+            reviewNumberKey: reviewKey,
+            reviewIssuedOn: body.issuedOn,
+            reviewVolumeM3: body.volumeM3 == null ? null : String(body.volumeM3),
+            status: sql`CASE
               WHEN ${wasteTicketBlindChecks.baselineNumberKey} IS NOT DISTINCT FROM ${reviewKey}
                AND ${wasteTicketBlindChecks.baselineIssuedOn} IS NOT DISTINCT FROM ${body.issuedOn}
                AND ${wasteTicketBlindChecks.baselineVolumeM3} IS NOT DISTINCT FROM ${
                  body.volumeM3 == null ? null : String(body.volumeM3)
                }
               THEN 'match' ELSE 'mismatch' END`,
-        })
-        .where(
-          and(
-            eq(wasteTicketBlindChecks.ticketId, req.params.ticketId),
-            eq(wasteTicketBlindChecks.status, 'pending'),
-            sql`${wasteTicketBlindChecks.checkerId} IS NULL`,
-          ),
-        )
-        .returning({ id: wasteTicketBlindChecks.id, status: wasteTicketBlindChecks.status });
+          })
+          .where(
+            and(
+              eq(wasteTicketBlindChecks.ticketId, req.params.ticketId),
+              eq(wasteTicketBlindChecks.status, 'pending'),
+              sql`${wasteTicketBlindChecks.checkerId} IS NULL`,
+            ),
+          )
+          .returning({ id: wasteTicketBlindChecks.id, status: wasteTicketBlindChecks.status });
 
-      if (!updated[0]) throw err.conflict('Это задание уже взял другой проверяющий');
+        if (!updated[0]) throw err.conflict('Это задание уже взял другой проверяющий');
+        // Перепроверка входит в значок заявки: ждущая — в «ждут подтверждения», расхождение — в
+        // ошибки (`waste-ticket-inputs.ts`). Талоны не тронуты, поэтому соседей звать не за чем,
+        // а своё состояние без пересчёта осталось бы с прежними числами (Р19).
+        await refreshReviewState(tx, request.id, []);
+        return updated[0];
+      });
+
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.ticket_blind_check',
         entityType: 'waste_request',
-        entityId: request.id,
-        metadata: { ticketId: req.params.ticketId, status: updated[0].status },
+        entityId: req.params.id,
+        metadata: { ticketId: req.params.ticketId, status: result.status },
       });
-      return { id: updated[0].id, status: updated[0].status };
+      return { id: result.id, status: result.status };
     },
   );
 
@@ -1581,72 +1952,75 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     },
     async (req) => {
       const p = requirePrincipal(req);
-      const request = await loadRequest(req.params.id);
-      assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, request.operatorCounterpartyId);
-
-      // Строка перепроверки обязана принадлежать этой заявке, а разбирающий — не быть ни
-      // проверяющим (это же держит `CHECK`), ни тем, кто талон подтвердил. Оба запрета про одно:
-      // арбитраж — третий взгляд, и совпади он с одним из двух первых, метрика уверенных ошибок
-      // считала бы человека, оценивающего собственную работу.
-      const [target] = await db
-        .select({
-          id: wasteTicketBlindChecks.id,
-          status: wasteTicketBlindChecks.status,
-          checkerId: wasteTicketBlindChecks.checkerId,
-          requestId: wasteTickets.requestId,
-          confirmedBy: wasteTickets.confirmedBy,
-          ticketId: wasteTicketBlindChecks.ticketId,
-          baselineNumberRaw: wasteTicketBlindChecks.baselineNumberRaw,
-          baselineNumberKey: wasteTicketBlindChecks.baselineNumberKey,
-          baselineIssuedOn: wasteTicketBlindChecks.baselineIssuedOn,
-          baselineVolumeM3: wasteTicketBlindChecks.baselineVolumeM3,
-          reviewNumberKey: wasteTicketBlindChecks.reviewNumberKey,
-          reviewIssuedOn: wasteTicketBlindChecks.reviewIssuedOn,
-          reviewVolumeM3: wasteTicketBlindChecks.reviewVolumeM3,
-        })
-        .from(wasteTicketBlindChecks)
-        .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketBlindChecks.ticketId))
-        .where(eq(wasteTicketBlindChecks.id, req.params.blindCheckId))
-        .limit(1);
-      // 404, а не 403: чужая строка не должна отвечать «она есть, но не ваша» — по такому ответу
-      // чужие заявки перебираются идентификаторами (Р28).
-      if (!target || target.requestId !== request.id) throw err.notFound('Перепроверка не найдена');
-      if (target.checkerId === p.id) {
-        throw err.forbidden('Читали эту бумагу вы — разобрать расхождение должен третий человек');
-      }
-      if (target.confirmedBy === p.id) {
-        throw err.forbidden('Этот талон подтвердили вы — разобрать расхождение должен другой');
-      }
-
-      const body = req.body;
-      // Разобрано должно быть КАЖДОЕ разошедшееся поле. Это же держит `CHECK` в базе, но ответ
-      // «нарушение ограничения» человеку ничего не говорит: он узнал бы, что запрос не прошёл, но
-      // не что именно осталось неразобранным. Частично закрытая строка хуже неразобранной ровно
-      // тем, что выглядит законченной (Р31).
-      const diverged: WasteTicketBlindCheckField[] = [
-        ...(target.baselineNumberKey !== target.reviewNumberKey ? (['number'] as const) : []),
-        ...((target.baselineIssuedOn ?? null) !== (target.reviewIssuedOn ?? null)
-          ? (['issuedOn'] as const)
-          : []),
-        // Объём — `numeric`: сравнивается числом, иначе «20» и «20.000» разошлись бы строками.
-        ...(Number(target.baselineVolumeM3 ?? NaN) !== Number(target.reviewVolumeM3 ?? NaN) &&
-        !(target.baselineVolumeM3 == null && target.reviewVolumeM3 == null)
-          ? (['volumeM3'] as const)
-          : []),
-      ];
-      const unresolved = diverged.filter((field) => !body.resolvedFields.includes(field));
-      if (unresolved.length > 0) {
-        throw err.badRequest('Разберите все разошедшиеся поля', {
-          resolvedFields: `Не разобрано: ${unresolved.map((f) => wasteTicketFieldLabels[f]).join(', ')}`,
-        });
-      }
-
-      const finalNumber = body.number === undefined ? null : body.number;
       // Разбор и его журнал — ОДНОЙ транзакцией: разойдись они, при сбое между ними строка
       // осталась бы разобранной без события либо событие рассказывало бы о вердикте, которого
       // никто не выносил, — а именно по этим событиям считается точность среди неисправленных.
       await db.transaction(async (tx) => {
+        // Заявка `FOR UPDATE` — первым действием (Р22), guard `any-status`: арбитраж, как и сама
+        // перепроверка, работает и у завершённой заявки — он меряет качество чтения, а не ведёт
+        // заявку. Строка перепроверки и её проверки читаются уже под этим замком: прочитанные до
+        // ожидания устарели бы по определению.
+        const request = await lockRequestForReview(tx, req.params.id, p, 'any-status');
+
+        // Строка перепроверки обязана принадлежать этой заявке, а разбирающий — не быть ни
+        // проверяющим (это же держит `CHECK`), ни тем, кто талон подтвердил. Оба запрета про одно:
+        // арбитраж — третий взгляд, и совпади он с одним из двух первых, метрика уверенных ошибок
+        // считала бы человека, оценивающего собственную работу.
+        const [target] = await tx
+          .select({
+            id: wasteTicketBlindChecks.id,
+            status: wasteTicketBlindChecks.status,
+            checkerId: wasteTicketBlindChecks.checkerId,
+            requestId: wasteTickets.requestId,
+            confirmedBy: wasteTickets.confirmedBy,
+            ticketId: wasteTicketBlindChecks.ticketId,
+            baselineNumberRaw: wasteTicketBlindChecks.baselineNumberRaw,
+            baselineNumberKey: wasteTicketBlindChecks.baselineNumberKey,
+            baselineIssuedOn: wasteTicketBlindChecks.baselineIssuedOn,
+            baselineVolumeM3: wasteTicketBlindChecks.baselineVolumeM3,
+            reviewNumberKey: wasteTicketBlindChecks.reviewNumberKey,
+            reviewIssuedOn: wasteTicketBlindChecks.reviewIssuedOn,
+            reviewVolumeM3: wasteTicketBlindChecks.reviewVolumeM3,
+          })
+          .from(wasteTicketBlindChecks)
+          .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketBlindChecks.ticketId))
+          .where(eq(wasteTicketBlindChecks.id, req.params.blindCheckId))
+          .limit(1);
+        // 404, а не 403: чужая строка не должна отвечать «она есть, но не ваша» — по такому ответу
+        // чужие заявки перебираются идентификаторами (Р28).
+        if (!target || target.requestId !== request.id)
+          throw err.notFound('Перепроверка не найдена');
+        if (target.checkerId === p.id) {
+          throw err.forbidden('Читали эту бумагу вы — разобрать расхождение должен третий человек');
+        }
+        if (target.confirmedBy === p.id) {
+          throw err.forbidden('Этот талон подтвердили вы — разобрать расхождение должен другой');
+        }
+
+        const body = req.body;
+        // Разобрано должно быть КАЖДОЕ разошедшееся поле. Это же держит `CHECK` в базе, но ответ
+        // «нарушение ограничения» человеку ничего не говорит: он узнал бы, что запрос не прошёл, но
+        // не что именно осталось неразобранным. Частично закрытая строка хуже неразобранной ровно
+        // тем, что выглядит законченной (Р31).
+        const diverged: WasteTicketBlindCheckField[] = [
+          ...(target.baselineNumberKey !== target.reviewNumberKey ? (['number'] as const) : []),
+          ...((target.baselineIssuedOn ?? null) !== (target.reviewIssuedOn ?? null)
+            ? (['issuedOn'] as const)
+            : []),
+          // Объём — `numeric`: сравнивается числом, иначе «20» и «20.000» разошлись бы строками.
+          ...(Number(target.baselineVolumeM3 ?? NaN) !== Number(target.reviewVolumeM3 ?? NaN) &&
+          !(target.baselineVolumeM3 == null && target.reviewVolumeM3 == null)
+            ? (['volumeM3'] as const)
+            : []),
+        ];
+        const unresolved = diverged.filter((field) => !body.resolvedFields.includes(field));
+        if (unresolved.length > 0) {
+          throw err.badRequest('Разберите все разошедшиеся поля', {
+            resolvedFields: `Не разобрано: ${unresolved.map((f) => wasteTicketFieldLabels[f]).join(', ')}`,
+          });
+        }
+
+        const finalNumber = body.number === undefined ? null : body.number;
         const updated = await tx
           .update(wasteTicketBlindChecks)
           .set({
@@ -1715,14 +2089,20 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           })),
           target: { kind: 'explicit', byField },
         });
+        // Расхождение перестало висеть в ошибках значка (`blindMismatch`) — своё состояние
+        // пересчитывается; талоны арбитраж не трогает, соседям звать не за чем (Р19, Р20).
+        await refreshReviewState(tx, request.id, []);
       });
 
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.ticket_blind_arbitrate',
         entityType: 'waste_request',
-        entityId: request.id,
-        metadata: { blindCheckId: req.params.blindCheckId, resolvedFields: body.resolvedFields },
+        entityId: req.params.id,
+        metadata: {
+          blindCheckId: req.params.blindCheckId,
+          resolvedFields: req.body.resolvedFields,
+        },
       });
       return { ok: true };
     },

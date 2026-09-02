@@ -1016,6 +1016,12 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['wasteRequests.ticketReview'],
   },
+  // Кнопка «подтвердить сошедшееся» из строки списка (ADR 0155): то же право, что и у поштучного
+  // подтверждения, — она делает ровно его, только пакетом и не открывая карточку.
+  'POST /api/v1/waste-requests/:id/tickets/confirm-ready': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.ticketReview'],
+  },
   'POST /api/v1/waste-requests/:id/tickets/:ticketId/dismiss': {
     kind: 'permissions',
     allOf: ['wasteRequests.ticketReview'],

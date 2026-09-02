@@ -117,7 +117,7 @@ import {
 } from './waste/subjectFilter';
 import {
   BlindCheckQueue,
-  TicketBadge,
+  TicketCell,
   TicketRecognitionBanner,
 } from '@features/waste-ticket-review';
 import { WasteDoneModal } from './waste/WasteDoneModal';
@@ -1231,8 +1231,8 @@ function RequestsTab() {
       sorter: true,
       render: (_v: unknown, r: WasteRequestDto) => r.wasteTypeName ?? '—',
     },
-    // Значок разбора талонов (ADR 0114, Р24) — рядом с предметом заявки, а не в конце строки: его
-    // читают вместе с объёмом, к которому он и относится. Колонки нет вовсе без права разбора.
+    // Разбор талонов (ADR 0114, Р24) — рядом с предметом заявки, а не в конце строки: его читают
+    // вместе с объёмом, к которому он и относится. Колонки нет вовсе без права разбора.
     ...(canReviewTickets
       ? [
           {
@@ -1240,7 +1240,7 @@ function RequestsTab() {
             title: 'Талоны',
             dataIndex: 'ticketBadge',
             width: 130,
-            render: (_v: unknown, r: WasteRequestDto) => <TicketBadge badge={r.ticketBadge} />,
+            render: (_v: unknown, r: WasteRequestDto) => <TicketCell request={r} />,
           },
         ]
       : []),

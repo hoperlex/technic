@@ -66,6 +66,8 @@ import {
   users,
   wasteRequestCompletions,
   wasteRequests,
+  wasteTicketPages,
+  wasteTickets,
   wasteTicketFieldEvents,
   wasteTypes,
 } from '../db/schema';
@@ -112,6 +114,13 @@ import { assertOperatorServesObject } from '../services/object-operators';
 import { enqueueTicketRecognition, purgeRequestRecognition } from '../services/waste-tickets';
 import { wasteTicketChecks } from '../services/waste-ticket-checks';
 import { loadTicketCheckInputs, loadTicketCheckRequestRow } from '../services/waste-ticket-inputs';
+import {
+  markTicketReviewStale,
+  neighbourRequestIds,
+  readOrRecomputeBadges,
+  recomputeTicketReviewState,
+  reviewStateInputFingerprint,
+} from '../services/waste-ticket-review-state';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -291,12 +300,47 @@ const EMPTY_BADGES: ReadonlyMap<string, WasteTicketBadgeDto> = new Map();
 async function ticketBadgesFor(
   rows: readonly RequestRow[],
 ): Promise<ReadonlyMap<string, WasteTicketBadgeDto>> {
-  const bundles = await loadTicketCheckInputs(rows);
-  const badges = new Map<string, WasteTicketBadgeDto>();
-  for (const [requestId, bundle] of bundles) {
-    badges.set(requestId, wasteTicketChecks(bundle.inputs).badge);
+  // Числа берутся из сохранённого состояния, а промахи и устаревшие строки считаются и пишутся
+  // условно по ревизии (ADR 0155, Р19): страница списка иначе считала бы всю сверку заново на
+  // каждое открытие, а реестр «Требуют разбора» — отбирать по ней не может вовсе.
+  return readOrRecomputeBadges(rows);
+}
+
+/**
+ * Хвост мутации заявки, меняющей вход сверки (ADR 0155, Р19, Р20).
+ *
+ * Своя заявка пересчитывается, соседи метятся устаревшими — по ключам ЕЁ талонов: заявка входит в
+ * чужие замечания о дубле, и её исчезновение (мягкое удаление, откат с уборкой распознанного) для
+ * соседа такое же событие, как появление.
+ */
+async function refreshRequestReviewState(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  requestId: string,
+  opts: { neighbours: boolean } = { neighbours: false },
+): Promise<void> {
+  if (opts.neighbours) {
+    const rows = await tx
+      .select({
+        numberKey: wasteTickets.numberKey,
+        numberFuzzy: wasteTickets.numberFuzzy,
+        pageSha256: wasteTicketPages.pageSha256,
+      })
+      .from(wasteTickets)
+      .leftJoin(wasteTicketPages, eq(wasteTicketPages.id, wasteTickets.pageId))
+      .where(eq(wasteTickets.requestId, requestId));
+    const neighbours = await neighbourRequestIds(tx, {
+      requestId,
+      numberKeys: rows.map((r) => r.numberKey).filter(Boolean),
+      numberFuzzies: rows.map((r) => r.numberFuzzy).filter(Boolean),
+      pageShas: rows.map((r) => r.pageSha256 ?? '').filter(Boolean),
+    });
+    // Своя строка идёт в общем возрастающем ряду с соседями (см. шапку `waste-ticket-review-state.ts`):
+    // взятая вне ряда, она даёт дедлок на встречной паре заявок.
+    await markTicketReviewStale(tx, [requestId, ...neighbours]);
+  } else {
+    await markTicketReviewStale(tx, [requestId]);
   }
-  return badges;
+  await recomputeTicketReviewState(tx, requestId);
 }
 
 /**
@@ -904,35 +948,34 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // остался бы неподтверждённым навсегда (Р24).
       q.ticketReview === 'pending'
         ? sql`(
-            EXISTS (SELECT 1 FROM waste_tickets wt
-                     WHERE wt.request_id = ${wasteRequests.id}
-                       AND (wt.status = 'unconfirmed' OR array_length(wt.needs_review_fields, 1) > 0))
-            OR EXISTS (SELECT 1 FROM waste_ticket_files wf
-                        WHERE wf.request_id = ${wasteRequests.id}
-                          AND wf.status IN ('unsupported', 'failed'))
-            OR EXISTS (SELECT 1 FROM waste_ticket_pages wp
-                        WHERE wp.request_id = ${wasteRequests.id} AND wp.status = 'failed')
-            OR EXISTS (SELECT 1 FROM waste_ticket_blind_checks bc
-                        JOIN waste_tickets wt2 ON wt2.id = bc.ticket_id
-                       WHERE wt2.request_id = ${wasteRequests.id}
-                         AND bc.status IN ('pending', 'mismatch'))
+            -- Отбор идёт по СОХРАНЁННОМУ состоянию разбора (ADR 0155, Р21): второе определение
+            -- «разбор не закончен» в SQL разъехалось с первым и молча прятало заявку, где все
+            -- талоны подтверждены, а расхождение не принято — такая не завершается и не находится.
+            --
+            -- Три первых условия — про НЕЗНАНИЕ: строки ещё нет, кто-то пометил её устаревшей,
+            -- правила или допуски сменились. Не знаем — показываем: ложная строка в реестре стоит
+            -- дешевле спрятанной работы.
+            EXISTS (SELECT 1 FROM waste_tickets wt WHERE wt.request_id = ${wasteRequests.id})
+            OR EXISTS (SELECT 1 FROM waste_ticket_files wf WHERE wf.request_id = ${wasteRequests.id})
             OR (
-              -- Талон приложен, а разбор его не касался: ни одного подтверждённого талона. Условие
-              -- зеркалит «wasteTicketReviewSettled» — реестр обязан показывать ровно те заявки,
-              -- которым портал отказывает в завершении. Тип здесь остаётся по той же причине, что
-              -- и в «loadTicketCheckInputs» (ADR 0150): читаются талоны всех типов, но ПРОШЛАЯ
-              -- бумага прочих типов в блокировку завершения не тянется — иначе выкат разом закрыл
-              -- бы завершение заявкам, закрытым до него. Условие обязано совпадать с тем — реестр
-              -- и отказ завершения расходиться не вправе.
+              -- Приложенный файл считается бумагой только у вывоза мусора — ровно как в загрузчике
+              -- сверки (граница ADR 0150 про прошлое). Иначе на промахе кэша в реестр попали бы
+              -- давно закрытые заявки прочих типов, к которым когда-то прикладывали квитанцию.
               ${wasteRequests.requestType} = 'waste_removal'
               AND EXISTS (SELECT 1 FROM request_files rf
                             JOIN files f ON f.id = rf.file_id
                            WHERE rf.request_id = ${wasteRequests.id}
                              AND rf.kind = 'ticket' AND f.status = 'active')
-              AND NOT EXISTS (SELECT 1 FROM waste_tickets wt3
-                               WHERE wt3.request_id = ${wasteRequests.id}
-                                 AND wt3.status = 'confirmed')
             )
+          ) AND (
+            NOT EXISTS (SELECT 1 FROM waste_ticket_review_state s
+                         WHERE s.request_id = ${wasteRequests.id})
+            OR EXISTS (SELECT 1 FROM waste_ticket_review_state s
+                        WHERE s.request_id = ${wasteRequests.id}
+                          AND (s.stale
+                               OR s.input_fingerprint <> ${reviewStateInputFingerprint()}
+                               OR s.errors > 0 OR s.pending_confirmation > 0
+                               OR s.failures > 0 OR s.unreviewed_paper > 0))
           )`
         : undefined,
       // Ищут по тексту, не помня, чья это была строка, — поэтому обе (ADR 0053).
@@ -1466,6 +1509,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
             { requestType: 'Сначала откатите выполнение' },
           );
         }
+        // Вход сверки меняют и объём, и тип заявки, и отвязанный файл-талон (ADR 0155, Р20):
+        // состояние разбора обязано пересчитаться здесь же, под этой транзакцией.
+        await refreshRequestReviewState(tx, id);
       });
       const after = (await getRequestDto(id))!;
       await writeAudit({
@@ -1531,6 +1577,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           .where(and(eq(wasteRequests.id, before.id), eq(wasteRequests.version, version)))
           .returning({ id: wasteRequests.id });
         if (!updated) throw err.conflict();
+        // Оператор — область уникальности номера и часть входа сверки (ADR 0155, Р20): смена
+        // исполнителя меняет то, в какой области окажется каждый неподтверждённый талон заявки.
+        await refreshRequestReviewState(tx, before.id, { neighbours: true });
       });
       const after = (await getRequestDto(before.id))!;
       await writeAudit({
@@ -1788,6 +1837,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           changedBy: p.id,
           comment,
         });
+        // Закрытие приносит факт и бумагу, откат уносит распознанное вместе с талонами (ADR 0155,
+        // Р20) — и то и другое меняет не только свою заявку: снятые талоны были соседями чужих.
+        await refreshRequestReviewState(tx, before.id, { neighbours: true });
         return saved;
       });
       await writeAudit({
@@ -1848,6 +1900,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // заявки, но остаётся источником наблюдения аудита, поэтому набор собирается по обеим связям.
       await db.transaction(async (tx) => {
         const linked = await prepareFilesForFullWasteRequestDeletion(tx, id);
+        // Соседи метятся ДО удаления: после него ключи талонов взять уже неоткуда, а замечание о
+        // дубле у чужой заявки продолжало бы указывать на бумагу, которой больше нет (ADR 0155, Р20).
+        await refreshRequestReviewState(tx, id, { neighbours: true });
         // Машины уходят каскадом вместе с заявкой, но строки files каскад не трогает.
         await tx.delete(wasteRequests).where(eq(wasteRequests.id, id));
         await hardDeleteFiles(tx, linked);
@@ -1861,15 +1916,20 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       return { ok: true, mode: 'hard' };
     }
 
-    await db
-      .update(wasteRequests)
-      .set({
-        deletedAt: new Date(),
-        deletedBy: p.id,
-        version: existing.version + 1,
-        updatedAt: new Date(),
-      })
-      .where(eq(wasteRequests.id, id));
+    await db.transaction(async (tx) => {
+      await tx
+        .update(wasteRequests)
+        .set({
+          deletedAt: new Date(),
+          deletedBy: p.id,
+          version: existing.version + 1,
+          updatedAt: new Date(),
+        })
+        .where(eq(wasteRequests.id, id));
+      // Мягко удалённая заявка выбывает из соседей (`loadNeighbours` смотрит только живые): у тех,
+      // кому она давала замечание о дубле, числа изменились (ADR 0155, Р20).
+      await refreshRequestReviewState(tx, id, { neighbours: true });
+    });
     await writeAudit({
       actorUserId: p.id,
       action: 'waste_request.soft_delete',
@@ -1901,10 +1961,15 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       assertPlaceObjectScope(p, existing.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, existing.operatorCounterpartyId);
       if (existing.deletedAt) {
-        await db
-          .update(wasteRequests)
-          .set({ deletedAt: null, deletedBy: null, updatedAt: new Date() })
-          .where(eq(wasteRequests.id, existing.id));
+        await db.transaction(async (tx) => {
+          await tx
+            .update(wasteRequests)
+            .set({ deletedAt: null, deletedBy: null, updatedAt: new Date() })
+            .where(eq(wasteRequests.id, existing.id));
+          // Вернувшаяся заявка снова становится соседом: её подтверждённые талоны опять занимают
+          // номера, и у тех, кто эти номера предъявлял, замечание появляется заново (ADR 0155, Р20).
+          await refreshRequestReviewState(tx, existing.id, { neighbours: true });
+        });
         await writeAudit({
           actorUserId: p.id,
           action: 'waste_request.restore',

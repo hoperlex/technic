@@ -35,6 +35,14 @@ export {
   type TicketJobResult,
 } from './job';
 export {
+  markReviewStale,
+  markReviewStaleWithNeighbors,
+  TICKET_REVIEW_NEIGHBORS_SQL,
+  TICKET_REVIEW_STALE_SQL,
+  type ReviewStateClient,
+  type TicketReviewKeys,
+} from './review-state';
+export {
   createEngineFrom,
   preprocessOptionsFrom,
   readTicketOcrConfig,

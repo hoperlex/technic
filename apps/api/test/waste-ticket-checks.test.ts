@@ -61,6 +61,10 @@ function ticket(over: Partial<WasteTicketCheckTicket> = {}): WasteTicketCheckTic
     pageId: 'page-1',
     pageSha256: PAGE_SHA,
     duplicateOverride: false,
+    fileId: 'file-1',
+    disputed: false,
+    hasProposal: false,
+    updatedAt: new Date('2026-08-17T10:00:00Z'),
     ...over,
   };
 }
@@ -95,6 +99,8 @@ describe('сверка молчит, когда всё сошлось', () => {
     expect(result.preliminary).toBe(false);
     expect(result.acceptanceAllowed).toBe(true);
     expect(result.badge).toEqual({
+      confirmable: 0,
+      confirmableFingerprint: '',
       errors: 0,
       warnings: 0,
       pendingConfirmation: 0,
@@ -427,6 +433,10 @@ describe('уникальность: бумага и номер (Р17)', () => {
     const result = run({ tickets });
     // ⛔ повтор номера · ⚠️ чужой адрес · ⏳ один талон ждёт подтверждения.
     expect(result.badge).toEqual({
+      // Неподтверждённый талон без спора и предложения готов к одному действию — но кнопки в
+      // строке не будет: её гасят ⛔ и ⚠️ (ADR 0155, Р16).
+      confirmable: 1,
+      confirmableFingerprint: expect.any(String),
       errors: 1,
       warnings: 1,
       pendingConfirmation: 1,
@@ -633,7 +643,7 @@ describe('принятое расхождение возвращается са�
 
 describe('приложенная бумага, которой разбор не касался', () => {
   const PAPER = {
-    attachedTicketFiles: 1,
+    attachedTicketFiles: [{ fileId: 'file-1', broken: false, readOk: true }],
     failedFiles: 0,
     failedPages: 0,
     blindPending: 0,
@@ -655,13 +665,64 @@ describe('приложенная бумага, которой разбор не 
     expect(wasteTicketReviewSettled(result.badge)).toBe(true);
   });
 
-  it('неподтверждённый талон признак не снимает — но говорит о себе своим числом', () => {
+  it('распознанный талон снимает признак с СВОЕГО файла — про него говорит ⏳', () => {
+    // Прежнее правило держало 📄 до первого подтверждённого талона, и строка списка показывала два
+    // числа об одной бумаге: «⏳2 📄2» (ADR 0155, Р18).
     const result = run({
       tickets: [ticket({ volumeM3: 40, status: 'unconfirmed' })],
       subsystem: PAPER,
     });
-    expect(result.badge.unreviewedPaper).toBe(1);
+    expect(result.badge.unreviewedPaper).toBe(0);
     expect(result.badge.pendingConfirmation).toBe(1);
+    expect(result.badge.confirmable).toBe(1);
+  });
+
+  it('сломанный файл считается только как 🚫 — второго числа о нём нет', () => {
+    const result = run({
+      tickets: [],
+      subsystem: {
+        ...PAPER,
+        attachedTicketFiles: [{ fileId: 'file-1', broken: true, readOk: false }],
+        failedFiles: 1,
+      },
+    });
+    expect(result.badge.unreviewedPaper).toBe(0);
+    expect(result.badge.failures).toBe(1);
+  });
+
+  it('второй приложенный файл горит, даже когда первый разобран', () => {
+    const result = run({
+      tickets: [ticket({ fileId: 'file-1' })],
+      subsystem: {
+        ...PAPER,
+        attachedTicketFiles: [
+          { fileId: 'file-1', broken: false, readOk: true },
+          { fileId: 'file-2', broken: false, readOk: false },
+        ],
+      },
+    });
+    expect(result.badge.unreviewedPaper).toBe(1);
+  });
+
+  it('ручной талон закрывает прочитанный файл, в котором талона не нашлось', () => {
+    // Единственный выход из тупика: разобрать такой лист можно только руками, а ручной талон к
+    // файлу не привязан вовсе (ADR 0155, Р18, третье условие).
+    const result = run({
+      tickets: [ticket({ pageId: null, fileId: null })],
+      subsystem: PAPER,
+    });
+    expect(result.badge.unreviewedPaper).toBe(0);
+  });
+
+  it('ручной талон НЕ закрывает файл, к разбору которого не приступали', () => {
+    const result = run({
+      tickets: [ticket({ pageId: null, fileId: null })],
+      subsystem: {
+        ...PAPER,
+        attachedTicketFiles: [{ fileId: 'file-2', broken: false, readOk: false }],
+      },
+    });
+    expect(result.badge.unreviewedPaper).toBe(1);
   });
 
   it('«это не талон» разбором бумаги не считается', () => {
@@ -670,7 +731,7 @@ describe('приложенная бумага, которой разбор не 
   });
 
   it('бумаги не приложено вовсе — признака нет', () => {
-    const result = run({ tickets: [], subsystem: { ...PAPER, attachedTicketFiles: 0 } });
+    const result = run({ tickets: [], subsystem: { ...PAPER, attachedTicketFiles: [] } });
     expect(result.badge.unreviewedPaper).toBe(0);
     expect(wasteTicketReviewSettled(result.badge)).toBe(true);
   });

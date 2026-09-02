@@ -5,6 +5,7 @@ import {
   formatWaybillDate,
   moscowDateKeyOf,
   WASTE_TICKET_CHECK_CODES,
+  type WasteTicketAttachedFile,
   type WasteTicketBadgeDto,
   type WasteTicketCheckCode,
   type WasteTicketCheckDto,
@@ -97,6 +98,34 @@ export interface WasteTicketCheckTicket {
   pageSha256: string;
   /** Клапан «это разные бумаги» (Р17): строка выведена из-под ограничения человеком. */
   duplicateOverride: boolean;
+  /** Файл, из которого пришла страница талона; `null` у ручного и у отвязанного (ADR 0155, Р18). */
+  fileId: string | null;
+  /** Модели прочитали поле по-разному — подтверждение такого талона падает (ADR 0155, Р16). */
+  disputed: boolean;
+  /** По талону лежит непринятое предложение перераспознавания — второе чтение ждёт человека. */
+  hasProposal: boolean;
+  /** Время последней правки строки: часть отпечатка готового набора (ADR 0155, Р23). */
+  updatedAt: Date;
+}
+
+/**
+ * Область уникальности номера ГЛАЗАМИ СВЕРКИ (ADR 0155, Р15).
+ *
+ * Машинный талон заводится «ничьим»: `operator_counterparty_id` у него `NULL`, а оператора он
+ * получает в момент подтверждения — снимком с заявки. Считай сверка неподтверждённый талон по его
+ * собственной пустой области, и предупреждение о похожем номере появлялось бы ПОСЛЕ подтверждения:
+ * человек нажимает кнопку «всё сошлось» и получает ⚠️ там, где секунду назад было чисто.
+ *
+ * Условие по статусу, а не `??`: у подтверждённого талона `NULL` — законный снимок «заявка без
+ * исполнителя», и подмена его оператором заявки переписала бы область уникальности задним числом.
+ */
+export function effectiveTicketArea(
+  ticket: { status: WasteTicketStatus; operatorCounterpartyId: string | null },
+  requestOperatorCounterpartyId: string | null,
+): string | null {
+  return ticket.status === 'unconfirmed'
+    ? requestOperatorCounterpartyId
+    : ticket.operatorCounterpartyId;
 }
 
 /** Как совпал сосед, найденный вне этой заявки. */
@@ -320,9 +349,23 @@ export function wasteTicketChecks(input: WasteTicketChecksInput): WasteTicketChe
 
   // Отклонённые («это не талон» — шапка бланка, приписка с проходной, второй кадр той же бумаги)
   // не участвуют ни в одной проверке: человек уже сказал, что бумаги здесь нет.
-  const active = tickets.filter((t) => t.status !== 'dismissed');
+  // Область у неподтверждённых подставляется вперёд (Р15): проверки обязаны видеть ту область, в
+  // которой бумага окажется после подтверждения, иначе предупреждение появится уже после нажатия.
+  // Подменяется РАБОЧАЯ копия, а не вход: отпечаток принятого расхождения снимается с `input.tickets`,
+  // и двигать его правилом, которое к принятию отношения не имеет, нельзя.
+  const active = tickets
+    .filter((t) => t.status !== 'dismissed')
+    .map((t) => ({
+      ...t,
+      operatorCounterpartyId: effectiveTicketArea(t, request.operatorCounterpartyId),
+    }));
   const unconfirmed = active.filter((t) => t.status !== 'confirmed').length;
   const preliminary = unconfirmed > 0;
+  // Готовые к подтверждению одним действием (ADR 0155, Р16): спорное поле роняет подтверждение, а
+  // живое предложение означает второе чтение, о котором человек ещё не решил.
+  const confirmableTickets = active.filter(
+    (t) => t.status === 'unconfirmed' && !t.disputed && !t.hasProposal,
+  );
 
   const collected = new Map<string, WasteTicketCheckDto>();
   const push = (code: WasteTicketCheckCode, subjectKey: string, message: string): void => {
@@ -385,6 +428,8 @@ export function wasteTicketChecks(input: WasteTicketChecksInput): WasteTicketChe
     preliminary,
     acceptanceAllowed: unconfirmed === 0,
     badge: {
+      confirmable: confirmableTickets.length,
+      confirmableFingerprint: confirmableFingerprint(confirmableTickets),
       // Снятое замечание в значке не считается: оно уже разобрано человеком и в реестр «требуют
       // разбора» заявку не тянет.
       //
@@ -397,15 +442,59 @@ export function wasteTicketChecks(input: WasteTicketChecksInput): WasteTicketChe
       warnings: checks.filter((c) => c.severity === 'warning' && !c.resolution).length,
       pendingConfirmation: unconfirmed + (subsystem?.blindPending ?? 0),
       failures: (subsystem?.failedFiles ?? 0) + (subsystem?.failedPages ?? 0),
-      // Приложенная бумага, к разбору которой не приступали. Гаснет с ПЕРВЫМ подтверждённым
-      // талоном, а не с первым распознанным: распознанный талон ждёт человека и виден как ⏳, а
-      // отклонённый («это не талон») говорит ровно обратное — настоящей бумаги в разборе так и
-      // нет. Считается по неотклонённым: `active` за вычетом неподтверждённых и есть число
-      // подтверждённых.
-      unreviewedPaper:
-        active.length - unconfirmed > 0 ? 0 : (subsystem?.attachedTicketFiles ?? 0),
+      // Приложенная бумага, до которой разбор не дошёл, — ПОФАЙЛОВО (ADR 0155, Р18).
+      //
+      // Прежнее правило («сколько файлов, пока нет ни одного подтверждённого талона») отвечало про
+      // заявку целиком там, где вопрос про конкретный лист: распознанная бумага давала `⏳2 📄2`, а
+      // единственный нечитаемый файл — `🚫1 📄1`. Два числа об одном и том же.
+      unreviewedPaper: unreviewedPaperFiles(active, subsystem?.attachedTicketFiles ?? []),
     },
   };
+}
+
+/**
+ * Отпечаток готового набора (ADR 0155, Р23): по нему сервер узнаёт, что человек нажимал кнопку,
+ * видя ровно эти талоны. Числа мало — между отрисовкой и нажатием один талон может исчезнуть, а
+ * другой появиться, и счёт совпадёт при другом составе.
+ *
+ * В отпечаток идёт `updatedAt`: правка талона, не меняющая ни статуса, ни спора, всё равно меняет
+ * цифры, под которыми человек подписывается.
+ */
+function confirmableFingerprint(tickets: readonly WasteTicketCheckTicket[]): string {
+  if (tickets.length === 0) return '';
+  const payload = tickets
+    .map((t) => [t.id, t.updatedAt.toISOString(), t.status].join(' '))
+    .sort()
+    .join('\n');
+  return createHash('sha256').update(payload, 'utf8').digest('hex');
+}
+
+/**
+ * Сколько приложенных листов ждут, чтобы к ним ПРИСТУПИЛИ (ADR 0155, Р18). Лист считается дошедшим
+ * до разбора, если верно любое:
+ *
+ * 1. по нему есть неотклонённый талон — бумага прочитана, дальше о ней говорят ⏳ и ⛔;
+ * 2. он сломан и уже посчитан в 🚫 — про такой сказано другим числом;
+ * 3. он прочитан успешно, талона в нём не нашлось, а в заявке есть неотклонённый талон БЕЗ
+ *    страницы, то есть заведённый руками. Это единственный выход из тупика: разобрать лист, в
+ *    котором машина талона не увидела, можно только руками, а ручной талон к файлу не привязан.
+ *
+ * Отклонённый талон лист НЕ закрывает: «это не талон» говорит ровно обратное — настоящей бумаги в
+ * разборе так и нет (правило ADR 0135 сохранено дословно).
+ */
+function unreviewedPaperFiles(
+  active: readonly WasteTicketCheckTicket[],
+  attached: readonly WasteTicketAttachedFile[],
+): number {
+  if (attached.length === 0) return 0;
+  const coveredFiles = new Set(
+    active.map((t) => t.fileId).filter((id): id is string => id !== null),
+  );
+  const hasManual = active.some((t) => t.fileId === null);
+  return attached.filter((file) => {
+    if (file.broken || coveredFiles.has(file.fileId)) return false;
+    return !(file.readOk && hasManual);
+  }).length;
 }
 
 type Push = (code: WasteTicketCheckCode, subjectKey: string, message: string) => void;

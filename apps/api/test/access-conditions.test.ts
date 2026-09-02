@@ -278,6 +278,9 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     },
   },
   'POST /api/v1/users/:id/email': { payload: { newEmail: 'other@test.local' } },
+  // Отпечаток готового набора обязателен схемой (ADR 0155): без тела ручка отвечает 400 раньше,
+  // чем дойдёт до проверки права, и проверка доступа мерила бы валидацию.
+  'POST /api/v1/waste-requests/:id/tickets/confirm-ready': { payload: { fingerprint: 'x'.repeat(64) } },
   'POST /api/v1/users/:id/password': { payload: { newPassword: PASSWORD } },
   'POST /api/v1/users/:id/reject': {
     payload: { reason: 'учётка не подтверждена', notifyApplicant: false },

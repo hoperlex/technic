@@ -1,5 +1,5 @@
 import { and, eq, inArray, notInArray, or, sql } from 'drizzle-orm';
-import type { RequestType } from '@technic/contracts';
+import type { RequestType, WasteTicketAttachedFile } from '@technic/contracts';
 import { db } from '../db/client';
 import {
   constructionObjects,
@@ -13,13 +13,22 @@ import {
   wasteTicketCheckResolutions,
   wasteTicketFiles,
   wasteTicketPages,
+  wasteTicketProposals,
   wasteTickets,
 } from '../db/schema';
+import { effectiveTicketArea } from './waste-ticket-checks';
 import type {
   WasteTicketCheckTicket,
   WasteTicketChecksInput,
   WasteTicketNeighbour,
 } from './waste-ticket-checks';
+
+/**
+ * Кто выполняет запросы: соединение или транзакция. Пересчёт состояния разбора идёт под замком
+ * заявки и обязан читать той же транзакцией (ADR 0155, Р22), а список и карточка — обычным
+ * соединением.
+ */
+export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 // ── Вход сверки талонов: чтение базы, отдельное от самой сверки (ADR 0114, Р15–Р21) ──
 //
@@ -60,11 +69,19 @@ export interface TicketCheckBundle {
 }
 
 /** Видимость чужой заявки: сосед называется по номеру только тому, кто вправе его читать (Р28). */
-export type RequestVisibility = (objectId: string, operatorCounterpartyId: string | null) => boolean;
+export type RequestVisibility = (
+  objectId: string,
+  operatorCounterpartyId: string | null,
+) => boolean;
 
 const ALWAYS_HIDDEN: RequestVisibility = () => false;
 
-function toCheckTicket(row: TicketRow, pageSha256: string): WasteTicketCheckTicket {
+function toCheckTicket(
+  row: TicketRow,
+  pageSha256: string,
+  fileId: string | null,
+  hasProposal: boolean,
+): WasteTicketCheckTicket {
   return {
     id: row.id,
     numberRaw: row.numberRaw,
@@ -79,6 +96,10 @@ function toCheckTicket(row: TicketRow, pageSha256: string): WasteTicketCheckTick
     pageId: row.pageId,
     pageSha256,
     duplicateOverride: row.duplicateOverrideAt !== null,
+    fileId,
+    disputed: row.needsReviewFields.length > 0,
+    hasProposal,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -93,15 +114,16 @@ function toCheckTicket(row: TicketRow, pageSha256: string): WasteTicketCheckTick
  */
 async function loadNeighbours(
   ownRequestIds: string[],
-  own: readonly { ticket: TicketRow; pageSha256: string }[],
+  own: readonly { ticket: TicketRow; pageSha256: string; area: string | null }[],
   visible: RequestVisibility,
+  exec: DbExecutor,
 ): Promise<WasteTicketNeighbour[]> {
   const keys = [...new Set(own.map((o) => o.ticket.numberKey).filter(Boolean))];
   const fuzzies = [...new Set(own.map((o) => o.ticket.numberFuzzy).filter(Boolean))];
   const shas = [...new Set(own.map((o) => o.pageSha256).filter(Boolean))];
   if (keys.length === 0 && fuzzies.length === 0 && shas.length === 0) return [];
 
-  const rows = await db
+  const rows = await exec
     .select({
       numberRaw: wasteTickets.numberRaw,
       numberKey: wasteTickets.numberKey,
@@ -132,9 +154,9 @@ async function loadNeighbours(
     );
 
   const found: WasteTicketNeighbour[] = [];
-  for (const { ticket, pageSha256 } of own) {
+  for (const { ticket, pageSha256, area: ownArea } of own) {
     if (ticket.status === 'dismissed') continue;
-    const area = ticket.operatorCounterpartyId ?? '';
+    const area = ownArea ?? '';
     for (const row of rows) {
       const label = visible(row.requestObjectId, row.requestOperatorId)
         ? `М-${row.requestNum}`
@@ -170,86 +192,122 @@ async function loadNeighbours(
  */
 export async function loadTicketCheckInputs(
   rows: readonly TicketCheckRequestRow[],
-  opts: { visible?: RequestVisibility } = {},
+  opts: { visible?: RequestVisibility; exec?: DbExecutor } = {},
 ): Promise<Map<string, TicketCheckBundle>> {
+  // Исполнитель приезжает параметром (ADR 0155, Р22): пересчёт под замком заявки обязан читать ТОЙ
+  // ЖЕ транзакцией, иначе «состояние под замком» на самом деле прочитано мимо него — и решение
+  // принимается по данным, которых в транзакции нет.
+  const exec = opts.exec ?? db;
   const result = new Map<string, TicketCheckBundle>();
   const ids = rows.map((r) => r.id);
   if (ids.length === 0) return result;
 
-  const [ticketRows, pageRows, fileRows, completionRows, resolutionRows, blindRows, paperRows] =
-    await Promise.all([
-      db.select().from(wasteTickets).where(inArray(wasteTickets.requestId, ids)),
-      db
-        .select({
-          id: wasteTicketPages.id,
-          requestId: wasteTicketPages.requestId,
-          fileId: wasteTicketPages.fileId,
-          pageNo: wasteTicketPages.pageNo,
-          pageSha256: wasteTicketPages.pageSha256,
-          status: wasteTicketPages.status,
-          ticketsFound: wasteTicketPages.ticketsFound,
-        })
-        .from(wasteTicketPages)
-        .where(inArray(wasteTicketPages.requestId, ids)),
-      // Мёртвая задача — тоже нечитаемый файл (Р24): строка стоит `pending`, но двигать её больше
-      // некому. Без соединения с очередью такой файл выглядел бы как «ещё считается» — вечно.
-      db
-        .select({
-          requestId: wasteTicketFiles.requestId,
-          status: wasteTicketFiles.status,
-          jobStatus: jobs.status,
-        })
-        .from(wasteTicketFiles)
-        .leftJoin(jobs, eq(jobs.id, wasteTicketFiles.activeJobId))
-        .where(inArray(wasteTicketFiles.requestId, ids)),
-      db
-        .select()
-        .from(wasteRequestCompletions)
-        .where(inArray(wasteRequestCompletions.requestId, ids)),
-      db
-        .select({
-          requestId: wasteTicketCheckResolutions.requestId,
-          checkCode: wasteTicketCheckResolutions.checkCode,
-          subjectKey: wasteTicketCheckResolutions.subjectKey,
-          inputFingerprint: wasteTicketCheckResolutions.inputFingerprint,
-          comment: wasteTicketCheckResolutions.comment,
-          acceptedAt: wasteTicketCheckResolutions.acceptedAt,
-          acceptedByName: users.fullName,
-        })
-        .from(wasteTicketCheckResolutions)
-        .leftJoin(users, eq(users.id, wasteTicketCheckResolutions.acceptedBy))
-        .where(inArray(wasteTicketCheckResolutions.requestId, ids)),
-      db
-        .select({ requestId: wasteTickets.requestId, status: wasteTicketBlindChecks.status })
-        .from(wasteTicketBlindChecks)
-        .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketBlindChecks.ticketId))
-        .where(inArray(wasteTickets.requestId, ids)),
-      // Приложенная бумага заявки — та, что легла в неё при закрытии (ADR 0020, ADR 0024). Читается
-      // здесь, а не выводится из строк распознавания: вопрос «есть ли бумага» и вопрос «дошла ли
-      // она до разбора» — разные, и второй отвечает `waste_ticket_files`. Разойдись они (модуль
-      // был выключен, задача не дошла до страниц) — заявка с нетронутым сканом выглядела бы
-      // разобранной.
-      db
-        .select({ requestId: requestFiles.requestId })
-        .from(requestFiles)
-        .innerJoin(files, eq(files.id, requestFiles.fileId))
-        .where(
-          and(
-            inArray(requestFiles.requestId, ids),
-            eq(requestFiles.kind, 'ticket'),
-            eq(files.status, 'active'),
-          ),
+  const [
+    ticketRows,
+    pageRows,
+    fileRows,
+    completionRows,
+    resolutionRows,
+    blindRows,
+    paperRows,
+    proposalRows,
+  ] = await Promise.all([
+    exec.select().from(wasteTickets).where(inArray(wasteTickets.requestId, ids)),
+    exec
+      .select({
+        id: wasteTicketPages.id,
+        requestId: wasteTicketPages.requestId,
+        fileId: wasteTicketPages.fileId,
+        pageNo: wasteTicketPages.pageNo,
+        pageSha256: wasteTicketPages.pageSha256,
+        status: wasteTicketPages.status,
+        ticketsFound: wasteTicketPages.ticketsFound,
+      })
+      .from(wasteTicketPages)
+      .where(inArray(wasteTicketPages.requestId, ids)),
+    // Мёртвая задача — тоже нечитаемый файл (Р24): строка стоит `pending`, но двигать её больше
+    // некому. Без соединения с очередью такой файл выглядел бы как «ещё считается» — вечно.
+    exec
+      .select({
+        requestId: wasteTicketFiles.requestId,
+        fileId: wasteTicketFiles.fileId,
+        status: wasteTicketFiles.status,
+        jobStatus: jobs.status,
+      })
+      .from(wasteTicketFiles)
+      .leftJoin(jobs, eq(jobs.id, wasteTicketFiles.activeJobId))
+      .where(inArray(wasteTicketFiles.requestId, ids)),
+    exec
+      .select()
+      .from(wasteRequestCompletions)
+      .where(inArray(wasteRequestCompletions.requestId, ids)),
+    exec
+      .select({
+        requestId: wasteTicketCheckResolutions.requestId,
+        checkCode: wasteTicketCheckResolutions.checkCode,
+        subjectKey: wasteTicketCheckResolutions.subjectKey,
+        inputFingerprint: wasteTicketCheckResolutions.inputFingerprint,
+        comment: wasteTicketCheckResolutions.comment,
+        acceptedAt: wasteTicketCheckResolutions.acceptedAt,
+        acceptedByName: users.fullName,
+      })
+      .from(wasteTicketCheckResolutions)
+      .leftJoin(users, eq(users.id, wasteTicketCheckResolutions.acceptedBy))
+      .where(inArray(wasteTicketCheckResolutions.requestId, ids)),
+    exec
+      .select({ requestId: wasteTickets.requestId, status: wasteTicketBlindChecks.status })
+      .from(wasteTicketBlindChecks)
+      .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketBlindChecks.ticketId))
+      .where(inArray(wasteTickets.requestId, ids)),
+    // Приложенная бумага заявки — та, что легла в неё при закрытии (ADR 0020, ADR 0024). Читается
+    // здесь, а не выводится из строк распознавания: вопрос «есть ли бумага» и вопрос «дошла ли
+    // она до разбора» — разные, и второй отвечает `waste_ticket_files`. Разойдись они (модуль
+    // был выключен, задача не дошла до страниц) — заявка с нетронутым сканом выглядела бы
+    // разобранной.
+    exec
+      .select({ requestId: requestFiles.requestId, fileId: requestFiles.fileId })
+      .from(requestFiles)
+      .innerJoin(files, eq(files.id, requestFiles.fileId))
+      .where(
+        and(
+          inArray(requestFiles.requestId, ids),
+          eq(requestFiles.kind, 'ticket'),
+          eq(files.status, 'active'),
         ),
-    ]);
+      ),
+    // Живые предложения перераспознавания (ADR 0155, Р16): талон с непринятым вторым чтением
+    // одним действием не подтверждают — человек ещё не решил, какое из двух чтений верное.
+    // Отдельным запросом, а не соединением с талонами: строка предложения есть у меньшинства, и
+    // тащить её левым соединением в основную выборку значило бы платить за неё всегда.
+    exec
+      .select({ ticketId: wasteTicketProposals.ticketId })
+      .from(wasteTicketProposals)
+      .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketProposals.ticketId))
+      .where(inArray(wasteTickets.requestId, ids)),
+  ]);
 
   const pageById = new Map(pageRows.map((p) => [p.id, p]));
   const shaOf = (t: TicketRow): string =>
     t.pageId ? (pageById.get(t.pageId)?.pageSha256 ?? '') : '';
+  // Файл талона известен только через страницу: ручной талон бумаге не принадлежит вовсе, и это
+  // не пробел данных, а свойство ручного ввода (ADR 0155, Р18).
+  const fileOf = (t: TicketRow): string | null =>
+    t.pageId ? (pageById.get(t.pageId)?.fileId ?? null) : null;
+  const withProposal = new Set(proposalRows.map((r) => r.ticketId));
 
+  // Область у неподтверждённого талона берётся у ЗАЯВКИ (ADR 0155, Р15) — той же функцией, что и в
+  // сверке: сосед по «похожему номеру» ищется в области, а посчитай мы её здесь иначе, список и
+  // карточка разошлись бы ровно на тех талонах, ради которых заведена кнопка.
+  const operatorOf = new Map(rows.map((r) => [r.id, r.operatorCounterpartyId]));
   const neighbours = await loadNeighbours(
     ids,
-    ticketRows.map((ticket) => ({ ticket, pageSha256: shaOf(ticket) })),
+    ticketRows.map((ticket) => ({
+      ticket,
+      pageSha256: shaOf(ticket),
+      area: effectiveTicketArea(ticket, operatorOf.get(ticket.requestId) ?? null),
+    })),
     opts.visible ?? ALWAYS_HIDDEN,
+    exec,
   );
 
   for (const row of rows) {
@@ -273,18 +331,34 @@ export async function loadTicketCheckInputs(
      * бумагу разом либо отобрать по дате закрытия. Это отдельная работа с миграцией, а не строка
      * в сверке.
      */
-    const attachedTicketFiles =
+    const pagesOfRequest = pageRows.filter((p) => p.requestId === row.id);
+    const attachedTicketFiles: WasteTicketAttachedFile[] =
       row.requestType === 'waste_removal'
-        ? paperRows.filter((f) => f.requestId === row.id).length
-        : 0;
+        ? paperRows
+            .filter((f) => f.requestId === row.id)
+            .map((f) => {
+              const recognition = recognitionFiles.find((r) => r.fileId === f.fileId);
+              // «Сломан» — то же самое, что попало в 🚫, и провалившаяся страница входит сюда
+              // наравне с отказом по файлу: иначе единственный нечитаемый лист показывался бы
+              // дважды — и как 🚫, и как 📄 (ADR 0155, Р18).
+              const broken =
+                recognition?.status === 'unsupported' ||
+                recognition?.status === 'failed' ||
+                recognition?.jobStatus === 'dead' ||
+                pagesOfRequest.some((p) => p.fileId === f.fileId && p.status === 'failed');
+              return { fileId: f.fileId, broken, readOk: recognition?.status === 'done' };
+            })
+        : [];
     /*
      * Заявка без бумаги вовсе значка не получает (`badge = null`, и завершению это не помеха).
      * Приложенный талон бумагой считается наравне со строкой распознавания: именно он и есть то,
      * что предстоит разобрать.
      */
-    if (tickets.length === 0 && recognitionFiles.length === 0 && attachedTicketFiles === 0) continue;
+    if (tickets.length === 0 && recognitionFiles.length === 0 && attachedTicketFiles.length === 0) {
+      continue;
+    }
 
-    const pages = pageRows.filter((p) => p.requestId === row.id);
+    const pages = pagesOfRequest;
     const blind = blindRows.filter((b) => b.requestId === row.id);
     const completion = completionRows.find((c) => c.requestId === row.id) ?? null;
     const ticketIds = new Set(tickets.map((t) => t.id));
@@ -307,7 +381,7 @@ export async function loadTicketCheckInputs(
               removedOnSource: completion.removedOnSource,
             }
           : null,
-        tickets: tickets.map((t) => toCheckTicket(t, shaOf(t))),
+        tickets: tickets.map((t) => toCheckTicket(t, shaOf(t), fileOf(t), withProposal.has(t.id))),
         neighbours: neighbours.filter((n) => ticketIds.has(n.ticketId)),
         resolutions: resolutionRows
           .filter((r) => r.requestId === row.id)
@@ -337,8 +411,9 @@ export async function loadTicketCheckInputs(
 /** Заявка объекта: имя и адрес площадки нужны сверке адреса (Р20) — без них она сравнивает с пустым. */
 export async function loadTicketCheckRequestRow(
   requestId: string,
+  exec: DbExecutor = db,
 ): Promise<TicketCheckRequestRow | null> {
-  const rows = await db
+  const rows = await exec
     .select({
       id: wasteRequests.id,
       num: wasteRequests.num,

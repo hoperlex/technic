@@ -4414,6 +4414,15 @@ export const wasteTickets = pgTable(
      * сведение `О`/`0` и `A`/`А` — догадка, и запрещать по догадке нельзя.
      */
     numberFuzzyIdx: index('waste_tickets_number_fuzzy_idx').on(t.numberFuzzy),
+    /**
+     * Поиск соседа по номеру для инвалидации состояния разбора (план автоподтверждения, Р20).
+     * Уникальные индексы выше для него не годятся: оба частичные по `status = 'confirmed'` и по
+     * снятому клапану, а сосед ищется среди НЕОТКЛОНЁННЫХ — то есть в том числе среди тех, кого
+     * человек ещё не подтвердил. Без этого индекса каждая правка номера читала бы таблицу целиком.
+     */
+    numberKeyIdx: index('waste_tickets_number_key_idx')
+      .on(t.numberKey)
+      .where(sql`${t.numberKey} <> ''`),
   }),
 );
 
@@ -9511,3 +9520,78 @@ export const autoPartReceiptFiles = pgTable(
 export type AutoPartReceiptRow = typeof autoPartReceipts.$inferSelect;
 export type AutoPartReceiptLineRow = typeof autoPartReceiptLines.$inferSelect;
 export type AutoPartReceiptFileRow = typeof autoPartReceiptFiles.$inferSelect;
+
+/**
+ * Состояние разбора талонов заявки — то, что реестр «Требуют разбора» спрашивает запросом (план
+ * `docs/waste-ticket-auto-confirm-plan.md`, Р19–Р21).
+ *
+ * ЗАЧЕМ ТАБЛИЦА ТАМ, ГДЕ ЗАМЕЧАНИЯ НАМЕРЕННО НЕ МАТЕРИАЛИЗУЮТСЯ. Замечания и правда считаются на
+ * лету (`waste-ticket-checks.ts`), и хранить их нельзя: таблица разошлась бы с талонами на первой
+ * же правке и разошлась бы молча. Но отбор списка — это SQL, а сверка — это TypeScript, и пока её
+ * результата нет в базе, отбор вынужден повторять правило вторым, упрощённым запросом. Он его и
+ * повторял: заявка со всеми подтверждёнными талонами и непринятым расхождением не завершалась и при
+ * этом в «Требуют разбора» не находилась (Р10). Здесь лежит РЕЗУЛЬТАТ единственного правила — не
+ * второе правило.
+ *
+ * СТРОКА ЕСТЬ ТОЛЬКО У ЗАЯВКИ С БУМАГОЙ. «Бумаги не приносили» и «бумага разобрана» — разные
+ * ответы (значка нет против значка из нулей), поэтому заявка, потерявшая последний талон и
+ * последний файл, теряет и строку: нули сказали бы «всё разобрано» там, где разбирать нечего.
+ *
+ * ЧИСЛА, А НЕ ЗАМЕЧАНИЯ. Строка отвечает на вопрос списка — «сколько и чего ждёт человека»; на
+ * вопрос карточки — «что именно не сошлось» — по-прежнему отвечает сверка на лету. Положи сюда
+ * тексты замечаний, и получится ровно та копия правила, которой здесь быть не должно.
+ */
+export const wasteTicketReviewState = pgTable(
+  'waste_ticket_review_state',
+  {
+    /** Своего `id` нет намеренно: это свойство заявки, а не запись о ней. */
+    requestId: uuid('request_id')
+      .primaryKey()
+      .references(() => wasteRequests.id, { onDelete: 'cascade' }),
+    /**
+     * Шесть чисел значка — те же, что считает `wasteTicketChecks`, и в том же смысле. Разъехаться
+     * им не даёт единственный писатель: `recomputeTicketReviewState`, зовущий ту же сверку.
+     */
+    errors: integer('errors').notNull().default(0),
+    warnings: integer('warnings').notNull().default(0),
+    pendingConfirmation: integer('pending_confirmation').notNull().default(0),
+    failures: integer('failures').notNull().default(0),
+    unreviewedPaper: integer('unreviewed_paper').notNull().default(0),
+    confirmable: integer('confirmable').notNull().default(0),
+    /** Отпечаток готового к подтверждению набора: его сверяет ручка подтверждения из списка (Р23). */
+    confirmableFingerprint: text('confirmable_fingerprint').notNull().default(''),
+    /**
+     * Версия правил сверки, версия самой этой формы и действующие допуски одной строкой. Не
+     * колонкой-версией: обесценивать строки приходится по ЛЮБОЙ из трёх причин сразу, а сравнение
+     * с одним значением — это одно условие в предикате реестра вместо трёх (Р21).
+     */
+    inputFingerprint: text('input_fingerprint').notNull().default(''),
+    /**
+     * «Числа могли устареть» — ставят те, кому пересчитать нечем: воркер, сосед по номеру, правка
+     * объекта. Умолчание `true`, потому что строку заводят как раз пометкой: посчитанной она
+     * становится позже и другим кодом.
+     */
+    stale: boolean('stale').notNull().default(true),
+    /**
+     * Счётчик записей. По нему пересчёт понимает, что состояние сменилось, пока он считал, и его
+     * числа устарели ещё до записи (Р19): пишут строку только условно, `WHERE revision = $прочитанная`.
+     */
+    revision: bigint('revision', { mode: 'number' }).notNull().default(0),
+    /** `NULL` — строку ещё не считали: наблюдаемость прогрева и признак «здесь одна пометка». */
+    computedAt: timestamp('computed_at', { withTimezone: true }),
+  },
+  (t) => ({
+    /**
+     * Одним `CHECK` на все шесть, а не шестью именными: отрицательное число в любом из них
+     * означает одну и ту же ошибку — сверка вернула бессмыслицу, — и по имени ограничения
+     * разбираться всё равно пойдут в неё.
+     */
+    countsCheck: check(
+      'waste_ticket_review_state_counts_check',
+      sql`${t.errors} >= 0 AND ${t.warnings} >= 0 AND ${t.pendingConfirmation} >= 0
+          AND ${t.failures} >= 0 AND ${t.unreviewedPaper} >= 0 AND ${t.confirmable} >= 0`,
+    ),
+  }),
+);
+
+export type WasteTicketReviewStateRow = typeof wasteTicketReviewState.$inferSelect;

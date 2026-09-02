@@ -27,7 +27,17 @@ const DONE_PENDING = wasteRequest({
   id: 'wr-2',
   num: 129,
   displayNumber: 'М-129',
-  ticketBadge: { errors: 0, warnings: 0, pendingConfirmation: 2, failures: 0, unreviewedPaper: 0 },
+  // Кнопкой из списка такое не закрыть (ADR 0155): готовых к одному действию талонов нет —
+  // ждущие подтверждения спорны, и разбирают их в карточке.
+  ticketBadge: {
+    errors: 0,
+    warnings: 0,
+    pendingConfirmation: 2,
+    failures: 0,
+    unreviewedPaper: 0,
+    confirmable: 0,
+    confirmableFingerprint: '',
+  },
 });
 
 /**
@@ -40,7 +50,15 @@ const DONE_UNREVIEWED = wasteRequest({
   id: 'wr-3',
   num: 130,
   displayNumber: 'М-130',
-  ticketBadge: { errors: 0, warnings: 0, pendingConfirmation: 0, failures: 0, unreviewedPaper: 1 },
+  ticketBadge: {
+    errors: 0,
+    warnings: 0,
+    pendingConfirmation: 0,
+    failures: 0,
+    unreviewedPaper: 1,
+    confirmable: 0,
+    confirmableFingerprint: '',
+  },
 });
 
 const COMPLETED = wasteRequest({
