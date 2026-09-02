@@ -1,22 +1,23 @@
 import { queryOptions } from '@tanstack/react-query';
-import { counterpartyTypeLabels, type CounterpartyDto } from '@technic/contracts';
+import { type CounterpartyDto } from '@technic/contracts';
 import { apiFetch, type ListResult } from '@shared/api';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { mechRequestsApi } from './mechRequestsApi';
 import { mechLessorKeys, mechRequestKeys } from './keys';
 
 /**
- * Арендодатели, у которых берут механизацию (Р6): контрагенты типа «Арендодатель механизации»
- * **и** «Арендодатель (ТС)».
+ * Арендодатели, у которых берут механизацию (Р6): контрагенты **только** типа «Арендодатель
+ * механизации».
  *
- * Два запроса, а не один: тип у контрагента один, фильтр справочника принимает тоже один, — а
- * компания, уже заведённая арендодателем ТС, сдаёт виброплиты под своим типом, и менять его ей
- * нельзя (сломались бы права её учёток и её техника). Спрашивать весь справочник вместо двух
- * отборов было бы хуже: в нём сотни подрядчиков и поставщиков, и выбор арендодателя превратился
- * бы в поиск по всему реестру.
+ * Здесь стоял перечень из двух типов — своего и «Арендодатель (ТС)»: рассуждение было в том, что
+ * одна компания сдаёт и то, и другое, а тип у контрагента один. Заказчик посмотрел живой портал и
+ * это отверг: в списке шли арендодатели техники, к механизации отношения не имеющие, и выбор
+ * превращался в поиск нужного среди чужих. Правило теперь простое — свой тип и никакой другой.
  *
- * Ключ при этом один: для потребителя это **один** перечень, и порознь эти половины никому не
- * нужны — ни форме договорённости, ни фильтру списка.
+ * Цена решения названа, чтобы не всплыла потом: организация, сдающая и ТС, и механизацию, должна
+ * быть заведена в справочнике **дважды** — тип у контрагента один, и другого способа портал не
+ * даёт. Понадобится обратное — это одна строка здесь и одна в проверке сервера, без миграции:
+ * ограничение базы (`mech_requests_lessor_type_check`) намеренно оставлено терпимым к обоим типам.
  *
  * Тип арендодателя ТС назван прямо в подписи, а не оставлен цветом или порядком: два одинаковых
  * названия подряд («ТрансСтрой» и «ТрансСтрой») означали бы для человека ошибку справочника, а не
@@ -29,38 +30,26 @@ import { mechLessorKeys, mechRequestKeys } from './keys';
 export const mechLessorOptionsQuery = () =>
   queryOptions({
     queryKey: mechLessorKeys.options(),
-    queryFn: async () => {
-      const ask = (type: 'mech_lessor' | 'vehicle_lessor') =>
-        apiFetch<ListResult<CounterpartyDto>>('/counterparties', {
-          query: {
-            page: 1,
-            pageSize: DICTIONARY_PAGE_SIZE,
-            type,
-            isActive: 'true',
-            sortBy: 'name',
-            sortOrder: 'asc',
-          },
-        });
-      const [mech, vehicle] = await Promise.all([ask('mech_lessor'), ask('vehicle_lessor')]);
-      return [...mech.items, ...vehicle.items];
-    },
+    queryFn: () =>
+      apiFetch<ListResult<CounterpartyDto>>('/counterparties', {
+        query: {
+          page: 1,
+          pageSize: DICTIONARY_PAGE_SIZE,
+          type: 'mech_lessor',
+          isActive: 'true',
+          sortBy: 'name',
+          sortOrder: 'asc',
+        },
+      }).then((r) => r.items),
     /*
-     * Порядок — по названию через оба типа сразу, а не «сначала свои, потом чужие»: человек ищет
-     * арендодателя по имени, а не по тому, чем тот ещё торгует. Плоским списком, а не группами:
-     * снятие отбора, указывающего на исчезнувшего контрагента (`usePruneMissingFilters`, ADR 0139),
-     * читает перечень листьями и группу не раскрывает — сгруппированный список тихо перестал бы
-     * чиститься.
+     * Подпись — одно название без пометки типа: тип в списке теперь один, и приписка «— арендодатель
+     * механизации» к каждой строке повторяла бы заголовок поля. Сервер отдаёт уже отсортированным
+     * по имени, но порядок закрепляется и здесь: он часть того, что видит человек, и зависеть от
+     * умолчания чужой ручки не должен.
      */
     select: (items) =>
       items
-        .map((c) => ({
-          value: c.id,
-          label:
-            c.type === 'mech_lessor'
-              ? c.name
-              : `${c.name} — ${counterpartyTypeLabels[c.type].toLowerCase()}`,
-          name: c.name,
-        }))
+        .map((c) => ({ value: c.id, label: c.name, name: c.name }))
         .sort((a, b) => a.name.localeCompare(b.name, 'ru')),
   });
 

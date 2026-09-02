@@ -435,12 +435,16 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
     expect(dead.statusCode, dead.body).toBe(400);
     expect(dead.json().message).toContain('неактивен');
 
-    // Арендодатель ТС — законный арендодатель механизации (Р6): компания, уже заведённая под своим
-    // типом, сдаёт и то, и другое, а менять ей тип значило бы сломать её технику в парке.
-    const both = ok(
-      await takeInWork(foreign.id, { lessorId: ctx.vehicleLessorId }),
-    ) as unknown as MechRequestDto;
-    expect(both.lessorType).toBe('vehicle_lessor');
+    // Арендодатель ТС механизации не сдаёт (решение заказчика 02.09.2026, разворот Р6). Здесь стоял
+    // обратный случай: тип принимался, потому что одна компания сдаёт и то, и другое. Заказчик
+    // увидел таких контрагентов в списке выбора и это отверг — и проверка ловит теперь именно
+    // отказ, потому что сервер обязан спрашивать ровно то же, что предлагает форма.
+    //
+    // Ограничение базы к обоим типам по-прежнему терпимо: за строгость отвечает сервис, и цена
+    // ошибки в нём — внятный отказ, а не ошибка целостности.
+    const vehicleOnly = await takeInWork(foreign.id, { lessorId: ctx.vehicleLessorId });
+    expect(vehicleOnly.statusCode, vehicleOnly.body).toBe(400);
+    expect(vehicleOnly.json().fields?.lessorId).toBe('Нужен арендодатель механизации');
   }, 60_000);
 
   // ── Выдача, снятие отметки и отмена (Р2) ──
@@ -691,7 +695,7 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
     ok(await takeInWork(request.id));
 
     const redeal = await changeStatus(request.id, 'confirmed', {
-      deal: { lessorId: ctx.vehicleLessorId, rate: 9999, rateUnit: 'shift' },
+      deal: { lessorId: ctx.mechLessorId, rate: 9999, rateUnit: 'shift' },
     });
     expect(redeal.statusCode, redeal.body).toBe(422);
     expect(redeal.json().fields?.deal).toBeTruthy();
