@@ -298,6 +298,10 @@ function renderPage(options: { viewport?: Viewport } = {}) {
     // молча осталась бы без данных. Проверяют её свои тесты (`garage-maintenance`).
     'GET /vehicle-maintenance/snapshot': ({ query }) =>
       json({ on: query.get('on') ?? '', items: [] }),
+    // Колонка «Запчасти, ₽» — свой пакет на страницу (план чеков, Р14): к срезу дня отношения не
+    // имеет, но видна всем, кому виден гараж. Проверяют её свои тесты.
+    'GET /auto-part-receipts/vehicles/snapshot': ({ query }) =>
+      json({ to: query.get('to') ?? '', items: [] }),
   });
   const rendered = renderWithUser(<GaragePage />, {
     user: admin,

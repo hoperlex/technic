@@ -182,6 +182,11 @@ function renderPage(options: {
     // Соседняя колонка «ТО» спрашивает своё состояние пакетом (Р16); спрашивают с неё свои тесты.
     'GET /vehicle-maintenance/snapshot': ({ query }) =>
       json({ on: query.get('on') ?? '', items: [] }),
+    // Колонка «Запчасти, ₽» спрашивает суммы тем же приёмом — пакетом на видимую страницу (план
+    // чеков на автозапчасти, Р14): к срезу дня она отношения не имеет, но видна всем, кому виден
+    // гараж, и без ответа молча осталась бы без данных. Проверяют её свои тесты.
+    'GET /auto-part-receipts/vehicles/snapshot': ({ query }) =>
+      json({ to: query.get('to') ?? '', items: [] }),
     [JOURNAL]: ({ params }) => json(journalOf(params.vehicleId!)),
   });
   renderWithUser(

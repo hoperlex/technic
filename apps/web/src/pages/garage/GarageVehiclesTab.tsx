@@ -12,6 +12,7 @@ import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { useAuth } from '../../auth/AuthContext';
 import { useJournalAddress } from './journalAddress';
 import { useMaintenanceColumn } from './maintenanceColumn';
+import { usePartsSpendColumn } from './partsSpendColumn';
 import { useBusyRouteActions } from './shared';
 import { vehicleCard, vehicleColumns, type VehicleRow } from './vehicleColumns';
 import { useVehicleFilters, type VehicleFilterParams } from './vehicleFilters';
@@ -96,6 +97,11 @@ export function GarageVehiclesTab({
   // в адресе — механику строка гаража единственный вход в журнал ТО.
   const maintenance = useMaintenanceColumn<VehicleRow>({ date, rows: items });
 
+  // Запчасти (Р14, Р15): суммы тем же приёмом — пакетом на видимую страницу и не позже дня среза,
+  // — а окно машины названо в адресе. Права на показания колонка не требует: «сколько вложено в
+  // эту машину» спрашивает всякий, кому виден гараж (Р5).
+  const partsSpend = usePartsSpendColumn<VehicleRow>({ date, rows: items });
+
   // Сводка считается по тем же фильтрам, что и таблица, — кроме состояния и показаний: обоими она
   // свелась бы к одной своей цифре. Площадка остаётся: она определяет перечень машин, а не одну
   // из его цифр, и несуженная сводка отвечала бы про весь парк под отобранной таблицей.
@@ -115,12 +121,13 @@ export function GarageVehiclesTab({
     { label: 'Рейсов без водителя', value: summary?.routesWithoutDriver ?? 0 },
   ];
 
-  const columns = vehicleColumns({ date, canReadReadings, journal, maintenance });
+  const columns = vehicleColumns({ date, canReadReadings, journal, maintenance, partsSpend });
   const card = vehicleCard({
     date,
     canReadReadings,
     journal,
     maintenance,
+    partsSpend,
     navigate,
     routeActions,
   });
@@ -173,6 +180,7 @@ export function GarageVehiclesTab({
       )}
 
       {maintenance.modal}
+      {partsSpend.modal}
     </PageTableLayout>
   );
 }

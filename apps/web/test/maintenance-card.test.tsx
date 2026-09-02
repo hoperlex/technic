@@ -319,6 +319,15 @@ describe('форма ТО открывается из двух точек одн
       'GET /vehicle-readings/vehicles/:vehicleId/card': () => json(CARD_DTO),
       [SUMMARY]: () => json(maintenanceSummary()),
       [HISTORY]: () => json({ items: [] }),
+      // Соседний блок карточки — автозапчасти (план чеков, Р16): своя ручка под `garage.read`.
+      'GET /auto-part-receipts/vehicles/:vehicleId': ({ params }) =>
+        json({
+          vehicleId: params.vehicleId,
+          vehicleLabel: '',
+          total: 0,
+          totalAllTime: 0,
+          rows: [],
+        }),
       'GET /garage/vehicles': () => json(GARAGE_VEHICLES),
       'GET /garage/vehicles/summary': () => json(GARAGE_SUMMARY),
       'GET /vehicle-classifications': () => json(emptyList()),

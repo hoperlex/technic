@@ -39,6 +39,9 @@ import { GaragePage } from '../src/pages/GaragePage';
 const STATS = 'GET /vehicle-readings/stats';
 const CARD = 'GET /vehicle-readings/vehicles/:vehicleId/card';
 const SNAPSHOT = 'GET /vehicle-maintenance/snapshot';
+/** Суммы запчастей: пакетом на страницу — колонке, по одной машине — блоку карточки (план чеков). */
+const PARTS_SNAPSHOT = 'GET /auto-part-receipts/vehicles/snapshot';
+const PARTS_SPEND = 'GET /auto-part-receipts/vehicles/:vehicleId';
 const MAINTENANCE = 'GET /vehicle-maintenance/vehicles/:vehicleId/summary';
 const MAINTENANCE_HISTORY = 'GET /vehicle-maintenance/vehicles/:vehicleId/history';
 
@@ -137,12 +140,23 @@ function renderPage(options: { user?: ReturnType<typeof authUser>; viewport?: Vi
     'GET /objects': () => json(emptyList()),
     // Соседняя колонка «ТО» спрашивает своё состояние пакетом (Р16): спрашивают с неё свои тесты.
     [SNAPSHOT]: ({ query }) => json({ on: query.get('on') ?? '', items: [] }),
+    // Колонка «Запчасти, ₽» — тем же приёмом и без права на показания (план чеков, Р14).
+    [PARTS_SNAPSHOT]: ({ query }) => json({ to: query.get('to') ?? '', items: [] }),
     [STATS]: ({ query }) =>
       json({ items: [STATS_ROW], from: query.get('from') ?? '', to: query.get('to') ?? '' }),
     [CARD]: ({ query }) => json(cardDto(query.get('from') ?? '', query.get('to') ?? '')),
     // Блок ТО внутри карточки — своя ручка под своим правом (Р14а); проверяют его свои тесты.
     [MAINTENANCE]: () => json(maintenanceSummary({ vehicleId: 'v1', vehicleLabel: LABEL })),
     [MAINTENANCE_HISTORY]: () => json({ items: [maintenanceRecord({ vehicleId: 'v1' })] }),
+    // Блок «Автозапчасти» внутри карточки — своя ручка под `garage.read` (план чеков, Р16).
+    [PARTS_SPEND]: ({ params }) =>
+      json({
+        vehicleId: params.vehicleId,
+        vehicleLabel: LABEL,
+        total: 0,
+        totalAllTime: 0,
+        rows: [],
+      }),
   });
   renderWithUser(
     <>

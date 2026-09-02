@@ -4,11 +4,15 @@ import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-reading';
 import { VehicleMaintenanceBlock } from '@features/vehicle-maintenance';
+import { VehiclePartsSpendBlock } from '@features/vehicle-parts-spend';
 import { ViewModal } from '@shared/ui';
+import { useAuth } from '../../auth/AuthContext';
 import { ReadingCardCounters } from './ReadingCardCounters';
 import { ReadingCardTotals } from './ReadingCardTotals';
 import { ReadingCardMonths } from './ReadingCardMonths';
 import { ReadingCardChart } from './ReadingCardChart';
+import { useVehicleSpendAddress } from './receiptsAddress';
+import { VehiclePartsSpendModal } from './VehiclePartsSpendModal';
 import { VehicleReadingsJournal } from './VehicleReadingsJournal';
 
 /**
@@ -54,6 +58,17 @@ export function VehicleReadingCard({ vehicleId, vehicleLabel, from, to, onClose 
    */
   const [journalOpen, setJournalOpen] = useState(false);
 
+  /**
+   * Окно «Запчасти машины» — третье окно этого экрана и единственное из трёх, живущее в адресе
+   * (`?spend=`, Р15): оно же открывается из колонки гаража и из карточки чека, и ключ у всех троих
+   * один. Право здесь про сам гараж (Р5), а не про показания: карточку открывает
+   * `vehicleReadings.read`, а «сколько вложено в машину» читают все, кому виден гараж.
+   *
+   * Проверять вкладку тут незачем: карточка и так рисуется только своей, активной (`ReadingsStatsTab`).
+   */
+  const { can } = useAuth();
+  const spend = useVehicleSpendAddress(can('garage.read'));
+
   const query = { from, to };
   const { data } = useQuery({
     queryKey: vehicleReadingKeys.card(vehicleId, query),
@@ -85,6 +100,14 @@ export function VehicleReadingCard({ vehicleId, vehicleLabel, from, to, onClose 
           {/* Обслуживание — свой ответ под своим правом (Р14а). Днём среза ему идёт конец периода
               карточки: срез марта не должен показывать майское ТО и майский одометр (Р16). */}
           <VehicleMaintenanceBlock vehicleId={vehicleId} vehicleLabel={label} on={to} />
+          {/* Автозапчасти — тем же порядком и под своим правом (Р16): период карточки задаёт
+              первую из двух цифр, вторая отвечает за всё время. */}
+          <VehiclePartsSpendBlock
+            vehicleId={vehicleId}
+            from={from}
+            to={to}
+            href={spend.href(vehicleId)}
+          />
           <div>
             <Button onClick={() => setJournalOpen(true)}>Показания по сменам</Button>
           </div>
@@ -108,6 +131,19 @@ export function VehicleReadingCard({ vehicleId, vehicleLabel, from, to, onClose 
           onClose={() => setJournalOpen(false)}
         />
       )}
+
+      {/* Окно перечня — внутри карточки, а не поверх страницы (ADR 0140): открыли его отсюда,
+          и закрытие обязано вернуть в карточку, а не оставить её позади погашенной. Период
+          карточки уходит в него начальным: цифра блока и перечень под ней отвечают про один
+          отрезок. */}
+      <VehiclePartsSpendModal
+        /* Только про свою машину: ключ в адресе общий у трёх экранов, и `?vehicle=A&spend=B` —
+           адрес несобранный, а не просьба показать B с подписью A. */
+        vehicle={spend.id === vehicleId ? { id: vehicleId, label: data?.vehicleLabel } : null}
+        from={from}
+        to={to}
+        onClose={spend.close}
+      />
     </ViewModal>
   );
 }

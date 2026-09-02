@@ -29,10 +29,14 @@ const MAINTENANCE_PARAM = 'maintenance';
 const RECORD_PARAM = 'record';
 
 export interface MaintenanceAddress extends AddressParam {
-  /** Акт, названный в адресе, — `null`, если адрес называет только машину. */
+  /**
+   * Акт, названный в адресе, — `null`, если адрес называет только машину.
+   *
+   * Читающая половина ключа жива: по ней сводка прокручивается к акту и раскрывает его. Пишущая
+   * (`hrefRecord`) ушла вместе с лентой журнала склада, которая была её единственным вызывающим, —
+   * билдер без вызывающих со временем начинает выглядеть обещанием ссылки, которой никто не даёт.
+   */
   recordId: string | null;
-  /** Ссылка на конкретный акт: её строит лента журнала склада. */
-  hrefRecord: (vehicleId: string, recordId: string) => string;
 }
 
 /**
@@ -59,12 +63,6 @@ export function useMaintenanceAddress(allowed: boolean): MaintenanceAddress {
       next.delete(MAINTENANCE_PARAM);
       next.delete(RECORD_PARAM);
       setParams(next, { replace: true });
-    },
-    hrefRecord: (vehicleId, recordId) => {
-      const next = new URLSearchParams(params);
-      next.set(MAINTENANCE_PARAM, vehicleId);
-      next.set(RECORD_PARAM, recordId);
-      return `?${next.toString()}`;
     },
   };
 }

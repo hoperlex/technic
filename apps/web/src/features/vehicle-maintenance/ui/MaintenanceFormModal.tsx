@@ -3,12 +3,10 @@ import { Alert, App, DatePicker, Form, Input, InputNumber } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { MaintenanceBody, VehicleMaintenanceDto } from '@technic/contracts';
-import { autoPartKeys } from '@entities/auto-part';
 import { vehicleMaintenanceApi, vehicleMaintenanceKeys } from '@entities/vehicle-maintenance';
 import { errorMessage } from '@shared/lib';
 import { FormModal } from '@shared/ui';
 import { filesApi } from '../../../api/resources';
-import { useAuth } from '../../../auth/AuthContext';
 import {
   VERSION_CONFLICT_MESSAGE,
   isStaleRecord,
@@ -16,14 +14,6 @@ import {
   maintenanceErrorText,
 } from '../model/conflict';
 import { DATE, SHOWN_DATE, kmText, previousOdometerKm } from '../model/maintenanceText';
-import {
-  partsBefore,
-  partsIssue,
-  rowsFromRecord,
-  rowsToPayload,
-  type PartRow,
-} from '../model/parts';
-import { MaintenancePartsBlock } from './MaintenancePartsBlock';
 import { MaintenanceScans, type ScanFile } from './MaintenanceScans';
 
 /**
@@ -44,15 +34,11 @@ import { MaintenanceScans, type ScanFile } from './MaintenanceScans';
  *   2. **Одометр меньше предыдущего — предупреждение, а не отказ** (Р11а). Счётчики меняют, и
  *      монотонности от акта никто не требует; портал только спрашивает, не тот ли это случай.
  *
- * С выпуском автозапчастей у формы появилось третье правило, и оно про склад (план
- * `docs/auto-parts-plan.md`, Р18):
- *
- *   3. **Правка всегда несёт полный набор строк — тот, что показан в блоке.** Отсутствие `parts` в
- *      PATCH означает «строки не менять», и это защита от старого клиента, а не режим работы
- *      нового: угадывать «трогали блок или нет» портал не станет — состояние «пользователь коснулся
- *      поля» разъезжается с действительностью первым. Неизменённый набор сервер видит нулевой
- *      разницей, склад не двигает и `autoParts.stock` не спрашивает (Р19), поэтому правка номера
- *      документа диспетчером проходит ровно как раньше.
+ * Строк расхода со склада в форме больше нет (план `docs/auto-part-receipts-plan.md`, Р2):
+ * купленное учитывается чеком, а не списанием с остатка, и акт снова отвечает ровно на один
+ * вопрос — когда обслуживали и при каком пробеге. Поле `parts` форма не шлёт вовсе; сервер до
+ * заморозки (выпуск 2) продолжает его принимать и отсутствие толкует как «строки не менять», так
+ * что правка реквизитов старого акта его строк не трогает.
  */
 
 interface Values {
@@ -95,19 +81,10 @@ export function MaintenanceFormModal({
   onClose: () => void;
 }) {
   const { message } = App.useApp();
-  const { can } = useAuth();
   const qc = useQueryClient();
   const [form] = Form.useForm<Values>();
   const [files, setFiles] = useState<ScanFile[]>([]);
   const [uploading, setUploading] = useState(false);
-  /** Строки расхода живут состоянием окна, а не полями формы: итог считается на каждое нажатие. */
-  const [parts, setParts] = useState<PartRow[]>([]);
-  /**
-   * Показывать ли отказ по строкам. До первого нажатия «Сохранить» его нет: только что заведённая
-   * строка ещё пуста по определению, и краснеть на неё значило бы ругаться на собственную кнопку.
-   */
-  const [issueShown, setIssueShown] = useState(false);
-  const canStock = can('autoParts.stock');
 
   const performedOn = Form.useWatch('performedOn', form);
   const odometerKm = Form.useWatch('odometerKm', form);
@@ -137,8 +114,6 @@ export function MaintenanceFormModal({
           },
     );
     setFiles(attachedScans(record));
-    setParts(rowsFromRecord(record));
-    setIssueShown(false);
   }, [open, record, defaultOn, prefillKm, form]);
 
   /**
@@ -174,13 +149,11 @@ export function MaintenanceFormModal({
   };
 
   /**
-   * Что гасится после записи акта (Р16). Не только машина: строки акта двигают **склад**, и
-   * вкладка автозапчастей с карточками позиций обязана узнать новый остаток — иначе она показывала
-   * бы прежнее число до перезагрузки страницы.
+   * Что гасится после записи акта (Р16). Только записи ТО: чужих предметов акт больше не двигает —
+   * покупки живут своими чеками и от акта не зависят.
    */
   function invalidate(): void {
     void qc.invalidateQueries({ queryKey: vehicleMaintenanceKeys.root });
-    void qc.invalidateQueries({ queryKey: autoPartKeys.root });
   }
 
   const save = useMutation({
@@ -192,20 +165,9 @@ export function MaintenanceFormModal({
         note: v.note?.trim() ?? '',
         // Список уходит целиком: сервер сам разберёт, что подшить, а что отвязать.
         fileIds: files.map((f) => f.id),
-        parts: rowsToPayload(parts),
       };
       if (!record) return vehicleMaintenanceApi.create(vehicleId, body);
-      return vehicleMaintenanceApi.update(record.id, {
-        ...body,
-        version: record.version,
-        /*
-         * Набор строк уходит и в правке — полным, а не разницей (Р5, Р18). Единственное, что может
-         * его отменить, — акт, пришедший вовсе без строк: так отвечал бы сервер до выката, и
-         * присланный ему пустой массив означал бы «снять все». Тогда поля в теле нет — «строки не
-         * менять», — и правка реквизитов проходит, не тронув склад.
-         */
-        parts: Array.isArray(record.parts) ? rowsToPayload(parts) : undefined,
-      });
+      return vehicleMaintenanceApi.update(record.id, { ...body, version: record.version });
     },
     onSuccess: () => {
       message.success(record ? 'Запись ТО изменена' : 'Запись ТО добавлена');
@@ -231,32 +193,9 @@ export function MaintenanceFormModal({
       if (isStaleRecord(e)) {
         invalidate();
         onClose();
-        return;
       }
-      /*
-       * Отказ по строке (нехватка остатка, погашенная позиция) окно НЕ закрывает: набранное в нём
-       * — это и есть то, что надо поправить, а закрытие стоило бы человеку всей формы. Склад при
-       * этом перечитывается: раз сервер назвал остаток, показанный устарел.
-       */
-      void qc.invalidateQueries({ queryKey: autoPartKeys.root });
     },
   });
-
-  /**
-   * Строки проверяются до отправки: пустая строка — это забытый выбор, а не «нисколько».
-   *
-   * Отказ показывается **в самом блоке**, а не тостом в углу (ADR 0094): строки живут состоянием
-   * окна, полем формы их не пометить, но место, где ошиблись, назвать обязательно — тост уходит в
-   * угол экрана и ничего не показывает.
-   */
-  const submit = (v: Values) => {
-    if (partsIssue(parts)) {
-      setIssueShown(true);
-      return;
-    }
-    setIssueShown(false);
-    save.mutate(v);
-  };
 
   return (
     <FormModal
@@ -267,7 +206,7 @@ export function MaintenanceFormModal({
       confirmLoading={save.isPending}
       width={560}
     >
-      <Form form={form} layout="vertical" onFinish={submit}>
+      <Form form={form} layout="vertical" onFinish={(v) => save.mutate(v)}>
         <Form.Item
           name="performedOn"
           label="Дата обслуживания"
@@ -311,17 +250,6 @@ export function MaintenanceFormModal({
         <Form.Item name="note" label="Примечание">
           <Input.TextArea rows={3} maxLength={1000} showCount />
         </Form.Item>
-
-        <MaintenancePartsBlock
-          vehicleId={vehicleId}
-          rows={parts}
-          onChange={setParts}
-          before={partsBefore(record)}
-          performedOn={performedOn ? performedOn.format(DATE) : null}
-          canStock={canStock}
-          recordParts={record?.parts ?? []}
-          issue={issueShown ? partsIssue(parts) : null}
-        />
 
         <MaintenanceScans
           files={files}

@@ -9303,3 +9303,211 @@ export type AutoPartRow = typeof autoParts.$inferSelect;
 export type AutoPartApplicabilityRow = typeof autoPartApplicability.$inferSelect;
 export type AutoPartStockEntryRow = typeof autoPartStockEntries.$inferSelect;
 export type VehicleMaintenancePartRow = typeof vehicleMaintenanceParts.$inferSelect;
+
+// ── Чеки на автозапчасти (план `docs/auto-part-receipts-plan.md`, миграция 0243) ──
+//
+// Склад выше отвечает на вопрос «сколько лежит», а спрашивают у портала другое — «сколько потратили
+// на эту машину». Чек отвечает на второй вопрос напрямую и без остатка: покупку заносят как бумагу,
+// строку относят к машине либо оставляют неотнесённой (Р8), а суммы складываются запросом.
+//
+// Склад этим выпуском ещё жив и работает по-прежнему (Р22): замораживает его выпуск 2, и схемы тот
+// не касается вовсе (Р26). Ни одна таблица отсюда на `auto_parts` не ссылается — справочник склада
+// и номенклатура чека это разные вещи по решению Р7: строки чека вводятся дословно, как напечатаны.
+
+/**
+ * Шапка чека — бумага, которую механик держал в руках: когда, у кого и по какому номеру купили.
+ *
+ * Колонки итога здесь НЕТ намеренно (Р11): сумма чека — это `Σ amount` его строк, и считает её
+ * сервер. Итог, переписанный с бумаги отдельным полем, разошёлся бы со строками в первый же день —
+ * опечаткой, недовведённой позицией, скидкой, напечатанной итогом, — и дальше в каждом отчёте
+ * пришлось бы заново решать, какая из двух сумм правда. Следствие названо честно: позиции, которых
+ * в портал не заносят (канцелярия, кофе), в итог портала не попадают, и он меньше бумажного.
+ *
+ * Номер обязателен (Р1а), а уникальности у него нет — и это решение, а не пропуск: номер выдаёт
+ * продавец, продавец записан свободным текстом, и два чека «0001» из разных магазинов законны.
+ * Уникальность по паре «продавец + номер» держалась бы на дословном совпадении названия магазина
+ * («ООО Автодеталь» и «Автодеталь ООО») и отбивала бы честный ввод, не поймав ни одного двойника.
+ */
+export const autoPartReceipts = pgTable(
+  'auto_part_receipts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * Дата документа — хозяйственная (Р13): по ней считаются все суммы, фильтры и периоды.
+     * Служебное «когда внесли в портал» живёт в `createdAt` и на расчёт не влияет никогда.
+     */
+    purchasedOn: date('purchased_on', { mode: 'string' }).notNull(),
+    /** Продавец дословно, как на бумаге (Р7): справочника магазинов в постановке нет вовсе. */
+    sellerName: text('seller_name').notNull().default(''),
+    /** Номер чека. Обязателен (Р1а): пустое поле означало бы, что бумагу в руках не держали. */
+    documentNumber: text('document_number').notNull(),
+    note: text('note').notNull().default(''),
+    /** Оптимистическая блокировка: форма отдаёт чек целиком — шапку, строки и сканы (Р12). */
+    version: integer('version').notNull().default(0),
+    /**
+     * Пометка на удаление (Р12). Удаляет чек только администратор; остальные просят — и просьба
+     * это состояние документа, а не сообщение, поэтому живёт в самой строке, а не в переписке.
+     * `null` — пометки нет; помеченный чек из ленты не исчезает и суммы считать не перестаёт.
+     */
+    deletionRequestedAt: timestamp('deletion_requested_at', { withTimezone: true }),
+    /** `restrict`, как остальные авторы записи: «кто попросил» обязано пережить увольнение. */
+    deletionRequestedBy: uuid('deletion_requested_by').references(() => users.id, {
+      onDelete: 'restrict',
+    }),
+    /**
+     * Причина. Пустая строка, а не `null`, у непомеченного: поле заполнено всегда, иначе второе
+     * представление «причины нет» пришлось бы отличать в каждом чтении.
+     */
+    deletionReason: text('deletion_reason').notNull().default(''),
+    /** `restrict` у обоих: «кто внёс» и «кто правил» обязаны пережить увольнение человека. */
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    /**
+     * Порядок ленты. Три колонки, а не одна дата: две покупки одного дня ключом `purchasedOn`
+     * неразличимы, и «последний чек» зависел бы от порядка чтения строк. `id` замыкает порядок —
+     * `createdAt` у двух записей одной транзакции совпадает, это время её начала.
+     */
+    feedIdx: index('auto_part_receipts_feed_idx').on(
+      t.purchasedOn.desc(),
+      t.createdAt.desc(),
+      t.id.desc(),
+    ),
+    /**
+     * Очередь администратора — отдельный вопрос к таблице («что просят удалить»), и отвечать на
+     * него полным сканом ленты незачем. Частичный: помеченных единицы, непомеченных вся история.
+     */
+    deletionIdx: index('auto_part_receipts_deletion_idx')
+      .on(t.deletionRequestedAt)
+      .where(sql`${t.deletionRequestedAt} IS NOT NULL`),
+    // Пустота меряется `btrim`, а не длиной: номер из одних пробелов встал бы в карточку строкой,
+    // неотличимой на экране от пустой, и прошёл бы `NOT NULL` насквозь.
+    documentNumberNotBlank: check(
+      'auto_part_receipts_document_number_check',
+      sql`btrim(${t.documentNumber}) <> ''`,
+    ),
+    versionNonNegative: check('auto_part_receipts_version_check', sql`${t.version} >= 0`),
+    // Три поля пометки описаны той же парой CHECK, что аннулирование акта ТО
+    // (`vehicle_maintenance_voided_pair_check` и `..._void_reason_check`): «помечен, но неизвестно
+    // кем» и «помечен молча, без причины» — не состояния документа, а дыры в записи о нём.
+    deletionPair: check(
+      'auto_part_receipts_deletion_pair_check',
+      sql`(${t.deletionRequestedAt} IS NULL) = (${t.deletionRequestedBy} IS NULL)`,
+    ),
+    deletionReasonPresence: check(
+      'auto_part_receipts_deletion_reason_check',
+      sql`(${t.deletionRequestedAt} IS NULL AND btrim(${t.deletionReason}) = '')
+          OR (${t.deletionRequestedAt} IS NOT NULL AND btrim(${t.deletionReason}) <> '')`,
+    ),
+  }),
+);
+
+/**
+ * Строка чека — позиция, как она напечатана на бумаге (Р7): справочника здесь нет ни одного, и
+ * ссылки на складскую позицию (`auto_parts`) тоже нет. Написание строк — забота человека, а не
+ * нормализации: «Фильтр масляный MANN W914/2» из чека и карточка склада живут независимо.
+ *
+ * Хранится сумма строки, а цена за единицу считается делением и показывается справочно (Р9).
+ * Обратный порядок — хранить цену и умножать — разошёлся бы с бумагой на копейку: в чеке напечатана
+ * сумма, а цена бывает уже округлённой («3 × 416,67 = 1 250,01»).
+ */
+export const autoPartReceiptLines = pgTable(
+  'auto_part_receipt_lines',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** `cascade`: строка — часть документа, а не его история, и без чека не значит ничего. */
+    receiptId: uuid('receipt_id')
+      .notNull()
+      .references(() => autoPartReceipts.id, { onDelete: 'cascade' }),
+    /**
+     * Порядок строк как в чеке: проставляет сервер по индексу массива формы. Хранится, а не
+     * выводится сортировкой по `createdAt`: правка отдаёт чек целиком, все строки пересоздаются
+     * одной транзакцией, и время у них общее — порядок бумаги восстановить было бы нечем.
+     */
+    seq: smallint('seq').notNull(),
+    /**
+     * Машина, на которую отнесли покупку. NULL — законное «не отнесено» (Р8): общий инструмент,
+     * расходники гаража, позиция, которую механик не стал разбирать. Карточка показывает такие
+     * строки отдельным итогом, и сумма по машинам законно меньше суммы чека.
+     *
+     * `restrict`, как у всех учётных ссылок на технику: строка чека — документ, и машину из-под
+     * неё не убирают выводом из парка.
+     */
+    vehicleId: uuid('vehicle_id').references(() => vehicles.id, { onDelete: 'restrict' }),
+    /** Наименование дословно с бумаги (Р7). */
+    name: text('name').notNull(),
+    /**
+     * Целое и строго положительное (Р10, решение заказчика от 02.09.2026) — то же правило, что у
+     * склада: канистры и литры здесь считают штуками и упаковками, а не долями. Цена решения
+     * названа честно: «масло, 4,75 л» механик заносит одной упаковкой, перенеся объём в имя.
+     */
+    quantity: integer('quantity').notNull(),
+    /** Единица текстом с умолчанием «шт»: она подписывает число, а не участвует в счёте. */
+    unit: text('unit').notNull().default('шт'),
+    /** Сумма строки (Р9). Ноль законен — акция, замена по гарантии, «в подарок». */
+    amount: numeric('amount', { precision: 14, scale: 2 }).notNull(),
+    note: text('note').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Порядок строк уникален внутри чека; он же читается слева направо как «строки этого чека» и
+    // потому отдельного индекса по `receiptId` не требует.
+    seqUnique: unique('auto_part_receipt_lines_seq_unique').on(t.receiptId, t.seq),
+    seqPositive: check('auto_part_receipt_lines_seq_check', sql`${t.seq} > 0`),
+    // Пустота имени меряется `btrim`, а не длиной: имя из одних пробелов встало бы в чек строкой,
+    // неотличимой на экране от пустой.
+    nameNotBlank: check(
+      'auto_part_receipt_lines_name_not_blank_check',
+      sql`btrim(${t.name}) <> ''`,
+    ),
+    // Ноль — это отсутствие строки, а не строка; отрицательное количество не значит ничего вовсе.
+    quantityPositive: check('auto_part_receipt_lines_quantity_check', sql`${t.quantity} > 0`),
+    unitNotBlank: check(
+      'auto_part_receipt_lines_unit_not_blank_check',
+      sql`btrim(${t.unit}) <> ''`,
+    ),
+    amountNonNegative: check('auto_part_receipt_lines_amount_check', sql`${t.amount} >= 0`),
+    // Под суммы по машине («Запчасти, ₽» во вкладке техники, окно «Запчасти машины») и под сам
+    // `restrict` при попытке вывести машину из парка. Частичный: неотнесённых строк много, и на
+    // вопрос «что купили этой машине» они не отвечают.
+    vehicleIdx: index('auto_part_receipt_lines_vehicle_idx')
+      .on(t.vehicleId)
+      .where(sql`${t.vehicleId} IS NOT NULL`),
+  }),
+);
+
+/**
+ * Скан чека. По образцу `vehicleMaintenanceFiles` — файл живёт максимум в одном месте, `cascade` с
+ * обеих сторон, — и связь обязана быть названа в `file_is_linked` той же миграцией: не названная
+ * там таблица означает, что уборка сочтёт подшитый скан сиротой, а `decideFileAccess` откроет его
+ * загрузившему бессрочно (это уже чинили миграцией 0225).
+ *
+ * Без скана чека не существует (Р6) — но требует этого маршрут, а не схема: пустой PK-парой такое
+ * правило не выражается, а триггер ради него завёл бы порядок вставки «сначала файл, потом строки».
+ */
+export const autoPartReceiptFiles = pgTable(
+  'auto_part_receipt_files',
+  {
+    receiptId: uuid('receipt_id')
+      .notNull()
+      .references(() => autoPartReceipts.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.receiptId, t.fileId] }),
+    fileUnique: uniqueIndex('auto_part_receipt_files_file_unique').on(t.fileId),
+  }),
+);
+
+export type AutoPartReceiptRow = typeof autoPartReceipts.$inferSelect;
+export type AutoPartReceiptLineRow = typeof autoPartReceiptLines.$inferSelect;
+export type AutoPartReceiptFileRow = typeof autoPartReceiptFiles.$inferSelect;

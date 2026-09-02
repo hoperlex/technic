@@ -1106,6 +1106,43 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { quantity: 10, expectedQuantity: 12, reason: 'продали два на сторону' },
   },
 
+  // ── Чеки на автозапчасти (план `docs/auto-part-receipts-plan.md`, §7) ──
+  // Тела валидные целиком, потому что схема стоит до стража: чек без строки, без скана и без
+  // номера отвергается схемой (Р6, Р11), и негативный случай показал бы 400 вместо 403. Дата —
+  // прошедшая: будущую схема не пропускает вовсе (Р13).
+  //
+  // Ни `total`, ни `seq` в телах нет, и это не экономия примера: полей таких не существует ни в
+  // одной схеме ввода (`.strict()`), а присланные они дали бы 400 — то есть перебор доказывал бы
+  // работу схемы вместо работы права.
+  'POST /api/v1/auto-part-receipts': {
+    payload: {
+      purchasedOn: PAST_DATE,
+      documentNumber: 'ЧЕК-118',
+      fileIds: [RECORD_ID],
+      lines: [{ name: 'Фильтр масляный', quantity: 2, amount: 1250.5 }],
+    },
+  },
+  'PATCH /api/v1/auto-part-receipts/:id': {
+    payload: {
+      purchasedOn: PAST_DATE,
+      documentNumber: 'ЧЕК-118',
+      fileIds: [RECORD_ID],
+      lines: [{ name: 'Фильтр масляный', quantity: 2, amount: 1250.5 }],
+      version: 0,
+    },
+  },
+  // Пометка: причина и версия — без любой из них схема отвергла бы тело до стража (Р12).
+  'POST /api/v1/auto-part-receipts/:id/deletion-mark': {
+    payload: { reason: 'задвоили с чеком № 214', version: 0 },
+  },
+  'DELETE /api/v1/auto-part-receipts/:id/deletion-mark': { query: 'version=0' },
+  'DELETE /api/v1/auto-part-receipts/:id': { query: 'version=0' },
+  // Снапшот сумм: `ids` обязателен — пустого перечня схема не ждёт, а без параметра вовсе отказ
+  // пришёл бы от неё, а не от права.
+  'GET /api/v1/auto-part-receipts/vehicles/snapshot': {
+    query: `to=${PAST_DATE}&ids=${RECORD_ID}`,
+  },
+
   // ── Техническое обслуживание ──
   'PATCH /api/v1/vehicle-maintenance/:id': {
     payload: { performedOn: PAST_DATE, odometerKm: 128_400, version: 0 },

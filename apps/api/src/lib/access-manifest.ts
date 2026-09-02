@@ -1604,6 +1604,44 @@ export const ACCESS_MANIFEST = {
   'DELETE /api/v1/auto-parts/:id': { kind: 'permissions', allOf: ['autoParts.manage'] },
   'POST /api/v1/auto-parts/:id/stock': { kind: 'permissions', allOf: ['autoParts.stock'] },
 
+  // ── Чеки на автозапчасти (план `docs/auto-part-receipts-plan.md`, Р4а, Р5, Р12; §7) ──
+  //
+  // Все десять строк — простой вид `permissions`: условных прав в модуле нет ни одного, и это
+  // упрощение против склада выше. Там право зависело от ЭФФЕКТА запроса (двинул ли акт остаток),
+  // здесь ведение чеков не делится на «реквизиты» и «движение» — чек не двигает ничего.
+  //
+  // Чтение — широкое `garage.read` (Р5): вопрос «сколько вложено в эту машину» задаёт всякий, кому
+  // виден гараж, персональных данных в чеке нет, а деньги портал этой же аудитории показывает
+  // давно. Отсюда и колонка «Запчасти, ₽» во вкладке «Техника» — без права на показания.
+  //
+  // Ведение — `autoParts.manage`: заведение, правка и обе ручки пометки. Удаление — своё право
+  // `autoParts.delete`, и «только администратор» выражено САМИМ ПРАВОМ, а не условием: право
+  // неназначаемо (`NON_GRANTABLE_PERMISSIONS`), в набор полномочия не собирается и достаётся
+  // администратору из `admin: [...PERMISSIONS]`. Оба права требуют `garage.read`
+  // (`PERMISSION_REQUIRES`): вести — и тем более уничтожать — то, чего не видишь, дыра.
+  'GET /api/v1/auto-part-receipts': { kind: 'permissions', allOf: ['garage.read'] },
+  'GET /api/v1/auto-part-receipts/summary': { kind: 'permissions', allOf: ['garage.read'] },
+  'GET /api/v1/auto-part-receipts/vehicles/snapshot': {
+    kind: 'permissions',
+    allOf: ['garage.read'],
+  },
+  'GET /api/v1/auto-part-receipts/vehicles/:id': { kind: 'permissions', allOf: ['garage.read'] },
+  'GET /api/v1/auto-part-receipts/:id': { kind: 'permissions', allOf: ['garage.read'] },
+  'POST /api/v1/auto-part-receipts': { kind: 'permissions', allOf: ['autoParts.manage'] },
+  'PATCH /api/v1/auto-part-receipts/:id': { kind: 'permissions', allOf: ['autoParts.manage'] },
+  // Пометка на удаление и её снятие — под правом ВЕДЕНИЯ, а не удаления (Р12): держатель
+  // `autoParts.manage` просит, администратор отвечает. Пометка ничего не прячет и ничего не
+  // пересчитывает, поэтому третьего права ей не нужно.
+  'POST /api/v1/auto-part-receipts/:id/deletion-mark': {
+    kind: 'permissions',
+    allOf: ['autoParts.manage'],
+  },
+  'DELETE /api/v1/auto-part-receipts/:id/deletion-mark': {
+    kind: 'permissions',
+    allOf: ['autoParts.manage'],
+  },
+  'DELETE /api/v1/auto-part-receipts/:id': { kind: 'permissions', allOf: ['autoParts.delete'] },
+
   // ── Техническое обслуживание ──
   //
   // Три ручки акта стоят под условием ПО ЭФФЕКТУ (план автозапчастей, Р19), и это единственное

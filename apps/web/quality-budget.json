@@ -5,13 +5,13 @@
     "components": 22
   },
   "rawKeyFiles": 45,
-  "antdDeprecated": 19,
+  "antdDeprecated": 17,
   "maxLines": {
     "src/api/resources.ts": 1313,
     "src/pages/WasteRequestsPage.tsx": 2004,
     "src/pages/WaybillsPage.tsx": 584,
     "src/pages/admin/UsersTab.tsx": 1362,
-    "src/pages/directories/CounterpartiesTab.tsx": 449,
+    "src/pages/directories/CounterpartiesTab.tsx": 440,
     "src/pages/directories/DriversTab.tsx": 948,
     "src/pages/directories/VehicleSpecsTab.tsx": 481,
     "src/pages/directories/VehicleTypeCardDrawer.tsx": 641,

@@ -119,6 +119,10 @@ function renderPage(options: {
     [SUMMARY]: ({ params }) =>
       json(summaryFor(options.rows.find((r) => r.id === params.vehicleId) ?? FIRST)),
     [HISTORY]: () => json({ items: [] }),
+    // Соседняя колонка «Запчасти, ₽» спрашивает суммы своим пакетом (план чеков, Р14): права на
+    // ТО она не требует и стоит даже у механика, поэтому ответ нужен во всех этих сценариях.
+    'GET /auto-part-receipts/vehicles/snapshot': ({ query }) =>
+      json({ to: query.get('to') ?? '', items: [] }),
   });
   renderWithUser(
     <>

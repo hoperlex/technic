@@ -12,6 +12,7 @@ import {
 import { config } from '../config';
 import { db } from '../db/client';
 import {
+  autoPartReceiptFiles,
   driverDailyReports,
   files,
   type FileRow,
@@ -115,6 +116,18 @@ export interface FileLinkage {
    */
   visibleMaintenance: boolean;
   /**
+   * Файл — скан чека на автозапчасти (миграция 0243, план `docs/auto-part-receipts-plan.md`, Р20).
+   * Условие одно — связь, по той же причине, что у сканов акта ТО и путевых листов: своей оси
+   * области у службы механика в портале нет (`ACCESS_PROFILES`), парк один, и чеки не сужаются ни
+   * объектом, ни контрагентом. Обратная сторона названа прямо: держатель `garage.read` открывает
+   * скан любого чека — ровно та же граница, что у журнала ТО.
+   *
+   * Без этой ветки скан чека не открылся бы НИКОМУ, включая подшившего его механика: собственный
+   * `uploadedBy` работает только у файла, не привязанного никуда, а привязанный сразу становится
+   * «чужим».
+   */
+  visibleReceipt: boolean;
+  /**
    * Файл привязан к показанию — и у принципала есть право читать показания парка (Р34). Своей
    * области у показаний нет по той же причине, что у журнала листов: список показаний не сужается
    * ни объектом, ни контрагентом, и придумывать фотографии область, которой нет у самих чисел,
@@ -165,6 +178,7 @@ export function decideFileAccess(
   if (linkage.visibleWaybill && can(p, 'waybills.read')) return true;
   if (linkage.visibleMech && can(p, 'mechRequests.read')) return true;
   if (linkage.visibleMaintenance && can(p, 'vehicleMaintenance.read')) return true;
+  if (linkage.visibleReceipt && can(p, 'garage.read')) return true;
   if (linkage.visibleReading && can(p, 'vehicleReadings.read')) return true;
   if (linkage.ownDriverReading && can(p, 'driverCabinet.read')) return true;
   return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
@@ -348,7 +362,7 @@ async function canAccessFile(
     visibleMech = mech.length > 0;
   }
 
-  // Дальше — вложения парка: скан акта ТО и фотографии показаний. Одна проверка «связь уже
+  // Дальше — вложения парка: скан акта ТО, скан чека на автозапчасти и фотографии показаний. Одна проверка «связь уже
   // нашлась» вместо растущей цепочки отрицаний: каждый следующий модуль иначе добавлял бы по
   // слагаемому в четыре условия.
   const foundInRequests = foundBeforeMech || visibleMech;
@@ -367,7 +381,32 @@ async function canAccessFile(
     visibleMaintenance = maintenance.length > 0;
   }
 
-  const foundBefore = foundInRequests || visibleMaintenance;
+  let visibleReceipt = false;
+  if (!foundInRequests && !visibleMaintenance && can(p, 'garage.read')) {
+    // Скан чека на автозапчасти (миграция 0243, план `docs/auto-part-receipts-plan.md`, Р20).
+    // Право — `garage.read`, ровно то же, под которым открывается сам чек (Р5): третьего права у
+    // модуля нет. Условие одно — связь, как у акта ТО выше: своей оси области у службы механика не
+    // заведено (`ACCESS_PROFILES`), парк один. Обратная сторона названа прямо: держатель
+    // `garage.read` открывает скан любого чека — той же границей живёт журнал ТО.
+    //
+    // Ветка обязана быть здесь целиком: в `file_is_linked` чеки уже перечислены десятой ветвью
+    // (0243), то есть подшитый скан перестал быть «ничьим» — и без этой ветки его не открыл бы
+    // НИКТО, включая механика, который его же и загрузил (`uploadedBy` работает только у файла, не
+    // привязанного никуда). Дополнять при этом больше нечего: перечень таблиц привязки живёт в
+    // одном месте — в функции БД, — а `linkedAnywhere` ниже спрашивает её через `isFileLinked`.
+    //
+    // Своего `deleted_at` у чека нет — удаление физическое, — поэтому join с шапкой ничего бы не
+    // отфильтровал. Пометка на удаление (Р12) скан тоже не прячет: помеченный чек из ленты не
+    // исчезает и до решения администратора остаётся обычным документом.
+    const receipt = await db
+      .select({ id: autoPartReceiptFiles.receiptId })
+      .from(autoPartReceiptFiles)
+      .where(eq(autoPartReceiptFiles.fileId, fileId))
+      .limit(1);
+    visibleReceipt = receipt.length > 0;
+  }
+
+  const foundBefore = foundInRequests || visibleMaintenance || visibleReceipt;
 
   let visibleReading = false;
   if (!foundBefore && can(p, 'vehicleReadings.read')) {
@@ -412,6 +451,7 @@ async function canAccessFile(
     visibleWaybill,
     visibleMech,
     visibleMaintenance,
+    visibleReceipt,
     visibleReading,
     ownDriverReading,
     linkedAnywhere,

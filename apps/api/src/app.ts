@@ -51,6 +51,7 @@ import driverRoutes from './routes/driver';
 import vehicleReadingsRoutes from './routes/vehicle-readings';
 import vehicleReadingsStatsRoutes from './routes/vehicle-readings-stats';
 import autoPartsRoutes from './routes/auto-parts';
+import autoPartReceiptsRoutes from './routes/auto-part-receipts';
 import vehicleMaintenanceRoutes from './routes/vehicle-maintenance';
 import wasteRequestsRoutes from './routes/waste-requests';
 import wasteTicketsRoutes from './routes/waste-tickets';
@@ -233,6 +234,12 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // (`autoParts.manage` и `autoParts.stock`). Перед обслуживанием, потому что акт ссылается на
   // склад, а склад на акт — нет: тот же порядок, что у расходников перед оргтехникой.
   await app.register(autoPartsRoutes, { prefix: '/api/v1/auto-parts' });
+  // Чеки на автозапчасти (план `docs/auto-part-receipts-plan.md`, §7) — свой префикс, а не ветка
+  // склада, который они заменяют: предмет у чека другой (бумага с суммой, а не позиция с
+  // остатком), и живут два раздела рядом ровно на время перехода — выпуск 2 снимает склад целиком
+  // вместе с его префиксом. Ветка внутри `/auto-parts` этот выкат превратила бы в правку чужого
+  // файла и перенос десяти строк манифеста.
+  await app.register(autoPartReceiptsRoutes, { prefix: '/api/v1/auto-part-receipts' });
   // Техобслуживание по пробегу (план «Показания техники», Р14) — свой префикс, а не ветка
   // показаний: права у него свои (`vehicleMaintenance.*`), и держит их порознь ровно то, что
   // служба главного механика ведёт ТО, не открывая приёмку, журналы и фотографии показаний.

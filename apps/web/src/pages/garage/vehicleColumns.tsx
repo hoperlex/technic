@@ -13,6 +13,7 @@ import {
 import { EntityLink, textColumn, type CardConfig } from '@shared/ui';
 import type { AddressParam } from '@shared/lib';
 import type { useMaintenanceColumn } from './maintenanceColumn';
+import type { usePartsSpendColumn } from './partsSpendColumn';
 import { vehicleCardHref } from './readingsAddress';
 import { odometerCardLine, odometerColumn } from './odometerColumn';
 import { BusyCell, busyLine, type useBusyRouteActions } from './shared';
@@ -46,6 +47,8 @@ type VehicleColumnsDeps = {
   journal: AddressParam;
   /** Колонка ТО, строка и пункты карточки — со своим правом и своим окном. */
   maintenance: ReturnType<typeof useMaintenanceColumn<VehicleRow>>;
+  /** Колонка «Запчасти, ₽» и вход в окно машины — под правом на сам гараж (Р5). */
+  partsSpend: ReturnType<typeof usePartsSpendColumn<VehicleRow>>;
 };
 
 /** Состояние дня плюс причина недоступности: «в ремонте» объясняет тег, а не повторяет его. */
@@ -75,6 +78,7 @@ export function vehicleColumns({
   canReadReadings,
   journal,
   maintenance,
+  partsSpend,
 }: VehicleColumnsDeps): TableColumnType<VehicleRow>[] {
   // Ключ колонки — он же поле сортировки на сервере (GARAGE_VEHICLE_SORT_FIELDS).
   return [
@@ -157,6 +161,13 @@ export function vehicleColumns({
     // Колонка ТО — под своим правом (Р14) и своим ответом: у механика она стоит там, где у
     // диспетчера одометр, и наоборот.
     ...maintenance.columns,
+    /*
+     * Запчасти — рядом с ТО и по той же причине, что и оно: обе колонки про содержание машины, а
+     * не про её день. Права на показания эта не требует вовсе (Р5): «сколько вложено в машину»
+     * спрашивает всякий, кому виден гараж, и у механика она стоит ровно такая же, как у
+     * диспетчера.
+     */
+    ...partsSpend.columns,
     {
       key: 'drivers',
       title: 'Водители',
@@ -181,6 +192,7 @@ export function vehicleCard({
   canReadReadings,
   journal,
   maintenance,
+  partsSpend,
   navigate,
   routeActions,
 }: VehicleColumnsDeps & {
@@ -211,6 +223,8 @@ export function vehicleCard({
       (r) => odometerCardLine(r),
       // ТО — тем же порядком: без права на обслуживание состояния нет, и строка молчит сама.
       maintenance.cardLine,
+      // Запчасти — так же: покупок за машиной не числится, и строка молчит, а не показывает ноль.
+      partsSpend.cardLine,
     ],
     /*
      * Действия карточки. Рейсы дня стоят первыми: карточка отвечает про **этот день**, и «что там
@@ -232,6 +246,7 @@ export function vehicleCard({
           ]
         : []),
       ...maintenance.cardActions(r),
+      ...partsSpend.cardActions(r),
     ],
     // На телефоне карточка открывает тот же журнал — и тем же путём, через адрес: ссылку,
     // присланную с телефона, коллега открывает на десктопе и видит ровно тот же день.

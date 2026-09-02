@@ -1,7 +1,7 @@
 import { Alert, Button, Space, Table, Tag, Tooltip, Typography, type TableColumnsType } from 'antd';
 import { DeleteOutlined, EditOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import type { VehicleMaintenanceDto, VehicleMaintenancePartDto } from '@technic/contracts';
+import type { VehicleMaintenanceDto } from '@technic/contracts';
 import { FilesCell } from '../../../components/FileLinks';
 import { SHOWN_DATE, kmText } from '../model/maintenanceText';
 
@@ -16,28 +16,21 @@ import { SHOWN_DATE, kmText } from '../model/maintenanceText';
  * Страниц нет по той же причине, по какой их нет в ответе: записей ТО у машины десятки за всю
  * жизнь.
  *
- * С выпуском автозапчастей строка научилась раскрываться (план `docs/auto-parts-plan.md`, Р15):
- * акт отвечает сразу на два вопроса — что поставили на машину и почему изменился склад, — и второй
- * ответ живёт в строках расхода. В колонках их нет и быть не может: позиций у акта бывает десяток,
- * и развёрнутыми они превратили бы журнал в простыню, а свёрнутыми в одну ячейку — в загадку.
- * Раскрытие даётся только тем актам, которым есть что сказать: пустой раскрыватель обещает
- * содержимое, которого нет.
+ * Раскрытие строки осталось от выпуска автозапчастей, но говорит теперь об одном: **почему акт
+ * аннулирован** (Р6). Строк расхода портал не читает вовсе (план `docs/auto-part-receipts-plan.md`,
+ * Р2) — купленное живёт чеками во вкладке «Автозапчасти», а не строками акта. Раскрытие даётся
+ * только тем актам, которым есть что сказать: пустой раскрыватель обещает содержимое, которого нет.
  *
- * **Аннулированный акт остаётся в журнале** (Р6) — на него ссылается лента склада, и спрятать
- * документ нельзя. Он помечен, объяснён причиной и автором, не правится и в расчёт не входит.
+ * **Аннулированный акт остаётся в журнале** (Р6) — на него ссылаются, и спрятать документ нельзя.
+ * Он помечен, объяснён причиной и автором, не правится и в расчёт не входит.
  */
 
-/** Наименование позиции в строке расхода: код дописывается, когда он есть (Р12). */
-function partTitle(part: VehicleMaintenancePartDto): string {
-  return part.code ? `${part.name} · ${part.code}` : part.name;
-}
-
 /**
- * Что поставили на машину этим актом, и аннулирование, если акт закрыт.
+ * Объяснение аннулирования: кто закрыл акт, когда и почему.
  *
  * Содержимое липнет к левому краю и не шире экрана: журнал прокручивается вбок (`scroll.x`), а
- * раскрытая строка живёт в ячейке во всю ширину таблицы — без этого на телефоне список позиций
- * уезжал бы вправо, и раскрытие пришлось бы «догонять» горизонтальной прокруткой.
+ * раскрытая строка живёт в ячейке во всю ширину таблицы — без этого на телефоне объяснение уезжало
+ * бы вправо, и раскрытие пришлось бы «догонять» горизонтальной прокруткой.
  */
 function MaintenanceRowDetails({ record }: { record: VehicleMaintenanceDto }) {
   return (
@@ -58,26 +51,8 @@ function MaintenanceRowDetails({ record }: { record: VehicleMaintenanceDto }) {
           title={`Акт аннулирован — ${record.voidedByName || 'без подписи'}, ${dayjs(
             record.voidedAt,
           ).format(`${SHOWN_DATE} HH:mm`)}`}
-          description={`Причина: ${record.voidReason}. Позиции возвращены на склад, в расчёт «пробег с ТО» акт не входит.`}
+          description={`Причина: ${record.voidReason}. В расчёт «пробег с ТО» акт не входит.`}
         />
-      )}
-      {record.parts.length > 0 && (
-        <div>
-          <Typography.Text strong>Установленные автозапчасти</Typography.Text>
-          {record.parts.map((part) => (
-            <div key={part.id} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4 }}>
-              {/* Наименование тянется, количество и примечание не жмутся: на телефоне строка
-                  переносится сама, а не уезжает в горизонтальную прокрутку. */}
-              <span style={{ flex: '1 1 240px', minWidth: 0 }}>{partTitle(part)}</span>
-              <Typography.Text strong style={{ flex: '0 0 auto' }}>
-                {part.quantity} {part.unit}
-              </Typography.Text>
-              <Typography.Text type="secondary" style={{ flex: '1 1 160px', minWidth: 0 }}>
-                {part.note}
-              </Typography.Text>
-            </div>
-          ))}
-        </div>
       )}
     </Space>
   );
@@ -200,9 +175,11 @@ export function MaintenanceHistoryTable({
                   />
                 </Tooltip>
                 {r.voidedAt ? null : r.hasPartMovements ? (
-                  /* Правило известно порталу заранее (Р6): акт с движениями склада неудаляем, и
-                     узнавать это из 409 после нажатия «Удалить» человек не должен. */
-                  <Tooltip title="По акту прошёл расход — такой акт аннулируют с причиной">
+                  /* Правило известно порталу заранее (Р6) и держится на признаке DTO
+                     `hasPartMovements`, а не на строках акта: строки снимали правкой, а движения по
+                     ним оставались навсегда. Узнавать это из 409 после нажатия «Удалить» человек не
+                     должен. */
+                  <Tooltip title="По акту прошли движения — такой акт аннулируют с причиной">
                     <Button
                       size="small"
                       danger
@@ -238,9 +215,9 @@ export function MaintenanceHistoryTable({
       locale={{ emptyText: 'Записей о ТО ещё нет' }}
       rowClassName={(r) => (r.id === highlightId ? 'ant-table-row-selected' : '')}
       expandable={{
-        // Раскрывается только то, у чего есть содержимое: строки расхода либо объяснение
-        // аннулирования. Пустой раскрыватель обещал бы ответ, которого у акта нет.
-        rowExpandable: (r) => r.parts.length > 0 || r.voidedAt !== null,
+        // Раскрывается только то, у чего есть содержимое: объяснение аннулирования. Пустой
+        // раскрыватель обещал бы ответ, которого у акта нет.
+        rowExpandable: (r) => r.voidedAt !== null,
         expandedRowKeys: [...expandedIds],
         // Ключи строк у таблицы — `Key`, а у актов они всегда uuid: приводим на границе, чтобы
         // тип «раскрытых» наверху остался честным списком идентификаторов.

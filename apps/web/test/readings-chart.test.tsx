@@ -144,6 +144,16 @@ function renderCard(over: RouteMap = {}): void {
     // выдано, и без мока его запрос ушёл бы в пустоту. Диаграммы обслуживание не касается.
     [MAINTENANCE]: () => json(maintenanceSummary()),
     [MAINTENANCE_HISTORY]: () => json({ items: [] }),
+    // Блок «Автозапчасти» стоит в той же карточке и спрашивает своё под `garage.read` (план чеков
+    // на автозапчасти, Р16): без ответа его запрос ушёл бы в пустоту. Проверяют блок свои тесты.
+    'GET /auto-part-receipts/vehicles/:vehicleId': ({ params }) =>
+      json({
+        vehicleId: params.vehicleId,
+        vehicleLabel: '',
+        total: 0,
+        totalAllTime: 0,
+        rows: [],
+      }),
     'GET /garage/vehicles': () => json(VEHICLES),
     'GET /garage/vehicles/summary': () => json(VEHICLES_SUMMARY),
     'GET /vehicle-classifications': () => json(emptyList()),

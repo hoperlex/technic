@@ -246,6 +246,9 @@ const GARAGE_ROUTES: RouteMap = {
   'GET /objects': () => json(emptyList()),
   'GET /vehicle-maintenance/snapshot': ({ query }) =>
     json({ on: query.get('on') ?? '', items: [] }),
+  // Колонка «Запчасти, ₽» — свой пакетный запрос и никаких особых прав (план чеков, Р14, Р5).
+  'GET /auto-part-receipts/vehicles/snapshot': ({ query }) =>
+    json({ to: query.get('to') ?? '', items: [] }),
 };
 
 describe('телефон: рейс из гаража', () => {

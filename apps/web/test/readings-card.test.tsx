@@ -145,6 +145,16 @@ function renderGarage(route: string, over: RouteMap = {}): HttpMock {
     // спрашивает её вместе со статистикой. Проверки самого блока — в maintenance-card.test.tsx.
     [MAINTENANCE]: () => json(maintenanceSummary()),
     [MAINTENANCE_HISTORY]: () => json({ items: [maintenanceRecord()] }),
+    // Блок «Автозапчасти» стоит в той же карточке и спрашивает своё под `garage.read` (план чеков
+    // на автозапчасти, Р16): без ответа его запрос ушёл бы в пустоту. Проверяют блок свои тесты.
+    'GET /auto-part-receipts/vehicles/:vehicleId': ({ params }) =>
+      json({
+        vehicleId: params.vehicleId,
+        vehicleLabel: '',
+        total: 0,
+        totalAllTime: 0,
+        rows: [],
+      }),
     // Соседняя вкладка: она монтируется при переключении, и без её ручек запрос ушёл бы в пустоту.
     'GET /garage/vehicles': () => json(VEHICLES),
     'GET /garage/vehicles/summary': () => json(VEHICLES_SUMMARY),
