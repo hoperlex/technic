@@ -78,14 +78,25 @@ describe('счётчик «ждут меня» спрашивают только
 
   it('сервисная компания видит бейдж — сторону задаёт тип контрагента, а не роль', async () => {
     const http = renderMenu(EXECUTOR, 5);
-    expect(await screen.findByText('5')).toBeDefined();
-    expect(http.countOf(WAITING_COUNT)).toBe(1);
+    /*
+     * ⚠️ Кружка на экране сейчас нет, и не потому, что счётчик её не касается: раздел
+     * «Орг.техника» скрыт до запуска временной заплаткой (`src/auth/temporarySectionLock.ts`), а
+     * бейдж живёт на пункте меню. Предмет проверки от этого не меняется — файл про условие
+     * запроса, а не про вёрстку кружка (см. заголовок), — и сторону по-прежнему задаёт тип
+     * контрагента: запрос уходит, хотя роль у учётки та же, что у оператора вывоза.
+     *
+     * На запуске заплатку снимают, и строка возвращается к прежнему виду:
+     *   expect(await screen.findByText('5')).toBeDefined();
+     */
+    await waitFor(() => expect(http.countOf(WAITING_COUNT)).toBe(1));
   });
 
   it('штаб без надстройки счётчик не запрашивает вовсе', async () => {
     const http = renderMenu(CUSTOMER);
-    // Раздел ему открыт — проверяется именно тишина в сети, а не спрятанный пункт меню.
-    expect(screen.getByText('Орг.техника')).toBeDefined();
+    // ⚠️ Раздел ему открыт по правам, но до запуска скрыт заплаткой
+    // (`src/auth/temporarySectionLock.ts`) — проверяется тишина в сети, и её заплатка не трогает:
+    // счётчик спрашивает каркас по субъекту, а не пункт меню. На запуске сюда возвращается
+    // `expect(screen.getByText('Орг.техника')).toBeDefined();`.
     await waitFor(() => expect(http.countOf('GET /releases')).toBe(1));
     expect(http.countOf(WAITING_COUNT)).toBe(0);
   });

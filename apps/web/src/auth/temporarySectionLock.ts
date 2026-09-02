@@ -1,0 +1,93 @@
+import {
+  PORTAL_SECTIONS,
+  type AuthUser,
+  type Permission,
+  type PortalSectionId,
+  type RoleAddon,
+  type SectionAccess,
+} from '@technic/contracts';
+
+/**
+ * ⚠️ ВРЕМЕННАЯ ЗАПЛАТКА — снимается на запуске.
+ *
+ * Модуль «Орг.техника» ещё дорабатывается, и до запуска раздел не должен показываться никому,
+ * кроме тех, кто его и делает: администратора и держателей надстроек «Оргтехника: ведение» и
+ * «Оргтехника: ИТ-служба». Сегодня раздел открывают `serviceRequests.read` и `officeEquipment.read`
+ * (`portal-sections.ts`), а второе право есть почти у каждой роли портала — то есть видят его все.
+ *
+ * Почему заплатка стоит **здесь, а не в реестре разделов**. Реестр лежит в контрактах и отвечает на
+ * «кому раздел положен по правам» — это модель доступа, и временное «показываем не всем, пока
+ * доделываем» ею не является: правь мы реестр, пришлось бы вместе с ним править матрицу прав, её
+ * тесты и серверную сторону, а на запуске всё это возвращать обратно. Здесь же снятие заплатки —
+ * это удаление одного файла и двух вызовов.
+ *
+ * ЧТО УДАЛИТЬ НА ЗАПУСКЕ:
+ *   1. этот файл;
+ *   2. вызов `withTemporarySectionLock` в `auth/ProtectedRoute.tsx` (`useSectionAccess`);
+ *   3. вызов `withTemporarySectionLock` в `components/AppLayout.tsx` (сборка пунктов меню);
+ *   4. учётку с надстройкой в тестах, помеченных ссылкой на этот файл.
+ *
+ * Заплатка **интерфейсная**: она убирает раздел из меню, гейта маршрута и стартовой страницы, но
+ * прав не отнимает — API по-прежнему отвечает всем, у кого право есть. Это осознанно: закрывается
+ * незаконченный экран, а не дыра в доступе.
+ */
+
+/** Разделы, спрятанные до запуска. Пустой список — заплатка ничего не делает. */
+const LOCKED_SECTIONS: readonly PortalSectionId[] = ['office-equipment'];
+
+/**
+ * Кому раздел остаётся видимым сверх роли администратора — те самые «специальные права»: обе
+ * надстройки оргтехники (`role-addons.ts`). Свободно собранный набор полномочий (ADR 0106) сюда не
+ * входит намеренно: спрашивать его пришлось бы по правам, а именно права здесь и есть у всех.
+ */
+const LOCK_KEEPER_ADDONS: readonly RoleAddon[] = [
+  'office_equipment_operator',
+  'office_equipment_it_approver',
+];
+
+/**
+ * Права, которыми открываются закрытые разделы — и только они.
+ *
+ * Заплатка гасит право, а не строку реестра, потому что вопросов у портала про раздел три (меню,
+ * гейт маршрута, стартовая страница), а спрашивают они одно — `isSectionOpen`, и внутрь ему видно
+ * только `canUse`. Погасив право, мы отвечаем на все три сразу и не можем разойтись: спрятанный
+ * раздел не станет ни пунктом меню, ни стартовой страницей, ни открытым по прямой ссылке.
+ *
+ * Право, которым открывается ещё и незакрытый раздел, из набора исключается: гасить его значило бы
+ * спрятать заодно чужой раздел. Сегодня таких нет — `serviceRequests.read` и `officeEquipment.read`
+ * не открывают ничего, кроме «Орг.техники», — но проверка стоит здесь, а не в комментарии, чтобы
+ * следующая строка в `LOCKED_SECTIONS` не унесла с собой соседа молча.
+ */
+const LOCKED_PERMISSIONS: ReadonlySet<Permission> = new Set(
+  PORTAL_SECTIONS.filter((section) => LOCKED_SECTIONS.includes(section.id))
+    .flatMap((section) => section.permissions)
+    .filter(
+      (permission) =>
+        !PORTAL_SECTIONS.some(
+          (other) => !LOCKED_SECTIONS.includes(other.id) && other.permissions.includes(permission),
+        ),
+    ),
+);
+
+/** Видит ли учётка спрятанные разделы: администратор и держатели надстроек оргтехники. */
+export function keepsLockedSections(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  return (user.addons ?? []).some((addon) => LOCK_KEEPER_ADDONS.includes(addon));
+}
+
+/**
+ * Доступ к разделам, из которого вычтены спрятанные, — обёртка над тем, что портал спрашивает у
+ * реестра. Всё остальное портала не касается: действия внутри страниц по-прежнему спрашивают `can`,
+ * и заплатка их не трогает.
+ */
+export function withTemporarySectionLock(
+  user: AuthUser | null | undefined,
+  access: SectionAccess,
+): SectionAccess {
+  if (LOCKED_PERMISSIONS.size === 0 || keepsLockedSections(user)) return access;
+  return {
+    ...access,
+    canUse: (permission) => !LOCKED_PERMISSIONS.has(permission) && access.canUse(permission),
+  };
+}
