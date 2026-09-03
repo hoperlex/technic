@@ -370,6 +370,9 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   },
   'PATCH /api/v1/warehouses/:id': { payload: { address: 'г. Мытищи, ул. Ленина, д. 2' } },
   'POST /api/v1/container-types': { payload: { code: 'CT-1', name: 'Бункер 8 м³' } },
+  'POST /api/v1/mech-models': {
+    payload: { code: 'vibroplita-proba', name: 'Виброплита реверсивная Wacker DPU 3070Н' },
+  },
   'POST /api/v1/waste-tariffs': {
     payload: {
       operatorCounterpartyId: COUNTERPARTY_ID,

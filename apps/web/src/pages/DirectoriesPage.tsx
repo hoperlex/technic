@@ -5,6 +5,7 @@ import { ObjectsTab } from './directories/ObjectsTab';
 import { DepartmentsTab } from './directories/DepartmentsTab';
 import { CounterpartiesTab } from './directories/CounterpartiesTab';
 import { WarehousesTab } from './directories/WarehousesTab';
+import { MechModelsTab } from './directories/MechModelsTab';
 import { ContainerTypesTab } from './directories/ContainerTypesTab';
 import { WasteTariffsTab } from './directories/WasteTariffsTab';
 import { VehicleTypesTab } from './directories/VehicleTypesTab';
@@ -75,6 +76,10 @@ export function DirectoriesPage() {
           // Склады идут сразу за контрагентами: склад существует только у поставщика (ADR 0051),
           // и заводят их одного за другим — сначала контрагента, потом его адреса.
           { key: 'warehouses', label: 'Склады', children: <WarehousesTab /> },
+          // Модели малой механизации (план `docs/mechanization-models-directory-plan.md`) —
+          // такой же простой справочник-таблица, как типы контейнеров, и стоит он перед ними, а
+          // не между ними и прайсом вывоза: две вкладки вывоза мусора читают одну за другой.
+          { key: 'mech-models', label: 'Модели механизации', children: <MechModelsTab /> },
           { key: 'types', label: 'Типы контейнеров', children: <ContainerTypesTab /> },
           // Отдельной вкладки «Типы мусора» нет (ADR 0017): тип заводится и правится здесь же,
           // в прайсе, — сам по себе, без цены, он ничего не значит.

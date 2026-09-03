@@ -56,6 +56,7 @@ import wasteRequestsRoutes from './routes/waste-requests';
 import wasteTicketsRoutes from './routes/waste-tickets';
 import ticketAuditRoutes from './routes/ticket-audit';
 import mechRequestsRoutes from './routes/mech-requests';
+import mechModelsRoutes from './routes/mech-models';
 import wasteTypesRoutes from './routes/waste-types';
 import wasteTariffsRoutes from './routes/waste-tariffs';
 import filesRoutes from './routes/files';
@@ -252,6 +253,10 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // права: с вывозом мусора модуль делит только ось области (площадка эксплуатации), а цикл,
   // заявитель и предмет у него собственные.
   await app.register(mechRequestsRoutes, { prefix: '/api/v1/mech-requests' });
+  // Справочник моделей механизации (план `docs/mechanization-models-directory-plan.md`) — рядом с
+  // заявкой, хотя ведут его в «Справочниках»: заявка сядет на него этапом Э2, и искать их порознь
+  // придётся тому же человеку.
+  await app.register(mechModelsRoutes, { prefix: '/api/v1/mech-models' });
   await app.register(wasteTypesRoutes, { prefix: '/api/v1/waste-types' });
   await app.register(wasteTariffsRoutes, { prefix: '/api/v1/waste-tariffs' });
   await app.register(filesRoutes, { prefix: '/api/v1/files' });

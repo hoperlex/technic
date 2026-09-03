@@ -936,6 +936,13 @@ export const ACCESS_MANIFEST = {
   'DELETE /api/v1/mech-requests/:id': { kind: 'permissions', allOf: ['mechRequests.delete'] },
   'POST /api/v1/mech-requests/:id/restore': { kind: 'permissions', allOf: ['archive.restore'] },
   'DELETE /api/v1/mech-requests/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
+  // Модели механизации — обычный справочник: читают под `directories.read`, ведут под
+  // `directories.write`, сносят погашенное под `records.purge` (ADR 0060). Прав модуля механизации
+  // здесь нет намеренно: справочник ведёт держатель справочников, а не тот, кто заводит заявки.
+  'GET /api/v1/mech-models': { kind: 'permissions', allOf: ['directories.read'] },
+  'POST /api/v1/mech-models': { kind: 'permissions', allOf: ['directories.write'] },
+  'PATCH /api/v1/mech-models/:id': { kind: 'permissions', allOf: ['directories.write'] },
+  'DELETE /api/v1/mech-models/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
 
   // ── Вывоз мусора ──
   // Два маршрута условные: назначить исполнителя прямо в форме заявки — то же назначение

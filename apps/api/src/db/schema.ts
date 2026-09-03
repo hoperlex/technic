@@ -1290,6 +1290,41 @@ export const grantPermissions = pgTable(
 );
 
 /**
+ * След одноразовой уборки состава наборов: строки `grant_permissions` с правом `autoParts.stock`,
+ * снятые миграцией `0247` (ADR 0154, план `docs/auto-part-receipts-plan.md`, выкат 3 «Уборка»).
+ *
+ * Право сняло из словаря выпуском 2 «Заморозка» — доступа осиротевшая строка не давала ни дня
+ * (`isPermission` отсекает её в `auth/principal.ts`), и убрана она ради каталога: набор, в котором
+ * числится несуществующее право, показывается администратору как дающий больше, чем даёт.
+ *
+ * Таблица постоянная и в коде не читается ни одним запросом — её спрашивают руками после выката:
+ * «кому выдан набор, который уборка оставила пустым». Описана здесь потому, что схема обязана
+ * знать обо всём, что завела миграция: снятие таблицы руками дало бы drift мимо журнала миграций,
+ * а её отсутствие в `schema.ts` — то же расхождение, только в другую сторону.
+ */
+export const autoPartsStockGrantRemoved = pgTable(
+  'auto_parts_stock_grant_removed',
+  {
+    // FK на `grants` НЕТ намеренно: починка вперёд разрешает опустевший набор в том числе
+    // удалением, и каскад унёс бы снимок вместе с предметом, а `RESTRICT` — заблокировал бы саму
+    // починку. Архив обязан пережить то, о чём рассказывает.
+    grantId: uuid('grant_id').notNull(),
+    // Код набора СНИМКОМ, а не соединением при чтении: к моменту чтения набора может уже не быть,
+    // и `JOIN` ответил бы на вопрос «чей это был набор» пустотой.
+    grantCode: text('grant_code').notNull(),
+    // Что снято. Сегодня всегда `autoParts.stock`; тип не сужается до `Permission` по той же
+    // причине, что и в `grant_permissions`, — здесь лежат как раз те строки, которых в словаре
+    // больше нет.
+    permission: text('permission').notNull(),
+    removedAt: timestamp('removed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // Пара уникальна по построению: в наборе право лежало один раз — это PK `grant_permissions`.
+    pk: primaryKey({ columns: [t.grantId, t.permission] }),
+  }),
+);
+
+/**
  * Кому набор разрешено назначать. Своей таблицей, а не массивом внутри `grants`: роль убирают из
  * списка чаще, чем правят состав, и жизненный цикл различает «нельзя назначать впредь» и «уже
  * выданное сохраняется». Инвариант «ось роли × модуль» к тому же проверяется на декартовом
@@ -4848,10 +4883,7 @@ export const wasteTicketFieldEvents = pgTable(
       'waste_ticket_field_events_actor_check',
       sql`${t.event} NOT IN ('recognized', 'disputed') OR ${t.actorId} IS NULL`,
     ),
-    passesCheck: check(
-      'waste_ticket_field_events_passes_check',
-      sql`${t.passes} BETWEEN 0 AND 2`,
-    ),
+    passesCheck: check('waste_ticket_field_events_passes_check', sql`${t.passes} BETWEEN 0 AND 2`),
     shaCheck: check(
       'waste_ticket_field_events_sha_check',
       sql`${t.pageSha256} = '' OR ${t.pageSha256} ~ '^[0-9a-f]{64}$'`,
@@ -5555,6 +5587,57 @@ export const vehicleRequestStatusHistory = pgTable(
   },
   (t) => ({
     requestIdx: index('vehicle_request_status_history_request_idx').on(t.vehicleRequestId),
+  }),
+);
+
+// ── Механизация: модели техники (план `docs/mechanization-models-directory-plan.md`) ──
+// Что можно взять в аренду: 103 позиции, присланные заказчиком. Справочник заведён миграцией 0249
+// после того, как заказчик потребовал СТРОГИЙ выбор вместо свободной строки, — решение 5 ADR 0152
+// («перечень не устоялся») снято им же. Заявка на эту таблицу пока не ссылается: перевод подбора —
+// этап Э2 отдельным выкатом, и до него `mechRequests.kindName` работает как работал.
+export const mechModels = pgTable(
+  'mech_models',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Системный ключ строки: латиница из наименования, человеку не показывается. Нужен обмену
+    // файлом (ADR 0073 ищет строку по коду) и переименованию: правка наименования код не трогает,
+    // и строка остаётся той же для всех, кто на неё сослался.
+    code: text('code').notNull(),
+    // Наименование дословно из присланного списка — вместе с «(см)», «(компл)», серийным номером и
+    // «б/у»: это пометки заказчика, по ним он позиции и узнаёт (разбор — в шапке миграции 0250).
+    name: text('name').notNull(),
+    // Считает БД (STORED): под ключом живёт UNIQUE, и второй точки правды по написанию быть не
+    // должно. Выражение повторяет `mechRequests.kindKey` знак в знак — этап Э2 переносит живые
+    // заявки на ссылку сопоставлением `kind_key = name_key`, и своя нормализация здесь оставила бы
+    // часть заявок без модели.
+    //
+    // Слеш двойной по той же причине, что у `kindKey`: `sql` — тегированный шаблон, и `\s` в нём
+    // «сварился» бы в обычную `s`, то есть выражение колонки молча разошлось бы с миграцией 0249.
+    nameKey: text('name_key').generatedAlwaysAs(
+      sql`lower(btrim(regexp_replace(name, '\\s+', ' ', 'g')))`,
+    ),
+    // Сид разложил позиции по алфавиту с шагом 10: заведённую завтра модель ставят между соседями,
+    // не переписывая весь справочник.
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    codeUnique: uniqueIndex('mech_models_code_unique').on(t.code),
+    // Двух одинаково названных моделей не бывает: на этом держится и строгий выбор в заявке, и
+    // перенос Э2 — сопоставление по имени имеет смысл, пока имя одно на строку.
+    nameKeyUnique: uniqueIndex('mech_models_name_key_unique').on(t.nameKey),
+    // Kebab-case латиницей: коды порождаются транслитерацией наименования, а оно состоит из слов.
+    // Разделитель разрешён только МЕЖДУ частями — «vibroplita--wacker» и «vibroplita-» получаются
+    // из ошибки генератора, и ловить их лучше базе, чем глазам в файле обмена.
+    codeFormat: check(
+      'mech_models_code_format_check',
+      sql`${t.code} ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$'`,
+    ),
+    nameNotBlank: check('mech_models_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
+    // Наименование из одних знаков препинания даёт пустой ключ и перестало бы ловиться как дубль.
+    nameKeyNotBlank: check('mech_models_name_key_not_blank_check', sql`${t.nameKey} <> ''`),
   }),
 );
 
@@ -7881,6 +7964,7 @@ export type WasteRequestRow = typeof wasteRequests.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type ObjectRow = typeof constructionObjects.$inferSelect;
 export type ContainerTypeRow = typeof containerTypes.$inferSelect;
+export type MechModelRow = typeof mechModels.$inferSelect;
 export type WasteTypeRow = typeof wasteTypes.$inferSelect;
 export type WasteTariffRow = typeof wasteTariffs.$inferSelect;
 export type VehicleKindRow = typeof vehicleKinds.$inferSelect;
