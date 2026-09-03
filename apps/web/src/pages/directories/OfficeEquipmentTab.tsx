@@ -21,6 +21,7 @@ import {
   officeEquipmentTypeOptionsQuery,
   officeEquipmentCard,
   officeEquipmentColumns,
+  OfficeEquipmentSpecsView,
 } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
@@ -350,6 +351,11 @@ export function OfficeEquipmentTab() {
             Обе секции читают один и тот же ответ карточки — второго запроса это не стоит. */}
         {record && (
           <>
+            {/* Характеристики модели: «Цветность печати: Цветная» (план
+                `docs/office-equipment-specs-plan.md`). Читаются из строки, которую и открыли, —
+                второго запроса это не стоит; правят их в окне «Модели аппаратов», потому что
+                свойство принадлежит модели, а не этому аппарату (Р6). */}
+            <OfficeEquipmentSpecsView specs={record.specs} />
             {/* «Чем заправлять» выше истории: за картриджем приходят чаще, чем за прошлым
                 ремонтом, и ответ на частый вопрос не должен лежать под редким (Р15). */}
             <OfficeEquipmentSupplies equipmentId={record.id} />

@@ -15,6 +15,7 @@ import type {
   OfficeEquipmentConsumableUsageQuery,
   OfficeEquipmentDto,
   OfficeEquipmentModelDto,
+  OfficeEquipmentSpecDto,
   OfficeEquipmentTypeDto,
   UpdateOfficeEquipmentConsumableInput,
   UpdateOfficeEquipmentInput,
@@ -107,6 +108,18 @@ export const officeEquipmentTypesApi = {
  * архивная), сервер удалить не даст — её гасят отметкой «Активна» (Р11). Отсюда `{ ok }` в ответе:
  * после удаления показывать нечего.
  */
+/**
+ * Какие характеристики спрашивают у типа и что у них за значения (план
+ * `docs/office-equipment-specs-plan.md`, Р4): им форма модели строит поле «Цветность печати».
+ *
+ * Отдельной ручкой, а не полем строки списка: перечень значений нужен там, где значение вводят, и
+ * спрашивают его в том числе до того, как модель существует, — при заведении новой.
+ */
+export const officeEquipmentSpecsApi = {
+  list: (equipmentTypeId: string) =>
+    apiFetch<OfficeEquipmentSpecDto[]>(`${TYPES_PATH}/${equipmentTypeId}/specs`),
+};
+
 export const officeEquipmentModelsApi = {
   ...createListApi<OfficeEquipmentModelDto>(MODELS_PATH),
   ...createWriteApi<

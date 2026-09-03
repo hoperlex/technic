@@ -41,7 +41,10 @@ function requestDto(over: Partial<MechRequestDto> = {}): MechRequestDto {
     departmentId: null,
     departmentCode: null,
     departmentName: null,
-    kindName: 'Виброплита реверсивная',
+    // Предмет аренды — одна ссылка на справочник (ADR 0156). Написания рядом больше нет: уборка Э3
+    // сняла его по решению заказчика, и заявка без модели показывается прочерком.
+    mechModelId: 'model-1',
+    mechModelName: 'Виброплита реверсивная Wacker DPU 3070Н',
     plannedFrom: '2026-08-03',
     plannedTo: '2026-08-17',
     responsibleName: 'Петров П. П.',
@@ -108,7 +111,9 @@ const DICTIONARIES: RouteMap = {
   'GET /objects': () => json(emptyList()),
   'GET /departments': () => json(emptyList()),
   'GET /counterparties': () => json(emptyList()),
-  'GET /mech-requests/kinds': () => json({ items: [] }),
+  // Модели приходят справочником (ADR 0156), а не подсказкой ранее введённого: ручки
+  // `/mech-requests/kinds` больше нет вовсе, и отбор по модели спрашивает сам справочник.
+  'GET /mech-models': () => json(emptyList()),
 };
 
 function renderHistory(routes: RouteMap = {}) {
@@ -194,6 +199,43 @@ describe('механизация: журнал закрытых аренд', () 
     }
     // Список заявок при этом не дёргается: журнал не его отбор, а своя выборка.
     expect(http.countOf('GET /mech-requests')).toBe(0);
+  });
+
+  /**
+   * Заявка **без модели** — законное состояние после уборки Э3 (ADR 0156, миграция 0256): у
+   * заявок, заведённых до справочника и не нашедших себе модель по написанию, предмета аренды не
+   * осталось вовсе — заказчик выбрал снять колонку, потеряв написания.
+   *
+   * Ячейка обязана быть ПРОЧЕРКОМ, а не пустой и не выдуманной подписью: пустое место читается как
+   * недогрузившаяся строка, а «не указана» прятало бы цену решения за формулировкой портала. Что
+   * именно потеряно, отвечает журнал аудита, а не экран.
+   *
+   * Столбец ищется по подписи шапки, а не по индексу: прочерков в строке несколько (у отменённой
+   * заявки пусты и арендодатель, и факт), и поиск по тексту подтвердил бы соседнюю ячейку.
+   */
+  it('заявка без модели показывает в столбце «Модель» прочерк', async () => {
+    const ORPHAN = requestDto({
+      id: 'mech-3',
+      num: 44,
+      displayNumber: 'МХ-44',
+      mechModelId: null,
+      mechModelName: null,
+    });
+    renderHistory({ [HISTORY]: () => json(list([requestDto(), ORPHAN])) });
+
+    await screen.findByText('МХ-44');
+    const headers = [...document.querySelectorAll('thead th')].map((th) => th.textContent);
+    const column = headers.indexOf('Модель');
+    expect(column).toBeGreaterThanOrEqual(0);
+
+    const cells = (cellsOf: HTMLElement): (string | null)[] =>
+      [...(cellsOf.closest('tr')?.querySelectorAll('td') ?? [])].map((td) => td.textContent);
+    expect(cells(screen.getByText('МХ-44'))[column]).toBe('—');
+    // И вторая половина утверждения: у заявки с моделью в той же ячейке стоит её наименование —
+    // иначе прочерк выше доказывал бы лишь то, что столбец найден не тот.
+    expect(cells(screen.getByText('МХ-42'))[column]).toBe(
+      'Виброплита реверсивная Wacker DPU 3070Н',
+    );
   });
 
   it('итог считается по отбору, а не по странице', async () => {

@@ -43,6 +43,7 @@ const TYPE: OfficeEquipmentTypeDto = {
 const EQUIPMENT: OfficeEquipmentDto = {
   id: 'oe-1',
   type: { id: TYPE.id, name: TYPE.name, isActive: true },
+  specs: [],
   name: 'Kyocera M3145',
   serialNumber: '',
   inventoryNumber: '0012345',

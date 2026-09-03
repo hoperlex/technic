@@ -78,6 +78,8 @@ interface Ctx {
   closeDb: () => Promise<void>;
   objectId: string;
   lessorId: string;
+  /** Модель из справочника: с Э2 предмет аренды выбирается строго из него (ADR 0156). */
+  modelId: string;
   users: {
     admin: string;
     /** Ведёт аренду целиком (`.status`), но продлевать её не вправе (Р9). */
@@ -89,7 +91,6 @@ interface Ctx {
 }
 
 let ctx: Ctx;
-let seq = 0;
 
 function prepareEnv(databaseUrl: string): void {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -173,10 +174,9 @@ async function headersOf(userId: string): Promise<Headers> {
 async function newRequest(
   over: { plannedFrom?: string; plannedTo?: string } = {},
 ): Promise<MechRequestDto> {
-  seq += 1;
   const res = await call('POST', '/', {
     objectId: ctx.objectId,
-    kindName: `Виброплита ${RUN}-${seq}`,
+    mechModelId: ctx.modelId,
     plannedFrom: over.plannedFrom ?? WEEK_AGO,
     plannedTo: over.plannedTo ?? IN_TEN_DAYS,
     responsibleName: 'Иванов Иван',
@@ -393,6 +393,12 @@ describe.skipIf(!DB_URL)('механизация: продление срока 
         comment: MARK,
       })
       .returning({ id: schema.counterparties.id });
+    // Своя строка справочника на прогон, а не позиция сида: база общая, и заявка, сославшаяся на
+    // общую модель, помешала бы соседнему файлу её гасить и сносить.
+    const [model] = await db
+      .insert(schema.mechModels)
+      .values({ code: `mech-extend-${RUN}`, name: `Виброплита продления ${RUN}` })
+      .returning({ id: schema.mechModels.id });
 
     const app = await buildApp();
     ctx = {
@@ -403,6 +409,7 @@ describe.skipIf(!DB_URL)('механизация: продление срока 
       closeDb,
       objectId: object!.id,
       lessorId: lessor!.id,
+      modelId: model!.id,
       users: {
         admin: await newUser('admin'),
         manager: await newUser('manager'),
@@ -426,6 +433,8 @@ describe.skipIf(!DB_URL)('механизация: продление срока 
     );
     await ctx.db.execute(sql`DELETE FROM users WHERE email LIKE ${`${EMAIL_PREFIX}%`}`);
     await ctx.db.execute(sql`DELETE FROM counterparties WHERE comment = ${MARK}`);
+    // Модели — после заявок: ссылка стоит с `ON DELETE RESTRICT`.
+    await ctx.db.execute(sql`DELETE FROM mech_models WHERE code = ${`mech-extend-${RUN}`}`);
     await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code = ${OBJECT_CODE}`);
     await ctx.app.close();
     await ctx.closeDb();

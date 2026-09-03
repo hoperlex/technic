@@ -82,6 +82,10 @@ interface Ctx {
   operatorId: string;
   /** Арендодатель механизации, погашенный: существует, но выбрать его сегодня нельзя. */
   inactiveLessorId: string;
+  /** Модель из справочника: предмет аренды с Э2 выбирается строго из него (ADR 0156). */
+  modelId: string;
+  /** Погашенная модель: строка есть, но выбрать её сегодня нельзя — как и погашенного арендодателя. */
+  inactiveModelId: string;
 }
 
 let ctx: Ctx;
@@ -156,7 +160,7 @@ async function card(id: string): Promise<MechRequestDto> {
 async function newRequest(): Promise<MechRequestDto> {
   const res = await call('POST', '/', {
     objectId: ctx.objectId,
-    kindName: `Виброплита ${RUN}`,
+    mechModelId: ctx.modelId,
     plannedFrom: yesterday,
     plannedTo: shiftDateKey(today, 10),
     responsibleName: 'Иванов Иван',
@@ -359,6 +363,23 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
       return row!.id;
     };
 
+    /**
+     * Своя строка справочника на прогон, а не позиция из сида 0250: база общая, и заявка,
+     * сославшаяся на общую модель, помешала бы соседнему файлу гасить и сносить ту же строку.
+     * Код — kebab-case латиницей: `mech_models_code_format_check` кириллицу не примет.
+     */
+    const model = async (tag: string, isActive = true): Promise<string> => {
+      const [row] = await db
+        .insert(schema.mechModels)
+        .values({
+          code: `mech-cycle-${tag}-${RUN}`,
+          name: `Виброплита ${tag} ${RUN}`,
+          isActive,
+        })
+        .returning({ id: schema.mechModels.id });
+      return row!.id;
+    };
+
     const app = await buildApp();
     const login = await app.inject({
       method: 'POST',
@@ -379,6 +400,8 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
       vehicleLessorId: await counterparty('vehicle_lessor', 'Арендодатель ТС'),
       operatorId: await counterparty('operator', 'Перевозчик'),
       inactiveLessorId: await counterparty('mech_lessor', 'Погашенный арендодатель', false),
+      modelId: await model('live'),
+      inactiveModelId: await model('dead', false),
     };
   }, 120_000);
 
@@ -390,6 +413,9 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
             (SELECT id FROM construction_objects WHERE code = ${OBJECT_CODE})`,
     );
     await ctx.db.execute(sql`DELETE FROM counterparties WHERE comment = ${MARK}`);
+    // Модели — после заявок: ссылка стоит с `ON DELETE RESTRICT`, и обратный порядок оставил бы
+    // строки справочника в общей базе навсегда.
+    await ctx.db.execute(sql`DELETE FROM mech_models WHERE code LIKE ${`mech-cycle-%-${RUN}`}`);
     await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code = ${OBJECT_CODE}`);
     await ctx.db.execute(sql`DELETE FROM users WHERE email = ${ADMIN_EMAIL}`);
     await ctx.app.close();
@@ -421,6 +447,121 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
     expect(taken.status).toBe('confirmed');
     expect(taken.lessorId).toBe(ctx.mechLessorId);
     expect(taken.rate).toBe(1200);
+  }, 60_000);
+
+  // ── Предмет аренды: строго из справочника (Р5, ADR 0156) ──
+
+  it('модель берут только из справочника: без неё, с выдуманной и с погашенной — отказ', async () => {
+    // Тело без модели вовсе: свободной строки в нём не осталось (ADR 0156, решение 2), и заявку
+    // без ссылки схема не принимает. Уборка Э3 этого не смягчила — она разрешила существование
+    // СТАРЫХ заявок без модели, а не заведение новых: строгость выбора держит сервер, и здесь
+    // спрашивают именно её.
+    const bare = await call('POST', '/', {
+      objectId: ctx.objectId,
+      plannedFrom: yesterday,
+      plannedTo: tomorrow,
+      responsibleName: 'Иванов Иван',
+      responsiblePhone: '9990000000',
+      comment: MARK,
+    });
+    expect(bare.statusCode, bare.body).toBe(400);
+
+    const withModel = async (mechModelId: string) =>
+      call('POST', '/', {
+        objectId: ctx.objectId,
+        mechModelId,
+        plannedFrom: yesterday,
+        plannedTo: tomorrow,
+        responsibleName: 'Иванов Иван',
+        responsiblePhone: '9990000000',
+        comment: MARK,
+      });
+
+    // Несуществующая строка справочника: ключ отдал бы 23503 пятисоткой, и отвечать обязан сервер.
+    const invented = await withModel(randomUUID());
+    expect(invented.statusCode, invented.body).toBe(400);
+    expect(invented.json().fields?.mechModelId).toBe('Модель не найдена');
+
+    // Погашенная модель существует и внешним ключом прошла бы: «её можно выбрать сегодня» —
+    // вопрос сервиса, тот же, что и у погашенного арендодателя рядом.
+    const dead = await withModel(ctx.inactiveModelId);
+    expect(dead.statusCode, dead.body).toBe(400);
+    expect(dead.json().message).toContain('погашена');
+  }, 60_000);
+
+  it('заявка отдаёт наименование модели соединением, а не своим снимком', async () => {
+    const request = await newRequest();
+    expect(request.mechModelId).toBe(ctx.modelId);
+    expect(request.mechModelName).toBe(`Виброплита live ${RUN}`);
+
+    // Переименование справочника видно и в заведённой заявке: заявка ССЫЛАЕТСЯ, а не хранит
+    // снимок (ADR 0156). Снимками в этом модуле хранятся только деньги.
+    const renamed = `Виброплита переименованная ${RUN}`;
+    await ctx.db.execute(
+      sql`UPDATE mech_models SET name = ${renamed} WHERE id = ${ctx.modelId}::uuid`,
+    );
+    expect((await card(request.id)).mechModelName).toBe(renamed);
+    await ctx.db.execute(
+      sql`UPDATE mech_models SET name = ${`Виброплита live ${RUN}`} WHERE id = ${ctx.modelId}::uuid`,
+    );
+  }, 60_000);
+
+  it('дублирование копирует ссылку на модель, а не написание', async () => {
+    const source = await newRequest();
+    const copy = await call('POST', `/${source.id}/duplicate`, {});
+    const dto = ok(copy, 201) as unknown as MechRequestDto;
+    expect(dto.mechModelId).toBe(ctx.modelId);
+    expect(dto.num).not.toBe(source.num);
+  }, 60_000);
+
+  /**
+   * Заявка **без модели** — законное и постоянное состояние после уборки Э3 (ADR 0156, миграция
+   * 0256): заказчик, которого спросили про заявки, не нашедшие себе модель по написанию, выбрал
+   * снять колонку, потеряв написания. Ровно ради этого класса строк `NOT NULL` на ссылке так и не
+   * поставлен, и проверять его нужно тем же, чем он опасен: попыткой с ним жить.
+   *
+   * Строка кладётся ПРЯМЫМ ЗАПРОСОМ, потому что маршрутом такой заявки больше не завести (случай
+   * «модель берут только из справочника» выше) — а на проде она появилась именно так, миграцией.
+   *
+   * Сервер говорит про отсутствие предмета аренды прямо — `mechModelName: null`, а не пустой
+   * строкой: прочерк на экране рисует портал (`mechModelLabel`), и решать за него, каким словом
+   * назвать пустоту, серверу не положено.
+   */
+  it('заявка без модели после уборки: читается, находится списком и правится', async () => {
+    const [row] = (
+      await ctx.db.execute<{ id: string; num: number }>(sql`
+        INSERT INTO mech_requests (
+          object_id, planned_from, planned_to, responsible_name, responsible_phone,
+          created_by, comment
+        ) VALUES (
+          ${ctx.objectId}::uuid, ${yesterday}, ${tomorrow}, 'Иванов Иван', '9990000000',
+          ${ctx.adminId}::uuid, ${MARK}
+        ) RETURNING id, num`)
+    ).rows;
+    const orphan = row!;
+
+    const dto = await card(orphan.id);
+    expect(dto.mechModelId).toBeNull();
+    expect(dto.mechModelName).toBeNull();
+
+    // Список её не теряет: соединение со справочником обязано остаться внешним. Внутреннее унесло
+    // бы такую заявку молча — вместе с деньгами, которые по ней считали.
+    expect(await listNums(`num=${orphan.num}`)).toEqual([orphan.num]);
+
+    // И правится как обычная: тело без `mechModelId` барьер «модель после „Новой“ не меняют» не
+    // трогает, а перепроверять несуществующую ссылку сервер не должен вовсе.
+    const edited = await call('PATCH', `/${orphan.id}`, {
+      version: dto.version,
+      comment: `${MARK} — правка без модели`,
+    });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect((edited.json() as unknown as MechRequestDto).mechModelName).toBeNull();
+
+    // Скопировать её нечем, и отказ говорит именно это: имя предмета аренды потеряно вместе с
+    // колонкой, и подставить его в сообщение неоткуда.
+    const copy = await call('POST', `/${orphan.id}/duplicate`, {});
+    expect(copy.statusCode, copy.body).toBe(422);
+    expect(copy.json().fields?.mechModelId).toBe('Модель не указана');
   }, 60_000);
 
   it('арендодателем бывает только арендодатель, и только не погашенный', async () => {

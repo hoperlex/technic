@@ -22,6 +22,8 @@
 #   deploy-auto --cutover-revert    откат незавершённого cutover (только пока граница не записана)
 #   deploy-auto --client-floor      показать пол версии клиента и контракт раздаваемой сборки
 #   deploy-auto --client-floor=N    поднять/опустить пол (MIN_CLIENT_CONTRACT) и перезапустить api
+#   deploy-auto --maintenance       показать состояние режима техработ (три канала порознь)
+#   deploy-auto --maintenance=on|off  закрыть/открыть портал: объявление, гейт api, эпоха токенов
 #
 # Запускать от владельца портала (corpsu) или от root: от root скрипт сам
 # перезапустится от владельца, иначе образы и state стали бы root-owned.
@@ -72,6 +74,11 @@ FREEZE_REQ="$PORTAL_DIR/deploy/requires-frozen-release.list"
 
 DB_TOOLS_IMAGE="postgres:17"            # мажор = серверу Yandex Managed PG (17.x)
 PROD_ENV="/etc/technic-portal/prod.env"
+# Флаг-файл режима технических работ. Каталог заводит сам deploy-auto при bootstrap (см.
+# maint_dir_bootstrap ниже) и монтирует в technic-web как /etc/nginx/maintenance:ro. Сам файл —
+# единственный канал режима, который переживает ОСТАНОВКУ api (план Р6).
+MAINT_DIR="/etc/technic-portal/maintenance"
+MAINT_FILE="$MAINT_DIR/maintenance.json"
 CA_FILE="/etc/technic-portal/certs/yandex-root.crt"
 LIVE_VHOST="/opt/infra/nginx/conf.d/technic.conf"
 REPO_VHOST="deploy/nginx/technic.conf"
@@ -124,6 +131,20 @@ deploy-auto — деплой/обновление портала technic (auto.s
                                     отбивается 426, а обновление сессии — нет (ADR 0146, реш. 7).
                                     Отметку спрашивают только выкаты без отката — те, что несут
                                     миграцию или идут окном --cutover; пропуск попадает в отчёт
+  deploy-auto --maintenance         показать режим технических работ: prod.env, фактическое
+                                    окружение technic-api и флаг-файл — ТРЕМЯ строками, порознь.
+                                    Расхождение любых двух — аварийное состояние, а не «включено»
+  deploy-auto --maintenance=on      закрыть портал: объявление в /maintenance.json, гейт 503 в api
+                                    и подъём AUTH_EPOCH_SINCE (все выданные access-токены мертвы;
+                                    refresh-сессии живы — люди вернутся в работу без пароля).
+                                    Отказывает, если пол клиента ниже контракта раздаваемой сборки:
+                                    заглушку рисует только новая сборка. Дополнительно:
+                                      --reason='<что делаем>'   публичный текст объявления
+                                      --until='<когда>'         ожидаемое окончание (ISO 8601)
+                                      --allow-old-clients       снять отказ по полу, понимая, что
+                                                                часть вкладок останется без него
+  deploy-auto --maintenance=off     открыть портал. AUTH_EPOCH_SINCE НЕ снимается: снять её значило
+                                    бы оживить токены, выданные до окна
   deploy-auto --help                эта справка
 
 Переменные окружения:
@@ -153,6 +174,8 @@ EOF
 DO_PREVIOUS=0 DO_RESTORE_DB=0 DO_STATUS=0 NO_PRUNE=0 SKIP_MIGRATE=0 ALLOW_VHOST_DRIFT=0
 DO_CUTOVER=0 DO_CUTOVER_REVERT=0 DO_CLIENT_FLOOR=0
 RESTORE_DB_ARG="" CLIENT_FLOOR_ARG=""
+DO_MAINTENANCE=0 ALLOW_OLD_CLIENTS=0
+MAINTENANCE_ARG="" MAINTENANCE_REASON_ARG="" MAINTENANCE_UNTIL_ARG=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -167,6 +190,11 @@ for arg in "$@"; do
     --cutover-revert) DO_CUTOVER_REVERT=1 ;;
     --client-floor)   DO_CLIENT_FLOOR=1 ;;
     --client-floor=*) DO_CLIENT_FLOOR=1; CLIENT_FLOOR_ARG="${arg#*=}" ;;
+    --maintenance)    DO_MAINTENANCE=1 ;;
+    --maintenance=*)  DO_MAINTENANCE=1; MAINTENANCE_ARG="${arg#*=}" ;;
+    --reason=*)       MAINTENANCE_REASON_ARG="${arg#*=}" ;;
+    --until=*)        MAINTENANCE_UNTIL_ARG="${arg#*=}" ;;
+    --allow-old-clients) ALLOW_OLD_CLIENTS=1 ;;
     -h|--help)        usage ;;
     *) echo "Неизвестный аргумент: $arg (см. --help)" >&2; exit 2 ;;
   esac
@@ -197,6 +225,30 @@ if [ "$DO_CLIENT_FLOOR" -eq 1 ] && [ -n "$CLIENT_FLOOR_ARG" ] \
    && ! printf '%s' "$CLIENT_FLOOR_ARG" | grep -qE '^[1-9][0-9]*$'; then
   echo "--client-floor=N: N — целое от 1. Ноль и пустое значение запрещены: запрос без заголовка" >&2
   echo "читается как контракт 1, и пол ниже единицы не отличался бы от выключенного гейта." >&2
+  exit 2
+fi
+# Режим технических работ — отдельная операция над prod.env и флаг-файлом, а не «деплой с флажком».
+# Смешать его с выкатом нельзя по той же причине, что и пол клиента, и по одной своей: между
+# закрытием портала и работой со схемой стоит РЕШЕНИЕ человека («данные проверены, можно»), и
+# команда, делающая оба шага сразу, это решение отменяет.
+if [ "$DO_MAINTENANCE" -eq 1 ] \
+   && { [ "$ROLLBACK_MODE" -eq 1 ] || [ "$DO_STATUS" -eq 1 ] || [ "$SKIP_MIGRATE" -eq 1 ] \
+        || [ "$DO_CUTOVER" -eq 1 ] || [ "$DO_CUTOVER_REVERT" -eq 1 ] || [ "$DO_CLIENT_FLOOR" -eq 1 ]; }; then
+  echo "--maintenance не сочетается с выкатом, откатом, --cutover и --client-floor: это отдельная" >&2
+  echo "операция над prod.env и флаг-файлом. Порядок работ в окне — docs/runbook.md." >&2
+  exit 2
+fi
+if [ "$DO_MAINTENANCE" -eq 1 ] && [ -n "$MAINTENANCE_ARG" ] \
+   && [ "$MAINTENANCE_ARG" != "on" ] && [ "$MAINTENANCE_ARG" != "off" ]; then
+  echo "--maintenance=on|off — других значений нет; без значения команда показывает состояние." >&2
+  exit 2
+fi
+# Три флага-спутника осмысленны только у включения. Молчаливое их игнорирование было бы хуже
+# отказа: человек, набравший `--maintenance=off --until=...`, ждёт от команды не того, что она
+# сделает, и узнает об этом уже в окне.
+if { [ -n "$MAINTENANCE_REASON_ARG" ] || [ -n "$MAINTENANCE_UNTIL_ARG" ] \
+     || [ "$ALLOW_OLD_CLIENTS" -eq 1 ]; } && [ "$MAINTENANCE_ARG" != "on" ]; then
+  echo "--reason, --until и --allow-old-clients имеют смысл только с --maintenance=on" >&2
   exit 2
 fi
 # Необратимый выкат — не «деплой с флажком»: у него свой порядок шагов и своё состояние. Смешать
@@ -231,10 +283,64 @@ fi
 [ -d "$PORTAL_DIR/.git" ] || fail "$PORTAL_DIR не похож на git-репозиторий портала"
 DEPLOY_USER="${AUTO_DEPLOY_USER:-$(stat -c %U "$PORTAL_DIR")}"
 
+# Каталог объявления режима техработ. Заводится ЗДЕСЬ, а не «по месту оператором» и не демоном
+# docker: без каталога `up -d technic-web` создаст его сам как root:root 0755, и владелец портала
+# уже не запишет флаг-файл иначе как через sudo, а чинить это придётся руками на живой площадке.
+#
+# root:docker 0751 — режим считан с живого nginx, а не выбран по аналогии с соседями:
+#   · 0751, а не 0750: воркеры nginx в контейнере работают под uid 101, он не root и в группе
+#     docker не состоит. Без бита `x` для остальных каталог непроходим, и хуже отказа то, КАК он
+#     отказывает: проверка `if (-f ...)` в spa.conf на EACCES молча возвращает ложь — режим
+#     включён, а объявления нет;
+#   · сам файл кладётся 0644 (см. maint_file_write): при 0640 канал статуса ответил бы 403, а 403
+#     заглушку у клиента не снимет. Секрета в файле нет — портал сам публикует его как
+#     /maintenance.json.
+# Каталог общий с конфигурацией портала (/etc/technic-portal), поэтому владельцем остаётся root:
+# пишет в него команда через sudo, читает — контейнер веба.
+MAINT_DIR_BOOTSTRAPPED=0
+maint_dir_bootstrap() {
+  # Отметка — не микрооптимизация: на площадке, где портал принадлежит root, обе ветки bootstrap
+  # идут подряд в одном процессе, и неустранимый отказ (нет группы docker, нет sudo) печатался бы
+  # дважды за каждый запуск любой команды.
+  [ "$MAINT_DIR_BOOTSTRAPPED" -eq 1 ] && return 0
+  MAINT_DIR_BOOTSTRAPPED=1
+
+  # СУЩЕСТВУЮЩИЙ каталог проверяется и чинится, а не пропускается. Пропуск был дырой: каталог,
+  # заведённый когда-то с 0750 (или созданный демоном docker как root:root 0755 при отсутствующем
+  # маунте), остаётся с нерабочими правами навсегда — nginx под uid 101 не входит в него, канал
+  # статуса отвечает 403, а проверка `-f` в spa.conf молча возвращает ложь. Симптом при этом
+  # худший из возможных: режим включён, а объявления нет.
+  if [ -d "$MAINT_DIR" ]; then
+    maint_dir_mode="$(stat -c '%a' "$MAINT_DIR" 2>/dev/null || true)"
+    maint_dir_owner="$(stat -c '%U:%G' "$MAINT_DIR" 2>/dev/null || true)"
+    [ "$maint_dir_mode" = "751" ] && [ "$maint_dir_owner" = "root:docker" ] && return 0
+    warn "$MAINT_DIR имеет ${maint_dir_owner:-?} ${maint_dir_mode:-?}, а нужен root:docker 0751 —
+  при иных правах nginx не читает объявление, и режим включается без него. Исправляю."
+    if [ "$(id -u)" -eq 0 ]; then
+      if ! { chown root:docker "$MAINT_DIR" && chmod 0751 "$MAINT_DIR"; }; then
+        warn "не удалось исправить права $MAINT_DIR — объявление может не дойти до вкладок"
+      fi
+    else
+      sudo -n sh -c 'chown root:docker "$1" && chmod 0751 "$1"' _ "$MAINT_DIR" 2>/dev/null \
+        || warn "не удалось исправить права $MAINT_DIR (нужен sudo) — объявление может не дойти до вкладок"
+    fi
+    return 0
+  fi
+
+  if [ "$(id -u)" -eq 0 ]; then
+    install -d -o root -g docker -m 0751 "$MAINT_DIR" \
+      || warn "не удалось завести $MAINT_DIR — режим технических работ включить будет нечем"
+    return 0
+  fi
+  sudo -n install -d -o root -g docker -m 0751 "$MAINT_DIR" 2>/dev/null \
+    || warn "не удалось завести $MAINT_DIR (нужен sudo) — режим технических работ включить будет нечем"
+}
+
 if [ "$(id -u)" -eq 0 ]; then
   install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 755 "$(dirname "$STATE_DIR")"
   install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 750 "$STATE_DIR" "$REPORT_DIR"
   install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 700 "$BACKUP_DIR" "$CONFIG_DIR"
+  maint_dir_bootstrap
 fi
 
 if [ "$(id -un)" != "$DEPLOY_USER" ]; then
@@ -254,6 +360,7 @@ if [ ! -d "$STATE_DIR" ]; then
 fi
 install -d -m 750 "$REPORT_DIR"
 install -d -m 700 "$BACKUP_DIR" "$CONFIG_DIR"
+maint_dir_bootstrap
 
 # Интерполяция compose для db-tools: UID/GID владельца (файлы дампов — не root-owned)
 # и путь к каталогу бэкапов. Экспорт ДО первого вызова compose.
@@ -756,8 +863,186 @@ if [ "$DO_CLIENT_FLOOR" -eq 1 ]; then
   [ "$CODE_NEW" != "426" ] || warn "раздаваемый контракт тоже отбивается — портал закрыт для всех, немедленно опустите пол"
   [ "$CODE_REFRESH" != "426" ] || warn "обновление сессии отбивается — гейт выкидывает людей из портала, опустите пол"
   log "готово: пол $CLIENT_FLOOR_ARG"
+  # ИЗВЕСТНЫЙ ДЕФЕКТ (план режима техработ §5.1): этот блок заканчивается ДО взятия flock, то есть
+  # правит prod.env и пересоздаёт technic-api без блокировки — параллельный деплой может делать то
+  # же самое с теми же контейнерами. Для правки одного числа это терпели; чинится отдельным
+  # выпуском, потому что перенос блока за lock меняет поведение соседней команды, а не этой.
+  # Режим технических работ ниже стоит уже ПОСЛЕ lock — там цена ошибки другая.
   exit 0
 fi
+
+# ---------------------------------------------------------------------------
+# Режим технических работ (docs/maintenance-mode-plan.md). Здесь — только ЧТЕНИЕ состояния:
+# переключение стоит ниже, после lock.
+#
+# У режима ДВА канала, и они не дублируют друг друга (план Р6):
+#   · переменные в prod.env — их читает гейт внутри technic-api и отбивает запросы 503;
+#   · флаг-файл, который technic-web раздаёт как /maintenance.json, — единственный источник,
+#     переживающий ОСТАНОВКУ api, то есть работающий в главном сценарии окна (--cutover api гасит).
+# Отсюда в выводе ТРИ состояния, а не одно on/off: prod.env, фактическое окружение контейнера и
+# файл. Расхождение любых двух — аварийное состояние, а не «включено».
+# ---------------------------------------------------------------------------
+
+# Значение переменной из prod.env; пусто — строки нет вовсе (сервер возьмёт своё умолчание).
+# Обрамляющие кавычки снимаются: свободный текст пишется в одинарных (maint_env_quote), и читать
+# его надо ровно так, как прочтёт compose, — иначе одно и то же состояние выглядело бы разным.
+maint_env_get() {
+  local raw
+  [ -r "$PROD_ENV" ] || return 1
+  raw="$(sed -n "s/^$1=//p" "$PROD_ENV" | tail -n1)"
+  case "$raw" in
+    "'"*"'") raw="${raw#\'}"; raw="${raw%\'}" ;;
+    '"'*'"') raw="${raw#\"}"; raw="${raw%\"}" ;;
+  esac
+  printf '%s' "$raw"
+}
+
+# Приведение к on/off. Пишем мы только `on` и `off`, а читаем терпимее: prod.env правит и человек,
+# и «True» вместо «on» — не повод показать закрытый портал открытым.
+maint_norm() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    on|1|true|yes) printf 'on' ;;
+    *)             printf 'off' ;;
+  esac
+}
+
+# Фактическое окружение technic-api. Спрашивается у КОНТЕЙНЕРА (Config.Env фиксируется при его
+# создании), а не у процесса: ответ есть и у остановленного контейнера, и это единственный способ
+# отличить «prod.env правлен, а контейнер не пересоздан» от «режим включён». Наружу уходит только
+# запрошенный ключ — весь env контейнера в переменную не оседает.
+maint_container_get() {
+  docker inspect technic-api --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+    | sed -n "s/^$1=//p" | tail -n1 || true
+}
+
+maint_container_exists() { docker inspect technic-api >/dev/null 2>&1; }
+
+# Флаг-файл лежит под root, поэтому читаем и через sudo: «нет доступа», прочитанное как «файла
+# нет», — это снятая заглушка на бумаге, то есть ровно та ошибка, которой режим и опасен.
+maint_file_present() {
+  if [ -e "$MAINT_FILE" ]; then return 0; fi
+  if sudo -n test -e "$MAINT_FILE" 2>/dev/null; then return 0; fi
+  return 1
+}
+
+maint_file_body() {
+  if cat "$MAINT_FILE" 2>/dev/null; then return 0; fi
+  if sudo -n cat "$MAINT_FILE" 2>/dev/null; then return 0; fi
+  return 1
+}
+
+# Строковое поле флаг-файла. JSON разбирается sed'ом, а не jq, по той же причине, что и границы
+# совместимости выше: зависимости у скрипта нет ни одной сверх coreutils/docker/git, и заводить её
+# ради двух полей значит сделать команду неработающей там, где jq забыли поставить.
+# Читаются только `until` и `startedAt` — в них кавычек нет по построению. Причину отсюда не
+# читаем: экранированная кавычка внутри значения оборвала бы выборку на полуслове, а второй
+# источник причины и так есть (prod.env), и он без экранирования.
+maint_file_field() {
+  local body
+  body="$(maint_file_body)" || return 1
+  printf '%s\n' "$body" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
+maint_file_active() {
+  local body
+  body="$(maint_file_body)" || return 1
+  printf '%s\n' "$body" | grep -q '"active"[[:space:]]*:[[:space:]]*true'
+}
+
+# Читает все три канала разом в MAINT_ST_*. MAINT_ST_AGREE=1 — каналы сходятся; 0 — расходятся, и
+# это ответ команды, а не деталь вывода: половина включённого режима опаснее выключенного, потому
+# что выглядит как включённый.
+MAINT_ST_ENV="" MAINT_ST_CONT="" MAINT_ST_FILE="" MAINT_ST_EPOCH=""
+MAINT_ST_UNTIL="" MAINT_ST_STARTED="" MAINT_ST_AGREE=1
+maint_state_read() {
+  MAINT_ST_ENV="$(maint_norm "$(maint_env_get MAINTENANCE_MODE || true)")"
+  MAINT_ST_EPOCH="$(maint_env_get AUTH_EPOCH_SINCE | tr -dc '0-9' || true)"
+  if maint_container_exists; then
+    MAINT_ST_CONT="$(maint_norm "$(maint_container_get MAINTENANCE_MODE)")"
+  else
+    # Контейнера нет вовсе — это не третий вариант режима: портал закрыт независимо от переменных,
+    # и сравнивать здесь нечего. Показываем прямо, в расхождение не засчитываем.
+    MAINT_ST_CONT="нет"
+  fi
+  MAINT_ST_UNTIL="" MAINT_ST_STARTED=""
+  if maint_file_present && maint_file_active; then
+    MAINT_ST_FILE="on"
+    MAINT_ST_UNTIL="$(maint_file_field until || true)"
+    MAINT_ST_STARTED="$(maint_file_field startedAt || true)"
+  else
+    MAINT_ST_FILE="off"
+  fi
+  MAINT_ST_AGREE=1
+  [ "$MAINT_ST_ENV" = "$MAINT_ST_FILE" ] || MAINT_ST_AGREE=0
+  if [ "$MAINT_ST_CONT" != "нет" ] && [ "$MAINT_ST_CONT" != "$MAINT_ST_ENV" ]; then
+    MAINT_ST_AGREE=0
+  fi
+}
+
+# Три канала порознь + вывод. Возвращает всегда 0: это отчёт о состоянии, а не проверка, и падать
+# на расхождении здесь нельзя — вывод зовут именно затем, чтобы расхождение увидеть.
+maint_print_state() {
+  local cont_txt file_txt
+  maint_state_read
+  case "$MAINT_ST_CONT" in
+    'нет') cont_txt="<контейнера нет>              (technic-api не создан — портал закрыт в любом случае)" ;;
+    *)     cont_txt="MAINTENANCE_MODE=$MAINT_ST_CONT           (фактическое окружение technic-api)" ;;
+  esac
+  if ! maint_file_present; then
+    file_txt="нет"
+  elif ! maint_file_body >/dev/null 2>&1; then
+    # Файл есть, а прочитать его нечем. Это не «режима нет»: молчаливое приравнивание одного к
+    # другому и есть тот fail-open, из-за которого заглушка снималась бы на бумаге.
+    file_txt="есть, но НЕ ЧИТАЕТСЯ (нет доступа) — состояние объявления неизвестно"
+  elif [ "$MAINT_ST_FILE" = "on" ]; then
+    file_txt="есть${MAINT_ST_UNTIL:+, until=$MAINT_ST_UNTIL}${MAINT_ST_STARTED:+, с $MAINT_ST_STARTED}"
+  else
+    file_txt="есть, но active=false"
+  fi
+  echo "prod.env  : MAINTENANCE_MODE=$MAINT_ST_ENV   AUTH_EPOCH_SINCE=${MAINT_ST_EPOCH:-<нет>}"
+  echo "контейнер : $cont_txt"
+  echo "файл      : $file_txt   ($MAINT_FILE → /maintenance.json)"
+  if [ "$MAINT_ST_AGREE" -eq 1 ]; then
+    if [ "$MAINT_ST_CONT" = "нет" ]; then
+      # Согласованность каналов тут ничего не говорит о доступности: портал закрыт остановкой, а не
+      # режимом, и назвать это «режим снят» значило бы соврать ровно в аварии.
+      echo "состояние : каналы согласованы (режим $MAINT_ST_ENV), но technic-api не создан —"
+      echo "            портал закрыт остановкой контейнера, а не режимом"
+    elif [ "$MAINT_ST_ENV" = "on" ]; then
+      echo "состояние : режим ВКЛЮЧЁН целиком — портал закрыт, объявление раздаётся"
+    else
+      echo "состояние : режим снят целиком — портал открыт"
+    fi
+    return 0
+  fi
+  echo "состояние : РАСХОЖДЕНИЕ КАНАЛОВ — это авария, а не «включено»:"
+  if [ "$MAINT_ST_CONT" != "нет" ] && [ "$MAINT_ST_CONT" != "$MAINT_ST_ENV" ]; then
+    echo "            prod.env=$MAINT_ST_ENV, а контейнер=$MAINT_ST_CONT — technic-api не пересоздавали,"
+    echo "            гейт живёт по СТАРОМУ окружению (портал открыт при закрытом на бумаге — или наоборот)"
+  fi
+  if [ "$MAINT_ST_ENV" != "$MAINT_ST_FILE" ]; then
+    echo "            prod.env=$MAINT_ST_ENV, а файл=$MAINT_ST_FILE — заглушка и гейт разошлись:"
+    echo "            вкладка покажет одно, а api ответит другое"
+  fi
+  echo "            довести состояние: deploy-auto --maintenance=on (закрыть) либо --maintenance=off (открыть)"
+  return 0
+}
+
+# Строка для --status: те же три канала, но одной строкой. Свести их к общему on/off нельзя —
+# спряталось бы ровно то состояние, ради которого строка и заводилась (план §5.3).
+maint_status_line() {
+  local file_txt="нет"
+  maint_state_read
+  if [ "$MAINT_ST_FILE" = "on" ]; then
+    file_txt="есть${MAINT_ST_UNTIL:+ (until=$MAINT_ST_UNTIL)}"
+  elif maint_file_present; then
+    file_txt="есть, но не активен либо не читается"
+  fi
+  printf 'prod.env=%s контейнер=%s файл=%s' "$MAINT_ST_ENV" "$MAINT_ST_CONT" "$file_txt"
+  if [ "$MAINT_ST_AGREE" -ne 1 ]; then
+    printf ' — РАСХОЖДЕНИЕ КАНАЛОВ (какое именно — deploy-auto --maintenance)'
+  fi
+}
 
 if [ "$DO_STATUS" -eq 1 ]; then
   echo "portal   : $PORTAL_DIR"
@@ -766,6 +1051,7 @@ if [ "$DO_STATUS" -eq 1 ]; then
   echo "cutover  : $(cutover_status_line)"
   echo "схема    : $(floor_status_line)"
   echo "клиент   : $(client_floor_line)"
+  echo "режим    : $(maint_status_line)"
   echo "ветка    : $(git_c rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
   echo "HEAD     : $(git_c rev-parse --short HEAD 2>/dev/null || echo '?')"
   vhost_st=0; vhost_state || vhost_st=$?
@@ -1040,6 +1326,440 @@ db_tools_dump() {
   "${COMPOSE[@]}" run --rm -T db-tools sh -c \
     'pg_dump --dbname="${DATABASE_MIGRATION_URL:-$DATABASE_URL}" -Fc -f "/backups/'"$1"'"'
 }
+
+# ---------------------------------------------------------------------------
+# Режим технических работ: ПЕРЕКЛЮЧЕНИЕ (план §5). Место — после flock, и это не формальность:
+# операция закрывает и открывает портал, а параллельный деплой пересоздаёт те же контейнеры;
+# полуприменённое окно — худшее из состояний, потому что выглядит применённым.
+#
+# Отчёта эта операция не пишет намеренно (план Р1): отчёты deploy-auto описывают выкаты, журнала
+# окон у режима нет вовсе, и половинчатая запись создала бы видимость аудита, которого нет.
+# ---------------------------------------------------------------------------
+
+# Причина — ПУБЛИЧНЫЙ текст, который едет в prod.env (план §4.1). Управляющие символы вычищаются
+# целиком, а не экранируются: CR/LF разорвал бы файл окружения на две строки и уронил бы
+# конфигурацию ВСЕГО сервиса, а не только объявление. Длина — 200 символов, обрезка молчаливая.
+maint_clean_text() {
+  local s
+  s="$(printf '%s' "${1:-}" | LC_ALL=C tr -d '\000-\037\177' || true)"
+  if [ "${#s}" -gt 200 ]; then
+    s="${s:0:200}"
+    # Обрезка могла разрубить многобайтовый символ пополам, и в prod.env с JSON поехал бы битый
+    # UTF-8. iconv, если он в системе есть, ловит ровно это; байт-другой с хвоста ничего не меняет.
+    if command -v iconv >/dev/null 2>&1; then
+      while [ -n "$s" ] && ! printf '%s' "$s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; do
+        s="${s%?}"
+      done
+    fi
+  fi
+  printf '%s' "$s"
+}
+
+# Значение свободного текста для prod.env. Одинарные кавычки — не украшение: env_file compose
+# разбирает правилами dotenv, и в ДВОЙНЫХ кавычках раскрывает и escape-последовательности, и
+# ${...}; в одинарных значение берётся буквально. Саму одинарную кавычку из текста поэтому
+# заменяем на типографскую: внутри одинарных кавычек dotenv экранирования не знает, и вставить её
+# нечем — а закрыть кавычку посреди значения значит отдать хвост причины парсеру как имя ключа.
+# ПУСТОЕ значение пишется БЕЗ кавычек: `MAINTENANCE_UNTIL=` — обычный способ снять переменную, и
+# читается он одинаково любым разбором env-файла. Литеральные две кавычки, попади они в значение,
+# конфиг api разобрал бы как дату и отказался бы стартовать — на СНЯТИИ режима, то есть ровно там,
+# где цена ошибки максимальна.
+maint_env_quote() {
+  [ -n "${1:-}" ] || { printf ''; return 0; }
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/’/g")"
+}
+
+# Ожидаемое окончание работ. Нормализуется в ISO 8601 UTC: строка едет и в объявление, и в
+# основание Retry-After у гейта, а мусор в ней клиент прочитать не сможет. Код 1 — не разобрано.
+maint_until_iso() {
+  case "${1:-}" in -*) return 1 ;; esac
+  date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null
+}
+
+# Правка prod.env парами «ключ значение»: атомарно и с сохранением владельца и режима. Файл лежит
+# root:docker 0640, и потерять эти биты значит либо открыть секреты, либо оставить портал без
+# конфигурации. Значение пишется КАК ЕСТЬ — экранирование делает вызывающая сторона.
+maint_env_write() {
+  sudo sh -c '
+    set -eu
+    f="$1"; shift
+    t="$(mktemp "${f}.XXXXXX")"
+    cat "$f" >"$t"
+    while [ "$#" -ge 2 ]; do
+      k="$1"; v="$2"; shift 2
+      u="$(mktemp "${f}.XXXXXX")"
+      seen=0
+      # Строка правится НА МЕСТЕ, а не сносится с дописыванием в конец: prod.env читают глазами, и
+      # переезд ключа в хвост при каждом окне превратил бы конфигурацию в журнал правок. Повторные
+      # строки того же ключа отбрасываются: compose взял бы последнюю, а человек читает первую.
+      while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+          "$k"=*) if [ "$seen" -eq 0 ]; then printf "%s=%s\n" "$k" "$v"; seen=1; fi ;;
+          *) printf "%s\n" "$line" ;;
+        esac
+      done <"$t" >"$u"
+      [ "$seen" -eq 1 ] || printf "%s=%s\n" "$k" "$v" >>"$u"
+      mv -f "$u" "$t"
+    done
+    chown --reference="$f" "$t"
+    chmod --reference="$f" "$t"
+    sync "$t" 2>/dev/null || sync
+    mv -f "$t" "$f"
+  ' _ "$PROD_ENV" "$@" || fail "не удалось записать $PROD_ENV (нужен sudo)"
+}
+
+# Флаг-файл пишется атомарно (временный рядом + mv): веб читает его на каждый опрос вкладки, и
+# полуфайл прочитался бы как «режима нет» — fail-open ровно там, где нужен fail-closed.
+maint_file_write() {
+  sudo sh -c '
+    set -eu
+    f="$1"; body="$2"; d="$(dirname "$f")"
+    t="$(mktemp "$d/.maintenance.XXXXXX")"
+    printf "%s\n" "$body" >"$t"
+    chown --reference="$d" "$t" 2>/dev/null || true
+    # 0644, а не 0640 как у prod.env, и это не небрежность: файл читает nginx ВНУТРИ technic-web
+    # непривилегированным пользователем, и 0640 обернулся бы для него 403 — то есть снятой
+    # заглушкой. Секрета в файле нет: это публичное объявление, которое и так отдаётся всем.
+    chmod 0644 "$t"
+    sync "$t" 2>/dev/null || sync
+    mv -f "$t" "$f"
+    sync "$d" 2>/dev/null || sync
+  ' _ "$MAINT_FILE" "$1" || fail "не удалось записать $MAINT_FILE (нужен sudo)"
+}
+
+maint_file_remove() {
+  sudo sh -c '
+    set -eu
+    f="$1"; d="$(dirname "$f")"
+    rm -f "$f"
+    sync "$d" 2>/dev/null || sync
+  ' _ "$MAINT_FILE" || fail "не удалось снять $MAINT_FILE (нужен sudo) — объявление осталось висеть
+  на открытом портале. Снимите вручную: sudo rm -f $MAINT_FILE"
+}
+
+# Барьер секунды (план §4.2). НЕ перестраховка: страж отвергает токен с `iat <= AUTH_EPOCH_SINCE`,
+# а `iat` меряется ЦЕЛЫМИ секундами. Поднимись новый api в ту же секунду, в которую записана эпоха,
+# первый же выданный им токен оказался бы недействительным — и вкладка ушла бы в бесконечный круг
+# «401 → refresh → 401». Ждём, пока часы уйдут ЗА секунду эпохи, и только потом пересоздаём.
+maint_wait_past_epoch() {
+  local epoch="$1" now
+  now="$(date +%s)"
+  # Эпоха из будущего (часы площадки разошлись, значение уже лежало в prod.env) — ждать её нельзя:
+  # ожидание было бы не барьером в секунду, а зависанием команды на годы. Смысла в нём тоже нет —
+  # конфиг такое значение отвергает при старте (план §4.1). Говорим прямо и идём дальше: причина
+  # здесь в часах, и найти её надо по этому сообщению, а не по повисшей команде.
+  if [ "$(( epoch - now ))" -gt 5 ]; then
+    warn "AUTH_EPOCH_SINCE=$epoch опережает часы сервера на $(( epoch - now )) с — барьер секунды пропущен."
+    warn "Небольшой рассинхрон конфиг api терпит, заметный — отвергает и не поднимается вовсе."
+    warn "Разбираться надо со временем площадки, а не с переменной: уменьшать эпоху нельзя."
+    return 0
+  fi
+  while [ "$(date +%s)" -le "$epoch" ]; do
+    sleep 0.2 2>/dev/null || sleep 1
+  done
+}
+
+# Тег, на котором СЕЙЧАС работает api. Пересоздание обязано вернуть тот же образ: режим меняет
+# окружение, а не код. Без явного тега `up -d` взял бы `:latest`, а он после недоведённого деплоя
+# указывает на ПРОШЛЫЙ здоровый релиз — закрытие портала молча откатило бы код.
+maint_api_tag() {
+  local img
+  img="$(docker inspect -f '{{.Config.Image}}' technic-api 2>/dev/null || true)"
+  case "$img" in
+    technic-api:*) printf '%s' "${img##*:}" ;;
+    *)             printf 'latest' ;;
+  esac
+}
+
+# Проба возвращает код ответа либо `err`. Пустой ответ бывает и когда контейнер лёг, и ронять на
+# нём команду нельзя: её вывод нужен как раз в эту минуту.
+maint_probe_code() {
+  local out
+  out="$("$@" 2>/dev/null || true)"
+  printf '%s' "${out:-err}"
+}
+
+# Отдаётся ли объявление вебом. Спрашиваем technic-web, а не диск: маунт каталога и локация в
+# spa.conf — части, которые команда не ставит, и «файл записан» ещё не значит «объявление видно».
+# Ходим изнутри api: наружу technic-web смотрит только через infra-nginx.
+maint_web_probe() {
+  "${COMPOSE[@]}" exec -T technic-api node -e \
+    "fetch('http://technic-web/maintenance.json') \
+       .then(r => { console.log(r.status); process.exit(0); }) \
+       .catch(() => { console.log('err'); process.exit(0); });" \
+    2>/dev/null | tr -dc '0-9a-z' | tail -c 8
+}
+
+if [ "$DO_MAINTENANCE" -eq 1 ]; then
+  # Отчёта у операции нет (см. выше) — снимаем trap, чтобы отказ не оставлял в реестре выкатов
+  # запись о выкате, которого не было.
+  trap - EXIT
+
+  [ -f "$PROD_ENV" ] || fail "нет $PROD_ENV"
+  [ -r "$PROD_ENV" ] || fail "$PROD_ENV нечитаем владельцем ($DEPLOY_USER) — нужен режим root:docker 0640"
+
+  if [ -z "$MAINTENANCE_ARG" ]; then
+    maint_print_state
+    exit 0
+  fi
+
+  # --- Гейт cutover (план §5.1). На активных фазах api остановлен ПРОТОКОЛОМ и намеренно, а
+  # пересоздание контейнера посадило бы код на схему, которой протокол его ещё не показывал.
+  cutover_phase_or_fail
+  case "$CUTOVER_PHASE" in
+    migrating|migrated|irreversible)
+      fail "идёт необратимый выкат $CUTOVER_CANDIDATE (фаза $CUTOVER_PHASE): technic-api остановлен
+  протоколом намеренно, и пересоздание контейнера посадило бы код на схему, которой протокол его
+  ещё не показывал. Сначала доведите выкат (deploy-auto --cutover) либо откатите его
+  (deploy-auto --cutover-revert), и только потом трогайте режим.
+  Портал в этих фазах и так закрыт — остановкой сервисов." ;;
+  esac
+
+  # --- Барьер пола клиента (план §3). Заглушку рисует только НОВАЯ сборка: она одна понимает 503
+  # maintenance_mode и опрашивает /maintenance.json. Пол ниже контракта раздаваемой сборки значит,
+  # что в окне живут вкладки, которые объявления не покажут вовсе, — и для их людей окно пройдёт
+  # как «портал сломался». Порядок выката держится машиной, а не памятью оператора.
+  if [ "$MAINTENANCE_ARG" = "on" ]; then
+    MAINT_FLOOR="$(client_floor_current || true)"
+    MAINT_SERVED="$(client_contract_deployed || true)"
+    MAINT_BARRIER=""
+    if [ -z "$MAINT_SERVED" ]; then
+      MAINT_BARRIER="контракт раздаваемой сборки не прочитан (ревизия ${CURRENT_BEFORE:-<нет>}) — проверить пол нечем"
+    elif [ -z "$MAINT_FLOOR" ] || [ "$MAINT_FLOOR" -lt "$MAINT_SERVED" ]; then
+      MAINT_BARRIER="пол клиента ${MAINT_FLOOR:-<не задан, умолчание 1>} НИЖЕ контракта раздаваемой сборки ($MAINT_SERVED)"
+    fi
+    if [ -n "$MAINT_BARRIER" ]; then
+      if [ "$ALLOW_OLD_CLIENTS" -eq 1 ]; then
+        warn "=== $MAINT_BARRIER"
+        warn "=== ПЕРЕДАН --allow-old-clients: ЧАСТЬ ВКЛАДОК ОСТАНЕТСЯ БЕЗ ОБЪЯВЛЕНИЯ. Они не умеют"
+        warn "=== ни читать 503 maintenance_mode, ни опрашивать /maintenance.json, и в окне их люди"
+        warn "=== увидят сетевые ошибки — ровно то, ради чего режим и заводился."
+        warn "=== Правильный путь: deploy-auto --client-floor=${MAINT_SERVED:-N}, и только потом --maintenance=on."
+      else
+        fail "$MAINT_BARRIER.
+  Заглушку рисует только новая сборка: она одна понимает 503 maintenance_mode и опрашивает
+  /maintenance.json. С таким полом половина вкладок увидит в окне сетевые ошибки вместо объявления.
+  Поднимите пол:  deploy-auto --client-floor=${MAINT_SERVED:-<контракт раздаваемой сборки>}
+  Либо, понимая цену, повторите с --allow-old-clients."
+      fi
+    fi
+  fi
+
+  # --- Каталог объявления. Его заводит сам deploy-auto при старте (maint_dir_bootstrap), поэтому
+  # его отсутствие здесь — не «ещё не завели», а отказ: не отработал sudo либо каталог снесли, и
+  # без него нет ни файла, ни маунта в technic-web, которым этот файл отдавать.
+  if ! { [ -d "$MAINT_DIR" ] || sudo -n test -d "$MAINT_DIR" 2>/dev/null; }; then
+    if [ "$MAINTENANCE_ARG" = "on" ]; then
+      fail "нет каталога $MAINT_DIR — раздать объявление нечем.
+  Его заводит сам deploy-auto при запуске (root:docker 0751), значит sudo не сработал или каталог
+  снесли; /maintenance.json — единственный канал режима, который переживает остановку api, и без
+  него окно закроет портал молча. Заведите каталог и повторите:
+    sudo install -d -o root -g docker -m 0751 $MAINT_DIR
+  Проверьте заодно, что он примонтирован в technic-web как /etc/nginx/maintenance:ro."
+    fi
+    warn "каталога $MAINT_DIR нет — снимать нечего; продолжаю снятие режима по prod.env"
+  fi
+
+  # Контракт для проб. Гейт версии клиента стоит ПЕРЕД гейтом режима, и запрос без заголовка он
+  # отобьёт своим 426 — проба мерила бы не то, что проверяет.
+  MAINT_PROBE_CONTRACT="$(client_contract_deployed || true)"
+  [ -n "$MAINT_PROBE_CONTRACT" ] || MAINT_PROBE_CONTRACT="$(client_floor_current || true)"
+
+  MAINT_UNTIL_ARG_ISO=""
+  if [ -n "$MAINTENANCE_UNTIL_ARG" ]; then
+    MAINT_UNTIL_ARG_ISO="$(maint_until_iso "$MAINTENANCE_UNTIL_ARG")" \
+      || fail "--until='$MAINTENANCE_UNTIL_ARG' не разбирается как дата. Ожидается ISO 8601, например
+  --until='2026-09-04T03:00:00Z' или --until='2026-09-04 06:00' (местное время сервера)."
+    if [ "$(date -u -d "$MAINT_UNTIL_ARG_ISO" +%s 2>/dev/null || echo 0)" -le "$(date +%s)" ]; then
+      warn "--until указывает в прошлое ($MAINT_UNTIL_ARG_ISO): вкладка покажет просроченный срок,"
+      warn "а Retry-After гейт возьмёт умолчанием. Обычно это перепутанный часовой пояс."
+    fi
+  fi
+
+  if [ "$MAINTENANCE_ARG" = "on" ]; then
+    MAINT_ENV_MODE_NOW="$(maint_norm "$(maint_env_get MAINTENANCE_MODE || true)")"
+    MAINT_EPOCH_PREV="$(maint_env_get AUTH_EPOCH_SINCE | tr -dc '0-9' || true)"
+
+    # Эпоха поднимается ОДИН раз на окно: повторный `on` после обрыва доводит состояние, а не
+    # обнуляет токены заново. Убывать ей нельзя никогда — уменьши её, и токены, выданные до окна,
+    # снова стали бы валидными: обнуление отменилось бы задним числом (план §4.1).
+    if [ "$MAINT_ENV_MODE_NOW" = "on" ] && [ -n "$MAINT_EPOCH_PREV" ] && [ "$MAINT_EPOCH_PREV" -gt 0 ]; then
+      MAINT_EPOCH="$MAINT_EPOCH_PREV"
+      log "окно уже открыто в prod.env — эпоха доступа остаётся $MAINT_EPOCH (повтор её не двигает)"
+    else
+      MAINT_EPOCH="$(date +%s)"
+      if [ -n "$MAINT_EPOCH_PREV" ] && [ "$MAINT_EPOCH_PREV" -ge "$MAINT_EPOCH" ]; then
+        warn "часы сервера дают $MAINT_EPOCH, а в prod.env уже $MAINT_EPOCH_PREV — эпоха НЕ убывает,"
+        warn "оставляю прежнюю. Проверьте время на площадке: расходящиеся часы ломают авторизацию."
+        MAINT_EPOCH="$MAINT_EPOCH_PREV"
+      fi
+    fi
+
+    # Причина и окно. При ПОВТОРНОМ `on` (доведении того же окна) не переданные заново значения
+    # берутся из prod.env — иначе обрыв стирал бы объявление. Для НОВОГО окна пустое значит пустое:
+    # прошлое «до 03:00» в свежем объявлении хуже, чем его отсутствие.
+    if [ -n "$MAINTENANCE_REASON_ARG" ]; then
+      MAINT_REASON_TXT="$(maint_clean_text "$MAINTENANCE_REASON_ARG")"
+    elif [ "$MAINT_ENV_MODE_NOW" = "on" ]; then
+      MAINT_REASON_TXT="$(maint_clean_text "$(maint_env_get MAINTENANCE_REASON || true)")"
+    else
+      MAINT_REASON_TXT=""
+    fi
+    if [ -n "$MAINT_UNTIL_ARG_ISO" ]; then
+      MAINT_UNTIL_TXT="$MAINT_UNTIL_ARG_ISO"
+    elif [ "$MAINT_ENV_MODE_NOW" = "on" ]; then
+      MAINT_UNTIL_TXT="$(maint_clean_text "$(maint_env_get MAINTENANCE_UNTIL || true)")"
+    elif maint_file_active; then
+      # prod.env потерян, а объявление живо: срок берём из уцелевшего канала. Иначе доведение
+      # состояния стирало бы окончание работ ровно в том повторе, который его обязан сохранить.
+      MAINT_UNTIL_TXT="$(maint_clean_text "$(maint_file_field until || true)")"
+    else
+      MAINT_UNTIL_TXT=""
+    fi
+    [ -n "$MAINT_REASON_TXT" ] || warn "причина не задана (--reason='...') — вкладка покажет объявление без объяснения"
+
+    # --- Шаг 1: ФАЙЛ ПЕРВЫМ (план §5.2). Обрыв на любом следующем шаге оставляет портал закрытым,
+    # а это безопасная сторона. Обратный порядок оставил бы открытый портал при закрытом api.
+    MAINT_STARTED=""
+    if maint_file_active; then MAINT_STARTED="$(maint_file_field startedAt || true)"; fi
+    if [ -n "$MAINT_STARTED" ]; then
+      log "окно уже объявлено с $MAINT_STARTED — переписываю объявление, начало не двигаю"
+    else
+      MAINT_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    fi
+    log "объявление → $MAINT_FILE (начато $MAINT_STARTED${MAINT_UNTIL_TXT:+, до $MAINT_UNTIL_TXT})"
+    maint_file_write "$(printf '{"active": true, "reason": "%s", "until": "%s", "startedAt": "%s"}' \
+      "$(json_escape "$MAINT_REASON_TXT")" "$(json_escape "$MAINT_UNTIL_TXT")" "$(json_escape "$MAINT_STARTED")")"
+
+    # --- Шаг 2: prod.env. Эпоха едет тем же движением, что и режим (план Р5): два шага означали бы
+    # окно, в котором портал закрыт, а старые токены живы, — и забыть второй можно ровно в том
+    # выкате, ради которого всё затевалось.
+    log "prod.env → MAINTENANCE_MODE=on, AUTH_EPOCH_SINCE=$MAINT_EPOCH"
+    maint_env_write \
+      MAINTENANCE_MODE on \
+      AUTH_EPOCH_SINCE "$MAINT_EPOCH" \
+      MAINTENANCE_REASON "$(maint_env_quote "$MAINT_REASON_TXT")" \
+      MAINTENANCE_UNTIL "$(maint_env_quote "$MAINT_UNTIL_TXT")"
+
+    # --- Шаг 3: барьер секунды. См. maint_wait_past_epoch — одна строка снимает целый класс отказов.
+    maint_wait_past_epoch "$MAINT_EPOCH"
+
+    # --- Шаг 4: пересоздание. `--force-recreate`: env_file читается при СОЗДАНИИ контейнера, и
+    # обычный `up -d` мог бы счесть конфигурацию неизменной.
+    log "пересоздание technic-api (образ прежний: режим меняет окружение, а не код)"
+    TAG="$(maint_api_tag)" "${COMPOSE[@]}" up -d --force-recreate --no-deps technic-api \
+      || fail "не удалось пересоздать technic-api. Объявление записано, prod.env закрыт — портал
+  закрыт, и это безопасная сторона. Повторите: deploy-auto --maintenance=on"
+    health_check || fail "health не подтверждён после пересоздания technic-api. Объявление висит,
+  портал закрыт — безопасная сторона. Логи: ${COMPOSE[*]} logs --tail=50 technic-api"
+
+    # --- Шаг 5: пробы. Проверяется исход, а не факт записи; вторая строка важнее первой.
+    MAINT_C_DOMAIN="$(maint_probe_code client_floor_probe "$MAINT_PROBE_CONTRACT" /api/v1/service-requests GET)"
+    MAINT_C_REFRESH="$(maint_probe_code client_floor_probe "$MAINT_PROBE_CONTRACT" /api/v1/auth/refresh POST)"
+    MAINT_C_WEB="$(maint_probe_code maint_web_probe)"
+    echo
+    echo "доменная ручка           : $MAINT_C_DOMAIN  (ожидается 503)"
+    echo "обновление сессии        : $MAINT_C_REFRESH  (503 быть НЕ должно)"
+    echo "/maintenance.json у веба : $MAINT_C_WEB  (ожидается 200)"
+    # Пробы ФАТАЛЬНЫ, как и при снятии. Предупреждения здесь мало: команда закрывает портал перед
+    # окном миграции, и «режим ВКЛЮЧЁН» с кодом 0 при неотбивающем гейте — это ложный успех, по
+    # которому оператор пойдёт останавливать базу. Состояние при отказе остаётся ЗАКРЫТЫМ
+    # (объявление на месте, prod.env закрыт) — чинить и повторять, а не откатывать: повтор `on`
+    # доводит состояние.
+    case "$MAINT_C_DOMAIN" in
+      503) ;;
+      *) fail "доменная ручка отвечает '$MAINT_C_DOMAIN', ожидалось 503 — гейт режима НЕ действует,
+  портал открыт при закрытом на бумаге. Объявление и prod.env оставлены закрытыми.
+  Проверьте MAINTENANCE_MODE в $PROD_ENV и ${COMPOSE[*]} logs --tail=50 technic-api,
+  затем повторите deploy-auto --maintenance=on" ;;
+    esac
+    case "$MAINT_C_REFRESH" in
+      503|err|'')
+        fail "обновление сессии отвечает '$MAINT_C_REFRESH' — режим выкинет людей на форму входа
+  вместо тихого продления (план Р4: /auth/refresh выведен из-под гейта насовсем). Состояние
+  оставлено закрытым. Проверьте перечень освобождённых путей в apps/api/src/lib/maintenance.ts" ;;
+    esac
+    case "$MAINT_C_WEB" in
+      200) ;;
+      *) fail "веб отдаёт /maintenance.json как '$MAINT_C_WEB', ожидалось 200 — вкладка не увидит
+  объявления, когда api остановят, а это главный сценарий окна. Частая причина — права каталога
+  $MAINT_DIR (нужно root:docker 0751) или отсутствующий маунт в technic-web.
+  Состояние оставлено закрытым; после починки повторите deploy-auto --maintenance=on" ;;
+    esac
+    echo
+    maint_print_state
+    log "готово: режим технических работ ВКЛЮЧЁН"
+    log "technic-worker режим НЕ гасит намеренно (план Р7): рассылки, ушедшие в окне, позовут людей"
+    log "в закрытый портал. Если это не устраивает — docker compose -p technic stop technic-worker"
+  else
+    # --- Снятие идёт ОБРАТНЫМ порядком (план §5.2): сперва prod.env и контейнер, файл — последним.
+    # Пока api не подтверждён, заглушка обязана висеть: сняв её первой, мы показали бы работающий
+    # портал в ту минуту, когда он ещё не отвечает.
+    MAINT_EPOCH_PREV="$(maint_env_get AUTH_EPOCH_SINCE | tr -dc '0-9' || true)"
+    log "prod.env → MAINTENANCE_MODE=off (AUTH_EPOCH_SINCE=${MAINT_EPOCH_PREV:-<нет>} ОСТАЁТСЯ: снять её"
+    log "значило бы оживить токены, выданные до окна, — обнуление отменилось бы задним числом)"
+    maint_env_write \
+      MAINTENANCE_MODE off \
+      MAINTENANCE_REASON "$(maint_env_quote "")" \
+      MAINTENANCE_UNTIL "$(maint_env_quote "")"
+
+    log "пересоздание technic-api (образ прежний)"
+    TAG="$(maint_api_tag)" "${COMPOSE[@]}" up -d --force-recreate --no-deps technic-api \
+      || fail "не удалось пересоздать technic-api — в prod.env режим уже снят, а гейт живёт по
+  старому окружению. Объявление НЕ снято намеренно. Повторите: deploy-auto --maintenance=off"
+    health_check || fail "health не подтверждён — объявление ОСТАВЛЕНО висеть намеренно: пока api не
+  отвечает, заглушка честнее открытого портала. Логи: ${COMPOSE[*]} logs --tail=50 technic-api,
+  затем повторите deploy-auto --maintenance=off"
+
+    MAINT_C_DOMAIN="$(maint_probe_code client_floor_probe "$MAINT_PROBE_CONTRACT" /api/v1/service-requests GET)"
+    MAINT_C_REFRESH="$(maint_probe_code client_floor_probe "$MAINT_PROBE_CONTRACT" /api/v1/auth/refresh POST)"
+    echo
+    echo "доменная ручка           : $MAINT_C_DOMAIN  (503 быть НЕ должно)"
+    echo "обновление сессии        : $MAINT_C_REFRESH  (503 быть НЕ должно)"
+    # Снятие объявления — последнее действие и единственное, что вкладка увидит как «работы
+    # кончились». Отдавать его на неподтверждённом гейте нельзя: заглушка уйдёт, а запросы будут
+    # отбиваться. Отсюда fail-closed и здесь — с прямой дверью наружу, если пробу не выполнить.
+    case "$MAINT_C_DOMAIN" in
+      503|err|'')
+        fail "доменная ручка отвечает '$MAINT_C_DOMAIN' — гейт режима не снялся или проверить это не
+  удалось. Объявление НЕ снимаю: на закрытом портале заглушка честна, а снятая — лжёт.
+  Смотрите ${COMPOSE[*]} logs --tail=50 technic-api и повторите deploy-auto --maintenance=off.
+  Если api заведомо здоров, а проба не выполняется, снимите объявление вручную:
+  sudo rm -f $MAINT_FILE" ;;
+    esac
+    case "$MAINT_C_REFRESH" in
+      503|err|'')
+        # Объявление ещё НЕ снято — снимается оно ниже, — поэтому отказ здесь оставляет состояние
+        # закрытым, как и при включении.
+        fail "обновление сессии отвечает '$MAINT_C_REFRESH' — гейт снялся не полностью, и люди уйдут
+  на форму входа. Объявление НЕ снимаю. Логи: ${COMPOSE[*]} logs --tail=50 technic-api,
+  затем повторите deploy-auto --maintenance=off" ;;
+    esac
+
+    if maint_file_present; then
+      log "снимаю объявление: $MAINT_FILE"
+      maint_file_remove
+    else
+      log "объявления нет — снимать нечего (доведение состояния после обрыва)"
+    fi
+    MAINT_C_WEB="$(maint_probe_code maint_web_probe)"
+    echo "/maintenance.json у веба : $MAINT_C_WEB  (ожидается 404)"
+    case "$MAINT_C_WEB" in
+      404) ;;
+      # Файл уже снят, портал уже открыт — отказ ничего не портит, но и молчать нельзя: вкладки
+      # останутся с заглушкой на работающем портале, а оператор уйдёт с кодом 0.
+      *) fail "веб отдаёт /maintenance.json как '$MAINT_C_WEB', ожидалось 404 — объявление снято с
+  диска, но веб его всё ещё раздаёт: вкладки останутся с заглушкой на работающем портале.
+  Проверьте маунт каталога $MAINT_DIR в technic-web и локацию = /maintenance.json в spa.conf" ;;
+    esac
+    echo
+    maint_print_state
+    log "готово: режим технических работ СНЯТ"
+    log "вкладки снимут заглушку сами по опросу файла, почистят кэш и продолжат работу без входа;"
+    log "остановленный на время окна technic-worker поднимается вручную: docker compose -p technic start technic-worker"
+  fi
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Составы миграций: чем отвечают на вопросы «что умеет этот код» и «что накатано сейчас».
@@ -1957,6 +2677,17 @@ if [ "$DO_CUTOVER" -eq 1 ]; then
       REASON="переход к заморозке не завершён (Р28): --cutover прошёл бы мимо предусловия и мимо отметки о завершении. Сначала проведите выкат 3 обычным деплоем (deploy-auto), затем катите необратимую миграцию отдельным --cutover"
       fail "$REASON"
     fi
+  fi
+  # Обратная проверка режима технических работ (план §5.1) — ПРЕДУПРЕЖДЕНИЕ, а не отказ: окно
+  # бывает аварийным, и вторая дверь, которую придётся обходить, хуже, чем портал, закрывшийся без
+  # объявления (а это ровно сегодняшнее поведение). Стоит здесь, перед самой остановкой сервисов:
+  # раньше её смыло бы выводом сборки.
+  if [ "$(maint_norm "$(maint_env_get MAINTENANCE_MODE || true)")" != "on" ]; then
+    warn "режим технических работ ВЫКЛЮЧЕН, а --cutover сейчас остановит technic-api и worker:"
+    warn "открытые вкладки увидят сетевые ошибки вместо объявления, а старые access-токены"
+    warn "переживут окно. Закрыть портал заранее (отдельной командой, до выката):"
+    warn "  deploy-auto --maintenance=on --reason='<что делаем>' --until='<когда>'"
+    warn "Выкат продолжается — это предупреждение, а не отказ."
   fi
   cutover_run
 fi

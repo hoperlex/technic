@@ -1,6 +1,10 @@
 import { Button, Space, Tag, Tooltip, Typography, type TableColumnType } from 'antd';
 import { DeleteOutlined, EditOutlined, HistoryOutlined, SwapOutlined } from '@ant-design/icons';
-import { officeEquipmentTitle, type OfficeEquipmentDto } from '@technic/contracts';
+import {
+  officeEquipmentSpecLine,
+  officeEquipmentTitle,
+  type OfficeEquipmentDto,
+} from '@technic/contracts';
 import { actionsColumn, boolBadgeColumn, textColumn, type CardConfig } from '@shared/ui';
 import { EquipmentStateTag, WarrantyTag } from '@entities/office-equipment';
 
@@ -63,6 +67,16 @@ export function officeEquipmentColumns({
             <>
               {' '}
               <Tag>Не используется</Tag>
+            </>
+          )}
+          {/* Цветность печати второй строкой (план `docs/office-equipment-specs-plan.md`, Р8): у
+              МФУ и принтеров «цв.», «ч/б» или «н/д», у остальных типов строки нет вовсе — им этот
+              вопрос не задают. Серым и тем же приёмом, что номера под моделью в соседней колонке:
+              пометка уточняет тип, а не спорит с ним за внимание. */}
+          {officeEquipmentSpecLine(r.specs) && (
+            <>
+              <br />
+              <Typography.Text type="secondary">{officeEquipmentSpecLine(r.specs)}</Typography.Text>
             </>
           )}
         </>
@@ -196,7 +210,12 @@ export function officeEquipmentCard({
   return {
     title: (r) => officeEquipmentTitle(r),
     badge: (r) => <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Да' : 'Нет'}</Tag>,
-    primary: (r) => r.type.name,
+    // Тип и цветность одной строкой: на телефоне у карточки строк меньше, чем колонок у таблицы, и
+    // отдельной строки ради двух знаков здесь не заводят.
+    primary: (r) =>
+      officeEquipmentSpecLine(r.specs)
+        ? `${r.type.name} · ${officeEquipmentSpecLine(r.specs)}`
+        : r.type.name,
     lines: [
       (r) => `${r.object.code} — ${r.object.name}`,
       (r) => (r.department ? `Отдел: ${r.department.name}` : 'Отдел: не закреплена'),

@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { applyMigrations } from '../src/db/migration-journal';
+import { applyMigrations, readMigration } from '../src/db/migration-journal';
 // Только тип: значение берётся через `await import` уже после того, как выставлено окружение, —
 // конфиг проверяет его при импорте и без него падает.
 import type { db as AppDb } from '../src/db/client';
@@ -31,7 +31,7 @@ import type { db as AppDb } from '../src/db/client';
  *    арендой с уже проставленным итогом**. Перебор неполных сочетаний — это перебор строк, которых
  *    не бывает, и предъявить его можно только базе.
  *
- * Имя нарушенного ограничения сверяется наравне с кодом: у таблицы четырнадцать `CHECK`'ов, и
+ * Имя нарушенного ограничения сверяется наравне с кодом: у таблицы пятнадцать `CHECK`'ов, и
  * невозможная строка часто нарушает сразу два. Сравнивай тест один код `23514` — он проходил бы,
  * отказывай база по другой причине, чем названо в заголовке, и снятое послабление осталось бы
  * незамеченным. Поэтому каждый случай подобран так, чтобы нарушение было **ровно одно**.
@@ -237,16 +237,23 @@ function deal(scene: Scene): Row {
 /** Полный возврат: три части, которые лестница допускает только вместе. */
 const FULL_RETURN: Row = { actualTo: '2026-09-10', actualUnits: '26.00', finalCost: '31200.00' };
 
-/** Вставка заявки: обязательные поля одни и те же, различается только то, что проверяет случай. */
+/**
+ * Вставка заявки: обязательные поля одни и те же, различается только то, что проверяет случай.
+ *
+ * Ни написания, ни ссылки на модель здесь нет: `kind_name` снята уборкой Э3, а `mech_model_id`
+ * осталась необязательной (ADR 0156) — заявка без модели после Э3 законна, и база принимает её.
+ * Строгость выбора держит сервер, и проверяется она маршрутными наборами, а не этим файлом: здесь
+ * меряют ограничения самой базы, и лишний внешний ключ в каждой строке только запутал бы отказы.
+ */
 function insert(scene: Scene, row: Row): ReturnType<typeof sql> {
   return sql`
     INSERT INTO mech_requests (
-      object_id, kind_name, planned_from, planned_to, responsible_name, responsible_phone,
+      object_id, planned_from, planned_to, responsible_name, responsible_phone,
       created_by, status,
       lessor_id, lessor_type, lessor_is_active, rate, rate_unit,
       actual_from, actual_to, actual_units, final_cost
     ) VALUES (
-      ${scene.objectId}, 'Виброплита', '2026-09-01', '2026-09-30', 'Иванов И.И.', '9990000000',
+      ${scene.objectId}, '2026-09-01', '2026-09-30', 'Иванов И.И.', '9990000000',
       ${scene.userId}, ${row.status ?? 'new'},
       ${row.lessorId ?? null}, ${row.lessorType ?? null}, ${row.lessorIsActive ?? null},
       ${row.rate ?? null}, ${row.rateUnit ?? null},
@@ -486,6 +493,120 @@ describe.skipIf(!DB_URL)('механизация: инварианты базы 
           insert(scene, { ...deal(scene), status: 'cancelled', actualFrom: '2026-09-02' }),
         ),
       ).toEqual(check('mech_requests_cancel_check'));
+    });
+  }, 60_000);
+
+  // ── Уборка написаний (Э3, ADR 0156, миграция 0256) ──
+
+  /**
+   * Тот самый снимок, которым миграция уносит написания в журнал, — **прочитанный из файла**, а не
+   * набранный здесь заново. Набранный заново, он проверял бы сам себя: поправь кто-нибудь отбор в
+   * миграции, и тест остался бы зелёным на прежнем тексте. Тот же приём, каким прежде проверялся
+   * перенос заявок на ссылку (Э2, миграция 0251); сам перенос больше не воспроизводим — колонок,
+   * которые он читал, в базе нет.
+   */
+  function kindSnapshotStatement(): string {
+    const text = readMigration('0256_mech_requests_drop_kind.sql');
+    const match = /INSERT INTO audit_log[\s\S]*?;/u.exec(text);
+    if (!match) throw new Error('В 0256 не нашёлся снимок написаний — тест устарел');
+    return match[0];
+  }
+
+  it('написание снято из схемы вместе со своим ключом, ограничением и индексом', async () => {
+    await inScene(async (tx, scene) => {
+      const runner = tx as unknown as { execute: (typeof AppDb)['execute'] };
+      const missing = async (query: Parameters<(typeof AppDb)['execute']>[0]): Promise<number> =>
+        Number((await runner.execute<{ n: string }>(query)).rows[0]!.n);
+
+      // Обе колонки, `CHECK` непустоты и индекс ключа — перечнем, а не одной проверкой: снятие
+      // колонки уносит ограничение и индекс молча, и «нет колонки» ещё не значит, что в схеме не
+      // осталось их следов под теми же именами.
+      expect(
+        await missing(sql`
+          SELECT count(*) AS n FROM information_schema.columns
+           WHERE table_name = 'mech_requests' AND column_name IN ('kind_name', 'kind_key')`),
+      ).toBe(0);
+      expect(
+        await missing(sql`
+          SELECT count(*) AS n FROM pg_constraint
+           WHERE conname = 'mech_requests_kind_not_blank_check'`),
+      ).toBe(0);
+      expect(
+        await missing(
+          sql`SELECT count(*) AS n FROM pg_class WHERE relname = 'mech_requests_kind_key_idx'`,
+        ),
+      ).toBe(0);
+
+      // И главное следствие: заявка без модели базе законна. Помощник `insert` ссылки не ставит
+      // вовсе — то есть каждая строка этого файла и есть такая заявка, — но сказано это здесь
+      // прямо: `NOT NULL`, обещанный планом, не поставлен намеренно, и молчаливой проверкой такое
+      // решение не документируется.
+      expect(await refusal(tx, insert(scene, {}))).toBe(ACCEPTED);
+    });
+  }, 60_000);
+
+  it('снимок написаний: заявка без модели уезжает в журнал строкой, заявка с моделью — нет', async () => {
+    await inScene(async (tx, scene) => {
+      const runner = tx as unknown as { execute: (typeof AppDb)['execute'] };
+      // Колонка возвращается НА ВРЕМЯ ЭТОЙ ТРАНЗАКЦИИ: миграция уже накатана, а проверять снимок
+      // надо на тех данных, ради которых он писался. Транзакция откатывается вместе со сценой, и
+      // база остаётся без колонки — DDL в Postgres обратим ровно так же, как строки.
+      await runner.execute(sql`ALTER TABLE mech_requests ADD COLUMN kind_name text`);
+
+      const model = (
+        await runner.execute<{ id: string }>(sql`
+          INSERT INTO mech_models (code, name)
+          VALUES (${`mech-inv-${RUN}`}, ${`Виброплита реверсивная Wacker ${RUN}`})
+          RETURNING id`)
+      ).rows[0]!;
+
+      const seed = async (kindName: string, modelId: string | null): Promise<string> =>
+        (
+          await runner.execute<{ id: string }>(sql`
+            INSERT INTO mech_requests (
+              object_id, mech_model_id, kind_name, planned_from, planned_to, responsible_name,
+              responsible_phone, created_by
+            ) VALUES (
+              ${scene.objectId}, ${modelId}, ${kindName}, '2026-09-01', '2026-09-30', 'Иванов И.И.',
+              '9990000000', ${scene.userId}
+            ) RETURNING id`)
+        ).rows[0]!.id;
+
+      const orphan = await seed(`Компрессор дизельный ${RUN}`, null);
+      const linked = await seed(`Виброплита реверсивная Wacker ${RUN}`, model.id);
+
+      await runner.execute(sql.raw(kindSnapshotStatement()));
+
+      const logged = await runner.execute<{
+        entity_id: string;
+        action: string;
+        actor_user_id: string | null;
+        kind_name: string;
+        num: string;
+        source: string;
+      }>(sql`
+        SELECT entity_id, action, actor_user_id,
+               metadata ->> 'kindName' AS kind_name,
+               metadata ->> 'num' AS num,
+               metadata ->> 'source' AS source
+          FROM audit_log
+         WHERE entity_id IN (${orphan}, ${linked})`);
+
+      // Ровно одна строка, и это половина утверждения: заявке с моделью терять нечего —
+      // наименование приходит соединением со справочником и уборку переживает. Запиши миграция
+      // обе, и журнал рассказывал бы о потере, которой не было.
+      expect(logged.rows).toHaveLength(1);
+      const entry = logged.rows[0]!;
+      expect(entry.entity_id).toBe(orphan);
+      expect(entry.action).toBe('mech_request.kind_dropped');
+      // Автора у события нет: колонку правит выкат, а не человек. Подставь сюда `created_by`
+      // заявки — журнал приписал бы уборку тому, кто её когда-то завёл.
+      expect(entry.actor_user_id).toBeNull();
+      expect(entry.source).toBe('migration 0256');
+      // Написание — то самое, снятое: журнал и есть единственное место, где оно остаётся после
+      // выката, и номер рядом с ним нужен, чтобы соотнести строку с исчезнувшей карточкой.
+      expect(entry.kind_name).toBe(`Компрессор дизельный ${RUN}`);
+      expect(Number(entry.num)).toBeGreaterThan(0);
     });
   }, 60_000);
 });

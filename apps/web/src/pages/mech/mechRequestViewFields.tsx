@@ -4,6 +4,7 @@ import {
   mechDayLabel,
   mechDaysLeftLabel,
   mechMoney,
+  mechModelLabel,
   mechRateLabel,
   mechRequesterLabel,
   mechTermLabel,
@@ -51,7 +52,7 @@ export function mechRequestViewFields({
         </>
       ),
     },
-    { key: 'kind', label: 'Вид техники', children: request.kindName },
+    { key: 'model', label: 'Модель', children: mechModelLabel(request) },
     {
       key: 'planned',
       label: 'Плановый срок',

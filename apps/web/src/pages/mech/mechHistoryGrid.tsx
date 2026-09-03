@@ -3,6 +3,7 @@ import { EyeOutlined } from '@ant-design/icons';
 import type { MechRequestDto } from '@technic/contracts';
 import {
   mechDayLabel,
+  mechModelLabel,
   mechMoney,
   mechRateLabel,
   mechRequesterLabel,
@@ -74,11 +75,13 @@ export function mechHistoryColumns(opts: MechHistoryGridOptions): TableColumnsTy
       render: (_v: unknown, r: MechRequestDto) => <MechPlaceCell row={r} />,
     },
     {
+      // Показывается наименование модели; ключ столбца остался прежним: см. `mechRequestGrid`.
       key: 'kindName',
-      title: 'Вид техники',
-      dataIndex: 'kindName',
+      title: 'Модель',
+      dataIndex: 'mechModelName',
       width: 180,
       sorter: true,
+      render: (_v: unknown, r: MechRequestDto) => mechModelLabel(r),
     },
     {
       key: 'lessorName',
@@ -190,7 +193,7 @@ export function mechHistoryCard(opts: MechHistoryGridOptions): CardConfig<MechRe
   return {
     title: (r) => r.displayNumber,
     badge: (r) => <MechStateTag row={r} />,
-    primary: (r) => r.kindName,
+    primary: (r) => mechModelLabel(r),
     lines: [
       (r) => r.objectName,
       (r) => (r.departmentId ? `Заявитель: ${mechRequesterLabel(r)}` : null),

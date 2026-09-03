@@ -166,6 +166,7 @@ const OBJECT = { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' };
 const EQUIPMENT: OfficeEquipmentDto = {
   id: 'oe-1',
   type: TYPE,
+  specs: [],
   name: 'Kyocera M3145',
   serialNumber: 'SN-1',
   inventoryNumber: '0012345',

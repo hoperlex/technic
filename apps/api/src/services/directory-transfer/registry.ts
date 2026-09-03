@@ -4,11 +4,13 @@ import { organizationalDirectories } from './defs/org';
 import { wasteDirectories } from './defs/waste';
 import { vehicleDirectories } from './defs/vehicles';
 import { officeDirectories } from './defs/office';
+import { mechDirectories } from './defs/mech';
 import { staffDirectories } from './defs/staff';
 
 /**
  * Какие справочники участвуют в обмене (ADR 0073). Описания сгруппированы по предметным областям
- * ровно так, как их ведут в портале: организационные, вывоз мусора, техника, оргтехника, кадры.
+ * ровно так, как их ведут в портале: организационные, вывоз мусора, техника, оргтехника,
+ * механизация, кадры.
  *
  * Порядок берётся из `DIRECTORY_KEYS` в общем пакете, а не из порядка импортов: список, по
  * которому портал рисует вкладку, и список, по которому сервер отдаёт файлы, должен быть один —
@@ -19,6 +21,7 @@ const DEFINITIONS: readonly AnyDirectory[] = [
   ...wasteDirectories,
   ...vehicleDirectories,
   ...officeDirectories,
+  ...mechDirectories,
   ...staffDirectories,
 ];
 

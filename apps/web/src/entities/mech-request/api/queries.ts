@@ -2,8 +2,7 @@ import { queryOptions } from '@tanstack/react-query';
 import { type CounterpartyDto } from '@technic/contracts';
 import { apiFetch, type ListResult } from '@shared/api';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
-import { mechRequestsApi } from './mechRequestsApi';
-import { mechLessorKeys, mechRequestKeys } from './keys';
+import { mechLessorKeys } from './keys';
 
 /**
  * Арендодатели, у которых берут механизацию (Р6): контрагенты **только** типа «Арендодатель
@@ -51,23 +50,4 @@ export const mechLessorOptionsQuery = () =>
       items
         .map((c) => ({ value: c.id, label: c.name, name: c.name }))
         .sort((a, b) => a.name.localeCompare(b.name, 'ru')),
-  });
-
-/**
- * Подсказка видов техники (Р5): что уже арендовали в своей области.
- *
- * Справочника видов нет — заказчик его отложил, — и поле остаётся свободной строкой. Подсказка
- * нужна ровно затем, чтобы «Виброплита реверсивная» не превратилась в пять написаний одного и того
- * же: сравнение идёт по нормализованному ключу (`mechKindKey`), и портал предлагает уже
- * существующие позиции раньше, чем человек допишет своё.
- *
- * Ввод уходит на сервер, а не отбирается на клиенте: перечень строится по области смотрящего и
- * по частоте внутри неё, и «показать первые двадцать и искать среди них» отвечало бы на другой
- * вопрос — «что чаще всего», а не «что похоже на набранное».
- */
-export const mechKindOptionsQuery = (search: string) =>
-  queryOptions({
-    queryKey: mechRequestKeys.kinds(search),
-    queryFn: () => mechRequestsApi.kinds(search),
-    select: (r) => r.items.map((kind) => ({ value: kind, label: kind })),
   });

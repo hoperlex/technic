@@ -4,6 +4,7 @@ import type { MechRequestDto } from '@technic/contracts';
 import {
   mechDayLabel,
   mechDaysLeftLabel,
+  mechModelLabel,
   mechRequesterLabel,
   mechRateLabel,
   MechPlaceCell,
@@ -75,11 +76,13 @@ export function mechRentalColumns(opts: MechRentalGridOptions): TableColumnsType
       render: (_v: unknown, r: MechRequestDto) => <MechRequesterCell row={r} />,
     },
     {
+      // Показывается наименование модели; ключ столбца остался прежним: см. `mechRequestGrid`.
       key: 'kindName',
-      title: 'Вид техники',
-      dataIndex: 'kindName',
+      title: 'Модель',
+      dataIndex: 'mechModelName',
       width: 190,
       sorter: true,
+      render: (_v: unknown, r: MechRequestDto) => mechModelLabel(r),
     },
     {
       key: 'lessorName',
@@ -198,7 +201,7 @@ export function mechRentalCard(opts: MechRentalGridOptions): CardConfig<MechRequ
         </Typography.Text>
       ) : null;
     },
-    primary: (r) => r.kindName,
+    primary: (r) => mechModelLabel(r),
     lines: [
       // Адрес — куда ехать забирать; пустой не рисуется вовсе (карточка пропускает пустые строки).
       (r) => r.objectAddress.trim() || null,

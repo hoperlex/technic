@@ -127,6 +127,27 @@ services:
         VITE_DADATA_SUGGEST_TOKEN: ${VITE_DADATA_SUGGEST_TOKEN:-}
     depends_on: [technic-api]
     restart: unless-stopped
+    # Тот же маунт статуса режима техработ, что в бою (docs/maintenance-mode-plan.md §4.4). Без
+    # него две приёмки невоспроизводимы вовсе: заглушка при ОСТАНОВЛЕННОМ api (`... stop
+    # technic-api`, затем перезагрузка страницы — обязана появиться maintenance.html) и снятие
+    # режима по 404 (файл убран — портал открылся сам). Обе проверяют веб-слой, а он на стенде
+    # ровно боевой: тот же образ, тот же spa.conf.
+    #
+    # Источник — не /etc/technic-portal: стенд живёт на машине разработчика, где такого каталога
+    # нет, а вся приёмка состоит в том, чтобы руками положить и убрать файл. Каталог заводится ДО
+    # первого запуска (`mkdir -p /tmp/technic-stand-maintenance`) — иначе его создаст демон docker
+    # и владельцем окажется root, а положить в него файл без sudo станет нельзя. Внутри
+    # контейнера файл читает nginx под uid 101, поэтому 0755/0644 (umask разработчика обычно даёт
+    # ровно это; иначе `chmod 0644` файлу).
+    #
+    #   docker compose -f deploy/docker-compose.stand.yml stop technic-api
+    #   printf '{"active":true}' > /tmp/technic-stand-maintenance/maintenance.json
+    #   curl -i http://localhost:8080/            # 503 + заглушка
+    #   curl -i http://localhost:8080/maintenance.json
+    #   rm /tmp/technic-stand-maintenance/maintenance.json
+    #   curl -i http://localhost:8080/maintenance.json   # 404 — режима нет
+    volumes:
+      - ${MAINTENANCE_DIR:-/tmp/technic-stand-maintenance}:/etc/nginx/maintenance:ro
     # Обе сети: внутрь — за api, наружу — за nginx стенда. Ровно как technic-web в бою.
     networks: [internal, edge]
 

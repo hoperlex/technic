@@ -5,6 +5,7 @@ import { App as AntApp, ConfigProvider } from 'antd';
 import ruRU from 'antd/locale/ru_RU';
 import { BrowserRouter } from 'react-router';
 import App from './App';
+import { MaintenanceBoundary } from '@app/MaintenanceBoundary';
 import { AuthProvider } from './auth/AuthContext';
 import { setupDayjs, useIsMobile, useMobileRootClass } from '@shared/lib';
 import { FORM_VALIDATE_MESSAGES } from '@shared/config';
@@ -58,9 +59,17 @@ function Root() {
       <AntApp>
         <QueryClientProvider client={queryClient}>
           <BrowserRouter>
-            <AuthProvider>
-              <App />
-            </AuthProvider>
+            {/* Граница режима технических работ стоит именно здесь — между роутером и
+                авторизацией (план `docs/maintenance-mode-plan.md`, §4.5). Ниже нельзя:
+                `AuthProvider` на первом монтировании зовёт `bootstrapAuth()`, в окне `/auth/me`
+                отвечает 503, и запомненный на всю жизнь вкладки `null` не дал бы порталу
+                открыться после снятия режима. Выше роутера — тоже нельзя: заглушка и портал
+                делят один адрес, и роутер должен пережить закрытие. */}
+            <MaintenanceBoundary>
+              <AuthProvider>
+                <App />
+              </AuthProvider>
+            </MaintenanceBoundary>
           </BrowserRouter>
         </QueryClientProvider>
       </AntApp>

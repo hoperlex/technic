@@ -4,6 +4,7 @@ import type { MechRequestDto } from '@technic/contracts';
 import {
   mechDayLabel,
   mechDaysLeftLabel,
+  mechModelLabel,
   mechRateLabel,
   mechRequesterLabel,
   MechPlaceCell,
@@ -64,11 +65,18 @@ export function mechRequestColumns(opts: MechGridOptions): TableColumnsType<Mech
       render: (_v: unknown, r: MechRequestDto) => <MechPlaceCell row={r} />,
     },
     {
+      /*
+       * Ключ столбца остался `kindName` и после того, как одноимённая колонка ушла из базы
+       * (ADR 0156, уборка Э3): он идентифицирует СТОЛБЕЦ, а не поле, сервер знает его в
+       * `MECH_REQUEST_SORT_FIELDS` и сортирует по наименованию модели. Переименуй ключ — открытая
+       * вкладка старой сборки получала бы 400 на сортировку, которую сама же и предлагает.
+       */
       key: 'kindName',
-      title: 'Вид техники',
-      dataIndex: 'kindName',
+      title: 'Модель',
+      dataIndex: 'mechModelName',
       width: 190,
       sorter: true,
+      render: (_v: unknown, r: MechRequestDto) => mechModelLabel(r),
     },
     // Срок — две колонки одной подписи: «с» и «по» отвечают на разные вопросы («когда начали»,
     // «когда возвращать»), и сортировка по ним нужна разная.
@@ -211,7 +219,7 @@ export function mechRequestCard(opts: MechGridOptions): CardConfig<MechRequestDt
   return {
     title: (r) => r.displayNumber,
     badge: (r) => <MechStateTag row={r} />,
-    primary: (r) => r.kindName,
+    primary: (r) => mechModelLabel(r),
     lines: [
       (r) => r.objectName,
       // Заявитель показывается строкой только у заявки отдела: у заявки самой площадки он равен

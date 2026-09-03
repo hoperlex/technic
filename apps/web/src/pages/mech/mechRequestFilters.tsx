@@ -3,7 +3,8 @@ import { Checkbox, DatePicker, Input, Select, Space } from 'antd';
 import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import { CLOSED_REQUEST_STATUSES, REQUEST_STATUSES, requestStatusLabels } from '@technic/contracts';
-import { mechKindOptionsQuery, mechLessorOptionsQuery } from '@entities/mech-request';
+import { mechModelOptionsQuery } from '@entities/mech-model';
+import { mechLessorOptionsQuery } from '@entities/mech-request';
 import { objectOptionsQuery } from '@entities/object';
 import { useRequestCustomerOptions } from '@features/request-customer';
 import { FilterReset, type FilterDefinition } from '@shared/ui';
@@ -33,8 +34,8 @@ export interface MechListFilters {
   placeObjectId?: string;
   /** Заявитель ключом `object:<id>` / `department:<id>` (Р20). */
   requester?: string;
-  /** Вид техники: сервер сравнивает по нормализованному ключу, а не по введённой строке (Р5). */
-  kind?: string;
+  /** Модель справочника (ADR 0156): ссылка, а не наименование, — отбор переживает переименование. */
+  mechModelId?: string;
   lessorId?: string;
   /** Окно вопроса «что стояло на площадке в эти дни», а не срок самой заявки. */
   periodFrom?: string;
@@ -62,7 +63,7 @@ export const MECH_FILTER_FIELDS = [
   'status',
   'placeObjectId',
   'requester',
-  'kind',
+  'mechModelId',
   'lessorId',
   'periodFrom',
   'periodTo',
@@ -124,8 +125,19 @@ export function useMechRequestFilters({
     isFetching: lessorsLoading,
     isSuccess: lessorsReady,
   } = useQuery(mechLessorOptionsQuery());
-  // Подсказка видов строится по той же области, что и список: чужих позиций в ней не бывает.
-  const { data: kindOptions = [] } = useQuery(mechKindOptionsQuery(''));
+  /*
+   * Модели — тот же справочник, что и в форме (ADR 0156), и тем же запросом: перечень маленький,
+   * приезжает целиком, и поиск идёт по уже приехавшему списку.
+   *
+   * Только действующие, в отличие от состава поля формы: отбирать по выведенной из обращения
+   * модели незачем — заявок на неё больше не заводят, а старые ищутся периодом и площадкой.
+   * Отбор, переживший погашение своей модели, снимает `usePruneMissingFilters` ниже.
+   */
+  const {
+    data: modelOptions = [],
+    isFetching: modelsLoading,
+    isSuccess: modelsReady,
+  } = useQuery(mechModelOptionsQuery());
 
   /*
    * Заявитель — тем же подбором «Объект/отдел», что и в форме (Р20): формат ключа один, и второй
@@ -157,6 +169,12 @@ export function useMechRequestFilters({
         value: params.placeObjectId,
         options: objectOptions,
         ready: objectsReady,
+      },
+      {
+        key: 'mechModelId',
+        value: params.mechModelId,
+        options: modelOptions,
+        ready: modelsReady,
       },
       {
         key: 'lessorId',
@@ -196,12 +214,13 @@ export function useMechRequestFilters({
     },
     {
       kind: 'select',
-      key: 'kind',
-      label: 'Вид техники',
-      value: params.kind,
-      options: kindOptions,
-      placeholder: 'Любая техника',
-      onChange: (v) => apply({ kind: v }),
+      key: 'mechModelId',
+      label: 'Модель',
+      value: params.mechModelId,
+      options: modelOptions,
+      loading: modelsLoading,
+      placeholder: 'Любая модель',
+      onChange: (v) => apply({ mechModelId: v }),
     },
     ...(status
       ? [
