@@ -65,18 +65,8 @@ export function ContainerTypesTab() {
   };
 
   const saveMut = useMutation({
-    /*
-     * Правка не шлёт код, и это не аккуратность, а починка: `updateContainerTypeSchema` объявлена
-     * `.strict()` и колонки `code` не знает — а antd отдаёт значение запертого поля наравне с
-     * остальными, потому что `disabled` убирает ввод, но не значение из формы. Сервер отвечал на
-     * такую правку ошибкой валидации, то есть переименовать тип контейнера или подвинуть порядок
-     * сортировки было нельзя вовсе.
-     *
-     * Разбор значений, а не второй тип формы: поля у заведения и правки одни и те же, и вторая
-     * форма разошлась бы с первой при первом же добавленном поле.
-     */
-    mutationFn: ({ code, ...rest }: CreateContainerTypeInput) =>
-      record ? containerTypesApi.update(record.id, rest) : containerTypesApi.create({ code, ...rest }),
+    mutationFn: (values: CreateContainerTypeInput) =>
+      record ? containerTypesApi.update(record.id, values) : containerTypesApi.create(values),
     onSuccess: () => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: containerTypeKeys.root });

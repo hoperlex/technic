@@ -707,10 +707,6 @@ describe('оргтехника в обмене файлом', () => {
 /** Разделитель составных ключей словарей — тот же нулевой байт, что в описании. */
 const SEP = String.fromCharCode(0);
 
-const COLOR_SPEC_ID = '9a3e0f60-1111-4d0a-9c3b-0f2f7d1c0001';
-const COLOR_VALUE_ID = '9a3e0f60-1111-4d0a-9c3b-0f2f7d1c0002';
-const MONO_VALUE_ID = '9a3e0f60-1111-4d0a-9c3b-0f2f7d1c0003';
-
 /**
  * Окружение листа моделей. Ключи написаний здесь заданы руками — это ОТВЕТ базы, а не правило:
  * правило живёт в `office_equipment_model_key`, и повторять его тесту нечем и незачем. Пара
@@ -733,17 +729,6 @@ function makeApparatusEnv() {
     ),
     // Сколько карточек у модели: числом в предупреждении о переименовании.
     cardsByModelId: new Map([[KYOCERA_MODEL_ID, 68]]),
-    // Цветность печати (план `docs/office-equipment-specs-plan.md`, Р12). Значения заданы так же,
-    // как их вернула бы база: полное имя и сокращение — два ключа одной строки.
-    colorSpecId: COLOR_SPEC_ID,
-    colorTypeIds: new Set([MFP_ID]),
-    colorValuesByKey: new Map([
-      ['цветная', { id: COLOR_VALUE_ID, name: 'Цветная' }],
-      ['цв.', { id: COLOR_VALUE_ID, name: 'Цветная' }],
-      ['чёрно-белая', { id: MONO_VALUE_ID, name: 'Чёрно-белая' }],
-      ['ч/б', { id: MONO_VALUE_ID, name: 'Чёрно-белая' }],
-    ]),
-    colorNameByModelId: new Map([[KYOCERA_MODEL_ID, 'Чёрно-белая']]),
     twins: new Map<string, string>(),
   };
 }
@@ -978,64 +963,6 @@ describe('модели аппаратов в обмене файлом', () => {
     expect(ctx.problems).toEqual([]);
     expect(cells['Производитель']).toBe('Kyocera');
     expect(cells['Комментарий']).toBe('');
-  });
-
-  // ── Цветность печати (план `docs/office-equipment-specs-plan.md`, Р12) ──
-
-  it('выгрузка пишет заведённую цветность полным словом', () => {
-    // Полным, а не сокращением: в файле человек читает и правит значение, а «цв.» — форма для
-    // строки списка, где за место борются восемь колонок.
-    expect(cellsOf(modelsDir, apparatusEnv, modelsDir.model(modelRow, apparatusEnv))['Цветность'])
-      .toBe('Чёрно-белая');
-  });
-
-  it('модель без значения выгружается пустой ячейкой', () => {
-    // «Н/д» хранится отсутствием строки (Р3), и в файле это пустая ячейка — не слово «н/д»:
-    // иначе загрузка того же файла обратно потребовала бы понимать «н/д» как значение.
-    const other = { ...modelRow, id: '9a3e0f60-1111-4d0a-9c3b-0f2f7d1c0009' };
-    expect(cellsOf(modelsDir, apparatusEnv, modelsDir.model(other, apparatusEnv))['Цветность'])
-      .toBe('');
-  });
-
-  it('пустая ячейка цветности не стирает заведённое', () => {
-    // Главное правило колонки (Р12): файл, собранный в Excel ради другой колонки, не должен
-    // обезличивать справочник. Убрать значение можно только в портале.
-    const { cells, ctx } = modelEditIn(apparatusEnv, modelRow, { Цветность: '' });
-    expect(ctx.problems).toEqual([]);
-    expect(cells['Цветность']).toBe('Чёрно-белая');
-  });
-
-  it('сокращение принимается и подменяется справочным написанием', () => {
-    // В отчёте человек обязан видеть то, что действительно запишется, — тот же приём, что с
-    // наименованием модели.
-    const { cells, ctx } = modelEditIn(apparatusEnv, modelRow, { Цветность: 'ЦВ.' });
-    expect(ctx.problems).toEqual([]);
-    expect(cells['Цветность']).toBe('Цветная');
-  });
-
-  it('незнакомое написание — отказ строки с перечнем допустимого', () => {
-    const { ctx } = modelEditIn(apparatusEnv, modelRow, { Цветность: 'полноцвет' });
-    expect(ctx.problems).toEqual([
-      expect.stringContaining('цветность «полноцвет» не распознана'),
-    ]);
-  });
-
-  it('цветность у типа, где её не спрашивают, — отказ, а не молчаливый пропуск', async () => {
-    // Замок базы (`office_equipment_model_specs_type_spec_fk`) сказал бы то же самое именем
-    // ограничения и уже на записи, отменив весь файл. Здесь названо и что не так, и что делать.
-    const env = makeApparatusEnv();
-    const asked = 'HP DesignJet T650';
-    await resolveModelsIn(
-      env,
-      [{ asked, key: 'HP DESIGNJET T650', spelling: asked }],
-      [{ 'Тип (код)': 'plotter', Наименование: asked, Цветность: 'Цветная' }],
-    );
-    const { ctx } = modelRowIn(env, {
-      'Тип (код)': 'plotter',
-      Наименование: asked,
-      Цветность: 'Цветная',
-    });
-    expect(ctx.problems).toContainEqual(expect.stringContaining('цветность печати у типа'));
   });
 });
 

@@ -61,13 +61,9 @@ const TODAY = moscowDateKeyOf(new Date());
 const FOUR_DAYS_AGO = shiftDateKey(TODAY, -4);
 const PLANNED_TO = shiftDateKey(TODAY, 14);
 
-/**
- * Модель у почасовой и у сменной аренды своя: по ней и проверяется, что итог журнала считает ПО
- * ФИЛЬТРУ, а не по всему отбору. С Э2 это ссылка на справочник, а не написание (ADR 0156), поэтому
- * идентификаторы приезжают в `ctx` — заводятся строки в `beforeAll`.
- */
-const HOUR_MODEL_CODE = `mech-journal-hour-${RUN}`;
-const SHIFT_MODEL_CODE = `mech-journal-shift-${RUN}`;
+/** Вид техники у каждой заявки свой: по нему проверяется, что итог считает по фильтру. */
+const HOUR_KIND = `Виброплита ${RUN}`;
+const SHIFT_KIND = `Компрессор ${RUN}`;
 
 interface Ctx {
   app: Awaited<ReturnType<typeof buildApp>>;
@@ -85,8 +81,6 @@ interface Ctx {
     dept: string;
   };
   lessorId: string;
-  /** Модели справочника: почасовая аренда заказывает одну, сменная — другую. */
-  models: { hour: string; shift: string };
   /** Заявки, заведённые один раз на весь файл: журнал читают, а не правят. */
   requests: {
     /** Аренда с почасовой ставкой, выданная и возвращённая одним днём. */
@@ -153,10 +147,6 @@ async function cleanup(db: typeof AppDb): Promise<void> {
   await db.execute(sql`DELETE FROM departments WHERE code LIKE ${`${CODE_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM construction_objects WHERE code LIKE ${`${CODE_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM counterparties WHERE comment = ${CODE_PREFIX}`);
-  // Модели — после заявок: ссылка стоит с `ON DELETE RESTRICT`.
-  await db.execute(
-    sql`DELETE FROM mech_models WHERE code IN (${HOUR_MODEL_CODE}, ${SHIFT_MODEL_CODE})`,
-  );
 }
 
 // ── Подопытные ──
@@ -237,8 +227,7 @@ async function versionOf(id: string): Promise<number> {
 interface SeedInput {
   objectId: string;
   departmentId?: string;
-  /** Какую модель заказывают; по умолчанию почасовую — сменная нужна отбору и итогу. */
-  mechModelId?: string;
+  kindName?: string;
 }
 
 /** Заявка, заведённая офисом: у менеджера области нет, и он заводит её на любую площадку. */
@@ -250,7 +239,7 @@ async function seedNew(input: SeedInput): Promise<string> {
     payload: {
       objectId: input.objectId,
       ...(input.departmentId ? { departmentId: input.departmentId } : {}),
-      mechModelId: input.mechModelId ?? ctx.models.hour,
+      kindName: input.kindName ?? HOUR_KIND,
       plannedFrom: TODAY,
       plannedTo: PLANNED_TO,
       responsibleName: 'Иванов Иван',
@@ -371,7 +360,6 @@ describe.skipIf(!DB_URL)('механизация: журнал закрытых,
       departmentId: '',
       users: {} as Ctx['users'],
       lessorId: '',
-      models: {} as Ctx['models'],
       requests: {} as Ctx['requests'],
     };
     // Упавший прогон обязан убираться следующим, а не копить площадки в общей базе.
@@ -412,19 +400,6 @@ describe.skipIf(!DB_URL)('механизация: журнал закрытых,
       })
       .returning({ id: schema.counterparties.id });
     ctx.lessorId = lessor!.id;
-    // Свои строки справочника на прогон, а не позиции сида: база общая, и заявка, сославшаяся на
-    // общую модель, помешала бы соседнему файлу её гасить и сносить.
-    const model = async (code: string, name: string): Promise<string> => {
-      const [row] = await db
-        .insert(schema.mechModels)
-        .values({ code, name: `${name} ${RUN}` })
-        .returning({ id: schema.mechModels.id });
-      return row!.id;
-    };
-    ctx.models = {
-      hour: await model(HOUR_MODEL_CODE, 'Виброплита'),
-      shift: await model(SHIFT_MODEL_CODE, 'Компрессор'),
-    };
 
     // Подопытные заводятся один раз: журнал читают, а не правят, и каждый тест спрашивает один и
     // тот же набор строк с разных сторон.
@@ -447,14 +422,14 @@ describe.skipIf(!DB_URL)('механизация: журнал закрытых,
       // «С 1-го по 1-е» — один календарный день, а не ноль (Э3).
       hourDone: await seedDone({
         objectId: ctx.objects.site,
-        mechModelId: ctx.models.hour,
+        kindName: HOUR_KIND,
         actualUnits: 8,
         finalCost: 9600,
       }),
       // Пять календарных дней включительно: с 4-х суток назад по сегодня.
       shiftDone: await seedDone({
         objectId: ctx.objects.site,
-        mechModelId: ctx.models.shift,
+        kindName: SHIFT_KIND,
         rateUnit: 'shift',
         actualFrom: FOUR_DAYS_AGO,
         actualUnits: 3,
@@ -597,12 +572,12 @@ describe.skipIf(!DB_URL)('механизация: журнал закрытых,
     expect(other.closed).toBe(1);
     expect(other.cost).toBe('1000.00');
 
-    // Модель сужает тот же итог дальше: остаётся одна аренда со сменной ставкой.
-    const byModel = await summaryOf(
+    // Вид техники сужает тот же итог дальше: остаётся одна аренда со сменной ставкой.
+    const kind = await summaryOf(
       office,
-      `placeObjectId=${ctx.objects.site}&mechModelId=${ctx.models.shift}`,
+      `placeObjectId=${ctx.objects.site}&kind=${encodeURIComponent(SHIFT_KIND)}`,
     );
-    expect(byModel).toEqual({
+    expect(kind).toEqual({
       closed: 1,
       rentals: 1,
       cancelled: 0,
@@ -626,8 +601,8 @@ describe.skipIf(!DB_URL)('механизация: журнал закрытых,
     expect(summary.hours).not.toBe(11);
     expect(summary.shifts).not.toBe(11);
 
-    // Каждая единица считается только по своим строкам: отбор по почасовой модели обнуляет смены.
-    const hourOnly = await summaryOf(site, `mechModelId=${ctx.models.hour}`);
+    // Каждая единица считается только по своим строкам: отбор по часовому виду обнуляет смены.
+    const hourOnly = await summaryOf(site, `kind=${encodeURIComponent(HOUR_KIND)}`);
     expect(hourOnly.hours).toBe(8);
     expect(hourOnly.shifts).toBe(0);
   });
@@ -648,11 +623,11 @@ describe.skipIf(!DB_URL)('механизация: журнал закрытых,
     const site = await headersOf(ctx.users.site);
 
     // Выдана и возвращена одним днём: разность дат ответила бы «ноль», а техника стояла сутки.
-    const oneDay = await summaryOf(site, `mechModelId=${ctx.models.hour}`);
+    const oneDay = await summaryOf(site, `kind=${encodeURIComponent(HOUR_KIND)}`);
     expect(oneDay.days).toBe(1);
 
     // Пять суток с обоими концами: 4 дня разницы плюс сам день возврата.
-    const fiveDays = await summaryOf(site, `mechModelId=${ctx.models.shift}`);
+    const fiveDays = await summaryOf(site, `kind=${encodeURIComponent(SHIFT_KIND)}`);
     expect(fiveDays.days).toBe(5);
   });
 

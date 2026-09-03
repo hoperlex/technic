@@ -48,7 +48,6 @@ function modelDto(id: string, name: string): OfficeEquipmentModelDto {
   return {
     id,
     type: { id: TYPE.id, name: TYPE.name, isActive: true },
-    specs: [],
     name,
     manufacturer: '',
     isActive: true,
@@ -66,7 +65,6 @@ function equipmentDto(over: Partial<OfficeEquipmentDto> = {}): OfficeEquipmentDt
   return {
     id: 'oe-1',
     type: { id: TYPE.id, name: TYPE.name, isActive: true },
-    specs: [],
     name: 'Canon i-SENSYS',
     serialNumber: '',
     inventoryNumber: '0000777',
@@ -97,7 +95,6 @@ function createdDto(input: CreateOfficeEquipmentInput): OfficeEquipmentDto {
   return equipmentDto({
     id: 'oe-new',
     type: { id: input.equipmentTypeId, name: TYPE.name, isActive: true },
-    specs: [],
     model: { id: model.id, name: model.name },
     name: model.name,
     serialNumber: input.serialNumber ?? '',
@@ -134,8 +131,6 @@ function renderForm(user: AuthUser, over: RouteMap = {}): HttpMock {
   const http = mockHttp({
     'GET /office-equipment': () => json(list(units)),
     'GET /office-equipment-types': () => json(list([TYPE])),
-    // Форма модели спрашивает характеристики типа (цветность печати); здесь их нет.
-    'GET /office-equipment-types/:id/specs': () => json([]),
     'GET /office-equipment-models': () => json(list(MODELS)),
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),

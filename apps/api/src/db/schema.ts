@@ -1290,41 +1290,6 @@ export const grantPermissions = pgTable(
 );
 
 /**
- * След одноразовой уборки состава наборов: строки `grant_permissions` с правом `autoParts.stock`,
- * снятые миграцией `0247` (ADR 0154, план `docs/auto-part-receipts-plan.md`, выкат 3 «Уборка»).
- *
- * Право сняло из словаря выпуском 2 «Заморозка» — доступа осиротевшая строка не давала ни дня
- * (`isPermission` отсекает её в `auth/principal.ts`), и убрана она ради каталога: набор, в котором
- * числится несуществующее право, показывается администратору как дающий больше, чем даёт.
- *
- * Таблица постоянная и в коде не читается ни одним запросом — её спрашивают руками после выката:
- * «кому выдан набор, который уборка оставила пустым». Описана здесь потому, что схема обязана
- * знать обо всём, что завела миграция: снятие таблицы руками дало бы drift мимо журнала миграций,
- * а её отсутствие в `schema.ts` — то же расхождение, только в другую сторону.
- */
-export const autoPartsStockGrantRemoved = pgTable(
-  'auto_parts_stock_grant_removed',
-  {
-    // FK на `grants` НЕТ намеренно: починка вперёд разрешает опустевший набор в том числе
-    // удалением, и каскад унёс бы снимок вместе с предметом, а `RESTRICT` — заблокировал бы саму
-    // починку. Архив обязан пережить то, о чём рассказывает.
-    grantId: uuid('grant_id').notNull(),
-    // Код набора СНИМКОМ, а не соединением при чтении: к моменту чтения набора может уже не быть,
-    // и `JOIN` ответил бы на вопрос «чей это был набор» пустотой.
-    grantCode: text('grant_code').notNull(),
-    // Что снято. Сегодня всегда `autoParts.stock`; тип не сужается до `Permission` по той же
-    // причине, что и в `grant_permissions`, — здесь лежат как раз те строки, которых в словаре
-    // больше нет.
-    permission: text('permission').notNull(),
-    removedAt: timestamp('removed_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    // Пара уникальна по построению: в наборе право лежало один раз — это PK `grant_permissions`.
-    pk: primaryKey({ columns: [t.grantId, t.permission] }),
-  }),
-);
-
-/**
  * Кому набор разрешено назначать. Своей таблицей, а не массивом внутри `grants`: роль убирают из
  * списка чаще, чем правят состав, и жизненный цикл различает «нельзя назначать впредь» и «уже
  * выданное сохраняется». Инвариант «ось роли × модуль» к тому же проверяется на декартовом
@@ -1700,160 +1665,6 @@ export const officeEquipmentModels = pgTable(
       t.equipmentTypeId,
       sql`office_equipment_model_key(${t.name})`,
     ),
-  }),
-);
-
-/**
- * Характеристики моделей оргтехники (план `docs/office-equipment-specs-plan.md`, Р1; миграция 0252).
- *
- * «Цветной или чёрно-белый» — свойство не карточки и не типа, а модели: Ricoh Aficio MP C2011SP
- * цветной во всех 33 карточках парка. Колонкой у модели это не сделано намеренно (Р1): колонка не
- * умеет отличить «у монитора цветности не бывает» от «у этого МФУ не заполнено», а на этом
- * различии стоит вся постановка — «н/д» показывается там, где вопрос законен, и не показывается
- * там, где он бессмыслен. Ответ на «где законен» живёт данными: `officeEquipmentTypeSpecs`.
- *
- * Конструкция повторяет ТТХ спецтехники (ADR 0016): `vehicleSpecs` → `vehicleTypeSpecs` →
- * `vehicleCategorySpecValues` с той же парой составных ключей. Отличие в виде значения: у ТТХ оно
- * числовое, здесь — выбор из заведённого перечня.
- *
- * Значение только из перечня (Р2): ни текста, ни числа, ни «да/нет» — спрошена одна характеристика
- * с двумя значениями, и четыре вида значений были бы четырьмя ветками в контракте, форме, обмене
- * файлом и показе ради того, чего не просили.
- */
-export const officeEquipmentSpecs = pgTable(
-  'office_equipment_specs',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    /** Системный ключ: им характеристику находят миграции и обмен файлом. Человеку не виден. */
-    code: text('code').notNull(),
-    name: text('name').notNull(),
-    sortOrder: integer('sort_order').notNull().default(100),
-    /**
-     * Идёт ли характеристика второй строкой в колонке «Тип» (Р8, Р14). Флаг, а не «показывать
-     * все»: в строке списка помещается одна-две пометки, а решать, какие именно, должны данные, а
-     * не длина строки.
-     */
-    showInList: boolean('show_in_list').notNull().default(true),
-    isActive: boolean('is_active').notNull().default(true),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => ({
-    codeUnique: uniqueIndex('office_equipment_specs_code_unique').on(t.code),
-    codeNotBlank: check('office_equipment_specs_code_not_blank_check', sql`btrim(${t.code}) <> ''`),
-    nameNotBlank: check('office_equipment_specs_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
-  }),
-);
-
-/** Допустимые значения характеристики: «Цветная · цв.», «Чёрно-белая · ч/б». */
-export const officeEquipmentSpecValues = pgTable(
-  'office_equipment_spec_values',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    specId: uuid('spec_id')
-      .notNull()
-      .references(() => officeEquipmentSpecs.id, { onDelete: 'cascade' }),
-    code: text('code').notNull(),
-    /** Полное написание: карточка единицы и файл обмена показывают именно его. */
-    name: text('name').notNull(),
-    /**
-     * Сокращение для строки списка. Хранится рядом со значением, а не собирается в портале (Р8):
-     * «как это называется коротко» — свойство значения, и вторая запись правила разошлась бы с
-     * первой на первой же правке.
-     */
-    shortName: text('short_name').notNull(),
-    sortOrder: integer('sort_order').notNull().default(100),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => ({
-    codeNotBlank: check(
-      'office_equipment_spec_values_code_not_blank_check',
-      sql`btrim(${t.code}) <> ''`,
-    ),
-    nameNotBlank: check(
-      'office_equipment_spec_values_name_not_blank_check',
-      sql`btrim(${t.name}) <> ''`,
-    ),
-    shortNotBlank: check(
-      'office_equipment_spec_values_short_not_blank_check',
-      sql`btrim(${t.shortName}) <> ''`,
-    ),
-    codeUnique: unique('office_equipment_spec_values_code_unique').on(t.specId, t.code),
-    /** Цель составного ключа — замок значения в `officeEquipmentModelSpecs` (Р5). */
-    idSpecUnique: unique('office_equipment_spec_values_id_spec_unique').on(t.id, t.specId),
-  }),
-);
-
-/**
- * У каких типов техники характеристика спрашивается (Р4).
- *
- * Эта таблица и есть ответ на вопрос «показывать ли здесь вторую строку». Есть строка — цветность
- * у моделей такого типа спрашивают, и незаполненное значение показывается как «н/д». Нет строки —
- * второй строки нет вовсе: у монитора не «н/д», у монитора вопроса нет.
- */
-export const officeEquipmentTypeSpecs = pgTable(
-  'office_equipment_type_specs',
-  {
-    equipmentTypeId: uuid('equipment_type_id')
-      .notNull()
-      .references(() => officeEquipmentTypes.id, { onDelete: 'restrict' }),
-    specId: uuid('spec_id')
-      .notNull()
-      .references(() => officeEquipmentSpecs.id, { onDelete: 'restrict' }),
-    createdAt: createdAt(),
-  },
-  (t) => ({
-    pk: primaryKey({ columns: [t.equipmentTypeId, t.specId] }),
-    specIdx: index('office_equipment_type_specs_spec_idx').on(t.specId),
-  }),
-);
-
-/**
- * Значение характеристики у модели. Отсутствие строки и означает «н/д» (Р3): третье значение
- * перечня завело бы два способа сказать одно, и первый же забывший про один из них соврал бы.
- *
- * Оба барьера держит база (Р5), тем же приёмом «замок», что `office_equipment_model_type_fk`:
- * значение принадлежит своей характеристике, а характеристика — типу этой модели. Проверки в
- * маршруте всё равно есть, но ради слов человеку вместо кода `23503`, а не вместо схемы.
- */
-export const officeEquipmentModelSpecs = pgTable(
-  'office_equipment_model_specs',
-  {
-    modelId: uuid('model_id').notNull(),
-    /**
-     * Тип модели копией. Разойтись с моделью он не может: тип у заведённой модели неизменяем, а
-     * пара «модель + тип» здесь заперта внешним ключом.
-     */
-    equipmentTypeId: uuid('equipment_type_id').notNull(),
-    specId: uuid('spec_id').notNull(),
-    valueId: uuid('value_id').notNull(),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => ({
-    pk: primaryKey({ columns: [t.modelId, t.specId] }),
-    modelTypeFk: foreignKey({
-      columns: [t.modelId, t.equipmentTypeId],
-      foreignColumns: [officeEquipmentModels.id, officeEquipmentModels.equipmentTypeId],
-      name: 'office_equipment_model_specs_model_type_fk',
-    }).onDelete('cascade'),
-    /**
-     * `restrict`: снять характеристику с типа, пока у моделей этого типа есть значения, нельзя —
-     * иначе заполненное человеком исчезло бы одной строкой в другой таблице.
-     */
-    typeSpecFk: foreignKey({
-      columns: [t.equipmentTypeId, t.specId],
-      foreignColumns: [officeEquipmentTypeSpecs.equipmentTypeId, officeEquipmentTypeSpecs.specId],
-      name: 'office_equipment_model_specs_type_spec_fk',
-    }).onDelete('restrict'),
-    valueFk: foreignKey({
-      columns: [t.valueId, t.specId],
-      foreignColumns: [officeEquipmentSpecValues.id, officeEquipmentSpecValues.specId],
-      name: 'office_equipment_model_specs_value_fk',
-    }).onDelete('restrict'),
-    valueIdx: index('office_equipment_model_specs_value_idx').on(t.valueId, t.specId),
-    typeSpecIdx: index('office_equipment_model_specs_type_spec_idx').on(t.equipmentTypeId, t.specId),
   }),
 );
 
@@ -5037,7 +4848,10 @@ export const wasteTicketFieldEvents = pgTable(
       'waste_ticket_field_events_actor_check',
       sql`${t.event} NOT IN ('recognized', 'disputed') OR ${t.actorId} IS NULL`,
     ),
-    passesCheck: check('waste_ticket_field_events_passes_check', sql`${t.passes} BETWEEN 0 AND 2`),
+    passesCheck: check(
+      'waste_ticket_field_events_passes_check',
+      sql`${t.passes} BETWEEN 0 AND 2`,
+    ),
     shaCheck: check(
       'waste_ticket_field_events_sha_check',
       sql`${t.pageSha256} = '' OR ${t.pageSha256} ~ '^[0-9a-f]{64}$'`,
@@ -5744,59 +5558,6 @@ export const vehicleRequestStatusHistory = pgTable(
   }),
 );
 
-// ── Механизация: модели техники (план `docs/mechanization-models-directory-plan.md`) ──
-// Что можно взять в аренду: 103 позиции, присланные заказчиком. Справочник заведён миграцией 0249
-// после того, как заказчик потребовал СТРОГИЙ выбор вместо свободной строки, — решение 5 ADR 0152
-// («перечень не устоялся») снято им же. Заявка ссылается на эту таблицу с этапа Э2 (миграция 0251):
-// `mechRequests.mechModelId` — и с этапа Э3 (миграция 0256) это ЕДИНСТВЕННЫЙ носитель предмета
-// аренды: написание из заявки снято, и у той, что своей модели не нашла, названия техники нет вовсе.
-export const mechModels = pgTable(
-  'mech_models',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    // Системный ключ строки: латиница из наименования, человеку не показывается. Нужен обмену
-    // файлом (ADR 0073 ищет строку по коду) и переименованию: правка наименования код не трогает,
-    // и строка остаётся той же для всех, кто на неё сослался.
-    code: text('code').notNull(),
-    // Наименование дословно из присланного списка — вместе с «(см)», «(компл)», серийным номером и
-    // «б/у»: это пометки заказчика, по ним он позиции и узнаёт (разбор — в шапке миграции 0250).
-    name: text('name').notNull(),
-    // Считает БД (STORED): под ключом живёт UNIQUE, и второй точки правды по написанию быть не
-    // должно. Выражение знак в знак повторяло `mech_requests.kind_key` — по паре ключей этап Э2
-    // переносил живые заявки на ссылку (`kind_key = name_key`), и своя нормализация здесь оставила
-    // бы часть заявок без модели. Парная колонка снята уборкой Э3, а это выражение остаётся: оно
-    // держит уникальность самого справочника, ради которой и заведено.
-    //
-    // Слеш двойной не по прихоти: `sql` — тегированный шаблон, и `\s` в нём «сварился» бы в
-    // обычную `s`, то есть выражение колонки молча разошлось бы с миграцией 0249.
-    nameKey: text('name_key').generatedAlwaysAs(
-      sql`lower(btrim(regexp_replace(name, '\\s+', ' ', 'g')))`,
-    ),
-    // Сид разложил позиции по алфавиту с шагом 10: заведённую завтра модель ставят между соседями,
-    // не переписывая весь справочник.
-    sortOrder: integer('sort_order').notNull().default(100),
-    isActive: boolean('is_active').notNull().default(true),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => ({
-    codeUnique: uniqueIndex('mech_models_code_unique').on(t.code),
-    // Двух одинаково названных моделей не бывает: на этом держится и строгий выбор в заявке, и
-    // перенос Э2 — сопоставление по имени имеет смысл, пока имя одно на строку.
-    nameKeyUnique: uniqueIndex('mech_models_name_key_unique').on(t.nameKey),
-    // Kebab-case латиницей: коды порождаются транслитерацией наименования, а оно состоит из слов.
-    // Разделитель разрешён только МЕЖДУ частями — «vibroplita--wacker» и «vibroplita-» получаются
-    // из ошибки генератора, и ловить их лучше базе, чем глазам в файле обмена.
-    codeFormat: check(
-      'mech_models_code_format_check',
-      sql`${t.code} ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$'`,
-    ),
-    nameNotBlank: check('mech_models_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
-    // Наименование из одних знаков препинания даёт пустой ключ и перестало бы ловиться как дубль.
-    nameKeyNotBlank: check('mech_models_name_key_not_blank_check', sql`${t.nameKey} <> ''`),
-  }),
-);
-
 // ── Механизация: аренда малой механизации (план `docs/mechanization-module-plan.md`) ──
 // Одна строка описывает просьбу, договорённость, аренду и её итог: отдельная запись состояния
 // понадобилась бы, если бы заявка порождала несколько аренд или аренда переживала свою заявку.
@@ -5822,25 +5583,18 @@ export const mechRequests = pgTable(
     // связана в справочнике, стережёт сервер в момент её назначения: состав площадок отдела
     // меняется, и перепроверка старой заявки запретила бы офису поправить у неё комментарий.
     departmentId: uuid('department_id').references(() => departments.id, { onDelete: 'restrict' }),
-    // ПРЕДМЕТ АРЕНДЫ — модель из справочника (ADR 0156, миграция 0251). Ссылка, а не снимок
-    // названия: переименование позиции меняет отображение и у старых заявок, как везде в портале, —
-    // снимками хранятся только деньги. `restrict` держит справочник от удаления строки, на которую
-    // ссылается история аренды.
+    // Вид техники — свободная строка: справочника видов заказчик пока не захотел.
+    kindName: text('kind_name').notNull(),
+    // Считает БД (STORED): по ключу строится подсказка видов и группируются отчёты, и второй точки
+    // правды по написанию быть не должно. Схлопывает регистр и повторные пробелы — и только:
+    // «Виброплита» и «Вибро плита» остаются разными позициями, разделять слова — работа
+    // справочника.
     //
-    // Пусто — заявка старше Э2, чьё написание в справочнике не нашлось. С Э3 (миграция 0256) это
-    // не переходное состояние, а ЗАКОННОЕ и постоянное: заказчик, которого спросили, выбрал снять
-    // колонку с написаниями, а не заводить таким заявкам модели, — и у этих заявок предмета аренды
-    // теперь нет вовсе, на экране прочерк. Обещанный планом `NOT NULL` поэтому и не поставлен: он
-    // упал бы на первой же такой строке в момент наката. Строгость выбора держит сервер
-    // (`assertMechModelAssignable`) — завести НОВУЮ заявку без модели нельзя.
-    mechModelId: uuid('mech_model_id').references(() => mechModels.id, { onDelete: 'restrict' }),
-    //
-    // Здесь стояли `kindName` — свободная строка вида техники — и её нормализованный ключ
-    // `kindKey`, по которому Э2 сопоставляла заявки со справочником. Обе сняты миграцией 0256:
-    // решение ADR 0152 про свободную строку заказчик развернул целиком, и последний след строки
-    // ушёл из схемы. Написания при этом ПОТЕРЯНЫ безвозвратно — их снимок остался только в журнале
-    // аудита (`mech_request.kind_dropped`), и это тоже его решение, названное вслух.
-    //
+    // Слеш здесь двойной не по прихоти: `sql` — тегированный шаблон, и `\s` в нём «сварился» бы в
+    // обычную `s`, то есть выражение колонки молча разошлось бы с миграцией 0238.
+    kindKey: text('kind_key').generatedAlwaysAs(
+      sql`lower(btrim(regexp_replace(kind_name, '\\s+', ' ', 'g')))`,
+    ),
     // План. Факт живёт ниже и сходиться с планом не обязан: продление двигает `plannedTo`, а
     // вернуть технику могут раньше срока.
     plannedFrom: date('planned_from', { mode: 'string' }).notNull(),
@@ -5896,6 +5650,9 @@ export const mechRequests = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => ({
+    // Вид техники — единственное, чем заявка отличается от соседней: `NOT NULL` от пустой строки
+    // не спасает.
+    kindNotBlank: check('mech_requests_kind_not_blank_check', sql`btrim(${t.kindName}) <> ''`),
     // Технику принимает человек, которому звонят с дороги.
     responsible: check(
       'mech_requests_responsible_check',
@@ -6019,12 +5776,8 @@ export const mechRequests = pgTable(
     lessorIdx: index('mech_requests_lessor_idx')
       .on(t.lessorId)
       .where(sql`${t.lessorId} is not null`),
-    // Вход со стороны справочника моделей: отбор списка и журнала по модели (он заменил отбор по
-    // ключу написания, снятому вместе с ним в Э3) и проверка `RESTRICT` при попытке модель снести.
-    // Индекс полный, а не частичный, в отличие от `lessorIdx`: заявок без модели немного, но они
-    // законны и останутся навсегда — предикат `IS NOT NULL` пришлось бы держать ради выигрыша,
-    // которого на такой доле строк нет.
-    mechModelIdx: index('mech_requests_mech_model_idx').on(t.mechModelId),
+    // Подсказка видов и группировка отчётов идут по нормализованному ключу, а не по написанию.
+    kindKeyIdx: index('mech_requests_kind_key_idx').on(t.kindKey),
     // Умолчательная сортировка реестра — свежие сверху.
     createdAtIdx: index('mech_requests_created_at_idx').on(t.createdAt),
     // Архив (ADR 0070): `archive=only` отбирает ровно по этой колонке и других условий не имеет.
@@ -8128,7 +7881,6 @@ export type WasteRequestRow = typeof wasteRequests.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type ObjectRow = typeof constructionObjects.$inferSelect;
 export type ContainerTypeRow = typeof containerTypes.$inferSelect;
-export type MechModelRow = typeof mechModels.$inferSelect;
 export type WasteTypeRow = typeof wasteTypes.$inferSelect;
 export type WasteTariffRow = typeof wasteTariffs.$inferSelect;
 export type VehicleKindRow = typeof vehicleKinds.$inferSelect;

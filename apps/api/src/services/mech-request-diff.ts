@@ -40,18 +40,6 @@ function day(dateKey: string | null): string {
   return dd && mm && yyyy ? `${dd}.${mm}.${yyyy}` : dateKey;
 }
 
-/**
- * Предмет аренды человеку — наименование модели из справочника (ADR 0156).
- *
- * Запасного хода через написание заявки здесь больше нет: этап Э3 снял колонку по решению
- * заказчика, и у заявки без модели предмета аренды нет вовсе. В истории это честный прочерк, а не
- * пустая строка: событие правки такой заявки обязано сказать, что названия техники у неё не стало,
- * — и сказать одинаково с карточкой и списком, где на том же месте тот же прочерк.
- */
-function model(r: MechRequestDto): string {
-  return r.mechModelName ?? EMPTY;
-}
-
 /** Площадка — код и наименование: справочник могут переименовать, история обязана помнить прежнее. */
 function place(r: MechRequestDto): string {
   return `${r.objectCode} — ${r.objectName}`;
@@ -89,10 +77,7 @@ export function diffMechRequests(
   const diff = changeSet();
   diff.changed('object', place(before), place(after));
   diff.changed('department', requester(before), requester(after));
-  // Ключ остался прежним, хотя поле стало ссылкой, а колонка `kind_name` и вовсе снята уборкой Э3:
-  // история append-only, и переименуй ключ — записи до Э2 остались бы в карточке без подписи
-  // (`mechRequestChangeLabels`).
-  diff.changed('kindName', model(before), model(after));
+  diff.changed('kindName', before.kindName, after.kindName);
   diff.changed('plannedFrom', day(before.plannedFrom), day(after.plannedFrom));
   diff.changed('plannedTo', day(before.plannedTo), day(after.plannedTo));
   diff.changed('responsibleName', before.responsibleName || EMPTY, after.responsibleName || EMPTY);
@@ -205,7 +190,7 @@ export function mechCompletionChanges(
 /**
  * Снимок исчезающей заявки для общего журнала (§6) — второй реестр аудита, не история карточки.
  *
- * Четырнадцать ключей отвечают ровно на один вопрос: **сможет ли журнал объяснить деньги заявки,
+ * Тринадцать ключей отвечают ровно на один вопрос: **сможет ли журнал объяснить деньги заявки,
  * которой больше нет**. Ставка с единицей и отработанные единицы показывают, из чего сложилась
  * `finalCost`; без `actualUnits` итог оказался бы числом без вывода.
  *
@@ -226,15 +211,7 @@ export function mechAuditSnapshot(r: MechRequestDto): Record<string, unknown> {
     // (`mechRequesterOf`), — колонки здесь не взаимоисключающие, и `objectId` заполнен всегда.
     requesterKind: mechRequesterOf(r)?.kind ?? null,
     departmentId: r.departmentId,
-    // Обе половины предмета аренды: ссылка отвечает «какая это позиция справочника», имя — «как
-    // она называлась». Имя берётся у справочника, а не у снятого написания заявки: уборка Э3
-    // унесла `kindName`, но задача ключа осталась прежней — заявки после `purge` нет, а модель,
-    // на которую она ссылалась, с этого момента можно снести насовсем (`RESTRICT` держал её только
-    // пока заявка была). Останься здесь один идентификатор — журнал отвечал бы про деньги строкой
-    // «за uuid», и дописать имя было бы уже некуда: журнал append-only. У заявки без модели пусто
-    // и здесь, и это её честное состояние после Э3, а не пропажа записи.
-    mechModelId: r.mechModelId,
-    mechModelName: r.mechModelName,
+    kindName: r.kindName,
     status: r.status,
     lessorId: r.lessorId,
     rate: r.rate,

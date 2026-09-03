@@ -47,7 +47,6 @@ const MODEL = { id: 'oem-1', name: 'Ricoh IM 350' };
 const UNIT: OfficeEquipmentDto = {
   id: 'oe-1',
   type: { id: 'oet-1', name: 'МФУ', isActive: true },
-  specs: [],
   model: MODEL,
   name: 'Ricoh IM 350',
   serialNumber: '',

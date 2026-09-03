@@ -15,17 +15,6 @@ import {
   isClientUpgradeResponse,
   requireClientUpgrade,
 } from './clientContract';
-import {
-  enterMaintenanceMode,
-  isMaintenanceModeActive,
-  isMaintenanceModeExempt,
-  isMaintenanceModeResponse,
-  maintenanceModeState,
-  readMaintenanceModeNotice,
-  MAINTENANCE_MODE_CODE,
-  MAINTENANCE_MODE_MESSAGE,
-  MAINTENANCE_MODE_STATUS,
-} from './maintenance';
 import { expireIfCurrent, getToken, refresh } from './session';
 
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
@@ -102,33 +91,8 @@ async function doFetch(url: string, options: RequestOptions): Promise<Response> 
   });
 }
 
-/**
- * Портал закрыт на технические работы — запрос НЕ ОТПРАВЛЯЕТСЯ ВОВСЕ, отказ собирается на месте.
- *
- * Замыкание здесь не оптимизация. Заглушка размонтирует портал, но вкладок у окна много, и каждая
- * до последнего запроса продолжала бы фоновые обновления списков: сервер в окне либо отвечает 503
- * на каждый такой запрос, либо остановлен `--cutover` и не отвечает вовсе — в обоих случаях это
- * работа впустую по закрытому API. Отказ при этом той же формы, что пришёл бы от гейта: вызывающий
- * про режим не знает и знать не должен, а разговор с человеком ведёт заглушка поверх всего.
- *
- * Единственное, что сквозь закрытый портал ходит, — выход; причина у исключения одна и названа в
- * `isMaintenanceModeExempt`.
- */
-function refuseWhileClosed(path: string, method: string): void {
-  if (!isMaintenanceModeActive()) return;
-  if (isMaintenanceModeExempt(method, path)) return;
-  const { reason, until } = maintenanceModeState();
-  throw {
-    code: MAINTENANCE_MODE_CODE,
-    message: MAINTENANCE_MODE_MESSAGE,
-    details: { reason, until },
-    status: MAINTENANCE_MODE_STATUS,
-  } as ApiError;
-}
-
 /** Запрос с обновлением токена и разбором ошибки; тело читают уже вызывающие. */
 async function request(path: string, options: RequestOptions): Promise<Response> {
-  refuseWhileClosed(path, options.method ?? 'GET');
   const url = buildUrl(path, options.query);
   let res = await doFetch(url, options);
 
@@ -160,15 +124,6 @@ async function request(path: string, options: RequestOptions): Promise<Response>
      * ведёт экран поверх всего (`components/AppUpdateBanner.tsx`).
      */
     if (isClientUpgradeResponse(res.status, body.code)) requireClientUpgrade();
-    /*
-     * Гейт режима технических работ (план `docs/maintenance-mode-plan.md`, §4.5): портал закрыт
-     * целиком. Флаг ставится немедленно, не дожидаясь очередного опроса файла статуса, — ради
-     * этого 503 и заведён вторым каналом. Снять его отказ не может: конец работ подтверждает
-     * только файл, переживающий остановку api.
-     */
-    if (isMaintenanceModeResponse(res.status, body.code)) {
-      enterMaintenanceMode(readMaintenanceModeNotice(body.details));
-    }
     throw {
       code: body.code ?? 'error',
       message: body.message ?? 'Ошибка запроса',

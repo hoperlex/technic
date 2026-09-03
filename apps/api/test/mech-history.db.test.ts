@@ -57,22 +57,15 @@ function day(dateKey: string): string {
   return `${dd}.${mm}.${yyyy}`;
 }
 
-/**
- * Четырнадцать ключей снимка (§6) — закрытый перечень, а не «реквизиты». Предмет аренды стоит в нём
- * ДВАЖДЫ (ADR 0156): `mechModelId` отвечает «какая это позиция справочника», `mechModelName` — «как
- * она называлась». Второй ключ не дублирует первый: после `purge` заявки нет, а модель с этого
- * момента можно снести насовсем — `RESTRICT` держал её, только пока заявка была. Написание заявки
- * (`kindName`) отвечало на этот же вопрос до уборки Э3 и ушло вместе с колонкой.
- */
+/** Тринадцать ключей снимка (§6) — закрытый перечень, а не «реквизиты». */
 const SNAPSHOT_KEYS = [
   'actualFrom',
   'actualTo',
   'actualUnits',
   'departmentId',
   'finalCost',
+  'kindName',
   'lessorId',
-  'mechModelId',
-  'mechModelName',
   'num',
   'objectId',
   'rate',
@@ -92,12 +85,10 @@ interface Ctx {
   auth: { authorization: string };
   lessorId: string;
   lessorName: string;
-  /** Модель из справочника: с Э2 предмет аренды выбирается строго из него (ADR 0156). */
-  modelId: string;
-  modelName: string;
 }
 
 let ctx: Ctx;
+let seq = 0;
 
 function prepareEnv(databaseUrl: string): void {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -137,8 +128,6 @@ async function cleanup(db: typeof AppDb): Promise<void> {
   await db.execute(sql`DELETE FROM departments WHERE code LIKE ${`${CODE_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM construction_objects WHERE code LIKE ${`${CODE_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM counterparties WHERE comment = ${CODE_PREFIX}`);
-  // Модели — после заявок: ссылка стоит с `ON DELETE RESTRICT`.
-  await db.execute(sql`DELETE FROM mech_models WHERE code = ${`mech-hist-${RUN}`}`);
 }
 
 // ── HTTP ──
@@ -149,6 +138,7 @@ interface CreateOptions {
 }
 
 async function createRequest(options: CreateOptions = {}): Promise<{ id: string; version: number }> {
+  seq += 1;
   const res = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/mech-requests',
@@ -156,7 +146,7 @@ async function createRequest(options: CreateOptions = {}): Promise<{ id: string;
     payload: {
       objectId: ctx.objectId,
       ...(options.fromDepartment ? { departmentId: ctx.departmentId } : {}),
-      mechModelId: ctx.modelId,
+      kindName: `Виброплита ${RUN}-${seq}`,
       plannedFrom: TODAY,
       plannedTo: PLANNED_TO,
       responsibleName: 'Иванов Иван',
@@ -290,14 +280,6 @@ describe.skipIf(!DB_URL)('механизация: история карточк�
       })
       .returning({ id: schema.counterparties.id });
 
-    // Своя строка справочника на прогон, а не позиция сида: база общая, и заявка, сославшаяся на
-    // общую модель, помешала бы соседнему файлу её гасить и сносить.
-    const modelName = `Виброплита истории ${RUN}`;
-    const [model] = await db
-      .insert(schema.mechModels)
-      .values({ code: `mech-hist-${RUN}`, name: modelName })
-      .returning({ id: schema.mechModels.id });
-
     const token = await tokens.signAccessToken({ sub: admin!.id, role: 'admin', av: 0 });
     ctx = {
       app,
@@ -310,8 +292,6 @@ describe.skipIf(!DB_URL)('механизация: история карточк�
       auth: { authorization: `Bearer ${token}` },
       lessorId: lessor!.id,
       lessorName,
-      modelId: model!.id,
-      modelName,
     };
   }, 120_000);
 

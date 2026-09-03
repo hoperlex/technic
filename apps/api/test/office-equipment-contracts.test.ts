@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   createOfficeEquipmentSchema,
-  OFFICE_EQUIPMENT_SPEC_UNKNOWN,
-  officeEquipmentSpecLine,
-  type OfficeEquipmentModelSpecDto,
   moveOfficeEquipmentSchema,
   createOfficeEquipmentTypeSchema,
   officeEquipmentListQuerySchema,
@@ -312,58 +309,5 @@ describe('контракт типа оргтехники', () => {
       'sortOrder',
     );
     expect(() => officeEquipmentTypeListQuerySchema.parse({ sortBy: 'createdAt' })).toThrow();
-  });
-});
-
-/**
- * Вторая строка колонки «Тип»: сокращения характеристик, помеченных `showInList`
- * (план `docs/office-equipment-specs-plan.md`, Р3, Р8).
- *
- * Правило одно на портал, письма и обмен файлом, и живёт оно в контрактах — потому что мест показа
- * четыре, а разъехаться им нельзя: «н/д» в списке техники и «н/д» в перечне моделей обязаны
- * означать одно и то же.
- *
- * Три исхода различаются намеренно и проверяются порознь: значение есть, значения нет («н/д» —
- * вопрос законен, ответа нет), характеристик у типа нет вовсе (строки нет — вопроса не задают).
- */
-describe('officeEquipmentSpecLine', () => {
-  const value = { id: 'v-1', code: 'mono', name: 'Чёрно-белая', shortName: 'ч/б' };
-  const spec = (over: Partial<OfficeEquipmentModelSpecDto> = {}): OfficeEquipmentModelSpecDto => ({
-    specId: 's-1',
-    code: 'print_color',
-    name: 'Цветность печати',
-    showInList: true,
-    sortOrder: 10,
-    value: null,
-    ...over,
-  });
-
-  it('показывает сокращение заполненного значения', () => {
-    expect(officeEquipmentSpecLine([spec({ value })])).toBe('ч/б');
-  });
-
-  it('незаполненное значение называет «н/д», а не молчит', () => {
-    // Молчание читалось бы как «чёрно-белый»: у самой массовой модели парка (68 карточек) печать
-    // ч/б, и пустая строка рядом с ней ничем не отличалась бы от честного ответа.
-    expect(officeEquipmentSpecLine([spec()])).toBe(OFFICE_EQUIPMENT_SPEC_UNKNOWN);
-  });
-
-  it('у типа без характеристик строки нет вовсе', () => {
-    // Не «н/д»: у монитора цветности печати не бывает, и задавать по нему вопрос незачем.
-    expect(officeEquipmentSpecLine([])).toBe('');
-  });
-
-  it('в строку идут только помеченные для списка, остальные ждут карточки', () => {
-    const hidden = spec({ specId: 's-2', code: 'paper', showInList: false, value });
-    expect(officeEquipmentSpecLine([spec({ value }), hidden])).toBe('ч/б');
-  });
-
-  it('несколько пометок разделяются точкой — тем же знаком, что и в заголовке единицы', () => {
-    const second = spec({
-      specId: 's-2',
-      code: 'paper',
-      value: { id: 'v-2', code: 'a3', name: 'A3', shortName: 'A3' },
-    });
-    expect(officeEquipmentSpecLine([spec({ value }), second])).toBe('ч/б · A3');
   });
 });

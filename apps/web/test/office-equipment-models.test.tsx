@@ -39,7 +39,6 @@ function modelDto(over: Partial<OfficeEquipmentModelDto> = {}): OfficeEquipmentM
   return {
     id: 'oem-1',
     type: { id: 'oet-1', name: 'МФУ', isActive: true },
-    specs: [],
     name: 'Ricoh Aficio MP 201SPF',
     manufacturer: 'Ricoh',
     isActive: true,
@@ -55,8 +54,6 @@ function modelDto(over: Partial<OfficeEquipmentModelDto> = {}): OfficeEquipmentM
 function renderModels(models: OfficeEquipmentModelDto[], over: RouteMap = {}): HttpMock {
   const http = mockHttp({
     'GET /office-equipment-models': () => json(list(models)),
-    // Форма модели спрашивает характеристики типа (цветность печати); в этом окне их нет.
-    'GET /office-equipment-types/:id/specs': () => json([]),
     ...over,
   });
   renderWithUser(
@@ -211,7 +208,6 @@ const PRINTER_MODEL = modelDto({
   id: 'oem-2',
   name: 'Kyocera ECOSYS P2040',
   type: { id: 'oet-2', name: 'Принтер', isActive: true },
-  specs: [],
 });
 
 function typeDto(id: string, code: string, name: string, sortOrder: number) {
@@ -291,7 +287,6 @@ function equipmentDto(): OfficeEquipmentDto {
   return {
     id: 'oe-1',
     type: { id: TYPE_MFU.id, name: TYPE_MFU.name, isActive: true },
-    specs: [],
     model: { id: MFU_MODEL.id, name: MFU_MODEL.name },
     name: MFU_MODEL.name,
     serialNumber: '',
@@ -354,8 +349,6 @@ describe('счётчик «В парке» и матрица инвалидац�
       // Карточку правки открывает секция обслуживания — она спрашивает единицу отдельно.
       'GET /office-equipment/:id': () => json(equipmentDto()),
       'GET /office-equipment-types': () => json(list([TYPE_MFU])),
-      // Форма модели спрашивает характеристики типа (цветность печати); здесь их нет.
-      'GET /office-equipment-types/:id/specs': () => json([]),
       'GET /objects': () => json(list([objectDto()])),
       'GET /departments': () => json(emptyList()),
       'GET /office-equipment-models': ({ query }) => {

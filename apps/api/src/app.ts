@@ -12,7 +12,6 @@ import { config } from './config';
 import { logger } from './logger';
 import { errorHandler, notFoundHandler } from './lib/error-handler';
 import clientContractGate from './lib/client-contract';
-import maintenanceGate from './lib/maintenance';
 import authPlugin from './auth/plugin';
 import healthRoutes from './routes/health';
 import authRoutes from './routes/auth';
@@ -57,7 +56,6 @@ import wasteRequestsRoutes from './routes/waste-requests';
 import wasteTicketsRoutes from './routes/waste-tickets';
 import ticketAuditRoutes from './routes/ticket-audit';
 import mechRequestsRoutes from './routes/mech-requests';
-import mechModelsRoutes from './routes/mech-models';
 import wasteTypesRoutes from './routes/waste-types';
 import wasteTariffsRoutes from './routes/waste-tariffs';
 import filesRoutes from './routes/files';
@@ -135,19 +133,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
    * его области (`/health/*`, `/internal/*` вне гейта) названы в самом плагине.
    */
   await app.register(clientContractGate);
-  /*
-   * Режим технических работ (план `docs/maintenance-mode-plan.md`) — сразу после гейта версии
-   * клиента и ДО авторизации.
-   *
-   * Порядок этих трёх не произволен. Версия клиента спрашивается первой: вкладка, которой отказано
-   * 426, обязана узнать про обновление в любом состоянии портала, иначе после снятия режима она
-   * продолжит работу на сборке, которой отказано. Авторизация — последней: в окне закрыт и вход, и
-   * `/auth/me`, а страж этого не знает и отвечал бы 401 — «войдите заново» вместо «идут работы».
-   *
-   * Ручки, выведенные из-под режима насовсем (`/auth/refresh`, `/auth/logout`), и границы его
-   * области (`/health/*`, `/metrics`, `/internal/*` вне гейта) названы в самом плагине.
-   */
-  await app.register(maintenanceGate);
   await app.register(authPlugin);
 
   if (options.onRoute) app.addHook('onRoute', options.onRoute);
@@ -267,10 +252,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // права: с вывозом мусора модуль делит только ось области (площадка эксплуатации), а цикл,
   // заявитель и предмет у него собственные.
   await app.register(mechRequestsRoutes, { prefix: '/api/v1/mech-requests' });
-  // Справочник моделей механизации (план `docs/mechanization-models-directory-plan.md`) — рядом с
-  // заявкой, хотя ведут его в «Справочниках»: заявка сядет на него этапом Э2, и искать их порознь
-  // придётся тому же человеку.
-  await app.register(mechModelsRoutes, { prefix: '/api/v1/mech-models' });
   await app.register(wasteTypesRoutes, { prefix: '/api/v1/waste-types' });
   await app.register(wasteTariffsRoutes, { prefix: '/api/v1/waste-tariffs' });
   await app.register(filesRoutes, { prefix: '/api/v1/files' });

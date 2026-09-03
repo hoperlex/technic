@@ -129,8 +129,6 @@ vi.mock('../src/auth/principal', () => ({
 // Валидные UUID: схемы проверяются до preHandler, и на кривом id перебор увидел бы 400 вместо 403.
 const RECORD_ID = '33333333-3333-4333-8333-333333333333';
 const OBJECT_ID = '11111111-1111-4111-8111-111111111111';
-/** Модель механизации (ADR 0156): существования строки перебор не требует — он проверяет стража. */
-const MECH_MODEL_ID = '11111111-1111-4111-8111-111111111133';
 const COUNTERPARTY_ID = '22222222-2222-4222-8222-222222222222';
 const PERSON_ID = '44444444-4444-4444-8444-444444444444';
 const DEPARTMENT_ID = '55555555-5555-4555-8555-555555555555';
@@ -372,9 +370,6 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   },
   'PATCH /api/v1/warehouses/:id': { payload: { address: 'г. Мытищи, ул. Ленина, д. 2' } },
   'POST /api/v1/container-types': { payload: { code: 'CT-1', name: 'Бункер 8 м³' } },
-  'POST /api/v1/mech-models': {
-    payload: { code: 'vibroplita-proba', name: 'Виброплита реверсивная Wacker DPU 3070Н' },
-  },
   'POST /api/v1/waste-tariffs': {
     payload: {
       operatorCounterpartyId: COUNTERPARTY_ID,
@@ -705,9 +700,7 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/mech-requests': {
     payload: {
       objectId: OBJECT_ID,
-      // Модель — ссылка на справочник (ADR 0156): свободной строки в теле больше нет, и образец
-      // без неё получал бы 400 от схемы вместо 403 от стража, то есть проверял бы не то.
-      mechModelId: MECH_MODEL_ID,
+      kindName: 'Виброплита',
       plannedFrom: FUTURE_DATE,
       plannedTo: FUTURE_DATE,
       ...CONTACT,

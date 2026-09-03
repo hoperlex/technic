@@ -10,7 +10,6 @@ export {
   officeEquipmentApi,
   officeEquipmentConsumablesApi,
   officeEquipmentModelsApi,
-  officeEquipmentSpecsApi,
   officeEquipmentTypesApi,
 } from './api/officeEquipmentApi';
 /**
@@ -32,7 +31,6 @@ export {
   officeEquipmentModelOptionsQuery,
   officeEquipmentModelPickerQuery,
   officeEquipmentOptionsQuery,
-  officeEquipmentSpecsQuery,
   officeEquipmentTypeOptionsQuery,
 } from './api/queries';
 export { EquipmentStateTag } from './ui/EquipmentStateTag';
@@ -49,12 +47,6 @@ export {
   type OfficeEquipmentGridActions,
 } from './ui/officeEquipmentGrid';
 export { WarrantyTag } from './ui/WarrantyTag';
-/**
- * Характеристики модели в карточке единицы: «Цветность печати: Цветная» (план
- * `docs/office-equipment-specs-plan.md`). В слое сущности, потому что правило показа —
- * «незаполненное называется вслух, ненужное типу не показывается вовсе» — одно на все места.
- */
-export { OfficeEquipmentSpecsView } from './ui/OfficeEquipmentSpecsView';
 /**
  * Поля карточки единицы. Живут в слое сущности, а не у вкладки справочника: заводят единицу из
  * двух мест — из самого справочника и из формы заявки, когда техники в списке не нашлось, — и два

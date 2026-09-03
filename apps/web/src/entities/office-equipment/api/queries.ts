@@ -5,7 +5,6 @@ import {
   officeEquipmentApi,
   officeEquipmentConsumablesApi,
   officeEquipmentModelsApi,
-  officeEquipmentSpecsApi,
   officeEquipmentTypesApi,
 } from './officeEquipmentApi';
 import {
@@ -123,22 +122,6 @@ export const officeEquipmentModelOptionsQuery = (equipmentTypeId: string | undef
       }),
     enabled: !!equipmentTypeId,
     select: (r) => r.items.map((m) => ({ value: m.id, label: m.name })),
-  });
-
-/**
- * Характеристики, положенные типу, со значениями на выбор (план
- * `docs/office-equipment-specs-plan.md`, Р4). Ими форма модели строит поля вроде «Цветность
- * печати», а пустой ответ означает, что у этого типа таких вопросов не задают вовсе.
- *
- * `enabled` по типу — как у перечня моделей: до выбора типа спрашивать нечего, набор характеристик
- * задаёт именно тип. Перечень меняется только миграцией, поэтому переспрашивать его на каждое
- * открытие формы незачем — запись живёт, пока жив кэш вкладки.
- */
-export const officeEquipmentSpecsQuery = (equipmentTypeId: string | undefined) =>
-  queryOptions({
-    queryKey: officeEquipmentModelKeys.specs(equipmentTypeId),
-    queryFn: () => officeEquipmentSpecsApi.list(equipmentTypeId!),
-    enabled: !!equipmentTypeId,
   });
 
 /**

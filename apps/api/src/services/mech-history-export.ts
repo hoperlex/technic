@@ -51,7 +51,7 @@ const HEADER = [
   'Статус',
   'Заявитель',
   'Площадка',
-  'Модель',
+  'Вид техники',
   'Арендодатель',
   'Ставка, ₽',
   'Единица ставки',
@@ -80,11 +80,7 @@ function rowOf(request: MechRequestDto): string[] {
     mechRequesterOf(request)?.name ?? '',
     // Площадка кодом и наименованием: по коду её ищут в счёте, по наименованию узнают.
     [request.objectCode, request.objectName].filter(Boolean).join(' · '),
-    // Модель из справочника (ADR 0156). У заявки старше Э2, не нашедшей своей модели, ячейка
-    // ПУСТА: уборка Э3 сняла написания по решению заказчика, и подставить сюда больше нечего.
-    // Пустая ячейка в книге, которую сверяют со счетами, читается как «предмет аренды не назван» —
-    // так оно и есть; выдумывать заполнение вместо этого значило бы прятать цену того решения.
-    request.mechModelName ?? '',
+    request.kindName,
     request.lessorName ?? '',
     money(request.rate),
     request.rateUnit ? mechRateUnitLabels[request.rateUnit] : '',

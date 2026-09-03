@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { baseListQuery, uuidSchema } from './common';
-import type { OfficeEquipmentModelSpecDto, OfficeEquipmentTypeRefDto } from './office-equipment';
+import type { OfficeEquipmentTypeRefDto } from './office-equipment';
 
 // ── Модели аппаратов (план `docs/office-equipment-consumables-plan.md`, Р1; выпуск A) ──
 //
@@ -72,22 +72,6 @@ export const officeEquipmentModelListQuerySchema = baseListQuery(
   coverage: z.enum(OFFICE_EQUIPMENT_MODEL_COVERAGE_FILTERS).optional(),
 });
 
-/**
- * Значения характеристик модели (план `docs/office-equipment-specs-plan.md`, Р2, Р3).
- *
- * Пара «характеристика — значение», где `valueId: null` означает «н/д»: строка значения просто не
- * заводится (или удаляется). Третьего значения в перечне нет намеренно — два способа сказать
- * «неизвестно» разошлись бы на первом же отборе.
- *
- * Присылать разрешено только характеристики, положенные типу модели; всё остальное маршрут
- * отбивает 422 словами, не доводя до отказа базы (замок `office_equipment_model_specs_type_spec_fk`).
- */
-export const officeEquipmentModelSpecInputSchema = z.object({
-  specId: uuidSchema,
-  valueId: uuidSchema.nullable(),
-});
-export type OfficeEquipmentModelSpecInput = z.infer<typeof officeEquipmentModelSpecInputSchema>;
-
 export const createOfficeEquipmentModelSchema = z.object({
   equipmentTypeId: uuidSchema,
   name: modelNameSchema,
@@ -95,13 +79,6 @@ export const createOfficeEquipmentModelSchema = z.object({
   /** Гашение вместо удаления (Р11): погашенную модель не предлагают, но у ссылающихся она есть. */
   isActive: z.boolean().optional().default(true),
   comment: commentSchema.optional().default(''),
-  /**
-   * Характеристики модели. Поля нет вовсе — «не трогай заведённое» (правка) или «ничего не
-   * заполнено» (заведение); присланная характеристика со `valueId: null` — «сотри значение».
-   * Различать эти два случая обязательно: форма модели присылает весь набор своего типа разом, а
-   * обмен файлом — только ту колонку, которая в файле заполнена (Р12).
-   */
-  specs: z.array(officeEquipmentModelSpecInputSchema).max(20).optional(),
 });
 export type CreateOfficeEquipmentModelInput = z.infer<typeof createOfficeEquipmentModelSchema>;
 
@@ -123,7 +100,6 @@ export const updateOfficeEquipmentModelSchema = createOfficeEquipmentModelSchema
   manufacturer: manufacturerSchema.optional(),
   isActive: z.boolean().optional(),
   comment: commentSchema.optional(),
-  specs: z.array(officeEquipmentModelSpecInputSchema).max(20).optional(),
 });
 export type UpdateOfficeEquipmentModelInput = z.infer<typeof updateOfficeEquipmentModelSchema>;
 
@@ -146,12 +122,6 @@ export interface OfficeEquipmentModelDto {
    * как своя.
    */
   isUsed: boolean;
-  /**
-   * Характеристики этой модели: все, положенные её типу, со значением или `null` — «н/д»
-   * (план `docs/office-equipment-specs-plan.md`, Р3, Р4). Пустой массив означает, что у типа
-   * характеристик не спрашивают вовсе, и второй строки в колонке «Тип» у него нет.
-   */
-  specs: OfficeEquipmentModelSpecDto[];
   /**
    * Сколько карточек модели видит смотрящий: живые и активные, **в его области** — тем же
    * предикатом `officeEquipmentScopeWhere`, что и список техники (Р12), а не похожим на него.

@@ -88,9 +88,6 @@ export * from './vehicle-request-feed';
  * а не частью «Заказа ТС», потому что общего у модулей только это: у аренды малой механизации свой
  * цикл, своя область и свой заказчик (план `docs/mechanization-module-plan.md`, Р1, Р10). */
 export * from './mech-requests';
-/* Справочник моделей механизации — сразу за заявкой: этап Э2 сделает его источником поля
- * «Модель», а пока справочник живёт сам по себе (план `docs/mechanization-models-directory-plan.md`). */
-export * from './mech-models';
 export * from './weekly-vehicle-requests';
 export * from './waybills';
 /* Бюджет печати (`print-budget.ts`) — сразу за путевым листом: печатают именно его, и лестница

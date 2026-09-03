@@ -19,6 +19,7 @@ import {
   type MechRequestHistoryQuery,
   mechDeleteScope,
   mechEditScope,
+  mechKindsQuerySchema,
   mechRequestHistoryQuerySchema,
   mechRequestListQuerySchema,
   mechRequestSummaryQuerySchema,
@@ -32,13 +33,7 @@ import {
   updateMechRequestSchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import {
-  constructionObjects,
-  mechModels,
-  mechRequestStatusHistory,
-  mechRequests,
-  users,
-} from '../db/schema';
+import { constructionObjects, mechRequestStatusHistory, mechRequests, users } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit, writeAuditTx } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
@@ -60,7 +55,6 @@ import {
 } from '../services/mech-request-dto';
 import {
   assertMechLessorAssignable,
-  assertMechModelAssignable,
   assertMechPairAssignable,
   assertMechRequesterAllowed,
   assertMechRequestLive,
@@ -74,6 +68,7 @@ import {
 } from '../services/mech-request-files';
 import {
   loadMechHistorySummary,
+  loadMechKinds,
   loadMechSummary,
   mechHistorySortColumns,
   mechHistoryWhere,
@@ -231,10 +226,6 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
       .select({ c: count() })
       .from(mechRequests)
       .innerJoin(constructionObjects, eq(mechRequests.objectId, constructionObjects.id))
-      // Модель — ради поиска по её наименованию: счётчик обязан считать ровно те строки, которые
-      // отобрала таблица, и соединение, забытое здесь, дало бы «показано 20 из 0» на первом же
-      // поиске словом из справочника.
-      .leftJoin(mechModels, eq(mechRequests.mechModelId, mechModels.id))
       .where(where);
     const filesMap = await mechFilesByRequestIds(
       db,
@@ -257,10 +248,10 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
     },
   );
 
-  // Подсказки ранее вводившихся видов (`GET /kinds`) здесь больше нет: строгий выбор из справочника
-  // (ADR 0156, решение 2) сделал её лишней, а оставленная рядом — вредной. Она отвечала «что уже
-  // набирали в этой области», и портал, спросивший её при пустом справочнике, предлагал бы человеку
-  // написания вместо позиций. Модели читаются справочником `GET /api/v1/mech-models`.
+  r.get('/kinds', { ...auth, schema: { querystring: mechKindsQuerySchema } }, async (req) => {
+    const p = requirePrincipal(req);
+    return { items: await loadMechKinds(p, req.query.search) };
+  });
 
   // ── Журнал закрытых аренд: вкладка «История» (§7 п. 3, Э3) ──
   //
@@ -321,8 +312,6 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         .select({ c: count() })
         .from(mechRequests)
         .innerJoin(constructionObjects, eq(mechRequests.objectId, constructionObjects.id))
-        // Модель — ради поиска по её наименованию, той же парой соединений, что и у списка.
-        .leftJoin(mechModels, eq(mechRequests.mechModelId, mechModels.id))
         .where(where);
       const filesMap = await mechFilesByRequestIds(
         db,
@@ -434,8 +423,8 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
   /**
    * Заведение — **отдельная ветка протокола Р21**: запереть ещё не существующую строку нечем.
    * Последовательность своя: транзакция → проверка пары «отдел — площадка» и активности её половин
-   * → проверка модели → вставка → привязка файлов → первая запись истории статусов → коммит →
-   * аудит обычным `writeAudit`.
+   * → вставка → привязка файлов → первая запись истории статусов → коммит → аудит обычным
+   * `writeAudit`.
    *
    * Аудит здесь ПОСЛЕ транзакции, а не в ней: заведения нет в строгом перечне (`writeAuditTx`), и
    * держать обещание, которого протокол не даёт, хуже, чем назвать границу. Снимок при этом
@@ -447,7 +436,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
     input: {
       objectId: string;
       departmentId: string | null;
-      mechModelId: string;
+      kindName: string;
       plannedFrom: string;
       plannedTo: string;
       responsibleName: string;
@@ -462,16 +451,12 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
     assertMechRequesterAllowed(p, input.departmentId);
     const created = await db.transaction(async (tx) => {
       await assertMechPairAssignable(tx, input.objectId, input.departmentId);
-      // Модель проверяется до вставки: внешний ключ отвечает «такая строка есть», а «её можно
-      // выбрать сегодня» — вопрос сервиса. Наименование при этом никуда не пишется: с уборкой Э3
-      // снимка написания у заявки нет вовсе, предмет аренды хранится одной ссылкой (ADR 0156).
-      await assertMechModelAssignable(tx, input.mechModelId);
       const [row] = await tx
         .insert(mechRequests)
         .values({
           objectId: input.objectId,
           departmentId: input.departmentId,
-          mechModelId: input.mechModelId,
+          kindName: input.kindName,
           plannedFrom: input.plannedFrom,
           plannedTo: input.plannedTo,
           responsibleName: input.responsibleName,
@@ -510,7 +495,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
     const dto = await createRequest(p, {
       objectId: body.objectId,
       departmentId: body.departmentId ?? null,
-      mechModelId: body.mechModelId,
+      kindName: body.kindName,
       plannedFrom: body.plannedFrom,
       plannedTo: body.plannedTo,
       responsibleName: body.responsibleName,
@@ -543,24 +528,12 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
       if (!source) throw err.notFound('Заявка не найдена');
       assertArchiveVisible(p, source.deletedAt, 'Заявка не найдена');
       assertPlaceObjectScope(p, source.objectId, MECH_SCOPE_LABEL);
-      // Копия ссылается на ту же модель. У заявки старше Э2 ссылки может не быть вовсе — её
-      // написание не нашлось в справочнике при переносе, а уборка Э3 сняла и само написание, — и
-      // копировать тут нечего: предмета аренды у такой заявки не осталось, а строгий выбор не
-      // допускает завести новую заявку без модели. Отказ поэтому не называет модель по имени: имя
-      // потеряно вместе с колонкой, и подставить в кавычки нечего.
-      if (!source.mechModelId) {
-        throw err.unprocessable(
-          'У этой заявки модель не указана — её завели до справочника, и скопировать заявку нечем: ' +
-            'оформите новую и выберите модель в «Справочниках»',
-          { mechModelId: 'Модель не указана' },
-        );
-      }
       const dto = await createRequest(
         p,
         {
           objectId: source.objectId,
           departmentId: source.departmentId,
-          mechModelId: source.mechModelId,
+          kindName: source.kindName,
           plannedFrom: source.plannedFrom,
           plannedTo: source.plannedTo,
           responsibleName: source.responsibleName,
@@ -578,7 +551,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
   /**
    * Правка формы. Три барьера, каждый со своим вопросом (Р19):
    *
-   * - **Б1 — состояние записи** (`mechEditScope`): «Новая» правится целиком; после неё срок, модель,
+   * - **Б1 — состояние записи** (`mechEditScope`): «Новая» правится целиком; после неё срок, вид,
    *   площадка и заявитель неизменяемы ДЛЯ ВСЕХ, включая офис и администратора — за ними стоит
    *   договорённость с арендодателем, и срок двигает только продление своим правом. У закрытой
    *   заявки открыты комментарий и вложения: акт приходит позже, а разбор постфактум пишут в
@@ -610,7 +583,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
           body.departmentId !== undefined ? body.departmentId : row.departmentId;
         const objectChanged = body.objectId !== undefined && body.objectId !== row.objectId;
         const departmentChanged = nextDepartmentId !== row.departmentId;
-        const modelChanged = body.mechModelId !== undefined && body.mechModelId !== row.mechModelId;
+        const kindChanged = body.kindName !== undefined && body.kindName !== row.kindName;
         const periodChanged =
           (body.plannedFrom !== undefined && body.plannedFrom !== row.plannedFrom) ||
           (body.plannedTo !== undefined && body.plannedTo !== row.plannedTo);
@@ -627,9 +600,9 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
               { plannedTo: 'Оформите продление' },
             );
           }
-          if (objectChanged || departmentChanged || modelChanged) {
+          if (objectChanged || departmentChanged || kindChanged) {
             throw err.unprocessable(
-              'Модель, площадку и заявителя после «Новой» не меняют — за ними стоит договорённость с арендодателем',
+              'Вид техники, площадку и заявителя после «Новой» не меняют — за ними стоит договорённость с арендодателем',
             );
           }
         }
@@ -650,14 +623,6 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
           await assertMechPairAssignable(tx, objectId, nextDepartmentId);
         }
 
-        // Модель проверяется, только когда её МЕНЯЮТ, — тем же правилом, что и пара «отдел +
-        // площадка» рядом: позицию справочника могли погасить после того, как заявку завели, и
-        // перепроверка неизменённой ссылки запретила бы офису поправить у такой заявки комментарий.
-        // Наименование проверка по-прежнему возвращает, но записывать его больше некуда: снимка
-        // написания у заявки нет с уборки Э3, предмет аренды хранится одной ссылкой.
-        const mechModelId = body.mechModelId ?? row.mechModelId;
-        if (modelChanged) await assertMechModelAssignable(tx, body.mechModelId!);
-
         const plannedFrom = body.plannedFrom ?? row.plannedFrom;
         const plannedTo = body.plannedTo ?? row.plannedTo;
         // Схеме есть что сказать про срок, только когда пришли обе даты; прислали одну — вторая
@@ -674,7 +639,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
           .set({
             objectId,
             departmentId: nextDepartmentId,
-            mechModelId,
+            kindName: body.kindName ?? row.kindName,
             plannedFrom,
             plannedTo,
             responsibleName: body.responsibleName ?? row.responsibleName,

@@ -19,7 +19,6 @@ function equipmentDto(overrides: Partial<OfficeEquipmentDto> = {}): OfficeEquipm
   return {
     id: 'oe-1',
     type: { id: 'ty-1', name: 'МФУ', isActive: true },
-    specs: [],
     name: 'Kyocera M3145',
     serialNumber: 'SN-1',
     inventoryNumber: '0012345',

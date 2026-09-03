@@ -85,25 +85,6 @@ services:
         # Токен DaData «Подсказки» (build-time). Пусто → веб без подсказок адресов (ADR 0006).
         VITE_DADATA_SUGGEST_TOKEN: ${VITE_DADATA_SUGGEST_TOKEN:-}
     depends_on: [technic-api]
-    # Статус режима технических работ (docs/maintenance-mode-plan.md §4.4). Единственный канал,
-    # который переживает остановку technic-api в окне `--cutover`, — поэтому файл отдаёт веб.
-    #
-    # Монтируется КАТАЛОГ, а не файл: команда режима подменяет /maintenance.json на месте (пишет
-    # рядом и переименовывает поверх — иначе вкладка успевала бы прочитать половину файла), а
-    # bind-mount файла привязан к inode, и после подмены контейнер до конца своей жизни показывал
-    # бы старое состояние. Каталог же переживает и появление, и снятие файла.
-    #
-    # Цель — ВНЕ корня nginx (/usr/share/nginx/html): внутри корня файл попал бы под try_files и
-    # раздавался как часть SPA. Локация с `alias` — в deploy/nginx/spa.conf.
-    #
-    # Права на хосте: /etc/technic-portal/maintenance — root:docker, но каталог обязан быть
-    # ПРОХОДИМ для остальных (0751), а сам maintenance.json — читаем (0644). Внутри контейнера
-    # воркеры nginx работают под uid 101: он не root и в группе docker не состоит, и при 0750
-    # получает EACCES — /maintenance.json ответил бы 403 (это не 404, заглушка бы не снялась), а
-    # проверка `-f` в spa.conf молча вернула бы ложь: режим включён, объявления нет. Секретом
-    # содержимое файла не является — портал сам публикует его по /maintenance.json.
-    volumes:
-      - /etc/technic-portal/maintenance:/etc/nginx/maintenance:ro
     # Без host-ports: снаружи только infra-nginx через сеть edge
     restart: unless-stopped
     networks: [internal, edge]

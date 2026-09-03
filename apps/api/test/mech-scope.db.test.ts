@@ -92,12 +92,6 @@ interface Ctx {
     deptOnlyA: string;
   };
   lessorId: string;
-  /**
-   * Две модели справочника: с Э2 предмет аренды выбирается строго из него (ADR 0156). Их две, а не
-   * одна, потому что отбор по модели проверяется СУЖЕНИЕМ — с одной моделью список не сузился бы
-   * ничем, и тест проходил бы на неработающем фильтре.
-   */
-  models: { first: string; second: string };
 }
 
 let ctx: Ctx;
@@ -146,8 +140,6 @@ async function cleanup(db: typeof AppDb): Promise<void> {
   await db.execute(sql`DELETE FROM departments WHERE code LIKE ${`${CODE_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM construction_objects WHERE code LIKE ${`${CODE_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM counterparties WHERE comment = ${CODE_PREFIX}`);
-  // Модели — после заявок: ссылка стоит с `ON DELETE RESTRICT`.
-  await db.execute(sql`DELETE FROM mech_models WHERE code LIKE ${`mech-scope-%-${RUN}`}`);
 }
 
 // ── Подопытные ──
@@ -252,8 +244,7 @@ async function headersOf(userId: string): Promise<Headers> {
 interface CreateInput {
   objectId: string;
   departmentId?: string;
-  /** Какую модель заказывают; по умолчанию первая — вторая нужна только отбору. */
-  mechModelId?: string;
+  kindName?: string;
   plannedFrom?: string;
   plannedTo?: string;
 }
@@ -266,7 +257,7 @@ function createRequest(headers: Headers, input: CreateInput) {
     payload: {
       objectId: input.objectId,
       ...(input.departmentId ? { departmentId: input.departmentId } : {}),
-      mechModelId: input.mechModelId ?? ctx.models.first,
+      kindName: input.kindName ?? `Виброплита ${RUN}`,
       plannedFrom: input.plannedFrom ?? TODAY,
       plannedTo: input.plannedTo ?? PLANNED_TO,
       responsibleName: 'Иванов Иван',
@@ -394,7 +385,6 @@ describe.skipIf(!DB_URL)('механизация: область, пара, фи
       objects: {} as Ctx['objects'],
       departments: {} as Ctx['departments'],
       users: {} as Ctx['users'],
-      models: {} as Ctx['models'],
       lessorId: '',
     };
     // Упавший прогон обязан убираться следующим, а не копить площадки в общей базе.
@@ -445,16 +435,6 @@ describe.skipIf(!DB_URL)('механизация: область, пара, фи
       })
       .returning({ id: schema.counterparties.id });
     ctx.lessorId = lessor!.id;
-    // Свои строки справочника на прогон, а не позиции сида: база общая, и заявка, сославшаяся на
-    // общую модель, помешала бы соседнему файлу её гасить и сносить.
-    const model = async (tag: string): Promise<string> => {
-      const [row] = await db
-        .insert(schema.mechModels)
-        .values({ code: `mech-scope-${tag}-${RUN}`, name: `Виброплита ${tag} ${RUN}` })
-        .returning({ id: schema.mechModels.id });
-      return row!.id;
-    };
-    ctx.models = { first: await model('first'), second: await model('second') };
   }, 120_000);
 
   afterAll(async () => {
@@ -651,36 +631,30 @@ describe.skipIf(!DB_URL)('механизация: область, пара, фи
     expect(copy.json().message).toContain('Площадка неактивна');
   });
 
-  /**
-   * Здесь стояла проверка подсказки ранее вводившихся видов (`GET /kinds`): она строилась по
-   * области, и площадка не должна была читать по ней, что арендуют соседи. Ручки больше нет —
-   * предмет аренды выбирают из справочника (ADR 0156, решение 2), и справочник у всех один. Её
-   * место занял отбор списка по модели: вопрос «покажи только виброплиты» никуда не делся, а
-   * отвечает на него теперь ссылка, а не написание.
-   */
-  it('отбор по модели сужает список и области не расширяет', async () => {
-    const first = await seedRequest({ objectId: ctx.objects.site });
-    const second = await seedRequest({
-      objectId: ctx.objects.site,
-      mechModelId: ctx.models.second,
-    });
-    const foreign = await seedRequest({
-      objectId: ctx.objects.other,
-      mechModelId: ctx.models.second,
-    });
+  it('подсказка видов не показывает виды из чужой области', async () => {
+    const mineKind = `Виброплита-своя-${RUN}`;
+    const foreignKind = `Компрессор-чужой-${RUN}`;
+    await seedRequest({ objectId: ctx.objects.site, kindName: mineKind });
+    await seedRequest({ objectId: ctx.objects.other, kindName: foreignKind });
+
+    const kinds = async (headers: Headers, search: string): Promise<string[]> => {
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/mech-requests/kinds?search=${encodeURIComponent(search)}`,
+        headers,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json().items as string[];
+    };
 
     const site = await headersOf(ctx.users.site);
-    const byModel = await listIds(site, `mechModelId=${ctx.models.second}`);
-    expect(byModel).toContain(second.id);
-    // Сужение настоящее: заявка на другую модель из отбора выпала.
-    expect(byModel).not.toContain(first.id);
-    // Отбор не отменяет области: чужая площадка с той же моделью по-прежнему не видна.
-    expect(byModel).not.toContain(foreign.id);
+    expect(await kinds(site, mineKind)).toContain(mineKind);
+    // Подсказка строится по той же области, что и список: иначе площадка читала бы по ней, что
+    // арендуют соседние объекты.
+    expect(await kinds(site, foreignKind)).toEqual([]);
 
-    // Та же заявка находится офисом, у которого области нет вовсе, — значит выпадение выше было
-    // про область, а не про сам отбор.
     const office = await headersOf(ctx.users.manager);
-    expect(await listIds(office, `mechModelId=${ctx.models.second}`)).toContain(foreign.id);
+    expect(await kinds(office, foreignKind)).toContain(foreignKind);
   });
 
   // ── Архив (Р15) ──
@@ -732,12 +706,12 @@ describe.skipIf(!DB_URL)('механизация: область, пара, фи
     expect(res.json().message).toContain('продление');
   });
 
-  it('менеджер не меняет модель, площадку и заявителя после «Новой»', async () => {
+  it('менеджер не меняет вид, площадку и заявителя после «Новой»', async () => {
     const office = await headersOf(ctx.users.manager);
     const id = await seedRunningRental(ctx.objects.deptA);
 
     for (const payload of [
-      { mechModelId: ctx.models.second },
+      { kindName: 'Компрессор' },
       { objectId: ctx.objects.deptB },
       { departmentId: ctx.departments.a },
     ]) {

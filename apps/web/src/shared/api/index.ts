@@ -6,7 +6,6 @@ export { createQueryKeys } from './createQueryKeys';
 export type { QueryKeyDefinitions, QueryKeys } from './createQueryKeys';
 export * from './clientContract';
 export * from './http';
-export * from './maintenance';
 export * from './resource';
 export * from './session';
 export * from './dadata';

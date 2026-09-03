@@ -68,8 +68,6 @@ interface Ctx {
   objects: { first: string; second: string };
   users: { admin: string; manager: string; site: string; siteOther: string };
   lessorId: string;
-  /** Модель из справочника: с Э2 предмет аренды выбирается строго из него (ADR 0156). */
-  modelId: string;
 }
 
 let ctx: Ctx;
@@ -120,8 +118,6 @@ async function cleanup(db: typeof AppDb): Promise<void> {
   await db.execute(sql`DELETE FROM users WHERE email LIKE ${emailLike}`);
   await db.execute(sql`DELETE FROM construction_objects WHERE code LIKE ${`${CODE_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM counterparties WHERE comment = ${CODE_PREFIX}`);
-  // Модели — после заявок: ссылка стоит с `ON DELETE RESTRICT`.
-  await db.execute(sql`DELETE FROM mech_models WHERE code = ${`mech-files-${RUN}`}`);
 }
 
 // ── Подопытные ──
@@ -216,7 +212,7 @@ async function createRequest(
     headers,
     payload: {
       objectId,
-      mechModelId: ctx.modelId,
+      kindName: `Генератор ${RUN}`,
       plannedFrom: TODAY,
       plannedTo: PLANNED_TO,
       responsibleName: 'Иванов Иван',
@@ -303,7 +299,6 @@ describe.skipIf(!DB_URL)('механизация: вложения и досту
       objects: {} as Ctx['objects'],
       users: {} as Ctx['users'],
       lessorId: '',
-      modelId: '',
     };
     await cleanup(db);
 
@@ -325,14 +320,6 @@ describe.skipIf(!DB_URL)('механизация: вложения и досту
       })
       .returning({ id: schema.counterparties.id });
     ctx.lessorId = lessor!.id;
-    // Своя строка справочника на прогон, а не позиция сида: база общая, и заявка, сославшаяся на
-    // общую модель, помешала бы соседнему файлу её гасить и сносить. Код — kebab-case латиницей
-    // (`mech_models_code_format_check`).
-    const [model] = await db
-      .insert(schema.mechModels)
-      .values({ code: `mech-files-${RUN}`, name: `Генератор ${RUN}` })
-      .returning({ id: schema.mechModels.id });
-    ctx.modelId = model!.id;
   }, 120_000);
 
   afterAll(async () => {

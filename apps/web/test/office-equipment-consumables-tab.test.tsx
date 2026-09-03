@@ -60,7 +60,6 @@ const WITHOUT_PURCHASES: AuthUser = {
 const MODEL: OfficeEquipmentModelDto = {
   id: 'oem-1',
   type: { id: 'oet-1', name: 'МФУ', isActive: true },
-  specs: [],
   name: 'Ricoh Aficio MP 201SPF',
   manufacturer: 'Ricoh',
   isActive: true,

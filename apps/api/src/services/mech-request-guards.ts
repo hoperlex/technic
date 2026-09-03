@@ -10,7 +10,6 @@ import {
   counterparties,
   departmentConstructionObjects,
   departments,
-  mechModels,
   mechRequests,
 } from '../db/schema';
 import { err } from '../lib/errors';
@@ -127,38 +126,6 @@ export async function assertMechLessorAssignable(
   }
   if (!cp.isActive) throw err.badRequest('Контрагент неактивен');
   return { lessorType: cp.type, lessorIsActive: cp.isActive, lessorName: cp.name };
-}
-
-// ── Назначаемость модели (Р5, ADR 0156) ──
-
-/**
- * Предмет аренды выбирается **строго из справочника** (ADR 0156, решение 2), и «выбрать» значит
- * ровно две вещи: строка существует и она не погашена. Проверка та же по устройству, что
- * `assertMechLessorAssignable` рядом, и по той же причине: внешний ключ отвечает «такая строка
- * есть», а «её можно выбрать сегодня» — вопрос к сервису. Погашенная модель ключом прошла бы, и
- * заявка завелась бы на то, чего портал в подборе не предлагает.
- *
- * Возвращает НАИМЕНОВАНИЕ, хотя записывать его после уборки Э3 некуда: снимка написания у заявки
- * больше нет, предмет аренды хранится одной ссылкой. Имя остаётся ради отказов — «Модель „…“
- * погашена» без имени не сказать, — и берётся здесь же, под тем же чтением, что и проверка:
- * спрошенное вторым запросом относилось бы к состоянию после чужой правки.
- */
-export async function assertMechModelAssignable(tx: MechTx, modelId: string): Promise<string> {
-  const [model] = await tx
-    .select({ name: mechModels.name, isActive: mechModels.isActive })
-    .from(mechModels)
-    .where(eq(mechModels.id, modelId));
-  if (!model) {
-    throw err.badRequest('Модель не найдена в справочнике', { mechModelId: 'Модель не найдена' });
-  }
-  if (!model.isActive) {
-    // Погашенная модель — не ошибка ввода, а снятая с аренды позиция: отказ обязан сказать, что
-    // делать дальше, иначе человек ищет её в том же списке, где её уже нет.
-    throw err.badRequest(`Модель «${model.name}» погашена — выберите другую`, {
-      mechModelId: 'Модель погашена',
-    });
-  }
-  return model.name;
 }
 
 // ── Пара «отдел — площадка» (Р17) ──

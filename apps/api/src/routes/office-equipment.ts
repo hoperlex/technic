@@ -68,7 +68,6 @@ import {
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
-import { modelSpecsExpr } from '../services/office-equipment-specs';
 
 /**
  * Справочник оргтехники (ADR 0085): что стоит по кабинетам и площадкам — МФУ, ноутбуки, мониторы.
@@ -103,17 +102,6 @@ const modelRef = {
   id: officeEquipmentModels.id,
   name: officeEquipmentModels.name,
 };
-
-/**
- * Ссылки на строку карточки для подзапроса характеристик — выражениями, а не колонками (тот же
- * приём, что `modelIdRef` в маршруте моделей): вписанная колонка внешней таблицы в подзапросе
- * рискует превратиться в ссылку на саму себя, и предикат станет вечно ложным без единой ошибки.
- *
- * `model_id` здесь законно бывает `NULL` — карточка выпуска A без модели. Тогда характеристики
- * типа приезжают со значением `null`, то есть «н/д» (Р9).
- */
-const equipmentModelIdRef = sql`${officeEquipment}."model_id"`;
-const equipmentTypeIdRef = sql`${officeEquipment}."equipment_type_id"`;
 
 /** Код объекта различает одноимённые корпуса — без него «Стройка» в списке ничего не называет. */
 const objectRef = {
@@ -157,9 +145,6 @@ function baseQuery() {
       model: modelRef,
       object: objectRef,
       department: departmentRef,
-      // Цветность печати второй строкой в колонке «Тип» (план
-      // `docs/office-equipment-specs-plan.md`): характеристики типа со значениями модели.
-      specs: modelSpecsExpr(equipmentModelIdRef, equipmentTypeIdRef),
     })
     .from(officeEquipment)
     .innerJoin(officeEquipmentTypes, eq(officeEquipment.equipmentTypeId, officeEquipmentTypes.id))
@@ -179,7 +164,6 @@ function toDto(r: EquipmentRow): OfficeEquipmentDto {
     // `null` означает «ссылки у карточки нет» (её завёл старый код в окне выката), а не «маршрут
     // не умеет»; в выпуске B оба переходных состояния уходят вместе с nullable-колонкой.
     model: r.model,
-    specs: r.specs,
     // Имя — копия имени модели, которую ведёт база (Р3), а не то, что ввёл человек.
     name: r.e.name,
     serialNumber: r.e.serialNumber,

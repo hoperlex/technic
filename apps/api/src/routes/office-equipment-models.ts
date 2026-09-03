@@ -6,7 +6,6 @@ import {
   createOfficeEquipmentModelSchema,
   officeEquipmentModelListQuerySchema,
   type OfficeEquipmentModelDto,
-  type OfficeEquipmentModelSpecDto,
   updateOfficeEquipmentModelSchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -23,7 +22,6 @@ import { writeAudit } from '../lib/audit';
 import { err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
-import { applyModelSpecs, modelSpecsExpr } from '../services/office-equipment-specs';
 
 /**
  * Справочник моделей аппаратов оргтехники (план `docs/office-equipment-consumables-plan.md`, Р1;
@@ -103,9 +101,6 @@ function normalizedName(name: string): SQL {
  * Краснеет только форма «колонка вписана в выражение».
  */
 const modelIdRef = sql`${officeEquipmentModels}."id"`;
-
-/** Тип строки — той же формой и по той же причине, что `modelIdRef`: подзапрос характеристик correlated. */
-const modelTypeIdRef = sql`${officeEquipmentModels}."equipment_type_id"`;
 
 /**
  * Первая половина занятости: карточки техники. Считаются ВСЕ — и архивные
@@ -190,9 +185,6 @@ function dtoColumns(p: Principal) {
     comment: officeEquipmentModels.comment,
     isUsed: isUsedExpr,
     equipmentCount: equipmentCountExpr(p),
-    // Характеристики: все, положенные типу модели, со значением или `null` — «н/д» (план
-    // `docs/office-equipment-specs-plan.md`, Р3, Р4).
-    specs: modelSpecsExpr(modelIdRef, modelTypeIdRef),
     createdAt: officeEquipmentModels.createdAt,
     updatedAt: officeEquipmentModels.updatedAt,
   };
@@ -209,7 +201,6 @@ interface DtoRow {
   comment: string;
   isUsed: boolean;
   equipmentCount: number;
-  specs: OfficeEquipmentModelSpecDto[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -225,7 +216,6 @@ function toDto(r: DtoRow): OfficeEquipmentModelDto {
     isUsed: r.isUsed,
     // `count(*)` приезжает из pg строкой (bigint), как у счётчиков типов ТС.
     equipmentCount: Number(r.equipmentCount),
-    specs: r.specs,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };
@@ -454,16 +444,6 @@ export default async function officeEquipmentModelsRoutes(app: FastifyInstance):
               comment: b.comment,
             })
             .returning({ id: officeEquipmentModels.id, name: officeEquipmentModels.name });
-          // Характеристики — той же транзакцией: модель, заведённая без своей цветности, показала
-          // бы «н/д» до первой правки, а откат записи значений оставил бы модель, которой в форме
-          // не просили.
-          if (b.specs?.length) {
-            await applyModelSpecs(tx, {
-              modelId: row!.id,
-              equipmentTypeId: b.equipmentTypeId,
-              specs: b.specs,
-            });
-          }
           return row!;
         })
         // Гонка с соседним заведением приходит сюда нарушением уникального индекса — и уходит тем
@@ -580,16 +560,6 @@ export default async function officeEquipmentModelsRoutes(app: FastifyInstance):
             })
             .where(eq(officeEquipmentModels.id, id))
             .returning({ name: officeEquipmentModels.name });
-          // Тип берётся из прочитанной строки, а не из тела: он неизменяем, и присланный проверен
-          // выше. Поля `specs` нет вовсе — значения не трогаются: от этого зависит обмен файлом,
-          // где пустая ячейка обязана оставить заведённое как есть (Р12).
-          if (b.specs?.length) {
-            await applyModelSpecs(tx, {
-              modelId: id,
-              equipmentTypeId: row.equipmentTypeId,
-              specs: b.specs,
-            });
-          }
           return res!;
         })
         // Третья дверь того же отказа: переименование в имя, которое сосед завёл в

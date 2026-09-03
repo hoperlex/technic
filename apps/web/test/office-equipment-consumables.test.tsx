@@ -63,7 +63,6 @@ const OPERATOR: AuthUser = authUser({
 const MODEL: OfficeEquipmentModelDto = {
   id: 'oem-1',
   type: { id: 'oet-1', name: 'МФУ', isActive: true },
-  specs: [],
   name: 'Ricoh Aficio MP 201SPF',
   manufacturer: 'Ricoh',
   isActive: true,
@@ -654,7 +653,6 @@ function equipmentDto(over: Partial<OfficeEquipmentDto> = {}): OfficeEquipmentDt
   return {
     id: 'oe-1',
     type: EQUIPMENT_TYPE,
-    specs: [],
     model: { id: MODEL.id, name: MODEL.name },
     name: MODEL.name,
     serialNumber: '',

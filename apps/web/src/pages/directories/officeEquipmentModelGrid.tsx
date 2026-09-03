@@ -1,6 +1,6 @@
 import { Button, Space, Tag, Tooltip, Typography, type TableColumnType } from 'antd';
 import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
-import { officeEquipmentSpecLine, type OfficeEquipmentModelDto } from '@technic/contracts';
+import type { OfficeEquipmentModelDto } from '@technic/contracts';
 import {
   actionsColumn,
   boolBadgeColumn,
@@ -78,25 +78,12 @@ export function officeEquipmentModelColumns({
       searchable: false,
       width: 160,
       render: (_v, r) => (
-        <>
-          <Space size={6}>
-            {r.type.name}
-            {/* Модель жива, а тип снят с оборота: строка обязана объяснить, почему такой техники
-                больше не заводят. */}
-            {!r.type.isActive && <Tag>Не используется</Tag>}
-          </Space>
-          {/* Цветность печати второй строкой — той же формой, что в списке техники (план
-              `docs/office-equipment-specs-plan.md`, Р8). Здесь она нужнее всего: по этому перечню
-              значения и дозаполняют, а «н/д» показывает, где работа ещё не сделана. */}
-          {officeEquipmentSpecLine(r.specs) && (
-            <>
-              <br />
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {officeEquipmentSpecLine(r.specs)}
-              </Typography.Text>
-            </>
-          )}
-        </>
+        <Space size={6}>
+          {r.type.name}
+          {/* Модель жива, а тип снят с оборота: строка обязана объяснить, почему такой техники
+              больше не заводят. */}
+          {!r.type.isActive && <Tag>Не используется</Tag>}
+        </Space>
       ),
     }),
     textColumn<OfficeEquipmentModelDto>({
@@ -183,11 +170,7 @@ export function officeEquipmentModelCard({
     badge: (r) => (
       <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Активна' : 'Погашена'}</Tag>
     ),
-    // Тип и цветность одной строкой — как в карточке техники на телефоне.
-    primary: (r) =>
-      officeEquipmentSpecLine(r.specs)
-        ? `${r.type.name} · ${officeEquipmentSpecLine(r.specs)}`
-        : r.type.name,
+    primary: (r) => r.type.name,
     lines: [
       (r) => r.manufacturer || null,
       (r) => `В парке: ${r.equipmentCount} (в вашей области, активных)`,

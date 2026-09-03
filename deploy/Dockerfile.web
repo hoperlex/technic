@@ -23,9 +23,4 @@ RUN pnpm --filter @technic/web build
 FROM nginx:1.27-alpine
 COPY deploy/nginx/spa.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
-# Заглушка режима техработ (docs/maintenance-mode-plan.md §3). Кладётся в корень статики, а не в
-# /etc/nginx/maintenance: тот каталог в бою перекрыт bind-mount'ом с хоста, и всё, что образ
-# положил внутрь него, в контейнере не видно — заглушка пропала бы ровно в окне. Копируется ПОСЛЕ
-# бандла: так файл из образа не зависит от того, окажется ли однажды одноимённый в dist.
-COPY deploy/nginx/maintenance.html /usr/share/nginx/html/maintenance.html
 EXPOSE 80

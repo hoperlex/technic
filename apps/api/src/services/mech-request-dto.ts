@@ -7,7 +7,6 @@ import {
   counterparties,
   departments,
   files,
-  mechModels,
   mechRequestFiles,
   mechRequestStatusHistory,
   mechRequests,
@@ -51,10 +50,7 @@ const requestSelect = {
   departmentId: mechRequests.departmentId,
   departmentCode: departments.code,
   departmentName: departments.name,
-  mechModelId: mechRequests.mechModelId,
-  // Наименование модели приходит JOIN'ом, а не снимком (ADR 0156): справочник переименовали —
-  // переименовалось и в старых заявках, как везде в портале. Снимками хранятся только деньги.
-  mechModelName: mechModels.name,
+  kindName: mechRequests.kindName,
   plannedFrom: mechRequests.plannedFrom,
   plannedTo: mechRequests.plannedTo,
   responsibleName: mechRequests.responsibleName,
@@ -91,11 +87,8 @@ const requestSelect = {
 
 /**
  * Площадка присоединяется внутренним соединением — она есть у каждой заявки и является осью области
- * (Р17). Отдел, арендодатель и модель — внешним: первого нет у заявки самой площадки, второго нет,
- * пока не договорились, а третьей нет у заявки старше Э2, чьё написание в справочнике не нашлось
- * (ADR 0156). Внешнее соединение с моделью после уборки Э3 не послабление, а единственный
- * работающий вариант: заказчик выбрал снять написания, и заявка без модели теперь законна навсегда
- * — внутреннее соединение потеряло бы её из списка молча, вместе с деньгами, которые по ней шли.
+ * (Р17). Отдел и арендодатель — внешним: первого нет у заявки самой площадки, второго нет, пока не
+ * договорились.
  */
 export function mechBaseQuery(reader: MechReader = db) {
   return reader
@@ -104,7 +97,6 @@ export function mechBaseQuery(reader: MechReader = db) {
     .innerJoin(constructionObjects, eq(mechRequests.objectId, constructionObjects.id))
     .leftJoin(departments, eq(mechRequests.departmentId, departments.id))
     .leftJoin(counterparties, eq(mechRequests.lessorId, counterparties.id))
-    .leftJoin(mechModels, eq(mechRequests.mechModelId, mechModels.id))
     .leftJoin(deleters, eq(mechRequests.deletedBy, deleters.id))
     .innerJoin(users, eq(mechRequests.createdBy, users.id));
 }
@@ -158,8 +150,7 @@ export function toMechRequestDto(r: MechRequestRow, requestFiles: FileDto[]): Me
     departmentId: r.departmentId,
     departmentCode: r.departmentCode,
     departmentName: r.departmentName,
-    mechModelId: r.mechModelId,
-    mechModelName: r.mechModelName,
+    kindName: r.kindName,
     plannedFrom: r.plannedFrom,
     plannedTo: r.plannedTo,
     responsibleName: r.responsibleName,

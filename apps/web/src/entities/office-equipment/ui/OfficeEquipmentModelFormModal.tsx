@@ -1,10 +1,9 @@
 import { useEffect } from 'react';
-import { App, Form, Input, Select, Switch } from 'antd';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { App, Form, Input, Switch } from 'antd';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { CreateOfficeEquipmentModelInput, OfficeEquipmentModelDto } from '@technic/contracts';
 import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
-import { officeEquipmentSpecsQuery } from '../api/queries';
 import { officeEquipmentModelsApi } from '../api/officeEquipmentApi';
 import {
   officeEquipmentConsumableKeys,
@@ -31,17 +30,6 @@ interface Option {
   value: string;
   label: string;
 }
-
-/**
- * Значения формы. Характеристики здесь картой «характеристика → значение», а не массивом контракта
- * (план `docs/office-equipment-specs-plan.md`): у antd имя поля — путь в объекте значений, и
- * массиву пришлось бы держать порядок характеристик синхронно с ответом сервера. Обратно в массив
- * их собирает отправка — по перечню характеристик типа, а не по тому, что человек тронул: снятое
- * значение обязано уехать как `null`, иначе «стереть» ничем не выразить.
- */
-type ModelFormValues = Omit<CreateOfficeEquipmentModelInput, 'specs'> & {
-  specs?: Record<string, string | undefined>;
-};
 
 interface Props {
   open: boolean;
@@ -71,23 +59,8 @@ export function OfficeEquipmentModelFormModal({
 }: Props) {
   const { message } = App.useApp();
   const qc = useQueryClient();
-  const [form] = Form.useForm<ModelFormValues>();
+  const [form] = Form.useForm<CreateOfficeEquipmentModelInput>();
   const blockers = useFormBlockers(form);
-  /*
-   * Набор характеристик задаёт тип: у МФУ спрашивают цветность печати, у ноутбука — ничего. При
-   * заведении тип выбирают прямо здесь, поэтому перечень читается со слежения за полем, а не из
-   * `lockedTypeId`: иначе форма, открытая из окна моделей, узнала бы о характеристиках только
-   * после сохранения.
-   */
-  const equipmentTypeId = Form.useWatch<string | undefined>('equipmentTypeId', form);
-  /*
-   * Закрытая форма не спрашивает НИЧЕГО, и `open` в условии — не оптимизация: окно висит в дереве
-   * вкладки постоянно (`open={formOpen}`), и запрос без этой проверки уходил бы при каждом заходе
-   * на вкладку — за перечнем, который никому в этот момент не показывают.
-   */
-  const { data: specs = [], isLoading: specsLoading } = useQuery(
-    officeEquipmentSpecsQuery(open ? (equipmentTypeId ?? lockedTypeId) : undefined),
-  );
 
   useEffect(() => {
     if (!open) return;
@@ -100,23 +73,11 @@ export function OfficeEquipmentModelFormModal({
       manufacturer: record?.manufacturer ?? '',
       comment: record?.comment ?? '',
       isActive: record?.isActive ?? true,
-      // Незаполненная характеристика — пустое поле: «н/д» значением перечня не бывает (Р3).
-      specs: Object.fromEntries(
-        (record?.specs ?? []).map((s) => [s.specId, s.value?.id ?? undefined]),
-      ),
     });
   }, [open, record, lockedTypeId, form]);
 
-  /**
-   * Карта формы обратно в массив контракта: по перечню характеристик ТИПА, а не по тронутым полям.
-   * Пустое поле уезжает как `valueId: null` — «сотри значение»; без этого снятая цветность осталась
-   * бы в базе, а форма показывала бы пустоту (Р3).
-   */
-  const specsPayload = (values: ModelFormValues) =>
-    specs.map((s) => ({ specId: s.id, valueId: values.specs?.[s.id] ?? null }));
-
   const saveMut = useMutation({
-    mutationFn: (values: ModelFormValues) =>
+    mutationFn: (values: CreateOfficeEquipmentModelInput) =>
       record
         ? // Тип в тело правки не кладём вовсе: менять его нельзя, и присланный чужой маршрут
           // отобьёт 422. Свой же он и так знает — читает из строки, а не из запроса.
@@ -132,9 +93,8 @@ export function OfficeEquipmentModelFormModal({
             manufacturer: values.manufacturer,
             comment: values.comment,
             isActive: values.isActive,
-            specs: specsPayload(values),
           })
-        : officeEquipmentModelsApi.create({ ...values, specs: specsPayload(values) }),
+        : officeEquipmentModelsApi.create(values),
     onSuccess: (saved) => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: officeEquipmentModelKeys.root });
@@ -215,29 +175,6 @@ export function OfficeEquipmentModelFormModal({
         >
           <Input maxLength={255} />
         </Form.Item>
-        {/*
-          * Характеристики модели (план `docs/office-equipment-specs-plan.md`, Р11): человек
-          * выбирает только значение — сами характеристики и их перечень заводит миграция.
-          *
-          * Поле очищаемое, и пустое означает «н/д»: данных по аппарату может не быть вовсе, и
-          * заставлять выбирать наугад здесь нельзя — по этой строке решают, куда нести цветной
-          * документ.
-          */}
-        {specs.map((spec) => (
-          <Form.Item
-            key={spec.id}
-            name={['specs', spec.id]}
-            label={spec.name}
-            extra="Не знаете — оставьте пустым: в списке это покажется как «н/д»"
-          >
-            <Select
-              allowClear
-              loading={specsLoading}
-              placeholder="Не указано"
-              options={spec.values.map((v) => ({ value: v.id, label: v.name }))}
-            />
-          </Form.Item>
-        ))}
         <Form.Item name="comment" label="Комментарий">
           <Input.TextArea rows={2} maxLength={2000} />
         </Form.Item>

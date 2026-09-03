@@ -95,7 +95,7 @@ export function HistoryTab() {
     status: params.status,
     placeObjectId: params.placeObjectId,
     requester: params.requester,
-    mechModelId: params.mechModelId,
+    kind: params.kind,
     lessorId: params.lessorId,
     periodFrom: params.periodFrom,
     periodTo: params.periodTo,
