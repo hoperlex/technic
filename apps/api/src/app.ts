@@ -12,6 +12,7 @@ import { config } from './config';
 import { logger } from './logger';
 import { errorHandler, notFoundHandler } from './lib/error-handler';
 import clientContractGate from './lib/client-contract';
+import maintenanceGate from './lib/maintenance';
 import authPlugin from './auth/plugin';
 import healthRoutes from './routes/health';
 import authRoutes from './routes/auth';
@@ -134,6 +135,19 @@ export async function buildApp(options: BuildAppOptions = {}) {
    * его области (`/health/*`, `/internal/*` вне гейта) названы в самом плагине.
    */
   await app.register(clientContractGate);
+  /*
+   * Режим технических работ (план `docs/maintenance-mode-plan.md`) — сразу после гейта версии
+   * клиента и ДО авторизации.
+   *
+   * Порядок этих трёх не произволен. Версия клиента спрашивается первой: вкладка, которой отказано
+   * 426, обязана узнать про обновление в любом состоянии портала, иначе после снятия режима она
+   * продолжит работу на сборке, которой отказано. Авторизация — последней: в окне закрыт и вход, и
+   * `/auth/me`, а страж этого не знает и отвечал бы 401 — «войдите заново» вместо «идут работы».
+   *
+   * Ручки, выведенные из-под режима насовсем (`/auth/refresh`, `/auth/logout`), и границы его
+   * области (`/health/*`, `/metrics`, `/internal/*` вне гейта) названы в самом плагине.
+   */
+  await app.register(maintenanceGate);
   await app.register(authPlugin);
 
   if (options.onRoute) app.addHook('onRoute', options.onRoute);
