@@ -2,7 +2,12 @@ import { useEffect } from 'react';
 import { Form } from 'antd';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { EMAIL_FORMAT_MESSAGE } from '@technic/contracts';
+import {
+  createCounterpartySchema,
+  EMAIL_FORMAT_MESSAGE,
+  optionalEmailSchema,
+  updateCounterpartySchema,
+} from '@technic/contracts';
 import {
   CounterpartyFormFields,
   type CounterpartyFormValues,
@@ -36,6 +41,10 @@ function FormHarness({
   return (
     <>
       <CounterpartyFormFields form={form} objectOptions={[]} onFinish={onFinish} />
+      {/* Смена типа тем же способом, что и в карточке: значение поля при этом остаётся в форме. */}
+      <button type="button" onClick={() => form.setFieldsValue({ type: 'supplier' })}>
+        Сменить тип
+      </button>
       <button type="button" onClick={() => form.submit()}>
         Сохранить
       </button>
@@ -109,7 +118,44 @@ describe('общий email сервисной компании', () => {
     expect(counterpartyUpdatePayload({ ...values, type: 'service', email: '' })).toMatchObject({
       email: '',
     });
-    // Заведение требует полного тела, и беречь там нечего: карточки ещё нет.
-    expect(counterpartyCreatePayload(values).email).toBe('кривой адрес');
+    // Заведение шлёт пустую строку: `POST` требует полного тела, а адрес прочему типу не принадлежит.
+    expect(counterpartyCreatePayload(values).email).toBe('');
+  });
+
+  /**
+   * Тело запроса обязано проходить ту же схему, которой его встретит сервер. Проверка стоит тут
+   * ровно потому, что предыдущая её версия закрепляла ошибку: она сверяла адрес с тем, что ввели,
+   * и была зелёной, пока сервер отвечал 400.
+   *
+   * Путь воспроизводится целиком, а не собирается значениями: адрес вводят при типе «Сервисная
+   * компания», затем меняют тип. Поле прячется, проверка перестаёт спрашиваться — и вот тут прежнее
+   * заведение отправляло непроверенное значение.
+   */
+  it('смена типа после ввода адреса не рождает тела, которое отвергнет сервер', async () => {
+    const onFinish = vi.fn();
+    render(<FormHarness onFinish={onFinish} />);
+
+    const input = await screen.findByLabelText('Email для заявок');
+    fireEvent.change(input, { target: { value: 'кривой адрес' } });
+    fireEvent.blur(input);
+    fireEvent.click(screen.getByRole('button', { name: 'Сменить тип' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(onFinish).toHaveBeenCalledTimes(1));
+    const values = onFinish.mock.calls[0]![0];
+    /**
+     * Значение из формы никуда не делось — оно просто больше не принадлежит этому типу. Проверяется
+     * не буква в букву, а по существу: пробелы снимает `normalize` поля, и адрес доезжает сюда
+     * склеенным, оставаясь негодным.
+     */
+    expect(values.email).not.toBe('');
+    expect(optionalEmailSchema.safeParse(values.email).success).toBe(false);
+
+    expect(createCounterpartySchema.safeParse(counterpartyCreatePayload(values)).success).toBe(
+      true,
+    );
+    expect(updateCounterpartySchema.safeParse(counterpartyUpdatePayload(values)).success).toBe(
+      true,
+    );
   });
 });
