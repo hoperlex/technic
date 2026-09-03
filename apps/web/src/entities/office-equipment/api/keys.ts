@@ -62,6 +62,12 @@ export const officeEquipmentTypeKeys = createQueryKeys('office-equipment-types',
 export const officeEquipmentModelKeys = createQueryKeys('office-equipment-models', {
   list: (params: Query) => ['list', params],
   options: (equipmentTypeId: string | undefined) => ['options', equipmentTypeId ?? null],
+  /**
+   * Характеристики типа со значениями на выбор (план `docs/office-equipment-specs-plan.md`).
+   * Семейство моделей, а не техники: перечень меняется вместе со справочником моделей и нужен
+   * ровно там, где модель заводят. Меняется он только миграцией, поэтому и держится долго.
+   */
+  specs: (equipmentTypeId: string | undefined) => ['specs', equipmentTypeId ?? null],
 });
 
 /**

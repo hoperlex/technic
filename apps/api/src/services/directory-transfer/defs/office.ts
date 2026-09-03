@@ -7,7 +7,11 @@ import {
   officeEquipment,
   officeEquipmentConsumableModels,
   officeEquipmentConsumables,
+  officeEquipmentModelSpecs,
   officeEquipmentModels,
+  officeEquipmentSpecValues,
+  officeEquipmentSpecs,
+  officeEquipmentTypeSpecs,
   officeEquipmentTypes,
   type OfficeEquipmentRow,
   type OfficeEquipmentTypeRow,
@@ -23,6 +27,7 @@ import {
   parseList,
 } from '../cells';
 import { directory, type AnyDirectory, type RowContext, type Tx } from '../types';
+import { applyModelSpecs } from '../../office-equipment-specs';
 
 /**
  * Справочники оргтехники в обмене файлом (ADR 0073, ADR 0085): перечень типов, модели аппаратов и
@@ -256,6 +261,50 @@ const officeEquipmentTypesDirectory = directory<
 // ── Модели аппаратов ──────────────────────────────────────────────────────────────────────────
 
 /**
+ * Код характеристики «Цветность печати» (миграция 0252). Лист знает про неё поимённо, и это
+ * осознанно: колонка файла — не «любая характеристика», а именно цветность, и человеку в шапке
+ * написано её название. Появится вторая характеристика — появится вторая колонка со своим кодом.
+ */
+const PRINT_COLOR_SPEC_CODE = 'print_color';
+
+/**
+ * Записать цветность модели тем же сервисом, каким её пишет маршрут
+ * (`services/office-equipment-specs.ts`).
+ *
+ * Своей вставки здесь нет намеренно: правило «значение принадлежит характеристике, характеристика
+ * — типу» одно на обе двери, и вторая его копия рано или поздно разошлась бы с первой. Проверки
+ * сервиса при этом не лишние, хотя `check()` всё уже сказал словами: файл применяется в одной
+ * транзакции с чужими строками, и молчаливая вставка мимо правила стоила бы дороже двух запросов.
+ *
+ * `colorValueId` не заполнен — значит ячейка была пуста: значение не трогается вовсе (Р12).
+ */
+async function writeColorSpec(
+  tx: Tx,
+  modelId: string,
+  equipmentTypeId: string,
+  m: ApparatusModel,
+): Promise<void> {
+  if (m.colorValueId === undefined || m.colorSpecId === undefined) return;
+  await applyModelSpecs(tx, {
+    modelId,
+    equipmentTypeId,
+    specs: [{ specId: m.colorSpecId, valueId: m.colorValueId }],
+  });
+}
+
+/**
+ * По чему значение цветности опознаётся в ячейке: регистр и края не различают, и «Цветная», «цв.»,
+ * «  ЧЁРНО-БЕЛАЯ » — это три написания двух значений.
+ *
+ * «ё» не сводится к «е» намеренно: в справочнике стоит «Чёрно-белая», выгрузка пишет именно его, и
+ * додумывать за человека замену буквы значило бы принимать написание, которого портал не показывал
+ * ни разу. Ошибётся — получит замечание строки с перечнем допустимого.
+ */
+function colorKey(text: string): string {
+  return text.trim().toLowerCase();
+}
+
+/**
  * Модель аппарата глазами человека: «Kyocera ECOSYS M3145» у типа `mfp`.
  *
  * «Аппарат» здесь — не карточка, а модель: карточек одной модели в парке шестьдесят восемь, и
@@ -268,6 +317,25 @@ interface ApparatusModel {
   manufacturer: string;
   comment: string;
   isActive: boolean;
+  /**
+   * Цветность печати — полным словом, как в справочнике значений («Цветная», «Чёрно-белая»);
+   * пустая строка — «н/д» (план `docs/office-equipment-specs-plan.md`, Р12).
+   *
+   * Одним полем, а не парой «текст ячейки + разобранное значение», и это важно для отчёта: движок
+   * показывает правку сравнением ячеек «до» и «после», и пустая ячейка, ничего не меняющая в
+   * модели, честно даёт «правки нет» — то самое «не трогать заведённое», которое просил заказчик.
+   * Присланное написание подменяется каноническим в `check()`, тем же приёмом, что и наименование.
+   */
+  colorName: string;
+  /** Что именно записать: id значения. Ставит `check()`; `undefined` — «ячейка пуста, не трогать». */
+  colorValueId?: string;
+  /**
+   * Характеристика, в которую пишется значение. Кладётся рядом со значением тем же `check()`, а не
+   * читается из окружения при записи: `update()` окружения не получает вовсе, а разносить одну
+   * пару «характеристика — значение» по двум источникам значило бы завести место, где они могут
+   * разойтись.
+   */
+  colorSpecId?: string;
   /** Идентификатор заведённой модели: им «наименование занято» отличают от «занято мной же». */
   savedId?: string;
   /** Тип, под которым модель заведена сейчас: сменить его нельзя, и сказать об этом надо словами. */
@@ -289,6 +357,18 @@ interface AskedName {
 interface ApparatusEnv {
   types: Map<string, { id: string; name: string; isActive: boolean }>;
   typeCodeById: Map<string, string>;
+  /**
+   * Характеристика «Цветность печати» и всё, что нужно про неё знать листу (Р12). `specId`
+   * `undefined` означает, что характеристики в базе нет вовсе (или она погашена) — тогда колонка
+   * ведёт себя как справочная: заполнить её нельзя ни у какого типа.
+   */
+  colorSpecId?: string;
+  /** Типы, у которых цветность спрашивают: у остальных заполненная ячейка — замечание строки. */
+  colorTypeIds: Set<string>;
+  /** Как значение опознаётся: полное имя и сокращение, регистр не различается. */
+  colorValuesByKey: Map<string, { id: string; name: string }>;
+  /** Что уже заведено у моделей: этим выгрузка заполняет колонку. */
+  colorNameByModelId: Map<string, string>;
   /**
    * Ключ и свёрнутое написание — по присланной строке. Заполняется дважды: наименованиями
    * справочника при чтении окружения и присланными — ответом базы. Обе половины берут ответ у базы:
@@ -383,7 +463,7 @@ const officeEquipmentModelsDirectory = directory<
 >({
   key: 'office-equipment-models',
   env: async () => {
-    const [types, models, cards] = await Promise.all([
+    const [types, models, cards, colorRows, colorTypeRows, colorModelRows] = await Promise.all([
       db
         .select({
           id: officeEquipmentTypes.id,
@@ -407,6 +487,49 @@ const officeEquipmentModelsDirectory = directory<
         .select({ modelId: officeEquipment.modelId, cards: count() })
         .from(officeEquipment)
         .groupBy(officeEquipment.modelId),
+      // Значения цветности печати (миграция 0252). Характеристика ищется по коду, а не по имени:
+      // имя показывают человеку, а находят строку кодом — переименуй её завтра, и лист не заметит.
+      db
+        .select({
+          specId: officeEquipmentSpecs.id,
+          valueId: officeEquipmentSpecValues.id,
+          name: officeEquipmentSpecValues.name,
+          shortName: officeEquipmentSpecValues.shortName,
+        })
+        .from(officeEquipmentSpecs)
+        .innerJoin(
+          officeEquipmentSpecValues,
+          eq(officeEquipmentSpecValues.specId, officeEquipmentSpecs.id),
+        )
+        .where(
+          and(
+            eq(officeEquipmentSpecs.code, PRINT_COLOR_SPEC_CODE),
+            eq(officeEquipmentSpecs.isActive, true),
+          ),
+        ),
+      db
+        .select({ equipmentTypeId: officeEquipmentTypeSpecs.equipmentTypeId })
+        .from(officeEquipmentTypeSpecs)
+        .innerJoin(
+          officeEquipmentSpecs,
+          eq(officeEquipmentSpecs.id, officeEquipmentTypeSpecs.specId),
+        )
+        .where(eq(officeEquipmentSpecs.code, PRINT_COLOR_SPEC_CODE)),
+      db
+        .select({
+          modelId: officeEquipmentModelSpecs.modelId,
+          name: officeEquipmentSpecValues.name,
+        })
+        .from(officeEquipmentModelSpecs)
+        .innerJoin(
+          officeEquipmentSpecs,
+          eq(officeEquipmentSpecs.id, officeEquipmentModelSpecs.specId),
+        )
+        .innerJoin(
+          officeEquipmentSpecValues,
+          eq(officeEquipmentSpecValues.id, officeEquipmentModelSpecs.valueId),
+        )
+        .where(eq(officeEquipmentSpecs.code, PRINT_COLOR_SPEC_CODE)),
     ]);
 
     const askedKeys = new Map<string, AskedName>();
@@ -426,12 +549,25 @@ const officeEquipmentModelsDirectory = directory<
       if (row.modelId !== null) cardsByModelId.set(row.modelId, row.cards);
     }
 
+    // Ключ опознавания — и полное имя, и сокращение, регистр не различается: в ячейке напишут и
+    // «Цветная», и «цв.», и «ЧЁРНО-БЕЛАЯ», и все три обязаны найти свою строку.
+    const colorValuesByKey = new Map<string, { id: string; name: string }>();
+    for (const v of colorRows) {
+      const value = { id: v.valueId, name: v.name };
+      colorValuesByKey.set(colorKey(v.name), value);
+      colorValuesByKey.set(colorKey(v.shortName), value);
+    }
+
     return {
       types: new Map(types.map((t) => [t.code, { id: t.id, name: t.name, isActive: t.isActive }])),
       typeCodeById: new Map(types.map((t) => [t.id, t.code])),
       askedKeys,
       takenByKey,
       cardsByModelId,
+      colorSpecId: colorRows[0]?.specId,
+      colorTypeIds: new Set(colorTypeRows.map((r) => r.equipmentTypeId)),
+      colorValuesByKey,
+      colorNameByModelId: new Map(colorModelRows.map((r) => [r.modelId, r.name])),
       twins: new Map(),
     };
   },
@@ -470,6 +606,19 @@ const officeEquipmentModelsDirectory = directory<
       },
     },
     {
+      header: 'Цветность',
+      width: 16,
+      hint: 'Цветная или Чёрно-белая — про ПЕЧАТЬ: цветной сканер чёрно-белого аппарата цветным его не делает. Принимаются и сокращения «цв.», «ч/б». Спрашивается только у МФУ и принтеров; у прочих типов заполненная ячейка — ошибка строки. Пустая ячейка ничего не стирает: чтобы убрать значение, откройте модель в портале. Пусто в выгрузке значит «нет данных» — в списке техники такая модель показывает «н/д».',
+      // Пусто здесь не значит «стереть», как и у производителя: файл, собранный в Excel ради
+      // другой колонки, не должен обезличивать справочник (Р12). Поэтому `set` при пустой ячейке
+      // не трогает модель вовсе — и движок честно показывает «правки нет».
+      get: (m) => m.colorName,
+      set: (m, text, ctx) => {
+        const v = parseText(text, ctx, 'Цветность', 64);
+        if (v !== undefined && v !== '') m.colorName = v;
+      },
+    },
+    {
       header: 'Комментарий',
       width: 40,
       hint: 'Пометка о модели: чем заправляется, где ещё встречается. Пустая ячейка означает «стереть».',
@@ -499,6 +648,7 @@ const officeEquipmentModelsDirectory = directory<
     'Наименование заведённой модели правится только строкой из выгрузки — той, где заполнена колонка «Идентификатор». Это переименование: новое написание уходит во все карточки модели, включая архивные, и в отчёте загрузки оно показано отдельным замечанием с числом карточек.',
     'Тип у заведённой модели не меняется: карточки связаны с моделью парой «модель + тип». Нужен другой тип — заведите модель заново и перецепите карточки в портале.',
     'Удаления файлом нет: лишнюю модель гасят колонкой «Активна». Совсем удалить можно только модель без карточек и без расходников — и только в портале.',
+    'Колонка «Цветность» — про печать, и заполняется она только у МФУ и принтеров: «Цветная», «Чёрно-белая» (принимаются и «цв.», «ч/б»). Пустая ячейка ничего не стирает — она означает «не знаю, оставь как есть»; убрать заведённое значение можно только в портале. В списке техники модель без значения показывает «н/д».',
   ],
   load: () =>
     db
@@ -529,12 +679,21 @@ const officeEquipmentModelsDirectory = directory<
       manufacturer: row.manufacturer,
       comment: row.comment,
       isActive: row.isActive,
+      // Пусто — «н/д»: значение хранится отсутствием строки, а не третьим значением перечня (Р3).
+      colorName: env.colorNameByModelId.get(row.id) ?? '',
       savedId: row.id,
       savedTypeCode: typeCode,
       savedName: row.name,
     };
   },
-  blank: () => ({ typeCode: '', name: '', manufacturer: '', comment: '', isActive: true }),
+  blank: () => ({
+    typeCode: '',
+    name: '',
+    manufacturer: '',
+    comment: '',
+    isActive: true,
+    colorName: '',
+  }),
   /**
    * Ключ строки — «тип + наименование», и сравнение в нём ТОЧНОЕ: правило написания живёт в базе, а
    * ключ строки движок считает до всякого запроса (`planRows`, первый проход). Своей копии правила
@@ -611,6 +770,37 @@ const officeEquipmentModelsDirectory = directory<
       return;
     }
 
+    /*
+     * Цветность печати (Р12). Ячейка пуста — колонки в этой строке будто нет: `set` модель не
+     * тронул, и заведённое значение остаётся как есть.
+     *
+     * Заполненная ячейка проверяется дважды: спрашивают ли цветность у этого типа и знакомо ли
+     * написание. Оба отказа — словами и с перечнем допустимого: замок базы сказал бы то же самое
+     * именем ограничения и уже на записи, отменив весь файл.
+     */
+    if (m.colorName !== '' && m.colorName !== env.colorNameByModelId.get(m.savedId ?? '')) {
+      if (env.colorSpecId === undefined) {
+        ctx.fail('цветность печати в портале не заведена — оставьте колонку пустой');
+      } else if (!env.colorTypeIds.has(type.id)) {
+        ctx.fail(
+          `цветность печати у типа «${type.name}» не спрашивается — оставьте колонку пустой: она заполняется только у МФУ и принтеров`,
+        );
+      } else {
+        const value = env.colorValuesByKey.get(colorKey(m.colorName));
+        if (!value) {
+          ctx.fail(
+            `цветность «${m.colorName}» не распознана: допустимы «Цветная» и «Чёрно-белая» (или «цв.» и «ч/б»)`,
+          );
+        } else {
+          // Написание подменяется справочным — тем же приёмом, что и наименование модели: в отчёте
+          // человек должен видеть то, что действительно запишется, а не текст своей ячейки.
+          m.colorName = value.name;
+          m.colorValueId = value.id;
+          m.colorSpecId = env.colorSpecId;
+        }
+      }
+    }
+
     if (m.savedName !== undefined && m.name !== m.savedName) {
       // Переименование разрешено — иначе лист не смог бы исправить и опечатку в справочнике, — но
       // молчаливым оно быть не должно: новое написание уходит зеркалом во все карточки модели,
@@ -627,16 +817,20 @@ const officeEquipmentModelsDirectory = directory<
   create: async (tx, m, env) => {
     const type = env.types.get(m.typeCode);
     if (!type || m.name === '') throw new Error('модель аппарата дошла до записи неразобранной');
-    await tx.insert(officeEquipmentModels).values({
-      equipmentTypeId: type.id,
-      // Свёртку написания делает база и на записи тоже: правило её, а идемпотентность функции
-      // означает, что второй проход по уже свёрнутому имени ничего не меняет. Так отказ проверки
-      // `office_equipment_models_name_normalized_check` невозможен в принципе — а он был бы 500.
-      name: sql`office_equipment_model_name_normalize(${m.name})`,
-      manufacturer: m.manufacturer,
-      comment: m.comment,
-      isActive: m.isActive,
-    });
+    const [created] = await tx
+      .insert(officeEquipmentModels)
+      .values({
+        equipmentTypeId: type.id,
+        // Свёртку написания делает база и на записи тоже: правило её, а идемпотентность функции
+        // означает, что второй проход по уже свёрнутому имени ничего не меняет. Так отказ проверки
+        // `office_equipment_models_name_normalized_check` невозможен в принципе — а он был бы 500.
+        name: sql`office_equipment_model_name_normalize(${m.name})`,
+        manufacturer: m.manufacturer,
+        comment: m.comment,
+        isActive: m.isActive,
+      })
+      .returning({ id: officeEquipmentModels.id });
+    await writeColorSpec(tx, created!.id, type.id, m);
   },
   update: async (tx, row, m) => {
     if (m.name !== row.name) {
@@ -657,6 +851,7 @@ const officeEquipmentModelsDirectory = directory<
         updatedAt: new Date(),
       })
       .where(eq(officeEquipmentModels.id, row.id));
+    await writeColorSpec(tx, row.id, row.equipmentTypeId, m);
   },
 });
 

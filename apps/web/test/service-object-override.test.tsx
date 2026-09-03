@@ -38,6 +38,7 @@ function unit(overrides: Partial<OfficeEquipmentDto> = {}): OfficeEquipmentDto {
   return {
     id: 'oe-1',
     type: { id: 'oet-1', name: 'МФУ', isActive: true },
+    specs: [],
     name: 'Kyocera M3145',
     serialNumber: '',
     inventoryNumber: '0012345',

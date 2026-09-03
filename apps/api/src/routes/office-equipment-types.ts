@@ -15,6 +15,7 @@ import { pgErrorOf } from '../lib/pg-error';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { listSpecsForType } from '../services/office-equipment-specs';
 
 /**
  * Перечень типов оргтехники (ADR 0085): МФУ, принтер, ноутбук, монитор. Ведётся в модальном окне из
@@ -160,6 +161,26 @@ export default async function officeEquipmentTypesRoutes(app: FastifyInstance): 
       reply.code(201);
       return toDto(created!);
     },
+  );
+
+  /**
+   * Характеристики, которые спрашивают у этого типа, со значениями на выбор (план
+   * `docs/office-equipment-specs-plan.md`, Р4). Ими форма модели строит поле «Цветность печати»;
+   * пустой ответ означает, что у типа таких вопросов не задают вовсе.
+   *
+   * Ручкой ТИПА, а не среза справочника техники, и тип — в пути, а не в строке запроса. Второе
+   * важнее, чем кажется: обязательный параметр строки запроса проверяется схемой ДО `preHandler`,
+   * и запрос без права получал бы 400 про незаполненное поле вместо честного 403 (поймано
+   * `access-conditions.test.ts`). В пути идентификатор проверяется тем же порядком, что у соседних
+   * маршрутов, и отказ по правам приходит первым.
+   *
+   * Правом чтения справочника: «бывает ли у МФУ цветность» — вопрос про устройство справочника, а
+   * не про парк, и области у него нет.
+   */
+  r.get(
+    '/:id/specs',
+    { preHandler: [app.authenticate, canRead], schema: { params: idParams } },
+    async (req) => await listSpecsForType(req.params.id),
   );
 
   r.patch(
