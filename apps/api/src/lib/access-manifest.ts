@@ -148,9 +148,11 @@ export type AccessConditionKind = AccessCondition['kind'];
  * сказать «видов восемь» — поэтому реестр записан руками, а полноту его держит компилятор
  * (`_EveryKindListed` ниже): вид, заведённый в union и забытый здесь, уронит сборку, а не прогон.
  *
- * Вид, которого в манифесте пока нет ни у одного маршрута, — законное состояние выпуска, идущего
- * двумя руками: `effectConditionalPermissions` заводится вместе со складом автозапчастей, а три
- * его строки приезжают с ручками обслуживания (план автозапчастей, Р19).
+ * Вид, которого в манифесте нет ни у одного маршрута, — законное состояние:
+ * `effectConditionalPermissions` остался от замороженного склада автозапчастей. Три его строки
+ * стояли у ручек обслуживания и уехали вместе со складским расходом (план
+ * `docs/auto-part-receipts-plan.md`, Р2, Р3); сам вид оставлен описанным — он называет приём
+ * «право по факту, а не по телу», и переизобретать его при следующей такой ручке незачем.
  */
 export const ACCESS_CONDITION_KINDS = [
   'public',
@@ -1580,36 +1582,6 @@ export const ACCESS_MANIFEST = {
     allOf: ['vehicleReadings.read'],
   },
 
-  // ── Склад автозапчастей (план `docs/auto-parts-plan.md`, Р10, Р19) ──
-  // Чтение — широкое `garage.read`: подобрать позицию при заведении акта обслуживания должен
-  // каждый, кому виден гараж. Запись — своя пара прав, отдельная от чтения и друг от друга: вести
-  // номенклатуру и пересчитывать детали на полке делают не обязательно одни руки, а
-  // `vehicleMaintenance.write` (оно есть и у менеджера, и у диспетчера) склад не открывает вовсе.
-  // Оба права требуют `garage.read` (`PERMISSION_REQUIRES`): справочник, которого не видно, вести
-  // нечем.
-  'GET /api/v1/auto-parts': { kind: 'permissions', allOf: ['garage.read'] },
-  // Заведение позиции — работа `manage`, но НЕНУЛЕВОЙ начальный остаток требует сверх него
-  // `stock`: иначе разделение прав держалось бы только у уже заведённых позиций, а то же число
-  // ставилось бы заведением в обход ручки остатка. Условие живёт в обработчике
-  // (`routes/auto-parts.ts`, `assertCan` при `quantity > 0`), поэтому страж объявляет одно базовое
-  // право — сверять с фактом можно `baseAllOf`, условную половину доказывают db-сценарии.
-  //
-  // Условие по ЗНАЧЕНИЮ, а не по присутствию поля, — тем же приёмом, что у расходников оргтехники:
-  // `quantity` приезжает умолчанием схемы и в теле есть всегда, а заведение с нулём никакого
-  // утверждения о складе не делает и законно с одним `manage`.
-  'POST /api/v1/auto-parts': {
-    kind: 'conditionalPermissions',
-    baseAllOf: ['autoParts.manage'],
-    conditionalAllOf: [{ when: 'quantity', allOf: ['autoParts.stock'] }],
-    conditionDeclaredOnRoute: false,
-  },
-  'GET /api/v1/auto-parts/:id': { kind: 'permissions', allOf: ['garage.read'] },
-  'PATCH /api/v1/auto-parts/:id': { kind: 'permissions', allOf: ['autoParts.manage'] },
-  // Удаление — только пока журнал остатка пуст (Р11); дальше `RESTRICT` и гашение флагом. Правом
-  // это не различается: удаляет тот же, кто завёл.
-  'DELETE /api/v1/auto-parts/:id': { kind: 'permissions', allOf: ['autoParts.manage'] },
-  'POST /api/v1/auto-parts/:id/stock': { kind: 'permissions', allOf: ['autoParts.stock'] },
-
   // ── Чеки на автозапчасти (план `docs/auto-part-receipts-plan.md`, Р4а, Р5, Р12; §7) ──
   //
   // Все десять строк — простой вид `permissions`: условных прав в модуле нет ни одного, и это
@@ -1650,34 +1622,21 @@ export const ACCESS_MANIFEST = {
 
   // ── Техническое обслуживание ──
   //
-  // Три ручки акта стоят под условием ПО ЭФФЕКТУ (план автозапчастей, Р19), и это единственное
-  // место в манифесте, где право спрашивается не за поле тела, а за то, что операция сделала.
-  // Причина в аудитории: `vehicleMaintenance.write` есть у пяти ролей, включая менеджера и
-  // диспетчера, а склад автозапчастей ведут механики. Оставь расход под одним правом на акт — и
-  // диспетчер, которому нельзя поправить остаток в карточке, списал бы любое количество через акт.
+  // Все ручки акта — простой вид `permissions`, и это состояние ПОСЛЕ заморозки склада (план
+  // `docs/auto-part-receipts-plan.md`, Р2, Р3). До неё три из них стояли под условием по ЭФФЕКТУ:
+  // акт был основанием складского расхода, и ненулевая разница строк требовала `autoParts.stock`
+  // сверх права на акт. Строк расхода у акта больше нет вовсе — второе право спрашивать не за что,
+  // и `vehicleMaintenance.write` снова единственная дверь ко всем трём.
   //
-  // Условие считается по фактической разнице строк под блокировкой позиций, а не по присутствию
-  // `parts` в теле: PATCH, приславший тот же набор, склад не двигает и второго права не требует —
-  // иначе диспетчер не смог бы исправить опечатку в номере документа у акта с расходом.
-  //
-  // `DELETE` ниже условия не имеет намеренно: акт с движениями не удаляется вовсе — ни с правом,
-  // ни без него (409 маршрута и `RESTRICT` журнала), а у акта без движений удалять со склада
-  // нечего.
+  // `DELETE` условия не имеет и не имел: акт с историческими движениями склада не удаляется вовсе
+  // — ни с правом, ни без него (409 маршрута и `RESTRICT` журнала).
   'PATCH /api/v1/vehicle-maintenance/:id': {
-    kind: 'effectConditionalPermissions',
-    baseAllOf: ['vehicleMaintenance.write'],
-    effectAllOf: ['autoParts.stock'],
-    effect: 'ненулевая разница строк расхода автозапчастей',
-    provenBy: 'test/vehicle-maintenance.db.test.ts',
+    kind: 'permissions',
+    allOf: ['vehicleMaintenance.write'],
   },
   'POST /api/v1/vehicle-maintenance/:id/void': {
-    kind: 'effectConditionalPermissions',
-    baseAllOf: ['vehicleMaintenance.write'],
-    effectAllOf: ['autoParts.stock'],
-    // У аннулирования тела про запчасти нет вовсе — там версия и причина, — а движение будет, и
-    // сразу по всем строкам акта. Ровно этот случай `conditionalPermissions` выразить не может.
-    effect: 'возврат всех строк расхода при аннулировании акта',
-    provenBy: 'test/vehicle-maintenance.db.test.ts',
+    kind: 'permissions',
+    allOf: ['vehicleMaintenance.write'],
   },
   'DELETE /api/v1/vehicle-maintenance/:id': {
     kind: 'permissions',
@@ -1688,11 +1647,8 @@ export const ACCESS_MANIFEST = {
     allOf: ['vehicleMaintenance.read'],
   },
   'POST /api/v1/vehicle-maintenance/vehicles/:id': {
-    kind: 'effectConditionalPermissions',
-    baseAllOf: ['vehicleMaintenance.write'],
-    effectAllOf: ['autoParts.stock'],
-    effect: 'ненулевая разница строк расхода автозапчастей',
-    provenBy: 'test/vehicle-maintenance.db.test.ts',
+    kind: 'permissions',
+    allOf: ['vehicleMaintenance.write'],
   },
   'GET /api/v1/vehicle-maintenance/vehicles/:id/history': {
     kind: 'permissions',

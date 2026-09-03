@@ -50,7 +50,6 @@ import garageRoutes from './routes/garage';
 import driverRoutes from './routes/driver';
 import vehicleReadingsRoutes from './routes/vehicle-readings';
 import vehicleReadingsStatsRoutes from './routes/vehicle-readings-stats';
-import autoPartsRoutes from './routes/auto-parts';
 import autoPartReceiptsRoutes from './routes/auto-part-receipts';
 import vehicleMaintenanceRoutes from './routes/vehicle-maintenance';
 import wasteRequestsRoutes from './routes/waste-requests';
@@ -229,16 +228,11 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // общее право `vehicleReadings.read`, но разные пути и разная цена запроса (сводка считает
   // разности по всему парку за период). Тот же приём, что у двух плагинов `admin/mail`.
   await app.register(vehicleReadingsStatsRoutes, { prefix: '/api/v1/vehicle-readings' });
-  // Склад автозапчастей (план `docs/auto-parts-plan.md`, Р2) — свой префикс, а не ветка гаража:
-  // гараж показывает срез дня, а склад существует сам по себе и ведётся своими правами
-  // (`autoParts.manage` и `autoParts.stock`). Перед обслуживанием, потому что акт ссылается на
-  // склад, а склад на акт — нет: тот же порядок, что у расходников перед оргтехникой.
-  await app.register(autoPartsRoutes, { prefix: '/api/v1/auto-parts' });
   // Чеки на автозапчасти (план `docs/auto-part-receipts-plan.md`, §7) — свой префикс, а не ветка
-  // склада, который они заменяют: предмет у чека другой (бумага с суммой, а не позиция с
-  // остатком), и живут два раздела рядом ровно на время перехода — выпуск 2 снимает склад целиком
-  // вместе с его префиксом. Ветка внутри `/auto-parts` этот выкат превратила бы в правку чужого
-  // файла и перенос десяти строк манифеста.
+  // склада, который они заменили: предмет у чека другой (бумага с суммой, а не позиция с
+  // остатком). Склада на сервере больше нет — выпуск 2 «Заморозка» снял `/api/v1/auto-parts`
+  // целиком (Р2, Р22); таблицы `auto_part*` остались в базе нетронутыми на случай возврата
+  // решения, но ходить в них некому.
   await app.register(autoPartReceiptsRoutes, { prefix: '/api/v1/auto-part-receipts' });
   // Техобслуживание по пробегу (план «Показания техники», Р14) — свой префикс, а не ветка
   // показаний: права у него свои (`vehicleMaintenance.*`), и держит их порознь ровно то, что

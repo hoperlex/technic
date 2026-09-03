@@ -68,20 +68,19 @@ const RECORD: VehicleMaintenanceDto = {
   voidedAt: null,
   voidedByName: '',
   voidReason: '',
-  // Строки расхода и признак движений — полный DTO акта (Р23): его отдают история, форма и
-  // карточка, тогда как сводка получает краткий, без строк.
-  parts: [],
+  // Признак старых движений замороженного склада — полный DTO акта (Р23): его отдают история,
+  // форма и карточка, тогда как сводка получает краткий, без признака.
   hasPartMovements: false,
 };
 
-const { parts: _parts, hasPartMovements: _moved, ...recordWithoutParts } = RECORD;
+const { hasPartMovements: _moved, ...recordWithoutParts } = RECORD;
 
 const summaryOf = (vehicleId: string): VehicleMaintenanceSummaryDto => ({
   vehicleId,
   vehicleLabel: 'Экскаватор JCB, А123БВ777',
   maintenanceBasis: 'odometer',
   lastOdometer: { km: 136_740, measuredOn: '2026-08-12' },
-  // Краткий акт (Р23): строк и признака движений в сводке нет — она приходит пакетом на страницу.
+  // Краткий акт (Р23): признака движений в сводке нет — она приходит пакетом на страницу.
   lastMaintenance: { ...recordWithoutParts, vehicleId },
   kmSince: 8_340,
   chainBroken: false,
@@ -211,7 +210,6 @@ vi.mock('../src/services/vehicle-maintenance', async (importOriginal) => {
         voidedAt: '2026-08-12T09:00:00.000Z',
         voidedByName: 'Механиков М. М.',
         voidReason: input.reason,
-        parts: [],
       };
     },
     deleteMaintenance: async (
@@ -442,8 +440,6 @@ describe('ведение записи ТО', () => {
           documentNumber: 'АКТ-17',
           note: 'Замена масла',
           fileIds: [FILE_ID],
-          // Умолчание схемы ЗАВЕДЕНИЯ: строк у нового акта ещё нет (Р18).
-          parts: [],
         },
         'user-1',
       ],
@@ -463,7 +459,6 @@ describe('ведение записи ТО', () => {
       documentNumber: '',
       note: '',
       fileIds: [],
-      parts: [],
     });
   });
 
@@ -508,8 +503,6 @@ describe('ведение записи ТО', () => {
     const { fn, args } = lastCall()!;
     expect(fn).toBe('updateMaintenance');
     expect(args[0]).toBe(MAINTENANCE_ID);
-    // `parts` в теле не было — и в сервис оно не подставляется: отсутствие поля у ПРАВКИ означает
-    // «строки не менять» (Р18), а пустой массив означал бы «снять все».
     expect(args[1]).toEqual({
       performedOn: '2026-08-11',
       odometerKm: 128_500,

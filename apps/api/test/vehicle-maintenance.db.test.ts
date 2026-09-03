@@ -6,7 +6,6 @@ import {
   moscowDateKeyOf,
   shiftDateKey,
   type MaintenanceBasis,
-  type MaintenancePartInput,
   type ReadingInput,
   type ReportItemSubmit,
   type VehicleMaintenanceDto,
@@ -74,10 +73,8 @@ interface Ctx {
   closeDb: () => Promise<void>;
   adminId: string;
   /**
-   * Тот же администратор принципалом. Сервису ТО он нужен целиком, а не одним идентификатором:
-   * движение склада автозапчастей требует `autoParts.stock` сверх права на акт, и спрашивается это
-   * право по фактической разнице строк уже внутри транзакции (план автозапчастей, Р19). У роли
-   * `admin` словарь прав полон по построению, поэтому здесь она и стоит.
+   * Тот же администратор принципалом: сервису ТО он нужен целиком, а не одним идентификатором —
+   * им подписывается аудит, который пишется внутри той же транзакции.
    */
   admin: Principal;
   objectId: string;
@@ -383,7 +380,6 @@ async function addMaintenance(vehicleId: string, performedOn: string, odometerKm
       documentNumber: `АКТ-${performedOn}`,
       note: '',
       fileIds: [],
-      parts: [],
     },
     ctx.admin,
   );
@@ -808,7 +804,6 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
         documentNumber: 'АКТ-152',
         note: '',
         fileIds: [first.id],
-        parts: [],
       },
       ctx.admin,
     );
@@ -871,34 +866,37 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
 
   /**
    * ─────────────────────────────────────────────────────────────────────────────────────────────
-   * РАСХОД АВТОЗАПЧАСТЕЙ ПО АКТУ ОБСЛУЖИВАНИЯ (план `docs/auto-parts-plan.md`, Р5—Р7, Р18, Р19,
-   * Р22—Р24; миграция [0188](../drizzle/0188_vehicle_maintenance_parts.sql)).
+   * ЗАМОРОЖЕННЫЙ СКЛАД АВТОЗАПЧАСТЕЙ (план `docs/auto-part-receipts-plan.md`, Р2, Р3, Р26;
+   * миграция [0188](../drizzle/0188_vehicle_maintenance_parts.sql) остаётся в базе нетронутой).
    *
-   * Акт перестал быть документом «для себя»: с этим выпуском его строки ДВИГАЮТ СКЛАД, и потому у
-   * него появились и второе право, и аннулирование, и аудит. Всё это — свойства пары «акт + журнал
-   * склада», а не одного из них, и проверяются они здесь, где живёт машинерия актов: машины,
-   * показания, версии и сводка.
+   * Акт обслуживания БОЛЬШЕ НЕ ДВИГАЕТ СКЛАД — ни заведением, ни правкой, ни аннулированием. Строк
+   * расхода у него нет вовсе, деньги на детали ведут чеки, а `auto_parts`, `auto_part_stock_entries`
+   * и `vehicle_maintenance_parts` живут в схеме со своими триггерами: выпуск 2 «Заморозка» идёт без
+   * единой миграции (Р26), и вернуть склад — это снять сокрытие, а не восстанавливать схему.
    *
-   * ЗДЕСЬ ЖЕ ЖИВЁТ ДОКАЗАТЕЛЬСТВО УСЛОВНОГО ПРАВА (Р19). Манифест доступа ссылается на этот файл
-   * поимённо — `provenBy: 'test/vehicle-maintenance.db.test.ts'` у трёх ручек обслуживания, — и
-   * ссылается потому, что структурной сверкой «манифест ↔ факт» условную половину не покрыть по
-   * построению: страж объявляет `vehicleMaintenance.write`, а `autoParts.stock` спрашивается уже в
-   * обработчике по ФАКТИЧЕСКОЙ разнице строк под блокировкой. Снимешь проверку из `syncParts` —
-   * структурные тесты останутся зелёными, и покраснеют только случаи ниже.
+   * Отсюда предмет этих случаев: не расход, а ГРАНИЦА замороженного. Проверяются ровно две вещи,
+   * которые заморозка обязана была сохранить, и одна, которую она обязана была убрать:
+   *
+   *   · аннулирование не пишет НИ ОДНОГО движения (Р3) — «склад не двигается вовсе» без исключения
+   *     «кроме аннулирования»; раньше оно возвращало весь расход акта;
+   *   · акт, за которым числятся ИСТОРИЧЕСКИЕ движения, по-прежнему неудаляем, и отказ приходит
+   *     СЛОВАМИ, а не именем ограничения: `RESTRICT` журнала никуда не делся;
+   *   · признак `hasPartMovements` остался в полном DTO — портал по нему объясняет, почему старый
+   *     акт не удаляется, и объясняет ДО нажатия, а не после 409.
+   *
+   * Историю расхода заводит прямой SQL, и иначе быть не может: кода, который её пишет, в портале не
+   * осталось. Это и есть точное состояние прода после заморозки — старые строки лежат, новых не
+   * появляется, — а инварианты миграции `0188` при такой вставке проверяются по-настоящему: они
+   * отложенные и срабатывают на коммите.
    *
    * Своё убирается своим `afterAll` — раньше общего: журнал склада неудаляем триггером, а его
    * строки ссылаются на акты под `RESTRICT`, и общая уборка не смогла бы снести ни акта.
    * ─────────────────────────────────────────────────────────────────────────────────────────────
    */
-  describe('расход автозапчастей: строки акта, аннулирование и право по эффекту', () => {
+  describe('заморозка склада: акт не двигает остаток, но старые движения его держат', () => {
     /** Метка своих позиций склада: имя уникально по построению, по нему же идёт уборка. */
     const PART_MARK = `АЗЧ-ТО ${RUN}`;
-    /** Диспетчер: `vehicleMaintenance.write` есть, `autoParts.stock` нет — ровно аудитория Р19. */
-    const DISPATCHER_EMAIL = 'db-vehicle-maintenance-dispatcher@example.invalid';
-    /** Отказ движения склада (`services/vehicle-maintenance.ts`): по словам видно, ЧТО отказало. */
-    const STOCK_DENIED_TAIL = 'Реквизиты акта правятся и без него';
 
-    let dispatcher: Principal;
     let partNo = 0;
 
     interface Part {
@@ -907,18 +905,18 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
     }
 
     /**
-     * Позиция склада прямым SQL: справочник автозапчастей — предмет своего файла
-     * (`auto-parts.db.test.ts`), здесь он декорация. Порядок внутри транзакции тот же, что у
-     * маршрута, и он обязателен: триггер цепочки сверяет «стало» события с ФАКТИЧЕСКИМ остатком
-     * карточки, поэтому сперва карточка с числом, потом событие «0 → N».
+     * Позиция склада прямым SQL: справочника автозапчастей в портале больше нет вовсе, а таблица
+     * есть. Порядок внутри транзакции тот же, что был у ручки, и он обязателен: триггер цепочки
+     * сверяет «стало» события с ФАКТИЧЕСКИМ остатком карточки, поэтому сперва карточка с числом,
+     * потом событие «0 → N».
      */
-    async function newPart(quantity = 0, isActive = true): Promise<Part> {
+    async function newPart(quantity = 0): Promise<Part> {
       partNo += 1;
       const name = `${PART_MARK} №${partNo}`;
       return ctx.db.transaction(async (tx) => {
         const created = await tx.execute<{ id: string }>(sql`
           INSERT INTO auto_parts (name, quantity, is_active, created_by, updated_by)
-          VALUES (${name}, ${quantity}, ${isActive}, ${ctx.adminId}, ${ctx.adminId})
+          VALUES (${name}, ${quantity}, true, ${ctx.adminId}, ${ctx.adminId})
           RETURNING id`);
         const id = created.rows[0]!.id;
         if (quantity > 0) {
@@ -928,6 +926,37 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
             VALUES (${id}, 0, ${quantity}, 'Заведение карточки: начальный остаток', ${ctx.adminId})`);
         }
         return { id, name };
+      });
+    }
+
+    /**
+     * СТАРЫЙ расход по акту: строка документа и списание журнала — прямым SQL, как их писал сервис
+     * до заморозки. Пишется одной транзакцией и в том же порядке (карточка → событие → строка):
+     * триггер цепочки `0187` сверяет «стало» с остатком карточки, а инвариант `0188` («количество
+     * строки = Σ issue − Σ return по паре») отложен и сойдётся на коммите — то есть история
+     * заводится законной, а не продавленной мимо защит.
+     */
+    async function addFrozenConsumption(
+      maintenanceId: string,
+      part: Part,
+      quantity: number,
+    ): Promise<void> {
+      await ctx.db.transaction(async (tx) => {
+        const card = await tx.execute<{ quantity: number }>(
+          sql`SELECT quantity FROM auto_parts WHERE id = ${part.id} FOR UPDATE`,
+        );
+        const before = card.rows[0]!.quantity;
+        const after = before - quantity;
+        await tx.execute(sql`UPDATE auto_parts SET quantity = ${after} WHERE id = ${part.id}`);
+        await tx.execute(sql`
+          INSERT INTO auto_part_stock_entries
+            (auto_part_id, entry_kind, quantity_before, quantity_after, reason, maintenance_id,
+             changed_by)
+          VALUES (${part.id}, 'issue', ${before}, ${after}, 'Списание по акту обслуживания',
+                  ${maintenanceId}, ${ctx.adminId})`);
+        await tx.execute(sql`
+          INSERT INTO vehicle_maintenance_parts (maintenance_id, auto_part_id, quantity)
+          VALUES (${maintenanceId}, ${part.id}, ${quantity})`);
       });
     }
 
@@ -966,30 +995,20 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
       }));
     }
 
-    /** Строки акта прямым SQL: DTO собирает их соединением, а здесь нужен сам факт строки. */
+    /** Строки акта прямым SQL: DTO их больше не отдаёт вовсе, а в таблице они лежат. */
     async function linesOf(
       maintenanceId: string,
-    ): Promise<Array<{ partId: string; quantity: number; note: string }>> {
-      const res = await ctx.db.execute<{
-        auto_part_id: string;
-        quantity: number;
-        note: string;
-      }>(sql`
-        SELECT auto_part_id, quantity, note FROM vehicle_maintenance_parts
+    ): Promise<Array<{ partId: string; quantity: number }>> {
+      const res = await ctx.db.execute<{ auto_part_id: string; quantity: number }>(sql`
+        SELECT auto_part_id, quantity FROM vehicle_maintenance_parts
          WHERE maintenance_id = ${maintenanceId} ORDER BY auto_part_id`);
-      return res.rows.map((r) => ({ partId: r.auto_part_id, quantity: r.quantity, note: r.note }));
-    }
-
-    function line(part: Part, quantity: number, note = ''): MaintenancePartInput {
-      return { autoPartId: part.id, quantity, note };
+      return res.rows.map((r) => ({ partId: r.auto_part_id, quantity: r.quantity }));
     }
 
     interface ActInput {
       on?: string;
       odometerKm?: number | null;
       documentNumber?: string;
-      parts?: MaintenancePartInput[];
-      actor?: Principal;
     }
 
     async function newAct(vehicleId: string, input: ActInput = {}): Promise<VehicleMaintenanceDto> {
@@ -1001,17 +1020,11 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
           documentNumber: input.documentNumber ?? `АКТ-${RUN}`,
           note: '',
           fileIds: [],
-          parts: input.parts ?? [],
         },
-        input.actor ?? ctx.admin,
+        ctx.admin,
       );
     }
 
-    /**
-     * Правка акта. `parts` НЕ подставляется умолчанием: отсутствие поля означает «строки не
-     * трогать» (Р18), и подставь его помощник пустым массивом — половина случаев ниже проверяла бы
-     * не то, о чём написана.
-     */
     function editAct(
       act: { id: string; version: number },
       fields: {
@@ -1019,9 +1032,7 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
         odometerKm?: number | null;
         documentNumber?: string;
         note?: string;
-        parts?: MaintenancePartInput[];
       },
-      actor: Principal = ctx.admin,
     ): Promise<VehicleMaintenanceDto> {
       return ctx.maintenance.updateMaintenance(
         act.id,
@@ -1031,11 +1042,23 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
           documentNumber: fields.documentNumber ?? `АКТ-${RUN}`,
           note: fields.note ?? '',
           fileIds: [],
-          ...(fields.parts === undefined ? {} : { parts: fields.parts }),
         },
         act.version,
-        actor,
+        ctx.admin,
       );
+    }
+
+    /** Метаданные последней записи аудита по акту — «что именно портал записал про действие». */
+    async function auditMeta(
+      maintenanceId: string,
+      action: string,
+    ): Promise<Record<string, unknown>> {
+      const res = await ctx.db.execute<{ metadata: Record<string, unknown> }>(sql`
+        SELECT metadata FROM audit_log
+         WHERE entity_type = 'vehicleMaintenance' AND entity_id = ${maintenanceId}
+           AND action = ${action}
+         ORDER BY created_at DESC LIMIT 1`);
+      return res.rows[0]!.metadata;
     }
 
     /**
@@ -1069,65 +1092,6 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
       }
       return { code: info?.code, constraint: info?.constraint, message };
     }
-
-    /** Отдельное соединение с пределом ожидания: зависший прогон читается как «сломался тест». */
-    async function openClient(): Promise<pg.Client> {
-      const client = new pg.Client({ connectionString: DB_URL });
-      await client.connect();
-      await client.query('SET lock_timeout = 8000');
-      return client;
-    }
-
-    /**
-     * Ждём, пока за чужой блокировкой встанет нужное число запросов, а не спим наугад. Наблюдатель
-     * — ОТДЕЛЬНОЕ соединение и обязательно вне транзакции: снимок `pg_stat_activity` кешируется на
-     * всю транзакцию читателя.
-     */
-    async function waitBlocked(
-      probe: pg.Client,
-      pattern: string,
-      count: number,
-      what: string,
-    ): Promise<void> {
-      const deadline = Date.now() + 15_000;
-      for (;;) {
-        const { rows } = await probe.query<{ c: number; qs: string }>(
-          `SELECT count(*)::int AS c, coalesce(string_agg(query, ' | '), '—') AS qs
-             FROM pg_stat_activity
-            WHERE datname = current_database()
-              AND cardinality(pg_blocking_pids(pid)) > 0
-              AND query ILIKE $1`,
-          [pattern],
-        );
-        if (rows[0]!.c >= count) return;
-        if (Date.now() > deadline) {
-          throw new Error(
-            `${what}: дождались ${rows[0]!.c} из ${count}; в очереди: ${rows[0]!.qs}`,
-          );
-        }
-        await new Promise((r) => setTimeout(r, 50));
-      }
-    }
-
-    beforeAll(async () => {
-      const { hashPassword } = await import('../src/auth/password');
-      const existing = await ctx.db.execute<{ id: string }>(
-        sql`SELECT id FROM users WHERE email = ${DISPATCHER_EMAIL}`,
-      );
-      const id =
-        existing.rows[0]?.id ??
-        (
-          await ctx.db.execute<{ id: string }>(sql`
-            INSERT INTO users (email, last_name, first_name, middle_name, password_hash, role,
-                               is_active, email_verified_at)
-            VALUES (${DISPATCHER_EMAIL}, 'Тестовый', 'Диспетчер', 'Складович',
-                    ${await hashPassword(PASSWORD)}, 'dispatcher'::role, true, now())
-            RETURNING id`)
-        ).rows[0]!.id;
-      // Роль подменяется в принципале, а не только в строке учётки: право считает матрица
-      // контрактов по принципалу, и «диспетчер в базе, администратор в объекте» проверял бы не то.
-      dispatcher = { ...principalOf(id), id, email: DISPATCHER_EMAIL, role: 'dispatcher' };
-    });
 
     /**
      * Уборка своего — РАНЬШЕ общей (вложенный `afterAll` отрабатывает до внешнего), и порядок в ней
@@ -1177,301 +1141,23 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
       });
     });
 
-    // ── 1. Диффер строк: сервер считает разницу и пишет её на склад (Р5) ──
+    // ── 1. Аннулирование про расчёт, а не про склад (Р3) ──
 
-    it('списание, правка количества и снятие строки: issue, разница и return на всё', async () => {
+    it('аннулирование акта со старым расходом не пишет ни одного движения склада', async () => {
       /*
-       * ЧЕТЫРЕ ХОДА ОДНОЙ ПОЗИЦИИ, и каждый — своя строка таблицы Р5. Клиент присылает полный набор
-       * и НЕ знает, что его правка «3 → 1» это возврат двух штук: разницу считает сервер, вид
-       * события проставляет тоже он.
-       */
-      const vehicle = await newVehicle();
-      const part = await newPart(10);
-
-      // 1. Добавили позицию, 3 шт → строка акта и событие «−3».
-      const act = await newAct(vehicle, { parts: [line(part, 3, 'замена по регламенту')] });
-      expect(act.parts).toHaveLength(1);
-      expect(act.parts[0]).toMatchObject({
-        autoPartId: part.id,
-        name: part.name,
-        quantity: 3,
-        note: 'замена по регламенту',
-        unit: 'шт',
-        code: null,
-      });
-      expect(act.hasPartMovements).toBe(true);
-      expect(await stockOf(part.id)).toBe(7);
-      expect(await movementsOf(part.id)).toEqual([
-        { kind: 'manual', before: 0, after: 10, reason: expect.any(String), maintenanceId: null },
-        {
-          kind: 'issue',
-          before: 10,
-          after: 7,
-          reason: 'Списание по акту обслуживания',
-          maintenanceId: act.id,
-        },
-      ]);
-
-      // 2. Было 3, стало 5 → списывается РАЗНИЦА, а не всё количество заново.
-      const grown = await editAct(act, { parts: [line(part, 5, 'замена по регламенту')] });
-      expect(grown.parts[0]!.quantity).toBe(5);
-      expect(await stockOf(part.id)).toBe(5);
-      expect((await movementsOf(part.id)).at(-1)).toMatchObject({
-        kind: 'issue',
-        before: 7,
-        after: 5,
-      });
-
-      // 3. Было 5, стало 1 → возврат четырёх, и причина у него СВОЯ, отличная от аннулирования.
-      const shrunk = await editAct(grown, { parts: [line(part, 1, 'замена по регламенту')] });
-      expect(shrunk.parts[0]!.quantity).toBe(1);
-      expect(await stockOf(part.id)).toBe(9);
-      expect((await movementsOf(part.id)).at(-1)).toMatchObject({
-        kind: 'return',
-        before: 5,
-        after: 9,
-        reason: 'Возврат по акту обслуживания',
-      });
-
-      // 4. Сняли позицию → возврат на ВСЁ оставшееся, строки акта больше нет.
-      const empty = await editAct(shrunk, { parts: [] });
-      expect(empty.parts).toEqual([]);
-      // Строки нет, а движения были — и признак отвечает про движения, а не про строки (Р6).
-      expect(empty.hasPartMovements).toBe(true);
-      expect(await stockOf(part.id)).toBe(10);
-      expect(await linesOf(act.id)).toEqual([]);
-      expect((await movementsOf(part.id)).at(-1)).toMatchObject({
-        kind: 'return',
-        before: 9,
-        after: 10,
-      });
-
-      // Правка ОДНОЙ ПОМЕТКИ склад не двигает: разница считается по количеству (Р19).
-      const again = await editAct(empty, { parts: [line(part, 2, 'течь')] });
-      const движенийБыло = (await movementsOf(part.id)).length;
-      const заметка = await editAct(again, { parts: [line(part, 2, 'течь сальника')] });
-      expect(заметка.parts[0]!.note).toBe('течь сальника');
-      expect(await movementsOf(part.id)).toHaveLength(движенийБыло);
-      expect(await stockOf(part.id)).toBe(8);
-    });
-
-    it('выдать больше, чем есть, нельзя: 409 словами маршрута, а не CHECK пятисоткой', async () => {
-      // Виртуальный склад означает ровно это (Р7): отрицательный остаток как «долг» не заводится, а
-      // отказ обязан прийти словами — «на складе 3, списываете 5», — а не именем ограничения.
-      // Формулировок ДВЕ, и они разные: новая строка списывает всё своё количество, увеличенная —
-      // только разницу. Одна формулировка на оба случая врала бы в одном из них.
-      const vehicle = await newVehicle();
-      const part = await newPart(3);
-
-      await expect(newAct(vehicle, { parts: [line(part, 5)] })).rejects.toMatchObject({
-        statusCode: 409,
-        code: 'auto_part_shortage',
-        message: expect.stringContaining('списываете 5'),
-      });
-      expect(await stockOf(part.id)).toBe(3);
-
-      const act = await newAct(vehicle, { parts: [line(part, 2)] });
-      await expect(editAct(act, { parts: [line(part, 9)] })).rejects.toMatchObject({
-        statusCode: 409,
-        code: 'auto_part_shortage',
-        message: expect.stringContaining('строка требует ещё 7'),
-      });
-      // Отказ откатил транзакцию целиком: ни строка, ни остаток не сдвинулись.
-      expect(await stockOf(part.id)).toBe(1);
-      expect(await linesOf(act.id)).toEqual([{ partId: part.id, quantity: 2, note: '' }]);
-    });
-
-    it('строка акта без движения и движение без строки одинаково падают НА КОММИТЕ', async () => {
-      /*
-       * Инвариант расхода — «количество строки равно Σ issue − Σ return по той же паре» — держат ДВА
-       * отложенных constraint-триггера, и каждый ловит свою половину. Один сторожит документ без
-       * склада (строку акта завели скриптом, остаток не тронули), другой — склад без документа
-       * (списали, а до акта не доехало). Ни один не заменяет другой.
+       * РЕГРЕСС ЗАМОРОЗКИ, и он про исключение, которого больше нет. Раньше `voidMaintenance` звал
+       * диффер с пустым набором: строки снимались, а на склад ложились возвраты. Обещание «склад не
+       * двигается вовсе» с оговоркой «кроме аннулирования» не было бы обещанием — мёртвый склад
+       * продолжал бы жить по чужому поводу, и остаток менялся бы у позиции, которой в портале нет.
        *
-       * Отложены оба намеренно: ВНУТРИ транзакции строка и движение законно расходятся — сервер
-       * пишет сперва склад, потом строки, — а сойтись они обязаны к коммиту. Поэтому случай идёт
-       * сырым соединением: предмет проверки в том, что сам `INSERT` ПРОХОДИТ, а `COMMIT` отказывает.
+       * При этом сама ручка остаётся нужной, и вторая половина случая — про это: аннулирование
+       * заведено ради РАСЧЁТА. Ошибочный акт, оставленный в журнале, был бы последним обслуживанием
+       * машины, и «пробег с ТО» считался бы от ложного якоря.
        */
-      const vehicle = await newVehicle();
-      const act = await newAct(vehicle);
-      const part = await newPart(10);
-      const client = await openClient();
-      try {
-        // Половина первая: строка акта, за которой не стоит ни одного движения склада.
-        await client.query('BEGIN');
-        const ins = await client.query(
-          'INSERT INTO vehicle_maintenance_parts (maintenance_id, auto_part_id, quantity) VALUES ($1, $2, 2)',
-          [act.id, part.id],
-        );
-        expect(ins.rowCount, 'сама вставка обязана пройти: проверка отложена до коммита').toBe(1);
-        const строкаБезДвижения = await dbRefusal(client.query('COMMIT'));
-        expect(строкаБезДвижения.code).toBe('23514');
-        expect(строкаБезДвижения.message).toContain('а журнал склада — про 0');
-
-        // Половина вторая: движение склада, за которым не стоит ни одной строки акта. Порядок
-        // «карточка → событие» соблюдён — иначе отбил бы триггер цепочки, то есть не тот триггер.
-        await client.query('BEGIN');
-        await client.query('UPDATE auto_parts SET quantity = 8 WHERE id = $1', [part.id]);
-        await client.query(
-          `INSERT INTO auto_part_stock_entries
-             (auto_part_id, entry_kind, maintenance_id, quantity_before, quantity_after, reason,
-              changed_by)
-           VALUES ($1, 'issue', $2, 10, 8, 'Списание по акту обслуживания', $3)`,
-          [part.id, act.id, ctx.adminId],
-        );
-        const движениеБезСтроки = await dbRefusal(client.query('COMMIT'));
-        expect(движениеБезСтроки.code).toBe('23514');
-        expect(движениеБезСтроки.message).toContain('говорит про 0, а журнал склада — про 2');
-      } finally {
-        await client.query('ROLLBACK').catch(() => undefined);
-        await client.end();
-      }
-
-      // Оба отказа откатили свои транзакции целиком: ни строки, ни движения, ни сдвига остатка.
-      expect(await linesOf(act.id)).toEqual([]);
-      expect(await movementsOf(part.id)).toHaveLength(1);
-      expect(await stockOf(part.id)).toBe(10);
-    }, 60_000);
-
-    // ── 2. Отсутствие `parts` в правке означает «строки не менять» (Р18) ──
-
-    it('PATCH без `parts` не трогает ни строки, ни склад, а явный пустой набор — снимает все', async () => {
-      /*
-       * Схема правки расширяет схему заведения, а значит унаследовала бы `default([])` — и старая
-       * вкладка портала, открытая до выката и приславшая тело без нового поля, получила бы «снять
-       * все позиции»: весь расход акта молча вернулся бы на склад, а механик увидел бы это в
-       * журнале задним числом. Поэтому правило на двух ручках РАЗНОЕ, и оно постоянное, а не «на
-       * время окна совместимости».
-       */
-      const vehicle = await newVehicle();
-      const part = await newPart(10);
-      const act = await newAct(vehicle, { parts: [line(part, 4)] });
-      expect(await stockOf(part.id)).toBe(6);
-      const движений = (await movementsOf(part.id)).length;
-
-      // Поля нет — строки не трогаем. Правится один только номер документа.
-      const renamed = await editAct(act, { documentNumber: 'АКТ-переименованный' });
-      expect(renamed.documentNumber).toBe('АКТ-переименованный');
-      expect(renamed.parts.map((p) => [p.autoPartId, p.quantity])).toEqual([[part.id, 4]]);
-      expect(await stockOf(part.id)).toBe(6);
-      expect(await movementsOf(part.id)).toHaveLength(движений);
-
-      // А явный пустой набор — это «снять все», и он возвращает весь расход акта на склад.
-      const cleared = await editAct(renamed, { documentNumber: 'АКТ-переименованный', parts: [] });
-      expect(cleared.parts).toEqual([]);
-      expect(await stockOf(part.id)).toBe(10);
-      expect(await movementsOf(part.id)).toHaveLength(движений + 1);
-    });
-
-    // ── 3. Право по ЭФФЕКТУ: ненулевая разница требует `autoParts.stock` (Р19) ──
-
-    it('диспетчер правит реквизиты акта с тем же набором строк, но изменить набор не может', async () => {
-      /*
-       * ЭТО И ЕСТЬ ДОКАЗАТЕЛЬСТВО, НА КОТОРОЕ ССЫЛАЕТСЯ МАНИФЕСТ (`effectConditionalPermissions`,
-       * `provenBy` этого файла). Условие считается по ФАКТИЧЕСКОЙ разнице под блокировкой, а не по
-       * присутствию `parts` в теле: PATCH, приславший тот же самый набор, склад не двигает и
-       * второго права не требует — иначе диспетчер не смог бы исправить опечатку в номере документа
-       * у акта с расходом.
-       *
-       * Аудитория тут не выдуманная: `vehicleMaintenance.write` есть у пяти ролей, включая
-       * менеджера и диспетчера, а склад ведут механики. Оставь расход под одним правом на акт — и
-       * диспетчер, которому нельзя поправить остаток в карточке, списал бы любое количество через
-       * акт.
-       */
-      const vehicle = await newVehicle();
-      const part = await newPart(10);
-      const other = await newPart(10);
-      const act = await newAct(vehicle, { parts: [line(part, 3, 'по регламенту')] });
-      expect(await stockOf(part.id)).toBe(7);
-
-      // 1. ТОТ ЖЕ набор строк — проходит: разница нулевая, склад не двинулся, второго права не за что
-      //    спрашивать. Меняется при этом реквизит документа, ради которого правка и затевалась.
-      const fixed = await editAct(
-        act,
-        { documentNumber: 'АКТ-1057', parts: [line(part, 3, 'по регламенту')] },
-        dispatcher,
-      );
-      expect(fixed.documentNumber).toBe('АКТ-1057');
-      expect(fixed.updatedByName).not.toBe('');
-      expect(await stockOf(part.id)).toBe(7);
-
-      // 2. ИЗМЕНЁННЫЙ набор — 403, и отказ говорит не «нельзя», а что именно остаётся доступным.
-      for (const набор of [
-        [line(part, 4, 'по регламенту')],
-        [line(part, 2, 'по регламенту')],
-        [line(part, 3, 'по регламенту'), line(other, 1)],
-        [],
-      ]) {
-        await expect(
-          editAct(fixed, { documentNumber: 'АКТ-1057', parts: набор }, dispatcher),
-        ).rejects.toMatchObject({
-          statusCode: 403,
-          message: expect.stringContaining(STOCK_DENIED_TAIL),
-        });
-      }
-      // Ни одна из четырёх попыток не оставила следа: отказ приходит ДО первой записи на склад.
-      expect(await stockOf(part.id)).toBe(7);
-      expect(await stockOf(other.id)).toBe(10);
-      expect(await linesOf(act.id)).toEqual([
-        { partId: part.id, quantity: 3, note: 'по регламенту' },
-      ]);
-
-      // 3. Заведение акта СО СТРОКАМИ — та же граница и та же ручка манифеста.
-      await expect(
-        newAct(vehicle, { parts: [line(other, 1)], actor: dispatcher }),
-      ).rejects.toMatchObject({ statusCode: 403 });
-      // А без строк заведение диспетчеру открыто: акт остаётся его документом.
-      const plain = await newAct(vehicle, { documentNumber: 'АКТ-диспетчера', actor: dispatcher });
-      expect(plain.parts).toEqual([]);
-      expect(plain.hasPartMovements).toBe(false);
-    });
-
-    it('аннулирование со строками требует `autoParts.stock`, без строк — обычная правка документа', async () => {
-      // У аннулирования тела про запчасти нет вовсе — там версия и причина, — а движение будет, и
-      // сразу по всем строкам. Ровно этот случай `conditionalPermissions` выразить не может: там
-      // право спрашивается по полю запроса, а поля нет.
-      const vehicle = await newVehicle();
-      const part = await newPart(6);
-      const сРасходом = await newAct(vehicle, { parts: [line(part, 2)] });
-      const безРасхода = await newAct(vehicle, { documentNumber: 'АКТ-пустой' });
-
-      await expect(
-        ctx.maintenance.voidMaintenance(
-          сРасходом.id,
-          { version: сРасходом.version, reason: 'ошиблись машиной' },
-          dispatcher,
-        ),
-      ).rejects.toMatchObject({
-        statusCode: 403,
-        message: expect.stringContaining(STOCK_DENIED_TAIL),
-      });
-      expect(await stockOf(part.id)).toBe(4);
-      expect(await linesOf(сРасходом.id)).toHaveLength(1);
-
-      const voided = await ctx.maintenance.voidMaintenance(
-        безРасхода.id,
-        { version: безРасхода.version, reason: 'ошиблись машиной' },
-        dispatcher,
-      );
-      expect(voided.voidedAt).not.toBeNull();
-      expect(voided.voidReason).toBe('ошиблись машиной');
-    });
-
-    // ── 4. Аннулирование ошибочного акта (Р6) ──
-
-    it('аннулирование возвращает все строки, ставит три поля и выводит акт из расчёта', async () => {
-      /*
-       * ЗАЧЕМ АННУЛИРОВАНИЕ ВООБЩЕ ЕСТЬ. Акт с движением неудаляем — держит `RESTRICT` журнала. Но
-       * оставь ошибочный акт пустым, и он останется ПОСЛЕДНИМ обслуживанием машины: «пробег с ТО»
-       * начнёт считаться от ложного якоря, и машина, которую пора обслуживать, покажет «в норме».
-       * Ошибка ввода не должна молча ломать нормативный контроль — вот что здесь и проверяется, а
-       * не то, что у записи появились три колонки.
-       */
-      const person = await newPerson('Аннулиров');
+      const person = await newPerson('Заморозк');
       const vehicle = await newVehicle();
       const [d0, d1, d2, d3, d4] = series(ago(28), 5);
       const part = await newPart(10);
-      const second = await newPart(4);
 
       await reportDay(person, vehicle, d0!, 99_900);
       const верный = await newAct(vehicle, { on: d1!, odometerKm: 100_000 });
@@ -1480,16 +1166,18 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
         on: d3!,
         odometerKm: 100_300,
         documentNumber: 'АКТ-ошибочный',
-        parts: [line(part, 3), line(second, 1)],
       });
+      // История: по этому акту когда-то списали три штуки — до заморозки, ручкой, которой больше нет.
+      await addFrozenConsumption(ошибочный.id, part, 3);
       await reportDay(person, vehicle, d4!, 100_500);
 
-      // До аннулирования: якорь — ошибочный акт, и пробег считается от него.
+      const движенияДо = await movementsOf(part.id);
+      expect(движенияДо).toHaveLength(2);
+      expect(await stockOf(part.id)).toBe(7);
+
       const до = await summaryOf(vehicle, d4!);
       expect(до.lastMaintenance?.id).toBe(ошибочный.id);
       expect(до.kmSince).toBe(200);
-      expect(await stockOf(part.id)).toBe(7);
-      expect(await stockOf(second.id)).toBe(3);
 
       const voided = await ctx.maintenance.voidMaintenance(
         ошибочный.id,
@@ -1497,26 +1185,27 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
         ctx.admin,
       );
 
+      // ГЛАВНОЕ: журнал склада не прирос ни строкой, остаток не сдвинулся ни на единицу, и строка
+      // документа осталась лежать — снять её было бы тем же движением склада.
+      expect(await movementsOf(part.id), 'аннулирование двинуло замороженный склад').toEqual(
+        движенияДо,
+      );
+      expect(await stockOf(part.id)).toBe(7);
+      expect(await linesOf(ошибочный.id)).toEqual([{ partId: part.id, quantity: 3 }]);
+      // И в аудите про возврат больше ни слова: возвращать нечего, а поле «returned» рассказывало бы
+      // про движение, которого не было.
+      const метаданные = await auditMeta(ошибочный.id, 'vehicleMaintenance.void');
+      expect(метаданные.reason).toBe('акт составлен не на ту машину');
+      expect(метаданные).not.toHaveProperty('returned');
+
       // Три поля одним состоянием: отметка, подпись и причина. Порознь они не бывают — это держат
       // `CHECK`и пары и причины.
       expect(voided.voidedAt).not.toBeNull();
       expect(voided.voidedByName).not.toBe('');
       expect(voided.voidReason).toBe('акт составлен не на ту машину');
-      // Строки сняты, а признак движений остался: движения по ним были и остались навсегда.
-      expect(voided.parts).toEqual([]);
+      // Признак движений остался: они были и остались навсегда, и по нему портал объясняет, почему
+      // этот акт не удаляют, а аннулируют.
       expect(voided.hasPartMovements).toBe(true);
-
-      // Весь расход вернулся на склад ОДНОЙ транзакцией и со своей причиной — по ней в ленте видно,
-      // почему остаток вырос.
-      expect(await stockOf(part.id)).toBe(10);
-      expect(await stockOf(second.id)).toBe(4);
-      for (const p of [part, second]) {
-        expect((await movementsOf(p.id)).at(-1)).toMatchObject({
-          kind: 'return',
-          reason: 'Возврат при аннулировании акта',
-          maintenanceId: ошибочный.id,
-        });
-      }
 
       // Акт выпал из «последнего ТО» и из `kmSince`: якорем снова стал верный акт, и пробег
       // пересчитался сам — ни одно производное число не хранится.
@@ -1526,7 +1215,7 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
       expect(после.state).toBe('ok');
 
       // Но из ИСТОРИИ он никуда не делся: на него ссылается журнал склада, и спрятать основание
-      // движения значило бы оставить в журнале запись, которую нечем прочитать.
+      // движения значило бы оставить в замороженном журнале запись, которую нечем прочитать.
       const история = await ctx.maintenance.loadMaintenanceHistory(vehicle);
       expect(история.map((row) => row.id)).toContain(ошибочный.id);
       expect(история.find((row) => row.id === ошибочный.id)).toMatchObject({
@@ -1548,13 +1237,21 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
       ).rejects.toMatchObject({ statusCode: 409, code: 'maintenance_voided' });
     }, 60_000);
 
+    // ── 2. Старые движения по-прежнему держат акт (Р3) ──
+
     it('акт с движениями не удаляется — 409 словами про автозапчасти и RESTRICT при прямом DELETE', async () => {
-      // Удаление остаётся ровно для акта, по которому движений не было: опечатку первого дня
-      // убирают как раньше. Правило держит `RESTRICT` журнала, а проверка в сервисе стоит не вместо
-      // него, а ПЕРЕД ним — чтобы человек прочитал, что делать вместо, а не что сломалось.
+      // Удаление остаётся ровно для акта, по которому движений не было: опечатку убирают как
+      // раньше. Правило держит `RESTRICT` журнала, а проверка в сервисе стоит не вместо него, а
+      // ПЕРЕД ним — чтобы человек прочитал, что делать вместо, а не что сломалось. Заморозка это
+      // правило не отменяет: писать в журнал больше некому, а записанное раньше никуда не делось.
       const vehicle = await newVehicle();
       const part = await newPart(5);
-      const сРасходом = await newAct(vehicle, { parts: [line(part, 1)] });
+      const сРасходом = await newAct(vehicle, { documentNumber: 'АКТ-с-расходом' });
+      await addFrozenConsumption(сРасходом.id, part, 1);
+
+      // Портал узнаёт правило ДО нажатия — по признаку полного DTO, а не из отказа после.
+      const [запись] = await ctx.maintenance.loadMaintenanceHistory(vehicle);
+      expect(запись?.hasPartMovements).toBe(true);
 
       await expect(
         ctx.maintenance.deleteMaintenance(сРасходом.id, сРасходом.version, ctx.admin),
@@ -1570,148 +1267,28 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
       expect(refusal.code).toBe('23503');
       expect(refusal.constraint).toBe('auto_part_stock_entries_maintenance_id_fkey');
 
-      // Снятие строк не помогает: движения по ним остались, и акт по-прежнему неудаляем — вот
-      // почему `hasPartMovements` считается по журналу, а не по строкам.
-      const cleared = await editAct(сРасходом, { parts: [] });
-      expect(cleared.parts).toEqual([]);
-      await expect(
-        ctx.maintenance.deleteMaintenance(cleared.id, cleared.version, ctx.admin),
-      ).rejects.toMatchObject({ statusCode: 409, code: 'maintenance_has_stock_movements' });
+      // Правка реквизитов такому акту по-прежнему доступна: неудаляем он, а не неприкосновенен.
+      const правленый = await editAct(сРасходом, { documentNumber: 'АКТ-с-расходом-1' });
+      expect(правленый.documentNumber).toBe('АКТ-с-расходом-1');
+      expect(правленый.hasPartMovements).toBe(true);
 
       // Акт без движений удаляется по-прежнему, версией.
       const пустой = await newAct(vehicle, { documentNumber: 'АКТ-опечатка' });
+      expect(пустой.hasPartMovements).toBe(false);
       await ctx.maintenance.deleteMaintenance(пустой.id, пустой.version, ctx.admin);
       expect(
         (await ctx.maintenance.loadMaintenanceHistory(vehicle)).map((row) => row.id),
       ).not.toContain(пустой.id);
-    });
-
-    // ── 5. Погашенная позиция: уменьшить можно, увеличить нельзя (Р24) ──
-
-    it('погашенная позиция: неизменённая строка и уменьшение проходят, увеличение — 409', async () => {
-      /*
-       * Погашенная позиция в подбор не попадает и новой строкой не добавляется. Но она может УЖЕ
-       * стоять в акте, который правят месяц спустя, и правило нужно всем трём случаям — иначе
-       * правка номера документа у такого акта стала бы невозможной, а возврат погашенной детали на
-       * склад запрещённым без всякой причины.
-       *
-       * Проверка идёт по РАЗНИЦЕ на сервере, а не схемой тела: тело не знает, что было раньше.
-       */
-      const vehicle = await newVehicle();
-      const part = await newPart(10);
-      const act = await newAct(vehicle, { parts: [line(part, 3)] });
-      await ctx.db.execute(sql`UPDATE auto_parts SET is_active = false WHERE id = ${part.id}`);
-      expect(await stockOf(part.id)).toBe(7);
-
-      // 1. Строка не изменилась — принимаем: правится реквизит документа, склад не двигается.
-      const same = await editAct(act, { documentNumber: 'АКТ-погашенный', parts: [line(part, 3)] });
-      expect(same.documentNumber).toBe('АКТ-погашенный');
-      expect(await stockOf(part.id)).toBe(7);
-
-      // 2. Количество уменьшено — принимаем: это возврат на склад, и запрещать его незачем.
-      const less = await editAct(same, {
-        documentNumber: 'АКТ-погашенный',
-        parts: [line(part, 1)],
-      });
-      expect(less.parts[0]!.quantity).toBe(1);
-      expect(await stockOf(part.id)).toBe(9);
-
-      // 3. Количество увеличено — 409 своими словами и своим кодом.
-      await expect(
-        editAct(less, { documentNumber: 'АКТ-погашенный', parts: [line(part, 2)] }),
-      ).rejects.toMatchObject({
-        statusCode: 409,
-        code: 'auto_part_inactive',
-        message: expect.stringContaining('погашена'),
-      });
-      expect(await stockOf(part.id)).toBe(9);
-
-      // 4. Снятие строки — тот же возврат, и он тоже проходит.
-      const dropped = await editAct(less, { documentNumber: 'АКТ-погашенный', parts: [] });
-      expect(dropped.parts).toEqual([]);
-      expect(await stockOf(part.id)).toBe(10);
-
-      // Погашенную позицию нельзя и ДОБАВИТЬ новой строкой: разница положительна, правило то же.
-      await expect(
-        editAct(dropped, { documentNumber: 'АКТ-погашенный', parts: [line(part, 1)] }),
-      ).rejects.toMatchObject({ statusCode: 409, code: 'auto_part_inactive' });
-    });
-
-    // ── 6. Порядок захвата позиций: пересекающиеся наборы не дают взаимной блокировки (Р5) ──
-
-    it('два акта, делящие две позиции в противоположном порядке, не дают 40P01', async () => {
-      /*
-       * Защита от взаимной блокировки стоит ровно одной строчки — `ORDER BY id` в
-       * `SELECT … FOR UPDATE` позиций: узел `LockRows` в PostgreSQL стоит НАД сортировкой, то есть
-       * строки блокируются в том порядке, в каком их отдал `ORDER BY`, а не в том, в каком их нашёл
-       * индекс. Сортировка набора в приложении для этого недостаточна.
-       *
-       * Без НАСТОЯЩЕЙ встречи случай ничего не стоит: последовательные правки этой ветки не
-       * касаются вовсе. Поэтому сцена собирается держателем — соседнее соединение берёт обе позиции
-       * `FOR UPDATE` и не отпускает, пока обе правки не встанут за ним в очередь.
-       *
-       * ЗАМЕРЕНО, А НЕ ВЫВЕДЕНО, и стоит сказать честно: снятие `ORDER BY` этот случай НЕ КРАСИТ —
-       * три прогона подряд зелены. Причина в том, что захват идёт ОДНИМ `SELECT`, а один запрос
-       * отдаёт строки в одинаковом порядке обоим соединениям, откуда бы этот порядок ни взялся.
-       * Значит случай сторожит не строчку, а ФОРМУ: переезд на построчный захват (цикл по
-       * позициям в порядке присланного набора) он ловит немедленно — а именно такой переезд и
-       * выглядит безобидной правкой. Строчку `ORDER BY` держит комментарий в `lockAutoParts`.
-       */
-      const первая = await newVehicle();
-      const вторая = await newVehicle();
-      const a = await newPart(20);
-      const b = await newPart(20);
-      const акт1 = await newAct(первая, { documentNumber: 'АКТ-гонка-1' });
-      const акт2 = await newAct(вторая, { documentNumber: 'АКТ-гонка-2' });
-
-      const holder = await openClient();
-      const probe = await openClient();
-      let левая: Promise<VehicleMaintenanceDto> | undefined;
-      let правая: Promise<VehicleMaintenanceDto> | undefined;
-      try {
-        await holder.query('BEGIN');
-        await holder.query('SELECT id FROM auto_parts WHERE id = ANY($1) ORDER BY id FOR UPDATE', [
-          [a.id, b.id],
-        ]);
-
-        // Наборы идут в ПРОТИВОПОЛОЖНОМ порядке: если бы сервер брал позиции так, как их прислали,
-        // одна транзакция держала бы A и ждала B, а другая — наоборот.
-        левая = editAct(акт1, { documentNumber: 'АКТ-гонка-1', parts: [line(a, 1), line(b, 1)] });
-        правая = editAct(акт2, { documentNumber: 'АКТ-гонка-2', parts: [line(b, 1), line(a, 1)] });
-
-        // ОБЕ правки обязаны встать в очередь, а не одна: очередь за строкой выстраивается
-        // цепочкой (первый ждёт держателя, второй — первого), и дождись мы одного, вторая правка
-        // могла бы ещё не дойти до позиций — встречи, ради которой сцена и собрана, не вышло бы.
-        await waitBlocked(probe, '%auto_parts%for update%', 2, 'правки строк акта');
-        await holder.query('ROLLBACK');
-
-        const [x, y] = await Promise.all([левая, правая]);
-        левая = undefined;
-        правая = undefined;
-        // Обе прошли — то есть ни одна не была выбрана жертвой взаимной блокировки (`40P01`).
-        expect(x.parts).toHaveLength(2);
-        expect(y.parts).toHaveLength(2);
-      } finally {
-        await holder.query('ROLLBACK').catch(() => undefined);
-        await левая?.catch(() => undefined);
-        await правая?.catch(() => undefined);
-        await holder.end();
-        await probe.end();
-      }
-
-      // Со склада ушло ровно по две штуки каждой позиции — по одной на акт.
-      expect(await stockOf(a.id)).toBe(18);
-      expect(await stockOf(b.id)).toBe(18);
     }, 60_000);
 
-    // ── 7. Аудит акта пишется ТОЙ ЖЕ транзакцией (Р22) ──
+    // ── 3. Аудит акта пишется ТОЙ ЖЕ транзакцией (Р22 плана склада) ──
 
-    it('искусственный сбой после записи аудита откатывает и аудит, и движение склада', async () => {
+    it('искусственный сбой после записи аудита откатывает и аудит, и саму правку', async () => {
       /*
        * `writeAuditTx` отличается от общего `writeAudit` двумя свойствами, и оба здесь предмет
        * проверки: он берёт соединение ТРАНЗАКЦИИ и не глушит ошибку. Общий `writeAudit` пишет своим
        * соединением — его запись пережила бы откат и осталась бы в журнале рассказывать о правке,
-       * которой не было, а сверять её было бы не с чем: склад-то не двинулся.
+       * которой не было.
        *
        * Сбой делается отложенным constraint-триггером на самом `audit_log`, и это не уловка, а
        * единственный способ упасть ПОСЛЕ записи аудита: отложенный триггер срабатывает на коммите,
@@ -1722,8 +1299,7 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
        * не сработал бы и правка прошла бы насквозь.
        */
       const vehicle = await newVehicle();
-      const part = await newPart(10);
-      const act = await newAct(vehicle, { parts: [line(part, 2)] });
+      const act = await newAct(vehicle, { documentNumber: 'АКТ-аудит' });
       const fn = `zz_test_audit_boom_${RUN}`;
 
       await ctx.db.execute(
@@ -1742,7 +1318,7 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
           EXECUTE FUNCTION ${fn}()`),
       );
       try {
-        const refusal = await dbRefusal(editAct(act, { parts: [line(part, 5)] }));
+        const refusal = await dbRefusal(editAct(act, { documentNumber: 'АКТ-аудит-2' }));
         expect(refusal.code).toBe('23514');
         expect(
           refusal.message,
@@ -1753,19 +1329,18 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
         await ctx.db.execute(sql.raw(`DROP FUNCTION ${fn}()`));
       }
 
-      // Откатилось ВСЁ: строки аудита не осталось, движение склада не записалось, остаток и строка
-      // акта прежние, версия не сдвинулась.
+      // Откатилось ВСЁ: строки аудита не осталось, реквизиты и версия акта прежние.
       const аудит = await ctx.db.execute<{ c: number }>(sql`
         SELECT count(*)::int AS c FROM audit_log
          WHERE entity_type = 'vehicleMaintenance' AND entity_id = ${act.id}
            AND action = 'vehicleMaintenance.update'`);
       expect(аудит.rows[0]!.c, 'запись аудита пережила откат — писал не `writeAuditTx`').toBe(0);
-      expect(await stockOf(part.id)).toBe(8);
-      expect(await linesOf(act.id)).toEqual([{ partId: part.id, quantity: 2, note: '' }]);
-      expect((await ctx.maintenance.loadMaintenanceHistory(vehicle))[0]!.version).toBe(act.version);
+      const [целый] = await ctx.maintenance.loadMaintenanceHistory(vehicle);
+      expect(целый?.documentNumber).toBe('АКТ-аудит');
+      expect(целый?.version).toBe(act.version);
 
       // А в обычном ходе события аудит ПИШЕТСЯ — и заведение, и правка, и аннулирование поимённо.
-      const ok = await editAct(act, { parts: [line(part, 5)] });
+      const ok = await editAct(act, { documentNumber: 'АКТ-аудит-3' });
       await ctx.maintenance.voidMaintenance(
         ok.id,
         { version: ok.version, reason: 'разбор аудита' },
@@ -1782,18 +1357,19 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
       ]);
     }, 60_000);
 
-    // ── 8. Сводка гаража: строки акта не превращают снапшот в N+1 (Р23) ──
+    // ── 4. Сводка гаража: признак движений не превращает снапшот в N+1 (Р23 плана склада) ──
 
-    it('число запросов снапшота не зависит ни от строк в актах, ни от числа машин', async () => {
+    it('число запросов снапшота не зависит ни от числа машин, ни от признака движений', async () => {
       /*
-       * `VehicleMaintenanceDto` живёт не только в истории: краткая его половина входит в сводку, а
-       * сводки приходят ПАЧКОЙ на всю видимую страницу гаража. Добавь строки в общий тип — и каждое
-       * открытие гаража тянуло бы позиции последнего акта для полусотни машин ради колонки, которой
-       * нужны только дата и состояние.
+       * `VehicleMaintenanceDto` живёт не только в истории: КРАТКАЯ его половина входит в сводку, а
+       * сводки приходят ПАЧКОЙ на всю видимую страницу гаража. Полный DTO стоит лишнего запроса —
+       * признак `hasPartMovements` читается из журнала склада, — и склей мы два типа, каждое
+       * открытие гаража спрашивало бы замороженный журнал ради колонки, которой нужны только дата и
+       * состояние.
        *
        * Считаются запросы обёрткой вокруг `pool.query` — единственной двери, через которую drizzle
        * ходит в базу. Вывод делается не из абсолютного числа (оно зависит от того, как устроен
-       * расчёт), а из его НЕИЗМЕННОСТИ при росте числа строк и числа машин.
+       * расчёт), а из его НЕИЗМЕННОСТИ при росте числа машин.
        */
       const { pool } = await import('../src/db/client');
       type RawQuery = (...args: unknown[]) => unknown;
@@ -1813,56 +1389,34 @@ describe.skipIf(!DB_URL)('ТО техники: пробег с обслужив�
         }
       }
 
-      const parts = [
-        await newPart(100),
-        await newPart(100),
-        await newPart(100),
-        await newPart(100),
-      ];
+      const part = await newPart(100);
       const vehicles = [await newVehicle(), await newVehicle(), await newVehicle()];
       const acts: VehicleMaintenanceDto[] = [];
       for (const vehicle of vehicles) {
-        acts.push(
-          await newAct(vehicle, {
-            odometerKm: 50_000,
-            documentNumber: 'АКТ-снапшот',
-            parts: [line(parts[0]!, 1)],
-          }),
-        );
+        acts.push(await newAct(vehicle, { odometerKm: 50_000, documentNumber: 'АКТ-снапшот' }));
       }
+      // У одного из актов — старое движение: сводке оно безразлично, а истории видно.
+      await addFrozenConsumption(acts[0]!.id, part, 1);
 
       const одна = await запросы(() =>
         ctx.maintenance.loadMaintenanceSnapshot([vehicles[0]!], TODAY),
       );
-      const тонкий = await запросы(() => ctx.maintenance.loadMaintenanceSnapshot(vehicles, TODAY));
-      expect(тонкий.count, 'снапшот запрашивает базу на каждую машину — это и есть N+1').toBe(
+      const все = await запросы(() => ctx.maintenance.loadMaintenanceSnapshot(vehicles, TODAY));
+      expect(все.count, 'снапшот запрашивает базу на каждую машину — это и есть N+1').toBe(
         одна.count,
       );
 
-      // Строк в актах становится вчетверо больше — числу запросов это безразлично.
-      for (const act of acts) {
-        await editAct(act, {
-          odometerKm: 50_000,
-          documentNumber: 'АКТ-снапшот',
-          parts: parts.map((p) => line(p, 1)),
-        });
-      }
-      const толстый = await запросы(() => ctx.maintenance.loadMaintenanceSnapshot(vehicles, TODAY));
-      expect(
-        толстый.count,
-        'строки акта дотянулись до снапшота — краткий DTO разошёлся с полным',
-      ).toBe(тонкий.count);
-
-      // И самое главное: в сводке строк НЕТ ВОВСЕ — не «пустой массив», а отсутствие поля. Пустой
-      // массив означал бы «строк нет», а это неправда: их четыре.
-      const сводка = толстый.value.get(vehicles[0]!)!;
+      // И самое главное: в сводке признака движений НЕТ ВОВСЕ — не «ложь», а отсутствие поля.
+      // `false` означал бы «движений не было», а это неправда: по этому акту они есть.
+      const сводка = все.value.get(vehicles[0]!)!;
       expect(сводка.lastMaintenance?.id).toBe(acts[0]!.id);
-      expect(сводка.lastMaintenance).not.toHaveProperty('parts');
       expect(сводка.lastMaintenance).not.toHaveProperty('hasPartMovements');
-      // А история той же машины строки отдаёт — там акт открыт по одному и читается глазами.
-      expect((await ctx.maintenance.loadMaintenanceHistory(vehicles[0]!))[0]!.parts).toHaveLength(
-        4,
-      );
+      expect(сводка.lastMaintenance).not.toHaveProperty('parts');
+      // А история той же машины признак отдаёт — там акт открыт по одному, и по нему решают,
+      // удалять его или аннулировать.
+      expect(
+        (await ctx.maintenance.loadMaintenanceHistory(vehicles[0]!))[0]!.hasPartMovements,
+      ).toBe(true);
     }, 60_000);
   });
 });

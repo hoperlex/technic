@@ -3,6 +3,7 @@ import { startCaptchaCanary, stopCaptchaCanary } from './auth/captcha';
 import { assertSigningKey, config } from './config';
 import { closeDb, pingDb } from './db/client';
 import { assertMigrationsApplied } from './db/migration-check';
+import { assertStockFrozenEmpty } from './db/stock-frozen';
 import { logger } from './logger';
 
 async function main(): Promise<void> {
@@ -31,6 +32,12 @@ async function main(): Promise<void> {
   // Схема — до первого запроса: неприменённая миграция иначе выстрелит пятисоткой в середине
   // чужого действия, и человек прочитает это как поломку формы, а не как несобранную базу.
   await assertMigrationsApplied();
+
+  // Пустота склада — до первого запроса и до сборки приложения (план чеков, Р24): заморозка при
+  // непустых таблицах не ломает ничего заметного, она молча убирает записи с экрана, оставляя их в
+  // базе. В проде это отказ старта, в деве — предупреждение (там таблицы не пусты от пробного
+  // заведения). Барьер живёт до сноса склада и снимается вместе с ним.
+  await assertStockFrozenEmpty();
 
   const app = await buildApp();
   await app.listen({ host: config.host, port: config.port });
