@@ -131,6 +131,23 @@ export const mailKindEnum = pgEnum('mail_kind', [
    * ящику службы: его получают назначенные поимённо и оператор сервисной компании.
    */
   'service_request_assigned',
+  /**
+   * Полный контур писем модуля (план `office-equipment-mail-expansion-plan.md`, §5.1; миграция
+   * 0257): смена состояния, движение по объёму работ, приложенные документы, реплика обсуждения.
+   * Свой вид у каждого события обязателен — очередь уникальна по паре `(kind, dedupe_key)`, и
+   * событие, притворившееся соседним, молча подавляло бы его письмо.
+   */
+  'service_request_status_changed',
+  'service_request_estimate',
+  'service_request_document',
+  'service_request_comment',
+  /**
+   * Сводка ограничения частоты (§5.11): когда по паре «заявка + адресат» за час набирается предел
+   * обычных писем, вместо очередного письма ставится одна сводка на окно. Вид технический и в
+   * `MODULE_MAIL_EVENTS` не входит: события включает администратор, а сводка — механизм, который
+   * появляется только вместо уже включённого события.
+   */
+  'service_request_activity_summary',
 ]);
 export const mailStatusEnum = pgEnum('mail_status', ['pending', 'sent', 'failed']);
 /** Расписания рассылок (ADR 0075, миграция 0099). */
@@ -7723,6 +7740,44 @@ export const moduleMailRecipients = pgTable(
       sql`(${t.replyToMode} = 'fixed' AND ${t.replyToEmail} <> '')
           OR (${t.replyToMode} = 'portal' AND ${t.replyToEmail} = '')
           OR ${t.replyToMode} IN ('author', 'actor')`,
+    ),
+  }),
+);
+
+// ── Рубильник события почты (план office-equipment-mail-expansion-plan.md, §5.1, миграция 0258) ──
+//
+// Строки выше отвечают, кому уходит копия письма; эта таблица — уходит ли письмо по событию
+// вообще. Настройка эксплуатационная: раздел модуля ещё закрыт заплаткой, а API открыт, события
+// включают по одному и смотрят, что приходит, а зашумевшее событие гасят, не откатывая релиз.
+//
+// Строка на каждое событие реестра, заводит их миграция. Событие без строки писем не шлёт:
+// отсутствие трактуется fail-closed, как выключенность, — и умолчание колонки такое же. Событие,
+// добравшееся до продакшена без своей строки, обязано молчать, а не начать писать наружу
+// подрядчику.
+export const moduleMailEventSettings = pgTable(
+  'module_mail_event_settings',
+  {
+    /** Ключ строки — само событие: рубильник у события ровно один, второму взяться неоткуда. */
+    event: text('event').primaryKey().$type<ModuleMailEvent>(),
+    isEnabled: boolean('is_enabled').notNull().default(false),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedAt: updatedAt(),
+    /** Одновременная правка двумя администраторами не должна тихо победить: судьба событий чужая. */
+    version: integer('version').notNull().default(0),
+  },
+  (t) => ({
+    // CHECK по перечню событий здесь есть — в отличие от адресатов выше, где он намеренно не
+    // ставится. Разница не в строгости, а в цене опечатки: лишняя строка адресата просто никогда
+    // не выстрелит, а лишняя строка рубильника выглядит настройкой («событие включено»), пока
+    // настоящее событие сидит без строки и молчит fail-closed. Бесплатным реестр здесь и так не
+    // бывает: новое событие приходит со своей строкой, то есть с миграцией. Перечень обязан
+    // совпадать с `MODULE_MAIL_EVENTS` и с CHECK миграции 0258.
+    eventCheck: check(
+      'module_mail_event_settings_event_check',
+      sql`${t.event} IN ('service_request_waiting_it', 'service_request_cancelled',
+                         'service_request_assigned', 'service_request_status_changed',
+                         'service_request_estimate', 'service_request_document',
+                         'service_request_comment')`,
     ),
   }),
 );

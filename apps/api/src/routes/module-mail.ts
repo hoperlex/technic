@@ -4,12 +4,16 @@ import { and, asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   createModuleMailRecipientSchema,
+  MODULE_MAIL_EVENTS,
+  type ModuleMailEvent,
+  type ModuleMailEventSettingDto,
   type ModuleMailRecipientDto,
   type RequestChangeDto,
+  updateModuleMailEventSettingSchema,
   updateModuleMailRecipientSchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { moduleMailRecipients, users } from '../db/schema';
+import { moduleMailEventSettings, moduleMailRecipients, users } from '../db/schema';
 import { err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
 import { writeAudit } from '../lib/audit';
@@ -85,6 +89,56 @@ async function withDuplicateMessage<T>(run: () => Promise<T[]>): Promise<T[]> {
     }
     throw e;
   }
+}
+
+// ── Рубильник события (план `docs/office-equipment-mail-expansion-plan.md`, §5.1; ADR 0159) ──
+//
+// Строки адресатов выше отвечают на вопрос «кому уходит копия», строка рубильника — на вопрос
+// «уходит ли письмо по событию вообще». Настройка эксплуатационная, а не продуктовая: раздел
+// модуля в портале ещё закрыт заплаткой, а API открыт (письма ушли бы наружу, подрядчику, раньше,
+// чем люди увидят модуль); события включают по одному и смотрят, что приходит; зашумевшее событие
+// гасят рубильником, не откатывая релиз.
+//
+// Строку на каждое событие заводит миграция (0258): новое событие приходит в портал вместе со
+// своей строкой. Поэтому здесь строки не заводятся ни при чтении, ни при правке — см.
+// `missingEventDto` и 404 в `PATCH /events/:event`.
+
+type EventRow = typeof moduleMailEventSettings.$inferSelect;
+
+/**
+ * Событие приходит параметром пути строкой, а не `z.enum`: у несуществующего события ответ 404 с
+ * текстом про сам путь, тогда как схема дала бы 400 «Ошибка валидации» — по нему не отличить
+ * промах адресом от сломанного клиента.
+ */
+const eventParams = z.object({ event: z.string() });
+
+function isKnownEvent(event: string): event is ModuleMailEvent {
+  return (MODULE_MAIL_EVENTS as readonly string[]).includes(event);
+}
+
+function toEventDto(row: EventRow, updatedByName: string | null): ModuleMailEventSettingDto {
+  return {
+    event: row.event,
+    isEnabled: row.isEnabled,
+    version: row.version,
+    updatedAt: row.updatedAt.toISOString(),
+    updatedByName,
+  };
+}
+
+/**
+ * Событие реестра, у которого в базе строки нет, — состояние fail-closed (§5.1): письма по нему не
+ * пойдут, и список обязан показать его **выключенным**, а не пропустить молча. Пропуск оставил бы
+ * администратора искать исчезнувший рубильник в базе, а показ «включено по умолчанию» обещал бы
+ * письма, которых не будет.
+ *
+ * Строку при этом не выдумываем — ни ленивой вставкой в базу, ни правдоподобными значениями в
+ * ответе. Пустой `updatedAt` и `null` в «кто правил» читаются как «настройки не было вовсе»:
+ * `version` 0 здесь не обещание, что правка пройдёт, — правка такого события отвечает 404, и щелчок
+ * по нему означает не «включить», а «выкат неполон, строка не накатана».
+ */
+function missingEventDto(event: ModuleMailEvent): ModuleMailEventSettingDto {
+  return { event, isEnabled: false, version: 0, updatedAt: '', updatedByName: null };
 }
 
 export default async function moduleMailRoutes(app: FastifyInstance) {
@@ -236,6 +290,114 @@ export default async function moduleMailRoutes(app: FastifyInstance) {
         metadata: { event: row.event, toEmail: row.toEmail },
       });
       reply.code(204);
+    },
+  );
+
+  /**
+   * Рубильники всех событий реестра — по строке на событие, в порядке `MODULE_MAIL_EVENTS`.
+   *
+   * Порядок реестровый, а не алфавитный и не по времени правки: администратор читает список как
+   * цикл заявки — ждёт визы, отменена, назначена, сменила состояние, объём работ, документы,
+   * обсуждение. Сортировка по названию перемешала бы цикл и превратила бы список в набор
+   * несвязанных выключателей, между которыми не видно, какое движение заявки уже покрыто почтой.
+   *
+   * Перечень ведёт код, а не выборка: `SELECT` отдаёт только заведённые строки, а событие без
+   * строки обязано быть видно выключенным (§5.1). Обратное тоже верно — строка, которой в реестре
+   * больше нет, в список не попадёт: писем по ней всё равно не будет.
+   */
+  r.get('/events', readGuards, async (req): Promise<ModuleMailEventSettingDto[]> => {
+    const rows = await db
+      .select({ s: moduleMailEventSettings, updatedByName: users.fullName })
+      .from(moduleMailEventSettings)
+      .leftJoin(users, eq(moduleMailEventSettings.updatedBy, users.id));
+    const byEvent = new Map(rows.map((row) => [row.s.event, row]));
+
+    const missing = MODULE_MAIL_EVENTS.filter((event) => !byEvent.has(event));
+    if (missing.length) {
+      // Не «пусто — и ладно»: строки заводит миграция, и их отсутствие означает недокаченный выкат.
+      // Снаружи это выглядит как тишина по событию, и объяснить её можно только отсюда — из лога.
+      req.log.error({ missing }, 'рубильник почты модуля: у события нет строки настройки');
+    }
+
+    return MODULE_MAIL_EVENTS.map((event) => {
+      const row = byEvent.get(event);
+      return row ? toEventDto(row.s, row.updatedByName) : missingEventDto(event);
+    });
+  });
+
+  /**
+   * Щелчок рубильником. В теле только включённость и версия: событие — ключ самой строки, а
+   * «перенести включённость» на соседнее событие означает два щелчка, и каждый обязан остаться в
+   * аудите своей строкой.
+   */
+  r.patch(
+    '/events/:event',
+    { ...manageGuards, schema: { params: eventParams, body: updateModuleMailEventSettingSchema } },
+    async (req): Promise<ModuleMailEventSettingDto> => {
+      const actor = requirePrincipal(req);
+      const { event } = req.params;
+      const b = req.body;
+
+      if (!isKnownEvent(event)) throw err.notFound('Такого события почты в портале нет');
+
+      const { before, after } = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .select()
+          .from(moduleMailEventSettings)
+          .where(eq(moduleMailEventSettings.event, event));
+        /**
+         * Строки нет — 404, и строка **не заводится**. Отсутствие строки это fail-closed (§5.1):
+         * база не знает о событии, и включать наружную рассылку с такого состояния нельзя. Тихая
+         * вставка превратила бы дыру наполнения в рабочую настройку — событие оказалось бы
+         * включённым по нажатию в форме, а не по накатанной миграции, и разбирать «почему письма
+         * пошли» пришлось бы по одному аудиту.
+         */
+        if (!row) {
+          throw err.notFound(
+            'Рубильник этого события не заведён в базе: событие выключено, пока не накатана его миграция',
+          );
+        }
+
+        // Версия — условием самого UPDATE, по той же причине, что у адресата выше: между `SELECT`
+        // и `UPDATE` соседнее окно успевает записать свою правку.
+        const [updated] = await tx
+          .update(moduleMailEventSettings)
+          .set({
+            isEnabled: b.isEnabled,
+            version: b.version + 1,
+            updatedBy: actor.id,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(moduleMailEventSettings.event, event),
+              eq(moduleMailEventSettings.version, b.version),
+            ),
+          )
+          .returning();
+        if (!updated) throw err.conflict();
+        return { before: row, after: updated };
+      });
+
+      /**
+       * Обычный `writeAudit`, а не `writeAuditTx`: строгая запись имеет закрытый перечень областей
+       * (см. `lib/audit.ts`), и рубильник в него не входит — щелчок не единственный носитель факта,
+       * текущее состояние видно строкой таблицы.
+       *
+       * Оба значения `isEnabled`, а не одно новое: «почему перестали приходить письма» разбирают
+       * через месяц, и по одной строке журнала должно быть видно и то, что рубильник трогали, и в
+       * какую сторону. Повторный щелчок в то же положение по такой записи тоже отличим — иначе он
+       * читался бы как отключение, которого не было.
+       */
+      await writeAudit({
+        actorUserId: actor.id,
+        action: 'moduleMailEvent.update',
+        entityType: 'moduleMailEvent',
+        entityId: event,
+        metadata: { event, isEnabledFrom: before.isEnabled, isEnabledTo: after.isEnabled },
+      });
+      // Имя правившего известно без второго запроса: `updated_by` — всегда текущий актёр.
+      return toEventDto(after, actor.fullName);
     },
   );
 }

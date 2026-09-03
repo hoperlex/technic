@@ -9,9 +9,9 @@
   [CounterpartiesTab.tsx](../../apps/web/src/pages/directories/CounterpartiesTab.tsx), Excel-обмен —
   [org.ts](../../apps/api/src/services/directory-transfer/defs/org.ts);
   `apps/api/test/service-request-mail.db.test.ts`
-- Связано: [ADR 0085](0085-office-equipment-service-requests.md) (сервисная компания — исполнитель
-  заявки), [ADR 0096](0096-office-equipment-upgrade.md) (письма модуля и реестр событий),
-  [ADR 0125](0125-office-equipment-cycle-changes.md) (назначение перестало быть переходом),
+- Связано: [ADR 0085](0085-office-equipment-module.md) (сервисная компания — исполнитель
+  заявки), [ADR 0096](0096-office-equipment-it-approval.md) (письма модуля и реестр событий),
+  [ADR 0125](0125-service-request-cycle-changes.md) (назначение перестало быть переходом),
   [ADR 0010](0010-counterparties.md) (одна запись на ИНН, тип — поле записи)
 
 ## Контекст

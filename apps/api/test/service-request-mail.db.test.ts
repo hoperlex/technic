@@ -305,6 +305,35 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
       }),
       retired: await makeUser('retired', 'shtab', { isActive: false }),
     };
+
+    /**
+     * Набор поимённого исполнителя — прогонный, а не системный: письмо теперь адресуется учётке
+     * лишь пока у неё есть `serviceRequests.execute` (§5.2 плана расширения). Право спрашивается
+     * КАЖДЫЙ раз, а не однажды при назначении: снятый с модуля сотрудник не должен продолжать
+     * читать движение по чужим заявкам почтой. Без набора эти учётки — обычный штаб, и адресатами
+     * задания они не были бы вовсе.
+     *
+     * `grant_roles` со строкой `shtab` обязательна: права набора считаются через гейт
+     * совместимости с ролью (`grantPermissionsExpr`), и без неё набор не даёт ничего.
+     *
+     * Отключённой `retired` набор не выдаётся намеренно: на ней проверяется «писать некуда», и
+     * право там ни при чём — она отключена.
+     */
+    const executorGrant = await db.execute<{ id: string }>(sql`
+      INSERT INTO grants (code, name, description, is_system, created_by)
+      VALUES (${`oe-executor-mail-${RUN}`}, ${`Оргтехника: исполнитель ${RUN}`},
+              'Набор поимённого исполнителя для писем модуля', false, ${admin.id})
+      RETURNING id`);
+    const executorGrantId = executorGrant.rows[0]!.id;
+    await db.execute(sql`
+      INSERT INTO grant_permissions (grant_id, permission)
+      VALUES (${executorGrantId}, 'serviceRequests.execute')`);
+    await db.execute(sql`
+      INSERT INTO grant_roles (grant_id, role) VALUES (${executorGrantId}, 'shtab'::role)`);
+    await db.execute(sql`
+      INSERT INTO user_grants (user_id, grant_id, granted_by)
+      VALUES (${people.exec1.id}, ${executorGrantId}, ${admin.id}),
+             (${people.exec2.id}, ${executorGrantId}, ${admin.id})`);
     ctx = {
       app,
       db,
@@ -451,8 +480,14 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     const letters = await mailsOf(request.id);
 
     expect(letters.map((l) => l.to_email).sort()).toEqual([COPY_MAILBOX, SERVICE_MAILBOX].sort());
-    // У копии режим «общий адрес портала» — своего обратного адреса у неё нет.
-    expect(letters.find((l) => l.to_email === COPY_MAILBOX)!.reply_to).toBe('');
+    /**
+     * Обратный адрес копии — ящик службы, а НЕ режим её строки (ADR 0159, решение 8). Прежде здесь
+     * стояла пустая строка: режим `portal` означал «отвечать некому». Режимы `author` и `actor`
+     * раздавали бы произвольному адресу настройки личный ящик заявителя или нажавшего кнопку — то
+     * есть адрес человека тому, у кого в портале нет ни учётки, ни права. Поэтому режим строки по
+     * событиям заявок больше не читается вовсе.
+     */
+    expect(letters.find((l) => l.to_email === COPY_MAILBOX)!.reply_to).toBe(SERVICE_MAILBOX);
 
     // Копия убирается сразу: дальше проверяется счёт писем, и лишний адресат сделал бы «одно
     // письмо на событие» неотличимым от «двух».
@@ -472,7 +507,7 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
    * `fixed` ответ уходит на заданный ящик, при `actor` — нажавшему, при `portal` — в никуда.
    * Письмо, которое врёт про адрес ответа, хуже письма без приписки.
    */
-  it('копия не обещает адрес ответа — у неё свой режим', async () => {
+  it('копия урезана: ни описания, ни контакта, ни ссылки — и отвечает в службу', async () => {
     const added = await inject('POST', '/api/v1/admin/mail/recipients', ctx.admin, {
       event: 'service_request_waiting_it',
       toEmail: COPY_MAILBOX,
@@ -488,10 +523,21 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     const copy = letters.find((l) => l.to_email === COPY_MAILBOX)!;
     const service = letters.find((l) => l.to_email === SERVICE_MAILBOX)!;
 
-    // Обратный адрес копии — её собственный, и тело больше не обещает чужой.
-    expect(copy.reply_to).toBe(COPY_MAILBOX);
-    expect(copy.body_text).toContain('настройке рассылки');
+    /**
+     * Копия — **редактированная** аудитория (§5.6). Строка настройки хранит произвольный email, а
+     * не субъекта с проверяемым правом: раскрывать ему описание поломки, телефон ответственного и
+     * ссылку в портал не на основании чего. Остаётся то, ради чего копию заводят: номер, статус,
+     * событие и обозначение техники.
+     */
+    expect(copy.reply_to).toBe(SERVICE_MAILBOX);
+    expect(copy.body_text).toContain('в службу оргтехники');
     expect(copy.body_text).not.toContain('уйдёт заявителю');
+    expect(copy.body_text).not.toContain('Гаснет экран');
+    expect(copy.body_text).not.toContain('Контакт:');
+    expect(copy.body_text).not.toContain('Открыть заявку в портале');
+    // Ради чего письмо и существует — «по этой заявке произошло вот это» — в копии остаётся.
+    expect(copy.body_text).toContain('Статус:');
+    expect(copy.body_text).toContain('Техника:');
     // Письмо службе не изменилось: у неё вопросы к заявителю, и ответ идёт ему.
     expect(service.reply_to).toBe(ctx.customerEmail);
     expect(service.body_text).toContain('уйдёт заявителю');
@@ -547,12 +593,30 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
    */
   async function assignAndMail(params: {
     requestId: string;
-    plan: ServiceMail.ServiceMailPlan;
     userIds: string[];
-    serviceCounterpartyId?: string;
-  }): Promise<void> {
-    await ctx.db.transaction(async (tx) => {
-      if (params.serviceCounterpartyId) {
+    serviceCounterpartyId?: string | null;
+    previousServiceCounterpartyId?: string | null;
+  }): Promise<ServiceMail.ServiceMailResult> {
+    /**
+     * Намерение считается до транзакции, адресаты — внутри неё (§5.2 плана расширения). Раньше тест
+     * звал планировщик снаружи и передавал готовый список внутрь; так больше нельзя, и это не
+     * придирка к сигнатуре: снаружи транзакции список успевал устареть — назначение могли сменить
+     * между расчётом и записью, и письмо уходило стороне, которой заявку уже не отдали.
+     */
+    const prepared = await ctx.mail.prepareServiceMail({
+      event: 'service_request_assigned',
+      actor: { id: ctx.people.admin.id, email: ctx.people.admin.email, counterpartyId: null },
+      authorId: ctx.people.customer.id,
+      assignment: {
+        userIds: params.userIds,
+        serviceCounterpartyId: params.serviceCounterpartyId ?? null,
+        previousServiceCounterpartyId: params.previousServiceCounterpartyId ?? null,
+      },
+    });
+
+    return ctx.db.transaction(async (tx) => {
+      const side = await ctx.mail.readServiceSide(tx, params.requestId);
+      if (params.serviceCounterpartyId !== undefined) {
         await tx.execute(sql`UPDATE service_requests
              SET service_counterparty_id = ${params.serviceCounterpartyId}
            WHERE id = ${params.requestId}`);
@@ -566,26 +630,16 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
         INSERT INTO service_request_status_history (request_id, from_status, to_status, changed_by)
         VALUES (${params.requestId}, 'new', 'new', ${ctx.people.admin.id})
         RETURNING id`);
-      const data = await ctx.mail.loadServiceLetterData(tx, params.requestId);
-      await ctx.mail.queueServiceMails(tx, {
-        plan: params.plan,
-        statusHistoryId: history.rows[0]!.id,
+      const result = await ctx.mail.queueServiceMailForIntent(tx, {
+        prepared,
+        side,
         requestId: params.requestId,
-        letters: ctx.mail.renderServiceLetters('service_request_assigned', data),
+        anchor: history.rows[0]!.id,
       });
+      // Ключи адресатов — наши подписки: по ним `mailsOf` отличает письма этого файла от чужих.
+      for (const recipient of result.recipients) ownRecipients.add(recipient.key);
+      return result;
     });
-  }
-
-  /** План письма о назначении: действует администратор, автор заявки — заказчик. */
-  function planAssignment(
-    userIds: string[],
-    serviceCounterpartyId: string | null,
-    previousServiceCounterpartyId: string | null = null,
-  ) {
-    return ctx.mail.planServiceAssignmentMail(
-      { userIds, serviceCounterpartyId, previousServiceCounterpartyId },
-      { actor: ctx.people.admin, authorId: ctx.people.customer.id },
-    );
   }
 
   /** Письма события назначения по заявке — своих подписок, как и всё в этом файле. */
@@ -605,17 +659,16 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
   it('письмо о назначении уходит назначенным, а не в ящик службы', async () => {
     const { request } = await createRequest(await ctx.newEquipment('assign'), 'Не берёт картридж');
 
-    // План считается ДО транзакции и по будущему составу: строк исполнителей ещё нет — их пишет та
-    // самая транзакция, ради которой письмо и составляется.
-    const planned = await planAssignment(
-      [ctx.people.exec1.id, ctx.people.exec2.id],
-      ctx.serviceCounterpartyId,
-    );
+    // Адресаты считаются ВНУТРИ транзакции — той же, что пишет строки исполнителей: снаружи список
+    // успевал устареть, а строк, из которых он собирается, ещё не существует.
+    const planned = await assignAndMail({
+      requestId: request.id,
+      userIds: [ctx.people.exec1.id, ctx.people.exec2.id],
+      serviceCounterpartyId: ctx.serviceCounterpartyId,
+    });
     expect(planned.outcome).toBe('queued');
-    const plan = planned.plan!;
-    for (const recipient of plan.recipients) ownRecipients.add(recipient.key);
 
-    expect(plan.recipients.map((r) => r.email).sort()).toEqual(
+    expect(planned.recipients.map((r) => r.email).sort()).toEqual(
       [
         ctx.people.exec1.email,
         ctx.people.exec2.email,
@@ -623,25 +676,18 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
         CONTRACTOR_MAILBOX,
       ].sort(),
     );
-    expect(plan.recipients.map((r) => r.email)).not.toContain(SERVICE_MAILBOX);
-    expect(plan.recipients.map((r) => r.email)).not.toContain(ctx.customerEmail);
+    expect(planned.recipients.map((r) => r.email)).not.toContain(SERVICE_MAILBOX);
+    expect(planned.recipients.map((r) => r.email)).not.toContain(ctx.customerEmail);
     /**
      * Обратный адрес один на всех — **ящик службы** (ADR 0153). Прежде отвечали заявителю, и для
      * своих сисадминов это было удобно; с появлением внешнего адресата так оставлять нельзя — ответ
      * подрядчика ушёл бы от лица чужой организации человеку, который её не знает.
      */
-    expect([...new Set(plan.recipients.map((r) => r.replyTo))]).toEqual([SERVICE_MAILBOX]);
+    expect([...new Set(planned.recipients.map((r) => r.replyTo))]).toEqual([SERVICE_MAILBOX]);
     // Общий ящик компании — аудитория «подрядчик»: у него своё тело письма.
-    const contractor = plan.recipients.find((r) => r.email === CONTRACTOR_MAILBOX)!;
+    const contractor = planned.recipients.find((r) => r.email === CONTRACTOR_MAILBOX)!;
     expect(contractor.key).toBe(`counterparty-${ctx.serviceCounterpartyId}`);
     expect(contractor.audience).toBe('contractor');
-
-    await assignAndMail({
-      requestId: request.id,
-      plan,
-      userIds: [ctx.people.exec1.id, ctx.people.exec2.id],
-      serviceCounterpartyId: ctx.serviceCounterpartyId,
-    });
 
     const letters = await assignmentLetters(request.id);
     expect(letters.map((l) => l.to_email).sort()).toEqual(
@@ -687,20 +733,21 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     ownRecipients.add(twiceId);
 
     const { request } = await createRequest(await ctx.newEquipment('acopy'), 'Мажет тонером');
-    const plan = (await planAssignment([ctx.people.exec1.id], null)).plan!;
-    for (const recipient of plan.recipients) ownRecipients.add(recipient.key);
+    const planned = await assignAndMail({
+      requestId: request.id,
+      userIds: [ctx.people.exec1.id],
+    });
 
-    expect(plan.recipients.map((r) => r.email)).toEqual([
+    expect(planned.recipients.map((r) => r.email)).toEqual([
       ctx.people.exec1.email,
       ASSIGN_COPY_MAILBOX,
     ]);
-    // Исполнитель остался исполнителем: ключ его, обратный адрес — ящик службы (ADR 0153), а не
-    // «общий адрес портала», как просила бы строка настройки, победи она в дедупликации.
-    expect(plan.recipients[0]!.key).toBe(ctx.people.exec1.id);
-    expect(plan.recipients[0]!.replyTo).toBe(SERVICE_MAILBOX);
-    expect(plan.recipients[1]!.replyTo).toBe('');
+    // Исполнитель остался исполнителем: ключ его, обратный адрес — ящик службы (ADR 0153). Копия
+    // отвечает туда же: режим её строки по событиям заявок больше не читается (ADR 0159, реш. 8).
+    expect(planned.recipients[0]!.key).toBe(ctx.people.exec1.id);
+    expect(planned.recipients[0]!.replyTo).toBe(SERVICE_MAILBOX);
+    expect(planned.recipients[1]!.replyTo).toBe(SERVICE_MAILBOX);
 
-    await assignAndMail({ requestId: request.id, plan, userIds: [ctx.people.exec1.id] });
     const letters = await assignmentLetters(request.id);
     expect(letters).toHaveLength(2);
     expect(letters.filter((l) => l.to_email === ctx.people.exec1.email)).toHaveLength(1);
@@ -721,8 +768,14 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
    * — обычное дело, а отключённая учётка это ящик, за которым никого нет.
    */
   it('назначенным писать некуда — письма нет вовсе, и исход это называет', async () => {
-    const planned = await planAssignment([ctx.people.retired.id], ctx.emptyCounterpartyId);
-    expect(planned).toEqual({ plan: null, outcome: 'no_recipients' });
+    const { request } = await createRequest(await ctx.newEquipment('nodst'), 'Не включается');
+    const planned = await assignAndMail({
+      requestId: request.id,
+      userIds: [ctx.people.retired.id],
+      serviceCounterpartyId: ctx.emptyCounterpartyId,
+    });
+    expect(planned.outcome).toBe('no_recipients');
+    expect(planned.recipients).toEqual([]);
   });
 
   /**
@@ -740,18 +793,30 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
   it('снятие компании без нового назначения: отзыв уходит, тревоги нет', async () => {
     // Ровно то, что считает ручка состава, снимая компанию при неизменном поимённом составе:
     // добавленных нет, новой компании нет, прежняя — та, у которой заявку забрали.
-    const withdrawal = await planAssignment([], null, ctx.serviceCounterpartyId);
+    const { request } = await createRequest(await ctx.newEquipment('wdraw'), 'Скрипит лоток');
+    const withdrawal = await assignAndMail({
+      requestId: request.id,
+      userIds: [],
+      serviceCounterpartyId: null,
+      previousServiceCounterpartyId: ctx.serviceCounterpartyId,
+    });
     expect(withdrawal.outcome).toBe('queued');
-    expect(withdrawal.plan!.recipients.map((r) => r.audience)).toEqual([
+    expect(withdrawal.recipients.map((r) => r.audience)).toEqual([
       'contractor_withdrawn',
       'contractor_withdrawn',
     ]);
-    expect(withdrawal.plan!.recipients.map((r) => r.email).sort()).toEqual(
+    expect(withdrawal.recipients.map((r) => r.email).sort()).toEqual(
       [ctx.people.operator.email, CONTRACTOR_MAILBOX].sort(),
     );
 
     // Тот же случай без прежней компании — возврат заявки прежнему составу: писать не о чем.
-    expect(await planAssignment([], null, null)).toEqual({ plan: null, outcome: 'not_needed' });
+    const nothing = await assignAndMail({
+      requestId: request.id,
+      userIds: [],
+      serviceCounterpartyId: null,
+    });
+    expect(nothing.outcome).toBe('not_needed');
+    expect(nothing.recipients).toEqual([]);
   });
 
   /**
@@ -766,22 +831,17 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
   it('подрядчику без учёток задание уходит на общий ящик из карточки', async () => {
     const { request } = await createRequest(await ctx.newEquipment('solo'), 'Не тянет бумагу');
 
-    const planned = await planAssignment([], ctx.mailboxCounterpartyId);
-    expect(planned.outcome).toBe('queued');
-    const plan = planned.plan!;
-    for (const recipient of plan.recipients) ownRecipients.add(recipient.key);
-
-    expect(plan.recipients).toHaveLength(1);
-    expect(plan.recipients[0]!.email).toBe(MAILBOX_ONLY_CONTRACTOR);
-    expect(plan.recipients[0]!.audience).toBe('contractor');
-    expect(plan.recipients[0]!.replyTo).toBe(SERVICE_MAILBOX);
-
-    await assignAndMail({
+    const planned = await assignAndMail({
       requestId: request.id,
-      plan,
       userIds: [],
       serviceCounterpartyId: ctx.mailboxCounterpartyId,
     });
+    expect(planned.outcome).toBe('queued');
+
+    expect(planned.recipients).toHaveLength(1);
+    expect(planned.recipients[0]!.email).toBe(MAILBOX_ONLY_CONTRACTOR);
+    expect(planned.recipients[0]!.audience).toBe('contractor');
+    expect(planned.recipients[0]!.replyTo).toBe(SERVICE_MAILBOX);
 
     const letters = await assignmentLetters(request.id);
     expect(letters).toHaveLength(1);
@@ -948,13 +1008,22 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     const was = config.mail.enabled;
     config.mail.enabled = false;
     try {
+      const { request } = await createRequest(await ctx.newEquipment('offmail'), 'Мигает лампа');
       // Ничего не назначено и нечего отзывать: состояние сервера к делу не относится.
-      expect(await planAssignment([], null, null)).toEqual({ plan: null, outcome: 'not_needed' });
-      // А вот назначение при выключенной почте — по-прежнему «письма нет из-за настройки».
-      expect(await planAssignment([], ctx.mailboxCounterpartyId, null)).toEqual({
-        plan: null,
-        outcome: 'mail_disabled',
+      const idle = await assignAndMail({
+        requestId: request.id,
+        userIds: [],
+        serviceCounterpartyId: null,
       });
+      expect(idle.outcome).toBe('not_needed');
+      // А вот назначение при выключенной почте — по-прежнему «письма нет из-за настройки».
+      const disabled = await assignAndMail({
+        requestId: request.id,
+        userIds: [],
+        serviceCounterpartyId: ctx.mailboxCounterpartyId,
+      });
+      expect(disabled.outcome).toBe('mail_disabled');
+      expect(disabled.recipients).toEqual([]);
     } finally {
       config.mail.enabled = was;
     }
@@ -966,10 +1035,16 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
    * пока прежний, которому написать некуда, продолжал бы собирать выезд.
    */
   it('переназначение, где прежней компании писать некуда, не отчитывается «ушло»', async () => {
-    const planned = await planAssignment([], ctx.mailboxCounterpartyId, ctx.emptyCounterpartyId);
+    const { request } = await createRequest(await ctx.newEquipment('halfmail'), 'Течёт тонер');
+    const planned = await assignAndMail({
+      requestId: request.id,
+      userIds: [],
+      serviceCounterpartyId: ctx.mailboxCounterpartyId,
+      previousServiceCounterpartyId: ctx.emptyCounterpartyId,
+    });
     expect(planned.outcome).toBe('no_recipients');
-    // План при этом есть: новое задание уходит, потерян только отзыв.
-    expect(planned.plan!.recipients.map((r) => r.email)).toEqual([MAILBOX_ONLY_CONTRACTOR]);
+    // Письма при этом есть: новое задание уходит, потерян только отзыв.
+    expect(planned.recipients.map((r) => r.email)).toEqual([MAILBOX_ONLY_CONTRACTOR]);
   });
 
   /**
@@ -1083,5 +1158,180 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     });
     expect(res.statusCode).toBe(422);
     expect(res.json().message).toContain('не отправлялись');
+  });
+  // ── События полного контура (план `office-equipment-mail-expansion-plan.md`, § 3) ──
+
+  /** Включить событие на время проверки: миграция заводит четыре новых выключенными (§5.1). */
+  async function withEvent<T>(event: string, fn: () => Promise<T>): Promise<T> {
+    await ctx.db.execute(sql`
+      UPDATE module_mail_event_settings SET is_enabled = true WHERE event = ${event}`);
+    try {
+      return await fn();
+    } finally {
+      await ctx.db.execute(sql`
+        UPDATE module_mail_event_settings SET is_enabled = false WHERE event = ${event}`);
+    }
+  }
+
+  /**
+   * Рубильник — не украшение настройки, а условие безопасного выката: раздел портала ещё закрыт
+   * заплаткой, а API открыт, и включённое событие шлёт письма НАРУЖУ, подрядчику. Поэтому
+   * проверяется не «настройка сохранилась», а то, что выключенное событие писем не создаёт вовсе,
+   * при этом сама операция проходит: заявка обязана двигаться, даже когда почта молчит.
+   */
+  it('выключенное событие переходов писем не ставит, а заявку двигает', async () => {
+    const { request } = await createRequest(await ctx.newEquipment('offev'), 'Заедает лоток');
+    const before = (await mailsOf(request.id)).length;
+
+    const held = await inject('PATCH', `/api/v1/service-requests/${request.id}/hold`, ctx.admin, {
+      reason: 'Ждём запчасть',
+      version: request.version,
+    });
+    expect(held.statusCode, held.body).toBe(200);
+    expect((held.json() as ServiceRequestDto).status).toBe('on_hold');
+    expect((await mailsOf(request.id)).length).toBe(before);
+  });
+
+  /**
+   * Письмо о переходе отвечает на два вопроса сразу: что стало и почему. «Отложена» без «из
+   * работы» читается как заведение отложенной заявки, а без причины адресат узнаёт факт, но не
+   * узнаёт, что делать, — у заморозки причина обязательна по схеме именно поэтому.
+   *
+   * Второе, что здесь доказывается: **актор своего письма не получает** (§5.4). Заморозку ставит
+   * администратор, и письмо ему было бы эхом собственного нажатия.
+   */
+  it('переход шлёт письмо стороне заявки — с «было → стало» и причиной', async () => {
+    const { request } = await createRequest(await ctx.newEquipment('trans'), 'Полосит печать');
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: request.version },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    const afterAssign = (assigned.json() as { request: ServiceRequestDto }).request;
+
+    const started = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/start`,
+      ctx.admin,
+      { version: afterAssign.version },
+    );
+    expect(started.statusCode, started.body).toBe(200);
+
+    await withEvent('service_request_status_changed', async () => {
+      const held = await inject('PATCH', `/api/v1/service-requests/${request.id}/hold`, ctx.admin, {
+        reason: 'Ждём запчасть от поставщика',
+        version: (started.json() as ServiceRequestDto).version,
+      });
+      expect(held.statusCode, held.body).toBe(200);
+    });
+
+    const letters = (await mailsOf(request.id)).filter(
+      (l) => l.kind === 'service_request_status_changed',
+    );
+    // Ящик службы и сторона подрядчика: общий ящик компании и её оператор в портале.
+    expect(letters.map((l) => l.to_email).sort()).toEqual(
+      [SERVICE_MAILBOX, CONTRACTOR_MAILBOX, ctx.people.operator.email].sort(),
+    );
+    const toContractor = letters.find((l) => l.to_email === CONTRACTOR_MAILBOX)!;
+    expect(toContractor.body_text).toContain('Было: «В работе» → стало «Отложена»');
+    expect(toContractor.body_text).toContain('Причина: Ждём запчасть от поставщика');
+    // Администратор нажал кнопку сам — эха ему не приходит.
+    expect(letters.map((l) => l.to_email)).not.toContain(ctx.people.admin.email);
+  });
+
+  /**
+   * У объёма работ письмо меняет направление по действию, а не по событию: предъявление читает
+   * тот, кто отвечает (служба), согласие — тот, кто работал (сервис). Одна цель на оба случая
+   * означала бы, что исполнитель получает собственное предъявление, а служба — собственный ответ.
+   *
+   * Сумма при этом уходит не всем: копия видит факт, но не цену — у адреса из настройки нет права
+   * `serviceRequests.finance`, и раскрывать ему стоимость ремонта не на основании чего (§5.6).
+   */
+  it('объём работ: предъявление — службе, согласие — исполнителю, сумма не всем', async () => {
+    const copy = await inject('POST', '/api/v1/admin/mail/recipients', ctx.admin, {
+      event: 'service_request_estimate',
+      toEmail: COPY_MAILBOX,
+      replyToMode: 'portal',
+    });
+    expect(copy.statusCode, copy.body).toBe(201);
+    const copyId = (copy.json() as { id: string }).id;
+    ownRecipients.add(copyId);
+
+    const { request } = await createRequest(await ctx.newEquipment('est'), 'Не берёт бумагу');
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: request.version },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    const started = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/start`,
+      ctx.admin,
+      { version: (assigned.json() as { request: ServiceRequestDto }).request.version },
+    );
+    expect(started.statusCode, started.body).toBe(200);
+
+    await withEvent('service_request_estimate', async () => {
+      const items = await inject(
+        'PUT',
+        `/api/v1/service-requests/${request.id}/estimate`,
+        ctx.admin,
+        {
+          items: [{ kind: 'part', name: 'Ролик подачи', quantity: 1, unitPrice: 2500 }],
+          version: (started.json() as ServiceRequestDto).version,
+        },
+      );
+      expect(items.statusCode, items.body).toBe(200);
+      const submitted = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${request.id}/estimate/submit`,
+        ctx.admin,
+        { warrantyRepair: false, version: (items.json() as ServiceRequestDto).version },
+      );
+      expect(submitted.statusCode, submitted.body).toBe(200);
+
+      const afterSubmit = (await mailsOf(request.id)).filter(
+        (l) => l.kind === 'service_request_estimate',
+      );
+      // Предъявление — службе и копии; исполнителю собственные числа не пересылают.
+      expect(afterSubmit.map((l) => l.to_email).sort()).toEqual(
+        [SERVICE_MAILBOX, COPY_MAILBOX].sort(),
+      );
+      const toService = afterSubmit.find((l) => l.to_email === SERVICE_MAILBOX)!;
+      expect(toService.body_text).toContain('Объём работ: предъявлен, ревизия 1');
+      // Пробел в сумме неразрывный (`toLocaleString('ru-RU')`) — сравниваем по образцу.
+      expect(toService.body_text).toMatch(/2\s500,00\s₽/u);
+      // Копия — редактированная аудитория: факт видит, цену нет.
+      const toCopy = afterSubmit.find((l) => l.to_email === COPY_MAILBOX)!;
+      expect(toCopy.body_text).toContain('Объём работ: предъявлен, ревизия 1');
+      expect(toCopy.body_text).not.toMatch(/2\s500,00\s₽/u);
+
+      const approved = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${request.id}/estimate/approval`,
+        ctx.admin,
+        {
+          approved: true,
+          replacementRecommended: false,
+          version: (submitted.json() as ServiceRequestDto).version,
+        },
+      );
+      expect(approved.statusCode, approved.body).toBe(200);
+    });
+
+    const afterApproval = (await mailsOf(request.id)).filter(
+      (l) => l.kind === 'service_request_estimate' && l.body_text.includes('согласован'),
+    );
+    // Согласие адресовано тому, кто работал: компании и её оператору (плюс копия наблюдателя).
+    expect(afterApproval.map((l) => l.to_email).sort()).toEqual(
+      [CONTRACTOR_MAILBOX, ctx.people.operator.email, COPY_MAILBOX].sort(),
+    );
+
+    const removed = await inject('DELETE', `/api/v1/admin/mail/recipients/${copyId}`, ctx.admin);
+    expect(removed.statusCode).toBe(204);
   });
 });

@@ -1,6 +1,5 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import {
-  COUNTERPARTY_SCOPED_ROLES,
   DEFAULT_MAIL_ACCOUNT,
   formatServiceRequestNumber,
   moduleMailEventLabels,
@@ -8,7 +7,7 @@ import {
   serviceRequestStatusLabels,
   type ModuleMailEvent,
   type ModuleMailOutcome,
-  type ReplyToMode,
+  type ServiceMailTargets,
   type ServiceRequestStatus,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -16,7 +15,6 @@ import {
   constructionObjects,
   counterparties,
   departments,
-  moduleMailRecipients,
   serviceRequestExecutors,
   serviceRequestFiles,
   serviceRequests,
@@ -26,6 +24,23 @@ import { config } from '../config';
 import { logger } from '../logger';
 import { renderMail, type MailContent } from './mail-templates';
 import { queuePreparedMail, type MailKind } from './mail';
+import {
+  addressOf,
+  collectServiceMailRecipients,
+  copyRecipients,
+  counterpartySideRecipients,
+  isServiceMailEventEnabled,
+  namedRecipients,
+  sideRecipients,
+  type ServiceMailActor,
+  type ServiceMailAudience,
+  type ServiceMailAudienceCtx,
+  type ServiceMailRecipient,
+  type ServiceRequestSide,
+} from './service-request-mail-audience';
+
+/** Сторона заявки на момент факта: ручки снимают её до бизнес-изменения (§5.2). */
+export { readServiceSide, type ServiceRequestSide } from './service-request-mail-audience';
 
 /**
  * Письма службе по заявке на обслуживание оргтехники (план
@@ -78,6 +93,17 @@ const SERVICE_MAIL_ACCOUNT = 'repair';
 const EVENT_BY_STATUS: Partial<Record<ServiceRequestStatus, ModuleMailEvent>> = {
   new: 'service_request_waiting_it',
   cancelled: 'service_request_cancelled',
+  /**
+   * Переходы цикла — одно событие на четыре входа (§3, № 4). Дробить его по статусам значило бы
+   * четыре строки в настройке копий и вопрос «а если включены две»; какой именно переход
+   * случился, письмо говорит строкой «Было → стало», а не своим именем.
+   *
+   * `assigned` и `estimate_review` сюда не входят: статусы мёртвые (0224), заявок в них не бывает.
+   */
+  in_work: 'service_request_status_changed',
+  on_hold: 'service_request_status_changed',
+  done: 'service_request_status_changed',
+  accepted: 'service_request_status_changed',
 };
 
 /**
@@ -86,6 +112,17 @@ const EVENT_BY_STATUS: Partial<Record<ServiceRequestStatus, ModuleMailEvent>> = 
  */
 export function serviceMailEventOf(status: ServiceRequestStatus): ModuleMailEvent | null {
   return EVENT_BY_STATUS[status] ?? null;
+}
+
+/**
+ * Что можно послать заново кнопкой «Отправить ещё раз» (Р70) — только письма СЛУЖБЕ: «заявка ждёт
+ * разбора» и «заявка отменена». Событие переходов кнопкой не повторяется: оно адресовано рабочей
+ * стороне и привязано к конкретному входу в статус, а повтор из карточки взял бы последний вход и
+ * второй раз объявил бы исполнителю о том, что и так случилось час назад.
+ */
+export function repeatableServiceMailEventOf(status: ServiceRequestStatus): ModuleMailEvent | null {
+  const event = serviceMailEventOf(status);
+  return event === 'service_request_status_changed' ? null : event;
 }
 
 /**
@@ -100,454 +137,341 @@ export function serviceMailEventOf(status: ServiceRequestStatus): ModuleMailEven
  * называет адрес ответа, для неё враньё: письмо обещало бы службу там, где ответ уйдёт заявителю
  * или на фиксированный ящик. Поэтому копия получает тело, которое про ответ ничего не утверждает.
  */
-export type ServiceMailAudience = 'internal' | 'contractor' | 'contractor_withdrawn' | 'copy';
+export type { ServiceMailAudience } from './service-request-mail-audience';
 
 /** Получатель письма: ящик канала, назначенный исполнитель, подрядчик или заведённая копия. */
-interface Recipient {
-  /**
-   * Часть ключа дедупликации — **чем вызвано письмо**, а не куда оно ушло: `channel` у основного
-   * адресата писем службе, id учётки — у назначенного исполнителя, `counterparty-<id>` — у общего
-   * ящика подрядчика, id строки — у копии. Двоеточий в ключе быть не должно: им разделены поля
-   * самого ключа дедупликации (`событие:строка истории:адресат`), и составной ключ адресата
-   * сделал бы разбор ключа неоднозначным.
-   */
-  key: string;
-  email: string;
-  /** Куда уйдёт ответ; пусто — общий адрес портала. */
-  replyTo: string;
-  /** Каким телом письма адресата обслуживать (см. `ServiceMailAudience`). */
-  audience: ServiceMailAudience;
-}
-
-export interface ServiceMailPlan {
+/**
+ * Намерение письма: **что случилось**, а не кому писать.
+ *
+ * Готовый список адресатов снаружи больше не приходит (§5.2, ADR 0159, решение 5). Ручка знает
+ * только факт и то, чего нет в строке заявки: при назначении — кого добавили и какую компанию
+ * сменили, потому что новую запись транзакция как раз делает, а прежнюю после неё не достать.
+ * Всё остальное — операторы, поимённые исполнители, их права, ящик компании и копии — читает сама
+ * транзакция после блокировки заявки.
+ */
+export interface ServiceMailIntent {
   event: ModuleMailEvent;
-  kind: MailKind;
-  recipients: Recipient[];
-}
-
-export type ServiceMailPlanResult =
-  | { plan: ServiceMailPlan; outcome: 'queued' | 'no_recipients' }
-  | { plan: null; outcome: Exclude<ModuleMailOutcome, 'queued'> };
-
-/**
- * Накопитель адресатов: одно правило дедупликации на все письма модуля — **по адресу, а не по
- * ключу**.
- *
- * Дедупликация нужна потому, что источники адресатов пересекаются, и человек попадает в письмо
- * дважды с разных сторон: ящик службы бывает заведён ещё и копией, а назначенный исполнитель —
- * заодно и той копией, которой «хочется видеть все назначения». Ключи у таких попаданий разные (id
- * учётки и id строки настройки), и `(kind, dedupe_key)` в очереди их не схлопнет: в один ящик
- * придут два одинаковых письма.
- *
- * Первый источник побеждает — отсюда порядок вызовов: сперва тот, кому письмо адресовано, потом
- * копии. Обратный порядок отдал бы адресату обратный адрес копии (у неё свой режим), то есть тихо
- * подменил бы смысл письма настройкой, заведённой ради наблюдения со стороны.
- */
-function recipientCollector(): {
-  add: (key: string, email: string, replyTo: string, audience?: ServiceMailAudience) => void;
-  list: Recipient[];
-} {
-  const seen = new Set<string>();
-  const list: Recipient[] = [];
-  return {
-    list,
-    add(key, email, replyTo, audience = 'internal') {
-      const normalized = email.trim().toLowerCase();
-      // Отзыв назначения — не дубль нового назначения даже при одном общем ящике у двух
-      // контрагентов: в таком случае на адрес должны прийти два разных по смыслу письма.
-      const identity =
-        audience === 'contractor_withdrawn' ? `${normalized}|contractor_withdrawn` : normalized;
-      if (!normalized || seen.has(identity)) return;
-      seen.add(identity);
-      list.push({ key, email, replyTo, audience });
-    },
-  };
-}
-
-/**
- * Кому и с каким обратным адресом уйдёт письмо. Считается **до** транзакции заявки: здесь ходят в
- * базу и в конфигурацию, и упавшее внутри транзакции откатило бы саму заявку (Р67).
- *
- * Пустой список копий — не повод молчать: основной адресат известен и без настройки, это ящик
- * самого канала (Р91). Молчит портал только тогда, когда почта выключена или канал не настроен на
- * сервере, — и оба случая возвращаются исходом, а не отказом.
- */
-export async function planServiceMail(
-  status: ServiceRequestStatus,
-  ctx: {
-    actor: { id: string; email: string };
-    authorId: string | null;
-    /**
-     * Кому заявка отдана сейчас. Нужен ровно одному событию — отмене: подрядчик, который уже
-     * собрался ехать, обязан узнать, что везти нечего (ADR 0153), и узнать он это может только
-     * письмом — учёток в портале у него может не быть вовсе.
-     *
-     * У заведения заявки поле пусто по построению, и это не забывчивость: исполнителя у только
-     * что заведённой заявки нет. У отката в «Новую» подрядчик бывает, но письма ему этот переход
-     * не шлёт — «заявка снова ждёт разбора» адресовано службе, а не тому, кто её ведёт; узнает он
-     * о снятии из письма о переназначении, если заявку отдадут другому.
-     */
-    serviceCounterpartyId?: string | null;
-  },
-): Promise<ServiceMailPlanResult> {
-  const event = serviceMailEventOf(status);
-  if (!event) return { plan: null, outcome: 'mail_disabled' };
-  if (!config.mail.enabled) return { plan: null, outcome: 'mail_disabled' };
-
-  const channel = config.mail.accounts[SERVICE_MAIL_ACCOUNT];
-  if (!channel.configured) return { plan: null, outcome: 'channel_missing' };
-
-  // Адрес ящика службы — из `From` канала: «Ремонт <repair@…>» → сам адрес.
-  const channelEmail = addressOf(channel.from);
-  if (!channelEmail) return { plan: null, outcome: 'channel_missing' };
-
-  const [author] = ctx.authorId
-    ? await db.select({ email: users.email }).from(users).where(eq(users.id, ctx.authorId))
-    : [];
-
-  const copies = await db
-    .select()
-    .from(moduleMailRecipients)
-    .where(and(eq(moduleMailRecipients.event, event), eq(moduleMailRecipients.isEnabled, true)));
-
-  // Ящик канала первым и всегда: письмо адресовано службе, а копии — это «кому ещё». Копия на
-  // адрес самого канала после этого отсеивается сама — двух одинаковых писем в один ящик не будет.
-  const to = recipientCollector();
-  to.add('channel', channelEmail, author?.email ?? '');
-
+  actor: ServiceMailActor;
+  /** Автор заявки: его адрес — обратный у двух сложившихся писем службе (§5.8). */
+  authorId: string | null;
   /**
-   * Подрядчик — вторым, до копий и после службы (ADR 0153). Порядок здесь тот же, что и у всего
-   * накопителя: первый источник побеждает, и адрес, заведённый ещё и копией, останется письмом
-   * подрядчику со своим обратным адресом, а не наблюдательской копией.
-   *
-   * **Сторона подрядчика — это ЕГО УЧЁТКИ И ЕГО ЯЩИК, а не один ящик.** Письмо о назначении так и
-   * считало с самого начала, а отмена — нет, и разница была тихой: компания с операторами в портале
-   * и пустым полем адреса получала задание и не получала отмены. Ехали зря, а портал отвечал
-   * `queued`, потому что письмо службе в очередь встало.
-   *
-   * Обратный адрес — ящик службы, а не автор заявки: с внешней организацией переписывается служба.
-   * Ответ подрядчика заявителю был бы письмом от чужой компании человеку, который её не знает, и
-   * ушёл бы мимо тех, кто ведёт заявку. По той же причине обе половины стороны подрядчика получают
-   * ТЕЛО ПОДРЯДЧИКА: оператору с учёткой ссылка в портал полезна, но приписка про адрес ответа
-   * важнее, а второе тело ради ссылки развело бы одно письмо на два.
+   * Что случилось с объёмом работ; есть только у `service_request_estimate`. Ревизия и действие
+   * задают якорь дедупликации: повторное предъявление той же ревизии письма не удваивает, а новая
+   * ревизия — это новое письмо, потому что предъявили другие числа.
    */
-  const contractorSide = ctx.serviceCounterpartyId
-    ? await contractorRecipients(event, ctx.serviceCounterpartyId)
-    : [];
-  for (const row of contractorSide) to.add(row.key, row.email, channelEmail, 'contractor');
-
-  for (const row of copies) {
-    to.add(
-      row.id,
-      row.toEmail,
-      replyToOf(row.replyToMode, row.replyToEmail, {
-        author: author?.email ?? '',
-        actor: ctx.actor.email,
-      }),
-      'copy',
-    );
-  }
-
-  /**
-   * Исход считается по СТОРОНЕ ПОДРЯДЧИКА, а не по всему письму. Ящик службы в адресатах есть
-   * всегда, и `queued` по нему был бы правдой про службу и ложью про того, кто собрался выезжать:
-   * заявку отменили, сказать об этом оказалось некому, и узнать это назначивший обязан сразу.
-   */
-  const contractorMissed =
-    event === 'service_request_cancelled' && !!ctx.serviceCounterpartyId
-      ? contractorSide.length === 0
-      : false;
-
-  return {
-    plan: { event, kind: event as MailKind, recipients: to.list },
-    outcome: contractorMissed ? 'no_recipients' : 'queued',
-  };
-}
-
-/**
- * Сторона подрядчика для письма, адресованного компании: её живые операторы и общий ящик карточки.
- *
- * Отмену подрядчик получает только тогда, когда заявка у него; для остальных событий список пуст —
- * «Новая» ждёт разбора службой, и подрядчику там нечего читать.
- */
-async function contractorRecipients(
-  event: ModuleMailEvent,
-  counterpartyId: string,
-): Promise<{ key: string; email: string }[]> {
-  if (event !== 'service_request_cancelled') return [];
-  const operators = await liveCounterpartyOperators(counterpartyId);
-  const mailbox = await contractorMailbox(counterpartyId);
-  return [
-    ...operators.map((row) => ({ key: row.id, email: row.email })),
-    ...(mailbox ? [{ key: `counterparty-${counterpartyId}`, email: mailbox }] : []),
-  ];
-}
-
-/**
- * Кому уйдёт письмо о назначении (план `docs/office-equipment-requests-rework-plan.md`, §7.3, Н13;
- * решение опроса В16).
- *
- * **Это единственное письмо модуля, адресованное людям, а не службе.** Остальные два уходят на ящик
- * канала: за ним нет учётки, и список копий только добавляет наблюдателей. Здесь наоборот — письмо
- * это задание на работу, и получает его тот, кому работать: назначенные поимённо сотрудники,
- * операторы и общий ящик сервисной компании. При переназначении прежний подрядчик получает здесь
- * же отдельный отзыв задания. Ящик канала в адресатах не участвует: служба назначение и сделала, и
- * второе письмо об этом ей ни о чём не сообщает.
- *
- * Отсюда же три следствия, каждое из которых легко потерять:
- *
- * 1. **Заявителю письмо не уходит** (В16): движение по заявке он видит в портале, а задание — не
- *    его дело. Автор назван в теле и остаётся доступен режимам обратного адреса настроенных копий;
- *    само задание отвечает в ящик службы.
- * 2. **Копии из `module_mail_recipients` работают поверх, а не вместо.** Строка настройки на это
- *    событие — «хочу видеть все назначения»; подменить ею адресата нельзя.
- * 3. **Нет новых адресатов и ящика прежнего подрядчика — письма нет вовсе** (`no_recipients`).
- *    Отправить его одной службе было бы худшим из исходов: портал отчитался бы «письмо ушло», а
- *    исполнитель задания или отзыв работы не увидел.
- *
- * Считается **до** транзакции, как и `planServiceMail` (Р67): здесь ходят в базу и в конфигурацию,
- * и упавшее внутри транзакции откатило бы саму заявку. Список приходит **параметром**, а не
- * вычитывается из `service_request_executors`: строк там на этот момент ещё нет — их пишет та самая
- * транзакция, ради которой письмо и составляется.
- */
-export async function planServiceAssignmentMail(
-  assignment: {
-    /** Учётки, назначаемые поимённо, — те же, что уйдут в `service_request_executors`. */
+  estimate?: { revision: number; action: 'submit' | 'approved' | 'reopened' };
+  /** Дельта назначения; есть только у `service_request_assigned`. */
+  assignment?: {
+    /** Добавленные поимённо — не весь состав: задание уходит тому, кому его выдали. */
     userIds: string[];
-    /** Сервисная компания, если заявка назначается ей; `null` — назначение только своими силами. */
     serviceCounterpartyId: string | null;
-    /** Прежняя компания при переназначении: ей уходит отзыв уже выданного задания. */
-    previousServiceCounterpartyId?: string | null;
-  },
-  ctx: { actor: { id: string; email: string }; authorId: string | null },
-): Promise<ServiceMailPlanResult> {
-  const event: ModuleMailEvent = 'service_request_assigned';
+    previousServiceCounterpartyId: string | null;
+  };
+}
 
-  /**
-   * Было ли этим действием что-то выдано или отозвано. Спрашивается ПЕРВЫМ, до почты и канала: если
-   * писать не о чем, состояние сервера к делу не относится вовсе. Иначе правка состава, которая
-   * никого не назначила, отвечала бы «отправка писем выключена» — тревога про настройку там, где
-   * письма и не требовалось (это и ломало смысл `not_needed`).
-   *
-   * «Выдано» — это `userIds` или новая компания; «отозвано» — прежняя компания при переназначении.
-   * Нашлись ли у них адреса, здесь не спрашивается: тот вопрос решается ниже и отвечает другим
-   * исходом.
-   */
-  const hadNewAssignment =
-    assignment.userIds.length > 0 || assignment.serviceCounterpartyId !== null;
-  const hadWithdrawal = !!assignment.previousServiceCounterpartyId;
-  if (!hadNewAssignment && !hadWithdrawal) return { plan: null, outcome: 'not_needed' };
+/**
+ * Подготовка письма **до** транзакции: только то, что читается из конфигурации процесса и не
+ * зависит от прав и состояния заявки (§5.9). Отказ здесь — мягкий исход, и транзакция идёт дальше
+ * без почтовой части.
+ *
+ * Обратный адрес внутреннего тела считается здесь же: у двух сложившихся писем службе это автор
+ * заявки, и его email — единственное, ради чего эта функция ходит в базу.
+ */
+export interface ServiceMailPreparation {
+  intent: ServiceMailIntent;
+  ctx: ServiceMailAudienceCtx;
+  /** Исход конфигурации: `null` — препятствий нет, дальше решает транзакция. */
+  configOutcome: 'mail_disabled' | 'channel_missing' | null;
+}
 
-  if (!config.mail.enabled) return { plan: null, outcome: 'mail_disabled' };
+/**
+ * Обратный адрес внутреннего тела по событию (§5.8).
+ *
+ * `waiting_it` и `cancelled` отвечают автору заявки — так сложилось и менять это незачем: письмо
+ * адресовано службе, а вопросы у неё именно к заявителю. У писем цикла обратный адрес — ящик
+ * службы: это рабочая переписка по заявке, и ответ обязан попасть тем, кто её ведёт.
+ */
+const AUTHOR_REPLY_EVENTS: ReadonlySet<ModuleMailEvent> = new Set<ModuleMailEvent>([
+  'service_request_waiting_it',
+  'service_request_cancelled',
+]);
 
-  /**
-   * Канал нужен и здесь, хотя его ящик писем не получает: он отправитель, и без настроенного
-   * `From` письмо некому подписать. Со времён ADR 0153 нужен ещё и его АДРЕС — он же обратный
-   * адрес этого письма (см. ниже), — поэтому проверяется не только `configured`.
-   */
+export async function prepareServiceMail(
+  intent: ServiceMailIntent,
+): Promise<ServiceMailPreparation> {
   const channel = config.mail.accounts[SERVICE_MAIL_ACCOUNT];
   const channelEmail = channel.configured ? addressOf(channel.from) : '';
-  if (!channelEmail) return { plan: null, outcome: 'channel_missing' };
-
-  const [author] = ctx.authorId
-    ? await db.select({ email: users.email }).from(users).where(eq(users.id, ctx.authorId))
+  const [author] = intent.authorId
+    ? await db.select({ email: users.email }).from(users).where(eq(users.id, intent.authorId))
     : [];
   const authorEmail = author?.email ?? '';
-
-  /**
-   * Задание адресуется тому, кто может войти в портал и принять заявку: архивная и отключённая
-   * учётки — это ящик, за которым никого нет, и молчаливо отправить туда письмо хуже, чем сказать
-   * назначившему «предупредите их сами».
-   */
-  const named = assignment.userIds.length
-    ? await db
-        .select({ id: users.id, email: users.email })
-        .from(users)
-        .where(
-          and(
-            inArray(users.id, assignment.userIds),
-            eq(users.isActive, true),
-            isNull(users.deletedAt),
-          ),
-        )
-        .orderBy(users.email)
-    : [];
-
-  /**
-   * У сервисной компании поимённых строк нет (§4.2): назначается она целиком, а читают почту её
-   * операторы. Их может не быть ни одной, и это обычное дело: подрядчик без доступа в портал
-   * существует. Отбор — общий на все письма модуля (`liveCounterpartyOperators`).
-   */
-  const operators = assignment.serviceCounterpartyId
-    ? await liveCounterpartyOperators(assignment.serviceCounterpartyId)
-    : [];
-
-  const previousOperators = assignment.previousServiceCounterpartyId
-    ? await liveCounterpartyOperators(assignment.previousServiceCounterpartyId)
-    : [];
-
-  /**
-   * Общие ящики новой и прежней компаний (ADR 0153). Ящик новой стоит рядом с её операторами, а
-   * не вместо них. Это
-   * единственный адресат, до которого письмо доходит, когда учёток у подрядчика нет вовсе: до
-   * решения такая заявка отвечала `no_recipients`, то есть портал честно говорил «задание не
-   * ушло», и дальше его доносили голосом.
-   *
-   * Дублирования с оператором нет: накопитель отсеивает по адресу, а не по ключу, — если оператор
-   * читает тот же ящик, письмо будет одно. Отзыв прежней компании остаётся отдельным письмом даже
-   * при совпавшем адресе: «вам назначено» и «у вас отозвано» схлопывать нельзя.
-   */
-  const contractor = assignment.serviceCounterpartyId
-    ? await contractorMailbox(assignment.serviceCounterpartyId)
-    : '';
-  const previousContractor = assignment.previousServiceCounterpartyId
-    ? await contractorMailbox(assignment.previousServiceCounterpartyId)
-    : '';
-
-  /**
-   * Обратный адрес всего письма — **ящик службы**, а не автор заявки (решение ADR 0153). Прежде
-   * отвечали заявителю, и для своих сисадминов это было удобно; с появлением внешнего адресата так
-   * оставлять нельзя: ответ подрядчика ушёл бы от лица чужой организации человеку, который её не
-   * знает, мимо тех, кто ведёт заявку. Правило одно на всех адресатов письма намеренно — второй
-   * обратный адрес означал бы второе тело письма (приписка называет, куда уйдёт ответ), то есть
-   * два расходящихся письма об одном событии.
-   *
-   * Автор заявки от этого не теряется: его имя названо в теле строкой «Заявку завёл».
-   */
-  const to = recipientCollector();
-  for (const row of [...named, ...operators]) to.add(row.id, row.email, channelEmail);
-  if (contractor) {
-    to.add(
-      `counterparty-${assignment.serviceCounterpartyId}`,
-      contractor,
-      channelEmail,
-      'contractor',
-    );
-  }
-  // Половина письма про новое задание закончилась: дальше идёт отзыв, и его адресаты в этот счёт
-  // попадать не должны — иначе «задание дошло» подтверждалось бы письмом прежнему подрядчику.
-  const newAssignmentReachedRecipient = to.list.length > 0;
-  for (const row of previousOperators) {
-    to.add(`withdrawn-${row.id}`, row.email, channelEmail, 'contractor_withdrawn');
-  }
-  if (previousContractor) {
-    to.add(
-      `counterparty-withdrawn-${assignment.previousServiceCounterpartyId}`,
-      previousContractor,
-      channelEmail,
-      'contractor_withdrawn',
-    );
-  }
-  // Писем нет вовсе, хотя действие их требовало (случай «не требовалось» отсечён в самом начале):
-  // ни у назначенных, ни у той стороны, у которой работу забрали, нет ни одного живого адреса.
-  if (to.list.length === 0) return { plan: null, outcome: 'no_recipients' };
-
-  const copies = await db
-    .select()
-    .from(moduleMailRecipients)
-    .where(and(eq(moduleMailRecipients.event, event), eq(moduleMailRecipients.isEnabled, true)));
-  const withdrawalReachedRecipient = to.list.some((r) => r.audience === 'contractor_withdrawn');
-
-  for (const row of copies) {
-    to.add(
-      row.id,
-      row.toEmail,
-      replyToOf(row.replyToMode, row.replyToEmail, { author: authorEmail, actor: ctx.actor.email }),
-      'copy',
-    );
-  }
-
-  /**
-   * Исход отвечает за ОБЕ половины письма, а не за ту, что дошла первой.
-   *
-   * Половины две и обе обязательны: новому исполнителю выдали задание, у прежней компании его
-   * забрали. Считай мы только новую — переназначение к подрядчику с ящиком отвечало бы `queued`,
-   * пока прежний, которому написать некуда, продолжал бы собирать выезд. Считай только старую —
-   * потерялось бы само задание. Поэтому недоставленной хватает любой.
-   */
-  const newAssignmentMissed = hadNewAssignment && !newAssignmentReachedRecipient;
-  const withdrawalMissed = hadWithdrawal && !withdrawalReachedRecipient;
-
-  return {
-    plan: { event, kind: event as MailKind, recipients: to.list },
-    outcome: newAssignmentMissed || withdrawalMissed ? 'no_recipients' : 'queued',
+  const ctx: ServiceMailAudienceCtx = {
+    channelEmail,
+    internalReplyTo: AUTHOR_REPLY_EVENTS.has(intent.event)
+      ? authorEmail || channelEmail
+      : channelEmail,
+    actor: intent.actor,
   };
+  const configOutcome = !config.mail.enabled
+    ? 'mail_disabled'
+    : !channelEmail
+      ? 'channel_missing'
+      : null;
+  return { intent, ctx, configOutcome };
+}
+
+/** Кому адресовано событие: обязательные цели, по которым и считается исход (§5.10). */
+type RequiredTarget = 'office' | 'service' | 'assignment' | 'withdrawal';
+
+/**
+ * Обязательные цели события. `assigned` в этой таблице нет: у него цели считаются по дельте
+ * намерения — выдали задание, отозвали его, или не случилось ни того ни другого (тогда письма и не
+ * требовалось, §5.10).
+ */
+const TARGETS_BY_EVENT: Partial<Record<ModuleMailEvent, RequiredTarget[]>> = {
+  /**
+   * Сторона подрядчика у «Новой» — изменение решения 3 ADR 0153 (Р3). Там откат в «Новую» ему не
+   * писал: «заявка снова ждёт разбора» адресовано службе. С полным контуром это перестало быть
+   * правдой — `in_work → new` исполнителя не снимает, заявка остаётся за компанией, и молчание
+   * означает, что она собирает выезд по заявке, которую разбирают заново. Второй путь в «Новую»
+   * (возврат отменённой) исполнителя снимает сам, и подрядчика там не окажется по устройству.
+   */
+  service_request_waiting_it: ['office', 'service'],
+  service_request_cancelled: ['office', 'service'],
+  // Переход цикла касается обеих сторон; кто его вызвал, письма о нём не получает (§5.4).
+  service_request_status_changed: ['office', 'service'],
+};
+
+/** Исход каждой цели по отдельности плюс общий: смешанный результат виден целиком (§5.10). */
+export interface ServiceMailResult {
+  outcome: ModuleMailOutcome;
+  targets: ServiceMailTargets;
+  /**
+   * Кому письма поставлены — снимком. Адреса показывает ручка повтора («отправить ещё раз») и
+   * пишет аудит: «кому ушло» иначе восстанавливалось бы только запросом в журнал писем. Ключи и
+   * аудитории нужны разбору: по ключу письмо находится в очереди, аудитория объясняет, каким телом
+   * оно ушло.
+   */
+  recipients: ServiceMailRecipient[];
 }
 
 /**
- * Живые учётки, работающие от лица контрагента, — те, кто читает заявки этой компании в портале.
+ * Ставит письма события внутри уже открытой транзакции заявки (§5.2).
  *
- * Отбор один на все письма модуля намеренно: задание, отзыв задания и отмена адресуются одной и той
- * же стороне, и разойдись эти три списка — подрядчик получал бы назначение, но не отмену, что и
- * случилось до этой правки.
+ * Порядок шагов обязателен и объяснён в §5.10: рубильник спрашивается ПЕРВЫМ и переопределяет уже
+ * вычисленный исход конфигурации — если писать не велено, состояние сервера к делу не относится;
+ * затем «а требовалось ли письмо вообще»; и только потом почта, канал и адресаты.
  *
- * Условие живой учётки: архивная и отключённая — это ящик, за которым никого нет. Роль спрашивается
- * вдобавок к контрагенту, а не вместо него: `users_operator_counterparty_check` (миграция 0023)
- * односторонний — «оператор обязан иметь контрагента», но не наоборот, и у учётки, переведённой на
- * другую роль, привязка остаётся. Такой человек заявок компании уже не видит, и письмо ему — письмо
- * в никуда.
+ * Сторона заявки снимается ДО бизнес-изменения самой ручкой и приезжает параметром: отмена
+ * сбрасывает исполнителя тем же переходом, и строка, перечитанная после него, о подрядчике уже не
+ * помнит — письмо «выезд не требуется» ушло бы одной службе.
  */
-async function liveCounterpartyOperators(
-  counterpartyId: string,
-): Promise<{ id: string; email: string }[]> {
-  return db
-    .select({ id: users.id, email: users.email })
-    .from(users)
-    .where(
-      and(
-        eq(users.counterpartyId, counterpartyId),
-        inArray(users.role, [...COUNTERPARTY_SCOPED_ROLES]),
-        eq(users.isActive, true),
-        isNull(users.deletedAt),
-      ),
-    )
-    .orderBy(users.email);
-}
+export async function queueServiceMailForIntent(
+  tx: Tx,
+  params: {
+    prepared: ServiceMailPreparation;
+    side: ServiceRequestSide;
+    requestId: string;
+    /**
+     * Якорь ключа дедупликации: строка истории статуса у переходов, свой у прочих событий.
+     *
+     * **Двоеточий в якоре быть не должно.** Ключ собран как `событие:якорь:адресат`, и разбор его
+     * полей — не теория: по третьему полю письма отбирают тесты и разбор очереди. Якорь с
+     * двоеточиями («…:rev1:submit») сдвигает адресата на пятое место, и письмо перестаёт находиться
+     * там, где его ищут. Поэтому составной якорь склеивается дефисами.
+     */
+    anchor: string;
+    /** Отличает осознанный повтор кнопкой от дубля (Р70). */
+    idempotencyKey?: string;
+    /** Контекст факта: прежний статус, причина перехода, действие с объёмом работ. */
+    extra?: ServiceLetterExtra;
+  },
+): Promise<ServiceMailResult> {
+  const { intent, ctx } = params.prepared;
+  const targets: ServiceMailTargets = {};
 
-/**
- * Общий ящик организации-подрядчика; пустая строка — адреса нет (ADR 0153, миграция 0241).
- *
- * Ни активность, ни архивность контрагента здесь НЕ спрашиваются, и это осознанно: заявка на него
- * уже ссылается, работу он уже делает, а «архивному подрядчику не пишем» означало бы, что заявку
- * отменили, а тому, кто едет, об этом не сказали. Отбор при НАЗНАЧЕНИИ — другое дело, и он стоит
- * на своём месте: `resolveServiceCounterparty` не даст отдать заявку удалённому или неактивному.
- */
-async function contractorMailbox(counterpartyId: string): Promise<string> {
-  const [row] = await db
-    .select({ email: counterparties.email })
-    .from(counterparties)
-    .where(eq(counterparties.id, counterpartyId));
-  return row?.email ?? '';
-}
-
-/**
- * Адрес из строки отправителя: `«Ремонт оргтехники <repair@example.ru>»` → `repair@example.ru`.
- * Строка без угловых скобок — уже адрес.
- */
-function addressOf(from: string): string {
-  const match = /<([^>]+)>/u.exec(from);
-  return (match?.[1] ?? from).trim();
-}
-
-/**
- * Обратный адрес по режиму строки (Р68). Откат при пустом адресе: `author`/`actor` → запасной
- * адрес этой же строки → общий адрес портала (пустая строка означает именно его).
- */
-function replyToOf(
-  mode: ReplyToMode,
-  fallback: string,
-  people: { author: string; actor: string },
-): string {
-  switch (mode) {
-    case 'fixed':
-      return fallback;
-    case 'author':
-      return people.author || fallback;
-    case 'actor':
-      return people.actor || fallback;
-    case 'portal':
-      return '';
+  if (!(await isServiceMailEventEnabled(tx, intent.event))) {
+    return { outcome: 'event_off', targets, recipients: [] };
   }
+
+  const required = requiredTargetsOf(intent, params.side);
+  if (required.length === 0) return { outcome: 'not_needed', targets, recipients: [] };
+
+  if (params.prepared.configOutcome) {
+    return { outcome: params.prepared.configOutcome, targets, recipients: [] };
+  }
+
+  const candidates = await candidatesOf(tx, intent, params.side, ctx);
+  const recipients = collectServiceMailRecipients(candidates, ctx.actor);
+
+  /**
+   * Данные письма — своей же строкой в той же транзакции. Отказать по данным это чтение не может:
+   * заявки нет только если нет и транзакции. Ошибка **сборки тела** ловится вызывающим и даёт
+   * мягкий исход `mail_failed` — заявка есть, письма нет.
+   */
+  if (recipients.length > 0) {
+    const data = await loadServiceLetterData(tx, params.requestId);
+    /**
+     * Ошибка **сборки тела** — обычное исключение приложения: оно ловится до следующей SQL-команды
+     * и даёт мягкий исход `mail_failed` (заявка есть, письма нет). Отказ же самой базы — чтения
+     * адресатов или вставки строки очереди — сюда не попадает и летит наружу, откатывая всё:
+     * прятать потерю атомарного outbox под мягким исходом нельзя (§5.9).
+     */
+    /**
+     * Тела собираются ТОЛЬКО тех аудиторий, которые есть среди адресатов, а не все четыре разом.
+     * Разница не в экономии: письмо о назначении без назначенных — законный случай (компанию сняли,
+     * поимённых нет, уходит один отзыв), а тело `internal` на нём обязано падать — исполнителей
+     * действительно нет. Рендери мы всё подряд, этот отзыв отвечал бы `mail_failed` и не уходил
+     * бы вовсе.
+     */
+    let letters: Partial<ServiceLetters>;
+    try {
+      letters = renderServiceLettersFor(
+        intent.event,
+        data,
+        new Set(recipients.map((r) => r.audience)),
+        params.extra,
+      );
+    } catch (e) {
+      logServiceMailFailure(params.requestId, e);
+      return { outcome: 'mail_failed', targets, recipients: [] };
+    }
+    for (const recipient of recipients) {
+      await queuePreparedMail(
+        {
+          kind: intent.event as MailKind,
+          dedupeKey: `${intent.event}:${params.anchor}:${recipient.key}${
+            params.idempotencyKey ? `:${params.idempotencyKey}` : ''
+          }`,
+          to: recipient.email,
+          account: SERVICE_MAIL_ACCOUNT,
+          replyTo: recipient.replyTo,
+          subject: letters[recipient.audience]!.subject,
+          text: letters[recipient.audience]!.text,
+          html: letters[recipient.audience]!.html,
+          entityType: 'serviceRequest',
+          entityId: params.requestId,
+        },
+        { tx },
+      );
+    }
+  }
+
+  return { outcome: outcomeOf(required, recipients, targets), targets, recipients };
+}
+
+/**
+ * Что это письмо обязано доставить. Пустой список означает «письма не требовалось» — исход
+ * `not_needed`, по которому портал молчит: правка состава, никого не назначившая, не повод звать
+ * заводить ящик (ADR 0153, §4а).
+ */
+function requiredTargetsOf(intent: ServiceMailIntent, side: ServiceRequestSide): RequiredTarget[] {
+  if (intent.event === 'service_request_estimate') {
+    /**
+     * Направление письма у объёма работ зависит от действия, а не от события: предъявление адресуют
+     * тому, кто отвечает (служба), а решение и возврат в правку — тому, кто работал (сервис).
+     * Одна цель на оба случая означала бы, что исполнитель читает собственное предъявление, а
+     * служба — собственный отказ.
+     */
+    if (intent.estimate?.action === 'submit') return ['office'];
+    return side.serviceCounterpartyId !== null || side.executorUserIds.length > 0
+      ? ['service']
+      : [];
+  }
+  if (intent.event === 'service_request_assigned') {
+    const a = intent.assignment;
+    if (!a) return [];
+    const list: RequiredTarget[] = [];
+    if (a.userIds.length > 0 || a.serviceCounterpartyId !== null) list.push('assignment');
+    if (a.previousServiceCounterpartyId) list.push('withdrawal');
+    return list;
+  }
+  const declared = TARGETS_BY_EVENT[intent.event] ?? [];
+  // Сторона подрядчика — цель только там, где заявка за ним: у нераспределённой её нет вовсе, и
+  // требовать доставки некому.
+  return declared.filter((t) => t !== 'service' || side.serviceCounterpartyId !== null);
+}
+
+/** Кандидаты в адресаты по событию: сторонами, а не перечнем ящиков (§5.2). */
+async function candidatesOf(
+  tx: Tx,
+  intent: ServiceMailIntent,
+  side: ServiceRequestSide,
+  ctx: ServiceMailAudienceCtx,
+): Promise<ServiceMailRecipient[]> {
+  const list: ServiceMailRecipient[] = [];
+
+  if (intent.event === 'service_request_assigned') {
+    const a = intent.assignment;
+    /**
+     * Ящика канала здесь нет намеренно: назначение сделала служба, и второе письмо об этом ей ни о
+     * чём не сообщает. Впиши его сюда — и задание исполнителю подменилось бы уведомлением службе.
+     */
+    if (a) {
+      list.push(...(await namedRecipients(tx, a.userIds, ctx)));
+      if (a.serviceCounterpartyId) {
+        list.push(
+          ...(await counterpartySideRecipients(tx, a.serviceCounterpartyId, 'assigned', ctx)),
+        );
+      }
+      if (a.previousServiceCounterpartyId) {
+        list.push(
+          ...(await counterpartySideRecipients(
+            tx,
+            a.previousServiceCounterpartyId,
+            'withdrawn',
+            ctx,
+          )),
+        );
+      }
+    }
+  } else if (intent.event === 'service_request_estimate') {
+    for (const target of requiredTargetsOf(intent, side)) {
+      if (target === 'office') list.push(...(await sideRecipients(tx, side, 'office', ctx)));
+      if (target === 'service') list.push(...(await sideRecipients(tx, side, 'service', ctx)));
+    }
+  } else {
+    for (const target of TARGETS_BY_EVENT[intent.event] ?? []) {
+      if (target === 'office') list.push(...(await sideRecipients(tx, side, 'office', ctx)));
+      if (target === 'service' && side.serviceCounterpartyId !== null) {
+        list.push(...(await sideRecipients(tx, side, 'service', ctx)));
+      }
+    }
+  }
+
+  // Копии — последними: первый источник побеждает, и доверенное тело не подменяется наблюдательским.
+  list.push(...(await copyRecipients(tx, intent.event, ctx)));
+  return list;
+}
+
+/**
+ * Общий исход по обязательным целям (§5.10). Копия на него не влияет: она наблюдатель, и её письмо
+ * не отменяет того, что задание никуда не ушло.
+ *
+ * `no_recipients` побеждает частичный успех намеренно: письмо в ящик службы правда про службу и
+ * ложь про того, кто собрался выезжать (ADR 0153, §4а). Кто именно остался без письма, видно в
+ * `targets`.
+ */
+function outcomeOf(
+  required: RequiredTarget[],
+  recipients: ServiceMailRecipient[],
+  targets: ServiceMailTargets,
+): ModuleMailOutcome {
+  const reached: Record<RequiredTarget, boolean> = {
+    office: recipients.some((r) => r.source === 'channel'),
+    service: recipients.some((r) => r.source === 'contractor' || r.source === 'internal_user'),
+    assignment: recipients.some((r) => r.source === 'contractor' || r.source === 'internal_user'),
+    withdrawal: recipients.some((r) => r.source === 'contractor_withdrawn'),
+  };
+  let outcome: ModuleMailOutcome = 'queued';
+  for (const target of required) {
+    const ok = reached[target];
+    if (target === 'office') targets.office = ok ? 'queued' : 'no_recipients';
+    else targets.service = ok ? 'queued' : 'no_recipients';
+    if (!ok) outcome = 'no_recipients';
+  }
+  if (recipients.some((r) => r.source === 'copy')) targets.copies = 'queued';
+  return outcome;
 }
 
 /** Что письмо рассказывает о заявке. Собирается одним запросом по её же строке. */
@@ -589,6 +513,8 @@ export interface ServiceLetterData {
   executorNames: string;
   /** Сервисная компания, если заявка назначена ей; `null` — своими силами. */
   serviceName: string | null;
+  /** Предъявленная сумма объёма работ; `null` — не предъявляли. Копии не показывается (§5.6). */
+  estimatedTotalAmount: string | null;
 }
 
 /** Транзакция drizzle: письмо ставится вместе с тем, ради чего оно отправляется. */
@@ -656,6 +582,7 @@ export async function loadServiceLetterData(tx: Tx, requestId: string): Promise<
     authorName: row.authorName,
     executorNames: row.executorNames,
     serviceName: row.serviceName,
+    estimatedTotalAmount: row.r.estimatedTotalAmount,
   };
 }
 
@@ -676,6 +603,127 @@ function assigneesOf(data: ServiceLetterData): string {
 }
 
 /**
+ * Контекст факта: то, чего в строке заявки уже нет к моменту письма.
+ *
+ * Прежний статус после перехода не прочитать ниоткуда, кроме истории, а письмо о переходе без «было»
+ * отвечает на половину вопроса: «Отложена» без «из работы» читается как заведение отложенной
+ * заявки. С объёмом работ то же: строка помнит текущую ревизию, но не то, что с ней сейчас сделали.
+ */
+export interface ServiceLetterExtra {
+  fromStatus?: ServiceRequestStatus | null;
+  comment?: string;
+  estimate?: { revision: number; action: 'submit' | 'approved' | 'reopened' };
+}
+
+/** Что произошло с объёмом работ — словами, которыми это называют в портале. */
+const ESTIMATE_ACTION_LABELS: Record<'submit' | 'approved' | 'reopened', string> = {
+  submit: 'предъявлен',
+  approved: 'согласован',
+  reopened: 'возвращён в правку',
+};
+
+/**
+ * Сумма письмом: рубли с копейками, как в карточке. `numeric` приезжает строкой, и печатать его
+ * как есть («14300.00») в письме нельзя — это цена, её читает человек.
+ */
+function formatEstimateAmount(amount: string): string {
+  const value = Number(amount);
+  return Number.isFinite(value)
+    ? `${value.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`
+    : amount;
+}
+
+/**
+ * Что аудитории **разрешено видеть в теле** (§5.6, ADR 0159, решение 7).
+ *
+ * Карта, а не россыпь `if` по телу письма: состав полей — это правило доступа, и оно обязано
+ * читаться одним куском. Закрыта `satisfies Record<ServiceMailAudience, …>` — новая аудитория не
+ * проедет молча, ей придётся ответить на каждый вопрос.
+ *
+ * **Копия урезана намеренно.** `module_mail_recipients` хранит произвольный email, а не субъекта с
+ * проверяемым правом: раскрывать ему описание поломки, телефон ответственного, состав документов и
+ * (со следующими событиями) суммы объёма работ не на основании чего. Копии остаётся то, ради чего
+ * её заводят, — «по этой заявке произошло вот это»: номер, статус, событие, срочность и обозначение
+ * техники. Понадобится полное тело — настройка должна ссылаться на живую учётку с
+ * `serviceRequests.finance`, а не на строку с адресом.
+ *
+ * Ссылка в портал у копии снята по той же причине: произвольный адрес не доказывает доступа, и
+ * приглашение «откройте заявку» ведёт такого читателя на форму входа.
+ */
+interface ServiceLetterFields {
+  /** Кого назначили — состав исполнителей. */
+  assignees: boolean;
+  /** Где стоит аппарат: площадка и место установки. */
+  place: boolean;
+  department: boolean;
+  /** Ответственный и его телефон. */
+  contact: boolean;
+  author: boolean;
+  /** Число вложений в заявке. */
+  attachments: boolean;
+  /** Текст «Описание» — то, что написал заявитель. */
+  description: boolean;
+  /** Ссылка «Открыть заявку в портале». */
+  portalLink: boolean;
+  /**
+   * Деньги: предъявленная сумма объёма работ. У копии запрещены отдельным полем, а не заодно с
+   * описанием: адрес из настройки — не субъект с правом `serviceRequests.finance`, и раскрывать
+   * ему цену ремонта не на основании чего.
+   */
+  finance: boolean;
+}
+
+export const SERVICE_MAIL_AUDIENCE_FIELDS = {
+  internal: {
+    finance: true,
+    assignees: true,
+    place: true,
+    department: true,
+    contact: true,
+    author: true,
+    attachments: true,
+    description: true,
+    portalLink: true,
+  },
+  contractor: {
+    finance: true,
+    assignees: true,
+    place: true,
+    department: true,
+    contact: true,
+    author: true,
+    attachments: true,
+    description: true,
+    // Учётки у подрядчика может не быть вовсе, и ссылка привела бы его на форму входа.
+    portalLink: false,
+  },
+  contractor_withdrawn: {
+    finance: true,
+    // Новый состав отзыв не раскрывает: у прежней компании заявку забрали, и кто её ведёт теперь —
+    // уже чужая работа.
+    assignees: false,
+    place: true,
+    department: true,
+    contact: true,
+    author: true,
+    attachments: true,
+    description: true,
+    portalLink: false,
+  },
+  copy: {
+    finance: false,
+    assignees: false,
+    place: false,
+    department: false,
+    contact: false,
+    author: false,
+    attachments: false,
+    description: false,
+    portalLink: false,
+  },
+} satisfies Record<ServiceMailAudience, ServiceLetterFields>;
+
+/**
  * Тело письма — самодостаточное: у службы учётки в портале может не быть вовсе, и ссылка ей ничего
  * не откроет. Вложения не прикладываются (контур их не носит), но их число названо — иначе о
  * фотографиях поломки никто не узнает.
@@ -688,6 +736,7 @@ export function renderServiceLetter(
   event: ModuleMailEvent,
   data: ServiceLetterData,
   audience: ServiceMailAudience = 'internal',
+  extra?: ServiceLetterExtra,
 ): { subject: string; text: string; html: string } {
   const number = formatServiceRequestNumber(data.num);
   const urgent = data.isUrgent ? 'СРОЧНО · ' : '';
@@ -711,9 +760,27 @@ export function renderServiceLetter(
     );
   }
 
+  const fields = SERVICE_MAIL_AUDIENCE_FIELDS[audience];
+
   const lines = [
-    `Статус: ${serviceRequestStatusLabels[data.status]}`,
-    ...(assignment && !withdrawn ? [`Назначены: ${assigneesOf(data)}`] : []),
+    extra?.fromStatus && extra.fromStatus !== data.status
+      ? `Было: «${serviceRequestStatusLabels[extra.fromStatus]}» → стало «${serviceRequestStatusLabels[data.status]}»`
+      : `Статус: ${serviceRequestStatusLabels[data.status]}`,
+    // Причина перехода — то, ради чего письмо и читают: у возврата на доработку и заморозки она
+    // обязательна по схеме, и без неё адресат узнает факт, но не узнает, что делать.
+    ...(extra?.comment ? [`Причина: ${extra.comment}`] : []),
+    // Объём работ: что именно с ним произошло и на какую сумму. Сумма — только тем, кому она
+    // разрешена картой аудиторий: копия видит факт, но не цену.
+    ...(extra?.estimate
+      ? [
+          `Объём работ: ${ESTIMATE_ACTION_LABELS[extra.estimate.action]}, ревизия ${extra.estimate.revision}${
+            fields.finance && data.estimatedTotalAmount
+              ? `, ${formatEstimateAmount(data.estimatedTotalAmount)}`
+              : ''
+          }`,
+        ]
+      : []),
+    ...(assignment && !withdrawn && fields.assignees ? [`Назначены: ${assigneesOf(data)}`] : []),
     /**
      * Предмет заявки. У заявки без аппарата (Р8) строка не исчезает, а говорит это словами: письмо
      * читают в сервисной компании, у которой портала может не быть вовсе, и пропавшая строка была
@@ -725,22 +792,22 @@ export function renderServiceLetter(
      * места нет ни в каком виде, и строка «Где стоит: —» отвечала бы на вопрос, которого никто не
      * задавал. Откуда заявка, читается строкой «Отдел» ниже.
      */
-    ...(data.objectCode !== null || data.objectName !== null
+    ...(fields.place && (data.objectCode !== null || data.objectName !== null)
       ? [
           `Где стоит: ${data.objectCode ?? ''} — ${data.objectName ?? ''}${
             data.equipmentLocation ? `, ${data.equipmentLocation}` : ''
           }`,
         ]
       : []),
-    ...(data.departmentName ? [`Отдел: ${data.departmentName}`] : []),
-    ...(data.responsibleName || data.responsiblePhone
+    ...(fields.department && data.departmentName ? [`Отдел: ${data.departmentName}`] : []),
+    ...(fields.contact && (data.responsibleName || data.responsiblePhone)
       ? [`Контакт: ${[data.responsibleName, data.responsiblePhone].filter(Boolean).join(', ')}`]
       : []),
-    ...(data.authorName ? [`Заявку завёл: ${data.authorName}`] : []),
-    ...(data.attachments > 0
+    ...(fields.author && data.authorName ? [`Заявку завёл: ${data.authorName}`] : []),
+    ...(fields.attachments && data.attachments > 0
       ? [
           // «См. в портале» — только тем, у кого портал есть. Копия читает его наравне со службой.
-          audience === 'internal' || audience === 'copy'
+          audience === 'internal'
             ? `Вложений в заявке: ${data.attachments} (см. в портале)`
             : `Вложений в заявке: ${data.attachments} (запросите их ответом на письмо)`,
         ]
@@ -758,13 +825,20 @@ export function renderServiceLetter(
       { kind: 'lines' as const, lines },
       // Заголовок блока совпадает с подписью поля в портале (Р2, просьба 7): письмо и карточка
       // называют одно и то же одинаково, а на заявке про расходники «Что случилось» было мимо.
-      { kind: 'heading' as const, text: 'Описание' },
-      { kind: 'paragraph' as const, text: data.description },
-      ...(audience === 'internal' || audience === 'copy'
+      ...(fields.description
+        ? [
+            { kind: 'heading' as const, text: 'Описание' },
+            { kind: 'paragraph' as const, text: data.description },
+          ]
+        : []),
+      ...(fields.portalLink
         ? [
             {
               kind: 'link' as const,
-              href: `${config.publicOrigin}/office-equipment?tab=requests&id=${data.requestId}`,
+              // `open`, а не `id`: карточку открывает именно этот параметр
+              // (`shared/lib/useOpenedRecord.ts`), и письмо с `id` приводило человека на список,
+              // где заявку искали глазами (§5.7).
+              href: `${config.publicOrigin}/office-equipment?tab=requests&open=${data.requestId}`,
               label: 'Открыть заявку в портале',
             },
           ]
@@ -790,8 +864,8 @@ export function renderServiceLetter(
          */
         text:
           audience === 'copy'
-            ? 'Это копия письма по заявке. Ссылка работает у тех, у кого есть доступ в портал; ' +
-              'ответ уйдёт по адресу, заданному в настройке рассылки.'
+            ? 'Это копия письма по заявке — без подробностей: их читают в портале. Ответ на это ' +
+              'письмо уйдёт в службу оргтехники.'
             : withdrawn
               ? 'Заявка больше не назначена вашей компании — выезд не требуется. Ответ на это ' +
                 'письмо уйдёт в службу оргтехники.'
@@ -819,6 +893,24 @@ export type ServiceLetters = Record<
 >;
 
 /**
+ * Тела письма для перечисленных аудиторий. Аудитория, которой в письме нет, не собирается: сборка
+ * тела бывает законно невозможной (см. выше про отзыв без назначенных), и падать из-за письма,
+ * которое никому не адресовано, нельзя.
+ */
+export function renderServiceLettersFor(
+  event: ModuleMailEvent,
+  data: ServiceLetterData,
+  audiences: ReadonlySet<ServiceMailAudience>,
+  extra?: ServiceLetterExtra,
+): Partial<ServiceLetters> {
+  const letters: Partial<ServiceLetters> = {};
+  for (const audience of audiences) {
+    letters[audience] = renderServiceLetter(event, data, audience, extra);
+  }
+  return letters;
+}
+
+/**
  * Все тела письма разом (ADR 0153). Функция чистая и дешёвая, поэтому варианты подрядчика
  * собираются всегда, а не «если есть такой адресат»: условие завело бы ещё одно место, где надо
  * помнить про аудиторию.
@@ -837,47 +929,6 @@ export function renderServiceLetters(
     contractor_withdrawn: renderServiceLetter(event, data, 'contractor_withdrawn'),
     copy: renderServiceLetter(event, data, 'copy'),
   };
-}
-
-/**
- * Ставит письма события — по одному на адресата, каждое со своим ключом дедупликации и **телом по
- * своей аудитории**: подрядчику уходит письмо, приписка которого не врёт про обратный адрес.
- *
- * Внутри транзакции заявки: письмо не может уйти по заявке, которой нет. Ошибка сборки тела ловится
- * вызывающим и даёт мягкий исход `mail_failed`, ошибка вставки — отказ хранилища и откат всего.
- */
-export async function queueServiceMails(
-  tx: Tx,
-  params: {
-    plan: ServiceMailPlan;
-    statusHistoryId: string;
-    requestId: string;
-    /** Уже отрисованные тела: ошибка рендера ловится вызывающим и даёт мягкий исход. */
-    letters: ServiceLetters;
-    /** Отличает повтор кнопкой от письма самого события (Р70). */
-    idempotencyKey?: string;
-  },
-): Promise<void> {
-  const suffix = params.idempotencyKey ? `:${params.idempotencyKey}` : '';
-
-  for (const recipient of params.plan.recipients) {
-    const letter = params.letters[recipient.audience];
-    await queuePreparedMail(
-      {
-        kind: params.plan.kind,
-        dedupeKey: `${params.plan.event}:${params.statusHistoryId}:${recipient.key}${suffix}`,
-        to: recipient.email,
-        account: SERVICE_MAIL_ACCOUNT,
-        replyTo: recipient.replyTo,
-        subject: letter.subject,
-        text: letter.text,
-        html: letter.html,
-        entityType: 'serviceRequest',
-        entityId: params.requestId,
-      },
-      { tx },
-    );
-  }
 }
 
 /**

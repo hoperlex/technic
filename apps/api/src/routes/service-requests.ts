@@ -23,12 +23,12 @@ import {
 import { alias } from 'drizzle-orm/pg-core';
 import {
   acceptServiceRequestSchema,
-  actsForCounterparty,
   approveServiceEstimateSchema,
   attachServiceFilesSchema,
   can,
   canApproveServiceEstimate,
   canAssignServiceExecutors,
+  canAttachServiceFile,
   canDeclineServiceRequest,
   canHoldService,
   canReopenServiceEstimate,
@@ -40,16 +40,17 @@ import {
   declineServiceRequestSchema,
   formatServiceRequestNumber,
   hasModuleWideScope,
-  isCounterpartyScopedRole,
   isDepartmentScopedRole,
   isObjectScopedRole,
   isServiceExecutor,
+  isServiceFileKindVisible,
   isServiceRequestClosed,
   isWarrantyActive,
   isWaitingOn,
   moscowInstantOf,
   officeEquipmentTitle,
   parseServiceRequestNumberSearch,
+  projectServiceRequestForAudience,
   putServiceEstimateSchema,
   putServiceExecutorsSchema,
   reopenServiceEstimateSchema,
@@ -72,6 +73,7 @@ import {
   serviceHoldSchema,
   serviceIsFirstAssignment,
   serviceMailRepeatable,
+  serviceRequestAudienceOf,
   serviceRequestListQuerySchema,
   serviceRequestNeedsClosingDocument,
   serviceRequestStatusLabels,
@@ -100,6 +102,7 @@ import {
   type ServiceExecutorAssignment,
   type ServiceExecutorsRow,
   type ServiceFileKind,
+  type ServiceRequestAudience,
   type ServiceRequestConsumableDto,
   type ServiceRequestKind,
   type ServiceWaitingOn,
@@ -135,26 +138,28 @@ import { grantPermissionsExpr } from '../services/user-scopes';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import {
-  loadServiceLetterData,
-  logServiceMailFailure,
-  planServiceAssignmentMail,
-  planServiceMail,
-  queueServiceMails,
-  renderServiceLetters,
+  prepareServiceMail,
+  queueServiceMailForIntent,
+  readServiceSide,
+  repeatableServiceMailEventOf,
   serviceMailEventOf,
-  type ServiceMailPlan,
+  type ServiceMailPreparation,
+  type ServiceMailResult,
+  type ServiceRequestSide,
 } from '../services/service-request-mail';
 import { requirePrincipal } from '../auth/plugin';
 import { loadPrincipal, type Principal } from '../auth/principal';
 import {
   archiveWhere,
   assertArchiveVisible,
+  assertCan,
   assertServiceRequestDeletable,
   assertServiceRequestEditable,
   assertServiceRequestScope,
+  assertServiceRequestVisible,
   officeEquipmentScopeWhere,
-  serviceExecutorVisibilityWhere,
-  serviceRequestScopeWhere,
+  serviceRequestNamedExecutorWhere,
+  serviceRequestVisibilityWhere,
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
@@ -191,7 +196,7 @@ import {
  * коридор переходов (контракты, `allowedServiceStatusTransitions`).
  *
  * Порядок проверок в каждой изменяющей ручке один и тот же:
- * право (`requirePermission`) → область (`assertServiceRequestScope` и область исполнителя) →
+ * право (`requirePermission`) → область (`assertServiceRequestVisible` — все три оси разом) →
  * коридор (`assertTransition`) → условие самого перехода → транзакция со сверкой `version` →
  * история и аудит после неё. Коды отказов: 403 — право, область и коридор; 422 — состояние
  * записи; 409 — конкуренция (версия, ревизия, дубликат) и живые ссылки; 404 — записи нет.
@@ -208,6 +213,14 @@ const idParams = z.object({ id: z.string().uuid() });
 const fileParams = idParams.extend({ fileId: z.string().uuid() });
 
 const NOT_FOUND = 'Заявка не найдена';
+
+/**
+ * Отказ по файлу — ОДНИМ текстом на два разных случая: связи с заявкой нет вовсе и связь есть, но
+ * вид документа читателю не виден (ADR 0160, решение 6). Константой, а не двумя строками по месту:
+ * разойдись они хоть словом, по ответу читалось бы наличие счёта — то самое, что закрыто в
+ * карточке, только добытое перебором идентификаторов.
+ */
+const FILE_NOT_LINKED = 'Файл не прикреплён к этой заявке';
 
 // ── Числа и даты ──
 
@@ -534,9 +547,21 @@ function toDto(
   executors: ServiceRequestExecutorDto[],
   consumables: ServiceRequestConsumableDto[],
   chat: ServiceRequestChatSummaryDto,
+  audience: ServiceRequestAudience,
 ): ServiceRequestDto {
   const r = row.r;
   return {
+    /**
+     * В каком объёме собран этот ответ (ADR 0160, решение 4). Поле отвечает не про заявку, а про
+     * читателя — как и посчитанные сервером стороны разговора рядом: без него `estimatedTotalAmount:
+     * null` читается двусмысленно, и портал нарисовал бы честный прочерк там, где рисовать не надо
+     * ничего.
+     *
+     * Значение стоит здесь ДО проекции и не зависит от неё: сборка отдаёт полное DTO, а карта полей
+     * подменяет `audience` на `'requester'` только вместе с самими деньгами — то есть ровно тогда,
+     * когда ответ и правда урезан.
+     */
+    audience,
     id: r.id,
     num: r.num,
     displayNumber: formatServiceRequestNumber(r.num),
@@ -724,16 +749,19 @@ function toDto(
 }
 
 /**
- * Заявки страницы со всем, что к ним подшито. Принципал нужен ровно одному блоку — обсуждению
- * (ADR 0141): «моё непрочитанное» и «мои стороны» — свойства пары «человек ↔ заявка», а не самой
- * заявки, и посчитать их без читателя нельзя. Остальные блоки от него не зависят и не должны:
- * состав сметы и вложений у всех один.
+ * Заявки страницы со всем, что к ним подшито, — ПОЛНЫМИ, каким бы ни был читатель. Наружу они не
+ * уходят: чем это отличается от `loadDtos` и почему умолчание именно такое — в комментарии к нему.
+ *
+ * Принципал нужен двум блокам. Обсуждению (ADR 0141): «моё непрочитанное» и «мои стороны» —
+ * свойства пары «человек ↔ заявка», а не самой заявки, и посчитать их без читателя нельзя. И
+ * аудитории (ADR 0160): «в каком объёме собран ответ» — свойство той же пары. Остальные блоки от
+ * читателя не зависят и не должны: состав сметы и вложений у всех один.
  *
  * Сводка чата считается ПОСЛЕ исполнителей, а не рядом с ними: поимённое назначение — один из
  * четырёх фактов разговора (`chatFactsFor`), и второй запрос за теми же строками означал бы два
  * ответа на вопрос «кто назначен» в одном ответе API.
  */
-async function loadDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceRequestDto[]> {
+async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceRequestDto[]> {
   const ids = rows.map((row) => row.r.id);
   const [items, fileMap, executorMap, consumableMap] = await Promise.all([
     itemsByRequest(ids),
@@ -748,51 +776,142 @@ async function loadDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceRequest
       executorIds: (executorMap.get(row.r.id) ?? []).map((e) => e.userId),
     })),
   );
-  return rows.map((row) =>
-    toDto(
+  return rows.map((row) => {
+    const executors = executorMap.get(row.r.id) ?? [];
+    /**
+     * Аудитория считается ПО СТРОКЕ (ADR 0160, решение 1), и признаки назначения собираются из
+     * того, что уже загружено: контрагент стоит в самой заявке, а поимённые исполнители пришли
+     * общей выборкой страницы. Второго похода в базу здесь быть не должно — список отдаёт до
+     * полусотни строк за запрос, и вопрос «назначен ли я» на каждой из них стоил бы столько же
+     * запросов.
+     *
+     * Правило то же, что у `executorAssignment` (одиночная строка): назначенный контрагент —
+     * совпадение с контрагентом субъекта, поимённый исполнитель — его строка в составе. Право
+     * `serviceRequests.execute` здесь не спрашивается намеренно: его спросит `isServiceExecutor`
+     * внутри, а вторая такая проверка была бы вторым ответом на тот же вопрос. Там она стоит ради
+     * лишнего запроса, которого здесь нет.
+     */
+    const audience = serviceRequestAudienceOf(p, {
+      actsForAssignedCounterparty:
+        row.r.serviceCounterpartyId !== null && row.r.serviceCounterpartyId === p.counterpartyId,
+      isNamedExecutor: executors.some((e) => e.userId === p.id),
+    });
+    return toDto(
       row,
       items.get(row.r.id) ?? [],
       fileMap.get(row.r.id) ?? [],
-      executorMap.get(row.r.id) ?? [],
+      executors,
       consumableMap.get(row.r.id) ?? [],
       chatMap.get(row.r.id)!,
-    ),
-  );
+      audience,
+    );
+  });
+}
+
+/**
+ * Ответ в объёме аудитории. Аудиторию не пересчитывает, а читает из самого DTO: она посчитана по
+ * строке при сборке, и второй расчёт по субъекту разошёлся бы с первым на назначенной заявке —
+ * ровно там, где цена расхождения выше всего.
+ */
+function forAudience(dto: ServiceRequestDto): ServiceRequestDto {
+  return projectServiceRequestForAudience(dto, dto.audience);
+}
+
+/**
+ * ПОЛНОЕ DTO — ВНУТРЬ, ПРОЕЦИРОВАННОЕ — НАРУЖУ (ADR 0160, решение 3).
+ *
+ * Функций две, и умолчание выбрано так, чтобы забывчивость стоила дешевле. `loadDtos`/`getDto` —
+ * те имена, которыми зовут сборку все ручки и с которых спишет следующая, — отдают ответ УЖЕ
+ * урезанным: новая ручка проецирует, ничего не зная про аудиторию и не вспоминая о ней. Забытая
+ * проекция была бы утечкой счёта заявителю, и заметить её нечем — ответ выглядит правильным.
+ *
+ * Полное значение спрашивается ОТДЕЛЬНЫМ именем (`loadFullDtos`/`getFullDto`), и зовут его только
+ * там, где DTO не уходит в ответ, а служит сырьём: `diffServiceRequests` и соседи считают историю
+ * ПО DTO, и урезанное DTO заявителя записало бы в журнал, что заявитель ничего не менял. Снимок в
+ * `metadata` единственный — восстановить потерянное «Ведением» уже нечем, и это была бы порча
+ * данных, а не сокрытие.
+ *
+ * Отсюда же правило для ручек, которым нужно и то и другое (правка, срочность, состав, закрытие):
+ * `before`/`after` берутся полными, а в ответ уходит `forAudience(after)` — одной строкой рядом с
+ * `return`, а не «где-нибудь выше», чтобы читалось вместе с ответом.
+ */
+async function loadDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceRequestDto[]> {
+  return (await loadFullDtos(p, rows)).map(forAudience);
+}
+
+async function getFullDto(p: Principal, id: string): Promise<ServiceRequestDto | null> {
+  const [row] = await requestQuery().where(eq(serviceRequests.id, id));
+  if (!row) return null;
+  const [dto] = await loadFullDtos(p, [row]);
+  return dto ?? null;
 }
 
 async function getDto(p: Principal, id: string): Promise<ServiceRequestDto | null> {
-  const [row] = await requestQuery().where(eq(serviceRequests.id, id));
-  if (!row) return null;
-  const [dto] = await loadDtos(p, [row]);
-  return dto ?? null;
+  const dto = await getFullDto(p, id);
+  return dto === null ? null : forAudience(dto);
 }
 
 // ── Область и коридор ──
 
 /**
- * Область сервисной компании по одной записи: она работает только с назначенными ей заявками
- * (ADR 0038). Проверка по строке, а не предикатом выборки: список чужое прячет
- * (`serviceExecutorVisibilityWhere`), а карточка и ход заявки получают запись по id и без неё
- * отдали бы её любому исполнителю, который знает id.
+ * Субъект значится поимённым исполнителем этой заявки — третья ось видимости (Р1) и половина
+ * признака `isNamedExecutor` в `executorAssignment` ниже: один вопрос, один запрос, одно место.
  *
- * Следствие, принятое в ADR 0085 сознательно: «Новую» заявку сервис не видит — исполнителя в ней
- * ещё нет, и заявка ничья.
+ * Право спрашивается ПЕРЕД базой, и это не экономия: строка назначения переживает отзыв набора
+ * (по ней написана переписка и подписаны бумаги, стирать её нельзя), поэтому «назначен» без
+ * действующего `serviceRequests.execute` не значит ничего — ни для видимости, ни для хода (И1).
+ *
+ * Исполнителем передаётся `tx` там, где вопрос задан внутри транзакции: спросить его через общий
+ * пул значило бы занять второе соединение, не отпустив первое, — на исчерпанном пуле это взаимная
+ * блокировка, а не лишний запрос.
  */
-function assertExecutorScope(p: Principal, serviceCounterpartyId: string | null): void {
-  if (!isCounterpartyScopedRole(p.role)) return;
-  if (!actsForCounterparty(p, 'service') || serviceCounterpartyId !== p.counterpartyId) {
-    throw err.forbidden('Сервисная компания работает только с назначенными ей заявками');
-  }
+async function isNamedExecutorHere(
+  p: Principal,
+  requestId: string,
+  exec: typeof db | Tx = db,
+): Promise<boolean> {
+  if (!can(p, 'serviceRequests.execute')) return false;
+  const [named] = await exec
+    .select({ userId: serviceRequestExecutors.userId })
+    .from(serviceRequestExecutors)
+    .where(
+      and(
+        eq(serviceRequestExecutors.requestId, requestId),
+        eq(serviceRequestExecutors.userId, p.id),
+      ),
+    )
+    .limit(1);
+  return !!named;
 }
 
-/** Обе оси области сразу: заказчик заявки (объект и отделы) и назначенный исполнитель. */
-function assertScope(p: Principal, row: RequestRow): void {
-  assertServiceRequestScope(p, {
-    objectId: row.equipmentObjectId,
-    customerDepartmentId: row.customerDepartmentId,
-    equipmentDepartmentId: row.equipmentDepartmentId,
-  });
-  assertExecutorScope(p, row.serviceCounterpartyId);
+/**
+ * Все три оси области сразу — заказчик заявки (объект и отделы), назначенный подрядчик и поимённое
+ * назначение. Тонкая обёртка над общим предикатом (`assertServiceRequestVisible`, Р2): своё правило
+ * здесь разъехалось бы со списком, и карточка отдавала бы то, чего список не показывает.
+ *
+ * Имя оставлено прежним намеренно: им подписана область в карте ручек §2.2 плана, его ищет инвентарь
+ * доступа (`scripts/service-access-inventory.ts`) и статический разбор манифеста, и переименование
+ * стоило бы правки трёх сторожей ради ничего.
+ *
+ * Стала асинхронной вместе с третьей осью: назначение — строка в базе, а не поле принципала. Поход
+ * туда стоит только носителю `serviceRequests.execute` (см. `isNamedExecutorHere`), то есть ни
+ * заказчику, ни наблюдателю, ни оператору подрядчика.
+ */
+async function assertScope(
+  p: Principal,
+  row: RequestRow,
+  exec: typeof db | Tx = db,
+): Promise<void> {
+  await assertServiceRequestVisible(
+    p,
+    {
+      objectId: row.equipmentObjectId,
+      customerDepartmentId: row.customerDepartmentId,
+      equipmentDepartmentId: row.equipmentDepartmentId,
+      serviceCounterpartyId: row.serviceCounterpartyId,
+    },
+    () => isNamedExecutorHere(p, row.id, exec),
+  );
 }
 
 /** Заявка по id — без области и без разбора архива: их спрашивает вызывающий. */
@@ -809,7 +928,7 @@ async function loadRow(id: string): Promise<RequestRow> {
 async function requireEditable(p: Principal, id: string): Promise<RequestRow> {
   const row = await loadRow(id);
   if (row.deletedAt) throw err.notFound(NOT_FOUND);
-  assertScope(p, row);
+  await assertScope(p, row);
   return row;
 }
 
@@ -864,17 +983,13 @@ async function executorAssignment(
 ): Promise<ServiceExecutorAssignment> {
   const actsForAssignedCounterparty =
     row.serviceCounterpartyId !== null && row.serviceCounterpartyId === p.counterpartyId;
-  if (!can(p, 'serviceRequests.execute')) {
-    return { actsForAssignedCounterparty, isNamedExecutor: false };
-  }
-  const [named] = await db
-    .select({ userId: serviceRequestExecutors.userId })
-    .from(serviceRequestExecutors)
-    .where(
-      and(eq(serviceRequestExecutors.requestId, row.id), eq(serviceRequestExecutors.userId, p.id)),
-    )
-    .limit(1);
-  return { actsForAssignedCounterparty, isNamedExecutor: !!named };
+  // Поимённая строка — тем же запросом и тем же условием, что у третьей оси видимости: сторона и
+  // область обязаны отвечать про назначение одинаково, иначе человек видел бы заявку, в которой ему
+  // нечего делать, — или наоборот.
+  return {
+    actsForAssignedCounterparty,
+    isNamedExecutor: await isNamedExecutorHere(p, row.id),
+  };
 }
 
 /**
@@ -933,7 +1048,7 @@ function assertTransition(
  * же порядке: **назначение** — `isServiceExecutor`, единственный ответ модуля на вопрос «чей это
  * ход», — **либо** право сметы, которым «Ведение» и администратор доводят заявку за исполнителя.
  * Второй ветки достаточно и для сервисной компании: до этой строки доходит только назначенная —
- * чужую отсекла область (`assertExecutorScope` внутри `requireEditable`).
+ * чужую отсекла область (`assertScope` внутри `requireEditable`).
  *
  * Строку заявки функция получает готовой: спрашивается она после `requireEditable`, потому что
  * назначение считается по самой заявке, а не по правам субъекта.
@@ -959,7 +1074,7 @@ async function assertExecutorSide(p: Principal, row: RequestRow, action: string)
  * и доводит заявку за любую сторону (§6.2).
  *
  * Второй ветки достаточно и для сервисной компании, если её оператор дошёл сюда через право хода:
- * чужую заявку отсекла область (`assertExecutorScope` внутри `requireEditable`).
+ * чужую заявку отсекла область (`assertScope` внутри `requireEditable`).
  */
 async function assertConsumableIssuer(p: Principal, row: RequestRow): Promise<void> {
   if (isServiceExecutor(p, await executorAssignment(p, row))) return;
@@ -1449,14 +1564,28 @@ async function applyTransition(
     patch?: RequestPatch;
     touchStatusAt?: boolean;
     /**
-     * План письма службе, посчитанный **до** транзакции (Р67): адресаты и обратные адреса ходят в
-     * базу и в конфигурацию, и упавшие внутри они откатили бы саму заявку. `null` — переход письма
-     * не шлёт.
+     * Подготовка письма, сделанная **до** транзакции (Р67): из внешней среды читаются только
+     * почтовые настройки процесса, и упавшие внутри они откатили бы саму заявку. Адресатов она не
+     * несёт — их читает транзакция после блокировки (§5.2). `null` — переход письма не шлёт.
+     *
+     * Параметр ОБЯЗАТЕЛЬНЫЙ, и это единственный способ не потерять новую дугу: пока промолчать было
+     * можно, шесть переходов модуля не ставили писем вовсе — молча, без единого предупреждения.
      */
-    mail?: ServiceMailPlan | null;
+    mail: ServiceMailPreparation | null;
   },
-): Promise<{ mailFailed: boolean; clearedWarranties: ClearedWarranty[] }> {
+): Promise<{
+  mail: ServiceMailResult | null;
+  mailFailed: boolean;
+  clearedWarranties: ClearedWarranty[];
+}> {
   const { row, to, actor } = params;
+  /**
+   * Сторона заявки снимается ДО бизнес-изменения: отмена сбрасывает исполнителя тем же переходом
+   * (`serviceResetOnTransition`, флаг `executor`), и строка, перечитанная после него, о подрядчике
+   * уже не помнит — письмо «выезд не требуется» ушло бы одной службе, то есть тому, кто отмену и
+   * сделал.
+   */
+  const side = await readServiceSide(tx, row.id);
   const reset = serviceResetOnTransition(row.status, to);
   const now = new Date();
   const set: RequestPatch = {};
@@ -1578,8 +1707,9 @@ async function applyTransition(
     .returning({ id: serviceRequests.id });
   if (!updated) throw err.conflict();
 
-  const { mailFailed } = await recordServiceStatusTransition(tx, {
+  const { mail } = await recordServiceStatusTransition(tx, {
     requestId: row.id,
+    side,
     // Переназначение — тот же статус: в истории оно и должно читаться как «Назначен сервис» →
     // «Назначен сервис», иначе строка «сменили исполнителя» пропадёт вовсе.
     fromStatus: row.status,
@@ -1589,7 +1719,27 @@ async function applyTransition(
     comment: params.comment ?? '',
     mail: params.mail,
   });
-  return { mailFailed, clearedWarranties: warrantySnapshot };
+  return { mail, mailFailed: mail?.outcome === 'mail_failed', clearedWarranties: warrantySnapshot };
+}
+
+/**
+ * Подготовка письма перехода: какое событие ставит вход в этот статус и что о нём известно до
+ * транзакции (§5.2). `null` — у перехода письма нет, и ручка обязана сказать это словом, а не
+ * умолчанием: обязательный параметр `mail` у `applyTransition` для того и заведён.
+ */
+async function prepareTransitionMail(
+  status: ServiceRequestStatus,
+  actor: Principal,
+  authorId: string | null,
+): Promise<ServiceMailPreparation | null> {
+  const event = serviceMailEventOf(status);
+  if (!event) return null;
+  return prepareServiceMail({ event, actor: mailActorOf(actor), authorId });
+}
+
+/** Актор события для почты: его источник вычёркивается из обычных адресатов (§5.4). */
+function mailActorOf(p: Principal): { id: string; email: string; counterpartyId: string | null } {
+  return { id: p.id, email: p.email, counterpartyId: p.counterpartyId };
 }
 
 /**
@@ -1613,10 +1763,15 @@ async function recordServiceStatusTransition(
     estimateRevision: number;
     actorId: string;
     comment: string;
-    /** План письма, посчитанный до транзакции; `null` — письма у этого перехода нет. */
-    mail?: ServiceMailPlan | null;
+    /**
+     * Подготовка письма, сделанная до транзакции; `null` — письма у этого перехода нет.
+     * Адресатов она НЕ несёт: их читает сама транзакция после блокировки заявки (§5.2).
+     */
+    mail: ServiceMailPreparation | null;
+    /** Сторона заявки, снятая ДО бизнес-изменения: отмена сбрасывает исполнителя тем же переходом. */
+    side: ServiceRequestSide;
   },
-): Promise<{ statusHistoryId: string; mailFailed: boolean }> {
+): Promise<{ statusHistoryId: string; mail: ServiceMailResult | null }> {
   const [entry] = await tx
     .insert(serviceRequestStatusHistory)
     .values({
@@ -1629,32 +1784,22 @@ async function recordServiceStatusTransition(
     })
     .returning({ id: serviceRequestStatusHistory.id });
 
-  if (!params.mail) return { statusHistoryId: entry!.id, mailFailed: false };
-
-  // Данные письма — своей же строкой в той же транзакции: отказать по данным это чтение не может,
-  // а собирать те же поля отдельно в каждой ручке значило бы завести два расходящихся письма.
-  const data = await loadServiceLetterData(tx, params.requestId);
+  if (!params.mail) return { statusHistoryId: entry!.id, mail: null };
 
   /**
-   * Ошибка **сборки тела** заявку не роняет: письма нет, заявка есть, исход `mail_failed` уходит
-   * ответом и в аудит после commit. Ошибка вставки письма — отказ хранилища, и она летит наружу,
-   * откатывая всё: прятать потерю письма мягким исходом нельзя.
+   * Письмо ставится тем же `tx`, что и строка истории: рубильник, адресаты, их права и копии
+   * читаются после блокировки заявки, а не заранее (§5.2). Якорь ключа дедупликации — строка
+   * истории: по заявке он был бы неверен дважды — повторный цикл «отменили → вернули» не дал бы
+   * второго письма, а второй адресат не получил бы ничего.
    */
-  let letters: ReturnType<typeof renderServiceLetters>;
-  try {
-    letters = renderServiceLetters(params.mail.event, data);
-  } catch (e) {
-    logServiceMailFailure(params.requestId, e);
-    return { statusHistoryId: entry!.id, mailFailed: true };
-  }
-
-  await queueServiceMails(tx, {
-    plan: params.mail,
-    statusHistoryId: entry!.id,
+  const mail = await queueServiceMailForIntent(tx, {
+    prepared: params.mail,
+    side: params.side,
     requestId: params.requestId,
-    letters,
+    anchor: entry!.id,
+    extra: { fromStatus: params.fromStatus, comment: params.comment },
   });
-  return { statusHistoryId: entry!.id, mailFailed: false };
+  return { statusHistoryId: entry!.id, mail };
 }
 
 // ── Смета ──
@@ -1675,35 +1820,15 @@ async function estimateItems(tx: Tx, requestId: string) {
 // ── Файлы (§8.3) ──
 
 /**
- * В каких статусах вид документа принимают. Правило одной строкой: до терминального статуса файлы
- * живут обычной жизнью, после него заявка принимает бумаги и ничего не отдаёт (Р16, Р29).
+ * В каких статусах вид документа принимают — таблица УЕХАЛА В КОНТРАКТЫ
+ * (`SERVICE_FILE_KIND_POLICY`, ADR 0160): там же, где записано, кому вид виден и кто его кладёт.
+ * Три вопроса об одном виде документа стояли в трёх местах — здесь, в проекции карточки и в форме
+ * подшивки портала, — и расходились они молча: форма предлагала вид, на котором приходил отказ, а
+ * подшитый счёт исчезал из карточки того, кто его положил.
  *
- * Объём работ — вид исполнителя. Акт и счёт приходят от «В работе» и позже, гарантийный талон — от
- * предъявления работ: раньше гарантировать нечего.
- *
- * Мёртвых статусов в перечнях больше нет (Р14): «Назначена» и «Смета на согласовании» сняты
- * миграцией `0224`, заявок в них не бывает, и строка под них отвечала бы на вопрос, которого никто
- * не задаёт. Набор заявок при этом не изменился — обе слились с живыми соседями, которые в
- * перечнях уже стояли.
+ * Здесь остаются только КОДЫ ОТВЕТА, потому что вопросы разные: неподходящий статус — ошибка
+ * формы, которую человек исправляет выбором (422), а запрет по аудитории — отсутствие права (403).
  */
-const FILE_KIND_STATUSES: Record<ServiceFileKind, ServiceRequestStatus[]> = {
-  attachment: ['new', 'in_work', 'done'],
-  /**
-   * Объём работ ведут в «В работе» (Р8) — оттуда же прикладывают и файл к нему. Второго статуса у
-   * этого вида больше нет: предъявление статуса не меняет, и заявка с висящей подписью — та же «В
-   * работе». Запрет менять состав под предъявлением держит не перечень видов, а замок Р9.
-   */
-  estimate: ['in_work'],
-  act: ['in_work', 'done', 'accepted', 'cancelled'],
-  invoice: ['in_work', 'done', 'accepted', 'cancelled'],
-  /**
-   * Гарантийный талон принимается и в «В работе» (план §7.3). Без этого планка Н8 замыкает круг:
-   * закрывающим документом талон считается, но подшить его можно было только после «Решена», куда
-   * без закрывающего документа не пускают. Заявка, у которой единственная бумага — талон, не
-   * закрывалась бы вовсе.
-   */
-  warranty_card: ['in_work', 'done', 'accepted', 'cancelled'],
-};
 
 /**
  * «Эффективный» статус заявки (Р110): у отложенной — тот, из которого её отложили. Заморозка
@@ -1719,8 +1844,39 @@ function effectiveStatus(row: {
   return row.heldFromStatus ?? row.status;
 }
 
-/** Статус здесь — «эффективный» (Р110): заморозка видов документов не меняет. */
-function assertFileKindAllowed(status: ServiceRequestStatus, kind: ServiceFileKind): void {
+/**
+ * Кладёт ли аудитория такой вид документа ХОТЬ КОГДА-НИБУДЬ. Вопрос права, и статуса он не знает
+ * намеренно: заявителю, приложившему счёт, «неподходящий статус» пообещал бы, что в другом статусе
+ * получится, — а не получится никогда.
+ *
+ * Перебором статусов, а не своим перечнем: единственная таблица видов живёт в контрактах, и второй
+ * список «что кому можно» рядом с ней разошёлся бы с ней на первом же новом виде документа.
+ */
+function kindAttachableByAudience(
+  kind: ServiceFileKind,
+  audience: ServiceRequestAudience,
+): boolean {
+  return SERVICE_REQUEST_STATUSES.some((status) => canAttachServiceFile(kind, status, audience));
+}
+
+/**
+ * Статус здесь — «эффективный» (Р110): заморозка видов документов не меняет.
+ *
+ * Порядок проверок значим. Сперва аудитория (403): «этот вид не ваш» — окончательный ответ, и
+ * добавлять к нему разбор статуса значило бы рассказывать заявителю про жизнь документа, которого
+ * он не увидит. Затем прежние два 422 — они про форму, их читает тот, кому вид разрешён, и
+ * действующие тесты проверяют оба текста.
+ */
+function assertFileKindAllowed(
+  status: ServiceRequestStatus,
+  kind: ServiceFileKind,
+  audience: ServiceRequestAudience,
+): void {
+  if (!kindAttachableByAudience(kind, audience)) {
+    throw err.forbidden(
+      `«${serviceFileKindLabels[kind]}» к заявке прикладывает исполнитель, а не заявитель`,
+    );
+  }
   if (isServiceRequestClosed(status) && !SERVICE_CLOSING_DOCUMENT_KINDS.includes(kind)) {
     const closing = SERVICE_CLOSING_DOCUMENT_KINDS.map((k) => serviceFileKindLabels[k]).join(', ');
     throw err.unprocessable(
@@ -1728,7 +1884,7 @@ function assertFileKindAllowed(status: ServiceRequestStatus, kind: ServiceFileKi
       { kind: 'Заявка закрыта' },
     );
   }
-  if (!FILE_KIND_STATUSES[kind].includes(status)) {
+  if (!canAttachServiceFile(kind, status, audience)) {
     throw err.unprocessable(
       `«${serviceFileKindLabels[kind]}» не прикладывают к заявке в статусе «${serviceRequestStatusLabels[status]}»`,
       { kind: 'Неподходящий статус' },
@@ -1894,17 +2050,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     ],
   };
 
-  /** Обе оси видимости списка: заказчик заявки и назначенный исполнитель. */
+  /**
+   * Видимость списка — общим предикатом целиком (Р2, Р1): заказчик ∨ назначенный подрядчик ∨
+   * поимённое назначение. Имя оставлено ради сторожей (инвентарь Э0 и статический разбор манифеста
+   * ищут `visibility(`), а содержимое уехало в `lib/access.ts` — там же, где его спрашивают
+   * карточка, файловый страж и журнал расходников.
+   */
   function visibility(p: Principal): SQL | undefined {
-    return and(
-      serviceRequestScopeWhere(
-        p,
-        serviceRequests.equipmentObjectId,
-        serviceRequests.customerDepartmentId,
-        serviceRequests.equipmentDepartmentId,
-      ),
-      serviceExecutorVisibilityWhere(p, serviceRequests.serviceCounterpartyId),
-    );
+    return serviceRequestVisibilityWhere(p);
   }
 
   /**
@@ -2015,21 +2168,6 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     return freeExecutors || freePending ? halves[0] : or(...halves);
   }
 
-  /** Субъект значится поимённым исполнителем этой заявки (Н5). */
-  function namedExecutorHere(p: Principal): SQL {
-    return exists(
-      db
-        .select({ x: sql`1` })
-        .from(serviceRequestExecutors)
-        .where(
-          and(
-            eq(serviceRequestExecutors.requestId, serviceRequests.id),
-            eq(serviceRequestExecutors.userId, p.id),
-          ),
-        ),
-    );
-  }
-
   /**
    * Очередь «Ждут меня» (Р35). `null` — у субъекта шага в цикле нет вовсе (заказчик, наблюдатель):
    * очередь пуста, и стоить обращения к базе она не должна.
@@ -2058,7 +2196,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     if (can(p, 'serviceRequests.execute')) {
       for (const side of ['service', 'approval'] as const) {
         const where = waitingSideWhere(side);
-        const named = where ? and(where, namedExecutorHere(p)) : undefined;
+        const named = where ? and(where, serviceRequestNamedExecutorWhere(p)) : undefined;
         if (named) parts.push(named);
       }
     }
@@ -2137,7 +2275,17 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             notInArray(serviceRequests.status, ['accepted', 'cancelled']),
           )
         : undefined,
-      q.awaitingDocuments
+      /**
+       * Очередь «Ожидаются документы» — инструмент того, кто заявку ведёт, и заявителю она МОЛЧА
+       * ИГНОРИРУЕТСЯ (ADR 0160, решение 9), как игнорируется запрос архива без права. Не 422:
+       * отличие ответов «отказ» и «пустая выдача» само по себе оракул — по нему перебором читается,
+       * подшит ли по заявке счёт, то есть ровно то, что закрыто в карточке.
+       *
+       * Право спрашивается СУБЪЕКТНОЕ, а не аудитория строки: у назначенного внутреннего
+       * исполнителя отдельные строки выдачи законно финансовые, но глобальный фильтр по ним стал бы
+       * оракулом по СОСЕДНИМ — неназначенным строкам его базовой области.
+       */
+      q.awaitingDocuments && can(p, 'serviceRequests.finance')
         ? and(inArray(serviceRequests.status, ['done', 'accepted']), not(hasClosingDocument))
         : undefined,
       q.warrantyClaim ? isNotNull(serviceRequests.warrantyClaimSource) : undefined,
@@ -2549,27 +2697,32 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     // Карточку достают по id, минуя условия списка, поэтому оба ограничения выдачи повторяются
     // здесь: архив — 404, чужая область — 403.
     assertArchiveVisible(p, row.deletedAt, NOT_FOUND);
-    assertScope(p, row);
+    await assertScope(p, row);
     return (await getDto(p, row.id))!;
   });
 
   // ── История: статусы и аудит (ADR 0012) ──
   // Отдельного права нет: это те же события, что в карточке, только по времени, — и границы у неё
-  // те же, что у самой заявки.
+  // те же, что у самой заявки. Объём — тоже: аудитория считается по той же строке, что и в карточке
+  // (ADR 0160, решение 8), иначе цена ремонта читалась бы из ленты у заявки, где её не показывают.
   r.get('/:id/history', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
     const row = await loadRow(req.params.id);
     assertArchiveVisible(p, row.deletedAt, NOT_FOUND);
-    assertScope(p, row);
+    await assertScope(p, row);
     const [author] = await db
       .select({ fullName: users.fullName })
       .from(users)
       .where(eq(users.id, row.createdBy));
-    return loadServiceRequestHistory(row.id, {
-      at: row.createdAt,
-      actorId: row.createdBy,
-      actorName: author?.fullName ?? '',
-    });
+    return loadServiceRequestHistory(
+      row.id,
+      {
+        at: row.createdAt,
+        actorId: row.createdBy,
+        actorName: author?.fullName ?? '',
+      },
+      serviceRequestAudienceOf(p, await executorAssignment(p, row)),
+    );
   });
 
   // ── Обсуждение заявки (ADR 0141) ──
@@ -2588,7 +2741,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const row = await loadRow(req.params.id);
       assertArchiveVisible(p, row.deletedAt, NOT_FOUND);
-      assertScope(p, row);
+      await assertScope(p, row);
       return readChatPage(p, row.id, req.query);
     },
   );
@@ -2612,7 +2765,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const row = await loadRow(req.params.id);
       assertArchiveVisible(p, row.deletedAt, NOT_FOUND);
-      assertScope(p, row);
+      await assertScope(p, row);
       return postChatMessage(p, row.id, req.body);
     },
   );
@@ -2632,7 +2785,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const row = await loadRow(req.params.id);
       assertArchiveVisible(p, row.deletedAt, NOT_FOUND);
-      assertScope(p, row);
+      await assertScope(p, row);
       return markChatRead(p, row.id, req.body.throughSeq);
     },
   );
@@ -2664,7 +2817,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        *
        * Автор будущей заявки — сам заводящий: ответ службы на письмо уйдёт ему.
        */
-      const mailPlan = await planServiceMail('new', { actor: p, authorId: p.id });
+      const mailPlan = await prepareTransitionMail('new', p, p.id);
 
       /**
        * Вид заявки (Н1). «Поля нет» читается как «ремонт» — ровно так, как читает его старый код в
@@ -2778,7 +2931,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           estimateRevision: 0,
           actorId: p.id,
           comment: '',
-          mail: mailPlan.plan,
+          mail: mailPlan,
+          // Заявки до этой транзакции не существовало: стороны у неё нет по построению.
+          side: { serviceCounterpartyId: null, executorUserIds: [] },
         });
         if (body.fileIds.length > 0) {
           await assertFilesAttachable(tx, body.fileIds, p.id);
@@ -2789,10 +2944,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             );
           await markFilesActive(tx, body.fileIds);
         }
-        return { ...request, mailFailed: transition.mailFailed, requester };
+        return { ...request, mail: transition.mail, requester };
       });
 
-      const dto = (await getDto(p, created.id))!;
+      const dto = (await getFullDto(p, created.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.create',
@@ -2815,7 +2970,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       });
       // Неудача сборки письма пишется в аудит только теперь: `writeAudit` ходит мимо транзакции, и
       // запись, сделанная внутри, пережила бы её откат (Р67).
-      if (created.mailFailed) {
+      if (created.mail?.outcome === 'mail_failed') {
         await writeAudit({
           actorUserId: p.id,
           action: 'serviceRequest.mailFailed',
@@ -2825,7 +2980,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         });
       }
       reply.code(201);
-      return { request: dto, mail: created.mailFailed ? 'mail_failed' : mailPlan.outcome };
+      // Наружу — в объёме аудитории: полное `dto` собрано ради заголовка в журнале.
+      return { request: forAudience(dto), mail: created.mail?.outcome ?? 'not_needed' };
     },
   );
 
@@ -3273,7 +3429,33 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           status: 'Заявка отложена',
         });
       }
-      const before = (await getDto(p, row.id))!;
+      /**
+       * СРОЧНОСТЬ — СВОЁ ПРАВО И ЗДЕСЬ, а не только у ручки `PATCH /:id/urgency` (план профилей
+       * оргтехники, Р10; находка Н1): прежде пара приезжала вместе с `serviceRequests.update`, и
+       * заявитель ставил себе «Срочная» правкой собственной «Новой». Дверь была вторая, а право
+       * заводили затем, чтобы закрыть их обе.
+       *
+       * Спрашивается ПО ЭФФЕКТУ, а не по присутствию полей, — тот же приём, что у `customerChanged`
+       * ниже (Р12б), и по той же причине, только острее: форма шлёт пару ВСЕГДА, потому что порознь
+       * её не принимают ни схема, ни `CHECK` базы. Условие «поле прислали» закрыло бы правом
+       * срочности всю форму заявителя — описание, телефон, заказчика, — а не красную метку.
+       *
+       * Склеенное состояние здесь то же, что уходит в патч: `PATCH` присылает половину пары, и
+       * решение об очереди — это разница склейки со строкой, а не присланное значение само по себе.
+       * Снятие срочности отсюда закрыто наравне с постановкой: снять — значит изменить флаг.
+       *
+       * До первой записи: отказ не должен зависеть от того, дошло ли дело до `UPDATE`.
+       */
+      const urgency = {
+        isUrgent: body.isUrgent ?? row.isUrgent,
+        urgencyReason: body.urgencyReason ?? row.urgencyReason,
+      };
+      const urgencyChanged =
+        urgency.isUrgent !== row.isUrgent || urgency.urgencyReason !== row.urgencyReason;
+      if (urgencyChanged) {
+        assertCan(p, 'serviceRequests.urgency', 'Срочность ставит тот, кто ведёт заявки');
+      }
+      const before = (await getFullDto(p, row.id))!;
 
       /**
        * «Поле пришло» и «значение изменилось» — разные события (Р12б). Форма присылает заказчика
@@ -3334,14 +3516,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         if (body.responsibleName !== undefined) patch.responsibleName = body.responsibleName;
         if (body.responsiblePhone !== undefined) patch.responsiblePhone = body.responsiblePhone;
         if (body.comment !== undefined) patch.comment = body.comment;
-        if (body.isUrgent !== undefined || body.urgencyReason !== undefined) {
-          // Пара сверяется по склеенному состоянию: `PATCH` присылает половину, и «поставили
-          // срочность, причину оставили прежней» — законная правка, а «сняли срочность, забыли
-          // причину» — нет. Схема этого не видит, CHECK в базе увидит и ответит ошибкой БД.
-          const urgency = {
-            isUrgent: body.isUrgent ?? row.isUrgent,
-            urgencyReason: body.urgencyReason ?? row.urgencyReason,
-          };
+        if (urgencyChanged) {
+          // Пара сверяется по склеенному состоянию (оно же считалось выше, для права): `PATCH`
+          // присылает половину, и «поставили срочность, причину оставили прежней» — законная
+          // правка, а «сняли срочность, забыли причину» — нет. Схема этого не видит, CHECK в базе
+          // увидит и ответит ошибкой БД.
+          //
+          // Условие здесь то же, что у права, и это не оптимизация записи: пиши мы пару всякий раз,
+          // когда её прислали, право спрашивалось бы по одному правилу, а колонки менялись бы по
+          // другому — и «отказано, но записано» стало бы вопросом порядка строк.
           const issue = urgencyIssue(urgency);
           if (issue) throw err.unprocessable(issue, { urgencyReason: issue });
           patch.isUrgent = urgency.isUrgent;
@@ -3379,7 +3562,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         if (!updated) throw err.conflict();
       });
 
-      const after = (await getDto(p, row.id))!;
+      const after = (await getFullDto(p, row.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.update',
@@ -3388,7 +3571,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         // Перечень изменённых полей — то, ради чего история отличает правку от «заявку трогали».
         metadata: { changes: diffServiceRequests(before, after) },
       });
-      return after;
+      // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
+      return forAudience(after);
     },
   );
 
@@ -3423,7 +3607,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         });
       }
 
-      const before = (await getDto(p, row.id))!;
+      const before = (await getFullDto(p, row.id))!;
       await db.transaction(async (tx) => {
         const [updated] = await tx
           .update(serviceRequests)
@@ -3439,7 +3623,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         if (!updated) throw err.conflict();
       });
 
-      const after = (await getDto(p, row.id))!;
+      const after = (await getFullDto(p, row.id))!;
       // Возраст в статусе срочность не сбрасывает: она не ожидание, и очередь «дольше всех ждут»
       // не должна обнуляться от того, что заявку пометили красным.
       await writeAudit({
@@ -3449,7 +3633,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityId: row.id,
         metadata: { changes: diffServiceRequests(before, after), isUrgent: after.isUrgent },
       });
-      return after;
+      // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
+      return forAudience(after);
     },
   );
 
@@ -3602,14 +3787,22 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        * автору. Считается до транзакции (Р67): адресаты ходят в базу и в конфигурацию, и упавшие
        * внутри откатили бы саму заявку.
        */
-      const mailPlan = await planServiceAssignmentMail(
-        {
+      const mailPlan = await prepareServiceMail({
+        event: 'service_request_assigned',
+        actor: mailActorOf(p),
+        authorId: row.createdBy,
+        /**
+         * Дельта назначения — единственное, чего транзакция сама не узнает: новую компанию она как
+         * раз записывает, прежнюю после записи уже не достать, а поимённые адресаты — это
+         * ДОБАВЛЕННЫЕ, а не весь состав (иначе «вам назначено» ушло бы тому, кто ведёт заявку
+         * неделю).
+         */
+        assignment: {
           userIds: added,
           serviceCounterpartyId: counterpartyChanged ? counterpartyId : null,
           previousServiceCounterpartyId: counterpartyChanged ? row.serviceCounterpartyId : null,
         },
-        { actor: p, authorId: row.createdBy },
-      );
+      });
 
       /**
        * Смета — документ того, кто её составлял, и держится она **только** пока заявка у него.
@@ -3629,7 +3822,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        */
       const to: ServiceRequestStatus = row.status === 'in_work' ? 'new' : row.status;
 
-      const mailFailed = await db.transaction(async (tx) => {
+      const mailResult = await db.transaction(async (tx) => {
         const locked = await lockRequest(tx, row.id);
 
         /**
@@ -3689,9 +3882,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           patch,
           // Возраст обнуляется и при `to === from`: сторона та же, а ждут другого (Р4).
           touchStatusAt: true,
-          mail: mailPlan.plan,
+          mail: mailPlan,
         });
-        return transition.mailFailed;
+        return transition.mail;
       });
       await writeAudit({
         actorUserId: p.id,
@@ -3711,7 +3904,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       });
       // Неудача сборки письма пишется в аудит только теперь: `writeAudit` ходит мимо транзакции, и
       // запись, сделанная внутри, пережила бы её откат (Р67).
-      if (mailFailed) {
+      if (mailResult?.outcome === 'mail_failed') {
         await writeAudit({
           actorUserId: p.id,
           action: 'serviceRequest.mailFailed',
@@ -3722,7 +3915,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       }
       return {
         request: (await getDto(p, row.id))!,
-        mail: mailFailed ? 'mail_failed' : mailPlan.outcome,
+        mail: mailResult?.outcome ?? 'not_needed',
       };
     },
   );
@@ -3964,6 +4157,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           // начинается заново; кто-то остался — работу никому не передавали, и оставшиеся ждут её
           // ровно столько же, сколько ждали.
           touchStatusAt: !left,
+          // Отказ исполнителя правит состав, а не шлёт письмо: снявшийся виден в письме о назначении,
+          // а оставшаяся без исполнителя заявка уходит в «Новую» и письмо ставит уже её событие.
+          mail: null,
         });
         return { left, wholeCounterparty, ownRow };
       });
@@ -4028,12 +4224,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           `${who} не берёт эту заявку в работу — это шаг назначенного исполнителя`,
         );
       }
+      // Приняли в работу — событие переходов (№ 4): службе и стороне заявки, кроме того, кто нажал.
+      const mailPlan = await prepareTransitionMail('in_work', p, row.createdBy);
       await db.transaction(async (tx) => {
         await applyTransition(tx, {
           row,
           to: 'in_work',
           version: req.body.version,
           actor: p,
+          mail: mailPlan,
         });
       });
       return (await getDto(p, row.id))!;
@@ -4065,6 +4264,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       assertSideAllowed(p, 'on_hold');
       const row = await requireEditable(p, req.params.id);
       assertTransition(p, row.status, 'on_hold');
+      // Заморозка — событие переходов: причина обязательна по схеме и уходит строкой письма.
+      const mailPlan = await prepareTransitionMail('on_hold', p, row.createdBy);
       await db.transaction(async (tx) => {
         await applyTransition(tx, {
           row,
@@ -4075,6 +4276,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           // Пара «откуда и почему» пишется целиком: порознь их не примет CHECK в базе, а чистит
           // обе выход из заморозки (Р118). Возраст в статусе обнуляет сам переход (Р108).
           patch: { heldFromStatus: row.status, holdReason: body.reason },
+          mail: mailPlan,
         });
       });
       await writeAudit({
@@ -4120,6 +4322,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           { status: 'Заявка не отложена' },
         );
       }
+      // Возврат к работе — событие переходов; куда именно вернули, знает `serviceResumeTarget`.
+      const mailPlan = await prepareTransitionMail(target, p, row.createdBy);
       await db.transaction(async (tx) => {
         await applyTransition(tx, {
           row,
@@ -4127,6 +4331,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           version: body.version,
           actor: p,
           comment: body.comment,
+          mail: mailPlan,
         });
       });
       await writeAudit({
@@ -4188,7 +4393,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           `Ревизия ${row.estimateRevision} согласована — верните объём работ в правку, прежде чем менять состав`,
         );
       }
-      const before = (await getDto(p, row.id))!;
+      const before = (await getFullDto(p, row.id))!;
 
       await db.transaction(async (tx) => {
         await assertEstimateReplaceable(tx, row.id);
@@ -4215,7 +4420,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         if (!updated) throw err.conflict();
       });
 
-      const after = (await getDto(p, row.id))!;
+      const after = (await getFullDto(p, row.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.estimate_update',
@@ -4225,7 +4430,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         // ролик, — а спорят с сервисом именно о составе.
         metadata: { changes: diffServiceEstimate(before.items, after.items) },
       });
-      return after;
+      // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
+      return forAudience(after);
     },
   );
 
@@ -4280,7 +4486,20 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       }
 
       const revision = row.estimateRevision + 1;
+      /**
+       * Предъявление адресовано тому, кто отвечает по объёму работ, — службе (§3, № 5). Событие
+       * держится не за статус (он не меняется), а за пару «ревизия + действие»: повторное
+       * предъявление той же ревизии письма не удвоит, а новая ревизия — это другие числа, о
+       * которых обязаны узнать заново.
+       */
+      const mailPlan = await prepareServiceMail({
+        event: 'service_request_estimate',
+        actor: mailActorOf(p),
+        authorId: row.createdBy,
+        estimate: { revision, action: 'submit' },
+      });
       const total = await db.transaction(async (tx) => {
+        const side = await readServiceSide(tx, row.id);
         if (body.warrantyRepair) {
           await assertEstimateReplaceable(tx, row.id);
           await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, row.id));
@@ -4318,6 +4537,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           },
           // Ход перешёл к согласующему (`service → approval`) — возраст ожидания начинается заново.
           touchStatusAt: true,
+          // Письмо ставит не переход (статус не меняется), а само предъявление — ниже.
+          mail: null,
+        });
+        await queueServiceMailForIntent(tx, {
+          prepared: mailPlan,
+          side,
+          requestId: row.id,
+          anchor: `${row.id}-rev${revision}-submit`,
+          extra: { estimate: { revision, action: 'submit' } },
         });
         return amount;
       });
@@ -4398,16 +4626,27 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        */
       const mailPlan = body.approved
         ? null
-        : await planServiceMail('cancelled', {
-            actor: p,
+        : await prepareTransitionMail('cancelled', p, row.createdBy);
+      /**
+       * Согласие статуса не меняет, но исполнителю сказать обязано: он ждёт ответа по предъявленным
+       * числам и без письма узнаёт о нём, только заглянув в портал, — а у подрядчика портала может
+       * не быть вовсе. Отказ отдельного письма не получает: он отменяет заявку, и об отмене уже
+       * уходит своё письмо (§3) — второе означало бы, что подрядчик читает про отказ дважды.
+       */
+      const estimateMail = body.approved
+        ? await prepareServiceMail({
+            event: 'service_request_estimate',
+            actor: mailActorOf(p),
             authorId: row.createdBy,
-            serviceCounterpartyId: row.serviceCounterpartyId,
-          });
+            estimate: { revision: row.estimateRevision, action: 'approved' },
+          })
+        : null;
 
-      const mailFailed = await db.transaction(async (tx) => {
+      const mailResult = await db.transaction(async (tx) => {
+        const side = await readServiceSide(tx, row.id);
         const transition = await applyTransition(tx, {
           row,
-          mail: mailPlan?.plan ?? null,
+          mail: mailPlan,
           // «Согласовано» — тот же статус, «не согласовано» — отмена (В1).
           to: body.approved ? row.status : 'cancelled',
           version: body.version,
@@ -4437,13 +4676,19 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           // отказа возраст обнуляет сама смена статуса.
           touchStatusAt: body.approved,
         });
-        return transition.mailFailed;
+        if (estimateMail) {
+          return queueServiceMailForIntent(tx, {
+            prepared: estimateMail,
+            side,
+            requestId: row.id,
+            anchor: `${row.id}-rev${row.estimateRevision}-approved`,
+            extra: { estimate: { revision: row.estimateRevision, action: 'approved' } },
+          });
+        }
+        return transition.mail;
       });
-      const mailOutcome = body.approved
-        ? null
-        : mailFailed
-          ? 'mail_failed'
-          : (mailPlan?.outcome ?? 'mail_failed');
+      // Исход у обеих половин свой: у согласия — письмо исполнителю, у отказа — письмо об отмене.
+      const mailOutcome = mailResult?.outcome ?? (body.approved ? null : 'mail_failed');
 
       await writeAudit({
         actorUserId: p.id,
@@ -4536,7 +4781,18 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           `${who} не возвращает объём работ в правку по этой заявке — это шаг исполнителя`,
         );
       }
+      /**
+       * Возврат в правку адресован тому, кто работал: объём работ вернули, и делать надо ему. Тот
+       * же случай, что у решения по объёму, — письмо стороне сервиса, а не службе.
+       */
+      const mailPlan = await prepareServiceMail({
+        event: 'service_request_estimate',
+        actor: mailActorOf(p),
+        authorId: row.createdBy,
+        estimate: { revision: row.estimateRevision, action: 'reopened' },
+      });
       await db.transaction(async (tx) => {
+        const side = await readServiceSide(tx, row.id);
         await applyTransition(tx, {
           row,
           // Статус тот же, событие своё: «предъявление отозвано» и «согласование снято» обязаны
@@ -4559,6 +4815,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
            * объёма не двигает ничего: до него ждали исполнителя и после него ждут его же.
            */
           touchStatusAt: serviceEstimatePending(row),
+          // Письмо ставит не переход (статус тот же), а сам возврат — ниже.
+          mail: null,
+        });
+        await queueServiceMailForIntent(tx, {
+          prepared: mailPlan,
+          side,
+          requestId: row.id,
+          anchor: `${row.id}-rev${row.estimateRevision}-reopened`,
+          extra: { estimate: { revision: row.estimateRevision, action: 'reopened' } },
         });
       });
       await writeAudit({
@@ -4627,7 +4892,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           { status: isServiceRequestClosed(row.status) ? 'Заявка закрыта' : 'Другой статус' },
         );
       }
-      const before = (await getDto(p, row.id))!;
+      const before = (await getFullDto(p, row.id))!;
 
       await db.transaction(async (tx) => {
         const locked = await lockRequest(tx, row.id);
@@ -4660,7 +4925,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         if (!updated) throw err.conflict();
       });
 
-      const after = (await getDto(p, row.id))!;
+      const after = (await getFullDto(p, row.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.consumables_update',
@@ -4680,7 +4945,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           })),
         },
       });
-      return after;
+      // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
+      return forAudience(after);
     },
   );
 
@@ -4813,6 +5079,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         });
       }
 
+      // «Решена» — событие переходов: заявку предъявили к приёмке, и ждут теперь заказчика.
+      const mailPlan = await prepareTransitionMail('done', p, row.createdBy);
       const outcome = await db.transaction(async (tx) => {
         /**
          * Планка закрывающего документа переехала сюда с приёмки (Н8): за работу внешнего сервиса
@@ -4960,11 +5228,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             finalAdjustmentAmount: adjustment === null ? null : money(adjustment),
             finalAdjustmentReason: adjustment === null ? '' : body.adjustmentReason,
           },
+          mail: mailPlan,
         });
         return { total, works, movements };
       });
 
-      const after = (await getDto(p, row.id))!;
+      const after = (await getFullDto(p, row.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.complete',
@@ -4995,7 +5264,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             })),
         },
       });
-      return after;
+      // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
+      return forAudience(after);
     },
   );
 
@@ -5021,6 +5291,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       assertSideAllowed(p, 'accepted', ['done']);
       const row = await requireEditable(p, req.params.id);
       assertTransition(p, row.status, 'accepted');
+      // Приёмка — событие переходов: исполнителю важно, что работу приняли.
+      const mailPlan = await prepareTransitionMail('accepted', p, row.createdBy);
       await db.transaction(async (tx) => {
         const locked = await lockRequest(tx, row.id);
         await applyTransition(tx, {
@@ -5032,6 +5304,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           actor: p,
           comment: body.comment,
           patch: { acceptedBy: p.id, acceptedAt: new Date(), acceptanceSource: 'human' },
+          mail: mailPlan,
         });
       });
       await writeAudit({
@@ -5057,6 +5330,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       assertSideAllowed(p, 'in_work', ['done']);
       const row = await requireEditable(p, req.params.id);
       assertTransition(p, row.status, 'in_work');
+      // Возврат на доработку — событие переходов: причина в письме, иначе исполнитель узнает факт без дела.
+      const mailPlan = await prepareTransitionMail('in_work', p, row.createdBy);
       const reworked = await db.transaction(async (tx) =>
         applyTransition(tx, {
           row,
@@ -5064,6 +5339,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           version: body.version,
           actor: p,
           comment: body.reason,
+          mail: mailPlan,
         }),
       );
       await writeAudit({
@@ -5114,14 +5390,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        * транзакции; автор заявки остаётся обратным адресом письма службе, а подрядчик отвечает на
        * ящик службы.
        */
-      const mailPlan = await planServiceMail(to, {
-        actor: p,
-        authorId: row.createdBy,
-        // Отмену обязан узнать и тот, кто уже собрался ехать (ADR 0153). Берётся исполнитель
-        // ДО перехода: отмена состава не трогает, но читать его после записи означало бы зависеть
-        // от того, что этого не делает и соседняя дуга.
-        serviceCounterpartyId: row.serviceCounterpartyId,
-      });
+      // Сторону, которой адресована отмена, снимает сама транзакция — до бизнес-изменения (§5.2):
+      // отмена сбрасывает исполнителя тем же переходом, и подрядчик, уже собравшийся ехать, иначе
+      // выпал бы из адресатов ровно того письма, ради которого оно и существует (ADR 0153).
+      const mailPlan = await prepareTransitionMail(to, p, row.createdBy);
 
       const transition = await db.transaction(async (tx) =>
         applyTransition(tx, {
@@ -5130,7 +5402,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           version: body.version,
           actor: p,
           comment: body.reason,
-          mail: mailPlan.plan,
+          mail: mailPlan,
         }),
       );
       await writeAudit({
@@ -5148,18 +5420,18 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             : {}),
         },
       });
-      if (transition.mailFailed) {
+      if (transition.mail?.outcome === 'mail_failed') {
         await writeAudit({
           actorUserId: p.id,
           action: 'serviceRequest.mailFailed',
           entityType: 'serviceRequest',
           entityId: row.id,
-          metadata: { event: mailPlan.plan?.event ?? null },
+          metadata: { event: mailPlan?.intent.event ?? null },
         });
       }
       return {
         request: (await getDto(p, row.id))!,
-        mail: transition.mailFailed ? 'mail_failed' : mailPlan.outcome,
+        mail: transition.mail?.outcome ?? 'not_needed',
       };
     },
   );
@@ -5182,7 +5454,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const row = await requireEditable(p, req.params.id);
 
-      const event = serviceMailEventOf(row.status);
+      const event = repeatableServiceMailEventOf(row.status);
       if (!event) {
         throw err.unprocessable('По этой заявке письма службе не отправлялись', {
           status: 'Нечего повторять',
@@ -5223,49 +5495,38 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         });
       }
 
-      const mailPlan = await planServiceMail(row.status, {
-        actor: p,
-        authorId: row.createdBy,
-        // Повтор кнопкой шлёт то же письмо тем же адресатам, что и само событие: разойдись они,
-        // «отправить ещё раз» означало бы «отправить не всем».
-        serviceCounterpartyId: row.serviceCounterpartyId,
-      });
-      if (!mailPlan.plan) return { mail: mailPlan.outcome, recipients: [] };
-      const plan = mailPlan.plan;
+      // Повтор кнопкой шлёт то же письмо тем же адресатам, что и само событие: разойдись они,
+      // «отправить ещё раз» означало бы «отправить не всем». Поэтому и путь один — тот же
+      // транзакционный сборщик, только с ключом идемпотентности (Р70).
+      const mailPlan = await prepareTransitionMail(row.status, p, row.createdBy);
+      if (!mailPlan) return { mail: 'not_needed', recipients: [] };
 
-      const failed = await db.transaction(async (tx) => {
-        const data = await loadServiceLetterData(tx, row.id);
-        let letters: ReturnType<typeof renderServiceLetters>;
-        try {
-          letters = renderServiceLetters(plan.event, data);
-        } catch (e) {
-          logServiceMailFailure(row.id, e);
-          return true;
-        }
-        await queueServiceMails(tx, {
-          plan,
-          statusHistoryId: entry.id,
+      const result = await db.transaction(async (tx) =>
+        queueServiceMailForIntent(tx, {
+          prepared: mailPlan,
+          side: await readServiceSide(tx, row.id),
           requestId: row.id,
-          letters,
+          anchor: entry.id,
           idempotencyKey: req.body.idempotencyKey,
-        });
-        return false;
-      });
+        }),
+      );
 
       await writeAudit({
         actorUserId: p.id,
         // Именно «поставлено в очередь»: отправляет письмо worker, и «отправлено» здесь было бы
         // обещанием, которого этот момент не даёт.
-        action: failed ? 'serviceRequest.mailFailed' : 'serviceRequest.mailQueued',
+        action:
+          result.outcome === 'queued' ? 'serviceRequest.mailQueued' : 'serviceRequest.mailFailed',
         entityType: 'serviceRequest',
         entityId: row.id,
-        metadata: { event, recipients: plan.recipients.map((r) => r.email) },
+        metadata: {
+          event,
+          outcome: result.outcome,
+          recipients: result.recipients.map((r) => r.email),
+        },
       });
 
-      return {
-        mail: failed ? 'mail_failed' : 'queued',
-        recipients: failed ? [] : plan.recipients.map((r) => r.email),
-      };
+      return { mail: result.outcome, recipients: result.recipients.map((r) => r.email) };
     },
   );
 
@@ -5339,7 +5600,13 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const { fileIds, kind } = req.body;
       const row = await requireEditable(p, req.params.id);
-      assertFileKindAllowed(effectiveStatus(row), kind);
+      // Аудитория — первый слой подшивки (ADR 0160, решение 7), а не замена стражу ручки:
+      // `serviceRequests.files` остаётся на месте, и одной аудитории для действия недостаточно.
+      assertFileKindAllowed(
+        effectiveStatus(row),
+        kind,
+        serviceRequestAudienceOf(p, await executorAssignment(p, row)),
+      );
 
       await db.transaction(async (tx) => {
         const existing = await tx
@@ -5381,6 +5648,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     const { fileId } = req.params;
     const row = await requireEditable(p, req.params.id);
     const manageAny = can(p, 'files.manageAny');
+    const audience = serviceRequestAudienceOf(p, await executorAssignment(p, row));
 
     const detached = await db.transaction(async (tx) => {
       const locked = await lockRequest(tx, row.id);
@@ -5396,7 +5664,28 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         .where(
           and(eq(serviceRequestFiles.requestId, locked.id), eq(serviceRequestFiles.fileId, fileId)),
         );
-      if (!link) throw err.notFound('Файл не прикреплён к этой заявке');
+      if (!link) throw err.notFound(FILE_NOT_LINKED);
+
+      /*
+       * ЗАМОК АУДИТОРИИ (ADR 0160, решение 7) — четвёртый, и стоит он первым, потому что отвечает
+       * раньше всех остальных: заявителю доступен только файл, который он сам подшил и который ему
+       * ВИДЕН по видам.
+       *
+       * Невидимый вид отвечает `404` тем же текстом, что и «связи нет вовсе», — и это не
+       * небрежность, а условие задачи: разведи мы ответы, по коду читалось бы, есть ли у заявки
+       * счёт, перебором идентификаторов и без единого скачивания. Ровно поэтому оба отказа
+       * называются одной константой.
+       *
+       * Своего файла заявитель, наоборот, не лишается: «снимает тот, кто приложил» — прежнее общее
+       * правило ниже, здесь оно повторено без оговорки про `files.manageAny`. Распорядитель чужими
+       * файлами, не видящий денег этой заявки, снимал бы бумагу, которой не видит.
+       */
+      if (audience === 'requester') {
+        if (!isServiceFileKindVisible(link.kind, audience)) throw err.notFound(FILE_NOT_LINKED);
+        if (link.attachedBy !== p.id) {
+          throw err.forbidden('Снять вложение может тот, кто его приложил');
+        }
+      }
 
       // Статус — «эффективный» (Р110), тем же правилом, что и виды документов при подшивке:
       // заморозка бумаги не запирает, и смета отложенной «Диагностики» снимается так же, как
@@ -5507,7 +5796,11 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         // Область — до разбора состояния: живая заявка отдаётся отсюда карточкой целиком (повтор
         // запроса — обычное дело), и проверка после `if (!row.deletedAt)` не мешала бы читать чужую
         // заявку в обход `serviceRequests.read`.
-        assertScope(p, row);
+        //
+        // Третья ось спрашивается ТОЙ ЖЕ транзакцией (`tx`), а не общим пулом: строка уже взята под
+        // блокировку выше, и второе соединение ради одного `EXISTS` заперло бы само себя, стоило
+        // пулу кончиться.
+        await assertScope(p, row, tx);
         if (!row.deletedAt) return false;
         // Место в очереди по единице занимает только заявка С аппаратом. Правило «одна открытая
         // заявка на единицу и вид» (Р21) держат уникальные частичные индексы по

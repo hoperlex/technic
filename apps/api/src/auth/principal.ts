@@ -19,6 +19,63 @@ import {
   type RoleAddon,
 } from '@technic/contracts';
 
+/**
+ * Поля субъекта доступа одной выборкой — **общие** у принципала и у любого другого места, которому
+ * надо спросить право не про себя, а про чужую учётку.
+ *
+ * Вынесены сюда ради `executeSubjectsOf` (`services/service-request-mail-audience.ts`): письмо
+ * события собирается внутри чужой транзакции и обязано ходить в базу её `tx`, а `loadPrincipal`
+ * стоит на горячем пути аутентификации и ходит в глобальный `db`. Переписывать его сигнатуру ради
+ * письма значило бы трогать вход в портал, а **скопировать** выражения — завести вторую формулу
+ * права: почта отвечала бы про доступ по-своему, и разошлись бы они молча, на первой же правке
+ * гейта совместимости внутри `grantPermissionsExpr`.
+ *
+ * Требует, чтобы в запросе участвовали `users` и (левым соединением) `counterparties`: выражения
+ * ссылаются на строку пользователя, а тип контрагента лежит в его карточке.
+ */
+export const accessSubjectColumns = {
+  role: users.role,
+  counterpartyType: counterparties.type,
+  grantCodes: grantCodesExpr,
+  grantPermissions: grantPermissionsExpr,
+};
+
+/** Строка выборки `accessSubjectColumns` — то, из чего собирается субъект доступа. */
+export interface AccessSubjectRow {
+  role: Role | null;
+  counterpartyType: CounterpartyType | null;
+  grantCodes: string[];
+  /** Право хранится текстом: сироту, снятую из словаря выкатом, отсеивает `isPermission` ниже. */
+  grantPermissions: string[];
+}
+
+/**
+ * Субъект доступа из строки выборки — единственное место, где строка базы становится `Permission`
+ * (см. `Principal.grantPermissions`).
+ *
+ * Отдельной функцией, а не четырьмя строками внутри `loadPrincipal`, по той же причине, по которой
+ * рядом стоит `accessSubjectColumns`: субъект собирают двое, и «почти такой же» субъект у второго
+ * означал бы другой ответ `can` на тот же вопрос.
+ */
+export function accessSubjectOf(row: AccessSubjectRow): {
+  role: Role | null;
+  counterpartyType: CounterpartyType | null;
+  grantCodes: string[];
+  grantPermissions: Permission[];
+  addons: RoleAddon[];
+} {
+  return {
+    role: row.role,
+    counterpartyType: row.counterpartyType,
+    grantCodes: row.grantCodes,
+    // Граница «база → код»: право-сирота (снятое из словаря выкатом) дальше не проходит. Отказ
+    // молчаливый намеренно — такой строки нет ни на одном маршруте, доступа она не даёт, и ронять
+    // из-за неё каждый запрос держателя набора нельзя.
+    grantPermissions: row.grantPermissions.filter(isPermission),
+    addons: systemAddonsOf(row.grantCodes),
+  };
+}
+
 /** Принципал — субъект доступа (ADR 0038): права спрашиваются у пары «роль + тип контрагента». */
 export interface Principal extends AccessSubject {
   id: string;
@@ -122,7 +179,6 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
   const [row] = await db
     .select({
       u: users,
-      counterpartyType: counterparties.type,
       // Карточка человека берётся тем же запросом, а не вторым по факту роли: роль до запроса
       // неизвестна, и «сходить ещё раз, если водитель» означало бы второй круг к базе на каждом
       // запросе кабинета — самого частого клиента портала.
@@ -130,8 +186,9 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
       constructionObjectIds: constructionObjectIdsExpr,
       departmentIds: departmentIdsExpr,
       departmentObjectIds: departmentObjectIdsExpr,
-      grantCodes: grantCodesExpr,
-      grantPermissions: grantPermissionsExpr,
+      // Роль, тип контрагента и наборы — общей выборкой (см. `accessSubjectColumns`): их же
+      // спрашивает сборщик адресатов письма, и второй формулы права быть не должно.
+      ...accessSubjectColumns,
     })
     .from(users)
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
@@ -145,7 +202,6 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
   // и телефоны заказчиков ещё две недели, пока жив выданный refresh-токен. Спрашивается на каждом
   // запросе по той же причине, по которой в токене не лежит роль: состояние меняется без нас.
   if (isPersonScopedRole(u.role) && (!u.personId || row.personDeletedAt)) return null;
-  const grantCodes = row.grantCodes;
   return {
     id: u.id,
     email: u.email,
@@ -154,7 +210,6 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     middleName: u.middleName,
     fullName: u.fullName,
     phone: u.phone,
-    role: u.role,
     isActive: u.isActive,
     mustChangePassword: u.mustChangePassword,
     constructionObjectIds: row.constructionObjectIds,
@@ -162,13 +217,7 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     departmentObjectIds: row.departmentObjectIds,
     counterpartyId: u.counterpartyId,
     personId: u.personId,
-    counterpartyType: row.counterpartyType,
-    grantCodes,
-    // Граница «база → код»: право-сирота (снятое из словаря выкатом) дальше не проходит. Отказ
-    // молчаливый намеренно — такой строки нет ни на одном маршруте, доступа она не даёт, и ронять
-    // из-за неё каждый запрос держателя набора нельзя.
-    grantPermissions: row.grantPermissions.filter(isPermission),
-    addons: systemAddonsOf(grantCodes),
+    ...accessSubjectOf(row),
     authVersion: u.authVersion,
   };
 }

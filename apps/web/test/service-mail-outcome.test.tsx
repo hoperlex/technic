@@ -144,12 +144,20 @@ async function openRowActions(): Promise<void> {
 }
 
 describe('заведение заявки: письмо службе', () => {
-  it('выключенная почта названа вслух — заявка заведена, а служба не оповещена', async () => {
+  it('выключенная почта названа вслух — заявка заведена, а адресат не оповещён', async () => {
     renderForm('mail_disabled');
     await submitForm();
 
     expect(await screen.findByText('Заявка заведена')).toBeDefined();
-    expect(await screen.findByText('Отправка писем выключена — служба не оповещена')).toBeDefined();
+    /*
+     * Подпись говорит про **обязательного адресата**, а не про службу. С полным контуром писем
+     * (план `docs/office-equipment-mail-expansion-plan.md`, § 3) обязательным получателем бывает
+     * сервисная компания или поимённый исполнитель, и «служба не оповещена» под письмом, которого
+     * ждал подрядчик, врало бы: службе-то как раз могли и не писать.
+     */
+    expect(
+      await screen.findByText('Отправка писем выключена — обязательный адресат не оповещён'),
+    ).toBeDefined();
   });
 
   it('очередь — обычный ход: предупреждения нет', async () => {
@@ -158,8 +166,24 @@ describe('заведение заявки: письмо службе', () => {
 
     expect(await screen.findByText('Заявка заведена')).toBeDefined();
     await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
-    // Ни слова про неоповещённую службу: письмо ушло, и предупреждать не о чем.
-    expect(screen.queryByText(/не оповещена/)).toBeNull();
+    // Ни слова про неоповещённого адресата: письмо ушло, и предупреждать не о чем.
+    expect(screen.queryByText(/не оповещ/)).toBeNull();
+  });
+
+  it('выключенное рубильником событие молчит: это настройка, а не беда', async () => {
+    const http = renderForm('event_off');
+    await submitForm();
+
+    expect(await screen.findByText('Заявка заведена')).toBeDefined();
+    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    /*
+     * `event_off` молчит наравне с `queued` и `not_needed` (§5.10 плана расширения почты). Письма
+     * нет не потому, что что-то не настроено, а потому, что событие выключили намеренно — в
+     * админке и заранее. Заводящему заявку тут ни сказать нечего, ни поправить нечем, а красная
+     * строка читалась бы как поломка портала.
+     */
+    expect(screen.queryByText(/Событие выключено/)).toBeNull();
+    expect(screen.queryByText(/не оповещ/)).toBeNull();
   });
 });
 
@@ -179,7 +203,32 @@ describe('отмена заявки: письмо «не выезжайте»', 
 
     expect(await screen.findByText('Заявка отменена')).toBeDefined();
     expect(
-      await screen.findByText('Почтовый канал службы не настроен — служба не оповещена'),
+      await screen.findByText('Почтовый канал не настроен — обязательный адресат не оповещён'),
+    ).toBeDefined();
+  });
+
+  it('отмену некому послать: совет заводит ящик компании, а не отменяет отмену', async () => {
+    renderTab([request()], {
+      'PATCH /service-requests/:id/status': () =>
+        json({ request: request({ status: 'cancelled' }), mail: 'no_recipients' }),
+    });
+    await openRowActions();
+    fireEvent.click(await screen.findByText('Отменить заявку'));
+
+    fireEvent.change(await screen.findByLabelText('Причина отмены'), {
+      target: { value: 'Технику списали' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Отменить заявку' }));
+
+    /*
+     * Отмена адресована и подрядчику: он уже собрался выезжать. Если адреса у него нет ни одного,
+     * отменивший обязан узнать это сразу и позвонить сам — и получить конкретный совет, а не
+     * «письма нет»: ящик компании заводится в справочнике контрагентов.
+     */
+    expect(await screen.findByText('Заявка отменена')).toBeDefined();
+    expect(await screen.findByText(/у обязательного адресата нет ни одного адреса/)).toBeDefined();
+    expect(
+      await screen.findByText(/заведите ящик компании в справочнике контрагентов/),
     ).toBeDefined();
   });
 });
