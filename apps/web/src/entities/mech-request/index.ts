@@ -12,13 +12,14 @@
  */
 export { mechRequestsApi } from './api/mechRequestsApi';
 export { mechLessorKeys, mechRequestKeys } from './api/keys';
-export { mechKindOptionsQuery, mechLessorOptionsQuery } from './api/queries';
+export { mechLessorOptionsQuery } from './api/queries';
 export {
   isDepartmentRequester,
   mechDayLabel,
   mechDaysLeftLabel,
   mechMoney,
   mechMoneySum,
+  mechModelLabel,
   mechRateLabel,
   mechRequesterLabel,
   mechTermLabel,

@@ -129,6 +129,8 @@ vi.mock('../src/auth/principal', () => ({
 // Валидные UUID: схемы проверяются до preHandler, и на кривом id перебор увидел бы 400 вместо 403.
 const RECORD_ID = '33333333-3333-4333-8333-333333333333';
 const OBJECT_ID = '11111111-1111-4111-8111-111111111111';
+/** Модель механизации (ADR 0156): существования строки перебор не требует — он проверяет стража. */
+const MECH_MODEL_ID = '11111111-1111-4111-8111-111111111133';
 const COUNTERPARTY_ID = '22222222-2222-4222-8222-222222222222';
 const PERSON_ID = '44444444-4444-4444-8444-444444444444';
 const DEPARTMENT_ID = '55555555-5555-4555-8555-555555555555';
@@ -703,7 +705,9 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/mech-requests': {
     payload: {
       objectId: OBJECT_ID,
-      kindName: 'Виброплита',
+      // Модель — ссылка на справочник (ADR 0156): свободной строки в теле больше нет, и образец
+      // без неё получал бы 400 от схемы вместо 403 от стража, то есть проверял бы не то.
+      mechModelId: MECH_MODEL_ID,
       plannedFrom: FUTURE_DATE,
       plannedTo: FUTURE_DATE,
       ...CONTACT,

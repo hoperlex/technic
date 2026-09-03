@@ -441,6 +441,46 @@ describe.skipIf(!DB_URL)('справочник моделей механизац
     expect(Number(gone.rows[0]!.n)).toBe(0);
   });
 
+  it('модель, на которую ссылается заявка, не сносится насовсем — и отказ называет заявки', async () => {
+    const created = await inject('POST', '/api/v1/mech-models', ctx.admin.auth, {
+      code: nextCode(),
+      name: `Занятая модель ${RUN}`,
+    });
+    const id = created.json().id as string;
+
+    // Заявка заводится прямым запросом: маршрут заявки — предмет соседних файлов, здесь нужна
+    // только САМА ССЫЛКА, из-за которой справочник и держит строку (ADR 0156, миграция 0251).
+    const scene = await ctx.db.execute<{ object_id: string; user_id: string }>(sql`
+      WITH o AS (
+        INSERT INTO construction_objects (code, name, address)
+        VALUES (${`яя-${CODE}-obj`}, ${`Площадка ссылки ${RUN}`}, 'г. Москва, тестовый проезд, 1')
+        RETURNING id
+      )
+      SELECT o.id AS object_id, u.id AS user_id
+      FROM o, users u WHERE u.id = ${ctx.admin.id}`);
+    const { object_id: objectId, user_id: userId } = scene.rows[0]!;
+    await ctx.db.execute(sql`
+      INSERT INTO mech_requests (
+        object_id, mech_model_id, planned_from, planned_to,
+        responsible_name, responsible_phone, created_by
+      ) VALUES (
+        ${objectId}, ${id}, '2026-09-01', '2026-09-30',
+        'Иванов И.И.', '9990000000', ${userId}
+      )`);
+
+    await inject('PATCH', `/api/v1/mech-models/${id}`, ctx.admin.auth, { isActive: false });
+    const refused = await inject('DELETE', `/api/v1/mech-models/${id}/purge`, ctx.admin.auth);
+    expect(refused.statusCode, refused.body).toBe(409);
+    // Без строки `mech_requests` в карте `directory-purge` человек прочитал бы безликое «на запись
+    // ссылаются другие данные» и не знал бы, где искать. Отказ обязан назвать заявки.
+    expect(refused.json().message).toContain('заявки механизации');
+
+    // Убираем за собой в том же порядке, в каком стоят ссылки: заявка, потом площадка. Саму
+    // модель заберёт `afterAll` по префиксу кода — но только после того, как заявки не станет.
+    await ctx.db.execute(sql`DELETE FROM mech_requests WHERE mech_model_id = ${id}`);
+    await ctx.db.execute(sql`DELETE FROM construction_objects WHERE id = ${objectId}`);
+  }, 60_000);
+
   // ── Обмен файлом (ADR 0073) ──
 
   it('выгруженный файл загружается без единой правки', async () => {

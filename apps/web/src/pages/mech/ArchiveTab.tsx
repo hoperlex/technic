@@ -10,6 +10,7 @@ import {
 import {
   mechDayLabel,
   mechFailureText,
+  mechModelLabel,
   mechRequesterLabel,
   mechRequestKeys,
   mechRequestsApi,
@@ -132,13 +133,13 @@ export function MechArchiveTab() {
     },
     {
       key: 'kindName',
-      title: 'Вид техники',
-      dataIndex: 'kindName',
+      title: 'Модель',
+      dataIndex: 'mechModelName',
       width: 220,
       sorter: true,
       render: (_v: unknown, r: MechRequestDto) => (
         <div style={{ lineHeight: 1.35 }}>
-          <div>{r.kindName}</div>
+          <div>{mechModelLabel(r)}</div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {r.objectName}
           </Typography.Text>
@@ -221,7 +222,7 @@ export function MechArchiveTab() {
   const card: CardConfig<MechRequestDto> = {
     title: (r) => r.displayNumber,
     badge: (r) => <MechStateTag row={r} />,
-    primary: (r) => r.kindName,
+    primary: (r) => mechModelLabel(r),
     lines: [
       (r) => r.objectName,
       (r) => `Заявитель: ${mechRequesterLabel(r)}`,

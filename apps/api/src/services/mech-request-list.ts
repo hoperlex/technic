@@ -2,7 +2,6 @@ import { and, count, eq, gte, inArray, isNotNull, isNull, lte, sql, type SQL } f
 import {
   CLOSED_REQUEST_STATUSES,
   dateKeySpan,
-  mechKindKey,
   type MechRequestHistoryQuery,
   type MechRequestHistorySummaryDto,
   type MechRequestListQuery,
@@ -14,6 +13,7 @@ import {
   constructionObjects,
   counterparties,
   departments,
+  mechModels,
   mechRequests,
   users,
 } from '../db/schema';
@@ -21,11 +21,14 @@ import { archiveWhere, placeObjectVisibilityWhere } from '../lib/access';
 import { searchCondition } from '../lib/pagination';
 import type { Principal } from '../auth/principal';
 
-// Чтение реестра механизации: отбор списка, сводка над ним, журнал закрытых с итогом и подсказка
-// видов (план `docs/mechanization-module-plan.md`, Р5, Р12, Р20, Э3). Все они обязаны считать
-// область и присутствие ОДИНАКОВО — разойдись они, просрочка считалась бы по одному набору строк, а
-// показывалась по другому, а итог журнала отвечал бы не про то, что человек видит в таблице, —
-// поэтому и живут они рядом, а не в пяти обработчиках.
+// Чтение реестра механизации: отбор списка, сводка над ним и журнал закрытых с итогом (план
+// `docs/mechanization-module-plan.md`, Р5, Р12, Р20, Э3). Подсказка ранее введённых видов жила
+// здесь же и снята вместе со свободной строкой (ADR 0156): предмет аренды выбирают из справочника,
+// и вторая ручка «что уже набирали» означала бы, что выбор не строгий.
+//
+// Оставшиеся трое обязаны считать область и присутствие ОДИНАКОВО — разойдись они, просрочка
+// считалась бы по одному набору строк, а показывалась по другому, а итог журнала отвечал бы не про
+// то, что человек видит в таблице, — поэтому и живут они рядом, а не в трёх обработчиках.
 
 /**
  * ДЕЙСТВУЮЩАЯ АРЕНДА одним условием — то же, что `isMechRentalRunning` в контрактах и что частичный
@@ -43,7 +46,7 @@ export function mechScopeWhere(p: Principal): SQL | undefined {
 }
 
 /**
- * Поля отбора, общие списку и журналу (Р20, Э3): площадка, заявитель, вид, арендодатель, номер,
+ * Поля отбора, общие списку и журналу (Р20, Э3): площадка, заявитель, модель, арендодатель, номер,
  * период и поиск. Строку в журнале ищут теми же словами, что и в работающем списке, — разойдись
  * эти два места, одна и та же заявка находилась бы до закрытия и терялась после.
  *
@@ -53,7 +56,14 @@ export function mechScopeWhere(p: Principal): SQL | undefined {
  */
 type MechCommonFilters = Pick<
   MechRequestListQuery,
-  'placeObjectId' | 'requester' | 'kind' | 'lessorId' | 'num' | 'periodFrom' | 'periodTo' | 'search'
+  | 'placeObjectId'
+  | 'requester'
+  | 'mechModelId'
+  | 'lessorId'
+  | 'num'
+  | 'periodFrom'
+  | 'periodTo'
+  | 'search'
 >;
 
 function mechCommonFilters(q: MechCommonFilters): (SQL | undefined)[] {
@@ -67,9 +77,10 @@ function mechCommonFilters(q: MechCommonFilters): (SQL | undefined)[] {
       ? and(eq(mechRequests.objectId, requester.id), isNull(mechRequests.departmentId))
       : undefined,
     requester?.kind === 'department' ? eq(mechRequests.departmentId, requester.id) : undefined,
-    // Вид сравнивается по нормализованному ключу той же формулой, что у генерируемой колонки (Р5):
-    // иначе «Виброплита» и «виброплита» были бы разными позициями фильтра.
-    q.kind ? eq(mechRequests.kindKey, mechKindKey(q.kind)) : undefined,
+    // Модель — ссылкой (ADR 0156). Прежде здесь сравнивался нормализованный ключ написания, и это
+    // была единственная защита от «Виброплиты» рядом с «виброплитой»; со строгим выбором вопрос
+    // снят в корне: сравниваются идентификаторы, а написание одно на строку справочника.
+    q.mechModelId ? eq(mechRequests.mechModelId, q.mechModelId) : undefined,
     q.lessorId ? eq(mechRequests.lessorId, q.lessorId) : undefined,
     q.num ? eq(mechRequests.num, q.num) : undefined,
     // Период — окно вопроса «что стояло на площадке в эти дни», поэтому ПЕРЕСЕЧЕНИЕ сроков, а не
@@ -78,8 +89,12 @@ function mechCommonFilters(q: MechCommonFilters): (SQL | undefined)[] {
     // дат нет вовсе, и отбор по ним потерял бы половину журнала молча.
     q.periodFrom ? gte(mechRequests.plannedTo, q.periodFrom) : undefined,
     q.periodTo ? lte(mechRequests.plannedFrom, q.periodTo) : undefined,
+    // Поиск по наименованию модели — по тому, что человек видит на экране сегодня (справочник
+    // могли переименовать). Написания заявки в перечне больше нет: уборка Э3 сняла колонку, и
+    // заявку без модели по названию техники не найти вовсе — только по номеру, площадке или
+    // комментарию. Это прямая цена решения заказчика, а не пропущенное поле.
     searchCondition(q.search, [
-      mechRequests.kindName,
+      mechModels.name,
       mechRequests.comment,
       mechRequests.responsibleName,
       constructionObjects.name,
@@ -133,7 +148,11 @@ export const mechListSortColumns = {
   // сортирует по выведенному имени — иначе колонка экрана и порядок строк разошлись бы.
   requesterName: sql`coalesce(${departments.name}, ${constructionObjects.name})`,
   objectName: constructionObjects.name,
-  kindName: mechRequests.kindName,
+  // Столбец «Модель»: сортировка по тому, что показано, — по наименованию из справочника. Ключ
+  // столбца остался прежним и после уборки Э3 (`MECH_REQUEST_SORT_FIELDS`): он идентифицирует
+  // столбец экрана, а не колонку базы. Заявка без модели сортируется как пустая — на экране у неё
+  // на этом месте прочерк, и подставлять ей что-то другое значило бы врать о порядке.
+  kindName: mechModels.name,
   plannedFrom: mechRequests.plannedFrom,
   plannedTo: mechRequests.plannedTo,
   status: mechRequests.status,
@@ -220,9 +239,11 @@ export async function loadMechHistorySummary(
       cost: sql<string>`coalesce(sum(${mechRequests.finalCost}), 0)::numeric(20,2)::text`,
     })
     .from(mechRequests)
-    // Площадка присоединяется и здесь: по её наименованию и коду идёт поиск. Внутреннее соединение
-    // строк не размножает — площадка у заявки одна и есть всегда (Р17).
+    // Площадка и модель присоединяются и здесь: по их наименованиям идёт поиск, а итог обязан
+    // считаться по ТОМУ ЖЕ отбору, что и таблица. Ни одно из соединений строк не размножает —
+    // площадка у заявки одна и есть всегда (Р17), модель одна и бывает пустой.
     .innerJoin(constructionObjects, eq(mechRequests.objectId, constructionObjects.id))
+    .leftJoin(mechModels, eq(mechRequests.mechModelId, mechModels.id))
     .where(where);
 
   return {
@@ -260,6 +281,7 @@ async function loadMechHistoryDays(where: SQL | undefined): Promise<number> {
     })
     .from(mechRequests)
     .innerJoin(constructionObjects, eq(mechRequests.objectId, constructionObjects.id))
+    .leftJoin(mechModels, eq(mechRequests.mechModelId, mechModels.id))
     .where(and(where, isNotNull(mechRequests.actualTo)))
     .groupBy(mechRequests.actualFrom, mechRequests.actualTo);
   return spans.reduce(
@@ -304,41 +326,4 @@ export async function loadMechSummary(
     rental: Number(row?.rental ?? 0),
     overdue: Number(row?.overdue ?? 0),
   };
-}
-
-/** Сколько написаний вида предлагать: подсказка, а не справочник — длинный список её обесценивает. */
-const KIND_SUGGESTIONS_LIMIT = 20;
-
-/**
- * Подсказка ранее вводившихся видов (Р5). Строится **по той же области**, что и список заявок, и
- * без сквозных счётчиков: иначе площадка читала бы по подсказке, что арендуют соседние объекты.
- *
- * Порядок — частота внутри собственной области, поэтому наружу идёт список строк, а не набор с
- * числами. Группировка по нормализованному ключу, а показывается последнее написание: «виброплита»
- * и «Виброплита» — одна позиция, и предлагать человеку обе значило бы своими руками плодить тот
- * разброс, ради которого подсказка и заведена.
- *
- * Ввод сужает подсказку вхождением, но сравнивается тоже по ключу — иначе набранное с заглавной не
- * нашло бы собственную позицию.
- */
-export async function loadMechKinds(p: Principal, search: string | undefined): Promise<string[]> {
-  const key = search ? mechKindKey(search) : '';
-  const rows = await db
-    .select({
-      // Ключ группы человеку не показывается — он в нижнем регистре; наружу идёт последнее
-      // введённое написание.
-      kindName: sql<string>`(array_agg(${mechRequests.kindName} ORDER BY ${mechRequests.createdAt} DESC))[1]`,
-    })
-    .from(mechRequests)
-    .where(
-      and(
-        isNull(mechRequests.deletedAt),
-        mechScopeWhere(p),
-        key ? sql`${mechRequests.kindKey} LIKE ${`%${key}%`}` : undefined,
-      ),
-    )
-    .groupBy(mechRequests.kindKey)
-    .orderBy(sql`count(*) DESC`, sql`max(${mechRequests.createdAt}) DESC`)
-    .limit(KIND_SUGGESTIONS_LIMIT);
-  return rows.map((row) => row.kindName);
 }

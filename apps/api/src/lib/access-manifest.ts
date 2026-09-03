@@ -511,6 +511,13 @@ export const ACCESS_MANIFEST = {
   // ── Орг.техника ──
   'GET /api/v1/office-equipment-types': { kind: 'permissions', allOf: ['officeEquipment.read'] },
   'POST /api/v1/office-equipment-types': { kind: 'permissions', allOf: ['officeEquipment.write'] },
+  // Характеристики типа (план `docs/office-equipment-specs-plan.md`, Р4): «спрашивают ли здесь
+  // цветность и какая она бывает». Правом чтения справочника — вопрос про его устройство, а не про
+  // парк, и области у него нет: ответ одинаков для всех, кому справочник открыт.
+  'GET /api/v1/office-equipment-types/:id/specs': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read'],
+  },
   'PATCH /api/v1/office-equipment-types/:id': {
     kind: 'permissions',
     allOf: ['officeEquipment.write'],
@@ -898,10 +905,6 @@ export const ACCESS_MANIFEST = {
   // дальше (Р9). Спроси у него `.status` — и разведение прав перестало бы что-либо значить.
   'GET /api/v1/mech-requests': { kind: 'permissions', allOf: ['mechRequests.read'] },
   'GET /api/v1/mech-requests/summary': { kind: 'permissions', allOf: ['mechRequests.read'] },
-  // Подсказка ранее вводившихся видов строится по той же области, что и список: право у неё то же
-  // самое, а не «справочное» — иначе площадка читала бы по подсказке, что арендуют соседние
-  // объекты.
-  'GET /api/v1/mech-requests/kinds': { kind: 'permissions', allOf: ['mechRequests.read'] },
   // Журнал закрытых аренд и его итог (Э3) — то же право, что у списка: журнал не второй способ
   // читать заявки, а тот же реестр с другого конца, и область у него та же самая. Выгрузка
   // отдельной строкой, но с тем же условием: файл собирается той же выборкой, и спрашивать за него

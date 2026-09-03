@@ -1,15 +1,12 @@
-import { useEffect, useState } from 'react';
-import { Alert, App, AutoComplete, DatePicker, Form, Input } from 'antd';
+import { useEffect } from 'react';
+import { Alert, App, DatePicker, Form, Input } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { mechEditScope, type MechRequestDto } from '@technic/contracts';
-import {
-  mechFailureText,
-  mechKindOptionsQuery,
-  mechRequestKeys,
-  mechRequestsApi,
-} from '@entities/mech-request';
-import { FormModal, useFormBlockers } from '@shared/ui';
+import { mechModelOptionsQuery } from '@entities/mech-model';
+import { mechFailureText, mechRequestKeys, mechRequestsApi } from '@entities/mech-request';
+import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
+import { withSavedOption } from '@shared/lib';
 import { MechRequestAttachments, useMechAttachments } from './MechRequestAttachments';
 import { useMechRequesterFields } from './MechRequesterFields';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
@@ -19,7 +16,7 @@ const DATE = 'YYYY-MM-DD';
 interface Values {
   customer: string;
   placeObjectId?: string;
-  kindName: string;
+  mechModelId: string;
   plannedFrom: Dayjs;
   plannedTo: Dayjs;
   responsibleName: string;
@@ -32,9 +29,9 @@ interface Values {
  *
  * Что из полей правится сейчас, решает **барьер состояния** (`mechEditScope`, Р19), а не статус «на
  * глаз»: у «Новой» правится всё, у взятой в работу — только контакт, комментарий и вложения, у
- * закрытой — комментарий и вложения. Срок, вид, площадка и заявитель после «Новой» неизменяемы для
- * всех, включая администратора: за ними стоит договорённость с арендодателем, и двигать её обязано
- * продление со своей причиной и своим событием истории, а не штатная форма.
+ * закрытой — комментарий и вложения. Срок, модель, площадка и заявитель после «Новой» неизменяемы
+ * для всех, включая администратора: за ними стоит договорённость с арендодателем, и двигать её
+ * обязано продление со своей причиной и своим событием истории, а не штатная форма.
  *
  * Барьер роли (Б2) тем же не заменяется: площадка и отдел правят заявку только в «Новой», и решает
  * это меню действий — форму им попросту не открыть. Здесь остаётся ответ на «что вообще можно
@@ -58,14 +55,21 @@ export function MechRequestForm({
   const customerKey = Form.useWatch('customer', form);
 
   /**
-   * Подсказка ранее вводившихся видов (Р5). Ввод уходит на сервер: перечень строится по области
-   * смотрящего и по частоте внутри неё, и отбор двадцати первых на клиенте отвечал бы на другой
-   * вопрос — «что чаще всего», а не «что похоже на набранное».
+   * Модели справочника (ADR 0156). Справочник маленький и приходит целиком: поиск идёт по уже
+   * приехавшему списку (`optionFilterProp`), а не запросом на каждую букву — сотню позиций сервер
+   * фильтровать не должен.
+   *
+   * К перечню дописывается модель самой заявки (`withSavedOption`): её могли вывести из обращения
+   * уже после заведения, а состав поля — только действующие. Без этого правка заявки показывала бы
+   * в поле сырой идентификатор, а сохранение подставляло бы другую модель.
    */
-  const [kindInput, setKindInput] = useState('');
-  const { data: kindOptions = [] } = useQuery({
-    ...mechKindOptionsQuery(kindInput),
+  const { data: modelOptions = [], isFetching: modelsLoading } = useQuery({
+    ...mechModelOptionsQuery(),
     enabled: open,
+  });
+  const models = withSavedOption(modelOptions, {
+    id: request?.mechModelId,
+    name: request?.mechModelName,
   });
 
   /*
@@ -94,20 +98,20 @@ export function MechRequestForm({
         // Площадка ставится всегда, а показывается только у заявки отдела: у заявки площадки поле
         // не рисуется вовсе, и лишнее значение в форме до тела запроса не доедет.
         placeObjectId: request.objectId,
-        kindName: request.kindName,
+        // Ссылки может не быть у заявки, заведённой до справочника: поле останется пустым, и
+        // сохранение потребует назвать модель — иначе строгий выбор обходился бы правкой.
+        mechModelId: request.mechModelId ?? undefined,
         plannedFrom: dayjs(request.plannedFrom),
         plannedTo: dayjs(request.plannedTo),
         responsibleName: request.responsibleName,
         responsiblePhone: request.responsiblePhone,
         comment: request.comment,
       });
-      setKindInput(request.kindName);
       return;
     }
     // Единственный доступный заявитель подставляется сам: заперто поле его не подставит, а
     // заперто оно как раз тогда, когда вариант один.
     form.setFieldsValue({ customer: soleKey ?? undefined });
-    setKindInput('');
   }, [open, request, form, savedKey, soleKey]);
 
   const mutation = useMutation({
@@ -129,7 +133,7 @@ export function MechRequestForm({
             ? {
                 objectId: pair.objectId,
                 departmentId: pair.departmentId ?? null,
-                kindName: values.kindName.trim(),
+                mechModelId: values.mechModelId,
                 plannedFrom: values.plannedFrom.format(DATE),
                 plannedTo: values.plannedTo.format(DATE),
               }
@@ -143,7 +147,7 @@ export function MechRequestForm({
       return mechRequestsApi.create({
         objectId: pair!.objectId,
         ...(pair!.departmentId ? { departmentId: pair!.departmentId } : {}),
-        kindName: values.kindName.trim(),
+        mechModelId: values.mechModelId,
         plannedFrom: values.plannedFrom.format(DATE),
         plannedTo: values.plannedTo.format(DATE),
         ...contact,
@@ -193,7 +197,7 @@ export function MechRequestForm({
             description={
               lockedContact
                 ? 'Заявка закрыта: правятся комментарий и вложения — акт приходит позже, и подшить его надо.'
-                : 'За сроком, видом и площадкой стоит договорённость с арендодателем. Срок двигает продление, договорённость — действие «Изменить договорённость».'
+                : 'За сроком, моделью и площадкой стоит договорённость с арендодателем. Срок двигает продление, договорённость — действие «Изменить договорённость».'
             }
             style={{ marginBottom: 16 }}
           />
@@ -201,21 +205,21 @@ export function MechRequestForm({
 
         {requester.fields}
 
+        {/* Модель — строго из справочника (ADR 0156): свободной строки у поля больше нет. Нужной
+            позиции в списке не нашлось — её заводит держатель справочников на своей вкладке, и
+            ярлыка «завести прямо отсюда» первым выпуском намеренно нет. */}
         <Form.Item
-          name="kindName"
-          label="Вид техники"
-          extra="Свободная строка: портал подсказывает то, что уже арендовали."
-          rules={[
-            { required: true, message: 'Укажите вид техники' },
-            { whitespace: true, message: 'Укажите вид техники' },
-            { max: 255, message: 'Слишком длинное наименование' },
-          ]}
+          name="mechModelId"
+          label="Модель"
+          rules={[{ required: true, message: 'Выберите модель' }]}
         >
-          <AutoComplete
-            options={kindOptions}
-            onSearch={setKindInput}
+          <AutoSelect
+            showSearch
+            optionFilterProp="label"
+            options={models}
+            loading={modelsLoading}
             disabled={lockedSubject}
-            placeholder="Например: виброплита реверсивная 90 кг"
+            placeholder="Например: виброплита Wacker DPU 3070Н"
           />
         </Form.Item>
 
