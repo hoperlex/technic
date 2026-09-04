@@ -660,11 +660,15 @@ describe.skipIf(!DB_URL)('коррекция назначения задним �
   });
 
   /**
-   * Одностороннее окно `findMachinist` (ADR 0101 п. 15 в редакции Р21): запись, закрытая **после**
-   * недели листа, человека из бланка не убирает; закрытая до неё — убирает. Нижней границы у окна
-   * нет намеренно — `started_on` по умолчанию равен дню заведения карточки.
+   * Специализация машиниста печати его фамилии не решает (ADR 0164): в лист идёт тот, кого назвали
+   * листу, — и уволенный после своей недели, и уволенный до неё. Прежде второй не получал бланка
+   * вовсе (рукой) или получал его с пустой графой ФИО (сверкой), хотя назначить его машинистом
+   * заявке портал позволял.
+   *
+   * Одностороннее окно кадровых записей (ADR 0101 п. 15 в редакции Р21) осталось там, где оно
+   * что-то значит: им читаются табельный номер и должность, а должностью — вид документа.
    */
-  it('машинист, уволенный после своей недели, в лист попадает, а уволенный до неё — нет', async () => {
+  it('машинист печатается в листе и с закрытой до его недели специализацией', async () => {
     const request = await confirm(await backdatedRequest(ctx.linearTypeId));
     const leftAfter = await seedDriver('Уволенный после', ctx.today);
     const leftBefore = await seedDriver('Уволенный до', shiftDateKey(ctx.pastFrom, -1));
@@ -675,18 +679,40 @@ describe.skipIf(!DB_URL)('коррекция назначения задним �
       version: request.version,
     });
     expect(ok.statusCode, ok.body).toBe(200);
-    const sheet = pastSheet(await sheetsOf(request.id))!;
-    expect(sheet.driver_person_id).toBe(leftAfter);
-    // Графа ФИО заполнена: человек нашёлся, а не просто не помешал выписке.
-    expect(sheet.driver_fio).toContain('Коррекцев');
 
-    const refused = await issueOnDemand(request.id, {
+    const also = await issueOnDemand(request.id, {
       vehicleId: ctx.otherVehicleId,
       driverPersonId: leftBefore,
       version: ok.json().version,
     });
+    expect(also.statusCode, also.body).toBe(200);
+
+    // Графа ФИО заполнена у обоих: фамилию печатает карточка человека, а не кадровая запись.
+    const issued = (await sheetsOf(request.id)).filter((s) => s.status === 'issued');
+    for (const personId of [leftAfter, leftBefore]) {
+      const sheet = issued.find((s) => s.driver_person_id === personId);
+      expect(sheet, `лист машиниста ${personId}`).toBeDefined();
+      expect(sheet!.driver_fio).toContain('Коррекцев');
+    }
+  });
+
+  /**
+   * Единственная оставшаяся причина отказа (ADR 0164): карточки в справочнике нет — она удалена, и
+   * выписывать бланк не на кого. Правило стоит в общей точке выпуска, поэтому одинаково отвечает и
+   * ручной выписке, и сверке — прежде сверка на этом месте печатала лист без фамилии машиниста.
+   */
+  it('на удалённую карточку машиниста лист не выписывается', async () => {
+    const request = await confirm(await backdatedRequest(ctx.linearTypeId));
+    const removed = await seedDriver('Удалённый');
+    await ctx.db.execute(sql`UPDATE persons SET deleted_at = now() WHERE id = ${removed}`);
+
+    const refused = await issueOnDemand(request.id, {
+      vehicleId: ctx.vehicleId,
+      driverPersonId: removed,
+      version: request.version,
+    });
     expect(refused.statusCode, refused.body).toBe(422);
-    expect(refused.json().message).toContain('не числится водителем');
+    expect(refused.json().message).toContain('карточка удалена');
   });
 
   /** Пустая коррекция отклоняется (Р31): блок `correction` не должен становиться отмычкой. */
