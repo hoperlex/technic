@@ -666,7 +666,17 @@ async function candidatesOf(
     for (const target of intent.comment?.targets ?? []) {
       if (target === 'office') list.push(...(await sideRecipients(tx, side, 'office', ctx)));
       if (target === 'service' && hasServiceSide(side)) {
-        list.push(...(await sideRecipients(tx, side, 'service', ctx)));
+        /**
+         * Реплика — единственное событие, которое НЕ идёт на общий ящик компании (решение
+         * заказчика 04.09.2026): диспетчерская читает задания и бумаги, а обсуждение ведут люди с
+         * учётками. Цена решения названа честно: у компании без учёток реплика не дойдёт, и исход
+         * скажет `no_recipients`.
+         */
+        list.push(
+          ...(await sideRecipients(tx, side, 'service', ctx, {
+            includeCounterpartyMailbox: false,
+          })),
+        );
       }
     }
     for (const userId of intent.comment?.userIds ?? []) {

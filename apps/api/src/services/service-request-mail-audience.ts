@@ -363,6 +363,16 @@ export async function sideRecipients(
   row: ServiceRequestSide,
   target: ServiceMailTarget,
   ctx: ServiceMailAudienceCtx,
+  /**
+   * Общий ящик компании из карточки — часть стороны `service` у всех событий, КРОМЕ обсуждения
+   * (решение заказчика 04.09.2026). Диспетчерская компании читает задания, отмены и бумаги; лента
+   * реплик — разговор людей, и высыпать её в общий ящик значит превратить его в чат, а заодно
+   * показать переписку тем, кому заявку никто не поручал.
+   *
+   * Следствие названо прямо: у компании без единой учётки в портале реплика не дойдёт вовсе, и
+   * исход честно скажет `no_recipients` — звонить придётся голосом, как и раньше.
+   */
+  opts: { includeCounterpartyMailbox?: boolean } = {},
 ): Promise<ServiceMailRecipient[]> {
   if (target === 'office') {
     if (!ctx.channelEmail) return [];
@@ -419,7 +429,7 @@ export async function sideRecipients(
       counterpartyId: null,
     });
   }
-  if (counterpartyId) {
+  if (counterpartyId && opts.includeCounterpartyMailbox !== false) {
     const mailbox = await counterpartyMailbox(tx, counterpartyId);
     if (mailbox) {
       list.push({
