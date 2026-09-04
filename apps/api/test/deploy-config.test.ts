@@ -128,6 +128,8 @@ const STAND_COMPOSE = 'deploy/docker-compose.stand.yml';
 const WEB_DOCKERFILE = 'deploy/Dockerfile.web';
 /** Сама заглушка — единственная страница портала, которая обязана работать без API. */
 const MAINTENANCE_PAGE = 'deploy/nginx/maintenance.html';
+/** Боевой оркестратор: ранняя ветка `--client-floor` должна видеть общие функции до своего exit. */
+const DEPLOY_AUTO = 'deploy/deploy-auto.sh';
 
 /** Каталог со статусом ВНУТРИ контейнера веба — общая точка compose и `spa.conf`. */
 const MAINTENANCE_DIR = '/etc/nginx/maintenance';
@@ -139,6 +141,25 @@ const PROD_MAINTENANCE_SOURCE = '/etc/technic-portal/maintenance';
 function readRepoFile(relPath: string): string {
   return readFileSync(join(repoRoot, relPath), 'utf8');
 }
+
+describe('deploy-auto: ранний режим пола клиента', () => {
+  it('объявляет health_check до выполнения ветки --client-floor', () => {
+    // Bash исполняет определения функций последовательно. Ветка пола находится до основного
+    // deploy-кода и завершается через exit, поэтому определение ниже неё не существует в момент
+    // вызова: prod.env уже изменён, api пересоздан, а проверка падает с `command not found`.
+    const script = readRepoFile(DEPLOY_AUTO);
+    const healthDefinition = script.indexOf('\nhealth_check() {');
+    const clientFloorBranch = script.indexOf('\nif [ "$DO_CLIENT_FLOOR" -eq 1 ]; then');
+    expect(healthDefinition, `${DEPLOY_AUTO}: определение health_check потеряно`).toBeGreaterThan(
+      0,
+    );
+    expect(clientFloorBranch, `${DEPLOY_AUTO}: ветка --client-floor потеряна`).toBeGreaterThan(0);
+    expect(
+      healthDefinition,
+      `${DEPLOY_AUTO}: health_check объявлен после ранней ветки --client-floor и недоступен ей`,
+    ).toBeLessThan(clientFloorBranch);
+  });
+});
 
 /** Строки без комментариев: закомментированная директива не должна сходить за действующую. */
 function nginxLines(conf: string): string[] {

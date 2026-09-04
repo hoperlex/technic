@@ -717,6 +717,23 @@ sync_vhost() {
 # ---------------------------------------------------------------------------
 # --status: только чтение — ни lock, ни снимков, ни мутаций.
 # ---------------------------------------------------------------------------
+
+# Диагностический health изнутри контейнера: минует infra-nginx/TLS. Объявлен до ранних режимов
+# (`--client-floor` заканчивает скрипт через exit), иначе Bash встретит вызов раньше определения и
+# после уже выполненного пересоздания api ответит `health_check: command not found`. Retry 5×.
+health_check() {
+  HEALTH="fail"
+  for _ in 1 2 3 4 5; do
+    if "${COMPOSE[@]}" exec -T technic-api node -e \
+      "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" \
+      >/dev/null 2>&1; then
+      HEALTH="ok"; log "health: ok"; return 0
+    fi
+    sleep 3
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Пол версии клиента (ADR 0146, решение 7): `MIN_CLIENT_CONTRACT` в prod.env.
 #
@@ -1189,20 +1206,6 @@ ensure_db_tools_image() {
   docker image inspect "$DB_TOOLS_IMAGE" >/dev/null 2>&1 && return 0
   log "docker pull $DB_TOOLS_IMAGE"
   docker pull "$DB_TOOLS_IMAGE" || { REASON="не удалось получить $DB_TOOLS_IMAGE"; fail "$REASON"; }
-}
-
-# Диагностический health изнутри контейнера: минует infra-nginx/TLS. Retry 5×.
-health_check() {
-  HEALTH="fail"
-  for _ in 1 2 3 4 5; do
-    if "${COMPOSE[@]}" exec -T technic-api node -e \
-      "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" \
-      >/dev/null 2>&1; then
-      HEALTH="ok"; log "health: ok"; return 0
-    fi
-    sleep 3
-  done
-  return 1
 }
 
 # Оценка места под дамп по РЕАЛЬНОМУ размеру БД (а не только df / > 8G).
