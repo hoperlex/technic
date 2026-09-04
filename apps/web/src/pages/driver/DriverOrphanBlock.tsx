@@ -36,7 +36,12 @@ const withUnit = (value: string, unit: string): string => (value ? `${value} ${u
 const FIELDS: { label: string; text: (item: DraftItem) => string }[] = [
   { label: 'Одометр', text: (item) => withUnit(item.odometerKm, 'км') },
   { label: 'Моточасы', text: (item) => withUnit(item.engineHours, 'ч') },
+  // Топливо тремя строками в порядке смены (ADR 0163) — тем же, каким его вводят и каким его
+  // диктуют диспетчеру: остаток на начало, заправленное за смену, остаток на конец. Пропусти здесь
+  // остаток — и он исчезнет ровно там, где введённое показывают, чтобы человек перенёс его руками.
+  { label: 'Топливо на начало', text: (item) => withUnit(item.fuelStartLiters, 'л') },
   { label: 'Заправлено', text: (item) => withUnit(item.fuelFilledLiters, 'л') },
+  { label: 'Топливо на конец', text: (item) => withUnit(item.fuelEndLiters, 'л') },
   { label: 'Комментарий', text: (item) => item.comment || DASH },
   { label: 'Файлы', text: (item) => (item.files.length > 0 ? String(item.files.length) : DASH) },
 ];

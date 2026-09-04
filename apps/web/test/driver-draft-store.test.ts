@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReportSubmitBody } from '@technic/contracts';
+import { parseReadingNumber } from '@entities/vehicle-reading';
 import type { DraftItem } from '../src/pages/driver/api';
 import type * as draftStore from '../src/pages/driver/draftStore';
 
@@ -33,7 +34,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const item = (patch: Partial<DraftItem> = {}): DraftItem => ({
   odometerKm: '',
   engineHours: '',
+  // Пять чисел, а не три (ADR 0163): остатки в баке обязательны в типе и стоят вокруг заправки
+  // в порядке смены. Пропущенный здесь ключ — не мелочь фикстуры: `DraftItem` собирают все
+  // перечисления черновика, и литерал без него перестал бы быть тем, что читает форма.
+  fuelStartLiters: '',
   fuelFilledLiters: '',
+  fuelEndLiters: '',
   comment: '',
   files: [],
   confirmAnomaly: false,
@@ -83,6 +89,106 @@ describe('черновик показаний: ключи и совместна�
     expect(keys()).toEqual([branchKey(tab)]);
     expect(branchKey(tab).startsWith(tab.draftPrefix(USER, DAY))).toBe(true);
     expect(branchKey(tab).startsWith(`technic:driver-draft:${USER}:`)).toBe(false);
+  });
+
+  it('пять чисел переживают перезагрузку, и отпечаток попытки считает остатки', async () => {
+    const tab = await openTab();
+    const full = item({
+      odometerKm: '145320',
+      engineHours: '9812.5',
+      fuelStartLiters: '120',
+      fuelFilledLiters: '80',
+      fuelEndLiters: '40',
+    });
+    tab.writeDraft(USER, DAY, { items: [{ key: ROUTE, item: full }] });
+
+    // Перезагрузка страницы — другая ветка и другое чтение: черновик перечитывается из хранилища
+    // целиком. Забудь остатки хоть одно из шести перечислений полей (Н4) — и пропало бы ровно то
+    // число, которое человек ввёл утром и сдавать собирался вечером.
+    const reloaded = await openTab();
+    expect(reloaded.readDraft(USER, DAY).items[ROUTE]?.item).toMatchObject(full);
+
+    /*
+     * Вторая половина Н4 — отпечаток тела попытки. Два тела, различающиеся ОДНИМ остатком, обязаны
+     * дать разные отпечатки: совпади они, портал счёл бы правку повтором прежней команды и ушёл бы
+     * с её ключом — а сервер ответил бы 409 «под этим ключом принято другое содержимое».
+     */
+    const withStart = tab.bodyFingerprint([
+      { itemId: 'item-1', reading: { kind: 'values', fuelStartLiters: 120 }, fileIds: [] },
+    ]);
+    const withEnd = tab.bodyFingerprint([
+      { itemId: 'item-1', reading: { kind: 'values', fuelEndLiters: 120 }, fileIds: [] },
+    ]);
+    expect(withStart).not.toBe(tab.bodyFingerprint(bodyItems(145320)));
+    expect(withStart).not.toBe(withEnd);
+  });
+
+  it('запись без новых ключей читается пустыми строками и разбор чисел не роняет', async () => {
+    // Ветка, написанная сборкой до выката: остатков в ней нет ФИЗИЧЕСКИ — не пустой строкой, а
+    // отсутствующим свойством. Ни один литерал `DraftItem` этого состояния не воспроизводит,
+    // поэтому ячейка пишется сырым JSON (Н11, Р11).
+    const stamp = Date.now();
+    localStorage.setItem(
+      `${dayPrefix}aaaa`,
+      JSON.stringify({
+        savedAt: stamp,
+        entries: {
+          [ROUTE]: {
+            clock: { counter: 1, branch: 'aaaa' },
+            savedAt: stamp,
+            item: {
+              odometerKm: '145320',
+              engineHours: '',
+              fuelFilledLiters: '80',
+              comment: 'набрано прежней сборкой',
+              files: [],
+              confirmAnomaly: false,
+            },
+          },
+        },
+        legacy: [],
+        attempts: [],
+      }),
+    );
+    // Запись прежнего формата — тем же сырым JSON и по той же причине: `putV1` кладёт уже
+    // нормализованный литерал, а нужен именно объект без двух свойств.
+    localStorage.setItem(
+      v1Key,
+      JSON.stringify({
+        idempotencyKey: 'legacy-key',
+        savedAt: stamp,
+        items: {
+          'item-1': {
+            odometerKm: '222222',
+            engineHours: '',
+            fuelFilledLiters: '',
+            comment: '',
+            files: [],
+            confirmAnomaly: false,
+          },
+        },
+      }),
+    );
+
+    const tab = await openTab();
+    const view = tab.readDraft(USER, DAY);
+
+    // Формат остаётся `v2`, и старые записи не выбрасываются: недостающие ключи дописывает
+    // нормализатор на границе чтения — там, где ветка входит в портал целиком.
+    const row = view.items[ROUTE]?.item;
+    if (!row) throw new Error('Строки прежней сборки нет в черновике');
+    expect(row).toMatchObject({ fuelStartLiters: '', fuelEndLiters: '', fuelFilledLiters: '80' });
+    // Прежний формат приходит через тот же нормализатор: блок «введено, но не привязано» печатает
+    // остатки построчно (Н5), и `undefined` встал бы в него текстом.
+    expect(view.legacy[0]?.item).toMatchObject({ fuelStartLiters: '', fuelEndLiters: '' });
+
+    /*
+     * И ради чего всё это: прочитанное значение идёт из черновика прямо в разбор числа, а тот
+     * начинается с `.trim()`. Приди сюда `undefined` — форма упала бы на первом же показе дня, и
+     * упала бы только у тех, кто ввёл черновик до выката, то есть в проде и не у нас.
+     */
+    expect(parseReadingNumber(row.fuelStartLiters)).toBeNull();
+    expect(parseReadingNumber(row.fuelEndLiters)).toBeNull();
   });
 
   it('в старый ключ не пишет и записей из него не удаляет', async () => {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { App, Alert, Skeleton, Space, Typography } from 'antd';
+import { App, Skeleton, Space, Typography } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import type { ReportItemDto } from '@technic/contracts';
@@ -79,6 +79,8 @@ export function DriverReadingsPage() {
   const userId = user?.id ?? '';
   const [draft, setDraft] = useState<DraftView>(NO_DRAFT);
   const [errors, setErrors] = useState<Record<string, Record<string, string>>>({});
+  /** День открыт, но пуст: подвал сказал об этом словами и молчит снова с первой же правкой (Р6). */
+  const [dayBlank, setDayBlank] = useState(false);
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const keyboardInset = useKeyboardInset();
@@ -136,6 +138,7 @@ export function DriverReadingsPage() {
   useEffect(() => {
     shown.current = date;
     setErrors({});
+    setDayBlank(false);
     setDraft(readDraft(userId, date));
   }, [date, userId]);
 
@@ -181,11 +184,13 @@ export function DriverReadingsPage() {
     const next = { ...(values[key] ?? emptyItem()), ...patch };
     if (!commit({ items: [{ key, item: next }] })) return false;
     // Правка снимает отказ со всего блока, а не с одного поля: «заполните хотя бы одно значение»
-    // относится к трём полям сразу, и держать его над исправленным блоком значило бы врать.
+    // относится к пяти полям сразу, и держать его над исправленным блоком значило бы врать. Тем же
+    // движением гаснет строка подвала: она говорила о пустом дне, а день уже не пуст.
     if (errors[item.id]) {
       const { [item.id]: _removed, ...rest } = errors;
       setErrors(rest);
     }
+    setDayBlank(false);
     return true;
   };
 
@@ -245,17 +250,22 @@ export function DriverReadingsPage() {
      */
     const view = readDraft(userId, date);
     const sending = seedValues(report, draftUse === 'edit' ? view.items : {});
-    const { items, errors: refused } = buildSubmitBody(report, sending, previousOf);
+    const { items, errors: refused, emptyOpenDay } = buildSubmitBody(report, sending, previousOf);
     setErrors(refused);
     const firstBad = report.items.find((item) => refused[item.id]);
+    // Ставится и снимается одним значением: иначе строка подвала пережила бы день, в котором уже
+    // есть что передать. Отказ поля её отменяет — он конкретнее и стоит на самом блоке.
+    setDayBlank(emptyOpenDay && !firstBad);
     if (firstBad) {
       // Отказ называет поле и приводит к нему, а не уходит тостом в угол экрана (ADR 0094).
       document.getElementById(`reading-${firstBad.id}`)?.scrollIntoView({ block: 'center' });
       return;
     }
+    // Пустое тело сервер не примет, но объяснений у него два, и путать их нельзя (Р6). Открытая
+    // строка не заполнена — человеку осталось ввести число, и зовёт его к кнопке подвал. Открытых
+    // строк нет вовсе — день закрыл персонал: это новость, а не подсказка, и она остаётся тостом.
     if (items.length === 0) {
-      // Все строки дня закрыл персонал: отправлять нечего, а пустое тело сервер и не примет.
-      message.info('Передавать нечего: строки этого дня уже закрыты');
+      if (!emptyOpenDay) message.info('Передавать нечего: строки этого дня уже закрыты');
       return;
     }
 
@@ -356,15 +366,6 @@ export function DriverReadingsPage() {
         ) : (
           <>
             <DayLine day={day} />
-            {report.items.length === 0 && day.submittable && (
-              // Отчёт без строк — день без источников: рейсы отменили после того, как задание
-              // показали. В читающем дне причину называет подвал — повторять её здесь незачем.
-              <Alert
-                type="info"
-                showIcon
-                title="За этот день передавать нечего: выездов не осталось"
-              />
-            )}
             <DayRows
               report={report}
               values={values}
@@ -389,6 +390,7 @@ export function DriverReadingsPage() {
         day={day}
         inset={keyboardInset}
         submitting={submitting}
+        blank={dayBlank}
         disabled={!report || report.items.length === 0 || !day?.submittable}
         onSubmit={() => void doSubmit()}
       />

@@ -91,7 +91,12 @@ const withReading: ReportItemDto = { ...routeItem, reading: stored145320 };
 const item = (patch: Partial<DraftItem> = {}): DraftItem => ({
   odometerKm: '',
   engineHours: '',
+  // Пять чисел, а не три (ADR 0163): остатки в баке обязательны в типе и стоят вокруг заправки
+  // в порядке смены. Пропущенный здесь ключ — не мелочь фикстуры: `DraftItem` собирают все
+  // перечисления черновика, и литерал без него перестал бы быть тем, что читает форма.
+  fuelStartLiters: '',
   fuelFilledLiters: '',
+  fuelEndLiters: '',
   comment: '',
   files: [],
   confirmAnomaly: false,
@@ -229,6 +234,14 @@ function field(scope: HTMLElement, label: string): HTMLInputElement | HTMLTextAr
   return input as HTMLInputElement | HTMLTextAreaElement;
 }
 
+/** Группа полей одного момента смены: «Начало смены», «За смену», «Конец смены» (Р7). */
+function group(scope: HTMLElement, title: string): HTMLElement {
+  const heading = [...scope.querySelectorAll('strong')].find((el) => el.textContent === title);
+  const box = heading?.closest('div');
+  if (!box) throw new Error(`Группы «${title}» нет в блоке`);
+  return box as HTMLElement;
+}
+
 /** Подвал: причина, по которой день не передают, стоит там же, где стояла бы кнопка (Р10). */
 function footer(): HTMLElement {
   const element = document.querySelector('.driver-footer');
@@ -251,7 +264,7 @@ describe('кабинет водителя: матрица состояний д�
     // Единственная клетка матрицы, где показ дня заводит отчёт: до `open` записывать некуда — у
     // строк нет `itemId` (Р2).
     expect(opens(http)).toBe(1);
-    expect(field(blockOf(routeItem.id), 'Одометр на конец смены').disabled).toBe(false);
+    expect(field(blockOf(routeItem.id), 'Одометр').disabled).toBe(false);
     expect(submitButton()).not.toBeNull();
   });
 
@@ -300,7 +313,7 @@ describe('кабинет водителя: матрица состояний д�
     // бесследной. Правку при этом день принимает — пока его не приняли (Р12).
     await expectNoOpen(http);
     expect(await screen.findByText('Передано')).toBeDefined();
-    const odometer = field(blockOf(routeItem.id), 'Одометр на конец смены') as HTMLInputElement;
+    const odometer = field(blockOf(routeItem.id), 'Одометр') as HTMLInputElement;
     expect(odometer.disabled).toBe(false);
     expect(odometer.value).toBe('145320');
     expect(submitButton()).not.toBeNull();
@@ -366,7 +379,7 @@ describe('кабинет водителя: матрица состояний д�
     await waitForBlocks();
 
     await expectNoOpen(http);
-    const odometer = field(blockOf(routeItem.id), 'Одометр на конец смены') as HTMLInputElement;
+    const odometer = field(blockOf(routeItem.id), 'Одометр') as HTMLInputElement;
     expect(odometer.disabled).toBe(true);
     expect(odometer.value).toBe('145320');
     expect(submitButton()).toBeNull();
@@ -382,15 +395,19 @@ describe('кабинет водителя: читающий режим и чер
     await waitForBlocks();
     const block = blockOf(routeItem.id);
 
-    // Выключено всё, чем можно ввести: три числа, комментарий, «Прикрепить фото». Иначе водитель
-    // правит принятый день, а отказ приходит с сервера — после того, как он всё набрал.
-    for (const label of [
-      'Одометр на конец смены',
-      'Моточасы на конец смены',
-      'Заправлено за смену',
-      'Комментарий',
+    // Выключено всё, чем можно ввести: ПЯТЬ чисел, комментарий, «Прикрепить фото». Иначе водитель
+    // правит принятый день, а отказ приходит с сервера — после того, как он всё набрал. Читающий
+    // режим гасит поля разом, одним признаком: выключай их поимённо — однажды забудешь шестое.
+    for (const input of [
+      field(block, 'Одометр'),
+      field(block, 'Моточасы'),
+      field(block, 'Заправлено'),
+      // Два поля с подписью «Топливо» различает только заголовок группы (Р7): без него оба раза
+      // проверялся бы остаток на начало, а конец смены остался бы без караула.
+      field(group(block, 'Начало смены'), 'Топливо'),
+      field(group(block, 'Конец смены'), 'Топливо'),
+      field(block, 'Комментарий'),
     ]) {
-      const input = field(block, label);
       expect(input.disabled).toBe(true);
       fireEvent.change(input, { target: { value: '999' } });
     }
@@ -417,9 +434,7 @@ describe('кабинет водителя: читающий режим и чер
     await waitForBlocks();
 
     // Числа сервера остаются в полях — это то, что в учёте.
-    expect((field(blockOf(routeItem.id), 'Одометр на конец смены') as HTMLInputElement).value).toBe(
-      '145320',
-    );
+    expect((field(blockOf(routeItem.id), 'Одометр') as HTMLInputElement).value).toBe('145320');
     // А введённое и не уехавшее стоит рядом пометкой: сдать такой день водитель уже не может, но
     // продиктовать свои цифры диспетчеру обязан мочь.
     expect(await screen.findByText('Введено, но не передано')).toBeDefined();
@@ -437,9 +452,7 @@ describe('кабинет водителя: читающий режим и чер
 
     // Отчёт закрыт для водителя: экран показывает то, что в учёте, а не то, что человек набрал
     // после приёмки, — иначе он читал бы свои числа как принятые.
-    expect((field(blockOf(routeItem.id), 'Одометр на конец смены') as HTMLInputElement).value).toBe(
-      '145320',
-    );
+    expect((field(blockOf(routeItem.id), 'Одометр') as HTMLInputElement).value).toBe('145320');
     expect(screen.queryByText('Введено, но не передано')).toBeNull();
     // Не показано — не значит удалено: черновик на месте, и уборка его не касалась.
     expect(draftRow('route:route-1')).toMatchObject({ odometerKm: '145400' });
@@ -456,9 +469,7 @@ describe('кабинет водителя: читающий режим и чер
     await waitForBlocks();
 
     await expectNoOpen(http);
-    expect((field(blockOf(routeItem.id), 'Одометр на конец смены') as HTMLInputElement).value).toBe(
-      '145320',
-    );
+    expect((field(blockOf(routeItem.id), 'Одометр') as HTMLInputElement).value).toBe('145320');
     expect(await screen.findByText('Введено, но не передано')).toBeDefined();
     expect(screen.getByText(/одометр 145400 км/u)).toBeDefined();
     // Передавать нечем, но и стирать нечего: правка не в учёте, но она есть.

@@ -76,7 +76,12 @@ const esm2Item: ReportItemDto = {
 const item = (patch: Partial<DraftItem> = {}): DraftItem => ({
   odometerKm: '',
   engineHours: '',
+  // Пять чисел, а не три (ADR 0163): остатки в баке обязательны в типе и стоят вокруг заправки
+  // в порядке смены. Пропущенный здесь ключ — не мелочь фикстуры: `DraftItem` собирают все
+  // перечисления черновика, и литерал без него перестал бы быть тем, что читает форма.
+  fuelStartLiters: '',
   fuelFilledLiters: '',
+  fuelEndLiters: '',
   comment: '',
   files: [],
   confirmAnomaly: false,
@@ -264,7 +269,21 @@ function field(scope: HTMLElement, label: string): HTMLInputElement {
   return input as HTMLInputElement;
 }
 
-const odometer = (itemId: string) => field(blockOf(itemId), 'Одометр на конец смены');
+const odometer = (itemId: string) => field(blockOf(itemId), 'Одометр');
+
+/**
+ * Группа полей одного момента смены (Р7). Без неё два поля с подписью «Топливо» неразличимы:
+ * поиск по подписи всегда находил бы первое — остаток на начало.
+ */
+function group(scope: HTMLElement, title: string): HTMLElement {
+  const heading = [...scope.querySelectorAll('strong')].find((el) => el.textContent === title);
+  const box = heading?.closest('div');
+  if (!box) throw new Error(`Группы «${title}» нет в блоке`);
+  return box as HTMLElement;
+}
+
+const fuelStart = (itemId: string) => field(group(blockOf(itemId), 'Начало смены'), 'Топливо');
+const fuelEnd = (itemId: string) => field(group(blockOf(itemId), 'Конец смены'), 'Топливо');
 
 function type(input: HTMLInputElement, value: string): void {
   fireEvent.change(input, { target: { value } });
@@ -333,6 +352,50 @@ describe('кабинет водителя: черновик по источни�
     // Отправить их нечем: строки отчёта у них нет, и выдумывать её порталу не из чего.
     expect(submitBody(http).items).toHaveLength(1);
     expect(submitBody(http).items[0]!.reading).toMatchObject({ odometerKm: 145320 });
+  });
+
+  it('осиротевшее введённое показывает остатки в баке и переносит их вместе с прочим', async () => {
+    putBranch('aaaa', {
+      'route:route-gone': item({
+        odometerKm: '145320',
+        fuelStartLiters: '120',
+        fuelFilledLiters: '80',
+        fuelEndLiters: '40',
+      }),
+    });
+    renderCabinet([routeItem]);
+    await waitForBlocks();
+
+    /*
+     * Н5: блок печатает потерянное введённое построчно, и остатки для него — не оформление.
+     * Пропусти их в перечислении полей — и они исчезли бы РОВНО там, где введённое показывают,
+     * чтобы человек перенёс его руками или продиктовал диспетчеру: числа были бы в хранилище, а на
+     * экране их не было бы вовсе.
+     *
+     * Порядок строк — по ходу смены, тот же, что в форме: строку эту диктуют вслух, и
+     * переставленные числа диспетчер запишет в том порядке, в каком услышал.
+     */
+    expect(orphanBlocks()).toHaveLength(1);
+    expect(screen.getByText('Топливо на начало')).toBeDefined();
+    expect(screen.getByText('120 л')).toBeDefined();
+    expect(screen.getByText('80 л')).toBeDefined();
+    expect(screen.getByText('Топливо на конец')).toBeDefined();
+    expect(screen.getByText('40 л')).toBeDefined();
+
+    // Цель одна и пуста — спрашивать «в ту ли строку» не о чем (Р14а п. 2).
+    fireEvent.click(screen.getByRole('button', { name: 'Перенести' }));
+    await waitFor(() => expect(odometer(routeItem.id).value).toBe('145320'));
+
+    // Перенос кладёт запись целиком: потеряй он остаток по дороге, человек увидел бы «перенесено»
+    // и недосчитался числа — молча и без единого следа в хранилище.
+    expect(fuelStart(routeItem.id).value).toBe('120');
+    expect(fuelEnd(routeItem.id).value).toBe('40');
+    expect(orphanBlocks()).toHaveLength(0);
+    expect(draft().items['route:route-1']?.item).toMatchObject({
+      fuelStartLiters: '120',
+      fuelFilledLiters: '80',
+      fuelEndLiters: '40',
+    });
   });
 
   it('перенос в занятую строку показывает сравнение и заменяет одной записью', async () => {

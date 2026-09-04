@@ -24,6 +24,17 @@ import { emptyItem, sourceKey } from './readingsDraft';
 
 const hintStyle = { display: 'block', fontSize: '0.9em' } as const;
 
+/** Причина, по которой нажатие не дало отправки, — строкой над самой кнопкой, а не в углу экрана. */
+const noteStyle = { display: 'block', marginBottom: 8 } as const;
+
+/**
+ * Открытая строка в дне есть, а чисел нет ни одного (Р6). Прежде это объясняли отказом схемы на
+ * КАЖДОМ блоке разом — день из трёх машин краснел целиком, хотя человек просто не начал вводить.
+ * Теперь пустой новый блок отправку не держит, и сказать, почему день не ушёл, обязан подвал: без
+ * этой строки нажатие «Передать» не отвечало бы вовсе.
+ */
+const DAY_BLANK = 'Заполните хотя бы одно значение: пока в дне нет ни одного числа';
+
 /**
  * Состояние дня — крупнее основного текста (план типографики, Р6): это первое, что водитель читает,
  * открыв кабинет, и от него зависит, будет ли он вообще набирать числа.
@@ -124,6 +135,10 @@ export function PendingMark({ row }: { row: PendingRow }) {
  *
  * Рядом со строкой встаёт пометка «введено, но не передано» — там, где локальное по ней есть, а
  * окно записи уже закрыто (Р10): числа сервера остаются в полях, введённое человеком стоит рядом.
+ *
+ * Строк нет вовсе — вместо блоков слова: отчёт без строк это день без источников, рейсы отменили
+ * уже после того, как задание показали. Только в дне, который ещё можно сдать: в читающем причину
+ * называет подвал, и повторять её над формой незачем.
  */
 export function DayRows({
   report,
@@ -149,6 +164,17 @@ export function DayRows({
   onUpload: (item: ReportItemDto, file: File) => void;
   onRemoveFile: (item: ReportItemDto, fileId: string) => void;
 }) {
+  if (report.items.length === 0)
+    return readOnly
+      ? []
+      : [
+          <Alert
+            key="no-sources"
+            type="info"
+            showIcon
+            title="За этот день передавать нечего: выездов не осталось"
+          />,
+        ];
   return report.items.flatMap((item) => {
     const mark = pending.get(item.id);
     return [
@@ -206,12 +232,17 @@ export function OrphanList({
  * В читающем дне кнопки нет вовсе, а не выключенной: выключенная обещает действие, которого в этом
  * дне не будет. Вместо неё — причина, теми же словами, что и строка над формой (Р10). Там, где
  * формы нет совсем, нет и подвала: называть причину дважды незачем.
+ *
+ * Здесь же встаёт строка пустого дня (`blank`) — почему нажатие не дало отправки (Р6). Место
+ * выбрано за неё: человек смотрит на кнопку, которую только что нажал, и объяснение обязано быть у
+ * неё под рукой, а не подсветкой всех блоков разом и не тостом, уехавшим за клавиатуру.
  */
 export function DayFooter({
   day,
   inset,
   submitting,
   disabled,
+  blank,
   onSubmit,
 }: {
   /** `null` — состояние дня ещё неизвестно: кнопка есть, но ждёт. */
@@ -219,6 +250,8 @@ export function DayFooter({
   inset: number;
   submitting: boolean;
   disabled: boolean;
+  /** День открыт, но пуст: нажатие не дало отправки. Гасит признак страница, первой же правкой. */
+  blank: boolean;
   onSubmit: () => void;
 }) {
   if (day?.notice) return null;
@@ -228,16 +261,23 @@ export function DayFooter({
         {day && !day.submittable ? (
           <Typography.Text type="secondary">{day.hint}</Typography.Text>
         ) : (
-          <Button
-            size="large"
-            block
-            type="primary"
-            loading={submitting}
-            disabled={disabled}
-            onClick={onSubmit}
-          >
-            Передать
-          </Button>
+          <>
+            {blank && (
+              <Typography.Text type="warning" style={noteStyle}>
+                {DAY_BLANK}
+              </Typography.Text>
+            )}
+            <Button
+              size="large"
+              block
+              type="primary"
+              loading={submitting}
+              disabled={disabled}
+              onClick={onSubmit}
+            >
+              Передать
+            </Button>
+          </>
         )}
       </div>
     </div>

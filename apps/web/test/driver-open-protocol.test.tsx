@@ -258,7 +258,7 @@ async function waitForBlocks(): Promise<void> {
 function odometer(itemId: string): HTMLInputElement {
   const block = document.getElementById(`reading-${itemId}`);
   const wrapper = [...(block?.querySelectorAll('label') ?? [])].find((label) =>
-    label.textContent?.startsWith('Одометр на конец смены'),
+    label.textContent?.startsWith('Одометр'),
   );
   const input = wrapper?.querySelector('input');
   if (!input) throw new Error(`Поля одометра в блоке «${itemId}» нет`);

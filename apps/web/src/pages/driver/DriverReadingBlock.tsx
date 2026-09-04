@@ -1,4 +1,3 @@
-import type { FocusEvent } from 'react';
 import { Alert, Button, Checkbox, Input, Typography, Upload } from 'antd';
 import { PaperClipOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -7,21 +6,19 @@ import {
   type DriverPreviousReading,
   type ReportItemDto,
 } from '@technic/contracts';
-import {
-  parseReadingNumber,
-  previousHintText,
-  readingWarnings,
-  type ReadingField,
-} from '@entities/vehicle-reading';
+import { parseReadingNumber, readingWarnings, type ReadingField } from '@entities/vehicle-reading';
 import { FileLinkList } from '../../components/FileLinks';
 import type { DraftItem } from './api';
+import { ReadingFields, fieldLabelStyle, hintStyle, keepVisible } from './DriverReadingFields';
 
 /**
  * Блок передачи показаний по одной строке ожидания (ADR 0103, Р14).
  *
  * Отдельным файлом от оверлея: оверлей отвечает за протокол — открыть отчёт, сохранить черновик,
- * отправить и разобрать отказ, — а блок за ввод. Держать их вместе значило бы читать разметку трёх
- * полей вперемешку с идемпотентностью отправки.
+ * отправить и разобрать отказ, — а блок за ввод. Держать их вместе значило бы читать разметку
+ * полей вперемешку с идемпотентностью отправки. Сама разметка пяти чисел уехала ещё дальше — в
+ * [DriverReadingFields](DriverReadingFields.tsx): блоку остались предупреждения, аномалии,
+ * комментарий и файлы.
  *
  * Своего состояния у блока нет ни капли: всё введённое живёт в черновике оверлея, и только там —
  * иначе восстановление после закрытия вкладки восстанавливало бы половину.
@@ -36,54 +33,11 @@ import type { DraftItem } from './api';
  * решает страница: читающих режима два, и с черновиком они обращаются по-разному.
  */
 
-/**
- * Подсказка под полем и текст отказа (план типографики, Р4). `0.9em`, а не прежние `0.85`: строку
- * «предыдущее: 145 320 (10.08)» водитель СВЕРЯЕТ с набранным, стоя у машины, — она мельче
- * набранного намеренно, но читаться обязана без прищура.
- */
-const hintStyle = { fontSize: '0.9em' } as const;
-
-/**
- * Подпись поля — заголовок поля, а не примечание к нему: базовым размером кабинета и обычным
- * цветом (Р4). Серым и мельче основного текста, как было, она читалась как сноска к чужому полю —
- * а это единственное, что называет вводимое число.
- */
-const fieldLabelStyle = { display: 'inline-block', marginBottom: 2 } as const;
-
 /** Госномер — первым и крупным (Р3): им водитель узнаёт строку среди своих машин за день. */
 const vehicleStyle = { fontSize: '1.2em' } as const;
 
 /** Источник строки — вторым: им различают две смены одной машины за один день. */
 const sourceStyle = { fontSize: '0.9em' } as const;
-
-/**
- * Экранная клавиатура перекрывает поле, к которому её и вызвали. Браузер прокручивает к нему сам
- * не всегда и не сразу, поэтому доводим сами — с задержкой, за которую клавиатура успевает
- * появиться и сжать окно.
- */
-function keepVisible(event: FocusEvent<HTMLElement>): void {
-  const target = event.currentTarget;
-  setTimeout(() => target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 300);
-}
-
-/**
- * Запятая нормализуется в точку прямо на вводе: на телефоне десятичный разделитель зависит от
- * раскладки, и человек набирает тот, что есть на клавише, — отказывать ему за это нельзя.
- * `integer` — про одометр: он целый по схеме, и не принять дробную часть на вводе лучше, чем
- * отклонить отправкой целого дня.
- *
- * Разряды при наборе не группируются (П2): пробел, вставленный между цифрами во время ввода,
- * сдвигает позицию курсора, и человек дописывает пробег в середину числа. Группировка — только
- * при выводе, в подписях и предупреждениях.
- */
-function normalizeDecimal(raw: string, integer: boolean): string {
-  const cleaned = raw.replace(/\s/gu, '').replace(',', '.');
-  if (!integer) return cleaned.replace(/[^\d.]/gu, '');
-  // Целое поле отбрасывает дробную часть, а не склеивает её с целой: «145 320,7», превращённое
-  // выбрасыванием разделителя в «1453207», — это молча выросший в десять раз пробег, который и
-  // схему пройдёт, и в учёт ляжет. Отбросить десятые честнее: одометр целый по схеме.
-  return cleaned.split('.')[0]!.replace(/\D/gu, '');
-}
 
 /**
  * Неподтверждённые аномалии показания — словами, с тем значением, с которым сравнивали.
@@ -112,66 +66,6 @@ function anomalyNotes(item: ReportItemDto): string[] {
     });
 }
 
-/** Ошибка стоит под своим полем, а не тостом в углу: отказ обязан называть поле (ADR 0094). */
-function FieldError({ text }: { text?: string }) {
-  if (!text) return null;
-  return (
-    <Typography.Text type="danger" style={hintStyle}>
-      {text}
-    </Typography.Text>
-  );
-}
-
-function NumberField({
-  label,
-  value,
-  hint,
-  error,
-  integer,
-  suffix,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  /** «предыдущее: 145 320 (10.08)» — то, с чем водитель сверяет набранное (П1). */
-  hint?: string;
-  error?: string;
-  integer: boolean;
-  suffix: string;
-  disabled: boolean;
-  onChange: (next: string) => void;
-}) {
-  return (
-    <label style={{ display: 'block' }}>
-      <Typography.Text style={fieldLabelStyle}>{label}</Typography.Text>
-      <Input
-        className="driver-number"
-        // `decimal`, а не `numeric`: моточасы и литры дробные, и клавиатура без разделителя
-        // сделала бы их ввод невозможным.
-        inputMode="decimal"
-        size="large"
-        value={value}
-        suffix={suffix}
-        disabled={disabled}
-        status={error ? 'error' : undefined}
-        onFocus={keepVisible}
-        onChange={(e) => onChange(normalizeDecimal(e.target.value, integer))}
-      />
-      {/* Подпись с предыдущим значением остаётся и при ошибке: именно она подсказывает, каким
-          число должно быть, — убрать её там, где она нужнее всего, было бы странно. */}
-      {hint && (
-        <div>
-          <Typography.Text type="secondary" style={hintStyle}>
-            {hint}
-          </Typography.Text>
-        </div>
-      )}
-      <FieldError text={error} />
-    </label>
-  );
-}
-
 export interface ReadingBlockProps {
   item: ReportItemDto;
   value: DraftItem;
@@ -181,7 +75,7 @@ export interface ReadingBlockProps {
   errors: Record<string, string>;
   uploading: boolean;
   /**
-   * Читающий режим (Р10): выключено всё, чем можно ввести, — три числа, комментарий, подтверждение
+   * Читающий режим (Р10): выключено всё, чем можно ввести, — пять чисел, комментарий, подтверждение
    * аномалии, «Прикрепить фото» и удаление файла. Иначе водитель правит принятый день, а отказ
    * приходит с сервера — после того, как он всё набрал.
    *
@@ -225,7 +119,9 @@ export function ReadingBlock({
     {
       odometerKm: parseReadingNumber(value.odometerKm),
       engineHours: parseReadingNumber(value.engineHours),
+      fuelStartLiters: parseReadingNumber(value.fuelStartLiters),
       fuelFilledLiters: parseReadingNumber(value.fuelFilledLiters),
+      fuelEndLiters: parseReadingNumber(value.fuelEndLiters),
     },
     previous,
   );
@@ -305,39 +201,16 @@ export function ReadingBlock({
         />
       )}
 
-      {/* Показание счётчика НА КОНЕЦ СМЕНЫ, а не работа за смену: хранится снимок, разности
-          считает сервер — вычитать в уме водителю не за чем (ADR 0103). */}
-      <NumberField
-        label="Одометр на конец смены"
-        suffix="км"
-        integer
-        value={value.odometerKm}
-        hint={previousHintText(previous, 'odometerKm')}
-        error={errors.odometerKm ?? hardOf('odometerKm')}
+      {/* Пять чисел тремя группами по ходу смены (Р7). Ввод уходит наружу той же запертой
+          дверью, что и остальное: `edit` молчит в читающем дне, а `disabled` гасит все пять полей
+          разом — выключать их поимённо значило бы однажды забыть шестое. */}
+      <ReadingFields
+        value={value}
+        previous={previous}
+        errors={errors}
+        hardOf={hardOf}
         disabled={readOnly}
-        onChange={(next) => edit({ odometerKm: next })}
-      />
-      <NumberField
-        label="Моточасы на конец смены"
-        suffix="ч"
-        integer={false}
-        value={value.engineHours}
-        hint={previousHintText(previous, 'engineHours')}
-        error={errors.engineHours ?? hardOf('engineHours')}
-        disabled={readOnly}
-        onChange={(next) => edit({ engineHours: next })}
-      />
-      {/* Заправлено ЗА СМЕНУ, а не остаток в баке: остатков портал не хранит и расхода не
-          считает (Р28) — подпись обязана называть то, что спрашивают. Предыдущего снимка у
-          заправки нет вовсе: она разовая, и сравнивать её не с чем. */}
-      <NumberField
-        label="Заправлено за смену"
-        suffix="л"
-        integer={false}
-        value={value.fuelFilledLiters}
-        error={errors.fuelFilledLiters ?? hardOf('fuelFilledLiters')}
-        disabled={readOnly}
-        onChange={(next) => edit({ fuelFilledLiters: next })}
+        onChange={edit}
       />
 
       <label style={{ display: 'block' }}>

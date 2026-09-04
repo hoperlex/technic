@@ -21,8 +21,16 @@ import { emptyItem, sourceKey } from './readingsDraft';
  * проверка введённого, там — запись черновика, сеть и порядок шагов при отказе.
  */
 
-/** Что вышло из блока: строка отправки, отказы по полям или «эта строка отправке не подлежит». */
-type BuiltItem = { submit: ReportItemSubmit } | { errors: Record<string, string> } | { skip: true };
+/**
+ * Что вышло из блока: строка отправки, отказы по полям или «эта строка отправке не подлежит».
+ *
+ * У пропуска два разных повода, и различать их обязан не только автор кода: `closed` — строку
+ * закрыл персонал, водителю сдавать по ней нечего; `blank` — сдавать было что, но человек ничего
+ * не ввёл. День, состоящий из одних `closed`, и день из одних `blank` дают одинаково пустое тело и
+ * совершенно разные новости человеку (Р6).
+ */
+type BuiltItem =
+  { submit: ReportItemSubmit } | { errors: Record<string, string> } | { skip: 'closed' | 'blank' };
 
 /** Сообщения схемы — по именам полей блока: их и подсвечивает форма. */
 function issueMessages(issues: readonly { path: PropertyKey[]; message: string }[]) {
@@ -52,6 +60,15 @@ function submitItem(itemId: string, reading: ReadingInput, value: DraftItem): Re
  * Собирает строку отправки либо ошибки блока: числа проверяет схема контракта, правдоподобие —
  * предупреждения при вводе (Р6). Вида `no_data` здесь больше нет: строку без показаний закрывает
  * только персонал (Р4), и сервер отправку водителя с таким видом отклоняет.
+ *
+ * **Пустой блок пропускается только у НОВОЙ строки, и это не оптимизация, а разные события в
+ * учёте** (Р6). У строки без сохранённого показания пусто означает «в эту машину ещё не смотрели»:
+ * день с двумя машинами, из которых заполнена одна, обязан уйти — иначе поэтапная сдача не
+ * работает вовсе, и утром одну машину не передать. У уже существующего показания вида `values`
+ * та же пустота означает противоположное: человек СТЁР последнее число, и это команда, а не
+ * молчание. Пропусти её — тело уедет без строки, сервер оставит в базе прежнее значение, а портал
+ * покажет успех: очистка исчезнет молча. Поэтому опустошённый `values` идёт в схему и получает
+ * оттуда отказ «заполните хотя бы одно значение».
  */
 function buildItem(
   item: ReportItemDto,
@@ -61,16 +78,38 @@ function buildItem(
   const numbers = {
     odometerKm: parseReadingNumber(value.odometerKm),
     engineHours: parseReadingNumber(value.engineHours),
+    fuelStartLiters: parseReadingNumber(value.fuelStartLiters),
     fuelFilledLiters: parseReadingNumber(value.fuelFilledLiters),
+    fuelEndLiters: parseReadingNumber(value.fuelEndLiters),
   };
   const broken = Object.entries(numbers).filter(([, v]) => v === 'invalid');
   if (broken.length > 0)
     return { errors: Object.fromEntries(broken.map(([field]) => [field, 'Введите число'])) };
 
-  // Строку, уже закрытую персоналом видом `no_data`, водитель не переоткрывает и пустой не
-  // заполняет: иначе один блок без чисел — а чисел там и не бывает — не давал бы сдать весь день.
-  const untouched = !value.odometerKm && !value.engineHours && !value.fuelFilledLiters;
-  if (item.reading?.kind === 'no_data' && untouched) return { skip: true };
+  /*
+   * «Ни одного числа» — не то же самое, что «блок пуст»: комментарий и файл пустотой не считаются
+   * намеренно (Р6). Человек, приложивший фото щитка или написавший «одометр не работает», ждёт,
+   * что это уедет; пропусти такой блок — и вложение с текстом исчезли бы без единого слова. Ему
+   * отвечает схема отказом «заполните хотя бы одно значение», и отказ этот стоит на его блоке.
+   */
+  const noNumbers =
+    !value.odometerKm &&
+    !value.engineHours &&
+    !value.fuelStartLiters &&
+    !value.fuelFilledLiters &&
+    !value.fuelEndLiters;
+
+  // Строка, закрытая персоналом видом `no_data`, — первая ветка и до общего правила пустоты не
+  // доходит: её сохранённый комментарий приезжает в поля вместе с показанием, и по общему правилу
+  // она перестала бы считаться пустой — то есть один чужой блок снова держал бы весь день.
+  // Водитель эту строку не редактирует; набранное же в ней число уедет как обычное показание.
+  if (item.reading?.kind === 'no_data' && noNumbers) return { skip: 'closed' };
+
+  // Новая строка, в которой не тронуто ничего, — это «сюда ещё не дошли», а не команда. Условие
+  // проверяет отсутствие сохранённого показания, а не его пустоту: `values` с числами в базе,
+  // очищенный на экране, выглядит отсюда так же — и обязан дойти до схемы (см. заголовок).
+  if (!item.reading && noNumbers && !value.comment.trim() && value.files.length === 0)
+    return { skip: 'blank' };
 
   // Грубое (вне абсолютных границ) отправку не пропускает вовсе: подтверждать опечатку в разряде
   // бессмысленно — её подтвердят так же, как набрали. Мягкое снимается галочкой: странное число
@@ -99,19 +138,36 @@ function buildItem(
  * Значения адресуются источником — тем же ключом, что и черновик (Р11): `itemId` строки живёт
  * только в отчёте и переживает не всё.
  */
+export interface SubmitBody {
+  items: ReportItemSubmit[];
+  errors: Record<string, Record<string, string>>;
+  /**
+   * Тело пустое, хотя заполнить было что: хотя бы одна открытая строка пропущена как нетронутая
+   * (Р6). Признак считается здесь, а не угадывается страницей заново: только сборка знает, почему
+   * строк не осталось, — «весь день закрыл персонал» и «день просто не заполнен» отсюда выглядят
+   * одинаково пустым телом, а человеку это две разные новости.
+   *
+   * Отказы полей при этом старше признака: если хоть один блок отказал, страница показывает
+   * отказы и до подвала не доходит.
+   */
+  emptyOpenDay: boolean;
+}
+
 export function buildSubmitBody(
   report: DriverReportDto,
   values: Record<string, DraftItem>,
   previousOf: (item: ReportItemDto) => DriverPreviousReading | null,
-): { items: ReportItemSubmit[]; errors: Record<string, Record<string, string>> } {
+): SubmitBody {
   const items: ReportItemSubmit[] = [];
   const errors: Record<string, Record<string, string>> = {};
+  let blank = false;
   for (const item of report.items) {
     const built = buildItem(item, values[sourceKey(item)] ?? emptyItem(), previousOf(item));
     if ('submit' in built) items.push(built.submit);
     else if ('errors' in built) errors[item.id] = built.errors;
+    else if (built.skip === 'blank') blank = true;
   }
-  return { items, errors };
+  return { items, errors, emptyOpenDay: items.length === 0 && blank };
 }
 
 /** Что делать с неудачной отправкой: сказать словами, закрывать ли попытку и перечитывать ли день. */

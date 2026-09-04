@@ -43,7 +43,12 @@ const driver = authUser({
 const draft = (patch: Partial<DraftItem> = {}): DraftItem => ({
   odometerKm: '',
   engineHours: '',
+  // Пять чисел, а не три (ADR 0163): остатки в баке обязательны в типе и стоят вокруг заправки
+  // в порядке смены. Пропущенный здесь ключ — не мелочь фикстуры: `DraftItem` собирают все
+  // перечисления черновика, и литерал без него перестал бы быть тем, что читает форма.
+  fuelStartLiters: '',
   fuelFilledLiters: '',
+  fuelEndLiters: '',
   comment: '',
   files: [],
   confirmAnomaly: false,
@@ -106,6 +111,22 @@ function field(label: string): HTMLInputElement | HTMLTextAreaElement {
   return input as HTMLInputElement | HTMLTextAreaElement;
 }
 
+/**
+ * Поле внутри группы одного момента смены (Р7). Заголовок группы — рабочая часть раскладки, а не
+ * оформление: подписи полей укорочены до «Топливо», и два таких поля различаются только им.
+ */
+function fieldIn(title: string, label: string): HTMLInputElement | HTMLTextAreaElement {
+  const heading = [...document.querySelectorAll('strong')].find((el) => el.textContent === title);
+  const box = heading?.closest('div');
+  if (!box) throw new Error(`группы «${title}» на экране нет`);
+  const wrapper = [...box.querySelectorAll('label')].find((el) =>
+    el.textContent?.startsWith(label),
+  );
+  const input = wrapper?.querySelector('input, textarea');
+  if (!input) throw new Error(`поля «${label}» в группе «${title}» нет`);
+  return input as HTMLInputElement | HTMLTextAreaElement;
+}
+
 /** Выбор файла идёт скрытым `input[type=file]`, а не кнопкой: кнопка только открывает диалог. */
 function filePicker(): HTMLInputElement {
   const input = document.querySelector('input[type="file"]');
@@ -142,13 +163,17 @@ describe('Читающий режим блока показаний (Р10)', () 
   it('не принимает ввода ни одним элементом, но показанное остаётся на экране', async () => {
     const spies = renderBlock(true);
 
-    for (const [label, next] of [
-      ['Одометр на конец смены', '145321'],
-      ['Моточасы на конец смены', '12,5'],
-      ['Заправлено за смену', '30'],
-      ['Комментарий', 'дописал в закрытый день'],
+    // Пять чисел, а не три: остатки в баке выключаются тем же одним признаком, что и счётчики
+    // (Р10). Два поля с подписью «Топливо» различает только заголовок группы (Р7) — без него
+    // проверялся бы дважды остаток на начало, а конец смены остался бы открытым для ввода.
+    for (const [input, next] of [
+      [field('Одометр'), '145321'],
+      [field('Моточасы'), '12,5'],
+      [fieldIn('Начало смены', 'Топливо'), '150'],
+      [field('Заправлено'), '30'],
+      [fieldIn('Конец смены', 'Топливо'), '90'],
+      [field('Комментарий'), 'дописал в закрытый день'],
     ] as const) {
-      const input = field(label);
       expect(input.disabled).toBe(true);
       fireEvent.change(input, { target: { value: next } });
     }
@@ -181,7 +206,7 @@ describe('Читающий режим блока показаний (Р10)', () 
   it('в обычном режиме те же элементы ввод принимают', async () => {
     const spies = renderBlock(false);
 
-    fireEvent.change(field('Одометр на конец смены'), { target: { value: '145321' } });
+    fireEvent.change(field('Одометр'), { target: { value: '145321' } });
     expect(spies.onChange).toHaveBeenCalledWith({ odometerKm: '145321' });
 
     fireEvent.change(field('Комментарий'), { target: { value: 'мыл машину' } });
@@ -208,7 +233,9 @@ const SAVED_AT = new Date('2026-08-19T11:32:00.000Z').getTime();
 const orphan = draft({
   odometerKm: '145320',
   engineHours: '12.5',
+  fuelStartLiters: '150',
   fuelFilledLiters: '30',
+  fuelEndLiters: '90',
   comment: 'заправка по талону',
   files: [photoFile],
 });
@@ -245,7 +272,11 @@ describe('Блок «Введено, но не привязано к строк�
 
     screen.getByText('145320 км');
     screen.getByText('12.5 ч');
+    // Остатки в баке — своими строками и в порядке смены (Н5): пропущенные в перечислении полей,
+    // они исчезли бы ровно там, где введённое показывают, чтобы человек перенёс его руками.
+    screen.getByText('150 л');
     screen.getByText('30 л');
+    screen.getByText('90 л');
     screen.getByText('заправка по талону');
     screen.getByText(/Сохранено 19\.08\.2026 14:32/);
     // Единственная кнопка блока — перенос: отправлять несопоставленную запись некуда, у неё нет

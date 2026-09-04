@@ -8,6 +8,7 @@ import {
   legacyDraftKey,
   mergeBranches,
   nextAttemptClock,
+  normalizeItem,
   orderAttempts,
   parseBranch,
   PREFIX,
@@ -197,25 +198,14 @@ function readLegacy(userId: string, date: string, handled: readonly string[]): L
   const seen = new Set(handled);
   const records: LegacyRecord[] = [];
   for (const [itemId, rawItem] of Object.entries(items)) {
-    const item = legacyItem(rawItem);
+    // Тем же нормализатором, что и ветки `v2`: старый формат знал виды показаний и поля, которых
+    // больше нет, а новых не знал вовсе — недостающее читается пустым, лишнее не смотрится. Двух
+    // приведений на два входа хранилища быть не должно: они разойдутся на первом же новом поле.
+    const item = normalizeItem(rawItem);
     const mark = legacyFingerprint(itemId, item);
     if (!seen.has(mark)) records.push({ itemId, item, fingerprint: mark, savedAt });
   }
   return records;
-}
-
-/** Старый формат знал виды показаний и поля, которых больше нет: недостающее читается пустым. */
-function legacyItem(raw: unknown): DraftItem {
-  const item = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<DraftItem>;
-  const text = (value: unknown): string => (typeof value === 'string' ? value : '');
-  return {
-    odometerKm: text(item.odometerKm),
-    engineHours: text(item.engineHours),
-    fuelFilledLiters: text(item.fuelFilledLiters),
-    comment: text(item.comment),
-    files: Array.isArray(item.files) ? item.files : [],
-    confirmAnomaly: item.confirmAnomaly === true,
-  };
 }
 
 // ── Запись ──
@@ -295,6 +285,13 @@ export function bodyFingerprint(items: ReportSubmitBody['items']): string {
 /**
  * Отпечаток записи `v1`. Идентификатор строки входит в него намеренно: две записи, совпавшие
  * содержимым до последнего пробела, гасились бы одной пометкой.
+ *
+ * **Остатков топлива здесь нет, и это не забытая строка.** Формат `v1` перестал записываться до
+ * того, как остатки появились: у всякой его записи оба поля — пустая строка, приведённая
+ * нормализатором, то есть одна и та же константа у всех. Различать они не могут ничего, а вот смена
+ * формулы стоила бы дорого и сразу: отпечаток изменился бы у всех записей `v1` разом, и уже
+ * разобранная запись всплыла бы у водителя ещё раз как непривязанная. Перечисление здесь описывает
+ * не `DraftItem`, а то, чем записи прежнего формата **отличаются друг от друга**.
  */
 export function legacyFingerprint(itemId: string, item: DraftItem): string {
   return fingerprint([

@@ -91,6 +91,39 @@ const isClock = (value: unknown): value is DraftClock =>
   typeof (value as DraftClock).counter === 'number' &&
   typeof (value as DraftClock).branch === 'string';
 
+/**
+ * Запись черновика в нынешней форме `DraftItem`: недостающее читается пустым, лишнее не смотрится.
+ *
+ * Нужен он не аккуратности ради. Ветка, записанная прежней сборкой, физически не содержит ключей,
+ * добавленных позже: у записи до релиза топлива `fuelStartLiters` равен `undefined`, а разбор числа
+ * доходит до `.trim()` и роняет блок при первой же перерисовке (план топлива, Н11). Дефолты
+ * интерфейса от этого не спасают вовсе: `seedValues` подставляет запись черновика ЦЕЛИКОМ вместо
+ * серверного значения, а не сливает её по полям, — заполнять пропуски там некому.
+ *
+ * Один нормализатор на оба входа хранилища: этот и `readLegacy` формата `v1`
+ * ([draftStore.ts](draftStore.ts), Р11б). Второй, заведённый «по месту», разошёлся бы с первым на
+ * следующем же добавленном поле — и разошёлся бы молча.
+ *
+ * Побочный эффект приведения безвреден и ожидаем: канонический вид старой ветки от него меняется,
+ * `sameContent` признаёт её отличной от слияния, и консолидация один раз перепишет её полной
+ * формой (Р11в). Дефект здесь только кажущийся — переписывание однократно и само себя гасит.
+ */
+export function normalizeItem(raw: unknown): DraftItem {
+  const item = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<DraftItem>;
+  const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+  return {
+    odometerKm: text(item.odometerKm),
+    engineHours: text(item.engineHours),
+    // Топливо в порядке смены (ADR 0163) — тем же, что в форме и в остальных перечислениях.
+    fuelStartLiters: text(item.fuelStartLiters),
+    fuelFilledLiters: text(item.fuelFilledLiters),
+    fuelEndLiters: text(item.fuelEndLiters),
+    comment: text(item.comment),
+    files: Array.isArray(item.files) ? item.files : [],
+    confirmAnomaly: item.confirmAnomaly === true,
+  };
+}
+
 /** Чужая или испорченная ячейка читается как «ветки нет»: угадывать её содержимое нечем. */
 export function parseBranch(raw: string | null): BranchState | null {
   if (!raw) return null;
@@ -108,7 +141,21 @@ export function parseBranch(raw: string | null): BranchState | null {
     const parsed = entry as Partial<DraftEntry> | null;
     // Версия без часов сравнению не поддаётся: молча выбросить её честнее, чем выдать ей чужие.
     if (!parsed || !isClock(parsed.clock) || typeof parsed.savedAt !== 'number') continue;
-    entries[key] = { clock: parsed.clock, savedAt: parsed.savedAt, item: parsed.item ?? null };
+    entries[key] = {
+      clock: parsed.clock,
+      savedAt: parsed.savedAt,
+      /*
+       * Форма записи приводится здесь — на границе доверия, — а не на выходе `readDraft`. Через
+       * `parseBranch` ветка входит в портал целиком: её видят слияние, консолидация и страница, и
+       * победившая версия уезжает обратно в хранилище копией. Приведи её только на выходе чтения —
+       * и неполная запись всё равно осталась бы в слиянии, в консолидации и в сравнении содержимого,
+       * то есть ровно там, где её потом никто не ищет.
+       *
+       * Отсутствующее `item` — это надгробие (Р11г), и нормализовать его нельзя: `null` обязан
+       * остаться `null`, иначе удаление строки превратилось бы в пустое значение и воскресило её.
+       */
+      item: parsed.item == null ? null : normalizeItem(parsed.item),
+    };
   }
   const attempts = (Array.isArray(state.attempts) ? state.attempts : []).filter(
     (attempt: Partial<SubmitAttempt> | null): attempt is SubmitAttempt =>

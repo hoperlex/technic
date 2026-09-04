@@ -16,7 +16,11 @@ import type { TransferTarget } from './DriverOrphanBlock';
 export const emptyItem = (): DraftItem => ({
   odometerKm: '',
   engineHours: '',
+  // Три числа топлива в порядке смены (ADR 0163): остаток на начало, заправленное за неё, остаток
+  // на конец. Тем же порядком они стоят в форме и во всех перечислениях черновика.
+  fuelStartLiters: '',
   fuelFilledLiters: '',
+  fuelEndLiters: '',
   comment: '',
   files: [],
   confirmAnomaly: false,
@@ -53,7 +57,9 @@ export function seedValues(
       ? {
           odometerKm: show(reading.odometerKm),
           engineHours: show(reading.engineHours),
+          fuelStartLiters: show(reading.fuelStartLiters),
           fuelFilledLiters: show(reading.fuelFilledLiters),
+          fuelEndLiters: show(reading.fuelEndLiters),
           comment: reading.comment,
           // Уже привязанные файлы сюда не попадают: отправка принимает только непривязанные
           // (Р18), и повтор их идентификаторов был бы отказом сервера.
@@ -113,10 +119,22 @@ export function orphansOf(report: DriverReportDto | null, draft: DraftView): Orp
   return [...rows, ...legacy];
 }
 
-/** Пустая запись — это отсутствие записи: занятой цель делает введённое, а не сам факт строки. */
+/**
+ * Пустая запись — это отсутствие записи: занятой цель делает введённое, а не сам факт строки.
+ *
+ * Перечислены все пять чисел, и это не полнота ради полноты: по этому же признаку запись попадает в
+ * список непереданного и предъявляется как непривязанная. Забудь здесь остаток — и запись, в которой
+ * человек ввёл только его, считалась бы пустой: молча не показанной и молча затёртой переносом.
+ */
 const filled = (item: DraftItem): boolean =>
-  Boolean(item.odometerKm || item.engineHours || item.fuelFilledLiters || item.comment) ||
-  item.files.length > 0;
+  Boolean(
+    item.odometerKm ||
+    item.engineHours ||
+    item.fuelStartLiters ||
+    item.fuelFilledLiters ||
+    item.fuelEndLiters ||
+    item.comment,
+  ) || item.files.length > 0;
 
 /**
  * Куда переносить разрешено (Р14а п. 1). Цель — только строка, открытую правку которой водитель
@@ -185,12 +203,19 @@ export interface PendingRow {
   savedAt: number;
 }
 
-/** Числа введённого — словами и с единицами: читают их глазами, а не сверяют по подписям полей. */
+/**
+ * Числа введённого — словами и с единицами: читают их глазами, а не сверяют по подписям полей.
+ *
+ * Топливо идёт в порядке смены — начало, заправлено, конец, — тем же, что в форме: строку эту
+ * диктуют диспетчеру вслух, и переставленные числа он запишет в том порядке, в каком услышал.
+ */
 function pendingText(item: DraftItem): string {
   const parts: string[] = [];
   if (item.odometerKm) parts.push(`одометр ${item.odometerKm} км`);
   if (item.engineHours) parts.push(`моточасы ${item.engineHours} ч`);
+  if (item.fuelStartLiters) parts.push(`топливо на начало ${item.fuelStartLiters} л`);
   if (item.fuelFilledLiters) parts.push(`заправлено ${item.fuelFilledLiters} л`);
+  if (item.fuelEndLiters) parts.push(`топливо на конец ${item.fuelEndLiters} л`);
   if (item.comment) parts.push(item.comment);
   if (item.files.length > 0) parts.push(`файлов: ${item.files.length}`);
   return parts.join(' · ');
