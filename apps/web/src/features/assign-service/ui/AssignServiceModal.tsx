@@ -126,8 +126,13 @@ export function AssignServiceModal({
    * Уже назначенные сотрудники в списке остаются при любом ответе — они приходят самой заявкой.
    */
   const mayListUsers = can('serviceRequests.assign');
+  /*
+   * Кандидаты спрашиваются ПРО ЭТУ ЗАЯВКУ (план аудита исполнителей, Р7): сервер отвечает не «кого
+   * вообще можно назначить», а «кто сможет по ней работать», и пустой идентификатор при закрытом
+   * окне запросу не мешает — он не уходит вовсе (`enabled`).
+   */
   const { data: candidates = [], isFetching: candidatesLoading } = useQuery({
-    ...serviceExecutorCandidatesQuery(),
+    ...serviceExecutorCandidatesQuery(request?.id ?? ''),
     enabled: !!request && mayListUsers,
   });
 

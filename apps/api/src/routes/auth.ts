@@ -84,11 +84,30 @@ interface AuthUserSource {
   /** Тип контрагента учётки (ADR 0038): вместе с ролью задаёт права — портал считает их сам. */
   counterpartyType: CounterpartyType | null;
   /**
+   * Контрагент учётки (ADR 0010): им портал отвечает на «эта заявка отдана моей компании?». Тип
+   * этого не знает — он говорит лишь, в каком модуле работает сторона, — и без идентификатора
+   * портал приближал ответ типом (Н7 плана аудита исполнителей заявок оргтехники).
+   *
+   * Отдельного запроса не требует: колонка лежит в самой учётке, а сюда приходит вместе с ней —
+   * и во входе (`userWithCounterpartyType`), и в принципале (`loadPrincipal`).
+   */
+  counterpartyId: string | null;
+  /**
    * Надстройки роли (ADR 0086): третий источник прав, и порталу он нужен по той же причине. С шага
    * 1c приходит производной от кодов наборов (`systemAddonsOf`), а не отдельным запросом в
    * `user_role_addons`; форма ответа при этом прежняя — портал считает по ней права и рисует пометку.
    */
   addons: RoleAddon[];
+  /**
+   * Коды назначенных наборов (ADR 0106): по ним портал узнаёт бизнес-профиль модуля «Орг.техника»
+   * (план профилей, Р9) — сторону обсуждения, подпись, будущее письмо. Правом коды не являются и в
+   * `can` не участвуют; переезд на них сделан до уборки мёртвого `serviceRequests.approveIt`, а не
+   * после, — иначе «Системный администратор» погас бы молча.
+   *
+   * Собираются тем же читателем и в том же месте, что `addons`: пометки рядом с ролью — производная
+   * от этих же кодов (`systemAddonsOf`), и разными путями они прийти не могут.
+   */
+  grantCodes: string[];
   /**
    * Права назначенных наборов (ADR 0106) — четвёртый источник субъекта доступа, и без него субъект
    * здесь был бы **обрезанным**: набор, собранный администратором, роль и пометки о себе не
@@ -122,7 +141,11 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
     departmentIds: u.departmentIds,
     departmentObjectIds: u.departmentObjectIds,
     counterpartyType: u.counterpartyType,
+    counterpartyId: u.counterpartyId,
     addons: u.addons,
+    // Коды наборов — рядом с пометками и по той же причине, что список прав ниже: портал обязан
+    // узнать профиль модуля во всех четырёх ответах сессии, а не только в `/auth/me`.
+    grantCodes: u.grantCodes,
     /*
      * Эффективные права учётки (ADR 0106, решение 5): считает их сервер, потому что портал больше не
      * может — состав набора лежит в базе, а не в матрице. Субъект передаётся целиком (`u` — это и
@@ -141,6 +164,17 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
      * массив, который вернула матрица, незачем.
      */
     permissions: [...permissionsFor(u)],
+    /*
+     * Права наборов — отдельным полем рядом с итогом, и это не дубль (см. `AuthUser` в контрактах).
+     * Итог `permissions` отвечает `can` портала; общие предикаты, одинаковые на сервере и на
+     * портале, спрашивают СУБЪЕКТ и складывают его источники сами — без этого поля субъект портала
+     * обрезан ровно на наборы, у которых нет надстройки. С разделением набора ИТ-службы (план
+     * профилей, Э6) это перестало быть безобидным: ходы исполнителя уехали в модульный
+     * `office_equipment_executor`, и меню сисадмина разошлось бы с ответом сервера.
+     *
+     * Копия, а не ссылка, — по той же причине, что у `permissions`: это тело ответа.
+     */
+    grantPermissions: [...u.grantPermissions],
   };
 }
 
@@ -607,6 +641,9 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
           // Пометки рядом с ролью — производная от кодов наборов, как и у принципала: собранный
           // администратором набор в это поле не попадает (`systemAddonsOf`).
           addons: systemAddonsOf(row.grantCodes),
+          // Сами коды — как есть, вместе с собранными администратором: по ним портал опознаёт
+          // профиль модуля, а не считает права.
+          grantCodes: row.grantCodes,
           // Граница «база → код» — здесь же, где у принципала: право-сироту дальше не пускает
           // `isPermission`, и в субъект уходит уже отфильтрованный список.
           grantPermissions: row.grantPermissions.filter(isPermission),
@@ -695,6 +732,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         departmentIds: row.departmentIds,
         departmentObjectIds: row.departmentObjectIds,
         addons: systemAddonsOf(row.grantCodes),
+        grantCodes: row.grantCodes,
         grantPermissions: row.grantPermissions.filter(isPermission),
       };
       const ok = await verifyPassword(u.passwordHash, currentPassword);

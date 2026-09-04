@@ -1,6 +1,7 @@
 import { Alert, App, Space, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
+  actsAsRequestCustomer,
   attachableServiceFileKinds,
   isServiceRequestClosed,
   SERVICE_FILE_KINDS,
@@ -18,7 +19,7 @@ import { officeEquipmentKeys } from '@entities/office-equipment';
 import { filesApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { useAuth } from '../../auth/AuthContext';
-import { serviceExecutorAssignment } from './serviceRequestRow';
+import { serviceExecutorAssignment, serviceRequestCustomerFacts } from './serviceRequestRow';
 import { errorMessage } from '../../utils/format';
 
 /**
@@ -69,11 +70,25 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
     serviceExecutorAssignment(request, user),
   );
 
+  /*
+   * Страж стороны заказчика (план профилей оргтехники, Р6) — тот же предикат контрактов, каким
+   * сервер стережёт общий вход изменяющих ручек, и подшивка с её снятием стоят там же, что правка
+   * и удаление: держатель набора «Заявитель» у роли без оси кладёт бумаги только в СВОЮ заявку.
+   * Чтение у такой роли глобально, и без этого условия форма загрузки висела бы на каждой чужой
+   * строке, отвечая 403 после выбора файла.
+   *
+   * У всех прочих предикат отвечает «да» — правило сужает ровно одного субъекта, — поэтому условие
+   * ничего не отбирает ни у исполнителя, ни у «Ведения», ни у распорядителя файлов.
+   */
+  const actsAsCustomer = actsAsRequestCustomer(user, serviceRequestCustomerFacts(request));
+
   // Снятие документа после приёмки — только у распорядителя файлов: заявка закрыта, и подшитая
   // бумага из неё не исчезает по решению стороны (Р29).
-  const canAttach = can('serviceRequests.files') && kinds.length > 0 && !request.deletedAt;
+  const canAttach =
+    can('serviceRequests.files') && kinds.length > 0 && !request.deletedAt && actsAsCustomer;
   const canDetach =
     !request.deletedAt &&
+    actsAsCustomer &&
     (can('files.manageAny') ||
       (can('serviceRequests.files') && !isServiceRequestClosed(request.status)));
 

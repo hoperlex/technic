@@ -51,12 +51,7 @@ import {
 } from '../db/schema';
 import type { Principal } from '../auth/principal';
 import { requirePrincipal } from '../auth/plugin';
-import {
-  assertCan,
-  officeEquipmentScopeWhere,
-  serviceExecutorVisibilityWhere,
-  serviceRequestScopeWhere,
-} from '../lib/access';
+import { assertCan, officeEquipmentScopeWhere, serviceRequestVisibilityWhere } from '../lib/access';
 import { writeAudit } from '../lib/audit';
 import { err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
@@ -586,13 +581,14 @@ async function authorSignaturesOf(userIds: string[]): Promise<Map<string, Author
  * заявке ЧУЖОЙ площадки — тот же 403, только после перехода. До Р4 лента рисовала ссылку всегда, и
  * это существующий дефект, который здесь и чинится.
  *
- * СОБРАНО ТЕМ ЖЕ, ЧЕМ ОТБИРАЕТ СПИСОК ЗАЯВОК, а не похожим на него: обе оси видимости —
- * `serviceRequestScopeWhere` по трём колонкам заказчика и `serviceExecutorVisibilityWhere` по
- * назначенному подрядчику — берутся у тех же функций и в том же порядке, что `visibility(p)` в
- * `routes/service-requests.ts`. Своя копия правила разошлась бы с оригиналом молча, и признак
- * обещал бы доступ там, где сам модуль отвечает 403.
+ * СОБРАНО ТЕМ ЖЕ, ЧЕМ ОТБИРАЕТ СПИСОК ЗАЯВОК, а не похожим на него: видимость целиком приходит одним
+ * `serviceRequestVisibilityWhere` (Р2) — той же функцией, что стоит внутри `visibility(p)` в
+ * `routes/service-requests.ts` и внутри `assertScope` у карточки. Прежде оси перечислялись здесь
+ * поимённо, и такая копия расходилась с оригиналом молча: признак обещал бы доступ там, где сам
+ * модуль отвечает 403. Поимённое назначение (Р1) приезжает той же функцией — иначе лента прятала бы
+ * ссылку на заявку, которая у назначенного исполнителя прекрасно открывается.
  *
- * ТРЕТЬЯ ОСЬ — АРХИВ, и она не часть области. Карточка заявки спрашивает её отдельным
+ * АРХИВ — НЕ ЧАСТЬ ОБЛАСТИ, и потому стоит здесь отдельным условием. Карточка заявки спрашивает её отдельным
  * `assertArchiveVisible`: удалённая заявка отвечает 404 всем, кроме держателей `archive.read`.
  * Признак повторяет ровно это, потому что обещает он не «моя область», а «откроется» — а ссылка на
  * удалённую заявку открывается ровно у того, у кого открыт архив.
@@ -611,13 +607,7 @@ function requestAccessibleExpr(p: Principal): SQL<boolean> {
     // У ручной правки заявки нет вовсе (обе ссылки пусты по `CHECK`у связок), и левое соединение
     // отдаёт пустую строку: открывать нечего, признак ложен.
     isNotNull(serviceRequests.id),
-    serviceRequestScopeWhere(
-      p,
-      serviceRequests.equipmentObjectId,
-      serviceRequests.customerDepartmentId,
-      serviceRequests.equipmentDepartmentId,
-    ),
-    serviceExecutorVisibilityWhere(p, serviceRequests.serviceCounterpartyId),
+    serviceRequestVisibilityWhere(p),
     can(p, 'archive.read') ? undefined : isNull(serviceRequests.deletedAt),
   )!;
   // `coalesce` — не от неопределённости условия, а от неопределённости его слагаемых: сравнение с
