@@ -33,12 +33,12 @@ import {
   operatorVisibilityWhere,
   assertOfficeEquipmentScope,
   assertServiceRequestScope,
-  serviceRequestScopeWhere,
+  serviceRequestVisibilityWhere,
   placeObjectVisibilityWhere,
 } from '../src/lib/access';
 import {
+  mechRequests,
   officeEquipment,
-  serviceRequests,
   vehicleRequests,
   vehicles,
   wasteRequests,
@@ -660,15 +660,15 @@ describe('сквозная область модуля оргтехники у �
     addons: ['office_equipment_it_approver'],
   });
 
+  /*
+   * Спрашивается ВЕСЬ предикат видимости, а не одна ось: с этапа Э3 плана аудита исполнителей оси
+   * приватны (Р2), и наружу отвечает только пара `serviceRequestVisibilityWhere` /
+   * `assertServiceRequestVisible`. Для сквозной области это даже точнее: «не сужается вовсе»
+   * обязано быть верно про итоговое условие запроса, а не про его слагаемое, — сложение осей
+   * `and`ом умеет превращать два «сужать нечем» в сужение, и проверять надо ответ целиком.
+   */
   it('заявки модуля и справочник не сужаются вовсе', () => {
-    expect(
-      serviceRequestScopeWhere(
-        itApprover,
-        serviceRequests.equipmentObjectId,
-        serviceRequests.customerDepartmentId,
-        serviceRequests.equipmentDepartmentId,
-      ),
-    ).toBeUndefined();
+    expect(serviceRequestVisibilityWhere(itApprover)).toBeUndefined();
     expect(
       officeEquipmentScopeWhere(
         itApprover,
@@ -696,22 +696,46 @@ describe('сквозная область модуля оргтехники у �
     ).toBe(200);
   });
 
-  it('в соседних модулях он остаётся собой: вывоз и заявки ТС сужены его отделом', () => {
-    const waste = placeObjectVisibilityWhere(itApprover, wasteRequests);
+  /**
+   * Т13 ПЛАНА ПРОФИЛЕЙ (`docs/office-equipment-access-profiles-plan.md`, §6.4, §10): сквозная
+   * область кончается на границе двух модулей, и «прежняя» проверяется по всем четырём соседям,
+   * названным в §6.4, — вывоз, заказ ТС, механизация, путевые листы.
+   *
+   * Механизация добавлена сюда не для полноты счёта: у неё та же ось «площадка записи», что у
+   * вывоза, и тот же предикат (`placeObjectVisibilityWhere`), — то есть ровно тот случай, когда
+   * лишняя ветка в `hasModuleWideScope` открыла бы чужой модуль, ничего не сломав в этом файле.
+   *
+   * Путевые листы устроены иначе, и потому проверяются иначе: предиката области у модуля нет
+   * вовсе — он закрыт правом целиком (`waybills.read`), — и «область прежняя» означает у него
+   * «модуль как был закрыт, так и закрыт». Сравнивать там нечего, и вместо выдуманного условия
+   * спрашивается то единственное, что у модуля есть: право. Держатель ИТ-набора его не получает —
+   * ни ролью, ни набором.
+   */
+  it('в соседних модулях он остаётся собой: вывоз, ТС и механизация — по отделу, листы закрыты', () => {
+    // Колонка, а не таблица: до правки Э10 здесь стояло `wasteRequests`, и условие собиралось по
+    // объекту, которого у аргумента нет вовсе, — `toBeDefined` зеленел бы и на пустом сравнении.
+    const waste = placeObjectVisibilityWhere(itApprover, wasteRequests.objectId);
     expect(waste, 'вывоз мусора сужен').toBeDefined();
     const vehicle = vehicleRequestVisibilityWhere(itApprover, vehicleRequests);
     expect(vehicle, 'заявки ТС сужены').toBeDefined();
     expect(paramsOf(vehicle)).toContain(DEPARTMENT_A);
+    const mech = placeObjectVisibilityWhere(itApprover, mechRequests.objectId);
+    expect(mech, 'механизация сужена').toBeDefined();
+    // Та же роль без набора отвечает тем же условием: набор области соседа не трогает ни в одну
+    // сторону — ни расширяет, ни сужает.
+    const mechPlain = placeObjectVisibilityWhere(
+      principal('department', { departmentIds: [DEPARTMENT_A] }),
+      mechRequests.objectId,
+    );
+    expect(paramsOf(mech)).toEqual(paramsOf(mechPlain));
+    // Путевые листы: у модуля предиката области нет — «прежняя» означает «модуль закрыт правом».
+    expect(can(itApprover, 'waybills.read'), 'журнал листов закрыт держателю ИТ-набора').toBe(false);
+    expect(can(itApprover, 'waybills.cancel')).toBe(false);
   });
 
   it('второй набор область не трогает — решение 2 ADR 0086 в силе', () => {
     expect(
-      serviceRequestScopeWhere(
-        operator,
-        serviceRequests.equipmentObjectId,
-        serviceRequests.customerDepartmentId,
-        serviceRequests.equipmentDepartmentId,
-      ),
+      serviceRequestVisibilityWhere(operator),
       'оператор оргтехники видит только свой отдел',
     ).toBeDefined();
     expect(
@@ -727,12 +751,7 @@ describe('сквозная область модуля оргтехники у �
 
   it('область читается из наборов: одной надстройки без назначения для неё мало', () => {
     expect(
-      serviceRequestScopeWhere(
-        addonOnly,
-        serviceRequests.equipmentObjectId,
-        serviceRequests.customerDepartmentId,
-        serviceRequests.equipmentDepartmentId,
-      ),
+      serviceRequestVisibilityWhere(addonOnly),
       'без назначения область прежняя — свой отдел',
     ).toBeDefined();
     expect(

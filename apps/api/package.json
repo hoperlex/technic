@@ -33,6 +33,7 @@
     "check:mailing-audience": "tsx src/check-mailing-audience.ts",
     "check:role-migration": "tsx src/check-role-migration.ts",
     "report:equipment-models": "tsx scripts/office-equipment-models-report.ts",
+    "report:service-access": "tsx scripts/service-access-inventory.ts",
     "backfill:routes": "tsx src/backfill-routes.ts",
     "backfill:trips": "tsx scripts/backfill-trips.ts",
     "template:waybill": "tsx scripts/mark-waybill-templates.ts",
