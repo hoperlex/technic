@@ -142,8 +142,8 @@ beforeAll(async () => {
     SELECT id, vehicle_type_id FROM vehicles
      WHERE deleted_at IS NULL AND ownership = 'own' ORDER BY id LIMIT 1`);
   const spec = await one(sql`SELECT id FROM specializations WHERE code = 'driver'`);
-  // Человек без действующей специализации водителя в лист не попадает вовсе (`findMachinist`), и
-  // сверка шага 12 ответила бы «укажите машиниста» вместо работы.
+  // Специализация водителя — реализм сцены, а не требование листа: печать ФИО от неё не зависит
+  // (ADR 0164), но водителем справочника человек числится именно ею.
   const person = async (last: string): Promise<string> => {
     const row = await one(
       sql`INSERT INTO persons (last_name, first_name) VALUES (${last}, 'Пров') RETURNING id`,

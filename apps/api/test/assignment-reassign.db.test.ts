@@ -160,8 +160,8 @@ async function newPerson(lastName: string): Promise<string> {
   const [spec] = (
     await ctx.db.execute<{ id: string }>(sql`SELECT id FROM specializations WHERE code = 'driver'`)
   ).rows;
-  // Человек без действующей специализации водителя в лист не попадает вовсе (`findMachinist`), и
-  // сверка ответила бы «укажите машиниста» вместо работы.
+  // Специализация водителя — реализм сцены, а не требование листа: печать ФИО от неё не зависит
+  // (ADR 0164), но водителем справочника человек числится именно ею.
   await ctx.db.execute(sql`
     INSERT INTO person_specializations (person_id, specialization_id, is_primary, started_on)
     VALUES (${personId}, ${spec!.id}, true, ${shiftDateKey(TERM_FROM, -400)})`);

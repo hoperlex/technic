@@ -154,7 +154,8 @@ async function inScene<T>(
         VALUES (${`ap-backstop-${RUN}@example.invalid`}, 'Бэкстопов', 'Пров', 'x', 'admin', false)
         RETURNING id`);
       const spec = await one(sql`SELECT id FROM specializations WHERE code = 'driver'`);
-      // Человек без действующей специализации водителя в лист не попадает вовсе (`findMachinist`).
+      // Специализация водителя — реализм сцены: листу она не нужна (ADR 0164), а водителем
+      // справочника человек числится ею.
       const person = await one(
         sql`INSERT INTO persons (last_name, first_name) VALUES ('Машинистов', 'Пров') RETURNING id`,
       );

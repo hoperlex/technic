@@ -225,8 +225,8 @@ async function inScene<T>(
         VALUES (${`ap-period-${RUN}@example.invalid`}, 'Сроков', 'Пров', 'x', 'admin', false)
         RETURNING id`);
       const spec = await one(sql`SELECT id FROM specializations WHERE code = 'driver'`);
-      // Человек без действующей специализации водителя в лист не попадает вовсе (`findMachinist`),
-      // и сверка сцены ответила бы «укажите машиниста» вместо бумаги.
+      // Специализация водителя — реализм сцены, а не требование листа: печать ФИО от неё не
+      // зависит (ADR 0164), но водителем справочника человек числится именно ею.
       const personOf = async (last: string): Promise<string> => {
         const person = (
           await one(sql`INSERT INTO persons (last_name, first_name) VALUES (${last}, 'Пров')

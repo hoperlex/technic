@@ -725,8 +725,8 @@ describe.skipIf(!RAW_DB_URL)('гонки дверей истории назна�
     const [spec] = (
       await db.execute<{ id: string }>(sql`SELECT id FROM specializations WHERE code = 'driver'`)
     ).rows;
-    // Человек без действующей специализации водителя в лист не попадает вовсе (`findMachinist`),
-    // и сверка ответила бы «укажите машиниста» вместо работы.
+    // Специализация водителя — реализм сцены, а не требование листа: печать ФИО от неё не
+    // зависит (ADR 0164), но водителем справочника человек числится именно ею.
     const person = async (last: string): Promise<string> => {
       const [row] = (
         await db.execute<{ id: string }>(sql`

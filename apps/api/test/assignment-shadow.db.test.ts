@@ -145,7 +145,8 @@ beforeAll(async () => {
     VALUES (${`ap-shadow-${RUN}@example.invalid`}, 'Теневой', 'Пров', 'x', 'admin', false)
     RETURNING id`);
   const spec = await one<{ id: string }>(sql`SELECT id FROM specializations WHERE code = 'driver'`);
-  // Человек без действующей специализации водителя в лист не попадает вовсе (`findMachinist`).
+  // Специализация водителя — реализм сцены: листу она не нужна (ADR 0164), а водителем справочника
+  // человек числится ею.
   const makePerson = async (last: string): Promise<string> => {
     const person = await one<{ id: string }>(
       sql`INSERT INTO persons (last_name, first_name) VALUES (${last}, 'Пров') RETURNING id`,
