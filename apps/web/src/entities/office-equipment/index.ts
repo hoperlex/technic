@@ -32,8 +32,10 @@ export {
   officeEquipmentModelOptionsQuery,
   officeEquipmentModelPickerQuery,
   officeEquipmentOptionsQuery,
+  officeEquipmentPickedQuery,
   officeEquipmentSpecsQuery,
   officeEquipmentTypeOptionsQuery,
+  type OfficeEquipmentOption,
 } from './api/queries';
 export { EquipmentStateTag } from './ui/EquipmentStateTag';
 /**
@@ -72,3 +74,15 @@ export {
   officeEquipmentUpdatePayload,
   type OfficeEquipmentFormValues,
 } from './model/form';
+/**
+ * Предупреждение о выключении карточки (план кандидата, §13 Ф4). В слое сущности рядом с полями
+ * формы, а не во вкладке справочника: гасят карточку той же галочкой, которую рисует
+ * `OfficeEquipmentFields`, и второе окно с этой галочкой (проверка кандидата) обязано взять готовую
+ * развилку, а не сложить свою из тех же признаков.
+ */
+export {
+  officeEquipmentDeactivationWarning,
+  useOfficeEquipmentDeactivationConfirm,
+  type OfficeEquipmentDeactivationIntent,
+  type OfficeEquipmentDeactivationWarning,
+} from './model/deactivation';

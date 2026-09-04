@@ -1,25 +1,25 @@
-import type { ReactNode } from 'react';
-import { Checkbox, DatePicker, Input, Select, Space } from 'antd';
-import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import { SERVICE_REQUEST_STATUSES, serviceRequestStatusLabels } from '@technic/contracts';
 import { serviceCompanyOptionsQuery } from '@entities/service-request';
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
-import { FilterReset, type FilterDefinition } from '@shared/ui';
+import { type FilterDefinition } from '@shared/ui';
 import { usePruneMissingFilters } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
-
-const DATE = 'YYYY-MM-DD';
 
 /**
  * Фильтры списка заявок на обслуживание — **одним описанием** на десктоп и телефон (§9.2).
  *
  * Обычно панель над таблицей собирается разметкой, а шит на телефоне — списком описаний, и две
  * копии расходятся при первой же правке: фильтр появляется на десктопе и не появляется в шите.
- * Здесь описание одно, а панель десктопа рисуется по нему же (`ServiceFilterBar`) — забыть
- * половину нельзя.
+ * Здесь описание одно, а панель десктопа рисуется по нему же (`ServiceFilterBar`, соседний файл) —
+ * забыть половину нельзя.
+ *
+ * Само рисование панели живёт отдельно (`ServiceFilterBar.tsx`): здесь принимаются РЕШЕНИЯ — какие
+ * отборы у списка бывают, кому какой положен и что уходит в запрос, — а там их только показывают,
+ * ничего не зная ни про права, ни про заявки. Разделение появилось, когда файл перерос порог длины,
+ * и граница выбрана по этому шву, а не по числу строк.
  */
 
 export interface ServiceListFilters {
@@ -47,6 +47,16 @@ export interface ServiceListFilters {
    * заявлял.
    */
   objectMismatch?: string;
+  /**
+   * Состояние предмета, которого ещё нет в справочнике (план кандидатов, §9): `'pending'` —
+   * сообщение о технике ждёт проверки, `'rejected'` — проверка кончилась отказом. Не признак, а
+   * ЗНАЧЕНИЕ ИЗ ДВУХ: состояние у кандидата одно, и пара чекбоксов допускала бы «и то, и другое» —
+   * запрос, ответ на который пуст всегда, а читается пустая выдача как поломка списка.
+   *
+   * Строкой, как и соседи: отбор уходит в запрос как есть, а перечень значений стережёт сервер
+   * (`candidateStatus` в `serviceRequestListQuerySchema`) — здесь его второй копии не заводится.
+   */
+  candidateStatus?: string;
   createdFrom?: string;
   createdTo?: string;
 }
@@ -69,6 +79,7 @@ export const SERVICE_FILTER_FIELDS = [
   'warrantyClaim',
   'urgent',
   'objectMismatch',
+  'candidateStatus',
   'createdFrom',
   'createdTo',
 ] as const satisfies readonly (keyof ServiceListFilters)[];
@@ -84,6 +95,21 @@ const statusOptions = SERVICE_REQUEST_STATUSES.map((value) => ({
 
 /** Признак включён — уходит строкой; выключен — не уходит вовсе, а не приходит `'false'`. */
 const flag = (checked: boolean) => (checked ? 'true' : undefined);
+
+/**
+ * Две очереди по состоянию предмета (план кандидатов, §9). Подписи называют ЗАЯВКУ, а не кандидата
+ * («предмет на проверке», а не «кандидат pending»): в списке заявок человек ищет заявки, и слово
+ * «кандидат» здесь потребовало бы знания о таблице, которого у него нет.
+ *
+ * Перечень свой, а не `officeEquipmentCandidateStatusLabels` из контрактов, и это не дублирование:
+ * тот словарь называет ИСХОД проверки для карточки кандидата (все четыре состояния, «Заведён в
+ * справочник»), здесь же — два состояния, у которых есть незакрытая работа. Взяв словарь целиком,
+ * отбор предложил бы два значения, отвечающих пустотой либо повторяющих отбор по карточке парка.
+ */
+const candidateStatusOptions = [
+  { value: 'pending', label: 'Предмет на проверке' },
+  { value: 'rejected', label: 'Предмет отклонён' },
+];
 
 /**
  * Очереди-пресеты над таблицей (§9.2): с них начинают работу оператор и сервис.
@@ -148,6 +174,15 @@ export function useServiceRequestFilters({
   usePruneMissingFilters(
     [
       { key: 'status', value: params.status, options: statusOptions, ready: true },
+      // Перечень состояний предмета — константа портала, и «пережить свой предмет» ему нечем:
+      // `ready: true`, потому что ждать загрузки нечего. Стоит здесь всё равно — чтобы снятое
+      // значение (например, из запомненного набора прошлого выпуска) не ушло в запрос молча.
+      {
+        key: 'candidateStatus',
+        value: params.candidateStatus,
+        options: candidateStatusOptions,
+        ready: true,
+      },
       { key: 'objectId', value: params.objectId, options: objectOptions, ready: objectsReady },
       {
         key: 'departmentId',
@@ -285,6 +320,28 @@ export function useServiceRequestFilters({
       value: params.objectMismatch === 'true',
       onChange: (v) => apply({ objectMismatch: flag(v) }),
     },
+    /*
+     * Отбор по состоянию предмета — рядом с «Расхождением по объекту» намеренно: обе строки про
+     * ОДНО И ТО ЖЕ — про предмет заявки, разошедшийся со справочником, — и обе ведут к работе, а не
+     * к срезу списка. «На проверке» разбирает тот, у кого `officeEquipment.review`, «отклонён» —
+     * тот, кто заявку ведёт.
+     *
+     * ПРАВОМ НЕ ЗАКРЫТ, в отличие от «Ожидаются документы» и «Тип техники». Те два закрыты не из
+     * осторожности: первый сервер молча игнорирует без `serviceRequests.finance` (кнопка была бы
+     * переключателем, ничего не меняющим), второму нужен перечень типов, за который сервис получил
+     * бы 403. Здесь нет ни того, ни другого — сервер применяет параметр всем, а значения перечня
+     * зашиты в самом портале. И читатель у отбора есть на каждой стороне: заявитель им находит свои
+     * заявки, по которым ещё нет ответа, — ту же плашку он видит и в карточке.
+     */
+    {
+      kind: 'select',
+      key: 'candidateStatus',
+      label: 'Предмет заявки',
+      value: params.candidateStatus,
+      options: candidateStatusOptions,
+      placeholder: 'Любой предмет',
+      onChange: (v) => apply({ candidateStatus: v }),
+    },
     {
       kind: 'dateRange',
       key: 'created',
@@ -294,88 +351,4 @@ export function useServiceRequestFilters({
       onChange: (from, to) => apply({ createdFrom: from, createdTo: to }),
     },
   ];
-}
-
-/**
- * Один фильтр в панели десктопа. Обычная функция, а не компонент: она вызывается прямо из
- * разметки панели и своего состояния не имеет — объявленный внутри компонент пересоздавался бы
- * на каждый рендер и терял бы фокус поля при вводе.
- */
-function renderFilter(filter: FilterDefinition): ReactNode {
-  switch (filter.kind) {
-    case 'select':
-      return (
-        <Select
-          key={filter.key}
-          allowClear
-          showSearch
-          optionFilterProp="label"
-          style={{ width: 200 }}
-          placeholder={filter.placeholder ?? filter.label}
-          options={filter.options}
-          loading={filter.loading}
-          disabled={filter.disabled}
-          value={filter.value}
-          onChange={(v) => filter.onChange(v)}
-        />
-      );
-    case 'text':
-      return (
-        <Input
-          key={filter.key}
-          allowClear
-          style={{ width: 180 }}
-          placeholder={filter.placeholder ?? filter.label}
-          value={filter.value}
-          onChange={(e) => filter.onChange(e.target.value || undefined)}
-        />
-      );
-    case 'toggle':
-      return (
-        <Checkbox
-          key={filter.key}
-          checked={filter.value}
-          disabled={filter.disabled}
-          onChange={(e) => filter.onChange(e.target.checked)}
-        >
-          {filter.label}
-        </Checkbox>
-      );
-    case 'dateRange':
-      return (
-        <DatePicker.RangePicker
-          key={filter.key}
-          format="DD.MM.YYYY"
-          allowEmpty={[true, true]}
-          value={[filter.from ? dayjs(filter.from) : null, filter.to ? dayjs(filter.to) : null]}
-          onChange={(range) =>
-            filter.onChange(
-              range?.[0] ? range[0].format(DATE) : undefined,
-              range?.[1] ? range[1].format(DATE) : undefined,
-            )
-          }
-        />
-      );
-  }
-}
-
-/**
- * Панель фильтров десктопа из тех же описаний, что уходят в шит телефона.
- *
- * `reset` — выход из набора одним движением (ADR 0139). Не передан — кнопки нет: список, отборы
- * которого живут один сеанс, разбирается теми же крестиками, что и собран.
- */
-export function ServiceFilterBar({
-  filters,
-  reset,
-}: {
-  filters: FilterDefinition[];
-  reset?: { active: boolean; onClick: () => void };
-}) {
-  return (
-    <Space wrap>
-      {filters.map(renderFilter)}
-      {reset ? <FilterReset {...reset} /> : null}
-    </Space>
-  );
 }

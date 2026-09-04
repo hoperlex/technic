@@ -376,6 +376,22 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'update',
     label: 'Ведёт справочник оргтехники',
   },
+  /*
+   * Подпись говорит про сообщение, а не про заведение карточки, и это не смягчение формулировки:
+   * держатель права в справочник не пишет вовсе — он отправляет кандидата, а карточку по нему
+   * заводит проверяющий (план кандидатов, Р8). «Заводит технику» в витрине читалось бы как
+   * `officeEquipment.write`, то есть как право, которого здесь намеренно нет.
+   */
+  'officeEquipment.propose': {
+    module: 'officeEquipment',
+    action: 'create',
+    label: 'Сообщает о технике, которой нет в справочнике',
+  },
+  'officeEquipment.review': {
+    module: 'officeEquipment',
+    action: 'manage',
+    label: 'Проверяет сообщения об отсутствующей технике',
+  },
   'officeEquipmentConsumables.manage': {
     module: 'officeEquipment',
     action: 'manage',

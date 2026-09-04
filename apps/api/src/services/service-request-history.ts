@@ -80,6 +80,28 @@ const AUDIT_ACTIONS = [
   'serviceRequest.urgency',
   'serviceRequest.files_attach',
   'serviceRequest.files_detach',
+  /**
+   * Решение по сообщению об отсутствующей технике (план `docs/office-equipment-candidate-plan.md`,
+   * Р6, Р16). Три действия, потому что исходов три, и словами они разные.
+   *
+   * ЗАЧЕМ ЭТИ СТРОКИ ВООБЩЕ ЕСТЬ. Само решение пишется строгим аудитом на СВОИ сущности —
+   * `officeEquipmentCandidate` и `officeEquipment`, — а лента заявки читает журнал по паре
+   * `entity_type = 'serviceRequest'` и этому закрытому перечню. То есть событие, которое меняет
+   * предмет чужой заявки, в её собственной истории не появилось бы вовсе: заявитель увидел бы, что
+   * у заявки вдруг стал аппарат, и не нашёл бы, откуда он взялся, — а при отказе не увидел бы
+   * ничего и ждал бы решения, которое уже принято.
+   *
+   * ТРЕТЬЕЙ СТРОКОЙ ЖУРНАЛА, А НЕ ЧТЕНИЕМ КАНДИДАТА ПРИ СБОРКЕ ЛЕНТЫ. Второй вариант выглядит
+   * дешевле — пары «кандидат ↔ заявка» лежат рядом, — но он завёл бы у ленты ЧЕТВЁРТЫЙ источник со
+   * своим `limit`, своей сортировкой и своим соединением, а главное — источник, у которого нет
+   * СОБЫТИЯ: строка кандидата помнит только последнее состояние, и время решения пришлось бы
+   * брать из `decided_at`, то есть достраивать событие из полей. Здесь же событие уже есть, оно
+   * атомарно решению (`writeAuditTx` в той же транзакции) и приезжает в ленту тем же путём, что и
+   * два десятка соседних.
+   */
+  'serviceRequest.candidate_confirm',
+  'serviceRequest.candidate_merge',
+  'serviceRequest.candidate_reject',
   'serviceRequest.soft_delete',
   'serviceRequest.restore',
 ] as const;
@@ -116,6 +138,14 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   // правится, и «Правка» в этом месте истории читалась бы как смена предмета заявки у сервиса.
   'serviceRequest.urgency': 'urgencyChanged',
   'serviceRequest.files_attach': 'documentAttached',
+  /*
+   * Три исхода решения — ОДИН вид события: чем кончилось, говорит сама строка («Предмет
+   * подтверждён: „…“», «Сообщение о технике отклонено: …»), а не тег. Довод целиком — при виде
+   * события в контрактах; тот же он у `consumablesIssued`, одного на выдачу и на возврат.
+   */
+  'serviceRequest.candidate_confirm': 'equipmentCandidateDecided',
+  'serviceRequest.candidate_merge': 'equipmentCandidateDecided',
+  'serviceRequest.candidate_reject': 'equipmentCandidateDecided',
   // Снятие документа — не подшивка: вид события у него общий («изменено»), а что именно сняли,
   // видно в перечне изменений.
   'serviceRequest.files_detach': 'updated',
@@ -227,6 +257,54 @@ function changesOf(action: string, metadata: unknown): RequestChangeDto[] {
     ...movementChangesOf(metadata),
     ...(action === 'serviceRequest.consumables_update' ? compositionChangesOf(metadata) : []),
   ];
+}
+
+/** Строковое поле metadata: журнал хранит его `unknown`, и читается оно как словарь с промахом. */
+function textOf(metadata: unknown, key: string): string {
+  if (!metadata || typeof metadata !== 'object') return '';
+  const raw = (metadata as Record<string, unknown>)[key];
+  return typeof raw === 'string' ? raw : '';
+}
+
+/**
+ * Исход решения по сообщению о технике — ОДНОЙ ФРАЗОЙ (план кандидата, Р6, Р16).
+ *
+ * ТЕКСТОМ СОБЫТИЯ, А НЕ ПАРОЙ «БЫЛО → СТАЛО». У решения нет «было»: предмета у заявки не было
+ * вовсе, а у отказа не появилось и «стало». Пара `changes` нарисовала бы в ленте строку с
+ * прочерком слева и подписью поля, которая ничего не добавляет, — тот же довод, по которому в
+ * `comment` едет реплика обсуждения: событие само и есть своё содержание.
+ *
+ * ФРАЗА СОБИРАЕТСЯ ЗДЕСЬ, А В ЖУРНАЛЕ ЛЕЖАТ ФАКТЫ — подпись карточки и причина отказа. Готовый
+ * текст, записанный в metadata, был бы вмороженной формулировкой: правка слов не достала бы
+ * записи прошлых месяцев, и лента показывала бы две редакции одного события. Снимок ПОДПИСИ при
+ * этом именно снимок, и это не противоречие: карточку через полгода переименуют, а решение
+ * читается тем именем, под которым его принимали (тем же приёмом снята подпись цели в журнале
+ * самого решения).
+ *
+ * ПРИЧИНА ОТКАЗА — ДОСЛОВНО, без `short`, которым режется реплика обсуждения (В5 плана): у реплики
+ * длина не ограничена ничем, а причина отказа ограничена схемой в 1000 знаков и адресована ЛИЧНО
+ * заявителю. Обрезанное многоточием объяснение отправило бы его искать остаток — то есть ровно за
+ * тем вторым действием, ради отмены которого причину и сделали обязательной.
+ *
+ * Пустая подпись у положительных исходов законна: записи, сделанные до этого выпуска, полей не
+ * несут вовсе. Фраза тогда остаётся без имени карточки, а не пропадает целиком — «предмет
+ * подтверждён» без имени всё ещё отвечает на вопрос читателя.
+ */
+function candidateDecisionComment(action: string, metadata: unknown): string {
+  const title = textOf(metadata, 'title');
+  const reason = textOf(metadata, 'reason');
+  switch (action) {
+    case 'serviceRequest.candidate_confirm':
+      return title ? `Предмет подтверждён: «${title}»` : 'Предмет подтверждён';
+    case 'serviceRequest.candidate_merge':
+      return title
+        ? `Предмет объединён с карточкой «${title}»`
+        : 'Предмет объединён с существующей карточкой';
+    case 'serviceRequest.candidate_reject':
+      return reason ? `Сообщение о технике отклонено: ${reason}` : 'Сообщение о технике отклонено';
+    default:
+      return '';
+  }
 }
 
 /** Ревизия сметы из metadata: её кладут события сметы — предъявление, согласование, отклонение. */
@@ -374,7 +452,13 @@ export async function loadServiceRequestHistory(
       fromStatus: null,
       toStatus: null,
       estimateRevision: revisionOf(row.metadata),
-      comment: '',
+      /*
+       * У событий аудита комментария нет — их содержание живёт в перечне изменений. Исключение
+       * одно, и оно названо: решение по сообщению о технике говорит фразой, а не парой «было →
+       * стало» (`candidateDecisionComment`). Остальным действиям функция отвечает пустой строкой,
+       * то есть ровно тем же, что стояло здесь раньше.
+       */
+      comment: candidateDecisionComment(row.action, row.metadata),
       changes: changesOf(row.action, row.metadata),
     })),
     ...chatRows,

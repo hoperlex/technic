@@ -58,6 +58,18 @@ export const MAIL_TEST_KINDS = [
   'service_request_estimate',
   'service_request_document',
   'service_request_comment',
+  /**
+   * Письма о сообщении, что аппарата нет в справочнике (план кандидатов, §10). Собираются по той же
+   * заявке-образцу: у сообщения и заявки связь 1:1, и по номеру заявки отладка находит кандидата
+   * сама — отдельного поля «номер сообщения» в форме не заводится ради двух видов писем.
+   *
+   * Заявка без сообщения о технике письма не даёт: отладка отвечает «возьмите другую заявку» тем
+   * же мягким отказом, каким отвечает письмо о назначении по заявке без исполнителей. Письмо о
+   * РЕШЕНИИ вдобавок требует уже решённого сообщения — собрать «решение», которого не принимали,
+   * значило бы показать администратору письмо, какого портал не шлёт.
+   */
+  'office_equipment_candidate_pending',
+  'office_equipment_candidate_decided',
   'verify_email',
   'password_reset',
   'password_changed',
@@ -77,6 +89,8 @@ export const mailTestKindLabels: Record<MailTestKind, string> = {
   service_request_estimate: 'Оргтехника: движение по объёму работ',
   service_request_document: 'Оргтехника: приложены документы',
   service_request_comment: 'Оргтехника: реплика в обсуждении',
+  office_equipment_candidate_pending: 'Оргтехника: сообщение о технике ждёт проверки',
+  office_equipment_candidate_decided: 'Оргтехника: решение по сообщению о технике',
   verify_email: 'Подтверждение адреса при регистрации',
   password_reset: 'Восстановление пароля',
   password_changed: 'Уведомление о смене пароля',
@@ -104,6 +118,9 @@ export const mailTestKindNeedsRequest: Record<MailTestKind, boolean> = {
   service_request_estimate: true,
   service_request_document: true,
   service_request_comment: true,
+  // Сообщение о технике живёт при заявке (связь 1:1), и находит его отладка по её же номеру.
+  office_equipment_candidate_pending: true,
+  office_equipment_candidate_decided: true,
   driver_routes: false,
   role_digest: false,
   verify_email: false,
@@ -124,6 +141,8 @@ export const mailTestKindNeedsDate: Record<MailTestKind, boolean> = {
   service_request_estimate: false,
   service_request_document: false,
   service_request_comment: false,
+  office_equipment_candidate_pending: false,
+  office_equipment_candidate_decided: false,
   driver_routes: true,
   role_digest: true,
   verify_email: false,
@@ -153,6 +172,8 @@ export const mailTestKindNeedsDriver: Record<MailTestKind, boolean> = {
   service_request_estimate: false,
   service_request_document: false,
   service_request_comment: false,
+  office_equipment_candidate_pending: false,
+  office_equipment_candidate_decided: false,
   driver_routes: true,
   role_digest: false,
   verify_email: false,
@@ -181,6 +202,8 @@ export const mailTestKindNeedsSampleUser: Record<MailTestKind, boolean> = {
   service_request_estimate: false,
   service_request_document: false,
   service_request_comment: false,
+  office_equipment_candidate_pending: false,
+  office_equipment_candidate_decided: false,
   driver_routes: false,
   role_digest: true,
   verify_email: false,

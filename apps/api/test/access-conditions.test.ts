@@ -168,6 +168,12 @@ const PARAM_VALUES: Record<string, string> = {
   ticketId: RECORD_ID,
   blindCheckId: RECORD_ID,
   checkCode: 'weight',
+  // Рубильник событий модуля (`PATCH /admin/mail/events/:event`, выпуск почтового контура): в адресе
+  // стоит не идентификатор строки, а КОД события из закрытого перечня `MODULE_MAIL_EVENTS`, и схема
+  // маршрута его проверяет. Значение поэтому взято из перечня, а не выдумано: `RECORD_ID` дал бы 400
+  // от схемы ещё до стража, и весь перебор прав по этому маршруту доказывал бы работу схемы.
+  // Который именно код — безразлично: страж спрашивает право, а не существование настройки.
+  event: 'service_request_waiting_it',
 };
 
 /**
@@ -282,7 +288,9 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/users/:id/email': { payload: { newEmail: 'other@test.local' } },
   // Отпечаток готового набора обязателен схемой (ADR 0155): без тела ручка отвечает 400 раньше,
   // чем дойдёт до проверки права, и проверка доступа мерила бы валидацию.
-  'POST /api/v1/waste-requests/:id/tickets/confirm-ready': { payload: { fingerprint: 'x'.repeat(64) } },
+  'POST /api/v1/waste-requests/:id/tickets/confirm-ready': {
+    payload: { fingerprint: 'x'.repeat(64) },
+  },
   'POST /api/v1/users/:id/password': { payload: { newPassword: PASSWORD } },
   'POST /api/v1/users/:id/reject': {
     payload: { reason: 'учётка не подтверждена', notifyApplicant: false },
@@ -319,6 +327,10 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
       replyToMode: 'portal',
     },
   },
+  // Рубильник события: умолчаний у схемы нет намеренно (`updateModuleMailEventSettingSchema`),
+  // поэтому оба поля обязаны быть в теле — иначе схема отвечает 400 раньше стража, и перебор прав
+  // доказывал бы работу схемы вместо работы права.
+  'PATCH /api/v1/admin/mail/events/:event': { payload: { isEnabled: true, version: 0 } },
   'PATCH /api/v1/admin/mail/recipients/:id': {
     payload: {
       toEmail: 'mail@test.local',
@@ -522,6 +534,44 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/office-equipment-purchases/:id/cancel': {
     payload: { reason: 'заказали по другому каналу' },
   },
+  // Правка заявленных реквизитов сообщения о технике (план кандидатов, Р12). Тело валидное и
+  // ПОЛНОЕ — все шесть полей плюс версия: схема стоит до стража, и с пустым телом негативный
+  // случай получил бы 400 от неё, доказывая работу схемы вместо работы права. Номер один из двух
+  // (`…_identity_check`), объект — обычный `OBJECT_ID` перебора.
+  'PATCH /api/v1/office-equipment-candidates/:id': {
+    payload: {
+      expectedVersion: 1,
+      equipmentTypeId: RECORD_ID,
+      declaredModel: 'Kyocera ECOSYS M3145',
+      inventoryNumber: '0012345',
+      objectId: OBJECT_ID,
+      location: 'каб. 214',
+    },
+  },
+  /*
+   * Три решения по сообщению о технике (план кандидатов, Р13, Р15). Тела ПОЛНЫЕ и валидные по той же
+   * причине, что у правки выше: схема Fastify отрабатывает раньше стража, и негативный случай с
+   * пустым телом получил бы 400 от неё — то есть доказывал бы работу схемы там, где проверяется
+   * право. Подтверждение несёт вложенную форму карточки парка целиком: она у него та же самая, что
+   * у `POST /office-equipment` ниже, и обязана пройти оба её `refine` — номер и модель.
+   */
+  'POST /api/v1/office-equipment-candidates/:id/confirm': {
+    payload: {
+      expectedVersion: 1,
+      equipment: {
+        equipmentTypeId: RECORD_ID,
+        name: 'Kyocera ECOSYS M3145',
+        inventoryNumber: '0012345',
+        objectId: OBJECT_ID,
+      },
+    },
+  },
+  'POST /api/v1/office-equipment-candidates/:id/merge': {
+    payload: { expectedVersion: 1, officeEquipmentId: RECORD_ID },
+  },
+  'POST /api/v1/office-equipment-candidates/:id/reject': {
+    payload: { expectedVersion: 1, reason: 'такого аппарата в кабинете нет' },
+  },
   'POST /api/v1/office-equipment': {
     payload: {
       equipmentTypeId: RECORD_ID,
@@ -543,6 +593,12 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
       responsiblePhone: '9000000000',
     },
   },
+  /*
+   * Тело без срочности, и это единственное, что здесь можно проверить перебором: право
+   * `serviceRequests.urgency` спрашивается у этой ручки ПО ЭФФЕКТУ — по разнице со строкой заявки
+   * (Р10), — а БД подменена, и строки нет. Условную половину доказывает направленный db-тест,
+   * названный в `provenBy` самого условия.
+   */
   'PATCH /api/v1/service-requests/:id': { payload: { description: 'не тянет бумагу', version: 1 } },
   'PATCH /api/v1/service-requests/:id/accept': { payload: { version: 1 } },
   /*
@@ -651,6 +707,18 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
    * СНЯТО: фикстура `PATCH /:id/it-approval`. Виза ИТ упразднена (план упрощения цикла, Р10) вместе
    * с самой ручкой, и строки под неё в манифесте нет — а фикстура на маршрут, которого не бывает,
    * ничего не проверяет и роняет сторожа «фикстуры описывают только живые маршруты».
+   */
+  /*
+   * Кандидаты в исполнители спрашиваются ПРО ЗАЯВКУ (план аудита исполнителей, Р7): без
+   * `requestId` схема отвечает 400 раньше стража, и перебор доказывал бы разбор запроса вместо
+   * права. Сторону ручка не спрашивает вовсе — она у неё задана правом маршрута, — а область
+   * читает по заявке, то есть уже за подменённой БД.
+   */
+  'GET /api/v1/service-requests/executor-candidates': { query: `requestId=${RECORD_ID}` },
+  /*
+   * Повтор письма службе получил сторону (Р9): её спрашивает `assertServiceOperatorSide` — и
+   * спрашивает ПОСЛЕ `requireEditable`, то есть за подменённой БД. Добавка «нужно обработчику»
+   * ручке поэтому не требуется: положительный случай упирается в БД, а не в отказ стороны.
    */
   'POST /api/v1/service-requests/:id/notify': { payload: { idempotencyKey: RECORD_ID } },
   'PATCH /api/v1/service-requests/:id/rework': {
@@ -1343,11 +1411,12 @@ function variantsOf(key: ManifestRouteKey, condition: AccessCondition): Variant[
   // половину, и большего он проверить не может по построению — эффект телом запроса не
   // выражается. Условную половину доказывает db-тест, названный в `provenBy` самого условия.
   //
-  // Маршрутов этого вида сейчас нет ни одного: три ручки акта обслуживания стояли под ним, пока
-  // акт двигал склад автозапчастей, и вернулись к простому `permissions` с заморозкой склада (план
-  // `docs/auto-part-receipts-plan.md`, Р2, Р3). Ветка оставлена вместе с самим видом: следующая
-  // такая ручка обязана попасть в перебор базовой половиной, а не мимо него — пропущенный маршрут
-  // и есть худший исход, и ловит его случай «каждый маршрут манифеста попал ровно в одну группу».
+  // Маршрут этого вида сегодня один — общая правка заявки на обслуживание: право срочности
+  // спрашивается там по разнице пары со строкой заявки, а строки у перебора нет вовсе (БД
+  // подменена). Ветка тем и важна, что пропускает такой маршрут в перебор БАЗОВОЙ половиной, а не
+  // мимо него: пропущенный маршрут — худший исход, и ловит его случай «каждый маршрут манифеста
+  // попал ровно в одну группу». Прежде под видом стояли три ручки акта обслуживания — они уехали
+  // к простому `permissions` с заморозкой склада (план `docs/auto-part-receipts-plan.md`, Р2, Р3).
   if (condition.kind === 'effectConditionalPermissions') {
     return [
       {

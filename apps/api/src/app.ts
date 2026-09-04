@@ -27,6 +27,7 @@ import officeEquipmentTypesRoutes from './routes/office-equipment-types';
 import officeEquipmentModelsRoutes from './routes/office-equipment-models';
 import officeEquipmentConsumablesRoutes from './routes/office-equipment-consumables';
 import officeEquipmentPurchasesRoutes from './routes/office-equipment-purchases';
+import officeEquipmentCandidatesRoutes from './routes/office-equipment-candidates';
 import officeEquipmentRoutes from './routes/office-equipment';
 import serviceRequestsRoutes from './routes/service-requests';
 import containerTypesRoutes from './routes/container-types';
@@ -195,6 +196,14 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // ссылки на их позиции.
   await app.register(officeEquipmentPurchasesRoutes, {
     prefix: '/api/v1/office-equipment-purchases',
+  });
+  // Сообщения об отсутствующей технике (план `docs/office-equipment-candidate-plan.md`, Р1) —
+  // СВОЙ ПРЕФИКС, А НЕ ВЕТКА СПРАВОЧНИКА, потому что кандидат записью справочника не является: до
+  // решения проверяющего его нет ни в одном читателе парка, и адрес внутри `/office-equipment`
+  // обещал бы обратное первому же, кто станет собирать ручки модуля по префиксу. Перед единицами,
+  // как типы и модели: решение по сообщению кончается заведением карточки, а не наоборот.
+  await app.register(officeEquipmentCandidatesRoutes, {
+    prefix: '/api/v1/office-equipment-candidates',
   });
   await app.register(officeEquipmentRoutes, { prefix: '/api/v1/office-equipment' });
   // Заявки на обслуживание оргтехники (ADR 0085) — третий модуль заявок: свой префикс, свои права

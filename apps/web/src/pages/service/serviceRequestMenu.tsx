@@ -27,7 +27,7 @@ import {
   type ServiceRequestDto,
 } from '@technic/contracts';
 import type { HoldMode } from '@features/service-hold';
-import type { ActionSheetItem } from '@shared/ui';
+import { serviceAcceptLock, type ServiceMenuItem } from './serviceStatusChoices';
 import type { ServiceRequestModals } from './serviceRequestModals';
 import { serviceRequestExtraItems } from './serviceRequestExtras';
 import { serviceReasonPrompts } from './serviceRequestPrompts';
@@ -56,7 +56,7 @@ import { serviceActionRow, serviceExecutorAssignment } from './serviceRequestRow
  *
  * Здесь — только **ход заявки по циклу**. Всё, что делают вокруг неё, не двигая, живёт соседним
  * модулем (`serviceRequestExtras`): состав номенклатуры, отметка выдачи, срочность, обсуждение,
- * перемещение техники, повтор письма. Граница проведена по смыслу, а не по длине файла — ход
+ * перемещение техники. Граница проведена по смыслу, а не по длине файла — ход
  * заявки меняется вместе с циклом, обстоятельства живут своей жизнью, — и порядок пунктов ей
  * следует: сперва ход, затем обстоятельства, и отмена последней, потому что она отнимает работу
  * целиком.
@@ -83,8 +83,6 @@ export interface ServiceMenuContext {
      * (`serviceStatusChangeRequiresReason` о нём молчит), поэтому и подтверждение живёт в хуке.
      */
     rollbackStart: (request: ServiceRequestDto) => void;
-    /** Повтор письма службе (Р70): ключ идемпотентности тоже держит хук. */
-    notify: (request: ServiceRequestDto) => void;
   };
 }
 
@@ -97,7 +95,7 @@ export interface ServiceMenuContext {
 export function serviceRequestMenuItems(
   request: ServiceRequestDto,
   ctx: ServiceMenuContext,
-): ActionSheetItem[] {
+): ServiceMenuItem[] {
   // Архивной заявке ход не положен: её либо восстанавливают, либо сносят — это действия архива.
   if (request.deletedAt) return [];
 
@@ -109,7 +107,7 @@ export function serviceRequestMenuItems(
   const row = serviceActionRow(request);
   const allowed = allowedServiceStatusTransitions(request.status, ctx.user, assignment);
   const has = (status: (typeof allowed)[number]) => allowed.includes(status);
-  const items: ActionSheetItem[] = [];
+  const items: ServiceMenuItem[] = [];
   const ask = ctx.modals.ask;
   // Действия «только с причиной» собраны отдельно: их пять, и различаются они подписями, а не
   // поведением (`serviceRequestPrompts.ts`).
@@ -145,9 +143,10 @@ export function serviceRequestMenuItems(
    * открывает дизъюнкция, вторая половина которой (право на объём работ) назначения не спрашивает.
    * По коридору пункт рисовался бы у нераспределённой заявки администратору, а сервер отвечал бы
    * отказом — то самое расхождение портала с сервером, от которого модуль защищается предикатами.
-   * Оговорка про оператора подрядчика: у него предикат исполнителя истинен и по нераспределённой
-   * заявке (портал не знает, какой компании она отдана, — см. `serviceRequestRow.ts`), и границу
-   * там держит область видимости, а не признак.
+   * Оговорка про оператора подрядчика снята вместе с приближением (Р8): портал теперь знает, какой
+   * компании отдана заявка (`counterpartyId` в `AuthUser`), и по нераспределённой предикат
+   * исполнителя ложен у него так же, как на сервере, — границу держит признак, а не соседнее
+   * правило области.
    * Найдено db-тестами при реализации.
    *
    * Пункт остаётся в меню и после того, как действие вышло быстрой кнопкой в строку списка и в
@@ -159,6 +158,7 @@ export function serviceRequestMenuItems(
       label: 'Принять в работу',
       icon: <PlayCircleOutlined />,
       primary: true,
+      toStatus: 'in_work',
       onClick: () => ctx.run.start(request),
     });
   }
@@ -223,6 +223,9 @@ export function serviceRequestMenuItems(
       label: 'Не согласовать объём работ',
       icon: <CloseSquareOutlined />,
       danger: true,
+      // Отказ по объёму работ — вторая дуга в «Отменена» (В1): различает их не пара статусов, а
+      // содержание, поэтому в списке переходов их два.
+      toStatus: 'cancelled',
       onClick: () => ctx.modals.approval(request),
     });
   }
@@ -263,6 +266,7 @@ export function serviceRequestMenuItems(
       label: 'Закрыть работы',
       icon: <CheckCircleOutlined />,
       primary: !needsDoc,
+      toStatus: 'done',
       disabled: needsDoc,
       disabledReason: needsDoc
         ? 'Сначала подшейте акт, счёт или гарантийный талон — без документа заявка не уходит в «Решена»'
@@ -277,9 +281,10 @@ export function serviceRequestMenuItems(
         key: 'accept',
         label: 'Принять работу',
         icon: <CheckCircleOutlined />,
-        // Сюда же ведёт подпись «Вам: нужен закрывающий документ» (Р120): бумагу подшивают в том же
-        // окне, и второго адреса у этого шага нет.
-        primary: true,
+        toStatus: 'accepted',
+        // Сюда же ведёт подпись «Вам: нужен закрывающий документ» (Р120): бумагу подшивают в том
+        // же окне. Замок непроверенного предмета (Р16) снимает и подпись, и саму кнопку.
+        ...serviceAcceptLock(request),
         onClick: () => ctx.modals.accept(request, 'accept'),
       });
     }
@@ -289,6 +294,7 @@ export function serviceRequestMenuItems(
         label: 'Вернуть на доработку',
         icon: <RollbackOutlined />,
         danger: true,
+        toStatus: 'in_work',
         onClick: () => ctx.modals.accept(request, 'rework'),
       });
     }
@@ -312,6 +318,10 @@ export function serviceRequestMenuItems(
       label: 'Вернуть в «Новую»',
       icon: <UndoOutlined />,
       danger: true,
+      toStatus: 'new',
+      // В списке переходов имя статуса уже стоит первым словом: «Новая · вернуть в «Новую»»
+      // заставляло бы искать разницу между половинами подписи.
+      transitionLabel: 'откатить приём в работу',
       onClick: () => ctx.run.rollbackStart(request),
     });
   }
@@ -322,6 +332,7 @@ export function serviceRequestMenuItems(
       label: 'Отменить приёмку',
       icon: <UndoOutlined />,
       danger: true,
+      toStatus: 'done',
       onClick: () => ask(prompts.rollbackAcceptance),
     });
   }
@@ -331,6 +342,8 @@ export function serviceRequestMenuItems(
       key: 'reopen-request',
       label: 'Вернуть в работу',
       icon: <UndoOutlined />,
+      toStatus: 'new',
+      transitionLabel: 'вернуть отменённую заявку в работу',
       onClick: () => ask(prompts.reopenRequest),
     });
   }
@@ -355,6 +368,9 @@ export function serviceRequestMenuItems(
       key: holdMode,
       label: holdMode === 'resume' ? 'Возобновить' : 'Отложить',
       icon: holdMode === 'resume' ? <PlayCircleOutlined /> : <PauseCircleOutlined />,
+      // У возврата цель динамическая и считается по заявке (`serviceResumeTarget`) — её подставляет
+      // сама проекция: здесь про неё известно только то, что она есть.
+      toStatus: holdMode === 'hold' ? 'on_hold' : undefined,
       onClick: () => ctx.modals.hold(request, holdMode),
     });
   }
@@ -371,6 +387,7 @@ export function serviceRequestMenuItems(
       label: 'Отменить заявку',
       icon: <StopOutlined />,
       danger: true,
+      toStatus: 'cancelled',
       onClick: () => ask(prompts.cancel),
     });
   }

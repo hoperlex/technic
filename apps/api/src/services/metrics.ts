@@ -102,12 +102,20 @@ export async function collectMetrics(): Promise<string> {
      * §5.12). Общий `technic_mail_messages` отвечает «сколько застряло», но не «каких»: рост
      * `failed` по подрядчикам в нём неотличим от роста по сводкам водителям, а разбирают их
      * по-разному. Сутки — окно алерта: письмо, застрявшее вчера, уже разобрано или уже неважно.
+     *
+     * ВТОРОЙ ПРЕФИКС — ПИСЬМА О СООБЩЕНИИ, ЧТО ТЕХНИКИ НЕТ В СПРАВОЧНИКЕ (план кандидатов, §10).
+     * Отбор идёт по именам видов, а не по перечню из контрактов, и это осознанная плата: SQL здесь
+     * читается глазами дежурного, и `LIKE` по префиксу переживает появление нового вида. Но плата
+     * настоящая — вид, названный без префикса модуля, выпал бы из метрики МОЛЧА, и заметили бы это
+     * тогда же, когда и всё в этом файле: на разборе «почему никто не получил письма». Оба
+     * префикса поэтому названы здесь явно, а не собраны одним «всё, что похоже на модуль».
      */
     db.execute<{ kind: string; status: string; count: string }>(
       sql`SELECT kind::text AS kind, status::text AS status, count(*)::text AS count
             FROM mail_messages
            WHERE NOT is_test
-             AND kind::text LIKE 'service_request_%'
+             AND (kind::text LIKE 'service_request_%'
+                  OR kind::text LIKE 'office_equipment_candidate_%')
              AND created_at > now() - interval '24 hours'
            GROUP BY kind, status`,
     ),

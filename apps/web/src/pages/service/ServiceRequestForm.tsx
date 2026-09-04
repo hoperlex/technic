@@ -1,15 +1,14 @@
 import { useEffect } from 'react';
 import { App, Checkbox, Form, Input, Segmented } from 'antd';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   isWarrantyActive,
   serviceRequestKindLabels,
   SERVICE_REQUEST_KINDS,
   type ServiceRequestDto,
   type ServiceRequestKind,
-  type WarrantyClaimSource,
 } from '@technic/contracts';
-import { officeEquipmentKeys, officeEquipmentOptionsQuery } from '@entities/office-equipment';
+import { officeEquipmentKeys } from '@entities/office-equipment';
 import { serviceRequestKeys } from '@entities/service-request';
 import { ServiceRequestCustomerField, useServiceRequestCustomer } from '@features/request-customer';
 import { FormModal, useFormBlockers } from '@shared/ui';
@@ -17,8 +16,15 @@ import {
   ServiceRequestAttachments,
   useServiceRequestAttachments,
 } from './ServiceRequestAttachments';
-import { submitServiceRequest, type ServiceFormValues } from './serviceRequestSubmit';
-import { ServiceRequestEquipmentField } from './ServiceRequestEquipmentField';
+import {
+  submitServiceRequest,
+  type ServiceFormValues,
+  type WarrantyClaimPreset,
+} from './serviceRequestSubmit';
+import {
+  ServiceRequestEquipmentField,
+  useServiceRequestEquipment,
+} from './ServiceRequestEquipmentField';
 import { ServiceRequestWarrantyClaim } from './ServiceRequestWarrantyClaim';
 import { useRequesterPlace } from './ServiceRequestRequesterPlace';
 import { reportServiceMail } from './serviceMailNotice';
@@ -28,20 +34,9 @@ import { useAuth } from '../../auth/AuthContext';
 
 /** Поля формы объявлены рядом с отправкой (`serviceRequestSubmit`): они — её вход. */
 type Values = ServiceFormValues;
-
-/**
- * Обращение по гарантии, начатое из реестра (§9.5): техника и источник уже названы строкой
- * реестра, и в форме они не правятся — `itemId` позиции прошлого ремонта взять больше неоткуда,
- * а «поправленный» источник означал бы ссылку не на ту работу.
- */
-export interface WarrantyClaimPreset {
-  equipmentId: string;
-  source: WarrantyClaimSource;
-  /** Позиция объёма работ прошлой заявки; у гарантии поставщика её нет (Р26). */
-  itemId: string | null;
-  /** На что гарантия — подпись для подсказки: человек должен видеть, на что ссылается. */
-  subject: string;
-}
+/* Там же живёт и предустановка обращения по гарантии — она вход той же отправки; отсюда её
+   по-прежнему берут реестр и блок гарантии, чтобы правка импортов не расползлась по модулю. */
+export type { WarrantyClaimPreset };
 
 /**
  * Форма заявки на обслуживание (§9.3): что сломалось, у какой единицы и с кем связываться.
@@ -84,12 +79,9 @@ export function ServiceRequestForm({
   const warrantySource = Form.useWatch('warrantySource', form);
   const isUrgent = Form.useWatch('isUrgent', form);
 
-  const { data: equipmentOptions = [], isFetching: equipmentLoading } = useQuery({
-    ...officeEquipmentOptionsQuery(),
-    enabled: open && can('officeEquipment.read'),
-  });
-
-  const selected = equipmentOptions.find((option) => option.value === equipmentId);
+  // Выдача и память выбранного живут при самом поле (Ф1): форме нужен ответ, а не его устройство.
+  const equipment = useServiceRequestEquipment({ open, equipmentId });
+  const selected = equipment.selected;
   const warrantyActive = isWarrantyActive(selected?.warrantyUntil);
 
   /**
@@ -103,6 +95,20 @@ export function ServiceRequestForm({
    * нет — оно лишь снимает требование аппарата с общего заведения, а отказ по нему даёт маршрут.
    */
   const canSkipEquipment = can('serviceRequests.createWithoutEquipment');
+  /**
+   * СРОЧНОСТЬ ПРИ ПРАВКЕ ЗАПЕРТА БЕЗ СВОЕГО ПРАВА (план профилей оргтехники, Р10): сервер спрашивает
+   * `serviceRequests.urgency`, как только пара расходится со строкой заявки, и кнопка, ведущая в
+   * 403, — это дефект портала, а не строгость сервера (§11: портал не показывает того, чего сервер
+   * не даст).
+   *
+   * Заперта, а не спрятана: заявитель обязан видеть, срочная его заявка или нет, — иначе исчезнувшая
+   * галочка читалась бы как «срочность сняли». Меняют её отдельной ручкой те, кто ведёт заявки
+   * (`ServiceUrgencyModal`), и им она отсюда не нужна.
+   *
+   * У ЗАВЕДЕНИЯ ПРАВА НЕ СПРАШИВАЕМ ВОВСЕ: объявить срочность при подаче — просьба заявителя, и
+   * серверная дверь там открыта намеренно (Н1, §8).
+   */
+  const urgencyLocked = !!request && !can('serviceRequests.urgency');
   /** Заявка заводится без аппарата: поле пусто, и оставить его пустым разрешено. */
   const withoutEquipment = !request && noEquipment && canSkipEquipment;
 
@@ -115,8 +121,13 @@ export function ServiceRequestForm({
    *
    * У заявки БЕЗ аппарата состав задаёт ось роли (Р6), и подбор считает её сам — форме остаётся
    * сказать, что аппарата не будет: поле техники пусто, а право оставить его пустым есть.
+   *
+   * У ЗАЯВЛЕННОГО АППАРАТА площадку задаёт само сообщение (план кандидата, Р7): единицы нет, но
+   * место человек уже назвал, а без подстановки поле осталось бы запертым «до выбора техники».
    */
-  const customer = useServiceRequestCustomer({ request, equipment: selected, withoutEquipment });
+  const draft = Form.useWatch('equipmentCandidate', { form, preserve: true });
+  const site = selected ?? draft?.site;
+  const customer = useServiceRequestCustomer({ request, equipment: site, withoutEquipment });
 
   // Подразделение заявителя (Н11): поле и тело запроса — из одной оси. Спрашивается только там,
   // где у учётки не одна привязка; при правке не спрашивается вовсе — оно снято снимком.
@@ -204,6 +215,10 @@ export function ServiceRequestForm({
         customerObjectId: pair.objectId,
         requesterPlace: place.body(values.requesterPlaceId),
         fileIds: attachments.ids,
+        equipmentCandidate: draft,
+        // Пара срочности при правке уходит только с правом (Р10): без него сервер ответил бы 403 на
+        // всю форму, потому что считает решение об очереди по разнице со строкой заявки.
+        canUrgency: can('serviceRequests.urgency'),
       });
     },
     onSuccess: (res) => {
@@ -215,12 +230,14 @@ export function ServiceRequestForm({
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();
     },
-    // Отказ разбирает отдельный модуль: кодов три, и у каждого своё место на экране.
+    // Отказ разбирает отдельный модуль: кодов четыре, и у каждого своё место на экране; форма
+    // передана ему затем, что дубль в парке (Р10) ставит найденную единицу прямо в её поля.
     onError: (e, values) =>
       reportServiceRequestFailure(e, {
-        withoutEquipment: !request && !values.officeEquipmentId,
+        withoutEquipment: !request && !values.officeEquipmentId && !draft,
         blockers,
         message,
+        form,
       }),
   });
 
@@ -256,10 +273,8 @@ export function ServiceRequestForm({
           request={request}
           claim={!!claim}
           optional={canSkipEquipment}
-          selected={selected}
-          options={equipmentOptions}
-          loading={equipmentLoading}
           open={open}
+          {...equipment}
         />
 
         {/* Строк номенклатуры здесь больше нет (Р15): заявитель не выбирает позиции справочника —
@@ -348,7 +363,7 @@ export function ServiceRequestForm({
           valuePropName="checked"
           style={{ marginBottom: isUrgent ? 8 : 24 }}
         >
-          <Checkbox>Срочная заявка</Checkbox>
+          <Checkbox disabled={urgencyLocked}>Срочная заявка</Checkbox>
         </Form.Item>
         {isUrgent && (
           <Form.Item
@@ -357,6 +372,7 @@ export function ServiceRequestForm({
             rules={[{ required: true, message: 'Объясните, почему заявка срочная' }]}
           >
             <Input
+              disabled={urgencyLocked}
               maxLength={500}
               placeholder="Например: единственный принтер на площадке, встала выдача пропусков"
             />

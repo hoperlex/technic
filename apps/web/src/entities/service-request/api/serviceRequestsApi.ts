@@ -1,6 +1,4 @@
 import type {
-  NotifyServiceRequestInput,
-  ServiceRequestNotifyResultDto,
   ServiceRequestWithMailDto,
   ApproveServiceEstimateInput,
   CompleteServiceRequestInput,
@@ -76,12 +74,23 @@ export const serviceRequestsApi = {
    * Заведение отвечает заявкой **и исходом письма службе**: у службы нет учётки в портале, и
    * «заявка заведена, но служба не оповещена» человек обязан узнать сразу, а не когда за ней не
    * приехали. Переопределяет `create` фабрики — форма ответа у него своя.
+   *
+   * КЛЮЧ ИДЕМПОТЕНТНОСТИ — ЗАГОЛОВКОМ И ТОЛЬКО У ВЕТКИ КАНДИДАТА (план
+   * `docs/office-equipment-candidate-plan.md`, §8): тело с `equipmentCandidate` заводит СРАЗУ ДВЕ
+   * строки — заявку и сообщение о технике, — и потерянный успешный ответ стоил бы человеку второй
+   * пары. Обычная заявка ключа не несёт: маршрут его там не ждёт, а обязательный для всех ключ
+   * означал бы правку каждого сегодняшнего вызова ради ветки, которой у большинства нет.
+   *
+   * Ключ приходит параметром, а не рождается здесь: он описывает ПОПЫТКУ, и повтор после обрыва
+   * обязан нести тот же ключ. Роди его этот метод — каждое нажатие получало бы свой, и защита
+   * выродилась бы в украшение (тот же довод, что у заведения плановой закупки).
    */
-  create: (body: CreateServiceRequestInput) =>
-    apiFetch<ServiceRequestWithMailDto>(PATH, { method: 'POST', body }),
-  /** Повторная отправка письма службе: ключ идемпотентности — один на открытие диалога (Р70). */
-  notify: (id: string, body: NotifyServiceRequestInput) =>
-    apiFetch<ServiceRequestNotifyResultDto>(`${PATH}/${id}/notify`, { method: 'POST', body }),
+  create: (body: CreateServiceRequestInput, idempotencyKey?: string) =>
+    apiFetch<ServiceRequestWithMailDto>(PATH, {
+      method: 'POST',
+      body,
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    }),
   ...createRemoveApi<{ ok: boolean }>(PATH),
 
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`${PATH}/${id}/history`),

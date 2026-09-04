@@ -1,5 +1,5 @@
 import { Button, Space, Tag, Tooltip, Typography } from 'antd';
-import { PlayCircleOutlined } from '@ant-design/icons';
+import { PlayCircleOutlined, SwapOutlined, UserSwitchOutlined } from '@ant-design/icons';
 import {
   serviceFileKindLabels,
   type ServiceRequestDto,
@@ -77,13 +77,7 @@ export function showsAmount(requests: readonly ServiceRequestDto[]): boolean {
 }
 
 /** Реквизиты единицы: модель сверху, номер и тип — подписью. Ими технику и опознают. */
-export function EquipmentCell({
-  request,
-  warrantyUntil,
-}: {
-  request: ServiceRequestDto;
-  warrantyUntil: string | null | undefined;
-}) {
+export function EquipmentCell({ request }: { request: ServiceRequestDto }) {
   const equipment = request.equipment;
   const number = equipment?.inventoryNumber
     ? `инв. ${equipment.inventoryNumber}`
@@ -102,9 +96,11 @@ export function EquipmentCell({
           {/* Два разных признака гарантии (§9.2): слева — состояние гарантии самой техники,
               справа — пометка «эта заявка заявлена по гарантии». Их путают постоянно: техника
               может быть на гарантии, а заявка заведена обычной, и наоборот.
-              `undefined` — справочник этой роли не виден (сервису он закрыт), и молчание честнее
-              прочерка: портал про гарантию единицы попросту не знает. */}
-          {warrantyUntil !== undefined && <WarrantyTag until={warrantyUntil} />}
+              Срок приходит в самой строке (Ф3), а не отдельным запросом справочника, и признак
+              «спрашивать не у чего» выражен отсутствием блока предмета: у заявки без аппарата и у
+              заявки с непроверенным кандидатом тега нет вовсе, а `null` внутри блока — это уже
+              честное «срок не заведён», и `WarrantyTag` рисует на него прочерк. */}
+          {equipment && <WarrantyTag until={equipment.warrantyUntil} />}
           {request.warrantyClaim && (
             <Tooltip
               title={`${warrantyClaimSourceLabels[request.warrantyClaim.source]}${
@@ -205,6 +201,61 @@ export function StartWorkButton({ item }: { item: ActionSheetItem | undefined })
         aria-label={item.label}
         // Клик не всплывает: по строке списка нажимают, чтобы открыть карточку, и второй смысл у
         // того же жеста означал бы «взял в работу вместо того, чтобы посмотреть».
+        onClick={(e) => {
+          e.stopPropagation();
+          item.onClick();
+        }}
+      />
+    </Tooltip>
+  );
+}
+
+/**
+ * «Записать перемещение» — у реквизитов аппарата в карточке, а не в меню «Действия» (backlog §12).
+ *
+ * Переезд, вызванный ремонтом, правит справочник, и решают его, глядя на реквизиты: инвентарный
+ * номер, модель, где стоит. В общем меню действие стояло наравне с ходами заявки и нажималось, не
+ * открыв её, — оттуда и расхождение «где записано» с «где стоит».
+ *
+ * Обработчик приходит готовым пунктом набора действий: своего правила у кнопки нет, и «кому
+ * положено» здесь не считается — её просто нет, когда пункт недоступен.
+ */
+export function MoveEquipmentButton({ onClick }: { onClick?: (() => void) | null }) {
+  if (!onClick) return null;
+  return (
+    <Button
+      type="link"
+      size="small"
+      icon={<SwapOutlined />}
+      style={{ padding: 0 }}
+      onClick={onClick}
+    >
+      Записать перемещение
+    </Button>
+  );
+}
+
+/**
+ * «Назначить/Изменить исполнителей» — быстрой кнопкой в строке списка (ADR 0162, Э5).
+ *
+ * Назначение и переназначение — то, ради чего список открывают чаще всего: заявки распределяют
+ * пачкой, глядя на очередь целиком, а не на карточку каждой. Пока вход был один и в меню, каждое
+ * такое распределение стоило двух нажатий вместо одного.
+ *
+ * Подпись берётся у самого пункта, а не пишется здесь: у первого назначения и у переназначения она
+ * разная («Назначить исполнителей» / «Изменить исполнителей»), и знает об этом набор действий —
+ * он же считает, кому действие доступно.
+ */
+export function AssignButton({ item }: { item: ActionSheetItem | undefined }) {
+  if (!item) return null;
+  return (
+    <Tooltip title={item.label}>
+      <Button
+        size="small"
+        icon={<UserSwitchOutlined />}
+        aria-label={item.label}
+        // Клик не всплывает — по той же причине, что у «Принять в работу»: нажатие по строке
+        // открывает карточку, и второй смысл у того же жеста спорил бы с первым.
         onClick={(e) => {
           e.stopPropagation();
           item.onClick();

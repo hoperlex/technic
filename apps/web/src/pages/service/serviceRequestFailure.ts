@@ -1,4 +1,8 @@
-import type { App } from 'antd';
+import type { App, FormInstance } from 'antd';
+import {
+  OFFICE_EQUIPMENT_CANDIDATE_CONFLICT_CODES,
+  type OfficeEquipmentCandidateParkDuplicateDetails,
+} from '@technic/contracts';
 import { isApiError } from '@shared/api';
 import type { FormBlockersApi } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
@@ -25,15 +29,40 @@ type MessageApi = ReturnType<typeof App.useApp>['message'];
  * (`fields` с текстом), а показывает портал то, что сказал сервер. Различие живёт на сервере, где
  * общий обработчик zod отвечает 400 там, где сама ручка ответила бы 422.
  *
+ * ЧЕТВЁРТЫЙ КОД — 409 ДУБЛЯ В ПАРКЕ у ветки сообщения о технике (план кандидата, Р10, §9), и он
+ * единственный, из которого портал может ПРОДОЛЖИТЬ заявку сам. Разбирается он ниже отдельным
+ * помощником: у отказа три редакции, и подставить найденную единицу можно ровно в одной.
+ *
  * Отдельным модулем от формы — по той же причине, что и сосед `serviceMailNotice`: разбор ответа и
  * заполнение полей отвечают на разные вопросы, а форма и без него упирается в порог длины файла.
  */
+
+/**
+ * 409 «такой аппарат в справочнике уже есть»: что портал делает вместо человека.
+ *
+ * ИДЕНТИФИКАТОР ЗАПОЛНЕН РОВНО У ОДНОЙ ИЗ ТРЁХ РЕДАКЦИЙ отказа — у активной карточки в области
+ * заявителя (Р10). Тогда портал ставит её в поле «Какой аппарат», убирает сообщение о технике и
+ * говорит словами, что произошло: человек искал этот аппарат и не нашёл (чаще всего из-за опечатки
+ * в номере), а заявку он заводил не ради справочника — она должна уйти по найденной единице.
+ *
+ * У двух других редакций идентификатора нет, и подставлять нечего: неактивную карточку селектор не
+ * показывает и сервер всё равно отобьёт (Ф2), а у чужой не раскрывается даже наименование. Там
+ * остаётся сказать словами — тем текстом, что прислал сервер, — и человек либо поправит номер, либо
+ * обратится к тому, кто ведёт справочник.
+ */
+function parkDuplicateOf(error: unknown): OfficeEquipmentCandidateParkDuplicateDetails | null {
+  if (!isApiError(error) || error.status !== 409) return null;
+  if (error.code !== OFFICE_EQUIPMENT_CANDIDATE_CONFLICT_CODES.parkDuplicate) return null;
+  const details = error.details as OfficeEquipmentCandidateParkDuplicateDetails | undefined;
+  return details?.kind === 'parkDuplicate' ? details : null;
+}
 export function reportServiceRequestFailure(
   error: unknown,
   {
     withoutEquipment,
     blockers,
     message,
+    form,
   }: {
     /**
      * Заводилась заявка БЕЗ аппарата: поле было пустым, и тело ушло с `officeEquipmentId: null`.
@@ -46,8 +75,30 @@ export function reportServiceRequestFailure(
     withoutEquipment: boolean;
     blockers: FormBlockersApi;
     message: MessageApi;
+    /**
+     * Сама форма — ею портал продолжает заявку после 409 дубля (Р10): найденная единица встаёт в
+     * поле «Какой аппарат», а сообщение о технике снимается. Двумя значениями, а не одним: отправь
+     * форма оба предмета сразу, схема ответила бы отказом «предмет заявки один».
+     *
+     * Необязательна: правка и обычное заведение этой ветки не имеют вовсе.
+     */
+    form?: FormInstance;
   },
 ): void {
+  const duplicate = parkDuplicateOf(error);
+  if (duplicate) {
+    if (duplicate.officeEquipmentId && form) {
+      form.setFieldValue('equipmentCandidate', undefined);
+      form.setFieldValue('officeEquipmentId', duplicate.officeEquipmentId);
+      message.warning(
+        `Этот аппарат уже есть в справочнике: ${duplicate.title ?? 'карточка найдена'}. Мы выбрали его в заявке — проверьте и сохраните ещё раз.`,
+      );
+      return;
+    }
+    // Подставить нечего: остаётся дословный ответ сервера — он и объясняет, какая это из редакций.
+    message.warning(errorMessage(error));
+    return;
+  }
   if (withoutEquipment && isApiError(error) && error.status === 403) {
     blockers.raise({ officeEquipmentId: error.message });
     return;

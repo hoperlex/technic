@@ -74,6 +74,7 @@ function request(overrides: Partial<ServiceRequestDto> = {}): ServiceRequestDto 
       inventoryNumber: EQUIPMENT.inventoryNumber,
       typeName: TYPE.name,
       location: EQUIPMENT.location,
+      warrantyUntil: EQUIPMENT.warrantyUntil,
     },
     responsibleName: 'Штабов С. И.',
     responsiblePhone: '9001234567',
@@ -168,6 +169,33 @@ describe('заведение заявки: письмо службе', () => {
     await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
     // Ни слова про неоповещённого адресата: письмо ушло, и предупреждать не о чем.
     expect(screen.queryByText(/не оповещ/)).toBeNull();
+    /*
+     * После снятия кнопки повтора (ADR 0162, Э2) это единственное место, где проверяется удавшееся
+     * письмо, и молчание тут — само утверждение. Считаются тосты, а не текст: их ровно один, «Заявка
+     * заведена», и второй означал бы, что портал всё-таки сказал про письмо.
+     */
+    expect(document.querySelectorAll('.ant-message-notice')).toHaveLength(1);
+  });
+
+  it('несобравшееся письмо отправляет к администратору, а не оставляет молчание', async () => {
+    /*
+     * Исход `mail_failed` проверяется здесь — на событии, которое его и порождает.
+     *
+     * Прежде он висел на кнопке «Отправить письмо службе ещё раз», а её сняли вертикалью
+     * (ADR 0162, Э2): вместе с пунктом ушли мутация, ключ идемпотентности и метод API, и второго
+     * места, откуда портал звал бы `POST /:id/notify`, в дереве не осталось. Сам же исход никуда не
+     * делся — он приходит ответом ЛЮБОГО действия, которое заказывает письмо, и заведение заявки
+     * первое из них.
+     *
+     * Молчать тут нельзя: заявка заведена, а службу не позвали. Человек ничего не поправит сам, но
+     * узнать об этом обязан сразу — иначе он уйдёт уверенным, что за техникой приедут.
+     */
+    const http = renderForm('mail_failed');
+    await submitForm();
+
+    expect(await screen.findByText('Заявка заведена')).toBeDefined();
+    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    expect(await screen.findByText('Письмо не собралось — сообщите администратору')).toBeDefined();
   });
 
   it('выключенное рубильником событие молчит: это настройка, а не беда', async () => {
@@ -230,30 +258,5 @@ describe('отмена заявки: письмо «не выезжайте»', 
     expect(
       await screen.findByText(/заведите ящик компании в справочнике контрагентов/),
     ).toBeDefined();
-  });
-});
-
-describe('повторная отправка письма службе', () => {
-  it('удавшийся повтор называет адресатов: за ними и шли', async () => {
-    renderTab([request()], {
-      'POST /service-requests/:id/notify': () =>
-        json({ mail: 'queued', recipients: ['service@example.test'] }),
-    });
-    await openRowActions();
-    fireEvent.click(await screen.findByText('Отправить письмо службе ещё раз'));
-
-    expect(
-      await screen.findByText('Письмо службе поставлено в очередь: service@example.test'),
-    ).toBeDefined();
-  });
-
-  it('несобравшееся письмо отправляет к администратору, а не оставляет молчание', async () => {
-    renderTab([request()], {
-      'POST /service-requests/:id/notify': () => json({ mail: 'mail_failed', recipients: [] }),
-    });
-    await openRowActions();
-    fireEvent.click(await screen.findByText('Отправить письмо службе ещё раз'));
-
-    expect(await screen.findByText('Письмо не собралось — сообщите администратору')).toBeDefined();
   });
 });

@@ -16,7 +16,7 @@ import {
 } from '@technic/contracts';
 import { config } from '../config';
 import { db } from '../db/client';
-import { users } from '../db/schema';
+import { serviceRequests, users } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
@@ -27,6 +27,10 @@ import {
   type ServiceLetterData,
   type ServiceLetterExtra,
 } from '../services/service-request-mail';
+import {
+  candidateLetterContent,
+  loadCandidateLetterData,
+} from '../services/office-equipment-candidate-mail';
 import type { MailContent } from '../services/mail-templates';
 import { buildDriverRoutesMail, driversWithRoutes } from '../services/mailings/driver-routes';
 import { buildRoleDigestMail } from '../services/mailings/role-digest';
@@ -158,6 +162,37 @@ async function contentFor(
       } catch {
         return null;
       }
+    }
+    /**
+     * Письма о сообщении, что аппарата нет в справочнике (план кандидатов, §10). Образец берётся по
+     * ТОЙ ЖЕ заявке-образцу: связь «сообщение ↔ заявка» строго 1:1 (Р4), и заводить в форме второе
+     * поле «номер сообщения» ради двух видов писем незачем — администратор и так вводит номер
+     * заявки, в которой сообщение видит.
+     */
+    case 'office_equipment_candidate_pending':
+    case 'office_equipment_candidate_decided': {
+      if (!opts.sampleRequestId) return null;
+      const data = await db
+        .transaction(async (tx) => {
+          const [row] = await tx
+            .select({ candidateId: serviceRequests.equipmentCandidateId })
+            .from(serviceRequests)
+            .where(eq(serviceRequests.id, opts.sampleRequestId!));
+          // Заявка без сообщения о технике — не поломка, а «возьмите другую»: тот же мягкий отказ,
+          // каким отвечает письмо о назначении по заявке без исполнителей.
+          return row?.candidateId ? await loadCandidateLetterData(tx, row.candidateId) : null;
+        })
+        .catch(() => null);
+      if (!data) return null;
+      /**
+       * Исход решения берётся у САМОГО сообщения, а не выдумывается образцом. Показательное
+       * «отклонено» под ещё не решённым сообщением показало бы администратору письмо, какого портал
+       * не шлёт, — и проверял бы он вёрстку строки, которой в жизни не будет. Ждущее проверки
+       * сообщение поэтому даёт образец только первого письма.
+       */
+      const decision = data.status === 'pending' ? undefined : data.status;
+      if (kind === 'office_equipment_candidate_decided' && !decision) return null;
+      return candidateLetterContent(kind, data, 'internal', decision);
     }
     case 'verify_email':
       return { subject: VERIFY_SUBJECT, content: verifyEmailContent(FAKE_TOKEN) };

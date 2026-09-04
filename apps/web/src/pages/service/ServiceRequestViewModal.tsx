@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Badge, Button, Dropdown, Space, Spin, Tabs, Typography } from 'antd';
+import { Badge, Button, Space, Spin, Tabs, Typography } from 'antd';
 import { MessageOutlined, PlayCircleOutlined, ProfileOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -14,13 +14,14 @@ import {
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
-import { ActionSheet, ViewFields, ViewModal } from '@shared/ui';
+import { ActionMenuButton, ActionSheet, ViewFields, ViewModal } from '@shared/ui';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ServiceRequestDocuments } from './ServiceRequestDocuments';
 import { ServiceRequestEstimate } from './ServiceRequestEstimate';
+import { cardMenuItems } from './serviceMenuPlacement';
 import { serviceRequestViewFields } from './serviceRequestViewFields';
 
 /**
@@ -65,23 +66,14 @@ const SERVICE_HISTORY_STATUSES = {
  */
 export function ServiceRequestViewModal({
   request: row,
-  equipmentWarrantyUntil,
   onClose,
-  onEdit,
   actions,
   pendingId,
   modals,
 }: {
   /** `null` — окно закрыто. Строка списка: с неё карточка рисуется, пока едет свежая. */
   request: ServiceRequestDto | null;
-  /**
-   * Гарантия самой единицы. Приходит извне и бывает не задана вовсе: в заявке лежит снимок
-   * реквизитов без срока, а справочник виден не всякому — сервису он закрыт (Р7).
-   */
-  equipmentWarrantyUntil?: string | null;
   onClose: () => void;
-  /** Не передан — правка этой заявки недоступна (роль, статус или архив). */
-  onEdit?: (request: ServiceRequestDto) => void;
   /**
    * Ход заявки: набор строит `useServiceRequestActions` — коридором там, где действие ещё переход,
    * и предикатами Р11 там, где оно им быть перестало. Не передан — карточка только на чтение
@@ -170,16 +162,22 @@ export function ServiceRequestViewModal({
    * ручкам к одному действию в одном окне взяться неоткуда.
    */
   const consumables = allActions.find((item) => item.key === 'consumables');
-  const actionItems = allActions.filter(
-    (item) => item.key !== 'assign' && item.key !== 'chat' && item.key !== 'consumables',
-  );
+  /*
+   * Перемещение техники (backlog §12) уходит из меню туда, где читают реквизиты, — кнопкой к полю
+   * «Какой аппарат». Пункт берётся готовым, как назначение и обсуждение: доступность считает
+   * предикат, а не поле.
+   */
+  const moveEquipment = allActions.find((item) => item.key === 'move-equipment');
+  /* Правка заявки: в меню карточки пункт вычеркнут — его место здесь, главной кнопкой подвала. */
+  const edit = allActions.find((item) => item.key === 'edit');
+  const actionItems = cardMenuItems(allActions);
 
   const fields = request
     ? serviceRequestViewFields({
         request,
         user,
-        equipmentWarrantyUntil,
         onAssign: assign?.onClick,
+        onMoveEquipment: moveEquipment?.onClick,
         // Тег статуса в поле «Статус» — тот же вход в ход заявки, что и в строке списка (ADR
         // 0161). Набор берётся КАРТОЧКИН: окно перехода обязано открыться внутри карточки, иначе
         // оно делит с ней слой и прячется под ней (ADR 0140).
@@ -239,27 +237,22 @@ export function ServiceRequestViewModal({
                   Действия
                 </Button>
               ) : (
-                <Dropdown
-                  key="actions"
-                  trigger={['click']}
-                  menu={{
-                    items: actionItems.map((item) => ({
-                      key: item.key,
-                      label: item.label,
-                      danger: item.danger,
-                    })),
-                    onClick: ({ key }) => actionItems.find((item) => item.key === key)?.onClick(),
-                  }}
-                >
-                  <Button>Действия</Button>
-                </Dropdown>
+                // Тот же триггер, что и в строке списка: прежде карточка теряла здесь `disabled`
+                // вместе с причиной, и выключенное «Закрыть работы» нажималось, открывало окно и
+                // упиралось в отказ сервера.
+                <ActionMenuButton key="actions" items={actionItems}>
+                  Действия
+                </ActionMenuButton>
               ),
             ]
           : []),
-        ...(request && onEdit
+        ...(edit
           ? [
-              <Button key="edit" type="primary" onClick={() => onEdit(request)}>
-                Редактировать
+              // Правка — главной кнопкой подвала, и пункт берётся ГОТОВЫМ, а не строится вторым
+              // условием: прежде кнопка жила на своём пропе, а меню — на пункте набора, и два
+              // источника одного права разошлись бы на первой же правке цикла.
+              <Button key="edit" type="primary" onClick={edit.onClick}>
+                {edit.label}
               </Button>,
             ]
           : []),

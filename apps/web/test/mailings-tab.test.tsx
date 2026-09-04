@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { ConfigProvider } from 'antd';
 import {
   can,
   EMAIL_VERIFICATION_ENABLED,
@@ -74,7 +75,21 @@ const ACCOUNTS: MailAccountStatusDto[] = [
  * поэтому тест сначала переключается на неё: до подвкладок форма стояла третьим блоком одного
  * свитка, и вместе они в экран не помещались.
  */
-async function renderTab(user: AuthUser = authUser({ role: 'admin' })): Promise<HttpMock> {
+/**
+ * `wide` включает `popupMatchSelectWidth={false}` — настройку точки входа портала (`main.tsx`,
+ * ADR 0136), которая заодно выключает виртуализацию списков. Нужна она ровно перебору видов письма
+ * ниже: в jsdom у выпадашки нулевая высота, rc-virtual-list рисует лишь первое окно вариантов, и
+ * виды, стоящие в конце перечня, до клика не доживают. Перечень растёт — девятым и десятым в него
+ * приехали письма о сообщениях про отсутствующую технику, — и споткнулся он ровно на них.
+ *
+ * Остальным случаям файла настройка не нужна и мешает: они выбирают варианты в коротких списках, а
+ * `popupMatchSelectWidth={false}` меняет разметку выпадашки настолько, что помощник `selectOption`
+ * перестаёт её находить. Поэтому параметр, а не общая обёртка: включаем там, где она лечит.
+ */
+async function renderTab(
+  user: AuthUser = authUser({ role: 'admin' }),
+  wide = false,
+): Promise<HttpMock> {
   const http = mockHttp({
     'GET /admin/mail/schedules': () => json([]),
     'GET /admin/mail/recipients': () => json([]),
@@ -84,7 +99,16 @@ async function renderTab(user: AuthUser = authUser({ role: 'admin' })): Promise<
     'GET /admin/mail/accounts': () => json(ACCOUNTS),
     [SEND]: () => json({ ok: true, message: 'Письмо отправлено' }),
   });
-  renderWithUser(<MailingsTab />, { user });
+  renderWithUser(
+    wide ? (
+      <ConfigProvider popupMatchSelectWidth={false}>
+        <MailingsTab />
+      </ConfigProvider>
+    ) : (
+      <MailingsTab />
+    ),
+    { user },
+  );
   fireEvent.click(screen.getByRole('tab', { name: 'Отладка' }));
   await screen.findByText('Отладочная отправка');
   return http;
@@ -112,7 +136,7 @@ describe('состав полей следует из вида письма', ()
       // Лишнее поле здесь — вопрос, на который человеку нечего ответить (у писем про доступ нет
       // ни периода, ни образца: они относятся к событию). Недостающее — отказ сервера на кнопке:
       // те же таблицы проверяет `mailTestSchema`.
-      await renderTab();
+      await renderTab(authUser({ role: 'admin' }), true);
       await screen.findByLabelText('Тип письма');
       await selectOption('Тип письма', mailTestKindLabels[kind]);
 

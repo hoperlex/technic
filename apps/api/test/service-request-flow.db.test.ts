@@ -791,8 +791,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
 
     /**
      * Набор «Оргтехника: ИТ-служба» (план §7.2) — своим кодом на прогон, а не системным
-     * `office_equipment_it_approver`: состав системного набора до волны В5 остаётся прежним (одна
-     * виза ИТ), и подмешать в него `execute` значило бы править поставочные права ради теста.
+     * `office_equipment_it_approver`: поставочный состав живёт своей жизнью (ходы исполнителя уехали
+     * из него в `office_equipment_executor`, мёртвая виза снята миграцией E), и подмешивать в него
+     * права ради теста нельзя. Прогонный набор даёт ровно тот состав, который проверяет стража.
      * Прогонный набор даёт ровно тот состав, который волна В5 и выдаст, — и проверяет он стража, а
      * не каталог.
      *
@@ -977,7 +978,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       await ctx.db.execute(
         sql`DELETE FROM service_requests WHERE office_equipment_id IN (${equipment})`,
       );
-      await ctx.db.execute(sql`DELETE FROM office_equipment_consumables WHERE id IN (${расходники})`);
+      await ctx.db.execute(
+        sql`DELETE FROM office_equipment_consumables WHERE id IN (${расходники})`,
+      );
       await ctx.db.execute(
         sql`DELETE FROM office_equipment WHERE inventory_number LIKE ${`ОЕ-${RUN}-%`}`,
       );
@@ -1087,8 +1090,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
   // ── Шаг 2. Виза отдела ИТ упразднена (Р10) ──
   //
   // Случай «визу ИТ на „Новую“ не ставят» снят: ставить нечего и нечем — ручка `PATCH
-  // /:id/it-approval` удалена, `SERVICE_IT_TRANSITIONS` пуста, а вопрос «чинить или менять» задаёт
-  // себе тот же человек, что смотрит на объём работ (ответ В2). Область согласующего от ИТ при
+  // /:id/it-approval` удалена, коридора визы нет вовсе (таблицу сняли вместе с уборкой мёртвого
+  // права из наборов), а вопрос «чинить или менять» задаёт себе тот же человек, что смотрит на
+  // объём работ (ответ В2). Область согласующего от ИТ при
   // этом никуда не делась — её проверяет случай ниже, — потому что надстройка модуля даёт не визу,
   // а видимость чужих площадок.
 
@@ -1201,7 +1205,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       'PATCH',
       `/api/v1/service-requests/${dto.id}/status`,
       ctx.admin.auth,
-      { status: 'new', reason: 'Вернули по просьбе заказчика', version: await version(dto.id, ctx.admin.auth) },
+      {
+        status: 'new',
+        reason: 'Вернули по просьбе заказчика',
+        version: await version(dto.id, ctx.admin.auth),
+      },
     );
     expect(back.statusCode, back.body).toBe(200);
     const returned = (back.json() as { request: ServiceRequestDto }).request;
@@ -1212,7 +1220,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       'PATCH',
       `/api/v1/service-requests/${dto.id}/status`,
       ctx.admin.auth,
-      { status: 'cancelled', reason: 'Служебная заявка теста', version: await version(dto.id, ctx.admin.auth) },
+      {
+        status: 'cancelled',
+        reason: 'Служебная заявка теста',
+        version: await version(dto.id, ctx.admin.auth),
+      },
     );
     expect(closed.statusCode, closed.body).toBe(200);
 
@@ -1357,11 +1369,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
 
     // Удаление той же назначенной заявки проходит: набор заявок, который покрывал прежний перечень
     // «Новая + Назначена», после слияния покрывает один `new`.
-    const removed = await inject(
-      'DELETE',
-      `/api/v1/service-requests/${dto.id}`,
-      ctx.customer.auth,
-    );
+    const removed = await inject('DELETE', `/api/v1/service-requests/${dto.id}`, ctx.customer.auth);
     expect(removed.statusCode, removed.body).toBe(200);
     expect((removed.json() as { ok: boolean }).ok).toBe(true);
   });
@@ -1393,12 +1401,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(dto.service).toBeNull();
     expect(dto.executors).toEqual([]);
 
-    const res = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${dto.id}/start`,
-      ctx.admin.auth,
-      { version: dto.version },
-    );
+    const res = await inject('PATCH', `/api/v1/service-requests/${dto.id}/start`, ctx.admin.auth, {
+      version: dto.version,
+    });
     // 422, а не 500 и не 403. Не 500 — до транзакции дело не доходит вовсе; не 403 — право у
     // держателя есть, и просить его не надо: заявку надо сперва распределить.
     expect(res.statusCode, res.body).toBe(422);
@@ -1522,6 +1527,59 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     );
     expect(cancel.statusCode, cancel.body).toBe(403);
     expect(cancel.json().message).toContain('шаг другой стороны');
+  });
+
+  /**
+   * Т2 ПЛАНА ПРОФИЛЕЙ (`docs/office-equipment-access-profiles-plan.md`, §5.1, §10): **заявитель не
+   * двигает статусы**. Пять ручек хода и распределения — приёмка, возврат на доработку, отмена,
+   * заморозка и назначение исполнителей — закрыты автору собственной заявки.
+   *
+   * Третий отказ в ряду с двумя соседними выше, и все три РАЗНЫЕ ПО ПРИРОДЕ — ради этого они и
+   * стоят подряд. Оператору коридор не даёт шагов исполнителя (право есть, сторона не та),
+   * подрядчику коридор не даёт приёмки и отмены (право есть, сторона не та), а заявителю отказывает
+   * **право**: `serviceRequests.status`, `.hold` и `.assign` роли заказчика не выдаются вовсе
+   * (`SERVICE_REQUEST_CUSTOMER_PERMISSIONS` — пять прав, и хода среди них нет). Отсюда и проверка
+   * кода, а не текста: сообщение здесь даёт `requirePermission`, и требовать от него слов про
+   * «шаг другой стороны» значило бы ждать отказа, которого до обработчика не доходит.
+   *
+   * Заявка на этот момент назначена подрядчику и стоит в «Новой» — то есть заявитель обращается к
+   * живому ходу, а не к переходу, которого нет ни у кого: отказ приходит на действие, которое в
+   * эту же минуту законно делают двое других.
+   *
+   * Тела запросов законные: схема проверяется ДО `preHandler`, и кривое тело вернуло бы 400 — то
+   * есть тест зеленел бы, не дойдя до права вовсе.
+   */
+  it('заявитель не двигает статусы: ход, заморозка и назначение — 403 (Т2)', async () => {
+    const at = await version(state.main.id);
+    const denied: [string, string, unknown][] = [
+      ['PATCH', 'accept', { version: at }],
+      ['PATCH', 'rework', { reason: 'Верните исполнителю', version: at }],
+      ['PATCH', 'status', { status: 'cancelled', reason: 'Передумали', version: at }],
+      ['PATCH', 'hold', { reason: 'Ждём решения', version: at }],
+    ];
+    for (const [method, tail, payload] of denied) {
+      const res = await inject(
+        method as 'PATCH',
+        `/api/v1/service-requests/${state.main.id}/${tail}`,
+        ctx.customer.auth,
+        payload,
+      );
+      expect(res.statusCode, `${tail}: ${res.body}`).toBe(403);
+    }
+
+    // Назначение — пятая дверь и единственная с другим методом: распределяет не заказчик (§5.1).
+    const executors = await inject(
+      'PUT',
+      `/api/v1/service-requests/${state.main.id}/executors`,
+      ctx.customer.auth,
+      { userIds: [], serviceCounterpartyId: ctx.otherServiceCounterpartyId, version: at },
+    );
+    expect(executors.statusCode, executors.body).toBe(403);
+
+    // И заявка после пяти отказов там же, где была: ни один из них не прошёл наполовину.
+    const after = await card(state.main.id);
+    expect(after.status).toBe('new');
+    expect(after.version).toBe(at);
   });
 
   // ── Шаг 4. Работа и смета ──
@@ -2146,6 +2204,40 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(itemNamed(dto, 'Ролик подачи').warrantyUntil).toBe(plusMonths(TODAY, 6));
   });
 
+  /**
+   * Т3 ПЛАНА ПРОФИЛЕЙ (§5.1, строка «Принять работу (`done → accepted`)», §10): **подрядчик не
+   * принимает собственную работу**, и закрывает это КОРИДОР, а не отсутствие права.
+   *
+   * Случай выше («сервис не согласует смету, не принимает работу и не отменяет заявку») проверяет
+   * тот же отказ из «Новой» — и это не одно и то же утверждение. Там дуги `new → accepted` нет ни
+   * у кого вовсе, и отказ можно было бы списать на несуществующий переход; здесь заявка стоит
+   * ровно в том статусе, из которого приёмка законна, работу в него привёл сам подрядчик, и
+   * отказать ему может только сторона. Опасен именно этот момент: акт подписан, деньги посчитаны,
+   * и «принять» — один запрос.
+   *
+   * Право `serviceRequests.status` у подрядчика есть (`COUNTERPARTY_TYPE_PERMISSIONS.service`), и
+   * оно же двигало заявку в «Решена» тремя случаями выше, — значит отказ ниже приходит от
+   * `assertSideAllowed`, и сообщение это подтверждает. Стой здесь `requirePermission`, подрядчик
+   * потерял бы и закрытие работ.
+   */
+  it('подрядчик не принимает собственную работу: «Решена» → «Принята» закрыта коридором (Т3)', async () => {
+    const before = await card(state.main.id);
+    expect(before.status, 'заявка стоит в статусе, из которого приёмка законна').toBe('done');
+
+    const accept = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${state.main.id}/accept`,
+      ctx.service.auth,
+      { version: before.version },
+    );
+    expect(accept.statusCode, accept.body).toBe(403);
+    expect(accept.json().message).toContain('шаг другой стороны');
+    // Ни статуса, ни версии: отказ пришёл до транзакции, а не откатил её.
+    const after = await card(state.main.id);
+    expect(after.status).toBe('done');
+    expect(after.version).toBe(before.version);
+  });
+
   // ── Шаг 8. Приёмка ──
 
   it('оператор принимает работу — заявка становится терминальной, источник «человек»', async () => {
@@ -2261,7 +2353,10 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       'PATCH',
       `/api/v1/service-requests/${dto.id}/decline`,
       ctx.service.auth,
-      { reason: 'Сканеры этой серии не обслуживаем', version: (assigned.json() as { request: ServiceRequestDto }).request.version },
+      {
+        reason: 'Сканеры этой серии не обслуживаем',
+        version: (assigned.json() as { request: ServiceRequestDto }).request.version,
+      },
     );
     expect(declined.statusCode, declined.body).toBe(200);
     const after = declined.json() as ServiceRequestDto;
@@ -2677,7 +2772,12 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     };
     // Привязок у учётки две — сервер не выбирает за человека: первый элемент массива это
     // случайный отдел, и отчёт по подразделениям стал бы выдумкой.
-    const silent = await inject('POST', '/api/v1/service-requests', ctx.multiDepartment.auth, payload);
+    const silent = await inject(
+      'POST',
+      '/api/v1/service-requests',
+      ctx.multiDepartment.auth,
+      payload,
+    );
     expect(silent.statusCode, silent.body).toBe(422);
     expect(silent.json().fields?.requesterDepartmentId).toBeTruthy();
 
@@ -2789,7 +2889,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(res.json().message).toContain('только на свой объект');
 
     // Заявка не завелась вовсе: та же единица принимает следующую без «уже есть незакрытая» (Р21).
-    const ok = await createRequest(ctx.customer.auth, equipmentId, 'Обычная заявка на ту же единицу');
+    const ok = await createRequest(
+      ctx.customer.auth,
+      equipmentId,
+      'Обычная заявка на ту же единицу',
+    );
     expect(ok.objectOverridden).toBe(false);
     expect(ok.object.id).toBe(ctx.objectId);
   });
@@ -2798,10 +2902,15 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     // Ось у проверки одна — объектная: у роли администратора области нет вовсе, и объект её не
     // сужает. Ему выбор открыт целиком — ровно как и держателю сквозной области модуля.
     const equipmentId = await freshUnit();
-    const dto = await createRequest(ctx.admin.auth, equipmentId, 'Аппарат стоит на соседней площадке', {
-      objectId: ctx.foreignObjectId,
-      objectOverridden: true,
-    });
+    const dto = await createRequest(
+      ctx.admin.auth,
+      equipmentId,
+      'Аппарат стоит на соседней площадке',
+      {
+        objectId: ctx.foreignObjectId,
+        objectOverridden: true,
+      },
+    );
     expect(dto.object.id).toBe(ctx.foreignObjectId);
     // Хранится ЗАЯВЛЕНИЕ, а расхождение вычисляется: снимок заявки разошёлся с карточкой техники,
     // которая по-прежнему числится на своей площадке.
@@ -2947,6 +3056,54 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       // Справочник исполнителю закрыт (Р7), и реестр — не обход этого запрета: «его» техника в
       // справочнике ничем не отмечена, поэтому гарантии парка означали бы для сервиса весь парк.
       expect(rows.every((r) => r.kind === 'repair')).toBe(true);
+    });
+
+    /**
+     * Т5 ПЛАНА ПРОФИЛЕЙ (§5.2, столбец «Сервис» — прочерк во ВСЕХ строках; §6.3; §10): **справочник
+     * подрядчику закрыт целиком** — список, карточка, история и её выгрузка.
+     *
+     * Случай выше говорит про реестр гарантий: там подрядчик что-то видит, и проверяется, что не
+     * парк. Здесь — про сам справочник, и ответ на всех четырёх дверях один: 403. Разница
+     * существенная: гарантии отбираются предикатом (видно своё), а справочник закрыт ПРАВОМ —
+     * `officeEquipment.read` не даёт подрядчику ни роль `operator` (у неё одно
+     * `directories.read`), ни тип контрагента `service`. Выдать его набором тоже нельзя: клетка
+     * `officeEquipment × counterparty` в `GRANT_SCOPE_MATRIX` — `forbidden` (Р11), и это уже
+     * проверено каталогом.
+     *
+     * Почему не 404 и не пустой список: «его» техники в парке не помечено ничем (ADR 0085,
+     * реквизиты приезжают снимком в самой заявке), поэтому пустой отбор здесь означал бы не
+     * «нечего показать», а «показать нечем» — и первая же строка предиката открыла бы весь парк
+     * компании. Отказ правом такой правки не переживёт молча.
+     *
+     * Единица берётся ТА САМАЯ, по которой подрядчик ведёт заявку: отказ на чужой технике
+     * доказывал бы область, а не запрет модуля.
+     */
+    it('сервис справочника не видит вовсе: список, карточка и история — 403 (Т5)', async () => {
+      const list = await inject('GET', '/api/v1/office-equipment?pageSize=200', ctx.service.auth);
+      expect(list.statusCode, list.body).toBe(403);
+
+      const cardRes = await inject(
+        'GET',
+        `/api/v1/office-equipment/${ctx.mfp.id}`,
+        ctx.service.auth,
+      );
+      expect(cardRes.statusCode, cardRes.body).toBe(403);
+
+      const history = await inject(
+        'GET',
+        `/api/v1/office-equipment/${ctx.mfp.id}/history`,
+        ctx.service.auth,
+      );
+      expect(history.statusCode, history.body).toBe(403);
+
+      // Выгрузка — своя дверь к той же ленте, и закрыта она тем же правом: файл мимо права был бы
+      // обходом запрета, а не отдельной функцией.
+      const xlsx = await inject(
+        'GET',
+        `/api/v1/office-equipment/${ctx.mfp.id}/history.xlsx`,
+        ctx.service.auth,
+      );
+      expect(xlsx.statusCode, xlsx.body).toBe(403);
     });
 
     it('штаб чужой площадки не видит ни гарантий техники, ни гарантий её ремонтов', async () => {
@@ -3171,6 +3328,90 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       );
       expect(kinds.length, 'событий срочности').toBeGreaterThanOrEqual(2);
       expect(kinds.some((e) => e.changes.some((c) => c.field === 'isUrgent'))).toBe(true);
+    });
+
+    /**
+     * ВТОРАЯ ДВЕРЬ К СРОЧНОСТИ — ОБЩАЯ ПРАВКА (план профилей оргтехники, Р10; находка Н1). Ручку
+     * `PATCH /:id/urgency` право закрывало с самого начала, а форму заявки — нет: пара
+     * `isUrgent`/`urgencyReason` приезжала вместе с `serviceRequests.update`, и заявитель ставил
+     * себе «Срочная» правкой собственной «Новой».
+     *
+     * Право спрашивается ПО ЭФФЕКТУ — по разнице склеенного состояния со строкой заявки, — а не по
+     * присутствию полей в теле: форма шлёт пару всегда (порознь её не принимают ни схема, ни
+     * `CHECK`), и условие «поле прислали» отобрало бы у заявителя всю форму, а не красную метку.
+     * Этот тест назван в манифесте доступа (`effectConditionalPermissions.provenBy`) и доказывает
+     * ровно ту половину, которую перебор прав не видит: у эффекта нет выражения в теле запроса, и
+     * `access-conditions.test.ts` проверяет у этого маршрута только базовое право.
+     *
+     * Учётки взяты по СОСТАВУ ПРАВ, а не по должности: у штаба есть `serviceRequests.update` и нет
+     * `.urgency`, у администратора есть оба — до волны В5 право срочности держит он один.
+     */
+    it('срочность в общей правке спрашивает своё право, и спрашивает по эффекту (Р10)', async () => {
+      const dto = await createRequest(ctx.customer.auth, await freshUnit(), 'Не печатает по сети', {
+        isUrgent: true,
+        urgencyReason: 'Единственный принтер на площадке',
+      });
+      // Заведение срочной осталось открытым НАМЕРЕННО (Н1, §8): объявить срочность при подаче —
+      // просьба заявителя, и отбирать её значило бы менять постановку, а не чинить дыру.
+      expect(dto.isUrgent).toBe(true);
+
+      // (а) Та же пара, что уже в заявке: правка описания обязана пройти без права срочности.
+      // Это главный случай — им и отличается условие по эффекту от условия по присутствию поля.
+      const samePair = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}`,
+        ctx.customer.auth,
+        {
+          description: 'Не печатает по сети, горит красный индикатор',
+          isUrgent: true,
+          urgencyReason: 'Единственный принтер на площадке',
+          version: await version(dto.id, ctx.customer.auth),
+        },
+      );
+      expect(samePair.statusCode, samePair.body).toBe(200);
+      expect(samePair.json().description).toBe('Не печатает по сети, горит красный индикатор');
+      expect(samePair.json().isUrgent, 'своя срочность не потерялась при правке').toBe(true);
+
+      // (в) Снятие срочности — то же решение об очереди, что и постановка, и без права оно 403.
+      const cleared = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}`,
+        ctx.customer.auth,
+        { isUrgent: false, urgencyReason: '', version: await version(dto.id, ctx.customer.auth) },
+      );
+      expect(cleared.statusCode, cleared.body).toBe(403);
+      // Отказ именно этот, а не чужой 403: у правки их несколько (область, «Новая», роль стороны),
+      // и без сверки текста тест был бы зелен и при снятой проверке права.
+      expect(cleared.json().message).toContain('Срочность ставит тот, кто ведёт заявки');
+      // Отказ ничего не записал: «403, но метка снята» — худший исход из всех возможных.
+      expect((await card(dto.id, ctx.customer.auth)).isUrgent).toBe(true);
+
+      // (г) У держателя права то же тело проходит, и метка действительно снимается.
+      const byAdmin = await inject('PATCH', `/api/v1/service-requests/${dto.id}`, ctx.admin.auth, {
+        isUrgent: false,
+        urgencyReason: '',
+        version: await version(dto.id, ctx.admin.auth),
+      });
+      expect(byAdmin.statusCode, byAdmin.body).toBe(200);
+      expect(byAdmin.json().isUrgent).toBe(false);
+      expect(byAdmin.json().urgencyReason).toBe('');
+
+      // (б) Обратный ход тем же заявителем: заявка уже не срочная, и постановка флага — эффект.
+      // Случай отдельный от (в): снятие и постановка — разные направления одного решения, и
+      // проверка, закрывающая одно, легко оставляет открытым другое.
+      const raised = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}`,
+        ctx.customer.auth,
+        {
+          isUrgent: true,
+          urgencyReason: 'Встала выдача пропусков',
+          version: await version(dto.id, ctx.customer.auth),
+        },
+      );
+      expect(raised.statusCode, raised.body).toBe(403);
+      expect(raised.json().message).toContain('Срочность ставит тот, кто ведёт заявки');
+      expect((await card(dto.id, ctx.customer.auth)).isUrgent).toBe(false);
     });
   });
 
@@ -3999,12 +4240,18 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
    * право, которым назначают.
    */
   describe('кандидаты в исполнители', () => {
+    /*
+     * Заявка в запросе обязательна (план аудита исполнителей, Р7): ручка отвечает не «кого вообще
+     * можно назначить», а «кто сможет работать по ЭТОЙ заявке», и область спрашивает по ней же — у
+     * того, кто список открыл. Своя свежая заявка на каждый случай: перечень от её хода не зависит,
+     * а вот делённая между случаями связала бы их порядком.
+     */
+    const candidatesUrl = (requestId: string): string =>
+      `/api/v1/service-requests/executor-candidates?requestId=${requestId}`;
+
     it('отдаёт держателей права исполнения и не отдаёт всех подряд', async () => {
-      const res = await inject(
-        'GET',
-        '/api/v1/service-requests/executor-candidates',
-        ctx.operator.auth,
-      );
+      const request = await requestIn('new', 'Кандидаты: кого вообще можно назначить');
+      const res = await inject('GET', candidatesUrl(request.id), ctx.operator.auth);
       expect(res.statusCode, res.body).toBe(200);
       const ids = (res.json().items as { id: string; fullName: string }[]).map((row) => row.id);
 
@@ -4025,15 +4272,12 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
        * список — назначение прошло бы, а коридор отказал бы ей на первом же ходе, и человек
        * оказался бы «назначенным исполнителем», который ничего не может.
        */
+      const request = await requestIn('new', 'Кандидаты: право читается эффективным');
       await ctx.db.execute(
         sql`UPDATE users SET role = 'observer' WHERE id = ${ctx.strayExecutor.id}::uuid`,
       );
       try {
-        const res = await inject(
-          'GET',
-          '/api/v1/service-requests/executor-candidates',
-          ctx.operator.auth,
-        );
+        const res = await inject('GET', candidatesUrl(request.id), ctx.operator.auth);
         expect(res.statusCode, res.body).toBe(200);
         const ids = (res.json().items as { id: string }[]).map((row) => row.id);
         expect(ids).not.toContain(ctx.strayExecutor.id);
@@ -4046,11 +4290,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     });
 
     it('заказчику список кандидатов закрыт: распределяет не он', async () => {
-      const res = await inject(
-        'GET',
-        '/api/v1/service-requests/executor-candidates',
-        ctx.customer.auth,
-      );
+      const request = await requestIn('new', 'Кандидаты: заказчику список закрыт');
+      // Заявка своя, и отказ приходит не от области, а от стража: распределяет не заказчик.
+      const res = await inject('GET', candidatesUrl(request.id), ctx.customer.auth);
       expect(res.statusCode).toBe(403);
     });
   });
@@ -4771,6 +5013,47 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         sql`SELECT quantity FROM office_equipment_consumables WHERE id = ${consumableId}::uuid`,
       );
       expect(Number(after.rows[0]!.quantity)).toBe(3);
+    }, 60_000);
+  });
+
+  /**
+   * Караул спрямления (ADR 0161): быстрый вход на теге статуса зовёт доменные ручки, и соблазн
+   * «свести всё к одной записи статуса» обязан упираться в отказ сервера, а не в договорённость.
+   *
+   * Проверяется именно `/status`: переход с содержанием живёт своей ручкой (Р18 шапки маршрутов),
+   * и «принять в работу» через общую запись прошло бы мимо назначения, письма и правил
+   * исполнителя — молча и с виду успешно.
+   */
+  describe('общая ручка статуса не заменяет доменные команды', () => {
+    it('«Новая» → «В работе» через /status отбивается 422 и не двигает заявку', async () => {
+      const request = await createRequest(
+        ctx.admin.auth,
+        ctx.choicePrinter.id,
+        'Караул спрямления статуса',
+      );
+
+      const straight = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${request.id}/status`,
+        ctx.admin.auth,
+        { status: 'in_work', reason: '', version: await version(request.id, ctx.admin.auth) },
+      );
+      expect(straight.statusCode, straight.body).toBe(422);
+      expect((straight.json() as { message: string }).message).toContain('своим действием');
+      expect((await card(request.id, ctx.admin.auth)).status).toBe('new');
+
+      // Та же ручка на своей дуге работает: отказ выше — про содержание перехода, а не про права.
+      const cancelled = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${request.id}/status`,
+        ctx.admin.auth,
+        {
+          status: 'cancelled',
+          reason: 'Служебная заявка теста',
+          version: await version(request.id, ctx.admin.auth),
+        },
+      );
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
     }, 60_000);
   });
 });

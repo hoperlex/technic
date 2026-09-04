@@ -1,9 +1,14 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Form } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
 import { objectOptionsQuery } from '@entities/object';
-import { EquipmentNotFoundLink } from '@features/quick-create-equipment';
+import {
+  officeEquipmentOptionsQuery,
+  officeEquipmentPickedQuery,
+  type OfficeEquipmentOption,
+} from '@entities/office-equipment';
+import { EquipmentNotFoundLink, type EquipmentCandidateDraft } from '@features/missing-equipment';
 import { AutoSelect } from '@shared/ui';
 import { ServiceRequestSubject } from './ServiceRequestSubject';
 import { useAuth } from '../../auth/AuthContext';
@@ -22,6 +27,69 @@ export interface EquipmentOption {
 }
 
 /**
+ * КАКАЯ ЕДИНИЦА ВЫБРАНА — и чем она подписана (план кандидата, Ф1).
+ *
+ * Хук стоит при поле, а не в форме: с переводом отбора на сервер ответ на этот вопрос перестал
+ * быть строчкой `find` по загруженному справочнику и собирается из трёх источников. Форме нужен
+ * ответ — по нему она считает гарантию и заказчика, — а устройство ответа принадлежит полю.
+ *
+ * Источников три, и каждый закрывает случай, которого не закрывают остальные.
+ *
+ * 1. Текущая выдача — обычный выбор из списка.
+ * 2. ПАМЯТЬ ВЫБРАННОГО. Выдача — срез по набранному, и следующий набор уносит из неё выбранное:
+ *    без памяти подпись в поле сменилась бы идентификатором, реквизиты под ним пропали бы, а поле
+ *    заказчика — оно считается по площадке выбранной единицы — заперлось бы, хотя человек всего
+ *    лишь набрал следующий номер.
+ * 3. ДОЧИТКА КАРТОЧКИ по идентификатору — для единицы, названной не набором: в обращении по
+ *    гарантии её назвал реестр, при правке — заведение, а заведённая из самой формы приходит в
+ *    поле готовым значением. В срез по набранному ни одна из трёх попасть не обязана.
+ *
+ * Спрашиваем карточку только тогда, когда справочник выдачей что-то показал, а выбранного в ней
+ * нет: пустая выдача означает, что показывать этой учётке нечего вовсе — по идентификатору придёт
+ * тот же ответ.
+ *
+ * Отдельной задержки ввода (debounce) здесь нет намеренно: выдачи лежат в кэше запросов по
+ * набранному (`officeEquipmentKeys.options`), повторный набор сервер не тревожит, а лишний слой
+ * ожидания добавил бы ровно одно — «поле отстаёт от набранного».
+ */
+export function useServiceRequestEquipment({
+  open,
+  equipmentId,
+}: {
+  open: boolean;
+  /** Что стоит в поле формы сейчас; `undefined` — единицу ещё не выбрали. */
+  equipmentId: string | undefined;
+}) {
+  const { can } = useAuth();
+  const canRead = can('officeEquipment.read');
+  const [search, setSearch] = useState('');
+  const [picked, setPicked] = useState<OfficeEquipmentOption | null>(null);
+
+  const { data: options = [], isFetching: loading } = useQuery({
+    ...officeEquipmentOptionsQuery(search),
+    enabled: open && canRead,
+  });
+  const listed = options.find((option) => option.value === equipmentId);
+  const remembered = picked?.value === equipmentId ? picked : undefined;
+  const { data: fetched } = useQuery({
+    ...officeEquipmentPickedQuery(equipmentId),
+    enabled: open && canRead && !!equipmentId && !listed && !remembered && options.length > 0,
+  });
+
+  return {
+    options,
+    loading,
+    search,
+    selected: listed ?? remembered ?? fetched,
+    onSearch: setSearch,
+    // Выбранное запоминается опцией той выдачи, в которой его выбрали: следующий набранный запрос
+    // эту выдачу сменит, а подпись и реквизиты обязаны остаться теми же.
+    onPick: (id: string | undefined) =>
+      setPicked(options.find((option) => option.value === id) ?? null),
+  };
+}
+
+/**
  * Выбор единицы и её реквизиты в форме заявки (§9.3, Р40, Р48).
  *
  * Три вещи одним блоком, потому что отвечают они на один вопрос — «о каком аппарате речь»: само
@@ -37,6 +105,9 @@ export function ServiceRequestEquipmentField({
   options,
   loading,
   open,
+  search,
+  onSearch,
+  onPick,
 }: {
   /** `null` — заведение: только тогда единицу и выбирают. */
   request: ServiceRequestDto | null;
@@ -52,14 +123,38 @@ export function ServiceRequestEquipmentField({
   options: EquipmentOption[];
   loading: boolean;
   open: boolean;
+  /**
+   * Что набрали в поле техники. Своей копии у поля нет — строка приходит из `useServiceRequestEquipment`
+   * вместе с выдачей: с переводом поиска на сервер (Ф1) набранное стало параметром запроса, и
+   * второй его владелец разъезжался бы с первым на первой же букве.
+   *
+   * Строка нужна и сама по себе: она уходит контекстом в обращение к поддержке, когда единицы в
+   * справочнике не оказалось, — и держится после закрытия списка, потому что искали именно это.
+   */
+  search: string;
+  onSearch: (value: string) => void;
+  /** Что выбрали — идентификатором: по нему хук и запоминает выбранную единицу (память выбранного). */
+  onPick: (id: string | undefined) => void;
 }) {
   const { can } = useAuth();
   const form = Form.useFormInstance();
   const objectScope = useObjectScope();
-  // Что набрали в поле техники: строка уходит контекстом в обращение к поддержке, когда единицы в
-  // справочнике не оказалось. Держится и после того, как список закрылся, — искали именно это.
-  const [search, setSearch] = useState('');
   const equipmentId = Form.useWatch('officeEquipmentId', form);
+  /*
+   * Заявленный аппарат живёт ПОЛЕМ ФОРМЫ, а не состоянием компонента (план кандидата, Р2): его
+   * отправляет `submitServiceRequest` вместе с описанием и вложениями, а сбрасывает — общий
+   * `form.resetFields()` при открытии окна. Своим `useState` он пережил бы закрытие формы и уехал
+   * бы в следующую заявку сообщением о чужом аппарате.
+   *
+   * `preserve` ОБЯЗАТЕЛЕН: у поля нет своего `Form.Item` (показывать нечего — плашку рисует ссылка
+   * ниже), а `useWatch` без него читает только ОБЪЯВЛЕННЫЕ поля и вернул бы `undefined` навсегда.
+   * Заводить ради подписки скрытый `Form.Item` нельзя: его контролу пришлось бы отдать объект
+   * значением, и React ругался бы на него в каждом рендере.
+   */
+  const candidateDraft = Form.useWatch<EquipmentCandidateDraft | undefined>('equipmentCandidate', {
+    form,
+    preserve: true,
+  });
   const missing = !request && !claim && !equipmentId;
 
   /*
@@ -74,6 +169,20 @@ export function ServiceRequestEquipmentField({
   const ownObjectName = objectOptions.find(
     (option) => option.value === objectScope.soleObjectId,
   )?.label;
+
+  /*
+   * Выбранная единица дописывается к вариантам, когда её нет в выдаче. Выдача — срез по
+   * набранному (Ф1), и следующий набор её из списка уносит: `Select` подписать значение может
+   * только вариантом, и без этой строки в поле осталась бы строка идентификатора — на глазах у
+   * человека, который ничего не менял.
+   */
+  const shownOptions = useMemo(
+    () =>
+      selected && !options.some((option) => option.value === selected.value)
+        ? [selected, ...options]
+        : options,
+    [options, selected],
+  );
 
   return (
     <>
@@ -94,8 +203,15 @@ export function ServiceRequestEquipmentField({
          * бы правку такой заявки для всех, кроме держателей права, отказом по полю, которое человек
          * не может заполнить.
          */
+        /*
+         * Заявленный аппарат снимает обязательность так же, как право заводить заявку без
+         * аппарата: единицы в справочнике нет вовсе, и требовать выбрать её — значит требовать
+         * невозможного от того, кто уже ответил на этот вопрос сообщением (Р5).
+         */
         rules={
-          optional || request ? [] : [{ required: true, message: 'Выберите единицу оргтехники' }]
+          optional || request || candidateDraft
+            ? []
+            : [{ required: true, message: 'Выберите единицу оргтехники' }]
         }
         extra={
           optional && !request && !claim
@@ -105,9 +221,22 @@ export function ServiceRequestEquipmentField({
       >
         <AutoSelect
           showSearch
-          optionFilterProp="label"
+          /*
+           * Отбор идёт на сервере (Ф1) — своего фильтра у поля нет вовсе. Оставь мы его, и он
+           * молча резал бы найденное: сервер ищет и по серийному номеру, и по кабинету, а
+           * клиентский фильтр видит одну подпись, в которой из двух номеров печатается один.
+           */
+          filterOption={false}
+          /*
+           * АВТОПОДСТАНОВКА ЕДИНСТВЕННОГО — только на нетронутой выдаче. Пока ничего не набрано,
+           * единственный вариант означает единственную единицу справочника, и подставить её —
+           * ровно то, за чем `AutoSelect` и заведён. С набранным то же самое означает другое:
+           * «единственная, что нашлась по этим двум цифрам», — и поле выбирало бы аппарат за
+           * человека, пока он ещё набирает номер.
+           */
+          autoSelectSole={!search}
           loading={loading}
-          options={options}
+          options={shownOptions}
           /*
            * Крестик — только у держателя права: выбранный по ошибке аппарат иначе нечем убрать, и
            * «оставьте поле пустым» оказалось бы советом, невыполнимым после первого же клика.
@@ -120,11 +249,16 @@ export function ServiceRequestEquipmentField({
           // источник гарантии относится к конкретной единице, и подмена сделала бы ссылку ложной.
           disabled={!!request || claim}
           placeholder="Модель, инвентарный или серийный номер"
-          onSearch={setSearch}
+          onSearch={onSearch}
+          // Свой обработчик не подменяет форменный: `Form.Item` вызывает оба — поле формы
+          // заполняется как обычно, а форма запоминает саму единицу.
+          onChange={(value: string | undefined) => onPick(value)}
           notFoundContent={
-            can('officeEquipment.read')
-              ? 'Ничего не нашлось — техники нет в справочнике'
-              : 'Справочник недоступен'
+            !can('officeEquipment.read')
+              ? 'Справочник недоступен'
+              : search
+                ? 'Ничего не нашлось — техники нет в справочнике'
+                : 'Начните вводить модель или номер'
           }
         />
       </Form.Item>
@@ -139,6 +273,10 @@ export function ServiceRequestEquipmentField({
           // Заведённая единица становится значением поля — тем же, каким её выбрали бы из списка:
           // заявка продолжается с того же места, где встала.
           onCreated={(equipment) => form.setFieldValue('officeEquipmentId', equipment.id)}
+          draft={candidateDraft ?? null}
+          // Заявленный аппарат кладётся в форму, а не отправляется: уйдёт он обычным «Сохранить»
+          // вместе с заявкой — кандидат и заявка рождаются одной транзакцией (Р2).
+          onReported={(reported) => form.setFieldValue('equipmentCandidate', reported ?? undefined)}
         />
       )}
 

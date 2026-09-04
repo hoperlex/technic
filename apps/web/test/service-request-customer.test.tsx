@@ -112,6 +112,7 @@ function request(over: Partial<ServiceRequestDto> = {}): ServiceRequestDto {
       inventoryNumber: '0012345',
       typeName: 'МФУ',
       location: 'Корпус 3, каб. 214',
+      warrantyUntil: null,
     },
     object: NORTH,
     responsibleName: 'Штабов С. И.',

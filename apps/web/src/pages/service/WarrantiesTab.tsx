@@ -10,7 +10,7 @@ import { DataTable, PageTableLayout, sortOptionsFrom, type FilterDefinition } fr
 import { useListParams, usePruneMissingFilters } from '@shared/lib';
 import { OPEN_PARAM } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
-import { ServiceFilterBar } from './serviceRequestFilters';
+import { ServiceFilterBar } from './ServiceFilterBar';
 import { warrantyCard, warrantyColumns } from './warrantyGrid';
 import { ServiceRequestForm, type WarrantyClaimPreset } from './ServiceRequestForm';
 

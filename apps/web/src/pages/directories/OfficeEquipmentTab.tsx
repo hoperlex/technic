@@ -13,6 +13,7 @@ import {
   OfficeEquipmentFields,
   type OfficeEquipmentFormValues,
   officeEquipmentApi,
+  useOfficeEquipmentDeactivationConfirm,
   officeEquipmentPayload,
   officeEquipmentUpdatePayload,
   officeEquipmentConsumableKeys,
@@ -91,6 +92,19 @@ export function OfficeEquipmentTab() {
   const [form] = Form.useForm<OfficeEquipmentFormValues>();
   const blockers = useFormBlockers(form);
 
+  /**
+   * Карточка правящейся единицы — ради истории обслуживания, по которой считается предупреждение о
+   * выключении (§13 Ф4). Ключ тот же, каким её спрашивают секции «Чем заправлять» и «Обслуживание
+   * и гарантии» внутри окна: react-query отдаёт всем троим один ответ, и второго похода на сервер
+   * подтверждение не стоит. Запрос свой, а не чтение чужого кэша: у оператора без
+   * `serviceRequests.read` соседних секций нет вовсе, а окно правки есть.
+   */
+  const { data: openCard } = useQuery({
+    queryKey: officeEquipmentKeys.detail(record?.id ?? ''),
+    queryFn: () => officeEquipmentApi.get(record!.id),
+    enabled: open && !!record,
+  });
+
   /** Смена любого отбора возвращает список на первую страницу: та же страница — уже другие строки. */
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
@@ -155,6 +169,18 @@ export function OfficeEquipmentTab() {
       if (!blockers.fromApi(e)) message.error(errorMessage(e));
     },
   });
+
+  /**
+   * Сохранение карточки. Развилка на пути одна — снятая галочка «Активна» (§13 Ф4): у неё
+   * появилось последствие, о котором оператор не знает, — выведенная из эксплуатации карточка
+   * больше не принимает НОВЫЕ заявки (фикс Ф2 в `resolveRequestSubject`). Разбирает её общий хук
+   * сущности: он же спросит подтверждение и он же объясняет, почему предупреждение, а не отказ.
+   */
+  const confirmDeactivation = useOfficeEquipmentDeactivationConfirm();
+  const submit = (values: OfficeEquipmentFormValues) =>
+    confirmDeactivation({ record, card: openCard, next: values.isActive }, () =>
+      saveMut.mutateAsync(values),
+    );
 
   const removeMut = useMutation({
     mutationFn: (id: string) => officeEquipmentApi.remove(id),
@@ -330,12 +356,7 @@ export function OfficeEquipmentTab() {
         confirmLoading={saveMut.isPending}
         width={560}
       >
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={(v) => saveMut.mutate(v)}
-          {...blockers.formProps}
-        >
+        <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
           <OfficeEquipmentFields
             typeOptions={typeOptions}
             typesLoading={typesLoading}

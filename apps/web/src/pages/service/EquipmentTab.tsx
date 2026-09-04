@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Checkbox, Select, Space } from 'antd';
+import { Checkbox, Segmented, Select, Space } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
   OFFICE_EQUIPMENT_STATES,
@@ -26,9 +26,12 @@ import {
 } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
+import { officeEquipmentCandidatePendingCountQuery } from '@entities/office-equipment-candidate';
 import { EquipmentMoveModal } from '@features/equipment-move';
 import { EquipmentHistoryModal } from '@features/equipment-history';
+import { CandidatesTab } from './CandidatesTab';
 import { useAuth } from '../../auth/AuthContext';
+import { useCandidateIntake } from '../../auth/candidateIntake';
 
 /**
  * Парк оргтехники в самом модуле (план `docs/office-equipment-mail-and-history-plan.md`, Р72–Р74).
@@ -85,6 +88,21 @@ export function EquipmentTab() {
   // Переезд записывает тот, кто ведёт парк. Смотреть список и историю может каждый, кому открыт
   // справочник: «что с этим аппаратом было» — вопрос читателя.
   const canWrite = can('officeEquipment.write');
+  /*
+   * ПОДВКЛАДКА «НА ПРОВЕРКЕ» — ЗДЕСЬ, А НЕ ОТДЕЛЬНОЙ ВКЛАДКОЙ РАЗДЕЛА (§9). Очередь отвечает на тот
+   * же вопрос, что и парк, — «что у нас за техника», — только про ту, которой в справочнике ещё
+   * нет. Отдельная вкладка раздела развела бы по двум входам одну работу: проверяющий приходит
+   * сюда, чтобы завести карточку, и тут же смотрит, нет ли её в парке.
+   *
+   * Счётчик стоит в самой подписи переключателя: срока проверки у модуля нет вовсе (В3), и число —
+   * единственное, чем очередь о себе заявляет тому, кто зашёл смотреть парк.
+   */
+  const { canReview } = useCandidateIntake();
+  const [view, setView] = useState<'park' | 'review'>('park');
+  const { data: pendingCount = 0 } = useQuery({
+    ...officeEquipmentCandidatePendingCountQuery(),
+    enabled: canReview,
+  });
 
   const { params, setParams, setSort, onTableChange, filtersActive, resetFilters } =
     useListParams<EquipmentListFilters>(
@@ -288,9 +306,25 @@ export function EquipmentTab() {
 
   const columns = officeEquipmentColumns(grid);
 
+  // Переключатель виден только проверяющему и стоит рядом с обеими половинами: из очереди в парк
+  // ходят так же часто, как обратно.
+  const toolbar = canReview ? (
+    <Segmented<'park' | 'review'>
+      value={view}
+      options={[
+        { value: 'park', label: 'Парк' },
+        { value: 'review', label: pendingCount ? `На проверке (${pendingCount})` : 'На проверке' },
+      ]}
+      onChange={setView}
+    />
+  ) : undefined;
+
+  if (canReview && view === 'review') return <CandidatesTab toolbar={toolbar} />;
+
   return (
     <>
       <PageTableLayout
+        toolbar={toolbar}
         filters={filters}
         mobile={{
           search: {

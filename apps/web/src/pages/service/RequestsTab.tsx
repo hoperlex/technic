@@ -4,12 +4,13 @@ import { useSearchParams } from 'react-router';
 import { PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  actsAsRequestCustomer,
   isPlaceScopedRole,
   isServiceRequestEditable,
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
-import { officeEquipmentKeys, officeEquipmentOptionsQuery } from '@entities/office-equipment';
+import { officeEquipmentKeys } from '@entities/office-equipment';
 import { MarkAllChatReadButton } from '@features/service-chat';
 import { DataTable, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
@@ -19,14 +20,14 @@ import { errorMessage } from '../../utils/format';
 import { serviceRequestCard, serviceRequestColumns, serviceGridView } from './serviceRequestGrid';
 import {
   SERVICE_FILTER_FIELDS,
-  ServiceFilterBar,
   useServiceQueues,
   useServiceRequestFilters,
   type ServiceListFilters,
 } from './serviceRequestFilters';
+import { ServiceFilterBar } from './ServiceFilterBar';
 import { useServiceRequestActions } from './serviceRequestActions';
 import type { ServiceMenuItem } from './serviceStatusChoices';
-import { serviceActionRow } from './serviceRequestRow';
+import { serviceActionRow, serviceRequestCustomerFacts } from './serviceRequestRow';
 import { ServiceRequestForm } from './ServiceRequestForm';
 import { ServiceRequestViewModal } from './ServiceRequestViewModal';
 
@@ -80,20 +81,12 @@ export function RequestsTab() {
     queryFn: () => serviceRequestsApi.list(query),
   });
 
-  /**
-   * Гарантии единиц справочника: в заявке лежит снимок реквизитов без срока, а состояние гарантии
-   * техники — колонка списка (§9.2). Тот же запрос обслуживает выбор техники в форме, поэтому
-   * лишним он не будет. Сервису справочник закрыт (Р7) — у него колонка просто молчит.
+  /*
+   * Гарантии справочник больше не спрашивают вовсе (Ф3 плана кандидата): срок гарантии единицы
+   * приезжает в самой строке заявки (`equipment.warrantyUntil`), и колонке «Гарантия» хватает
+   * выдачи списка. Прежний запрос брал весь парк страницей в 500 строк — потолок Н11, из-за
+   * которого колонка замолчала бы у части строк молча, — и снят он вместе со своим ключом кэша.
    */
-  const { data: equipmentOptions = [] } = useQuery({
-    ...officeEquipmentOptionsQuery(),
-    enabled: can('officeEquipment.read'),
-  });
-  const warranties = useMemo(
-    () => new Map(equipmentOptions.map((option) => [option.value, option.warrantyUntil])),
-    [equipmentOptions],
-  );
-  const warrantyOf = (equipmentId: string) => warranties.get(equipmentId);
 
   const filters = useServiceRequestFilters({ params, apply: applyFilter });
   // Очереди-пресеты живут рядом с отборами: это те же параметры запроса, и состав их зависит от
@@ -181,6 +174,23 @@ export function RequestsTab() {
   };
 
   /**
+   * Разрешает ли сторона заказчика распоряжаться ЭТОЙ строкой — тот же страж, что стоит на общем
+   * входе изменяющих ручек (`assertActsAsRequestCustomer`, план профилей оргтехники, Р6).
+   *
+   * Второй копии правила портал не заводит: предикат живёт в контрактах, признаки для него собирает
+   * общий адаптер карточки, и обе стороны зовут одну функцию. Своё условие здесь («а не менеджер ли
+   * это с набором „Заявитель“») разошлось бы с сервером в первую же правку состава профилей.
+   *
+   * СУЖАЕТ ОН РОВНО ОДНОГО СУБЪЕКТА — держателя набора «Заявитель» у роли без оси, — и у всех
+   * прочих отвечает «да» без единого дополнительного условия: администратор, «Ведение», ИТ-служба,
+   * подрядчик и штаб своей площадки видят ровно те же пункты, что и до правила. Ставится он тем не
+   * менее рядом с правом, а не вместо него: право отвечает «положено ли действие вообще», страж —
+   * «на этой ли строке», и подменять одно другим нельзя.
+   */
+  const actsAsCustomer = (request: ServiceRequestDto): boolean =>
+    actsAsRequestCustomer(user, serviceRequestCustomerFacts(request));
+
+  /**
    * Кому и когда позволено снести заявку в архив — тем же условием, что проверяет сервер
    * (`assertServiceRequestEditable`): площадочной роли снос открыт только пока заявку правят, то
    * есть пока она «Новая» и за ней никто не стоит, а администратору — в любом статусе. Прежде пункт
@@ -193,6 +203,7 @@ export function RequestsTab() {
    */
   const mayDelete = (request: ServiceRequestDto) =>
     can('serviceRequests.delete') &&
+    actsAsCustomer(request) &&
     (!isPlaceScopedRole(user?.role) || isServiceRequestEditable(serviceActionRow(request)));
 
   /**
@@ -209,7 +220,11 @@ export function RequestsTab() {
     (set: ReturnType<typeof useServiceRequestActions>) =>
     (request: ServiceRequestDto): ServiceMenuItem[] => [
       ...set.actionsFor(request),
-      ...(isServiceRequestEditable(serviceActionRow(request)) && can('serviceRequests.update')
+      // Правка: право, открытая правка по строке и сторона заказчика ЭТОЙ строки (Р6). Третий
+      // сомножитель ничего не отбирает у тех, кого правило не касается, — предикат отвечает им «да».
+      ...(isServiceRequestEditable(serviceActionRow(request)) &&
+      can('serviceRequests.update') &&
+      actsAsCustomer(request)
         ? [
             {
               key: 'edit',
@@ -243,20 +258,15 @@ export function RequestsTab() {
 
   const grid = {
     view,
-    warrantyOf,
     // Учётка уходит в сетку целиком: подпись состояния и её лицо считает `serviceStatusLine`
     // (Р101), а прежний признак «ждут меня» был бы вторым источником того же факта.
     user,
     /*
-     * Подпись «Вам: …» ведёт в то же окно, что и пункт меню строки (Р117): главный шаг помечен
-     * признаком `primary` там же, где строится сам пункт, — второй карты «статус → окно» здесь нет
-     * и быть не должно. Нет доступного пункта — подпись остаётся текстом.
-     *
-     * Быстрая кнопка «Принять в работу» берёт свой пункт тем же путём, но уже внутри ячейки
-     * действий (Р6): признак `primary` у неё тот же, и расходиться им негде.
+     * Подпись «Вам: …» и быстрая кнопка «Принять в работу» берут свой пункт из ЭТОГО набора по
+     * признаку `primary` (Р117, Р6) — каждая внутри своей ячейки. Отдельного обработчика для
+     * подписи здесь больше нет: он строил набор заново, третий раз на ту же строку, и был вторым
+     * источником одного факта.
      */
-    primaryAction: (r: ServiceRequestDto) =>
-      actions.actionsFor(r).find((item) => item.primary)?.onClick ?? null,
     actions: rowActions,
     // Выдача уходит и в набор колонок (ADR 0160, Р11): столбец «Сумма» один на таблицу, а
     // аудитория — свойство строки, и у исполнителя обе законно лежат в одной выдаче.
@@ -362,22 +372,11 @@ export function RequestsTab() {
 
       <ServiceRequestViewModal
         request={shown}
-        // Гарантия — вопрос к справочнику по конкретной единице: у заявки без аппарата спрашивать
-        // не о чем, и `undefined` означает здесь то же, что и закрытый справочник, — блок гарантии
-        // в карточке не рисуется вовсе (Р8).
-        equipmentWarrantyUntil={shown?.equipment ? warrantyOf(shown.equipment.id) : undefined}
         // Действия карточки — те же, что у строки: их строит коридор переходов, и разойтись
         // они не могут. Разные у них только окна: карточкины живут внутри неё (ADR 0140).
         actions={cardRowActions}
         pendingId={cardActions.pendingId}
         modals={cardActions.modals}
-        onEdit={
-          shown &&
-          isServiceRequestEditable(serviceActionRow(shown)) &&
-          can('serviceRequests.update')
-            ? openEdit
-            : undefined
-        }
         onClose={() => {
           setViewRecord(null);
           opened.clear();

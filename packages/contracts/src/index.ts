@@ -43,6 +43,12 @@ export * from './office-equipment-models';
 export * from './office-equipment-consumables';
 export * from './office-equipment-purchases';
 export * from './office-equipment-history';
+export * from './office-equipment-profiles';
+/* Кандидаты (`office-equipment-candidates.ts`) — сразу за справочником, потому что читаются с ним
+ * рядом, и отдельным файлом ровно потому, что кандидат не запись справочника: в `office_equipment`
+ * он не лежит (план `docs/office-equipment-candidate-plan.md`, Р1), а общий файл со временем стёр
+ * бы эту границу — ту самую, ради которой сообщение и отделено от карточки. */
+export * from './office-equipment-candidates';
 export * from './service-requests';
 export * from './container-types';
 export * from './vehicle-kinds';

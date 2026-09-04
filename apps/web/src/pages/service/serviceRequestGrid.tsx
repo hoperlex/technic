@@ -1,4 +1,4 @@
-import { Button, Dropdown, Space, Tooltip, Typography, type TableColumnsType } from 'antd';
+import { Button, Space, Tooltip, Typography, type TableColumnsType } from 'antd';
 import { EyeOutlined, MoreOutlined } from '@ant-design/icons';
 import {
   actsAsServiceExecutor,
@@ -17,7 +17,14 @@ import {
   UrgentTag,
 } from '@entities/service-request';
 import { ServiceChatMark } from '@features/service-chat';
-import { actionsColumn, type CardConfig, ExpandableCell, textColumn } from '@shared/ui';
+import {
+  ActionMenuButton,
+  actionsColumn,
+  type CardConfig,
+  ExpandableCell,
+  textColumn,
+} from '@shared/ui';
+import { cardListMenuItems, rowMenuItems } from './serviceMenuPlacement';
 import { ServiceStatusCell, ServiceStatusLineCell } from './ServiceStatusCell';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 import {
@@ -27,6 +34,7 @@ import {
   PlaceCell,
   showsAmount,
   StartWorkButton,
+  AssignButton,
 } from './serviceRequestCells';
 import { PhoneLink } from '../../components/PhoneField';
 
@@ -141,23 +149,11 @@ export function serviceGridView(user: AuthUser | null): ServiceGridView {
 export interface ServiceGridOptions {
   view: ServiceGridView;
   /**
-   * Гарантия самой техники по её идентификатору. Приходит извне: в заявке лежит снимок реквизитов
-   * единицы без срока, а справочник виден не всякому — сервису он закрыт вовсе (Р7).
-   */
-  warrantyOf: (equipmentId: string) => string | null | undefined;
-  /**
    * Чью очередь считать своей. Учётка целиком, а не прежний признак `isMine`: подпись состояния и
    * её лицо считаются одной функцией (`serviceStatusLine`, Р101), и второй вход для того же факта
    * рано или поздно разошёлся бы с текстом — заметная строка «Ждёт оператора» у того, кого и ждут.
    */
   user: AuthUser | null;
-  /**
-   * Главный шаг состояния — то самое действие, к которому зовёт подпись «Вам: …» (Р117). Строит его
-   * набор действий (признак `primary` у пункта), а не вторая карта «статус → окно»: та разошлась бы
-   * с набором на первом же изменении цикла. Вернуло `null` либо не передано вовсе — подпись
-   * остаётся текстом: пункта нет, и звать некуда.
-   */
-  primaryAction?: (request: ServiceRequestDto) => (() => void) | null;
   actions: (request: ServiceRequestDto) => ServiceMenuItem[];
   /**
    * Строки текущей страницы — набору колонок, а не только таблице (ADR 0160, Р11): показывать ли
@@ -228,7 +224,6 @@ export function serviceRequestColumns(
           items={opts.actions(r)}
           pending={opts.pendingId === r.id}
           user={opts.user}
-          primaryAction={opts.primaryAction}
         />
       ),
     },
@@ -239,15 +234,9 @@ export function serviceRequestColumns(
       title: 'Техника',
       dataIndex: 'equipment',
       width: 260,
-      // Гарантию спрашивают только у существующей единицы: у заявки без аппарата её не «не знают»,
-      // её не бывает — и `undefined` здесь означает то же молчание ячейки, что и закрытый
-      // справочник (Р8).
-      render: (_v, r) => (
-        <EquipmentCell
-          request={r}
-          warrantyUntil={r.equipment ? opts.warrantyOf(r.equipment.id) : undefined}
-        />
-      ),
+      // Гарантия приезжает внутри самой строки (Ф3), и ячейке больше нечего передавать: срок лежит
+      // в блоке предмета, а у заявки без аппарата блока нет вовсе — спрашивать не у чего.
+      render: (_v, r) => <EquipmentCell request={r} />,
     }),
     // Объект — колонка ядра, а не набора сервиса (Р57). До этого её видел только исполнитель, и
     // заказчик с оператором отвечали на вопрос «где стоит аппарат», открывая карточку: у отдела
@@ -377,11 +366,14 @@ export function serviceRequestColumns(
       render: (_v: unknown, r: ServiceRequestDto) => statusAgeLabel(r.statusChangedAt),
     },
     actionsColumn<ServiceRequestDto>((r) => {
-      const items = opts.actions(r);
+      const all = opts.actions(r);
+      const items = rowMenuItems(all);
       return (
         <Space size={4}>
-          {/* «Принять в работу» — быстрой кнопкой в строке (Р6): пункт берётся готовым. */}
-          <StartWorkButton item={items.find((item) => item.key === 'start')} />
+          {/* «Принять в работу» и назначение — быстрыми кнопками (Р6, ADR 0162): пункты берутся
+              готовыми, доступность считает набор действий. */}
+          <StartWorkButton item={all.find((item) => item.key === 'start')} />
+          <AssignButton item={all.find((item) => item.key === 'assign')} />
           <Tooltip title="Открыть карточку">
             <Button
               size="small"
@@ -391,22 +383,14 @@ export function serviceRequestColumns(
             />
           </Tooltip>
           {items.length > 0 && (
-            // Действий у заявки бывает четыре и больше (назначить, согласовать, принять,
-            // отменить) — иконками они заняли бы полстроки, поэтому уходят в меню.
-            <Dropdown
-              trigger={['click']}
-              menu={{
-                items: items.map((item) => ({
-                  key: item.key,
-                  label: item.label,
-                  danger: item.danger,
-                  disabled: item.disabled,
-                })),
-                onClick: ({ key }) => items.find((item) => item.key === key)?.onClick(),
-              }}
-            >
-              <Button size="small" icon={<MoreOutlined />} aria-label="Действия" />
-            </Dropdown>
+            // Действий бывает четыре и больше — иконками они заняли бы полстроки. Триггер общий с
+            // карточкой: он же собирает пункты и возвращает фокус после закрытия (ADR 0162).
+            <ActionMenuButton
+              items={items}
+              size="small"
+              icon={<MoreOutlined />}
+              ariaLabel="Действия"
+            />
           )}
         </Space>
       );
@@ -466,7 +450,7 @@ export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<Service
         icon: <EyeOutlined />,
         onClick: () => opts.onOpen(r),
       },
-      ...opts.actions(r),
+      ...cardListMenuItems(opts.actions(r)),
     ],
   };
 }

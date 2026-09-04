@@ -8,8 +8,6 @@ import {
   warrantyClaimSourceLabels,
 } from '@technic/contracts';
 import {
-  ServiceStatusTag,
-  serviceRequestEquipmentName,
   serviceRequestObjectLabel,
   serviceStatusLine,
   statusAgeLabel,
@@ -17,6 +15,10 @@ import {
 } from '@entities/service-request';
 import { WarrantyTag } from '@entities/office-equipment';
 import type { ViewField } from '@shared/ui';
+import { MoveEquipmentButton } from './serviceRequestCells';
+import { ServiceRequestSubjectName } from './ServiceRequestSubjectName';
+import { ServiceStatusCell } from './ServiceStatusCell';
+import type { ServiceMenuItem } from './serviceStatusChoices';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { formatDateTime } from '../../utils/format';
 
@@ -31,17 +33,14 @@ import { formatDateTime } from '../../utils/format';
 export function serviceRequestViewFields({
   request,
   user,
-  equipmentWarrantyUntil,
   onAssign,
+  onMoveEquipment,
+  statusItems,
+  statusPending,
 }: {
   request: ServiceRequestDto;
   /** Смотрящий: от него зависит только лицо подписи состояния — «Вам: …» либо «Ждёт …». */
   user: AccessSubject | null | undefined;
-  /**
-   * Гарантия самой единицы. Приходит извне и бывает не задана вовсе: в заявке лежит снимок
-   * реквизитов без срока, а справочник виден не всякому — сервису он закрыт (Р7).
-   */
-  equipmentWarrantyUntil?: string | null;
   /**
    * Открыть окно исполнителей (ADR 0140). Не задан — состав правит кто-то другой либо не тот
    * статус: право и коридор здесь не считаются вовсе, обработчик приходит готовым пунктом
@@ -49,6 +48,16 @@ export function serviceRequestViewFields({
    * разошлась бы с коридором переходов на первом же изменении цикла.
    */
   onAssign?: (() => void) | null;
+  /** Записать переезд аппарата (backlog §12): готовый пункт набора действий, как и `onAssign`. */
+  onMoveEquipment?: (() => void) | null;
+  /**
+   * Набор действий карточки (ADR 0161): из него тег статуса отбирает разрешённые переходы. Не
+   * передан — карточка на чтение (архив), и тег остаётся тегом. Своего про доступ поле не считает:
+   * пункты приходят готовыми, как и обработчик назначения выше.
+   */
+  statusItems?: ServiceMenuItem[];
+  /** По этой заявке идёт действие без окна: тег ждёт ответа. */
+  statusPending?: boolean;
 }): ViewField[] {
   // Подпись — та же, что во второй строке столбца (Р100); у отложенной её разбирает строка ниже.
   const statusLine = request.status !== 'on_hold' ? serviceStatusLine(request, user) : null;
@@ -61,7 +70,11 @@ export function serviceRequestViewFields({
       label: 'Статус',
       children: (
         <Space size={8} wrap>
-          <ServiceStatusTag status={request.status} />
+          <ServiceStatusCell
+            request={request}
+            items={statusItems ?? []}
+            pending={!!statusPending}
+          />
           {/* Вид заявки (Н1) — рядом со статусом, а не отдельной строкой: он не реквизит, а ответ
               на «о чём эта заявка вообще», и читается вместе с состоянием. Обслуживание (бывший
               «Ремонт», Р1) не подписывается: оно умолчание модуля, и тег у каждой второй заявки
@@ -144,7 +157,7 @@ export function serviceRequestViewFields({
               состояние — прочерк на его месте читался бы как незаполненное поле. Реквизитов у
               такой заявки нет ни одного: ни номеров, ни типа, ни гарантии — вторая строка и теги
               ниже не пустеют, а не рисуются. */}
-          <span>{serviceRequestEquipmentName(request)}</span>
+          <ServiceRequestSubjectName request={request} />
           {request.equipment && (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {[
@@ -157,16 +170,18 @@ export function serviceRequestViewFields({
             </Typography.Text>
           )}
           {/* Два разных признака (§9.2): состояние гарантии самой техники и пометка о том,
-              что заявку завели по гарантии. Первое известно только тому, кому виден
-              справочник, второе — всем. У заявки без аппарата обоих нет вовсе: гарантия единицы
-              не «неизвестна», а не существует, и обращение по гарантии заводится выбором аппарата
-              (Р7 закрывает эту дверь на сервере). */}
-          {request.equipment && equipmentWarrantyUntil !== undefined && (
+              что заявку завели по гарантии. У заявки без аппарата обоих нет вовсе: гарантия
+              единицы не «неизвестна», её не существует, и обращение по гарантии заводится
+              выбором аппарата (Р7 закрывает эту дверь на сервере).
+              Срок приходит в самой заявке (Ф3), а не отдельным запросом справочника: карточка
+              открывается и из архива, где того запроса не было вовсе, — и там строка гарантии
+              молчала не потому, что срока нет, а потому, что спросить было некому. */}
+          {request.equipment && (
             <Space size={8} wrap>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 гарантия на технику:
               </Typography.Text>
-              <WarrantyTag until={equipmentWarrantyUntil} />
+              <WarrantyTag until={request.equipment.warrantyUntil} />
             </Space>
           )}
           {request.warrantyClaim && (
@@ -183,6 +198,8 @@ export function serviceRequestViewFields({
               </Tag>
             </Tooltip>
           )}
+          {/* Переезд записывают там же, где читают реквизиты (backlog §12). */}
+          <MoveEquipmentButton onClick={onMoveEquipment} />
         </Space>
       ),
     },

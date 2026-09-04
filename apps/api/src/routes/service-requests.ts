@@ -107,6 +107,8 @@ import {
   warrantyState,
   warrantyToday,
   type AccessSubject,
+  type EquipmentCandidateInput,
+  type ModuleMailOutcome,
   type ServiceExecutorAssignment,
   type ServiceExecutorsRow,
   type ServiceFileKind,
@@ -131,6 +133,7 @@ import {
   departments,
   files,
   officeEquipment,
+  officeEquipmentCandidates,
   officeEquipmentConsumables,
   officeEquipmentConsumableStockEntries,
   officeEquipmentTypes,
@@ -156,6 +159,10 @@ import {
   type ServiceMailResult,
   type ServiceRequestSide,
 } from '../services/service-request-mail';
+import {
+  prepareCandidateMail,
+  queueCandidateMail,
+} from '../services/office-equipment-candidate-mail';
 import { requirePrincipal } from '../auth/plugin';
 import {
   accessSubjectColumns,
@@ -165,6 +172,7 @@ import {
 } from '../auth/principal';
 import {
   archiveWhere,
+  assertActsAsRequestCustomer,
   assertArchiveVisible,
   assertCan,
   assertServiceRequestDeletable,
@@ -202,6 +210,23 @@ import {
   postChatMessage,
   readChatPage,
 } from '../services/service-request-chat';
+// Приём сообщения о технике, которой нет в справочнике (план кандидатов, Р2): два рубежа дублей и
+// ключ идемпотентности живут своим модулем, а разбор предмета и вставка пары — здесь, рядом с двумя
+// другими способами назвать предмет.
+import {
+  asCandidateIntakeRepeat,
+  assertNoParkDuplicate,
+  candidateIntakeFingerprint,
+  candidateIntakeKeyOf,
+  findIntakeRepeat,
+} from '../services/service-request-candidate-intake';
+// Замок приёмки под непроверенным предметом (план кандидатов, Р16): правило живёт в модуле
+// кандидата вместе с блокировкой его строки — здесь его только применяют, и порядок блокировок
+// «заявка → кандидат» описан там же.
+import { assertCandidateDecided } from '../services/office-equipment-candidates';
+// Тип сообщения проверяется тем же помощником, что и форма карточки парка (Р14): две двери в один
+// справочник обязаны принимать одно и то же.
+import { assertTypeUsable } from '../services/office-equipment-write';
 
 /**
  * Заявки на обслуживание оргтехники (ADR 0085).
@@ -326,6 +351,38 @@ function requestQuery() {
        * действием и человеком, который обязан не забыть.
        */
       equipmentCardObjectId: officeEquipment.objectId,
+      /**
+       * Срок гарантии единицы — тоже ТЕКУЩИЙ, из справочника (Ф3, §13 плана кандидата). Стоит
+       * рядом с объектом карточки по той же причине: оба поля отвечают про карточку сегодня, а не
+       * про снимок заявки, — и оба берутся из УЖЕ стоящего соединения, ради названия типа
+       * заведённого. Ни нового `leftJoin`, ни второго запроса поле не добавляет.
+       */
+      equipmentWarrantyUntil: officeEquipment.warrantyUntil,
+      /**
+       * СООБЩЕНИЕ О ТЕХНИКЕ, ставшее предметом заявки (план кандидатов, Р5, §9). Шесть колонок, а
+       * не строка целиком: в блок заявки уходит пересечение двух кругов читателей — тех, кто видит
+       * заявку, и тех, кому открыта очередь проверки (Р9), — и выбрано оно составом полей, а не
+       * вычёркиванием из DTO кандидата (разбор — при `ServiceRequestCandidateDto` в контрактах).
+       *
+       * СОЕДИНЕНИЕМ, А НЕ ВТОРЫМ ЗАПРОСОМ, и по той же причине, что у гарантии выше: блок нужен
+       * КАЖДОЙ показанной заявке — и в карточке, и в строке списка, где предмет называют, — а
+       * связь «заявка ↔ кандидат» ровно 1:1 (`equipment_candidate_id`, третья ветвь
+       * `service_requests_subject_check`). Левое соединение по ключу 1:1 строк не размножает, и
+       * лишнего похода в базу блок не стоит. Отдельная ручка означала бы запрос на строку списка.
+       *
+       * СОЕДИНЕНИЕ ЛЕВОЕ, и пустует оно законно — как и соседнее соединение с карточкой парка, но
+       * ПО ОЧЕРЕДИ с ним: у заявки с обычным аппаратом кандидата нет, у заявки с кандидатом нет
+       * аппарата (Р5), а у заявки без предмета вовсе (Р8) пусты оба. Внутреннее соединение здесь
+       * потеряло бы из списка ровно те заявки, ради которых блок и заводится, — и потеряло бы
+       * молча. Ссылка при этом `restrict`: строка соединения не приходит пустой НИКОГДА, когда
+       * `equipment_candidate_id` непуст, — на этом и стоит сборка блока ниже.
+       */
+      candidateId: officeEquipmentCandidates.id,
+      candidateStatus: officeEquipmentCandidates.status,
+      candidateDeclaredModel: officeEquipmentCandidates.declaredModel,
+      candidateSerialNumber: officeEquipmentCandidates.serialNumber,
+      candidateInventoryNumber: officeEquipmentCandidates.inventoryNumber,
+      candidateDecisionReason: officeEquipmentCandidates.decisionReason,
       objectId: constructionObjects.id,
       objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
@@ -346,6 +403,10 @@ function requestQuery() {
     .from(serviceRequests)
     .leftJoin(officeEquipment, eq(serviceRequests.officeEquipmentId, officeEquipment.id))
     .leftJoin(officeEquipmentTypes, eq(officeEquipment.equipmentTypeId, officeEquipmentTypes.id))
+    .leftJoin(
+      officeEquipmentCandidates,
+      eq(serviceRequests.equipmentCandidateId, officeEquipmentCandidates.id),
+    )
     .leftJoin(constructionObjects, eq(serviceRequests.equipmentObjectId, constructionObjects.id))
     .innerJoin(creators, eq(serviceRequests.createdBy, creators.id))
     .leftJoin(customerDepartments, eq(serviceRequests.customerDepartmentId, customerDepartments.id))
@@ -574,6 +635,7 @@ function toDto(
   consumables: ServiceRequestConsumableDto[],
   chat: ServiceRequestChatSummaryDto,
   audience: ServiceRequestAudience,
+  seesEquipmentDirectory: boolean,
 ): ServiceRequestDto {
   const r = row.r;
   return {
@@ -633,6 +695,65 @@ function toDto(
             inventoryNumber: r.equipmentInventoryNumber,
             typeName: row.typeName ?? '',
             location: r.equipmentLocation,
+            /*
+             * Единственное поле блока, приходящее из справочника, а не из снимка: срок гарантии
+             * живёт в карточке и меняется после заведения заявки (почему не снимок и почему не
+             * второй запрос — при самом поле в `ServiceRequestEquipmentDto`).
+             *
+             * И ровно поэтому оно ЗАКРЫТО ТОМУ, КОМУ ЗАКРЫТ СПРАВОЧНИК (решение владельца
+             * 04.09.2026): снимок заявки подрядчик видит по праву — он по нему и едет чинить, — а
+             * живая колонка парка ему не полагается. Гейт стоит здесь, в единственном месте, где
+             * блок предмета собирается, а не в карте аудиторий (ADR 0160): та отвечает про деньги
+             * этой заявки и считается по правам заявки, здесь же спрашивается право справочника —
+             * другой вопрос и другой источник ответа. Разбор альтернатив («третья аудитория» и
+             * «вторая карта видимости») — при самом поле в контрактах.
+             *
+             * Без `??`: колонка справочника необязательна, и `null` здесь — её собственное «срок
+             * не заведён», а не следствие соединения. Подменять его пустой строкой или датой было
+             * бы выдуманным ответом там, где честный ответ — «не знаем». Закрытому читателю
+             * приезжает тот же `null`, и это не двусмысленность, а её отсутствие: обоим состояниям
+             * портал рисует прочерк, то есть молчит, — тогда как выдуманная дата или пустая строка
+             * заставили бы его отвечать за сервер.
+             */
+            warrantyUntil: seesEquipmentDirectory ? row.equipmentWarrantyUntil : null,
+          },
+    /**
+     * ТРЕТИЙ СПОСОБ НАЗВАТЬ ПРЕДМЕТ: сообщение об аппарате, которого в справочнике ещё нет (план
+     * `docs/office-equipment-candidate-plan.md`, Р5, Р15, §9). `null` — предмет обычный: карточка
+     * парка либо заявка без аппарата вовсе.
+     *
+     * ПРИЗНАК — СОЕДИНЕНИЕ, А НЕ КОЛОНКА ЗАЯВКИ, и здесь это не то же самое, что у аппарата выше.
+     * У аппарата в самой заявке лежит снимок (имя, оба номера, место), и спрашивать его наличие
+     * надо у заявки; у кандидата снимка нет вовсе — ВСЕ поля блока приходят из соединённой строки
+     * одним куском. Спроси мы `r.equipmentCandidateId`, пришлось бы утверждать «раз ссылка есть,
+     * то и строка пришла» тремя восклицательными знаками — то есть допустить ответ «сообщение
+     * есть, а модели у него нет». Ровно тот же довод, что у блока площадки ниже.
+     *
+     * БЛОК НЕ ЗАКРЫТ НИ ПРАВОМ СПРАВОЧНИКА, НИ АУДИТОРИЕЙ, и это решение, а не пропущенный гейт.
+     * Соседнее поле `warrantyUntil` закрыто `officeEquipment.read` — но оно приходит из ЖИВОЙ
+     * карточки парка, а кандидат записью справочника не является вовсе (Р1): он предмет самой
+     * заявки, живущий в своей таблице. Тот же гейт здесь погасил бы блок у подрядчика, которому
+     * справочник закрыт намеренно (`COUNTERPARTY_TYPE_PERMISSIONS.service`) и который поедет на
+     * этот аппарат смотреть, и у автора сообщения, которому адресована причина отказа (Р15). Оба
+     * остались бы с заявкой без предмета: `equipment` у неё `null` по построению.
+     *
+     * Проекция по аудиториям блок тоже не режет (`SERVICE_REQUEST_FIELD_AUDIENCE`, строка
+     * `equipmentCandidate`): карта отвечает про ДЕНЬГИ заявки, а в блоке нет ни одной цифры —
+     * заявленная модель, два номера с шильдика, состояние проверки и слова отказа.
+     */
+    equipmentCandidate:
+      row.candidateId === null
+        ? null
+        : {
+            id: row.candidateId,
+            status: row.candidateStatus!,
+            declaredModel: row.candidateDeclaredModel!,
+            // Номера непусты не оба: `…_identity_check` требует хотя бы один, второй остаётся
+            // пустой СТРОКОЙ — колонки кандидата `NOT NULL`. Восклицательный знак здесь про
+            // соединение («строка пришла»), а не про значение.
+            serialNumber: row.candidateSerialNumber!,
+            inventoryNumber: row.candidateInventoryNumber!,
+            decisionReason: row.candidateDecisionReason!,
           },
     /**
      * Площадка предмета. Пустеет вместе с аппаратом: у заявки «от отдела» снимка места нет вовсе
@@ -802,6 +923,27 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
       executorIds: (executorMap.get(row.r.id) ?? []).map((e) => e.userId),
     })),
   );
+  /**
+   * Открыт ли читателю справочник парка — вопрос ОДНОГО права и всей страницы сразу (решение
+   * владельца 04.09.2026). Им закрывается единственное поле блока предмета, приходящее из живой
+   * карточки, а не из снимка заявки (`warrantyUntil`).
+   *
+   * СЧИТАЕТСЯ ОДИН РАЗ, А НЕ НА СТРОКУ, в отличие от аудитории: аудитория — свойство ПАРЫ «человек
+   * ↔ эта заявка» (назначение открывает деньги ровно одной строки), а «открыт ли справочник» —
+   * свойство одного читателя, и одинаково для всех пятидесяти строк страницы.
+   *
+   * ОБЛАСТЬ СПРАВОЧНИКА ЗДЕСЬ НЕ СПРАШИВАЕТСЯ, и это решение. Область отвечает на вопрос «какие
+   * карточки читатель НАХОДИТ», а здесь ничего не ищут: карточку назвала предметом заявка, которая
+   * читателю уже видна, и её реквизиты он видит снимком целиком — имя, оба номера и место. Довесок
+   * `officeEquipmentScopeWhere` на каждую строку означал бы второй предикат области в выдаче
+   * списка, расходящийся с предикатом видимости заявок молча и в ту сторону, где часть строк
+   * замолкает без причины, — ровно ту болезнь, от которой Ф3 колонку и лечил.
+   *
+   * Признак расхождения площадок (`objectMismatch`) правом НЕ закрывается: он не выдаёт значения
+   * справочника вовсе — это факт о самой заявке («снимок разошёлся с картотекой и не устранён»), и
+   * читает его в первую очередь тот, кто аппарат повезёт.
+   */
+  const seesEquipmentDirectory = can(p, 'officeEquipment.read');
   return rows.map((row) => {
     const executors = executorMap.get(row.r.id) ?? [];
     /**
@@ -830,6 +972,7 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
       consumableMap.get(row.r.id) ?? [],
       chatMap.get(row.r.id)!,
       audience,
+      seesEquipmentDirectory,
     );
   });
 }
@@ -951,11 +1094,30 @@ async function loadRow(id: string): Promise<RequestRow> {
 /**
  * Живая заявка в области субъекта — общий вход всех изменяющих ручек. Архивная отвечает 404, а не
  * 403: удалённую заявку не двигают, и знать о её существовании по известному id тоже незачем.
+ *
+ * СТРАЖ СТОРОНЫ ЗАКАЗЧИКА СТОИТ ЗДЕСЬ, А НЕ В ЧЕТЫРЁХ РУЧКАХ ПООТДЕЛЬНОСТИ (план профилей
+ * оргтехники, Р6). Правило сужает ровно одного субъекта — держателя набора «Заявитель» у роли без
+ * оси, — и дверей у него сегодня четыре: правка «Новой», её удаление, подшивка и снятие своего
+ * вложения. Расставленное по ручкам, оно жило бы в четырёх местах и приезжало бы в пятую ручку
+ * только вместе с тем, кто про него вспомнит; на общем входе изменяющих ручек забыть его нельзя.
+ * Прочих субъектов оно не касается вовсе — `actsAsRequestCustomer` отвечает им «да», — поэтому
+ * общий вход ничего у них не отбирает.
+ *
+ * Читающие ручки сюда не ходят (кроме `GET /executor-candidates`, куда без права `assign` не
+ * попасть): карточку, историю и ленту достаёт `loadRow` + `assertScope`, и глобальное ЧТЕНИЕ у
+ * роли без оси остаётся прежним — это действующая модель, а не дыра (Т17).
  */
 async function requireEditable(p: Principal, id: string): Promise<RequestRow> {
   const row = await loadRow(id);
   if (row.deletedAt) throw err.notFound(NOT_FOUND);
   await assertScope(p, row);
+  assertActsAsRequestCustomer(p, {
+    id: row.id,
+    createdBy: row.createdBy,
+    objectId: row.equipmentObjectId,
+    customerDepartmentId: row.customerDepartmentId,
+    equipmentDepartmentId: row.equipmentDepartmentId,
+  });
   return row;
 }
 
@@ -1809,6 +1971,19 @@ async function applyTransition(
  * транзакции (§5.2). `null` — у перехода письма нет, и ручка обязана сказать это словом, а не
  * умолчанием: обязательный параметр `mail` у `applyTransition` для того и заведён.
  */
+/**
+ * Исходы, по которым письмо действительно НЕ дошло, — только они пишутся отдельной записью отказа.
+ * `queued` очевиден, а `not_needed` и `event_off` — штатные состояния: письма не требовалось либо
+ * событие выключено рубильником, и запись «не ушло» про них засоряла бы журнал ровно там, где его
+ * читают на разборе «почему подрядчик не приехал» (§5.10).
+ */
+const FAILED_MAIL_OUTCOMES: ReadonlySet<ModuleMailOutcome> = new Set<ModuleMailOutcome>([
+  'mail_failed',
+  'channel_missing',
+  'no_recipients',
+  'mail_disabled',
+]);
+
 async function prepareTransitionMail(
   status: ServiceRequestStatus,
   actor: Principal,
@@ -2391,6 +2566,39 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       q.awaitingDocuments && can(p, 'serviceRequests.finance')
         ? and(inArray(serviceRequests.status, ['done', 'accepted']), not(hasClosingDocument))
         : undefined,
+      /**
+       * ДВЕ ОЧЕРЕДИ ПО СОСТОЯНИЮ ПРЕДМЕТА (план кандидатов, §9): «на проверке» — работа
+       * проверяющего, «отклонён» — работа того, кто заявку ведёт. Одним параметром с одним
+       * значением из двух: у кандидата состояние одно, и пара чекбоксов допускала бы запрос с
+       * заведомо пустым ответом (разбор — при самом параметре в контрактах).
+       *
+       * ПОДЗАПРОСОМ `EXISTS`, А НЕ СОЕДИНЕНИЕМ, хотя `requestQuery` кандидата уже соединяет. У
+       * этого условия ТРИ читателя, и соединение есть только у одного: страница списка строится
+       * `requestQuery`, а счётчик той же страницы и «Отметить все прочитанными»
+       * (`markAllChatRead`) собирают свои запросы сами — там из справочников соединён один
+       * `office_equipment`. Условие по колонке кандидата уронило бы оба с «missing FROM-clause
+       * entry», а дописать соединение в три места значило бы завести три способа разойтись:
+       * страница показывала бы одно, счётчик считал бы другое, кнопка гасила бы третье. `EXISTS`
+       * не зависит от формы вмещающего запроса вовсе — тот же приём и по той же причине, что у
+       * `hasClosingDocument` выше.
+       *
+       * Коррелированный подзапрос здесь безопасен: он стоит в `WHERE`, а не в списке столбцов, —
+       * молча переписывает корреляцию драйвер только во втором случае
+       * (`office-equipment-sql-correlation.test.ts`).
+       */
+      q.candidateStatus
+        ? exists(
+            db
+              .select({ x: sql`1` })
+              .from(officeEquipmentCandidates)
+              .where(
+                and(
+                  eq(officeEquipmentCandidates.id, serviceRequests.equipmentCandidateId),
+                  eq(officeEquipmentCandidates.status, q.candidateStatus),
+                ),
+              ),
+          )
+        : undefined,
       q.warrantyClaim ? isNotNull(serviceRequests.warrantyClaimSource) : undefined,
       // Заморозка признак срочности не гасит (Р119) — заявка не перестала быть срочной оттого, что
       // её остановили, — но из отбора выпадает: пока она ждёт решения, браться не за что.
@@ -2948,8 +3156,39 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const body = req.body;
 
+      /**
+       * ИДЕМПОТЕНТНОСТЬ — ТОЛЬКО У ВЕТКИ КАНДИДАТА и ДО всякой работы (план кандидатов, §8).
+       *
+       * Ключ спрашивается первым — раньше разбора предмета, раньше рубежа дублей и раньше
+       * транзакции, — и это самый неочевидный шаг приёма (закупка ошиблась ровно на нём). При
+       * потерянном ответе первая попытка УЖЕ завела ожидающего кандидата, значит повтор упёрся бы
+       * в рубеж 2 «аппарат уже отправлен на проверку», не дойдя до собственного ключа, — то есть
+       * обещание «повтор вернёт прежнюю пару» не выполнялось бы ровно в том случае, ради которого
+       * ключ и заводится.
+       *
+       * Повтор заканчивается ЗДЕСЬ и не делает больше ничего: ни письма, ни аудита, ни второй
+       * строки. Ответ у него 200, а не 201: этим запросом ничего не создано, и сказать «создано»
+       * значило бы соврать клиенту, который как раз и выясняет, создавал он что-нибудь или нет.
+       *
+       * ОТСЮДА ОДНО ОТСТУПЛЕНИЕ ОТ ОБЫЧНОГО ПОРЯДКА «право → область → работа»: тело без заголовка
+       * получит 400 раньше, чем недостающее право получит 403. Принято сознательно — право
+       * `officeEquipment.propose` спрашивается ОДИН раз и в одном месте, вместе с разбором предмета
+       * (`resolveRequestSubject`), а второй его вызов здесь ради порядка кодов завёл бы второе место,
+       * которое однажды разойдётся с первым. Раскрыть 400 при этом нечего: он сообщает лишь то, что
+       * у ручки есть заголовок.
+       */
+      const candidate = body.equipmentCandidate ?? null;
+      const intake = candidate
+        ? { key: candidateIntakeKeyOf(req), fingerprint: candidateIntakeFingerprint(body) }
+        : null;
+      if (intake) {
+        const repeatOf = await findIntakeRepeat(p, intake.key, intake.fingerprint);
+        if (repeatOf) return await repeatedIntakeAnswer(p, repeatOf);
+      }
+
       // Предмет заявки и её заказчик — одним разбором (Р5, Р6, Р7): у заявки с аппаратом они
-      // считаются от карточки единицы, у заявки без аппарата — от оси роли заводящего.
+      // считаются от карточки единицы, у заявки без аппарата — от оси роли заводящего, у заявки с
+      // кандидатом — из самого сообщения о технике.
       const { equipment, equipmentObjectId, customerDepartmentId } = await resolveRequestSubject(
         p,
         body,
@@ -2964,6 +3203,21 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        * Автор будущей заявки — сам заводящий: ответ службы на письмо уйдёт ему.
        */
       const mailPlan = await prepareTransitionMail('new', p, p.id);
+      /**
+       * ВТОРОЕ ПИСЬМО ЭТОГО ЗАВЕДЕНИЯ — О САМОМ СООБЩЕНИИ (план кандидатов, §10; этап Э5).
+       *
+       * Оно НЕ ПОДАВЛЯЕТ и НЕ ПОДМЕНЯЕТ `service_request_waiting_it`: это два разных факта и два
+       * разных адресата. Служба получает «заявку надо разобрать», проверяющие — «в справочнике
+       * появилось сообщение, которое надо проверить», и склеить их нельзя даже при совпадении
+       * ящиков: у писем разные `kind`, поэтому уникальность очереди `(kind, dedupe_key)` их не
+       * схлопнет, а рубильники щёлкаются порознь.
+       *
+       * Готовится ДО транзакции, как и соседнее: здесь читается только конфигурация канала, и её
+       * отказ — мягкий исход. Адресаты, рубильник и тела считаются внутри транзакции (§5.9).
+       */
+      const candidateMailPlan = candidate
+        ? prepareCandidateMail('office_equipment_candidate_pending', mailActorOf(p))
+        : null;
 
       /**
        * Вид заявки (Н1). «Поля нет» читается как «ремонт» — ровно так, как читает его старый код в
@@ -2974,7 +3228,13 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const kind: ServiceRequestKind = body.kind ?? 'repair';
       const consumables = body.consumables ?? [];
 
-      const created = await db.transaction(async (tx) => {
+      /*
+       * Промис заведения берётся ОТДЕЛЬНОЙ ПЕРЕМЕННОЙ, а не цепочкой прямо на вызове: разбор
+       * `23505` обязан стоять снаружи транзакции (ниже), а `.catch`, приписанный к самому вызову,
+       * сдвинул бы внутрь всё тело заведения, ничего в нём не изменив. Промис при этом не «висит»:
+       * обработчик приписан к нему следующим же выражением, без единого `await` между ними.
+       */
+      const attempt = db.transaction(async (tx) => {
         // Замок «одна открытая заявка вида на аппарат» (Р21) без аппарата не зовётся, и это не
         // послабление, а буквальное прочтение правила: запирается ЕДИНИЦА, а её здесь нет. Тем же
         // читаются и частичные уникальные индексы под ним — в B-tree `NULL` не равен `NULL`, и
@@ -2992,10 +3252,32 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
          * подразделение называлось в момент заведения.
          */
         const requester = await resolveRequesterPlace(tx, p, body);
+        /**
+         * КАНДИДАТ И ЗАЯВКА — ОДНОЙ ТРАНЗАКЦИЕЙ (Р2), и порядок «сначала кандидат» задан ссылкой:
+         * заявка держит `equipment_candidate_id`, а не наоборот. Отдельная ручка «сначала кандидат,
+         * потом заявка» оставляла бы кандидатов-сирот при каждом обрыве на втором шаге и требовала
+         * бы уборки; здесь обрыв не оставляет ничего.
+         *
+         * Тип сообщения проверяется ОБЩИМ помощником справочника (`assertTypeUsable`, Р14), а не
+         * своей копией условия: заявитель выбирает тип из того же перечня, что и оператор в форме
+         * карточки, и «здесь неактивный тип ещё можно, а там уже нельзя» было бы расхождением двух
+         * дверей в один справочник. Внутри транзакции, потому что помощник работает над `tx`, а
+         * пустой откат не стоит ничего.
+         */
+        const candidateId = candidate
+          ? await insertRequestCandidate(tx, p, candidate, requester.departmentId, intake!)
+          : null;
         const [row] = await tx
           .insert(serviceRequests)
           .values({
             officeEquipmentId: equipment?.id ?? null,
+            /**
+             * ТРЕТИЙ СПОСОБ НАЗВАТЬ ПРЕДМЕТ (Р4). Ссылка остаётся заполненной и после решения
+             * проверяющего: заявка обязана помнить, что предмет пришёл проверкой, — по этой паре
+             * читается история, снимается замок приёмки (Р16) и строится срез «заведено через
+             * проверку».
+             */
+            equipmentCandidateId: candidateId,
             /**
              * Объект заявки — снимок, как и остальные реквизиты предмета, и при поднятой пометке
              * его называет человек (Р16, ответ В3). Справочник заявка при этом НЕ правит: перенос
@@ -3022,13 +3304,21 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
              * (§5 плана): колонки эти — копия справочника, и подпись для человека в них означала
              * бы, что поиск по названию техники находит заявку, у которой техники нет. Как её
              * называть на экране, решает портал по `equipment: null` (`SERVICE_REQUEST_NO_EQUIPMENT`).
+             *
+             * У ЗАЯВКИ С КАНДИДАТОМ СНИМОК ЗАПОЛНЕН ЗАЯВЛЕННЫМ (Р6): модель — как её прочли с
+             * шильдика, оба номера и место — как их назвал человек. Пустой снимок здесь был бы
+             * неверен: предмет у заявки ЕСТЬ, он просто не проверен, и сервис едет по этому адресу
+             * уже сегодня. Решение проверяющего перепишет эти четыре колонки реквизитами заведённой
+             * карточки — единственный раз в жизни заявки, когда снимок меняется, и потому событие
+             * пишется в историю, а не подменяется молча.
              */
-            equipmentName: equipment?.name ?? '',
-            equipmentSerialNumber: equipment?.serialNumber ?? '',
-            equipmentInventoryNumber: equipment?.inventoryNumber ?? '',
+            equipmentName: equipment?.name ?? candidate?.declaredModel ?? '',
+            equipmentSerialNumber: equipment?.serialNumber ?? candidate?.serialNumber ?? '',
+            equipmentInventoryNumber:
+              equipment?.inventoryNumber ?? candidate?.inventoryNumber ?? '',
             // Место — часть того же снимка: сервис поедет по нему, а карточка к тому времени
             // могла переехать (Р57).
-            equipmentLocation: equipment?.location ?? '',
+            equipmentLocation: equipment?.location ?? candidate?.location ?? '',
             kind,
             description: body.description,
             responsibleName: body.responsibleName,
@@ -3045,7 +3335,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
              * Автовизы при заведении больше нет (Н3). Она существовала потому, что заявку,
              * заведённую самим согласующим, незачем было подписывать вторым действием **на входе**;
              * виза по смете — решение по чужому счёту, и автоматической быть не может. Заявка
-             * обладателя `approveIt` заводится «Новой» наравне с остальными.
+             * ИТ-службы заводится «Новой» наравне с остальными — тем более что визы не осталось ни
+             * в цикле, ни в её наборе (Э9 плана профилей).
              */
             warrantyClaimSource: claim.source,
             warrantyClaimItemId: claim.itemId,
@@ -3090,8 +3381,44 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             );
           await markFilesActive(tx, body.fileIds);
         }
-        return { ...request, mail: transition.mail, requester };
+        /**
+         * ПИСЬМО О СООБЩЕНИИ — ТЕМ ЖЕ `tx` И ПОСЛЕДНИМ ШАГОМ ТРАНЗАКЦИИ (atomic-outbox, §5.9
+         * почтового плана). Тем же — потому что SQL-ошибка очереди обязана откатить и пару
+         * «кандидат + заявка»: письмо, потерянное молча, оставило бы сообщение лежать в очереди, о
+         * которой никто не узнал. Последним — потому что тело письма читает уже записанные строки:
+         * тип, площадку и подразделение автора берёт `loadCandidateLetterData` по самой строке
+         * кандидата, а номер заявки существует только после её вставки (`num` — identity).
+         *
+         * SMTP при этом работает уже после ответа: в транзакции появляются лишь строка очереди и
+         * задача воркера.
+         */
+        const candidateMail =
+          candidateId && candidateMailPlan
+            ? await queueCandidateMail(tx, { prepared: candidateMailPlan, candidateId })
+            : null;
+        return { ...request, mail: transition.mail, requester, candidateId, candidateMail };
       });
+      /**
+       * РУБЕЖ 2 И ГОНКА КЛЮЧА — СНАРУЖИ ПРЕРВАННОЙ ТРАНЗАКЦИИ (Р10, §8). К моменту `23505`
+       * транзакция прервана, и читать в ней нечего: любой запрос в ней ответит `25P02`.
+       *
+       * Второго чтения ключа «под блокировкой», как у закупки (её шаг 4), здесь нет и не нужно:
+       * закупка берёт `FOR UPDATE` на строки расходников и потому обязана перечитать ключ уже под
+       * замком, а заведение пары блокировок не берёт вовсе — точкой сериализации служит сам
+       * уникальный индекс, и разбор его отказа эту работу и делает.
+       */
+      const created = await attempt.catch(async (e: unknown) => {
+        if (!intake) throw e;
+        const repeat = await asCandidateIntakeRepeat(
+          e,
+          p,
+          intake.key,
+          intake.fingerprint,
+          candidate!,
+        );
+        return { repeatOf: repeat.requestId };
+      });
+      if ('repeatOf' in created) return await repeatedIntakeAnswer(p, created.repeatOf);
 
       const dto = (await getFullDto(p, created.id))!;
       await writeAudit({
@@ -3114,6 +3441,32 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           requesterObjectId: created.requester.objectId,
         },
       });
+      /**
+       * Заведение кандидата — ОБЫЧНЫЙ `writeAudit`, а не строгий (§11 плана кандидатов), и это
+       * решение, а не следование соседней строке. След заведения есть и без журнала: пара колонок
+       * `created_by/created_at` самой строки плюс ссылка из заявки, — а ронять заведение заявки
+       * неудачной записью в журнал нельзя, человек в ней не виноват. Строгим (`writeAuditTx`)
+       * станут решения проверяющего (Э4): там журнал отвечает, откуда взялась карточка в парке, и
+       * потерянная запись оставила бы этот вопрос без ответа именно в редком случае, ради которого
+       * журнал и читают.
+       */
+      if (created.candidateId) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'officeEquipmentCandidate.create',
+          entityType: 'officeEquipmentCandidate',
+          entityId: created.candidateId,
+          metadata: {
+            requestId: created.id,
+            num: created.num,
+            declaredModel: candidate!.declaredModel,
+            serialNumber: candidate!.serialNumber,
+            inventoryNumber: candidate!.inventoryNumber,
+            objectId: candidate!.objectId,
+            location: candidate!.location,
+          },
+        });
+      }
       // Неудача сборки письма пишется в аудит только теперь: `writeAudit` ходит мимо транзакции, и
       // запись, сделанная внутри, пережила бы её откат (Р67).
       if (created.mail?.outcome === 'mail_failed') {
@@ -3127,9 +3480,137 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       }
       reply.code(201);
       // Наружу — в объёме аудитории: полное `dto` собрано ради заголовка в журнале.
-      return { request: forAudience(dto), mail: created.mail?.outcome ?? 'not_needed' };
+      return {
+        request: forAudience(dto),
+        mail: created.mail?.outcome ?? 'not_needed',
+        /**
+         * Исход второго письма — ОТДЕЛЬНЫМ полем и только у заведения с сообщением о технике
+         * (§10). Поле аддитивное: старый клиент лишнее игнорирует, а поле `mail` продолжает
+         * отвечать за письмо службы — подмени мы его общим исходом, портал говорил бы «служба не
+         * оповещена» там, где не нашлось проверяющего, и наоборот.
+         *
+         * Тип ответа контрактами пока не объявлен: `packages/contracts/src/service-requests.ts`
+         * правит соседняя волна, и лезть в него ради одного необязательного поля значило бы
+         * поймать конфликт на ровном месте. Портал читает поле по имени, а объявление приедет
+         * вместе с ближайшей правкой контракта заведения.
+         */
+        ...(created.candidateMail ? { candidateMail: created.candidateMail.outcome } : {}),
+      };
     },
   );
+
+  // ── Заведение пары «кандидат + заявка» (план кандидатов, Р2, Р7, §8) ──
+
+  /**
+   * Ответ на ПОВТОР потерянной попытки: прежняя пара и ничего больше (§8).
+   *
+   * Ни 201, ни письма, ни второй строки аудита: ресурс этим запросом не создавался, и сказать
+   * «создано» значило бы соврать клиенту, который как раз и выясняет, создавал он что-нибудь или
+   * нет. Исход почты — `not_needed`: письмо по этой заявке ушло на первой попытке, и повторять его
+   * незачем; «поставлено в очередь» здесь означало бы второе письмо, которого не будет.
+   */
+  async function repeatedIntakeAnswer(
+    p: Principal,
+    requestId: string,
+  ): Promise<{ request: ServiceRequestDto; mail: ModuleMailOutcome }> {
+    const dto = (await getFullDto(p, requestId))!;
+    return { request: forAudience(dto), mail: 'not_needed' };
+  }
+
+  /**
+   * Строка сообщения о технике — той же транзакцией, что и заявка (Р2).
+   *
+   * ПОДРАЗДЕЛЕНИЕ АВТОРА — СНИМКОМ, и берётся оно у того же разбора, что и снимок заявки
+   * (`resolveRequesterPlace`), а не у сегодняшних привязок учётки: по нему считается отдельская ось
+   * области проверяющего (Р9), и переведённый в другой отдел человек не должен уносить свои прошлые
+   * сообщения из чужой очереди. Пусто у учёток вовсе без отделов (площадочная роль, администратор)
+   * — законное состояние: такие кандидаты видны по объекту.
+   *
+   * Версии, статуса и решения здесь нет ни одного: у только что отправленного сообщения статус
+   * `pending`, версия единица и решения не принято — всё это стоит умолчаниями колонок, и
+   * повторять их в теле вставки значило бы завести второе место, где записаны те же значения.
+   */
+  async function insertRequestCandidate(
+    tx: Tx,
+    p: Principal,
+    candidate: EquipmentCandidateInput,
+    requesterDepartmentId: string | null,
+    intake: { key: string; fingerprint: string },
+  ): Promise<string> {
+    await assertTypeUsable(tx, candidate.equipmentTypeId);
+    const [row] = await tx
+      .insert(officeEquipmentCandidates)
+      .values({
+        equipmentTypeId: candidate.equipmentTypeId,
+        declaredModel: candidate.declaredModel,
+        serialNumber: candidate.serialNumber,
+        inventoryNumber: candidate.inventoryNumber,
+        objectId: candidate.objectId,
+        location: candidate.location,
+        comment: candidate.comment,
+        requesterDepartmentId,
+        createdBy: p.id,
+        idempotencyKey: intake.key,
+        idempotencyFingerprint: intake.fingerprint,
+      })
+      .returning({ id: officeEquipmentCandidates.id });
+    return row!.id;
+  }
+
+  /**
+   * Площадка кандидата — по ОСИ РОЛИ автора (Р7), и оси здесь две, а не одна.
+   *
+   * Разбор СВОЙ, а не общий с пометкой «не тот объект» (`resolveEquipmentObject`), и это не
+   * дублирование: тот проверяет только объектную ось, потому что у заявки с аппаратом площадка
+   * приходит из карточки, и роль отдела, выбравшая чужой объект, всё равно остаётся в своей области
+   * по отделу-заказчику. Здесь опоры на карточку нет вовсе — площадку называет сам человек, — и
+   * отдельская ось обязана сузиться до площадок СВОИХ отделов (`departmentObjectIds`, ADR 0062):
+   * иначе сотрудник отдела заводил бы сообщения о технике чужих строек, и очередь проверяющего той
+   * площадки наполнялась бы сообщениями, которых никто там не видел.
+   *
+   * Сквозная область модуля и роли без осей выбирают из справочника целиком — то же правило и тот
+   * же источник (`hasModuleWideScope`), что у соседних разборов предмета.
+   *
+   * 422 с именем поля, а не 403: право сообщить о технике у человека есть — не годится присланное
+   * значение. Тот же код и та же форма ответа, что у чужого объекта в пометке «не тот объект».
+   */
+  async function resolveCandidateObject(
+    p: Principal,
+    candidate: EquipmentCandidateInput,
+  ): Promise<void> {
+    const wide = hasModuleWideScope(p.grantCodes, 'serviceRequests');
+    const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+    if (
+      !wide &&
+      isObjectScopedRole(p.role) &&
+      !p.constructionObjectIds.includes(candidate.objectId)
+    ) {
+      throw err.unprocessable(
+        'Сообщить о технике можно только со своего объекта — заявку с чужого не увидит и сам заявитель',
+        { 'equipmentCandidate.objectId': 'Чужой объект' },
+      );
+    }
+    if (
+      !wide &&
+      isDepartmentScopedRole(p.role) &&
+      !p.departmentObjectIds.includes(candidate.objectId)
+    ) {
+      throw err.unprocessable(
+        `${who} сообщает о технике на площадках своего отдела: на чужой её некому проверить`,
+        { 'equipmentCandidate.objectId': 'Чужая площадка' },
+      );
+    }
+    // Существование, а не активность: закрывающаяся площадка ещё держит у себя технику, и запрет
+    // выбирать её означал бы сообщение, которое негде записать. Тот же разбор, что у площадки
+    // заявителя и у пометки «не тот объект» рядом.
+    const [object] = await db
+      .select({ id: constructionObjects.id })
+      .from(constructionObjects)
+      .where(eq(constructionObjects.id, candidate.objectId));
+    if (!object) {
+      throw err.unprocessable('Объект не найден', { 'equipmentCandidate.objectId': 'Не найден' });
+    }
+  }
 
   // ── Предмет и заказчик заводимой заявки (Р5, Р6, Р7) ──
 
@@ -3147,7 +3628,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
 
   /** Что заявка получит в трёх колонках области: предмет, площадка и отдел-заказчик. */
   interface RequestSubject {
-    /** `null` — заявка без аппарата: снимки предмета пустые, отдел-владелец пуст всегда. */
+    /**
+     * `null` у ДВУХ разных заявок, и путать их нельзя: у заявки без аппарата предмета нет вовсе —
+     * снимки пустые; у заявки с кандидатом предмет есть и не проверен — снимки заполняет
+     * заявленное (Р6). Различает их сам вызывающий по `body.equipmentCandidate`, а отдел-владелец
+     * пуст в обоих случаях: владельца у несуществующей карточки нет.
+     */
     equipment: EquipmentSnapshot | null;
     equipmentObjectId: string | null;
     customerDepartmentId: string | null;
@@ -3155,7 +3641,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
 
   /**
    * Предмет заявки и её заказчик — одним разбором, потому что это один вопрос («чья заявка»), у
-   * которого два разных источника ответа.
+   * которого ТРИ разных источника ответа.
    *
    * С АППАРАТОМ ответ приходит из справочника: площадка — из карточки единицы, отдел-владелец —
    * оттуда же, отдел-заказчик подсказывается ими и уточняется человеком. Порядок шагов прежний и
@@ -3164,16 +3650,68 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * БЕЗ АППАРАТА справочника нет, и ответ даёт **сам заводящий** — выбором заказчика по оси своей
    * роли (Р6). Отсюда и страж права здесь же: «аппарат не прислали» — это не пропущенное поле, а
    * другой способ завести заявку, и разрешение на него отдельное.
+   *
+   * С КАНДИДАТОМ справочника ещё нет, но предмет есть: человек описал аппарат словами (план
+   * кандидатов, Р2). Площадку он называет сам — внутри сообщения, — а заказчик считается тем же
+   * разбором, что и у заявки с аппаратом, и потому у этой ветки законно заполнены ОБЕ колонки
+   * области сразу: `equipment_object_id` держит физическое место аппарата, `customer_department_id`
+   * — заказчика отдельской роли (Р7, последний абзац). Старое XOR-правило к ней не применяется, и
+   * третья ветвь `service_requests_subject_check` этого не запрещает.
    */
   async function resolveRequestSubject(
     p: Principal,
     body: {
       officeEquipmentId?: string | null;
+      equipmentCandidate?: EquipmentCandidateInput;
       objectId?: string;
       objectOverridden: boolean;
       customerDepartmentId?: string | null;
     },
   ): Promise<RequestSubject> {
+    const candidate = body.equipmentCandidate;
+    if (candidate) {
+      /**
+       * 403, А НЕ 422, и спрашивается право ЗДЕСЬ ЖЕ — тем же приёмом и по тем же трём доводам, что
+       * у `serviceRequests.createWithoutEquipment` строкой ниже:
+       *
+       *   * схемой нельзя — она одна на все учётки и прав не видит вовсе;
+       *   * стражем маршрута нельзя — дверь у ручки одна на все три способа назвать предмет, и
+       *     требование права на ней отобрало бы у всей компании обычную заявку;
+       *   * 422 по полю сказало бы «вы ошиблись формой» там, где человек не ошибся ничем: сообщить
+       *     о технике ему просто не разрешено, и разрешение это отдельное (Р8).
+       *
+       * Отказ называет ВЫХОД, а не только запрет: пока право не выдано, аппарат в справочник
+       * заводит тот, кому это положено, и заявка после этого заводится обычным способом.
+       */
+      if (!can(p, 'officeEquipment.propose')) {
+        throw err.forbidden(
+          'Сообщать о технике, которой нет в справочнике, разрешено отдельно — попросите ИТ-службу завести карточку',
+        );
+      }
+      await resolveCandidateObject(p, candidate);
+      const customerDepartmentId = await resolveCustomerDepartment(p, body, {
+        ownerDepartmentId: null,
+      });
+      /*
+       * Второй рубеж под тем же правилом, что и у заявки без аппарата: разбор выше выбирает площадку
+       * и заказчика порознь, а эта проверка спрашивает у ОБЩЕГО источника области, попала ли
+       * получившаяся заявка к самому автору. Разойдись они однажды — человек отправил бы заявку и не
+       * увидел её в списке, а искать её было бы некому: у кандидата и очередь проверки своя.
+       */
+      assertServiceRequestScope(p, {
+        objectId: candidate.objectId,
+        customerDepartmentId,
+        equipmentDepartmentId: null,
+      });
+      /*
+       * РУБЕЖ 1 — ПОСЛЕДНИМ ИЗ ПРОВЕРОК ВХОДА, и порядок содержателен. Он ходит в базу по всему
+       * парку и отвечает 409, то есть говорит о ЧУЖИХ строках; спроси мы его раньше области,
+       * человек, ошибившийся объектом, узнавал бы попутно о существовании карточки, к которой
+       * отношения не имеет. Сначала «вам ли эта заявка», потом «а нет ли такого аппарата».
+       */
+      await assertNoParkDuplicate(p, candidate);
+      return { equipment: null, equipmentObjectId: candidate.objectId, customerDepartmentId };
+    }
     if (body.officeEquipmentId == null) {
       /**
        * 403, А НЕ 422 (Р5). Право `serviceRequests.createWithoutEquipment` спрашивается ЗДЕСЬ, а
@@ -3212,6 +3750,13 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         ownerDepartmentId: officeEquipment.ownerDepartmentId,
         location: officeEquipment.location,
         warrantyUntil: officeEquipment.warrantyUntil,
+        /*
+         * Признак читается, а не дописывается условием в `WHERE`: выключенной карточке нужен СВОЙ
+         * ответ. Уйди активность в отбор — она слилась бы с «не найдена», и человек искал бы
+         * опечатку в выборе там, где аппарат нашёлся и стоит на месте, просто выведен из
+         * эксплуатации.
+         */
+        isActive: officeEquipment.isActive,
       })
       .from(officeEquipment)
       .where(
@@ -3219,6 +3764,42 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       );
     if (!equipment) {
       throw err.badRequest('Единица оргтехники не найдена', { officeEquipmentId: 'Не найдена' });
+    }
+    /**
+     * ВЫВЕДЕННАЯ ИЗ ЭКСПЛУАТАЦИИ КАРТОЧКА ЗАЯВКУ НЕ ПРИНИМАЕТ (Н1 плана
+     * `docs/office-equipment-candidate-plan.md`, §13 Ф2).
+     *
+     * До этой проверки `is_active` не смотрел здесь никто: сервер брал единицу по `id` и живой
+     * строке, а неактивные прятал ПОРТАЛ — параметром `isActive: 'true'` у селектора формы. То
+     * есть запрет держался клиентом, и обходили его двое: прямой запрос мимо портала и
+     * собственный устаревший список опций в открытой форме — карточку гасят в соседней вкладке, а
+     * в этой она ещё выбирается.
+     *
+     * **422, а не 403 и не 409.** Право заводить заявку у человека есть, и спорить не о чем — не
+     * годится присланное ЗНАЧЕНИЕ: та же форма ответа, что у чужого объекта в пометке «не тот
+     * объект» и у чужого подразделения заявителя. 403 сказал бы «вам не положено» тому, кому
+     * положено, и отправил бы человека просить права, которых ему хватает; 409 обещал бы гонку
+     * версий, которой нет, — карточку никто не менял под руками, она просто в другом состоянии.
+     * Отказ поэтому называет и выход: включить карточку в справочнике, то есть тем же правом
+     * `officeEquipment.write`, которым её и выключили.
+     *
+     * Спрашивается СРАЗУ ЗА СУЩЕСТВОВАНИЕМ и до области: состояние карточки — факт того же рода,
+     * что и её наличие, а наличие соседний 400 уже раскрывает. Разбери мы сперва область, тот же
+     * человек получал бы то 403 «чужая техника», то 422 в зависимости от того, чья карточка
+     * выключена, — и подсказка «включите карточку» терялась бы за отказом о другом.
+     *
+     * ПРОВЕРКА СТОИТ ТОЛЬКО У ВХОДА. Правку заявки (`PATCH /:id`) она не трогает намеренно, и это
+     * не забывчивость: единицу там не меняют вовсе, а гасят карточки как раз тогда, когда аппарат
+     * уже уехал по живой заявке. Спрашивай мы активность и дальше по циклу, эти заявки застряли бы
+     * на середине — ни доработать смету, ни закрыть, — и «выведен из эксплуатации» стало бы
+     * приговором делу, которое ещё доводят до конца. Фикс закрывает вход, а не переписывает
+     * историю.
+     */
+    if (!equipment.isActive) {
+      throw err.unprocessable(
+        'Аппарат выведен из эксплуатации: включите карточку в справочнике или выберите другой',
+        { officeEquipmentId: 'Выведен из эксплуатации' },
+      );
     }
 
     const customerDepartmentId = await resolveCustomerDepartment(p, body, equipment);
@@ -4277,14 +4858,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
   /**
    * Ручка `PATCH /:id/it-approval` снята вместе с самой визой: согласует объём работ назначенный
    * сотрудник, и вопрос «чинить или менять» задаёт себе тот же человек, что смотрит на счёт (ответ
-   * В2). Двух подписей по порядку больше нет, `SERVICE_IT_TRANSITIONS` пуста, третья ось очереди
-   * ушла вместе с ней.
+   * В2). Двух подписей по порядку больше нет, коридора визы нет вовсе, третья ось очереди ушла
+   * вместе с ней.
    *
    * Поля `it_approved_*` при этом остались снимком истории — подпись от 22.08 правдива, и стирать
    * её нечем: карточка показывает её по-прежнему, а решающих мест у неё больше нет. Право
-   * `serviceRequests.approveIt` тоже остаётся в матрице и перестаёт давать ходы: уборка выданных
-   * наборов — отдельный откат, и делать её в одном выпуске с переделкой цикла значило бы смешать
-   * два разных (§8).
+   * `serviceRequests.approveIt` из наборов убрано отдельным выпуском (план профилей оргтехники,
+   * Э9, миграция E) — сперва сторона обсуждения переехала на код набора, потом уборка; в словаре и
+   * в матрице администратора право осталось.
    */
 
   // ── Отказ исполнителя (Н5, §4.2) ──
@@ -5006,13 +5587,24 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        * заявки (`ServiceRequestDto`), и приписать ей поле значило бы менять контракт ради случая,
        * у которого уже есть выход — кнопка «отправить ещё раз» по отменённой заявке (Р70).
        */
-      if (mailOutcome && mailOutcome !== 'queued') {
+      /**
+       * Отдельная запись отказа — ТОЛЬКО на настоящих отказах. `not_needed` и `event_off` —
+       * штатные исходы: письма не требовалось либо событие выключено администратором, и «письмо не
+       * ушло» про них было бы ложной тревогой в журнале, который читают на разборе.
+       *
+       * Событие называется своим именем: у согласия это движение по объёму работ, у отказа —
+       * отмена заявки. Жёстко записанная отмена приписывала бы каждому «Согласовано» чужой факт.
+       */
+      if (mailOutcome && FAILED_MAIL_OUTCOMES.has(mailOutcome)) {
         await writeAudit({
           actorUserId: p.id,
           action: 'serviceRequest.mailFailed',
           entityType: 'serviceRequest',
           entityId: row.id,
-          metadata: { event: 'service_request_cancelled', outcome: mailOutcome },
+          metadata: {
+            event: body.approved ? 'service_request_estimate' : 'service_request_cancelled',
+            outcome: mailOutcome,
+          },
         });
       }
       return (await getDto(p, row.id))!;
@@ -5611,6 +6203,20 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const mailPlan = await prepareTransitionMail('accepted', p, row.createdBy);
       await db.transaction(async (tx) => {
         const locked = await lockRequest(tx, row.id);
+        /**
+         * ЗАМОК ПРИЁМКИ ПОД НЕПРОВЕРЕННЫМ ПРЕДМЕТОМ (план `docs/office-equipment-candidate-plan.md`,
+         * Р16): пока сообщение о технике ждёт решения, работу по заявке не принимают.
+         *
+         * ПОСЛЕ `lockRequest`, А НЕ ДО ТРАНЗАКЦИИ, и порядок здесь не косметика: решение
+         * проверяющего берёт те же две строки в том же порядке «заявка → кандидат» (`runDecision`),
+         * и обратный порядок дал бы дедлок ровно в гонке приёмки с решением. Прочитанное же до
+         * транзакции состояние кандидата к моменту `COMMIT` устаревает — между чтением и записью
+         * помещается целое решение.
+         *
+         * Заявок без сообщения замок не касается вовсе: у них `equipment_candidate_id` пуст, и
+         * помощник отвечает сразу.
+         */
+        await assertCandidateDecided(tx, locked.equipmentCandidateId);
         await applyTransition(tx, {
           // Переход считается по строке, перечитанной под блокировкой: расхождение с прочитанной
           // до транзакции упрётся в сверку версии и вернёт 409, а не молча пройдёт по старой.
@@ -5856,8 +6462,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         actorUserId: p.id,
         // Именно «поставлено в очередь»: отправляет письмо worker, и «отправлено» здесь было бы
         // обещанием, которого этот момент не даёт.
-        action:
-          result.outcome === 'queued' ? 'serviceRequest.mailQueued' : 'serviceRequest.mailFailed',
+        action: FAILED_MAIL_OUTCOMES.has(result.outcome)
+          ? 'serviceRequest.mailFailed'
+          : 'serviceRequest.mailQueued',
         entityType: 'serviceRequest',
         entityId: row.id,
         metadata: {
@@ -6001,7 +6608,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             actorOnServiceSide:
               assignment.actsForAssignedCounterparty || assignment.isNamedExecutor,
             actorIsExternal: actsForCounterparty(p, 'service'),
-            hasServiceAssignment: side.serviceCounterpartyId !== null,
+            // Сторона сервиса — не только компания: заявку, которую ведёт свой сисадмин
+            // поимённо, документ тоже касается (§5.2).
+            hasServiceAssignment:
+              side.serviceCounterpartyId !== null || side.executorUserIds.length > 0,
           }),
           kind,
           names: names.map((n) => n.filename),

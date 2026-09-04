@@ -1,5 +1,5 @@
 import { queryOptions } from '@tanstack/react-query';
-import { officeEquipmentTitle } from '@technic/contracts';
+import { officeEquipmentTitle, type OfficeEquipmentDto } from '@technic/contracts';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import {
   officeEquipmentApi,
@@ -46,47 +46,100 @@ export const officeEquipmentTypeOptionsQuery = () =>
   });
 
 /**
- * Единицы оргтехники для выбора техники в заявке на обслуживание (§9.3 плана). Подпись собирает
- * `officeEquipmentTitle` из контрактов — «Kyocera M3145 · инв. 0012345» обязано читаться одинаково
- * и в портале, и в письме.
+ * Единица справочника в том виде, в каком её знает форма заявки. Собирается одним местом на оба
+ * запроса ниже — выдачу поля и дочитку уже выбранной карточки: разойдись они, и выбранная единица
+ * подписывалась бы иначе, чем та же единица в списке, а реквизиты под полем менялись бы от того,
+ * каким путём она туда попала.
+ *
+ * Подпись собирает `officeEquipmentTitle` из контрактов — «Kyocera M3145 · инв. 0012345» обязано
+ * читаться одинаково и в портале, и в письме.
+ */
+const equipmentOption = (item: OfficeEquipmentDto) => ({
+  value: item.id,
+  label: officeEquipmentTitle(item),
+  warrantyUntil: item.warrantyUntil,
+  // Реквизиты выбранной единицы форма заявки показывает отдельными строками (Р48): человек должен
+  // увидеть, что именно уйдёт в заявку снимком, до отправки, а не после.
+  name: item.name,
+  serialNumber: item.serialNumber,
+  inventoryNumber: item.inventoryNumber,
+  typeName: item.type.name,
+  objectLabel: `${item.object.code} — ${item.object.name}`,
+  departmentName: item.department?.name ?? '',
+  // Идентификаторы рядом с подписями — для поля заказчика (план `department-requests-plan.md`,
+  // §9 п. 5): из объекта собирается ключ площадки (Р11а), а по отделу-владельцу считается
+  // граница «площадка роли отдела только по технике своего отдела» (Р12). Неразмеченная
+  // единица приходит с `null` — и площадку по ней сервер отвергает.
+  objectId: item.object.id,
+  departmentId: item.department?.id ?? null,
+  location: item.location,
+  // Модель — ею окно состава подбирает подходящие расходники (Н10). Приходит из того же ответа,
+  // что и всё остальное: отдельный запрос за моделью спрашивал бы про ту же карточку второй раз.
+  modelId: item.model?.id,
+});
+
+/** Единица справочника для поля заявки: подпись, реквизиты снимка и ключи площадки. */
+export type OfficeEquipmentOption = ReturnType<typeof equipmentOption>;
+
+/**
+ * СТРАНИЦА ВЫДАЧИ ПОЛЯ — полсотни строк, а не весь справочник (план кандидата, Ф1). Отбор считает
+ * сервер, и страница здесь ровно та, которую человек глазами и разбирает: списком длиннее полусотни
+ * никто не пользуется — его доуточняют набором.
+ */
+const OPTIONS_PAGE_SIZE = 50;
+
+/**
+ * Единицы оргтехники для выбора техники в заявке на обслуживание (§9.3 плана, Ф1 плана кандидата).
+ *
+ * ИЩЕТ СЕРВЕР, А НЕ ПОЛЕ. Раньше выдача приходила одной страницей в пятьсот строк и резалась на
+ * клиенте по подписи — и оба следствия были дефектами. Поиск по серийному номеру не находил
+ * ничего у карточки с инвентарным (подпись печатает один номер из двух, `officeEquipmentTitle`),
+ * а парк больше пятисот единиц не помещался в страницу целиком, и «ничего не нашлось» означало
+ * «не поместилось». Сервер ищет по модели, обоим номерам и месту разом (`searchCondition`) — то
+ * есть по тому, как единицу называют на самом деле: бухгалтерия по инвентарному, сервис по
+ * серийному, а «принтер в 214-м» вообще по кабинету.
+ *
+ * Подпись при этом не меняется: она печатается в письмах и в истории, и номер, добавленный в неё
+ * ради поиска, поехал бы во все письма модуля. Поиску он там и не нужен — он идёт по колонке.
  *
  * Только действующие: заявку заводят на технику, которая стоит в кабинете, а списанную выбирать
  * незачем — в уже заведённых заявках её реквизиты хранятся снимком (Р7) и от справочника не
  * зависят.
  */
-export const officeEquipmentOptionsQuery = () =>
+export const officeEquipmentOptionsQuery = (search?: string) =>
   queryOptions({
-    queryKey: officeEquipmentKeys.options(),
+    queryKey: officeEquipmentKeys.options(search),
     queryFn: () =>
       officeEquipmentApi.list({
         page: 1,
-        pageSize: DICTIONARY_PAGE_SIZE,
+        pageSize: OPTIONS_PAGE_SIZE,
         isActive: 'true',
+        search: search?.trim() || undefined,
         sortBy: 'name',
         sortOrder: 'asc',
       }),
-    select: (r) =>
-      r.items.map((item) => ({
-        value: item.id,
-        label: officeEquipmentTitle(item),
-        warrantyUntil: item.warrantyUntil,
-        // Реквизиты выбранной единицы форма заявки показывает отдельными строками (Р48): человек
-        // должен увидеть, что именно уйдёт в заявку снимком, до отправки, а не после. Второго
-        // запроса за карточкой это не стоит — список всё равно загружен целиком.
-        name: item.name,
-        serialNumber: item.serialNumber,
-        inventoryNumber: item.inventoryNumber,
-        typeName: item.type.name,
-        objectLabel: `${item.object.code} — ${item.object.name}`,
-        departmentName: item.department?.name ?? '',
-        // Идентификаторы рядом с подписями — для поля заказчика (план `department-requests-plan.md`,
-        // §9 п. 5): из объекта собирается ключ площадки (Р11а), а по отделу-владельцу считается
-        // граница «площадка роли отдела только по технике своего отдела» (Р12). Неразмеченная
-        // единица приходит с `null` — и площадку по ней сервер отвергает.
-        objectId: item.object.id,
-        departmentId: item.department?.id ?? null,
-        location: item.location,
-      })),
+    select: (r) => r.items.map(equipmentOption),
+  });
+
+/**
+ * УЖЕ ВЫБРАННАЯ единица по идентификатору — тем же видом, что и строка выдачи.
+ *
+ * Заведена вместе с серверным поиском (Ф1) и ровно из-за него: выдача стала срезом по набранному,
+ * и единица, названная не набором, в ней может не лежать вовсе. Таких случаев три, и все они
+ * рабочие: обращение по гарантии (единицу назвал реестр), правка заявки (её назвали при заведении)
+ * и карточка, только что заведённая из самой формы. Без дочитки в поле осталась бы строка
+ * идентификатора, реквизиты под ним пропали бы, а поле заказчика — которое считается по площадке
+ * выбранной единицы — заперлось бы вместе с ними.
+ *
+ * Ключ карточки, а не выдачи: спрашивается ровно та же ручка `GET /office-equipment/:id`, которой
+ * карточку открывают из заявки, и делить с ней запись кэша правильно — ответ один и тот же.
+ */
+export const officeEquipmentPickedQuery = (id: string | undefined) =>
+  queryOptions({
+    queryKey: officeEquipmentKeys.detail(id ?? ''),
+    queryFn: () => officeEquipmentApi.get(id!),
+    enabled: !!id,
+    select: equipmentOption,
   });
 
 /**
