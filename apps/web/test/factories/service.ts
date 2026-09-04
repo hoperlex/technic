@@ -1,5 +1,8 @@
 import {
   type AuthUser,
+  MODULE_GRANTS,
+  OFFICE_EQUIPMENT_EXECUTOR_GRANT,
+  OFFICE_EQUIPMENT_REQUESTER_GRANT,
   type Role,
   type ServiceFileKind,
   type ServiceRequestDto,
@@ -73,6 +76,13 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
       inventoryNumber: '0012345',
       typeName: 'МФУ',
       location: 'Корпус 3, каб. 214',
+      /*
+       * Срок гарантии единицы — часть строки заявки, а не отдельного запроса справочника (Ф3
+       * плана кандидата). Умолчание `null` («срок не заведён»), а не дата: сценарию, который про
+       * гарантию не говорит, дата приписала бы утверждение — и колонка «Гарантия» проверялась бы
+       * фикстурой, а не тем, что сказал сервер. Сценарии про саму колонку задают срок явно.
+       */
+      warrantyUntil: null,
     },
     object: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
     // Объект подставила карточка техники, и расхождения нет (Р16). Пара ходит вместе: заявленный
@@ -124,6 +134,8 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     chat: {
       canWrite: false,
       participantSides: [],
+      // Письма по репликам: у фикстуры их нет — событие выключено, как и на свежем выкате.
+      mailEnabled: false,
       total: 0,
       unreadMine: 0,
       unreadOthers: false,
@@ -259,15 +271,24 @@ export function serviceExecutor(overrides: Partial<AuthUser> = {}): AuthUser {
 }
 
 /**
- * Свой сисадмин ИТ-службы: та же надстройка `office_equipment_it_approver`, но описывает она уже
- * не согласующего — виза упразднена целиком вместе с ручкой `it-approval` (Р10), и подпись под
- * объёмом работ теперь одна. Право `serviceRequests.approveIt` в наборе осталось (его снятие —
- * отдельная уборка) и ходов не даёт ни одного.
+ * Свой сисадмин — профиль «Системный администратор» ЦЕЛИКОМ, о двух кодах (план
+ * `docs/office-equipment-access-profiles-plan.md`, Р2 и Р4; этап Э6, миграция 0262).
  *
- * Фикстура нужна ровно для ОДНОГО: показать, что ходы исполнителя открывает **поимённое
- * назначение**, а не право. `execute` у надстройки есть всегда, и заявка без его строки в
- * исполнителях обязана оставлять его ни с чем — у оператора контрагента-сервиса эта разница не
- * видна, портал считает его назначенным по типу контрагента.
+ * Первый код — надстройка `office_equipment_it_approver`: координация и сквозная видимость модуля.
+ * Виза упразднена целиком вместе с ручкой `it-approval` (Р10), и мёртвое право
+ * `serviceRequests.approveIt` из набора убрано (Э9 плана профилей, миграция E). Стороной `it`
+ * фикстуру делает КОД набора, а не право, — переезд на коды был сделан именно ради этого.
+ *
+ * Второй — модульный набор `office_equipment_executor`: `read`, `execute`, `files`. Надстройки у
+ * него нет и не будет, поэтому права приходят фикстуре не через `addons`, а прямым списком — ровно
+ * так их и отдаёт сервер: `permissions` в `AuthUser` он считает по всем источникам сразу.
+ *
+ * ДВА КОДА, А НЕ ОДИН, — ЭТО И ЕСТЬ ПРЕДМЕТ РАЗДЕЛЕНИЯ. До Э6 `execute` приходил вместе со
+ * сквозной областью, и назначить человека исполнителем можно было только вместе с правом видеть
+ * все заявки компании. Фикстура же нужна ровно для одного и после разделения: показать, что ходы
+ * исполнителя открывает **поимённое назначение**, а не право. Заявка без его строки в исполнителях
+ * обязана оставлять его ни с чем — у оператора контрагента-сервиса эта разница не видна, портал
+ * считает его назначенным по типу контрагента.
  */
 export function serviceInHouseExecutor(overrides: Partial<AuthUser> = {}): AuthUser {
   return authUser({
@@ -275,6 +296,8 @@ export function serviceInHouseExecutor(overrides: Partial<AuthUser> = {}): AuthU
     role: 'shtab' as Role,
     constructionObjectIds: ['obj-1'],
     addons: ['office_equipment_it_approver'],
+    grantCodes: ['office_equipment_it_approver', OFFICE_EQUIPMENT_EXECUTOR_GRANT],
+    grantPermissions: [...MODULE_GRANTS.office_equipment_executor.permissions],
     ...overrides,
   });
 }
@@ -282,4 +305,29 @@ export function serviceInHouseExecutor(overrides: Partial<AuthUser> = {}): AuthU
 /** Заказчик: тот же штаб, но без надстройки — заявки заводит, решений по ним не принимает. */
 export function serviceCustomer(overrides: Partial<AuthUser> = {}): AuthUser {
   return authUser({ role: 'shtab' as Role, constructionObjectIds: ['obj-1'], ...overrides });
+}
+
+/**
+ * ЕДИНСТВЕННЫЙ СУБЪЕКТ, КОТОРОГО СУЖАЕТ СТРАЖ АВТОРСТВА (план профилей оргтехники, Р6): роль без
+ * оси области плюс набор «Заявитель» и ничего сверх него.
+ *
+ * Менеджер сидит в офисе рядом с принтером, но завести заявку своей ролью не может — ради него
+ * набор и заведён (миграция 0266). Оси у роли нет, поэтому ЧТЕНИЕ у него глобально: он видит
+ * заявки всех площадок компании, и это действующая модель, а не дыра. А вот править, удалять и
+ * подшивать он вправе только СВОИ строки — на чужой сервер отвечает 403, и портал обязан не
+ * предлагать того, чего сервер не даст.
+ *
+ * Права приходят `grantPermissions`, а не дописываются в итог: общие предикаты складывают
+ * источники сами, и учётка с правом только в итоговом списке вела бы себя в них как учётка без
+ * права. Код набора — обязателен: страж опознаёт профиль КОДОМ, а не суммой прав (Р9), и фикстура
+ * без кода описывала бы человека, которого правило не касается вовсе.
+ */
+export function serviceGlobalRequester(overrides: Partial<AuthUser> = {}): AuthUser {
+  return authUser({
+    id: 'user-requester',
+    role: 'manager' as Role,
+    grantCodes: [OFFICE_EQUIPMENT_REQUESTER_GRANT],
+    grantPermissions: [...MODULE_GRANTS.office_equipment_requester.permissions],
+    ...overrides,
+  });
 }

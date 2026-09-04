@@ -181,6 +181,22 @@ export type ServiceMailTarget = 'office' | 'service' | { userId: string };
  * миграция, и их отсутствие означает недокаченный выкат, снаружи неотличимый от «администратор
  * выключил»; отсюда `error` в логе рядом с fail-closed ответом.
  */
+/**
+ * То же, но БЕЗ блокировки строки и вне транзакции — для подсказки формы («уйдёт ли письмо
+ * вообще»). Блокировать настройку ради подписи под полем «Кому» нельзя: подсказку спрашивает
+ * каждое открытие списка заявок, и `FOR SHARE` на общей строке держал бы её админа за руку.
+ */
+export async function readServiceMailEventEnabled(
+  reader: Reader,
+  event: ModuleMailEvent,
+): Promise<boolean> {
+  const [row] = await reader
+    .select({ isEnabled: moduleMailEventSettings.isEnabled })
+    .from(moduleMailEventSettings)
+    .where(eq(moduleMailEventSettings.event, event));
+  return row?.isEnabled ?? false;
+}
+
 export async function isServiceMailEventEnabled(tx: Tx, event: ModuleMailEvent): Promise<boolean> {
   const [row] = await tx
     .select({ isEnabled: moduleMailEventSettings.isEnabled })
@@ -323,16 +339,6 @@ export async function counterpartyMailbox(reader: Reader, counterpartyId: string
     .select({ email: counterparties.email })
     .from(counterparties)
     .where(eq(counterparties.id, counterpartyId));
-  return row?.email ?? '';
-}
-
-/** Адрес автора заявки: обратный адрес двух сложившихся писем службе (§5.8). */
-export async function authorEmailOf(reader: Reader, authorId: string | null): Promise<string> {
-  if (!authorId) return '';
-  const [row] = await reader
-    .select({ email: users.email })
-    .from(users)
-    .where(eq(users.id, authorId));
   return row?.email ?? '';
 }
 

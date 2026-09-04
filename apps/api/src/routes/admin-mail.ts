@@ -10,6 +10,7 @@ import {
   MAIL_TEST_NOTE,
   MAIL_TEST_SUBJECT_PREFIX,
   type MailTestKind,
+  mailTestKindNeedsRequest,
   mailTestSchema,
   type Role,
 } from '@technic/contracts';
@@ -137,9 +138,26 @@ async function contentFor(
     case 'service_request_document':
     case 'service_request_comment': {
       if (!opts.sampleRequestId) return null;
-      const data = await db.transaction((tx) => loadServiceLetterData(tx, opts.sampleRequestId!));
-      const letter = serviceLetterContent(kind, data, 'internal', sampleExtraFor(kind, data));
-      return { subject: letter.subject, content: letter.content };
+      /**
+       * Заявки может не быть — администратор вводит номер руками. Мягкий `null` вместо исключения:
+       * ручка отвечает по нему понятным отказом формы, а 500 из сборки письма выглядел бы поломкой
+       * портала там, где человек просто опечатался.
+       */
+      const data = await db
+        .transaction((tx) => loadServiceLetterData(tx, opts.sampleRequestId!))
+        .catch(() => null);
+      if (!data) return null;
+      /**
+       * Сборка тела тоже бывает законно невозможной: письмо о назначении требует назначенных, и по
+       * заявке без исполнителей падает намеренно (тем же кодом, что и в проде). Для отладки это не
+       * поломка, а «возьмите другую заявку».
+       */
+      try {
+        const letter = serviceLetterContent(kind, data, 'internal', sampleExtraFor(kind, data));
+        return { subject: letter.subject, content: letter.content };
+      } catch {
+        return null;
+      }
     }
     case 'verify_email':
       return { subject: VERIFY_SUBJECT, content: verifyEmailContent(FAKE_TOKEN) };
@@ -341,7 +359,11 @@ export default async function adminMailRoutes(app: FastifyInstance): Promise<voi
     // Пустое письмо не отправляется: молчаливый успех на дате без рейсов читался бы как «письмо
     // ушло», и человек ждал бы его в ящике.
     if (!built) {
-      throw err.badRequest('За выбранную дату данных для письма нет — отправлять нечего');
+      throw err.badRequest(
+        mailTestKindNeedsRequest[kind]
+          ? 'По этой заявке письмо не собирается — проверьте номер и состав заявки'
+          : 'За выбранную дату данных для письма нет — отправлять нечего',
+      );
     }
     const marked = markAsTest(built.subject, built.content);
 
@@ -370,6 +392,9 @@ export default async function adminMailRoutes(app: FastifyInstance): Promise<voi
         kind,
         date: req.body.date ?? null,
         sampleUserId: req.body.sampleUserId ?? null,
+        // Письмо модуля целиком состоит из данных конкретной заявки — какой именно, журнал обязан
+        // помнить: «показали администратору чужие данные» разбирают по этой строке.
+        sampleRequestId: req.body.sampleRequestId ?? null,
       },
     });
 

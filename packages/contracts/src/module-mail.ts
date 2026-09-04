@@ -347,6 +347,8 @@ export const moduleMailOutcomeLabels: Record<ModuleMailOutcome, string> = {
  * «результат неизвестен». `copies` — цель необязательная и на общий исход не влияет никогда.
  */
 export interface ServiceMailTargets {
+  /** Отзыв задания прежней компании: своё обязательство письма о назначении, своя ячейка. */
+  withdrawal?: ModuleMailOutcome;
   /** Ящик канала службы. */
   office?: ModuleMailOutcome;
   /** Сервисная компания целиком: живые операторы, общий ящик карточки, поимённые исполнители. */

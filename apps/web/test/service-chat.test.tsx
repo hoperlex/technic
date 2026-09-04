@@ -43,12 +43,12 @@ const WAITING = 'GET /service-requests/waiting-count';
 const OPERATOR: AuthUser = serviceOperator();
 
 /** Блок `chat` считает сервер (§3.2): портал правил сторон не воспроизводит, а рисует ответ. */
-function chatSummary(
-  over: Partial<ServiceRequestDto['chat']> = {},
-): ServiceRequestDto['chat'] {
+function chatSummary(over: Partial<ServiceRequestDto['chat']> = {}): ServiceRequestDto['chat'] {
   return {
     canWrite: true,
     participantSides: ['operator'],
+    // Событие писем по репликам включено: сценарии проверяют и подпись «получат письмом».
+    mailEnabled: true,
     total: 1,
     unreadMine: 0,
     unreadOthers: false,
@@ -120,10 +120,19 @@ function chatWindow() {
 
 describe('лента обсуждения', () => {
   it('показывает реплики и подтверждает прочтение — после показа, а не при открытии', async () => {
-    const http = renderTab([serviceRequest({ status: 'in_work', chat: chatSummary({ unreadMine: 1, lastSeq: 2 }) })], {
-      [MESSAGES]: () => json(chatPage([chatMessage(), chatMessage({ id: 'm-2', seq: 2, body: 'мастер выедет 3-го' })])),
-      [READ]: () => json({ readThroughSeq: 2, lastSeq: 2 }),
-    });
+    const http = renderTab(
+      [serviceRequest({ status: 'in_work', chat: chatSummary({ unreadMine: 1, lastSeq: 2 }) })],
+      {
+        [MESSAGES]: () =>
+          json(
+            chatPage([
+              chatMessage(),
+              chatMessage({ id: 'm-2', seq: 2, body: 'мастер выедет 3-го' }),
+            ]),
+          ),
+        [READ]: () => json({ readThroughSeq: 2, lastSeq: 2 }),
+      },
+    );
     await screen.findByText('СО-14');
 
     await openChatFromRow();
@@ -137,21 +146,24 @@ describe('лента обсуждения', () => {
   });
 
   it('полоса «Новые» стоит на границе прочитанного и не съезжает от подтверждения', async () => {
-    renderTab([serviceRequest({ status: 'in_work', chat: chatSummary({ unreadMine: 2, lastSeq: 3 }) })], {
-      [MESSAGES]: () =>
-        json(
-          chatPage(
-            [
-              chatMessage(),
-              chatMessage({ id: 'm-2', seq: 2, body: 'мастер выедет 3-го' }),
-              chatMessage({ id: 'm-3', seq: 3, body: 'аппарат увезли' }),
-            ],
-            // Дочитано до первой: две следующие и есть «новые».
-            { readThroughSeq: 1 },
+    renderTab(
+      [serviceRequest({ status: 'in_work', chat: chatSummary({ unreadMine: 2, lastSeq: 3 }) })],
+      {
+        [MESSAGES]: () =>
+          json(
+            chatPage(
+              [
+                chatMessage(),
+                chatMessage({ id: 'm-2', seq: 2, body: 'мастер выедет 3-го' }),
+                chatMessage({ id: 'm-3', seq: 3, body: 'аппарат увезли' }),
+              ],
+              // Дочитано до первой: две следующие и есть «новые».
+              { readThroughSeq: 1 },
+            ),
           ),
-        ),
-      [READ]: () => json({ readThroughSeq: 3, lastSeq: 3 }),
-    });
+        [READ]: () => json({ readThroughSeq: 3, lastSeq: 3 }),
+      },
+    );
     await screen.findByText('СО-14');
     await openChatFromRow();
     await screen.findByText('ждём запчасть от поставщика');
@@ -170,7 +182,11 @@ describe('лента обсуждения', () => {
     const http = renderTab([serviceRequest({ status: 'in_work' })], {
       [MESSAGES]: ({ query }) =>
         query.get('beforeSeq') === '5'
-          ? json(chatPage([chatMessage({ id: 'm-4', seq: 4, body: 'заявку приняли в работу' })], { lastSeq: 5 }))
+          ? json(
+              chatPage([chatMessage({ id: 'm-4', seq: 4, body: 'заявку приняли в работу' })], {
+                lastSeq: 5,
+              }),
+            )
           : json(chatPage([chatMessage({ id: 'm-5', seq: 5 })], { hasMore: true, lastSeq: 5 })),
       [READ]: () => json({ readThroughSeq: 5, lastSeq: 5 }),
     });
@@ -411,7 +427,12 @@ describe('отправка реплики', () => {
       [SEND]: ({ body }) => {
         sent(body);
         return json({
-          message: chatMessage({ id: 'm-2', seq: 2, body: 'мастер выедет 3-го', authorName: 'Штабов С. И.' }),
+          message: chatMessage({
+            id: 'm-2',
+            seq: 2,
+            body: 'мастер выедет 3-го',
+            authorName: 'Штабов С. И.',
+          }),
           lastSeq: 2,
         });
       },
@@ -492,9 +513,15 @@ describe('отправка реплики', () => {
       ).toHaveLength(1),
     );
 
-    fireEvent.click((await openSelectOptions('Кому')).find((o) => o.textContent === 'Всем участникам')!);
+    fireEvent.click(
+      (await openSelectOptions('Кому')).find((o) => o.textContent === 'Всем участникам')!,
+    );
     await waitFor(() =>
-      expect(chatWindow().queryAllByText('Заявителю', { selector: '.ant-select-selection-item-content' })).toHaveLength(0),
+      expect(
+        chatWindow().queryAllByText('Заявителю', {
+          selector: '.ant-select-selection-item-content',
+        }),
+      ).toHaveLength(0),
     );
   });
 });

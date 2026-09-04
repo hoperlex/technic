@@ -18,11 +18,14 @@ import {
   type ServiceRequestStatus,
 } from '@technic/contracts';
 import { db } from '../db/client';
+import { config } from '../config';
 import {
   prepareServiceMail,
   queueServiceMailForIntent,
   readServiceSide,
+  SERVICE_MAIL_ACCOUNT,
 } from './service-request-mail';
+import { readServiceMailEventEnabled } from './service-request-mail-audience';
 import {
   officeEquipment,
   serviceRequestExecutors,
@@ -227,8 +230,28 @@ interface SummaryRow extends Record<string, unknown> {
   unread_others: number;
 }
 
+/**
+ * Уйдёт ли по реплике письмо хоть кому-нибудь: событие включено рубильником, почта включена и
+ * канал службы настроен. Три условия, и все три — про сервер, а не про адресатов: кому именно
+ * достанется письмо, решает уже таблица адресатов реплики (§ 4).
+ *
+ * Спрашивается вне транзакции и без блокировки: это подсказка формы, а не решение о доставке.
+ * Разойдись она с настоящей отправкой на секунду — человек увидит подпись, чуть устаревшую;
+ * промолчи мы вовсе — он будет уверен, что подрядчик прочитал.
+ */
+async function serviceCommentMailEnabled(): Promise<boolean> {
+  if (!config.mail.enabled) return false;
+  const channel = config.mail.accounts[SERVICE_MAIL_ACCOUNT];
+  if (!channel.configured) return false;
+  return readServiceMailEventEnabled(db, 'service_request_comment');
+}
+
 /** Пустая сводка: у заявки, по которой ещё не сказано ни слова, курсору некуда указывать. */
-function emptySummary(p: Principal, input: ChatSummaryInput): ServiceRequestChatSummaryDto {
+function emptySummary(
+  p: Principal,
+  input: ChatSummaryInput,
+  mailEnabled: boolean,
+): ServiceRequestChatSummaryDto {
   const facts = chatFactsFor(p, input.row, input.executorIds);
   return {
     canWrite: canWriteChat(p, facts, input.row.status),
@@ -238,6 +261,7 @@ function emptySummary(p: Principal, input: ChatSummaryInput): ServiceRequestChat
     unreadOthers: false,
     lastSeq: 0,
     readThroughSeq: 0,
+    mailEnabled,
   };
 }
 
@@ -265,7 +289,13 @@ export async function chatSummaryByRequest(
   inputs: readonly ChatSummaryInput[],
 ): Promise<Map<string, ServiceRequestChatSummaryDto>> {
   const map = new Map<string, ServiceRequestChatSummaryDto>();
-  for (const input of inputs) map.set(input.row.id, emptySummary(p, input));
+  /**
+   * Уходят ли письма по репликам вообще — один вопрос на всю страницу: рубильник события общий, и
+   * спрашивать его по разу на заявку значило бы полсотни лишних чтений на открытие списка.
+   * Подпись в окне отправки без этого обещала бы письмо, которого выкат ещё не даёт (§ 4).
+   */
+  const mailEnabled = await serviceCommentMailEnabled();
+  for (const input of inputs) map.set(input.row.id, emptySummary(p, input, mailEnabled));
   if (inputs.length === 0) return map;
 
   const ids = sql.join(
@@ -298,6 +328,7 @@ export async function chatSummaryByRequest(
     map.set(row.request_id, {
       canWrite: canWriteChat(p, facts, input.row.status),
       participantSides,
+      mailEnabled,
       total: Number(row.total),
       unreadMine: Number(row.unread_mine),
       unreadOthers: participantSides.length > 0 && Number(row.unread_others) > 0,

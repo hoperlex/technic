@@ -102,10 +102,14 @@ export function ServiceChatComposer({
           скажи мы этого здесь, «написал же в заявке» осталось бы непрочитанным.
 
           Правило считает контрактная функция, а не своя формула рядом: вторая копия разошлась бы с
-          серверной молча — ровно та беда, ради которой правила сторон живут в контрактах.
+          серверной молча — ровно та беда, ради которой правила сторон живут в контрактах. А вот
+          «идут ли письма вообще» портал не выводит сам: рубильник события, включённость почты и
+          настроенность канала — это сервер, и он отвечает на них полем `chat.mailEnabled`.
         */}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {chatMailNotice(chatMailTargets(splitAddressees(addressees)))}
+          {request.chat.mailEnabled
+            ? chatMailNotice(chatMailTargets(splitAddressees(addressees)))
+            : 'Письма по обсуждению сейчас не отправляются — сообщение увидят только в портале.'}
         </Typography.Text>
       </div>
       <div>

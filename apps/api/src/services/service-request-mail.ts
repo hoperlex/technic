@@ -75,7 +75,7 @@ export {
  */
 
 /** Канал, которым уходят письма модуля: ящик службы одновременно и отправитель, и получатель. */
-const SERVICE_MAIL_ACCOUNT = 'repair';
+export const SERVICE_MAIL_ACCOUNT = 'repair';
 
 /**
  * Какому событию соответствует вход в статус. Таблица отвечает ровно на один вопрос — «какое письмо
@@ -248,6 +248,19 @@ export async function prepareServiceMail(
   return { intent, ctx, configOutcome };
 }
 
+/**
+ * Есть ли у заявки сторона сервиса. Это НЕ «назначена ли компания»: слоя у назначения два (Н5), и
+ * заявку, которую ведёт свой сисадмин поимённо, сторона сервиса тоже имеет — иначе «приняли в
+ * работу», «отменена» и приложенный акт не доходили бы до того, кто её и делает.
+ *
+ * Один предикат на все ветки намеренно: пока их было три — объявление целей, сбор кандидатов и
+ * цели документа, — они успели разойтись, и реплика «Сервисному центру» на заявке без компании
+ * объявляла обязательную цель, для которой никто не собирался.
+ */
+function hasServiceSide(side: ServiceRequestSide): boolean {
+  return side.serviceCounterpartyId !== null || side.executorUserIds.length > 0;
+}
+
 /** Кому адресовано событие: обязательные цели, по которым и считается исход (§5.10). */
 type RequiredTarget = 'office' | 'service' | 'assignment' | 'withdrawal';
 
@@ -315,8 +328,19 @@ async function windowCount(
 }
 
 /** Текущее окно: час в UTC. Ключ сводки строится по нему, и он же ограничивает счёт. */
-function currentHour(): string {
-  return new Date().toISOString().slice(0, 13);
+/**
+ * Текущее окно — час по часам БАЗЫ, а не процесса.
+ *
+ * Счёт писем окна берёт границу от `now()` транзакции; возьми ключ сводки время из `new Date()` — и
+ * при расхождении часов приложения с Postgres (или на транзакции, пересёкшей границу часа) ключ
+ * уехал бы в соседнее окно. Следствие видно не сразу и хуже потока: сводка, записанная ключом
+ * следующего часа, подавит сводку САМОГО следующего часа, и адресат останется без единого письма.
+ */
+async function currentHour(tx: Tx): Promise<string> {
+  const rows = await tx.execute<{ hour: string }>(
+    sql`SELECT to_char(date_trunc('hour', now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24') AS hour`,
+  );
+  return rows.rows[0]!.hour;
 }
 
 /**
@@ -334,7 +358,19 @@ async function queueActivitySummary(
     hour: string;
     data: ServiceLetterData;
   },
-): Promise<void> {
+): Promise<'queued' | 'mail_failed'> {
+  /**
+   * Сводка окна могла быть поставлена раньше и умереть в dead-letter. Тогда `onConflictDoNothing`
+   * ниже промолчит, и цель считалась бы достигнутой: портал ответил бы «письмо ушло», а адресат
+   * не получил бы за час ничего. Поэтому состояние существующей сводки спрашивается прямо (§5.11).
+   */
+  const existing = await tx.execute<{ status: string }>(sql`
+    SELECT status::text AS status FROM mail_messages
+     WHERE kind = ${ACTIVITY_SUMMARY_KIND}
+       AND dedupe_key = ${`${params.requestId}:${params.recipient.email}:${params.hour}`}`);
+  const status = existing.rows[0]?.status;
+  if (status === 'failed') return 'mail_failed';
+  if (status) return 'queued';
   const number = formatServiceRequestNumber(params.data.num);
   const internal = params.recipient.audience === 'internal';
   const content: MailContent = {
@@ -378,6 +414,7 @@ async function queueActivitySummary(
     },
     { tx },
   );
+  return 'queued';
 }
 
 /**
@@ -429,19 +466,48 @@ export async function queueServiceMailForIntent(
   };
   const targets: ServiceMailTargets = {};
 
-  if (!(await isServiceMailEventEnabled(tx, intent.event))) {
-    return { outcome: 'event_off', targets, recipients: [] };
-  }
+  /**
+   * Единственный выход из функции, и он же — единственное место записи следа. След обязан
+   * оставаться на КАЖДОМ исходе, а не только на успешном: «письма не было» разбирают через месяц,
+   * и `event_off` (администратор выключил) от `no_recipients` (писать некуда) отличает как раз эта
+   * запись. У `queued` строки очереди есть и без неё, у остальных исходов — нет ничего.
+   */
+  const finish = async (
+    outcome: ModuleMailOutcome,
+    recipients: ServiceMailRecipient[] = [],
+  ): Promise<ServiceMailResult> => {
+    await writeAuditTx(tx, {
+      actorUserId: intent.actor.id,
+      action: 'serviceRequest.mailPlanned',
+      entityType: 'serviceRequest',
+      entityId: params.requestId,
+      // Адреса — в журнал, а не в лог: у аудита есть право доступа, у логов его нет.
+      metadata: {
+        event: intent.event,
+        outcome,
+        targets,
+        recipients: recipients.map((r) => r.email),
+        sources: recipients.map((r) => r.source),
+      },
+    });
+    logger.info(
+      { requestId: params.requestId, event: intent.event, outcome, recipients: recipients.length },
+      'письмо модуля: итог планирования',
+    );
+    return { outcome, targets, recipients };
+  };
+
+  if (!(await isServiceMailEventEnabled(tx, intent.event))) return finish('event_off');
 
   const required = requiredTargetsOf(intent, params.side);
-  if (required.length === 0) return { outcome: 'not_needed', targets, recipients: [] };
+  if (required.length === 0) return finish('not_needed');
 
-  if (params.prepared.configOutcome) {
-    return { outcome: params.prepared.configOutcome, targets, recipients: [] };
-  }
+  if (params.prepared.configOutcome) return finish(params.prepared.configOutcome);
 
   const candidates = await candidatesOf(tx, intent, params.side, ctx);
   const recipients = collectServiceMailRecipients(candidates, ctx.actor);
+  /** Хоть одна сводка окна мертва: исход события обязан это назвать, а не отчитаться «ушло». */
+  let deadSummary = false;
 
   /**
    * Данные письма — своей же строкой в той же транзакции. Отказать по данным это чтение не может:
@@ -473,22 +539,25 @@ export async function queueServiceMailForIntent(
       );
     } catch (e) {
       logServiceMailFailure(params.requestId, e);
-      return { outcome: 'mail_failed', targets, recipients: [] };
+      return finish('mail_failed');
     }
     const limit = config.serviceRequests.mailMaxPerRequestHour;
-    const hour = currentHour();
+    const hour = await currentHour(tx);
     for (const recipient of recipients) {
       /**
        * Потолок считается на КАЖДЫЙ адрес отдельно: активная заявка шумит не всем сразу — служба
        * ведёт десяток заявок, а подрядчик читает одну. Ноль снимает потолок совсем.
        */
       if (limit > 0 && (await windowCount(tx, params.requestId, recipient.email, hour)) >= limit) {
-        await queueActivitySummary(tx, {
+        const summary = await queueActivitySummary(tx, {
           requestId: params.requestId,
           recipient,
           hour,
           data,
         });
+        // Сводка окна умерла — значит адресат за этот час не получит ничего, и «ушло» было бы
+        // ложью ровно про того, ради кого письмо и существует.
+        if (summary === 'mail_failed') deadSummary = true;
         continue;
       }
       await queuePreparedMail(
@@ -511,31 +580,8 @@ export async function queueServiceMailForIntent(
     }
   }
 
-  const outcome = outcomeOf(required, recipients, targets);
-  /**
-   * Итог планирования — той же транзакцией, что и событие (§5.10, перечень строгого аудита в
-   * `lib/audit.ts`, п. 8). Адреса в журнале, а не в логе: у аудита есть право доступа, у логов его
-   * нет. Лог рядом несёт только числа — по нему видно поток, а не переписку.
-   */
-  await writeAuditTx(tx, {
-    actorUserId: intent.actor.id,
-    action: 'serviceRequest.mailPlanned',
-    entityType: 'serviceRequest',
-    entityId: params.requestId,
-    metadata: {
-      event: intent.event,
-      outcome,
-      targets,
-      recipients: recipients.map((r) => r.email),
-      sources: recipients.map((r) => r.source),
-    },
-  });
-  logger.info(
-    { requestId: params.requestId, event: intent.event, outcome, recipients: recipients.length },
-    'письмо модуля: итог планирования',
-  );
-
-  return { outcome, targets, recipients };
+  if (deadSummary) return finish('mail_failed', recipients);
+  return finish(outcomeOf(required, recipients, targets), recipients);
 }
 
 /**
@@ -548,10 +594,7 @@ function requiredTargetsOf(intent: ServiceMailIntent, side: ServiceRequestSide):
     const plan = intent.comment;
     if (!plan) return [];
     const targets: RequiredTarget[] = plan.targets
-      .filter(
-        (t) =>
-          t !== 'service' || side.serviceCounterpartyId !== null || side.executorUserIds.length > 0,
-      )
+      .filter((t) => t !== 'service' || hasServiceSide(side))
       .map((t) => (t === 'office' ? 'office' : 'service'));
     // Поимённый адресат — тоже обязательство: реплика написана конкретному человеку, и «письма
     // нет» здесь означает, что он о ней не узнает.
@@ -560,10 +603,7 @@ function requiredTargetsOf(intent: ServiceMailIntent, side: ServiceRequestSide):
   }
   if (intent.event === 'service_request_document') {
     // Цели посчитаны маршрутом по стороне приложившего: здесь их только фильтрует наличие стороны.
-    return (intent.document?.targets ?? []).filter(
-      (t) =>
-        t !== 'service' || side.serviceCounterpartyId !== null || side.executorUserIds.length > 0,
-    );
+    return (intent.document?.targets ?? []).filter((t) => t !== 'service' || hasServiceSide(side));
   }
   if (intent.event === 'service_request_estimate') {
     /**
@@ -573,9 +613,7 @@ function requiredTargetsOf(intent: ServiceMailIntent, side: ServiceRequestSide):
      * служба — собственный отказ.
      */
     if (intent.estimate?.action === 'submit') return ['office'];
-    return side.serviceCounterpartyId !== null || side.executorUserIds.length > 0
-      ? ['service']
-      : [];
+    return hasServiceSide(side) ? ['service'] : [];
   }
   if (intent.event === 'service_request_assigned') {
     const a = intent.assignment;
@@ -588,7 +626,7 @@ function requiredTargetsOf(intent: ServiceMailIntent, side: ServiceRequestSide):
   const declared = TARGETS_BY_EVENT[intent.event] ?? [];
   // Сторона подрядчика — цель только там, где заявка за ним: у нераспределённой её нет вовсе, и
   // требовать доставки некому.
-  return declared.filter((t) => t !== 'service' || side.serviceCounterpartyId !== null);
+  return declared.filter((t) => t !== 'service' || hasServiceSide(side));
 }
 
 /** Кандидаты в адресаты по событию: сторонами, а не перечнем ящиков (§5.2). */
@@ -627,7 +665,7 @@ async function candidatesOf(
   } else if (intent.event === 'service_request_comment') {
     for (const target of intent.comment?.targets ?? []) {
       if (target === 'office') list.push(...(await sideRecipients(tx, side, 'office', ctx)));
-      if (target === 'service' && side.serviceCounterpartyId !== null) {
+      if (target === 'service' && hasServiceSide(side)) {
         list.push(...(await sideRecipients(tx, side, 'service', ctx)));
       }
     }
@@ -645,7 +683,7 @@ async function candidatesOf(
   } else {
     for (const target of TARGETS_BY_EVENT[intent.event] ?? []) {
       if (target === 'office') list.push(...(await sideRecipients(tx, side, 'office', ctx)));
-      if (target === 'service' && side.serviceCounterpartyId !== null) {
+      if (target === 'service' && hasServiceSide(side)) {
         list.push(...(await sideRecipients(tx, side, 'service', ctx)));
       }
     }
@@ -678,10 +716,21 @@ function outcomeOf(
   let outcome: ModuleMailOutcome = 'queued';
   for (const target of required) {
     const ok = reached[target];
-    if (target === 'office') targets.office = ok ? 'queued' : 'no_recipients';
-    else targets.service = ok ? 'queued' : 'no_recipients';
+    /**
+     * У каждой цели своя ячейка: назначение и отзыв — два разных обязательства одного письма, и
+     * записанные в одно поле они затирали бы друг друга. Смешанный результат («задание ушло, отзыв
+     * некому») читается только по раздельным ячейкам.
+     */
+    const outcomeOfTarget: ModuleMailOutcome = ok ? 'queued' : 'no_recipients';
+    if (target === 'office') targets.office = outcomeOfTarget;
+    else if (target === 'withdrawal') targets.withdrawal = outcomeOfTarget;
+    else targets.service = outcomeOfTarget;
     if (!ok) outcome = 'no_recipients';
   }
+  // Поимённый адресат реплики виден отдельно: «написали инженеру, а письма ему нет» — не то же
+  // самое, что «стороне сервиса писать некуда».
+  const named = recipients.filter((r) => r.source === 'internal_user');
+  if (named.length > 0) targets.user = 'queued';
   if (recipients.some((r) => r.source === 'copy')) targets.copies = 'queued';
   return outcome;
 }
@@ -984,17 +1033,28 @@ function buildServiceLetter(
     extra?.fromStatus && extra.fromStatus !== data.status
       ? `Было: «${serviceRequestStatusLabels[extra.fromStatus]}» → стало «${serviceRequestStatusLabels[data.status]}»`
       : `Статус: ${serviceRequestStatusLabels[data.status]}`,
-    // Причина перехода — то, ради чего письмо и читают: у возврата на доработку и заморозки она
-    // обязательна по схеме, и без неё адресат узнает факт, но не узнает, что делать.
-    ...(extra?.comment ? [`Причина: ${extra.comment}`] : []),
-    // Объём работ: что именно с ним произошло и на какую сумму. Сумма — только тем, кому она
-    // разрешена картой аудиторий: копия видит факт, но не цену.
-    ...(extra?.message
+    /**
+     * Причина перехода — то, ради чего письмо и читают: у возврата на доработку и заморозки она
+     * обязательна по схеме, и без неё адресат узнает факт, но не узнает, что делать.
+     *
+     * Свободный текст человека, поэтому спрашивается `fields.description`: у копии за адресом нет
+     * субъекта с правом, и «этих тянуть не будем, счёт завышен» ей знать неоткуда.
+     */
+    ...(fields.description && extra?.comment ? [`Причина: ${extra.comment}`] : []),
+    // Автор и адресаты реплики — те же данные переписки, что и её текст: копии их не показываем.
+    ...(fields.description && extra?.message
       ? [`Написал: ${extra.message.authorName}`, `Кому: ${extra.message.addressees}`]
       : []),
+    /**
+     * Документы: вид и имена файлов — только тем, кому разрешены вложения. Копия видит сам факт
+     * («добавлены документы: N»), но не то, ЧТО подшили: имя «schet-4412.pdf» рассказывает о
+     * заявке ровно то, что от копии закрыто (§5.6).
+     */
     ...(extra?.document
       ? [
-          `Приложены документы (${serviceFileKindLabels[extra.document.kind]}): ${extra.document.names.join(', ')} — файлов в заявке: ${extra.document.total}`,
+          fields.attachments
+            ? `Приложены документы (${serviceFileKindLabels[extra.document.kind]}): ${extra.document.names.join(', ')} — файлов в заявке: ${extra.document.total}`
+            : `Добавлены документы: ${extra.document.names.length}`,
         ]
       : []),
     ...(extra?.estimate
@@ -1109,7 +1169,15 @@ function buildServiceLetter(
                     'уйдёт в службу оргтехники.'
                 : audience === 'contractor'
                   ? `${event === 'service_request_cancelled' ? 'Заявка отменена — выезд не требуется. ' : ''}Ответ на это письмо уйдёт в службу оргтехники.`
-                  : 'Ссылка работает у тех, у кого есть доступ в портал. Ответ на это письмо уйдёт заявителю.',
+                  : /**
+                     * Своим приписка обязана называть ТОТ адрес, который стоит в заголовке
+                     * (§5.8): у двух сложившихся писем службе это автор заявки, у писем цикла —
+                     * ящик службы. Одна фраза на все события обещала бы заявителя там, где ответ
+                     * уйдёт в службу, — то есть врала бы ровно тому, кто ей поверит.
+                     */
+                    `Ссылка работает у тех, у кого есть доступ в портал. Ответ на это письмо уйдёт ${
+                      AUTHOR_REPLY_EVENTS.has(event) ? 'заявителю' : 'в службу оргтехники'
+                    }.`,
       },
     ],
   };

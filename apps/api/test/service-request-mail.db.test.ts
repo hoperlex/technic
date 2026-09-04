@@ -1190,6 +1190,17 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     expect(held.statusCode, held.body).toBe(200);
     expect((held.json() as ServiceRequestDto).status).toBe('on_hold');
     expect((await mailsOf(request.id)).length).toBe(before);
+
+    /**
+     * След в журнале обязателен и здесь — иначе «письма не было» через месяц не отличить от
+     * «письмо не дошло»: строк очереди у выключенного события не возникает вовсе, и объяснить
+     * тишину больше нечем.
+     */
+    const audit = await ctx.db.execute<{ metadata: { outcome?: string } }>(sql`
+      SELECT metadata FROM audit_log
+       WHERE action = 'serviceRequest.mailPlanned' AND entity_id = ${request.id}
+       ORDER BY created_at DESC LIMIT 1`);
+    expect(audit.rows[0]?.metadata.outcome).toBe('event_off');
   });
 
   /**
