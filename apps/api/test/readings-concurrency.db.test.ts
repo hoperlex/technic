@@ -4,10 +4,12 @@ import { and, asc, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   moscowDateKeyOf,
+  reportSubmitSchema,
   shiftDateKey,
   type DriverReportDto,
   type ReadingInput,
   type ReportItemSubmit,
+  type ReportSubmitInput,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -785,5 +787,94 @@ describe.skipIf(!DB_URL)('показания: сериализация, цепо
     ).rejects.toMatchObject({ statusCode: 409 });
     const unchanged = await ctx.service.loadReport(person, ctx.today);
     expect(unchanged!.items[0]!.reading!.odometerKm).toBe(300);
+  });
+
+  /**
+   * Ретрай запроса, ушедшего ДО выката остатков (ADR 0163, Р13). Караул стоит здесь, а не в
+   * контрактах, потому что охраняет он последствие, а не форму: отпечаток тела считается уже после
+   * разбора канонизатором, который пропускает `undefined`, — и ровно поэтому остаткам оставлены
+   * `nullable().optional()` **без** `default(null)`.
+   *
+   * Дай им умолчание, и разбор вложил бы в тело два ключа, которых отправитель не посылал: отпечаток
+   * стал бы другим, и повтор потерянного запроса получил бы 409 «под этим ключом принято другое
+   * содержимое» вместо ответа на собственный ретрай. Сломать это можно одной строкой в схеме
+   * ввода, и ни один типовой караул такой правки не заметит — она законна с точки зрения типов.
+   *
+   * Первая команда изображает уже разобранное старой схемой тело и идёт в сервис напрямую. Ретрай
+   * того же сырого запроса проходит уже через новую схему: предмет проверки — то, что она не
+   * дописывает два новых ключа и сохраняет прежний отпечаток.
+   */
+  it('повтор тела без ключей остатков по старому ключу отправки — повтор, а не 409', async () => {
+    const vehicleId = await newVehicle();
+    const person = await newPerson('Ретрайный');
+    await newRoute(vehicleId, ctx.today, person);
+    const key = randomUUID();
+
+    const opened = await ctx.service.openReport(person, ctx.today, ctx.adminId, { mode: 'staff' });
+    const itemId = opened.items[0]!.id;
+    /** Выход старой схемы: об остатках она не знает, но старые defaults уже материализованы. */
+    const legacy: ReportSubmitInput = {
+      version: opened.version,
+      reason: '',
+      items: [line(itemId, values({ odometerKm: 300 }))],
+    };
+    const parseBody = () => reportSubmitSchema.parse(structuredClone(legacy));
+
+    const parsed = parseBody();
+    const reading = parsed.items[0]!.reading as Record<string, unknown>;
+    expect('fuelStartLiters' in reading).toBe(false);
+    expect('fuelEndLiters' in reading).toBe(false);
+    // Асимметрия осознанная: три старых поля умолчание получают — сборок, не знающих одометра, не
+    // существует, и переучивать их протокол незачем.
+    expect('fuelFilledLiters' in reading).toBe(true);
+    expect(reading.fuelFilledLiters).toBeNull();
+
+    const sent = await ctx.service.submitReport(person, ctx.today, legacy, ctx.adminId, key, {
+      mode: 'staff',
+    });
+    const repeated = await ctx.service.submitReport(
+      person,
+      ctx.today,
+      parseBody(),
+      ctx.adminId,
+      key,
+      { mode: 'staff' },
+    );
+
+    expect(repeated.version).toBe(sent.version);
+    expect(repeated.contentVersion).toBe(sent.contentVersion);
+    expect(repeated.items[0]!.reading!.id).toBe(sent.items[0]!.reading!.id);
+    // Ни второго показания, ни второй записи в истории: ретрай ничего не сделал.
+    expect(await chainOf(vehicleId)).toHaveLength(1);
+    expect(await readingEvents(sent.items[0]!.reading!.id)).toEqual(['created']);
+
+    /*
+     * Обратная сторона того же различия: явный `null` — это команда ОЧИСТИТЬ, а не «оставить как
+     * есть», и под старым ключом её подтверждать нельзя. Ложным 409 это не станет: новая сборка
+     * шлёт `null` с самого первого запроса, и её собственный ретрай сходится с её же отпечатком.
+     */
+    await expect(
+      ctx.service.submitReport(
+        person,
+        ctx.today,
+        reportSubmitSchema.parse({
+          version: legacy.version,
+          items: [
+            {
+              itemId,
+              reading: {
+                kind: 'values' as const,
+                odometerKm: 300,
+                fuelStartLiters: null,
+                fuelEndLiters: null,
+              },
+            },
+          ],
+        }),
+        ctx.adminId,
+        key,
+        { mode: 'staff' },
+      ),
+    ).rejects.toMatchObject({ statusCode: 409 });
   });
 });

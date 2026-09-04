@@ -267,10 +267,30 @@ function line(itemId: string, reading: ReadingInput): ReportItemSubmit {
 }
 
 /**
+ * Утреннее показание: один остаток топлива в баке и больше ничего (ADR 0163). Своя фикстура, а не
+ * `values()`: там одометр обязателен по сигнатуре, а здесь предмет проверки как раз его отсутствие.
+ */
+function fuelOnly(liters: number): ReadingInput {
+  return {
+    kind: 'values',
+    odometerKm: null,
+    engineHours: null,
+    fuelStartLiters: liters,
+    fuelFilledLiters: null,
+    comment: '',
+  } as ReadingInput;
+}
+
+/**
  * Снимок одометра за день: рейс, открытый отчёт и переданные числа. Ввод идёт «за работника»
  * (`mode: 'staff'`) — половина дней отрезка старше водительского окна записи.
  */
-async function reading(vehicleId: string, personId: string, date: string, km: number) {
+async function reading(
+  vehicleId: string,
+  personId: string,
+  date: string,
+  km: number | ReadingInput,
+) {
   await newRoute(vehicleId, date, personId);
   const opened = await ctx.service.openReport(personId, date, ctx.adminId, { mode: 'staff' });
   const item = opened.items.find((entry) => entry.vehicleId === vehicleId);
@@ -279,7 +299,11 @@ async function reading(vehicleId: string, personId: string, date: string, km: nu
   await ctx.service.submitReport(
     personId,
     date,
-    { version: current!.version, items: [line(item!.id, values(km))], reason: '' },
+    {
+      version: current!.version,
+      items: [line(item!.id, typeof km === 'number' ? values(km) : km)],
+      reason: '',
+    },
     ctx.adminId,
     null,
     { mode: 'staff', reason: '' },
@@ -442,6 +466,31 @@ describe.skipIf(!DB_URL)('гараж: последний одометр на д�
     const row = await vehicleRow(ctx.ridden, day(3));
     expect(row?.lastOdometer).toEqual({ km: 100_300, measuredOn: day(2) });
     expect(row?.lastOdometer?.measuredOn).not.toBe(day(3));
+  });
+
+  /*
+   * Караул на ОСОЗНАННОЕ поведение, а не на желаемое (ADR 0163; план гаража Р3). Состояние дня
+   * считается по НАЛИЧИЮ строки показания (`closedCount` в SQL — просто `count(id)`), а не по её
+   * полноте, — и смена, в которой водитель утром ввёл один остаток топлива, для колонки гаража
+   * выглядит сданной. Заказчик выбрал «оставить как сейчас»: заполнять в произвольном порядке,
+   * править до приёмки, дисциплину держит просрочка.
+   *
+   * Цена решения названа здесь прямо, чтобы следующий читатель не принял её за баг и не «починил»
+   * состояние дня по полноте: дыру закрывает жёлтая пометка реестра приёма
+   * (`readings-intake.db.test.ts`), которая эту же смену из пакетного приёма выбивает.
+   *
+   * Одометра при этом в колонке нет: топливная строка про пробег не говорит ничего, и `null` здесь
+   * не «ноль на приборе», а «числа не передавали».
+   */
+  it('строка с одним лишь остатком топлива оставляет день «сданы», а колонку одометра — пустой', async () => {
+    const vehicle = await newVehicle('утро');
+    const person = await newPerson('Утренний');
+    const date = day(1);
+    await reading(vehicle, person, date, fuelOnly(60));
+
+    const row = await vehicleRow(vehicle, date);
+    expect(row?.readingState).toBe('reported');
+    expect(row?.lastOdometer).toBeNull();
   });
 
   it('без права на показания поля нет вовсе: механику гараж виден, одометр — нет', async () => {

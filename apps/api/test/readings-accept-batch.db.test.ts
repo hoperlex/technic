@@ -249,6 +249,22 @@ function line(itemId: string, odometerKm: number): ReportItemSubmit {
 const STAFF = { mode: 'staff' as const };
 
 /**
+ * Показание с одним лишь остатком на начало смены (ADR 0163): утро сдано, вечер — нет. Своя
+ * фикстура, а не `values()`: там одометр обязателен по сигнатуре, а здесь предмет проверки как раз
+ * его отсутствие.
+ */
+function morningFuel(liters: number): ReadingInput {
+  return {
+    kind: 'values',
+    odometerKm: null,
+    engineHours: null,
+    fuelStartLiters: liters,
+    fuelFilledLiters: null,
+    comment: '',
+  } as ReadingInput;
+}
+
+/**
  * Отчёт дня с одной сданной строкой: единственное показание машины — первое в её цепочке, поэтому
  * аномалии сравнивать не с чем и день выходит зелёным целиком (Р6).
  */
@@ -444,5 +460,68 @@ describe.skipIf(!DB_URL)('пакетный приём отчётов дня на
       code: 'gone',
       reason: 'Отчёт дня не найден',
     });
+  });
+
+  /*
+   * Жёлтая строка «вечерние показания не переданы» (ADR 0163, план гаража Р4) выбивает отчёт из
+   * ПАКЕТА и только из него. Это и есть вся цена пометки — и вся её польза: пакет предлагают
+   * нажатием на всё сразу, и день, о котором стоит подумать, туда попадать не должен; а диспетчер,
+   * знающий, что вечерних чисел у этой машины не будет, принимает его одиночным приёмом и одним
+   * нажатием. Ни блокера, ни запрета выпуск не добавляет (Р5), и караул охраняет обе половины
+   * сразу: ужесточи кто-нибудь условия приёма — упадёт вторая, ослабь пригодность к пакету —
+   * первая.
+   *
+   * Свой человек и своя машина: `persons` — люди двух пакетов выше, и лишняя строка в их списке
+   * сдвинула бы ожидаемые ответы.
+   */
+  it('отчёт с недосданным вечером в пакет не попадает, но принимается одиночным приёмом', async () => {
+    const person = await newPerson(GOOD_COUNT + 100);
+    await newRoute(await newVehicle(), person);
+    const opened = await ctx.service.openReport(person, DAY, ctx.adminId, STAFF);
+    expect(opened.items).toHaveLength(1);
+    await ctx.service.submitReport(
+      person,
+      DAY,
+      {
+        version: opened.version,
+        items: [
+          {
+            itemId: opened.items[0]!.id,
+            reading: morningFuel(60),
+            fileIds: [],
+            confirmOdometerAnomaly: false,
+            confirmEngineHoursAnomaly: false,
+          },
+        ],
+        reason: '',
+      },
+      ctx.adminId,
+      null,
+      { ...STAFF, reason: '' },
+    );
+
+    const submitted = await reportOf(person);
+    const registry = await ctx.intake.loadReadingIntake({
+      from: DAY,
+      to: DAY,
+      page: 1,
+      pageSize: 500,
+    });
+    const shown = registry.reports.find((row) => row.reportId === submitted.id)!;
+    expect(shown).toMatchObject({ itemCount: 1, greenCount: 0, batchEligible: false });
+    expect(
+      registry.items.find((row) => row.reportId === submitted.id)!.issues.map((i) => i.code),
+    ).toEqual(['shift_tail_missing']);
+
+    // Экран строит пакет из пригодных строк реестра — и этого отчёта в нём нет вовсе.
+    expect(
+      registry.reports.filter((row) => row.batchEligible).map((row) => row.reportId),
+    ).not.toContain(submitted.id);
+
+    // А одиночный приём проходит: блокеры приёма считают строки БЕЗ показания, и такая строка для
+    // них закрыта.
+    const accepted = await ctx.service.acceptReport(submitted.id, submitted.version, ctx.adminId);
+    expect(accepted.state).toBe('accepted');
+    expect(accepted.acceptedContentVersion).toBe(submitted.contentVersion);
   });
 });

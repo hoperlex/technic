@@ -97,7 +97,10 @@ type IntakeSqlRow = {
   reading_kind: 'values' | 'no_data' | null;
   odometer_km: number | null;
   engine_hours: string | null;
+  /* Три числа топлива идут порядком смены: остаток на начало, заправлено, остаток на конец. */
+  fuel_start_liters: string | null;
   fuel_filled_liters: string | null;
+  fuel_end_liters: string | null;
   no_data_reason: string | null;
   comment: string | null;
   reading_source: 'driver' | 'staff' | null;
@@ -160,7 +163,9 @@ SELECT r.source_id,
        vr.kind::text             AS reading_kind,
        vr.odometer_km,
        vr.engine_hours,
+       vr.fuel_start_liters,
        vr.fuel_filled_liters,
+       vr.fuel_end_liters,
        vr.no_data_reason,
        vr.comment,
        vr.source::text           AS reading_source,
@@ -242,7 +247,9 @@ function readingOf(row: IntakeSqlRow): VehicleReadingDto | null {
     kind: row.reading_kind,
     odometerKm: row.odometer_km,
     engineHours,
+    fuelStartLiters: num(row.fuel_start_liters),
     fuelFilledLiters: num(row.fuel_filled_liters),
+    fuelEndLiters: num(row.fuel_end_liters),
     noDataReason: row.no_data_reason ?? '',
     comment: row.comment ?? '',
     source: row.reading_source ?? 'staff',
@@ -403,6 +410,34 @@ function issuesOf(row: IntakeSqlRow, reading: VehicleReadingDto | null, ctx: Iss
       code: 'no_data',
       level: 'yellow',
       message: `нет возможности снять показания: ${reading.noDataReason}`,
+    });
+  } else if (
+    reading.kind === 'values' &&
+    reading.odometerKm === null &&
+    reading.engineHours === null &&
+    reading.fuelEndLiters === null &&
+    (reading.fuelStartLiters !== null || reading.fuelFilledLiters !== null)
+  ) {
+    /*
+     * Утро передано, вечер — нет (Р4). Состояние дня такую смену всё равно зовёт сданной: оно
+     * считает по наличию строки показания, а не по её полноте (Р3), — и дыру закрывает пометка, а
+     * не новое состояние и не блокер приёма (Р5). Ужесточить блокер нельзя: у техники без одометра
+     * и без указателя уровня вечерних чисел не бывает вовсе, и день, честно сданный водителем, стал
+     * бы непринимаемым.
+     *
+     * Отсюда жёлтый, а не красный, и отсюда же всё, чего пометка стоит: жёлтая строка выбивает
+     * отчёт из ПАКЕТНОГО приёма (`batchEligible` требует всех зелёных), а одиночный приём остаётся
+     * одним нажатием — диспетчер, знающий, что вечерних чисел у этой машины не будет, принимает
+     * день осознанно. Ни запрета, ни второй формулы уровня здесь не появляется: цвет строки
+     * по-прежнему считает `intakeLevel` по этому же списку.
+     *
+     * Вторая половина условия следует из `vehicle_readings_values_check` — строки `values` без
+     * единого числа не бывает, — но написана явно, чтобы условие читалось без обращения к схеме.
+     */
+    issues.push({
+      code: 'shift_tail_missing',
+      level: 'yellow',
+      message: 'вечерние показания не переданы',
     });
   }
 

@@ -868,6 +868,50 @@ describe.skipIf(!DB_URL)('агрегат показаний: месяцы, ит�
     expect(await snapshotsOf(vehicle, first, last)).toEqual({ odometer: null, engineHours: null });
   });
 
+  /*
+   * `missing_readings` считает смену без СТРОКИ показания, а не смену без чисел счётчиков (ADR
+   * 0163; план гаража Р6, Н1), — и караул закрепляет именно это, потому что после выката топливная
+   * строка станет штатным утренним состоянием и соблазн «поправить» условие будет прямым.
+   *
+   * Поправить нельзя. Условие агрегата — `NOT aligned OR reading_id IS NULL OR kind = 'no_data'`;
+   * ужесточи его до «нет одометра и моточасов», и пропуском окажется честно завершённая смена
+   * техники, у которой таких счётчиков нет вовсе, — то есть месячная метрика разошлась бы с Р3 и
+   * Р5 и стала бы врать про парк. Неполноту вечера показывает оперативная пометка реестра
+   * (`readings-intake.db.test.ts`), и смешивать её с качеством исторического агрегата нельзя: после
+   * приёмки утренняя неполнота не должна задним числом превращаться в другое число месяца.
+   */
+  it('строка `values` с одним лишь топливом пропуском не считается', async () => {
+    const person = await newPerson('Топливный');
+    const vehicle = await newVehicle();
+    const [morning, empty] = [ago(23), ago(22)];
+
+    await newRoute(vehicle, morning, person);
+    await reportDay(person, morning, values({ fuelStartLiters: 60 }));
+
+    const one = (await cardOf(vehicle, morning, morning))!.total;
+    expect(one).toMatchObject({
+      shifts: 1,
+      // Строка есть, число передано — пропуска нет. И в пробег с наработкой топливная смена не
+      // идёт: счётчиков она не несёт, а ряда не рвёт — рвать в ней нечего.
+      missingReadings: 0,
+      distanceKm: null,
+      engineHours: null,
+      odometerGaps: 0,
+      engineHoursGaps: 0,
+      // Остаток в баке за период не складывается: суммируется только поток, и его здесь не было.
+      fuelFilledLiters: 0,
+    });
+
+    // Рядом — смена, где показания нет вовсе: вот она пропуск. Без этой половины караул не отличил
+    // бы «не считаем пропуском» от «не считаем вообще ничего».
+    await newRoute(vehicle, empty, person);
+    await report(person, empty);
+    expect((await cardOf(vehicle, morning, empty))!.total).toMatchObject({
+      shifts: 2,
+      missingReadings: 1,
+    });
+  });
+
   it('смена с одними моточасами за снимок одометра себя не выдаёт', async () => {
     const person = await newPerson('Моточасовый');
     const vehicle = await newVehicle();

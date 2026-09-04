@@ -92,7 +92,9 @@ interface Values {
   kind: ReadingKind;
   odometerKm?: string;
   engineHours?: string;
+  fuelStartLiters?: string;
   fuelFilledLiters?: string;
+  fuelEndLiters?: string;
   noDataReason?: string;
   comment?: string;
   reason?: string;
@@ -120,7 +122,9 @@ export function IntakeReadingForm({
   const kind = Form.useWatch('kind', form) ?? reading?.kind ?? 'values';
   const odometerKm = Form.useWatch('odometerKm', form);
   const engineHours = Form.useWatch('engineHours', form);
+  const fuelStartLiters = Form.useWatch('fuelStartLiters', form);
   const fuelFilledLiters = Form.useWatch('fuelFilledLiters', form);
+  const fuelEndLiters = Form.useWatch('fuelEndLiters', form);
 
   /*
    * Предупреждения считаются на каждом наборе символа и той же чистой проверкой, которой правило
@@ -133,7 +137,9 @@ export function IntakeReadingForm({
           {
             odometerKm: parseReadingNumber(odometerKm ?? ''),
             engineHours: parseReadingNumber(engineHours ?? ''),
+            fuelStartLiters: parseReadingNumber(fuelStartLiters ?? ''),
             fuelFilledLiters: parseReadingNumber(fuelFilledLiters ?? ''),
+            fuelEndLiters: parseReadingNumber(fuelEndLiters ?? ''),
           },
           previous,
         ).filter((w) => !w.hard)
@@ -196,13 +202,17 @@ export function IntakeReadingForm({
             kind: 'values',
             odometerKm: numberOf(v.odometerKm),
             engineHours: numberOf(v.engineHours),
+            // Остатки уходят явными ключами, в том числе пустыми: форма их показывает, значит
+            // очищенное поле — решение вносящего, а не незнание сборки (ADR 0163, Р13).
+            fuelStartLiters: numberOf(v.fuelStartLiters),
             fuelFilledLiters: numberOf(v.fuelFilledLiters),
+            fuelEndLiters: numberOf(v.fuelEndLiters),
             comment: v.comment ?? '',
           },
     );
     if (!parsed.success) {
       // Отказ схемы называет поле и встаёт под ним: «заполните хотя бы одно значение» относится
-      // к трём полям сразу и приходит с путём первого из них.
+      // к пяти полям сразу и приходит с путём первого из них.
       form.setFields(
         parsed.error.issues.map((issue) => ({
           // Имена полей формы и полей схемы совпадают намеренно: отказ обязан встать под тем
@@ -232,7 +242,9 @@ export function IntakeReadingForm({
           kind: reading?.kind ?? 'values',
           odometerKm: show(reading?.odometerKm),
           engineHours: show(reading?.engineHours),
+          fuelStartLiters: show(reading?.fuelStartLiters),
           fuelFilledLiters: show(reading?.fuelFilledLiters),
+          fuelEndLiters: show(reading?.fuelEndLiters),
           noDataReason: reading?.noDataReason ?? '',
           comment: reading?.comment ?? '',
           reason: '',
@@ -274,12 +286,32 @@ export function IntakeReadingForm({
             >
               <Input inputMode="decimal" suffix="ч" />
             </Form.Item>
-            {/* Заправлено ЗА СМЕНУ, а не остаток в баке: остатков портал не хранит и расхода не
-                считает (ADR 0103, решение 12) — подпись обязана называть то, что спрашивают. */}
+            {/* Три числа топлива идут по ходу смены: остаток в баке на её начало, заправленное за
+                неё, остаток на конец (ADR 0163, Р2). Порядок тот же, что в кабине и в карточке
+                отчёта: подписи различаются одним словом, а единицы у всех трёх литры — переставь
+                поля местами, и вносящий промахнётся, не заметив этого. Подсказки «предыдущее» под
+                ними нет намеренно: она сравнила бы остатки соседних смен, то есть посчитала бы
+                расход, которого в учёте нет (`readingLimits`). */}
+            <Form.Item
+              name="fuelStartLiters"
+              label="Топливо в баке на начало смены, л"
+              rules={[hardRule('fuelStartLiters')]}
+              getValueFromEvent={(e) => normalizeDecimal(e.target.value, false)}
+            >
+              <Input inputMode="decimal" suffix="л" />
+            </Form.Item>
             <Form.Item
               name="fuelFilledLiters"
               label="Заправлено за смену, л"
               rules={[hardRule('fuelFilledLiters')]}
+              getValueFromEvent={(e) => normalizeDecimal(e.target.value, false)}
+            >
+              <Input inputMode="decimal" suffix="л" />
+            </Form.Item>
+            <Form.Item
+              name="fuelEndLiters"
+              label="Топливо в баке на конец смены, л"
+              rules={[hardRule('fuelEndLiters')]}
               getValueFromEvent={(e) => normalizeDecimal(e.target.value, false)}
             >
               <Input inputMode="decimal" suffix="л" />

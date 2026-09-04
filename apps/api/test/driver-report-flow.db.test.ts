@@ -269,6 +269,32 @@ function odometer(km: number): ReadingInput {
   return { kind: 'values', odometerKm: km, engineHours: null, fuelFilledLiters: null, comment: '' };
 }
 
+/**
+ * Числа топлива (ADR 0163). Ключи остатков ставятся ЯВНО и только те, что названы: в этом файле
+ * разница между «ключа в теле нет» и «ключ равен `null`» и есть предмет проверки, а фикстура,
+ * дописывающая `null` за автора, эту разницу стёрла бы (Р13). `odometer` выше — как раз тело
+ * старой сборки: новых ключей оно не знает вовсе.
+ */
+function fuel(input: Partial<Omit<ReadingInput & { kind: 'values' }, 'kind'>>): ReadingInput {
+  return {
+    kind: 'values',
+    odometerKm: null,
+    engineHours: null,
+    fuelFilledLiters: null,
+    comment: '',
+    ...input,
+  } as ReadingInput;
+}
+
+/** Показание строки прямо из базы: DTO отдаёт числа, а караулам нужны и версия, и `numeric` строкой. */
+async function readingRowOf(itemId: string) {
+  const [row] = await ctx.db
+    .select()
+    .from(ctx.schema.vehicleReadings)
+    .where(eq(ctx.schema.vehicleReadings.itemId, itemId));
+  return row;
+}
+
 /** Закрытие строки без чисел: вид, которым диспетчер отвечает «снять было нечем» (Р18). */
 function noData(reason: string): ReadingInput {
   return { kind: 'no_data', noDataReason: reason, comment: '' };
@@ -744,6 +770,257 @@ describe.skipIf(!DB_URL)('отчёт дня: приёмка и разбор ра
     const reaccepted = await ctx.readings.acceptReport(edited.id, edited.version, ctx.userId);
     expect(reaccepted.state).toBe('accepted');
     expect(reaccepted.acceptedContentVersion).toBe(edited.contentVersion);
+  });
+
+  // ── Топливо на концах смены: поэтапный день (ADR 0163) ──
+
+  /*
+   * День заполняется по ходу смены (ADR 0163, Р5 плана кабинета): утром остаток, вечером счётчики.
+   * Сервер это умел и раньше — `submitReport` принимает любое подмножество строк, — но с двумя
+   * новыми полями появился способ сломать умение молча: вторая отправка правит СУЩЕСТВУЮЩУЮ строку,
+   * и если бы утренняя не находилась, у смены оказалось бы два показания, а цепочка счётчиков
+   * получила бы двух предшественников на одну точку.
+   */
+  it('день заполняется в два захода: утром остаток, вечером счётчики — строка одна, редакция растёт', async () => {
+    const person = await makeDriver('Поэтапнов');
+    const route = await makeRoute({
+      vehicleId: await makeVehicle(),
+      personId: person,
+      date: ctx.today,
+    });
+    const opened = await ctx.readings.openReport(person, ctx.today, ctx.userId);
+    const item = itemOf(opened, route).id;
+
+    const morning = await ctx.readings.submitReport(
+      person,
+      ctx.today,
+      { version: opened.version, items: [line(item, fuel({ fuelStartLiters: 60 }))], reason: '' },
+      ctx.userId,
+      null,
+    );
+    expect(morning.state).toBe('submitted');
+    const afterMorning = await readingRowOf(item);
+    expect(afterMorning!.fuelStartLiters).toBe('60.0');
+
+    const evening = await ctx.readings.submitReport(
+      person,
+      ctx.today,
+      {
+        version: morning.version,
+        items: [
+          line(
+            item,
+            fuel({
+              fuelStartLiters: 60,
+              fuelFilledLiters: 120,
+              odometerKm: 128_400,
+              fuelEndLiters: 18.5,
+            }),
+          ),
+        ],
+        reason: '',
+      },
+      ctx.userId,
+      null,
+    );
+
+    const afterEvening = await readingRowOf(item);
+    // Строка та же самая: вечер правит утреннюю, а не заводит вторую.
+    expect(afterEvening!.id).toBe(afterMorning!.id);
+    expect(afterEvening!.version).toBe(afterMorning!.version + 1);
+    expect(evening.contentVersion).toBe(morning.contentVersion + 1);
+    expect([
+      afterEvening!.odometerKm,
+      afterEvening!.fuelStartLiters,
+      afterEvening!.fuelFilledLiters,
+      afterEvening!.fuelEndLiters,
+    ]).toEqual([128_400, '60.0', '120.0', '18.5']);
+
+    const rows = await ctx.db
+      .select({ id: ctx.schema.vehicleReadings.id })
+      .from(ctx.schema.vehicleReadings)
+      .where(eq(ctx.schema.vehicleReadings.itemId, item));
+    expect(rows).toHaveLength(1);
+  });
+
+  /*
+   * Остатки входят в сравнение `same` наравне со счётчиками (Р12). Караул нарочно правит ТОЛЬКО
+   * уровень в баке, оставляя одометр прежним: пропусти поля в `same`, и число в базе поменялось бы,
+   * а редакция содержимого — нет; принятый отчёт остался бы «принятым», и диспетчер не узнал бы,
+   * что подписанное им число уже другое.
+   */
+  it('правка одного лишь остатка поднимает редакцию и уводит принятый отчёт на повторный приём', async () => {
+    const person = await makeDriver('Остатков');
+    const route = await makeRoute({
+      vehicleId: await makeVehicle(),
+      personId: person,
+      date: ctx.today,
+    });
+    const opened = await ctx.readings.openReport(person, ctx.today, ctx.userId);
+    const item = itemOf(opened, route).id;
+    const submitted = await ctx.readings.submitReport(
+      person,
+      ctx.today,
+      {
+        version: opened.version,
+        items: [line(item, fuel({ odometerKm: 900, fuelEndLiters: 18.5 }))],
+        reason: '',
+      },
+      ctx.userId,
+      null,
+    );
+    const accepted = await ctx.readings.acceptReport(submitted.id, submitted.version, ctx.userId);
+    const beforeEdit = await readingRowOf(item);
+
+    const edited = await ctx.readings.submitReport(
+      person,
+      ctx.today,
+      {
+        version: accepted.version,
+        // Одометр тот же — меняется ровно остаток на конец смены.
+        items: [line(item, fuel({ odometerKm: 900, fuelEndLiters: 22 }))],
+        reason: 'диспетчер сверил по чеку',
+      },
+      ctx.userId,
+      null,
+      { mode: 'staff', reason: 'диспетчер сверил по чеку' },
+    );
+
+    expect(edited.state).toBe('needs_reacceptance');
+    expect(edited.contentVersion).toBe(accepted.contentVersion + 1);
+    // Принятая редакция сохраняется: по паре чисел видно, насколько подписанное разошлось с текущим.
+    expect(edited.acceptedContentVersion).toBe(accepted.acceptedContentVersion);
+    const afterEdit = await readingRowOf(item);
+    expect(afterEdit!.fuelEndLiters).toBe('22.0');
+    expect(afterEdit!.version).toBe(beforeEdit!.version + 1);
+
+    // Обратная сторона того же сравнения: повтор тела с ТЕМИ ЖЕ числами ничего не переоткрывает.
+    const again = await ctx.readings.submitReport(
+      person,
+      ctx.today,
+      {
+        version: edited.version,
+        items: [line(item, fuel({ odometerKm: 900, fuelEndLiters: 22 }))],
+        reason: 'повтор',
+      },
+      ctx.userId,
+      null,
+      { mode: 'staff', reason: 'повтор' },
+    );
+    expect(again.contentVersion).toBe(edited.contentVersion);
+    expect((await readingRowOf(item))!.version).toBe(afterEdit!.version);
+  });
+
+  /*
+   * Отсутствующий ключ и явный `null` — разные команды (Р13), и различить их обязательно: показание
+   * отправляется целиком, и вкладка сборки, не знающей остатков, иначе стирала бы оба числа всякой
+   * правкой одометра. Тот же караул закрывает и гаражную сторону (план гаража, Н6): подтверждение
+   * аномалии повторно шлёт сохранённое показание, и старая вкладка не должна ничего терять.
+   */
+  it('тело без ключей остатков их сохраняет, а явный `null` очищает', async () => {
+    const person = await makeDriver('Старовкладк');
+    const route = await makeRoute({
+      vehicleId: await makeVehicle(),
+      personId: person,
+      date: ctx.today,
+    });
+    const opened = await ctx.readings.openReport(person, ctx.today, ctx.userId);
+    const item = itemOf(opened, route).id;
+    const submitted = await ctx.readings.submitReport(
+      person,
+      ctx.today,
+      {
+        version: opened.version,
+        items: [line(item, fuel({ odometerKm: 100, fuelStartLiters: 60, fuelEndLiters: 18 }))],
+        reason: '',
+      },
+      ctx.userId,
+      null,
+    );
+
+    // `odometer()` — ровно тело старой сборки: ключей остатков в нём нет вовсе.
+    const kept = await ctx.readings.submitReport(
+      person,
+      ctx.today,
+      {
+        version: submitted.version,
+        items: [line(item, odometer(140))],
+        reason: 'уточнили одометр',
+      },
+      ctx.userId,
+      null,
+      { mode: 'staff', reason: 'уточнили одометр' },
+    );
+    const afterKept = await readingRowOf(item);
+    expect(afterKept!.odometerKm).toBe(140);
+    expect([afterKept!.fuelStartLiters, afterKept!.fuelEndLiters]).toEqual(['60.0', '18.0']);
+
+    // И тот же старый повтор ничего не двигает: «оставить как есть» сравнивается с сохранённым, а
+    // не с `null`, — иначе каждая правка одометра выглядела бы очисткой и поднимала бы редакцию.
+    const repeated = await ctx.readings.submitReport(
+      person,
+      ctx.today,
+      { version: kept.version, items: [line(item, odometer(140))], reason: 'повтор' },
+      ctx.userId,
+      null,
+      { mode: 'staff', reason: 'повтор' },
+    );
+    expect(repeated.contentVersion).toBe(kept.contentVersion);
+    expect((await readingRowOf(item))!.version).toBe(afterKept!.version);
+
+    /*
+     * Явный `null` — осознанная очистка. В одном теле сразу оба случая: начало смены стирается
+     * названным `null`, конец сохраняется отсутствующим ключом. Строка при этом остаётся законной,
+     * потому что в ней есть другие числа: CHECK требует хотя бы одно из пяти.
+     */
+    const cleared = await ctx.readings.submitReport(
+      person,
+      ctx.today,
+      {
+        version: repeated.version,
+        items: [line(item, fuel({ odometerKm: 140, fuelStartLiters: null }))],
+        reason: 'водитель не снимал остаток утром',
+      },
+      ctx.userId,
+      null,
+      { mode: 'staff', reason: 'водитель не снимал остаток утром' },
+    );
+    const afterCleared = await readingRowOf(item);
+    expect(afterCleared!.fuelStartLiters).toBeNull();
+    expect(afterCleared!.fuelEndLiters).toBe('18.0');
+    expect(cleared.contentVersion).toBe(repeated.contentVersion + 1);
+  });
+
+  /*
+   * Блокеры приёма не ужесточались (план гаража, Р5): «не закрыто строк» по-прежнему считает
+   * строки БЕЗ показания, а не строки без чисел конца смены. Караул охраняет осознанное поведение:
+   * у техники без одометра и без указателя уровня вечерних чисел не бывает вовсе, и день, честно
+   * сданный водителем, стал бы непринимаемым. Неполноту вечера показывает жёлтая пометка реестра
+   * (`readings-intake.db.test.ts`), а не запрет.
+   */
+  it('строка с одним лишь остатком закрыта для приёмки: блокеры приёма не изменились', async () => {
+    const person = await makeDriver('Утренников');
+    const route = await makeRoute({
+      vehicleId: await makeVehicle(),
+      personId: person,
+      date: ctx.today,
+    });
+    const opened = await ctx.readings.openReport(person, ctx.today, ctx.userId);
+    const submitted = await ctx.readings.submitReport(
+      person,
+      ctx.today,
+      {
+        version: opened.version,
+        items: [line(itemOf(opened, route).id, fuel({ fuelStartLiters: 60 }))],
+        reason: '',
+      },
+      ctx.userId,
+      null,
+    );
+
+    const accepted = await ctx.readings.acceptReport(submitted.id, submitted.version, ctx.userId);
+    expect(accepted.state).toBe('accepted');
+    expect(accepted.acceptedContentVersion).toBe(submitted.contentVersion);
   });
 
   it('приложенное фото не двигает ни редакцию содержимого, ни состояние принятого отчёта', async () => {

@@ -169,8 +169,13 @@ function Reading({
             unit="ч"
             delta={reading.engineHoursDelta}
           />
-          {/* Заправлено за смену, а не остаток и не расход (ADR 0103, решение 12). */}
+          {/* Три числа топлива идут группой и в порядке смены (ADR 0163, Р2): остаток бака на её
+              начало, заправленное за неё, остаток на конец. Приростов у них нет намеренно —
+              разность остатков соседних смен и была бы расходом, отложенным решением 12
+              ADR 0103. */}
+          <Counter label="Топливо на начало" value={reading.fuelStartLiters} unit="л" />
           <Counter label="Заправлено" value={reading.fuelFilledLiters} unit="л" />
+          <Counter label="Топливо на конец" value={reading.fuelEndLiters} unit="л" />
         </Space>
       )}
 

@@ -302,6 +302,11 @@ function messages(row: ReadingIntakeRow): string[] {
   return row.issues.map((issue) => issue.message);
 }
 
+/** Коды пометок: по ним караул спрашивает наличие или отсутствие вида, а не формулировку. */
+function codes(row: ReadingIntakeRow): string[] {
+  return row.issues.map((issue) => issue.code);
+}
+
 describe.skipIf(!DB_URL)('реестр приёма: ожидаемые смены, пометки и пригодность к пакету', () => {
   beforeAll(async () => {
     prepareEnv(DB_URL!);
@@ -506,6 +511,125 @@ describe.skipIf(!DB_URL)('реестр приёма: ожидаемые смен
       batchEligible: false,
       greenCount: 0,
     });
+  });
+
+  // ── Топливо в реестре и пометка «вечер не сдан» (ADR 0163, план гаража Р4) ──
+
+  /*
+   * Три числа топлива в строке реестра и новая пометка у утреннего показания. Числа приходят не
+   * сами: `IntakeSqlRow` перечисляет колонки поимённо, а `readingOf` переносит их во вложенный
+   * `VehicleReadingDto` — забудь любой из двух шагов, и пометка считалась бы по НЕПОЛНОМУ
+   * показанию, то есть висела бы на строке, у которой остаток конца смены на самом деле есть.
+   *
+   * Сама пометка закрывает цену решения Р3 плана гаража: состояние дня считается по НАЛИЧИЮ строки
+   * показания, а не по её полноте, и смена с одним утренним остатком выглядит для гаража сданной.
+   * Дыру закрывает жёлтая строка реестра, а не новое состояние в базе и не блокер приёма.
+   */
+  it('утренний остаток: реестр отдаёт три числа топлива и ставит `shift_tail_missing`', async () => {
+    const person = await newPerson('Утренний');
+    const vehicle = await newVehicle();
+    const date = ago(2);
+    await newRoute(vehicle, date, person);
+    await reportDay(person, date, values({ fuelStartLiters: 60 }));
+
+    const [row] = rowsOfVehicle(await intakeOf(date, date), vehicle);
+    // Все три числа топлива — в одном показании и порознь: уровень на концах смены и поток за неё.
+    expect(row!.reading).toMatchObject({
+      kind: 'values',
+      fuelStartLiters: 60,
+      fuelFilledLiters: null,
+      fuelEndLiters: null,
+      odometerKm: null,
+      engineHours: null,
+    });
+    expect(codes(row!)).toEqual(['shift_tail_missing']);
+    expect(messages(row!)).toEqual(['вечерние показания не переданы']);
+    // Жёлтый, а не красный: день сдан честно, просто ещё не до конца.
+    expect(intakeLevel(row!.issues)).toBe('yellow');
+
+    /*
+     * И то, ради чего пометка вообще что-то значит (план гаража, Р4): жёлтая строка выбивает отчёт
+     * из ПАКЕТНОГО приёма. Ни блокера, ни запрета при этом не появляется — одиночный приём
+     * проверяет `readings-accept-batch.db.test.ts`.
+     */
+    const answer = await intakeOf(date, date);
+    const report = answer.reports.find((r) => r.reportId === row!.reportId)!;
+    expect(report).toMatchObject({ itemCount: 1, greenCount: 0, batchEligible: false });
+  });
+
+  /*
+   * Вторая ранняя половина условия — дневная заправка. Текст пометки нарочно не говорит «сдано
+   * начало»: водитель мог передать только заправку, и подпись, называющая утренний остаток,
+   * оказалась бы прямой неправдой на этой самой строке.
+   */
+  it('одна лишь заправка получает ту же пометку, и текст не говорит «сдано начало»', async () => {
+    const person = await newPerson('Заправочный');
+    const vehicle = await newVehicle();
+    const date = ago(2);
+    await newRoute(vehicle, date, person);
+    await reportDay(person, date, values({ fuelFilledLiters: 40 }));
+
+    const [row] = rowsOfVehicle(await intakeOf(date, date), vehicle);
+    expect(row!.reading).toMatchObject({
+      fuelFilledLiters: 40,
+      fuelStartLiters: null,
+      fuelEndLiters: null,
+    });
+    expect(codes(row!)).toEqual(['shift_tail_missing']);
+    expect(messages(row!)).toEqual(['вечерние показания не переданы']);
+    expect(messages(row!).join(' ')).not.toMatch(/начал/iu);
+  });
+
+  /*
+   * Границы пометки со всех четырёх сторон разом: любое ОДНО число конца смены её снимает, `no_data`
+   * её не получает, и строка без показания тоже — там уже стоит своя пометка, и вторая про тот же
+   * пропуск была бы шумом. Проверять это порознь бессмысленно: условие в `readings-intake.ts`
+   * одно, и ошибка в нём разъезжается сразу по всем случаям.
+   */
+  it('пометка не ставится: ни при числе конца смены, ни у `no_data`, ни там, где показания нет', async () => {
+    const person = await newPerson('Границын');
+    const date = ago(2);
+
+    /** Любое одно число конца смены закрывает вечер: у техники их бывает по одному, а не по три. */
+    const tails: [string, ReadingInput][] = [
+      ['одометр', values({ fuelStartLiters: 60, odometerKm: 1000 })],
+      ['моточасы', values({ fuelStartLiters: 60, engineHours: 12.5 })],
+      ['остаток на конец', values({ fuelStartLiters: 60, fuelEndLiters: 18 })],
+    ];
+    for (const [what, reading] of tails) {
+      // Работник и машина у каждого случая свои: день одного человека — один отчёт, и три машины в
+      // нём пришлось бы разбирать по строкам, тогда как предмет проверки — вид показания.
+      const driver = await newPerson(`Вечерний-${what}`);
+      const vehicle = await newVehicle();
+      await newRoute(vehicle, date, driver);
+      await reportDay(driver, date, reading);
+
+      const row = rowsOfVehicle(await intakeOf(date, date), vehicle)[0]!;
+      expect(codes(row), what).not.toContain('shift_tail_missing');
+      expect(intakeLevel(row.issues), what).toBe('green');
+    }
+
+    // `no_data` — закрытие строки с причиной, и чисел у него не бывает вовсе: «вечер не сдан» на
+    // нём означало бы, что снять было чем.
+    const closedVehicle = await newVehicle();
+    await newRoute(closedVehicle, date, person);
+    await reportDay(person, date, {
+      kind: 'no_data',
+      noDataReason: 'бак не читается',
+      comment: '',
+    });
+    const closedRow = rowsOfVehicle(await intakeOf(date, date), closedVehicle)[0]!;
+    expect(codes(closedRow)).toEqual(['no_data']);
+
+    // А там, где показания нет вовсе, стоит своя пометка про ожидание, и вторая про тот же пропуск
+    // была бы шумом: строка и так не зелёная.
+    const emptyVehicle = await newVehicle();
+    const emptyPerson = await newPerson('Несдавший');
+    await newRoute(emptyVehicle, date, emptyPerson);
+    await report(emptyPerson, date);
+    const emptyRow = rowsOfVehicle(await intakeOf(date, date), emptyVehicle)[0]!;
+    expect(emptyRow.reading).toBeNull();
+    expect(codes(emptyRow)).toEqual(['waiting']);
   });
 
   it('«сегодня» считает сервер и по московскому дню', async () => {

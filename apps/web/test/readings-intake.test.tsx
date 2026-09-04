@@ -36,6 +36,12 @@ import { VehicleReadingsJournal } from '../src/pages/garage/VehicleReadingsJourn
  * принять день с невидимой жёлтой строкой. Поэтому в ответе отчёт разрезан границей страницы, а
  * тест листает и сверяет счётчик.
  *
+ * **Топливо — одной ячейкой, пометка о нём — с сервера** (ADR 0163, Н3, Н4). Три числа смены
+ * печатаются рядом «120,0 / +80,0 / 60,0» в одной колонке: три отдельные увели бы «Пометки» за
+ * край ноутбучного экрана. А пометка «вечерние показания не переданы» — такая же серверная, как
+ * аномалия и просрочка: портал показывает её и там, где сам бы не поставил, и молчит там, где
+ * сервер промолчал.
+ *
  * **Итог приёма и кэш** (Р9, Р19). Пакет — N транзакций, отказ по одному не отменяет остальных:
  * «принято N из M» и причины отказов показываются всегда. После приёма гасится корень слайса —
  * поэтому рядом с реестром в тесте живёт журнал: он на другом семействе ключей и обязан
@@ -65,6 +71,8 @@ const TOTAL = 150;
 /** Готовый текст жёлтой пометки — с числами и порогом. Портал обязан показать его дословно. */
 const ANOMALY_MESSAGE = 'одометр — прирост 3 400 км за 1 день при пороге 1 500 км';
 const OVERDUE_MESSAGE = 'нет показания 4 дня';
+/** Текст пометки о неполном вечере (ADR 0163, Р4): его тоже пишет сервер, а не портал. */
+const TAIL_MESSAGE = 'вечерние показания не переданы';
 
 function reading(over: Partial<VehicleReadingDto> = {}): VehicleReadingDto {
   return {
@@ -73,7 +81,9 @@ function reading(over: Partial<VehicleReadingDto> = {}): VehicleReadingDto {
     kind: 'values',
     odometerKm: 128400,
     engineHours: 1240.5,
+    fuelStartLiters: null,
     fuelFilledLiters: 120,
+    fuelEndLiters: null,
     noDataReason: '',
     comment: '',
     source: 'driver',
@@ -277,6 +287,19 @@ function askedPeriod(http: HttpMock): [string, string] {
 /** Строка таблицы по подписи машины: подписи в фикстуре разные — по ним строки и различают. */
 const tableRow = (label: string) => screen.getByText(label).closest('tr') as HTMLElement;
 
+/**
+ * Реестр из своих строк, одной страницей. Топливные караулы смотрят на ячейку и на пометку, и
+ * страницы им только мешают: разрезанный отчёт `intakeDto` нужен счётчику кнопки, а не колонке.
+ */
+function withRows(items: ReadingIntakeRow[]): RouteMap {
+  return {
+    [INTAKE]: ({ query }) => {
+      const base = intakeDto(1, query.get('from') ?? '', query.get('to') ?? '');
+      return json({ ...base, items, total: items.length });
+    },
+  };
+}
+
 /** Кнопка пакетного приёма: её подпись и есть счётчик отчётов. */
 const acceptButton = () => screen.getByRole('button', { name: /Принять/u });
 
@@ -366,6 +389,119 @@ describe('приём показаний: строки реестра', () => {
     expect(green.querySelector('.ant-badge-status-success')).not.toBeNull();
     // Числа показания при этом на месте: строка молчит о проблемах, а не о данных.
     expect(within(green).getByText('128400')).toBeDefined();
+  });
+
+  /**
+   * Ряд топлива ОДНОЙ ячейкой (ADR 0163, Н4).
+   *
+   * Караулятся здесь три решения разом, и все три легко «поправить» в обратную сторону.
+   *
+   * 1. **Колонка одна.** Три отдельные, как в журнале машины, добавляют реестру около 260 px, а
+   *    смотрят его на ноутбуке — за край уехали бы «Пометки», ради которых реестр и открывают.
+   * 2. **Порядок — по ходу смены:** уровень бака на начало, поток за смену, уровень на конец.
+   *    Переставленные крайние числа читаются как обычный день, а не как ошибка.
+   * 3. **«+» стоит только у середины.** Заправка — поток, два крайних числа — уровни; без знака
+   *    ряд читается как три уровня, то есть как невозможно упавший и снова выросший бак.
+   */
+  it('печатает топливо одной ячейкой в порядке смены, и «+» только у заправки', async () => {
+    renderGarage({
+      over: withRows([
+        row({
+          key: 'it-1',
+          vehicleLabel: 'КамАЗ · А111АА777',
+          reading: reading({ fuelStartLiters: 120, fuelFilledLiters: 80, fuelEndLiters: 60 }),
+        }),
+        row({
+          key: 'it-2',
+          vehicleLabel: 'МАЗ · В222ВВ777',
+          reading: reading({ fuelStartLiters: 120, fuelFilledLiters: null, fuelEndLiters: 60 }),
+        }),
+      ]),
+    });
+    expect(await screen.findByText('КамАЗ · А111АА777')).toBeDefined();
+
+    // Колонка на все три числа одна, и заголовок называет единицы за всех троих сразу.
+    expect(screen.getByRole('columnheader', { name: 'Топливо, л' })).toBeDefined();
+    expect(screen.queryByRole('columnheader', { name: 'Топливо на начало' })).toBeNull();
+    expect(screen.queryByRole('columnheader', { name: 'Топливо на конец' })).toBeNull();
+
+    expect(within(tableRow('КамАЗ · А111АА777')).getByText('120,0 / +80,0 / 60,0')).toBeDefined();
+    // Отсутствующее число — прочерк на своём месте: ряд не съезжает, и видно, какого числа нет.
+    expect(within(tableRow('МАЗ · В222ВВ777')).getByText('120,0 / — / 60,0')).toBeDefined();
+  });
+
+  it('полностью пустая тройка топлива схлопывается в один прочерк', async () => {
+    renderGarage({
+      over: withRows([
+        row({
+          key: 'it-1',
+          vehicleLabel: 'Урал · С333СС777',
+          // Счётчики сданы, литров нет вовсе: законный день техники без указателя уровня.
+          reading: reading({ fuelStartLiters: null, fuelFilledLiters: null, fuelEndLiters: null }),
+        }),
+      ]),
+    });
+    expect(await screen.findByText('Урал · С333СС777')).toBeDefined();
+
+    // «— / — / —» кричало бы о трёх отсутствиях там, где отсутствие одно: топлива не передали
+    // вовсе. Прочерк в строке ровно один — второй пришёл бы из пустого счётчика, а они сданы.
+    const line = tableRow('Урал · С333СС777');
+    expect(within(line).queryByText('— / — / —')).toBeNull();
+    expect(within(line).getAllByText('—')).toHaveLength(1);
+  });
+
+  /**
+   * Пометка `shift_tail_missing` показывается, но НЕ вычисляется (ADR 0163, Н3; Р5).
+   *
+   * Уровень строки считает единственная функция контрактов `intakeLevel` по списку пометок,
+   * который прислал сервер. Заведи портал свою формулу «нет чисел конца смены — значит жёлтая», и
+   * разъехались бы две вещи сразу: цвет строки и кнопка пакетного приёма, которая требует всех
+   * зелёных. Поэтому караул подаёт обе половины расхождения.
+   *
+   * Проверять это можно только парой строк: одна доказывает, что портал показывает чужую пометку
+   * даже там, где сам бы её не поставил; вторая — что он не ставит своей там, где сервер промолчал.
+   * Порознь любая из них проходит и с самодельной формулой.
+   */
+  it('пометку о неполном вечере показывает текстом сервера, но сам её не выводит', async () => {
+    renderGarage({
+      over: withRows([
+        // Числа полны все пять — а пометка от сервера есть. Своя формула эту строку промолчала бы.
+        row({
+          key: 'it-1',
+          vehicleLabel: 'КамАЗ · А111АА777',
+          reading: reading({ fuelStartLiters: 120, fuelFilledLiters: 80, fuelEndLiters: 60 }),
+          issues: [{ code: 'shift_tail_missing', level: 'yellow', message: TAIL_MESSAGE }],
+        }),
+        // И наоборот: вечерних чисел нет ни одного, а пометки сервер не прислал — портал молчит.
+        row({
+          key: 'it-2',
+          vehicleLabel: 'МАЗ · В222ВВ777',
+          reading: reading({
+            odometerKm: null,
+            engineHours: null,
+            fuelStartLiters: 90,
+            fuelFilledLiters: null,
+            fuelEndLiters: null,
+          }),
+          issues: [],
+        }),
+      ]),
+    });
+    expect(await screen.findByText('КамАЗ · А111АА777')).toBeDefined();
+
+    // Пометка стоит дословно и красит строку жёлтым — уровень собран по списку сервера.
+    const yellow = tableRow('КамАЗ · А111АА777');
+    expect(within(yellow).getByText(TAIL_MESSAGE)).toBeDefined();
+    expect(yellow.querySelector('.ant-badge-status-warning')).not.toBeNull();
+
+    // Утренняя строка без пометки остаётся зелёной и молчит: пересчитывать за сервер портал не
+    // берётся, даже когда условие пометки видно прямо в её числах.
+    const silent = tableRow('МАЗ · В222ВВ777');
+    expect(within(silent).queryByText(TAIL_MESSAGE)).toBeNull();
+    expect(silent.querySelectorAll('.ant-tag')).toHaveLength(0);
+    expect(silent.querySelector('.ant-badge-status-success')).not.toBeNull();
+    // Ряд топлива при этом на месте: строка молчит о пометках, а не о числах.
+    expect(within(silent).getByText('90,0 / — / —')).toBeDefined();
   });
 
   it('строка ведёт в отчёт дня, и отчёт называется в адресе', async () => {

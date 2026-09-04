@@ -466,7 +466,9 @@ export async function loadVehicleReadingJournal(
         kind: vehicleReadings.kind,
         odometerKm: vehicleReadings.odometerKm,
         engineHours: vehicleReadings.engineHours,
+        fuelStartLiters: vehicleReadings.fuelStartLiters,
         fuelFilledLiters: vehicleReadings.fuelFilledLiters,
+        fuelEndLiters: vehicleReadings.fuelEndLiters,
         noDataReason: vehicleReadings.noDataReason,
         comment: vehicleReadings.comment,
         source: vehicleReadings.source,
@@ -533,7 +535,15 @@ export async function loadVehicleReadingJournal(
       kind: row.kind,
       odometerKm: row.odometerKm,
       engineHours,
+      /*
+       * Три числа топлива живут только здесь, в построчном журнале, и ниже по файлу в сводку
+       * периода не попадают: складывать за месяц можно лишь «Заправлено» — это поток, а остатки
+       * на начало и конец смены — уровень в баке, и их сумма отвечает на несуществующий вопрос
+       * (Р1). Строку же читают целиком, и без обоих концов по ней не видно, куда ушла заправка.
+       */
+      fuelStartLiters: num(row.fuelStartLiters),
       fuelFilledLiters: num(row.fuelFilledLiters),
+      fuelEndLiters: num(row.fuelEndLiters),
       noDataReason: row.noDataReason ?? '',
       comment: row.comment ?? '',
       source: row.source,

@@ -241,6 +241,13 @@ function journalRow(over: JournalRow = {}): JournalRow {
     odometerKm: 128_400,
     engineHours: '9310.5',
     fuelFilledLiters: '120',
+    /*
+     * Остатки в баке стоят в фикстуре явными `null`, а не отсутствуют (ADR 0163, Н9): драйвер
+     * отдаёт `numeric` строкой либо `null`, и пропущенный ключ дал бы `Number(undefined)` — то есть
+     * «NaN» в ячейке книги вместо прочерка. Свои числа проверки подставляют поверх сами.
+     */
+    fuelStartLiters: null,
+    fuelEndLiters: null,
     noDataReason: '',
     comment: '',
     source: 'driver',
@@ -408,6 +415,10 @@ describe('выгрузки показаний: один сборщик, вари
       'Заправлено, л',
       'Аномалии',
       'Показание',
+      // Хвост шапки — два остатка (ADR 0163, Р9). Стоят они в конце, а не рядом с «Заправлено, л»,
+      // именно затем, чтобы индексы всех колонок выше не сдвинулись.
+      'Топливо на начало, л',
+      'Топливо на конец, л',
     ]);
     expect(book[0]!.rows[1]).toEqual([
       '05.01.2026',
@@ -422,11 +433,16 @@ describe('выгрузки показаний: один сборщик, вари
       '120,0',
       '',
       'передано водителем',
+      '—',
+      '—',
     ]);
     // Смена без показания из журнала не выпадает: «смена была, цифр нет» — то, ради чего его и
     // открывают. Прочерки в её числах не притворяются нулями.
     expect(book[0]!.rows[2]!.slice(5, 10)).toEqual(['—', '—', '—', '—', '—']);
-    expect(book[0]!.rows[2]!.at(-1)).toBe('не сдано');
+    // «Показание» спрашивается номером колонки, а не `at(-1)`: с приписанными остатками последней
+    // ячейкой строки стало топливо, и хвостовой поиск читал бы соседа.
+    expect(book[0]!.rows[2]![11]).toBe('не сдано');
+    expect(book[0]!.rows[2]!.slice(12)).toEqual(['—', '—']);
   });
 
   it('журнал машины по месяцам — месяц отдельным листом, пустой месяц тоже', async () => {
@@ -460,6 +476,113 @@ describe('выгрузки показаний: один сборщик, вари
     expect(book).toHaveLength(1);
     expect(book[0]!.rows[0]![0]).toBe('Техника');
     expect(book[0]!.rows.slice(1).map((row) => row[0])).toEqual(['А123БВ777', 'В777АА99']);
+  });
+
+  /**
+   * Приписка остатков в конец строки (ADR 0163, Р9) — три построчные книги сразу, потому что шапку
+   * им даёт один `JOURNAL_HEADER`, и разъехаться они могут только вместе с ним. Караул охраняет не
+   * наличие двух колонок, а их МЕСТО: вставь их кто-нибудь около «Заправлено, л» ради экранной
+   * группировки Р2, и «Аномалии» с «Показанием» уехали бы вправо — молча, вместе с каждой чужой
+   * формулой и каждым `slice` по индексу в уже разосланных книгах.
+   */
+  it('три построчные книги дописывают остатки в конец, не двигая ни одной старой колонки', async () => {
+    const OLD_HEADER = [
+      'День',
+      'Смена',
+      'Источник',
+      'Кто передал',
+      'Состояние отчёта',
+      'Одометр, км',
+      'Прирост, км',
+      'Моточасы, м/ч',
+      'Прирост, м/ч',
+      'Заправлено, л',
+      'Аномалии',
+      'Показание',
+    ];
+    const books: { kind: string; query: string; withVehicle: boolean }[] = [
+      {
+        kind: 'vehicleJournal',
+        query: `kind=vehicleJournal&from=2026-01-01&to=2026-01-31&vehicleId=${VEHICLE_ID}`,
+        withVehicle: false,
+      },
+      {
+        kind: 'vehicleMonths',
+        query: `kind=vehicleMonths&from=2026-01-01&to=2026-03-31&vehicleId=${VEHICLE_ID}`,
+        withVehicle: false,
+      },
+      {
+        kind: 'fleetJournal',
+        query: 'kind=fleetJournal&from=2026-01-01&to=2026-01-31',
+        withVehicle: true,
+      },
+    ];
+
+    for (const { kind, query, withVehicle } of books) {
+      const book = await download(query);
+      for (const sheet of book) {
+        const header = sheet.rows[0]!;
+        const where = `${kind}/${sheet.name}`;
+        expect(header, where).toEqual([
+          ...(withVehicle ? ['Техника'] : []),
+          ...OLD_HEADER,
+          'Топливо на начало, л',
+          'Топливо на конец, л',
+        ]);
+        // Индексы старых колонок названы отдельно от сравнения целиком: сравнение упадёт и от
+        // переименования, а вопрос караула — сдвиг, и он должен быть виден в отказе прямо.
+        const shift = withVehicle ? 1 : 0;
+        expect(header.indexOf('Заправлено, л'), where).toBe(9 + shift);
+        expect(header.indexOf('Аномалии'), where).toBe(10 + shift);
+        expect(header.indexOf('Показание'), where).toBe(11 + shift);
+      }
+    }
+  });
+
+  /**
+   * Ячеек в строке ровно столько, сколько в шапке, — и в книге с колонкой «Техника», и без неё.
+   * Строку собирает `journalRow`, а шапку — `JOURNAL_HEADER`: это два разных списка, и правка
+   * одного без второго даёт книгу, в которой числа стоят под чужими подписями. Excel такой файл
+   * открывает молча, поэтому спрашивать длину надо здесь.
+   */
+  it('число ячеек строки равно длине шапки в обоих вариантах книги', async () => {
+    state.journalRows = [
+      journalRow({ fuelStartLiters: '58.5', fuelEndLiters: '12' }),
+      // Вторая строка — без остатков: прочерк обязан занимать ячейку, а не исчезать из строки.
+      journalRow({ reportDate: '2026-01-07', shiftOrder: 2 }),
+    ];
+    state.journalTotal = 2;
+
+    for (const query of [
+      `kind=vehicleJournal&from=2026-01-01&to=2026-01-31&vehicleId=${VEHICLE_ID}`,
+      'kind=fleetJournal&from=2026-01-01&to=2026-01-31',
+    ]) {
+      const book = await download(query);
+      const sheet = book[0]!;
+      const width = sheet.rows[0]!.length;
+      for (const row of sheet.rows) expect(row, `${query}: ${row.join('|')}`).toHaveLength(width);
+      // Формат ячейки тот же, каким книга пишет заправленное: одна десятая и запятая разделителем.
+      expect(sheet.rows[1]!.slice(-2), query).toEqual(['58,5', '12,0']);
+      expect(sheet.rows[2]!.slice(-2), query).toEqual(['—', '—']);
+    }
+  });
+
+  /**
+   * Уровень в баке за период не складывается (ADR 0163, Р1) и не отвечает на вопрос среза (Р8):
+   * «сколько намотано на выбранный день» — про счётчики, а остаток из последней смены в колонке
+   * рядом с одометром прочитался бы как «столько в баке сегодня». Отсутствие колонок здесь —
+   * решение, а не забытая работа, и караул держит его от «доделаем и тут для единообразия».
+   */
+  it('срез на дату, сводка и матричные книги остатков не получили', async () => {
+    for (const query of [
+      'kind=fleetSummary&from=2026-01-01&to=2026-03-31',
+      'kind=fleetMonths&from=2026-01-01&to=2026-03-31',
+      'kind=snapshot&from=2026-01-01&to=2026-03-31',
+    ]) {
+      const book = await download(query);
+      const headers = book.map((sheet) => (sheet.rows[0] ?? []).join(' ')).join(' | ');
+      expect(headers, query).not.toMatch(/на начало|на конец|остат/iu);
+    }
   });
 
   it('срез на дату — последние счётчики с датами их снятия', async () => {

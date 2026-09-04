@@ -279,6 +279,20 @@ function values(input: Partial<Omit<ReadingInput & { kind: 'values' }, 'kind'>>)
   } as ReadingInput;
 }
 
+/**
+ * Своя смена под караул: работник, машина, рейс с листом и открытый отчёт дня. Заводится отдельно,
+ * а не берётся у соседней проверки: база у db-тестов общая, порядок проверок в файле уже несёт
+ * состояние (отчёт `twin` правится из теста в тест), и лишняя строка ожидания сдвинула бы и версию
+ * отчёта, и ряд счётчиков машины.
+ */
+async function freshShift(name: string) {
+  const personId = await newPerson(name);
+  const vehicleId = await newVehicle();
+  await newRoute(vehicleId, ctx.today, personId);
+  const report = await ctx.service.openReport(personId, ctx.today, ctx.adminId);
+  return { personId, vehicleId, report, item: report.items[0]!, itemId: report.items[0]!.id };
+}
+
 function line(itemId: string, reading: ReadingInput, confirm = false): ReportItemSubmit {
   return {
     itemId,
@@ -440,6 +454,26 @@ describe.skipIf(!DB_URL)('показания техники: отчёт дня �
 
     // Первая линия обороны — схема ввода: до сервиса такое тело не доходит вовсе.
     expect(readingInputSchema.safeParse({ kind: 'values' }).success).toBe(false);
+    /*
+     * Чисел стало пять (ADR 0163, Р2), и правило «хотя бы одно» считает ПРИСУТСТВУЮЩИЕ: для него
+     * отсутствующий ключ остатка и явный `null` равнозначны — числа нет. Оба тела ниже пустые, и
+     * оба обязаны отказом упереться в схему, иначе показание без единого числа перестало бы
+     * отличаться от намеренного пропуска (ADR 0103, решение 4).
+     */
+    expect(
+      readingInputSchema.safeParse({
+        kind: 'values',
+        odometerKm: null,
+        engineHours: null,
+        fuelStartLiters: null,
+        fuelFilledLiters: null,
+        fuelEndLiters: null,
+      }).success,
+    ).toBe(false);
+    // А одного лишь остатка на начало уже довольно: он такое же число, как одометр.
+    expect(readingInputSchema.safeParse({ kind: 'values', fuelStartLiters: 58.5 }).success).toBe(
+      true,
+    );
     expect(readingInputSchema.safeParse({ kind: 'no_data', noDataReason: '  ' }).success).toBe(
       false,
     );
@@ -481,6 +515,168 @@ describe.skipIf(!DB_URL)('показания техники: отчёт дня �
     expect(after!.state).toBe('draft');
     expect(after!.version).toBe(report!.version);
     expect(after!.items.every((i) => i.reading === null)).toBe(true);
+  });
+
+  /*
+   * Утро сдано, вечера ещё нет (ADR 0163, Р1, Р2): одно число из пяти — законное показание, и
+   * караул охраняет всю дорогу этого числа целиком — от CHECK до ответа портала. Сломать её можно
+   * в трёх разных местах порознь: `vehicle_readings_values_check` перечисляет поля поимённо и без
+   * правки не знал бы остатков (Н2), `readingColumns` переводит ввод в колонки, а выходной DTO
+   * собирается отдельным списком полей. Каждое из трёх молчит по-своему.
+   */
+  it('показание с одним лишь остатком на начало записывается и читается обратно', async () => {
+    const shift = await freshShift('Утренний');
+
+    const sent = await ctx.service.submitReport(
+      shift.personId,
+      ctx.today,
+      {
+        version: shift.report.version,
+        items: [line(shift.itemId, values({ fuelStartLiters: 58.5 }))],
+        reason: '',
+      },
+      ctx.adminId,
+      null,
+    );
+    expect(sent.state).toBe('submitted');
+
+    // В базе остаток лежит строкой `numeric(7,1)`: сравнение `same` идёт по строкам, и число,
+    // прошедшее через `Number`, разошлось бы само с собой на первой же повторной отправке.
+    const row = await readingRow(shift.itemId);
+    expect(row!.kind).toBe('values');
+    expect(row!.fuelStartLiters).toBe('58.5');
+    expect([row!.odometerKm, row!.engineHours, row!.fuelFilledLiters, row!.fuelEndLiters]).toEqual([
+      null,
+      null,
+      null,
+      null,
+    ]);
+
+    // В ответе портала оба остатка обязательны и равны числу либо `null`: необязательность живёт
+    // только на вводе, где отсутствие ключа значит «оставить как есть» (Р13).
+    const reloaded = await ctx.service.loadReport(shift.personId, ctx.today);
+    const reading = reloaded!.items.find((i) => i.id === shift.itemId)!.reading!;
+    expect(reading.fuelStartLiters).toBe(58.5);
+    expect(reading.fuelEndLiters).toBeNull();
+    expect(reading.odometerKm).toBeNull();
+  });
+
+  /*
+   * Неотрицательность — второе ограничение, переписанное миграцией 0267, и оно тоже перечисляет
+   * поля поимённо (Н2). Забудь его кто-нибудь, и в баке оказалось бы минус сорок литров: схема
+   * ввода такое тело не пропустит, но CHECK — последний рубеж, и спрашивать его надо мимо схемы,
+   * прямым INSERT'ом, ровно как соседний караул спрашивает составной ключ снимка.
+   */
+  it('отрицательный остаток не проходит CHECK неотрицательности', async () => {
+    const shift = await freshShift('Отрицательный');
+
+    expect(readingInputSchema.safeParse({ kind: 'values', fuelStartLiters: -1 }).success).toBe(
+      false,
+    );
+    expect(readingInputSchema.safeParse({ kind: 'values', fuelEndLiters: -0.1 }).success).toBe(
+      false,
+    );
+
+    const insert = (over: Record<string, unknown>) =>
+      ctx.db.insert(ctx.schema.vehicleReadings).values({
+        itemId: shift.itemId,
+        reportId: shift.report.id,
+        vehicleId: shift.vehicleId,
+        reportDate: shift.report.reportDate,
+        shiftOrder: shift.item.shiftOrder,
+        kind: 'values',
+        source: 'staff',
+        createdBy: ctx.adminId,
+        ...over,
+      });
+
+    // Оба конца смены спрашиваются порознь: условия добавлены двумя строками, и пропуск одной из
+    // них не виден по второй.
+    expect(await rejectedConstraint(() => insert({ fuelStartLiters: '-1.0' }))).toBe(
+      'vehicle_readings_non_negative_check',
+    );
+    expect(await rejectedConstraint(() => insert({ fuelEndLiters: '-0.1' }))).toBe(
+      'vehicle_readings_non_negative_check',
+    );
+    // Ноль остаётся законным: пустой бак — это число, а не отсутствие числа.
+    await insert({ fuelEndLiters: '0.0' });
+    expect((await readingRow(shift.itemId))!.fuelEndLiters).toBe('0.0');
+  });
+
+  /*
+   * Остатки входят в историю и в версию наравне со счётчиками (Р12). Пропуск в `readingSnapshot`
+   * даёт худший исход из возможных: число в базе меняется, а журнал правок молчит — и спросить
+   * потом, кто и почему поставил другой остаток, будет негде.
+   */
+  it('правка остатка видна в истории показания вместе с причиной', async () => {
+    const shift = await freshShift('Правленый');
+
+    const first = await ctx.service.submitReport(
+      shift.personId,
+      ctx.today,
+      {
+        version: shift.report.version,
+        items: [line(shift.itemId, values({ fuelStartLiters: 58.5 }))],
+        reason: '',
+      },
+      ctx.adminId,
+      null,
+    );
+    const created = await readingRow(shift.itemId);
+
+    // Правка сданного числа персоналом без причины не проходит (Р19) — и остаток здесь ничем не
+    // отличается от одометра: это уже сданное число, а не черновик формы.
+    await expect(
+      ctx.service.submitReport(
+        shift.personId,
+        ctx.today,
+        {
+          version: first.version,
+          items: [line(shift.itemId, values({ fuelStartLiters: 61 }))],
+          reason: '',
+        },
+        ctx.adminId,
+        null,
+        { mode: 'staff' },
+      ),
+    ).rejects.toMatchObject({ statusCode: 400 });
+
+    /*
+     * Причина едет ОТДЕЛЬНЫМ параметром сервиса, а не полем тела: `reportSubmitSchema.reason`
+     * разбирает её на границе, а маршрут перекладывает в `options.reason`
+     * (`routes/vehicle-readings.ts`). Положи её в тело — и сервис увидит пустую причину, то есть
+     * тот же отказ, что выше.
+     */
+    await ctx.service.submitReport(
+      shift.personId,
+      ctx.today,
+      {
+        version: first.version,
+        items: [line(shift.itemId, values({ fuelStartLiters: 61 }))],
+        reason: 'Водитель назвал другое число по телефону',
+      },
+      ctx.adminId,
+      null,
+      { mode: 'staff', reason: 'Водитель назвал другое число по телефону' },
+    );
+
+    const row = await readingRow(shift.itemId);
+    expect(row!.fuelStartLiters).toBe('61.0');
+    expect(row!.version).toBe(created!.version + 1);
+
+    const events = await ctx.db
+      .select()
+      .from(ctx.schema.vehicleReadingHistory)
+      .where(eq(ctx.schema.vehicleReadingHistory.readingId, row!.id))
+      .orderBy(asc(ctx.schema.vehicleReadingHistory.changedAt));
+    expect(events.map((e) => e.event)).toEqual(['created', 'updated']);
+    const updated = events.at(-1)!;
+    expect(updated.reason).toBe('Водитель назвал другое число по телефону');
+    expect(updated.version).toBe(row!.version);
+    // Снимки «до» и «после» несут именно остаток: без него запись события была бы про правку, о
+    // которой ничего не сказано.
+    expect((updated.before as Record<string, unknown>).fuelStartLiters).toBe('58.5');
+    expect((updated.after as Record<string, unknown>).fuelStartLiters).toBe('61.0');
   });
 
   it('показание с чужой машиной в копиях снимка не вставляется', async () => {

@@ -8481,8 +8481,18 @@ export const vehicleReadings = pgTable(
     kind: readingKindEnum('kind').notNull(),
     odometerKm: integer('odometer_km'),
     engineHours: numeric('engine_hours', { precision: 9, scale: 1 }),
-    /** ЗАПРАВЛЕНО за смену, не остаток в баке: расхода портал по этому полю не считает. */
+    /**
+     * Три числа топлива, и они разной природы (ADR 0163, Р1). `fuel_start_liters` и
+     * `fuel_end_liters` — УРОВЕНЬ в баке на концах смены: их нельзя складывать за период, поэтому
+     * ни в сводках, ни в месячных агрегатах, ни в матричных книгах их нет. `fuel_filled_liters` —
+     * ПОТОК, заправленное за смену, и складывается только он.
+     *
+     * Расход (`начало + заправлено − конец`) стал вычислим, но не считается: решение 12 ADR 0103
+     * остаётся в силе по воле заказчика, и снимать его надо явно, а не молча первой колонкой.
+     */
+    fuelStartLiters: numeric('fuel_start_liters', { precision: 7, scale: 1 }),
     fuelFilledLiters: numeric('fuel_filled_liters', { precision: 7, scale: 1 }),
+    fuelEndLiters: numeric('fuel_end_liters', { precision: 7, scale: 1 }),
     noDataReason: text('no_data_reason').notNull().default(''),
     comment: text('comment').notNull().default(''),
     // Две независимые цепочки: строка с одними моточасами не разрывает ряд одометра.
@@ -8533,19 +8543,25 @@ export const vehicleReadings = pgTable(
       ],
       name: 'vehicle_readings_snapshot_fk',
     }).onUpdate('cascade'),
+    // Хотя бы одно число из ПЯТИ — правило то же, что было из трёх (ADR 0163, Р2): пустая строка
+    // `values` по-прежнему невозможна, иначе она перестала бы отличаться от намеренного пропуска.
     valuesShape: check(
       'vehicle_readings_values_check',
       sql`(${t.kind} = 'values' AND ${t.noDataReason} = ''
             AND (${t.odometerKm} IS NOT NULL OR ${t.engineHours} IS NOT NULL
-                 OR ${t.fuelFilledLiters} IS NOT NULL))
+                 OR ${t.fuelFilledLiters} IS NOT NULL OR ${t.fuelStartLiters} IS NOT NULL
+                 OR ${t.fuelEndLiters} IS NOT NULL))
         OR (${t.kind} = 'no_data' AND ${t.odometerKm} IS NULL AND ${t.engineHours} IS NULL
-            AND ${t.fuelFilledLiters} IS NULL AND btrim(${t.noDataReason}) <> '')`,
+            AND ${t.fuelFilledLiters} IS NULL AND ${t.fuelStartLiters} IS NULL
+            AND ${t.fuelEndLiters} IS NULL AND btrim(${t.noDataReason}) <> '')`,
     ),
     nonNegative: check(
       'vehicle_readings_non_negative_check',
       sql`(${t.odometerKm} IS NULL OR ${t.odometerKm} >= 0)
         AND (${t.engineHours} IS NULL OR ${t.engineHours} >= 0)
-        AND (${t.fuelFilledLiters} IS NULL OR ${t.fuelFilledLiters} >= 0)`,
+        AND (${t.fuelFilledLiters} IS NULL OR ${t.fuelFilledLiters} >= 0)
+        AND (${t.fuelStartLiters} IS NULL OR ${t.fuelStartLiters} >= 0)
+        AND (${t.fuelEndLiters} IS NULL OR ${t.fuelEndLiters} >= 0)`,
     ),
     // Подтверждение бывает только у проставленной аномалии, и «кто» без «когда» подписью не
     // является — тот же приём, что у визы заявки и подписи смены.

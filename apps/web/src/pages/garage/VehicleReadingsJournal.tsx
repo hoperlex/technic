@@ -14,8 +14,9 @@ import { useIsMobile, useListParams } from '@shared/lib';
 import { FilesCell } from '../../components/FileLinks';
 
 /**
- * Журнал показаний машины (ADR 0103, Р27): день, смена, кто передал, три числа, разности по
- * каждому счётчику со своим предшественником, аномалии, фотографии и история правок.
+ * Журнал показаний машины (ADR 0103, Р27): день, смена, кто передал, два счётчика и три числа
+ * топлива, разности по каждому счётчику со своим предшественником, аномалии, фотографии и история
+ * правок.
  *
  * Окно читающее — правят показания в своём модуле, под `vehicleReadings.write` и с причиной. Гараж
  * показывает чужие данные ровно так же, как показывает рейсы и бланки (ADR 0076).
@@ -102,6 +103,18 @@ function CounterCell({
       </Typography.Text>
       <AnomalyTag anomaly={anomaly} />
     </Space>
+  );
+}
+
+/**
+ * Литры топлива. Прироста и разности рядом нет намеренно (ADR 0163, Р1): остаток — уровень бака, и
+ * разность соседних уровней была бы расходом, отложенным решением 12 ADR 0103.
+ */
+function FuelCell({ value }: { value: number | null | undefined }) {
+  return value == null ? (
+    <Typography.Text type="secondary">—</Typography.Text>
+  ) : (
+    <span>{`${decimal(value)} л`}</span>
   );
 }
 
@@ -216,17 +229,29 @@ const columns: TableColumnType<VehicleReadingJournalRow>[] = [
       />
     ),
   },
+  /*
+   * Три числа топлива — тремя соседними колонками, в порядке смены (ADR 0163, Р2). Здесь они
+   * разнесены, а в реестре приёма стоят одной ячейкой, и это не расхождение: у окна журнала ширина
+   * есть, у реестра, который смотрят на ноутбуке, её нет (Н4).
+   */
+  {
+    key: 'fuelStart',
+    title: 'Топливо на начало',
+    width: 120,
+    render: (_v, r) => <FuelCell value={r.reading?.fuelStartLiters} />,
+  },
   {
     key: 'fuel',
-    // Заправлено за смену, а не остаток и не расход (Р28): портал называет ровно то, что считает.
+    // Единственное из трёх, что складывается за период: заправка — поток, остатки — уровни.
     title: 'Заправлено',
     width: 110,
-    render: (_v, r) =>
-      r.reading?.fuelFilledLiters == null ? (
-        <Typography.Text type="secondary">—</Typography.Text>
-      ) : (
-        `${decimal(r.reading.fuelFilledLiters)} л`
-      ),
+    render: (_v, r) => <FuelCell value={r.reading?.fuelFilledLiters} />,
+  },
+  {
+    key: 'fuelEnd',
+    title: 'Топливо на конец',
+    width: 120,
+    render: (_v, r) => <FuelCell value={r.reading?.fuelEndLiters} />,
   },
   {
     key: 'state',

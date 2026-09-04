@@ -653,13 +653,36 @@ function numeric1(value: number | null): string | null {
   return value === null ? null : value.toFixed(1);
 }
 
-function readingColumns(reading: ReadingInput) {
+/**
+ * Остаток в баке: у него три разных входа и, соответственно, три разные команды (ADR 0163, Р13).
+ * Отсутствующий ключ — «оставить как есть», и потому смотрит в уже сохранённое число; явный `null`
+ * — «очистить». Различить их обязательно: схема ввода намеренно оставляет отсутствующий ключ
+ * `undefined`, а не подменяет его `null`, потому что показание отправляется целиком — и вкладка
+ * сборки, не знающей этих полей, иначе стирала бы оба остатка всякой правкой одометра.
+ *
+ * Сохранённое переносится строкой, как лежит в базе, а не через число: сравнение `same` идёт по
+ * строкам numeric, и «12.0», прошедшее через `Number`, разошлось бы само с собой.
+ */
+function keptFuelLevel(value: number | null | undefined, stored: string | null): string | null {
+  return value === undefined ? stored : numeric1(value);
+}
+
+/**
+ * Перевод ввода в колонки. Вторая опора — уже сохранённая строка либо `null` при создании: без неё
+ * «оставить как есть» выразить нечем, а оставлять при создании нечего, и отсутствующий ключ там
+ * значит `NULL`.
+ */
+function readingColumns(reading: ReadingInput, existing: VehicleReadingRow | null) {
   if (reading.kind === 'no_data') {
+    // «Снять нечего» обнуляет все пять чисел: у строки, где прибор не читали, не бывает и уровня в
+    // баке, — поэтому здесь не действует и «оставить как есть».
     return {
       kind: 'no_data' as const,
       odometerKm: null,
       engineHours: null,
+      fuelStartLiters: null,
       fuelFilledLiters: null,
+      fuelEndLiters: null,
       noDataReason: reading.noDataReason,
       comment: reading.comment,
     };
@@ -668,7 +691,9 @@ function readingColumns(reading: ReadingInput) {
     kind: 'values' as const,
     odometerKm: reading.odometerKm,
     engineHours: numeric1(reading.engineHours),
+    fuelStartLiters: keptFuelLevel(reading.fuelStartLiters, existing?.fuelStartLiters ?? null),
     fuelFilledLiters: numeric1(reading.fuelFilledLiters),
+    fuelEndLiters: keptFuelLevel(reading.fuelEndLiters, existing?.fuelEndLiters ?? null),
     noDataReason: '',
     comment: reading.comment,
   };
@@ -765,8 +790,10 @@ export async function submitReport(
       // Машины вне задания дня в форме нет ни у кого (Р26): клиент присылает `item_id`, а строки
       // ожидания строятся из задания. Поздний источник добавляет персонал явным действием.
       if (!item) throw err.badRequest('Строка не из этого отчёта — обновите страницу');
-      const columns = readingColumns(line.reading);
+      // Существующая строка читается до разрешения ввода: отсутствующий ключ остатка берёт
+      // значение именно из неё (ADR 0163, Р13).
       const existing = readings.get(item.id);
+      const columns = readingColumns(line.reading, existing ?? null);
 
       if (!existing) {
         const [created] = await tx
@@ -812,11 +839,16 @@ export async function submitReport(
         engineHours: line.confirmEngineHoursAnomaly,
       });
       const before = readingSnapshot(existing);
+      // Сравниваются уже разрешённые пять чисел: остатки участвуют наравне со счётчиками
+      // (ADR 0163, Р12), иначе правка уровня не подняла бы `content_version` и принятый отчёт не
+      // ушёл бы в `needs_reacceptance` — число в базе поменялось бы, а приёмка об этом не узнала.
       const same =
         before.kind === columns.kind &&
         before.odometerKm === columns.odometerKm &&
         before.engineHours === columns.engineHours &&
+        before.fuelStartLiters === columns.fuelStartLiters &&
         before.fuelFilledLiters === columns.fuelFilledLiters &&
+        before.fuelEndLiters === columns.fuelEndLiters &&
         before.noDataReason === columns.noDataReason &&
         before.comment === columns.comment;
       // Файл не двигает ни `content_version`, ни состояние отчёта (Р22): приём фиксирует числа, а
@@ -927,12 +959,18 @@ async function attachFiles(
   await tx.insert(vehicleReadingFiles).values(fresh.map((fileId) => ({ readingId, fileId })));
 }
 
+/**
+ * Снимок для истории и для сравнения. Перечисляет ровно те же поля, что и `readingColumns`:
+ * пропущенное здесь меняется в базе молча — ни журнал правок, ни приёмка о нём не узнают.
+ */
 function readingSnapshot(row: VehicleReadingRow) {
   return {
     kind: row.kind,
     odometerKm: row.odometerKm,
     engineHours: row.engineHours,
+    fuelStartLiters: row.fuelStartLiters,
     fuelFilledLiters: row.fuelFilledLiters,
+    fuelEndLiters: row.fuelEndLiters,
     noDataReason: row.noDataReason,
     comment: row.comment,
   };
@@ -2014,7 +2052,9 @@ function readingDto(
     kind: row.kind,
     odometerKm: row.odometerKm,
     engineHours,
+    fuelStartLiters: row.fuelStartLiters === null ? null : Number(row.fuelStartLiters),
     fuelFilledLiters: row.fuelFilledLiters === null ? null : Number(row.fuelFilledLiters),
+    fuelEndLiters: row.fuelEndLiters === null ? null : Number(row.fuelEndLiters),
     noDataReason: row.noDataReason,
     comment: row.comment,
     source: row.source,

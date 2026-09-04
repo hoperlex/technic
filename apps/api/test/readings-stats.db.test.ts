@@ -1029,6 +1029,96 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       expect(empty!.items[0]!.edits).toEqual([]);
     });
 
+    /*
+     * Журнал машины собирает `VehicleReadingDto` СВОИМ `readingOf` и своим перечнем колонок в
+     * запросе (план гаража, Н7): правки контракта и портала ему мало — он либо не соберётся, либо
+     * молча отдаст остатки пустыми. Три числа топлива в журнале стоят рядом, но значат разное:
+     * два уровня на концах смены и один поток за неё.
+     */
+    it('журнал машины отдаёт все три числа топлива, а пустые остатки — как `null`', async () => {
+      const person = await newPerson('Топливный');
+      const vehicle = await newVehicle();
+      const [full, bare] = [day(4), day(5)];
+
+      for (const [date, reading] of [
+        [
+          full,
+          values({
+            odometerKm: 700,
+            fuelStartLiters: 60,
+            fuelFilledLiters: 40,
+            fuelEndLiters: 18.5,
+          }),
+        ],
+        [bare, values({ engineHours: 4 })],
+      ] as const) {
+        await newRoute(vehicle, date, person);
+        const opened = await report(person, date);
+        await submit(person, date, [line(opened.items[0]!.id, reading)]);
+      }
+
+      const journal = await journalOf(vehicle, full, bare);
+      const byDate = new Map(journal!.items.map((item) => [item.reportDate, item.reading]));
+      expect(byDate.get(full)).toMatchObject({
+        fuelStartLiters: 60,
+        fuelFilledLiters: 40,
+        fuelEndLiters: 18.5,
+      });
+      /*
+       * У показания без остатков поля обязаны БЫТЬ и равняться `null`: необязательность живёт
+       * только на вводе (Р13), а исчезающее поле ответа портал прочитал бы как `undefined` — и
+       * `parseReadingNumber(undefined)` уронил бы форму на первой же перерисовке.
+       */
+      const empty = byDate.get(bare)!;
+      expect(empty).toHaveProperty('fuelStartLiters', null);
+      expect(empty).toHaveProperty('fuelEndLiters', null);
+    });
+
+    /*
+     * Остаток в баке — УРОВЕНЬ, а не поток (ADR 0163, Р1): сумма остатков за месяц не значит
+     * ничего, среднее — тем более, и первый же, кто сложит такую колонку с чужой, получит ответ на
+     * несуществующий вопрос. Отсутствие колонок в сводке и в месяцах карточки — поэтому решение, а
+     * не отложенная работа, и караул держит его от «доделаем и тут, для единообразия».
+     *
+     * Состав строк перечислен целиком, а не проверен на отсутствие двух имён: новая колонка,
+     * названная иначе, прошла бы мимо запрета по именам, а мимо полного перечня не пройдёт.
+     */
+    it('сводка парка и месяцы карточки новых колонок не получили', async () => {
+      const [from, to] = [chain.days[0]!, chain.days[2]!];
+      const row = await statsOf(chain.vehicle, from, to);
+      expect(Object.keys(row!).sort()).toEqual([
+        'distanceKm',
+        'engineHours',
+        'fuelFilledLiters',
+        'gaps',
+        'lastEngineHours',
+        'lastOdometer',
+        'vehicleId',
+        'vehicleLabel',
+      ]);
+
+      const card = await ctx.aggregate.loadVehicleCard(chain.vehicle, from, to);
+      expect(card!.months.length).toBeGreaterThan(0);
+      const monthKeys = [
+        'distanceKm',
+        'engineHours',
+        'engineHoursGaps',
+        'fuelFilledLiters',
+        'missingReadings',
+        'month',
+        'odometerGaps',
+        'shifts',
+        'unacceptedShifts',
+      ];
+      for (const month of card!.months) {
+        expect(Object.keys(month).sort(), month.month).toEqual(monthKeys);
+      }
+      // Итог карточки — ровно сумма месяцев, и месяца в нём нет: называть его нечем.
+      expect(Object.keys(card!.total).sort()).toEqual(monthKeys.filter((key) => key !== 'month'));
+      // Из топлива складывается только поток за смену — заправленное.
+      expect(card!.total.fuelFilledLiters).toBe(80);
+    });
+
     /**
      * Страницы журнала (Р25). Проверяется то, ради чего пагинация и заводится: страница отвечает
      * своими строками, общее число считается по всему периоду, а порядок строк сквозной — «свежее

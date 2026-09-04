@@ -272,6 +272,8 @@ async function loadJournalRows(from: string, to: string, vehicleId: string | nul
       odometerKm: vehicleReadings.odometerKm,
       engineHours: vehicleReadings.engineHours,
       fuelFilledLiters: vehicleReadings.fuelFilledLiters,
+      fuelStartLiters: vehicleReadings.fuelStartLiters,
+      fuelEndLiters: vehicleReadings.fuelEndLiters,
       noDataReason: vehicleReadings.noDataReason,
       comment: vehicleReadings.comment,
       source: vehicleReadings.source,
@@ -351,6 +353,18 @@ function readingStateText(row: JournalRow): string {
   return row.comment ? `${who} · ${row.comment}` : who;
 }
 
+/**
+ * Шапка построчных книг — она одна на все три (`vehicleJournal`, `vehicleMonths`, `fleetJournal`),
+ * и правится тоже одна: разные шапки у книг с одинаковыми строками пришлось бы сверять глазами.
+ *
+ * Остатки в баке стоят **в конце**, а не рядом с «Заправлено, л», хотя на экранах три числа топлива
+ * идут группой по ходу смены (Р2 плана «топливо в гараже»). Это осознанное исключение (Р9): книги
+ * уже разосланы и лежат у диспетчеров, поверх них построены формулы и сводные таблицы, а вставка
+ * двух колонок в середину сдвинула бы «Аномалии» и «Показание» вправо и молча сломала бы каждую
+ * такую ссылку. Приписка справа не двигает ни одного существующего индекса. «Заправлено, л»
+ * остаётся на своём прежнем месте и не дублируется: это поток за смену, а не уровень в баке, и
+ * второй его колонки в книге быть не должно.
+ */
 const JOURNAL_HEADER = [
   'День',
   'Смена',
@@ -364,8 +378,11 @@ const JOURNAL_HEADER = [
   'Заправлено, л',
   'Аномалии',
   'Показание',
+  'Топливо на начало, л',
+  'Топливо на конец, л',
 ];
-const JOURNAL_WIDTHS = [12, 8, 18, 28, 18, 14, 12, 14, 12, 12, 34, 40];
+/** Ширины — по числу колонок шапки; у остатков она под подпись, число там того же порядка, что заправленное. */
+const JOURNAL_WIDTHS = [12, 8, 18, 28, 18, 14, 12, 14, 12, 12, 34, 40, 20, 20];
 const VEHICLE_COLUMN = { header: 'Техника', width: 38 };
 
 /**
@@ -405,6 +422,9 @@ function journalRow(row: JournalRow, withVehicle: boolean): string[] {
       .filter(Boolean)
       .join('; '),
     readingStateText(row),
+    // Хвост строки — те же две колонки и в том же порядке, что в конце `JOURNAL_HEADER` (Р9).
+    cell(num(row.fuelStartLiters), 1),
+    cell(num(row.fuelEndLiters), 1),
   ];
 }
 
@@ -503,7 +523,9 @@ function snapshotSheet(
  * По длине периода потолок уже стоит на ручке (год), и сводным книгам его достаточно: год по парку
  * — это 2 400 строк ответа. У построчных строк столько же, сколько смен в периоде, а
  * `writeWorkbook` собирает XML всех листов и ZIP целиком в памяти — поэтому у них свой предел, и
- * стоит он по замеру сборки книги (13 колонок, узел разработки, node 22):
+ * стоит он по замеру сборки книги (13 колонок, узел разработки, node 22; с приходом двух колонок
+ * топлива строка стала на седьмую часть шире — числа ниже настолько же оптимистичны, и предел это
+ * переживает с запасом, но при следующем пересчёте замер надо повторить на нынешней ширине):
  *
  * | строк | время | файл | пик RSS |
  * | --- | --- | --- | --- |

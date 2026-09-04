@@ -89,6 +89,36 @@ function number(value: number | null | undefined, digits = 1) {
   return text === '—' ? <Typography.Text type="secondary">—</Typography.Text> : text;
 }
 
+const FUEL_HINT =
+  'Топливо, л: остаток в баке на начало смены / заправлено за смену / остаток на конец смены';
+
+/**
+ * Три числа топлива ОДНОЙ ячейкой — «120 / +80 / 60» (ADR 0163, Н4).
+ *
+ * Колонка здесь одна намеренно, и «выровнять» её на три, как в журнале машины, нельзя: три колонки
+ * добавляют реестру около 260 px, а смотрят его на ноутбуке — вправо за край уехали бы «Пометки»,
+ * ради которых реестр и открывают. Ширина есть у журнала машины, там числа и стоят отдельно.
+ *
+ * Ряд читается слева направо по ходу смены, «+» стоит только у середины: заправка — поток за смену,
+ * два крайних числа — уровни бака на её границах, и без знака ряд читался бы как три уровня.
+ * Расшифровку даёт подсказка: три числа подряд без единиц сами себя не называют.
+ */
+function FuelCell({ reading }: { reading: ReadingIntakeRow['reading'] }) {
+  const start = decimal(reading?.fuelStartLiters ?? null);
+  const filled = reading?.fuelFilledLiters == null ? '—' : `+${decimal(reading.fuelFilledLiters)}`;
+  const end = decimal(reading?.fuelEndLiters ?? null);
+  // Пустая тройка схлопывается в один прочерк: «— / — / —» кричит о трёх отсутствиях там, где
+  // отсутствие одно — показания нет вовсе.
+  if (start === '—' && filled === '—' && end === '—') {
+    return <Typography.Text type="secondary">—</Typography.Text>;
+  }
+  return (
+    <Tooltip title={FUEL_HINT}>
+      <span>{`${start} / ${filled} / ${end}`}</span>
+    </Tooltip>
+  );
+}
+
 export const intakeColumns: TableColumnType<ReadingIntakeRow>[] = [
   {
     key: 'level',
@@ -130,12 +160,13 @@ export const intakeColumns: TableColumnType<ReadingIntakeRow>[] = [
     render: (_v, r) => number(r.reading?.engineHours),
   },
   {
-    // Заправлено за смену, а не остаток и не расход (Р28): портал называет ровно то, что считает.
+    // Одна колонка на все три числа топлива — это решение по ширине реестра, а не недоделка
+    // (ADR 0163, Н4): разбор — в шапке `FuelCell`, туда же и с вопросом «почему не три».
     key: 'fuel',
-    title: 'Заправлено, л',
-    width: 130,
+    title: 'Топливо, л',
+    width: 170,
     align: 'right',
-    render: (_v, r) => number(r.reading?.fuelFilledLiters),
+    render: (_v, r) => <FuelCell reading={r.reading} />,
   },
   { key: 'issues', title: 'Пометки', render: (_v, r) => <IntakeIssues issues={r.issues} /> },
 ];

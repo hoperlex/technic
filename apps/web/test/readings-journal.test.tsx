@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import type { VehicleReadingJournalDto, VehicleReadingJournalRow } from '@technic/contracts';
+import type {
+  VehicleReadingDto,
+  VehicleReadingJournalDto,
+  VehicleReadingJournalRow,
+} from '@technic/contracts';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { VehicleReadingsJournal } from '../src/pages/garage/VehicleReadingsJournal';
@@ -15,6 +19,11 @@ import { VehicleReadingsJournal } from '../src/pages/garage/VehicleReadingsJourn
  * Отсюда три утверждения теста: запрос несёт страницу, вторая страница берётся у сервера (а не
  * нарезается из загруженного), и смена периода возвращает к первой странице — третья страница
  * другого отрезка означала бы уже не те смены.
+ *
+ * Четвёртое пришло с топливом в баке (ADR 0163, Р2, Н4): три числа смены стоят здесь **тремя
+ * соседними колонками** — журнал единственное место гаража, где на это есть ширина, — и стоят в
+ * порядке смены. В реестре приёма те же числа собраны в одну ячейку, и это не расхождение, а
+ * решение по ширине: караул держит обе стороны от «выравнивания» экранов друг под друга.
  */
 
 const JOURNAL = 'GET /vehicle-readings/journal/:vehicleId';
@@ -27,7 +36,7 @@ const PERIOD_START = '2026-06-24';
 const TOTAL = 240;
 const PAGE_SIZE = 100;
 
-function row(num: number): VehicleReadingJournalRow {
+function row(num: number, over: Partial<VehicleReadingJournalRow> = {}): VehicleReadingJournalRow {
   return {
     itemId: `item-${num}`,
     reportId: `report-${num}`,
@@ -42,8 +51,34 @@ function row(num: number): VehicleReadingJournalRow {
     reading: null,
     files: [],
     edits: [],
+    ...over,
   };
 }
+
+/**
+ * Показание с полной тройкой топлива: остаток бака на начало смены, заправленное за неё, остаток
+ * на конец (ADR 0163). Числа разные и неокруглённые нарочно — по ним видно, какое из трёх встало
+ * не в свою колонку.
+ */
+const FUEL_READING: VehicleReadingDto = {
+  id: 'rd-1',
+  itemId: 'item-1',
+  kind: 'values',
+  odometerKm: 128400,
+  engineHours: 1240.5,
+  fuelStartLiters: 120,
+  fuelFilledLiters: 80,
+  fuelEndLiters: 60.5,
+  noDataReason: '',
+  comment: '',
+  source: 'driver',
+  recordedAt: '2026-07-20T17:20:00.000Z',
+  odometerAnomaly: null,
+  engineHoursAnomaly: null,
+  odometerDelta: 240,
+  engineHoursDelta: 8,
+  fileIds: [],
+};
 
 /** Страница журнала: своя строка на каждой — по ней и видно, какую страницу показывает окно. */
 function pageOf(page: number, from = PERIOD_START, to = DAY): VehicleReadingJournalDto {
@@ -81,6 +116,28 @@ function renderJournal(): HttpMock {
   );
   return http;
 }
+
+/** Журнал из своих строк: топливные караулы смотрят на колонки, а не на страницы. */
+function renderRows(items: VehicleReadingJournalRow[]): void {
+  mockHttp({
+    [JOURNAL]: () => json({ ...pageOf(1), total: items.length, items }),
+  });
+  renderWithUser(
+    <VehicleReadingsJournal
+      vehicleId="v-1"
+      vehicleLabel="КамАЗ 65115 · А123ВС799"
+      day={DAY}
+      open
+      onClose={() => {}}
+    />,
+  );
+}
+
+/** Ячейки строки таблицы по порядку: ими и проверяется, что число встало в свою колонку. */
+const cellsOf = (label: string): string[] =>
+  [...(screen.getByText(label).closest('tr') as HTMLElement).querySelectorAll('td')].map(
+    (cell) => cell.textContent ?? '',
+  );
 
 /**
  * Период вводится руками: календарь в jsdom мышью не открывается, а набранное значение antd
@@ -147,5 +204,63 @@ describe('журнал показаний машины', () => {
       // Третья страница другого отрезка показывала бы уже не те смены, о которых спросили.
       expect(query.get('page')).toBe('1');
     });
+  });
+
+  /**
+   * Три числа топлива — тремя СОСЕДНИМИ колонками, в порядке смены (ADR 0163, Р2).
+   *
+   * Караул стоит здесь по двум причинам сразу. Первая — порядок: подписи трёх колонок различаются
+   * одним словом, единицы у всех три раза литры, и переставленные местами «начало» и «конец»
+   * читаются как обычный день, а не как ошибка. Вторая — само число колонок: в реестре приёма те
+   * же три числа стоят ОДНОЙ ячейкой (Н4), и первый же читатель, увидев расхождение, захочет
+   * «выровнять» экраны. Выравнивать нельзя ни в ту, ни в другую сторону: у окна журнала ширина
+   * есть, у реестра, который смотрят на ноутбуке, её нет.
+   */
+  it('показывает три отдельные колонки топлива в порядке смены, после моточасов', async () => {
+    renderRows([row(1, { reading: FUEL_READING })]);
+    expect(await screen.findByText('Р-1')).toBeDefined();
+
+    // Форма таблицы целиком: топливо стоит группой после «Моточасы» и не сдвинуло ни «Показание»,
+    // ни «Файлы» — колонок в журнале ровно столько, сколько названо.
+    expect(screen.getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'День',
+      'Смена',
+      'Одометр',
+      'Моточасы',
+      'Топливо на начало',
+      'Заправлено',
+      'Топливо на конец',
+      'Показание',
+      'Файлы',
+    ]);
+
+    // И числа стоят в своих колонках, а не просто где-то в строке: 120 — уровень бака на начало,
+    // 80 — заправленное за смену, 60,5 — уровень на конец. Прироста рядом с ними нет намеренно
+    // (Р1): разность соседних уровней и была бы расходом, отложенным решением 12 ADR 0103.
+    const cells = cellsOf('Р-1');
+    expect(cells[4]).toBe('120,0 л');
+    expect(cells[5]).toBe('80,0 л');
+    expect(cells[6]).toBe('60,5 л');
+    expect(cells.some((text) => text.includes('прирост'))).toBe(false);
+  });
+
+  it('у показания без топлива в каждой из трёх колонок прочерк, а не ноль', async () => {
+    renderRows([
+      row(1, {
+        reading: {
+          ...FUEL_READING,
+          fuelStartLiters: null,
+          fuelFilledLiters: null,
+          fuelEndLiters: null,
+        },
+      }),
+    ]);
+    expect(await screen.findByText('Р-1')).toBeDefined();
+
+    // Ноль в баке — это утверждение о машине («бак пуст»), которого никто не делал: литров просто
+    // не передали, и прочерк — единственный честный ответ.
+    const cells = cellsOf('Р-1');
+    expect(cells.slice(4, 7)).toEqual(['—', '—', '—']);
+    expect(cells.some((text) => text.includes('0,0 л'))).toBe(false);
   });
 });

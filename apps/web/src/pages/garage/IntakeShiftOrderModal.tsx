@@ -34,7 +34,14 @@ const CONFLICT =
   'Порядок не сохранён: смены или отчёты этого дня успели измениться, пока окно было открыто. ' +
   'Карточка перечитана — откройте порядок заново и переставьте смены ещё раз';
 
-/** Чем строка узнаётся глазами: числа показания либо честное «показания нет». */
+/**
+ * Чем строка узнаётся глазами: числа показания либо честное «показания нет».
+ *
+ * Топливо в подписи наравне со счётчиками (ADR 0163, Н8). Без него утренняя строка, где заполнен
+ * один остаток бака, называлась бы «числа не заполнены» — а переставляют смены как раз тогда, когда
+ * их две и различить их надо по числам. Метки короткие и обязательные: все три числа в литрах, и
+ * без «нач./запр./кон.» ряд неразличим.
+ */
 function readingLabel(row: VehicleReadingJournalRow): string {
   const reading = row.reading;
   if (!reading) return 'показания нет';
@@ -42,6 +49,9 @@ function readingLabel(row: VehicleReadingJournalRow): string {
   const parts = [
     reading.odometerKm === null ? null : `${formatReading(reading.odometerKm)} км`,
     reading.engineHours === null ? null : `${formatReading(reading.engineHours)} ч`,
+    reading.fuelStartLiters === null ? null : `нач. ${formatReading(reading.fuelStartLiters)} л`,
+    reading.fuelFilledLiters === null ? null : `запр. ${formatReading(reading.fuelFilledLiters)} л`,
+    reading.fuelEndLiters === null ? null : `кон. ${formatReading(reading.fuelEndLiters)} л`,
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(' · ') : 'числа не заполнены';
 }
