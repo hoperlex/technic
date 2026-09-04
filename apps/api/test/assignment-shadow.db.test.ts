@@ -11,11 +11,20 @@ import type * as Shadow from '../src/services/assignment-shadow';
 import type * as Esm2 from '../src/services/waybill-esm2';
 
 /*
- * ФАЙЛУ НУЖНА СВОЯ БАЗА. Поколение сравнения заводится по **всей популяции** заявок базы, и
- * `expected_checks` считается по ней же: чужие заказы соседнего файла попали бы в manifest и
- * сделали бы исход прогона зависимым от порядка файлов. Сцена здесь поэтому не откатывается
- * (сервис открывает свои транзакции и внутри чужой их не увидит), а убирается за собой поимённо —
- * по тем идентификаторам, которые случай завёл сам.
+ * ФАЙЛУ НУЖНА СВОЯ БАЗА, И ОН ЗАВОДИТ ЕЁ САМ. Поколение сравнения строится по **всей популяции**
+ * заявок базы, и `expected_checks` считается по ней же: чужие заказы соседнего файла попали бы в
+ * manifest и сделали бы исход прогона зависимым от порядка файлов.
+ *
+ * Требование это раньше стояло одними словами — адрес чистой базы полагалось подать снаружи, — и
+ * держалось ровно до первого запуска по общей `technic_archive_test`: на ней `checked` приходил
+ * равным числу чужих заказов (294 вместо 1), и восемь случаев из десяти падали, ничего не сообщая
+ * о самом контуре. Теперь база заводится, мигрируется с нуля и сносится в `afterAll` — тем же
+ * приёмом, что у соседей (образец — `service-request-without-equipment.db.test.ts`), и подать
+ * не ту базу больше нельзя.
+ *
+ * Поимённая уборка между случаями остаётся и после этого: своя база пуста ОДИН раз, а популяцию
+ * считает каждый случай, и заказы предыдущего вошли бы в manifest следующего. Откатом транзакции
+ * этого не сделать — сервис открывает свои и внутри чужой их не увидит.
  */
 
 /*
@@ -50,15 +59,18 @@ import type * as Esm2 from '../src/services/waybill-esm2';
  * задевающий сегодняшний день, менял бы смысл случаев в зависимости от дня недели. Заказы сцены
  * стоят на следующей неделе целиком: бумага там ещё аннулируема, а листы ещё выписываются.
  *
- * Запуск (база пустая либо промигрированная — миграции тест накатывает сам):
+ * Запуск (базу тест заводит и сносит сам; `TEST_DATABASE_URL` нужен лишь ради адреса сервера):
  *
- *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/ap_shadow \
+ *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/technic_archive_test \
  *     npx vitest run test/assignment-shadow.db.test.ts
  *
  * Без `TEST_DATABASE_URL` файл пропускается — как и остальные `*.db.test.ts`.
  */
 
 const DB_URL = process.env.TEST_DATABASE_URL;
+const OWN_DB_NAME = 'technic_assignment_shadow_test';
+const OWN_DB = DB_URL?.replace(/\/[^/]+$/, `/${OWN_DB_NAME}`);
+const ADMIN_DB = DB_URL?.replace(/\/[^/]+$/, '/postgres');
 
 /** Хвост прогона: учётка и человек живут дольше случая, а email уникален глобально. */
 const RUN = Date.now().toString(36).slice(-6);
@@ -105,8 +117,8 @@ const createdRequests: string[] = [];
 const createdRuns: string[] = [];
 
 beforeAll(async () => {
-  if (!DB_URL) return;
-  process.env.DATABASE_URL = DB_URL;
+  if (!DB_URL || !OWN_DB || !ADMIN_DB) return;
+  process.env.DATABASE_URL = OWN_DB;
   process.env.NODE_ENV ??= 'test';
   process.env.PUBLIC_ORIGIN ??= 'http://localhost:5173';
   process.env.COOKIE_SECRET ??= 'test-cookie-secret-0123456789abcdef';
@@ -120,9 +132,23 @@ beforeAll(async () => {
   process.env.S3_SECRET_ACCESS_KEY ??= 'test-secret';
   process.env.LOG_LEVEL ??= 'error';
 
-  const client = new pg.Client({ connectionString: DB_URL });
+  // База своя и с нуля: заводится до всякого импорта клиента — конфиг читает `DATABASE_URL` при
+  // импорте, и подключаться ему уже некуда, если базы ещё нет.
+  const admin = new pg.Client({ connectionString: ADMIN_DB });
+  await admin.connect();
+  try {
+    await admin.query(`DROP DATABASE IF EXISTS ${OWN_DB_NAME}`);
+    await admin.query(`CREATE DATABASE ${OWN_DB_NAME}`);
+  } finally {
+    await admin.end();
+  }
+  const client = new pg.Client({ connectionString: OWN_DB });
   await client.connect();
   try {
+    // Расширения ставит ops до миграций (drizzle.config.ts, §8) — своей базе их ставит тест.
+    await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+    await client.query('CREATE EXTENSION IF NOT EXISTS citext');
+    await client.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
     await applyMigrations(client);
   } finally {
     await client.end();
@@ -196,8 +222,17 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  // База своя — уносим её целиком: оставленная помешала бы следующему прогону завести её заново.
   await ctx?.closeDb();
-});
+  if (!ADMIN_DB) return;
+  const admin = new pg.Client({ connectionString: ADMIN_DB });
+  await admin.connect();
+  try {
+    await admin.query(`DROP DATABASE IF EXISTS ${OWN_DB_NAME}`);
+  } finally {
+    await admin.end();
+  }
+}, 60_000);
 
 // ── Сцена ──
 
