@@ -4,6 +4,7 @@
  * внутрь, а перестроить компонент можно, не трогая тех, кто им пользуется.
  */
 export * from './ActionSheet';
+export * from './actionMenu';
 export * from './AutoSelect';
 export * from './CheckboxPicker';
 export * from './columns';

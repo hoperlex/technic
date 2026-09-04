@@ -25,6 +25,11 @@ export interface ActionSheetItem {
 }
 
 interface Props {
+  /**
+   * Чем назван ящик. Умолчание не косметика: без заголовка шит приезжает с одной крестовиной, и
+   * тому, кто слушает экран, непонятно, что ему открыли. Своё название передают там, где оно
+   * точнее общего, — «Действия по заявке», «Изменить статус».
+   */
   title?: string;
   open: boolean;
   onClose: () => void;
@@ -38,7 +43,7 @@ interface Props {
  *
  * Используется и для действий записи, и для смены статуса: набор пунктов разный, поведение одно.
  */
-export function ActionSheet({ title, open, onClose, items }: Props) {
+export function ActionSheet({ title = 'Действия', open, onClose, items }: Props) {
   return (
     <Drawer
       title={title}
@@ -71,6 +76,12 @@ export function ActionSheet({ title, open, onClose, items }: Props) {
               }}
             >
               {item.label}
+              {/* Причина запрета — второй строкой в доступном имени кнопки. Подсказка на обёртке
+                  ниже остаётся, но по касанию она не открывается вовсе, и без этого текста
+                  человек с озвучиванием слышал бы «Закрыть работы, недоступно» без объяснения. */}
+              {item.disabledReason && (
+                <span className="visually-hidden">. {item.disabledReason}</span>
+              )}
             </Button>
           );
           // Выключенная кнопка событий указателя не отдаёт — подсказку держит обёртка.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { AuthUser, ServiceRequestDto } from '@technic/contracts';
-import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
+import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList, list } from './factories/common';
 import { serviceExecutor, serviceOperator, serviceRequest } from './factories/service';
@@ -171,15 +171,6 @@ async function openActions(button: HTMLElement): Promise<HTMLElement> {
   });
 }
 
-/** Нажать пункт открытого меню. */
-function clickMenuItem(menu: HTMLElement, label: string): void {
-  const item = [...menu.querySelectorAll<HTMLElement>('.ant-dropdown-menu-title-content')].find(
-    (el) => el.textContent === label,
-  );
-  if (!item) throw new Error(`в меню нет пункта «${label}»`);
-  fireEvent.click(item);
-}
-
 /** Подписи пунктов меню «Действия» самой карточки — не одноимённого меню строки списка. */
 async function cardActionLabels(): Promise<string[]> {
   const menu = await openActions(cardFooterButton('Действия'));
@@ -331,40 +322,17 @@ describe('окна карточки гаснут вместе с ней', () => 
   });
 });
 
-/**
- * Повторное письмо службе (Р70) — ключ идемпотентности общий на оба набора действий.
+/*
+ * Сценарий «повтор письма службе не двоится между наборами действий» удалён целиком вместе с самой
+ * кнопкой (ADR 0162, Э2). Он держался на ключе идемпотентности, общем для набора страницы и набора
+ * карточки: два неудачных нажатия — из меню карточки и из меню строки — обязаны были уйти одним
+ * ключом, иначе оборвавшийся повтор превращался во второе письмо службе.
  *
- * Наборов у заявки теперь два: окна списка живут на странице, окна карточки — внутри карточки.
- * Ключ хранится по заявке и переживает оба: держи каждый набор свой, и повтор, оборвавшийся
- * ошибкой в меню карточки, ушёл бы из меню строки под новым ключом — то есть **вторым** письмом
- * службе, ради предотвращения которого ключ и заведён. Успех ключ снимает, поэтому нажатия здесь
- * оба неудачные: проверяется именно поведение до ответа.
+ * Сегодня проверять там нечего: пункта нет ни в одном меню, мутации и ключа нет в дереве
+ * (`serviceRequestNotifyKeys.ts` удалён), метода `notify` нет в API портала. Переписанный «на
+ * отсутствие пункта», сценарий был бы зелёным при любой поломке — а состав меню по всем четырём
+ * местам показа сверяет `service-request-actions-menu.test.tsx`.
+ *
+ * Утверждение про ОБЩИЙ набор окон он при этом не уносит: слои и гашение окон карточки проверяют
+ * сценарии выше, и они же ловят разъехавшиеся наборы.
  */
-describe('повтор письма службе не двоится между наборами действий', () => {
-  it('повтор из карточки и из строки списка уходит одним ключом идемпотентности', async () => {
-    const http = renderTab(OPERATOR, [serviceRequest()], {
-      'POST /service-requests/:id/notify': () =>
-        apiError(503, { code: 'MAIL_UNAVAILABLE', message: 'Почтовый сервер недоступен' }),
-    });
-
-    await openCard();
-    clickMenuItem(
-      await openActions(cardFooterButton('Действия')),
-      'Отправить письмо службе ещё раз',
-    );
-    await waitFor(() => expect(http.countOf('POST /service-requests/:id/notify')).toBe(1));
-
-    await closeCard();
-    clickMenuItem(
-      await openActions(await screen.findByRole('button', { name: 'Действия' })),
-      'Отправить письмо службе ещё раз',
-    );
-    await waitFor(() => expect(http.countOf('POST /service-requests/:id/notify')).toBe(2));
-
-    const keys = http.calls
-      .filter((call) => call.method === 'POST' && call.path.endsWith('/notify'))
-      .map((call) => (call.body as { idempotencyKey?: string }).idempotencyKey);
-    expect(keys[0]).toBeTruthy();
-    expect(keys[1]).toBe(keys[0]);
-  });
-});

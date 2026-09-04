@@ -133,8 +133,8 @@ describe('список заявок: заявка без аппарата', () =
 });
 
 describe('карточка заявки без аппарата', () => {
-  const openCard = async () => {
-    fireEvent.click(await screen.findByText('СО-15'));
+  const openCard = async (num = 'СО-15') => {
+    fireEvent.click(await screen.findByText(num));
     await waitFor(() => {
       if (!document.querySelector('.ant-modal-wrap')) throw new Error('карточка не открылась');
     });
@@ -160,10 +160,24 @@ describe('карточка заявки без аппарата', () => {
     expect(await rowActionLabels()).not.toContain('Записать перемещение техники');
   });
 
-  it('у заявки с аппаратом пункт перемещения остаётся на месте', async () => {
+  /*
+   * Вход у перемещения теперь один и он в карточке (ADR 0162): в меню списка пункта нет ни у
+   * какой заявки — переезд правит справочник, и решают его, глядя на реквизиты аппарата. Проверяем
+   * обе половины сразу, иначе «пункта нет» прошло бы и на потерянном действии.
+   */
+  it('перемещение записывают из карточки, а в меню списка его нет', async () => {
     renderTab([serviceRequest()]);
     await screen.findByText('СО-14');
-    expect(await rowActionLabels()).toContain('Записать перемещение техники');
+    expect(await rowActionLabels()).not.toContain('Записать перемещение техники');
+
+    await openCard('СО-14');
+    expect(screen.getByText('Записать перемещение')).toBeDefined();
+  });
+
+  it('у заявки без аппарата кнопки перемещения в карточке нет', async () => {
+    renderTab([fromDepartment()]);
+    await openCard();
+    expect(screen.queryByText('Записать перемещение')).toBeNull();
   });
 });
 

@@ -49,11 +49,50 @@ export function ServiceRequestEstimate({
     (item): item is ActionSheetItem => !!item,
   );
 
+  /*
+   * Кнопки решений — единственный вход в согласование ИЗ КАРТОЧКИ: из её меню пункты вычеркнуты
+   * (ADR 0162), потому что подпись под цифрой ставят там, где цифру видно. Отсюда и требование к
+   * этому месту: кнопки обязаны быть везде, где решение доступно, — иначе вычеркнутый пункт
+   * оставляет карточку без входа вовсе.
+   */
+  const decisionButtons = decisions.length > 0 && (
+    <Space wrap>
+      {decisions.map((item) => (
+        <Button
+          key={item.key}
+          // Главное решение — сплошной кнопкой: у согласования оно одно, и признак `primary`
+          // проставлен там же, где строится сам пункт (Р117).
+          type={item.primary ? 'primary' : 'default'}
+          danger={item.danger}
+          icon={item.icon}
+          onClick={item.onClick}
+        >
+          {item.key === 'approve'
+            ? 'Согласовать'
+            : item.key === 'reject'
+              ? 'Не согласовано'
+              : 'Вернуть в правку'}
+        </Button>
+      ))}
+    </Space>
+  );
+
   if (request.items.length === 0) {
+    /*
+     * Строк нет — но решение по нему бывает и здесь: предъявить пустой объём работ сервер
+     * позволяет (гарантийный ремонт — это осознанное «чиним, денег нет»), и согласующему такую
+     * ревизию всё равно подписывать. Показать один лишь текст значило бы спрятать от него
+     * единственный вход.
+     */
     return (
-      <Typography.Text type="secondary">
-        Объёма работ пока нет: его собирает исполнитель, взявший заявку в работу.
-      </Typography.Text>
+      <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+        <Typography.Text type="secondary">
+          {pending
+            ? 'Объём работ предъявлен без строк — по нему нечего считать, но решение по ревизии нужно.'
+            : 'Объёма работ пока нет: его собирает исполнитель, взявший заявку в работу.'}
+        </Typography.Text>
+        {decisionButtons}
+      </Space>
     );
   }
 
@@ -140,27 +179,7 @@ export function ServiceRequestEstimate({
       </Space>
 
       {/* Решения — под таблицей и под итогом, а не над ними: подпись ставят, дочитав до суммы. */}
-      {decisions.length > 0 && (
-        <Space wrap>
-          {decisions.map((item) => (
-            <Button
-              key={item.key}
-              // Главное решение — сплошной кнопкой: у согласования оно одно, и признак `primary`
-              // проставлен там же, где строится сам пункт (Р117).
-              type={item.primary ? 'primary' : 'default'}
-              danger={item.danger}
-              icon={item.icon}
-              onClick={item.onClick}
-            >
-              {item.key === 'approve'
-                ? 'Согласовать'
-                : item.key === 'reject'
-                  ? 'Не согласовано'
-                  : 'Вернуть в правку'}
-            </Button>
-          ))}
-        </Space>
-      )}
+      {decisionButtons}
     </Space>
   );
 }
