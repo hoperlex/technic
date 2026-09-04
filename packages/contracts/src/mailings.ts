@@ -46,6 +46,18 @@ export const MAILING_WINDOW_PRESETS = [
 export const MAIL_TEST_KINDS = [
   'driver_routes',
   'role_digest',
+  /**
+   * Письма модуля «Орг.техника» (план расширения почты, §5.13). Собираются по РЕАЛЬНОЙ заявке
+   * (`sampleRequestId`): письмо модуля без её данных бессмысленно — проверять в нём было бы нечего.
+   * Ходят они тем же кодом, что и настоящие, иначе проверка вёрстки проверяла бы не то письмо.
+   */
+  'service_request_waiting_it',
+  'service_request_cancelled',
+  'service_request_assigned',
+  'service_request_status_changed',
+  'service_request_estimate',
+  'service_request_document',
+  'service_request_comment',
   'verify_email',
   'password_reset',
   'password_changed',
@@ -58,6 +70,13 @@ export type MailTestKind = (typeof MAIL_TEST_KINDS)[number];
 export const mailTestKindLabels: Record<MailTestKind, string> = {
   driver_routes: 'Задание водителю на рейсы',
   role_digest: 'Сводка по ролям',
+  service_request_waiting_it: 'Оргтехника: заявка ждёт разбора',
+  service_request_cancelled: 'Оргтехника: заявка отменена',
+  service_request_assigned: 'Оргтехника: заявка назначена исполнителю',
+  service_request_status_changed: 'Оргтехника: заявка сменила состояние',
+  service_request_estimate: 'Оргтехника: движение по объёму работ',
+  service_request_document: 'Оргтехника: приложены документы',
+  service_request_comment: 'Оргтехника: реплика в обсуждении',
   verify_email: 'Подтверждение адреса при регистрации',
   password_reset: 'Восстановление пароля',
   password_changed: 'Уведомление о смене пароля',
@@ -72,7 +91,39 @@ export const mailTestKindLabels: Record<MailTestKind, string> = {
  * рейсы конкретного дня печатаются так, как ожидалось. У сводки дата означает день рассылки:
  * период считается от неё так же, как у настоящего запуска расписания.
  */
+/**
+ * Нужна ли виду письма заявка-образец. У писем модуля «Орг.техника» — да, и это не удобство:
+ * письмо целиком состоит из её данных, и собрать его «вообще, ни по какой заявке» нечем. У прочих
+ * видов заявки нет вовсе.
+ */
+export const mailTestKindNeedsRequest: Record<MailTestKind, boolean> = {
+  service_request_waiting_it: true,
+  service_request_cancelled: true,
+  service_request_assigned: true,
+  service_request_status_changed: true,
+  service_request_estimate: true,
+  service_request_document: true,
+  service_request_comment: true,
+  driver_routes: false,
+  role_digest: false,
+  verify_email: false,
+  password_reset: false,
+  password_changed: false,
+  registration_rejected: false,
+  registration_approved: false,
+  account_created: false,
+};
+
 export const mailTestKindNeedsDate: Record<MailTestKind, boolean> = {
+  // Письмам модуля «Орг.техника» нужен не период и не образец-человек, а САМА ЗАЯВКА:
+  // содержимое письма — её номер, техника, место и описание (см. `mailTestKindNeedsRequest`).
+  service_request_waiting_it: false,
+  service_request_cancelled: false,
+  service_request_assigned: false,
+  service_request_status_changed: false,
+  service_request_estimate: false,
+  service_request_document: false,
+  service_request_comment: false,
   driver_routes: true,
   role_digest: true,
   verify_email: false,
@@ -93,6 +144,15 @@ export const mailTestKindNeedsDate: Record<MailTestKind, boolean> = {
  * Уходит оно всё равно администратору.
  */
 export const mailTestKindNeedsDriver: Record<MailTestKind, boolean> = {
+  // Письмам модуля «Орг.техника» нужен не период и не образец-человек, а САМА ЗАЯВКА:
+  // содержимое письма — её номер, техника, место и описание (см. `mailTestKindNeedsRequest`).
+  service_request_waiting_it: false,
+  service_request_cancelled: false,
+  service_request_assigned: false,
+  service_request_status_changed: false,
+  service_request_estimate: false,
+  service_request_document: false,
+  service_request_comment: false,
   driver_routes: true,
   role_digest: false,
   verify_email: false,
@@ -112,6 +172,15 @@ export const mailTestKindNeedsDriver: Record<MailTestKind, boolean> = {
  * и «показать сводку» вообще, ни под кем, нечего — под каждым она своя.
  */
 export const mailTestKindNeedsSampleUser: Record<MailTestKind, boolean> = {
+  // Письмам модуля «Орг.техника» нужен не период и не образец-человек, а САМА ЗАЯВКА:
+  // содержимое письма — её номер, техника, место и описание (см. `mailTestKindNeedsRequest`).
+  service_request_waiting_it: false,
+  service_request_cancelled: false,
+  service_request_assigned: false,
+  service_request_status_changed: false,
+  service_request_estimate: false,
+  service_request_document: false,
+  service_request_comment: false,
   driver_routes: false,
   role_digest: true,
   verify_email: false,
@@ -125,6 +194,8 @@ export const mailTestKindNeedsSampleUser: Record<MailTestKind, boolean> = {
 export const mailTestSchema = z
   .object({
     kind: z.enum(MAIL_TEST_KINDS),
+    /** Заявка-образец для писем модуля «Орг.техника»: без неё письму нечем быть. */
+    sampleRequestId: uuidSchema.optional(),
     /**
      * Каким каналом отправить (план `office-equipment-mail-and-history-plan.md`, Р89). Умолчание —
      * основной: им уходит всё, что портал рассылал до появления второго канала.

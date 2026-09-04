@@ -76,8 +76,16 @@ const OVERDUE_MINUTES = 10;
 export async function collectMetrics(): Promise<string> {
   const captcha = captchaMetrics();
   const asOf = moscowDateKeyOf(new Date());
-  const [mail, jobs, runs, overdue, assignmentMode, assignmentPopulation, legacyPeriodCalls] =
-    await Promise.all([
+  const [
+    mail,
+    jobs,
+    serviceMail,
+    runs,
+    overdue,
+    assignmentMode,
+    assignmentPopulation,
+    legacyPeriodCalls,
+  ] = await Promise.all([
     db.execute<{ status: string; count: string }>(
       sql`SELECT status::text AS status, count(*)::text AS count
             FROM mail_messages
@@ -88,6 +96,20 @@ export async function collectMetrics(): Promise<string> {
       sql`SELECT status::text AS status, count(*)::text AS count
             FROM jobs
            GROUP BY status`,
+    ),
+    /**
+     * Письма модуля «Орг.техника» за сутки, в разрезе вида и состояния (план расширения почты,
+     * §5.12). Общий `technic_mail_messages` отвечает «сколько застряло», но не «каких»: рост
+     * `failed` по подрядчикам в нём неотличим от роста по сводкам водителям, а разбирают их
+     * по-разному. Сутки — окно алерта: письмо, застрявшее вчера, уже разобрано или уже неважно.
+     */
+    db.execute<{ kind: string; status: string; count: string }>(
+      sql`SELECT kind::text AS kind, status::text AS status, count(*)::text AS count
+            FROM mail_messages
+           WHERE NOT is_test
+             AND kind::text LIKE 'service_request_%'
+             AND created_at > now() - interval '24 hours'
+           GROUP BY kind, status`,
     ),
     db.execute<{ status: string; count: string }>(
       sql`SELECT status::text AS status, count(*)::text AS count
@@ -200,6 +222,15 @@ export async function collectMetrics(): Promise<string> {
       help: 'Фоновые задачи по состоянию; dead — исчерпаны попытки',
       type: 'gauge',
       values: byStatus([...jobs.rows]),
+    },
+    {
+      name: 'technic_service_request_mail',
+      help: 'Письма модуля «Орг.техника» за сутки по виду и состоянию (без отладочных)',
+      type: 'gauge',
+      values: [...serviceMail.rows].map((row) => ({
+        value: Number(row.count),
+        labels: { event: row.kind, status: row.status },
+      })),
     },
     {
       /*

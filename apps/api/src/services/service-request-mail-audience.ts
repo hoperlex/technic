@@ -1,9 +1,5 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
-import {
-  can,
-  COUNTERPARTY_SCOPED_ROLES,
-  type ModuleMailEvent,
-} from '@technic/contracts';
+import { can, COUNTERPARTY_SCOPED_ROLES, type ModuleMailEvent } from '@technic/contracts';
 import type { db } from '../db/client';
 import {
   counterparties,
@@ -69,11 +65,7 @@ export type ServiceMailAudience = 'internal' | 'contractor' | 'contractor_withdr
  * победит при совпадении адресов.
  */
 export type ServiceMailSource =
-  | 'channel'
-  | 'internal_user'
-  | 'contractor'
-  | 'contractor_withdrawn'
-  | 'copy';
+  'channel' | 'internal_user' | 'contractor' | 'contractor_withdrawn' | 'copy';
 
 /**
  * Порядок источников — фиксированный и **не зависящий от порядка строк SQL** (§5.2): свои (ящик
@@ -326,10 +318,7 @@ export async function liveCounterpartyOperators(
  * отменили, а тому, кто едет, об этом не сказали. Отбор при НАЗНАЧЕНИИ — другое дело, и он стоит
  * на своём месте: `resolveServiceCounterparty` не даст отдать заявку удалённому или неактивному.
  */
-export async function counterpartyMailbox(
-  reader: Reader,
-  counterpartyId: string,
-): Promise<string> {
+export async function counterpartyMailbox(reader: Reader, counterpartyId: string): Promise<string> {
   const [row] = await reader
     .select({ email: counterparties.email })
     .from(counterparties)
@@ -402,10 +391,7 @@ export async function sideRecipients(
    * компании и поимённые исполнители берутся вместе, потому что два отдельных `FOR SHARE` по
    * пересекающимся наборам в разном порядке — это готовый взаимный замок.
    */
-  const live = await executeSubjectsOf(tx, [
-    ...operators.map((o) => o.id),
-    ...row.executorUserIds,
-  ]);
+  const live = await executeSubjectsOf(tx, [...operators.map((o) => o.id), ...row.executorUserIds]);
 
   const list: ServiceMailRecipient[] = [];
   for (const id of row.executorUserIds) {
@@ -495,7 +481,9 @@ export async function counterpartySideRecipients(
   const mailbox = await counterpartyMailbox(tx, counterpartyId);
   if (mailbox) {
     list.push({
-      key: withdrawn ? `counterparty-withdrawn-${counterpartyId}` : `counterparty-${counterpartyId}`,
+      key: withdrawn
+        ? `counterparty-withdrawn-${counterpartyId}`
+        : `counterparty-${counterpartyId}`,
       email: mailbox,
       replyTo: ctx.channelEmail,
       audience,
@@ -640,4 +628,38 @@ function isActorSource(
 export function addressOf(from: string): string {
   const match = /<([^>]+)>/u.exec(from);
   return (match?.[1] ?? from).trim();
+}
+
+// ── Кому адресован приложенный документ ──
+
+/**
+ * Стороны письма о документе (§5.2 плана расширения, § 3 № 6).
+ *
+ * Документ адресован **противоположной стороне**: подрядчик приложил акт — читает служба; служба
+ * приложила счёт или фотографии — читает подрядчик. У `POST /:id/files` нет признака «от какой роли
+ * я сейчас действую», и выбирать одну сторону по основной подписи профиля было бы скрытой
+ * эвристикой: у своего сисадмина, назначенного поимённо, обе стороны настоящие. Поэтому при двойном
+ * участии письмо уходит обеим — лишнее письмо здесь дешевле пропавшего.
+ *
+ * Закрытая функция, а не пара `if` в маршруте: тот же вопрос задаст следующее событие, и второй
+ * ответ на него разошёлся бы с первым молча.
+ */
+export function documentMailTargets(opts: {
+  /** Приложивший работает по этой заявке: подрядчик её компании или поимённый исполнитель. */
+  actorOnServiceSide: boolean;
+  /** Приложивший — внешняя учётка подрядчика (оператор контрагента), а не свой сотрудник. */
+  actorIsExternal: boolean;
+  /** Заявка отдана сервисной компании: без неё писать «стороне сервиса» некому. */
+  hasServiceAssignment: boolean;
+}): Array<'office' | 'service'> {
+  const targets: Array<'office' | 'service'> = [];
+  // Внешний подрядчик пишет службе — она ведёт заявку и ждёт закрывающих бумаг.
+  if (opts.actorOnServiceSide && opts.actorIsExternal) targets.push('office');
+  // Свой сотрудник (служба, заявитель, поимённый исполнитель) — стороне сервиса, если она есть.
+  if (!opts.actorIsExternal && opts.hasServiceAssignment) targets.push('service');
+  // Свой поимённый исполнитель — это обе стороны разом: он и работает, и ведёт заявку изнутри.
+  if (opts.actorOnServiceSide && !opts.actorIsExternal && !targets.includes('office')) {
+    targets.push('office');
+  }
+  return targets;
 }

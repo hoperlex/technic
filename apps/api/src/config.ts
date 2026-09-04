@@ -126,6 +126,13 @@ const rawSchema = z.object({
   // отбор увидит все заявки, стоявшие в «Решена» до него, и уменьшенное значение разбирает эту
   // очередь за несколько проходов вместо одного всплеска.
   SERVICE_REQUEST_AUTO_CLOSE_BATCH: z.coerce.number().int().positive().default(50),
+  /**
+   * Потолок обычных писем модуля на пару «заявка + адрес» в течение UTC-часа (план расширения
+   * почты, §5.11). Сверх него уходит ОДНА сводка на окно: тишина хуже потока, но и письмо на
+   * каждый шаг активной заявки приучает не читать почту. `0` снимает потолок совсем — на случай,
+   * если счёт окажется тесен живой работе; править это должно быть можно без релиза.
+   */
+  SERVICE_MAIL_MAX_PER_REQUEST_HOUR: z.coerce.number().int().min(0).default(12),
   // Распознавание талонов вывоза (ADR 0114, план `docs/waste-ticket-ocr-plan.md`).
   //
   // Наружу портал ходит **только** через LLM-прокси заказчика: ключей провайдера у него нет и не
@@ -516,6 +523,7 @@ function loadConfig() {
     serviceRequests: {
       /** Размер пачки автозакрытия «Решена» → «Закрыта» за один прогон (Н7). */
       autoCloseBatch: env.SERVICE_REQUEST_AUTO_CLOSE_BATCH,
+      mailMaxPerRequestHour: env.SERVICE_MAIL_MAX_PER_REQUEST_HOUR,
     },
     ticketOcr: {
       enabled: env.TICKET_OCR_ENABLED,

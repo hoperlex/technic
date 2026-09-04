@@ -7,6 +7,7 @@ import {
   DatePicker,
   Form,
   InputNumber,
+  Input,
   Select,
   Space,
   Typography,
@@ -23,6 +24,7 @@ import {
   mailTestKindLabels,
   mailTestKindNeedsDate,
   mailTestKindNeedsDriver,
+  mailTestKindNeedsRequest,
   mailTestKindNeedsSampleUser,
   type MailAccount,
   type MailTestKind,
@@ -43,6 +45,7 @@ interface FormValues {
   windowDays?: number;
   driverPersonId?: string;
   sampleUserId?: string;
+  sampleRequestId?: string;
 }
 
 const DATE = 'YYYY-MM-DD';
@@ -89,6 +92,7 @@ export function MailDebugBlock() {
   const needsDate = mailTestKindNeedsDate[kind];
   const needsDriver = mailTestKindNeedsDriver[kind];
   const needsSampleUser = mailTestKindNeedsSampleUser[kind];
+  const needsRequest = mailTestKindNeedsRequest[kind];
   const account = Form.useWatch<MailAccount>('account', form) ?? DEFAULT_MAIL_ACCOUNT;
   const watchDate = Form.useWatch<dayjs.Dayjs | undefined>('date', form);
   const driversDate = watchDate ? watchDate.format(DATE) : undefined;
@@ -127,6 +131,7 @@ export function MailDebugBlock() {
           : {}),
         ...(values.driverPersonId ? { driverPersonId: values.driverPersonId } : {}),
         ...(values.sampleUserId ? { sampleUserId: values.sampleUserId } : {}),
+        ...(values.sampleRequestId ? { sampleRequestId: values.sampleRequestId } : {}),
       }),
     onSuccess: (res) => message.success(res.message),
     onError: (e) => message.error(errorMessage(e)),
@@ -265,6 +270,21 @@ export function MailDebugBlock() {
                     label: `${u.fullName} — ${roleLabels[u.role]} — ${u.email}`,
                   }))}
                 />
+              </Form.Item>
+            )}
+
+            {/* Письмо модуля «Орг.техника» целиком состоит из данных заявки — номера, техники,
+              места, описания. Собрать его «вообще, ни по какой заявке» нечем, поэтому номер
+              спрашивается, а не подставляется: проверяют обычно ту заявку, из-за которой и полезли
+              в отладку. */}
+            {needsRequest && (
+              <Form.Item
+                name="sampleRequestId"
+                label="Заявка-образец"
+                rules={[{ required: true, message: 'Укажите заявку, по которой собрать письмо' }]}
+                extra="Идентификатор заявки на обслуживание: письмо соберётся по её данным."
+              >
+                <Input placeholder="00000000-0000-0000-0000-000000000000" allowClear />
               </Form.Item>
             )}
 

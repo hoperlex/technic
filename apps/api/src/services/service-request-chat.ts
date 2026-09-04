@@ -1,10 +1,12 @@
 import { and, asc, desc, eq, gt, inArray, lt, sql, type SQL } from 'drizzle-orm';
 import {
   actsForCounterparty,
+  chatMailTargets,
   audienceMatches,
   canWriteChat,
   participantSidesOf,
   SERVICE_CHAT_SIDES,
+  serviceChatSideLabels,
   serviceRequestStatusLabels,
   type SendServiceChatMessageInput,
   type ServiceChatFacts,
@@ -17,6 +19,11 @@ import {
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
+  prepareServiceMail,
+  queueServiceMailForIntent,
+  readServiceSide,
+} from './service-request-mail';
+import {
   officeEquipment,
   serviceRequestExecutors,
   serviceRequestMessageAddressees,
@@ -27,10 +34,7 @@ import {
 } from '../db/schema';
 import type { Principal } from '../auth/principal';
 import { err } from '../lib/errors';
-import {
-  inServiceRequestCustomerScope,
-  serviceRequestCustomerScopeWhere,
-} from '../lib/access';
+import { inServiceRequestCustomerScope, serviceRequestCustomerScopeWhere } from '../lib/access';
 
 /**
  * Обсуждение заявки на обслуживание оргтехники (ADR 0141, `docs/office-equipment-chat-plan.md`).
@@ -224,10 +228,7 @@ interface SummaryRow extends Record<string, unknown> {
 }
 
 /** Пустая сводка: у заявки, по которой ещё не сказано ни слова, курсору некуда указывать. */
-function emptySummary(
-  p: Principal,
-  input: ChatSummaryInput,
-): ServiceRequestChatSummaryDto {
+function emptySummary(p: Principal, input: ChatSummaryInput): ServiceRequestChatSummaryDto {
   const facts = chatFactsFor(p, input.row, input.executorIds);
   return {
     canWrite: canWriteChat(p, facts, input.row.status),
@@ -391,9 +392,7 @@ function toMessageDto(row: MessageRow, addressees: AddresseeRow[]): ServiceChatM
     body: row.body,
     createdAt: row.createdAt.toISOString(),
     addressees: {
-      sides: addressees
-        .map((a) => a.side)
-        .filter((side): side is ServiceChatSide => side !== null),
+      sides: addressees.map((a) => a.side).filter((side): side is ServiceChatSide => side !== null),
       users: addressees
         .filter((a) => a.userId !== null)
         .map((a) => ({ id: a.userId!, fullName: a.fullName ?? '' })),
@@ -578,6 +577,17 @@ export async function postChatMessage(
   requestId: string,
   input: SendServiceChatMessageInput,
 ): Promise<PostedChatMessage> {
+  /**
+   * Письмо по реплике (план расширения почты, § 4): уходит тем, кому реплика АДРЕСОВАНА, а не всем,
+   * кому видна заявка. Почтовые настройки процесса читаются до транзакции — упавшие внутри, они
+   * откатили бы саму отправку сообщения; адресатов же считает транзакция, после блокировки заявки.
+   */
+  const mailPlan = await prepareServiceMail({
+    event: 'service_request_comment',
+    actor: { id: p.id, email: p.email, counterpartyId: p.counterpartyId },
+    authorId: null,
+  });
+
   return db.transaction(async (tx) => {
     const [row] = await tx
       .select()
@@ -624,10 +634,12 @@ export async function postChatMessage(
       })
       .returning({ id: serviceRequestMessages.id });
 
-    await tx.insert(serviceRequestMessageAddressees).values([
-      ...addressees.sides.map((side) => ({ messageId: message!.id, side, userId: null })),
-      ...addressees.users.map((userId) => ({ messageId: message!.id, side: null, userId })),
-    ]);
+    await tx
+      .insert(serviceRequestMessageAddressees)
+      .values([
+        ...addressees.sides.map((side) => ({ messageId: message!.id, side, userId: null })),
+        ...addressees.users.map((userId) => ({ messageId: message!.id, side: null, userId })),
+      ]);
 
     const names =
       addressees.users.length > 0
@@ -636,6 +648,30 @@ export async function postChatMessage(
             .from(users)
             .where(inArray(users.id, addressees.users))
         : [];
+
+    /**
+     * Письмо ставится ТОЙ ЖЕ транзакцией, что и реплика: письмо о сообщении, которого нет в ленте,
+     * — это ответ в пустоту, а сообщение без письма подрядчик просто не увидит. Ошибка сборки тела
+     * даёт мягкий исход, отказ базы откатывает всё вместе с репликой.
+     */
+    const mailTargets = chatMailTargets(addressees, 'chat');
+    await queueServiceMailForIntent(tx, {
+      prepared: mailPlan,
+      side: await readServiceSide(tx, row.id),
+      requestId: row.id,
+      anchor: message!.id,
+      comment: { targets: mailTargets.targets, userIds: mailTargets.userIds },
+      extra: {
+        message: {
+          authorName: p.fullName,
+          addressees: [
+            ...addressees.sides.map((side) => serviceChatSideLabels[side]),
+            ...names.map((n) => n.fullName),
+          ].join(', '),
+          body: input.body,
+        },
+      },
+    });
 
     return {
       message: {

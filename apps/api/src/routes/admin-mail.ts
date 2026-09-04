@@ -20,6 +20,12 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { queueMail } from '../services/mail';
+import {
+  loadServiceLetterData,
+  serviceLetterContent,
+  type ServiceLetterData,
+  type ServiceLetterExtra,
+} from '../services/service-request-mail';
 import type { MailContent } from '../services/mail-templates';
 import { buildDriverRoutesMail, driversWithRoutes } from '../services/mailings/driver-routes';
 import { buildRoleDigestMail } from '../services/mailings/role-digest';
@@ -74,18 +80,67 @@ const SAMPLE_ROLE: Role = 'operator';
  * Содержимое письма для отладки. Задание водителю собирается тем же кодом, что и настоящая
  * рассылка, — иначе проверка показывала бы не то письмо, которое потом уйдёт людям.
  */
+/**
+ * Чем дополнить образец, чтобы он показывал письмо целиком. У события переходов это «было → стало»,
+ * у объёма работ — действие и ревизия, у документа и реплики — то, чего в строке заявки нет вовсе.
+ * Значения показательные: образец проверяет вёрстку, а не данные конкретного дня.
+ */
+function sampleExtraFor(
+  kind: MailTestKind,
+  data: ServiceLetterData,
+): ServiceLetterExtra | undefined {
+  switch (kind) {
+    case 'service_request_status_changed':
+      return { fromStatus: 'in_work', comment: 'Ждём запчасть от поставщика' };
+    case 'service_request_estimate':
+      return { estimate: { revision: Math.max(1, data.num % 3), action: 'submit' } };
+    case 'service_request_document':
+      return { document: { kind: 'act', names: ['akt-2026-09.pdf'], total: 3 } };
+    case 'service_request_comment':
+      return {
+        message: {
+          authorName: 'Оператор оргтехники',
+          addressees: 'Сервисному центру',
+          body: 'Образец реплики: письмо показывает текст сообщения целиком.',
+        },
+      };
+    default:
+      return undefined;
+  }
+}
+
 async function contentFor(
   kind: MailTestKind,
   opts: {
     date?: string;
     driverPersonId?: string;
     sampleUserId?: string;
+    /** Заявка-образец для писем модуля «Орг.техника». */
+    sampleRequestId?: string;
     /** Окно данных от дня рассылки — те же два числа, что у расписания (ADR 0093). */
     windowFromDays: number;
     windowDays: number;
   },
 ): Promise<{ subject: string; content: MailContent } | null> {
   switch (kind) {
+    /**
+     * Письма модуля «Орг.техника» собираются по РЕАЛЬНОЙ заявке и тем же кодом, что уходит людям
+     * (план расширения почты, §5.13). Аудитория — `internal`: у администратора портал есть, и
+     * образец должен показать письмо целиком, вместе со ссылкой; тела подрядчика и копии
+     * проверяются контрактными тестами, а не отладочной отправкой на чужой ящик.
+     */
+    case 'service_request_waiting_it':
+    case 'service_request_cancelled':
+    case 'service_request_assigned':
+    case 'service_request_status_changed':
+    case 'service_request_estimate':
+    case 'service_request_document':
+    case 'service_request_comment': {
+      if (!opts.sampleRequestId) return null;
+      const data = await db.transaction((tx) => loadServiceLetterData(tx, opts.sampleRequestId!));
+      const letter = serviceLetterContent(kind, data, 'internal', sampleExtraFor(kind, data));
+      return { subject: letter.subject, content: letter.content };
+    }
     case 'verify_email':
       return { subject: VERIFY_SUBJECT, content: verifyEmailContent(FAKE_TOKEN) };
     case 'password_reset':
@@ -279,6 +334,7 @@ export default async function adminMailRoutes(app: FastifyInstance): Promise<voi
       // Образец по умолчанию — сам получатель: у администратора область видимости полная, и такая
       // сводка показывает письмо целиком, ничего не пряча.
       sampleUserId: req.body.sampleUserId ?? toUserId,
+      ...(req.body.sampleRequestId ? { sampleRequestId: req.body.sampleRequestId } : {}),
       windowFromDays: req.body.windowFromDays,
       windowDays: req.body.windowDays,
     });

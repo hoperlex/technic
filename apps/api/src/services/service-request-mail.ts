@@ -4,10 +4,12 @@ import {
   formatServiceRequestNumber,
   moduleMailEventLabels,
   SERVICE_REQUEST_NO_EQUIPMENT,
+  serviceFileKindLabels,
   serviceRequestStatusLabels,
   type ModuleMailEvent,
   type ModuleMailOutcome,
   type ServiceMailTargets,
+  type ServiceFileKind,
   type ServiceRequestStatus,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -22,6 +24,7 @@ import {
 } from '../db/schema';
 import { config } from '../config';
 import { logger } from '../logger';
+import { writeAuditTx } from '../lib/audit';
 import { renderMail, type MailContent } from './mail-templates';
 import { queuePreparedMail, type MailKind } from './mail';
 import {
@@ -40,7 +43,11 @@ import {
 } from './service-request-mail-audience';
 
 /** Сторона заявки на момент факта: ручки снимают её до бизнес-изменения (§5.2). */
-export { readServiceSide, type ServiceRequestSide } from './service-request-mail-audience';
+export {
+  documentMailTargets,
+  readServiceSide,
+  type ServiceRequestSide,
+} from './service-request-mail-audience';
 
 /**
  * Письма службе по заявке на обслуживание оргтехники (план
@@ -160,6 +167,27 @@ export interface ServiceMailIntent {
    * ревизия — это новое письмо, потому что предъявили другие числа.
    */
   estimate?: { revision: number; action: 'submit' | 'approved' | 'reopened' };
+  /**
+   * Приложенные документы; есть только у `service_request_document`. Цели считает
+   * `documentMailTargets` в маршруте — там, где известна сторона приложившего под блокировкой.
+   */
+  document?: {
+    targets: Array<'office' | 'service'>;
+    kind: ServiceFileKind;
+    /** Имена файлов пачки: письмо называет, что именно подшили, а не «добавлено 2». */
+    names: string[];
+    /** Сколько файлов у заявки стало всего — чтобы адресат понимал, полон ли комплект. */
+    total: number;
+  };
+  /**
+   * Реплика обсуждения; есть только у `service_request_comment`. Цели считает `chatMailTargets` из
+   * контрактов — по адресатам самой реплики, а не по правам автора (§ 4).
+   */
+  comment?: {
+    targets: Array<'office' | 'service'>;
+    /** Поимённые адресаты: письмо получит только назначенная учётка с правом исполнителя. */
+    userIds: string[];
+  };
   /** Дельта назначения; есть только у `service_request_assigned`. */
   assignment?: {
     /** Добавленные поимённо — не весь состав: задание уходит тому, кому его выдали. */
@@ -255,6 +283,103 @@ export interface ServiceMailResult {
   recipients: ServiceMailRecipient[];
 }
 
+// ── Потолок частоты и сводка окна (§5.11) ──
+
+/** Вид письма-сводки: не бизнес-событие, поэтому в реестре событий и в админке его нет. */
+const ACTIVITY_SUMMARY_KIND = 'service_request_activity_summary' as const;
+
+/**
+ * Сколько обычных писем модуля уже ушло на этот адрес по этой заявке в текущем UTC-часе.
+ *
+ * Считается ПОД `pg_advisory_xact_lock` по тройке «заявка + адрес + час»: два одновременных
+ * события иначе прочитали бы один и тот же счёт и оба решили бы, что место ещё есть. Замок
+ * транзакционный — он снимается вместе с коммитом, и держать его дольше самой вставки не нужно.
+ *
+ * Сводки в счёт не входят: иначе одно окно душило бы следующее.
+ */
+async function windowCount(
+  tx: Tx,
+  requestId: string,
+  email: string,
+  hour: string,
+): Promise<number> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${requestId}:${email}:${hour}`}))`);
+  const rows = await tx.execute<{ count: string }>(sql`
+    SELECT count(*)::text AS count FROM mail_messages
+     WHERE entity_type = 'serviceRequest' AND entity_id = ${requestId}
+       AND to_email = ${email}
+       AND NOT is_test
+       AND kind <> ${ACTIVITY_SUMMARY_KIND}
+       AND created_at >= date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`);
+  return Number(rows.rows[0]?.count ?? 0);
+}
+
+/** Текущее окно: час в UTC. Ключ сводки строится по нему, и он же ограничивает счёт. */
+function currentHour(): string {
+  return new Date().toISOString().slice(0, 13);
+}
+
+/**
+ * Сводка вместо очередного письма: «по заявке идёт работа, писем по каждому шагу до конца часа не
+ * будет». Ставится ОДНА на окно — ключ без события, поэтому одновременные события разных видов не
+ * создадут двух сводок; `onConflictDoNothing` делает все последующие подавленными.
+ *
+ * Ссылка — только тем, у кого портал: внешнему адресату вместо неё сказано позвонить в службу.
+ */
+async function queueActivitySummary(
+  tx: Tx,
+  params: {
+    requestId: string;
+    recipient: ServiceMailRecipient;
+    hour: string;
+    data: ServiceLetterData;
+  },
+): Promise<void> {
+  const number = formatServiceRequestNumber(params.data.num);
+  const internal = params.recipient.audience === 'internal';
+  const content: MailContent = {
+    title: `${number} — по заявке идёт работа`,
+    blocks: [
+      {
+        kind: 'paragraph',
+        text:
+          `По заявке ${number} сегодня много событий, и письма по каждому шагу до конца часа ` +
+          'отправляться не будут.',
+      },
+      ...(internal
+        ? [
+            {
+              kind: 'link' as const,
+              href: `${config.publicOrigin}/office-equipment?tab=requests&open=${params.requestId}`,
+              label: 'Открыть заявку в портале',
+            },
+          ]
+        : [
+            {
+              kind: 'paragraph' as const,
+              text: 'Чтобы узнать подробности, свяжитесь со службой оргтехники.',
+            },
+          ]),
+    ],
+  };
+  const rendered = renderMail(content);
+  await queuePreparedMail(
+    {
+      kind: ACTIVITY_SUMMARY_KIND,
+      dedupeKey: `${params.requestId}:${params.recipient.email}:${params.hour}`,
+      to: params.recipient.email,
+      account: SERVICE_MAIL_ACCOUNT,
+      replyTo: params.recipient.replyTo,
+      subject: `${number} — по заявке идёт работа`,
+      text: rendered.text,
+      html: rendered.html,
+      entityType: 'serviceRequest',
+      entityId: params.requestId,
+    },
+    { tx },
+  );
+}
+
 /**
  * Ставит письма события внутри уже открытой транзакции заявки (§5.2).
  *
@@ -285,9 +410,23 @@ export async function queueServiceMailForIntent(
     idempotencyKey?: string;
     /** Контекст факта: прежний статус, причина перехода, действие с объёмом работ. */
     extra?: ServiceLetterExtra;
+    /**
+     * Документы пачки — вместе с целями, посчитанными по стороне приложившего. Приезжают сюда, а
+     * не в намерение, потому что сторона известна только под блокировкой заявки: до транзакции
+     * назначение ещё могли сменить.
+     */
+    document?: NonNullable<ServiceMailIntent['document']>;
+    /** Адресаты реплики — по той же причине, что и документы: их считает транзакция отправки. */
+    comment?: NonNullable<ServiceMailIntent['comment']>;
   },
 ): Promise<ServiceMailResult> {
-  const { intent, ctx } = params.prepared;
+  const { ctx } = params.prepared;
+  // Документы дополняют намерение уже внутри транзакции — см. `params.document`.
+  const intent: ServiceMailIntent = {
+    ...params.prepared.intent,
+    ...(params.document ? { document: params.document } : {}),
+    ...(params.comment ? { comment: params.comment } : {}),
+  };
   const targets: ServiceMailTargets = {};
 
   if (!(await isServiceMailEventEnabled(tx, intent.event))) {
@@ -336,7 +475,22 @@ export async function queueServiceMailForIntent(
       logServiceMailFailure(params.requestId, e);
       return { outcome: 'mail_failed', targets, recipients: [] };
     }
+    const limit = config.serviceRequests.mailMaxPerRequestHour;
+    const hour = currentHour();
     for (const recipient of recipients) {
+      /**
+       * Потолок считается на КАЖДЫЙ адрес отдельно: активная заявка шумит не всем сразу — служба
+       * ведёт десяток заявок, а подрядчик читает одну. Ноль снимает потолок совсем.
+       */
+      if (limit > 0 && (await windowCount(tx, params.requestId, recipient.email, hour)) >= limit) {
+        await queueActivitySummary(tx, {
+          requestId: params.requestId,
+          recipient,
+          hour,
+          data,
+        });
+        continue;
+      }
       await queuePreparedMail(
         {
           kind: intent.event as MailKind,
@@ -357,7 +511,31 @@ export async function queueServiceMailForIntent(
     }
   }
 
-  return { outcome: outcomeOf(required, recipients, targets), targets, recipients };
+  const outcome = outcomeOf(required, recipients, targets);
+  /**
+   * Итог планирования — той же транзакцией, что и событие (§5.10, перечень строгого аудита в
+   * `lib/audit.ts`, п. 8). Адреса в журнале, а не в логе: у аудита есть право доступа, у логов его
+   * нет. Лог рядом несёт только числа — по нему видно поток, а не переписку.
+   */
+  await writeAuditTx(tx, {
+    actorUserId: intent.actor.id,
+    action: 'serviceRequest.mailPlanned',
+    entityType: 'serviceRequest',
+    entityId: params.requestId,
+    metadata: {
+      event: intent.event,
+      outcome,
+      targets,
+      recipients: recipients.map((r) => r.email),
+      sources: recipients.map((r) => r.source),
+    },
+  });
+  logger.info(
+    { requestId: params.requestId, event: intent.event, outcome, recipients: recipients.length },
+    'письмо модуля: итог планирования',
+  );
+
+  return { outcome, targets, recipients };
 }
 
 /**
@@ -366,6 +544,27 @@ export async function queueServiceMailForIntent(
  * заводить ящик (ADR 0153, §4а).
  */
 function requiredTargetsOf(intent: ServiceMailIntent, side: ServiceRequestSide): RequiredTarget[] {
+  if (intent.event === 'service_request_comment') {
+    const plan = intent.comment;
+    if (!plan) return [];
+    const targets: RequiredTarget[] = plan.targets
+      .filter(
+        (t) =>
+          t !== 'service' || side.serviceCounterpartyId !== null || side.executorUserIds.length > 0,
+      )
+      .map((t) => (t === 'office' ? 'office' : 'service'));
+    // Поимённый адресат — тоже обязательство: реплика написана конкретному человеку, и «письма
+    // нет» здесь означает, что он о ней не узнает.
+    if (plan.userIds.length > 0 && !targets.includes('service')) targets.push('service');
+    return targets;
+  }
+  if (intent.event === 'service_request_document') {
+    // Цели посчитаны маршрутом по стороне приложившего: здесь их только фильтрует наличие стороны.
+    return (intent.document?.targets ?? []).filter(
+      (t) =>
+        t !== 'service' || side.serviceCounterpartyId !== null || side.executorUserIds.length > 0,
+    );
+  }
   if (intent.event === 'service_request_estimate') {
     /**
      * Направление письма у объёма работ зависит от действия, а не от события: предъявление адресуют
@@ -425,7 +624,20 @@ async function candidatesOf(
         );
       }
     }
-  } else if (intent.event === 'service_request_estimate') {
+  } else if (intent.event === 'service_request_comment') {
+    for (const target of intent.comment?.targets ?? []) {
+      if (target === 'office') list.push(...(await sideRecipients(tx, side, 'office', ctx)));
+      if (target === 'service' && side.serviceCounterpartyId !== null) {
+        list.push(...(await sideRecipients(tx, side, 'service', ctx)));
+      }
+    }
+    for (const userId of intent.comment?.userIds ?? []) {
+      list.push(...(await sideRecipients(tx, side, { userId }, ctx)));
+    }
+  } else if (
+    intent.event === 'service_request_estimate' ||
+    intent.event === 'service_request_document'
+  ) {
     for (const target of requiredTargetsOf(intent, side)) {
       if (target === 'office') list.push(...(await sideRecipients(tx, side, 'office', ctx)));
       if (target === 'service') list.push(...(await sideRecipients(tx, side, 'service', ctx)));
@@ -613,6 +825,12 @@ export interface ServiceLetterExtra {
   fromStatus?: ServiceRequestStatus | null;
   comment?: string;
   estimate?: { revision: number; action: 'submit' | 'approved' | 'reopened' };
+  document?: { kind: ServiceFileKind; names: string[]; total: number };
+  /**
+   * Реплика целиком: у подрядчика без учётки письмо — единственный носитель, и «вам написали» без
+   * текста заставило бы его звонить, чтобы узнать что.
+   */
+  message?: { authorName: string; addressees: string; body: string };
 }
 
 /** Что произошло с объёмом работ — словами, которыми это называют в портале. */
@@ -732,12 +950,12 @@ export const SERVICE_MAIL_AUDIENCE_FIELDS = {
  * открыть портал, внешнему — подтвердить получение ответом. Отзыв прежней компании не раскрывает
  * новый состав и прямо говорит, что выезд не требуется.
  */
-export function renderServiceLetter(
+function buildServiceLetter(
   event: ModuleMailEvent,
   data: ServiceLetterData,
-  audience: ServiceMailAudience = 'internal',
+  audience: ServiceMailAudience,
   extra?: ServiceLetterExtra,
-): { subject: string; text: string; html: string } {
+): { subject: string; content: MailContent } {
   const number = formatServiceRequestNumber(data.num);
   const urgent = data.isUrgent ? 'СРОЧНО · ' : '';
   const withdrawn = audience === 'contractor_withdrawn';
@@ -771,6 +989,14 @@ export function renderServiceLetter(
     ...(extra?.comment ? [`Причина: ${extra.comment}`] : []),
     // Объём работ: что именно с ним произошло и на какую сумму. Сумма — только тем, кому она
     // разрешена картой аудиторий: копия видит факт, но не цену.
+    ...(extra?.message
+      ? [`Написал: ${extra.message.authorName}`, `Кому: ${extra.message.addressees}`]
+      : []),
+    ...(extra?.document
+      ? [
+          `Приложены документы (${serviceFileKindLabels[extra.document.kind]}): ${extra.document.names.join(', ')} — файлов в заявке: ${extra.document.total}`,
+        ]
+      : []),
     ...(extra?.estimate
       ? [
           `Объём работ: ${ESTIMATE_ACTION_LABELS[extra.estimate.action]}, ревизия ${extra.estimate.revision}${
@@ -825,6 +1051,12 @@ export function renderServiceLetter(
       { kind: 'lines' as const, lines },
       // Заголовок блока совпадает с подписью поля в портале (Р2, просьба 7): письмо и карточка
       // называют одно и то же одинаково, а на заявке про расходники «Что случилось» было мимо.
+      ...(fields.description && extra?.message
+        ? [
+            { kind: 'heading' as const, text: 'Сообщение' },
+            { kind: 'paragraph' as const, text: extra.message.body },
+          ]
+        : []),
       ...(fields.description
         ? [
             { kind: 'heading' as const, text: 'Описание' },
@@ -882,8 +1114,36 @@ export function renderServiceLetter(
     ],
   };
 
-  const rendered = renderMail(content);
-  return { subject, text: rendered.text, html: rendered.html };
+  return { subject, content };
+}
+
+/** Готовое письмо: тема и отрисованное тело — то, что уходит в очередь. */
+export function renderServiceLetter(
+  event: ModuleMailEvent,
+  data: ServiceLetterData,
+  audience: ServiceMailAudience = 'internal',
+  extra?: ServiceLetterExtra,
+): { subject: string; text: string; html: string } {
+  const letter = buildServiceLetter(event, data, audience, extra);
+  const rendered = renderMail(letter.content);
+  return { subject: letter.subject, text: rendered.text, html: rendered.html };
+}
+
+/**
+ * То же письмо, но **до** отрисовки — темой и `MailContent`.
+ *
+ * Нужна отладочной отправке (`POST /admin/mail/test`): она помечает письмо словом «ТЕСТ», а
+ * помечать умеет только `MailContent`. Собирать образец вторым кодом нельзя — проверка вёрстки
+ * проверяла бы не то письмо, что уходит людям; поэтому `renderServiceLetter` и эта функция ходят
+ * по одному пути, и разойтись им негде.
+ */
+export function serviceLetterContent(
+  event: ModuleMailEvent,
+  data: ServiceLetterData,
+  audience: ServiceMailAudience = 'internal',
+  extra?: ServiceLetterExtra,
+): { subject: string; content: MailContent } {
+  return buildServiceLetter(event, data, audience, extra);
 }
 
 /** Готовое тело письма на каждую аудиторию: адресат выбирает своё по `Recipient.audience`. */

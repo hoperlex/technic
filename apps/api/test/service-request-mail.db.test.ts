@@ -1334,4 +1334,171 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     const removed = await inject('DELETE', `/api/v1/admin/mail/recipients/${copyId}`, ctx.admin);
     expect(removed.statusCode).toBe(204);
   });
+  /**
+   * Документ адресован противоположной стороне (§ 3, № 6). Служба подшила акт — читает подрядчик:
+   * он ждёт закрывающих бумаг и в портал не заходит. Ящику службы это письмо не нужно — она его и
+   * приложила, а эхо собственного действия только приучает не читать почту.
+   *
+   * Проверяется и состав тела: письмо называет вид и имена файлов, потому что вложений оно не
+   * носит, а «добавлено 2» не отвечает на вопрос, пришёл ли акт или только фотография.
+   */
+  it('приложенный документ уходит стороне сервиса — с видом и именами файлов', async () => {
+    const { request } = await createRequest(await ctx.newEquipment('doc'), 'Порвало плёнку');
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: request.version },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    const afterAssign = (assigned.json() as { request: ServiceRequestDto }).request;
+    const started = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/start`,
+      ctx.admin,
+      { version: afterAssign.version },
+    );
+    expect(started.statusCode, started.body).toBe(200);
+
+    // Файл заводится строкой, как в соседних db-тестах: хранилище к письму отношения не имеет.
+    const fileRow = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO files (bucket, object_key, filename, content_type, size, status, uploaded_by)
+      VALUES ('test', ${`oe/${RUN}/${randomUUID()}`}, 'akt-2026-09.pdf', 'application/pdf', 2048,
+              'pending', ${ctx.people.admin.id})
+      RETURNING id`);
+
+    await withEvent('service_request_document', async () => {
+      const attached = await inject(
+        'POST',
+        `/api/v1/service-requests/${request.id}/files`,
+        ctx.admin,
+        { fileIds: [fileRow.rows[0]!.id], kind: 'act' },
+      );
+      expect(attached.statusCode, attached.body).toBe(200);
+    });
+
+    const letters = (await mailsOf(request.id)).filter(
+      (l) => l.kind === 'service_request_document',
+    );
+    // Сторона сервиса целиком: общий ящик компании и её оператор. Ящика службы здесь нет — акт
+    // подшила она сама.
+    expect(letters.map((l) => l.to_email).sort()).toEqual(
+      [CONTRACTOR_MAILBOX, ctx.people.operator.email].sort(),
+    );
+    expect(letters.map((l) => l.to_email)).not.toContain(SERVICE_MAILBOX);
+    const toContractor = letters.find((l) => l.to_email === CONTRACTOR_MAILBOX)!;
+    expect(toContractor.body_text).toContain('Приложены документы (Акт): akt-2026-09.pdf');
+    expect(toContractor.body_text).toContain('файлов в заявке: 1');
+  });
+  /**
+   * Реплика уходит письмом ТОЛЬКО адресатам (§ 4). Проверяются обе половины решения разом: реплика
+   * «Сервисному центру» доходит до подрядчика с полным текстом (у него портала может не быть
+   * вовсе), а реплика «Заявителю» письма не порождает — заявитель читает ленту в портале, и
+   * пересылка чужого разговора превратила бы почту подрядчика в зеркало обсуждения.
+   */
+  it('реплика сервису уходит письмом с текстом, реплика заявителю — нет', async () => {
+    const { request } = await createRequest(await ctx.newEquipment('chat'), 'Не тянет из лотка');
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: request.version },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+
+    await withEvent('service_request_comment', async () => {
+      const toService = await inject(
+        'POST',
+        `/api/v1/service-requests/${request.id}/messages`,
+        ctx.admin,
+        { body: 'Привезите ролик подачи, аппарат стоит', addressees: { sides: ['service'] } },
+      );
+      expect(toService.statusCode, toService.body).toBe(200);
+
+      const toCustomer = await inject(
+        'POST',
+        `/api/v1/service-requests/${request.id}/messages`,
+        ctx.admin,
+        { body: 'Внутренняя пометка для заявителя', addressees: { sides: ['customer'] } },
+      );
+      expect(toCustomer.statusCode, toCustomer.body).toBe(200);
+    });
+
+    const letters = (await mailsOf(request.id)).filter((l) => l.kind === 'service_request_comment');
+    // Одно событие — одна реплика: письмо ушло только по адресованной сервису.
+    expect(letters.map((l) => l.to_email).sort()).toEqual(
+      [CONTRACTOR_MAILBOX, ctx.people.operator.email].sort(),
+    );
+    const toContractor = letters.find((l) => l.to_email === CONTRACTOR_MAILBOX)!;
+    // Текст реплики в теле целиком: «вам написали» заставило бы подрядчика звонить, чтобы узнать что.
+    expect(toContractor.body_text).toContain('Привезите ролик подачи, аппарат стоит');
+    expect(toContractor.body_text).toContain('Кому: Сервисному центру');
+    // Внутренней реплики заявителю в почте нет ни в каком виде.
+    expect(letters.every((l) => !l.body_text.includes('Внутренняя пометка'))).toBe(true);
+  });
+  /**
+   * Потолок частоты (§5.11): активная заявка не должна превращать почту подрядчика в поток. Но и
+   * тишина не годится — сверх потолка уходит ОДНА сводка на окно, а не молчание: адресат обязан
+   * узнать, что письма по шагам прекратились, и куда идти за подробностями.
+   *
+   * Потолок подменяется на двойку, а не на единицу: окно считает ВСЕ письма модуля по паре
+   * «заявка + адрес», и письмо о назначении, ушедшее строкой выше, одно место уже заняло. Считать
+   * потолок на живом значении (12) значило бы гонять два десятка реплик ради одной проверки.
+   */
+  it('сверх потолка вместо письма уходит одна сводка на окно', async () => {
+    const { config } = await import('../src/config');
+    const was = config.serviceRequests.mailMaxPerRequestHour;
+    config.serviceRequests.mailMaxPerRequestHour = 2;
+    const { request } = await createRequest(await ctx.newEquipment('flood'), 'Стучит барабан');
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      { userIds: [], serviceCounterpartyId: ctx.serviceCounterpartyId, version: request.version },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+
+    try {
+      await withEvent('service_request_comment', async () => {
+        for (const body of ['Первое сообщение', 'Второе сообщение', 'Третье сообщение']) {
+          const sent = await inject(
+            'POST',
+            `/api/v1/service-requests/${request.id}/messages`,
+            ctx.admin,
+            { body, addressees: { sides: ['service'] } },
+          );
+          expect(sent.statusCode, sent.body).toBe(200);
+        }
+      });
+    } finally {
+      config.serviceRequests.mailMaxPerRequestHour = was;
+    }
+
+    // Обычных писем по репликам — по одному на адрес: второе место окна заняло назначение.
+    const usual = (await mailsOf(request.id)).filter((l) => l.kind === 'service_request_comment');
+    expect(usual.filter((l) => l.to_email === CONTRACTOR_MAILBOX)).toHaveLength(1);
+    expect(usual[0]!.body_text).toContain('Первое сообщение');
+
+    /**
+     * Сводка выбирается своим запросом: её ключ — «заявка + адрес + час» БЕЗ события, чтобы
+     * одновременные события разных видов не создали двух сводок, и в общий отбор файла по третьему
+     * полю ключа она не попадает.
+     */
+    const summaries = await ctx.db.execute<{ to_email: string; body_text: string }>(sql`
+      SELECT to_email, body_text FROM mail_messages
+       WHERE entity_type = 'serviceRequest' AND entity_id = ${request.id}
+         AND kind = 'service_request_activity_summary'
+       ORDER BY to_email`);
+    // По одной сводке на адрес стороны — и ровно одна, а не по штуке на каждое подавленное письмо.
+    expect(summaries.rows.map((r) => r.to_email).sort()).toEqual(
+      [CONTRACTOR_MAILBOX, ctx.people.operator.email].sort(),
+    );
+    const forContractor = summaries.rows.find((r) => r.to_email === CONTRACTOR_MAILBOX)!;
+    expect(forContractor.body_text).toContain('письма по каждому шагу до конца часа');
+    // Внешнему адресату ссылка не предлагается — портала у него может не быть вовсе.
+    expect(forContractor.body_text).toContain('свяжитесь со службой оргтехники');
+    expect(forContractor.body_text).not.toContain('office-equipment?tab=requests');
+    // Текстов подавленных реплик в сводке нет: она говорит о факте, а не пересказывает переписку.
+    expect(forContractor.body_text).not.toContain('Второе сообщение');
+  });
 });

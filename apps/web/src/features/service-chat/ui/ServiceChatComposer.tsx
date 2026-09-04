@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { App, Button, Input, Select, Space, Typography } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import {
+  chatMailNotice,
+  chatMailTargets,
   isServiceRequestClosed,
   serviceRequestStatusLabels,
   type ServiceChatMessageDto,
@@ -94,6 +96,17 @@ export function ServiceChatComposer({
           onChange={(next) => setAddressees(normalizeAddressees(next, addressees))}
           placeholder="Всем участникам"
         />
+        {/*
+          Кого затронет почта — до нажатия «Отправить» (план расширения почты, § 4). Реплика уходит
+          письмом ТОЛЬКО адресатам, и у подрядчика без учётки письмо — единственный носитель: не
+          скажи мы этого здесь, «написал же в заявке» осталось бы непрочитанным.
+
+          Правило считает контрактная функция, а не своя формула рядом: вторая копия разошлась бы с
+          серверной молча — ровно та беда, ради которой правила сторон живут в контрактах.
+        */}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {chatMailNotice(chatMailTargets(splitAddressees(addressees)))}
+        </Typography.Text>
       </div>
       <div>
         <label htmlFor={BODY_FIELD}>Сообщение</label>
