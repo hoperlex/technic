@@ -17,7 +17,8 @@ import { useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
-import { serviceRequestCard, serviceRequestColumns, serviceGridView } from './serviceRequestGrid';
+import { serviceRequestColumns, serviceGridView } from './serviceRequestGrid';
+import { serviceRequestCard } from './serviceRequestCard';
 import {
   SERVICE_FILTER_FIELDS,
   useServiceQueues,
