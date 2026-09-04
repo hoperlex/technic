@@ -1,5 +1,5 @@
 import { useCallback, useState, type ReactNode } from 'react';
-import { App } from 'antd';
+import { Alert, App } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ModuleMailOutcome, ServiceRequestDto } from '@technic/contracts';
 import { serviceRequestKeys } from '@entities/service-request';
@@ -202,6 +202,29 @@ export function useServiceRequestModals(): ServiceRequestModals {
         )}
         <ReasonModal
           open={!!prompt}
+          /*
+           * Что заявка потеряет — блоком НАД полем причины (ADR 0161): отмена снимает исполнителей
+           * и согласование, а возврат отменённой — ещё и весь объём работ. После нажатия
+           * восстанавливать будет нечего, поэтому перечень читают до, а не узнают из карточки
+           * после. Пустой перечень блока не рисует: терять нечего, и предупреждать не о чем.
+           */
+          notice={
+            prompt?.erases?.length ? (
+              <Alert
+                type="warning"
+                showIcon
+                title="Что снимется с заявки"
+                description={
+                  <ul style={{ margin: '4px 0 0', paddingInlineStart: 20 }}>
+                    {prompt.erases.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                }
+                style={{ marginBottom: 16 }}
+              />
+            ) : undefined
+          }
           title={prompt?.title}
           label={prompt?.label}
           okText={prompt?.okText}

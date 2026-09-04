@@ -9,6 +9,53 @@ export interface ReasonPrompt {
   danger?: boolean;
   success: string;
   submit: (reason: string) => Promise<unknown>;
+  /**
+   * Что заявка потеряет по нажатию (ADR 0161, решение по перечню потерь). Пусто — терять нечего,
+   * и блок не рисуется вовсе: пустой список «будет стёрто» читается как недогрузившийся, а не как
+   * «ничего не пропадёт».
+   *
+   * Перечень собирается ПО САМОЙ ЗАЯВКЕ, а не по матрице сброса вообще: обещать снятие того, чего
+   * у неё нет, значит пугать выдуманной потерей (приём `rollbackErases` вывоза мусора, ADR 0135).
+   */
+  erases?: string[];
+}
+
+/** Кто сейчас за заявкой закреплён: подрядчик строкой и поимённые исполнители. */
+function assignedNames(request: ServiceRequestDto): string[] {
+  return [request.service?.name, ...request.executors.map((e) => e.name)].filter(
+    (name): name is string => !!name,
+  );
+}
+
+/**
+ * Что снимает отмена (`serviceResetOnTransition`: исполнители и снимок согласования). Заявка
+ * остаётся историей того, что собирались чинить, но ни исполнителя, ни согласованной суммы у неё
+ * больше нет, — и человек обязан узнать это ДО нажатия, а не из карточки после.
+ */
+function cancelErases(request: ServiceRequestDto): string[] {
+  const items: string[] = [];
+  const names = assignedNames(request);
+  if (names.length > 0) items.push(`Назначенные исполнители: ${names.join(', ')}`);
+  if (request.approval) {
+    items.push(`Согласование объёма работ (ревизия ${request.approval.revision})`);
+  }
+  return items;
+}
+
+/**
+ * Что снимает возврат отменённой заявки в «Новую». Сброс там шире отмены на целый цикл: виза ИТ,
+ * весь объём работ и обе пометки отказа — заявка проходит путь заново.
+ */
+function reopenErases(request: ServiceRequestDto): string[] {
+  const items = cancelErases(request);
+  if (request.items.length > 0) {
+    items.push(`Объём работ: ${request.items.length} поз., ревизия ${request.estimateRevision}`);
+  }
+  if (request.itApproval) items.push('Виза ИТ-службы');
+  if (request.replacementRecommended || request.rejectionResolution) {
+    items.push('Пометка «Рекомендована замена» и решение, принятое вместо ремонта');
+  }
+  return items;
 }
 
 /**
@@ -62,6 +109,7 @@ export function serviceReasonPrompts(request: ServiceRequestDto) {
         serviceRequestsApi.changeStatus(id, { status: 'done', reason, version }),
     },
     reopenRequest: {
+      erases: reopenErases(request),
       title: 'Возврат отменённой заявки',
       label: 'Причина',
       okText: 'Вернуть в «Новую»',
@@ -70,6 +118,7 @@ export function serviceReasonPrompts(request: ServiceRequestDto) {
         serviceRequestsApi.changeStatus(id, { status: 'new', reason, version }),
     },
     cancel: {
+      erases: cancelErases(request),
       title: `Отмена заявки ${request.displayNumber}`,
       label: 'Причина отмены',
       okText: 'Отменить заявку',
