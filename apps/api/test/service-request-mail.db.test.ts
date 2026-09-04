@@ -1402,12 +1402,12 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     expect(toContractor.body_text).toContain('файлов в заявке: 1');
   });
   /**
-   * Реплика уходит письмом ТОЛЬКО адресатам (§ 4) и ТОЛЬКО людям с учётками: общий ящик компании
-   * из карточки контрагента обсуждение не получает (решение заказчика 04.09.2026). Диспетчерская
-   * читает задания, отмены и бумаги; лента реплик — разговор тех, кто ведёт заявку.
+   * Реплика уходит письмом ТОЛЬКО адресатам (§ 4) — и всей стороне сервиса, включая общий ящик
+   * компании: у подрядчика без учёток в портале это единственный способ прочитать сообщение.
    *
-   * Проверяются три вещи разом: реплика «Сервисному центру» доходит до ОПЕРАТОРА компании с полным
-   * текстом, общий ящик её не получает, а реплика «Заявителю» письма не порождает вовсе.
+   * Проверяются две половины решения разом: реплика «Сервисному центру» доходит до подрядчика с
+   * полным текстом, а реплика «Заявителю» письма не порождает вовсе — заявитель читает ленту в
+   * портале, и пересылка чужого разговора превратила бы почту подрядчика в зеркало обсуждения.
    */
   it('реплика сервису уходит письмом с текстом, реплика заявителю — нет', async () => {
     const { request } = await createRequest(await ctx.newEquipment('chat'), 'Не тянет из лотка');
@@ -1438,11 +1438,11 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     });
 
     const letters = (await mailsOf(request.id)).filter((l) => l.kind === 'service_request_comment');
-    // Одно событие — одна реплика, и адресат у неё один: оператор компании в портале.
-    expect(letters.map((l) => l.to_email)).toEqual([ctx.people.operator.email]);
-    // Общий ящик компании обсуждения не получает — в отличие от задания, отмены и бумаг.
-    expect(letters.map((l) => l.to_email)).not.toContain(CONTRACTOR_MAILBOX);
-    const toContractor = letters.find((l) => l.to_email === ctx.people.operator.email)!;
+    // Одно событие — одна реплика: письмо ушло только по адресованной сервису, зато всей стороне.
+    expect(letters.map((l) => l.to_email).sort()).toEqual(
+      [CONTRACTOR_MAILBOX, ctx.people.operator.email].sort(),
+    );
+    const toContractor = letters.find((l) => l.to_email === CONTRACTOR_MAILBOX)!;
     // Текст реплики в теле целиком: «вам написали» заставило бы подрядчика звонить, чтобы узнать что.
     expect(toContractor.body_text).toContain('Привезите ролик подачи, аппарат стоит');
     expect(toContractor.body_text).toContain('Кому: Сервисному центру');
@@ -1489,8 +1489,7 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
 
     // Обычных писем по репликам — по одному на адрес: второе место окна заняло назначение.
     const usual = (await mailsOf(request.id)).filter((l) => l.kind === 'service_request_comment');
-    // Реплики идут оператору компании, а не в её общий ящик (§ 4).
-    expect(usual.filter((l) => l.to_email === ctx.people.operator.email)).toHaveLength(1);
+    expect(usual.filter((l) => l.to_email === CONTRACTOR_MAILBOX)).toHaveLength(1);
     expect(usual[0]!.body_text).toContain('Первое сообщение');
 
     /**
@@ -1503,14 +1502,63 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
        WHERE entity_type = 'serviceRequest' AND entity_id = ${request.id}
          AND kind = 'service_request_activity_summary'
        ORDER BY to_email`);
-    // Сводка — ровно одна на адрес, а не по штуке на каждое подавленное письмо.
-    expect(summaries.rows.map((r) => r.to_email)).toEqual([ctx.people.operator.email]);
-    const forContractor = summaries.rows.find((r) => r.to_email === ctx.people.operator.email)!;
+    // По одной сводке на адрес стороны — и ровно одна, а не по штуке на каждое подавленное письмо.
+    expect(summaries.rows.map((r) => r.to_email).sort()).toEqual(
+      [CONTRACTOR_MAILBOX, ctx.people.operator.email].sort(),
+    );
+    const forContractor = summaries.rows.find((r) => r.to_email === CONTRACTOR_MAILBOX)!;
     expect(forContractor.body_text).toContain('письма по каждому шагу до конца часа');
     // Внешнему адресату ссылка не предлагается — портала у него может не быть вовсе.
     expect(forContractor.body_text).toContain('свяжитесь со службой оргтехники');
     expect(forContractor.body_text).not.toContain('office-equipment?tab=requests');
     // Текстов подавленных реплик в сводке нет: она говорит о факте, а не пересказывает переписку.
     expect(forContractor.body_text).not.toContain('Второе сообщение');
+  });
+  /**
+   * Главное ограничение общего ящика компании, названное заказчиком 04.09.2026: он получает письма
+   * ТОЛЬКО по тем заявкам, которые назначены ей. Держится оно не проверкой в письме, а тем, что
+   * сторона считается по `service_counterparty_id` самой заявки, — и проверять это надо именно
+   * так: соседняя компания ведёт свою заявку, а наш ящик молчит.
+   *
+   * Ошибка здесь была бы худшего сорта: подрядчик читал бы движение по чужим заявкам, включая
+   * технику, адреса площадок и переписку, — то самое, из-за чего адрес и не завели строкой
+   * `module_mail_recipients` (ADR 0153).
+   */
+  it('чужая заявка не пишет в ящик компании: сторона считается по назначению', async () => {
+    const { request } = await createRequest(await ctx.newEquipment('alien'), 'Не сканирует лоток');
+    // Заявка отдана ДРУГОЙ компании — той, у которой свой общий ящик из карточки.
+    const assigned = await inject(
+      'PUT',
+      `/api/v1/service-requests/${request.id}/executors`,
+      ctx.admin,
+      {
+        userIds: [],
+        serviceCounterpartyId: ctx.mailboxCounterpartyId,
+        version: request.version,
+      },
+    );
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    const afterAssign = (assigned.json() as { request: ServiceRequestDto }).request;
+
+    await withEvent('service_request_status_changed', async () => {
+      const started = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${request.id}/start`,
+        ctx.admin,
+        { version: afterAssign.version },
+      );
+      expect(started.statusCode, started.body).toBe(200);
+    });
+
+    // Все письма этой заявки — по всем видам, а не только по одному: ограничение общее.
+    const letters = await ctx.db.execute<{ to_email: string; kind: string }>(sql`
+      SELECT to_email, kind::text AS kind FROM mail_messages
+       WHERE entity_type = 'serviceRequest' AND entity_id = ${request.id}`);
+    const addresses = letters.rows.map((r) => r.to_email);
+    // Ящик соседней компании письма получает — заявка её.
+    expect(addresses).toContain(MAILBOX_ONLY_CONTRACTOR);
+    // А наш подрядчик и его оператор не получают ничего: заявка не их.
+    expect(addresses).not.toContain(CONTRACTOR_MAILBOX);
+    expect(addresses).not.toContain(ctx.people.operator.email);
   });
 });
