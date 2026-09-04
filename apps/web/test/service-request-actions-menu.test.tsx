@@ -10,6 +10,7 @@ import {
   serviceCustomer,
   serviceExecutor,
   serviceGlobalRequester,
+  serviceInHouseExecutor,
   serviceOperator,
   serviceRequest,
 } from './factories/service';
@@ -580,5 +581,76 @@ describe('«Редактировать» и «Удалить» сужены ст
 
     expect(labels).toContain('Редактировать');
     expect(labels).toContain('Удалить');
+  });
+});
+
+/**
+ * Те же два пункта у СИСАДМИНА — сужены его настоящей областью (план профилей оргтехники, находка
+ * Н8, решение заказчика 04.09.2026).
+ *
+ * Отдельным блоком от Р6 выше, потому что и субъект другой, и признак другой. Там роль без оси с
+ * набором «Заявитель», и решает всё авторство; здесь роль С осью плюс сквозная область модуля, и
+ * решает её вторая половина: «эта заявка моей площадки». Сквозная область стороной заказчика не
+ * делает — она отвечает «видно», а не «моё», — поэтому на чужой строке сервер теперь отвечает 403,
+ * и меню обязано молчать вместе с ним.
+ *
+ * ПРИЗНАК ПРИХОДИТ ПОЛЕМ КАРТОЧКИ (`inCustomerScope`), а не считается порталом: правило области
+ * живёт на сервере, и вторая его копия в браузере разошлась бы с первой молча. Фикстуры поэтому
+ * различаются ровно им — и, в третьем случае, авторством из сводки обсуждения.
+ */
+const SYSADMIN: AuthUser = serviceInHouseExecutor();
+
+/**
+ * Чужая строка: видна сквозной областью, заведена не им, площадка не его. Площадка названа другая
+ * не для красоты — фикстура обязана быть такой, какой её отдал бы сервер: на своей площадке он
+ * посчитал бы `inCustomerScope: true`, и «чужая заявка» с `obj-1` описывала бы ответ, которого не
+ * бывает.
+ */
+const OTHER_AREA: ServiceRequestDto = serviceRequest({
+  object: { id: 'obj-2', code: 'ОБ-2', name: 'ЖК Южный' },
+});
+
+/** Заявка ЕГО площадки: сторону заказчика посчитал сервер и сказал это полем карточки. */
+const OUR_AREA: ServiceRequestDto = serviceRequest({ inCustomerScope: true });
+
+/** Та же чужая площадка, но заявку завёл он сам: авторство — вторая половина дизъюнкции. */
+const OWN_ELSEWHERE: ServiceRequestDto = serviceRequest({
+  chat: { ...OTHER_AREA.chat, participantSides: ['customer'] },
+});
+
+describe('«Редактировать» и «Удалить» у сисадмина сужены его областью (Н8)', () => {
+  for (const place of LIST_PLACES) {
+    it(`на чужой строке пунктов нет: ${place.name}`, async () => {
+      const labels = await labelsAt(place, SYSADMIN, OTHER_AREA);
+
+      expect(labels).not.toContain('Редактировать');
+      expect(labels).not.toContain('Удалить');
+      // Якорь: обсуждение стоит у всех и во всех статусах — без него сценарий был бы зелёным и на
+      // неоткрывшемся меню. И второй якорь, острее: работа исполнителя у сисадмина не пропала.
+      expect(labels).toContain('Обсуждение');
+    });
+  }
+
+  it('на заявке своей площадки оба пункта на месте', async () => {
+    const labels = await labelsAt(LIST_PLACES[0]!, SYSADMIN, OUR_AREA);
+
+    expect(labels).toContain('Редактировать');
+    expect(labels).toContain('Удалить');
+  });
+
+  it('на чужой площадке, но своей по авторству, — тоже на месте', async () => {
+    const labels = await labelsAt(LIST_PLACES[0]!, SYSADMIN, OWN_ELSEWHERE);
+
+    expect(labels).toContain('Редактировать');
+    expect(labels).toContain('Удалить');
+  });
+
+  it('на чужой строке правки нет и у кнопки подвала карточки', async () => {
+    // В карточке «Редактировать» — главная кнопка подвала, и берётся она из того же набора
+    // действий: не подведи мы набор под предикат, кнопка осталась бы там, где меню уже чисто.
+    renderTab(SYSADMIN, [OTHER_AREA]);
+    await openCard();
+
+    expect(screen.queryByRole('button', { name: 'Редактировать' })).toBeNull();
   });
 });

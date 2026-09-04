@@ -6,6 +6,7 @@ import {
   ALL_SYSTEM_GRANT_CODES,
   audienceMatches,
   can,
+  canChangeRequestAsCustomer,
   hasModuleWideScope,
   MODULE_GRANT_CODES,
   MODULE_GRANTS,
@@ -565,5 +566,176 @@ describe('Профили по кодам выданных наборов (Р7, �
     // Собранный администратором набор с тем же составом прав профилем не является (Р9): профиль —
     // это код, и вывести его из состава значило бы вернуть ровно ту ошибку, от которой Э3 уводил.
     expect(officeEquipmentProfilesOf(['auditor', 'waste_ticket_audit'])).toEqual([]);
+  });
+});
+
+/**
+ * Правка и удаление заявки: `canChangeRequestAsCustomer` (план профилей оргтехники, находка Н8,
+ * решение заказчика 04.09.2026 — «системный администратор не правит и не удаляет чужие заявки»).
+ *
+ * ЧТО ЗАКРЫВАЕТ. Две клетки §5.1 — «Изменение заявки: Сисадмин —» и «Удаление (в архив): Сисадмин
+ * —» — не держало ничто: обе половины профиля выдаются поверх ролей `shtab`/`site`/`department`, у
+ * каждой из которых `serviceRequests.update` и `.delete` есть по матрице, а сквозная область
+ * ИТ-набора снимает у них ось. Теперь эти клетки держит этот предикат.
+ *
+ * ГЛАВНОЕ УТВЕРЖДЕНИЕ ЭТОГО БЛОКА — ТО ЖЕ, ЧТО У СОСЕДНЕГО: невлияние. Ни одна роль БЕЗ наборов
+ * оргтехники поведения не изменила, и доказывается это сплошным перебором, а не выборкой случаев:
+ * сквозная область приходит только набором, и субъекту без наборов правило отвечает «да» на любом
+ * сочетании признаков.
+ */
+describe('Правка и удаление: сторона заказчика (Н8)', () => {
+  const FACTS: readonly RequestCustomerFacts[] = [
+    { isAuthor: false, inCustomerScope: false },
+    { isAuthor: true, inCustomerScope: false },
+    { isAuthor: false, inCustomerScope: true },
+    { isAuthor: true, inCustomerScope: true },
+  ];
+
+  /** Профиль «Системный администратор» целиком — оба кода, как его выдаёт форма учётки (Р2, Э8). */
+  const IT_CODES = [OFFICE_EQUIPMENT_IT_GRANT, OFFICE_EQUIPMENT_EXECUTOR_GRANT];
+
+  /**
+   * НЕВЛИЯНИЕ, СПЛОШНЫМ ПЕРЕБОРОМ. `ACCESS_PROFILES` — все, кто в портале бывает: роли, типы
+   * контрагента и пары «роль + набор». Правило написано про сквозную область модуля заявок,
+   * поэтому перебор делится ровно надвое, и делит его тот же `hasModuleWideScope`, которым
+   * область читают сервер и портал:
+   *
+   *   · у кого сквозной области НЕТ — ответ обязан совпасть с прежним стражем на каждом из
+   *     четырёх сочетаний признаков. Не «true», а именно совпасть: так утверждение остаётся
+   *     верным и для держателя «Заявителя», которого сужает прежнее правило;
+   *   · у кого она ЕСТЬ — это половина профиля ИТ-службы и никто больше, и таких субъектов
+   *     перебор обязан найти хоть одного: сойдись он к пустому множеству, тест зеленел бы,
+   *     ничего не проверяя.
+   *
+   * Утверждение сильнее, чем «роли с осью не тронуты»: сюда попадают и штаб, и наблюдатель, и
+   * подрядчик, и учётка без роли вовсе.
+   */
+  it('ни один субъект без сквозной области не изменил поведения — ни на одном сочетании', () => {
+    const wide: string[] = [];
+    for (const subject of [...ACCESS_PROFILES, { role: null } as AccessSubject]) {
+      if (hasModuleWideScope(subject.grantCodes, 'serviceRequests')) {
+        wide.push(accessProfileLabel(subject));
+        continue;
+      }
+      for (const facts of FACTS) {
+        expect(
+          canChangeRequestAsCustomer(subject, facts),
+          `${accessProfileLabel(subject)} @ ${JSON.stringify(facts)}`,
+        ).toBe(actsAsRequestCustomer(subject, facts));
+      }
+    }
+    // Сквозная область приходит ровно одним набором — тем, которым выдают половину профиля ИТ.
+    expect(wide.length).toBeGreaterThan(0);
+    expect(wide.every((label) => label.includes('ИТ-служба'))).toBe(true);
+  });
+
+  /**
+   * И то же самое ответом соседа: там, где прежнее правило автора отвечало «да», новое обязано
+   * отвечать тем же — субъекты у них разные, и подменять один другим нельзя. Перебор идёт по всем
+   * ролям с кодом «Заявителя»: у него сквозной области нет и быть не может (Р9), поэтому добавка
+   * Н8 его не касается ни в одном случае.
+   */
+  it('держателя «Заявителя» новая дверь судит ровно тем же ответом, что и прежняя', () => {
+    for (const role of ROLES) {
+      const subject: AccessSubject = { role, grantCodes: [OFFICE_EQUIPMENT_REQUESTER_GRANT] };
+      for (const facts of FACTS) {
+        expect(
+          canChangeRequestAsCustomer(subject, facts),
+          `${role} @ ${JSON.stringify(facts)}`,
+        ).toBe(actsAsRequestCustomer(subject, facts));
+      }
+    }
+  });
+
+  /**
+   * СОБСТВЕННО ПРАВИЛО. Профиль ИТ-службы на всех трёх ролях, поверх которых его выдают (Н8):
+   * чужая строка — «нет», своя по авторству либо по НАСТОЯЩЕЙ области — «да».
+   *
+   * Роли перечислены поимённо, потому что поимённо названа и находка: сквозная область снимает ось
+   * у каждой из трёх, и без правила все три правили бы любую «Новую» компании.
+   */
+  it('профиль ИТ: чужая заявка — нет, своя по авторству или по своей области — да', () => {
+    for (const role of ['shtab', 'site', 'department'] as const) {
+      const subject: AccessSubject = { role, grantCodes: IT_CODES };
+      expect(hasModuleWideScope(subject.grantCodes, 'serviceRequests'), role).toBe(true);
+      expect(
+        canChangeRequestAsCustomer(subject, { isAuthor: false, inCustomerScope: false }),
+        role,
+      ).toBe(false);
+      expect(
+        canChangeRequestAsCustomer(subject, { isAuthor: true, inCustomerScope: false }),
+        role,
+      ).toBe(true);
+      expect(
+        canChangeRequestAsCustomer(subject, { isAuthor: false, inCustomerScope: true }),
+        role,
+      ).toBe(true);
+    }
+  });
+
+  /**
+   * ПОЛОВИНА ПРОФИЛЯ БЕЗ СКВОЗНОЙ ОБЛАСТИ ПРАВИЛОМ НЕ СУЖАЕТСЯ. Набор «работа исполнителем»
+   * (`…_executor`) заводился ровно затем, чтобы назначенному не отдавать заодно сквозную
+   * видимость (Р2), — и правило Н8 про него не написано: сузь оно и его, назначенный сотрудник
+   * потерял бы правку СВОЕЙ заявки на чужой площадке без единого решения об этом.
+   */
+  it('набор исполнителя в одиночку правило не включает', () => {
+    const subject: AccessSubject = {
+      role: 'shtab',
+      grantCodes: [OFFICE_EQUIPMENT_EXECUTOR_GRANT],
+    };
+    expect(hasModuleWideScope(subject.grantCodes, 'serviceRequests')).toBe(false);
+    for (const facts of FACTS) {
+      expect(canChangeRequestAsCustomer(subject, facts), JSON.stringify(facts)).toBe(true);
+    }
+  });
+
+  /**
+   * ИСКЛЮЧЕНИЕ ПЕРВОЕ: «Ведение». Держатель кода `office_equipment_operator` правит и удаляет
+   * чужие заявки по должности — операторский слой с авторским не смешивается (Р6 прямым текстом),
+   * и пара «Ведение + ИТ» у одного человека рабочая: он и координирует, и чинит.
+   */
+  it('«Ведение» снимает правило — и в одиночку, и в паре с набором ИТ', () => {
+    const pairs: readonly string[][] = [
+      [OFFICE_EQUIPMENT_OPERATOR_GRANT],
+      [...IT_CODES, OFFICE_EQUIPMENT_OPERATOR_GRANT],
+    ];
+    for (const grantCodes of pairs) {
+      const subject: AccessSubject = { role: 'department', grantCodes };
+      expect(
+        canChangeRequestAsCustomer(subject, { isAuthor: false, inCustomerScope: false }),
+        grantCodes.join('+'),
+      ).toBe(true);
+    }
+  });
+
+  /**
+   * ИСКЛЮЧЕНИЕ ВТОРОЕ: `admin`. Основание то же, по которому он исключён в `actsAsServiceOperator`
+   * и в стороне обсуждения `it`: права у него от роли, кодов наборов не бывает вовсе, а разбор
+   * застрявшего за любую сторону — его работа. Субъект с кодом здесь выдуман нарочно: исключение
+   * обязано держаться ролью, а не тем, что до кодов дело не дойдёт.
+   */
+  it('администратор правит и удаляет любую заявку — даже с кодами наборов', () => {
+    for (const grantCodes of [undefined, IT_CODES]) {
+      const admin: AccessSubject = { role: 'admin', grantCodes };
+      expect(
+        canChangeRequestAsCustomer(admin, { isAuthor: false, inCustomerScope: false }),
+        JSON.stringify(grantCodes),
+      ).toBe(true);
+    }
+  });
+
+  /**
+   * И ГРАНИЦА, РАДИ КОТОРОЙ ПРЕДИКАТ ОТДЕЛЬНЫЙ: подшивку документов правило не трогает. Страж
+   * авторства стоит на общем входе ВСЕХ изменяющих ручек, и под ним, кроме правки и удаления,
+   * живут подшивка и снятие вложения. Сисадмина штатно назначают исполнителем на заявку чужой
+   * площадки — акт по ней он обязан приложить, — поэтому старый предикат на чужой строке ему
+   * отвечает «да», а новый «нет», и это два разных ответа на два разных вопроса.
+   */
+  it('прежний страж на чужой строке сисадмина не сужает — иначе исполнитель потерял бы подшивку', () => {
+    const subject: AccessSubject = { role: 'site', grantCodes: IT_CODES };
+    const foreign = { isAuthor: false, inCustomerScope: false };
+    expect(actsAsRequestCustomer(subject, foreign)).toBe(true);
+    expect(canChangeRequestAsCustomer(subject, foreign)).toBe(false);
   });
 });

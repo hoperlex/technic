@@ -81,6 +81,11 @@ const file = (kind: ServiceFileKind) => ({
  */
 const FULL: ServiceRequestDto = {
   audience: 'finance',
+  /*
+   * Сторона заказчика читателя (Н8 плана профилей): поле про ЧИТАТЕЛЯ, как и `audience` рядом, и
+   * проекция его не трогает — карта режет деньги заявки, а не права того, кто её открыл.
+   */
+  inCustomerScope: true,
   id: UUID,
   num: 14,
   displayNumber: 'СО-14',

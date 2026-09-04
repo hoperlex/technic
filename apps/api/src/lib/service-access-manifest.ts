@@ -113,9 +113,16 @@ export type ServiceStateGate =
   | 'archiveWhere'
   /** Архивная строка отвечает 404, а не 403 (`assertArchiveVisible`). */
   | 'assertArchiveVisible'
-  /** Заказчик правит заявку только до назначения (`isServiceRequestEditable`). */
+  /**
+   * Заказчик правит заявку только до назначения (`isServiceRequestEditable`), и правит её только
+   * СВОЮ: та же функция спрашивает сторону заказчика (`canChangeRequestAsCustomer`, находка Н8
+   * плана профилей оргтехники) — по собственной оси субъекта либо по авторству.
+   */
   | 'assertServiceRequestEditable'
-  /** Заказчик удаляет заявку, пока по ней не начали работать (`isServiceRequestDeletable`). */
+  /**
+   * Заказчик удаляет заявку, пока по ней не начали работать (`isServiceRequestDeletable`), и
+   * удаляет тоже только свою — сторона там та же, что у правки.
+   */
   | 'assertServiceRequestDeletable'
   /** Коридор переходов контрактов (`allowedServiceStatusTransitions`). */
   | 'assertTransition'

@@ -134,6 +134,14 @@ interface Ctx {
    */
   itAdmin: TestUser;
   /**
+   * ВТОРОЙ системный администратор — тот же профиль, но поверх ШТАБА своей площадки (Н8). Нужен он
+   * ради одной вещи, которой на роли отдела не собрать вовсе: заявка, где сисадмин АВТОР, но своей
+   * области у него нет. У роли отдела так не бывает — её собственная заявка всегда уходит на её же
+   * отдел-заказчик, — и авторская половина дизъюнкции проверялась бы вместе с областной, то есть
+   * никак. Заодно это вторая из трёх ролей, поверх которых профиль выдают.
+   */
+  itSite: TestUser;
+  /**
    * Роль БЕЗ СВОЕЙ ОСИ с набором «Заявитель» (Т17, этап Э7): менеджер, у которого нет ни площадки,
    * ни отдела. Ради него набор и заведён (Р6) — он сидит в офисе рядом с принтером, а завести
    * заявку до Э7 не мог вовсе.
@@ -353,6 +361,9 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
     const operator = await makeUser('oper', 'shtab');
     const executor = await makeUser('exec', 'shtab');
     const itAdmin = await makeUser('it', 'department');
+    // Сисадмин поверх штаба: своя площадка у него есть, и она НЕ та, где стоит техника заявок
+    // второй площадки, — на этой паре и читается «своё по авторству» отдельно от «своего по области».
+    const itSite = await makeUser('itsite', 'shtab');
     const customerB = await makeUser('custb', 'shtab');
     /*
      * Менеджер БЕЗ площадок и без отделов — не упрощение сцены, а условие Т17: своей оси у роли
@@ -365,7 +376,8 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
     await db.execute(sql`
       INSERT INTO user_construction_objects (user_id, construction_object_id)
       VALUES (${customer.id}, ${objectId}), (${operator.id}, ${objectId}),
-             (${executor.id}, ${objectId}), (${customerB.id}, ${objectBId})`);
+             (${executor.id}, ${objectId}), (${itSite.id}, ${objectId}),
+             (${customerB.id}, ${objectBId})`);
     await db.execute(sql`
       INSERT INTO user_departments (user_id, department_id)
       VALUES (${itAdmin.id}, ${itDepartmentId})`);
@@ -419,6 +431,7 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
       operator: { ...operator, auth: { authorization: '' } },
       executor: { ...executor, auth: { authorization: '' } },
       itAdmin: { ...itAdmin, auth: { authorization: '' } },
+      itSite: { ...itSite, auth: { authorization: '' } },
       office: { ...office, auth: { authorization: '' } },
       customerB: { ...customerB, auth: { authorization: '' } },
       serviceUser: { ...serviceUser, auth: { authorization: '' } },
@@ -454,6 +467,9 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
     await assignGrant(executor.id, executorGrantId);
     await assignGrant(itAdmin.id, itGrantId);
     await assignGrant(itAdmin.id, executorGrantId);
+    // Второй держатель того же профиля — оба кода, как их выдаёт форма учётки (Р2, Э8).
+    await assignGrant(itSite.id, itGrantId);
+    await assignGrant(itSite.id, executorGrantId);
     // «Заявитель» менеджеру — сама по себе эта выдача и есть половина Т17: до миграции D барьер
     // ответил бы `roleNotAllowed`, потому что строки `grant_roles` под ролью без оси не было.
     await assignGrant(office.id, requesterGrantId);
@@ -461,6 +477,7 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
     // Входы — после выдачи: выдача гасит сессии держателя, и токен, взятый раньше, всё равно умер бы.
     ctx.executor.auth = await login(executor.email);
     ctx.itAdmin.auth = await login(itAdmin.email);
+    ctx.itSite.auth = await login(itSite.email);
     ctx.office.auth = await login(office.email);
   }, 240_000);
 
@@ -1182,5 +1199,259 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
     const sides = (await card(foreign.id, ctx.office.auth)).chat.participantSides;
     expect(sides).toContain('operator');
     expect(sides).not.toContain('customer');
+  });
+
+  /**
+   * Н8, ПЕРВАЯ ПОЛОВИНА: **системный администратор не правит и не удаляет чужие заявки**
+   * (решение заказчика 04.09.2026; §5.1, строки «Изменение заявки» и «Удаление (в архив)»).
+   *
+   * Что здесь доказывается и почему тремя разными заявками. Дверь открывает сторона заказчика,
+   * посчитанная ПО СОБСТВЕННОЙ оси субъекта либо по авторству, а сквозная область стороной
+   * заказчика не делает, — значит проверять надо все три случая порознь:
+   *
+   *   1. чужая заявка: видна сквозной областью, и обе двери отвечают 403 с причиной `side`;
+   *   2. своя ПО АВТОРСТВУ — на профиле поверх ШТАБА и на чужой ему площадке: областной половины
+   *      дизъюнкции здесь нет вовсе, держит дверь одно авторство;
+   *   3. своя ПО ОБЛАСТИ — заявку завёл другой человек, а техника закреплена за отделом ИТ:
+   *      авторства нет, сторона настоящая.
+   *
+   * Второй и третий случаи — положительные контроли, и без них первый доказывал бы что угодно,
+   * вплоть до «учётка вообще не правит заявок».
+   */
+  it('сисадмин правит и удаляет своё, а чужую заявку — нет: 403 на обе двери (Н8)', async () => {
+    // — 1. ЧУЖАЯ. Площадки у роли отдела нет вовсе, отдел в строке не его: видит он заявку одной
+    // лишь сквозной областью ИТ-набора, и ровно это правило теперь и отсекает.
+    const foreign = await ctx.newRequest('h8a');
+    const seen = await card(foreign.id, ctx.itAdmin.auth);
+    expect(seen.id, 'заявка обязана быть видна: отказ ниже — не про область').toBe(foreign.id);
+    expect(seen.inCustomerScope, 'сквозная область стороной заказчика не делает').toBe(false);
+
+    const patchForeign = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${foreign.id}`,
+      ctx.itAdmin.auth,
+      { description: 'Правка чужой заявки', version: await version(foreign.id) },
+    );
+    expect(patchForeign.statusCode, patchForeign.body).toBe(403);
+    expect(patchForeign.json<{ message: string }>().message).toMatch(/сторона заказчика/u);
+
+    const dropForeign = await ctx.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/service-requests/${foreign.id}`,
+      headers: ctx.itAdmin.auth,
+    });
+    expect(dropForeign.statusCode, dropForeign.body).toBe(403);
+
+    // Ни одна из дверей не приоткрылась наполовину: строка та же и в архив не ушла.
+    const untouched = await card(foreign.id, ctx.admin.auth);
+    expect(untouched.description).toBe(foreign.description);
+    expect(untouched.version).toBe(foreign.version);
+
+    /*
+     * И обе попытки лежат в журнале отказов — тем же способом, каким туда попадает страж
+     * авторства: причина `side` (заявка достигнута законно, а распоряжаться ею вправе её сторона)
+     * и адрес заявки. Строка видна сразу после ответа: хук `onError` завершается раньше, чем ответ
+     * уходит клиенту.
+     */
+    const denials = await ctx.db.execute<{ metadata: Record<string, unknown> }>(sql`
+      SELECT metadata FROM audit_log
+       WHERE action = 'serviceRequest.access_denied'
+         AND entity_id = ${foreign.id}
+         AND actor_user_id = ${ctx.itAdmin.id}
+       ORDER BY created_at`);
+    expect(denials.rows.map((r) => r.metadata.route)).toEqual([
+      'PATCH /api/v1/service-requests/:id',
+      'DELETE /api/v1/service-requests/:id',
+    ]);
+    expect(denials.rows.every((r) => r.metadata.reason === 'side')).toBe(true);
+
+    // — 2. СВОЯ ПО АВТОРСТВУ. Сисадмин-штаб заводит заявку на ВТОРОЙ площадке — своей области там
+    // нет ни одной колонкой, и держит обе двери одно авторство.
+    const mineRes = await inject('POST', '/api/v1/service-requests', ctx.itSite.auth, {
+      officeEquipmentId: await ctx.newEquipment('h8b', ctx.objectBId),
+      description: 'Завёл сам, площадка чужая',
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000010',
+    });
+    expect(mineRes.statusCode, mineRes.body).toBe(201);
+    const mine = (mineRes.json() as { request: ServiceRequestDto }).request;
+    expect(mine.inCustomerScope, 'на чужой площадке своей области быть не может').toBe(false);
+
+    const patchMine = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${mine.id}`,
+      ctx.itSite.auth,
+      { description: 'Завёл сам и уточнил', version: mine.version },
+    );
+    expect(patchMine.statusCode, patchMine.body).toBe(200);
+
+    const dropMine = await ctx.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/service-requests/${mine.id}`,
+      headers: ctx.itSite.auth,
+    });
+    expect(dropMine.statusCode, dropMine.body).toBe(200);
+
+    // — 3. СВОЯ ПО ОБЛАСТИ. Заявку завёл штаб площадки, а техника закреплена за отделом ИТ: снимок
+    // `equipment_department_id` и делает сисадмина стороной заказчика — настоящей, не сквозной.
+    const ourUnit = await ctx.newEquipment('h8c');
+    await ctx.db.execute(sql`
+      UPDATE office_equipment SET owner_department_id = ${ctx.itDepartmentId} WHERE id = ${ourUnit}`);
+    const oursRes = await inject('POST', '/api/v1/service-requests', ctx.customer.auth, {
+      officeEquipmentId: ourUnit,
+      description: 'Аппарат отдела ИТ не печатает',
+      responsibleName: 'Петров Пётр Петрович',
+      responsiblePhone: '+79990000011',
+    });
+    expect(oursRes.statusCode, oursRes.body).toBe(201);
+    const ours = (oursRes.json() as { request: ServiceRequestDto }).request;
+    expect((await card(ours.id, ctx.itAdmin.auth)).inCustomerScope).toBe(true);
+
+    const patchOurs = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${ours.id}`,
+      ctx.itAdmin.auth,
+      { description: 'Уточнение от своего отдела', version: await version(ours.id) },
+    );
+    expect(patchOurs.statusCode, patchOurs.body).toBe(200);
+
+    const dropOurs = await ctx.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/service-requests/${ours.id}`,
+      headers: ctx.itAdmin.auth,
+    });
+    expect(dropOurs.statusCode, dropOurs.body).toBe(200);
+  });
+
+  /**
+   * Н8, ГЛАВНЫЙ СЛУЧАЙ — ЛОВУШКА: **назначенный исполнитель не потерял подшивку** на той самой
+   * чужой заявке, править которую ему закрыли.
+   *
+   * Почему это отдельный случай, а не строчка в соседнем. Страж стороны заказчика стоит на общем
+   * входе ВСЕХ изменяющих ручек, и под ним, кроме правки и удаления, живут подшивка и снятие
+   * вложения. Расширь правило Н8 «в лоб» — на общем входе, — и сисадмин, назначенный на заявку
+   * чужой площадки, перестал бы прикладывать акт к заявке, которую сам же чинит. Регрессии этой
+   * никто не заказывал, и ловится она только сценарием, где обе половины стоят рядом: правка
+   * отвечает 403, а бумага подшивается 200 — на ОДНОЙ и той же строке.
+   *
+   * Акт, а не произвольное вложение: это бумага ИСПОЛНИТЕЛЯ (`attachedBySide: ['executor']`), то
+   * есть ровно та дверь, которую сломало бы неаккуратное расширение.
+   */
+  it('назначенный сисадмин подшивает и снимает акт на заявке, править которую ему закрыли (Н8)', async () => {
+    const foreign = await ctx.newRequest('h8x');
+
+    // Дверь правки закрыта — с неё и начинаем: без неё «подшивка работает» ничего не доказывает.
+    const beforeAssign = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${foreign.id}`,
+      ctx.itAdmin.auth,
+      { description: 'Правка до назначения', version: await version(foreign.id) },
+    );
+    expect(beforeAssign.statusCode, beforeAssign.body).toBe(403);
+
+    // Назначение — рукой «Ведения», как в жизни, и ходы исполнителя после него работают.
+    await assignExecutor(foreign.id, ctx.itAdmin.id);
+    const started = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${foreign.id}/start`,
+      ctx.itAdmin.auth,
+      { version: await version(foreign.id) },
+    );
+    expect(started.statusCode, started.body).toBe(200);
+    expect((started.json() as ServiceRequestDto).status).toBe('in_work');
+
+    const act = await uploadedFile(ctx.itAdmin.id, 'акт-выполненных-работ.pdf');
+    const attach = await inject(
+      'POST',
+      `/api/v1/service-requests/${foreign.id}/files`,
+      ctx.itAdmin.auth,
+      { fileIds: [act], kind: 'act' },
+    );
+    expect(attach.statusCode, attach.body).toBe(200);
+
+    const detach = await ctx.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/service-requests/${foreign.id}/files/${act}`,
+      headers: ctx.itAdmin.auth,
+    });
+    expect(detach.statusCode, detach.body).toBe(200);
+
+    // И правка всё так же закрыта СТОРОНОЙ, а не статусом: назначение открыло работу, а не запись.
+    const afterAssign = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${foreign.id}`,
+      ctx.itAdmin.auth,
+      { description: 'Правка исполнителем', version: await version(foreign.id) },
+    );
+    expect(afterAssign.statusCode, afterAssign.body).toBe(403);
+    expect(afterAssign.json<{ message: string }>().message).toMatch(/сторона заказчика/u);
+  });
+
+  /**
+   * Н8, ДВА НАЗВАННЫХ ИСКЛЮЧЕНИЯ: **«Ведение» и администратор чужую заявку правят и удаляют
+   * по-прежнему**.
+   *
+   * Первое — потому что оператор ведёт модуль и распоряжается чужими заявками по должности
+   * (Р6: операторский слой с авторским не смешивается); второе — потому что права администратора
+   * приходят ролью, а не выдачей, и разбор застрявшего за любую сторону его работа.
+   *
+   * ВЫДАЧА «ВЕДЕНИЯ» ЗДЕСЬ НЕ ОТМАТЫВАЕТСЯ ОБРАТНО, поэтому случай стоит последним в файле —
+   * ровно по той же причине, что и вторая половина Т17 выше. Проверяется он ПЕРЕКЛЮЧЕНИЕМ: тот же
+   * человек на той же заявке сперва получает 403, а с набором — 200; отдельный «оператор с самого
+   * начала» доказывал бы лишь то, что оператор работает.
+   */
+  it('«Ведение» и администратор правят и удаляют чужую заявку по-прежнему (Н8)', async () => {
+    // — Администратор: заявка чужой площадки, заведённая другим человеком.
+    const forAdmin = await ctx.newRequest('h8y');
+    const patchAdmin = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${forAdmin.id}`,
+      ctx.admin.auth,
+      { description: 'Разбор администратора', version: await version(forAdmin.id) },
+    );
+    expect(patchAdmin.statusCode, patchAdmin.body).toBe(200);
+    const dropAdmin = await ctx.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/service-requests/${forAdmin.id}`,
+      headers: ctx.admin.auth,
+    });
+    expect(dropAdmin.statusCode, dropAdmin.body).toBe(200);
+
+    // — «Ведение». Заявка ВТОРОЙ площадки: сисадмину-штабу она чужая по обеим половинам правила.
+    const foreignBRes = await inject('POST', '/api/v1/service-requests', ctx.customerB.auth, {
+      officeEquipmentId: await ctx.newEquipment('h8z', ctx.objectBId),
+      description: 'Мнёт бумагу на второй площадке',
+      responsibleName: 'Сидоров Сидор Сидорович',
+      responsiblePhone: '+79990000012',
+    });
+    expect(foreignBRes.statusCode, foreignBRes.body).toBe(201);
+    const foreignB = (foreignBRes.json() as { request: ServiceRequestDto }).request;
+
+    const denied = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${foreignB.id}`,
+      ctx.itSite.auth,
+      { description: 'Правка до выдачи «Ведения»', version: foreignB.version },
+    );
+    expect(denied.statusCode, denied.body).toBe(403);
+
+    await assignGrant(ctx.itSite.id, ctx.operatorGrantId);
+    // Выдача гасит сессии держателя — токен, взятый раньше, уже мёртв.
+    ctx.itSite.auth = await login(ctx.itSite.email);
+
+    const patchOperator = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${foreignB.id}`,
+      ctx.itSite.auth,
+      { description: 'Правка того, кто ведёт модуль', version: await version(foreignB.id) },
+    );
+    expect(patchOperator.statusCode, patchOperator.body).toBe(200);
+
+    const dropOperator = await ctx.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/service-requests/${foreignB.id}`,
+      headers: ctx.itSite.auth,
+    });
+    expect(dropOperator.statusCode, dropOperator.body).toBe(200);
   });
 });

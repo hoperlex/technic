@@ -15,6 +15,7 @@ import {
   allowedVehicleRequestTypes,
   type ArchiveFilter,
   can,
+  canChangeRequestAsCustomer,
   canOrderVehicleRequestType,
   canTransitionStatus,
   type CounterpartyType,
@@ -875,6 +876,44 @@ export function assertActsAsRequestCustomer(p: Principal, row: ServiceRequestAut
 }
 
 /**
+ * **Страж стороны заказчика на ДВУХ дверях — правке и удалении** (план профилей оргтехники,
+ * находка Н8, решение заказчика 04.09.2026): держатель сквозной области модуля правит и удаляет
+ * только свои заявки и заявки своей настоящей области.
+ *
+ * ПОЧЕМУ НЕ В `requireEditable`, ГДЕ УЖЕ СТОИТ СОСЕД. На общем входе изменяющих ручек живут
+ * ЧЕТЫРЕ двери, и две из них — подшивка и снятие документов. Сисадмина штатно назначают
+ * исполнителем на заявку чужой площадки (ради этого у профиля второй набор), и акт по ней он
+ * обязан приложить: поставь мы это правило туда, назначенный исполнитель перестал бы прикладывать
+ * документы к заявке, которую сам же чинит. Поэтому правило зовётся отсюда — с двух дверей, а не с
+ * общего входа, — и на подшивке продолжает работать один лишь прежний страж авторства.
+ *
+ * ПРИЗНАКИ ТЕ ЖЕ И СЧИТАЮТСЯ ТЕМ ЖЕ. Авторство и `inServiceRequestCustomerScope` — ровно та пара,
+ * которой решает сторону заказчика сосед выше и подсветка адресата «Заявителю»; решает же по ним
+ * контракт (`canChangeRequestAsCustomer`), он же отвечает порталу. Своё условие здесь развело бы
+ * кнопку и ручку молча.
+ *
+ * ОТКАЗ — `side`, как у соседа, и по той же причине: заявка субъекту ВИДНА и достигнута законно
+ * (сквозной областью набора), а вот распоряжаться записью вправе её сторона заказчика. Хук журнала
+ * пишет по этой причине `serviceRequest.access_denied` с адресом заявки — попытка править чужую
+ * строку обязана оставлять след.
+ */
+function assertChangesRequestAsCustomer(
+  p: Principal,
+  row: ServiceRequestAuthorPlace,
+  action: string,
+): void {
+  const allowed = canChangeRequestAsCustomer(p, {
+    isAuthor: row.createdBy === p.id,
+    inCustomerScope: inServiceRequestCustomerScope(p, row),
+  });
+  if (allowed) return;
+  throw serviceDenied.side(
+    `Сквозная область модуля показывает заявку, но ${action} её вправе сторона заказчика — тот, кто её завёл, либо его площадка или отдел`,
+    row.id,
+  );
+}
+
+/**
  * Со стороны заказчика правят заявку, которую ещё никому не отдали: после назначения за ней стоят
  * договорённости с исполнителем, и менять её предмет задним числом нельзя. Правило то же, что в
  * двух действующих модулях (`assertObjectRoleEditable`), а решает его предикат контрактов
@@ -892,9 +931,19 @@ export function assertActsAsRequestCustomer(p: Principal, row: ServiceRequestAut
  */
 export function assertServiceRequestEditable(
   p: Principal,
-  row: ServiceExecutorsRow & { status: ServiceRequestStatus },
+  row: ServiceRequestAuthorPlace & ServiceExecutorsRow & { status: ServiceRequestStatus },
   action: string,
 ): void {
+  /*
+   * СТОРОНА — ПЕРВЫМ ВОПРОСОМ, СОСТОЯНИЕ — ВТОРЫМ (Н8). Правило живёт здесь, а не отдельной
+   * проверкой в маршруте, ровно потому, что эта функция И ЕСТЬ дверь «правка заявки»: её называет
+   * столбец «Держит» матрицы §5.1, её же называет манифест доступа строкой `PATCH /:id`, и зовёт
+   * её один-единственный обработчик. Проверка, приписанная в маршруте рядом, была бы третьим
+   * местом, о котором обязана помнить следующая изменяющая ручка, — а забытая, она открыла бы
+   * дверь молча. Порядок вопросов тоже не случаен: «заявка не ваша» человеку полезнее, чем «её уже
+   * отдали исполнителю», и в журнал отказов попадает именно попытка дотянуться до чужой строки.
+   */
+  assertChangesRequestAsCustomer(p, row, 'править');
   if (isPlaceScopedRole(p.role) && !isServiceRequestEditable(row)) {
     throw err.forbidden(
       `${roleLabels[p.role!]} может ${action} заявку только до назначения сервиса`,
@@ -908,21 +957,31 @@ export function assertServiceRequestEditable(
  * начиналась, исполнителя ей просто назначили, — а править её уже нельзя, предмет заявки
  * исполнитель прочитал и по нему договорился.
  *
- * Поэтому **статуса здесь достаточно, а строка не передаётся**, и это проверено, а не совпало
+ * Поэтому **на СОСТОЯНИЕ здесь по-прежнему отвечает один статус**, и это проверено, а не совпало
  * (Р14): удаляли «Новую» и «Назначенную» — то есть заявку до того, как за неё взялись, — оба
  * состояния после слияния зовутся «Новой», и один `new` покрывает ровно тот же набор заявок, что
  * покрывала прежняя пара. Разница с правкой ровно в этом: правке нужен ещё и состав исполнителей,
  * удалению — нет.
+ *
+ * СТРОКА ЖЕ ПОЯВИЛАСЬ В СИГНАТУРЕ РАДИ СТОРОНЫ, А НЕ РАДИ СОСТОЯНИЯ (Н8, решение заказчика
+ * 04.09.2026): удаление — вторая из двух дверей, которые сузились, и держит её эта функция ровно
+ * так же, как правку держит соседняя. Автор и место строки — то, чем сторона заказчика считается;
+ * статусом её не выразить ничем.
  *
  * Отдельной функцией, потому что условие у этих двух решений разное и живёт оно в контрактах
  * (`isServiceRequestDeletable`): переиспользуй мы `assertServiceRequestEditable`, два разных
  * решения заказчика держались бы на одном перечне и разъехались бы на первой же правке любого из
  * них.
  */
-export function assertServiceRequestDeletable(p: Principal, status: ServiceRequestStatus): void {
-  if (isPlaceScopedRole(p.role) && !isServiceRequestDeletable(status)) {
+export function assertServiceRequestDeletable(
+  p: Principal,
+  row: ServiceRequestAuthorPlace & { status: ServiceRequestStatus },
+): void {
+  // Сторона — первым вопросом, как и у правки: чужую заявку человеку не удалять ни в каком статусе.
+  assertChangesRequestAsCustomer(p, row, 'удалить');
+  if (isPlaceScopedRole(p.role) && !isServiceRequestDeletable(row.status)) {
     throw err.forbidden(
-      `${roleLabels[p.role!]} удаляет заявку, пока по ней не начали работать — «${serviceRequestStatusLabels[status]}» уже дальше`,
+      `${roleLabels[p.role!]} удаляет заявку, пока по ней не начали работать — «${serviceRequestStatusLabels[row.status]}» уже дальше`,
     );
   }
 }

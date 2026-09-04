@@ -179,7 +179,9 @@ import {
   assertServiceRequestEditable,
   assertServiceRequestScope,
   assertServiceRequestVisible,
+  inServiceRequestCustomerScope,
   officeEquipmentScopeWhere,
+  type ServiceRequestAuthorPlace,
   serviceRequestNamedExecutorWhere,
   serviceRequestVisibilityWhere,
 } from '../lib/access';
@@ -636,6 +638,7 @@ function toDto(
   chat: ServiceRequestChatSummaryDto,
   audience: ServiceRequestAudience,
   seesEquipmentDirectory: boolean,
+  inCustomerScope: boolean,
 ): ServiceRequestDto {
   const r = row.r;
   return {
@@ -650,6 +653,13 @@ function toDto(
      * когда ответ и правда урезан.
      */
     audience,
+    /**
+     * Сторона заказчика ЭТОГО читателя (Н8) — второй признак, которым портал зовёт
+     * `canChangeRequestAsCustomer`: первым идёт авторство, и оно приходит сводкой обсуждения.
+     * Считает сервер тем же предикатом, что и область видимости, а портал правило не
+     * воспроизводит — иначе у «моей заявки» завелось бы два ответа, и разошлись бы они молча.
+     */
+    inCustomerScope,
     id: r.id,
     num: r.num,
     displayNumber: formatServiceRequestNumber(r.num),
@@ -973,6 +983,16 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
       chatMap.get(row.r.id)!,
       audience,
       seesEquipmentDirectory,
+      /*
+       * Сторона заказчика — свойство пары «человек ↔ эта заявка», как и аудитория рядом, и
+       * считается тем же предикатом, что область видимости и подсветка адресата «Заявителю»
+       * (Н8). Второго похода в базу здесь нет: обе отдельские колонки и площадка уже в строке.
+       */
+      inServiceRequestCustomerScope(p, {
+        objectId: row.r.equipmentObjectId,
+        customerDepartmentId: row.r.customerDepartmentId,
+        equipmentDepartmentId: row.r.equipmentDepartmentId,
+      }),
     );
   });
 }
@@ -1111,14 +1131,28 @@ async function requireEditable(p: Principal, id: string): Promise<RequestRow> {
   const row = await loadRow(id);
   if (row.deletedAt) throw err.notFound(NOT_FOUND);
   await assertScope(p, row);
-  assertActsAsRequestCustomer(p, {
+  assertActsAsRequestCustomer(p, authorPlaceOf(row));
+  return row;
+}
+
+/**
+ * Строка заявки в объёме, которым решается СТОРОНА ЗАКАЗЧИКА: адрес, автор и место (площадка плюс
+ * обе отдельские колонки).
+ *
+ * Одним переводом на все двери, а не пятью объектными литералами по местам вызова: спрашивают его
+ * теперь трое — общий вход изменяющих ручек и два стража распоряжения записью (Н8), — и
+ * разложенный по вызовам он разъехался бы ровно там, где ошибка означает открытую дверь. Имя поля
+ * `objectId` при этом переводится с `equipmentObjectId` именно здесь: в контрактах место заявки
+ * называется по-своему, и знать об этом обязано одно место.
+ */
+function authorPlaceOf(row: RequestRow): ServiceRequestAuthorPlace {
+  return {
     id: row.id,
     createdBy: row.createdBy,
     objectId: row.equipmentObjectId,
     customerDepartmentId: row.customerDepartmentId,
     equipmentDepartmentId: row.equipmentDepartmentId,
-  });
-  return row;
+  };
 }
 
 /**
@@ -4137,10 +4171,13 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        * Строкой, а не статусом: пока «Новая» означала «ещё не назначена», на этот вопрос отвечал
        * статус, а после слияния (Р1) он половину ответа потерял бы молча — правка открылась бы у
        * заявки, которую исполнитель уже прочитал.
+       *
+       * Место строки и автор приезжают туда же (Н8): та же функция отвечает и на второй вопрос
+       * двери — «заказчик ли он ЭТОЙ заявке», — а сквозная область набора заказчиком не делает.
        */
       assertServiceRequestEditable(
         p,
-        { ...(await executorsRowOf(row)), status: row.status },
+        { ...authorPlaceOf(row), ...(await executorsRowOf(row)), status: row.status },
         'редактировать',
       );
       if (isServiceRequestClosed(row.status)) {
@@ -4370,8 +4407,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     const p = requirePrincipal(req);
     const row = await requireEditable(p, req.params.id);
     // Своё правило, а не «то же, что правка» (В20): «Назначенную» ещё удаляют — работа по ней не
-    // начиналась, — а править её уже нельзя.
-    assertServiceRequestDeletable(p, row.status);
+    // начиналась, — а править её уже нельзя. Сторона заказчика при этом спрашивается та же, что у
+    // правки (Н8): в архив уводят свою заявку либо заявку своей площадки или отдела.
+    assertServiceRequestDeletable(p, { ...authorPlaceOf(row), status: row.status });
     const now = new Date();
     await db
       .update(serviceRequests)

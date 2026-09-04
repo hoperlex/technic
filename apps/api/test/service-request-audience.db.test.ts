@@ -786,6 +786,14 @@ describe.skipIf(!DB_URL)('карточка заявки на обслужива�
   function financeRepairCard(): Record<string, unknown> {
     return {
       audience: 'finance',
+      /*
+       * Сторона заказчика ЧИТАТЕЛЯ (находка Н8 плана профилей оргтехники): «эта заявка моей
+       * площадки или моего отдела». Матчером, а не значением, — по той же причине, что стороны
+       * обсуждения рядом: поле считается про читателя, а карточку в этом файле спрашивают семь
+       * разных учёток, и у них ответ законно разный. Аудитория его не трогает вовсе — в карте
+       * полей оно помечено `all`, — а вот пропажа поля уронит сравнение, как и всякая другая.
+       */
+      inCustomerScope: expect.any(Boolean),
       id: state.repair.id,
       num: state.repair.num,
       displayNumber: formatServiceRequestNumber(state.repair.num),
