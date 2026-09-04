@@ -220,13 +220,22 @@ describe('столбец состояния подписан лицом смот
  * `primary` у пункта меню, а не второй картой «статус → окно», и разойтись с коридором оно не
  * может. Второй картой это и разошлось бы — строка звала бы к действию, которого в меню нет.
  */
+/**
+ * Быстрая кнопка назначения в строке (ADR 0162, Э5). Из меню строки пункт вычеркнут — вход у него
+ * здесь один, и ищется он по доступному имени: подпись у кнопки та же, что была у пункта.
+ */
+const assignButton = (): HTMLElement | undefined =>
+  [...document.querySelectorAll<HTMLElement>('button')].find((el) =>
+    (el.getAttribute('aria-label') ?? '').endsWith(' исполнителей'),
+  );
+
 describe('подпись состояния ведёт в действие (Р117)', () => {
   it('«Вам: назначить исполнителей» открывает окно назначения — то же, что и пункт меню', async () => {
     renderTab(OPERATOR, [serviceRequest()]);
     await screen.findByText('СО-14');
-    // Тот же ход есть и в меню строки: подпись обещает ровно его.
-    expect(await rowActionLabels()).toContain('Назначить исполнителей');
-    fireEvent.keyDown(document.body, { key: 'Escape' });
+    // Тот же ход есть в строке быстрой кнопкой: подпись обещает ровно его (из меню строки пункт
+    // вычеркнут — ADR 0162, Э5).
+    expect(assignButton()?.getAttribute('aria-label')).toBe('Назначить исполнителей');
 
     const link = statusLink('Вам: назначить исполнителей');
     expect(link).not.toBeNull();
@@ -340,8 +349,10 @@ describe('ячейка документов', () => {
 describe('действия ищутся предикатами, а не дугами (Р11)', () => {
   it('оператору «Новая» предлагает распределение — и ничего чужого', async () => {
     renderTab(OPERATOR, [serviceRequest()]);
+    await screen.findByText('СО-14');
+    // Назначение — кнопкой в строке, остальное — пунктами меню (ADR 0162, Э5).
+    expect(assignButton()?.getAttribute('aria-label')).toBe('Назначить исполнителей');
     await openRowActions();
-    expect(await screen.findByText('Назначить исполнителей')).toBeDefined();
     expect(screen.getByText('Отменить заявку')).toBeDefined();
     // Шаги исполнителя оператору недоступны ни через портал, ни через сервер: их открывает факт
     // назначения, а у нераспределённой заявки назначенных нет (Р6).
@@ -352,9 +363,10 @@ describe('действия ищутся предикатами, а не дуга
     // Заявка та же «Новая», разница только в исполнителях — и она одна меняет подпись пункта
     // (`serviceIsFirstAssignment`, Р11). Прежде на этот же вопрос отвечал статус `assigned`.
     renderTab(OPERATOR, [assignedServiceRequest()]);
-    const labels = await rowActionLabels();
-    expect(labels).toContain('Изменить исполнителей');
-    expect(labels).not.toContain('Назначить исполнителей');
+    await screen.findByText('СО-14');
+    // Подпись читает состав, а не статус, и она же стоит у быстрой кнопки строки.
+    expect(assignButton()?.getAttribute('aria-label')).toBe('Изменить исполнителей');
+    expect(await rowActionLabels()).not.toContain('Назначить исполнителей');
   });
 
   it('висящее предъявление запирает переназначение, хотя статус тот же «В работе»', async () => {
@@ -462,8 +474,7 @@ describe('назначение исполнителей', () => {
         json({ request: assignedServiceRequest(), mail: 'queued' }),
     });
     await screen.findByText('СО-14');
-    await openRowActions();
-    fireEvent.click(await screen.findByText('Назначить исполнителей'));
+    fireEvent.click(assignButton()!);
 
     await selectOption('Исполнители', 'КопиЛайт');
     fireEvent.click(screen.getByRole('button', { name: 'Назначить' }));
