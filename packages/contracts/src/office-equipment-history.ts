@@ -2,7 +2,12 @@ import { z } from 'zod';
 import { dateOnlySchema } from './common';
 import type { OfficeEquipmentObjectRefDto, OfficeEquipmentState } from './office-equipment';
 import type { RequestChangeDto } from './request-history';
-import type { ServiceRequestStatus } from './service-requests';
+import {
+  projectByAudiencePolicy,
+  type AudiencePolicy,
+  type ServiceRequestAudience,
+  type ServiceRequestStatus,
+} from './service-requests';
 
 // ── История единицы оргтехники одной лентой (план `office-equipment-mail-and-history-plan.md`,
 //    Р75–Р79, Р81) ──
@@ -157,6 +162,139 @@ export type EquipmentHistoryEventDto =
   | EquipmentServiceStepEvent
   | EquipmentCardChangeEvent
   | EquipmentWarrantyEvent;
+
+/**
+ * Классификация полей ленты по аудиториям (ADR 0160, решение 10; план
+ * `office-equipment-requester-card-plan.md`, Р13).
+ *
+ * ЗАЧЕМ. Событие `service_request` несёт сумму ремонта — ту же, что убрана из карточки заявки, — и
+ * приходит она сюда по праву `officeEquipment.read`, которое у заказчика есть. Лента и её выгрузка
+ * были бы обходным путём к вычищенной цифре, причём самым неочевидным: про карточку заявки помнят
+ * все, про «Историю обслуживания» принтера — никто.
+ *
+ * ПОЧЕМУ КАРТОЙ ПО ВСЕМ ШЕСТИ ВИДАМ, а не строкой `totalAmount: null` в сборщике. `Record` требует
+ * ключ на каждый вид, `AudiencePolicy` — решение на каждое поле вида: новый вид события и новое
+ * поле существующего ломают компиляцию, пока автор не скажет, кому это видно. Одиночная замена
+ * была бы fail-open — то есть ровно тем классом ошибки, ради которого написан весь план.
+ *
+ * ЧТО ЗНАЧИТ `all` У КАРТОЧНЫХ ВИДОВ. Перемещение, правка карточки и её жизненный цикл — данные
+ * САМОГО справочника, а не заявки: их закрывает `officeEquipment.read`, и вычитать оттуда план не
+ * берётся. Проекция всё равно применяется и к ним (аудитория читателя без назначения) — чтобы
+ * решение `{ requester: … }`, если оно однажды здесь понадобится, начало действовать в тот же день,
+ * когда его записали, а не оказалось мёртвой строкой в карте.
+ */
+export const EQUIPMENT_HISTORY_EVENT_AUDIENCE = {
+  card_lifecycle: {
+    kind: 'all',
+    id: 'all',
+    sortId: 'all',
+    occurredOn: 'all',
+    recordedAt: 'all',
+    actorName: 'all',
+    action: 'all',
+  },
+  movement: {
+    kind: 'all',
+    id: 'all',
+    sortId: 'all',
+    occurredOn: 'all',
+    recordedAt: 'all',
+    actorName: 'all',
+    fromObject: 'all',
+    toObject: 'all',
+    fromLocation: 'all',
+    toLocation: 'all',
+    fromState: 'all',
+    toState: 'all',
+    toDepartmentName: 'all',
+    reason: 'all',
+    comment: 'all',
+    // Ссылка на заявку — не деньги: «переехал по заявке СО-14» отвечает на вопрос «почему аппарат
+    // не на месте», и номер заявки заявитель видит и в самой заявке.
+    serviceRequestId: 'all',
+    serviceRequestNum: 'all',
+  },
+  service_request: {
+    kind: 'all',
+    id: 'all',
+    sortId: 'all',
+    occurredOn: 'all',
+    recordedAt: 'all',
+    actorName: 'all',
+    requestId: 'all',
+    displayNumber: 'all',
+    status: 'all',
+    serviceName: 'all',
+    /*
+     * Итог по акту — единственные деньги ленты, и здесь та же подстановка, что в карточке заявки:
+     * `null`, а не `0`. Ноль означал бы «починили бесплатно», а выгрузка напечатала бы «0,00 ₽» —
+     * то есть соврала бы вместо того, чтобы промолчать.
+     */
+    totalAmount: { requester: null },
+    // Описание поломки написал сам заявитель: скрывать от него его же текст незачем. Сумму,
+    // названную в нём словами, план не вычищает и не обещает (Г4).
+    description: 'all',
+  },
+  service_step: {
+    kind: 'all',
+    id: 'all',
+    sortId: 'all',
+    occurredOn: 'all',
+    recordedAt: 'all',
+    actorName: 'all',
+    requestId: 'all',
+    displayNumber: 'all',
+    toStatus: 'all',
+    // Комментарий перехода — свободный текст, и он остаётся целиком: план удаляет структурные
+    // денежные поля, а DLP-фильтром чужих фраз не является (Г4).
+    comment: 'all',
+  },
+  card_change: {
+    kind: 'all',
+    id: 'all',
+    sortId: 'all',
+    occurredOn: 'all',
+    recordedAt: 'all',
+    actorName: 'all',
+    changes: 'all',
+  },
+  warranty: {
+    kind: 'all',
+    id: 'all',
+    sortId: 'all',
+    occurredOn: 'all',
+    recordedAt: 'all',
+    actorName: 'all',
+    source: 'all',
+    action: 'all',
+    // Что именно покрыто гарантией, заявитель видит и должен видеть: обращаться по ней будет он
+    // (матрица §4.1, граница Г2). Цен в гарантии нет ни одной.
+    subject: 'all',
+    from: 'all',
+    until: 'all',
+    requestId: 'all',
+    displayNumber: 'all',
+  },
+} satisfies {
+  [K in EquipmentHistoryKind]: AudiencePolicy<Extract<EquipmentHistoryEventDto, { kind: K }>>;
+};
+
+/**
+ * Событие ленты в объёме аудитории. Аудитория считается ПО КАЖДОЙ ЗАЯВКЕ (Р13, §4.2): у
+ * внутреннего исполнителя одна лента несёт и назначенные ему заявки (`finance`), и соседние
+ * (`requester`) — это не третья аудитория, а построчное применение двух существующих.
+ *
+ * Карта берётся по виду события, поэтому и ход заявки, и гарантия, и перемещение проходят через
+ * ту же дверь: «спроецируем только то, где сегодня есть деньги» означало бы, что завтрашнее
+ * денежное поле соседнего вида уедет мимо.
+ */
+export function projectEquipmentHistoryEventForAudience(
+  event: EquipmentHistoryEventDto,
+  audience: ServiceRequestAudience,
+): EquipmentHistoryEventDto {
+  const policy = EQUIPMENT_HISTORY_EVENT_AUDIENCE[event.kind];
+  return projectByAudiencePolicy(event, audience, policy as AudiencePolicy<EquipmentHistoryEventDto>);
+}
 
 /** Сколько событий отдаёт страница и сколько их бывает в ответе максимум (Р79). */
 export const EQUIPMENT_HISTORY_PAGE_SIZE = 50;

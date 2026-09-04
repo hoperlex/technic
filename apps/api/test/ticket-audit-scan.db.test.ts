@@ -302,8 +302,10 @@ describe.skipIf(!DB_URL)('сканы талонов праву аудита ра
     await attach(requestId, fileId, 'ticket');
 
     // Штабу той же роли и той же площадки чужой талон закрыт: право на модуль у него есть, области
-    // нет — и разница между двумя ответами есть ровно то, что даёт набор.
-    expect((await download(ctx.local, fileId)).statusCode).toBe(403);
+    // нет — и разница между двумя ответами есть ровно то, что даёт набор. Код отказа — `404`
+    // (ADR 0160, решение 6): «есть, но не тебе» отвечает так же, как «нет такого файла», иначе по
+    // одному коду ответа перебором читалось бы, какие сканы у чужой площадки вообще есть.
+    expect((await download(ctx.local, fileId)).statusCode).toBe(404);
 
     const res = await download(ctx.auditor, fileId);
     expect(res.statusCode, res.body).toBe(200);
@@ -329,7 +331,12 @@ describe.skipIf(!DB_URL)('сканы талонов праву аудита ра
     // договоры, письма и фотографии площадок.
     expect((await download(ctx.auditor, ticketId)).statusCode).toBe(200);
     const res = await download(ctx.auditor, paperId);
-    expect(res.statusCode, res.body).toBe(403);
+    // Код отказа — `404` (ADR 0160, решение 6), как и у двух случаев выше: «есть, но не тебе»
+    // отвечает так же, как «нет такого файла», иначе перебором идентификаторов читалось бы, сколько
+    // непрофильных бумаг подшито к чужой заявке. Утверждение случая от этого не слабеет: соседний
+    // талон ТОЙ ЖЕ заявки строкой выше открывается, и разница между двумя ответами по-прежнему
+    // ровно одна — колонка `kind`.
+    expect(res.statusCode, res.body).toBe(404);
     // Отказ в журнал не пишется: событие называется просмотром, а просмотра не было.
     expect(await views(paperId)).toHaveLength(0);
   });
@@ -355,8 +362,9 @@ describe.skipIf(!DB_URL)('сканы талонов праву аудита ра
 
     expect((await download(ctx.auditor, fileId)).statusCode).toBe(200);
     expect(await views(fileId)).toHaveLength(1);
-    // Штабу без набора он закрыт: связи с видимой заявкой у файла нет вовсе.
-    expect((await download(ctx.local, fileId)).statusCode).toBe(403);
+    // Штабу без набора он закрыт: связи с видимой заявкой у файла нет вовсе. Код — `404`
+    // (ADR 0160, решение 6), общий для всех модулей.
+    expect((await download(ctx.local, fileId)).statusCode).toBe(404);
   });
 
   it('своя площадка держателя открывается обычным путём и в журнал просмотров не идёт', async () => {

@@ -85,6 +85,31 @@ const statusOptions = SERVICE_REQUEST_STATUSES.map((value) => ({
 /** Признак включён — уходит строкой; выключен — не уходит вовсе, а не приходит `'false'`. */
 const flag = (checked: boolean) => (checked ? 'true' : undefined);
 
+/**
+ * Очереди-пресеты над таблицей (§9.2): с них начинают работу оператор и сервис.
+ *
+ * Переехали сюда из самой страницы, потому что это не второй механизм, а те же три параметра
+ * запроса (`waitingOnMe`, `urgent`, `awaitingDocuments`), что и отборы ниже, — и правило «кому
+ * какой срез положен» у них общее. Порознь его пришлось бы держать в двух местах, и первым
+ * признаком расхождения стал бы пресет, которого нет в шите фильтров, или наоборот.
+ */
+export function useServiceQueues(): { value: string; label: string }[] {
+  const { can } = useAuth();
+  return [
+    { value: 'all', label: 'Все заявки' },
+    { value: 'waiting', label: 'Требуют решения' },
+    // Срочные — вход, а не фильтр: с них начинают день, и прятать их в шит значило бы прятать саму
+    // работу (план модернизации, Р56).
+    { value: 'urgent', label: 'Срочные' },
+    // Та же дверь, что и у отбора ниже, и по той же причине (ADR 0160, решение 9): без субъектного
+    // `serviceRequests.finance` сервер параметр молча игнорирует, и пресет был бы кнопкой, которая
+    // переключается, ничего не меняя.
+    ...(can('serviceRequests.finance')
+      ? [{ value: 'documents', label: 'Ожидаются документы' }]
+      : []),
+  ];
+}
+
 export function useServiceRequestFilters({
   params,
   apply,
@@ -220,13 +245,27 @@ export function useServiceRequestFilters({
       value: params.mine === 'true',
       onChange: (v) => apply({ mine: flag(v) }),
     },
-    {
-      kind: 'toggle',
-      key: 'awaitingDocuments',
-      label: 'Ожидаются документы',
-      value: params.awaitingDocuments === 'true',
-      onChange: (v) => apply({ awaitingDocuments: flag(v) }),
-    },
+    /*
+     * Очередь долгов перед подрядчиком — рабочий инструмент того, кто заявку ведёт (ADR 0160,
+     * решение 9). Сервер применяет параметр ТОЛЬКО при субъектном `serviceRequests.finance`, а
+     * остальным молча игнорирует его — не отказом, чтобы разница «отказ / пустая выдача» сама не
+     * стала оракулом «подшит ли счёт».
+     *
+     * Спрашивается ПРАВО субъекта, а не аудитория строки, и правилу «портал аудиторию не считает»
+     * это не противоречит: у отбора нет строки, по которой её считать, — есть ровно тот же вопрос
+     * к субъекту, который задаёт себе сервер, прежде чем применить параметр.
+     */
+    ...(can('serviceRequests.finance')
+      ? [
+          {
+            kind: 'toggle' as const,
+            key: 'awaitingDocuments',
+            label: 'Ожидаются документы',
+            value: params.awaitingDocuments === 'true',
+            onChange: (v: boolean) => apply({ awaitingDocuments: flag(v) }),
+          },
+        ]
+      : []),
     {
       kind: 'toggle',
       key: 'warrantyClaim',

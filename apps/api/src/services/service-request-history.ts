@@ -1,10 +1,12 @@
 import { desc, eq, inArray } from 'drizzle-orm';
 import {
+  projectHistoryForAudience,
   serviceChatSideLabels,
   type RequestChangeDto,
   type RequestHistoryEntryDto,
   type RequestHistoryKind,
   type ServiceChatSide,
+  type ServiceRequestAudience,
   type ServiceRequestStatus,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -326,6 +328,7 @@ function sideTarget(side: ServiceChatSide): string {
 export async function loadServiceRequestHistory(
   requestId: string,
   created: { at: Date; actorId: string; actorName: string },
+  audience: ServiceRequestAudience,
 ): Promise<ServiceRequestHistoryEntryDto[]> {
   const [statusRows, auditRows, chatRows] = await Promise.all([
     db
@@ -393,9 +396,20 @@ export async function loadServiceRequestHistory(
     });
   }
 
-  // Свежие события отбираются первыми, а показываются в порядке, в котором происходили.
-  return entries
+  /*
+   * Аудитория применяется ПОСЛЕДНИМ шагом, после отбора и сортировки, и порядок здесь имеет
+   * значение. Фильтр вычищает значения изменений, но не выбрасывает события (Р10), — значит на
+   * состав страницы он не влияет и обрезать `HISTORY_LIMIT` по уже отфильтрованному не пришлось бы.
+   * Обратный порядок был бы хуже другим: фильтруя до отбора, мы платили бы за события, которые
+   * всё равно не покажем.
+   *
+   * Правило живёт в контрактах (`projectHistoryForAudience`), а не здесь: тот же вопрос — «какие
+   * значения этому читателю положены» — задаёт карточка, и второй ответ на него разошёлся бы с
+   * первым молча (Р3).
+   */
+  const page = entries
     .sort((a, b) => b.at.localeCompare(a.at))
     .slice(0, HISTORY_LIMIT)
     .reverse();
+  return projectHistoryForAudience(page, audience);
 }

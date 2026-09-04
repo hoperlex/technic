@@ -1,13 +1,15 @@
 import { Button, Dropdown, Space, Tooltip, Typography, type TableColumnsType } from 'antd';
 import { EyeOutlined, MoreOutlined } from '@ant-design/icons';
 import {
-  actsForCounterparty,
+  actsAsServiceExecutor,
   can,
+  participantSidesOf,
   type AuthUser,
+  type ServiceChatFacts,
+  type ServiceExecutorAssignment,
   type ServiceRequestDto,
 } from '@technic/contracts';
 import {
-  ServiceStatusTag,
   serviceRequestEquipmentName,
   serviceRequestPlaceLine,
   serviceStatusLine,
@@ -16,12 +18,14 @@ import {
 } from '@entities/service-request';
 import { ServiceChatMark } from '@features/service-chat';
 import { actionsColumn, type CardConfig, ExpandableCell, textColumn } from '@shared/ui';
-import type { ActionSheetItem } from '@shared/ui';
+import { ServiceStatusCell, ServiceStatusLineCell } from './ServiceStatusCell';
+import type { ServiceMenuItem } from './serviceStatusChoices';
 import {
   amountLabel,
   DocumentsCell,
   EquipmentCell,
   PlaceCell,
+  showsAmount,
   StartWorkButton,
 } from './serviceRequestCells';
 import { PhoneLink } from '../../components/PhoneField';
@@ -47,14 +51,84 @@ export interface ServiceGridView {
 }
 
 /**
+ * Признаки заявки, ни один из которых не спрашивали.
+ *
+ * Колонки выбираются на ВСЮ таблицу, а стороны в контрактах делятся надвое: `operator` и `it`
+ * считаются по САМОМУ СУБЪЕКТУ (код выданного набора — бизнес-профиль модуля), а `customer` и
+ * `service` — по СТРОКЕ (авторство, область заказчика, назначение). Пустые признаки и оставляют в
+ * ответе ровно первую половину — ту, которая на всю таблицу одна.
+ *
+ * Приём не выдуман здесь: им же сервер раскладывает стороны в SQL (`probeFacts` в
+ * `services/service-request-chat.ts`), спрашивая контракты «а без заявки?». Другого способа задать
+ * этот вопрос нет, а задать его надо — иначе набор колонок пришлось бы выводить своей формулой.
+ *
+ * Авторство при этом на клиенте не выводится и выводиться не может: `createdBy` в DTO нет
+ * намеренно, а понадобься набору колонок сторона заказчика по строке — её берут готовой из
+ * серверного `chat.participantSides`. Набору она не нужна: «показать ли колонки заказчика»
+ * отвечает ПРАВО заводить заявки, а не участие в конкретной переписке.
+ *
+ * `userId` здесь пустой: он сравнивается только с поимённым адресатом реплики (`audienceMatches`),
+ * а участие в сторонах от него не зависит.
+ */
+function subjectOnlyChatFacts(user: AuthUser | null): ServiceChatFacts {
+  return {
+    userId: user?.id ?? '',
+    isAuthor: false,
+    inCustomerScope: false,
+    actsForAssignedService: false,
+    isNamedExecutor: false,
+  };
+}
+
+/**
+ * «Если заявка отдана его компании — он на ней исполнитель?» Тем же вопросом список и смотрят:
+ * заявку, отданную не ему, подрядчик не видит, и набор колонок у него от строки не зависит.
+ *
+ * Поимённая строка в пробнике пуста намеренно: сотрудник с `serviceRequests.execute` становится
+ * исполнителем НА КОНКРЕТНОЙ заявке, а не вообще, — и колонки подрядчика (объект, контакт) ему
+ * положены не больше, чем прежде. Признаки конкретной строки собирает `serviceExecutorAssignment`,
+ * и он же отвечает за меню действий.
+ */
+const ASSIGNED_TO_MY_COUNTERPARTY: ServiceExecutorAssignment = {
+  actsForAssignedCounterparty: true,
+  isNamedExecutor: false,
+};
+
+/**
  * Чьими глазами смотрят на список. Наблюдателю и администратору показывается всё: первый заведён
  * ради сквозной картины по компании, у второго есть оба коридора сразу — он разбирает чужие
  * ошибки, и половина ответа ему не годится.
+ *
+ * СТОРОНЫ СПРАШИВАЮТСЯ У КОНТРАКТОВ, А НЕ РАЗБИРАЮТСЯ ЗДЕСЬ (Р8). Прежде набор считался своей
+ * формулой из трёх прав — `actsForCounterparty` плюс `assign` плюс `create`, — и это было третье
+ * представление сторон рядом с `participantSidesOf` и `actsAsServiceExecutor`: расходиться с ними
+ * оно могло только молча, набором колонок, который никто не проверяет глазами. Так уже и вышло бы:
+ * сторону «Ведения» перевели на код набора (план профилей, Р9), а здешняя копия осталась бы на
+ * правах и показывала бы колонки решающего тому, кому профиля не выдавали.
+ *
+ * Взаимоисключение сторон тоже ушло из формулы: `!executor &&` перед каждой строкой повторял то,
+ * что контракты знают сами — сторона `operator` прямо исключает оператора подрядчика, а прав
+ * заводить заявки у него нет вовсе.
+ *
+ * Ответ по всем существующим субъектам прежний: у держателей профиля код и права ходят вместе
+ * (пометка роли — производная от кода), у подрядчика профиля нет, у наблюдателя нет ни того ни
+ * другого. Разойтись новое правило со старым может лишь на собранном руками наборе, где права
+ * «Ведения» выданы без его кода, — и там правильный ответ даёт код, а не сумма прав.
  */
 export function serviceGridView(user: AuthUser | null): ServiceGridView {
-  const executor = actsForCounterparty(user, 'service');
-  const operator = !executor && can(user, 'serviceRequests.assign');
-  const customer = !executor && can(user, 'serviceRequests.create');
+  const executor = actsAsServiceExecutor(user, ASSIGNED_TO_MY_COUNTERPARTY);
+  // Обе стороны ведения модуля дают один набор колонок: «Ведение» (`operator`) распределяет и
+  // принимает, ИТ-служба (`it`) решает «чинить или менять», и список оба читают одним вопросом —
+  // «что требует решения». Стороны спрашиваются целиком, а не одна из них: они опознаются кодами
+  // разных наборов (план профилей, Р9), и ИТ-служба под `operator` не подходит — прежняя формула
+  // включала её случайно, правом `assign`, общим у двух должностей.
+  const sides = participantSidesOf(user, subjectOnlyChatFacts(user));
+  const operator = sides.includes('operator') || sides.includes('it');
+  // Заказчик — это право заводить заявки, а не сторона переписки: колонки «Описание» и «Сумма»
+  // отвечают на «что с моим принтером», и спрашивать за них участие в конкретной заявке нечем.
+  const customer = can(user, 'serviceRequests.create');
+  // «Всё» — две разные причины с одинаковым ответом: сторон не нашлось вовсе (наблюдатель со
+  // сквозным чтением) либо сторон сразу две (администратор: ведёт модуль и пишет объём работ).
   const everything =
     (!executor && !operator && !customer) || (operator && can(user, 'serviceRequests.estimate'));
   return {
@@ -84,7 +158,19 @@ export interface ServiceGridOptions {
    * остаётся текстом: пункта нет, и звать некуда.
    */
   primaryAction?: (request: ServiceRequestDto) => (() => void) | null;
-  actions: (request: ServiceRequestDto) => ActionSheetItem[];
+  actions: (request: ServiceRequestDto) => ServiceMenuItem[];
+  /**
+   * Строки текущей страницы — набору колонок, а не только таблице (ADR 0160, Р11): показывать ли
+   * столбец «Сумма», решается по выдаче ЦЕЛИКОМ. Аудитория — свойство строки, и у держателя
+   * `serviceRequests.execute` без субъектного `.finance` в одной выдаче законно лежат обе:
+   * назначенная заявка полная, соседняя заявка его же области — редуцированная (`showsAmount`).
+   */
+  requests: readonly ServiceRequestDto[];
+  /**
+   * Заявка, по которой идёт действие без окна (ADR 0161): её тег ждёт ответа и нажатий не
+   * принимает. Признак по строке, а не общий флаг набора: тот погасил бы теги соседних заявок.
+   */
+  pendingId?: string | null;
   onOpen: (request: ServiceRequestDto) => void;
   /**
    * Открыть обсуждение прямо из строки (ADR 0141): метка непрочитанного у номера ведёт в него, а
@@ -134,36 +220,17 @@ export function serviceRequestColumns(
       dataIndex: 'status',
       width: 230,
       sorter: true,
-      render: (_v: unknown, r: ServiceRequestDto) => {
-        const line = serviceStatusLine(r, opts.user);
-        const act = line?.mine ? (opts.primaryAction?.(r) ?? null) : null;
-        return (
-          <div style={{ lineHeight: 1.35 }}>
-            <ServiceStatusTag status={r.status} statusChangedAt={r.statusChangedAt} />
-            {line && (
-              <div style={{ fontSize: 12 }}>
-                {act ? (
-                  <Typography.Link
-                    // Мишень — сам текст, а не ячейка (Р117): строку списка задевают мышью чаще,
-                    // чем нажимают, а клик по ней открывает карточку — всплыви он, окно действия
-                    // открылось бы под карточкой.
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      act();
-                    }}
-                  >
-                    {line.text}
-                  </Typography.Link>
-                ) : line.mine ? (
-                  line.text
-                ) : (
-                  <Typography.Text type="secondary">{line.text}</Typography.Text>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      },
+      // Сам тег — вход в ход заявки (ADR 0161): переходы отбираются из набора действий строки, и
+      // второй карты правил у портала не появляется. Разметка ячейки живёт своим модулем.
+      render: (_v: unknown, r: ServiceRequestDto) => (
+        <ServiceStatusLineCell
+          request={r}
+          items={opts.actions(r)}
+          pending={opts.pendingId === r.id}
+          user={opts.user}
+          primaryAction={opts.primaryAction}
+        />
+      ),
     },
     // Поиск живёт лупой этого столбца: сервер ищет и по модели, и по обоим номерам, и по номеру
     // самой заявки («СО-14») — то есть ровно по тому, чем заявку и опознают.
@@ -244,7 +311,7 @@ export function serviceRequestColumns(
           },
         ]
       : []),
-    ...(view.customer || view.operator
+    ...((view.customer || view.operator) && showsAmount(opts.requests)
       ? [
           {
             key: 'amount',
@@ -253,13 +320,16 @@ export function serviceRequestColumns(
             width: 140,
             align: 'right' as const,
             render: (_v: unknown, r: ServiceRequestDto) => {
-              const { value, hint } = amountLabel(r);
+              // Редуцированная строка молчит целиком, а не рисует прочерк: пустая ячейка ничего не
+              // утверждает, а «—» утверждало бы, что сметы у заявки нет (ADR 0160, Р11).
+              const label = amountLabel(r);
+              if (!label) return null;
               return (
                 <div style={{ lineHeight: 1.35 }}>
-                  <div>{value}</div>
-                  {hint && (
+                  <div>{label.value}</div>
+                  {label.hint && (
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {hint}
+                      {label.hint}
                     </Typography.Text>
                   )}
                 </div>
@@ -354,7 +424,8 @@ export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<Service
             карточке — саму заявку. Второго места для непрочитанного здесь нет — колонок нет. */}
         <ServiceChatMark request={r} onOpen={opts.onChat} />
         {r.isUrgent && <UrgentTag reason="" />}
-        <ServiceStatusTag status={r.status} />
+        {/* Тап по тегу открывает шит переходов, тап по карточке — саму заявку (ADR 0161). */}
+        <ServiceStatusCell request={r} items={opts.actions(r)} pending={opts.pendingId === r.id} />
       </Space>
     ),
     primary: (r) =>
@@ -373,9 +444,12 @@ export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<Service
       (r) => serviceRequestPlaceLine(r),
       (r) => r.description,
       (r) => (r.service ? `Сервис: ${r.service.name}` : 'Сервис не назначен'),
+      // Денежная строка карточки решается по аудитории САМОЙ СТРОКИ, а не по набору страницы
+      // (ADR 0160, Р11): у карточек столбцов нет, ровнять здесь нечего — редуцированная заявка
+      // просто не показывает строки, как не показывает её заявка без сметы.
       (r) => {
-        const { value, hint } = amountLabel(r);
-        return value === '—' ? null : `${value} ${hint}`;
+        const label = amountLabel(r);
+        return !label || label.value === '—' ? null : `${label.value} ${label.hint}`;
       },
       // «Ждёт», а не «в статусе» (Р4): возраст меряет ожидание, а не статус.
       (r) => `Ждёт: ${statusAgeLabel(r.statusChangedAt)}`,

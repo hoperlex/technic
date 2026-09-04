@@ -11,7 +11,7 @@ import {
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { officeEquipmentKeys, officeEquipmentOptionsQuery } from '@entities/office-equipment';
 import { MarkAllChatReadButton } from '@features/service-chat';
-import { DataTable, PageTableLayout, sortOptionsFrom, type ActionSheetItem } from '@shared/ui';
+import { DataTable, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
 import { useAuth } from '../../auth/AuthContext';
@@ -20,23 +20,15 @@ import { serviceRequestCard, serviceRequestColumns, serviceGridView } from './se
 import {
   SERVICE_FILTER_FIELDS,
   ServiceFilterBar,
+  useServiceQueues,
   useServiceRequestFilters,
   type ServiceListFilters,
 } from './serviceRequestFilters';
 import { useServiceRequestActions } from './serviceRequestActions';
+import type { ServiceMenuItem } from './serviceStatusChoices';
 import { serviceActionRow } from './serviceRequestRow';
 import { ServiceRequestForm } from './ServiceRequestForm';
 import { ServiceRequestViewModal } from './ServiceRequestViewModal';
-
-/** Очереди-пресеты (§9.2): с них начинают работу оператор и сервис. */
-const QUEUES = [
-  { value: 'all', label: 'Все заявки' },
-  { value: 'waiting', label: 'Требуют решения' },
-  // Срочные — вход, а не фильтр: с них начинают день, и прятать их в шит значило бы прятать саму
-  // работу (план модернизации, Р56).
-  { value: 'urgent', label: 'Срочные' },
-  { value: 'documents', label: 'Ожидаются документы' },
-] as const;
 
 /**
  * Список заявок на обслуживание оргтехники (ADR 0085).
@@ -104,6 +96,9 @@ export function RequestsTab() {
   const warrantyOf = (equipmentId: string) => warranties.get(equipmentId);
 
   const filters = useServiceRequestFilters({ params, apply: applyFilter });
+  // Очереди-пресеты живут рядом с отборами: это те же параметры запроса, и состав их зависит от
+  // читателя так же (ADR 0160, решение 9).
+  const queues = useServiceQueues();
   /*
    * Наборов действий два, и это не дубль по невнимательности (ADR 0140). Окна списка живут здесь,
    * на уровне страницы, а окна карточки — внутри карточки: только вложенной модалке antd считает
@@ -212,7 +207,7 @@ export function RequestsTab() {
    */
   const requestActions =
     (set: ReturnType<typeof useServiceRequestActions>) =>
-    (request: ServiceRequestDto): ActionSheetItem[] => [
+    (request: ServiceRequestDto): ServiceMenuItem[] => [
       ...set.actionsFor(request),
       ...(isServiceRequestEditable(serviceActionRow(request)) && can('serviceRequests.update')
         ? [
@@ -263,6 +258,11 @@ export function RequestsTab() {
     primaryAction: (r: ServiceRequestDto) =>
       actions.actionsFor(r).find((item) => item.primary)?.onClick ?? null,
     actions: rowActions,
+    // Выдача уходит и в набор колонок (ADR 0160, Р11): столбец «Сумма» один на таблицу, а
+    // аудитория — свойство строки, и у исполнителя обе законно лежат в одной выдаче.
+    requests: data?.items ?? [],
+    // Чей тег ждёт ответа (ADR 0161): действие идёт по одной строке, крутиться обязана она одна.
+    pendingId: actions.pendingId,
     onOpen: (request: ServiceRequestDto) => setViewRecord(request),
     // Метка непрочитанного ведёт в окно набора СТРАНИЦЫ: карточка при нажатии на строку ещё не
     // открыта, и вкладывать переписку не во что.
@@ -305,7 +305,7 @@ export function RequestsTab() {
       toolbar={
         <Space wrap>
           {/* Пресеты стоят над таблицей и на телефоне тоже: это вход в работу, а не фильтр. */}
-          <Segmented options={[...QUEUES]} value={queue} onChange={(v) => setQueue(String(v))} />
+          <Segmented options={queues} value={queue} onChange={(v) => setQueue(String(v))} />
           {/* Отбор уходит тот же, которым отобран список: кнопка гасит ровно то, что видно. */}
           <MarkAllChatReadButton filters={query} />
         </Space>
@@ -369,6 +369,7 @@ export function RequestsTab() {
         // Действия карточки — те же, что у строки: их строит коридор переходов, и разойтись
         // они не могут. Разные у них только окна: карточкины живут внутри неё (ADR 0140).
         actions={cardRowActions}
+        pendingId={cardActions.pendingId}
         modals={cardActions.modals}
         onEdit={
           shown &&

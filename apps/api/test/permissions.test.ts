@@ -975,16 +975,46 @@ describe('права внешнего исполнителя зависят от
    * пропавшая — субъект, которого перестали проверять тесты доступа.
    */
   it('профили доступа перечисляют пары «базовая роль × надстройка» (ADR 0086)', () => {
+    /*
+     * Коды наборов идут теми же строками, что надстройки (план профилей оргтехники, Р9): одна и та
+     * же выдача читается двумя полями — права спрашивают надстройку, бизнес-профиль модуля
+     * (сторона обсуждения) спрашивает код. Перечисляются оба поля, а не одно: субъект без кодов
+     * прошёл бы перебор молча, и сторона «Ведение» у него не нашлась бы ни у одного профиля.
+     */
     expect(ACCESS_PROFILES.filter((s) => !isPlainProfile(s))).toEqual([
-      { role: 'shtab', addons: ['office_equipment_operator'] },
+      {
+        role: 'shtab',
+        addons: ['office_equipment_operator'],
+        grantCodes: ['office_equipment_operator'],
+      },
       // Площадка — третья базовая роль обеих надстроек с шага prepare этапа 8 (ADR 0113). Пар от
       // этого шесть, и все шесть обязаны перебираться тестами доступа: после перевода учёток
       // именно эти два субъекта останутся вместо площадочных.
-      { role: 'site', addons: ['office_equipment_operator'] },
-      { role: 'department', addons: ['office_equipment_operator'] },
-      { role: 'shtab', addons: ['office_equipment_it_approver'] },
-      { role: 'site', addons: ['office_equipment_it_approver'] },
-      { role: 'department', addons: ['office_equipment_it_approver'] },
+      {
+        role: 'site',
+        addons: ['office_equipment_operator'],
+        grantCodes: ['office_equipment_operator'],
+      },
+      {
+        role: 'department',
+        addons: ['office_equipment_operator'],
+        grantCodes: ['office_equipment_operator'],
+      },
+      {
+        role: 'shtab',
+        addons: ['office_equipment_it_approver'],
+        grantCodes: ['office_equipment_it_approver'],
+      },
+      {
+        role: 'site',
+        addons: ['office_equipment_it_approver'],
+        grantCodes: ['office_equipment_it_approver'],
+      },
+      {
+        role: 'department',
+        addons: ['office_equipment_it_approver'],
+        grantCodes: ['office_equipment_it_approver'],
+      },
     ]);
     expect(accessProfileLabel({ role: 'shtab', addons: ['office_equipment_operator'] })).toBe(
       'Штаб + Оргтехника: ведение',
@@ -1010,16 +1040,21 @@ describe('заявки на обслуживание оргтехники (ADR 0
    * «открыт ли раздел», и тестам. Разъехавшись с матрицей, он молча перестал бы кого-нибудь
    * закрывать.
    */
-  it('прав у модуля четырнадцать, и список модуля выводится из матрицы', () => {
+  it('прав у модуля пятнадцать, и список модуля выводится из матрицы', () => {
     // Четырнадцатым пришло «заводит заявку без аппарата»
     // (`serviceRequests.createWithoutEquipment`, ADR 0146, решение 6): своей двери у права нет —
     // заведение идёт через тот же `POST /service-requests`, и право лишь снимает с него требование
     // обязательного аппарата. В матрице его нет ни у одной роли: приходит оно двумя наборами
     // оргтехники — «Ведение» и «ИТ-служба».
+    //
+    // Пятнадцатым — «видит деньги и объём работ заявок» (`serviceRequests.finance`, план
+    // `docs/office-equipment-requester-card-plan.md`, Р1). Своей двери у него нет тем более: оно не
+    // открывает ручек вовсе, а расширяет ответ уже открытых. В матрице ролей его тоже нет ни у
+    // одной — приходит оно теми же двумя наборами и типом контрагента `service`.
     expect([...SERVICE_REQUEST_PERMISSIONS]).toEqual(
       PERMISSIONS.filter((p) => p.startsWith('serviceRequests.')),
     );
-    expect(SERVICE_REQUEST_PERMISSIONS).toHaveLength(14);
+    expect(SERVICE_REQUEST_PERMISSIONS).toHaveLength(15);
     // Право без единого держателя — мёртвая строка матрицы: она выглядит как раздача доступа, а
     // означает «этого не может никто».
     for (const permission of SERVICE_REQUEST_PERMISSIONS) {
@@ -1147,7 +1182,9 @@ describe('заявки на обслуживание оргтехники (ADR 0
    * заявки исполнитель не может ни в одном из трёх модулей — это граница модели.
    */
   it('сервисная компания ведёт смету и свою часть цикла, но заявок не заводит', () => {
-    expect(moduleOf(serviceCompany)).toEqual(['estimate', 'files', 'read', 'status']);
+    // `finance` — деньги его собственной сметы и его счёта (план
+    // `docs/office-equipment-requester-card-plan.md`, Р2): подрядчик видит то, что сам и выставил.
+    expect(moduleOf(serviceCompany)).toEqual(['estimate', 'files', 'finance', 'read', 'status']);
     expect(moduleOf(wasteOperator)).toEqual([]);
     expect(moduleOf(vehicleLessor)).toEqual([]);
     // Право сметы — стороны исполнителя: вне контрагента `service` оно есть только у

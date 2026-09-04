@@ -1,8 +1,19 @@
 import { z } from 'zod';
 import { archiveFilterSchema, baseListQuery, dateOnlySchema, uuidSchema } from './common';
 import { contactNameSchema, contactPhoneSchema } from './common';
-import { actsForCounterparty, can, type AccessSubject, type Permission } from './permissions';
+import {
+  actsForCounterparty,
+  can,
+  hasGrantCode,
+  type AccessSubject,
+  type Permission,
+} from './permissions';
+import {
+  OFFICE_EQUIPMENT_IT_GRANT,
+  OFFICE_EQUIPMENT_OPERATOR_GRANT,
+} from './office-equipment-profiles';
 import type { ModuleMailOutcome } from './module-mail';
+import type { RequestChangeDto } from './request-history';
 
 // ── Заявки на обслуживание оргтехники (ADR 0085) ──
 // Цикл длиннее, чем у вывоза мусора и заказа техники: между «приняли» и «сделали» стоит смета,
@@ -808,6 +819,32 @@ export function actsAsServiceExecutor(
   if (!subject) return false;
   if (actsForCounterparty(subject, 'service')) return assignment.actsForAssignedCounterparty;
   return isServiceExecutor(subject, assignment) || can(subject, 'serviceRequests.estimate');
+}
+
+/**
+ * Сторона «Ведения» — тот, кто ведёт заявку по циклу: администратор либо держатель набора
+ * `office_equipment_operator`, и ни при каких условиях не подрядчик.
+ *
+ * ПАРА К `actsAsServiceExecutor`, и заведена по той же причине: сторону спрашивают в двух местах —
+ * подсветка адресата «Оргтехнике (ведение)» в ленте и дверь повтора служебного письма
+ * (`POST /:id/notify`, план аудита исполнителей, Р9), — а правило обязано быть одно. Формула стояла
+ * внутри `matchesServiceChatSide`, оттуда сюда и вынесена: скопируй её вторая дверь, и первая же
+ * правка модели профилей развела бы «кому реплика подсвечена» и «кому открыт повтор» молча.
+ *
+ * ПОЧЕМУ КОД НАБОРА, А НЕ СУММА ПРАВ. Пара `status` + `assign` давала ровно «Ведение», пока такой
+ * набор был один; с назначаемыми полномочиями (ADR 0106) его собирают в проде руками, и профиль
+ * модуля выводился бы из состава чужого набора. Профиль — это код, а не сумма прав.
+ *
+ * `admin` отдельной строкой: кодов у него нет вовсе, а разбирать застрявшее — его работа.
+ * Исключение подрядчика — второй рубеж на случай, если набор «Ведения» выдадут ему руками: право
+ * `serviceRequests.status` у типа контрагента `service` есть, и без этой половины исполнитель стал
+ * бы заказчиком собственной работы.
+ */
+export function actsAsServiceOperator(subject: AccessSubject | null | undefined): boolean {
+  return (
+    (subject?.role === 'admin' || hasGrantCode(subject, OFFICE_EQUIPMENT_OPERATOR_GRANT)) &&
+    !actsForCounterparty(subject, 'service')
+  );
 }
 
 /**
@@ -2163,6 +2200,21 @@ export interface ServiceRequestWarrantyClaimDto {
 }
 
 export interface ServiceRequestDto {
+  /**
+   * В КАКОМ ОБЪЁМЕ СОБРАН ЭТОТ ОТВЕТ (план `docs/office-equipment-requester-card-plan.md`, Р4).
+   * Поле отвечает не про заявку, а про читателя — как и `chat.participantSides`, посчитанный
+   * сервером для него же.
+   *
+   * Без него «скрыто» неотличимо от «нет данных»: `estimatedTotalAmount: null` читается и как
+   * «объём работ ещё не собран», и как «его не показывают», а это разные вещи. Портал, не
+   * различая их, нарисовал бы заявителю честный прочерк там, где рисовать не надо ничего.
+   *
+   * Обязательное, а не `?`: значение считает сервер на каждом ответе (`serviceRequestAudienceOf`),
+   * и `undefined` здесь означал бы карточку, про которую никто не решил, что в ней показано.
+   * Портал аудиторию САМ ПО ПРАВАМ НЕ СЧИТАЕТ — читает отсюда: два ответа на один вопрос
+   * разъедутся, и первым разъедется тот, что в браузере.
+   */
+  audience: ServiceRequestAudience;
   id: string;
   num: number;
   displayNumber: string;
@@ -2411,6 +2463,10 @@ export function isServiceRequestDeletable(status: ServiceRequestStatus): boolean
 /** Права модуля — одним списком: он нужен и матрице, и проверке «открыт ли раздел». */
 export const SERVICE_REQUEST_PERMISSIONS: readonly Permission[] = [
   'serviceRequests.read',
+  // Деньги и объём работ — оговорка к чтению, а не отдельная работа (план
+  // `docs/office-equipment-requester-card-plan.md`, Р1): порядок здесь повторяет словарь
+  // `PERMISSIONS`, и страж модуля сверяет оба перечня строка в строку.
+  'serviceRequests.finance',
   'serviceRequests.create',
   // Заявка без аппарата — своё право рядом с «завести» (Р5, ADR 0146, решение 6): порядок здесь
   // повторяет словарь `PERMISSIONS`, и страж модуля сверяет оба перечня строка в строку.
@@ -2433,7 +2489,7 @@ export const SERVICE_REQUEST_PERMISSIONS: readonly Permission[] = [
  * (`service-request-diff.ts`). Словарь один на правку заявки, правку сметы и закрытие: читателю
  * истории всё равно, какая ручка породила строку, — ему важно, что именно изменилось.
  */
-export const serviceRequestChangeLabels: Record<string, string> = {
+export const serviceRequestChangeLabels = {
   // «Описание» — общая подпись на оба вида (Р2, просьба 7): заказчик просит единообразия, и
   // кинд-зависимость, введённая Р17 ADR 0145, отменена целиком. Ключ поля прежний, поэтому
   // подпись переименовывает и записи прошлых месяцев — это верно: поле осталось тем же, менялось
@@ -2481,7 +2537,634 @@ export const serviceRequestChangeLabels: Record<string, string> = {
   consumablesReturned: 'Возвращено на склад',
   /** Состав номенклатуры до и после правки: спорят о том, что именно просили и в каком количестве. */
   consumables: 'Состав номенклатуры',
+  /*
+   * `satisfies`, а не `Record<string, string>`, и это не украшение типа. Ключи словаря — тот
+   * ЗАКРЫТЫЙ перечень изменений, по которому история режется аудиторией
+   * (`SERVICE_HISTORY_CHANGE_AUDIENCE` ниже): объявленный `Record<string, string>`, он дал бы
+   * `keyof` равный `string`, и карта аудиторий перестала бы требовать решения на новый ключ.
+   * Читателям словаря переход ничего не меняет — `Record<string, string>` он по-прежнему
+   * удовлетворяет, и `RequestHistory` в портале принимает его тем же аргументом.
+   */
+} satisfies Record<string, string>;
+
+// ── Аудитории карточки: кому видны деньги и объём работ ──
+//
+// План `docs/office-equipment-requester-card-plan.md`. Заказчик просил убрать заявителю вкладку
+// «Объём работ», суммы и закрытые виды документов — и убрать их не условным рендером, а из ответа
+// сервера. Правила живут в контрактах, а не в маршруте, потому что спрашивают их трое: сборка DTO,
+// карточка единицы техники и портал (виды в форме подшивки). Правило, написанное в маршруте, они
+// переписали бы у себя, а расходятся такие копии молча — ровно тот довод, которым в ADR 0141 в
+// контрактах оставлены стороны разговора.
+//
+// Прецедента серверной проекции DTO по читателю в портале не было: кабинет водителя решает ту же
+// задачу своим контуром ручек (ADR 0102), а заявитель работает в ОБЩЕМ списке, общей карточкой и
+// общей историей. Механизм заводится впервые, и цена ошибки в нём — не «некрасиво», а «утекло».
+// Отсюда форма всех карт ниже: они закрыты компилятором, и забыть поле в них нельзя, а не «нужно
+// внимательно не забыть».
+
+/**
+ * Две аудитории, и обе названы по тому, что видно, а не по должности (Р2). `finance` видит
+ * финансовую часть ЭТОЙ строки, `requester` — строку без денег и состава работ. Какой набор строк
+ * читателю доступен вообще, решает область видимости, а не аудитория: это разные вопросы, и
+ * третьей аудитории («состав работ без цен») план не заводит — она означала бы третий набор правил
+ * в каждом месте, где сегодня их два.
+ */
+export type ServiceRequestAudience = 'finance' | 'requester';
+
+/**
+ * Аудитория конкретной строки: положительное право ЛИБО факт назначения на эту заявку (Р1).
+ *
+ * Вторая ветка нужна внутреннему исполнителю — назначение открывает ему деньги ровно одной заявки,
+ * — и написана она вызовом `isServiceExecutor`, а НЕ своим условием «назначен + `execute`». Ровно
+ * этот вопрос тот предикат уже решает, и решает шире, чем выглядит: поимённое назначение с
+ * `execute` ЛИБО оператор назначенного контрагента. Повтори мы условие здесь, второй ответ разошёлся
+ * бы с коридором ходов, и первым признаком расхождения стала бы карточка, где кнопки исполнителя
+ * есть, а сумм нет.
+ *
+ * Отрицательного основания («у него нет ни одного из прав ведения») здесь нет намеренно: такое
+ * правило ломается молча — первое же новое право модуля открыло бы деньги тому, кому их не
+ * открывали, и ошибка была бы в неперечисленном, то есть в том, чего не проверяет ни один тест.
+ */
+export function serviceRequestAudienceOf(
+  subject: AccessSubject | null | undefined,
+  assignment: ServiceExecutorAssignment,
+): ServiceRequestAudience {
+  return can(subject, 'serviceRequests.finance') || isServiceExecutor(subject, assignment)
+    ? 'finance'
+    : 'requester';
+}
+
+/**
+ * Всё, что решает вид документа: в каком статусе его принимают, кому он виден и кто его кладёт
+ * (матрицы §4.1 и Р9).
+ *
+ * Одной таблицей, а не тремя перечнями. Список файлов карточки и прямая ссылка обязаны резаться
+ * ОДНИМ перечнем видов: расхождение означало бы файл, невидимый в карточке и открывающийся по
+ * ссылке, — то есть ровно ту дыру, ради которой план написан. А видимость и подшивка стоят рядом
+ * потому, что порознь они дают «подшил и потерял»: человек кладёт файл видом «Счёт», и тот
+ * исчезает из его же карточки.
+ */
+interface ServiceFileKindPolicy {
+  /**
+   * Статусы, в которых вид принимается. Таблица переехала сюда из
+   * `apps/api/src/routes/service-requests.ts` (`FILE_KIND_STATUSES`), где жила второй копией рядом
+   * с копией портала (`attachableKinds` в `ServiceRequestDocuments.tsx`): две копии одного правила
+   * дают либо форму, предлагающую вид, на котором придёт отказ, либо отказ там, где форма
+   * промолчала.
+   *
+   * Закрытость статуса заявки отдельным условием не проверяется — она уже записана перечнями:
+   * `attachment` в `accepted`/`cancelled` не стоит, а закрывающие виды стоят намеренно, потому что
+   * «акт пришлю завтра» иначе означало бы потерянную бумагу (Р16, Р29).
+   */
+  readonly statuses: readonly ServiceRequestStatus[];
+  /** Кому вид виден — и в списке файлов карточки, и по прямой ссылке. */
+  readonly visibleTo: readonly ServiceRequestAudience[];
+  /**
+   * Кто вид кладёт. Не выводится из `visibleTo`, и это решение матрицы: гарантийный талон заявителю
+   * ВИДЕН (обращаться по гарантии будет он), но кладёт его исполнитель.
+   */
+  readonly attachedBy: readonly ServiceRequestAudience[];
+  /**
+   * Какой СТОРОНЕ заявки вид разрешён — второй слой подшивки (план аудита исполнителей, Р3).
+   *
+   * Аудитории для этого мало, и это остаток находки Н2: `serviceRequests.finance` есть у ИТ-службы
+   * по всей компании, а `act`, `invoice` и `warranty_card` разрешены уже в «В работе» — наличие
+   * любого из них снимает планку закрывающего документа. То есть основание платежа мог подшить
+   * всякий, кому заявку открыли деньгами, и подрядчик закрывал работу под чужой бумагой.
+   *
+   * Список, а не одно значение: у закрывающих видов сторон две — исполнитель и «Ведение», — и
+   * записать это дизъюнкцией в одном слове значило бы завести четвёртое понятие стороны рядом с
+   * тремя существующими.
+   */
+  readonly attachedBySide: readonly ServiceFileAttachingSide[];
+}
+
+/**
+ * Сторона, которой вид документа разрешён. Не путать со стороной разговора и не заменяет её:
+ * вопрос здесь один — «чья это бумага».
+ *
+ * `'any'` означает «сторона не спрашивается вовсе», а не «можно всем»: до этого слоя доходит только
+ * тот, у кого есть право `serviceRequests.files` и кому заявка видна, — фотографию поломки грузит
+ * заказчик, и требовать от него стороны цикла было бы отказом половине заявок.
+ */
+export type ServiceFileAttachingSide = 'any' | 'executor' | 'operator';
+
+/**
+ * Сторона словами — для текста отказа. Рядом с таблицей, а не в маршруте: перечень сторон вида
+ * читает сервер, и составленный на его стороне текст разъехался бы с таблицей на первом же
+ * изменении матрицы.
+ */
+export const serviceFileAttachingSideLabels: Record<ServiceFileAttachingSide, string> = {
+  any: 'участник заявки',
+  executor: 'назначенный исполнитель',
+  operator: 'тот, кто ведёт заявку',
 };
+
+/**
+ * `Record` по всем видам: новый вид документа обязан ответить на все четыре вопроса, иначе сборка
+ * не соберётся. Умолчания «как у соседа» здесь нет намеренно — им и утекают такие таблицы.
+ */
+const SERVICE_FILE_KIND_POLICY: Record<ServiceFileKind, ServiceFileKindPolicy> = {
+  // Фотография поломки — половина заявки, и грузит её сам заявитель.
+  attachment: {
+    statuses: ['new', 'in_work', 'done'],
+    visibleTo: ['finance', 'requester'],
+    attachedBy: ['finance', 'requester'],
+    // Стороны у фотографии поломки нет: её грузит тот, кто заявку и завёл, а сторона цикла у него
+    // появится в лучшем случае позже.
+    attachedBySide: ['any'],
+  },
+  // Тот же предмет, что и скрытая вкладка: документ с составом работ и ценами.
+  estimate: {
+    statuses: ['in_work'],
+    visibleTo: ['finance'],
+    attachedBy: ['finance'],
+    // Объём работ предлагает тот, кто будет их делать. «Ведение» его СОГЛАСУЕТ, а не пишет:
+    // подпись под собственным предложением не согласование (та же граница, что у прав в матрице —
+    // `estimate` и `approveEstimate` одному субъекту не выдают).
+    attachedBySide: ['executor'],
+  },
+  // В акте стоят суммы: «акт виден» отменяло бы половину задачи (Р6, §12 п. 1).
+  act: {
+    statuses: ['in_work', 'done', 'accepted', 'cancelled'],
+    visibleTo: ['finance'],
+    attachedBy: ['finance'],
+    /*
+     * Закрывающая бумага: её кладёт исполнитель либо «Ведение» (Р3). Вторая сторона здесь не
+     * послабление, а рабочий случай — акт приходит на бумаге и почтой, и сканирует его тот, кто
+     * заявку ведёт; отбери мы у него подшивку, работа внешнего подрядчика не закрылась бы вовсе.
+     */
+    attachedBySide: ['executor', 'operator'],
+  },
+  // Исходное требование заказчика: основание платежа — отношения компании с подрядчиком.
+  invoice: {
+    statuses: ['in_work', 'done', 'accepted', 'cancelled'],
+    visibleTo: ['finance'],
+    attachedBy: ['finance'],
+    attachedBySide: ['executor', 'operator'],
+  },
+  // Обращаться по гарантии будет заявитель, и талон нужен ему на руках; сумм в нём нет.
+  warranty_card: {
+    statuses: ['in_work', 'done', 'accepted', 'cancelled'],
+    visibleTo: ['finance', 'requester'],
+    attachedBy: ['finance'],
+    attachedBySide: ['executor', 'operator'],
+  },
+};
+
+/** Виден ли вид документа этой аудитории — вопрос и списка файлов, и прямой ссылки на файл (Р7). */
+export function isServiceFileKindVisible(
+  kind: ServiceFileKind,
+  audience: ServiceRequestAudience,
+): boolean {
+  return SERVICE_FILE_KIND_POLICY[kind].visibleTo.includes(audience);
+}
+
+/**
+ * Виды документов, которые аудитория видит. Порядок — порядок `SERVICE_FILE_KINDS`: перечень
+ * уходит и в SQL-условие прямой ссылки, и в фильтр списка, и стабильный порядок там дешевле
+ * случайного.
+ */
+export function visibleServiceFileKinds(
+  audience: ServiceRequestAudience,
+): readonly ServiceFileKind[] {
+  return SERVICE_FILE_KINDS.filter((kind) => isServiceFileKindVisible(kind, audience));
+}
+
+/**
+ * Кладёт ли аудитория такой вид ХОТЬ КОГДА-НИБУДЬ — потолок аудитории, без статуса и без стороны.
+ *
+ * Вопрос отдельный, потому что и ответ на него отдельный: заявителю, приложившему счёт, «сейчас
+ * неподходящий статус» пообещал бы, что в другом статусе получится, — а не получится никогда.
+ * Сервер отвечает на это `403` и не разбирает ни статуса, ни стороны.
+ */
+export function isServiceFileKindAttachable(
+  kind: ServiceFileKind,
+  audience: ServiceRequestAudience,
+): boolean {
+  return SERVICE_FILE_KIND_POLICY[kind].attachedBy.includes(audience);
+}
+
+/** Чья это бумага — перечнем сторон, как он записан в таблице (для текста отказа). */
+export function serviceFileAttachingSides(
+  kind: ServiceFileKind,
+): readonly ServiceFileAttachingSide[] {
+  return SERVICE_FILE_KIND_POLICY[kind].attachedBySide;
+}
+
+/**
+ * СТОРОНА ЗАЯВКИ разрешает субъекту этот вид документа — второй слой подшивки (Р3).
+ *
+ * Сторона исполнителя спрашивается КОНТРАКТНЫМ `actsAsServiceExecutor` — тем же, каким её читают
+ * коридор ходов, предикаты действий и портал: третьего представления стороны в модуле быть не
+ * должно, а разошлись бы они молча — кнопкой, ведущей в 403.
+ *
+ * «Ведение» — правом `serviceRequests.status`, и это ровно та сторона, что доводит заявку по
+ * циклу. Финансовая аудитория стороной не является ни в одном виде: `serviceRequests.finance`
+ * отвечает «этому читателю видны деньги», а не «эта бумага его» (Н2).
+ *
+ * Признаки назначения приходят ПОСЧИТАННЫМИ, как и у остальных предикатов действий: сервер читает
+ * их из строк заявки под блокировкой (Р4), портал — из карточки.
+ */
+export function canAttachServiceFileSide(
+  kind: ServiceFileKind,
+  subject: AccessSubject | null | undefined,
+  assignment: ServiceExecutorAssignment,
+): boolean {
+  if (!subject) return false;
+  return SERVICE_FILE_KIND_POLICY[kind].attachedBySide.some((side) => {
+    switch (side) {
+      case 'any':
+        return true;
+      case 'executor':
+        return actsAsServiceExecutor(subject, assignment);
+      case 'operator':
+        return can(subject, 'serviceRequests.status');
+    }
+  });
+}
+
+/**
+ * Принимает ли заявка этот вид документа ОТ ЭТОГО СУБЪЕКТА прямо сейчас — все три сомножителя
+ * разом: аудитория, статус и сторона.
+ *
+ * Сомножители отвечают на РАЗНЫЕ вопросы, и различие это не формальное: неподходящий статус —
+ * ошибка формы, которую человек исправляет выбором (сервер отвечает `422`), а запрет по аудитории
+ * или стороне — отсутствие права (`403`). Слитые в один ответ, они предложили бы заявителю
+ * «исправить» то, что исправить нельзя, — поэтому сервер спрашивает слои по одному
+ * (`isServiceFileKindAttachable`, `canAttachServiceFileSide`), а эта функция отвечает целиком там,
+ * где нужен один ответ: перечень видов формы и всякая проверка «можно ли вообще».
+ *
+ * КОНЪЮНКЦИЯ ДВУХ ПЛАНОВ, а не вторая матрица (Р3): аудитория приехала планом карточки заявителя и
+ * осталась первым слоем (`requester` кладёт только вложение), сторона — этим планом. Ни одна из
+ * половин не переписана: `finance` сам по себе подшивку не разрешает.
+ */
+export function canAttachServiceFile(
+  kind: ServiceFileKind,
+  status: ServiceRequestStatus,
+  audience: ServiceRequestAudience,
+  subject: AccessSubject | null | undefined,
+  assignment: ServiceExecutorAssignment,
+): boolean {
+  return (
+    isServiceFileKindAttachable(kind, audience) &&
+    SERVICE_FILE_KIND_POLICY[kind].statuses.includes(status) &&
+    canAttachServiceFileSide(kind, subject, assignment)
+  );
+}
+
+/**
+ * Что предложить в форме подшивки. Статус сюда передаётся «эффективный» (Р110): у отложенной
+ * заявки виды считаются по тому статусу, из которого её отложили, — заморозка останавливает ход
+ * заявки, а не жизнь вокруг неё. Считать это здесь нельзя: `heldFromStatus` знает строка, а не вид
+ * документа.
+ *
+ * Субъект и признаки назначения обязательны с Р3: форма, спрашивающая одну аудиторию, предлагала
+ * бы ИТ-службе «Акт», на котором придёт 403, — та самая кнопка в никуда, ради которой правила и
+ * живут в контрактах.
+ */
+export function attachableServiceFileKinds(
+  status: ServiceRequestStatus,
+  audience: ServiceRequestAudience,
+  subject: AccessSubject | null | undefined,
+  assignment: ServiceExecutorAssignment,
+): readonly ServiceFileKind[] {
+  return SERVICE_FILE_KINDS.filter((kind) =>
+    canAttachServiceFile(kind, status, audience, subject, assignment),
+  );
+}
+
+/**
+ * Решение по одному полю DTO (Р3, Р5). Три вида решения, и четвёртого быть не может:
+ *
+ * - `'all'` — поле уходит обеим аудиториям как есть;
+ * - `{ requester: … }` — заявителю подставляется НЕЙТРАЛЬНОЕ значение того же типа. Значение стоит
+ *   в самой карте, а не в теле проекции: «чем заменяем» — часть решения об аудитории, и разнесённое
+ *   по двум местам оно разъехалось бы;
+ * - вложенная карта — для объекта, который вычищается не целиком (`completion`: «работы закрыты 14
+ *   августа» не деньги, а факт, которого заявитель ждёт);
+ * - `'visible_file_kinds'` — только для списка файлов: он не заменяется значением, а режется
+ *   перечнем видимых видов (Р7). Тип разрешает это решение ИСКЛЮЧИТЕЛЬНО там, где поле и правда
+ *   список файлов, — поставить его любому другому полю компилятор не даст.
+ *
+ * Объект со своим полем `requester` вложенной картой быть НЕ МОЖЕТ, и это защита, а не каприз:
+ * проекция отличает нейтральное значение от вложенной карты по наличию ключа `requester`, и такой
+ * объект она приняла бы за значение. Запретив его на уровне типа, мы получаем однозначность по
+ * построению, а не по внимательности читателя.
+ */
+export type AudienceDecision<V> =
+  | 'all'
+  | { readonly requester: V }
+  | (NonNullable<V> extends readonly ServiceRequestFileDto[] ? 'visible_file_kinds' : never)
+  | (NonNullable<V> extends readonly unknown[]
+      ? never
+      : NonNullable<V> extends { requester: unknown }
+        ? never
+        : NonNullable<V> extends object
+          ? AudiencePolicy<NonNullable<V>>
+          : never);
+
+/**
+ * Исчерпывающая классификация полей: `-?` требует ключ на КАЖДОЕ поле — и обязательное, и
+ * необязательное.
+ *
+ * Обычный «список того, что вычесть» был бы fail-open: новое поле, которое забыли перечислить,
+ * осталось бы в готовом DTO и уехало заявителю целым. Поэтому вычитание из готового DTO допустимо
+ * только через исчерпывающую карту — и облегчённый второй DTO при этом всё равно не заводится:
+ * форма ответа обязана остаться одна, иначе портал получил бы две.
+ */
+export type AudiencePolicy<T> = {
+  [K in keyof T]-?: AudienceDecision<T[K]>;
+};
+
+/**
+ * Что видит заявитель в карточке заявки (таблица Р4).
+ *
+ * Добавление поля в `ServiceRequestDto` без строки здесь ЛОМАЕТ КОМПИЛЯЦИЮ — это и есть главный
+ * сторож плана: забыть классифицировать поле невозможно, а не «нужно не забыть».
+ *
+ * `consumables` остаются целиком, и это решение, а не недосмотр: цен в строках расходников нет ни
+ * одной, вкладка «Номенклатура» — предмет заявки на расходники, а не её финансовая сторона.
+ * `chat`, `executors`, `service`, `itApproval` и `serviceComment` остаются по той же границе: план
+ * удаляет структурные финансовые поля, а не является DLP-фильтром свободного текста (Г4).
+ */
+export const SERVICE_REQUEST_FIELD_AUDIENCE = {
+  // «В каком объёме собран ответ» — само поле и есть ответ проекции о себе.
+  audience: { requester: 'requester' },
+  id: 'all',
+  num: 'all',
+  displayNumber: 'all',
+  kind: 'all',
+  status: 'all',
+  statusChangedAt: 'all',
+  waitingOn: 'all',
+  heldFromStatus: 'all',
+  holdReason: 'all',
+  equipment: 'all',
+  object: 'all',
+  objectOverridden: 'all',
+  objectMismatch: 'all',
+  customerDepartment: 'all',
+  equipmentDepartment: 'all',
+  requesterPlace: 'all',
+  description: 'all',
+  responsibleName: 'all',
+  responsiblePhone: 'all',
+  isUrgent: 'all',
+  urgencyReason: 'all',
+  service: 'all',
+  executors: 'all',
+  itApproval: 'all',
+  warrantyClaim: 'all',
+  // Ноль, а не `null`: ревизия — счётчик, и «объёма работ не показываем» здесь читается как «его
+  // ещё не собирали». Тип поля при этом не меняется.
+  estimateRevision: { requester: 0 },
+  estimatePendingRevision: { requester: null },
+  estimateSubmittedAt: { requester: null },
+  estimatedTotalAmount: { requester: null },
+  approval: { requester: null },
+  items: { requester: [] },
+  consumables: 'all',
+  /*
+   * Вложенной картой, а не `{ requester: null }` целиком: дата закрытия работ — не деньги, а факт,
+   * которого заявитель ждёт больше всего остального в этой карточке.
+   */
+  completion: {
+    completedAt: 'all',
+    totalAmount: { requester: null },
+    adjustmentAmount: { requester: null },
+    // Пустая строка, а не `null`: поле необязательным не объявлено, и `null` в нём означал бы
+    // форму ответа, которой у DTO нет.
+    adjustmentReason: { requester: '' },
+  },
+  acceptedByName: 'all',
+  acceptedAt: 'all',
+  acceptanceSource: 'all',
+  replacementRecommended: 'all',
+  rejectionResolution: 'all',
+  comment: 'all',
+  serviceComment: 'all',
+  chat: 'all',
+  files: 'visible_file_kinds',
+  createdByName: 'all',
+  createdAt: 'all',
+  updatedAt: 'all',
+  deletedAt: 'all',
+  version: 'all',
+} satisfies AudiencePolicy<ServiceRequestDto>;
+
+/** Нейтральное значение отличается от вложенной карты ключом `requester` — тип это и гарантирует. */
+function isNeutralValue(decision: unknown): decision is { readonly requester: unknown } {
+  return typeof decision === 'object' && decision !== null && 'requester' in decision;
+}
+
+/**
+ * Значение из карты копируется, а не кладётся ссылкой: карта — константа модуля, и общий пустой
+ * массив, попавший в сотню ответов, первая же мутация испортила бы разом во всех.
+ */
+function neutralCopy(value: unknown): unknown {
+  return Array.isArray(value) ? [...value] : value;
+}
+
+/**
+ * Обход карты. Аудитория аргументом не ходит: карта описывает ровно ОДНО решение — «что видит
+ * `requester`», — и финансовая аудитория до этой функции не доходит вовсе (проекция возвращает DTO
+ * раньше). Параметр здесь означал бы, что бывает и вторая карта, которой нет.
+ */
+function applyAudiencePolicy<T extends object>(value: T, policy: Record<string, unknown>): T {
+  const projected: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+  for (const [field, decision] of Object.entries(policy)) {
+    if (decision === 'all') continue;
+    if (decision === 'visible_file_kinds') {
+      const files = projected[field] as readonly ServiceRequestFileDto[];
+      projected[field] = files.filter((file) => isServiceFileKindVisible(file.kind, 'requester'));
+      continue;
+    }
+    if (isNeutralValue(decision)) {
+      projected[field] = neutralCopy(decision.requester);
+      continue;
+    }
+    // Вложенная карта. Пустой объект остаётся пустым: «закрытия не было» и «закрытие есть, но без
+    // сумм» — разные состояния, и подменять первое вторым проекция не вправе.
+    const nested = projected[field];
+    projected[field] =
+      nested == null
+        ? nested
+        : applyAudiencePolicy(nested as object, decision as Record<string, unknown>);
+  }
+  return projected as T;
+}
+
+/**
+ * Ответ в объёме аудитории. Зовётся там, где принципал уже есть, — в сборке DTO, — и ОДИН раз на
+ * ответ: карточка, список, ответы действий и архив идут одной сборкой все до одного.
+ *
+ * `finance` получает исходный объект без копирования: проекция не должна стоить лишнего обхода
+ * там, где вычитать нечего.
+ *
+ * ИДЕМПОТЕНТНА, и это требование, а не свойство: результат применяется к ответам действий, и
+ * повторное применение к уже урезанному DTO обязано дать то же самое. Держится это тем, что все
+ * подстановки — константы, а фильтр файлов повторно ничего не находит.
+ */
+export function projectServiceRequestForAudience(
+  dto: ServiceRequestDto,
+  audience: ServiceRequestAudience,
+): ServiceRequestDto {
+  if (audience === 'finance') return dto;
+  return applyAudiencePolicy(dto, SERVICE_REQUEST_FIELD_AUDIENCE);
+}
+
+/**
+ * Проекция СОСЕДНЕГО типа по его собственной карте (Р13): строка «Истории обслуживания» в карточке
+ * единицы техники и событие её ленты — не `ServiceRequestDto`, а сумма ремонта в них та же самая.
+ *
+ * Общий у них не код карточки, а понятие аудитории (Р3) — поэтому карта у каждого типа СВОЯ и
+ * стоит рядом со своим типом, а вот ОБХОД карты один на всех. Второй такой обход означал бы второе
+ * правило подстановки нейтрального значения — и разошлись бы они молча, на первом же поле, которое
+ * заменяют массивом (общая константа, попавшая в сотню ответов, портится первой же мутацией; это
+ * ровно то, ради чего здесь стоит `neutralCopy`).
+ *
+ * `finance` получает исходный объект без копирования — по той же причине, что и в проекции
+ * карточки заявки: вычитать нечего, и лишний обход не нужен.
+ */
+export function projectByAudiencePolicy<T extends object>(
+  value: T,
+  audience: ServiceRequestAudience,
+  policy: AudiencePolicy<T>,
+): T {
+  if (audience === 'finance') return value;
+  return applyAudiencePolicy(value, policy as Record<string, unknown>);
+}
+
+/**
+ * Ключ изменения в истории заявки — тот же перечень, что и подписи (`serviceRequestChangeLabels`).
+ *
+ * Выведен из словаря подписей, а не объявлен вторым списком рядом: разъехавшись, они дали бы либо
+ * строку истории с сырым именем поля вместо подписи, либо изменение, о котором карта аудиторий
+ * ничего не знает. Один перечень — один ответ на оба вопроса.
+ */
+export type ServiceRequestChangeKey = keyof typeof serviceRequestChangeLabels;
+
+/** Что делать с изменением при `requester`. */
+export type ServiceHistoryChangeDecision = 'all' | 'finance' | 'visible_file_kinds';
+
+/**
+ * Классификация ключей истории (Р10): заявитель видит, ЧТО заявка двигалась, но не видит цифр.
+ *
+ * Живёт здесь, а не в `request-history.ts`, ровно потому, что перечень ключей живёт здесь:
+ * `request-history.ts` — общая форма событий для трёх модулей заявок, и модульного в ней только
+ * подписи полей. Ключи заявки на обслуживание объявлены рядом с её подписями, и карта аудиторий
+ * стоит там же — иначе решение про ключ и сам ключ разъехались бы по файлам.
+ *
+ * Классификация ЗАКРЫТА `Record`'ом: новый ключ истории без решения не компилируется. Простой
+ * список «денежных ключей» был бы blacklist и пропустил бы первое же новое денежное изменение.
+ *
+ * По ключам, а не по действиям аудита, и это не выбор удобства: записи прошлых месяцев уже лежат в
+ * `metadata.changes` снимком, и добавить в них признак «денежное» нечем. Ключ — то единственное,
+ * что у старой записи есть и что не меняется.
+ */
+export const SERVICE_HISTORY_CHANGE_AUDIENCE: Record<
+  ServiceRequestChangeKey,
+  ServiceHistoryChangeDecision
+> = {
+  description: 'all',
+  dueDate: 'all',
+  customerDepartment: 'all',
+  responsibleName: 'all',
+  responsiblePhone: 'all',
+  isUrgent: 'all',
+  urgencyReason: 'all',
+  itApproval: 'all',
+  comment: 'all',
+  warrantyClaim: 'all',
+  // Перечень режется по видимым видам: «Счёт: s.pdf» назвал бы то, чего заявителю не видно.
+  filesAdded: 'visible_file_kinds',
+  filesRemoved: 'visible_file_kinds',
+  // В тексте строки стоит цена: «Запчасть «Ролик подачи», 1 × 1800,00 ₽».
+  estimateItemsAdded: 'finance',
+  estimateItemsRemoved: 'finance',
+  rejectionResolution: 'all',
+  // Состав объёма работ, а не его цена, — и убирается по тому же решению, что и вкладка (§12,
+  // п. 2): третьей аудитории «состав без цен» план не заводит.
+  itemsNotPerformed: 'finance',
+  itemsPartial: 'finance',
+  // Расходники остаются целиком: цен в этих строках нет ни одной.
+  consumablesIssued: 'all',
+  consumablesReturned: 'all',
+  consumables: 'all',
+};
+
+/**
+ * Разделитель перечня в событии-списке — тот же, которым его собрал дифф (`changeSet().listed`).
+ * Разъехавшись, они дадут не ошибку, а неразрезанную строку, где скрытый документ уедет целиком.
+ */
+const HISTORY_LIST_SEPARATOR = ', ';
+
+/**
+ * Префиксы скрытых видов документов. Дифф пишет не-вложение как «`Вид`: имя файла», а вложение —
+ * голым именем, поэтому режется список именно по префиксу метки.
+ *
+ * ЦЕНА ЗАПИСАНА ЗДЕСЬ, а не выясняется потом. Перечень в истории хранится ОДНОЙ строкой, и
+ * восстановить состав можно только разрезав её: имя файла с «, » внутри разрежется пополам, а
+ * вложение, названное «Счёт: 12.pdf», спрячется вместе со счетами. Оба промаха уводят в одну
+ * сторону — показать МЕНЬШЕ положенного, — и это единственное направление ошибки, которое здесь
+ * допустимо.
+ */
+function hiddenFileKindPrefixes(audience: ServiceRequestAudience): readonly string[] {
+  return SERVICE_FILE_KINDS.filter((kind) => !isServiceFileKindVisible(kind, audience)).map(
+    (kind) => `${serviceFileKindLabels[kind]}: `,
+  );
+}
+
+function projectHistoryChange(
+  change: RequestChangeDto,
+  hiddenPrefixes: readonly string[],
+): RequestChangeDto[] {
+  /*
+   * Ключ приходит из аудита строкой, поэтому смотрим на карту как на словарь с промахом. Промах
+   * возможен по-настоящему: записи прошлых месяцев несут ключи, которых сегодня нет вовсе (так уже
+   * вышло с `dueDate` — поле сняли, записи остались).
+   */
+  const decision = (
+    SERVICE_HISTORY_CHANGE_AUDIENCE as Record<string, ServiceHistoryChangeDecision | undefined>
+  )[change.field];
+  // FAIL-CLOSED: ключ, о котором карта ничего не знает, заявителю НЕ показывается. Обратное
+  // умолчание означало бы, что снятое денежное поле всплывает в истории само — и всплывает молча,
+  // потому что никто не писал строки, которая бы это разрешила.
+  if (decision !== 'all' && decision !== 'visible_file_kinds') return [];
+  if (decision === 'all') return [change];
+  const kept = (change.to ?? '')
+    .split(HISTORY_LIST_SEPARATOR)
+    .filter((item) => !hiddenPrefixes.some((prefix) => item.startsWith(prefix)));
+  // Изменение, от которого ничего не осталось, уходит: «Прикреплены файлы: » без единого имени —
+  // не событие, а пустая строка в ленте.
+  return kept.length > 0 ? [{ ...change, to: kept.join(HISTORY_LIST_SEPARATOR) }] : [];
+}
+
+/**
+ * История в объёме аудитории (Р10).
+ *
+ * СОБЫТИЕ С ОПУСТЕВШИМ СПИСКОМ ИЗМЕНЕНИЙ НЕ ВЫБРАСЫВАЕТСЯ: «Объём работ предъявлен» без цифр — это
+ * и есть ответ на вопрос «что происходило с моей заявкой», а выброшенное событие оставило бы в
+ * ленте провал, который читается как поломка портала.
+ *
+ * Обобщена по типу события, а не привязана к `RequestHistoryEntryDto`, и это не универсальность
+ * впрок: у истории заявки на обслуживание СВОЙ тип события (`ServiceRequestHistoryEntryDto` —
+ * собственный перечень статусов и ревизия сметы, ADR 0085 §5), и он не подставляется на место
+ * общего. Требуется от события ровно то, что функция читает, — список изменений; всё остальное она
+ * переносит как есть, поэтому расширить событие полем можно, не трогая фильтр.
+ */
+export function projectHistoryForAudience<T extends { changes: RequestChangeDto[] }>(
+  entries: readonly T[],
+  audience: ServiceRequestAudience,
+): T[] {
+  if (audience === 'finance') return [...entries];
+  const hiddenPrefixes = hiddenFileKindPrefixes(audience);
+  return entries.map((entry) => ({
+    ...entry,
+    changes: entry.changes.flatMap((change) => projectHistoryChange(change, hiddenPrefixes)),
+  }));
+}
 
 // ── Обсуждение заявки (office-equipment-chat-plan.md, ADR 0141) ──
 //
@@ -2578,37 +3261,68 @@ function matchesServiceChatSide(
     case 'customer':
       return facts.isAuthor || (wideCustomer && facts.inCustomerScope);
     /*
-     * Конъюнкция двух прав И явное исключение подрядчика — обе половины по делу.
+     * Сторона «Ведение» — КОД ВЫДАННОГО НАБОРА, а не сумма прав (план профилей оргтехники, Р9), и
+     * формула у неё общая с дверью повтора служебного письма: `actsAsServiceOperator`, где и
+     * записано, почему код, почему админ отдельной строкой и почему подрядчик исключён явно.
      *
-     * `serviceRequests.status` есть у типа контрагента `service`: оно открывает подрядчику ЕГО
-     * половину цикла. Одного этого права хватило бы, чтобы сервисная компания стала «Ведением» и
-     * увидела яркими реплики, адресованные администратору модуля. `assign` у подрядчика нет, у
-     * «Ведения» и ИТ-службы есть; `status` у ИТ-службы нет намеренно (переработка заявок §7.2).
-     * Конъюнкция даёт ровно «Ведение» и `admin`.
+     * Прежде здесь стояла конъюнкция `status && assign`. Она давала ровно «Ведение» и админа, но
+     * держалась на том, что эту пару прав больше никому не выдают вместе: `serviceRequests.status`
+     * есть у типа контрагента `service` (подрядчику она открывает ЕГО половину цикла), `assign` у
+     * подрядчика нет, `status` у ИТ-службы нет намеренно. С назначаемыми полномочиями (ADR 0106)
+     * это перестало быть правдой — набор с той же парой прав собирается в проде руками, — и профиль
+     * модуля начал бы выводиться из состава чужого набора.
      *
-     * Исключение по типу контрагента стоит вторым рубежом — на случай, если кому-то из подрядчиков
-     * выдадут набор «Ведение» руками: тогда человек останется исполнителем, а не станет заказчиком
-     * собственной работы.
+     * Смена поведения ОСОЗНАННАЯ: субъект, у которого `status` и `assign` есть, а кода «Ведения»
+     * нет, стороной обсуждения больше не становится. Профиль — это код, а не сумма прав; иначе
+     * человек, которому профиля никто не давал, видел бы яркими реплики администратору модуля.
      *
-     * `admin` в `operator` попадает, и это тоже осознанно: администратор обладает всеми правами и
-     * золотой бейдж «ждёт меня» получает по той же причине (`isWaitingOn` спрашивает `assign`).
-     * Исключение здесь завело бы ВТОРОЕ правило про админа, расходящееся с первым.
+     * Золотой бейдж «ждёт меня» админ получает по той же причине, по которой проходит сюда
+     * (`isWaitingOn` спрашивает `assign`), — второе правило про админа, расходящееся с первым,
+     * было бы хуже.
      */
     case 'operator':
-      return (
-        can(subject, 'serviceRequests.status') &&
-        can(subject, 'serviceRequests.assign') &&
-        !actsForCounterparty(subject, 'service')
-      );
-    // Виза ИТ — единственное, чем ИТ-служба отличается от прочих держателей `assign`: право
-    // `serviceRequests.approveIt` есть только у её набора и у админа.
+      return actsAsServiceOperator(subject);
+    /*
+     * Сторона ИТ-службы — код её набора, а не виза (Р9). Право `serviceRequests.approveIt`, которым
+     * она опознавалась прежде, МЁРТВОЕ: `SERVICE_IT_TRANSITIONS` пуста целиком, ручки
+     * `PATCH /:id/it-approval` нет, и уборка права из набора — вопрос отдельного выпуска (Э9
+     * плана). Опознавайся сторона правом — эта уборка погасила бы «Системного администратора»
+     * молча, вместе с яркой меткой и будущим письмом. Поэтому порядок жёсткий: сперва код, потом
+     * уборка права, и ни разу наоборот.
+     *
+     * `admin` — по той же причине и с тем же смыслом, что в `operator`: правом он проходил сюда
+     * сам, кодов у него нет.
+     */
     case 'it':
-      return can(subject, 'serviceRequests.approveIt');
-    // Дизъюнкция, а не одно условие: сторону исполнителя держат двое — назначенный контрагент
-    // целиком и поимённо назначенный сотрудник (инхаус-ремонт ИТ-службы). Проверить это по субъекту
-    // нельзя ни в одном из двух случаев: назначение — свойство заявки, а не учётки.
+      return subject?.role === 'admin' || hasGrantCode(subject, OFFICE_EQUIPMENT_IT_GRANT);
+    /*
+     * Дизъюнкция, а не одно условие: сторону исполнителя держат двое — назначенный контрагент
+     * целиком и поимённо назначенный сотрудник (инхаус-ремонт ИТ-службы). Проверить это по субъекту
+     * нельзя ни в одном из двух случаев: назначение — свойство заявки, а не учётки.
+     *
+     * У СВОЕГО СОТРУДНИКА НАЗНАЧЕНИЕ РАБОТАЕТ В ПАРЕ С ПРАВОМ (план аудита исполнителей, Р1;
+     * находка Н9). Строка `service_request_executors` историческая: по ней написана переписка и
+     * разосланы задания, и снимать её при отзыве набора нельзя. Значит одно её наличие означало бы,
+     * что переведённый сисадмин остаётся «Сервисным центром» в заявке, которая видна ему по базовой
+     * области: пишет от имени исполнителя, попадает в адресаты реплики «Исполнителю» и в будущую
+     * почту по ним. Право читается из БД на каждом запросе (`loadPrincipal`), поэтому отзыв гасит
+     * сторону следующим же запросом, а не по истечении сессии (И1, И3).
+     *
+     * У подрядчика права не спрашивают, и это не забывчивость, а та же причина, что в
+     * `isServiceExecutor`: поимённых строк у него не бывает, `serviceRequests.execute` в наборе
+     * типа контрагента `service` нет и не появится, — потребуй мы его, сервисная компания перестала
+     * бы быть стороной собственной заявки.
+     *
+     * Разложению аудитории на SQL (`addressedToMeSql`) добавленный сомножитель не мешает: он
+     * спрашивается у СУБЪЕКТА, одинаково при всех пробах признаков, — а разложение требует
+     * дизъюнкции по признакам ЗАЯВКИ. У субъекта без права ветка `isNamedExecutor` просто не войдёт
+     * в дизъюнкцию, и это ровно то, чего мы добиваемся.
+     */
     case 'service':
-      return facts.actsForAssignedService || facts.isNamedExecutor;
+      return (
+        facts.actsForAssignedService ||
+        (facts.isNamedExecutor && can(subject, 'serviceRequests.execute'))
+      );
   }
 }
 
@@ -2635,6 +3349,56 @@ export function participantSidesOf(
 export type ServiceChatAddressee =
   | { readonly side: ServiceChatSide; readonly userId?: null }
   | { readonly side?: null; readonly userId: string };
+
+/**
+ * Кому уходит ПИСЬМО по реплике (план `office-equipment-mail-expansion-plan.md`, § 4).
+ *
+ * **Только адресованные, а не вся видимая лента.** Адресат реплики заведён ровно ради этого
+ * (ADR 0141, §3.12: пометка управляет подсветкой и будущим письмом), и пересылка всего подряд
+ * сделала бы почту подрядчика зеркалом внутреннего разговора — не потому, что там секреты, а
+ * потому, что там не его дело. Цена ошибки при этом названа честно: подрядчик без учётки читает
+ * только письма, и реплика, адресованная одним «своим», до него не дойдёт; смягчает это умолчание
+ * окна («Всем участникам») и подпись, которую портал показывает до отправки.
+ *
+ * Таблица закрыта `Record`: новая сторона обязана ответить, кому по ней писать, — иначе реплика
+ * молча перестанет доходить до половины участников.
+ *
+ * `customer` цели не даёт вовсе: заявитель сидит в портале, движение по заявке видит карточкой и
+ * бейджем непрочитанного, а письма ему — отдельная работа с другой аудиторией и другой частотой.
+ *
+ * Стороны `operator` и `it` дают одну цель — ящик службы: почтовый канал у модуля один, и
+ * различить их доставкой нельзя. Обещать иное значило бы врать про адрес.
+ */
+const CHAT_MAIL_TARGETS: Record<ServiceChatSide, Array<'office' | 'service'>> = {
+  all: ['office', 'service'],
+  customer: [],
+  operator: ['office'],
+  it: ['office'],
+  service: ['service'],
+};
+
+/** Что уходит письмом по реплике: стороны и поимённые адресаты, названные в самой реплике. */
+export interface ChatMailPlan {
+  targets: Array<'office' | 'service'>;
+  /** Поимённые адресаты: письмо получает только назначенная учётка (проверяет сервер). */
+  userIds: string[];
+}
+
+/**
+ * План письма по адресатам реплики. Перенесённые примечания (`origin='import'`) писем не ставят
+ * никогда — у них приблизительное время и часто нет автора, а переносятся они пачкой.
+ */
+export function chatMailTargets(
+  addressees: { sides: readonly ServiceChatSide[]; users: readonly string[] },
+  origin: ServiceChatOrigin = 'chat',
+): ChatMailPlan {
+  if (origin === 'import') return { targets: [], userIds: [] };
+  const targets = new Set<'office' | 'service'>();
+  for (const side of addressees.sides) {
+    for (const target of CHAT_MAIL_TARGETS[side]) targets.add(target);
+  }
+  return { targets: [...targets], userIds: [...addressees.users] };
+}
 
 /**
  * Адресована ли реплика этому человеку — вопрос яркой метки, счёта в бейдже и будущего письма
@@ -2780,6 +3544,22 @@ export interface ServiceChatPageDto {
   hasMore: boolean;
   lastSeq: number;
   readThroughSeq: number;
+}
+
+/**
+ * Кого затронет письмо по реплике с такими адресатами — подпись под полем «Кому» (§ 4).
+ *
+ * Считает её сервер и отдаёт готовой строкой: второе правило рядом с первым разошлось бы молча —
+ * ровно та беда, ради которой правила сторон живут в контрактах, а портал их не воспроизводит.
+ */
+export function chatMailNotice(plan: ChatMailPlan): string {
+  const parts: string[] = [];
+  if (plan.targets.includes('service')) parts.push('сервисный центр');
+  if (plan.targets.includes('office')) parts.push('служба оргтехники');
+  if (plan.userIds.length > 0) parts.push('названные исполнители');
+  return parts.length === 0
+    ? 'Письма не будет: сообщение адресовано только тем, кто читает его в портале.'
+    : `Получат письмом: ${parts.join(', ')}.`;
 }
 
 /**

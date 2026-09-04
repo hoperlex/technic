@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { archiveFilterSchema, baseListQuery, dateOnlySchema, uuidSchema } from './common';
-import type { ServiceRequestStatus } from './service-requests';
+import {
+  projectByAudiencePolicy,
+  type AudiencePolicy,
+  type ServiceRequestAudience,
+  type ServiceRequestStatus,
+} from './service-requests';
 
 // ── Справочник оргтехники (ADR 0085) ──
 // Единица: тип, модель, номера, место (объект и уточнение внутри него), отдел-владелец, гарантия
@@ -391,6 +396,45 @@ export interface OfficeEquipmentServiceEntryDto {
   serviceName: string | null;
   totalAmount: number | null;
   warranties: OfficeEquipmentItemWarrantyDto[];
+}
+
+/**
+ * Что видит заявитель в «Истории обслуживания» карточки единицы (ADR 0160, решение 10; план
+ * `office-equipment-requester-card-plan.md`, Р13).
+ *
+ * ЭТО САМЫЙ НЕОЧЕВИДНЫЙ КАНАЛ. Про карточку заявки помнят все, про эту строку — никто: вход сюда
+ * открывает `officeEquipment.read`, которое есть у заказчика, а сумма ремонта стоит прямо в строке.
+ * Заявитель, которому карточка заявки уже ничего не показывает, читал бы ту же сумму через
+ * справочник.
+ *
+ * Карта, а не одиночный `totalAmount: null` в маршруте: `-?` требует решения на КАЖДОЕ поле, и
+ * новое денежное поле строки (скидка, аванс, стоимость запчастей) ломает компиляцию, пока
+ * разработчик не выберет аудиторию. Одиночная замена была бы fail-open — ровно тот класс ошибки,
+ * ради которого весь план и написан.
+ *
+ * `warranties` остаются целиком: цен в строке гарантии нет ни одной, а обращаться по гарантии
+ * будет как раз заявитель (матрица §4.1 — гарантийный талон ему виден). Это та же граница, что у
+ * реестра гарантий (Г2): план убирает деньги, а не сам факт «что чинили».
+ */
+export const OFFICE_EQUIPMENT_SERVICE_ENTRY_AUDIENCE = {
+  id: 'all',
+  displayNumber: 'all',
+  status: 'all',
+  createdAt: 'all',
+  completedAt: 'all',
+  serviceName: 'all',
+  // Итог по акту — единственные деньги строки. `null`, а не `0`: «ремонт был бесплатным» и «сумму
+  // не показываем» — разные вещи, и портал рисует по `null` пустую ячейку, а не честный ноль.
+  totalAmount: { requester: null },
+  warranties: 'all',
+} satisfies AudiencePolicy<OfficeEquipmentServiceEntryDto>;
+
+/** Строка истории обслуживания в объёме аудитории ЭТОЙ заявки (Р13). */
+export function projectOfficeEquipmentServiceEntry(
+  entry: OfficeEquipmentServiceEntryDto,
+  audience: ServiceRequestAudience,
+): OfficeEquipmentServiceEntryDto {
+  return projectByAudiencePolicy(entry, audience, OFFICE_EQUIPMENT_SERVICE_ENTRY_AUDIENCE);
 }
 
 /** Одно перемещение единицы: откуда, куда, когда и почему (Р59). */

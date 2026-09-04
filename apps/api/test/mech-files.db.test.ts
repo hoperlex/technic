@@ -351,7 +351,10 @@ describe.skipIf(!DB_URL)('механизация: вложения и досту
     // грузится до сохранения заявки.
     expect(await isLinked(file.id)).toBe(false);
     expect((await download(site, file.id)).statusCode).toBe(200);
-    expect((await download(other, file.id)).statusCode).toBe(403);
+    // `404`, а не `403`, — с ADR 0160 (решение 6) отказ в доступе к файлу неотличим от «нет такого
+    // файла», и одинаково во всех модулях: разные коды позволяли бы перебором идентификаторов
+    // читать, сколько документов лежит в чужой заявке. Ответ маршрута сменился, поведение — нет.
+    expect((await download(other, file.id)).statusCode).toBe(404);
 
     const request = await createRequest(site, ctx.objects.first, [file.id]);
     // Ветка модуля в `file_is_linked` (миграция 0238): без неё файл остался бы «ничьим», то есть
@@ -361,7 +364,8 @@ describe.skipIf(!DB_URL)('механизация: вложения и досту
     // Теперь файл живёт по правилам заявки: автору он виден потому, что видна она.
     expect((await download(site, file.id)).statusCode).toBe(200);
     // Чужая площадка вложения не открывает: право читать модуль есть у обоих, а область — нет.
-    expect((await download(other, file.id)).statusCode).toBe(403);
+    // Код — `404` (ADR 0160, решение 6): «не тебе» и «нет такого» отвечают одинаково.
+    expect((await download(other, file.id)).statusCode).toBe(404);
 
     // И вынуть документ из заявки в обход её формы автор тоже не может.
     const removed = await ctx.app.inject({
@@ -381,7 +385,7 @@ describe.skipIf(!DB_URL)('механизация: вложения и досту
     });
     expect(moved.statusCode, moved.body).toBe(200);
 
-    expect((await download(site, file.id)).statusCode).toBe(403);
+    expect((await download(site, file.id)).statusCode).toBe(404);
     expect((await download(other, file.id)).statusCode).toBe(200);
   });
 
@@ -469,8 +473,10 @@ describe.skipIf(!DB_URL)('механизация: вложения и досту
     expect(archived.statusCode, archived.body).toBe(200);
     expect(archived.json().mode).toBe('soft');
     // Архивная заявка вложений не отдаёт — ни автору загрузки, ни площадке: архив открывает
-    // карточку, а не прямую ссылку на файл.
-    expect((await download(office, file.id)).statusCode).toBe(403);
+    // карточку, а не прямую ссылку на файл. Приоткрыт архив только у заявок на обслуживание
+    // оргтехники и только держателю `archive.read` (ADR 0160, решение 6); у механизации решение
+    // прежнее. Код отказа — `404`, общий для всех модулей с того же решения.
+    expect((await download(office, file.id)).statusCode).toBe(404);
 
     const purged = await ctx.app.inject({
       method: 'DELETE',

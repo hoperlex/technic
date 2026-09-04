@@ -281,6 +281,17 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'read',
     label: 'Видит заявки на обслуживание',
   },
+  /**
+   * Вид действия — «Чтение», как у строки выше, и это не дубль клетки: право не открывает ручек, а
+   * расширяет ответ уже открытых (план `docs/office-equipment-requester-card-plan.md`, Р1). В
+   * «Особых» оно читалось бы как отдельная работа, тогда как это оговорка к чтению — тот же список
+   * и та же карточка, только с деньгами.
+   */
+  'serviceRequests.finance': {
+    module: 'service',
+    action: 'read',
+    label: 'Видит деньги и объём работ заявок',
+  },
   'serviceRequests.create': {
     module: 'service',
     action: 'create',

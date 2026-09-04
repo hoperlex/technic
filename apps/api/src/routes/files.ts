@@ -1,13 +1,16 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, exists, inArray, isNotNull, isNull, not, or, type SQL, sql } from 'drizzle-orm';
 import {
+  actsForCounterparty,
   can,
   createUploadSessionSchema,
   fileDownloadQuerySchema,
   type FileDto,
   isInlineViewable,
+  type ServiceRequestAudience,
+  visibleServiceFileKinds,
 } from '@technic/contracts';
 import { config } from '../config';
 import { db } from '../db/client';
@@ -19,6 +22,7 @@ import {
   mechRequestFiles,
   mechRequests,
   requestFiles,
+  serviceRequestExecutors,
   serviceRequestFiles,
   serviceRequests,
   vehicleMaintenanceFiles,
@@ -38,8 +42,7 @@ import { requirePrincipal } from '../auth/plugin';
 import {
   lessorVisibilityWhere,
   operatorVisibilityWhere,
-  serviceExecutorVisibilityWhere,
-  serviceRequestScopeWhere,
+  serviceRequestVisibilityWhere,
   placeObjectVisibilityWhere,
   vehicleRequestVisibilityWhere,
 } from '../lib/access';
@@ -232,6 +235,85 @@ async function wasteTicketScan(fileId: string): Promise<{ requestId: string | nu
 type FileAccess =
   { via: 'denied' } | { via: 'linkedRecord' } | { via: 'ticketAudit'; requestId: string | null };
 
+/**
+ * «Открывает ли ЭТА заявка субъекту деньги» — `serviceRequestAudienceOf` (ADR 0160, Р1),
+ * записанное предикатом SQL над строкой `service_requests`.
+ *
+ * Правило не переписывается, а раскладывается по тем же двум ветвям, из которых оно состоит в
+ * контрактах: право `serviceRequests.finance` (ответ одинаков для всех строк — считается здесь же,
+ * до запроса) либо `isServiceExecutor` — оператор назначенного контрагента ЛИБО поимённая строка
+ * `service_request_executors` в паре с `serviceRequests.execute`. Разойдись эти две записи, файл
+ * оказался бы виден в карточке и не скачивался бы (или наоборот), а расхождение было бы молчаливым.
+ *
+ * Три ответа, а не один `SQL`: «всегда» и «никогда» известны до запроса, и подставленные в него
+ * `true`/`false` только мешали бы читать условие. `never` — не «прав нет вовсе», а «исполнителем
+ * этой заявки субъект не бывает ни при каком её содержимом».
+ */
+function serviceFinanceAudienceWhere(p: Principal): SQL | 'always' | 'never' {
+  if (can(p, 'serviceRequests.finance')) return 'always';
+  const parts: SQL[] = [];
+  // Две половины, как в `executorAssignment`: тип контрагента у учётки и совпадение с исполнителем
+  // заявки. Без первой сервисной стороной стал бы любой контрагент с совпавшим идентификатором,
+  // без второй — сервисная сторона по чужой заявке.
+  //
+  // `IS NOT NULL` рядом с равенством — не украшение, а трёхзначная логика: у нераспределённой
+  // заявки колонка пуста, `NULL = :id` даёт `UNKNOWN`, и отрицание этой ветви ниже осталось бы
+  // `UNKNOWN` — то есть строка не прошла бы НИ ПО ОДНОЙ аудитории и вложение исчезло бы вовсе.
+  // Контракты пишут ту же половину теми же словами (`row.serviceCounterpartyId !== null && …`).
+  if (actsForCounterparty(p, 'service') && p.counterpartyId) {
+    parts.push(
+      and(
+        isNotNull(serviceRequests.serviceCounterpartyId),
+        eq(serviceRequests.serviceCounterpartyId, p.counterpartyId),
+      )!,
+    );
+  }
+  // Поимённая строка спрашивается только у того, кто вообще может быть назначен: без
+  // `serviceRequests.execute` ответ `isServiceExecutor` всё равно «не исполнитель».
+  if (can(p, 'serviceRequests.execute')) {
+    parts.push(
+      exists(
+        db
+          .select({ x: sql`1` })
+          .from(serviceRequestExecutors)
+          .where(
+            and(
+              eq(serviceRequestExecutors.requestId, serviceRequests.id),
+              eq(serviceRequestExecutors.userId, p.id),
+            ),
+          ),
+      ),
+    );
+  }
+  if (parts.length === 0) return 'never';
+  return parts.length === 1 ? parts[0]! : or(...parts)!;
+}
+
+/**
+ * Условие по виду документа для связи «файл ↔ заявка на обслуживание» (ADR 0160, Р7/Р8).
+ *
+ * Перечень видов не пишется здесь ни одной строкой: его отдаёт `visibleServiceFileKinds` — та же
+ * функция, которой режется список файлов карточки. Двух перечней быть не может, расхождение
+ * означало бы файл, невидимый в карточке и открывающийся по ссылке.
+ *
+ * Обе аудитории — явными слагаемыми, включая отрицание: «видно заявителю ИЛИ (я исполнитель И
+ * видно исполнителю)» было бы короче, но верно лишь пока перечень заявителя вложен в перечень
+ * исполнителя. Это свойство сегодняшней матрицы, а не правило: вид, видимый заявителю и закрытый
+ * для денег, короткая запись отдала бы держателю `finance` молча. Здесь же каждая строка
+ * получает перечень **своей** аудитории — ровно как её считает `serviceRequestAudienceOf`.
+ *
+ * Корреляция стоит в `WHERE` запроса с `innerJoin`, а не в списке столбцов односоставной выборки,
+ * — там подмена квалификации колонок drizzle не достаёт (`office-equipment-sql-correlation.test.ts`).
+ */
+function serviceFileKindWhere(p: Principal): SQL {
+  const kindsOf = (audience: ServiceRequestAudience): SQL =>
+    inArray(serviceRequestFiles.kind, [...visibleServiceFileKinds(audience)]);
+  const finance = serviceFinanceAudienceWhere(p);
+  if (finance === 'always') return kindsOf('finance');
+  if (finance === 'never') return kindsOf('requester');
+  return or(and(finance, kindsOf('finance')), and(not(finance), kindsOf('requester')))!;
+}
+
 async function canAccessFile(
   p: Principal,
   fileId: string,
@@ -292,11 +374,25 @@ async function canAccessFile(
 
   let visibleService = false;
   if (!visibleWaste && !visibleVehicle && canReadService) {
-    // Документы заявки на обслуживание оргтехники (ADR 0084, миграция 0105). Область — та же, что
-    // в списке заявок, и считается теми же функциями: две оси заказчика (объект, где стоит
-    // техника, и оба отдела — подавший заявку и владелец единицы) плюс контрагент исполнителя.
-    // Своя копия правил здесь разъехалась бы с модулем на первой же правке — и отдала бы чужое
-    // вложение по прямой ссылке, пока список продолжал бы честно прятать саму заявку.
+    // Документы заявки на обслуживание оргтехники (ADR 0084, миграция 0105). Область — не «та же,
+    // что в списке заявок», а БУКВАЛЬНО ТА ЖЕ: один вызов `serviceRequestVisibilityWhere`, которым
+    // отбирает список и по которому отвечает карточка (Р2). Прежде здесь стояла своя сборка из
+    // отдельных осей, и разъехаться с модулем она могла на первой же правке — отдав чужое вложение
+    // по прямой ссылке, пока список продолжал бы честно прятать саму заявку (находка Н4).
+    //
+    // Вместе с общим предикатом сюда приехала и третья ось (Р1): поимённо назначенный исполнитель
+    // качает бумаги СВОЕЙ заявки, даже если по роли она вне его площадки. Иначе назначение открывало
+    // бы карточку, в которой не открывается ни одно вложение.
+    //
+    // Вид документа — вторым условием того же запроса (ADR 0160, решение 6): аудитория `requester`
+    // видит вложение и гарантийный талон, смета, акт и счёт закрыты. Условие уходит в SQL, а не в
+    // разбор после выборки, потому что файл бывает подшит к нескольким заявкам, и вопрос звучит
+    // «есть ли ВИДИМАЯ связь», а не «видима ли первая найденная».
+    //
+    // Архив: удалённая заявка отдаёт документ держателю `archive.read` (Р8). Ветка приоткрыта
+    // ровно ему — иначе вкладка «Архив» показывала бы вложение, которое не скачивается, то есть
+    // законно открытую карточку с неработающей строкой. Соседние модули этой поблажки не
+    // получают: их архив прямой ссылки не открывает, и решение о нём — их собственное.
     const service = await db
       .select({ id: serviceRequests.id })
       .from(serviceRequestFiles)
@@ -304,14 +400,9 @@ async function canAccessFile(
       .where(
         and(
           eq(serviceRequestFiles.fileId, fileId),
-          isNull(serviceRequests.deletedAt),
-          serviceRequestScopeWhere(
-            p,
-            serviceRequests.equipmentObjectId,
-            serviceRequests.customerDepartmentId,
-            serviceRequests.equipmentDepartmentId,
-          ),
-          serviceExecutorVisibilityWhere(p, serviceRequests.serviceCounterpartyId),
+          can(p, 'archive.read') ? undefined : isNull(serviceRequests.deletedAt),
+          serviceRequestVisibilityWhere(p),
+          serviceFileKindWhere(p),
         ),
       )
       .limit(1);
@@ -562,7 +653,17 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
       const [file] = await db.select().from(files).where(eq(files.id, req.params.id));
       if (!file || file.status !== 'active' || file.deletedAt) throw err.notFound('Файл не найден');
       const access = await canAccessFile(p, file.id, file.uploadedBy);
-      if (access.via === 'denied') throw err.forbidden();
+      /*
+       * `404`, а не `403`, и одинаково для всех модулей (ADR 0160, решение 6). Разные коды на «нет
+       * такого файла» и «есть, но не тебе» — это оракул: перебрав идентификаторы, по одному лишь
+       * коду ответа читается, сколько у заявки счетов. Разводить коды по модулям бессмысленно —
+       * сравнение соседних ответов дало бы тот же оракул, только в два запроса.
+       *
+       * Отказы по авторству в `POST /:id/complete` и `DELETE /:id` остаются `403`: там речь не о
+       * видимости чужой записи, а о действии над своим файлом, существование которого обращающийся
+       * и так знает — он его загрузил.
+       */
+      if (access.via === 'denied') throw err.notFound('Файл не найден');
       const inline = req.query.disposition === 'inline' && isInlineViewable(file.contentType);
       const url = await presignGet(file.objectKey, file.filename, inline ? 'inline' : 'attachment');
       if (access.via === 'ticketAudit') {

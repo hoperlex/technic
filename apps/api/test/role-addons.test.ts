@@ -143,11 +143,36 @@ describe('матрица надстроек', () => {
      * приходят к тому, кто ведёт модуль. Требование `serviceRequests.create` (`PERMISSION_REQUIRES`)
      * у всех трёх базовых ролей выполняется: заявку как заказчик заводит каждая.
      */
+    /*
+     * Девятым — деньги и объём работ заявок (план `docs/office-equipment-requester-card-plan.md`,
+     * Р2). Перечень оно расширяет только на бумаге: до выката проекции суммы видел всякий, кому
+     * видна заявка, и право лишь называет того, кто продолжит их видеть. «Ведение» здесь потому, что
+     * оно согласует объём работ и принимает работу, — отобрать у него цифры значило бы просить
+     * подпись вслепую.
+     */
+    /*
+     * Первыми шестью набор стал САМОДОСТАТОЧНЫМ (план
+     * `docs/office-equipment-access-profiles-plan.md`, Р4; находка Н4; миграция 0261). Прав они не
+     * расширяют вовсе — ни у одного держателя: чтение справочника и круг заказчика по заявке даёт
+     * любая из трёх базовых ролей, а источники соединены `OR`. Расширяют они не доступ, а
+     * НЕЗАВИСИМОСТЬ состава: прежде набор давал `officeEquipment.write` без `.read` и решения по
+     * заявке без её чтения, и работало это лишь потому, что совместимых ролей ровно три и у каждой
+     * чтение своё. Пока так — набор нельзя было выдать роли без модуля (этап Э6 расширяет
+     * `grant_roles` на менеджера и диспетчера), барьер требований проверял не то, что кажется, а
+     * снятие права из роли молча выключило бы половину набора.
+     */
     expect([...ROLE_ADDON_PERMISSIONS[OFFICE]]).toEqual([
+      'officeEquipment.read',
+      'serviceRequests.read',
+      'serviceRequests.create',
+      'serviceRequests.update',
+      'serviceRequests.delete',
+      'serviceRequests.files',
       'officeEquipment.write',
       'serviceRequests.assign',
       'serviceRequests.approveEstimate',
       'serviceRequests.status',
+      'serviceRequests.finance',
       'serviceRequests.hold',
       'serviceRequests.urgency',
       'officeEquipmentPurchases.manage',

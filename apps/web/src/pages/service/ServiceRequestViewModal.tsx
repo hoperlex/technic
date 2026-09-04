@@ -14,7 +14,8 @@ import {
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
-import { ActionSheet, ViewFields, ViewModal, type ActionSheetItem } from '@shared/ui';
+import { ActionSheet, ViewFields, ViewModal } from '@shared/ui';
+import type { ServiceMenuItem } from './serviceStatusChoices';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
@@ -49,6 +50,8 @@ const SERVICE_HISTORY_STATUSES = {
 
 /**
  * Карточка заявки на обслуживание (§9.4): вкладки «Заявка», «Объём работ», «Документы», «История».
+ * Средняя из них зависит от заявки и от читателя: у расходников на её месте «Номенклатура», а
+ * заявителю (ADR 0160) её нет вовсе — вкладок остаётся три.
  *
  * Вкладками, а не одной длинной страницей: у заявки три стороны и три разных разговора — что
  * сломалось, во сколько это встало и чем подтверждено. В один свиток они складываются так, что
@@ -66,6 +69,7 @@ export function ServiceRequestViewModal({
   onClose,
   onEdit,
   actions,
+  pendingId,
   modals,
 }: {
   /** `null` — окно закрыто. Строка списка: с неё карточка рисуется, пока едет свежая. */
@@ -84,7 +88,12 @@ export function ServiceRequestViewModal({
    * (архив). Действия стоят в подвале, потому что решают, прочитав объём работ и историю, — то есть
    * здесь, а не в строке списка.
    */
-  actions?: (request: ServiceRequestDto) => ActionSheetItem[];
+  actions?: (request: ServiceRequestDto) => ServiceMenuItem[];
+  /**
+   * Заявка, по которой идёт действие без окна (ADR 0161): её тег статуса ждёт ответа. Приходит
+   * снаружи, из того же набора, чьи окна карточка держит внутри себя (ADR 0140).
+   */
+  pendingId?: string | null;
   /**
    * Окна действий карточки (ADR 0140). Рендерятся **внутри** окна, и это не вкусовщина:
    * вложенная модалка получает от antd собственный слой (`ZIndexContext` даёт ей z-index на сотню
@@ -171,6 +180,11 @@ export function ServiceRequestViewModal({
         user,
         equipmentWarrantyUntil,
         onAssign: assign?.onClick,
+        // Тег статуса в поле «Статус» — тот же вход в ход заявки, что и в строке списка (ADR
+        // 0161). Набор берётся КАРТОЧКИН: окно перехода обязано открыться внутри карточки, иначе
+        // оно делит с ней слой и прячется под ней (ADR 0140).
+        statusItems: allActions,
+        statusPending: !!request && pendingId === request.id,
       })
     : [];
 
@@ -281,35 +295,55 @@ export function ServiceRequestViewModal({
              * (Р15): у ремонта окном объёма работ, у расходников окном состава. Симметрия здесь не
              * украшение — у обоих видов заявки исполнитель отвечает на один вопрос, «что по ней
              * пойдёт», и два разных места для одного ответа расходятся на первой же правке.
+             *
+             * Заявителю (`audience === 'requester'`) вкладки объёма работ НЕ СТРОИТСЯ ВОВСЕ —
+             * ADR 0160, решение 3: у него `items` пусты, суммы и согласование обнулены сервером, и
+             * оставленная вкладка показывала бы пустую таблицу вместо ответа «денег вам не видно».
+             * Прятать её стилем нельзя по той же причине, по которой сервер вычитает поля, а не
+             * полагается на портал: спрятанное остаётся в разметке.
+             *
+             * Номенклатура при этом остаётся ОБЕИМ аудиториям: цен в строках расходников нет ни
+             * одной (Р4), и запрет «Объёма работ» подменять запретом соседней вкладки значило бы
+             * расширять задачу — предмет заявки на картридж заявитель обязан видеть.
+             *
+             * Аудитория читается из DTO, а не выводится из прав: сервер посчитал её для этой самой
+             * строки, и второй ответ разъехался бы с первым — карточкой без вкладки при полных
+             * данных либо вкладкой с пустой таблицей.
              */
-            request.kind === 'consumable'
-              ? {
-                  key: 'consumables',
-                  label: 'Номенклатура',
-                  children: (
-                    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-                      <ServiceConsumablesTable lines={request.consumables} />
-                      {consumables && (
-                        <Button
-                          type="link"
-                          size="small"
-                          icon={<ProfileOutlined />}
-                          style={{ padding: 0, alignSelf: 'flex-start' }}
-                          onClick={consumables.onClick}
-                        >
-                          {consumables.label}
-                        </Button>
-                      )}
-                    </Space>
-                  ),
-                }
-              : {
-                  key: 'estimate',
-                  label: 'Объём работ',
-                  // Решения по объёму работ живут кнопками под таблицей (Р11): пункты берутся
-                  // готовыми, чтобы вкладка и меню спрашивали одни и те же предикаты.
-                  children: <ServiceRequestEstimate request={request} actions={allActions} />,
-                },
+            ...(request.kind === 'consumable'
+              ? [
+                  {
+                    key: 'consumables',
+                    label: 'Номенклатура',
+                    children: (
+                      <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+                        <ServiceConsumablesTable lines={request.consumables} />
+                        {consumables && (
+                          <Button
+                            type="link"
+                            size="small"
+                            icon={<ProfileOutlined />}
+                            style={{ padding: 0, alignSelf: 'flex-start' }}
+                            onClick={consumables.onClick}
+                          >
+                            {consumables.label}
+                          </Button>
+                        )}
+                      </Space>
+                    ),
+                  },
+                ]
+              : request.audience === 'finance'
+                ? [
+                    {
+                      key: 'estimate',
+                      label: 'Объём работ',
+                      // Решения по объёму работ живут кнопками под таблицей (Р11): пункты берутся
+                      // готовыми, чтобы вкладка и меню спрашивали одни и те же предикаты.
+                      children: <ServiceRequestEstimate request={request} actions={allActions} />,
+                    },
+                  ]
+                : []),
             {
               key: 'documents',
               label: 'Документы',

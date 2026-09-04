@@ -26,6 +26,7 @@ import {
   moveOfficeEquipmentSchema,
   officeEquipmentListQuerySchema,
   officeEquipmentTitle,
+  projectOfficeEquipmentServiceEntry,
   type OfficeEquipmentConsumableRefDto,
   type OfficeEquipmentDto,
   type OfficeEquipmentItemWarrantyDto,
@@ -48,6 +49,7 @@ import {
   serviceRequestItems,
   serviceRequests,
 } from '../db/schema';
+import { serviceAudienceByRequest } from '../services/service-request-audience';
 import { err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
 import { writeAudit } from '../lib/audit';
@@ -64,7 +66,7 @@ import {
   assertArchiveVisible,
   assertOfficeEquipmentScope,
   officeEquipmentScopeWhere,
-  serviceRequestScopeWhere,
+  serviceRequestVisibilityWhere,
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
@@ -528,8 +530,16 @@ const SERVICE_HISTORY_LIMIT = 10;
  * отдела это разные области (справочник — по владельцу техники, заявки — по заказчику заявки, Р5),
  * и показать здесь заявку соседнего отдела значило бы обойти область модуля через справочник.
  *
- * Область исполнителя (`serviceExecutorVisibilityWhere`) не повторяется намеренно: справочник
- * сервисной компании закрыт целиком (Р7), и до этого места её учётка не доходит.
+ * ВИДИМОСТЬ ПРИХОДИТ ЦЕЛИКОМ — одним `serviceRequestVisibilityWhere` (Р2), и это правка по находке
+ * Н4. Раньше здесь стояла одна ось из трёх — заказчик, — а недостающая ось подрядчика держалась не
+ * на себе, а на СОСЕДНЕМ правиле: справочник оргтехники закрыт сервисной компании целиком (Р7), и
+ * до этого места её учётка не доходила. Правило, опёртое на чужое, верно ровно до чужой правки:
+ * открой кому-нибудь `officeEquipment.read` — и карточка отдала бы историю ремонтов всех
+ * подрядчиков без единой ошибки в логе. Теперь условие отвечает за себя само.
+ *
+ * Тем же вызовом закрыт и второй долг: поимённо назначенный исполнитель (Р1) видит здесь СВОЙ
+ * ремонт, даже когда аппарат стоит вне его площадки. Витрина перестала быть у́же карточки заявки
+ * (К3) — ту же заявку `GET /service-requests/:id` ему открывает.
  */
 async function loadServiceHistory(
   p: Principal,
@@ -544,6 +554,9 @@ async function loadServiceHistory(
       completedAt: serviceRequests.completedAt,
       totalAmount: serviceRequests.finalTotalAmount,
       serviceName: counterparties.name,
+      // Исполнитель нужен не для показа, а для аудитории строки (Р13): назначенная субъекту заявка
+      // отдаёт ему сумму, соседняя — нет, и решается это по каждой строке отдельно.
+      serviceCounterpartyId: serviceRequests.serviceCounterpartyId,
     })
     .from(serviceRequests)
     .leftJoin(counterparties, eq(serviceRequests.serviceCounterpartyId, counterparties.id))
@@ -551,12 +564,7 @@ async function loadServiceHistory(
       and(
         eq(serviceRequests.officeEquipmentId, equipmentId),
         isNull(serviceRequests.deletedAt),
-        serviceRequestScopeWhere(
-          p,
-          serviceRequests.equipmentObjectId,
-          serviceRequests.customerDepartmentId,
-          serviceRequests.equipmentDepartmentId,
-        ),
+        serviceRequestVisibilityWhere(p),
       ),
     )
     .orderBy(desc(serviceRequests.createdAt))
@@ -594,16 +602,29 @@ async function loadServiceHistory(
     byRequest.set(row.requestId, list);
   }
 
-  return rows.map((row) => ({
-    id: row.id,
-    displayNumber: formatServiceRequestNumber(row.num),
-    status: row.status,
-    createdAt: row.createdAt.toISOString(),
-    completedAt: row.completedAt ? row.completedAt.toISOString() : null,
-    serviceName: row.serviceName,
-    totalAmount: row.totalAmount === null ? null : Number(row.totalAmount),
-    warranties: byRequest.get(row.id) ?? [],
-  }));
+  /*
+   * Аудитория — по каждой заявке (Р13), а не по субъекту целиком: у внутреннего исполнителя одна и
+   * та же история аппарата несёт и назначенные ему ремонты, и соседние. Считается тем же
+   * `serviceRequestAudienceOf`, что и карточка заявки, — иначе сумма, скрытая в одном месте,
+   * читалась бы в другом.
+   */
+  const audiences = await serviceAudienceByRequest(p, rows);
+
+  return rows.map((row) =>
+    projectOfficeEquipmentServiceEntry(
+      {
+        id: row.id,
+        displayNumber: formatServiceRequestNumber(row.num),
+        status: row.status,
+        createdAt: row.createdAt.toISOString(),
+        completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+        serviceName: row.serviceName,
+        totalAmount: row.totalAmount === null ? null : Number(row.totalAmount),
+        warranties: byRequest.get(row.id) ?? [],
+      },
+      audiences.get(row.id) ?? 'requester',
+    ),
+  );
 }
 
 export default async function officeEquipmentRoutes(app: FastifyInstance): Promise<void> {

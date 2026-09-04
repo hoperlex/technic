@@ -596,7 +596,8 @@ async function seedLinkParents(): Promise<Parents> {
     .insert(schema.mechRequests)
     .values({
       objectId: ctx.objectId,
-      kindName: `Виброплита ${RUN}`,
+      // Модель не ставится: предмет аренды здесь не проверяется вовсе, а колонка ссылки
+      // необязательна (уборка Э3 сняла написание, ADR 0156).
       plannedFrom: TODAY,
       plannedTo: shiftDateKey(TODAY, 3),
       responsibleName: 'Иванов Иван',
@@ -1500,8 +1501,10 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
     // граница, что у журнала ТО, и другой в разделе не заводится.
     expect((await download(reader, foreign.id)).statusCode).toBe(200);
     expect((await download(admin, own.id)).statusCode).toBe(200);
-    // Учётка без гаража не открывает ничего: без ветки `visibleReceipt` она и не должна.
-    expect((await download(outsider, foreign.id)).statusCode).toBe(403);
+    // Учётка без гаража не открывает ничего: без ветки `visibleReceipt` она и не должна. Отказ —
+    // `404` (ADR 0160, решение 6): код «есть, но не тебе» отличался бы от «нет такого файла» и
+    // работал бы оракулом при переборе идентификаторов. Правило общее для всех модулей.
+    expect((await download(outsider, foreign.id)).statusCode).toBe(404);
 
     // А теперь главное: подшивший скан теряет гараж — и теряет доступ к собственному файлу.
     // Собственный `uploadedBy` работает только у файла, не привязанного НИКУДА; привязанный сразу
@@ -1511,7 +1514,7 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
       .set({ role: 'site' })
       .where(eq(ctx.schema.users.id, ctx.users.exMech));
     const demoted = await headersOf(ctx.users.exMech);
-    expect((await download(demoted, own.id)).statusCode).toBe(403);
+    expect((await download(demoted, own.id)).statusCode).toBe(404);
   });
 
   // ── 17. Аудит ──

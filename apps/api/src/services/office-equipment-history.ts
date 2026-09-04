@@ -10,6 +10,7 @@ import {
   isAfterEquipmentHistoryCursor,
   moscowDateKeyOf,
   officeEquipmentTitle,
+  projectEquipmentHistoryEventForAudience,
   type EquipmentHistoryCursor,
   type EquipmentHistoryEventDto,
   type EquipmentHistoryPageDto,
@@ -17,6 +18,7 @@ import {
   type ServiceRequestStatus,
 } from '@technic/contracts';
 import { db } from '../db/client';
+import { serviceAudienceByRequest } from './service-request-audience';
 import {
   auditLog,
   constructionObjects,
@@ -28,7 +30,7 @@ import {
   serviceRequestStatusHistory,
   users,
 } from '../db/schema';
-import { serviceRequestScopeWhere } from '../lib/access';
+import { serviceRequestVisibilityWhere } from '../lib/access';
 import type { Principal } from '../auth/principal';
 
 /**
@@ -156,7 +158,19 @@ async function loadMovements(
   }));
 }
 
-/** Заявки в области смотрящего — основа и для шагов, и для гарантий ремонта. */
+/**
+ * Заявки, видимые смотрящему, — основа и для шагов, и для гарантий ремонта.
+ *
+ * Видимость спрашивается целиком, одним `serviceRequestVisibilityWhere` (Р2), а не складывается
+ * здесь из осей — правка по находке Н4. Прежде лента держала одну ось, заказчика, и молчание об
+ * остальных опиралось на СОСЕДНЕЕ правило: справочник оргтехники закрыт сервисной компании (Р7), и
+ * до этой сборки её учётка не доходила. Держаться на чужом правиле лента перестала: открой
+ * кому-нибудь `officeEquipment.read` — и она отдала бы ремонты всех подрядчиков, ничем не
+ * пожаловавшись.
+ *
+ * Заодно снят и второй долг: поимённо назначенный исполнитель (Р1) видит в ленте СВОИ ремонты и на
+ * чужой площадке — те самые, чьи карточки ему и так открыты (К3, «витрина ⊆ карточка»).
+ */
 async function visibleRequests(p: Principal, equipmentId: string, limit: number) {
   return db
     .select({
@@ -169,6 +183,9 @@ async function visibleRequests(p: Principal, equipmentId: string, limit: number)
       totalAmount: serviceRequests.finalTotalAmount,
       serviceName: counterparties.name,
       authorName: users.fullName,
+      // Не для показа, а для аудитории события (Р13): назначенная субъекту заявка отдаёт ему сумму
+      // ремонта, соседняя в той же ленте — нет.
+      serviceCounterpartyId: serviceRequests.serviceCounterpartyId,
     })
     .from(serviceRequests)
     .leftJoin(counterparties, eq(serviceRequests.serviceCounterpartyId, counterparties.id))
@@ -177,12 +194,7 @@ async function visibleRequests(p: Principal, equipmentId: string, limit: number)
       and(
         eq(serviceRequests.officeEquipmentId, equipmentId),
         isNull(serviceRequests.deletedAt),
-        serviceRequestScopeWhere(
-          p,
-          serviceRequests.equipmentObjectId,
-          serviceRequests.customerDepartmentId,
-          serviceRequests.equipmentDepartmentId,
-        ),
+        serviceRequestVisibilityWhere(p),
       ),
     )
     .orderBy(desc(serviceRequests.createdAt))
@@ -190,6 +202,28 @@ async function visibleRequests(p: Principal, equipmentId: string, limit: number)
 }
 
 type VisibleRequest = Awaited<ReturnType<typeof visibleRequests>>[number];
+
+/**
+ * За какой заявкой стоит событие ленты — и стоит ли вообще.
+ *
+ * Своя функция, а не `'requestId' in event`: у перемещения ссылка называется иначе
+ * (`serviceRequestId` — перемещение бывает и без заявки), и проверка по одному имени молча отдала
+ * бы перемещению чужую аудиторию. Перечисление по виду события заставляет отвечать на вопрос
+ * «какая заявка отвечает за деньги этой строки» каждый раз, когда в ленте заводят новый вид.
+ */
+function equipmentHistoryRequestIdOf(event: EquipmentHistoryEventDto): string | null {
+  switch (event.kind) {
+    case 'movement':
+      return event.serviceRequestId;
+    case 'service_request':
+    case 'service_step':
+      return event.requestId;
+    case 'warranty':
+      return event.requestId;
+    default:
+      return null;
+  }
+}
 
 function requestEvents(rows: VisibleRequest[]): EquipmentHistoryEventDto[] {
   return rows.map((row) => ({
@@ -412,8 +446,9 @@ export async function loadEquipmentHistoryPage(
   events.push(...cardAuditEvents(await loadCardAudit(equipment.id, limit), equipment));
   events.push(...expiredWarrantyEvents(equipment, today));
 
+  let requests: VisibleRequest[] = [];
   if (serviceVisible) {
-    const requests = await visibleRequests(p, equipment.id, limit);
+    requests = await visibleRequests(p, equipment.id, limit);
     events.push(...requestEvents(requests));
     events.push(...(await loadSteps(requests, limit)));
     events.push(...requestWarrantyEvents(await loadRequestAudit(requests, limit), requests));
@@ -430,8 +465,29 @@ export async function loadEquipmentHistoryPage(
   const page = filtered.slice(0, opts.pageSize);
   const hasMore = filtered.length > page.length;
   const last = page[page.length - 1];
+
+  /*
+   * Аудитория применяется К СТРАНИЦЕ, после отбора, курсора и сортировки: деньги ни на порядок, ни
+   * на состав ленты не влияют, а платить проекцией за события, которые не покажем, незачем. Курсор
+   * при этом считается по непроецированному событию — иначе «страница после» зависела бы от того,
+   * кто её читает.
+   *
+   * Событию без заявки (перемещение, правка карточки, гарантия самой единицы) достаётся
+   * `requester` — умышленно самая узкая: денег в этих видах сегодня нет, и проекция им ничего не
+   * меняет, но если завтра в перемещении появится стоимость доставки, она по умолчанию окажется
+   * скрытой, а не открытой. Fail-closed здесь стоит ровно столько же, сколько fail-open.
+   */
+  const audiences = await serviceAudienceByRequest(p, requests);
+  const items = page.map((event) =>
+    projectEquipmentHistoryEventForAudience(
+      event,
+      (equipmentHistoryRequestIdOf(event) && audiences.get(equipmentHistoryRequestIdOf(event)!)) ||
+        'requester',
+    ),
+  );
+
   return {
-    items: page,
+    items,
     hasMore,
     nextCursor: hasMore && last ? encodeEquipmentHistoryCursor(cursorOfEvent(last)) : null,
     serviceVisible,

@@ -74,7 +74,10 @@ export interface ServiceStatusLine {
 export function serviceStatusLine(
   request: Pick<
     ServiceRequestDto,
-    'status' | 'waitingOn' | 'holdReason' | 'files' | 'kind' | 'service'
+    // `audience` — не украшение подписи, а вход в `isAwaitingDocuments`: у заявителя тот отвечает
+    // «нет» всегда (ADR 0160, Р12), и строка «Ждёт документов» у него не появляется вовсе. Считать
+    // её по урезанному списку файлов значило бы обещать бумагу, которая давно подшита.
+    'status' | 'waitingOn' | 'holdReason' | 'files' | 'kind' | 'service' | 'audience'
   >,
   subject: AccessSubject | null | undefined,
 ): ServiceStatusLine | null {

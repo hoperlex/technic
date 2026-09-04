@@ -1,7 +1,16 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { canUse as scopedCanUse, type AuthUser, type Permission } from '@technic/contracts';
 import { authApi } from '../api/auth';
+import { accessFingerprint } from './accessFingerprint';
 import { clear as clearSession, onExpired, onRefreshedUser, refresh } from '@shared/api';
 
 type Status = 'loading' | 'authenticated' | 'unauthenticated';
@@ -82,6 +91,13 @@ let bootstrapPromise: Promise<AuthUser | null> | null = null;
 let cachedUserId: string | null = null;
 
 /**
+ * Отпечаток доступа, при котором набран кэш (ADR 0160, Р15). Рядом с `cachedUserId` и по той же
+ * причине: ключи запросов не содержат ни учётки, ни её прав, и различить «те же данные» от «уже не
+ * те» может только сравнение с тем, что было.
+ */
+let cachedAccess = '';
+
+/**
  * Забыть ответ bootstrap: следующее монтирование провайдера спросит сервер заново.
  *
  * Заведено ради режима технических работ (`docs/maintenance-mode-plan.md`, §4.5), и без него режим
@@ -103,6 +119,9 @@ export function resetAuthBootstrap(): void {
 export function __resetAuthForTests(): void {
   resetAuthBootstrap();
   cachedUserId = null;
+  // Вместе с учёткой забывается и её доступ: иначе первый же сценарий следующего файла сравнил бы
+  // свой отпечаток с чужим и вычистил кэш там, где ничего не менялось.
+  cachedAccess = '';
 }
 
 function bootstrapAuth(): Promise<AuthUser | null> {
@@ -127,10 +146,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * выбрасывается целиком — иначе на общем рабочем месте следующий вошедший увидел бы чужие
    * заявки, пока данные не протухнут сами.
    */
-  const adoptSession = (next: AuthUser | null) => {
-    if (next?.id !== cachedUserId) queryClient.clear();
-    cachedUserId = next?.id ?? null;
-  };
+  const adoptSession = useCallback(
+    (next: AuthUser | null) => {
+      /*
+       * Второе условие — смена доступа при той же учётке (ADR 0160, Р15). После разграничения
+       * карточки по аудиториям одна и та же заявка приходит РАЗНОЙ: человеку выдали «Ведение», сервер
+       * уже отдаёт суммы, а в кэше лежит ответ, собранный для заявителя, — и вкладка «Объём работ»,
+       * открывшаяся по новому праву, показывала бы пустую таблицу до протухания кэша.
+       *
+       * Правило одно на обе стороны, хотя опасна из них только одна: «право отобрали» портал
+       * переживает и без сброса (перерисуется по новым правам), а «право выдали» — нет. Разные
+       * правила на «дали» и «отобрали» разъехались бы на первой же правке, и разъехались бы в ту
+       * сторону, которую никто не проверяет.
+       */
+      if (next?.id !== cachedUserId || accessFingerprint(next) !== cachedAccess)
+        queryClient.clear();
+      cachedUserId = next?.id ?? null;
+      cachedAccess = accessFingerprint(next);
+      // Мемоизация — не оптимизация, а условие честных зависимостей: функцию зовут три эффекта и
+      // значение контекста, и без стабильной ссылки каждый из них либо врёт линтеру о своих
+      // зависимостях, либо перезапускается на каждый рендер провайдера. Сравниваемое состояние живёт
+      // в модульных переменных, поэтому от рендера функция не зависит вовсе — только от клиента кэша.
+    },
+    [queryClient],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -148,7 +187,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [adoptSession]);
 
   /*
    * Сессия кончилась посреди работы (refresh истёк, отозван или учётку выключили) — уводим на
@@ -166,7 +205,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null);
       setStatus('unauthenticated');
     });
-  }, []);
+  }, [adoptSession]);
 
   /*
    * Обновление токена принесло учётку — применяем её целиком. Права считает сервер, и обновление
@@ -192,15 +231,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // вернуло бы права, действовавшие до обновления.
       bootstrapPromise = Promise.resolve(next);
       /*
-       * Кэш запросов не выбрасывается: обновление продлевает ту же сессию, «вошёл другой» им не
-       * бывает — ответ, вернувшийся уже к другому пользователю, до подписки не доходит вовсе
-       * (сверку поколения делает сама сессия).
+       * «Вошёл другой» обновлением не бывает — ответ, вернувшийся уже к другому пользователю, до
+       * подписки не доходит вовсе (сверку поколения делает сама сессия). А вот СМЕНА ДОСТУПА той же
+       * учётки бывает именно здесь: обновление токена — тот самый момент, когда выданный набор
+       * доезжает до вкладки посреди работы (`authVersion + 1`). Поэтому кэш выбрасывается по тому
+       * же правилу, что и при смене учётки, — иначе новый доступ показывал бы старые, собранные для
+       * прежней аудитории ответы (ADR 0160, Р15).
        */
+      adoptSession(next);
       setUser(next);
     });
     // Зависимость от `user` — ради проверки выше: подписка обязана видеть текущее состояние
-    // сессии, а не то, каким оно было на первом рендере.
-  }, [user]);
+    // сессии, а не то, каким оно было на первом рендере. `adoptSession` мемоизирован и ссылку не
+    // меняет, поэтому подписка от него не пересоздаётся.
+  }, [user, adoptSession]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -234,7 +278,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
       ...permissionChecks(user),
     }),
-    [user, status],
+    [user, status, adoptSession],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
