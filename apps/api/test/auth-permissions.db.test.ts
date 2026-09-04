@@ -382,7 +382,23 @@ describe.skipIf(!DB_URL)('ответы сессии отдают эффекти�
     const { email } = await newUser('shtab');
 
     const { user } = await login(email);
-    for (const permission of ROLE_ADDON_PERMISSIONS[OPERATOR]) {
+    /*
+     * Перебирается СОБСТВЕННЫЙ ВКЛАД набора, а не весь его состав, и это следствие
+     * самодостаточности (план `docs/office-equipment-access-profiles-plan.md`, Р4; миграция 0261).
+     * С неё в составе лежат чтение справочника и круг заказчика по заявке — то, что роль `shtab`
+     * даёт и сама, — и утверждение «ни одного права набора у учётки без набора» стало бы ложным на
+     * ровном месте: права там, но пришли они должностью, а не выдачей.
+     *
+     * Разница считается по правам самой роли, а не списком-копией: копия разъехалась бы с составом
+     * молча, а весь смысл случая — в том, что выдача НИЧЕГО не добавила.
+     */
+    const own = ROLE_ADDON_PERMISSIONS[OPERATOR].filter(
+      (permission) => !can({ role: 'shtab' }, permission),
+    );
+    // Пустой перебор прошёл бы молча и ничего не доказал: у набора обязан быть свой вклад, ради него
+    // он и выдаётся.
+    expect(own.length).toBeGreaterThan(0);
+    for (const permission of own) {
       expect(user.permissions, `право набора у учётки без набора: ${permission}`).not.toContain(
         permission,
       );

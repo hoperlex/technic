@@ -126,7 +126,7 @@ interface Ctx {
   colleague: TestUser;
   /** «Оргтехника: ведение» — надстройка роли даёт `status` и `assign`, то есть сторону `operator`. */
   operator: TestUser;
-  /** ИТ-служба: `approveIt` и сквозная область модуля. Сторона `it`, субъект module-wide для п. 16. */
+  /** ИТ-служба: код набора и сквозная область модуля. Сторона `it`, субъект module-wide для п. 16. */
   itSupport: TestUser;
   /** Учётка сервисной компании: сторона `service` через назначенного контрагента. */
   service: TestUser;
@@ -509,9 +509,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
 
     /**
      * Набор поимённого исполнителя — свой на прогон: `execute` и ничего сверх того. Ни `status`,
-     * ни `assign`, ни `approveIt` в нём нет намеренно — иначе обе учётки попали бы заодно в
-     * стороны `operator` и `it`, и «реплика поимённо одному» перестала бы отличаться от
-     * «реплики стороне».
+     * ни `assign` в нём нет намеренно — иначе учётки попали бы заодно в сторону `operator`, и
+     * «реплика поимённо одному» перестала бы отличаться от «реплики стороне». Стороной `it` их не
+     * сделал бы и полный состав ИТ-набора: она опознаётся кодом выданного набора (Р9).
      */
     const grantCode = `oe-chat-exec-${RUN}`;
     const grant = await db.execute<{ id: string }>(sql`
@@ -608,7 +608,7 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       expect(await said(ctx.author.auth, id, 'бумага снова зажевалась', { sides: ['all'] })).toBe(1);
       // «Ведение» — `status` и `assign` разом, и ни одного из них по отдельности не хватило бы.
       expect(await said(ctx.operator.auth, id, 'передаю в сервис', { sides: ['service'] })).toBe(2);
-      // ИТ-служба — `approveIt`.
+      // ИТ-служба — по коду выданного набора (Р9), а не по праву: мёртвой визы в нём больше нет.
       expect(await said(ctx.itSupport.auth, id, 'менять узел не будем', { sides: ['operator'] })).toBe(3);
       // Сервисная компания — оператор НАЗНАЧЕННОГО контрагента.
       expect(await said(ctx.service.auth, id, 'ждём ролик подачи', { sides: ['customer'] })).toBe(4);
@@ -911,8 +911,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
 
   it('п. 7. реплика двум сторонам одного человека даёт unreadMine = 1, а не 2', async () => {
     const id = await makeFullRequest('две стороны одного');
-    // Администратор — и `operator` (status + assign), и `it` (approveIt): соединение с таблицей
-    // адресатов размножило бы такую реплику на две строки, и `count(*)` показал бы «2 новых».
+    // Администратор — и `operator`, и `it` разом (кодов у него нет, обе стороны даёт роль):
+    // соединение с таблицей адресатов размножило бы такую реплику на две строки, и `count(*)`
+    // показал бы «2 новых».
     expect((await chatOf(ctx.admin.auth, id)).participantSides).toEqual(['operator', 'it']);
     await said(ctx.author.auth, id, 'вопрос и к ведению, и к ИТ', { sides: ['operator', 'it'] });
 

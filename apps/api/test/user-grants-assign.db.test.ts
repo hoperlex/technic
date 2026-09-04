@@ -1049,8 +1049,12 @@ describe.skipIf(!DB_URL)('выдача и отзыв полномочия: ма�
 
   /**
    * Системный набор выдаётся наравне с пользовательским: в коде живёт его **состав** (решение 2), а
-   * не список держателей. Иначе перенос надстроек оставил бы визу ИТ невыдаваемой вовсе — а именно её
-   * и раздают людям.
+   * не список держателей. Иначе перенос надстроек оставил бы набор ИТ-службы невыдаваемым вовсе — а
+   * именно его и раздают людям.
+   *
+   * Прибавка проверяется по `serviceRequests.assign`, а не по прежней визе: мёртвое
+   * `serviceRequests.approveIt` из состава убрано (план профилей оргтехники, Э9, миграция E).
+   * Назначение — то, ради чего набор и выдают, и роли `shtab` оно не положено.
    */
   it('системный набор выдаётся и отзывается теми же ручками', async () => {
     const holder = await newHolder('shtab');
@@ -1062,11 +1066,11 @@ describe.skipIf(!DB_URL)('выдача и отзыв полномочия: ма�
     const approver = list
       .json<{ items: GrantCardDto[] }>()
       .items.find((row) => row.code === SYSTEM_GRANT_CODES[1])!;
-    expect(approver, 'системный набор визы ИТ в каталоге').toBeDefined();
+    expect(approver, 'системный набор ИТ-службы в каталоге').toBeDefined();
 
     const assigned = await assignOk(holder.id, approver.id);
     expect(assigned.changed).toBe(true);
-    expect(assigned.delta.added).toContain('serviceRequests.approveIt');
+    expect(assigned.delta.added).toContain('serviceRequests.assign');
 
     const revoked = await revoke(holder.id, approver.id);
     expect(revoked.statusCode, revoked.body).toBe(200);

@@ -7,6 +7,7 @@ import {
   canWriteChat,
   isServiceRequestClosed,
   markServiceChatReadSchema,
+  MODULE_GRANTS,
   participantSidesOf,
   profilesWith,
   SERVICE_CHAT_SIDES,
@@ -30,7 +31,10 @@ import {
  *
  * Формулы сторон живут в контракте, а факты приходят аргументом (§3.2): у `AccessSubject` нет ни id
  * учётки, ни областей, ни назначения, — поэтому «заказчик» и «исполнитель» здесь проверяются
- * фактами, а «Ведение» и ИТ-служба — правами.
+ * фактами, а «Ведение» и ИТ-служба — КОДАМИ ВЫДАННЫХ НАБОРОВ (план профилей оргтехники, Р9): с Э3
+ * профиль модуля опознаётся кодом, а не суммой прав. Сам переезд и его отрицательные случаи живут
+ * в `office-equipment-profiles.test.ts`; здесь коды стоят на субъектах ровно затем, чтобы стороны
+ * считались так же, как у живой учётки.
  */
 
 const ME = '11111111-1111-4111-8111-111111111111';
@@ -49,8 +53,36 @@ const facts = (over: Partial<ServiceChatFacts>): ServiceChatFacts => ({ ...NO_FA
 
 const admin: AccessSubject = { role: 'admin' };
 const serviceCompany: AccessSubject = { role: 'operator', counterpartyType: 'service' };
-const management: AccessSubject = { role: 'shtab', addons: ['office_equipment_operator'] };
-const itService: AccessSubject = { role: 'shtab', addons: ['office_equipment_it_approver'] };
+// Надстройка и код набора — одна и та же выдача, читаемая двумя полями (`SYSTEM_GRANT_CODES ...
+// satisfies readonly RoleAddon[]`): права спрашивают надстройку, сторону обсуждения — код. Так же
+// собирает субъекты и перебор `ACCESS_PROFILES`.
+const management: AccessSubject = {
+  role: 'shtab',
+  addons: ['office_equipment_operator'],
+  grantCodes: ['office_equipment_operator'],
+};
+const itService: AccessSubject = {
+  role: 'shtab',
+  addons: ['office_equipment_it_approver'],
+  grantCodes: ['office_equipment_it_approver'],
+};
+/**
+ * Системный администратор ЦЕЛИКОМ — оба кода профиля (план
+ * `docs/office-equipment-access-profiles-plan.md`, Р2 и Р4; этап Э6). Координация приходит
+ * надстройкой, работа руками — модульным набором `office_equipment_executor`, и его права субъект
+ * несёт `grantPermissions`: надстройки у него нет и не будет, набор заводился сразу набором.
+ *
+ * Пара нужна файлу целиком, а не только ради одного случая: сторона `service` у своего сотрудника
+ * держится ДИЗЪЮНКЦИЕЙ «назначен поимённо И имеет `serviceRequests.execute`» (Р1 плана аудита
+ * исполнителей, находка Н9). После разделения набора половина этой пары приходит вторым кодом — и
+ * субъект без него стороной исполнителя не становится даже назначенный.
+ */
+const itServiceExecutor: AccessSubject = {
+  role: 'shtab',
+  addons: ['office_equipment_it_approver'],
+  grantCodes: ['office_equipment_it_approver', 'office_equipment_executor'],
+  grantPermissions: [...MODULE_GRANTS.office_equipment_executor.permissions],
+};
 const observer: AccessSubject = { role: 'observer' };
 const colleague: AccessSubject = { role: 'department' };
 
@@ -70,9 +102,10 @@ describe('Стороны обсуждения — перебор ACCESS_PROFILES
   });
 
   /**
-   * Сторона «Ведение» — конъюнкция `status` и `assign` (§3.1). Ровно четыре субъекта: администратор
-   * и три базовые роли с набором «Оргтехника: ведение». Субъект, попавший сюда молча, увидит яркими
-   * реплики, адресованные администратору модуля, — поэтому список точный, а не «содержит».
+   * Сторона «Ведение» — код набора «Оргтехника: ведение» плюс администратор (Р9; прежде —
+   * конъюнкция `status` и `assign`). Ровно четыре субъекта: администратор и три базовые роли с этим
+   * набором. Субъект, попавший сюда молча, увидит яркими реплики, адресованные администратору
+   * модуля, — поэтому список точный, а не «содержит».
    */
   it('сторона «Ведение» — администратор и набор «Оргтехника: ведение», и никто больше', () => {
     expect(participantsIn('operator')).toEqual([
@@ -80,6 +113,11 @@ describe('Стороны обсуждения — перебор ACCESS_PROFILES
       'Штаб + Оргтехника: ведение',
       'Площадка + Оргтехника: ведение',
       'Отдел + Оргтехника: ведение',
+      // Офисная пара — этап Э7 плана профилей (Р5): «Ведение» выдаётся и ролям без своей оси.
+      // Сторона у них та же самая — код набора один, — и это ровно то, чего добивались: сторону
+      // держит КОД, а не роль и не область.
+      'Менеджер + Оргтехника: ведение',
+      'Диспетчер + Оргтехника: ведение',
     ]);
     // Аудитория и участие у этой стороны совпадают: расходится только `customer` (§3.1).
     expect(audienceOf('operator')).toEqual(participantsIn('operator'));
@@ -88,9 +126,10 @@ describe('Стороны обсуждения — перебор ACCESS_PROFILES
   /**
    * ПОЛОМКА 1 ПЕРВОЙ РЕДАКЦИИ. `serviceRequests.status` есть у типа контрагента `service` — оно
    * открывает подрядчику его половину цикла. Одного этого права хватило бы, чтобы сервисная
-   * компания стала «Ведением»; формулу спасает второй сомножитель `assign` и явное исключение по
-   * типу контрагента. Тест держит обе половины: первое сравнение доказывает, что право у
-   * подрядчика действительно есть, — иначе проверка ниже проходила бы по пустой причине.
+   * компания стала «Ведением»; сегодня её не пускают сразу две половины — набора «Ведение» ей никто
+   * не выдавал (Р9), и стоит явное исключение по типу контрагента. Тест держит обе: первое
+   * сравнение доказывает, что право у подрядчика действительно есть, — иначе проверка ниже
+   * проходила бы по пустой причине.
    */
   it('подрядчик не «Ведение», хотя право serviceRequests.status у него есть', () => {
     expect(profilesWith('serviceRequests.status').map(accessProfileLabel)).toContain(
@@ -109,29 +148,27 @@ describe('Стороны обсуждения — перебор ACCESS_PROFILES
 
   /**
    * Второй рубеж той же поломки — и его перебором `ACCESS_PROFILES` не поймать: такого субъекта в
-   * перечне нет и быть не может (наборы полномочий собираются в базе, ADR 0106). Случай ровно один:
-   * подрядчику ВЫДАЛИ набор «Ведение» руками. Конъюнкция прав его уже не спасает — оба права у
-   * человека есть, — и без исключения по типу контрагента исполнитель стал бы заказчиком
-   * собственной работы: принимал бы её и согласовывал бы свою же смету глазами «Ведения».
+   * перечне нет и быть не может (наборы полномочий выдаются в базе, ADR 0106). Случай ровно один:
+   * подрядчику ВЫДАЛИ набор «Ведение» руками. Код его уже не спасает — код у него настоящий, — и
+   * без исключения по типу контрагента исполнитель стал бы заказчиком собственной работы: принимал
+   * бы её и согласовывал бы свою же смету глазами «Ведения».
    */
   it('подрядчик с выданным набором «Ведение» остаётся исполнителем', () => {
     const contractorWithGrant: AccessSubject = {
       ...serviceCompany,
+      grantCodes: ['office_equipment_operator'],
       grantPermissions: ['serviceRequests.status', 'serviceRequests.assign'],
     };
     expect(participantSidesOf(contractorWithGrant, NO_FACTS)).toEqual([]);
     expect(audienceMatches({ side: 'operator' }, contractorWithGrant, NO_FACTS)).toBe(false);
     // Тот же набор у своего сотрудника «Ведением» делает: исключение по типу контрагента, а не по
-    // происхождению права.
+    // происхождению кода.
     expect(
-      participantSidesOf(
-        { role: 'shtab', grantPermissions: ['serviceRequests.status', 'serviceRequests.assign'] },
-        NO_FACTS,
-      ),
+      participantSidesOf({ role: 'shtab', grantCodes: ['office_equipment_operator'] }, NO_FACTS),
     ).toEqual(['operator']);
   });
 
-  it('сторона ИТ-службы — виза `approveIt`: администратор и набор «ИТ-служба»', () => {
+  it('сторона ИТ-службы — код набора «ИТ-служба»: он и администратор', () => {
     expect(participantsIn('it')).toEqual([
       'Администратор',
       'Штаб + Оргтехника: ИТ-служба',
@@ -156,12 +193,22 @@ describe('Стороны обсуждения — перебор ACCESS_PROFILES
     const everyone = ACCESS_PROFILES.map(accessProfileLabel);
     expect(participantsIn('customer', facts({ isAuthor: true }))).toEqual(everyone);
     expect(participantsIn('service', facts({ actsForAssignedService: true }))).toEqual(everyone);
-    // Поимённый исполнитель — вторая половина дизъюнкции: инхаус-ремонт ИТ-службы держит сторону
-    // сервиса без всякого контрагента.
-    expect(participantSidesOf(itService, facts({ isNamedExecutor: true }))).toEqual([
+    // Поимённый исполнитель — вторая половина дизъюнкции: инхаус-ремонт системного администратора
+    // держит сторону сервиса без всякого контрагента. Профиль здесь ПОЛНЫЙ, о двух кодах: с этапа
+    // Э6 право `serviceRequests.execute` приносит набор «Оргтехника: исполнитель».
+    expect(participantSidesOf(itServiceExecutor, facts({ isNamedExecutor: true }))).toEqual([
       'it',
       'service',
     ]);
+    /*
+     * И обратное — то, ради чего пара «назначение + право» вообще написана дизъюнкцией (Н9):
+     * ОДНОЙ строки назначения мало. Координатор без второго кода назначенным в заявке числиться
+     * может (назначение — факт заявки, а не право), но стороной исполнителя он не становится:
+     * поле ввода от лица сервиса и яркие реплики ему не полагаются, потому что ходов исполнителя
+     * у него нет. До разделения набора этот случай был непроверяем — право и код приходили одной
+     * выдачей.
+     */
+    expect(participantSidesOf(itService, facts({ isNamedExecutor: true }))).toEqual(['it']);
   });
 
   /**

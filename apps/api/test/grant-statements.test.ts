@@ -377,6 +377,15 @@ describe('предел назначений по итогу (§4.2)', () => {
 describe('итог субъекта считается с гейтом совместимости (Р5)', () => {
   const estimate: Permission = 'serviceRequests.estimate';
   const approveEstimate: Permission = 'serviceRequests.approveEstimate';
+  /*
+   * Чтение модуля идёт вместе со сметой не для полноты картины, а потому что барьер требований его
+   * теперь спрашивает: `PERMISSION_REQUIRES` объявил зависимость девяти прав модуля от
+   * `serviceRequests.read` (план `docs/office-equipment-access-profiles-plan.md`, Р12; находка Н2).
+   * Роль `manager` чтения заявок не даёт, и набор из одной сметы поднимал бы `requirement_missing`
+   * — верный, но посторонний здесь: эти два случая проверяют РАЗДЕЛЕНИЕ ОБЯЗАННОСТЕЙ по сумме двух
+   * наборов, и лишнее нарушение заслоняло бы то единственное, ради которого случай написан.
+   */
+  const read: Permission = 'serviceRequests.read';
 
   it('набор, несовместимый с новой ролью, прав не даёт', () => {
     const subject = grantSubjectOf({
@@ -388,7 +397,7 @@ describe('итог субъекта считается с гейтом совм�
   });
 
   it('конфликт обязанностей ловится суммой двух наборов, а не составом одного', () => {
-    const first = grant(ID.a, { roles: ['manager'], permissions: [estimate] });
+    const first = grant(ID.a, { roles: ['manager'], permissions: [read, estimate] });
     const second = grant(ID.b, { roles: ['manager'], permissions: [approveEstimate] });
     const outcome = grantOperationOutcome({
       before: { role: 'manager', counterpartyType: null, grants: [first] },
@@ -401,7 +410,7 @@ describe('итог субъекта считается с гейтом совм�
   });
 
   it('тот же конфликт не возникает, если второй набор новой роли не действует', () => {
-    const first = grant(ID.a, { roles: ['manager'], permissions: [estimate] });
+    const first = grant(ID.a, { roles: ['manager'], permissions: [read, estimate] });
     const second = grant(ID.b, { roles: ['site'], permissions: [approveEstimate] });
     const outcome = grantOperationOutcome({
       before: { role: 'manager', counterpartyType: null, grants: [first] },
