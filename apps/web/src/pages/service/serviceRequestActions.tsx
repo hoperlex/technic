@@ -4,12 +4,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
-import type { ActionSheetItem } from '@shared/ui';
+import { isApiError } from '@shared/api';
 import { useAuth } from '../../auth/AuthContext';
 import { useServiceRequestModals } from './serviceRequestModals';
 import { serviceRequestMenuItems } from './serviceRequestMenu';
+import type { ServiceMenuItem } from './serviceStatusChoices';
 import { reportServiceMail } from './serviceMailNotice';
-import { forgetServiceNotifyKey, serviceNotifyKey } from './serviceRequestNotifyKeys';
 import { errorMessage, formatMoney } from '../../utils/format';
 
 /**
@@ -21,13 +21,19 @@ import { errorMessage, formatMoney } from '../../utils/format';
  * окна, ни причины и которые уходят прямо в запрос.
  */
 export function useServiceRequestActions(): {
-  actionsFor: (request: ServiceRequestDto) => ActionSheetItem[];
+  actionsFor: (request: ServiceRequestDto) => ServiceMenuItem[];
   modals: ReactNode;
   /** Открыть обсуждение помимо меню: этим живёт адрес `?open=<id>&chat=1` (ADR 0141, §3.7). */
   openChat: (request: ServiceRequestDto) => void;
   /** Погасить все окна набора: нужно тому, чьи окна живут внутри карточки (ADR 0140). */
   close: () => void;
   pending: boolean;
+  /**
+   * Заявка, по которой прямо сейчас идёт действие без окна (ADR 0161). Нужна тегу статуса: ждать
+   * ответа обязана та строка, по которой нажали, а общий `pending` погасил бы теги всех соседних
+   * заявок — то есть сообщил бы про них неправду.
+   */
+  pendingId: string | null;
 } {
   const { user } = useAuth();
   const { message, modal } = App.useApp();
@@ -40,23 +46,26 @@ export function useServiceRequestActions(): {
     void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
   };
 
-  /** Повторная отправка письма службе (Р70); чем держится её ключ — `serviceRequestNotifyKeys`. */
-  const notifyMutation = useMutation({
-    mutationFn: (request: ServiceRequestDto) =>
-      serviceRequestsApi.notify(request.id, { idempotencyKey: serviceNotifyKey(request.id) }),
-    onSuccess: (res, request) => {
-      forgetServiceNotifyKey(request.id);
-      // Успех называет адресатов: повтор шлют, когда сомневаются в настройке, — и ответ на это
-      // сомнение не «отправлено», а «отправлено вот сюда». Неудача повтора — тем же
-      // предупреждением, что и у прочих действий: письма снова нет.
-      if (res.mail === 'queued') {
-        message.success(`Письмо службе поставлено в очередь: ${res.recipients.join(', ')}`);
-      } else {
-        reportServiceMail(message, res.mail);
-      }
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
+  /**
+   * Отказ по действию без окна (ADR 0161, решение 6).
+   *
+   * 409 получает свой текст: общий ответ сервера («Конфликт версий — обновите данные и повторите»)
+   * не говорит человеку, что делать с уже нажатой кнопкой, а нажимал он по строке списка, которая к
+   * этому моменту устарела. 403 и 422 показываются словами сервера — он называет и сторону, и
+   * причину, и второе объяснение рядом спорило бы с первым.
+   *
+   * Кэш гасится в обоих случаях: строка, по которой портал построил предложение, заведомо не та,
+   * что в базе. Молчать нельзя — «нажал, и ничего не произошло» неотличимо от поломки портала.
+   */
+  const failed = (e: unknown) => {
+    const stale = isApiError(e) && e.status === 409;
+    message.error(
+      stale
+        ? 'Заявку изменили в другом окне — список обновлён, откройте переход заново'
+        : errorMessage(e),
+    );
+    refresh();
+  };
 
   /**
    * «Принять в работу» (Р6) — единственный ход без содержания: подтверждать нечего, есть только
@@ -69,7 +78,7 @@ export function useServiceRequestActions(): {
       message.success('Заявка принята в работу');
       refresh();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: failed,
   });
 
   /**
@@ -92,7 +101,7 @@ export function useServiceRequestActions(): {
       message.success('Объём работ согласован — заявка в работе');
       refresh();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: failed,
   });
 
   /**
@@ -119,7 +128,7 @@ export function useServiceRequestActions(): {
       reportServiceMail(message, res.mail);
       refresh();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: failed,
   });
 
   /**
@@ -155,7 +164,7 @@ export function useServiceRequestActions(): {
       onOk: () => approveMutation.mutateAsync(request),
     });
 
-  const actionsFor = (request: ServiceRequestDto): ActionSheetItem[] =>
+  const actionsFor = (request: ServiceRequestDto): ServiceMenuItem[] =>
     serviceRequestMenuItems(request, {
       user,
       modals,
@@ -163,7 +172,6 @@ export function useServiceRequestActions(): {
         start: (target) => startMutation.mutate(target),
         approve: confirmApprove,
         rollbackStart: confirmRollbackStart,
-        notify: (target) => notifyMutation.mutate(target),
       },
     });
 
@@ -172,5 +180,18 @@ export function useServiceRequestActions(): {
     startMutation.isPending ||
     approveMutation.isPending ||
     rollbackStartMutation.isPending;
-  return { actionsFor, modals: modals.node, openChat: modals.chat, close: modals.close, pending };
+  /**
+   * Чья строка ждёт ответа. Считается по переменным самих мутаций, а не отдельным состоянием: два
+   * источника одного факта разошлись бы на первом же отказе, оставив тег крутиться навсегда.
+   */
+  const running = [startMutation, approveMutation, rollbackStartMutation].find((m) => m.isPending);
+  const pendingId = running?.variables?.id ?? null;
+  return {
+    actionsFor,
+    modals: modals.node,
+    openChat: modals.chat,
+    close: modals.close,
+    pending,
+    pendingId,
+  };
 }

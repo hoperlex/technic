@@ -1,6 +1,5 @@
 import {
   InboxOutlined,
-  MailOutlined,
   MessageOutlined,
   ProfileOutlined,
   SwapOutlined,
@@ -8,10 +7,10 @@ import {
 } from '@ant-design/icons';
 import {
   actsAsServiceExecutor,
+  actsForCounterparty,
   can as hasPermission,
   isServiceExecutor,
   isServiceRequestEditable,
-  serviceMailRepeatable,
   type ServiceActionRequest,
   type ServiceExecutorAssignment,
   type ServiceRequestDto,
@@ -22,8 +21,8 @@ import type { ServiceMenuContext } from './serviceRequestMenu';
 /**
  * Действия **вокруг** заявки: те, что заявку не двигают.
  *
- * Состав номенклатуры, отметка выдачи, срочность, обсуждение, перемещение техники и повтор письма —
- * это не ход по циклу, а обстоятельства, при которых он идёт. Отдельным модулем от хода
+ * Состав номенклатуры, отметка выдачи, срочность, обсуждение и перемещение техники — это не ход по
+ * циклу, а обстоятельства, при которых он идёт. Отдельным модулем от хода
  * (`serviceRequestMenu`) именно поэтому: ход меняется вместе с циклом заявки — и переделка цикла
  * трогает его целиком, — а обстоятельства живут своей жизнью и переживают такие переделки без
  * единой правки. Разрез по этой границе, а не по номеру строки.
@@ -39,7 +38,19 @@ export function serviceRequestExtraItems(
   row: ServiceActionRequest,
 ): ActionSheetItem[] {
   const items: ActionSheetItem[] = [];
-  const executor = assignment.actsForAssignedCounterparty;
+  /*
+   * «Смотрит подрядчик» — вопрос о СУБЪЕКТЕ, а не о его назначении на эту заявку, и спрашивается он
+   * поэтому типом контрагента. Три пункта ниже прячутся именно от стороны подрядчика: срочность и
+   * перемещение техники — дело заказывающей стороны, а повтор служебного письма зовёт разобрать
+   * заявку тех, кому её и адресуют.
+   *
+   * Прежде здесь стоял признак назначения (`assignment.actsForAssignedCounterparty`), и совпадал он
+   * с типом контрагента лишь потому, что портал считал сторону подрядчика приближённо. С точным
+   * ответом (Р8) признак означает уже другое — «эта заявка отдана моей компании», — и на чужой
+   * заявке подрядчика он ложен: пункты, спрятанные от него, вернулись бы ровно там, где им быть
+   * особенно незачем.
+   */
+  const executor = actsForCounterparty(ctx.user, 'service');
   const held = request.status === 'on_hold';
   const closed = request.status === 'accepted' || request.status === 'cancelled';
 
@@ -171,29 +182,6 @@ export function serviceRequestExtraItems(
       label: 'Записать перемещение техники',
       icon: <SwapOutlined />,
       onClick: () => ctx.modals.moveEquipment(request),
-    });
-  }
-
-  /*
-   * Письмо службе уходит на входе в статус, и повторить его можно только там, где событие есть:
-   * «Новая» и «Отменена». В остальных статусах сервер отвечает 422, и предлагать кнопку было бы
-   * обещанием, которого он не даёт.
-   *
-   * Предикат читает строку, а не голый статус (Р14): у «Новой» письмо зовёт службу РАЗОБРАТЬ
-   * заявку, и после назначения повторять его незачем — задание исполнителю ушло своим письмом,
-   * привязанным к действию. Пока «Новая» означала «ещё не назначена», на это отвечал статус; после
-   * слияния он половину ответа потерял бы молча.
-   */
-  if (
-    !executor &&
-    serviceMailRepeatable(row) &&
-    hasPermission(ctx.user, 'serviceRequests.status')
-  ) {
-    items.push({
-      key: 'notify',
-      label: 'Отправить письмо службе ещё раз',
-      icon: <MailOutlined />,
-      onClick: () => ctx.run.notify(request),
     });
   }
 
