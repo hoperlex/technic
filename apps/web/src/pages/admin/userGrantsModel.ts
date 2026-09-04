@@ -1,10 +1,13 @@
 import {
   GRANT_MODULE_WIDE_SCOPE,
+  OFFICE_EQUIPMENT_PROFILE_REGISTRY,
+  OFFICE_EQUIPMENT_PROFILES,
   permissionsFor,
   roleLabels,
   type CounterpartyType,
   type GrantDto,
   type GrantStatement,
+  type OfficeEquipmentProfileId,
   type Permission,
   type Role,
   type UserGrantRefDto,
@@ -50,6 +53,66 @@ export const NO_GRANT_EDITS: GrantManualEdits = { checked: [], unchecked: [] };
 /** Назначения, которые форма снять не даёт: взведённые переводом ролей (Р4, ADR 0113). */
 export function lockedGrantIds(assigned: readonly UserGrantRefDto[]): Set<string> {
   return new Set(assigned.filter((g) => g.origin === 'migration').map((g) => g.id));
+}
+
+/**
+ * Профиль модуля «Орг.техника» пунктом выпадающего списка (план профилей оргтехники, Р7).
+ *
+ * Список строится ИЗ РЕЕСТРА КОНТРАКТОВ (`OFFICE_EQUIPMENT_PROFILE_REGISTRY`), а не из здешней
+ * таблицы «профиль → наборы»: вторая такая таблица разошлась бы с первой ровно так же молча, как
+ * разошлась бы копия правил совместимости, — и администратор выдал бы половину профиля, считая, что
+ * выдал целый.
+ *
+ * Отбор по каталогу — тот же способ, каким форма показывает несовместимость набора: каталог отобран
+ * сервером по выбранной роли, и профиль, ни одного кода которого этой роли не положено, предлагать
+ * нечего — выбор его ничего бы не отметил.
+ *
+ * «Сервисный центр» СТОИТ В СПИСКЕ ВСЕГДА И ВЫКЛЮЧЕННЫМ (Р11). Кодами он не выдаётся вовсе, и
+ * отбор по каталогу выбросил бы его первым — а это ровно то, чего делать нельзя: администратор
+ * ищет в списке все четыре профиля, и молчаливо пропавший читался бы как «такого профиля нет» либо
+ * «я его уже выдал». Подпись объясняет, чем он выдаётся на самом деле: пустой список кодов в
+ * реестре — это утверждение о способе выдачи, а не пропуск.
+ */
+export interface GrantProfileOption {
+  value: OfficeEquipmentProfileId;
+  /** Подпись пункта: у выключенного она же и объяснение — второго места под него в списке нет. */
+  label: string;
+  /** Кодами не выдаётся: выбрать нельзя, но видеть — обязательно. */
+  disabled: boolean;
+}
+
+/** Чем «Сервисный центр» выдаётся вместо набора — дословно пара из Р2. */
+const SERVICE_PROFILE_HINT =
+  'выдаётся ролью «Оператор» и контрагентом сервисной компании, не здесь';
+
+export function grantProfileOptions(catalog: readonly GrantDto[]): GrantProfileOption[] {
+  const codes = new Set(catalog.map((g) => g.code));
+  return OFFICE_EQUIPMENT_PROFILES.flatMap<GrantProfileOption>((value) => {
+    const profile = OFFICE_EQUIPMENT_PROFILE_REGISTRY[value];
+    if (profile.grants.length === 0) {
+      return [{ value, label: `${profile.label} — ${SERVICE_PROFILE_HINT}`, disabled: true }];
+    }
+    if (!profile.grants.some((code) => codes.has(code))) return [];
+    return [{ value, label: profile.label, disabled: false }];
+  });
+}
+
+/**
+ * Коды выбранного профиля — то, что уходит в **предложенные** гидратации (Р7), и ничего сверх того.
+ *
+ * Выбор профиля НИЧЕГО НЕ СОХРАНЯЕТ И НИЧЕГО НЕ ОТМЕЧАЕТ САМ: он лишь дополняет третье множество
+ * формулы, а решают её выданные, ручные отметки и снятия. Отсюда даром достаются четыре свойства,
+ * которых иначе пришлось бы добиваться по отдельности: снятое руками не возвращается (снятия
+ * вычитаются последними), смена роли гасит несовместимое сама (пересечение с каталогом),
+ * несовместимое не уходит на сервер (тело собирается от того же значения), а «повышение прав»
+ * остаётся сохранением формы администратором — не побочным эффектом выбора в списке.
+ *
+ * Оба кода профиля ИТ уходят вместе и одним высказыванием (`buildGrantStatements` собирает тело
+ * целиком, одним запросом): половина профиля — это человек, которого можно назначить исполнителем,
+ * но который не видит модуль, либо наоборот.
+ */
+export function profilePresetCodes(profile: OfficeEquipmentProfileId | null): readonly string[] {
+  return profile ? OFFICE_EQUIPMENT_PROFILE_REGISTRY[profile].grants : [];
 }
 
 /**

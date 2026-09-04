@@ -6,24 +6,29 @@ import {
   type CounterpartyType,
   type GrantDto,
   type GrantStatement,
+  type OfficeEquipmentProfileId,
   type Role,
   type UserAccountDto,
   type UserGrantRefDto,
 } from '@technic/contracts';
 import { isApiError } from '@shared/api';
 import { grantFormApi, grantKeys } from '../../api/grants';
+import { GrantProfileField } from './GrantProfileField';
 import { apiViolationTexts, GRANT_ROLES, permissionLabel } from './grantModel';
 import {
   applyGrantToggle,
   buildGrantStatements,
   grantAddedPermissions,
   grantCompositionText,
+  grantProfileOptions,
   hydrateGrantSelection,
   lockedGrantIds,
   NO_GRANT_EDITS,
   outOfRangeGrants,
   outOfRangeHintText,
+  profilePresetCodes,
   roleGateNoticeText,
+  type GrantProfileOption,
 } from './userGrantsModel';
 
 /**
@@ -137,6 +142,11 @@ export function useUserGrantsField(params: Params): UserGrantsControl {
   const blocked = shown && (catalogQuery.isError || catalogQuery.data?.complete === false);
 
   const [edits, setEdits] = useState(NO_GRANT_EDITS);
+  /**
+   * Выбранный пресет профиля (Р7) — состоянием поля, а не значением формы: сохраняется не профиль,
+   * а НАБОРЫ; в `UserFormValues` он был бы вторым высказыванием о том же доступе.
+   */
+  const [profile, setProfile] = useState<OfficeEquipmentProfileId | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   /** Ушло ли поле в последнем запросе: отказ по молчанию подсвечивать нечем (Р8). */
   const sent = useRef(false);
@@ -147,13 +157,24 @@ export function useUserGrantsField(params: Params): UserGrantsControl {
     if (open) return;
     // Закрытие окна сбрасывает решение целиком: ручные отметки живут, пока открыто окно (Р4).
     setEdits(NO_GRANT_EDITS);
+    // Пресет — то же решение одного захода: открытая заново учётка показывает выданное.
+    setProfile(null);
     setErrors([]);
     noticed.current = null;
   }, [open]);
 
+  /*
+   * Предложенные — ОДНО множество на два источника (Р7): пожелание заявителя при активации (ADR
+   * 0143) и выбранный профиль. Второй аргумент гидратации означал бы второе правило подстановки,
+   * расходящееся с первым ровно на снятых руками галочках.
+   */
+  const suggested = useMemo(
+    () => [...(suggestedCodes ?? []), ...profilePresetCodes(profile)],
+    [suggestedCodes, profile],
+  );
   const value = useMemo(
-    () => hydrateGrantSelection({ assigned, catalog, edits, suggestedCodes }),
-    [assigned, catalog, edits, suggestedCodes],
+    () => hydrateGrantSelection({ assigned, catalog, edits, suggestedCodes: suggested }),
+    [assigned, catalog, edits, suggested],
   );
   const outOfRange = useMemo(() => outOfRangeGrants(assigned, catalog), [assigned, catalog]);
 
@@ -230,6 +251,12 @@ export function useUserGrantsField(params: Params): UserGrantsControl {
         catalog={catalog}
         assigned={assigned}
         value={value}
+        profile={profile}
+        profileOptions={grantProfileOptions(catalog)}
+        onProfile={(next) => {
+          setProfile(next);
+          setErrors([]);
+        }}
         onChange={(next) => {
           setEdits(applyGrantToggle(edits, value, next));
           setErrors([]);
@@ -252,6 +279,11 @@ interface FieldProps {
   assigned: UserGrantRefDto[];
   value: string[];
   onChange: (next: string[]) => void;
+  /** Выбранный пресет; `null` — не выбирали: галочки тогда описывают одну лишь выдачу. */
+  profile: OfficeEquipmentProfileId | null;
+  /** Профили, о которых при этой роли есть что сказать (`grantProfileOptions`). */
+  profileOptions: GrantProfileOption[];
+  onProfile: (next: OfficeEquipmentProfileId | null) => void;
   loading: boolean;
   blocked: boolean;
   onRetry: () => void;
@@ -267,6 +299,9 @@ function GrantsField({
   assigned,
   value,
   onChange,
+  profile,
+  profileOptions,
+  onProfile,
   loading,
   blocked,
   onRetry,
@@ -277,81 +312,88 @@ function GrantsField({
   const locked = lockedGrantIds(assigned);
 
   return (
-    <Form.Item
-      label="Полномочия"
-      tooltip="Наборы прав поверх должности (ADR 0106). Область учётки они не меняют — кроме наборов со сквозной областью, о ней сказано в подсказке набора"
-      validateStatus={errors.length > 0 ? 'error' : undefined}
-      help={
-        errors.length > 0 ? (
-          <Space orientation="vertical" size={0}>
-            {errors.map((text) => (
-              <span key={text}>{text}</span>
-            ))}
-          </Space>
-        ) : undefined
-      }
-      extra={
-        blocked ? undefined : (
-          <Space orientation="vertical" size={0}>
-            {/* Что полномочия дают сверх должности — двумя субъектами, а не вычитанием из прав
-                записи: у заявки их нет вовсе, а при смене роли они описывают прежнего человека. */}
-            {value.length > 0 ? (
-              <span>
-                {added
-                  ? `Добавится сверх должности: ${added}`
-                  : 'Сверх должности ничего не добавится: эти права уже даёт роль'}
-              </span>
-            ) : null}
-            {/* Назначения вне диапазона роли: они живы, но прав по ним нет (§13.1). */}
-            {outOfRangeHint ? <span>{outOfRangeHint}</span> : null}
-          </Space>
-        )
-      }
-    >
-      {blocked ? (
-        <Alert
-          type="warning"
-          showIcon
-          title="Список полномочий загрузился не полностью"
-          description={
-            <Space orientation="vertical" size={4}>
-              <span>
-                Пока он неполон, полномочия и роль не правятся: сохранение оставит назначения
-                нетронутыми. Снять и выдать наборы можно во вкладке «Права».
-              </span>
-              <Button size="small" onClick={onRetry}>
-                Загрузить заново
-              </Button>
+    <>
+      {/* Пресет профиля (Р7) — своим полем и своим файлом. Пока каталог едет или пришёл неполным,
+          его нет вовсе: предлагать профиль, наборов которого мы не знаем, — обещать полвыдачи. */}
+      {!blocked && !loading ? (
+        <GrantProfileField profile={profile} options={profileOptions} onChange={onProfile} />
+      ) : null}
+      <Form.Item
+        label="Полномочия"
+        tooltip="Наборы прав поверх должности (ADR 0106). Область учётки они не меняют — кроме наборов со сквозной областью, о ней сказано в подсказке набора"
+        validateStatus={errors.length > 0 ? 'error' : undefined}
+        help={
+          errors.length > 0 ? (
+            <Space orientation="vertical" size={0}>
+              {errors.map((text) => (
+                <span key={text}>{text}</span>
+              ))}
             </Space>
-          }
-        />
-      ) : loading ? (
-        <Spin size="small" />
-      ) : catalog.length === 0 ? (
-        <Typography.Text type="secondary">
-          Наборов, совместимых с этой ролью, нет — выдавать нечего.
-        </Typography.Text>
-      ) : (
-        <Checkbox.Group<string> value={value} onChange={onChange}>
-          <Space orientation="vertical" size={0}>
-            {catalog.map((grant) => (
-              <Checkbox key={grant.id} value={grant.id} disabled={locked.has(grant.id)}>
-                <Tooltip title={grantCompositionText(grant)}>
-                  <span>{grant.name}</span>
-                </Tooltip>
-                {/* Взведённое переводом ролей (ADR 0113) не снимается здесь вовсе: часть
+          ) : undefined
+        }
+        extra={
+          blocked ? undefined : (
+            <Space orientation="vertical" size={0}>
+              {/* Что полномочия дают сверх должности — двумя субъектами, а не вычитанием из прав
+                записи: у заявки их нет вовсе, а при смене роли они описывают прежнего человека. */}
+              {value.length > 0 ? (
+                <span>
+                  {added
+                    ? `Добавится сверх должности: ${added}`
+                    : 'Сверх должности ничего не добавится: эти права уже даёт роль'}
+                </span>
+              ) : null}
+              {/* Назначения вне диапазона роли: они живы, но прав по ним нет (§13.1). */}
+              {outOfRangeHint ? <span>{outOfRangeHint}</span> : null}
+            </Space>
+          )
+        }
+      >
+        {blocked ? (
+          <Alert
+            type="warning"
+            showIcon
+            title="Список полномочий загрузился не полностью"
+            description={
+              <Space orientation="vertical" size={4}>
+                <span>
+                  Пока он неполон, полномочия и роль не правятся: сохранение оставит назначения
+                  нетронутыми. Снять и выдать наборы можно во вкладке «Права».
+                </span>
+                <Button size="small" onClick={onRetry}>
+                  Загрузить заново
+                </Button>
+              </Space>
+            }
+          />
+        ) : loading ? (
+          <Spin size="small" />
+        ) : catalog.length === 0 ? (
+          <Typography.Text type="secondary">
+            Наборов, совместимых с этой ролью, нет — выдавать нечего.
+          </Typography.Text>
+        ) : (
+          <Checkbox.Group<string> value={value} onChange={onChange}>
+            <Space orientation="vertical" size={0}>
+              {catalog.map((grant) => (
+                <Checkbox key={grant.id} value={grant.id} disabled={locked.has(grant.id)}>
+                  <Tooltip title={grantCompositionText(grant)}>
+                    <span>{grant.name}</span>
+                  </Tooltip>
+                  {/* Взведённое переводом ролей (ADR 0113) не снимается здесь вовсе: часть
                     подготовленного перевода снимают в реестре выдач, где видно, что снимается (Р4). */}
-                {locked.has(grant.id) ? (
-                  <Typography.Text type="secondary">
-                    {' '}
-                    · взведено переводом ролей — снять можно в реестре выдач
-                  </Typography.Text>
-                ) : null}
-              </Checkbox>
-            ))}
-          </Space>
-        </Checkbox.Group>
-      )}
-    </Form.Item>
+                  {locked.has(grant.id) ? (
+                    <Typography.Text type="secondary">
+                      {' '}
+                      · взведено переводом ролей — снять можно в реестре выдач
+                    </Typography.Text>
+                  ) : null}
+                </Checkbox>
+              ))}
+            </Space>
+          </Checkbox.Group>
+        )}
+      </Form.Item>
+    </>
   );
 }

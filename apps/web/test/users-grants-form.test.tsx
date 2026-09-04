@@ -12,10 +12,12 @@ import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
-import { selectOption } from './antd';
+import { openSelectOptions, selectOption } from './antd';
 import {
   account,
   CUSTOM,
+  EXECUTOR,
+  EXECUTOR_ID,
   grantRef,
   ORDERING,
   ORDERING_ASSIGNED_VERSION,
@@ -23,6 +25,7 @@ import {
   orderingRef,
   SHTAB_ID,
   SYSTEM,
+  SYSTEM_ID,
 } from './factories/grants';
 import { UsersTab } from '../src/pages/admin/UsersTab';
 
@@ -461,5 +464,147 @@ describe('отказ сервера (Р8, Р7)', () => {
       await screen.findByText(/состав полномочия изменили, откройте карточку заново/),
     ).toBeTruthy();
     await waitFor(() => expect(http.countOf(USERS)).toBeGreaterThan(before));
+  });
+});
+
+/**
+ * Пресет бизнес-профиля модуля «Орг.техника» (план профилей оргтехники, Р7) — экраном, а не
+ * значениями: расчёт проверен в `user-grants-model.test.ts`, а здесь предмет тот же, что у всего
+ * файла, — что форма зовёт этот расчёт и что результат уходит в тело ОДНИМ запросом.
+ *
+ * Каталог здесь свой: пара кодов профиля ИТ нужна целиком, а общий `catalogFor` знает только один
+ * из них — второй заведён миграцией 0262 и в сценариях перехода ролей не участвует.
+ */
+const PROFILE_SETS: GrantDto[] = [ORDERING, CUSTOM, EXECUTOR, SYSTEM];
+
+/** Каталог с обоими кодами ИТ — тем же отбором по роли, каким отвечает сервер. */
+const profileCatalog: RouteMap = {
+  [CATALOG]: (ctx) =>
+    json(
+      list(
+        PROFILE_SETS.filter((grant) => {
+          const role = ctx.query.get('role');
+          return !!role && (grant.roles as readonly string[]).includes(role);
+        }),
+      ),
+    ),
+};
+
+const IT_PROFILE = 'Системный администратор';
+const PROFILE_FIELD = 'Профиль «Орг.техники»';
+
+describe('пресет профиля в окне учётки (Р7)', () => {
+  it('выбор профиля ИТ отмечает ОБА набора и уходит одним высказыванием', async () => {
+    /*
+     * Главное утверждение части: профиль о двух кодах выдаётся атомарно. Половина профиля — это
+     * человек, которого можно назначить исполнителем, но который не видит модуль, либо наоборот,
+     * и появиться она может ровно двумя способами: пресет отметил один код либо тело ушло двумя
+     * запросами. Проверяются оба — состав галочек и число правок.
+     */
+    const record = shtab();
+    const http = renderTab([record], profileCatalog);
+    await openCard(record.email);
+
+    await waitFor(() => expect(grantBox(SYSTEM.name)).toBeTruthy());
+    // До выбора не отмечено ничего: пресет отмечает, а не подтверждает уже отмеченное.
+    expect(grantBox(SYSTEM.name)?.checked).toBe(false);
+    expect(grantBox(EXECUTOR.name)?.checked).toBe(false);
+
+    await selectOption(PROFILE_FIELD, IT_PROFILE);
+
+    await waitFor(() => expect(grantBox(SYSTEM.name)?.checked).toBe(true));
+    expect(grantBox(EXECUTOR.name)?.checked).toBe(true);
+
+    clickButton('Сохранить');
+
+    await waitFor(() => expect(http.countOf(PATCH)).toBe(1));
+    // Две строки одного тела, обе с каталожной версией: сервер применяет их одной операцией под
+    // теми же барьерами, что и любую другую выдачу.
+    expect(lastBody(http).grants as GrantStatement[]).toEqual([
+      { id: EXECUTOR_ID, version: EXECUTOR.version, selected: true },
+      { id: SYSTEM_ID, version: SYSTEM.version, selected: true },
+    ]);
+  });
+
+  it('снятое руками выбор профиля не возвращает', async () => {
+    // Свойство формулы, а не отдельное правило (Р7): «предложенные» складываются до вычитания
+    // снятых. Администратор, снявший половину профиля осознанно, получает ровно то, что оставил.
+    const record = shtab();
+    const http = renderTab([record], profileCatalog);
+    await openCard(record.email);
+
+    await waitFor(() => expect(grantBox(EXECUTOR.name)).toBeTruthy());
+    fireEvent.click(grantBox(EXECUTOR.name)!);
+    fireEvent.click(grantBox(EXECUTOR.name)!);
+    expect(grantBox(EXECUTOR.name)?.checked).toBe(false);
+
+    await selectOption(PROFILE_FIELD, IT_PROFILE);
+
+    await waitFor(() => expect(grantBox(SYSTEM.name)?.checked).toBe(true));
+    expect(grantBox(EXECUTOR.name)?.checked).toBe(false);
+
+    clickButton('Сохранить');
+
+    await waitFor(() => expect(http.countOf(PATCH)).toBe(1));
+    expect(lastBody(http).grants as GrantStatement[]).toEqual([
+      { id: SYSTEM_ID, version: SYSTEM.version, selected: true },
+    ]);
+  });
+
+  it('«Сервисный центр» в перечне виден, объясняет себя и не выбирается', async () => {
+    // Кодами он не выдаётся вовсе (Р11), но молча пропасть из списка не может: администратор ищет
+    // в нём все четыре профиля, и отсутствующий читался бы как «уже выдан» либо «не существует».
+    const record = shtab();
+    renderTab([record], profileCatalog);
+    await openCard(record.email);
+    await waitFor(() => expect(grantBox(SYSTEM.name)).toBeTruthy());
+
+    const options = await openSelectOptions(PROFILE_FIELD);
+    const service = options.find((el) => el.textContent?.includes('Сервисный центр'));
+
+    expect(service, 'профиля «Сервисный центр» нет в перечне').toBeTruthy();
+    expect(service?.className).toContain('ant-select-item-option-disabled');
+    expect(service?.textContent).toContain('контрагентом');
+    // Якорь: выбираемый профиль рядом — иначе «выключен» был бы правдой и у пустого перечня.
+    const it = options.find((el) => el.textContent?.includes(IT_PROFILE));
+    expect(it?.className).not.toContain('ant-select-item-option-disabled');
+  });
+
+  it('роли без наборов модуля перечень отвечает строкой, а не запертым списком', async () => {
+    // У «Менеджера» в этом каталоге есть только «Согласование ИТ» без пары, поэтому проверяется
+    // роль, которой наборов оргтехники не положено ни одного: выбирать нечего, и сказать об этом
+    // надо словами — вместе с тем, чем «Сервисный центр» выдаётся на самом деле.
+    const record = shtab();
+    renderTab([record], {
+      [CATALOG]: () => json(list([CUSTOM])),
+    });
+    await openCard(record.email);
+
+    expect(
+      await screen.findByText(/Профиль модуля этой роли полномочиями не выдаётся/),
+    ).toBeTruthy();
+    expect(screen.getByText(/Сервисный центр/).textContent).toContain('ролью «Оператор»');
+  });
+});
+
+describe('подпись профиля в карточке учётки (Р7, Р9)', () => {
+  it('пара кодов ИТ подписана профилем рядом с ролью', async () => {
+    // Считается по КОДАМ ВЫДАННЫХ НАБОРОВ, а не по правам и не по надстройкам: реестр контрактов
+    // один на форму выдачи и на эту подпись, второй таблицы соответствий у портала нет.
+    renderTab([
+      shtab({ grantCodes: ['office_equipment_executor', 'office_equipment_it_approver'] }),
+    ]);
+
+    expect(await screen.findByText(`Оргтехника: ${IT_PROFILE}`)).toBeTruthy();
+  });
+
+  it('половина профиля профилем не подписывается', async () => {
+    // Ровно тот случай, ради которого пресет выдаёт пару атомарно: с одним кодом человек либо
+    // назначаем исполнителем без модуля, либо видит модуль, но не работает руками. Подписать его
+    // «Системным администратором» значило бы спрятать неполноту.
+    renderTab([shtab({ grantCodes: ['office_equipment_executor'] })]);
+
+    await screen.findByText(roleLabels.shtab);
+    expect(screen.queryByText(`Оргтехника: ${IT_PROFILE}`)).toBeNull();
   });
 });

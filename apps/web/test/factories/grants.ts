@@ -27,6 +27,7 @@ export const SHTAB_ID = '33333333-3333-3333-3333-333333333333';
 export const MANAGER_ID = '44444444-4444-4444-4444-444444444444';
 export const DRIVER_ID = '55555555-5555-5555-5555-555555555555';
 export const ORDERING_ID = '66666666-6666-6666-6666-666666666666';
+export const EXECUTOR_ID = '77777777-7777-7777-7777-777777777777';
 
 /** Пользовательский набор: собран администратором в проде, правится и выдаётся. */
 export const CUSTOM: GrantDto = {
@@ -50,11 +51,37 @@ export const SYSTEM: GrantDto = {
   id: SYSTEM_ID,
   code: 'office_equipment_it_approver',
   name: 'Согласование ИТ',
-  description: 'Виза ИТ-службы',
+  description: 'Координация модуля «Орг.техника» сквозным взглядом',
   isSystem: true,
   version: 1,
-  permissions: ['serviceRequests.approveIt', 'officeEquipment.read'],
+  // Состав — как у настоящего набора после уборки мёртвой визы (план профилей оргтехники, Э9):
+  // `serviceRequests.approveIt` в нём больше нет. Фикстуре важны два свойства, и оба сохранены:
+  // право модуля заявок плюс чтение справочника, а сквозную область даёт КОД набора.
+  permissions: ['serviceRequests.assign', 'officeEquipment.read'],
   roles: ['shtab', 'manager'],
+  holderCount: 0,
+};
+
+/**
+ * Второй код профиля «Системный администратор» — модульный набор исполнителя (план профилей
+ * оргтехники, Р2 и Р4; миграция 0262).
+ *
+ * Заведён ради пресета (Э8): профиль ИТ — единственный, который выдаётся ДВУМЯ кодами, и проверить
+ * «выбор отметил оба и оба ушли одним высказыванием» на одном наборе нечем. Роль здесь одна —
+ * `shtab`, как и у ИТ-набора в фикстуре выше: пара обязана быть совместима с одной и той же ролью,
+ * иначе каталог отдал бы половину профиля, и тест рассказывал бы про поломку каталога, а не про
+ * пресет.
+ */
+export const EXECUTOR: GrantDto = {
+  ...CUSTOM,
+  id: EXECUTOR_ID,
+  code: 'office_equipment_executor',
+  name: 'Оргтехника: исполнитель',
+  description: 'Работает по назначенным заявкам',
+  isSystem: false,
+  version: 2,
+  permissions: ['serviceRequests.read', 'serviceRequests.execute', 'serviceRequests.files'],
+  roles: ['shtab'],
   holderCount: 0,
 };
 

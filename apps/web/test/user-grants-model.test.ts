@@ -11,16 +11,20 @@ import {
   buildGrantStatements,
   grantAddedPermissions,
   grantCompositionText,
+  grantProfileOptions,
   hydrateGrantSelection,
   lockedGrantIds,
   NO_GRANT_EDITS,
   outOfRangeGrants,
   outOfRangeHintText,
+  profilePresetCodes,
   roleGateNoticeText,
 } from '../src/pages/admin/userGrantsModel';
 import {
   CUSTOM,
   CUSTOM_ID,
+  EXECUTOR,
+  EXECUTOR_ID,
   grantRef,
   ORDERING,
   ORDERING_ASSIGNED_VERSION,
@@ -376,15 +380,109 @@ describe('тексты поля', () => {
     expect(custom).toContain(label('audit.read'));
     expect(custom).not.toContain('Область');
 
-    // «Согласование ИТ» отличается от прочих не правом, а тем, что видит модуль целиком, минуя
-    // область роли. Умолчи форма об этом — визу ИТ выдавали бы, считая, что человек останется в
+    // Набор ИТ-службы отличается от прочих не правом, а тем, что видит модуль целиком, минуя
+    // область роли. Умолчи форма об этом — набор выдавали бы, считая, что человек останется в
     // своём отделе.
     const system = grantCompositionText(SYSTEM);
-    expect(system).toContain(label('serviceRequests.approveIt'));
+    expect(system).toContain(label('serviceRequests.assign'));
     expect(system).toContain('Область');
     expect(system).toContain('видит эти разделы целиком');
 
     // Пустой набор доступа не даёт, и сказать это надо словами, а не пустой строкой состава.
     expect(grantCompositionText({ ...CUSTOM, permissions: [] })).toContain('Прав в наборе нет');
+  });
+});
+
+describe('пресет бизнес-профиля оргтехники (план профилей, Р7)', () => {
+  /** Каталог роли, которой положены оба кода профиля ИТ: на нём и проверяется пара. */
+  const IT_CATALOG: GrantDto[] = [CUSTOM, EXECUTOR, SYSTEM];
+  /** Ничего не выдано и ничего не тронуто: отмечает только сам пресет. */
+  const CLEAN = { assigned: [], edits: NO_GRANT_EDITS };
+
+  it('выбор профиля отмечает его наборы — и только их', () => {
+    // Пресет — третье множество той же формулы (Р7), а не присваивание в поле: он лишь дополняет
+    // «предложенные», а пересечение с каталогом и вычитание снятого работают как работали.
+    const value = hydrateGrantSelection({
+      ...CLEAN,
+      catalog: IT_CATALOG,
+      suggestedCodes: profilePresetCodes('operator'),
+    });
+
+    // «Ведения» в этом каталоге нет вовсе — отмечать нечего, и выдумывать `id` пресету не из чего.
+    expect(value).toEqual([]);
+  });
+
+  it('профиль ИТ отмечает ОБА кода: половина профиля — не профиль', () => {
+    // Единственный профиль о двух кодах (Р2): координация («что с этой заявкой») и работа руками
+    // («я её и чиню») — разные полномочия, и отмеченный один из них дал бы человека, который либо
+    // назначаем исполнителем, но модуля не видит, либо наоборот.
+    const value = hydrateGrantSelection({
+      ...CLEAN,
+      catalog: IT_CATALOG,
+      suggestedCodes: profilePresetCodes('it'),
+    });
+
+    // Порядок — каталожный: пресет отмечает галочки, а не переставляет список.
+    expect(value).toEqual([EXECUTOR_ID, SYSTEM_ID]);
+  });
+
+  it('снятое руками пресет не возвращает', () => {
+    // То самое свойство, ради которого выбор кладётся в «предложенные», а не отмечает галочки сам:
+    // снятия вычитаются последними, и спорить с администратором формуле нечем.
+    const edits = applyGrantToggle(NO_GRANT_EDITS, [SYSTEM_ID], []);
+
+    const value = hydrateGrantSelection({
+      assigned: [],
+      catalog: IT_CATALOG,
+      edits,
+      suggestedCodes: profilePresetCodes('it'),
+    });
+
+    expect(value).toEqual([EXECUTOR_ID]);
+  });
+
+  it('«Сервисный центр» не предлагает ни одного кода', () => {
+    // Профиль выражен парой «роль `operator` + тип контрагента `service`» (Р11), и пустой список
+    // кодов в реестре — сформулированный запрет, а не пропуск: набор раздал бы права по базовой
+    // области, которой у подрядчика нет.
+    expect(profilePresetCodes('service')).toEqual([]);
+    expect(
+      hydrateGrantSelection({
+        ...CLEAN,
+        catalog: IT_CATALOG,
+        suggestedCodes: profilePresetCodes('service'),
+      }),
+    ).toEqual([]);
+  });
+
+  it('профиля не выбирали — форма ведёт себя так, будто пресета нет', () => {
+    expect(profilePresetCodes(null)).toEqual([]);
+  });
+
+  it('список профилей показывает «Сервисный центр» выключенным и объясняет, чем он выдаётся', () => {
+    const options = grantProfileOptions(IT_CATALOG);
+    const service = options.find((o) => o.value === 'service');
+
+    // Молча спрятать его нельзя: администратор ищет в списке все четыре профиля, и пропавший
+    // читался бы как «такого профиля нет» либо «я его уже выдал» (Р11).
+    expect(service).toBeTruthy();
+    expect(service?.disabled).toBe(true);
+    expect(service?.label).toContain('Оператор');
+    expect(service?.label).toContain('контрагентом');
+  });
+
+  it('профиль, ни одного кода которого этой роли не положено, в списке не предлагается', () => {
+    // Несовместимость показывается тем же способом, что и у набора: каталог отобран сервером по
+    // роли, и предлагать профиль, который ничего бы не отметил, — обещать несуществующее.
+    const options = grantProfileOptions([CUSTOM]).map((o) => o.value);
+
+    expect(options).toEqual(['service']);
+  });
+
+  it('профиль виден там, где его коды в каталоге есть', () => {
+    // Якорь к проверке выше: пустой список пунктов был бы зелёным и на сломанном отборе.
+    const options = grantProfileOptions(IT_CATALOG).map((o) => o.value);
+
+    expect(options).toEqual(['it', 'service']);
   });
 });

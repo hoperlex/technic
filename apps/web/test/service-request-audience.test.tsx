@@ -6,6 +6,7 @@ import { renderWithUser } from './render';
 import { emptyList, list } from './factories/common';
 import {
   serviceCustomer,
+  serviceGlobalRequester,
   serviceOperator,
   serviceRequest,
   serviceRequestFile,
@@ -130,6 +131,17 @@ const NEIGHBOUR = repair({
   },
 });
 
+/**
+ * Та же заявка, но заведённая смотрящим (план профилей оргтехники, Р6).
+ *
+ * Авторство выражено `customer` в сводке обсуждения, и другого способа у портала нет:
+ * `ServiceRequestDto` не отдаёт `createdBy` (решение §7.4), а участие со стороны заказчика сервер
+ * считает строго автором — той же строкой, по которой судит страж изменяющих ручек.
+ */
+function authoredBy(request: ServiceRequestDto): ServiceRequestDto {
+  return { ...request, chat: { ...request.chat, canWrite: true, participantSides: ['customer'] } };
+}
+
 // ── Карточка ───────────────────────────────────────────────────────────────
 
 function renderCard(request: ServiceRequestDto, user: AuthUser): void {
@@ -237,6 +249,31 @@ describe('подшивка и плашка закрывающего докуме
     renderDocuments(FINANCE, INHOUSE_EXECUTOR);
     await screen.findByRole('button', { name: /Подшить документ/ });
 
+    expect(await attachKinds()).toEqual(['Вложение']);
+  });
+
+  /**
+   * ДЕРЖАТЕЛЬ НАБОРА «ЗАЯВИТЕЛЬ» БЕЗ ОСИ — четвёртая половина того же вопроса (план профилей
+   * оргтехники, Р6). Виды документа тут ни при чём: заявка ему ВИДНА (чтение у роли без оси
+   * глобально), и `attachableServiceFileKinds` предложил бы «Вложение» на любой строке компании.
+   * Отсекает чужую строку страж авторства — тот же предикат контрактов, каким сервер стережёт общий
+   * вход изменяющих ручек, — и признак авторства портал берёт из сводки обсуждения.
+   *
+   * Обе стороны проверяются на ОДНОЙ заявке, различающейся ровно этим признаком: одиночная проверка
+   * отсутствия зелена и на экране, который не показывает формы никому.
+   */
+  it('держателю набора «Заявитель» без оси на чужой заявке формы подшивки нет', async () => {
+    renderDocuments(REQUESTER, serviceGlobalRequester());
+
+    // Сама вкладка при этом жива: файл видно, снять его нечем — «нет формы» не значит «нет вкладки».
+    expect(await screen.findByText(/Вложение/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Подшить документ/ })).toBeNull();
+  });
+
+  it('на своей заявке форма подшивки у него есть', async () => {
+    renderDocuments(authoredBy(REQUESTER), serviceGlobalRequester());
+
+    expect(await screen.findByRole('button', { name: /Подшить документ/ })).toBeTruthy();
     expect(await attachKinds()).toEqual(['Вложение']);
   });
 });
