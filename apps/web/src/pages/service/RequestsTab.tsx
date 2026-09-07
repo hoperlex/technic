@@ -21,10 +21,11 @@ import { serviceRequestColumns, serviceGridView } from './serviceRequestGrid';
 import { serviceRequestCard } from './serviceRequestCard';
 import {
   SERVICE_FILTER_FIELDS,
-  useServiceQueues,
   useServiceRequestFilters,
   type ServiceListFilters,
 } from './serviceRequestFilters';
+import { useServiceQueue } from './serviceRequestQueues';
+import { serviceRepeatQuery, useServiceRepeatMode } from './serviceRequestRepeat';
 import { ServiceFilterBar } from './ServiceFilterBar';
 import { useServiceRequestActions } from './serviceRequestActions';
 import { useServiceBulk } from './ServiceBulkBar';
@@ -76,7 +77,8 @@ export function RequestsTab() {
 
   const sortBy = params.sortBy ?? 'statusChangedAt';
   const sortOrder = params.sortBy ? params.sortOrder : 'asc';
-  const query = { ...params, sortBy, sortOrder };
+  // Режим «предыдущие» не сочетается с отбором (Р10): сочетание гасится ДО сети, а не эффектом.
+  const query = serviceRepeatQuery({ ...params, sortBy, sortOrder });
 
   const { data, isFetching } = useQuery({
     queryKey: serviceRequestKeys.list(query),
@@ -90,10 +92,13 @@ export function RequestsTab() {
    * которого колонка замолчала бы у части строк молча, — и снят он вместе со своим ключом кэша.
    */
 
-  const filters = useServiceRequestFilters({ params, apply: applyFilter });
+  // Строки страницы спрашивают трое: таблица, набор колонок (ADR 0160) и набор отборов — «Только
+  // повторные» показывается, лишь когда признак повтора включён (Р5).
+  const items = data?.items ?? [];
+  const filters = useServiceRequestFilters({ params, apply: applyFilter, rows: items });
   // Очереди-пресеты живут рядом с отборами: это те же параметры запроса, и состав их зависит от
   // читателя так же (ADR 0160, решение 9).
-  const queues = useServiceQueues();
+  const queue = useServiceQueue({ params, setParams });
   /*
    * Наборов действий два, и это не дубль по невнимательности (ADR 0140). Окна списка живут здесь,
    * на уровне страницы, а окна карточки — внутри карточки: только вложенной модалке antd считает
@@ -116,6 +121,13 @@ export function RequestsTab() {
     fetch: (id) => serviceRequestsApi.get(id),
   });
   const shown = viewRecord ?? opened.record;
+
+  /*
+   * Ссылка «предыдущие» из карточки (Р10 плана повторов): режим приходит адресом и ЗАМЕЩАЕТ отбор
+   * целиком — иначе запомненный с прошлого сеанса фильтр (ADR 0139) дал бы 422 либо список, не
+   * совпадающий с числом в теге. Карточку он закрывает: ссылку нажимают в ней, а ведёт она вниз.
+   */
+  const repeat = useServiceRepeatMode({ params, setParams, onEnter: () => setViewRecord(null) });
 
   /*
    * `?open=<id>&chat=1` — карточка с раскрытым обсуждением (§3.7). Заведено не сегодняшнему
@@ -279,7 +291,7 @@ export function RequestsTab() {
     actions: rowActions,
     // Выдача уходит и в набор колонок (ADR 0160, Р11): столбец «Сумма» один на таблицу, а
     // аудитория — свойство строки, и у исполнителя обе законно лежат в одной выдаче.
-    requests: data?.items ?? [],
+    requests: items,
     // Чей тег ждёт ответа (ADR 0161): действие идёт по одной строке, крутиться обязана она одна.
     pendingId: actions.pendingId,
     onOpen: (request: ServiceRequestDto) => setViewRecord(request),
@@ -288,24 +300,6 @@ export function RequestsTab() {
     onChat: actions.openChat,
   };
   const columns = serviceRequestColumns(grid);
-
-  const queue =
-    params.waitingOnMe === 'true'
-      ? 'waiting'
-      : params.urgent === 'true'
-        ? 'urgent'
-        : params.awaitingDocuments === 'true'
-          ? 'documents'
-          : 'all';
-
-  const setQueue = (value: string) =>
-    setParams((p) => ({
-      ...p,
-      waitingOnMe: value === 'waiting' ? 'true' : undefined,
-      urgent: value === 'urgent' ? 'true' : undefined,
-      awaitingDocuments: value === 'documents' ? 'true' : undefined,
-      page: 1,
-    }));
 
   const canCreate = can('serviceRequests.create');
   const openCreate = () => {
@@ -317,17 +311,23 @@ export function RequestsTab() {
     <PageTableLayout
       filters={
         <ServiceFilterBar
-          filters={filters}
+          filters={repeat.active ? [] : filters}
           reset={{ active: filtersActive, onClick: resetFilters }}
         />
       }
       toolbar={
-        <Space wrap>
-          {/* Пресеты стоят над таблицей и на телефоне тоже: это вход в работу, а не фильтр. */}
-          <Segmented options={queues} value={queue} onChange={(v) => setQueue(String(v))} />
-          {/* Отбор уходит тот же, которым отобран список: кнопка гасит ровно то, что видно. */}
-          <MarkAllChatReadButton filters={query} />
-        </Space>
+        /* В режиме «предыдущие» вместо очередей стоит плашка режима: очередь дописала бы к
+           `repeatFor` отбор, которого сервер не принимает, а «Отметить все прочитанными» —
+           единственная ручка, применяющая набор БЕЗ этого режима: она погасила бы не то, что
+           видно, а всю область читателя. */
+        repeat.banner ?? (
+          <Space wrap>
+            {/* Пресеты стоят над таблицей и на телефоне тоже: это вход в работу, а не фильтр. */}
+            <Segmented {...queue} />
+            {/* Отбор уходит тот же, которым отобран список: кнопка гасит ровно то, что видно. */}
+            <MarkAllChatReadButton filters={query} />
+          </Space>
+        )
       }
       mobile={{
         search: {
@@ -335,7 +335,7 @@ export function RequestsTab() {
           placeholder: 'СО-14, модель, инв. или серийный номер',
           onChange: (v) => setParams((p) => ({ ...p, search: v, page: 1 })),
         },
-        filters,
+        filters: repeat.active ? [] : filters,
         sort: {
           options: sortOptionsFrom(columns, { num: 'Номер заявки' }),
           sortBy: params.sortBy,
@@ -359,7 +359,7 @@ export function RequestsTab() {
       <DataTable<ServiceRequestDto>
         columns={columns}
         card={serviceRequestCard(grid)}
-        data={data?.items ?? []}
+        data={items}
         total={data?.total ?? 0}
         loading={isFetching || actions.pending || cardActions.pending || removeMutation.isPending}
         page={params.page}

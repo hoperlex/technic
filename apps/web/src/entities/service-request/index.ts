@@ -28,6 +28,7 @@ export {
   consumableLabel,
   type ConsumableFactRow,
 } from './model/consumables';
+export { serviceRepeatHint, serviceRepeatSummary } from './model/repeat';
 export {
   isAwaitingDocuments,
   SERVICE_CLOSING_DOCUMENT_HINT,
@@ -43,5 +44,6 @@ export { ServiceConsumablesTable } from './ui/ServiceConsumablesTable';
 export { ServiceDocumentUpload } from './ui/ServiceDocumentUpload';
 export { ServiceEstimateTable } from './ui/ServiceEstimateTable';
 export { ServiceRequestContext } from './ui/ServiceRequestContext';
+export { RepeatTag } from './ui/RepeatTag';
 export { ServiceStatusTag } from './ui/ServiceStatusTag';
 export { UrgentTag } from './ui/UrgentTag';

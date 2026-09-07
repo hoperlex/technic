@@ -1,5 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import { SERVICE_REQUEST_STATUSES, serviceRequestStatusLabels } from '@technic/contracts';
+import {
+  SERVICE_REQUEST_STATUSES,
+  serviceRequestStatusLabels,
+  type ServiceRequestDto,
+} from '@technic/contracts';
 import { serviceCompanyOptionsQuery } from '@entities/service-request';
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
@@ -34,6 +38,19 @@ export interface ServiceListFilters {
   awaitingDocuments?: string;
   warrantyClaim?: string;
   urgent?: string;
+  /**
+   * Только повторные (план `docs/office-equipment-repeat-request-plan.md`, Р10): по аппарату
+   * заявки уже есть закрытая соседка в окне признака. Что попадает в окно, решает сервер — окно у
+   * каждой строки своё, а совпадения считаются в области смотрящего (Р8).
+   */
+  repeat?: string;
+  /**
+   * РЕЖИМ «предыдущие» — те самые заявки, которые посчитал тег (Р10), и потому его нет в
+   * `SERVICE_FILTER_FIELDS` ниже: запомнись он между сеансами (ADR 0139), человек утром открыл бы
+   * вкладку в списке вчерашних «предыдущих». Ставит его `useServiceRepeatMode` — сервер принимает
+   * параметр только в одиночестве.
+   */
+  repeatFor?: string;
   /**
    * Расхождение по объекту (Р16): заявитель сказал, что аппарат стоит не там, где записано в его
    * карточке, и справочник до сих пор говорит своё. Отбор — конъюнкция ДВУХ признаков плюс «заявка
@@ -78,6 +95,7 @@ export const SERVICE_FILTER_FIELDS = [
   'awaitingDocuments',
   'warrantyClaim',
   'urgent',
+  'repeat',
   'objectMismatch',
   'candidateStatus',
   'createdFrom',
@@ -111,37 +129,18 @@ const candidateStatusOptions = [
   { value: 'rejected', label: 'Предмет отклонён' },
 ];
 
-/**
- * Очереди-пресеты над таблицей (§9.2): с них начинают работу оператор и сервис.
- *
- * Переехали сюда из самой страницы, потому что это не второй механизм, а те же три параметра
- * запроса (`waitingOnMe`, `urgent`, `awaitingDocuments`), что и отборы ниже, — и правило «кому
- * какой срез положен» у них общее. Порознь его пришлось бы держать в двух местах, и первым
- * признаком расхождения стал бы пресет, которого нет в шите фильтров, или наоборот.
- */
-export function useServiceQueues(): { value: string; label: string }[] {
-  const { can } = useAuth();
-  return [
-    { value: 'all', label: 'Все заявки' },
-    { value: 'waiting', label: 'Требуют решения' },
-    // Срочные — вход, а не фильтр: с них начинают день, и прятать их в шит значило бы прятать саму
-    // работу (план модернизации, Р56).
-    { value: 'urgent', label: 'Срочные' },
-    // Та же дверь, что и у отбора ниже, и по той же причине (ADR 0160, решение 9): без субъектного
-    // `serviceRequests.finance` сервер параметр молча игнорирует, и пресет был бы кнопкой, которая
-    // переключается, ничего не меняя.
-    ...(can('serviceRequests.finance')
-      ? [{ value: 'documents', label: 'Ожидаются документы' }]
-      : []),
-  ];
-}
-
 export function useServiceRequestFilters({
   params,
   apply,
+  rows,
 }: {
   params: ServiceListFilters;
   apply: (patch: ServiceListFilters) => void;
+  /**
+   * Строки страницы — ради одного вопроса: включён ли признак повтора (Р5). Портал его иначе не
+   * задаст: у выключенного поля `repeat` нет вовсе, а `count: 0` — «считали, не нашли».
+   */
+  rows: readonly ServiceRequestDto[];
 }): FilterDefinition[] {
   const { can } = useAuth();
 
@@ -232,6 +231,28 @@ export function useServiceRequestFilters({
       value: params.urgent === 'true',
       onChange: (v) => apply({ urgent: flag(v) }),
     },
+    /*
+     * «Только повторные» — ОТБОР, а не очередь-пресет (Р10 плана повторов): пресетом стоит то, с
+     * чего начинают день и что кто-то обязан разобрать, а повтор ничьей работы не назначает и
+     * ничего не запускает (Р9) — с ним приходят к уже открытому списку.
+     *
+     * ПОКАЗЫВАЕТСЯ, ПОКА ПРИЗНАК ВКЛЮЧЁН (§10.2, п. 4): строка с полем `repeat` означает, что окно
+     * задано и сервер считал; нет таких строк — признак выключен либо на странице одни расходники,
+     * и переключатель, ничего не меняющий, обещал бы работу, которой нет. Включённым отбор виден
+     * всегда: набор переживает сеанс (ADR 0139), а выключенный признак отвечает пустой выдачей —
+     * снять его человеку обязано быть чем.
+     */
+    ...(params.repeat === 'true' || rows.some((r) => r.repeat !== undefined)
+      ? [
+          {
+            kind: 'toggle' as const,
+            key: 'repeat',
+            label: 'Только повторные',
+            value: params.repeat === 'true',
+            onChange: (v: boolean) => apply({ repeat: flag(v) }),
+          },
+        ]
+      : []),
     {
       kind: 'select',
       key: 'objectId',

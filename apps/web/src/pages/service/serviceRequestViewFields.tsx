@@ -16,6 +16,7 @@ import {
 import { WarrantyTag } from '@entities/office-equipment';
 import type { ViewField } from '@shared/ui';
 import { MoveEquipmentButton } from './serviceRequestCells';
+import { serviceRepeatFields } from './serviceRequestRepeat';
 import { ServiceRequestSubjectName } from './ServiceRequestSubjectName';
 import { ServiceStatusCell } from './ServiceStatusCell';
 import type { ServiceMenuItem } from './serviceStatusChoices';
@@ -203,6 +204,14 @@ export function serviceRequestViewFields({
         </Space>
       ),
     },
+    /*
+     * Повторное обращение по тому же аппарату — следом за его реквизитами (Р10 плана повторов):
+     * признак говорит про аппарат, и читают его вместе с ним. Наблюдение, а не основание — ни
+     * срочности, ни писем за собой не тянет (Р9), а ссылка ведёт в список тех самых предыдущих
+     * заявок, которые признак и посчитал. Строка со ссылкой собирается своим модулем: там же
+     * лежит режим списка, в который она ведёт, и порознь эти две половины разъезжаются молча.
+     */
+    ...serviceRepeatFields(request),
     {
       key: 'customer',
       /*

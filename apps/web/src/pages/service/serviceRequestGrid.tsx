@@ -9,7 +9,7 @@ import {
   type ServiceExecutorAssignment,
   type ServiceRequestDto,
 } from '@technic/contracts';
-import { statusAgeLabel, UrgentTag } from '@entities/service-request';
+import { RepeatTag, statusAgeLabel, UrgentTag } from '@entities/service-request';
 import { ServiceChatMark } from '@features/service-chat';
 import { ActionMenuButton, actionsColumn, ExpandableCell, textColumn } from '@shared/ui';
 import { rowMenuItems } from './serviceMenuPlacement';
@@ -182,6 +182,10 @@ export function serviceRequestColumns(
             {/* Срочность — у номера, а не в отдельной колонке: список читают слева направо, и
                 признак, ради которого заявку берут вне очереди, обязан попасться первым. */}
             {r.isUrgent && <UrgentTag reason={r.urgencyReason} />}
+            {/* «Повтор ×N» — там же (план повторов, Р10): признак читается вместе с номером, по
+                нему заявку и берут в разговор с подрядчиком. Метка ничего не запускает (Р9):
+                ни срочности, ни письма — решение принимает человек, посмотрев предыдущие. */}
+            <RepeatTag repeat={r.repeat} />
             {/* Непрочитанное обсуждение — там же и по той же причине: колонки с текстом реплик в
                 списке нет вовсе (решение опроса), и метка у номера — единственное место, где
                 видно, что по заявке написали. */}

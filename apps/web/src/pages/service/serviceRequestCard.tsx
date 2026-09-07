@@ -2,6 +2,7 @@ import { Space } from 'antd';
 import { EyeOutlined } from '@ant-design/icons';
 import type { ServiceRequestDto } from '@technic/contracts';
 import {
+  RepeatTag,
   serviceRequestEquipmentName,
   serviceRequestPlaceLine,
   serviceStatusLine,
@@ -32,6 +33,10 @@ export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<Service
             карточке — саму заявку. Второго места для непрочитанного здесь нет — колонок нет. */}
         <ServiceChatMark request={r} onOpen={opts.onChat} />
         {r.isUrgent && <UrgentTag reason="" />}
+        {/* Тот же тег повтора, что и у номера на десктопе (Р10). Подсказку он здесь СОХРАНЯЕТ, в
+            отличие от срочности рядом: причину срочности карточка выносит отдельной строкой, а
+            период, за который считали повторы, назвать больше негде. */}
+        <RepeatTag repeat={r.repeat} />
         {/* Тап по тегу открывает шит переходов, тап по карточке — саму заявку (ADR 0161). */}
         <ServiceStatusCell request={r} items={opts.actions(r)} pending={opts.pendingId === r.id} />
       </Space>
