@@ -18,6 +18,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import type { Principal } from '../src/auth/principal';
 
 /**
  * ИСТОРИЯ ЕДИНИЦЫ ОРГТЕХНИКИ ТРЕМЯ БИЗНЕС-БЛОКАМИ — серверные случаи §10.1 плана
@@ -43,7 +44,10 @@ import type { db as AppDb } from '../src/db/client';
  *   6. четыре разных `outcome` — нефинансовым кодом со словарной подписью (Р2, Н12);
  *   7. сумма акта: скрыта у аудитории, которой не положена, и открыта назначенному исполнителю (Р5);
  *   8. правка без диффа приходит строкой, а не пропадает (Н5);
- *   9. чужой курсор (ленты и соседнего блока) — `422`, а не молчаливая первая страница (Р8).
+ *   9. чужой курсор (ленты и соседнего блока) — `422`, а не молчаливая первая страница (Р8);
+ *  10. бюджет запросов (Р10, К8): страница блока заявок стоит не больше ПЯТИ выражений SQL, и число
+ *      это одно и то же при одной строке и при двадцати — равенство и есть доказательство того, что
+ *      скрытого `N+1` нет.
  *
  * СВОЯ БАЗА, А НЕ ОБЩАЯ `technic_archive_test`: файл сравнивает МНОЖЕСТВА строк по единице и
  * считает страницы, а по общей базе идут параллельные прогоны и лежит копия боевого парка. База
@@ -151,6 +155,80 @@ function inject(
     remoteAddress: nextAddress(),
     ...(payload === undefined ? {} : { payload }),
   });
+}
+
+// ── Счётчик SQL-выражений (Р10, К8) ──
+
+/**
+ * Открытое окно счёта: пока оно есть, сюда ложится текст каждого выражения, ушедшего в базу.
+ * `null` означает, что окна нет и обёртка не делает ничего, — и это главное свойство счётчика:
+ * миграции, фикстура, входы и сами проверки результатов в счёт не попадают. Считай он всё подряд,
+ * число зависело бы от того, что делалось до замера, то есть от порядка случаев в файле.
+ */
+let sqlWindow: string[] | null = null;
+
+/** Обёрнутые соединения: клиента из пула берут много раз, а обёртку он получает один. */
+const instrumented = new WeakSet<object>();
+
+/**
+ * ГДЕ СТОИТ ПЕРЕХВАТ И ПОЧЕМУ ИМЕННО ТАМ.
+ *
+ * Не в `src/db/client.ts`: счётчик нужен одному файлу тестов, а жил бы в рабочем коде — на каждом
+ * запросе прода, ради проверки. Р10 просит обёртку, а не постоянного жильца.
+ *
+ * Не на `pool.query`: `Pool.query` внутри берёт соединение и зовёт `client.query` на нём
+ * (`pg-pool/index.js`), поэтому счёт на обоих уровнях сразу удваивал бы каждый запрос, а счёт на
+ * одном только пуле терял бы всё, что идёт через `pool.connect()` — выделенное соединение берут
+ * транзакции drizzle, и спрятанный в них `N+1` остался бы невидимым. Соединение — единственная
+ * точка, через которую проходит и то и другое, и ровно по разу.
+ *
+ * Событием `connect`, а не подменой `pool.connect`: событие приходит один раз на каждое НОВОЕ
+ * физическое соединение и до первого запроса по нему (`_acquireClient`), то есть обёртка ставится
+ * ровно один раз на клиента и не зависит от того, сколько раз его брали из пула.
+ *
+ * Ставится счётчик сразу после импорта клиента, пока пул пуст: соединение, созданное раньше,
+ * обёртки бы не получило и молча не считалось бы — а незамеченный запрос здесь хуже отсутствия
+ * проверки, потому что выглядит она при этом зелёной.
+ */
+function installSqlCounter(target: pg.Pool): void {
+  target.on('connect', (client) => {
+    if (instrumented.has(client)) return;
+    instrumented.add(client);
+    const original = client.query.bind(client) as (...args: unknown[]) => unknown;
+    (client as unknown as { query: (...args: unknown[]) => unknown }).query = (...args) => {
+      sqlWindow?.push(statementTextOf(args[0]));
+      return original(...args);
+    };
+  });
+}
+
+/**
+ * Текст выражения — для сообщения об ошибке: считаем мы вызовы, а вот показывать при расхождении
+ * надо то, что ушло в базу. Оба вида вызова: drizzle зовёт клиента объектом `{ text, values }`,
+ * голая строка приходит от прямых обращений вроде `pingDb`.
+ */
+function statementTextOf(arg: unknown): string {
+  if (typeof arg === 'string') return arg;
+  if (arg && typeof arg === 'object' && 'text' in arg) {
+    return String((arg as { text: unknown }).text);
+  }
+  return '<выражение неизвестного вида>';
+}
+
+/**
+ * Считает выражения ОДНОГО действия. Вкладывать замеры нельзя, и попытка отбивается сразу: у
+ * вложенных окон внешнее не досчитало бы внутренних запросов, и «пять» вышло бы из ниоткуда.
+ */
+async function countSql<T>(run: () => Promise<T>): Promise<{ value: T; sql: string[] }> {
+  if (sqlWindow) throw new Error('Окно счёта уже открыто: замеры не вкладываются');
+  const log: string[] = [];
+  sqlWindow = log;
+  try {
+    const value = await run();
+    return { value, sql: log };
+  } finally {
+    sqlWindow = null;
+  }
 }
 
 // ── Чтение блоков ──
@@ -272,7 +350,9 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
     }
 
     prepareEnv(OWN_DB!);
-    const { db, closeDb } = await import('../src/db/client');
+    const { db, closeDb, pool } = await import('../src/db/client');
+    // До первого запроса: соединений в пуле ещё нет, и обёртку получат все до одного.
+    installSqlCounter(pool);
     const { hashPassword } = await import('../src/auth/password');
     const { buildApp } = await import('../src/app');
     const passwordHash = await hashPassword(PASSWORD);
@@ -903,6 +983,193 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
         ctx.operator.auth,
       );
       expect(res.statusCode, res.body).toBe(422);
+    });
+  });
+
+  // ── 10. Бюджет запросов на страницу (тест 11, Р10, К8) ──
+
+  describe('бюджет запросов: страница не дорожает от строк', () => {
+    /** Двадцать строк — вторая точка замера из §10.1; первая точка та же выборка при `pageSize=1`. */
+    const BULK_ROWS = 20;
+
+    /**
+     * Отдельная единица под замер, и это не чистота фикстуры ради самой себя: вопрос Р10 звучит
+     * «растёт ли число запросов вместе со строками», а ответ на него даёт ОДНА выборка, прочитанная
+     * дважды — одной строкой и двадцатью. Те же данные, тот же читатель, тот же (пустой) курсор:
+     * разойдись числа — разойтись им будет не от чего, кроме строк.
+     */
+    let bulkUnitId = '';
+    let blocks: typeof import('../src/services/office-equipment-blocks');
+    /** Право `serviceRequests.execute` есть у администратора — он платит все пять запросов. */
+    let adminPrincipal: Principal;
+    /** У «ведения справочника» права исполнения нет: аудитория ему в базу не ходит вовсе. */
+    let operatorPrincipal: Principal;
+
+    beforeAll(async () => {
+      blocks = await import('../src/services/office-equipment-blocks');
+      /*
+       * Сервис зовётся НАПРЯМУЮ, а не через `inject`, и это и есть предмет Р10: решение писалось
+       * про страницу блока, а ручка вокруг неё делает свою работу — читает принципала и карточку
+       * ради области. Меряя ручку, мы записали бы в бюджет страницы то, что от неё не зависит;
+       * отдельный случай ниже эти два запроса и называет.
+       */
+      const { loadPrincipal } = await import('../src/auth/principal');
+      const [asAdmin, asOperator] = await Promise.all([
+        loadPrincipal(ctx.admin.id),
+        loadPrincipal(ctx.operator.id),
+      ]);
+      if (!asAdmin || !asOperator) throw new Error('Принципал не прочитан: сцена собрана неверно');
+      adminPrincipal = asAdmin;
+      operatorPrincipal = asOperator;
+
+      const created = await inject('POST', EQUIPMENT, ctx.operator.auth, {
+        equipmentTypeId: ctx.typeId,
+        name: `Kyocera ECOSYS bulk ${RUN}`,
+        inventoryNumber: `HB-${RUN}-bulk`,
+        objectId: ctx.objectA,
+        location: 'кабинет 300',
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      bulkUnitId = (created.json() as { id: string }).id;
+
+      for (let i = 1; i <= BULK_ROWS; i += 1) {
+        const res = await inject('POST', REQUESTS, ctx.operator.auth, {
+          officeEquipmentId: bulkUnitId,
+          description: `Заявка ${i} под замер бюджета`,
+          kind: 'repair',
+          responsibleName: 'Иванов Иван Иванович',
+          responsiblePhone: '+79990000000',
+        });
+        expect(res.statusCode, res.body).toBe(201);
+        const { request } = res.json() as { request: ServiceRequestDto };
+        // Каждая закрывается сразу: по единице разрешена одна открытая заявка НА ВИД (Р21, миграция
+        // 0177), а замеру нужны двадцать строк, а не двадцать способов их не завести.
+        await ctx.db.execute(sql`
+          UPDATE service_requests
+             SET status = 'cancelled', rejection_resolution = 'Строка замера'
+           WHERE id = ${request.id}`);
+      }
+    }, 300_000);
+
+    it('страница заявок: не больше пяти запросов, и число не растёт со строками', async () => {
+      const measure = (pageSize: number) =>
+        countSql(() =>
+          blocks.loadEquipmentRequestsPage(
+            adminPrincipal,
+            { id: bulkUnitId, objectId: ctx.objectA },
+            { cursor: null, pageSize },
+          ),
+        );
+      const one = await measure(1);
+      const twenty = await measure(BULK_ROWS);
+
+      expect(one.value.items).toHaveLength(1);
+      expect(twenty.value.items).toHaveLength(BULK_ROWS);
+
+      // Потолок Р10 и К8 — на обеих страницах.
+      expect(one.sql.length, one.sql.join('\n')).toBeLessThanOrEqual(5);
+      expect(twenty.sql.length, twenty.sql.join('\n')).toBeLessThanOrEqual(5);
+      /*
+       * И ГЛАВНОЕ: двадцать строк стоят ровно столько же, сколько одна. Потолок сам по себе `N+1` не
+       * ловит — страница в одну строку укладывается в него и при походе за каждой, — а вот
+       * равенство ловит: догрузка на строку дала бы здесь 5 против 24, и краснело бы это на любой
+       * машине, без единой отметки времени в проверке.
+       */
+      expect(twenty.sql.length, twenty.sql.join('\n')).toBe(one.sql.length);
+    });
+
+    it('пятый запрос платит только читатель с правом исполнения', async () => {
+      const forReader = (p: Principal) =>
+        countSql(() =>
+          blocks.loadEquipmentRequestsPage(
+            p,
+            { id: bulkUnitId, objectId: ctx.objectA },
+            { cursor: null, pageSize: BULK_ROWS },
+          ),
+        );
+      const asAdmin = await forReader(adminPrincipal);
+      const asOperator = await forReader(operatorPrincipal);
+
+      expect(asAdmin.value.items).toHaveLength(BULK_ROWS);
+      expect(asOperator.value.items).toHaveLength(BULK_ROWS);
+
+      /*
+       * Числа названы ТОЧНО, а не «не больше», и вот зачем. Пятёрка Р10 — это потолок, который
+       * платит не всякий: аудитория (`serviceAudienceByRequest`) не ходит в базу без
+       * `serviceRequests.execute`, и у «ведения справочника» страница стоит четырёх. Ровно на этом
+       * месте план и комментарий сервиса разошлись: четвёртой догрузкой была аудитория, а пятая —
+       * подтверждения заявленного места — пришла позже соседней работой, и потолок стал пятью.
+       * Появится шестая — красным станет этот случай, а не рассуждение в чьей-нибудь голове.
+       */
+      expect(asAdmin.sql, asAdmin.sql.join('\n')).toHaveLength(5);
+      expect(asOperator.sql, asOperator.sql.join('\n')).toHaveLength(4);
+    });
+
+    it('пустая страница в базу за догрузками не идёт вовсе', async () => {
+      const empty = await countSql(() =>
+        blocks.loadEquipmentRequestsPage(
+          adminPrincipal,
+          // У единицы случая 4 есть правки карточки и ни одной заявки — то есть блок пуст, а сама
+          // карточка жива: пустота здесь не следствие отказа в области.
+          { id: ctx.tieUnitId, objectId: ctx.objectA },
+          { cursor: null, pageSize: BULK_ROWS },
+        ),
+      );
+      expect(empty.value.items).toHaveLength(0);
+      // Один запрос — сама страница. Все четыре догрузки видят пустой список идентификаторов и
+      // возвращают пустые карты, не притрагиваясь к базе: иначе пустой блок стоил бы пяти запросов
+      // ради четырёх заведомо пустых ответов, а пустых блоков в справочнике большинство.
+      expect(empty.sql, empty.sql.join('\n')).toHaveLength(1);
+    });
+
+    it('блоки правок и перемещений стоят одного запроса каждый', async () => {
+      const changes = await countSql(() =>
+        blocks.loadEquipmentChangesPage(ctx.unitId, { cursor: null, pageSize: 100 }),
+      );
+      const movements = await countSql(() =>
+        blocks.loadEquipmentMovementsPage(ctx.unitId, { cursor: null, pageSize: 100 }),
+      );
+
+      expect(changes.value.items).toHaveLength(6);
+      expect(movements.value.items).toHaveLength(6);
+      // Догрузок у этих двух нет ни одной: автора правки, обе площадки, оба отдела и номер заявки
+      // отдают соединения, и каждое из них — по одной строке на запись. Шесть строк стоят здесь
+      // ровно столько же, сколько ноль.
+      expect(changes.sql, changes.sql.join('\n')).toHaveLength(1);
+      expect(movements.sql, movements.sql.join('\n')).toHaveLength(1);
+    });
+
+    it('ручка дороже страницы на два запроса, и ни один из них не про строки', async () => {
+      const service = await countSql(() =>
+        blocks.loadEquipmentRequestsPage(
+          adminPrincipal,
+          { id: bulkUnitId, objectId: ctx.objectA },
+          { cursor: null, pageSize: BULK_ROWS },
+        ),
+      );
+      const http = await countSql(async () => {
+        const res = await inject(
+          'GET',
+          `${EQUIPMENT}/${bulkUnitId}/requests?pageSize=${BULK_ROWS}`,
+          ctx.admin.auth,
+        );
+        expect(res.statusCode, res.body).toBe(200);
+        return res.json() as EquipmentRequestsPageDto;
+      });
+
+      expect(http.value.items).toHaveLength(service.value.items.length);
+      /*
+       * ЧТО НЕ ВХОДИТ В БЮДЖЕТ Р10 и почему это честно. Обращение к ручке стоит на два выражения
+       * больше страницы: страж читает принципала (`loadPrincipal`), а обработчик — карточку ради
+       * ОБЛАСТИ (`requireHistoryEquipment`). Оба — цена входа, а не цена страницы: они одинаковы
+       * при одной строке и при двадцати, повторяются на каждой ручке модуля и от предмета Р10
+       * («не появилось ли похода в базу на строку») не зависят. Записывать их в бюджет блока
+       * значило бы мерить бюджетом страницы работу аутентификации; молчать о них — обещать
+       * шестью запросами то, что стоит семи. Поэтому они названы здесь поимённо и посчитаны.
+       */
+      expect(http.sql.length, http.sql.join('\n')).toBe(service.sql.length + 2);
+      expect(http.sql[0]).toContain('"users"');
+      expect(http.sql[1]).toContain('"office_equipment"');
     });
   });
 });
