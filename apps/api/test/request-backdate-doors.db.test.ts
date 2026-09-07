@@ -549,407 +549,410 @@ describe.skipIf(!DB_URL)('двери заднего числа со сторон
 
   describe('ЭСМ-2 по требованию за прошедшую неделю (дыра 3)', () => {
     /*
-   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
-   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
-   *
-   * Сегодня половины совпадают: двери проверяют право, причину и ключ операции, а не нарезку бумаги. На этапе 5 расходится счёт выписанных номеров там, где команда режет неделю.
-   */
-  describeReadModes(readMode, 'двери заднего числа', (mode) => {
-    void mode;
+     * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
+     * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+     *
+     * Сегодня половины совпадают: двери проверяют право, причину и ключ операции, а не нарезку бумаги. На этапе 5 расходится счёт выписанных номеров там, где команда режет неделю.
+     */
+    describeReadModes(readMode, 'двери заднего числа', (mode) => {
+      void mode;
 
-  it('без права — 403, без причины — 422, без ключа — 422, и ни один номер не сгорел', async () => {
-      const request = await linearInProgress();
-      const weekOf = ctx.pastFrom;
+      it('без права — 403, без причины — 422, без ключа — 422, и ни один номер не сгорел', async () => {
+        const request = await linearInProgress();
+        const weekOf = ctx.pastFrom;
 
-      // У менеджера `waybills.correct` нет вовсе: прошлое ему закрыто, сколько бы он ни объяснял.
-      const forbidden = await issueEsm2(ctx.manager, request.id, {
-        weekOf,
-        version: request.version,
-        reason: 'Машина отработала неделю',
-        operationId: uuid(),
-      });
-      expect(forbidden.statusCode, forbidden.body).toBe(403);
-
-      // У диспетчера право есть, но бланк за прошедшую неделю без объяснения не выписывается:
-      // разрыв нумерации в журнале строгой отчётности обязан быть объяснён (Р35).
-      const noReason = await issueEsm2(ctx.dispatcher, request.id, {
-        weekOf,
-        version: request.version,
-        operationId: uuid(),
-      });
-      expect(noReason.statusCode, noReason.body).toBe(422);
-      expect(noReason.json().message).toContain('причину');
-
-      // Причина есть, ключа нет: повтор после обрыва связи сжёг бы второй номер (Р31).
-      const noKey = await issueEsm2(ctx.dispatcher, request.id, {
-        weekOf,
-        version: request.version,
-        reason: 'Машина отработала неделю',
-      });
-      expect(noKey.statusCode, noKey.body).toBe(422);
-      expect(noKey.json().message).toContain('ключ');
-
-      // Ни один отказ бумаги не завёл: номер серии цел, заявка без листов.
-      expect(await sheetsOf(request.id)).toEqual([]);
-      expect(await correctionsOfRequest(request.id)).toEqual([]);
-    });
-
-    it('с правом, причиной и ключом лист выписан, помечен коррекцией и оставил операцию', async () => {
-      const request = await linearInProgress();
-      const operationId = uuid();
-      const reason = 'Машина отработала неделю, бланк выписываем по факту';
-
-      const res = await issueEsm2(ctx.dispatcher, request.id, {
-        weekOf: ctx.pastFrom,
-        version: request.version,
-        reason,
-        operationId,
-      });
-      expect(res.statusCode, res.body).toBe(200);
-
-      const [sheet, ...rest] = await sheetsOf(request.id);
-      expect(rest).toEqual([]);
-      expect(sheet!.status).toBe('issued');
-      // Эффективная дата операции — конец недели (таблица §4 плана), и лист выписан именно за неё.
-      expect(sheet!.period_to).toBe(ctx.pastTo);
-      /*
-       * Форма, которую Р35 и предусматривает: причина при **пустом** `corrects_waybill_id` —
-       * заменять было нечего, лист рождён не взамен другого. Признак коррекции для фильтра (Р28)
-       * считается по ссылке на операцию, а не по заменённому номеру.
-       */
-      expect(sheet!.correction_reason).toBe(reason);
-      expect(sheet!.corrects_waybill_id).toBeNull();
-      expect(sheet!.correction_id).not.toBeNull();
-
-      const [correction, ...others] = await correctionsOfRequest(request.id);
-      expect(others).toEqual([]);
-      expect(correction!.kind).toBe('esm2');
-      expect(correction!.reason).toBe(reason);
-      expect(correction!.actor_user_id).toBe(ctx.dispatcherId);
-      expect(sheet!.correction_id).toBe(correction!.id);
-    });
-
-    it('лист прошедшей недели виден в фильтре «только коррекции» и не виден в «без коррекций»', async () => {
-      const request = await linearInProgress();
-      const res = await issueEsm2(ctx.dispatcher, request.id, {
-        weekOf: ctx.pastFrom,
-        version: request.version,
-        reason: 'Бланк за отработанную неделю',
-        operationId: uuid(),
-      });
-      expect(res.statusCode, res.body).toBe(200);
-      const sheet = (await sheetsOf(request.id))[0]!;
-
-      // Отбор двусторонний: «что правилось задним числом» и «что шло обычным порядком» — два
-      // разных вопроса, и один флаг на оба не отвечает (Р28). Журнал сужен днём листа и машиной:
-      // база у db-тестов общая, и страница журнала целиком сюда не поместится.
-      const journal = async (correction: 'true' | 'false') => {
-        const list = await ctx.app.inject({
-          method: 'GET',
-          url: `/api/v1/waybills?correction=${correction}&vehicleId=${ctx.vehicleId}&dateFrom=${ctx.pastFrom}&dateTo=${ctx.pastFrom}&pageSize=100`,
-          headers: ctx.admin,
+        // У менеджера `waybills.correct` нет вовсе: прошлое ему закрыто, сколько бы он ни объяснял.
+        const forbidden = await issueEsm2(ctx.manager, request.id, {
+          weekOf,
+          version: request.version,
+          reason: 'Машина отработала неделю',
+          operationId: uuid(),
         });
-        expect(list.statusCode, list.body).toBe(200);
-        return (list.json().items as { id: string; isCorrection: boolean }[]).map((w) => w.id);
-      };
-      expect(await journal('true')).toContain(sheet.id);
-      expect(await journal('false')).not.toContain(sheet.id);
+        expect(forbidden.statusCode, forbidden.body).toBe(403);
+
+        // У диспетчера право есть, но бланк за прошедшую неделю без объяснения не выписывается:
+        // разрыв нумерации в журнале строгой отчётности обязан быть объяснён (Р35).
+        const noReason = await issueEsm2(ctx.dispatcher, request.id, {
+          weekOf,
+          version: request.version,
+          operationId: uuid(),
+        });
+        expect(noReason.statusCode, noReason.body).toBe(422);
+        expect(noReason.json().message).toContain('причину');
+
+        // Причина есть, ключа нет: повтор после обрыва связи сжёг бы второй номер (Р31).
+        const noKey = await issueEsm2(ctx.dispatcher, request.id, {
+          weekOf,
+          version: request.version,
+          reason: 'Машина отработала неделю',
+        });
+        expect(noKey.statusCode, noKey.body).toBe(422);
+        expect(noKey.json().message).toContain('ключ');
+
+        // Ни один отказ бумаги не завёл: номер серии цел, заявка без листов.
+        expect(await sheetsOf(request.id)).toEqual([]);
+        expect(await correctionsOfRequest(request.id)).toEqual([]);
+      });
+
+      it('с правом, причиной и ключом лист выписан, помечен коррекцией и оставил операцию', async () => {
+        const request = await linearInProgress();
+        const operationId = uuid();
+        const reason = 'Машина отработала неделю, бланк выписываем по факту';
+
+        const res = await issueEsm2(ctx.dispatcher, request.id, {
+          weekOf: ctx.pastFrom,
+          version: request.version,
+          reason,
+          operationId,
+        });
+        expect(res.statusCode, res.body).toBe(200);
+
+        const sheets = await sheetsOf(request.id);
+        const periods = esm2Periods(ctx.pastFrom, ctx.pastTo);
+        // Календарная неделя режется ещё и концом месяца (ADR 0142), поэтому одна просьба законно
+        // расходует несколько бланков. Сверяем весь набор, а не случайно первый лист недели.
+        expect(sheets).toHaveLength(periods.length);
+        expect(sheets.map((sheet) => sheet.period_to)).toEqual(periods.map((period) => period.to));
+        expect(sheets.every((sheet) => sheet.status === 'issued')).toBe(true);
+        /*
+         * Форма, которую Р35 и предусматривает: причина при **пустом** `corrects_waybill_id` —
+         * заменять было нечего, лист рождён не взамен другого. Признак коррекции для фильтра (Р28)
+         * считается по ссылке на операцию, а не по заменённому номеру.
+         */
+        expect(sheets.every((sheet) => sheet.correction_reason === reason)).toBe(true);
+        expect(sheets.every((sheet) => sheet.corrects_waybill_id === null)).toBe(true);
+        expect(sheets.every((sheet) => sheet.correction_id !== null)).toBe(true);
+
+        const [correction, ...others] = await correctionsOfRequest(request.id);
+        expect(others).toEqual([]);
+        expect(correction!.kind).toBe('esm2');
+        expect(correction!.reason).toBe(reason);
+        expect(correction!.actor_user_id).toBe(ctx.dispatcherId);
+        expect(sheets.every((sheet) => sheet.correction_id === correction!.id)).toBe(true);
+      });
+
+      it('лист прошедшей недели виден в фильтре «только коррекции» и не виден в «без коррекций»', async () => {
+        const request = await linearInProgress();
+        const res = await issueEsm2(ctx.dispatcher, request.id, {
+          weekOf: ctx.pastFrom,
+          version: request.version,
+          reason: 'Бланк за отработанную неделю',
+          operationId: uuid(),
+        });
+        expect(res.statusCode, res.body).toBe(200);
+        const sheet = (await sheetsOf(request.id))[0]!;
+
+        // Отбор двусторонний: «что правилось задним числом» и «что шло обычным порядком» — два
+        // разных вопроса, и один флаг на оба не отвечает (Р28). Журнал сужен днём листа и машиной:
+        // база у db-тестов общая, и страница журнала целиком сюда не поместится.
+        const journal = async (correction: 'true' | 'false') => {
+          const list = await ctx.app.inject({
+            method: 'GET',
+            url: `/api/v1/waybills?correction=${correction}&vehicleId=${ctx.vehicleId}&dateFrom=${ctx.pastFrom}&dateTo=${ctx.pastFrom}&pageSize=100`,
+            headers: ctx.admin,
+          });
+          expect(list.statusCode, list.body).toBe(200);
+          return (list.json().items as { id: string; isCorrection: boolean }[]).map((w) => w.id);
+        };
+        expect(await journal('true')).toContain(sheet.id);
+        expect(await journal('false')).not.toContain(sheet.id);
+      });
+
+      it('повтор с тем же ключом возвращает тот же лист, а не жжёт второй номер', async () => {
+        const request = await linearInProgress();
+        const body: Esm2Body = {
+          weekOf: ctx.pastFrom,
+          version: request.version,
+          reason: 'Бланк за отработанную неделю',
+          operationId: uuid(),
+        };
+
+        // Ключ идемпотентности считается по **всему** телу, а рукопожатие его меняет (Р21а). Поэтому
+        // повторять надо ровно то тело, которое сервер принял, — помощник его для этого и отдаёт.
+        const { res: first, payload: accepted } = await issueRequestEsm2({
+          app: ctx.app,
+          headers: ctx.dispatcher,
+          requestId: request.id,
+          expectIssued: false,
+          payload: {
+            weekOf: body.weekOf,
+            vehicleId: ctx.vehicleId,
+            driverPersonId: ctx.driverId,
+            version: body.version,
+            reason: body.reason,
+            operationId: body.operationId,
+          },
+        });
+        expect(first.statusCode, first.body).toBe(200);
+        const sheets = await sheetsOf(request.id);
+        const expectedSheetCount = esm2Periods(ctx.pastFrom, ctx.pastTo).length;
+        expect(sheets).toHaveLength(expectedSheetCount);
+
+        // Тело то же целиком, включая устаревшую версию: до проверки версии повтор не доходит —
+        // ради этого ключ и заводили (Р31).
+        const repeat = await ctx.app.inject({
+          method: 'POST',
+          url: `/api/v1/vehicle-requests/${request.id}/esm2`,
+          headers: ctx.dispatcher,
+          payload: accepted,
+        });
+        expect(repeat.statusCode, repeat.body).toBe(200);
+        expect(await sheetsOf(request.id)).toHaveLength(expectedSheetCount);
+        expect(await correctionsOfRequest(request.id)).toHaveLength(1);
+
+        // Тот же ключ с другой командой — не повтор, а другая команда под чужим ключом.
+        const другое = await issueEsm2(ctx.dispatcher, request.id, {
+          ...body,
+          weekOf: ctx.pastTo,
+          version: repeat.json().version,
+        });
+        expect(другое.statusCode, другое.body).toBe(409);
+      });
+
+      it('лист текущей недели операцией не является: ни причины, ни ключа, ни метки', async () => {
+        /*
+         * Срок берётся подобранный (`ongoingTermFrom`), а не прошлонедельный: просьба идёт о неделе
+         * целиком, и в дни месячного разреза прошлонедельный срок добавил бы к ней уже закрытый
+         * августовский кусок — тогда 422 портала был бы законен, а красной оказалась бы посылка
+         * случая, а не дверь. Подробности и цена подбора — над самой функцией.
+         */
+        const request = await linearInProgress({ dateFrom: ctx.ongoingFrom });
+
+        // Лист, которым кончается просьба, ещё не отработан: его `periodTo` не раньше сегодняшнего
+        // дня, и guard отвечает «обычная работа» — ни права, ни причины не спрашивая.
+        const res = await issueEsm2(ctx.dispatcher, request.id, {
+          weekOf: ctx.today,
+          version: request.version,
+        });
+        expect(res.statusCode, res.body).toBe(200);
+
+        /*
+         * Проверяются **все** листы просьбы, а не первый: неделя, у которой месяц кончается позже
+         * сегодняшнего дня, отдаёт сразу два бланка (ADR 0142), и метка коррекции на втором из них
+         * прошла бы мимо `[sheet]`. Сам их состав спрашивается у `esm2Periods` — тем же расчётом,
+         * каким режет портал: записанная цифрой единица краснела бы 106 дней из 1095 (перебор
+         * 2025–2027) — ровно в те, когда месяц кончается внутри недели позже сегодняшнего дня.
+         */
+        const monday = weekStartKey(ctx.today);
+        const week = { from: monday, to: shiftDateKey(monday, 6) };
+        const asked = esm2Periods(ctx.ongoingFrom, ctx.dateTo).filter(
+          (period) => period.from <= week.to && week.from <= period.to,
+        );
+        const sheets = await sheetsOf(request.id);
+        expect(sheets.map((sheet) => sheet.period_to)).toEqual(asked.map((period) => period.to));
+        for (const sheet of sheets) {
+          expect(sheet.correction_id).toBeNull();
+          expect(sheet.correction_reason).toBe('');
+        }
+        expect(await correctionsOfRequest(request.id)).toEqual([]);
+      });
     });
 
-    it('повтор с тем же ключом возвращает тот же лист, а не жжёт второй номер', async () => {
-      const request = await linearInProgress();
-      const body: Esm2Body = {
-        weekOf: ctx.pastFrom,
-        version: request.version,
-        reason: 'Бланк за отработанную неделю',
-        operationId: uuid(),
-      };
+    describe('перегон прошедшим днём (дыра 1)', () => {
+      it('без права — 403, без причины — 422, с причиной — рейс без строки операции', async () => {
+        const request = await requestInProgress(ctx.plainTypeId, {
+          dateFrom: ctx.today,
+          machinist: true,
+        });
+        const yesterday = shiftDateKey(ctx.today, -1);
 
-      // Ключ идемпотентности считается по **всему** телу, а рукопожатие его меняет (Р21а). Поэтому
-      // повторять надо ровно то тело, которое сервер принял, — помощник его для этого и отдаёт.
-      const { res: first, payload: accepted } = await issueRequestEsm2({
-        app: ctx.app,
-        headers: ctx.dispatcher,
-        requestId: request.id,
-        expectIssued: false,
-        payload: {
-          weekOf: body.weekOf,
-          vehicleId: ctx.vehicleId,
-          driverPersonId: ctx.driverId,
-          version: body.version,
-          reason: body.reason,
-          operationId: body.operationId,
-        },
-      });
-      expect(first.statusCode, first.body).toBe(200);
-      const sheets = await sheetsOf(request.id);
-      expect(sheets).toHaveLength(1);
+        const forbidden = await relocation(ctx.manager, request.id, {
+          routeDate: yesterday,
+          reason: 'Технику увезли в пятницу',
+        });
+        expect(forbidden.statusCode, forbidden.body).toBe(403);
 
-      // Тело то же целиком, включая устаревшую версию: до проверки версии повтор не доходит —
-      // ради этого ключ и заводили (Р31).
-      const repeat = await ctx.app.inject({
-        method: 'POST',
-        url: `/api/v1/vehicle-requests/${request.id}/esm2`,
-        headers: ctx.dispatcher,
-        payload: accepted,
-      });
-      expect(repeat.statusCode, repeat.body).toBe(200);
-      expect(await sheetsOf(request.id)).toHaveLength(1);
-      expect(await correctionsOfRequest(request.id)).toHaveLength(1);
+        const noReason = await relocation(ctx.dispatcher, request.id, { routeDate: yesterday });
+        expect(noReason.statusCode, noReason.body).toBe(422);
+        expect(noReason.json().message).toContain('причину');
 
-      // Тот же ключ с другой командой — не повтор, а другая команда под чужим ключом.
-      const другое = await issueEsm2(ctx.dispatcher, request.id, {
-        ...body,
-        weekOf: ctx.pastTo,
-        version: repeat.json().version,
-      });
-      expect(другое.statusCode, другое.body).toBe(409);
-    });
+        // Ни один отказ рейса не завёл.
+        expect(await routesOf(request.id)).toHaveLength(0);
 
-    it('лист текущей недели операцией не является: ни причины, ни ключа, ни метки', async () => {
-      /*
-       * Срок берётся подобранный (`ongoingTermFrom`), а не прошлонедельный: просьба идёт о неделе
-       * целиком, и в дни месячного разреза прошлонедельный срок добавил бы к ней уже закрытый
-       * августовский кусок — тогда 422 портала был бы законен, а красной оказалась бы посылка
-       * случая, а не дверь. Подробности и цена подбора — над самой функцией.
-       */
-      const request = await linearInProgress({ dateFrom: ctx.ongoingFrom });
+        const ok = await relocation(ctx.dispatcher, request.id, {
+          routeDate: yesterday,
+          reason: 'Технику увезли в пятницу, в портал вносим в понедельник',
+        });
+        expect(ok.statusCode, ok.body).toBe(201);
+        expect(ok.json().routeDate).toBe(yesterday);
+        expect(await routesOf(request.id)).toHaveLength(1);
 
-      // Лист, которым кончается просьба, ещё не отработан: его `periodTo` не раньше сегодняшнего
-      // дня, и guard отвечает «обычная работа» — ни права, ни причины не спрашивая.
-      const res = await issueEsm2(ctx.dispatcher, request.id, {
-        weekOf: ctx.today,
-        version: request.version,
-      });
-      expect(res.statusCode, res.body).toBe(200);
-
-      /*
-       * Проверяются **все** листы просьбы, а не первый: неделя, у которой месяц кончается позже
-       * сегодняшнего дня, отдаёт сразу два бланка (ADR 0142), и метка коррекции на втором из них
-       * прошла бы мимо `[sheet]`. Сам их состав спрашивается у `esm2Periods` — тем же расчётом,
-       * каким режет портал: записанная цифрой единица краснела бы 106 дней из 1095 (перебор
-       * 2025–2027) — ровно в те, когда месяц кончается внутри недели позже сегодняшнего дня.
-       */
-      const monday = weekStartKey(ctx.today);
-      const week = { from: monday, to: shiftDateKey(monday, 6) };
-      const asked = esm2Periods(ctx.ongoingFrom, ctx.dateTo).filter(
-        (period) => period.from <= week.to && week.from <= period.to,
-      );
-      const sheets = await sheetsOf(request.id);
-      expect(sheets.map((sheet) => sheet.period_to)).toEqual(asked.map((period) => period.to));
-      for (const sheet of sheets) {
-        expect(sheet.correction_id).toBeNull();
-        expect(sheet.correction_reason).toBe('');
-      }
-      expect(await correctionsOfRequest(request.id)).toEqual([]);
-    });
-  });
-
-  describe('перегон прошедшим днём (дыра 1)', () => {
-    it('без права — 403, без причины — 422, с причиной — рейс без строки операции', async () => {
-      const request = await requestInProgress(ctx.plainTypeId, {
-        dateFrom: ctx.today,
-        machinist: true,
-      });
-      const yesterday = shiftDateKey(ctx.today, -1);
-
-      const forbidden = await relocation(ctx.manager, request.id, {
-        routeDate: yesterday,
-        reason: 'Технику увезли в пятницу',
-      });
-      expect(forbidden.statusCode, forbidden.body).toBe(403);
-
-      const noReason = await relocation(ctx.dispatcher, request.id, { routeDate: yesterday });
-      expect(noReason.statusCode, noReason.body).toBe(422);
-      expect(noReason.json().message).toContain('причину');
-
-      // Ни один отказ рейса не завёл.
-      expect(await routesOf(request.id)).toHaveLength(0);
-
-      const ok = await relocation(ctx.dispatcher, request.id, {
-        routeDate: yesterday,
-        reason: 'Технику увезли в пятницу, в портал вносим в понедельник',
-      });
-      expect(ok.statusCode, ok.body).toBe(201);
-      expect(ok.json().routeDate).toBe(yesterday);
-      expect(await routesOf(request.id)).toHaveLength(1);
-
-      /*
-       * Строки операции у перегона нет намеренно (§1 плана, уточнение этапа 7): номера строгой
-       * отчётности рейс не расходует, и операция без единого листа засоряла бы журнал коррекций.
-       * Объяснение живёт в аудите заведения — там же, где у обычного рейса.
-       */
-      expect(await correctionsOfRequest(request.id)).toEqual([]);
-      const audit = await ctx.db.execute<{ metadata: Record<string, unknown> }>(sql`
+        /*
+         * Строки операции у перегона нет намеренно (§1 плана, уточнение этапа 7): номера строгой
+         * отчётности рейс не расходует, и операция без единого листа засоряла бы журнал коррекций.
+         * Объяснение живёт в аудите заведения — там же, где у обычного рейса.
+         */
+        expect(await correctionsOfRequest(request.id)).toEqual([]);
+        const audit = await ctx.db.execute<{ metadata: Record<string, unknown> }>(sql`
         SELECT metadata FROM audit_log
         WHERE action = 'vehicle_route.create' AND metadata->>'requestId' = ${request.id}
         ORDER BY created_at DESC LIMIT 1`);
-      expect(audit.rows[0]!.metadata).toMatchObject({ backdated: true });
-      expect(String(audit.rows[0]!.metadata.reason)).toContain('пятницу');
+        expect(audit.rows[0]!.metadata).toMatchObject({ backdated: true });
+        expect(String(audit.rows[0]!.metadata.reason)).toContain('пятницу');
+      });
+
+      it('сегодняшний перегон причины не требует', async () => {
+        const request = await requestInProgress(ctx.plainTypeId, {
+          dateFrom: ctx.today,
+          machinist: true,
+        });
+        const res = await relocation(ctx.manager, request.id, { routeDate: ctx.today });
+        expect(res.statusCode, res.body).toBe(201);
+        await routesOf(request.id);
+      });
     });
 
-    it('сегодняшний перегон причины не требует', async () => {
-      const request = await requestInProgress(ctx.plainTypeId, {
-        dateFrom: ctx.today,
-        machinist: true,
-      });
-      const res = await relocation(ctx.manager, request.id, { routeDate: ctx.today });
-      expect(res.statusCode, res.body).toBe(201);
-      await routesOf(request.id);
-    });
-  });
+    describe('день линейного заказа прошедшим числом (дыра 1)', () => {
+      it('без права — 403, без причины — 422, с причиной — день в рейсе и след в аудите', async () => {
+        const request = await linearInProgress();
 
-  describe('день линейного заказа прошедшим числом (дыра 1)', () => {
-    it('без права — 403, без причины — 422, с причиной — день в рейсе и след в аудите', async () => {
-      const request = await linearInProgress();
+        const forbidden = await planDay(ctx.manager, request.id, ctx.pastTo, {
+          reason: 'Машина отработала день',
+        });
+        expect(forbidden.statusCode, forbidden.body).toBe(403);
 
-      const forbidden = await planDay(ctx.manager, request.id, ctx.pastTo, {
-        reason: 'Машина отработала день',
-      });
-      expect(forbidden.statusCode, forbidden.body).toBe(403);
+        const noReason = await planDay(ctx.dispatcher, request.id, ctx.pastTo);
+        expect(noReason.statusCode, noReason.body).toBe(422);
+        expect(noReason.json().message).toContain('причину');
 
-      const noReason = await planDay(ctx.dispatcher, request.id, ctx.pastTo);
-      expect(noReason.statusCode, noReason.body).toBe(422);
-      expect(noReason.json().message).toContain('причину');
+        // Ни один отказ рейса не завёл: номер «Р-» не сгорел.
+        expect(await routesOf(request.id)).toHaveLength(0);
 
-      // Ни один отказ рейса не завёл: номер «Р-» не сгорел.
-      expect(await routesOf(request.id)).toHaveLength(0);
+        const ok = await planDay(ctx.dispatcher, request.id, ctx.pastTo, {
+          reason: 'Машина отработала день, в портал вносим по факту',
+        });
+        expect(ok.statusCode, ok.body).toBe(200);
+        const day = (ok.json().items as { date: string; route: unknown }[]).find(
+          (d) => d.date === ctx.pastTo,
+        );
+        expect(day!.route).not.toBeNull();
+        expect(await routesOf(request.id)).toHaveLength(1);
 
-      const ok = await planDay(ctx.dispatcher, request.id, ctx.pastTo, {
-        reason: 'Машина отработала день, в портал вносим по факту',
-      });
-      expect(ok.statusCode, ok.body).toBe(200);
-      const day = (ok.json().items as { date: string; route: unknown }[]).find(
-        (d) => d.date === ctx.pastTo,
-      );
-      expect(day!.route).not.toBeNull();
-      expect(await routesOf(request.id)).toHaveLength(1);
-
-      // Строки операции у планирования нет — по тому же правилу, что у перегона; объяснение
-      // уходит в аудит события укладки в рейс.
-      expect(await correctionsOfRequest(request.id)).toEqual([]);
-      const audit = await ctx.db.execute<{ metadata: Record<string, unknown> }>(sql`
+        // Строки операции у планирования нет — по тому же правилу, что у перегона; объяснение
+        // уходит в аудит события укладки в рейс.
+        expect(await correctionsOfRequest(request.id)).toEqual([]);
+        const audit = await ctx.db.execute<{ metadata: Record<string, unknown> }>(sql`
         SELECT metadata FROM audit_log
         WHERE action = 'vehicle_route.attach' AND metadata->>'requestId' = ${request.id}
         ORDER BY created_at DESC LIMIT 1`);
-      expect(audit.rows[0]!.metadata).toMatchObject({ backdated: true, workDate: ctx.pastTo });
+        expect(audit.rows[0]!.metadata).toMatchObject({ backdated: true, workDate: ctx.pastTo });
+      });
+
+      it('сегодняшний день планируется как прежде — без права и без причины', async () => {
+        const request = await linearInProgress();
+        const res = await planDay(ctx.manager, request.id, ctx.today);
+        expect(res.statusCode, res.body).toBe(200);
+        await routesOf(request.id);
+      });
     });
 
-    it('сегодняшний день планируется как прежде — без права и без причины', async () => {
-      const request = await linearInProgress();
-      const res = await planDay(ctx.manager, request.id, ctx.today);
-      expect(res.statusCode, res.body).toBe(200);
-      await routesOf(request.id);
-    });
-  });
-
-  /**
-   * Пятая дверь: доставка внутри перевода в работу (ADR 0101, Р29).
-   *
-   * Отдельная ручка перегона уже под правилом, но тот же рейс заводится полем `assignment.delivery`
-   * при смене статуса — и без проверки правило обходилось бы одним движением. Причина спрашивается
-   * ровно про дату перегона: сам перевод в работу происходит сегодня, и объяснять его нечем.
-   */
-  describe('доставка задним числом внутри перевода в работу', () => {
-    /** Заявка, ждущая перевода в работу: та же подготовка, но без самого перехода. */
-    async function approvedRequest(): Promise<{ id: string; version: number }> {
-      const created = await ctx.app.inject({
-        method: 'POST',
-        url: '/api/v1/vehicle-requests',
-        headers: ctx.admin,
-        payload: {
-          requestType: 'special_equipment',
-          objectId: ctx.objectId,
-          vehicleTypeId: ctx.plainTypeId,
-          dateFrom: ctx.today,
-          dateTo: ctx.dateTo,
-          responsibleName: 'Дверев Пётр Сергеевич',
-          responsiblePhone: '9007770801',
-        },
-      });
-      expect(created.statusCode, created.body).toBe(201);
-      const request = created.json();
-      createdRequests.push(request.id as string);
-      const approved = await ctx.app.inject({
-        method: 'PATCH',
-        url: `/api/v1/vehicle-requests/${request.id}/approval`,
-        headers: ctx.admin,
-        payload: { approved: true, version: request.version },
-      });
-      expect(approved.statusCode, approved.body).toBe(200);
-      return { id: request.id as string, version: approved.json().version as number };
-    }
-
-    function confirmWithDelivery(
-      auth: { authorization: string },
-      request: { id: string; version: number },
-      delivery: { routeDate: string; reason?: string },
-    ): ReturnType<typeof ctx.app.inject> {
-      return ctx.app.inject({
-        method: 'PATCH',
-        url: `/api/v1/vehicle-requests/${request.id}/status`,
-        headers: auth,
-        payload: {
-          status: 'confirmed',
-          comment: '',
-          version: request.version,
-          assignment: {
-            vehicleId: ctx.vehicleId,
-            pricePerHour: null,
-            pricePerShift: null,
-            shiftHours: null,
-            driverPersonId: ctx.driverId,
-            delivery: {
-              routeDate: delivery.routeDate,
-              moveFrom: 'База, ул Автомобильная, д 3',
-              moveTo: 'Объект, ул Задняя, д 1',
-              ...(delivery.reason ? { reason: delivery.reason } : {}),
-            },
-          },
-          schedule: {
+    /**
+     * Пятая дверь: доставка внутри перевода в работу (ADR 0101, Р29).
+     *
+     * Отдельная ручка перегона уже под правилом, но тот же рейс заводится полем `assignment.delivery`
+     * при смене статуса — и без проверки правило обходилось бы одним движением. Причина спрашивается
+     * ровно про дату перегона: сам перевод в работу происходит сегодня, и объяснять его нечем.
+     */
+    describe('доставка задним числом внутри перевода в работу', () => {
+      /** Заявка, ждущая перевода в работу: та же подготовка, но без самого перехода. */
+      async function approvedRequest(): Promise<{ id: string; version: number }> {
+        const created = await ctx.app.inject({
+          method: 'POST',
+          url: '/api/v1/vehicle-requests',
+          headers: ctx.admin,
+          payload: {
             requestType: 'special_equipment',
+            objectId: ctx.objectId,
+            vehicleTypeId: ctx.plainTypeId,
             dateFrom: ctx.today,
             dateTo: ctx.dateTo,
+            responsibleName: 'Дверев Пётр Сергеевич',
+            responsiblePhone: '9007770801',
           },
-        },
-      });
-    }
+        });
+        expect(created.statusCode, created.body).toBe(201);
+        const request = created.json();
+        createdRequests.push(request.id as string);
+        const approved = await ctx.app.inject({
+          method: 'PATCH',
+          url: `/api/v1/vehicle-requests/${request.id}/approval`,
+          headers: ctx.admin,
+          payload: { approved: true, version: request.version },
+        });
+        expect(approved.statusCode, approved.body).toBe(200);
+        return { id: request.id as string, version: approved.json().version as number };
+      }
 
-    it('без права — 403, без причины — 422, с причиной — рейс заведён и объяснён', async () => {
-      const noRight = await approvedRequest();
-      const denied = await confirmWithDelivery(ctx.manager, noRight, { routeDate: ctx.pastFrom });
-      expect(denied.statusCode, denied.body).toBe(403);
-      // Отказ ничего не завёл: ни рейса, ни перехода — заявка осталась ждать.
-      expect(await routesOf(noRight.id)).toEqual([]);
+      function confirmWithDelivery(
+        auth: { authorization: string },
+        request: { id: string; version: number },
+        delivery: { routeDate: string; reason?: string },
+      ): ReturnType<typeof ctx.app.inject> {
+        return ctx.app.inject({
+          method: 'PATCH',
+          url: `/api/v1/vehicle-requests/${request.id}/status`,
+          headers: auth,
+          payload: {
+            status: 'confirmed',
+            comment: '',
+            version: request.version,
+            assignment: {
+              vehicleId: ctx.vehicleId,
+              pricePerHour: null,
+              pricePerShift: null,
+              shiftHours: null,
+              driverPersonId: ctx.driverId,
+              delivery: {
+                routeDate: delivery.routeDate,
+                moveFrom: 'База, ул Автомобильная, д 3',
+                moveTo: 'Объект, ул Задняя, д 1',
+                ...(delivery.reason ? { reason: delivery.reason } : {}),
+              },
+            },
+            schedule: {
+              requestType: 'special_equipment',
+              dateFrom: ctx.today,
+              dateTo: ctx.dateTo,
+            },
+          },
+        });
+      }
 
-      const noReason = await confirmWithDelivery(ctx.dispatcher, noRight, {
-        routeDate: ctx.pastFrom,
-      });
-      expect(noReason.statusCode, noReason.body).toBe(422);
+      it('без права — 403, без причины — 422, с причиной — рейс заведён и объяснён', async () => {
+        const noRight = await approvedRequest();
+        const denied = await confirmWithDelivery(ctx.manager, noRight, { routeDate: ctx.pastFrom });
+        expect(denied.statusCode, denied.body).toBe(403);
+        // Отказ ничего не завёл: ни рейса, ни перехода — заявка осталась ждать.
+        expect(await routesOf(noRight.id)).toEqual([]);
 
-      const ok = await confirmWithDelivery(ctx.dispatcher, noRight, {
-        routeDate: ctx.pastFrom,
-        reason: 'Технику привезли на площадку раньше, чем оформили заявку',
-      });
-      expect(ok.statusCode, ok.body).toBe(200);
-      expect((await routesOf(noRight.id)).length).toBe(1);
+        const noReason = await confirmWithDelivery(ctx.dispatcher, noRight, {
+          routeDate: ctx.pastFrom,
+        });
+        expect(noReason.statusCode, noReason.body).toBe(422);
 
-      // Строки операции у рейсовой двери нет (§1 плана, этап 7) — объяснение живёт в аудите
-      // самого перехода: своего события у доставки нет, она родилась внутри него.
-      expect(await correctionsOfRequest(noRight.id)).toEqual([]);
-      const audit = await ctx.db.execute<{ metadata: Record<string, unknown> }>(sql`
+        const ok = await confirmWithDelivery(ctx.dispatcher, noRight, {
+          routeDate: ctx.pastFrom,
+          reason: 'Технику привезли на площадку раньше, чем оформили заявку',
+        });
+        expect(ok.statusCode, ok.body).toBe(200);
+        expect((await routesOf(noRight.id)).length).toBe(1);
+
+        // Строки операции у рейсовой двери нет (§1 плана, этап 7) — объяснение живёт в аудите
+        // самого перехода: своего события у доставки нет, она родилась внутри него.
+        expect(await correctionsOfRequest(noRight.id)).toEqual([]);
+        const audit = await ctx.db.execute<{ metadata: Record<string, unknown> }>(sql`
         SELECT metadata FROM audit_log
         WHERE entity_id = ${noRight.id} AND action = 'vehicle_request.status'
         ORDER BY created_at DESC LIMIT 1`);
-      expect(audit.rows[0]!.metadata).toMatchObject({ deliveryBackdated: true });
-    });
+        expect(audit.rows[0]!.metadata).toMatchObject({ deliveryBackdated: true });
+      });
 
-    it('сегодняшняя доставка переводит в работу как прежде — без права и без причины', async () => {
-      const request = await approvedRequest();
-      const res = await confirmWithDelivery(ctx.manager, request, { routeDate: ctx.today });
-      expect(res.statusCode, res.body).toBe(200);
-      await routesOf(request.id);
+      it('сегодняшняя доставка переводит в работу как прежде — без права и без причины', async () => {
+        const request = await approvedRequest();
+        const res = await confirmWithDelivery(ctx.manager, request, { routeDate: ctx.today });
+        expect(res.statusCode, res.body).toBe(200);
+        await routesOf(request.id);
+      });
     });
-  });
   });
 });

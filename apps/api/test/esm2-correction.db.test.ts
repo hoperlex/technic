@@ -3,7 +3,7 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { describeReadModes, useReadModeDatabase } from './assignment-read-mode';
-import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
+import { esm2Periods, moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
 import { issueRequestEsm2 } from './waybill-issue-helper';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -549,7 +549,8 @@ describe.skipIf(!DB_URL)('коррекция назначения задним �
   it('в неделе с листами двух машин коррекция отказывает и называет номера', async () => {
     const request = await confirm(await backdatedRequest(ctx.linearTypeId));
 
-    // Линейному заказу листы выписывает человек — по одному на машину (ADR 0100 §6, §7).
+    // Линейному заказу листы выписывает человек — отдельной просьбой на каждую машину
+    // (ADR 0100 §6, §7); внутри просьбы неделя может разрезаться концом месяца.
     let version = request.version;
     for (const vehicleId of [ctx.vehicleId, ctx.otherVehicleId]) {
       const issued = await issueOnDemand(request.id, {
@@ -561,7 +562,10 @@ describe.skipIf(!DB_URL)('коррекция назначения задним �
       version = issued.json().version;
     }
     const sheets = (await sheetsOf(request.id)).filter((s) => s.status === 'issued');
-    expect(sheets).toHaveLength(2);
+    // Один запрос на машину может дать два строгих документа, если внутри недели кончается месяц
+    // (ADR 0142). Предмет случая — две машины одной недели, а не записанная цифрой пара листов.
+    const expectedSheetCount = esm2Periods(ctx.pastFrom, ctx.pastTo).length * 2;
+    expect(sheets).toHaveLength(expectedSheetCount);
 
     const res = await changeAssignment(
       { id: request.id, version },
@@ -580,7 +584,9 @@ describe.skipIf(!DB_URL)('коррекция назначения задним �
     expect(res.json().message).toContain('по требованию');
 
     // Ни один номер при этом не сгорел.
-    expect((await sheetsOf(request.id)).filter((s) => s.status === 'issued')).toHaveLength(2);
+    expect((await sheetsOf(request.id)).filter((s) => s.status === 'issued')).toHaveLength(
+      expectedSheetCount,
+    );
   });
 
   /** Чужой и уже сгоревший номер в перечне — ошибка, а не молча пропущенная строка (Р11). */
