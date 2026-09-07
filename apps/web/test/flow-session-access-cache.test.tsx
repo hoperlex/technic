@@ -172,4 +172,24 @@ describe('отпечаток доступа', () => {
   it('у пустой сессии отпечаток пустой: выход и вход сравнивать не с чем', () => {
     expect(accessFingerprint(null)).toBe('');
   });
+
+  it('старый ответ сессии без новых списков читается как пустой доступ', () => {
+    const current = authUser({
+      permissions: [],
+      grantCodes: [],
+      constructionObjectIds: [],
+      departmentIds: [],
+      departmentObjectIds: [],
+    });
+    const legacy = {
+      ...current,
+      permissions: undefined,
+      grantCodes: undefined,
+      constructionObjectIds: undefined,
+      departmentIds: undefined,
+      departmentObjectIds: undefined,
+    } as unknown as AuthUser;
+
+    expect(accessFingerprint(legacy)).toBe(accessFingerprint(current));
+  });
 });

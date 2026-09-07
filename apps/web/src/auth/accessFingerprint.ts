@@ -25,7 +25,14 @@ import type { AuthUser } from '@technic/contracts';
  */
 export function accessFingerprint(user: AuthUser | null): string {
   if (!user) return '';
-  const list = (values: readonly string[]): string => [...values].sort().join(',');
+  /*
+   * Во время совместимого выката новая клиентская сборка может на один bootstrap получить ответ
+   * старого API без только что добавленного списка. Отсутствующий список здесь равен пустому:
+   * доступ он не добавляет, а падение до следующего refresh заперло бы весь портал. Тип AuthUser
+   * остаётся строгим для нового кода; optional нужен ровно на этой границе версий.
+   */
+  const list = (values: readonly string[] | undefined): string =>
+    [...(values ?? [])].sort().join(',');
   return [
     user.role ?? '',
     user.counterpartyType ?? '',

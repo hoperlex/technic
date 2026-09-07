@@ -36,7 +36,6 @@ import { PortalLogo } from './PortalLogo';
 import { UserAvatar } from './UserAvatar';
 
 const { Sider, Content } = Layout;
-
 const SIDER_WIDTH = 230;
 const SIDER_COLLAPSED_WIDTH = 64;
 
@@ -90,7 +89,6 @@ export function AppLayout() {
 
   const waitingServiceCount = useServiceWaitingCount();
   const unreadChatCount = useServiceChatUnreadCount();
-
   /**
    * Бейдж ведёт не в раздел, а в саму очередь «Требуют решения» — тот же пресет списка, что и
    * кнопка на вкладке заявок. Обработчик гасит всплытие: нажатие мимо бейджа остаётся нажатием на
@@ -192,11 +190,9 @@ export function AppLayout() {
    * порядок и подписи — его, каркасу остаются иконка и переход. Почему раздел открыт такой-то роли
    * (ADR 0010, 0025, 0037, 0062, 0076, 0085), написано там же, в строках разделов: копия
    * объяснений здесь разъехалась бы с копией состава — с этого болезнь и начиналась.
-   *
    * Реестр спрашивает всюду `canUse`, хотя до него часть пунктов спрашивала `can`. Состав меню от
    * этого не меняется ни у одной роли: область сужает единственный `MODULE_SCOPE` — вывоз мусора у
    * отдела без площадки (ADR 0062), — а для остальных прав `canUse` совпадает с `can`.
-   *
    * `short` — подпись для нижней навигации мобильного режима: на 360 px пункту достаётся четверть
    * экрана, и полное название раздела туда не помещается (ADR 0030).
    */
@@ -221,7 +217,6 @@ export function AppLayout() {
 
   // Подсвечен тот пункт, на страницу которого зашли; если такого пункта у роли нет — никакой.
   const selectedKey = navItems.find((it) => location.pathname.startsWith(it.key))?.key ?? '';
-
   const userMenu: MenuProps = {
     items: [
       { key: 'change-password', icon: <KeyOutlined />, label: 'Сменить пароль' },
