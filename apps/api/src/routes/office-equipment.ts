@@ -16,7 +16,14 @@ import { z } from 'zod';
 import {
   can,
   createOfficeEquipmentSchema,
+  decodeEquipmentChangesCursor,
   decodeEquipmentHistoryCursor,
+  decodeEquipmentMovementsCursor,
+  decodeEquipmentRequestsCursor,
+  equipmentBlockQuerySchema,
+  type EquipmentChangesPageDto,
+  type EquipmentMovementsPageDto,
+  type EquipmentRequestsPageDto,
   EQUIPMENT_HISTORY_EXPORT_LIMIT,
   type EquipmentHistoryPageDto,
   equipmentHistoryQuerySchema,
@@ -59,6 +66,17 @@ import {
   loadEquipmentHistoryPage,
 } from '../services/office-equipment-history';
 import { equipmentHistoryWorkbook } from '../services/office-equipment-history-export';
+/*
+ * Три бизнес-проекции той же истории (план `docs/office-equipment-history-blocks-plan.md`, Р1).
+ * Лента остаётся каноном и режимом «Полная история»; блоки читают те же таблицы своей выборкой, но
+ * ни одного нового правила видимости не заводят — область им даёт тот же `requireHistoryEquipment`,
+ * а ремонтной части — `serviceRequestVisibilityWhere` внутри сервиса.
+ */
+import {
+  loadEquipmentChangesPage,
+  loadEquipmentMovementsPage,
+  loadEquipmentRequestsPage,
+} from '../services/office-equipment-blocks';
 import { requirePrincipal } from '../auth/plugin';
 import type { Principal } from '../auth/principal';
 import {
@@ -1124,6 +1142,85 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
       }
 
       return loadEquipmentHistoryPage(p, equipment, { cursor, pageSize: req.query.pageSize });
+    },
+  );
+
+  /**
+   * Отказ по нечитаемому курсору — общий для всех блоков и для ленты: человек должен понять, что
+   * ссылка устарела, а не решить, будто история опустела. Курсоры блоков между собой не совместимы
+   * (у каждого свой ключ порядка), и чужой распознаётся именно здесь.
+   */
+  function assertCursorRead<T>(raw: string | undefined, cursor: T | null): T | null {
+    if (raw && !cursor) {
+      throw err.unprocessable('Ссылка на продолжение истории не читается — откройте её заново', {
+        cursor: 'Некорректный курсор',
+      });
+    }
+    return cursor;
+  }
+
+  /**
+   * Блок «Связанные заявки» (план истории тремя блоками, Р2): одна заявка — одна строка.
+   *
+   * Права ДВА, и оба обязательны: карточку открывает `officeEquipment.read`, а заявки по ней —
+   * `serviceRequests.read` со своей областью. Без второго блок молчал бы у менеджера и диспетчера,
+   * которым справочник открыт, а модуль обслуживания — нет; выдать им ремонты «заодно со
+   * справочником» значило бы обойти модуль через карточку техники.
+   */
+  r.get(
+    '/:id/requests',
+    {
+      preHandler: [app.authenticate, canRead, app.requirePermission('serviceRequests.read')],
+      schema: { params: idParams, querystring: equipmentBlockQuerySchema },
+    },
+    async (req): Promise<EquipmentRequestsPageDto> => {
+      const p = requirePrincipal(req);
+      const equipment = await requireHistoryEquipment(p, req.params.id);
+      const cursor = assertCursorRead(
+        req.query.cursor,
+        req.query.cursor ? decodeEquipmentRequestsCursor(req.query.cursor) : null,
+      );
+      return loadEquipmentRequestsPage(
+        p,
+        { id: equipment.id, objectId: equipment.objectId },
+        { cursor, pageSize: req.query.pageSize },
+      );
+    },
+  );
+
+  /** Блок «Ручные правки» (Р3): что человек менял в карточке, включая срок гарантии поставщика. */
+  r.get(
+    '/:id/changes',
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { params: idParams, querystring: equipmentBlockQuerySchema },
+    },
+    async (req): Promise<EquipmentChangesPageDto> => {
+      const p = requirePrincipal(req);
+      const equipment = await requireHistoryEquipment(p, req.params.id);
+      const cursor = assertCursorRead(
+        req.query.cursor,
+        req.query.cursor ? decodeEquipmentChangesCursor(req.query.cursor) : null,
+      );
+      return loadEquipmentChangesPage(equipment.id, { cursor, pageSize: req.query.pageSize });
+    },
+  );
+
+  /** Блок «Перемещения» (Р4): единственный, где событие журнала и строка блока совпадают один в один. */
+  r.get(
+    '/:id/movements',
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { params: idParams, querystring: equipmentBlockQuerySchema },
+    },
+    async (req): Promise<EquipmentMovementsPageDto> => {
+      const p = requirePrincipal(req);
+      const equipment = await requireHistoryEquipment(p, req.params.id);
+      const cursor = assertCursorRead(
+        req.query.cursor,
+        req.query.cursor ? decodeEquipmentMovementsCursor(req.query.cursor) : null,
+      );
+      return loadEquipmentMovementsPage(equipment.id, { cursor, pageSize: req.query.pageSize });
     },
   );
 

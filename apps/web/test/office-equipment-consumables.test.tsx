@@ -680,6 +680,10 @@ function renderEquipmentTab(card: OfficeEquipmentDto): HttpMock {
     'GET /office-equipment': () => json(list([equipmentDto()])),
     // Карточка по идентификатору — единственный ответ, который несёт срез «чем заправлять».
     'GET /office-equipment/:id': () => json(card),
+    // Секция «Обслуживание и гарантии» карточки читает теперь блок «Связанные заявки» (план
+    // истории тремя блоками, Р7), а не срез `serviceHistory` ответа карточки.
+    'GET /office-equipment/:id/requests': () =>
+      json({ items: [], hasMore: false, nextCursor: null }),
     'GET /office-equipment-types': () =>
       json(
         list([

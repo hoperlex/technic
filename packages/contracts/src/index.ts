@@ -43,6 +43,13 @@ export * from './office-equipment-models';
 export * from './office-equipment-consumables';
 export * from './office-equipment-purchases';
 export * from './office-equipment-history';
+/* Бизнес-блоки истории (`office-equipment-blocks.ts`) — сразу за лентой, потому что читаются в том
+ * же окне и поверх тех же таблиц, и отдельным файлом ровно потому, что моделью ленте не родня:
+ * там размеченное объединение шести видов с общим правилом сравнения, здесь три плоские строки со
+ * своими ключами порядка и несовместимыми курсорами (план `docs/office-equipment-history-blocks-plan.md`,
+ * §4, Р8). Общий файл со временем стёр бы эту границу — вместе с ответом на вопрос, где живёт
+ * правило «сумма ремонта видна не всем». */
+export * from './office-equipment-blocks';
 export * from './office-equipment-profiles';
 /* Кандидаты (`office-equipment-candidates.ts`) — сразу за справочником, потому что читаются с ним
  * рядом, и отдельным файлом ровно потому, что кандидат не запись справочника: в `office_equipment`

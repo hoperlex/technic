@@ -733,6 +733,21 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['officeEquipment.read'],
   },
+  // Три бизнес-проекции истории (план `docs/office-equipment-history-blocks-plan.md`, Р1). У блока
+  // заявок прав ДВА: справочник открывает карточку, а ремонты по ней — свой модуль со своей
+  // областью. Разойдись эти строки с ручками — блок отдавал бы заявки тому, кому модуль закрыт.
+  'GET /api/v1/office-equipment/:id/requests': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read', 'serviceRequests.read'],
+  },
+  'GET /api/v1/office-equipment/:id/changes': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read'],
+  },
+  'GET /api/v1/office-equipment/:id/movements': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read'],
+  },
   // Перемещение — своё право (план `docs/office-equipment-move-from-request-plan.md`, Р1), и
   // единственная строка модуля, где ведение справочника ключом не служит: подтверждает переезд
   // тот, кто видел аппарат на месте. Требование `officeEquipment.read` объявлено в

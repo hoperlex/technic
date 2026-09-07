@@ -1,78 +1,90 @@
-import { Empty, Space, Spin, Tag, Typography } from 'antd';
+import { useState } from 'react';
+import { Button, Empty, Space, Spin, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router';
+import { officeEquipmentApi, officeEquipmentKeys } from '@entities/office-equipment';
 import {
-  serviceRequestStatusColors,
-  serviceRequestStatusLabels,
-  type OfficeEquipmentServiceEntryDto,
-} from '@technic/contracts';
-import { officeEquipmentApi, officeEquipmentKeys, WarrantyTag } from '@entities/office-equipment';
-import { formatDate, formatMoney } from '../../utils/format';
+  EquipmentHistoryModal,
+  EquipmentRequestLine,
+  REQUESTS_EMPTY_TEXT,
+  REQUESTS_PREVIEW_LIMIT,
+  useEquipmentRequestsPreview,
+} from '@features/equipment-history';
+import { useAuth } from '../../auth/AuthContext';
 
 /**
- * История обслуживания единицы и гарантии её ремонтов (§8.2).
+ * История обслуживания единицы и гарантии её ремонтов (§8.2) — первые строки блока «Связанные
+ * заявки» (план `docs/office-equipment-history-blocks-plan.md`, Р7).
  *
  * Секция отвечает на вопрос, с которого начинается работа с чужой техникой: чинили ли уже этот
  * аппарат, что в нём меняли и на что ещё действует гарантия. Без неё карточка знает про технику
  * всё, кроме единственного, ради чего её открывают перед назначением сервиса.
  *
- * Данные приходят карточкой с сервера (`GET /office-equipment/:id`), а не отдельным запросом в
- * раздел заявок: область у заявок своя (Р5), и собирать её на портале значило бы завести второе
- * правило видимости рядом с серверным. Поля `serviceHistory` в ответе нет вовсе, если у
- * смотрящего нет права модуля, — тогда секция не рисуется.
+ * ТОТ ЖЕ БЛОК, А НЕ ВТОРОЙ РАССКАЗ (Н1, К7). Раньше строки приезжали срезом `serviceHistory` в
+ * ответе карточки — последними десятью, без ответа «а было ли больше» и в своём формате строки.
+ * Теперь секция спрашивает ту же ручку `GET /:id/requests`, что и вкладка окна, с пределом пять и
+ * ссылкой «Все заявки по аппарату» в блок: место, рассказывающее про заявки по аппарату, одно, и
+ * правило обрезки у него одно.
+ *
+ * Область по-прежнему считает сервер (Р5): собирать её на портале значило бы завести второе
+ * правило видимости рядом с серверным. Без `serviceRequests.read` ручка отвечает `403`, поэтому
+ * секции у такого читателя нет вовсе — пустой список сказал бы «ремонтов не было», а это другое
+ * утверждение.
  */
 export function OfficeEquipmentServiceHistory({ equipmentId }: { equipmentId: string }) {
-  const { data, isLoading } = useQuery({
+  const { can } = useAuth();
+  const canRequests = can('serviceRequests.read');
+  const pages = useEquipmentRequestsPreview(equipmentId, canRequests);
+
+  /**
+   * Карточка единицы — ради шапки окна истории («где сейчас», гарантия, выгрузка), а не ради
+   * самих строк. Ключ тот же, каким её спрашивают соседняя секция «Чем заправлять» и само окно
+   * правки: react-query отдаёт всем один ответ, и второго похода на сервер ссылка не стоит.
+   */
+  const { data: card } = useQuery({
     queryKey: officeEquipmentKeys.detail(equipmentId),
     queryFn: () => officeEquipmentApi.get(equipmentId),
+    enabled: canRequests,
   });
+  const [historyOpen, setHistoryOpen] = useState(false);
 
-  if (isLoading) return <Spin size="small" />;
-  // Права нет — секции нет: пустой список сказал бы «ремонтов не было», а это другое утверждение.
-  if (!data?.serviceHistory) return null;
+  if (!canRequests) return null;
 
   return (
     <>
       <Typography.Title level={5} style={{ marginTop: 8 }}>
         Обслуживание и гарантии
       </Typography.Title>
-      {data.serviceHistory.length === 0 ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Заявок на обслуживание не было" />
+      {pages.isLoading ? (
+        <Spin size="small" />
+      ) : pages.items.length === 0 ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={REQUESTS_EMPTY_TEXT} />
       ) : (
-        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-          {data.serviceHistory.map((entry) => (
-            <ServiceEntry key={entry.id} entry={entry} />
-          ))}
-        </Space>
-      )}
-    </>
-  );
-}
-
-function ServiceEntry({ entry }: { entry: OfficeEquipmentServiceEntryDto }) {
-  return (
-    <div>
-      <Space size={8} wrap>
-        {/* Ссылка ведёт в раздел и открывает ту самую заявку (ADR 0074): «что там делали» читают
-            в ней, а не в справочнике. */}
-        <Link to={`/office-equipment?tab=requests&open=${entry.id}`}>{entry.displayNumber}</Link>
-        <Tag color={serviceRequestStatusColors[entry.status]}>
-          {serviceRequestStatusLabels[entry.status]}
-        </Tag>
-        <Typography.Text type="secondary">{formatDate(entry.createdAt)}</Typography.Text>
-        {entry.serviceName && <Typography.Text>{entry.serviceName}</Typography.Text>}
-        {entry.totalAmount !== null && (
-          <Typography.Text strong>{formatMoney(entry.totalAmount)}</Typography.Text>
-        )}
-      </Space>
-      {entry.warranties.map((warranty) => (
-        <div key={warranty.itemId}>
-          <Space size={6}>
-            <Typography.Text type="secondary">{warranty.name}</Typography.Text>
-            <WarrantyTag until={warranty.warrantyUntil} />
+        <>
+          <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+            {pages.items.slice(0, REQUESTS_PREVIEW_LIMIT).map((row) => (
+              <EquipmentRequestLine key={row.id} row={row} />
+            ))}
           </Space>
-        </div>
-      ))}
-    </div>
+          {/* Ссылка стоит и тогда, когда заявок ровно пять: «есть ли ещё» человек узнаёт в блоке,
+              а не по длине списка — молчаливая обрезка ровно этим и была плоха (§2.3). Окно
+              открывается ВНУТРИ карточки (ADR 0140): снаружи оно ушло бы под неё. */}
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: 0 }}
+            disabled={!card}
+            onClick={() => setHistoryOpen(true)}
+          >
+            Все заявки по аппарату
+          </Button>
+        </>
+      )}
+
+      <EquipmentHistoryModal
+        equipment={historyOpen ? (card ?? null) : null}
+        onClose={() => setHistoryOpen(false)}
+        initialBlock="requests"
+      />
+    </>
   );
 }

@@ -122,11 +122,17 @@ describe('лента истории единицы', () => {
     description: 'Не печатает',
   };
 
+  /**
+   * Окно открывается на вкладке «Полная история» — именно она и есть эта лента (план истории
+   * тремя блоками, Р11). Умолчание окна с тех пор другое («Заявки»), и три бизнес-блока проверяет
+   * свой файл: здесь речь о том, что лента цела и показывает всё, что показывала (К2).
+   */
   function renderHistory(payload: unknown): void {
     mockHttp({ 'GET /office-equipment/:id/history': () => json(payload) });
-    renderWithUser(<EquipmentHistoryModal equipment={equipment()} onClose={() => {}} />, {
-      user: OPERATOR,
-    });
+    renderWithUser(
+      <EquipmentHistoryModal equipment={equipment()} onClose={() => {}} initialBlock="full" />,
+      { user: OPERATOR },
+    );
   }
 
   const page = (items: unknown[], serviceVisible = true) => ({

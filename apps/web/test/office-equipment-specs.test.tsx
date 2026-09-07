@@ -170,6 +170,10 @@ describe('карточка единицы', () => {
     mockHttp({
       'GET /office-equipment': () => json(list([equipmentDto()])),
       'GET /office-equipment/:id': () => json(equipmentDto()),
+      // Секция «Обслуживание и гарантии» карточки читает теперь блок «Связанные заявки» (план
+      // истории тремя блоками, Р7), а не срез `serviceHistory` ответа карточки.
+      'GET /office-equipment/:id/requests': () =>
+        json({ items: [], hasMore: false, nextCursor: null }),
       'GET /office-equipment-types': () => json(list([TYPE_MFU])),
       'GET /office-equipment-types/:id/specs': () => json([PRINT_COLOR]),
       'GET /objects': () => json(list([objectDto()])),

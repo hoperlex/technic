@@ -2,7 +2,10 @@ import type {
   CreateOfficeEquipmentConsumableInput,
   CreateOfficeEquipmentInput,
   CreateOfficeEquipmentModelInput,
+  EquipmentChangesPageDto,
   EquipmentHistoryPageDto,
+  EquipmentMovementsPageDto,
+  EquipmentRequestsPageDto,
   CreateOfficeEquipmentTypeInput,
   MoveOfficeEquipmentInput,
   OfficeEquipmentConsumableDetailDto,
@@ -31,6 +34,16 @@ import {
   createWriteApi,
   type ListResult,
 } from '@shared/api';
+
+/**
+ * Что спрашивают у страницы блока истории (план истории тремя блоками, §6): продолжение и размер.
+ * Оба необязательны — сервер сам подставит первую страницу и свои двадцать строк, — но размер
+ * называет тот, кто знает, сколько строк поместится: у секции карточки их пять (Р7).
+ */
+export type EquipmentBlockParams = {
+  cursor?: string;
+  pageSize?: number;
+};
 
 const PATH = '/office-equipment';
 const TYPES_PATH = '/office-equipment-types';
@@ -67,6 +80,25 @@ export const officeEquipmentApi = {
    */
   history: (id: string, query: { cursor?: string; pageSize?: number } = {}) =>
     apiFetch<EquipmentHistoryPageDto>(`${PATH}/${id}/history`, { query }),
+  /**
+   * Три бизнес-блока той же истории (план `docs/office-equipment-history-blocks-plan.md`, Р1):
+   * «Связанные заявки», «Ручные правки», «Перемещения». Тремя методами, а не одним с видом блока
+   * в параметрах: у ручек разные строки, разные ключи порядка и разные права — притворяться, что
+   * это одна выдача, дороже, чем назвать их тремя.
+   *
+   * Курсор у каждого блока свой и с соседними не совместим: подставленный чужой сервер отобьёт
+   * словами («ссылка на продолжение не читается»), а не молчаливой первой страницей.
+   *
+   * `requests` требует ещё и `serviceRequests.read`: без него ручка отвечает `403`, и вкладку
+   * такому читателю портал не показывает вовсе (Р11) — спрашивать её, чтобы узнать об отказе,
+   * незачем.
+   */
+  requests: (id: string, query: EquipmentBlockParams = {}) =>
+    apiFetch<EquipmentRequestsPageDto>(`${PATH}/${id}/requests`, { query }),
+  changes: (id: string, query: EquipmentBlockParams = {}) =>
+    apiFetch<EquipmentChangesPageDto>(`${PATH}/${id}/changes`, { query }),
+  movements: (id: string, query: EquipmentBlockParams = {}) =>
+    apiFetch<EquipmentMovementsPageDto>(`${PATH}/${id}/movements`, { query }),
   /**
    * Выгрузка истории (Р80). Через `apiDownload`, а не ссылкой: файл отдаётся под тем же токеном,
    * что и остальные запросы, — обычная ссылка открыла бы вкладку с «Требуется авторизация».

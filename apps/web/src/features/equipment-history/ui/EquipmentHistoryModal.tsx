@@ -1,189 +1,59 @@
-import { App, Button, Descriptions, Empty, Space, Spin, Table, Tag, Typography } from 'antd';
+import { App, Button, Descriptions, Tabs } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
-import { useInfiniteQuery } from '@tanstack/react-query';
-import { Link } from 'react-router';
-import {
-  equipmentHistoryKindColors,
-  equipmentHistoryKindLabels,
-  officeEquipmentStateLabels,
-  officeEquipmentTitle,
-  serviceRequestStatusColors,
-  serviceRequestStatusLabels,
-  type EquipmentHistoryEventDto,
-  type OfficeEquipmentDto,
-} from '@technic/contracts';
-import { officeEquipmentApi, officeEquipmentKeys, WarrantyTag } from '@entities/office-equipment';
+import { officeEquipmentTitle, type OfficeEquipmentDto } from '@technic/contracts';
+import { officeEquipmentApi, WarrantyTag } from '@entities/office-equipment';
 import { ViewModal } from '@shared/ui';
-import { errorMessage, formatDate, formatMoney } from '../../../utils/format';
-import { fieldLabels } from './fieldLabels';
+import { useAuth } from '../../../auth/AuthContext';
+import { errorMessage, formatDate } from '../../../utils/format';
+import { ChangesBlock } from './ChangesBlock';
+import { FullHistoryBlock } from './FullHistoryBlock';
+import { MovementsBlock } from './MovementsBlock';
+import { placeOf, stateOf } from './place';
+import { RequestsBlock } from './RequestsBlock';
 
 /**
- * История единицы одной лентой (план `office-equipment-mail-and-history-plan.md`, Р75–Р82).
+ * История единицы оргтехники: три бизнес-блока и полная лента (план
+ * `docs/office-equipment-history-blocks-plan.md`, Р11).
  *
- * Шесть источников приходят одним потоком: перемещения, заявки, их ключевые шаги, правки карточки,
- * гарантии и жизненный цикл самой карточки. Сшивать их здесь нечего и нельзя — у половины событий
- * нет времени, и порядок считает сервер; портал только рисует и просит следующую страницу.
+ * «Заявки · Правки · Перемещения» отвечают на три разных вопроса — «что с аппаратом делали и чем
+ * кончилось», «кто и что поправил в карточке», «где стоял и почему уехал», — а четвёртая вкладка
+ * оставляет нетронутой событийную ленту шести источников: она канонический аудит, и в споре
+ * смотрят её (К2).
  *
- * Шапка отвечает на вопрос, который задают до истории: где аппарат сейчас, за кем закреплён и до
- * какого числа действует гарантия. Без неё лента начинается с прошлого, а спрашивают обычно про
- * настоящее.
+ * УМОЛЧАНИЕ — «ЗАЯВКИ»: с них начинают в девяти случаях из десяти. ВЫБРАННАЯ ВКЛАДКА МЕЖДУ
+ * ОТКРЫТИЯМИ НЕ ЗАПОМИНАЕТСЯ — окно открывают по конкретному вопросу, и прошлый выбор чаще мешает,
+ * чем помогает. Держится это не хитростью, а устройством: тело живёт внутри `ViewModal` с
+ * `destroyOnHidden`, то есть собирается заново на каждое открытие вместе со своим состоянием.
+ *
+ * Шапка отвечает на вопрос, который задают до истории: где аппарат сейчас, за кем закреплён, до
+ * какого числа гарантия и когда карточку завели. Без неё история начинается с прошлого, а
+ * спрашивают обычно про настоящее.
  */
-
-/** Куда переехала техника: место и состояние одной строкой — по ней её и ищут. */
-function placeOf(objectCode: string, location: string, state: string): string {
-  return [objectCode, location, state].filter(Boolean).join(' · ');
-}
-
-function eventText(event: EquipmentHistoryEventDto): React.ReactNode {
-  switch (event.kind) {
-    case 'card_lifecycle':
-      return (
-        <span>
-          {event.action === 'created'
-            ? 'Карточка заведена'
-            : event.action === 'archived'
-              ? 'Карточка отправлена в архив'
-              : 'Карточка восстановлена из архива'}
-        </span>
-      );
-
-    case 'movement': {
-      const from = placeOf(
-        event.fromObject.code,
-        event.fromLocation,
-        event.fromState === 'on_site' ? '' : officeEquipmentStateLabels[event.fromState],
-      );
-      const to = placeOf(
-        event.toObject.code,
-        event.toLocation,
-        event.toState === 'on_site' ? '' : officeEquipmentStateLabels[event.toState],
-      );
-      return (
-        <div style={{ lineHeight: 1.4 }}>
-          <div>
-            {from} → <strong>{to}</strong>
-          </div>
-          <Typography.Text type="secondary">{event.reason}</Typography.Text>
-          {event.serviceRequestNum !== null && (
-            <>
-              {' '}
-              <Link to={`/office-equipment?tab=requests&id=${event.serviceRequestId}`}>
-                СО-{event.serviceRequestNum}
-              </Link>
-            </>
-          )}
-          {event.toDepartmentName && (
-            <div>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Отдел: {event.toDepartmentName}
-              </Typography.Text>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    case 'service_request':
-      return (
-        <div style={{ lineHeight: 1.4 }}>
-          <Space size={8} wrap>
-            <Link to={`/office-equipment?tab=requests&id=${event.requestId}`}>
-              {event.displayNumber}
-            </Link>
-            <Tag color={serviceRequestStatusColors[event.status]}>
-              {serviceRequestStatusLabels[event.status]}
-            </Tag>
-            {event.totalAmount !== null && <span>{formatMoney(event.totalAmount)}</span>}
-          </Space>
-          <div>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {event.serviceName ?? 'Сервис не назначен'} · {event.description}
-            </Typography.Text>
-          </div>
-        </div>
-      );
-
-    case 'service_step':
-      return (
-        <Space size={8} wrap>
-          <Link to={`/office-equipment?tab=requests&id=${event.requestId}`}>
-            {event.displayNumber}
-          </Link>
-          <Tag color={serviceRequestStatusColors[event.toStatus]}>
-            {serviceRequestStatusLabels[event.toStatus]}
-          </Tag>
-          {event.comment && <Typography.Text type="secondary">{event.comment}</Typography.Text>}
-        </Space>
-      );
-
-    case 'card_change':
-      return (
-        <div style={{ lineHeight: 1.4 }}>
-          {event.changes.map((change) => (
-            <div key={change.field}>
-              <Typography.Text type="secondary">
-                {fieldLabels[change.field] ?? change.field}:
-              </Typography.Text>{' '}
-              {change.from ?? '—'} → <strong>{change.to ?? '—'}</strong>
-            </div>
-          ))}
-        </div>
-      );
-
-    case 'warranty':
-      return (
-        <div style={{ lineHeight: 1.4 }}>
-          <div>
-            {event.action === 'set' &&
-              `Гарантия на «${event.subject}» до ${formatDate(event.until)}`}
-            {event.action === 'moved' &&
-              `Гарантия на «${event.subject}»: ${formatDate(event.from)} → ${formatDate(event.until)}`}
-            {event.action === 'cleared' &&
-              `Гарантия на «${event.subject}» снята (была до ${formatDate(event.from)})`}
-            {event.action === 'expired' && `Гарантия на «${event.subject}» истекла`}
-          </div>
-          {event.displayNumber && (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              заявка{' '}
-              <Link to={`/office-equipment?tab=requests&id=${event.requestId}`}>
-                {event.displayNumber}
-              </Link>
-            </Typography.Text>
-          )}
-        </div>
-      );
-  }
-}
+export type EquipmentHistoryBlock = 'requests' | 'changes' | 'movements' | 'full';
 
 export function EquipmentHistoryModal({
   equipment,
   onClose,
+  initialBlock = 'requests',
 }: {
   /** `null` — окно закрыто. */
   equipment: OfficeEquipmentDto | null;
   onClose: () => void;
+  /** С какой вкладки открыть: секция карточки ведёт прямо в заявки (Р7). */
+  initialBlock?: EquipmentHistoryBlock;
 }) {
   const { message } = App.useApp();
+  const { can } = useAuth();
 
   /**
-   * Страницами, а не целиком: у единицы с десятью ремонтами в год лента за пять лет — сотни строк,
-   * и грузить их разом ради первых десяти незачем. Курсор считает сервер; портал только передаёт
-   * его обратно.
+   * Блок заявок просит ДВА права: карточку открывает `officeEquipment.read`, а заявки по ней —
+   * `serviceRequests.read` со своей областью (Р1). Без второго ручка отвечает `403`, и вкладки у
+   * такого читателя нет вовсе — ровно как сегодня у ленты, где ремонтная часть просто не
+   * приходит. Спрашивать сервер, чтобы показать человеку отказ, незачем.
    */
-  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
-    queryKey: officeEquipmentKeys.history(equipment?.id ?? ''),
-    queryFn: ({ pageParam }) =>
-      officeEquipmentApi.history(equipment!.id, pageParam ? { cursor: pageParam } : {}),
-    initialPageParam: '',
-    getNextPageParam: (last) => last.nextCursor ?? undefined,
-    enabled: !!equipment,
-  });
-
-  const pages = data?.pages ?? [];
-  const events = pages.flatMap((page) => page.items);
-  // Ремонтная часть приходит с сервера только при праве модуля: у менеджера и диспетчера справочник
-  // открыт, а обслуживание — нет, и лента у них состоит из перемещений и правок карточки.
-  const serviceVisible = pages[0]?.serviceVisible ?? false;
+  const canRequests = can('serviceRequests.read');
+  const defaultBlock: EquipmentHistoryBlock =
+    initialBlock === 'requests' && !canRequests ? 'changes' : initialBlock;
 
   const exportHistory = () => {
     if (!equipment) return;
@@ -201,78 +71,65 @@ export function EquipmentHistoryModal({
       destroyOnHidden
     >
       {equipment && (
-        <Descriptions size="small" column={2} style={{ marginBottom: 16 }}>
-          <Descriptions.Item label="Где сейчас">
-            {placeOf(
-              `${equipment.object.code} — ${equipment.object.name}`,
-              equipment.location,
-              equipment.state === 'on_site' ? '' : officeEquipmentStateLabels[equipment.state],
-            )}
-            {equipment.stateNote ? ` (${equipment.stateNote})` : ''}
-          </Descriptions.Item>
-          <Descriptions.Item label="Отдел">
-            {equipment.department?.name ?? 'не закреплена'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Гарантия">
-            {equipment.warrantyUntil ? <WarrantyTag until={equipment.warrantyUntil} /> : '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Выгрузка">
-            <Button size="small" icon={<DownloadOutlined />} onClick={exportHistory}>
-              Скачать историю
-            </Button>
-          </Descriptions.Item>
-        </Descriptions>
-      )}
-
-      {isLoading ? (
-        <Spin />
-      ) : events.length === 0 ? (
-        <Empty
-          description={
-            serviceVisible
-              ? 'Ни перемещений, ни ремонтов: карточку завели и с тех пор не трогали'
-              : 'Перемещений и правок нет: карточку завели и с тех пор не трогали'
-          }
-        />
-      ) : (
         <>
-          <Table<EquipmentHistoryEventDto>
-            size="small"
-            rowKey="sortId"
-            dataSource={events}
-            pagination={false}
-            columns={[
-              { key: 'on', title: 'Дата', width: 110, render: (_v, r) => formatDate(r.occurredOn) },
+          <Descriptions size="small" column={2} style={{ marginBottom: 8 }}>
+            <Descriptions.Item label="Где сейчас">
+              {placeOf(
+                `${equipment.object.code} — ${equipment.object.name}`,
+                equipment.location,
+                stateOf(equipment.state, equipment.stateNote),
+              )}
+            </Descriptions.Item>
+            <Descriptions.Item label="Отдел">
+              {equipment.department?.name ?? 'не закреплена'}
+            </Descriptions.Item>
+            <Descriptions.Item label="Гарантия">
+              {equipment.warrantyUntil ? <WarrantyTag until={equipment.warrantyUntil} /> : '—'}
+            </Descriptions.Item>
+            {/* Жизненный цикл карточки — в шапку, а не отдельным блоком (Р6): за жизнь карточки
+                этих событий два-три, и вопрос «откуда взялась» задают до истории, а не внутри
+                неё. Имени заводившего в карточке нет — оно живёт только событием полной ленты, —
+                и придумывать его портал не станет: дата отвечает на вопрос, ради которого поле и
+                стоит в шапке. */}
+            <Descriptions.Item label="Заведена">
+              {formatDate(equipment.createdAt)}
+            </Descriptions.Item>
+            <Descriptions.Item label="Выгрузка">
+              <Button size="small" icon={<DownloadOutlined />} onClick={exportHistory}>
+                Скачать историю
+              </Button>
+            </Descriptions.Item>
+          </Descriptions>
+
+          <Tabs
+            defaultActiveKey={defaultBlock}
+            items={[
+              ...(canRequests
+                ? [
+                    {
+                      key: 'requests',
+                      label: 'Заявки',
+                      children: <RequestsBlock equipmentId={equipment.id} />,
+                    },
+                  ]
+                : []),
               {
-                key: 'kind',
-                title: 'Событие',
-                width: 150,
-                render: (_v, r) => (
-                  <Tag color={equipmentHistoryKindColors[r.kind]}>
-                    {equipmentHistoryKindLabels[r.kind]}
-                  </Tag>
-                ),
+                key: 'changes',
+                label: 'Правки',
+                children: <ChangesBlock equipmentId={equipment.id} />,
               },
-              { key: 'what', title: 'Что произошло', render: (_v, r) => eventText(r) },
               {
-                key: 'who',
-                title: 'Кто',
-                width: 170,
-                render: (_v, r) => (
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {r.actorName ?? '—'}
-                  </Typography.Text>
-                ),
+                key: 'movements',
+                label: 'Перемещения',
+                children: <MovementsBlock equipmentId={equipment.id} />,
+              },
+              {
+                key: 'full',
+                label: 'Полная история',
+                children: <FullHistoryBlock equipmentId={equipment.id} />,
               },
             ]}
           />
-          {hasNextPage && (
-            <div style={{ textAlign: 'center', marginTop: 12 }}>
-              <Button onClick={() => void fetchNextPage()} loading={isFetchingNextPage}>
-                Показать ещё
-              </Button>
-            </div>
-          )}
         </>
       )}
     </ViewModal>

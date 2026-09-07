@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import type { QueryClient } from '@tanstack/react-query';
 import type {
   AuthUser,
   OfficeEquipmentDto,
@@ -10,6 +11,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
+import { officeEquipmentKeys } from '../src/entities/office-equipment';
 import { OfficeEquipmentTab } from '../src/pages/directories/OfficeEquipmentTab';
 
 /**
@@ -92,18 +94,37 @@ function entry(over: Partial<OfficeEquipmentServiceEntryDto> = {}): OfficeEquipm
  * Вкладка справочника со списком из одной карточки. `card` — ответ `GET /office-equipment/:id`:
  * именно его срез `serviceHistory` (или его отсутствие) и решает, что скажет предупреждение.
  */
-function renderTab(card: OfficeEquipmentDto): HttpMock {
+function renderTab(card: OfficeEquipmentDto): { http: HttpMock; queryClient: QueryClient } {
   const http = mockHttp({
     'GET /office-equipment': () => json(list([equipmentDto()])),
     'GET /office-equipment/:id': () => json(card),
+    // Секция «Обслуживание и гарантии» карточки читает теперь блок «Связанные заявки» (план
+    // истории тремя блоками, Р7), а не срез `serviceHistory` ответа карточки.
+    'GET /office-equipment/:id/requests': () =>
+      json({ items: [], hasMore: false, nextCursor: null }),
     'GET /office-equipment-types': () => json(list([TYPE_MFU])),
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
     'GET /office-equipment-models': () => json(emptyList()),
     'PATCH /office-equipment/:id': () => json(equipmentDto({ isActive: false })),
   });
-  renderWithUser(<OfficeEquipmentTab />, { user: OPERATOR });
-  return http;
+  const { queryClient } = renderWithUser(<OfficeEquipmentTab />, { user: OPERATOR });
+  return { http, queryClient };
+}
+
+/**
+ * Дождаться карточки единицы — той самой, по срезу которой считается предупреждение.
+ *
+ * Раньше её приход был виден на экране: секция «Обслуживание и гарантии» рисовала номера из того
+ * же `serviceHistory`. С переводом секции на блок «Связанные заявки» (план
+ * `docs/office-equipment-history-blocks-plan.md`, Р7) на экране этого больше нет, а предупреждение
+ * по-прежнему считает срез ответа карточки. Поэтому ждём ровно то, по чему оно считается, —
+ * запись в кэше запросов: нажатие до ответа проверяло бы гонку, а не ветку с номерами.
+ */
+async function awaitCard(queryClient: QueryClient): Promise<void> {
+  await waitFor(() =>
+    expect(queryClient.getQueryData(officeEquipmentKeys.detail('oe-1'))).toBeTruthy(),
+  );
 }
 
 /** Открыть окно правки первой строки — тем же карандашом, что и человек. */
@@ -145,11 +166,11 @@ function acceptConfirm(): void {
 
 describe('выключение карточки оргтехники', () => {
   it('называет незакрытые заявки и не сохраняет, пока человек не подтвердил', async () => {
-    const http = renderTab(equipmentDto({ serviceHistory: [entry()] }));
+    const { http, queryClient } = renderTab(equipmentDto({ serviceHistory: [entry()] }));
     await openEdit();
     // Дожидаемся самой карточки: до её прихода номеров у предупреждения нет, и тест проверял бы
     // не ветку с номерами, а гонку.
-    await screen.findByText('СО-14');
+    await awaitCard(queryClient);
     switchOffAndSave();
 
     const text = await confirmText();
@@ -162,9 +183,9 @@ describe('выключение карточки оргтехники', () => {
   });
 
   it('подтверждение выключает карточку — это предупреждение, а не запрет', async () => {
-    const http = renderTab(equipmentDto({ serviceHistory: [entry()] }));
+    const { http, queryClient } = renderTab(equipmentDto({ serviceHistory: [entry()] }));
     await openEdit();
-    await screen.findByText('СО-14');
+    await awaitCard(queryClient);
     switchOffAndSave();
     await confirmText();
     acceptConfirm();
@@ -177,9 +198,9 @@ describe('выключение карточки оргтехники', () => {
   it('без права на заявки предупреждает общей фразой, а не молчит', async () => {
     // Ответ без среза `serviceHistory` — так сервер отвечает тому, у кого нет
     // `serviceRequests.read`. Номера показать нечем, последствие — то же самое.
-    const http = renderTab(equipmentDto());
+    const { queryClient } = renderTab(equipmentDto());
     await openEdit();
-    await waitFor(() => expect(http.lastCall('GET /office-equipment/:id')).toBeTruthy());
+    await awaitCard(queryClient);
     switchOffAndSave();
 
     const text = await confirmText();
@@ -190,9 +211,11 @@ describe('выключение карточки оргтехники', () => {
   it('пустой срез не выдаётся за «незакрытых заявок нет»', async () => {
     // Право есть, открытых в срезе не видно — но срез сужен областью и обрезан десятью
     // последними, поэтому фраза та же сослагательная.
-    renderTab(equipmentDto({ serviceHistory: [entry({ status: 'accepted' })] }));
+    const { queryClient } = renderTab(
+      equipmentDto({ serviceHistory: [entry({ status: 'accepted' })] }),
+    );
     await openEdit();
-    await screen.findByText('СО-14');
+    await awaitCard(queryClient);
     switchOffAndSave();
 
     const text = await confirmText();
@@ -201,9 +224,9 @@ describe('выключение карточки оргтехники', () => {
   });
 
   it('правка при включённой галочке идёт сразу, без лишнего окна', async () => {
-    const http = renderTab(equipmentDto({ serviceHistory: [entry()] }));
+    const { http, queryClient } = renderTab(equipmentDto({ serviceHistory: [entry()] }));
     await openEdit();
-    await screen.findByText('СО-14');
+    await awaitCard(queryClient);
     const save = [...document.querySelectorAll<HTMLButtonElement>('.ant-modal-footer button')].find(
       (b) => b.textContent === 'Сохранить',
     );

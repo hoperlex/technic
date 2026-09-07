@@ -353,6 +353,10 @@ describe('счётчик «В парке» и матрица инвалидац�
       'GET /office-equipment': () => json(list([equipmentDto()])),
       // Карточку правки открывает секция обслуживания — она спрашивает единицу отдельно.
       'GET /office-equipment/:id': () => json(equipmentDto()),
+      // Секция «Обслуживание и гарантии» карточки читает теперь блок «Связанные заявки» (план
+      // истории тремя блоками, Р7), а не срез `serviceHistory` ответа карточки.
+      'GET /office-equipment/:id/requests': () =>
+        json({ items: [], hasMore: false, nextCursor: null }),
       'GET /office-equipment-types': () => json(list([TYPE_MFU])),
       // Форма модели спрашивает характеристики типа (цветность печати); здесь их нет.
       'GET /office-equipment-types/:id/specs': () => json([]),
