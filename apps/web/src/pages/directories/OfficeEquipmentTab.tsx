@@ -57,6 +57,9 @@ export function OfficeEquipmentTab() {
   const { message, modal } = App.useApp();
   const { can } = useAuth();
   const canWrite = can('officeEquipment.write');
+  // Перемещение — своё право (план перемещения из карточки заявки, Р1): справочник и карточка
+  // заявки спрашивают одно и то же, иначе у действия два замка разной строгости.
+  const canMove = can('officeEquipment.move');
   const qc = useQueryClient();
 
   // Набор отборов описан один раз — в модуле полосы фильтров: разъехавшись, тип параметров и
@@ -214,6 +217,7 @@ export function OfficeEquipmentTab() {
 
   const grid = {
     canWrite,
+    canMove,
     onEdit: openEdit,
     onDelete: confirmDelete,
     onMove: setMoving,

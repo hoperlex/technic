@@ -22,6 +22,14 @@ export interface OfficeEquipmentGridActions {
   /** Ведение справочника: без него в строке остаётся только чтение (ADR 0033 §6). */
   canWrite: boolean;
   /**
+   * Подтверждает перемещение (`officeEquipment.move`, план перемещения из карточки заявки, Р1).
+   * Отдельным признаком, а не частью `canWrite`: переезд подтверждает тот, кто видел аппарат на
+   * месте, и заводить ради этого карточки, типы и модели ему незачем. Две двери к одному действию с
+   * разными замками — это отсутствие замка, поэтому справочник спрашивает то же право, что и
+   * карточка заявки.
+   */
+  canMove: boolean;
+  /**
    * Правка и удаление карточки — работа справочника, и во вкладке модуля их нет вовсе (Р72):
    * там технику эксплуатируют, а не ведут. Поэтому необязательные: отсутствие обработчика значит
    * «этого действия здесь не бывает», а не «оно недоступно этой роли».
@@ -46,6 +54,7 @@ export function numbersLine(r: OfficeEquipmentDto): string {
 
 export function officeEquipmentColumns({
   canWrite,
+  canMove,
   onEdit,
   onDelete,
   onMove,
@@ -178,11 +187,13 @@ export function officeEquipmentColumns({
         <Tooltip title="История">
           <Button size="small" icon={<HistoryOutlined />} onClick={() => onHistory(r)} />
         </Tooltip>
+        {canMove && (
+          <Tooltip title="Переместить">
+            <Button size="small" icon={<SwapOutlined />} onClick={() => onMove(r)} />
+          </Tooltip>
+        )}
         {canWrite && (
           <>
-            <Tooltip title="Переместить">
-              <Button size="small" icon={<SwapOutlined />} onClick={() => onMove(r)} />
-            </Tooltip>
             {/* Правки и удаления во вкладке модуля нет вовсе: карточку ведут в справочнике. */}
             {onEdit && <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(r)} />}
             {onDelete && (
@@ -202,6 +213,7 @@ export function officeEquipmentColumns({
  */
 export function officeEquipmentCard({
   canWrite,
+  canMove,
   onEdit,
   onDelete,
   onMove,
@@ -239,9 +251,9 @@ export function officeEquipmentCard({
     onOpen: canWrite && onEdit ? onEdit : onHistory,
     actions: (r) => [
       { key: 'history', label: 'История', onClick: () => onHistory(r) },
+      ...(canMove ? [{ key: 'move', label: 'Переместить', onClick: () => onMove(r) }] : []),
       ...(canWrite
         ? [
-            { key: 'move', label: 'Переместить', onClick: () => onMove(r) },
             ...(onEdit ? [{ key: 'edit', label: 'Редактировать', onClick: () => onEdit(r) }] : []),
             ...(onDelete
               ? [{ key: 'delete', label: 'Удалить', danger: true, onClick: () => onDelete(r) }]

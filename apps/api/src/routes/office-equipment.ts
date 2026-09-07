@@ -22,6 +22,10 @@ import {
   equipmentHistoryQuerySchema,
   formatServiceRequestNumber,
   moveOfficeEquipmentSchema,
+  officeEquipmentStateLabels,
+  OFFICE_EQUIPMENT_MOVE_CONFLICT_CODE,
+  type MoveOfficeEquipmentSide,
+  type OfficeEquipmentMoveConflictDetails,
   officeEquipmentListQuerySchema,
   projectOfficeEquipmentServiceEntry,
   type OfficeEquipmentConsumableRefDto,
@@ -463,10 +467,92 @@ async function loadServiceHistory(
   );
 }
 
+/** Транзакция перемещения: помощник сверки зовётся уже изнутри неё и под взятой блокировкой. */
+type MoveTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Сверка исходной стороны перемещения (план `docs/office-equipment-move-from-request-plan.md`, Р3).
+ *
+ * Зовётся ТОЛЬКО из транзакции, где строка карточки уже взята `FOR UPDATE` (Р4): сверка без
+ * блокировки — та же гонка «проверил — записал», просто с лишним запросом. Сама блокировка при этом
+ * от сверки не зависит и работает даже в выпуске A, где `from` присылает не всякий портал.
+ *
+ * СРАВНИВАЮТСЯ ВСЕ ПЯТЬ ПОЛЕЙ, включая пустую строку уточнения: «был у Иванова» и «был у сотрудника
+ * без уточнения» — разные состояния, и сверка, закрывающая на это глаза, пропустила бы ровно ту
+ * правку, ради записи которой Р5 и завёл `state_note` в журнал.
+ *
+ * ОТКАЗ НАЗЫВАЕТ ТЕКУЩЕЕ МЕСТО СЛОВАМИ, а не «обновите страницу» (свой код `equipment_moved` вместо
+ * общего `version_conflict`): человек подтверждает переезд глазами, и объяснение «техника уже
+ * уехала на такую-то площадку» он может проверить — в отличие от номера версии, которого у карточки
+ * парка нет вовсе.
+ */
+async function assertMoveFromMatches(
+  tx: MoveTx,
+  card: typeof officeEquipment.$inferSelect,
+  from: MoveOfficeEquipmentSide,
+): Promise<void> {
+  const same =
+    from.objectId === card.objectId &&
+    from.departmentId === card.ownerDepartmentId &&
+    from.location === card.location &&
+    from.state === card.state &&
+    from.stateNote === card.stateNote;
+  if (same) return;
+
+  // Названия сторон читаются здесь же, под той же транзакцией: тело отказа показывают человеку, а
+  // «объект 7f3c…» не отвечает на вопрос, ради которого отказ и объясняют. Оба запроса живут
+  // ТОЛЬКО на пути отказа — обычное перемещение их не делает.
+  const [object] = await tx
+    .select({ code: constructionObjects.code, name: constructionObjects.name })
+    .from(constructionObjects)
+    .where(eq(constructionObjects.id, card.objectId));
+  const [department] = card.ownerDepartmentId
+    ? await tx
+        .select({ name: departments.name })
+        .from(departments)
+        .where(eq(departments.id, card.ownerDepartmentId))
+    : [];
+
+  // Площадка — с кодом: названия объектов повторяются («Склад»), и без кода фраза отказа не
+  // различает два корпуса.
+  const objectName = object ? `${object.code} · ${object.name}` : '';
+  const details: OfficeEquipmentMoveConflictDetails = {
+    current: {
+      objectId: card.objectId,
+      objectName,
+      departmentId: card.ownerDepartmentId,
+      departmentName: department?.name ?? null,
+      location: card.location,
+      state: card.state,
+      stateNote: card.stateNote,
+    },
+  };
+  // Фраза собирается из того же, что уходит в `details`: окно покажет её как есть, а разобравший
+  // тело портал — своими словами. Пустые части пропускаются, иначе строка обрастает разделителями.
+  const words = [
+    objectName,
+    card.location,
+    officeEquipmentStateLabels[card.state],
+    card.stateNote,
+  ].filter((part) => part !== '');
+  throw err.conflict(`Техника уже переехала: сейчас ${words.join(' · ')} — откройте окно заново`, {
+    code: OFFICE_EQUIPMENT_MOVE_CONFLICT_CODE,
+    details,
+  });
+}
+
 export default async function officeEquipmentRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const canRead = app.requirePermission('officeEquipment.read');
   const canWrite = app.requirePermission('officeEquipment.write');
+  /**
+   * Перемещение — своё право (план `docs/office-equipment-move-from-request-plan.md`, Р1), а не
+   * ведение справочника: подтверждает переезд тот, кто видел аппарат на месте, и заводить ради
+   * этого карточки, типы и модели ему незачем. Прежние держатели возможность сохранили — право
+   * дописано ролям и наборам, у которых `write` уже был (Р2), — а ИТ-служба получила её впервые:
+   * `officeEquipment.write` у неё нет и не появляется.
+   */
+  const canMove = app.requirePermission('officeEquipment.move');
 
   r.get(
     '/',
@@ -836,11 +922,22 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
    * Открытая заявка переезду не мешает (Р63): именно при ремонте технику и возят. Заявка хранит
    * снимок объекта и остаётся у своего заказчика — иначе она уехала бы из его области вместе с
    * аппаратом.
+   *
+   * ПРАВО — СВОЁ, `officeEquipment.move` (план перемещения из заявки, Р1). Ведение справочника
+   * открывало разом заведение, правку, типы, модели, архив И перемещение, и сузить круг было
+   * нечем; теперь у действия свой замок, и он один на обе двери — карточку заявки и справочник.
+   *
+   * ДВЕ ЗАЩИТЫ ОТ ГОНКИ, И ОНИ РАЗНЫЕ (Р3, Р4, находка Н1). Первая — блокировка строки карточки
+   * `FOR UPDATE` первым шагом транзакции: она работает ВСЕГДА и ни от чего не зависит. Вторая —
+   * сверка присланного `from` с тем, что лежит под блокировкой: она объясняет отказ словами
+   * («техника уже переехала, сейчас она вот здесь») и потому необязательна в выпуске A — старый
+   * портал поля не шлёт. Без первой две одновременные записи оставили бы в журнале `A → B` и
+   * `A → C` при карточке в `C`, и вопрос «где аппарат стоял в мае» получил бы два ответа.
    */
   r.post(
     '/:id/move',
     {
-      preHandler: [app.authenticate, canWrite],
+      preHandler: [app.authenticate, canMove],
       schema: { params: idParams, body: moveOfficeEquipmentSchema },
     },
     async (req, reply) => {
@@ -849,16 +946,24 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
       const b = req.body;
 
       const movement = await db.transaction(async (tx) => {
+        // Р4: строка карточки берётся под замок ПЕРВЫМ шагом, до всех проверок. Сверка `from` без
+        // блокировки осталась бы гонкой «проверил — записал», а порядок «сначала прочитать, потом
+        // заблокировать» дал бы двум записям одно и то же «откуда».
         const [ex] = await tx
           .select()
           .from(officeEquipment)
-          .where(and(eq(officeEquipment.id, id), isNull(officeEquipment.deletedAt)));
+          .where(and(eq(officeEquipment.id, id), isNull(officeEquipment.deletedAt)))
+          .for('update');
         if (!ex) throw err.notFound('Единица оргтехники не найдена');
         // Только исходная сторона: см. Р60 выше.
         assertOfficeEquipmentScope(p, {
           objectId: ex.objectId,
           ownerDepartmentId: ex.ownerDepartmentId,
         });
+
+        // Сверка исходной стороны (Р3) — сразу после блокировки и до всего остального: если
+        // аппарат уже переехал, разговаривать не о чем, а человеку надо показать, куда именно.
+        if (b.from) await assertMoveFromMatches(tx, ex, b.from);
 
         const toDepartmentId =
           b.departmentId !== undefined ? (b.departmentId ?? null) : ex.ownerDepartmentId;
@@ -871,6 +976,10 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
           b.objectId === ex.objectId &&
           b.state === ex.state &&
           b.location === ex.location &&
+          // Смена одного лишь уточнения — тоже перемещение (Р5): «был у Иванова, стал у Петрова»
+          // меняет ответ на вопрос «где искать аппарат». До миграции 0277 такая запись отбивалась
+          // и здесь, и в CHECK, и единственным способом её оформить была тихая правка карточки.
+          b.stateNote === ex.stateNote &&
           toDepartmentId === ex.ownerDepartmentId;
         // Перемещение, которое ничего не переместило, — запись ни о чём (то же держит CHECK).
         if (unchanged) {
@@ -878,20 +987,45 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
         }
 
         if (b.serviceRequestId) {
-          // Ссылка на заявку принимается только по этой же единице: «увезли в сервис» относится к
-          // конкретному ремонту, и чужой номер сделал бы журнал бесполезным.
+          /*
+           * Ссылка на заявку принимается только по этой же единице: «увезли в сервис» относится к
+           * конкретному ремонту, и чужой номер сделал бы журнал бесполезным.
+           *
+           * Заявка читается ЖИВОЙ и ВИДИМОЙ (Р6, находка Н11): архивную можно было бы указать
+           * основанием нового события, а невидимая раскрыла бы существование чужой строки самим
+           * различием отказов. Оба случая отвечают общим `404` — тем же, что и «нет такой заявки».
+           * Неподходящий аппарат и отсутствие заявления — уже безопасный `422`: заявку человек
+           * видит, и объяснить ему, что не так, можно словами.
+           */
           const [request] = await tx
-            .select({ id: serviceRequests.id })
+            .select({
+              id: serviceRequests.id,
+              officeEquipmentId: serviceRequests.officeEquipmentId,
+              objectOverridden: serviceRequests.objectOverridden,
+            })
             .from(serviceRequests)
             .where(
               and(
                 eq(serviceRequests.id, b.serviceRequestId),
-                eq(serviceRequests.officeEquipmentId, id),
+                isNull(serviceRequests.deletedAt),
+                serviceRequestVisibilityWhere(p),
               ),
             );
-          if (!request) {
-            throw err.badRequest('Заявка не найдена или заведена не на эту технику', {
+          if (!request) throw err.notFound('Заявка не найдена');
+          if (request.officeEquipmentId !== id) {
+            throw err.unprocessable('Заявка заведена не на эту технику', {
               serviceRequestId: 'Чужая заявка',
+            });
+          }
+          /*
+           * Подтверждать нечего там, где ничего не заявляли (Р8, находка Н11). Флаг гасит очередь
+           * расхождений ИТ-службы, и поставленный на заявку без `object_overridden` он погасил бы
+           * то, чего в очереди и не было, — то есть сделал бы журнал единственным свидетельством
+           * разбора, которого не происходило.
+           */
+          if (b.confirmsDeclaredPlace && !request.objectOverridden) {
+            throw err.unprocessable('В заявке не заявлено другое место — подтверждать нечего', {
+              confirmsDeclaredPlace: 'Заявления о месте нет',
             });
           }
         }
@@ -909,10 +1043,16 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
             toLocation: b.location,
             fromState: ex.state,
             toState: b.state,
+            // Обе стороны уточнения (Р5): карточка хранит только текущее, и без этой пары вопрос
+            // «у кого техника была в марте» не читается ниоткуда.
+            fromStateNote: ex.stateNote,
+            toStateNote: b.stateNote,
             movedOn: b.movedOn,
             reason: b.reason,
             comment: b.comment,
             serviceRequestId: b.serviceRequestId ?? null,
+            // Флаг ставится только вместе с заявкой — схема без неё его не принимает (Р8).
+            confirmsDeclaredPlace: b.confirmsDeclaredPlace,
             movedBy: p.id,
           })
           .returning({ id: officeEquipmentMovements.id });
@@ -945,6 +1085,9 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
           state: b.state,
           movedOn: b.movedOn,
           reason: b.reason,
+          // «Этим действием разобрано заявленное место» (Р8): очередь расхождений ИТ-службы гаснет
+          // именно по нему, и журнал обязан помнить, кто её погасил.
+          confirmsDeclaredPlace: b.confirmsDeclaredPlace,
         },
       });
       reply.code(201);

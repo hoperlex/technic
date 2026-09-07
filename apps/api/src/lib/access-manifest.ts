@@ -733,9 +733,14 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['officeEquipment.read'],
   },
+  // Перемещение — своё право (план `docs/office-equipment-move-from-request-plan.md`, Р1), и
+  // единственная строка модуля, где ведение справочника ключом не служит: подтверждает переезд
+  // тот, кто видел аппарат на месте. Требование `officeEquipment.read` объявлено в
+  // `PERMISSION_REQUIRES` — перемещать вслепую нельзя, — а вот `write` требованием НЕ объявлен, и
+  // в этом весь смысл: потребуй он его, круг держателей остался бы прежним.
   'POST /api/v1/office-equipment/:id/move': {
     kind: 'permissions',
-    allOf: ['officeEquipment.write'],
+    allOf: ['officeEquipment.move'],
   },
   'DELETE /api/v1/office-equipment/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
   'POST /api/v1/office-equipment/:id/restore': { kind: 'permissions', allOf: ['archive.restore'] },

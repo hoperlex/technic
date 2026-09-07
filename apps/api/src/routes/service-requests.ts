@@ -213,6 +213,16 @@ import {
   serviceRequestRepeatByRequest,
   serviceRequestRepeatWhere,
 } from '../services/service-request-repeat';
+/*
+ * Заявленное место и его разбор (план перемещения из карточки заявки, Р8). Условие очереди и
+ * признак строки считает один модуль: разъедься они, ИТ-служба видела бы в списке одно, а в
+ * карточке другое.
+ */
+import {
+  confirmedPlaceByRequest,
+  placeNotConfirmedWhere,
+  type PlaceConfirmation,
+} from '../services/service-request-place';
 import {
   chatSummaryByRequest,
   chatUnreadCount,
@@ -656,6 +666,12 @@ function toDto(
    * держится оно спредом в теле: поля не должно быть в объекте, а не только в его JSON.
    */
   repeat: ServiceRequestRepeatDto | undefined,
+  /**
+   * Подтверждение заявленного места по этой заявке (план перемещения, Р8): `null` — не разобрано
+   * либо расхождения не заявляли. Приходит готовым снимком из пакетной догрузки страницы: строка на
+   * заявку стоила бы полусотни запросов на список.
+   */
+  placeConfirmation: PlaceConfirmation | null,
 ): ServiceRequestDto {
   const r = row.r;
   return {
@@ -820,7 +836,17 @@ function toDto(
     objectMismatch:
       r.officeEquipmentId !== null &&
       r.objectOverridden &&
-      row.equipmentCardObjectId !== r.equipmentObjectId,
+      row.equipmentCardObjectId !== r.equipmentObjectId &&
+      /*
+       * ТРЕТИЙ ЧЛЕН (план перемещения, Р8; находка Н6 того же плана): расхождение считается
+       * неразобранным, только пока по заявке нет подтверждающего перемещения. Без него заявка, у
+       * которой аппарат нашёлся В ТРЕТЬЕМ месте, висела бы в очереди ИТ-службы до самого закрытия:
+       * снимок «B» так и не сравнялся бы с карточкой «C», хотя разбор состоялся. Флагом, а не
+       * фактом перемещения по заявке: «увезли в сервис» — тоже строка журнала, но она не отвечает
+       * на вопрос, где аппарат стоит на самом деле.
+       */
+      placeConfirmation === null,
+    objectMismatchResolvedBy: placeConfirmation,
     customerDepartment: row.customerDepartmentId
       ? {
           id: row.customerDepartmentId,
@@ -945,7 +971,7 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
    * группировка по аппарату приписала бы прошлогодней заявке свежий счёт (план повторов, Р6).
    * При выключенном окне карта приходит пустой, не потревожив базу.
    */
-  const [items, fileMap, executorMap, consumableMap, repeatMap] = await Promise.all([
+  const [items, fileMap, executorMap, consumableMap, repeatMap, placeMap] = await Promise.all([
     itemsByRequest(ids),
     filesByRequest(ids),
     executorsByRequest(ids),
@@ -954,6 +980,8 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
       p,
       rows.map((row) => row.r),
     ),
+    // Подтверждения заявленного места — тем же пакетным приёмом и по той же причине (Р8).
+    confirmedPlaceByRequest(ids),
   ]);
   const chatMap = await chatSummaryByRequest(
     p,
@@ -1023,6 +1051,7 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
         equipmentDepartmentId: row.r.equipmentDepartmentId,
       }),
       repeatMap.get(row.r.id),
+      placeMap.get(row.r.id) ?? null,
     );
   });
 }
@@ -2615,6 +2644,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             eq(serviceRequests.objectOverridden, true),
             ne(serviceRequests.equipmentObjectId, officeEquipment.objectId),
             notInArray(serviceRequests.status, ['accepted', 'cancelled']),
+            // Четвёртое условие (Р8 плана перемещения): разобранное подтверждением из очереди
+            // уходит. Коррелированный `NOT EXISTS` здесь законен — он в `WHERE`, а не в списке
+            // колонок, — и покрыт частичным индексом миграции `0277`.
+            placeNotConfirmedWhere(),
           )
         : undefined,
       /**

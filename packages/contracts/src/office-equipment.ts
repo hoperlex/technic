@@ -449,13 +449,82 @@ export interface OfficeEquipmentMovementDto {
   toLocation: string;
   fromState: OfficeEquipmentState;
   toState: OfficeEquipmentState;
+  /**
+   * Уточнение состояния обеими сторонами (план `docs/office-equipment-move-from-request-plan.md`,
+   * Р5, находка Н5). Без них журнал отвечает «была у сотрудника», не отвечая, у какого: карточка
+   * хранит только текущее значение, и вопрос «у кого техника была в марте» не читается ниоткуда.
+   */
+  fromStateNote: string;
+  toStateNote: string;
   reason: string;
   comment: string;
   /** Заявка, из-за которой единицу увезли или вернули; `null` — переезд сам по себе. */
   serviceRequestId: string | null;
   serviceRequestNum: number | null;
+  /**
+   * «Этим действием подтверждено заявленное место» (Р8). Ставится только вместе с заявкой; у всех
+   * строк журнала, записанных до выпуска, — `false`, и очередь расхождений ведёт себя как раньше.
+   */
+  confirmsDeclaredPlace: boolean;
   movedByName: string;
   createdAt: string;
+}
+
+/**
+ * «Откуда» — исходное состояние карточки, каким его показали человеку (Р3).
+ *
+ * Сверяется сервером под блокировкой строки и при расхождении отвечает `409`
+ * (`OFFICE_EQUIPMENT_MOVE_CONFLICT_CODE`): между открытием окна и нажатием кнопки аппарат мог
+ * переехать, и записанное вторым перемещение оставило бы в журнале две ветки из одного «откуда» —
+ * `A → B` и `A → C` при карточке в `C` (находка Н1).
+ *
+ * ПОЧЕМУ МЕСТО, А НЕ НОМЕР ВЕРСИИ. Человек видит и подтверждает именно место, и сверка того, что
+ * видно, объясняет отказ словами, которые можно проверить глазами: «техника уже переехала: сейчас
+ * там-то». Версии у карточки парка нет вовсе, и заводить её ради одной операции значило бы
+ * повесить колонку на все остальные правки справочника.
+ *
+ * Все пять полей, включая пустую строку уточнения: «был у Иванова» и «был у сотрудника без
+ * уточнения» — разные состояния, и сверка, закрывающая на это глаза, пропустила бы ровно ту
+ * правку, ради записи которой Р5 и заводит `state_note` в журнале.
+ */
+export const moveSideSchema = z.object({
+  objectId: uuidSchema,
+  departmentId: uuidSchema.nullable(),
+  location: locationSchema,
+  state: officeEquipmentStateSchema,
+  stateNote: stateNoteSchema,
+});
+export type MoveOfficeEquipmentSide = z.infer<typeof moveSideSchema>;
+
+/**
+ * Код отказа «техника уже переехала» (Р3). Своим кодом, а не общим `version_conflict`: тот портал
+ * показывает как «обновите данные и повторите», а здесь человеку нужно знать, КУДА аппарат уехал —
+ * исход у отказа другой (перечитать карточку и решить заново), и различить два исхода на один код
+ * было бы нечем.
+ */
+export const OFFICE_EQUIPMENT_MOVE_CONFLICT_CODE = 'equipment_moved';
+
+/**
+ * Где единица стоит СЕЙЧАС — тело отказа `equipment_moved` (Р3).
+ *
+ * Названия сторон, а не одни идентификаторы: тело читает человек через окно, и «объект
+ * 7f3c…-…» не отвечает на вопрос, ради которого отказ и объясняют. Идентификаторы рядом остаются —
+ * ими портал перезаполняет форму и отправляет повтор с обновлённым `from`.
+ */
+export interface OfficeEquipmentMovePlaceDto {
+  objectId: string;
+  /** «СМР-2 · Стройка на Ленина»: код различает одноимённые корпуса — как в списке техники. */
+  objectName: string;
+  departmentId: string | null;
+  departmentName: string | null;
+  location: string;
+  state: OfficeEquipmentState;
+  stateNote: string;
+}
+
+/** Тело `409 equipment_moved`: то, из чего окно собирает фразу «сейчас техника вот здесь». */
+export interface OfficeEquipmentMoveConflictDetails {
+  current: OfficeEquipmentMovePlaceDto;
 }
 
 /**
@@ -465,6 +534,18 @@ export interface OfficeEquipmentMovementDto {
  */
 export const moveOfficeEquipmentSchema = z
   .object({
+    /**
+     * Сверка исходной стороны (Р3). НЕОБЯЗАТЕЛЬНА — это выпуск A, а не половинчатость: всё время
+     * раскатки в браузерах работает прежний портал, который поля не шлёт, и требовать его сразу
+     * значило бы отбивать каждое перемещение до последнего обновлённого клиента. Присланный `from`
+     * при этом сверяется с первого дня. Обязательным поле станет выпуском B (§7 плана), тем же
+     * приёмом, что `modelId` в карточке техники.
+     *
+     * Защита от гонки от этого поля не зависит и зависеть не должна: строка карточки берётся
+     * `FOR UPDATE` первым шагом транзакции (Р4) при любом теле — блокировка сериализует две записи,
+     * а разошедшийся `from` объясняет отказ словами.
+     */
+    from: moveSideSchema.optional(),
     objectId: uuidSchema,
     departmentId: uuidSchema.nullish(),
     location: locationSchema.optional().default(''),
@@ -475,10 +556,24 @@ export const moveOfficeEquipmentSchema = z
     comment: z.string().trim().max(1000).optional().default(''),
     /** Переезд из-за ремонта: «увезли в сервис» и «вернулась» заводятся из карточки заявки. */
     serviceRequestId: uuidSchema.nullish(),
+    /**
+     * «Подтверждаю заявленное место» (Р8): этим перемещением разобрано расхождение, о котором
+     * сообщил заявитель, — и очередь ИТ-службы гаснет независимо от того, нашёлся аппарат там, где
+     * заявили, или в третьем месте (находка Н6).
+     *
+     * Без заявки бессмысленно и схемой не принимается: подтверждать нечего, если не сказано, чьё
+     * заявление разбирали. Перемещение по заявке при этом бывает и служебным («увезли в сервис»),
+     * поэтому флаг ставит человек галочкой, а не выводится из наличия `serviceRequestId`.
+     */
+    confirmsDeclaredPlace: z.boolean().optional().default(false),
   })
   .refine((v) => !officeEquipmentStateNeedsNote(v.state) || !!v.stateNote, {
     message: 'Уточните, где именно находится техника',
     path: ['stateNote'],
+  })
+  .refine((v) => !v.confirmsDeclaredPlace || !!v.serviceRequestId, {
+    message: 'Подтверждение места относится к заявке',
+    path: ['confirmsDeclaredPlace'],
   });
 export type MoveOfficeEquipmentInput = z.infer<typeof moveOfficeEquipmentSchema>;
 

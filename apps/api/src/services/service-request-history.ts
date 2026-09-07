@@ -1,5 +1,6 @@
 import { desc, eq, inArray } from 'drizzle-orm';
 import {
+  officeEquipmentStateLabels,
   projectHistoryForAudience,
   serviceChatSideLabels,
   type RequestChangeDto,
@@ -9,8 +10,13 @@ import {
   type ServiceRequestAudience,
   type ServiceRequestStatus,
 } from '@technic/contracts';
+import { alias } from 'drizzle-orm/pg-core';
 import { db } from '../db/client';
 import {
+  constructionObjects,
+  departments,
+  officeEquipment,
+  officeEquipmentMovements,
   serviceRequestMessageAddressees,
   serviceRequestMessages,
   serviceRequestStatusHistory,
@@ -19,7 +25,7 @@ import {
 import { HISTORY_LIMIT, loadAuditEvents } from './request-history';
 import { short } from './request-diff';
 
-// История заявки на обслуживание оргтехники (ADR 0012, ADR 0085). Источников три, и все три уже
+// История заявки на обслуживание оргтехники (ADR 0012, ADR 0085). Источников четыре, и все они уже
 // пишутся своими таблицами: переходы статусов (там есть переход, причина и ревизия сметы), общий
 // аудит (что именно изменила правка — снимком в metadata) и лента обсуждения (ADR 0141). Своей
 // таблицы у истории нет по той же причине, что у двух действующих модулей: она была бы ещё одной
@@ -59,6 +65,12 @@ export interface ServiceRequestHistoryEntryDto extends Omit<
  * Взятия в диагностику здесь нет намеренно: у него нет содержания сверх самого перехода, и строка
  * в аудите повторила бы строку истории статусов слово в слово.
  */
+/**
+ * Как подписан автор у события, которое сделал сам портал (ADR 0133, автозакрытие по молчанию).
+ * Словом, а не пустотой и не служебной учёткой: пустота читается как потеря, а учётка — как человек.
+ */
+const SYSTEM_ACTOR_NAME = 'Портал';
+
 const AUDIT_ACTIONS = [
   'serviceRequest.update',
   'serviceRequest.estimate_update',
@@ -392,6 +404,115 @@ async function loadChatEvents(requestId: string): Promise<ServiceRequestHistoryE
   }));
 }
 
+const fromObjects = alias(constructionObjects, 'history_move_from_objects');
+const toObjects = alias(constructionObjects, 'history_move_to_objects');
+const fromDepartments = alias(departments, 'history_move_from_departments');
+const toDepartments = alias(departments, 'history_move_to_departments');
+
+/**
+ * Перемещения техники, записанные ПО ЭТОЙ ЗАЯВКЕ (план перемещения из карточки заявки, Р12).
+ *
+ * Четвёртый источник истории — и назван он явно, а не подмешан через аудит. Аудит перемещения
+ * пишется на сущность `officeEquipment`, и разреши мы истории заявки читать чужой `entity_type`,
+ * в неё однажды приедет и всё остальное про аппарат: правки карточки, её архивирование, гарантии
+ * поставщика. Источник со своим запросом отвечает ровно на один вопрос — «что по этой заявке
+ * сделали с техникой».
+ *
+ * Стороны переезда показываются парами «было → стало» в общем формате изменений, а не фразой:
+ * человек читает историю глазами, и «Объект: ОБ-1 → ОБ-2» рядом с «Место: каб. 214 → каб. 310»
+ * складывается в переезд без единого слова. Причина уходит в комментарий события — там же, где
+ * живут причины отмены и заморозки.
+ */
+async function loadMovementEvents(requestId: string): Promise<ServiceRequestHistoryEntryDto[]> {
+  const rows = await db
+    .select({
+      id: officeEquipmentMovements.id,
+      movedOn: officeEquipmentMovements.movedOn,
+      createdAt: officeEquipmentMovements.createdAt,
+      reason: officeEquipmentMovements.reason,
+      comment: officeEquipmentMovements.comment,
+      confirms: officeEquipmentMovements.confirmsDeclaredPlace,
+      fromLocation: officeEquipmentMovements.fromLocation,
+      toLocation: officeEquipmentMovements.toLocation,
+      fromState: officeEquipmentMovements.fromState,
+      toState: officeEquipmentMovements.toState,
+      fromStateNote: officeEquipmentMovements.fromStateNote,
+      toStateNote: officeEquipmentMovements.toStateNote,
+      fromObject: fromObjects.code,
+      toObject: toObjects.code,
+      fromDepartment: fromDepartments.name,
+      toDepartment: toDepartments.name,
+      equipmentName: officeEquipment.name,
+      actorId: officeEquipmentMovements.movedBy,
+      actorName: users.fullName,
+    })
+    .from(officeEquipmentMovements)
+    .innerJoin(fromObjects, eq(officeEquipmentMovements.fromObjectId, fromObjects.id))
+    .innerJoin(toObjects, eq(officeEquipmentMovements.toObjectId, toObjects.id))
+    .leftJoin(fromDepartments, eq(officeEquipmentMovements.fromDepartmentId, fromDepartments.id))
+    .leftJoin(toDepartments, eq(officeEquipmentMovements.toDepartmentId, toDepartments.id))
+    .innerJoin(officeEquipment, eq(officeEquipmentMovements.equipmentId, officeEquipment.id))
+    // Автор перемещения объявлен `restrict`, но соединение левое: строку журнала читают и после
+    // того, как учётку выключат, а «кто перевёз» тогда честнее показать пустым, чем потерять
+    // событие целиком — тем же приёмом, что и у переходов выше.
+    .leftJoin(users, eq(officeEquipmentMovements.movedBy, users.id))
+    .where(eq(officeEquipmentMovements.serviceRequestId, requestId))
+    .orderBy(desc(officeEquipmentMovements.createdAt))
+    .limit(HISTORY_LIMIT);
+
+  return rows.map((row) => {
+    const changes: RequestChangeDto[] = [];
+    const place = (state: string, note: string): string =>
+      note ? `${officeEquipmentStateLabels[state as keyof typeof officeEquipmentStateLabels]} (${note})` : officeEquipmentStateLabels[state as keyof typeof officeEquipmentStateLabels];
+    if (row.fromObject !== row.toObject) {
+      changes.push({ field: 'moveObject', from: row.fromObject, to: row.toObject });
+    }
+    if (row.fromLocation !== row.toLocation) {
+      changes.push({
+        field: 'moveLocation',
+        from: row.fromLocation || '—',
+        to: row.toLocation || '—',
+      });
+    }
+    if ((row.fromDepartment ?? null) !== (row.toDepartment ?? null)) {
+      changes.push({
+        field: 'moveDepartment',
+        from: row.fromDepartment ?? 'не закреплена',
+        to: row.toDepartment ?? 'не закреплена',
+      });
+    }
+    if (row.fromState !== row.toState || row.fromStateNote !== row.toStateNote) {
+      changes.push({
+        field: 'moveState',
+        from: place(row.fromState, row.fromStateNote),
+        to: place(row.toState, row.toStateNote),
+      });
+    }
+    return {
+      id: row.id,
+      kind: 'equipmentMoved' as RequestHistoryKind,
+      // Датируется МОМЕНТОМ ЗАПИСИ, а не днём переезда: история заявки хронологична, и событие,
+      // датированное пятницей, встало бы посреди понедельничных строк. День переезда при этом не
+      // теряется — он назван в комментарии события.
+      at: row.createdAt.toISOString(),
+      actorId: row.actorId,
+      actorName: row.actorName ?? SYSTEM_ACTOR_NAME,
+      fromStatus: null,
+      toStatus: null,
+      estimateRevision: null,
+      comment: [
+        `${row.equipmentName}: ${row.reason}`,
+        `переезд ${row.movedOn}`,
+        row.confirms ? 'подтверждено заявленное место' : '',
+        row.comment,
+      ]
+        .filter(Boolean)
+        .join('; '),
+      changes,
+    };
+  });
+}
+
 /** Ярлык стороны в дательном падеже — тот же, что рисует лента: «Сервисному центру» → строчными. */
 function sideTarget(side: ServiceChatSide): string {
   const label = serviceChatSideLabels[side];
@@ -408,7 +529,7 @@ export async function loadServiceRequestHistory(
   created: { at: Date; actorId: string; actorName: string },
   audience: ServiceRequestAudience,
 ): Promise<ServiceRequestHistoryEntryDto[]> {
-  const [statusRows, auditRows, chatRows] = await Promise.all([
+  const [statusRows, auditRows, chatRows, movementRows] = await Promise.all([
     db
       .select({
         id: serviceRequestStatusHistory.id,
@@ -421,12 +542,23 @@ export async function loadServiceRequestHistory(
         actorName: users.fullName,
       })
       .from(serviceRequestStatusHistory)
-      .innerJoin(users, eq(serviceRequestStatusHistory.changedBy, users.id))
+      /*
+       * ЛЕВЫМ соединением, а не внутренним (находка Н6 плана истории тремя блоками; чинится здесь,
+       * потому что здесь же трогают эту функцию ради перемещений ниже).
+       *
+       * Автозакрытие пишет строку перехода БЕЗ автора: `changed_by` пуст, `actor_source = 'system'`
+       * (ADR 0133). Внутреннее соединение выбрасывало такую строку целиком — «портал закрыл заявку
+       * сам» не читалось в истории вовсе, хотя в ленте единицы это событие видно. Лента с самого
+       * начала соединяет левым, и расхождение двух экранов было тем более странным, что источник у
+       * них один.
+       */
+      .leftJoin(users, eq(serviceRequestStatusHistory.changedBy, users.id))
       .where(eq(serviceRequestStatusHistory.requestId, requestId))
       .orderBy(desc(serviceRequestStatusHistory.changedAt))
       .limit(HISTORY_LIMIT),
     loadAuditEvents('serviceRequest', requestId, AUDIT_ACTIONS),
     loadChatEvents(requestId),
+    loadMovementEvents(requestId),
   ]);
 
   const entries: ServiceRequestHistoryEntryDto[] = [
@@ -436,7 +568,13 @@ export async function loadServiceRequestHistory(
       kind: (row.fromStatus === null ? 'created' : 'status') as RequestHistoryKind,
       at: row.at.toISOString(),
       actorId: row.actorId,
-      actorName: row.actorName,
+      /*
+       * Пустой автор означает ровно одно — «сделал портал» (`actor_source = 'system'`), и подпись
+       * обязана это говорить: пустое место в столбце «Кто» читается как потерянные данные, а
+       * служебная учётная запись вместо него была бы хуже пустоты — она стояла бы в журнале
+       * наравне с людьми.
+       */
+      actorName: row.actorName ?? SYSTEM_ACTOR_NAME,
       fromStatus: row.fromStatus,
       toStatus: row.toStatus,
       estimateRevision: row.estimateRevision,
@@ -462,6 +600,7 @@ export async function loadServiceRequestHistory(
       changes: changesOf(row.action, row.metadata),
     })),
     ...chatRows,
+    ...movementRows,
   ];
 
   // Обрезанную историю дополнять заведением нельзя: его запись просто не попала в выборку.

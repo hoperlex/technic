@@ -2020,6 +2020,18 @@ export const officeEquipmentMovements = pgTable(
     toLocation: text('to_location').notNull().default(''),
     fromState: officeEquipmentStateEnum('from_state').notNull(),
     toState: officeEquipmentStateEnum('to_state').notNull(),
+    /**
+     * Уточнение состояния обеими сторонами (миграция 0277, план
+     * `docs/office-equipment-move-from-request-plan.md`, Р5, находка Н5): «у сотрудника» без
+     * ответа «у какого» — незакрытый вопрос, а карточка хранит только текущее значение. Без этих
+     * колонок «у кого была техника в марте» не читается ниоткуда.
+     *
+     * `NOT NULL DEFAULT ''`, как и `location`: пустая строка означает «уточнения не было», а не
+     * «неизвестно». У строк, записанных до миграции, здесь пусто с обеих сторон — уточнения тогда
+     * и не спрашивали, а придумывать его задним числом значило бы соврать в журнале.
+     */
+    fromStateNote: text('from_state_note').notNull().default(''),
+    toStateNote: text('to_state_note').notNull().default(''),
     // Дата переезда, а не момент записи: технику увозят в пятницу, а заносят в понедельник.
     movedOn: date('moved_on').notNull(),
     reason: text('reason').notNull(),
@@ -2032,6 +2044,28 @@ export const officeEquipmentMovements = pgTable(
     movedBy: uuid('moved_by')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * «Этим перемещением разобрано заявленное место» (миграция 0277, Р8, находка Н6).
+     *
+     * Расхождение в модуле не хранится флагом: оно считается сравнением снимка заявки с карточкой и
+     * гаснет само, когда единицу переносят ТУДА, где её заявили. Но заявитель говорит «стоит на B»,
+     * а ответственный находит аппарат на C — и после переноса снимок `B` по-прежнему не равен
+     * карточке `C`, то есть разобранная заявка остаётся в очереди навсегда. Эта колонка и есть
+     * ответ: «расхождение разобрано вот этим действием», с автором и датой.
+     *
+     * Ставится ТОЛЬКО вместе с `service_request_id`: подтверждать нечего, если не сказано, чьё
+     * заявление разбирали. Держат это схема запроса (`moveOfficeEquipmentSchema`) и маршрут, а НЕ
+     * CHECK, и это решение, а не пропуск: ссылка на заявку гасится `ON DELETE SET NULL`, когда
+     * заявку сносят насовсем (`records.purge`), — и ограничение «подтверждение обязано иметь
+     * заявку» отбило бы саму уборку архива нарушением целостности. Факт «этим действием разобрали
+     * расхождение» при этом переживает удаление заявки, и правильно: он про перемещение, а не про
+     * неё (развилка В4 плана).
+     *
+     * Из наличия заявки флаг не выводится: перемещение по заявке бывает служебным («увезли в
+     * сервис»), а оно на вопрос «где аппарат на самом деле» не отвечает. У всех строк, записанных
+     * до миграции, здесь `false` — очередь ведёт себя как раньше.
+     */
+    confirmsDeclaredPlace: boolean('confirms_declared_place').notNull().default(false),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -2039,16 +2073,33 @@ export const officeEquipmentMovements = pgTable(
       'office_equipment_movements_reason_not_blank_check',
       sql`btrim(${t.reason}) <> ''`,
     ),
-    // Перемещение, которое ничего не переместило, — запись ни о чём.
+    /**
+     * Перемещение, которое ничего не переместило, — запись ни о чём.
+     *
+     * Уточнение состояния — тоже перемещение (Р5): «был у Иванова, стал у Петрова» меняет ответ на
+     * вопрос «где искать аппарат», и до миграции 0277 такая запись отбивалась как «ничего не
+     * изменилось» — единственным способом её оформить была тихая правка карточки, то есть ровно
+     * то, ради чего журнал и заведён.
+     */
     change: check(
       'office_equipment_movements_change_check',
       sql`${t.fromObjectId} <> ${t.toObjectId}
           OR ${t.fromState} <> ${t.toState}
           OR ${t.fromLocation} <> ${t.toLocation}
+          OR ${t.fromStateNote} <> ${t.toStateNote}
           OR ${t.fromDepartmentId} IS DISTINCT FROM ${t.toDepartmentId}`,
     ),
     equipmentIdx: index('office_equipment_movements_equipment_idx').on(t.equipmentId, t.movedOn),
     toObjectIdx: index('office_equipment_movements_to_object_idx').on(t.toObjectId, t.movedOn),
+    /**
+     * Частичный индекс под гашение очереди (Р8): по нему считается `NOT EXISTS` «нет
+     * подтверждающего перемещения» в list/detail заявок и находится последнее подтверждение для
+     * подписи «расхождение разобрано». Частичный — потому что подтверждений на порядок меньше, чем
+     * перемещений, и индекс по всем строкам был бы больше при той же пользе.
+     */
+    confirmsIdx: index('office_equipment_movements_confirms_idx')
+      .on(t.serviceRequestId, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.confirmsDeclaredPlace} IS TRUE`),
   }),
 );
 

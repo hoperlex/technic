@@ -97,6 +97,8 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     // это `false` в обоих полях, и сценарий про плашку обязан поднимать оба, а не одно.
     objectOverridden: false,
     objectMismatch: false,
+    // Расхождение никто не заявлял — значит и разбирать было нечего (план перемещения, Р8).
+    objectMismatchResolvedBy: null,
     customerDepartment: null,
     equipmentDepartment: null,
     // Подразделение заявителя (Н11): у учётки без отделов и площадок его нет вовсе — законное

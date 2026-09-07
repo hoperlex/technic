@@ -181,6 +181,14 @@ describe('матрица надстроек', () => {
      * `grant_roles` на менеджера и диспетчера), барьер требований проверял не то, что кажется, а
      * снятие права из роли молча выключило бы половину набора.
      */
+    /*
+     * Десятым — подтверждение перемещения (план
+     * `docs/office-equipment-move-from-request-plan.md`, Р1, Р2), и оно стоит сразу за ведением
+     * справочника, потому что из него и выделено. Держателям набора право не добавляет ничего:
+     * перемещение они записывают и сегодня — по `officeEquipment.write`. Строка здесь ради того,
+     * чтобы выпуск, отделивший перемещение от ведения, не отобрал у «Ведения» ежедневную работу;
+     * новую дверь то же право открывает только ИТ-службе, у которой `write` нет и не появится.
+     */
     expect([...ROLE_ADDON_PERMISSIONS[OFFICE]]).toEqual([
       'officeEquipment.read',
       'serviceRequests.read',
@@ -189,6 +197,7 @@ describe('матрица надстроек', () => {
       'serviceRequests.delete',
       'serviceRequests.files',
       'officeEquipment.write',
+      'officeEquipment.move',
       'serviceRequests.assign',
       'serviceRequests.approveEstimate',
       'serviceRequests.status',

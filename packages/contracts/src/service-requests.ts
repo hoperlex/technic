@@ -2801,6 +2801,20 @@ export interface ServiceRequestDto {
    * и рядом, хотя никто ничего не заявлял.
    */
   objectMismatch: boolean;
+  /**
+   * Кем и когда разобрано заявленное расхождение (план перемещения из карточки заявки, Р8).
+   * `null` — не разобрано либо расхождения не заявляли вовсе.
+   *
+   * Поле объясняет, почему строка ушла из очереди ИТ-службы: без него «заявляли, а в очереди нет»
+   * читалось бы как потеря, а не как разбор. Разбирают его подтверждающим перемещением — тем самым,
+   * которым ответственный говорит «аппарат стоит здесь», — поэтому в снимке автор и время события,
+   * а не отметка в самой заявке: заявка остаётся рассказом о том, что заявили.
+   */
+  objectMismatchResolvedBy: {
+    movementId: string;
+    at: string;
+    actorName: string | null;
+  } | null;
   /** Отдел-заказчик и отдел-владелец: по ним считается область роли отдела. */
   customerDepartment: ServiceRequestDepartmentDto | null;
   equipmentDepartment: ServiceRequestDepartmentDto | null;
@@ -3094,6 +3108,16 @@ export const serviceRequestChangeLabels = {
   consumablesReturned: 'Возвращено на склад',
   /** Состав номенклатуры до и после правки: спорят о том, что именно просили и в каком количестве. */
   consumables: 'Состав номенклатуры',
+  /*
+   * Перемещение техники, записанное ПО ЭТОЙ ЗАЯВКЕ (план перемещения из карточки заявки, Р12) —
+   * четвёртый источник истории. Ключи проставляет сборка истории, а не дифф полей заявки: переезд
+   * меняет карточку аппарата, а не заявку, и без подписей `RequestHistory` показал бы человеку
+   * сырые имена ключей.
+   */
+  moveObject: 'Объект',
+  moveLocation: 'Место',
+  moveDepartment: 'Отдел-владелец',
+  moveState: 'Где находится',
   /*
    * `satisfies`, а не `Record<string, string>`, и это не украшение типа. Ключи словаря — тот
    * ЗАКРЫТЫЙ перечень изменений, по которому история режется аудиторией
@@ -3506,6 +3530,8 @@ export const SERVICE_REQUEST_FIELD_AUDIENCE = {
   object: 'all',
   objectOverridden: 'all',
   objectMismatch: 'all',
+  // Кем разобрано расхождение — не про деньги, а про место: видно тем же, кому видна сама заявка.
+  objectMismatchResolvedBy: 'all',
   customerDepartment: 'all',
   equipmentDepartment: 'all',
   requesterPlace: 'all',
@@ -3705,6 +3731,14 @@ export const SERVICE_HISTORY_CHANGE_AUDIENCE: Record<
   consumablesIssued: 'all',
   consumablesReturned: 'all',
   consumables: 'all',
+  /*
+   * Перемещение денег не содержит вовсе, а «куда увезли аппарат» заявителю видеть и положено, и
+   * полезно: он по этой заявке его и ждёт.
+   */
+  moveObject: 'all',
+  moveLocation: 'all',
+  moveDepartment: 'all',
+  moveState: 'all',
 };
 
 /**
