@@ -1211,6 +1211,26 @@ describe.skipIf(!DB_URL)('массовые действия над заявка�
   });
 
   describe('§11.2. Наблюдаемость пачки', () => {
+    /**
+     * Имя события — ОДНО на пачку и на одиночную ручку (Р6 плана аудита исполнителей). Держится оно
+     * тем, что оба отбора ниже идут по этой константе: разъедься имена, один из двух окажется пуст.
+     */
+    const DENIED = 'serviceRequest.access_denied';
+
+    /** Отказы доступа по этим заявкам — тем же событием, каким на них отвечает журнал портала. */
+    async function denials(ids: string[]) {
+      const res = await ctx.db.execute<{
+        entity_id: string;
+        entity_type: string;
+        actor_user_id: string;
+        metadata: Record<string, unknown>;
+      }>(sql`
+        SELECT entity_id, entity_type, actor_user_id, metadata FROM audit_log
+         WHERE action = ${DENIED} AND entity_id = ANY(${sql.param(ids)}::text[])
+         ORDER BY created_at`);
+      return res.rows;
+    }
+
     it('аудит построчный, и пачка в нём названа', async () => {
       /*
        * ЧТО ИЗМЕНИЛОСЬ ПРОТИВ ПРЕЖНЕЙ НАХОДКИ. Р8 требует двух вещей сразу: «своя запись у каждой
@@ -1264,6 +1284,104 @@ describe.skipIf(!DB_URL)('массовые действия над заявка�
       expect(alone.action).toBe('serviceRequest.hold');
       expect(Object.keys(alone.metadata)).not.toContain('bulkOperationId');
       expect(alone.metadata).toEqual({ from: 'new', reason: 'Смотрим, что попадёт в журнал' });
+    });
+
+    it('отказ доступа в пачке пишется на КАЖДУЮ строку и совпадает с записью одиночной ручки', async () => {
+      /*
+       * ЧТО ЗДЕСЬ ДОКАЗЫВАЕТСЯ (Р6 и критерий К6 плана
+       * `docs/office-equipment-executor-access-audit-plan.md`). Журнал отказов заведён ради одного
+       * случая — перебора чужих идентификаторов прямым запросом, — и пачка была для него дверью без
+       * камеры: отказ строки перехвачен исполнителем и стал строкой отчёта, наружу ушёл `200`, а
+       * хук плагина, который пишет журнал остальным ручкам, срабатывает только на отказе, дошедшем
+       * до ответа. Три чужих заявки, перебранные ОДНИМ обращением, обязаны оставить три записи.
+       *
+       * ПОЧЕМУ ТРИ, А НЕ ОДНА. Запись «на пачку» прошла бы случай из одной строки и провалила бы
+       * замысел: журнал отвечает на вопрос «кто стучался в ЭТУ заявку», и сводная строка не
+       * ответила бы на него ни по одной из трёх.
+       *
+       * ЧЕТВЁРТАЯ СТРОКА — СВОЯ И УСПЕШНАЯ, и её отсутствие в журнале отказов проверяется наравне с
+       * записями: без неё случай зеленел бы и у реализации, пишущей отказ по каждой строке подряд.
+       *
+       * ОТЧЁТ ПРИ ЭТОМ ПРЕЖНИЙ. Наблюдаемость не имеет права стоить ни исхода строки, ни кода: пачка
+       * по-прежнему выполняет свою строку и отчитывается по трём чужим, а не падает целиком.
+       */
+      const own = await makeRequest();
+      const foreign: string[] = [];
+      for (let i = 0; i < 3; i += 1) {
+        foreign.push(await makeRequest({ objectId: ctx.otherObjectId, auth: ctx.admin.auth }));
+      }
+      // Пятая заявка — для одиночной ручки: с ней сверяется состав записи, и своей она нужна, чтобы
+      // отбор по её адресу не смешал запись пачки с записью ручки.
+      const single = await makeRequest({ objectId: ctx.otherObjectId, auth: ctx.admin.auth });
+
+      const rows = [...(await rowsOf([own]))];
+      for (const id of foreign) rows.push({ id, version: await version(id, ctx.admin.auth) });
+
+      const result = await bulkOk({
+        operation: 'urgency_on',
+        rows,
+        urgencyReason: 'Перебор чужих номеров одним обращением',
+      });
+      expect([result.done, result.failed]).toEqual([1, 3]);
+      for (const id of foreign) {
+        expect(rowOf(result, id)).toMatchObject({ outcome: 'failed', code: 'forbidden' });
+      }
+
+      const written = await denials(foreign);
+      expect(written.map((r) => r.entity_id).sort()).toEqual([...foreign].sort());
+      for (const row of written) {
+        expect(row.entity_type).toBe('serviceRequest');
+        expect(row.actor_user_id).toBe(ctx.operator.id);
+        /*
+         * Сверяется ВЕСЬ состав, а не отдельные ключи: забытое поле — это вопрос, на который журнал
+         * спустя месяцы не ответит («кем он тогда стучался»), и выборочной проверкой пропажу не
+         * заметить. Адрес попытки — пакетная ручка, а не `PATCH /:id/urgency`: обращение было одно,
+         * и разбирают его как одно; какой операцией шли строки, помнит `bulkOperationId`.
+         */
+        expect(row.metadata).toEqual({
+          route: 'POST /api/v1/service-requests/bulk',
+          reason: 'scope',
+          role: 'shtab',
+          counterpartyId: null,
+          bulkOperationId: result.operationId,
+        });
+      }
+
+      // Успешная строка журнал отказов не засоряет: событие пишется отказом, а не обходом строк.
+      expect(await denials([own])).toEqual([]);
+
+      /*
+       * ТА ЖЕ ПОПЫТКА ОДИНОЧНОЙ РУЧКОЙ — эталон, с которым сверяется запись пачки. Страж один и тот
+       * же (`requireEditable` внутри шага срочности), поэтому расходиться записям позволено ровно в
+       * двух местах: адрес ручки и приписка пачки. Разъедься остальное — сравнение ниже упадёт.
+       */
+      const alone = await inject('PATCH', `${REQUESTS}/${single}/urgency`, ctx.operator.auth, {
+        isUrgent: true,
+        urgencyReason: 'Перебор чужих номеров по одному',
+        version: await version(single, ctx.admin.auth),
+      });
+      expect(alone.statusCode, alone.body).toBe(403);
+
+      const aloneRows = await denials([single]);
+      expect(aloneRows, JSON.stringify(aloneRows)).toHaveLength(1);
+      expect(aloneRows[0]!.actor_user_id).toBe(ctx.operator.id);
+      expect(aloneRows[0]!.metadata).toEqual({
+        route: 'PATCH /api/v1/service-requests/:id/urgency',
+        reason: 'scope',
+        role: 'shtab',
+        counterpartyId: null,
+      });
+      // У одиночной ручки приписки НЕТ ВОВСЕ — той же формой, что у записей об успешных строках
+      // выше: `null` читался бы и как «сделано поштучно», и как «запись написана до Р8».
+      expect(Object.keys(aloneRows[0]!.metadata)).not.toContain('bulkOperationId');
+      /*
+       * И последнее, ради чего эталон здесь и стоит: одна запись пачки, лишённая своей приписки и
+       * своего адреса, обязана совпасть с записью одиночной ручки ЦЕЛИКОМ. Так проверяется «такой
+       * же след», а не «похожий»: новое поле, добавленное одному из двух путей, уронит случай.
+       */
+      const { bulkOperationId: _tag, route: _route, ...common } = written[0]!.metadata;
+      const { route: _singleRoute, ...singleCommon } = aloneRows[0]!.metadata;
+      expect(common).toEqual(singleCommon);
     });
   });
 });
