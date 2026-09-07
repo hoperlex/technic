@@ -41,6 +41,13 @@ import { serviceRequestVisibilityWhere } from '../lib/access';
  */
 const PREV = alias(serviceRequests, 'sr_repeat_prev');
 
+/**
+ * Сама заявка `R` в пакетном счёте. Нужна затем, чтобы аппарат и дату заведения брать колонками
+ * базы, а не значениями, проехавшими через JS: там `timestamptz` теряет микросекунды (см. сборку
+ * запроса ниже), и метка расходилась бы с отбором на границе окна.
+ */
+const CUR = alias(serviceRequests, 'sr_repeat_cur');
+
 /** Таблица предыдущей заявки: либо псевдоним (список, карточка), либо сама таблица (`repeatFor`). */
 type RepeatPrevTable = typeof serviceRequests | typeof PREV;
 
@@ -183,22 +190,34 @@ export async function serviceRequestRepeatByRequest(
   if (subjects.length === 0) return result;
 
   /*
-   * Типы столбцов `VALUES` задаются приведением в КАЖДОЙ строке, а не в первой: параметр без
-   * приведения приехал бы `unknown`, и сравнение `uuid = unknown` решалось бы правилами неявного
-   * приведения, а не нашим намерением. Дата отдаётся строкой ISO в UTC: `timestamptz` разбирает её
-   * однозначно, тогда как голый `Date` зависел бы от того, как его сериализует драйвер.
+   * В `VALUES` уезжают ТОЛЬКО идентификаторы, а аппарат и дату заведения запрос берёт колонками
+   * самой заявки — соединением по этому идентификатору.
+   *
+   * ПОЧЕМУ НЕ ЗНАЧЕНИЯМИ ИЗ JS, КАК БЫЛО. `timestamptz` в базе хранит микросекунды, а `Date` в JS
+   * заканчивается миллисекундой: отданная строкой ISO дата заведения теряла хвост, и обе границы
+   * окна уезжали вниз на эту долю. Отбор «только повторные» при этом сравнивал ту же дату
+   * колонкой, с полной точностью, — и заявка, заведённая внутри той же миллисекунды, в которую
+   * закрыли предшественницу, получала в метке ноль и одновременно попадала в список. Ровно то
+   * расхождение, против которого правило и сведено в один builder (К3 плана): совпасть числа
+   * обязаны не «почти», а в точности, и добиваться этого округлением обеих сторон значило бы
+   * держать в двух местах ещё и одинаковое правило округления.
+   *
+   * Приведение типа задаётся в КАЖДОЙ строке, а не в первой: параметр без приведения приехал бы
+   * `unknown`, и сравнение `uuid = unknown` решалось бы правилами неявного приведения, а не нашим
+   * намерением.
    */
   const values = sql.join(
-    subjects.map(
-      (row) =>
-        sql`(${row.id}::uuid, ${row.officeEquipmentId}::uuid, ${row.createdAt.toISOString()}::timestamptz)`,
-    ),
+    subjects.map((row) => sql`(${row.id}::uuid)`),
     sql`, `,
   );
   const match = repeatMatchWhere(
     p,
     PREV,
-    { id: sql`v.id`, equipmentId: sql`v.equipment_id`, createdAt: sql`v.created_at` },
+    {
+      id: sql`${CUR.id}`,
+      equipmentId: sql`${CUR.officeEquipmentId}`,
+      createdAt: sql`${CUR.createdAt}`,
+    },
     window,
   );
 
@@ -206,7 +225,8 @@ export async function serviceRequestRepeatByRequest(
     SELECT v.id::text AS id,
            count(m.id)::int AS cnt,
            max(m.status_changed_at) AS last_at
-      FROM (VALUES ${values}) AS v(id, equipment_id, created_at)
+      FROM (VALUES ${values}) AS v(id)
+      JOIN ${serviceRequests} ${CUR} ON ${CUR.id} = v.id
       LEFT JOIN LATERAL (
         SELECT ${PREV.id} AS id, ${PREV.statusChangedAt} AS status_changed_at
           FROM ${serviceRequests} ${PREV}
