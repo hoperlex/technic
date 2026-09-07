@@ -1,0 +1,123 @@
+{
+  "$comment": "Собирается `pnpm --filter @technic/api docs:labels` из packages/contracts. Руками не правится: расхождение с контрактами роняет apps/api/test/docs-service-labels.test.ts.",
+  "kinds": [
+    {
+      "value": "repair",
+      "label": "Обслуживание"
+    },
+    {
+      "value": "consumable",
+      "label": "Расходники"
+    }
+  ],
+  "statuses": [
+    {
+      "value": "new",
+      "label": "Новая",
+      "live": true
+    },
+    {
+      "value": "it_approved",
+      "label": "Согласована ИТ",
+      "live": false
+    },
+    {
+      "value": "assigned",
+      "label": "Назначена",
+      "live": false
+    },
+    {
+      "value": "diagnostics",
+      "label": "Диагностика",
+      "live": false
+    },
+    {
+      "value": "estimate_review",
+      "label": "Смета на согласовании",
+      "live": false
+    },
+    {
+      "value": "in_work",
+      "label": "В работе",
+      "live": true
+    },
+    {
+      "value": "on_hold",
+      "label": "Отложена",
+      "live": true
+    },
+    {
+      "value": "done",
+      "label": "Решена",
+      "live": true
+    },
+    {
+      "value": "accepted",
+      "label": "Закрыта",
+      "live": true
+    },
+    {
+      "value": "cancelled",
+      "label": "Отменена",
+      "live": true
+    }
+  ],
+  "waitingOn": [
+    {
+      "value": "it",
+      "label": "Ждёт ИТ"
+    },
+    {
+      "value": "operator",
+      "label": "Ждёт оператора"
+    },
+    {
+      "value": "approval",
+      "label": "Ждёт согласования"
+    },
+    {
+      "value": "service",
+      "label": "Ждёт исполнителя"
+    },
+    {
+      "value": "hold",
+      "label": "Отложена"
+    },
+    {
+      "value": "nobody",
+      "label": "Закрыта"
+    }
+  ],
+  "fileKinds": [
+    {
+      "value": "attachment",
+      "label": "Вложение",
+      "visibleToRequester": true,
+      "attachableByRequester": true
+    },
+    {
+      "value": "estimate",
+      "label": "Объём работ",
+      "visibleToRequester": false,
+      "attachableByRequester": false
+    },
+    {
+      "value": "act",
+      "label": "Акт",
+      "visibleToRequester": false,
+      "attachableByRequester": false
+    },
+    {
+      "value": "invoice",
+      "label": "Счёт",
+      "visibleToRequester": false,
+      "attachableByRequester": false
+    },
+    {
+      "value": "warranty_card",
+      "label": "Гарантийный талон",
+      "visibleToRequester": true,
+      "attachableByRequester": false
+    }
+  ]
+}
