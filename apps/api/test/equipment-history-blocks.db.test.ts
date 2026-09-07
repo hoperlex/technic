@@ -19,6 +19,9 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
 import type { Principal } from '../src/auth/principal';
+// Модуль блоков грузится через `await import` уже после того, как выставлено окружение; тип берётся
+// отдельно — встроенная аннотация `typeof import(...)` в этом наборе правил запрещена.
+import type * as OfficeEquipmentBlocks from '../src/services/office-equipment-blocks';
 
 /**
  * ИСТОРИЯ ЕДИНИЦЫ ОРГТЕХНИКИ ТРЕМЯ БИЗНЕС-БЛОКАМИ — серверные случаи §10.1 плана
@@ -999,7 +1002,7 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
      * разойдись числа — разойтись им будет не от чего, кроме строк.
      */
     let bulkUnitId = '';
-    let blocks: typeof import('../src/services/office-equipment-blocks');
+    let blocks: typeof OfficeEquipmentBlocks;
     /** Право `serviceRequests.execute` есть у администратора — он платит все пять запросов. */
     let adminPrincipal: Principal;
     /** У «ведения справочника» права исполнения нет: аудитория ему в базу не ходит вовсе. */
