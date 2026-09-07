@@ -84,7 +84,15 @@ export async function confirmedPlaceByRequest(
         eq(officeEquipmentMovements.confirmsDeclaredPlace, true),
       ),
     )
-    .orderBy(desc(officeEquipmentMovements.createdAt));
+    /*
+     * Ничья по времени разрешается идентификатором, а не порядком чтения. Два подтверждения одной
+     * заявки в одну миллисекунду — случай редкий (двойное нажатие, перенос данных), но при равном
+     * `created_at` порядок без второго ключа зависит от плана запроса: список показал бы одного
+     * разобравшего, карточка после перезапроса — другого, и объяснить это человеку было бы нечем.
+     * Пара совпадает с ключом частичного индекса `office_equipment_movements_confirms_idx`, так что
+     * досортировки она не стоит.
+     */
+    .orderBy(desc(officeEquipmentMovements.createdAt), desc(officeEquipmentMovements.id));
 
   for (const row of rows) {
     if (!row.requestId || result.has(row.requestId)) continue; // порядок убывающий — первое и есть последнее
