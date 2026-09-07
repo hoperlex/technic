@@ -783,6 +783,111 @@ describe.skipIf(!DB_URL)('массовые действия над заявка�
       const unknown = await inject('GET', `${BULK}/${randomUUID()}`, ctx.operator.auth);
       expect(unknown.statusCode, unknown.body).toBe(404);
     });
+
+    it('11. та же пачка с переставленными строками — повтор, а не «другое тело»', async () => {
+      /*
+       * ОБЕЩАНИЕ Р7 (ADR 0167, §2): «нормализуется всё тело вместе с порядком строк — переставленные
+       * местами заявки та же команда». Держалось оно наполовину: нормализация сортировала ключи
+       * объектов, но не элементы списков, и повтор, собравший тот же выбор в другом порядке
+       * (реестр пересортирован, список перечитан), получал «под этим ключом уже принята другая
+       * команда» — отказ по форме тела, а не по его существу. Ровно тот случай, ради которого ключ
+       * идемпотентности и заводили: клиент повторяет свою же команду и обязан получить свой отчёт.
+       *
+       * ГРАНИЦА ПРОВЕРЯЕТСЯ ТУТ ЖЕ, и без неё случай был бы опасен: тело, другое ПО СОСТАВУ, обязано
+       * отбиваться по-прежнему. Иначе «нечувствителен к порядку» незаметно стало бы «нечувствителен
+       * ни к чему», и под занятым ключом проехала бы вторая, настоящая команда.
+       */
+      const ids = [await makeRequest(), await makeRequest(), await makeRequest()];
+      const rows = await rowsOf(ids);
+      const key = randomUUID();
+      const reason = 'Ждём поставку до понедельника';
+
+      const first = await bulkOk({ operation: 'hold', rows, reason }, ctx.operator.auth, key);
+      expect(first.done).toBe(3);
+      const versionsAfterFirst = await rowsOf(ids);
+
+      /*
+       * Тот же выбор в обратном порядке — и порядок ключей переставлен и у тела, и внутри строк:
+       * отпечаток обязан быть нечувствителен к обоим, а отчёт вернуться прежний слово в слово,
+       * вместе с порядком строк ПЕРВОГО запроса (он и есть сохранённый отчёт).
+       */
+      const shuffled = await bulkOk(
+        {
+          reason,
+          rows: [...rows].reverse().map((row) => ({ version: row.version, id: row.id })),
+          operation: 'hold',
+        },
+        ctx.operator.auth,
+        key,
+      );
+      expect(shuffled).toEqual(first);
+      // Ни одного второго применения: версии заявок стоят там же, где их оставил первый заход.
+      expect(await rowsOf(ids)).toEqual(versionsAfterFirst);
+
+      // Другой СОСТАВ — другая команда: строк две вместо трёх.
+      const shorter = await bulk(
+        { operation: 'hold', rows: [rows[0]!, rows[1]!], reason },
+        ctx.operator.auth,
+        key,
+      );
+      expect(shorter.statusCode, shorter.body).toBe(409);
+      expect(shorter.json()).toMatchObject({
+        code: SERVICE_REQUEST_BULK_CONFLICT_CODES.idempotency,
+      });
+
+      // И тот же состав с другой версией строки — тоже другая команда: версии в отпечаток входят,
+      // потому что человек перечитал список перед нажатием.
+      const bumped = await bulk(
+        {
+          operation: 'hold',
+          rows: rows.map((row, i) => (i === 0 ? { ...row, version: row.version + 1 } : row)),
+          reason,
+        },
+        ctx.operator.auth,
+        key,
+      );
+      expect(bumped.statusCode, bumped.body).toBe(409);
+      expect(bumped.json()).toMatchObject({
+        code: SERVICE_REQUEST_BULK_CONFLICT_CODES.idempotency,
+      });
+    });
+
+    it('12. отпечаток: состав исполнителей — набор, а не последовательность', async () => {
+      /*
+       * ВТОРОЙ (И ПОСЛЕДНИЙ) СПИСОК В ТЕЛЕ КОМАНДЫ — `userIds` назначения, и решение «сравнивать как
+       * набор» принято по нему отдельно, а не распространено на массивы вообще: порядок имён в нём
+       * не значит ничего — ручка первым же действием сворачивает состав в `Set` и считает дельту
+       * множествами. Спрашивается это прямо у функции: собрать случай пакетной ручкой значило бы
+       * завести двух пригодных исполнителей ради вопроса, который к назначению не относится.
+       *
+       * КРАТНОСТЬ ПРИ ЭТОМ СОХРАНЯЕТСЯ, и это тоже проверяется: отпечаток сравнивает ТЕЛА, а не их
+       * последствия, и не берётся угадывать, что ручка потом свернёт повтор имени.
+       */
+      const { serviceBulkFingerprint } = await import('../src/services/service-request-bulk');
+      const [first, second] = [randomUUID(), randomUUID()];
+      const rows = [
+        { id: randomUUID(), version: 1 },
+        { id: randomUUID(), version: 2 },
+      ];
+      const body = (userIds: string[], order: typeof rows) => ({
+        operation: 'assign',
+        rows: order,
+        userIds,
+        serviceCounterpartyId: null,
+        reason: 'Раскидываем работу',
+        comment: '',
+      });
+
+      expect(serviceBulkFingerprint(body([first, second], rows))).toBe(
+        serviceBulkFingerprint(body([second, first], [...rows].reverse())),
+      );
+      expect(serviceBulkFingerprint(body([first, first], rows))).not.toBe(
+        serviceBulkFingerprint(body([first], rows)),
+      );
+      expect(serviceBulkFingerprint(body([first, second], rows))).not.toBe(
+        serviceBulkFingerprint(body([first, randomUUID()], rows)),
+      );
+    });
   });
 
   // ────────────────────────────── §11.2. Операции ──────────────────────────────
@@ -1382,6 +1487,216 @@ describe.skipIf(!DB_URL)('массовые действия над заявка�
       const { bulkOperationId: _tag, route: _route, ...common } = written[0]!.metadata;
       const { route: _singleRoute, ...singleCommon } = aloneRows[0]!.metadata;
       expect(common).toEqual(singleCommon);
+    });
+  });
+
+  // ────────────────────────── §6.3. Уборка брошенных пачек ──────────────────────────
+
+  describe('§6.3. Уборка журнала', () => {
+    /**
+     * ЧЕГО ОТСЮДА НЕ ВИДНО РУЧКОЙ. Уборка — вторая, и последняя, дверь к финализации: она ставит
+     * почтовую сводку и объявляет недоделанные строки брошенными. Ручки к ней нет (её зовёт
+     * воркер), а брошенной пачки штатным путём не получить вовсе — для этого процесс должен умереть
+     * посередине. Поэтому и запись журнала, и почтовые намерения строк заводятся прямым SQL — ровно
+     * в том виде, в каком их оставил бы умерший владелец. Всё остальное в случаях настоящее: уборку
+     * зовёт её собственная функция, письма считаются в очереди, состояние читается из журнала.
+     *
+     * ПОЧЕМУ ЭТО ВООБЩЕ ПРОВЕРЯЕТСЯ ЗДЕСЬ. Уборщик — не наблюдатель, а второй владелец пачки, и
+     * ошибка у него дороже, чем у исполнителя: он не «сделает лишнюю строку», а объявит брошенной
+     * живую работу и займёт `dedupe_key` неполной сводкой — после чего правильная не уйдёт никогда.
+     */
+    const ABANDONED_AGE = "interval '25 hours'";
+
+    /** Строка журнала в объёме, которым видно владение: уборку иначе не отличить от бездействия. */
+    async function journalRow(id: string) {
+      const res = await ctx.db.execute<{
+        owner_token: string | null;
+        lease_alive: boolean | null;
+        finished: boolean;
+        row_results: ServiceRequestBulkRowResultDto[];
+        result: ServiceRequestBulkResultDto | null;
+      }>(sql`
+        SELECT owner_token::text AS owner_token,
+               lease_expires_at > now() AS lease_alive,
+               finished_at IS NOT NULL AS finished,
+               row_results, result
+          FROM service_request_bulk_operations WHERE id = ${id}`);
+      const row = res.rows[0];
+      if (!row) throw new Error(`В журнале нет пачки ${id}`);
+      return row;
+    }
+
+    /**
+     * Брошенная пачка: одна строка уже зафиксирована владельцем, аренда мертва, а `updated_at`
+     * старше `ABANDON_HOURS` — то есть ровно то, что уборка обязана подобрать.
+     *
+     * Идентификатор выполненной строки настоящий, хотя уборка в заявку и не ходит: журнал хранит
+     * то, что зафиксировал владелец, и сверять итог с выдуманным id значило бы сверять его с
+     * мусором.
+     */
+    async function abandonedPack(requested: number): Promise<{ id: string; doneRow: string }> {
+      const doneRow = await makeRequest();
+      const entry: ServiceRequestBulkRowResultDto = {
+        index: 0,
+        id: doneRow,
+        displayNumber: (await card(doneRow)).displayNumber,
+        outcome: 'done',
+      };
+      const res = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO service_request_bulk_operations
+          (actor_user_id, actor_name, idempotency_key, idempotency_fingerprint, operation,
+           requested_count, row_results, owner_token, lease_expires_at, created_at, updated_at)
+        VALUES (${ctx.operator.id}, 'Тестовый Пользователь oper', ${randomUUID()},
+                ${'v2:умерший-владелец'}, 'hold', ${requested},
+                ${JSON.stringify([entry])}::jsonb, ${randomUUID()},
+                now() - ${sql.raw(ABANDONED_AGE)}, now() - ${sql.raw(ABANDONED_AGE)},
+                now() - ${sql.raw(ABANDONED_AGE)})
+        RETURNING id`);
+      return { id: res.rows[0]!.id, doneRow };
+    }
+
+    /**
+     * Почтовое намерение строки — то, что сложил бы её сток вместо письма (Р10). Отпечаток адресата
+     * считается ТОЙ ЖЕ функцией, что и в бою: сводка группируется по нему, и придуманный здесь хеш
+     * проверял бы группировку по выдумке.
+     */
+    async function putIntent(operationId: string, rowIndex: number, line: string): Promise<void> {
+      const { bulkMailRecipientHash } = await import('../src/services/service-request-mail');
+      await ctx.db.execute(sql`
+        INSERT INTO service_request_bulk_mail_items
+          (operation_id, row_index, recipient_hash, recipient_email, audience, event,
+           projected_payload)
+        VALUES (${operationId}, ${rowIndex},
+                ${bulkMailRecipientHash('internal', SERVICE_MAILBOX)}, ${SERVICE_MAILBOX},
+                'internal', 'service_request_held',
+                ${JSON.stringify({ line })}::jsonb)`);
+    }
+
+    const sweep = async () => {
+      const { sweepServiceRequestBulk } = await import('../src/services/service-request-bulk');
+      return sweepServiceRequestBulk();
+    };
+
+    it('брошенная пачка закрывается сохранённым итогом, а сводка уходит один раз', async () => {
+      /*
+       * Базовый случай §6.3: зафиксированный успех остаётся успехом, необработанные строки получают
+       * `abandoned`, аренда снимается, а намерения умершего владельца доезжают сводкой. Второй
+       * проход уборки обязан не найти ничего: пачка закрыта, и второго письма быть не должно.
+       */
+      const { id, doneRow } = await abandonedPack(3);
+      await putIntent(id, 0, 'Заявка № 1 — отложена');
+
+      const swept = await sweep();
+      expect(swept.closed).toBe(1);
+
+      const row = await journalRow(id);
+      expect(row.finished).toBe(true);
+      // Аренда снята вместе с итогом: держать её после завершения не за чем.
+      expect(row.owner_token).toBeNull();
+      const result = row.result!;
+      expect([result.done, result.failed]).toEqual([1, 2]);
+      // Строка, зафиксированная владельцем, не переписана уборкой — она и есть «сохранённый итог».
+      expect(result.rows[0]).toMatchObject({ index: 0, id: doneRow, outcome: 'done' });
+      expect(result.rows.slice(1)).toMatchObject([
+        { index: 1, id: '', outcome: 'failed', code: 'abandoned' },
+        { index: 2, id: '', outcome: 'failed', code: 'abandoned' },
+      ]);
+
+      const digests = await digestsOf(id);
+      expect(digests).toHaveLength(1);
+      expect(digests[0]!.body_text).toContain('Заявка № 1 — отложена');
+
+      const again = await sweep();
+      expect(again.closed).toBe(0);
+      expect(await digestsOf(id)).toHaveLength(1);
+    });
+
+    it('аренда, взятая между чтением и захватом, уборщика останавливает', async () => {
+      /*
+       * ГОНКА, РАДИ КОТОРОЙ ЗАХВАТ И ЗАВЕДЁН. Список просроченных — снимок: пока уборщик доходит до
+       * строки, повтор по ключу успевает взять новую аренду и продолжить пачку. Уборщик, который
+       * решает по прочитанному, объявит её строки брошенными и поставит сводку по половине
+       * намерений — а `dedupe_key` у сводки один на пару «пачка + адресат», и правильная, полная,
+       * после этого не уйдёт НИКОГДА. Поэтому право на финализацию даёт только собственный токен,
+       * взятый условием «аренда всё ещё мертва» в самом `UPDATE`.
+       *
+       * ОКНО ГОНКИ ОТКРЫВАЕТСЯ ЗДЕСЬ РУКАМИ, и другого способа нет: между сканом и захватом
+       * помещаются миллисекунды, и ждать их совпадения значило бы проверять расписание машины, а не
+       * правило. Подменяется ровно один запрос — тот, которым уборка увидела нашу пачку; сразу
+       * после него аренду забирает «повтор по ключу», как это сделал бы живой человек из портала.
+       */
+      const { id, doneRow } = await abandonedPack(3);
+      await putIntent(id, 0, 'Заявка № 1 — отложена');
+      const newOwner = randomUUID();
+
+      const realExecute = ctx.db.execute.bind(ctx.db);
+      let revived = false;
+      const spy = vi.spyOn(ctx.db, 'execute').mockImplementation((async (query: never) => {
+        const out = await realExecute(query);
+        if (!revived && out.rows.some((r) => (r as { id?: string }).id === id)) {
+          revived = true;
+          await realExecute(sql`
+            UPDATE service_request_bulk_operations
+               SET owner_token = ${newOwner}, lease_expires_at = now() + interval '5 minutes',
+                   updated_at = now()
+             WHERE id = ${id}`);
+        }
+        return out;
+      }) as typeof ctx.db.execute);
+
+      let swept: { closed: number; purged: number };
+      try {
+        swept = await sweep();
+      } finally {
+        spy.mockRestore();
+      }
+
+      // Окно и правда открылось: иначе случай зеленел бы, ничего не проверив.
+      expect(revived).toBe(true);
+      expect(swept.closed).toBe(0);
+
+      const row = await journalRow(id);
+      expect(row.finished).toBe(false);
+      // Аренду уборщик не отобрал и токен живого владельца не переписал: пачка осталась его.
+      expect(row.owner_token).toBe(newOwner);
+      expect(row.lease_alive).toBe(true);
+      expect(row.result).toBeNull();
+      // Строки не испорчены: ни одной `abandoned` поверх ещё не выполненной работы.
+      expect(row.row_results).toHaveLength(1);
+      expect(row.row_results[0]).toMatchObject({ index: 0, id: doneRow, outcome: 'done' });
+      // И главное: преждевременной сводки нет — `dedupe_key` свободен.
+      expect(await digestsOf(id)).toHaveLength(0);
+
+      /*
+       * ЧЕМ ЭТО КОНЧАЕТСЯ. Второй владелец сделал ещё одну строку, сложил её намерение и тоже умер;
+       * аренда истекла по-настоящему. Теперь пачка и правда брошена, уборщик берёт её своим
+       * захватом — и сводка уходит ПОЛНОЙ. Уйди она с первой попытки, вторая строка не попала бы в
+       * письмо никогда: второе письмо с тем же `dedupe_key` очередь молча проглатывает.
+       */
+      const second: ServiceRequestBulkRowResultDto = {
+        index: 1,
+        id: await makeRequest(),
+        displayNumber: null,
+        outcome: 'done',
+      };
+      await ctx.db.execute(sql`
+        UPDATE service_request_bulk_operations
+           SET row_results = row_results || ${JSON.stringify([second])}::jsonb,
+               lease_expires_at = now() - interval '1 minute',
+               updated_at = now() - ${sql.raw(ABANDONED_AGE)}
+         WHERE id = ${id}`);
+      await putIntent(id, 1, 'Заявка № 2 — отложена');
+
+      const again = await sweep();
+      expect(again.closed).toBe(1);
+      const closedRow = await journalRow(id);
+      expect(closedRow.finished).toBe(true);
+      expect([closedRow.result!.done, closedRow.result!.failed]).toEqual([2, 1]);
+
+      const digests = await digestsOf(id);
+      expect(digests).toHaveLength(1);
+      expect(digests[0]!.body_text).toContain('Заявка № 1 — отложена');
+      expect(digests[0]!.body_text).toContain('Заявка № 2 — отложена');
     });
   });
 });

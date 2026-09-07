@@ -156,7 +156,11 @@ class BulkLeaseLost extends Error {
 
 /**
  * Отпечаток нормализованного тела (Р7, приём кандидата и закупки): версия впереди, чтобы смена
- * состава полей однажды не выдала старый отпечаток за новый.
+ * состава полей — или самого правила нормализации — однажды не выдала старый отпечаток за новый.
+ * `v2` и есть такая смена: `v1` сортировал ключи объектов, но не элементы списков, и та же пачка,
+ * присланная в другом порядке, получала «ключ занят другой командой» — ровно то, что обещание Р7
+ * запрещает. Отпечатки незакрытых пачек прежнего выпуска на этом переходе перестают совпадать, и
+ * это честнее молчаливого `v1`, под которым одно имя означало бы два разных правила.
  *
  * Нормализуется ВСЁ тело вместе с порядком строк: переставленные местами заявки — та же команда, и
  * честный повтор потерянного ответа не должен получать «ключ занят другой командой». Версии строк
@@ -164,14 +168,40 @@ class BulkLeaseLost extends Error {
  * перечитал список.
  */
 export function serviceBulkFingerprint(body: unknown): string {
-  return `v1:${createHash('sha256')
+  return `v2:${createHash('sha256')
     .update(JSON.stringify(normalize(body)))
     .digest('hex')}`;
 }
 
-/** Устойчивый к порядку ключей вид тела: `JSON.stringify` иначе зависел бы от порядка полей. */
+/**
+ * Устойчивый к порядку вид тела: `JSON.stringify` иначе зависел бы и от порядка ключей объекта, и
+ * от порядка элементов списка.
+ *
+ * СПИСКИ СРАВНИВАЮТСЯ КАК НАБОР, и это решение по СОСТАВУ ИМЕННО ЭТОГО тела
+ * (`serviceRequestBulkSchema`), а не общее правило для любого JSON. Списков в нём ровно два, и оба
+ * — множества: `rows` набраны галочками в реестре, где порядок отметок командой не является (повтор
+ * идентификатора схема отбивает запросом целиком), а `userIds` назначения — состав исполнителей,
+ * который ручка первым же действием сворачивает в `Set`, так что старшинства у первого имени нет.
+ * Заведись в теле список, где порядок значим (шаги, приоритеты, точки маршрута), сортировать его
+ * будет НЕЛЬЗЯ — правило придётся делать выборочным по полю: тихая сортировка такого списка
+ * склеила бы две разные команды в один отпечаток, а это хуже лишнего отказа.
+ *
+ * Кратность при этом сохраняется: `[a, a]` и `[a]` — разные тела, и отпечаток обязан их различать.
+ */
 function normalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(normalize);
+  if (Array.isArray(value)) {
+    /*
+     * Порядок задаёт сериализация уже нормализованного элемента: она годится и строкам, и объектам,
+     * и одинакова на любом узле — в отличие от `localeCompare`, который зависит от настроек ICU, а
+     * отпечаток обязан совпадать у всех, кто его считает.
+     */
+    const items = value.map((item) => {
+      const normalized = normalize(item);
+      return { normalized, order: JSON.stringify(normalized) };
+    });
+    items.sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : 0));
+    return items.map((item) => item.normalized);
+  }
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
@@ -199,6 +229,16 @@ function inProgressConflict(): never {
 
 const leaseInterval = () =>
   sql.raw(`interval '${Number(config.serviceRequests.bulk.leaseSeconds)} seconds'`);
+
+/**
+ * «Аренды на этой пачке нет» — ОДНИМ выражением на всех, кто её забирает.
+ *
+ * Вопрос у захватчиков один и тот же, и ответов у него быть не может два: разойдись копии условия,
+ * повтор по ключу и уборка стали бы владеть пачкой по разным правилам — и разошлись бы молча, обе
+ * продолжая работать.
+ */
+const leaseDead = () => sql`(${serviceRequestBulkOperations.leaseExpiresAt} IS NULL
+     OR ${serviceRequestBulkOperations.leaseExpiresAt} <= now())`;
 
 /** Строка журнала в объёме, которым принимаются все решения протокола. */
 interface BulkRow {
@@ -297,6 +337,36 @@ async function takeOver(row: BulkRow, fingerprint: string): Promise<BulkClaim> {
   if (row.finished && row.result) return { kind: 'replay', result: row.result };
   if (row.leaseAlive) inProgressConflict();
 
+  const ownerToken = await captureLease(row.id);
+  if (!ownerToken) {
+    // Либо пачку подхватил кто-то другой, либо её успели завершить: и то и другое читается
+    // перечитыванием, а не догадкой.
+    const now = await findByKey0(row.id);
+    if (now?.finished && now.result) return { kind: 'replay', result: now.result };
+    inProgressConflict();
+  }
+  return { kind: 'claimed', operationId: row.id, ownerToken, done: row.rowResults ?? [] };
+}
+
+/**
+ * ЗАХВАТ ПАЧКИ — ОДНИМ УСЛОВНЫМ `UPDATE`, И ОДИН НА ВСЕХ ЗАХВАТЧИКОВ (Р7, §6.3).
+ *
+ * Так забирает брошенную пачку повтор по ключу (`takeOver`), и ровно так же — уборщик. Все три
+ * условия проверяются В САМОМ `UPDATE`, а не берутся из прочитанного: между чтением и записью
+ * помещается чужой захват, и вырвать пачку у живого владельца означало бы применить её строки
+ * дважды. Прочитанное состояние отвечает лишь на вопрос «что здесь было», а «моё ли это сейчас» —
+ * только сам `UPDATE`.
+ *
+ * ВЫИГРАВШИЙ ПОЛУЧАЕТ СВОЙ ТОКЕН, и дальше под ним идёт ВСЁ: checkpoint строки, почтовая сводка,
+ * закрытие. `owner_token` в `WHERE` каждого следующего запроса и есть доказательство, что пачка
+ * всё ещё его; потерявший её на середине изменит ноль строк и отойдёт. Проигравший здесь получает
+ * `null` и обязан отойти целиком — половина финализации хуже, чем не начатая вовсе.
+ *
+ * Аренда продлевается вместе с захватом, а `updated_at` идёт с ней заодно: «эту пачку прямо сейчас
+ * кто-то ведёт» — правда и для повтора, и для уборки, а часы заброшенности считаются именно по
+ * `updated_at`.
+ */
+async function captureLease(operationId: string): Promise<string | null> {
   const ownerToken = randomUUID();
   const [taken] = await db
     .update(serviceRequestBulkOperations)
@@ -307,24 +377,13 @@ async function takeOver(row: BulkRow, fingerprint: string): Promise<BulkClaim> {
     })
     .where(
       and(
-        eq(serviceRequestBulkOperations.id, row.id),
+        eq(serviceRequestBulkOperations.id, operationId),
         isNull(serviceRequestBulkOperations.finishedAt),
-        // Условие «аренда и правда мертва» повторяется в `WHERE`, а не берётся из прочитанного:
-        // между чтением и записью помещается чужой takeover, и вырвать пачку у живого владельца
-        // означало бы применить строку дважды.
-        sql`(${serviceRequestBulkOperations.leaseExpiresAt} IS NULL
-             OR ${serviceRequestBulkOperations.leaseExpiresAt} <= now())`,
+        leaseDead(),
       ),
     )
     .returning({ id: serviceRequestBulkOperations.id });
-  if (!taken) {
-    // Либо пачку подхватил кто-то другой, либо её успели завершить: и то и другое читается
-    // перечитыванием, а не догадкой.
-    const now = await findByKey0(row.id);
-    if (now?.finished && now.result) return { kind: 'replay', result: now.result };
-    inProgressConflict();
-  }
-  return { kind: 'claimed', operationId: row.id, ownerToken, done: row.rowResults ?? [] };
+  return taken ? ownerToken : null;
 }
 
 /** Та же строка по идентификатору: нужна там, где ключ и автор уже отработали. */
@@ -918,7 +977,9 @@ export async function readServiceBulkStatus(
  * 1. Брошенная пачка с истёкшей арендой и без heartbeat дольше `abandonHours` закрывается
  *    сохранённым итогом: уже готовые строки остаются как есть, необработанные получают
  *    `abandoned`. Так никогда не повторённая пачка не живёт вечно, а её зафиксированные успехи не
- *    теряются и не превращаются в ложное «ничего не вышло».
+ *    теряются и не превращаются в ложное «ничего не вышло». Закрывает уборщик её ПОД СВОЕЙ
+ *    арендой, взятой тем же захватом, что и повтор по ключу: он такой же владелец пачки, а не
+ *    наблюдатель со стороны, — и права распоряжаться чужой живой пачкой у него нет.
  * 2. Завершённые пачки старше `retentionDays` удаляются каскадом вместе со своими почтовыми
  *    намерениями.
  *
@@ -932,9 +993,11 @@ export async function sweepServiceRequestBulk(): Promise<{ closed: number; purge
 
   /*
    * Без `FOR UPDATE SKIP LOCKED`, и это решение: взятая ВНЕ транзакции блокировка отпускается тем
-   * же запросом и не удерживает ничего — она выглядела бы защитой, не будучи ею. Двух уборщиков
-   * разводит условный `UPDATE` ниже (`finished_at IS NULL`): второй изменит ноль строк и просто не
-   * посчитает пачку своей.
+   * же запросом и не удерживает ничего — она выглядела бы защитой, не будучи ею. Уборщиков (и
+   * уборщика с повтором по ключу) разводит захват аренды ниже: он и есть общий рубеж владения.
+   *
+   * Список — СНИМОК, и относиться к нему надо как к снимку: пока уборщик доходит до строки, повтор
+   * по ключу успевает взять новую аренду и продолжить пачку.
    */
   const stale = await db.execute<{ id: string }>(sql`
     SELECT id FROM service_request_bulk_operations
@@ -944,8 +1007,28 @@ export async function sweepServiceRequestBulk(): Promise<{ closed: number; purge
 
   let closed = 0;
   for (const { id } of stale.rows) {
+    /*
+     * ЗАХВАТ — ДО ЕДИНОГО ДЕЙСТВИЯ НАД ПАЧКОЙ, И ТЕМ ЖЕ ПРАВИЛОМ, ЧТО У ПОВТОРА ПО КЛЮЧУ.
+     *
+     * Уборка — не чтение, а финализация: она ставит письма и объявляет строки брошенными. Делать
+     * это по прочитанному списку значит однажды сделать это над пачкой, которую УЖЕ подхватил
+     * живой исполнитель, — и не наполовину, а дважды непоправимо: строки, которые он вот-вот
+     * выполнит, объявляются `abandoned`, а преждевременная сводка занимает `dedupe_key` и не даёт
+     * уйти правильной. Поэтому право на все три действия даёт только собственный токен, взятый
+     * условием «аренда всё ещё мертва» в самом `UPDATE`.
+     *
+     * ПРОИГРАВШИЙ МОЛЧА ИДЁТ ДАЛЬШЕ: раз аренда жива, пачка не брошена — трогать её не за что, и
+     * чинить здесь нечего.
+     */
+    const ownerToken = await captureLease(id);
+    if (!ownerToken) continue;
+    /*
+     * Состояние перечитывается ПОСЛЕ захвата: прежний владелец мог дописать checkpoint перед самой
+     * смертью аренды, и сводка с итогом обязаны считаться по тому, что уже никто не изменит, —
+     * чужой checkpoint под нашим токеном не проходит.
+     */
     const row = await findByKey0(id);
-    if (!row || row.finished) continue;
+    if (!row) continue;
     /*
      * СВОДКА СТАВИТСЯ И ЗДЕСЬ, И ДО ЗАКРЫТИЯ (§6.3, Р10). Уборка — вторая, и последняя, дверь к
      * финализации: у брошенной пачки уже есть успешные строки, а у них — сложенные почтовые
@@ -992,6 +1075,9 @@ export async function sweepServiceRequestBulk(): Promise<{ closed: number; purge
       .where(
         and(
           eq(serviceRequestBulkOperations.id, id),
+          // Закрытие — под тем же токеном, что и захват: пока уборщик собирал сводку, аренду мог
+          // отобрать повтор по ключу, и тогда закрывать нечего — пачка снова живая и своя.
+          eq(serviceRequestBulkOperations.ownerToken, ownerToken),
           isNull(serviceRequestBulkOperations.finishedAt),
         ),
       )
