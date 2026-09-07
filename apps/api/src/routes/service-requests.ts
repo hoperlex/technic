@@ -2837,6 +2837,11 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * Условие для самих `P` строит общий builder, а не этот маршрут: длина всех страниц обязана
    * совпасть с `repeat.count`, который человек только что видел в теге, — а совпадёт она лишь
    * тогда, когда условий не шесть похожих, а те же шесть.
+   *
+   * ДАТЫ ЗАВЕДЕНИЯ ЭТО ЧТЕНИЕ НЕ БЕРЁТ, и это не экономия колонки: окно builder отсчитывает от
+   * `created_at` самой `R`, но читает его колонкой базы. Проехав здесь через `Date`, дата потеряла
+   * бы микросекунды `timestamptz`, окно съехало бы вниз на этот хвост — и ссылка отвечала бы
+   * пустым списком там, где метка обещала повтор.
    */
   async function previousWhere(p: Principal, requestId: string): Promise<SQL> {
     const [subject] = await db
@@ -2844,7 +2849,6 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         id: serviceRequests.id,
         kind: serviceRequests.kind,
         officeEquipmentId: serviceRequests.officeEquipmentId,
-        createdAt: serviceRequests.createdAt,
       })
       .from(serviceRequests)
       .where(
