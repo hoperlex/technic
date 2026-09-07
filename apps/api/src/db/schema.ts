@@ -3491,6 +3491,22 @@ export const serviceRequests = pgTable(
             AND ${t.status} NOT IN ('accepted','cancelled','on_hold')`,
       ),
     createdAtIdx: index('service_requests_created_at_idx').on(t.createdAt),
+    /**
+     * Признак повторного обращения (план `docs/office-equipment-repeat-request-plan.md`, Р7;
+     * миграция `0276`). Частичный: повтор ищется только среди закрытых и отменённых живых заявок,
+     * и индекс остаётся размером с архив терминальных, а не со всей таблицей.
+     *
+     * Порядок колонок — по тому, как читается предикат: аппарат, вид, окно. `kind` ключом, а не
+     * условием, — тогда индекс отвечает и соседям («что закрывали по этому аппарату»), а
+     * расширение правила на расходники не потребует новой миграции. `status` в условии — константный
+     * предикат без функций, поэтому он одинаково ложится на прод (PostgreSQL 17) и на дев (16).
+     *
+     * Объявлен здесь ради `drizzle-kit generate`: индекс, живущий только в миграции, следующая
+     * генерация предложила бы снести — и однажды кто-нибудь согласится.
+     */
+    repeatIdx: index('service_requests_repeat_idx')
+      .on(t.officeEquipmentId, t.kind, sql`${t.statusChangedAt} DESC`)
+      .where(sql`${t.deletedAt} IS NULL AND ${t.status} IN ('accepted','cancelled')`),
   }),
 );
 

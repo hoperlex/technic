@@ -119,6 +119,7 @@ import {
   type ServiceWarrantyRowDto,
   type ServiceRequestChatSummaryDto,
   type ServiceRequestDto,
+  type ServiceRequestRepeatDto,
   type ServiceRequestExecutorDto,
   type ServiceRequestFileDto,
   type ServiceRequestItemDto,
@@ -203,6 +204,15 @@ import {
   serviceRequestTitle,
 } from '../services/service-request-diff';
 import { loadServiceRequestHistory } from '../services/service-request-history';
+/*
+ * Признак повторного обращения по аппарату (план `docs/office-equipment-repeat-request-plan.md`).
+ * Правило живёт одним builder'ом на сервере: список, карточка и отбор зовут его же, и второй
+ * записи условия — ни в контрактах, ни здесь — не заводится.
+ */
+import {
+  serviceRequestRepeatByRequest,
+  serviceRequestRepeatWhere,
+} from '../services/service-request-repeat';
 import {
   chatSummaryByRequest,
   chatUnreadCount,
@@ -639,6 +649,13 @@ function toDto(
   audience: ServiceRequestAudience,
   seesEquipmentDirectory: boolean,
   inCustomerScope: boolean,
+  /**
+   * Признак повторного обращения (план `docs/office-equipment-repeat-request-plan.md`).
+   * `undefined` — признак не применяется вовсе: окно выключено настройкой, либо у заявки нет
+   * аппарата, либо это не ремонт. Отличие от `count: 0` («считали, повторов нет») содержательное, и
+   * держится оно спредом в теле: поля не должно быть в объекте, а не только в его JSON.
+   */
+  repeat: ServiceRequestRepeatDto | undefined,
 ): ServiceRequestDto {
   const r = row.r;
   return {
@@ -845,6 +862,7 @@ function toDto(
           sourceRequestNum: row.claimRequestNum,
         }
       : null,
+    ...(repeat ? { repeat } : {}),
     estimateRevision: r.estimateRevision,
     /**
      * Непогашенное предъявление (Р2) — то, что означала «Смета на согласовании». Полем DTO, а не
@@ -920,11 +938,22 @@ function toDto(
  */
 async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceRequestDto[]> {
   const ids = rows.map((row) => row.r.id);
-  const [items, fileMap, executorMap, consumableMap] = await Promise.all([
+  /*
+   * Признак повторного обращения считается ОДНИМ запросом на страницу и идёт в общий `Promise.all`:
+   * от остальных блоков он не зависит вовсе. Окно у каждой строки своё — от её собственного
+   * `created_at`, — поэтому builder берёт страницу списком троек и считает боковым соединением;
+   * группировка по аппарату приписала бы прошлогодней заявке свежий счёт (план повторов, Р6).
+   * При выключенном окне карта приходит пустой, не потревожив базу.
+   */
+  const [items, fileMap, executorMap, consumableMap, repeatMap] = await Promise.all([
     itemsByRequest(ids),
     filesByRequest(ids),
     executorsByRequest(ids),
     consumablesByRequest(ids),
+    serviceRequestRepeatByRequest(
+      p,
+      rows.map((row) => row.r),
+    ),
   ]);
   const chatMap = await chatSummaryByRequest(
     p,
@@ -993,6 +1022,7 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
         customerDepartmentId: row.r.customerDepartmentId,
         equipmentDepartmentId: row.r.equipmentDepartmentId,
       }),
+      repeatMap.get(row.r.id),
     );
   });
 }
@@ -2649,6 +2679,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             notInArray(serviceRequests.status, ['on_hold']),
           )
         : undefined,
+      /*
+       * «Только повторные» (план `docs/office-equipment-repeat-request-plan.md`, Р10): условие
+       * приходит готовым `EXISTS` из общего builder'а — второй копии правила у списка нет. При
+       * выключенном окне (`SERVICE_REQUEST_REPEAT_WINDOW_DAYS = 0`) builder отдаёт ложь, то есть
+       * пустую выдачу, а не отказ: параметр остаётся законным запросом с пустым итогом (Р5).
+       * Соединений условие не требует и потому годится и счётчику страницы, и `read-all`, которые
+       * зовут этот же `listWhere`.
+       */
+      q.repeat ? serviceRequestRepeatWhere(p) : undefined,
       q.createdFrom
         ? gte(serviceRequests.createdAt, new Date(`${q.createdFrom}T00:00:00Z`))
         : undefined,
