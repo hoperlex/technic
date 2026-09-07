@@ -4,6 +4,7 @@ import {
   dateKeySpan,
   formatWaybillDate,
   moscowDateKeyOf,
+  suggestWasteTicketYear,
   WASTE_TICKET_CHECK_CODES,
   type WasteTicketAttachedFile,
   type WasteTicketBadgeDto,
@@ -260,6 +261,33 @@ function quoted(value: string): string {
   return `«${value}»`;
 }
 
+/**
+ * Хвост замечания `date_mismatch` с проверяемой заменой года (Р10, ADR 0166 п. 5). Пустая строка —
+ * когда предлагать нечего, и это частый исход: одновременно неверные год и день безопасной
+ * подсказки не имеют.
+ *
+ * Формулировок две, и выбирает между ними ФАКТ, а не ветка сверки. Оговорка «день и месяц
+ * совпадают» — это то самое «отличие ровно на год» из ADR 0166 п. 5, и ставить её можно ровно
+ * тогда, когда день и месяц у талона и у якоря действительно одни и те же. В мягкой ветке
+ * подсказка попадает в допуск `planDateDays`, то есть день там сплошь и рядом другой, и утверждать
+ * про одну лишь цифру года было бы просто неправдой.
+ *
+ * Числом «один год» разница не называется и в первом случае: день и месяц совпадают, а лет между
+ * датами бывает и семь (талон 2019 года против якоря 2026-го). Совпадение дня и месяца — это всё,
+ * что здесь доказано, и ровно это замечание и говорит.
+ *
+ * Сам год подсказки отдельным числом тоже не печатается: человеку показывают дату целиком и в том
+ * же виде, в каком она стоит в первой половине замечания, — сравнивать он будет их, а не цифры.
+ */
+function yearHint(issuedOn: string, anchor: string, suggested: string | null): string {
+  if (!suggested) return '';
+  // День и месяц — хвост ключа `YYYY-MM-DD`; сравниваются с якорем, а не с самой подсказкой:
+  // подсказка отличается от текущей даты только годом, и про якорь она ничего не доказывает.
+  const sameDayAndMonth = issuedOn.slice(5) === anchor.slice(5);
+  const opening = sameDayAndMonth ? 'день и месяц совпадают — вероятно' : 'вероятно';
+  return `; ${opening}, неверно распознан год: проверьте ${formatWaybillDate(suggested)}`;
+}
+
 // ── Отпечаток входа (Р21) ──
 
 /**
@@ -368,7 +396,14 @@ export function wasteTicketChecks(input: WasteTicketChecksInput): WasteTicketChe
   );
 
   const collected = new Map<string, WasteTicketCheckDto>();
-  const push = (code: WasteTicketCheckCode, subjectKey: string, message: string): void => {
+  const push = (
+    code: WasteTicketCheckCode,
+    subjectKey: string,
+    message: string,
+    // Проверяемая замена года — только у `date_mismatch` (Р10, ADR 0166 п. 5). У прочих проверок
+    // подсказывать нечего: номер, объём и адрес правит человек, глядя на бумагу.
+    suggestedIssuedOn: string | null = null,
+  ): void => {
     // Одно замечание на пару «проверка + предмет»: этой парой оно и гасится принятием
     // (`PRIMARY KEY (request_id, check_code, subject_key)`), и вторая строка с тем же ключом
     // означала бы замечание, которое принять нельзя. Поводов бывает несколько — тогда они
@@ -376,7 +411,17 @@ export function wasteTicketChecks(input: WasteTicketChecksInput): WasteTicketChe
     const key = `${code} ${subjectKey}`;
     const existing = collected.get(key);
     if (existing) {
-      if (!existing.message.includes(message)) existing.message += `; ${message}`;
+      if (existing.message.includes(message)) return;
+      existing.message += `; ${message}`;
+      // ВТОРОЙ ПОВОД СНИМАЕТ ПОДСКАЗКУ — не из осторожности, а по её определению: подсказка
+      // обещает, что замена года ГАСИТ ЭТО ЗАМЕЧАНИЕ (Р10). Замечание с двумя поводами замена
+      // года не гасит: человек нажал бы кнопку, текст остался бы на экране, и следующей подсказке
+      // он бы уже не поверил. Поэтому подсказка снимается независимо от того, принёс ли
+      // дописанный повод свою: живой она остаётся только у замечания с единственным поводом.
+      //
+      // Повторённый слово в слово повод новым не считается (`return` выше): это тот же самый
+      // повод, текст от него не меняется, и подсказка остаётся действующей.
+      existing.suggestedIssuedOn = null;
       return;
     }
     collected.set(key, {
@@ -385,6 +430,7 @@ export function wasteTicketChecks(input: WasteTicketChecksInput): WasteTicketChe
       subjectKey,
       message,
       preliminary,
+      suggestedIssuedOn,
       resolution: null,
     });
   };
@@ -497,7 +543,12 @@ function unreviewedPaperFiles(
   }).length;
 }
 
-type Push = (code: WasteTicketCheckCode, subjectKey: string, message: string) => void;
+type Push = (
+  code: WasteTicketCheckCode,
+  subjectKey: string,
+  message: string,
+  suggestedIssuedOn?: string | null,
+) => void;
 
 /**
  * Уникальность двухслойная (Р17): точный повтор БУМАГИ виден по хэшу растра ещё до всякого чтения,
@@ -679,6 +730,11 @@ function collectVolume(
  * взаимоисключающие, а не идущие подряд: у них один код проверки и один предмет, а значит и одно
  * принятие на двоих (`PRIMARY KEY (request_id, check_code, subject_key)`) — два замечания с этим
  * ключом человек не смог бы разобрать по отдельности.
+ *
+ * ПОДСКАЗКА ГОДА (Р10, ADR 0166 п. 5) считается здесь же, вместе с замечанием, и никуда не
+ * сохраняется: замечания не материализуются (Р21), а отпечаток входа она не двигает — величина
+ * производная от тех же дат, что уже в нём лежат. Правило одно на обе ветки, меняется только
+ * окно: у введённого дня вывоза допуск нулевой, у плановой даты — `planDateDays`.
  */
 function collectDates(
   active: readonly WasteTicketCheckTicket[],
@@ -699,10 +755,15 @@ function collectDates(
     if (removedOn) {
       if (ticket.issuedOn === removedOn) continue;
       const off = daysText(daysBetween(ticket.issuedOn, removedOn));
+      // Допуск подсказки — ТО ЖЕ ОКНО, по которому замечание вообще возникло (Р10): у введённого
+      // дня вывоза сверка точная, поэтому и замена года годится только та, что попадает в день
+      // ровно. Подсказка, не гасящая замечание, — это предложение поправить дату «в никуда».
+      const suggested = suggestWasteTicketYear(ticket.issuedOn, removedOn, 0);
       push(
         'date_mismatch',
         ticket.id,
-        `Дата талона ${formatWaybillDate(ticket.issuedOn)}, дата вывоза ${formatWaybillDate(removedOn)} — расхождение ${off}`,
+        `Дата талона ${formatWaybillDate(ticket.issuedOn)}, дата вывоза ${formatWaybillDate(removedOn)} — расхождение ${off}${yearHint(ticket.issuedOn, removedOn, suggested)}`,
+        suggested,
       );
       continue;
     }
@@ -710,10 +771,14 @@ function collectDates(
     if (!plannedOn) continue;
     const off = daysBetween(ticket.issuedOn, plannedOn);
     if (off <= tolerances.planDateDays) continue;
+    // Мягкая ветка — тот же принцип с её собственным окном: годится замена года, после которой
+    // расхождение с планом укладывается в `planDateDays`.
+    const suggested = suggestWasteTicketYear(ticket.issuedOn, plannedOn, tolerances.planDateDays);
     push(
       'date_mismatch',
       ticket.id,
-      `Дата вывоза в закрытии не указана; дата талона ${formatWaybillDate(ticket.issuedOn)} расходится с плановой ${formatWaybillDate(plannedOn)} на ${daysText(off)}`,
+      `Дата вывоза в закрытии не указана; дата талона ${formatWaybillDate(ticket.issuedOn)} расходится с плановой ${formatWaybillDate(plannedOn)} на ${daysText(off)}${yearHint(ticket.issuedOn, plannedOn, suggested)}`,
+      suggested,
     );
   }
 }

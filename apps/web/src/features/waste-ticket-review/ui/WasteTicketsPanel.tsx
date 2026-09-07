@@ -9,6 +9,7 @@ import { BlindCheckPanel } from './BlindCheckPanel';
 import { TicketFormModal } from './TicketFormModal';
 import { TicketCard } from './TicketCard';
 import { ChecksStrip, FileState } from './RecognitionState';
+import { ticketDate } from './ticketDate';
 
 /**
  * Разбор талонов в карточке заявки (ADR 0114, план §9.2).
@@ -87,6 +88,36 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
     onSettled: () => setBusyId(null),
   });
 
+  /**
+   * Кнопка «Исправить год» из полосы замечаний (ADR 0166, п. 6, Р11 плана).
+   *
+   * Своей ручки у неё нет и не заводится: правка идёт обычным `PATCH` талона с одним предметным
+   * полем `issuedOn` рядом со служебным маркером `editSource`. По маркеру сервер под замком заявки
+   * заново строит подсказку и сверяет её с присланным значением — клиентское значение служит
+   * кнопкой, а не доказательством.
+   *
+   * Поэтому отказ здесь — нормальный ход событий, а не сбой: пока карточка была открыта, подсказка
+   * могла измениться или исчезнуть, замечание — стать принятым, талон — отклонённым. Список
+   * гасится и на отказе, тем же приёмом, что у кнопки подтверждения пакета (Р27 ADR 0155):
+   * оставь мы полосу как была, человек жал бы ту же кнопку снова.
+   */
+  const fixYear = useMutation({
+    mutationFn: (vars: { ticketId: string; issuedOn: string }) =>
+      wasteTicketsApi.update(requestId, vars.ticketId, {
+        issuedOn: vars.issuedOn,
+        editSource: 'year_suggestion',
+      }),
+    onSuccess: async (_res, vars) => {
+      await invalidate();
+      message.success(`Год исправлен: дата ${ticketDate(vars.issuedOn)}`);
+    },
+    onError: async (e) => {
+      await invalidate();
+      message.error(errorMessage(e));
+    },
+    onSettled: () => setBusyId(null),
+  });
+
   const recognize = useMutation({
     mutationFn: (fileId: string) => wasteTicketsApi.recognize(requestId, fileId),
     onSuccess: async () => {
@@ -158,6 +189,16 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
         checks={data.checks}
         preliminary={data.preliminary}
         hasTickets={data.tickets.some((t) => t.status !== 'dismissed')}
+        // Талоны отдаются полосе целиком: условия показа кнопки года — свойства талона, а
+        // замечание знает о нём только `subjectKey`.
+        tickets={data.tickets}
+        busyTicketId={busyId}
+        onFixYear={(ticketId, issuedOn) => {
+          // Тот же признак занятости, что у карточек: строка блокируется на время запроса, и
+          // второй клик по кнопке уже не проходит.
+          setBusyId(ticketId);
+          fixYear.mutate({ ticketId, issuedOn });
+        }}
       />
 
       {/* Ручной ввод — равноправный путь, а не запасной: машина читает не всё, а два талона на
@@ -268,9 +309,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
           ghost
           // Развёрнут сразу, если есть что показать по существу: свёрнутый блок с ответом на
           // вопрос «почему талонов нет» ничем не лучше отсутствующего.
-          defaultActiveKey={
-            data.files.some((f) => f.status !== 'done') ? ['files'] : undefined
-          }
+          defaultActiveKey={data.files.some((f) => f.status !== 'done') ? ['files'] : undefined}
           items={[
             {
               key: 'files',

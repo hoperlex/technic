@@ -55,6 +55,32 @@ function pick(sha: string, offset: number, mod: number): number {
   return parseInt(chunk, 16) % mod;
 }
 
+/**
+ * Написание даты, как его вернула бы модель в графе (ADR 0166, п. 1). Форма выбирается тем же
+ * хэшем, что и всё остальное, и перебирает **все четыре ветки правила выбора года**: четыре цифры
+ * (год сохраняется как прочитан), две (век выбирает якорь), без года (якорь даёт год целиком) и
+ * `null` — графы нет или она не читается, и остаётся `issuedOn` модели.
+ *
+ * День и месяц транскрипции ВСЕГДА те же, что в `issuedOn`. Расхождение по ним — отдельный повод
+ * для второго прохода (ADR 0166, п. 4), и заводить его у каждого третьего листа заглушки значило
+ * бы гонять каскад на ровном месте: разработка и тесты API увидели бы эскалацию там, где её в бою
+ * не будет. Кому нужен именно спор дня — тот задаёт талон `scripted`.
+ */
+function stubIssuedOnRaw(sha: string, seq: number, day: number, month: number): string | null {
+  const dd = String(day).padStart(2, '0');
+  const mm = String(month).padStart(2, '0');
+  switch (pick(sha, 2 + seq * 4, 4)) {
+    case 0:
+      return `${dd}.${mm}.2026`;
+    case 1:
+      return `${dd}.${mm}.26`;
+    case 2:
+      return `${dd}.${mm}`;
+    default:
+      return null;
+  }
+}
+
 function stubResponse(sha: string): WasteTicketRecognitionResponse {
   const twoTickets = pick(sha, 0, 3) === 0;
   const tickets = [0, 1].slice(0, twoTickets ? 2 : 1).map((seq) => {
@@ -69,6 +95,7 @@ function stubResponse(sha: string): WasteTicketRecognitionResponse {
     return {
       number,
       issuedOn: `2026-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      issuedOnRaw: stubIssuedOnRaw(sha, seq, day, month),
       volumeM3: volume,
       workKind,
       addressRaw: `г. Новосибирск, ул. Строителей, д. ${1 + pick(sha, 48 + seq * 4, 40)}`,

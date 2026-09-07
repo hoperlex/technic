@@ -190,18 +190,42 @@ export function completeJob(
 /**
  * Задача отложена: попытки не тратятся. Так растягивается во времени рассылка, упершаяся в потолок
  * отправки, и так ждёт настройки письмо канала, которого на этом сервере ещё нет.
+ *
+ * `incrementPayloadField` — имя поля полезной нагрузки, счётчик которого увеличивается на единицу
+ * этим же переносом. Заведено под повтор распознавания талона при смене якоря заявки (план
+ * `docs/waste-ticket-date-escalation-plan.md`, Р8): отсрочка `attempts` не трогает намеренно, а раз
+ * попытки не тратятся, потолка у такого повтора нет вовсе — заявка, которую правят несколько раз
+ * подряд, гоняла бы задачу по кругу. Считать повторы приходится самой задаче, и пережить возврат в
+ * очередь счётчик может только в её нагрузке: строка `jobs` — единственное, что от захода к заходу
+ * остаётся тем же.
+ *
+ * Приращение обязано ехать ТЕМ ЖЕ `UPDATE`, а не вторым запросом, ровно из-за условия владельца.
+ * Второй запрос выполнялся бы в момент, когда аренда уже могла быть потеряна: перевод в `pending`
+ * тогда не проходит (`locked_by` чужой), а счётчик по одному `id` увеличился бы у задачи, которую в
+ * это время ведёт другой воркер, — он получил бы чужой расход потолка и записал бы страницу без
+ * нужной ступени. Здесь же статус и счётчик — одна строка одного запроса, поэтому «задача больше не
+ * наша» означает, что не изменилось ничего.
+ *
+ * Отсутствующее поле считается нулём и создаётся приращением (`jsonb_set` дописывает ключ, которого
+ * не было): у задачи, откладываемой впервые, счётчика в нагрузке нет. Без параметра `payload` не
+ * трогается вовсе — остальные типы задач вызывают `deferJob` как раньше.
  */
 export function deferJob(
   client: JobLeaseClient,
-  opts: { jobId: string; workerId: string; nextRunAt: Date },
+  opts: { jobId: string; workerId: string; nextRunAt: Date; incrementPayloadField?: string },
 ): Promise<boolean> {
   return finishOwned(
     client,
     `UPDATE jobs
         SET status = 'pending', next_run_at = $3, locked_by = NULL, locked_until = NULL,
+            payload = CASE
+                        WHEN $4::text IS NULL THEN payload
+                        ELSE jsonb_set(payload, ARRAY[$4::text],
+                                       to_jsonb(COALESCE((payload ->> $4::text)::int, 0) + 1))
+                      END,
             updated_at = now()
       WHERE id = $1 AND locked_by = $2`,
-    [opts.jobId, opts.workerId, opts.nextRunAt],
+    [opts.jobId, opts.workerId, opts.nextRunAt, opts.incrementPayloadField ?? null],
   );
 }
 

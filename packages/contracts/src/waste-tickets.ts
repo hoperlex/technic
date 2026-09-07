@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { dateOnlySchema, uuidSchema } from './common';
 import type { RequestStatus } from './enums';
+import { dateKeySpan } from './time';
 
 // ── Талоны вывоза: распознавание, разбор и сверка (ADR 0114, план `docs/waste-ticket-ocr-plan.md`) ──
 //
@@ -204,6 +205,22 @@ const ticketVolumeSchema = z.coerce
 const ticketAddressSchema = z.string().trim().max(500);
 
 /**
+ * Написание даты — символы, прочитанные моделью именно в графе «Дата», без дополнения и
+ * нормализации: «17.08.25», «17 авг 26», «17.08» (ADR 0166, п.1). Предел в 64 знака тот же, что у
+ * номера: любое написание с бланка в него укладывается, а строка длиннее означает, что в графу
+ * уехала половина талона.
+ *
+ * Это НЕ шестое поле бумаги, поэтому в `WASTE_TICKET_FIELDS` и в `unreadable` его нет: тот список
+ * закрыт `CHECK` журнала наблюдений и `resolved_fields` слепой перепроверки, и новое имя в нём
+ * стоило бы миграции ради сырья, которого человек в талоне не видит. Транскрипция — материал для
+ * чтения `issuedOn`, и живёт она отдельным свойством рядом с ним.
+ */
+const ticketIssuedOnRawSchema = z
+  .string()
+  .trim()
+  .max(64, 'Написание даты — не длиннее 64 символов');
+
+/**
  * Один талон в ответе модели.
  *
  * Все поля, кроме вида работ, **обнуляемы**, и это прямое требование промпта: догадка запрещена
@@ -217,6 +234,13 @@ const ticketAddressSchema = z.string().trim().max(500);
 export const recognizedWasteTicketSchema = z.object({
   number: ticketNumberSchema.nullable(),
   issuedOn: dateOnlySchema.nullable(),
+  /**
+   * Что модель прочитала в графе «Дата» дословно (ADR 0166, п.1). `null` — графы нет или она не
+   * читается. Свойство отдельное от `issuedOn` потому, что `YYYY-MM-DD` требует четырёх цифр года:
+   * запретить модели выбор века в этом поле нельзя вовсе, а вот перестать считать этот выбор
+   * доверенным — можно, как только написание удалось разобрать (`parseWasteTicketDateParts`).
+   */
+  issuedOnRaw: ticketIssuedOnRawSchema.nullable(),
   volumeM3: ticketVolumeSchema.nullable(),
   workKind: z.enum(WASTE_TICKET_WORK_KINDS),
   addressRaw: ticketAddressSchema.nullable(),
@@ -242,6 +266,307 @@ export const wasteTicketRecognitionResponseSchema = z.object({
   unreadable: z.array(z.enum(WASTE_TICKET_FIELDS)).default([]),
 });
 export type WasteTicketRecognitionResponse = z.infer<typeof wasteTicketRecognitionResponseSchema>;
+
+// ── Дата талона: разбор написания и выбор года по якорю (ADR 0166) ──
+//
+// Три чистые функции ниже зовут ДВОЕ: воркер — когда записывает талон, сверка API — когда строит
+// подсказку года. Поэтому они живут в контрактах рядом с нормализациями номера
+// (`waste-ticket-number.ts`), а не в сервисе портала: разъедься две реализации, воркер выбрал бы
+// один век, а подсказка предлагала бы заменить год ровно на тот, который сама и поставила.
+//
+// Правило понадобилось потому, что века модели взять было неоткуда: задание требует `YYYY-MM-DD`,
+// а ни текущей даты, ни даты заявки в запросе нет — двузначную запись модель достраивала сама
+// (ADR 0166, контекст). Отсюда главное свойство этого кода: **«сегодня» в нём не участвует
+// нигде**. Век выбирает ЯКОРЬ — фактический день вывоза или плановая дата заявки; разбор по
+// текущей дате (`parseWasteTicketDate` в API) повторял бы ровно ту же ошибку, что и промпт.
+
+/** Сколько дней в месяце: `Date.UTC(y, m, 0)` — последний день предыдущего, то есть месяца `m`. */
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+/**
+ * Сборка календарного ключа с проверкой существования дня. Написание пропускает и `31.02`, а такой
+ * даты не бывает: записав её, портал получил бы расхождение с датой вывоза на пустом месте и
+ * заставил бы человека разбирать ошибку разбора, а не бумагу.
+ *
+ * Год за пределами XX–XXI веков — это не дата, а неудачно прочитанные цифры: талоны собирают с
+ * 2024 года, и «1808» в графе года означает, что разбор пошёл не тем форматом.
+ */
+function issuedOnKeyOf(year: number, month: number, day: number): string | null {
+  if (year < 1900 || year > 2999) return null;
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > daysInMonth(year, month)) return null;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/** Расстояние между календарными днями в сутках — тем же счётом, что и в замечаниях сверки. */
+function dateKeyDistance(a: string, b: string): number {
+  const [from, to] = a <= b ? [a, b] : [b, a];
+  return Math.max(dateKeySpan(from, to) - 1, 0);
+}
+
+/**
+ * Написание даты, разобранное на составляющие (ADR 0166, п.2). Год отдельно от числа его цифр
+ * потому, что именно ЧИСЛО ЦИФР решает, что с ним делать: четырёхзначный сохраняется как
+ * прочитан, двузначному якорь выбирает век, а отсутствующему — год целиком.
+ */
+export interface WasteTicketDateParts {
+  day: number;
+  month: number;
+  /** Год как записан: `2026` при четырёх цифрах, `26` при двух, `null` — года в записи нет. */
+  year: number | null;
+  yearDigits: 0 | 2 | 4;
+}
+
+/** Русские месяцы: родительный падеж с бланка («17 августа») и именительный из подписей граф. */
+const MONTH_NAMES: readonly (readonly [string, string])[] = [
+  ['января', 'январь'],
+  ['февраля', 'февраль'],
+  ['марта', 'март'],
+  ['апреля', 'апрель'],
+  ['мая', 'май'],
+  ['июня', 'июнь'],
+  ['июля', 'июль'],
+  ['августа', 'август'],
+  ['сентября', 'сентябрь'],
+  ['октября', 'октябрь'],
+  ['ноября', 'ноябрь'],
+  ['декабря', 'декабрь'],
+];
+
+/**
+ * Месяц по названию. Сокращение считается началом полного слова, а не отдельным словарём: на
+ * бланках пишут и «авг», и «авг.», и «августа», и список сокращений пришлось бы держать полным,
+ * иначе «сент» разбиралось бы, а «сентяб» — нет. Трёх букв хватает: короче месяцы неразличимы
+ * («мар» против «мая»), а на трёх расходятся все двенадцать.
+ */
+function monthByName(token: string): number | null {
+  if (token.length < 3) return null;
+  const found = MONTH_NAMES.findIndex((forms) => forms.some((form) => form.startsWith(token)));
+  return found < 0 ? null : found + 1;
+}
+
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/u;
+/** Разделители перечислены поимённо: на бланках стоит точка, дробь, дефис или пробел — и только. */
+const NUMERIC_DATE_RE = /^(\d{1,2})[.\-/\s]+(\d{1,2})(?:[.\-/\s]+(\d{2}|\d{4}))?$/u;
+const NAMED_DATE_RE = /^(\d{1,2})[.\-/\s]*([а-я]+)[.\-/\s]*(\d{2}|\d{4})?$/u;
+const COMPACT_DATE_RE = /^\d{8}$/u;
+/** Хвост «2026 г.» снимается только после ЦИФРЫ: иначе правило откусило бы «г» у «17 авг». */
+const YEAR_SUFFIX_RE = /(\d)\s*(?:года|г\.?)$/u;
+
+/**
+ * Сборка разобранных частей с той проверкой существования дня, какая возможна без года. У
+ * четырёхзначной записи день проверяется до конца, у двузначной и у записи без года — по самому
+ * длинному варианту месяца (`daysInMonth(2000, …)`, високосный февраль): существование `29.02`
+ * решает уже выбранный год, и отбрасывать его здесь значило бы терять законную дату.
+ */
+function wasteTicketDateParts(
+  day: number,
+  month: number,
+  year: number | null,
+  yearDigits: 0 | 2 | 4,
+): WasteTicketDateParts | null {
+  if (yearDigits === 4) {
+    if (year === null || !issuedOnKeyOf(year, month, day)) return null;
+    return { day, month, year, yearDigits };
+  }
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > daysInMonth(2000, month)) return null;
+  return { day, month, year, yearDigits };
+}
+
+/**
+ * Написание даты с талона в составляющие (ADR 0166, п.2). Набор форм закрытый и собран с настоящих
+ * бланков: `17.08.2026`, `17/08/26`, `17 08 26`, `17 августа 2026`, `17 авг 26`, те же формы без
+ * года, `2026-08-17` (в этом виде отвечает сама модель) и восемь цифр подряд.
+ *
+ * Незнакомая форма и календарно несуществующая дата не разбираются, и это не строгость ради
+ * строгости: не разобрали написание — остаёмся на `issuedOn` модели, то есть на сегодняшнем
+ * поведении, а разобрали неверно — испортили бы ранее верную дату (ADR 0166, риски).
+ */
+export function parseWasteTicketDateParts(
+  raw: string | null | undefined,
+): WasteTicketDateParts | null {
+  if (typeof raw !== 'string') return null;
+  const text = raw.trim().toLowerCase().replace(/ё/gu, 'е').replace(YEAR_SUFFIX_RE, '$1').trim();
+  if (!text) return null;
+
+  const iso = ISO_DATE_RE.exec(text);
+  if (iso) return wasteTicketDateParts(Number(iso[3]), Number(iso[2]), Number(iso[1]), 4);
+
+  const numeric = NUMERIC_DATE_RE.exec(text);
+  if (numeric) {
+    const yearText = numeric[3];
+    return wasteTicketDateParts(
+      Number(numeric[1]),
+      Number(numeric[2]),
+      yearText ? Number(yearText) : null,
+      yearText ? ((yearText.length === 4 ? 4 : 2) as 2 | 4) : 0,
+    );
+  }
+
+  const named = NAMED_DATE_RE.exec(text);
+  if (named) {
+    const month = monthByName(named[2]!);
+    if (month === null) return null;
+    const yearText = named[3];
+    return wasteTicketDateParts(
+      Number(named[1]),
+      month,
+      yearText ? Number(yearText) : null,
+      yearText ? ((yearText.length === 4 ? 4 : 2) as 2 | 4) : 0,
+    );
+  }
+
+  if (COMPACT_DATE_RE.test(text)) {
+    // Восемь цифр читаются двумя способами, и разводит их только правдоподобие года: `20260818` —
+    // это `YYYYMMDD`, а `18082026` годом `1808` быть не может. Сначала пробуется машинный порядок:
+    // он однозначен, а человеческий `DDMMYYYY` подхватывает всё остальное.
+    const asIso = wasteTicketDateParts(
+      Number(text.slice(6, 8)),
+      Number(text.slice(4, 6)),
+      Number(text.slice(0, 4)),
+      4,
+    );
+    if (asIso) return asIso;
+    return wasteTicketDateParts(
+      Number(text.slice(0, 2)),
+      Number(text.slice(2, 4)),
+      Number(text.slice(4, 8)),
+      4,
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Годы-кандидаты в том порядке, в каком их перечисляет ADR 0166, п.2. Порядок — часть правила, а не
+ * деталь реализации: при равном расстоянии до якоря побеждает первый, и от него зависит, что
+ * запишется в талон. Отсортируй кандидатов иначе — и одна и та же страница дала бы разные даты.
+ */
+function issuedOnYearCandidates(parts: WasteTicketDateParts, anchorYear: number): number[] {
+  if (parts.yearDigits === 2) {
+    const century = Math.floor(anchorYear / 100) * 100;
+    const written = parts.year ?? 0;
+    return [century + written, century - 100 + written, century + 100 + written];
+  }
+  return [anchorYear, anchorYear - 1, anchorYear + 1];
+}
+
+/** Итог выбора даты: что записывать и нужен ли по этой строке второй проход (ADR 0166, п.2, п.4). */
+export interface WasteTicketIssuedOnChoice {
+  issuedOn: string | null;
+  /**
+   * `issuedOn` модели разошёлся с её же транскрипцией по дню или месяцу. Молча выбрать одну из
+   * двух дат нельзя — обе прочитала одна и та же модель, — поэтому значение остаётся её, а
+   * расхождение становится поводом для второго прохода (ADR 0166, п.4).
+   */
+  conflict: boolean;
+}
+
+/**
+ * Итоговая дата талона по ответу модели и якорю заявки (ADR 0166, п.2).
+ *
+ * `anchor` — календарный ключ `YYYY-MM-DD`: фактический день вывоза, если его ввёл человек, иначе
+ * плановая дата заявки по МСК. Якоря без заявки не бывает, поэтому обнуляемым он здесь не сделан.
+ *
+ * Из транскрипции автоматически меняется ТОЛЬКО год. Четырёхзначный не меняется и им: подменять
+ * прочитанные цифры догадкой системы — это ровно та ошибка, против которой всё правило и заведено,
+ * и такая дата остаётся поводом для второго прохода и для подсказки человеку, но не для тихой
+ * правки (ADR 0166, отвергнутые варианты).
+ *
+ * `opts.yearFromAnchor === false` — выключатель `TICKET_OCR_DATE_YEAR_FROM_ANCHOR`: год берётся из
+ * `issuedOn` модели, как до этой работы. Транскрипция при этом всё равно разбирается, и `conflict`
+ * считается по-прежнему — выключатель гасит выбор века, а не проверку на расхождение, иначе откат
+ * правила заодно отключал бы эскалацию, которая от него не зависит (ADR 0166, п.2).
+ */
+export function resolveWasteTicketIssuedOn(
+  input: { issuedOn: string | null; issuedOnRaw: string | null },
+  anchor: string,
+  opts: { yearFromAnchor?: boolean } = {},
+): WasteTicketIssuedOnChoice {
+  const parts = parseWasteTicketDateParts(input.issuedOnRaw);
+  // Не разобрали написание — остаётся ответ модели: это сегодняшнее поведение, а не новая пустота.
+  if (!parts) return { issuedOn: input.issuedOn, conflict: false };
+
+  const model = input.issuedOn ? ISO_DATE_RE.exec(input.issuedOn) : null;
+  if (model && (Number(model[3]) !== parts.day || Number(model[2]) !== parts.month)) {
+    return { issuedOn: input.issuedOn, conflict: true };
+  }
+  if (opts.yearFromAnchor === false) return { issuedOn: input.issuedOn, conflict: false };
+
+  if (parts.yearDigits === 4 && parts.year !== null) {
+    // Четыре цифры года разобраны вместе с днём и месяцем, поэтому ключ здесь всегда собирается;
+    // запасной ответ модели стоит на случай, если это когда-нибудь перестанет быть правдой.
+    const key = issuedOnKeyOf(parts.year, parts.month, parts.day);
+    return { issuedOn: key ?? input.issuedOn, conflict: false };
+  }
+
+  const anchorParts = ISO_DATE_RE.exec(anchor);
+  if (!anchorParts) return { issuedOn: input.issuedOn, conflict: false };
+
+  let chosen: string | null = null;
+  let chosenDistance = Number.POSITIVE_INFINITY;
+  for (const year of issuedOnYearCandidates(parts, Number(anchorParts[1]))) {
+    const key = issuedOnKeyOf(year, parts.month, parts.day);
+    if (!key) continue;
+    const distance = dateKeyDistance(key, anchor);
+    // Строгое «меньше» и есть стабильность: равное расстояние оставляет победителем первого по
+    // порядку кандидатов, а не последнего.
+    if (distance < chosenDistance) {
+      chosen = key;
+      chosenDistance = distance;
+    }
+  }
+  // Ни один кандидат не существует календарно (`29.02` без года в трёх невисокосных подряд) —
+  // остаётся ответ модели: пустая дата стоила бы человеку той же работы, что и неверная.
+  return { issuedOn: chosen ?? input.issuedOn, conflict: false };
+}
+
+/**
+ * Проверяемая замена года для замечания `date_mismatch` (ADR 0166, п.5). `null` — предлагать
+ * нечего, и это частый исход: подсказка появляется только там, где она доказуема.
+ *
+ * Рассматривается замена ТОЛЬКО года — на год якоря, предыдущий или следующий, — и кандидат обязан
+ * быть календарно допустимым, отличаться от текущей даты талона и попасть в действующее окно
+ * сверки: `toleranceDays = 0` у введённого факта вывоза (там сравнение точное) и `planDateDays` у
+ * плановой даты. Подсказка, не гасящая замечание, — это предложение поправить дату «в никуда»:
+ * человек нажал бы, замечание осталось бы, и следующей подсказке он бы уже не поверил.
+ *
+ * 29 февраля отбрасывается только там, где такого дня нет: замена на невисокосный год кандидата не
+ * даёт, на високосный — обычная законная подсказка.
+ */
+export function suggestWasteTicketYear(
+  issuedOn: string,
+  anchor: string,
+  toleranceDays: number,
+): string | null {
+  const current = ISO_DATE_RE.exec(issuedOn);
+  const anchorParts = ISO_DATE_RE.exec(anchor);
+  if (!current || !anchorParts) return null;
+
+  const month = Number(current[2]);
+  const day = Number(current[3]);
+  const anchorYear = Number(anchorParts[1]);
+
+  let chosen: string | null = null;
+  let chosenDistance = Number.POSITIVE_INFINITY;
+  // Порядок тот же, что и у выбора года при записи, — и по той же причине: подсказка обязана
+  // совпадать с тем, что записал бы воркер, иначе человек и машина спорили бы об одной дате.
+  for (const year of [anchorYear, anchorYear - 1, anchorYear + 1]) {
+    const key = issuedOnKeyOf(year, month, day);
+    if (!key || key === issuedOn) continue;
+    const distance = dateKeyDistance(key, anchor);
+    if (distance > toleranceDays) continue;
+    if (distance < chosenDistance) {
+      chosen = key;
+      chosenDistance = distance;
+    }
+  }
+  return chosen;
+}
 
 // ── Замечания сверки (Р18, Р21) ──
 
@@ -478,6 +803,13 @@ export interface WasteTicketDto {
    * они существуют ради ограничения и поиска, а показывают человеку бумагу, а не ключ (Р16). */
   number: string;
   issuedOn: string | null;
+  /**
+   * Написание даты, как его прочитала модель (ADR 0166, п.7). Пустая строка у старых и у ручных
+   * талонов: транскрипция относится к скану, а не к решению человека, и ручная правка даты её не
+   * меняет. Подпись под датой звучит «OCR в графе: 17.08.25» — это ответ модели, а не
+   * гарантированное содержимое бумаги.
+   */
+  issuedOnRaw: string;
   /** `null` у простоя — законно, объёма на таком талоне нет (Р2, Р18). */
   volumeM3: number | null;
   workKind: WasteTicketWorkKind;
@@ -687,6 +1019,15 @@ export interface WasteTicketCheckDto {
    * промежуточного состояния и слетал бы на следующем же подтверждении.
    */
   preliminary: boolean;
+  /**
+   * Проверяемая замена года у `date_mismatch` (ADR 0166, п.5): дата, которая гасит это замечание,
+   * отличаясь от текущей только годом. `null` у всех прочих кодов и там, где такой замены нет, —
+   * и это не редкость: одновременно неверные год и день безопасной подсказки не имеют.
+   *
+   * Значение служит кнопкой, а не доказательством: сервер строит подсказку заново под замком
+   * заявки, и присланное клиентом на веру не берётся (ADR 0166, п.6).
+   */
+  suggestedIssuedOn: string | null;
   resolution: WasteTicketCheckResolutionDto | null;
 }
 
@@ -1084,6 +1425,16 @@ export const updateWasteTicketSchema = z
     workKind: z.enum(WASTE_TICKET_WORK_KINDS).optional(),
     addressRaw: ticketAddressSchema.optional(),
     duplicateOverrideReason: duplicateOverrideReasonSchema.optional(),
+    /*
+     * Служебный маркер «правка сделана кнопкой подсказки года» (ADR 0166, п.6). Предметного поля
+     * он не меняет и в талон не попадает: по нему сервер знает, что нужно заново построить
+     * подсказку и сверить её с присланной датой, а аудит — что писать `metadata.source`.
+     *
+     * Отдельного действия аудита под клик не заводится: без маркера ручка всё равно не отличила бы
+     * его от ручного ввода — форма шлёт те же поля, — а новое имя разошлось бы с действующей
+     * областью `waste_request.ticket_*`.
+     */
+    editSource: z.literal('year_suggestion').optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -1096,6 +1447,19 @@ export const updateWasteTicketSchema = z
     }
     if (value.workKind !== undefined && value.volumeM3 !== undefined) {
       checkVolumeAgainstWorkKind(value, ctx);
+    }
+    // Маркер разрешён только одиночной правке даты, и проверяет это схема, а не маршрут: пришедший
+    // вместе с номером или объёмом, он означал бы, что кнопка подсказки года меняет соседние поля,
+    // — а сервер, перестраивая подсказку, проверяет ровно дату и о них ничего не сказал бы.
+    if (value.editSource !== undefined) {
+      const subject = WASTE_TICKET_FIELDS.filter((field) => value[field] !== undefined);
+      if (subject.length !== 1 || subject[0] !== 'issuedOn') {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['editSource'],
+          message: 'Подсказкой года правится только дата талона',
+        });
+      }
     }
   });
 export type UpdateWasteTicketInput = z.infer<typeof updateWasteTicketSchema>;

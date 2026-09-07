@@ -54,6 +54,9 @@ const GOOD_ANSWER = JSON.stringify({
             {
               number: 'ТЛ-123456',
               issuedOn: '2026-08-14',
+              // Транскрипция графы «Дата» — обязательное по форме свойство ответа с версии 4
+              // промпта (ADR 0166, п. 1): без неё схема контракта ответ не примет.
+              issuedOnRaw: '14.08.26',
               volumeM3: 12.5,
               workKind: 'removal',
               addressRaw: 'г. Новосибирск, ул. Строителей, 12',
@@ -349,7 +352,7 @@ describe('разбор ответа модели (Р4)', () => {
         {
           message: {
             content:
-              '```json\n{"tickets":[{"number":"1","issuedOn":null,"volumeM3":null,"workKind":"idle","addressRaw":null}],"unreadable":["volumeM3"]}\n```',
+              '```json\n{"tickets":[{"number":"1","issuedOn":null,"issuedOnRaw":null,"volumeM3":null,"workKind":"idle","addressRaw":null}],"unreadable":["volumeM3"]}\n```',
           },
         },
       ],
@@ -493,16 +496,35 @@ describe('заглушка (Р3)', () => {
 });
 
 describe('схема ответа в запросе (Р4)', () => {
-  it('перечисляет ровно те поля, что описаны контрактом', () => {
-    expect(Object.keys(TICKET_ITEM_PROPERTIES)).toEqual([...WASTE_TICKET_FIELDS]);
+  /**
+   * Равенство составов заменено ВКЛЮЧЕНИЕМ (Р4 плана `docs/waste-ticket-date-escalation-plan.md`,
+   * ADR 0166 п. 1): с версии 4 промпта у талона есть служебное свойство `issuedOnRaw` — дословная
+   * транскрипция графы «Дата», не шестое поле бумаги, а способ прочитать `issuedOn`. В
+   * `WASTE_TICKET_FIELDS` его нет и не будет, поэтому `toEqual` ловил бы не забытое поле, а сам
+   * факт правки. Смысл проверки при этом сохранён целиком: каждое имя контракта обязано быть и в
+   * `properties`, и в `required`, — а служебное свойство названо здесь поимённо, чтобы «больше,
+   * чем полей» не превратилось в «что угодно сверх».
+   */
+  it('перечисляет все поля контракта и служебную транскрипцию даты', () => {
+    const properties = Object.keys(TICKET_ITEM_PROPERTIES);
+    for (const field of WASTE_TICKET_FIELDS) expect(properties).toContain(field);
+    expect(properties).toContain('issuedOnRaw');
     expect(TICKET_ITEM_PROPERTIES.workKind!.enum).toEqual([...WASTE_TICKET_WORK_KINDS]);
 
     const schema = RESPONSE_JSON_SCHEMA.schema as Record<string, Record<string, never>>;
     const tickets = schema.properties!.tickets as unknown as Record<string, unknown>;
     expect(tickets.maxItems).toBe(MAX_RECOGNIZED_TICKETS_PER_PAGE);
     const items = tickets.items as Record<string, unknown>;
-    expect(items.required).toEqual([...WASTE_TICKET_FIELDS]);
+    // Строгому режиму нужен ПОЛНЫЙ `required`: пропущено хоть одно свойство — режим не включится.
+    const required = items.required as string[];
+    for (const field of WASTE_TICKET_FIELDS) expect(required).toContain(field);
+    expect(required).toContain('issuedOnRaw');
     // Строгий режим включается только с этим: без него модель вправе дописать своё поле.
     expect(items.additionalProperties).toBe(false);
+
+    // А вот `unreadable` — по-прежнему ровно домен полей талона: транскрипции в нём быть не должно,
+    // иначе модель назвала бы нечитаемым то, что полем бумаги не является.
+    const unreadable = schema.properties!.unreadable as unknown as Record<string, unknown>;
+    expect((unreadable.items as Record<string, unknown>).enum).toEqual([...WASTE_TICKET_FIELDS]);
   });
 });

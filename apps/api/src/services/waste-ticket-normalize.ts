@@ -1,5 +1,5 @@
 import {
-  moscowDateKeyOf,
+  parseWasteTicketDateParts,
   type RecognizedWasteTicket,
   WASTE_TICKET_WORK_KINDS,
   type WasteTicketWorkKind,
@@ -28,77 +28,37 @@ export { wasteTicketNumberFuzzy, wasteTicketNumberKey } from '@technic/contracts
 
 // ── Разбор полей из ответа модели (Р2, Р4) ──
 
-/** Сколько дней в месяце: `Date.UTC(y, m, 0)` — последний день предыдущего, то есть месяца `m`. */
-function daysInMonth(year: number, month: number): number {
-  return new Date(Date.UTC(year, month, 0)).getUTCDate();
-}
+// ДАТА: РАЗБОР НАПИСАНИЯ ПЕРЕЕХАЛ В КОНТРАКТЫ (ADR 0166, п. 2).
+// `parseWasteTicketDate` жил здесь и выбирал век ПО ТЕКУЩЕЙ ДАТЕ — то есть повторял ровно ту
+// ошибку, из-за которой затеян ADR 0166: «сегодня» о дате на бумаге не знает ничего, и «17.08.26»,
+// прочитанное в январе 2100-го, становилось бы 2126 годом. Функция удалена, а не обёрнута тонким
+// вызовом, и это честнее по отношению к вызывающим: снаружи её звали только тесты, а подпись
+// `(raw, now)` нечем заменить — общему правилу нужен ЯКОРЬ ЗАЯВКИ (`resolveWasteTicketIssuedOn`),
+// которого у разбора одного поля нет и взяться ему тут неоткуда. Оставленная обёртка с прежней
+// подписью была бы вторым входом в правило, в котором нет якоря, — то есть приглашением снова
+// выбрать век по календарю машины.
+//
+// Разбор написаний целиком лежит в `@technic/contracts` (`parseWasteTicketDateParts`), выбор
+// года — там же и по якорю, а сверка строит по нему подсказку замены года (Р10).
 
 /**
- * Сборка календарного ключа с проверкой существования дня. Регулярное выражение пропускает
- * `31.02`, а такой даты не бывает: записать её значило бы получить расхождение с датой вывоза на
- * пустом месте и заставить человека разбирать ошибку разбора, а не бумагу.
- */
-function dateKeyOf(year: number, month: number, day: number): string | null {
-  // Год за пределами XX–XXI веков — это не дата, а неудачно прочитанные цифры: талоны собирают
-  // с 2024 года, и «1808» в графе года означает, что разбор пошёл не тем форматом.
-  if (year < 1900 || year > 2999) return null;
-  if (month < 1 || month > 12) return null;
-  if (day < 1 || day > daysInMonth(year, month)) return null;
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-}
-
-/**
- * Двузначный год — к ТЕКУЩЕМУ веку: «17.08.26» на талоне 2026 года это 2026, а не 1926. Век берётся
- * из календаря, а не зашит числом 2000, чтобы правило пережило смену столетия само.
- */
-function yearOf(value: number, digits: number, now: Date): number {
-  if (digits === 4) return value;
-  const century = Math.floor(Number(moscowDateKeyOf(now).slice(0, 4)) / 100) * 100;
-  return century + value;
-}
-
-const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/u;
-/** Разделителем считается ЛЮБОЙ нецифровой знак: на бланке между числами стоит точка, пробел, дробь. */
-const SEPARATED_DATE_RE = /^(\d{1,2})\D+(\d{1,2})\D+(\d{2}|\d{4})$/u;
-const COMPACT_DATE_RE = /^\d{8}$/u;
-
-/**
- * Дата с талона в календарный ключ `YYYY-MM-DD` (Р19). Форматы взяты с настоящих бланков:
- * `17.08.2026`, `17 08 2026`, `17.08.26`, `18082026` — плюс `2026-08-17`, потому что ровно этого
- * формата промпт просит у модели, и разбирать её собственный ответ вторым правилом незачем.
+ * Дата из поля `issuedOn` ответа модели в календарный ключ `YYYY-MM-DD` (Р19, ADR 0166 п. 2).
  *
- * Не разобралось — `null`, и талон уходит человеку с пустой датой. Подставить сегодняшнюю или
- * плановую было бы худшим из возможных: сверка сравнила бы выдумку с фактом и промолчала.
+ * Берётся ТОЛЬКО четырёхзначный год: век здесь выбирать не из чего. Двузначная запись и запись без
+ * года законны на бумаге, но год им даёт якорь заявки, а не эта функция, — и попадают они сюда не
+ * полем `issuedOn`, а транскрипцией `issuedOnRaw`, из которой их и прочтёт
+ * `resolveWasteTicketIssuedOn`. Догадаться о веке самим значило бы записать в талон предположение
+ * и лишить якорь права его поправить.
  */
-export function parseWasteTicketDate(raw: unknown, now: Date = new Date()): string | null {
+function modelIssuedOn(raw: unknown): string | null {
   // Число здесь законно: `18082026` без разделителей модель отдаёт то строкой, то числом, и
   // отказывать по типу значило бы терять дату из-за формата JSON, а не из-за бумаги.
-  const text = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw.trim() : '';
-  if (!text) return null;
-
-  const iso = ISO_DATE_RE.exec(text);
-  if (iso) return dateKeyOf(Number(iso[1]), Number(iso[2]), Number(iso[3]));
-
-  const parts = SEPARATED_DATE_RE.exec(text);
-  if (parts) {
-    const year = yearOf(Number(parts[3]), parts[3]!.length, now);
-    return dateKeyOf(year, Number(parts[2]), Number(parts[1]));
-  }
-
-  if (COMPACT_DATE_RE.test(text)) {
-    // Восемь цифр читаются двумя способами, и разводит их только правдоподобие года: `20260818` —
-    // это `YYYYMMDD`, а `18082026` годом `1808` быть не может. Сначала пробуется машинный порядок:
-    // он однозначен, а человеческий `DDMMYYYY` подхватывает всё остальное.
-    const asIso = dateKeyOf(
-      Number(text.slice(0, 4)),
-      Number(text.slice(4, 6)),
-      Number(text.slice(6, 8)),
-    );
-    if (asIso) return asIso;
-    return dateKeyOf(Number(text.slice(4, 8)), Number(text.slice(2, 4)), Number(text.slice(0, 2)));
-  }
-
-  return null;
+  const text = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw : '';
+  const parts = parseWasteTicketDateParts(text);
+  if (!parts || parts.yearDigits !== 4 || parts.year === null) return null;
+  // Существование дня проверено разбором — четырёхзначная запись проверяется им до конца, — так
+  // что здесь остаётся только сборка ключа.
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
 }
 
 /**
@@ -160,11 +120,14 @@ export function parseWasteTicketWorkKind(raw: unknown): WasteTicketWorkKind {
 /** Пределы полей повторяют схему ответа модели (`recognizedWasteTicketSchema`). */
 const MAX_NUMBER_LENGTH = 64;
 const MAX_ADDRESS_LENGTH = 500;
+const MAX_ISSUED_ON_RAW_LENGTH = 64;
 
 /** Сырой талон, как он приходит из JSON модели: типы полей не гарантированы никем (Р4). */
 export interface RawRecognizedWasteTicket {
   number?: unknown;
   issuedOn?: unknown;
+  /** Что модель прочитала в графе «Дата» дословно: «17.08.25», «17 авг 26» (ADR 0166, п. 1). */
+  issuedOnRaw?: unknown;
   volumeM3?: unknown;
   workKind?: unknown;
   addressRaw?: unknown;
@@ -178,16 +141,23 @@ export interface RawRecognizedWasteTicket {
  * Номер длиннее предела становится пустым, а адрес — обрезается, и разница между ними
  * содержательная: обрезанный номер это ДРУГОЙ номер, который займёт чужую бумагу в уникальности,
  * а обрезанный адрес остаётся тем же местом — он участвует только в нестрогом сравнении.
+ * Транскрипция даты считается по правилу номера, а не адреса: обрезанное написание — это другое
+ * написание, и год по нему выбирал бы якорь, то есть догадка получила бы вид прочитанного.
+ *
+ * «Сейчас» в разбор больше не приходит вовсе (ADR 0166, п. 2): выбор года — дело якоря заявки, и
+ * делает его `resolveWasteTicketIssuedOn` уже над готовым ответом.
  */
-export function parseRecognizedWasteTicket(
-  raw: RawRecognizedWasteTicket,
-  now: Date = new Date(),
-): RecognizedWasteTicket {
+export function parseRecognizedWasteTicket(raw: RawRecognizedWasteTicket): RecognizedWasteTicket {
   const numberText = typeof raw.number === 'string' ? raw.number.trim() : '';
   const addressText = typeof raw.addressRaw === 'string' ? raw.addressRaw.trim() : '';
+  const issuedOnRawText = typeof raw.issuedOnRaw === 'string' ? raw.issuedOnRaw.trim() : '';
   return {
     number: numberText && numberText.length <= MAX_NUMBER_LENGTH ? numberText : null,
-    issuedOn: parseWasteTicketDate(raw.issuedOn, now),
+    issuedOn: modelIssuedOn(raw.issuedOn),
+    issuedOnRaw:
+      issuedOnRawText && issuedOnRawText.length <= MAX_ISSUED_ON_RAW_LENGTH
+        ? issuedOnRawText
+        : null,
     volumeM3: parseWasteTicketVolume(raw.volumeM3),
     workKind: parseWasteTicketWorkKind(raw.workKind),
     addressRaw: addressText ? addressText.slice(0, MAX_ADDRESS_LENGTH) : null,

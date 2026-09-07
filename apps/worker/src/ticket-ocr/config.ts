@@ -40,6 +40,25 @@ export interface TicketOcrConfig {
    * перестают быть нужными задолго до того, как заканчивается срок хранения самой заявки.
    */
   attemptTtlDays: number;
+  /**
+   * `TICKET_OCR_DATE_ANCHOR_DAYS`: окно вокруг якоря заявки, за которым дата талона становится
+   * поводом для второго прохода (ADR 0166, п. 4). Бумагу приносят с опозданием, но не на месяц.
+   *
+   * Управляет ТОЛЬКО эскалацией: выбор века им не гасится — у того свой выключатель ниже. Порог
+   * вынесен в окружение затем, чтобы поднять его в первые недели наблюдения можно было без
+   * выката (ADR 0166, последствия).
+   */
+  dateAnchorDays: number;
+  /**
+   * `TICKET_OCR_DATE_YEAR_FROM_ANCHOR`: век двузначного года выбирает якорь заявки, а не модель
+   * (ADR 0166, п. 2). Умолчание — включено; выключается значением `0` или `false`.
+   *
+   * Выключатель нужен свой, потому что откатывать правило иначе пришлось бы выкатом воркера:
+   * `TICKET_OCR_DATE_ANCHOR_DAYS` к выбору года отношения не имеет. При выключенном год берётся
+   * из `issuedOn` модели, как до этой работы, транскрипция всё равно пишется в `issued_on_raw`, а
+   * эскалация по расстоянию до якоря продолжает работать (ADR 0166, риски плана).
+   */
+  dateYearFromAnchor: boolean;
 }
 
 const DEFAULTS = {
@@ -51,6 +70,7 @@ const DEFAULTS = {
   pdfTimeoutMs: 60_000,
   pdfMemoryMb: 2048,
   attemptTtlDays: 180,
+  dateAnchorDays: 30,
 };
 
 /** Число из окружения: мусор и ноль откатываются к умолчанию, а не роняют воркер на старте. */
@@ -61,6 +81,18 @@ function num(raw: string | undefined, fallback: number): number {
 
 function flag(raw: string | undefined): boolean {
   return raw === '1' || raw?.toLowerCase() === 'true';
+}
+
+/**
+ * Признак, включённый по умолчанию: гасят его только явным `0` или `false`. Отдельная функция, а
+ * не `flag` с «наоборот», потому что смысл незаданной переменной у них противоположный: `flag`
+ * отвечает «выключено, пока не включили» (так заводят новый модуль), а этот — «работает, пока не
+ * выключили» (так откатывают правило, которое уже в бою). Пустая строка и мусор считаются
+ * незаданным: `TICKET_OCR_DATE_YEAR_FROM_ANCHOR=` в конфиге прода не должен молча менять правило.
+ */
+function flagOn(raw: string | undefined): boolean {
+  const value = raw?.trim().toLowerCase();
+  return value !== '0' && value !== 'false';
 }
 
 export function readTicketOcrConfig(env: NodeJS.ProcessEnv = process.env): TicketOcrConfig {
@@ -79,6 +111,12 @@ export function readTicketOcrConfig(env: NodeJS.ProcessEnv = process.env): Ticke
     pdfMemoryMb: num(env.TICKET_OCR_PDF_MEMORY_MB, DEFAULTS.pdfMemoryMb),
     heifConvertBin: env.TICKET_OCR_HEIF_CONVERT_BIN || undefined,
     attemptTtlDays: num(env.TICKET_OCR_ATTEMPT_TTL_DAYS, DEFAULTS.attemptTtlDays),
+    // Две настройки даты (ADR 0166) — единственные в этом файле, у которых нет пары в
+    // `apps/api/src/config.ts`, и правило «умолчания обязаны совпадать до цифры» их не касается
+    // просто потому, что совпадать не с чем: API не решает ни когда звать старшую модель, ни
+    // какой век выбрать двузначному году. Обе величины нужны там, где читают бумагу, — в воркере.
+    dateAnchorDays: num(env.TICKET_OCR_DATE_ANCHOR_DAYS, DEFAULTS.dateAnchorDays),
+    dateYearFromAnchor: flagOn(env.TICKET_OCR_DATE_YEAR_FROM_ANCHOR),
   };
 }
 

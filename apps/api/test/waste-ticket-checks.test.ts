@@ -236,6 +236,8 @@ describe('дата талона против дня вывоза (Р19)', () => 
     expect(messageOf(result, 'date_mismatch')).toBe(
       'Дата талона 17.08.2026, дата вывоза 19.08.2026 — расхождение 2 дня',
     );
+    // Расхождение измеряется днями, а не годом: заменять тут нечего, и текст о годе не появляется.
+    expect(result.checks[0]!.suggestedIssuedOn).toBeNull();
   });
 
   it('историческому закрытию дата не выдумывается', () => {
@@ -255,6 +257,7 @@ describe('дата талона против дня вывоза (Р19)', () => 
     expect(messageOf(result, 'date_mismatch')).toBe(
       'Дата вывоза в закрытии не указана; дата талона 25.08.2026 расходится с плановой 17.08.2026 на 8 дней',
     );
+    expect(result.checks[0]!.suggestedIssuedOn).toBeNull();
   });
 
   it('непрочитанная дата замечания не порождает', () => {
@@ -265,6 +268,86 @@ describe('дата талона против дня вывоза (Р19)', () => 
     expect(run({ tickets, completion: { ...COMPLETION, removedOn: '2026-08-19' } }).checks).toEqual(
       [expect.objectContaining({ code: 'date_mismatch', subjectKey: 't2' })],
     );
+  });
+});
+
+describe('подсказка замены года (Р10, ADR 0166 п. 5)', () => {
+  /**
+   * Талон с проверяемой датой и тихий сосед: второй нужен только затем, чтобы сумма сошлась с
+   * закрытием и объём молчал, поэтому его дата всегда равна якорю — иначе замечание о дате
+   * появилось бы и у него.
+   */
+  function withDate(issuedOn: string, anchor = '2026-08-17'): WasteTicketCheckTicket[] {
+    return [
+      ticket({ id: 't1', issuedOn }),
+      ticket({ id: 't2', numberRaw: '30477', issuedOn: anchor }),
+    ];
+  }
+
+  it('введённый факт вывоза: допуск нулевой, подсказка попадает в день ровно', () => {
+    const result = run({ tickets: withDate('2025-08-17') });
+    expect(codes(result)).toEqual(['date_mismatch']);
+    expect(result.checks[0]!.suggestedIssuedOn).toBe('2026-08-17');
+    // День и месяц совпали с якорем — только тогда и можно сказать, что отличается один год.
+    expect(messageOf(result, 'date_mismatch')).toBe(
+      'Дата талона 17.08.2025, дата вывоза 17.08.2026 — расхождение 365 дней;' +
+        ' день и месяц совпадают — вероятно, неверно распознан год: проверьте 17.08.2026',
+    );
+  });
+
+  it('плановая дата: подсказка меряется допуском сверки, а не точным попаданием', () => {
+    // Дня вывоза нет, план — 17.08.2026, допуск трое суток. Замена года даёт 19.08.2026: замечание
+    // она гасит, но «отличие ровно на год» тут было бы неправдой — день другой.
+    const result = run({ tickets: withDate('2025-08-19'), completion: HISTORIC });
+    expect(codes(result)).toEqual(['date_mismatch']);
+    expect(result.checks[0]!.suggestedIssuedOn).toBe('2026-08-19');
+    expect(messageOf(result, 'date_mismatch')).toBe(
+      'Дата вывоза в закрытии не указана; дата талона 19.08.2025 расходится' +
+        ' с плановой 17.08.2026 на 363 дня; вероятно, неверно распознан год: проверьте 19.08.2026',
+    );
+  });
+
+  it('за окном сверки подсказки нет: она не погасила бы замечание', () => {
+    // 25.08 против плана 17.08 — восемь суток и после замены года: человек нажал бы кнопку, а
+    // замечание осталось бы на экране.
+    const result = run({ tickets: withDate('2025-08-25'), completion: HISTORIC });
+    expect(codes(result)).toEqual(['date_mismatch']);
+    expect(result.checks[0]!.suggestedIssuedOn).toBeNull();
+    expect(messageOf(result, 'date_mismatch')).not.toContain('год');
+  });
+
+  it('29 февраля: при високосном целевом годе подсказка обычная', () => {
+    const result = run({
+      tickets: withDate('2024-02-29', '2028-02-29'),
+      completion: { ...COMPLETION, removedOn: '2028-02-29' },
+    });
+    expect(codes(result)).toEqual(['date_mismatch']);
+    expect(result.checks[0]!.suggestedIssuedOn).toBe('2028-02-29');
+    expect(messageOf(result, 'date_mismatch')).toContain(
+      'день и месяц совпадают — вероятно, неверно распознан год: проверьте 29.02.2028',
+    );
+  });
+
+  it('29 февраля: невисокосный кандидат отбрасывается как несуществующий', () => {
+    // Год якоря 2027-й високосным не бывает, 29.02.2027 не существует, а живой 2028-й лежит за
+    // окном сверки — предлагать нечего.
+    const result = run({
+      tickets: withDate('2024-02-29', '2027-02-28'),
+      completion: { ...COMPLETION, removedOn: '2027-02-28' },
+    });
+    expect(codes(result)).toEqual(['date_mismatch']);
+    expect(result.checks[0]!.suggestedIssuedOn).toBeNull();
+  });
+
+  it('у прочих проверок подсказки нет вовсе', () => {
+    // Номер, объём и адрес правит человек, глядя на бумагу: замены года у них не бывает.
+    const tickets = [
+      ticket({ id: 't1', addressRaw: 'Садовническая, 76' }),
+      ticket({ id: 't2', numberRaw: '30476' }),
+    ];
+    const result = run({ tickets, completion: { ...COMPLETION, volumeM3: 48 } });
+    expect(codes(result)).toEqual(['duplicate_number', 'volume_mismatch', 'address_mismatch']);
+    for (const check of result.checks) expect(check.suggestedIssuedOn).toBeNull();
   });
 });
 

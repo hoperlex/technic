@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseRecognizedWasteTicket,
-  parseWasteTicketDate,
   parseWasteTicketVolume,
   parseWasteTicketWorkKind,
   similarWasteAddress,
@@ -12,9 +11,10 @@ import {
 
 // Нормализации и разбор полей талона (ADR 0114, план `docs/waste-ticket-ocr-plan.md`, Р16, Р19).
 // Фикстуры синтетические: репозиторий публичный, настоящих сканов и номеров здесь нет.
-
-/** Момент, от которого считается «текущий век» у двузначного года: фиксируем, а не берём часы. */
-const NOW = new Date('2026-08-21T09:00:00.000Z');
+//
+// «Сейчас» в этом файле больше нет ни у одной проверки (ADR 0166, п. 2): разбор написаний уехал в
+// контракты, а год двузначной записи выбирает ЯКОРЬ ЗАЯВКИ — это проверяет
+// `waste-ticket-date-anchor.test.ts`.
 
 describe('номер: консервативная нормализация (Р16)', () => {
   it('снимает регистр, пробелы и знак номера', () => {
@@ -54,40 +54,41 @@ describe('номер: поисковая нормализация (Р16)', () =>
   });
 });
 
-describe('дата талона (Р19)', () => {
-  it('разбирает форматы с настоящих бланков', () => {
-    expect(parseWasteTicketDate('17.08.2026', NOW)).toBe('2026-08-17');
-    expect(parseWasteTicketDate('17 08 2026', NOW)).toBe('2026-08-17');
-    expect(parseWasteTicketDate('17/08/2026', NOW)).toBe('2026-08-17');
-    expect(parseWasteTicketDate('7.8.2026', NOW)).toBe('2026-08-07');
-    expect(parseWasteTicketDate('18082026', NOW)).toBe('2026-08-18');
-    // Собственный ответ модели: промпт просит именно этот формат.
-    expect(parseWasteTicketDate('2026-08-17', NOW)).toBe('2026-08-17');
-  });
+describe('дата в ответе модели (Р19, ADR 0166 п. 2)', () => {
+  const issuedOn = (raw: unknown): string | null =>
+    parseRecognizedWasteTicket({ issuedOn: raw }).issuedOn;
 
-  it('двузначный год относит к текущему веку', () => {
-    expect(parseWasteTicketDate('17.08.26', NOW)).toBe('2026-08-17');
-    expect(parseWasteTicketDate('01.01.99', NOW)).toBe('2099-01-01');
-    // Век берётся из календаря, а не зашит числом 2000.
-    expect(parseWasteTicketDate('17.08.26', new Date('2101-01-01T00:00:00.000Z'))).toBe(
-      '2126-08-17',
-    );
-  });
-
-  it('восемь цифр разводит правдоподобием года', () => {
+  it('разбирает написания с настоящих бланков, когда год записан полностью', () => {
+    expect(issuedOn('17.08.2026')).toBe('2026-08-17');
+    expect(issuedOn('17 08 2026')).toBe('2026-08-17');
+    expect(issuedOn('17/08/2026')).toBe('2026-08-17');
+    expect(issuedOn('7.8.2026')).toBe('2026-08-07');
     // `20260818` — машинный порядок; `18082026` годом 1808 быть не может.
-    expect(parseWasteTicketDate('20260818', NOW)).toBe('2026-08-18');
-    expect(parseWasteTicketDate(18082026, NOW)).toBe('2026-08-18');
+    expect(issuedOn('20260818')).toBe('2026-08-18');
+    expect(issuedOn('18082026')).toBe('2026-08-18');
+    // Собственный ответ модели: промпт просит именно этот формат.
+    expect(issuedOn('2026-08-17')).toBe('2026-08-17');
+    // Восемь цифр модель отдаёт то строкой, то числом: терять дату из-за формата JSON нельзя.
+    expect(issuedOn(18082026)).toBe('2026-08-18');
+  });
+
+  it('век здесь не выбирается вовсе: двузначный год и запись без года остаются пустыми', () => {
+    // Здесь стоял выбор века ПО ТЕКУЩЕЙ ДАТЕ — ровно та ошибка, против которой заведён ADR 0166.
+    // Год двузначной записи выбирает якорь заявки (`resolveWasteTicketIssuedOn`), и приходит такая
+    // запись транскрипцией `issuedOnRaw`, а не полем `issuedOn`: в нём формат требует четырёх цифр.
+    expect(issuedOn('17.08.26')).toBeNull();
+    expect(issuedOn('17.08')).toBeNull();
   });
 
   it('несуществующий день и мусор оставляют поле пустым (Р4)', () => {
-    expect(parseWasteTicketDate('31.02.2026', NOW)).toBeNull();
-    expect(parseWasteTicketDate('17.13.2026', NOW)).toBeNull();
-    expect(parseWasteTicketDate('', NOW)).toBeNull();
-    expect(parseWasteTicketDate('  ', NOW)).toBeNull();
-    expect(parseWasteTicketDate('август', NOW)).toBeNull();
-    expect(parseWasteTicketDate(null, NOW)).toBeNull();
-    expect(parseWasteTicketDate(undefined, NOW)).toBeNull();
+    expect(issuedOn('31.02.2026')).toBeNull();
+    expect(issuedOn('17.13.2026')).toBeNull();
+    expect(issuedOn('')).toBeNull();
+    expect(issuedOn('  ')).toBeNull();
+    expect(issuedOn('август')).toBeNull();
+    expect(issuedOn(null)).toBeNull();
+    expect(issuedOn(undefined)).toBeNull();
+    expect(issuedOn({})).toBeNull();
   });
 });
 
@@ -145,20 +146,20 @@ describe('вид работ (Р2)', () => {
 describe('талон из ответа модели целиком (Р4)', () => {
   it('разбирает поля и оставляет пустым то, что не прочиталось', () => {
     expect(
-      parseRecognizedWasteTicket(
-        {
-          number: ' № 30 476 ',
-          issuedOn: '17.08.2026',
-          volumeM3: '20 м3 бой',
-          workKind: 'removal',
-          addressRaw: '  Волоколамское ш. 71/14 ',
-        },
-        NOW,
-      ),
+      parseRecognizedWasteTicket({
+        number: ' № 30 476 ',
+        issuedOn: '17.08.2026',
+        issuedOnRaw: ' 17.08.26 ',
+        volumeM3: '20 м3 бой',
+        workKind: 'removal',
+        addressRaw: '  Волоколамское ш. 71/14 ',
+      }),
     ).toEqual({
       // Номер хранится ДОСЛОВНО: нормализации считаются отдельно, человеку показывают бумагу.
       number: '№ 30 476',
       issuedOn: '2026-08-17',
+      // Транскрипция тоже дословная — только пробелы по краям: по ней год выберет якорь заявки.
+      issuedOnRaw: '17.08.26',
       volumeM3: 20,
       workKind: 'removal',
       addressRaw: 'Волоколамское ш. 71/14',
@@ -167,24 +168,37 @@ describe('талон из ответа модели целиком (Р4)', () =>
 
   it('битый ответ не выдумывает значений', () => {
     expect(
-      parseRecognizedWasteTicket({ number: 42, issuedOn: {}, volumeM3: 'нет', workKind: 7 }, NOW),
+      parseRecognizedWasteTicket({
+        number: 42,
+        issuedOn: {},
+        issuedOnRaw: 17,
+        volumeM3: 'нет',
+        workKind: 7,
+      }),
     ).toEqual({
       number: null,
       issuedOn: null,
+      issuedOnRaw: null,
       volumeM3: null,
       workKind: 'other',
       addressRaw: null,
     });
-    expect(parseRecognizedWasteTicket({}, NOW).number).toBeNull();
+    expect(parseRecognizedWasteTicket({}).number).toBeNull();
+    expect(parseRecognizedWasteTicket({}).issuedOnRaw).toBeNull();
   });
 
   // Обрезанный номер — это ДРУГОЙ номер, который займёт чужую бумагу в уникальности.
-  it('слишком длинный номер обнуляется, а адрес обрезается', () => {
-    const parsed = parseRecognizedWasteTicket(
-      { number: '1'.repeat(65), addressRaw: 'а'.repeat(600) },
-      NOW,
-    );
+  it('слишком длинный номер и написание обнуляются, а адрес обрезается', () => {
+    const parsed = parseRecognizedWasteTicket({
+      number: '1'.repeat(65),
+      issuedOnRaw: '1'.repeat(65),
+      addressRaw: 'а'.repeat(600),
+    });
     expect(parsed.number).toBeNull();
+    // Обрезанное написание — это другое написание: год по нему выбирал бы якорь, и догадка
+    // получила бы вид прочитанного. Строка длиннее 64 знаков означает, что в графу «Дата» уехала
+    // половина талона (ADR 0166, п. 1).
+    expect(parsed.issuedOnRaw).toBeNull();
     expect(parsed.addressRaw).toHaveLength(500);
   });
 });

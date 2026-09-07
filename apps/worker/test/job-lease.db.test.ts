@@ -41,6 +41,7 @@ interface JobState {
   locked_until: Date | null;
   next_run_at: Date;
   last_error: string | null;
+  payload: Record<string, unknown>;
 }
 
 async function insertJob(opts: {
@@ -50,13 +51,15 @@ async function insertJob(opts: {
   lockedBy?: string | null;
   /** Аренда относительно текущего момента: минус — истекла, плюс — ещё держится. */
   lockedUntilMs?: number | null;
+  /** Полезная нагрузка: нужна там, где проверяется приращение счётчика переносом. */
+  payload?: Record<string, unknown>;
 }): Promise<string> {
   // `next_run_at` в далёком прошлом: очередь отбирает по нему, а в тестовой базе лежат чужие
   // задачи прошлых прогонов — без этого пачка набралась бы ими, и до задачи теста дело не дошло бы.
   const res = await client.query<{ id: string }>(
     `INSERT INTO jobs (type, payload, status, attempts, max_attempts, next_run_at, locked_by,
                        locked_until)
-     VALUES ($1, jsonb_build_object('probe', true), $2, $3, $4, now() - interval '10 years', $5,
+     VALUES ($1, $7::jsonb, $2, $3, $4, now() - interval '10 years', $5,
              CASE WHEN $6::double precision IS NULL THEN NULL
                   ELSE now() + ($6::double precision * interval '1 millisecond') END)
      RETURNING id`,
@@ -67,6 +70,7 @@ async function insertJob(opts: {
       opts.maxAttempts ?? 5,
       opts.lockedBy ?? null,
       opts.lockedUntilMs ?? null,
+      JSON.stringify(opts.payload ?? { probe: true }),
     ],
   );
   return res.rows[0]!.id;
@@ -74,7 +78,8 @@ async function insertJob(opts: {
 
 async function state(id: string): Promise<JobState> {
   const res = await client.query<JobState>(
-    `SELECT status::text AS status, attempts, locked_by, locked_until, next_run_at, last_error
+    `SELECT status::text AS status, attempts, locked_by, locked_until, next_run_at, last_error,
+            payload
        FROM jobs WHERE id = $1`,
     [id],
   );
@@ -238,5 +243,121 @@ describe.skipIf(!DB_URL)('аренда фоновых задач (живая с�
     expect(afterDefer.attempts).toBe(0); // перенос попытку не тратит
     expect(afterDefer.locked_by).toBeNull();
     expect(afterDefer.next_run_at.getTime()).toBeGreaterThan(Date.now() + 800_000);
+  });
+
+  /**
+   * Счётчик отложенных повторов в полезной нагрузке (план `docs/waste-ticket-date-escalation-plan.md`,
+   * Р8). Он нужен потому, что перенос не тратит `max_attempts`: у повтора, вызванного правкой
+   * заявки прямо во время распознавания, иного потолка нет вовсе.
+   */
+  it('перенос без приращения не трогает полезную нагрузку', async () => {
+    const id = await insertJob({
+      status: 'running',
+      lockedBy: WORKER_A,
+      lockedUntilMs: 60_000,
+      payload: { requestId: 'r-1', anchorDeferrals: 2 },
+    });
+
+    expect(
+      await deferJob(client, {
+        jobId: id,
+        workerId: WORKER_A,
+        nextRunAt: new Date(Date.now() + 60_000),
+      }),
+    ).toBe(true);
+
+    // Ни байта: письма и рассылка зовут `deferJob` без приращения, и их нагрузка обязана пережить
+    // перенос ровно такой, какой была, — включая чужой счётчик, который переносу не адресован.
+    expect((await state(id)).payload).toEqual({ requestId: 'r-1', anchorDeferrals: 2 });
+  });
+
+  it('перенос с приращением заводит счётчик и увеличивает его на единицу', async () => {
+    const first = await insertJob({
+      status: 'running',
+      lockedBy: WORKER_A,
+      lockedUntilMs: 60_000,
+      payload: { requestId: 'r-1', fileId: 'f-1' },
+    });
+    const again = await insertJob({
+      status: 'running',
+      lockedBy: WORKER_A,
+      lockedUntilMs: 60_000,
+      payload: { requestId: 'r-2', anchorDeferrals: 2 },
+    });
+    const later = new Date(Date.now() + 60_000);
+
+    for (const id of [first, again]) {
+      expect(
+        await deferJob(client, {
+          jobId: id,
+          workerId: WORKER_A,
+          nextRunAt: later,
+          incrementPayloadField: 'anchorDeferrals',
+        }),
+      ).toBe(true);
+    }
+
+    // Первый перенос заводит поле: у задачи, которую ещё не откладывали, счётчика нет — и это ноль,
+    // а не повод не считать.
+    expect((await state(first)).payload).toEqual({
+      requestId: 'r-1',
+      fileId: 'f-1',
+      anchorDeferrals: 1,
+    });
+    // Остальные поля нагрузки приращение не задевает: задача возвращается в очередь той же самой.
+    expect((await state(again)).payload).toEqual({ requestId: 'r-2', anchorDeferrals: 3 });
+  });
+
+  it('у потерянной аренды перенос с приращением не меняет ни статуса, ни счётчика', async () => {
+    const id = await insertJob({
+      status: 'running',
+      lockedBy: WORKER_B,
+      lockedUntilMs: 60_000,
+      payload: { requestId: 'r-1', anchorDeferrals: 1 },
+    });
+    const before = await state(id);
+
+    expect(
+      await deferJob(client, {
+        jobId: id,
+        workerId: WORKER_A,
+        nextRunAt: new Date(Date.now() + 60_000),
+        incrementPayloadField: 'anchorDeferrals',
+      }),
+    ).toBe(false);
+
+    // Статус и счётчик меняются ОДНИМ запросом, поэтому «задача больше не наша» означает, что не
+    // изменилось ничего. Отдельным `UPDATE` счётчик разъехался бы со статусом ровно здесь: потолок
+    // повторов израсходовал бы воркер, который эту задачу уже не ведёт.
+    const after = await state(id);
+    expect(after.status).toBe('running');
+    expect(after.locked_by).toBe(WORKER_B);
+    expect(after.payload).toEqual({ requestId: 'r-1', anchorDeferrals: 1 });
+    expect(after.next_run_at.getTime()).toBe(before.next_run_at.getTime());
+  });
+
+  it('приращение счётчика не тратит попытку', async () => {
+    const id = await insertJob({
+      status: 'running',
+      attempts: 2,
+      lockedBy: WORKER_A,
+      lockedUntilMs: 60_000,
+      payload: { requestId: 'r-1' },
+    });
+
+    expect(
+      await deferJob(client, {
+        jobId: id,
+        workerId: WORKER_A,
+        nextRunAt: new Date(Date.now() + 60_000),
+        incrementPayloadField: 'anchorDeferrals',
+      }),
+    ).toBe(true);
+
+    // Свойство существующее, но теперь принципиальное: счётчик в нагрузке заводился именно потому,
+    // что `attempts` перенос не трогает и своего потолка у повтора нет.
+    const after = await state(id);
+    expect(after.attempts).toBe(2);
+    expect(after.payload.anchorDeferrals).toBe(1);
   });
 });

@@ -15,6 +15,7 @@ import {
   preprocessOptionsFrom,
   readTicketOcrConfig,
   runTicketRecognitionJob,
+  type TicketJobResult,
 } from './ticket-ocr';
 import {
   claimJobs,
@@ -278,7 +279,13 @@ async function sendEmail(job: JobRow): Promise<void | { deferUntil: Date }> {
   );
 }
 
-async function handleJob(job: JobRow): Promise<void | { deferUntil: Date }> {
+/**
+ * Исход обработчика для цикла: либо задача выполнена, либо отложена — и тогда сказано, до какого
+ * момента и почему. Причину несёт только распознавание талонов (`TicketJobResult`), и она здесь не
+ * ради журнала: от неё зависит, тратит ли перенос потолок повторов в нагрузке задачи. Остальные
+ * обработчики возвращают один `deferUntil`, как и раньше.
+ */
+async function handleJob(job: JobRow): Promise<TicketJobResult> {
   switch (job.type) {
     case JOB_DELETE_S3_OBJECT: {
       const objectKey = String(job.payload.objectKey ?? '');
@@ -319,7 +326,7 @@ async function handleJob(job: JobRow): Promise<void | { deferUntil: Date }> {
  */
 const ticketRate = new RateLimiter(readTicketOcrConfig().maxPerMinute);
 
-async function recognizeWasteTicketFile(job: JobRow): Promise<void | { deferUntil: Date }> {
+async function recognizeWasteTicketFile(job: JobRow): Promise<TicketJobResult> {
   const cfg = readTicketOcrConfig();
   if (!cfg.enabled) {
     logger.info({ jobId: job.id }, 'Распознавание талонов выключено: задача пропущена');
@@ -338,6 +345,15 @@ async function recognizeWasteTicketFile(job: JobRow): Promise<void | { deferUnti
   const requestId = String(job.payload.requestId ?? '');
   const fileId = String(job.payload.fileId ?? '');
   if (!requestId || !fileId) throw new Error('Задача распознавания без requestId или fileId');
+  /**
+   * Сколько раз задачу уже откладывали из-за смены якоря заявки (Р8 плана даты талона). Пишет
+   * счётчик сам `deferJob` тем же запросом, что и перевод в `pending`, поэтому в нагрузке он лежит
+   * числом; у задачи, которую ещё не откладывали, поля нет вовсе — это ноль. `Number` от чужого
+   * мусора дал бы `NaN`, а сравнение с потолком тогда молча стало бы ложным, то есть потолка бы не
+   * было: непонятное значение считается нулём осознанно — оно лучше бесконечного круга.
+   */
+  const raw = Number(job.payload.anchorDeferrals ?? 0);
+  const anchorDeferrals = Number.isFinite(raw) ? raw : 0;
 
   return runTicketRecognitionJob(
     {
@@ -347,10 +363,15 @@ async function recognizeWasteTicketFile(job: JobRow): Promise<void | { deferUnti
       engine: createEngineFrom(cfg),
       model: cfg.model,
       escalationModel: cfg.escalationModel,
+      // Обе настройки даты — из окружения, а не из умолчаний задачи (ADR 0166): иначе
+      // `TICKET_OCR_DATE_YEAR_FROM_ANCHOR=0` в prod.env молча игнорировался бы, и выключатель
+      // выбора века, заведённый как способ отката без выката, отката бы не давал.
+      dateAnchorDays: cfg.dateAnchorDays,
+      dateYearFromAnchor: cfg.dateYearFromAnchor,
       preprocess: preprocessOptionsFrom(cfg),
       log: (meta, msg) => logger.info(meta, msg),
     },
-    { requestId, fileId, forced: job.payload.forced === true },
+    { requestId, fileId, forced: job.payload.forced === true, anchorDeferrals },
     job.id,
   );
 }
@@ -516,10 +537,26 @@ async function processJobs(): Promise<number> {
         if (outcome?.deferUntil) {
           // Отложено, а не выполнено и не провалено: попытки не тратятся. Так упирается в потолок
           // отправки рассылка на сотню адресов — она растягивается во времени, а не сгорает.
+          //
+          // Смена якоря заявки — единственная причина, которая при этом ещё и считается (Р8 плана
+          // даты талона): раз `attempts` не растут, потолок повторам ставит счётчик в нагрузке
+          // задачи. Переносы по `Retry-After` прокси и по своему потолку обращений его не
+          // расходуют — иначе занятый прокси съедал бы лимит, заведённый против правок заявки, и
+          // страница записалась бы без нужной ступени на ровном месте.
+          const anchorChanged = outcome.reason === 'anchor_changed';
+          if (anchorChanged) {
+            // Отдельная строка журнала: по ней потом смотрят, как часто заявку правят прямо во
+            // время распознавания, — среди остальных переносов этот случай не разглядеть.
+            logger.info(
+              { jobId: job.id, type: job.type, deferUntil: outcome.deferUntil },
+              'Якорь заявки изменился во время распознавания: результат не записан, задача отложена',
+            );
+          }
           const owned = await deferJob(pool, {
             jobId: job.id,
             workerId: WORKER_ID,
             nextRunAt: outcome.deferUntil,
+            ...(anchorChanged ? { incrementPayloadField: 'anchorDeferrals' } : {}),
           });
           if (!owned) warnJobTaken(job, 'перенос');
           continue;

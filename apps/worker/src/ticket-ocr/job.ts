@@ -11,7 +11,15 @@
  * | растеризация | скачивание из S3, страницы, `page_sha256` | нет |
  * | проверка | связь и статус читаются ещё раз, **до** обращения к модели | нет |
  * | T1 | advisory lock ключа кэша, чтение кэша, вызов модели, вставка попытки | только ключ кэша |
- * | T2 | повторная проверка, запись страниц и талонов, файловый статус | `waste_requests FOR UPDATE` |
+ * | T2 | повторная проверка, **перепроверка якоря**, запись страниц и талонов, файловый статус | `waste_requests FOR UPDATE` |
+ *
+ * **Что здесь делает якорь** (ADR 0166, Р5–Р8). Дата талона выбирается не только по ответу модели:
+ * век двузначного года и решение «звать ли старшую модель» зависят от даты ЗАЯВКИ. Поэтому вместе
+ * со связью читается якорь — фактический день вывоза или плановая дата, — и снимок берётся из
+ * последней проверки перед первым вызовом. Человек правит заявку и во время вызова, так что в T2
+ * якорь читается заново под общим замком: обе ступени нормализуются и сливаются по актуальному
+ * значению прямо там. Отсрочка (`deferUntil` с причиной `anchor_changed`) берётся ровно тогда,
+ * когда новому якорю нужен проход, которого не делали, — и у неё свой потолок.
  *
  * **Почему T1 отдельно.** Вызов к модели идёт до двух минут. Держи мы на это время строку заявки —
  * закрытие следующей заявки и откат этой ждали бы сеть. Поэтому дорогое вынесено в транзакцию,
@@ -29,6 +37,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { GetObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import {
+  dateKeySpan,
+  moscowDateKeyOf,
+  resolveWasteTicketIssuedOn,
   WASTE_TICKET_FIELDS,
   wasteTicketNumberFuzzy,
   wasteTicketNumberKey,
@@ -38,7 +49,7 @@ import { prepareTicketFile, PREPROCESSING_VERSION } from './preprocess';
 import { TicketFileError } from './errors';
 import { markReviewStale, markReviewStaleWithNeighbors } from './review-state';
 import { attemptCacheKey, PROXY_CHOOSES_MODEL } from './engine/keys';
-import type { PageImage, RecognitionEngine, RecognitionOutcome } from './engine/types';
+import type { AttemptMeta, PageImage, RecognitionEngine, RecognitionFailure } from './engine/types';
 import { PROMPT_VERSION } from './engine/prompt';
 import type { PreparedFile, PreprocessOptions } from './preprocess';
 
@@ -76,6 +87,18 @@ export interface TicketJobDeps {
    */
   download?: (objectKey: string) => Promise<Buffer>;
   prepare?: (source: Buffer) => Promise<PreparedFile>;
+  /**
+   * Окно вокруг якоря заявки, за которым дата талона становится поводом для второго прохода
+   * (`TICKET_OCR_DATE_ANCHOR_DAYS`, ADR 0166 п. 4), и выключатель выбора века
+   * (`TICKET_OCR_DATE_YEAR_FROM_ANCHOR`, п. 2).
+   *
+   * Необязательны здесь по одной причине: подставляет их `index.ts`, и до того, как он это
+   * начнёт делать, задача обязана собираться и работать. Умолчания поэтому повторяют
+   * `config.ts` до цифры — иначе воркер, которому забыли передать порог, вёл бы себя не так, как
+   * написано в `.env.example`.
+   */
+  dateAnchorDays?: number;
+  dateYearFromAnchor?: boolean;
 }
 
 export interface TicketJobPayload {
@@ -83,10 +106,39 @@ export interface TicketJobPayload {
   fileId: string;
   /** Принудительный проход мимо кэша — кнопка «перераспознать» при тех же версиях (Р13). */
   forced?: boolean;
+  /**
+   * Сколько раз задачу уже откладывали из-за смены якоря заявки (Р8, ADR 0166 п. 4). Хранить
+   * счётчик негде, кроме полезной нагрузки: отсрочка не тратит `attempts`, и потолка ей иначе
+   * никто не ставит. Приращение делает `deferJob` тем же ownership-checked `UPDATE`, который
+   * переводит задачу в `pending`, — отдельный запрос разъехался бы со статусом ровно тогда,
+   * когда аренда потеряна.
+   */
+  anchorDeferrals?: number;
 }
 
-/** Исход задачи для цикла воркера: перенос — это `Retry-After` прокси, а не наш backoff (Р5). */
-export type TicketJobResult = { deferUntil: Date } | void;
+/**
+ * Исход задачи для цикла воркера. Перенос бывает двух пород, и они считаются по-разному:
+ * `Retry-After` прокси (Р5) идёт без причины, а `anchor_changed` — это правка заявки под
+ * работающим разбором, и только её считает потолок `MAX_ANCHOR_DEFERRALS` (Р8). Смешай их — и
+ * занятый прокси съедал бы лимит, заведённый против правок заявки.
+ */
+export type TicketJobResult = { deferUntil: Date; reason?: 'anchor_changed' } | void;
+
+/**
+ * Сколько раз задачу можно отложить из-за смены якоря, прежде чем страница будет записана тем,
+ * что есть (Р8, ADR 0166 п. 4). Потолок — уступка, а не решение: заявку, которую правят третий
+ * раз подряд, дешевле показать человеку, чем догонять её якорь платными вызовами.
+ */
+export const MAX_ANCHOR_DEFERRALS = 3;
+
+/**
+ * Срок отсрочки при смене якоря. Секунды, а не минуты: якорь сменил человек, который прямо сейчас
+ * дозаполняет заявку, и ждать его правки часами незачем. Меньше `WORKER_POLL_INTERVAL_MS` (5 с)
+ * ставить бессмысленно — очередь всё равно просыпается своим шагом, — а десять секунд дают
+ * человеку дописать начатое и укладывают все три отсрочки в полминуты, то есть заметно меньше
+ * одного вызова модели.
+ */
+const ANCHOR_DEFER_MS = 10_000;
 
 /**
  * Связь файла с заявкой в том виде, в каком её проверяют все три раза. Версии заявки здесь нет
@@ -97,13 +149,29 @@ interface LinkState {
   linked: boolean;
   objectKey: string;
   contentType: string;
+  /**
+   * Якорь даты талона: календарный день `YYYY-MM-DD`, от которого считается век двузначного года
+   * и расстояние до окна эскалации (ADR 0166, п. 2). Пусто ровно тогда, когда связи нет:
+   * `delivery_at` в базе `NOT NULL`, поэтому у связанной заявки якорь есть всегда.
+   */
+  anchor: string;
 }
 
+/**
+ * Связь и якорь одним запросом — отдельного обращения к базе якорь не добавляет (Р8).
+ *
+ * Фактический день вывоза берётся ТОЛЬКО при `removed_on_source = 'entered'`: у закрытий старше
+ * колонки дня нет вовсе, и подстановка плановой даты выдала бы предположение за факт — то же
+ * правило, по которому строит замечание сверка (`waste-ticket-checks.ts`).
+ */
 const LINK_SQL = `
-  SELECT f.object_key, f.content_type
+  SELECT f.object_key, f.content_type, wr.delivery_at,
+         CASE WHEN c.removed_on_source = 'entered' THEN to_char(c.removed_on, 'YYYY-MM-DD') END
+           AS removed_on
     FROM request_files rf
     JOIN files f ON f.id = rf.file_id
     JOIN waste_requests wr ON wr.id = rf.request_id
+    LEFT JOIN waste_request_completions c ON c.request_id = wr.id
    WHERE rf.request_id = $1
      AND rf.file_id = $2
      AND rf.kind = 'ticket'
@@ -112,15 +180,22 @@ const LINK_SQL = `
      AND wr.status = 'done'`;
 
 async function readLink(client: JobClient, requestId: string, fileId: string): Promise<LinkState> {
-  const res = await client.query<{ object_key: string; content_type: string }>(LINK_SQL, [
-    requestId,
-    fileId,
-  ]);
+  const res = await client.query<{
+    object_key: string;
+    content_type: string;
+    delivery_at: Date;
+    removed_on: string | null;
+  }>(LINK_SQL, [requestId, fileId]);
   const row = res.rows[0];
   return {
     linked: !!row,
     objectKey: row?.object_key ?? '',
     contentType: row?.content_type ?? '',
+    // Плановая дата приводится к московскому дню ТОЙ ЖЕ функцией, что и в сверке
+    // (`moscowDateKeyOf`), а не выражением в SQL: правило должно совпадать до дня, иначе воркер
+    // выберет один век, а замечание предложит заменить год ровно на тот, который сам и поставил.
+    // Фактический день — уже `date`, и приводить его не к чему.
+    anchor: row ? (row.removed_on ?? moscowDateKeyOf(row.delivery_at)) : '',
   };
 }
 
@@ -244,6 +319,40 @@ async function failFile(
 // ── T1: одна страница ──
 
 /**
+ * Материализованная попытка одной ступени каскада (Р6, ADR 0166 п. 3).
+ *
+ * Ключевое здесь — чего в типе НЕТ: следа того, откуда взялся ответ. Свежий `outcome` и
+ * сохранённые в строке попытки `raw` с `model_reported` дают одну и ту же величину, и дальше по
+ * коду обе ступени обрабатываются одинаково. Прежде этого не было, и стоило это настоящего
+ * дефекта: ветка эскалации проверяла `outcome`, которого у попадания в кэш нет вовсе, — страница,
+ * уже прочитанная двумя моделями, при повторе задачи теряла старшую.
+ */
+interface StageResult {
+  attemptId: string;
+  /** Сырой ответ модели: `outcome.response` или `raw` попытки. Якорь-независим — см. Р6. */
+  raw: { tickets?: unknown; unreadable?: unknown };
+  /** Фактическая модель (`model_reported`, Р7): пусто, когда её не назвали ни ответ, ни попытка. */
+  modelReported: string;
+  /** Заказанный слаг ступени — им подписывается вторая ступень, когда фактическая неизвестна. */
+  model: string;
+  /** Ответ отдал кэш попыток: вызова наружу на ЭТОЙ ступени не было (§2.1 плана аудита). */
+  fromCache: boolean;
+}
+
+/**
+ * Что вернула ступень: ответ (свежий или из кэша) либо настоящий отказ свежего вызова. Источник
+ * ответа веткой НЕ является — он спрятан внутри `StageResult` признаком `fromCache` (Р6).
+ *
+ * `called` есть у обеих ветвей потому, что по нему, а не по составу итога, считается
+ * `PageResult.cacheHit` (Р6): свежая эскалация, завершившаяся отказом, в результат не входит, а
+ * оплачена, и признак «денег не потратили» после неё был бы неправдой.
+ */
+type StageAttempt =
+  | { status: 'read'; result: StageResult; called: boolean }
+  /** Отказ: с ним разбирается вызывающий — терминальный, `Retry-After` или бросок наверх. */
+  | { status: 'failed'; failure: RecognitionFailure; meta: AttemptMeta; called: true };
+
+/**
  * Распознаёт страницу и возвращает попытку. Кэш и advisory lock — в одной транзакции с вызовом:
  * замок держит **ключ кэша**, а не заявку, поэтому два воркера на одном листе выстраиваются в
  * очередь, и второй забирает готовый результат вместо второго платного вызова (Р12).
@@ -251,12 +360,16 @@ async function failFile(
  * Оговорка, которая стоит денег: дедуп прокси схлопывает только **конкурентные** запросы. Повтор
  * задачи через минуту — новый вызов, и его оплатят. От повторной оплаты последовательных попыток
  * спасает этот кэш, и только если предыдущая попытка успела записаться как `done`.
+ *
+ * Якорь заявки в ключ кэша НЕ входит и входить не может (Р6): содержимое кэша — сырой ответ
+ * модели, величина якорь-независимая, а повторно использованная попытка просто нормализуется
+ * заново. Обратное сделало бы одну и ту же страницу завтра другой работой.
  */
 async function recognizePage(
   deps: TicketJobDeps,
   page: PageImage,
   opts: { model: string; forced: boolean; jobId: string },
-): Promise<{ attemptId: string; outcome: RecognitionOutcome | null; fromCache: boolean }> {
+): Promise<StageAttempt> {
   const cacheKey = attemptCacheKey({
     pageSha256: page.sha256,
     engine: deps.engine.kind,
@@ -275,8 +388,11 @@ async function recognizePage(
     await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [advisoryKey(cacheKey)]);
 
     if (!opts.forced && cacheable) {
-      const hit = await client.query<{ id: string; raw: unknown }>(
-        `SELECT id, raw FROM waste_ticket_recognition_attempts
+      // `raw` и `model_reported` читаются ЗДЕСЬ, вместе с попаданием, а не отдельной транзакцией
+      // выше по стеку (Р6): материализация у обеих ступеней одна, и второго места, где ответ
+      // достают из попытки, быть не должно — именно оно и разъехалось с веткой эскалации.
+      const hit = await client.query<{ id: string; raw: unknown; model_reported: string }>(
+        `SELECT id, raw, model_reported FROM waste_ticket_recognition_attempts
           WHERE page_sha256 = $1 AND engine = $2 AND model = $3
             AND prompt_version = $4 AND preprocessing_version = $5
             AND status = 'done' AND NOT forced
@@ -291,7 +407,22 @@ async function recognizePage(
           { pageSha256: page.sha256.slice(0, 12), model: opts.model, attemptId: row.id },
           'Распознавание талона: страница взята из кэша попыток',
         );
-        return { attemptId: row.id, outcome: null, fromCache: true };
+        return {
+          status: 'read',
+          result: {
+            attemptId: row.id,
+            // Форма `raw` — обещание схемы контракта, а не факт: писала его прошлая версия кода.
+            raw: (row.raw ?? {}) as { tickets?: unknown; unreadable?: unknown },
+            // Вызова не было, значит нет и `meta` ответа: фактическую модель называет сама
+            // попытка. Возьми мы заказанный слаг — метрика приписала бы чтение не тому, кто
+            // читал (Р7). Пусто, когда не знает и попытка: при варианте A в колонке фактической
+            // модели стояло бы слово `proxy`, то есть выдумка вместо ответа «неизвестно».
+            modelReported: row.model_reported ?? '',
+            model: opts.model,
+            fromCache: true,
+          },
+          called: false,
+        };
       }
     }
 
@@ -333,20 +464,145 @@ async function recognizePage(
         outcome.status === 'failed' ? outcome.failure.message : '',
       ],
     );
-    return { attemptId: inserted.rows[0]!.id, outcome, fromCache: false };
+    const attemptId = inserted.rows[0]!.id;
+    if (outcome.status === 'failed') {
+      return { status: 'failed', failure: outcome.failure, meta: outcome.meta, called: true };
+    }
+    return {
+      status: 'read',
+      result: {
+        attemptId,
+        raw: outcome.response,
+        modelReported: outcome.meta.modelReported,
+        model: opts.model,
+        fromCache: false,
+      },
+      called: true,
+    };
   });
 }
 
-// ── Каскад по полям (Р14) ──
+// ── Дата: якорь, нормализация прохода (Р5, Р6) ──
 
-/** Поле, требующее второго прохода: пустое, названное нечитаемым или не прошедшее проверку формы. */
+/**
+ * Всё, что нужно знать о дате, чтобы разобрать ответ модели. Величина **контекстная**: якорь
+ * меняет человек, правя заявку, и один и тот же сырой ответ по разным якорям даёт разные даты.
+ * Поэтому она не хранится внутри материализованной попытки, а передаётся туда, где ответ
+ * превращается в талон, — и передаётся в T2 второй раз, уже с перечитанным под замком якорем.
+ */
+interface AnchorContext {
+  /** Календарный день `YYYY-MM-DD`, к которому привязана заявка (ADR 0166, п. 2). */
+  anchor: string;
+  /** `TICKET_OCR_DATE_YEAR_FROM_ANCHOR`: выбирать ли век по якорю. */
+  yearFromAnchor: boolean;
+  /** `TICKET_OCR_DATE_ANCHOR_DAYS`: за этим окном дата становится поводом для второго прохода. */
+  dateAnchorDays: number;
+}
+
+/** Умолчания повторяют `config.ts` (см. оговорку у `TicketJobDeps`). */
+function anchorContextOf(deps: TicketJobDeps, anchor: string): AnchorContext {
+  return {
+    anchor,
+    yearFromAnchor: deps.dateYearFromAnchor ?? true,
+    dateAnchorDays: deps.dateAnchorDays ?? 30,
+  };
+}
+
+/** Расстояние между календарными днями в сутках — тем же счётом, каким его считает сверка. */
+function daysApart(a: string, b: string): number {
+  const [from, to] = a <= b ? [a, b] : [b, a];
+  return Math.max(dateKeySpan(from, to) - 1, 0);
+}
+
+/** Талон в ответе модели, как он лежит в `raw`: и у свежего ответа, и у попытки из кэша. */
+interface RawStageTicket {
+  number: string | null;
+  issuedOn: string | null;
+  issuedOnRaw?: unknown;
+  volumeM3: number | null;
+  workKind: string;
+  addressRaw: string | null;
+}
+
+/**
+ * Талон ОДНОГО прохода после нормализации даты (Р6, ADR 0166 п. 3). Сюда попадает уже выбранная
+ * дата, а не догадка модели о веке, — и только поэтому два прохода, одинаково прочитавшие
+ * «17.08.25», сравниваются как одинаковые, а не спорят из-за 1925 против 2025.
+ */
+interface StageTicket {
+  number: string | null;
+  issuedOn: string | null;
+  /** Транскрипция графы «Дата» — её же записывает талон (Р12). Нормализация её не трогает. */
+  issuedOnRaw: string | null;
+  volumeM3: number | null;
+  workKind: string;
+  addressRaw: string | null;
+  /**
+   * `issuedOn` модели разошёлся с её же транскрипцией по дню или месяцу. Молча выбрать одну из
+   * двух дат нельзя — обе прочитала одна модель, — и расхождение становится четвёртым поводом
+   * для второго прохода (Р7, ADR 0166 п. 4).
+   */
+  dateConflict: boolean;
+}
+
+/**
+ * Талоны прохода с нормализованной датой. Зовётся сразу после материализации попытки и ДО
+ * сопоставления и слияния — одинаково для свежего ответа и для взятого из кэша (Р6).
+ *
+ * `raw` попытки при этом НЕ переписывается: сырой ответ остаётся якорь-независимым содержимым
+ * кэша, и завтрашний повтор по изменившемуся якорю нормализует его заново.
+ */
+function stageTickets(raw: { tickets?: unknown }, ctx: AnchorContext): StageTicket[] {
+  // Форма талона в ответе — обещание схемы контракта, а не факт: из кэша сюда приходит `jsonb`,
+  // который писала прошлая версия кода.
+  const list = (Array.isArray(raw.tickets) ? raw.tickets : []) as RawStageTicket[];
+  return list.map((ticket) => {
+    // У попыток, записанных до промпта версии 4, транскрипции нет вовсе. Это не пустота ответа, а
+    // отсутствие вопроса — и правило разбора её так и понимает: нет написания, остаётся `issuedOn`.
+    const issuedOnRaw = typeof ticket.issuedOnRaw === 'string' ? ticket.issuedOnRaw : null;
+    const choice = resolveWasteTicketIssuedOn(
+      { issuedOn: ticket.issuedOn ?? null, issuedOnRaw },
+      ctx.anchor,
+      { yearFromAnchor: ctx.yearFromAnchor },
+    );
+    return {
+      number: ticket.number ?? null,
+      issuedOn: choice.issuedOn,
+      issuedOnRaw,
+      volumeM3: ticket.volumeM3 ?? null,
+      workKind: ticket.workKind,
+      addressRaw: ticket.addressRaw ?? null,
+      dateConflict: choice.conflict,
+    };
+  });
+}
+
+// ── Каскад по полям (Р14, Р7) ──
+
+/**
+ * Поле, требующее второго прохода: пустое, названное нечитаемым или не прошедшее проверку формы.
+ *
+ * У даты поводов четыре (Р7, ADR 0166 п. 4), и два последних — новые. Противоречие транскрипции и
+ * `issuedOn` по дню или месяцу означает, что модель прочитала графу двумя способами и способы
+ * разошлись; выход за окно якоря — что бумагу принесли на месяц позже плановой даты, чего не
+ * бывает. Ни то ни другое не делает дату спорной само по себе (Р9): это повод посмотреть
+ * внимательнее вторым голосом, а не утверждение, что прочитанное неверно.
+ */
 function fieldsNeedingEscalation(
-  ticket: { number: string | null; issuedOn: string | null; volumeM3: number | null; workKind: string },
+  ticket: StageTicket,
   unreadable: readonly string[],
+  ctx: AnchorContext,
 ): string[] {
   const need: string[] = [];
   if (!ticket.number || unreadable.includes('number')) need.push('number');
-  if (!ticket.issuedOn || unreadable.includes('issuedOn')) need.push('issuedOn');
+  if (
+    !ticket.issuedOn ||
+    unreadable.includes('issuedOn') ||
+    ticket.dateConflict ||
+    daysApart(ticket.issuedOn, ctx.anchor) > ctx.dateAnchorDays
+  ) {
+    need.push('issuedOn');
+  }
   // У простоя объёма нет законно — просить старшую модель перечитать пустоту незачем.
   const volumeExpected = ticket.workKind === 'removal';
   if (volumeExpected && (ticket.volumeM3 == null || unreadable.includes('volumeM3'))) {
@@ -356,16 +612,30 @@ function fieldsNeedingEscalation(
 }
 
 /**
+ * Нужен ли странице второй проход по ЭТОМУ якорю. Решение принимается по первому проходу — и
+ * одинаково для свежего и для взятого из кэша (Р7): ветка кэша не имеет права завершать обработку
+ * раньше этой проверки, иначе временный отказ старшей модели или её позднее включение навсегда
+ * оставили бы страницу с одним проходом — при повторе задача снова попала бы в кэш и снова
+ * остановилась.
+ *
+ * Зовётся дважды: в разборе — по снимку якоря, и в T2 — по перечитанному под замком (Р8).
+ */
+function pageNeedsSecond(primary: StageResult, ctx: AnchorContext): boolean {
+  const unreadable = readUnreadable(primary.raw.unreadable);
+  return stageTickets(primary.raw, ctx).some(
+    (ticket) => fieldsNeedingEscalation(ticket, unreadable, ctx).length > 0,
+  );
+}
+
+/**
  * Сопоставление талонов между проходами (Р13). По позиции — только последним резервом: порядок
  * массива модель менять вправе, и сопоставление по `seq` показало бы предложение от одного талона
  * рядом с другим. Сперва номер (он напечатан типографски и читается надёжнее всего), затем пара
  * «дата + объём», и лишь потом позиция.
  */
-function matchTicket<T extends { number: string | null; issuedOn: string | null; volumeM3: number | null }>(
-  target: T,
-  candidates: readonly T[],
-  index: number,
-): T | undefined {
+function matchTicket<
+  T extends { number: string | null; issuedOn: string | null; volumeM3: number | null },
+>(target: T, candidates: readonly T[], index: number): T | undefined {
   if (target.number) {
     const key = wasteTicketNumberKey(target.number);
     const byNumber = candidates.find((c) => c.number && wasteTicketNumberKey(c.number) === key);
@@ -416,7 +686,8 @@ function mergeField<V>(
       stage: escalated === null ? null : 'escalation',
     };
   }
-  if (escalated === null) return { value: primary, review: false, candidates: null, stage: 'primary' };
+  if (escalated === null)
+    return { value: primary, review: false, candidates: null, stage: 'primary' };
   if (primary === escalated) {
     return { value: primary, review: false, candidates: null, stage: 'merged' };
   }
@@ -452,11 +723,19 @@ interface PageResult {
    * ответа, и при двух талонах на листе признак ложится на оба.
    */
   unreadable: readonly WasteTicketField[];
-  /** Страница взята из кэша попыток: вызова наружу не было и денег не потрачено (§2.1). */
+  /**
+   * При разборе страницы НЕ БЫЛО НИ ОДНОГО свежего вызова наружу (Р6, §2.1 плана аудита).
+   *
+   * Определение буквальное, и «все участвовавшие в итоге ступени пришли из кэша» тут не годится:
+   * свежая эскалация, завершившаяся отказом, в результат не входит, а вызов состоялся и оплачен.
+   * Считай мы по составу итога — расход занижался бы и в журнале наблюдений, и в итоговой строке.
+   */
   cacheHit: boolean;
   tickets: {
     number: string | null;
     issuedOn: string | null;
+    /** Транскрипция графы «Дата», выбранная по правилу Р12: чья именно — см. `issuedOnRawOf`. */
+    issuedOnRaw: string;
     volumeM3: number | null;
     workKind: string;
     addressRaw: string | null;
@@ -469,6 +748,35 @@ interface PageResult {
 }
 
 /**
+ * Страница с сохранёнными сырыми ступенями (Р8). Именно она, а не готовый `PageResult`, доезжает
+ * до T2: под замком якорь читается заново, и обе ступени нормализуются и сливаются по нему ещё
+ * раз. Пересборка бесплатна — нормализация и слияние чистые функции без обращений наружу.
+ */
+interface PageDraft {
+  page: PageImage & { pageNo: number };
+  primary: StageResult;
+  /** Вторая ступень, если её ответ получен: свежий или из кэша (Р7). */
+  escalation: StageResult | null;
+  /**
+   * Второй проход в этом разборе **был предпринят** — включая свежий, завершившийся отказом.
+   * Это не то же самое, что «ступень есть в результате» (Р8): отказавшая эскалация состоялась и
+   * оплачена, и повторять её из-за смены якоря нельзя — иначе каждая правка заявки оплачивала бы
+   * отказавшую модель заново.
+   */
+  escalationAttempted: boolean;
+  /** Ни одного свежего вызова наружу на этой странице (Р6). */
+  cacheHit: boolean;
+}
+
+/**
+ * Исход записи результата (Р8, ADR 0166 п. 4). Три, а не два: прежде `saveResult` возвращал
+ * `boolean`, и «не записал» означало единственный случай — отвязку файла. Теперь их два разных, и
+ * путать их нельзя: отвязка — успешное завершение (работать больше не над чем), а смена якоря —
+ * незаконченная работа, и завершись задача как выполненная, талоны так и не появились бы.
+ */
+type SaveOutcome = 'written' | 'unlinked' | 'anchor_changed';
+
+/**
  * Пишет страницы и талоны — под общим замком и после третьей, обязательной проверки связи. Всё,
  * что записано здесь, принадлежит заявке и уйдёт при её откате (Р22); попытки, наоборот, остаются:
  * они принадлежат содержимому страницы и служат кэшем.
@@ -476,14 +784,19 @@ interface PageResult {
  * Талон заводится `unconfirmed`: распознанное — предложение, а не факт. Номер занимает место в
  * реестре только после подтверждения человеком, поэтому `operator_counterparty_id` здесь **не
  * заполняется** — снимок оператора берётся в момент подтверждения (Р17).
+ *
+ * Здесь же перепроверяется якорь (Р8): между снимком и этой транзакцией лежат внешние вызовы
+ * длиной до двух минут, и за это время человек успевает ввести фактический день вывоза или
+ * сдвинуть плановую дату.
  */
 async function saveResult(
   deps: TicketJobDeps,
   payload: TicketJobPayload,
   prepared: { totalPages: number; skippedPages: number },
-  pages: readonly PageResult[],
+  drafts: readonly PageDraft[],
   recognitionRunId: string,
-): Promise<boolean> {
+  snapshot: AnchorContext,
+): Promise<SaveOutcome> {
   return inTransaction(deps.pool, async (client) => {
     await lockRequest(client, payload.requestId);
     const link = await readLink(client, payload.requestId, payload.fileId);
@@ -492,8 +805,57 @@ async function saveResult(
         { requestId: payload.requestId, fileId: payload.fileId },
         'Распознавание завершилось в пустоту: заявку откатили или файл отвязали — результат не пишем',
       );
-      return false;
+      return 'unlinked';
     }
+
+    // Якорь под замком. Совпал со снимком — пишем по нему же; разошёлся — результат по старому
+    // контексту не годится, но откладывать задачу нужно далеко не всегда (Р8).
+    let ctx = snapshot;
+    if (link.anchor !== snapshot.anchor) {
+      ctx = { ...snapshot, anchor: link.anchor };
+      const canEscalate = !!deps.escalationModel && deps.escalationModel !== deps.model;
+      // Отсрочка берётся ровно в одном случае: новому якорю нужен проход, которого НЕ ДЕЛАЛИ.
+      // Всё остальное — пересчёт: сырьё обеих ступеней уже здесь, и слияние по новому якорю
+      // стоит столько же, сколько по старому.
+      const missing = drafts.some(
+        (draft) => !draft.escalationAttempted && canEscalate && pageNeedsSecond(draft.primary, ctx),
+      );
+      const deferrals = payload.anchorDeferrals ?? 0;
+      if (missing && deferrals < MAX_ANCHOR_DEFERRALS) {
+        deps.log(
+          {
+            requestId: payload.requestId,
+            fileId: payload.fileId,
+            anchor: link.anchor,
+            previousAnchor: snapshot.anchor,
+            anchorDeferrals: deferrals,
+          },
+          'Якорь заявки изменился, а новому нужен непредпринятый второй проход: задача отложена',
+        );
+        return 'anchor_changed';
+      }
+      // Обе оставшиеся ветки пишут результат, и обе — новые: первые недели по ним смотрят, часто
+      // ли заявку правят под работающим разбором и как дорого это обходится (ADR 0166,
+      // последствия). Строка одна на смену якоря, а не на страницу: заявку правят целиком.
+      deps.log(
+        {
+          requestId: payload.requestId,
+          fileId: payload.fileId,
+          anchor: link.anchor,
+          previousAnchor: snapshot.anchor,
+          anchorDeferrals: deferrals,
+        },
+        missing
+          ? // Потолок исчерпан — пишем тем, что есть, без ступени, которой требует новый якорь.
+            // Это СОЗНАТЕЛЬНАЯ УСТУПКА (Р8): у такого талона может остаться дата, которую второй
+            // проход прочитал бы иначе, и обещать, что её кто-то поймает, нельзя — сверка молчит,
+            // когда значение совпало с якорем, даже если оно противоречит транскрипции по дню.
+            // Гоняться за якорем, который правят третий раз подряд, дороже, чем показать талон.
+            'Потолок отсрочек по смене якоря исчерпан: страница пишется без недостающей ступени'
+          : 'Якорь заявки изменился: результат пересчитан по новому якорю и записан тут же',
+      );
+    }
+    const pages = drafts.map((draft) => toPageResult(draft, ctx));
 
     // Ключи для поиска соседей собираются в ДВА захода, и первый из них — здесь, до единой записи.
     // Соседа задевает не только то, что проход запишет, но и то, что он затрёт: перечитывание
@@ -557,6 +919,11 @@ async function saveResult(
           ticket.addressRaw ?? '',
           ticket.needsReview,
           JSON.stringify(ticket.candidates),
+          // Транскрипция графы (Р12, ADR 0166 п. 7). Пишется и при спорной дате — она нужна для
+          // разбора; решение «не показывать подпись до разрешения спора» принимает портал, а не
+          // запись: колонка отвечает на вопрос «что модель прочитала в графе», и у спорного
+          // талона ответ на него есть.
+          ticket.issuedOnRaw,
         ];
         // Строка, к которой человек не прикасался, переписывается новым проходом целиком: она и
         // была предложением машины, а не решением. Тронутая — нет (Р13): подтверждённая занимает
@@ -566,9 +933,9 @@ async function saveResult(
           `INSERT INTO waste_tickets
              (request_id, page_id, seq, primary_attempt_id, escalation_attempt_id,
               number_raw, number_key, number_fuzzy, issued_on, volume_m3, work_kind,
-              address_raw, origin, status, needs_review_fields, candidates)
+              address_raw, origin, status, needs_review_fields, candidates, issued_on_raw)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'ocr','unconfirmed',$13::text[],
-                   $14::jsonb)
+                   $14::jsonb,$15)
            ON CONFLICT (page_id, seq) WHERE page_id IS NOT NULL AND origin = 'ocr'
            DO UPDATE SET primary_attempt_id = EXCLUDED.primary_attempt_id,
                          escalation_attempt_id = EXCLUDED.escalation_attempt_id,
@@ -576,6 +943,7 @@ async function saveResult(
                          number_key = EXCLUDED.number_key,
                          number_fuzzy = EXCLUDED.number_fuzzy,
                          issued_on = EXCLUDED.issued_on,
+                         issued_on_raw = EXCLUDED.issued_on_raw,
                          volume_m3 = EXCLUDED.volume_m3,
                          work_kind = EXCLUDED.work_kind,
                          address_raw = EXCLUDED.address_raw,
@@ -744,16 +1112,14 @@ async function saveResult(
     // Пустые ключи и повторы отбрасывает сама пометка — старый и новый наборы пересекаются почти
     // всегда, и без этого один и тот же сосед искался бы дважды.
     await markReviewStaleWithNeighbors(client, payload.requestId, neighborKeys);
-    return true;
+    return 'written';
   });
 }
 
 // ── Задача целиком ──
 
 async function downloadObject(deps: TicketJobDeps, objectKey: string): Promise<Buffer> {
-  const res = await deps.s3.send(
-    new GetObjectCommand({ Bucket: deps.bucket, Key: objectKey }),
-  );
+  const res = await deps.s3.send(new GetObjectCommand({ Bucket: deps.bucket, Key: objectKey }));
   const body = res.Body as { transformToByteArray?: () => Promise<Uint8Array> } | undefined;
   if (!body?.transformToByteArray) throw new Error('S3 вернул пустое тело объекта');
   return Buffer.from(await body.transformToByteArray());
@@ -817,7 +1183,13 @@ export async function runTicketRecognitionJob(
   );
   if (!stillLinked.linked) return;
 
-  const results: PageResult[] = [];
+  // Снимок якоря берётся ИМЕННО ЗДЕСЬ — из последней проверки связи перед первым вызовом модели
+  // (Р8). Не из T0: между ними лежат скачивание из S3 и рендер PDF, и брать якорь оттуда значило
+  // бы начинать расхождение раньше, чем начнётся работа.
+  const snapshot = anchorContextOf(deps, stillLinked.anchor);
+  const canEscalate = !!deps.escalationModel && deps.escalationModel !== deps.model;
+
+  const drafts: PageDraft[] = [];
   for (const page of prepared.pages) {
     const first = await recognizePage(deps, page, {
       model: deps.model,
@@ -825,36 +1197,8 @@ export async function runTicketRecognitionJob(
       jobId,
     });
 
-    // Кэш: страницу этими же версиями уже читали. Вызова нет, денег нет, попытка та же.
-    if (first.fromCache) {
-      const cached = await inTransaction(deps.pool, (client) =>
-        client.query<{ raw: { tickets?: unknown[]; unreadable?: string[] }; model_reported: string }>(
-          'SELECT raw, model_reported FROM waste_ticket_recognition_attempts WHERE id = $1',
-          [first.attemptId],
-        ),
-      );
-      const hit = cached.rows[0];
-      results.push(
-        toPageResult({
-          page,
-          primaryAttemptId: first.attemptId,
-          primary: hit?.raw ?? {},
-          // Вызова не было, значит нет и `meta` ответа: фактическую модель называет сама попытка.
-          // Возьми мы заказанный слаг — метрика приписала бы чтение не тому, кто читал (Р7).
-          //
-          // Пусто, когда не знает и попытка. Именно пусто, а не заказанный слаг: при варианте A в
-          // колонке фактической модели стояло бы слово `proxy`, то есть выдумка вместо ответа
-          // «неизвестно». Заказанное имя и так лежит рядом, в `model`.
-          models: { primary: hit?.model_reported ?? '', escalation: '' },
-          cacheHit: true,
-        }),
-      );
-      continue;
-    }
-
-    const outcome = first.outcome!;
-    if (outcome.status === 'failed') {
-      const failure = outcome.failure;
+    if (first.status === 'failed') {
+      const { failure, meta } = first;
       deps.log(
         {
           requestId: payload.requestId,
@@ -863,8 +1207,8 @@ export async function runTicketRecognitionJob(
           code: failure.code,
           errorClass: failure.errorClass,
           errorScope: failure.errorScope,
-          model: outcome.meta.model,
-          proxyRequestId: outcome.meta.proxyRequestId,
+          model: meta.model,
+          proxyRequestId: meta.proxyRequestId,
         },
         `Распознавание страницы не удалось: ${failure.message}`,
       );
@@ -882,30 +1226,26 @@ export async function runTicketRecognitionJob(
         );
         return;
       }
-      if (failure.retryAfterMs != null) return { deferUntil: new Date(Date.now() + failure.retryAfterMs) };
+      // Перенос по сроку прокси идёт БЕЗ причины: счётчик отсрочек заведён против правок заявки,
+      // и занятый прокси его тратить не должен (Р8).
+      if (failure.retryAfterMs != null)
+        return { deferUntil: new Date(Date.now() + failure.retryAfterMs) };
       throw new Error(`${failure.code}: ${failure.message}`);
     }
 
-    // Эскалация: старшая модель перечитывает страницу, если хоть у одного талона пусто поле,
-    // которое обязано быть заполненным. Просить её о том же, что уже прочитано, незачем — она
-    // получает то же задание, отличается только модель, и это её единственное отличие (Р14).
-    const primaryTickets = outcome.response.tickets;
-    const needsSecond =
-      !!deps.escalationModel &&
-      deps.escalationModel !== deps.model &&
-      primaryTickets.some(
-        (t) => fieldsNeedingEscalation(t, outcome.response.unreadable ?? []).length > 0,
-      );
-
-    if (!needsSecond) {
-      results.push(
-        toPageResult({
-          page,
-          primaryAttemptId: first.attemptId,
-          primary: outcome.response,
-          models: { primary: outcome.meta.modelReported, escalation: '' },
-        }),
-      );
+    // Эскалация: старшая модель перечитывает страницу, если хоть у одного талона поле не прошло
+    // проверку. Просить её о том же, что уже прочитано, незачем — она получает то же задание,
+    // отличается только модель, и это её единственное отличие (Р14). Решение принимается и по
+    // ЗАКЭШИРОВАННОМУ первому проходу (Р7): ветка кэша больше не завершает страницу раньше.
+    const primary = first.result;
+    if (!canEscalate || !pageNeedsSecond(primary, snapshot)) {
+      drafts.push({
+        page,
+        primary,
+        escalation: null,
+        escalationAttempted: false,
+        cacheHit: !first.called,
+      });
       continue;
     }
 
@@ -914,44 +1254,35 @@ export async function runTicketRecognitionJob(
       forced: !!payload.forced,
       jobId,
     });
-    const secondOutcome = second.outcome;
-    if (!secondOutcome || secondOutcome.status === 'failed') {
-      // Эскалация не удалась — это не повод терять первый проход: пишем его как есть. Вторая
-      // ступень в итог не вошла, поэтому и в наблюдении её нет: назови мы её моделью, метрика
-      // засчитала бы старшей модели чтение, которого та не сделала.
-      results.push(
-        toPageResult({
-          page,
-          primaryAttemptId: first.attemptId,
-          primary: outcome.response,
-          models: { primary: outcome.meta.modelReported, escalation: '' },
-        }),
-      );
-      continue;
-    }
-    results.push(
-      toPageResult({
-        page,
-        primaryAttemptId: first.attemptId,
-        escalationAttemptId: second.attemptId,
-        primary: outcome.response,
-        escalated: secondOutcome.response.tickets,
-        models: {
-          primary: outcome.meta.modelReported,
-          escalation: secondOutcome.meta.modelReported || deps.escalationModel,
-        },
-      }),
-    );
+    // Отброшен только настоящий ОТКАЗ эскалации: тогда, как и прежде, пишется первый проход, а
+    // второй ступени в наблюдении нет — назови мы её моделью, метрика засчитала бы старшей чтение,
+    // которого та не сделала. Попадание же в кэш старшей модели — это СОСТОЯВШИЙСЯ второй проход
+    // (Р7), и в слияние он идёт наравне со свежим.
+    drafts.push({
+      page,
+      primary,
+      escalation: second.status === 'read' ? second.result : null,
+      // Предпринятой считается любая попытка второго прохода, включая неуспешную: она оплачена, и
+      // смена якоря не должна оплачивать отказавшую модель заново (Р8).
+      escalationAttempted: true,
+      cacheHit: !first.called && !second.called,
+    });
   }
 
-  const written = await saveResult(
+  const outcome = await saveResult(
     deps,
     payload,
     { totalPages: prepared.totalPages, skippedPages: prepared.skippedPages },
-    results,
+    drafts,
     recognitionRunId,
+    snapshot,
   );
-  if (written) {
+  if (outcome === 'anchor_changed') {
+    // Причина уходит наверх вместе со сроком: только по ней очередь приращает `anchorDeferrals`
+    // (Р8). Задача при этом не проваливается — `deferJob` не тратит `attempts`.
+    return { deferUntil: new Date(Date.now() + ANCHOR_DEFER_MS), reason: 'anchor_changed' };
+  }
+  if (outcome === 'written') {
     // Итог одной строкой: сколько страниц разобрано, сколько талонов нашлось, сколько вызовов
     // ушло мимо кэша. По ней видно и работу, и её цену — а без неё пришлось бы считать попытки
     // запросом к базе.
@@ -960,10 +1291,15 @@ export async function runTicketRecognitionJob(
         requestId: payload.requestId,
         fileId: payload.fileId,
         jobId,
-        pages: results.length,
+        pages: drafts.length,
         skippedPages: prepared.skippedPages,
-        tickets: results.reduce((sum, page) => sum + page.tickets.length, 0),
-        cached: results.filter((page) => page.cacheHit).length,
+        // Талоны считаются по первому проходу: слияние их число не меняет — оно ходит по талонам
+        // первой ступени, — а собирать `PageResult` второй раз ради строки журнала незачем.
+        tickets: drafts.reduce(
+          (sum, draft) => sum + stageTickets(draft.primary.raw, snapshot).length,
+          0,
+        ),
+        cached: drafts.filter((draft) => draft.cacheHit).length,
       },
       'Распознавание талона: файл разобран',
     );
@@ -999,7 +1335,11 @@ function readState(args: {
   // У простоя объёма нет законно (Р2) — графы на такой бумаге не существует. Но если модель сама
   // назвала объём нечитаемым, это уже немота: назвав её «неприменимо», мы записали бы неудачное
   // чтение в законную пустоту и потеряли бы его из метрики целиком.
-  if (args.field === 'volumeM3' && args.workKind === 'idle' && !args.unreadable.includes('volumeM3')) {
+  if (
+    args.field === 'volumeM3' &&
+    args.workKind === 'idle' &&
+    !args.unreadable.includes('volumeM3')
+  ) {
     return 'not_applicable';
   }
   return 'unreadable';
@@ -1132,43 +1472,50 @@ function readUnreadable(value: unknown): WasteTicketField[] {
   return value.filter((f): f is WasteTicketField => typeof f === 'string' && known.includes(f));
 }
 
-/** Собирает страницу результата, сливая проходы по полям (Р14). */
-function toPageResult(args: {
-  page: PageImage & { pageNo: number };
-  primaryAttemptId: string;
-  /** Попытка второй ступени — только если её чтение вошло в итог. */
-  escalationAttemptId?: string | null;
-  /** Ответ первого прохода: от движка или из `raw` попытки, когда страница взята из кэша. */
-  primary: { tickets?: unknown; unreadable?: unknown };
-  /** Талоны второго прохода: пусто, когда эскалации не было или её результат не пригодился. */
-  escalated?: readonly unknown[];
-  /**
-   * Чем читали проходы. Фактические модели (`model_reported`, Р7), а не заказанные: человеку в
-   * споре важно, кто именно так прочитал, а прокси вправе подставить свою (Р7).
-   */
-  models?: { primary: string; escalation: string };
-  /** Вызова наружу не было — страницу отдал кэш попыток (§2.1 плана аудита). */
-  cacheHit?: boolean;
-}): PageResult {
-  const escalationAttemptId = args.escalationAttemptId ?? null;
-  const primaryModel = args.models?.primary ?? '';
-  const escalationModel = args.models?.escalation ?? '';
-  type T = {
-    number: string | null;
-    issuedOn: string | null;
-    volumeM3: number | null;
-    workKind: string;
-    addressRaw: string | null;
-  };
-  // Форма талона в ответе — обещание схемы контракта, а не факт: из кэша сюда приходит `jsonb`.
-  const primaryTickets = (Array.isArray(args.primary.tickets) ? args.primary.tickets : []) as T[];
-  const escalatedTickets = (args.escalated ?? []) as readonly T[];
-  const unreadable = readUnreadable(args.primary.unreadable);
+/**
+ * Чья транскрипция уезжает в талон (Р12, ADR 0166 п. 7).
+ *
+ * Правило идёт за датой: итог дал только второй проход — берётся его написание, иначе приоритет у
+ * непустого написания первого. Подмешивать первое к дате второго нельзя: подпись «OCR в графе»
+ * обещает написание ТОЙ модели, чья дата стоит рядом, а собранная из двух ответов пара объясняла
+ * бы дату чужим чтением графы.
+ *
+ * У спорной и пустой даты ступени нет, и написание всё равно сохраняется — для разбора; подпись
+ * до разрешения спора не рисует портал (Р12).
+ */
+function issuedOnRawOf(
+  stage: FieldStage | null,
+  primary: string | null | undefined,
+  escalation: string | null | undefined,
+): string {
+  if (stage === 'escalation') return escalation ?? '';
+  return (primary || escalation) ?? '';
+}
+
+/**
+ * Собирает страницу результата: нормализует ОБЕ ступени по якорю и сливает их по полям (Р6, Р14).
+ *
+ * Чистая функция от чернового результата и контекста — и это её главное свойство: T2 зовёт её
+ * второй раз, уже с якорем, перечитанным под замком заявки (Р8), и ничего, кроме дат, от этого
+ * не меняется.
+ */
+function toPageResult(draft: PageDraft, ctx: AnchorContext): PageResult {
+  const escalationAttemptId = draft.escalation?.attemptId ?? null;
+  const primaryModel = draft.primary.modelReported;
+  // Вторая ступень подписывается заказанным слагом, когда фактическую не назвал никто: у первой
+  // такой подстановки нет намеренно (при варианте A там стояло бы слово `proxy`), а у старшей
+  // слаг заказан прямо в настройке и другой моделью быть не может.
+  const escalationModel = draft.escalation
+    ? draft.escalation.modelReported || draft.escalation.model
+    : '';
+  // Нормализация — до сопоставления и слияния, отдельно у каждого прохода и одинаково у свежего и
+  // взятого из кэша (Р6, ADR 0166 п. 3).
+  const primaryTickets = stageTickets(draft.primary.raw, ctx);
+  const escalatedTickets = draft.escalation ? stageTickets(draft.escalation.raw, ctx) : [];
+  const unreadable = readUnreadable(draft.primary.raw.unreadable);
 
   const tickets = primaryTickets.map((ticket, index) => {
-    const pair = escalationAttemptId
-      ? matchTicket(ticket, escalatedTickets, index)
-      : undefined;
+    const pair = escalationAttemptId ? matchTicket(ticket, escalatedTickets, index) : undefined;
     const number = mergeField(ticket.number, pair?.number);
     const issuedOn = mergeField(ticket.issuedOn, pair?.issuedOn);
     const volume = mergeField(ticket.volumeM3, pair?.volumeM3);
@@ -1192,8 +1539,12 @@ function toPageResult(args: {
     // Вид работ и адрес каскад не сливает: в талон уходит чтение первого прохода, чем бы ни
     // ответил второй. Ступень поэтому только `merged` (второй прочитал то же самое) или
     // `primary`, а расхождение видно значениями — оба записаны, и спорным поле от этого не станет.
-    const kept = (value: string | null, escalatedValue: string | null | undefined): FieldReading => ({
-      stage: value === null || value === '' ? null : escalatedValue === value ? 'merged' : 'primary',
+    const kept = (
+      value: string | null,
+      escalatedValue: string | null | undefined,
+    ): FieldReading => ({
+      stage:
+        value === null || value === '' ? null : escalatedValue === value ? 'merged' : 'primary',
       primaryValue: asText(value),
       escalationValue: asText(escalatedValue),
     });
@@ -1219,6 +1570,7 @@ function toPageResult(args: {
     return {
       number: number.value,
       issuedOn: issuedOn.value,
+      issuedOnRaw: issuedOnRawOf(issuedOn.stage, ticket.issuedOnRaw, pair?.issuedOnRaw),
       volumeM3: volume.value,
       workKind: ticket.workKind,
       addressRaw: ticket.addressRaw,
@@ -1229,14 +1581,14 @@ function toPageResult(args: {
   });
 
   return {
-    pageNo: args.page.pageNo,
-    sha256: args.page.sha256,
-    primaryAttemptId: args.primaryAttemptId,
+    pageNo: draft.page.pageNo,
+    sha256: draft.page.sha256,
+    primaryAttemptId: draft.primary.attemptId,
     escalationAttemptId,
     modelReported: primaryModel,
     escalationModelReported: escalationModel,
     unreadable,
-    cacheHit: !!args.cacheHit,
+    cacheHit: draft.cacheHit,
     tickets,
   };
 }

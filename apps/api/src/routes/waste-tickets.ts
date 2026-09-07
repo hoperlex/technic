@@ -11,6 +11,7 @@ import {
   createWasteTicketSchema,
   dismissWasteTicketProposalSchema,
   dismissWasteTicketSchema,
+  formatWaybillDate,
   type RequestStatus,
   updateWasteTicketSchema,
   WASTE_TICKET_CHECK_CODES,
@@ -661,6 +662,11 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         status: t.status,
         number: t.numberRaw,
         issuedOn: t.issuedOn,
+        // Написание даты, как его прочитала модель (ADR 0166, п. 7; Р12 плана). Пустая строка —
+        // законное «написания нет»: у ручного талона его не бывает вовсе, у машинных прошлых
+        // разборов модель о нём не спрашивали. Это не «неизвестно», и подпись под датой её просто
+        // не рисует.
+        issuedOnRaw: t.issuedOnRaw,
         volumeM3: t.volumeM3 == null ? null : Number(t.volumeM3),
         workKind: t.workKind,
         addressRaw: t.addressRaw,
@@ -1073,6 +1079,80 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
   );
 
   /**
+   * Правка пришла кнопкой подсказки года — проверить источник (ADR 0166, п. 6; Р11 плана
+   * `docs/waste-ticket-date-escalation-plan.md`).
+   *
+   * ПОЧЕМУ ЭТОЙ ЖЕ РУЧКОЙ, А НЕ СВОЕЙ. Второй путь к тому же изменению разошёлся бы с первым на
+   * первой же доработке протокола замков (Р22 ADR 0155): правка талона берёт заявку, строку талона
+   * и три области номера в едином порядке, и повторить этот порядок во второй ручке — значит
+   * однажды его не повторить. Кнопка поэтому шлёт обычный `PATCH`, а маркер в теле лишь говорит,
+   * что источник надо проверить.
+   *
+   * ПОЧЕМУ ПОДСКАЗКА СТРОИТСЯ ЗАНОВО. Присланная дата доказательством не считается: возьми сервер
+   * её на веру — и маркер превратил бы форму в ручку «поставь любое число и назови это подсказкой
+   * портала», а `metadata.source`, по которому считается доля исправлений по кнопке (Р13), мерил
+   * бы ручной ввод. Сверяется поэтому не тело с телом, а тело с тем, что портал предложил бы
+   * СЕЙЧАС, — из текущего талона и актуального якоря.
+   *
+   * Все отказы — конфликт, а не «некорректный запрос»: человек ничего не нарушил, у него устарела
+   * карточка. Замечание приняли, талон сняли, дату уже поправили или сдвинулся якорь — и в каждом
+   * случае ответ говорит, что случилось, и просит открыть карточку заново.
+   */
+  async function assertYearSuggestionAlive(
+    tx: Tx,
+    principal: ReturnType<typeof requirePrincipal>,
+    requestId: string,
+    ticket: Awaited<ReturnType<typeof loadTicket>>,
+    sentIssuedOn: string | null,
+  ): Promise<void> {
+    // Отклонённый талон в сверку не входит вовсе — человек уже сказал, что бумаги здесь нет.
+    // Спрашивать о нём замечание бессмысленно, и молчание сверки прочиталось бы как «подсказки
+    // нет», хотя причина совсем другая и человеку нужно назвать именно её.
+    if (ticket.status === 'dismissed') {
+      throw err.conflict(
+        'Талон отмечен как «не талон» — год в нём больше не правят. Обновите карточку заявки',
+      );
+    }
+
+    // Вход сверки читается ТОЙ ЖЕ транзакцией, под уже взятым замком (Р22): прочитанный мимо неё
+    // устарел бы к моменту записи — а решается им как раз то, писать ли вообще.
+    const bundle = await collectCheckInputs(principal, requestId, tx);
+    const mismatch = wasteTicketChecks(bundle.inputs).checks.find(
+      (check) => check.code === 'date_mismatch' && check.subjectKey === ticket.id,
+    );
+    if (!mismatch) {
+      throw err.conflict(
+        'Дата талона уже сходится с заявкой — исправлять нечего. Обновите карточку заявки',
+      );
+    }
+    // Действующее принятие (Р21): человек уже согласился с расхождением, и кнопка на таком
+    // замечании не рисуется. Недействующее сюда не доедет — сверка его не показывает вовсе,
+    // потому что отпечаток входа перестал сходиться.
+    if (mismatch.resolution) {
+      throw err.conflict(
+        'Расхождение по дате уже принято — подсказка снята. Обновите карточку заявки',
+      );
+    }
+
+    // Подсказка берётся У САМОГО ЗАМЕЧАНИЯ, а не строится здесь второй раз: её считает сверка из
+    // текущей даты талона и того же якоря — введённого дня вывоза либо плановой даты, — и второе
+    // написание этого правила разъехалось бы с первым молча. Заодно сюда приходит и оговорка Р10:
+    // у замечания с двумя поводами подсказки нет вовсе, потому что замена года его не гасит.
+    const suggested = mismatch.suggestedIssuedOn;
+    if (!suggested) {
+      throw err.conflict(
+        'Замена года для этой даты больше не предлагается — обновите карточку заявки',
+      );
+    }
+    if (suggested !== sentIssuedOn) {
+      throw err.conflict(
+        `Подсказка изменилась: портал предлагает ${formatWaybillDate(suggested)}. ` +
+          'Обновите карточку заявки',
+      );
+    }
+  }
+
+  /**
    * Правка поля талона. Происхождение НЕ меняется: правленый машинный талон остаётся машинным,
    * иначе метрика «доля правок» перестала бы его видеть ровно тогда, когда он для неё интереснее
    * всего (Р14). Правка снимает поле со спора — человек и есть тот арбитр, которого ждали.
@@ -1125,6 +1205,14 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
             numberKey,
           });
           if (neighbour && !reason) throw numberConflictError(p, neighbour, nextNumber);
+        }
+
+        // Источник правки проверяется ПОСЛЕ всех замков и ДО первой записи (ADR 0166, п. 6):
+        // раньше замков решение принималось бы по состоянию, которое замок как раз и держит, а
+        // позже записи оно доказывало бы то, что уже случилось. Обычная ручная правка маркера не
+        // шлёт и ведёт себя ровно как прежде — ни одной новой проверки на её пути не появляется.
+        if (body.editSource === 'year_suggestion') {
+          await assertYearSuggestionAlive(tx, p, request.id, ticket, body.issuedOn ?? null);
         }
 
         const fields = ['number', 'issuedOn', 'volumeM3', 'workKind', 'addressRaw'] as const;
@@ -1211,7 +1299,9 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           ticket,
           { numberKey, numberFuzzy, pageId: ticket.pageId },
         ]);
-        return { ticketId: ticket.id, touched, numberChanged };
+        // Прежняя дата забирается здесь: журнал аудита пишется уже после коммита, а в строке
+        // талона «было» к тому времени не осталось — и в записи о клике стояло бы одно «стало».
+        return { ticketId: ticket.id, touched, numberChanged, issuedOnBefore: ticket.issuedOn };
       });
 
       await writeAudit({
@@ -1219,7 +1309,22 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         action: 'waste_request.ticket_edit',
         entityType: 'waste_request',
         entityId: req.params.id,
-        metadata: { ticketId: changed.ticketId, fields: changed.touched },
+        // Действие остаётся общим (ADR 0166, п. 6): отдельное имя `waste_ticket.year_fix`
+        // разошлось бы с действующей областью `waste_request.ticket_*`, а без маркера ручка всё
+        // равно не отличила бы клик от ручного ввода — форма шлёт те же поля. Различает их этот
+        // ключ, и по нему же считается доля исправлений по подсказке (Р13), поэтому рядом с ним
+        // лежат оба значения даты: отчёту нужно не только «сколько», но и «что на что».
+        metadata: {
+          ticketId: changed.ticketId,
+          fields: changed.touched,
+          ...(body.editSource === 'year_suggestion'
+            ? {
+                source: body.editSource,
+                issuedOnFrom: changed.issuedOnBefore,
+                issuedOnTo: body.issuedOn ?? null,
+              }
+            : {}),
+        },
       });
       return { ok: true };
     },

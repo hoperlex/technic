@@ -6,8 +6,18 @@ import {
   type RecognizedWasteTicket,
   type WasteTicketField,
 } from '@technic/contracts';
-import { runTicketRecognitionJob, type JobClient, type JobPool } from '../src/ticket-ocr/job';
-import type { PageImage, RecognitionEngine, RecognitionOutcome } from '../src/ticket-ocr/engine/types';
+import {
+  MAX_ANCHOR_DEFERRALS,
+  runTicketRecognitionJob,
+  type JobClient,
+  type JobPool,
+} from '../src/ticket-ocr/job';
+import type {
+  PageImage,
+  RecognitionEngine,
+  RecognitionFailure,
+  RecognitionOutcome,
+} from '../src/ticket-ocr/engine/types';
 
 /**
  * Задача распознавания — на живой схеме, и главный её случай это ГОНКА.
@@ -32,11 +42,35 @@ import type { PageImage, RecognitionEngine, RecognitionOutcome } from '../src/ti
 
 const DB_URL = process.env.TEST_DATABASE_URL;
 
+/**
+ * Якорь заявки по умолчанию (ADR 0166, п. 2) — тот же день, что стоит в талонах фикстур. Ноль
+ * расстояния означает, что ни одна проверка не получает эскалацию по дате нечаянно: кому нужен
+ * выход за окно, тот двигает якорь `setPlannedAt` явно.
+ */
+const DEFAULT_ANCHOR = '2026-08-17';
+
+/** Якорь заведомо вне окна `TICKET_OCR_DATE_ANCHOR_DAYS` (30 дней) от даты талонов фикстур. */
+const FAR_ANCHOR = '2026-06-01';
+
 let admin: pg.Client;
 let pool: pg.Pool;
 
 /** Движок-счётчик: отвечает предсказуемо и рассказывает, сколько раз его позвали. */
-function countingEngine(tickets: unknown[] = [{ number: '30476', issuedOn: '2026-08-17', volumeM3: 20, workKind: 'removal', addressRaw: 'Автозаводская, лот 33' }]) {
+function countingEngine(
+  tickets: unknown[] = [
+    {
+      number: '30476',
+      issuedOn: '2026-08-17',
+      // Транскрипция графы «Дата» — обязательное по форме свойство ответа с версии 4 промпта
+      // (ADR 0166, п. 1). Двузначный год: век ему выбирает якорь заявки, а `seed()` ставит
+      // `delivery_at = now()`, то есть текущий, — дата от нормализации не меняется.
+      issuedOnRaw: '17.08.26',
+      volumeM3: 20,
+      workKind: 'removal',
+      addressRaw: 'Автозаводская, лот 33',
+    },
+  ],
+) {
   const calls: string[] = [];
   const engine: RecognitionEngine = {
     kind: 'stub',
@@ -81,9 +115,13 @@ async function seed(): Promise<{ requestId: string; fileId: string }> {
     [`ocr-${suffix}@example.test`],
   );
   const req = await admin.query<{ id: string }>(
+    // Плановая дата ФИКСИРОВАНА, а не `now()`: с ADR 0166 она стала якорем даты талона, и
+    // расстояние до него решает, звать ли старшую модель. Оставь мы «сегодня» — набор менялся бы
+    // со временем: через месяц после написания дата талона `2026-08-17` вылезла бы за окно, и
+    // проверки каскада начали бы звать эскалацию по причине, которой в них не написано.
     `INSERT INTO waste_requests (object_id, request_type, delivery_at, created_by, status)
-     VALUES ($1, 'waste_removal', now(), $2, 'done') RETURNING id`,
-    [obj.rows[0]!.id, user.rows[0]!.id],
+     VALUES ($1, 'waste_removal', $3::timestamptz, $2, 'done') RETURNING id`,
+    [obj.rows[0]!.id, user.rows[0]!.id, `${DEFAULT_ANCHOR}T09:00:00+03:00`],
   );
   const file = await admin.query<{ id: string }>(
     `INSERT INTO files (bucket, object_key, filename, content_type, size, status, uploaded_by)
@@ -119,7 +157,14 @@ function preparedPages(sha: string) {
     skippedPages: 0,
     preprocessingVersion: 1,
     pages: [
-      { pageNo: 1, buffer: Buffer.from('page'), mediaType: 'image/jpeg', sha256: sha, width: 100, height: 100 },
+      {
+        pageNo: 1,
+        buffer: Buffer.from('page'),
+        mediaType: 'image/jpeg',
+        sha256: sha,
+        width: 100,
+        height: 100,
+      },
     ],
   };
 }
@@ -200,6 +245,7 @@ function recognizedTicket(overrides: Partial<RecognizedWasteTicket> = {}): Recog
   return {
     number: '70476',
     issuedOn: '2026-08-17',
+    issuedOnRaw: '17.08.26',
     volumeM3: 20,
     workKind: 'removal',
     addressRaw: 'Автозаводская, лот 33',
@@ -217,6 +263,17 @@ interface StubAnswer {
 }
 
 /**
+ * Отказ ступени: вызов СОСТОЯЛСЯ и ответа не дал. Отдельно от «ступени не было» — по Р8 это
+ * разные вещи: отказавшая эскалация оплачена, и смена якоря не имеет права требовать её заново.
+ */
+interface StubFailure {
+  failure: RecognitionFailure;
+  reported: string;
+}
+
+type StubReply = StubAnswer | StubFailure;
+
+/**
  * Движок, отвечающий ПО ЗАКАЗАННОМУ СЛАГУ: каскад ходит по одной странице дважды, отличаясь только
  * моделью, — этого хватает, чтобы развести проходы. Отличие от `countingEngine` выше одно, но
  * существенное: фактическая модель здесь своя у каждой ступени, и её видно в наблюдении.
@@ -224,7 +281,7 @@ interface StubAnswer {
  * Слаг без заготовленного ответа — падение, а не пустой ответ: пустота выглядела бы честным «поле
  * не прочитано» и увела бы проверку в зелёное по ложной причине.
  */
-function modelAwareEngine(answers: Record<string, StubAnswer>): {
+function modelAwareEngine(answers: Record<string, StubReply>): {
   engine: RecognitionEngine;
   calls: string[];
 } {
@@ -235,24 +292,26 @@ function modelAwareEngine(answers: Record<string, StubAnswer>): {
       const answer = answers[opts.model];
       if (!answer) throw new Error(`Тест не задал ответа для модели ${opts.model}`);
       calls.push(`${opts.model}:${page.sha256.slice(0, 8)}`);
+      const meta = {
+        engine: 'stub',
+        model: opts.model,
+        modelReported: answer.reported,
+        // Заведомо чужая версия промпта — по той же причине, что и у `countingEngine`.
+        promptVersion: 99,
+        preprocessingVersion: 1,
+        inputTokens: 100,
+        outputTokens: 20,
+        durationMs: 5,
+        proxyRequestId: '',
+        upstreamRequestId: '',
+        idempotencyKey: 'k',
+        requestId: 'r',
+      } as const;
+      if ('failure' in answer) return { status: 'failed', failure: answer.failure, meta };
       return {
         status: 'done',
         response: { tickets: answer.tickets, unreadable: answer.unreadable ?? [] },
-        meta: {
-          engine: 'stub',
-          model: opts.model,
-          modelReported: answer.reported,
-          // Заведомо чужая версия промпта — по той же причине, что и у `countingEngine`.
-          promptVersion: 99,
-          preprocessingVersion: 1,
-          inputTokens: 100,
-          outputTokens: 20,
-          durationMs: 5,
-          proxyRequestId: '',
-          upstreamRequestId: '',
-          idempotencyKey: 'k',
-          requestId: 'r',
-        },
+        meta,
       };
     },
   };
@@ -381,7 +440,10 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     expect(calls).toHaveLength(1);
     expect(tickets.rows).toEqual([{ number_key: '30476', status: 'unconfirmed', origin: 'ocr' }]);
 
-    const file = await admin.query(`SELECT status, total_pages, processed_pages FROM waste_ticket_files WHERE file_id = $1`, [fileId]);
+    const file = await admin.query(
+      `SELECT status, total_pages, processed_pages FROM waste_ticket_files WHERE file_id = $1`,
+      [fileId],
+    );
     expect(file.rows[0]).toMatchObject({ status: 'done', total_pages: 1, processed_pages: 1 });
   });
 
@@ -394,10 +456,26 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     // старшая читает целиком, и её чтение сверяется со всеми полями первой.
     const { requestId, fileId } = await seed();
     const primary = countingEngine([
-      { number: '30476', issuedOn: null, volumeM3: 20, workKind: 'removal', addressRaw: 'Автозаводская, лот 33' },
+      // Даты нет ни в одном виде: будь транскрипция на месте, нормализация собрала бы дату из
+      // неё, и эскалацию пришлось бы вызывать чем-то другим (Р5).
+      {
+        number: '30476',
+        issuedOn: null,
+        issuedOnRaw: null,
+        volumeM3: 20,
+        workKind: 'removal',
+        addressRaw: 'Автозаводская, лот 33',
+      },
     ]);
     const escalated = countingEngine([
-      { number: '30476', issuedOn: '2026-08-17', volumeM3: 28, workKind: 'removal', addressRaw: 'Автозаводская, лот 33' },
+      {
+        number: '30476',
+        issuedOn: '2026-08-17',
+        issuedOnRaw: '17.08.26',
+        volumeM3: 28,
+        workKind: 'removal',
+        addressRaw: 'Автозаводская, лот 33',
+      },
     ]);
     /** Первый вызов отвечает основной моделью, второй — старшей: каскад ходит по одной странице. */
     const engine: RecognitionEngine = {
@@ -462,7 +540,14 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     );
 
     const second = countingEngine([
-      { number: '30999', issuedOn: '2026-08-18', volumeM3: 25, workKind: 'removal', addressRaw: 'Автозаводская, лот 33' },
+      {
+        number: '30999',
+        issuedOn: '2026-08-18',
+        issuedOnRaw: '18.08.26',
+        volumeM3: 25,
+        workKind: 'removal',
+        addressRaw: 'Автозаводская, лот 33',
+      },
     ]);
     const jobId2 = await seedJob({ requestId, fileId });
     await runTicketRecognitionJob(
@@ -502,7 +587,14 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     );
 
     const second = countingEngine([
-      { number: '30999', issuedOn: '2026-08-18', volumeM3: 25, workKind: 'removal', addressRaw: 'Автозаводская, лот 33' },
+      {
+        number: '30999',
+        issuedOn: '2026-08-18',
+        issuedOnRaw: '18.08.26',
+        volumeM3: 25,
+        workKind: 'removal',
+        addressRaw: 'Автозаводская, лот 33',
+      },
     ]);
     const jobId2 = await seedJob({ requestId, fileId });
     await runTicketRecognitionJob(
@@ -536,9 +628,12 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
       { requestId, fileId },
       jobId,
     );
-    await admin.query(`UPDATE waste_tickets SET status = 'confirmed', confirmed_at = now(),
+    await admin.query(
+      `UPDATE waste_tickets SET status = 'confirmed', confirmed_at = now(),
               confirmed_by = (SELECT created_by FROM waste_requests WHERE id = $1)
-        WHERE request_id = $1`, [requestId]);
+        WHERE request_id = $1`,
+      [requestId],
+    );
 
     const jobId2 = await seedJob({ requestId, fileId });
     await runTicketRecognitionJob(
@@ -563,7 +658,9 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     // связь талона снимается и статус заявки возвращается в «Новую», как это делает маршрут.
     const barrierPool = poolWithBarrier(pool, 4, async () => {
       await admin.query(`DELETE FROM request_files WHERE request_id = $1`, [requestId]);
-      await admin.query(`UPDATE waste_requests SET status = 'confirmed' WHERE id = $1`, [requestId]);
+      await admin.query(`UPDATE waste_requests SET status = 'confirmed' WHERE id = $1`, [
+        requestId,
+      ]);
     });
 
     await runTicketRecognitionJob(
@@ -572,14 +669,20 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
       await seedJob({ requestId, fileId }),
     );
 
-    const tickets = await admin.query(`SELECT id FROM waste_tickets WHERE request_id = $1`, [requestId]);
-    const pages = await admin.query(`SELECT id FROM waste_ticket_pages WHERE request_id = $1`, [requestId]);
+    const tickets = await admin.query(`SELECT id FROM waste_tickets WHERE request_id = $1`, [
+      requestId,
+    ]);
+    const pages = await admin.query(`SELECT id FROM waste_ticket_pages WHERE request_id = $1`, [
+      requestId,
+    ]);
     expect(tickets.rows).toHaveLength(0);
     expect(pages.rows).toHaveLength(0);
     // Вызов модели всё же был и оплачен — эту границу порядок транзакций не убирает, и попытка
     // остаётся в журнале: кэшем, который сэкономит повторное закрытие тем же листом.
     expect(calls).toHaveLength(1);
-    const attempts = await admin.query(`SELECT status FROM waste_ticket_recognition_attempts WHERE engine = 'stub'`);
+    const attempts = await admin.query(
+      `SELECT status FROM waste_ticket_recognition_attempts WHERE engine = 'stub'`,
+    );
     expect(attempts.rows).toHaveLength(1);
   });
 
@@ -591,9 +694,10 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     await runTicketRecognitionJob(deps({ engine }) as never, second, await seedJob(second));
 
     expect(calls).toHaveLength(1);
-    const tickets = await admin.query(`SELECT request_id FROM waste_tickets WHERE request_id = ANY($1::uuid[])`, [
-      [first.requestId, second.requestId],
-    ]);
+    const tickets = await admin.query(
+      `SELECT request_id FROM waste_tickets WHERE request_id = ANY($1::uuid[])`,
+      [[first.requestId, second.requestId]],
+    );
     expect(tickets.rows).toHaveLength(2);
   });
 
@@ -624,7 +728,11 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
   it('принудительный проход идёт мимо кэша', async () => {
     const { requestId, fileId } = await seed();
     const { engine, calls } = countingEngine();
-    await runTicketRecognitionJob(deps({ engine }) as never, { requestId, fileId }, await seedJob({ requestId, fileId }));
+    await runTicketRecognitionJob(
+      deps({ engine }) as never,
+      { requestId, fileId },
+      await seedJob({ requestId, fileId }),
+    );
     await runTicketRecognitionJob(
       deps({ engine }) as never,
       { requestId, fileId, forced: true },
@@ -632,7 +740,9 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     );
 
     expect(calls).toHaveLength(2);
-    const attempts = await admin.query(`SELECT forced FROM waste_ticket_recognition_attempts WHERE engine = 'stub' ORDER BY forced`);
+    const attempts = await admin.query(
+      `SELECT forced FROM waste_ticket_recognition_attempts WHERE engine = 'stub' ORDER BY forced`,
+    );
     expect(attempts.rows.map((r) => r.forced)).toEqual([false, true]);
   });
 
@@ -641,10 +751,16 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     await admin.query(`UPDATE waste_requests SET status = 'confirmed' WHERE id = $1`, [requestId]);
     const { engine, calls } = countingEngine();
 
-    await runTicketRecognitionJob(deps({ engine }) as never, { requestId, fileId }, await seedJob({ requestId, fileId }));
+    await runTicketRecognitionJob(
+      deps({ engine }) as never,
+      { requestId, fileId },
+      await seedJob({ requestId, fileId }),
+    );
 
     expect(calls).toHaveLength(0);
-    const file = await admin.query(`SELECT file_id FROM waste_ticket_files WHERE file_id = $1`, [fileId]);
+    const file = await admin.query(`SELECT file_id FROM waste_ticket_files WHERE file_id = $1`, [
+      fileId,
+    ]);
     expect(file.rows).toHaveLength(0);
   });
 
@@ -728,7 +844,7 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
       const sha = newSha();
       const { engine } = modelAwareEngine({
         [OBS_MODEL]: {
-          tickets: [recognizedTicket({ issuedOn: null })],
+          tickets: [recognizedTicket({ issuedOn: null, issuedOnRaw: null })],
           reported: OBS_PRIMARY_REPORTED,
         },
         [OBS_SENIOR]: { tickets: [escalated], reported: OBS_SENIOR_REPORTED },
@@ -745,10 +861,12 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     it('спор каскада: событие disputed, оба кандидата рядом, ступени и выбранной попытки нет', async () => {
       const { requestId, jobId } = await runCascade(recognizedTicket({ volumeM3: 28 }));
 
-      const written = await admin.query<{ volume_m3: string | null; needs_review_fields: string[] }>(
-        `SELECT volume_m3, needs_review_fields FROM waste_tickets WHERE request_id = $1`,
-        [requestId],
-      );
+      const written = await admin.query<{
+        volume_m3: string | null;
+        needs_review_fields: string[];
+      }>(`SELECT volume_m3, needs_review_fields FROM waste_tickets WHERE request_id = $1`, [
+        requestId,
+      ]);
       expect(written.rows[0]!.needs_review_fields).toEqual(['volumeM3']);
       expect(written.rows[0]!.volume_m3).toBeNull();
 
@@ -895,7 +1013,11 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     });
 
     /** Подтверждённый талон: новый проход ложится рядом предложением, а не переписывает работу. */
-    async function seedConfirmedTicket(): Promise<{ requestId: string; fileId: string; sha: string }> {
+    async function seedConfirmedTicket(): Promise<{
+      requestId: string;
+      fileId: string;
+      sha: string;
+    }> {
       const { requestId, fileId } = await seed();
       const sha = newSha();
       const { engine } = modelAwareEngine({
@@ -922,7 +1044,14 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
     ): Promise<string> {
       const { engine } = modelAwareEngine({
         [OBS_MODEL]: {
-          tickets: [recognizedTicket({ number, issuedOn: '2026-08-18', volumeM3: 25 })],
+          tickets: [
+            recognizedTicket({
+              number,
+              issuedOn: '2026-08-18',
+              issuedOnRaw: '18.08.26',
+              volumeM3: 25,
+            }),
+          ],
           reported: OBS_PRIMARY_REPORTED,
         },
       });
@@ -1076,6 +1205,424 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
       for (const row of (await observationsOfRun(firstRun)).values()) {
         expect(row.cache_hit).toBe(false);
       }
+    });
+  });
+
+  /**
+   * ЯКОРЬ ДАТЫ ТАЛОНА (ADR 0166, план `docs/waste-ticket-date-escalation-plan.md`, Р5–Р9, Р12).
+   *
+   * Проверяется здесь то, чего нельзя проверить рассуждением: решение об эскалации зависит от
+   * ДАННЫХ ЗАЯВКИ, а те живут в базе и меняются человеком прямо во время разбора. Три ветки
+   * новые целиком — эскалация по расстоянию до якоря, материализация закэшированной ступени и
+   * условная запись под замком с отсрочкой, — и каждая из них при ошибке молчит: талон в карточке
+   * выглядит правильно, а даты в нём не те.
+   */
+  describe('дата талона: якорь заявки (ADR 0166)', () => {
+    /** Плановая дата заявки — она же якорь, пока фактический день вывоза не введён (п. 2). */
+    async function setPlannedAt(requestId: string, dateKey: string): Promise<void> {
+      await admin.query(`UPDATE waste_requests SET delivery_at = $2::timestamptz WHERE id = $1`, [
+        requestId,
+        `${dateKey}T09:00:00+03:00`,
+      ]);
+    }
+
+    /** Единственный талон заявки — с датой и её написанием (Р12). */
+    async function ticketOf(requestId: string): Promise<{
+      issued_on: string | null;
+      issued_on_raw: string;
+      volume_m3: string | null;
+      needs_review_fields: string[];
+    }> {
+      const res = await admin.query<{
+        issued_on: string | null;
+        issued_on_raw: string;
+        volume_m3: string | null;
+        needs_review_fields: string[];
+      }>(
+        // Дата берётся текстом: `date` node-postgres разбирает в `Date` по местной полуночи, и
+        // сравнение с ожидаемым днём зависело бы от пояса машины, на которой идёт прогон.
+        `SELECT to_char(issued_on, 'YYYY-MM-DD') AS issued_on, issued_on_raw, volume_m3,
+                needs_review_fields
+           FROM waste_tickets WHERE request_id = $1`,
+        [requestId],
+      );
+      expect(res.rows).toHaveLength(1);
+      return res.rows[0]!;
+    }
+
+    /** Первый проход прочитал всё, но старшая молчит: вызов состоялся и ответа не дал. */
+    const SENIOR_SILENT: RecognitionFailure = {
+      code: 'upstream_error',
+      errorClass: 'transient',
+      errorScope: 'item',
+      message: 'старшая модель не ответила',
+      retryAfterMs: null,
+    };
+
+    it('дата вне окна якоря вызывает второй проход, а внутри окна — не вызывает', async () => {
+      // Четвёртый повод каскада (Р7): поле прочитано и не пусто, но бумага «выписана» за два с
+      // лишним месяца до плановой даты. Прежде такая страница проходила контур без единой
+      // остановки — с одним проходом спорить не с чем, а замечание сверки жёлтое.
+      const far = await seed();
+      await setPlannedAt(far.requestId, FAR_ANCHOR);
+      const farSha = newSha();
+      const farEngine = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [recognizedTicket()], reported: OBS_PRIMARY_REPORTED },
+        [OBS_SENIOR]: { tickets: [recognizedTicket()], reported: OBS_SENIOR_REPORTED },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({
+          sha: farSha,
+          engine: farEngine.engine,
+          escalationModel: OBS_SENIOR,
+        }) as never,
+        far,
+        await seedJob(far),
+      );
+      expect(farEngine.calls).toEqual([
+        `${OBS_MODEL}:${farSha.slice(0, 8)}`,
+        `${OBS_SENIOR}:${farSha.slice(0, 8)}`,
+      ]);
+      // Само попадание вне окна спора не создаёт (Р9): проходы сошлись, значение сохраняется.
+      expect((await ticketOf(far.requestId)).issued_on).toBe('2026-08-17');
+
+      // Контроль: тот же талон при якоре в тот же день. Без него проверка выше доказывала бы лишь
+      // «эскалация включена», а не «её включило расстояние до якоря».
+      const near = await seed();
+      const nearSha = newSha();
+      const nearEngine = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [recognizedTicket()], reported: OBS_PRIMARY_REPORTED },
+        [OBS_SENIOR]: { tickets: [recognizedTicket()], reported: OBS_SENIOR_REPORTED },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({
+          sha: nearSha,
+          engine: nearEngine.engine,
+          escalationModel: OBS_SENIOR,
+        }) as never,
+        near,
+        await seedJob(near),
+      );
+      expect(nearEngine.calls).toEqual([`${OBS_MODEL}:${nearSha.slice(0, 8)}`]);
+    });
+
+    it('решение об эскалации принимается и по закэшированному первому проходу', async () => {
+      // Ветка кэша не имеет права завершать страницу раньше проверки (Р7): иначе временный отказ
+      // старшей модели или её позднее включение навсегда оставили бы лист с одним проходом — при
+      // повторе задача снова попала бы в кэш и снова остановилась.
+      const first = await seed();
+      const sha = newSha();
+      const cached = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [recognizedTicket()], reported: OBS_PRIMARY_REPORTED },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine: cached.engine }) as never,
+        first,
+        await seedJob(first),
+      );
+      expect(cached.calls).toHaveLength(1);
+
+      // Та же страница у другой заявки, но якорь далеко. Первый проход придёт из кэша — ответа на
+      // слаг `OBS_MODEL` движок второго разбора не знает вовсе и на обращении к нему упал бы.
+      const second = await seed();
+      await setPlannedAt(second.requestId, FAR_ANCHOR);
+      const senior = modelAwareEngine({
+        [OBS_SENIOR]: { tickets: [recognizedTicket()], reported: OBS_SENIOR_REPORTED },
+      });
+      const runId = await seedJob(second);
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine: senior.engine, escalationModel: OBS_SENIOR }) as never,
+        second,
+        runId,
+      );
+      expect(senior.calls).toEqual([`${OBS_SENIOR}:${sha.slice(0, 8)}`]);
+
+      // Смешанный случай «первый из кэша, эскалация свежая» — это `cache_hit = false` (Р6):
+      // вызов был и оплачен, и отчёт, посчитанный по составу итога, занизил бы расход.
+      for (const row of (await observationsOfRun(runId)).values()) {
+        expect(row.cache_hit).toBe(false);
+        expect(row.passes).toBe(2);
+      }
+    });
+
+    it('закэшированная эскалация участвует в слиянии, а не выбрасывается', async () => {
+      // Тот самый дефект, ради которого заведена общая материализация (Р6): прежде ветка каскада
+      // смотрела на `outcome`, которого у попадания в кэш нет вовсе, и страница, уже прочитанная
+      // двумя моделями, при повторе теряла старшую.
+      const first = await seed();
+      await setPlannedAt(first.requestId, FAR_ANCHOR);
+      const sha = newSha();
+      const both = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [recognizedTicket()], reported: OBS_PRIMARY_REPORTED },
+        [OBS_SENIOR]: {
+          tickets: [recognizedTicket({ volumeM3: 28 })],
+          reported: OBS_SENIOR_REPORTED,
+        },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine: both.engine, escalationModel: OBS_SENIOR }) as never,
+        first,
+        await seedJob(first),
+      );
+      const disputed = await ticketOf(first.requestId);
+      expect(disputed.needs_review_fields).toEqual(['volumeM3']);
+      expect(disputed.volume_m3).toBeNull();
+
+      // Повтор по той же странице: обе ступени лежат в кэше, и движок падает на любом вызове.
+      const repeat = await seed();
+      await setPlannedAt(repeat.requestId, FAR_ANCHOR);
+      const silent = modelAwareEngine({});
+      const runId = await seedJob(repeat);
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine: silent.engine, escalationModel: OBS_SENIOR }) as never,
+        repeat,
+        runId,
+      );
+
+      expect(silent.calls).toHaveLength(0);
+      // Тот же талон, а не результат одного первого прохода: отбрось мы закэшированную старшую —
+      // объём встал бы двадцаткой, и спор, который человек уже видел, исчез бы сам собой.
+      const again = await ticketOf(repeat.requestId);
+      expect(again.needs_review_fields).toEqual(['volumeM3']);
+      expect(again.volume_m3).toBeNull();
+      // Новых попыток не появилось: платить было не за что.
+      expect(await attemptsOfPage(sha)).toHaveLength(2);
+      for (const row of (await observationsOfRun(runId)).values()) {
+        expect(row.cache_hit).toBe(true);
+        expect(row.passes).toBe(2);
+      }
+    });
+
+    it('первый из кэша, свежая эскалация отказала: один проход, но cache_hit ложный', async () => {
+      // Отдельный случай, на котором дыряво определение «все участвовавшие в итоге ступени из
+      // кэша» (Р6): в результат вошла одна ступень, и она из кэша, — а вызов был и оплачен.
+      const first = await seed();
+      const sha = newSha();
+      const cached = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [recognizedTicket()], reported: OBS_PRIMARY_REPORTED },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine: cached.engine }) as never,
+        first,
+        await seedJob(first),
+      );
+
+      const second = await seed();
+      await setPlannedAt(second.requestId, FAR_ANCHOR);
+      const failing = modelAwareEngine({
+        [OBS_SENIOR]: { failure: SENIOR_SILENT, reported: OBS_SENIOR_REPORTED },
+      });
+      const runId = await seedJob(second);
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine: failing.engine, escalationModel: OBS_SENIOR }) as never,
+        second,
+        runId,
+      );
+
+      expect(failing.calls).toEqual([`${OBS_SENIOR}:${sha.slice(0, 8)}`]);
+      // Отказ эскалации — не повод терять первый проход: пишется он, как и прежде (Р7).
+      expect((await ticketOf(second.requestId)).issued_on).toBe('2026-08-17');
+      for (const row of (await observationsOfRun(runId)).values()) {
+        expect(row.cache_hit).toBe(false);
+        expect(row.passes).toBe(1);
+        expect(row.escalated).toBe(false);
+        expect(row.escalation_attempt_id).toBeNull();
+      }
+    });
+
+    it('смена якоря, не требующая новой ступени, нормализуется и пишется тут же', async () => {
+      // Условная запись (Р8): сырьё обеих ступеней уже здесь, нормализация и слияние — чистые
+      // функции, и пересчёт по новому якорю стоит столько же, сколько по старому. Откладывать
+      // задачу тут значило бы в режимах без кэша платить за модель заново на каждой правке заявки.
+      const { requestId, fileId } = await seed();
+      const sha = newSha();
+      const { engine, calls } = modelAwareEngine({
+        // Написание БЕЗ года: год целиком даёт якорь, и по разным якорям он разный — на этом и
+        // видно, что запись пошла по перечитанному значению, а не по снимку.
+        [OBS_MODEL]: {
+          tickets: [recognizedTicket({ issuedOnRaw: '17.08' })],
+          reported: OBS_PRIMARY_REPORTED,
+        },
+        [OBS_SENIOR]: { tickets: [recognizedTicket()], reported: OBS_SENIOR_REPORTED },
+      });
+      // Четвёртое `BEGIN` — это T2 (T0, проверка, T1, T2). В зазор перед ним человек сдвигает
+      // плановую дату на год назад: 17 августа остаётся 17 августа, а год у него меняется.
+      const barrier = poolWithBarrier(pool, 4, async () => {
+        await setPlannedAt(requestId, '2025-08-20');
+      });
+      const result = await runTicketRecognitionJob(
+        {
+          ...observationDeps({ sha, engine, escalationModel: OBS_SENIOR }),
+          pool: barrier,
+        } as never,
+        { requestId, fileId },
+        await seedJob({ requestId, fileId }),
+      );
+
+      // Отсрочки нет: новому якорю ступень, которой не делали, не нужна — 17.08.2025 от 20.08.2025
+      // в трёх днях, то есть внутри окна.
+      expect(result).toBeUndefined();
+      expect(calls).toHaveLength(1);
+      const ticket = await ticketOf(requestId);
+      expect(ticket.issued_on).toBe('2025-08-17');
+      expect(ticket.issued_on_raw).toBe('17.08');
+    });
+
+    it('смена якоря, требующая непредпринятой ступени, откладывает задачу', async () => {
+      const { requestId, fileId } = await seed();
+      const sha = newSha();
+      const { engine, calls } = modelAwareEngine({
+        // Четыре цифры года: якорь его не подменяет (ADR 0166, отвергнутые варианты), поэтому
+        // новый якорь даёт не другую дату, а расстояние в семь с лишним месяцев.
+        [OBS_MODEL]: {
+          tickets: [recognizedTicket({ issuedOnRaw: '17.08.2026' })],
+          reported: OBS_PRIMARY_REPORTED,
+        },
+        [OBS_SENIOR]: { tickets: [recognizedTicket()], reported: OBS_SENIOR_REPORTED },
+      });
+      const barrier = poolWithBarrier(pool, 4, async () => {
+        await setPlannedAt(requestId, '2026-01-05');
+      });
+      const before = Date.now();
+      const result = await runTicketRecognitionJob(
+        {
+          ...observationDeps({ sha, engine, escalationModel: OBS_SENIOR }),
+          pool: barrier,
+        } as never,
+        { requestId, fileId },
+        await seedJob({ requestId, fileId }),
+      );
+
+      // Отдельный исход, а не «файл отвязан»: закройся задача как выполненная, талоны так и не
+      // появились бы (Р8). Причина уезжает наверх потому, что только её считает потолок отсрочек:
+      // перенос по `Retry-After` прокси лимит правок заявки тратить не должен.
+      expect(result?.reason).toBe('anchor_changed');
+      // Срок короткий: якорь сменил человек, который прямо сейчас дозаполняет заявку.
+      expect(result!.deferUntil.getTime()).toBeGreaterThan(before);
+      expect(result!.deferUntil.getTime()).toBeLessThanOrEqual(before + 60_000);
+      // Второй проход по старому якорю не был нужен и не делался — платить заново не за что.
+      expect(calls).toHaveLength(1);
+
+      const tickets = await admin.query(`SELECT id FROM waste_tickets WHERE request_id = $1`, [
+        requestId,
+      ]);
+      const pages = await admin.query(`SELECT id FROM waste_ticket_pages WHERE request_id = $1`, [
+        requestId,
+      ]);
+      expect(tickets.rows).toHaveLength(0);
+      expect(pages.rows).toHaveLength(0);
+      // Файл остаётся в работе: задача не выполнена, а перенесена, и значок разбора обязан это
+      // показывать — иначе человек увидел бы «разобрано» у файла без единого талона.
+      const file = await admin.query<{ status: string }>(
+        `SELECT status FROM waste_ticket_files WHERE file_id = $1`,
+        [fileId],
+      );
+      expect(file.rows[0]!.status).toBe('pending');
+    });
+
+    it('после исчерпания потолка отсрочек страница пишется тем, что есть', async () => {
+      // Сознательная уступка (Р8): у такого талона может остаться дата, которую второй проход
+      // прочитал бы иначе, и обещать, что её кто-то поймает, нельзя — сверка молчит, когда
+      // значение совпало с якорем. Гоняться за якорем, который правят третий раз подряд, дороже,
+      // чем показать человеку талон.
+      const { requestId, fileId } = await seed();
+      const sha = newSha();
+      const { engine, calls } = modelAwareEngine({
+        [OBS_MODEL]: {
+          tickets: [recognizedTicket({ issuedOnRaw: '17.08.2026' })],
+          reported: OBS_PRIMARY_REPORTED,
+        },
+        [OBS_SENIOR]: { tickets: [recognizedTicket()], reported: OBS_SENIOR_REPORTED },
+      });
+      const barrier = poolWithBarrier(pool, 4, async () => {
+        await setPlannedAt(requestId, '2026-01-05');
+      });
+      const payload = { requestId, fileId, anchorDeferrals: MAX_ANCHOR_DEFERRALS };
+      const result = await runTicketRecognitionJob(
+        {
+          ...observationDeps({ sha, engine, escalationModel: OBS_SENIOR }),
+          pool: barrier,
+        } as never,
+        payload,
+        await seedJob(payload),
+      );
+
+      expect(result).toBeUndefined();
+      // Недостающая ступень так и не вызвана — потолок именно об этом.
+      expect(calls).toHaveLength(1);
+      expect((await ticketOf(requestId)).issued_on).toBe('2026-08-17');
+    });
+
+    it('issued_on_raw записан по правилу Р12', async () => {
+      // Один проход — его написание.
+      const single = await seed();
+      const singleSha = newSha();
+      const alone = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [recognizedTicket()], reported: OBS_PRIMARY_REPORTED },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({ sha: singleSha, engine: alone.engine }) as never,
+        single,
+        await seedJob(single),
+      );
+      expect((await ticketOf(single.requestId)).issued_on_raw).toBe('17.08.26');
+
+      // Итог дала только вторая ступень — её написание, а не первой: подпись «OCR в графе»
+      // обещает написание ТОЙ модели, чья дата стоит рядом. Написание у первой при этом НЕ пустое,
+      // а неразборчивое: пустое не отличило бы правило от простого «берём непустое».
+      const escalated = await seed();
+      const escalatedSha = newSha();
+      const cascade = modelAwareEngine({
+        [OBS_MODEL]: {
+          tickets: [recognizedTicket({ issuedOn: null, issuedOnRaw: 'дата смазана' })],
+          reported: OBS_PRIMARY_REPORTED,
+        },
+        [OBS_SENIOR]: {
+          tickets: [recognizedTicket({ issuedOnRaw: '17 авг 2026' })],
+          reported: OBS_SENIOR_REPORTED,
+        },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({
+          sha: escalatedSha,
+          engine: cascade.engine,
+          escalationModel: OBS_SENIOR,
+        }) as never,
+        escalated,
+        await seedJob(escalated),
+      );
+      const fromSenior = await ticketOf(escalated.requestId);
+      expect(fromSenior.issued_on).toBe('2026-08-17');
+      expect(fromSenior.issued_on_raw).toBe('17 авг 2026');
+
+      // Оба прохода дали дату (`merged`) — приоритет у непустого написания первого. Заодно видно
+      // главное свойство нормализации (Р6): «17.08.26» и «17 авг 2026» — это одна дата, и спора
+      // из-за разных догадок о веке не возникает.
+      const merged = await seed();
+      await setPlannedAt(merged.requestId, FAR_ANCHOR);
+      const mergedSha = newSha();
+      const two = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [recognizedTicket()], reported: OBS_PRIMARY_REPORTED },
+        [OBS_SENIOR]: {
+          tickets: [recognizedTicket({ issuedOnRaw: '17 авг 2026' })],
+          reported: OBS_SENIOR_REPORTED,
+        },
+      });
+      const mergedRun = await seedJob(merged);
+      await runTicketRecognitionJob(
+        observationDeps({
+          sha: mergedSha,
+          engine: two.engine,
+          escalationModel: OBS_SENIOR,
+        }) as never,
+        merged,
+        mergedRun,
+      );
+      const bothPasses = await ticketOf(merged.requestId);
+      expect(bothPasses.needs_review_fields).toEqual([]);
+      expect(bothPasses.issued_on).toBe('2026-08-17');
+      expect(bothPasses.issued_on_raw).toBe('17.08.26');
+      expect((await observationsOfRun(mergedRun)).get('issuedOn')!.source_stage).toBe('merged');
     });
   });
 });
