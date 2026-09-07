@@ -909,6 +909,34 @@ async function tickMailingsSafely(): Promise<void> {
  * От почты не зависит вовсе — это движение статуса, а не рассылка: при `MAIL_ENABLED=false` заявки
  * обязаны закрываться так же, иначе выключенная почта тихо остановила бы цикл заявок.
  */
+/**
+ * Уборка пакетных операций (план массовых действий, §6.3): пачка с истёкшей арендой закрывается —
+ * необработанным строкам ставится исход «брошена», а уже успевшим доставляется почтовая сводка, —
+ * и снимаются завершённые операции старше срока хранения.
+ *
+ * Через внутреннюю ручку, а не своим SQL: протокол пачки знает про lease, checkpoint'ы и сводку, и
+ * вторая его реализация в worker'е разошлась бы с первой молча. Молчание при недоступном API
+ * законно по той же причине, что у автозакрытия: уборка смотрит на состояние, а не на задачу, и
+ * следующий проход возьмёт то же самое.
+ */
+async function sweepServiceBulkSafely(): Promise<void> {
+  if (!INTERNAL_API_TOKEN) return;
+  try {
+    const res = await fetch(`${INTERNAL_API_URL}/internal/service-requests/bulk-sweep`, {
+      method: 'POST',
+      headers: { 'x-internal-token': INTERNAL_API_TOKEN },
+    });
+    if (!res.ok) throw new Error(`API ответил ${res.status}`);
+    const stats = (await res.json()) as { abandoned: number; purged: number };
+    // В лог — только то, что что-то сделало: пустых проходов здесь большинство.
+    if (stats.abandoned > 0 || stats.purged > 0) {
+      logger.info(stats, 'Уборка пакетных операций заявок оргтехники');
+    }
+  } catch (e) {
+    logger.warn({ err: e }, 'Уборка пакетных операций: API не ответил');
+  }
+}
+
 async function tickServiceAutoCloseSafely(): Promise<void> {
   if (!INTERNAL_API_TOKEN) return;
   try {
@@ -970,6 +998,10 @@ async function loop(): Promise<void> {
         // ждёт следующего часа между шагами.
         await archiveUnverified();
         await cleanupRejectedRegistrations();
+        // Пачки заявок оргтехники: брошенные закрываются, старые сносятся (план массовых действий,
+        // §6.3). Ходит через ту же внутреннюю ручку, что автозакрытие: у worker'а нет ни схемы
+        // заявок, ни доменных правил, и заводить их здесь второй раз ради уборки незачем.
+        await sweepServiceBulkSafely();
         // Последней: она ничего не освобождает для других проходов и ни от кого не зависит.
         await cleanupTicketAttemptsSafely();
       }

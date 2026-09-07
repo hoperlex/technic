@@ -21,7 +21,7 @@ import {
 import { waybillsApi } from '../api/resources';
 import { WaybillFilesCell } from '../components/WaybillFiles';
 import { garageKeys } from '@entities/garage';
-import { DataTable } from '@shared/ui';
+import { DataTable, listScopeKey } from '@shared/ui';
 import { EntityLink } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
@@ -136,11 +136,6 @@ export function WaybillsPage() {
     queryKey: ['waybills', query],
     queryFn: () => waybillsApi.list(query),
   });
-
-  // Список сменился — выбор снят. Зависимость сама выдача, а не параметры запроса: перерисовка
-  // теми же строками (обновление после печати) выбор не трогает, а другая страница или другой
-  // отбор его обнуляют.
-  useEffect(() => setSelected([]), [data]);
 
   const cancelMut = useMutation({
     mutationFn: ({
@@ -541,6 +536,11 @@ export function WaybillsPage() {
         selection={{
           keys: selected,
           onChange: setSelected,
+          /*
+           * Отпечаток — из того же запроса, которым загружен список: сменили страницу, период или
+           * отбор, и в принтер уже не уйдут листы, которых человек на экране не видит.
+           */
+          scopeKey: listScopeKey(query),
           disabled: (r) => (canPrintWaybill(r.status) ? null : WAYBILL_CANCELLED_PRINT_MESSAGE),
           bar: (keys) => (
             <>

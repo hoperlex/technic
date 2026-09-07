@@ -1,4 +1,7 @@
 import type {
+  ServiceRequestBulkBody,
+  ServiceRequestBulkResultDto,
+  ServiceRequestBulkStatusDto,
   ServiceRequestWithMailDto,
   ApproveServiceEstimateInput,
   CompleteServiceRequestInput,
@@ -260,6 +263,33 @@ export const serviceRequestsApi = {
     }),
   detachFile: (id: string, fileId: string) =>
     apiFetch<{ ok: boolean }>(`${PATH}/${id}/files/${fileId}`, { method: 'DELETE' }),
+
+  /**
+   * Пакетная команда над несколькими заявками сразу (план
+   * `docs/office-equipment-bulk-actions-plan.md`, Р1): одна ручка на все операции, тело —
+   * размеченный союз по `operation`, строки — парами «идентификатор + версия» (Р4).
+   *
+   * КЛЮЧ ИДЕМПОТЕНТНОСТИ ОБЯЗАТЕЛЕН и приходит параметром, а не рождается здесь. Пачка идёт
+   * секунды, кнопка всё это время видна, вкладка может перезагрузиться — повтор той же попытки
+   * обязан нести ТОТ ЖЕ ключ, иначе полсотни чужих заявок отменились бы дважды. Версии от этого
+   * не спасают: повтор после успеха выглядел бы как «ничего не вышло», хотя всё вышло (Р7).
+   *
+   * Ответ приходит один на всю пачку и построчный: пакет — это N независимых исходов, и «done» у
+   * сорока девяти строк не отменяется чужой версией пятидесятой (Р3).
+   */
+  bulk: (body: ServiceRequestBulkBody, idempotencyKey: string) =>
+    apiFetch<ServiceRequestBulkResultDto>(`${PATH}/bulk`, {
+      method: 'POST',
+      body,
+      headers: { 'Idempotency-Key': idempotencyKey },
+    }),
+  /**
+   * Состояние СВОЕЙ пачки по тому же ключу (Н12): сколько строк уже обработано и готовый отчёт,
+   * когда пачка закончилась. Нужна двоим — прогрессу открытого окна и вкладке, перезагруженной
+   * посреди операции: синхронный ответ `POST` о ходе дела молчит, а после обрыва не приходит вовсе.
+   */
+  bulkStatus: (idempotencyKey: string) =>
+    apiFetch<ServiceRequestBulkStatusDto>(`${PATH}/bulk/${idempotencyKey}`),
 
   /** Возврат из архива (ADR 0070) и удаление насовсем (ADR 0060) — слова портала, не HTTP. */
   restore: (id: string) => apiFetch<ServiceRequestDto>(`${PATH}/${id}/restore`, { method: 'POST' }),

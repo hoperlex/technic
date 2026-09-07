@@ -236,6 +236,21 @@ const via = (name: keyof typeof serviceRequestsApi): PortalCall => ({
   run: () => LOOSE[String(name)]!(REQUEST_ID, FILE_ID, 'act'),
 });
 
+/**
+ * Состояние пачки адресуется не заявкой, а КЛЮЧОМ ИДЕМПОТЕНТНОСТИ (план массовых действий, Р1), и
+ * на сервере параметр так и назван — `:key`. Общий `via` подставил бы сюда идентификатор заявки, и
+ * сверка честно показала бы расхождение форм: у неё нет способа узнать имя параметра из
+ * перехваченного адреса — в нём стоит значение, а не имя.
+ *
+ * Поэтому у этого звена своя константа и своя нормализация ниже: путь по-прежнему сверяется целиком
+ * и посегментно, но параметр называется тем же словом, что и на сервере.
+ */
+const BULK_KEY = 'BULK-KEY';
+const bulkStatusCall: PortalCall = {
+  name: 'serviceRequestsApi.bulkStatus',
+  run: () => LOOSE.bulkStatus!(BULK_KEY),
+};
+
 /** Запрос слайса, живущий мимо объекта API: у кандидатов в исполнители свой `queryOptions`. */
 const candidates: PortalCall = {
   name: 'serviceExecutorCandidatesQuery',
@@ -271,6 +286,21 @@ const DOORS: Record<string, Door> = {
   'POST /api/v1/service-requests/messages/read-all': {
     call: via('markAllChatRead'),
     entry: 'кнопка «Отметить все прочитанными» над списком заявок',
+  },
+  /*
+   * Массовые действия (план `docs/office-equipment-bulk-actions-plan.md`, Р16): полоса выбора —
+   * ОБЪЯВЛЕННЫЙ второй вход в те же операции, и берёт она готовые пункты набора действий, а не
+   * считает доступность заново. Поэтому строка реестра здесь одна на девять операций: вход у них
+   * общий — полоса и её окно.
+   */
+  'POST /api/v1/service-requests/bulk': {
+    call: via('bulk'),
+    entry: 'полоса выбора строк в реестре заявок → окно подтверждения пачки',
+  },
+  'GET /api/v1/service-requests/bulk/:key': {
+    call: bulkStatusCall,
+    entry: 'то же окно: прогресс пачки и восстановление отчёта после обрыва',
+    exempt: 'read',
   },
   'GET /api/v1/service-requests/executor-candidates': {
     call: candidates,
@@ -446,6 +476,11 @@ const DOORS: Record<string, Door> = {
     exempt: 'internal',
     why: 'автозакрытие «Решена» → «Закрыта» заводит планировщик по общему секрету, а не человек',
   },
+  'POST /internal/service-requests/bulk-sweep': {
+    call: null,
+    exempt: 'internal',
+    why: 'уборку брошенных пачек и снятие завершённых по сроку заводит тот же планировщик',
+  },
 };
 
 const REGISTRY_KEYS = Object.keys(DOORS);
@@ -464,7 +499,15 @@ const sorted = (keys: Iterable<string>): string[] => [...keys].sort();
 function routeKeyOf(call: RecordedCall): string {
   const path = call.path
     .split('/')
-    .map((segment) => (segment === REQUEST_ID ? ':id' : segment === FILE_ID ? ':fileId' : segment))
+    .map((segment) =>
+      segment === REQUEST_ID
+        ? ':id'
+        : segment === FILE_ID
+          ? ':fileId'
+          : segment === BULK_KEY
+            ? ':key'
+            : segment,
+    )
     .join('/');
   return `${call.method} /api/v1${path}`;
 }

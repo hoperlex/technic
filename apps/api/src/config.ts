@@ -161,6 +161,27 @@ const rawSchema = z.object({
     .int()
     .min(0)
     .default(SERVICE_REQUEST_REPEAT_WINDOW_DISABLED),
+  /**
+   * МАССОВЫЕ ДЕЙСТВИЯ НАД ЗАЯВКАМИ (план `docs/office-equipment-bulk-actions-plan.md`, Р7).
+   *
+   * Четыре именованные настройки, а не эвристика по возрасту записи: «жива ли пачка» и «давно ли
+   * начата» — разные вопросы, и отвечать на первый вторым значит однажды отобрать работающую пачку.
+   *
+   *   · аренда (`LEASE`) — сколько владелец держит пачку без heartbeat; продлевается ПЕРЕД каждой
+   *     строкой, поэтому длительность самой пачки её не отбирает;
+   *   · `LOCK_TIMEOUT` и `STATEMENT_TIMEOUT` — пределы транзакции ОДНОЙ строки, и оба обязаны быть
+   *     меньше аренды: строка, застрявшая дольше, чем живёт аренда, дала бы двух владельцев сразу;
+   *   · `ABANDON_HOURS` — с какого момента уборка закрывает брошенную пачку сохранённым итогом
+   *     (готовые строки остаются `done`, необработанные получают `abandoned`);
+   *   · `RETENTION_DAYS` — сколько живёт завершённый журнал. Предложение плана (В4) — 90 дней;
+   *     срок настройкой, потому что «дольше для разбора спорных случаев» — вопрос заказчику, а не
+   *     релизу.
+   */
+  SERVICE_REQUEST_BULK_LEASE_SECONDS: z.coerce.number().int().positive().default(60),
+  SERVICE_REQUEST_BULK_LOCK_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(5),
+  SERVICE_REQUEST_BULK_STATEMENT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(30),
+  SERVICE_REQUEST_BULK_ABANDON_HOURS: z.coerce.number().int().positive().default(24),
+  SERVICE_REQUEST_BULK_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
   // Распознавание талонов вывоза (ADR 0114, план `docs/waste-ticket-ocr-plan.md`).
   //
   // Наружу портал ходит **только** через LLM-прокси заказчика: ключей провайдера у него нет и не
@@ -554,6 +575,18 @@ function loadConfig() {
       mailMaxPerRequestHour: env.SERVICE_MAIL_MAX_PER_REQUEST_HOUR,
       /** Окно признака повтора, днями; `0` — признак выключен целиком (Р5 плана повторов). */
       repeatWindowDays: env.SERVICE_REQUEST_REPEAT_WINDOW_DAYS,
+      /**
+       * Протокол массовых действий (Р7). Потолок пачки сюда НЕ приезжает: он живёт в контрактах
+       * (`SERVICE_REQUEST_BULK_LIMIT`), потому что его спрашивает и схема тела, и выбор строк в
+       * портале — настройка окружения дала бы серверу и клиенту разные числа.
+       */
+      bulk: {
+        leaseSeconds: env.SERVICE_REQUEST_BULK_LEASE_SECONDS,
+        lockTimeoutSeconds: env.SERVICE_REQUEST_BULK_LOCK_TIMEOUT_SECONDS,
+        statementTimeoutSeconds: env.SERVICE_REQUEST_BULK_STATEMENT_TIMEOUT_SECONDS,
+        abandonHours: env.SERVICE_REQUEST_BULK_ABANDON_HOURS,
+        retentionDays: env.SERVICE_REQUEST_BULK_RETENTION_DAYS,
+      },
     },
     ticketOcr: {
       enabled: env.TICKET_OCR_ENABLED,

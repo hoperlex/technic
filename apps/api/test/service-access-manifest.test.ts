@@ -131,6 +131,19 @@ const SCOPE_MARKERS = [
 ] as const;
 
 /**
+ * Вызовы, означающие «ручка спрашивает область АВТОРА ЗАПИСИ, а не заявки» (`scope: 'actor'`).
+ *
+ * Заведено вместе с состоянием пачки (план массовых действий, §6.4): отчёт читает только тот, кто
+ * пачку и завёл, и области заявки у этой ручки нет вовсе. Без своего маркера строка `'actor'`
+ * проходила бы сверку молча — то есть новый вид области стал бы дырой в карауле, а не записью в
+ * нём.
+ *
+ * Имя — читающая функция протокола, а не колонка: колонку легко встретить в соседнем запросе, а
+ * `readServiceBulkStatus(` бывает ровно там, где область автора и спрашивается.
+ */
+const ACTOR_SCOPE_MARKERS = ['readServiceBulkStatus'] as const;
+
+/**
  * Комментарии убираются перед разбором, иначе упоминание `assertScope` в соседнем абзаце объявило
  * бы область у ручки, которая её не спрашивает. Разбор грубый (не AST), и этого довольно: файл
  * маршрутов написан одним стилем, а ошибка разбора роняет прогон, а не проходит молча.
@@ -147,10 +160,52 @@ function stripComments(source: string): string {
 
 interface SourceRoute {
   key: string;
-  /** Нашлись ли в теле ручки вызовы, спрашивающие область. */
+  /** Нашлись ли в теле ручки вызовы, спрашивающие область заявки. */
   asksScope: boolean;
+  /** Нашлись ли вызовы, спрашивающие область автора записи (`scope: 'actor'`). */
+  asksActorScope: boolean;
   /** Какие именно — для внятного текста расхождения. */
   markers: string[];
+}
+
+/**
+ * Тела доменных шагов (`…Step`) — по имени.
+ *
+ * Заведено вместе с выделением шагов (план массовых действий, Э1): восемь ручек стали тонкими
+ * обёртками «схема → шаг → DTO», и область теперь спрашивает **шаг**, а не тело регистрации.
+ * Разбор, который смотрит только внутрь `r.patch(…)`, после этого объявил бы четыре ручки
+ * беспризорными — и был бы неправ: проверка не исчезла, она переехала на один вызов вглубь.
+ *
+ * Прослеживается ровно ОДИН уровень и только вызовы с суффиксом `Step`. Дальше идти нельзя:
+ * караул, который ходит по всему графу вызовов, однажды найдёт `visibility(` в общем помощнике и
+ * объявит область у ручки, которая её не спрашивает, — то есть перестанет быть доказательством.
+ *
+ * Границы тела — от `async function xStep(` до следующего объявления того же уровня отступа или
+ * до регистрации маршрута; этого довольно: файл написан одним стилем, а ошибка разбора роняет
+ * прогон, а не проходит молча (та же оговорка, что у `sourceRoutes` ниже).
+ */
+function stepBodies(lines: string[]): Map<string, string> {
+  const bodies = new Map<string, string>();
+  const starts: { name: string; line: number }[] = [];
+  lines.forEach((line, index) => {
+    const match = /^\s{0,4}(?:async\s+)?function\s+(\w+Step)\s*\(/.exec(line);
+    if (match) starts.push({ name: match[1]!, line: index });
+  });
+  for (const [index, start] of starts.entries()) {
+    let end = starts[index + 1]?.line ?? lines.length;
+    for (let i = start.line + 1; i < end; i += 1) {
+      if (
+        /^\s{0,4}(?:async\s+)?function\s+\w+\s*\(|^\s{0,4}r\.(get|post|put|patch|delete)\(/.test(
+          lines[i] ?? '',
+        )
+      ) {
+        end = i;
+        break;
+      }
+    }
+    bodies.set(start.name, lines.slice(start.line, end).join('\n'));
+  }
+  return bodies;
 }
 
 /**
@@ -160,6 +215,7 @@ interface SourceRoute {
  */
 function sourceRoutes(): SourceRoute[] {
   const lines = stripComments(routesSource).split('\n');
+  const steps = stepBodies(lines);
   const starts: { line: number; method: string; path: string | null }[] = [];
   lines.forEach((line, index) => {
     const match = /^\s{0,4}r\.(get|post|put|patch|delete)\(\s*(?:'([^']*)')?/.exec(line);
@@ -176,13 +232,35 @@ function sourceRoutes(): SourceRoute[] {
       .slice(start.line, end)
       .filter((line) => !/\bfunction\s+\w+\s*\(/.test(line))
       .join('\n');
+    /*
+     * Тело ручки плюс тела доменных шагов, которые она зовёт: область у восьми операций живёт
+     * теперь в шаге, и не заглянуть туда значило бы объявить её отсутствующей там, где она есть.
+     * Маркер из шага называется вместе с шагом — расхождение должно читаться, не открывая файл.
+     */
+    const stepCalls = [...body.matchAll(/\b(\w+Step)\s*\(/g)].map((match) => match[1]!);
     const markers = SCOPE_MARKERS.filter((marker) =>
+      new RegExp(`\\b${marker}\\(`).test(body),
+    ) as string[];
+    for (const step of new Set(stepCalls)) {
+      const stepBody = steps.get(step);
+      if (!stepBody) continue;
+      for (const marker of SCOPE_MARKERS) {
+        if (
+          new RegExp(`\\b${marker}\\(`).test(stepBody) &&
+          !markers.includes(`${marker} (${step})`)
+        ) {
+          markers.push(`${marker} (${step})`);
+        }
+      }
+    }
+    const actorMarkers = ACTOR_SCOPE_MARKERS.filter((marker) =>
       new RegExp(`\\b${marker}\\(`).test(body),
     ) as string[];
     return {
       key: `${start.method} ${pathOf(`${MODULE_PREFIXES[0]}${path}`)}`,
       asksScope: markers.length > 0,
-      markers,
+      asksActorScope: actorMarkers.length > 0,
+      markers: [...markers, ...actorMarkers],
     };
   });
 }
@@ -198,6 +276,7 @@ const parsed = sourceRoutes();
 const OUTSIDE_ROUTES_FILE = [
   'DELETE /api/v1/service-requests/:id/purge',
   'POST /internal/service-requests/auto-close',
+  'POST /internal/service-requests/bulk-sweep',
 ];
 
 describe('манифест области и стороны заявок на обслуживание', () => {
@@ -228,11 +307,26 @@ describe('манифест области и стороны заявок на о
     expect(none.map(([key]) => key).sort()).toEqual([
       'DELETE /api/v1/service-requests/:id/purge',
       'POST /internal/service-requests/auto-close',
+      'POST /internal/service-requests/bulk-sweep',
     ]);
     const silent = none
       .filter(([, row]) => row.scope === 'none' && row.why.trim().length === 0)
       .map(([key]) => key);
     expect(silent, 'область не спрашивается, а почему — не сказано').toEqual([]);
+  });
+
+  /**
+   * Область автора — не заявки, и перечень таких ручек поимённый по той же причине, что и у
+   * `scope: 'none'`: вторая обязана попасть в ревью, а не приехать вместе с правкой соседней.
+   * `why` при этом требует уже тип; здесь проверяется, что оно не пустое.
+   */
+  it('каждая строка `scope: actor` названа поимённо и объясняет свою область', () => {
+    const actor = Object.entries(manifest).filter(([, row]) => row.scope === 'actor');
+    expect(actor.map(([key]) => key).sort()).toEqual(['GET /api/v1/service-requests/bulk/:key']);
+    const silent = actor
+      .filter(([, row]) => row.scope === 'actor' && row.why.trim().length === 0)
+      .map(([key]) => key);
+    expect(silent, 'область — автор записи, а чем она ограничена, не сказано').toEqual([]);
   });
 
   it('разбор файла маршрутов нашёл ручки, а не пустоту', () => {
@@ -269,6 +363,19 @@ describe('манифест области и стороны заявок на о
           `${route.key}: манифест — none, а в теле ручки ${route.markers.join(', ')}`,
         );
       }
+      /*
+       * Третий вид области доказывается своим маркером, а не отсутствием чужого: «ни `visibility`,
+       * ни `none`» — это не доказательство, а пропуск, и строка, объявленная `'actor'` без единого
+       * отбора по автору, читалась бы как проверка там, где её нет.
+       */
+      if (row.scope === 'actor' && !route.asksActorScope) {
+        mismatched.push(`${route.key}: манифест — actor, а отбора по автору записи в теле нет`);
+      }
+      if (row.scope === 'actor' && route.asksScope) {
+        mismatched.push(
+          `${route.key}: манифест — actor, а в теле ручки область заявки: ${route.markers.join(', ')}`,
+        );
+      }
     }
     expect(mismatched).toEqual([]);
   });
@@ -282,10 +389,11 @@ describe('манифест области и стороны заявок на о
     }
   });
 
-  it('сторон пять, все перечислены реестром и все применены', () => {
+  it('сторон шесть, все перечислены реестром и все применены', () => {
     expect([...SERVICE_SIDES].sort()).toEqual([
       'any',
       'assigner',
+      'byOperation',
       'customer',
       'executor',
       'operator',

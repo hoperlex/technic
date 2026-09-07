@@ -164,6 +164,49 @@ export async function collectMetrics(): Promise<string> {
    * привязана к календарю заявки, поэтому «за вчера» здесь означает «вчера читали», а не «вчера
    * возили».
    */
+  /**
+   * МАССОВЫЕ ДЕЙСТВИЯ НАД ЗАЯВКАМИ (план `docs/office-equipment-bulk-actions-plan.md`, §8).
+   *
+   * ЭТО GAUGES ЗА ОКНО, А НЕ МОНОТОННЫЕ СЧЁТЧИКИ ПРОЦЕССА, и вид выбран не по привычке файла:
+   * значения считаются запросом из БД, а журнал пачек убирается по сроку хранения — «counter»,
+   * который умеет убывать, врал бы каждому `rate()`.
+   *
+   * Третья метрика — не про объём, а про здоровье протокола: незавершённая операция с истёкшей
+   * арендой означает, что пачку никто не подхватил. Ноль здесь — норма, и любой другой ответ
+   * разбирают руками; критерий приёмки К9 («в логе нет истёкших lease») проверяется именно ею.
+   */
+  const [bulkOperations, bulkRows, bulkExpired] = await Promise.all([
+    db.execute<{ operation: string; state: string; count: string }>(
+      sql`SELECT operation,
+                 CASE WHEN finished_at IS NOT NULL THEN 'finished'
+                      WHEN jsonb_array_length(row_results) >= requested_count
+                        THEN 'finishing_notifications'
+                      ELSE 'running' END AS state,
+                 count(*)::text AS count
+            FROM service_request_bulk_operations
+           WHERE created_at > now() - interval '24 hours'
+           GROUP BY operation, state`,
+    ),
+    /*
+     * Исходы СТРОК, а не пачек: «доля failed объяснима» — вопрос про строки, и в разрезе пачек на
+     * него ответа нет вовсе. Считается по checkpoint'ам, а не по итоговому отчёту: у незавершённой
+     * пачки отчёта ещё нет, а её строки уже применены.
+     */
+    db.execute<{ operation: string; outcome: string; count: string }>(
+      sql`SELECT o.operation, e.value->>'outcome' AS outcome, count(*)::text AS count
+            FROM service_request_bulk_operations o
+            CROSS JOIN LATERAL jsonb_array_elements(o.row_results) AS e
+           WHERE o.created_at > now() - interval '24 hours'
+           GROUP BY o.operation, e.value->>'outcome'`,
+    ),
+    db.execute<{ count: string }>(
+      sql`SELECT count(*)::text AS count
+            FROM service_request_bulk_operations
+           WHERE finished_at IS NULL
+             AND (lease_expires_at IS NULL OR lease_expires_at <= now())`,
+    ),
+  ]);
+
   const [attempts, tokens, blind, journal, review] = await Promise.all([
     db.execute<{ engine: string; status: string; scope: string; count: string }>(
       sql`SELECT engine, status, error_scope AS scope, count(*)::text AS count
@@ -232,6 +275,8 @@ export async function collectMetrics(): Promise<string> {
       values: byStatus([...jobs.rows]),
     },
     {
+      // Почтовая сводка пачки видна здесь же, отдельной метрики ей не заводится: у неё свой вид
+      // письма (`service_request_bulk_summary`), и он попадает в этот разрез сам.
       name: 'technic_service_request_mail',
       help: 'Письма модуля «Орг.техника» за сутки по виду и состоянию (без отладочных)',
       type: 'gauge',
@@ -239,6 +284,35 @@ export async function collectMetrics(): Promise<string> {
         value: Number(row.count),
         labels: { event: row.kind, status: row.status },
       })),
+    },
+    {
+      name: 'technic_service_bulk_operations_24h',
+      help: 'Массовые операции над заявками за сутки: вариант команды и состояние',
+      type: 'gauge',
+      values: [...bulkOperations.rows].map((row) => ({
+        labels: { operation: row.operation, state: row.state },
+        value: Number(row.count),
+      })),
+    },
+    {
+      name: 'technic_service_bulk_rows_24h',
+      help: 'Строки массовых операций за сутки: вариант команды и исход строки',
+      type: 'gauge',
+      values: [...bulkRows.rows].map((row) => ({
+        labels: { operation: row.operation, outcome: row.outcome ?? 'unknown' },
+        value: Number(row.count),
+      })),
+    },
+    {
+      /*
+       * Незавершённые пачки с истёкшей арендой. Ноль — норма: живую пачку heartbeat продлевает
+       * перед каждой строкой, а брошенную подхватывает повтор по ключу либо уборка. Устойчиво
+       * ненулевое значение означает, что ни того ни другого не случилось.
+       */
+      name: 'technic_service_bulk_expired_leases',
+      help: 'Незавершённые массовые операции с истёкшей арендой владельца',
+      type: 'gauge',
+      values: [{ value: Number(bulkExpired.rows[0]?.count ?? 0) }],
     },
     {
       /*

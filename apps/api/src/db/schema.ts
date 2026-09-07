@@ -35,6 +35,9 @@ import type {
   ModuleMailEvent,
   OfficeEquipmentCandidateStatus,
   ReplyToMode,
+  ServiceRequestBulkOperation,
+  ServiceRequestBulkResultDto,
+  ServiceRequestBulkRowResultDto,
   WaybillCorrectionAuthorizationScope,
   WasteTicketBlindCheckField,
   WasteTicketField,
@@ -158,6 +161,16 @@ export const mailKindEnum = pgEnum('mail_kind', [
    */
   'office_equipment_candidate_pending',
   'office_equipment_candidate_decided',
+  /**
+   * Сводка массового действия над заявками (план `docs/office-equipment-bulk-actions-plan.md`,
+   * Р10; миграция 0278). Вид технический, как и `service_request_activity_summary`: в
+   * `MODULE_MAIL_EVENTS` его нет и рубильника у него нет — он появляется вместо уже включённых
+   * событий и только у пакетной ручки.
+   *
+   * Свой вид обязателен: очередь уникальна по паре `(kind, dedupe_key)`, и сводка, притворившаяся
+   * событийным письмом, молча подавила бы его по той же строке истории.
+   */
+  'service_request_bulk_summary',
 ]);
 export const mailStatusEnum = pgEnum('mail_status', ['pending', 'sent', 'failed']);
 /** Расписания рассылок (ADR 0075, миграция 0099). */
@@ -4076,6 +4089,151 @@ export const serviceRequestMessageReads = pgTable(
     }),
     // Ноль законен и означает «открывал, но не дочитал ни до чего»; отрицательного курсора нет.
     seqCheck: check('service_request_message_reads_seq_check', sql`${t.readThroughSeq} >= 0`),
+  }),
+);
+
+// ── Массовые действия над заявками: журнал пачек (план массовых действий, §6.3, Р7) ──
+/**
+ * ЗАЧЕМ ТАБЛИЦА, ЕСЛИ ЕСТЬ АУДИТ. Аудит отвечает «что было с ЗАЯВКОЙ», а здесь лежит «что вернули
+ * ЧЕЛОВЕКУ»: именно этот отчёт повторяется при повторном клике и после обрыва сети. Отдельной
+ * записи «выполнена пачка» в `audit_log` при этом не заводится — строка про пятьдесят чужих заявок
+ * в журнале одной из них была бы шумом (Р8).
+ *
+ * ПОЧЕМУ ЗАПИСЬ ЗАВОДИТСЯ ДО ВЫПОЛНЕНИЯ (claim). Версии от повтора не спасают: повтор после успеха
+ * получил бы `version` по всем строкам и выглядел бы как «ничего не вышло», хотя всё вышло.
+ * Поэтому пара «автор + ключ» уникальна, рядом лежит отпечаток нормализованного тела, а гонка двух
+ * одновременных нажатий разбирается по ИМЕНИ уникального ограничения (`23505`) — приём кандидата
+ * и закупки, а не свой.
+ *
+ * АРЕНДА (`owner_token` + `lease_expires_at`) И ПОСТРОЧНЫЕ CHECKPOINT'Ы — ответ на Н12: после
+ * обрыва клиент не знает, работает ли пачка, а брошенную пачку обязан подобрать следующий заход,
+ * не переписав уже зафиксированные успехи ошибками `version`. Успешная мутация и добавление
+ * результата в `row_results` проходят ОДНОЙ транзакцией под условием «id + owner_token + не
+ * завершено», поэтому старый процесс не может завершить строку после того, как аренду забрал новый.
+ */
+export const serviceRequestBulkOperations = pgTable(
+  'service_request_bulk_operations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * `ON DELETE SET NULL` — политика `audit_log`: удаление учётки не должно упираться в её пачки.
+     * У живого пользователя уникальность пары работает обычно, а после удаления повтор от того же
+     * субъекта невозможен по определению.
+     */
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+    /** Снимок подписи для разбора: имя теряется вместе с учёткой, а вопрос «кто это сделал» — нет. */
+    actorName: text('actor_name').notNull(),
+    idempotencyKey: uuid('idempotency_key').notNull(),
+    /** Отпечаток нормализованного тела: тот же ключ с другим телом — это другая команда, а не повтор. */
+    idempotencyFingerprint: text('idempotency_fingerprint').notNull(),
+    /** Вариант команды; перечень — в контрактах (`SERVICE_REQUEST_BULK_OPERATIONS`). */
+    operation: text('operation').notNull().$type<ServiceRequestBulkOperation>(),
+    requestedCount: integer('requested_count').notNull(),
+    /**
+     * Построчные checkpoint'ы — массив исходов уже зафиксированных строк. Растёт по одной записи в
+     * транзакции самой строки, поэтому падение процесса не может «потерять» успех: он зафиксирован
+     * вместе с мутацией.
+     */
+    rowResults: jsonb('row_results')
+      .notNull()
+      .$type<ServiceRequestBulkRowResultDto[]>()
+      .default(sql`'[]'::jsonb`),
+    /** Кто сейчас держит пачку; `null` — никто не брался либо аренда снята финализацией. */
+    ownerToken: uuid('owner_token'),
+    /** До какого мгновения аренда действительна; продлевается перед каждой строкой (heartbeat). */
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    doneCount: integer('done_count'),
+    failedCount: integer('failed_count'),
+    /** Готовый отчёт: он и возвращается повтору, слово в слово. */
+    result: jsonb('result').$type<ServiceRequestBulkResultDto>(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+  },
+  (t) => ({
+    /**
+     * ПАРА, А НЕ КЛЮЧ САМ ПО СЕБЕ: ключ описывает попытку КОНКРЕТНОГО человека, и совпадение UUID
+     * у двоих (пусть невероятное) не должно превращать чужую пачку в «повтор».
+     */
+    keyUnique: unique('service_request_bulk_operations_key_unique').on(
+      t.actorUserId,
+      t.idempotencyKey,
+    ),
+    /**
+     * Итог бывает только целиком: отчёт, оба счётчика и время завершения появляются одной
+     * транзакцией финализации. Половина итога означала бы «пачка закончена, но неизвестно чем».
+     */
+    finishedCheck: check(
+      'service_request_bulk_operations_finished_check',
+      sql`(${t.finishedAt} IS NULL) = (${t.result} IS NULL)
+          AND (${t.finishedAt} IS NULL) = (${t.doneCount} IS NULL)
+          AND (${t.finishedAt} IS NULL) = (${t.failedCount} IS NULL)`,
+    ),
+    actorIdx: index('service_request_bulk_operations_actor_idx').on(
+      t.actorUserId,
+      sql`${t.createdAt} DESC`,
+    ),
+  }),
+);
+
+/**
+ * ПОЧТОВЫЕ НАМЕРЕНИЯ ПАЧКИ (Р10).
+ *
+ * Существующий потолок писем считается по тройке «заявка + адрес + час»
+ * (`SERVICE_MAIL_MAX_PER_REQUEST_HOUR`) и от пачки по РАЗНЫМ заявкам не спасает: пятьдесят заявок
+ * одному адресату дадут пятьдесят обычных писем. Поэтому строка пачки вызывает тот же построитель
+ * почтового намерения, что и одиночное действие, но кладёт результат сюда — идемпотентным upsert'ом
+ * в транзакции строки, — а финализатор шлёт один `service_request_bulk_summary` на пару «адресат +
+ * аудитория».
+ *
+ * Ключ — пятёрка: одна строка пачки может дать одному адресату разные события и разные аудитории,
+ * а повтор строки после takeover обязан не удвоить намерение.
+ *
+ * `projected_payload` хранит УЖЕ СПРОЕЦИРОВАННЫЕ поля (аудитория применена в момент записи):
+ * восстановить проекцию на финализации из полной заявки нельзя — финансовые поля к тому моменту
+ * пришлось бы считать заново и не для того читателя.
+ *
+ * `ON DELETE CASCADE`: почтовые элементы не переживают свою пачку — уборка §6.3 сносит их одним
+ * движением, и осиротевших намерений не остаётся.
+ */
+export const serviceRequestBulkMailItems = pgTable(
+  'service_request_bulk_mail_items',
+  {
+    operationId: uuid('operation_id')
+      .notNull()
+      .references(() => serviceRequestBulkOperations.id, { onDelete: 'cascade' }),
+    /** Позиция строки в запросе: по ней намерение соотносится с checkpoint'ом той же строки. */
+    rowIndex: integer('row_index').notNull(),
+    /**
+     * Отпечаток ПАРЫ «аудитория + нормализованный адрес» (`bulkMailRecipientHash`), а не одного
+     * адреса: из него собран `dedupe_key` сводки (`bulk:<operationId>:<recipientHash>`), а сводка
+     * ставится одна на пару. Хешируй он адрес — человек, попавший в пачке и во внутреннюю
+     * аудиторию, и в копию, получил бы одно письмо вместо двух: второе молча подавилось бы
+     * уникальностью очереди `(kind, dedupe_key)`. Регистр адреса на группировку не влияет — сюда
+     * приходит уже нормализованный.
+     */
+    recipientHash: text('recipient_hash').notNull(),
+    recipientEmail: citext('recipient_email').notNull(),
+    /** Аудитория письма: `internal`, `contractor`, `contractor_withdrawn`, `copy` — та же, что у одиночного. */
+    audience: text('audience').notNull(),
+    /** Событие модуля (`ModuleMailEvent`): текстом, чтобы новый вид не стоил миграции этой таблице. */
+    event: text('event').notNull(),
+    projectedPayload: jsonb('projected_payload')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pk: primaryKey({
+      name: 'service_request_bulk_mail_items_pkey',
+      columns: [t.operationId, t.rowIndex, t.recipientHash, t.audience, t.event],
+    }),
+    /** Группировка digest'а: «все намерения этой пачки по паре адресат+аудитория» одним проходом. */
+    digestIdx: index('service_request_bulk_mail_items_digest_idx').on(
+      t.operationId,
+      t.recipientHash,
+      t.audience,
+    ),
   }),
 );
 

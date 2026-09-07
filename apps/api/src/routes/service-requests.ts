@@ -71,7 +71,9 @@ import {
   SERVICE_REQUEST_STATUSES,
   SERVICE_WAITING_ON,
   serviceCommentSchema,
+  canRunServiceBulkOperation,
   canStartServiceWork,
+  canUseServiceBulk,
   serviceEstimatePending,
   serviceFileAttachingSideLabels,
   serviceFileAttachingSides,
@@ -81,6 +83,8 @@ import {
   serviceIsFirstAssignment,
   serviceMailRepeatable,
   serviceRequestAudienceOf,
+  serviceRequestBulkKeyParams,
+  serviceRequestBulkSchema,
   serviceRequestListQuerySchema,
   serviceRequestNeedsClosingDocument,
   serviceRequestStatusLabels,
@@ -113,6 +117,8 @@ import {
   type ServiceExecutorsRow,
   type ServiceFileKind,
   type ServiceRequestAudience,
+  type ServiceRequestBulkResultDto,
+  type ServiceRequestBulkStatusDto,
   type ServiceRequestConsumableDto,
   type ServiceRequestKind,
   type ServiceWaitingOn,
@@ -156,6 +162,7 @@ import {
   readServiceSide,
   repeatableServiceMailEventOf,
   serviceMailEventOf,
+  type ServiceMailBulkSink,
   type ServiceMailPreparation,
   type ServiceMailResult,
   type ServiceRequestSide,
@@ -164,6 +171,13 @@ import {
   prepareCandidateMail,
   queueCandidateMail,
 } from '../services/office-equipment-candidate-mail';
+import {
+  outsideBulk,
+  readServiceBulkStatus,
+  runServiceRequestBulk,
+  serviceBulkFingerprint,
+  type BulkStepContext,
+} from '../services/service-request-bulk';
 import { requirePrincipal } from '../auth/plugin';
 import {
   accessSubjectColumns,
@@ -274,6 +288,39 @@ type RequestPatch = Partial<typeof serviceRequests.$inferInsert>;
 
 const idParams = z.object({ id: z.string().uuid() });
 const fileParams = idParams.extend({ fileId: z.string().uuid() });
+/**
+ * Версия у архивирования — параметром запроса (Р4 плана массовых действий, находка Н6): тела у
+ * `DELETE` нет, а `z.coerce` нужен потому, что в строке запроса число приезжает строкой.
+ * Необязательное поле — временная граница выпуска A, названная и в плане, и на самой ручке.
+ */
+const archiveVersionQuery = z.object({
+  version: z.coerce.number().int().nonnegative().optional(),
+});
+
+/**
+ * Ключ идемпотентности пачки — заголовком, тем же транспортом, что у сообщения о технике и у
+ * закупки (Р7).
+ *
+ * ОБЯЗАТЕЛЕН, и это не строгость ради строгости: повторный клик и повтор HTTP у пачки не редкость,
+ * а норма — она идёт секунды, кнопка видна, вкладка может перезагрузиться. Версии от этого не
+ * спасают: повтор после успеха получил бы `version` по всем строкам и выглядел бы как «ничего не
+ * вышло», хотя всё вышло.
+ *
+ * `uuid`, а не свободная строка: ключ порождает портал на попытку отправки, тип отбивает мусор в
+ * заголовке раньше маршрута, и он же стоит типом колонки журнала.
+ */
+function bulkKeyOf(req: { headers: Record<string, unknown> }): string {
+  const raw = req.headers['idempotency-key'];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (!value) {
+    throw err.badRequest(
+      'Массовое действие отправляется с заголовком Idempotency-Key — обновите страницу и повторите',
+    );
+  }
+  const parsed = z.string().uuid().safeParse(value);
+  if (!parsed.success) throw err.badRequest('Некорректный Idempotency-Key');
+  return parsed.data;
+}
 
 /**
  * Заявка, на которую подбирают исполнителя (Р7). В контракты схема не уехала намеренно: она
@@ -1282,6 +1329,29 @@ async function executorAssignment(
 }
 
 /**
+ * СУЖЕНИЕ МАССОВОГО «ПРИНЯТЬ В РАБОТУ» (Р5): пакетный `start` открыт ТОЛЬКО назначенным.
+ *
+ * У одиночной ручки третья ветка `actsAsServiceExecutor` открывает ход держателю
+ * `serviceRequests.estimate` без назначения на заявку — «Ведению», разбирающему застрявшее. В
+ * массовом режиме такой субъект набрал бы пятьдесят чужих назначенных заявок и взял их в работу
+ * одним нажатием, не будучи исполнителем ни одной, — поэтому здесь спрашивается сам ФАКТ
+ * назначения, а не право.
+ *
+ * Прав это ни у кого не отнимает: одиночная кнопка в карточке работает по-прежнему, и сужение
+ * названо планом, а не спрятано в коде. Стоит оно ДО шага и после общего входа: область и сторона
+ * заказчика уже спрошены `requireEditable`, а «назначен ли» — вопрос строки исполнителей.
+ */
+async function assertBulkStartAssignment(p: Principal, id: string): Promise<void> {
+  const row = await requireEditable(p, id);
+  const assignment = await executorAssignment(p, row);
+  if (!assignment.actsForAssignedCounterparty && !assignment.isNamedExecutor) {
+    throw err.forbidden(
+      'Массово в работу берут только назначенные исполнители — эту заявку откройте карточкой',
+    );
+  }
+}
+
+/**
  * Чужая сторона отсекается **до** чтения записи.
  *
  * Специализированная ручка описывает одну дугу коридора (Р18), и субъекту, у которого этой дуги
@@ -1909,6 +1979,17 @@ async function applyTransition(
      * можно, шесть переходов модуля не ставили писем вовсе — молча, без единого предупреждения.
      */
     mail: ServiceMailPreparation | null;
+    /**
+     * Сток письма, если переход идёт строкой пачки (план массовых действий, Р10). Приезжает из
+     * `bulk.runTx` доменного шага вместе с транзакцией и уходит построителю письма: тот кладёт
+     * готовое намерение в `service_request_bulk_mail_items` вместо строки очереди, а сводку по
+     * пачке шлёт финализатор — одну на пару «адресат + аудитория».
+     *
+     * Необязательный и по умолчанию пустой: одиночная ручка о пачке не знает и ведёт себя ровно как
+     * до неё. Проекция аудитории при этом происходит ЗДЕСЬ, на строке, — восстановить её на
+     * финализации из полной заявки нельзя.
+     */
+    bulkMail?: ServiceMailBulkSink | null;
   },
 ): Promise<{
   mail: ServiceMailResult | null;
@@ -2055,6 +2136,7 @@ async function applyTransition(
     actorId: actor.id,
     comment: params.comment ?? '',
     mail: params.mail,
+    bulkMail: params.bulkMail ?? null,
   });
   return { mail, mailFailed: mail?.outcome === 'mail_failed', clearedWarranties: warrantySnapshot };
 }
@@ -2120,6 +2202,8 @@ async function recordServiceStatusTransition(
     mail: ServiceMailPreparation | null;
     /** Сторона заявки, снятая ДО бизнес-изменения: отмена сбрасывает исполнителя тем же переходом. */
     side: ServiceRequestSide;
+    /** Сток письма строки пачки; `null` — обычный путь одиночной ручки (Р10). */
+    bulkMail?: ServiceMailBulkSink | null;
   },
 ): Promise<{ statusHistoryId: string; mail: ServiceMailResult | null }> {
   const [entry] = await tx
@@ -2148,6 +2232,7 @@ async function recordServiceStatusTransition(
     requestId: params.requestId,
     anchor: entry!.id,
     extra: { fromStatus: params.fromStatus, comment: params.comment },
+    bulk: params.bulkMail ?? null,
   });
   return { statusHistoryId: entry!.id, mail };
 }
@@ -3147,6 +3232,180 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           )
           .map((candidate) => ({ id: candidate.id, fullName: candidate.fullName })),
       };
+    },
+  );
+
+  // ── Массовые действия над заявками (план `docs/office-equipment-bulk-actions-plan.md`) ──
+  /**
+   * ОДНА ИЗМЕНЯЮЩАЯ РУЧКА И ОДНА ЧИТАЮЩАЯ (Р1). Девять пакетных ручек означали бы девять мест, где
+   * написан один и тот же протокол (версии, ключ, отчёт, порядок, аудит), и первое же исправление
+   * разъехалось бы по ним. Различает операции не транспорт, а исполнитель шага — тот же доменный
+   * шаг, что зовёт одиночная ручка (Р2, Н9).
+   *
+   * ПУТЬ СТАТИЧЕСКИЙ, ПОЭТОМУ ОБЪЯВЛЕН ЗДЕСЬ — ДО ПАРАМЕТРИЧЕСКИХ `/:id/…`, тем же правилом, по
+   * которому выше стоят `/warranties`, `/waiting-count` и `/executor-candidates`.
+   *
+   * ТРИ РУБЕЖА ДОПУСКА, И ПОДМЕНЯТЬ ОДИН ДРУГИМ НЕЛЬЗЯ НИ В КАКУЮ СТОРОНУ (Р5, §6.4):
+   *
+   *   1. страж маршрута — «бывает ли у этого субъекта хоть одна пакетная операция» (`anyOf`);
+   *   2. `canUseServiceBulk` — продуктовый допуск к массовому режиму: закрывает Н11 (у заявителя
+   *      есть `serviceRequests.delete` на свою «Новую», но массовый интерфейс ему не даётся) и
+   *      сужает `start` до назначенных, не принимая `estimate`;
+   *   3. `canRunServiceBulkOperation` — точное право НАЗВАННОЙ операции;
+   *
+   * и только после них — построчный доменный предикат ВНУТРИ шага. Разделительная черта одна:
+   * свойство запроса отбивается запросом, свойство строки — строкой (Н7).
+   */
+  const canBulk = {
+    preHandler: [
+      app.authenticate,
+      app.requireAnyPermission(
+        [
+          'serviceRequests.assign',
+          'serviceRequests.status',
+          'serviceRequests.execute',
+          'serviceRequests.hold',
+          'serviceRequests.urgency',
+          // `delete` страж принимает, иначе архивирование не прошло бы его вовсе; допуск
+          // `canUseServiceBulk` держателя ОДНОГО лишь `delete` при этом отбивает — так и закрыт Н11.
+          'serviceRequests.delete',
+        ],
+        'Массовые действия над заявками недоступны',
+      ),
+    ],
+  };
+
+  r.post(
+    '/bulk',
+    { ...canBulk, schema: { body: serviceRequestBulkSchema } },
+    async (req): Promise<ServiceRequestBulkResultDto> => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      /*
+       * Оба отказа обработчика начинаются одинаково — «Массовый режим», — и это не стиль: перебор
+       * прав (`access-conditions.test.ts`) отличает отказ ОБРАБОТЧИКА от отказа стража по одной
+       * подстроке на маршрут, а отказов здесь два. Разойдись их начала, положительный случай
+       * перебора читался бы как «страж не пустил».
+       */
+      if (!canUseServiceBulk(p)) {
+        throw err.forbidden('Массовый режим открыт тем, кто заявки распределяет и ведёт');
+      }
+      if (!canRunServiceBulkOperation(p, body.operation)) {
+        throw err.forbidden(
+          'Массовый режим этой операции вам не открыт — откройте заявки по одной',
+        );
+      }
+      /*
+       * Ключ идемпотентности заголовком — тем же транспортом, что у сообщения о технике и у
+       * закупки. Обязателен: пачка идёт секунды, кнопка видна, вкладка может перезагрузиться, и
+       * повтор без ключа означал бы второе применение к сорока девяти уже сделанным строкам.
+       */
+      const key = bulkKeyOf(req);
+      return runServiceRequestBulk({
+        actor: p,
+        key,
+        fingerprint: serviceBulkFingerprint(body),
+        operation: body.operation,
+        rows: body.rows,
+        log: req.log,
+        /*
+         * РАЗБОР ОПЕРАЦИИ ЖИВЁТ ЗДЕСЬ, А НЕ В ПРОТОКОЛЕ, и это не стиль: протокол не должен знать
+         * ни одного доменного правила, иначе у пачки завёлся бы второй набор условий. Каждая ветка
+         * зовёт ТОТ ЖЕ шаг, что и одиночная ручка, — сравнить их можно глазами, не открывая
+         * второго файла.
+         *
+         * КОНТЕКСТ ПАЧКИ (`step`) УЕЗЖАЕТ ШАГУ ПОСЛЕДНИМ АРГУМЕНТОМ — тем самым, которого одиночная
+         * ручка не передаёт вовсе. В нём две неразделимые вещи: транзакция строки с checkpoint'ом
+         * внутри (Р7) и приписка `bulkOperationId` к аудиту (Р8). Порознь их взять неоткуда —
+         * значит ветка не может выполнить строку в транзакции пачки и записать журнал так, будто
+         * заявку правили поштучно.
+         */
+        run: async (row, _index, step) => {
+          switch (body.operation) {
+            case 'cancel':
+              // Отмена — вариант общей ручки статуса с целью `cancelled`; откаты массовыми не
+              // бывают вовсе (§4), и второй ветки под них здесь нет.
+              await statusStep(
+                p,
+                row.id,
+                { status: 'cancelled', reason: body.reason, version: row.version },
+                step,
+              );
+              return;
+            case 'hold':
+              await holdStep(p, row.id, { reason: body.reason, version: row.version }, step);
+              return;
+            case 'resume':
+              // Цель у каждой строки своя и берётся из неё самой (`held_from_status`) — человеку
+              // решать нечего, поэтому комментарий необязателен.
+              await resumeStep(p, row.id, { comment: body.comment, version: row.version }, step);
+              return;
+            case 'urgency_on':
+              await urgencyStep(
+                p,
+                row.id,
+                { isUrgent: true, urgencyReason: body.urgencyReason, version: row.version },
+                step,
+              );
+              return;
+            case 'urgency_off':
+              // Снятие причины не требует вовсе, и пара «флаг + причина» гасится целиком: порознь
+              // её не примет ни схема, ни `CHECK` базы.
+              await urgencyStep(
+                p,
+                row.id,
+                { isUrgent: false, urgencyReason: '', version: row.version },
+                step,
+              );
+              return;
+            case 'assign':
+              await assignStep(
+                p,
+                row.id,
+                {
+                  userIds: body.userIds,
+                  serviceCounterpartyId: body.serviceCounterpartyId,
+                  reason: body.reason,
+                  comment: body.comment,
+                  version: row.version,
+                },
+                step,
+              );
+              return;
+            case 'start':
+              await assertBulkStartAssignment(p, row.id);
+              await startStep(p, row.id, { version: row.version }, step);
+              return;
+            case 'accept':
+              await acceptStep(p, row.id, { comment: body.comment, version: row.version }, step);
+              return;
+            case 'archive':
+              // Версия у пачки ОБЯЗАТЕЛЬНА (Н6): у одиночной ручки она необязательна ради старого
+              // портала, а здесь её всегда шлёт отбор строк, и не сверять её значило бы сносить в
+              // архив то, чего человек уже не видел.
+              await archiveStep(p, row.id, row.version, step);
+              return;
+          }
+        },
+      });
+    },
+  );
+
+  /**
+   * Состояние пачки по её ключу (Р1, Н12): прогресс и восстановление после обрыва, а не вторая
+   * командная ручка. Ничего не меняет, отвечает только автору (`404` на чужой ключ), и портал
+   * начинает опрос одновременно с `POST` — `404` до момента claim допустим.
+   */
+  r.get(
+    '/bulk/:key',
+    { ...auth, schema: { params: serviceRequestBulkKeyParams } },
+    async (req): Promise<ServiceRequestBulkStatusDto> => {
+      const p = requirePrincipal(req);
+      const status = await readServiceBulkStatus(p.id, req.params.key);
+      // Чужой ключ — `404`, а не `403`: существование чужой пачки не показывается по известному
+      // ключу, ровно как архивная заявка не показывается по известному id.
+      if (!status) throw err.notFound('Массовая операция не найдена');
+      return status;
     },
   );
 
@@ -4422,80 +4681,161 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * «Штаб» или «Отдел», и правило «место — только Новую» отобрало бы у него признак вместе с
    * заказчиком.
    */
+  /**
+   * СРОЧНОСТЬ — ЕДИНСТВЕННОЙ ФУНКЦИЕЙ (план `docs/office-equipment-bulk-actions-plan.md`, Р2,
+   * этап Э1): проверки состояния, сверка версии и журнал живут здесь, а ручка ниже только
+   * разбирает тело и приводит ответ к объёму аудитории. Второго набора правил тем самым завести
+   * негде — пакет позовёт этот же шаг, а не свою копию условий.
+   *
+   * Один шаг на два варианта команды — включение и снятие: различает их `isUrgent` в теле, пару
+   * «флаг + причина» проверяет схема, и разложенное по двум функциям одно правило разъехалось бы
+   * ровно на снятии, где причины не требуют вовсе.
+   *
+   * Полное состояние уходит наружу, а к аудитории его приводит ручка: `after` собран здесь ради
+   * diff'а в журнале, и второй поход за ним был бы лишним запросом, а пакету проекция карточки
+   * не нужна вовсе.
+   */
+  async function urgencyStep(
+    p: Principal,
+    id: string,
+    body: z.infer<typeof setServiceUrgencySchema>,
+    bulk: BulkStepContext = outsideBulk,
+  ): Promise<ServiceRequestDto> {
+    const row = await requireEditable(p, id);
+    if (isServiceRequestClosed(row.status)) {
+      throw err.unprocessable(
+        `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» уже закрыта — срочность ей ничего не меняет`,
+      );
+    }
+    // Отложенной срочность не меняют (Р119): признак заморозка не гасит, но и разбирать его
+    // поверх остановки незачем — очередь срочных отложенную не показывает, и «поставили красным»
+    // не сдвинуло бы её ни на строку.
+    if (row.status === 'on_hold') {
+      throw err.unprocessable('Отложенной заявке срочность не меняют — сначала возобновите её', {
+        status: 'Заявка отложена',
+      });
+    }
+
+    const before = (await getFullDto(p, row.id))!;
+    await bulk.runTx(async (tx) => {
+      const [updated] = await tx
+        .update(serviceRequests)
+        .set({
+          isUrgent: body.isUrgent,
+          urgencyReason: body.urgencyReason,
+          updatedBy: p.id,
+          updatedAt: new Date(),
+          version: row.version + 1,
+        })
+        .where(and(eq(serviceRequests.id, row.id), eq(serviceRequests.version, body.version)))
+        .returning({ id: serviceRequests.id });
+      if (!updated) throw err.conflict();
+    });
+
+    const after = (await getFullDto(p, row.id))!;
+    // Возраст в статусе срочность не сбрасывает: она не ожидание, и очередь «дольше всех ждут»
+    // не должна обнуляться от того, что заявку пометили красным.
+    await writeAudit({
+      actorUserId: p.id,
+      action: 'serviceRequest.urgency',
+      entityType: 'serviceRequest',
+      entityId: row.id,
+      /*
+       * ПРИПИСКА ПАЧКИ (Р8) — последним ключом и только когда пачка есть: `bulk.audit` вне пачки
+       * пуст, и metadata одиночной ручки остаётся прежней до буквы. Так журнал отвечает на вопрос
+       * «эти двадцать записей сделаны одним движением», не заводя записи «выполнена пачка».
+       */
+      metadata: {
+        changes: diffServiceRequests(before, after),
+        isUrgent: after.isUrgent,
+        ...bulk.audit,
+      },
+    });
+    return after;
+  }
+
   r.patch(
     '/:id/urgency',
     { ...canUrgency, schema: { params: idParams, body: setServiceUrgencySchema } },
     async (req) => {
-      const p = requirePrincipal(req);
-      const body = req.body;
-      const row = await requireEditable(p, req.params.id);
-      if (isServiceRequestClosed(row.status)) {
-        throw err.unprocessable(
-          `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» уже закрыта — срочность ей ничего не меняет`,
-        );
-      }
-      // Отложенной срочность не меняют (Р119): признак заморозка не гасит, но и разбирать его
-      // поверх остановки незачем — очередь срочных отложенную не показывает, и «поставили красным»
-      // не сдвинуло бы её ни на строку.
-      if (row.status === 'on_hold') {
-        throw err.unprocessable('Отложенной заявке срочность не меняют — сначала возобновите её', {
-          status: 'Заявка отложена',
-        });
-      }
-
-      const before = (await getFullDto(p, row.id))!;
-      await db.transaction(async (tx) => {
-        const [updated] = await tx
-          .update(serviceRequests)
-          .set({
-            isUrgent: body.isUrgent,
-            urgencyReason: body.urgencyReason,
-            updatedBy: p.id,
-            updatedAt: new Date(),
-            version: row.version + 1,
-          })
-          .where(and(eq(serviceRequests.id, row.id), eq(serviceRequests.version, body.version)))
-          .returning({ id: serviceRequests.id });
-        if (!updated) throw err.conflict();
-      });
-
-      const after = (await getFullDto(p, row.id))!;
-      // Возраст в статусе срочность не сбрасывает: она не ожидание, и очередь «дольше всех ждут»
-      // не должна обнуляться от того, что заявку пометили красным.
-      await writeAudit({
-        actorUserId: p.id,
-        action: 'serviceRequest.urgency',
-        entityType: 'serviceRequest',
-        entityId: row.id,
-        metadata: { changes: diffServiceRequests(before, after), isUrgent: after.isUrgent },
-      });
+      const after = await urgencyStep(requirePrincipal(req), req.params.id, req.body);
       // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
       return forAudience(after);
     },
   );
 
   // ── Мягкое удаление: заявка уходит в архив ──
-  r.delete('/:id', { ...canDelete, schema: { params: idParams } }, async (req) => {
-    const p = requirePrincipal(req);
-    const row = await requireEditable(p, req.params.id);
+  /**
+   * АРХИВИРОВАНИЕ — ЕДИНСТВЕННОЙ ФУНКЦИЕЙ (план массовых действий, Р2, этап Э1): своё правило
+   * удаления, мягкое снятие и журнал. Ручка ниже только отвечает `{ ok: true }`.
+   *
+   * Тела у ручки нет вовсе — поэтому нет его и у шага. Сверки версии здесь тоже нет, и это
+   * сегодняшнее поведение, а не упущение выделения (Н6 того же плана): условие `WHERE` спрашивает
+   * только «жива ли». Завести её заодно значило бы спрятать новое правило в рефакторинг, у
+   * которого весь смысл — не менять ничего.
+   */
+  async function archiveStep(
+    p: Principal,
+    id: string,
+    /**
+     * Версия — НЕОБЯЗАТЕЛЬНАЯ у одиночной ручки и обязательная у пачки (Н6, Р4). Присланная
+     * сверяется, отсутствующая означает сегодняшнее поведение: портал прежнего выпуска её не шлёт,
+     * и требовать её сразу значило бы сломать работающую дверь ради новой.
+     */
+    version: number | undefined,
+    bulk: BulkStepContext = outsideBulk,
+  ): Promise<void> {
+    const row = await requireEditable(p, id);
     // Своё правило, а не «то же, что правка» (В20): «Назначенную» ещё удаляют — работа по ней не
     // начиналась, — а править её уже нельзя. Сторона заказчика при этом спрашивается та же, что у
     // правки (Н8): в архив уводят свою заявку либо заявку своей площадки или отдела.
     assertServiceRequestDeletable(p, { ...authorPlaceOf(row), status: row.status });
     const now = new Date();
-    await db
-      .update(serviceRequests)
-      .set({ deletedAt: now, deletedBy: p.id, updatedAt: now, version: row.version + 1 })
-      .where(and(eq(serviceRequests.id, row.id), isNull(serviceRequests.deletedAt)));
+    /*
+     * Транзакция здесь появилась не ради самой правки — она одна, — а ради пачки: мутация и
+     * отметка о ней (checkpoint) обязаны быть неразделимы (Р7). У одиночной ручки `bulk.runTx` —
+     * обычная `db.transaction`, и наблюдаемое поведение прежнее.
+     */
+    await bulk.runTx(async (tx) => {
+      const [archived] = await tx
+        .update(serviceRequests)
+        .set({ deletedAt: now, deletedBy: p.id, updatedAt: now, version: row.version + 1 })
+        .where(
+          and(
+            eq(serviceRequests.id, row.id),
+            isNull(serviceRequests.deletedAt),
+            // Сверка версии — только если её прислали (Н6). Добавленная безусловно, она отбила бы
+            // сегодняшний портал, который её не шлёт вовсе.
+            ...(version === undefined ? [] : [eq(serviceRequests.version, version)]),
+          ),
+        )
+        .returning({ id: serviceRequests.id });
+      if (!archived && version !== undefined) throw err.conflict();
+    });
     await writeAudit({
       actorUserId: p.id,
       action: 'serviceRequest.soft_delete',
       entityType: 'serviceRequest',
       entityId: row.id,
-      metadata: { num: row.num, status: row.status },
+      metadata: { num: row.num, status: row.status, ...bulk.audit },
     });
-    return { ok: true };
-  });
+  }
+
+  /**
+   * Версия приходит ПАРАМЕТРОМ ЗАПРОСА, а не телом (Р4, находка Н6): тела у `DELETE` нет вовсе, и
+   * заводить его ради одного числа значило бы вводить в модуль приём, которого он не знает ни в
+   * одной ручке. Поле необязательное: портал прежнего выпуска версии не шлёт, и присланная —
+   * сверяется, отсутствующая означает сегодняшнее поведение. Обязательным оно станет выпуском B,
+   * когда портал начнёт слать её всегда.
+   */
+  r.delete(
+    '/:id',
+    { ...canDelete, schema: { params: idParams, querystring: archiveVersionQuery } },
+    async (req) => {
+      await archiveStep(requirePrincipal(req), req.params.id, req.query.version);
+      return { ok: true };
+    },
+  );
 
   // ── Назначение исполнителей (Н5, Н6) ──
   /**
@@ -4523,252 +4863,268 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * строки заявки, затем работа со строками исполнителей. Никогда наоборот — иначе назначение,
    * идущее «от исполнителей», встречается со сменой статуса, идущей «от заявки».
    */
+  /**
+   * НАЗНАЧЕНИЕ — ЕДИНСТВЕННОЙ ФУНКЦИЕЙ (план массовых действий, Р2, этап Э1): предикат, дельта
+   * состава, письмо, транзакция и журнал. Ручка ниже разбирает тело и собирает ответ «заявка плюс
+   * исход письма».
+   *
+   * Исход письма шаг отдаёт как есть, а карточку не собирает: перечитывать заявку ради ответа —
+   * дело ручки, и пакету, у которого ответ построчный, эта работа не нужна.
+   */
+  async function assignStep(
+    p: Principal,
+    id: string,
+    body: z.infer<typeof putServiceExecutorsSchema>,
+    bulk: BulkStepContext = outsideBulk,
+  ): Promise<ModuleMailOutcome> {
+    const row = await requireEditable(p, id);
+    /**
+     * Доступность спрашивается предикатом, а не коридором (Р11): дуги у назначения больше нет, а
+     * `assertSideAllowed` с `assertTransition` умеют отвечать только про дуги. Предикат отвечает
+     * тем же составом условий — статус («Новая» либо «В работе»), право `serviceRequests.assign`
+     * и отсутствие висящего предъявления, — и той же функцией отвечает портал, рисуя пункт меню.
+     *
+     * Запрет переназначения под висящим предъявлением — сегодняшнее правило, а не новое: из
+     * «Сметы на согласовании» переназначить было нельзя, потому что цифры принадлежат прежнему
+     * исполнителю и переданная заявка оставила бы новому чужой счёт. После слияния это же
+     * состояние зовётся «В работе» + предъявление, и не войди условие в предикат — запрет тихо
+     * исчез бы вместе со статусом.
+     */
+    // Состояние отвечает своим кодом, а право и статус — предикатом: коды отказов в модуле
+    // разведены (403 — право, область и сторона; 422 — состояние записи), и один общий отказ от
+    // предиката стёр бы это различие как раз там, где человеку надо не «просить прав», а дождаться
+    // ответа по объёму работ.
+    if (serviceEstimatePending(row)) {
+      throw err.unprocessable(
+        'Объём работ предъявлен и ждёт ответа — переназначить заявку можно, когда по нему решат',
+        { status: 'Объём работ на согласовании' },
+      );
+    }
+    if (!canAssignServiceExecutors(row, p)) {
+      const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+      throw err.forbidden(
+        `${who} не назначает исполнителей заявке в статусе «${serviceRequestStatusLabels[row.status]}»`,
+      );
+    }
+
+    const userIds = [...new Set(body.userIds)];
+    if (userIds.length === 0 && !body.serviceCounterpartyId) {
+      throw err.unprocessable(
+        'Назначьте хотя бы одного исполнителя — сотрудника или сервисную компанию',
+        { userIds: 'Нужен исполнитель' },
+      );
+    }
+
+    const service = body.serviceCounterpartyId
+      ? await resolveServiceCounterparty(body.serviceCounterpartyId)
+      : null;
+
+    /**
+     * Что именно меняется, считается **до** транзакции: от дельты зависят и адресаты письма, и
+     * обязательность причины. Состав, прочитанный здесь, к моменту записи не устареет: и
+     * назначение, и отказ поднимают версию самой заявки, а её сверяет `applyTransition` — 409
+     * придёт раньше, чем разъедется дельта.
+     */
+    const current = await db
+      .select({ userId: serviceRequestExecutors.userId })
+      .from(serviceRequestExecutors)
+      .where(eq(serviceRequestExecutors.requestId, row.id));
+    const had = new Set(current.map((r) => r.userId));
+    const keep = new Set(userIds);
+    const removed = [...had].filter((id) => !keep.has(id));
+    const added = userIds.filter((id) => !had.has(id));
+    const counterpartyId = service?.id ?? null;
+    const counterpartyChanged = row.serviceCounterpartyId !== counterpartyId;
+    const changed = removed.length > 0 || added.length > 0 || counterpartyChanged;
+    /**
+     * Первое ли это назначение — по СОСТАВУ, а не по статусу (Р11). Прежнее `row.status === 'new'`
+     * было верно лишь потому, что статус с составом совпадал: назначение уводило заявку в
+     * «Назначенную». Совпадать больше нечему, и признак становится тем, чем был по смыслу —
+     * «исполнителей у заявки ещё не было». Той же функцией отвечает окно назначения, решая,
+     * спрашивать ли причину: разойдись они, окно требовало бы причину там, где она не нужна, либо
+     * отправляло запрос, на который придёт 422.
+     */
+    const first = serviceIsFirstAssignment({
+      serviceCounterpartyId: row.serviceCounterpartyId,
+      executorCount: current.length,
+    });
+    // Тот же состав у «Новой» — не назначение, а повтор нажатия. Из «В работе» тот же состав
+    // означает возврат заявки к назначенным (ниже она уходит в «Новую»), и он законен.
+    if (!changed && row.status === 'new') {
+      throw err.unprocessable('Эти исполнители уже назначены на заявку');
+    }
+    // Первое назначение причины не требует, переназначение требует: у прежнего исполнителя
+    // отбирают работу, и в истории обязано остаться, почему.
+    if (!first && !body.reason) {
+      throw err.unprocessable(
+        'Укажите причину переназначения — у прежнего исполнителя отбирают работу',
+        { reason: 'Укажите причину' },
+      );
+    }
+
+    /**
+     * Письмо о назначении (Н13) — задание на работу, и уходит оно новым исполнителям. Прежней
+     * сервисной компании при смене или снятии назначения уходит отдельный отзыв: новое задание
+     * другой компании само по себе не говорит старой, что выезд больше не требуется.
+     *
+     * Обратный адрес — ящик службы: внешний подрядчик отвечает тем, кто ведёт заявку, а не её
+     * автору. Считается до транзакции (Р67): адресаты ходят в базу и в конфигурацию, и упавшие
+     * внутри откатили бы саму заявку.
+     */
+    const mailPlan = await prepareServiceMail({
+      event: 'service_request_assigned',
+      actor: mailActorOf(p),
+      authorId: row.createdBy,
+      /**
+       * Дельта назначения — единственное, чего транзакция сама не узнает: новую компанию она как
+       * раз записывает, прежнюю после записи уже не достать, а поимённые адресаты — это
+       * ДОБАВЛЕННЫЕ, а не весь состав (иначе «вам назначено» ушло бы тому, кто ведёт заявку
+       * неделю).
+       */
+      assignment: {
+        userIds: added,
+        serviceCounterpartyId: counterpartyChanged ? counterpartyId : null,
+        previousServiceCounterpartyId: counterpartyChanged ? row.serviceCounterpartyId : null,
+      },
+    });
+
+    /**
+     * Смета — документ того, кто её составлял, и держится она **только** пока заявка у него.
+     * Стирается поэтому не на всякой правке состава, а когда заявка меняет руки: у прежнего
+     * подрядчика её забрали либо сняли поимённого исполнителя. Добавление второго сисадмина к
+     * первому чужого счёта не обесценивает и смету не трогает.
+     */
+    const handedOver =
+      removed.length > 0 || (row.serviceCounterpartyId !== null && counterpartyChanged);
+
+    /**
+     * Куда уходит заявка. Назначение статуса не меняет — кроме переназначения из «В работе»:
+     * оно возвращает её в «Новую», чтобы новый исполнитель нажал «Принять в работу» сам (Р5).
+     * Исполнителей эта дуга НЕ снимает (`serviceResetOnTransition`): строки пишутся ниже, до
+     * помощника перехода, и сброс, идущий следом, оставил бы заявку ничьей — молча, потому что
+     * отложенный `service_requests_executor_present` для «Новой» возвращается сразу.
+     */
+    const to: ServiceRequestStatus = row.status === 'in_work' ? 'new' : row.status;
+
+    const applied = await bulk.runTx(async (tx, bulkMail) => {
+      const locked = await lockRequest(tx, row.id);
+
+      /**
+       * СОСТАВ ПРОВЕРЯЕТСЯ ЗДЕСЬ, А НЕ ДО ТРАНЗАКЦИИ (Р7). Кандидаты приезжают из окна, открытого
+       * когда угодно, и «он был пригоден, когда я открывал список» доказательством не является:
+       * набор отбирают ровно между открытием окна и нажатием кнопки, и проверка, сделанная до
+       * `lockRequest`, записала бы исполнителя, который к `COMMIT` уже ничего не может. Под
+       * блокировкой заявки состав и проверяется, и пишется — разъехаться им нечем.
+       *
+       * Проверяется ВЕСЬ присланный состав, а не одни добавленные: тело задаёт состав целиком, и
+       * оставшийся в нём мёртвый исполнитель проехал бы молча — вместе с заявкой, которую он не
+       * откроет.
+       */
+      const executors = await resolveNamedExecutors(userIds, locked, tx);
+
+      /**
+       * Строки исполнителей пишутся **до** `applyTransition`: письмо собирается внутри той же
+       * транзакции и читает исполнителей из таблицы. Вставь мы их после — задание ушло бы без
+       * половины адресатов либо вовсе без них.
+       *
+       * Отложенный `service_requests_executor_present` этому не мешает: он проверяет состояние к
+       * концу транзакции, каким бы ни был порядок шагов внутри.
+       */
+      if (removed.length > 0) {
+        await tx
+          .delete(serviceRequestExecutors)
+          .where(
+            and(
+              eq(serviceRequestExecutors.requestId, locked.id),
+              inArray(serviceRequestExecutors.userId, removed),
+            ),
+          );
+      }
+      if (added.length > 0) {
+        await tx.insert(serviceRequestExecutors).values(
+          added.map((userId) => ({
+            requestId: locked.id,
+            userId,
+            assignedBy: p.id,
+          })),
+        );
+      }
+
+      const patch: RequestPatch = { serviceCounterpartyId: counterpartyId };
+      // `!first` здесь больше не проверяется, и это не пропуск: у первого назначения нет ни
+      // снятых строк, ни прежнего контрагента, — то есть `handedOver` при нём ложен по
+      // построению, и вторая половина условия отвечала бы на вопрос, которого не бывает.
+      if (handedOver) {
+        await assertEstimateReplaceable(tx, locked.id);
+        await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, locked.id));
+        patch.estimateRevision = 0;
+        patch.estimateSubmittedAt = null;
+        patch.estimatedTotalAmount = null;
+        // Ревизия уходит в `0`, и оставленное предъявление уронило бы саму запись
+        // (`service_requests_estimate_pending_check` требует их равенства). До этой строки оно
+        // тут и не окажется — переназначение под висящим предъявлением запрещено предикатом
+        // выше, — но защита не должна держаться на выводе о соседней проверке (Р2).
+        patch.estimatePendingRevision = null;
+        patch.approvedEstimateRevision = null;
+        patch.estimateApprovedBy = null;
+        patch.estimateApprovedAt = null;
+      }
+
+      const transition = await applyTransition(tx, {
+        row: locked,
+        to,
+        version: body.version,
+        actor: p,
+        comment: body.reason ?? body.comment,
+        patch,
+        // Возраст обнуляется и при `to === from`: сторона та же, а ждут другого (Р4).
+        touchStatusAt: true,
+        mail: mailPlan,
+        bulkMail,
+      });
+      // Состав уезжает наружу вместе с исходом письма: журнал пишется ПОСЛЕ транзакции
+      // (`writeAudit` ходит мимо неё), а имена в нём — те самые, что проверены под блокировкой.
+      return { mail: transition.mail, executors };
+    });
+    const mailResult = applied.mail;
+    await writeAudit({
+      actorUserId: p.id,
+      action: first ? 'serviceRequest.assign' : 'serviceRequest.reassign',
+      entityType: 'serviceRequest',
+      entityId: row.id,
+      metadata: {
+        serviceCounterpartyId: counterpartyId,
+        serviceName: service?.name ?? '',
+        // Поимённо — именами, а не идентификаторами: журнал читают люди, и «сняли исполнителя
+        // 8f3c…» ничего им не говорит.
+        executors: applied.executors.map((e) => e.fullName),
+        added: added.length,
+        removed: removed.length,
+        reason: body.reason ?? '',
+        ...bulk.audit,
+      },
+    });
+    // Неудача сборки письма пишется в аудит только теперь: `writeAudit` ходит мимо транзакции, и
+    // запись, сделанная внутри, пережила бы её откат (Р67).
+    if (mailResult?.outcome === 'mail_failed') {
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'serviceRequest.mailFailed',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        metadata: { event: 'service_request_assigned', ...bulk.audit },
+      });
+    }
+    return mailResult?.outcome ?? 'not_needed';
+  }
+
   r.put(
     '/:id/executors',
     { ...canAssign, schema: { params: idParams, body: putServiceExecutorsSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const body = req.body;
-      const row = await requireEditable(p, req.params.id);
-      /**
-       * Доступность спрашивается предикатом, а не коридором (Р11): дуги у назначения больше нет, а
-       * `assertSideAllowed` с `assertTransition` умеют отвечать только про дуги. Предикат отвечает
-       * тем же составом условий — статус («Новая» либо «В работе»), право `serviceRequests.assign`
-       * и отсутствие висящего предъявления, — и той же функцией отвечает портал, рисуя пункт меню.
-       *
-       * Запрет переназначения под висящим предъявлением — сегодняшнее правило, а не новое: из
-       * «Сметы на согласовании» переназначить было нельзя, потому что цифры принадлежат прежнему
-       * исполнителю и переданная заявка оставила бы новому чужой счёт. После слияния это же
-       * состояние зовётся «В работе» + предъявление, и не войди условие в предикат — запрет тихо
-       * исчез бы вместе со статусом.
-       */
-      // Состояние отвечает своим кодом, а право и статус — предикатом: коды отказов в модуле
-      // разведены (403 — право, область и сторона; 422 — состояние записи), и один общий отказ от
-      // предиката стёр бы это различие как раз там, где человеку надо не «просить прав», а дождаться
-      // ответа по объёму работ.
-      if (serviceEstimatePending(row)) {
-        throw err.unprocessable(
-          'Объём работ предъявлен и ждёт ответа — переназначить заявку можно, когда по нему решат',
-          { status: 'Объём работ на согласовании' },
-        );
-      }
-      if (!canAssignServiceExecutors(row, p)) {
-        const who = p.role ? roleLabels[p.role] : 'Учётная запись';
-        throw err.forbidden(
-          `${who} не назначает исполнителей заявке в статусе «${serviceRequestStatusLabels[row.status]}»`,
-        );
-      }
-
-      const userIds = [...new Set(body.userIds)];
-      if (userIds.length === 0 && !body.serviceCounterpartyId) {
-        throw err.unprocessable(
-          'Назначьте хотя бы одного исполнителя — сотрудника или сервисную компанию',
-          { userIds: 'Нужен исполнитель' },
-        );
-      }
-
-      const service = body.serviceCounterpartyId
-        ? await resolveServiceCounterparty(body.serviceCounterpartyId)
-        : null;
-
-      /**
-       * Что именно меняется, считается **до** транзакции: от дельты зависят и адресаты письма, и
-       * обязательность причины. Состав, прочитанный здесь, к моменту записи не устареет: и
-       * назначение, и отказ поднимают версию самой заявки, а её сверяет `applyTransition` — 409
-       * придёт раньше, чем разъедется дельта.
-       */
-      const current = await db
-        .select({ userId: serviceRequestExecutors.userId })
-        .from(serviceRequestExecutors)
-        .where(eq(serviceRequestExecutors.requestId, row.id));
-      const had = new Set(current.map((r) => r.userId));
-      const keep = new Set(userIds);
-      const removed = [...had].filter((id) => !keep.has(id));
-      const added = userIds.filter((id) => !had.has(id));
-      const counterpartyId = service?.id ?? null;
-      const counterpartyChanged = row.serviceCounterpartyId !== counterpartyId;
-      const changed = removed.length > 0 || added.length > 0 || counterpartyChanged;
-      /**
-       * Первое ли это назначение — по СОСТАВУ, а не по статусу (Р11). Прежнее `row.status === 'new'`
-       * было верно лишь потому, что статус с составом совпадал: назначение уводило заявку в
-       * «Назначенную». Совпадать больше нечему, и признак становится тем, чем был по смыслу —
-       * «исполнителей у заявки ещё не было». Той же функцией отвечает окно назначения, решая,
-       * спрашивать ли причину: разойдись они, окно требовало бы причину там, где она не нужна, либо
-       * отправляло запрос, на который придёт 422.
-       */
-      const first = serviceIsFirstAssignment({
-        serviceCounterpartyId: row.serviceCounterpartyId,
-        executorCount: current.length,
-      });
-      // Тот же состав у «Новой» — не назначение, а повтор нажатия. Из «В работе» тот же состав
-      // означает возврат заявки к назначенным (ниже она уходит в «Новую»), и он законен.
-      if (!changed && row.status === 'new') {
-        throw err.unprocessable('Эти исполнители уже назначены на заявку');
-      }
-      // Первое назначение причины не требует, переназначение требует: у прежнего исполнителя
-      // отбирают работу, и в истории обязано остаться, почему.
-      if (!first && !body.reason) {
-        throw err.unprocessable(
-          'Укажите причину переназначения — у прежнего исполнителя отбирают работу',
-          { reason: 'Укажите причину' },
-        );
-      }
-
-      /**
-       * Письмо о назначении (Н13) — задание на работу, и уходит оно новым исполнителям. Прежней
-       * сервисной компании при смене или снятии назначения уходит отдельный отзыв: новое задание
-       * другой компании само по себе не говорит старой, что выезд больше не требуется.
-       *
-       * Обратный адрес — ящик службы: внешний подрядчик отвечает тем, кто ведёт заявку, а не её
-       * автору. Считается до транзакции (Р67): адресаты ходят в базу и в конфигурацию, и упавшие
-       * внутри откатили бы саму заявку.
-       */
-      const mailPlan = await prepareServiceMail({
-        event: 'service_request_assigned',
-        actor: mailActorOf(p),
-        authorId: row.createdBy,
-        /**
-         * Дельта назначения — единственное, чего транзакция сама не узнает: новую компанию она как
-         * раз записывает, прежнюю после записи уже не достать, а поимённые адресаты — это
-         * ДОБАВЛЕННЫЕ, а не весь состав (иначе «вам назначено» ушло бы тому, кто ведёт заявку
-         * неделю).
-         */
-        assignment: {
-          userIds: added,
-          serviceCounterpartyId: counterpartyChanged ? counterpartyId : null,
-          previousServiceCounterpartyId: counterpartyChanged ? row.serviceCounterpartyId : null,
-        },
-      });
-
-      /**
-       * Смета — документ того, кто её составлял, и держится она **только** пока заявка у него.
-       * Стирается поэтому не на всякой правке состава, а когда заявка меняет руки: у прежнего
-       * подрядчика её забрали либо сняли поимённого исполнителя. Добавление второго сисадмина к
-       * первому чужого счёта не обесценивает и смету не трогает.
-       */
-      const handedOver =
-        removed.length > 0 || (row.serviceCounterpartyId !== null && counterpartyChanged);
-
-      /**
-       * Куда уходит заявка. Назначение статуса не меняет — кроме переназначения из «В работе»:
-       * оно возвращает её в «Новую», чтобы новый исполнитель нажал «Принять в работу» сам (Р5).
-       * Исполнителей эта дуга НЕ снимает (`serviceResetOnTransition`): строки пишутся ниже, до
-       * помощника перехода, и сброс, идущий следом, оставил бы заявку ничьей — молча, потому что
-       * отложенный `service_requests_executor_present` для «Новой» возвращается сразу.
-       */
-      const to: ServiceRequestStatus = row.status === 'in_work' ? 'new' : row.status;
-
-      const applied = await db.transaction(async (tx) => {
-        const locked = await lockRequest(tx, row.id);
-
-        /**
-         * СОСТАВ ПРОВЕРЯЕТСЯ ЗДЕСЬ, А НЕ ДО ТРАНЗАКЦИИ (Р7). Кандидаты приезжают из окна, открытого
-         * когда угодно, и «он был пригоден, когда я открывал список» доказательством не является:
-         * набор отбирают ровно между открытием окна и нажатием кнопки, и проверка, сделанная до
-         * `lockRequest`, записала бы исполнителя, который к `COMMIT` уже ничего не может. Под
-         * блокировкой заявки состав и проверяется, и пишется — разъехаться им нечем.
-         *
-         * Проверяется ВЕСЬ присланный состав, а не одни добавленные: тело задаёт состав целиком, и
-         * оставшийся в нём мёртвый исполнитель проехал бы молча — вместе с заявкой, которую он не
-         * откроет.
-         */
-        const executors = await resolveNamedExecutors(userIds, locked, tx);
-
-        /**
-         * Строки исполнителей пишутся **до** `applyTransition`: письмо собирается внутри той же
-         * транзакции и читает исполнителей из таблицы. Вставь мы их после — задание ушло бы без
-         * половины адресатов либо вовсе без них.
-         *
-         * Отложенный `service_requests_executor_present` этому не мешает: он проверяет состояние к
-         * концу транзакции, каким бы ни был порядок шагов внутри.
-         */
-        if (removed.length > 0) {
-          await tx
-            .delete(serviceRequestExecutors)
-            .where(
-              and(
-                eq(serviceRequestExecutors.requestId, locked.id),
-                inArray(serviceRequestExecutors.userId, removed),
-              ),
-            );
-        }
-        if (added.length > 0) {
-          await tx.insert(serviceRequestExecutors).values(
-            added.map((userId) => ({
-              requestId: locked.id,
-              userId,
-              assignedBy: p.id,
-            })),
-          );
-        }
-
-        const patch: RequestPatch = { serviceCounterpartyId: counterpartyId };
-        // `!first` здесь больше не проверяется, и это не пропуск: у первого назначения нет ни
-        // снятых строк, ни прежнего контрагента, — то есть `handedOver` при нём ложен по
-        // построению, и вторая половина условия отвечала бы на вопрос, которого не бывает.
-        if (handedOver) {
-          await assertEstimateReplaceable(tx, locked.id);
-          await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, locked.id));
-          patch.estimateRevision = 0;
-          patch.estimateSubmittedAt = null;
-          patch.estimatedTotalAmount = null;
-          // Ревизия уходит в `0`, и оставленное предъявление уронило бы саму запись
-          // (`service_requests_estimate_pending_check` требует их равенства). До этой строки оно
-          // тут и не окажется — переназначение под висящим предъявлением запрещено предикатом
-          // выше, — но защита не должна держаться на выводе о соседней проверке (Р2).
-          patch.estimatePendingRevision = null;
-          patch.approvedEstimateRevision = null;
-          patch.estimateApprovedBy = null;
-          patch.estimateApprovedAt = null;
-        }
-
-        const transition = await applyTransition(tx, {
-          row: locked,
-          to,
-          version: body.version,
-          actor: p,
-          comment: body.reason ?? body.comment,
-          patch,
-          // Возраст обнуляется и при `to === from`: сторона та же, а ждут другого (Р4).
-          touchStatusAt: true,
-          mail: mailPlan,
-        });
-        // Состав уезжает наружу вместе с исходом письма: журнал пишется ПОСЛЕ транзакции
-        // (`writeAudit` ходит мимо неё), а имена в нём — те самые, что проверены под блокировкой.
-        return { mail: transition.mail, executors };
-      });
-      const mailResult = applied.mail;
-      await writeAudit({
-        actorUserId: p.id,
-        action: first ? 'serviceRequest.assign' : 'serviceRequest.reassign',
-        entityType: 'serviceRequest',
-        entityId: row.id,
-        metadata: {
-          serviceCounterpartyId: counterpartyId,
-          serviceName: service?.name ?? '',
-          // Поимённо — именами, а не идентификаторами: журнал читают люди, и «сняли исполнителя
-          // 8f3c…» ничего им не говорит.
-          executors: applied.executors.map((e) => e.fullName),
-          added: added.length,
-          removed: removed.length,
-          reason: body.reason ?? '',
-        },
-      });
-      // Неудача сборки письма пишется в аудит только теперь: `writeAudit` ходит мимо транзакции, и
-      // запись, сделанная внутри, пережила бы её откат (Р67).
-      if (mailResult?.outcome === 'mail_failed') {
-        await writeAudit({
-          actorUserId: p.id,
-          action: 'serviceRequest.mailFailed',
-          entityType: 'serviceRequest',
-          entityId: row.id,
-          metadata: { event: 'service_request_assigned' },
-        });
-      }
-      return {
-        request: (await getDto(p, row.id))!,
-        mail: mailResult?.outcome ?? 'not_needed',
-      };
+      const mail = await assignStep(p, req.params.id, req.body);
+      return { request: (await getDto(p, req.params.id))!, mail };
     },
   );
 
@@ -5169,48 +5525,62 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
   // между заведением и работой не стало. Открывает ход всё тот же **факт назначения**, а не право,
   // — и он же сам собой закрывает ход у нераспределённой заявки: у «Новой» без исполнителей
   // назначенных нет, и `isServiceExecutor` ложен при любом праве.
+  /**
+   * «ПРИНЯТЬ В РАБОТУ» — ЕДИНСТВЕННОЙ ФУНКЦИЕЙ (план массовых действий, Р2, этап Э1): отсев
+   * стороны, состав исполнителей, коридор, предикат назначенного и сам переход. Ручка ниже только
+   * отдаёт карточку.
+   */
+  async function startStep(
+    p: Principal,
+    id: string,
+    body: z.infer<typeof startServiceRequestSchema>,
+    bulk: BulkStepContext = outsideBulk,
+  ): Promise<void> {
+    assertSideAllowed(p, id, 'in_work', ['new']);
+    const row = await requireEditable(p, id);
+    const assignment = await executorAssignment(p, row);
+    const executors = await executorsRowOf(row);
+    /*
+     * «Есть кому браться» — своей проверкой и своим 422, как у отказа. Найдено db-тестами:
+     * прежде запрет держал статус (коридор был `assigned → in_work`, и у «Новой» дуг не было), а
+     * после Р6 держать стало нечем — коридор открывает дизъюнкция, вторая половина которой,
+     * право на объём работ, назначения не спрашивает. Заявку без исполнителей администратор
+     * переводил в «В работе», и ловил это отложенный `service_requests_executor_present` на
+     * `COMMIT`: данные целы, но наружу уходило 500 вместо отказа.
+     */
+    if (!serviceHasExecutors(executors)) {
+      throw err.unprocessable(
+        'Заявку сначала распределяют — брать в работу нераспределённую некому',
+        { status: 'Исполнителей нет' },
+      );
+    }
+    assertTransition(p, row.id, row.status, 'in_work', assignment);
+    if (!canStartServiceWork({ ...executors, status: row.status }, p, assignment)) {
+      const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+      throw err.forbidden(`${who} не берёт эту заявку в работу — это шаг назначенного исполнителя`);
+    }
+    // Приняли в работу — событие переходов (№ 4): службе и стороне заявки, кроме того, кто нажал.
+    const mailPlan = await prepareTransitionMail('in_work', p, row.createdBy);
+    // `bulkMail` — сток письма: `null` у одиночной ручки, пачка передаёт свой (Р10).
+    await bulk.runTx(async (tx, bulkMail) => {
+      await applyTransition(tx, {
+        row,
+        to: 'in_work',
+        version: body.version,
+        actor: p,
+        mail: mailPlan,
+        bulkMail,
+      });
+    });
+  }
+
   r.patch(
     '/:id/start',
     { ...canExecutorStatus, schema: { params: idParams, body: startServiceRequestSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      assertSideAllowed(p, req.params.id, 'in_work', ['new']);
-      const row = await requireEditable(p, req.params.id);
-      const assignment = await executorAssignment(p, row);
-      const executors = await executorsRowOf(row);
-      /*
-       * «Есть кому браться» — своей проверкой и своим 422, как у отказа. Найдено db-тестами:
-       * прежде запрет держал статус (коридор был `assigned → in_work`, и у «Новой» дуг не было), а
-       * после Р6 держать стало нечем — коридор открывает дизъюнкция, вторая половина которой,
-       * право на объём работ, назначения не спрашивает. Заявку без исполнителей администратор
-       * переводил в «В работе», и ловил это отложенный `service_requests_executor_present` на
-       * `COMMIT`: данные целы, но наружу уходило 500 вместо отказа.
-       */
-      if (!serviceHasExecutors(executors)) {
-        throw err.unprocessable(
-          'Заявку сначала распределяют — брать в работу нераспределённую некому',
-          { status: 'Исполнителей нет' },
-        );
-      }
-      assertTransition(p, row.id, row.status, 'in_work', assignment);
-      if (!canStartServiceWork({ ...executors, status: row.status }, p, assignment)) {
-        const who = p.role ? roleLabels[p.role] : 'Учётная запись';
-        throw err.forbidden(
-          `${who} не берёт эту заявку в работу — это шаг назначенного исполнителя`,
-        );
-      }
-      // Приняли в работу — событие переходов (№ 4): службе и стороне заявки, кроме того, кто нажал.
-      const mailPlan = await prepareTransitionMail('in_work', p, row.createdBy);
-      await db.transaction(async (tx) => {
-        await applyTransition(tx, {
-          row,
-          to: 'in_work',
-          version: req.body.version,
-          actor: p,
-          mail: mailPlan,
-        });
-      });
-      return (await getDto(p, row.id))!;
+      await startStep(p, req.params.id, req.body);
+      return (await getDto(p, req.params.id))!;
     },
   );
 
@@ -5229,40 +5599,53 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * Письма службе заморозка не шлёт (Р111): это внутреннее решение оператора, а не событие для
    * исполнителя — о задержке сервис узнаёт звонком и может продолжать чинить.
    */
+  /**
+   * ЗАМОРОЗКА — ЕДИНСТВЕННОЙ ФУНКЦИЕЙ (план массовых действий, Р2, этап Э1): право заморозки,
+   * коридор, переход с парой «откуда и почему» и журнал. Ручка ниже только отдаёт карточку.
+   */
+  async function holdStep(
+    p: Principal,
+    id: string,
+    body: z.infer<typeof serviceHoldSchema>,
+    bulk: BulkStepContext = outsideBulk,
+  ): Promise<void> {
+    assertCanHold(p, 'откладывает заявку');
+    assertSideAllowed(p, id, 'on_hold');
+    const row = await requireEditable(p, id);
+    assertTransition(p, row.id, row.status, 'on_hold');
+    // Заморозка — событие переходов: причина обязательна по схеме и уходит строкой письма.
+    const mailPlan = await prepareTransitionMail('on_hold', p, row.createdBy);
+    await bulk.runTx(async (tx, bulkMail) => {
+      await applyTransition(tx, {
+        row,
+        to: 'on_hold',
+        version: body.version,
+        actor: p,
+        comment: body.reason,
+        // Пара «откуда и почему» пишется целиком: порознь их не примет CHECK в базе, а чистит
+        // обе выход из заморозки (Р118). Возраст в статусе обнуляет сам переход (Р108).
+        patch: { heldFromStatus: row.status, holdReason: body.reason },
+        mail: mailPlan,
+        bulkMail,
+      });
+    });
+    await writeAudit({
+      actorUserId: p.id,
+      action: 'serviceRequest.hold',
+      entityType: 'serviceRequest',
+      entityId: row.id,
+      // Откуда отложили — в metadata: после возврата заявка этого уже не помнит, поля чистятся.
+      metadata: { from: row.status, reason: body.reason, ...bulk.audit },
+    });
+  }
+
   r.patch(
     '/:id/hold',
     { ...canHold, schema: { params: idParams, body: serviceHoldSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const body = req.body;
-      assertCanHold(p, 'откладывает заявку');
-      assertSideAllowed(p, req.params.id, 'on_hold');
-      const row = await requireEditable(p, req.params.id);
-      assertTransition(p, row.id, row.status, 'on_hold');
-      // Заморозка — событие переходов: причина обязательна по схеме и уходит строкой письма.
-      const mailPlan = await prepareTransitionMail('on_hold', p, row.createdBy);
-      await db.transaction(async (tx) => {
-        await applyTransition(tx, {
-          row,
-          to: 'on_hold',
-          version: body.version,
-          actor: p,
-          comment: body.reason,
-          // Пара «откуда и почему» пишется целиком: порознь их не примет CHECK в базе, а чистит
-          // обе выход из заморозки (Р118). Возраст в статусе обнуляет сам переход (Р108).
-          patch: { heldFromStatus: row.status, holdReason: body.reason },
-          mail: mailPlan,
-        });
-      });
-      await writeAudit({
-        actorUserId: p.id,
-        action: 'serviceRequest.hold',
-        entityType: 'serviceRequest',
-        entityId: row.id,
-        // Откуда отложили — в metadata: после возврата заявка этого уже не помнит, поля чистятся.
-        metadata: { from: row.status, reason: body.reason },
-      });
-      return (await getDto(p, row.id))!;
+      await holdStep(p, req.params.id, req.body);
+      return (await getDto(p, req.params.id))!;
     },
   );
 
@@ -5277,47 +5660,60 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * трогать нечем и не нужно. Возраст в статусе обнуляется самим переходом (Р108): вернувшийся
    * исполнитель не наследует время, которое заявка простояла.
    */
+  /**
+   * ВОЗВРАТ В РАБОТУ — ЕДИНСТВЕННОЙ ФУНКЦИЕЙ (план массовых действий, Р2, этап Э1): предикат
+   * права, цель из самой заявки, переход и журнал. Ручка ниже только отдаёт карточку.
+   */
+  async function resumeStep(
+    p: Principal,
+    id: string,
+    body: z.infer<typeof serviceResumeSchema>,
+    bulk: BulkStepContext = outsideBulk,
+  ): Promise<void> {
+    if (!canResumeService(p)) {
+      const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+      throw err.forbidden(
+        `${who} не возвращает отложенную заявку в работу — это шаг того, кто её ведёт`,
+      );
+    }
+    const row = await requireEditable(p, id);
+    const target = serviceResumeTarget(row);
+    if (!target) {
+      throw err.unprocessable(
+        `Заявка не отложена — она в статусе «${serviceRequestStatusLabels[row.status]}»`,
+        { status: 'Заявка не отложена' },
+      );
+    }
+    // Возврат к работе — событие переходов; куда именно вернули, знает `serviceResumeTarget`.
+    const mailPlan = await prepareTransitionMail(target, p, row.createdBy);
+    await bulk.runTx(async (tx, bulkMail) => {
+      await applyTransition(tx, {
+        row,
+        to: target,
+        version: body.version,
+        actor: p,
+        comment: body.comment,
+        mail: mailPlan,
+        bulkMail,
+      });
+    });
+    await writeAudit({
+      actorUserId: p.id,
+      action: 'serviceRequest.resume',
+      entityType: 'serviceRequest',
+      entityId: row.id,
+      // Куда вернули: в самой заявке после возврата от заморозки не остаётся ничего.
+      metadata: { to: target, ...bulk.audit },
+    });
+  }
+
   r.patch(
     '/:id/resume',
     { ...canHold, schema: { params: idParams, body: serviceResumeSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const body = req.body;
-      if (!canResumeService(p)) {
-        const who = p.role ? roleLabels[p.role] : 'Учётная запись';
-        throw err.forbidden(
-          `${who} не возвращает отложенную заявку в работу — это шаг того, кто её ведёт`,
-        );
-      }
-      const row = await requireEditable(p, req.params.id);
-      const target = serviceResumeTarget(row);
-      if (!target) {
-        throw err.unprocessable(
-          `Заявка не отложена — она в статусе «${serviceRequestStatusLabels[row.status]}»`,
-          { status: 'Заявка не отложена' },
-        );
-      }
-      // Возврат к работе — событие переходов; куда именно вернули, знает `serviceResumeTarget`.
-      const mailPlan = await prepareTransitionMail(target, p, row.createdBy);
-      await db.transaction(async (tx) => {
-        await applyTransition(tx, {
-          row,
-          to: target,
-          version: body.version,
-          actor: p,
-          comment: body.comment,
-          mail: mailPlan,
-        });
-      });
-      await writeAudit({
-        actorUserId: p.id,
-        action: 'serviceRequest.resume',
-        entityType: 'serviceRequest',
-        entityId: row.id,
-        // Куда вернули: в самой заявке после возврата от заморозки не остаётся ничего.
-        metadata: { to: target },
-      });
-      return (await getDto(p, row.id))!;
+      await resumeStep(p, req.params.id, req.body);
+      return (await getDto(p, req.params.id))!;
     },
   );
 
@@ -6300,53 +6696,66 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * Приёмка человеком — `acceptance_source = 'human'` (Н7). Автоматическая пишет `auto` и пустого
    * автора, и различает их именно это поле, а не отсутствие имени: имя теряется вместе с учёткой.
    */
+  /**
+   * ПРИЁМКА РАБОТЫ — ЕДИНСТВЕННОЙ ФУНКЦИЕЙ (план массовых действий, Р2, этап Э1): коридор, замок
+   * непроверенного предмета под блокировкой, переход и журнал. Ручка ниже только отдаёт карточку.
+   */
+  async function acceptStep(
+    p: Principal,
+    id: string,
+    body: z.infer<typeof acceptServiceRequestSchema>,
+    bulk: BulkStepContext = outsideBulk,
+  ): Promise<void> {
+    assertSideAllowed(p, id, 'accepted', ['done']);
+    const row = await requireEditable(p, id);
+    assertTransition(p, row.id, row.status, 'accepted');
+    // Приёмка — событие переходов: исполнителю важно, что работу приняли.
+    const mailPlan = await prepareTransitionMail('accepted', p, row.createdBy);
+    await bulk.runTx(async (tx, bulkMail) => {
+      const locked = await lockRequest(tx, row.id);
+      /**
+       * ЗАМОК ПРИЁМКИ ПОД НЕПРОВЕРЕННЫМ ПРЕДМЕТОМ (план `docs/office-equipment-candidate-plan.md`,
+       * Р16): пока сообщение о технике ждёт решения, работу по заявке не принимают.
+       *
+       * ПОСЛЕ `lockRequest`, А НЕ ДО ТРАНЗАКЦИИ, и порядок здесь не косметика: решение
+       * проверяющего берёт те же две строки в том же порядке «заявка → кандидат» (`runDecision`),
+       * и обратный порядок дал бы дедлок ровно в гонке приёмки с решением. Прочитанное же до
+       * транзакции состояние кандидата к моменту `COMMIT` устаревает — между чтением и записью
+       * помещается целое решение.
+       *
+       * Заявок без сообщения замок не касается вовсе: у них `equipment_candidate_id` пуст, и
+       * помощник отвечает сразу.
+       */
+      await assertCandidateDecided(tx, locked.equipmentCandidateId);
+      await applyTransition(tx, {
+        // Переход считается по строке, перечитанной под блокировкой: расхождение с прочитанной
+        // до транзакции упрётся в сверку версии и вернёт 409, а не молча пройдёт по старой.
+        row: locked,
+        to: 'accepted',
+        version: body.version,
+        actor: p,
+        comment: body.comment,
+        patch: { acceptedBy: p.id, acceptedAt: new Date(), acceptanceSource: 'human' },
+        mail: mailPlan,
+        bulkMail,
+      });
+    });
+    await writeAudit({
+      actorUserId: p.id,
+      action: 'serviceRequest.accept',
+      entityType: 'serviceRequest',
+      entityId: row.id,
+      metadata: { total: num(row.finalTotalAmount), ...bulk.audit },
+    });
+  }
+
   r.patch(
     '/:id/accept',
     { ...canChangeStatus, schema: { params: idParams, body: acceptServiceRequestSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const body = req.body;
-      assertSideAllowed(p, req.params.id, 'accepted', ['done']);
-      const row = await requireEditable(p, req.params.id);
-      assertTransition(p, row.id, row.status, 'accepted');
-      // Приёмка — событие переходов: исполнителю важно, что работу приняли.
-      const mailPlan = await prepareTransitionMail('accepted', p, row.createdBy);
-      await db.transaction(async (tx) => {
-        const locked = await lockRequest(tx, row.id);
-        /**
-         * ЗАМОК ПРИЁМКИ ПОД НЕПРОВЕРЕННЫМ ПРЕДМЕТОМ (план `docs/office-equipment-candidate-plan.md`,
-         * Р16): пока сообщение о технике ждёт решения, работу по заявке не принимают.
-         *
-         * ПОСЛЕ `lockRequest`, А НЕ ДО ТРАНЗАКЦИИ, и порядок здесь не косметика: решение
-         * проверяющего берёт те же две строки в том же порядке «заявка → кандидат» (`runDecision`),
-         * и обратный порядок дал бы дедлок ровно в гонке приёмки с решением. Прочитанное же до
-         * транзакции состояние кандидата к моменту `COMMIT` устаревает — между чтением и записью
-         * помещается целое решение.
-         *
-         * Заявок без сообщения замок не касается вовсе: у них `equipment_candidate_id` пуст, и
-         * помощник отвечает сразу.
-         */
-        await assertCandidateDecided(tx, locked.equipmentCandidateId);
-        await applyTransition(tx, {
-          // Переход считается по строке, перечитанной под блокировкой: расхождение с прочитанной
-          // до транзакции упрётся в сверку версии и вернёт 409, а не молча пройдёт по старой.
-          row: locked,
-          to: 'accepted',
-          version: body.version,
-          actor: p,
-          comment: body.comment,
-          patch: { acceptedBy: p.id, acceptedAt: new Date(), acceptanceSource: 'human' },
-          mail: mailPlan,
-        });
-      });
-      await writeAudit({
-        actorUserId: p.id,
-        action: 'serviceRequest.accept',
-        entityType: 'serviceRequest',
-        entityId: row.id,
-        metadata: { total: num(row.finalTotalAmount) },
-      });
-      return (await getDto(p, row.id))!;
+      await acceptStep(p, req.params.id, req.body);
+      return (await getDto(p, req.params.id))!;
     },
   );
 
@@ -6393,78 +6802,94 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * со своей схемой. Отдать их сюда значило бы завести второй путь к тем же переходам — без
    * назначенного исполнителя, без ревизии сметы и без факта закрытия.
    */
+  /**
+   * ОТМЕНА И АДМИНИСТРАТИВНЫЕ ОТКАТЫ — ЕДИНСТВЕННОЙ ФУНКЦИЕЙ (план массовых действий, Р2, этап
+   * Э1). Шаг один на обе команды, потому что целевой статус приходит телом: массовая «отмена» —
+   * это его вариант с `status: 'cancelled'`, а откаты массовыми не бывают вовсе (§4 того же
+   * плана), и вторая функция рядом означала бы второй разбор одной матрицы.
+   *
+   * Ручка ниже разбирает тело и собирает ответ «заявка плюс исход письма».
+   */
+  async function statusStep(
+    p: Principal,
+    id: string,
+    body: z.infer<typeof serviceStatusChangeSchema>,
+    bulk: BulkStepContext = outsideBulk,
+  ): Promise<ModuleMailOutcome> {
+    const to = body.status;
+    // Здесь дуга не одна: целевой статус называет тело, а исходных у отмены и откатов много.
+    assertSideAllowed(p, id, to);
+    const row = await requireEditable(p, id);
+    if (to !== 'cancelled' && !SERVICE_ADMIN_ROLLBACKS[row.status].includes(to)) {
+      throw err.unprocessable(
+        `Этой ручкой заявку только отменяют и откатывают назад; переход «${serviceRequestStatusLabels[row.status]}» → «${serviceRequestStatusLabels[to]}» делается своим действием`,
+        { status: 'Другое действие' },
+      );
+    }
+    assertTransition(p, row.id, row.status, to);
+    // Переход, отменяющий чужую работу, требует объяснения: без него в истории останется пара
+    // строк, по которой не понять, что именно случилось.
+    if (serviceStatusChangeRequiresReason(row.status, to) && !body.reason) {
+      throw err.unprocessable('Укажите причину', { reason: 'Укажите причину' });
+    }
+
+    /**
+     * Письмо у этой ручки бывает дважды: отмена («не выезжайте») и откат в «Новую» — заявка
+     * снова ждёт визы, и ждут её так же, как при заведении (Р65). Адресаты считаются до
+     * транзакции; автор заявки остаётся обратным адресом письма службе, а подрядчик отвечает на
+     * ящик службы.
+     */
+    // Сторону, которой адресована отмена, снимает сама транзакция — до бизнес-изменения (§5.2):
+    // отмена сбрасывает исполнителя тем же переходом, и подрядчик, уже собравшийся ехать, иначе
+    // выпал бы из адресатов ровно того письма, ради которого оно и существует (ADR 0153).
+    const mailPlan = await prepareTransitionMail(to, p, row.createdBy);
+
+    const transition = await bulk.runTx(async (tx, bulkMail) =>
+      applyTransition(tx, {
+        row,
+        to,
+        version: body.version,
+        actor: p,
+        comment: body.reason,
+        mail: mailPlan,
+        bulkMail,
+      }),
+    );
+    await writeAudit({
+      actorUserId: p.id,
+      action: 'serviceRequest.status',
+      entityType: 'serviceRequest',
+      entityId: row.id,
+      metadata: {
+        from: row.status,
+        to,
+        reason: body.reason,
+        // Второй путь к очистке факта — административный `done → in_work` (Р77).
+        ...(transition.clearedWarranties.length > 0
+          ? { clearedWarranties: transition.clearedWarranties }
+          : {}),
+        ...bulk.audit,
+      },
+    });
+    if (transition.mail?.outcome === 'mail_failed') {
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'serviceRequest.mailFailed',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        metadata: { event: mailPlan?.intent.event ?? null, ...bulk.audit },
+      });
+    }
+    return transition.mail?.outcome ?? 'not_needed';
+  }
+
   r.patch(
     '/:id/status',
     { ...canChangeStatus, schema: { params: idParams, body: serviceStatusChangeSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const body = req.body;
-      const to = body.status;
-      // Здесь дуга не одна: целевой статус называет тело, а исходных у отмены и откатов много.
-      assertSideAllowed(p, req.params.id, to);
-      const row = await requireEditable(p, req.params.id);
-      if (to !== 'cancelled' && !SERVICE_ADMIN_ROLLBACKS[row.status].includes(to)) {
-        throw err.unprocessable(
-          `Этой ручкой заявку только отменяют и откатывают назад; переход «${serviceRequestStatusLabels[row.status]}» → «${serviceRequestStatusLabels[to]}» делается своим действием`,
-          { status: 'Другое действие' },
-        );
-      }
-      assertTransition(p, row.id, row.status, to);
-      // Переход, отменяющий чужую работу, требует объяснения: без него в истории останется пара
-      // строк, по которой не понять, что именно случилось.
-      if (serviceStatusChangeRequiresReason(row.status, to) && !body.reason) {
-        throw err.unprocessable('Укажите причину', { reason: 'Укажите причину' });
-      }
-
-      /**
-       * Письмо у этой ручки бывает дважды: отмена («не выезжайте») и откат в «Новую» — заявка
-       * снова ждёт визы, и ждут её так же, как при заведении (Р65). Адресаты считаются до
-       * транзакции; автор заявки остаётся обратным адресом письма службе, а подрядчик отвечает на
-       * ящик службы.
-       */
-      // Сторону, которой адресована отмена, снимает сама транзакция — до бизнес-изменения (§5.2):
-      // отмена сбрасывает исполнителя тем же переходом, и подрядчик, уже собравшийся ехать, иначе
-      // выпал бы из адресатов ровно того письма, ради которого оно и существует (ADR 0153).
-      const mailPlan = await prepareTransitionMail(to, p, row.createdBy);
-
-      const transition = await db.transaction(async (tx) =>
-        applyTransition(tx, {
-          row,
-          to,
-          version: body.version,
-          actor: p,
-          comment: body.reason,
-          mail: mailPlan,
-        }),
-      );
-      await writeAudit({
-        actorUserId: p.id,
-        action: 'serviceRequest.status',
-        entityType: 'serviceRequest',
-        entityId: row.id,
-        metadata: {
-          from: row.status,
-          to,
-          reason: body.reason,
-          // Второй путь к очистке факта — административный `done → in_work` (Р77).
-          ...(transition.clearedWarranties.length > 0
-            ? { clearedWarranties: transition.clearedWarranties }
-            : {}),
-        },
-      });
-      if (transition.mail?.outcome === 'mail_failed') {
-        await writeAudit({
-          actorUserId: p.id,
-          action: 'serviceRequest.mailFailed',
-          entityType: 'serviceRequest',
-          entityId: row.id,
-          metadata: { event: mailPlan?.intent.event ?? null },
-        });
-      }
-      return {
-        request: (await getDto(p, row.id))!,
-        mail: transition.mail?.outcome ?? 'not_needed',
-      };
+      const mail = await statusStep(p, req.params.id, req.body);
+      return { request: (await getDto(p, req.params.id))!, mail };
     },
   );
 

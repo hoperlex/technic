@@ -296,6 +296,25 @@ function callIndex(text: string, name: string): number {
   return text.search(new RegExp(`\\b${name}\\s*\\(`));
 }
 
+/**
+ * Вызовы доменных шагов в теле ручки — ровно вызовы, без объявлений.
+ *
+ * Заведено вместе с выделением шагов (план массовых действий, Э1): восемь ручек стали тонкими
+ * обёртками, и `requireEditable` переехал внутрь шага. Разбор режет файл «от регистрации до
+ * следующей», поэтому объявление шага попадает в срез СОСЕДНЕГО маршрута — и четыре ручки
+ * оказывались без единой проверки, а четыре получали чужую по совпадению. Ни то, ни другое не
+ * является правдой о доступе.
+ *
+ * `(?<!function )` отсекает объявление: срез соседа содержит `async function holdStep(`, и без
+ * этого условия объявление считалось бы вызовом — ровно та ошибка, от которой уже страхует
+ * фильтр `function` в `sourceRoutes` карауля манифеста.
+ */
+function stepCallsIn(text: string): string[] {
+  const names = new Set<string>();
+  for (const m of text.matchAll(/(?<!function\s)\b(\w+Step)\s*\(/g)) names.add(m[1]!);
+  return [...names];
+}
+
 function checksIn(text: string): AccessCheck[] {
   return CHECKS.map((name) => ({ name, at: callIndex(text, name) }))
     .filter((hit) => hit.at >= 0)
@@ -434,7 +453,16 @@ function collectFile(rel: string, appCode: string): RouteAccess[] {
     const bare = /^\w+$/.test(options) ? [options] : [];
     const names = [...spreads, ...bare].filter((name) => sets.has(name));
     const inline = options.includes('preHandler:') && names.length === 0;
-    const direct = checksIn(body);
+    /*
+     * Проверки ручки — её собственные плюс проверки доменного шага, который она зовёт. Один
+     * уровень и только шаги: разбор, идущий по всему графу вызовов, однажды найдёт `assertScope(`
+     * в общем помощнике и объявит область у ручки, которая её не спрашивает, — то есть перестанет
+     * быть доказательством. Порядок сохраняется: сперва то, что ручка делает сама, потом то, что
+     * делает шаг за неё.
+     */
+    const stepChecks = stepCallsIn(body).flatMap((step) => helpers.get(step) ?? []);
+    const direct = [...checksIn(body)];
+    for (const check of stepChecks) if (!direct.includes(check)) direct.push(check);
     out.push({
       file: rel,
       line: lineOf(src, mark.at),

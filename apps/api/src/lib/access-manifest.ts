@@ -241,6 +241,11 @@ export const ACCESS_MANIFEST = {
     kind: 'internalToken',
     why: 'worker просит закрыть заявки, простоявшие сутки в «Решена» (Н7)',
   },
+  // Уборка пакетных операций (план массовых действий, §6.3): за ней тоже нет человека.
+  'POST /internal/service-requests/bulk-sweep': {
+    kind: 'internalToken',
+    why: 'worker просит закрыть брошенные пачки и снять завершённые по сроку хранения',
+  },
 
   // ── Вход, письма и self-service ──
   // Публичны те ручки, по которым ходит ещё не вошедший: сам вход, регистрация, ссылки из писем
@@ -785,6 +790,40 @@ export const ACCESS_MANIFEST = {
   'GET /api/v1/service-requests/executor-candidates': {
     kind: 'permissions',
     allOf: ['serviceRequests.assign'],
+  },
+  /*
+   * МАССОВЫЕ ДЕЙСТВИЯ НАД ЗАЯВКАМИ (план `docs/office-equipment-bulk-actions-plan.md`, §6.4).
+   *
+   * Страж отвечает ровно на один вопрос: «бывает ли у этого субъекта хоть ОДНА пакетная операция».
+   * Какая именно — решает `canRunServiceBulkOperation` в обработчике, а «на этой ли строке» —
+   * доменный шаг; подменять один вопрос другим нельзя ни в какую сторону.
+   *
+   * МАНИФЕСТ ШИРЕ ДОПУСКА, и оба расхождения названы здесь, чтобы их не приняли за ошибку:
+   *
+   *   · `delete` он принимает — без него архивирование не прошло бы стража вовсе, — а продуктовый
+   *     допуск `canUseServiceBulk` держателя ОДНОГО лишь `delete` отбивает: так закрыта находка
+   *     Н11 плана, «заявителю массовые действия не показывать» строже одиночных прав;
+   *   · `estimate` он не принимает вовсе — то же сужение, что и в Р5: массовый «Принять в работу»
+   *     открыт только назначенным, потому что иначе держатель права на объём работ набрал бы
+   *     полсотни чужих заявок и взял их в работу одним нажатием.
+   */
+  'POST /api/v1/service-requests/bulk': {
+    kind: 'anyOf',
+    anyOf: [
+      'serviceRequests.assign',
+      'serviceRequests.status',
+      'serviceRequests.execute',
+      'serviceRequests.hold',
+      'serviceRequests.urgency',
+      'serviceRequests.delete',
+    ],
+    why: 'девять операций одной ручкой: страж пускает к пачке, точное право спрашивает обработчик',
+  },
+  // Состояние пачки по ключу: ничего не меняет и отвечает только своему автору — область у него
+  // не заявка, а `actor_user_id`, и чужой ключ получает 404.
+  'GET /api/v1/service-requests/bulk/:key': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.read'],
   },
   'GET /api/v1/service-requests/:id': { kind: 'permissions', allOf: ['serviceRequests.read'] },
   /*

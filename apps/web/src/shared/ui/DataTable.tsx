@@ -1,11 +1,9 @@
 import { useState, type MouseEvent, type ReactNode } from 'react';
 import {
-  Checkbox,
   Empty,
   Pagination,
   Skeleton,
   Table,
-  Tooltip,
   Typography,
   type TableColumnsType,
   type TableProps,
@@ -18,6 +16,13 @@ import { useElementSize } from '@shared/lib';
 import { useIsMobile } from '@shared/lib';
 import { ActionSheet, type ActionSheetItem } from './ActionSheet';
 import { NO_ROW_CLICK } from './columns';
+import { useScopedSelection, withSelectionColumn, type SelectionConfig } from './tableSelection';
+
+/**
+ * Выбор строк живёт своим модулем, но входом в сегмент остаётся `@shared/ui`: контракт и помощник
+ * отпечатка списки берут оттуда же, откуда сам `DataTable`.
+ */
+export { listScopeKey, type SelectionConfig } from './tableSelection';
 
 /**
  * Карточное представление строки на телефоне (ADR 0030). Объявляется рядом с колонками и из тех
@@ -40,30 +45,6 @@ export interface CardConfig<T> {
    * `opensRow`, что и строка таблицы на десктопе.
    */
   onOpen?: (record: T) => void;
-}
-
-/**
- * Выбор строк для действия над несколькими сразу (печать пачки путевых листов).
- *
- * Колонка выбора встаёт последней перед «Действиями» и закрепляется вместе с ней: список широкий,
- * и чекбокс, уехавший за правый край, пришлось бы искать прокруткой. Слева, где его рисует antd
- * своим `rowSelection`, он оказался бы у номера записи — то есть у самой читаемой колонки, ради
- * которой список и открывают.
- *
- * Что делать с выбранным, решает страница: сюда приходит готовая полоса (`bar`), и показывается
- * она на уровне управления страницами — выбор относится ко всему списку, а не к одной строке.
- */
-export interface SelectionConfig<T> {
-  /** Ключи выбранных строк. Живут у страницы: смена фильтра или страницы их сбрасывает. */
-  keys: string[];
-  onChange: (keys: string[]) => void;
-  /**
-   * Почему строку выбрать нельзя; `null` — можно. Текст идёт подсказкой к выключенному чекбоксу:
-   * запрет без объяснения читается как поломка.
-   */
-  disabled?: (record: T) => string | null;
-  /** Полоса действий над выбранным: показывается, только когда выбрана хотя бы одна строка. */
-  bar: (keys: string[]) => ReactNode;
 }
 
 interface DataTableProps<T> {
@@ -129,78 +110,6 @@ function compactColumns<T>(columns: TableColumnsType<T>): TableColumnsType<T> {
     if (index === 0 && next.width != null) next.fixed = 'left';
     return next;
   });
-}
-
-/**
- * Колонка выбора — последней перед «Действиями» и закреплённой так же, как она.
- *
- * Заголовок выбирает всю страницу разом: пачку печатают целыми днями, и щёлкать по полусотне
- * чекбоксов ради «всех» никто не станет. «Всё» здесь — это загруженная страница, а не весь
- * список: сервер отдал ровно её, и отвечать за строки, которых на экране нет, портал не может.
- */
-function withSelectionColumn<T extends object>(
-  columns: TableColumnsType<T>,
-  selection: SelectionConfig<T>,
-  data: T[],
-  rowKey: string,
-): TableColumnsType<T> {
-  const keyOf = (record: T): string => String((record as Record<string, unknown>)[rowKey]);
-  const selectable = data.filter((record) => !selection.disabled?.(record));
-  const selected = new Set(selection.keys);
-  const onPage = selectable.filter((record) => selected.has(keyOf(record))).length;
-
-  const toggle = (record: T, checked: boolean) => {
-    const key = keyOf(record);
-    selection.onChange(
-      checked ? [...selection.keys, key] : selection.keys.filter((k) => k !== key),
-    );
-  };
-
-  const column: TableColumnsType<T>[number] = {
-    key: 'select',
-    fixed: 'right',
-    width: 48,
-    // Колонка отдана нажатиям целиком: клик по ней не должен заодно открывать карточку записи.
-    onCell: () => ({ className: NO_ROW_CLICK }),
-    title: (
-      <Checkbox
-        aria-label="Выбрать всё на странице"
-        checked={selectable.length > 0 && onPage === selectable.length}
-        indeterminate={onPage > 0 && onPage < selectable.length}
-        disabled={selectable.length === 0}
-        onChange={(e) => {
-          const pageKeys = selectable.map(keyOf);
-          selection.onChange(
-            e.target.checked
-              ? [...new Set([...selection.keys, ...pageKeys])]
-              : selection.keys.filter((k) => !pageKeys.includes(k)),
-          );
-        }}
-      />
-    ),
-    render: (_value: unknown, record: T) => {
-      const reason = selection.disabled?.(record) ?? null;
-      const box = (
-        <Checkbox
-          checked={selected.has(keyOf(record))}
-          disabled={!!reason}
-          onChange={(e) => toggle(record, e.target.checked)}
-        />
-      );
-      // Выключенный чекбокс подсказку не показывает сам — её держит обёртка.
-      return reason ? (
-        <Tooltip title={reason}>
-          <span>{box}</span>
-        </Tooltip>
-      ) : (
-        box
-      );
-    },
-  };
-
-  const actionsAt = columns.findIndex((c) => c.key === 'actions');
-  if (actionsAt < 0) return [...columns, column];
-  return [...columns.slice(0, actionsAt), column, ...columns.slice(actionsAt)];
 }
 
 /**
@@ -296,14 +205,14 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
   const isMobile = useIsMobile();
   const scrollY = Math.max(160, height - THEAD_HEIGHT - PAGINATION_HEIGHT);
   const rowKey = props.rowKey ?? 'id';
-  const columns = props.selection
-    ? withSelectionColumn(props.columns, props.selection, props.data, rowKey)
+  /** Выбор гасится при смене того, что видно: правило общее для портала, см. `scopeKey`. */
+  const selection = useScopedSelection(props.selection);
+  const columns = selection
+    ? withSelectionColumn(props.columns, selection, props.data, rowKey)
     : props.columns;
   /** Полоса выбора: появляется, только когда выбрана хотя бы одна строка. */
   const selectionBar =
-    props.selection && props.selection.keys.length > 0
-      ? props.selection.bar(props.selection.keys)
-      : null;
+    selection && selection.keys.length > 0 ? selection.bar(selection.keys) : null;
 
   const handleChange: TableProps<T>['onChange'] = (pagination, filters, sorter) => {
     const s = (Array.isArray(sorter) ? sorter[0] : sorter) as SorterResult<T> | undefined;
@@ -335,9 +244,16 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
     : {};
 
   if (isMobile) {
+    /*
+     * Полоса выбора показывается только там, где есть чем выбирать. Карточка списка чекбокса не
+     * имеет вовсе, и «Выбрано 3» над карточками — управление тем, чего на этом экране ни снять,
+     * ни добавить: выбор туда попадает с десктопа того же сеанса. Справочник, который на телефоне
+     * остаётся таблицей, колонку выбора сохраняет — там полоса при деле.
+     */
+    const bar = props.card ? null : selectionBar;
     const pager = (
       <>
-        {selectionBar && <div className="list-pager list-pager--selection">{selectionBar}</div>}
+        {bar && <div className="list-pager list-pager--selection">{bar}</div>}
         <div className="list-pager">
           <Typography.Text type="secondary">Всего: {props.total}</Typography.Text>
           <Pagination
@@ -425,9 +341,9 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
            вверх — накрывая строку фильтров над шапкой ровно тогда, когда до неё тянутся мышью. */
         showSorterTooltip={false}
         {...rowProps}
-        pagination={props.selection ? false : pagination}
+        pagination={selection ? false : pagination}
       />
-      {props.selection && (
+      {selection && (
         <div className="table-footer">
           <div className="table-footer__bar">{selectionBar}</div>
           <Pagination

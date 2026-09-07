@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { sweepServiceRequestBulk } from '../services/service-request-bulk';
 import { sql } from 'drizzle-orm';
 import { SERVICE_CLOSING_DOCUMENT_KINDS } from '@technic/contracts';
 import { config } from '../config';
@@ -255,5 +256,28 @@ export default async function internalServiceRequestRoutes(app: FastifyInstance)
     }
     if (stats.taken > 0) logger.info(stats, 'Автозакрытие заявок оргтехники');
     return stats;
+  });
+
+  /**
+   * Уборка пакетных операций (план массовых действий, §6.3): брошенная пачка закрывается, а
+   * завершённые старше срока хранения сносятся.
+   *
+   * Своей ручкой рядом с автозакрытием, а не задачей очереди: у обеих один хозяин (worker), одна
+   * дверь (внутренний токен) и одно свойство — они смотрят на состояние, а не на задание, и
+   * пропущенный проход ничего не теряет. Тела у запроса нет по той же причине: сроки — настройка
+   * сервера, и позволить worker'у называть своё число значило бы завести второе место, где это
+   * решается.
+   *
+   * Ответ отдаёт числа для лога worker'а: `abandoned` — сколько брошенных пачек закрыто (их строки
+   * получили исход «брошена», а уже успевшим доставлена почтовая сводка), `purged` — сколько
+   * завершённых снято по сроку.
+   */
+  app.post('/bulk-sweep', async (req) => {
+    assertInternalToken(req);
+    const { closed, purged } = await sweepServiceRequestBulk();
+    if (closed > 0 || purged > 0) {
+      logger.info({ abandoned: closed, purged }, 'Уборка пакетных операций заявок оргтехники');
+    }
+    return { abandoned: closed, purged };
   });
 }

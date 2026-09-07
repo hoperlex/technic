@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import {
   DEFAULT_MAIL_ACCOUNT,
@@ -17,6 +18,7 @@ import {
   constructionObjects,
   counterparties,
   departments,
+  serviceRequestBulkMailItems,
   serviceRequestExecutors,
   serviceRequestFiles,
   serviceRequests,
@@ -296,6 +298,77 @@ export interface ServiceMailResult {
   recipients: ServiceMailRecipient[];
 }
 
+// ── Сменный сток: намерение строки пачки вместо письма (Р10) ──
+
+/**
+ * ЧЬЯ ЭТО СТРОКА (план `docs/office-equipment-bulk-actions-plan.md`, Р10).
+ *
+ * Единственное, чего построитель письма не знает сам: идёт ли операция в составе пачки и какая
+ * это строка. Признак приезжает ПАРАМЕТРОМ — через `runTx` доменного шага и `applyTransition`, — а
+ * не глобальной переменной и не полем модуля: сток меняет то, куда уедет письмо человеку, и
+ * решение об этом обязано быть видно в сигнатуре каждой точки, через которую оно прошло.
+ *
+ * Одиночная ручка не передаёт его никогда, и её путь остаётся сегодняшним до строки.
+ */
+export interface ServiceMailBulkSink {
+  /** Пачка, в чьи намерения складывается письмо; она же — половина `dedupe_key` сводки. */
+  operationId: string;
+  /** Позиция строки в запросе: часть первичного ключа намерения, поэтому повтор строки не удваивает. */
+  rowIndex: number;
+}
+
+/**
+ * Отпечаток адресата сводки — по паре «аудитория + адрес», а НЕ по одному адресу.
+ *
+ * Из него собирается `dedupe_key = bulk:<operationId>:<recipientHash>`, а сводка ставится одна на
+ * пару «адресат + аудитория» (Р10). Хешируй мы один адрес — два письма одному человеку, попавшему
+ * в пачке и во внутреннюю аудиторию, и в копию, получили бы ОДИН ключ, и второе молча подавилось
+ * бы уникальностью очереди `(kind, dedupe_key)`: адресат недосчитался бы письма, и следа об этом
+ * не осталось бы нигде.
+ *
+ * Адрес сюда приходит уже нормализованным (`collectServiceMailRecipients`): группировка сводки не
+ * должна зависеть от регистра.
+ */
+export function bulkMailRecipientHash(audience: ServiceMailAudience, email: string): string {
+  return createHash('sha256').update(`${audience}|${email}`).digest('hex');
+}
+
+/**
+ * Намерение строки — в таблицу пачки, той же транзакцией, что и сама мутация.
+ *
+ * `ON CONFLICT DO NOTHING` по пятёрке «операция + строка + адресат + аудитория + событие»: строка,
+ * повторённая после takeover, не должна удвоить намерение — она либо не была зафиксирована вовсе
+ * (тогда намерения нет), либо была вместе с ним (тогда его и не пишут заново).
+ *
+ * `projected_payload` хранит УЖЕ спроецированное тело: восстановить проекцию аудитории на
+ * финализации из полной заявки нельзя — деньги, контакты и место видит не всякий читатель, а
+ * финализатор о заявке не знает ничего.
+ */
+async function putBulkMailItem(
+  tx: Tx,
+  params: {
+    sink: ServiceMailBulkSink;
+    recipient: ServiceMailRecipient;
+    event: ModuleMailEvent;
+    /** Готовая строка сводки для читателя ЭТОЙ аудитории — тема его же письма. */
+    line: string;
+    displayNumber: string;
+  },
+): Promise<void> {
+  await tx
+    .insert(serviceRequestBulkMailItems)
+    .values({
+      operationId: params.sink.operationId,
+      rowIndex: params.sink.rowIndex,
+      recipientHash: bulkMailRecipientHash(params.recipient.audience, params.recipient.email),
+      recipientEmail: params.recipient.email,
+      audience: params.recipient.audience,
+      event: params.event,
+      projectedPayload: { line: params.line, displayNumber: params.displayNumber },
+    })
+    .onConflictDoNothing();
+}
+
 // ── Потолок частоты и сводка окна (§5.11) ──
 
 /** Вид письма-сводки: не бизнес-событие, поэтому в реестре событий и в админке его нет. */
@@ -455,6 +528,18 @@ export async function queueServiceMailForIntent(
     document?: NonNullable<ServiceMailIntent['document']>;
     /** Адресаты реплики — по той же причине, что и документы: их считает транзакция отправки. */
     comment?: NonNullable<ServiceMailIntent['comment']>;
+    /**
+     * СМЕННЫЙ СТОК (Р10 плана `docs/office-equipment-bulk-actions-plan.md`). `null`/отсутствие —
+     * обычный путь: строка `mail_messages` и задача отправки, ровно как сегодня. Заполненный —
+     * операция идёт в составе пачки, и готовое намерение кладётся в
+     * `service_request_bulk_mail_items`, откуда его заберёт один digest на пару «адресат +
+     * аудитория».
+     *
+     * Меняется ТОЛЬКО последний шаг — доставка. Рубильник события, обязательные цели, конфигурация,
+     * сбор адресатов, их аудитории и сборка тела остаются те же и в том же порядке: пачка не имеет
+     * права решать «кому и что можно сообщить» иначе, чем одиночная ручка.
+     */
+    bulk?: ServiceMailBulkSink | null;
   },
 ): Promise<ServiceMailResult> {
   const { ctx } = params.prepared;
@@ -488,6 +573,16 @@ export async function queueServiceMailForIntent(
         targets,
         recipients: recipients.map((r) => r.email),
         sources: recipients.map((r) => r.source),
+        /*
+         * Чьей пачкой сделана строка (план массовых действий, Р8 и К5). Исход
+         * `batched_for_summary` честно говорит, что письма по строке не было, — но без этого поля
+         * не ответить, КАКАЯ пачка забрала его в сводку, а разбирают такое через месяц и по
+         * журналу. Вне пачки ключа нет вовсе: `null` читался бы и как «не пачкой», и как «запись
+         * сделана до этой правки».
+         */
+        ...(params.bulk
+          ? { bulkOperationId: params.bulk.operationId, bulkRowIndex: params.bulk.rowIndex }
+          : {}),
       },
     });
     logger.info(
@@ -541,6 +636,49 @@ export async function queueServiceMailForIntent(
       logServiceMailFailure(params.requestId, e);
       return finish('mail_failed');
     }
+    /**
+     * СМЕННЫЙ СТОК ПАЧКИ (Р10) — здесь, ПОСЛЕ всех решений и вместо одной лишь доставки.
+     *
+     * Выше уже спрошены рубильник события, обязательные цели, конфигурация, адресаты, их аудитории
+     * и собрано тело: «кому и что можно сообщить» пачка решает тем же кодом, что одиночная ручка, —
+     * иначе массовый режим стал бы вторым, более щедрым набором правил.
+     *
+     * Потолка частоты здесь нет намеренно: он считается по тройке «заявка + адрес + час» и от пачки
+     * по РАЗНЫМ заявкам не спасает вовсе (§2.4). Его место занимает сама сводка — одно письмо на
+     * пару «адресат + аудитория» на всю операцию.
+     *
+     * Строкой сводки становится ТЕМА письма этой аудитории: она собрана тем же построителем и
+     * содержит номер, срочность и событие — то есть ровно то, что разрешено даже копии. Своей
+     * проекции сток не изобретает: второй набор правил доступа разошёлся бы с первым на первой же
+     * правке.
+     */
+    if (params.bulk) {
+      const displayNumber = formatServiceRequestNumber(data.num);
+      for (const recipient of recipients) {
+        await putBulkMailItem(tx, {
+          sink: params.bulk,
+          recipient,
+          event: intent.event,
+          line: letters[recipient.audience]!.subject,
+          displayNumber,
+        });
+      }
+      /*
+       * Исход считается ТЕМ ЖЕ разбором обязательных целей, что у одиночного письма, и только
+       * потом «поставлено в очередь» заменяется на «сложено в сводку»: пачка не имеет права
+       * проглотить `no_recipients`. Строка, у которой обязательному адресату писать некуда,
+       * обязана сказать это своим исходом — сводка ей не поможет, письма всё равно не будет.
+       *
+       * И `batched_for_summary` вместо `queued` не косметика: письма в очереди ещё нет, и аудит,
+       * сказавший «ушло», врал бы разбору «почему адресат ничего не получил».
+       */
+      const outcome = outcomeOf(required, recipients, targets);
+      for (const key of Object.keys(targets) as (keyof ServiceMailTargets)[]) {
+        if (targets[key] === 'queued') targets[key] = 'batched_for_summary';
+      }
+      return finish(outcome === 'queued' ? 'batched_for_summary' : outcome, recipients);
+    }
+
     const limit = config.serviceRequests.mailMaxPerRequestHour;
     const hour = await currentHour(tx);
     for (const recipient of recipients) {

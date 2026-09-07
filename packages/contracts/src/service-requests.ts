@@ -2032,7 +2032,15 @@ export type SetServiceUrgencyInput = z.infer<typeof setServiceUrgencySchema>;
 // перехода не может разъехаться с проверкой данных этого перехода. `/status` остаётся отмене и
 // административным откатам, у которых из данных только причина.
 
-const reasonSchema = z.string().trim().min(3, 'Укажите причину').max(1000);
+/**
+ * Причина, которой объясняют чужую работу: отмену, отказ, переназначение, заморозку.
+ *
+ * ЭКСПОРТИРУЕТСЯ РАДИ ПАКЕТНОЙ РУЧКИ (план `docs/office-equipment-bulk-actions-plan.md`, §6.1):
+ * общая причина пачки — та же причина, что у одиночного действия, и переписанная рядом строка
+ * `z.string().trim().min(3).max(1000)` и была бы тем самым вторым набором правил, только
+ * маленьким. Разойдись они — пачка принимала бы объяснение, которое одиночная ручка отвергает.
+ */
+export const reasonSchema = z.string().trim().min(3, 'Укажите причину').max(1000);
 
 export const assignServiceSchema = z.object({
   serviceCounterpartyId: uuidSchema,
@@ -2243,6 +2251,299 @@ export const serviceCommentSchema = z.object({
   serviceComment: z.string().trim().max(2000),
   version: z.number().int().nonnegative(),
 });
+
+// ── Массовые действия над заявками (план `docs/office-equipment-bulk-actions-plan.md`) ──
+/**
+ * ОДНА ИЗМЕНЯЮЩАЯ РУЧКА НА ВСЕ ОПЕРАЦИИ (Р1), и потому — размеченное объединение по `operation`.
+ *
+ * Девять пакетных ручек означали бы девять мест, где написан один и тот же протокол (версии, ключ
+ * идемпотентности, отчёт, порядок строк, аудит), и первое же исправление разъехалось бы по ним.
+ * Цена решения названа прямо: союз в схеме и отдельная строка в обоих реестрах доступа — и она
+ * меньше девяти копий протокола.
+ *
+ * ЧТО ЗДЕСЬ НЕ ЗАВОДИТСЯ: ни одного нового правила доменной проверки. Тело описывает КОМАНДУ, а
+ * «можно ли её на этой строке» отвечают те же предикаты, что и одиночной ручке (Н9, Р2).
+ */
+
+/**
+ * Потолок пачки. Число выбрано не наугад: это наименьший размер страницы (`PAGE_SIZE_OPTIONS[0]`),
+ * то есть «выбрать всё на странице» при обычной настройке в него не упирается, а при странице в
+ * 100+ портал говорит об этом до нажатия (Р13). Потолок держит и время: 50 строк — это 50
+ * транзакций со сборкой писем.
+ */
+export const SERVICE_REQUEST_BULK_LIMIT = 50;
+
+/**
+ * Девять вариантов команды. Включение и снятие срочности считаются отдельно — причина у них
+ * разная: включение требует объяснения, снятие не требует вовсе (§4).
+ *
+ * Чего здесь нет и почему: возврат на доработку (причина у каждой строки своя), закрытие работ
+ * (факт по каждой строке сметы и закрывающий документ), объём работ и его согласование (деньги
+ * строками), административные откаты (каждый откат разбирает свою ошибку). У каждого «нет» в §4
+ * названа причина, а не «пока не будем».
+ */
+export const SERVICE_REQUEST_BULK_OPERATIONS = [
+  'cancel',
+  'hold',
+  'resume',
+  'urgency_on',
+  'urgency_off',
+  'assign',
+  'start',
+  'accept',
+  'archive',
+] as const;
+export type ServiceRequestBulkOperation = (typeof SERVICE_REQUEST_BULK_OPERATIONS)[number];
+export const serviceRequestBulkOperationSchema = z.enum(SERVICE_REQUEST_BULK_OPERATIONS);
+
+/** Человеческое имя операции: подпись кнопки, строка отчёта и тема письма-сводки. */
+export const serviceRequestBulkOperationLabels: Record<ServiceRequestBulkOperation, string> = {
+  cancel: 'Отменить',
+  hold: 'Отложить',
+  resume: 'Возобновить',
+  urgency_on: 'Поставить срочность',
+  urgency_off: 'Снять срочность',
+  assign: 'Назначить исполнителей',
+  start: 'Принять в работу',
+  accept: 'Принять работу',
+  archive: 'Архивировать',
+};
+
+/**
+ * Пара «идентификатор + версия» (Р4). Версия не необязательна: список сортирован по возрасту
+ * ожидания, соседняя вкладка живёт своей жизнью, и выбранная строка успевает уехать между показом
+ * и нажатием (Н3). Присланная версия и есть ответ «я собирался сделать это с тем, что видел».
+ */
+const bulkRowSchema = z.object({ id: uuidSchema, version: z.number().int().nonnegative() });
+
+/**
+ * Список строк. Повтор идентификатора — ошибка ЗАПРОСА, а не отказ строки: приём показаний
+ * (`accept-batch`) отвечает так же, и по делу — «примени дважды» это не команда, а сбитый клиент,
+ * и построчный отказ спрятал бы поломку в отчёте.
+ */
+const bulkRowsSchema = z
+  .array(bulkRowSchema)
+  .min(1, 'Выберите хотя бы одну заявку')
+  .max(
+    SERVICE_REQUEST_BULK_LIMIT,
+    `За один раз обрабатывается не больше ${SERVICE_REQUEST_BULK_LIMIT} заявок`,
+  )
+  .superRefine((rows, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, row] of rows.entries()) {
+      if (seen.has(row.id)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Заявка названа в списке дважды',
+          path: [index, 'id'],
+        });
+      }
+      seen.add(row.id);
+    }
+  });
+
+/**
+ * Тело пакетной команды.
+ *
+ * ПРИЧИНЫ — ТЕМИ ЖЕ СХЕМАМИ, что у одиночных ручек (`reasonSchema`, `urgencyReasonSchema`).
+ * Обязательность их здесь местами строже: первое назначение поодиночке причины не требует, а
+ * массовое требует всегда (§4) — «раскидать двадцать заявок» это решение о чужой работе, и одно
+ * объяснение на пачку честно описывает все её строки.
+ *
+ * Отсутствие обязательной причины — отказ на ВЕСЬ запрос (Р5): валидность тела не должна зависеть
+ * от ещё не прочитанных состояний строк.
+ */
+export const serviceRequestBulkSchema = z
+  .discriminatedUnion('operation', [
+    z.object({ operation: z.literal('cancel'), rows: bulkRowsSchema, reason: reasonSchema }),
+    z.object({ operation: z.literal('hold'), rows: bulkRowsSchema, reason: reasonSchema }),
+    z.object({
+      operation: z.literal('resume'),
+      rows: bulkRowsSchema,
+      comment: z.string().trim().max(1000).default(''),
+    }),
+    z.object({
+      operation: z.literal('urgency_on'),
+      rows: bulkRowsSchema,
+      urgencyReason: urgencyReasonSchema,
+    }),
+    z.object({ operation: z.literal('urgency_off'), rows: bulkRowsSchema }),
+    z.object({
+      operation: z.literal('assign'),
+      rows: bulkRowsSchema,
+      /** Состав приходит целиком, как у одиночной ручки: «добавить одного» сервер не угадывает. */
+      userIds: z.array(uuidSchema).max(20),
+      serviceCounterpartyId: uuidSchema.nullable(),
+      reason: reasonSchema,
+      comment: z.string().trim().max(1000).default(''),
+    }),
+    z.object({ operation: z.literal('start'), rows: bulkRowsSchema }),
+    z.object({
+      operation: z.literal('accept'),
+      rows: bulkRowsSchema,
+      comment: z.string().trim().max(1000).default(''),
+    }),
+    z.object({ operation: z.literal('archive'), rows: bulkRowsSchema }),
+  ])
+  /*
+   * Пара «флаг + причина» у включения срочности проверяется на союзе, а не внутри ветки:
+   * `z.discriminatedUnion` разбирает объекты по литералу, и ветка, обёрнутая в `superRefine`,
+   * перестала бы им быть (тот же приём, что у двери ремонта в `assignment-periods.ts`).
+   *
+   * Спрашивается это ТЕМ ЖЕ `urgencyIssue`, что и одиночная ручка: сообщение человеку обязано
+   * совпасть слово в слово, иначе форма пачки объясняла бы отказ иначе, чем форма заявки.
+   */
+  .superRefine((value, ctx) => {
+    if (value.operation !== 'urgency_on') return;
+    const issue = urgencyIssue({ isUrgent: true, urgencyReason: value.urgencyReason });
+    if (issue) ctx.addIssue({ code: 'custom', message: issue, path: ['urgencyReason'] });
+  });
+export type ServiceRequestBulkInput = z.infer<typeof serviceRequestBulkSchema>;
+export type ServiceRequestBulkBody = z.input<typeof serviceRequestBulkSchema>;
+
+/** Ключ пачки в пути читающей ручки: тот же `Idempotency-Key`, которым её и запускали. */
+export const serviceRequestBulkKeyParams = z.object({ key: uuidSchema });
+
+/**
+ * Коды отказа строки — ГРУБЫЕ, для портала (§6.2).
+ *
+ * Грубость намеренная: отсутствие заявки, её архивность, чужая область и непредвиденный сбой
+ * получают общие тексты, чтобы отчёт не стал способом перебирать чужие UUID или читать
+ * внутренности базы. Безопасные доменные объяснения (422 своей ручки) уходят в `reason`.
+ */
+export const SERVICE_REQUEST_BULK_FAILURE_CODES = [
+  /** Строка изменилась между показом и нажатием — присланная версия разошлась. */
+  'version',
+  /** Состояние заявки хода не даёт: не тот статус, висит предъявление, исполнителей нет. */
+  'blocked',
+  /** Право, область или сторона: субъекту эта строка недоступна (Н7 — построчно, а не на запрос). */
+  'forbidden',
+  /** Заявки нет либо она в архиве — один код на оба случая, чтобы не раскрывать существование. */
+  'gone',
+  /** Пачку бросили: строка так и не была обработана, а операция закрыта уборкой (§6.3). */
+  'abandoned',
+  /** Непредвиденный сбой: человеку общий текст, разбор — в логе по `operationId`. */
+  'error',
+] as const;
+export type ServiceRequestBulkFailureCode = (typeof SERVICE_REQUEST_BULK_FAILURE_CODES)[number];
+
+/** Состояние пачки: `finishing_notifications` — строки готовы, digest ещё не поставлен (Р10). */
+export const SERVICE_REQUEST_BULK_STATES = [
+  'running',
+  'finishing_notifications',
+  'finished',
+] as const;
+export type ServiceRequestBulkState = (typeof SERVICE_REQUEST_BULK_STATES)[number];
+
+/**
+ * Коды 409 пакетной ручки. Своими кодами, а не общим `version_conflict`: исходы у них разные —
+ * занятый ключ означает «возьмите новый», а выполняющаяся пачка означает «читайте состояние».
+ */
+export const SERVICE_REQUEST_BULK_CONFLICT_CODES = {
+  /** Ключ занят ДРУГОЙ командой: тело под ним уже принято другим отпечатком. */
+  idempotency: 'bulk_idempotency',
+  /** Ключ занят ТОЙ ЖЕ командой, и она сейчас выполняется: клиент читает `GET /bulk/:key`. */
+  inProgress: 'bulk_in_progress',
+} as const;
+
+export interface ServiceRequestBulkRowResultDto {
+  /** Исходная позиция: по ней восстанавливается порядок и называется скрытая строка. */
+  index: number;
+  id: string;
+  /** `null` у невидимой либо несуществующей строки — номер чужой заявки не раскрывается. */
+  displayNumber: string | null;
+  outcome: 'done' | 'failed';
+  code?: ServiceRequestBulkFailureCode;
+  /** Безопасный текст: отсутствие заявки и чужая область объясняются общими словами. */
+  reason?: string;
+}
+
+export interface ServiceRequestBulkResultDto {
+  /** Строка журнала пачек: по ней читается повтор и наблюдаемость. */
+  operationId: string;
+  operation: ServiceRequestBulkOperation;
+  done: number;
+  failed: number;
+  /** Перед ответом сортируются по `index`: порядок отчёта — порядок запроса (Р3). */
+  rows: ServiceRequestBulkRowResultDto[];
+}
+
+export interface ServiceRequestBulkStatusDto {
+  operationId: string;
+  state: ServiceRequestBulkState;
+  requested: number;
+  processed: number;
+  /** До завершения — `null`: отчёт появляется целиком и сразу (Н12). */
+  result: ServiceRequestBulkResultDto | null;
+}
+
+/**
+ * ДОПУСК К МАССОВОМУ РЕЖИМУ (Р5) — продуктовое ограничение поверх прав, а не новое право.
+ *
+ * Требует хотя бы одного ОПЕРАЦИОННОГО права: `assign | status | execute | hold | urgency`.
+ * Наличие только `read/create/update/delete/estimate` его не удовлетворяет, и это закрывает Н11:
+ * у заявителя есть `serviceRequests.delete` на свою новую заявку, но пункт 11 разбора прямо
+ * исключает его из массового интерфейса — иначе прямой вызов API вернул бы возможность, которую
+ * продукт не давал.
+ *
+ * `estimate` здесь нет НАМЕРЕННО, и это единственное место, где пакет строже одиночной ручки.
+ * У одиночного «Принять в работу» третья ветка `actsAsServiceExecutor` открывает ход держателю
+ * `serviceRequests.estimate` без назначения на заявку; в массовом режиме такой субъект набрал бы
+ * пятьдесят чужих назначенных заявок и взял их в работу одним нажатием, не будучи исполнителем ни
+ * одной. Прав это ни у кого не отнимает — одиночная кнопка в карточке работает по-прежнему.
+ *
+ * Ту же функцию спрашивает портал, решая, показывать ли полосу выбора: разойдись они, чекбоксы
+ * вели бы в 403.
+ */
+export function canUseServiceBulk(subject: AccessSubject | null | undefined): boolean {
+  if (!subject) return false;
+  return (
+    can(subject, 'serviceRequests.assign') ||
+    can(subject, 'serviceRequests.status') ||
+    can(subject, 'serviceRequests.execute') ||
+    can(subject, 'serviceRequests.hold') ||
+    can(subject, 'serviceRequests.urgency')
+  );
+}
+
+/**
+ * ТОЧНОЕ ПРАВО ОПЕРАЦИИ — второй рубеж после допуска и до построчного предиката (Р5).
+ *
+ * Отвечает ровно на вопрос «бывает ли У ЭТОГО СУБЪЕКТА такая команда вообще»; «на этой ли строке»
+ * решает доменный шаг, и подменять один вопрос другим нельзя ни в какую сторону. Условия взяты у
+ * одиночных ручек и второй раз не выводятся:
+ *
+ *   · отмена и приёмка работы — `serviceRequests.status` (коридор оператора);
+ *   · заморозка и возврат — `canHoldService` (`hold ∨ status`, и исполнителю закрыто вовсе);
+ *   · срочность — `serviceRequests.urgency`;
+ *   · назначение — `serviceRequests.assign`;
+ *   · «принять в работу» — `status ∨ execute`, как у стража одиночной ручки;
+ *   · архивирование — `serviceRequests.delete`.
+ */
+export function canRunServiceBulkOperation(
+  subject: AccessSubject | null | undefined,
+  operation: ServiceRequestBulkOperation,
+): boolean {
+  if (!subject) return false;
+  switch (operation) {
+    case 'cancel':
+    case 'accept':
+      return can(subject, 'serviceRequests.status');
+    case 'hold':
+      return canHoldService(subject);
+    case 'resume':
+      return canResumeService(subject);
+    case 'urgency_on':
+    case 'urgency_off':
+      return can(subject, 'serviceRequests.urgency');
+    case 'assign':
+      return can(subject, 'serviceRequests.assign');
+    case 'start':
+      return can(subject, 'serviceRequests.status') || can(subject, 'serviceRequests.execute');
+    case 'archive':
+      return can(subject, 'serviceRequests.delete');
+  }
+}
 
 // ── Файлы ──
 

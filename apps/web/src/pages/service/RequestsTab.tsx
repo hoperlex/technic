@@ -27,6 +27,7 @@ import {
 } from './serviceRequestFilters';
 import { ServiceFilterBar } from './ServiceFilterBar';
 import { useServiceRequestActions } from './serviceRequestActions';
+import { useServiceBulk } from './ServiceBulkBar';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 import { serviceActionRow, serviceRequestCustomerFacts } from './serviceRequestRow';
 import { ServiceRequestForm } from './ServiceRequestForm';
@@ -367,6 +368,7 @@ export function RequestsTab() {
         sortOrder={sortOrder}
         onRowClick={(r) => setViewRecord(r)}
         onChange={onTableChange}
+        selection={useServiceBulk(grid, query)}
       />
 
       <ServiceRequestForm
