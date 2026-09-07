@@ -3,6 +3,9 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  encodeEquipmentChangesCursor,
+  encodeEquipmentMovementsCursor,
+  encodeEquipmentRequestsCursor,
   equipmentRequestOutcomeLabels,
   EQUIPMENT_WARRANTY_CHANGE_FIELD,
   type EquipmentChangeRowDto,
@@ -43,6 +46,9 @@ import type * as OfficeEquipmentBlocks from '../src/services/office-equipment-bl
  *   3. пагинация: три страницы по две строки — шесть разных строк без повторов и пропусков, и это
  *      проверено на КАЖДОМ из трёх блоков (у каждого свой ключ порядка и свой курсор);
  *   4. детерминированный порядок при одинаковых отметках времени — разрыв ничьей по `id` (Н8);
+ *  4b. МИКРОСЕКУНДЫ (находка ревью заказчика, К4): три строки внутри ОДНОЙ миллисекунды читаются
+ *      постранично без потерь и повторов — и по свежему курсору, и по курсору открытой вкладки,
+ *      округлённому до миллисекунды прошлой редакцией сервера;
  *   5. гарантии в строке заявки: действующие есть, истёкшие нет (Р6, К5);
  *   6. четыре разных `outcome` — нефинансовым кодом со словарной подписью (Р2, Н12);
  *   7. сумма акта: скрыта у аудитории, которой не положена, и открыта назначенному исполнителю (Р5);
@@ -76,6 +82,13 @@ const REQUESTS = '/api/v1/service-requests';
 
 /** Сумма акта заявки, у которой она есть: её и прячет проекция аудитории. */
 const ACT_AMOUNT = 12_500;
+
+/**
+ * Миллисекунда, в которую сгоняются все строки единицы случая 4b. Значение произвольное; важно
+ * одно — оно ровно миллисекундное, поэтому `Date.toISOString()` любой из трёх строк даёт ОДИН И ТОТ
+ * ЖЕ курсор, а сами строки различаются микросекундным хвостом.
+ */
+const MICRO_MILLISECOND = '2026-09-03T07:00:00.123Z';
 
 interface Auth {
   authorization: string;
@@ -114,6 +127,11 @@ interface Ctx {
   otherUnitId: string;
   /** Единица под случай 4: у её двух правок отметки времени совпадают до микросекунды. */
   tieUnitId: string;
+  /**
+   * Единица под случай 4b: у неё по три строки в каждом блоке, и внутри блока все три стоят в ОДНОЙ
+   * миллисекунде, различаясь только микросекундами.
+   */
+  microUnitId: string;
   /** Заявки основной единицы по метке случая. */
   requests: Map<string, ServiceRequestDto>;
   otherUnitRequestId: string;
@@ -481,6 +499,7 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
       unitId: '',
       otherUnitId: '',
       tieUnitId: '',
+      microUnitId: '',
       requests: new Map(),
       otherUnitRequestId: '',
     };
@@ -633,6 +652,74 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
       });
       expect(res.statusCode, res.body).toBe(201);
     }
+
+    // ── Фикстура: единица случая 4b (микросекунды) ──
+    //
+    // Три строки в каждом блоке, и внутри блока все три стоят в ОДНОЙ миллисекунде: различает их
+    // только микросекундный хвост — тот самый, которого нет у `Date` в JS. Отдельная единица, а не
+    // основная: сдвиг отметок ломал бы соседние случаи, которые считают по ней страницы и порядок.
+    ctx.microUnitId = await makeEquipment('micro');
+
+    for (const word of ['Первая', 'Вторая', 'Третья']) {
+      await patch(ctx.microUnitId, { comment: `${word} правка микроединицы` });
+    }
+    for (let i = 1; i <= 3; i += 1) {
+      const res = await inject('POST', `${EQUIPMENT}/${ctx.microUnitId}/move`, ctx.operator.auth, {
+        objectId: ctx.objectA,
+        location: `кабинет 30${i}`,
+        // Дата переезда у всех трёх ОДНА, и это часть случая: у перемещений она старший ключ
+        // порядка, и различать строки обязано время записи — то самое, с микросекундами.
+        movedOn: '2026-08-10',
+        reason: `Переезд микроединицы ${i}`,
+      });
+      expect(res.statusCode, res.body).toBe(201);
+    }
+    for (let i = 1; i <= 3; i += 1) {
+      const row = await createRequest(ctx.microUnitId, `Заявка микроединицы ${i}`);
+      // Каждая закрывается сразу: по единице разрешена одна открытая заявка НА ВИД (Р21).
+      await db.execute(sql`
+        UPDATE service_requests
+           SET status = 'cancelled', rejection_resolution = 'Строка случая точности'
+         WHERE id = ${row.id}`);
+    }
+
+    /*
+     * ОДНА МИЛЛИСЕКУНДА НА ТРИ СТРОКИ — руками, потому что ручкой такого не подстроить: обращения
+     * идут миллисекундами друг от друга, а нужен разброс в микросекунды. Отметки раздаются по
+     * ПОРЯДКУ ЗАВЕДЕНИЯ (`row_number` по `created_at`), чтобы естественный порядок строк не
+     * перетасовался: предмет случая — точность границы, а не сортировка.
+     *
+     * Хвосты `.123001`, `.123002`, `.123003`: `date_trunc('milliseconds')` у всех трёх один, и
+     * курсор, собранный через `Date`, у любой из них округлится в одно и то же значение.
+     */
+    await db.execute(sql`
+      WITH ordered AS (
+        SELECT id, row_number() OVER (ORDER BY created_at, id) AS n
+          FROM audit_log
+         WHERE entity_type = 'officeEquipment' AND entity_id = ${ctx.microUnitId}
+           AND action = 'officeEquipment.update'
+      )
+      UPDATE audit_log a
+         SET created_at = ${MICRO_MILLISECOND}::timestamptz + ordered.n * interval '1 microsecond'
+        FROM ordered WHERE a.id = ordered.id`);
+    await db.execute(sql`
+      WITH ordered AS (
+        SELECT id, row_number() OVER (ORDER BY created_at, id) AS n
+          FROM office_equipment_movements
+         WHERE equipment_id = ${ctx.microUnitId}
+      )
+      UPDATE office_equipment_movements m
+         SET created_at = ${MICRO_MILLISECOND}::timestamptz + ordered.n * interval '1 microsecond'
+        FROM ordered WHERE m.id = ordered.id`);
+    await db.execute(sql`
+      WITH ordered AS (
+        SELECT id, row_number() OVER (ORDER BY created_at, id) AS n
+          FROM service_requests
+         WHERE office_equipment_id = ${ctx.microUnitId}
+      )
+      UPDATE service_requests r
+         SET created_at = ${MICRO_MILLISECOND}::timestamptz + ordered.n * interval '1 microsecond'
+        FROM ordered WHERE r.id = ordered.id`);
   }, 300_000);
 
   afterAll(async () => {
@@ -827,7 +914,12 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
   });
 
   // ── 4. Детерминированный порядок при равных отметках (тест 4, Н8) ──
-
+  //
+  // Отметки здесь РАВНЫ до микросекунды (обе — ровно `10:00:00+03`), и спрашивается одно:
+  // детерминированность порядка, то есть разрыв ничьей по `id`. Точности границы страницы этот
+  // случай не касается вовсе — у целой секунды нет ни миллисекунд, ни микросекунд, и потерять на
+  // ней нечего. Про точность спрашивает соседний случай 4b, и до него дефект округления курсора
+  // жил в модуле незамеченным именно потому, что здесь его поймать было нечем.
   it('две правки одной секундой приходят в одном и том же порядке', async () => {
     const first = await changesPage(ctx.operator.auth, '?pageSize=100', ctx.tieUnitId);
     const second = await changesPage(ctx.operator.auth, '?pageSize=100', ctx.tieUnitId);
@@ -849,6 +941,157 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
       ctx.tieUnitId,
     );
     expect(next.items[0]!.id).toBe(first.items[1]!.id);
+  });
+
+  // ── 4b. Микросекунды: три строки в одной миллисекунде (находка ревью заказчика, К4) ──
+
+  describe('строки одной миллисекунды не теряются на границе страниц', () => {
+    /*
+     * ЧТО ЗДЕСЬ ЛОВИТСЯ. `timestamptz` в базе хранит микросекунды, а `Date` в JS заканчивается
+     * миллисекундой: курсор, собранный из `toISOString()`, оказывался МЛАДШЕ строки, которой
+     * принадлежал. Строгое сравнение с такой границей выбрасывало соседей по той же миллисекунде,
+     * у кого микросекунд больше, — и «показать ещё» молча отдавало пустую страницу вместо двух
+     * оставшихся строк. Порядок при этом целый, отказа нет, в журнале ничего: строк просто нет.
+     *
+     * ПОЧЕМУ СОСЕДНИЙ СЛУЧАЙ 4 ЭТОГО НЕ ЛОВИЛ. Он задаёт обеим строкам ровно целую секунду —
+     * округлять там нечего, и курсор совпадает со строкой в точности. Разница между случаями и
+     * есть разница между двумя вопросами: «одинаковые отметки идут в одном порядке» (случай 4) и
+     * «разные отметки не сливаются в одну границей страницы» (случай 4b).
+     *
+     * Проверяется множество, а не длина: «прочитано три» проходило бы и на трёх повторах одной
+     * строки, а обещание К4 — ни потерь, НИ ПОВТОРОВ.
+     */
+    interface BlockPage {
+      items: { id: string }[];
+      nextCursor: string | null;
+    }
+    type ReadBlock = (query: string) => Promise<BlockPage>;
+
+    /** Постранично ПО ОДНОЙ строке: ровно та дорога, на которой строки и пропадали. */
+    async function walk(read: ReadBlock): Promise<string[]> {
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      for (let guard = 0; guard < 10; guard += 1) {
+        const page = await read(
+          `?pageSize=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+        );
+        seen.push(...page.items.map((row) => row.id));
+        cursor = page.nextCursor;
+        if (!cursor) break;
+      }
+      return seen;
+    }
+
+    const blocks: { name: string; read: ReadBlock }[] = [
+      {
+        name: 'Связанные заявки',
+        read: (query) => requestsPage(ctx.operator.auth, query, ctx.microUnitId),
+      },
+      {
+        name: 'Ручные правки',
+        read: (query) => changesPage(ctx.operator.auth, query, ctx.microUnitId),
+      },
+      {
+        name: 'Перемещения',
+        read: (query) => movementsPage(ctx.operator.auth, query, ctx.microUnitId),
+      },
+    ];
+
+    it('фикстура и правда про микросекунды: одна миллисекунда, три разных хвоста', async () => {
+      const mark = sql`to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.MS')`;
+      const tail = sql`to_char(created_at AT TIME ZONE 'UTC', 'US')`;
+      const tables = await Promise.all([
+        ctx.db.execute<{ ms: string; us: string }>(sql`
+          SELECT ${mark} AS ms, ${tail} AS us FROM audit_log
+           WHERE entity_type = 'officeEquipment' AND entity_id = ${ctx.microUnitId}
+             AND action = 'officeEquipment.update'`),
+        ctx.db.execute<{ ms: string; us: string }>(sql`
+          SELECT ${mark} AS ms, ${tail} AS us FROM office_equipment_movements
+           WHERE equipment_id = ${ctx.microUnitId}`),
+        ctx.db.execute<{ ms: string; us: string }>(sql`
+          SELECT ${mark} AS ms, ${tail} AS us FROM service_requests
+           WHERE office_equipment_id = ${ctx.microUnitId}`),
+      ]);
+      for (const table of tables) {
+        expect(table.rows).toHaveLength(3);
+        // Миллисекунда одна на три строки — значит `Date` у всех трёх даёт одну и ту же отметку.
+        expect(new Set(table.rows.map((row) => row.ms)).size).toBe(1);
+        // А микросекундные хвосты разные — значит строки различимы, и терять их не за что.
+        expect(new Set(table.rows.map((row) => row.us)).size).toBe(3);
+      }
+    });
+
+    for (const block of blocks) {
+      it(`блок «${block.name}»: страницами по одной приходят все три строки`, async () => {
+        const whole = await block.read('?pageSize=100');
+        expect(whole.items).toHaveLength(3);
+
+        const seen = await walk(block.read);
+        // Множество прочитанного = множеству записанного, и порядок тот же, что у цельной выдачи:
+        // ни одной потерянной строки (это и краснело до правки) и ни одного повтора (К4).
+        expect(seen).toEqual(whole.items.map((row) => row.id));
+        expect(new Set(seen).size).toBe(seen.length);
+      });
+    }
+
+    it('курсор открытой вкладки (миллисекунды) тоже не теряет строк', async () => {
+      /*
+       * Курсор ПРОШЛОЙ редакции сервера — отметка `Date`, округлённая вниз до миллисекунды. Ровно
+       * такие лежат сейчас в открытых вкладках, и отвечать на них `422` нельзя: человек всего лишь
+       * нажал «показать ещё». Точной границы из такого курсора не собрать (где внутри миллисекунды
+       * стояла показанная строка, в нём не записано), поэтому граница расширяется до конца этой
+       * миллисекунды, а сама строка курсора отсекается по `id`, — остаток приходит целиком.
+       *
+       * Собирается он теми же кодеками, что и настоящий: подделка строки руками проверяла бы наш
+       * навык печатать «~», а не совместимость формата.
+       */
+      const requests = await requestsPage(ctx.operator.auth, '?pageSize=100', ctx.microUnitId);
+      const changes = await changesPage(ctx.operator.auth, '?pageSize=100', ctx.microUnitId);
+      const movements = await movementsPage(ctx.operator.auth, '?pageSize=100', ctx.microUnitId);
+
+      // Отметки строк показываются миллисекундами — из них старый курсор и собирался.
+      expect(changes.items[0]!.at).toMatch(/\.\d{3}Z$/);
+
+      const legacy: { name: string; read: ReadBlock; cursor: string; rest: string[] }[] = [
+        {
+          name: 'Связанные заявки',
+          read: blocks[0]!.read,
+          cursor: encodeEquipmentRequestsCursor({
+            createdAt: requests.items[0]!.createdAt,
+            id: requests.items[0]!.id,
+          }),
+          rest: requests.items.slice(1).map((row) => row.id),
+        },
+        {
+          name: 'Ручные правки',
+          read: blocks[1]!.read,
+          cursor: encodeEquipmentChangesCursor({
+            at: changes.items[0]!.at,
+            id: changes.items[0]!.id,
+          }),
+          rest: changes.items.slice(1).map((row) => row.id),
+        },
+        {
+          name: 'Перемещения',
+          read: blocks[2]!.read,
+          cursor: encodeEquipmentMovementsCursor({
+            movedOn: movements.items[0]!.movedOn,
+            createdAt: movements.items[0]!.createdAt,
+            id: movements.items[0]!.id,
+          }),
+          rest: movements.items.slice(1).map((row) => row.id),
+        },
+      ];
+
+      for (const block of legacy) {
+        const page = await block.read(`?pageSize=100&cursor=${encodeURIComponent(block.cursor)}`);
+        // Ни одной потерянной строки — и первая, на которой остановились, не повторилась.
+        expect(
+          page.items.map((row) => row.id),
+          block.name,
+        ).toEqual(block.rest);
+      }
+    });
   });
 
   // ── 5. Гарантии строки заявки (тест 6, Р6, К5) ──

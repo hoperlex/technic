@@ -1,9 +1,20 @@
-import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import {
+  and,
+  type AnyColumn,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
   encodeEquipmentChangesCursor,
   encodeEquipmentMovementsCursor,
   encodeEquipmentRequestsCursor,
+  equipmentCursorInstantIsExact,
   equipmentRequestOutcomeOf,
   equipmentRequestSummary,
   EQUIPMENT_WARRANTY_CHANGE_FIELD,
@@ -97,6 +108,68 @@ function pageOf<T>(rows: T[], pageSize: number): { page: T[]; hasMore: boolean }
   return { page: rows.slice(0, pageSize), hasMore: rows.length > pageSize };
 }
 
+/**
+ * Отметка времени С ПОЛНОЙ ТОЧНОСТЬЮ БАЗЫ — строкой ISO с шестью знаками долей секунды.
+ *
+ * ПОЧЕМУ НЕ `Date`, КАК БЫЛО. `timestamptz` хранит микросекунды, а `Date` в JS заканчивается
+ * миллисекундой: значение, проехавшее через драйвер, уже округлено вниз, и `toISOString()` хвост
+ * не вернёт. Для показа разницы нет, а для КУРСОРА она решает всё: округлённая вниз граница младше
+ * строки, которой принадлежит, и строгое сравнение `(created_at, id) < (курсор, id)` выбрасывает
+ * соседей по той же миллисекунде, у кого микросекунд больше. Такая страница молча теряет строки —
+ * ровно то, что запрещено К4 («страницы не теряют и не повторяют строк»).
+ *
+ * ТА ЖЕ ЛОВУШКА, ЧТО У ПРИЗНАКА ПОВТОРА (`service-request-repeat.ts`): там дата заведения тоже
+ * ездила через JS, и обе границы окна уезжали вниз на этот же хвост. Лечение то же — брать
+ * значение у базы, а не у `Date`. Разница в том, что курсору надо доехать до клиента строкой, и
+ * потому значение не остаётся колонкой, а печатается: `US` даёт ровно шесть знаков всегда, и на
+ * этом стоит признак точности курсора (`equipmentCursorInstantIsExact`).
+ *
+ * Показанные поля строк при этом остаются миллисекундными (`toISOString()`): человеку микросекунды
+ * не нужны, а одна и та же запись обязана выглядеть одинаково здесь и в журнальном DTO.
+ */
+function exactInstant(column: AnyColumn): SQL<string> {
+  return sql<string>`to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+}
+
+/** Старший ключ порядка перед отметкой времени: у перемещений это бизнес-дата переезда. */
+interface CursorKeyPart {
+  column: AnyColumn;
+  value: SQL;
+}
+
+/**
+ * «Строки СТРОГО СТАРШЕ той, на которой остановились» — граница страницы, общая всем трём блокам
+ * (Р8). Кортежем, а не тремя условиями: так сравнение читается тем же, чем сортировка, и индекс по
+ * ключу работает.
+ *
+ * ДВЕ ФОРМЫ, И ВТОРАЯ — РАДИ ОТКРЫТЫХ ВКЛАДОК. Курсор, собранный сегодня, несёт микросекунды, и
+ * граница сравнивается как есть: ни одной потерянной и ни одной повторённой строки. Курсор,
+ * выданный до этой правки, округлён вниз до миллисекунды, и точной границы из него не собрать в
+ * принципе — где внутри той миллисекунды стояла последняя показанная строка, в самом курсоре не
+ * записано. Отвечать на такой курсор `422` нельзя (человек всего лишь нажал «показать ещё»), и из
+ * двух возможных ошибок выбрана заметная: граница расширяется до КОНЦА той миллисекунды, а сама
+ * строка курсора отсекается по `id`. Потерянную строку не увидит никто и никогда; повтор виден
+ * глазами, ограничен одной миллисекундой и исчезает со следующей страницей — её курсор уже точный.
+ */
+function beforeCursor(
+  leading: CursorKeyPart[],
+  instant: { column: AnyColumn; at: string },
+  row: { column: AnyColumn; id: string },
+): SQL {
+  const columns = leading.map((part) => sql`${part.column}`);
+  const values = leading.map((part) => part.value);
+  const anchor = sql`${row.id}::uuid`;
+  if (equipmentCursorInstantIsExact(instant.at)) {
+    return sql`(${sql.join([...columns, sql`${instant.column}`, sql`${row.column}`], sql`, `)})
+             < (${sql.join([...values, sql`${instant.at}::timestamptz`, anchor], sql`, `)})`;
+  }
+  return and(
+    sql`(${sql.join([...columns, sql`${instant.column}`], sql`, `)})
+      < (${sql.join([...values, sql`${instant.at}::timestamptz + interval '1 millisecond'`], sql`, `)})`,
+    sql`${row.column} <> ${anchor}`,
+  )!;
+}
+
 // ── Блок «Связанные заявки» ──
 
 /**
@@ -148,6 +221,10 @@ export async function loadEquipmentRequestsPage(
       status: serviceRequests.status,
       description: serviceRequests.description,
       createdAt: serviceRequests.createdAt,
+      // Отметка для КУРСОРА берётся печатью из базы, с микросекундами (см. `exactInstant`): та же
+      // дата, проехавшая через `Date` соседней строкой, теряет хвост, и граница страницы уезжает
+      // вниз — вместе с соседями по миллисекунде.
+      createdAtCursor: exactInstant(serviceRequests.createdAt),
       updatedAt: serviceRequests.updatedAt,
       totalAmount: serviceRequests.finalTotalAmount,
       replacementRecommended: serviceRequests.replacementRecommended,
@@ -169,11 +246,14 @@ export async function loadEquipmentRequestsPage(
         // не показывает и лента, и расширять область блоком план не берётся.
         isNull(serviceRequests.deletedAt),
         serviceRequestVisibilityWhere(p),
-        // Порядок и курсор — одна пара «дата + идентификатор» (Р8). Кортежем, а не тремя
-        // условиями: так сравнение читается тем же, чем сортировка, и индекс по паре работает.
+        // Порядок и курсор — одна пара «дата + идентификатор» (Р8); границу собирает общий
+        // `beforeCursor`, он же отрабатывает точность отметки.
         opts.cursor
-          ? sql`(${serviceRequests.createdAt}, ${serviceRequests.id})
-                < (${opts.cursor.createdAt}::timestamptz, ${opts.cursor.id}::uuid)`
+          ? beforeCursor(
+              [],
+              { column: serviceRequests.createdAt, at: opts.cursor.createdAt },
+              { column: serviceRequests.id, id: opts.cursor.id },
+            )
           : undefined,
       ),
     )
@@ -255,7 +335,7 @@ export async function loadEquipmentRequestsPage(
     hasMore,
     nextCursor:
       hasMore && last
-        ? encodeEquipmentRequestsCursor({ createdAt: last.createdAt.toISOString(), id: last.id })
+        ? encodeEquipmentRequestsCursor({ createdAt: last.createdAtCursor, id: last.id })
         : null,
   };
 }
@@ -349,6 +429,8 @@ export async function loadEquipmentChangesPage(
       id: auditLog.id,
       metadata: auditLog.metadata,
       createdAt: auditLog.createdAt,
+      /** Та же отметка, но с точностью базы, — она и уезжает в курсор (см. `exactInstant`). */
+      createdAtCursor: exactInstant(auditLog.createdAt),
       actorName: actors.fullName,
     })
     .from(auditLog)
@@ -359,8 +441,11 @@ export async function loadEquipmentChangesPage(
         eq(auditLog.entityId, equipmentId),
         eq(auditLog.action, 'officeEquipment.update'),
         opts.cursor
-          ? sql`(${auditLog.createdAt}, ${auditLog.id})
-                < (${opts.cursor.at}::timestamptz, ${opts.cursor.id}::uuid)`
+          ? beforeCursor(
+              [],
+              { column: auditLog.createdAt, at: opts.cursor.at },
+              { column: auditLog.id, id: opts.cursor.id },
+            )
           : undefined,
       ),
     )
@@ -407,7 +492,7 @@ export async function loadEquipmentChangesPage(
     hasMore,
     nextCursor:
       hasMore && last
-        ? encodeEquipmentChangesCursor({ at: last.createdAt.toISOString(), id: last.id })
+        ? encodeEquipmentChangesCursor({ at: last.createdAtCursor, id: last.id })
         : null,
   };
 }
@@ -449,6 +534,8 @@ export async function loadEquipmentMovementsPage(
       toDepartment: { id: toDepartments.id, code: toDepartments.code, name: toDepartments.name },
       movedByName: movers.fullName,
       requestNum: serviceRequests.num,
+      /** Время записи с точностью базы — средний ключ курсора (см. `exactInstant`). */
+      createdAtCursor: exactInstant(officeEquipmentMovements.createdAt),
     })
     .from(officeEquipmentMovements)
     .innerJoin(fromObjects, eq(officeEquipmentMovements.fromObjectId, fromObjects.id))
@@ -462,9 +549,19 @@ export async function loadEquipmentMovementsPage(
         eq(officeEquipmentMovements.equipmentId, equipmentId),
         // Тройка, а не пара (Р8): `moved_on` — бизнес-дата («увезли в пятницу»), порядка записи она
         // не задаёт, два переезда одного дня различает время записи, а совпадение и его — `id`.
+        // Бизнес-дата уходит в границу старшим ключом: у `date` терять нечего, точность спрашивают
+        // только со среднего ключа.
         opts.cursor
-          ? sql`(${officeEquipmentMovements.movedOn}, ${officeEquipmentMovements.createdAt}, ${officeEquipmentMovements.id})
-                < (${opts.cursor.movedOn}::date, ${opts.cursor.createdAt}::timestamptz, ${opts.cursor.id}::uuid)`
+          ? beforeCursor(
+              [
+                {
+                  column: officeEquipmentMovements.movedOn,
+                  value: sql`${opts.cursor.movedOn}::date`,
+                },
+              ],
+              { column: officeEquipmentMovements.createdAt, at: opts.cursor.createdAt },
+              { column: officeEquipmentMovements.id, id: opts.cursor.id },
+            )
           : undefined,
       ),
     )
@@ -509,7 +606,7 @@ export async function loadEquipmentMovementsPage(
       hasMore && last
         ? encodeEquipmentMovementsCursor({
             movedOn: last.m.movedOn,
-            createdAt: last.m.createdAt.toISOString(),
+            createdAt: last.createdAtCursor,
             id: last.m.id,
           })
         : null,
