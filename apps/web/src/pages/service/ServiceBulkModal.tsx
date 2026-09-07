@@ -13,6 +13,7 @@ import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-reques
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { newIdempotencyKey } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
+import { useAuth } from '../../auth/AuthContext';
 import {
   clearServiceBulkRun,
   saveServiceBulkRun,
@@ -124,6 +125,9 @@ export function ServiceBulkModal({
 }) {
   const { message } = App.useApp();
   const qc = useQueryClient();
+  // Кто начинает пачку: его именем она и ляжет в хранилище вкладки — под чужой учёткой
+  // незаконченная пачка не восстанавливается (`saveServiceBulkRun`).
+  const { user } = useAuth();
   const operation = target.kind === 'command' ? target.command.operation : target.run.operation;
   const requested =
     target.kind === 'command' ? target.command.rows.length : target.run.body.rows.length;
@@ -158,7 +162,7 @@ export function ServiceBulkModal({
   });
 
   const start = (next: ServiceBulkRun) => {
-    saveServiceBulkRun(next);
+    saveServiceBulkRun(next, user?.id);
     setSent(next);
     setProcessed(0);
     setPhase({ kind: 'running', run: next });

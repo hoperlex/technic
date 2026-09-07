@@ -277,24 +277,74 @@ export function serviceBulkFingerprint(body: ServiceRequestBulkBody): string {
  */
 const RUN_STORAGE_KEY = 'service-bulk-run';
 
-export function saveServiceBulkRun(run: ServiceBulkRun): void {
+/**
+ * Запись хранилища — пачка ПЛЮС её хозяин.
+ *
+ * Учётка лежит В ЗАПИСИ, а не в имени ключа, и это не мелочь оформления. Рабочее место в конторе
+ * бывает общим, выход чистит серверную сессию и кэш запросов (`AuthContext`), но не хранилище
+ * вкладки. Разведи мы записи по ключам с учёткой — брошенная пачка первого человека пережидала бы
+ * чужую смену и всплывала бы «Продолжить» при его возвращении, с версиями строк, устаревшими часы
+ * назад. Ключ один, запись одна, и чтение под другой учёткой её СНОСИТ (`readServiceBulkRun`):
+ * незаконченная пачка — состояние одного разговора одного человека, а не архив вкладки.
+ *
+ * Проверка при чтении, а не «погасить при выходе», потому что выход — не единственная дверь:
+ * сессия кончается ещё и сама (`onExpired`), а вкладку открывают заново уже под другим человеком.
+ * Хозяин, записанный рядом с пачкой, отвечает на вопрос «твоё ли это» в любую из них.
+ *
+ * Хозяин — свойство ЗАПИСИ, а не самой пачки: `ServiceBulkRun` — это запрос к серверу (ключ, тело,
+ * отпечаток), и от того, кто оставил его в браузере, он не зависит.
+ */
+interface StoredServiceBulkRun extends ServiceBulkRun {
+  userId: string;
+}
+
+/**
+ * Сохранить пачку от имени `userId`. Учётки нет — не сохраняем вовсе, тем же правилом живёт память
+ * отборов списков (`shared/lib/listParamsStore`): запись без хозяина подхватил бы первый вошедший.
+ */
+export function saveServiceBulkRun(run: ServiceBulkRun, userId: string | undefined): void {
+  if (!userId) return;
   try {
-    sessionStorage.setItem(RUN_STORAGE_KEY, JSON.stringify(run));
+    const stored: StoredServiceBulkRun = { ...run, userId };
+    sessionStorage.setItem(RUN_STORAGE_KEY, JSON.stringify(stored));
   } catch {
     /* приватный режим: записывать некуда */
   }
 }
 
-export function readServiceBulkRun(): ServiceBulkRun | null {
+/**
+ * Незаконченная пачка этого человека — или `null`, если её нет, она чужая либо не сходится сама с
+ * собой.
+ *
+ * Всё, что этому человеку не годится, чтение сносит на месте. Чужая запись и так ничего не сделает
+ * — наружу её не отдают, — но и лежать ей незачем: пока она в хранилище, «Продолжить» над чужим
+ * выбором строк остаётся возможным хотя бы теоретически, а мусор вкладки живёт до её закрытия.
+ *
+ * Пока учётка неизвестна (сессия ещё поднимается) хранилище не трогается вовсе: снести запись
+ * здесь значило бы стереть СВОЮ пачку за мгновение до того, как выяснилось, что она своя.
+ */
+export function readServiceBulkRun(userId: string | undefined): ServiceBulkRun | null {
+  if (!userId) return null;
   try {
     const raw = sessionStorage.getItem(RUN_STORAGE_KEY);
+    // Пусто — и сносить нечего: лишний вызов хранилища на каждом открытии реестра.
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as ServiceBulkRun | null;
-    if (!parsed?.key || !parsed.body?.rows) return null;
-    return serviceBulkFingerprint(parsed.body) === parsed.fingerprint ? parsed : null;
+    const stored = JSON.parse(raw) as StoredServiceBulkRun | null;
+    const own =
+      !!stored &&
+      stored.userId === userId &&
+      !!stored.key &&
+      // Список строк проверяется на массив, а не на «что-то есть»: отпечаток считается по нему
+      // перебором, и запись, набранная не нами, роняла бы этим перебором открытие реестра.
+      Array.isArray(stored.body?.rows) &&
+      serviceBulkFingerprint(stored.body) === stored.fingerprint;
+    if (own) return stored;
   } catch {
-    return null;
+    /* приватный режим либо мусор вместо JSON: пачки нет */
   }
+  // Сюда сходятся все отказы — чужая запись, битая, не сошедшаяся с отпечатком: лежать ей незачем.
+  clearServiceBulkRun();
+  return null;
 }
 
 export function clearServiceBulkRun(): void {

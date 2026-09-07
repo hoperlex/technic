@@ -9,6 +9,7 @@ import { objectDto } from './factories/waste';
 import { RequestsTab } from '../src/pages/service/RequestsTab';
 import {
   clearServiceBulkRun,
+  readServiceBulkRun,
   saveServiceBulkRun,
   serviceBulkFingerprint,
 } from '../src/pages/service/serviceBulkCommands';
@@ -24,6 +25,8 @@ import {
  */
 
 const OPERATOR: AuthUser = serviceOperator();
+/** Сменщик за тем же столом: тот же профиль, другая учётка. */
+const OTHER: AuthUser = serviceOperator({ id: 'user-2', email: 'other@example.test' });
 const UUID = /^[0-9a-f-]{36}$/u;
 
 /** Заголовки `mockHttp` не журналирует, а ключ идемпотентности живёт именно заголовком. */
@@ -46,7 +49,7 @@ const HELD = heldServiceRequest('in_work', {
   version: 5,
 });
 
-function renderTab(items: ServiceRequestDto[], over: RouteMap = {}) {
+function renderTab(items: ServiceRequestDto[], over: RouteMap = {}, user: AuthUser = OPERATOR) {
   const http = mockHttp({
     'GET /service-requests': () => json(list(items)),
     'GET /objects': () => json(list([objectDto()])),
@@ -78,7 +81,7 @@ function renderTab(items: ServiceRequestDto[], over: RouteMap = {}) {
     });
     return inner(input, init);
   }) as typeof globalThis.fetch;
-  renderWithUser(<RequestsTab />, { user: OPERATOR });
+  renderWithUser(<RequestsTab />, { user });
   return { http, sent };
 }
 
@@ -292,43 +295,94 @@ describe('доступность', () => {
 });
 
 describe('перезагрузка вкладки', () => {
-  it('пачка восстанавливается из sessionStorage и показывает свой отчёт', async () => {
-    const body = {
-      operation: 'cancel' as const,
-      rows: [{ id: '22222222-2222-4222-8222-222222222222', version: 5 }],
-      reason: 'закрыли',
-    };
-    saveServiceBulkRun({
-      key: '11111111-2222-4333-8444-555555555555',
-      operation: 'cancel',
-      fingerprint: serviceBulkFingerprint(body),
-      body,
-    });
-    const { http } = renderTab([LIVE, HELD], {
-      'GET /service-requests/bulk/:key': () =>
-        json({
+  /** Тело брошенной пачки: одна строка, общая причина — то, что человек уже отправил. */
+  const abandoned = {
+    operation: 'cancel' as const,
+    rows: [{ id: '22222222-2222-4222-8222-222222222222', version: 5 }],
+    reason: 'закрыли',
+  };
+  const save = (user: AuthUser) =>
+    saveServiceBulkRun(
+      {
+        key: '11111111-2222-4333-8444-555555555555',
+        operation: 'cancel',
+        fingerprint: serviceBulkFingerprint(abandoned),
+        body: abandoned,
+      },
+      user.id,
+    );
+
+  const finished: RouteMap = {
+    'GET /service-requests/bulk/:key': () =>
+      json({
+        operationId: 'op-7',
+        state: 'finished',
+        requested: 1,
+        processed: 1,
+        result: {
           operationId: 'op-7',
-          state: 'finished',
-          requested: 1,
-          processed: 1,
-          result: {
-            operationId: 'op-7',
-            operation: 'cancel',
-            done: 1,
-            failed: 0,
-            rows: [
-              {
-                index: 0,
-                id: '22222222-2222-4222-8222-222222222222',
-                displayNumber: 'СО-15',
-                outcome: 'done',
-              },
-            ],
-          },
-        }),
-    });
+          operation: 'cancel',
+          done: 1,
+          failed: 0,
+          rows: [
+            {
+              index: 0,
+              id: '22222222-2222-4222-8222-222222222222',
+              displayNumber: 'СО-15',
+              outcome: 'done',
+            },
+          ],
+        },
+      }),
+  };
+
+  it('пачка восстанавливается из sessionStorage и показывает свой отчёт', async () => {
+    save(OPERATOR);
+    const { http } = renderTab([LIVE, HELD], finished);
 
     await waitFor(() => expect(dialogText()).toContain('Выполнено: 1'));
     expect(http.countOf('GET /service-requests/bulk/:key')).toBeGreaterThan(0);
+  });
+
+  /*
+   * Общее рабочее место: выход гасит серверную сессию, но не хранилище вкладки. Подхвати сменщик
+   * чужую пачку — он выполнил бы чужой выбор строк от своего имени, и серверная идемпотентность
+   * этого не остановила бы: ключ операции привязан к автору, и для второго человека тот же ключ —
+   * НОВАЯ команда.
+   */
+  it('чужая пачка не восстанавливается и в хранилище не остаётся', async () => {
+    save(OPERATOR);
+    const { http } = renderTab([LIVE, HELD], finished, OTHER);
+    expect(await screen.findByText('СО-14')).toBeDefined();
+
+    // Ни окна, ни даже вопроса о состоянии чужой пачки.
+    expect(document.querySelector('.ant-modal-wrap')).toBeNull();
+    expect(http.countOf('GET /service-requests/bulk/:key')).toBe(0);
+    // И вернувшемуся хозяину подхватывать уже нечего: запись снесена, а не оставлена дожидаться.
+    expect(readServiceBulkRun(OPERATOR.id)).toBeNull();
+  });
+
+  it('пока учётка неизвестна, чтение сохранённое не трогает', () => {
+    save(OPERATOR);
+
+    // Сессия ещё поднимается: снести запись здесь значило бы потерять СВОЮ пачку до того, как
+    // выяснилось, что она своя.
+    expect(readServiceBulkRun(undefined)).toBeNull();
+    expect(readServiceBulkRun(OPERATOR.id)?.key).toBe('11111111-2222-4333-8444-555555555555');
+  });
+
+  it('пачка без учётки не сохраняется вовсе: подхватить её мог бы первый вошедший', () => {
+    saveServiceBulkRun(
+      {
+        key: '11111111-2222-4333-8444-555555555555',
+        operation: 'cancel',
+        fingerprint: serviceBulkFingerprint(abandoned),
+        body: abandoned,
+      },
+      undefined,
+    );
+
+    expect(readServiceBulkRun(OPERATOR.id)).toBeNull();
+    expect(readServiceBulkRun(OTHER.id)).toBeNull();
   });
 });
