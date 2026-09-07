@@ -24,7 +24,6 @@ import {
   type EquipmentChangesPageDto,
   type EquipmentMovementsPageDto,
   type EquipmentRequestsPageDto,
-  EQUIPMENT_HISTORY_EXPORT_LIMIT,
   type EquipmentHistoryPageDto,
   equipmentHistoryQuerySchema,
   formatServiceRequestNumber,
@@ -61,11 +60,8 @@ import { serviceAudienceByRequest } from '../services/service-request-audience';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { officeEquipmentDiff } from '../services/office-equipment-diff';
-import {
-  loadEquipmentHistoryAll,
-  loadEquipmentHistoryPage,
-} from '../services/office-equipment-history';
-import { equipmentHistoryWorkbook } from '../services/office-equipment-history-export';
+import { loadEquipmentHistoryPage } from '../services/office-equipment-history';
+import { equipmentHistoryBook } from '../services/office-equipment-history-export';
 /*
  * Три бизнес-проекции той же истории (план `docs/office-equipment-history-blocks-plan.md`, Р1).
  * Лента остаётся каноном и режимом «Полная история»; блоки читают те же таблицы своей выборкой, но
@@ -1239,26 +1235,26 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
       const { id } = req.params;
       const equipment = await requireHistoryEquipment(p, id);
 
-      const { items, truncated } = await loadEquipmentHistoryAll(
-        p,
-        equipment,
-        EQUIPMENT_HISTORY_EXPORT_LIMIT,
-      );
-      const workbook = equipmentHistoryWorkbook(equipment, items, truncated);
+      // Книга собирается ЗДЕСЬ, а не в сервисе выгрузки: лист заявок отбирается областью читателя,
+      // и принципал ему нужен так же, как самому блоку на экране (план истории блоками, Р12).
+      const { bytes, rows, truncated } = await equipmentHistoryBook(p, equipment);
 
       await writeAudit({
         actorUserId: p.id,
         action: 'officeEquipment.historyExport',
         entityType: 'officeEquipment',
         entityId: id,
-        metadata: { rows: items.length, truncated },
+        // Смысл записи прежний — сколько строк и упёрлись ли в потолок, — но считается он теперь по
+        // ленте, а не по всей книге: сравнивать выгрузки до и после этой правки иначе стало бы
+        // нечем, а лента и была тем, что выгружали.
+        metadata: { rows, truncated },
       });
 
       const filename = `history-${equipment.inventoryNumber || equipment.serialNumber || id}.xlsx`;
       return reply
         .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         .header('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`)
-        .send(Buffer.from(workbook));
+        .send(Buffer.from(bytes));
     },
   );
 
