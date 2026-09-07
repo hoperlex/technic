@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   moscowDateKeyOf,
+  type EquipmentRequestsPageDto,
   type ServiceRequestDto,
   type ServiceWarrantyRowDto,
 } from '@technic/contracts';
@@ -1575,6 +1576,143 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
       expect(history.length).toBeGreaterThan(0);
     });
 
+    /**
+     * §6.15, ВТОРАЯ ПОЛОВИНА: блок «Связанные заявки» карточки единицы
+     * (`GET /api/v1/office-equipment/:id/requests`) и **роль отдела**.
+     *
+     * О ЧЁМ ПРЕДУПРЕЖДАЕТ САМ КОД. `office-equipment-blocks.ts` пишет прямым текстом: ремонтная
+     * часть блока отбирается ОБЛАСТЬЮ ЗАЯВОК (`serviceRequestVisibilityWhere`), а не областью
+     * справочника, потому что «у ролей отдела это разные области — справочник по владельцу
+     * техники, заявки по заказчику, — и показать здесь заявку соседнего отдела значило бы обойти
+     * модуль через справочник». Субъекта, на котором эти две области РАСХОДЯТСЯ, в проверках блока
+     * не было: на объектных ролях обе оси совпадают, и предупреждение оставалось словами.
+     *
+     * СЦЕНА СОБРАНА РОВНО НА РАСХОЖДЕНИИ. Единица без отдела-владельца: `assertOfficeEquipmentScope`
+     * открывает такую карточку ЛЮБОЙ роли отдела намеренно («разметить её больше некому»), то есть
+     * справочник у отдела A на неё открыт. А заявку по ней завёл отдел B: `customer_department_id`
+     * — отдел B, `equipment_department_id` — пусто (владельца нет), и обе отдельские колонки
+     * области мимо отдела A. Значит карточка единицы открыта, а заявка в ней — нет, и блок обязан
+     * промолчать. Покажи он строку — заявка соседнего отдела уехала бы через справочник, минуя
+     * модуль, ровно как и предупреждает комментарий.
+     *
+     * ОТДЕЛ B — НЕ УКРАШЕНИЕ. Без него пустой блок отдела A объяснялся бы чем угодно, вплоть до
+     * сломанной ручки: у владельца заявки та же ручка на той же единице обязана строку показать.
+     */
+    it('§6.15 блок заявок не выдаёт роли отдела заявку соседнего отдела через справочник', async () => {
+      const foreign = await createRequest(
+        ctx.deptUserB.auth,
+        ctx.objectBId,
+        'Отдел B: заявка своего отдела на неразмеченной единице',
+      );
+      const snapshot = await card(foreign.id, ctx.admin.auth);
+      const equipmentId = snapshot.equipment!.id;
+      // Снимки области — те, ради которых сцена и собрана: заказчик отдела B, владельца у техники
+      // нет. Проверяются вслух: подставь фикстура отдел-владельца, и случай молча стал бы про
+      // совпадающие области, продолжая зеленеть.
+      expect(snapshot.customerDepartment?.id).toBe(ctx.departmentBId);
+      expect(snapshot.equipmentDepartment ?? null).toBeNull();
+
+      // Справочник отделу A ОТКРЫТ: 200 ниже — не «повезло с закрытой дверью».
+      const unit = await inject(
+        'GET',
+        `/api/v1/office-equipment/${equipmentId}`,
+        ctx.deptUserA.auth,
+      );
+      expect(unit.statusCode, unit.body).toBe(200);
+
+      // А сама заявка ему закрыта — областью заявок, и отказ назван словами области, а не стража.
+      const denied = await inject(
+        'GET',
+        `/api/v1/service-requests/${foreign.id}`,
+        ctx.deptUserA.auth,
+      );
+      expect(denied.statusCode, denied.body).toBe(403);
+      expect(messageOf(denied)).toContain('работает только с заявками своих отделов');
+
+      const blocked = await inject(
+        'GET',
+        `/api/v1/office-equipment/${equipmentId}/requests`,
+        ctx.deptUserA.auth,
+      );
+      expect(blocked.statusCode, blocked.body).toBe(200);
+      const foreignRows = (blocked.json() as EquipmentRequestsPageDto).items;
+      expect(foreignRows.map((row) => row.id)).not.toContain(foreign.id);
+
+      // Владельцу заявки та же ручка на той же единице строку отдаёт: блок работает, молчит он
+      // именно про чужое.
+      const own = await inject(
+        'GET',
+        `/api/v1/office-equipment/${equipmentId}/requests`,
+        ctx.deptUserB.auth,
+      );
+      expect(own.statusCode, own.body).toBe(200);
+      expect((own.json() as EquipmentRequestsPageDto).items.map((row) => row.id)).toContain(
+        foreign.id,
+      );
+    });
+
+    /**
+     * §6.15, ТРЕТЬЯ ПОЛОВИНА: блок «Связанные заявки» и **поимённо назначенный исполнитель**.
+     *
+     * Третья ось видимости (план аудита исполнителей, Р1) добавляет к области ОДНУ СТРОКУ — ту
+     * заявку, на которую субъект назначен, — и §6.5 доказывает это на карточке заявки. Блок стоит
+     * за ДРУГОЙ дверью: сперва область справочника (`requireHistoryEquipment`), и только внутри
+     * неё — область заявок. Значит у назначенного вне своей площадки два ответа обязаны разойтись,
+     * и разойтись именно так: заявку он читает, а историю ремонтов ЧУЖОГО аппарата — нет.
+     *
+     * ПОЧЕМУ ЭТО ВАЖНО, А НЕ ПРИДИРКА. Блок отдаёт всё, что было с аппаратом: кто чинил, чем
+     * кончилось, какие гарантии живы. Открой его назначение — и одно поимённое назначение на одну
+     * заявку соседней площадки открывало бы ремонтную историю её техники целиком. Это тот же обход
+     * модуля через справочник, что и в случае выше, только другой осью.
+     *
+     * ВТОРАЯ ПОЛОВИНА СЛУЧАЯ — своя площадка: там та же ручка тому же человеку отвечает 200 и
+     * показывает его заявку. Без неё 403 читался бы как «ручка ему закрыта вообще».
+     */
+    it('§6.15 назначение открывает заявку, но не блок заявок чужой единицы', async () => {
+      const foreign = await createRequest(
+        ctx.foreignShtab.auth,
+        ctx.objectBId,
+        'Площадка B: назначенный сисадмин и история аппарата',
+      );
+      await assign(foreign.id, { userIds: [ctx.executor.id] });
+      const foreignEquipmentId = (await card(foreign.id, ctx.admin.auth)).equipment!.id;
+
+      // Заявку видит — третья ось на месте (§6.5), и 403 ниже приходит не от неё.
+      const readable = await inject(
+        'GET',
+        `/api/v1/service-requests/${foreign.id}`,
+        ctx.executor.auth,
+      );
+      expect(readable.statusCode, readable.body).toBe(200);
+
+      const blocked = await inject(
+        'GET',
+        `/api/v1/office-equipment/${foreignEquipmentId}/requests`,
+        ctx.executor.auth,
+      );
+      expect(blocked.statusCode, blocked.body).toBe(403);
+      // Отбивает область СПРАВОЧНИКА — то же сообщение, что у карточки единицы в §6.15 выше.
+      expect(messageOf(blocked)).toContain('работает только со своими объектами');
+
+      // На своей площадке блок ему открыт и показывает его же заявку.
+      const own = await createRequest(
+        ctx.customer.auth,
+        ctx.objectAId,
+        'Площадка A: назначенный сисадмин видит свою заявку в блоке',
+      );
+      await assign(own.id, { userIds: [ctx.executor.id] });
+      const ownEquipmentId = (await card(own.id, ctx.admin.auth)).equipment!.id;
+      const allowed = await inject(
+        'GET',
+        `/api/v1/office-equipment/${ownEquipmentId}/requests`,
+        ctx.executor.auth,
+      );
+      expect(allowed.statusCode, allowed.body).toBe(200);
+      expect((allowed.json() as EquipmentRequestsPageDto).items.map((row) => row.id)).toContain(
+        own.id,
+      );
+    });
+
     it('§6.16 журнал остатка расходников не обещает чужую заявку', async () => {
       const consumable = await inject(
         'POST',
@@ -2033,9 +2171,15 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
   describe('витрины ⊆ карточка (К3)', () => {
     it('ни один список, счётчик и реестр гарантий не показывает недоступную строку', async () => {
       /*
-       * Свойство проверяется ПЕРЕБОРОМ, а не рассуждением: витрин у модуля четыре, отбираются они
+       * Свойство проверяется ПЕРЕБОРОМ, а не рассуждением: витрин у модуля пять, отбираются они
        * тремя разными выражениями (`listWhere`, `visibility`, область справочника гарантий), и
        * доказать «они совпадают» можно только спросив у каждой, а потом сверив ответ с карточкой.
+       *
+       * ПЯТАЯ — БЛОК «СВЯЗАННЫЕ ЗАЯВКИ» карточки единицы (`GET /office-equipment/:id/requests`), и
+       * в переборе он обязателен по причине, которой нет у остальных четырёх: он живёт ЗА ЧУЖОЙ
+       * ДВЕРЬЮ. Право на него даёт справочник оргтехники, область карточки — тоже справочник, и
+       * только строки внутри отбираются областью заявок. Витрина, у которой вход и содержимое
+       * считаются разными правилами, — ровно то место, где «показать чуть больше» не заметит никто.
        *
        * Администратора в переборе нет намеренно: он видит всю общую базу, включая заявки соседних
        * тестов, и перебор превратился бы в проверку чужих данных. Все остальные учётки файла —
@@ -2052,6 +2196,27 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
         ['подрядчик A', ctx.serviceA],
         ['подрядчик B', ctx.serviceB],
       ];
+
+      /*
+       * Единицы блока берутся ПРЯМО ИЗ ТАБЛИЦЫ и только свои: у списка справочника своя область, и
+       * спроси мы его от лица субъекта — перебор проверял бы пересечение двух областей вместо
+       * витрины. Чужие единицы общей базы отсеиваются суффиксом прогона по той же причине, по
+       * которой из перебора убран администратор.
+       */
+      const unitRows = await ctx.db.execute<{ id: string }>(sql`
+        SELECT id FROM office_equipment
+         WHERE inventory_number LIKE ${`SEA-${RUN}-%`}
+         ORDER BY inventory_number`);
+      const unitIds = unitRows.rows.map((row) => row.id);
+      expect(unitIds.length, 'единиц прогона нет — блок перебирал бы пустоту').toBeGreaterThan(0);
+      /*
+       * Счётчик проверенных строк блока — караул от ПУСТОГО доказательства. Витрина, ответившая
+       * всем 403 (переименовали ручку, сузили право, разъехалась фикстура), прошла бы перебор
+       * зелёной, ничего не проверив: у остальных четырёх витрин такой опасности нет — их ответ 200
+       * обязателен, — а у этой закрытый ответ законен, и отличить «закрыта у всех» от «проверена»
+       * можно только счётом.
+       */
+      let blockRows = 0;
 
       for (const [name, user] of subjects) {
         const ids = await listIds(user.auth);
@@ -2082,8 +2247,39 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
           const res = await inject('GET', `/api/v1/service-requests/${row.requestId}`, user.auth);
           expect(res.statusCode, `${name}: гарантия ведёт в ${res.statusCode}`).toBe(200);
         }
+
+        // Блок «Связанные заявки» — по каждой единице прогона. Закрытая витрина доказательству не
+        // мешает: показать лишнее может только та, что ответила строками.
+        for (const unitId of unitIds) {
+          const block = await inject(
+            'GET',
+            `/api/v1/office-equipment/${unitId}/requests?pageSize=50`,
+            user.auth,
+          );
+          if (block.statusCode !== 200) {
+            /*
+             * Двери у блока две, и обе закрываются раньше строк: право справочника (у подрядчика
+             * его нет вовсе) и область карточки (чужая площадка, чужой отдел-владелец). Иных
+             * ответов быть не должно — 500 или 422 здесь означали бы, что перебор молча
+             * пропускает витрину вместо того, чтобы её проверять.
+             */
+            expect(
+              [403, 404],
+              `${name}: блок единицы ${unitId} ответил ${block.statusCode} — ${block.body}`,
+            ).toContain(block.statusCode);
+            continue;
+          }
+          for (const row of (block.json() as EquipmentRequestsPageDto).items) {
+            const res = await inject('GET', `/api/v1/service-requests/${row.id}`, user.auth);
+            expect(res.statusCode, `${name}: строка блока ${row.id} — ${res.body}`).toBe(200);
+            blockRows += 1;
+          }
+        }
       }
-    }, 60_000);
+      expect(blockRows, 'блок не показал ни одной строки ни одному субъекту').toBeGreaterThan(0);
+      // Срок вдвое против прежнего: пятая витрина спрашивается по каждой единице прогона, и
+      // упереться в умолчание значило бы получить красноту вместо ответа о доступе.
+    }, 120_000);
   });
 
   // ────────────────────────────────────────────────────────────────────────────────────────────
