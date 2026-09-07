@@ -1450,6 +1450,12 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
             numberKey,
             numberFuzzy,
             issuedOn: proposal.issuedOn,
+            // Написание графы «Дата» переезжает вместе с датой, а не отдельно от неё (Р12,
+            // ADR 0166 п. 7; миграция 0283). Принять одну и оставить другое значило бы показать
+            // под новой датой подпись «OCR в графе» от ПРОШЛОГО прохода — то есть объяснение
+            // даты, которой в талоне больше нет. Ручная правка даты написание по-прежнему не
+            // трогает: там человек читает бумагу, а здесь соглашается с чтением машины.
+            issuedOnRaw: proposal.issuedOnRaw,
             volumeM3: proposal.volumeM3,
             workKind: proposal.workKind,
             addressRaw: proposal.addressRaw,

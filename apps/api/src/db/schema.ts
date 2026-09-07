@@ -5259,6 +5259,20 @@ export const wasteTicketProposals = pgTable(
      */
     numberRaw: text('number_raw').notNull().default(''),
     issuedOn: date('issued_on', { mode: 'string' }),
+    /**
+     * Написание графы «Дата» того прохода, чью дату несёт предложение (миграция 0283; Р12,
+     * ADR 0166 п. 7). Рядом с `issued_on`, а не отдельно от него: принять дату и оставить прежнее
+     * написание значило бы показать под новой датой подпись от ЧУЖОГО чтения графы — а подпись
+     * «OCR в графе» существует ровно затем, чтобы объяснять стоящую в талоне дату.
+     *
+     * Шестым полем талона от этого не становится: в `WASTE_TICKET_FIELDS` его нет, домен журнала
+     * наблюдений закрыт `CHECK`, и решать по написанию человеку нечего — предложение заводится и
+     * раскладывается по пяти полям. Здесь оно едет прицепом к дате.
+     *
+     * Пустая строка — «написания нет», как и в самом талоне: у предложений прошлых разборов его не
+     * бывает вовсе.
+     */
+    issuedOnRaw: text('issued_on_raw').notNull().default(''),
     volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }),
     workKind: text('work_kind').notNull().default('removal').$type<'removal' | 'idle' | 'other'>(),
     addressRaw: text('address_raw').notNull().default(''),

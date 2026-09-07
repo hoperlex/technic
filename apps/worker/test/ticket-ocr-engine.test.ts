@@ -510,6 +510,11 @@ describe('схема ответа в запросе (Р4)', () => {
     for (const field of WASTE_TICKET_FIELDS) expect(properties).toContain(field);
     expect(properties).toContain('issuedOnRaw');
     expect(TICKET_ITEM_PROPERTIES.workKind!.enum).toEqual([...WASTE_TICKET_WORK_KINDS]);
+    // Транскрипция либо непустая, либо `null` — и требование адресовано моделям со строгим
+    // режимом, а не только нашей валидации (Р4, ADR 0166 п. 1). Пустая строка выглядела бы
+    // ответом, а правило выбора века приняло бы её за неразобранное написание.
+    expect(TICKET_ITEM_PROPERTIES.issuedOnRaw!.type).toEqual(['string', 'null']);
+    expect(TICKET_ITEM_PROPERTIES.issuedOnRaw!.minLength).toBe(1);
 
     const schema = RESPONSE_JSON_SCHEMA.schema as Record<string, Record<string, never>>;
     const tickets = schema.properties!.tickets as unknown as Record<string, unknown>;

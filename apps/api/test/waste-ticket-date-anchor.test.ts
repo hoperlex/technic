@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseWasteTicketDateParts,
+  recognizedWasteTicketSchema,
   resolveWasteTicketIssuedOn,
   suggestWasteTicketYear,
   updateWasteTicketSchema,
@@ -16,6 +17,43 @@ import {
 
 /** Якорь заявки: фактический день вывоза или плановая дата, всегда календарный ключ. */
 const ANCHOR = '2026-08-17';
+
+describe('транскрипция в ответе модели (ADR 0166, п.1)', () => {
+  /** Годный талон целиком: в тестах ниже меняется одно свойство — транскрипция. */
+  const TICKET = {
+    number: '30476',
+    issuedOn: '2026-08-17',
+    issuedOnRaw: '17.08.26',
+    volumeM3: 20,
+    workKind: 'removal',
+    addressRaw: 'г. Новосибирск, ул. Строителей, д. 1',
+  };
+
+  it('написание с бланка принимается и обрезается пробелами', () => {
+    expect(recognizedWasteTicketSchema.parse(TICKET).issuedOnRaw).toBe('17.08.26');
+    expect(
+      recognizedWasteTicketSchema.parse({ ...TICKET, issuedOnRaw: ' 17 авг 26 ' }).issuedOnRaw,
+    ).toBe('17 авг 26');
+  });
+
+  it('`null` законен: так и говорится «графы нет или она не читается»', () => {
+    expect(
+      recognizedWasteTicketSchema.parse({ ...TICKET, issuedOnRaw: null }).issuedOnRaw,
+    ).toBeNull();
+  });
+
+  it('пустая строка и пробелы отбиваются схемой', () => {
+    // Пустая строка — это «модель что-то ответила», и правило выбора века приняло бы её за
+    // неразобранное написание: год молча остался бы за моделью вместо честного отката на её
+    // `issuedOn` (Р4). Отсутствие графы выражается ровно одним способом — `null`.
+    expect(recognizedWasteTicketSchema.safeParse({ ...TICKET, issuedOnRaw: '' }).success).toBe(
+      false,
+    );
+    expect(recognizedWasteTicketSchema.safeParse({ ...TICKET, issuedOnRaw: '   ' }).success).toBe(
+      false,
+    );
+  });
+});
 
 describe('разбор написания даты (ADR 0166, п.2)', () => {
   it('числовые формы с разделителями бланка', () => {

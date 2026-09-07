@@ -986,13 +986,15 @@ async function saveResult(
           volume_differs: boolean;
           work_kind_differs: boolean;
           address_differs: boolean;
+          issued_on_raw: string;
         }>(
           `SELECT wt.id,
                   wt.number_raw  IS DISTINCT FROM $4          AS number_differs,
                   wt.issued_on   IS DISTINCT FROM $5::date    AS issued_on_differs,
                   wt.volume_m3   IS DISTINCT FROM $6::numeric AS volume_differs,
                   wt.work_kind   IS DISTINCT FROM $7          AS work_kind_differs,
-                  wt.address_raw IS DISTINCT FROM $8          AS address_differs
+                  wt.address_raw IS DISTINCT FROM $8          AS address_differs,
+                  wt.issued_on_raw
              FROM waste_tickets wt
             WHERE wt.page_id = $1 AND wt.seq = $2 AND wt.origin = 'ocr'
               AND wt.request_id = $3`,
@@ -1016,6 +1018,36 @@ async function saveResult(
           workKind: target.work_kind_differs,
           addressRaw: target.address_differs,
         };
+        // Написание графы «Дата» в `differs` НЕ участвует и своим изменением предложения не
+        // заводит (Р12, ADR 0166 п. 7). Оно не шестое поле талона: в `WASTE_TICKET_FIELDS` его
+        // нет, домен журнала наблюдений закрыт `CHECK`, и решать по нему человеку в предложении
+        // нечего — сравниваются те же пять полей, что и раньше.
+        //
+        // Но у тронутого талона написание иначе не появится никогда: строку сам проход не
+        // переписывает (Р13 ADR 0114), а талон, разобранный до этой волны, живёт с пустой графой,
+        // и подпись «OCR в графе» ему не нарисовать даже после явного перераспознавания. Поэтому
+        // написание ДОПИСЫВАЕТСЯ, и правило у дописи узкое: только пустое и только при совпавшей
+        // дате.
+        //
+        //   · пустое поле диагностики — не решение человека, и заполнить его новым проходом
+        //     законно: Р13 запрещает переписывать РАБОТУ человека, а не дополнять диагностику;
+        //   · непустое не трогаем: оно уже относится к той самой дате, что стоит в талоне, и
+        //     новое чтение стёрло бы объяснение неизменившейся даты;
+        //   · разошлись даты — не пишем вовсе, иначе подпись описывала бы дату, которой в талоне
+        //     нет. Этот случай и есть предложение (дата в `differs`), и написание приедет вместе
+        //     с его принятием — дата и её написание одна пара.
+        //
+        // Условие продублировано в самом `UPDATE`: стоит предикат ничего, а читается как
+        // обещание — этот запрос не в состоянии переписать непустое написание, чем бы его ни
+        // позвали.
+        if (!differs.issuedOn && !target.issued_on_raw && ticket.issuedOnRaw) {
+          await client.query(
+            `UPDATE waste_tickets
+                SET issued_on_raw = $2, updated_at = now()
+              WHERE id = $1 AND issued_on_raw = ''`,
+            [target.id, ticket.issuedOnRaw],
+          );
+        }
         // Предложение, повторяющее то, что в талоне уже стоит, не заводится: «модель прочитала то
         // же самое» — не новость, а лишняя строка, которую человеку придётся закрывать руками.
         // Наблюдений тоже нет: исход наблюдения предложения приходит решением человека по этому
@@ -1035,12 +1067,17 @@ async function saveResult(
           ticket,
         });
         await client.query(
+          // Написание графы едет вместе с датой (Р12, миграция 0283): принятие предложения
+          // переносит в талон обе величины разом, и подпись «OCR в графе» остаётся объяснением
+          // той даты, что после принятия и стоит в талоне. Собственным поводом для предложения
+          // написание при этом не является — см. правило дописи выше.
           `INSERT INTO waste_ticket_proposals
-             (ticket_id, number_raw, issued_on, volume_m3, work_kind, address_raw,
+             (ticket_id, number_raw, issued_on, issued_on_raw, volume_m3, work_kind, address_raw,
               primary_attempt_id, escalation_attempt_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
            ON CONFLICT (ticket_id) DO UPDATE
                   SET number_raw = EXCLUDED.number_raw, issued_on = EXCLUDED.issued_on,
+                      issued_on_raw = EXCLUDED.issued_on_raw,
                       volume_m3 = EXCLUDED.volume_m3, work_kind = EXCLUDED.work_kind,
                       address_raw = EXCLUDED.address_raw,
                       primary_attempt_id = EXCLUDED.primary_attempt_id,
@@ -1050,6 +1087,7 @@ async function saveResult(
             target.id,
             raw,
             ticket.issuedOn,
+            ticket.issuedOnRaw,
             ticket.volumeM3,
             ticket.workKind,
             ticket.addressRaw ?? '',

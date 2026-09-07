@@ -1250,6 +1250,36 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
       return res.rows[0]!;
     }
 
+    /**
+     * Талон, которого коснулся человек: новый проход такую строку не переписывает, а кладёт
+     * предложение рядом (Р13 ADR 0114). Написание задаётся тут же — пустое означает строку,
+     * разобранную до этой волны, когда колонки не было вовсе.
+     */
+    async function markEdited(requestId: string, issuedOnRaw: string): Promise<void> {
+      await admin.query(
+        `UPDATE waste_tickets
+            SET edited_at = now(),
+                edited_by = (SELECT created_by FROM waste_requests WHERE id = $1),
+                issued_on_raw = $2
+          WHERE request_id = $1`,
+        [requestId, issuedOnRaw],
+      );
+    }
+
+    /** Предложение перераспознавания рядом с талоном; `null` — его не завели. */
+    async function proposalOf(
+      requestId: string,
+    ): Promise<{ issued_on: string | null; issued_on_raw: string } | null> {
+      const res = await admin.query<{ issued_on: string | null; issued_on_raw: string }>(
+        `SELECT to_char(p.issued_on, 'YYYY-MM-DD') AS issued_on, p.issued_on_raw
+           FROM waste_ticket_proposals p
+           JOIN waste_tickets wt ON wt.id = p.ticket_id
+          WHERE wt.request_id = $1`,
+        [requestId],
+      );
+      return res.rows[0] ?? null;
+    }
+
     /** Первый проход прочитал всё, но старшая молчит: вызов состоялся и ответа не дал. */
     const SENIOR_SILENT: RecognitionFailure = {
       code: 'upstream_error',
@@ -1623,6 +1653,245 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
       expect(bothPasses.issued_on).toBe('2026-08-17');
       expect(bothPasses.issued_on_raw).toBe('17.08.26');
       expect((await observationsOfRun(mergedRun)).get('issuedOn')!.source_stage).toBe('merged');
+    });
+
+    it('противоречие написания и даты по дню поднимает второй проход', async () => {
+      // Четвёртый повод каскада (Р7, ADR 0166 п. 4), и до сих пор он проверялся только чистой
+      // функцией в API: модель прочитала графу двумя способами, и способы разошлись. Расстояние до
+      // якоря здесь ни при чём — от плановой даты до 19 августа два дня, то есть глубоко внутри
+      // окна; поднимает старшую модель именно противоречие.
+      const conflicting = await seed();
+      const conflictSha = newSha();
+      const conflictEngine = modelAwareEngine({
+        [OBS_MODEL]: {
+          tickets: [recognizedTicket({ issuedOn: '2026-08-19', issuedOnRaw: '17.08.26' })],
+          reported: OBS_PRIMARY_REPORTED,
+        },
+        [OBS_SENIOR]: {
+          tickets: [recognizedTicket({ issuedOn: '2026-08-19', issuedOnRaw: '17.08.26' })],
+          reported: OBS_SENIOR_REPORTED,
+        },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({
+          sha: conflictSha,
+          engine: conflictEngine.engine,
+          escalationModel: OBS_SENIOR,
+        }) as never,
+        conflicting,
+        await seedJob(conflicting),
+      );
+      expect(conflictEngine.calls).toEqual([
+        `${OBS_MODEL}:${conflictSha.slice(0, 8)}`,
+        `${OBS_SENIOR}:${conflictSha.slice(0, 8)}`,
+      ]);
+      // Само противоречие спора не создаёт (Р9): проходы сошлись, дата модели сохраняется — из
+      // двух её же чтений графы система молча не выбирает, — а написание остаётся рядом.
+      const readTwice = await ticketOf(conflicting.requestId);
+      expect(readTwice.issued_on).toBe('2026-08-19');
+      expect(readTwice.issued_on_raw).toBe('17.08.26');
+      expect(readTwice.needs_review_fields).toEqual([]);
+
+      // Контроль: то же чтение, но написание с датой согласно. Без него проверка выше доказывала
+      // бы лишь «эскалация включена», а не «её включило противоречие».
+      const agreed = await seed();
+      const agreedSha = newSha();
+      const agreedEngine = modelAwareEngine({
+        [OBS_MODEL]: {
+          tickets: [recognizedTicket({ issuedOn: '2026-08-19', issuedOnRaw: '19.08.26' })],
+          reported: OBS_PRIMARY_REPORTED,
+        },
+        [OBS_SENIOR]: {
+          tickets: [recognizedTicket({ issuedOn: '2026-08-19', issuedOnRaw: '19.08.26' })],
+          reported: OBS_SENIOR_REPORTED,
+        },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({
+          sha: agreedSha,
+          engine: agreedEngine.engine,
+          escalationModel: OBS_SENIOR,
+        }) as never,
+        agreed,
+        await seedJob(agreed),
+      );
+      expect(agreedEngine.calls).toEqual([`${OBS_MODEL}:${agreedSha.slice(0, 8)}`]);
+    });
+
+    it('выключенный выбор века оставляет год модели, но пишет написание и эскалирует', async () => {
+      // `TICKET_OCR_DATE_YEAR_FROM_ANCHOR = false` (ADR 0166 п. 2) гасит ВЫБОР ВЕКА, и только его:
+      // написание всё равно попадает в талон, а эскалация по расстоянию до якоря продолжает
+      // работать — иначе откат правила заодно отключал бы проверку, которая от него не зависит.
+      const off = await seed();
+      const offSha = newSha();
+      // Написание БЕЗ года: с включённым правилом год целиком дал бы якорь, с выключенным остаётся
+      // год модели. На этой паре разница между режимами и видна.
+      const offReading = recognizedTicket({ issuedOn: '2025-08-17', issuedOnRaw: '17.08' });
+      const offEngine = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [offReading], reported: OBS_PRIMARY_REPORTED },
+        [OBS_SENIOR]: { tickets: [offReading], reported: OBS_SENIOR_REPORTED },
+      });
+      await runTicketRecognitionJob(
+        {
+          ...observationDeps({
+            sha: offSha,
+            engine: offEngine.engine,
+            escalationModel: OBS_SENIOR,
+          }),
+          dateYearFromAnchor: false,
+        } as never,
+        off,
+        await seedJob(off),
+      );
+      const kept = await ticketOf(off.requestId);
+      expect(kept.issued_on).toBe('2025-08-17');
+      expect(kept.issued_on_raw).toBe('17.08');
+      // Год расстояния до якоря — старшую модель позвали, хотя выбор века выключен.
+      expect(offEngine.calls).toHaveLength(2);
+
+      // Контроль: тот же ответ при включённом правиле. Год берётся от якоря, дата садится на него,
+      // и второго прохода не требуется вовсе.
+      const on = await seed();
+      const onSha = newSha();
+      const onEngine = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [offReading], reported: OBS_PRIMARY_REPORTED },
+        [OBS_SENIOR]: { tickets: [offReading], reported: OBS_SENIOR_REPORTED },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({
+          sha: onSha,
+          engine: onEngine.engine,
+          escalationModel: OBS_SENIOR,
+        }) as never,
+        on,
+        await seedJob(on),
+      );
+      expect((await ticketOf(on.requestId)).issued_on).toBe('2026-08-17');
+      expect(onEngine.calls).toHaveLength(1);
+    });
+
+    it('разные века одного написания сливаются в одну дату, а не спорят', async () => {
+      // Нормализация идёт ДО сопоставления и слияния (Р6, ADR 0166 п. 3), и ради этого случая она
+      // там и стоит: в контракте `issuedOn` всегда четырёхзначный, поэтому расхождение проходов
+      // здесь — это разный выбор столетия у ОДНОЙ И ТОЙ ЖЕ двузначной записи, а не разное чтение
+      // бумаги. Сравнивай мы догадки моделей о веке — человек получил бы спор на ровном месте.
+      const { requestId, fileId } = await seed();
+      const sha = newSha();
+      const { engine, calls } = modelAwareEngine({
+        [OBS_MODEL]: {
+          tickets: [recognizedTicket({ issuedOn: '1925-08-17', issuedOnRaw: '17.08.25' })],
+          reported: OBS_PRIMARY_REPORTED,
+        },
+        [OBS_SENIOR]: {
+          tickets: [recognizedTicket({ issuedOn: '2025-08-17', issuedOnRaw: '17.08.25' })],
+          reported: OBS_SENIOR_REPORTED,
+        },
+      });
+      const runId = await seedJob({ requestId, fileId });
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine, escalationModel: OBS_SENIOR }) as never,
+        { requestId, fileId },
+        runId,
+      );
+
+      // Второй проход поднят годом расстояния до якоря: «17.08.25» при якоре 2026 — это 2025-й.
+      expect(calls).toHaveLength(2);
+      const ticket = await ticketOf(requestId);
+      expect(ticket.issued_on).toBe('2025-08-17');
+      expect(ticket.issued_on_raw).toBe('17.08.25');
+      expect(ticket.needs_review_fields).toEqual([]);
+      expect((await observationsOfRun(runId)).get('issuedOn')!.source_stage).toBe('merged');
+    });
+
+    it('перераспознавание дописывает пустое написание, а непустое не трогает', async () => {
+      // Случай, которого сравнение `differs` не видит вовсе: пять полей совпали, предложения нет,
+      // а написания у талона нет — он разобран до этой волны. Без дописи подпись «OCR в графе» не
+      // появилась бы у него никогда, даже после явного перераспознавания (Р12, ADR 0166 п. 7).
+      const { requestId, fileId } = await seed();
+      const sha = newSha();
+      const first = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [recognizedTicket()], reported: OBS_PRIMARY_REPORTED },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine: first.engine }) as never,
+        { requestId, fileId },
+        await seedJob({ requestId, fileId }),
+      );
+      // Строку правил человек, написания у неё нет: ровно состояние талона из разбора до 0280.
+      await markEdited(requestId, '');
+
+      const again = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [recognizedTicket()], reported: OBS_PRIMARY_REPORTED },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine: again.engine }) as never,
+        { requestId, fileId, forced: true },
+        await seedJob({ requestId, fileId }),
+      );
+
+      // Предложения нет — решать человеку нечего, пять полей те же. А написание дописано: пустое
+      // поле диагностики работой человека не является, и запрет Р13 ADR 0114 на него не
+      // распространяется — он про правленые значения, а не про пустую графу.
+      expect(await proposalOf(requestId)).toBeNull();
+      const filled = await ticketOf(requestId);
+      expect(filled.issued_on).toBe('2026-08-17');
+      expect(filled.issued_on_raw).toBe('17.08.26');
+
+      // Третий проход читает графу иначе, но приходит к той же дате. Написание не меняется: оно
+      // уже относится к дате, которая в талоне стоит, и перезапись стёрла бы объяснение
+      // неизменившегося значения.
+      const third = modelAwareEngine({
+        [OBS_MODEL]: {
+          tickets: [recognizedTicket({ issuedOnRaw: '17 авг 2026' })],
+          reported: OBS_PRIMARY_REPORTED,
+        },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine: third.engine }) as never,
+        { requestId, fileId, forced: true },
+        await seedJob({ requestId, fileId }),
+      );
+      expect(await proposalOf(requestId)).toBeNull();
+      expect((await ticketOf(requestId)).issued_on_raw).toBe('17.08.26');
+    });
+
+    it('разошедшаяся дата заводит предложение, и написание едет вместе с ним', async () => {
+      // Обратная половина того же правила: даты разошлись — написание в талон не дописывается
+      // вовсе, иначе подпись объясняла бы дату, которой в талоне нет. Этот случай и есть
+      // предложение, и написание приезжает человеку вместе с его принятием (Р12).
+      const { requestId, fileId } = await seed();
+      const sha = newSha();
+      const first = modelAwareEngine({
+        [OBS_MODEL]: { tickets: [recognizedTicket()], reported: OBS_PRIMARY_REPORTED },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine: first.engine }) as never,
+        { requestId, fileId },
+        await seedJob({ requestId, fileId }),
+      );
+      await markEdited(requestId, '');
+
+      const other = modelAwareEngine({
+        [OBS_MODEL]: {
+          tickets: [recognizedTicket({ issuedOn: '2026-08-18', issuedOnRaw: '18.08.26' })],
+          reported: OBS_PRIMARY_REPORTED,
+        },
+      });
+      await runTicketRecognitionJob(
+        observationDeps({ sha, engine: other.engine }) as never,
+        { requestId, fileId, forced: true },
+        await seedJob({ requestId, fileId }),
+      );
+
+      const untouched = await ticketOf(requestId);
+      expect(untouched.issued_on).toBe('2026-08-17');
+      expect(untouched.issued_on_raw).toBe('');
+      // Дата и её написание — одна пара, и в предложении они лежат вместе: принять одну и
+      // оставить другое значило бы показать под новой датой подпись от прошлого прохода.
+      expect(await proposalOf(requestId)).toEqual({
+        issued_on: '2026-08-18',
+        issued_on_raw: '18.08.26',
+      });
     });
   });
 });
