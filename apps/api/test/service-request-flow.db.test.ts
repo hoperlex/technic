@@ -4428,14 +4428,18 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         events.filter((e) => e.kind === 'status' && e.fromStatus === 'new' && e.toStatus === 'new'),
       ).toEqual([]);
 
-      // 3. В аудите — ничего, кроме заведения: `writeAudit` ходит МИМО транзакции, и запись,
-      //    сделанная до отказа, пережила бы его. Проверять поэтому надо саму таблицу, а не только
-      //    ответ ручки; сверяется полный список действий, чтобы `decline` не спрятался за счётом.
+      // 3. В аудите — только следы самого заведения и запланированного при нём письма:
+      //    `writeAudit` ходит МИМО транзакции, и запись, сделанная до отказа, пережила бы его.
+      //    Проверять поэтому надо саму таблицу, а не только ответ ручки; сверяется полный список
+      //    действий, чтобы `decline` не спрятался за счётом.
       const audit = await ctx.db.execute<{ action: string }>(sql`
         SELECT action FROM audit_log
          WHERE entity_type = 'serviceRequest' AND entity_id = ${dto.id}
          ORDER BY action`);
-      expect(audit.rows.map((r) => r.action)).toEqual(['serviceRequest.create']);
+      expect(audit.rows.map((r) => r.action)).toEqual([
+        'serviceRequest.create',
+        'serviceRequest.mailPlanned',
+      ]);
     });
 
     /**
@@ -5028,7 +5032,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     it('«Новая» → «В работе» через /status отбивается 422 и не двигает заявку', async () => {
       const request = await createRequest(
         ctx.admin.auth,
-        ctx.choicePrinter.id,
+        await freshUnit(),
         'Караул спрямления статуса',
       );
 

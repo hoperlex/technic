@@ -775,6 +775,7 @@ describe.skipIf(!DB_URL)('карточка заявки на обслужива�
    */
   const emptyChat = {
     canWrite: expect.any(Boolean),
+    mailEnabled: false,
     participantSides: expect.any(Array),
     total: 0,
     unreadMine: 0,
@@ -826,6 +827,8 @@ describe.skipIf(!DB_URL)('карточка заявки на обслужива�
       object: { id: ctx.objectId, code: ctx.objectCode, name: ctx.objectName },
       objectOverridden: false,
       objectMismatch: false,
+      objectMismatchResolvedBy: null,
+      equipmentCandidate: null,
       customerDepartment: {
         id: ctx.departmentId,
         code: ctx.departmentCode,
