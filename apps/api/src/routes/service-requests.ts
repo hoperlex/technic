@@ -225,6 +225,7 @@ import { loadServiceRequestHistory } from '../services/service-request-history';
  */
 import {
   serviceRequestRepeatByRequest,
+  serviceRequestRepeatPreviousWhere,
   serviceRequestRepeatWhere,
 } from '../services/service-request-repeat';
 /*
@@ -2825,11 +2826,42 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     return where;
   }
 
+  /**
+   * Список «предыдущих» по ссылке из тега повтора (Р10 плана повторов).
+   *
+   * Сначала ищется сама `R` — и ищется ПОД ОБЩИМ ПРЕДИКАТОМ ВИДИМОСТИ, тем же, которым отвечает
+   * карточка. Невидимая заявка даёт обычный `404`, неотличимый от «нет такой»: иначе ссылка стала
+   * бы оракулом — подставляя чужие идентификаторы, можно было бы узнавать, какие заявки вообще
+   * существуют.
+   *
+   * Условие для самих `P` строит общий builder, а не этот маршрут: длина всех страниц обязана
+   * совпасть с `repeat.count`, который человек только что видел в теге, — а совпадёт она лишь
+   * тогда, когда условий не шесть похожих, а те же шесть.
+   */
+  async function previousWhere(p: Principal, requestId: string): Promise<SQL> {
+    const [subject] = await db
+      .select({
+        id: serviceRequests.id,
+        kind: serviceRequests.kind,
+        officeEquipmentId: serviceRequests.officeEquipmentId,
+        createdAt: serviceRequests.createdAt,
+      })
+      .from(serviceRequests)
+      .where(
+        and(eq(serviceRequests.id, requestId), isNull(serviceRequests.deletedAt), visibility(p)),
+      )
+      .limit(1);
+    if (!subject) throw err.notFound(NOT_FOUND);
+    return serviceRequestRepeatPreviousWhere(p, subject);
+  }
+
   // ── Список ──
   r.get('/', { ...auth, schema: { querystring: serviceRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     const q = req.query;
-    const where = listWhere(p, q);
+    // Режим «предыдущие» отбор не дополняет, а заменяет: схема запретила их сочетание, поэтому
+    // здесь именно `или`, а не `and` с остатками `listWhere`.
+    const where = q.repeatFor ? await previousWhere(p, q.repeatFor) : listWhere(p, q);
 
     const sortColumns = {
       num: serviceRequests.num,

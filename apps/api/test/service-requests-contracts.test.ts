@@ -733,6 +733,49 @@ describe('список заявок', () => {
   });
 
   /**
+   * Ссылка «предыдущие» обещает ровно то число заявок, которое человек видит в теге повтора. Оттого
+   * она и не сочетается с отбором: список помнит фильтры между сеансами (ADR 0139), и оставшийся с
+   * прошлого раза статус превратил бы «Повтор ×3» в одну строку — без единого признака, что виноват
+   * не счёт, а отбор. Проверяется отказом, потому что молчаливое игнорирование фильтра выглядело бы
+   * ровно так же, как его применение.
+   */
+  it('режим «предыдущие» идёт один: с ним можно листать и сортировать, но не отбирать', () => {
+    const id = '00000000-0000-4000-8000-000000000001';
+    const alone = serviceRequestListQuerySchema.parse({ repeatFor: id });
+    expect(alone.repeatFor).toBe(id);
+    // Листание и порядок — не отбор: они не меняют состав выдачи, только её показ.
+    expect(
+      serviceRequestListQuerySchema.safeParse({
+        repeatFor: id,
+        page: '2',
+        sortBy: 'num',
+        sortOrder: 'asc',
+        archive: 'exclude',
+      }).success,
+    ).toBe(true);
+    // Выключенный флаг фильтром не является: портал шлёт его наравне с включённым.
+    expect(
+      serviceRequestListQuerySchema.safeParse({ repeatFor: id, urgent: 'false' }).success,
+    ).toBe(true);
+    for (const busy of [
+      { status: 'new' },
+      { equipmentId: '00000000-0000-4000-8000-000000000002' },
+      { search: 'СО-14' },
+      { urgent: 'true' },
+      { repeat: 'true' },
+      { archive: 'only' },
+    ]) {
+      expect(
+        serviceRequestListQuerySchema.safeParse({ repeatFor: id, ...busy }).success,
+        `отбор ${Object.keys(busy)[0]} рядом с repeatFor`,
+      ).toBe(false);
+    }
+    // Сам по себе отбор «только повторные» законен — запрещено именно сочетание с режимом.
+    expect(serviceRequestListQuerySchema.parse({ repeat: 'true' }).repeat).toBe(true);
+    expect(serviceRequestListQuerySchema.safeParse({ repeatFor: 'СО-14' }).success).toBe(false);
+  });
+
+  /**
    * Просрочка ушла вместе с полем «Желаемый срок» (Р115): фильтр «Просроченные» и сортировка по
    * сроку отбирали по дате, которую никто не выдерживал, — давность заявки читается возрастом в
    * статусе (`statusChangedAt`). Проверяется отказом, а не тишиной: сортировка по несуществующему
