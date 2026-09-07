@@ -207,14 +207,22 @@ function requestEventOf(
   return event!;
 }
 
-/** Все ячейки книги одной плоской строкой: искать сумму по столбцам незачем — её не должно быть нигде. */
+/**
+ * Все ячейки книги одной плоской строкой: искать сумму по столбцам незачем — её не должно быть
+ * нигде.
+ *
+ * ИМЕННО ВСЕЙ КНИГИ, А НЕ ПЕРВОГО ЛИСТА. Выгрузка стала книгой из четырёх листов (план истории
+ * блоками, Р12), и проверка одного листа с этого дня доказывала бы ровно четверть: сумма, не
+ * попавшая в ленту, могла бы уехать в лист «Заявки». Число листов здесь намеренно не закрепляется —
+ * состав книги проверяет свой набор, а этому случаю важно одно: нигде.
+ */
 async function exportedCells(auth: Auth): Promise<string[]> {
   const res = await inject('GET', `/api/v1/office-equipment/${ctx.equipmentId}/history.xlsx`, auth);
   expect(res.statusCode, res.body).toBe(200);
   expect(res.headers['content-type']).toContain('spreadsheetml');
   const sheets = readWorkbook(new Uint8Array(res.rawPayload));
-  expect(sheets).toHaveLength(1);
-  return sheets[0]!.rows.flat();
+  expect(sheets.length, 'книга пуста').toBeGreaterThan(0);
+  return sheets.flatMap((sheet) => sheet.rows.flat());
 }
 
 describe.skipIf(!DB_URL)('деньги ремонта в карточке единицы: аудитории (живая схема)', () => {
