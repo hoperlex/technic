@@ -1,6 +1,12 @@
-# Портал строительной компании — Этап 1
+# Портал строительной компании
 
-Корпоративный портал: заявки на вывоз мусора, справочники, администрирование. Построен по корпоративному стандарту v3.1 (single-VPS). Полный план: `~/.claude/plans/magical-petting-ripple.md`.
+Корпоративный портал: заказ техники и путевые листы, вывоз мусора, аренда механизации,
+обслуживание оргтехники, гараж и показания, справочники, кабинет водителя, администрирование.
+Построен по корпоративному стандарту v3.1 (single-VPS).
+
+Куда идти дальше: **[AGENTS.md](AGENTS.md)** — как здесь принято работать;
+**[docs/code-map.md](docs/code-map.md)** — какая область за что отвечает и через какие слои
+проходит; **[docs/adr/README.md](docs/adr/README.md)** — указатель принятых решений.
 
 ## Стек
 
@@ -12,12 +18,13 @@
 ## Структура
 
 ```text
-apps/web            React SPA (Vite + antd 6)
-apps/api            Fastify REST API + миграции + seed
-apps/worker         Фоновые задачи (PostgreSQL jobs, S3 cleanup)
-packages/contracts  Общие zod-схемы и типы API
+apps/web            React SPA (Vite + antd 6): страницы, слои entities/features/shared
+apps/api            Fastify REST API, сервисы, миграции и teardown-набор, seed
+apps/worker         Фоновые задачи (PostgreSQL jobs, почта, распознавание талонов, S3 cleanup)
+packages/contracts  Общий язык сервера и портала: zod-схемы, права, предикаты, коридоры статусов
+scripts             Ворота качества и проверки документации
 deploy              Dockerfile'ы, docker-compose, nginx
-docs                runbook, схема БД, setup Yandex/cloud.ru
+docs                решения (adr/), карта кода, runbook, схема БД, планы работ
 ```
 
 ## Быстрый старт (dev)
@@ -48,7 +55,9 @@ CI нетронутыми: там переменные приходят из hos
 ## Проверки
 
 ```bash
-pnpm -r typecheck && pnpm -r test && pnpm lint
+pnpm check        # типы, линт и все тесты, кроме db-набора
+pnpm check:db     # db-тесты на своей свежей базе
+pnpm check:docs   # ссылки, номера решений, полнота карты кода
 ```
 
 Тесты API базы не требуют — кроме одного файла, который без неё пропускается. Он проверяет то,
