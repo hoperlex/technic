@@ -69,6 +69,7 @@ const MODALS: ServiceRequestModals = {
   complete: () => {},
   issue: () => {},
   accept: () => {},
+  cancel: () => {},
   hold: () => {},
   urgency: () => {},
   chat: () => {},

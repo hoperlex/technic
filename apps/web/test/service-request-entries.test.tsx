@@ -180,10 +180,13 @@ const ENTRIES: Record<string, EntryRow> = {
   // он попадает особым случаем проекции, и реестр обязан это помнить.
   resume: { label: 'Возобновить', statusTag: true },
   cancel: { label: 'Отменить заявку', statusTag: true },
+  // Подписи переименованы вместе с вкладкой (план
+  // `docs/office-equipment-card-and-list-cleanup-plan.md`, Р13): пункт, вкладка и заголовок окна
+  // называют состав заявки одним словом, иначе второй вход в карточке не опознать как тот же.
   consumables: {
-    label: 'Заполнить / Изменить номенклатуру',
+    label: 'Заполнить / Изменить расходники',
     hiddenInCard: true,
-    cardEntry: 'кнопка под таблицей на вкладке «Номенклатура»',
+    cardEntry: 'кнопка под таблицей на вкладке «Расходники»',
   },
   // Склад двигает отметка выдачи, а не статус заявки (Р6): перехода здесь нет.
   'consumables-issued': { label: 'Отметить выдачу / Изменить выданное' },
@@ -242,6 +245,7 @@ const MODALS: ServiceRequestModals = {
   complete: () => {},
   issue: () => {},
   accept: () => {},
+  cancel: () => {},
   hold: () => {},
   urgency: () => {},
   chat: () => {},
@@ -287,7 +291,7 @@ const SUBJECTS: AuthUser[] = [
 /**
  * Составы заявки, на которых набор действий различается: статус после Р1 отвечает не за всё —
  * назначенность держит состав исполнителей, ожидание подписи — `estimatePendingRevision`, а вид
- * заявки открывает пару пунктов номенклатуры.
+ * заявки открывает пару пунктов состава расходников.
  */
 function requestsIn(status: ServiceRequestStatus): ServiceRequestDto[] {
   const rows = [
@@ -297,7 +301,7 @@ function requestsIn(status: ServiceRequestStatus): ServiceRequestDto[] {
     // именно так заявка и доживает до приёмки.
     assignedServiceRequest({ status, files: [serviceRequestFile('act')] }),
     estimatePendingServiceRequest({ status, service: { ...SERVICE_COUNTERPARTY } }),
-    // Расходники: объёма работ у них нет, зато есть состав номенклатуры и отметка выдачи.
+    // Расходники: объёма работ у них нет, зато есть состав расходников и отметка выдачи.
     assignedServiceRequest({ status, kind: 'consumable' }),
   ];
   // У отложенной цель возврата берётся из самой заявки, и без исходного статуса пункт возобновления

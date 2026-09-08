@@ -1,9 +1,6 @@
 import {
-  AuditOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
-  CloseSquareOutlined,
-  FileTextOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
   RollbackOutlined,
@@ -13,13 +10,11 @@ import {
 } from '@ant-design/icons';
 import {
   allowedServiceStatusTransitions,
-  canApproveServiceEstimate,
+  can as hasPermission,
   canAssignServiceExecutors,
   canStartServiceWork,
   canDeclineServiceRequest,
-  canReopenServiceEstimate,
   canResumeService,
-  canSubmitServiceEstimate,
   hasServiceClosingDocument,
   serviceIsFirstAssignment,
   serviceRequestNeedsClosingDocument,
@@ -29,6 +24,7 @@ import {
 import type { HoldMode } from '@features/service-hold';
 import { serviceAcceptLock, type ServiceMenuItem } from './serviceStatusChoices';
 import type { ServiceRequestModals } from './serviceRequestModals';
+import { serviceEstimateMenuItems } from './serviceRequestEstimateMenu';
 import { serviceRequestExtraItems } from './serviceRequestExtras';
 import { serviceReasonPrompts } from './serviceRequestPrompts';
 import { serviceActionRow, serviceExecutorAssignment } from './serviceRequestRow';
@@ -109,8 +105,8 @@ export function serviceRequestMenuItems(
   const has = (status: (typeof allowed)[number]) => allowed.includes(status);
   const items: ServiceMenuItem[] = [];
   const ask = ctx.modals.ask;
-  // Действия «только с причиной» собраны отдельно: их пять, и различаются они подписями, а не
-  // поведением (`serviceRequestPrompts.ts`).
+  // Действия «только с причиной» собраны отдельно: их четыре, и различаются они подписями, а не
+  // поведением (`serviceRequestPrompts.ts`). Отмена в набор не входит — у неё своё окно (Р10).
   const prompts = serviceReasonPrompts(request);
 
   /*
@@ -180,70 +176,13 @@ export function serviceRequestMenuItems(
   }
 
   /*
-   * Предъявление объёма работ (Р8): поднимает ревизию и открывает ожидание подписи, оставляя заявку
-   * в «В работе». Предикат держит и первый замок Р9 — пока предъявление висит, повторное запрещено:
-   * иначе исполнитель подменил бы снимок суммы под уже открытым окном согласования.
-   *
-   * У расходников объёма работ нет вовсе: картридж берут со своего склада, согласовывать по нему
-   * нечего и не у кого, — и вид заявки предикат проверяет сам.
+   * Объём работ — четыре пункта соседним модулем (`serviceRequestEstimateMenu`). Разрез по
+   * предмету, а не по длине: это разговор о деньгах внутри одного статуса, и заявку он не двигает —
+   * ровно та граница, по которой рядом отделены обстоятельства (`serviceRequestExtras`). Волна
+   * «внутренний ремонт без объёма работ» это и подтвердила: весь набор целиком стал условным, не
+   * тронув ни одного перехода.
    */
-  if (canSubmitServiceEstimate(row, ctx.user, assignment)) {
-    items.push({
-      key: 'estimate',
-      label: 'Объём работ',
-      icon: <FileTextOutlined />,
-      // Главный шаг, пока объём работ ни разу не предъявляли: дальше главное — закрыть работы.
-      primary: !request.estimateSubmittedAt,
-      onClick: () => ctx.modals.estimate(request),
-    });
-  }
-
-  /*
-   * Согласование (Р8, Р11) — двумя пунктами, а не одним «Согласование объёма работ»: исходы у него
-   * разные и по цене ошибки, и по содержанию. «Согласовано» ничего не спрашивает и статуса не
-   * меняет; «не согласовано» уводит заявку в «Отменена» с обязательными причиной и решением (В1).
-   *
-   * Те же два действия стоят кнопками под таблицей объёма работ (просьба заказчика дословно), и это
-   * не дублирование: оба входа спрашивают один предикат, а карточку открывают и с телефона, где
-   * вкладку надо сперва найти.
-   *
-   * Сторону согласующего считает предикат: право «Ведения» либо поимённое назначение (Р3). Оператор
-   * подрядчика исключён им же — подпись под собственным счётом не согласование, а его копия.
-   */
-  if (canApproveServiceEstimate(row, ctx.user, assignment)) {
-    items.push({
-      key: 'approve',
-      label: 'Согласовать объём работ',
-      icon: <AuditOutlined />,
-      primary: true, // пока подписи нет, работы стоят: это и есть главный шаг «В работе»
-      onClick: () => ctx.run.approve(request),
-    });
-    items.push({
-      key: 'reject',
-      label: 'Не согласовать объём работ',
-      icon: <CloseSquareOutlined />,
-      danger: true,
-      // Отказ по объёму работ — вторая дуга в «Отменена» (В1): различает их не пара статусов, а
-      // содержание, поэтому в списке переходов их два.
-      toStatus: 'cancelled',
-      onClick: () => ctx.modals.approval(request),
-    });
-  }
-
-  /*
-   * «Вернуть объём работ в правку» (Р9) — ключ от обоих замков: ручка снимает и снимок
-   * согласования, и само предъявление. Отсюда и предусловие предиката «есть что снимать» — подпись
-   * ЛИБО непогашенное предъявление; прежнего «согласование есть» после Р9 мало, иначе отозвать
-   * собственное предъявление было бы нечем.
-   */
-  if (canReopenServiceEstimate(row, ctx.user, assignment)) {
-    items.push({
-      key: 'reopen',
-      label: 'Вернуть объём в правку',
-      icon: <UndoOutlined />,
-      onClick: () => ask(prompts.reopenEstimate),
-    });
-  }
+  items.push(...serviceEstimateMenuItems(request, ctx, assignment, row, prompts));
 
   if (request.status === 'in_work' && has('done')) {
     /*
@@ -311,8 +250,24 @@ export function serviceRequestMenuItems(
    *
    * Причины переход не требует, и выдумывать её нельзя: она требовалась дуге `assigned → new`,
    * которая снимала исполнителя, — а этот откат не снимает.
+   *
+   * ПРАВО СПРАШИВАЕТСЯ ОТДЕЛЬНО ОТ ДУГИ, и это единственный пункт файла, которому одного коридора
+   * мало. Дуга `in_work → new` в коридор приходит ДВУМЯ путями: распределяющему её даёт
+   * `SERVICE_ASSIGNER_TRANSITIONS` ради ПЕРЕназначения (`PUT /:id/executors` сам возвращает заявку
+   * в «Новую», Р5), а этот пункт уходит в `PATCH /:id/status`, за которым стоит страж
+   * `serviceRequests.status`. У профиля «Системный администратор» (`assign` и `hold` есть, `status`
+   * нет) пункт поэтому рисовался и отвечал 403 «Недостаточно прав для смены статуса» — проверено
+   * прямым опросом сервера. Спрашиваем ровно то, что спросит ручка: правило то же, что у соседей в
+   * `serviceRequestExtras` («несбывающееся действие в меню — это обещание, за которым пусто»).
+   *
+   * Переназначение у него при этом остаётся: «Изменить исполнителей» — свой пункт со своим
+   * предикатом, и та же «Новая» получается им законно.
    */
-  if (request.status === 'in_work' && has('new')) {
+  if (
+    request.status === 'in_work' &&
+    has('new') &&
+    hasPermission(ctx.user, 'serviceRequests.status')
+  ) {
     items.push({
       key: 'rollback-start',
       label: 'Вернуть в «Новую»',
@@ -380,7 +335,9 @@ export function serviceRequestMenuItems(
   items.push(...serviceRequestExtraItems(request, ctx, assignment, row));
 
   // Отмена — последней и красной: она отнимает работу целиком, и место рядом с ходами по циклу
-  // предлагало бы её наравне с ними.
+  // предлагало бы её наравне с ними. Окно у неё своё (Р10): у ремонта спрашивают ещё и решение
+  // «что делаем вместо» с пометкой замены — единственный оставшийся вход для «чинить
+  // нецелесообразно» там, где отказа по объёму работ больше не бывает.
   if (has('cancelled')) {
     items.push({
       key: 'cancel',
@@ -388,7 +345,7 @@ export function serviceRequestMenuItems(
       icon: <StopOutlined />,
       danger: true,
       toStatus: 'cancelled',
-      onClick: () => ask(prompts.cancel),
+      onClick: () => ctx.modals.cancel(request),
     });
   }
 

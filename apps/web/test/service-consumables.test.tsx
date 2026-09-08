@@ -4,6 +4,7 @@ import type {
   AuthUser,
   OfficeEquipmentConsumableDto,
   OfficeEquipmentDto,
+  RequestHistoryEntryDto,
   ServiceRequestConsumableDto,
   ServiceRequestDto,
 } from '@technic/contracts';
@@ -11,7 +12,7 @@ import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
-import { serviceRequest } from './factories/service';
+import { SERVICE_COUNTERPARTY, serviceExecutor, serviceRequest } from './factories/service';
 import { ServiceRequestForm } from '../src/pages/service/ServiceRequestForm';
 import { ServiceRequestViewModal } from '../src/pages/service/ServiceRequestViewModal';
 import { RequestsTab } from '../src/pages/service/RequestsTab';
@@ -256,7 +257,7 @@ describe('заведение заявки на расходники (Н1, Р15, 
   });
 });
 
-// ── Состав номенклатуры: окно исполнителя ──────────────────────────────────
+// ── Состав расходников: окно исполнителя ───────────────────────────────────
 
 function renderConsumablesModal(request: ServiceRequestDto, routes: RouteMap = {}): HttpMock {
   const http = mockHttp({
@@ -272,7 +273,7 @@ function renderConsumablesModal(request: ServiceRequestDto, routes: RouteMap = {
   return http;
 }
 
-describe('редактор состава номенклатуры (Н10, Р15)', () => {
+describe('редактор состава расходников (Н10, Р15, Р13)', () => {
   const saved = {
     'PUT /service-requests/:id/consumables': () => json(consumableRequest('in_work', [line()])),
   };
@@ -315,6 +316,29 @@ describe('редактор состава номенклатуры (Н10, Р15)'
     // пустой состав оставил бы заявку на расходники без предмета.
     expect(await screen.findByText('Добавьте хотя бы одну позицию')).toBeDefined();
     expect(http.countOf('PUT /service-requests/:id/consumables')).toBe(0);
+  });
+
+  it('окно и уведомление называют состав расходниками, а термин учёта не трогают (Р13, Н15)', async () => {
+    const http = renderConsumablesModal(consumableRequest('in_work', [line()]), saved);
+
+    /*
+     * Заголовок — «Расходники заявки СО-14»: то же слово, что на вкладке карточки и в пункте
+     * действий, из которого окно открывают. Разойдись эти три подписи, человек искал бы в
+     * карточке вкладку с именем нажатого пункта.
+     */
+    expect(await screen.findByText('Расходники заявки СО-14')).toBeDefined();
+    /*
+     * А ПРЕДМЕТНЫЙ ТЕРМИН ОСТАЁТСЯ (Н15, лексическая граница Р13). «Код номенклатуры» — слово
+     * учётной системы: им подписан столбец в складских бумагах и по нему сверяют со счётом.
+     * Переименуй его заодно, и портал начал бы называть своим словом то, что печатается чужим.
+     */
+    expect(screen.getByLabelText('Позиция номенклатуры')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(http.countOf('PUT /service-requests/:id/consumables')).toBe(1));
+    // Уведомление об успехе — та же пара слов, что и подпись изменения в истории (контракты).
+    expect(await screen.findByText('Состав расходников сохранён')).toBeDefined();
   });
 });
 
@@ -482,7 +506,48 @@ describe('правка факта выдачи (Р6)', () => {
 
 // ── Строки в карточке ──────────────────────────────────────────────────────
 
-describe('строки расходников в карточке заявки (Р10)', () => {
+/**
+ * Событие правки состава: подпись поля берётся из контрактов
+ * (`serviceRequestChangeLabels.consumables`), и переименована она там же, где переименован сам
+ * состав, — иначе история звала бы одно и то же двумя словами.
+ */
+const CONSUMABLES_CHANGE: RequestHistoryEntryDto = {
+  id: 'h-1',
+  kind: 'updated',
+  at: '2026-08-06T09:00:00.000Z',
+  actorId: 'user-9',
+  actorName: 'Сисадминов С. С.',
+  fromStatus: null,
+  toStatus: null,
+  comment: '',
+  changes: [{ field: 'consumables', from: 'Тонер Ricoh 201 — 1 шт', to: 'Тонер Ricoh 201 — 2 шт' }],
+};
+
+/** Карточка заявки на расходники: её и открывают, чтобы прочитать состав. */
+function renderCard(
+  request: ServiceRequestDto,
+  options: { user?: AuthUser; history?: RequestHistoryEntryDto[] } = {},
+): void {
+  mockHttp({
+    'GET /service-requests/:id': () => json(request),
+    'GET /service-requests/:id/history': () => json(options.history ?? []),
+  });
+  renderWithUser(<ServiceRequestViewModal request={request} onClose={() => {}} />, {
+    user: options.user ?? OPERATOR,
+  });
+}
+
+/** Открыть вкладку состава. Её подпись — предмет проверки, поэтому она названа здесь буквально. */
+async function openConsumablesTab(): Promise<void> {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Расходники' }));
+}
+
+/** Есть ли колонка с таким заголовком: по ним и видно, что таблица показывает. */
+function hasColumn(title: string): boolean {
+  return screen.queryByRole('columnheader', { name: title }) !== null;
+}
+
+describe('строки расходников в карточке заявки (Р10, Р13, Р14)', () => {
   it('показывают, что просили, что выдали и почему разошлось — и только на чтение', async () => {
     const request = consumableRequest('accepted', [
       line({ requestedQuantity: 2, issuedQuantity: 1, issueNote: 'на складе был один' }),
@@ -495,17 +560,17 @@ describe('строки расходников в карточке заявки (
         requestedQuantity: 1,
       }),
     ]);
-    mockHttp({
-      'GET /service-requests/:id': () => json(request),
-      'GET /service-requests/:id/history': () => json([]),
-    });
-    renderWithUser(<ServiceRequestViewModal request={request} onClose={() => {}} />, {
-      user: OPERATOR,
-    });
+    renderCard(request);
 
-    // У расходников вкладки «Объём работ» нет вовсе (Р17 переименовал «Смету»): предмет заявки —
-    // либо объём работ, либо номенклатура, и двух списков предмета у одной заявки не бывает.
-    fireEvent.click(await screen.findByRole('tab', { name: 'Номенклатура' }));
+    /*
+     * Вкладка называется «Расходники» (Р13). Имя занято вкладкой РАЗДЕЛА, где позиции ведут и
+     * считают остаток (Н6), и прилагательного мы не заводим: раздел и карточка — разные экраны, а
+     * пара «Объём работ / Расходники» в карточке отвечает на один вопрос «что по заявке пойдёт».
+     *
+     * У расходников вкладки «Объём работ» нет вовсе (Р17 переименовал «Смету»): предмет заявки —
+     * либо объём работ, либо состав расходников, и двух списков предмета у одной заявки не бывает.
+     */
+    await openConsumablesTab();
     expect(screen.queryByRole('tab', { name: 'Объём работ' })).toBeNull();
 
     expect(await screen.findByText('Тонер Ricoh 201')).toBeDefined();
@@ -514,15 +579,90 @@ describe('строки расходников в карточке заявки (
     expect(screen.getByText('голубой')).toBeDefined();
     // «Нет отметки» и «выдали ноль» — разные состояния, и вторая строка стоит первым из них.
     expect(screen.getByText('не отмечено')).toBeDefined();
+    // Код позиции остаётся при имени второй строкой (Р14): по нему сверяют со складом и со счётом.
+    expect(screen.getByText('Д0000093569')).toBeDefined();
     // Закрытая заявка правится только чтением: полей факта в карточке нет ни одного.
     expect(screen.queryAllByLabelText(/^Выдано: /)).toHaveLength(0);
+  });
+
+  it('до отметки о выдаче колонок факта нет, а заголовки спрашивают, а не называют (Р14)', async () => {
+    renderCard(consumableRequest('in_work', [line(), line({ id: 'src-2' })]));
+    await openConsumablesTab();
+
+    expect((await screen.findAllByText('Тонер Ricoh 201')).length).toBe(2);
+    // Заголовки — вопросами: таблицу читает тот, кому привезут, а не тот, кто заводил колонку.
+    expect(hasColumn('Сколько просили')).toBe(true);
+    /*
+     * Две колонки факта не построены вовсе. Пока исполнитель не съездил, они во всех строках
+     * говорят «не отмечено» и «—» — половина ширины занята сообщением «здесь пока ничего нет».
+     * Проверяются заголовки, а не текст ячеек: оставь мы колонку и погаси только слова, ширина
+     * никуда бы не делась, а проверка по «не отмечено» этого не заметила бы.
+     */
+    expect(hasColumn('Сколько выдали')).toBe(false);
+    expect(hasColumn('Причина расхождения')).toBe(false);
+    expect(screen.queryByText('не отмечено')).toBeNull();
+  });
+
+  it('первая же отметка открывает колонки факта, не стирая разницы с «нет отметки» (Р14)', async () => {
+    renderCard(
+      consumableRequest('done', [
+        // Съездили и не выдали: законный исход работы («тонер оказался цел», В9б).
+        line({ issuedQuantity: 0, issueNote: 'тонер оказался цел' }),
+        // Соседняя строка не отмечена вовсе — и это другое состояние, а не тот же ноль.
+        line({ id: 'src-2' }),
+      ]),
+    );
+    await openConsumablesTab();
+
+    expect(await screen.findByText('тонер оказался цел')).toBeDefined();
+    expect(hasColumn('Сколько выдали')).toBe(true);
+    expect(hasColumn('Причина расхождения')).toBe(true);
+    /*
+     * Исчезает ПУСТАЯ КОЛОНКА, а не различие двух состояний. Ноль показан числом, отсутствие
+     * отметки — словами: сложи их в одно, и наполовину закрытая заявка читалась бы закрытой
+     * целиком, а со склада списали бы то, чего не выдавали.
+     */
+    expect(screen.getByText('0')).toBeDefined();
+    expect(screen.getByText('не отмечено')).toBeDefined();
+  });
+
+  it('пустой состав объяснён словами, а не пустой таблицей antd (Р14)', async () => {
+    renderCard(consumableRequest('new', []));
+    await openConsumablesTab();
+
+    /*
+     * «Нет данных» под шапкой из колонок читается как поломка или как «мне ничего не привезут»,
+     * тогда как состояние законное: заявитель сказал словами, чего не хватает, а позиции подберёт
+     * тот, кому везти. Строка называет и следующий шаг, и того, кто его делает.
+     */
+    expect(
+      await screen.findByText('Состав ещё не собран: позиции заполнит исполнитель, которому везти'),
+    ).toBeDefined();
+    // Таблицы нет вовсе: пустая шапка и есть то, что заказчик принимал за ошибку.
+    expect(hasColumn('Позиция')).toBe(false);
+    expect(hasColumn('Сколько просили')).toBe(false);
+  });
+
+  it('история называет состав теми же словами, что вкладка и окно (Р13)', async () => {
+    renderCard(consumableRequest('in_work', [line()]), { history: [CONSUMABLES_CHANGE] });
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'История' }));
+
+    /*
+     * Подпись приходит из контрактов (`serviceRequestChangeLabels.consumables`) — своей копии
+     * портал не держит. Проверка стоит здесь, потому что расходится это молча: словарь и вкладку
+     * правят разные выпуски, и история осталась бы «Составом номенклатуры» при вкладке
+     * «Расходники».
+     */
+    expect(await screen.findByText(/Состав расходников/)).toBeDefined();
+    expect(screen.queryByText(/Состав номенклатуры/)).toBeNull();
   });
 });
 
 // ── Пункт меню ─────────────────────────────────────────────────────────────
 
 /** Список заявок: из него и открывают окна — меню строки строит коридор переходов. */
-function renderTab(items: ServiceRequestDto[]): void {
+function renderTab(items: ServiceRequestDto[], user: AuthUser = OPERATOR): void {
   mockHttp({
     'GET /service-requests': () => json(list(items)),
     'GET /objects': () => json(emptyList()),
@@ -531,7 +671,20 @@ function renderTab(items: ServiceRequestDto[]): void {
     'GET /office-equipment': () => json(emptyList()),
     'GET /office-equipment-types': () => json(emptyList()),
   });
-  renderWithUser(<RequestsTab />, { user: OPERATOR });
+  renderWithUser(<RequestsTab />, { user });
+}
+
+/**
+ * Заявка на расходники, отданная сервисной компании: только на ней и открыт пункт правки состава —
+ * сторону исполнителя спрашивает контрактный `actsAsServiceExecutor`, а «Ведение» состава не пишет.
+ */
+function executorRequest(lines: ServiceRequestConsumableDto[]): ServiceRequestDto {
+  return serviceRequest({
+    kind: 'consumable',
+    status: 'in_work',
+    consumables: lines,
+    service: { ...SERVICE_COUNTERPARTY },
+  });
 }
 
 /** Подписи пунктов меню строки — по ним и видно, что заявке разрешено. */
@@ -568,5 +721,30 @@ describe('отметка о выдаче в меню заявки (§6.2, Р6)',
       : [];
     expect(labels).not.toContain('Отметить выдачу');
     expect(labels).not.toContain('Изменить выданное');
+  });
+});
+
+describe('подпись пункта состава (Р13)', () => {
+  /*
+   * Проверяется НАСТОЯЩЕЕ меню, а не реестр входов: подпись пункта, вкладки и заголовка окна —
+   * три места одного слова, и расходятся они молча. Нажатый «Заполнить номенклатуру», открывающий
+   * окно «Расходники заявки СО-14», человек читает как «попал не туда» и закрывает окно.
+   *
+   * Смотрит меню строки СПИСКА: из меню карточки пункт вычеркнут (ADR 0140 — правят там же, где
+   * читают, кнопкой под таблицей), и второе место показа берёт ту же подпись у того же набора.
+   */
+  it('у пустого состава пункт зовёт его заполнить', async () => {
+    renderTab([executorRequest([])], serviceExecutor());
+
+    expect(await rowActionLabels()).toContain('Заполнить расходники');
+  });
+
+  it('у собранного состава пункт зовёт его изменить', async () => {
+    renderTab([executorRequest([line()])], serviceExecutor());
+
+    const labels = await rowActionLabels();
+    expect(labels).toContain('Изменить расходники');
+    // Слова учётной системы в подписях действий не остаётся ни при пустом составе, ни при полном.
+    expect(labels.filter((label) => /номенклатур/i.test(label))).toEqual([]);
   });
 });

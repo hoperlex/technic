@@ -387,7 +387,7 @@ const DOORS: Record<string, Door> = {
   },
   'PUT /api/v1/service-requests/:id/consumables': {
     call: via('putConsumables'),
-    entry: 'кнопка под таблицей на вкладке «Номенклатура»',
+    entry: 'кнопка под таблицей на вкладке «Расходники»',
   },
   'PATCH /api/v1/service-requests/:id/consumables/issued': {
     call: via('setConsumablesIssued'),

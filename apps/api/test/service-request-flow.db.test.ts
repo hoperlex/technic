@@ -36,9 +36,12 @@ import type { db as AppDb } from '../src/db/client';
  * продолжает предыдущий, и порядок здесь — часть проверки.
  *
  * Данные готовятся настоящими ручками везде, где портал это умеет. Прямой SQL остаётся ровно в
- * трёх местах, и каждое отмечено комментарием: учётки и контрагенты (форма учётки — не предмет
+ * четырёх местах, и каждое отмечено комментарием: учётки и контрагенты (форма учётки — не предмет
  * этого файла), строка `files` под подшивку документа (загрузка идёт в S3, которого в тесте нет)
- * и одно состояние, недостижимое через API вовсе, — расхождение ревизий сметы в «В работе».
+ * и два состояния, недостижимых через API вовсе, — расхождение ревизий сметы в «В работе» и
+ * заявка-наследие внутреннего ремонта со строками объёма работ и висящим предъявлением (после
+ * Р5 плана `docs/office-equipment-card-and-list-cleanup-plan.md` все четыре двери сметного круга
+ * такой заявке отвечают 422, и написать ей смету больше нечем).
  *
  * Запуск (база пустая либо уже промигрированная — миграции тест накатывает сам):
  *
@@ -3278,12 +3281,42 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       );
     });
 
-    it('срочные идут первыми в списке и отбираются своим фильтром', async () => {
-      const all = await inject('GET', '/api/v1/service-requests?pageSize=100', ctx.operator.auth);
-      expect(all.statusCode, all.body).toBe(200);
-      const items = all.json().items as ServiceRequestDto[];
-      expect(items[0]?.id, 'срочная заявка первой строкой').toBe(state.urgent.id);
+    it('порядок списка задаёт сортировка, а не срочность; отбор срочных на месте', async () => {
+      /*
+       * Подъём срочных над выбранной сортировкой снят (план
+       * `docs/office-equipment-card-and-list-cleanup-plan.md`, Р1), и проверять это надо ДВУМЯ
+       * своими свежими заявками с явными `sortBy=num&sortOrder=asc`, а не первой строкой всей
+       * фикстуры. Прежняя проверка «`items[0]` — срочная» опиралась на случайный текущий порядок
+       * общего списка: в нём лежат заявки прочих случаев файла и общей базы, и утверждение о его
+       * начале было бы зелёным при любом ответе сервера, кроме совсем сломанного.
+       *
+       * Обычная заводится ПЕРВОЙ, то есть её номер меньше. По возрастанию номера она обязана
+       * стоять выше срочной — это и отличает «подъёма нет» от «сортировки нет вовсе»; обратный
+       * порядок (`desc`) сторожит вторую половину: список действительно сортируется, а не
+       * отдаётся как лёг.
+       */
+      const ordinary = await createRequest(
+        ctx.customer.auth,
+        await freshUnit(),
+        'Обычная заявка: заведена раньше срочной',
+      );
+      const urgent = await createRequest(ctx.customer.auth, await freshUnit(), 'Срочная заявка', {
+        isUrgent: true,
+        urgencyReason: 'Единственный принтер на площадке',
+      });
+      expect(urgent.num, 'срочная заведена позже обычной').toBeGreaterThan(ordinary.num);
 
+      const asc = await listIds(ctx.operator.auth, '&sortBy=num&sortOrder=asc');
+      expect(asc.indexOf(urgent.id), 'по возрастанию номера срочная ниже обычной').toBeGreaterThan(
+        asc.indexOf(ordinary.id),
+      );
+      const desc = await listIds(ctx.operator.auth, '&sortBy=num&sortOrder=desc');
+      expect(desc.indexOf(urgent.id), 'по убыванию номера срочная выше обычной').toBeLessThan(
+        desc.indexOf(ordinary.id),
+      );
+
+      // Отбор срочных снятие подъёма не задело (Р1): спросить «покажи срочные» человек по-прежнему
+      // может — за него лишь перестали решать, с какой из них начинать.
       const onlyUrgent = await inject(
         'GET',
         '/api/v1/service-requests?urgent=true&pageSize=100',
@@ -3292,6 +3325,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect(onlyUrgent.statusCode, onlyUrgent.body).toBe(200);
       const urgentItems = onlyUrgent.json().items as ServiceRequestDto[];
       expect(urgentItems.every((r) => r.isUrgent)).toBe(true);
+      expect(urgentItems.map((r) => r.id)).toContain(urgent.id);
       expect(urgentItems.map((r) => r.id)).toContain(state.urgent.id);
     });
 
@@ -3895,10 +3929,12 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect(await waitingCount(ctx.operator.auth)).toBe(before);
     });
 
-    it('срочная отложенная не всплывает первой строкой и не входит в фильтр срочных (Р119)', async () => {
-      // Обычная заявка заводится **первой**: список берётся по номеру по возрастанию, и без
-      // правила «срочные вперёд» она стоит выше. Всплывёт срочная — значит правило сработало, и
-      // проверка отличает «отложенную не подняли» от «сортировки нет вовсе».
+    it('срочная отложенная выпадает из отбора срочных и возвращается в него возобновлением (Р119)', async () => {
+      // Обычная заявка заводится **первой**: список берётся по номеру по возрастанию, и её номер
+      // меньше. Порядок здесь задаёт только сортировка — подъёма срочных над выбранной колонкой
+      // больше нет (план `docs/office-equipment-card-and-list-cleanup-plan.md`, Р1), — и обе
+      // проверки порядка ниже сторожат именно это: строку не двигает ни флаг срочности, ни
+      // заморозка, ни возврат из неё. Предмет самого случая — Р119: из ОТБОРА отложенная выпадает.
       const ordinary = await assignedRequest('Обычная заявка для сравнения порядка');
       const urgent = await createRequest(
         ctx.customer.auth,
@@ -3917,20 +3953,24 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
 
       const byNum = () => listIds(ctx.operator.auth, '&sortBy=num&sortOrder=asc');
       const held = await byNum();
+      // Из общего списка отложенная не исчезает: заморозка — не удаление, и по номеру заявка
+      // стоит там же, где стояла бы без неё.
       expect(held).toContain(urgent.id);
-      // Первой строкой списка стоит то, за что берутся сейчас, а отложенная ждёт решения, а не рук.
-      expect(held[0]).not.toBe(urgent.id);
       expect(held.indexOf(urgent.id)).toBeGreaterThan(held.indexOf(ordinary.id));
-      // Фильтр срочных — та же очередь: показывай он отложенные, оператор начинал бы день со
-      // списка, половина которого не двигается.
+      // Отбор срочных — про «за что браться»: показывай он отложенные, оператор начинал бы день
+      // со списка, половина которого не двигается.
       expect(await listIds(ctx.operator.auth, '&urgent=true')).not.toContain(urgent.id);
 
       const back = await resume(urgent.id);
       expect(back.statusCode, back.body).toBe(200);
       const resumed = await byNum();
-      // Возобновлённая срочная встаёт наверх сама — сортировка на месте, и наверх её не пускала
-      // именно заморозка.
-      expect(resumed.indexOf(urgent.id)).toBeLessThan(resumed.indexOf(ordinary.id));
+      /*
+       * Возобновление возвращает заявку в ОТБОР срочных — и только туда. Прежнее утверждение
+       * `indexOf(urgent) < indexOf(ordinary)` проверяло подъём наверх и после Р1 держало бы
+       * снятое правило зелёным во втором месте: восстановившего `urgentFirst` этот тест не
+       * остановил бы, а обвинил бы в поломке — ровно наоборот.
+       */
+      expect(resumed.indexOf(urgent.id)).toBeGreaterThan(resumed.indexOf(ordinary.id));
       expect(await listIds(ctx.operator.auth, '&urgent=true')).toContain(urgent.id);
     });
 
@@ -4687,12 +4727,53 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       return card(dto.id);
     }
 
+    /**
+     * Тот же поимённый исполнитель, но рядом с подрядчиком — смешанный состав (Р8 плана
+     * `docs/office-equipment-card-and-list-cleanup-plan.md`): работу подрядчика оплачивают
+     * независимо от того, помогал ли ему свой сотрудник, и объём работ по такой заявке ПОЛОЖЕН.
+     *
+     * Помощник заведён ради случая о посторонней стороне ниже. Тот проверяет, что чужой держатель
+     * набора не проходит ни один ход исполнителя, — и половина этих ходов живёт в круге объёма
+     * работ. У чисто внутренней заявки круга больше нет (Р5), и на ней отказы стороны стали бы
+     * неотличимы от «шага не бывает»: `reopen` отвечал бы 422 «снимать нечего» ещё до разбора
+     * субъекта, то есть случай доказывал бы не то, что называет.
+     */
+    async function assignedToNamedAndService(description: string): Promise<ServiceRequestDto> {
+      const dto = await createRequest(ctx.customer.auth, await freshUnit(), description);
+      const assigned = await inject(
+        'PUT',
+        `/api/v1/service-requests/${dto.id}/executors`,
+        ctx.operator.auth,
+        {
+          userIds: [ctx.namedExecutor.id],
+          serviceCounterpartyId: ctx.serviceCounterpartyId,
+          version: dto.version,
+        },
+      );
+      expect(assigned.statusCode, assigned.body).toBe(200);
+      return card(dto.id);
+    }
+
     /** Объём работ из одной строки: предмет проверки — кто его пишет, а не что в нём. */
     const ESTIMATE_ITEMS = [
       { kind: 'service', name: 'Чистка узла подачи', quantity: 1, unitPrice: 1000 },
     ];
 
-    it('назначенный поимённо проходит «принять в работу», объём работ и закрытие работ', async () => {
+    /**
+     * ВНУТРЕННИЙ РЕМОНТ ЗАКРЫВАЕТСЯ БЕЗ ОБЪЁМА РАБОТ (Р6 плана
+     * `docs/office-equipment-card-and-list-cleanup-plan.md`, просьба заказчика 08.09.2026, п. 2).
+     *
+     * Прежде этот же случай прогонял заявку через смету: правку состава, предъявление и
+     * согласование. Так было не потому, что так задумывали, а потому, что иначе заявку было не
+     * закрыть вовсе (Н1): сверка ревизий на закрытии сравнивала `approved_estimate_revision`
+     * (пустой) с `estimate_revision` (ноль), и `NULL !== 0` не пускало внутренний ремонт в
+     * «Решена» ни при каких условиях. Заказчик просил снять не лишнюю кнопку, а обязательный шаг.
+     *
+     * Теперь путь такой, каким его и описывают словами: взял в работу, починил, закрыл датой и
+     * необязательным «что сделали». Тело закрытия законно содержит `items: []` — сам массив
+     * обязателен схемой, — и ни строк, ни сумм, ни скидки в нём нет.
+     */
+    it('внутренний ремонт: «Новая → В работе → Решена → Закрыта» без единого обращения к объёму работ', async () => {
       const assigned = await assignedToNamed('Поимённый исполнитель: чинит свой сисадмин');
       // Назначение статуса не меняет (Р5): заявка «Новая», а «Назначена» её называет состав.
       expect(assigned.status).toBe('new');
@@ -4708,36 +4789,52 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       );
       expect(started.statusCode, started.body).toBe(200);
       expect((started.json() as ServiceRequestDto).status).toBe('in_work');
+      // Ждут ИСПОЛНИТЕЛЯ, а не подписи: у внутренней заявки предъявления не бывает вовсе (Р7).
+      expect((started.json() as ServiceRequestDto).waitingOn).toBe('service');
 
-      const put = await inject(
-        'PUT',
-        `/api/v1/service-requests/${assigned.id}/estimate`,
-        ctx.namedExecutor.auth,
-        { items: ESTIMATE_ITEMS, version: (started.json() as ServiceRequestDto).version },
-      );
-      expect(put.statusCode, put.body).toBe(200);
-      const submitted = await inject(
-        'PATCH',
-        `/api/v1/service-requests/${assigned.id}/estimate/submit`,
-        ctx.namedExecutor.auth,
-        { version: (put.json() as ServiceRequestDto).version },
-      );
-      expect(submitted.statusCode, submitted.body).toBe(200);
-      // Предъявление статуса не меняет: заявка стоит в «В работе», а ход перешёл к согласующему.
-      expect((submitted.json() as ServiceRequestDto).status).toBe('in_work');
-      expect((submitted.json() as ServiceRequestDto).waitingOn).toBe('approval');
-
-      // Подпись осталась одна (Р10): визы ИТ больше нет вовсе, а согласие по деньгам — чужая
-      // сторона, и набором ИТ-службы она не открывается.
-      const approved = await inject(
+      /**
+       * ЧЕТЫРЕ ДВЕРИ СМЕТНОГО КРУГА ОТВЕЧАЮТ ОДИНАКОВО — 422 «объём работ по ней не составляют»
+       * (Р5, фаза C §8). Спрашивает их НАЗНАЧЕННЫЙ исполнитель и «Ведение», то есть те самые
+       * стороны, которым эти ходы и положены: предмет негоден независимо от стороны, и отказ
+       * обязан говорить про заявку, а не про человека.
+       *
+       * Коды здесь и есть предмет случая. До фазы C три ручки отвечали 403 предикатами контрактов
+       * («это не ваш шаг»), а `PUT /:id/estimate` не отвечала ничем — своего предиката у неё нет.
+       * Оба прежних исхода врали: 403 отправлял бы назначенного исполнителя добывать право,
+       * которого у него достаточно, а 200 у правки состава оставлял бы в заявке цифры, которых по
+       * ней не бывает. Проверяется поэтому не «отказано», а `422` и его текст: перепутанный код
+       * здесь стоит человеку похода за полномочием.
+       */
+      for (const [method, path, body] of [
+        ['PUT', 'estimate', { items: ESTIMATE_ITEMS }],
+        ['PATCH', 'estimate/submit', {}],
+        ['PATCH', 'estimate/reopen', { reason: 'вернуть в правку' }],
+      ] as const) {
+        const res = await inject(
+          method,
+          `/api/v1/service-requests/${assigned.id}/${path}`,
+          ctx.namedExecutor.auth,
+          { ...body, version: await version(assigned.id) },
+        );
+        expect(res.statusCode, `${method} ${path}: ${res.body}`).toBe(422);
+        expect((res.json() as { message: string }).message, path).toContain(
+          'объём работ по ней не составляют',
+        );
+      }
+      // Согласование — четвёртая дверь и единственная чужая: её ход у «Ведения», и отвечает ей то
+      // же самое. Подписываться под ценами, которых по заявке не бывает, некому.
+      const approval = await inject(
         'PATCH',
         `/api/v1/service-requests/${assigned.id}/estimate/approval`,
         ctx.operator.auth,
         { approved: true, version: await version(assigned.id) },
       );
-      expect(approved.statusCode, approved.body).toBe(200);
+      expect(approval.statusCode, approval.body).toBe(422);
+      expect((approval.json() as { message: string }).message).toContain(
+        'объём работ по ней не составляют',
+      );
 
-      // Примечание исполнителя — тоже его ручка, и стояла она под правом сметы.
+      // Примечание исполнителя — его ручка, и она осталась на месте: «что сделали» пишут словами.
       const commented = await inject(
         'PATCH',
         `/api/v1/service-requests/${assigned.id}/service-comment`,
@@ -4746,19 +4843,32 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       );
       expect(commented.statusCode, commented.body).toBe(200);
 
-      const before = await card(assigned.id);
+      // Закрытие — дата и комментарий. Закрывающего документа внутренняя заявка не требует (Н8):
+      // платить по ней некому.
       const completed = await inject(
         'PATCH',
         `/api/v1/service-requests/${assigned.id}/complete`,
         ctx.namedExecutor.auth,
         {
           completedOn: TODAY,
-          items: before.items.map((item) => ({ id: item.id, performed: true })),
-          version: before.version,
+          items: [],
+          comment: 'Почистил узел подачи, заменил ролик',
+          version: await version(assigned.id),
         },
       );
       expect(completed.statusCode, completed.body).toBe(200);
-      expect((completed.json() as ServiceRequestDto).status).toBe('done');
+      const done = completed.json() as ServiceRequestDto;
+      expect(done.status).toBe('done');
+      // Денег по внутреннему ремонту не фиксируют вовсе: ноль в итоге читался бы как выполненная
+      // на ноль работа, а прочерк — как «стоимость по этой заявке не считают» (Н5).
+      expect(done.completion?.totalAmount).toBeNull();
+      expect(done.completion?.adjustmentAmount).toBeNull();
+      expect(done.completion?.adjustmentReason).toBe('');
+      expect(done.items).toEqual([]);
+
+      const accepted = await acceptWork(assigned.id);
+      expect(accepted.statusCode, accepted.body).toBe(200);
+      expect((await card(assigned.id)).status).toBe('accepted');
     });
 
     it('тот же набор без назначения не проходит ни один ход — и отказывает ему коридор, а не страж', async () => {
@@ -4774,7 +4884,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         for (const guard of GUARD_REFUSALS) expect(message).not.toContain(guard);
       };
 
-      const assigned = await assignedToNamed('Поимённый исполнитель: посторонний держатель набора');
+      // Состав смешанный (Р8): предмет случая — сторона, и все ходы исполнителя обязаны быть
+      // достижимы, иначе отказ по стороне не отличить от «такого шага у заявки нет» (Р5).
+      const assigned = await assignedToNamedAndService(
+        'Поимённый исполнитель: посторонний держатель набора',
+      );
       expect(assigned.status).toBe('new');
 
       /*
@@ -5018,6 +5132,399 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       );
       expect(Number(after.rows[0]!.quantity)).toBe(3);
     }, 60_000);
+  });
+
+  /**
+   * ВНУТРЕННИЙ РЕМОНТ БЕЗ ОБЪЁМА РАБОТ: ПРОШЛОЕ, ОЧЕРЕДИ И ПЕРЕНАЗНАЧЕНИЕ (Э2 плана
+   * `docs/office-equipment-card-and-list-cleanup-plan.md`, решения Р6, Р7, Р9).
+   *
+   * Сам путь «взял — починил — закрыл» проверяет случай выше, в разделе поимённого исполнителя.
+   * Здесь — то, что видно только на живой схеме и только у заявок, ЗАВЕДЁННЫХ ДО этой волны:
+   * строки объёма работ, непогашенное предъявление и матрица переназначения. Именно они и есть
+   * цена ошибки: правило снимает шаг у новых заявок, но не имеет права ни превратить старые строки
+   * в стоимость внутреннего ремонта, ни уронить такую заявку из очередей вовсе.
+   */
+  describe('внутренний ремонт: историческое прошлое, очереди и переназначение (Э2)', () => {
+    const HISTORICAL_ITEMS = [
+      {
+        kind: 'service',
+        name: 'Чистка узла подачи',
+        quantity: 1,
+        unitPrice: 1000,
+        warrantyMonths: 6,
+      },
+    ];
+
+    /** Внутренняя заявка в «В работе»: назначен один свой сотрудник, подрядчика нет. */
+    async function internalInWork(description: string): Promise<ServiceRequestDto> {
+      const dto = await createRequest(ctx.customer.auth, await freshUnit(), description);
+      const assigned = await inject(
+        'PUT',
+        `/api/v1/service-requests/${dto.id}/executors`,
+        ctx.operator.auth,
+        { userIds: [ctx.namedExecutor.id], serviceCounterpartyId: null, version: dto.version },
+      );
+      expect(assigned.statusCode, assigned.body).toBe(200);
+      const started = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/start`,
+        ctx.namedExecutor.auth,
+        { version: (assigned.json() as { request: ServiceRequestDto }).request.version },
+      );
+      expect(started.statusCode, started.body).toBe(200);
+      return card(dto.id);
+    }
+
+    /** Строки объёма работ у внутренней заявки — прямо в таблицу, тем же составом, что клал портал. */
+    async function seedEstimateItems(requestId: string): Promise<void> {
+      const item = HISTORICAL_ITEMS[0]!;
+      await ctx.db.execute(sql`
+        INSERT INTO service_request_items
+          (request_id, kind, name, quantity, unit_price, warranty_months, sort_order)
+        VALUES (${requestId}, ${item.kind}, ${item.name}, ${item.quantity}, ${item.unitPrice},
+                ${item.warrantyMonths}, 0)`);
+      await ctx.db.execute(
+        sql`UPDATE service_requests SET version = version + 1 WHERE id = ${requestId}`,
+      );
+    }
+
+    /**
+     * Заявка-наследие: свой исполнитель, строки объёма работ и НЕПОГАШЕННОЕ предъявление.
+     *
+     * И СТРОКИ, И ПРЕДЪЯВЛЕНИЕ КЛАДУТСЯ ПРЯМЫМ SQL, а не ручками API, и это вынужденно. После
+     * фазы C (Р5) внутренняя заявка не пускает в объём работ ни одну из четырёх дверей — `PUT
+     * /:id/estimate` отвечает 422 наравне с предъявлением, — то есть собрать это состояние через
+     * портал больше нечем вовсе. А собрать его надо: заявки с историческими строками и висящим
+     * предъявлением в базе ЕСТЬ, они заведены до этой волны, и вся волна ровно про то, как с ними
+     * обходятся. Отказаться от случая значило бы не проверить ни Р7, ни Н18 — то есть выкатить
+     * правило, доказанное только на заявках, которых оно не касается.
+     *
+     * Прошлое воспроизводится ИМЕННО ТАКИМ, каким оно записано в базе: строка `service_request_items`
+     * с ценой и гарантией, поднятая ревизия и `estimate_pending_revision`, равная ей (`CHECK`
+     * сторожит это равенство). Версия поднимается тем же UPDATE — иначе следующий ход упёрся бы в
+     * сверку версий и случай доказывал бы оптимистичную блокировку.
+     */
+    async function internalWithHistory(description: string): Promise<ServiceRequestDto> {
+      const dto = await internalInWork(description);
+      await seedEstimateItems(dto.id);
+      await ctx.db.execute(sql`
+        UPDATE service_requests
+           SET estimate_revision = 1,
+               estimate_pending_revision = 1,
+               estimate_submitted_at = now(),
+               version = version + 1
+         WHERE id = ${dto.id}`);
+      const historical = await card(dto.id);
+      expect(historical.items).toHaveLength(1);
+      expect(historical.estimatePendingRevision).toBe(1);
+      return historical;
+    }
+
+    /**
+     * Р7 и Н11 разом: историческое предъявление перестало быть РАБОЧИМ ожиданием, но осталось
+     * сохранённым фактом.
+     *
+     * Половина случая — про очереди, и она главная. Читай сервер сырую колонку, такая заявка вечно
+     * стояла бы в «Ждут меня» у «Ведения» как ждущая подписи, которую после Р5 некому дать. Читай
+     * он её наполовину (одну половину оси, Н16), заявка выпала бы из очередей ВООБЩЕ — в том числе
+     * из очереди исполнителя, куда её отправляет карточка, — и падения не случилось бы: строка
+     * просто исчезла бы из списка.
+     */
+    it('историческое предъявление ставит внутреннюю заявку в очередь исполнителя, а не согласования', async () => {
+      const historical = await internalWithHistory('Наследие: предъявление без ответа');
+
+      // Карточка: ждут ИСПОЛНИТЕЛЯ. Сырое поле при этом на месте — историю мы не переписываем.
+      expect(historical.waitingOn).toBe('service');
+      expect(historical.estimatePendingRevision).toBe(1);
+
+      // Список исполнителя — та же сторона, посчитанная SQL-выражением builder'а. Ровно здесь
+      // расходились бы две записи одного правила, будь их две.
+      expect(await listIds(ctx.namedExecutor.auth, '&waitingOnMe=true')).toContain(historical.id);
+      // Очередь согласования — «Ведение»: оно видит сторону `approval` по своему праву. Заявки в
+      // ней нет: подписывать по внутреннему ремонту нечего.
+      expect(await listIds(ctx.operator.auth, '&waitingOnMe=true')).not.toContain(historical.id);
+
+      // И переназначение историческим предъявлением не запирается (Н11): иначе такая заявка
+      // осталась бы за прежним исполнителем навсегда — ручного возврата сметы в правку у неё нет.
+      const reassigned = await inject(
+        'PUT',
+        `/api/v1/service-requests/${historical.id}/executors`,
+        ctx.operator.auth,
+        {
+          userIds: [ctx.strayExecutor.id],
+          serviceCounterpartyId: null,
+          reason: 'Сисадмин ушёл в отпуск',
+          version: historical.version,
+        },
+      );
+      expect(reassigned.statusCode, reassigned.body).toBe(200);
+    });
+
+    /**
+     * Р6 и Н18: закрытие внутренней заявки С ИСТОРИЧЕСКИМИ СТРОКАМИ не превращает их в факт.
+     *
+     * Пройди такая заявка общий путь закрытия, `estimateItems` потребовал бы отметку по каждой
+     * строке, проставил бы факт, посчитал бы сумму выполненного и выдал бы гарантию на шесть
+     * месяцев — от имени своего сисадмина, который её не давал (Н4). Строки обязаны остаться
+     * ИСТОРИЕЙ: они объясняют, на каком основании работали, и трогать их нельзя ни в ту, ни в
+     * другую сторону.
+     *
+     * Тем же патчем гасится предъявление (Н18): закрытой заявки с непогашенным предъявлением
+     * сегодня не бывает ни одной, и заводить такое состояние первым же выпуском — значит ждать,
+     * когда его прочитает напрямую первый отчёт.
+     */
+    it('закрытие внутренней заявки с историческими строками не создаёт ни факта, ни гарантий, ни денег', async () => {
+      const historical = await internalWithHistory('Наследие: закрытие со старыми строками');
+
+      const completed = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${historical.id}/complete`,
+        ctx.namedExecutor.auth,
+        {
+          completedOn: TODAY,
+          items: [],
+          comment: 'Почистил, старую смету не трогаю',
+          version: historical.version,
+        },
+      );
+      expect(completed.statusCode, completed.body).toBe(200);
+
+      const after = await card(historical.id);
+      expect(after.status).toBe('done');
+      // 1. Денег нет: ни итога, ни скидки, ни причины.
+      expect(after.completion?.totalAmount).toBeNull();
+      expect(after.completion?.adjustmentAmount).toBeNull();
+      expect(after.completion?.adjustmentReason).toBe('');
+      // 2. Строки на месте и остались планом: ни отметки о выполнении, ни гарантии.
+      expect(after.items).toHaveLength(1);
+      expect(after.items[0]!.performed).toBeNull();
+      expect(after.items[0]!.warrantyUntil).toBeNull();
+      // 3. Предъявление погашено, а снимок согласования не трогали — его и не было.
+      expect(after.estimatePendingRevision).toBeNull();
+      expect(after.estimateRevision).toBe(1);
+      expect(after.approval).toBeNull();
+
+      // 4. Денежных полей нет и в аудите: ноль в `total` — тоже зафиксированная сумма, а `revision`
+      //    — след упразднённого шага. Читается сама таблица: `writeAudit` ходит мимо транзакции, и
+      //    проверять ответ ручки вместо журнала значило бы проверять не то.
+      const audit = await ctx.db.execute<{ metadata: Record<string, unknown> }>(sql`
+        SELECT metadata FROM audit_log
+         WHERE entity_type = 'serviceRequest' AND entity_id = ${historical.id}
+           AND action = 'serviceRequest.complete'`);
+      expect(audit.rows).toHaveLength(1);
+      const metadata = audit.rows[0]!.metadata;
+      for (const key of ['revision', 'total', 'works', 'changes', 'grantedWarranties']) {
+        expect(metadata, key).not.toHaveProperty(key);
+      }
+      expect(metadata).toHaveProperty('completedOn', TODAY);
+
+      // 5. Реестр гарантий пуст: гарантию по внутреннему ремонту не выдавали (Н4).
+      const warranties = await inject(
+        'GET',
+        '/api/v1/service-requests/warranties?pageSize=200',
+        ctx.operator.auth,
+      );
+      expect(warranties.statusCode, warranties.body).toBe(200);
+      expect(
+        (warranties.json().items as ServiceWarrantyRowDto[]).map((row) => row.requestId),
+      ).not.toContain(historical.id);
+    });
+
+    /**
+     * ЗАКРЫТИЕ ВНУТРЕННЕЙ ЗАЯВКИ НЕ ПРИНИМАЕТ ТЕЛА, СОБРАННОГО ВОКРУГ СМЕТЫ (Р6, фаза C §8).
+     *
+     * Отправитель такого тела ровно один — залежавшаяся вкладка старой сборки: она рисует таблицу
+     * объёма работ, собирает отметки по строкам, скидку и расходники и шлёт всё это закрытием. В
+     * фазе A сервер её терпел и присланное молча не применял; терпимость снята, и случай сторожит
+     * именно ЗАМЕНУ молчания отказом. Цена ошибки — тихое расхождение: человек видел бы «работы
+     * закрыты», а введённые им цифры не попали бы никуда, и узнал бы он об этом на сверке.
+     *
+     * Три поля проверяются ПОРОЗНЬ, а не одним телом со всем сразу: слитые в один запрос, они
+     * доказывали бы, что отказ приходит хоть на что-нибудь, — и запрет по любому из трёх мог бы
+     * тихо исчезнуть, оставив случай зелёным.
+     *
+     * Четвёртой строкой — законное тело: `items: []` ОБЯЗАН проходить (Н8). Массив объявлен схемой
+     * обязательным, и запрети мы поле целиком, внутреннее закрытие стало бы невозможным вовсе.
+     * Без этой половины случай был бы доказательством того, что закрытие сломано.
+     */
+    it('внутреннее закрытие отбивает строки, расходники и скидку — и принимает пустое тело', async () => {
+      const request = await internalWithHistory('Фаза C: старое тело закрытия');
+      const complete = async (body: Record<string, unknown>): Promise<Injected> =>
+        inject('PATCH', `/api/v1/service-requests/${request.id}/complete`, ctx.namedExecutor.auth, {
+          completedOn: TODAY,
+          items: [],
+          ...body,
+          version: await version(request.id),
+        });
+
+      // 1. Отметки по строкам объёма работ — ровно то, что шлёт старое окно закрытия ремонта.
+      const withItems = await complete({
+        items: request.items.map((item) => ({ id: item.id, performed: true })),
+      });
+      expect(withItems.statusCode, withItems.body).toBe(422);
+      expect((withItems.json() as { message: string }).message).toContain(
+        'стоимость работ не фиксируется',
+      );
+
+      // 2. Расходники: списывать со склада по ремонтной заявке нечего, и молча проглоченный
+      //    список означал бы, что кладовщик ждёт движения, которого не будет.
+      const withConsumables = await complete({
+        consumables: [{ id: '00000000-0000-4000-8000-000000000009', issuedQuantity: 1 }],
+      });
+      expect(withConsumables.statusCode, withConsumables.body).toBe(422);
+
+      // 3. Скидка с причиной: обе половины сразу — порознь их отбивает проверка пары, и случай
+      //    доказывал бы её вместо запрета денег по внутренней заявке.
+      const withAdjustment = await complete({
+        adjustmentAmount: -500,
+        adjustmentReason: 'скидка за задержку',
+      });
+      expect(withAdjustment.statusCode, withAdjustment.body).toBe(422);
+      expect((withAdjustment.json() as { message: string }).message).toContain(
+        'стоимость работ не фиксируется',
+      );
+
+      // Ни одна попытка заявку не сдвинула: отказ обязан быть отказом, а не половиной закрытия.
+      expect((await card(request.id)).status).toBe('in_work');
+
+      // 4. И законное тело нового портала проходит тем же ходом.
+      const ok = await complete({ comment: 'Почистил, старую смету не трогаю' });
+      expect(ok.statusCode, ok.body).toBe(200);
+      expect((ok.json() as ServiceRequestDto).status).toBe('done');
+    });
+
+    /**
+     * Р9 и Н10: ПОЯВЛЕНИЕ ПОДРЯДЧИКА НЕ НАСЛЕДУЕТ ВНУТРЕННИЙ ОБЪЁМ РАБОТ.
+     *
+     * Прежнее условие сброса спрашивало «сняли ли поимённого ИЛИ сменили ли УЖЕ НАЗНАЧЕННОГО
+     * подрядчика» — и переход `NULL → service` при сохранённом составе своих исполнителей мимо
+     * него проходил. Подрядчик получал заявку с готовой сметой, которой не писал, и начинал
+     * коммерческий этап с чужих цен: сверка ревизий на закрытии этого не поймала бы — ревизия-то
+     * своя.
+     *
+     * Четыре перехода проверяются одним случаем намеренно: это не четыре правила, а одна матрица,
+     * и порознь её половины читаются как совпадения.
+     */
+    it('переназначение сбрасывает объём работ при любой смене подрядчика и только при ней (Р9)', async () => {
+      // 1. `NULL → service` при сохранённом своём исполнителе — та самая находка Н10.
+      const inherited = await internalInWork('Р9: свой сисадмин, затем подрядчик');
+      // Строки — тем же прямым SQL, что у заявки-наследия: после фазы C `PUT /:id/estimate` по
+      // внутренней заявке отвечает 422 (Р5), и написать их ручкой больше нечем. Предмет случая от
+      // этого не страдает — он про СБРОС состава при смене подрядчика, а не про то, кто состав клал.
+      await seedEstimateItems(inherited.id);
+      expect((await card(inherited.id)).items).toHaveLength(1);
+      const toService = await inject(
+        'PUT',
+        `/api/v1/service-requests/${inherited.id}/executors`,
+        ctx.operator.auth,
+        {
+          // Свой сотрудник ОСТАЁТСЯ в составе: без этого сработала бы прежняя половина условия
+          // («сняли поимённого»), и находка Н10 осталась бы непроверенной.
+          userIds: [ctx.namedExecutor.id],
+          serviceCounterpartyId: ctx.serviceCounterpartyId,
+          reason: 'Своими силами не вышло, зовём подрядчика',
+          version: await version(inherited.id),
+        },
+      );
+      expect(toService.statusCode, toService.body).toBe(200);
+      const afterService = await card(inherited.id);
+      expect(afterService.service?.id).toBe(ctx.serviceCounterpartyId);
+      expect(afterService.executors.map((e) => e.userId)).toEqual([ctx.namedExecutor.id]);
+      expect(afterService.items).toEqual([]);
+      expect(afterService.estimateRevision).toBe(0);
+
+      // 2. `service → NULL`: обратный ход обнулял смету и прежде — проверяется, что не перестал.
+      const back = await inject(
+        'PUT',
+        `/api/v1/service-requests/${afterService.id}/executors`,
+        ctx.operator.auth,
+        {
+          userIds: [ctx.namedExecutor.id],
+          serviceCounterpartyId: null,
+          reason: 'Подрядчик отказался, доделываем сами',
+          version: afterService.version,
+        },
+      );
+      expect(back.statusCode, back.body).toBe(200);
+      expect((await card(afterService.id)).service).toBeNull();
+
+      // 3. `service A → service B`: смета первого подрядчика второму не достаётся.
+      const swapped = await requestIn('in_work', 'Р9: смена подрядчика');
+      expect(swapped.items.length).toBeGreaterThan(0);
+      const toOther = await inject(
+        'PUT',
+        `/api/v1/service-requests/${swapped.id}/executors`,
+        ctx.operator.auth,
+        {
+          userIds: [],
+          serviceCounterpartyId: ctx.otherServiceCounterpartyId,
+          reason: 'Первый подрядчик не приехал',
+          version: swapped.version,
+        },
+      );
+      expect(toOther.statusCode, toOther.body).toBe(200);
+      const afterSwap = await card(swapped.id);
+      expect(afterSwap.service?.id).toBe(ctx.otherServiceCounterpartyId);
+      expect(afterSwap.items).toEqual([]);
+      expect(afterSwap.estimateRevision).toBe(0);
+      expect(afterSwap.approval).toBeNull();
+
+      // 4. Подрядчик НЕ менялся: добавление своего помощника чужого счёта не обесценивает, и
+      //    смету трогать нечем. Без этой половины условие «сбрасывать всегда» тоже было бы зелёным.
+      const kept = await requestIn('in_work', 'Р9: подрядчик остаётся, добавили своего');
+      const revision = kept.estimateRevision;
+      expect(kept.items.length).toBeGreaterThan(0);
+      const helper = await inject(
+        'PUT',
+        `/api/v1/service-requests/${kept.id}/executors`,
+        ctx.operator.auth,
+        {
+          userIds: [ctx.namedExecutor.id],
+          serviceCounterpartyId: ctx.serviceCounterpartyId,
+          reason: 'Свой сисадмин поможет с доступом в кабинет',
+          version: kept.version,
+        },
+      );
+      expect(helper.statusCode, helper.body).toBe(200);
+      const afterHelper = await card(kept.id);
+      expect(afterHelper.service?.id).toBe(ctx.serviceCounterpartyId);
+      expect(afterHelper.executors.map((e) => e.userId)).toEqual([ctx.namedExecutor.id]);
+      expect(afterHelper.items.length).toBe(kept.items.length);
+      expect(afterHelper.estimateRevision).toBe(revision);
+      expect(afterHelper.approval).not.toBeNull();
+    });
+
+    /**
+     * ЗАЯВКА ПОДРЯДЧИКА ЗАКРЫВАЕТСЯ ПО-ПРЕЖНЕМУ ТОЛЬКО ПО СОГЛАСОВАННОЙ РЕВИЗИИ.
+     *
+     * Условие сверки перестало спрашивать вид заявки и спрашивает признак Р4 — «нужен ли по ней
+     * объём работ», — и `kind === 'repair'` растворился в нём как половина. Половина, которой не
+     * стало видно, обязана остаться работающей: у заявки с подрядчиком признак истинен, и сверка
+     * держит её так же, как держала. Иначе снятие шага у внутреннего ремонта тихо сняло бы планку
+     * и у коммерческого.
+     */
+    it('заявку подрядчика без свежей подписи в «Решена» не пускают — 409 (Р4 не ослабил сверку)', async () => {
+      const request = await requestIn('in_work', 'Сверка ревизий после Р4');
+      // Новое предъявление обесценивает прежнюю подпись: ревизия 2 не согласована никем.
+      const pending = await submitEstimate(request.id);
+      expect(pending.estimatePendingRevision).toBe(pending.estimateRevision);
+
+      const res = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${request.id}/complete`,
+        ctx.service.auth,
+        {
+          completedOn: TODAY,
+          items: (await card(request.id)).items.map((item) => ({ id: item.id, performed: true })),
+          version: await version(request.id),
+        },
+      );
+      expect(res.statusCode, res.body).toBe(409);
+      expect((res.json() as { message: string }).message).toContain(
+        'согласуйте объём работ заново',
+      );
+      expect((await card(request.id)).status).toBe('in_work');
+    });
   });
 
   /**

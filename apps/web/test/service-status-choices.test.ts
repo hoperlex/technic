@@ -3,6 +3,7 @@ import {
   ACCESS_PROFILES,
   accessProfileLabel,
   allowedServiceStatusTransitions,
+  can,
   permissionsFor,
   SERVICE_REQUEST_STATUSES,
   serviceResumeTarget,
@@ -48,6 +49,7 @@ const MODALS: ServiceRequestModals = {
   complete: () => {},
   issue: () => {},
   accept: () => {},
+  cancel: () => {},
   hold: () => {},
   urgency: () => {},
   chat: () => {},
@@ -180,11 +182,16 @@ describe('полнота вверх: коридор не остаётся без
    * На РАСПРЕДЕЛЁННОЙ заявке множества совпадают полностью: предикаты действий сужают коридор
    * только там, где заявкой ещё никто не занят.
    *
-   * Единственное законное расхождение — нераспределённая заявка: ветка права на объём работ
-   * открывает администратору дугу `new → in_work`, а пункта «Принять в работу» нет, потому что
-   * `canStartServiceWork` требует исполнителей, — и сервер отвечает тем же отказом. Поэтому
-   * сравнение идёт по заявке с исполнителями, а поведение нераспределённой закреплено отдельным
-   * случаем ниже.
+   * Законных расхождений два, и оба закреплены отдельными случаями ниже.
+   *
+   * Первое — нераспределённая заявка: ветка права на объём работ открывает администратору дугу
+   * `new → in_work`, а пункта «Принять в работу» нет, потому что `canStartServiceWork` требует
+   * исполнителей, — и сервер отвечает тем же отказом. Поэтому сравнение идёт по заявке с
+   * исполнителями.
+   *
+   * Второе — дуга `in_work → new` у субъекта с `assign` без `serviceRequests.status`: она пришла из
+   * коридора распределения (переназначение), а пункт отката уходит в ручку статуса. Оно вычитается
+   * прямо в сравнении, рядом с причиной.
    *
    * Возврат из заморозки в сравнении не участвует: его цель коридором не выражается вовсе.
    */
@@ -207,7 +214,18 @@ describe('полнота вверх: коридор не остаётся без
               })
             : assignedServiceRequest({ status, files: [serviceRequestFile('act')] });
         const assignment = serviceExecutorAssignment(request, user);
+        /*
+         * ВТОРОЕ ЗАКОННОЕ РАСХОЖДЕНИЕ, и оно закреплено случаем ниже. Дуга `in_work → new` приходит
+         * в коридор ДВУМЯ путями: распределяющему её даёт `SERVICE_ASSIGNER_TRANSITIONS` ради
+         * переназначения (`PUT /:id/executors` сам возвращает заявку в «Новую»), а пункт «Вернуть в
+         * «Новую»» уходит в `PATCH /:id/status`. У субъекта с `assign` без `serviceRequests.status`
+         * — то есть у профиля «Системный администратор» — пункта поэтому нет, и это не забытый
+         * `toStatus`: сервер отвечал ему 403 «Недостаточно прав для смены статуса», пока пункт
+         * рисовался (проверено прямым опросом).
+         */
+        const rollbackClosed = request.status === 'in_work' && !can(user, 'serviceRequests.status');
         const corridor = [...allowedServiceStatusTransitions(request.status, user, assignment)]
+          .filter((to) => !(rollbackClosed && to === 'new'))
           .sort()
           .join(', ');
         const covered = [
@@ -234,6 +252,29 @@ describe('полнота вверх: коридор не остаётся без
     ).toContain('in_work');
     // …а пункта нет: заявка никому не назначена, и сервер откажет так же.
     expect(labelsFor(plain, admin)).not.toContain('«В работе» · принять в работу');
+  });
+
+  it('дуга «В работе» → «Новая» без права статуса остаётся без пункта: за ней ручка «Ведения»', () => {
+    const sysadmin = serviceInHouseExecutor();
+    const request = assignedServiceRequest({ status: 'in_work' });
+
+    // Коридор дугу отдаёт — её даёт распределение: переназначение само возвращает заявку в «Новую».
+    expect(
+      allowedServiceStatusTransitions(
+        'in_work',
+        sysadmin,
+        serviceExecutorAssignment(request, sysadmin),
+      ),
+    ).toContain('new');
+    // …а пункта отката нет: он уходит в `PATCH /:id/status`, которого сисадмину не открывали.
+    const keys = itemsFor(request, sysadmin).map((item) => item.key);
+    expect(keys).not.toContain('rollback-start');
+    // Законный путь к той же «Новой» у него при этом остаётся — своим пунктом и своей ручкой.
+    expect(keys).toContain('assign');
+    // А у «Ведения» право статуса есть, и пункт на месте: правило про право, а не про профиль.
+    expect(itemsFor(request, serviceOperator()).map((item) => item.key)).toContain(
+      'rollback-start',
+    );
   });
 
   it('у отложенной всегда есть возврат — с целью из самой заявки', () => {

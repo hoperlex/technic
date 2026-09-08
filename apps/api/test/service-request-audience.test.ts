@@ -64,6 +64,20 @@ const ASSIGNED_COUNTERPARTY: ServiceExecutorAssignment = {
   isNamedExecutor: false,
 };
 
+/**
+ * ТРЕТИЙ ВХОД ПОДШИВКИ — САМА ЗАЯВКА (Р5, Н17 плана
+ * `docs/office-equipment-card-and-list-cleanup-plan.md`): вид `estimate` не кладут туда, где объёма
+ * работ не составляют.
+ *
+ * Ремонт подрядчика стоит в случаях НИЖЕ по умолчанию, и это не «лишь бы что-нибудь передать»: они
+ * про аудиторию, статус и сторону, а заявка без подрядчика закрывала бы объём работ четвёртым
+ * основанием — тем, о котором случай молчит. Упади такой тест, было бы не видно, какое из двух
+ * правил поехало.
+ */
+const CONTRACTOR_REPAIR = { kind: 'repair', serviceCounterpartyId: UUID } as const;
+/** Тот же ремонт, но ведёт его свой сотрудник: объём работ по такой заявке не составляют вовсе. */
+const INTERNAL_REPAIR = { kind: 'repair', serviceCounterpartyId: null } as const;
+
 const file = (kind: ServiceFileKind) => ({
   id: `file-${kind}`,
   filename: `${kind}.pdf`,
@@ -404,7 +418,13 @@ describe('видимость и подшивка документов', () => {
    */
   it('заявитель кладёт только вложение, и только по правилу статуса', () => {
     for (const status of SERVICE_REQUEST_STATUSES) {
-      const requester = attachableServiceFileKinds(status, 'requester', CUSTOMER, NOT_ASSIGNED);
+      const requester = attachableServiceFileKinds(
+        status,
+        'requester',
+        CUSTOMER,
+        NOT_ASSIGNED,
+        CONTRACTOR_REPAIR,
+      );
       expect(
         requester.every((kind) => kind === 'attachment'),
         status,
@@ -413,23 +433,46 @@ describe('видимость и подшивка документов', () => {
       // в этом статусе, заявителю не запрещают. Сторона у сравниваемого субъекта полная
       // (исполнитель), иначе сравнение упёрлось бы в неё, а не в статус.
       expect(requester, status).toEqual(
-        attachableServiceFileKinds(status, 'finance', EXECUTOR, NAMED).filter(
+        attachableServiceFileKinds(status, 'finance', EXECUTOR, NAMED, CONTRACTOR_REPAIR).filter(
           (kind) => kind === 'attachment',
         ),
       );
     }
-    expect(canAttachServiceFile('attachment', 'new', 'requester', CUSTOMER, NOT_ASSIGNED)).toBe(
-      true,
-    );
-    expect(canAttachServiceFile('invoice', 'in_work', 'requester', CUSTOMER, NOT_ASSIGNED)).toBe(
-      false,
-    );
+    expect(
+      canAttachServiceFile(
+        'attachment',
+        'new',
+        'requester',
+        CUSTOMER,
+        NOT_ASSIGNED,
+        CONTRACTOR_REPAIR,
+      ),
+    ).toBe(true);
+    expect(
+      canAttachServiceFile(
+        'invoice',
+        'in_work',
+        'requester',
+        CUSTOMER,
+        NOT_ASSIGNED,
+        CONTRACTOR_REPAIR,
+      ),
+    ).toBe(false);
     // Закрытая заявка вложений не принимает ни у кого: после приёмки она принимает бумаги и ничего
     // не отдаёт (Р16, Р29).
     expect(
-      canAttachServiceFile('attachment', 'accepted', 'requester', CUSTOMER, NOT_ASSIGNED),
+      canAttachServiceFile(
+        'attachment',
+        'accepted',
+        'requester',
+        CUSTOMER,
+        NOT_ASSIGNED,
+        CONTRACTOR_REPAIR,
+      ),
     ).toBe(false);
-    expect(canAttachServiceFile('attachment', 'accepted', 'finance', EXECUTOR, NAMED)).toBe(false);
+    expect(
+      canAttachServiceFile('attachment', 'accepted', 'finance', EXECUTOR, NAMED, CONTRACTOR_REPAIR),
+    ).toBe(false);
   });
 
   /**
@@ -440,6 +483,10 @@ describe('видимость и подшивка документов', () => {
    * Субъект здесь — назначенный исполнитель: слой стороны (Р3 плана аудита исполнителей) проверяет
    * соседний случай, а этот про статусы, и посторонняя сторона превратила бы его в проверку двух
    * правил сразу — упади он, было бы не видно, какое из них поехало.
+   *
+   * Заявка по той же причине с подрядчиком: у внутренней `estimate` не имеет ни одного статуса
+   * (Р5, Н17), и таблица «прежнего маршрута» доказывала бы не совместимость выката, а новое
+   * правило — то есть ровно то, чего этот случай проверять не должен.
    */
   it('перечень статусов финансовой аудитории — прежняя таблица маршрута', () => {
     const before: Record<ServiceFileKind, string[]> = {
@@ -451,7 +498,7 @@ describe('видимость и подшивка документов', () => {
     };
     for (const kind of SERVICE_FILE_KINDS) {
       const allowed = SERVICE_REQUEST_STATUSES.filter((status) =>
-        canAttachServiceFile(kind, status, 'finance', EXECUTOR, NAMED),
+        canAttachServiceFile(kind, status, 'finance', EXECUTOR, NAMED, CONTRACTOR_REPAIR),
       );
       expect([...allowed], kind).toEqual(before[kind]);
     }
@@ -476,32 +523,64 @@ describe('видимость и подшивка документов', () => {
     };
     expect(serviceRequestAudienceOf(IT_SERVICE, NOT_ASSIGNED)).toBe('finance');
     for (const kind of ['act', 'invoice', 'warranty_card', 'estimate'] as const) {
-      expect(canAttachServiceFile(kind, 'in_work', 'finance', IT_SERVICE, NOT_ASSIGNED), kind).toBe(
-        false,
-      );
+      expect(
+        canAttachServiceFile(
+          kind,
+          'in_work',
+          'finance',
+          IT_SERVICE,
+          NOT_ASSIGNED,
+          CONTRACTOR_REPAIR,
+        ),
+        kind,
+      ).toBe(false);
       // Назначение ту же учётку и допускает: сторона — это факт по ЭТОЙ заявке, а не должность.
-      expect(canAttachServiceFile(kind, 'in_work', 'finance', IT_SERVICE, NAMED), kind).toBe(true);
+      expect(
+        canAttachServiceFile(kind, 'in_work', 'finance', IT_SERVICE, NAMED, CONTRACTOR_REPAIR),
+        kind,
+      ).toBe(true);
     }
     // Вложение стороны не спрашивает — иначе половина заявок осталась бы без фотографии поломки.
-    expect(canAttachServiceFile('attachment', 'new', 'finance', IT_SERVICE, NOT_ASSIGNED)).toBe(
-      true,
-    );
+    expect(
+      canAttachServiceFile(
+        'attachment',
+        'new',
+        'finance',
+        IT_SERVICE,
+        NOT_ASSIGNED,
+        CONTRACTOR_REPAIR,
+      ),
+    ).toBe(true);
   });
 
   /**
    * «Ведение» — вторая сторона закрывающих документов и НЕ сторона объёма работ (Р3). Различие
    * рабочее: акт приходит почтой, и сканирует его тот, кто ведёт заявку, — а предложить объём работ
    * за исполнителя означало бы подписать собственное согласование.
+   *
+   * ОСНОВАНИЙ У ОТКАЗА ПО `estimate` СТАЛО ДВА (Р5, Н17), и случай обязан проверять то, что
+   * называет: заявка здесь ремонтная и с подрядчиком, то есть объём работ по ней ПОЛОЖЕН, — и
+   * единственное, что отбивает «Ведение», это сторона. Подставь мы внутреннюю заявку, тест остался
+   * бы зелёным, сняв сторону из правила вовсе: отказ пришёл бы по Р4, а имя случая обещало бы
+   * другое. Второе основание проверяет соседний случай ниже.
    */
   it('«Ведение» кладёт акт и счёт, но не объём работ', () => {
     for (const kind of ['act', 'invoice', 'warranty_card'] as const) {
-      expect(canAttachServiceFile(kind, 'in_work', 'finance', OPERATOR, NOT_ASSIGNED), kind).toBe(
-        true,
-      );
+      expect(
+        canAttachServiceFile(kind, 'in_work', 'finance', OPERATOR, NOT_ASSIGNED, CONTRACTOR_REPAIR),
+        kind,
+      ).toBe(true);
     }
-    expect(canAttachServiceFile('estimate', 'in_work', 'finance', OPERATOR, NOT_ASSIGNED)).toBe(
-      false,
-    );
+    expect(
+      canAttachServiceFile(
+        'estimate',
+        'in_work',
+        'finance',
+        OPERATOR,
+        NOT_ASSIGNED,
+        CONTRACTOR_REPAIR,
+      ),
+    ).toBe(false);
     // Сервисная компания — сторона исполнителя ровно на назначенной ей заявке (`isServiceExecutor`).
     expect(
       canAttachServiceFile(
@@ -510,11 +589,68 @@ describe('видимость и подшивка документов', () => {
         'finance',
         SERVICE_COMPANY,
         ASSIGNED_COUNTERPARTY,
+        CONTRACTOR_REPAIR,
       ),
     ).toBe(true);
     expect(
-      canAttachServiceFile('estimate', 'in_work', 'finance', SERVICE_COMPANY, NOT_ASSIGNED),
+      canAttachServiceFile(
+        'estimate',
+        'in_work',
+        'finance',
+        SERVICE_COMPANY,
+        NOT_ASSIGNED,
+        CONTRACTOR_REPAIR,
+      ),
     ).toBe(false);
+  });
+
+  /**
+   * ТРЕТИЙ СЛОЙ — САМА ЗАЯВКА (Р5, Н17 плана `office-equipment-card-and-list-cleanup-plan.md`).
+   *
+   * Политика вида `estimate` знает статус, аудиторию и сторону, но про подрядчика не знает и знать
+   * не может: признак читается из строки заявки. Без этого слоя внутренний исполнитель — сторона
+   * настоящая, статус подходящий, аудитория финансовая — подшивал бы к заявке документ с ценами,
+   * которых по ней не бывает: этап объёма работ у неё снят целиком.
+   *
+   * Проверяется ровно эта разница: тот же вид, тот же статус, та же сторона, разные заявки. И
+   * проверяется, что слой ОДИН: остальные четыре вида признак Р4 не спрашивают вовсе — акт и счёт
+   * по внутренней заявке тоже не появятся, но не появятся они по другой причине (её нечем
+   * оплачивать), и запрещать их этим правилом было бы вторым правилом под одним именем.
+   */
+  it('объём работ не подшивают к заявке, которую ведёт свой сотрудник', () => {
+    expect(
+      canAttachServiceFile('estimate', 'in_work', 'finance', EXECUTOR, NAMED, CONTRACTOR_REPAIR),
+    ).toBe(true);
+    expect(
+      canAttachServiceFile('estimate', 'in_work', 'finance', EXECUTOR, NAMED, INTERNAL_REPAIR),
+    ).toBe(false);
+    // Перечень формы — производный, и признак обязан доехать и до него: не приди он, форма
+    // предлагала бы «Объём работ», а сервер отвечал бы на выбранный файл отказом.
+    expect(
+      attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, INTERNAL_REPAIR),
+    ).not.toContain('estimate');
+    expect(attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, CONTRACTOR_REPAIR)) //
+      .toContain('estimate');
+    // Остальные виды признак Р4 не спрашивают: перечни внутренней и подрядной заявки различаются
+    // ровно на «Объём работ», и ни на что больше.
+    expect(
+      attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, CONTRACTOR_REPAIR).filter(
+        (kind) => kind !== 'estimate',
+      ),
+    ).toEqual([
+      ...attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, INTERNAL_REPAIR),
+    ]);
+    // Заявка на расходники — тот же ответ и по прежней причине: объёма работ у неё нет вовсе.
+    expect(
+      canAttachServiceFile('estimate', 'in_work', 'finance', EXECUTOR, NAMED, {
+        kind: 'consumable',
+        serviceCounterpartyId: UUID,
+      }),
+    ).toBe(false);
+    // ВИДИМОСТЬ УЖЕ ПОДШИТОГО НЕ ОТНИМАЕТСЯ: до выпуска внутренние заявки объём работ проходили, и
+    // спрятать бумагу значило бы стереть основание принятого решения (тот же довод, что у
+    // исторической вкладки в Р7).
+    expect(isServiceFileKindVisible('estimate', 'finance')).toBe(true);
   });
 });
 

@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Alert, App, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type { ServiceRequestDto } from '@technic/contracts';
+import { canCoordinateServiceRequests, type ServiceRequestDto } from '@technic/contracts';
 import {
   consumableFactChanges,
   consumableFactIssue,
   consumableFactRows,
   consumableFailureText,
   ServiceConsumableFactRows,
+  ServiceHint,
   ServiceRequestContext,
   serviceRequestKeys,
   serviceRequestsApi,
@@ -15,6 +16,7 @@ import {
 } from '@entities/service-request';
 import { officeEquipmentConsumableKeys, officeEquipmentKeys } from '@entities/office-equipment';
 import { FormModal } from '@shared/ui';
+import { useAuth } from '../../../auth/AuthContext';
 
 /**
  * Правка факта выдачи (Р6): склад двигает **изменение факта**, а не смена статуса.
@@ -40,7 +42,14 @@ export function ServiceConsumablesIssueModal({
   onClose: () => void;
 }) {
   const { message } = App.useApp();
+  const { user } = useAuth();
   const qc = useQueryClient();
+  /*
+   * Кому положены пояснения (Р11). Признак считает вызывающий: `entities` не видит `AuthContext`
+   * (линт границ), а правило «кому положены пояснения» живёт единственной функцией контрактов —
+   * своя формула на месте разошлась бы с соседними экранами молча.
+   */
+  const coordinator = canCoordinateServiceRequests(user);
   const [rows, setRows] = useState<ConsumableFactRow[]>([]);
   /** Отказ сервера строкой в окне: по нехватке остатка факт правят здесь же, не закрывая окно. */
   const [failure, setFailure] = useState<string | null>(null);
@@ -100,9 +109,13 @@ export function ServiceConsumablesIssueModal({
       {request && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <ServiceRequestContext request={request} />
-          <Alert
-            type="info"
-            showIcon
+          {/* Арифметика списания — пояснение о правиле, а не о заявке (Р11), поэтому вне «Ведения»
+              оно не рисуется вовсе. Само правило от этого никуда не девается: строка под таблицей
+              («правьте выданное количество — со склада уйдёт разница») остаётся всем, и человек
+              без плашки не остаётся с погашенной кнопкой без объяснения. */}
+          <ServiceHint
+            coordinator={coordinator}
+            level="info"
             title="Со склада уйдёт разница, а не всё количество"
             description="Было выдано 2, стало 3 — спишется одна штука; было 2, стало 0 — вернутся две. Расхождение с запрошенным объясняется причиной."
           />

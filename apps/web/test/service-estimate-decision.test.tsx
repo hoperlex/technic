@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { AuthUser, ServiceRequestDto } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList, list } from './factories/common';
-import { estimatePendingServiceRequest, serviceOperator } from './factories/service';
+import {
+  estimatePendingServiceRequest,
+  serviceOperator,
+  serviceRequest,
+} from './factories/service';
 import { objectDto } from './factories/waste';
 import { RequestsTab } from '../src/pages/service/RequestsTab';
 import { EstimateApprovalModal } from '../src/features/estimate-approval/ui/EstimateApprovalModal';
@@ -47,6 +51,10 @@ function renderModal(over: RouteMap = {}): HttpMock {
 function renderTab(items: ServiceRequestDto[], over: RouteMap = {}): HttpMock {
   const http = mockHttp({
     'GET /service-requests': () => json(list(items)),
+    // Карточка спрашивает заявку сама, строкой списка лишь рисуется, пока едет свежая.
+    'GET /service-requests/:id': ({ params }) =>
+      json(items.find((r) => r.id === params.id) ?? items[0]!),
+    'GET /service-requests/:id/history': () => json([]),
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
     'GET /counterparties': () => json(emptyList()),
@@ -206,5 +214,148 @@ describe('согласие идёт подтверждением, а не окн
     // Ни причины, ни решения у согласия нет: спрашивать нечего.
     expect(body.reason).toBeUndefined();
     expect(body.resolution).toBeUndefined();
+  });
+});
+
+/**
+ * Внутренний ремонт: решать нечего, потому что и объёма работ не бывает (Р4–Р7 плана
+ * `office-equipment-card-and-list-cleanup-plan.md`).
+ *
+ * Свой сисадмин стоимости не фиксирует, поэтому у СВЕЖЕЙ внутренней заявки нет ни вкладки, ни
+ * решений: пустая вкладка отвечала бы «объём собирает исполнитель» на вопрос, которого по такой
+ * заявке не задают. У ИСТОРИЧЕСКОЙ — той, что вели подрядчиком, а потом передали своему, — вкладка
+ * остаётся: строки настоящие, и по ним объясняли уже принятое решение; спрятать их значило бы
+ * стереть основание. Но решать по ним нечего, и кнопок под таблицей нет.
+ *
+ * Проверяется пара «есть вкладка / нет вкладки» на заявках, различающихся ровно одним полем:
+ * ревизией. Иначе первый же случай доказывал бы лишь, что вкладка исчезла отовсюду.
+ */
+describe('внутренний ремонт: объёма работ по нему не бывает (Р7)', () => {
+  /** Свежая внутренняя: подрядчика нет, ревизия нулевая — считать по такой заявке нечего. */
+  const FRESH_IN_HOUSE = serviceRequest({
+    status: 'in_work',
+    service: null,
+    executors: [
+      { userId: 'user-9', name: 'Сисадминов С. С.', assignedAt: '2026-08-05T10:00:00.000Z' },
+    ],
+  });
+
+  /**
+   * Историческая внутренняя: объём работ предъявляли и согласовывали, пока заявку вёл подрядчик, —
+   * до этой волны иначе её было не закрыть вовсе (Н1). Сейчас подрядчика у неё нет.
+   */
+  const HISTORICAL_IN_HOUSE = serviceRequest({
+    status: 'in_work',
+    service: null,
+    estimateRevision: 1,
+    estimateSubmittedAt: '2026-08-06T09:00:00.000Z',
+    estimatedTotalAmount: 1800,
+    approval: {
+      by: 'user-2',
+      byName: 'Оператор О. О.',
+      at: '2026-08-07T10:00:00.000Z',
+      revision: 1,
+    },
+    items: [
+      {
+        id: 'sri-1',
+        kind: 'part',
+        name: 'Ролик подачи',
+        quantity: 1,
+        unitPrice: 1800,
+        amount: 1800,
+        performed: null,
+        actualQuantity: null,
+        actualAmount: null,
+        warrantyMonths: null,
+        warrantyUntil: null,
+        warrantyUntilManual: false,
+      },
+    ],
+  });
+
+  /** Окно карточки: заголовок — единственное, чем окна на экране различаются. */
+  function cardWrap(): HTMLElement {
+    const wrap = [...document.querySelectorAll<HTMLElement>('.ant-modal-wrap')]
+      .filter((el) => el.style.display !== 'none')
+      .find((el) => el.querySelector('.ant-modal-title')?.textContent === 'Заявка СО-14');
+    if (!wrap) throw new Error('карточки «Заявка СО-14» на экране нет');
+    return wrap;
+  }
+
+  /** Открыть карточку так, как её открывает человек: нажатием на номер в списке. */
+  async function openCard(request: ServiceRequestDto): Promise<HTMLElement> {
+    renderTab([request]);
+    fireEvent.click(await screen.findByText('СО-14'));
+    return await waitFor(() => cardWrap());
+  }
+
+  const tabNames = (wrap: HTMLElement): string[] =>
+    within(wrap)
+      .getAllByRole('tab')
+      .map((tab) => tab.textContent ?? '');
+
+  /**
+   * Подписи меню карточки. Кнопка ищется по разметке подвала, а не по доступному имени:
+   * одноимённая кнопка есть и в строке списка под окном, и поиск по документу вернул бы обе.
+   */
+  async function cardMenuLabels(wrap: HTMLElement): Promise<string[]> {
+    const button = [...wrap.querySelectorAll<HTMLElement>('.ant-modal-footer button')].find(
+      (el) => el.textContent === 'Действия',
+    );
+    if (!button) throw new Error('в подвале карточки нет кнопки «Действия»');
+    fireEvent.click(button);
+    const menu = await waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLElement>('.ant-dropdown')]
+        .filter((el) => !el.classList.contains('ant-dropdown-hidden'))
+        .map((el) => el.querySelector<HTMLElement>('.ant-dropdown-menu'))
+        .filter((el): el is HTMLElement => !!el)
+        .at(-1);
+      if (!found) throw new Error('меню действий не открылось');
+      return found;
+    });
+    return [...menu.querySelectorAll('.ant-dropdown-menu-item')].map((el) => el.textContent ?? '');
+  }
+
+  it('у свежей внутренней заявки вкладки нет вовсе: их остаётся три', async () => {
+    const wrap = await openCard(FRESH_IN_HOUSE);
+
+    expect(tabNames(wrap)).toEqual(['Заявка', 'Документы', 'История']);
+    // Не построена, а не «спрятана стилем»: спрятанная осталась бы в разметке вместе с подписью и
+    // содержимым, и проверка на видимость зеленела бы на карточке с пустой таблицей внутри.
+    expect(within(wrap).queryByText('Объём работ')).toBeNull();
+  });
+
+  it('решений по ней не предлагает и меню', async () => {
+    const wrap = await openCard(FRESH_IN_HOUSE);
+    const labels = await cardMenuLabels(wrap);
+
+    /*
+     * Пункты вычёркивает не карточка, а предикаты контрактов: у заявки без подрядчика
+     * `canSubmitServiceEstimate` и соседи отвечают «нельзя», и второй проверки прав портал не
+     * заводит — она разошлась бы с сервером молча.
+     */
+    expect(labels).not.toContain('Объём работ');
+    expect(labels).not.toContain('Согласовать объём работ');
+    expect(labels).not.toContain('Не согласовать объём работ');
+    expect(labels).not.toContain('Вернуть объём в правку');
+    // Якорь: меню не опустело заодно — отмена из него не вычёркивалась.
+    expect(labels).toContain('Отменить заявку');
+  });
+
+  it('исторический объём остаётся видимым, но только на чтение', async () => {
+    const wrap = await openCard(HISTORICAL_IN_HOUSE);
+
+    // Вкладка на месте: по этим строкам объясняли уже принятое решение, и стирать основание нельзя.
+    expect(tabNames(wrap)).toEqual(['Заявка', 'Объём работ', 'Документы', 'История']);
+
+    fireEvent.click(within(wrap).getByRole('tab', { name: 'Объём работ' }));
+    expect(await within(wrap).findByText('Ролик подачи')).toBeDefined();
+
+    // Кнопок решений под таблицей нет: решать по историческому объёму нечего и некому.
+    const buttons = [...wrap.querySelectorAll('button')].map((el) => el.textContent ?? '');
+    expect(buttons).not.toContain('Согласовать');
+    expect(buttons).not.toContain('Не согласовано');
+    expect(buttons).not.toContain('Вернуть в правку');
   });
 });

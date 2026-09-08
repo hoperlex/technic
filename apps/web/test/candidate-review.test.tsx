@@ -18,7 +18,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
-import { serviceRequest } from './factories/service';
+import { serviceOperator, serviceRequest } from './factories/service';
 import { EquipmentTab } from '../src/pages/service/EquipmentTab';
 import { ServiceRequestSubjectName } from '../src/pages/service/ServiceRequestSubjectName';
 import { serviceAcceptLock } from '../src/pages/service/serviceStatusChoices';
@@ -373,18 +373,26 @@ describe('состояние предмета в самой заявке', () =>
   });
 
   it('плашка называет предмет сообщением, пока карточки парка нет', () => {
-    renderWithUser(<ServiceRequestSubjectName request={pending} />);
+    // Читатель — «Ведение» (право `serviceRequests.assign`): «на проверке» это ПОЯСНЕНИЕ, и с
+    // выпуска «тише подсказки» (план `docs/office-equipment-card-and-list-cleanup-plan.md`, Р11)
+    // плашку целиком видит только тот, кто ведёт заявки.
+    renderWithUser(<ServiceRequestSubjectName request={pending} />, { user: serviceOperator() });
     // Подпись предмета — то же, что в очереди проверки и в письме: модель плюс названный номер.
     expect(screen.getAllByText(/Kyocera M3145 · инв\. 0012345/).length).toBeGreaterThan(0);
     expect(screen.getByText(/На проверке/)).toBeDefined();
   });
 
-  it('заявителю плашка та же: реквизиты и решение — не деньги заявки', () => {
-    // Аудитория `requester` — тот объём, в котором сервер собирает ответ автору (ADR 0160). Блок
-    // кандидата проекция не режет (`SERVICE_REQUEST_FIELD_AUDIENCE`), и сценарий закрепляет это со
-    // стороны портала: автор сообщения — главный читатель плашки, а не терпимый.
+  it('заявителю «на проверке» больше не показывается, а предмет назван по-прежнему (Р11)', () => {
+    /*
+     * Аудитория `requester` — тот объём, в котором сервер собирает ответ автору (ADR 0160). Блок
+     * кандидата проекция по-прежнему не режет (`SERVICE_REQUEST_FIELD_AUDIENCE`), и данные автору
+     * приходят целыми — меняется ПОДАЧА: синее пояснение о ходе проверки заказчик просил убрать
+     * всем, кроме ведущих заявки (просьба 08.09.2026, п. 3). Отказ на это правило не подпадает и
+     * печатается автору дословно — соседним сценарием.
+     */
     renderWithUser(<ServiceRequestSubjectName request={{ ...pending, audience: 'requester' }} />);
-    expect(screen.getByText(/На проверке/)).toBeDefined();
+    expect(screen.getAllByText(/Kyocera M3145 · инв\. 0012345/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/На проверке/)).toBeNull();
   });
 
   it('отказ печатает причину дословно — за ней автор и приходит', () => {

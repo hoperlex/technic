@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react';
-import { Alert, App, Button, Input, Space, Tooltip, Typography } from 'antd';
+import { App, Button, Input, Space, Tooltip, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
+  canCoordinateServiceRequests,
   serviceEstimatePending,
   type ServiceItemKind,
   type ServiceRequestDto,
 } from '@technic/contracts';
-import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
+import { ServiceHint, serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { ViewModal } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
+import { useAuth } from '../../../auth/AuthContext';
 import {
   estimateIssue,
   newEstimateRow,
@@ -64,7 +66,13 @@ export function EstimateEditorModal({
   onClose: () => void;
 }) {
   const { message } = App.useApp();
+  const { user } = useAuth();
   const qc = useQueryClient();
+  /*
+   * Кому положены пояснения (Р11): признак считает вызывающий, а не `ServiceHint`, — слой
+   * сущностей `AuthContext` не видит, и правило живёт единственной функцией контрактов.
+   */
+  const coordinator = canCoordinateServiceRequests(user);
   const [rows, setRows] = useState<EstimateRow[]>([]);
   const [comment, setComment] = useState('');
   const [version, setVersion] = useState(0);
@@ -214,17 +222,25 @@ export function EstimateEditorModal({
              * Замок объясняется до нажатия, а не 409-й в ответ. Поля и кнопки погашены, и без этой
              * врезки окно выглядело бы сломанным: состав виден, а тронуть его нечем — причину
              * этого портал обязан назвать сам, ответ сервера сюда уже не придёт.
+             *
+             * Это причина блокировки, поэтому у некоординатора она сворачивается, но НЕ исчезает
+             * (Р11): исчезни она — исполнитель остался бы с погашенными полями без единого слова.
+             * Ключ от замка при этом уходит вместе с описанием, и это осознанная цена свёртки:
+             * снять предъявление всё равно вправе не он, а «Ведение», у которого текст остался
+             * целым.
              */
-            <Alert
-              type="warning"
-              showIcon
+            <ServiceHint
+              coordinator={coordinator}
+              level="warning"
               title={`Ревизия ${request.estimatePendingRevision} предъявлена и ждёт ответа — правка закрыта`}
               description={`Пока предъявление висит, сервер не примет ни изменённый состав, ни повторное предъявление: согласующий подписывает то, что видит. ${LOCKED_HINT}`}
             />
           ) : (
-            <Alert
-              type="info"
-              showIcon
+            // Как считается итог и что случится со старой подписью — пояснение о правилах цикла:
+            // вне «Ведения» его не рисуют вовсе, сумма же видна в самом окне и без плашки.
+            <ServiceHint
+              coordinator={coordinator}
+              level="info"
               title={
                 request.estimateRevision > 0
                   ? `Ревизия ${request.estimateRevision} уже предъявлялась — следующее предъявление уйдёт ревизией ${request.estimateRevision + 1}`

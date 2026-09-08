@@ -1,8 +1,9 @@
-import { Alert, App, Space, Typography } from 'antd';
+import { App, Space, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   actsAsRequestCustomer,
   attachableServiceFileKinds,
+  canCoordinateServiceRequests,
   isServiceRequestClosed,
   SERVICE_FILE_KINDS,
   serviceFileKindLabels,
@@ -12,6 +13,7 @@ import {
   isAwaitingDocuments,
   SERVICE_CLOSING_DOCUMENT_HINT,
   ServiceDocumentUpload,
+  ServiceHint,
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
@@ -19,7 +21,11 @@ import { officeEquipmentKeys } from '@entities/office-equipment';
 import { filesApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { useAuth } from '../../auth/AuthContext';
-import { serviceExecutorAssignment, serviceRequestCustomerFacts } from './serviceRequestRow';
+import {
+  serviceActionRow,
+  serviceExecutorAssignment,
+  serviceRequestCustomerFacts,
+} from './serviceRequestRow';
 import { errorMessage } from '../../utils/format';
 
 /**
@@ -62,12 +68,20 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
    * назначения считает общий адаптер (`serviceExecutorAssignment`) — тот же, каким их читают меню
    * действий и вкладка объёма работ; своей формулы здесь нет, иначе форма предлагала бы ИТ-службе
    * «Акт», на котором сервер ответит 403.
+   *
+   * Сама заявка — четвёртый сомножитель (Р5, Н17): вид «Объём работ» не предлагается там, где
+   * объёма работ не бывает, — у внутреннего ремонта этап снят целиком (Р4). Пара «вид + подрядчик»
+   * приходит готовой из `serviceActionRow` — того же перевода карточки, каким её читают предикаты
+   * действий; собери мы её здесь литералом, признак разошёлся бы с меню и вкладкой на первой же
+   * правке. Видимость УЖЕ подшитого документа этим не отнимается: `SERVICE_FILE_KINDS` ниже
+   * перечисляет все виды, и историческая бумага внутренней заявки остаётся читаемой.
    */
   const kinds = attachableServiceFileKinds(
     request.heldFromStatus ?? request.status,
     request.audience,
     user,
     serviceExecutorAssignment(request, user),
+    serviceActionRow(request),
   );
 
   /*
@@ -81,6 +95,15 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
    * ничего не отбирает ни у исполнителя, ни у «Ведения», ни у распорядителя файлов.
    */
   const actsAsCustomer = actsAsRequestCustomer(user, serviceRequestCustomerFacts(request));
+
+  /*
+   * Кому положены пояснения (Р11). Признак считается ЗДЕСЬ, у того, кому видна учётка, и уходит в
+   * `ServiceHint` пропом: слой сущностей `AuthContext` не видит — линт границ такой импорт не
+   * пропустит, — а своей формулы вместо предиката контрактов здесь нет: правило «кому положены
+   * пояснения» обязано меняться в одном месте, иначе половина подсказок вернулась бы тем, у кого
+   * их убирали.
+   */
+  const coordinator = canCoordinateServiceRequests(user);
 
   // Снятие документа после приёмки — только у распорядителя файлов: заявка закрыта, и подшитая
   // бумага из неё не исчезает по решению стороны (Р29).
@@ -114,11 +137,16 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
           Заявителю её нет вовсе (ADR 0160, Р12), и отдельным условием это здесь не написано:
           ответ «нет» даёт сам предикат — он спрашивает аудиторию первым делом. Вторая проверка
           рядом означала бы два правила на один вопрос, а разошлись бы они молча: плашка на
-          вкладке и красный тег в списке спрашивают одну и ту же функцию. */}
+          вкладке и красный тег в списке спрашивают одну и ту же функцию.
+
+          Подача — по Р11: это причина, по которой заявка не закроется, поэтому исполнителю и
+          сервисной компании она не исчезает, а сворачивается в мелкую строку. Полностью её видит
+          тот, кто ведёт заявки: разбирая чужую очередь «Ожидаются документы», он читает не «нужна
+          бумага», а «почему эта строка тут стоит». */}
       {isAwaitingDocuments(request) && (
-        <Alert
-          type="warning"
-          showIcon
+        <ServiceHint
+          coordinator={coordinator}
+          level="warning"
           title={SERVICE_CLOSING_DOCUMENT_HINT}
           description="Пока нет ни одного, заявка стоит в очереди «Ожидаются документы»: работу сервисной компании без закрывающего документа не закрыть, и портал такую заявку не закроет сам — сутки на возражение отсчитываются от подшитой бумаги."
         />

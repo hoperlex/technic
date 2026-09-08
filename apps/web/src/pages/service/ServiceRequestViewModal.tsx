@@ -6,6 +6,7 @@ import {
   type RequestHistoryEntryDto,
   type ServiceRequestDto,
   serviceRequestChangeLabels,
+  serviceRequestNeedsEstimate,
   serviceRequestStatusColors,
   serviceRequestStatusLabels,
 } from '@technic/contracts';
@@ -22,6 +23,7 @@ import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHi
 import { ServiceRequestDocuments } from './ServiceRequestDocuments';
 import { ServiceRequestEstimate } from './ServiceRequestEstimate';
 import { cardMenuItems } from './serviceMenuPlacement';
+import { serviceActionRow } from './serviceRequestRow';
 import { serviceRequestViewFields } from './serviceRequestViewFields';
 
 /**
@@ -51,8 +53,9 @@ const SERVICE_HISTORY_STATUSES = {
 
 /**
  * Карточка заявки на обслуживание (§9.4): вкладки «Заявка», «Объём работ», «Документы», «История».
- * Средняя из них зависит от заявки и от читателя: у расходников на её месте «Номенклатура», а
- * заявителю (ADR 0160) её нет вовсе — вкладок остаётся три.
+ * Средняя из них зависит от заявки и от читателя: у расходников на её месте «Расходники»; у
+ * заявителя (ADR 0160) и у внутреннего ремонта, по которому объёма работ не бывает (Р7), её нет
+ * вовсе — вкладок остаётся три.
  *
  * Вкладками, а не одной длинной страницей: у заявки три стороны и три разных разговора — что
  * сломалось, во сколько это встало и чем подтверждено. В один свиток они складываются так, что
@@ -157,7 +160,7 @@ export function ServiceRequestViewModal({
    */
   const start = allActions.find((item) => item.key === 'start');
   /*
-   * Состав номенклатуры (Р15) правится кнопкой на вкладке «Номенклатура» — там же, где его читают,
+   * Состав расходников (Р15) правится кнопкой на вкладке «Расходники» — там же, где его читают,
    * тем же приёмом, что и назначение у поля «Исполнители». Из меню пункт поэтому вычеркнут: двум
    * ручкам к одному действию в одном окне взяться неоткуда.
    */
@@ -267,16 +270,13 @@ export function ServiceRequestViewModal({
             {
               key: 'request',
               label: 'Заявка',
-              children: (
-                <>
-                  <ViewFields items={fields} />
-                  {request.equipmentDepartment == null && request.customerDepartment == null && (
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      Заявка объектная: отдел у неё не указан.
-                    </Typography.Text>
-                  )}
-                </>
-              ),
+              /*
+               * Серой строки «Заявка объектная: отдел у неё не указан» здесь больше нет (Р12
+               * плана `office-equipment-card-and-list-cleanup-plan.md`): она объясняла пустоту,
+               * которой в карточке не видно — поля «Отдел» у такой заявки нет вовсе, и читатель
+               * узнавал из подписи о пробеле, который сам бы не заметил.
+               */
+              children: <ViewFields items={fields} />,
             },
             /*
              * Предмет заявки — либо объём работ, либо номенклатура, и вкладка у них одна (Н1): у
@@ -295,7 +295,7 @@ export function ServiceRequestViewModal({
              * Прятать её стилем нельзя по той же причине, по которой сервер вычитает поля, а не
              * полагается на портал: спрятанное остаётся в разметке.
              *
-             * Номенклатура при этом остаётся ОБЕИМ аудиториям: цен в строках расходников нет ни
+             * Расходники при этом остаются ОБЕИМ аудиториям: цен в их строках нет ни
              * одной (Р4), и запрет «Объёма работ» подменять запретом соседней вкладки значило бы
              * расширять задачу — предмет заявки на картридж заявитель обязан видеть.
              *
@@ -307,7 +307,7 @@ export function ServiceRequestViewModal({
               ? [
                   {
                     key: 'consumables',
-                    label: 'Номенклатура',
+                    label: 'Расходники',
                     children: (
                       <Space orientation="vertical" size={12} style={{ width: '100%' }}>
                         <ServiceConsumablesTable lines={request.consumables} />
@@ -326,7 +326,26 @@ export function ServiceRequestViewModal({
                     ),
                   },
                 ]
-              : request.audience === 'finance'
+              : /*
+                 * Объём работ есть не у всякого ремонта (Р7), и обе половины условия обязательны.
+                 *
+                 * Первая — замок аудитории (ADR 0160, решение 3; Н9 плана): сними его, и заявителю
+                 * вернулась бы финансовая вкладка у любой заявки подрядчика — та самая, которую
+                 * сервер из ответа вычитает. Аудитория читается полем DTO, а не выводится из прав:
+                 * сервер посчитал её для ЭТОЙ строки, и второй ответ разошёлся бы с первым молча.
+                 *
+                 * Вторая — про прошлое: до этого выпуска объём работ был обязателен любому ремонту,
+                 * и внутренние заявки проходили предъявление и согласование. Спрятать их строки
+                 * значило бы стереть основание уже принятого решения. У свежей внутренней заявки
+                 * ревизия нулевая, и вкладок в карточке остаётся три.
+                 *
+                 * Признак — функцией контрактов через `serviceActionRow`: своей копии условия
+                 * «ремонт с подрядчиком» портал не держит, иначе вкладка предлагала бы решение, на
+                 * которое сервер отвечает отказом.
+                 */
+                request.audience === 'finance' &&
+                  (serviceRequestNeedsEstimate(serviceActionRow(request)) ||
+                    request.estimateRevision > 0)
                 ? [
                     {
                       key: 'estimate',

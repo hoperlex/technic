@@ -11,12 +11,13 @@ import { ServiceChatModal } from '@features/service-chat';
 import { ServiceCompleteModal } from '@features/service-complete';
 import { ServiceConsumablesIssueModal } from '@features/service-consumables-issue';
 import { ServiceAcceptModal, type AcceptMode } from '@features/service-accept';
+import { ServiceCancelModal } from '@features/service-cancel';
 import { ServiceHoldModal, type HoldMode } from '@features/service-hold';
 import { EquipmentMoveFromRequest } from '@features/equipment-move';
 import { ServiceUrgencyModal } from '@features/service-urgency';
 import { ServiceRequestConsumablesModal } from './ServiceRequestConsumables';
 import { reportServiceMail } from './serviceMailNotice';
-import type { ReasonPrompt } from './serviceRequestPrompts';
+import { cancelErases, type ReasonPrompt } from './serviceRequestPrompts';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { errorMessage } from '../../utils/format';
 
@@ -39,6 +40,12 @@ export interface ServiceRequestModals {
   /** Правка факта выдачи расходников (Р6): склад двигает она, а не смена статуса. */
   issue: (request: ServiceRequestDto) => void;
   accept: (request: ServiceRequestDto, mode: AcceptMode) => void;
+  /**
+   * Отмена заявки (Р10): причина, а у ремонта — решение «что делаем вместо» и пометка замены. Своё
+   * окно, а не `ask(prompts.cancel)`: у отмены появилось содержание, которого одно-полевой
+   * `ReasonModal` не знает.
+   */
+  cancel: (request: ServiceRequestDto) => void;
   hold: (request: ServiceRequestDto, mode: HoldMode) => void;
   urgency: (request: ServiceRequestDto) => void;
   /** Обсуждение заявки (ADR 0141): лента реплик, а не перезаписываемое примечание. */
@@ -88,6 +95,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
     request: ServiceRequestDto;
     mode: HoldMode;
   } | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<ServiceRequestDto | null>(null);
   const [urgencyTarget, setUrgencyTarget] = useState<ServiceRequestDto | null>(null);
   const [chatTarget, setChatTarget] = useState<ServiceRequestDto | null>(null);
   const [moveTarget, setMoveTarget] = useState<ServiceRequestDto | null>(null);
@@ -115,6 +123,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
     setCompleteTarget(null);
     setIssueTarget(null);
     setAcceptTarget(null);
+    setCancelTarget(null);
     setHoldTarget(null);
     setUrgencyTarget(null);
     setChatTarget(null);
@@ -130,6 +139,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
     complete: setCompleteTarget,
     issue: setIssueTarget,
     accept: (request, mode) => setAcceptTarget({ request, mode }),
+    cancel: setCancelTarget,
     hold: (request, mode) => setHoldTarget({ request, mode }),
     urgency: setUrgencyTarget,
     chat: setChatTarget,
@@ -176,6 +186,15 @@ export function useServiceRequestModals(): ServiceRequestModals {
             onClose={() => setAcceptTarget(null)}
           />
         )}
+        {/* Перечень потерь считает страница (`cancelErases`), а не окно: тем же перечнем живёт
+            возврат отменённой заявки, и вторая копия матрицы сброса разошлась бы с первой. */}
+        {cancelTarget && (
+          <ServiceCancelModal
+            request={cancelTarget}
+            erases={cancelErases(cancelTarget)}
+            onClose={() => setCancelTarget(null)}
+          />
+        )}
         {holdTarget && (
           <ServiceHoldModal
             request={holdTarget.request}
@@ -203,10 +222,14 @@ export function useServiceRequestModals(): ServiceRequestModals {
         <ReasonModal
           open={!!prompt}
           /*
-           * Что заявка потеряет — блоком НАД полем причины (ADR 0161): отмена снимает исполнителей
-           * и согласование, а возврат отменённой — ещё и весь объём работ. После нажатия
-           * восстанавливать будет нечего, поэтому перечень читают до, а не узнают из карточки
-           * после. Пустой перечень блока не рисует: терять нечего, и предупреждать не о чем.
+           * Что заявка потеряет — блоком НАД полем причины (ADR 0161): возврат отменённой снимает
+           * исполнителей, согласование и весь объём работ. После нажатия восстанавливать будет
+           * нечего, поэтому перечень читают до, а не узнают из карточки после. Пустой перечень
+           * блока не рисует: терять нечего, и предупреждать не о чем.
+           *
+           * Тот же блок собственными руками рисует окно отмены (Р10): общим его не сделать —
+           * `ReasonModal` живёт в `components` и служит трём модулям сразу, а перечень потерь у
+           * каждого свой.
            */
           notice={
             prompt?.erases?.length ? (

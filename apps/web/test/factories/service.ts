@@ -8,6 +8,7 @@ import {
   type ServiceRequestDto,
   type ServiceRequestFileDto,
   serviceHasExecutors,
+  serviceRequestHasEffectivePendingEstimate,
   serviceRequestWaitingOn,
 } from '@technic/contracts';
 import { authUser } from './auth';
@@ -169,7 +170,17 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
           serviceCounterpartyId: request.service?.id ?? null,
           executorCount: request.executors.length,
         }),
-        estimatePendingRevision: request.estimatePendingRevision,
+        /*
+         * Ожидание подписи — ДЕЙСТВУЮЩЕЕ, а не сырая колонка (Р4, Р7): у внутреннего ремонта
+         * согласования не бывает, и историческое `estimatePendingRevision` не делает такую заявку
+         * ждущей согласующего. Считается тем же предикатом контрактов, каким его считает сервер, —
+         * своя формула в фикстуре описывала бы очередь, которой в портале не бывает.
+         */
+        estimatePending: serviceRequestHasEffectivePendingEstimate({
+          kind: request.kind,
+          serviceCounterpartyId: request.service?.id ?? null,
+          estimatePendingRevision: request.estimatePendingRevision,
+        }),
       }),
   };
 }
@@ -207,12 +218,22 @@ export function assignedServiceRequest(
  * Статус «В работе», а состояние держит `estimatePendingRevision` (Р2, Р8): предъявление ревизии
  * есть, ответа на неё нет. Ревизия и снимок предъявления идут вместе — предъявленной без даты
  * заявки не бывает.
+ *
+ * ПОДРЯДЧИК В ФИКСТУРЕ ОБЯЗАТЕЛЕН (Р4, Р5 плана `office-equipment-card-and-list-cleanup-plan.md`).
+ * Объём работ бывает только у ремонта, который ведёт сервисная компания: своему сисадмину нечего
+ * предъявлять и не с кем согласовывать. Без компании фикстура описывала бы состояние, которого
+ * после этой волны не бывает, — свежую внутреннюю заявку с висящим предъявлением, — и сценарии
+ * согласования проверялись бы на ней вхолостую: предикаты честно отвечали бы «нельзя».
+ *
+ * Историческую внутреннюю заявку (объём остался от подрядчика, а ведёт её теперь свой) сценарий
+ * описывает сам, передав `service: null`: это отдельное состояние, и умолчанием оно быть не должно.
  */
 export function estimatePendingServiceRequest(
   overrides: Partial<ServiceRequestDto> = {},
 ): ServiceRequestDto {
   return serviceRequest({
     status: 'in_work',
+    service: { ...SERVICE_COUNTERPARTY },
     estimateRevision: 1,
     estimatePendingRevision: 1,
     estimateSubmittedAt: '2026-08-06T09:00:00.000Z',

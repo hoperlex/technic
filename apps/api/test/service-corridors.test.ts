@@ -6,6 +6,7 @@ import {
   can,
   canApproveServiceEstimate,
   canAssignServiceExecutors,
+  canCoordinateServiceRequests,
   canDeclineServiceRequest,
   canStartServiceWork,
   canHoldService,
@@ -23,6 +24,8 @@ import {
   serviceEstimatePending,
   serviceHasExecutors,
   serviceIsFirstAssignment,
+  serviceRequestHasEffectivePendingEstimate,
+  serviceRequestNeedsEstimate,
   serviceRequestWaitingOn,
   serviceResetOnTransition,
   serviceResumeTarget,
@@ -988,6 +991,11 @@ describe('сброс при возвратах и откатах', () => {
  * ними — что за неё возьмутся; «В работе» с висящим предъявлением ждёт подписи под объёмом работ,
  * без него — самих работ. Третья ось, виза ИТ, ушла вместе с визой (Р10).
  *
+ * Ось предъявления приходит ДЕЙСТВУЮЩЕЙ (Р7, Н16): булево, посчитанное вызывающим, а не колонка.
+ * Третьей оси очередь получить не может — маски выводятся сплошным перебором сочетаний, — и
+ * различие «предъявление сохранилось» против «подписи по этой заявке бывают» обязано быть сведено
+ * к тому же булеву до входа сюда.
+ *
  * Сама сторона определяется правами и типом контрагента, а не именем роли: у «Ведения» роль «Штаб»
  * или «Отдел», у подрядчика роль «Оператор (внешний исполнитель)».
  */
@@ -996,7 +1004,7 @@ describe('кого ждёт заявка', () => {
   const row = (status: ServiceRequestStatus): ServiceWaitingRequest => ({
     status,
     hasExecutors: false,
-    estimatePendingRevision: null,
+    estimatePending: false,
   });
 
   it('сторона следует из статуса, а два рабочих статуса — из признаков строки', () => {
@@ -1075,14 +1083,14 @@ describe('кого ждёт заявка', () => {
       serviceRequestWaitingOn({
         status: 'in_work',
         hasExecutors: true,
-        estimatePendingRevision: null,
+        estimatePending: false,
       }),
     ).toBe('service');
     expect(
       serviceRequestWaitingOn({
         status: 'in_work',
         hasExecutors: true,
-        estimatePendingRevision: 3,
+        estimatePending: true,
       }),
     ).toBe('approval');
     // Состав исполнителей на этот ответ не влияет: в «В работе» спрашивают не «есть ли кому
@@ -1091,13 +1099,53 @@ describe('кого ждёт заявка', () => {
       serviceRequestWaitingOn({
         status: 'in_work',
         hasExecutors: false,
-        estimatePendingRevision: 3,
+        estimatePending: true,
       }),
     ).toBe('approval');
-    // Ноль — такая же ревизия, как любая другая: признак читает `NULL`, а не истинность числа.
+    // Ноль — такая же ревизия, как любая другая: сырой признак читает `NULL`, а не истинность
+    // числа.
     expect(serviceEstimatePending({ estimatePendingRevision: null })).toBe(false);
     expect(serviceEstimatePending({ estimatePendingRevision: 0 })).toBe(true);
     expect(serviceEstimatePending({ estimatePendingRevision: 3 })).toBe(true);
+  });
+
+  /**
+   * ЧЕМ ОСЬ ЗАПОЛНЯЕТСЯ (Р7, Н11) — главное отличие от прежней колонки. У внутренней ремонтной
+   * заявки предъявление могло сохраниться с тех пор, когда объём работ был обязателен любому
+   * ремонту, а ответить на него после Р5 некому: подписи по такой заявке не бывает вовсе. Считай
+   * очередь сырую колонку — заявка вечно стояла бы в «Ждёт согласования» и не попадала бы туда,
+   * где её ждут на самом деле, к исполнителю.
+   *
+   * Проверяется именно связка «признак → ось», а не одна функция: расходятся такие вещи не внутри
+   * предиката, а на стыке — там, где строку заявки переводят в строку очереди.
+   */
+  it('историческое предъявление внутренней заявки ждёт исполнителя, а не согласования', () => {
+    const historic = {
+      kind: 'repair',
+      serviceCounterpartyId: null,
+      estimatePendingRevision: 2,
+    } as const;
+    // Сырая колонка непуста — история этого не отрицает...
+    expect(serviceEstimatePending(historic)).toBe(true);
+    // ...но действующим ожиданием она не является: объём работ по такой заявке не составляют.
+    expect(serviceRequestHasEffectivePendingEstimate(historic)).toBe(false);
+    expect(
+      serviceRequestWaitingOn({
+        status: 'in_work',
+        hasExecutors: true,
+        estimatePending: serviceRequestHasEffectivePendingEstimate(historic),
+      }),
+    ).toBe('service');
+    // У подрядчика та же колонка — рабочее ожидание, и очередь отвечает по-прежнему.
+    const byService = { ...historic, serviceCounterpartyId: COUNTERPARTY_ID };
+    expect(serviceRequestHasEffectivePendingEstimate(byService)).toBe(true);
+    expect(
+      serviceRequestWaitingOn({
+        status: 'in_work',
+        hasExecutors: true,
+        estimatePending: serviceRequestHasEffectivePendingEstimate(byService),
+      }),
+    ).toBe('approval');
   });
 
   /**
@@ -1108,7 +1156,7 @@ describe('кого ждёт заявка', () => {
   it('в заморозке, приёмке и закрытых статусах признаки не спрашиваются', () => {
     for (const status of ['on_hold', 'done', 'accepted', 'cancelled'] as const) {
       expect(
-        serviceRequestWaitingOn({ status, hasExecutors: true, estimatePendingRevision: 7 }),
+        serviceRequestWaitingOn({ status, hasExecutors: true, estimatePending: true }),
         status,
       ).toBe(serviceRequestWaitingOn(row(status)));
     }
@@ -1182,8 +1230,8 @@ describe('кого ждёт заявка', () => {
     const answers = new Set<ServiceWaitingOn>(
       SERVICE_REQUEST_STATUSES.flatMap((status) =>
         [false, true].flatMap((hasExecutors) =>
-          [null, 1].map((estimatePendingRevision) =>
-            serviceRequestWaitingOn({ status, hasExecutors, estimatePendingRevision }),
+          [false, true].map((estimatePending) =>
+            serviceRequestWaitingOn({ status, hasExecutors, estimatePending }),
           ),
         ),
       ),
@@ -1250,37 +1298,52 @@ describe('кого ждёт заявка', () => {
     }[] = [
       {
         label: '«Новая» без исполнителей — распределить',
-        row: { status: 'new', hasExecutors: false, estimatePendingRevision: null },
+        row: { status: 'new', hasExecutors: false, estimatePending: false },
         waiting: 'operator',
         step: (subject) =>
-          canAssignServiceExecutors({ status: 'new', estimatePendingRevision: null }, subject),
+          canAssignServiceExecutors(
+            {
+              kind: 'repair',
+              status: 'new',
+              serviceCounterpartyId: null,
+              estimatePendingRevision: null,
+            },
+            subject,
+          ),
       },
       {
         label: '«Новая» с исполнителями — принять в работу',
-        row: { status: 'new', hasExecutors: true, estimatePendingRevision: null },
+        row: { status: 'new', hasExecutors: true, estimatePending: false },
         waiting: 'service',
         step: (subject) => canTransitionServiceStatus('new', 'in_work', subject, BY_COUNTERPARTY),
       },
       {
         label: '«В работе» без предъявления — выполнить и закрыть',
-        row: { status: 'in_work', hasExecutors: true, estimatePendingRevision: null },
+        row: { status: 'in_work', hasExecutors: true, estimatePending: false },
         waiting: 'service',
         step: (subject) => canTransitionServiceStatus('in_work', 'done', subject, BY_COUNTERPARTY),
       },
       {
+        // Заявку ведёт подрядчик, и это не подробность фикстуры: подписи бывают только у него
+        // (Р4), и у внутренней заявки эта строка не сошлась бы ни очередью, ни действием.
         label: '«В работе» с предъявлением — согласовать объём работ',
-        row: { status: 'in_work', hasExecutors: true, estimatePendingRevision: 2 },
+        row: { status: 'in_work', hasExecutors: true, estimatePending: true },
         waiting: 'approval',
         step: (subject) =>
           canApproveServiceEstimate(
-            { status: 'in_work', estimatePendingRevision: 2 },
+            {
+              kind: 'repair',
+              status: 'in_work',
+              serviceCounterpartyId: COUNTERPARTY_ID,
+              estimatePendingRevision: 2,
+            },
             subject,
             NOT_ASSIGNED,
           ),
       },
       {
         label: '«Решена» — принять работу',
-        row: { status: 'done', hasExecutors: true, estimatePendingRevision: null },
+        row: { status: 'done', hasExecutors: true, estimatePending: false },
         waiting: 'operator',
         step: (subject) => canTransitionServiceStatus('done', 'accepted', subject),
       },
@@ -1383,6 +1446,15 @@ describe('действия, у которых больше нет дуги (Р11
     ...over,
   });
 
+  /**
+   * Та же строка, но заявку ведёт ПОДРЯДЧИК. Отдельной заготовкой, потому что после Р4 объём работ
+   * бывает только у неё: у всего, что делает свой сотрудник, предъявлять и согласовывать нечего —
+   * стоимость внутренних работ не фиксируется. На заготовке по умолчанию (свой исполнитель) три
+   * предиката объёма работ отвечают «нельзя», и это проверяет отдельный случай ниже.
+   */
+  const serviceRow = (over: Partial<ServiceActionRequest> = {}): ServiceActionRequest =>
+    actionRow({ serviceCounterpartyId: COUNTERPARTY_ID, ...over });
+
   it('назначают из «Новой» и «В работе» — и только правом распределения', () => {
     for (const subject of [...OPERATORS, ...IT_APPROVERS, admin]) {
       const who = accessProfileLabel(subject);
@@ -1415,7 +1487,7 @@ describe('действия, у которых больше нет дуги (Р11
       const who = accessProfileLabel(operator);
       expect(
         canAssignServiceExecutors(
-          actionRow({ status: 'in_work', estimatePendingRevision: 2 }),
+          serviceRow({ status: 'in_work', estimatePendingRevision: 2 }),
           operator,
         ),
         who,
@@ -1424,7 +1496,7 @@ describe('действия, у которых больше нет дуги (Р11
       // ровно как сегодня из «В работе» без сметы на подписи.
       expect(
         canAssignServiceExecutors(
-          actionRow({
+          serviceRow({
             status: 'in_work',
             estimatePendingRevision: null,
             approvedEstimateRevision: 2,
@@ -1434,6 +1506,32 @@ describe('действия, у которых больше нет дуги (Р11
         who,
       ).toBe(true);
     }
+  });
+
+  /**
+   * ЗАПИРАЕТ ДЕЙСТВУЮЩЕЕ ожидание, а не сохранённая колонка (Н11). У внутренней заявки предъявление
+   * могло остаться с тех пор, когда объём работ был обязателен любому ремонту; согласовать его
+   * после Р5 некому — а значит, спроси предикат сырую колонку, такая заявка навсегда осталась бы у
+   * прежнего исполнителя. Выходом был бы ручной возврат сметы в правку, которого волна не заводит
+   * намеренно: историческое предъявление гасит закрытие (Р6), а не человек.
+   */
+  it('историческое предъявление внутренней заявки переназначению не мешает', () => {
+    const historic = actionRow({ status: 'in_work', estimatePendingRevision: 2 });
+    // Колонка непуста — сырой признак это подтверждает...
+    expect(serviceEstimatePending(historic)).toBe(true);
+    for (const operator of OPERATORS) {
+      // ...а запрета нет: подписи по внутренней заявке не бывает, и ждать по ней нечего.
+      expect(canAssignServiceExecutors(historic, operator), accessProfileLabel(operator)).toBe(
+        true,
+      );
+    }
+    // У расходников та же колонка не значит ничего по той же причине — объёма работ у них нет.
+    expect(
+      canAssignServiceExecutors(
+        serviceRow({ kind: 'consumable', estimatePendingRevision: 2 }),
+        shtabOperator,
+      ),
+    ).toBe(true);
   });
 
   /**
@@ -1513,21 +1611,75 @@ describe('действия, у которых больше нет дуги (Р11
    * согласования.
    */
   it('предъявляет объём работ исполнитель: по ремонту, из работы и не поверх висящего', () => {
-    expect(canSubmitServiceEstimate(actionRow(), service, BY_COUNTERPARTY)).toBe(true);
-    expect(canSubmitServiceEstimate(actionRow(), namedExecutor, BY_NAME)).toBe(true);
-    expect(canSubmitServiceEstimate(actionRow(), namedExecutor, NOT_ASSIGNED)).toBe(false);
+    expect(canSubmitServiceEstimate(serviceRow(), service, BY_COUNTERPARTY)).toBe(true);
+    expect(canSubmitServiceEstimate(serviceRow(), namedExecutor, BY_NAME)).toBe(true);
+    expect(canSubmitServiceEstimate(serviceRow(), namedExecutor, NOT_ASSIGNED)).toBe(false);
     expect(
-      canSubmitServiceEstimate(actionRow({ estimatePendingRevision: 1 }), service, BY_COUNTERPARTY),
+      canSubmitServiceEstimate(
+        serviceRow({ estimatePendingRevision: 1 }),
+        service,
+        BY_COUNTERPARTY,
+      ),
     ).toBe(false);
     // У расходников объёма работ нет вовсе: предмет такой заявки — номенклатура (Р15).
     expect(
-      canSubmitServiceEstimate(actionRow({ kind: 'consumable' }), service, BY_COUNTERPARTY),
+      canSubmitServiceEstimate(serviceRow({ kind: 'consumable' }), service, BY_COUNTERPARTY),
     ).toBe(false);
     for (const status of SERVICE_REQUEST_STATUSES.filter((s) => s !== 'in_work')) {
       expect(
-        canSubmitServiceEstimate(actionRow({ status }), service, BY_COUNTERPARTY),
+        canSubmitServiceEstimate(serviceRow({ status }), service, BY_COUNTERPARTY),
         status,
       ).toBe(false);
+    }
+  });
+
+  /**
+   * ВНУТРЕННИЙ РЕМОНТ ОБЪЁМА РАБОТ НЕ СОСТАВЛЯЕТ (Р4, Р5) — просьба заказчика 08.09.2026, п. 2: за
+   * работу своего сотрудника не платят, и фиксировать по ней стоимость незачем. Проверяются все три
+   * предиката разом, потому что запрет обязан быть одним и тем же: открой хоть один из них — и шаг
+   * вернётся в цикл целиком (предъявить сможет исполнитель, согласовать «Ведение», вернуть в правку
+   * снова исполнитель).
+   *
+   * Признак смотрит на КОНТРАГЕНТА, а не на «есть ли поимённые исполнители» (Р8): смешанный состав
+   * — свой сисадмин плюс подрядчик — обычный случай, и работа подрядчика оплачивается независимо от
+   * того, помогал ли ему свой сотрудник. Поэтому рядом стоит случай смешанного состава.
+   */
+  it('у внутреннего ремонта объёма работ нет: ни предъявить, ни согласовать, ни вернуть', () => {
+    const internal = actionRow({ executorCount: 1 });
+    expect(serviceRequestNeedsEstimate(internal)).toBe(false);
+    expect(canSubmitServiceEstimate(internal, namedExecutor, BY_NAME)).toBe(false);
+    // Согласовывать нечего и «Ведению», даже когда предъявление в колонке сохранилось.
+    expect(
+      canApproveServiceEstimate(
+        actionRow({ executorCount: 1, estimatePendingRevision: 2 }),
+        shtabOperator,
+        NOT_ASSIGNED,
+      ),
+    ).toBe(false);
+    // Возврат в правку заперт обеими отметками сразу — и предъявлением, и подписью: по внутренней
+    // заявке правят не смету, а факт выполнения.
+    expect(
+      canReopenServiceEstimate(
+        actionRow({ executorCount: 1, estimatePendingRevision: 2, approvedEstimateRevision: 2 }),
+        namedExecutor,
+        BY_NAME,
+      ),
+    ).toBe(false);
+    // Смешанный состав — подрядчик плюс свой помощник (Р8): объём работ нужен, всё как прежде.
+    const mixed = serviceRow({ executorCount: 1 });
+    expect(serviceRequestNeedsEstimate(mixed)).toBe(true);
+    expect(canSubmitServiceEstimate(mixed, service, BY_COUNTERPARTY)).toBe(true);
+    expect(
+      canApproveServiceEstimate(
+        serviceRow({ executorCount: 1, estimatePendingRevision: 2 }),
+        shtabOperator,
+        NOT_ASSIGNED,
+      ),
+    ).toBe(true);
+    // Расходники отвечают «нельзя» при любом исполнителе — как и до волны.
+    for (const row of [actionRow({ kind: 'consumable' }), serviceRow({ kind: 'consumable' })]) {
+      expect(serviceRequestNeedsEstimate(row)).toBe(false);
+      expect(canSubmitServiceEstimate(row, service, BY_COUNTERPARTY)).toBe(false);
     }
   });
 
@@ -1539,7 +1691,7 @@ describe('действия, у которых больше нет дуги (Р11
    * и подписывающая.
    */
   it('оператор контрагента-сервиса объём работ не согласует ни при каком праве', () => {
-    const pending = actionRow({ estimatePendingRevision: 2 });
+    const pending = serviceRow({ estimatePendingRevision: 2 });
     expect(canApproveServiceEstimate(pending, service, BY_COUNTERPARTY)).toBe(false);
     const serviceWithApproval: AccessSubject = {
       role: 'operator',
@@ -1554,7 +1706,7 @@ describe('действия, у которых больше нет дуги (Р11
   });
 
   it('согласует «Ведение» и назначенный поимённо — по висящему предъявлению из работы', () => {
-    const pending = actionRow({ estimatePendingRevision: 2 });
+    const pending = serviceRow({ estimatePendingRevision: 2 });
     for (const operator of OPERATORS) {
       expect(
         canApproveServiceEstimate(pending, operator, NOT_ASSIGNED),
@@ -1566,13 +1718,13 @@ describe('действия, у которых больше нет дуги (Р11
     expect(canApproveServiceEstimate(pending, namedExecutor, BY_NAME)).toBe(true);
     expect(canApproveServiceEstimate(pending, namedExecutor, NOT_ASSIGNED)).toBe(false);
     // Без висящего предъявления согласовывать нечего.
-    expect(canApproveServiceEstimate(actionRow(), shtabOperator, NOT_ASSIGNED)).toBe(false);
+    expect(canApproveServiceEstimate(serviceRow(), shtabOperator, NOT_ASSIGNED)).toBe(false);
     // Перечень статусов держит признак: он переживает и «Отменена», и заморозку, — и без перечня
     // объём работ согласовывали бы по отменённой заявке.
     for (const status of SERVICE_REQUEST_STATUSES.filter((s) => s !== 'in_work')) {
       expect(
         canApproveServiceEstimate(
-          actionRow({ status, estimatePendingRevision: 2 }),
+          serviceRow({ status, estimatePendingRevision: 2 }),
           shtabOperator,
           NOT_ASSIGNED,
         ),
@@ -1589,21 +1741,25 @@ describe('действия, у которых больше нет дуги (Р11
    */
   it('возврат в правку отпирают обе отметки: предъявление либо подпись', () => {
     expect(
-      canReopenServiceEstimate(actionRow({ estimatePendingRevision: 2 }), service, BY_COUNTERPARTY),
+      canReopenServiceEstimate(
+        serviceRow({ estimatePendingRevision: 2 }),
+        service,
+        BY_COUNTERPARTY,
+      ),
     ).toBe(true);
     expect(
       canReopenServiceEstimate(
-        actionRow({ approvedEstimateRevision: 2 }),
+        serviceRow({ approvedEstimateRevision: 2 }),
         service,
         BY_COUNTERPARTY,
       ),
     ).toBe(true);
     // Снимать нечего — ни предъявления, ни подписи.
-    expect(canReopenServiceEstimate(actionRow(), service, BY_COUNTERPARTY)).toBe(false);
+    expect(canReopenServiceEstimate(serviceRow(), service, BY_COUNTERPARTY)).toBe(false);
     // Сторона та же, что у предъявления: возвращает в правку тот, кто предъявлял.
     expect(
       canReopenServiceEstimate(
-        actionRow({ estimatePendingRevision: 2 }),
+        serviceRow({ estimatePendingRevision: 2 }),
         namedExecutor,
         NOT_ASSIGNED,
       ),
@@ -1611,12 +1767,38 @@ describe('действия, у которых больше нет дуги (Р11
     for (const status of SERVICE_REQUEST_STATUSES.filter((s) => s !== 'in_work')) {
       expect(
         canReopenServiceEstimate(
-          actionRow({ status, estimatePendingRevision: 2, approvedEstimateRevision: 2 }),
+          serviceRow({ status, estimatePendingRevision: 2, approvedEstimateRevision: 2 }),
           service,
           BY_COUNTERPARTY,
         ),
         status,
       ).toBe(false);
+    }
+  });
+});
+
+/**
+ * КОМУ ПОЛОЖЕНЫ ПОЯСНЕНИЯ (Р11 плана `office-equipment-card-and-list-cleanup-plan.md`). Заказчик
+ * просил убрать предупреждения и информационные плашки всем, кроме тех, кто ведёт заявки, — и
+ * граница у просьбы ровно одна: право распределения. Оно есть у «Ведения» и ИТ-службы и нет ни у
+ * внутреннего исполнителя, ни у оператора подрядчика, ни у заявителя.
+ *
+ * Правило проверяется отдельно от действий, потому что действием оно не является: функция решает
+ * форму подачи текста, а не доступ. Случай нужен затем, чтобы граница не переехала молча вместе с
+ * чьей-нибудь правкой набора: мест, спрашивающих её в портале, одиннадцать.
+ */
+describe('кому положены пояснения в интерфейсе (Р11)', () => {
+  it('ведут заявки «Ведение» и ИТ-служба, и больше никто', () => {
+    for (const subject of [...OPERATORS, ...IT_APPROVERS, admin]) {
+      expect(canCoordinateServiceRequests(subject), accessProfileLabel(subject)).toBe(true);
+    }
+    for (const subject of [...CUSTOMERS, observer, service, namedExecutor, null, undefined]) {
+      expect(canCoordinateServiceRequests(subject)).toBe(false);
+    }
+    // Правило — ровно право распределения, а не список ролей: набор, которому его выдадут, получит
+    // пояснения тем же днём, и переписывать перечень мест не придётся.
+    for (const subject of [...ACCESS_PROFILES, { role: null }, null, undefined]) {
+      expect(canCoordinateServiceRequests(subject)).toBe(can(subject, 'serviceRequests.assign'));
     }
   });
 });

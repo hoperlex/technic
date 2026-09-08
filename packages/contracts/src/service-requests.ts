@@ -1035,14 +1035,22 @@ export function canChangeRequestAsCustomer(
  * поэтому перечня статусов мало: не войди условие в сам предикат, запрет тихо исчез бы вместе со
  * статусом. Сперва решают по объёму работ — из «В работе» без предъявления переназначение снова
  * открыто, ровно как сегодня.
+ *
+ * Ожидание берётся ДЕЙСТВУЮЩЕЕ, а не сырой колонкой (Н11): у внутренней заявки предъявление могло
+ * сохраниться с тех пор, когда объём работ был обязателен любому ремонту, а ответить на него после
+ * Р5 некому. Спроси предикат колонку — такая заявка навсегда осталась бы с прежним исполнителем, и
+ * единственным выходом был бы ручной возврат сметы в правку, которого волна не заводит.
  */
 export function canAssignServiceExecutors(
-  row: Pick<ServiceActionRequest, 'status' | 'estimatePendingRevision'>,
+  row: Pick<
+    ServiceActionRequest,
+    'kind' | 'status' | 'serviceCounterpartyId' | 'estimatePendingRevision'
+  >,
   subject: AccessSubject | null | undefined,
 ): boolean {
   if (!subject) return false;
   if (row.status !== 'new' && row.status !== 'in_work') return false;
-  if (serviceEstimatePending(row)) return false;
+  if (serviceRequestHasEffectivePendingEstimate(row)) return false;
   return can(subject, 'serviceRequests.assign');
 }
 
@@ -1126,13 +1134,19 @@ export function canStartServiceWork(
  * ревизий на закрытии этого не поймала бы: ревизия-то согласована свежая.
  *
  * Вид — только ремонт: у расходников объёма работ нет вовсе, там предмет заявки — номенклатура.
+ * Один вид спрашивать перестало быть достаточно (Р5): за работу своего сотрудника не платят, и
+ * предъявлять по внутреннему ремонту нечего — на оба условия отвечает `serviceRequestNeedsEstimate`
+ * первой строкой.
  */
 export function canSubmitServiceEstimate(
-  row: Pick<ServiceActionRequest, 'kind' | 'status' | 'estimatePendingRevision'>,
+  row: Pick<
+    ServiceActionRequest,
+    'kind' | 'status' | 'serviceCounterpartyId' | 'estimatePendingRevision'
+  >,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
 ): boolean {
-  if (row.kind !== 'repair') return false;
+  if (!serviceRequestNeedsEstimate(row)) return false;
   if (row.status !== 'in_work') return false;
   if (serviceEstimatePending(row)) return false;
   return actsAsServiceExecutor(subject, assignment);
@@ -1150,13 +1164,21 @@ export function canSubmitServiceEstimate(
  *
  * Оператор контрагента-сервиса исключён явно и раньше обеих веток: объём работ предъявил он, и
  * подпись под собственным счётом — не согласование, а его копия.
+ *
+ * Признак Р4 стоит первым и у согласования — иначе историческое предъявление внутренней заявки
+ * по-прежнему звало бы «Ведение» подписаться под ценами, которых по такой заявке не бывает.
+ * Погасить его — работа закрытия (Р6), а не подписи.
  */
 export function canApproveServiceEstimate(
-  row: Pick<ServiceActionRequest, 'status' | 'estimatePendingRevision'>,
+  row: Pick<
+    ServiceActionRequest,
+    'kind' | 'status' | 'serviceCounterpartyId' | 'estimatePendingRevision'
+  >,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
 ): boolean {
   if (!subject) return false;
+  if (!serviceRequestNeedsEstimate(row)) return false;
   if (row.status !== 'in_work') return false;
   if (!serviceEstimatePending(row)) return false;
   if (actsForCounterparty(subject, 'service')) return false;
@@ -1169,20 +1191,49 @@ export function canApproveServiceEstimate(
  * предусловие «есть что снимать» — подпись ЛИБО непогашенное предъявление: прежнего «согласование
  * есть» после Р9 мало, иначе отозвать собственное предъявление было бы нечем.
  *
- * Вид в условии не назван, и это не пропуск: у расходников не бывает ни предъявления, ни подписи, и
- * дизъюнкция ложна у них при любом статусе.
+ * Вид в условии больше не выводится из дизъюнкции (прежде он не назывался вовсе: у расходников не
+ * бывает ни предъявления, ни подписи). После Р5 этого мало — у внутреннего ремонта обе отметки
+ * встречаются исторически, — и признак Р4 стоит явной первой строкой: возвращать в правку объём
+ * работ, которого по заявке не составляют, некому и незачем. Историческая ревизия остаётся видна
+ * только на чтение (Р7).
  */
 export function canReopenServiceEstimate(
   row: Pick<
     ServiceActionRequest,
-    'status' | 'estimatePendingRevision' | 'approvedEstimateRevision'
+    | 'kind'
+    | 'status'
+    | 'serviceCounterpartyId'
+    | 'estimatePendingRevision'
+    | 'approvedEstimateRevision'
   >,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
 ): boolean {
+  if (!serviceRequestNeedsEstimate(row)) return false;
   if (row.status !== 'in_work') return false;
   if (!serviceEstimatePending(row) && row.approvedEstimateRevision === null) return false;
   return actsAsServiceExecutor(subject, assignment);
+}
+
+/**
+ * ВЕДЁТ ЛИ СУБЪЕКТ ЗАЯВКИ — то есть положены ли ему пояснения в интерфейсе (Р11 плана
+ * `office-equipment-card-and-list-cleanup-plan.md`).
+ *
+ * Право то же самое, что у распределения, и это не совпадение: заявку ведёт тот, кто её раздаёт, —
+ * «Ведение» и ИТ-служба. Заявитель, внутренний исполнитель и оператор подрядчика видят одну
+ * заявку и своё действие в ней, и предупреждать их о состоянии чужой очереди не о чем: заказчик
+ * просил убрать именно эти плашки (просьба 08.09.2026, п. 3).
+ *
+ * Своей функцией, а не строкой `can(subject, 'serviceRequests.assign')` по компонентам: мест,
+ * которые её спрашивают, одиннадцать (§2.3 плана), и правило «кому положены пояснения» обязано
+ * меняться в одном месте. Разложенное по вызовам, оно переехало бы наполовину — и половина
+ * подсказок вернулась бы тем, у кого их убирали.
+ *
+ * Действия эта функция не открывает НИ ОДНОГО и открывать не должна: она отвечает про подачу
+ * текста, а не про права. Всё, что решает доступ, спрашивает свой предикат выше.
+ */
+export function canCoordinateServiceRequests(subject: AccessSubject | null | undefined): boolean {
+  return can(subject, 'serviceRequests.assign');
 }
 
 // ── Кого ждут ──
@@ -1241,8 +1292,21 @@ export interface ServiceWaitingRequest {
   status: ServiceRequestStatus;
   /** У заявки есть исполнители: `serviceHasExecutors` по карточке либо `EXISTS` в запросе списка. */
   hasExecutors: boolean;
-  /** Непогашенное предъявление объёма работ (Р2). */
-  estimatePendingRevision: number | null;
+  /**
+   * ДЕЙСТВУЮЩЕЕ ожидание подписи под объёмом работ — уже посчитанное
+   * `serviceRequestHasEffectivePendingEstimate`, а не колонка `estimate_pending_revision` (Р7, Н16).
+   *
+   * Ось у очереди осталась одна, и это её единственно возможная форма. SQL не зовёт
+   * TypeScript-функцию на колонках, а третью ось перебора очередь получить не может: маски
+   * выводятся сплошным перебором сочетаний, и каждая новая ось удваивает их число. Поэтому
+   * вызывающий приводит обе половины к одному булеву — карточка признаком Р4, builder очередей
+   * парой SQL-выражений, — и расхождение «в карточке ждут исполнителя, в списке согласования»
+   * становится невозможным по построению.
+   *
+   * Тот же приём, что у `hasExecutors` рядом: чего в строке нет готовым, предикат принимает
+   * посчитанным.
+   */
+  estimatePending: boolean;
 }
 
 /**
@@ -1278,8 +1342,10 @@ export function serviceRequestWaitingOn(row: ServiceWaitingRequest): ServiceWait
       return row.hasExecutors ? 'service' : 'operator';
     // «В работе» отвечает предъявлением: висит — ждут подписи под объёмом работ (Р3); не висит —
     // ждут самих работ. Третьей оси — визы ИТ — здесь больше нет, она ушла вместе с визой (Р10).
+    // Признак читается готовым: «действует ли предъявление» решил вызывающий (Р7), потому что
+    // ответ зависит от вида и исполнителя заявки, которых у строки очереди нет.
     case 'in_work':
-      return serviceEstimatePending(row) ? 'approval' : 'service';
+      return row.estimatePending ? 'approval' : 'service';
     // Приёмка — ход «Ведения»: работу предъявили, и ждут, когда её примут.
     case 'done':
       return 'operator';
@@ -1309,7 +1375,7 @@ export function serviceRequestWaitingOn(row: ServiceWaitingRequest): ServiceWait
  * `serviceRequestWaitingOn`; здесь функция дожидается снятия последних вызовов.
  */
 export function serviceWaitingOn(status: ServiceRequestStatus): ServiceWaitingOn {
-  return serviceRequestWaitingOn({ status, hasExecutors: false, estimatePendingRevision: null });
+  return serviceRequestWaitingOn({ status, hasExecutors: false, estimatePending: false });
 }
 
 /**
@@ -2276,10 +2342,30 @@ export const serviceResumeSchema = z.object({
 });
 export type ServiceResumeInput = z.infer<typeof serviceResumeSchema>;
 
-/** Отмена и административные откаты: причина — единственное содержание такого перехода. */
+/**
+ * Отмена и административные откаты: причина — главное содержание такого перехода.
+ *
+ * ДВА ПОЛЯ РЯДОМ С НЕЙ — ВТОРОЙ ВХОД В «РЕКОМЕНДОВАНА ЗАМЕНА» (Р10 плана
+ * `office-equipment-card-and-list-cleanup-plan.md`, Н3). Прежде и пометку, и решение ставил ровно
+ * один ход — отказ по объёму работ; после Р5 у внутреннего ремонта объёма работ не бывает вовсе, и
+ * сказать «чинить нецелесообразно, аппарат под замену» стало нечем. А именно по этой пометке
+ * собирают список того, что пора менять, — волна закрыла бы этап вместе со списком.
+ *
+ * ОБА НЕОБЯЗАТЕЛЬНЫЕ И БЕЗ `default`, и это не мелочь схемы. Отсутствие поля сервер трактует как
+ * «замена не рекомендована»: тем же телом ходит МАССОВАЯ отмена, и общий `default(false)` был бы
+ * безобиден лишь до первой попытки прочитать «поле не прислали» — а различать эти два случая
+ * приходится ровно там, где одна галочка не должна помечать к замене всю пачку аппаратов.
+ *
+ * Принимает их сервер только у ремонта и только при `status === 'cancelled'`; на административном
+ * откате непустые значения — `422`, а не молчаливое игнорирование: отменённая заявка могла
+ * остаться открытой в чужом браузере, и «сохранилось, но не сохранилось» — худший из исходов.
+ */
 export const serviceStatusChangeSchema = z.object({
   status: serviceRequestStatusSchema,
   reason: z.string().trim().max(1000).optional().default(''),
+  /** «Что делаем вместо ремонта» — то же поле заявки, что пишет отказ по объёму работ. */
+  resolution: z.string().trim().max(500).optional(),
+  replacementRecommended: z.boolean().optional(),
   version: z.number().int().nonnegative(),
 });
 export type ServiceStatusChangeInput = z.infer<typeof serviceStatusChangeSchema>;
@@ -2654,6 +2740,51 @@ export function serviceRequestNeedsClosingDocument(request: {
   serviceCounterpartyId: string | null;
 }): boolean {
   return request.kind === 'repair' && request.serviceCounterpartyId !== null;
+}
+
+/**
+ * Нужен ли по заявке объём работ (Р4 плана `office-equipment-card-and-list-cleanup-plan.md`).
+ *
+ * Пара признаков та же, что у закрывающего документа, и это не совпадение: платит компания за
+ * работу подрядчика, и обе бумаги — про деньги. Свой сисадмин стоимости не фиксирует вовсе
+ * (просьба заказчика 08.09.2026, п. 2), поэтому предъявлять, согласовывать и возвращать в правку у
+ * внутреннего ремонта нечего.
+ *
+ * Одной функцией, а не строкой по месту: правило спрашивают три предиката объёма работ, предикат
+ * назначения, четыре ручки сметы, закрытие работ, подшивка документа, вкладка и окно закрытия.
+ * Первым признаком разошедшихся копий стала бы карточка, где кнопка «Объём работ» есть, а сервер
+ * отвечает на неё отказом.
+ *
+ * Вид в условии не лишний, хотя у расходников объёма работ не бывает и по другой причине: правило
+ * обязано отказывать по той причине, по которой его писали, — иначе в день, когда картриджи
+ * повезёт подрядчик, оно молча потребует от него смету.
+ */
+export function serviceRequestNeedsEstimate(request: {
+  kind: ServiceRequestKind;
+  /** Исполнитель-контрагент; `null` — заявку ведёт свой сотрудник, и цены по ней не считают. */
+  serviceCounterpartyId: string | null;
+}): boolean {
+  return request.kind === 'repair' && request.serviceCounterpartyId !== null;
+}
+
+/**
+ * ДЕЙСТВУЮЩЕЕ ожидание подписи — в отличие от сырой колонки `estimate_pending_revision` (Н11).
+ *
+ * Колонка отвечает на вопрос «предъявляли ли и получили ли ответ», и у исторической внутренней
+ * заявки она законно непуста: до этой волны объём работ был обязателен любому ремонту. Спроси её
+ * очередь напрямую — такая заявка вечно ждала бы согласования, которого после Р5 некому дать, и
+ * вечно же запрещала бы переназначение. Отвечать «ждут подписи» вправе только та заявка, у которой
+ * подпись вообще бывает.
+ *
+ * Сырой признак при этом остаётся и в БД, и в DTO: историю мы не переписываем — Р7 лишь перестаёт
+ * считать её рабочим ожиданием.
+ */
+export function serviceRequestHasEffectivePendingEstimate(request: {
+  kind: ServiceRequestKind;
+  serviceCounterpartyId: string | null;
+  estimatePendingRevision: number | null;
+}): boolean {
+  return serviceRequestNeedsEstimate(request) && serviceEstimatePending(request);
 }
 
 export const attachServiceFilesSchema = z.object({
@@ -3444,8 +3575,15 @@ export const serviceRequestChangeLabels = {
    */
   consumablesIssued: 'Списано со склада',
   consumablesReturned: 'Возвращено на склад',
-  /** Состав номенклатуры до и после правки: спорят о том, что именно просили и в каком количестве. */
-  consumables: 'Состав номенклатуры',
+  /*
+   * Состав расходников до и после правки: спорят о том, что именно просили и в каком количестве.
+   *
+   * Подпись переименована вместе со вкладкой карточки (Р13): «Номенклатура» читалась как название
+   * справочника, а спор идёт про состав ОДНОЙ заявки. Предметный термин при этом остаётся собой —
+   * «код номенклатуры», набор «Оргтехника: номенклатура» и разделы справочника не переименованы, и
+   * глобальная замена слова по репозиторию была бы ошибкой.
+   */
+  consumables: 'Состав расходников',
   /*
    * Перемещение техники, записанное ПО ЭТОЙ ЗАЯВКЕ (план перемещения из карточки заявки, Р12) —
    * четвёртый источник истории. Ключи проставляет сборка истории, а не дифф полей заявки: переезд
@@ -3602,6 +3740,9 @@ const SERVICE_FILE_KIND_POLICY: Record<ServiceFileKind, ServiceFileKindPolicy> =
     // подпись под собственным предложением не согласование (та же граница, что у прав в матрице —
     // `estimate` и `approveEstimate` одному субъекту не выдают).
     attachedBySide: ['executor'],
+    // Пятого столбца «нужен ли объём работ вообще» в таблице нет и быть не может: он зависит от
+    // строки заявки, а не от вида документа, — и спрашивается отдельной строкой в
+    // `canAttachServiceFile` (Р5, Н17). Ищущему здесь оставлена эта ссылка.
   },
   // В акте стоят суммы: «акт виден» отменяло бы половину задачи (Р6, §12 п. 1).
   act: {
@@ -3717,6 +3858,16 @@ export function canAttachServiceFileSide(
  * КОНЪЮНКЦИЯ ДВУХ ПЛАНОВ, а не вторая матрица (Р3): аудитория приехала планом карточки заявителя и
  * осталась первым слоем (`requester` кладёт только вложение), сторона — этим планом. Ни одна из
  * половин не переписана: `finance` сам по себе подшивку не разрешает.
+ *
+ * ЧЕТВЁРТЫЙ СОМНОЖИТЕЛЬ — САМА ЗАЯВКА (Р5, Н17), и в таблицу видов он не помещается: политика
+ * `estimate` знает статус, аудиторию и сторону, но про подрядчика не знает и знать не может —
+ * признак Р4 читается из строки, а не из вида документа. Без этой строки внутренний исполнитель
+ * подшивал бы к заявке документ с ценами, которых по ней не бывает: этап объёма работ у неё снят
+ * целиком, а вид документа остался бы открытым и пронёс бы деньги мимо.
+ *
+ * ВИДИМОСТЬ УЖЕ ПОДШИТОГО НЕ ОТНИМАЕТСЯ — `isServiceFileKindVisible` этой пары не спрашивает: до
+ * выпуска внутренние заявки объём работ проходили, и спрятать бумагу значило бы стереть основание
+ * принятого решения (тот же довод, что у исторической вкладки в Р7).
  */
 export function canAttachServiceFile(
   kind: ServiceFileKind,
@@ -3724,7 +3875,9 @@ export function canAttachServiceFile(
   audience: ServiceRequestAudience,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
+  request: { kind: ServiceRequestKind; serviceCounterpartyId: string | null },
 ): boolean {
+  if (kind === 'estimate' && !serviceRequestNeedsEstimate(request)) return false;
   return (
     isServiceFileKindAttachable(kind, audience) &&
     SERVICE_FILE_KIND_POLICY[kind].statuses.includes(status) &&
@@ -3741,15 +3894,20 @@ export function canAttachServiceFile(
  * Субъект и признаки назначения обязательны с Р3: форма, спрашивающая одну аудиторию, предлагала
  * бы ИТ-службе «Акт», на котором придёт 403, — та самая кнопка в никуда, ради которой правила и
  * живут в контрактах.
+ *
+ * Признаки самой заявки — с Р5 и по той же причине: перечень производный, и не приди пара Р4 сюда,
+ * форма предлагала бы «Объём работ» по внутреннему ремонту, а сервер отвечал бы на выбранный файл
+ * отказом.
  */
 export function attachableServiceFileKinds(
   status: ServiceRequestStatus,
   audience: ServiceRequestAudience,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
+  request: { kind: ServiceRequestKind; serviceCounterpartyId: string | null },
 ): readonly ServiceFileKind[] {
   return SERVICE_FILE_KINDS.filter((kind) =>
-    canAttachServiceFile(kind, status, audience, subject, assignment),
+    canAttachServiceFile(kind, status, audience, subject, assignment, request),
   );
 }
 

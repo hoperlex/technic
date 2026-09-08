@@ -31,8 +31,13 @@ function assignedNames(request: ServiceRequestDto): string[] {
  * Что снимает отмена (`serviceResetOnTransition`: исполнители и снимок согласования). Заявка
  * остаётся историей того, что собирались чинить, но ни исполнителя, ни согласованной суммы у неё
  * больше нет, — и человек обязан узнать это ДО нажатия, а не из карточки после.
+ *
+ * Экспортируется, потому что спрашивающих двое, а правило одно: своё окно отмены (Р10) получает
+ * этот перечень пропом, а возврат отменённой заявки строит на нём свой — более широкий. Посчитай
+ * окно свой список само, две копии матрицы сброса разошлись бы на первой же её правке, и одна из
+ * двух обещала бы человеку не то.
  */
-function cancelErases(request: ServiceRequestDto): string[] {
+export function cancelErases(request: ServiceRequestDto): string[] {
   const items: string[] = [];
   const names = assignedNames(request);
   if (names.length > 0) items.push(`Назначенные исполнители: ${names.join(', ')}`);
@@ -66,6 +71,9 @@ function reopenErases(request: ServiceRequestDto): string[] {
  * Переходами эти действия быть перестали не все: отказ и возврат объёма работ в правку статуса не
  * трогают вовсе (Р7, Р9), но причину спрашивают той же ручкой — по ней в истории и читают, почему
  * исполнителей стало меньше, а подпись под объёмом снята.
+ *
+ * Отмена из этого набора ушла (Р10): её содержание перестало сводиться к причине, и окно у неё
+ * теперь своё. Оставшимся четырём добавить нечего — им и правда нечего спросить сверх «почему».
  */
 export function serviceReasonPrompts(request: ServiceRequestDto) {
   const version = request.version;
@@ -117,15 +125,12 @@ export function serviceReasonPrompts(request: ServiceRequestDto) {
       submit: (reason: string) =>
         serviceRequestsApi.changeStatus(id, { status: 'new', reason, version }),
     },
-    cancel: {
-      erases: cancelErases(request),
-      title: `Отмена заявки ${request.displayNumber}`,
-      label: 'Причина отмены',
-      okText: 'Отменить заявку',
-      danger: true,
-      success: 'Заявка отменена',
-      submit: (reason: string) =>
-        serviceRequestsApi.changeStatus(id, { status: 'cancelled', reason, version }),
-    },
+    /*
+     * Отмены здесь больше нет (Р10): у неё появилось содержание сверх причины — решение «что
+     * делаем вместо ремонта» и пометка «рекомендована замена», — и живёт она своим окном
+     * (`features/service-cancel`). Одно-полевой `ReasonModal` третьего поля не знает, а добавить
+     * его туда значило бы принести пометку замены вывозу мусора и заказу ТС, которые тем же окном
+     * спрашивают свою причину.
+     */
   } satisfies Record<string, ReasonPrompt>;
 }

@@ -345,41 +345,32 @@ const ESTIMATE_ITEMS = [
 ];
 
 /**
- * Заявка, доведённая исполнителем до «В работе» с СОГЛАСОВАННЫМ объёмом работ, — состояние, из
- * которого закрывают работы. Без него `complete` упирается в равенство ревизий и отвечает 409, то
- * есть отказом не про доступ.
+ * Заявка, доведённая поимённым исполнителем до «В работе», — состояние, из которого закрывают
+ * работы.
+ *
+ * ОБЪЁМА РАБОТ ЗДЕСЬ БОЛЬШЕ НЕТ, И ЭТО НЕ УПРОЩЕНИЕ ФИКСТУРЫ. Прежде функция гнала заявку через
+ * правку состава, предъявление и согласование — не ради предмета случая (он про сторону), а
+ * потому, что иначе `complete` упирался в равенство ревизий и отвечал 409, то есть отказом не про
+ * доступ. У внутренней заявки этой планки больше нет (Р6 плана
+ * `docs/office-equipment-card-and-list-cleanup-plan.md`): заявку без подрядчика закрывают датой, а
+ * четыре двери объёма работ по ней отвечают 422 (Р5) — прежний путь стал недостижим вовсе.
+ *
+ * Подрядчика ради старого пути сюда не добавляют: файл проверяет ПОИМЁННОГО исполнителя, и
+ * назначенный контрагент подмешал бы к каждому случаю вторую сторону — то есть менял бы предмет
+ * доказательства ради формы фикстуры.
  */
-async function driveToApproved(id: string, executorAuth: Auth): Promise<void> {
+async function driveToInWork(id: string, executorAuth: Auth): Promise<void> {
   const started = await inject('PATCH', `/api/v1/service-requests/${id}/start`, executorAuth, {
     version: await versionOf(id),
   });
   expect(started.statusCode, started.body).toBe(200);
-  const put = await inject('PUT', `/api/v1/service-requests/${id}/estimate`, executorAuth, {
-    items: ESTIMATE_ITEMS,
-    version: (started.json() as ServiceRequestDto).version,
-  });
-  expect(put.statusCode, put.body).toBe(200);
-  const submitted = await inject(
-    'PATCH',
-    `/api/v1/service-requests/${id}/estimate/submit`,
-    executorAuth,
-    { version: (put.json() as ServiceRequestDto).version },
-  );
-  expect(submitted.statusCode, submitted.body).toBe(200);
-  const approved = await inject(
-    'PATCH',
-    `/api/v1/service-requests/${id}/estimate/approval`,
-    ctx.admin.auth,
-    { approved: true, version: await versionOf(id) },
-  );
-  expect(approved.statusCode, approved.body).toBe(200);
 }
 
 /** Заявка площадки A, назначенная поимённо и готовая к закрытию работ. */
 async function namedRequestReady(user: TestUser, description: string): Promise<ServiceRequestDto> {
   const dto = await createRequest(ctx.customer.auth, ctx.objectAId, description);
   await assign(dto.id, { userIds: [user.id] });
-  await driveToApproved(dto.id, user.auth);
+  await driveToInWork(dto.id, user.auth);
   return card(dto.id, ctx.admin.auth);
 }
 
@@ -1117,7 +1108,19 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
        * обе — иначе строка доказывала бы половину правила.
        */
       const dto = await createRequest(ctx.customer.auth, ctx.objectAId, 'Две двери согласования');
-      await assign(dto.id, { userIds: [ctx.executor.id] });
+      /*
+       * СОСТАВ СМЕШАННЫЙ — свой сотрудник ПЛЮС подрядчик (Р8 плана
+       * `docs/office-equipment-card-and-list-cleanup-plan.md`), и подрядчик здесь не декорация.
+       * После Р5 объём работ бывает только у заявки с назначенным контрагентом: у чисто
+       * внутренней все четыре двери сметного круга отвечают 422, и случай доказывал бы отказ по
+       * предмету вместо двух дверей согласования. Ход при этом остаётся ходом ПОИМЁННОГО
+       * исполнителя — он и предъявляет, и подписывает второй дверью, — а работа подрядчика
+       * оплачивается независимо от того, помогал ли ему свой сисадмин.
+       */
+      await assign(dto.id, {
+        userIds: [ctx.executor.id],
+        serviceCounterpartyId: ctx.counterpartyAId,
+      });
       /*
        * ВЕРСИЯ ПЕРЕЧИТЫВАЕТСЯ ПЕРЕД КАЖДЫМ ХОДОМ. Ревизию заявки поднимает не только сам ход:
        * назначение состава — тоже запись, и версия, взятая из ответа на заведение, устаревает уже
@@ -1243,9 +1246,11 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
      * `warranty_card` разрешены уже в «В работе» — и наличие любого из них снимает планку
      * закрывающего документа. Заказчик клал основание платежа, подрядчик закрывал по нему работу.
      *
-     * Пока шёл аудит, в дерево приехал план карточки заявителя: `canAttachServiceFile(kind, status,
-     * audience)` и `SERVICE_FILE_KIND_POLICY` в контрактах, право `serviceRequests.finance` в
-     * матрице. У `act` теперь `attachedBy: ['finance']`, а заказчик без `finance` — аудитория
+     * Пока шёл аудит, в дерево приехал план карточки заявителя: `canAttachServiceFile` и
+     * `SERVICE_FILE_KIND_POLICY` в контрактах, право `serviceRequests.finance` в матрице. Слоёв у
+     * функции с тех пор стало четыре — аудитория, сторона, статус и сама заявка (Р5, Н17 плана
+     * `office-equipment-card-and-list-cleanup-plan.md`), — и выписывать их список сюда значило бы
+     * заводить второе место, которое разъедется с сигнатурой: здесь важен ПЕРВЫЙ из них. У `act` теперь `attachedBy: ['finance']`, а заказчик без `finance` — аудитория
      * `requester`, и сервер отвечает ему 403 ещё до разбора статуса. Это записано и в самом Р3:
      * функция делится между двумя планами, аудитория приехала первой.
      *

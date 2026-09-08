@@ -11,12 +11,50 @@ import type { ServiceRequestConsumableDto } from '@technic/contracts';
  * Реквизиты позиции приходят живыми, а не снимком (в отличие от реквизитов техники): строка
  * ссылается на карточку справочника, и переименование позиции обязано читаться в заявке новым
  * именем — склад это действующий перечень, а не история заявки.
+ *
+ * ЧИТАЕТСЯ БЕЗ ОБЪЯСНЕНИЙ (план `docs/office-equipment-card-and-list-cleanup-plan.md`, Р14).
+ * Заголовки — вопросами («Сколько просили», «Сколько выдали»), а не именами реквизитов: таблицу
+ * читает заказчик, которому привезут, а не тот, кто заводил колонку. Пустой состав отвечает
+ * словами, а колонки факта появляются по факту — почему именно так, сказано у каждой ниже.
  */
 export function ServiceConsumablesTable({
   lines,
 }: {
   lines: readonly ServiceRequestConsumableDto[];
 }) {
+  /*
+   * Пустой состав отвечает словами, а не пустой таблицей antd (Р14). «Нет данных» под шапкой из
+   * четырёх колонок читается как поломка или как «мне ничего не привезут», тогда как состояние
+   * законное и ожидаемое: заявитель сказал словами, чего не хватает, а позиции подберёт тот, кому
+   * везти. Строка называет и следующий шаг, и того, кто его делает, — иначе заказчик пишет в
+   * ИТ-службу ровно тот вопрос, ради отмены которого модуль и заводился.
+   */
+  if (lines.length === 0) {
+    return (
+      <Typography.Text type="secondary">
+        Состав ещё не собран: позиции заполнит исполнитель, которому везти
+      </Typography.Text>
+    );
+  }
+
+  /*
+   * ЕСТЬ ЛИ ПО ЗАЯВКЕ ХОТЬ ОДНА ОТМЕТКА О ВЫДАЧЕ — и от этого зависит, показывать ли две колонки
+   * факта (Р14). До выезда исполнителя они во всех строках говорят «не отмечено» и «—»: половина
+   * ширины таблицы занята сообщением «здесь пока ничего нет», которое человек и так видит.
+   *
+   * ИСЧЕЗАЕТ ПУСТАЯ КОЛОНКА, А НЕ РАЗЛИЧИЕ. «Нет отметки» (`null`) и «выдали ноль» — разные
+   * состояния: первое ждёт исполнителя, второе — законченная работа («съездили, тонер оказался
+   * цел», В9б). Различие держит `render` колонки, и оно остаётся: у частично закрытой заявки
+   * колонка уже показана, и строки без отметки честно говорят «не отмечено». Спрячь мы колонку по
+   * «все строки выданы», и наполовину отмеченный состав выглядел бы полностью отмеченным — цена
+   * ошибки тут не в вёрстке, а в списании со склада, которого не было.
+   *
+   * Отвергнуто «показывать колонки всегда и рисовать прочерки»: это нынешнее поведение, с него и
+   * начался пункт 4 заказчика. Отвергнуто и «прятать по статусу заявки» — статус про цикл, а
+   * отметка про склад: правку факта разрешают до «Закрыта», и статус ответил бы не на тот вопрос.
+   */
+  const factShown = lines.some((line) => line.issuedQuantity !== null);
+
   const columns: TableColumnsType<ServiceRequestConsumableDto> = [
     {
       key: 'name',
@@ -33,6 +71,9 @@ export function ServiceConsumablesTable({
             </Tag>
           )}
           <div>
+            {/* Код второй строкой и мелким (Р14): по нему сверяют со складом и со счётом, но
+                читают строку по наименованию — вынеси код в свою колонку, и он отнял бы ширину
+                у названия позиции, ради которого таблицу и открывают. */}
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {line.code}
             </Typography.Text>
@@ -42,44 +83,43 @@ export function ServiceConsumablesTable({
     },
     {
       key: 'requestedQuantity',
-      title: 'Просили',
+      title: 'Сколько просили',
       dataIndex: 'requestedQuantity',
-      width: 100,
+      width: 140,
       align: 'right',
     },
-    {
-      key: 'issuedQuantity',
-      title: 'Выдано',
-      dataIndex: 'issuedQuantity',
-      width: 110,
-      align: 'right',
-      /*
-       * «Нет отметки» и «выдали ноль» — разные состояния, и показывать их одинаково нельзя: первое
-       * ждёт исполнителя, второе — законченная работа («съездили, тонер оказался цел», В9б).
-       */
-      render: (_v, line) =>
-        line.issuedQuantity == null ? (
-          <Typography.Text type="secondary">не отмечено</Typography.Text>
-        ) : (
-          line.issuedQuantity
-        ),
-    },
-    {
-      key: 'issueNote',
-      title: 'Причина расхождения',
-      dataIndex: 'issueNote',
-      render: (_v, line) =>
-        line.issueNote || <Typography.Text type="secondary">—</Typography.Text>,
-    },
+    ...(factShown
+      ? ([
+          {
+            key: 'issuedQuantity',
+            title: 'Сколько выдали',
+            dataIndex: 'issuedQuantity',
+            width: 140,
+            align: 'right',
+            /*
+             * «Нет отметки» и «выдали ноль» — разные состояния, и показывать их одинаково нельзя:
+             * первое ждёт исполнителя, второе — законченная работа («съездили, тонер оказался
+             * цел», В9б).
+             */
+            render: (_v, line) =>
+              line.issuedQuantity == null ? (
+                <Typography.Text type="secondary">не отмечено</Typography.Text>
+              ) : (
+                line.issuedQuantity
+              ),
+          },
+          {
+            key: 'issueNote',
+            title: 'Причина расхождения',
+            dataIndex: 'issueNote',
+            render: (_v, line) =>
+              line.issueNote || <Typography.Text type="secondary">—</Typography.Text>,
+          },
+        ] satisfies TableColumnsType<ServiceRequestConsumableDto>)
+      : []),
   ];
 
   return (
-    <Table
-      rowKey="id"
-      size="small"
-      pagination={false}
-      columns={columns}
-      dataSource={[...lines]}
-    />
+    <Table rowKey="id" size="small" pagination={false} columns={columns} dataSource={[...lines]} />
   );
 }

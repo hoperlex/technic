@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, App, Form, Input, Space } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
+  canCoordinateServiceRequests,
   hasServiceClosingDocument,
   SERVICE_CLOSING_DOCUMENT_KINDS,
   type ServiceRequestDto,
@@ -9,6 +10,7 @@ import {
 import {
   SERVICE_CLOSING_DOCUMENT_HINT,
   ServiceDocumentUpload,
+  ServiceHint,
   ServiceRequestContext,
   serviceRequestKeys,
   serviceRequestsApi,
@@ -50,7 +52,7 @@ export function ServiceAcceptModal({
   onClose: () => void;
 }) {
   const { message } = App.useApp();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const qc = useQueryClient();
   const [form] = Form.useForm<{ text?: string }>();
   const blockers = useFormBlockers(form);
@@ -112,6 +114,12 @@ export function ServiceAcceptModal({
    */
   const missingDocument = !rework && !!shown && !hasServiceClosingDocument(shown);
   const canAttach = can('serviceRequests.files');
+  /*
+   * Кому положены пояснения (Р11). Считает вызывающий, а не `ServiceHint`: слой сущностей
+   * `AuthContext` не видит, и правило «кому положены пояснения» живёт единственной функцией
+   * контрактов — своя формула здесь разошлась бы с соседними экранами молча.
+   */
+  const coordinator = canCoordinateServiceRequests(user);
 
   return (
     <FormModal
@@ -131,9 +139,14 @@ export function ServiceAcceptModal({
       {shown && (
         <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           <ServiceRequestContext request={shown} />
-          <Alert
-            type={rework ? 'warning' : 'info'}
-            showIcon
+          {/* Что означает нажатие: цена возврата — предупреждение, сумма приёмки — пояснение.
+              Подача по Р11: у «Ведения», которое эти два решения и принимает, обе плашки остаются
+              прежними; заказчику, дошедшему сюда своей заявкой, пояснение не показывается, а цена
+              возврата сворачивается в строку — но не исчезает, иначе стёртый факт закрытия стал бы
+              для него неожиданностью. */}
+          <ServiceHint
+            coordinator={coordinator}
+            level={rework ? 'warning' : 'info'}
             title={
               rework
                 ? 'Факт закрытия будет стёрт'
@@ -148,6 +161,10 @@ export function ServiceAcceptModal({
 
           {!rework && (
             <>
+              {/* Эта плашка через `ServiceHint` НЕ идёт и остаётся полной у всех (Р12): окно
+                  приёмки открывает «Ведение», и адресована она ровно ему — «работу предъявили без
+                  бумаги, спросите её у исполнителя». Другой аудитории здесь не бывает, и свернуть
+                  её значило бы урезать текст единственному читателю. */}
               {missingDocument && (
                 <Alert
                   type="warning"

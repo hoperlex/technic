@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   acceptServiceRequestSchema,
+  type AccessSubject,
   approveServiceEstimateSchema,
   assignServiceSchema,
+  attachableServiceFileKinds,
   attachServiceFilesSchema,
+  canAttachServiceFile,
   completeServiceRequestSchema,
   createServiceRequestSchema,
   declineServiceRequestSchema,
@@ -24,13 +27,17 @@ import {
   SERVICE_REQUEST_STATUSES,
   serviceCommentSchema,
   serviceEstimateItemSchema,
+  type ServiceExecutorAssignment,
   type ServiceFileKind,
   serviceHoldSchema,
+  isServiceFileKindVisible,
   serviceRequestChangeLabels,
   type ServiceRequestFileDto,
+  serviceRequestHasEffectivePendingEstimate,
   serviceRequestKindLabels,
   serviceRequestListQuerySchema,
   serviceRequestNeedsClosingDocument,
+  serviceRequestNeedsEstimate,
   serviceResumeSchema,
   serviceStatusChangeSchema,
   setServiceUrgencySchema,
@@ -859,6 +866,145 @@ describe('документы заявки', () => {
     ).toBe(false);
     // Два вида и обе подписи — на случай, если словарь видов начнёт расти молча.
     expect(Object.keys(serviceRequestKindLabels).sort()).toEqual(['consumable', 'repair']);
+  });
+
+  /**
+   * КОМУ НУЖЕН ОБЪЁМ РАБОТ (Р4 плана `office-equipment-card-and-list-cleanup-plan.md`) — та же пара
+   * признаков, что у закрывающего документа, и это не совпадение: обе бумаги про деньги, а за
+   * работу своего сотрудника не платят (просьба заказчика 08.09.2026, п. 2).
+   *
+   * Проверяются все четыре сочетания, а не одно рабочее, — и рядом с ответами закрывающего
+   * документа: пара обязана совпадать, и разойдись она, у заявки появился бы этап, по которому нет
+   * бумаги, либо бумага, под которой нет этапа.
+   */
+  it('объём работ нужен только ремонту подрядчика — как и закрывающий документ', () => {
+    expect(serviceRequestNeedsEstimate({ kind: 'repair', serviceCounterpartyId: UUID })).toBe(true);
+    // Внутренний ремонт: исполнитель свой, стоимость не фиксируется вовсе.
+    expect(serviceRequestNeedsEstimate({ kind: 'repair', serviceCounterpartyId: null })).toBe(
+      false,
+    );
+    // Расходники: предмет заявки — номенклатура, объёма работ у них не бывает ни у кого.
+    expect(serviceRequestNeedsEstimate({ kind: 'consumable', serviceCounterpartyId: UUID })).toBe(
+      false,
+    );
+    expect(serviceRequestNeedsEstimate({ kind: 'consumable', serviceCounterpartyId: null })).toBe(
+      false,
+    );
+    // Ответы совпадают с планкой закрывающего документа во всех четырёх случаях.
+    for (const kind of ['repair', 'consumable'] as const) {
+      for (const serviceCounterpartyId of [UUID, null]) {
+        expect(
+          serviceRequestNeedsEstimate({ kind, serviceCounterpartyId }),
+          `${kind}/${serviceCounterpartyId ?? 'свой'}`,
+        ).toBe(serviceRequestNeedsClosingDocument({ kind, serviceCounterpartyId }));
+      }
+    }
+  });
+
+  /**
+   * ДЕЙСТВУЮЩЕЕ ожидание подписи против сохранённой колонки (Н11). Колонка отвечает «предъявляли и
+   * ответа не получили» и у внутренней заявки законно непуста: до этой волны объём работ был
+   * обязателен любому ремонту. Ответить на такое предъявление после Р5 некому — и признак обязан
+   * это признать, иначе заявка вечно ждала бы согласования и запрещала бы переназначение.
+   *
+   * Сырой `serviceEstimatePending` при этом остаётся собой: историю мы не переписываем, а лишь
+   * перестаём считать её рабочим ожиданием.
+   */
+  it('историческое предъявление внутренней заявки действующим ожиданием не является', () => {
+    const historic = { kind: 'repair', serviceCounterpartyId: null, estimatePendingRevision: 2 };
+    expect(serviceRequestHasEffectivePendingEstimate(historic)).toBe(false);
+    // У подрядчика та же колонка означает ровно то, что означала.
+    expect(
+      serviceRequestHasEffectivePendingEstimate({ ...historic, serviceCounterpartyId: UUID }),
+    ).toBe(true);
+    // Погашенное предъявление не действует ни у кого — вторая половина конъюнкции на месте.
+    expect(
+      serviceRequestHasEffectivePendingEstimate({
+        kind: 'repair',
+        serviceCounterpartyId: UUID,
+        estimatePendingRevision: null,
+      }),
+    ).toBe(false);
+    // Расходники отвечают «нет» при любом исполнителе и любой колонке.
+    expect(
+      serviceRequestHasEffectivePendingEstimate({
+        kind: 'consumable',
+        serviceCounterpartyId: UUID,
+        estimatePendingRevision: 2,
+      }),
+    ).toBe(false);
+  });
+
+  /**
+   * ВИД ДОКУМЕНТА «ОБЪЁМ РАБОТ» СЛЕДУЕТ ЗА ЭТАПОМ (Р5, Н17). Политика вида знает статус, аудиторию
+   * и сторону, но про подрядчика не знает: без признака Р4 внутренний исполнитель подшивал бы к
+   * заявке документ с ценами, которых по ней не бывает, — этап сняли, а дверь осталась бы открытой.
+   *
+   * ВИДИМОСТЬ УЖЕ ПОДШИТОГО НЕ ОТНИМАЕТСЯ, и это отдельное утверждение случая: до выпуска
+   * внутренние заявки объём работ проходили, и спрятать бумагу значило бы стереть основание
+   * принятого решения (тот же довод, что у исторической вкладки в Р7).
+   */
+  it('«Объём работ» подшивают только там, где он положен, а прочитать могут и в истории', () => {
+    const EXECUTOR: AccessSubject = {
+      role: 'shtab',
+      grantPermissions: ['serviceRequests.execute', 'serviceRequests.files'],
+    };
+    const NAMED: ServiceExecutorAssignment = {
+      actsForAssignedCounterparty: false,
+      isNamedExecutor: true,
+    };
+    const byService = { kind: 'repair', serviceCounterpartyId: UUID } as const;
+    const internal = { kind: 'repair', serviceCounterpartyId: null } as const;
+    expect(canAttachServiceFile('estimate', 'in_work', 'finance', EXECUTOR, NAMED, byService)).toBe(
+      true,
+    );
+    expect(canAttachServiceFile('estimate', 'in_work', 'finance', EXECUTOR, NAMED, internal)).toBe(
+      false,
+    );
+    // Заявка на расходники закрыта тем же признаком: смету по картриджам не подшивают.
+    expect(
+      canAttachServiceFile('estimate', 'in_work', 'finance', EXECUTOR, NAMED, {
+        kind: 'consumable',
+        serviceCounterpartyId: UUID,
+      }),
+    ).toBe(false);
+    // Форма подшивки — производный перечень, и вид уходит из неё вместе с правилом.
+    expect(attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, byService)).toContain(
+      'estimate',
+    );
+    expect(
+      attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, internal),
+    ).not.toContain('estimate');
+    // Прочие виды признак Р4 не трогает: акт и счёт живут своей планкой закрывающего документа.
+    expect(
+      attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, internal).filter(
+        (kind) => kind !== 'estimate',
+      ),
+    ).toEqual(
+      attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, byService).filter(
+        (kind) => kind !== 'estimate',
+      ),
+    );
+    // Видимость подшитого — не эта функция и не эта пара признаков: она вида заявки не спрашивает
+    // вовсе, и историческая бумага внутренней заявки остаётся читаемой финансовой аудитории.
+    expect(isServiceFileKindVisible('estimate', 'finance')).toBe(true);
+  });
+
+  /**
+   * Подпись состава в истории переименована вместе со вкладкой карточки (Р13): «Номенклатура»
+   * читалась как имя справочника, а спор в истории идёт про состав ОДНОЙ заявки.
+   *
+   * Граница переименования жёсткая, и случай сторожит именно её: ключ словаря (`consumables`)
+   * прежний — записи прошлых месяцев несут его в аудите, — а предметный термин «номенклатура» в
+   * коде позиции, наборе полномочий и справочнике остаётся собой. Глобальная замена слова по
+   * репозиторию была бы ошибкой.
+   */
+  it('состав заявки в истории называется расходниками, а ключ остаётся прежним', () => {
+    expect(serviceRequestChangeLabels.consumables).toBe('Состав расходников');
+    expect(serviceRequestChangeLabels).toHaveProperty('consumables');
+    // Соседние подписи движения склада не трогались: они про другое событие.
+    expect(serviceRequestChangeLabels.consumablesIssued).toBe('Списано со склада');
+    expect(serviceRequestChangeLabels.consumablesReturned).toBe('Возвращено на склад');
   });
 
   it('подшивается пачка файлов с видом, по умолчанию — вложение', () => {
