@@ -8,6 +8,7 @@ import type {
   MechRequestSummaryDto,
   RequestHistoryEntryDto,
   RevokeMechIssueInput,
+  SetMechRequestApprovalInput,
   UpdateMechDealInput,
   UpdateMechRequestInput,
 } from '@technic/contracts';
@@ -79,6 +80,14 @@ export const mechRequestsApi = {
    */
   updateDeal: (id: string, body: UpdateMechDealInput) =>
     apiFetch<MechRequestDto>(`${PATH}/${id}/deal`, { method: 'PATCH', body }),
+
+  /**
+   * Виза площадки и её отзыв — одной ручкой (план визы, Р3): у обоих действий одно право, одна
+   * область и один инвариант «пока заявка Новая». Тело различает их флагом, а не адрес — методом:
+   * два маршрута разошлись бы в проверках при первой же правке.
+   */
+  setApproval: (id: string, body: SetMechRequestApprovalInput) =>
+    apiFetch<MechRequestDto>(`${PATH}/${id}/approval`, { method: 'PATCH', body }),
 
   /** Отметка выдачи: с этого дня пошли деньги, и в истории он виден своим событием (Р11). */
   issue: (id: string, body: IssueMechRequestInput) =>

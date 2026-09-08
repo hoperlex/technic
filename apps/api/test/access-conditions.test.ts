@@ -816,7 +816,11 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { lessorId: COUNTERPARTY_ID, rate: 1200, rateUnit: 'hour', version: 1 },
   },
   'PATCH /api/v1/mech-requests/:id/status': { payload: { status: 'confirmed', version: 1 } },
-  // Продление — единственный маршрут модуля со своим правом (`.extend`, диспетчер, Р9): страж у
+  // Виза площадки (план `docs/mechanization-approval-and-grants-plan.md`, Р1) — второй маршрут
+  // модуля со своим правом: тело обязано пройти схему, иначе отказ придёт от валидации раньше
+  // стража, и проверка права осталась бы непроверенной.
+  'PATCH /api/v1/mech-requests/:id/approval': { payload: { approved: true, version: 1 } },
+  // Продление — маршрут модуля со своим правом (`.extend`, диспетчер, Р9): страж у
   // него другой, чем у соседей, и тело обязано пройти схему, чтобы это было видно по отказу.
   'PATCH /api/v1/mech-requests/:id/extend': {
     payload: { plannedTo: FUTURE_DATE, reason: 'работы не закончены', version: 1 },

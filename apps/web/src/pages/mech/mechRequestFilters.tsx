@@ -1,16 +1,11 @@
-import type { ReactNode } from 'react';
-import { Checkbox, DatePicker, Input, Select, Space } from 'antd';
-import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import { CLOSED_REQUEST_STATUSES, REQUEST_STATUSES, requestStatusLabels } from '@technic/contracts';
 import { mechModelOptionsQuery } from '@entities/mech-model';
 import { mechLessorOptionsQuery } from '@entities/mech-request';
 import { objectOptionsQuery } from '@entities/object';
 import { useRequestCustomerOptions } from '@features/request-customer';
-import { FilterReset, type FilterDefinition } from '@shared/ui';
+import type { FilterDefinition } from '@shared/ui';
 import { flattenOptions, usePruneMissingFilters } from '@shared/lib';
-
-const DATE = 'YYYY-MM-DD';
 
 /**
  * Отбор списка аренд — **одним описанием** на десктоп и телефон (ADR 0030).
@@ -49,6 +44,14 @@ export interface MechListFilters {
    * отбор молча оказывался бы снятым.
    */
   overdue?: string;
+  /**
+   * Виза площадки (план визы, Р13): `'true'` — завизированные, `'false'` — ждущие подписи.
+   *
+   * Строкой и с тремя состояниями, а не переключателем: у визы вопрос двусторонний. Визирующий
+   * спрашивает «что ждёт меня», офис — «что уже подписано и можно брать в работу», и переключатель
+   * ответил бы только на первый.
+   */
+  approved?: string;
 }
 
 /**
@@ -68,6 +71,7 @@ export const MECH_FILTER_FIELDS = [
   'periodFrom',
   'periodTo',
   'overdue',
+  'approved',
 ] as const satisfies readonly (keyof MechListFilters)[];
 
 /**
@@ -257,6 +261,23 @@ export function useMechRequestFilters({
       to: params.periodTo,
       onChange: (periodFrom, periodTo) => apply({ periodFrom, periodTo }),
     },
+    {
+      /*
+       * Виза — отбор сервера по колонке подписи (Р13), общий у рабочего списка и журнала: в
+       * журнале им находят аренды, закрытые без подписи, — заявки старше визы и взятые в работу
+       * откатом. Три состояния вместо переключателя: «любая» это не то же самое, что «есть».
+       */
+      kind: 'select' as const,
+      key: 'approved',
+      label: 'Виза',
+      value: params.approved,
+      options: [
+        { value: 'true', label: 'Есть' },
+        { value: 'false', label: 'Ждёт визы' },
+      ],
+      placeholder: 'Любая',
+      onChange: (value?: string) => apply({ approved: value }),
+    },
     ...(overdue
       ? [
           {
@@ -276,100 +297,9 @@ export function useMechRequestFilters({
   ];
 }
 
-/**
- * Один фильтр в панели десктопа. Обычная функция, а не компонент: она вызывается прямо из разметки
- * панели и своего состояния не имеет — объявленный внутри компонент пересоздавался бы на каждый
- * рендер и терял бы фокус поля при вводе.
+/*
+ * Панель десктопа переехала в соседний файл (`MechFilterBar.tsx`) — вопрос там другой: не «какие
+ * фильтры у списка», а «как они выглядят в ряд». Реэкспорт оставлен, чтобы вкладки продолжали
+ * брать описания и панель одним импортом: их дело — список аренд, а не раскладка модулей.
  */
-function renderFilter(filter: FilterDefinition): ReactNode {
-  switch (filter.kind) {
-    case 'select':
-      return (
-        <Select
-          key={filter.key}
-          allowClear
-          showSearch
-          optionFilterProp="label"
-          style={{ width: 200 }}
-          placeholder={filter.placeholder ?? filter.label}
-          options={filter.options}
-          loading={filter.loading}
-          disabled={filter.disabled}
-          value={filter.value}
-          onChange={(v) => filter.onChange(v)}
-        />
-      );
-    case 'toggle':
-      // Флажком, а не переключателем: в панели десктопа он стоит в одном ряду с полями отбора, и
-      // подпись должна читаться слева направо вместе с ними — как у архива в реестре техники.
-      return (
-        <Checkbox
-          key={filter.key}
-          checked={filter.value}
-          disabled={filter.disabled}
-          onChange={(e) => filter.onChange(e.target.checked)}
-        >
-          {filter.label}
-        </Checkbox>
-      );
-    case 'dateRange':
-      return (
-        <DatePicker.RangePicker
-          key={filter.key}
-          format="DD.MM.YYYY"
-          style={{ width: 250 }}
-          allowEmpty={[true, true]}
-          placeholder={['Аренда с', 'по']}
-          value={[filter.from ? dayjs(filter.from) : null, filter.to ? dayjs(filter.to) : null]}
-          onChange={(range) =>
-            filter.onChange(
-              range?.[0] ? range[0].format(DATE) : undefined,
-              range?.[1] ? range[1].format(DATE) : undefined,
-            )
-          }
-        />
-      );
-    default:
-      // Прочих видов у этого списка нет: описания собираются здесь же, и ветка-заглушка ловила бы
-      // только собственную опечатку — молча и на экране.
-      return null;
-  }
-}
-
-/**
- * Панель фильтров десктопа из тех же описаний, что уходят в шит телефона, плюс поиск по номеру.
- *
- * Номер стоит в панели, а не в шите: «МХ-42» набирают, придя из переписки, — это разовый вопрос к
- * списку, а не срез, в котором работают.
- */
-export function MechFilterBar({
-  filters,
-  num,
-  reset,
-  extra,
-}: {
-  filters: FilterDefinition[];
-  num: { text: string; onChange: (raw: string) => void };
-  reset?: { active: boolean; onClick: () => void };
-  /**
-   * Действие над тем же срезом — выгрузка журнала. В этом же ряду, а не в шапке страницы: кнопка
-   * скачивает ровно то, что задано соседними полями, и уехав от них, она читалась бы как «выгрузи
-   * всё».
-   */
-  extra?: ReactNode;
-}) {
-  return (
-    <Space wrap>
-      {filters.map(renderFilter)}
-      <Input
-        style={{ width: 160 }}
-        allowClear
-        placeholder="Поиск по № заявки"
-        value={num.text}
-        onChange={(e) => num.onChange(e.target.value)}
-      />
-      {reset ? <FilterReset {...reset} /> : null}
-      {extra}
-    </Space>
-  );
-}
+export { MechFilterBar } from './MechFilterBar';

@@ -64,6 +64,10 @@ type MechCommonFilters = Pick<
   | 'periodFrom'
   | 'periodTo'
   | 'search'
+  // Виза (план `docs/mechanization-approval-and-grants-plan.md`, Р13) — общий фильтр обоих
+  // отборов: визирующий начинает день с неподписанных, а журнал отвечает на вопрос «что закрылось
+  // без подписи» — про заявки, прошедшие до появления визы или взятые в работу откатом.
+  | 'approved'
 >;
 
 function mechCommonFilters(q: MechCommonFilters): (SQL | undefined)[] {
@@ -93,6 +97,14 @@ function mechCommonFilters(q: MechCommonFilters): (SQL | undefined)[] {
     // могли переименовать). Написания заявки в перечне больше нет: уборка Э3 сняла колонку, и
     // заявку без модели по названию техники не найти вовсе — только по номеру, площадке или
     // комментарию. Это прямая цена решения заказчика, а не пропущенное поле.
+    // Виза: `true` — подписанные, `false` — ждущие подписи. Ветвление по `undefined`, как у
+    // `rental` и `overdue`: «нет фильтра» и «нет визы» — разные вопросы, и приравнять их значило бы
+    // молча отдать список, в котором отбор не сработал.
+    q.approved === undefined
+      ? undefined
+      : q.approved
+        ? isNotNull(mechRequests.approvedAt)
+        : isNull(mechRequests.approvedAt),
     searchCondition(q.search, [
       mechModels.name,
       mechRequests.comment,

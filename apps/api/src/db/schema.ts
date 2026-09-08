@@ -1438,9 +1438,14 @@ export const userGrants = pgTable(
     // не проставит момент переноса: меняется способ хранения, а не причина выдачи.
     grantedBy: uuid('granted_by').references(() => users.id, { onDelete: 'set null' }),
     grantedAt: timestamp('granted_at', { withTimezone: true }).notNull().defaultNow(),
-    // Происхождение назначения: выдал администратор или создал перевод роли. Неизменяемо — на нём
-    // держится откат перевода, который выданное вручную не трогает никогда.
-    origin: text('origin').notNull().default('manual').$type<'manual' | 'migration'>(),
+    // Происхождение назначения: выдал администратор, создал перевод роли либо сохранил доступ
+    // выкат, переводивший модуль в назначаемый (`backfill`, план визы механизации, Р9).
+    // Неизменяемо — на нём держится откат перевода, который выданное вручную не трогает никогда, и
+    // запрет снимать галочкой взведённые назначения (`lockedGrantIds`), которого у `backfill` нет.
+    origin: text('origin')
+      .notNull()
+      .default('manual')
+      .$type<'manual' | 'migration' | 'backfill'>(),
     // Каким переводом ролей выдано. Ключ и CHECK согласованности пришли шагом prepare этапа 8
     // (миграция 0154, ADR 0113) — в 1a колонка стояла без них, потому что таблицы, на которую они
     // указывают, ещё не существовало (ADR 0106, решение 3).
@@ -1455,7 +1460,10 @@ export const userGrants = pgTable(
     // «полномочия учётки» — закрывает префикс `user_id` уникального ограничения.
     grantIdx: index('user_grants_grant_idx').on(t.grantId),
     // Перечень закрыт поведением, а не реестром, — здесь CHECK уместен, в отличие от списка прав.
-    originCheck: check('user_grants_origin_check', sql`${t.origin} in ('manual', 'migration')`),
+    originCheck: check(
+      'user_grants_origin_check',
+      sql`${t.origin} in ('manual', 'migration', 'backfill')`,
+    ),
     // «Выдано переводом» и «известно, каким переводом» — одно утверждение (миграция 0154):
     // `origin = 'migration'` без ссылки откат не найдёт и не снимет, а ссылка при `manual` означала
     // бы, что откат снимет выданное администратором своей рукой.
@@ -1893,7 +1901,10 @@ export const officeEquipmentModelSpecs = pgTable(
       name: 'office_equipment_model_specs_value_fk',
     }).onDelete('restrict'),
     valueIdx: index('office_equipment_model_specs_value_idx').on(t.valueId, t.specId),
-    typeSpecIdx: index('office_equipment_model_specs_type_spec_idx').on(t.equipmentTypeId, t.specId),
+    typeSpecIdx: index('office_equipment_model_specs_type_spec_idx').on(
+      t.equipmentTypeId,
+      t.specId,
+    ),
   }),
 );
 
@@ -3542,18 +3553,26 @@ export const serviceRequests = pgTable(
     serviceIdx: index('service_requests_service_idx')
       .on(t.serviceCounterpartyId)
       .where(sql`${t.serviceCounterpartyId} IS NOT NULL`),
-    // Очередь «что срочное ждёт дольше всех»: закрытые, удалённые и отложенные заявки в ней не
-    // участвуют, поэтому индекс частичный — он остаётся размером с очередь, а не с таблицей.
-    // Отложенные ушли из условия вместе с фильтром срочных и сортировкой `urgentFirst`
-    // (миграция 0162, Р119): флаг срочности заморозка не гасит, но первой строкой списка стоит
-    // то, за что берутся сейчас, а отложенная ждёт решения, а не рук. Условие обязано совпадать с
-    // самой очередью — иначе индекс перестаёт её покрывать.
+    /**
+     * Отбор «Только срочные» — единственный, что остался у срочности после снятия подъёма наверх
+     * (план `docs/office-equipment-card-and-list-cleanup-plan.md`, Р1/Р2, находка Н7; миграция
+     * `0286`). Условие сократилось до `is_urgent AND deleted_at IS NULL` — сам индекс от этого
+     * стал ШИРЕ прежнего: до этой волны он дословно повторял условие сортировки `urgentFirst`
+     * (`status NOT IN ('accepted','cancelled','on_hold')`, миграция 0162) и вместе с ней потерял
+     * потребителя. Отбор спрашивает другое — «покажи все срочные за период», — и закрытые
+     * срочные из него не выпадают: индекс с их исключением просто перестал бы покрывать запрос.
+     *
+     * Остаточное `status <> 'on_hold'` фильтр дописывает сам, и в условие индекса оно не идёт:
+     * частичный индекс обязан быть ШИРЕ любого своего читателя, иначе первый же соседний
+     * (счётчик той же страницы, `read-all`, будущая очередь) уедет на seq scan. Совсем удалять
+     * индекс тоже нельзя: вход остался рабочим, и снимать его следует замером, а не догадкой.
+     *
+     * Колонка — `status_changed_at`: она совпадает с умолчательным порядком списка, а выбранная
+     * человеком другая сортировка теперь главнее срочности всегда (Р1).
+     */
     urgentIdx: index('service_requests_urgent_idx')
       .on(t.statusChangedAt)
-      .where(
-        sql`${t.isUrgent} AND ${t.deletedAt} IS NULL
-            AND ${t.status} NOT IN ('accepted','cancelled','on_hold')`,
-      ),
+      .where(sql`${t.isUrgent} AND ${t.deletedAt} IS NULL`),
     createdAtIdx: index('service_requests_created_at_idx').on(t.createdAt),
     /**
      * Признак повторного обращения (план `docs/office-equipment-repeat-request-plan.md`, Р7;
@@ -6483,6 +6502,17 @@ export const mechRequests = pgTable(
     // Тип общий на все модули заявок; у механизации коридор `new → confirmed → done` плюс отмена, а
     // «Завершена» нет вовсе — держит `mechRequestsStatusCheck` ниже.
     status: requestStatusEnum('status').notNull().default('new'),
+    // ── Виза площадки (план `docs/mechanization-approval-and-grants-plan.md`, Р1, Р3) ──
+    // Подпись ответственного лица: без неё аренду не берут в работу. Пара колонок живёт и умирает
+    // вместе (`approvalParts` ниже), `restrict` на авторе — как у заказа ТС: подпись обязана
+    // пережить всё, кроме удаления самой учётки, а удаление учётки с подписями и должно упираться.
+    //
+    // Инварианта «в работе ⇒ завизирована» в базе НЕТ намеренно: у модуля есть аренды, взятые в
+    // работу до появления визы, условие упало бы на первой такой строке при накате, а проставить
+    // подпись задним числом некому. Барьер держит сервер (`mechTransitionBlocker`) — тот же выбор,
+    // что у `vehicle_requests`.
+    approvedBy: uuid('approved_by').references(() => users.id, { onDelete: 'restrict' }),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
     // ── Договорённость: с кем и почём. Пять колонок живут и умирают вместе ──
     lessorId: uuid('lessor_id'),
     // Служебная: приложение пишет фактический тип контрагента. Существует ради составного FK — им
@@ -6531,6 +6561,12 @@ export const mechRequests = pgTable(
       sql`btrim(${t.responsibleName}) <> '' AND ${t.responsiblePhone} ~ '^[0-9]{10}$'`,
     ),
     period: check('mech_requests_period_check', sql`${t.plannedTo} >= ${t.plannedFrom}`),
+    // Виза целиком или её нет: «подписал никто в 14:20» и «подписал Иванов неизвестно когда» —
+    // одинаково бессмысленные строки, и различать их потом будет нечем.
+    approvalParts: check(
+      'mech_requests_approval_check',
+      sql`(${t.approvedBy} is null) = (${t.approvedAt} is null)`,
+    ),
     // У факта то же правило, но обе даты необязательны: пока техника не возвращена, `actualTo` пуст.
     actualPeriod: check(
       'mech_requests_actual_period_check',
@@ -6654,6 +6690,12 @@ export const mechRequests = pgTable(
     // законны и останутся навсегда — предикат `IS NOT NULL` пришлось бы держать ради выигрыша,
     // которого на такой доле строк нет.
     mechModelIdx: index('mech_requests_mech_model_idx').on(t.mechModelId),
+    // «Что ждёт визы» — вопрос, с которого начинает день ответственный площадки, и отбор фильтра
+    // `approved=false`. Частичный: подписанных заявок со временем становится большинство, а этот
+    // индекс отвечает ровно про неподписанные и живые.
+    unapprovedIdx: index('mech_requests_unapproved_idx')
+      .on(t.createdAt.desc())
+      .where(sql`${t.approvedAt} is null and ${t.deletedAt} is null`),
     // Умолчательная сортировка реестра — свежие сверху.
     createdAtIdx: index('mech_requests_created_at_idx').on(t.createdAt),
     // Архив (ADR 0070): `archive=only` отбирает ровно по этой колонке и других условий не имеет.

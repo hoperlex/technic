@@ -10,7 +10,12 @@ import {
   isClosedRequestStatus,
   isMechAwaitingIssue,
   isMechCompletionCorrection,
+  approvesOwnMechRequestOnCreate,
+  canApproveMechRequest,
+  isMechApprovalChangeable,
   isMechRentalRunning,
+  MECH_APPROVAL_LOCKED_MESSAGE,
+  MECH_APPROVAL_SCOPE_MESSAGE,
   issueMechRequestSchema,
   MECH_DELETE_RUNNING_MESSAGE,
   MECH_EXTEND_NOT_LATER_MESSAGE,
@@ -28,6 +33,7 @@ import {
   type RequestStatus,
   requestStatusLabels,
   revokeMechIssueSchema,
+  setMechRequestApprovalSchema,
   updateMechDealSchema,
   updateMechRequestSchema,
 } from '@technic/contracts';
@@ -84,6 +90,7 @@ import { MECH_HISTORY_EXPORT_LIMIT, mechHistoryWorkbook } from '../services/mech
 import { NO_MECH_FACT, planMechTransition } from '../services/mech-request-transition';
 import {
   diffMechRequests,
+  mechApprovalChanges,
   mechAuditSnapshot,
   mechCompletionChanges,
   mechDealChanges,
@@ -188,6 +195,15 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
     preHandler: [
       app.authenticate,
       app.requirePermission('mechRequests.delete', 'Недостаточно прав для удаления заявки'),
+    ],
+  };
+  // Виза площадки (план `docs/mechanization-approval-and-grants-plan.md`, Р1): своё право, а не
+  // `.update`. Подпись — не правка заявки: правит её заказчик, а подписывает тот, кто отвечает за
+  // площадку либо за отдел-заявитель, и совпадают эти двое далеко не всегда.
+  const canApprove = {
+    preHandler: [
+      app.authenticate,
+      app.requirePermission('mechRequests.approve', 'Недостаточно прав для визирования аренды'),
     ],
   };
   const canChangeStatus = {
@@ -460,6 +476,20 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
   ): Promise<MechRequestDto> => {
     assertPlaceObjectScope(p, input.objectId, MECH_SCOPE_LABEL);
     assertMechRequesterAllowed(p, input.departmentId);
+    /*
+     * Автовиза подачей (план визы, Р6): заявка, заведённая тем, кто её же и подписывает,
+     * согласована самим фактом заведения — отдельного нажатия «Согласовать» от одного человека
+     * портал не требует. Правило считается ДО транзакции и по тем же двум колонкам, которые
+     * вставляются ниже: спрашивать его у сохранённой строки значило бы читать её второй раз ради
+     * ответа, который уже известен.
+     *
+     * Дублирование идёт этой же веткой и получает то же правило: копия — новая заявка, и виза
+     * исходной на неё не переносится ни при каком авторе.
+     */
+    const selfApproved = approvesOwnMechRequestOnCreate(p, {
+      objectId: input.objectId,
+      departmentId: input.departmentId,
+    });
     const created = await db.transaction(async (tx) => {
       await assertMechPairAssignable(tx, input.objectId, input.departmentId);
       // Модель проверяется до вставки: внешний ключ отвечает «такая строка есть», а «её можно
@@ -478,6 +508,8 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
           responsiblePhone: input.responsiblePhone,
           comment: input.comment,
           status: 'new',
+          approvedBy: selfApproved ? p.id : null,
+          approvedAt: selfApproved ? new Date() : null,
           createdBy: p.id,
         })
         .returning({ id: mechRequests.id });
@@ -669,6 +701,26 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         }
 
         const before = (await loadMechRequestDto(tx, id))!;
+        /*
+         * Согласовано было то, что подписывающий видел (план визы, Р11). Правка по существу —
+         * модель, срок, площадка, заявитель — визу снимает; комментарий, вложения и контакт
+         * ответственного не трогают её никогда: подписывают технику, срок и место, а не то, кто
+         * встретит машину на воротах.
+         *
+         * Три условия рядом с существенностью, и каждое обязательно:
+         *
+         * - **виза стоит** — снимать нечего у неподписанной заявки;
+         * - **правит не тот, кто может визировать** — визирующий подтверждает изменение самим
+         *   фактом правки, и снятая у него подпись означала бы, что он не согласен с собой;
+         * - **заявка «Новая»** (`isMechApprovalChangeable`) — снимать визу можно только там, где её
+         *   можно поставить обратно. Барьер состояния (Б1) сюда и так не пустил бы правку сути, но
+         *   правило записано явно: оно про визу, а не про поля.
+         */
+        const dropApproval =
+          row.approvedAt !== null &&
+          isMechApprovalChangeable(row.status) &&
+          !canApproveMechRequest(p, { objectId, departmentId: nextDepartmentId }) &&
+          (objectChanged || departmentChanged || modelChanged || periodChanged);
         const [updated] = await tx
           .update(mechRequests)
           .set({
@@ -680,6 +732,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
             responsibleName: body.responsibleName ?? row.responsibleName,
             responsiblePhone: body.responsiblePhone ?? row.responsiblePhone,
             comment: body.comment ?? row.comment,
+            ...(dropApproval ? { approvedBy: null, approvedAt: null } : {}),
             updatedBy: p.id,
             version: row.version + 1,
             updatedAt: new Date(),
@@ -692,6 +745,18 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         if (body.removeFileIds?.length) await unlinkMechRequestFiles(tx, id, body.removeFileIds);
         if (body.addFileIds?.length) {
           await linkMechRequestFiles(tx, id, body.addFileIds, p.id, true);
+        }
+        // Снятие визы — своё событие и строгий аудит той же транзакцией (Р12): в `changes` правки
+        // подпись не попадает вовсе (`diffMechRequests` про поля формы), и без этой записи журнал
+        // ответил бы «заявку поправили», умолчав, что согласование при этом отменилось.
+        if (dropApproval) {
+          await writeAuditTx(tx, {
+            actorUserId: p.id,
+            action: 'mech_request.approval_revoke',
+            entityType: 'mech_request',
+            entityId: id,
+            metadata: { changes: mechApprovalChanges(before.approvedByName, null) },
+          });
         }
         return { before, after: (await loadMechRequestDto(tx, id))! };
       });
@@ -806,7 +871,12 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
           return { dto: before, changed: false as const, from: row.status };
         }
         assertTransitionAllowed(p, row.status, status, 'mech');
-        const blocker = mechTransitionBlocker(row, status);
+        // Виза приезжает барьеру строкой, как в DTO: у строки базы это `timestamptz`, а предикат
+        // один на портал и сервер — и разъехаться формам нельзя (план визы, Р3).
+        const blocker = mechTransitionBlocker(
+          { ...row, approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null },
+          status,
+        );
         if (blocker) throw err.unprocessable(blocker);
         // Возврат в «Новую» стирает договорённость целиком (Р8), и причина ему нужна наравне с
         // причиной отмены: без неё в истории осталась бы пара переходов, по которой не понять, за
@@ -992,6 +1062,69 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         });
         return (await loadMechRequestDto(tx, id))!;
       });
+    },
+  );
+
+  /**
+   * Виза площадки и её отзыв — **одним маршрутом** (план визы, Р3): у обоих действий одно право,
+   * одна проверка области и один инвариант «пока заявка Новая». Раздельные маршруты разошлись бы в
+   * проверках при первой же правке — ровно так рассуждал и заказ техники, где ручка тоже одна.
+   *
+   * Порядок шагов — общий протокол Р21 модуля: замок первым действием, существование, архив и
+   * область (`assertMechRequestOpenable`), сверка версии до предметных проверок, затем сами
+   * проверки и CAS.
+   *
+   * Право на маршруте общее, а подписывает заявку СВОЙ ответственный: `canApproveMechRequest` (Р5)
+   * отличает площадку от отдела-заявителя и не пускает соседа, который заявку видит. Проверка идёт
+   * после области модуля намеренно — «чужая площадка» и «моя площадка, но не моя заявка» разные
+   * ответы, и порядок отказов у всех действий модуля обязан быть одинаковым.
+   *
+   * Повтор того же состояния — тихий успех без записи в историю: подпись, поставленная дважды, это
+   * одно нажатие и одна подпись, а событие «завизировал повторно» в ленте означало бы действие,
+   * которого не было. Двойной клик сюда и не доходит — у второго запроса версия уже старая.
+   */
+  r.patch(
+    '/:id/approval',
+    { ...canApprove, schema: { params: idParams, body: setMechRequestApprovalSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { id } = req.params;
+      const { approved, version } = req.body;
+      await db.transaction(async (tx) => {
+        const row = assertMechRequestOpenable(p, await lockMechRequest(tx, id), version);
+        assertMechRequestLive(row, 'визировать её');
+        if (!canApproveMechRequest(p, row)) throw err.forbidden(MECH_APPROVAL_SCOPE_MESSAGE);
+        if ((row.approvedAt !== null) === approved) return;
+        if (!isMechApprovalChangeable(row.status)) {
+          throw err.unprocessable(MECH_APPROVAL_LOCKED_MESSAGE);
+        }
+
+        const before = (await loadMechRequestDto(tx, id))!;
+        const [updated] = await tx
+          .update(mechRequests)
+          .set({
+            approvedBy: approved ? p.id : null,
+            approvedAt: approved ? new Date() : null,
+            updatedBy: p.id,
+            version: row.version + 1,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(mechRequests.id, id), eq(mechRequests.version, version)))
+          .returning({ id: mechRequests.id });
+        if (!updated) throw err.conflict();
+        // Строгий аудит внутри транзакции (Р12): после отзыва колонки подписи пусты, и что она
+        // была, кто её поставил и когда, не помнит больше ничто.
+        await writeAuditTx(tx, {
+          actorUserId: p.id,
+          action: approved ? 'mech_request.approve' : 'mech_request.approval_revoke',
+          entityType: 'mech_request',
+          entityId: id,
+          metadata: {
+            changes: mechApprovalChanges(before.approvedByName, approved ? p.fullName : null),
+          },
+        });
+      });
+      return (await loadMechRequestDto(db, id))!;
     },
   );
 

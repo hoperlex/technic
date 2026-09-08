@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import {
+  isDepartmentScopedRole,
+  isObjectScopedRole,
+  isPlaceScopedRole,
   mechRateUnitSchema,
   requestStatusSchema,
   statusChangeRequiresReason,
@@ -15,6 +18,7 @@ import {
   dateOnlySchema,
   uuidSchema,
 } from './common';
+import { can, type ScopedSubject } from './permissions';
 import {
   costTargetKey,
   parseCostTargetKey,
@@ -140,19 +144,55 @@ export function isMechCompletionCorrection(row: MechRentalState): boolean {
 }
 
 /**
+ * Состояние аренды **вместе с визой** — то, что нужно барьеру переходов и тегу списка (план визы,
+ * Р3). Пересечением, а не полем в `MechRentalState`: тот отвечает на вопрос «идёт ли аренда», и
+ * учить визе каждое место, которое спрашивает только присутствие техники (сводка, частичная
+ * выборка, расчёт просрочки), значило бы требовать от них колонку, которая им не нужна.
+ */
+export type MechTransitionState = MechRentalState & { approvedAt: string | null };
+
+/**
+ * **Визу ставят и снимают, пока заявка «Новая»** (план визы, Р3) — то же правило и та же причина,
+ * что у заказа ТС (`isApprovalChangeable`, ADR 0025): после входа в работу подпись стала
+ * основанием состоявшейся договорённости с арендодателем, и её отзыв задним числом ничего не
+ * отменяет, зато оставил бы аренду «в работе и ждущей визы» одновременно.
+ */
+export function isMechApprovalChangeable(status: RequestStatus): boolean {
+  return status === 'new';
+}
+
+/**
+ * **Ждёт визы** — «Новая» без подписи площадки. Состояние, с которого начинается день
+ * визирующего: пока оно есть, аренду нельзя взять в работу (`mechTransitionBlocker`).
+ */
+export function isMechAwaitingApproval(row: MechTransitionState): boolean {
+  return row.status === 'new' && row.approvedAt === null;
+}
+
+/**
  * Тег состояния для строки списка: `null` — состояние читается по самому статусу, и второй ярлык
  * рядом с ним был бы шумом.
  *
- * Собирается здесь, а не в вёрстке: тегов два, показываются они в трёх местах (таблица, карточка
+ * Собирается здесь, а не в вёрстке: тегов три, показываются они в трёх местах (таблица, карточка
  * на телефоне, окно заявки), и разойтись подписи не должны.
+ *
+ * Порядок веток — порядок жизни заявки, и пересечься они не могут: «ждёт визы» бывает только у
+ * «Новой», два других состояния — только у «В работе».
  */
-export function mechStateTag(row: MechRentalState): 'awaitingIssue' | 'correction' | null {
+export function mechStateTag(
+  row: MechTransitionState,
+): 'awaitingApproval' | 'awaitingIssue' | 'correction' | null {
+  if (isMechAwaitingApproval(row)) return 'awaitingApproval';
   if (isMechAwaitingIssue(row)) return 'awaitingIssue';
   if (isMechCompletionCorrection(row)) return 'correction';
   return null;
 }
 
-export const mechStateTagLabels: Record<'awaitingIssue' | 'correction', string> = {
+export const mechStateTagLabels: Record<
+  'awaitingApproval' | 'awaitingIssue' | 'correction',
+  string
+> = {
+  awaitingApproval: 'ждёт визы',
   awaitingIssue: 'ждёт подачи',
   correction: 'коррекция завершения',
 };
@@ -343,6 +383,14 @@ export const mechRequestListQuerySchema = baseListQuery(MECH_REQUEST_SORT_FIELDS
   rental: booleanFlagSchema,
   /** Просрочен возврат: действующая аренда с плановой датой в прошлом (Р12). */
   overdue: booleanFlagSchema,
+  /**
+   * Виза площадки: `true` — завизированные, `false` — ждущие подписи (план визы, Р13). Форма та
+   * же, что у заказа ТС (`approved`), и предикат один — `approved_at IS [NOT] NULL`.
+   *
+   * Отбор нужен обеим сторонам: визирующий начинает день с `approved=false`, а офис тем же
+   * фильтром видит, что подписано и можно брать в работу.
+   */
+  approved: booleanFlagSchema,
   /** Архив (ADR 0070): без права `archive.read` любое значение означает «без архива» (Р15). */
   archive: archiveFilterSchema,
 });
@@ -403,6 +451,10 @@ export const MECH_HISTORY_SORT_FIELDS = [
  *
  * `status` сужает журнал до одного из двух закрытых (`CLOSED_REQUEST_STATUSES`); остальные
  * значения сервер отклоняет — открытая заявка историей ещё не стала.
+ *
+ * `approved` при этом здесь **есть** (план визы, Р13), хотя визу и ставят только у «Новой»:
+ * журнал — единственное место, где видно аренды, прошедшие до появления визы или взятые в работу
+ * откатом, и вопрос «что закрылось без подписи» задают именно к нему.
  */
 export const mechRequestHistoryQuerySchema = baseListQuery(MECH_HISTORY_SORT_FIELDS).extend({
   status: requestStatusSchema.optional(),
@@ -413,6 +465,7 @@ export const mechRequestHistoryQuerySchema = baseListQuery(MECH_HISTORY_SORT_FIE
   num: z.coerce.number().int().positive().optional(),
   periodFrom: dateOnlySchema.optional(),
   periodTo: dateOnlySchema.optional(),
+  approved: booleanFlagSchema,
 });
 export type MechRequestHistoryQuery = z.infer<typeof mechRequestHistoryQuerySchema>;
 
@@ -626,6 +679,96 @@ export const revokeMechIssueSchema = z.object({
 });
 export type RevokeMechIssueInput = z.infer<typeof revokeMechIssueSchema>;
 
+// ── Виза площадки (план `docs/mechanization-approval-and-grants-plan.md`, Р1–Р6) ──
+
+/**
+ * Субъект, спрашивающий про визу: права плюс обе оси области. `ScopedSubject` сам по себе не
+ * годится — в нём нет `departmentIds`, а именно они отвечают на вопрос «этот ли отдел завёл
+ * заявку»; под расширение подходят как есть и принципал сервера, и текущий пользователь портала.
+ */
+export interface MechApprovalSubject extends ScopedSubject {
+  /** Отделы учётки (ADR 0040): своя сторона заявки у роли отдела. */
+  departmentIds?: readonly string[];
+}
+
+/** Стороны заявки, по которым считается виза: место эксплуатации и необязательный заявитель. */
+export interface MechApprovalTarget {
+  objectId: string;
+  departmentId: string | null;
+}
+
+/**
+ * Может ли субъект завизировать эту аренду (план визы, Р5): право визы плюс своя сторона заявки.
+ *
+ * **Одна функция на портал и сервер** — иначе кнопка появлялась бы там, где ручка отвечает 403.
+ *
+ * Устройство модуля отличается от заказа техники, и предикат `canApproveRequest` сюда не годится:
+ * там заказчик — объект **либо** отдел (`num_nonnulls(object_id, department_id) = 1`), и ось роли
+ * однозначно выбирает, что сравнивать. У аренды площадка есть ВСЕГДА, а отдел — необязательный
+ * заявитель поверх неё, и обе колонки бывают заполнены разом: это и есть ответ заказчика «площадка
+ * или руководитель отдела — кто первый».
+ *
+ * Ветвление идёт **по оси роли**, а не дизъюнкцией «совпал объект ИЛИ отдел»: у роли отдела есть
+ * производный список площадок (`departmentObjectIds`, ADR 0062/0144), и спроси мы по нему —
+ * руководитель отдела визировал бы заявки САМОЙ площадки, которых его отдел не заводил. Поэтому
+ * отдельская ветка требует обе половины: заявку завёл его отдел И площадка закреплена за отделом
+ * сейчас. Заявка с пустым `departmentId` остаётся ему невизируемой всегда — второй ветке нечего
+ * сравнивать.
+ */
+export function canApproveMechRequest(
+  subject: MechApprovalSubject | null | undefined,
+  row: MechApprovalTarget,
+): boolean {
+  if (!can(subject, 'mechRequests.approve')) return false;
+  const role = subject?.role;
+  if (isObjectScopedRole(role))
+    return (subject?.constructionObjectIds ?? []).includes(row.objectId);
+  if (isDepartmentScopedRole(role)) {
+    return (
+      !!row.departmentId &&
+      (subject?.departmentIds ?? []).includes(row.departmentId) &&
+      (subject?.departmentObjectIds ?? []).includes(row.objectId)
+    );
+  }
+  // Роль без своей оси (администратор) не ограничена ничем — как и в заказе техники.
+  return true;
+}
+
+/**
+ * Визируется ли аренда сразу, самой подачей (план визы, Р6) — дословно правило ADR 0025 п. 5 и
+ * ADR 0032, перенесённое на модуль: подпись случается сама только у того, кто отвечает за
+ * подразделение заказчика. Администратор под правило не подпадает — он заводит заявку за того,
+ * кто до портала не добрался, и согласования этим не происходит, иначе визу обходили бы просьбой
+ * «заведи за меня».
+ */
+export function approvesOwnMechRequestOnCreate(
+  subject: MechApprovalSubject | null | undefined,
+  row: MechApprovalTarget,
+): boolean {
+  return isPlaceScopedRole(subject?.role) && canApproveMechRequest(subject, row);
+}
+
+/**
+ * Постановка и отзыв визы — **одним телом и одним маршрутом**: у обоих действий одно право, одна
+ * проверка области и один инвариант «пока заявка Новая». Разведи их по двум ручкам — проверки
+ * разошлись бы при первой же правке (тот же приём, что у заказа ТС).
+ */
+export const setMechRequestApprovalSchema = z
+  .object({
+    approved: z.boolean(),
+    version: z.number().int().nonnegative(),
+  })
+  .strict();
+export type SetMechRequestApprovalInput = z.infer<typeof setMechRequestApprovalSchema>;
+
+/** Отказ области: один текст на сервер и на подсказку портала. */
+export const MECH_APPROVAL_SCOPE_MESSAGE =
+  'Аренду визирует ответственный этой площадки или руководитель отдела-заявителя';
+
+/** Отказ по состоянию: визу ставят и снимают, пока заявка «Новая» (Р3). */
+export const MECH_APPROVAL_LOCKED_MESSAGE =
+  'Визу ставят и снимают, пока заявка «Новая»: после входа в работу она основание договорённости с арендодателем';
+
 /** Дата продления строго позже прежней — один текст на отказ сервера и на проверку формы. */
 export const MECH_EXTEND_NOT_LATER_MESSAGE =
   'Новая дата возврата должна быть позже прежней: сокращение срока оформляется завершением с фактической датой';
@@ -794,11 +937,18 @@ export const MECH_NO_COMPLETED_STATUS_MESSAGE = 'У аренды механиз�
  * отказ сервера (422) и на портал, который такой ход просто не предлагает: разойдись они, человек
  * нажимал бы кнопку, кончающуюся отказом.
  *
- * Барьеров два, и оба про **выданную технику**:
+ * Барьеров три. Первый про **вход в работу**, два других — про **выданную технику**:
  *
- * 1. **отмена после выдачи** — за выданную технику выставят счёт, и отмена означала бы, что аренды
+ * 1. **вход в работу из «Новой» без визы** (план визы, Р3): за «взяли в работу» стоит
+ *    договорённость с арендодателем и деньги площадки, и подпись обязана быть раньше неё.
+ *    Остальных переходов виза не касается — отмена незавизированной заявки это законный способ её
+ *    закрыть, а завершение решают те, кто ведёт аренду. **Откат «Выполнена» → «В работе» барьером
+ *    не запирается, и это не послабление**: аренда уже состоялась, откатом её открывают, чтобы
+ *    поправить факт, а у заявок старше визы подписи нет и взяться ей неоткуда — требовать её
+ *    здесь значило бы запереть исправление всей прошлой истории модуля;
+ * 2. **отмена после выдачи** — за выданную технику выставят счёт, и отмена означала бы, что аренды
  *    не было. Лечится завершением с фактическими датами, а не отменой;
- * 2. **откат в «Новую» после выдачи** — отдельный барьер, а не следствие первого. `confirmed → new`
+ * 3. **откат в «Новую» после выдачи** — отдельный барьер, а не следствие второго. `confirmed → new`
  *    стирает договорённость и факт по построению (`new_empty_check`), и без запрета получалась бы
  *    дверь из трёх шагов в обход запрета на удаление действующей аренды: откат → всё стёрлось →
  *    физическое удаление «Новой». Тем же путём уходила бы и коррекция завершения.
@@ -807,7 +957,10 @@ export const MECH_NO_COMPLETED_STATUS_MESSAGE = 'У аренды механиз�
  * откатывать. Два шага здесь не бюрократия — это то, что отличает исправление опечатки от стирания
  * состоявшейся аренды.
  */
-export function mechTransitionBlocker(row: MechRentalState, to: RequestStatus): string | null {
+export function mechTransitionBlocker(row: MechTransitionState, to: RequestStatus): string | null {
+  if (to === 'confirmed' && row.status === 'new' && row.approvedAt === null) {
+    return 'Заявку берут в работу после визы ответственного площадки или отдела-заявителя';
+  }
   if (row.actualFrom === null) return null;
   if (to === 'cancelled') {
     return `Техника выдана ${formatDay(row.actualFrom)}: заявку нужно завершить, а не отменять`;
@@ -912,6 +1065,13 @@ export interface MechRequestDto {
   responsiblePhone: string;
   comment: string;
   status: RequestStatus;
+  /**
+   * Виза площадки (план визы, Р1): кто и когда подписал. Пусто — подписи нет; у «Новой» это и есть
+   * состояние «ждёт визы», у закрытых заявок старше визы — навсегда (прошлое не переписываем).
+   */
+  approvedBy: string | null;
+  approvedByName: string | null;
+  approvedAt: string | null;
   /** Причина отмены из истории статусов; заполнена только у отменённых заявок. */
   cancelReason: string | null;
   /** Арендодатель; `null` — договорённости ещё нет (заявка «Новая» либо отменённая). */
@@ -976,6 +1136,9 @@ export const mechRequestChangeLabels: Record<string, string> = {
   lessor: 'Арендодатель',
   rate: 'Ставка',
   rateUnit: 'Единица ставки',
+  // Виза площадки (`mech_request.approve`, `mech_request.approval_revoke`). Ключ один на оба
+  // события: различает их вид истории, а не имя поля, — как у пары «выдача и её снятие» ниже.
+  approval: 'Виза площадки',
   // Выдача и её снятие (`mech_request.issue`, `mech_request.issue_revoke`). Причина идёт строкой
   // вида «список» (`from === null`): у неё нет «было», и пара «— → текст» читалась бы как потеря.
   actualFrom: 'Выдана',

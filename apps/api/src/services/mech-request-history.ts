@@ -29,6 +29,11 @@ const AUDIT_ACTIONS = [
   // снова выглядит невыданной, и что выдача была, помнит одно это событие.
   'mech_request.issue',
   'mech_request.issue_revoke',
+  // Виза площадки и её отзыв (план `docs/mechanization-approval-and-grants-plan.md`, Р12): после
+  // отзыва колонки подписи пусты, и что она была — помнит одна эта запись. Отзыв бывает и
+  // автоматическим — правкой по существу от того, кто визировать не может (Р11).
+  'mech_request.approve',
+  'mech_request.approval_revoke',
   // Продление: своё событие, потому что прежний срок строка не хранит — она помнит одно «сейчас».
   // Без вида в реестре оно приехало бы в карточку как «изменено», то есть срок аренды читался бы
   // правкой формы.
@@ -54,6 +59,10 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   'mech_request.deal': 'mechDeal',
   'mech_request.issue': 'mechIssued',
   'mech_request.issue_revoke': 'mechIssueRevoked',
+  // Виды общие с заказом техники: подпись площадки — одно и то же действие во всех модулях, и
+  // заводить ему свой вид значило бы дать той же строке ленты вторую подпись и второй цвет.
+  'mech_request.approve': 'approved',
+  'mech_request.approval_revoke': 'approvalRevoked',
   'mech_request.extend': 'mechExtended',
   'mech_request.complete': 'completed',
   'mech_request.soft_delete': 'deleted',

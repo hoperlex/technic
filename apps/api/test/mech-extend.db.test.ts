@@ -194,8 +194,22 @@ async function changeStatus(
   return call('PATCH', `/${id}/status`, { status, version: await version(id), ...extra });
 }
 
+/**
+ * Виза площадки — предусловие входа в работу (план
+ * `docs/mechanization-approval-and-grants-plan.md`, Р3). Ставится в сцене, а не проверяется здесь:
+ * этот файл спрашивает про другое, а сама подпись и её правила живут в `mech-approval.db.test.ts`.
+ */
+async function approve(id: string): Promise<void> {
+  const res = await call('PATCH', `/${id}/approval`, {
+    approved: true,
+    version: await version(id),
+  });
+  expect(res.statusCode, res.body).toBe(200);
+}
+
 /** Взять в работу: договорённость обязательна, выдача — по желанию (техника уже на объекте). */
 async function takeInWork(id: string, actualFrom?: string): Promise<Injected> {
+  await approve(id);
   return changeStatus(id, 'confirmed', {
     deal: { lessorId: ctx.lessorId, rate: 1200, rateUnit: 'hour' },
     ...(actualFrom ? { actualFrom } : {}),

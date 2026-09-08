@@ -31,6 +31,13 @@ export type MechReader = MechTx | typeof db;
 /** Кто отправил заявку в архив (ADR 0070) — второй join на users: первый занят автором заявки. */
 const deleters = alias(users, 'mech_deleters');
 
+/**
+ * Кто завизировал аренду (план визы, Р1) — третий join на ту же таблицу. Именованный alias
+ * обязателен: без него два соединения с `users` затирают друг другу колонки, и в карточке имя
+ * автора встало бы на место подписи.
+ */
+const approvers = alias(users, 'mech_approvers');
+
 /** numeric в БД принимает и отдаёт строку; `null` остаётся `null`. */
 export function toNum(v: string | null): number | null {
   return v == null ? null : Number(v);
@@ -61,6 +68,11 @@ const requestSelect = {
   responsiblePhone: mechRequests.responsiblePhone,
   comment: mechRequests.comment,
   status: mechRequests.status,
+  // Виза площадки (план визы, Р1): кто и когда подписал. Имя — соединением, а не снимком: человек
+  // мог сменить фамилию, и карточка обязана показывать сегодняшнюю.
+  approvedBy: mechRequests.approvedBy,
+  approvedByName: approvers.fullName,
+  approvedAt: mechRequests.approvedAt,
   // Причина отмены живёт в истории статусов; в карточке нужна последняя и только у отменённых
   // заявок — после отката прежняя причина к текущему статусу не относится.
   cancelReason: sql<string | null>`
@@ -106,6 +118,7 @@ export function mechBaseQuery(reader: MechReader = db) {
     .leftJoin(counterparties, eq(mechRequests.lessorId, counterparties.id))
     .leftJoin(mechModels, eq(mechRequests.mechModelId, mechModels.id))
     .leftJoin(deleters, eq(mechRequests.deletedBy, deleters.id))
+    .leftJoin(approvers, eq(mechRequests.approvedBy, approvers.id))
     .innerJoin(users, eq(mechRequests.createdBy, users.id));
 }
 
@@ -166,6 +179,9 @@ export function toMechRequestDto(r: MechRequestRow, requestFiles: FileDto[]): Me
     responsiblePhone: r.responsiblePhone,
     comment: r.comment,
     status: r.status,
+    approvedBy: r.approvedBy,
+    approvedByName: r.approvedByName,
+    approvedAt: r.approvedAt ? r.approvedAt.toISOString() : null,
     // Пустой комментарий отмены читается как «причина не указана».
     cancelReason: r.cancelReason || null,
     lessorId: r.lessorId,

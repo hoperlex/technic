@@ -42,6 +42,7 @@ import {
   ROLE_ADDONS,
   ROLE_GRANT_CODES,
   ROLE_GRANTS,
+  ROLE_MIGRATIONS,
   ROLE_PERMISSIONS,
   ROLE_SCOPE_AXES,
   roleScopeAxis,
@@ -257,10 +258,16 @@ describe('назначаемые права: 73 из 79', () => {
     // сузить круг подтверждающих было нечем. Назначаемо (иначе его нечем было бы положить в два
     // системных набора, куда его кладёт Р2) и потому пополнило оба числа разом: семьдесят три из
     // семидесяти девяти.
-    expect(PERMISSIONS).toHaveLength(79);
+    //
+    // Восемьдесят первым приездом пришла виза аренды механизации (`mechRequests.approve`, план
+    // `docs/mechanization-approval-and-grants-plan.md`, Р1) — право новой работы, а не выделенное
+    // из существующего: подписи у модуля не было вовсе. Назначаемо, и обязано таким остаться:
+    // именно им наполняются наборы «Виза объекта» и «Виза отдела», которыми подпись доедет до
+    // целевых ролей после реформы. Оба числа выросли на единицу: семьдесят четыре из восьмидесяти.
+    expect(PERMISSIONS).toHaveLength(80);
     const grantable = PERMISSIONS.filter(isGrantable);
     expect(grantable).toHaveLength(PERMISSIONS.length - NON_GRANTABLE_PERMISSIONS.length);
-    expect(grantable).toHaveLength(73);
+    expect(grantable).toHaveLength(74);
   });
 
   /**
@@ -648,27 +655,37 @@ describe('ролевая часть каталога: наборы, замеща
    * тот способ, которым расширение доступа проходит незамеченным.
    */
   it('старая роль равна новой паре «роль + наборы» — поимённо', () => {
+    /*
+     * Наборы берутся из ТАБЛИЦЫ ПЕРЕВОДА, а не перечисляются здесь второй раз. Перечисление было
+     * копией `ROLE_MIGRATIONS`, и первая же правка состава разводила их молча: план визы
+     * механизации (Р8) добавил `mech_ordering` всем трём строкам этапа 8, и копия сказала бы
+     * «роли разошлись» про разницу, которую сама же и не знала.
+     */
     const sum = (role: Role, codes: readonly RoleGrantCode[]): Set<Permission> =>
       new Set<Permission>([
         ...ROLE_PERMISSIONS[role],
         ...codes.flatMap((code) => [...ROLE_GRANTS[code].permissions]),
       ]);
-    const same = (was: Role, becomes: Set<Permission>): void => {
-      expect([...becomes].sort(), was).toEqual([...ROLE_PERMISSIONS[was]].sort());
-    };
 
-    same('shtab', sum('site', ['vehicle_ordering']));
-    same('rukstroy', sum('site', ['vehicle_ordering', 'site_approval']));
-    same('department_head', sum('department', ['department_approval']));
+    for (const migration of ROLE_MIGRATIONS) {
+      const after = sum(migration.to, migration.grants);
+      const before = new Set<Permission>(ROLE_PERMISSIONS[migration.from]);
+      // Объявленное расширение вычитается ИЗ ОЖИДАНИЯ, а не прощается сравнению: у трёх строк из
+      // четырёх `gains` пуст, и равенство остаётся поимённым, а у коменданта разница обязана
+      // совпасть с объявленной ровно, без «ну там что-то добавится».
+      expect([...after].sort(), `${migration.from}: приобретено сверх объявленного`).toEqual(
+        [...new Set<Permission>([...before, ...migration.gains])].sort(),
+      );
+      const lost = [...before].filter((p) => !after.has(p));
+      expect(lost, `${migration.from} не должен потерять ни одного права`).toEqual([]);
+    }
 
-    // Комендант: `site` без единого набора, и разница — ровно оргтехника (справочник на чтение плюс
-    // заявки на обслуживание со стороны заказчика). Ничего сверх неё появиться не должно.
-    const commandant = new Set<Permission>(ROLE_PERMISSIONS.commandant);
-    const gained = ROLE_PERMISSIONS.site.filter((p) => !commandant.has(p));
-    const lost = ROLE_PERMISSIONS.commandant.filter(
-      (p) => !new Set<Permission>(ROLE_PERMISSIONS.site).has(p),
-    );
-    expect(gained.sort()).toEqual([
+    // Единственное объявленное расширение всей реформы — оргтехника коменданту (решение №1
+    // заказчика от 17.08.2026). Выписано поимённо: молчаливое «что-то добавится» и есть тот способ,
+    // которым расширение доступа проходит незамеченным.
+    expect(
+      [...(ROLE_MIGRATIONS.find((m) => m.from === 'commandant')?.gains ?? [])].sort(),
+    ).toEqual([
       'officeEquipment.read',
       'serviceRequests.create',
       'serviceRequests.delete',
@@ -676,7 +693,10 @@ describe('ролевая часть каталога: наборы, замеща
       'serviceRequests.read',
       'serviceRequests.update',
     ]);
-    expect(lost, 'комендант не должен потерять ни одного права').toEqual([]);
+    for (const migration of ROLE_MIGRATIONS) {
+      if (migration.from === 'commandant') continue;
+      expect(migration.gains, `${migration.from}: расширений быть не должно`).toEqual([]);
+    }
   });
 
   /**
@@ -723,12 +743,18 @@ describe('ролевая часть каталога: наборы, замеща
   /**
    * Выдача по итогу — и здесь наборы ведут себя **по-разному**, что и есть проверяемое утверждение.
    *
-   * «Заказ техники» и «Виза отдела» выдаются своей роли в одиночку: первый открывает модуль вместе с
-   * чтением, у второй чтение уже есть от роли `department`. «Виза объекта» в одиночку выдаче не
-   * подлежит — подпись без модуля, который подписывают, — и отказ приходит барьером требований, а не
-   * решением формы. Поверх «Заказа техники» она выдаётся: так и собирается `rukstroy`.
+   * «Заказ техники», «Заказ механизации» и «Виза отдела» выдаются своей роли в одиночку: первые два
+   * открывают модуль вместе с чтением, у третьей чтение уже есть от роли `department`. «Виза
+   * объекта» в одиночку выдаче не подлежит — подпись без модулей, которые подписывают, — и отказ
+   * приходит барьером требований, а не решением формы.
+   *
+   * **Заказных наборов под ней теперь ДВА** (план `docs/mechanization-approval-and-grants-plan.md`,
+   * Р2): с уходом механизации из состава роли `site` подпись требует и чтения аренды. Это не
+   * техническая случайность, а буквальный смысл ответа заказчика «право визы у площадки одно на
+   * портал»: конфигурации «визирует аренду, но не видит заказ техники» после перехода на `site`
+   * нет.
    */
-  it('«Виза объекта» выдаётся только поверх «Заказа техники», остальные — сами по себе', () => {
+  it('«Виза объекта» выдаётся только поверх обоих заказных наборов, остальные — сами по себе', () => {
     const check = (role: Role, codes: readonly RoleGrantCode[], added: RoleGrantCode) => {
       const after = [
         ...new Set<Permission>([
@@ -746,19 +772,30 @@ describe('ролевая часть каталога: наборы, замеща
     };
 
     expect(check('site', ['vehicle_ordering'], 'vehicle_ordering').map((v) => v.code)).toEqual([]);
+    expect(check('site', ['mech_ordering'], 'mech_ordering').map((v) => v.code)).toEqual([]);
     expect(
       check('department', ['department_approval'], 'department_approval').map((v) => v.code),
     ).toEqual([]);
-    // В одиночку — отказ, и он называет недостающее право, а не «недопустимую комбинацию».
+    // В одиночку — отказ, и он называет недостающие права, а не «недопустимую комбинацию».
     const alone = check('site', ['site_approval'], 'site_approval');
-    expect(alone.map((v) => v.code)).toEqual(['requirement_missing', 'requirement_missing']);
+    expect(alone.map((v) => v.code)).toEqual([
+      'requirement_missing',
+      'requirement_missing',
+      'requirement_missing',
+    ]);
     expect(alone.map((v) => v.requires).sort()).toEqual([
+      'mechRequests.read',
       'vehicleRequests.read',
       'weeklyRequests.read',
     ]);
-    // Поверх «Заказа техники» — законна: так собирается сегодняшний руководитель строительства.
+    // Поверх ОДНОГО заказного набора — всё ещё отказ, и он называет ровно недостающий модуль.
+    const half = check('site', ['vehicle_ordering', 'site_approval'], 'site_approval');
+    expect(half.map((v) => v.requires)).toEqual(['mechRequests.read']);
+    // Поверх обоих — законна: так собирается сегодняшний руководитель строительства.
     expect(
-      check('site', ['vehicle_ordering', 'site_approval'], 'site_approval').map((v) => v.code),
+      check('site', ['vehicle_ordering', 'mech_ordering', 'site_approval'], 'site_approval').map(
+        (v) => v.code,
+      ),
     ).toEqual([]);
   });
 

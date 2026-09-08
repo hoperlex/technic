@@ -95,6 +95,47 @@ export function useMechRequestActions({
     },
   });
 
+  /**
+   * Виза и её отзыв — одна мутация с флагом (план визы, Р3): у обоих действий одна ручка, одно
+   * право и одно правило, и вторая мутация рядом означала бы вторую копию обработки отказа.
+   */
+  const approvalMutation = useMutation({
+    mutationFn: (v: { request: MechRequestDto; approved: boolean }) =>
+      mechRequestsApi.setApproval(v.request.id, {
+        approved: v.approved,
+        version: v.request.version,
+      }),
+    onSuccess: (_dto, v) => {
+      message.success(v.approved ? 'Заявка завизирована' : 'Виза снята');
+      refresh();
+    },
+    onError: (e) => {
+      message.error(mechFailureText(e));
+      refresh();
+    },
+  });
+
+  /**
+   * Согласование идёт сразу, снятие — через подтверждение. Разница не в опасности запроса, а в
+   * том, что отменяет человек: подпись под чужой просьбой, после которой заявку уже могли начать
+   * готовить к работе. Текст называет следствие, а не действие.
+   */
+  const setApproval = (request: MechRequestDto, approved: boolean) => {
+    if (approved) {
+      approvalMutation.mutate({ request, approved: true });
+      return;
+    }
+    modal.confirm({
+      title: `Снять визу с заявки ${request.displayNumber}?`,
+      content:
+        'Без визы заявку нельзя взять в работу: аренда остановится до повторного согласования.',
+      okText: 'Снять визу',
+      okButtonProps: { danger: true },
+      cancelText: 'Отмена',
+      onOk: () => approvalMutation.mutateAsync({ request, approved: false }),
+    });
+  };
+
   const duplicateMutation = useMutation({
     mutationFn: (request: MechRequestDto) => mechRequestsApi.duplicate(request.id),
     onSuccess: (created) => {
@@ -156,6 +197,7 @@ export function useMechRequestActions({
       },
       run: {
         rollback: (r, status) => statusMutation.mutate({ request: r, status }),
+        setApproval,
         duplicate: (r) => duplicateMutation.mutate(r),
         remove: confirmRemove,
       },
@@ -208,6 +250,10 @@ export function useMechRequestActions({
     actionsFor,
     modals,
     close,
-    pending: statusMutation.isPending || duplicateMutation.isPending || removeMutation.isPending,
+    pending:
+      statusMutation.isPending ||
+      approvalMutation.isPending ||
+      duplicateMutation.isPending ||
+      removeMutation.isPending,
   };
 }

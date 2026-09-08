@@ -4,18 +4,20 @@ import {
   mechStateTagLabels,
   requestStatusColors,
   requestStatusLabels,
-  type MechRentalState,
+  type MechTransitionState,
 } from '@technic/contracts';
 
 /** Строка, из которой тег читает всё, что ему нужно: состояние плюс причина отмены. */
-export type MechStateRow = MechRentalState & { cancelReason?: string | null };
+export type MechStateRow = MechTransitionState & { cancelReason?: string | null };
 
 /**
- * Цвета тегов состояния (Р2). Оба — предупреждающие, но разной природы, и в списке их различают
- * глазами: «ждёт подачи» оранжевым, как всякое ожидание в портале, «коррекция завершения» —
- * `volcano`: это не ожидание чужого действия, а недоделанная работа своей стороны.
+ * Цвета тегов состояния (Р2; виза — план визы, Р13). Все три предупреждающие, но разной природы, и
+ * в списке их различают глазами: «ждёт визы» золотым — ожидание чужой подписи, без которой заявку
+ * не возьмут в работу; «ждёт подачи» оранжевым, как всякое ожидание в портале; «коррекция
+ * завершения» — `volcano`: это не ожидание чужого действия, а недоделанная работа своей стороны.
  */
-const STATE_COLORS: Record<'awaitingIssue' | 'correction', string> = {
+const STATE_COLORS: Record<'awaitingApproval' | 'awaitingIssue' | 'correction', string> = {
+  awaitingApproval: 'gold',
   awaitingIssue: 'orange',
   correction: 'volcano',
 };
@@ -29,7 +31,7 @@ const STATE_COLORS: Record<'awaitingIssue' | 'correction', string> = {
  * `actual_to`. Четвёртого статуса заказчик не называл, и выдумывать его нельзя, поэтому разницу и
  * несёт второй тег.
  *
- * Что именно показать, решает `mechStateTag` контрактов, а не эта разметка: тегов два, места у
+ * Что именно показать, решает `mechStateTag` контрактов, а не эта разметка: тегов три, места у
  * них три (таблица, карточка телефона, окно заявки), и разойтись подписи не должны. `null` —
  * состояние читается по самому статусу, и второй ярлык рядом с ним был бы шумом.
  */

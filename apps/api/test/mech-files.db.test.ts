@@ -139,6 +139,21 @@ async function newObject(tag: string): Promise<string> {
   return row!.id;
 }
 
+/**
+ * Набор «Заказ механизации» держателю — тем же способом, каким его выдаёт администратор
+ * (ADR 0175). Нужен всякой площадочной учётке: модуль ушёл из состава роли `site` и приходит
+ * только набором, а посев миграции сюда не достаёт — он сеет тем, кто существовал на момент
+ * наката, а эти учётки заводит тест после него.
+ */
+async function grantMechOrdering(userId: string): Promise<void> {
+  const [grant] = await ctx.db
+    .select({ id: ctx.schema.grants.id })
+    .from(ctx.schema.grants)
+    .where(eq(ctx.schema.grants.code, 'mech_ordering'));
+  if (!grant) throw new Error('В каталоге нет набора «Заказ механизации»: миграция не накатана');
+  await ctx.db.insert(ctx.schema.userGrants).values({ userId, grantId: grant.id });
+}
+
 async function newUser(
   tag: string,
   role: 'admin' | 'manager' | 'site',
@@ -163,6 +178,9 @@ async function newUser(
       .insert(ctx.schema.userConstructionObjects)
       .values({ userId: row!.id, constructionObjectId });
   }
+  // Площадке модуль выдаётся набором, а не ролью (ADR 0175): без него у неё нет ни одного права
+  // механизации, и файл проверял бы 403 вместо своего предмета.
+  if (role === 'site') await grantMechOrdering(row!.id);
   return row!.id;
 }
 
@@ -454,6 +472,16 @@ describe.skipIf(!DB_URL)('механизация: вложения и досту
 
     // Архивируется только заявка после «Новой»: «Новую» портал стирает физически, и `purge` для
     // неё был бы недостижим.
+    // Виза площадки — предусловие входа в работу (план
+    // `docs/mechanization-approval-and-grants-plan.md`, Р3); ставит её администратор, у офиса
+    // права визы нет. Сама подпись проверяется своим файлом — здесь она часть сцены.
+    const approved = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/mech-requests/${request.id}/approval`,
+      headers: await headersOf(ctx.users.admin),
+      payload: { approved: true, version: await versionOf(request.id) },
+    });
+    expect(approved.statusCode, approved.body).toBe(200);
     const inWork = await ctx.app.inject({
       method: 'PATCH',
       url: `/api/v1/mech-requests/${request.id}/status`,

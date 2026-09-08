@@ -310,17 +310,24 @@ describe('права ролей', () => {
 
   /**
    * Отдел (ADR 0040) — заказчик со стороны офиса. Сотрудник и руководитель отдела различаются
-   * ровно визой, как штаб и руководитель строительства на объекте. Сравнением, а не
+   * ровно визами, как штаб и руководитель строительства на объекте. Сравнением, а не
    * перечислением: новое право у сотрудника обязано появиться и у руководителя.
+   *
+   * **Виз теперь две** (план `docs/mechanization-approval-and-grants-plan.md`, Р2, Р5): заказ
+   * техники и аренда механизации. Обе вычитаются вместе — иначе тест сказал бы «роли разошлись»
+   * про разницу, которая и есть должность руководителя.
    */
-  it('руководитель отдела = сотрудник отдела плюс виза (ADR 0040)', () => {
+  it('руководитель отдела = сотрудник отдела плюс визы (ADR 0040)', () => {
+    const APPROVALS: Permission[] = ['vehicleRequests.approve', 'mechRequests.approve'];
     const withoutApprove = (role: Role) =>
       permissionsFor(of(role))
-        .filter((p) => p !== 'vehicleRequests.approve')
+        .filter((p) => !APPROVALS.includes(p))
         .sort();
     expect(withoutApprove('department_head')).toEqual(withoutApprove('department'));
-    expect(can(of('department_head'), 'vehicleRequests.approve')).toBe(true);
-    expect(can(of('department'), 'vehicleRequests.approve')).toBe(false);
+    for (const permission of APPROVALS) {
+      expect(can(of('department_head'), permission), permission).toBe(true);
+      expect(can(of('department'), permission), permission).toBe(false);
+    }
   });
 
   /**
@@ -644,18 +651,34 @@ describe('механизация: аренда малой механизации
    * Шесть ролей-заказчиков сравнением, а не шестью перечислениями: разойдись наборы, два заказчика
    * одной площадки получили бы разный портал на одну и ту же аренду. Комендант здесь наравне с
    * остальными — компрессор и тепловая пушка нужны тому же, кто отвечает за быт площадки.
+   *
+   * **Двое из шести отличаются ровно визой** (план `docs/mechanization-approval-and-grants-plan.md`,
+   * Р2): у руководителя строительства и руководителя отдела к набору заказчика добавляется
+   * `mechRequests.approve`. Это то же различие, которым они отличаются в заказе техники, и
+   * проверяется оно вычитанием, а не вторым перечнем: припиши кто-нибудь визу третьей роли — и
+   * сравнение с набором заказчика покраснеет у неё, а не промолчит.
    */
   it('заказчики просят технику, а ход аренды решает офис', () => {
+    const MECH_APPROVERS: Role[] = ['rukstroy', 'department_head'];
     for (const role of [
       'shtab',
       'rukstroy',
       'commandant',
-      'site',
       'department',
       'department_head',
     ] as Role[]) {
-      expect(mechOf(of(role)), role).toEqual(MECH_CUSTOMER);
+      const expected = MECH_APPROVERS.includes(role)
+        ? [...MECH_CUSTOMER, 'mechRequests.approve'].sort()
+        : MECH_CUSTOMER;
+      expect(mechOf(of(role)), role).toEqual(expected);
     }
+    /*
+     * Роль `site` в перечне выше НЕТ, и это главное утверждение этапа Э2 плана визы (Р4): модуль
+     * ушёл из состава целевой роли и выдаётся набором «Заказ механизации» — поимённо и отзывно
+     * галочкой. Три упраздняемые роли сохраняют его до перевода учёток: набор им нельзя объявить
+     * совместимым, а снять право, не имея чем его вернуть, значило бы молча отобрать работу.
+     */
+    expect(mechOf(of('site'))).toEqual([]);
     // Офис ведёт аренду: договорённость с арендодателем, отметка выдачи, завершение с фактом.
     expect(mechOf(of('manager'))).toEqual([...MECH_CUSTOMER, 'mechRequests.status'].sort());
     expect(mechOf(of('dispatcher'))).toEqual(

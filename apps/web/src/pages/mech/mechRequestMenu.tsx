@@ -1,6 +1,8 @@
 import {
   allowedStatusTransitions,
   can,
+  canApproveMechRequest,
+  isMechApprovalChangeable,
   isMechAwaitingIssue,
   isMechRentalRunning,
   MECH_DELETE_RUNNING_MESSAGE,
@@ -66,6 +68,11 @@ export interface MechMenuTargets {
 export interface MechMenuRunners {
   /** Откат, ничего не стирающий («Выполнена» → «В работе»): объяснять нечего. */
   rollback: (request: MechRequestDto, status: RequestStatus) => void;
+  /**
+   * Виза и её отзыв — без окна: подпись не требует ни причины, ни выбора. Снятие спрашивает
+   * подтверждение, но спрашивает его вызывающий: окна набора действий принадлежат ему (ADR 0140).
+   */
+  setApproval: (request: MechRequestDto, approved: boolean) => void;
   duplicate: (request: MechRequestDto) => void;
   remove: (request: MechRequestDto) => void;
 }
@@ -126,6 +133,34 @@ export function mechMenuItems(
         return run.rollback(request, to);
       },
     });
+  }
+
+  /*
+   * Виза площадки (план `docs/mechanization-approval-and-grants-plan.md`, Р3, Р5) — своё право и
+   * своя область: подписывает ответственный ЭТОЙ площадки либо руководитель отдела-заявителя, а не
+   * всякий, кто заявку видит. Поэтому `canApproveMechRequest`, а не одно `can`: пункт, показанный
+   * соседу, кончился бы отказом 403.
+   *
+   * Ставится и снимается, пока заявка «Новая» (Р3). Снятие — не «отмена согласования задним
+   * числом», а исправление своей же подписи до того, как за ней последовали договорённости, и
+   * потому оно не `danger`: опасное действие здесь — взять в работу без визы, а его барьер держит
+   * сервер и меню.
+   */
+  if (canApproveMechRequest(user, request) && isMechApprovalChangeable(request.status)) {
+    items.push(
+      request.approvedAt
+        ? {
+            key: 'approval:revoke',
+            label: 'Снять визу',
+            onClick: () => run.setApproval(request, false),
+          }
+        : {
+            key: 'approval:set',
+            label: 'Согласовать',
+            primary: true,
+            onClick: () => run.setApproval(request, true),
+          },
+    );
   }
 
   /*

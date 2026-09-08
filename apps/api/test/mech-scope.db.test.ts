@@ -193,6 +193,23 @@ async function unlinkDepartmentObject(departmentId: string, objectId: string): P
     );
 }
 
+/**
+ * Набор «Заказ механизации» держателю — тем же способом, каким его выдаёт администратор
+ * (план `docs/mechanization-approval-and-grants-plan.md`, Р7).
+ *
+ * Нужен всякой площадочной учётке файла: модуль ушёл из состава роли `site` и приходит только
+ * набором. Посев миграции (Р9) сюда не достаёт по построению — он сеет учёткам, существовавшим на
+ * момент наката, а эти заводятся тестом после него.
+ */
+async function grantMechOrdering(userId: string): Promise<void> {
+  const [grant] = await ctx.db
+    .select({ id: ctx.schema.grants.id })
+    .from(ctx.schema.grants)
+    .where(eq(ctx.schema.grants.code, 'mech_ordering'));
+  if (!grant) throw new Error('В каталоге нет набора «Заказ механизации»: миграция не накатана');
+  await ctx.db.insert(ctx.schema.userGrants).values({ userId, grantId: grant.id });
+}
+
 async function newUser(
   tag: string,
   role: 'admin' | 'manager' | 'site' | 'department',
@@ -224,6 +241,10 @@ async function newUser(
       .insert(ctx.schema.userDepartments)
       .values({ userId: row!.id, departmentId, isHead: false });
   }
+  // Площадке модуль выдаётся набором, а не ролью (Р4): без него у неё нет ни одного права
+  // механизации, и файл проверял бы 403 вместо области. Отделу набор не нужен — у роли
+  // `department` модуль остался в составе.
+  if (role === 'site') await grantMechOrdering(row!.id);
   return row!.id;
 }
 
@@ -284,6 +305,23 @@ async function seedRequest(input: CreateInput): Promise<{ id: string; version: n
   return { id: dto.id, version: dto.version };
 }
 
+/**
+ * Подпись площадки — предусловие входа в работу (план
+ * `docs/mechanization-approval-and-grants-plan.md`, Р3). Ставит её администратор: у офиса права
+ * визы нет вовсе, а этот файл спрашивает про область и барьеры правки — сама виза проверяется
+ * своим файлом (`mech-approval.db.test.ts`).
+ */
+async function approve(id: string, version: number): Promise<number> {
+  const res = await ctx.app.inject({
+    method: 'PATCH',
+    url: `/api/v1/mech-requests/${id}/approval`,
+    headers: await headersOf(ctx.users.admin),
+    payload: { approved: true, version },
+  });
+  expect(res.statusCode, res.body).toBe(200);
+  return res.json().version as number;
+}
+
 function patchRequest(headers: Headers, id: string, payload: Record<string, unknown>) {
   return ctx.app.inject({
     method: 'PATCH',
@@ -338,7 +376,7 @@ async function seedAwaitingIssue(objectId: string): Promise<string> {
   const created = await seedRequest({ objectId });
   const res = await changeStatus(office, created.id, {
     status: 'confirmed',
-    version: created.version,
+    version: await approve(created.id, created.version),
     deal: { lessorId: ctx.lessorId, rate: 1200, rateUnit: 'hour' },
   });
   expect(res.statusCode, res.body).toBe(200);
@@ -355,7 +393,7 @@ async function seedRunningRental(objectId: string): Promise<string> {
   const created = await seedRequest({ objectId });
   const res = await changeStatus(office, created.id, {
     status: 'confirmed',
-    version: created.version,
+    version: await approve(created.id, created.version),
     deal: { lessorId: ctx.lessorId, rate: 1200, rateUnit: 'hour' },
     actualFrom: TODAY,
   });
@@ -800,7 +838,7 @@ describe.skipIf(!DB_URL)('механизация: область, пара, фи
     const created = await seedRequest({ objectId: ctx.objects.site });
     const inWork = await changeStatus(office, created.id, {
       status: 'confirmed',
-      version: created.version,
+      version: await approve(created.id, created.version),
       deal: { lessorId: ctx.lessorId, rate: 1000, rateUnit: 'hour' },
     });
     expect(inWork.statusCode, inWork.body).toBe(200);

@@ -1,7 +1,12 @@
 import { useState } from 'react';
 import { Alert, App, Button, Select, Space, Spin, Tag, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { roleLabels, type GrantDto, type GrantHolderDto } from '@technic/contracts';
+import {
+  grantOriginLabels,
+  roleLabels,
+  type GrantDto,
+  type GrantHolderDto,
+} from '@technic/contracts';
 import { userAccountKeys } from '@entities/user-account';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { ViewModal } from '@shared/ui';
@@ -64,8 +69,14 @@ function HolderRow({ holder, onRevoke }: { holder: GrantHolderDto; onRevoke: () 
             {!holder.isActive && <Tag>доступ выключен</Tag>}
             {holder.isArchived && <Tag>в архиве</Tag>}
             {/* Происхождение: выданное переводом ролей снимается откатом перевода, выданное
-                руками — только руками, и различать их приходится по строке реестра. */}
+                руками — только руками, и различать их приходится по строке реестра.
+                Третья пометка — `backfill` (план визы механизации, Р9): доступ сохранён выкатом,
+                переводившим модуль в назначаемый. Снимается она как ручная выдача, но выдал её не
+                человек, и молчать об этом нельзя — иначе администратор ищет автора, которого нет. */}
             {holder.origin === 'migration' && <Tag color="purple">перевод ролей</Tag>}
+            {holder.origin === 'backfill' && (
+              <Tag color="geekblue">{grantOriginLabels.backfill}</Tag>
+            )}
           </Space>
           <div>
             <Typography.Text type="secondary">
@@ -75,7 +86,9 @@ function HolderRow({ holder, onRevoke }: { holder: GrantHolderDto; onRevoke: () 
               {holder.email} ·{' '}
               {holder.origin === 'migration' && !holder.grantedByName
                 ? 'выдано переводом ролей'
-                : `выдал ${holder.grantedByName ?? 'неизвестно кто'}`}
+                : holder.origin === 'backfill' && !holder.grantedByName
+                  ? 'доступ сохранён при переводе модуля в назначаемый'
+                  : `выдал ${holder.grantedByName ?? 'неизвестно кто'}`}
               , {formatDateTime(holder.grantedAt)}
             </Typography.Text>
           </div>

@@ -2,11 +2,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  moscowDateKeyOf,
-  type RequestHistoryEntryDto,
-  shiftDateKey,
-} from '@technic/contracts';
+import { moscowDateKeyOf, type RequestHistoryEntryDto, shiftDateKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -148,7 +144,9 @@ interface CreateOptions {
   fromDepartment?: boolean;
 }
 
-async function createRequest(options: CreateOptions = {}): Promise<{ id: string; version: number }> {
+async function createRequest(
+  options: CreateOptions = {},
+): Promise<{ id: string; version: number }> {
   const res = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/mech-requests',
@@ -224,11 +222,27 @@ async function auditRows(
   return rows.map((r) => ({ id: r.id, metadata: r.metadata as Record<string, unknown> }));
 }
 
+/**
+ * Виза площадки — предусловие входа в работу (план
+ * `docs/mechanization-approval-and-grants-plan.md`, Р3). Ставится в сцене, а не проверяется здесь:
+ * этот файл спрашивает про другое, а сама подпись и её правила живут в `mech-approval.db.test.ts`.
+ */
+async function approve(id: string, version: number): Promise<number> {
+  const res = await ctx.app.inject({
+    method: 'PATCH',
+    url: `/api/v1/mech-requests/${id}/approval`,
+    headers: ctx.auth,
+    payload: { approved: true, version },
+  });
+  expect(res.statusCode, res.body).toBe(200);
+  return res.json().version as number;
+}
+
 /** Заявка, взятая в работу с договорённостью: дальше от неё идут выдача, возврат и откаты. */
 async function takeInWork(id: string, version: number, rate = 1200): Promise<void> {
   const res = await changeStatus(id, {
     status: 'confirmed',
-    version,
+    version: await approve(id, version),
     deal: { lessorId: ctx.lessorId, rate, rateUnit: 'hour' },
   });
   expect(res.statusCode, res.body).toBe(200);

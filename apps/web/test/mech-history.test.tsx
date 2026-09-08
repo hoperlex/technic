@@ -51,6 +51,11 @@ function requestDto(over: Partial<MechRequestDto> = {}): MechRequestDto {
     responsiblePhone: '9000000000',
     comment: '',
     status: 'done',
+    // Виза (план визы, Р1): у закрытых аренд журнала она бывает и пустой — заявки старше визы
+    // прошли цикл до её появления, и фильтр «виза: нет» существует ровно ради них.
+    approvedBy: null,
+    approvedByName: null,
+    approvedAt: null,
     cancelReason: null,
     lessorId: 'cp-1',
     lessorName: 'СтройАренда',

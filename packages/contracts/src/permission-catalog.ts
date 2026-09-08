@@ -253,6 +253,15 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'manage',
     label: 'Продлевает аренду механизации',
   },
+  /*
+   * Виза площадки — своё действие витрины, как у заказа ТС и недельной заявки: подпись не входит
+   * ни в ведение заявки, ни в ход аренды, и человек, читающий матрицу, обязан видеть её строкой.
+   */
+  'mechRequests.approve': {
+    module: 'mech',
+    action: 'approve',
+    label: 'Визирует аренду механизации и её продление',
+  },
 
   'drivers.read': { module: 'drivers', action: 'read', label: 'Читает карточки водителей' },
   'drivers.write': { module: 'drivers', action: 'update', label: 'Ведёт справочник водителей' },

@@ -105,16 +105,28 @@ describe('перечень пожеланий', () => {
    * Различие между тремя должностями от этого не пропадает, а переезжает в наборы: заказ техники у
    * сотрудника объекта, он же плюс виза у руководителя строительства, ничего у коменданта.
    */
+  /*
+   * Механизация приезжает набором всем трём площадочным пожеланиям (план визы механизации, Р8):
+   * модуль ушёл из состава роли `site`, и без подстановки форма открывалась бы состоянием,
+   * которого администратор не заказывал, — новый штаб без аренды, о которой его никто не спросил,
+   * а у руководителя строительства ещё и виза без чтения, то есть набор, который сервер не примет.
+   *
+   * Комендант проверяется отдельно и не пустым списком: до этого плана «`site` без единого набора»
+   * и было ответом таблицы, и разница с остальными двумя должностями держалась на нём.
+   */
   it('площадочные пожелания ведут к роли «Площадка» — три должности, одна роль', () => {
     expect(activationDefaultsFor('site_staff')).toEqual({
       role: 'site',
-      grants: ['vehicle_ordering'],
+      grants: ['vehicle_ordering', 'mech_ordering'],
     });
     expect(activationDefaultsFor('rukstroy')).toEqual({
       role: 'site',
-      grants: ['vehicle_ordering', 'site_approval'],
+      grants: ['vehicle_ordering', 'mech_ordering', 'site_approval'],
     });
-    expect(activationDefaultsFor('commandant')).toEqual({ role: 'site', grants: [] });
+    expect(activationDefaultsFor('commandant')).toEqual({
+      role: 'site',
+      grants: ['mech_ordering'],
+    });
     expect(registrationRoleRequestLabels.site_staff).toBe('Сотрудник объекта');
   });
 

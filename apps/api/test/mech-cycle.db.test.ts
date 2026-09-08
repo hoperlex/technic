@@ -186,10 +186,24 @@ async function takeInWork(
   id: string,
   over: { lessorId?: string; actualFrom?: string } = {},
 ): Promise<Injected> {
+  // Виза площадки — предусловие входа в работу (план
+  // `docs/mechanization-approval-and-grants-plan.md`, Р3), и ставится она здесь, а не в каждой
+  // сцене: этот файл про цикл и гонки, а барьер визы проверяется своим — `mech-approval.db.test.ts`.
+  // Администратор подписывает вручную: автовизы подачей у него нет намеренно (ADR 0032).
+  await approve(id);
   return changeStatus(id, 'confirmed', {
     deal: { lessorId: over.lessorId ?? ctx.mechLessorId, rate: 1200, rateUnit: 'hour' },
     ...(over.actualFrom ? { actualFrom: over.actualFrom } : {}),
   });
+}
+
+/** Поставить визу, если её ещё нет: повтор той же подписи ручка отдаёт тихим успехом. */
+async function approve(id: string): Promise<void> {
+  const res = await call('PATCH', `/${id}/approval`, {
+    approved: true,
+    version: await version(id),
+  });
+  expect(res.statusCode, res.body).toBe(200);
 }
 
 /** Полный факт возврата: четыре значения, без любого из которых закрывать нечего. */
@@ -426,6 +440,10 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
 
   it('в работу не берут без арендодателя и без ставки', async () => {
     const request = await newRequest();
+    // Виза стоит до проверки договорённости: барьер входа в работу (план визы, Р3) отвечает
+    // раньше — сначала «можно ли отсюда туда», потом «полно ли содержимое перехода». Без подписи
+    // сцена проверяла бы не договорённость, а визу.
+    await approve(request.id);
 
     // Без договорённости вовсе: отказ приходит от сервера, а не пятисотым от CHECK'а базы.
     const bare = await changeStatus(request.id, 'confirmed');
@@ -439,9 +457,11 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
     expect(priceless.statusCode, priceless.body).toBe(400);
 
     // Заявка не сдвинулась ни на одном отказе: неудавшийся переход не тронул ни статус, ни версию.
+    // Версия сравнивается с той, что была ПОСЛЕ визы: подпись — законная запись, и она версию
+    // подняла (Р12 плана визы), а два неудавшихся перехода после неё не должны были её тронуть.
     const untouched = await card(request.id);
     expect(untouched.status).toBe('new');
-    expect(untouched.version).toBe(request.version);
+    expect(untouched.version).toBe(request.version + 1);
 
     const taken = ok(await takeInWork(request.id)) as unknown as MechRequestDto;
     expect(taken.status).toBe('confirmed');
@@ -789,6 +809,10 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
      */
     const moment = new Date(`${today}T21:30:00.000Z`);
     const moscowDay = moscowDateKeyOf(moment);
+    // Версия читается ДО подмены часов и запоминается: считать её от `request.version` числом
+    // нельзя — сцену версии двигают и виза (план визы, Р12), и вход в работу, и порядок этих шагов
+    // принадлежит не этому тесту.
+    const atIssue = await version(request.id);
     expect(moscowDay, 'сцена обязана быть про сутки, разъехавшиеся с UTC').toBe(tomorrow);
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(moment);
@@ -804,7 +828,7 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
         method: 'POST',
         url: `/api/v1/mech-requests/${request.id}/issue`,
         headers: auth,
-        payload: { actualFrom: moscowDay, version: request.version + 1 },
+        payload: { actualFrom: moscowDay, version: atIssue },
       });
       expect(res.statusCode, res.body).toBe(200);
       expect(res.json().actualFrom).toBe(moscowDay);
@@ -813,7 +837,7 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
         method: 'POST',
         url: `/api/v1/mech-requests/${request.id}/issue`,
         headers: auth,
-        payload: { actualFrom: shiftDateKey(moscowDay, 1), version: request.version + 2 },
+        payload: { actualFrom: shiftDateKey(moscowDay, 1), version: atIssue + 1 },
       });
       expect(beyond.statusCode, beyond.body).toBe(400);
     } finally {
@@ -978,7 +1002,10 @@ describe.skipIf(!DB_URL)('механизация: цикл, барьеры и г
 
   it('правка срока, разошедшаяся с переводом в работу, отклоняется по версии', async () => {
     const request = await newRequest();
-    const at = request.version;
+    // Виза стоит до гонки: без неё перевод в работу упёрся бы в барьер визы (план визы, Р3), и
+    // сцена проверяла бы не порядок «версия раньше предметных правил», а предусловие перехода.
+    await approve(request.id);
+    const at = await version(request.id);
 
     // Обе двери выходят из «Новой», где срок правится свободно. Пока правка ждала строку, заявку
     // взяли в работу — и предметный барьер («срок двигает только продление») стал бы формально

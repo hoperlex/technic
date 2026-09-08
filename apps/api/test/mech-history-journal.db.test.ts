@@ -175,6 +175,21 @@ async function newObject(tag: string): Promise<string> {
   return row!.id;
 }
 
+/**
+ * Набор «Заказ механизации» держателю — тем же способом, каким его выдаёт администратор
+ * (ADR 0175). Нужен всякой площадочной учётке: модуль ушёл из состава роли `site` и приходит
+ * только набором, а посев миграции сюда не достаёт — он сеет тем, кто существовал на момент
+ * наката, а эти учётки заводит тест после него.
+ */
+async function grantMechOrdering(userId: string): Promise<void> {
+  const [grant] = await ctx.db
+    .select({ id: ctx.schema.grants.id })
+    .from(ctx.schema.grants)
+    .where(eq(ctx.schema.grants.code, 'mech_ordering'));
+  if (!grant) throw new Error('В каталоге нет набора «Заказ механизации»: миграция не накатана');
+  await ctx.db.insert(ctx.schema.userGrants).values({ userId, grantId: grant.id });
+}
+
 async function newUser(
   tag: string,
   role: 'admin' | 'manager' | 'site' | 'department',
@@ -206,6 +221,9 @@ async function newUser(
       .insert(ctx.schema.userDepartments)
       .values({ userId: row!.id, departmentId, isHead: false });
   }
+  // Площадке модуль выдаётся набором, а не ролью (ADR 0175); отделу набор не нужен — у роли
+  // `department` модуль остался в составе.
+  if (role === 'site') await grantMechOrdering(row!.id);
   return row!.id;
 }
 
@@ -272,11 +290,27 @@ async function changeStatus(id: string, payload: Record<string, unknown>): Promi
   expect(res.statusCode, res.body).toBe(200);
 }
 
+/**
+ * Виза площадки — предусловие входа в работу (план
+ * `docs/mechanization-approval-and-grants-plan.md`, Р3). Ставится в сцене, а не проверяется здесь:
+ * этот файл спрашивает про другое, а сама подпись и её правила живут в `mech-approval.db.test.ts`.
+ */
+async function approve(id: string): Promise<void> {
+  const res = await ctx.app.inject({
+    method: 'PATCH',
+    url: `/api/v1/mech-requests/${id}/approval`,
+    headers: await headersOf(ctx.users.admin),
+    payload: { approved: true, version: await versionOf(id) },
+  });
+  expect(res.statusCode, res.body).toBe(200);
+}
+
 /** Действующая аренда: договорённость и выдача приезжают вместе с переходом в «В работе» (Р2). */
 async function seedRunning(
   input: SeedInput & { rateUnit?: 'hour' | 'shift'; actualFrom?: string },
 ): Promise<string> {
   const id = await seedNew(input);
+  await approve(id);
   await changeStatus(id, {
     status: 'confirmed',
     deal: {
