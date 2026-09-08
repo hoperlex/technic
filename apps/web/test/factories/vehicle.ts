@@ -15,6 +15,7 @@ import type {
   WeeklyRequestItemDto,
   WeeklyVehicleRequestDto,
 } from '@technic/contracts';
+import { vehicleClassificationKey, vehicleClassificationLabel } from '@technic/contracts';
 
 /**
  * Записи раздела «Заказ ТС».
@@ -315,13 +316,38 @@ export function vehicleSummary(
 export function classification(
   overrides: Partial<VehicleClassificationDto> = {},
 ): VehicleClassificationDto {
-  return {
+  /*
+   * Имена полей — как в DTO (`typeName`/`categoryName`), а не «vehicleTypeName»: так их зовёт
+   * сервер, так их читают подписи, и так их всегда передавали вызывающие. Прежние умолчания
+   * фабрики звали ту же пару по-своему — приведение к DTO это скрывало, — и объект уезжал в
+   * портал без наименований вовсе.
+   */
+  const base = {
     vehicleTypeId: 'vt-1',
-    vehicleTypeName: 'Автокраны',
+    typeName: 'Автокраны',
     vehicleCategoryId: 'vc-1',
-    vehicleCategoryName: 'г/п 25 т',
+    categoryName: 'г/п 25 т',
     kindCode: 'special',
     ...overrides,
+  };
+  return {
+    ...base,
+    /*
+     * Ключ позиции считается ПОСЛЕ overrides и по ним же (`vehicleClassificationKey`): по нему
+     * позицию находят и подбор формы, и `byKey` в `useVehicleClassifications`.
+     *
+     * Раньше его тут не было вовсе — приведение к DTO скрывало пропажу, и карта позиций
+     * складывалась с ключом `undefined`. На списке выбора это не сказывалось (там значения берут
+     * из самих строк), а всякий сценарий, который позицию ИЩЕТ, молча получал «такой позиции в
+     * справочнике нет» — то есть проверял поведение выключенной позиции, думая, что проверяет
+     * обычную.
+     */
+    key: overrides.key ?? vehicleClassificationKey(base.vehicleTypeId, base.vehicleCategoryId),
+    // Подпись — тем же правилом, что и на сервере (`vehicleClassificationLabel`): её печатают
+    // варианты списка, и без неё поле показывало бы человеку сырой ключ «vt-1:vc-1».
+    label:
+      overrides.label ??
+      vehicleClassificationLabel({ typeName: base.typeName, categoryName: base.categoryName }),
   } as VehicleClassificationDto;
 }
 

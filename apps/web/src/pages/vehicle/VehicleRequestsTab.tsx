@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import {
+  Alert,
   App,
   Button,
   DatePicker,
@@ -139,15 +140,14 @@ import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import { MOSCOW_TZ } from '@shared/config';
 import { ApprovalCell, StatusCell } from './requestRowCells';
 import { RequestTripsBlock } from './RequestTripsBlock';
-import {
-  blankTrip,
-  editTripBody,
-  newTripBody,
-  tripNeedsList,
-  tripToForm,
-  type TripFormValue,
-} from './requestTripsForm';
+import { blankTrip, editTripBody, newTripBody, type TripFormValue } from './requestTripsForm';
 import { rollbackErases, retypeErases, termLabel } from './requestRowText';
+import {
+  copyFormValues,
+  editFormValues,
+  type FormValues,
+  tripsNeedExpanding,
+} from './requestFormValues';
 import {
   EarlyEndTag,
   FileEditor,
@@ -173,48 +173,6 @@ import {
   weeklyRequestPath,
   WeeklyStatusTag,
 } from './weeklyShared';
-
-/**
- * Единая форма заявки на автотехнику. Тип заявки выбирают явно — он задаёт и набор полей,
- * и список доступной техники: на объект заказывают технику любого вида, грузоперевозку —
- * только грузовым (`isVehicleKindAllowedForRequest`). Поля чужого типа скрыты вместе с
- * лейблами, пока тип заявки не выбран — не видно ни одного из двух блоков.
- */
-interface FormValues {
-  requestType: VehicleRequestType;
-  /**
-   * Заказчик (ADR 0040) одним ключом `object:<id>` | `department:<id>` (план Р2): пара колонок для
-   * тела запроса собирается из выбранной опции (`customerPairOf`), а не разбором строки.
-   */
-  customerKey?: string;
-  /** Ключ позиции классификатора «тип:категория» (ADR 0028); в API уходит парой полей. */
-  classificationKey: string;
-  // Техника на объект: период работы (date-only) и контакт встречающего.
-  dateFrom?: Dayjs | null;
-  dateTo?: Dayjs | null;
-  responsibleName?: string;
-  responsiblePhone?: string;
-  // Грузоперевозка: дата + необязательное время `HH:mm` первой подачи (Р3) и список ездок.
-  scheduledDate?: Dayjs | null;
-  scheduledTime?: string;
-  /**
-   * Ездки заявки (Р1, Р2 плана `docs/route-trips-plan.md`): адреса, количество и контакты обоих
-   * концов лежат у них, а не у заявки — у заявки с ездками `A→B` и `A→C` «адреса разгрузки
-   * заявки» не существует.
-   *
-   * Списком в значениях формы, а не антовским `Form.List`: адресное поле и контакт зовут форму
-   * напрямую и путь к полю знают целиком (`trips.3.fromLocation`), а `Form.List` подставляет свой
-   * префикс только элементам `Form.Item`. Ведёт список `RequestTripsBlock`.
-   */
-  trips?: TripFormValue[];
-  comment?: string;
-  /**
-   * Причина заднего числа (ADR 0101). Полем формы, а не состоянием экрана: показывается оно по
-   * выбранной дате, и `resetFields` обязан уносить его вместе с ней — иначе объяснение вчерашней
-   * заявки уехало бы в следующую, заведённую в том же окне.
-   */
-  backdateReason?: string;
-}
 
 /**
  * Вход сохранения формы: значения плюс уже проведённая правка срока (волна 4a плана
@@ -417,6 +375,12 @@ export function VehicleRequestsTab() {
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<VehicleRequestDto | null>(null);
+  /**
+   * Заявка, с которой сняли копию (ADR 0173): формой она не правится и в тело не уходит — по ней
+   * окно называет себя и предупреждает о вложениях. Отдельным состоянием от `record`, потому что
+   * `record` отвечает на другой вопрос: «что сохраняем — правку или заведение».
+   */
+  const [copySource, setCopySource] = useState<VehicleRequestDto | null>(null);
   /** Открытая карточка заявки: поля только на чтение и история событий (ADR 0015). */
   const [viewRecord, setViewRecord] = useState<VehicleRequestDto | null>(null);
 
@@ -748,6 +712,7 @@ export function VehicleRequestsTab() {
 
   const openCreate = () => {
     setRecord(null);
+    setCopySource(null);
     form.resetFields();
     setOperationId(crypto.randomUUID());
     // Штаб заводит заявку только на свой объект, сотрудник отдела — только от своего отдела:
@@ -771,57 +736,11 @@ export function VehicleRequestsTab() {
 
   const openEdit = (r: VehicleRequestDto) => {
     setRecord(r);
+    setCopySource(null);
     form.resetFields();
     setOperationId(crypto.randomUUID());
-    /*
-     * Свёрнутый вид годится не всякой заявке (§4.1): списком открываются те, у кого ездок
-     * несколько, и та, у кого ездка одна, но со своим временем подачи или примечанием — их
-     * свёрнутый вид не показывает вовсе, и человек правил бы заявку, не видя половины заказа.
-     * Тем же правилом решает карточка (`tripNeedsList`), показывать ли ездку парой полей.
-     */
-    const trips = r.requestType === 'freight_transport' ? r.trips : [];
-    setTripsExpanded(trips.length > 1 || trips.some(tripNeedsList));
-    if (r.requestType === 'special_equipment') {
-      form.setFieldsValue({
-        requestType: r.requestType,
-        // Заказчик — ключом из самой заявки (Р2): пара колонок под CHECK заполнена ровно
-        // наполовину, и род берётся из неё, а не из оси того, кто правит.
-        customerKey: costTargetKeyOf(r) ?? undefined,
-        classificationKey: classificationKeyOf(r),
-        dateFrom: dayjs(r.dateFrom),
-        dateTo: r.dateTo ? dayjs(r.dateTo) : null,
-        responsibleName: r.responsibleName,
-        responsiblePhone: r.responsiblePhone,
-        comment: r.comment,
-      });
-    } else {
-      // Момент с сервера переводится в МСК, а не читается как московское время: `dayjs.tz(iso,
-      // tz)` теряет пришедшее смещение и показывал бы подачу на три часа раньше — а правка
-      // сохраняла бы этот сдвиг обратно в заявку. Так же читает подачу заявка на вывоз мусора.
-      const at = dayjs(r.scheduledAt).tz(MOSCOW_TZ);
-      /*
-       * Адреса, груз и контакты лежат у ездок (Р2 плана `docs/route-trips-plan.md`) — у заявки их
-       * больше нет, и форма правит их полным списком (§7).
-       *
-       * Переносится каждая ездка как есть, включая непроверенный адрес и пустой контакт: у строк,
-       * доехавших бэкфилом от заявок старше ADR 0006 и миграции `0062`, их не бывает, и выдумывать
-       * за прошлое форма не станет (Р2а). Метаданные едут вместе со строкой — по ним адресное поле
-       * само откроется в том режиме, каким адрес и заводили.
-       *
-       * Пустой список тут теоретически невозможен (ездок не бывает ноль), но окно правки не то
-       * место, где это стоит утверждать падением: список просто окажется без строк.
-       */
-      form.setFieldsValue({
-        requestType: r.requestType,
-        customerKey: costTargetKeyOf(r) ?? undefined,
-        classificationKey: classificationKeyOf(r),
-        scheduledDate: at,
-        // Время не задано — поле остаётся пустым (в scheduledAt лежит полночь МСК).
-        scheduledTime: r.scheduledTimeUnspecified ? undefined : at.format('HH:mm'),
-        trips: trips.map(tripToForm),
-        comment: r.comment,
-      });
-    }
+    setTripsExpanded(tripsNeedExpanding(r));
+    form.setFieldsValue(editFormValues(r));
     editor.reset(
       r.files.map((f): EditorFile => ({
         id: f.id,
@@ -831,6 +750,33 @@ export function VehicleRequestsTab() {
         isNew: false,
       })),
     );
+    setOpen(true);
+  };
+
+  /**
+   * Копия заявки (ADR 0173): та же форма, но заведением, а не правкой, — `record` остаётся пустым,
+   * и сохранение уйдёт в `create`. Что именно переносится и что нет, решает `copyFormValues`.
+   *
+   * Вложения не переносятся (`editor.reset([])`): файл живёт не более чем у одной заявки.
+   */
+  const openCopy = (r: VehicleRequestDto) => {
+    setRecord(null);
+    setCopySource(r);
+    form.resetFields();
+    setOperationId(crypto.randomUUID());
+    setTripsExpanded(tripsNeedExpanding(r));
+    // Заказчик спрашивается тем же вопросом, каким форма собирает тело (К8): значение вне подбора
+    // уходит пустой парой, и подставлять его — значит показывать заказчика, которого сервер не
+    // примет. Пара считается один раз: два вызова отвечали бы на один вопрос дважды.
+    const pair = customer.customerPairOf(costTargetKeyOf(r));
+    form.setFieldsValue(
+      copyFormValues(r, {
+        minDate,
+        hasClassification: classificationByKey.has(classificationKeyOf(r)),
+        hasCustomer: !!pair.objectId || !!pair.departmentId,
+      }),
+    );
+    editor.reset([]);
     setOpen(true);
   };
 
@@ -1397,6 +1343,20 @@ export function VehicleRequestsTab() {
 
   const canModify = (r: VehicleRequestDto) =>
     !r.deletedAt && (canEdit || canDelete) && (!isObjectRole || r.status === 'new');
+
+  /**
+   * Снять с заявки копию (ADR 0173) — только с «Новой» и только имея право заводить заявки.
+   *
+   * Статус ограничивает не осторожность, а смысл: у работающей и закрытой заявки даты давно
+   * прошли, а состав уже привязан к конкретной машине и рейсу — повторять там нечего, копия
+   * состояла бы из одних сброшенных полей. Тип спрашивается отдельно от права: отделу открыта
+   * одна грузоперевозка, и копия заказа спецтехники ушла бы к отказу сервера.
+   */
+  const canCopy = (r: VehicleRequestDto) =>
+    !r.deletedAt &&
+    r.status === 'new' &&
+    canCreate &&
+    requestTypeOptions.some((o) => o.value === r.requestType);
 
   const confirmDelete = (r: VehicleRequestDto) =>
     modal.confirm({
@@ -2318,7 +2278,13 @@ export function VehicleRequestsTab() {
         onChange={onTableChange}
       />
       <FormModal
-        title={record ? `Заявка ${record.displayNumber}` : 'Новая заявка на автотехнику'}
+        title={
+          record
+            ? `Заявка ${record.displayNumber}`
+            : copySource
+              ? `Новая заявка на автотехнику — копия ${copySource.displayNumber}`
+              : 'Новая заявка на автотехнику'
+        }
         open={open}
         onCancel={() => setOpen(false)}
         onSubmit={() => form.submit()}
@@ -2327,6 +2293,17 @@ export function VehicleRequestsTab() {
       >
         {/* Поля парами (FormGrid): в одну колонку форма заявки не помещается в экран и половину
             полей прячет под прокрутку. На телефоне колонка одна, порядок полей тот же. */}
+        {/* Копия (ADR 0173) объявляется прямо в форме: заголовок называет источник, а строка под
+          ним — то единственное, чего копия не унесла. Узнать про вложения после сохранения
+          значило бы обнаружить пропажу тогда, когда заявка уже ушла. */}
+        {copySource && !record && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            description={`Состав заказа перенесён из заявки ${copySource.displayNumber}; сроки сдвинуты вперёд, если прежние уже прошли. Вложения не переносятся — приложите их заново.`}
+          />
+        )}
         <Form form={form} layout="vertical" onFinish={onFinish}>
           <FormGrid>
             {/* Заказчик заявки (ADR 0040, план Р2): площадки и подразделения одним подбором — по
@@ -2553,6 +2530,14 @@ export function VehicleRequestsTab() {
             ? (r) => {
                 closeView();
                 openEdit(r);
+              }
+            : undefined
+        }
+        onCopy={
+          viewed && canCopy(viewed)
+            ? (r) => {
+                closeView();
+                openCopy(r);
               }
             : undefined
         }

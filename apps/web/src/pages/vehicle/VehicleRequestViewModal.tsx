@@ -1,7 +1,7 @@
 import { Button, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { type ReactNode, useMemo } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import {
   assignmentRateLabel,
@@ -51,6 +51,7 @@ import { calendarDaysLabel } from '../../utils/date';
 import { formatDate, formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { formatDateOnly, tripsCountLabel } from './shared';
 import { useRouteModal } from '@features/route-modal';
+import { vehicleRequestCardFooter } from './VehicleRequestCardFooter';
 import { VehicleRequestDays } from './VehicleRequestDays';
 import { VehicleShiftsView } from './VehicleShiftsView';
 import { weeklyRequestPath } from './weeklyShared';
@@ -68,6 +69,16 @@ interface Props {
   onClose: () => void;
   /** Не передана — правка этой заявки недоступна (роль, статус или архив). */
   onEdit?: (r: VehicleRequestDto) => void;
+  /**
+   * Завести новую заявку тем же составом (ADR 0173). Не передана — действие недоступно: копию
+   * снимают только с «Новой» и только там, где есть право заводить заявки, а тип и заказчик этой
+   * заявки открыты учётке.
+   *
+   * Кнопка стоит в карточке, а не в строке списка, по той же причине, что и «Сменить технику»:
+   * решают, повторять ли заказ, прочитав его целиком — адреса, груз, контакт и примечание, — а в
+   * строке из этого видна половина.
+   */
+  onCopy?: (r: VehicleRequestDto) => void;
   /**
    * Сменить назначенную машину (ADR 0048). Не передана — действие этой заявке недоступно: у
    * «Новой» машину назначает перевод в работу, у закрытой её уже не меняют, а подбирает технику
@@ -321,6 +332,7 @@ export function VehicleRequestViewModal({
   request,
   onClose,
   onEdit,
+  onCopy,
   onReassign,
   onChangeMachinist,
   onTransfer,
@@ -1144,41 +1156,14 @@ export function VehicleRequestViewModal({
       width={1000}
       // Окно переоткрывают на соседней заявке — раскрытые строки прошлой истории не её дело.
       destroyOnHidden
-      footer={[
-        ...(request && onEdit
-          ? [
-              <Button key="edit" type="primary" onClick={() => onEdit(request)}>
-                Редактировать
-              </Button>,
-            ]
-          : []),
-        // Читалку действия не ведут — вместо них дверь туда, где ведут: в список заявок с
-        // открытой карточкой этой же заявки (план §3.5). Адрес считается по уже загруженному
-        // DTO, потому что одного статуса мало: удалённая заявка живёт в архиве, и выбирает его
-        // `deletedAt`. Он же закрыт своим правом — без `archive.read` адреса не будет вовсе
-        // (`vehicleRequestLink` вернёт `null`), и кнопки тогда нет: ссылка, кончающаяся отказом,
-        // хуже её отсутствия.
-        //
-        // Настоящей ссылкой, а не `navigate` по нажатию: список заявок открывают соседней
-        // вкладкой, оставив рейс на экране, — тем же приёмом, что и `EntityLink`. Переход при
-        // этом уносит из адреса `request` и `route`, и окна закрываются сами: состояние окон
-        // живёт только в адресе (§3.1).
-        ...(requestListHref
-          ? [
-              <Link key="list" to={requestListHref}>
-                {/* На телефоне кнопки футера делят ширину поровну (`.sheet-footer`), и делит её
-                  ссылка, а не кнопка внутри неё: без `block` кнопка осталась бы по тексту, а
-                  соседняя «Закрыть» — во всю свою долю. */}
-                <Button type="primary" block={isMobile}>
-                  Открыть в списке заявок
-                </Button>
-              </Link>,
-            ]
-          : []),
-        <Button key="close" onClick={onClose}>
-          Закрыть
-        </Button>,
-      ]}
+      footer={vehicleRequestCardFooter({
+        request,
+        onClose,
+        onEdit,
+        onCopy,
+        requestListHref,
+        isMobile,
+      })}
     >
       {request && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
