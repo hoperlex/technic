@@ -529,6 +529,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: 'ЭСМ-2 только в комментарии 27; листы файла — исключительно 4-П по рейсу',
   },
   {
+    file: 'vehicle-request-rollback.db.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note: 'файл про визу при возврате заказа в «Новую» (ADR 0172); ЭСМ-2 назван один раз — машиниста в назначении спрашивает именно выписка недельного листа, и без него перевод в работу отвечает 422. Ни границ недели, ни самих листов файл не читает',
+  },
+  {
     file: 'vehicle-requests-contracts.test.ts',
     klass: 'mention',
     status: 'done',

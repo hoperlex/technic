@@ -35,9 +35,13 @@ export function termLabel(r: VehicleRequestDto): string {
  * собственным данным.
  *
  * Перечень не статический намеренно: у арендной машины рейса и перегонов не бывает — их ведёт
- * арендодатель, — у заявки отдела нет визы, а факт есть только у той, которую уже закрывали и
- * откатили назад в работу. Обещать снятие того, чего у заявки нет, — врать человеку ровно в том
- * окне, где он решает, стирать ли работу; поэтому строка появляется только под заполненное поле.
+ * арендодатель, — а факт есть только у той заявки, которую уже закрывали и откатили назад в
+ * работу. Обещать снятие того, чего у заявки нет, — врать человеку ровно в том окне, где он
+ * решает, стирать ли работу; поэтому строка появляется только под заполненное поле.
+ *
+ * Визы в перечне нет вовсе (ADR 0172): возврат её не снимает, и строка о ней была бы не
+ * осторожностью, а неправдой — человек отказался бы от отката, чтобы сберечь то, чему ничего не
+ * грозит.
  */
 export function rollbackErases(r: VehicleRequestDto, relocations: VehicleRouteDto[]): string[] {
   const items: string[] = [];
@@ -54,12 +58,6 @@ export function rollbackErases(r: VehicleRequestDto, relocations: VehicleRouteDt
   for (const route of relocations) {
     items.push(
       `${routePurposeLabels[route.purpose]} — рейс ${route.displayNumber} от ${formatDateOnly(route.routeDate)}`,
-    );
-  }
-  // Виза (ADR 0025): её ставят только «Новой» заявке, и вернувшуюся придётся согласовывать заново.
-  if (r.approvedAt) {
-    items.push(
-      `Виза руководителя строительства${r.approvedByName ? ` (${r.approvedByName})` : ''}`,
     );
   }
   if (r.completion) items.push(`Предъявленный факт: ${completionLabel(r.completion)}`);
