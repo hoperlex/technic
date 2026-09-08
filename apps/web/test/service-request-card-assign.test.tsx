@@ -99,15 +99,47 @@ function layerOf(title: string): number {
 }
 
 /**
- * Кнопка у поля «Исполнители». По части подписи, а не по точному имени: рядом с текстом стоит
- * иконка, и её имя antd подмешивает в доступное имя кнопки («user-switch Назначить»).
+ * Строка поля «Исполнители» карточки: и состав, и ручка к нему живут в ней одной (ADR 0140), и все
+ * утверждения этого файла — про неё же. Ищется по подписи поля, а не по номеру строки: порядок
+ * полей карточки меняется от волны к волне, и завязка на него ломала бы файл на каждой.
  */
-function assignButton(): HTMLElement | null {
-  const card = within(wrapOf('Заявка СО-14'));
+function executorsRow(): HTMLElement {
+  const label = [
+    ...wrapOf('Заявка СО-14').querySelectorAll<HTMLElement>('.ant-descriptions-item-label'),
+  ].find((el) => el.textContent === 'Исполнители');
+  const row = label?.closest<HTMLElement>('.ant-descriptions-row');
+  if (!row) throw new Error('в карточке нет строки поля «Исполнители»');
+  return row;
+}
+
+/**
+ * Ручка у поля «Исполнители» — поиском по разметке, как и кнопка подвала ниже.
+ *
+ * Причина та же, что там (дерево доступности этой карточки antd гасит целиком, стоит открыть
+ * поверх неё вложенное окно), и ещё одна, замеренная. `*ByRole` с именем зовёт у каждого кандидата
+ * `getComputedStyle` — так дерево доступности отсеивает спрятанное и так же считается доступное
+ * имя. В jsdom один такой вызов на кнопке поля стоит ДВЕ С ПОЛОВИНОЙ СЕКУНДЫ: движок вычисленных
+ * стилей разворачивает наследуемые значения по всей цепочке предков, а кнопка лежит на глубине 22
+ * под таблицей antd. Файл звал `*ByRole` по карточке одиннадцать раз и от этого один тянул
+ * полторы минуты из семи минут всего набора — а под нагрузкой параллельных воркеров тот же вызов
+ * растягивался вдвое и упирался в двадцатисекундный потолок. Тот же поиск по разметке — 0 мс.
+ *
+ * Утверждение при этом не слабеет: элемент и так `<button>`, ролью его никто не подменял, а
+ * подпись сверяется точным равенством вместо прежнего `/Назначить$/` — регулярное выражение было
+ * нужно ровно затем, чтобы отрезать имя иконки («user-switch Назначить»), которое подмешивает
+ * antd. Внутри самого окна назначения `*ByRole` остаётся: там разметка мелкая и дешёвая (12 мс).
+ */
+function assignButton(): HTMLButtonElement | null {
   return (
-    card.queryByRole('button', { name: /Назначить$/ }) ??
-    card.queryByRole('button', { name: /Изменить$/ })
+    [...executorsRow().querySelectorAll('button')].find((el) =>
+      ['Назначить', 'Изменить'].includes(el.textContent ?? ''),
+    ) ?? null
   );
+}
+
+/** Подписи всех кнопок карточки: ими проверяется, что ручки не осталось нигде, а не только у поля. */
+function cardButtonLabels(): string[] {
+  return [...wrapOf('Заявка СО-14').querySelectorAll('button')].map((el) => el.textContent ?? '');
 }
 
 /** Открыть карточку так, как её открывает человек: кликом по строке списка. */
@@ -188,7 +220,7 @@ describe('кнопка назначения у поля «Исполнители
     // Глагол — от видимого состава, а не от статуса: рядом с «не назначены» «Изменить» звало бы
     // менять то, чего нет.
     expect(card.getByText('не назначены')).toBeDefined();
-    expect(card.getByRole('button', { name: /Назначить$/ })).toBeDefined();
+    expect(assignButton()?.textContent).toBe('Назначить');
 
     /*
      * Из меню карточки пункт вычеркнут: две ручки к одному действию в одном окне задавали бы
@@ -207,8 +239,9 @@ describe('кнопка назначения у поля «Исполнители
     // Состав виден рядом с кнопкой: исполнителей правят, глядя на то, кто ведёт заявку, — прежде
     // за этим шли в меню внизу карточки, то есть отводили глаза от самого ответа.
     expect(card.getByText('Сисадминов С. С.')).toBeDefined();
-    expect(card.getByRole('button', { name: /Изменить$/ })).toBeDefined();
-    expect(card.queryByRole('button', { name: /Назначить$/ })).toBeNull();
+    expect(assignButton()?.textContent).toBe('Изменить');
+    // И «Назначить» не осталось нигде в карточке, а не только у самого поля.
+    expect(cardButtonLabels()).not.toContain('Назначить');
   });
 
   it('«Ведению» список кандидатов запрашивается: страж ручки — право назначения', async () => {
@@ -220,8 +253,7 @@ describe('кнопка назначения у поля «Исполнители
     // только уже назначенных, а себя в исполнители не поставить.
     const http = renderTab(OPERATOR, [serviceRequest()]);
     await openCard();
-    const card = within(wrapOf('Заявка СО-14'));
-    fireEvent.click(card.getByRole('button', { name: /Назначить$/ }));
+    fireEvent.click(assignButton()!);
     await waitFor(() =>
       expect(http.countOf('GET /service-requests/executor-candidates')).toBeGreaterThan(0),
     );
@@ -252,7 +284,7 @@ describe('окно назначения лежит поверх карточки
     renderTab(OPERATOR, [serviceRequest()]);
     await openCard();
 
-    fireEvent.click(within(wrapOf('Заявка СО-14')).getByRole('button', { name: /Назначить$/ }));
+    fireEvent.click(assignButton()!);
 
     // Открыты оба: назначение — шаг внутри разговора о заявке, и карточка за ним видна.
     await waitFor(() =>
@@ -278,7 +310,7 @@ describe('окно назначения лежит поверх карточки
     await closeCard();
     await openCard();
 
-    fireEvent.click(within(wrapOf('Заявка СО-14')).getByRole('button', { name: /Назначить$/ }));
+    fireEvent.click(assignButton()!);
     await waitFor(() => expect(openModalTitles()).toContain('Назначить исполнителей'));
 
     // Карточка под окном, а не над ним: человек видит форму назначения, а не «ничего не произошло».
@@ -308,7 +340,7 @@ describe('окна карточки гаснут вместе с ней', () => 
   it('карточку закрыли поверх открытого окна — ушли оба, и назад окно само не вернулось', async () => {
     renderTab(OPERATOR, [serviceRequest()]);
     await openCard();
-    fireEvent.click(within(wrapOf('Заявка СО-14')).getByRole('button', { name: /Назначить$/ }));
+    fireEvent.click(assignButton()!);
     await waitFor(() => expect(openModalTitles()).toContain('Назначить исполнителей'));
 
     // Закрываем саму карточку, окна назначения не трогая: цель в наборе сейчас взведена.
