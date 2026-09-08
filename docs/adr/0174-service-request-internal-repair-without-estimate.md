@@ -4,6 +4,7 @@
   `cad5fa2`. Схему решение НЕ меняет: колонки объёма работ остаются на месте и у внутренних заявок
   просто не заполняются. Парная миграция волны (`0286`, переопределение частичного индекса
   срочности под отбор) к этому решению отношения не имеет и живёт своей причиной
+- Домены: оргтехника
 - Область: контракты —
   [service-requests.ts](../../packages/contracts/src/service-requests.ts) (`serviceRequestNeedsEstimate`,
   `serviceRequestHasEffectivePendingEstimate`, три предиката объёма работ, `canAssignServiceExecutors`,

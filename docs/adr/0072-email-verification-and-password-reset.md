@@ -2,7 +2,9 @@
 
 - Статус: Принято; решения 1, 2 и 14 **временно выключены** (07.08.2026) — см. «Временное
   отключение подтверждения» ниже
-- Связано: [ADR 0034](0034-registration-request.md) (саморегистрация, капча и пожелание роли),
+- Домены: доступ, почта
+- Область: `apps/worker/src/retention.ts`
+- Связано: [ADR 0034](0034-registration-name-parts-and-captcha.md) (саморегистрация, капча и пожелание роли),
   [ADR 0063](0063-user-archive-lifecycle.md) (архив учёток освобождает адрес),
   `docs/mail-integration-plan.md` (почтовый контур целиком),
   `packages/contracts/src/{auth,email,users}.ts`, `apps/api/src/routes/{auth,users}.ts`,

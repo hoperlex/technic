@@ -4,6 +4,7 @@
   [mechanization-approval-and-grants-plan.md](../mechanization-approval-and-grants-plan.md),
   редакция 3. Схема — две колонки `mech_requests.approved_by` / `approved_at` (миграция `0284`),
   состав двух системных наборов (`0285`); номера взяты по файлам дерева перед созданием
+- Домены: механизация, доступ
 - Область: контракты — [permissions.ts](../../packages/contracts/src/permissions.ts),
   [permission-catalog.ts](../../packages/contracts/src/permission-catalog.ts),
   [grants.ts](../../packages/contracts/src/grants.ts),

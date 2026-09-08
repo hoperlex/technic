@@ -20,7 +20,7 @@
   [metrics.ts](../../apps/api/src/services/metrics.ts), портал —
   [serviceMailNotice.ts](../../apps/web/src/pages/service/serviceMailNotice.ts);
   `apps/api/test/service-request-mail.db.test.ts` и новый
-  `apps/api/test/service-request-mail-events.db.test.ts`
+  `apps/api/test/service-request-mail.db.test.ts`
 - Связано: [ADR 0153](0153-service-request-contractor-mail.md) (письма доходят до самой сервисной
   компании; здесь меняется его решение 3), [ADR 0141](0141-service-request-chat.md) (обсуждение
   заявки и адресат реплики), [ADR 0096](0096-office-equipment-it-approval.md) (реестр событий, виза

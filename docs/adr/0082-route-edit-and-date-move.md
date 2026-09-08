@@ -1,9 +1,11 @@
 # ADR 0082. Правка рейса: день переезжает вместе с заявками, а перегоны правятся в самой заявке
 
 - Статус: Принято
+- Домены: заказ-тс
+- Область: `packages/contracts/src/vehicle-routes.ts`, `apps/api/src/routes/vehicle-routes.ts`, `apps/api/src/services/vehicle-routes.ts`, `apps/web/src/pages/vehicle/VehicleRouteEditModal.tsx`, `apps/web/src/pages/vehicle/RequestRelocationsField.tsx`
 - Связано: [ADR 0050](0050-vehicle-routes.md) (маршрут — рейс машины на дату),
-  [ADR 0052](0052-waybill-cancel-window.md) (рейс спрашивается до машины),
-  [ADR 0037](0037-waybill-journal.md) (выписанный лист замораживает рейс),
+  [ADR 0052](0052-route-followup.md) (рейс спрашивается до машины),
+  [ADR 0037](0037-freight-transport-waybill.md) (выписанный лист замораживает рейс),
   [ADR 0057](0057-waybill-forms-and-relocation.md) (перегон техники — рейс без состава),
   [ADR 0064](0064-assignment-without-classification-limits.md) (список водителей помечает, а не
   сужает), `packages/contracts/src/vehicle-routes.ts`, `apps/api/src/routes/vehicle-routes.ts`,

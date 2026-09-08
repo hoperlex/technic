@@ -1,10 +1,12 @@
 # ADR 0081. Аннулированный лист бумагой не выдаётся, а у выданного видно, что он уже уходил
 
 - Статус: Принято
-- Связано: [ADR 0037](0037-waybill-journal.md) (журнал учёта, аннулирование бланка),
-  [ADR 0041](0041-waybill-print.md) (печать листа PDF инлайном),
+- Домены: путевые-листы
+- Область: `packages/contracts/src/waybills.ts`, `apps/api/src/routes/waybills.ts`, `apps/web/src/components/WaybillPrint.tsx`
+- Связано: [ADR 0037](0037-freight-transport-waybill.md) (журнал учёта, аннулирование бланка),
+  [ADR 0041](0041-waybill-freight-only-and-printing.md) (печать листа PDF инлайном),
   [ADR 0080](0080-waybill-batch-print.md) (печать пачкой),
-  [ADR 0052](0052-waybill-cancel-window.md) (граница аннулирования),
+  [ADR 0052](0052-route-followup.md) (граница аннулирования),
   `packages/contracts/src/waybills.ts`, `apps/api/src/routes/waybills.ts`,
   `apps/web/src/components/WaybillPrint.tsx`. Миграций не требует
 

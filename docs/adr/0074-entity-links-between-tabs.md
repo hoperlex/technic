@@ -1,6 +1,8 @@
 # ADR 0074. Переход по номеру записи: вкладка и открытая карточка в адресе страницы
 
 - Статус: Принято
+- Домены: каркас-портала
+- Область: `apps/web/src/utils/links.ts`, `apps/web/src/shared/lib/useOpenedRecord.ts`, `apps/web/src/shared/ui/EntityLink.tsx`, `apps/web/src/components/PageTabs.tsx`, `apps/api/src/routes/waybills.ts`
 - Изменён: [ADR 0120](0120-record-windows-over-page.md) — п. 1 в части рейса и заявки: их номер
   ведёт не на вкладку с открытой карточкой (`?tab=&open=`), а открывает запись **окном поверх
   текущей страницы** (`?route=`, `?routes=1`, `?request=`), и чужие параметры адреса при этом не
@@ -9,11 +11,11 @@
   на **запись**, а не на целевую вкладку (вкладки «Маршруты» больше нет); последствие «вкладка
   «Маршруты», открытая ссылкой, ставит период на день рейса» — период списку теперь называет тот,
   кто его открывает, и в адрес это не пишется
-- Связано: [ADR 0029](0029-vehicle-requests-history.md) (закрытые заявки живут в журнале, а не в
+- Связано: [ADR 0029](0029-vehicle-request-completion.md) (закрытые заявки живут в журнале, а не в
   списке), [ADR 0070](0070-request-archive-tab.md) (удалённые — в архиве),
-  [ADR 0050](0050-vehicle-routes.md) (рейс и его состав), [ADR 0037](0037-waybill-journal.md)
+  [ADR 0050](0050-vehicle-routes.md) (рейс и его состав), [ADR 0037](0037-freight-transport-waybill.md)
   (журнал листов), [ADR 0021](0021-permissions-model.md) (право на целевую вкладку),
-  [ADR 0040](0040-department-requests.md) (заказчик — объект либо отдел),
+  [ADR 0040](0040-department-scope.md) (заказчик — объект либо отдел),
   `apps/web/src/utils/links.ts`, `apps/web/src/shared/lib/useOpenedRecord.ts`,
   `apps/web/src/shared/ui/EntityLink.tsx`, `apps/web/src/components/PageTabs.tsx`,
   `apps/api/src/routes/waybills.ts`. Миграций не требует

@@ -1,10 +1,12 @@
 # ADR 0103. Показания техники: отчёт дня и цепочки счётчиков
 
 - Статус: Принято
+- Домены: гараж
+- Область: `packages/contracts/src/vehicle-readings.ts`, `apps/api/src/routes/vehicle-readings.ts`
 - Дополняет: [ADR 0076](0076-garage-day-view.md) — гараж остаётся читающим, но показывает показания
   парка; таблицы принадлежат своему модулю
 - Связано: [ADR 0102](0102-driver-cabinet.md) (кабинет, откуда показания приходят),
-  [ADR 0024](0024-file-storage.md) (файл живёт максимум в одном месте),
+  [ADR 0024](0024-waste-vehicles-by-count.md) (файл живёт максимум в одном месте),
   [ADR 0037](0037-freight-transport-waybill.md) (лист как документ и снимок значений),
   [ADR 0060](0060-esm2-weekly-waybill.md) (недельный ЭСМ-2),
   [ADR 0082](0082-route-edit-and-date-move.md) (перенос рейса на другую дату),

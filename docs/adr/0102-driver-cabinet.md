@@ -1,12 +1,14 @@
 # ADR 0102. Кабинет водителя: второй контур портала
 
 - Статус: Принято
+- Домены: кабинет-водителя
+- Область: `packages/contracts/src/driver-cabinet.ts`, `apps/api/src/routes/driver.ts`, `apps/web/src/pages/driver`
 - Изменяет: [ADR 0021](0021-permissions-model.md) — к трём осям области видимости добавляется
   четвёртая, «свой человек»; [ADR 0030](0030-responsive-layout.md) — у портала появляется второй
   каркас, у которого нет разделов
 - Связано: [ADR 0008](0008-persons-and-qualifications.md) (человек и учётка разведены),
-  [ADR 0034](0034-registration-request.md) (регистрация как заявка, пожелание роли),
-  [ADR 0063](0063-user-archive.md) (архив учёток), [ADR 0076](0076-garage-day-view.md) (чем занят
+  [ADR 0034](0034-registration-name-parts-and-captcha.md) (регистрация как заявка, пожелание роли),
+  [ADR 0063](0063-user-archive-lifecycle.md) (архив учёток), [ADR 0076](0076-garage-day-view.md) (чем занят
   водитель в этот день), [ADR 0103](0103-vehicle-readings.md) (показания техники), миграции `0130`,
   `0131`, план [docs/driver-portal-plan.md](../driver-portal-plan.md)
 

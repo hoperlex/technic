@@ -1,6 +1,9 @@
 # ADR 0085. Недельная заявка на технику
 
 - Статус: Принято
+- Домены: заказ-тс
+- Область: `packages/contracts/src/weekly-vehicle-requests.ts`, `apps/api/src/routes/weekly-vehicle-requests.ts`, `apps/api/src/services/weekly-request-apply.ts`, `apps/api/src/services/vehicle-request-period.ts`, `apps/api/src/lib/access.ts`
+- Внимание: номер занят дважды — то же число носит [Орг.техника: справочник единиц, заявки на обслуживание и гарантии](0085-office-equipment-module.md). Ссылаться на это решение голым номером нельзя, в ссылке обязан стоять путь к файлу; перенумерация отклонена (план `docs/docs-navigation-plan.md`, Р6)
 - Изменяет: [ADR 0044](0044-vehicle-request-early-end.md) — продление срока перестало быть только
   обычной правкой: у него появился второй путь, со своей визой и своим документом-основанием, а
   строгая логика срока (версия, ожидающий досрочный отъезд, сверка ЭСМ-2) вынесена из маршрута

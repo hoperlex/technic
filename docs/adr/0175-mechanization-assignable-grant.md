@@ -4,6 +4,7 @@
   [mechanization-approval-and-grants-plan.md](../mechanization-approval-and-grants-plan.md),
   редакция 3, решения Р4, Р7–Р9. Схема не меняется; из миграций — каталог набора с посевом выдач
   (`0290`) и запись выпуска (`0291`); номера взяты по файлам дерева перед созданием
+- Домены: механизация, доступ
 - Область: контракты — [grants.ts](../../packages/contracts/src/grants.ts) (набор `mech_ordering`,
   третье происхождение выдачи), [permissions.ts](../../packages/contracts/src/permissions.ts)
   (модуль снят с роли `site`),

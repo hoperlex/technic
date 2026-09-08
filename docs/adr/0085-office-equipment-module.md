@@ -1,6 +1,9 @@
 # ADR 0085. Орг.техника: справочник единиц, заявки на обслуживание и гарантии
 
 - Статус: Принято
+- Домены: оргтехника
+- Область: `packages/contracts/src/office-equipment.ts`, `packages/contracts/src/warranty.ts`, `apps/api/src/routes/office-equipment.ts`, `apps/api/src/routes/office-equipment-types.ts`, `apps/api/src/db/schema.ts`, `apps/web/src/pages/directories/OfficeEquipmentTab.tsx`
+- Внимание: номер занят дважды — то же число носит [Недельная заявка на технику](0085-weekly-vehicle-request.md). Ссылаться на это решение голым номером нельзя, в ссылке обязан стоять путь к файлу; перенумерация отклонена (план `docs/docs-navigation-plan.md`, Р6)
 - Развивает: [ADR 0010](0010-counterparties.md) (контрагенты одной таблицей, роль задаётся типом),
   [ADR 0021](0021-permissions-model.md) (доступ выдаётся правами, а не списками ролей),
   [ADR 0038](0038-executor-permissions-by-counterparty-type.md) (права исполнителя следуют из типа

@@ -1,6 +1,8 @@
 # ADR 0123. Заказчиком заявки становится подразделение по видимости; заказчика меняют только у «Новой»
 
 - Статус: Принято
+- Домены: заказ-тс
+- Область: `packages/contracts/src/cost-target.ts`, `apps/api/src/routes/vehicle-requests.ts`, `apps/api/src/routes/service-requests.ts`
 - Изменяет: [ADR 0040](0040-department-scope.md) — не модель, а **доступ к выбору**: заказчиком
   грузоперевозки отдел был с самого начала (`vehicle_requests.department_id`, миграция `0069`), но
   спрашивал о нём портал только у ролей отдела. Ось учётки, CHECK «заказчик ровно один» и запрет
@@ -8,7 +10,7 @@
   поля заказчика заявки на обслуживание: «Отдел-заказчик» с пустым значением стал подбором
   «Объект/отдел», где площадка выбирается явно
 - Связано: [ADR 0025](0025-vehicle-request-approval.md) (виза), [ADR 0032](0032-approval-not-automatic-for-admin.md)
-  (автовиза следует из ответственности за подразделение), [ADR 0044](0044-vehicle-early-end.md)
+  (автовиза следует из ответственности за подразделение), [ADR 0044](0044-vehicle-request-early-end.md)
   (виза заявки в работе не снимается), [ADR 0091](0091-vehicle-request-retype.md) (переоформление),
   [ADR 0096](0096-office-equipment-it-approval.md) и [ADR 0106](0106-assignable-permission-grants.md)
   (сквозная область «Согласования ИТ»), [ADR 0062](0062-department-object-link.md) (площадка отдела),

@@ -3,6 +3,7 @@
 - Статус: Принято (реализовано 03.09.2026). План — [maintenance-mode-plan.md](../maintenance-mode-plan.md),
   редакция 2, один круг ревью (пять блокирующих находок). Схемы миграций у выпуска **нет**;
   запись выпуска и версия берутся при выкате
+- Домены: схема-и-выкат
 - Область: [maintenance.ts](../../apps/api/src/lib/maintenance.ts) (новый),
   [config.ts](../../apps/api/src/config.ts), [app.ts](../../apps/api/src/app.ts),
   [tokens.ts](../../apps/api/src/auth/tokens.ts), [plugin.ts](../../apps/api/src/auth/plugin.ts),
@@ -17,7 +18,7 @@
   [docker-compose.stand.yml](../../deploy/docker-compose.stand.yml),
   команда — [deploy-auto.sh](../../deploy/deploy-auto.sh), [runbook.md](../runbook.md)
 - Связано: [протокол выката](../schema-cutover-protocol.md) §11 (место режима в окне),
-  [ADR 0146](0146-office-equipment-request-cycle.md) решение 7 (гейт версии клиента — образец
+  [ADR 0146](0146-office-equipment-consumables-tab-and-purchase.md) решение 7 (гейт версии клиента — образец
   устройства), план периодов назначения §6 (заморозка модуля — соседняя дверь, не эта)
 
 ## Контекст

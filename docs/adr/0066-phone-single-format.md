@@ -1,11 +1,13 @@
 # ADR 0066. Единый формат телефона
 
 - Статус: Принято
+- Домены: справочники
+- Область: `apps/api/drizzle/0095_phone_normalization.sql`, `packages/contracts/src/common.ts`, `apps/web/src/components/PhoneInput.tsx`, `apps/web/src/components/PhoneField.tsx`, `apps/web/src/components/ResponsibleFields.tsx`, `apps/web/src/pages/RegisterPage.tsx`
 - Связано: `apps/api/drizzle/0095_phone_normalization.sql`, `packages/contracts/src/common.ts`,
   `apps/web/src/components/PhoneInput.tsx`, `apps/web/src/components/PhoneField.tsx`,
   `apps/web/src/components/ResponsibleFields.tsx`, `apps/web/src/pages/RegisterPage.tsx`,
   [ADR 0043](0043-user-contact-phone.md) (телефон учётки), миграция `0062` (контакт по заявке),
-  [ADR 0037](0037-waybill-and-vehicle-documents.md) (путевой лист), `0051` (склады)
+  [ADR 0037](0037-freight-transport-waybill.md) (путевой лист), `0051` (склады)
 
 ## Контекст
 

@@ -1,6 +1,9 @@
 # ADR 0060. ЭСМ-2: недельный лист спецтехники, который портал ведёт сам
 
 - Статус: Принято
+- Домены: путевые-листы
+- Область: `packages/contracts/src/waybills.ts`, `apps/api/src/services/waybill-esm2.ts`, `apps/api/scripts/mark-waybill-templates.ts`, `apps/web/src/pages/WaybillsPage.tsx`
+- Внимание: номер занят дважды — то же число носит [Окончательное удаление записей справочников](0060-directory-record-purge.md). Ссылаться на это решение голым номером нельзя, в ссылке обязан стоять путь к файлу; перенумерация отклонена (план `docs/docs-navigation-plan.md`, Р6)
 - Изменяет: [ADR 0037](0037-freight-transport-waybill.md) — п. 1 (область выписки: лист рождается
   и без рейса) и п. 11 (нумерация: серия перестала быть одной);
   [ADR 0041](0041-waybill-freight-only-and-printing.md) — п. 1 («у заказа техники на объект листа

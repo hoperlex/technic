@@ -1,9 +1,11 @@
 # ADR 0083. Даты рейсов и водителей портал не подставляет — он их подсказывает
 
 - Статус: Принято
-- Связано: [ADR 0052](0052-waybill-cancel-window.md) (перевод в работу спрашивает рейс),
+- Домены: заказ-тс
+- Область: `apps/web/src/shared/ui/AutoSelect.tsx`, `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`, `apps/web/src/pages/vehicle/VehicleRelocationModal.tsx`
+- Связано: [ADR 0052](0052-route-followup.md) (перевод в работу спрашивает рейс),
   [ADR 0064](0064-assignment-without-classification-limits.md) (список водителей помечает, а не
-  сужает), [ADR 0055](0055-driver-license-advisory.md) (категория прав — справочно),
+  сужает), [ADR 0055](0055-driver-documents-over-categories.md) (категория прав — справочно),
   [ADR 0057](0057-waybill-forms-and-relocation.md) (перегон техники),
   [ADR 0082](0082-route-edit-and-date-move.md) (правка рейса),
   `apps/web/src/shared/ui/AutoSelect.tsx`, `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`,

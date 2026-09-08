@@ -2,6 +2,7 @@
 
 - Статус: Реализовано (08.09.2026). Схема не меняется; из миграций — только запись выпуска
   (ADR 0077), её номер и `seq` берутся по файлам дерева перед созданием файла
+- Домены: заказ-тс
 - Область: API — [vehicle-requests.ts](../../apps/api/src/routes/vehicle-requests.ts) (маршрут
   смены статуса: `UPDATE` строки заявки и событие журнала);
   контракты — [enums.ts](../../packages/contracts/src/enums.ts) (`transitionResetsWork`,

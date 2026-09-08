@@ -211,7 +211,7 @@ teardown там нет. Запись `app_releases` в запасном пути
 
 ## 3. Что сегодня в коде
 
-Словарь статусов — [service-requests.ts](packages/contracts/src/service-requests.ts), девять
+Словарь статусов — [service-requests.ts](../packages/contracts/src/service-requests.ts), девять
 значений, из них два уже мёртвые (`it_approved`, `diagnostics`: значение в типе есть, заявок нет,
 `CHECK` миграции 0197 их запретил, подписи оставлены ради истории переходов). Коридоров шесть, и
 разведены они не по ролям, а по основаниям: ход исполнителя, виза ИТ, распределение, заморозка, ход
@@ -229,7 +229,7 @@ teardown там нет. Запись `app_releases` в запасном пути
 Что стоит за каждым из снимаемых статусов:
 
 - **«Назначена»** ставит `PUT /:id/executors`
-  ([service-requests.ts:2866](apps/api/src/routes/service-requests.ts#L2866)) — одним действием и
+  ([service-requests.ts:2866](../apps/api/src/routes/service-requests.ts#L2866)) — одним действием и
   поимённые исполнители, и сервисная компания. Оттуда же уходит письмо-задание. Признак «первое
   назначение или переназначение» сегодня читается из статуса: `first = row.status === 'new'`, и от
   него зависит обязательность причины.
@@ -244,7 +244,7 @@ teardown там нет. Запись `app_releases` в запасном пути
 них однозначно.
 
 Форма расходников
-([ServiceRequestForm.tsx:274](apps/web/src/pages/service/ServiceRequestForm.tsx#L274)) спрашивает
+([ServiceRequestForm.tsx:274](../apps/web/src/pages/service/ServiceRequestForm.tsx#L274)) спрашивает
 строки номенклатуры блоком «Что нужно» и текст «Зачем нужно»; схема заведения требует хотя бы одну
 позицию, иначе 422.
 
@@ -289,7 +289,7 @@ serviceEstimatePending(row) =
 **Почему своя колонка, а не вывод из существующих.** Редакции 1 и 2 пытались вывести признак из
 того, что уже лежит в строке, и обе ошиблись — по-разному, но в одном месте. Ревизия без снимка
 предъявления не отличает «вернули в правку» от «ждёт подписи»: `estimate/reopen`
-([route:3719](apps/api/src/routes/service-requests.ts#L3719)) чистит снимок согласования и
+([route:3719](../apps/api/src/routes/service-requests.ts#L3719)) чистит снимок согласования и
 **оставляет** `estimate_submitted_at`. Добавленный к ней снимок предъявления не отличает то же
 самое **у старых данных**: отказ по смете сегодня тоже не чистит эту дату (ручка согласования при
 `approved = false` пишет пустой patch), а нормализовать её миграцией нельзя — тот же запрос через
@@ -320,9 +320,9 @@ serviceEstimatePending(row) =
 | полный сброс сметы (`reset.estimate`) | `NULL` | то же самое на пути отката: `cancelled → new` |
 
 Последняя строка — единственное место, где колонку чистит **общий** помощник
-([route:1323](apps/api/src/routes/service-requests.ts#L1323)); в остальных пяти её пишет сама ручка.
+([route:1323](../apps/api/src/routes/service-requests.ts#L1323)); в остальных пяти её пишет сама ручка.
 Утверждение редакции 2 «правка `handedOver` не касается» с появлением колонки перестало быть верным
-([route:2980](apps/api/src/routes/service-requests.ts#L2980)) — он обнуляет ревизию и обязан обнулить
+([route:2980](../apps/api/src/routes/service-requests.ts#L2980)) — он обнуляет ревизию и обязан обнулить
 предъявление вместе с ней.
 
 Очередь после правки:
@@ -341,7 +341,7 @@ serviceEstimatePending(row) =
 «принять в работу» и «согласовать объём работ» / «выполнить и закрыть работы».
 
 **Следствие для SQL очереди.** `waitingSideWhere`
-([route:1722](apps/api/src/routes/service-requests.ts#L1722)) сегодня **выводит** условие из
+([route:1722](../apps/api/src/routes/service-requests.ts#L1722)) сегодня **выводит** условие из
 `serviceRequestWaitingOn`, опрашивая её по каждому статусу на двух исходах визы ИТ, и раскладывает
 статусы на три кучки. Осей теперь тоже две, но других — `hasExecutors` и `estimatePending`, — и
 третья ось (виза ИТ) уходит вместе с самой визой (Р10). Приём остаётся тем же: перебрать статусы по
@@ -353,10 +353,10 @@ serviceEstimatePending(row) =
 
 Ответ В2 отдаёт согласование назначенному сотруднику, а сегодняшняя сторона `operator` определяется
 правом распределения: `isWaitingOn` отвечает `can(subject, 'serviceRequests.assign')`
-([contracts:706](packages/contracts/src/service-requests.ts#L706)). Поимённый исполнитель ей не
+([contracts:706](../packages/contracts/src/service-requests.ts#L706)). Поимённый исполнитель ей не
 виден и виден быть не может — «я в списке назначенных» это свойство заявки, а не субъекта, — и в
 очередь он попадает только соединением с `service_request_executors`, причём **только по стороне
-`service`** ([route:1784](apps/api/src/routes/service-requests.ts#L1784)). Оставь мы согласование на
+`service`** ([route:1784](../apps/api/src/routes/service-requests.ts#L1784)). Оставь мы согласование на
 стороне `operator`, согласующий не увидел бы заявку в «Ждут меня» вовсе.
 
 Поэтому в `SERVICE_WAITING_ON` заводится значение `approval`:
@@ -372,8 +372,8 @@ serviceEstimatePending(row) =
 
 Права ручки и манифест расширяются согласованно. `PATCH /:id/estimate/approval` сегодня требует
 `serviceRequests.approveEstimate` и в маршруте
-([route:1607](apps/api/src/routes/service-requests.ts#L1607)), и в манифесте
-([access-manifest:666](apps/api/src/lib/access-manifest.ts#L666)); становится `anyOf` из
+([route:1607](../apps/api/src/routes/service-requests.ts#L1607)), и в манифесте
+([access-manifest:666](../apps/api/src/lib/access-manifest.ts#L666)); становится `anyOf` из
 `approveEstimate` и `execute` — по образцу `decline` и `estimate`, где та же пара уже стоит. Само
 назначение при этом проверяет тело ручки, а не страж: держатель `execute` без строки в этой заявке
 получает отказ от предиката, а не от `preHandler`.
@@ -382,7 +382,7 @@ serviceEstimatePending(row) =
 
 `status_changed_at` обновляется сегодня, только если статус действительно сменился либо ручка
 попросила явно (`touchStatusAt`,
-[route:1400](apps/api/src/routes/service-requests.ts#L1400)); ручки, пишущие историю мимо помощника
+[route:1400](../apps/api/src/routes/service-requests.ts#L1400)); ручки, пишущие историю мимо помощника
 перехода (виза ИТ, возврат в правку), не трогают его вовсе. После правки половина смен
 ответственной стороны происходит **без** смены статуса, и колонка, оставленная как есть, показывала
 бы «в работе 9 дней» у заявки, которую вчера передали новому исполнителю.
@@ -437,7 +437,7 @@ serviceEstimatePending(row) =
 Два следствия, которые нельзя пропустить:
 
 1. **Признак первого назначения** больше не читается из статуса
-   ([route:2913](apps/api/src/routes/service-requests.ts#L2913)). Он становится тем, чем был по
+   ([route:2913](../apps/api/src/routes/service-requests.ts#L2913)). Он становится тем, чем был по
    смыслу: «исполнителей у заявки ещё не было» — ни строк, ни контрагента. От него зависит
    обязательность причины (у прежнего исполнителя отбирают работу — в истории обязано остаться,
    почему), и статус его подменял только потому, что совпадал.
@@ -547,7 +547,7 @@ serviceEstimatePending(row) =
 **Дату предъявления возврат не трогает.** `estimate_submitted_at` сохраняет прежний смысл — «когда
 предъявляли в последний раз» (§6), — и чистит её только полный сброс сметы. Из этого следует правка
 портала: вкладка объёма работ сегодня считает активным предъявлением сам факт непустой даты
-([ServiceRequestEstimate.tsx:51](apps/web/src/pages/service/ServiceRequestEstimate.tsx#L51)) и после
+([ServiceRequestEstimate.tsx:51](../apps/web/src/pages/service/ServiceRequestEstimate.tsx#L51)) и после
 правки соврала бы — «предъявлена» стояло бы у отозванного. Активное состояние определяет
 исключительно `serviceEstimatePending`, а дата подписывается как время последнего предъявления.
 
@@ -579,7 +579,7 @@ serviceEstimatePending(row) =
 
 Портал строит меню из **коридора переходов**: назначение он находит по `has('assigned')`, отказ —
 по `has('new')`, предъявление — по `has('estimate_review')`
-([serviceRequestActions.tsx:153](apps/web/src/pages/service/serviceRequestActions.tsx#L153)). Это
+([serviceRequestActions.tsx:153](../apps/web/src/pages/service/serviceRequestActions.tsx#L153)). Это
 работало ровно пока у каждого действия была своя дуга. После правки дуг у четырёх действий из пяти
 нет вовсе — и, не заведи мы им замену, пункты меню просто исчезнут с экрана. Ошибка молчаливая:
 сервер разрешает, портал не рисует.
@@ -617,9 +617,9 @@ serviceEstimatePending(row) =
 
 Признак первого назначения тоже перестаёт читаться из статуса — и в двух местах сразу. На сервере
 это `first = row.status === 'new'`
-([route:2913](apps/api/src/routes/service-requests.ts#L2913)), в портале —
+([route:2913](../apps/api/src/routes/service-requests.ts#L2913)), в портале —
 `isFirstAssignment(status)`
-([AssignServiceModal.tsx:43](apps/web/src/features/assign-service/ui/AssignServiceModal.tsx#L43)),
+([AssignServiceModal.tsx:43](../apps/web/src/features/assign-service/ui/AssignServiceModal.tsx#L43)),
 и второй сегодня оправдан прямой ссылкой на первый: «ровно так решает сервер». Оба заменяются одним
 предикатом `serviceIsFirstAssignment(row)` по составу исполнителей — иначе окно требовало бы причину
 там, где она не нужна, либо отправляло запрос, на который придёт 422.
@@ -644,7 +644,7 @@ serviceEstimatePending(row) =
   `CHECK (status = 'cancelled' OR btrim(rejection_resolution) = '')`, по образцу существующего
   `service_requests_replacement_check`.
 - **Сброс.** Поле `replacement` структуры `ServiceTransitionReset`
-  ([contracts:497](packages/contracts/src/service-requests.ts#L497)) переименовывается в
+  ([contracts:497](../packages/contracts/src/service-requests.ts#L497)) переименовывается в
   `rejection` и снимает **обе** пометки отказа — рекомендацию замены и решение. Они всегда живут и
   умирают вместе: обе объясняют, почему заявку закрыли без ремонта, и обе относятся к отмене,
   которой после отката больше нет. Ветка та же — `cancelled → new`; не сними мы решение, откат
@@ -663,8 +663,8 @@ serviceEstimatePending(row) =
 
   **В аудит решение пишется элементом `changes`, а не верхнеуровневым полем.** Сборка истории
   извлекает содержание события только из `metadata.changes`
-  ([service-request-history.ts:124](apps/api/src/services/service-request-history.ts#L124),
-  [service-request-history.ts:222](apps/api/src/services/service-request-history.ts#L222)):
+  ([service-request-history.ts:124](../apps/api/src/services/service-request-history.ts#L124),
+  [service-request-history.ts:222](../apps/api/src/services/service-request-history.ts#L222)):
   произвольное поле рядом с `revision` и `reason` она молча пропустит, и подпись в словаре осталась
   бы неиспользованной. Поэтому событие `serviceRequest.estimate_reject` кладёт
   `changes: [{ field: 'rejectionResolution', from: '', to: <решение> }]` — тем же каналом, каким
@@ -694,11 +694,11 @@ serviceEstimatePending(row) =
 
 | Место | Сегодня | Стало |
 |---|---|---|
-| `isServiceRequestEditable` ([contracts:1695](packages/contracts/src/service-requests.ts#L1695)) | `status === 'new'` | `new` **и** исполнителей нет: после назначения за заявкой стоят договорённости с исполнителем, и предмет её не меняют. Предикат начинает принимать строку, а не статус; зовущих пятеро, включая `assertServiceRequestEditable` ([access.ts:587](apps/api/src/lib/access.ts#L587)) |
-| `serviceMailRepeatable` ([contracts:1681](packages/contracts/src/service-requests.ts#L1681)) | `new \|\| cancelled` | то же плюс «исполнителей нет»: письмо «Новой» зовёт службу разобрать заявку, и повторять его после назначения незачем — задание уже ушло своим письмом |
-| `isServiceRequestDeletable` ([contracts:1709](packages/contracts/src/service-requests.ts#L1709)) | `new \|\| assigned` | `new`: слияние сохраняет сегодняшнее поведение слово в слово, менять нечего — но проверить и записать это надо, иначе следующая правка примет совпадение за недосмотр |
-| Виды прикладываемых документов ([route:1520](apps/api/src/routes/service-requests.ts#L1520)) | `attachment` в пяти статусах, `estimate` в двух | из перечней уходят мёртвые значения; `estimate` остаётся только у `in_work` |
-| Прикладывание в портале ([ServiceRequestDocuments.tsx:46](apps/web/src/pages/service/ServiceRequestDocuments.tsx#L46)) | `in_work \|\| estimate_review` | `in_work` |
+| `isServiceRequestEditable` ([contracts:1695](../packages/contracts/src/service-requests.ts#L1695)) | `status === 'new'` | `new` **и** исполнителей нет: после назначения за заявкой стоят договорённости с исполнителем, и предмет её не меняют. Предикат начинает принимать строку, а не статус; зовущих пятеро, включая `assertServiceRequestEditable` ([access.ts:587](../apps/api/src/lib/access.ts#L587)) |
+| `serviceMailRepeatable` ([contracts:1681](../packages/contracts/src/service-requests.ts#L1681)) | `new \|\| cancelled` | то же плюс «исполнителей нет»: письмо «Новой» зовёт службу разобрать заявку, и повторять его после назначения незачем — задание уже ушло своим письмом |
+| `isServiceRequestDeletable` ([contracts:1709](../packages/contracts/src/service-requests.ts#L1709)) | `new \|\| assigned` | `new`: слияние сохраняет сегодняшнее поведение слово в слово, менять нечего — но проверить и записать это надо, иначе следующая правка примет совпадение за недосмотр |
+| Виды прикладываемых документов ([route:1520](../apps/api/src/routes/service-requests.ts#L1520)) | `attachment` в пяти статусах, `estimate` в двух | из перечней уходят мёртвые значения; `estimate` остаётся только у `in_work` |
+| Прикладывание в портале ([ServiceRequestDocuments.tsx:46](../apps/web/src/pages/service/ServiceRequestDocuments.tsx#L46)) | `in_work \|\| estimate_review` | `in_work` |
 
 ### Р15. Форма расходников: заявитель говорит словами
 
@@ -715,7 +715,7 @@ serviceEstimatePending(row) =
 + `serviceRequests.execute`**, та же, что у трёх ручек сметы, и выбрана она не по смыслу слова
 «смета», а потому что это и есть «сторона исполнителя» в матрице: у сервисной компании набор — это
 `read`, `estimate`, `status`, `files`
-([permissions.ts:918](packages/contracts/src/permissions.ts#L918)), и ни `update`, ни `execute` в нём
+([permissions.ts:918](../packages/contracts/src/permissions.ts#L918)), и ни `update`, ни `execute` в нём
 нет. Возьми мы напрашивающуюся пару `update` + `execute`, назначенный подрядчик не смог бы заполнить
 номенклатуру вовсе — то есть исполнитель, ради которого правка и делается, остался бы без ручки.
 Страж при этом только отсеивает посторонних; назначение **на эту заявку** проверяет тело ручки
@@ -861,10 +861,10 @@ serviceLiveStatus(status) =
 заявки, первый релиз проставляет `estimate_pending_revision = estimate_revision`.**
 
 Точка исполнения — **`applyTransition`**, и другой быть не может. Он не блокирует строку сам
-([route:1284](apps/api/src/routes/service-requests.ts#L1284)) — ручки передают ему строку,
+([route:1284](../apps/api/src/routes/service-requests.ts#L1284)) — ручки передают ему строку,
 прочитанную до транзакции, — поэтому материализация в `lockRequest` мимо него и прошла бы: ни
-`hold` ([route:3391](apps/api/src/routes/service-requests.ts#L3391)), ни `resume`, ни общий
-`/status` ([route:4258](apps/api/src/routes/service-requests.ts#L4258)) его не зовут. Зато сам
+`hold` ([route:3391](../apps/api/src/routes/service-requests.ts#L3391)), ни `resume`, ни общий
+`/status` ([route:4258](../apps/api/src/routes/service-requests.ts#L4258)) его не зовут. Зато сам
 `applyTransition` — единственная воронка, через которую идут **все** записи статуса и
 `held_from_status`, включая мотивирующую пару «отложить» и «возобновить». Материализация становится
 строкой его `patch` и уезжает тем же `UPDATE`, что и смена статуса, — атомарно, без второго запроса
@@ -874,7 +874,7 @@ serviceLiveStatus(status) =
 два намерения: совместимость просит `pending = revision`, а сама ручка (согласование, отказ, возврат
 в правку) требует итогового `NULL`. Побеждать обязана ручка, и сегодняшний помощник именно так и
 склеивает — `const patch = { ...set, ...(params.patch ?? {}) }`
-([route:1399](apps/api/src/routes/service-requests.ts#L1399)): общие сбросы идут значением по
+([route:1399](../apps/api/src/routes/service-requests.ts#L1399)): общие сбросы идут значением по
 умолчанию, `patch` ручки — поверх. Материализация встаёт **в `set`**, а не в `patch`, и порядок
 менять нельзя: положи мы её поверх — починка заморозки сломала бы согласование, оставив
 согласованную заявку в очереди подписи.
@@ -898,16 +898,16 @@ serviceLiveStatus(status) =
 ### Что выяснилось про инструмент
 
 - `--cutover` **останавливает запись** (шаг 2) и поднимает сервисы только на шаге 9
-  ([deploy-auto.sh:1199](deploy/deploy-auto.sh#L1199)). Это окно, а не фоновый выкат.
+  ([deploy-auto.sh:1199](../deploy/deploy-auto.sh#L1199)). Это окно, а не фоновый выкат.
 - Он запускается **только на необратимом бандле**, а необратимость видна по файлу
   `apps/api/teardown/<миграция>`; нет teardown — отказ «необратимых нет, выкатывайте обычным
-  deploy-auto» ([deploy-auto.sh:1176](deploy/deploy-auto.sh#L1176)). Обязателен и соседний
-  верификатор ([deploy-auto.sh:1158](deploy/deploy-auto.sh#L1158)).
+  deploy-auto» ([deploy-auto.sh:1176](../deploy/deploy-auto.sh#L1176)). Обязателен и соседний
+  верификатор ([deploy-auto.sh:1158](../deploy/deploy-auto.sh#L1158)).
 - Граница пишется на **шаге 7 — до подъёма кандидата**
-  ([deploy-auto.sh:1254](deploy/deploy-auto.sh#L1254)). Значит фактическая граница — успешный
+  ([deploy-auto.sh:1254](../deploy/deploy-auto.sh#L1254)). Значит фактическая граница — успешный
   верификатор, а не «первая запись новой модели», как утверждала редакция 5.
 - После границы `--previous` отбивает гейт по составу образа
-  ([deploy-auto.sh:1419](deploy/deploy-auto.sh#L1419)), а `--previous --restore-db` **не спасает**:
+  ([deploy-auto.sh:1419](../deploy/deploy-auto.sh#L1419)), а `--previous --restore-db` **не спасает**:
   предмиграционный дамп границы не содержит, и правило 2 §5 протокола его отвергает. Остаётся
   forward-fix — так протокол и написан.
 
@@ -921,7 +921,7 @@ serviceLiveStatus(status) =
 не работает вовсе. Основание то же, по которому 24.08.2026 заказчик согласился слить три выпуска
 0197 в один накат: живых заявок в модуле единицы, окно согласуется. Прецедент этот **деловой, а не
 технический** — 0197 ехала обычным `deploy-auto` с сознательно принятым окном старого кода на новой
-схеме ([0197:15](apps/api/drizzle/0197_service_request_dead_statuses.sql#L15)), teardown у неё нет
+схеме ([0197:15](../apps/api/drizzle/0197_service_request_dead_statuses.sql#L15)), teardown у неё нет
 вовсе, и `--cutover` для неё не запускался. Здесь окно строже: старый код в нём не работает совсем.
 
 **Бандл 0224** одной миграцией, в порядке §6 редакции 4 (`ALTER TABLE` до всякого `UPDATE` статусов,
@@ -991,7 +991,7 @@ END $$;
 SET CONSTRAINTS ALL IMMEDIATE;
 
 -- 5. Дверь. Ограничение с этим именем УЖЕ ЕСТЬ — его завела 0197 на пару it_approved/diagnostics
---    ([0197:78](apps/api/drizzle/0197_service_request_dead_statuses.sql#L78)); поэтому его снимают и
+--    ([0197:78](../apps/api/drizzle/0197_service_request_dead_statuses.sql#L78)); поэтому его снимают и
 --    ставят заново, а не создают одноимённое.
 ALTER TABLE service_requests DROP CONSTRAINT service_requests_dead_status_check;
 ALTER TABLE service_requests ADD CONSTRAINT service_requests_dead_status_check CHECK (
@@ -1013,7 +1013,7 @@ INSERT INTO app_releases (seq, version, released_on, title, adrs, items) VALUES 
 
 **Бандл обязан ехать в окне один — и это требование ЭТОГО плана, а не протокола.** Протокол обычных
 соседей в окне допускает сознательно (§6, «уступка не удобству, а арифметике»), а `deploy-auto`
-всего лишь предупреждает о них ([deploy-auto.sh:1183](deploy/deploy-auto.sh#L1183)). Но соседи
+всего лишь предупреждает о них ([deploy-auto.sh:1183](../deploy/deploy-auto.sh#L1183)). Но соседи
 отбирают `--cutover-revert`: teardown снимет одну миграцию, остальные останутся в журнале без файлов
 в старом образе, и он не стартует, — а на возможности отменить неудачный верификатор здесь держится
 весь смысл teardown, который мы только что расписали. Значит гейт **ручной**, и стоять он должен
@@ -1033,7 +1033,7 @@ INSERT INTO app_releases (seq, version, released_on, title, adrs, items) VALUES 
   `db:migrate:check` спрашивается и база: заняты ли `seq = 63`, версия `'0.1.54.0145'` и номер ADR.
 
 Проверка состава запускается **образом кандидата**, а не текущим: список файлов миграций читается с
-диска запущенного образа ([migration-journal.ts:34](apps/api/src/db/migration-journal.ts#L34)), и
+диска запущенного образа ([migration-journal.ts:34](../apps/api/src/db/migration-journal.ts#L34)), и
 предыдущий образ про 0224 не знает вовсе — у него она даже не окажется в `pending`. Увидели
 соседей — окно не начинаем: развести их по разным выкатам дешевле, чем остаться без отката.
 
@@ -1089,7 +1089,7 @@ ALTER TABLE service_requests DROP COLUMN rejection_resolution;
 ALTER TABLE service_requests DROP COLUMN object_overridden;
 
 -- 5. Прежняя дверь 0197 — дословно, вместе с её комментарием
---    ([0197:83](apps/api/drizzle/0197_service_request_dead_statuses.sql#L83)).
+--    ([0197:83](../apps/api/drizzle/0197_service_request_dead_statuses.sql#L83)).
 ALTER TABLE service_requests ADD CONSTRAINT service_requests_dead_status_check CHECK (
   status NOT IN ('it_approved','diagnostics')
   AND (held_from_status IS NULL OR held_from_status NOT IN ('it_approved','diagnostics'))
@@ -1229,8 +1229,8 @@ END $$;
    teardown у неё нет, а завести его ради floor значило бы объявить необратимым то, что обратимо.
    Значит `--previous` после первой новой записи технически доступен и приведёт к рассинхронизации
    молча: старый код даст править предъявленный объём работ
-   ([route:3492](apps/api/src/routes/service-requests.ts#L3492)) и не даст его согласовать
-   ([route:3636](apps/api/src/routes/service-requests.ts#L3636)), а `new` с исполнителями прочитает
+   ([route:3492](../apps/api/src/routes/service-requests.ts#L3492)) и не даст его согласовать
+   ([route:3636](../apps/api/src/routes/service-requests.ts#L3636)), а `new` с исполнителями прочитает
    как нераспределённую. Граница остаётся **документарной**: «после выката первого релиза — только
    вперёд», и стеречь её некому, кроме человека.
 2. **Аппарат совместимости — это пять мест, каждое из которых уже один раз ловили ревью.** Он
@@ -1275,20 +1275,20 @@ END $$;
 **Э4. Снятие «Назначена»** — коридоры через `serviceLiveStatus`, назначение и отказ без перехода,
 переназначение из «В работе», `start` из «Новой», быстрая кнопка, возраст ожидания (Р4–Р7).
 Затрагивает: `packages/contracts/src/service-requests.ts`,
-[service-requests.ts](apps/api/src/routes/service-requests.ts) (`executors`, `decline`, `start`),
-[serviceRequestActions.tsx](apps/web/src/pages/service/serviceRequestActions.tsx),
-[serviceRequestCells.tsx](apps/web/src/pages/service/serviceRequestCells.tsx),
-[office-equipment-history.ts](apps/api/src/services/office-equipment-history.ts) (`KEY_STEPS`
+[service-requests.ts](../apps/api/src/routes/service-requests.ts) (`executors`, `decline`, `start`),
+[serviceRequestActions.tsx](../apps/web/src/pages/service/serviceRequestActions.tsx),
+[serviceRequestCells.tsx](../apps/web/src/pages/service/serviceRequestCells.tsx),
+[office-equipment-history.ts](../apps/api/src/services/office-equipment-history.ts) (`KEY_STEPS`
 теряет `assigned`).
 
 **Э5. Снятие «Смета на согласовании»** — предъявление, возврат в правку и согласование без
 перехода, оба замка (Р9), отказ в «Отменена» с причиной и решением, снятие визы ИТ и ручки
 `it-approval`, `rejection_resolution` со сбросом и показом (Р8–Р13).
 Затрагивает те же файлы плюс
-[ServiceRequestEstimate.tsx](apps/web/src/pages/service/ServiceRequestEstimate.tsx),
+[ServiceRequestEstimate.tsx](../apps/web/src/pages/service/ServiceRequestEstimate.tsx),
 `features/estimate-approval`, `features/it-approval` (снимается),
-[ServiceRequestDocuments.tsx](apps/web/src/pages/service/ServiceRequestDocuments.tsx),
-[access-manifest.ts](apps/api/src/lib/access-manifest.ts).
+[ServiceRequestDocuments.tsx](../apps/web/src/pages/service/ServiceRequestDocuments.tsx),
+[access-manifest.ts](../apps/api/src/lib/access-manifest.ts).
 
 **Э6. Форма расходников и «не тот объект»** — блок номенклатуры из заведения убран, схема без
 требования позиций, редактор состава у исполнителя парой `estimate` + `execute`, вкладка

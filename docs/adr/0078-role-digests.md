@@ -1,12 +1,14 @@
 # ADR 0078. Роль решает, кому писать; область решает, что показать — ролевые дайджесты
 
 - Статус: Принято
+- Домены: почта
+- Область: `apps/api/src/services/mailings/role-digest.ts`, `apps/api/src/services/mailings/digest-context.ts`
 - Изменён: [ADR 0093](0093-mailing-window-and-digest-tables.md) — окно дней вместо периодичности,
   отбор аудитории вместо исключений, сводка по путевым листам; п. 3–6, 9, 11–14 отменены вместе с
   реестром разделов, в силе остаются п. 1, 2, 7, 8, 10
 - Связано: [ADR 0075](0075-mailing-schedules.md) (расписания и запуски),
   [ADR 0072](0072-email-verification-and-password-reset.md) (подтверждение адреса),
-  [ADR 0021](0021-access-model.md) и [ADR 0038](0038-counterparty-type-permissions.md) (права и
+  [ADR 0021](0021-permissions-model.md) и [ADR 0038](0038-executor-permissions-by-counterparty-type.md) (права и
   область видимости), `docs/mail-integration-plan.md` §8,
   `apps/api/src/services/mailings/{digest-context,digest-sections,role-digest}.ts`
 - Миграция: `0100` (роли, разделы, исключённые получатели и области; индексы по времени у истории

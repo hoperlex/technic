@@ -5,13 +5,15 @@
   Остальные решения в силе, включая п. 10 (капча проверяется до всего остального) и п. 13–18
   (заявки как неактивные учётки, пожелание роли). Текст ниже не переписан: это запись решения,
   принятого тогда, и доводы против внешних сервисов стоит читать вместе с тем, что их перевесило
+- Домены: доступ, учётки-и-аудит
+- Область: `apps/api/drizzle/0055_users_name_parts.sql`, `apps/api/drizzle/0057_registration_role_request.sql`, `packages/contracts/src/registration-request.ts`, `packages/contracts/src/person-name.ts`, `packages/contracts/src/password.ts`, `apps/api/src/auth/captcha.ts`
 - Связано: `apps/api/drizzle/0055_users_name_parts.sql`,
   `apps/api/drizzle/0057_registration_role_request.sql`,
   `packages/contracts/src/registration-request.ts`, `packages/contracts/src/person-name.ts`,
   `packages/contracts/src/password.ts`, `apps/api/src/auth/captcha.ts`,
   `apps/api/src/auth/captcha-image.ts`, `apps/web/src/components/PersonNameFields.tsx`,
   `apps/web/src/components/CaptchaField.tsx`, `apps/web/src/pages/RegisterPage.tsx`,
-  [ADR 0008](0008-persons-and-employments.md) (физлица), [ADR 0021](0021-permissions-model.md)
+  [ADR 0008](0008-persons-and-qualifications.md) (физлица), [ADR 0021](0021-permissions-model.md)
   (матрица прав)
 
 ## Контекст
