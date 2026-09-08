@@ -683,16 +683,16 @@ describe('ролевая часть каталога: наборы, замеща
     // Единственное объявленное расширение всей реформы — оргтехника коменданту (решение №1
     // заказчика от 17.08.2026). Выписано поимённо: молчаливое «что-то добавится» и есть тот способ,
     // которым расширение доступа проходит незамеченным.
-    expect(
-      [...(ROLE_MIGRATIONS.find((m) => m.from === 'commandant')?.gains ?? [])].sort(),
-    ).toEqual([
-      'officeEquipment.read',
-      'serviceRequests.create',
-      'serviceRequests.delete',
-      'serviceRequests.files',
-      'serviceRequests.read',
-      'serviceRequests.update',
-    ]);
+    expect([...(ROLE_MIGRATIONS.find((m) => m.from === 'commandant')?.gains ?? [])].sort()).toEqual(
+      [
+        'officeEquipment.read',
+        'serviceRequests.create',
+        'serviceRequests.delete',
+        'serviceRequests.files',
+        'serviceRequests.read',
+        'serviceRequests.update',
+      ],
+    );
     for (const migration of ROLE_MIGRATIONS) {
       if (migration.from === 'commandant') continue;
       expect(migration.gains, `${migration.from}: расширений быть не должно`).toEqual([]);
