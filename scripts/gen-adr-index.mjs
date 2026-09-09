@@ -49,8 +49,16 @@ export function domainsOf(adr) {
  */
 const BACK_LABEL = { cancels: 'отменён', changes: 'изменён' };
 
-/** До пяти путей в порядке появления, остальное — счётчиком: строка указателя должна читаться. */
-const PATHS_SHOWN = 5;
+/**
+ * ⛔ СТАВИТСЯ ТОЛЬКО ПО СОБСТВЕННОМУ СТАТУСУ РЕШЕНИЯ (Р4).
+ *
+ * Входящее «Отменяет» — не приговор всему документу: ADR 0141 отменяет приём ADR 0053 **в модуле
+ * оргтехники**, а в вывозе мусора тот приём работает. Пометить 0053 недействующим целиком значило
+ * бы соврать читателю ровно в том месте, ради которого указатель и читают. Область отмены знает
+ * только текст решения, поэтому обратное ребро показывается связью с уточнением, а знак ставит
+ * автор — полем «Статус».
+ */
+const CANCELLED_STATUSES = new Set(['Отменено', 'Заменено']);
 
 function build(adrs) {
   const byDomain = new Map(DOMAINS.map((d) => [d, []]));
@@ -61,26 +69,38 @@ function build(adrs) {
     for (const domain of domains) byDomain.get(domain)?.push(adr);
   }
 
-  /** Обратные рёбра: кто отменил и кто изменил это решение. Считаются по прямым полям соседей. */
+  /**
+   * Обратные рёбра: кто отменил и кто изменил это решение. Ключ — ИМЯ ФАЙЛА цели, а не номер:
+   * под 0060 и 0085 живут по два решения, и ключ-номер выдавал им общий набор связей.
+   */
   const inbound = new Map();
+  const ambiguities = new Map();
+  const addBack = (targetName, entry) => {
+    const list = inbound.get(targetName) ?? [];
+    if (!list.some((x) => x.id === entry.id && x.label === entry.label)) list.push(entry);
+    inbound.set(targetName, list);
+  };
   for (const adr of adrs) {
     for (const rel of adr.relations) {
-      const label =
-        BACK_LABEL[rel.kind] ??
-        (rel.kind === 'cancelled-by' || rel.kind === 'changed-by' ? null : null);
-      if (!label) continue;
-      const list = inbound.get(rel.id) ?? [];
-      if (!list.some((x) => x.id === adr.id && x.label === label)) list.push({ id: adr.id, label });
-      inbound.set(rel.id, list);
-    }
-    // Обратное поле самого решения («Изменён: ADR 0093») — то же ребро, записанное с другой
-    // стороны. Дублировать его нельзя: указатель показал бы одну связь дважды.
-    for (const rel of adr.relations) {
-      if (rel.kind !== 'changed-by' && rel.kind !== 'cancelled-by') continue;
-      const label = rel.kind === 'changed-by' ? 'изменён' : 'отменён';
-      const list = inbound.get(adr.id) ?? [];
-      if (!list.some((x) => x.id === rel.id && x.label === label)) list.push({ id: rel.id, label });
-      inbound.set(adr.id, list);
+      // Голый номер занятого дважды номера цель не выбирает: догадка приписала бы связь не тому.
+      if (rel.ambiguous || !rel.name) {
+        if (rel.ambiguous) {
+          const list = ambiguities.get(adr.name) ?? [];
+          list.push(rel.id);
+          ambiguities.set(adr.name, [...new Set(list)]);
+        }
+        continue;
+      }
+      const label = BACK_LABEL[rel.kind];
+      if (label) addBack(rel.name, { id: adr.id, label, qualifier: rel.qualifier });
+      // Обратное поле самого решения («Изменён: ADR 0093») — то же ребро с другой стороны.
+      if (rel.kind === 'changed-by' || rel.kind === 'cancelled-by') {
+        addBack(adr.name, {
+          id: rel.id,
+          label: rel.kind === 'changed-by' ? 'изменён' : 'отменён',
+          qualifier: rel.qualifier,
+        });
+      }
     }
   }
 
@@ -99,9 +119,11 @@ function build(adrs) {
   );
   lines.push('');
   lines.push(
-    'Как читать строку: номер · заголовок · статус · «изменён/отменён» следующими решениями · ' +
-      'миграции · до пяти путей, названных шапкой. **Отменённое решение помечено ⛔** — его текст ' +
-      'остаётся правдой о прошлом, но действующим правилом больше не является.',
+    'Как читать строку: номер · заголовок · статус · «изменён/отменён» следующими решениями (в ' +
+      'скобках — граница, если решение правится не целиком) · миграции · пути, названные областью. ' +
+      '**⛔ стоит только у решения, которое само объявило себя отменённым или заменённым.** ' +
+      'Входящая связь показывает, кто его правил, но насколько — знает лишь текст самого решения: ' +
+      'ADR 0141 отменяет приём ADR 0053 в модуле оргтехники, а в вывозе мусора тот приём работает.',
   );
   lines.push('');
   lines.push(`Решений: ${adrs.length}. Доменов: ${DOMAINS.length}.`);
@@ -135,26 +157,29 @@ function build(adrs) {
     for (const adr of [...list].sort(
       (a, b) => Number(a.id) - Number(b.id) || (a.name < b.name ? -1 : 1),
     )) {
-      const back = inbound.get(adr.id) ?? [];
-      const cancelled = back.some((b) => b.label === 'отменён');
+      const back = inbound.get(adr.name) ?? [];
       const marks = [];
       const byLabel = (label) =>
         back
           .filter((b) => b.label === label)
-          .map((b) => b.id)
-          .sort();
-      if (byLabel('отменён').length > 0) marks.push(`отменён ${byLabel('отменён').join(', ')}`);
-      if (byLabel('изменён').length > 0) marks.push(`изменён ${byLabel('изменён').join(', ')}`);
+          .sort((a, b) => (a.id < b.id ? -1 : 1))
+          .map((b) => (b.qualifier ? `${b.id} (${b.qualifier})` : b.id));
+      for (const label of ['отменён', 'изменён']) {
+        const list = byLabel(label);
+        if (list.length > 0) marks.push(`${label} ${list.join(', ')}`);
+      }
+      const unclear = ambiguities.get(adr.name) ?? [];
+      if (unclear.length > 0) {
+        marks.push(`связь по голому номеру неоднозначна: ${unclear.join(', ')}`);
+      }
       const migrations = adr.migrations.match(/`\d{4}`/g);
       if (migrations) marks.push(`миграции ${[...new Set(migrations)].join(', ')}`);
-      const shown = adr.codePaths.slice(0, PATHS_SHOWN);
-      if (shown.length > 0) {
-        const rest = adr.codePaths.length - shown.length;
-        marks.push(
-          `код: ${shown.map((p) => `\`${p}\``).join(', ')}${rest > 0 ? ` и ещё ${rest}` : ''}`,
-        );
+      // Пути — все, названные «Областью»: обрезка прятала половину ответа на «где это в коде».
+      if (adr.regionPaths.length > 0) {
+        marks.push(`код: ${adr.regionPaths.map((x) => `\`${x}\``).join(', ')}`);
       }
       const status = adr.status && adr.status !== 'Принято' ? ` · ${adr.status.toLowerCase()}` : '';
+      const cancelled = CANCELLED_STATUSES.has(adr.status);
       lines.push(
         `- ${cancelled ? '⛔ ' : ''}[${adr.id}](${adr.name}) — ${adr.title}${status}` +
           `${marks.length > 0 ? ` · ${marks.join(' · ')}` : ''}`,
@@ -167,8 +192,9 @@ function build(adrs) {
     lines.push('## Без домена');
     lines.push('');
     lines.push(
-      'Решение без источника домена — дефект, а не раздел указателя: его чинит поле «Домены» ' +
-        'в шапке либо строка в таблице классификации.',
+      'Решение ещё не отнесено ни к одному домену: его чинит поле «Домены» в шапке либо строка ' +
+        'в таблице классификации. Пока решение не закоммичено, это замечание, а не ошибка — ' +
+        'оно ещё пишется.',
     );
     lines.push('');
     for (const adr of orphans) lines.push(`- [${adr.id}](${adr.name}) — ${adr.title}`);

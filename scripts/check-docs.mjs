@@ -11,8 +11,8 @@
  *
  * ЧТО РОНЯЕТ ПРОГОН. Всё, что означает ошибку прямо сейчас: новая коллизия номера, битая ссылка
  * четырёх классов, отсутствующий путь из шапки затронутого решения, статус или домен вне словаря.
- * Исторический долг — только то, что поимённо занесено в baseline (`scripts/lib/docs-baseline.mjs`)
- * с причиной; остального «известного долга» здесь нет и не заводится.
+ * Исторический долг не ведётся списком вовсе: жил ли путь когда-нибудь, отвечает `git log --all`
+ * (Р5). Ответа три — жил, не жил, историю не спросить, — и третий не выдаётся за второй.
  *
  * СТРОГОСТЬ ОБЪЯВЛЯЕТ САМ ФАЙЛ (Р8). Обязательные поля новой шапки спрашиваются с решений, у
  * которых есть поле «Домены»: написав его, автор сказал «этот файл по новой форме». Границу по
@@ -44,10 +44,12 @@ import {
   classifyBrokenLink,
   collisionProblems,
   linksIn,
-  pathEverExisted,
+  HISTORY,
+  pathHistory,
   readAdrs,
   readDocs,
 } from './lib/docs-navigation.mjs';
+import { execFileSync } from 'node:child_process';
 import { LEGACY_DOMAINS } from './lib/docs-legacy-domains.mjs';
 
 const say = (text = '') => process.stdout.write(`${text}\n`);
@@ -92,8 +94,15 @@ for (const file of docs) {
      * Ссылка в код, которого нет: жил ли он когда-нибудь (Р5). Жил — история решения, и её не
      * чинят; не жил — опечатка, и возраст документа её не оправдывает.
      */
-    if (kind === 'code-path' && pathEverExisted(ROOT, hint)) warnings.push({ kind, text });
-    else errors.push({ kind: `link:${kind}`, text });
+    if (kind !== 'code-path') {
+      errors.push({ kind: `link:${kind}`, text });
+      continue;
+    }
+    const history = pathHistory(ROOT, hint);
+    if (history === HISTORY.EXISTS) warnings.push({ kind, text });
+    else if (history === HISTORY.UNKNOWN) {
+      warnings.push({ kind: 'history-unknown', text: `${text} — историю не спросить` });
+    } else errors.push({ kind: `link:${kind}`, text: `${text} — такого пути не было никогда` });
   }
 }
 
@@ -104,25 +113,47 @@ for (const adr of adrs) {
     headerPaths += 1;
     if (existsSync(path.join(ROOT, target))) continue;
     const text = `${adr.name} → ${target}`;
-    if (pathEverExisted(ROOT, target)) warnings.push({ kind: 'header-path', text });
-    else errors.push({ kind: 'header-path', text: `${text} — такого пути не было никогда` });
+    const history = pathHistory(ROOT, target);
+    if (history === HISTORY.EXISTS) warnings.push({ kind: 'header-path', text });
+    else if (history === HISTORY.UNKNOWN) {
+      warnings.push({ kind: 'history-unknown', text: `${text} — историю не спросить` });
+    } else errors.push({ kind: 'header-path', text: `${text} — такого пути не было никогда` });
   }
 }
 
 // ── Источник домена: ровно один на решение (Р3) ───────────────────────────────────────────────
 /*
- * Ни одного источника — решение выпадет из указателя целиком; два источника — поле и строка
- * таблицы разъедутся на первой же правке, и разъедутся молча. Поэтому оба случая ошибки, и
- * ретрофит шапки обязан удалять строку из таблицы, а не дополнять её.
+ * Два источника — ошибка всегда: поле и строка таблицы разъедутся на первой же правке, и разъедутся
+ * молча.
+ *
+ * НИ ОДНОГО ИСТОЧНИКА — СМОТРЯ ПО СОСТОЯНИЮ САМОГО ФАЙЛА. Пока решение не закоммичено, оно ещё
+ * пишется: требовать с него домен значит красить прогон соседу посреди работы, и это ровно то, чего
+ * Р8 избегает. Закоммиченное решение без домена — уже другое дело: оно выпадет из указателя, а
+ * добровольность поля «Домены» иначе позволила бы новым решениям навсегда остаться вне навигации
+ * (риск 7 плана). Условие смотрит только на СВОЙ файл — ни на чей diff и ни на чьё присутствие в
+ * дереве, поэтому зависимости от чужой работы здесь нет.
  */
+const trackedAdrs = (() => {
+  try {
+    return new Set(
+      execFileSync('git', ['ls-files', 'docs/adr'], { cwd: ROOT, encoding: 'utf8' })
+        .split('\n')
+        .map((line) => path.basename(line.trim()))
+        .filter(Boolean),
+    );
+  } catch {
+    // Историю не спросить — считаем все решения отслеживаемыми: молчаливое послабление хуже.
+    return null;
+  }
+})();
 for (const adr of adrs) {
   const inTable = LEGACY_DOMAINS.has(adr.name);
   const hasField = adr.domains.length > 0;
   if (!inTable && !hasField) {
-    errors.push({
-      kind: 'domains',
-      text: `${adr.name}: нет ни поля «Домены», ни строки в таблице`,
-    });
+    const tracked = trackedAdrs === null || trackedAdrs.has(adr.name);
+    const text = `${adr.name}: нет ни поля «Домены», ни строки в таблице`;
+    if (tracked) errors.push({ kind: 'domains', text });
+    else warnings.push({ kind: 'domains', text: `${text} (решение ещё не закоммичено)` });
   }
   if (inTable && hasField) {
     errors.push({
