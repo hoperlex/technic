@@ -187,6 +187,10 @@ const EQUIPMENT: OfficeEquipmentDto = {
 const ROUTES: RouteMap = {
   'GET /office-equipment': () => json(list([EQUIPMENT])),
   'GET /office-equipment-types': () => json(list([TYPE])),
+  // Очередь сообщений о технике: счётчик подвкладки «На проверке» спрашивает её у всякого, кому
+  // выдано `officeEquipment.review`, — а оно приходит вместе с надстройкой оператора (ADR 0165).
+  // К отборам списка запрос отношения не имеет, но без мока экран остаётся без данных молча.
+  'GET /office-equipment-candidates': () => json(emptyList()),
   'GET /objects': () => json(list([OBJECT])),
   'GET /departments': () => json(emptyList()),
   'GET /service-requests': () => json(emptyList()),

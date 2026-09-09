@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import type { AuthUser, OfficeEquipmentDto } from '@technic/contracts';
+import type { AuthUser, OfficeEquipmentRequestOptionDto } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList, list } from './factories/common';
+import { equipmentSelectorOption, equipmentSelectorRoutes } from './factories/officeEquipment';
 import { serviceOperator, serviceRequest } from './factories/service';
 import { objectDto } from './factories/waste';
 import { openSelectOptions, selectOption } from './antd';
@@ -34,28 +35,19 @@ const SOUTH = objectDto({ id: 'obj-2', code: 'ОБ-2', name: 'ЖК Южный' }
 /** Чужая площадка: в области заявителя её нет, и в списке она появиться не должна. */
 const FOREIGN = objectDto({ id: 'obj-9', code: 'ОБ-9', name: 'ЖК Западный' });
 
-function unit(overrides: Partial<OfficeEquipmentDto> = {}): OfficeEquipmentDto {
-  return {
-    id: 'oe-1',
-    type: { id: 'oet-1', name: 'МФУ', isActive: true },
-    specs: [],
-    name: 'Kyocera M3145',
-    serialNumber: '',
-    inventoryNumber: '0012345',
+/**
+ * Единица глазами формы — проекция селектора (Р1 плана предмета заявки). Стоит она на СВОЕЙ
+ * площадке (`objectInOwnScope: true`), и это условие всего файла: у аппарата чужой площадки
+ * расхождение не заявляют — оно уже названо справочником, и пару собирает сама форма (Р5, Р6).
+ */
+function unit(
+  overrides: Partial<OfficeEquipmentRequestOptionDto> = {},
+): OfficeEquipmentRequestOptionDto {
+  return equipmentSelectorOption({
     object: { id: NORTH.id, code: NORTH.code, name: NORTH.name },
-    department: null,
     location: 'Корпус 3, каб. 214',
-    state: 'on_site',
-    stateNote: '',
-    purchasedOn: null,
-    warrantyUntil: null,
-    comment: '',
-    isActive: true,
-    createdAt: '2026-08-01T09:00:00.000Z',
-    updatedAt: '2026-08-01T09:00:00.000Z',
-    deletedAt: null,
     ...overrides,
-  } as OfficeEquipmentDto;
+  });
 }
 
 /** Два аппарата: сценарий про сброс без второго не написать — менять было бы не на что. */
@@ -77,7 +69,7 @@ function renderForm(
   request = null as null | Parameters<typeof serviceRequest>[0],
 ): HttpMock {
   const http = mockHttp({
-    'GET /office-equipment': () => json(list([KYOCERA, BROTHER])),
+    ...equipmentSelectorRoutes([KYOCERA, BROTHER]),
     'GET /objects': () => json(list([NORTH, SOUTH, FOREIGN])),
     'GET /departments': () => json(emptyList()),
     'POST /service-requests': () => json({ request: serviceRequest(), mail: 'queued' }, 201),

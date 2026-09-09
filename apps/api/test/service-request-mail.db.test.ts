@@ -413,7 +413,13 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
   });
 
   it('срочная заявка помечена в теме', async () => {
-    const res = await inject('POST', '/api/v1/service-requests', ctx.customer, {
+    /*
+     * ЗАВОДИТ СРОЧНУЮ ДЕРЖАТЕЛЬ ПРАВА `serviceRequests.urgency` (план
+     * `docs/office-equipment-request-subject-plan.md`, Р9), и это не смена декораций: пометка темы
+     * ставится при ЗАВЕДЕНИИ, то есть срочной заявка обязана родиться, а не стать ею потом. У
+     * заказчика права нет — ему ручка ответила бы 403, — а у администратора словарь прав целиком.
+     */
+    const res = await inject('POST', '/api/v1/service-requests', ctx.admin, {
       officeEquipmentId: await ctx.newEquipment('urgent'),
       description: 'Дым из блока',
       responsibleName: 'Иванов Иван Иванович',

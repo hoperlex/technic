@@ -683,16 +683,22 @@ describe('ролевая часть каталога: наборы, замеща
     // Единственное объявленное расширение всей реформы — оргтехника коменданту (решение №1
     // заказчика от 17.08.2026). Выписано поимённо: молчаливое «что-то добавится» и есть тот способ,
     // которым расширение доступа проходит незамеченным.
-    expect(
-      [...(ROLE_MIGRATIONS.find((m) => m.from === 'commandant')?.gains ?? [])].sort(),
-    ).toEqual([
-      'officeEquipment.read',
-      'serviceRequests.create',
-      'serviceRequests.delete',
-      'serviceRequests.files',
-      'serviceRequests.read',
-      'serviceRequests.update',
-    ]);
+    expect([...(ROLE_MIGRATIONS.find((m) => m.from === 'commandant')?.gains ?? [])].sort()).toEqual(
+      [
+        // Шестое право приехало выпуском B волны кандидатов (ADR 0165, этап Э6 плана предмета
+        // заявки): `officeEquipment.propose` вошло в состав заказчика, то есть в роль `site`, — и
+        // разница перевода выросла ровно на него. Список сверяется на равенство, поэтому строка
+        // здесь обязательна: она и есть то место, где расширение доступа объявляется, а не
+        // проскакивает.
+        'officeEquipment.propose',
+        'officeEquipment.read',
+        'serviceRequests.create',
+        'serviceRequests.delete',
+        'serviceRequests.files',
+        'serviceRequests.read',
+        'serviceRequests.update',
+      ],
+    );
     for (const migration of ROLE_MIGRATIONS) {
       if (migration.from === 'commandant') continue;
       expect(migration.gains, `${migration.from}: расширений быть не должно`).toEqual([]);
@@ -1059,6 +1065,10 @@ const OPERATOR_GRANT: readonly Permission[] = [
   // составе набора рядом с ведением, из которого оно выделено. Кейс двойной записи ниже держится
   // на совпадении этого списка с надстройкой: без строки он показал бы ложную потерю права.
   'officeEquipment.move',
+  // Проверка сообщений об отсутствующей технике (ADR 0165; этап Э6 плана предмета заявки) — то же
+  // требование к списку, что и у перемещения: он обязан совпадать с надстройкой, иначе кейс
+  // двойной записи ниже покажет ложную потерю права при отзыве одного из двух источников.
+  'officeEquipment.review',
   'serviceRequests.assign',
   'serviceRequests.approveEstimate',
   'serviceRequests.status',
@@ -1308,6 +1318,14 @@ describe('разница эффективных прав', () => {
         // Перемещение идёт сразу за ведением, потому что словарь перечисляет его следом (Р1), —
         // и у роли `shtab` это настоящее приобретение: своего `officeEquipment.move` у неё нет.
         'officeEquipment.move',
+        /*
+         * Проверка сообщений (ADR 0165) — тоже настоящее приобретение штаба, и стоит она между
+         * перемещением и закупкой потому, что там её место в словаре. Соседнее право волны,
+         * `officeEquipment.propose`, в этом списке НЕ появляется, и это ровно то, что список и
+         * должен показывать: сообщать о ненайденной технике штаб теперь может сам, по роли
+         * (`SERVICE_REQUEST_CUSTOMER_PERMISSIONS`), — набор «Ведение» ему этого не приносит.
+         */
+        'officeEquipment.review',
         // Закупка расходников идёт последней не по важности, а по месту в словаре: `PERMISSIONS`
         // перечисляет её после справочника оргтехники и его номенклатуры (ADR 0146, Р12), и
         // предпросмотр обязан повторять словарь, а не порядок выдачи в наборе.

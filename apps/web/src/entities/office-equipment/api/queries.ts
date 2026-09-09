@@ -1,5 +1,9 @@
 import { queryOptions } from '@tanstack/react-query';
-import { officeEquipmentTitle, type OfficeEquipmentDto } from '@technic/contracts';
+import {
+  officeEquipmentTitle,
+  type OfficeEquipmentDto,
+  type OfficeEquipmentRequestOptionDto,
+} from '@technic/contracts';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import {
   officeEquipmentApi,
@@ -140,6 +144,97 @@ export const officeEquipmentPickedQuery = (id: string | undefined) =>
     queryFn: () => officeEquipmentApi.get(id!),
     enabled: !!id,
     select: equipmentOption,
+  });
+
+/**
+ * Единица справочника глазами формы заявки — из ОТДЕЛЬНОЙ проекции селектора (план
+ * `docs/office-equipment-request-subject-plan.md`, Р1).
+ *
+ * Соседний `equipmentOption` не переиспользуется, хотя половина полей совпадает: он собран из
+ * карточки `OfficeEquipmentDto` и берёт у неё тип и модель, которых у проекции нет вовсе — и не
+ * должно быть. Общая функция потребовала бы либо вернуть их в проекцию, либо сделать
+ * необязательными в обеих, то есть стереть ровно ту границу, ради которой проекция и заведена.
+ *
+ * Подпись собирает тот же `officeEquipmentTitle` — «Kyocera M3145 · инв. 0012345» обязано читаться
+ * одинаково и в портале, и в письме.
+ */
+const selectorOption = (item: OfficeEquipmentRequestOptionDto) => ({
+  value: item.id,
+  label: officeEquipmentTitle(item),
+  warrantyUntil: item.warrantyUntil,
+  // Реквизиты выбранной единицы форма показывает отдельными строками: человек должен увидеть, что
+  // именно уйдёт в заявку снимком, до отправки, а не после.
+  name: item.name,
+  serialNumber: item.serialNumber,
+  inventoryNumber: item.inventoryNumber,
+  objectId: item.object.id,
+  objectLabel: `${item.object.code} — ${item.object.name}`,
+  departmentId: item.ownerDepartment?.id ?? null,
+  departmentName: item.ownerDepartment?.name ?? '',
+  location: item.location,
+  /**
+   * Погашенная приезжает только дочиткой уже выбранного: в выдаче поля её нет. Форма показывает
+   * такой выбор честно — «списана», — а не молча теряет его.
+   */
+  isActive: item.isActive,
+  /**
+   * Два ответа об области, а не один (Р2). `inOwnScope: false` при `objectInOwnScope: true`
+   * означает «чужой отдел, СВОЯ площадка»: плашка про отдел показывается, поправка объекта — нет.
+   * Считает их сервер: область — его вопрос, и второе мнение о ней в портале разошлось бы с первым.
+   */
+  inOwnScope: item.inOwnScope,
+  objectInOwnScope: item.objectInOwnScope,
+});
+
+/** Единица справочника для поля «Какой аппарат» в заявке: подпись, реквизиты и признаки области. */
+export type OfficeEquipmentSelectorOption = ReturnType<typeof selectorOption>;
+
+/**
+ * ВЫДАЧА ПОЛЯ «КАКОЙ АППАРАТ» — по всему активному парку от трёх набранных символов (Р3).
+ *
+ * Своя пара запросов и свои ключи кэша, а не параметр у соседних: у обычной карточки и у селектора
+ * не должно быть общей записи кэша вовсе. Дочитка селектора под ключом `detail` положила бы
+ * аппарат вне области в ту же ячейку, которой живёт обычная карточка справочника, — и следующий,
+ * кто открыл бы его из вкладки, получил бы чужую запись из кэша.
+ *
+ * Порог в три символа портал не повторяет своим числом и не проверяет сам: решает сервер
+ * (`OFFICE_EQUIPMENT_SELECTOR_SEARCH_MIN`), а поле лишь показывает то, что пришло. Второе правило
+ * рядом означало бы, что портал обещает поиск, которого сервер не делает, — или наоборот, скрывает
+ * то, что сервер уже отдал.
+ *
+ * Страница та же, что у соседней выдачи, — полсотни строк: список длиннее никто не разбирает
+ * глазами, его доуточняют набором.
+ */
+export const officeEquipmentSelectorOptionsQuery = (search?: string) =>
+  queryOptions({
+    queryKey: officeEquipmentKeys.selectorOptions(search),
+    queryFn: () =>
+      officeEquipmentApi.selector({
+        page: 1,
+        pageSize: OPTIONS_PAGE_SIZE,
+        search: search?.trim() || undefined,
+      }),
+    select: (r) => r.items.map(selectorOption),
+  });
+
+/**
+ * УЖЕ ВЫБРАННАЯ единица — тем же видом, что и строка выдачи.
+ *
+ * Нужна ровно потому, что выдача стала срезом по набранному: аппарат, названный не набором, в ней
+ * может не лежать. Случаев три, и все рабочие: обращение по гарантии (единицу назвал реестр),
+ * правка заявки (её назвали при заведении) и карточка, только что заведённая из самой формы. Без
+ * дочитки в поле осталась бы строка идентификатора, а реквизиты под ним пропали бы.
+ *
+ * Ручка отдаёт запись независимо от области и длины набранного — выбранное уже выбрано, — а
+ * погашенную возвращает с `isActive: false`. Архивная отвечает 404: предметом новой заявки
+ * удалённая карточка быть не может.
+ */
+export const officeEquipmentSelectorPickedQuery = (id: string | undefined) =>
+  queryOptions({
+    queryKey: officeEquipmentKeys.selectorPicked(id ?? ''),
+    queryFn: () => officeEquipmentApi.selectorPicked(id!),
+    enabled: !!id,
+    select: selectorOption,
   });
 
 /**

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { App, Checkbox, Form, Input, Segmented } from 'antd';
+import { App, Form, Input, Segmented } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   isWarrantyActive,
@@ -25,6 +25,7 @@ import {
   ServiceRequestEquipmentField,
   useServiceRequestEquipment,
 } from './ServiceRequestEquipmentField';
+import { ServiceRequestUrgency } from './ServiceRequestUrgency';
 import { ServiceRequestWarrantyClaim } from './ServiceRequestWarrantyClaim';
 import { useRequesterPlace } from './ServiceRequestRequesterPlace';
 import { reportServiceMail } from './serviceMailNotice';
@@ -78,7 +79,6 @@ export function ServiceRequestForm({
   const equipmentId = Form.useWatch('officeEquipmentId', form);
   const chosenKind = Form.useWatch('kind', form);
   const warrantySource = Form.useWatch('warrantySource', form);
-  const isUrgent = Form.useWatch('isUrgent', form);
 
   // Выдача и память выбранного живут при самом поле (Ф1): форме нужен ответ, а не его устройство.
   const equipment = useServiceRequestEquipment({ open, equipmentId });
@@ -97,19 +97,10 @@ export function ServiceRequestForm({
    */
   const canSkipEquipment = can('serviceRequests.createWithoutEquipment');
   /**
-   * СРОЧНОСТЬ ПРИ ПРАВКЕ ЗАПЕРТА БЕЗ СВОЕГО ПРАВА (план профилей оргтехники, Р10): сервер спрашивает
-   * `serviceRequests.urgency`, как только пара расходится со строкой заявки, и кнопка, ведущая в
-   * 403, — это дефект портала, а не строгость сервера (§11: портал не показывает того, чего сервер
-   * не даст).
-   *
-   * Заперта, а не спрятана: заявитель обязан видеть, срочная его заявка или нет, — иначе исчезнувшая
-   * галочка читалась бы как «срочность сняли». Меняют её отдельной ручкой те, кто ведёт заявки
-   * (`ServiceUrgencyModal`), и им она отсюда не нужна.
-   *
-   * У ЗАВЕДЕНИЯ ПРАВА НЕ СПРАШИВАЕМ ВОВСЕ: объявить срочность при подаче — просьба заявителя, и
-   * серверная дверь там открыта намеренно (Н1, §8).
+   * Право на срочность (Р9). Спрашивается здесь, а не в блоке пары: по нему форма и показывает
+   * поля, и решает, что отправить, — а два ответа на один вопрос разъехались бы.
    */
-  const urgencyLocked = !!request && !can('serviceRequests.urgency');
+  const canUrgency = can('serviceRequests.urgency');
   /** Заявка заводится без аппарата: поле пусто, и оставить его пустым разрешено. */
   const withoutEquipment = !request && noEquipment && canSkipEquipment;
 
@@ -217,9 +208,15 @@ export function ServiceRequestForm({
         requesterPlace: place.body(values.requesterPlaceId),
         fileIds: attachments.ids,
         equipmentCandidate: draft,
-        // Пара срочности при правке уходит только с правом (Р10): без него сервер ответил бы 403 на
-        // всю форму, потому что считает решение об очереди по разнице со строкой заявки.
-        canUrgency: can('serviceRequests.urgency'),
+        /*
+         * Аппарат стоит вне площадок учётки (Р5): объектом заявки станет своя площадка — та, что
+         * выбрана заказчиком, — а не объект карточки. Признак считает сервер и отдаёт проекцией
+         * селектора; форма его только передаёт, потому что собирает тело она.
+         */
+        foreignSite: !!selected && !selected.objectInOwnScope,
+        // Пара срочности уходит только с правом (Р9, Р10): при правке — вся пара целиком, при
+        // заведении — сама срочность, которую без права сервер отбивает 403.
+        canUrgency,
       });
     },
     onSuccess: (res) => {
@@ -356,29 +353,9 @@ export function ServiceRequestForm({
             разных вопроса, и путать их значит записывать заявку на чужой отдел. */}
         {place.field}
 
-        {/* Срочность — пара «галочка + причина» (Р56). Причина появляется вместе с галочкой и
-            обязательна: без неё через месяц срочными окажутся все заявки, и очередь, в которую
-            смотрит оператор, перестанет что-либо означать. */}
-        <Form.Item
-          name="isUrgent"
-          valuePropName="checked"
-          style={{ marginBottom: isUrgent ? 8 : 24 }}
-        >
-          <Checkbox disabled={urgencyLocked}>Срочная заявка</Checkbox>
-        </Form.Item>
-        {isUrgent && (
-          <Form.Item
-            name="urgencyReason"
-            label="Почему срочно"
-            rules={[{ required: true, message: 'Объясните, почему заявка срочная' }]}
-          >
-            <Input
-              disabled={urgencyLocked}
-              maxLength={500}
-              placeholder="Например: единственный принтер на площадке, встала выдача пропусков"
-            />
-          </Form.Item>
-        )}
+        {/* Срочность — своим блоком (Р9, Р56): показ пары и её запертость считаются там же, где
+            она рисуется, а форме остаётся сказать, правка это или заведение. */}
+        <ServiceRequestUrgency editing={!!request} canUrgency={canUrgency} />
 
         <Form.Item name="comment" label="Что ещё важно знать">
           <Input.TextArea rows={2} maxLength={2000} placeholder="Необязательно" />

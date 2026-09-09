@@ -7,6 +7,7 @@ import {
   changePasswordSchema,
   type CounterpartyType,
   EMAIL_VERIFICATION_ENABLED,
+  type FeatureFlagKey,
   isPermission,
   isPersonScopedRole,
   loginSchema,
@@ -46,6 +47,7 @@ import {
   grantPermissionsExpr,
   systemAddonsOf,
 } from '../services/user-scopes';
+import { enabledFeatures } from '../services/feature-flags';
 import { assertEmailFree, asEmailConflict } from '../services/user-email';
 import { assertMailEnabled, queueMail } from '../services/mail';
 import {
@@ -124,8 +126,12 @@ interface AuthUserSource {
  * Единственный сборщик пользователя в ответах сессии: его зовут вход, `refresh`, `/auth/me` и смена
  * пароля. Один на четыре ответа намеренно — план (§10.1) требует список прав во всех четырёх, и
  * четыре сборки разошлись бы в первую же правку модели доступа.
+ *
+ * Включённые рубильники приходят ВТОРЫМ АРГУМЕНТОМ, а не читаются здесь: сборщик синхронный и
+ * чистый — он раскладывает уже прочитанное, — а поход в базу внутри него превратил бы каждый из
+ * четырёх ответов в неявный запрос и спрятал бы его от читателя кода.
  */
-function makeAuthUser(u: AuthUserSource): AuthUser {
+function makeAuthUser(u: AuthUserSource, features: FeatureFlagKey[]): AuthUser {
   return {
     id: u.id,
     email: u.email,
@@ -175,6 +181,19 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
      * Копия, а не ссылка, — по той же причине, что у `permissions`: это тело ответа.
      */
     grantPermissions: [...u.grantPermissions],
+    /*
+     * Включённые рубильники приёма (план `docs/office-equipment-request-subject-plan.md`, Р10).
+     *
+     * Во всех четырёх ответах сессии и по той же причине, что права выше: портал рисует экраны по
+     * ответу входа, ещё не спросив `/auth/me`, — отдай мы список только в одном месте, и приём
+     * кандидатов был бы открыт или закрыт в зависимости от того, как человек вошёл. `refresh` тем
+     * же полем доносит до вкладки аварийное выключение, не дожидаясь перезагрузки страницы.
+     *
+     * Правом список не является и доступа не даёт: `POST /service-requests` читает ту же строку
+     * базы сам и присланному клиентом списку не доверяет. Здесь он ровно затем, чтобы портал не
+     * показывал дверь, за которой стоит отказ.
+     */
+    features,
   };
 }
 
@@ -673,7 +692,11 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       entityType: 'user',
       entityId: u.id,
     });
-    return { accessToken, expiresIn: config.auth.accessTtl, user: makeAuthUser(u) };
+    return {
+      accessToken,
+      expiresIn: config.auth.accessTtl,
+      user: makeAuthUser(u, await enabledFeatures(db)),
+    };
   });
 
   r.post('/refresh', { config: authRateLimit }, async (req, reply) => {
@@ -698,7 +721,11 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       role: principal.role,
       av: principal.authVersion,
     });
-    return { accessToken, expiresIn: config.auth.accessTtl, user: makeAuthUser(principal) };
+    return {
+      accessToken,
+      expiresIn: config.auth.accessTtl,
+      user: makeAuthUser(principal, await enabledFeatures(db)),
+    };
   });
 
   r.post('/logout', async (req, reply) => {
@@ -710,7 +737,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
   });
 
   r.get('/me', { preHandler: [app.authenticate] }, async (req) => {
-    return makeAuthUser(requirePrincipal(req));
+    return makeAuthUser(requirePrincipal(req), await enabledFeatures(db));
   });
 
   r.post(
@@ -780,7 +807,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       return {
         accessToken,
         expiresIn: config.auth.accessTtl,
-        user: makeAuthUser({ ...u, mustChangePassword: false }),
+        user: makeAuthUser({ ...u, mustChangePassword: false }, await enabledFeatures(db)),
       };
     },
   );

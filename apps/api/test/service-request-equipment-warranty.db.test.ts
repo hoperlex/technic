@@ -324,6 +324,14 @@ describe.skipIf(!DB_URL)('гарантия единицы в строке зая
         VALUES (${requester.id}, ${grantId}, ${adminUser.id}, 'manual')`);
     }
 
+    /*
+     * Рубильник приёма сообщений о технике (план `docs/office-equipment-request-subject-plan.md`,
+     * Р10) включается фикстурой: миграция 0293 заводит его строку выключенной, а один из случаев
+     * ниже заводит заявку кандидатом — при закрытом приёме он получил бы 403 вместо гарантии.
+     */
+    await db.execute(sql`
+      UPDATE feature_flags SET is_enabled = true WHERE key = 'office_equipment_candidate_intake'`);
+
     const typeRow = await db.execute<{ id: string }>(
       sql`SELECT id FROM office_equipment_types WHERE code = 'mfp'`,
     );

@@ -3,7 +3,6 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type {
   AuthUser,
   CreateServiceRequestInput,
-  OfficeEquipmentDto,
   OfficeEquipmentTypeDto,
   Permission,
 } from '@technic/contracts';
@@ -12,6 +11,7 @@ import { json, mockHttp, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
+import { equipmentSelectorOption, equipmentSelectorRoutes } from './factories/officeEquipment';
 import { objectDto } from './factories/waste';
 import { ServiceRequestForm } from '../src/pages/service/ServiceRequestForm';
 
@@ -24,6 +24,11 @@ import { ServiceRequestForm } from '../src/pages/service/ServiceRequestForm';
  * заведения карточки (её сервер встретит 403 после одиннадцати заполненных полей), а проверяющему —
  * окно «Сообщить об аппарате», то есть предложило бы сообщить самому себе о технике, которую он же
  * и заводит.
+ *
+ * У средней ветви ВЫХОДОВ ДВА (Э5 плана `docs/office-equipment-request-subject-plan.md`): «Заполнить
+ * самостоятельно» и «Написать в техподдержку» одной плашкой. Право сообщить о технике не означает,
+ * что человеку есть что о ней сказать, — и единственная кнопка ставила бы его перед формой, которую
+ * нечем заполнить, спрятав при этом поддержку.
  *
  * Второе, что закрепляется здесь, — ОКНО НИЧЕГО НЕ ОТПРАВЛЯЕТ САМО (Р2). Кандидат и заявка рождаются
  * одной транзакцией одного `POST /service-requests`; отдельный вход оставлял бы кандидатов-сирот
@@ -52,30 +57,6 @@ const TYPES: OfficeEquipmentTypeDto[] = [
   },
 ];
 
-/** Карточка, которая якобы уже есть в парке: ею сервер отвечает на 409 дубля (Р10). */
-function equipmentDto(): OfficeEquipmentDto {
-  return {
-    id: 'oe-1',
-    type: { id: 'oet-1', name: 'МФУ', isActive: true },
-    specs: [],
-    name: 'Kyocera M3145',
-    serialNumber: 'SN-7770001',
-    inventoryNumber: '0012345',
-    object: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
-    department: null,
-    location: 'каб. 214',
-    state: 'on_site',
-    stateNote: '',
-    purchasedOn: null,
-    warrantyUntil: null,
-    comment: '',
-    isActive: true,
-    createdAt: '2026-08-01T09:00:00.000Z',
-    updatedAt: '2026-08-01T09:00:00.000Z',
-    deletedAt: null,
-  };
-}
-
 /** Права заявителя: заводить заявки и читать справочник — их требует и сам `propose` (Р8). */
 const REQUESTER: Permission[] = [
   'serviceRequests.create',
@@ -90,11 +71,20 @@ const OPERATOR: AuthUser = authUser({
   addons: ['office_equipment_operator'],
 });
 
-/** Сообщает о технике: карточку завести не может, но его свидетельство проходит проверку. */
+/**
+ * Сообщает о технике: карточку завести не может, но его свидетельство проходит проверку.
+ *
+ * Рубильник приёма включён явно (`features`, план `docs/office-equipment-request-subject-plan.md`,
+ * Р10): без него ответ сессии читается fail-closed, и окно кандидата не открылось бы никому — то
+ * есть три ветви этого файла свелись бы к двум. Само умолчание «поля нет — приём закрыт»
+ * проверяется отдельно (`candidate-intake-flag.test.tsx`): здесь предмет другой — развилка по
+ * правам, и подмешивать к ней рубильник значило бы проверять два условия одним ожиданием.
+ */
 const PROPOSER: AuthUser = authUser({
   role: 'shtab',
   constructionObjectIds: ['obj-1'],
   permissions: [...REQUESTER, 'officeEquipment.propose'],
+  features: ['office_equipment_candidate_intake'],
 });
 
 /** Ни того ни другого: до выпуска B прав не выдано никому, и это самая частая учётка. */
@@ -114,7 +104,7 @@ interface SentRequest {
 function renderForm(user: AuthUser, over: RouteMap = {}) {
   const http = mockHttp({
     // Справочник пуст — это и есть разбираемый тупик: искомой техники в нём нет.
-    'GET /office-equipment': () => json(emptyList()),
+    ...equipmentSelectorRoutes([]),
     'GET /office-equipment-types': () => json(list(TYPES)),
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
@@ -141,6 +131,9 @@ const fill = (label: string, value: string) =>
 /** Заполнить окно «Сообщить об аппарате» и вернуть заявленное в форму заявки. */
 async function reportEquipment() {
   fireEvent.click(await screen.findByText('Не нашли технику?'));
+  // Окно открывается кнопкой плашки, а не самой ссылкой: выходов у этой ветви два, и человек
+  // выбирает между ними (Э5).
+  fireEvent.click(await screen.findByRole('button', { name: 'Заполнить самостоятельно' }));
   await screen.findByText('Сообщить об аппарате');
   await selectOption('Что за аппарат', 'МФУ');
   fill('Модель с шильдика', 'Kyocera M3145');
@@ -169,14 +162,30 @@ describe('три ветви «Не нашли технику?»', () => {
     expect(screen.queryByText('Сообщить об аппарате')).toBeNull();
   });
 
-  it('у заявителя с правом сообщать открывается окно кандидата', async () => {
+  it('у заявителя с правом сообщать плашка предлагает оба выхода (Э5)', async () => {
     renderForm(PROPOSER);
     fireEvent.click(await screen.findByText('Не нашли технику?'));
 
-    expect(await screen.findByText('Сообщить об аппарате')).toBeDefined();
-    // Ни формы карточки парка, ни совета про поддержку: у человека есть свой выход из тупика.
+    // ОБЕ КНОПКИ СРАЗУ, а не «либо-либо»: право сообщить о технике не означает, что человеку есть
+    // что о ней сказать, — шильдик бывает заклеен, а аппарат стоит в другом корпусе.
+    expect(await screen.findByText('Техники нет в справочнике')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Заполнить самостоятельно' })).toBeDefined();
+    // Имя кнопки ищется частью: у antd в доступное имя попадает и подпись иконки
+    // («customer-service»), и точное сравнение ловило бы вёрстку, а не текст.
+    expect(screen.getByRole('button', { name: /Написать в техподдержку/ })).toBeDefined();
+    // Текст объясняет, что будет дальше: карточку заведёт «Ведение» по данным заявителя.
+    expect(screen.getByText(/Карточку заведёт «Ведение» по вашим данным/)).toBeDefined();
+    // Ни формы карточки парка, ни ветви только-поддержки: у человека есть свой выход из тупика.
     expect(screen.queryByText('Новая единица оргтехники')).toBeNull();
     expect(screen.queryByText('Карточки нет в справочнике')).toBeNull();
+  });
+
+  it('окно сообщения открывается кнопкой плашки, а не самой ссылкой', async () => {
+    renderForm(PROPOSER);
+    fireEvent.click(await screen.findByText('Не нашли технику?'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Заполнить самостоятельно' }));
+
+    expect(await screen.findByText('Сообщить об аппарате')).toBeDefined();
     // Фото просят, но не требуют (Р7, В4): снимок снимает половину работы проверяющего, а
     // запертая на вложении заявка означает несделанную заявку.
     expect(screen.getByText(/Приложите фото шильдика/)).toBeDefined();
@@ -258,9 +267,13 @@ describe('409 «такой аппарат в справочнике уже ес�
           },
         },
       }),
-      // Подставленная единица дочитывается по идентификатору: в выдаче поля её нет — поиск ничего
-      // не находил, потому и сообщали.
-      'GET /office-equipment/:id': () => json(equipmentDto()),
+      /*
+       * Подставленная единица дочитывается по идентификатору — и дочиткой СЕЛЕКТОРА (план предмета
+       * заявки, Р1, Р3): в выдаче поля её нет, поиск ничего не находил, потому и сообщали. Ручка и
+       * заведена ради таких случаев — она отвечает независимо от набранного и от области.
+       */
+      'GET /office-equipment/selector/:id': () =>
+        json(equipmentSelectorOption({ serialNumber: 'SN-7770001', location: 'каб. 214' })),
     });
     await reportEquipment();
     fillRequest();

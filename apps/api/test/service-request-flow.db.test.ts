@@ -373,6 +373,32 @@ async function createRequest(
   return (res.json() as { request: ServiceRequestDto }).request;
 }
 
+/**
+ * СРОЧНАЯ ЗАЯВКА ЗАВОДИТСЯ В ДВА ХОДА (план `docs/office-equipment-request-subject-plan.md`, Р9):
+ * заявитель подаёт обычную, срочность назначает тот, кто заявки ведёт.
+ *
+ * Прежде хватало одного хода — галочка при подаче была открыта всем, и файл заводил срочную сразу
+ * телом заведения. Р9 это отменил: очередь наполнялась срочными ровно настолько, насколько бойко
+ * жал галочку каждый. Здесь второй ход делает администратор — до волны В5 право
+ * `serviceRequests.urgency` держит он один, и это про состав прав, а не про должность.
+ */
+async function urgentRequest(
+  auth: Auth,
+  officeEquipmentId: string,
+  description: string,
+  urgencyReason: string,
+): Promise<ServiceRequestDto> {
+  const dto = await createRequest(auth, officeEquipmentId, description);
+  const raised = await inject(
+    'PATCH',
+    `/api/v1/service-requests/${dto.id}/urgency`,
+    ctx.admin.auth,
+    { isUrgent: true, urgencyReason, version: dto.version },
+  );
+  expect(raised.statusCode, raised.body).toBe(200);
+  return raised.json() as ServiceRequestDto;
+}
+
 // Помощник `approveByIt` снят вместе с самой визой (Р10, ADR 0145): ручки `PATCH /:id/it-approval`
 // больше нет, порядка двух подписей — тоже. Объём работ согласует один человек, и делает он это
 // ручкой `PATCH /:id/estimate/approval`.
@@ -3191,14 +3217,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     });
 
     it('срочность ставится парой «флаг + причина» и снимается вместе с причиной', async () => {
-      const dto = await createRequest(
+      const dto = await urgentRequest(
         ctx.customer.auth,
         state.urgent.equipmentId,
         'Не тянет бумагу',
-        {
-          isUrgent: true,
-          urgencyReason: 'Единственный принтер на площадке',
-        },
+        'Единственный принтер на площадке',
       );
       state.urgent = { ...state.urgent, id: dto.id, num: dto.num };
       expect(dto.isUrgent).toBe(true);
@@ -3300,10 +3323,12 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         await freshUnit(),
         'Обычная заявка: заведена раньше срочной',
       );
-      const urgent = await createRequest(ctx.customer.auth, await freshUnit(), 'Срочная заявка', {
-        isUrgent: true,
-        urgencyReason: 'Единственный принтер на площадке',
-      });
+      const urgent = await urgentRequest(
+        ctx.customer.auth,
+        await freshUnit(),
+        'Срочная заявка',
+        'Единственный принтер на площадке',
+      );
       expect(urgent.num, 'срочная заведена позже обычной').toBeGreaterThan(ordinary.num);
 
       const asc = await listIds(ctx.operator.auth, '&sortBy=num&sortOrder=asc');
@@ -3381,12 +3406,18 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
      * `.urgency`, у администратора есть оба — до волны В5 право срочности держит он один.
      */
     it('срочность в общей правке спрашивает своё право, и спрашивает по эффекту (Р10)', async () => {
-      const dto = await createRequest(ctx.customer.auth, await freshUnit(), 'Не печатает по сети', {
-        isUrgent: true,
-        urgencyReason: 'Единственный принтер на площадке',
-      });
-      // Заведение срочной осталось открытым НАМЕРЕННО (Н1, §8): объявить срочность при подаче —
-      // просьба заявителя, и отбирать её значило бы менять постановку, а не чинить дыру.
+      const dto = await urgentRequest(
+        ctx.customer.auth,
+        await freshUnit(),
+        'Не печатает по сети',
+        'Единственный принтер на площадке',
+      );
+      /*
+       * ЗАВЕДЕНИЕ СРОЧНОЙ БОЛЬШЕ НЕ ОТКРЫТО (план предмета заявки, Р9): галочку при подаче
+       * спрашивает то же право, что и обе двери ниже, — и «просьба заявителя» перестала быть
+       * исключением из правила. Поэтому стартовое срочное состояние ставит здесь держатель права,
+       * а предметом случая остаётся ВТОРАЯ дверь — общая правка.
+       */
       expect(dto.isUrgent).toBe(true);
 
       // (а) Та же пара, что уже в заявке: правка описания обязана пройти без права срочности.
@@ -3936,11 +3967,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       // проверки порядка ниже сторожат именно это: строку не двигает ни флаг срочности, ни
       // заморозка, ни возврат из неё. Предмет самого случая — Р119: из ОТБОРА отложенная выпадает.
       const ordinary = await assignedRequest('Обычная заявка для сравнения порядка');
-      const urgent = await createRequest(
+      const urgent = await urgentRequest(
         ctx.customer.auth,
         await freshUnit(),
         'Срочная, но отложенная',
-        { isUrgent: true, urgencyReason: 'Единственный принтер на площадке' },
+        'Единственный принтер на площадке',
       );
 
       const frozenRes = await hold(urgent.id, 'Ждём поставку картриджа');

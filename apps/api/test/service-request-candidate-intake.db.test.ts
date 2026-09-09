@@ -78,7 +78,17 @@ interface Ctx {
   requester: TestUser;
   /** Второй такой же — им проверяется гонка двух заявителей (рубеж 2). */
   second: TestUser;
-  /** Без права `propose`: та же роль и та же площадка, отличается только набор. */
+  /**
+   * Без права `propose`, но со всем остальным, что нужно заказчику.
+   *
+   * До выпуска B это был такой же `shtab`, отличавшийся от заявителя одним лишь набором. После Э6
+   * плана предмета заявки так больше не выйдет: `officeEquipment.propose` вошло в
+   * `SERVICE_REQUEST_CUSTOMER_PERMISSIONS`, то есть его даёт САМА роль каждому из пяти
+   * заказчиков, — и «тот же `shtab` без права» перестал существовать. Поэтому здесь роль без
+   * модуля заявок (`manager`) плюс собранный набор заказчика без сообщения о технике: субъект,
+   * который завести заявку может, а сообщить о ненайденном аппарате — нет. Именно эту пару
+   * ответов файл и проверяет.
+   */
   plain: TestUser;
   /** Роль отдела: у неё ось площадок отдела (ADR 0062), а заказчиком остаётся её отдел. */
   dept: TestUser;
@@ -303,7 +313,7 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
     const adminUser = await makeUser('admin', 'admin');
     const requester = await makeUser('requester', 'shtab');
     const second = await makeUser('second', 'shtab');
-    const plain = await makeUser('plain', 'shtab');
+    const plain = await makeUser('plain', 'manager');
     const dept = await makeUser('dept', 'department');
 
     const attachObject = (userId: string, id: string) =>
@@ -312,14 +322,22 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
         VALUES (${userId}, ${id})`);
     await attachObject(requester.id, objectId);
     await attachObject(second.id, objectId);
-    await attachObject(plain.id, objectId);
+    // `plain` площадке не приписывается: у роли `manager` объектной оси нет вовсе, и строка
+    // привязки ничего бы не значила. Заявку он заводит глобально — это свойство роли без оси,
+    // а не поблажка теста.
+
     await db.execute(sql`
       INSERT INTO user_departments (user_id, department_id) VALUES (${dept.id}, ${departmentId})`);
 
     /*
-     * НАБОР СОБИРАЕТСЯ ТЕСТОМ, а не берётся системным, и это вынужденно: составы наборов и ролей
-     * едут ВЫПУСКОМ B (§14, M4), а выпуск A обязан работать до него. Собранный набор — законный
-     * способ выдачи по ADR 0106, и ровно им право попадёт к пилотным учёткам раньше M4.
+     * НАБОР СОБИРАЕТСЯ ТЕСТОМ, а не берётся системным. Изначально это было вынужденно: составы
+     * наборов и ролей ехали ВЫПУСКОМ B (§14, M4), а выпуск A обязан был работать до него.
+     * После Э6 плана предмета заявки право `officeEquipment.propose` держателям ниже даёт уже сама
+     * роль (`shtab` и `department` — через `SERVICE_REQUEST_CUSTOMER_PERMISSIONS`), и набор им
+     * ничего не добавляет. Оставлен он намеренно: собранный набор — второй, независимый от матрицы
+     * источник выдачи (ADR 0106), и файл продолжает доказывать, что ветвь кандидата открывается
+     * ПРАВОМ, а не тем, каким путём право пришло. Отрицательный случай при этом переехал на
+     * `plain` — роль без модуля заявок и набор заказчика без сообщения о технике.
      *
      * Роли в `grant_roles` обязательны: права набора считаются соединением с ними
      * (`grantPermissionsExpr`), и набор без строки роли не даёт держателю ничего.
@@ -338,6 +356,43 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
         INSERT INTO user_grants (user_id, grant_id, granted_by, origin)
         VALUES (${holder}, ${grantId}, ${adminUser.id}, 'manual')`);
     }
+
+    /*
+     * ВТОРОЙ СОБРАННЫЙ НАБОР — заказчик БЕЗ сообщения о технике, для `plain`. Состав повторяет
+     * системный «Оргтехника: заявитель» минус одно право: после Э6 плана предмета заявки в самом
+     * системном наборе `officeEquipment.propose` уже есть, и выдать его здесь значило бы остаться
+     * без отрицательного случая вовсе.
+     *
+     * Требования (`PERMISSION_REQUIRES`) в составе соблюдены: правка, удаление и вложения зависят
+     * от `serviceRequests.read`, и он на месте. Набор самодостаточен ровно потому, что у роли
+     * `manager` прав модуля заявок нет ни одного.
+     */
+    const plainGrantRow = await db.execute<{ id: string }>(sql`
+      INSERT INTO grants (code, name, is_system) VALUES (${`ci_plain_${RUN}`}, 'Заказчик без сообщения', false)
+      RETURNING id`);
+    const plainGrantId = plainGrantRow.rows[0]!.id;
+    await db.execute(sql`
+      INSERT INTO grant_roles (grant_id, role) VALUES (${plainGrantId}, 'manager')`);
+    await db.execute(sql`
+      INSERT INTO grant_permissions (grant_id, permission) VALUES
+        (${plainGrantId}, 'officeEquipment.read'),
+        (${plainGrantId}, 'serviceRequests.read'),
+        (${plainGrantId}, 'serviceRequests.create'),
+        (${plainGrantId}, 'serviceRequests.update'),
+        (${plainGrantId}, 'serviceRequests.delete'),
+        (${plainGrantId}, 'serviceRequests.files')`);
+    await db.execute(sql`
+      INSERT INTO user_grants (user_id, grant_id, granted_by, origin)
+      VALUES (${plain.id}, ${plainGrantId}, ${adminUser.id}, 'manual')`);
+
+    /*
+     * РУБИЛЬНИК ПРИЁМА ВКЛЮЧАЕТСЯ ФИКСТУРОЙ (план `docs/office-equipment-request-subject-plan.md`,
+     * Р10). Миграция 0293 заводит строку ВЫКЛЮЧЕННОЙ — это состояние выпуска A, — и без этой строки
+     * `POST /service-requests` отвечал бы 403 на каждое сообщение о технике: файл проверял бы
+     * рубильник вместо приёма. Сам рубильник доказывает свой файл (`candidate-intake-flag.db.test.ts`).
+     */
+    await db.execute(sql`
+      UPDATE feature_flags SET is_enabled = true WHERE key = 'office_equipment_candidate_intake'`);
 
     const typeRow = await db.execute<{ id: string }>(
       sql`SELECT id FROM office_equipment_types WHERE code = 'mfp'`,

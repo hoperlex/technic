@@ -727,6 +727,17 @@ export const ACCESS_MANIFEST = {
   },
   'GET /api/v1/office-equipment': { kind: 'permissions', allOf: ['officeEquipment.read'] },
   'POST /api/v1/office-equipment': { kind: 'permissions', allOf: ['officeEquipment.write'] },
+  // Проекция для выбора предмета заявки (план `docs/office-equipment-request-subject-plan.md`, Р1).
+  // Прав ДВА, и второе не декорация: по этой выдаче от трёх набранных символов виден весь активный
+  // парк компании, и открывать его наблюдателю, который заявок не заводит, не за что.
+  'GET /api/v1/office-equipment/selector': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read', 'serviceRequests.create'],
+  },
+  'GET /api/v1/office-equipment/selector/:id': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read', 'serviceRequests.create'],
+  },
   'GET /api/v1/office-equipment/:id': { kind: 'permissions', allOf: ['officeEquipment.read'] },
   'PATCH /api/v1/office-equipment/:id': { kind: 'permissions', allOf: ['officeEquipment.write'] },
   'DELETE /api/v1/office-equipment/:id': { kind: 'permissions', allOf: ['officeEquipment.write'] },
@@ -845,8 +856,17 @@ export const ACCESS_MANIFEST = {
    * то есть эффект есть. Смысл прежней формулировки «по присутствию» («снятие — то же решение, что
    * и постановка») уцелел целиком, а её издержка — нет.
    *
-   * Заведение (`POST /api/v1/service-requests`) остаётся простым `permissions` намеренно (Н1, §8):
-   * объявить срочность при подаче — просьба заявителя, и отбирать её значило бы менять постановку.
+   * ЗАВЕДЕНИЕ (`POST /api/v1/service-requests`) СРОЧНОСТЬ ТЕПЕРЬ ТОЖЕ СПРАШИВАЕТ (план
+   * `docs/office-equipment-request-subject-plan.md`, Р9): прежняя формулировка «объявить срочность
+   * при подаче — просьба заявителя» отменена заказчиком, и `isUrgent: true` без права отвечает 403 в
+   * обработчике. Строка манифеста при этом остаётся простым `permissions`, и вот почему: условием
+   * здесь ПАРА полей (`isUrgent` + `urgencyReason`, порознь их не принимает схема), а
+   * `conditionalPermissions` подставляет в тело ровно одно поле — объявленное таким видом условие
+   * упиралось бы в 400 схемы вместо 403 стража, то есть проверяло бы схему. Тем же — и по той же
+   * причине — не объявлены два соседних условия этой ручки (`serviceRequests.createWithoutEquipment`
+   * и `officeEquipment.propose`): все три живут в обработчике одним разбором предмета и доказываются
+   * направленными db-тестами (`service-request-urgency.db.test.ts`,
+   * `service-request-without-equipment.db.test.ts`, `service-request-candidate-intake.db.test.ts`).
    *
    * Считается разница в обработчике, по уже загруженной строке (`routes/service-requests.ts`), и
    * страж объявляет одно базовое право: сверять с фактом можно `baseAllOf`, а эффект телом запроса

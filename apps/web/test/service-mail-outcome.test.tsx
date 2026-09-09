@@ -11,6 +11,7 @@ import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
+import { equipmentSelectorOption, equipmentSelectorRoutes } from './factories/officeEquipment';
 import { serviceRequest } from './factories/service';
 import { objectDto } from './factories/waste';
 import { ServiceRequestForm } from '../src/pages/service/ServiceRequestForm';
@@ -99,7 +100,16 @@ const OPERATOR: AuthUser = authUser({
 /** Заведение заявки: ответ несёт заявку и исход письма — оба нужны форме. */
 function renderForm(mail: ModuleMailOutcome): HttpMock {
   const http = mockHttp({
-    'GET /office-equipment': () => json(list([EQUIPMENT])),
+    // Форма спрашивает проекцию селектора (план предмета заявки, Р1), а вкладка ниже — обычный
+    // справочник: ручки разные, и мок обязан различать их так же, как сервер.
+    ...equipmentSelectorRoutes([
+      equipmentSelectorOption({
+        id: EQUIPMENT.id,
+        name: EQUIPMENT.name,
+        inventoryNumber: EQUIPMENT.inventoryNumber,
+        location: EQUIPMENT.location,
+      }),
+    ]),
     'GET /office-equipment-types': () => json(list([TYPE])),
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),

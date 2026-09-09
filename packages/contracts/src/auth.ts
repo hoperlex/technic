@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { optionalPhoneSchema } from './common';
 import { emailSchema } from './email';
 import type { CounterpartyType } from './counterparties';
+import type { FeatureFlagKey } from './feature-flags';
 import type { RoleAddon } from './role-addons';
 import type { Role } from './enums';
 import type { Permission } from './permissions';
@@ -297,6 +298,30 @@ export interface AuthUser extends PersonNameParts {
    * на границе «база → код», тем же приёмом и в том же месте, что принципал.
    */
   grantPermissions: Permission[];
+  /**
+   * **Включённые рубильники приёма** (`FEATURE_FLAGS`, план
+   * `docs/office-equipment-request-subject-plan.md`, Р10) — список ключей, которые сервер считает
+   * включёнными; ключа в списке нет, значит выключен.
+   *
+   * Список включённых, а не словарь всех: так же устроены `permissions` и `grantCodes` рядом, и
+   * ответ «чего нет — того нельзя» получается сам собой, без разбора третьего состояния.
+   *
+   * **Поле необязательно, и это не забывчивость сервера.** Новый сервер отдаёт его всегда, во всех
+   * четырёх ответах сессии; необязательным оно объявлено ровно затем, чтобы fail-closed был выражен
+   * ТИПОМ. В окне выката портал бывает новее приложения, и `user.features.includes(…)` на ответе
+   * старого сервера не «вернуло бы `false`», а упало бы на `undefined`. Читать значение полагается
+   * только `hasFeature` (`feature-flags.ts`), где отсутствие списка и отсутствие ключа сведены к
+   * одному ответу.
+   *
+   * Приходит во всех четырёх ответах, устанавливающих сессию (`login`, `refresh`, `/auth/me`, смена
+   * пароля) — тем же сборщиком и по той же причине, что права и коды наборов выше: портал рисует
+   * меню и экраны по ответу входа, ещё не спросив `/auth/me`, и разные ответы означали бы разное
+   * поведение в зависимости от того, как человек вошёл.
+   *
+   * Доказательством доступа поле не является: решение по запросу сервер принимает сам, читая ту же
+   * строку базы, и присланному клиентом списку не доверяет.
+   */
+  features?: FeatureFlagKey[];
 }
 
 export interface LoginResult {

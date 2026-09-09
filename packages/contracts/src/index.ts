@@ -15,6 +15,11 @@ export * from './snils';
 export * from './persons';
 export * from './password';
 export * from './registration-request';
+/* Рубильники приёма (`feature-flags.ts`) — перед ответами сессии, потому что приезжают именно в
+ * них: ключ объявлен здесь, значение считает сервер, а правило «нет ключа — выключено» живёт рядом
+ * с реестром, чтобы у портала не завелось второй копии (план
+ * `docs/office-equipment-request-subject-plan.md`, Р10). */
+export * from './feature-flags';
 export * from './auth';
 export * from './users';
 export * from './objects';

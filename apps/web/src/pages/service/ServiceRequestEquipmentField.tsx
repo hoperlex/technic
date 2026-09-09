@@ -4,9 +4,9 @@ import { useQuery } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
 import { objectOptionsQuery } from '@entities/object';
 import {
-  officeEquipmentOptionsQuery,
-  officeEquipmentPickedQuery,
-  type OfficeEquipmentOption,
+  officeEquipmentSelectorOptionsQuery,
+  officeEquipmentSelectorPickedQuery,
+  type OfficeEquipmentSelectorOption,
 } from '@entities/office-equipment';
 import { EquipmentNotFoundLink, type EquipmentCandidateDraft } from '@features/missing-equipment';
 import { AutoSelect } from '@shared/ui';
@@ -14,24 +14,26 @@ import { ServiceRequestSubject } from './ServiceRequestSubject';
 import { useAuth } from '../../auth/AuthContext';
 import { useObjectScope } from '../../hooks/useObjectScope';
 
-/** Опция справочника техники с реквизитами, которые форма показывает под полем (Р48). */
-export interface EquipmentOption {
-  value: string;
-  label: string;
-  name: string;
-  serialNumber: string;
-  inventoryNumber: string;
-  objectLabel: string;
-  location: string;
-  warrantyUntil: string | null;
-}
+/**
+ * Опция поля «Какой аппарат» — ОТДЕЛЬНАЯ ПРОЕКЦИЯ СЕЛЕКТОРА (план
+ * `docs/office-equipment-request-subject-plan.md`, Р1), а не карточка справочника.
+ *
+ * Своего описания у поля больше нет: проекция и заведена ровно под этот вопрос, и вторая её опись
+ * рядом обещала бы поля, которых сервер не отдаёт. Тип и модель в ней отсутствуют намеренно — по
+ * этой выдаче виден весь активный парк компании, и учётные реквизиты по нему не раздаются. Кто
+ * спрашивает про модель (окно расходников) и про тип (объединение кандидата), тот и остаётся на
+ * обычной выдаче справочника: у них своя область и свой ответ.
+ */
+type EquipmentOption = OfficeEquipmentSelectorOption;
 
 /**
- * КАКАЯ ЕДИНИЦА ВЫБРАНА — и чем она подписана (план кандидата, Ф1).
+ * КАКАЯ ЕДИНИЦА ВЫБРАНА — и чем она подписана (план кандидата, Ф1; проекция — Р1 плана предмета
+ * заявки).
  *
  * Хук стоит при поле, а не в форме: с переводом отбора на сервер ответ на этот вопрос перестал
  * быть строчкой `find` по загруженному справочнику и собирается из трёх источников. Форме нужен
- * ответ — по нему она считает гарантию и заказчика, — а устройство ответа принадлежит полю.
+ * ответ — по нему она считает гарантию, заказчика и плашку о чужой площадке, — а устройство
+ * ответа принадлежит полю.
  *
  * Источников три, и каждый закрывает случай, которого не закрывают остальные.
  *
@@ -40,17 +42,21 @@ export interface EquipmentOption {
  *    без памяти подпись в поле сменилась бы идентификатором, реквизиты под ним пропали бы, а поле
  *    заказчика — оно считается по площадке выбранной единицы — заперлось бы, хотя человек всего
  *    лишь набрал следующий номер.
- * 3. ДОЧИТКА КАРТОЧКИ по идентификатору — для единицы, названной не набором: в обращении по
- *    гарантии её назвал реестр, при правке — заведение, а заведённая из самой формы приходит в
- *    поле готовым значением. В срез по набранному ни одна из трёх попасть не обязана.
+ * 3. ДОЧИТКА по идентификатору — для единицы, названной не набором: в обращении по гарантии её
+ *    назвал реестр, при правке — заведение, а заведённая из самой формы приходит в поле готовым
+ *    значением. В срез по набранному ни одна из трёх попасть не обязана.
  *
- * Спрашиваем карточку только тогда, когда справочник выдачей что-то показал, а выбранного в ней
- * нет: пустая выдача означает, что показывать этой учётке нечего вовсе — по идентификатору придёт
- * тот же ответ.
+ * ДОЧИТКА БОЛЬШЕ НЕ ЖДЁТ НЕПУСТОЙ ВЫДАЧИ, и это прямое следствие перевода на селектор. Прежнее
+ * условие «справочник что-то показал» держалось на том, что выдача и дочитка судили об области
+ * одинаково: пустой список означал «этой учётке показывать нечего», и по идентификатору пришёл бы
+ * тот же отказ. Теперь выдача без набранного — это СВОЯ область (Р3), а дочитка отвечает
+ * независимо от области и от набранного: аппарат чужой площадки, названный реестром гарантий или
+ * правкой заявки, остался бы в поле голым идентификатором ровно в тот момент, когда про него и
+ * надо рассказать плашкой.
  *
  * Отдельной задержки ввода (debounce) здесь нет намеренно: выдачи лежат в кэше запросов по
- * набранному (`officeEquipmentKeys.options`), повторный набор сервер не тревожит, а лишний слой
- * ожидания добавил бы ровно одно — «поле отстаёт от набранного».
+ * набранному (`officeEquipmentKeys.selectorOptions`), повторный набор сервер не тревожит, а лишний
+ * слой ожидания добавил бы ровно одно — «поле отстаёт от набранного».
  */
 export function useServiceRequestEquipment({
   open,
@@ -61,19 +67,25 @@ export function useServiceRequestEquipment({
   equipmentId: string | undefined;
 }) {
   const { can } = useAuth();
-  const canRead = can('officeEquipment.read');
+  /*
+   * ДВЕРЬ У СЕЛЕКТОРА ИЗ ДВУХ ПРАВ (Р1), и спрашиваются оба: `officeEquipment.read` отвечает за
+   * справочник, `serviceRequests.create` — за то, что человек вообще заводит заявки. Спроси портал
+   * одно первое, и правка заявки учёткой без второго била бы в 403 на каждом открытии окна —
+   * молча, фоновым запросом, у которого результата всё равно никто не ждёт.
+   */
+  const canPick = can('officeEquipment.read') && can('serviceRequests.create');
   const [search, setSearch] = useState('');
-  const [picked, setPicked] = useState<OfficeEquipmentOption | null>(null);
+  const [picked, setPicked] = useState<EquipmentOption | null>(null);
 
   const { data: options = [], isFetching: loading } = useQuery({
-    ...officeEquipmentOptionsQuery(search),
-    enabled: open && canRead,
+    ...officeEquipmentSelectorOptionsQuery(search),
+    enabled: open && canPick,
   });
   const listed = options.find((option) => option.value === equipmentId);
   const remembered = picked?.value === equipmentId ? picked : undefined;
   const { data: fetched } = useQuery({
-    ...officeEquipmentPickedQuery(equipmentId),
-    enabled: open && canRead && !!equipmentId && !listed && !remembered && options.length > 0,
+    ...officeEquipmentSelectorPickedQuery(equipmentId),
+    enabled: open && canPick && !!equipmentId && !listed && !remembered,
   });
 
   return {

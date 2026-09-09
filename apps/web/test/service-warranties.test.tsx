@@ -5,6 +5,7 @@ import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
+import { equipmentSelectorOption, equipmentSelectorRoutes } from './factories/officeEquipment';
 import { objectDto } from './factories/waste';
 import { WarrantiesTab } from '../src/pages/service/WarrantiesTab';
 
@@ -49,6 +50,19 @@ function renderTab(rows: ServiceWarrantyRowDto[], over: RouteMap = {}): HttpMock
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
     'GET /office-equipment': () => json(emptyList()),
+    /*
+     * Форма обращения по гарантии открывается с уже названной единицей, и поле «Какой аппарат»
+     * дочитывает её проекцией селектора (план предмета заявки, Р1, Р3): в выдачу по набранному она
+     * попасть не обязана — назвал её реестр, а не человек. Дочитка потому и отвечает независимо от
+     * набранного.
+     */
+    ...equipmentSelectorRoutes([
+      equipmentSelectorOption({
+        id: 'oe-1',
+        serialNumber: 'SN-1',
+        warrantyUntil: '2026-11-20',
+      }),
+    ]),
     'GET /office-equipment-types': () => json(emptyList()),
     ...over,
   });

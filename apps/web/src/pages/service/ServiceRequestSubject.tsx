@@ -1,12 +1,35 @@
 import { useEffect, useRef } from 'react';
-import { Checkbox, Descriptions, Form, Space, Typography } from 'antd';
+import { Alert, Checkbox, Descriptions, Form, Space, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
 import { objectOptionsQuery } from '@entities/object';
 import { WarrantyTag } from '@entities/office-equipment';
 import { serviceRequestEquipmentName, serviceRequestPlaceLine } from '@entities/service-request';
 import { AutoSelect } from '@shared/ui';
+import { useAuth } from '../../auth/AuthContext';
+import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import { useObjectScope } from '../../hooks/useObjectScope';
+
+/**
+ * Выбранная единица глазами этого блока: реквизиты снимка и два ответа об области (Р2 плана
+ * предмета заявки). Проекция селектора подходит под него целиком.
+ */
+interface SubjectEquipment {
+  name: string;
+  serialNumber: string;
+  inventoryNumber: string;
+  objectLabel: string;
+  /** Отдел-владелец словами; пусто — карточка не размечена (Р1). */
+  departmentName: string;
+  location: string;
+  warrantyUntil: string | null;
+  /** Погашенная карточка приходит только дочиткой уже выбранного (Р3) и называется вслух. */
+  isActive: boolean;
+  /** Карточка целиком в области учётки. */
+  inOwnScope: boolean;
+  /** ОБЪЕКТ карточки в объектах учётки — им и различается «чужой отдел, своя площадка» (Р2). */
+  objectInOwnScope: boolean;
+}
 
 /**
  * Реквизиты предмета заявки в форме (план модернизации, Р48, Р57; подписи — Р17): аппарат, номера,
@@ -27,14 +50,7 @@ export function ServiceRequestSubject({
   /** Правка существующей заявки: реквизиты берутся из её снимка. */
   request: ServiceRequestDto | null;
   /** Выбранная в справочнике единица; у правки её нет — поле выключено. */
-  selected?: {
-    name: string;
-    serialNumber: string;
-    inventoryNumber: string;
-    objectLabel: string;
-    location: string;
-    warrantyUntil: string | null;
-  };
+  selected?: SubjectEquipment;
 }) {
   const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
@@ -99,7 +115,21 @@ export function ServiceRequestSubject({
         style={{ marginBottom: 8 }}
         labelStyle={{ width: 140 }}
         items={[
-          { key: 'name', label: 'Аппарат', children: selected.name },
+          {
+            key: 'name',
+            label: 'Аппарат',
+            children: (
+              <Space size={8} wrap>
+                <span>{selected.name}</span>
+                {/* Погашенная карточка попадает в поле только дочиткой уже выбранного (Р3) — из
+                    реестра гарантий или из правки заявки, — и называется вслух: заявку по ней
+                    сервер отбивает 422, и молчание стоило бы человеку заполненной формы. */}
+                {!selected.isActive && (
+                  <Typography.Text type="danger">выведен из эксплуатации</Typography.Text>
+                )}
+              </Space>
+            ),
+          },
           {
             key: 'numbers',
             label: 'Номера',
@@ -129,8 +159,56 @@ export function ServiceRequestSubject({
           },
         ]}
       />
-      <ServiceRequestObjectOverride />
+      <ServiceRequestForeignScopeAlert selected={selected} />
+      {/* Площадка заявки считается по объекту КАРТОЧКИ (`objectInOwnScope`), а не по карточке
+          целиком: чужой отдел-владелец места аппарата не меняет (Р2, Р6). */}
+      <ServiceRequestObjectOverride foreignSite={!selected.objectInOwnScope} />
     </>
+  );
+}
+
+/**
+ * АППАРАТ ЧИСЛИТСЯ НЕ ЗА ВАМИ (план предмета заявки, Р4–Р6) — предупреждение, и только оно.
+ *
+ * Заявку плашка не запрещает и ничего не требует: справочник по оргтехнике врёт чаще, чем человек,
+ * стоящий рядом с аппаратом, — за этим поиск и открыли по всему парку. Отвергнуто на ревью
+ * заказчика: запирать заведение до подтверждения ИТ-службой (заявку тогда не завести в тот день,
+ * когда аппарат встал) и молча писать заявку на площадку карточки (автор отправил бы её и не
+ * увидел — видимость объектной роли считается именно этой колонкой, Р4).
+ *
+ * НАЗЫВАЕТ РАСХОЖДЕНИЕ СЛОВАМИ, а не значком: «стоит не у вас» без имени площадки не отвечает на
+ * единственный вопрос, ради которого плашку и читают, — «тот ли это аппарат». Названия объектов в
+ * компании повторяются («Склад»), поэтому подпись идёт с кодом — той же строкой, что и «Где стоит»
+ * над ней.
+ *
+ * РАЗВИЛКА ЧИТАЕТСЯ ТОЛЬКО ПО ДВУМ ПРИЗНАКАМ СЕРВЕРА (Р2), и своей оси у портала здесь нет:
+ *
+ *   * `objectInOwnScope: false` — аппарат стоит на чужой площадке; она и называется;
+ *   * `inOwnScope: false` при СВОЕЙ площадке — единственная причина расхождения в отделе-владельце,
+ *     и тогда называется он. Спроси портал роль сам, он завёл бы второе мнение об области — то, из-за
+ *     которого признаков и сделали два.
+ *
+ * Когда чужие обе (роль отдела на чужой площадке), названа площадка: именно она решает, куда
+ * запишется заявка, а дописать «и отдел» портал мог бы, лишь повторив у себя разбор области сервера.
+ */
+function ServiceRequestForeignScopeAlert({ selected }: { selected: SubjectEquipment }) {
+  const foreignSite = !selected.objectInOwnScope;
+  const foreignOwner = !selected.inOwnScope && selected.objectInOwnScope;
+  if (!foreignSite && !foreignOwner) return null;
+
+  const where = foreignSite
+    ? `По справочнику он стоит на площадке «${selected.objectLabel}», а не на вашей.`
+    : `По справочнику он закреплён за ${
+        selected.departmentName ? `отделом «${selected.departmentName}»` : 'другим отделом'
+      }, а не за вашим.`;
+  return (
+    <Alert
+      type="warning"
+      showIcon
+      style={{ marginBottom: 12 }}
+      title="Аппарат числится не за вами"
+      description={`${where} Заявке это не мешает: она будет записана на вас — проверьте, тот ли это аппарат.`}
+    />
   );
 }
 
@@ -155,10 +233,33 @@ export function ServiceRequestSubject({
  * проверяет область заявителя, а не различие), и в очередь расхождений ИТ-службы пришла бы ложная
  * строка, которую разбирал бы живой человек. Правило живёт у самой пары, ровно как правило площадки
  * живёт у поля заказчика (К10), а не у формы, которая их только расставляет.
+ *
+ * У АППАРАТА ВНЕ СВОЕЙ ОБЛАСТИ ПАРА НЕ ЗАЯВЛЯЕТСЯ, А СЛЕДУЕТ ИЗ ФОРМЫ (план предмета заявки, Р5,
+ * Р6), и спрашивают её по-разному две оси:
+ *
+ *   * ОБЪЕКТНАЯ — не спрашивает здесь ничего. Своя площадка выбирается в поле «Для кого заявка» и
+ *     одним решением становится и заказчиком, и объектом пары (Р5): второе поле про то же самое
+ *     означало бы два ответа на один вопрос — и заявку, у которой заказчик и место разъехались;
+ *   * ОТДЕЛЬСКАЯ — спрашивает площадку отдельно (Р6): заказчиком там уходит свой отдел, а место
+ *     аппарата отделом не задаётся вовсе. Выбор ограничен площадками своих отделов
+ *     (`departmentObjectIds`, ADR 0062) — тем же отбором, каким сервер отвечает 422 на чужую.
+ *
+ * Галочки в обоих случаях нет: расхождение здесь не заявляют — оно уже названо справочником, и
+ * предлагать подтвердить его вручную значило бы спрашивать «точно ли аппарат там, где он стоит».
+ * Площадок у отдела может не оказаться вовсе; тогда поля нет и пары нет — заявка запишется на
+ * объект карточки и удержится в области своим отделом-заказчиком, а требовать невыполнимого от
+ * человека с пустым списком портал не вправе.
  */
-function ServiceRequestObjectOverride() {
+function ServiceRequestObjectOverride({
+  /** Аппарат стоит вне площадок учётки (`objectInOwnScope: false`). */
+  foreignSite,
+}: {
+  foreignSite: boolean;
+}) {
   const form = Form.useFormInstance();
+  const { user } = useAuth();
   const objectScope = useObjectScope();
+  const departmentScope = useDepartmentScope();
   const overridden = Form.useWatch('objectOverridden', form);
   const equipmentId = Form.useWatch('officeEquipmentId', form);
 
@@ -176,39 +277,64 @@ function ServiceRequestObjectOverride() {
     form.setFieldsValue({ objectOverridden: false, objectId: undefined });
   }, [equipmentId, form]);
 
+  /*
+   * Площадки своих отделов спрашиваются готовым списком учётки (ADR 0062, ADR 0144), а не
+   * выводятся из её отделов: связь «отдел ↔ площадка» портал знает целиком, и второй способ её
+   * посчитать разошёлся бы с серверным (`resolveEquipmentObject`) на первой же правке привязок.
+   * Тот же список читает и площадка сообщения о технике (`ReportEquipmentModal`).
+   */
+  const departmentObjectIds = user?.departmentObjectIds ?? [];
+  const askOwnSite =
+    foreignSite && departmentScope.isDepartmentRole && !!departmentObjectIds.length;
+  // Заявленное расхождение спрашивают только у аппарата СВОЕЙ площадки: у чужой оно уже факт.
+  const claimed = !foreignSite;
+
   const { data: objectOptions = [], isFetching } = useQuery({
     ...objectOptionsQuery(),
     // Список нужен только раскрытому полю: у нетронутой галочки выбирать не из чего.
-    enabled: !!overridden,
+    enabled: (claimed && !!overridden) || askOwnSite,
   });
+  const options = askOwnSite
+    ? objectOptions.filter((option) => departmentObjectIds.includes(option.value))
+    : // Только свои объекты: чужие объектной роли и выбирать незачем — сервер ответит 422.
+      objectScope.limitObjectOptions(objectOptions);
+
+  if (!claimed && !askOwnSite) return null;
 
   return (
     <>
-      <Form.Item name="objectOverridden" valuePropName="checked" style={{ marginBottom: 8 }}>
-        <Checkbox
-          // Снятая галочка уносит и выбор: пара «объект + пометка» уходит на сервер целиком, и
-          // схема заведения не принимает её половинками — объект без пометки и пометка без объекта
-          // одинаково отвергаются (422).
-          onChange={(e) => {
-            if (!e.target.checked) form.setFieldValue('objectId', undefined);
-          }}
-        >
-          Аппарат стоит на другом объекте
-        </Checkbox>
-      </Form.Item>
-      {overridden && (
+      {claimed && (
+        <Form.Item name="objectOverridden" valuePropName="checked" style={{ marginBottom: 8 }}>
+          <Checkbox
+            // Снятая галочка уносит и выбор: пара «объект + пометка» уходит на сервер целиком, и
+            // схема заведения не принимает её половинками — объект без пометки и пометка без объекта
+            // одинаково отвергаются (422).
+            onChange={(e) => {
+              if (!e.target.checked) form.setFieldValue('objectId', undefined);
+            }}
+          >
+            Аппарат стоит на другом объекте
+          </Checkbox>
+        </Form.Item>
+      )}
+      {(askOwnSite || (claimed && overridden)) && (
         <Form.Item
           name="objectId"
-          label="Где он на самом деле"
+          label={askOwnSite ? 'На какой вашей площадке он стоит' : 'Где он на самом деле'}
           rules={[{ required: true, message: 'Выберите объект, на котором стоит аппарат' }]}
-          extra="Справочник этим не правится: единицу перенесёт ИТ-служба, разобрав заявленные расхождения."
+          extra={
+            askOwnSite
+              ? // Заявка записывается на выбранную площадку (Р4): на площадке карточки автор её не
+                // увидел бы, а исполнять её некому — аппарат стоит не там.
+                'Заявка запишется на эту площадку: по ней её найдут и исполнят.'
+              : 'Справочник этим не правится: единицу перенесёт ИТ-служба, разобрав заявленные расхождения.'
+          }
         >
           <AutoSelect
             showSearch
             optionFilterProp="label"
             loading={isFetching}
-            // Только свои объекты: чужие объектной роли и выбирать незачем — сервер ответит 422.
-            options={objectScope.limitObjectOptions(objectOptions)}
+            options={options}
             placeholder="Код или название объекта"
           />
         </Form.Item>

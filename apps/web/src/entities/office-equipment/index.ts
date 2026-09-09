@@ -33,9 +33,18 @@ export {
   officeEquipmentModelPickerQuery,
   officeEquipmentOptionsQuery,
   officeEquipmentPickedQuery,
+  /**
+   * Выбор предмета заявки — своя пара запросов со своими ключами (план
+   * `docs/office-equipment-request-subject-plan.md`, Р1). Рядом с обычной выдачей, а не вместо неё:
+   * ту спрашивают объединение кандидата и окно расходников заявки, и им нужны тип с моделью,
+   * которых у проекции селектора нет.
+   */
+  officeEquipmentSelectorOptionsQuery,
+  officeEquipmentSelectorPickedQuery,
   officeEquipmentSpecsQuery,
   officeEquipmentTypeOptionsQuery,
   type OfficeEquipmentOption,
+  type OfficeEquipmentSelectorOption,
 } from './api/queries';
 export { EquipmentStateTag } from './ui/EquipmentStateTag';
 /**

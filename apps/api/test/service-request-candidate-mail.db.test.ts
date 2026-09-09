@@ -476,6 +476,15 @@ describe.skipIf(!DB_URL)('письма о сообщении, что техни�
       UPDATE module_mail_event_settings SET is_enabled = true
        WHERE event IN (${PENDING}, ${DECIDED})`);
 
+    /*
+     * ТУДА ЖЕ И РУБИЛЬНИК ПРИЁМА (план `docs/office-equipment-request-subject-plan.md`, Р10):
+     * миграция 0293 заводит его строку выключенной, и без включения ручка отвечала бы 403 на каждое
+     * сообщение о технике — писем не появилось бы вовсе, а файл зеленел бы на пустом месте. Рубильник
+     * приёма и рубильники писем щёлкаются порознь: это два разных ключа и два разных вопроса.
+     */
+    await db.execute(sql`
+      UPDATE feature_flags SET is_enabled = true WHERE key = 'office_equipment_candidate_intake'`);
+
     const app = await buildApp();
     await app.ready();
 

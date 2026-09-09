@@ -5,6 +5,7 @@ import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { departmentUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
+import { equipmentSelectorOption, equipmentSelectorRoutes } from './factories/officeEquipment';
 import {
   serviceCustomer,
   serviceInHouseExecutor,
@@ -144,7 +145,20 @@ function renderForm(
   request: ServiceRequestDto | null = null,
 ): HttpMock {
   const http = mockHttp({
-    'GET /office-equipment': () => json(list([UNIT, SECOND])),
+    // Поле «Какой аппарат» спрашивает проекцию селектора (план предмета заявки, Р1); обе единицы
+    // стоят на своих площадках — про чужую здесь речи нет.
+    ...equipmentSelectorRoutes(
+      [UNIT, SECOND].map((unit) =>
+        equipmentSelectorOption({
+          id: unit.id,
+          name: unit.name,
+          inventoryNumber: unit.inventoryNumber,
+          object: unit.object,
+          location: unit.location,
+          warrantyUntil: unit.warrantyUntil,
+        }),
+      ),
+    ),
     'GET /objects': () => json(list([NORTH, SOUTH, FOREIGN])),
     'GET /departments': () => json(list(DEPARTMENTS)),
     'POST /service-requests': () => json({ request: serviceRequest(), mail: 'queued' }, 201),

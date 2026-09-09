@@ -12,6 +12,7 @@ import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
+import { equipmentSelectorOption, equipmentSelectorRoutes } from './factories/officeEquipment';
 import { SERVICE_COUNTERPARTY, serviceExecutor, serviceRequest } from './factories/service';
 import { ServiceRequestForm } from '../src/pages/service/ServiceRequestForm';
 import { ServiceRequestViewModal } from '../src/pages/service/ServiceRequestViewModal';
@@ -147,7 +148,20 @@ function consumableRequest(
 
 function renderForm(routes: RouteMap = {}): HttpMock {
   const http = mockHttp({
-    'GET /office-equipment': () => json(list([UNIT])),
+    /*
+     * Форма спрашивает ПРОЕКЦИЮ СЕЛЕКТОРА (план предмета заявки, Р1), а окно состава ниже —
+     * обычную выдачу справочника: модели у проекции нет вовсе, а расходники подбираются именно по
+     * ней. Разные ручки у разных вопросов, и мок обязан различать их так же, как сервер.
+     */
+    ...equipmentSelectorRoutes([
+      equipmentSelectorOption({
+        id: UNIT.id,
+        name: UNIT.name,
+        inventoryNumber: UNIT.inventoryNumber,
+        object: NORTH,
+        location: UNIT.location,
+      }),
+    ]),
     'GET /departments': () => json(emptyList()),
     'GET /objects': () => json(emptyList()),
     // Отбор по модели — на стороне сервера: портал шлёт `modelId`, и проверяется именно это.

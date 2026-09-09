@@ -18,6 +18,8 @@ import type {
   OfficeEquipmentConsumableUsageQuery,
   OfficeEquipmentDto,
   OfficeEquipmentModelDto,
+  OfficeEquipmentRequestOptionDto,
+  OfficeEquipmentSelectorQuery,
   OfficeEquipmentSpecDto,
   OfficeEquipmentTypeDto,
   UpdateOfficeEquipmentConsumableInput,
@@ -68,6 +70,25 @@ export const officeEquipmentApi = {
     PATH,
   ),
   ...createRemoveApi<{ ok: boolean }>(PATH),
+  /**
+   * ВЫБОР ПРЕДМЕТА ЗАЯВКИ (план `docs/office-equipment-request-subject-plan.md`, Р1) — своя пара
+   * ручек, а не `list`/`get` с параметром.
+   *
+   * Ответ у них другой и намеренно бедный: подпись, номера, место, гарантия и два признака области.
+   * Ни комментария, ни закупки, ни состояния, ни характеристик, ни расходников, ни истории — по
+   * этой выдаче от трёх набранных символов виден весь активный парк компании, и открывать по нему
+   * учётные данные значило бы не «расширить поиск», а раздать справочник.
+   *
+   * `selectorPicked` дочитывает уже выбранное по идентификатору: выдача — срез по набранному, и
+   * аппарат, названный не набором (обращение по гарантии, правка заявки), в ней может не лежать
+   * вовсе. Погашенная карточка приходит с `isActive: false`, архивная — 404.
+   *
+   * Обе просят ещё и `serviceRequests.create`: без него сервер отвечает 403.
+   */
+  selector: (query: OfficeEquipmentSelectorQuery) =>
+    apiFetch<ListResult<OfficeEquipmentRequestOptionDto>>(`${PATH}/selector`, { query }),
+  selectorPicked: (id: string) =>
+    apiFetch<OfficeEquipmentRequestOptionDto>(`${PATH}/selector/${id}`),
   /**
    * Перемещение (Р59): переезд — событие с датой, причиной и обеими сторонами, а не поле правки.
    * Ответ — обновлённая карточка: следующее действие делают уже по новому месту.

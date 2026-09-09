@@ -5,6 +5,7 @@ import type {
   CreateOfficeEquipmentInput,
   OfficeEquipmentDto,
   OfficeEquipmentModelDto,
+  OfficeEquipmentRequestOptionDto,
   OfficeEquipmentTypeDto,
 } from '@technic/contracts';
 import { selectOption } from './antd';
@@ -12,6 +13,7 @@ import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
+import { equipmentSelectorOption, equipmentSelectorRoutes } from './factories/officeEquipment';
 import { objectDto } from './factories/waste';
 import { ServiceRequestForm } from '../src/pages/service/ServiceRequestForm';
 
@@ -127,12 +129,23 @@ const CUSTOMER: AuthUser = authUser({ role: 'shtab', constructionObjectIds: ['ob
  * принести новую единицу и всем прочим спискам справочника.
  */
 function renderForm(user: AuthUser, over: RouteMap = {}): HttpMock {
-  const units: OfficeEquipmentDto[] = [
-    equipmentDto(),
-    equipmentDto({ id: 'oe-2', name: 'Brother HL-1110R', inventoryNumber: '0000778' }),
+  /*
+   * Выдача поля — проекция селектора (план предмета заявки, Р1), а не карточки справочника: их
+   * различают ручки, и общий массив на оба ответа обещал бы полю поля, которых сервер не отдаёт.
+   * Заведённая по ходу теста карточка дописывается сюда же — перезапрос после заведения обязан
+   * принести её и в это поле.
+   */
+  const units: OfficeEquipmentRequestOptionDto[] = [
+    equipmentSelectorOption({ name: 'Canon i-SENSYS', inventoryNumber: '0000777', location: '' }),
+    equipmentSelectorOption({
+      id: 'oe-2',
+      name: 'Brother HL-1110R',
+      inventoryNumber: '0000778',
+      location: '',
+    }),
   ];
   const http = mockHttp({
-    'GET /office-equipment': () => json(list(units)),
+    ...equipmentSelectorRoutes(units),
     'GET /office-equipment-types': () => json(list([TYPE])),
     // Форма модели спрашивает характеристики типа (цветность печати); здесь их нет.
     'GET /office-equipment-types/:id/specs': () => json([]),
@@ -141,7 +154,16 @@ function renderForm(user: AuthUser, over: RouteMap = {}): HttpMock {
     'GET /departments': () => json(emptyList()),
     'POST /office-equipment': ({ body }) => {
       const dto = createdDto(body as CreateOfficeEquipmentInput);
-      units.push(dto);
+      units.push(
+        equipmentSelectorOption({
+          id: dto.id,
+          name: dto.name,
+          serialNumber: dto.serialNumber,
+          inventoryNumber: dto.inventoryNumber,
+          object: dto.object,
+          location: dto.location,
+        }),
+      );
       return json(dto, 201);
     },
     ...over,
@@ -190,8 +212,9 @@ describe('«Не нашли технику?» у того, кто ведёт с�
     // Заявка продолжается с того же места: заведённая единица стоит выбранной, и стоит подписью
     // портала («модель · инв. номер»), а не идентификатором.
     expect(await screen.findByText('Kyocera M3145 · инв. 0012345')).toBeDefined();
-    // Список вариантов перезапрошен — единица есть и у всех прочих списков справочника.
-    await waitFor(() => expect(http.countOf('GET /office-equipment')).toBeGreaterThan(1));
+    // Список вариантов перезапрошен — единица есть и у всех прочих списков справочника: гашение
+    // корня семейства достаёт и выдачу селектора, у которой свои ключи (Р1).
+    await waitFor(() => expect(http.countOf('GET /office-equipment/selector')).toBeGreaterThan(1));
     // Разобранный тупик убирает и саму ссылку: техника выбрана, искать больше нечего.
     expect(screen.queryByText('Не нашли технику?')).toBeNull();
   });
@@ -239,7 +262,7 @@ describe('режимы, в которых технику не выбирают',
       subject: 'Замена узла',
     };
     mockHttp({
-      'GET /office-equipment': () => json(emptyList()),
+      ...equipmentSelectorRoutes([]),
       'GET /departments': () => json(emptyList()),
     });
     renderWithUser(<ServiceRequestForm open request={null} claim={claim} onClose={() => {}} />, {

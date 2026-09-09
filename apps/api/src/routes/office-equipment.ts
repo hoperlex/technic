@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import {
   and,
+  asc,
   count,
   desc,
   eq,
@@ -33,6 +34,9 @@ import {
   type MoveOfficeEquipmentSide,
   type OfficeEquipmentMoveConflictDetails,
   officeEquipmentListQuerySchema,
+  OFFICE_EQUIPMENT_SELECTOR_SEARCH_MIN,
+  officeEquipmentSelectorQuerySchema,
+  type OfficeEquipmentRequestOptionDto,
   projectOfficeEquipmentServiceEntry,
   type OfficeEquipmentConsumableRefDto,
   type OfficeEquipmentDto,
@@ -79,6 +83,7 @@ import {
   archiveWhere,
   assertArchiveVisible,
   assertOfficeEquipmentScope,
+  officeEquipmentObjectInOwnScope,
   officeEquipmentScopeWhere,
   serviceRequestVisibilityWhere,
 } from '../lib/access';
@@ -225,6 +230,77 @@ function toDto(r: EquipmentRow): OfficeEquipmentDto {
 async function getDto(id: string): Promise<OfficeEquipmentDto | null> {
   const [row] = await baseQuery().where(eq(officeEquipment.id, id));
   return row ? toDto(row) : null;
+}
+
+/**
+ * Выборка ПРОЕКЦИИ для выбора предмета заявки (план
+ * `docs/office-equipment-request-subject-plan.md`, Р1): своя, а не `baseQuery` с обрезкой полей.
+ *
+ * Тип, модель и характеристики не соединяются вовсе — не «не показываются», а не запрашиваются: по
+ * этой выдаче виден весь активный парк компании, и лишний столбец здесь стоит дороже, чем в списке
+ * справочника, который сужен областью. Заодно это два соединения вместо пяти на каждый набор буквы
+ * в поле.
+ *
+ * `inOwnScope` считает БАЗА ТЕМ ЖЕ ПРЕДИКАТОМ, которым список сужает выдачу
+ * (`officeEquipmentScopeWhere`), а не портал и не второе правило рядом: признак обязан отвечать на
+ * вопрос «увидел бы я этот аппарат в своём справочнике» ровно так же, как отвечает сам справочник.
+ * Списанное в код правило разошлось бы с оригиналом на первой же правке области — молча, потому что
+ * ошибка выражается плашкой, а не отказом. `undefined` предиката означает «область не сужается»
+ * (сквозная область модуля, роль без осей), и тогда признак верен для всех строк разом.
+ *
+ * `COALESCE` — не украшение: `owner_department_id IN (…)` у неразмеченной карточки даёт `NULL`, и
+ * без него признак приезжал бы третьим значением, которого в контракте нет.
+ */
+function selectorQuery(p: Principal) {
+  const scope = officeEquipmentScopeWhere(
+    p,
+    officeEquipment.objectId,
+    officeEquipment.ownerDepartmentId,
+  );
+  return db
+    .select({
+      id: officeEquipment.id,
+      name: officeEquipment.name,
+      serialNumber: officeEquipment.serialNumber,
+      inventoryNumber: officeEquipment.inventoryNumber,
+      object: objectRef,
+      ownerDepartment: departmentRef,
+      location: officeEquipment.location,
+      warrantyUntil: officeEquipment.warrantyUntil,
+      isActive: officeEquipment.isActive,
+      inOwnScope: scope ? sql<boolean>`COALESCE(${scope}, false)` : sql<boolean>`true`,
+    })
+    .from(officeEquipment)
+    .innerJoin(constructionObjects, eq(officeEquipment.objectId, constructionObjects.id))
+    .leftJoin(departments, eq(officeEquipment.ownerDepartmentId, departments.id));
+}
+
+type SelectorRow = Awaited<ReturnType<typeof selectorQuery>>[number];
+
+/**
+ * Строка проекции целиком: к ответу базы добавляется второй признак области (Р2).
+ *
+ * Поля перечислены поимённо, а не расписаны из строки: у этой проекции состав — и есть предмет
+ * решения (Р1), и `...row` однажды вынес бы наружу столбец, добавленный в выборку ради отбора.
+ *
+ * `objectInOwnScope` считается в коде, а не в SQL, потому что спрашивается не о строке справочника,
+ * а об учётке: её площадки принципал приносит готовыми на каждом запросе, и запрос в базу за тем,
+ * что уже в памяти, был бы вторым источником одного ответа.
+ */
+function toRequestOption(p: Principal, row: SelectorRow): OfficeEquipmentRequestOptionDto {
+  return {
+    id: row.id,
+    name: row.name,
+    serialNumber: row.serialNumber,
+    inventoryNumber: row.inventoryNumber,
+    object: row.object,
+    ownerDepartment: row.ownerDepartment,
+    location: row.location,
+    warrantyUntil: row.warrantyUntil,
+    isActive: row.isActive,
+    inOwnScope: row.inOwnScope,
+    objectInOwnScope: officeEquipmentObjectInOwnScope(p, row.object.id),
+  };
 }
 
 /**
@@ -567,6 +643,25 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
    * `officeEquipment.write` у неё нет и не появляется.
    */
   const canMove = app.requirePermission('officeEquipment.move');
+  /**
+   * ВТОРАЯ ПОЛОВИНА ДВЕРИ СЕЛЕКТОРА (план `docs/office-equipment-request-subject-plan.md`, Р1):
+   * общий поиск по парку открыт тому, кто читает справочник **и** заводит заявки.
+   *
+   * Конъюнкция записана вторым стражем, а не одним «хитрым» правом: так её объявляет `auth/plugin`
+   * («конъюнкция записывается несколькими стражами»), так её видит манифест доступа по одному
+   * праву на пометку, и так же закрыт соседний блок «Связанные заявки». Ручной проверки в
+   * обработчике с собственным 403 не заведено намеренно: страж без пометки `authz` не попал бы ни
+   * в `route-authorization`, ни в сверку манифеста — то есть дверь перестала бы быть видимой ровно
+   * тем проверкам, ради которых они написаны.
+   *
+   * Почему `serviceRequests.create`, а не одно чтение справочника: наблюдателю, который парк
+   * читает, а заявок не заводит, общекомпанейский поиск не нужен — а по нему видно модель, номера
+   * и место любого активного аппарата компании (§10, риск 1).
+   */
+  const canPickSubject = app.requirePermission(
+    'serviceRequests.create',
+    'Поиск по всему парку открыт тем, кто заводит заявки на обслуживание',
+  );
 
   r.get(
     '/',
@@ -659,6 +754,110 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
         page: p2.page,
         pageSize: p2.pageSize,
       };
+    },
+  );
+
+  /**
+   * ВЫДАЧА ДЛЯ ПОЛЯ «КАКОЙ АППАРАТ» (план `docs/office-equipment-request-subject-plan.md`, Р3).
+   *
+   * Порог в три символа делит выдачу надвое, и деление это содержательное, а не техническое. Пусто
+   * и один-два символа — своя область, как у списка справочника: короткий набор это не поиск, а
+   * праздный просмотр парка компании. От трёх символов — весь активный парк: качественной базы по
+   * оргтехнике нет, аппарат сплошь и рядом числится не там, где стоит, и заявитель обязан найти
+   * его по номеру, не спрашивая, за кем тот числится. Иначе говоря: чтобы увидеть чужое, надо его
+   * назвать.
+   *
+   * НАБРАННОЕ СУЖАЕТ ВЫДАЧУ ВСЕГДА — и в короткой ветке тоже: человек уже назвал, что ищет, и
+   * показать ему в ответ весь свой отдел значило бы проигнорировать ввод.
+   *
+   * АРХИВ НЕ ОТДАЁТСЯ ВОВСЕ — здесь `isNull(deleted_at)` руками, а не `archiveWhere`: тот держателю
+   * `archive.read` архив открывает, а предметом новой заявки удалённая карточка быть не может ни
+   * при каких правах. Погашенные (`is_active = false`) не показываются по той же причине: заявку
+   * заводят на технику, которая стоит в кабинете. Уже выбранную погашенную отдаёт дочитка ниже.
+   */
+  r.get(
+    '/selector',
+    {
+      preHandler: [app.authenticate, canRead, canPickSubject],
+      schema: { querystring: officeEquipmentSelectorQuerySchema },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const q = req.query;
+      // Схема уже обрезала пробелы, поэтому «три символа» считаются по тому же, по чему идёт поиск:
+      // три пробела — это пустой запрос, а не выход за область.
+      const search = q.search ?? '';
+      const wholePark = search.length >= OFFICE_EQUIPMENT_SELECTOR_SEARCH_MIN;
+      const where = and(
+        isNull(officeEquipment.deletedAt),
+        eq(officeEquipment.isActive, true),
+        wholePark
+          ? undefined
+          : officeEquipmentScopeWhere(
+              p,
+              officeEquipment.objectId,
+              officeEquipment.ownerDepartmentId,
+            ),
+        // Те же четыре колонки, что и в справочнике: как единицу называют вслух, зависит от того,
+        // кто спрашивает — бухгалтерия по инвентарному, сервис по серийному, а «принтер в 214-м»
+        // вообще по кабинету.
+        searchCondition(search || undefined, [
+          officeEquipment.name,
+          officeEquipment.serialNumber,
+          officeEquipment.inventoryNumber,
+          officeEquipment.location,
+        ]),
+      );
+      const p2 = pageParams(q);
+      const [rows, totalRows] = await Promise.all([
+        selectorQuery(p)
+          .where(where)
+          // Наименование, а идентификатор вторым ключом — не педантизм: у половины парка имена
+          // совпадают до буквы (два десятка одинаковых МФУ), и без второго ключа порядок строк
+          // между страницами плавал бы, то есть страница 2 повторяла бы часть первой.
+          .orderBy(asc(officeEquipment.name), asc(officeEquipment.id))
+          .limit(p2.limit)
+          .offset(p2.offset),
+        // Счётчик — по той же таблице без соединений: условие целиком собрано из колонок карточки,
+        // и присоединять ради него площадку с отделом незачем.
+        db.select({ c: count() }).from(officeEquipment).where(where),
+      ]);
+      return {
+        items: rows.map((row) => toRequestOption(p, row)),
+        total: Number(totalRows[0]!.c),
+        page: p2.page,
+        pageSize: p2.pageSize,
+      };
+    },
+  );
+
+  /**
+   * ДОЧИТКА УЖЕ ВЫБРАННОГО (Р3): выдача — срез по набранному, и единица, названная не набором, в
+   * ней может не лежать вовсе. Случаев таких три, и все рабочие: обращение по гарантии (аппарат
+   * назвал реестр), правка заявки (его назвали при заведении) и карточка, только что заведённая из
+   * самой формы.
+   *
+   * ОБЛАСТЬ ЗДЕСЬ НЕ СПРАШИВАЕТСЯ ВОВСЕ, и это не упущение: выбранное уже выбрано — тем же поиском,
+   * который эту ручку и открывает, — и прятать его от собственной формы бессмысленно. Признаки
+   * области при этом отвечают честно, и по ним форма рисует плашку.
+   *
+   * ПОГАШЕННАЯ КАРТОЧКА ПРИХОДИТ С `isActive: false`, а не 404: устаревший выбор должен быть виден
+   * как устаревший — исчезнув, он оставил бы в поле идентификатор без подписи. Архивная — 404: её
+   * не существует для этой формы ни в каком виде.
+   */
+  r.get(
+    '/selector/:id',
+    {
+      preHandler: [app.authenticate, canRead, canPickSubject],
+      schema: { params: idParams },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const [row] = await selectorQuery(p).where(
+        and(eq(officeEquipment.id, req.params.id), isNull(officeEquipment.deletedAt)),
+      );
+      if (!row) throw err.notFound('Единица оргтехники не найдена');
+      return toRequestOption(p, row);
     },
   );
 

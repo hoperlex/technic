@@ -483,6 +483,33 @@ export function assertOfficeEquipmentScope(p: Principal, place: OfficeEquipmentP
 }
 
 /**
+ * ПЛОЩАДКА единицы оргтехники — своя ли она учётке (план
+ * `docs/office-equipment-request-subject-plan.md`, Р2).
+ *
+ * Это НЕ `assertOfficeEquipmentScope`, срезанный до объекта, и путать их нельзя. Тот отвечает «чья
+ * это карточка» и у роли отдела спрашивает ВЛАДЕЛЬЦА; здесь вопрос другой — «стоит ли аппарат там,
+ * где работает эта учётка», и отдельская ось отвечает на него площадками своих отделов
+ * (`departmentObjectIds`, ADR 0062), ровно как при сообщении о технике (`resolveCandidateObject`).
+ *
+ * Ради чего заведён отдельный ответ. У роли отдела аппарат сплошь и рядом чужой ТОЛЬКО по
+ * владельцу, стоя при этом на своей площадке: карточка вне области, а объект — тот самый. Одним
+ * `officeEquipmentScopeWhere` этот случай неотличим от «чужая площадка», и форма заявки включала бы
+ * поправку объекта там, где поправлять нечего.
+ *
+ * Не бросает, а отвечает: признак уезжает в выдачу к каждой строке, и «нет» здесь — не отказ, а
+ * содержание плашки. Отказом это условие не становится нигде — дверь заявки сторожит свой разбор.
+ *
+ * Сквозная область модуля (ADR 0106, шаг 1c) и роли без осей отвечают «своя»: у первых парк открыт
+ * целиком, у вторых объектной оси нет вовсе, и «чужая площадка» им нечем предъявить.
+ */
+export function officeEquipmentObjectInOwnScope(p: Principal, objectId: string): boolean {
+  if (hasModuleWideScope(p.grantCodes, 'officeEquipment')) return true;
+  if (isObjectScopedRole(p.role)) return p.constructionObjectIds.includes(objectId);
+  if (isDepartmentScopedRole(p.role)) return p.departmentObjectIds.includes(objectId);
+  return true;
+}
+
+/**
  * Заявка на обслуживание оргтехники: чья она **со стороны заказчика** (ADR 0085 §8).
  *
  * Область считается по **заказчику заявки**, а не по справочнику: у заявки три снимка — объект

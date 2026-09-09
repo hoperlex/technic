@@ -3,14 +3,16 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type {
   AuthUser,
   DepartmentDto,
-  OfficeEquipmentDto,
+  OfficeEquipmentRequestOptionDto,
   ServiceRequestDto,
 } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser, departmentUser } from './factories/auth';
-import { emptyList, list } from './factories/common';
+import { list } from './factories/common';
+import { equipmentSelectorOption, equipmentSelectorRoutes } from './factories/officeEquipment';
 import { serviceRequest } from './factories/service';
+import { objectDto } from './factories/waste';
 import { openSelectOptions, selectOption } from './antd';
 import { ServiceRequestForm } from '../src/pages/service/ServiceRequestForm';
 
@@ -66,28 +68,16 @@ const DEPARTMENTS = [
   department({ id: 'dep-9', code: 'ИТ', name: 'Служба ИТ' }),
 ];
 
-function equipment(over: Partial<OfficeEquipmentDto> = {}): OfficeEquipmentDto {
-  return {
-    id: 'oe-1',
-    type: { id: 'oet-1', name: 'МФУ', isActive: true },
-    specs: [],
-    name: 'Kyocera M3145',
-    serialNumber: '',
-    inventoryNumber: '0012345',
-    object: NORTH,
-    department: null,
-    location: 'Корпус 3, каб. 214',
-    state: 'on_site',
-    stateNote: '',
-    purchasedOn: null,
-    warrantyUntil: null,
-    comment: '',
-    isActive: true,
-    createdAt: '2026-08-01T09:00:00.000Z',
-    updatedAt: '2026-08-01T09:00:00.000Z',
-    deletedAt: null,
-    ...over,
-  };
+/**
+ * Единица глазами формы — проекция селектора (план предмета заявки, Р1): подпись, место, владелец
+ * и два признака области. Обе области здесь свои: файл про состав поля заказчика, а про аппарат
+ * вне области — свой (`service-request-subject.test.tsx`), и подмешивать к одному другое значило
+ * бы проверять два правила одним ожиданием.
+ */
+function equipment(
+  over: Partial<OfficeEquipmentRequestOptionDto> = {},
+): OfficeEquipmentRequestOptionDto {
+  return equipmentSelectorOption({ object: NORTH, ...over });
 }
 
 /**
@@ -127,6 +117,23 @@ function request(over: Partial<ServiceRequestDto> = {}): ServiceRequestDto {
  */
 const OPERATOR: AuthUser = authUser({
   role: 'shtab',
+  /*
+   * ОБЕ ПЛОЩАДКИ — СВОИ, и это не щедрость фикстуры. Смена единицы проверяется переездом заказчика
+   * с одной площадки на другую (К10), а обе единицы обязаны при этом оставаться в области учётки:
+   * аппарат чужой площадки пересобирает поле целиком (план предмета заявки, Р5), и К10 на нём
+   * проверялся бы вхолостую. Про чужую площадку — свой файл.
+   */
+  constructionObjectIds: ['obj-1', 'obj-2'],
+  addons: ['office_equipment_operator'],
+  phone: '9001234567',
+});
+
+/**
+ * Тот же оператор с ЕДИНСТВЕННОЙ площадкой: подразделение заявителя у него не спрашивается вовсе
+ * (Н11), и ради этого он и заведён — у OPERATOR площадок две, и поле появляется.
+ */
+const SOLE_OPERATOR: AuthUser = authUser({
+  role: 'shtab',
   constructionObjectIds: ['obj-1'],
   addons: ['office_equipment_operator'],
   phone: '9001234567',
@@ -135,21 +142,31 @@ const OPERATOR: AuthUser = authUser({
 /**
  * Сотрудник отдела с двумя своими отделами. Именно с двумя: с одним поле оказалось бы запертым
  * единственным вариантом (Р3а), и «площадки в списке нет» было бы неотличимо от «списка нет вовсе».
+ *
+ * Площадка отдела названа (`departmentObjectIds`, ADR 0062) и совпадает с площадкой техники: иначе
+ * фикстура описывала бы аппарат ВНЕ области учётки (`objectInOwnScope: false`), а это другой
+ * разговор и другой файл — состав поля там пересобирается целиком (план предмета заявки, Р6).
  */
-const DEP_USER: AuthUser = departmentUser('dep-1', [], {
+const DEP_USER: AuthUser = departmentUser('dep-1', ['obj-1'], {
   departmentIds: ['dep-1', 'dep-2'],
   phone: '9001234567',
 });
 
 function renderForm(
   user: AuthUser,
-  options: { request?: ServiceRequestDto; units?: OfficeEquipmentDto[]; routes?: RouteMap } = {},
+  options: {
+    request?: ServiceRequestDto;
+    units?: OfficeEquipmentRequestOptionDto[];
+    routes?: RouteMap;
+  } = {},
 ): HttpMock {
   const http = mockHttp({
-    'GET /office-equipment': () => json(list(options.units ?? UNITS)),
+    ...equipmentSelectorRoutes(options.units ?? UNITS),
     'GET /departments': () => json(list(DEPARTMENTS)),
-    // Площадка учётки — контекст обращения в поддержку, к подбору заказчика отношения не имеет.
-    'GET /objects': () => json(emptyList()),
+    // Справочник площадок к подбору заказчика отношения не имеет: он нужен полю «Откуда
+    // обращаетесь» — у оператора двух площадок одного ответа на него нет (Н11).
+    'GET /objects': () =>
+      json(list([objectDto(), objectDto({ id: 'obj-2', code: 'ОБ-2', name: 'Склад-2' })])),
     ...options.routes,
   });
   renderWithUser(<ServiceRequestForm open request={options.request ?? null} onClose={() => {}} />, {
@@ -248,9 +265,9 @@ describe('умолчание поля', () => {
     // Сотрудник отдела с одним отделом: до подбора его отдел подставлялся сам (ADR 0085 §8), и
     // площадка на этом месте молча превратила бы заявку отдела о своём же принтере в заявку от
     // площадки — заказчик у неё стал бы пустым.
-    const sole = departmentUser('dep-1', [], { phone: '9001234567' });
+    const sole = departmentUser('dep-1', ['obj-1'], { phone: '9001234567' });
     renderForm(sole, {
-      units: [equipment({ department: { id: 'dep-1', code: 'ПТО', name: 'ПТО' } })],
+      units: [equipment({ ownerDepartment: { id: 'dep-1', code: 'ПТО', name: 'ПТО' } })],
     });
 
     await waitFor(() => expect(shownCustomer()).toBe(PTO_LABEL));
@@ -278,12 +295,18 @@ describe('правка читает снимок заявки (Р11а)', () => {
 });
 
 describe('площадка роли отдела ограничена принадлежностью техники (Р12)', () => {
-  const own = equipment({ department: { id: 'dep-1', code: 'ПТО', name: 'ПТО' } });
+  const own = equipment({ ownerDepartment: { id: 'dep-1', code: 'ПТО', name: 'ПТО' } });
+  /*
+   * Чужая по владельцу, но СВОЯ по площадке (план предмета заявки, Р2): признаки области расходятся
+   * ровно на этом случае. Площадки такой единице роль отдела не получает (Р12) — не из-за области, а
+   * потому что заявка от площадки по чужой технике не держится ни одной её колонкой.
+   */
   const foreign = equipment({
     id: 'oe-3',
     name: 'HP LaserJet 107w',
     inventoryNumber: '0000779',
-    department: IT_DEPARTMENT,
+    ownerDepartment: IT_DEPARTMENT,
+    inOwnScope: false,
   });
   const unmarked = equipment({ id: 'oe-2', name: 'Brother HL-1110R', inventoryNumber: '0000778' });
 
@@ -393,7 +416,7 @@ describe('подразделение заявителя (Н11)', () => {
   it('единственная привязка не спрашивается: её подставит сервер', async () => {
     // Оператор с одним объектом и без отделов — самый частый случай, и лишнее поле в форме тут
     // означало бы вопрос, ответ на который известен заранее.
-    renderForm(OPERATOR, { routes: create });
+    renderForm(SOLE_OPERATOR, { routes: create });
     await selectOption('Какой аппарат', /Kyocera/);
 
     expect(document.getElementById('requesterPlaceId')).toBeNull();
@@ -412,6 +435,9 @@ describe('заведение шлёт осознанное значение (Р1
     fireEvent.change(screen.getByLabelText('Описание'), {
       target: { value: 'Не захватывает бумагу' },
     });
+    // Площадок у оператора две, и подразделение заявителя он называет сам (Н11): без этого форма
+    // встала бы на своём правиле, а проверка про заказчика до отправки не дошла бы.
+    await selectOption('Откуда обращаетесь', NORTH_LABEL);
 
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
     await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
@@ -431,6 +457,7 @@ describe('заведение шлёт осознанное значение (Р1
     fireEvent.change(screen.getByLabelText('Описание'), {
       target: { value: 'Не захватывает бумагу' },
     });
+    await selectOption('Откуда обращаетесь', NORTH_LABEL);
 
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
     await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));

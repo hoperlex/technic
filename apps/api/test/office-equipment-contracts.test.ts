@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   createOfficeEquipmentSchema,
+  OFFICE_EQUIPMENT_REQUEST_OPTION_FIELDS,
+  OFFICE_EQUIPMENT_SELECTOR_SEARCH_MIN,
+  officeEquipmentSelectorQuerySchema,
   OFFICE_EQUIPMENT_SPEC_UNKNOWN,
   officeEquipmentSpecLine,
   type OfficeEquipmentModelSpecDto,
@@ -365,5 +368,115 @@ describe('officeEquipmentSpecLine', () => {
       value: { id: 'v-2', code: 'a3', name: 'A3', shortName: 'A3' },
     });
     expect(officeEquipmentSpecLine([spec({ value }), second])).toBe('ч/б · A3');
+  });
+});
+
+/**
+ * ПРОЕКЦИЯ ДЛЯ ВЫБОРА ПРЕДМЕТА ЗАЯВКИ (план `docs/office-equipment-request-subject-plan.md`, Р1):
+ * в ней нет ни одного тяжёлого поля карточки.
+ *
+ * Зачем это проверять прогоном, если состав задан типом. Поля интерфейса стираются при сборке, а
+ * `apps/api/tsconfig.json` не включает каталог `test/` — то есть проверка, написанная здесь типами,
+ * не проверялась бы ничем и зеленела бы всегда. Поэтому контракт отдаёт перечень своих полей
+ * значением (`OFFICE_EQUIPMENT_REQUEST_OPTION_FIELDS`), и смотреть на него можно глазами прогона.
+ *
+ * Тяжёлые поля названы поимённо, а не «всё, чего нет в перечне»: смысл случая — назвать вслух то,
+ * что по этой ручке видно ВСЕМУ парку компании, и список этих имён обязан быть виден ревьюеру
+ * рядом с ожиданием. Каждое из них есть у `OfficeEquipmentDto` или у её карточки, и попасть сюда
+ * они могли бы ровно одним способом — «заодно, раз уж выборка всё равно ходит в ту же таблицу».
+ */
+describe('проекция единицы для выбора предмета заявки', () => {
+  /**
+   * Что именно не отдаётся и почему это дорого:
+   * комментарий и дата покупки — учётные данные компании; состояние с уточнением — «у Иванова»,
+   * то есть человек; характеристики и модель — карточка модели целиком; расходники — остаток
+   * склада; история обслуживания — деньги и работы по чужим заявкам; отметки времени и архива —
+   * жизнь записи, к выбору предмета отношения не имеющая.
+   */
+  const HEAVY_FIELDS = [
+    'comment',
+    'purchasedOn',
+    'state',
+    'stateNote',
+    'specs',
+    'model',
+    'type',
+    'consumables',
+    'serviceHistory',
+    'createdAt',
+    'updatedAt',
+    'deletedAt',
+  ] as const;
+
+  it('не несёт ни одного тяжёлого поля карточки', () => {
+    for (const field of HEAVY_FIELDS) {
+      expect(OFFICE_EQUIPMENT_REQUEST_OPTION_FIELDS, field).not.toContain(field);
+    }
+  });
+
+  it('состоит ровно из одиннадцати полей поля выбора и плашки', () => {
+    /*
+     * Равенство множеств, а не «содержит нужное»: проверка «нет тяжёлых» пропустила бы любое
+     * ТРИНАДЦАТОЕ поле, которого сегодня нет в списке выше, — а завтрашний `purchasePrice` был бы
+     * ровно им. Здесь же лишнее поле краснеет само, каким бы оно ни было.
+     */
+    expect([...OFFICE_EQUIPMENT_REQUEST_OPTION_FIELDS].sort()).toEqual(
+      [
+        'id',
+        'inOwnScope',
+        'inventoryNumber',
+        'isActive',
+        'location',
+        'name',
+        'object',
+        'objectInOwnScope',
+        'ownerDepartment',
+        'serialNumber',
+        'warrantyUntil',
+      ].sort(),
+    );
+  });
+
+  it('подпись собирается тем же `officeEquipmentTitle`, что и у карточки', () => {
+    // Проекция беднее карточки, но три поля подписи в ней те же — и подпись обязана читаться
+    // одинаково: она печатается в письмах и в истории заявки.
+    expect(
+      officeEquipmentTitle({
+        name: 'Kyocera ECOSYS M3145',
+        inventoryNumber: '0012345',
+        serialNumber: 'SN-77',
+      }),
+    ).toBe('Kyocera ECOSYS M3145 · инв. 0012345');
+  });
+
+  it('страница спрашивается общими правилами, а сортировка и отборы — не спрашиваются вовсе', () => {
+    const q = officeEquipmentSelectorQuerySchema.parse({});
+    expect(q.page).toBe(1);
+    // Размер — из общего перечня, а не любое число: своим числом клиент выгрузил бы весь парк
+    // одним запросом мимо правила, общего для всех списков портала.
+    expect(officeEquipmentSelectorQuerySchema.parse({ pageSize: '200' }).pageSize).toBe(200);
+    expect(officeEquipmentSelectorQuerySchema.safeParse({ pageSize: '150' }).success).toBe(false);
+    expect(officeEquipmentSelectorQuerySchema.safeParse({ page: '0' }).success).toBe(false);
+    /*
+     * Порядок выдачи задан жёстко (по наименованию), отборов у неё нет, и поле, которое сервер
+     * обязан игнорировать, было бы обещанием, которого он не выполняет. Проверяется не «отбито», а
+     * то, что таких ключей нет в разобранном запросе: лишнее базовая схема просто отбрасывает, и
+     * `safeParse` на нём зеленел бы, ничего не проверив.
+     */
+    const parsed = officeEquipmentSelectorQuerySchema.parse({
+      sortBy: 'name',
+      sortOrder: 'asc',
+      objectId: '11111111-1111-4111-8111-111111111111',
+      search: '  инв-12  ',
+    });
+    expect(Object.keys(parsed).sort()).toEqual(['page', 'pageSize', 'search']);
+    // Набранное обрезается схемой: «три пробела» — пустой запрос, а не выход за область учётки.
+    expect(parsed.search).toBe('инв-12');
+    expect(officeEquipmentSelectorQuerySchema.parse({ search: '   ' }).search).toBe('');
+  });
+
+  it('порог общего поиска назван числом в контракте — портал и сервер меряют одним', () => {
+    // Два числа разошлись бы на первой правке, и портал обещал бы поиск, которого сервер не делает.
+    expect(OFFICE_EQUIPMENT_SELECTOR_SEARCH_MIN).toBe(3);
   });
 });
