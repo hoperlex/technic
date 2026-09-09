@@ -121,7 +121,17 @@ function measure() {
     if (!isEntityKeysFile(path.relative(SRC, file)) && hasRawQueryKey(code)) rawKeyFiles += 1;
     antdDeprecated += countAntdDeprecated(file, code);
 
-    const lines = code.split('\n').length;
+    /*
+     * Строк в файле — по числу переносов, а не по числу кусков разбиения. `split('\n')` у файла с
+     * завершающим переводом строки (а он есть у всех, prettier его ставит) даёт на кусок больше:
+     * последний — пустая строка после последнего `\n`. Файл ровно на 400 строк считался за 401 и
+     * объявлялся «длиннее 400» — ровно то, что случилось с `ServiceRequestForm.tsx` и покрасило
+     * ворота на файле, который порога не нарушал.
+     *
+     * Число обязано совпадать с тем, что видит человек в редакторе и `wc -l`: комментарий у
+     * `LINE_LIMIT` обещает общий порог с `max-lines` в eslint, а тот считает настоящие строки.
+     */
+    const lines = code.replace(/\n$/, '').split('\n').length;
     if (lines > LINE_LIMIT) maxLines[rel] = lines;
   }
 
