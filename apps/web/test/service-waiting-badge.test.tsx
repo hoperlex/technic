@@ -78,18 +78,15 @@ describe('счётчик «ждут меня» спрашивают только
 
   it('сервисная компания видит бейдж — сторону задаёт тип контрагента, а не роль', async () => {
     const http = renderMenu(EXECUTOR, 5);
-    // Временная заплатка (`src/auth/temporarySectionLock.ts`) сервисную компанию не трогает: раздел
-    // у неё единственный, и пункт меню с кружком на месте.
     expect(await screen.findByText('5')).toBeDefined();
     await waitFor(() => expect(http.countOf(WAITING_COUNT)).toBe(1));
   });
 
   it('штаб без надстройки счётчик не запрашивает вовсе', async () => {
     const http = renderMenu(CUSTOMER);
-    // ⚠️ Раздел ему открыт по правам, но до запуска скрыт заплаткой
-    // (`src/auth/temporarySectionLock.ts`) — проверяется тишина в сети, и её заплатка не трогает:
-    // счётчик спрашивает каркас по субъекту, а не пункт меню. На запуске сюда возвращается
-    // `expect(screen.getByText('Орг.техника')).toBeDefined();`.
+    // Раздел ему открыт по правам — предмет проверки не пункт меню, а тишина в сети: счётчик
+    // спрашивает каркас по субъекту, и штабу без набора он не нужен.
+    expect(await screen.findByText('Орг.техника')).toBeDefined();
     await waitFor(() => expect(http.countOf('GET /releases')).toBe(1));
     expect(http.countOf(WAITING_COUNT)).toBe(0);
   });

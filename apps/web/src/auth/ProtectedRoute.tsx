@@ -9,8 +9,6 @@ import {
   type SectionAccess,
 } from '@technic/contracts';
 import { useAuth } from './AuthContext';
-// ⚠️ Временная заплатка «Орг.техника скрыта до запуска» — снимается вместе со своим файлом.
-import { withTemporarySectionLock } from './temporarySectionLock';
 // Экран «разделов нет» — из `pages`: стартовая страница его рисует, а не уводит на него, и своего
 // адреса у него нет вовсе.
 import { NoSectionsPage } from '../pages/NoSectionsPage';
@@ -54,9 +52,7 @@ export function ProtectedRoute() {
  */
 function useSectionAccess(): SectionAccess {
   const { user, canUse } = useAuth();
-  // ⚠️ Обёртка временная (`temporarySectionLock.ts`): она вычитает разделы, спрятанные до запуска.
-  // На запуске остаётся `return { role: user?.role ?? null, canUse };`.
-  return withTemporarySectionLock(user, { role: user?.role ?? null, canUse });
+  return { role: user?.role ?? null, canUse };
 }
 
 /**

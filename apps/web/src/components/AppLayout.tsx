@@ -24,8 +24,6 @@ import {
 } from '@technic/contracts';
 import { usersApi } from '../api/resources';
 import { useAuth } from '../auth/AuthContext';
-// ⚠️ Временная заплатка «Орг.техника скрыта до запуска» — снимается вместе со своим файлом.
-import { withTemporarySectionLock } from '../auth/temporarySectionLock';
 import { UtilityMenu, useUtilityMenu } from '@widgets/utility-menu';
 import { useServiceWaitingCount } from '@features/service-waiting-badge';
 import { useServiceChatUnreadCount } from '@features/service-chat';
@@ -202,18 +200,16 @@ export function AppLayout() {
 
   /** `menuIcon` — иконка развёрнутого меню: у раздела со счётчиками в строке она остаётся голой. */
   type NavItem = MobileNavItem & { icon: ReactNode; menuIcon: ReactNode; counters: ReactNode };
-  // ⚠️ `withTemporarySectionLock` — временная заплатка (`auth/temporarySectionLock.ts`): вычитает
-  // разделы, спрятанные до запуска. На запуске остаётся голый `openShellSections({ role, canUse })`.
-  const navItems: NavItem[] = openShellSections(
-    withTemporarySectionLock(user, { role: user?.role ?? null, canUse }),
-  ).map((section) => ({
-    key: section.path,
-    icon: sectionIcons[section.id],
-    menuIcon: sectionCounters[section.id] ? SECTION_ICONS[section.id] : sectionIcons[section.id],
-    counters: sectionCounters[section.id] ?? null,
-    label: section.label,
-    short: section.short,
-  }));
+  const navItems: NavItem[] = openShellSections({ role: user?.role ?? null, canUse }).map(
+    (section) => ({
+      key: section.path,
+      icon: sectionIcons[section.id],
+      menuIcon: sectionCounters[section.id] ? SECTION_ICONS[section.id] : sectionIcons[section.id],
+      counters: sectionCounters[section.id] ?? null,
+      label: section.label,
+      short: section.short,
+    }),
+  );
 
   // Подсвечен тот пункт, на страницу которого зашли; если такого пункта у роли нет — никакой.
   const selectedKey = navItems.find((it) => location.pathname.startsWith(it.key))?.key ?? '';
