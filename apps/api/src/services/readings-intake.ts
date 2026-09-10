@@ -60,7 +60,7 @@ import { loadReportById } from './readings';
  * Строка ответа SQL: обе координаты смены (Р32), показание с предшественниками и всё, из чего
  * собираются подписи. Псевдоним, а не `interface`: `db.execute` требует индексную сигнатуру.
  */
-type IntakeSqlRow = {
+export type IntakeSqlRow = {
   source_id: string;
   source_kind: ReadingSourceKind;
   /** Живая координата: машина, день и работник источника **сегодня**. */
@@ -116,7 +116,14 @@ type IntakeSqlRow = {
   previous_engine_hours_date: string | null;
 };
 
-async function loadIntakeRows(from: string, to: string): Promise<IntakeSqlRow[]> {
+/**
+ * Строки периода целиком, без страницы. Наружу отданы затем, что по ним собирается служебная
+ * книга показаний (`readings-admin-export.ts`): ей нужны **ожидаемые смены**, а не строки
+ * открытых отчётов, — иначе смена машиниста, чей день никто не открывал, в книгу не попадает
+ * вовсе, вместе с его именем. Второго правила «что такое смена периода» в проекте нет, и
+ * заводить его ради книги нельзя.
+ */
+export async function loadIntakeRows(from: string, to: string): Promise<IntakeSqlRow[]> {
   return db.transaction(async (tx) => {
     // Тот же приём и по той же причине, что в агрегате (Р35): у CTE статистики нет, планировщик
     // оценивает полное объединение на порядки мимо, и пороги JIT оказываются перекрыты. `SET LOCAL`

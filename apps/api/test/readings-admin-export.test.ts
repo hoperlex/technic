@@ -21,17 +21,29 @@ const V2 = '22222222-2222-4222-8222-222222222222';
 const state = vi.hoisted(() => ({
   stats: [] as unknown[],
   rows: [] as Record<string, unknown>[],
-  total: 0,
+  limit: 50_000,
 }));
 
 vi.mock('../src/services/readings-aggregate', () => ({
   loadFleetStats: async () => state.stats,
 }));
 
+/*
+ * Предел строк — из подменённого модуля, и он читается на каждый вызов (геттер): книга сверяется
+ * с ним внутри сборки, а поднимать в тесте пятьдесят тысяч строк ради одного отказа незачем.
+ */
 vi.mock('../src/services/readings-export', () => ({
-  countJournalRows: async () => state.total,
-  loadJournalRows: async () => state.rows,
-  READING_EXPORT_ROW_LIMIT: 50_000,
+  get READING_EXPORT_ROW_LIMIT() {
+    return state.limit;
+  },
+}));
+
+/*
+ * Строки книги — ожидаемые смены периода, те же, что показывает реестр приёма. Подменяется именно
+ * их выборка: своего правила «что такое смена» у книги нет, и тест не должен заводить второе.
+ */
+vi.mock('../src/services/readings-intake', () => ({
+  loadIntakeRows: async () => state.rows,
 }));
 
 const { buildAdminReadingsExport } = await import('../src/services/readings-admin-export');
@@ -78,40 +90,98 @@ function dirtyVehicle(): VehicleReadingStatsRow {
 
 function shift(over: Record<string, unknown>): Record<string, unknown> {
   return {
-    vehicleId: V1,
+    source_id: 's1',
+    source_kind: 'route',
+    exp_vehicle: V1,
+    exp_date: '2026-08-03',
+    exp_person: 'p1',
+    exp_report_id: 'rep1',
+    exp_state: 'accepted',
+    exp_report_version: 1,
+    item_id: 'i1',
+    obs_vehicle: V1,
+    obs_date: '2026-08-03',
+    obs_shift_order: 1,
+    obs_report_id: 'rep1',
+    obs_state: 'accepted',
+    obs_report_version: 1,
+    aligned: true,
+    row_date: '2026-08-03',
+    row_vehicle: V1,
+    row_person: 'p1',
+    person_name: 'Иванов Иван Иванович',
+    route_num: 145,
+    waybill_number: null,
+    waybill_prefix: null,
+    waybill_number_width: null,
     ownership: 'own',
     description: '',
-    registrationNumber: 'А123БВ797',
-    categoryName: 'Самосвал',
-    typeName: 'Самосвал',
-    modelName: 'КамАЗ 65115',
-    reportDate: '2026-08-03',
-    shiftOrder: 1,
-    reportState: 'accepted',
-    sourceKind: 'route',
-    routeNum: 145,
-    waybillNumber: null,
-    waybillPrefix: null,
-    waybillNumberWidth: null,
-    personName: 'Иванов Иван Иванович',
-    readingId: 'r1',
-    kind: 'numbers',
-    odometerKm: 213_020,
-    engineHours: '4790.0',
-    fuelFilledLiters: '200.0',
-    fuelStartLiters: '180.0',
-    fuelEndLiters: '150.0',
-    noDataReason: null,
+    registration_number: 'А123БВ797',
+    category_name: 'Самосвал',
+    type_name: 'Самосвал',
+    model_name: 'КамАЗ 65115',
+    reading_id: 'r1',
+    reading_kind: 'values',
+    odometer_km: 213_020,
+    engine_hours: '4790.0',
+    fuel_start_liters: '180.0',
+    fuel_filled_liters: '200.0',
+    fuel_end_liters: '150.0',
+    no_data_reason: null,
     comment: null,
-    source: 'driver',
-    odometerAnomaly: null,
-    odometerAnomalyConfirmedAt: null,
-    engineHoursAnomaly: null,
-    engineHoursAnomalyConfirmedAt: null,
-    previousOdometerKm: 212_775,
-    previousEngineHours: '4781.5',
+    reading_source: 'driver',
+    recorded_at: '2026-08-03T10:00:00.000Z',
+    odometer_anomaly: null,
+    odometer_anomaly_confirmed: false,
+    engine_hours_anomaly: null,
+    engine_hours_anomaly_confirmed: false,
+    previous_odometer_km: 212_775,
+    previous_odometer_date: '2026-08-02',
+    previous_engine_hours: '4781.5',
+    previous_engine_hours_date: '2026-08-02',
     ...over,
   };
+}
+
+/**
+ * Смена машиниста по недельному ЭСМ-2, чей день никто не открывал: отчёта нет, показаний нет,
+ * человек известен из самого листа. Ради неё книга и переехала на ожидаемые смены (Р13).
+ */
+function machinistShift(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return shift({
+    source_id: 'w1',
+    source_kind: 'esm2',
+    exp_report_id: null,
+    exp_state: null,
+    exp_report_version: null,
+    item_id: null,
+    obs_vehicle: null,
+    obs_date: null,
+    obs_shift_order: null,
+    obs_report_id: null,
+    obs_state: null,
+    obs_report_version: null,
+    aligned: false,
+    person_name: 'Сидоров Семён Семёнович',
+    route_num: null,
+    waybill_number: 123,
+    waybill_prefix: 'ЭСМ',
+    waybill_number_width: 6,
+    reading_id: null,
+    reading_kind: null,
+    odometer_km: null,
+    engine_hours: null,
+    fuel_start_liters: null,
+    fuel_filled_liters: null,
+    fuel_end_liters: null,
+    reading_source: null,
+    recorded_at: null,
+    previous_odometer_km: null,
+    previous_odometer_date: null,
+    previous_engine_hours: null,
+    previous_engine_hours_date: null,
+    ...over,
+  });
 }
 
 async function book() {
@@ -136,26 +206,37 @@ beforeEach(() => {
   state.stats = [dirtyVehicle(), cleanVehicle()];
   state.rows = [
     shift({}),
-    shift({ reportDate: '2026-08-04', odometerKm: 213_268, previousOdometerKm: 213_020 }),
     shift({
-      vehicleId: V2,
-      registrationNumber: 'М456ОР197',
-      modelName: 'КамАЗ 6520',
-      reportDate: '2026-08-06',
-      personName: 'Кузнецов Алексей Алексеевич',
-      odometerKm: 187_100,
-      previousOdometerKm: null,
-      engineHours: '2980.0',
-      previousEngineHours: '2974.0',
-      fuelStartLiters: null,
-      fuelEndLiters: null,
-      fuelFilledLiters: '300.0',
-      odometerAnomaly: 'counter_reset',
-      source: 'staff',
+      row_date: '2026-08-04',
+      exp_date: '2026-08-04',
+      obs_date: '2026-08-04',
+      odometer_km: 213_268,
+      previous_odometer_km: 213_020,
+    }),
+    shift({
+      source_id: 's3',
+      exp_vehicle: V2,
+      obs_vehicle: V2,
+      row_vehicle: V2,
+      registration_number: 'М456ОР197',
+      model_name: 'КамАЗ 6520',
+      row_date: '2026-08-06',
+      exp_date: '2026-08-06',
+      obs_date: '2026-08-06',
+      person_name: 'Кузнецов Алексей Алексеевич',
+      odometer_km: 187_100,
+      previous_odometer_km: null,
+      engine_hours: '2980.0',
+      previous_engine_hours: '2974.0',
+      fuel_start_liters: null,
+      fuel_end_liters: null,
+      fuel_filled_liters: '300.0',
+      odometer_anomaly: 'counter_reset',
+      reading_source: 'staff',
       comment: 'замена прибора',
     }),
   ];
-  state.total = state.rows.length;
+  state.limit = 50_000;
 });
 
 describe('служебная книга показаний', () => {
@@ -222,6 +303,31 @@ describe('служебная книга показаний', () => {
     expect(rows[8]?.[0]).toContain('не сдано 1 смену');
   });
 
+  /**
+   * Тот самый дефект, ради которого книга переехала на ожидаемые смены (Р13): машинист сдаёт
+   * работу недельным ЭСМ-2, дни таких листов никто не открывает — и в первой редакции книги ни
+   * смены, ни имени не было, хотя «Смен по плану» их считало. Проверяется по всем трём местам
+   * сразу: детализация, колонка людей в своде и источник сводной.
+   */
+  it('смену машиниста без отчёта книга показывает вместе с его именем', async () => {
+    state.rows = [...state.rows, machinistShift()];
+
+    const { sheets } = await book();
+    const detail = sheet(sheets, 'Детализация');
+    const summary = sheet(sheets, 'Свод');
+    const source = sheet(sheets, 'Данные');
+
+    const shiftRow = detail.find((row) => row[2] === 'Сидоров С.С.');
+    expect(shiftRow?.[3]).toBe('ЭСМ000123 (ЭСМ-2)');
+    // Позиции смены у неоткрытого дня нет, показаний нет, отчёта нет — и книга говорит это
+    // словами: «не открыт» и «не сдано» — разные ответы, и ни один не ноль.
+    expect(shiftRow?.[1]).toBe('—');
+    expect(shiftRow?.at(-1)).toBe('не открыт');
+    expect(shiftRow?.at(-2)).toBe('не сдано');
+    expect(summary[3]?.[19]).toContain('Сидоров С.С.');
+    expect(source.some((row) => row[4] === 'Сидоров С.С.')).toBe(true);
+  });
+
   it('в скрытом источнике сводной машина стоит колонкой, а неизвестное — пусто', async () => {
     const rows = sheet((await book()).sheets, 'Данные');
 
@@ -266,8 +372,10 @@ describe('служебная книга показаний', () => {
   });
 
   it('отказывает до сборки, когда строк больше предела', async () => {
-    state.total = 50_001;
+    state.limit = 2;
 
-    await expect(book()).rejects.toThrow(/сузьте период/i);
+    // Строк три — ровно на одну больше предела; книга не собирается вовсе, а отказ говорит, что
+    // делать дальше. Молчаливое обрезание здесь было бы худшим: подписывают выгрузку целиком.
+    await expect(book()).rejects.toThrow(/В выгрузку попадает 3 строк.*сузьте период/i);
   });
 });

@@ -393,6 +393,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: '`newEsm2` (283–304) — те же `weekStartKey` + `+6`; лист служит родителем для `waybill_files` и строк показаний, сама связка от разреза не зависит',
   },
   {
+    file: 'readings-admin-export.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note: 'служебная книга показаний (ADR 0180): фикстура смены машиниста называет источник `esm2` и номер листа, разреза недели не касается — строки приходят готовыми из подменённой выборки ожидаемых смен',
+  },
+  {
     file: 'readings-aggregate-parity.db.test.ts',
     klass: 'consumer',
     status: 'done',

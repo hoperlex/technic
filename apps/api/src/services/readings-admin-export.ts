@@ -3,6 +3,7 @@ import {
   formatNameWithInitials,
   formatVehicleRouteNumber,
   readingAnomalyLabels,
+  vehicleLabel,
   vehicleOwnershipLabels,
   waybillDisplayNumber,
   type VehicleReadingStatsRow,
@@ -16,12 +17,8 @@ import {
   type SheetInput,
 } from '../lib/xlsx';
 import { loadFleetStats } from './readings-aggregate';
-import {
-  countJournalRows,
-  loadJournalRows,
-  READING_EXPORT_ROW_LIMIT,
-  type JournalRow,
-} from './readings-export';
+import { READING_EXPORT_ROW_LIMIT } from './readings-export';
+import { loadIntakeRows, type IntakeSqlRow } from './readings-intake';
 
 /**
  * Служебная книга показаний автотранспорта (`docs/readings-admin-export-plan.md`).
@@ -34,8 +31,16 @@ import {
  *
  * Своей арифметики здесь ровно одна — расход топлива (Р5). Всё остальное приходит готовым: пробег,
  * наработка, заправленное, разрывы, последние снимки счётчиков и три счётчика смен — от агрегата
- * (`readings-aggregate.ts`), строки смен — той же выборкой, какой собирается журнал парка. Второго
- * ответа на «сколько проехала машина» в проекте быть не должно.
+ * (`readings-aggregate.ts`), строки смен — той же выборкой, какой собирает реестр приёма
+ * (`readings-intake.ts`). Второго ответа на «сколько проехала машина» в проекте быть не должно.
+ *
+ * **Строки — ожидаемые смены, а не строки открытых отчётов** (Р13). Первая редакция книги брала
+ * выборку журнала парка, то есть строки заведённых отчётов, — и теряла целый разряд работы: смену
+ * машиниста по недельному ЭСМ-2, чей день никто не открывал, вместе с его именем. В своде такая
+ * смена считалась («смен по плану»), а в детализации её не было, и книга выглядела так, будто
+ * портал знает одних водителей рейсов. Общий отбор ожидаемых смен даёт человека из самого
+ * документа — рейса или листа, — поэтому машинист попадает в книгу и тогда, когда показаний за
+ * него никто не передавал.
  *
  * Четыре правила книги:
  *
@@ -111,6 +116,12 @@ function monthLabel(date: string): string {
 // ── Строка смены ──
 
 /**
+ * Строка книги — ожидаемая смена периода вместе с показанием, если оно передано. Тип приходит от
+ * реестра приёма: правило «что такое смена» одно на портал (Р13).
+ */
+type ShiftRow = IntakeSqlRow;
+
+/**
  * Расход за смену (Р5): `остаток на начало + заправлено − остаток на конец`.
  *
  * Считается только там, где известны **оба** остатка; заправленное без остатков расходом не
@@ -118,57 +129,101 @@ function monthLabel(date: string): string {
  * машина, у которой уровни не передают, «не расходует топливо» только в книге, где ноль поставили
  * за неё.
  */
-function fuelSpent(row: JournalRow): number | null {
-  const start = decimal(row.fuelStartLiters);
-  const end = decimal(row.fuelEndLiters);
+function fuelSpent(row: ShiftRow): number | null {
+  const start = decimal(row.fuel_start_liters);
+  const end = decimal(row.fuel_end_liters);
   if (start === null || end === null) return null;
-  return round1(start + (decimal(row.fuelFilledLiters) ?? 0) - end);
+  return round1(start + (decimal(row.fuel_filled_liters) ?? 0) - end);
 }
 
-function odometerDelta(row: JournalRow): number | null {
-  return row.odometerKm === null || row.previousOdometerKm === null
+function odometerDelta(row: ShiftRow): number | null {
+  return row.odometer_km === null || row.previous_odometer_km === null
     ? null
-    : row.odometerKm - row.previousOdometerKm;
+    : row.odometer_km - row.previous_odometer_km;
 }
 
-function engineHoursDelta(row: JournalRow): number | null {
-  const hours = decimal(row.engineHours);
-  const previous = decimal(row.previousEngineHours);
+function engineHoursDelta(row: ShiftRow): number | null {
+  const hours = decimal(row.engine_hours);
+  const previous = decimal(row.previous_engine_hours);
   return hours === null || previous === null ? null : round1(hours - previous);
 }
 
-/** Источник зовут его номером — тем же правилом, каким его зовёт журнал на экране. */
-function sourceLabel(row: JournalRow): string {
-  if (row.sourceKind === 'route') {
-    return row.routeNum === null ? DASH : formatVehicleRouteNumber(row.routeNum);
+/** Источник зовут его номером — тем же правилом, каким его зовёт реестр приёма. */
+function sourceLabel(row: ShiftRow): string {
+  if (row.source_kind === 'route') {
+    return row.route_num === null ? DASH : formatVehicleRouteNumber(row.route_num);
   }
-  return row.waybillNumber === null || row.waybillPrefix === null
+  return row.waybill_number === null || row.waybill_prefix === null
     ? DASH
-    : `${waybillDisplayNumber(row.waybillPrefix, row.waybillNumber, row.waybillNumberWidth ?? 0)} (ЭСМ-2)`;
+    : `${waybillDisplayNumber(row.waybill_prefix, row.waybill_number, row.waybill_number_width ?? 0)} (ЭСМ-2)`;
 }
 
-function anomalyText(row: JournalRow): string {
+function anomalyText(row: ShiftRow): string {
   const parts = [
-    row.odometerAnomaly === null ? '' : `одометр: ${readingAnomalyLabels[row.odometerAnomaly]}`,
-    row.engineHoursAnomaly === null
+    row.odometer_anomaly === null ? '' : `одометр: ${readingAnomalyLabels[row.odometer_anomaly]}`,
+    row.engine_hours_anomaly === null
       ? ''
-      : `моточасы: ${readingAnomalyLabels[row.engineHoursAnomaly]}`,
+      : `моточасы: ${readingAnomalyLabels[row.engine_hours_anomaly]}`,
   ];
   return parts.filter(Boolean).join('; ') || DASH;
 }
 
 /** Что со строкой — теми же словами, какими её называет журнал показаний. */
-function readingText(row: JournalRow): string {
-  if (row.readingId === null || row.kind === null || row.source === null) return 'не сдано';
-  if (row.kind === 'no_data') {
-    return `нет данных${row.noDataReason ? `: ${row.noDataReason}` : ''}`;
+function readingText(row: ShiftRow): string {
+  if (row.reading_id === null || row.reading_kind === null || row.reading_source === null) {
+    return 'не сдано';
   }
-  const who = row.source === 'staff' ? 'внесено персоналом' : 'передано водителем';
+  if (row.reading_kind === 'no_data') {
+    return `нет данных${row.no_data_reason ? `: ${row.no_data_reason}` : ''}`;
+  }
+  const who = row.reading_source === 'staff' ? 'внесено персоналом' : 'передано водителем';
   return row.comment ? `${who} · ${row.comment}` : who;
 }
 
-function driverName(row: JournalRow): string {
-  return formatNameWithInitials(row.personName);
+/**
+ * Состояние отчёта дня. У ожидаемой смены, чей день никто не открывал, отчёта нет вовсе — и книга
+ * говорит это словами, а не пустой ячейкой: «нет отчёта» и «отчёт не принят» — разные ответы, и
+ * второй нельзя выдать за первый.
+ */
+function reportStateText(row: ShiftRow): string {
+  const state = row.exp_state ?? row.obs_state;
+  return state === null ? 'не открыт' : driverReportStateLabels[state].toLowerCase();
+}
+
+/**
+ * Кто на смене — работник источника: водитель рейса либо машинист недельного ЭСМ-2 (Р13). Имя
+ * приходит из документа, поэтому в книге он назван и тогда, когда показаний за него не передавали.
+ */
+function personLabel(row: ShiftRow): string {
+  return row.person_name ? formatNameWithInitials(row.person_name) : DASH;
+}
+
+/** Подпись машины строки — на случай, если её нет в своде (осиротевшая строка, Р32 плана показаний). */
+function labelOf(row: ShiftRow): string {
+  return vehicleLabel({
+    ownership: row.ownership,
+    description: row.description,
+    registrationNumber: row.registration_number,
+    categoryName: row.category_name,
+    typeName: row.type_name,
+    modelName: row.model_name,
+  });
+}
+
+/**
+ * Порядок строк книги — хронологический по машине: машина, день, смена. Реестр приёма отдаёт их
+ * «свежее сверху» — так спрашивают экран, — а книгу читают лентой и подшивают.
+ */
+function orderShifts(rows: readonly ShiftRow[], labels: Map<string, string>): ShiftRow[] {
+  return [...rows].sort((a, b) => {
+    const byVehicle = (labels.get(a.row_vehicle) ?? labelOf(a)).localeCompare(
+      labels.get(b.row_vehicle) ?? labelOf(b),
+      'ru',
+    );
+    if (byVehicle !== 0) return byVehicle;
+    if (a.row_date !== b.row_date) return a.row_date < b.row_date ? -1 : 1;
+    return (a.obs_shift_order ?? 1) - (b.obs_shift_order ?? 1);
+  });
 }
 
 // ── Свод по машинам ──
@@ -182,27 +237,29 @@ interface VehicleExtra {
   shiftsWithRows: number;
 }
 
-function extrasByVehicle(rows: readonly JournalRow[]): Map<string, VehicleExtra> {
+function extrasByVehicle(rows: readonly ShiftRow[]): Map<string, VehicleExtra> {
   const byVehicle = new Map<string, VehicleExtra>();
   for (const row of rows) {
-    const extra = byVehicle.get(row.vehicleId) ?? {
+    const extra = byVehicle.get(row.row_vehicle) ?? {
       drivers: [],
       anomalies: 0,
       fuelSpentLiters: null,
       shiftsWithFuel: 0,
       shiftsWithRows: 0,
     };
-    const driver = driverName(row);
-    if (!extra.drivers.includes(driver)) extra.drivers.push(driver);
-    if (row.odometerAnomaly !== null) extra.anomalies += 1;
-    if (row.engineHoursAnomaly !== null) extra.anomalies += 1;
+    const person = personLabel(row);
+    // Прочерк в список людей не идёт: «работник не назван» — это не имя, и в колонке «Водители»
+    // оно читалось бы как ещё один человек.
+    if (person !== DASH && !extra.drivers.includes(person)) extra.drivers.push(person);
+    if (row.odometer_anomaly !== null) extra.anomalies += 1;
+    if (row.engine_hours_anomaly !== null) extra.anomalies += 1;
     const spent = fuelSpent(row);
     if (spent !== null) {
       extra.fuelSpentLiters = round1((extra.fuelSpentLiters ?? 0) + spent);
       extra.shiftsWithFuel += 1;
     }
     extra.shiftsWithRows += 1;
-    byVehicle.set(row.vehicleId, extra);
+    byVehicle.set(row.row_vehicle, extra);
   }
   return byVehicle;
 }
@@ -258,12 +315,14 @@ const SUMMARY_HEADER = [
   'Смен с остатками',
   'Разрывов ряда',
   'Аномалий',
-  'Водители',
+  // Не «Водители»: по недельному ЭСМ-2 работает машинист, и колонка, названная одной из двух
+  // должностей, читалась бы как отбор — будто вторых в книге нет (Р13).
+  'Водители и машинисты',
   'Нарекания',
 ];
 
 const SUMMARY_WIDTHS = [
-  22, 18, 20, 12, 13, 12, 10, 16, 12, 14, 18, 13, 16, 14, 14, 12, 16, 13, 11, 34, 40,
+  22, 18, 20, 12, 13, 12, 10, 16, 12, 14, 18, 13, 16, 14, 14, 12, 16, 13, 11, 36, 40,
 ];
 
 /** Машина со своими числами: строка свода и её же итоги для листа детализации. */
@@ -361,7 +420,7 @@ function summarySheet(vehicles: readonly VehicleRow[], period: string): SheetInp
 const DETAIL_HEADER = [
   'Дата',
   'Смена',
-  'Водитель',
+  'Водитель / машинист',
   'Источник',
   'Одометр, км',
   'Прирост, км',
@@ -378,23 +437,24 @@ const DETAIL_HEADER = [
 
 const DETAIL_WIDTHS = [12, 8, 24, 22, 14, 12, 12, 13, 19, 14, 19, 12, 30, 34, 16];
 
-function detailRow(row: JournalRow): CellInput[] {
+function detailRow(row: ShiftRow): CellInput[] {
   return [
-    day(row.reportDate),
-    { num: row.shiftOrder },
-    driverName(row),
+    day(row.row_date),
+    // Позиция смены известна только у строки заведённого отчёта: у ожидаемой смены её ещё нет.
+    row.obs_shift_order === null ? DASH : { num: row.obs_shift_order },
+    personLabel(row),
     sourceLabel(row),
-    num(row.odometerKm),
+    num(row.odometer_km),
     num(odometerDelta(row)),
-    num(decimal(row.engineHours), 1),
+    num(decimal(row.engine_hours), 1),
     num(engineHoursDelta(row), 1),
-    num(decimal(row.fuelStartLiters), 1),
-    num(decimal(row.fuelFilledLiters), 1),
-    num(decimal(row.fuelEndLiters), 1),
+    num(decimal(row.fuel_start_liters), 1),
+    num(decimal(row.fuel_filled_liters), 1),
+    num(decimal(row.fuel_end_liters), 1),
     num(fuelSpent(row), 1),
     anomalyText(row),
     readingText(row),
-    driverReportStateLabels[row.reportState].toLowerCase(),
+    reportStateText(row),
   ];
 }
 
@@ -411,7 +471,7 @@ function detailRow(row: JournalRow): CellInput[] {
  */
 function detailSheet(
   vehicles: readonly VehicleRow[],
-  rowsByVehicle: Map<string, JournalRow[]>,
+  rowsByVehicle: Map<string, ShiftRow[]>,
   period: string,
 ): SheetInput {
   const rows: CellInput[][] = [[`Показания по сменам за ${period}`], [], [...DETAIL_HEADER]];
@@ -500,7 +560,7 @@ export const SOURCE_HEADER = [
  * Неизвестные числа здесь — пустые ячейки, а не прочерки: прочерк сделал бы числовое поле кэша
  * смешанным, и сводная перестала бы складывать колонку.
  */
-function sourceSheet(rows: readonly JournalRow[], labels: Map<string, VehicleReadingStatsRow>) {
+function sourceSheet(rows: readonly ShiftRow[], labels: Map<string, VehicleReadingStatsRow>) {
   return {
     name: SOURCE_SHEET,
     hidden: true,
@@ -508,19 +568,19 @@ function sourceSheet(rows: readonly JournalRow[], labels: Map<string, VehicleRea
     rows: [
       [...SOURCE_HEADER],
       ...rows.map((row): CellInput[] => {
-        const stats = labels.get(row.vehicleId);
+        const stats = labels.get(row.row_vehicle);
         return [
-          stats?.vehicleLabel ?? DASH,
-          stats?.typeName ?? DASH,
-          monthLabel(row.reportDate),
-          day(row.reportDate),
-          driverName(row),
+          stats?.vehicleLabel ?? labelOf(row),
+          stats?.typeName ?? row.type_name,
+          monthLabel(row.row_date),
+          day(row.row_date),
+          personLabel(row),
           raw(odometerDelta(row)),
           raw(engineHoursDelta(row), 1),
-          raw(decimal(row.fuelFilledLiters), 1),
+          raw(decimal(row.fuel_filled_liters), 1),
           raw(fuelSpent(row), 1),
           readingText(row),
-          driverReportStateLabels[row.reportState].toLowerCase(),
+          reportStateText(row),
         ];
       }),
     ],
@@ -642,27 +702,34 @@ export async function buildAdminReadingsExport(
   request: AdminExportRequest,
 ): Promise<AdminExportResult> {
   const { from, to } = request;
-  const total = await countJournalRows(from, to, null);
-  if (total > READING_EXPORT_ROW_LIMIT) {
+
+  const [stats, shifts] = await Promise.all([loadFleetStats(from, to), loadIntakeRows(from, to)]);
+
+  /*
+   * Предел (Р11) считается по строкам, которые попадут в книгу, и потому после выборки, а не
+   * счётным запросом до неё: строка книги — ожидаемая смена, а их число живёт в том же отборе,
+   * что и сами строки. Отдельный счётчик был бы вторым правилом «сколько строк в книге», и
+   * разойдись он с выборкой — предел срабатывал бы не на той книге, которую собирают.
+   */
+  if (shifts.length > READING_EXPORT_ROW_LIMIT) {
     throw err.badRequest(
-      `В выгрузку попадает ${total} строк, предел — ${READING_EXPORT_ROW_LIMIT}: сузьте период`,
+      `В выгрузку попадает ${shifts.length} строк, предел — ${READING_EXPORT_ROW_LIMIT}: сузьте период`,
       { to: 'Сузьте период' },
     );
   }
 
-  const [stats, journalRows] = await Promise.all([
-    loadFleetStats(from, to),
-    loadJournalRows(from, to, null),
-  ]);
-
-  const extras = extrasByVehicle(journalRows);
+  const extras = extrasByVehicle(shifts);
   const vehicles = orderVehicles(stats, extras);
   const labels = new Map(stats.map((row) => [row.vehicleId, row]));
-  const rowsByVehicle = new Map<string, JournalRow[]>();
-  for (const row of journalRows) {
-    const list = rowsByVehicle.get(row.vehicleId) ?? [];
+  const ordered = orderShifts(
+    shifts,
+    new Map(stats.map((row) => [row.vehicleId, row.vehicleLabel])),
+  );
+  const rowsByVehicle = new Map<string, ShiftRow[]>();
+  for (const row of ordered) {
+    const list = rowsByVehicle.get(row.row_vehicle) ?? [];
     list.push(row);
-    rowsByVehicle.set(row.vehicleId, list);
+    rowsByVehicle.set(row.row_vehicle, list);
   }
 
   const period = periodLabel(from, to);
@@ -670,8 +737,8 @@ export async function buildAdminReadingsExport(
     summarySheet(vehicles, period),
     detailSheet(vehicles, rowsByVehicle, period),
     pivotSheet(period),
-    parametersSheet(request, vehicles, journalRows.length),
-    sourceSheet(journalRows, labels),
+    parametersSheet(request, vehicles, ordered.length),
+    sourceSheet(ordered, labels),
   ];
 
   return {
