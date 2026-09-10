@@ -173,6 +173,13 @@ describe.skipIf(!DB_URL)('адрес заявки из справочника (�
 
     // Грузоперевозку выполняет только грузовой вид ТС; категория берётся, если у типа она есть, —
     // тип с категориями сервер без неё не примет (ADR 0028).
+    //
+    // Отбор просит РОВНО ТО, что потребует сервер (`vehicle-request-create.ts`): активный
+    // тип активного вида. Прежний запрос брал первый попавшийся грузовой тип без единого из этих
+    // условий, а в наполнении есть погашенные типы (миграция 0010). На общей базе он годами
+    // вытягивал подходящий по случайности, а на свежей все шесть случаев файла падали
+    // «Тип ТС неактивен». `ORDER BY` здесь по той же причине:
+    // `LIMIT` без сортировки — это «любая строка», и такой тест краснеет через раз.
     const types = await db.execute<{ type_id: string; category_id: string | null }>(sql`
       SELECT vt.id AS type_id,
              (SELECT vc.id FROM vehicle_categories vc
@@ -180,6 +187,9 @@ describe.skipIf(!DB_URL)('адрес заявки из справочника (�
       FROM vehicle_types vt
       JOIN vehicle_kinds vk ON vk.id = vt.kind_id
       WHERE vk.code = 'freight_transport'
+        AND vt.is_active
+        AND vk.is_active
+      ORDER BY vt.code
       LIMIT 1`);
     const type = types.rows[0];
     if (!type)
