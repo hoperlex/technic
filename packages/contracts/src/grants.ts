@@ -791,6 +791,12 @@ export const PERMISSION_REQUIRES: Partial<Record<Permission, readonly Permission
    * итоговым правам субъекта, и «Оператор (оргтехника)» — тот самый пример из преамбулы, где
    * состав набора инвариант нарушает, а субъект — нет.
    */
+  /*
+   * Служебная выгрузка показаний (`docs/readings-admin-export-plan.md`, Р2). Требование ровно то
+   * же, что у соседей ниже: набор с одной выгрузкой, выданный человеку без чтения показаний, дал
+   * бы книгу по всему парку тому, кому ни одна строка этих данных не показана ни на одном экране.
+   */
+  'vehicleReadings.export': ['vehicleReadings.read'],
   'officeEquipment.write': ['officeEquipment.read'],
   /*
    * Подтверждение перемещения (план `docs/office-equipment-move-from-request-plan.md`, Р1).

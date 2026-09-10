@@ -498,6 +498,16 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'manage',
     label: 'Правит показания и принимает день',
   },
+  /*
+   * Действие `read`, а не `manage`: держатель ничего не меняет — он уносит книгу. `manage` объявил
+   * бы модуль пишущим у того, кто в нём только читает, и витрина прав показала бы «работает» там,
+   * где человек смотрит и выгружает.
+   */
+  'vehicleReadings.export': {
+    module: 'vehicleReadings',
+    action: 'read',
+    label: 'Выгружает служебную книгу показаний',
+  },
   'vehicleMaintenance.read': {
     module: 'vehicleMaintenance',
     action: 'read',
@@ -589,6 +599,9 @@ export const ADMIN_PAGE_PERMISSIONS = [
   'mailings.read',
   'directories.export',
   'manuals.manage',
+  // Выгрузка показаний живёт вкладкой «Администрирования» (план, Р1), и без строки здесь раздел не
+  // открылся бы тому, у кого из административных прав есть только она.
+  'vehicleReadings.export',
 ] as const satisfies readonly Permission[];
 
 /**

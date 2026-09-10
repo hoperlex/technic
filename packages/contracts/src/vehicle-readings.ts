@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, type ListResult, uuidSchema } from './common';
 import type { ReadingSourceKind } from './driver-cabinet';
 import type { AttachedFileDto } from './files';
+import type { VehicleOwnership } from './vehicles';
 
 /**
  * Показания техники (ADR 0103): одометр, моточасы и заправленное за смену.
@@ -566,6 +567,26 @@ export interface VehicleReadingStatsRow {
    * которой ряд оборвался.
    */
   gaps: number;
+  /**
+   * Реквизиты машины россыпью — тип, модель и владение. Портал ими не пользуется (ему хватает
+   * подписи), а служебной книге они нужны отдельными колонками: по ним группирует сводная таблица
+   * (`docs/readings-admin-export-plan.md`, §3.1). Приходят они из той же выборки, что и подпись,
+   * поэтому второго запроса за реквизитами парка не появляется.
+   */
+  typeName: string;
+  modelName: string | null;
+  ownership: VehicleOwnership;
+  /**
+   * Ожидаемые смены периода и качество их закрытия (Р26в, Р27): сколько смен ждали, сколько из них
+   * осталось без числового показания и сколько отчётов не принято.
+   *
+   * Числа не новые — их считает `sumMonths` вместе с пробегом и наработкой, — но до строки сводки
+   * они не доезжали. Второго их расчёта заводить нельзя: отбор ожидаемых смен один, и разойдись
+   * он между сводкой и книгой, «не сдано 3 смены» в книге означало бы не то же, что на экране.
+   */
+  shifts: number;
+  missingReadings: number;
+  unacceptedShifts: number;
 }
 
 /** Отрезок, за который спрашивают показания: его границы одинаковы у сводки, карточки и журнала. */

@@ -535,6 +535,9 @@ function sumMonths(months: readonly ReadingMonthRow[]): ReadingTotals {
 /** Машина со своими месяцами: подпись строится один раз на машину, а не на каждый месяц. */
 interface VehicleMonths {
   vehicleId: string;
+  typeName: string;
+  modelName: string | null;
+  ownership: VehicleOwnership;
   vehicleLabel: string;
   months: ReadingMonthRow[];
   /**
@@ -552,6 +555,9 @@ function groupByVehicle(rows: readonly AggregateRow[]): VehicleMonths[] {
     const entry = byVehicle.get(row.vehicle_id) ?? {
       vehicleId: row.vehicle_id,
       gaps: 0,
+      typeName: row.type_name,
+      modelName: row.model_name,
+      ownership: row.ownership,
       vehicleLabel: vehicleLabel({
         ownership: row.ownership,
         description: row.description,
@@ -626,6 +632,13 @@ export async function loadFleetStats(from: string, to: string): Promise<VehicleR
       lastEngineHours: engineHours.get(entry.vehicleId) ?? null,
       fuelFilledLiters: total.fuelFilledLiters,
       gaps: entry.gaps,
+      typeName: entry.typeName,
+      modelName: entry.modelName,
+      ownership: entry.ownership,
+      // Три числа приходят из того же `sumMonths`, что и пробег: своего счёта смен у сводки нет.
+      shifts: total.shifts,
+      missingReadings: total.missingReadings,
+      unacceptedShifts: total.unacceptedShifts,
     };
   });
 }

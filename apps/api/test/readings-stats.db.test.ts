@@ -954,6 +954,11 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       //
       // Снимки счётчиков (Р17) — не производные: это сами показания приборов за период, а не
       // что-то, поделённое на пробег. В книгу они при этом не идут — её колонки ниже прежние.
+      //
+      // Реквизиты машины и три счётчика смен пришли со служебной книгой
+      // (`docs/readings-admin-export-plan.md`, §3.5) и запрета тоже не нарушают: тип, модель и
+      // владение — приметы машины, а «смен ждали / не сдано / отчётов не принято» — счёт событий,
+      // а не чьё-то частное. Считает их всё тот же `sumMonths`, второго расчёта не появилось.
       expect(Object.keys(row!).sort()).toEqual([
         'distanceKm',
         'engineHours',
@@ -961,6 +966,12 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
         'gaps',
         'lastEngineHours',
         'lastOdometer',
+        'missingReadings',
+        'modelName',
+        'ownership',
+        'shifts',
+        'typeName',
+        'unacceptedShifts',
         'vehicleId',
         'vehicleLabel',
       ]);
@@ -1093,6 +1104,12 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
         'gaps',
         'lastEngineHours',
         'lastOdometer',
+        'missingReadings',
+        'modelName',
+        'ownership',
+        'shifts',
+        'typeName',
+        'unacceptedShifts',
         'vehicleId',
         'vehicleLabel',
       ]);

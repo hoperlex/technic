@@ -303,6 +303,12 @@ describe('совместимость с сегодняшним homePath', () => 
    * Живых учёток правка не двигает: сегодня оба права вместе есть у администратора и диспетчера, а
    * им обоим стартовым остаётся «Вывоз мусора».
    */
+  /*
+   * Служебная выгрузка показаний (`vehicleReadings.export`) вошла в `ADMIN_PAGE_PERMISSIONS`, и
+   * список подрос на три пары — тем же расхождением и по той же причине, что соседние строки:
+   * держателю справочников «Справочники» открыты и стоят выше «Администрирования». Живых учёток
+   * это не двигает: право есть только у администратора, а ему стартовым остаётся «Вывоз мусора».
+   */
   it('стартовый раздел совпадает с homePath всюду, кроме перечисленного', () => {
     const changed: string[] = [];
     for (const combo of PERMISSION_COMBOS) {
@@ -317,12 +323,15 @@ describe('совместимость с сегодняшним homePath', () => 
       'directories.export + officeEquipment.write: /admin → /directories',
       'directories.export + officeEquipmentConsumables.manage: /admin → /directories',
       'directories.export + officeEquipmentConsumables.stock: /admin → /directories',
+      'officeEquipment.write + vehicleReadings.export: /admin → /directories',
       'officeEquipment.write + users.manage: /admin → /directories',
       'officeEquipment.write + mailings.read: /admin → /directories',
       'officeEquipment.write + manuals.manage: /admin → /directories',
+      'officeEquipmentConsumables.manage + vehicleReadings.export: /admin → /directories',
       'officeEquipmentConsumables.manage + users.manage: /admin → /directories',
       'officeEquipmentConsumables.manage + mailings.read: /admin → /directories',
       'officeEquipmentConsumables.manage + manuals.manage: /admin → /directories',
+      'officeEquipmentConsumables.stock + vehicleReadings.export: /admin → /directories',
       'officeEquipmentConsumables.stock + users.manage: /admin → /directories',
       'officeEquipmentConsumables.stock + mailings.read: /admin → /directories',
       'officeEquipmentConsumables.stock + manuals.manage: /admin → /directories',

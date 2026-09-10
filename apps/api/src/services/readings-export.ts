@@ -224,7 +224,7 @@ function journalWhere(from: string, to: string, vehicleId: string | null) {
   );
 }
 
-async function countJournalRows(
+export async function countJournalRows(
   from: string,
   to: string,
   vehicleId: string | null,
@@ -249,9 +249,10 @@ async function countJournalRows(
  * Порядок — хронологический (машина, день, смена), а не «свежее сверху», как на экране: книгу
  * читают лентой и подшивают, а вопрос «что сдали вчера» задают порталу, а не файлу.
  */
-async function loadJournalRows(from: string, to: string, vehicleId: string | null) {
+export async function loadJournalRows(from: string, to: string, vehicleId: string | null) {
   return db
     .select({
+      vehicleId: driverDailyReportItems.vehicleId,
       ownership: vehicles.ownership,
       description: vehicles.description,
       registrationNumber: vehicles.registrationNumber,
@@ -308,7 +309,7 @@ async function loadJournalRows(from: string, to: string, vehicleId: string | nul
     );
 }
 
-type JournalRow = Awaited<ReturnType<typeof loadJournalRows>>[number];
+export type JournalRow = Awaited<ReturnType<typeof loadJournalRows>>[number];
 
 /** Число из `numeric`: драйвер отдаёт его строкой, и `null` обязан остаться `null`, а не нулём. */
 function num(value: string | null): number | null {

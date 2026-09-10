@@ -326,3 +326,125 @@ describe('отказ вместо падения', () => {
     expect(() => readWorkbook(book)).toThrow(XlsxError);
   });
 });
+
+/**
+ * Числа, даты, заливка и сводная таблица (`docs/readings-admin-export-plan.md`, Р4).
+ *
+ * Всё это пришло со служебной книгой показаний, и проверять его надо здесь, на писателе: `readWorkbook`
+ * отдаёт только текст ячеек, и «книга открылась» ничего не говорит ни про формат числа, ни про цвет
+ * строки. Поэтому части разбираются как XML — глазами того же редактора, который их прочтёт.
+ */
+describe('писатель: числа, оформление и сводная', () => {
+  const partOf = (bytes: Uint8Array, name: string): string =>
+    strFromU8(unzipSync(bytes)[name] ?? new Uint8Array());
+
+  it('число лежит числом, а не текстом', () => {
+    const book = writeWorkbook([{ name: 'Лист', rows: [['Пробег'], [{ num: 3480 }]] }]);
+    const sheet = partOf(book, 'xl/worksheets/sheet1.xml');
+
+    // Числовая ячейка идёт без `t="inlineStr"` и со значением в `<v>`: только такую считает
+    // формула и берёт в кэш сводная.
+    expect(sheet).toContain('<v>3480</v>');
+    expect(sheet).not.toContain('<is><t xml:space="preserve">3480</t></is>');
+  });
+
+  it('дата уезжает числом дней Excel и своим форматом', () => {
+    const book = writeWorkbook([{ name: 'Лист', rows: [[{ date: '2026-08-29' }]] }]);
+
+    // 29.08.2026 — 46 263-й день календаря Excel, в котором есть несуществующее 29.02.1900.
+    expect(partOf(book, 'xl/worksheets/sheet1.xml')).toContain('<v>46263</v>');
+    // Формат свой, а не встроенный: встроенный показывает дату по языку системы.
+    expect(partOf(book, 'xl/styles.xml')).toContain('formatCode="DD.MM.YYYY"');
+  });
+
+  it('прочерк в числовой колонке остаётся текстом', () => {
+    const book = writeWorkbook([{ name: 'Лист', rows: [['—']] }]);
+
+    // Ноль вместо прочерка соврал бы про «стояла», а пустая ячейка сводную не искажает.
+    expect(partOf(book, 'xl/worksheets/sheet1.xml')).toContain('—');
+  });
+
+  it('заливка строки, слитая ячейка и группировка доезжают до листа', () => {
+    const book = writeWorkbook([
+      {
+        name: 'Лист',
+        headerRow: 1,
+        autoFilter: false,
+        rows: [['Шапка'], ['Машина'], ['смена']],
+        rowStyles: [undefined, { fill: 'green', bold: true }],
+        merges: ['A2:C2'],
+        outline: [0, 0, 1],
+      },
+    ]);
+    const sheet = partOf(book, 'xl/worksheets/sheet1.xml');
+
+    expect(sheet).toContain('<mergeCell ref="A2:C2"/>');
+    expect(sheet).toContain('outlineLevel="1"');
+    // Автофильтр отключён намеренно: на листе с заголовками групп он таскал бы их вместе с данными.
+    expect(sheet).not.toContain('<autoFilter');
+    expect(partOf(book, 'xl/styles.xml')).toContain('FFC6EFCE');
+  });
+
+  it('скрытый лист помечен скрытым в книге', () => {
+    const book = writeWorkbook([
+      { name: 'Виден', rows: [['раз']] },
+      { name: 'Данные', hidden: true, rows: [['два']] },
+    ]);
+
+    expect(partOf(book, 'xl/workbook.xml')).toContain('state="hidden"');
+  });
+
+  it('сводная приходит с полным кэшем, а не с пустым обещанием пересчёта', () => {
+    const book = writeWorkbook(
+      [
+        { name: 'Сводная', rows: [['Сводная']] },
+        {
+          name: 'Данные',
+          hidden: true,
+          rows: [
+            ['Техника', 'Месяц', 'Пробег, км'],
+            ['А123БВ797', '08.2026', { num: 245 }],
+            ['А123БВ797', '09.2026', { num: 300 }],
+          ],
+        },
+      ],
+      {
+        sheet: 'Сводная',
+        source: 'Данные',
+        rowField: 'Техника',
+        columnField: 'Месяц',
+        startRow: 3,
+        values: [{ field: 'Пробег, км', label: 'Пробег, км' }],
+        calculated: [{ name: 'Вдвое', formula: "'Пробег, км'*2" }],
+      },
+    );
+    const records = partOf(book, 'xl/pivotCache/pivotCacheRecords1.xml');
+    const definition = partOf(book, 'xl/pivotCache/pivotCacheDefinition1.xml');
+    const table = partOf(book, 'xl/pivotTables/pivotTable1.xml');
+
+    // Записи кэша — все: с пустым кэшем сводная оживает только в Excel, а LibreOffice и
+    // отечественные редакторы показали бы пустой лист.
+    expect(records).toContain('<n v="245"/>');
+    expect(records).toContain('<n v="300"/>');
+    expect(definition).toContain('<s v="А123БВ797"/>');
+    // Вычисляемое поле записей не имеет — его считает редактор по формуле.
+    expect(definition).toContain('databaseField="0"');
+    // Значений в таблице два: сумма и вычисляемое поле, и разметка строк знает про оба.
+    expect(table).toContain('<dataFields count="2">');
+    expect(partOf(book, '[Content_Types].xml')).toContain('pivotTable+xml');
+  });
+
+  it('без листа-источника сводная не заводится, а книга остаётся книгой', () => {
+    const book = writeWorkbook([{ name: 'Лист', rows: [['раз']] }], {
+      sheet: 'Лист',
+      source: 'Нет такого',
+      rowField: 'Техника',
+      columnField: 'Месяц',
+      startRow: 3,
+      values: [],
+    });
+
+    expect(Object.keys(unzipSync(book))).not.toContain('xl/pivotTables/pivotTable1.xml');
+    expect(readWorkbook(book)[0]?.rows[0]?.[0]).toBe('раз');
+  });
+});

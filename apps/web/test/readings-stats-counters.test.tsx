@@ -43,6 +43,12 @@ const ROWS: VehicleReadingStatsRow[] = [
     lastEngineHours: { value: 5120.5, measuredOn: '2026-07-20' },
     fuelFilledLiters: 620,
     gaps: 1,
+    typeName: 'Самосвал',
+    modelName: null,
+    ownership: 'own',
+    shifts: 0,
+    missingReadings: 0,
+    unacceptedShifts: 0,
   },
   {
     /*
@@ -57,6 +63,12 @@ const ROWS: VehicleReadingStatsRow[] = [
     lastEngineHours: null,
     fuelFilledLiters: 0,
     gaps: 0,
+    typeName: 'Самосвал',
+    modelName: null,
+    ownership: 'own',
+    shifts: 0,
+    missingReadings: 0,
+    unacceptedShifts: 0,
   },
 ];
 

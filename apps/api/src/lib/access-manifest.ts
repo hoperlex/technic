@@ -1791,6 +1791,15 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['vehicleReadings.read'],
   },
+  /**
+   * Служебная книга администрирования (`docs/readings-admin-export-plan.md`, Р2). Право своё, и
+   * это не задвоение выгрузки: соседняя ручка отдаёт то, что открыто на экране гаража, а эта —
+   * весь парк за произвольный период вместе с ФИО водителей, то есть выносит данные наружу.
+   */
+  'GET /api/v1/vehicle-readings/admin-export': {
+    kind: 'permissions',
+    allOf: ['vehicleReadings.export'],
+  },
   'POST /api/v1/vehicle-readings/items/:id/rebase': {
     kind: 'permissions',
     allOf: ['vehicleReadings.write'],

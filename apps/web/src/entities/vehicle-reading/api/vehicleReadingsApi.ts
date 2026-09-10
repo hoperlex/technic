@@ -146,4 +146,15 @@ export const vehicleReadingsApi = {
    */
   exportBook: (kind: ReadingExportKind, query: Query) =>
     apiDownload(`${BASE}/export`, 'Показания техники.xlsx', { query: { ...query, kind } }),
+  /**
+   * Служебная книга администрирования (`docs/readings-admin-export-plan.md`): свод, детализация,
+   * сводная таблица и параметры одним файлом.
+   *
+   * Отдельный метод, а не седьмой `kind` у соседа: у книги своё право (`vehicleReadings.export`),
+   * своя ручка и свой период — тот, что человек выбрал в форме, а не тот, что открыт на экране
+   * гаража. Склей их — и «kind, который виден не всем» пришлось бы объяснять и в окне выгрузки, и
+   * в схеме запроса.
+   */
+  adminExport: (query: Query) =>
+    apiDownload(`${BASE}/admin-export`, 'Показания автотранспорта.xlsx', { query }),
 };

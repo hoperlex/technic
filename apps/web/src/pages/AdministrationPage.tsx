@@ -7,6 +7,7 @@ import { AccessTab } from './admin/AccessTab';
 import { MailingsTab } from './admin/MailingsTab';
 import { DirectoryTransferTab } from './admin/DirectoryTransferTab';
 import { ManualsTab } from './admin/ManualsTab';
+import { ReadingsExportTab } from './admin/ReadingsExportTab';
 
 export function AdministrationPage() {
   // Компактная полоса вкладок на телефоне — как в справочниках: на 360 px обычная съедает
@@ -50,6 +51,13 @@ export function AdministrationPage() {
     // страницу — оно входит в `ADMIN_PAGE_PERMISSIONS`, по которому живут все три гейта (§3.6).
     ...(can('manuals.manage')
       ? [{ key: 'manuals', label: 'Руководства', children: <ManualsTab /> }]
+      : []),
+    // Служебная выгрузка показаний (`docs/readings-admin-export-plan.md`, Р1) — по своему праву:
+    // книга уносит весь парк за период вместе с ФИО водителей, и это не то же самое, что смотреть
+    // показания в гараже. Право входит в `ADMIN_PAGE_PERMISSIONS`, поэтому вкладка открывает
+    // раздел сама, как и «Руководства».
+    ...(can('vehicleReadings.export')
+      ? [{ key: 'readings-export', label: 'Выгрузки', children: <ReadingsExportTab /> }]
       : []),
   ];
   return (

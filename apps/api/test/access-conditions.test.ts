@@ -1186,6 +1186,7 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'GET /api/v1/vehicle-readings/export': {
     query: `kind=fleetSummary&from=${PAST_DATE}&to=${PAST_DATE}`,
   },
+  'GET /api/v1/vehicle-readings/admin-export': { query: `from=${PAST_DATE}&to=${PAST_DATE}` },
   'GET /api/v1/vehicle-readings/intake': { query: `from=${PAST_DATE}&to=${PAST_DATE}` },
   'GET /api/v1/vehicle-readings/journal/:vehicleId': {
     query: `from=${PAST_DATE}&to=${PAST_DATE}`,

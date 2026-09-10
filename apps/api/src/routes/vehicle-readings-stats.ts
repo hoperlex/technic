@@ -16,6 +16,7 @@ import {
 import { requirePrincipal } from '../auth/plugin';
 import { err } from '../lib/errors';
 import { loadFleetStats, loadVehicleCard } from '../services/readings-aggregate';
+import { buildAdminReadingsExport } from '../services/readings-admin-export';
 import { buildReadingsExport, type ReadingsExportResult } from '../services/readings-export';
 import { loadReadingIntake } from '../services/readings-intake';
 import { loadVehicleReadingJournal } from '../services/readings-stats';
@@ -189,6 +190,40 @@ export default async function vehicleReadingsStatsRoutes(app: FastifyInstance): 
         to,
         vehicleId,
         withMaintenance: can(requirePrincipal(req), 'vehicleMaintenance.read'),
+      });
+      return sendWorkbook(reply, book);
+    },
+  );
+
+  /**
+   * Служебная книга показаний (`docs/readings-admin-export-plan.md`): свод, детализация по сменам,
+   * сводная таблица и параметры выгрузки — одним файлом, за период, который выбрал человек.
+   *
+   * Право своё — `vehicleReadings.export`, и охраняет оно не «посмотреть», а «вынести»: книга
+   * сводит весь парк вместе с ФИО водителей и уходит письмом (Р2, Р12). Гараж свои шесть книг
+   * выгружает по-прежнему под `vehicleReadings.read` — там выгружают ровно то, что открыто на
+   * экране.
+   *
+   * Потолок периода тот же, что у соседей: длина проверяется здесь, число строк — в сборщике, до
+   * сборки книги (Р11).
+   */
+  r.get(
+    '/admin-export',
+    {
+      preHandler: [app.authenticate, app.requirePermission('vehicleReadings.export')],
+      schema: { querystring: readingStatsQuerySchema },
+    },
+    async (req, reply) => {
+      const { from, to } = req.query;
+      checkPeriod(from, to);
+
+      const principal = requirePrincipal(req);
+      const book = await buildAdminReadingsExport({
+        from,
+        to,
+        // Подпись — ФИО и почта того, кто нажал: книгу читают в чужой папке через месяц (Р10).
+        actor: `${principal.fullName} (${principal.email})`,
+        at: new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }),
       });
       return sendWorkbook(reply, book);
     },
