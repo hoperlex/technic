@@ -228,25 +228,29 @@ describe('ЭСМ-2, сверка бумаги с заявкой (`esm2SyncPlan`)
       wanted: [{ from: NEXT_MON, to: NEXT_WED }],
       existing: [sheet('a', NEXT_MON, NEXT_WED)],
     });
-    expect(plan).toEqual({ cancel: [], issue: [] });
+    expect(plan).toEqual({ cancel: [], issue: [], trim: [] });
   });
 
-  it('сдвиг любой границы внутри недели жжёт номер: правке выданный бланк не подлежит', () => {
-    // Продление срока внутри той же недели (лист «пн…ср», срок дотянули до вс).
+  it('расширение недели жжёт номер, а сокращение правит лист на месте (Р6)', () => {
+    // Продление срока внутри той же недели (лист «пн…ср», срок дотянули до вс): «продлить» бланк
+    // нечем, кроме нового номера, — в графе «Период работы» напечатаны прежние даты, а
+    // дописывать в неё портал не вправе. Правка умеет только отнимать дни.
     expect(
       auto({
         wanted: [{ from: NEXT_MON, to: NEXT_SUN }],
         existing: [sheet('a', NEXT_MON, NEXT_WED)],
       }),
-    ).toEqual({ cancel: ['a'], issue: [{ from: NEXT_MON, to: NEXT_SUN }] });
-    // И сокращение того же листа — тем же порядком: в графе «Период работы» напечатаны прежние
-    // даты, и «продлить» бланк нечем, кроме нового номера.
+    ).toEqual({ cancel: ['a'], issue: [{ from: NEXT_MON, to: NEXT_SUN }], trim: [] });
+    // А сокращение того же листа перестало быть парой «аннулировать плюс выписать» (Р5, Р6 плана
+    // `docs/vehicle-request-actual-end-date-plan.md`): состав и первый день те же, портал отнимает
+    // дни с конца — номер за это не платится. Напечатанный экземпляр остаётся с прежней графой
+    // периода, и расхождение это намеренное (Р13).
     expect(
       auto({
         wanted: [{ from: NEXT_MON, to: NEXT_WED }],
         existing: [sheet('a', NEXT_MON, NEXT_SUN)],
       }),
-    ).toEqual({ cancel: ['a'], issue: [{ from: NEXT_MON, to: NEXT_WED }] });
+    ).toEqual({ cancel: [], issue: [], trim: [{ waybillId: 'a', to: NEXT_WED }] });
   });
 
   it('машину сняли с заявки — бумага горит вся, а замена выписывается «ни на что»', () => {
@@ -260,7 +264,7 @@ describe('ЭСМ-2, сверка бумаги с заявкой (`esm2SyncPlan`)
       existing: [sheet('a', MON, SUN)],
       vehicleId: null,
     });
-    expect(plan).toEqual({ cancel: ['a'], issue: [{ from: MON, to: SUN }] });
+    expect(plan).toEqual({ cancel: ['a'], issue: [{ from: MON, to: SUN }], trim: [] });
   });
 
   it('отработанный лист не горит и закрывает свою календарную неделю целиком', () => {
@@ -275,7 +279,7 @@ describe('ЭСМ-2, сверка бумаги с заявкой (`esm2SyncPlan`)
       wanted: [{ from: MON, to: WED }],
       existing: [sheet('a', MON, SUN, { vehicleId: 'vehicle-2' })],
     });
-    expect(plan).toEqual({ cancel: [], issue: [] });
+    expect(plan).toEqual({ cancel: [], issue: [], trim: [] });
   });
 
   it('граница отработанности — последний день листа, и день этот ещё «сегодня»', () => {
@@ -289,26 +293,28 @@ describe('ЭСМ-2, сверка бумаги с заявкой (`esm2SyncPlan`)
     expect(auto({ ...stale, today: SUN })).toEqual({
       cancel: ['a'],
       issue: [{ from: MON, to: SUN }],
+      trim: [],
     });
     // Понедельник следующей недели — неделя отстояна, и бумага неприкосновенна.
-    expect(auto({ ...stale, today: NEXT_MON })).toEqual({ cancel: [], issue: [] });
+    expect(auto({ ...stale, today: NEXT_MON })).toEqual({ cancel: [], issue: [], trim: [] });
   });
 
-  it('срок, сокращённый внутрь прошлого, жжёт номер и замены не выписывает', () => {
-    // Странность (как есть), и найдена она этим же тестом. Заказ закрывают в воскресенье задним
-    // числом — по среду. Лист недели пн…вс аннулировать ещё можно (его последний день — сегодня),
-    // и он уходит в `cancel`. А замену «пн…ср» выписать уже нельзя: у выписки своя граница —
-    // `p.to >= today`, — и она считается по концу **нового** отрезка, который в прошлом.
-    // Получается сгоревший номер и три отработанных дня без документа; закрыть их можно только
-    // коррекцией (`correction`), то есть с правом и причиной. Двух границ здесь именно две, и
-    // сходятся они в один день ровно тогда, когда срок правят последним днём недели.
+  it('срок, сокращённый внутрь прошлого, правит лист — и коррекции для этого не нужно', () => {
+    // Бывшая странность, снятая правилом `trim` (Р6), и найдена она была этим же тестом. Заказ
+    // закрывают в воскресенье задним числом — по среду. Прежде лист недели пн…вс уходил в
+    // `cancel` (аннулировать его ещё можно — последний день сегодня), а замену «пн…ср» выписать
+    // было уже нельзя: у выписки своя граница `p.to >= today`, и считается она по концу
+    // **нового** отрезка, который в прошлом. Получались сгоревший номер и три отработанных дня
+    // без документа. Теперь второй границы просто не возникает: состав и начало те же, конец
+    // ближе — лист правится на месте, и номер остаётся при нём.
     const plan = auto({
       today: SUN,
       wanted: [{ from: MON, to: WED }],
       existing: [sheet('a', MON, SUN)],
     });
-    expect(plan).toEqual({ cancel: ['a'], issue: [] });
-    // С проверенной операцией коррекции та же правка доводится до конца.
+    expect(plan).toEqual({ cancel: [], issue: [], trim: [{ waybillId: 'a', to: WED }] });
+    // Контекст коррекции ничего здесь не добавляет: он разрешает **выписать** прошедшую неделю, а
+    // правка периода номера не расходует и выписки не требует.
     expect(
       auto({
         today: SUN,
@@ -316,7 +322,7 @@ describe('ЭСМ-2, сверка бумаги с заявкой (`esm2SyncPlan`)
         existing: [sheet('a', MON, SUN)],
         correction: { allowed: true },
       }),
-    ).toEqual({ cancel: ['a'], issue: [{ from: MON, to: WED }] });
+    ).toEqual({ cancel: [], issue: [], trim: [{ waybillId: 'a', to: WED }] });
   });
 
   it('два листа в одной неделе: отработанный запирает свои дни, а соседний переоформляется', () => {
@@ -336,7 +342,7 @@ describe('ЭСМ-2, сверка бумаги с заявкой (`esm2SyncPlan`)
         sheet('stale', '2026-08-06', SUN, { vehicleId: 'vehicle-2' }),
       ],
     });
-    expect(plan).toEqual({ cancel: ['stale'], issue: [{ from: '2026-08-06', to: SUN }] });
+    expect(plan).toEqual({ cancel: ['stale'], issue: [{ from: '2026-08-06', to: SUN }], trim: [] });
   });
 
   it('пустоту набора для режима `none` обеспечивает вызывающий, а не сама сверка', () => {
@@ -352,7 +358,7 @@ describe('ЭСМ-2, сверка бумаги с заявкой (`esm2SyncPlan`)
       driverPersonId: DRIVER,
       today: '2026-08-01',
     });
-    expect(plan).toEqual({ cancel: [], issue: [{ from: MON, to: SUN }] });
+    expect(plan).toEqual({ cancel: [], issue: [{ from: MON, to: SUN }], trim: [] });
   });
 
   it('дубль в наборе даёт два бланка на одни и те же дни: набору сверка верит', () => {
@@ -613,7 +619,7 @@ describe('ЭСМ-2, сборка входа сверки (`buildEsm2SyncPlan`)',
     expect(built?.input.mode).toBe('on_demand');
     expect(built?.input.driverPersonId).toBeNull();
     expect(built?.input.wanted).toEqual([{ from: NEXT_MON, to: NEXT_SUN }]);
-    expect(built?.plan).toEqual({ cancel: [], issue: [] });
+    expect(built?.plan).toEqual({ cancel: [], issue: [], trim: [] });
     expect(log).toEqual(['request', 'sheets']);
   });
 
@@ -639,7 +645,7 @@ describe('ЭСМ-2, сборка входа сверки (`buildEsm2SyncPlan`)',
     });
     expect(built?.input.mode).toBe('none');
     expect(built?.input.driverPersonId).toBe('driver-last');
-    expect(built?.plan).toEqual({ cancel: ['a', 'b'], issue: [] });
+    expect(built?.plan).toEqual({ cancel: ['a', 'b'], issue: [], trim: [] });
     expect(log).toEqual(['request', 'sheets', 'machinist']);
   });
 
@@ -659,7 +665,7 @@ describe('ЭСМ-2, сборка входа сверки (`buildEsm2SyncPlan`)',
     const { built } = await build({ request: { ...confirmed, dateFrom: null, dateTo: null } });
     expect(built?.input.mode).toBe('auto');
     expect(built?.input.wanted).toEqual([]);
-    expect(built?.plan).toEqual({ cancel: [], issue: [] });
+    expect(built?.plan).toEqual({ cancel: [], issue: [], trim: [] });
   });
 
   it('оба ключа коррекции доезжают до сверки вместе, а без операции остаются пустыми', async () => {
@@ -678,6 +684,7 @@ describe('ЭСМ-2, сборка входа сверки (`buildEsm2SyncPlan`)',
     expect(withCorrection.built?.plan).toEqual({
       cancel: ['a'],
       issue: [{ from: MON, to: SUN }],
+      trim: [],
     });
 
     const plain = await build(
@@ -691,7 +698,7 @@ describe('ЭСМ-2, сборка входа сверки (`buildEsm2SyncPlan`)',
     expect(plain.built?.input.unlockWaybillIds).toBeUndefined();
     expect(plain.built?.input.correction).toBeUndefined();
     // Та же прошедшая неделя без операции: лист неприкосновенен, замены нет, план молчит.
-    expect(plain.built?.plan).toEqual({ cancel: [], issue: [] });
+    expect(plain.built?.plan).toEqual({ cancel: [], issue: [], trim: [] });
   });
 
   it('без явной даты расчёта днём сверки становится сегодня по МСК', async () => {

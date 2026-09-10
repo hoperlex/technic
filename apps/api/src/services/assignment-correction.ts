@@ -128,6 +128,7 @@ const EMPTY_SHEET_PLAN: Esm2SheetPlan = {
   wanted: [],
   cancel: [],
   issue: [],
+  trim: [],
   kept: [],
   locked: [],
   outOfScope: [],
@@ -626,7 +627,7 @@ export async function clearCorrectionApprovals(
         displayNumbers: ctx.plan.sheetNumbers,
         unlockWaybillIds: ctx.plan.requiredUnlocks.map((u) => u.waybillId),
       })
-    : { cancelled: [], issued: [] };
+    : { cancelled: [], issued: [], trimmed: [] };
   if (ctx.plan.paperByHistory) {
     await assertAssignmentPaperConverged(ctx.tx, {
       requestId: ctx.request.id,

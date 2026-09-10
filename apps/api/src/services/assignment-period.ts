@@ -1,43 +1,29 @@
-import { eq, inArray, ne, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import {
   canShortenWorkPeriodByEdit,
   isApprovalChangeable,
   moscowDateKeyOf,
   movedRequestDateKey,
   movedRequestStartKey,
-  shiftDateKey,
   vehicleRequestLeadTimeBlocker,
-  waybillDisplayNumber,
   type AssignmentPlanCancelDto,
   type AssignmentPlanIssueDto,
   type AssignmentUnlockDto,
   type CancelledAssignmentGroupDto,
-  type DriverState,
   type Esm2Mode,
-  type Esm2Period,
   type OperationRequirement,
   type PeriodApplyInput,
   type PeriodCommand,
   type PeriodPreviewDto,
   type RequestCalendar,
   type RequestStatus,
-  type VehicleOwnership,
   type WaybillCorrectionAuthorizationScope,
 } from '@technic/contracts';
 import type { AuditEntry } from '../lib/audit';
 import { err } from '../lib/errors';
 import { canApproveRequest } from '../lib/access';
 import type { Principal } from '../auth/principal';
-import {
-  persons,
-  specialEquipmentRequestDetails,
-  vehicleModels,
-  vehicleRequestAssignments,
-  vehicleRequests,
-  vehicles,
-  waybills,
-  waybillSeries,
-} from '../db/schema';
+import { specialEquipmentRequestDetails, vehicleRequests } from '../db/schema';
 import type {
   AssignmentAuditContext,
   AssignmentAuthorizeContext,
@@ -47,19 +33,9 @@ import type {
   AssignmentPlanContext,
   AssignmentPlanned,
 } from './assignment-command';
-import {
-  assignmentCommandEffects,
-  type AssignmentEffects,
-  type AssignmentExternalEffect,
-  type AssignmentMutation,
-} from './assignment-effects';
-import {
-  assignmentChangeTargetOf,
-  ensureAssignmentHistory,
-  ensureCommandHistory,
-  planAssignmentHistory,
-} from './assignment-ensure';
-import { assignmentSegments, type AssignmentTerm } from './assignment-history';
+import type { AssignmentEffects, AssignmentExternalEffect } from './assignment-effects';
+import { ensureAssignmentHistory, ensureCommandHistory } from './assignment-ensure';
+import type { AssignmentTerm } from './assignment-history';
 import {
   applyAssignmentMutations,
   type AssignmentChangeRecord,
@@ -71,15 +47,18 @@ import {
 // «`crew` требует `waybills.correct`, глубже тридцати дней — `correctBeyondLimit`». Своя копия
 // разошлась бы с ней при первой же правке правила, а разъезжаются такие пары молча.
 import { authorizeCrewCommand, authorizeCrewRepeat, fingerprintOf } from './assignment-crew';
+// Расчёт изменения срока — общий на четыре применяющие ветви (Р18 плана
+// `docs/vehicle-request-actual-end-date-plan.md`): гасимые группы, эффекты, бумага, разблокировки.
+// Дверь срока с него и началась и осталась его первым вызывающим; решения по посчитанному —
+// по-прежнему её, и ни одно из них в общий расчёт не переехало.
 import {
-  documentClosure,
-  esm2SheetPlan,
-  normalizeRangeSet,
-  type DateRangeSet,
-  type Esm2ExistingSheet,
-  type Esm2SheetPlan,
-} from './esm2-plan';
-import { buildEsm2SyncPlan, type Esm2SyncResult } from './waybill-esm2';
+  cancelGroupsShape,
+  lastDayOf,
+  shortenTermPlan,
+  type TermCancelGroup,
+} from './assignment-shorten-term';
+import type { DateRangeSet, Esm2ExistingSheet, Esm2SheetPlan } from './esm2-plan';
+import type { Esm2SyncResult } from './waybill-esm2';
 // Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
 // провенансом (§10, Р32). Порядок работ шага 12 у этой двери свой и остаётся у общего сервиса
 // правки срока — сюда приходит только «что исполнять».
@@ -127,23 +106,27 @@ import type { LinearDaysSyncResult } from './vehicle-request-days';
  * версия и аудит принадлежат [assignment-command.ts](./assignment-command.ts); запись истории —
  * [assignment-write.ts](./assignment-write.ts); проекции последствий —
  * [assignment-effects.ts](./assignment-effects.ts); последствия срока —
- * [vehicle-request-period.ts](./vehicle-request-period.ts). Здесь только предметные правила правки
- * срока и расчёт того, что она обязана назвать человеку.
+ * [vehicle-request-period.ts](./vehicle-request-period.ts).
+ *
+ * ГДЕ ГРАНИЦА С ОБЩИМ РАСЧЁТОМ СРОКА (Р18 плана `docs/vehicle-request-actual-end-date-plan.md`).
+ * Всё, что зависит только от пары «прежний срок → новый срок», живёт в
+ * [assignment-shorten-term.ts](./assignment-shorten-term.ts): гасимые группы и их отпечаток,
+ * логические эффекты, область и план бумаги, разблокировки, план линейных дней. Тем же расчётом
+ * будут считать себя дверь закрытия фактической датой и обе применяющие ветви досрочного
+ * завершения — четыре ветви на один предмет, и четыре его копии разошлись бы молча.
+ *
+ * Здесь остаётся то, что **решает дверь**, а не считает срок: законна ли команда (сокращение
+ * работающего заказа, пустая правка, заблаговременность, архив), чем считается её собственный исход
+ * (`external`), что она обещает про денормализацию, снимает ли визу, из каких измерений складывает
+ * свой отпечаток, чего требует рукопожатием, в каком порядке пишет шаг 11 и что делает с
+ * замороженными днями линейного заказа на шаге 12. Ни одно из этих решений в общий расчёт не
+ * переехало — иначе извлечение изменило бы поведение двери, которого оно менять не вправе.
  */
 
 /** Имя двери в цели операции журнала (Р9) и в отпечатке предпросмотра — §7 называет его дословно. */
 const DOOR = 'period';
 
 // ── Что дверь посчитала ──
-
-/** Группа истории, которую выносит за срок сокращение (Д2): состав целиком и адрес для ядра. */
-export interface PeriodCancelGroup {
-  changeGroupId: string;
-  /** Актуальные строки группы — все, обеих шкал: гашение групповое, и показывать его надо целиком. */
-  rows: AssignmentChangeRecord[];
-  /** Строка, которой группа адресуется ядру записи; погашена будет вся группа (В2). */
-  target: AssignmentWriteMutation & { kind: 'cancel' };
-}
 
 /**
  * Предметный план правки срока: всё, что посчитано до первой записи и дальше только читается.
@@ -168,7 +151,7 @@ export interface PeriodPlan {
   movedDate: string | null;
   mutations: AssignmentWriteMutation[];
   denormalization: AssignmentDenormalizationIntent;
-  cancelGroups: PeriodCancelGroup[];
+  cancelGroups: TermCancelGroup[];
   /** Те же группы глазами окна: даты, шкалы, состав и имена машин (Д2). */
   cancelGroupsPreview: CancelledAssignmentGroupDto[];
   /** Отпечаток перечня погашаемых групп; `null` — гасить нечего, и подтверждать нечего. */
@@ -202,9 +185,10 @@ export interface PeriodPlan {
   /**
    * Отпечаток последствий — он же ответ предпросмотра.
    *
-   * Лежит в плане, потому что сверяет его **дверь**, а не только каркас: шаг 7 канона требует
-   * отпечаток лишь у непустой команды **истории** (`effects.mutations`), а у продления история
-   * пуста при непустой бумаге. См. {@link assertPeriodHandshake}.
+   * Лежит в плане, потому что сверяет его **каркас** шагом 7, а считает дверь: умолчание каркаса
+   * («непустая история команды») правку срока пропустило бы — у продления история пуста при
+   * непустой бумаге, — и поэтому дверь объявляет `requiresPreview` (Р17). Своей сверки отпечатка
+   * у неё больше нет, см. {@link assertPeriodHandshake}.
    */
   fingerprint: string;
 }
@@ -271,159 +255,71 @@ export async function planPeriodCommand(
   if (tooSoon) throw err.unprocessable(tooSoon, { dateFrom: 'Слишком рано' });
 
   /*
-   * Шаг 5 канона в расчётной половине (Р20): история **считается**, а не пишется. Отказа по
-   * невосстановимой истории здесь нет, и это отличие от соседних дверей по существу: срок правят и
-   * у заявки, которой техника ещё не назначена, — у неё нет ни истории, ни бумаги, и гасить тоже
-   * нечего. Соседним дверям без истории нечего делать вовсе, этой — есть.
-   */
-  const history = await planAssignmentHistory(tx, { requestId: request.id, asOf });
-  const changes: readonly AssignmentChangeRecord[] =
-    history.state === 'empty' ? [] : history.changes;
-
-  // Режим бумаги и действующие листы — у той работы, которая их и считает: своя копия «что такое
-  // действующий лист заявки» разошлась бы со сверкой при первой же правке.
-  const base = await buildEsm2SyncPlan(tx, { requestId: request.id, asOf });
-  if (!base) throw err.notFound('Заявка не найдена');
-  const esm2Mode = base.input.mode;
-  const sheets: Esm2ExistingSheet[] = [...base.input.existing];
-
-  const cancelGroups = cancelGroupsOf(changes, termBefore, termAfter);
-  const cancelledIds = new Set(cancelGroups.flatMap((g) => g.rows.map((row) => row.id)));
-  const changesAfter = changes.filter((row) => !cancelledIds.has(row.id));
-
-  /*
-   * Логические эффекты команды — по строке на каждую строку гасимых групп, тем же приёмом, каким их
-   * перечисляет отмена у двери машиниста: ядру мутация нужна одна на группу (гашение групповое), а
-   * проекциям — диапазон каждой строки, иначе прежний `inTermRange` спутника пропал бы из счёта.
-   *
-   * Диапазоны считаются по **прежнему** сроку (Р11, Е3): именно он отвечает на вопрос «какие дни
-   * группа занимала, пока была актуальной», и от этого зависит исход. Посчитай мы их по новому
-   * сроку — гашение группы, вынесенной за срок, оказалось бы безобидным по построению.
-   */
-  const effectMutations: AssignmentMutation[] = cancelGroups.flatMap((group) =>
-    group.rows.map((row): AssignmentMutation => ({ kind: 'cancel', changeId: row.id })),
-  );
-
-  const ownershipByVehicle = await readOwnership(tx, request.id, changes);
-  const segmentsBefore = assignmentSegments(changes, termBefore);
-  const segmentsAfter = assignmentSegments(changesAfter, termAfter);
-  const planContextOf = (options: {
-    scope?: DateRangeSet;
-    unlockWaybillIds?: readonly string[];
-    correction?: boolean;
-  }) => ({
-    ownershipByVehicle,
-    today: asOf,
-    ...(options.scope ? { scope: options.scope } : {}),
-    ...(options.unlockWaybillIds ? { unlockWaybillIds: options.unlockWaybillIds } : {}),
-    ...(options.correction ? { correction: { allowed: true as const } } : {}),
-  });
-  /*
-   * Отрезки `wanted` до и после команды: замыкание области считается по обоим разрезам (§7).
-   *
-   * Считаются они только у `auto`, и это не сокращение записи. `none` — бумаги у заказа нет вовсе.
-   * `on_demand` — линейный заказ (Р14): недели там называет человек при выписке, а не срок заявки,
-   * и «нужный лист» портал не выводит ни до правки, ни после. Планировать за него отрезки значило
-   * бы показать в предпросмотре бумагу, которой никто не просил, — и в разблокировках назвать
-   * листы, которых команда не тронет. Дни линейного заказа правка срока при этом ведёт как и
-   * раньше: их сверяет `syncLinearRouteDays` на шаге 12.
-   */
-  const wanted: Esm2Period[] =
-    esm2Mode === 'auto'
-      ? [
-          ...esm2SheetPlan(segmentsBefore, termBefore, [], planContextOf({})).wanted,
-          ...esm2SheetPlan(segmentsAfter, termAfter, [], planContextOf({})).wanted,
-        ]
-      : [];
-
-  /*
-   * Исход самой правки срока (Е3). Строки истории у неё нет вовсе — календарь двигает колонка
-   * заявки, — поэтому он приносится в проекции отдельным эффектом, а не выводится из мутаций.
-   * Граница та же, что у `backdateGuard`: «сегодня и вперёд» — обычная работа, раньше — операция с
-   * причиной, правом и глубиной.
+   * Исход самой правки срока (Е3) — и он остаётся здесь, а не в общем расчёте. Строки истории у
+   * правки нет вовсе (календарь двигает колонка заявки), поэтому исход приносится в проекции
+   * отдельным эффектом; чем именно он считается, знает только дверь: граница та же, что у
+   * `backdateGuard`, — «сегодня и вперёд» обычная работа, раньше — операция с причиной, правом и
+   * глубиной. У двери закрытия фактической датой этот эффект свой, и общий расчёт обязан принимать
+   * его готовым, а не выводить из срока.
    */
   const external: AssignmentExternalEffect | null =
     movedDate === null ? null : { effectiveDate: movedDate, outcome: backdated ? 'crew' : 'none' };
 
-  const effects = assignmentCommandEffects({
-    changes,
-    term: termBefore,
+  /*
+   * Общий расчёт изменения срока (Р18) — всё, что зависит только от пары «прежний срок → новый»:
+   * история, действующие листы, гасимые группы, эффекты, область и план бумаги, разблокировки.
+   *
+   * Отказа по невосстановимой истории он не делает, и это отличие двери срока от соседних по
+   * существу: срок правят и у заявки, которой техника ещё не назначена, — у неё нет ни истории, ни
+   * бумаги, и гасить тоже нечего. Соседним дверям без истории делать нечего вовсе, этой — есть.
+   */
+  const shorten = await shortenTermPlan(tx, {
+    requestId: request.id,
     asOf,
-    mutations: effectMutations,
-    sheets,
-    wanted,
+    termBefore,
+    termAfter,
     external,
+    /*
+     * Линейных дней дверь срока у расчёта не спрашивает — и это её прежнее поведение, а не пробел
+     * (Р11, таблица политик). Обречённые дни она снимает шагом 12 (`syncLinearRouteDays` внутри
+     * `afterWorkPeriodChanged`), а заморозку узнаёт **из-под блокировки рейса** и уже после записи
+     * срока: замороженный день у неё предупреждение событием аудита и отказ только при коррекции.
+     * Посчитай мы тот же план здесь, в нём лежал бы второй, более старый ответ про те же дни — и
+     * первый же читатель принял бы его за основание отказа, которым он не является.
+     */
+    linearDays: null,
   });
+  const { effects } = shorten;
 
-  /*
-   * Область бумаги (§8, таблица): `documentClosure(старый срок △ новый срок)` плюс дневной эффект
-   * гашений. Обе половины нужны: правка срока меняет **набор дней** заявки, а гашение — состав
-   * внутри дней, которые она же и выносит за срок.
-   */
-  const termDiff = symmetricDifference(termRange(termBefore), termRange(termAfter));
-  const paperScope = documentClosure(
-    normalizeRangeSet([...effects.paperRange, ...termDiff]),
-    sheets,
-    wanted,
-  );
-
-  /*
-   * Разблокировки считаются по плану **без** них: `locked` первого прохода и есть то множество,
-   * которое операция обязана назвать, чтобы переоформить отработанную бумагу (Р11). Отпечаток
-   * возвращается тогда и только тогда, когда исход `crew`, — в том числе для пустого множества
-   * (Д4): у прошедшей недели без листа разблокировать нечего, но `allowPast` ей нужен, и
-   * подтверждать человек должен именно пустоту, а не её отсутствие.
-   */
-  const probe =
-    esm2Mode === 'auto'
-      ? esm2SheetPlan(segmentsAfter, termAfter, sheets, planContextOf({ scope: paperScope }))
-      : EMPTY_SHEET_PLAN;
-  const requiredUnlockIds = effects.needsCorrection ? [...probe.locked].sort() : [];
-  const sheetPlan =
-    esm2Mode === 'auto'
-      ? esm2SheetPlan(
-          segmentsAfter,
-          termAfter,
-          sheets,
-          planContextOf({
-            scope: paperScope,
-            unlockWaybillIds: requiredUnlockIds,
-            correction: effects.needsCorrection,
-          }),
-        )
-      : EMPTY_SHEET_PLAN;
-
-  const numbers = await readSheetNumbers(tx, request.id);
-  const names = await readNames(tx, sheetPlan, cancelGroups);
   const approval = await readApproval(tx, request.id);
   const draft = {
     termBefore,
     termAfter,
-    termDiff,
+    termDiff: shorten.termDiff,
     movedDate,
-    mutations: cancelGroups.map((group) => group.target),
+    mutations: shorten.cancelGroups.map((group) => group.target),
     /*
-     * Обещание по денормализации (Р17). Гашения нет — `keep`: правка срока назначения не касается,
-     * и сдвинувшийся от неё хвост истории означал бы ошибку двери. Гашение есть — `tail_release`:
-     * назначение и ставки не тронуты, а хвост истории **законно** разошёлся с ним, потому что
-     * граница снята и вопрос «чем заявка закрыта после срока» снова открыт (Р30, Р31).
+     * Обещание по денормализации (Р17) — двери, а не расчёта: это её слово ядру записи о том, что
+     * станет с `vehicle_request_assignments`. Гашения нет — `keep`: правка срока назначения не
+     * касается, и сдвинувшийся от неё хвост истории означал бы ошибку двери. Гашение есть —
+     * `tail_release`: назначение и ставки не тронуты, а хвост истории **законно** разошёлся с ним,
+     * потому что граница снята и вопрос «чем заявка закрыта после срока» снова открыт (Р30, Р31).
      */
-    denormalization: (cancelGroups.length > 0
+    denormalization: (shorten.cancelGroups.length > 0
       ? { kind: 'tail_release' }
       : { kind: 'keep' }) as AssignmentDenormalizationIntent,
-    cancelGroups,
-    cancelGroupsPreview: cancelGroupsPreviewOf(cancelGroups, names.vehicles),
-    cancelGroupsFingerprint:
-      cancelGroups.length > 0 ? fingerprintOf(cancelGroupsShape(cancelGroups)) : null,
-    paperScope,
-    preview: previewPlanOf(sheetPlan, sheets, numbers, names),
-    requiredUnlocks: requiredUnlockIds.map((id) => unlockDtoOf(id, sheets, numbers)),
-    unlockFingerprint: effects.needsCorrection ? fingerprintOf({ requiredUnlockIds }) : null,
-    esm2Mode,
-    sheetPlan,
-    sheets,
-    sheetNumbers: numbers,
-    historyPresent: history.state !== 'empty',
+    cancelGroups: shorten.cancelGroups,
+    cancelGroupsPreview: shorten.cancelGroupsPreview,
+    cancelGroupsFingerprint: shorten.cancelGroupsFingerprint,
+    paperScope: shorten.paperScope,
+    preview: shorten.preview,
+    requiredUnlocks: shorten.requiredUnlocks,
+    unlockFingerprint: shorten.unlockFingerprint,
+    esm2Mode: shorten.esm2Mode,
+    sheetPlan: shorten.sheetPlan,
+    sheets: shorten.sheets,
+    sheetNumbers: shorten.sheetNumbers,
+    historyPresent: shorten.historyPresent,
     /*
      * Виза руководителя строительства (ADR 0025): согласовано было то, что он видел, а срок —
      * это и есть суть заказа. Снимается она только там, где её можно поставить обратно (заявка
@@ -435,19 +331,15 @@ export async function planPeriodCommand(
       !canApproveRequest(actor, approval.customer),
   };
 
-  const fingerprint = periodFingerprintOf(request.id, asOf, effects, draft, requiredUnlockIds);
+  const fingerprint = periodFingerprintOf(
+    request.id,
+    asOf,
+    effects,
+    draft,
+    shorten.requiredUnlockIds,
+  );
   return { effects, fingerprint, plan: { ...draft, fingerprint } };
 }
-
-/** Пустой план листов: у заявки без автоматической бумаги по нему считается всё остальное. */
-const EMPTY_SHEET_PLAN: Esm2SheetPlan = {
-  wanted: [],
-  cancel: [],
-  issue: [],
-  kept: [],
-  locked: [],
-  outOfScope: [],
-};
 
 // ── Новый срок и его границы ──
 
@@ -481,16 +373,6 @@ function assertPeriodChanged(before: AssignmentTerm, after: AssignmentTerm): voi
   }
 }
 
-/** Последний день срока: `coalesce(date_to, date_from)` — так его читает весь портал. */
-function lastDayOf(term: AssignmentTerm): string {
-  return term.dateTo || term.dateFrom;
-}
-
-/** Срок одним отрезком календаря. */
-function termRange(term: AssignmentTerm): { from: string; to: string } {
-  return { from: term.dateFrom, to: lastDayOf(term) };
-}
-
 /** Календарь заявки для правил заднего числа и заблаговременности (ADR 0101 §4). */
 function calendarOf(term: AssignmentTerm): RequestCalendar {
   return { dateFrom: term.dateFrom, dateTo: term.dateTo };
@@ -504,176 +386,27 @@ function commandCalendar(input: PeriodCommand): RequestCalendar {
   return { dateFrom: input.dateFrom, dateTo: input.dateTo };
 }
 
-/**
- * Симметрическая разность двух сроков — дни, которые команда открывает или закрывает (§8).
- *
- * Считается на отрезках, а не поштучно: срок бывает многолетним, а различий у двух отрезков не
- * больше двух — по краю с каждой стороны.
- */
-function symmetricDifference(
-  before: { from: string; to: string },
-  after: { from: string; to: string },
-): DateRangeSet {
-  const parts: { from: string; to: string }[] = [];
-  const edge = (a: { from: string; to: string }, b: { from: string; to: string }): void => {
-    if (a.from < b.from) parts.push({ from: a.from, to: min(shiftDateKey(b.from, -1), a.to) });
-    if (a.to > b.to) parts.push({ from: max(shiftDateKey(b.to, 1), a.from), to: a.to });
-  };
-  edge(before, after);
-  edge(after, before);
-  return normalizeRangeSet(parts);
-}
-
-const min = (a: string, b: string): string => (a < b ? a : b);
-const max = (a: string, b: string): string => (a > b ? a : b);
-
-// ── Гашение групп при сокращении (Д2) ──
-
-/**
- * Группы, которые сокращение выносит за срок, — и только они.
- *
- * Критерий ровно тот, что назван Д2: **актуальная vehicle-строка, стоявшая внутри прежнего срока и
- * оказавшаяся за новым концом**. Каждая половина условия по делу:
- *
- * - **vehicle-строка**, потому что послабление Р24 («изменение за сроком дремлет») ограничено
- *   шкалой `driver`: дремлющий машинист законен, дремлющая машина — нет, она оживёт при следующем
- *   продлении и назначит технику в обход Р7, без ставок и занятости;
- * - **`effectiveDate <= прежний конец`**, потому что то, что уже лежало за сроком, сокращению не
- *   мешает: дремлющая группа решения хвоста стоит на `dateTo + 1` и была дремлющей до команды —
- *   гасить её правкой срока не за что (§13, «дремлющая группа хвоста за старым `dateTo` сокращению
- *   не мешает»);
- * - **`effectiveDate > новый конец`** — собственно предмет: эти дни из срока ушли.
- *
- * Сдвиг начала срока вперёд сюда не входит намеренно: строка левее нового начала продолжает
- * задавать состав первого дня (свёртка читает последнее изменение **до** даты), и гасить её значило
- * бы стереть состав, который заявка как раз и показывает.
- *
- * Состав каждой группы читается целиком и обеих шкал: гашение групповое (В2), и человек, сокращающий
- * срок, должен увидеть, что вместе с майской машиной уходит её майский машинист.
- */
-export function cancelGroupsOf(
-  changes: readonly AssignmentChangeRecord[],
-  termBefore: AssignmentTerm,
-  termAfter: AssignmentTerm,
-): PeriodCancelGroup[] {
-  const oldLast = lastDayOf(termBefore);
-  const newLast = lastDayOf(termAfter);
-  if (newLast >= oldLast) return [];
-
-  const actual = changes.filter((row) => !row.supersededAt);
-  const groupIds = new Set(
-    actual
-      .filter(
-        (row) =>
-          row.dimension === 'vehicle' &&
-          row.effectiveDate <= oldLast &&
-          row.effectiveDate > newLast,
-      )
-      .map((row) => row.changeGroupId),
-  );
-
-  return [...groupIds]
-    .map((changeGroupId): PeriodCancelGroup => {
-      const rows = actual
-        .filter((row) => row.changeGroupId === changeGroupId)
-        .sort((a, b) =>
-          a.effectiveDate < b.effectiveDate
-            ? -1
-            : a.effectiveDate > b.effectiveDate
-              ? 1
-              : a.dimension < b.dimension
-                ? -1
-                : 1,
-        );
-      const anchor = rows.find((row) => row.dimension === 'vehicle') ?? rows[0]!;
-      return {
-        changeGroupId,
-        rows,
-        target: { kind: 'cancel', target: assignmentChangeTargetOf(anchor) },
-      };
-    })
-    .sort((a, b) =>
-      a.rows[0]!.effectiveDate < b.rows[0]!.effectiveDate
-        ? -1
-        : a.rows[0]!.effectiveDate > b.rows[0]!.effectiveDate
-          ? 1
-          : 0,
-    );
-}
-
-/**
- * Содержание погашаемых групп для отпечатка — **значениями, а не идентификаторами** (Р20).
- *
- * У истории, которую материализует та же транзакция, идентификаторов ещё нет вовсе, а состав группы
- * человек подтверждает по составу: смена члена группы между предпросмотром и командой обязана дать
- * 422 «список изменился», а не пройти молча (Р31, «состав группы читается под блокировкой»).
- */
-function cancelGroupsShape(groups: readonly PeriodCancelGroup[]): unknown {
-  return groups.map((group) =>
-    group.rows.map((row) => ({
-      effectiveDate: row.effectiveDate,
-      dimension: row.dimension,
-      vehicleId: row.vehicleId,
-      driverPersonId: row.driverPersonId,
-      driverState: row.driverState,
-      origin: row.origin,
-    })),
-  );
-}
-
-/** Те же группы глазами окна: состав целиком, машины — с именами (Д2). */
-function cancelGroupsPreviewOf(
-  groups: readonly PeriodCancelGroup[],
-  vehicleNames: ReadonlyMap<string, string>,
-): CancelledAssignmentGroupDto[] {
-  return groups.map((group) => ({
-    changeGroupId: group.changeGroupId,
-    rows: group.rows.map((row) => ({
-      effectiveDate: row.effectiveDate,
-      dimension: row.dimension,
-      vehicle: row.vehicleId
-        ? { vehicleId: row.vehicleId, name: vehicleNames.get(row.vehicleId) ?? row.vehicleId }
-        : null,
-      driver: driverStateOf(row),
-      origin: row.origin,
-    })),
-  }));
-}
-
-/** Состояние машиниста строки; `null` — строка шкалы `vehicle` (Р19). */
-function driverStateOf(row: AssignmentChangeRecord): DriverState | null {
-  if (row.dimension !== 'driver' || !row.driverState) return null;
-  if (row.driverState === 'set') {
-    return row.driverPersonId ? { state: 'set', personId: row.driverPersonId } : null;
-  }
-  return { state: row.driverState };
-}
-
 // ── Рукопожатия (шаг 8) ──
 
 /**
  * Что тело обязано подтвердить против **рассчитанного** плана (§8, Д2, Д4).
  *
- * Проверок три, и каждая закрывает свой способ сделать не то, что человек видел:
+ * Проверок здесь две — только **дополнительные** отпечатки двери. Общий отпечаток последствий
+ * сверяет каркас шагом 7, и до Э4а дверь сверяла его вторым, своим, экземпляром той же проверки:
+ * умолчание каркаса («непустая история команды») правку срока пропускало, потому что у продления
+ * строк истории нет при сгорающих и выписываемых листах. Теперь дверь объявляет каркасу
+ * `requiresPreview` (Р17) — тот же безусловный вопрос, тот же 409 и тот же текст, — а копия
+ * проверки убрана: два места, отвечающих на один вопрос, рано или поздно ответили бы по-разному.
  *
- * 1. **отпечаток последствий** — каркас сверяет его только у непустой команды **истории**
- *    (`effects.mutations`), а у продления история пуста при непустой бумаге: сгорающие и
- *    выписываемые листы есть, а строк нет. Без этой сверки продление шло бы вовсе без рукопожатия,
- *    поэтому дверь спрашивает отпечаток сама — тем же значением и тем же кодом, каким ответил бы
- *    шаг 7. У команды с гашением проверка холостая: там каркас уже ответил;
- * 2. **перечень гасимых групп** (Д2) — сокращение без подтверждения отвечает 422 с перечнем, и
+ * Каждая из оставшихся закрывает свой способ сделать не то, что человек видел:
+ *
+ * 1. **перечень гасимых групп** (Д2) — сокращение без подтверждения отвечает 422 с перечнем, и
  *    `date_to` при этом не меняется. Лишнее подтверждение отвергается симметрично: тело, знающее
  *    про гашение, которого нет, посчитано по другому состоянию;
- * 3. **отпечаток разблокировок** (Д4) — присутствие поля определяется исходом, а не желанием
+ * 2. **отпечаток разблокировок** (Д4) — присутствие поля определяется исходом, а не желанием
  *    клиента: лишний отпечаток это не «лишнее поле», а заявка на право сжечь чужие номера.
  */
 export function assertPeriodHandshake(plan: PeriodPlan, input: PeriodApplyInput): void {
-  if (input.previewFingerprint !== plan.fingerprint) {
-    throw err.conflict(
-      'Последствия изменились с момента предпросмотра — посмотрите их заново и подтвердите',
-      { code: 'assignment_preview_stale' },
-    );
-  }
   if (plan.cancelGroupsFingerprint === null) {
     if (input.cancelGroupsFingerprint !== undefined) {
       throw err.unprocessable(
@@ -683,11 +416,11 @@ export function assertPeriodHandshake(plan: PeriodPlan, input: PeriodApplyInput)
     }
   } else if (input.cancelGroupsFingerprint !== plan.cancelGroupsFingerprint) {
     throw err.unprocessable(
-      `Сокращение срока гасит решения о технике за новым концом срока (${plan.cancelGroups
+      `Сокращение срока гасит решения о технике и машинисте, стоявшие за новым концом срока (${plan.cancelGroups
         .map((group) => group.rows[0]!.effectiveDate)
         .join(
           ', ',
-        )}): вместе с машиной уходит и назначенный на неё машинист. Подтвердите перечень — он показан в предпросмотре`,
+        )}): решение уходит целиком — вместе с машиной снимается и назначенный на неё машинист. Подтвердите перечень — он показан в предпросмотре`,
       { cancelGroupsFingerprint: 'Нужно подтверждение' },
       { cancelGroups: plan.cancelGroupsPreview },
     );
@@ -747,6 +480,17 @@ function periodFingerprintOf(
     plan: {
       cancel: plan.preview.cancel.map((sheet) => sheet.waybillId).sort(),
       issue: plan.preview.issue.map((i) => `${i.from}|${i.to}|${i.vehicleId}|${i.driverPersonId}`),
+      /*
+       * Правки периода — третьим ключом (Р5). Без него подмена «перевыпуск → правка» отпечатка не
+       * меняет: у плана, сокращающего лист, обе половины выше пусты — номер не горит и новый не
+       * выписывается, — и два плана, различающиеся ТОЛЬКО правками, дали бы один отпечаток.
+       * Человек подтвердил бы одно обещание, а исполнилось бы другое.
+       *
+       * Берётся из самого плана листов, а не из предпросмотра: показ правок — забота следующего
+       * этапа (`AssignmentPlanTrimDto`), а отпечаток обязан считаться уже сейчас — иначе окно
+       * подтверждения останется дырявым на всё время, пока DTO не завели.
+       */
+      trim: plan.sheetPlan.trim.map((item) => `${item.waybillId}|${item.to}`).sort(),
     },
   });
 }
@@ -781,6 +525,14 @@ export function periodCommandSpec(params: {
     body: input,
     operation: input.operation ?? null,
     previewFingerprint: input.previewFingerprint,
+    /*
+     * Предпросмотр эта дверь спрашивает **всегда** (Р17), и это не перестраховка, а условие
+     * неизменности поведения: её собственное рукопожатие сверяло отпечаток безусловно — иначе
+     * продление, у которого история пуста при непустой бумаге, проходило бы вовсе без
+     * подтверждения. Признак, считающий непустоту чего бы то ни было, изменил бы дверь ровно там,
+     * где перенос сверки в каркас обещает её сохранить.
+     */
+    requiresPreview: () => true,
     asOf,
     plan: (ctx) => planPeriodCommand(ctx, input, actor),
     handshake: (ctx) => assertPeriodHandshake(ctx.plan, input),
@@ -1085,36 +837,15 @@ function operationRequirementOf(effects: AssignmentEffects): OperationRequiremen
   };
 }
 
-// ── Чтение справочников ──
+// ── Чтение, которого нет у общего расчёта ──
 
 /**
- * Принадлежность машин разреза (Р4) — вход плана листов.
+ * Виза и заказчик заявки: ими решается, снимает ли правка согласование (ADR 0025).
  *
- * Читаются и машины истории, и машина назначения: у заявки, история которой ещё не знает ни одной
- * vehicle-строки, разрез опирается на денормализацию.
+ * Единственное чтение, оставшееся в двери. Справочники бумаги и истории читает общий расчёт — они
+ * нужны всем четырём ветвям, — а согласование не про срок вовсе: это правило о том, кто и что
+ * подтверждал, и у двери закрытия фактической датой оно другое.
  */
-async function readOwnership(
-  tx: AssignmentCommandTx,
-  requestId: string,
-  changes: readonly AssignmentChangeRecord[],
-): Promise<Map<string, VehicleOwnership>> {
-  const ids = new Set(
-    changes.flatMap((row) => (row.dimension === 'vehicle' && row.vehicleId ? [row.vehicleId] : [])),
-  );
-  const [assignment] = await tx
-    .select({ vehicleId: vehicleRequestAssignments.vehicleId })
-    .from(vehicleRequestAssignments)
-    .where(eq(vehicleRequestAssignments.requestId, requestId));
-  if (assignment) ids.add(assignment.vehicleId);
-  if (ids.size === 0) return new Map();
-  const rows = await tx
-    .select({ id: vehicles.id, ownership: vehicles.ownership })
-    .from(vehicles)
-    .where(inArray(vehicles.id, [...ids]));
-  return new Map(rows.map((row) => [row.id, row.ownership]));
-}
-
-/** Виза и заказчик заявки: ими решается, снимает ли правка согласование (ADR 0025). */
 async function readApproval(
   tx: AssignmentCommandTx,
   requestId: string,
@@ -1135,130 +866,6 @@ async function readApproval(
     approved: row.approvedAt !== null,
     customer: { objectId: row.objectId, departmentId: row.departmentId },
   };
-}
-
-/** Напечатанные номера действующих листов: ими окно называет человеку бумагу, о которой говорит. */
-async function readSheetNumbers(
-  tx: AssignmentCommandTx,
-  requestId: string,
-): Promise<Map<string, string>> {
-  const rows = await tx
-    .select({
-      id: waybills.id,
-      number: waybills.number,
-      prefix: waybillSeries.prefix,
-      numberWidth: waybillSeries.numberWidth,
-    })
-    .from(waybills)
-    .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-    .where(and(eq(waybills.sourceRequestId, requestId), ne(waybills.status, 'cancelled')));
-  return new Map(
-    rows.map((row) => [row.id, waybillDisplayNumber(row.prefix, row.number, row.numberWidth)]),
-  );
-}
-
-interface PreviewNames {
-  vehicles: Map<string, string>;
-  persons: Map<string, string>;
-}
-
-/**
- * Имена машин и людей — и выпускаемых листов, и гасимых групп: идентификатор нужен команде, имя
- * человеку. Обе выборки одним заходом: два запроса за теми же строками стоили бы вдвое, а окно
- * показывает их рядом.
- */
-async function readNames(
-  tx: AssignmentCommandTx,
-  plan: Esm2SheetPlan,
-  groups: readonly PeriodCancelGroup[],
-): Promise<PreviewNames> {
-  const vehicleIds = new Set(plan.issue.map((i) => i.vehicleId));
-  const personIds = new Set(plan.issue.map((i) => i.driver.personId));
-  for (const group of groups) {
-    for (const row of group.rows) if (row.vehicleId) vehicleIds.add(row.vehicleId);
-  }
-  const names: PreviewNames = { vehicles: new Map(), persons: new Map() };
-  if (vehicleIds.size > 0) {
-    const rows = await tx
-      .select({
-        id: vehicles.id,
-        registrationNumber: vehicles.registrationNumber,
-        modelName: vehicleModels.name,
-      })
-      .from(vehicles)
-      .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
-      .where(inArray(vehicles.id, [...vehicleIds]));
-    for (const row of rows) {
-      names.vehicles.set(
-        row.id,
-        [row.modelName, row.registrationNumber].filter(Boolean).join(' · ') || row.id,
-      );
-    }
-  }
-  if (personIds.size > 0) {
-    const rows = await tx
-      .select({ id: persons.id, fullName: persons.fullName })
-      .from(persons)
-      .where(inArray(persons.id, [...personIds]));
-    for (const row of rows) names.persons.set(row.id, row.fullName);
-  }
-  return names;
-}
-
-/** Лист под разблокировку — номером и неделей: ими окно называет бумагу, о которой спрашивает. */
-function unlockDtoOf(
-  waybillId: string,
-  sheets: readonly Esm2ExistingSheet[],
-  numbers: ReadonlyMap<string, string>,
-): AssignmentUnlockDto {
-  const sheet = sheets.find((s) => s.id === waybillId);
-  return {
-    waybillId,
-    displayNumber: numbers.get(waybillId) ?? waybillId,
-    from: sheet?.periodFrom ?? '',
-    to: sheet?.periodTo ?? '',
-  };
-}
-
-/**
- * План глазами окна: что сгорит и что выпишется.
- *
- * `issueKey` — индекс в плане, отсортированном по `(from, to, vehicleId, driverPersonId)`.
- * Сортировать по идентификатору нельзя вовсе: он появится только после расхода номера, а
- * сгенерированные идентификаторы в отпечаток предпросмотра не входят.
- */
-function previewPlanOf(
-  plan: Esm2SheetPlan,
-  sheets: readonly Esm2ExistingSheet[],
-  numbers: ReadonlyMap<string, string>,
-  names: PreviewNames,
-): { cancel: AssignmentPlanCancelDto[]; issue: AssignmentPlanIssueDto[] } {
-  const cancel = plan.cancel.map((id) => {
-    const sheet = sheets.find((s) => s.id === id);
-    return {
-      waybillId: id,
-      displayNumber: numbers.get(id) ?? id,
-      from: sheet?.periodFrom ?? '',
-      to: sheet?.periodTo ?? '',
-    };
-  });
-  const issue = [...plan.issue]
-    .sort((a, b) =>
-      `${a.from}|${a.to}|${a.vehicleId}|${a.driver.personId}` <
-      `${b.from}|${b.to}|${b.vehicleId}|${b.driver.personId}`
-        ? -1
-        : 1,
-    )
-    .map((want, index) => ({
-      issueKey: index,
-      from: want.from,
-      to: want.to,
-      vehicleId: want.vehicleId,
-      vehicleName: names.vehicles.get(want.vehicleId) ?? want.vehicleId,
-      driverPersonId: want.driver.personId,
-      driverName: names.persons.get(want.driver.personId) ?? want.driver.personId,
-    }));
-  return { cancel, issue };
 }
 
 // ── Мелочи ──

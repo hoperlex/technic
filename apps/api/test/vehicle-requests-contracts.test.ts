@@ -16,7 +16,8 @@ import {
   CLOSED_REQUEST_STATUSES,
   completeVehicleRequestSchema,
   createVehicleRequestSchema,
-  decideVehicleEarlyEndSchema,
+  decideVehicleEarlyEndApplySchema,
+  decideVehicleEarlyEndPreviewSchema,
   earlyEndBlocker,
   earlyEndDateBounds,
   earlyEndDaysSaved,
@@ -36,7 +37,8 @@ import {
   rateForWorkUnit,
   serializeClassificationFilter,
   requestTypeChangeBlocker,
-  requestVehicleEarlyEndSchema,
+  requestVehicleEarlyEndApplySchema,
+  requestVehicleEarlyEndPreviewSchema,
   setVehicleRequestApprovalSchema,
   transitionRequiresApproval,
   transitionRequiresAssignment,
@@ -1565,7 +1567,7 @@ describe('vehicle-requests: досрочное завершение (ADR 0044)',
 
   it('в запросе обязательны дата и причина, лишние поля отвергаются', () => {
     expect(
-      requestVehicleEarlyEndSchema.parse({
+      requestVehicleEarlyEndPreviewSchema.parse({
         newDateTo: '2026-07-24',
         reason: 'Работы на фундаменте закончены',
         version: 2,
@@ -1573,13 +1575,17 @@ describe('vehicle-requests: досрочное завершение (ADR 0044)',
     ).toBe('Работы на фундаменте закончены');
     // Причина обязательна: визирующему нечего решать, если не сказано, что произошло.
     expect(() =>
-      requestVehicleEarlyEndSchema.parse({ newDateTo: '2026-07-24', reason: '   ', version: 2 }),
+      requestVehicleEarlyEndPreviewSchema.parse({
+        newDateTo: '2026-07-24',
+        reason: '   ',
+        version: 2,
+      }),
     ).toThrow();
     expect(() =>
-      requestVehicleEarlyEndSchema.parse({ newDateTo: '2026-07-24', version: 2 }),
+      requestVehicleEarlyEndPreviewSchema.parse({ newDateTo: '2026-07-24', version: 2 }),
     ).toThrow();
     expect(() =>
-      requestVehicleEarlyEndSchema.parse({
+      requestVehicleEarlyEndPreviewSchema.parse({
         newDateTo: '2026-07-24',
         reason: 'ок',
         version: 2,
@@ -1588,20 +1594,100 @@ describe('vehicle-requests: досрочное завершение (ADR 0044)',
     ).toThrow();
   });
 
+  /*
+   * Четыре маршрутные схемы (Р28 плана `vehicle-request-actual-end-date-plan.md`, этап Э10).
+   * Границ здесь две, и они разные: схема отвечает 400 на поле, которого у входа нет вовсе, а
+   * применимость принятого поля решает уже дверь по рассчитанной ветви — своим 422.
+   */
+  it('рукопожатия принимает apply-схема запроса, предпросмотр — отвергает', () => {
+    const applied = requestVehicleEarlyEndApplySchema.parse({
+      newDateTo: '2026-07-24',
+      reason: 'Работы закончены',
+      version: 2,
+      operationId: '00000000-0000-4000-8000-000000000001',
+      previewFingerprint: 'abc',
+      cancelGroupsFingerprint: 'def',
+    });
+    expect(applied.operationId).toBe('00000000-0000-4000-8000-000000000001');
+    expect(applied.previewFingerprint).toBe('abc');
+    // Предпросмотру подтверждать нечего: он последствия и вычисляет.
+    expect(() =>
+      requestVehicleEarlyEndPreviewSchema.parse({
+        newDateTo: '2026-07-24',
+        reason: 'Работы закончены',
+        version: 2,
+        previewFingerprint: 'abc',
+      }),
+    ).toThrow();
+    /*
+     * Ни `unlockFingerprint`, ни `clearedShiftsFingerprint` не принимает **никакая** схема этой
+     * двери: оба недостижимы (Р19) — исход `crew` невозможен, а снимаемый диапазон смен целиком в
+     * будущем. Поле, которое нечем заполнить, отвергается схемой, то есть 400.
+     */
+    for (const extra of ['unlockFingerprint', 'clearedShiftsFingerprint']) {
+      expect(() =>
+        requestVehicleEarlyEndApplySchema.parse({
+          newDateTo: '2026-07-24',
+          reason: 'Работы закончены',
+          version: 2,
+          [extra]: 'abc',
+        }),
+      ).toThrow();
+    }
+  });
+
   it('решение: виза без комментария, отказ — только с причиной', () => {
-    expect(decideVehicleEarlyEndSchema.parse({ approved: true, version: 3 })).toEqual({
+    expect(decideVehicleEarlyEndApplySchema.parse({ approved: true, version: 3 })).toEqual({
       approved: true,
       comment: '',
       version: 3,
     });
-    expect(() => decideVehicleEarlyEndSchema.parse({ approved: false, version: 3 })).toThrow();
+    expect(() => decideVehicleEarlyEndApplySchema.parse({ approved: false, version: 3 })).toThrow();
     expect(
-      decideVehicleEarlyEndSchema.parse({
+      decideVehicleEarlyEndApplySchema.parse({
         approved: false,
         comment: 'Техника ещё нужна',
         version: 3,
       }).comment,
     ).toBe('Техника ещё нужна');
+  });
+
+  it('виза несёт комментарий и рукопожатия, отказ — ни одного из них', () => {
+    // Комментарий одобряющей визы сохранён: он и сегодня ложится в `decision_comment` и остаётся
+    // единственным местом, где живёт слово визирующего (Р28).
+    const visa = decideVehicleEarlyEndApplySchema.parse({
+      approved: true,
+      comment: 'Согласовано, техника уходит на другой объект',
+      version: 3,
+      operationId: '00000000-0000-4000-8000-000000000002',
+      previewFingerprint: 'abc',
+      cancelGroupsFingerprint: 'def',
+    });
+    expect(visa).toMatchObject({
+      comment: 'Согласовано, техника уходит на другой объект',
+      operationId: '00000000-0000-4000-8000-000000000002',
+      cancelGroupsFingerprint: 'def',
+    });
+    // Отказ ничего не применяет: присланное ему рукопожатие — ошибка клиента, а не «лишнее поле».
+    expect(() =>
+      decideVehicleEarlyEndApplySchema.parse({
+        approved: false,
+        comment: 'Техника ещё нужна',
+        version: 3,
+        previewFingerprint: 'abc',
+      }),
+    ).toThrow();
+    // Предпросмотр решения бывает только у одобрения: у отказа последствий нет вовсе.
+    expect(decideVehicleEarlyEndPreviewSchema.parse({ approved: true, version: 3 })).toEqual({
+      approved: true,
+      version: 3,
+    });
+    expect(() =>
+      decideVehicleEarlyEndPreviewSchema.parse({ approved: false, comment: 'нет', version: 3 }),
+    ).toThrow();
+    expect(() =>
+      decideVehicleEarlyEndPreviewSchema.parse({ approved: true, version: 3, comment: 'да' }),
+    ).toThrow();
   });
 
   it('срок работающей заявки правкой не сокращают — только досрочным завершением', () => {

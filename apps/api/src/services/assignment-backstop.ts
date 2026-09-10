@@ -106,7 +106,8 @@ export type AssignmentBackstopDoor =
   | 'early_end_request'
   | 'early_end_decision'
   | 'work_period'
-  | 'weekly_apply';
+  | 'weekly_apply'
+  | 'completion';
 
 interface DoorSpec {
   /** Как дверь называется в отказе и в диагностике — человеку, а не разработчику. */
@@ -130,6 +131,11 @@ const DOORS: Record<AssignmentBackstopDoor, DoorSpec> = {
   early_end_decision: { title: 'Виза досрочного завершения', opensTerm: false },
   work_period: { title: 'Правка срока работ', opensTerm: true },
   weekly_apply: { title: 'Применение недельной заявки', opensTerm: true },
+  // Закрытие фактической датой (Р1 плана `docs/vehicle-request-actual-end-date-plan.md`): дверь
+  // сокращает срок и потому переписывает бумагу — пробелы машиниста у неё спрашиваются, как у
+  // всех. Новых дней она не открывает никогда (факт не бывает позже утверждённого срока, Р15),
+  // значит и решения по хвосту (Р31) требовать с неё не за что.
+  completion: { title: 'Закрытие заказа фактической датой', opensTerm: false },
 };
 
 // ── Вердикт ──

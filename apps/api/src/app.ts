@@ -44,6 +44,7 @@ import waybillsRoutes from './routes/waybills';
 import vehicleRequestAssignmentRoutes from './routes/vehicle-request-assignment';
 import vehicleRequestAssignmentRepairRoutes from './routes/vehicle-request-assignment-repair';
 import vehicleRequestAssignmentCorrectionRoutes from './routes/vehicle-request-assignment-correction';
+import vehicleRequestCompletionRoutes from './routes/vehicle-request-completion';
 import vehicleRequestPeriodRoutes from './routes/vehicle-request-period';
 import vehicleRequestsRoutes from './routes/vehicle-requests';
 import weeklyVehicleRequestsRoutes from './routes/weekly-vehicle-requests';
@@ -233,6 +234,10 @@ export async function buildApp(options: BuildAppOptions = {}) {
     prefix: '/api/v1/vehicle-requests',
   });
   await app.register(vehicleRequestPeriodRoutes, { prefix: '/api/v1/vehicle-requests' });
+  // Закрытие фактической датой (план `docs/vehicle-request-actual-end-date-plan.md`, Р1) — шестая
+  // дверь истории и тот же префикс: заказ закрывают тем днём, которым работы кончились, и той же
+  // командой приводят к нему срок, бумагу, часы и рейсы.
+  await app.register(vehicleRequestCompletionRoutes, { prefix: '/api/v1/vehicle-requests' });
   // Недельная заявка (ADR 0085) — документ-основание **над** заказами ТС: свой префикс, а не ветка
   // `/vehicle-requests`, потому что и права у неё свои, и область видимости своя.
   await app.register(weeklyVehicleRequestsRoutes, { prefix: '/api/v1/weekly-vehicle-requests' });

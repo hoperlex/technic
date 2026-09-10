@@ -1439,7 +1439,10 @@ describe('отмена решения хвоста (Р31, Р17 `tail_release`)',
         expect(after.tail).toBe(scene.vehicleB);
         // Бумага не тронута: у команды с пустой областью сверки шаг 12 не работает вовсе.
         expect(await sheetsOf(tx, scene.requestId)).toEqual(sheetsBefore);
-        expect(outcome.paper?.esm2).toEqual({ cancelled: [], issued: [] });
+        // Третий список пуст наравне с двумя первыми: «бумага не тронута» с правилом `trim` (Р5
+        // плана `docs/vehicle-request-actual-end-date-plan.md`) означает и «ни один выданный лист
+        // не сокращён» — правка меняет бланк, не сжигая номера, и мимо двух списков прошла бы.
+        expect(outcome.paper?.esm2).toEqual({ cancelled: [], issued: [], trimmed: [] });
       },
     );
   });

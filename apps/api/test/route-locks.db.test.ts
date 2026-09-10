@@ -665,6 +665,19 @@ describe.skipIf(!DB_URL)('встречные блокировки: канон «
       },
     });
     expect(asked.statusCode, asked.body).toBe(200);
+    /*
+     * Отпечаток берётся заранее: виза применяет срок и потому идёт каноном (этап Э10 плана
+     * `vehicle-request-actual-end-date-plan.md`, Р17), а предпросмотр блокировок не берёт — на
+     * порядок захвата, ради которого стоит случай, он не влияет.
+     */
+    const shown = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/v1/vehicle-requests/${requestId}/early-end/decision/preview`,
+      headers: ctx.auth,
+      payload: { approved: true, version: await requestVersion(requestId) },
+    });
+    expect(shown.statusCode, shown.body).toBe(200);
+    const previewFingerprint = shown.json().fingerprint as string;
     const before = await deadlocks();
 
     const holder = await openHolder();
@@ -677,7 +690,12 @@ describe.skipIf(!DB_URL)('встречные блокировки: канон «
         method: 'PATCH',
         url: `/api/v1/vehicle-requests/${requestId}/early-end`,
         headers: ctx.auth,
-        payload: { approved: true, comment: '', version: await requestVersion(requestId) },
+        payload: {
+          approved: true,
+          comment: '',
+          version: await requestVersion(requestId),
+          previewFingerprint,
+        },
       });
       await waitBlockedBy(holder.pid, 1);
       const edit = ctx.app.inject({

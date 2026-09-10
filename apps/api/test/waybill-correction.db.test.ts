@@ -35,6 +35,13 @@ import type { db as AppDb } from '../src/db/client';
  * которые укладывается коррекция. Здесь конвертер подменён: он и есть то самое окно, и внутри него
  * лист аннулируется. Без перечитывания статуса после рендера бумага уехала бы аннулированной.
  *
+ * **Сокращённый период (Р12 плана «закрытие фактической датой»).** Третий источник той же метки:
+ * лист, у которого закрытие заявки отняло дни с конца, для журнала такая же коррекция, как
+ * списанный задним числом, — своей метки заказчик заводить не стал. Отсюда два случая в конце
+ * файла: метка со следом правки в ответе и обе ветви седьмого фильтра. Живая схема тут нужна не
+ * ради предиката, а ради условия запроса: расходится оно молча, отбор просто начинает показывать
+ * не то.
+ *
  * Запуск (миграции тест накатывает сам):
  *
  *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/technic_archive_test \
@@ -328,6 +335,38 @@ async function movePast(sheet: Sheet, daysAgo: number): Promise<{ from: string; 
   return { from: monday, to: sunday };
 }
 
+/**
+ * Тот же лист, но с сокращённым периодом (Р12 плана «закрытие фактической датой»): бланк выдан на
+ * неделю, а действует по среду — заказ закрыли фактической датой, и дни с конца отняли.
+ *
+ * Пишется прямой записью в колонки следа (миграция `0292`), а не дверью: двери, которая сокращает
+ * период, в этой ветке ещё нет — она заводится этапом Э9, — а предмет здешних случаев не в том,
+ * **кто** правит лист, а в том, что журнал видит правленый лист правленым. Ровно тем же приёмом и
+ * по той же причине этот файл двигает даты бланка в прошлое (`movePast`).
+ *
+ * Границы недели берутся понедельником и воскресеньем: `waybills_period_check` держит лист внутри
+ * одной календарной недели, а `waybills_period_trim_check` требует, чтобы прежний конец был строго
+ * больше нынешнего. Версия поднимается вместе со следом — так же, как её поднимает настоящая
+ * правка (Р21): бланк, собранный из прежнего снимка, документом больше не подтверждается.
+ */
+async function trimPeriod(
+  sheet: Sheet,
+  reason: string,
+): Promise<{ periodTo: string; periodToOriginal: string }> {
+  const monday = weekStartKey(ctx.today);
+  const wednesday = shiftDateKey(monday, 2);
+  const sunday = shiftDateKey(monday, 6);
+  await ctx.db.execute(
+    sql`UPDATE waybills
+        SET issued_for_date = ${monday}, period_from = ${monday}, period_to = ${wednesday},
+            period_to_original = ${sunday}, period_trimmed_at = now(),
+            period_trimmed_by = ${ctx.adminId}, period_trim_reason = ${reason},
+            version = version + 1
+        WHERE id = ${sheet.id}`,
+  );
+  return { periodTo: wednesday, periodToOriginal: sunday };
+}
+
 async function cancel(
   auth: { authorization: string },
   id: string,
@@ -356,6 +395,11 @@ async function journalRow(id: string) {
     correctsNumber: string | null;
     correctedByNumber: string | null;
     status: string;
+    /** След сокращения периода (Р12): портал показывает им обе даты и причину правки. */
+    periodTo: string | null;
+    periodToOriginal: string | null;
+    trimmedAt: string | null;
+    trimReason: string;
   };
 }
 
@@ -668,6 +712,314 @@ describe.skipIf(!DB_URL)('коррекция задним числом: спис
     } finally {
       duringRender = null;
     }
+  }, 180_000);
+  /*
+   * Сокращение периода в журнале (Р12). Отдельной метки у него нет — решение заказчика по В3:
+   * бухгалтерии важно не то, каким механизмом бланк привели к нынешнему виду, а то, что он не
+   * такой, каким выдан. Значит, весь вес ложится на существующий признак и существующий фильтр, и
+   * оба обязаны знать про третий источник.
+   *
+   * Проверяется на живой схеме и настоящим HTTP-путём по той же причине, что и остальной файл:
+   * ломается здесь не предикат, а сборка выдачи и условие запроса. Ошибка не роняет ничего —
+   * ответ остаётся успешным, в нём просто тихо не хватает метки либо строки.
+   */
+  it('сокращённый лист — коррекция для журнала, и след правки приезжает в ответе', async () => {
+    const sheet = await issueWaybill();
+    const { periodTo, periodToOriginal } = await trimPeriod(sheet, 'машина ушла с объекта раньше');
+
+    const row = await journalRow(sheet.id);
+    // Третий источник метки: операции коррекции у листа нет вовсе — ни причины, ни замены, — а
+    // признак поднят. Проверять его вместе с пустыми полями операции обязательно: иначе тест
+    // прошёл бы и на портале, который метит коррекцией всё подряд.
+    expect(row.isCorrection, 'признак поднимает сам факт правки периода').toBe(true);
+    expect(row.correctionReason).toBe('');
+    expect(row.correctsNumber).toBeNull();
+    expect(row.correctedByNumber).toBeNull();
+    // Номер не сгорел и лист остался действующим: сокращение — правка на месте, а не пара
+    // «аннулировать плюс выписать».
+    expect(row.status).toBe('issued');
+
+    // Обе даты сразу: одно только «сокращён» не отвечает на вопрос, ради которого поле и заведено,
+    // — насколько печатная графа шире действующего срока (Р13).
+    expect(row.periodTo).toBe(periodTo);
+    expect(row.periodToOriginal).toBe(periodToOriginal);
+    expect(row.trimReason).toBe('машина ушла с объекта раньше');
+    expect(row.trimmedAt, 'время правки — то, чем считается третий источник').not.toBeNull();
+  }, 180_000);
+
+  it('обе ветви фильтра знают о сокращении: `true` показывает такой лист, `false` его прячет', async () => {
+    const trimmed = await issueWaybill();
+    await trimPeriod(trimmed, 'заказ закрыт фактической датой');
+    // Обычный лист рядом — контроль: без него проверка прошла бы и на фильтре, который вернул всё
+    // подряд, и на фильтре, который не вернул ничего.
+    const plain = await issueWaybill();
+
+    expect(await journalHas(trimmed.id, { correction: 'true' })).toBe(true);
+    expect(await journalHas(plain.id, { correction: 'true' })).toBe(false);
+
+    /*
+     * Вторая ветвь — не «всё остальное», а собственный вопрос «что шло обычным порядком», и
+     * забытое в ней третье условие соврало бы молча: сокращённый лист стоял бы среди обычных, а
+     * ошибки не случилось бы ни в какой момент.
+     */
+    expect(await journalHas(trimmed.id, { correction: 'false' })).toBe(false);
+    expect(await journalHas(plain.id, { correction: 'false' })).toBe(true);
+
+    // Без отбора журнал показывает оба: фильтр сужает выдачу, а не прячет бумагу из учёта.
+    expect(await journalHas(trimmed.id, {})).toBe(true);
+    expect(await journalHas(plain.id, {})).toBe(true);
+  }, 180_000);
+
+  /*
+   * ПОВТОРНОЕ СОКРАЩЕНИЕ ЛИСТА — по колонкам (Р12, таблица «При второй и следующей правке»).
+   *
+   * Два случая ниже отличаются от соседних предметом: те спрашивают, как журнал ПОКАЗЫВАЕТ уже
+   * правленый лист, и потому пишут след руками (`trimPeriod`); эти спрашивают, что настоящая
+   * правка делает со следом, который на листе УЖЕ стоит. Рукой такое не проверить по определению:
+   * предмет — само выражение `coalesce(period_to_original, period_to)` и условие
+   * `context.kind !== 'ordinary'`, то есть код, который правку и пишет.
+   *
+   * Поэтому обе правки идут настоящей недельной сверкой (`syncEsm2Waybills`) — тем самым входом,
+   * которым бумагу этой заявки ведут все её двери в режиме `legacy`. Неординарность выражается
+   * ровно так, как её выражает боевой путь: сверка, позванная с проверенной операцией коррекции,
+   * исполняет план видом `backdate`, без неё — видом `ordinary`. Дверь закрытия фактической датой
+   * приносит ту же пару своим исходом (`assignment_tail`/`crew` против `none`), и ставит она тот
+   * же самый `period_trim_correction_id` тем же исполнителем.
+   *
+   * Обе последовательности Р12 названы поимённо и обе стали случаями: неординарная → обычная
+   * (ссылка **снимается**) и обычная → неординарная (ссылка **появляется**). Общего у них три
+   * утверждения, и каждое — отдельный способ соврать в бланке строгой отчётности:
+   * `period_to_original` помнит выписку, а не прошлую правку; тройка «когда, кто, почему»
+   * описывает последнюю; версия растёт каждой правкой, иначе сторож печати (Р21) стоит вхолостую.
+   */
+
+  /**
+   * Понедельник недели, целиком лежащей внутри одного месяца.
+   *
+   * Берётся следующая неделя, а не текущая: во-первых, лист будущей недели заведомо не отработан
+   * и правится обычным порядком — сцена не зависит от дня, в который её запустили; во-вторых,
+   * месячный разрез (ADR 0142) разбил бы неделю на два листа, и правился бы уже не тот лист,
+   * который выдан. Две недели подряд границу месяца пересечь не могут — в месяце больше семи дней,
+   * — поэтому запасной вариант ровно один.
+   */
+  function wholeMonthWeek(): string {
+    const next = shiftDateKey(weekStartKey(ctx.today), 7);
+    return next.slice(0, 7) === shiftDateKey(next, 6).slice(0, 7) ? next : shiftDateKey(next, 7);
+  }
+
+  /** Учётка по адресу: вторая правка обязана быть чужой — иначе «кто» ничего не доказывает. */
+  async function userIdOf(email: string): Promise<string> {
+    const rows = await ctx.db.execute<{ id: string }>(
+      sql`SELECT id FROM users WHERE email = ${email}`,
+    );
+    return rows.rows[0]!.id;
+  }
+
+  /**
+   * Строка операции журнала. Заводится прямой записью: предмет случая — след правки на листе, а не
+   * дверь, эту операцию порождающая; проходить дверь ради ссылки значило бы проверять чужой модуль.
+   * Вид `esm2` — тот самый, под которым бумагу заявки правят задним числом.
+   */
+  async function correctionRow(actorUserId: string, reason: string): Promise<string> {
+    const rows = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO waybill_corrections (operation_id, fingerprint, kind, reason, actor_user_id)
+      VALUES (${uuid()}, ${'тест: отпечаток не проверяется'}, 'esm2', ${reason}, ${actorUserId})
+      RETURNING id`);
+    return rows.rows[0]!.id;
+  }
+
+  /** Настоящая недельная сверка: с проверенной операцией — неординарная, без неё — обычная. */
+  async function syncPaper(
+    requestId: string,
+    reason: string,
+    options: { actorId?: string; correctionId?: string } = {},
+  ): Promise<void> {
+    const { syncEsm2Waybills } = await import('../src/services/waybill-esm2');
+    await ctx.db.transaction(async (tx) => {
+      await syncEsm2Waybills(tx, {
+        requestId,
+        actor: { id: options.actorId ?? ctx.adminId },
+        reason,
+        ...(options.correctionId
+          ? { correction: { id: options.correctionId, unlockWaybillIds: [] } }
+          : {}),
+      });
+    });
+  }
+
+  /** Срок заказа: его и двигают все входы сокращения — правка листа идёт следом за ним. */
+  async function setTermTo(requestId: string, dateTo: string): Promise<void> {
+    await ctx.db.execute(sql`
+      UPDATE special_equipment_request_details SET date_to = ${dateTo}
+       WHERE request_id = ${requestId}`);
+  }
+
+  /** Действующие листы заказа: правка не расходует номера, и их число обязано остаться прежним. */
+  async function activeSheetIds(requestId: string): Promise<string[]> {
+    const rows = await ctx.db.execute<{ id: string }>(sql`
+      SELECT id FROM waybills
+       WHERE source_request_id = ${requestId} AND status <> 'cancelled'
+       ORDER BY period_from`);
+    return rows.rows.map((row) => row.id);
+  }
+
+  /** След правки прямо из строки листа: журнал показывает его же, но держит именно она. */
+  async function trimTrail(sheetId: string): Promise<{
+    periodTo: string;
+    periodToOriginal: string | null;
+    reason: string;
+    trimmedBy: string | null;
+    trimmedAt: string | null;
+    correctionId: string | null;
+    version: number;
+  }> {
+    const rows = await ctx.db.execute<{
+      period_to: string;
+      period_to_original: string | null;
+      period_trim_reason: string;
+      period_trimmed_by: string | null;
+      period_trimmed_at: string | null;
+      period_trim_correction_id: string | null;
+      version: number;
+    }>(sql`
+      SELECT period_to, period_to_original, period_trim_reason, period_trimmed_by,
+             period_trimmed_at::text AS period_trimmed_at, period_trim_correction_id, version
+        FROM waybills WHERE id = ${sheetId}`);
+    const row = rows.rows[0]!;
+    return {
+      periodTo: row.period_to,
+      periodToOriginal: row.period_to_original,
+      reason: row.period_trim_reason,
+      trimmedBy: row.period_trimmed_by,
+      trimmedAt: row.period_trimmed_at,
+      correctionId: row.period_trim_correction_id,
+      version: Number(row.version),
+    };
+  }
+
+  /**
+   * Заказ, у которого выдан один лист на всю неделю, — сцена обеих последовательностей.
+   *
+   * Срок переставляется прямой записью, а лист выписывается настоящей сверкой по нему: заводить
+   * заказ будущей неделей через дверь нельзя (`issueWaybill` берёт заявку в работу сегодняшним
+   * днём), а выписывать бланк руками — значит проверять правку на бумаге, которой портал не
+   * выписывал.
+   */
+  async function weekSheet(): Promise<{
+    requestId: string;
+    sheetId: string;
+    from: string;
+    to: string;
+  }> {
+    const issued = await issueWaybill();
+    const owner = await ctx.db.execute<{ request_id: string }>(
+      sql`SELECT source_request_id AS request_id FROM waybills WHERE id = ${issued.id}`,
+    );
+    const requestId = owner.rows[0]!.request_id;
+    const from = wholeMonthWeek();
+    const to = shiftDateKey(from, 6);
+    await ctx.db.execute(sql`
+      UPDATE special_equipment_request_details SET date_from = ${from}, date_to = ${to}
+       WHERE request_id = ${requestId}`);
+    await syncPaper(requestId, 'сцена теста: бумага на всю неделю');
+
+    const active = await ctx.db.execute<{
+      id: string;
+      period_from: string;
+      period_to: string;
+    }>(sql`
+      SELECT id, period_from, period_to FROM waybills
+       WHERE source_request_id = ${requestId} AND status <> 'cancelled'`);
+    expect(active.rows.length, 'у заказа ровно один действующий недельный лист').toBe(1);
+    const sheet = active.rows[0]!;
+    expect(sheet.period_from).toBe(from);
+    expect(sheet.period_to).toBe(to);
+    const trail = await trimTrail(sheet.id);
+    expect(trail.periodToOriginal, 'выданный лист следа правки не носит').toBeNull();
+    return { requestId, sheetId: sheet.id, from, to };
+  }
+
+  it('неординарная правка, а следом обычная: ссылка на операцию снимается, «каким выдан» помнит выписку', async () => {
+    const { requestId, sheetId, from, to } = await weekSheet();
+    const issuedVersion = (await trimTrail(sheetId)).version;
+    const dispatcherId = await userIdOf(DISPATCHER_EMAIL);
+    const correctionId = await correctionRow(dispatcherId, 'операция: неделя переоформлена');
+
+    // Первая правка — неординарная: сверка идёт под проверенной операцией, и лист обязан на неё
+    // сослаться (Р12: `assignment_tail` — такая же операция журнала, как `crew`).
+    await setTermTo(requestId, shiftDateKey(from, 4));
+    await syncPaper(requestId, 'ТЕСТ: сокращение под операцией журнала', {
+      actorId: dispatcherId,
+      correctionId,
+    });
+    const first = await trimTrail(sheetId);
+    expect(first.periodTo).toBe(shiftDateKey(from, 4));
+    expect(first.periodToOriginal, 'первая правка и запоминает, каким лист выдан').toBe(to);
+    expect(first.correctionId).toBe(correctionId);
+    expect(first.trimmedBy).toBe(dispatcherId);
+    expect(first.reason).toBe('ТЕСТ: сокращение под операцией журнала');
+    expect(first.version).toBe(issuedVersion + 1);
+
+    // Вторая — обычная, другим человеком и с другой причиной.
+    await setTermTo(requestId, shiftDateKey(from, 2));
+    await syncPaper(requestId, 'ТЕСТ: заказ закрыт фактической датой', { actorId: ctx.adminId });
+    const second = await trimTrail(sheetId);
+    expect(second.periodTo).toBe(shiftDateKey(from, 2));
+    /*
+     * Главное утверждение последовательности: ссылка снята. Оставь её обычная правка — журнал
+     * объяснял бы нынешний вид листа чужим действием, которое к нему уже не относится, а отбор
+     * «что делали задним числом» показывал бы бланк, задним числом не правленый.
+     */
+    expect(second.correctionId, 'обычная правка ссылку на операцию снимает').toBeNull();
+    // «Каким выдан» переписать нельзя: печатная графа на площадке по-прежнему говорит про воскресенье.
+    expect(second.periodToOriginal, 'колонка помнит выписку, а не прошлую правку').toBe(to);
+    // Тройка «когда, кто, почему» описывает последнюю правку целиком, а не по частям.
+    expect(second.trimmedBy).toBe(ctx.adminId);
+    expect(second.reason).toBe('ТЕСТ: заказ закрыт фактической датой');
+    expect(second.trimmedAt! >= first.trimmedAt!).toBe(true);
+    // Версия растёт каждой правкой: на ней стоит сторож печати (Р21).
+    expect(second.version).toBe(issuedVersion + 2);
+    // Номер не сгорел и лист остался тем же: правка — на месте, а не пара «аннулировать плюс выписать».
+    expect(await activeSheetIds(requestId)).toEqual([sheetId]);
+  }, 180_000);
+
+  it('обычная правка, а следом неординарная: ссылка на операцию появляется, а «каким выдан» не двигается', async () => {
+    const { requestId, sheetId, from, to } = await weekSheet();
+    const issuedVersion = (await trimTrail(sheetId)).version;
+    const dispatcherId = await userIdOf(DISPATCHER_EMAIL);
+
+    await setTermTo(requestId, shiftDateKey(from, 4));
+    await syncPaper(requestId, 'ТЕСТ: обычное сокращение срока', { actorId: ctx.adminId });
+    const first = await trimTrail(sheetId);
+    expect(first.periodTo).toBe(shiftDateKey(from, 4));
+    expect(first.periodToOriginal).toBe(to);
+    expect(first.correctionId, 'обычной правке ссылаться не на что').toBeNull();
+    expect(first.trimmedBy).toBe(ctx.adminId);
+    expect(first.version).toBe(issuedVersion + 1);
+
+    const correctionId = await correctionRow(dispatcherId, 'операция: неделя переоформлена');
+    await setTermTo(requestId, shiftDateKey(from, 2));
+    await syncPaper(requestId, 'ТЕСТ: сокращение под операцией журнала', {
+      actorId: dispatcherId,
+      correctionId,
+    });
+    const second = await trimTrail(sheetId);
+    expect(second.periodTo).toBe(shiftDateKey(from, 2));
+    // Обратная сторона того же правила: ссылка появляется у листа, который её не имел.
+    expect(second.correctionId, 'неординарная правка ссылку ставит').toBe(correctionId);
+    expect(second.periodToOriginal, 'колонка помнит выписку, а не прошлую правку').toBe(to);
+    expect(second.trimmedBy).toBe(dispatcherId);
+    expect(second.reason).toBe('ТЕСТ: сокращение под операцией журнала');
+    expect(second.trimmedAt! >= first.trimmedAt!).toBe(true);
+    expect(second.version).toBe(issuedVersion + 2);
+    expect(await activeSheetIds(requestId)).toEqual([sheetId]);
+
+    // И журнал видит правленый лист правленым обеими правками подряд: метку поднимает сам факт
+    // правки периода, а не ссылка на операцию (Э11).
+    const row = await journalRow(sheetId);
+    expect(row.isCorrection).toBe(true);
+    expect(row.periodToOriginal).toBe(to);
+    expect(row.trimReason).toBe('ТЕСТ: сокращение под операцией журнала');
   }, 180_000);
   });
 });

@@ -4,6 +4,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   type Esm2Mode,
   esm2Mode,
+  type Esm2Trim,
   formatVehicleRequestNumber,
   moscowDateKeyOf,
   type RequestStatus,
@@ -31,11 +32,13 @@ import { assignmentSegments } from './assignment-history';
 import { ASSIGNMENT_HISTORY_ALGO_VERSION } from './assignment-mode';
 import type { AssignmentWriteTx } from './assignment-write';
 import {
+  esm2RequestedSheetPlan,
   esm2SheetPlan,
   legacyComparableKey,
   toLegacyComparable,
   type Esm2SheetPlan,
   type LegacyComparablePlan,
+  type LegacyComparableSheet,
 } from './esm2-plan';
 import { buildEsm2SyncPlan } from './waybill-esm2';
 
@@ -66,13 +69,20 @@ import { buildEsm2SyncPlan } from './waybill-esm2';
  * (`issue` — границы, машина, человек). Той же проекцией работает гейт совместимости этапа 3
  * (`assignment-crew.ts`), и это не экономия: три независимых нормализатора разошлись бы молча.
  *
+ * Исходов у листа с тех пор стало три: рядом с «сжечь» и «выписать» встала **правка периода**
+ * (`trim` — Р5, Р6 плана `docs/vehicle-request-actual-end-date-plan.md`), и сравнение спрашивает её
+ * наравне с ними ({@link ShadowComparablePlan}). Спроси мы только две первых — стороны, обе
+ * правящие бумагу, сошлись бы двумя пустыми списками, хотя правят разные листы или до разных дат.
+ *
  * В сравнение **не входит** и не считается расхождением:
  *
- * - `waybillId`, серия, номер, `issueKey → waybillId` — всё, что рождается после расхода номера
- *   (§7). У плана их нет вовсе;
+ * - `waybillId`, серия, номер, `issueKey → waybillId` **выписываемого** документа — всё, что
+ *   рождается после расхода номера (§7). У плана их нет вовсе. Лист, который **правят**, назван
+ *   идентификатором, и это не исключение из правила: его строка существует у обеих сторон, обе
+ *   прочитали её из одного снимка, и другого имени у правки нет;
  * - `wanted`, `kept`, `locked`, `outOfScope` отрезкового плана — недельный расчёт их не возвращает,
  *   и сравнивать их было бы сравнением алгоритма с пустотой. На бумагу они влияют ровно через
- *   `cancel` и `issue`, а те сравниваются;
+ *   `cancel`, `issue` и `trim`, а те сравниваются;
  * - `responsibility` ожидания — у обеих сторон он всегда `portal` (арендный отрезок в ожидания не
  *   попадает вовсе). Постоянное поле в сравнении — чистый шум;
  * - `sheetSnapshotDraft` и `warningSnapshot` — их недельная сторона считает только на записи
@@ -102,20 +112,23 @@ import { buildEsm2SyncPlan } from './waybill-esm2';
  *    удалённость, линейность, принадлежность). Отрезковая обязана спросить то же самое — **кроме
  *    принадлежности**: у разреза она принадлежит отрезку, а не заявке (Р4), и в этом и состоит
  *    одно из ожидаемых расхождений, ради поиска которого прогон затевается. Поэтому
- *    {@link portalKeepsPaper} — это `esm2Mode` с принудительной `own`, а принадлежность отрезковая
- *    сторона читает по машине каждого отрезка.
+ *    {@link freshPaperMode} — это `esm2Mode` с принудительной `own`, а принадлежность отрезковая
+ *    сторона читает по машине каждого отрезка. Спрашивается при этом **весь** режим, а не «ведёт
+ *    ли портал бумагу»: у `on_demand` недели назначает человек, и сторона, свернувшая три ответа
+ *    в два, считала бы линейному заказу чужой план (см. {@link freshPaperMode}).
  * 5. **Ничего не подставляется руками.** Машиниста и машину недельная сторона читает сама, ровно
  *    как в бою у двери, которая человека не называет (смена статуса, правка срока): машина — из
  *    назначения, человек — с последнего листа. Подставь мы туда «правильные» значения из истории,
  *    сравнение доказывало бы совпадение нового алгоритма с самим собой.
  *
  * ЧТО СЧИТАЕТСЯ РАСХОЖДЕНИЕМ. Всё, что отличает бумагу: другой набор аннулируемых листов, другие
- * границы документов, другая машина, другой человек. Расхождение — всегда `mismatch`, и ни одно из
- * них не «прощается»: поколение с `mismatch` до cutover не допускается (Е1, К1). «Объяснено» здесь
- * значит **классифицировано**: у каждой строки расхождения записаны причина ({@link
- * ShadowMismatchReason}), обе проекции целиком и словесная сводка, — чтобы разбор шёл по группам, а
- * не по строкам. Ожидаемые расхождения (разрез недели Б1, смена принадлежности внутри срока Р4,
- * пробел машиниста Р16/Р19) от неожиданных отличаются именно причиной, а не статусом.
+ * границы документов, другая машина, другой человек, другой правимый лист или другой день, до
+ * которого его правят. Расхождение — всегда `mismatch`, и ни одно из них не «прощается»: поколение
+ * с `mismatch` до cutover не допускается (Е1, К1). «Объяснено» здесь значит **классифицировано**:
+ * у каждой строки расхождения записаны причина ({@link ShadowMismatchReason}), обе проекции целиком
+ * и словесная сводка, — чтобы разбор шёл по группам, а не по строкам. Ожидаемые расхождения (разрез
+ * недели Б1, смена принадлежности внутри срока Р4, пробел машиниста Р16/Р19) от неожиданных
+ * отличаются именно причиной, а не статусом.
  *
  * ЧТО РАСХОЖДЕНИЕМ НЕ ЯВЛЯЕТСЯ. Расхождение машины назначения с хвостом истории (Р30) — это
  * предупреждение: история с бумагой сходится, расходится лишь денормализация. Оно записывается
@@ -147,8 +160,11 @@ import { buildEsm2SyncPlan } from './waybill-esm2';
  *   не ожидается» и гасят всё, что можно погасить, одинаково: сравнение таких целей доказывало бы
  *   лишь то, что два пустых списка равны, а число целей раздувало бы вдвое;
  * - **линейный заказ** — у него бумаги «по сроку» нет вовсе, недели называет человек (ADR 0100),
- *   а история из листов не восстанавливается (в неделе законно два листа разных машин). Отрезковый
- *   план на него не рассчитан, и его цели были бы гарантированным шумом;
+ *   а история из листов не восстанавливается (в неделе законно два листа разных машин). Обе
+ *   стороны ведут ему одно и то же — уже выписанное, подрезанное сроком, — и цель совпадала бы по
+ *   построению, ничего не доказывая. Сравнение при этом линейный заказ **считает** и считает
+ *   верно ({@link freshPaperMode}): в цель он попадает и мимо популяции — переключением режима
+ *   (ADR 0107) между печатью manifest'а и проверкой, — и разбором одной заявки;
  * - **заказ без машины и без бумаги** — восстанавливать историю не от чего и нечему сверяться
  *   (`no_assignment`); ни одна сторона такому заказу бумаги не заводит.
  *
@@ -233,7 +249,15 @@ export type ShadowMismatchReason =
   /** Стороны хотят бумагу на разные дни. */
   | 'coverage'
   /** Документы совпали, разошёлся состав аннулируемых листов. */
-  | 'cancel';
+  | 'cancel'
+  /**
+   * Документы и аннулирования совпали, разошлись **правки периода** (Р5, Р6): стороны правят
+   * разные листы либо один лист до разных дней.
+   *
+   * Причина заведена отдельной, а не сведена к `cancel`, потому что и разбор у неё другой: там
+   * расходится расход номеров, здесь — период действующего бланка, который никто не перевыписывает.
+   */
+  | 'trim';
 
 const REASON_WORDS: Record<ShadowMismatchReason, string> = {
   history_unrestorable: 'история заявки не восстанавливается, отрезковый план не считается',
@@ -244,7 +268,106 @@ const REASON_WORDS: Record<ShadowMismatchReason, string> = {
   driver: 'на тех же днях разные машинисты',
   coverage: 'стороны ожидают бумагу на разные дни',
   cancel: 'разошёлся состав аннулируемых листов',
+  trim: 'стороны правят период разных листов либо до разных дней (Р5, Р6)',
 };
+
+// ── Сравнимая проекция с правками (Р5, Р6 плана `docs/vehicle-request-actual-end-date-plan.md`) ──
+
+/**
+ * Правка листа в сравнимой форме: **какой** лист правят и **до какого** дня.
+ *
+ * Лист назван идентификатором, и общему запрету на `waybillId` (§7) это не противоречит. Запрет
+ * говорит о документе, которого ещё нет: у выписки нет ни строки, ни номера, и сравнивать её по
+ * идентификатору значило бы сравнивать не планы, а результаты двух записей. Правка адресуется
+ * листу **уже существующему**, прочитанному обеими сторонами из одного снимка (см. заголовок,
+ * п. 2), и другого имени у неё нет вовсе: «сократить пн–вс до среды» и «сократить соседний пн–вс
+ * до среды» — разные действия с одинаковой датой.
+ *
+ * Прежний конец периода в проекцию не входит: он у сторон общий по построению — обе прочитали его
+ * из той же строки листа, — и сравнивать его значило бы сравнивать вход с самим собой.
+ */
+export interface ShadowComparableTrim {
+  waybillId: string;
+  to: string;
+}
+
+/**
+ * Проекция плана бумаги с третьим исходом — правкой периода.
+ *
+ * ЗАЧЕМ. Общая проекция (`LegacyComparablePlan`, Г4) знает два исхода: сгоревшие номера и
+ * выписанные документы. Пока исходов было два, этого хватало; с `trim` — нет, и дыра у неё одна,
+ * зато изнутри `cancel`/`issue` нечинимая: **у обеих сторон эти списки пусты**. Расхождение
+ * «одна сторона правит, другая перевыписывает» видно и без правок — у второй стороны появляются и
+ * `cancel`, и `issue`; а «правят разные листы» и «правят до разных дней» не видно вовсе, и
+ * переключение чтения прошло бы по зелёному прогону, сдвинув период действующего бланка не там,
+ * где обещал. Сдвинув молча: правка номера не расходует, замены не выписывает и в графе замен
+ * следа не оставляет — заметить её постфактум не по чему, кроме самого периода.
+ *
+ * ПОЧЕМУ ЗДЕСЬ, А НЕ В ОБЩЕЙ ПРОЕКЦИИ. Правки сравнивает сегодня один потребитель — этот прогон.
+ * У гейта совместимости (`assignment-crew.ts`) правок не бывает вовсе: пятое условие Р6 нарочно
+ * исключает разрез недели сменой состава, — и внеси мы `trim` в общий ключ, у гейта сменился бы
+ * формат сравнения ради поля, всегда пустого. Когда правку научится показывать предпросмотр
+ * (`AssignmentPlanTrimDto`, этап Э9 плана), проекция переедет в `esm2-plan.ts` целиком — вместе с
+ * этой сортировкой и этим ключом, а не второй их редакцией: три нормализатора разошлись бы молча,
+ * и Г4 завела единственный ровно поэтому.
+ */
+export interface ShadowComparablePlan extends LegacyComparablePlan {
+  /**
+   * Правки в каноническом порядке.
+   *
+   * Порядок — как и у `issue`, не «как сложилось»: недельная сторона идёт неделями срока,
+   * отрезковая — отрезками разреза, и два одинаковых набора, отличающихся порядком, дали бы
+   * ложное расхождение.
+   */
+  trim: ShadowComparableTrim[];
+}
+
+/** Каноническая строка правки: по ней и сортируют, и сравнивают. */
+function trimKey(trim: ShadowComparableTrim): string {
+  return `${trim.waybillId}|${trim.to}`;
+}
+
+/**
+ * Привести план к сравнимой форме — общей половиной (`toLegacyComparable`) плюс правками.
+ *
+ * Общая половина **зовётся**, а не переписывается: второй нормализатор `cancel`/`issue` разошёлся
+ * бы с первым молча, каждый на своей правке.
+ *
+ * Экспортируется вместе с {@link compareShadowPlans} и ради того же: пару планов, на которой
+ * проверяется сличение, тест обязан собирать **той же** нормализацией, что и боевой расчёт, —
+ * иначе он проверял бы свой порядок списков, а не сличение.
+ */
+export function toShadowComparable(
+  cancel: readonly string[],
+  issue: readonly LegacyComparableSheet[],
+  trim: readonly Esm2Trim[],
+): ShadowComparablePlan {
+  return {
+    ...toLegacyComparable(cancel, issue),
+    trim: trim
+      .map((item) => ({ waybillId: item.waybillId, to: item.to }))
+      .sort((a, b) => (trimKey(a) < trimKey(b) ? -1 : trimKey(a) > trimKey(b) ? 1 : 0)),
+  };
+}
+
+/**
+ * Ключ сравнения: две проекции равны тогда и только тогда, когда равны их ключи.
+ *
+ * Человек сверяется всегда (`withDriver: true`): теневое сравнение спрашивает «выйдет ли та же
+ * бумага», а лист, выписанный не на того машиниста, — другой документ. Гейт совместимости
+ * спрашивает другое и потому берёт общий ключ сам (`legacyComparableKey`).
+ *
+ * Правки лежат в ключе отдельным полем, а не подмешаны к документам: разбор расхождения начинается
+ * с вопроса «что именно разошлось», и слипшиеся списки отвечали бы на него «что-то».
+ */
+function shadowComparableKey(plan: ShadowComparablePlan): string {
+  return JSON.stringify({
+    plan: legacyComparableKey(plan, { withDriver: true }),
+    trim: plan.trim.map(trimKey),
+  });
+}
+
+// ── Вердикт стороны ──
 
 /**
  * Результат теневого вычисления одной стороны (З4).
@@ -254,7 +377,7 @@ const REASON_WORDS: Record<ShadowMismatchReason, string> = {
  * пробелы Р16 плана не останавливают — они уходят в заметки и объясняют расхождение, если оно есть.
  */
 type ShadowEvaluation =
-  | { kind: 'plan'; plan: LegacyComparablePlan }
+  | { kind: 'plan'; plan: ShadowComparablePlan }
   | { kind: 'blocked'; blockers: AssignmentHistoryUnrestorable[] };
 
 /** Что записано в `details` строки manifest'а — и расхождения, и заметки при совпадении. */
@@ -265,9 +388,9 @@ export interface ShadowCheckDetails {
   reason?: ShadowMismatchReason;
   summary?: string;
   /** Проекция недельного расчёта; у заблокированной стороны её нет. */
-  legacy?: LegacyComparablePlan;
+  legacy?: ShadowComparablePlan;
   /** Проекция отрезкового расчёта. */
-  fresh?: LegacyComparablePlan;
+  fresh?: ShadowComparablePlan;
   /** Чем заблокирована сторона, если она заблокирована. */
   blocked?: AssignmentHistoryUnrestorable[];
   /** Что было только у одной стороны — с этого начинается разбор. */
@@ -276,6 +399,15 @@ export interface ShadowCheckDetails {
     cancelOnlyFresh: string[];
     issueOnlyLegacy: string[];
     issueOnlyFresh: string[];
+    /**
+     * Правки, названные только одной стороной, — строками `waybillId|день`.
+     *
+     * Правка одного листа до разных дней попадает в **обе** половины, и это не дублирование, а
+     * единственное честное изображение: у сторон это два разных действия с одним листом, и
+     * «пересечения по листу» здесь нет.
+     */
+    trimOnlyLegacy: string[];
+    trimOnlyFresh: string[];
   };
   notes: ShadowNotes;
 }
@@ -284,8 +416,15 @@ export interface ShadowCheckDetails {
 export interface ShadowNotes {
   /** Режим бумаги недельной стороны (`esm2Mode`). */
   legacyMode: Esm2Mode;
-  /** Ведёт ли портал бумагу заказа по мнению отрезковой стороны (тот же вопрос минус принадлежность). */
-  portalKeepsPaper: boolean;
+  /**
+   * Режим бумаги **отрезковой** стороны: тот же вопрос минус принадлежность ({@link freshPaperMode}).
+   *
+   * Стоит рядом с `legacyMode` и записывается всегда, потому что расхождение режимов объясняет
+   * расхождение планов целиком: `none` против `auto` — это спор о принадлежности (Р4), `auto`
+   * против `on_demand` — о том, кто назначает недели. Прежде поле было булевым («ведёт ли»), и на
+   * линейном заказе оно врало дважды: и о самом себе, и о причине расхождения.
+   */
+  freshMode: Esm2Mode;
   /** Откуда взялась история: записана в базе либо восстановлена в памяти этим же расчётом (Р20). */
   history: 'stored' | 'computed' | 'none';
   historyState: AssignmentHistorySnapshot['state'];
@@ -294,7 +433,13 @@ export interface ShadowNotes {
   /** Расхождение хвоста (Р30): предупреждение, а не ошибка, и статус строки оно не меняет. */
   tailVehicleMismatch?: { historyVehicleId: string; assignmentVehicleId: string };
   /**
-   * Сколько действий с бумагой у каждой стороны — `cancel` плюс `issue`.
+   * Сколько действий с бумагой у каждой стороны — `cancel` плюс `issue` плюс `trim`.
+   *
+   * Правка считается действием наравне с двумя другими, и иначе быть не может: `shadowNoteTally`
+   * читает эти числа как «сторона бумагу не двигает» (`paperConfirmed`), а сторона, правящая
+   * период действующего бланка, двигает её ровно так же, как аннулированием, — просто без расхода
+   * номера. Не считай мы правки, отчёт объявлял бы «обе стороны подтвердили выписанную бумагу»
+   * там, где обе её меняют.
    *
    * Пишется и при совпадении, и это не статистика ради статистики. «Обе стороны молчат» читается
    * по-разному в зависимости от того, есть ли бумага вообще:
@@ -505,31 +650,46 @@ async function selectShadowPopulation(tx: Tx): Promise<string[]> {
 // ── Сравнение ──
 
 /**
- * Ведёт ли портал бумагу этого заказа — тот же вопрос, что у `esm2Mode`, **минус принадлежность**.
+ * В каком режиме ведёт бумагу заказа **отрезковая** сторона — тот же вопрос, что у `esm2Mode`,
+ * **минус принадлежность**.
  *
  * Принадлежность у разреза принадлежит отрезку (Р4): заказ, который вели арендной единицей, а
  * продолжают своей, бумагу заводит с того дня, а не с начала срока. Спроси отрезковая сторона
  * принадлежность заявки, она повторила бы недельное правило — и прогон не заметил бы ровно того
  * расхождения, ради которого разрез и делается.
  *
- * Всё остальное у режима общее и остаётся: не заказ спецтехники, не в работе, удалённая или
- * линейная заявка бумаги не ведёт ни при каком разрезе.
+ * Всё остальное у режима общее и остаётся: не заказ спецтехники, не в работе или удалённая заявка
+ * бумаги не ведёт ни при каком разрезе.
+ *
+ * ОТВЕТОВ ТРИ, А НЕ ДВА, и это не украшение подписи. Прежде функция отвечала «ведёт ли», то есть
+ * `mode === 'auto'`, и линейный заказ попадал в ту же ветку, что грузоперевозка: «бумаги не
+ * ожидается, гасим всё, что можно погасить». Для `none` это правда — недельная сторона поступает
+ * ровно так же, — а для `on_demand` ложь: выписанные по просьбе бланки недельная сторона ведёт
+ * (`esm2RequestedPeriods`), и стороны расходились **по построению**, на любом линейном заказе и
+ * при любых данных. Ворота, шумящие всегда, ничего не стерегут: настоящее расхождение утонуло бы
+ * среди этого шума. Поэтому режим возвращается целиком, а ветку по нему выбирает
+ * {@link evaluateShadowTarget} — тем же тройным выбором, каким её выбирает боевое сокращение
+ * срока (`assignment-shorten-term.ts`).
+ *
+ * Аренда у линейного заказа остаётся расхождением, и намеренно: принудительная `own` даёт здесь
+ * `on_demand` там, где недельная сторона по арендной машине отвечает `none` и гасит бумагу. Это
+ * ровно то расхождение Р4, ради которого принадлежность и не спрашивается, — «по построению» оно
+ * не возникает, потому что линейному заказу с арендной единицей бланк не выписывает ни одна дверь
+ * (`issueEsm2OnDemand` отказывает), и листы у него берутся только от прежней собственной машины.
  */
-function portalKeepsPaper(head: {
+function freshPaperMode(head: {
   requestType: 'special_equipment' | 'freight_transport';
   status: RequestStatus;
   deletedAt: Date | null;
   isLinear: boolean;
-}): boolean {
-  return (
-    esm2Mode({
-      requestType: head.requestType,
-      status: head.status,
-      ownership: 'own',
-      deletedAt: head.deletedAt ? head.deletedAt.toISOString() : null,
-      isLinear: head.isLinear,
-    }) === 'auto'
-  );
+}): Esm2Mode {
+  return esm2Mode({
+    requestType: head.requestType,
+    status: head.status,
+    ownership: 'own',
+    deletedAt: head.deletedAt ? head.deletedAt.toISOString() : null,
+    isLinear: head.isLinear,
+  });
 }
 
 /**
@@ -561,7 +721,7 @@ export async function evaluateShadowTarget(
   // ── недельная сторона: ровно то, что портал делает сегодня ──
   const legacyBuilt = await buildEsm2SyncPlan(tx, { requestId, asOf });
   if (!legacyBuilt) throw rejected(`Недельный расчёт не построен по заявке ${requestId}`);
-  const legacyPlan = toLegacyComparable(
+  const legacyPlan = toShadowComparable(
     legacyBuilt.plan.cancel,
     legacyBuilt.plan.issue.map((period) => ({
       from: period.from,
@@ -570,12 +730,19 @@ export async function evaluateShadowTarget(
       vehicleId: legacyBuilt.input.vehicleId ?? '',
       driverPersonId: legacyBuilt.input.driverPersonId,
     })),
+    legacyBuilt.plan.trim,
   );
 
   // ── отрезковая сторона: то, что портал будет делать после переключения чтения ──
   const snapshot = await readAssignmentHistorySnapshot(tx, requestId);
-  const keepsPaper = portalKeepsPaper({ ...head, isLinear: snapshot.isLinear });
-  const computed = keepsPaper ? computeAssignmentHistory(snapshot, asOf) : null;
+  const paperMode = freshPaperMode({ ...head, isLinear: snapshot.isLinear });
+  /*
+   * История считается только у `auto`: ожидания оттуда и берутся. `on_demand` считает план из
+   * выписанного, `none` не ожидает ничего — обоим история не входит ни в один ответ, а у линейного
+   * заказа её и восстанавливать не из чего: в одной неделе законно живут листы двух разных машин
+   * (ADR 0100), и одной временнóй шкалы из такой бумаги не строится.
+   */
+  const computed = paperMode === 'auto' ? computeAssignmentHistory(snapshot, asOf) : null;
   const unrestorable = computed?.unrestorable ?? [];
 
   let fresh: ShadowEvaluation;
@@ -583,17 +750,39 @@ export async function evaluateShadowTarget(
   if (computed && unrestorable.length > 0) {
     fresh = { kind: 'blocked', blockers: [...unrestorable] };
   } else {
-    // Бумаги не ожидается — отрезков нет: тогда план гасит всё, что можно погасить, тем же
-    // `canCancelWaybill`, каким это делает недельная сторона. Это не «пустой план», а честный
-    // ответ «портал этому заказу бумаги не ведёт».
-    const segments = computed ? assignmentSegments(computed.changes, snapshot.term) : [];
-    freshPlan = esm2SheetPlan(segments, snapshot.term, snapshot.sheets, {
-      ownershipByVehicle: snapshot.ownershipByVehicle,
-      today: asOf,
-    });
+    const context = { ownershipByVehicle: snapshot.ownershipByVehicle, today: asOf };
+    /*
+     * ВЕТКА ВЫБИРАЕТСЯ РЕЖИМОМ — тем же тройным выбором, каким её выбирает боевое сокращение срока
+     * (`assignment-shorten-term.ts`), и по той же причине: «сколько бумаги нужно заказу» у режимов
+     * спрашивается из разных мест, а «что делать с выданным листом» у них общее.
+     *
+     * - `auto` — ожидания даёт разрез состава, подрезанный сроком: портал решает сам;
+     * - `on_demand` — решения такого у портала нет вовсе (линейный заказ, ADR 0100 §5): недели
+     *   назвал человек, и единственный след его просьбы — сами выписанные бланки, подрезанные
+     *   сроком (`esm2RequestedSheetPlan`);
+     * - `none` — бумаги не ожидается: отрезков нет, план гасит всё, что можно погасить, тем же
+     *   `canCancelWaybill`, каким это делает недельная сторона. Это не «пустой план», а честный
+     *   ответ «портал этому заказу бумаги не ведёт».
+     *
+     * Ветки `on_demand` здесь не было, и это была дыра в самих воротах (Э10 плана
+     * `docs/vehicle-request-actual-end-date-plan.md`). Линейный заказ уходил в ветку `none`:
+     * отрезковая сторона гасила выписанные по просьбе бланки, недельная их вела — и цель
+     * расходилась при любых данных, ни о чём не свидетельствуя. Ворота, дающие расхождение по
+     * построению, обесценивают и все остальные свои строки: настоящее расхождение читается в
+     * отчёте наравне с гарантированным шумом.
+     */
+    freshPlan =
+      paperMode === 'on_demand'
+        ? esm2RequestedSheetPlan(snapshot.sheets, snapshot.term, context)
+        : esm2SheetPlan(
+            computed ? assignmentSegments(computed.changes, snapshot.term) : [],
+            snapshot.term,
+            snapshot.sheets,
+            context,
+          );
     fresh = {
       kind: 'plan',
-      plan: toLegacyComparable(
+      plan: toShadowComparable(
         freshPlan.cancel,
         freshPlan.issue.map((sheet) => ({
           from: sheet.from,
@@ -601,18 +790,22 @@ export async function evaluateShadowTarget(
           vehicleId: sheet.vehicleId,
           driverPersonId: sheet.driver.personId,
         })),
+        freshPlan.trim,
       ),
     };
   }
 
   const notes: ShadowNotes = {
     actions: {
-      legacy: legacyPlan.cancel.length + legacyPlan.issue.length,
-      fresh: fresh.kind === 'plan' ? fresh.plan.cancel.length + fresh.plan.issue.length : 0,
+      legacy: legacyPlan.cancel.length + legacyPlan.issue.length + legacyPlan.trim.length,
+      fresh:
+        fresh.kind === 'plan'
+          ? fresh.plan.cancel.length + fresh.plan.issue.length + fresh.plan.trim.length
+          : 0,
     },
     sheets: snapshot.sheets.length,
     legacyMode: legacyBuilt.input.mode,
-    portalKeepsPaper: keepsPaper,
+    freshMode: paperMode,
     history:
       snapshot.changes.length > 0
         ? 'stored'
@@ -682,7 +875,32 @@ export async function evaluateShadowTarget(
 }
 
 /** Вердикт по одной цели: совпало или нет, а если нет — почему. */
-type ShadowVerdict = { status: 'match' } | { status: 'mismatch'; reason: ShadowMismatchReason };
+export type ShadowVerdict =
+  { status: 'match' } | { status: 'mismatch'; reason: ShadowMismatchReason };
+
+/**
+ * Сличение двух **посчитанных** проекций: ключ решает «сошлось ли», {@link classify} — «почему».
+ *
+ * Отделено от чтения базы и экспортировано намеренно. Расхождение правок (`trim`) сегодня
+ * недостижимо на живых данных: чтобы стороны правили разные листы, им нужны разные ожидания, а
+ * разные ожидания двигают заодно `cancel` и `issue` — и цель расходится уже по ним. Значит
+ * единственный способ проверить, что правка вообще участвует в сличении, — подать сличению пару
+ * планов; собранная из базы сцена доказывала бы что угодно, кроме этого.
+ *
+ * Недостижимость эта — свойство сегодняшних правил, а не гарантия. Правило `trim` написано в двух
+ * планировщиках дважды (Н7), и поправленное в одном оно разойдётся со вторым молча: у обеих сторон
+ * `cancel` и `issue` останутся пустыми. Сличение правок — единственное, что такое расхождение
+ * поймает, и потому оно проверяется прямо, а не через сцену.
+ */
+export function compareShadowPlans(
+  legacy: ShadowComparablePlan,
+  fresh: ShadowComparablePlan,
+  freshPlan: Esm2SheetPlan | null,
+  sheets: readonly { id: string; periodFrom: string; periodTo: string }[],
+): ShadowVerdict {
+  if (shadowComparableKey(legacy) === shadowComparableKey(fresh)) return { status: 'match' };
+  return { status: 'mismatch', reason: classify(legacy, fresh, freshPlan, sheets) };
+}
 
 /**
  * Сравнение двух вычислений (З4): `plan` с `plan` — по содержимому, разные `kind` — расхождение.
@@ -705,11 +923,7 @@ function compareShadowEvaluations(
       JSON.stringify(fresh.kind === 'blocked' ? fresh.blockers : []);
     return same ? { status: 'match' } : { status: 'mismatch', reason: 'history_unrestorable' };
   }
-  const options = { withDriver: true } as const;
-  if (legacyComparableKey(legacy.plan, options) === legacyComparableKey(fresh.plan, options)) {
-    return { status: 'match' };
-  }
-  return { status: 'mismatch', reason: classify(legacy.plan, fresh.plan, freshPlan, sheets) };
+  return compareShadowPlans(legacy.plan, fresh.plan, freshPlan, sheets);
 }
 
 /**
@@ -717,19 +931,29 @@ function compareShadowEvaluations(
  *
  * Порядок проверок — от причины, объясняющей всё, к причине, объясняющей остаток:
  *
- * 1. документы совпали, а списки на аннулирование нет — расхождение только в гашении;
- * 2. пробел машиниста: отрезковая сторона ждёт лист, но человека не знает и потому не выписывает
+ * 1. документы и аннулирования совпали, а правки нет — разошлась только правка периода (Р5, Р6):
+ *    стороны правят разные листы либо один лист до разных дней. Спрашивается первой, потому что
+ *    это единственное расхождение, у которого **все прочие поля пусты или равны**: не назови мы
+ *    его своей причиной, оно ушло бы в `cancel` со словами «разошёлся состав аннулируемых листов»,
+ *    которых при этом ни у кого нет;
+ * 2. документы совпали, а списки на аннулирование нет — расхождение только в гашении;
+ * 3. пробел машиниста: отрезковая сторона ждёт лист, но человека не знает и потому не выписывает
  *    (Р16, Р19). Спрашивается раньше границ намеренно — иначе то же расхождение выглядело бы как
  *    «стороны хотят бумагу на разные дни» и увело бы разбор не туда;
- * 3. границы документов совпали — значит разошлись машина либо человек;
- * 4. **дни бумаги** совпали, а документы нет — это и есть разрез недели (Б1, Р5): одна сторона
+ * 4. границы документов совпали — значит разошлись машина либо человек;
+ * 5. **дни бумаги** совпали, а документы нет — это и есть разрез недели (Б1, Р5): одна сторона
  *    держит лист пн–вс, другая заменяет его на пн–вт и ср–вс. Дни бумаги считаются одинаково у
  *    обеих сторон: что она собирается выписать плюс листы, которых она не гасит;
- * 5. всё прочее — стороны ожидают бумагу на разные дни.
+ * 6. всё прочее — стороны ожидают бумагу на разные дни.
+ *
+ * Правки дальше первого пункта не спрашиваются, и это не забывчивость: разойдись вместе с ними и
+ * документы, объясняет расхождение уже не правка. Сторона, которая правит там, где вторая
+ * перевыписывает, вся видна в `cancel` и `issue` — а причина у такой цели должна называть большее
+ * из двух действий, потому что чинить придётся его.
  */
 function classify(
-  legacy: LegacyComparablePlan,
-  fresh: LegacyComparablePlan,
+  legacy: ShadowComparablePlan,
+  fresh: ShadowComparablePlan,
   freshPlan: Esm2SheetPlan | null,
   sheets: readonly { id: string; periodFrom: string; periodTo: string }[],
 ): ShadowMismatchReason {
@@ -740,7 +964,12 @@ function classify(
   const onlyLegacy = legacy.issue.filter((sheet) => !freshKeys.has(key(sheet)));
   const onlyFresh = fresh.issue.filter((sheet) => !legacyKeys.has(key(sheet)));
 
-  if (onlyLegacy.length === 0 && onlyFresh.length === 0) return 'cancel';
+  if (onlyLegacy.length === 0 && onlyFresh.length === 0) {
+    // Обе половины отсортированы каноническим порядком (`toShadowComparable`), поэтому равенство
+    // наборов здесь — это равенство строк, а не совпадение размеров.
+    const sameCancel = legacy.cancel.join('|') === fresh.cancel.join('|');
+    return sameCancel ? 'trim' : 'cancel';
+  }
 
   // Пробел машиниста спрашивается у `wanted`, а не у `issue`: в `issue` такого ожидания нет по
   // определению — именно потому оно и не выписывается.
@@ -768,14 +997,25 @@ function classify(
    * Мера одна на обе стороны — только так «тот же набор дней, другие границы» отличается от
    * «разные дни».
    */
-  const paperDays = (plan: LegacyComparablePlan): string => {
+  const paperDays = (plan: ShadowComparablePlan): string => {
     const days = new Set<string>();
     const cancelled = new Set(plan.cancel);
+    /*
+     * Правка отнимает дни у действующего листа, и мера «на каких днях сторона ожидает бумагу»
+     * обязана это знать: за новым концом сокращённого листа бумаги у стороны нет — ни выписанной,
+     * ни планируемой. Считай мы правленый лист целым, сторона, которая его правит, и сторона,
+     * которая перевыписывает те же дни новым номером, разошлись бы «разными днями», хотя дни у них
+     * одни и те же, а разошлись они способом.
+     */
+    const trimmedTo = new Map(plan.trim.map((item) => [item.waybillId, item.to]));
     const spans: { from: string; to: string }[] = [
       ...plan.issue.map((sheet) => ({ from: sheet.from, to: sheet.to })),
       ...sheets
         .filter((sheet) => !cancelled.has(sheet.id))
-        .map((sheet) => ({ from: sheet.periodFrom, to: sheet.periodTo })),
+        .map((sheet) => ({
+          from: sheet.periodFrom,
+          to: trimmedTo.get(sheet.id) ?? sheet.periodTo,
+        })),
     ];
     for (const span of spans) {
       for (let day = span.from; day <= span.to; day = nextDay(day)) days.add(day);
@@ -794,8 +1034,8 @@ function nextDay(key: string): string {
 
 /** Что было только у одной стороны: с этого разбор расхождения и начинается. */
 function diffOf(
-  legacy: LegacyComparablePlan,
-  fresh: LegacyComparablePlan,
+  legacy: ShadowComparablePlan,
+  fresh: ShadowComparablePlan,
 ): NonNullable<ShadowCheckDetails['diff']> {
   const key = (sheet: LegacyComparablePlan['issue'][number]): string =>
     `${sheet.from}|${sheet.to}|${sheet.vehicleId}|${sheet.driverPersonId ?? ''}`;
@@ -803,11 +1043,15 @@ function diffOf(
   const freshCancel = new Set(fresh.cancel);
   const legacyIssue = new Set(legacy.issue.map(key));
   const freshIssue = new Set(fresh.issue.map(key));
+  const legacyTrim = new Set(legacy.trim.map(trimKey));
+  const freshTrim = new Set(fresh.trim.map(trimKey));
   return {
     cancelOnlyLegacy: legacy.cancel.filter((id) => !freshCancel.has(id)),
     cancelOnlyFresh: fresh.cancel.filter((id) => !legacyCancel.has(id)),
     issueOnlyLegacy: [...legacyIssue].filter((k) => !freshIssue.has(k)),
     issueOnlyFresh: [...freshIssue].filter((k) => !legacyIssue.has(k)),
+    trimOnlyLegacy: [...legacyTrim].filter((k) => !freshTrim.has(k)),
+    trimOnlyFresh: [...freshTrim].filter((k) => !legacyTrim.has(k)),
   };
 }
 

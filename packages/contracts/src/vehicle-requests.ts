@@ -3,7 +3,17 @@ import { z } from 'zod';
 // описана там одним объектом, и расширение берёт поле **оттуда**, а не пишет его копию.
 // Обратной зависимости нет — `assignment-periods.ts` про заявку не знает вовсе, — значит и цикла
 // импортов здесь не возникает.
-import { changeVehicleAssignmentExtrasSchema } from './assignment-periods';
+import {
+  assignmentFingerprintSchema,
+  changeVehicleAssignmentExtrasSchema,
+  operationInputSchema,
+  type AssignmentPreviewDto,
+  type CancelledAssignmentGroupDto,
+  type OperationRequirement,
+} from './assignment-periods';
+// Только тип: проекция дня наружу («дата и номер рейса») названа один раз и там, где живут правила
+// дней линейного заказа. Импорт типовой, поэтому и кольца импортов он не заводит.
+import type { LinearDayRef } from './vehicle-request-days';
 import {
   requestStatusLabels,
   requestStatusSchema,
@@ -1031,36 +1041,189 @@ export function canShortenWorkPeriodByEdit(status: RequestStatus): boolean {
 }
 
 /**
- * Запрос на досрочное завершение. Причина обязательна: визирующему нечего решать, если ему не
- * сказали, что произошло на объекте, — а решает он не глядя на площадку.
+ * Досрочное завершение — **четыре маршрутные схемы**, по одной на каждый вход (Р28 плана
+ * `docs/vehicle-request-actual-end-date-plan.md`).
+ *
+ * ПОЧЕМУ ИХ ЧЕТЫРЕ, А НЕ ДВЕ. Границ здесь тоже две, и они разные. Первая — **схема**, и её отказ
+ * это 400: предпросмотру подтверждать нечего (он последствия и вычисляет), а отказ по запросу
+ * ничего не применяет — рукопожатия в этих телах означают ошибку клиента. Вторая — **рассчитанная
+ * ветвь**, и её отказ 422: применяет ли запрос срок немедленно, решает сервер (`auto` —
+ * визирующий просит сам за себя), и из тела это не видно вовсе.
+ *
+ * ЧЕГО В ЭТИХ СХЕМАХ НЕТ И НЕ БУДЕТ. `unlockFingerprint` и `clearedShiftsFingerprint`: оба
+ * недостижимы у этой двери, и оба отсутствия доказаны инвариантами, а не выбраны (Р19). Нижняя
+ * граница новой даты — сегодня (`earlyEndDateBounds`), поэтому сокращение не задевает ни одного
+ * отработанного листа (исход не бывает `crew` — разблокировок не спрашивают вовсе), а снимаемый
+ * диапазон смен целиком лежит в будущем, где смену не ведут и не подписывают. Поле, которое нечем
+ * заполнить, схема принимать не должна: присланное — 400.
+ *
+ * ПРИЧИНЫ ОПЕРАЦИИ В ТЕЛАХ НЕТ ВОВСЕ, и ключ поэтому плоский (`operationId`), а не envelope
+ * канона. Причину дверь берёт из строки самого запроса (`vehicle_request_early_endings.reason` —
+ * «что случилось на объекте») и сверяет её под блокировкой: у визы второго места для причины быть
+ * не должно, а комментарий визирующего живёт в `decision_comment` и причиной операции не
+ * становится (Р19).
  */
-export const requestVehicleEarlyEndSchema = z
+const requestVehicleEarlyEndCoreSchema = z.object({
+  newDateTo: dateOnlySchema,
+  /** Причина обязательна: визирующему нечего решать, если ему не сказали, что произошло. */
+  reason: z.string().trim().min(1, 'Укажите причину').max(2000),
+  version: z.number().int().nonnegative(),
+});
+
+/** Тело предпросмотра запроса — ядро и ничего сверх него: подтверждать предпросмотру нечего. */
+export const requestVehicleEarlyEndPreviewSchema = requestVehicleEarlyEndCoreSchema.strict();
+export type RequestVehicleEarlyEndPreviewInput = z.infer<
+  typeof requestVehicleEarlyEndPreviewSchema
+>;
+
+/**
+ * Тело запроса: ядро плюс **допустимое надмножество** рукопожатий.
+ *
+ * Все три поля необязательны в схеме, потому что нужны они только одной из двух ветвей, а ветвь
+ * считает сервер. `auto = false` (запрос уходит на визу) — присланные поля отвергаются 422 «этот
+ * запрос ничего не применяет»; `auto = true` (просит сам визирующий, и срок двигается немедленно) —
+ * отпечаток спрашивает шаг 7 канона своим 409, а ключ операции — шаг 10, когда гашение групп
+ * потребовало журнала.
+ */
+export const requestVehicleEarlyEndApplySchema = requestVehicleEarlyEndCoreSchema
+  .extend({
+    /**
+     * Ключ идемпотентности операции журнала — **плоским полем**, а не envelope: причину эта дверь
+     * собирает сама (см. шапку выше), и половина envelope в теле означала бы второе место, где
+     * пишут причину сокращения.
+     */
+    operationId: uuidSchema.optional(),
+    previewFingerprint: assignmentFingerprintSchema.optional(),
+    cancelGroupsFingerprint: assignmentFingerprintSchema.optional(),
+  })
+  .strict();
+/** Имя прежнее: тело запроса у портала то же самое, а выросло оно необязательными полями. */
+export type RequestVehicleEarlyEndInput = z.infer<typeof requestVehicleEarlyEndApplySchema>;
+export type RequestVehicleEarlyEndBody = z.input<typeof requestVehicleEarlyEndApplySchema>;
+
+/**
+ * Тело предпросмотра решения — только одобрение (`approved: z.literal(true)`) и версия.
+ *
+ * Отказ последствий не имеет вовсе: он ничего не применяет, срок оставляет прежним и бумаги не
+ * касается. Показывать по нему нечего, и схема, принявшая бы `false`, обещала бы человеку ответ на
+ * вопрос, которого он не задавал.
+ */
+export const decideVehicleEarlyEndPreviewSchema = z
   .object({
-    newDateTo: dateOnlySchema,
-    reason: z.string().trim().min(1, 'Укажите причину').max(2000),
+    approved: z.literal(true),
     version: z.number().int().nonnegative(),
   })
   .strict();
-export type RequestVehicleEarlyEndInput = z.infer<typeof requestVehicleEarlyEndSchema>;
+export type DecideVehicleEarlyEndPreviewInput = z.infer<typeof decideVehicleEarlyEndPreviewSchema>;
 
 /**
  * Решение по запросу: виза и отказ — одним маршрутом, как постановка и снятие визы заявки
  * (ADR 0025 п. 6). У них одно право, одна область и один инвариант «пока запрос ждёт визы»;
- * раздельные маршруты разошлись бы в проверках. Отказ объясняется причиной — как отмена заявки.
+ * раздельные маршруты разошлись бы в проверках.
+ *
+ * Тела у них при этом **разные**, и разводит их сама схема (Р28, первая граница). Виза применяет
+ * срок и потому носит рукопожатия; отказ не применяет ничего — присланный ему отпечаток означает
+ * ошибку клиента, и отвечает на неё 400, а не 422 «уберите поле». Комментарий у визы остаётся
+ * необязательным (он и сегодня ложится в `decision_comment`), у отказа обязателен непустым: заявка
+ * живёт дальше по заказанному сроку, и это надо объяснить — как и отмену заявки.
  */
-export const decideVehicleEarlyEndSchema = z
+export const decideVehicleEarlyEndApplySchema = z.discriminatedUnion('approved', [
+  z
+    .object({
+      approved: z.literal(true),
+      /** Слово визирующего: единственное место, где оно живёт. Причиной операции не становится. */
+      comment: commentSchema.optional().default(''),
+      operationId: uuidSchema.optional(),
+      previewFingerprint: assignmentFingerprintSchema.optional(),
+      cancelGroupsFingerprint: assignmentFingerprintSchema.optional(),
+      version: z.number().int().nonnegative(),
+    })
+    .strict(),
+  z
+    .object({
+      approved: z.literal(false),
+      comment: z.string().trim().min(1, 'Укажите причину отказа').max(2000),
+      version: z.number().int().nonnegative(),
+    })
+    .strict(),
+]);
+export type DecideVehicleEarlyEndInput = z.infer<typeof decideVehicleEarlyEndApplySchema>;
+export type DecideVehicleEarlyEndBody = z.input<typeof decideVehicleEarlyEndApplySchema>;
+
+/**
+ * Что видит визирующий в предпросмотре: **числа, даты и требования — и ничего, что называет бланк
+ * или человека** (Р26, решение заказчика по В9).
+ *
+ * ЗАЧЕМ ОТДЕЛЬНЫЙ ТИП, А НЕ ПРОЕКЦИЯ ОБЩЕГО. У роли, которая визирует сокращение, прав на журнал
+ * листов нет вовсе, а общий `AssignmentPreviewDto` несёт и `waybillId`, и `displayNumber`, и имена.
+ * Собери мы ответ вычитанием полей — первое же новое поле общего DTO утекло бы визирующему само,
+ * если про него забудут. Поэтому тип свой, собирается он **из плана**, а не из общего ответа, и на
+ * маршруте объявлена явная схема ответа.
+ *
+ * Обезличен он **для всех**, включая администратора, у которого право на листы есть: две формы
+ * ответа на одном маршруте — это два пути, расходящиеся при первой правке, и тест «в теле нет
+ * номеров» перестал бы что-либо доказывать. Номера администратору доступны там, где они и живут, —
+ * в журнале листов.
+ *
+ * Полей смен и разблокировок здесь нет намеренно: у этой двери они пусты по построению (Р19).
+ */
+export interface EarlyEndApprovalPreviewDto {
+  /** Новый последний день работ — тот, который применит виза. */
+  newDateTo: string;
+  /** Сколько дней освобождается: с 20-го до 12-го — восемь. */
+  daysSaved: number;
+  /** Бумага числами: сколько листов сократится, сколько сгорит и по какое число сократят. */
+  paper: { trimmed: number; cancelled: number; trimmedTo: string | null };
+  /** Дни линейного заказа за новым концом срока — **датами**, а не номерами рейсов. */
+  linearDays: { detachable: string[]; frozen: string[] };
+  /** Решения истории, которые погаснут, — только датами вступления в силу. */
+  cancelGroups: { effectiveDate: string }[];
+  /**
+   * Своя проекция (Р19): причина у этой двери своя — её назвал сам запрос, — и второго поля
+   * причины окно показывать не должно. Отсюда `reasonRequired: false` при `assignment_tail`;
+   * `null` — исход `none`, объяснять нечего.
+   */
+  operationRequirement: OperationRequirement | null;
+  asOf: string;
+  fingerprint: string;
+  cancelGroupsFingerprint: string | null;
+}
+
+/**
+ * Схема ответа обоих предпросмотров — **замок обезличивания**, а не украшение маршрута.
+ *
+ * Она объявляется у Fastify и через неё же ответ сериализуется: поле, случайно попавшее в объект,
+ * до клиента не доедет. `satisfies` связывает схему с типом на этапе компиляции — разойтись им
+ * молча нечем.
+ */
+export const earlyEndApprovalPreviewResponseSchema = z
   .object({
-    approved: z.boolean(),
-    comment: commentSchema.optional().default(''),
-    version: z.number().int().nonnegative(),
+    newDateTo: dateOnlySchema,
+    daysSaved: z.number().int(),
+    paper: z
+      .object({
+        trimmed: z.number().int(),
+        cancelled: z.number().int(),
+        trimmedTo: dateOnlySchema.nullable(),
+      })
+      .strict(),
+    linearDays: z
+      .object({ detachable: z.array(dateOnlySchema), frozen: z.array(dateOnlySchema) })
+      .strict(),
+    cancelGroups: z.array(z.object({ effectiveDate: dateOnlySchema }).strict()),
+    operationRequirement: z
+      .object({
+        kind: z.enum(['crew', 'assignment_tail']),
+        reasonRequired: z.boolean(),
+        operationIdRequired: z.boolean(),
+      })
+      .strict()
+      .nullable(),
+    asOf: dateOnlySchema,
+    fingerprint: assignmentFingerprintSchema,
+    cancelGroupsFingerprint: assignmentFingerprintSchema.nullable(),
   })
-  .strict()
-  .superRefine((v, ctx) => {
-    if (!v.approved && !v.comment) {
-      ctx.addIssue({ code: 'custom', path: ['comment'], message: 'Укажите причину отказа' });
-    }
-  });
-export type DecideVehicleEarlyEndInput = z.infer<typeof decideVehicleEarlyEndSchema>;
+  .strict() satisfies z.ZodType<EarlyEndApprovalPreviewDto>;
 
 /**
  * Досрочное завершение заявки: запрос и решение по нему. Одна заявка — одна запись: повторный
@@ -1540,6 +1703,150 @@ export const completeVehicleRequestSchema = z
   })
   .strict();
 export type CompleteVehicleRequestInput = z.infer<typeof completeVehicleRequestSchema>;
+
+// ── Дверь закрытия фактической датой (план `docs/vehicle-request-actual-end-date-plan.md`) ──
+//
+// Заказ закрывают тем днём, которым работы кончились, а не тем, до которого их разрешали
+// (Р1, Р2). Дверь своя — `POST /vehicle-requests/:id/completion/preview` и
+// `POST /vehicle-requests/:id/completion`, — и тело у неё своё: `endedOn` живёт **только** здесь.
+//
+// Почему не полем общей схемы факта (Р3, замечание 6 первого ревью и 6 второго): общая
+// `completeVehicleRequestSchema` одна на оба типа заявки и на старый статусный путь, который даты
+// не знает (`resolveCompletion` её не читает). Появись поле там — присланная старым телом дата
+// молча игнорировалась бы, и это состояние существовало бы всё время переезда. Со строгой схемой
+// старого тела такого состояния нет вовсе: лишнее поле оно отвергает.
+
+/**
+ * Факт закрытия с фактической датой — тело новой двери, и только её (Р3).
+ *
+ * `endedOn` необязателен **в схеме**, а обязательность держит дверь (422 «Укажите фактическую
+ * дату…»): спрашивать её надо не у всех — у арендодателя даты не спрашивают вовсе (Р16), а его
+ * ветвь считает сервер по субъекту и назначенной машине. Схема, потребовавшая дату у всех,
+ * отвечала бы 400 честному телу арендодателя; схема, не описавшая её вовсе, не дала бы закрыть
+ * заказ фактом никому.
+ */
+export const completionFactSchema = completeVehicleRequestSchema.extend({
+  endedOn: dateOnlySchema.optional(),
+});
+export type CompletionFactInput = z.infer<typeof completionFactSchema>;
+
+/**
+ * Спрашивать ли фактическую дату — решает тип заявки и её срок (Р2, Р3); субъекта добавляет дверь.
+ *
+ * Ею портал решает, показывать ли поле. Серверной границей она не служит: тип заявки держит сам
+ * каркас команд («история назначения ведётся только у заказа спецтехники»), а не начавшийся заказ
+ * дверь отклоняет 422 — закрытие фактом заказа, по которому никто не работал, записало бы в отчёт
+ * смены за дни, которых не было.
+ */
+export function completionRequiresEndDate(
+  r: { requestType: VehicleRequestType; dateFrom: string },
+  today: string,
+): boolean {
+  return r.requestType === 'special_equipment' && r.dateFrom <= today;
+}
+
+/**
+ * Границы фактической даты: `date_from ≤ факт ≤ min(конец срока, сегодня)` (Р2).
+ *
+ * `null` — даты не спрашивают: либо заявка не того типа, либо срок ещё не начался. У второго
+ * случая фактического конца не существует, и дверь отвечает 422, а не подставляет умолчание.
+ *
+ * **Умолчание окна — это `max`**: сегодня среда, разрешали до воскресенья, подставлять надо среду.
+ * Отдельным полем оно не возвращается намеренно — два имени одного значения разъехались бы на
+ * первой же правке правила.
+ *
+ * Конец срока читается тем же `coalesce(date_to, date_from)`, каким его читает весь портал: пустая
+ * дата окончания — однодневный срок, а не «конца нет».
+ */
+export function completionEndBounds(
+  r: { requestType: VehicleRequestType; dateFrom: string; dateTo?: string | null },
+  today: string,
+): { min: string; max: string } | null {
+  if (!completionRequiresEndDate(r, today)) return null;
+  const last = r.dateTo || r.dateFrom;
+  return { min: r.dateFrom, max: last < today ? last : today };
+}
+
+/**
+ * Что закрывают: факт, слово закрывающего и версия. Одно ядро на предпросмотр и на боевой вызов —
+ * семантическая часть у них общая, а расходятся они только рукопожатиями (Л1 плана периодов).
+ *
+ * `comment` есть в обеих схемах: его шлёт сегодняшнее окно закрытия и сохраняет событие статуса,
+ * и строгая схема без него ответила бы 400 на честное тело портала.
+ */
+const completionCoreSchema = z.object({
+  completion: completionFactSchema,
+  comment: commentSchema.optional().default(''),
+  version: z.number().int().nonnegative(),
+});
+
+/**
+ * Тело предпросмотра — ядро и ничего сверх него (Р28, первая граница).
+ *
+ * Рукопожатий предпросмотр не описывает **схемой**, а не проверкой двери: подтверждать ему нечего —
+ * он последствия и вычисляет, — и присланный отпечаток означает ошибку клиента, то есть 400.
+ */
+export const completionPreviewSchema = completionCoreSchema.strict();
+export type CompletionPreviewInput = z.infer<typeof completionPreviewSchema>;
+export type CompletionPreviewBody = z.input<typeof completionPreviewSchema>;
+
+/**
+ * Тело боевого вызова: ядро плюс четыре отпечатка и envelope журнала (Р17, Р28).
+ *
+ * Все пять полей необязательны **в схеме**, и каждое спрашивает сервер по рассчитанному под
+ * блокировкой плану: `previewFingerprint` — шаг 7 канона (409 «посмотрите последствия заново»),
+ * остальные — шаг 8 (422 «подтвердите» либо «лишнее подтверждение»). Из тела ни один из этих
+ * вопросов не виден: и исход, и ветвь, и снимаемые часы считаются уже под блокировкой.
+ */
+export const completionApplySchema = completionCoreSchema
+  .extend({
+    previewFingerprint: assignmentFingerprintSchema.optional(),
+    cancelGroupsFingerprint: assignmentFingerprintSchema.optional(),
+    unlockFingerprint: assignmentFingerprintSchema.optional(),
+    clearedShiftsFingerprint: assignmentFingerprintSchema.optional(),
+    operation: operationInputSchema.optional(),
+  })
+  .strict();
+export type CompletionApplyInput = z.infer<typeof completionApplySchema>;
+export type CompletionApplyBody = z.input<typeof completionApplySchema>;
+
+/** Факт, каким его посчитала дверь: чем закрывают и во что это обошлось (Р23, §4). */
+export interface CompletionFactDto {
+  /**
+   * Фактический конец работ; `null` — арендодательская ветвь (Р16): у неё даты не спрашивают, и
+   * срок она не двигает.
+   */
+  endedOn: string | null;
+  /** Эффективный конец срока **до** закрытия — `coalesce(date_to, date_from)`. */
+  previousDateTo: string;
+  workedUnit: VehicleWorkUnit;
+  workedAmount: number;
+  /** Ставка за единицу из назначения; `null` — своя машина без ставки. */
+  rate: number | null;
+  /** Итоговая стоимость; `null` — считать было нечем. */
+  totalCost: number | null;
+}
+
+/**
+ * Ответ предпросмотра закрытия: общие последствия плюс три вещи, которых нет у соседних дверей.
+ *
+ * `cancelGroups` — как у двери срока (Д2): закрытие фактом сокращает срок и гасит решения истории
+ * за новым концом. `completion` — сам факт: окно показывает не только «что сгорит», но и «чем
+ * закрываем». `linearDays` — пятое измерение отпечатка (Р17): команда, снимающая дни с рейсов,
+ * обязана их показать, иначе человек подтверждает изменение чужих рейсов, которого не видел.
+ */
+export interface CompletionPreviewDto extends AssignmentPreviewDto {
+  completion: CompletionFactDto;
+  cancelGroups: CancelledAssignmentGroupDto[];
+  /** Отпечаток перечня погашаемых групп; `null` — гасить нечего, и подтверждать нечего. */
+  cancelGroupsFingerprint: string | null;
+  /**
+   * Дни линейного заказа за границей факта: что рейс отдаст и чего не отдаст, потому что по нему
+   * выписан действующий лист. Наружу — проекция (дата и номер рейса); исполнимый план с
+   * идентификаторами и версиями рейсов остаётся на сервере (Р11).
+   */
+  linearDays: { detachable: LinearDayRef[]; frozen: LinearDayRef[] };
+}
 
 /**
  * Переход, требующий факта: «Выполнена» отвечает на «сколько отработали и сколько стоило».
@@ -2148,6 +2455,18 @@ export interface VehicleRequestCompletionDto {
   completedBy: string;
   completedByName: string;
   completedAt: string;
+  /**
+   * Фактический конец работ, которым закрыли заказ (Р23 плана
+   * `docs/vehicle-request-actual-end-date-plan.md`); `null` — закрытий три вида, и у всех трёх его
+   * нет законно: закрытые до этой волны, грузоперевозка и арендодательская ветвь (Р16).
+   */
+  endedOn: string | null;
+  /**
+   * Каким был конец срока до закрытия — эффективный (`coalesce(date_to, date_from)`). Пара с
+   * `endedOn` отвечает «было 09.08, закрыли 05.08» и после следующей правки срока, когда разность
+   * из соседних полей уже не восстановить.
+   */
+  previousDateTo: string | null;
 }
 
 /** Отработанное и сумма одной строкой: «3 смены × 18 000 ₽»; без ставки — только отработанное. */

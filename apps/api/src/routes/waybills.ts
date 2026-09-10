@@ -243,6 +243,13 @@ const waybillSelect = {
   correctionId: waybills.correctionId,
   cancelCorrectionId: waybills.cancelCorrectionId,
   correctionReason: waybills.correctionReason,
+  // След сокращения периода (Р12 плана «закрытие фактической датой», миграция 0292). Третья
+  // причина, по которой бланк «не такой, каким выдан», — и потому третий источник `isCorrection`
+  // рядом с двумя ссылками на операцию. Колонок три из пяти: автор правки журналу не нужен —
+  // строка показывает, что и почему стало с бумагой, а «кто» читают в событиях.
+  periodToOriginal: waybills.periodToOriginal,
+  periodTrimmedAt: waybills.periodTrimmedAt,
+  periodTrimReason: waybills.periodTrimReason,
   correctsNumber: displayNumberOf(
     corrected.number,
     correctedSeries.prefix,
@@ -443,10 +450,28 @@ function toDto(
     cancelReason: row.cancelReason,
     printedAt: marks.printedAt,
     exportedAt: marks.exportedAt,
-    isCorrection: row.correctionId !== null || row.cancelCorrectionId !== null,
+    /*
+     * Три источника, а не два (Р12): лист прошёл операцию коррекции — родился ею либо был ею
+     * списан — **или** у него сокращали период. Третий проверяется по `period_trimmed_at`, а не по
+     * `period_trim_correction_id`: та ссылка стоит лишь у неординарной правки, а метка обязана
+     * встать у всякой — заказ, закрытый фактической датой сегодняшним днём, тоже оставляет на
+     * площадке бланк с более широкой графой «Период работы», чем есть на самом деле.
+     *
+     * Метка при этом общая с коррекцией намеренно (решение заказчика по В3), и цена решения
+     * записана в Р12: отбор бухгалтерии означает теперь «какие бланки не такие, какими выданы», а
+     * не «что делали задним числом».
+     */
+    isCorrection:
+      row.correctionId !== null || row.cancelCorrectionId !== null || row.periodTrimmedAt !== null,
     correctionReason: row.correctionReason,
     correctsNumber: row.correctsNumber,
     correctedByNumber: row.correctedByNumber,
+    // Прежний конец периода и след правки. Портал показывает ими обе даты сразу — «действует по
+    // среду, напечатано по воскресенье», — потому что бумага и запись расходятся намеренно (Р13),
+    // и объяснить это можно только парой чисел.
+    periodToOriginal: row.periodToOriginal,
+    trimmedAt: row.periodTrimmedAt?.toISOString() ?? null,
+    trimReason: row.periodTrimReason,
     routeId: row.routeId,
     // Проверка на null отдельная, а не внутри форматирования: «Р-» без номера читалось бы как
     // рейс, которого нет, — у ЭСМ-2 и у перенесённой истории места рейса пусто вовсе.
@@ -518,10 +543,17 @@ async function waybillDtoOr404(id: string): Promise<WaybillDto> {
   );
 }
 
-/** Статус листа и его напечатанный номер — то, чем сторожится бумага. */
+/**
+ * Статус листа, его версия и напечатанный номер — то, чем сторожится бумага.
+ *
+ * Версия здесь не для оптимистической блокировки (печать ничего не пишет), а ради подмены, которую
+ * ни статус, ни номер не видят: снимок действующего листа правится на месте, и после правки тот же
+ * номер в том же статусе печатает уже другой документ.
+ */
 interface PrintGuardRow {
   id: string;
   status: WaybillDto['status'];
+  version: number;
   number: number;
   prefix: string;
   numberWidth: number;
@@ -532,6 +564,7 @@ async function printGuardRows(ids: string[]): Promise<PrintGuardRow[]> {
     .select({
       id: waybills.id,
       status: waybills.status,
+      version: waybills.version,
       number: waybills.number,
       prefix: waybillSeries.prefix,
       numberWidth: waybillSeries.numberWidth,
@@ -561,6 +594,49 @@ function cancelledNotice(orderedIds: string[], rows: PrintGuardRow[]): string | 
 }
 
 /**
+ * Лист, из снимка которого уже собран бланк: его идентификатор и **та версия, что была прочитана
+ * вместе со снимком**.
+ *
+ * Пара, а не голый идентификатор, потому что сверять после сборки нужно не «тот ли это лист», а
+ * «тот ли это документ»: у листа, правленного на месте, идентификатор прежний.
+ */
+interface PrintedSheet {
+  id: string;
+  version: number;
+}
+
+/**
+ * Отказ в бумаге со списком листов, изменившихся за время сборки; `null` — снимок тот же (Р21).
+ *
+ * До появления правки действующего листа единственным событием внутри окна рендера было
+ * аннулирование, и статуса хватало: изменившийся лист всегда переставал быть печатаемым. Правка
+ * снимка (сокращение периода при закрытии заявки) это допущение отменяет — номер, статус и
+ * печатаемость остаются прежними, а даты в бланке уже не те, что в базе. Отличает такой лист
+ * только версия, поднятая правкой.
+ *
+ * Пропавшая строка считается расхождением наравне с разошедшейся версией: чем бы лист ни исчез из
+ * журнала между рендером и ответом, бланк, собранный по нему, документом уже не подтверждается.
+ * Номер такого листа назвать нечем — он ушёл вместе со строкой, — и перечень тогда остаётся без
+ * номеров, но отказ всё равно происходит.
+ *
+ * Номера перечисляются в порядке пачки — по той же причине, что и у аннулированных: человек сверяет
+ * перечень со своим выбором на экране.
+ */
+function changedNotice(printed: readonly PrintedSheet[], rows: PrintGuardRow[]): string | null {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const changed = printed.filter((sheet) => byId.get(sheet.id)?.version !== sheet.version);
+  if (changed.length === 0) return null;
+  const numbers = changed
+    .map((sheet) => byId.get(sheet.id))
+    .filter((row) => row !== undefined)
+    .map((row) => waybillDisplayNumber(row.prefix, row.number, row.numberWidth));
+  const single = changed.length === 1;
+  const subject = single ? 'Лист' : 'Листы';
+  const named = numbers.length > 0 ? `${subject} № ${numbers.join(', ')}` : subject;
+  return `${named} ${single ? 'изменился' : 'изменились'}, пока готовился файл: откройте печать заново`;
+}
+
+/**
  * Перечитать статус после рендера и **до** отдачи файла (Р39, ADR 0101 п. 18).
  *
  * До ADR 0101 статус спрашивался один раз — перед сборкой бланка. Между этой проверкой и ответом
@@ -575,9 +651,20 @@ function cancelledNotice(orderedIds: string[], rows: PrintGuardRow[]): string | 
  * рендера отвергнута: рендер долгий (до полусотни бланков), и коррекция ждала бы чужой печати —
  * то есть цена была бы выше выигрыша. Остаточный риск принят: в оставшееся окно бумага ещё не у
  * водителя, а в журнале отметка печати встанет рядом с аннулированием, и по паре видно, что было.
+ *
+ * Спрашиваются **два** вопроса, а не один (Р21): «лист ещё печатаем?» и «это ещё тот же документ?».
+ * Второй появился вместе с правкой снимка действующего листа — до неё он не имел смысла, потому что
+ * выданный лист не менялся никогда. Одной выборкой на оба: строки те же, а второй запрос удлинял бы
+ * ровно то окно, которое здесь и закрывается.
+ *
+ * Аннулирование называется первым, если сошлось и то и другое: «уберите номер из выбора» — точное
+ * поручение, а «откройте печать заново» после него человек выполнил бы впустую, получив тот же
+ * отказ вторым заходом.
  */
-async function assertStillPrintable(orderedIds: string[]): Promise<void> {
-  const notice = cancelledNotice(orderedIds, await printGuardRows(orderedIds));
+async function assertStillPrintable(printed: readonly PrintedSheet[]): Promise<void> {
+  const orderedIds = printed.map((sheet) => sheet.id);
+  const rows = await printGuardRows(orderedIds);
+  const notice = cancelledNotice(orderedIds, rows) ?? changedNotice(printed, rows);
   if (notice) throw err.conflict(notice);
 }
 
@@ -616,14 +703,31 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         // Бланк: журнал у трёх форм один, а читают их разные люди по разным поводам — без этого
         // сужения недельные листы спецтехники тонут в ежедневных рейсовых.
         q.formCode ? eq(waybills.formCode, q.formCode) : undefined,
-        // Коррекции (ADR 0101 п. 20): по ссылке на операцию, а не по заменённому номеру — списание
-        // без перевыписки и выписка задним числом заменяемого листа не имеют, но правкой
-        // прошедшего дня являются ровно так же.
+        /*
+         * Коррекции (ADR 0101 п. 20): по ссылке на операцию, а не по заменённому номеру — списание
+         * без перевыписки и выписка задним числом заменяемого листа не имеют, но правкой
+         * прошедшего дня являются ровно так же.
+         *
+         * Условий три, и они те же, из которых сложен `isCorrection` (Р12): третье — сокращение
+         * периода. Правятся **обе** ветви, и это не симметрия ради красоты: ветвь `false` — не
+         * «всё остальное», а собственный вопрос «что шло обычным порядком», и сокращённый лист,
+         * не исключённый из неё, отвечал бы на него ложью. Держать оба списка условий в одном
+         * месте обязательно ещё и потому, что расходятся они молча: отбор просто начинает
+         * показывать не то, а ошибки не случается ни в какой момент.
+         */
         q.correction === undefined
           ? undefined
           : q.correction
-            ? or(isNotNull(waybills.correctionId), isNotNull(waybills.cancelCorrectionId))
-            : and(isNull(waybills.correctionId), isNull(waybills.cancelCorrectionId)),
+            ? or(
+                isNotNull(waybills.correctionId),
+                isNotNull(waybills.cancelCorrectionId),
+                isNotNull(waybills.periodTrimmedAt),
+              )
+            : and(
+                isNull(waybills.correctionId),
+                isNull(waybills.cancelCorrectionId),
+                isNull(waybills.periodTrimmedAt),
+              ),
         numberSearchCondition(q.search),
       );
       const pg = pageParams(q);
@@ -675,6 +779,12 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
    * Аннулированный лист бумагой больше не отдаётся никому: напечатанный, он неотличим от
    * действующего и, попав к водителю, ездит документом, которого нет (`canPrintWaybill`). Чем
    * кончился номер, отвечает строка журнала, а пришедший скан подшивают вложением.
+   *
+   * Вместе со снимком читается его **версия** (Р21) и отдаётся наружу: снимок и версия обязаны
+   * приехать из одной строки одной выборкой, иначе сверка после сборки сравнивала бы бланк с
+   * версией, к которой он отношения не имеет. Дальше её спрашивает `assertStillPrintable`, а
+   * пережившая проверку версия уходит в аудит — без неё «какой именно вариант листа ушёл на
+   * площадку» после первой же правки становится невосстановимым.
    */
   async function renderWaybill(id: string, templates?: Map<string, Uint8Array>) {
     const [row] = await db
@@ -682,6 +792,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         id: waybills.id,
         formCode: waybills.formCode,
         status: waybills.status,
+        version: waybills.version,
         number: waybills.number,
         prefix: waybillSeries.prefix,
         numberWidth: waybillSeries.numberWidth,
@@ -700,6 +811,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
     return {
       rendered,
       id: row.id,
+      version: row.version,
       displayNumber: waybillDisplayNumber(row.prefix, row.number, row.numberWidth),
     };
   }
@@ -713,11 +825,12 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
     },
     async (req, reply) => {
       const p = requirePrincipal(req);
-      const { rendered, id, displayNumber } = await renderWaybill(req.params.id);
-      // Лист мог быть аннулирован коррекцией, пока бланк собирался (Р39). Сборка xlsx короче
-      // печати, но проверка стоит и здесь: файл правят в редакторе и печатают уже из него — то
-      // есть аннулированный бланк уезжает на бумагу тем же путём, только длиннее.
-      await assertStillPrintable([id]);
+      const { rendered, id, version, displayNumber } = await renderWaybill(req.params.id);
+      // Лист мог быть аннулирован коррекцией или правлен закрытием заявки, пока бланк собирался
+      // (Р39, Р21). Сборка xlsx короче печати, но проверка стоит и здесь: файл правят в редакторе и
+      // печатают уже из него — то есть устаревший бланк уезжает на бумагу тем же путём, только
+      // длиннее, и вернуть его правкой в редакторе никто не догадается.
+      await assertStillPrintable([{ id, version }]);
 
       // Выгрузка уносит персональные данные водителя из портала — это учётное событие.
       await writeAudit({
@@ -725,7 +838,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         action: 'waybill.export',
         entityType: 'waybill',
         entityId: id,
-        metadata: { missing: rendered.missing },
+        metadata: { missing: rendered.missing, version },
       });
 
       const name = `Путевой лист ${displayNumber}.xlsx`;
@@ -756,19 +869,19 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       // ответом лежат ещё сборка бланка и проверка статуса, и они тоже идут под медленной базой.
       const budget = requestBudget(req, reply, PRINT_BUDGET.handlerMs);
       try {
-        const { rendered, id, displayNumber } = await renderWaybill(req.params.id);
+        const { rendered, id, version, displayNumber } = await renderWaybill(req.params.id);
         const pdf = await renderPdf(rendered.bytes, budget.signal);
-        // Самое длинное окно гонки во всём портале: между проверкой статуса в `renderWaybill` и этой
-        // строкой лежит вся работа LibreOffice (Р39). Аудит печати ниже — только после проверки:
-        // отметка «печатали» не должна появляться у бумаги, которая никуда не ушла.
-        await assertStillPrintable([id]);
+        // Самое длинное окно гонки во всём портале: между чтением листа в `renderWaybill` и этой
+        // строкой лежит вся работа LibreOffice (Р39, Р21). Аудит печати ниже — только после
+        // проверки: отметка «печатали» не должна появляться у бумаги, которая никуда не ушла.
+        await assertStillPrintable([{ id, version }]);
 
         await writeAudit({
           actorUserId: p.id,
           action: 'waybill.print',
           entityType: 'waybill',
           entityId: id,
-          metadata: { missing: rendered.missing },
+          metadata: { missing: rendered.missing, version },
         });
 
         const name = `Путевой лист ${displayNumber}.pdf`;
@@ -839,8 +952,10 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         );
         const pdf = await mergePdfs(pdfs);
         // По всем листам пачки, а не по первому: коррекция аннулирует один номер, а на бумагу уходит
-        // весь документ — и неполный комплект со стола заберут, не зная об этом (Р39).
-        await assertStillPrintable(ids);
+        // весь документ — и неполный комплект со стола заберут, не зная об этом (Р39). Версии тоже
+        // сверяются по всем: правка одного листа портит пачку ровно так же, как аннулирование, —
+        // остальные страницы при этом верны, и подмену в одной из полусотни не заметит никто (Р21).
+        await assertStillPrintable(rendered);
 
         await Promise.all(
           rendered.map((item) =>
@@ -849,7 +964,13 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
               action: 'waybill.print',
               entityType: 'waybill',
               entityId: item.id,
-              metadata: { missing: item.rendered.missing, batch: ids.length },
+              // Версия — своя у каждого листа пачки: печатались они одним документом, а правится
+              // каждый отдельно, и общая на пачку отметка отвечала бы на вопрос о чужой бумаге.
+              metadata: {
+                missing: item.rendered.missing,
+                version: item.version,
+                batch: ids.length,
+              },
             }),
           ),
         );

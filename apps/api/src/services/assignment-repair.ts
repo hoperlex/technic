@@ -1,10 +1,12 @@
 import { and, eq, inArray, ne } from 'drizzle-orm';
 import {
+  esm2Mode,
   formatVehicleRequestNumber,
   shiftDateKey,
   waybillDisplayNumber,
   type AssignmentChangeTarget,
   type DriverState,
+  type Esm2Mode,
   type KnownFill,
   type MachinistAnchor,
   type RequiredAnchor,
@@ -13,7 +15,15 @@ import {
   type VehicleOwnership,
 } from '@technic/contracts';
 import { createHash } from 'node:crypto';
-import { vehicleRequestAssignments, vehicles, waybills, waybillSeries } from '../db/schema';
+import { requestIsLinearSql } from '../db/linear-mode';
+import {
+  vehicleRequestAssignments,
+  vehicleRequests,
+  vehicles,
+  vehicleTypes,
+  waybills,
+  waybillSeries,
+} from '../db/schema';
 import { AppError, err } from '../lib/errors';
 import type { AssignmentMutation } from './assignment-effects';
 import { tailEffectiveDate } from './assignment-effects';
@@ -35,6 +45,7 @@ import {
 } from './assignment-write';
 import {
   esm2PaperSegments,
+  esm2RequestedSheetPlan,
   esm2SheetPlan,
   normalizeRangeSet,
   rangeSetIntersects,
@@ -152,6 +163,16 @@ export interface RepairContext {
   /** Машина денормализации; `null` — назначения у заявки нет. */
   assignmentVehicleId: string | null;
   assignmentVehicleTypeId: string | null;
+  /**
+   * Откуда берётся набор нужных листов — из разреза состава или из просьбы человека
+   * (ADR 0100 §5). Считается {@link readRepairPaperMode} и только им.
+   *
+   * Лежит в контексте, а не спрашивается в момент расчёта, по той же причине, что и всё
+   * остальное здесь: предпросмотр и боевая ручка считают план дважды каждый (пробный и
+   * исполняемый), и четыре независимых чтения режима разошлись бы ровно тогда, когда рядом
+   * идёт чужая команда.
+   */
+  paperMode: Esm2Mode;
 }
 
 /**
@@ -221,7 +242,70 @@ export async function readRepairContext(
     vehicleTypes,
     assignmentVehicleId: assignment?.vehicleId ?? null,
     assignmentVehicleTypeId: assignment?.vehicleTypeId ?? null,
+    paperMode: await readRepairPaperMode(
+      tx,
+      requestId,
+      // Принадлежность — машины назначения, как её спрашивает и недельная сверка (`loadRequest`):
+      // режим заявки считается по той единице, которой заказ ведут, а не по каждой из истории.
+      assignment?.vehicleId ? (ownershipByVehicle.get(assignment.vehicleId) ?? null) : null,
+    ),
   };
+}
+
+/**
+ * Режим бумаги заказа глазами двери ремонта: `esm2Mode` контрактов при **гипотетическом
+ * `deleted_at = null`**.
+ *
+ * ЗАЧЕМ ДВЕРИ ВООБЩЕ РЕЖИМ. Ожидания бумаги считаются из разных мест: в `auto` их задаёт разрез
+ * состава — портал сам решает, сколько листов нужно заказу, — а в `on_demand` (линейный заказ,
+ * ADR 0100 §5) решения такого у портала нет вовсе: недели называет человек при выписке, и
+ * единственный след его просьбы — сами выписанные бланки. Ветку по режиму выбирает
+ * {@link repairPaperPlan}, и тем же тройным выбором её выбирают сокращение срока
+ * ([assignment-shorten-term.ts](assignment-shorten-term.ts)) и теневое сличение
+ * ([assignment-shadow.ts](assignment-shadow.ts)).
+ *
+ * ПОЧЕМУ АРХИВ СНИМАЕТСЯ. Тот же самый гипотетический `deleted_at = null`, ради которого дверь
+ * считает план архивной заявке (см. {@link repairPaperPlan}): мягкое удаление сверку не зовёт, и
+ * «в архиве `esm2Mode` = none» ничего не говорит о бумаге. Спроси мы режим как есть, архивный
+ * заказ получил бы `none` — и ремонт архивной заявки снова стал бы «бесплатным», то есть вернулась
+ * бы ровно та дыра Р29, которую этот расчёт и закрывает.
+ *
+ * ПОЧЕМУ ЧТЕНИЕ СВОЁ, А НЕ `buildEsm2SyncPlan`. Соседние двери берут режим у неё, и правило это
+ * одно на всех — здесь оно тоже не переписывается: решает по-прежнему `esm2Mode` контрактов, а
+ * читаются лишь её входы. Отличается ровно один вход — архив, — и подать его недельной сборке
+ * нечем: `deletedAt` она берёт из строки заявки и переопределения не принимает. Тем же приёмом и
+ * по той же причине спрашивает свой режим теневое сличение (`freshPaperMode`), которому нужна
+ * принудительная принадлежность.
+ */
+async function readRepairPaperMode(
+  tx: AssignmentWriteTx,
+  requestId: string,
+  ownership: VehicleOwnership | null,
+): Promise<Esm2Mode> {
+  const [head] = await tx
+    .select({
+      requestType: vehicleRequests.requestType,
+      status: vehicleRequests.status,
+      /*
+       * Признак линейности — у **заказанного** типа и через снимок заявки, единственной на портал
+       * формулой (`coalesce(is_linear_frozen, vehicle_types.is_linear)`): заявку могло застать
+       * переключение признака (ADR 0107), и до конца работы она ведётся снимком. Живой признак
+       * сменил бы режим на ходу — то есть посреди уже выписанной бумаги.
+       */
+      isLinear: requestIsLinearSql(vehicleRequests.isLinearFrozen, vehicleTypes.isLinear),
+    })
+    .from(vehicleRequests)
+    .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicleRequests.vehicleTypeId))
+    .where(eq(vehicleRequests.id, requestId));
+  // Заявки нет — сюда дверь не доходит: строку она уже прочла и держит блокировкой (шаг 0 канона).
+  if (!head) throw err.notFound('Заявка не найдена');
+  return esm2Mode({
+    requestType: head.requestType,
+    status: head.status,
+    ownership,
+    deletedAt: null,
+    isLinear: head.isLinear,
+  });
 }
 
 /**
@@ -1153,6 +1237,29 @@ function setGroup(map: Map<string, string>, key: string, value: string): string 
  * действующими, и «в архиве `esm2Mode` = none» ничего не говорит о бумаге. Без этого расчёта
  * ремонт архивной заявки правил бы историю «бесплатно», restore снимал бы архив — и живая заявка
  * расходилась бы с действующим бланком, причём сверки могло не случиться ещё месяц.
+ *
+ * ВЕТКА ВЫБИРАЕТСЯ РЕЖИМОМ — тем же выбором, каким её выбирают сокращение срока
+ * ([assignment-shorten-term.ts](assignment-shorten-term.ts)) и теневое сличение
+ * ([assignment-shadow.ts](assignment-shadow.ts)), и по той же причине: «сколько бумаги нужно
+ * заказу» у режимов спрашивается из разных мест, а «что делать с выданным листом» у них общее.
+ *
+ * Ветки `on_demand` здесь не было, и это была третья дверь того же класса (раздел 7 плана
+ * `docs/vehicle-request-actual-end-date-plan.md`). Последствие у неё хуже, чем у двух прежних, и
+ * вот почему. У линейного заказа машиниста не называют на заявке вовсе — его называют на каждый
+ * лист отдельно (ADR 0100 §6), — и бэкфилл честно оставляет ему **одну** строку истории: машину с
+ * начала срока и ни слова о человеке ([assignment-ensure.ts](assignment-ensure.ts), правило 1). А
+ * отрезок без человека бумаги не ожидает (`wantedSheets`): ожиданий не оставалось ни на один день,
+ * и план получался «погасить всё выписанное». То есть **сжечь номера строгой отчётности** за
+ * недели, которые человек просил сам, — и не выписать взамен ничего, потому что выписывать не на
+ * кого. Доходило это до бумаги при `read_mode = history`: шаг 12 двери исполняет ровно тот план,
+ * который здесь посчитан.
+ *
+ * Ветвей две, а не три, и `none` среди них нет намеренно: у этой двери его не бывает по
+ * построению — режим ей считается с гипотетическим `deleted_at = null`
+ * ({@link readRepairPaperMode}), а прочие `none` (грузоперевозка, аренда, заявка не в работе)
+ * попадают в ту же ветку разреза, в какой были и до починки. Заведи мы им пустой план, ремонт
+ * архивной заявки снова стал бы «бесплатным» — тот самый Р29, ради которого архив здесь и
+ * снимается.
  */
 export function repairPaperPlan(
   context: RepairContext,
@@ -1169,17 +1276,28 @@ export function repairPaperPlan(
    */
   unlock?: { waybillIds: readonly string[]; correction: boolean },
 ): Esm2SheetPlan {
-  return esm2SheetPlan(assignmentSegments(changesAfter, term), term, context.sheets, {
+  const planContext = {
     ownershipByVehicle: context.ownershipByVehicle,
     today: asOf,
     ...(unlock ? { unlockWaybillIds: unlock.waybillIds } : {}),
     ...(unlock?.correction ? { correction: { allowed: true as const } } : {}),
-  });
+  };
+  return context.paperMode === 'on_demand'
+    ? esm2RequestedSheetPlan(context.sheets, term, planContext)
+    : esm2SheetPlan(assignmentSegments(changesAfter, term), term, context.sheets, planContext);
 }
 
-/** Пуст ли бумажный план: только это и означает «paper-free» (Р29). */
+/**
+ * Пуст ли бумажный план: только это и означает «paper-free» (Р29).
+ *
+ * Правка периода считается наравне с гашением и выпиской (Р5): она меняет выданный бланк строгой
+ * отчётности — период документа, снимок, по которому он печатается, и его версию, — и план из
+ * одной такой правки «бумаги не касается» не означает ни в каком смысле. Это гейт: им команда
+ * решает, спрашивать ли право и причину, и просмотреть в нём сокращение значило бы пропустить
+ * правку строгого документа как безбумажную.
+ */
 export function isPaperFree(plan: Esm2SheetPlan): boolean {
-  return plan.cancel.length === 0 && plan.issue.length === 0;
+  return plan.cancel.length === 0 && plan.issue.length === 0 && plan.trim.length === 0;
 }
 
 /**

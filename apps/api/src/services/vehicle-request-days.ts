@@ -6,6 +6,7 @@ import {
   isShiftDayInTerm,
   linearDaysBlocker,
   linearDaysOf,
+  type LinearDayRef,
   type LinearDaySubject,
   type PlanVehicleRequestDayInput,
   type PlannedVehicleRequestDay,
@@ -28,7 +29,7 @@ import {
   vehicleTypes,
 } from '../db/schema';
 import { requestIsLinearSql } from '../db/linear-mode';
-import { writeAudit } from '../lib/audit';
+import { writeAudit, type AuditEntry } from '../lib/audit';
 import { err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
 import {
@@ -51,6 +52,13 @@ import {
  * зовётся теми же местами: досрочное завершение, правка срока, отмена, возврат в «Новую»,
  * применение недельной заявки. Ни одно из них не решает само, что делать с планом, — как не решает
  * и что делать с бумагой.
+ *
+ * Сама сверка расщеплена надвое: `planLinearRouteDays` считает и **ничего не пишет**,
+ * `applyLinearRouteDaysPlan` исполняет уже посчитанное. Разрез не украшение и не вкусовщина: он
+ * единственный способ ответить «какие дни удержит выданная бумага», **не отцепив** ничего, — а
+ * значит и до первой записи. Без этого ответа дверь не может ни показать человеку последствия
+ * команды, ни связать показанное отпечатком, ни отказаться от команды целиком. Прежняя
+ * `syncLinearRouteDays` осталась той же дверью для тех же пяти мест и складывается из этой пары.
  *
  * Правила «можно ли вести дни» и «можно ли распланировать этот день» живут в контрактах
  * (`linearDaysBlocker`, `planDayBlocker`): портал обязан объяснять недоступное теми же словами,
@@ -382,11 +390,46 @@ export async function loadRequestDays(
   return linearDaysOf(term, planned);
 }
 
-/** День, снятый с рейса или оставшийся в нём: им сверка объясняется человеку и журналу. */
-export interface LinearDayRef {
+/*
+ * Проекция дня наружу (`LinearDayRef`) переехала в контракты и здесь только перевыставлена: её
+ * показывает окно закрытия фактической датой, а форма ответа обязана быть одна на сервер и портал.
+ * Импортёры сервиса при этом не меняются — тип виден там же, где был.
+ */
+export type { LinearDayRef };
+
+/**
+ * Строка исполнимого плана: всё, чем день **отцепляют**, — а не то, чем его называют человеку.
+ *
+ * Второй тип рядом с `LinearDayRef` заведён не ради симметрии. В `LinearDayRef` лежат дата и
+ * напечатанный номер рейса: этого хватает ответу и журналу, но не хватает исполнителю — рейс
+ * блокируется, чистится и версионируется по `id`, а номер для этого не годится вовсе. Обратное
+ * тоже верно: `routeId` человеку не объясняет ничего. Поэтому наружу идёт проекция
+ * (`linearDayRefOf`), а `routeId` с версией остаются внутри модуля.
+ */
+export interface LinearDayPlanItem {
   date: string;
-  /** «Р-12» — рейс, из которого день сняли или который его не отдал. */
-  routeNumber: string;
+  /** По нему рейс берётся под блокировку, из него удаляется связь и по нему растёт версия. */
+  routeId: string;
+  /** Номер рейса: им план и называется человеку — второй раз за ним в базу не ходят. */
+  routeNum: number;
+  /**
+   * Версия рейса на момент расчёта: под ней он и был прочитан. Сам исполнитель её не сверяет —
+   * рукопожатие ведёт дверь: она хеширует показанный человеку план вместе с версиями и сравнивает
+   * отпечаток при подтверждении. Внутри исполнения решает не версия, а блокировка рейса.
+   */
+  routeVersion: number;
+  /**
+   * Держит ли день выданный лист — считается там же, где читается рейс, и означает ровно «так было
+   * на момент чтения». Что делать с такими днями, решает дверь, а не расчёт (ADR 0100 §11): правка
+   * срока оставляет их предупреждением, коррекция задним числом отказывает.
+   */
+  frozen: boolean;
+}
+
+/** Чем кончилось чтение: дни, которые рейс отдаст, и дни, которых он не отдаст. */
+export interface LinearDaysPlan {
+  detachable: LinearDayPlanItem[];
+  frozen: LinearDayPlanItem[];
 }
 
 /** Чем кончилась сверка дней: что снялось с рейсов и что осталось в выданной бумаге. */
@@ -397,6 +440,153 @@ export interface LinearDaysSyncResult {
 }
 
 const EMPTY: LinearDaysSyncResult = { detached: [], frozen: [] };
+
+/** Проекция плана наружу: дата и номер рейса — ими день и называют человеку и журналу. */
+export function linearDayRefOf(item: LinearDayPlanItem): LinearDayRef {
+  return { date: item.date, routeNumber: formatVehicleRouteNumber(item.routeNum) };
+}
+
+/**
+ * Какие дни заказа обречены и какие из них держит выданная бумага — **чистым чтением**, без единой
+ * записи.
+ *
+ * Зачем отдельно от исполнения. Сверка зовётся уже после записи нового срока и читает заявку из
+ * базы — другого состояния она не знает. Значит вопрос «какие дни удержит выданный лист, если срок
+ * сократить вот так» до первой записи задать было нечем: ответ узнавался только вместе с самим
+ * отцеплением. Дверь, обязанная показать человеку последствия **до** команды и связать показанное
+ * отпечатком, с таким устройством невозможна.
+ *
+ * Отсюда два параметра, и оба стоят вместо чтения из базы.
+ *
+ * `eligibilitySubject` — субъект, по которому решается **допустимость дня**. Обречённость считают
+ * два правила: общий запрет `linearDaysBlocker` (тип заявки, линейность, архив, статус,
+ * принадлежность машины, наличие срока) и подённая граница `isShiftDayInTerm`. Поэтому передаётся
+ * весь субъект, а не одна дата: команда меняет срок и статус разом, и подстановка одного срока
+ * дала бы план по состоянию, которого не будет.
+ *
+ * Имя — «субъект допустимости», а не «состояние после команды», и это часть решения, а не
+ * вкусовщина. Дверь закрытия намеренно подставляет сюда прежний статус «В работе», хотя после
+ * команды заявка станет «Выполненной»: назови параметр «состоянием после» — и первый же честный
+ * рефакторинг подставил бы настоящий статус, а общий запрет тут же обрёк бы **все** дни заказа,
+ * включая отработанные.
+ *
+ * `retainCompletedDays` — политика открыто, флагом, который видно в вызове. Общий запрет снимает
+ * весь план целиком, и это верно, когда дней у заявки не стало вовсе: отменили, вернули в «Новую»,
+ * поставили арендную машину. Закрытие заказа — не тот случай: рейс отработанного дня это след
+ * состоявшейся работы, и «чей был выезд» обязано читаться и после закрытия. Флаг говорит,
+ * распространяется ли общий запрет на дни **внутри срока**; день за сроком обречён при любой
+ * политике — его у заказа больше нет.
+ *
+ * Заморозка читается без блокировки, и это верный ответ на верный вопрос: «что показать человеку и
+ * на чём сойтись отпечатку». Решение «что можно снять прямо сейчас» принимает исполнитель и только
+ * под блокировкой рейса.
+ *
+ * Транзакция чтению не нужна (`Reader`) — тем же правилом устроен весь читающий край модуля:
+ * предпросмотр двери спрашивают вне транзакции, а сверка зовёт то же чтение своей.
+ */
+export async function planLinearRouteDays(
+  reader: Reader,
+  params: {
+    requestId: string;
+    eligibilitySubject: LinearDaySubject;
+    retainCompletedDays: boolean;
+  },
+): Promise<LinearDaysPlan> {
+  const rows = await plannedDayRows(reader, params.requestId);
+  if (rows.length === 0) return { detachable: [], frozen: [] };
+
+  const subject = params.eligibilitySubject;
+  /*
+   * Общий запрет («дней у этой заявки больше нет») сильнее подённого: он снимает весь план — но
+   * ровно настолько, насколько это позволила дверь. С `retainCompletedDays` он не достаёт до дней
+   * внутри срока, и от плана остаётся только хвост за границей.
+   */
+  const sweepsTerm = linearDaysBlocker(subject) !== null && !params.retainCompletedDays;
+  const doomed = rows.filter((row) => sweepsTerm || !isShiftDayInTerm(subject, row.workDate!));
+  if (doomed.length === 0) return { detachable: [], frozen: [] };
+
+  // Листы обречённых рейсов — одной пачкой и по одному разу на рейс: день заказа не единственный
+  // в рейсе, и спрашивать бумагу заново на каждый его день значило бы читать одно и то же.
+  const waybills = await waybillsOfRoutes(
+    reader,
+    doomed.map((row) => row.routeId),
+  );
+
+  const detachable: LinearDayPlanItem[] = [];
+  const frozen: LinearDayPlanItem[] = [];
+  // Порядок — по дням (`plannedDayRows` читает их по возрастанию даты): план читают глазами, и
+  // календарный порядок здесь единственный осмысленный. Свой порядок блокировок исполнитель
+  // наводит сам — это его забота, а не читателя.
+  for (const row of doomed) {
+    const item: LinearDayPlanItem = {
+      date: row.workDate!,
+      routeId: row.routeId,
+      routeNum: row.routeNum,
+      routeVersion: row.routeVersion,
+      frozen: !isRouteEditable(waybills.get(row.routeId)?.status ?? null),
+    };
+    (item.frozen ? frozen : detachable).push(item);
+  }
+  return { detachable, frozen };
+}
+
+/**
+ * Исполнить посчитанное: снять названные планом дни с их рейсов (ADR 0100 §11).
+ *
+ * Заморозку исполнитель перечитывает **сам и под блокировкой**, а флаг `frozen` в строке плана на
+ * веру не принимает. Между расчётом и исполнением лист успевают выписать, и день, снятый по
+ * устаревшему ответу, исчез бы из бланка, который уже у водителя. Бывает и обратное: лист
+ * аннулировали, и рейс отдаёт день, который расчёт считал замороженным. Поэтому в `frozen`
+ * результата попадает то, чего не отдали **сейчас**, а не то, чего не отдавали при расчёте.
+ *
+ * Дверь вправе не передавать сюда дни, которые она разобрала сама: закрытие, например, отказывает
+ * от команды целиком, если выданная бумага держит хоть один обречённый день, и до исполнения дело
+ * не доходит вовсе. А правка срока отдаёт весь обречённый план — она снимает что снимается и
+ * рассказывает про остальное.
+ */
+export async function applyLinearRouteDaysPlan(
+  tx: Tx,
+  plan: LinearDayPlanItem[],
+  params: { requestId: string; actor: { id: string } },
+): Promise<LinearDaysSyncResult> {
+  if (plan.length === 0) return EMPTY;
+
+  const detached: LinearDayRef[] = [];
+  const frozen: LinearDayRef[] = [];
+  // Порядок блокировок один на модуль: рейсы берутся по возрастанию `id`, иначе две встречные
+  // сверки встанут во взаимную блокировку (тем же порядком работает `lockRoutePair`).
+  for (const item of [...plan].sort((a, b) => a.routeId.localeCompare(b.routeId))) {
+    const ref = linearDayRefOf(item);
+    await lockRoute(tx, item.routeId);
+    const waybill = await routeWaybill(tx, item.routeId);
+    if (!isRouteEditable(waybill?.status ?? null)) {
+      frozen.push(ref);
+      continue;
+    }
+    await detachRequest(tx, item.routeId, params.requestId);
+    await bumpRouteVersion(tx, item.routeId, params.actor.id);
+    detached.push(ref);
+  }
+  return { detached, frozen };
+}
+
+/**
+ * Есть ли у заявки распланированные дни вовсе — один дешёвый запрос вместо двух.
+ *
+ * Нужен ради холостого хода сверки: она зовётся пятью местами, и у нелинейной заявки обязана
+ * кончаться первым же запросом. Читать ради этого субъект допустимости (пять join'ов по заявке)
+ * значило бы платить за него на каждом переводе статуса любой заявки портала.
+ */
+async function hasPlannedDays(reader: Reader, requestId: string): Promise<boolean> {
+  const [row] = await reader
+    .select({ requestId: vehicleRouteRequests.requestId })
+    .from(vehicleRouteRequests)
+    .where(
+      and(eq(vehicleRouteRequests.requestId, requestId), isNotNull(vehicleRouteRequests.workDate)),
+    )
+    .limit(1);
+  return !!row;
+}
 
 /**
  * Привести план по дням в соответствие с самой заявкой (ADR 0100 §11).
@@ -413,6 +603,17 @@ const EMPTY: LinearDaysSyncResult = { detached: [], frozen: [] };
  * Замороженный выписанным листом рейс день не отдаёт: бланк уже у водителя, и исчезнуть из него
  * день не может — тем же правилом рейс держит заявку при смене статуса (`shouldDetachOnStatus`).
  * Такой день остаётся в плане с пометкой «вне срока» и ждёт, пока лист аннулируют.
+ *
+ * Сама сверка складывается из пары «чтение и исполнение» прежним порядком, и каждое слагаемое
+ * говорит здесь ровно то, что говорило до расщепления:
+ *
+ * - субъект допустимости читается из базы — сверку зовут уже после записи нового срока, и другого
+ *   состояния у неё нет и не было;
+ * - политика прежняя: общий запрет снимает весь план, включая отработанные дни. Оставлять их в
+ *   рейсах будет новая дверь закрытия, и это её решение, а не общего расчёта;
+ * - исполнителю отдаётся **весь** обречённый план, вместе с тем, что чтение сочло замороженным.
+ *   Так эта дверь и вела себя всегда: замороженное она узнаёт из-под блокировки рейса, а не из
+ *   предварительного чтения, — и разбирать бумагу до записи ей незачем, она уже записала.
  */
 export async function syncLinearRouteDays(
   tx: Tx,
@@ -423,43 +624,55 @@ export async function syncLinearRouteDays(
     reason: string;
   },
 ): Promise<LinearDaysSyncResult> {
-  const rows = await plannedDayRows(tx, params.requestId);
-  if (rows.length === 0) return EMPTY;
+  if (!(await hasPlannedDays(tx, params.requestId))) return EMPTY;
 
   const request = await loadLinearRequest(tx, params.requestId);
   if (!request) return EMPTY;
-  // Общий запрет («дней у этой заявки больше нет») сильнее подённого: он снимает весь план.
-  const blocker = linearDaysBlocker(request);
-  const doomed = rows.filter(
-    (row) => blocker !== null || !isShiftDayInTerm(request, row.workDate!),
-  );
-  if (doomed.length === 0) return EMPTY;
 
-  const detached: LinearDayRef[] = [];
-  const frozen: LinearDayRef[] = [];
-  // Порядок блокировок один на модуль: рейсы берутся по возрастанию `id`, иначе две встречные
-  // сверки встанут во взаимную блокировку (тем же порядком работает `lockRoutePair`).
-  for (const row of [...doomed].sort((a, b) => a.routeId.localeCompare(b.routeId))) {
-    const ref = { date: row.workDate!, routeNumber: formatVehicleRouteNumber(row.routeNum) };
-    await lockRoute(tx, row.routeId);
-    const waybill = await routeWaybill(tx, row.routeId);
-    if (!isRouteEditable(waybill?.status ?? null)) {
-      frozen.push(ref);
-      continue;
-    }
-    await detachRequest(tx, row.routeId, params.requestId);
-    await bumpRouteVersion(tx, row.routeId, params.actor.id);
-    detached.push(ref);
-  }
-  return { detached, frozen };
+  const plan = await planLinearRouteDays(tx, {
+    requestId: params.requestId,
+    eligibilitySubject: request,
+    retainCompletedDays: false,
+  });
+  return applyLinearRouteDaysPlan(tx, [...plan.detachable, ...plan.frozen], {
+    requestId: params.requestId,
+    actor: params.actor,
+  });
 }
 
 /**
- * Событие аудита о снятых днях. Пишется после транзакции — как и все прочие события заявки, — и
- * только если план действительно изменился: молчаливая сверка событием не является.
+ * Событие о снятых днях — **данными**, а не записью.
+ *
+ * Двум вызывающим нужно разное: статусная ручка пишет его после транзакции своим `writeAudit`, а
+ * дверь канона возвращает события скелету и пишет их **в** транзакции (§8, шаг 13). Общее у них —
+ * имя события, причина и состав перечней, и вторая их редакция разошлась бы ровно там, где журнал
+ * читают глазами: одна и та же сверка выглядела бы по-разному в зависимости от двери.
+ *
+ * `null` — сверка ничего не изменила: молчаливая сверка событием не является, и запись «сняли
+ * ноль дней» отличалась бы от отсутствия записи только длиной журнала.
  *
  * Дни, которых рейс не отдал, попадают в то же событие: по журналу должно быть видно не только
  * что сняли, но и что осталось в выданной бумаге вопреки сокращённому сроку.
+ */
+export function linearDaysSyncAudit(params: {
+  reason: string;
+  result: LinearDaysSyncResult;
+}): AuditEntry | null {
+  const { detached, frozen } = params.result;
+  if (detached.length === 0 && frozen.length === 0) return null;
+  return {
+    action: 'vehicle_request.days_sync',
+    metadata: {
+      reason: params.reason,
+      detached: detached.map((d) => `${d.date} (${d.routeNumber})`),
+      frozen: frozen.map((d) => `${d.date} (${d.routeNumber})`),
+    },
+  };
+}
+
+/**
+ * То же событие записью — вход тех вызывающих, у которых транзакция уже закрыта (статусная ручка,
+ * досрочное завершение, отмена). Пишется после транзакции, как и все прочие события заявки.
  */
 export async function auditLinearDaysSync(params: {
   actorUserId: string;
@@ -467,18 +680,13 @@ export async function auditLinearDaysSync(params: {
   reason: string;
   result: LinearDaysSyncResult;
 }): Promise<void> {
-  const { detached, frozen } = params.result;
-  if (detached.length === 0 && frozen.length === 0) return;
+  const entry = linearDaysSyncAudit(params);
+  if (!entry) return;
   await writeAudit({
+    ...entry,
     actorUserId: params.actorUserId,
-    action: 'vehicle_request.days_sync',
     entityType: 'vehicle_request',
     entityId: params.requestId,
-    metadata: {
-      reason: params.reason,
-      detached: detached.map((d) => `${d.date} (${d.routeNumber})`),
-      frozen: frozen.map((d) => `${d.date} (${d.routeNumber})`),
-    },
   });
 }
 

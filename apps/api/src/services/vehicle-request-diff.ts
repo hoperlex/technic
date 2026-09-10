@@ -291,6 +291,33 @@ export function earlyEndReasonChange(reason: string): RequestChangeDto[] {
   return diff.changes;
 }
 
+/** Максимум дат в перечне: заказ бывает на месяц, и весь список в строку события не влезет. */
+const MAX_LISTED_DATES = 5;
+
+/** Календарный ключ `YYYY-MM-DD` человеку: `24.07.2026`. Через JS Date он бы поехал на день. */
+function dateKeyRu(key: string): string {
+  const [y, m, d] = key.split('-');
+  return y && m && d ? `${d}.${m}.${y}` : key;
+}
+
+/**
+ * Дни, за которые объект так и не расписался, — строкой события закрытия (ADR 0029).
+ *
+ * Здесь, а не в маршруте, потому что закрывающих дверей две: статусная ручка и дверь закрытия
+ * фактической датой (Р24 плана `docs/vehicle-request-actual-end-date-plan.md`). Формат читают
+ * глазами в истории заявки, и разойдись он между дверями — одно и то же событие выглядело бы
+ * по-разному в зависимости от того, каким окном закрыли заказ.
+ *
+ * Значима только правая часть: «было» у неподписанных дней не бывает — закрытие их принимает
+ * молча, а спорят о машиночасах через два месяца, и история обязана помнить, что подписи не было.
+ */
+export function shiftsPendingChange(dates: readonly string[]): RequestChangeDto[] {
+  if (dates.length === 0) return [];
+  const head = dates.slice(0, MAX_LISTED_DATES).map(dateKeyRu).join(', ');
+  const rest = dates.length - MAX_LISTED_DATES;
+  return [{ field: 'shiftsPending', from: null, to: rest > 0 ? `${head} и ещё ${rest}` : head }];
+}
+
 /**
  * Продление срока недельной заявкой (ADR 0085): дата — той же парой «было → стало», что и у
  * обычной правки, а рядом номер пакета, которым её сдвинули.

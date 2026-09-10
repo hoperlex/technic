@@ -486,6 +486,7 @@ const EMPTY_SHEET_PLAN: Esm2SheetPlan = {
   wanted: [],
   cancel: [],
   issue: [],
+  trim: [],
   kept: [],
   locked: [],
   outOfScope: [],
@@ -1405,7 +1406,7 @@ export async function syncCrewPaper(
    * значило бы разрешить ей попутно переписать бумагу, которой человек в предпросмотре не видел.
    */
   if (params.plan.esm2Mode === 'none' || params.plan.paperScope.length === 0) {
-    return { esm2: { cancelled: [], issued: [] } };
+    return { esm2: { cancelled: [], issued: [], trimmed: [] } };
   }
 
   const unlockWaybillIds = params.plan.requiredUnlocks.map((u) => u.waybillId);

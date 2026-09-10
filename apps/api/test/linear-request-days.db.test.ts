@@ -440,11 +440,28 @@ async function shortenTo(
     payload: { newDateTo, reason: 'работы закончены раньше', version: request.version },
   });
   expect(asked.statusCode, asked.body).toBe(200);
+  /*
+   * Виза применяет срок и потому идёт каноном команд истории: подтверждённый предпросмотр ей
+   * обязателен (этап Э10 плана `vehicle-request-actual-end-date-plan.md`, Р17). Тело предпросмотра
+   * обезличено — здесь от него нужен только отпечаток.
+   */
+  const shown = await ctx.app.inject({
+    method: 'POST',
+    url: `/api/v1/vehicle-requests/${request.id}/early-end/decision/preview`,
+    headers: ctx.auth,
+    payload: { approved: true, version: asked.json().version },
+  });
+  expect(shown.statusCode, shown.body).toBe(200);
   const decided = await ctx.app.inject({
     method: 'PATCH',
     url: `/api/v1/vehicle-requests/${request.id}/early-end`,
     headers: ctx.auth,
-    payload: { approved: true, comment: '', version: asked.json().version },
+    payload: {
+      approved: true,
+      comment: '',
+      version: asked.json().version,
+      previewFingerprint: shown.json().fingerprint,
+    },
   });
   expect(decided.statusCode, decided.body).toBe(200);
 }
@@ -712,6 +729,68 @@ describe.skipIf(!DB_URL)('дни линейного заказа в рейсах
     const day = plan.items.find((d) => d.date === ctx.dayA)!;
     expect(day.outOfTerm).toBe(true);
     expect(day.route).not.toBeNull();
+  });
+
+  /**
+   * Расчёт отделён от отцепления (Р11 плана закрытия фактической датой): `planLinearRouteDays`
+   * читает и ничего не пишет, а состояние, по которому он решает, приходит параметром. Ради этого
+   * разрез и сделан: до него вопрос «какие дни удержит выданный лист, если срок сократить вот так»
+   * задать было нечем — ответ узнавался только вместе с самим отцеплением, то есть после записи.
+   *
+   * Проверяется всё, чем расчёт отличается от прежней сверки: субъект из параметра (срока, который
+   * тут проверяется, в базе нет), политика флагом и молчание — ни одной записи.
+   */
+  it('расчёт плана дней ничего не пишет и решает по переданному субъекту', async () => {
+    const request = await linearInProgress();
+    expect((await planDay(request.id, ctx.dayA, {})).statusCode).toBe(200);
+    expect(
+      (await planDay(request.id, ctx.dayB, { vehicleId: ctx.otherVehicleId })).statusCode,
+    ).toBe(200);
+    // На первый день выписан лист: его рейс день не отдаст, и расчёт обязан это назвать заранее.
+    const routeA = (await dayOf(request.id, ctx.dayA))!.route!.id;
+    const routeB = (await dayOf(request.id, ctx.dayB))!.route!.id;
+    await issueWaybill(routeA);
+
+    const { loadLinearRequest, planLinearRouteDays } =
+      await import('../src/services/vehicle-request-days');
+    const subject = (await loadLinearRequest(ctx.db, request.id))!;
+
+    // Срок укорочен только в субъекте: в базе он прежний, и оба дня в нём стоят законно.
+    const shortened = await planLinearRouteDays(ctx.db, {
+      requestId: request.id,
+      eligibilitySubject: { ...subject, dateTo: ctx.dateFrom },
+      retainCompletedDays: false,
+    });
+    expect(shortened.frozen.map((i) => i.date)).toEqual([ctx.dayA]);
+    expect(shortened.frozen[0]!.routeId).toBe(routeA);
+    expect(shortened.detachable.map((i) => i.date)).toEqual([ctx.dayB]);
+    expect(shortened.detachable[0]!.routeId).toBe(routeB);
+
+    /*
+     * Политика открыто. Общий запрет («заявка не в работе») снимает весь план — так сверка ведёт
+     * себя сегодня и так же отвечает расчёт без политики. С `retainCompletedDays` тот же запрет не
+     * достаёт до дней внутри срока: рейс отработанного дня — след состоявшейся работы (Р27).
+     */
+    const swept = await planLinearRouteDays(ctx.db, {
+      requestId: request.id,
+      eligibilitySubject: { ...subject, status: 'done' },
+      retainCompletedDays: false,
+    });
+    expect(swept.frozen.map((i) => i.date)).toEqual([ctx.dayA]);
+    expect(swept.detachable.map((i) => i.date)).toEqual([ctx.dayB]);
+
+    const retained = await planLinearRouteDays(ctx.db, {
+      requestId: request.id,
+      eligibilitySubject: { ...subject, status: 'done' },
+      retainCompletedDays: true,
+    });
+    expect(retained.frozen).toHaveLength(0);
+    expect(retained.detachable).toHaveLength(0);
+
+    // И ни одной записи после трёх расчётов: оба дня стоят там же, где стояли.
+    const plan = await daysOf(request.id);
+    expect(plan.items.find((d) => d.date === ctx.dayA)!.route!.id).toBe(routeA);
+    expect(plan.items.find((d) => d.date === ctx.dayB)!.route!.id).toBe(routeB);
   });
 
   it('снятый день освобождает свой день заново', async () => {

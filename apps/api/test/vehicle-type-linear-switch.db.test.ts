@@ -319,18 +319,34 @@ async function requestInProgressNow(typeId: string): Promise<WorkingRequest> {
   };
 }
 
-/** Закрыть заявку фактом — им и заканчивается работа (ADR 0029). */
+/**
+ * Закрыть заявку фактом и фактической датой — им и заканчивается работа (ADR 0029, ADR 0178).
+ *
+ * Идёт **дверью** (`POST /:id/completion`): статусная ручка на «Выполнена» у заказа техники на
+ * объект отвечает 422 и отправляет в окно закрытия (Р1). Дверь спрашивает отпечаток последствий
+ * всегда, поэтому предпросмотр здесь не украшение сцены, а часть разговора с сервером.
+ *
+ * Дата — сегодняшний день: сцены файла заводят заказ с сегодняшнего дня, и закрытие сегодня
+ * повторяет то, что делала статусная ручка, у которой фактической даты не было вовсе.
+ */
 async function closeRequest(id: string): Promise<number> {
-  const res = await ctx.app.inject({
-    method: 'PATCH',
-    url: `/api/v1/vehicle-requests/${id}/status`,
+  const body = {
+    version: (await readRequest(id)).version,
+    comment: '',
+    completion: { workedUnit: 'hours', workedAmount: 8, totalCost: 8000, endedOn: ctx.today },
+  };
+  const shown = await ctx.app.inject({
+    method: 'POST',
+    url: `/api/v1/vehicle-requests/${id}/completion/preview`,
     headers: ctx.auth,
-    payload: {
-      status: 'done',
-      comment: '',
-      version: (await readRequest(id)).version,
-      completion: { workedUnit: 'hours', workedAmount: 8, totalCost: 8000 },
-    },
+    payload: body,
+  });
+  expect(shown.statusCode, shown.body).toBe(200);
+  const res = await ctx.app.inject({
+    method: 'POST',
+    url: `/api/v1/vehicle-requests/${id}/completion`,
+    headers: ctx.auth,
+    payload: { ...body, previewFingerprint: shown.json().fingerprint },
   });
   expect(res.statusCode, res.body).toBe(200);
   return res.statusCode;
@@ -773,18 +789,8 @@ describe.skipIf(!DB_URL)('переключение признака линейн
     await switchLinear(type.id, { isLinear: true, fingerprint: shown.json().fingerprint });
     const before = await esm2Count(working.id);
 
-    const closed = await ctx.app.inject({
-      method: 'PATCH',
-      url: `/api/v1/vehicle-requests/${working.id}/status`,
-      headers: ctx.auth,
-      payload: {
-        status: 'done',
-        comment: '',
-        version: (await readRequest(working.id)).version,
-        completion: { workedUnit: 'hours', workedAmount: 8, totalCost: 8000 },
-      },
-    });
-    expect(closed.statusCode, closed.body).toBe(200);
+    // Закрытие идёт дверью (ADR 0178): статусная ручка «Выполнена» у заказа техники отвечает 422.
+    expect(await closeRequest(working.id)).toBe(200);
 
     /*
      * Порядок Р4: сверка ЭСМ-2 отрабатывает ДО снятия снимка. Сними его раньше — и заявка уехала

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, ne } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import {
   driverDocumentGaps,
   driverDocumentGapsWarning,
@@ -56,6 +56,7 @@ import {
   type Esm2ReplacementEdge,
   type Esm2ScopedCancel,
   type Esm2ScopedPlan,
+  type Esm2ScopedTrim,
 } from './esm2-plan';
 // Рукопожатие выписки (Р21а) — общее с листом по рейсу: набор предупреждений у двух бланков разный,
 // а решение «пускать, спрашивать или записать подтверждённое» одно, и второе его написание
@@ -785,12 +786,112 @@ export type Esm2ExecutionContext = {
 export interface Esm2ApplyResult {
   cancelled: { waybillId: string; displayNumber: string; period: Esm2Period }[];
   issued: { issueKey: number; waybillId: string; displayNumber: string; period: Esm2Period }[];
+  /**
+   * Сокращённые листы: номер тот же, период «было → стало» (Р5).
+   *
+   * Отдельным списком, а не парой в `cancelled`/`issued`: сокращение не расходует номера и не
+   * рождает документов, и подмешать его к тем двум значило бы соврать в журнале про бланк строгой
+   * отчётности. Графы замен у правки нет — заменять нечем, документ остался собой.
+   */
+  trimmed: {
+    waybillId: string;
+    displayNumber: string;
+    /** Период, каким лист стоял до правки. */
+    period: Esm2Period;
+    /** Новый последний день. */
+    newTo: string;
+  }[];
   /** Рёбра «сгоревший лист → выпущенный», с днями пересечения. */
   replacementGraph: Esm2ReplacementEdge[];
 }
 
 /** Пустое исполнение: план сошёлся, номера не тронуты, события нет. */
-const EMPTY_APPLY: Esm2ApplyResult = { cancelled: [], issued: [], replacementGraph: [] };
+const EMPTY_APPLY: Esm2ApplyResult = {
+  cancelled: [],
+  issued: [],
+  trimmed: [],
+  replacementGraph: [],
+};
+
+/**
+ * Сократить период выданного листа — единственная правка, которую бланк строгой отчётности
+ * допускает (Р5, Р6, Р12 плана `docs/vehicle-request-actual-end-date-plan.md`).
+ *
+ * Правится ровно четыре вещи, и каждая обязана меняться одним заявлением с остальными:
+ *
+ * 1. **`period_to`** — сам новый конец. Начало не двигается никогда: правка умеет только отнимать
+ *    дни с хвоста, и лист остаётся внутри своей календарной недели по построению.
+ * 2. **Снимок `data`** — `period_to_day` и числа дней, ушедших за новую границу. Считаются тем же
+ *    `esm2WeekDays`, каким они и печатались при выписке: второй расчёт «какая строка бланка какому
+ *    дню принадлежит» разошёлся бы с первым, и портал погасил бы не ту клетку. Прочие графы снимка
+ *    не пересчитываются — снимок остаётся снимком выписки (Р6): организация, машина и человек в
+ *    нём те, какими их напечатали, и приводить их к сегодняшним справочникам правка не вправе.
+ * 3. **След правки** (Р12): `period_to_original` пишется **один раз** — `coalesce` читает старое
+ *    значение колонки в том же `UPDATE` и потому переживает любую следующую правку; тройка
+ *    «когда, кто, почему» переписывается каждой, потому что описывает нынешний вид листа, а не
+ *    первый; ссылка на операцию ставится у любой неординарной правки (условие
+ *    `context.kind !== 'ordinary'` — то же, каким рядом связывают лист отмена и выпуск) и
+ *    **очищается** обычной последующей: иначе она объясняла бы нынешний вид листа чужим действием.
+ * 4. **`version`** — и это не деталь учёта, а замок. Сторож печати (Р21) сверяет версии листов
+ *    после сборки PDF и до отдачи файла: печать, начатая до правки, обязана получить 409, а не
+ *    отдать бланк с датами, которых в базе уже нет. Сегодня версию листа не поднимает больше
+ *    никто — ни аннулирование, ни выписка, — и без этой строки сторож стоит вхолостую.
+ *
+ * Сторожевое условие в `WHERE` — «лист всё ещё такой, каким его увидел план»: не аннулирован и
+ * конец периода не сдвинут. Разошлось — правка не применяется вовсе, и это конфликт, а не молчание:
+ * план, посчитанный по одной строке и применённый к другой, укоротил бы документ в день, которого
+ * никто не подтверждал. Пустые границы у листа, которого в плане не нашлось, отсекаются этим же
+ * условием.
+ */
+async function trimWaybillPeriod(
+  tx: Tx,
+  item: Esm2ScopedTrim,
+  context: Esm2ExecutionContext,
+): Promise<void> {
+  /*
+   * Клетки бланка, теряющие число. Строки «пн…вс» впечатаны в бланк и не двигаются — гаснут
+   * только числа тех дней, которые лист печатал и больше не покрывает. Дни, оставшиеся в периоде,
+   * не трогаются вовсе: их значение уже верное, а переписать его значило бы пересчитать снимок.
+   */
+  const patch: Record<string, string> = { period_to_day: dayOf(item.newTo) };
+  esm2WeekDays(item.period).forEach((day, index) => {
+    if (day.inPeriod && day.date > item.newTo) patch[`day${index + 1}_date`] = '';
+  });
+
+  const updated = await tx
+    .update(waybills)
+    .set({
+      periodTo: item.newTo,
+      // Снимок правится слиянием, а не заменой: ключей в нём под сотню, и переписать объект
+      // целиком означало бы вернуть в бланк сегодняшние справочники вместо тех, что напечатаны.
+      data: sql`${waybills.data} || ${JSON.stringify(patch)}::jsonb`,
+      // «Каким лист был выдан» — только у первой правки: выражение читает старое значение
+      // колонки, и вторая правка находит её уже заполненной (Р12).
+      periodToOriginal: sql`coalesce(${waybills.periodToOriginal}, ${waybills.periodTo})`,
+      periodTrimmedAt: new Date(),
+      periodTrimmedBy: context.actorUserId,
+      periodTrimReason: context.syncReason,
+      // Обычная правка ссылку снимает, неординарная — ставит: тройка «когда, кто, почему» и
+      // ссылка на операцию всегда описывают одну и ту же, последнюю правку (Р12).
+      periodTrimCorrectionId: context.kind === 'ordinary' ? null : context.operation.id,
+      version: sql`${waybills.version} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(waybills.id, item.waybillId),
+        ne(waybills.status, 'cancelled'),
+        eq(waybills.periodTo, item.period.to),
+      ),
+    )
+    .returning({ id: waybills.id });
+  if (updated.length === 0) {
+    throw err.conflict(
+      `Путевой лист ${item.displayNumber} изменился, пока считался план: сокращение периода отменено — посмотрите последствия заново`,
+      { code: 'esm2_sheet_changed' },
+    );
+  }
+}
 
 /**
  * Исполнить **уже посчитанный** план: сжечь названные номера и выписать названные отрезки.
@@ -801,14 +902,18 @@ const EMPTY_APPLY: Esm2ApplyResult = { cancelled: [], issued: [], replacementGra
  *
  * Порядок «сначала аннулировать, потом выписать» обязателен: `waybills_request_period_unique`
  * держит «одна неделя — один действующий лист», и выписка поверх ещё не погашенного номера упала
- * бы на ограничении.
+ * бы на ограничении. Сокращение стоит между ними — освобождение идёт до выписки: сегодня отнятые
+ * дни не нужны никому (пятое условие Р6), но порядок «сначала освободить, потом занять» переживёт
+ * и ослабление этого условия, а обратный молча выдал бы два документа на одни дни.
  */
 async function applyEsm2SyncPlan(
   tx: Tx,
   plan: Esm2ScopedPlan,
   context: Esm2ExecutionContext,
 ): Promise<Esm2ApplyResult> {
-  if (plan.cancel.length === 0 && plan.issue.length === 0) return EMPTY_APPLY;
+  if (plan.cancel.length === 0 && plan.issue.length === 0 && plan.trim.length === 0) {
+    return EMPTY_APPLY;
+  }
   /*
    * Union живёт в типах, а вызывающие бывают старые: ветка `backdate` без операции означала бы
    * открытое прошлое без строки журнала, и поймать это обязан runtime, а не только сборка.
@@ -848,6 +953,22 @@ async function applyEsm2SyncPlan(
     });
   }
 
+  /*
+   * Правка периода — между гашением и выпиской. Номера она не расходует и графы замен не имеет:
+   * лист остаётся собой и лишь теряет дни с конца (Р5, Р6). Провенанс её — тот же, что у соседей:
+   * неординарная операция ставит на лист свою ссылку, обычная её снимает (Р12).
+   */
+  const trimmed: Esm2ApplyResult['trimmed'] = [];
+  for (const item of plan.trim) {
+    await trimWaybillPeriod(tx, item, context);
+    trimmed.push({
+      waybillId: item.waybillId,
+      displayNumber: item.displayNumber,
+      period: item.period,
+      newTo: item.newTo,
+    });
+  }
+
   const issued: Esm2ApplyResult['issued'] = [];
   for (const item of plan.issue) {
     const created = await issueEsm2Waybill(tx, {
@@ -884,7 +1005,12 @@ async function applyEsm2SyncPlan(
     });
   }
 
-  return { cancelled, issued, replacementGraph: esm2ReplacementGraph(plan.cancel, plan.issue) };
+  return {
+    cancelled,
+    issued,
+    trimmed,
+    replacementGraph: esm2ReplacementGraph(plan.cancel, plan.issue),
+  };
 }
 
 /**
@@ -908,7 +1034,15 @@ export async function applyEsm2SyncPlanAndAudit(
   context: Esm2ExecutionContext,
 ): Promise<Esm2ApplyResult> {
   const result = await applyEsm2SyncPlan(tx, plan, context);
-  if (result.cancelled.length === 0 && result.issued.length === 0) return result;
+  /*
+   * Пустым исполнение считается тогда, когда бумаги оно не коснулось вовсе, — и с Р5 «не
+   * коснулось» означает «ни отмен, ни выписок, ни правок». Сокращение меняет выданный бланк
+   * строгой отчётности и обязано объясняться событием ровно так же, как сгоревший номер: молча
+   * укоротить период документа хуже, чем молча его сжечь, — сгоревший хотя бы виден по статусу.
+   */
+  if (result.cancelled.length === 0 && result.issued.length === 0 && result.trimmed.length === 0) {
+    return result;
+  }
   await writeAuditTx(tx, {
     actorUserId: context.actorUserId,
     action: 'waybill.esm2_sync',
@@ -920,6 +1054,9 @@ export async function applyEsm2SyncPlanAndAudit(
       // джойном, и идентификатор строки на вопрос «какой бланк сгорел» не отвечает.
       cancelled: result.cancelled.map((sheet) => sheet.displayNumber),
       issued: result.issued.map((sheet) => sheet.displayNumber),
+      // Сокращённые — третьим перечнем номеров рядом с двумя первыми, и второго события под них
+      // не заводится (Р5): «что портал сделал с бумагой этой заявки» — один вопрос и один ответ.
+      trimmed: result.trimmed.map((sheet) => sheet.displayNumber),
       // Дни, которых сверка касалась: вне области она не тронула ничего, и это часть объяснения.
       scope: plan.scope,
       /*
@@ -935,6 +1072,19 @@ export async function applyEsm2SyncPlanAndAudit(
         to: sheet.period.to,
       })),
       replacements: result.replacementGraph,
+      /*
+       * «Было → стало» каждой правки — тем же порядком, каким `issuedKeys` объясняет выписку.
+       * Прежние границы листа хранятся в строке только до следующего сокращения (`period_to_original`
+       * помнит выписку, а не предыдущую правку), и цепочку «каким лист был между первой и второй
+       * правкой» восстанавливают отсюда (Р12).
+       */
+      trims: result.trimmed.map((sheet) => ({
+        waybillId: sheet.waybillId,
+        displayNumber: sheet.displayNumber,
+        from: sheet.period.from,
+        to: sheet.period.to,
+        newTo: sheet.newTo,
+      })),
       ...(context.kind === 'ordinary' ? {} : { operationId: context.operation.id }),
     },
   });
@@ -946,6 +1096,7 @@ export function esm2SyncResultOf(result: Esm2ApplyResult): Esm2SyncResult {
   return {
     cancelled: result.cancelled.map((sheet) => sheet.displayNumber),
     issued: result.issued.map((sheet) => sheet.displayNumber),
+    trimmed: result.trimmed.map((sheet) => sheet.displayNumber),
   };
 }
 
@@ -953,9 +1104,15 @@ export function esm2SyncResultOf(result: Esm2ApplyResult): Esm2SyncResult {
 export interface Esm2SyncResult {
   cancelled: string[];
   issued: string[];
+  /**
+   * Сокращённые листы: номера те же, дней меньше (Р5). Третий список рядом с двумя, а не строка в
+   * одном из них: у сокращённого номер не сгорел и заново не выписывался, и человек, увидевший его
+   * среди аннулированных, пошёл бы искать бланк, которого не существует.
+   */
+  trimmed: string[];
 }
 
-const EMPTY: Esm2SyncResult = { cancelled: [], issued: [] };
+const EMPTY: Esm2SyncResult = { cancelled: [], issued: [], trimmed: [] };
 
 /**
  * Вход сверки — ровно тот, что принимает `esm2SyncPlan`.
@@ -1130,7 +1287,9 @@ export async function syncEsm2Waybills(
   });
   if (!built) return EMPTY;
   const { input, plan } = built;
-  if (plan.cancel.length === 0 && plan.issue.length === 0) return EMPTY;
+  // Молчаливая сверка — это «бумага сошлась», а не «горящих номеров нет»: правка периода бумагу
+  // меняет и в пустоту не проваливается (Р5).
+  if (plan.cancel.length === 0 && plan.issue.length === 0 && plan.trim.length === 0) return EMPTY;
 
   const { mode, existing: sheets, driverPersonId } = input;
 
@@ -1210,7 +1369,7 @@ export async function syncEsm2Waybills(
    * горит, и **до** аннулирования: после него та же строка вернула бы ту же цифру лишним запросом.
    */
   const burnedById = new Map<string, Esm2ScopedCancel>();
-  if (plan.cancel.length > 0) {
+  if (plan.cancel.length > 0 || plan.trim.length > 0) {
     for (const s of await activeSheets(tx, params.requestId)) {
       burnedById.set(s.id, {
         waybillId: s.id,
@@ -1247,15 +1406,39 @@ export async function syncEsm2Waybills(
         period: { from: input.today, to: input.today },
       },
   );
+  /*
+   * Правки — теми же прочитанными строками, что и гашения: и номер бланка, и прежний конец периода
+   * берутся из живой строки, а не из плана. В плане их нет намеренно (`Esm2Trim` называет только
+   * лист и новый конец): «каким лист был» после правки не восстановить ниоткуда, и второй источник
+   * той же даты разошёлся бы с первым на первой же гонке.
+   *
+   * Листа, которого нет среди действующих, здесь не бывает: план посчитан по ним же и в этой же
+   * транзакции. Пустые границы у такого — защитная форма, общая с гашением: исполнитель сверяет
+   * прежний конец в `WHERE` и на несуществующем листе отказывает, а не правит наугад.
+   */
+  const trimSpecs: Esm2ScopedTrim[] = plan.trim.map((item) => {
+    const sheet = burnedById.get(item.waybillId);
+    return {
+      waybillId: item.waybillId,
+      displayNumber: sheet?.displayNumber ?? item.waybillId,
+      period: sheet?.period ?? { from: '', to: '' },
+      newTo: item.to,
+    };
+  });
   const scoped = esm2ScopedPlan({
     // Области у недельной сверки нет: она ведёт бумагу заявки целиком. В плане поэтому стоят те
     // дни, которых работа и правда касается, — ими событие журнала и объясняет, что переписано.
+    // У правки это её хвост: дни, оставшиеся без документа, — сам лист сверка не переписывает.
     scope: normalizeRangeSet([
       ...cancelSpecs.map((item) => item.period),
       ...issueSpecs.map((item) => ({ from: item.from, to: item.to })),
+      ...trimSpecs
+        .filter((item) => item.period.to > item.newTo)
+        .map((item) => ({ from: shiftDateKey(item.newTo, 1), to: item.period.to })),
     ]),
     cancel: cancelSpecs,
     issue: issueSpecs,
+    trim: trimSpecs,
     // Связь замены заполняется только под операцией: база запрещает `corrects_waybill_id` без
     // `correction_id` (`waybills_correction_issue_reason_check`).
     withCorrectionLinks: params.correction !== undefined,

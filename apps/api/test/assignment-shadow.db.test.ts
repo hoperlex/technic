@@ -338,6 +338,54 @@ async function insertChange(
             ${randomUUID()})`);
 }
 
+/**
+ * Лист ЭСМ-2 **по просьбе**: у линейного заказа недели называет человек, а не срок (ADR 0100 §5).
+ *
+ * Дверь зовётся прямо, а не через `issueRequestEsm2`: приложения этот файл не поднимает вовсе — ни
+ * одна его проверка не ходит по HTTP, — а рукопожатие выписки (Р21а) стоит в общей точке выпуска
+ * номера и спрашивается с человека независимо от двери. Здесь повторён ровно тот ход, который
+ * делает окно портала: первый вызов без подтверждения, отказ со свежим отпечатком, второй с ним.
+ * У машиниста сцены комплект документов пуст, так что отказ этот приходит всегда.
+ *
+ * Возвращает выписанные листы: их бывает два, если неделю режет конец месяца (ADR 0142).
+ */
+async function issueOnDemand(requestId: string, weekOf: string): Promise<Esm2.IssuedEsm2[]> {
+  const guardedPeriods = await ctx.esm2.esm2OnDemandPeriods(ctx.db, { requestId, weekOf });
+  const issue = async (acknowledge: { fingerprint: string } | null): Promise<Esm2.IssuedEsm2[]> =>
+    ctx.db.transaction(async (tx) =>
+      ctx.esm2.issueEsm2OnDemand(tx, {
+        requestId,
+        weekOf,
+        vehicleId: ctx.vehicleOwn,
+        driverPersonId: ctx.personA,
+        actor: { id: ctx.userId },
+        guardedPeriods,
+        acknowledge,
+      }),
+    );
+  try {
+    return await issue(null);
+  } catch (error) {
+    const fingerprint = (error as { details?: { fingerprint?: string } }).details?.fingerprint;
+    if (!fingerprint) throw error;
+    return issue({ fingerprint });
+  }
+}
+
+/**
+ * Посчитать одну цель, не заводя поколения, — второй вход сравнения (разбор одной заявки).
+ *
+ * Транзакция общая на оба расчёта и `read only`, как её открывает боевой прогон: сравнение,
+ * посчитанное по двум разным снимкам базы, доказывало бы не расхождение алгоритмов, а чужую
+ * правку между чтениями.
+ */
+async function evaluateOne(requestId: string): Promise<Shadow.ShadowCheckOutcome> {
+  return ctx.db.transaction(
+    async (tx) => ctx.shadow.evaluateShadowTarget(tx, { requestId, asOf: TODAY }),
+    { accessMode: 'read only' },
+  );
+}
+
 /** Завести поколение, построить и запечатать манифест — то, что делает команда `start`. */
 async function startRun(asOf?: string): Promise<Shadow.ShadowRunHeader> {
   const opened = await ctx.shadow.openShadowRun(ctx.db, {
@@ -406,6 +454,67 @@ describe.skipIf(!DB_URL)('теневое сравнение: поколение 
     expect(tally).toEqual({ total: 1, pending: 0, match: 1, mismatch: 0 });
   });
 
+  it('обе стороны правят один лист до одного дня — расхождения нет, но и молчанием это не считается', async () => {
+    /*
+     * Правка периода (`trim`, Р5 и Р6 плана `vehicle-request-actual-end-date-plan.md`) — третий
+     * исход сверки рядом с «сжечь» и «выписать»: заказ закрыли фактической датой, хвост недели
+     * работы не знал, и лист теряет дни с конца, не расходуя номера.
+     *
+     * Случай проверяет две вещи сразу, и обе про теневое сравнение, а не про планировщиков:
+     *
+     * 1. **правка проходит сличение**. Оба планировщика правят один лист до одного дня — значит
+     *    совпадение. Совпадение это содержательное: разойдись стороны листом или днём, ключ
+     *    сравнения разошёлся бы вместе с ними, потому что правки в него входят;
+     * 2. **правка считается действием с бумагой**. `notes.actions` читает отчёт как «сторона бумагу
+     *    двигает», и сторона, укорачивающая период действующего бланка, двигает её ровно так же,
+     *    как аннулированием. Не считай мы правок, отчёт объявил бы «обе стороны подтвердили
+     *    выписанную бумагу» там, где обе её меняют.
+     *
+     * День обрезки берётся внутри последнего **многодневного** документа срока: месячный разрез
+     * (ADR 0142) делает последний документ иногда однодневным, а однодневный не укорачивается — он
+     * целиком уходит в аннулирование. Недели из семи дней хватает всегда: как её ни разрежь
+     * месяцем, один из кусков длиннее одного дня.
+     */
+    const requestId = await makeRequest({ paper: true });
+    const shortened = [...TERM_PERIODS].reverse().find((period) => period.from < period.to)!;
+    const newEnd = shiftDateKey(shortened.to, -1);
+    await ctx.db.execute(sql`
+      UPDATE special_equipment_request_details SET date_to = ${newEnd}
+       WHERE request_id = ${requestId}`);
+
+    // Сцена и правда про правку, а не про пару «аннулирование плюс выписка»: недельный
+    // планировщик назван прямо, потому что вердикт сравнения без этого читался бы как угодно.
+    const sheets = (
+      await ctx.db.execute<{ id: string; period_from: string }>(sql`
+        SELECT id, period_from FROM waybills
+         WHERE source_request_id = ${requestId} AND status <> 'cancelled'
+         ORDER BY period_from`)
+    ).rows;
+    const built = await ctx.esm2.buildEsm2SyncPlan(ctx.db, { requestId, asOf: TODAY });
+    expect(built?.plan.trim).toEqual([
+      { waybillId: sheets.find((row) => row.period_from === shortened.from)?.id, to: newEnd },
+    ]);
+    expect(built?.plan.issue).toEqual([]);
+    // Документы за укороченным сроком гасятся как прежде: правка отнимает дни, а не недели.
+    const burned = TERM_PERIODS.filter((period) => period.from > shortened.from).length;
+    expect(built?.plan.cancel).toHaveLength(burned);
+
+    const sealed = await startRun();
+    const progress = await ctx.shadow.runShadowChecks(ctx.db, { runId: sealed.runId });
+    expect(progress).toMatchObject({ checked: 1, matched: 1, mismatched: 0 });
+
+    const details = (await checkOf(sealed.runId, requestId))?.details as Shadow.ShadowCheckDetails;
+    expect(details.reason).toBeUndefined();
+    // Действия обеих сторон посчитаны с правкой: она одна плюс сгоревшие документы срока.
+    expect(details.notes.actions).toEqual({ legacy: burned + 1, fresh: burned + 1 });
+
+    const notes = await ctx.shadow.shadowNoteTally(ctx.db, sealed.runId);
+    expect(notes).toMatchObject({ paperTouched: 1, paperConfirmed: 0, paperAbsent: 0 });
+
+    const { header } = await ctx.shadow.finalizeShadowRun(ctx.db, sealed.runId);
+    expect(header.status).toBe('completed');
+  });
+
   it('после печати состав целей не меняется: ни построитель, ни новая заявка в manifest не попадут', async () => {
     await makeRequest({ paper: true });
     const sealed = await startRun();
@@ -468,7 +577,7 @@ describe.skipIf(!DB_URL)('теневое сравнение: поколение 
     const details = row?.details as Shadow.ShadowCheckDetails;
     expect(details.reason).toBe('week_split');
     // Обе проекции целиком: разбор идёт по записанному, а не по пересчёту живых данных.
-    expect(details.legacy).toEqual({ cancel: [], issue: [] });
+    expect(details.legacy).toEqual({ cancel: [], issue: [], trim: [] });
     /*
      * Переоформляется только та бумага, чей состав разошёлся: документ, кончившийся до среды
      * (а он появляется, когда месяц режет неделю, — ADR 0142), остаётся при своём человеке.
@@ -524,6 +633,122 @@ describe.skipIf(!DB_URL)('теневое сравнение: поколение 
     for (const outside of [cancelled, draft, linear]) {
       expect(await checkOf(sealed.runId, outside)).toBeUndefined();
     }
+  });
+
+  it('линейный заказ: обе стороны ведут выписанный по просьбе бланк — цель сходится', async () => {
+    /*
+     * ДЫРА В САМИХ ВОРОТАХ (Э10 плана `vehicle-request-actual-end-date-plan.md`). У линейного
+     * заказа стороны расходились **по построению**: недельная ведёт выписанные по просьбе бланки
+     * (`esm2RequestedPeriods`), а отрезковая звалась с пустыми ожиданиями — как у заявки, которой
+     * бумаги не положено вовсе, — и гасила их все. Расхождение выходило при любых данных, то есть
+     * не свидетельствовало ни о чём: настоящее утонуло бы в этом шуме.
+     *
+     * ПОЧЕМУ ЦЕЛЬ СЧИТАЕТСЯ НАПРЯМУЮ. Линейный заказ в популяцию не входит (случай выше), и
+     * поколением его не посчитать. Но мимо популяции он в расчёт попадает — переключением режима
+     * (ADR 0107) между печатью manifest'а и проверкой цели и разбором одной заявки, — а считаться
+     * он обязан верно в любом из этих входов: сравнение спрашивает линейность у снимка, а не у
+     * условия отбора.
+     */
+    const requestId = await makeRequest({ linear: true });
+    const sheets = await issueOnDemand(requestId, NEXT_MONDAY);
+    // Сцена не пуста: бланки на срок и правда выписаны, и гасить отрезковой стороне есть что.
+    expect(sheets).toHaveLength(TERM_PERIODS.length);
+
+    const outcome = await evaluateOne(requestId);
+    expect(outcome.status).toBe('match');
+    expect(outcome.details.reason).toBeUndefined();
+    /*
+     * Совпадение содержательное, а не «два пустых списка»: у заказа есть действующая бумага, и
+     * обе стороны её подтвердили — отрезковой для этого пришлось сойтись с каждым листом по
+     * границам, машине и человеку. Режимы записаны оба: `on_demand` с обеих сторон и есть
+     * доказательство, что гейт бумаги спрошен одним вопросом.
+     */
+    expect(outcome.details.notes).toMatchObject({
+      legacyMode: 'on_demand',
+      freshMode: 'on_demand',
+      actions: { legacy: 0, fresh: 0 },
+      sheets: TERM_PERIODS.length,
+    });
+  });
+
+  it('линейный заказ с сокращённым сроком: обе стороны правят один бланк до одного дня', async () => {
+    /*
+     * Обратная половина той же починки: сойтись стороны обязаны на **работе**, а не на молчании.
+     * Ветка `on_demand`, отдающая пустой план, дала бы здесь ложное совпадение — «обе стороны
+     * бумаги не трогают», — при том что бланк стоит по дни, которых у заказа больше нет.
+     *
+     * День обрезки — внутри последнего многодневного документа срока: месячный разрез (ADR 0142)
+     * делает последний документ иногда однодневным, а однодневный не укорачивается — он целиком
+     * уходит в аннулирование.
+     */
+    const requestId = await makeRequest({ linear: true });
+    await issueOnDemand(requestId, NEXT_MONDAY);
+    const shortened = [...TERM_PERIODS].reverse().find((period) => period.from < period.to)!;
+    const newEnd = shiftDateKey(shortened.to, -1);
+    await ctx.db.execute(sql`
+      UPDATE special_equipment_request_details SET date_to = ${newEnd}
+       WHERE request_id = ${requestId}`);
+
+    // Недельная сторона названа прямо: без неё вердикт сравнения читался бы как угодно.
+    const trimmed = (
+      await ctx.db.execute<{ id: string }>(sql`
+        SELECT id FROM waybills
+         WHERE source_request_id = ${requestId} AND status <> 'cancelled'
+           AND period_from = ${shortened.from}`)
+    ).rows[0];
+    const built = await ctx.esm2.buildEsm2SyncPlan(ctx.db, { requestId, asOf: TODAY });
+    expect(built?.plan.trim).toEqual([{ waybillId: trimmed?.id, to: newEnd }]);
+    // Новых недель линейному заказу не заводит ни одна сторона: их называет человек, а не срок.
+    expect(built?.plan.issue).toEqual([]);
+    const burned = TERM_PERIODS.filter((period) => period.from > shortened.from).length;
+    expect(built?.plan.cancel).toHaveLength(burned);
+
+    const outcome = await evaluateOne(requestId);
+    /*
+     * Совпадение здесь означает буквально «тот же лист до того же дня»: правка входит в ключ
+     * сравнения (Э4), и разойдись стороны бланком или днём — цель разошлась бы вместе с ними
+     * (`assignment-shadow-compare.test.ts` проверяет это самой парой планов).
+     */
+    expect(outcome.status).toBe('match');
+    expect(outcome.details.notes.actions).toEqual({
+      legacy: burned + 1,
+      fresh: burned + 1,
+    });
+  });
+
+  it('линейный заказ: настоящее расхождение сравнение по-прежнему видит', async () => {
+    /*
+     * Обратная проверка починки: ветка `on_demand` заведена, чтобы убрать шум, а не чтобы
+     * объявлять линейные цели совпавшими. Сцена — сдвиг начала срока: переоформление здесь
+     * неизбежно (правка умеет только отнимать дни с конца, а начало не двигает), и стороны
+     * расходятся на выписке замены.
+     *
+     * Расходятся они машинистом, и это расхождение настоящее, а не артефакт сцены. У недельной
+     * стороны «машиниста заявки» в режиме `on_demand` не существует вовсе (ADR 0100 §6): его
+     * называют на каждую неделю отдельно, и в план он приходит только из самого действия —
+     * `buildEsm2SyncPlan` отдаёт `null`. Отрезковая берёт человека **из самого бланка**, который
+     * переоформляет. Кто прав — вопрос к планировщикам; дело ворот в том, чтобы такую цель было
+     * видно, и после починки она видна с именем причины.
+     */
+    const requestId = await makeRequest({ linear: true });
+    await issueOnDemand(requestId, NEXT_MONDAY);
+    await ctx.db.execute(sql`
+      UPDATE special_equipment_request_details SET date_from = ${NEXT_WEDNESDAY}
+       WHERE request_id = ${requestId}`);
+
+    const outcome = await evaluateOne(requestId);
+    expect(outcome.status).toBe('mismatch');
+    expect(outcome.details.reason).toBe('driver');
+    // Оба режима `on_demand` — значит расходятся не гейты бумаги, а планы: гасят стороны один и
+    // тот же бланк, а взамен выписывают документ на те же дни, но с разными людьми.
+    expect(outcome.details.notes).toMatchObject({
+      legacyMode: 'on_demand',
+      freshMode: 'on_demand',
+    });
+    expect(outcome.details.diff?.cancelOnlyLegacy).toEqual([]);
+    expect(outcome.details.diff?.cancelOnlyFresh).toEqual([]);
+    expect(outcome.details.legacy?.issue[0]?.driverPersonId).toBeNull();
+    expect(outcome.details.fresh?.issue[0]?.driverPersonId).toBe(ctx.personA);
   });
 
   it('прогон, переживший полночь, к целям не допускается (О3)', async () => {

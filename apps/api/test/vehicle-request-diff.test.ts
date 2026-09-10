@@ -397,6 +397,9 @@ const COMPLETION: VehicleRequestCompletionDto = {
   completedBy: '55555555-5555-4555-8555-555555555555',
   completedByName: 'Иванов И. И.',
   completedAt: '2026-08-05T12:00:00.000Z',
+  // Закрытие старым статусным путём: фактической даты оно не знает (Р3 плана закрытия).
+  endedOn: null,
+  previousDateTo: null,
 };
 
 describe('дифф факта выполнения', () => {

@@ -19,7 +19,6 @@ import {
   persons,
   specialEquipmentRequestDetails,
   vehicleModels,
-  vehicleRequestShifts,
   vehicleRequests,
   vehicleTypes,
   vehicles,
@@ -40,6 +39,10 @@ import type {
 import { fingerprintOf } from './assignment-crew';
 import { assignmentCommandEffects, type AssignmentEffects } from './assignment-effects';
 import { historyIsAuthoritative, type AssignmentModeSnapshot } from './assignment-mode';
+// Смены читает общий сервис (Р10 плана фактической даты): та же выборка нужна двери закрытия, а
+// написанная там второй раз она разошлась бы с этой молча — окно показывало бы один состав дней,
+// а команда снимала другой.
+import { readShiftDays, toAssignmentShiftDay } from './assignment-shifts';
 import { rangeSetIntersects, type DateRangeSet } from './esm2-plan';
 import { buildEsm2SyncPlan, type Esm2SyncPlanInput } from './waybill-esm2';
 
@@ -299,11 +302,14 @@ export async function planReassignCommand(
    * - у линейного заказа не снимается ничего (ADR 0100 §4): машина дня там — машина рейса, а
    *   назначение остаётся умолчанием, и подпись под часами дня правка умолчания не опровергает.
    *
-   * Удаления заполненных без подписи часов (`clearableFilledDays`) сегодня не происходит вовсе, и
-   * обещать его нельзя: оно приходит тем же решением §15, что и диапазонный запрет.
+   * Удаления заполненных без подписи часов **эта дверь** не делает по-прежнему, и обещать его
+   * нельзя: оно приходит тем же решением §15, что и диапазонный запрет. Исполнитель для него с
+   * этапа Э7 существует (`dropUnapprovedShiftsInRange` в общем сервисе смен), но заведён он ради
+   * закрытия фактической датой — наличие механики не является разрешением ею воспользоваться
+   * здесь.
    */
-  const blockedShiftDays = input.correction ? [] : approved.map(toShiftDay);
-  const clearedShiftDays = input.correction && !linear ? approved.map(toShiftDay) : [];
+  const blockedShiftDays = input.correction ? [] : approved.map(toAssignmentShiftDay);
+  const clearedShiftDays = input.correction && !linear ? approved.map(toAssignmentShiftDay) : [];
 
   /*
    * Пробелы машиниста (Р16) — тем же расчётом, каким их считает бэкстоп чужих дверей: он и есть
@@ -571,31 +577,6 @@ async function readSheetNumbers(
   return new Map(
     rows.map((row) => [row.id, waybillDisplayNumber(row.prefix, row.number, row.numberWidth)]),
   );
-}
-
-/** Дни работы заявки с часами и состоянием подписи — вход обоих множеств Р18. */
-async function readShiftDays(
-  tx: AssignmentCommandTx,
-  requestId: string,
-): Promise<{ date: string; hours: number; approved: boolean }[]> {
-  const rows = await tx
-    .select({
-      date: vehicleRequestShifts.shiftDate,
-      hours: vehicleRequestShifts.machineHours,
-      approvedAt: vehicleRequestShifts.approvedAt,
-    })
-    .from(vehicleRequestShifts)
-    .where(eq(vehicleRequestShifts.requestId, requestId))
-    .orderBy(vehicleRequestShifts.shiftDate);
-  return rows.map((row) => ({
-    date: row.date,
-    hours: Number(row.hours),
-    approved: row.approvedAt !== null,
-  }));
-}
-
-function toShiftDay(row: { date: string; hours: number }): AssignmentShiftDay {
-  return { date: row.date, hours: row.hours };
 }
 
 /** Режим заказа: подписи снимает только неделя стояния на площадке, но не линейный заказ. */

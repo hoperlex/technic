@@ -8,7 +8,12 @@ import {
 import { err } from '../lib/errors';
 import { assertAssignmentBackstop, type AssignmentBackstopDoor } from './assignment-backstop';
 import type { Esm2ScopedPlan } from './esm2-plan';
-import { type LinearDaysSyncResult, syncLinearRouteDays } from './vehicle-request-days';
+import {
+  applyLinearRouteDaysPlan,
+  type LinearDayPlanItem,
+  type LinearDaysSyncResult,
+  syncLinearRouteDays,
+} from './vehicle-request-days';
 import {
   applyEsm2SyncPlanAndAudit,
   esm2SyncResultOf,
@@ -85,7 +90,7 @@ export interface WorkPeriodCorrection {
  * чтобы неделю чинили одним заходом, — и здесь ей проверять уже нечего.
  */
 export type WorkPeriodBackstop =
-  Extract<AssignmentBackstopDoor, 'work_period'> | 'checked_by_caller';
+  Extract<AssignmentBackstopDoor, 'work_period' | 'completion'> | 'checked_by_caller';
 
 /**
  * Кто ведёт бумагу ЭСМ-2 этой правки — недельная сверка или **готовый отрезковый план** (§10).
@@ -99,6 +104,22 @@ export type WorkPeriodBackstop =
  */
 export type WorkPeriodPaper =
   { kind: 'weekly' } | { kind: 'plan'; plan: Esm2ScopedPlan; context: Esm2ExecutionContext };
+
+/**
+ * Кто ведёт дни линейного заказа — прежняя сверка или **готовый план** (Р11, Р27 плана
+ * `docs/vehicle-request-actual-end-date-plan.md`).
+ *
+ * Умолчание есть, и оно `sync`: четыре сегодняшних вызывающих плана дней не считают вовсе, и
+ * сверка сама читает субъект из базы — уже после записи нового срока и уже с новым статусом.
+ *
+ * Дверь закрытия фактической датой так не может, и это не оптимизация: сверка, прочитавшая заявку
+ * «Выполненной», обрекает **все** дни заказа разом (общий запрет `linearDaysBlocker` сильнее
+ * подённой границы) — то есть подметает и отработанные. Р27 это поведение отменяет, поэтому дверь
+ * считает план до смены статуса, по укороченному сроку и с явной политикой, показывает его
+ * человеку, хеширует в отпечаток — и сюда приходит **исполнять подтверждённое**, а не считать
+ * заново.
+ */
+export type WorkPeriodDays = { kind: 'sync' } | { kind: 'plan'; plan: LinearDayPlanItem[] };
 
 /** Чем кончилось изменение срока: снятый запрос на отъезд, переоформленные листы и снятые дни. */
 export interface WorkPeriodChangeResult {
@@ -132,6 +153,12 @@ export async function afterWorkPeriodChanged(
     correction?: WorkPeriodCorrection;
     /** Кто ведёт бумагу (§10); не передан — недельная сверка, как и было до модуля. */
     paper?: WorkPeriodPaper;
+    /**
+     * Кто ведёт дни линейного заказа; не передан — прежняя сверка, читающая заявку из базы.
+     * Готовый план приносит дверь закрытия фактической датой: её план посчитан **до** смены
+     * статуса, и пересчитанный здесь он снял бы с рейсов и отработанные дни (Р27).
+     */
+    days?: WorkPeriodDays;
     /**
      * Открывает ли команда новые дни (Ю78). Знает это только вызывающий: сюда он приходит уже
      * после записи срока, и прежнего конца в базе больше нет.
@@ -191,14 +218,24 @@ export async function afterWorkPeriodChanged(
           // вызывающий.
           ...(params.correction ? { correction: params.correction } : {}),
         });
-  // План по дням сверяется той же транзакцией и по той же причине, что и бумага: сокращённый срок
-  // оставил бы рейсы на дни, которых у заказа больше нет. Продление дней не трогает — их просто
-  // становится больше, и распланировать новые день за днём предстоит человеку (ADR 0100 §8).
-  const days = await syncLinearRouteDays(tx, {
-    requestId: params.requestId,
-    actor: params.actor,
-    reason: params.reason,
-  });
+  // План по дням исполняется той же транзакцией и по той же причине, что и бумага: сокращённый
+  // срок оставил бы рейсы на дни, которых у заказа больше нет. Продление дней не трогает — их
+  // просто становится больше, и распланировать новые день за днём предстоит человеку (ADR 0100 §8).
+  //
+  // Готовый план исполняется как есть: заморозку `applyLinearRouteDaysPlan` всё равно перечитает
+  // из-под блокировки рейса, а вот **какие** дни обречены, решено до записи статуса и подтверждено
+  // человеком.
+  const days =
+    params.days?.kind === 'plan'
+      ? await applyLinearRouteDaysPlan(tx, params.days.plan, {
+          requestId: params.requestId,
+          actor: params.actor,
+        })
+      : await syncLinearRouteDays(tx, {
+          requestId: params.requestId,
+          actor: params.actor,
+          reason: params.reason,
+        });
   return { earlyEndDropped, esm2, days };
 }
 

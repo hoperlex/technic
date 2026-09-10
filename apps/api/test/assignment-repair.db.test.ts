@@ -274,6 +274,16 @@ interface SceneOptions {
   assignment?: { id: string; typeId: string };
   archived?: boolean;
   state?: 'empty' | 'materialized' | 'ready';
+  /**
+   * Линейный заказ (ADR 0100): бумагу неделями он не ведёт вовсе — недели называет человек.
+   *
+   * Ставится снимком (`is_linear_frozen`, миграция 0137), а не заведением своего типа техники:
+   * режим заявки и так читается формулой `coalesce(is_linear_frozen, vehicle_types.is_linear)`
+   * ([linear-mode.ts](../src/db/linear-mode.ts)), одной на весь портал, и снимок — её законная
+   * половина. Заводить ради этого линейный тип значило бы трогать общий справочник, из которого
+   * этот файл берёт машины по первому попавшемуся `ownership`.
+   */
+  linear?: boolean;
   /** Строки истории: одной командой бэкфилла, каждая своей группой. */
   history?: {
     effectiveDate: string;
@@ -310,12 +320,14 @@ async function makeScene(options: SceneOptions = {}): Promise<Scene> {
     await ctx.db.execute<{ id: string }>(sql`
       INSERT INTO vehicle_requests (request_type, object_id, vehicle_type_id, status, comment,
                                     created_by, assignment_history_state,
-                                    assignment_history_validated_on, deleted_at, deleted_by)
+                                    assignment_history_validated_on, deleted_at, deleted_by,
+                                    is_linear_frozen, linear_frozen_at)
       VALUES ('special_equipment', ${ctx.objectId}, ${assignment.typeId}, 'confirmed',
               ${REQUEST_MARK}, ${ctx.admin.id}, ${state},
               ${state === 'empty' ? null : TODAY},
               ${options.archived ? new Date().toISOString() : null},
-              ${options.archived ? ctx.admin.id : null})
+              ${options.archived ? ctx.admin.id : null},
+              ${options.linear ? true : null}, ${options.linear ? sql`now()` : null})
       RETURNING id`)
   ).rows;
   const requestId = request!.id;
@@ -365,6 +377,50 @@ async function makeScene(options: SceneOptions = {}): Promise<Scene> {
     await ctx.db.execute(sql`DELETE FROM audit_log WHERE entity_id = ${requestId}`);
   }
   return { requestId, version: 0 };
+}
+
+/**
+ * Лист ЭСМ-2 **по просьбе** — единственный способ, каким бумага заводится у линейного заказа
+ * (ADR 0100 §5, §6): недели у него называет человек, а не срок заявки.
+ *
+ * Дверь зовётся сервисом, а не HTTP: предмет случая — что ремонт делает с **уже выписанным**
+ * бланком, а путь, которым его выписали, к делу не относится. Рукопожатие (Р21а) при этом
+ * повторено ровно то, что делает окно портала, — первый вызов без подтверждения, отказ со свежим
+ * отпечатком, второй с ним: оно стоит в общей точке выпуска номера и спрашивается независимо от
+ * двери, а у машиниста сцены комплект документов пуст.
+ *
+ * Возвращает выписанные листы: их бывает два, если неделю режет конец месяца (ADR 0142).
+ */
+async function issueOnDemand(
+  requestId: string,
+  weekOf: string,
+  vehicleId: string,
+  driverPersonId: string,
+): Promise<Esm2.IssuedEsm2[]> {
+  const guardedPeriods = await ctx.esm2.esm2OnDemandPeriods(ctx.db, { requestId, weekOf });
+  const issue = (acknowledge: { fingerprint: string } | null): Promise<Esm2.IssuedEsm2[]> =>
+    ctx.db.transaction(async (tx) =>
+      ctx.esm2.issueEsm2OnDemand(tx, {
+        requestId,
+        weekOf,
+        vehicleId,
+        driverPersonId,
+        actor: { id: ctx.admin.id },
+        guardedPeriods,
+        acknowledge,
+      }),
+    );
+  let issued: Esm2.IssuedEsm2[];
+  try {
+    issued = await issue(null);
+  } catch (error) {
+    const fingerprint = (error as { details?: { fingerprint?: string } }).details?.fingerprint;
+    if (!fingerprint) throw error;
+    issued = await issue({ fingerprint });
+  }
+  // След подготовки из журнала — прочь, по той же причине, что и у недельной сверки сцены.
+  await ctx.db.execute(sql`DELETE FROM audit_log WHERE entity_id = ${requestId}`);
+  return issued;
 }
 
 const previewRepair = (account: Account, requestId: string, body: Record<string, unknown>) =>
@@ -1890,5 +1946,90 @@ describeReadModes(readMode, 'бумага починенной истории (�
      */
     const live = after.filter((sheet) => sheet.status !== 'cancelled');
     expect(live.some((sheet) => sheet.period_to >= TOMORROW)).toBe(expected.paperBeyondToday);
+  });
+  it('линейный заказ: ремонт истории не трогает бланк, выписанный по просьбе', async () => {
+    if (!DB_URL) return;
+    /*
+     * ДЫРА ТРЕТЬЕЙ ДВЕРИ (класс Э10 плана `docs/vehicle-request-actual-end-date-plan.md`, раздел 7).
+     *
+     * Отрезковый план листов выводит ожидания **из разреза состава**, и для линейного заказа это
+     * неверно: недели у него называет человек при выписке (ADR 0100 §5), а разрез о них не знает
+     * ничего. Хуже того, разреза с человеком у линейного заказа не бывает вовсе — машиниста
+     * называют на каждый лист отдельно (ADR 0100 §6), и бэкфилл честно оставляет ему **одну**
+     * строку истории: машину с начала срока и ни слова о человеке
+     * ([assignment-ensure.ts](../src/services/assignment-ensure.ts), правило 1). Отрезок без
+     * человека бумаги не ожидает (`wantedSheets`) — значит ожиданий не остаётся ни на один день, и
+     * план получается «погасить всё выписанное». То есть сжечь номера строгой отчётности за
+     * недели, которые человек просил сам.
+     *
+     * Сцена сталкивает это в самой безобидной команде двери: решение о машине после конца срока
+     * (Р31) пишет **дремлющую** границу — строку за концом срока, не трогающую внутри него ни
+     * одного дня. Бумаге здесь меняться не от чего ни при каком режиме, и если она всё-таки
+     * гаснет, то не от команды, а от того, что план посчитан чужим правилом.
+     *
+     * ОЖИДАНИЕ ОДНО НА ОБА РЕЖИМА, и это утверждение, а не сэкономленный `byReadMode`. У `on_demand`
+     * бумага не зависит от истории вовсе: набор недель задан просьбой человека и хранится в самих
+     * листах. Значит и переключение чтения (§10) здесь ничего не переключает — ремонт истории
+     * линейного заказа обязан быть бумажно пустым и до cutover, и после. Красным без починки
+     * случай при этом бывает по-разному: в `legacy` врёт предпросмотр (`paperFree`, список
+     * гашений), в `history` к нему добавляется исполненное шагом 12 аннулирование.
+     */
+    const scene = await makeScene({
+      dateFrom: PREV_MONDAY,
+      dateTo: PAPER_TO,
+      linear: true,
+      // Назначение — машина B, история ведёт машину A: расхождение хвоста (Р31), которое дверь и
+      // чинит. Дремлющая граница ляжет за концом срока значением назначения.
+      assignment: ctx.ownVehicleB,
+      // История ровно та, какую линейному заказу оставляет бэкфилл: одна vehicle-строка и ни одной
+      // driver-строки. Дописать сюда машиниста значило бы собрать заказ, которого не бывает.
+      history: [{ effectiveDate: PREV_MONDAY, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id }],
+      state: 'ready',
+    });
+    // Бланк на текущую неделю — тот самый, который человек попросил сам. Он ещё не отработан
+    // (`period_to >= сегодня`), то есть отменяем: неприкосновенность прошлого его не защищает, и
+    // остановить гашение может только верно посчитанный план.
+    const requested = await issueOnDemand(scene.requestId, TODAY, ctx.ownVehicle.id, ctx.personA);
+    expect(requested.length).toBeGreaterThan(0);
+    const before = await sheetsOf(scene.requestId);
+    expect(compositionOf(before)).toHaveLength(before.length);
+
+    const body = { mode: 'repair', version: 0, tailResolution: { kind: 'assignment_wins' } };
+    const preview = await previewRepair(ctx.admin, scene.requestId, body);
+    expect(preview.statusCode, preview.body).toBe(200);
+    const dto = preview.json<{
+      fingerprint: string;
+      paperFree: boolean;
+      plan: { cancel: { waybillId: string }[]; issue: unknown[] };
+    }>();
+    /*
+     * Предпросмотр — половина предмета: он показывается человеку, хешируется отпечатком и им же
+     * решается, спрашивать ли право и причину за переоформление бумаги (Р29). Пустой план здесь
+     * означает ровно то, что должен: ремонт истории линейного заказа бумаги не касается.
+     */
+    expect(dto.plan.cancel).toEqual([]);
+    expect(dto.plan.issue).toEqual([]);
+    expect(dto.paperFree).toBe(true);
+
+    const applied = await postRepair(ctx.admin, scene.requestId, {
+      ...body,
+      previewFingerprint: dto.fingerprint,
+      operation: operation('Дальше за заявкой числится машина назначения'),
+    });
+    expect(applied.statusCode, applied.body).toBe(200);
+    // Граница написана — команда действительно исполнилась, и пустота бумаги ниже не от того, что
+    // дверь отказала.
+    expect(
+      actual(await rowsOf(scene.requestId)).some((row) => row.origin === 'tail_resolution'),
+    ).toBe(true);
+
+    /*
+     * Вторая половина предмета: шаг 12. Бланк остался собой — тем же номером, теми же границами,
+     * той же машиной и тем же человеком, — сгоревших нет, и события сверки не случилось вовсе.
+     */
+    const after = await sheetsOf(scene.requestId);
+    expect(compositionOf(after)).toEqual(compositionOf(before));
+    expect(burnedOf(after)).toEqual([]);
+    expect(await esm2EventsOf(scene.requestId)).toHaveLength(0);
   });
 });

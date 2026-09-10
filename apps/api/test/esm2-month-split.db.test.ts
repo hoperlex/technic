@@ -387,7 +387,10 @@ describeReadModes(readMode, 'месячный разрез листа ЭСМ-2 (
       const before = await sheetsOf(tx, scene.requestId);
 
       const again = await sync(tx, scene, 'повторная сверка');
-      expect(again).toEqual({ cancelled: [], issued: [] });
+      // Три пустых списка, а не два: у сверки появился третий исход — правка периода (Р5 плана
+      // `docs/vehicle-request-actual-end-date-plan.md`). Идемпотентность означает пустоту всех
+      // трёх: сошедшийся срок не жжёт номеров, не выписывает новых и не трогает выданных.
+      expect(again).toEqual({ cancelled: [], issued: [], trimmed: [] });
       expect(await sheetsOf(tx, scene.requestId)).toEqual(before);
     });
   });

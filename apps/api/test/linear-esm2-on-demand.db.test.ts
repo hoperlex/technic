@@ -3,7 +3,13 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { byReadMode, describeReadModes, useReadModeDatabase } from './assignment-read-mode';
-import { esm2Periods, moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
+import {
+  esm2Periods,
+  esm2WeekDays,
+  moscowDateKeyOf,
+  shiftDateKey,
+  weekStartKey,
+} from '@technic/contracts';
 import { issueRequestEsm2 } from './waybill-issue-helper';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -293,12 +299,25 @@ interface SheetRow {
   period_to: string;
   vehicle_id: string;
   driver_person_id: string;
+  /**
+   * Версия листа и след сокращения (Р12 плана `docs/vehicle-request-actual-end-date-plan.md`):
+   * ими и отличается правка выданного бланка от пары «аннулировать плюс выписать». Читаются
+   * всегда, а не только сокращающим случаем: соседние проверки утверждают «лист не тронут», и
+   * утверждение это без следа правки было бы неполным.
+   */
+  version: number;
+  period_to_original: string | null;
+  period_trimmed_at: string | null;
+  period_trim_reason: string;
+  /** Снимок бланка: по нему лист печатается, и правка периода обязана дойти до него. */
+  data: Record<string, string>;
 }
 
 /** Листы заявки как они лежат в журнале: действующие и сгоревшие, по неделям. */
 async function sheetsOf(requestId: string): Promise<SheetRow[]> {
   const res = await ctx.db.execute<SheetRow>(sql`
-    SELECT id, status, period_from::text, period_to::text, vehicle_id, driver_person_id
+    SELECT id, status, period_from::text, period_to::text, vehicle_id, driver_person_id,
+           version, period_to_original::text, period_trimmed_at::text, period_trim_reason, data
     FROM waybills WHERE source_request_id = ${requestId}
     ORDER BY period_from, issued_at`);
   return res.rows;
@@ -776,10 +795,16 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
     });
 
     /**
-     * Досрочное завершение (ADR 0044) подрезает бумагу и здесь: неделя, у которой отняли дни,
-     * перевыписывается по новый последний день, а выпавшая целиком аннулируется без замены.
+     * Досрочное завершение (ADR 0044) подрезает бумагу и здесь. С правилом `trim` (Р5, Р6 плана
+     * `docs/vehicle-request-actual-end-date-plan.md`) подрезка перестала стоить номера: неделя, у
+     * которой отняли дни, **правится на месте** — тот же бланк, то же начало, конец ближе, — а
+     * выпавшая целиком по-прежнему аннулируется без замены.
+     *
+     * Прежде здесь ждали пару «аннулирован плюс выписан заново», и ожидание это было записью
+     * старого правила, а не проверкой нового. Теперь предмет случая другой: **номер не сгорел**.
+     * Отсюда и форма — снимок бумаги до команды сличается со снимком после, лист за листом.
      */
-    it('сокращённый срок подрезает выписанную неделю, а выпавшую аннулирует', async () => {
+    it('сокращённый срок правит выписанную неделю на месте, а выпавшую аннулирует', async () => {
       const request = await linearRequestInProgress();
       const nextMonday = shiftDateKey(weekStartKey(ctx.dateFrom), 7);
       const newDateTo = shiftDateKey(nextMonday, 2);
@@ -788,7 +813,8 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       expect(first.statusCode, first.body).toBe(200);
       // Просьба закрыла неделю целиком: последний её лист кончается воскресеньем — одним бланком
       // или двумя, если неделю разрезал месяц (ADR 0142).
-      expect((await sheetsOf(request.id)).at(-1)!.period_to).toBe(shiftDateKey(nextMonday, 6));
+      const before = await sheetsOf(request.id);
+      expect(before.at(-1)!.period_to).toBe(shiftDateKey(nextMonday, 6));
 
       const asked = await ctx.app.inject({
         method: 'POST',
@@ -797,39 +823,165 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
         payload: { newDateTo, reason: 'работы закончены раньше', version: first.json().version },
       });
       expect(asked.statusCode, asked.body).toBe(200);
+      /*
+       * Виза применяет срок, а значит идёт каноном команд истории и требует подтверждённого
+       * предпросмотра (этап Э10 плана, Р17): без отпечатка она отвечает 409 «посмотрите
+       * последствия заново». Тело предпросмотра обезличено — здесь от него нужен только отпечаток.
+       */
+      const shown = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/vehicle-requests/${request.id}/early-end/decision/preview`,
+        headers: ctx.auth,
+        payload: { approved: true, version: asked.json().version },
+      });
+      expect(shown.statusCode, shown.body).toBe(200);
       const decided = await ctx.app.inject({
         method: 'PATCH',
         url: `/api/v1/vehicle-requests/${request.id}/early-end`,
         headers: ctx.auth,
-        payload: { approved: true, comment: '', version: asked.json().version },
+        payload: {
+          approved: true,
+          comment: '',
+          version: asked.json().version,
+          previewFingerprint: shown.json().fingerprint,
+        },
       });
       expect(decided.statusCode, decided.body).toBe(200);
 
       const sheets = await sheetsOf(request.id);
       /*
-       * Сгорели ровно те листы, чьи дни вышли за новый срок, — и признак этот считается, а не
-       * пишется единицей.
-       *
-       * «Ровно один» верно, пока разрез месяца не попал МЕЖДУ новым концом срока и воскресеньем:
-       * тогда за срок выходит и второй лист недели, и первый, портал законно жжёт оба и
-       * перевыписывает первый по новую границу. Перебором по трёхлетию таких дней 105 из 1095 —
-       * то есть цифра «один» зеленела бы девять месяцев в году и краснела бы в оставшиеся три без
-       * единой правки кода. Формулировка ниже — дословно та же, что и в этом объяснении: лист
-       * горит тогда, когда его последний день позже нового конца срока.
+       * Новых номеров не появилось — и это главное утверждение случая. Перечень листов до команды
+       * и после совпадает поимённо: сокращение идёт правкой того же бланка, а не парой
+       * «аннулировать плюс выписать» (Р6). Сравнение по идентификаторам, а не по числу: пара
+       * «сгорел один, выписан другой» число сохраняет и мимо счётчика прошла бы.
        */
-      expect(sheets.filter((s) => s.status === 'cancelled')).toHaveLength(
-        askedPeriods(nextMonday).filter((p) => p.to > newDateTo).length,
-      );
-      const issued = sheets.filter((s) => s.status === 'issued');
-      // Бумага покрывает новый срок и не выходит за него: первый лист начинается понедельником,
-      // последний кончается новым концом срока.
-      expect(issued[0]!.period_from).toBe(nextMonday);
-      expect(issued.at(-1)!.period_to).toBe(newDateTo);
-      expect(issued.every((s) => s.period_from >= nextMonday && s.period_to <= newDateTo)).toBe(
-        true,
-      );
-      // Машинист остался прежним: срок правили, а не человека.
-      expect(issued.every((s) => s.driver_person_id === ctx.driverA)).toBe(true);
+      expect(sheets.map((row) => row.id).sort()).toEqual(before.map((row) => row.id).sort());
+
+      /*
+       * Судьба каждого листа считается из его же границ, а не пишется цифрой: месяц режет неделю
+       * (ADR 0142), и в конце месяца просьба выдаёт два бланка вместо одного. Разбор по трём
+       * случаям — то же самое правило, каким его формулирует Р6:
+       *
+       * - лист целиком за новым концом срока — аннулируется без замены (Р7);
+       * - лист, пересечённый новым концом, — сокращается: номер, начало и состав те же, конец
+       *   новый, версия выросла и след правки записан (Р12);
+       * - лист внутри нового срока — не тронут ничем, включая версию.
+       */
+      for (const was of before) {
+        const now = sheets.find((row) => row.id === was.id)!;
+        if (was.period_from > newDateTo) {
+          expect(now.status).toBe('cancelled');
+          // Аннулированный сокращением не считается: след правки у него пуст.
+          expect(now.period_trimmed_at).toBeNull();
+          continue;
+        }
+        if (was.period_to <= newDateTo) {
+          expect(now).toEqual(was);
+          continue;
+        }
+        expect(now.status).toBe('issued');
+        expect(now.period_from).toBe(was.period_from);
+        expect(now.period_to).toBe(newDateTo);
+        expect(now.vehicle_id).toBe(was.vehicle_id);
+        // Машинист остался прежним: срок правили, а не человека.
+        expect(now.driver_person_id).toBe(ctx.driverA);
+        /*
+         * Версия поднята — без этого сторож печати (Р21) стоит вхолостую: печать, начатая до
+         * правки, отдала бы бланк с датами, которых в базе уже нет, и сверять ему было бы нечего.
+         */
+        expect(now.version).toBe(was.version + 1);
+        // След правки (Р12): каким лист был выдан, когда и почему его привели к нынешнему виду.
+        expect(now.period_to_original).toBe(was.period_to);
+        expect(now.period_trimmed_at).not.toBeNull();
+        expect(now.period_trim_reason).not.toBe('');
+        /*
+         * Снимок доведён до факта: в графе «по» стоит новое число, а строки дней, ушедших за
+         * границу, опустели — иначе заказчик вписал бы часы в день, которого у листа больше нет.
+         * Числа считаются той же недельной сеткой, какой они и печатались (`esm2WeekDays`).
+         */
+        expect(now.data.period_to_day).toBe(newDateTo.slice(8, 10));
+        for (const [index, day] of esm2WeekDays({
+          from: was.period_from,
+          to: was.period_to,
+        }).entries()) {
+          const cell = now.data[`day${index + 1}_date`];
+          if (day.inPeriod && day.date <= newDateTo) expect(cell).toBe(day.date.slice(8, 10));
+          else expect(cell).toBe('');
+        }
+      }
+    });
+
+    /**
+     * Тот же случай — но спрошенный **у общего расчёта сокращения**, а не у двери.
+     *
+     * ЗАЧЕМ ОТДЕЛЬНАЯ ПРОВЕРКА. Дыра, которую этот случай сторожит, дверной не была: общий расчёт
+     * (`shortenTermPlan`, Р18) планировал листы только у заказа с бумагой `auto`, а линейному
+     * отдавал **пустой** план. Пустой план ничего не выписывает — и ничего не правит: выданный на
+     * неделю бланк остался бы стоять по дни, которых у заказа больше нет. Дверей у расчёта четыре
+     * (срок, закрытие фактической датой и две ветви досрочного завершения), и заплатка в одной из
+     * них закрывала ровно одну; проверка поэтому спрашивает сам расчёт.
+     *
+     * Снаружи шов не виден: в режиме `legacy` бумагу всё равно ведёт недельная сверка, и дверь
+     * покажет правку периода при любом плане. Отсюда и форма — план читается прямо, в читающей
+     * транзакции, и утверждение о нём одно и то же в обоих режимах: расчёт от режима чтения не
+     * зависит вовсе.
+     */
+    it('общий расчёт сокращения планирует бумагу и линейному заказу, а не отдаёт пустой план', async () => {
+      const request = await linearRequestInProgress();
+      const nextMonday = shiftDateKey(weekStartKey(ctx.dateFrom), 7);
+      const newDateTo = shiftDateKey(nextMonday, 2);
+
+      const issued = await issueEsm2(request.id, { weekOf: nextMonday, version: request.version });
+      expect(issued.statusCode, issued.body).toBe(200);
+      const sheets = (await sheetsOf(request.id)).filter((s) => s.status === 'issued');
+
+      // Расчёт зовётся так же, как его зовут двери, — в транзакции и по прочитанному сроку.
+      // Читающей: до сверки отпечатка и авторизации команда не пишет ни строки (Р20), и откат
+      // здесь страхует от обратного, а не оформляет запись.
+      const { shortenTermPlan } = await import('../src/services/assignment-shorten-term');
+      let plan: Awaited<ReturnType<typeof shortenTermPlan>> | undefined;
+      await ctx.db
+        .transaction(async (tx) => {
+          plan = await shortenTermPlan(tx, {
+            requestId: request.id,
+            asOf: ctx.dateFrom,
+            termBefore: { dateFrom: ctx.dateFrom, dateTo: ctx.dateTo },
+            termAfter: { dateFrom: ctx.dateFrom, dateTo: newDateTo },
+            // Исход самой команды над сроком приносит дверь; расчёту здесь довольно его отсутствия.
+            external: null,
+            // Дни линейного заказа расчёт спрашивает только по просьбе двери — предмет случая не они.
+            linearDays: null,
+          });
+          throw new Error('rollback');
+        })
+        .catch((e: unknown) => {
+          if ((e as Error).message !== 'rollback') throw e;
+        });
+
+      expect(plan!.esm2Mode).toBe('on_demand');
+      /*
+       * Судьба каждого листа считается из его границ — тем же разбором, каким её проверяет случай
+       * выше у двери: месяц режет неделю (ADR 0142), и число листов у просьбы бывает и два.
+       *
+       * - лист целиком за новым концом — в аннулирование;
+       * - лист, пересечённый новым концом, — в правку, ровно до нового конца;
+       * - лист внутри нового срока — ни в один список: команда до него не дотягивается.
+       */
+      for (const sheet of sheets) {
+        if (sheet.period_from > newDateTo) {
+          expect(plan!.sheetPlan.cancel).toContain(sheet.id);
+          continue;
+        }
+        if (sheet.period_to <= newDateTo) {
+          expect(plan!.sheetPlan.cancel).not.toContain(sheet.id);
+          expect(plan!.sheetPlan.trim.map((item) => item.waybillId)).not.toContain(sheet.id);
+          continue;
+        }
+        expect(plan!.sheetPlan.trim).toContainEqual({ waybillId: sheet.id, to: newDateTo });
+      }
+      // Номеров сокращение не жжёт и новых недель линейному заказу не заводит: выписывать нечего,
+      // о второй неделе никто не просил.
+      expect(plan!.sheetPlan.issue).toEqual([]);
     });
 
     it('отмена заявки аннулирует и то, что выписали по требованию', async () => {

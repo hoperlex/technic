@@ -704,21 +704,38 @@ describe.skipIf(!DB_URL)('срезы и отборы линейного зака
 
   it('заявка находится по машине дня и в «Истории»', async () => {
     const request = await linearWithDayToday();
-    // Лист за отработанный день — им день и остаётся при заявке после закрытия: сверка
-    // (`syncLinearRouteDays`) снимает с закрытой заявки весь неподкреплённый бумагой план, а
-    // выданный бланк рейс не отдаёт (ADR 0100 §11). Это и есть случай журнала: машина отработала,
-    // 4-П выписан, заказ закрыт — и «где ходила эта машина» обязано его находить.
+    /*
+     * Лист за отработанный день — им день и остаётся при заявке после закрытия. Это и есть случай
+     * журнала: машина отработала, 4-П выписан, заказ закрыт — и «где ходила эта машина» обязано его
+     * находить.
+     *
+     * Закрывается заказ **своей дверью** (`POST /:id/completion`, ADR 0178): статусная ручка на
+     * «Выполнена» у заказа техники на объект отвечает 422 и отправляет в окно закрытия. Дверь
+     * спрашивает фактическую дату и отпечаток последствий — поэтому и предпросмотр здесь не
+     * украшение сцены, а часть разговора с сервером.
+     *
+     * День при этом остаётся у заявки по двум причинам сразу, и обе новые: он **внутри** факта
+     * (дни за фактической датой снимаются, отработанные остаются — Р27), и по нему выписан бланк,
+     * которого рейс не отдал бы в любом случае (ADR 0100 §11).
+     */
     await issueWaybill(request.routeId);
-    const done = await ctx.app.inject({
-      method: 'PATCH',
-      url: `/api/v1/vehicle-requests/${request.id}/status`,
+    const body = {
+      version: request.version,
+      comment: '',
+      completion: { workedUnit: 'hours', workedAmount: 8, endedOn: ctx.today },
+    };
+    const shown = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/v1/vehicle-requests/${request.id}/completion/preview`,
       headers: ctx.auth,
-      payload: {
-        status: 'done',
-        comment: '',
-        version: request.version,
-        completion: { workedUnit: 'hours', workedAmount: 8 },
-      },
+      payload: body,
+    });
+    expect(shown.statusCode, shown.body).toBe(200);
+    const done = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/v1/vehicle-requests/${request.id}/completion`,
+      headers: ctx.auth,
+      payload: { ...body, previewFingerprint: shown.json().fingerprint },
     });
     expect(done.statusCode, done.body).toBe(200);
 

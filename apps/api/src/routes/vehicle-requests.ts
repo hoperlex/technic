@@ -25,7 +25,6 @@ import {
   ADDRESS_NOT_VERIFIED_MESSAGE,
   type AssignmentPreviewDto,
   type AssignVehicleInput,
-  calcVehicleRequestCost,
   can,
   // Контакт ездки: жёсткая модель спрашивается за **изменившееся** значение (Р2а), и спрашивается
   // теми же схемами, что при заведении, — иначе форма и правка разошлись бы в границах полей.
@@ -50,11 +49,13 @@ import {
   type ChangeVehicleRequestTypeInput,
   CLOSED_REQUEST_STATUSES,
   dateOnlySchema,
-  type CompleteVehicleRequestInput,
   type ConfirmScheduleInput,
   createVehicleRequestSchema,
   type CreateVehicleRequestInput,
-  decideVehicleEarlyEndSchema,
+  decideVehicleEarlyEndApplySchema,
+  decideVehicleEarlyEndPreviewSchema,
+  earlyEndApprovalPreviewResponseSchema,
+  type EarlyEndApprovalPreviewDto,
   earlyEndBlocker,
   earlyEndDateBounds,
   // Недели ЭСМ-2 считаются теми же функциями, что и в самой сверке: правка срока обязана знать,
@@ -112,12 +113,12 @@ import {
   movedRequestStartKey,
   vehicleRequestLeadTimeBlocker,
   onlyWeeklyRows,
-  rateForWorkUnit,
   REQUEST_CUSTOMER_LOCKED_MESSAGE,
   REQUEST_STATUSES,
   type RequestStatus,
   requestTypeChangeBlocker,
-  requestVehicleEarlyEndSchema,
+  requestVehicleEarlyEndApplySchema,
+  requestVehicleEarlyEndPreviewSchema,
   type RequestWaybillDto,
   approvedShiftsBlocker,
   approveVehicleRequestShiftSchema,
@@ -170,7 +171,6 @@ import {
   vehicleRequestOnSiteQuerySchema,
   vehicleRequestSummaryQuerySchema,
   vehicleStatusLabels,
-  vehicleWorkUnitRateLabels,
   // Пересечение дней двух периодов: им коррекция проверяет, не стоит ли на дни названного листа
   // второй действующий бланк (Р11) — тем же вопросом считается и замок сверки.
   periodsOverlap,
@@ -266,6 +266,7 @@ import {
   diffVehicleEarlyEnd,
   diffVehicleRequests,
   earlyEndReasonChange,
+  shiftsPendingChange,
   shiftChange,
 } from '../services/vehicle-request-diff';
 import {
@@ -314,7 +315,27 @@ import { assignmentStateOn } from '../services/assignment-history';
  * конфликтуют при любом порядке работ. Здесь остаётся только то, что действительно принадлежит
  * маршруту: где стоит сверка отпечатка в порядке транзакции и что видит человек.
  */
-import { previewAssignmentCommand, type AssignmentCommandTx } from '../services/assignment-command';
+import {
+  previewAssignmentCommand,
+  runAssignmentCommand,
+  type AssignmentCommandTx,
+} from '../services/assignment-command';
+/*
+ * Досрочное завершение — **две применяющие ветви одной двери** (план
+ * `docs/vehicle-request-actual-end-date-plan.md`, Р19). Расчёт, отпечаток, рукопожатие и запись
+ * живут в своём модуле по той же причине, по какой туда уехали остальные двери истории: здесь
+ * остаётся только то, что принадлежит маршруту, — область, право и выбор ветви.
+ */
+import {
+  earlyEndApprovalPreviewDto,
+  earlyEndAsOf,
+  earlyEndCommandSpec,
+  planEarlyEndCommand,
+  readPendingEarlyEnd,
+  type EarlyEndPaper,
+  type EarlyEndPlan,
+} from '../services/assignment-early-end';
+import type { AssignmentWriteResult } from '../services/assignment-write';
 import {
   assertReassignPreviewFingerprint,
   lockedReassignRequest,
@@ -421,6 +442,9 @@ import {
 // Последствия изменившегося срока работ — общим сервисом: их же зовёт применение недельной заявки,
 // и два описания одного правила разошлись бы при первой правке.
 import { afterWorkPeriodChanged, clearPendingEarlyEnd } from '../services/vehicle-request-period';
+// Факт выполнения — общий с дверью закрытия фактической датой: правило «ставку берёт сервер» и
+// запрет закрывать аренду без суммы принадлежат факту, а не двери (ADR 0029, Р1 плана закрытия).
+import { resolveCompletion, saveCompletion } from '../services/vehicle-request-completion';
 // Условия появления заказа спецтехники — общим сервисом с применением недельной заявки (ADR 0085):
 // иначе проверки классификации и активности площадки разойдутся у формы и у недели.
 import {
@@ -560,6 +584,10 @@ const requestSelect = {
   completedBy: vehicleRequestCompletions.completedBy,
   completedByName: completers.fullName,
   completedAt: vehicleRequestCompletions.completedAt,
+  // Фактический конец работ и срок до закрытия (Р23 плана закрытия фактической датой): «закрыли
+  // 05.08, а разрешали до 09.08» читается строкой факта, а не выводится из соседних событий.
+  completionEndedOn: vehicleRequestCompletions.endedOn,
+  completionPreviousDateTo: vehicleRequestCompletions.previousDateTo,
   // Досрочное завершение (ADR 0044): запрос на сокращение срока и решение по нему.
   earlyEndStatus: vehicleRequestEarlyEndings.status,
   earlyEndNewDateTo: vehicleRequestEarlyEndings.newDateTo,
@@ -1271,6 +1299,10 @@ function toCompletionDto(r: RequestRow): VehicleRequestCompletionDto | null {
     completedBy: r.completedBy,
     completedByName: r.completedByName ?? '',
     completedAt: r.completedAt.toISOString(),
+    // Фактическая дата и прежний конец срока (Р23 плана закрытия): у закрытий до этой волны их
+    // нет и не появится, поэтому наружу они идут `null`, а не подставленной датой заявки.
+    endedOn: r.completionEndedOn,
+    previousDateTo: r.completionPreviousDateTo,
   };
 }
 
@@ -2729,67 +2761,13 @@ async function saveAssignment(
     });
 }
 
-/**
- * Факт, которым закрывают заявку (ADR 0029). Ставку берёт не клиент, а сервер — из назначения,
- * по выбранной единице: «сколько стоило» должно объясняться той ценой, о которой договорились
- * при переводе в работу, а не той, что пришла в теле запроса. Сумма приходит уже посчитанной
- * (её видел человек в окне закрытия) и правится свободно — счёт арендодателя включает перегон и
- * простой; не прислана — считается ставкой на количество.
- *
- * Возвращает DTO «как будет после записи»: им же пишется история.
+/*
+ * Разбор и запись факта выполнения переехали в свой сервис
+ * ([vehicle-request-completion.ts](../services/vehicle-request-completion.ts)): закрывающих дверей
+ * стало две — эта ручка и дверь закрытия фактической датой (Р1 плана
+ * `docs/vehicle-request-actual-end-date-plan.md`), — а правила самого факта («ставку берёт сервер»,
+ * «аренду без суммы не закрывают») принадлежат факту, а не двери. Здесь остаётся вызов.
  */
-function resolveCompletion(
-  assignment: VehicleRequestAssignmentDto | null,
-  input: CompleteVehicleRequestInput,
-  actor: { id: string; name: string },
-): VehicleRequestCompletionDto {
-  const rate = rateForWorkUnit(assignment, input.workedUnit);
-  const totalCost = input.totalCost ?? calcVehicleRequestCost(rate, input.workedAmount);
-  // Аренда — счёт от контрагента (ADR 0027): закрытие без суммы означало бы «сколько заплатили,
-  // выясним потом». Своя машина без ставок закрывается и без суммы: внутреннюю технику не всегда
-  // считают в деньгах. Ставка не задана именно за выбранную единицу — об этом и говорим: обычно
-  // достаточно закрыть сменами вместо часов.
-  if (assignment?.ownership === 'rental' && totalCost == null) {
-    throw err.unprocessable(
-      `Ставка ${vehicleWorkUnitRateLabels[input.workedUnit]} у назначенной техники не задана — укажите стоимость`,
-      { totalCost: 'Укажите стоимость' },
-    );
-  }
-  return {
-    workedUnit: input.workedUnit,
-    workedAmount: input.workedAmount,
-    rate,
-    totalCost,
-    completedBy: actor.id,
-    completedByName: actor.name,
-    completedAt: new Date().toISOString(),
-  };
-}
-
-/**
- * Закрытие заявки: одна строка на заявку. Повторное закрытие (после отката администратором)
- * переписывает её — двух фактов об одной работе не бывает.
- */
-async function saveCompletion(
-  tx: Tx,
-  requestId: string,
-  c: VehicleRequestCompletionDto,
-): Promise<void> {
-  const values = {
-    workedUnit: c.workedUnit,
-    workedAmount: String(c.workedAmount),
-    rate: numToDb(c.rate),
-    totalCost: numToDb(c.totalCost),
-    completedBy: c.completedBy,
-  };
-  await tx
-    .insert(vehicleRequestCompletions)
-    .values({ requestId, ...values })
-    .onConflictDoUpdate({
-      target: vehicleRequestCompletions.requestId,
-      set: { ...values, completedAt: new Date(), updatedAt: new Date() },
-    });
-}
 
 /**
  * Чем объясняется переписанная бумага в журнале бланков. Причина аннулирования обязательна
@@ -2887,29 +2865,6 @@ async function esm2CancelPreview(tx: Tx, ids: readonly string[]): Promise<Esm2Ca
 function dateKeyRu(key: string): string {
   const [y, m, d] = key.split('-');
   return y && m && d ? `${d}.${m}.${y}` : key;
-}
-
-/** Максимум дат в перечне отказа: заявка бывает на месяц, и весь список в сообщение не влезет. */
-const MAX_LISTED_DATES = 5;
-
-/** Даты перечнем: «12.08.2026, 13.08.2026 и ещё 7». */
-function listDates(dates: string[]): string {
-  const head = dates.slice(0, MAX_LISTED_DATES).map(dateKeyRu).join(', ');
-  const rest = dates.length - MAX_LISTED_DATES;
-  return rest > 0 ? `${head} и ещё ${rest}` : head;
-}
-
-/**
- * Согласованное сокращение срока (ADR 0044): новый последний день записывается прямо в заявку.
- * Отдельной пары «план/факт» у срока нет — в заявке одно время, то, о котором договорились, — а
- * расхождение с первоначальным читается историей. Тем же приёмом пишется срок, уточнённый при
- * переводе заявки в работу (`applyConfirmedSchedule`).
- */
-async function applyEarlyEnd(tx: Tx, requestId: string, newDateTo: string): Promise<void> {
-  await tx
-    .update(specialEquipmentRequestDetails)
-    .set({ dateTo: newDateTo })
-    .where(eq(specialEquipmentRequestDetails.requestId, requestId));
 }
 
 /**
@@ -4780,7 +4735,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
       const periodEdited = changesWorkPeriod(before, body);
       let earlyEndDropped = false;
-      let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
+      let esm2: Esm2SyncResult = { cancelled: [], issued: [], trimmed: [] };
       let days: LinearDaysSyncResult = { detached: [], frozen: [] };
 
       /*
@@ -6169,6 +6124,29 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       assertLessorScope(p, before.assignment?.lessorId ?? null);
       if (before.status === status) return before;
       assertTransitionAllowed(p, before.status, status, 'vehicle');
+      /*
+       * Закрытие заказа техники на объект ушло в свою дверь — `POST /:id/completion` (Р1 плана
+       * `docs/vehicle-request-actual-end-date-plan.md`, ADR 0178). Она спрашивает фактическую дату
+       * окончания работ, сокращает по ней срок и приводит к ней бумагу: недели за фактом гасит, а
+       * лист недели, в которую попал последний рабочий день, правит по него, не сжигая номер.
+       *
+       * Пока обе двери принимали `done`, рядом с новой оставалась дорога мимо фактической даты — и
+       * ходили бы по ней ровно те, у кого окно осталось прежним. Поэтому запрет выкатывается парой
+       * с порталом (Э14), а не отдельным этапом «потом»: разъехавшаяся пара означала бы либо
+       * закрытие мимо даты, либо окно, которому некуда стучаться.
+       *
+       * Сужено ровно до заказа техники на объект (Р3): у грузоперевозки нет ни срока работ, ни
+       * недельной бумаги, «фактическая дата окончания» ей ничего не значит, и новая дверь её не
+       * принимает вовсе — запрети мы `done` и ей, закрывать её стало бы нечем.
+       *
+       * Стоит **после** `before.status === status`: повтор «закрытая → закрыта» отвечает заявкой,
+       * как и отвечал, и отказом на нём человека пугать не за что.
+       */
+      if (status === 'done' && before.requestType === 'special_equipment') {
+        throw err.unprocessable(
+          'Закрывайте заказ окном закрытия: оно спрашивает фактическую дату окончания работ и приводит к ней путевые листы',
+        );
+      }
       // Без визы заявка не обрабатывается (ADR 0025): в работу её не берут, пока руководитель
       // строительства не согласовал. Отменить незавизированную заявку можно — ей так и закрывают
       // путь. 422, а не 403: право на переход есть, не хватает состояния самой заявки.
@@ -6613,9 +6591,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               ...diffVehicleCompletion(before.completion, completed),
               // Дни, за которые объект так и не расписался: закрытие их принимает молча, а спорят о
               // машиночасах через два месяца — по истории, и она обязана помнить, что подписи не было.
-              ...(completed && pendingShiftDates.length > 0
-                ? [{ field: 'shiftsPending', from: null, to: listDates(pendingShiftDates) }]
-                : []),
+              ...(completed ? shiftsPendingChange(pendingShiftDates) : []),
             ],
           },
         });
@@ -6827,7 +6803,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         });
       };
 
-      let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
+      let esm2: Esm2SyncResult = { cancelled: [], issued: [], trimmed: [] };
       let days: LinearDaysSyncResult = { detached: [], frozen: [] };
       /**
        * Смена водителя рейса, если её просили вместе с машиной (ADR 0048). Своё событие она
@@ -7137,6 +7113,115 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
   );
 
   // ── Досрочное завершение заказа спецтехники (ADR 0044) ──
+  //
+  // ТРИ ВЕТВИ, И СРОК ПРИМЕНЯЮТ ДВЕ (Р19 плана `docs/vehicle-request-actual-end-date-plan.md`):
+  // запрос без визы заводит `pending` и ничего не двигает, запрос визирующего применяет срок
+  // немедленно, решение применяет его спустя часы или дни — либо не применяет вовсе. Обе
+  // применяющие ветви идут **каноном команды истории** (`runAssignmentCommand`) и общим расчётом
+  // сокращения: до этого этапа они звали недельную сверку напрямую, то есть правка листа вместо
+  // перевыпуска (`trim`) в режиме `history` в досрочное завершение не попала бы никогда.
+  //
+  // Предпросмотров у ветвей два, и оба **обезличены** (Р26): визирующий не имеет прав на журнал
+  // листов, и ответ поэтому отвечает числами и датами, а не номерами бланков и фамилиями.
+
+  /**
+   * Предпросмотр запроса визирующего — что случится, если применить сокращение прямо сейчас.
+   *
+   * Только у той ветви, которая применяет: запрос, уходящий на визу, срок не двигает и бумаги не
+   * трогает, а обещание «что будет, когда завизируют» к моменту визы устареет — его и покажет
+   * предпросмотр решения. Поэтому не-визирующему здесь отвечают отказом по существу, а не пустым
+   * телом: пустое тело он прочитал бы как «последствий нет».
+   *
+   * Право — то же, каким подают сам запрос (`vehicleRequests.update`): смотреть последствия вправе
+   * тот, кто их вызовет. Право на листы **не спрашивается** — ради этого ответ и обезличен (В9).
+   */
+  r.post(
+    '/:id/early-end/preview',
+    {
+      ...canUpdate,
+      schema: {
+        params: idParams,
+        body: requestVehicleEarlyEndPreviewSchema,
+        // Схема ответа — замок обезличивания, а не украшение: ответ сериализуется через неё, и
+        // поле, случайно попавшее в объект, до визирующего не доедет (Р26).
+        response: { 200: earlyEndApprovalPreviewResponseSchema },
+      },
+    },
+    async (req): Promise<EarlyEndApprovalPreviewDto> => {
+      const p = requirePrincipal(req);
+      const before = await getDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      assertRequestScope(p, before);
+      if (!approvesOwnRequestOnCreate(p, before)) {
+        throw err.unprocessable(
+          'Этот запрос ничего не применяет: он уйдёт на визу руководителя строительства, и последствия покажет предпросмотр решения',
+        );
+      }
+      const preview = await previewAssignmentCommand<EarlyEndPlan>(db, {
+        requestId: req.params.id,
+        actor: { id: p.id },
+        asOf: earlyEndAsOf(),
+        plan: (ctx) =>
+          planEarlyEndCommand(ctx, {
+            branch: 'request',
+            newDateTo: req.body.newDateTo,
+            reason: req.body.reason,
+          }),
+      });
+      return earlyEndApprovalPreviewDto(
+        preview.effects,
+        preview.plan,
+        preview.fingerprint,
+        preview.asOf,
+      );
+    },
+  );
+
+  /**
+   * Предпросмотр визы — то же обезличенное тело, но по **чужому** запросу и глазами визирующего.
+   *
+   * Предпросмотр заявителя здесь не годится и в дело не идёт: между запросом и решением проходит
+   * время, состояние меняется, а решает другой человек — отпечаток, снятый чужими глазами и по
+   * чужому состоянию, подтверждает не то. Имя двери входит в отпечаток, поэтому чужой предпросмотр
+   * не подойдёт физически, а не по проверке (Р19).
+   */
+  r.post(
+    '/:id/early-end/decision/preview',
+    {
+      ...canApprove,
+      schema: {
+        params: idParams,
+        body: decideVehicleEarlyEndPreviewSchema,
+        response: { 200: earlyEndApprovalPreviewResponseSchema },
+      },
+    },
+    async (req): Promise<EarlyEndApprovalPreviewDto> => {
+      const p = requirePrincipal(req);
+      const before = await getDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      assertRequestScope(p, before);
+      // Объектная и административная граница визы — та же, что у боевой ручки: реестр доступа её
+      // не дублирует, потому что живёт она здесь (Р22).
+      if (!canApproveRequest(p, before)) {
+        throw err.forbidden('Досрочное завершение визирует руководитель этого объекта');
+      }
+      const snapshot = await readPendingEarlyEnd(db, before.id);
+      if (!snapshot) throw err.unprocessable('Запрос на досрочное завершение не найден');
+      const preview = await previewAssignmentCommand<EarlyEndPlan>(db, {
+        requestId: before.id,
+        actor: { id: p.id },
+        asOf: earlyEndAsOf(),
+        plan: (ctx) => planEarlyEndCommand(ctx, { branch: 'decision', snapshot, comment: '' }),
+      });
+      return earlyEndApprovalPreviewDto(
+        preview.effects,
+        preview.plan,
+        preview.fingerprint,
+        preview.asOf,
+      );
+    },
+  );
+
   /**
    * Запросить сокращение срока: техника освободилась раньше заказанного.
    *
@@ -7148,17 +7233,65 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    *
    * Запрос того, кто эту заявку визирует, применяется сразу: согласование состоялось самим фактом
    * обращения (ADR 0025 п. 5, ADR 0032 — администратор под это правило не подпадает, он действует
-   * не за объект).
+   * не за объект). Отсюда две ветви под одним маршрутом, и **разные** они не по телу, а по
+   * субъекту: применяющая идёт каноном истории со своим предпросмотром и отпечатком, ждущая визы
+   * остаётся простой записью строки.
+   *
+   * Предметные проверки (статус заявки, границы даты) у применяющей ветви живут **внутри** канона
+   * (Р19): после успешного применения все они ложны, и спрошенные здесь они съели бы повтор по
+   * ключу — тот выходит на шаге 2, до расчёта.
    */
   r.post(
     '/:id/early-end',
-    { ...canUpdate, schema: { params: idParams, body: requestVehicleEarlyEndSchema } },
+    { ...canUpdate, schema: { params: idParams, body: requestVehicleEarlyEndApplySchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const { newDateTo, reason, version } = req.body;
+      const {
+        newDateTo,
+        reason,
+        version,
+        operationId,
+        previewFingerprint,
+        cancelGroupsFingerprint,
+      } = req.body;
       const before = await getDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, before);
+
+      const auto = approvesOwnRequestOnCreate(p, before);
+      if (auto) {
+        /*
+         * Ветвь визирующего: срок двигается немедленно, значит команда идёт каноном целиком —
+         * гейт режима, блокировки, повтор по ключу, версия, расчёт, отпечаток, рукопожатие,
+         * авторизация, журнал, мутации, бумага по режиму, аудит и версия заявки.
+         */
+        await runAssignmentCommand<EarlyEndPlan, AssignmentWriteResult, EarlyEndPaper>(
+          db,
+          earlyEndCommandSpec({
+            requestId: before.id,
+            actor: p,
+            command: { branch: 'request', newDateTo, reason },
+            handshake: { operationId, previewFingerprint, cancelGroupsFingerprint },
+            body: req.body,
+            expectedVersion: version,
+            asOf: earlyEndAsOf(),
+          }),
+        );
+        return (await getDto(before.id))!;
+      }
+
+      /*
+       * Ветвь без визы. Рукопожатия ей не применимы, и отказ здесь 422, а не 400: схема принимает
+       * допустимое надмножество (тело у маршрута одно), а какая ветвь пойдёт, считает сервер — по
+       * субъекту, а не по телу (Р28, вторая граница). Канона здесь нет вовсе, поэтому и повторять
+       * нечего: отказ безусловный.
+       */
+      if (operationId || previewFingerprint || cancelGroupsFingerprint) {
+        throw err.unprocessable(
+          'Этот запрос ничего не применяет — он ждёт визы руководителя строительства: подтверждать последствия нечем',
+          { previewFingerprint: 'Ветвь ничего не применяет' },
+        );
+      }
 
       // «Сегодня» считает сервер — тем же способом, что и срез «На объекте» (ADR 0036): часы
       // клиента бывают сбиты, а браузер восточнее Москвы начинает сутки раньше.
@@ -7174,32 +7307,27 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         );
       }
 
-      const auto = approvesOwnRequestOnCreate(p, before);
       const previousDateTo = special.dateTo!;
-      let days: LinearDaysSyncResult = { detached: [], frozen: [] };
       await db.transaction(async (tx) => {
-        // Шаг 0 — гейт режима (§10): запрос сокращения правит срок заказа и снимает дни с
-        // рейсов, то есть читает историю ради бумаги — дверь класса `history`.
+        // Шаг 0 — гейт режима (§10): запрос сокращения читает историю ради бумаги — тот же класс
+        // двери, что и у применяющих ветвей, хотя сам он ни бумаги, ни срока не трогает.
         await requireOpenDoor(tx, 'history');
         /*
-         * Канонический порядок Р17 — до первой записи: сокращённый срок снимает дни с рейсов
-         * (`syncLinearRouteDays`), то есть эта транзакция берёт и рейсы, и заявку. Прежде она шла
-         * к ним с конца — запись запроса, срок заказа, и только потом рейсы, — а встречная правка
-         * заявки (`PATCH /:id`) идёт каноном: сначала рейсы, потом строка заказа. Две такие
-         * транзакции Postgres разрывал как взаимную блокировку; проверено встречными транзакциями.
+         * Порядок захвата — канонический (ADR 0050 п. 12): рейсы заявки, потом её строка. Рейсов
+         * эта ветвь не трогает вовсе, но порядок держится один на модуль: встречная правка заявки
+         * идёт тем же путём, а обратный порядок Postgres разрывал бы как взаимную блокировку.
          */
         await lockRequestRoutes(tx, before.id);
         await lockRequestRow(tx, before.id);
         const values = {
-          // Своя виза не нужна тому, кто её и ставит: запрос сразу записывается согласованным.
-          status: auto ? ('approved' as const) : ('pending' as const),
+          status: 'pending' as const,
           newDateTo,
           previousDateTo,
           reason,
           requestedBy: p.id,
           requestedAt: new Date(),
-          decidedBy: auto ? p.id : null,
-          decidedAt: auto ? new Date() : null,
+          decidedBy: null,
+          decidedAt: null,
           decisionComment: '',
         };
         // Одна заявка — одна запись: повторный запрос переписывает прежний (ADR 0044). Цепочка
@@ -7211,34 +7339,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             target: vehicleRequestEarlyEndings.requestId,
             set: { ...values, updatedAt: new Date() },
           });
-        if (auto) {
-          await applyEarlyEnd(tx, before.id, newDateTo);
-          // Бэкстоп Р21 — после сокращения срока и перед бумагой. Порядок именно такой: считать
-          // до `applyEarlyEnd` значило бы спрашивать машиниста на дни, которые операция как раз и
-          // убирает. Решения по хвосту (Р31) сокращение не спрашивает — новых дней оно не
-          // открывает, а расхождение на прошлом бумаге не мешает (Р30).
-          await assertAssignmentBackstop(tx, {
-            door: 'early_end_request',
-            requestId: before.id,
-            actor: { id: p.id },
-            reason: `Срок заявки сокращён до ${dateKeyRu(newDateTo)}`,
-          });
-          // Сокращённый срок переписывает бумагу той же транзакцией (миграция 0087): недели за
-          // новой датой аннулируются, а текущая — аннулируется и выписывается заново, с днями по
-          // новый последний день включительно. Отработанные недели сверка не трогает.
-          await syncEsm2Waybills(tx, {
-            requestId: before.id,
-            actor: { id: p.id },
-            reason: `Срок заявки сокращён до ${dateKeyRu(newDateTo)} — путевые листы переоформлены`,
-          });
-          // Дни за новым концом срока сняты той же транзакцией (ADR 0100 §11): рейс на день,
-          // которого у заказа больше нет, — это выезд, за который никто не заплатит.
-          days = await syncLinearRouteDays(tx, {
-            requestId: before.id,
-            actor: { id: p.id },
-            reason: `Срок заявки сокращён до ${dateKeyRu(newDateTo)}`,
-          });
-        }
         // Версию поднимает и запрос: он меняет то, что показывает карточка заявки, и второй
         // человек, правящий её с прежней версией, должен получить конфликт, а не тихую перезапись.
         const [updated] = await tx
@@ -7249,7 +7349,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         if (!updated) throw err.conflict();
       });
 
-      const after = (await getDto(before.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'vehicle_request.early_end_request',
@@ -7261,24 +7360,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           changes: diffVehicleEarlyEnd({ previousDateTo, newDateTo, reason }),
         },
       });
-      // Собственная виза — отдельным событием с пометкой `auto`, как и при заведении заявки:
-      // иначе на вопрос «кто согласовал сокращение» отвечало бы только текущее состояние строки.
-      if (auto) {
-        await writeAudit({
-          actorUserId: p.id,
-          action: 'vehicle_request.early_end_approve',
-          entityType: 'vehicle_request',
-          entityId: before.id,
-          metadata: { auto: true, changes: diffVehicleRequests(before, after) },
-        });
-      }
-      await auditLinearDaysSync({
-        actorUserId: p.id,
-        requestId: before.id,
-        reason: 'early_end',
-        result: days,
-      });
-      return after;
+      return (await getDto(before.id))!;
     },
   );
 
@@ -7286,23 +7368,62 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    * Решение по запросу: виза или отказ. Одним маршрутом — у них одно право, одна область и один
    * инвариант «пока запрос ждёт визы»; раздельные разошлись бы в проверках, как и у визы заявки.
    *
-   * Состояние заявки проверяется заново, а не по снимку запроса: между обращением и визой проходит
-   * ночь, за которую заявку успевают закрыть, поправить ей срок или просто дожить до запрошенного
-   * дня. Виза, поставленная не глядя на это, сократила бы срок задним числом.
+   * Виза применяет срок, поэтому идёт каноном истории — со своим предпросмотром, своим отпечатком
+   * и своим ключом операции. Отказ не применяет ничего и остаётся прежним простым телом.
+   *
+   * Состояние заявки при визе проверяется заново и **под блокировкой** (внутри расчёта): между
+   * обращением и визой проходит ночь, за которую заявку успевают закрыть, поправить ей срок или
+   * просто дожить до запрошенного дня. Виза, поставленная не глядя на это, сократила бы срок задним
+   * числом.
    */
   r.patch(
     '/:id/early-end',
-    { ...canApprove, schema: { params: idParams, body: decideVehicleEarlyEndSchema } },
+    { ...canApprove, schema: { params: idParams, body: decideVehicleEarlyEndApplySchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const { approved, comment, version } = req.body;
+      const body = req.body;
       const before = await getDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, before);
       // Право на маршруте общее, а решает руководитель своего объекта — тот же, кто визирует
-      // саму заявку (ADR 0025 п. 4).
+      // саму заявку (ADR 0025 п. 4). Администратор проходит здесь наравне с ним: неограниченную
+      // роль с правом визы `canApproveRequest` пропускает, и волна этого не отбирает (Р26).
       if (!canApproveRequest(p, before)) {
         throw err.forbidden('Досрочное завершение визирует руководитель этого объекта');
+      }
+
+      if (body.approved) {
+        /*
+         * Мост причины (Р19). Причина операции журнала лежит в строке запроса — «что случилось на
+         * объекте», — а канон ждёт envelope **до** транзакции. Поэтому строка читается здесь
+         * предварительным запросом, её причина уезжает в envelope, а расчёт под блокировкой
+         * перечитывает ту же строку и сверяет: разошлась — 409 «посмотрите последствия заново».
+         * Комментарий визирующего к причине не приклеивается: у обоих полей предел 2000 символов,
+         * и склейка однажды упала бы на схеме журнала.
+         *
+         * Отсутствующая строка здесь **не отказ** — и это то самое, ради чего предметные проверки
+         * переехали внутрь расчёта (Р19): повтор по ключу приходит на уже завизированный запрос,
+         * где `pending` не осталось, и отказавший маршрут не дал бы ему дойти до шага 2 канона.
+         * Решает расчёт под блокировкой: нет строки — 422, другая строка — 409.
+         */
+        const snapshot = await readPendingEarlyEnd(db, before.id);
+        await runAssignmentCommand<EarlyEndPlan, AssignmentWriteResult, EarlyEndPaper>(
+          db,
+          earlyEndCommandSpec({
+            requestId: before.id,
+            actor: p,
+            command: { branch: 'decision', snapshot, comment: body.comment },
+            handshake: {
+              operationId: body.operationId,
+              previewFingerprint: body.previewFingerprint,
+              cancelGroupsFingerprint: body.cancelGroupsFingerprint,
+            },
+            body,
+            expectedVersion: body.version,
+            asOf: earlyEndAsOf(),
+          }),
+        );
+        return (await getDto(before.id))!;
       }
 
       const pending =
@@ -7310,89 +7431,42 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           ? before.earlyEnd
           : null;
       if (!pending) throw err.unprocessable('Запрос на досрочное завершение не найден');
-      let days: LinearDaysSyncResult = { detached: [], frozen: [] };
-
-      if (approved) {
-        const onDate = moscowDateKeyOf(new Date());
-        const blocker = earlyEndBlocker(before, onDate);
-        if (blocker) throw err.unprocessable(blocker);
-        if (!isAllowedEarlyEndDate(before, onDate, pending.newDateTo)) {
-          throw err.unprocessable(
-            `Запрошенная дата ${dateKeyRu(pending.newDateTo)} больше не годится: срок заявки изменился или день уже прошёл — нужен новый запрос`,
-          );
-        }
-      }
 
       await db.transaction(async (tx) => {
-        // Шаг 0 — гейт режима (§10): виза сокращения правит срок и переписывает листы — та же
-        // дверь класса `history`, что и сам запрос.
+        // Шаг 0 — гейт режима (§10): отказ стоит в том же ряду, что запрос и виза, — дверь класса
+        // `history`, хотя сам он ни срока, ни бумаги не трогает.
         await requireOpenDoor(tx, 'history');
-        // Тот же канонический порядок, что и у самого запроса сокращения (Р17): виза правит срок и
-        // снимает дни с рейсов, значит рейсы и заявка берутся до первой записи и в этом порядке.
+        // Тот же канонический порядок захвата, что и у остальных ветвей.
         await lockRequestRoutes(tx, before.id);
         await lockRequestRow(tx, before.id);
         await tx
           .update(vehicleRequestEarlyEndings)
           .set({
-            status: approved ? 'approved' : 'rejected',
+            status: 'rejected',
             decidedBy: p.id,
             decidedAt: new Date(),
-            decisionComment: comment,
+            decisionComment: body.comment,
             updatedAt: new Date(),
           })
           .where(eq(vehicleRequestEarlyEndings.requestId, before.id));
-        // Срок сокращается той же транзакцией, что и виза: состояния «согласовано, а срок
-        // прежний» не бывает — по нему считают и площадку, и аренду. Той же транзакцией
-        // переписываются путевые листы (миграция 0087): бумага, утверждающая работу, которой не
-        // будет, не должна пережить визу даже на мгновение.
-        if (approved) {
-          await applyEarlyEnd(tx, before.id, pending.newDateTo);
-          // Бэкстоп Р21 — тем же порядком и по той же причине, что и у самого запроса сокращения:
-          // сначала новый срок, потом расчёт по нему, и только потом бумага.
-          await assertAssignmentBackstop(tx, {
-            door: 'early_end_decision',
-            requestId: before.id,
-            actor: { id: p.id },
-            reason: `Срок заявки сокращён до ${dateKeyRu(pending.newDateTo)}`,
-          });
-          await syncEsm2Waybills(tx, {
-            requestId: before.id,
-            actor: { id: p.id },
-            reason: `Срок заявки сокращён до ${dateKeyRu(pending.newDateTo)} — путевые листы переоформлены`,
-          });
-          days = await syncLinearRouteDays(tx, {
-            requestId: before.id,
-            actor: { id: p.id },
-            reason: `Срок заявки сокращён до ${dateKeyRu(pending.newDateTo)}`,
-          });
-        }
         const [updated] = await tx
           .update(vehicleRequests)
           .set({ updatedBy: p.id, version: before.version + 1, updatedAt: new Date() })
-          .where(and(eq(vehicleRequests.id, before.id), eq(vehicleRequests.version, version)))
+          .where(and(eq(vehicleRequests.id, before.id), eq(vehicleRequests.version, body.version)))
           .returning({ id: vehicleRequests.id });
         if (!updated) throw err.conflict();
       });
 
-      const after = (await getDto(before.id))!;
       await writeAudit({
         actorUserId: p.id,
-        action: approved ? 'vehicle_request.early_end_approve' : 'vehicle_request.early_end_reject',
+        action: 'vehicle_request.early_end_reject',
         entityType: 'vehicle_request',
         entityId: before.id,
-        // У визы состав изменений — сам срок заявки: она его и меняет. У отказа менять нечего,
-        // и событие несёт причину: заявка живёт дальше по заказанному сроку, и это надо объяснить.
-        metadata: approved
-          ? { changes: diffVehicleRequests(before, after) }
-          : { changes: earlyEndReasonChange(comment) },
+        // У отказа менять нечего, и событие несёт причину: заявка живёт дальше по заказанному
+        // сроку, и это надо объяснить.
+        metadata: { changes: earlyEndReasonChange(body.comment) },
       });
-      await auditLinearDaysSync({
-        actorUserId: p.id,
-        requestId: before.id,
-        reason: 'early_end',
-        result: days,
-      });
-      return after;
+      return (await getDto(before.id))!;
     },
   );
 

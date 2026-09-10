@@ -429,11 +429,13 @@ function armed(
   };
 }
 
-const errorOf = async (run: () => Promise<unknown>): Promise<Error & { statusCode?: number }> => {
+const errorOf = async (
+  run: () => Promise<unknown>,
+): Promise<Error & { statusCode?: number; code?: string }> => {
   try {
     await run();
   } catch (e) {
-    return e as Error & { statusCode?: number };
+    return e as Error & { statusCode?: number; code?: string };
   }
   throw new Error('ожидался отказ, а команда прошла');
 };
@@ -477,8 +479,24 @@ async function sheetsOf(tx: SceneTx, requestId: string) {
       vehicle_id: string;
       driver_person_id: string;
       status: string;
+      /**
+       * Версия и след сокращения (Р12 плана `docs/vehicle-request-actual-end-date-plan.md`).
+       *
+       * Ими и различаются два способа привести лист к новому сроку: перевыписка даёт новую строку
+       * с новым номером, правка — ту же строку с поднятой версией и заполненным следом. Состав
+       * (`compositionOf`) обе картины показывает одинаково, и без этих колонок тест, ждавший пары
+       * «аннулирован плюс выписан», молча зеленел бы на правке.
+       */
+      version: number;
+      period_to_original: string | null;
+      period_trimmed_at: string | null;
+      period_trim_reason: string;
+      period_trim_correction_id: string | null;
     }>(sql`
-      SELECT id, period_from, period_to, vehicle_id, driver_person_id, status FROM waybills
+      SELECT id, period_from, period_to, vehicle_id, driver_person_id, status,
+             version, period_to_original::text, period_trimmed_at::text,
+             period_trim_reason, period_trim_correction_id
+        FROM waybills
        WHERE source_request_id = ${requestId} ORDER BY period_from, id`)
   ).rows;
 }
@@ -876,6 +894,15 @@ describe.skipIf(!DB_URL)('правка срока: подтверждение г
     });
   });
 
+  /*
+   * Отпечаток у этой двери спрашивается **безусловно** — и после того, как сверка переехала из её
+   * рукопожатия в шаг 7 каркаса (Р17, Э4а), тоже. Сцена выбрана ровно там, где умолчание каркаса
+   * («непустые `effects.mutations`») дверь пропустило бы: продление истории не пишет ни строки, а
+   * бумага у него непустая. Признак `requiresPreview` двери и есть то, чем эта сцена держится.
+   *
+   * Код и текст отказа проверяются поимённо: портал разбирает 409 по `assignment_preview_stale`,
+   * и переезд проверки обязан оставить ему ту же ошибку на том же месте, а не другую.
+   */
   it('устаревший предпросмотр — 409, даже когда история команды пуста', async () => {
     await inScene({ status: 'confirmed', issueSheets: true }, async (tx, scene) => {
       const command: PeriodCommand = { version: 0, dateTo: EXTENDED_TO };
@@ -883,6 +910,26 @@ describe.skipIf(!DB_URL)('правка срока: подтверждение г
         runPeriod(tx, scene, DISPATCHER, { ...command, previewFingerprint: 'вчерашний' }),
       );
       expect(error.statusCode).toBe(409);
+      expect(error.code).toBe('assignment_preview_stale');
+      expect(error.message).toBe(
+        'Последствия изменились с момента предпросмотра — посмотрите их заново и подтвердите',
+      );
+      expect(await versionOf(tx, scene.requestId)).toBe(0);
+    });
+  });
+
+  /*
+   * Пропущенный отпечаток — тот же 409, а не «тело без поля»: до Э4а на него отвечало дверное
+   * рукопожатие (`undefined !== plan.fingerprint`), теперь отвечает шаг 7 по признаку двери.
+   * Разница видна только здесь: у продления история пуста, и умолчание каркаса эту команду
+   * применило бы без подтверждения вовсе.
+   */
+  it('вовсе не присланный отпечаток у продления — тот же отказ, а не тихое применение', async () => {
+    await inScene({ status: 'confirmed', issueSheets: true }, async (tx, scene) => {
+      const command: PeriodCommand = { version: 0, dateTo: EXTENDED_TO };
+      const error = await errorOf(() => runPeriod(tx, scene, DISPATCHER, { ...command }));
+      expect(error.statusCode).toBe(409);
+      expect(error.code).toBe('assignment_preview_stale');
       expect(await versionOf(tx, scene.requestId)).toBe(0);
     });
   });
@@ -927,6 +974,7 @@ describeReadModes(readMode, 'правка срока: права по исход
       { status: 'done', dateTo: EXTENDED_TO, splitAt, issueSheets: true },
       async (tx, scene) => {
         const command: PeriodCommand = { version: 0, dateTo: shiftDateKey(splitAt, -1) };
+        const before = await sheetsOf(tx, scene.requestId);
         const preview = await previewPeriod(tx, scene, DISPATCHER, command);
         // Прежний диапазон группы начинался в прошлой неделе — исход `crew` (Р32, Е3), и вместе с
         // ним появляется отпечаток разблокировок: подтверждать надо и пустое множество (Д4).
@@ -994,6 +1042,45 @@ describeReadModes(readMode, 'правка срока: права по исход
             return `${p.from}—${p.to}|${vehicleInSheet}|${scene.personA}`;
           }),
         );
+
+        /*
+         * Чем именно бумага приведена к новому сроку — и здесь два исполнителя расходятся, а
+         * состав выше этого не показывает: границы у обеих картин одни и те же.
+         *
+         * Смотрим на лист, накрывавший последний день нового срока. В `legacy` его состав совпал с
+         * ожиданием (недельная сверка печатает пару из денормализации — ту же, что и при выписке),
+         * начало не сдвинулось, а отнятый хвост не нужен никакому другому ожиданию: все пять
+         * условий Р6 сошлись, и лист **правится на месте**. Номер не сгорел, строка та же, версия
+         * поднята (без этого сторож печати Р21 стоит вхолостую), след правки записан, и ссылка на
+         * операцию стоит — исход `crew` неординарен (Р12).
+         *
+         * В `history` машина листа разошлась с историей этих дней, а правка чинить состав не умеет
+         * ни при каких входных данных: номер горит и выписывается новый. След сокращения у
+         * сгоревшего листа обязан остаться пустым — иначе журнал объявил бы сокращённым бланк,
+         * который изъят из оборота целиком.
+         */
+        const lastDay = shiftDateKey(splitAt, -1);
+        const covering = before.find(
+          (row) => row.period_from <= lastDay && row.period_to >= lastDay,
+        )!;
+        const after = (await sheetsOf(tx, scene.requestId)).find((row) => row.id === covering.id)!;
+        if (mode === 'legacy') {
+          expect(after.status).toBe('issued');
+          expect(after.period_from).toBe(covering.period_from);
+          expect(after.period_to).toBe(lastDay);
+          expect(after.version).toBe(covering.version + 1);
+          expect(after.period_to_original).toBe(covering.period_to);
+          expect(after.period_trimmed_at).not.toBeNull();
+          expect(after.period_trim_reason).toBe('машина ушла с объекта раньше');
+          expect(after.period_trim_correction_id).toBe(
+            (await journalOf(tx, scene.requestId))[0]!.id,
+          );
+        } else {
+          expect(after.status).toBe('cancelled');
+          expect(after.period_to).toBe(covering.period_to);
+          expect(after.period_trimmed_at).toBeNull();
+          expect(after.period_trim_correction_id).toBeNull();
+        }
       },
     );
   });
