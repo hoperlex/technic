@@ -1603,18 +1603,32 @@ describe('разница эффективных прав', () => {
      * отражение до шага 1e), «Заявителя» — из модульного каталога; итог считается так же, как его
      * считает сервер: права роли ∪ состав набора.
      */
-    const NEW_PAIRS: readonly { label: string; permissions: readonly Permission[] }[] = [
+    const NEW_PAIRS: readonly {
+      label: string;
+      permissions: readonly Permission[];
+      roles: readonly Role[];
+    }[] = [
       {
         label: 'office_equipment_operator',
         permissions: ROLE_ADDON_PERMISSIONS.office_equipment_operator,
+        roles: ROLE_ADDON_BASE_ROLES.office_equipment_operator,
       },
       {
+        /*
+         * Роли берутся ИЗ КАТАЛОГА, а не перебором обеих офисных (ADR 0181): круг заявителя выдан
+         * менеджеру матрицей роли, и набор ему с этого дня не положен — он не добавил бы ни одного
+         * права. Проверка «вклад непуст» ниже поймала бы это падением, но падать она должна на
+         * забытом составе, а не на паре, которой каталог больше не обещает.
+         */
         label: 'office_equipment_requester',
         permissions: MODULE_GRANTS.office_equipment_requester.permissions,
+        roles: MODULE_GRANTS.office_equipment_requester.roles,
       },
     ];
-    for (const role of OFFICE_ROLES) {
-      for (const { label, permissions } of NEW_PAIRS) {
+    for (const { label, permissions, roles } of NEW_PAIRS) {
+      const pairRoles = OFFICE_ROLES.filter((role) => roles.includes(role));
+      expect(pairRoles, `каталог не обещает набор «${label}» ни одной офисной роли`).not.toEqual([]);
+      for (const role of pairRoles) {
         const after = [...new Set<Permission>([...ROLE_PERMISSIONS[role], ...permissions])];
         const violations = validateGrantAssignment({
           roles: [role],
@@ -1634,6 +1648,18 @@ describe('разница эффективных прав', () => {
         ).not.toEqual([]);
       }
     }
+
+    /*
+     * Обратная сторона того же решения (ADR 0181): менеджеру «Заявитель» больше не положен, и
+     * причина названа здесь, а не подразумевается пустотой перебора выше, — круг заказчика у него
+     * в матрице целиком, до последнего права.
+     */
+    expect([...MODULE_GRANTS.office_equipment_requester.roles]).not.toContain('manager');
+    expect(
+      MODULE_GRANTS.office_equipment_requester.permissions.filter(
+        (p) => !ROLE_PERMISSIONS.manager.includes(p),
+      ),
+    ).toEqual([]);
 
     /*
      * Вторая половина, и она про запрет: ИТ-служба и исполнитель офисным ролям не положены.
@@ -2143,19 +2169,24 @@ describe('единая проверка выдачи', () => {
    * — тот же случай коменданта, ради которого таблица заведена.
    *
    * Роль взята действующая, а не выдуманная, и её нехватка проверяется прямо здесь: выдай кто-нибудь
-   * менеджеру чтение заявок матрицей — и тест зеленел бы по причине, к барьеру отношения не
+   * этой роли чтение заявок матрицей — и тест зеленел бы по причине, к барьеру отношения не
    * имеющей. Вторая половина кейса — тот же набор роли с модулем — обязательна по той же причине:
    * барьер стоит на **отсутствии чтения у субъекта**, а не на самом праве, и функция, отклоняющая
    * `assign` всегда, первую половину прошла бы.
+   *
+   * РОЛЬ СМЕНИЛАСЬ С МЕНЕДЖЕРА НА ДИСПЕТЧЕРА (ADR 0181), и это ровно тот случай, ради которого
+   * первая строка теста и написана: менеджеру круг заказчика выдан матрицей 10.09.2026, чтение
+   * заявок у него теперь есть, и барьер на нём больше не срабатывает. Диспетчер остался ролью без
+   * модуля — круг заявителя приходит ему набором, а не ролью.
    */
   it('назначение исполнителя без чтения заявок роли без модуля не выдаётся', () => {
-    expect(ROLE_PERMISSIONS.manager).not.toContain('serviceRequests.read');
+    expect(ROLE_PERMISSIONS.dispatcher).not.toContain('serviceRequests.read');
     const grant: readonly Permission[] = ['serviceRequests.assign'];
     const violations = validateGrantAssignment({
-      roles: ['manager'],
+      roles: ['dispatcher'],
       permissions: grant,
-      subjectRole: 'manager',
-      subjectPermissionsAfter: effectiveAfter({ role: 'manager' }, grant),
+      subjectRole: 'dispatcher',
+      subjectPermissionsAfter: effectiveAfter({ role: 'dispatcher' }, grant),
       grantLabel: 'Оргтехника: назначение',
     });
     expect(codesOf(violations)).toEqual(['requirement_missing']);

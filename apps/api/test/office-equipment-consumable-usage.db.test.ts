@@ -76,7 +76,8 @@ interface Ctx {
    * Менеджер — тот самый случай Р4: `officeEquipment.read` у него есть, `serviceRequests.read`
    * нет. Склад ему открыт целиком, а заявка, названная в ленте, — нет, и ссылка вела бы в 403.
    */
-  manager: { id: string; email: string; auth: Auth };
+  /** Ведущий справочник парка без модуля заявок — с 10.09.2026 это диспетчер (ADR 0181). */
+  directoryKeeper: { id: string; email: string; auth: Auth };
   /**
    * Роль площадки, но ЧУЖОЙ: право читать заявки у неё есть, а эта заявка не её. Второй отказ Р4 —
    * тот, который правом не ловится вовсе, только областью.
@@ -340,7 +341,7 @@ describe.skipIf(!DB_URL)('расход расходников: отчёт и с�
               'admin'::role, true, now())
       RETURNING id, full_name`);
     // Два смотрящих Р4: у первого нет права читать заявки, у второго право есть, а заявка чужая.
-    const manager = await makeUser('manager', 'manager');
+    const directoryKeeper = await makeUser('keeper', 'dispatcher');
     const foreignSite = await makeUser('foreign', 'shtab');
     const objectRow = await db.execute<{ id: string }>(sql`
       INSERT INTO construction_objects (code, name, address)
@@ -382,7 +383,11 @@ describe.skipIf(!DB_URL)('расход расходников: отчёт и с�
         email,
         auth: await login(email),
       },
-      manager: { id: manager.id, email: manager.email, auth: await login(manager.email) },
+      directoryKeeper: {
+        id: directoryKeeper.id,
+        email: directoryKeeper.email,
+        auth: await login(directoryKeeper.email),
+      },
       foreignSite: {
         id: foreignSite.id,
         email: foreignSite.email,
@@ -555,13 +560,16 @@ describe.skipIf(!DB_URL)('расход расходников: отчёт и с�
     expect(forAdmin.requestAccessible).toBe(true);
 
     /*
-     * Менеджер: `officeEquipment.read` есть, `serviceRequests.read` нет. Ссылка вела бы в 403 на
-     * самом пороге модуля, поэтому признак ложен — и ложен он ДО всякого разбора области: спрашивать
-     * «чья заявка» у того, кому закрыт весь модуль, незачем.
+     * Ведущий справочник (диспетчер): `officeEquipment.read` есть, `serviceRequests.read` нет.
+     * Ссылка вела бы в 403 на самом пороге модуля, поэтому признак ложен — и ложен он ДО всякого
+     * разбора области: спрашивать «чья заявка» у того, кому закрыт весь модуль, незачем.
+     *
+     * Роль тут диспетчерская, а не менеджерская: менеджеру круг заказчика выдан ролью (ADR 0181),
+     * и на нём этот случай доказывал бы обратное тому, о чём написан.
      */
-    const forManager = issueOf(await stockEntriesOf(state.toner.id, ctx.manager.auth));
-    expect(forManager.serviceRequestNumber).toBe(number);
-    expect(forManager.requestAccessible).toBe(false);
+    const forKeeper = issueOf(await stockEntriesOf(state.toner.id, ctx.directoryKeeper.auth));
+    expect(forKeeper.serviceRequestNumber).toBe(number);
+    expect(forKeeper.requestAccessible).toBe(false);
 
     /*
      * Роль ЧУЖОЙ площадки: право читать заявки у неё есть, а эта заявка не её — предикат области
@@ -580,13 +588,13 @@ describe.skipIf(!DB_URL)('расход расходников: отчёт и с�
      * запрошенная теми же двумя учётками напрямую, отвечает 403. Без этой пары случай проверял бы
      * только сам себя.
      */
-    const managerTry = await inject(
+    const keeperTry = await inject(
       'GET',
       `/api/v1/service-requests/${state.request.id}`,
       undefined,
-      ctx.manager.auth,
+      ctx.directoryKeeper.auth,
     );
-    expect(managerTry.statusCode).toBe(403);
+    expect(keeperTry.statusCode).toBe(403);
     const foreignTry = await inject(
       'GET',
       `/api/v1/service-requests/${state.request.id}`,

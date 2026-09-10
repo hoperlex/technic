@@ -58,8 +58,16 @@ function renderPage(user: AuthUser, search = '') {
   return http;
 }
 
-/** Менеджер ведёт справочники, но заявок на обслуживание у него нет вовсе. */
+/**
+ * Менеджер: ведёт справочник парка и с 10.09.2026 заводит заявки — круг заказчика выдан ему ролью
+ * (ADR 0181). Оси области у роли нет, поэтому и площадок в фикстуре нет.
+ */
 const KEEPER = authUser({ role: 'manager', constructionObjectIds: [] });
+/**
+ * Диспетчер: единственная теперь роль, которая ведёт справочник оргтехники, а модуля заявок не
+ * видит вовсе — круг заявителя приходит ей набором «Оргтехника: заявитель», а не матрицей.
+ */
+const DIRECTORY_KEEPER = authUser({ role: 'dispatcher', constructionObjectIds: [] });
 /** Оператор оргтехники: надстройка над штабом — у него есть и заявки, и парк. */
 const OPERATOR = authUser({
   role: 'shtab',
@@ -81,12 +89,23 @@ describe('вкладки раздела «Орг.техника»', () => {
     expect(screen.getByRole('tab', { name: 'Техника' })).toBeTruthy();
   });
 
-  it('менеджеру открыта только «Техника», и она же становится вкладкой по умолчанию', async () => {
-    // Право заявок у него отсутствует — иначе проверка ничего не значит.
-    expect(can(KEEPER, 'serviceRequests.read')).toBe(false);
+  it('менеджеру открыты и заявки, и парк (ADR 0181)', async () => {
+    // Круг заказчика пришёл ролью, а не набором: у фикстуры нет ни надстроек, ни выданных кодов.
+    expect(can(KEEPER, 'serviceRequests.read')).toBe(true);
     expect(can(KEEPER, 'officeEquipment.read')).toBe(true);
 
     renderPage(KEEPER);
+
+    expect(await screen.findByRole('tab', { name: 'Заявки' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Техника' })).toBeTruthy();
+  });
+
+  it('тому, кто ведёт только справочник, открыта одна «Техника» — и она же по умолчанию', async () => {
+    // Право заявок у него отсутствует — иначе проверка ничего не значит.
+    expect(can(DIRECTORY_KEEPER, 'serviceRequests.read')).toBe(false);
+    expect(can(DIRECTORY_KEEPER, 'officeEquipment.read')).toBe(true);
+
+    renderPage(DIRECTORY_KEEPER);
 
     const equipmentTab = await screen.findByRole('tab', { name: 'Техника' });
     expect(equipmentTab.getAttribute('aria-selected')).toBe('true');
@@ -100,8 +119,8 @@ describe('вкладки раздела «Орг.техника»', () => {
    * Прямая ссылка переживает смену роли: адрес с недоступной вкладкой обязан вести на доступную, а
    * не на пустой экран с отказами.
    */
-  it('ссылка на «Заявки» у менеджера ведёт на доступную вкладку', async () => {
-    renderPage(KEEPER, '?tab=requests');
+  it('ссылка на «Заявки» у ведущего справочник ведёт на доступную вкладку', async () => {
+    renderPage(DIRECTORY_KEEPER, '?tab=requests');
 
     const equipmentTab = await screen.findByRole('tab', { name: 'Техника' });
     expect(equipmentTab.getAttribute('aria-selected')).toBe('true');

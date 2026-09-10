@@ -781,7 +781,12 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     const foreignShtab = await makeUser({ tag: 'fshtab', role: 'shtab' });
     const department = await makeUser({ tag: 'dept', role: 'department' });
     const multiDepartment = await makeUser({ tag: 'dept2', role: 'department' });
-    const keeper = await makeUser({ tag: 'keeper', role: 'manager' });
+    /*
+     * «Держатель справочника» — тот, кто ведёт парк, а модуля заявок не видит вовсе. С 10.09.2026
+     * это ДИСПЕТЧЕР, а не менеджер (ADR 0181): менеджеру круг заказчика выдан ролью, и на нём
+     * проверки «ремонтной части не видно» доказывали бы обратное тому, о чём написаны.
+     */
+    const keeper = await makeUser({ tag: 'keeper', role: 'dispatcher' });
     // Согласующий от ИТ: роль отдела и **чужой** отдел в области. Именно чужой — так проверяется,
     // что заявки он видит не по своей роли, а по надстройке (Р54).
     const itApprover = await makeUser({ tag: 'it', role: 'department' });
@@ -3184,7 +3189,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       // Карточка ему открыта: техникой он и занимается.
       expect(res.statusCode, res.body).toBe(200);
       // А поля нет совсем, а не пустым списком: пустой список означал бы «ремонтов не было», и
-      // менеджер решил бы, что аппарат ни разу не чинили.
+      // ведущий справочник решил бы, что аппарат ни разу не чинили.
       expect(res.json().serviceHistory).toBeUndefined();
     });
   });
