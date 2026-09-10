@@ -929,6 +929,17 @@ export const ACCESS_MANIFEST = {
     anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
     why: 'работа исполнителя: у стороны — право на объём работ, у поимённого — назначение',
   },
+  // Раскладка свободной записи по графам (план свободного объёма работ, Р2). ОДНО право, и НЕ
+  // дизъюнкция стороны исполнителя, стоящая у всех соседних ручек объёма работ: здесь другая
+  // работа и другой держатель. `serviceRequests.estimateRewrite` уходит в набор «Ведение» — оно
+  // переносит присланный подрядчиком перечень в графы, — и по СОГЛАСОВАННОЙ ревизии эта дверь
+  // переиздаёт документ: поднимает номер, снимает подпись и ставит новое предъявление. Припиши мы
+  // сюда `estimate`/`execute`, исполнитель получил бы обход собственного замка «согласованный
+  // состав не правится», причём тем же телом запроса, что у соседней ручки.
+  'PUT /api/v1/service-requests/:id/estimate/breakdown': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.estimateRewrite'],
+  },
   // Согласование объёма работ (план упрощения цикла, Р3). Согласует НАЗНАЧЕННЫЙ сотрудник, а не
   // только «Ведение», — поэтому пара та же, что у `decline`: у стороны согласования это её
   // собственное право, у поимённого исполнителя — `serviceRequests.execute`, которым он значится в
@@ -1505,6 +1516,42 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['vehicleRequests.update', 'waybills.read'],
   },
+  /*
+   * Закрытие фактической датой (план `docs/vehicle-request-actual-end-date-plan.md`, Р22) — две
+   * строки одного вида, потому что вопрос у предпросмотра и боевого вызова один и тот же.
+   *
+   * Базовое право — `vehicleRequests.status`: закрытие это решение о ходе заявки, то же самое,
+   * которым её закрывают сегодня статусной ручкой, а не правка заказа (`vehicleRequests.update`
+   * есть у площадки, и подбор дверей по нему отдал бы ей закрытие).
+   *
+   * Второе право **условное, и условие здесь — эффект, а не поле тела**. `waybills.read` нужно
+   * всем, кроме одной ветви: арендодатель закрывает свой заказ плановым сроком, бумаги не касается
+   * вовсе и права на журнал листов не имеет (`COUNTERPARTY_TYPE_PERMISSIONS`). Напиши мы простую
+   * пару `['vehicleRequests.status', 'waybills.read']` — закрылся бы его единственный коридор;
+   * оставь один `status` — из машинного реестра пропало бы условное право, а он для того и заведён,
+   * чтобы права читались из него, а не из кода. Телом ветвь не выражается: её считает сервер по
+   * субъекту и арендодателю назначенной машины, под блокировкой, — значит и `conditionalPermissions`
+   * (условие по присланному полю) здесь не годится.
+   *
+   * Спрашивает право сама дверь, и мест ровно три: предпросмотр после расчёта ветви, `authorize`
+   * боевой команды и `authorizeRepeat` — последний обязателен, потому что повтор по ключу выходит
+   * на шаге 2 канона и до `authorize` не доходит. Доказывает это `provenBy`: перебором прав такое
+   * правило не проверить — структурная сверка «манифест ↔ факт» видит только базовую половину.
+   */
+  'POST /api/v1/vehicle-requests/:id/completion/preview': {
+    kind: 'effectConditionalPermissions',
+    baseAllOf: ['vehicleRequests.status'],
+    effectAllOf: ['waybills.read'],
+    effect: 'ветвь команды не `paperlessLessorCompletion`',
+    provenBy: 'test/vehicle-request-completion.db.test.ts',
+  },
+  'POST /api/v1/vehicle-requests/:id/completion': {
+    kind: 'effectConditionalPermissions',
+    baseAllOf: ['vehicleRequests.status'],
+    effectAllOf: ['waybills.read'],
+    effect: 'ветвь команды не `paperlessLessorCompletion`',
+    provenBy: 'test/vehicle-request-completion.db.test.ts',
+  },
   'GET /api/v1/vehicle-requests/:id/days': {
     kind: 'permissions',
     allOf: ['vehicleRequests.read'],
@@ -1520,6 +1567,28 @@ export const ACCESS_MANIFEST = {
   'GET /api/v1/vehicle-requests/:id/driver': {
     kind: 'permissions',
     allOf: ['vehicleRequests.read'],
+  },
+  /*
+   * Досрочное завершение: два предпросмотра последствий (план
+   * `docs/vehicle-request-actual-end-date-plan.md`, Р22, Р26, этап Э10). Боевые маршруты ниже
+   * прежние и свои строки уже имеют.
+   *
+   * Строки ПРОСТЫЕ, а не условные, — в отличие от соседнего закрытия фактической датой, и причин
+   * тому три. Тело ответа одно на всех и **обезличено** (Р26): числа, даты и требования, без
+   * номеров бланков и фамилий, — поэтому `waybills.read` здесь не спрашивается ни у кого, включая
+   * администратора, у которого оно есть. Права ни одной ветви не растут (Р19): предпросмотр
+   * доступен ровно тому, кто вызовет ту же ветвь боевым запросом. А объектная и административная
+   * граница визы живёт в `canApproveRequest` — там же, где у боевой ручки решения, — и реестр её
+   * не дублирует: манифест описывает «что нужно, чтобы обработчик начал работать», а не «над
+   * какими строками».
+   */
+  'POST /api/v1/vehicle-requests/:id/early-end/preview': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.update'],
+  },
+  'POST /api/v1/vehicle-requests/:id/early-end/decision/preview': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.approve'],
   },
   'POST /api/v1/vehicle-requests/:id/early-end': {
     kind: 'permissions',

@@ -333,6 +333,19 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     label: 'Назначает сервисную компанию',
   },
   'serviceRequests.estimate': { module: 'service', action: 'manage', label: 'Ведёт смету ремонта' },
+  /*
+   * Раскладка свободной записи по графам (план
+   * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р2). Действие `manage`, а не
+   * `update`: колонка «Правка» модуля описывает правку самой заявки (`serviceRequests.update`), и
+   * раскладка, попав в неё, читалась бы как её половина — тогда как это работа над другим
+   * документом и с другими последствиями (снятая подпись, новая ревизия). Место ей рядом с
+   * ведением сметы, строкой выше.
+   */
+  'serviceRequests.estimateRewrite': {
+    module: 'service',
+    action: 'manage',
+    label: 'Переписывает объём работ по графам',
+  },
   'serviceRequests.approveEstimate': {
     module: 'service',
     action: 'approve',

@@ -667,6 +667,21 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     },
   },
   /*
+   * Раскладка свободной записи по графам (план свободного объёма работ, Р2). Тело такое же, как у
+   * соседки выше, и фикстура ей нужна по той же причине: схема проверяется ДО стража, и пустое тело
+   * дало бы 400 вместо ожидаемого 403 — то есть перебор прав молча перестал бы что-либо доказывать.
+   *
+   * Ни добавки «нужно обработчику», ни `selfRefusal` здесь нет: право у ручки одно
+   * (`serviceRequests.estimateRewrite`), а всё остальное — статус заявки и состояние ревизии —
+   * обработчик спрашивает уже за подменённой БД.
+   */
+  'PUT /api/v1/service-requests/:id/estimate/breakdown': {
+    payload: {
+      items: [{ kind: 'part', name: 'Ролик подачи', quantity: 1, unitPrice: 1800 }],
+      version: 1,
+    },
+  },
+  /*
    * Согласование объёма работ (Р3, Р8). Статуса оно больше не меняет, коридора у него нет, и страж
    * стал дизъюнкцией «право согласования **или** назначение» — согласует назначенный сотрудник, а
    * не только «Ведение». До первого запроса в БД обработчик ничего не спрашивает: и сторону, и
@@ -993,6 +1008,23 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { version: 0, dateTo: FUTURE_DATE, previewFingerprint: 'a'.repeat(64) },
   },
 
+  /*
+   * Закрытие фактической датой (Э9 плана `docs/vehicle-request-actual-end-date-plan.md`). Тело —
+   * минимальное валидное: фактическая дата в схеме необязательна (её спрашивает дверь по ветви,
+   * Р3), а без факта и версии схема ответила бы 400 раньше стража, и перебор проверял бы Zod.
+   */
+  'POST /api/v1/vehicle-requests/:id/completion/preview': {
+    payload: { version: 0, completion: { workedUnit: 'shifts', workedAmount: 1 } },
+  },
+
+  'POST /api/v1/vehicle-requests/:id/completion': {
+    payload: {
+      version: 0,
+      completion: { workedUnit: 'shifts', workedAmount: 1 },
+      previewFingerprint: 'a'.repeat(64),
+    },
+  },
+
   'POST /api/v1/vehicle-requests/:id/assignment-changes/preview': {
     payload: {
       kind: 'set',
@@ -1029,6 +1061,15 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { newDateTo: FUTURE_DATE, reason: 'работы закончены', version: 1 },
   },
   'PATCH /api/v1/vehicle-requests/:id/early-end': { payload: { approved: true, version: 1 } },
+  // Предпросмотры досрочного завершения (этап Э10 плана `vehicle-request-actual-end-date-plan.md`):
+  // тела семантические — то же, что у боевых ветвей, минус рукопожатия, которых предпросмотр не
+  // принимает вовсе. Без тела страж не успел бы ответить: схема разбирается раньше `preHandler`.
+  'POST /api/v1/vehicle-requests/:id/early-end/preview': {
+    payload: { newDateTo: FUTURE_DATE, reason: 'работы закончены', version: 1 },
+  },
+  'POST /api/v1/vehicle-requests/:id/early-end/decision/preview': {
+    payload: { approved: true, version: 1 },
+  },
   'POST /api/v1/vehicle-requests/:id/esm2': {
     payload: {
       weekOf: FUTURE_DATE,

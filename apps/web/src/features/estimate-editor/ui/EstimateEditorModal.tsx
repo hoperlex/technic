@@ -1,26 +1,10 @@
-import { useEffect, useState } from 'react';
 import { App, Button, Input, Space, Tooltip, Typography } from 'antd';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  canCoordinateServiceRequests,
-  serviceEstimatePending,
-  type ServiceItemKind,
-  type ServiceRequestDto,
-} from '@technic/contracts';
-import { ServiceHint, serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
-import { officeEquipmentKeys } from '@entities/office-equipment';
+import { canCoordinateServiceRequests, type ServiceRequestDto } from '@technic/contracts';
+import { ServiceHint } from '@entities/service-request';
 import { ViewModal } from '@shared/ui';
-import { errorMessage } from '@shared/lib';
 import { useAuth } from '../../../auth/AuthContext';
-import {
-  estimateIssue,
-  newEstimateRow,
-  rowsChanged,
-  rowsFromItems,
-  rowsToPayload,
-  rowsTotal,
-  type EstimateRow,
-} from '../model/rows';
+import { useEstimateEditor, type EstimateEditorIntent } from '../model/useEstimateEditor';
+import { EstimateFreeFields, EstimateModeSwitch } from './EstimateFreeMode';
 import { EstimateRowsGroup } from './EstimateRows';
 
 /**
@@ -35,17 +19,28 @@ const LOCKED_HINT =
   'Отзовите его действием «Вернуть объём работ в правку» — оно снимает и предъявление, и подпись, — и правка откроется снова.';
 
 /**
- * Редактор объёма работ у исполнителя (§9.3): две группы, количество, цена, срок гарантии, итог
- * на лету.
+ * Чем раскладка отличается от правки — словами и до нажатия (Р2, ответ В9 заказчика от
+ * 09.09.2026). Ревизию поднимает не человек, а сама ручка, и узнать об этом он обязан здесь: под
+ * согласованной сметой стоит подпись, и «Разложить» отправляет заявку за новой.
+ */
+const BREAKDOWN_HINT =
+  'Раскладка переиздаёт объём работ: у согласованной ревизии поднимется номер, подпись снимется, ' +
+  'а заявка уйдёт на согласование заново — под новым составом подписываются отдельно.';
+
+/**
+ * Редактор объёма работ (§9.3): две группы строк либо одна свободная запись, итог на лету.
  *
- * Состав уходит на сервер целиком (`PUT`), поэтому строки живут состоянием окна, а не формой с
- * `Form.List`: считать итог на каждое нажатие клавиши и показывать его тут же — главное, что
- * окно делает; объём работ — это разговор о деньгах, и сумма не должна появляться только после
- * отправки.
+ * ДВА РЕЖИМА ВВОДА, ОДНА МОДЕЛЬ (план
+ * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р1 и Р8). Свободная запись —
+ * обычная строка `kind = service`, `quantity = 1`, `unitPrice` = общая стоимость; второго
+ * источника суммы не заводится, потому что итог, согласование, акт, факт, реестр гарантий и разбор
+ * спора читают строки — вторая дорога заставила бы каждое из шести мест отвечать, какой источник
+ * главный. Признака формата в БД нет: разложенная «Ведением» смета оставила бы его ложью.
  *
- * Версия заявки держится своим состоянием: сохранение состава её поднимает, и предъявление
- * сразу после сохранения ушло бы со старой версией — то есть получило бы 409 на ровном месте
- * (Р30).
+ * ДВЕ ДВЕРИ, ОДНО ОКНО (Р2). Исполнитель правит черновик (`PUT /:id/estimate`), «Ведение»
+ * раскладывает присланный перечень по графам (`PUT /:id/estimate/breakdown`) — и по согласованной
+ * ревизии вторая ручка переиздаёт документ. Второго окна для того же набора строк не заводится:
+ * оно разошлось бы с этим на первой же правке состава.
  *
  * **Пока предъявление висит, окно не пускает никуда** (Р9). Прежде эту дверь запирал статус:
  * предъявленная смета стояла в «Смете на согласовании», где ни правка состава, ни повторное
@@ -53,9 +48,13 @@ const LOCKED_HINT =
  * держит одним признаком `serviceEstimatePending`, отвечая 409. Здесь про это сказано словами и
  * до нажатия: «ошибка сервера» на кнопке «Сохранить» читалась бы как поломка портала, а не как
  * «сначала отзовите предъявление».
+ *
+ * Состав, версия и три пути отправки живут в `useEstimateEditor` — здесь только то, как это
+ * выглядит.
  */
 export function EstimateEditorModal({
   request,
+  intent = 'estimate',
   onClose,
 }: {
   /**
@@ -63,157 +62,124 @@ export function EstimateEditorModal({
    * после закрытия работ он уже не правится.
    */
   request: ServiceRequestDto | null;
+  /**
+   * Чем окно открыли (Р2). Умолчание — правка исполнителя: так его открывали до этой волны, и все
+   * прежние входы остаются прежними, не называя себя.
+   */
+  intent?: EstimateEditorIntent;
   onClose: () => void;
 }) {
   const { message } = App.useApp();
   const { user } = useAuth();
-  const qc = useQueryClient();
+  const editor = useEstimateEditor({ request, intent, onClose });
+  const breakdown = intent === 'breakdown';
   /*
    * Кому положены пояснения (Р11): признак считает вызывающий, а не `ServiceHint`, — слой
    * сущностей `AuthContext` не видит, и правило живёт единственной функцией контрактов.
    */
   const coordinator = canCoordinateServiceRequests(user);
-  const [rows, setRows] = useState<EstimateRow[]>([]);
-  const [comment, setComment] = useState('');
-  const [version, setVersion] = useState(0);
-
-  useEffect(() => {
-    if (!request) return;
-    setRows(rowsFromItems(request.items));
-    setVersion(request.version);
-    setComment('');
-  }, [request]);
-
-  const total = rowsTotal(rows);
-  const issue = estimateIssue(rows);
-  const warrantyMode = !!request?.warrantyClaim;
-  /*
-   * Оба замка Р9 сразу: и правка состава, и повторное предъявление закрыты одним признаком —
-   * непогашенным предъявлением. Признак спрашивается у контрактов, а не выводится из даты
-   * предъявления: у отозванного `estimateSubmittedAt` непуста, и окно заперлось бы навсегда.
-   */
-  const locked = !!request && serviceEstimatePending(request);
-
-  const addRow = (kind: ServiceItemKind) => setRows((prev) => [...prev, newEstimateRow(kind)]);
-  const changeRow = (key: string, patch: Partial<EstimateRow>) =>
-    setRows((prev) => prev.map((row) => (row.key === key ? { ...row, ...patch } : row)));
-  const removeRow = (key: string) => setRows((prev) => prev.filter((row) => row.key !== key));
-
-  const refresh = () => {
-    void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
-    void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
-  };
+  const warrantyMode = !!request?.warrantyClaim && !breakdown;
+  const { locked, mode, rows, issue, pending } = editor;
+  const freeRow = rows[0];
 
   /**
-   * Сохранение и предъявление — одна цепочка, а не две кнопки с одинаковым телом: предъявить
-   * можно только то, что лежит на сервере, и «сохранить, потом отправить» руками означало бы
-   * ревизию, разошедшуюся с экраном исполнителя.
+   * Отказ по незаполненному — тостом, и это исключение записано в воротах поимённо (ADR 0094,
+   * `check-form-blockers`): полей формы у окна нет — состав живёт состоянием ради итога на лету, —
+   * помечать нечего, а список пропусков читается одной строкой под кнопкой. Стоит он ЗДЕСЬ, у
+   * разметки, а не в хуке: послабление ворот выдано этому файлу, и разъехавшись, оно потребовало
+   * бы второго.
    */
-  const saveMutation = useMutation({
-    mutationFn: async (submit: boolean) => {
-      let current = version;
-      if (rowsChanged(rows, request!.items)) {
-        const saved = await serviceRequestsApi.saveEstimate(request!.id, {
-          items: rowsToPayload(rows),
-          version: current,
-        });
-        current = saved.version;
-      }
-      if (!submit) return { version: current, submitted: false };
-      const sent = await serviceRequestsApi.submitEstimate(request!.id, {
-        warrantyRepair: false,
-        comment: comment.trim(),
-        version: current,
-      });
-      return { version: sent.version, submitted: true };
-    },
-    onSuccess: (result) => {
-      setVersion(result.version);
-      refresh();
-      if (result.submitted) {
-        // Не «отправлена»: заявка никуда не уехала — она осталась «В работе» и ждёт подписи (Р8).
-        message.success('Объём работ предъявлен на согласование');
-        onClose();
-      } else {
-        message.success('Объём работ сохранён');
-      }
-    },
-    // 409 здесь — обычный ответ: заявку подвинули, пока объём работ набирали. Второй его повод —
-    // предъявление, повисшее с чужого экрана: замок ниже гасит кнопки, но между открытием окна и
-    // нажатием помещается чужое действие, и объяснение этому даёт уже сервер.
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  /** Гарантийный ремонт (Р27): объём работ из служебной нулевой строки, его собирает сервер. */
-  const warrantyMutation = useMutation({
-    mutationFn: () =>
-      serviceRequestsApi.submitEstimate(request!.id, {
-        warrantyRepair: true,
-        comment: comment.trim(),
-        version,
-      }),
-    onSuccess: () => {
-      message.success('Гарантийный ремонт предъявлен без оплаты');
-      refresh();
-      onClose();
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  const pending = saveMutation.isPending || warrantyMutation.isPending;
+  const refuse = (problem: string | null): boolean => {
+    if (!problem) return false;
+    message.warning(problem);
+    return true;
+  };
+  /*
+   * У ЧЕРНОВИКА СВОЙ ВОПРОС, А НЕ «БЕЗ ВОПРОСОВ» (дефект Д1 тестовой волны). Прежде здесь стояло
+   * `if (!asDraft && …)`: черновик уходил как есть — незаконченный набор законно сохранять. В
+   * свободном режиме это оказалось дырой: описание без стоимости уходило строкой с подставленным
+   * нулём, а при следующем открытии ноль приезжал готовым значением и предъявлялся уже молча. То
+   * есть «пусто = 0», отменённое ответом В10, возвращалось в два шага. Черновик остался
+   * черновиком: пустую свободную запись сохранять по-прежнему можно, начатую без стоимости —
+   * нельзя.
+   */
   const submit = (asDraft: boolean) => {
-    if (!asDraft && issue) {
-      message.warning(issue);
-      return;
-    }
-    saveMutation.mutate(!asDraft);
+    if (refuse(asDraft ? editor.draftIssue : issue)) return;
+    editor.submit(asDraft);
+  };
+  const runBreakdown = () => {
+    if (refuse(issue)) return;
+    editor.runBreakdown();
   };
 
   return (
     <ViewModal
-      title={request ? `Объём работ заявки ${request.displayNumber}` : 'Объём работ'}
+      title={
+        request
+          ? `${breakdown ? 'Раскладка объёма работ заявки' : 'Объём работ заявки'} ${request.displayNumber}`
+          : 'Объём работ'
+      }
       open={!!request}
       onClose={onClose}
       width={860}
       destroyOnHidden
-      footer={[
-        ...(warrantyMode
+      /*
+       * У раскладки подвал СВОЙ, а не общий с погашенными кнопками: ни черновика, ни предъявления
+       * у «Ведения» нет — прав на них у него не бывает вовсе, — и выключенные кнопки обещали бы
+       * действия, которых за этой дверью не существует.
+       */
+      footer={
+        breakdown
           ? [
-              <Tooltip
-                key="warranty"
-                title={
-                  locked
-                    ? 'Объём работ уже предъявлен: пока идёт согласование, предъявить заново нельзя'
-                    : rows.length > 0
-                      ? 'Уберите строки: гарантийный ремонт предъявляется без оплаты'
-                      : 'Работы по гарантии: заявка уйдёт на согласование с нулевой суммой'
-                }
+              <Button
+                key="breakdown"
+                type="primary"
+                loading={editor.breakdownPending}
+                disabled={locked}
+                onClick={runBreakdown}
               >
-                <span>
-                  <Button
-                    disabled={locked || rows.length > 0 || pending}
-                    loading={warrantyMutation.isPending}
-                    onClick={() => warrantyMutation.mutate()}
-                  >
-                    Гарантийный ремонт без оплаты
-                  </Button>
-                </span>
-              </Tooltip>,
+                Разложить по графам
+              </Button>,
             ]
-          : []),
-        <Button key="draft" disabled={locked || pending} onClick={() => submit(true)}>
-          Сохранить черновик
-        </Button>,
-        <Button
-          key="submit"
-          type="primary"
-          loading={saveMutation.isPending}
-          disabled={locked || warrantyMutation.isPending}
-          onClick={() => submit(false)}
-        >
-          Предъявить на согласование
-        </Button>,
-      ]}
+          : [
+              ...(warrantyMode
+                ? [
+                    <Tooltip
+                      key="warranty"
+                      title={
+                        locked
+                          ? 'Объём работ уже предъявлен: пока идёт согласование, предъявить заново нельзя'
+                          : editor.filled
+                            ? 'Уберите строки: гарантийный ремонт предъявляется без оплаты'
+                            : 'Работы по гарантии: заявка уйдёт на согласование с нулевой суммой'
+                      }
+                    >
+                      <span>
+                        <Button
+                          disabled={locked || editor.filled || pending}
+                          loading={editor.warrantyPending}
+                          onClick={editor.runWarranty}
+                        >
+                          Гарантийный ремонт без оплаты
+                        </Button>
+                      </span>
+                    </Tooltip>,
+                  ]
+                : []),
+              <Button key="draft" disabled={locked || pending} onClick={() => submit(true)}>
+                Сохранить черновик
+              </Button>,
+              <Button
+                key="submit"
+                type="primary"
+                loading={editor.saving}
+                disabled={locked || editor.warrantyPending}
+                onClick={() => submit(false)}
+              >
+                Предъявить на согласование
+              </Button>,
+            ]
+      }
     >
       {request && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -242,18 +208,21 @@ export function EstimateEditorModal({
               coordinator={coordinator}
               level="info"
               title={
-                request.estimateRevision > 0
-                  ? `Ревизия ${request.estimateRevision} уже предъявлялась — следующее предъявление уйдёт ревизией ${request.estimateRevision + 1}`
-                  : 'Черновик можно сохранять сколько угодно: на согласование уйдёт то, что предъявите'
+                breakdown
+                  ? 'Перенесите присланный перечень в графы: строка на позицию, цена на строку'
+                  : request.estimateRevision > 0
+                    ? `Ревизия ${request.estimateRevision} уже предъявлялась — следующее предъявление уйдёт ревизией ${request.estimateRevision + 1}`
+                    : 'Черновик можно сохранять сколько угодно: на согласование уйдёт то, что предъявите'
               }
               description={
                 [
+                  breakdown ? BREAKDOWN_HINT : null,
                   warrantyMode
                     ? 'Заявка заведена как гарантийная — работы можно предъявить без оплаты.'
                     : null,
                   // Подпись обесценивается новым предъявлением (ревизии сверяются при закрытии
                   // работ), и узнать об этом надо до нажатия, а не по отказу на закрытии.
-                  request.approval
+                  request.approval && !breakdown
                     ? `Согласована ревизия ${request.approval.revision}: новое предъявление снимет эту подпись — объём работ придётся согласовать заново.`
                     : null,
                 ]
@@ -263,28 +232,50 @@ export function EstimateEditorModal({
             />
           )}
 
-          <EstimateRowsGroup
-            kind="part"
-            disabled={locked}
-            rows={rows.filter((row) => row.kind === 'part')}
-            onAdd={addRow}
-            onChange={changeRow}
-            onRemove={removeRow}
-          />
-          <EstimateRowsGroup
-            kind="service"
-            disabled={locked}
-            rows={rows.filter((row) => row.kind === 'service')}
-            onAdd={addRow}
-            onChange={changeRow}
-            onRemove={removeRow}
-          />
+          {/* Переключатель стоит НАД составом: он меняет то, что под ним, и решение о способе
+              ввода принимают до набора, а не дочитав до итога. */}
+          <Space size={8}>
+            <Typography.Text type="secondary">Как набрать:</Typography.Text>
+            <EstimateModeSwitch
+              mode={mode}
+              rows={rows}
+              disabled={locked}
+              onChange={editor.switchMode}
+            />
+          </Space>
+
+          {mode === 'free' && freeRow ? (
+            <EstimateFreeFields
+              row={freeRow}
+              disabled={locked}
+              onChange={(patch) => editor.changeRow(freeRow.key, patch)}
+            />
+          ) : (
+            <>
+              <EstimateRowsGroup
+                kind="part"
+                disabled={locked}
+                rows={rows.filter((row) => row.kind === 'part')}
+                onAdd={editor.addRow}
+                onChange={editor.changeRow}
+                onRemove={editor.removeRow}
+              />
+              <EstimateRowsGroup
+                kind="service"
+                disabled={locked}
+                rows={rows.filter((row) => row.kind === 'service')}
+                onAdd={editor.addRow}
+                onChange={editor.changeRow}
+                onRemove={editor.removeRow}
+              />
+            </>
+          )}
 
           {/* Итог — строка, а не поле: его считает сумма строк, и разойтись с ней он не может. */}
           <Space size={8} style={{ justifyContent: 'flex-end', width: '100%' }}>
             <Typography.Text type="secondary">Итого по объёму работ:</Typography.Text>
             <Typography.Text strong style={{ fontSize: 16 }}>
-              {total.toLocaleString('ru-RU', {
+              {editor.total.toLocaleString('ru-RU', {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2,
               })}{' '}
@@ -292,14 +283,19 @@ export function EstimateEditorModal({
             </Typography.Text>
           </Space>
 
-          <Input.TextArea
-            rows={2}
-            maxLength={1000}
-            disabled={locked}
-            value={comment}
-            placeholder="Комментарий к объёму работ: что нашли при диагностике"
-            onChange={(e) => setComment(e.target.value)}
-          />
+          {/* Комментарий уходит с ПРЕДЪЯВЛЕНИЕМ, поэтому у раскладки его нет: «Ведение» ничего не
+              предъявляет своими словами — предъявление ставит сама ручка, и поле, чей текст никуда
+              не уедет, было бы обещанием несказанного. */}
+          {!breakdown && (
+            <Input.TextArea
+              rows={2}
+              maxLength={1000}
+              disabled={locked}
+              value={editor.comment}
+              placeholder="Комментарий к объёму работ: что нашли при диагностике"
+              onChange={(e) => editor.setComment(e.target.value)}
+            />
+          )}
           {issue && <Typography.Text type="warning">{issue}</Typography.Text>}
         </div>
       )}

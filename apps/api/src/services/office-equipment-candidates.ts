@@ -88,6 +88,10 @@ function requestVisibleExpr(p: Principal): SQL<boolean> {
     customerDepartmentId: linkedRequest.customerDepartmentId,
     equipmentDepartmentId: linkedRequest.equipmentDepartmentId,
     serviceCounterpartyId: linkedRequest.serviceCounterpartyId,
+    // Автор — шестая колонка правила (план свободного объёма работ, Р3): при включённом рубильнике
+    // исполнительский профиль видит свои заведённые заявки, и у псевдонима она берётся так же, как
+    // остальные пять.
+    createdBy: linkedRequest.createdBy,
   });
   return visible === undefined
     ? sql<boolean>`${linkedRequest.id} IS NOT NULL`

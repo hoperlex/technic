@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { Button, Space, Typography } from 'antd';
+import { PartitionOutlined } from '@ant-design/icons';
 import {
   canCoordinateServiceRequests,
   serviceRequestHasEffectivePendingEstimate,
@@ -6,9 +8,10 @@ import {
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { ServiceEstimateTable, ServiceHint } from '@entities/service-request';
+import { EstimateEditorModal } from '@features/estimate-editor';
 import type { ActionSheetItem } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
-import { serviceActionRow } from './serviceRequestRow';
+import { mayActOnServiceRequest, serviceActionRow } from './serviceRequestRow';
 import { formatDateTime, formatMoney } from '../../utils/format';
 
 /** Решения по объёму работ, которые вкладка показывает кнопками: их порядок здесь и есть порядок. */
@@ -56,7 +59,8 @@ export function ServiceRequestEstimate({
    */
   actions?: ActionSheetItem[];
 }) {
-  const { user } = useAuth();
+  const { can, user } = useAuth();
+  const [breakdownOpen, setBreakdownOpen] = useState(false);
   const approval = request.approval;
   const completion = request.completion;
   const row = serviceActionRow(request);
@@ -81,6 +85,61 @@ export function ServiceRequestEstimate({
   const showFact = request.items.some((item) => item.performed != null);
   const decisions = DECISION_KEYS.map((key) => actions.find((item) => item.key === key)).filter(
     (item): item is ActionSheetItem => !!item,
+  );
+
+  /*
+   * РАСКЛАДКА ПО ГРАФАМ (план `docs/office-equipment-free-estimate-and-executor-scope-plan.md`,
+   * Р2; ответ В9 заказчика от 09.09.2026) — вход «Ведения», а не исполнителя, и потому он здесь, а
+   * не в наборе действий заявки.
+   *
+   * ЗАЧЕМ ОНА. Подрядчик присылает объём работ письмом: перечень позиций и одна сумма на всё.
+   * Исполнитель кладёт это свободной записью — иначе он придумывал бы цены, которых ему не
+   * называли, — а разложить перечень по графам потом вправе «Ведение»: у него есть и время, и
+   * основание, и право `serviceRequests.estimateRewrite`, выданное ровно этому набору.
+   *
+   * ДВЕРЬ ДРУГАЯ, ОКНО ТО ЖЕ. Кнопка открывает редактор состава в режиме «По графам», но состав
+   * уходит в `PUT /:id/estimate/breakdown`: у согласованной ревизии эта ручка поднимает номер,
+   * снимает подпись, пересчитывает итог и ставит новое предъявление — подписанное содержимое под
+   * прежней ревизией не меняется (ADR 0133). Второго окна для того же набора строк не заводится:
+   * оно разошлось бы с первым на первой же правке.
+   *
+   * ТОЛЬКО «В РАБОТЕ», и это статус-gate ручки, а не украшение: и предъявление, и согласование
+   * требуют этого статуса, а раскладка, сделанная в «Отложена», создала бы предъявление, которое
+   * НЕКОМУ подписать — кнопки согласования у отложенной заявки нет вовсе. У «Новой» объёма работ
+   * ещё нет, после закрытия работ строки несут факт и гарантии; сервер отвечает на такое 422, и
+   * кнопка, ведущая в этот отказ, была бы обещанием, за которым пусто.
+   *
+   * ОБЛАСТЬ ДЕЙСТВИЙ — ПЕРВЫМ СОМНОЖИТЕЛЕМ (Р11), как у всякой мутации портала: право `Ведения`
+   * само по себе не отвечает на вопрос «эта ли заявка в моей области».
+   *
+   * Историческому объёму работ внутренней заявки кнопка не положена (`historical`): раскладывать
+   * там нечего — этап согласования у внутреннего ремонта снят целиком (ADR 0174), и переиздание
+   * ревизии позвало бы согласующего, которого не существует.
+   */
+  const mayBreakdown =
+    !historical &&
+    // Раскладывать нечего — нечего и показывать: у пустой ревизии кнопка открыла бы окно, в
+    // котором «переносить перечень в графы» не из чего, а нажатие переиздало бы пустоту.
+    request.items.length > 0 &&
+    request.status === 'in_work' &&
+    can('serviceRequests.estimateRewrite') &&
+    mayActOnServiceRequest(request, user);
+  const breakdownButton = mayBreakdown && (
+    <Button icon={<PartitionOutlined />} onClick={() => setBreakdownOpen(true)}>
+      Разложить по графам
+    </Button>
+  );
+  /*
+   * Окно живёт ВНУТРИ вкладки, то есть внутри карточки (ADR 0140): вложенная модалка получает от
+   * antd свой слой поверх родительской, а соседняя по странице делит слой с карточкой и прячется
+   * под ней. Открывающая его кнопка стоит здесь же — там, где читают сам объём работ.
+   */
+  const breakdownModal = breakdownOpen && (
+    <EstimateEditorModal
+      request={request}
+      intent="breakdown"
+      onClose={() => setBreakdownOpen(false)}
+    />
   );
 
   /*
@@ -237,8 +296,14 @@ export function ServiceRequestEstimate({
         )}
       </Space>
 
-      {/* Решения — под таблицей и под итогом, а не над ними: подпись ставят, дочитав до суммы. */}
-      {decisionButtons}
+      {/* Решения — под таблицей и под итогом, а не над ними: подпись ставят, дочитав до суммы.
+          Раскладка стоит рядом с ними по той же мерке: это ответ на прочитанное — «перечень
+          пришёл письмом, разложу по графам», — а не подготовка к чтению. */}
+      <Space wrap>
+        {breakdownButton}
+        {decisionButtons}
+      </Space>
+      {breakdownModal}
     </Space>
   );
 }

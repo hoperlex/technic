@@ -22,6 +22,7 @@ import { filesApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { useAuth } from '../../auth/AuthContext';
 import {
+  mayActOnServiceRequest,
   serviceActionRow,
   serviceExecutorAssignment,
   serviceRequestCustomerFacts,
@@ -97,6 +98,23 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
   const actsAsCustomer = actsAsRequestCustomer(user, serviceRequestCustomerFacts(request));
 
   /*
+   * ОБЛАСТЬ ДЕЙСТВИЙ — ПЕРВЫЙ СОМНОЖИТЕЛЬ ОБЕИХ ДВЕРЕЙ (план
+   * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р11). Подшивка и снятие —
+   * такие же изменяющие ручки, как правка и переходы, и сервер закрывает их тем же общим входом.
+   *
+   * СЛУЧАЙ, РАДИ КОТОРОГО ОН ЗДЕСЬ: снятый исполнитель на СВОЕЙ площадке. Стражу заказчика выше
+   * он по-прежнему свой — площадка действительно его, — и без второго сомножителя вкладка
+   * показала бы ему форму загрузки и крестики снятия на заявке, по которой сервер отвечает 403 на
+   * каждый файл. Заявку он при этом видит и в обсуждении участвует (ответ В11 заказчика от
+   * 09.09.2026): область чтения шире области действий, и здесь спрашивается именно вторая.
+   *
+   * Предикаты ПЕРЕМНОЖАЮТСЯ, а не заменяют друг друга: этот отвечает «в моей ли заявка области
+   * действий», соседний — «моя ли это сторона». Назначенному исполнителю оба отвечают «да» на
+   * заявке чужой площадки, и подшить акт по ней он может ровно как прежде.
+   */
+  const mayAct = mayActOnServiceRequest(request, user);
+
+  /*
    * Кому положены пояснения (Р11). Признак считается ЗДЕСЬ, у того, кому видна учётка, и уходит в
    * `ServiceHint` пропом: слой сущностей `AuthContext` не видит — линт границ такой импорт не
    * пропустит, — а своей формулы вместо предиката контрактов здесь нет: правило «кому положены
@@ -108,8 +126,13 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
   // Снятие документа после приёмки — только у распорядителя файлов: заявка закрыта, и подшитая
   // бумага из неё не исчезает по решению стороны (Р29).
   const canAttach =
-    can('serviceRequests.files') && kinds.length > 0 && !request.deletedAt && actsAsCustomer;
+    mayAct &&
+    can('serviceRequests.files') &&
+    kinds.length > 0 &&
+    !request.deletedAt &&
+    actsAsCustomer;
   const canDetach =
+    mayAct &&
     !request.deletedAt &&
     actsAsCustomer &&
     (can('files.manageAny') ||

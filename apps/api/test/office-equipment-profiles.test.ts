@@ -3,10 +3,12 @@ import {
   ACCESS_PROFILES,
   accessProfileLabel,
   actsAsRequestCustomer,
+  actsAsServiceExecutorOnly,
   ALL_SYSTEM_GRANT_CODES,
   audienceMatches,
   can,
   canChangeRequestAsCustomer,
+  canWriteChat,
   hasModuleWideScope,
   MODULE_GRANT_CODES,
   MODULE_GRANTS,
@@ -603,25 +605,32 @@ describe('Правка и удаление: сторона заказчика (�
 
   /**
    * НЕВЛИЯНИЕ, СПЛОШНЫМ ПЕРЕБОРОМ. `ACCESS_PROFILES` — все, кто в портале бывает: роли, типы
-   * контрагента и пары «роль + набор». Правило написано про сквозную область модуля заявок,
-   * поэтому перебор делится ровно надвое, и делит его тот же `hasModuleWideScope`, которым
-   * область читают сервер и портал:
+   * контрагента и пары «роль + набор». Правило написано про исполнительский профиль модуля,
+   * поэтому перебор делится ровно надвое, и делит его тот же `actsAsServiceExecutorOnly`, которым
+   * субъекта опознают сервер и портал:
    *
-   *   · у кого сквозной области НЕТ — ответ обязан совпасть с прежним стражем на каждом из
-   *     четырёх сочетаний признаков. Не «true», а именно совпасть: так утверждение остаётся
-   *     верным и для держателя «Заявителя», которого сужает прежнее правило;
-   *   · у кого она ЕСТЬ — это половина профиля ИТ-службы и никто больше, и таких субъектов
+   *   · кто исполнительским профилем НЕ является — ответ обязан совпасть с прежним стражем на
+   *     каждом из четырёх сочетаний признаков. Не «true», а именно совпасть: так утверждение
+   *     остаётся верным и для держателя «Заявителя», которого сужает прежнее правило;
+   *   · кто является — это половина профиля ИТ-службы и набор исполнителя, и таких субъектов
    *     перебор обязан найти хоть одного: сойдись он к пустому множеству, тест зеленел бы,
    *     ничего не проверяя.
+   *
+   * ДЕЛИТЕЛЬ СМЕНИЛСЯ ВМЕСТЕ С ПРАВИЛОМ (план
+   * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р10). Прежде здесь стоял
+   * `hasModuleWideScope(…, 'serviceRequests')` — КАРТА сквозной области, — и это было верно, пока
+   * страж опознавал субъекта ею же. Карта из модуля уезжает следующим выпуском, страж переехал на
+   * коды наборов, и делитель обязан был переехать за ним: оставленный прежним, он делил бы перебор
+   * не по тому признаку и молча пропускал бы в «невлияние» тех, кого правило как раз и сузило.
    *
    * Утверждение сильнее, чем «роли с осью не тронуты»: сюда попадают и штаб, и наблюдатель, и
    * подрядчик, и учётка без роли вовсе.
    */
-  it('ни один субъект без сквозной области не изменил поведения — ни на одном сочетании', () => {
-    const wide: string[] = [];
+  it('ни один субъект вне исполнительского профиля не изменил поведения — ни на одном сочетании', () => {
+    const narrowed: string[] = [];
     for (const subject of [...ACCESS_PROFILES, { role: null } as AccessSubject]) {
-      if (hasModuleWideScope(subject.grantCodes, 'serviceRequests')) {
-        wide.push(accessProfileLabel(subject));
+      if (actsAsServiceExecutorOnly(subject)) {
+        narrowed.push(accessProfileLabel(subject));
         continue;
       }
       for (const facts of FACTS) {
@@ -631,9 +640,13 @@ describe('Правка и удаление: сторона заказчика (�
         ).toBe(actsAsRequestCustomer(subject, facts));
       }
     }
-    // Сквозная область приходит ровно одним набором — тем, которым выдают половину профиля ИТ.
-    expect(wide.length).toBeGreaterThan(0);
-    expect(wide.every((label) => label.includes('ИТ-служба'))).toBe(true);
+    // Исполнительский профиль приходит наборами модуля — тем, которым выдают половину профиля ИТ,
+    // и отделённым от него набором «работа исполнителем».
+    expect(narrowed.length).toBeGreaterThan(0);
+    expect(
+      narrowed.every((label) => label.includes('ИТ-служба') || label.includes('исполнител')),
+      narrowed.join(' | '),
+    ).toBe(true);
   });
 
   /**
@@ -681,20 +694,59 @@ describe('Правка и удаление: сторона заказчика (�
   });
 
   /**
-   * ПОЛОВИНА ПРОФИЛЯ БЕЗ СКВОЗНОЙ ОБЛАСТИ ПРАВИЛОМ НЕ СУЖАЕТСЯ. Набор «работа исполнителем»
-   * (`…_executor`) заводился ровно затем, чтобы назначенному не отдавать заодно сквозную
-   * видимость (Р2), — и правило Н8 про него не написано: сузь оно и его, назначенный сотрудник
-   * потерял бы правку СВОЕЙ заявки на чужой площадке без единого решения об этом.
+   * НАБОР ИСПОЛНИТЕЛЯ В ОДИНОЧКУ ПРАВИЛО ТЕПЕРЬ ВКЛЮЧАЕТ — и это ИЗМЕНЕНИЕ поведения, названное
+   * вслух решением Р10 плана `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, а
+   * не сохранение прежнего.
+   *
+   * ЧТО БЫЛО. Страж опознавал сужаемого субъекта КАРТОЙ сквозной области
+   * (`hasModuleWideScope(…, 'serviceRequests')`), а у отделённого набора «работа исполнителем»
+   * карты нет вовсе — он затем и отделён, чтобы назначенному не отдавать заодно сквозную
+   * видимость. Держатель одного этого набора под правило не попадал ни разу и правил чужие «Новые»
+   * заявки по обычной оси своей роли.
+   *
+   * ЧТО СТАЛО И ПОЧЕМУ ИМЕННО ТАК. Страж переехал с карты на коды наборов
+   * (`actsAsServiceExecutorOnly`), потому что карта из модуля уезжает следующим выпуском: сними её,
+   * прежний признак стал бы ложным у ВСЕХ, страж ответил бы «да» — и правка чужой заявки открылась
+   * бы через назначение ровно тому профилю, у которого её только что отобрали. Правило «правка и
+   * удаление — своя площадка либо своё авторство» обязано пережить уборку карты без единой правки
+   * поведения, и переживает оно её только опознанием по кодам.
+   *
+   * ЦЕНА НАЗВАНА: держатель одного исполнительского набора сузился. Это правильная строгость —
+   * «я чиню эту заявку» и «я ею распоряжаюсь» разведены двумя разными основаниями, — но это
+   * изменение, и держит его отдельный случай, а не сноска в чужом комментарии.
+   *
+   * ЧЕГО ПРАВИЛО НЕ ОТНЯЛО: свою площадку и своё авторство. Назначенный сотрудник правку СВОЕЙ
+   * заявки не теряет ни на чьей площадке — за это отвечают два последних сочетания признаков; а
+   * подшивка документов по чужой заявке живёт за другим предикатом и правилом не тронута вовсе
+   * (случай в конце файла).
    */
-  it('набор исполнителя в одиночку правило не включает', () => {
+  it('набор исполнителя в одиночку правило ТЕПЕРЬ включает: чужая заявка — нет, своя — да', () => {
     const subject: AccessSubject = {
       role: 'shtab',
       grantCodes: [OFFICE_EQUIPMENT_EXECUTOR_GRANT],
     };
+    // Карты сквозной области у набора нет — то есть прежний признак этого субъекта не ловил.
     expect(hasModuleWideScope(subject.grantCodes, 'serviceRequests')).toBe(false);
-    for (const facts of FACTS) {
-      expect(canChangeRequestAsCustomer(subject, facts), JSON.stringify(facts)).toBe(true);
-    }
+    // А новый ловит: доступ к модулю пришёл ему набором работы руками, роль не `admin`, «Ведения»
+    // нет. Обе строки стоят рядом намеренно — в них и записана вся суть переезда Р10.
+    expect(actsAsServiceExecutorOnly(subject)).toBe(true);
+
+    expect(canChangeRequestAsCustomer(subject, { isAuthor: false, inCustomerScope: false })).toBe(
+      false,
+    );
+    expect(canChangeRequestAsCustomer(subject, { isAuthor: true, inCustomerScope: false })).toBe(
+      true,
+    );
+    expect(canChangeRequestAsCustomer(subject, { isAuthor: false, inCustomerScope: true })).toBe(
+      true,
+    );
+    expect(canChangeRequestAsCustomer(subject, { isAuthor: true, inCustomerScope: true })).toBe(
+      true,
+    );
+
+    // Прежний страж на чужой строке по-прежнему отвечает «да» — сузил субъекта именно новый, а не
+    // изменившееся поведение соседа. Без этой строки случай не отличал бы одно от другого.
+    expect(actsAsRequestCustomer(subject, { isAuthor: false, inCustomerScope: false })).toBe(true);
   });
 
   /**
@@ -744,5 +796,199 @@ describe('Правка и удаление: сторона заказчика (�
     const foreign = { isAuthor: false, inCustomerScope: false };
     expect(actsAsRequestCustomer(subject, foreign)).toBe(true);
     expect(canChangeRequestAsCustomer(subject, foreign)).toBe(false);
+  });
+});
+
+describe('Частичный отзыв наборов: таблица Р3 целиком (Т11)', () => {
+  /**
+   * **СЕМЬ СТРОК ТАБЛИЦЫ Р3** плана
+   * `docs/office-equipment-free-estimate-and-executor-scope-plan.md` — все до одной, вместе со
+   * столбцом «чат по заявке, с которой снят».
+   *
+   * ЗАЧЕМ ТАБЛИЦА ТЕСТОМ. Заказчик ответил про ПОЛНЫЙ профиль («исполнитель видит только свои
+   * заявки»), а в проде наборы снимают поодиночке: у человека остаётся половина профиля, к нему
+   * добавляют «Ведение», его переводят в администраторы. Ревью потребовало ответить за каждое
+   * такое состояние ТАБЛИЦЕЙ, а не выводом по ходу чтения, — и таблица имеет цену ровно до тех
+   * пор, пока её кто-то сверяет.
+   *
+   * ЧТО ЗДЕСЬ ПРОВЕРЯЕТСЯ, А ЧТО НЕТ. Здесь — ответы ЧИСТЫХ предикатов контрактов, то есть та
+   * половина правила, которую зовут и сервер, и портал. Саму выдачу — «в списке ровно эти
+   * заявки» — проверяет `service-executor-scope.db.test.ts` на живой базе: предикат отвечает «кто
+   * он в модуле», а не «что он увидит», и подменять одно другим нельзя ни в одну сторону.
+   */
+
+  /** Ветви области из развилки Р3 — теми же словами, что в плане. */
+  type ScopeBranch = 'всё' | 'область «Ведения»' | 'свои' | 'как сегодня';
+
+  /**
+   * Развилка Р3 в том же ПОРЯДКЕ, в каком её задаёт сервер (`executorScopeVisibilityWhere` и
+   * `assertVisibleUnderExecutorScope`): администратор, «Ведение», исполнительский профиль, все
+   * остальные.
+   *
+   * ПОРЯДОК — ЧАСТЬ УТВЕРЖДЕНИЯ, а не деталь записи. Переставь «Ведение» после исполнительского
+   * профиля — и пара «ИТ + Ведение» получила бы область «свои» вместо области своей роли, то есть
+   * ровно тот ответ, который таблица Р3 ему не обещает. Три вопроса задаются по субъекту и в базу
+   * не ходят — потому их и можно задать здесь.
+   */
+  function scopeBranchOf(subject: AccessSubject): ScopeBranch {
+    if (subject.role === 'admin') return 'всё';
+    if ((subject.grantCodes ?? []).includes(OFFICE_EQUIPMENT_OPERATOR_GRANT)) {
+      return 'область «Ведения»';
+    }
+    if (actsAsServiceExecutorOnly(subject)) return 'свои';
+    return 'как сегодня';
+  }
+
+  /**
+   * Факты заявки, С КОТОРОЙ СУБЪЕКТА СНЯЛИ: действующего назначения нет (строку удаляют физически),
+   * подрядчиком этой заявки он не работает, автором не был и к стороне заказчика не относится.
+   * Именно в этой точке столбец таблицы и задан — «чат по заявке, с которой снят».
+   */
+  const REMOVED: ServiceChatFacts = {
+    userId: '22222222-2222-4222-8222-222222222222',
+    isAuthor: false,
+    inCustomerScope: false,
+    actsForAssignedService: false,
+    isNamedExecutor: false,
+  };
+
+  const IT = OFFICE_EQUIPMENT_IT_GRANT;
+  const EXECUTOR = OFFICE_EQUIPMENT_EXECUTOR_GRANT;
+  const OPERATOR = OFFICE_EQUIPMENT_OPERATOR_GRANT;
+
+  const ROWS: {
+    what: string;
+    subject: AccessSubject;
+    scope: ScopeBranch;
+    /**
+     * Ответ САМОГО предиката контрактов на этой строке. Столбец заведён затем, чтобы таблица
+     * проверяла код, а не себя: ветку «Ведения» и ветку админа выбирает помощник выше, и без
+     * этого столбца три строки из семи сверяли бы помощника с помощником.
+     */
+    executorOnly: boolean;
+    /** Пишет ли он в обсуждение заявки, с которой снят. */
+    writes: boolean;
+    sides: string[];
+  }[] = [
+    {
+      what: 'ИТ + исполнитель',
+      subject: { role: 'shtab', grantCodes: [IT, EXECUTOR] },
+      scope: 'свои',
+      executorOnly: true,
+      // Участие снятого держится на стороне `it`, то есть на КОДЕ набора: сторона `service`
+      // требует действующей строки назначения, которой у него больше нет (Н15).
+      writes: true,
+      sides: ['it'],
+    },
+    {
+      what: 'только исполнитель (ИТ снят)',
+      subject: { role: 'shtab', grantCodes: [EXECUTOR] },
+      scope: 'свои',
+      executorOnly: true,
+      // Названная граница волны, а не недоделка: факт «был назначен» в модель чата не заводится.
+      writes: false,
+      sides: [],
+    },
+    {
+      what: 'только ИТ (исполнитель снят)',
+      subject: { role: 'shtab', grantCodes: [IT] },
+      // Назначения остаются, новых не будет: право `serviceRequests.execute` у держателя одного
+      // ИТ-набора отсутствует вовсе (Н2), а область считают КОДЫ, а не право.
+      scope: 'свои',
+      executorOnly: true,
+      writes: true,
+      sides: ['it'],
+    },
+    {
+      what: 'ИТ + исполнитель + «Ведение»',
+      subject: { role: 'shtab', grantCodes: [IT, EXECUTOR, OPERATOR] },
+      scope: 'область «Ведения»',
+      // «Ведение» исключает субъекта из правила: координатор модуля правит чужие заявки по
+      // должности, и операторский слой с исполнительским не смешивается.
+      executorOnly: false,
+      writes: true,
+      sides: ['operator', 'it'],
+    },
+    {
+      what: 'оба набора сняты',
+      subject: { role: 'shtab', grantCodes: [] },
+      scope: 'как сегодня',
+      executorOnly: false,
+      // «По стороне заказчика»: у снятого её нет — он не автор и не его площадка. Вторая половина
+      // строки (когда сторона есть) проверяется отдельным случаем ниже.
+      writes: false,
+      sides: [],
+    },
+    {
+      what: 'admin',
+      subject: { role: 'admin', grantCodes: [] },
+      scope: 'всё',
+      // Роль `admin` исключена первым же сомножителем: право `execute` у него по построению.
+      executorOnly: false,
+      writes: true,
+      sides: ['operator', 'it'],
+    },
+    {
+      what: 'оператор контрагента service',
+      subject: { role: 'operator', counterpartyType: 'service', grantCodes: [] },
+      // Ось подрядчика, как сегодня: кодов наборов оргтехники у него не бывает ни одного, и
+      // сужает его собственная ось «заявка назначена моей компании».
+      scope: 'как сегодня',
+      executorOnly: false,
+      // Сторона `service` требует ДЕЙСТВУЮЩЕГО назначения компании — со снятой заявкой её нет.
+      writes: false,
+      sides: [],
+    },
+  ];
+
+  it('область заявок — все семь строк', () => {
+    // Сперва ответ самого предиката: это и есть половина правила, живущая в контрактах.
+    expect(ROWS.map((row) => [row.what, actsAsServiceExecutorOnly(row.subject)])).toEqual(
+      ROWS.map((row) => [row.what, row.executorOnly]),
+    );
+    expect(ROWS.map((row) => [row.what, scopeBranchOf(row.subject)])).toEqual(
+      ROWS.map((row) => [row.what, row.scope]),
+    );
+  });
+
+  it('чат по заявке, с которой снят, — все семь строк', () => {
+    expect(
+      ROWS.map((row) => [
+        row.what,
+        canWriteChat(row.subject, REMOVED, 'in_work'),
+        participantSidesOf(row.subject, REMOVED),
+      ]),
+    ).toEqual(ROWS.map((row) => [row.what, row.writes, row.sides]));
+  });
+
+  it('«по стороне заказчика» и «по своей стороне» — вторая половина двух строк', () => {
+    /*
+     * ДВЕ СТРОКИ ТАБЛИЦЫ ОТВЕЧАЮТ НЕ «ДА/НЕТ», А «ПО СТОРОНЕ», и на снятых фактах обе выглядят
+     * одинаково — пустым списком. Без этого случая они доказывали бы лишь то, что у постороннего
+     * стороны нет, а обещание «по стороне заказчика» осталось бы непроверенным.
+     */
+    const plain: AccessSubject = { role: 'shtab', grantCodes: [] };
+    const asAuthor: ServiceChatFacts = { ...REMOVED, isAuthor: true };
+    expect(participantSidesOf(plain, asAuthor)).toEqual(['customer']);
+    expect(canWriteChat(plain, asAuthor, 'in_work')).toBe(true);
+
+    const contractor: AccessSubject = {
+      role: 'operator',
+      counterpartyType: 'service',
+      grantCodes: [],
+    };
+    const assigned: ServiceChatFacts = { ...REMOVED, actsForAssignedService: true };
+    expect(participantSidesOf(contractor, assigned)).toEqual(['service']);
+    expect(canWriteChat(contractor, assigned, 'in_work')).toBe(true);
+  });
+
+  it('закрытая заявка гасит письмо у всех семи строк', () => {
+    // Второй сомножитель `canWriteChat` — закрытость заявки, а не статус вообще. Строка стоит
+    // здесь, потому что таблица Р3 говорит про ЖИВУЮ заявку: у закрытой ответ один на всех.
+    for (const row of ROWS) {
+      expect(canWriteChat(row.subject, { ...REMOVED, isAuthor: true }, 'accepted'), row.what).toBe(
+        false,
+      );
+    }
   });
 });

@@ -74,6 +74,14 @@ const SYSTEM_ACTOR_NAME = 'Портал';
 const AUDIT_ACTIONS = [
   'serviceRequest.update',
   'serviceRequest.estimate_update',
+  /**
+   * Раскладка свободной записи по графам (план свободного объёма работ, Р2). В перечне обязана
+   * быть: лента читает журнал по этому закрытому списку, и без строки самое заметное изменение
+   * сметы — перечень позиций вместо одной строки — не появилось бы в истории вовсе. У заявки,
+   * которую после раскладки отправили на повторное согласование, читатель не нашёл бы, почему
+   * подпись пропала.
+   */
+  'serviceRequest.estimate_breakdown',
   'serviceRequest.it_approve',
   'serviceRequest.it_reject',
   'serviceRequest.assign',
@@ -123,6 +131,11 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   // Правка сметы — тоже правка, но своя: её ведёт исполнитель, а заявку правит заказчик.
   // Различает их не вид события, а перечень изменений (`diffServiceEstimate`).
   'serviceRequest.estimate_update': 'updated',
+  // Раскладка по графам — тоже правка состава, и вид у неё тот же: содержание события несёт
+  // перечень изменений (`diffServiceEstimate` в `metadata.changes`), а не тег. Своего вида в
+  // контрактах она не заводит намеренно — читателю ленты важно, ЧТО стало со строками, а «кто
+  // именно правил» уже сказано автором события.
+  'serviceRequest.estimate_breakdown': 'updated',
   // Виза ИТ (Р51): согласие и отказ читаются разными событиями — «решение ИТ» одним словом не
   // отвечает, чем кончилось.
   'serviceRequest.it_approve': 'itApproved',
@@ -463,7 +476,9 @@ async function loadMovementEvents(requestId: string): Promise<ServiceRequestHist
   return rows.map((row) => {
     const changes: RequestChangeDto[] = [];
     const place = (state: string, note: string): string =>
-      note ? `${officeEquipmentStateLabels[state as keyof typeof officeEquipmentStateLabels]} (${note})` : officeEquipmentStateLabels[state as keyof typeof officeEquipmentStateLabels];
+      note
+        ? `${officeEquipmentStateLabels[state as keyof typeof officeEquipmentStateLabels]} (${note})`
+        : officeEquipmentStateLabels[state as keyof typeof officeEquipmentStateLabels];
     if (row.fromObject !== row.toObject) {
       changes.push({ field: 'moveObject', from: row.fromObject, to: row.toObject });
     }

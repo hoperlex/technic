@@ -27,7 +27,11 @@ import type { ServiceRequestModals } from './serviceRequestModals';
 import { serviceEstimateMenuItems } from './serviceRequestEstimateMenu';
 import { serviceRequestExtraItems } from './serviceRequestExtras';
 import { serviceReasonPrompts } from './serviceRequestPrompts';
-import { serviceActionRow, serviceExecutorAssignment } from './serviceRequestRow';
+import {
+  mayActOnServiceRequest,
+  serviceActionRow,
+  serviceExecutorAssignment,
+} from './serviceRequestRow';
 
 /**
  * Перечень действий заявки: что субъекту доступно и как это подписано.
@@ -101,6 +105,23 @@ export function serviceRequestMenuItems(
    * каком их читают контракты. Считается один раз на весь набор — спрашивающих её пятеро.
    */
   const row = serviceActionRow(request);
+  /*
+   * ОБЛАСТЬ ДЕЙСТВИЙ — ПЕРВЫЙ СОМНОЖИТЕЛЬ КАЖДОГО ИЗМЕНЯЮЩЕГО ПУНКТА (план
+   * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р11). Прежде набор спрашивал
+   * только право и статус: предикаты вроде `canAssignServiceExecutors` про отношение субъекта к
+   * ЭТОЙ заявке не знают вовсе — и бывшему исполнителю рисовалась бы кнопка «Изменить
+   * исполнителей», на которую сервер отвечает 403. Обещаний, которых сервер не выполняет, модуль
+   * избегает предикатами с ADR 0162, и это из того же ряда.
+   *
+   * Признак считается ОДИН РАЗ на весь набор и уходит соседним модулям параметром — ровно как
+   * `row` и `assignment` рядом: второй его разбор внутри `serviceRequestExtras` разошёлся бы с
+   * ходом заявки молча.
+   *
+   * Ветку «набор пуст» здесь не заводят: чтение и обсуждение областью действий не закрываются
+   * (ответ В11), а пункт «Обсуждение» живёт как раз в наборе — верни мы отсюда пустой список,
+   * снятый исполнитель потерял бы единственный вход в переписку по заявке, которую видит.
+   */
+  const mayAct = mayActOnServiceRequest(request, ctx.user);
   const allowed = allowedServiceStatusTransitions(request.status, ctx.user, assignment);
   const has = (status: (typeof allowed)[number]) => allowed.includes(status);
   const items: ServiceMenuItem[] = [];
@@ -115,7 +136,7 @@ export function serviceRequestMenuItems(
    * предъявлением: прежде его держал статус «Смета на согласовании», и, сняв статус, мы потеряли бы
    * запрет молча.
    */
-  if (canAssignServiceExecutors(row, ctx.user)) {
+  if (mayAct && canAssignServiceExecutors(row, ctx.user)) {
     // Первое назначение — главный шаг «Новой»; дальше это уже переназначение, то есть разбор
     // ошибки, а не ожидаемый ход. Признак читается по составу исполнителей, а не по статусу (Р11):
     // статус с ним лишь СОВПАДАЛ, и совпадать больше нечему.
@@ -148,7 +169,7 @@ export function serviceRequestMenuItems(
    * Пункт остаётся в меню и после того, как действие вышло быстрой кнопкой в строку списка и в
    * шапку карточки: убери мы его, действие пропало бы на телефоне, где меню открывается шитом.
    */
-  if (canStartServiceWork(row, ctx.user, assignment)) {
+  if (mayAct && canStartServiceWork(row, ctx.user, assignment)) {
     items.push({
       key: 'start',
       label: 'Принять в работу',
@@ -165,7 +186,7 @@ export function serviceRequestMenuItems(
    * отличает и отличать не должен: кого снимать — свою строку или всю компанию — решает ручка, а
    * «остался ли кто-то ещё» отвечает уже очередь.
    */
-  if (canDeclineServiceRequest(row, ctx.user, assignment)) {
+  if (mayAct && canDeclineServiceRequest(row, ctx.user, assignment)) {
     items.push({
       key: 'decline',
       label: 'Отказаться от заявки',
@@ -182,9 +203,9 @@ export function serviceRequestMenuItems(
    * «внутренний ремонт без объёма работ» это и подтвердила: весь набор целиком стал условным, не
    * тронув ни одного перехода.
    */
-  items.push(...serviceEstimateMenuItems(request, ctx, assignment, row, prompts));
+  items.push(...serviceEstimateMenuItems(request, ctx, assignment, row, prompts, mayAct));
 
-  if (request.status === 'in_work' && has('done')) {
+  if (mayAct && request.status === 'in_work' && has('done')) {
     /*
      * Планка закрывающего документа переехала с приёмки на «Решена» (Н8) и стоит только у
      * сервисного ремонта — предикат контрактов, а не своя копия правила. Кнопка при этом остаётся
@@ -214,7 +235,7 @@ export function serviceRequestMenuItems(
     });
   }
 
-  if (request.status === 'done') {
+  if (mayAct && request.status === 'done') {
     if (has('accepted')) {
       items.push({
         key: 'accept',
@@ -264,6 +285,7 @@ export function serviceRequestMenuItems(
    * предикатом, и та же «Новая» получается им законно.
    */
   if (
+    mayAct &&
     request.status === 'in_work' &&
     has('new') &&
     hasPermission(ctx.user, 'serviceRequests.status')
@@ -281,7 +303,7 @@ export function serviceRequestMenuItems(
     });
   }
 
-  if (request.status === 'accepted' && has('done')) {
+  if (mayAct && request.status === 'accepted' && has('done')) {
     items.push({
       key: 'rollback-accept',
       label: 'Отменить приёмку',
@@ -292,7 +314,7 @@ export function serviceRequestMenuItems(
     });
   }
 
-  if (request.status === 'cancelled' && has('new')) {
+  if (mayAct && request.status === 'cancelled' && has('new')) {
     items.push({
       key: 'reopen-request',
       label: 'Вернуть в работу',
@@ -310,8 +332,9 @@ export function serviceRequestMenuItems(
    * динамическая — статус, из которого заявку отложили (Р104), — поэтому право спрашивается тем же
    * предикатом, что и на сервере.
    */
-  const holdMode: HoldMode | null =
-    request.status === 'on_hold'
+  const holdMode: HoldMode | null = !mayAct
+    ? null
+    : request.status === 'on_hold'
       ? canResumeService(ctx.user)
         ? 'resume'
         : null
@@ -332,13 +355,13 @@ export function serviceRequestMenuItems(
 
   // Обстоятельства заявки — после её хода: сперва «что с ней делать дальше», потом «что при ней
   // поправить». Тем же порядком, каким набор действий записи вообще читается сверху вниз.
-  items.push(...serviceRequestExtraItems(request, ctx, assignment, row));
+  items.push(...serviceRequestExtraItems(request, ctx, assignment, row, mayAct));
 
   // Отмена — последней и красной: она отнимает работу целиком, и место рядом с ходами по циклу
   // предлагало бы её наравне с ними. Окно у неё своё (Р10): у ремонта спрашивают ещё и решение
   // «что делаем вместо» с пометкой замены — единственный оставшийся вход для «чинить
   // нецелесообразно» там, где отказа по объёму работ больше не бывает.
-  if (has('cancelled')) {
+  if (mayAct && has('cancelled')) {
     items.push({
       key: 'cancel',
       label: 'Отменить заявку',

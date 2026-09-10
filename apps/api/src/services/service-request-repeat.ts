@@ -162,6 +162,10 @@ function repeatMatchWhere(
       customerDepartmentId: prev.customerDepartmentId,
       equipmentDepartmentId: prev.equipmentDepartmentId,
       serviceCounterpartyId: prev.serviceCounterpartyId,
+      // Автор — шестая колонка правила (план свободного объёма работ, Р3): при включённом рубильнике
+      // исполнительский профиль видит свои заведённые заявки, и у псевдонима она берётся так же, как
+      // остальные пять.
+      createdBy: prev.createdBy,
     }),
   )!;
 }

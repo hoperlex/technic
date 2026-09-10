@@ -8,6 +8,7 @@ import type {
   CreateServiceRequestInput,
   DeclineServiceRequestInput,
   PutServiceConsumablesInput,
+  PutServiceEstimateBreakdownInput,
   PutServiceEstimateInput,
   PutServiceExecutorsInput,
   RequestHistoryEntryDto,
@@ -189,6 +190,25 @@ export const serviceRequestsApi = {
    */
   saveEstimate: (id: string, body: PutServiceEstimateInput) =>
     apiFetch<ServiceRequestDto>(`${PATH}/${id}/estimate`, { method: 'PUT', body }),
+  /**
+   * Раскладка свободной записи по графам (план
+   * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р2; ответ В9 заказчика от
+   * 09.09.2026). Тело по составу то же, что у соседки выше, — и это РАЗНЫЕ двери, а не одна с
+   * флагом.
+   *
+   * Соседку открывает `serviceRequests.estimate` — автор объёма работ, исполнитель, — и правит он
+   * черновик: состав заменяется, номер ревизии и подписи не трогаются. Эту открывает
+   * `serviceRequests.estimateRewrite` — «Ведение», переносящее присланный подрядчиком перечень в
+   * графы, — и по СОГЛАСОВАННОЙ ревизии она делает другое: поднимает номер, снимает подпись,
+   * пересчитывает итог и ставит новое предъявление, потому что подписанное содержимое под прежней
+   * ревизией не меняется (ADR 0133). Заявка после неё ждёт новой подписи.
+   *
+   * Отказы у неё свои, и портал их не предугадывает: 409 под висящим предъявлением (согласующий
+   * подписал бы не то, что видел) и 422 вне статуса «В работе» — отложенную сперва возобновляют, у
+   * «Новой» объёма работ ещё нет, а после закрытия работ строки несут факт и гарантии.
+   */
+  saveEstimateBreakdown: (id: string, body: PutServiceEstimateBreakdownInput) =>
+    apiFetch<ServiceRequestDto>(`${PATH}/${id}/estimate/breakdown`, { method: 'PUT', body }),
   /**
    * Предъявление объёма работ: ревизия +1, либо гарантийный ремонт без оплаты (Р27). Статуса не
    * двигает (Р8) — поднимает ревизию и ставит непогашенное предъявление, по которому очередь

@@ -50,7 +50,28 @@ export function ServiceEstimateTable({
         </Tag>
       ),
     },
-    { key: 'name', title: 'Наименование', dataIndex: 'name' },
+    {
+      key: 'name',
+      title: 'Наименование',
+      dataIndex: 'name',
+      /*
+       * ПЕРЕНОСЫ СТРОК СОХРАНЯЮТСЯ (план
+       * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р1). Наименование стало
+       * длинным и многострочным: свободный режим кладёт в него перечень позиций из письма
+       * подрядчика — пять-шесть строк, — и склеенный в одну строку он становится нечитаемым ровно
+       * там, где по нему согласуют деньги. `pre-line`, а не `pre`: переводы строк — часть
+       * значения, а лишние пробелы и отступы, приехавшие из чужого письма, схлопнуть полезно.
+       *
+       * Колонка ширины не получает: она единственная резиновая в таблице, у остальных ширина
+       * задана, — а `break-word` не даёт длинному артикулу без пробелов растянуть её за край и
+       * увести таблицу в прокрутку.
+       */
+      render: (_v, item) => (
+        <Typography.Text style={{ whiteSpace: 'pre-line', wordBreak: 'break-word' }}>
+          {item.name}
+        </Typography.Text>
+      ),
+    },
     { key: 'quantity', title: 'Кол-во', dataIndex: 'quantity', width: 80, align: 'right' },
     {
       key: 'unitPrice',

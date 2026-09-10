@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/client';
 import { counterparties, persons, users } from '../db/schema';
 import {
@@ -10,6 +10,7 @@ import {
   systemAddonsOf,
 } from '../services/user-scopes';
 import {
+  type FeatureFlagKey,
   isPermission,
   isPersonScopedRole,
   type AccessSubject,
@@ -39,6 +40,48 @@ export const accessSubjectColumns = {
   grantCodes: grantCodesExpr,
   grantPermissions: grantPermissionsExpr,
 };
+
+/**
+ * Ключ рубильника, сужающего область исполнителя в заявках оргтехники (план
+ * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р4; миграция 0300).
+ *
+ * Отдельной константой ради `satisfies`-проверки: реестр `FEATURE_FLAGS` закрыт, и опечатка в
+ * строке означала бы «ключа нет», то есть навсегда выключенный рубильник — состояние, которое
+ * снаружи неотличимо от «оператор выключил».
+ */
+const EXECUTOR_SCOPE_FLAG: FeatureFlagKey = 'service_request_executor_scope';
+
+/**
+ * Включён ли рубильник сужения области исполнителя — **подзапросом в той же выборке**, что и
+ * остальной субъект (Р4 плана).
+ *
+ * ПОЧЕМУ ПОЛЕМ ПРИНЦИПАЛА, А НЕ ПАРАМЕТРОМ. Предикаты контрактов чистые и в базу не ходят, а
+ * `serviceRequestVisibilityWhere` зовут ВОСЕМЬ файлов — список заявок, счётчики, витрины
+ * справочника, файловый страж, журнал расходников, повтор заявки, кандидаты и массовые действия.
+ * Протащи мы признак параметром через всех, вышло бы восемь мест, где о нём можно забыть, причём
+ * забытый он означал бы не ошибку, а ТИХОЕ расширение области: рубильник включён, а конкретная
+ * витрина по-прежнему показывает заявки всей компании.
+ *
+ * ВТОРОГО ПОХОДА В БАЗУ НЕ ПОЯВЛЯЕТСЯ. `loadPrincipal` стоит на горячем пути каждого запроса, и
+ * отдельный `SELECT` по таблице рубильников удвоил бы число обращений ради одного булева. Скалярный
+ * подзапрос по первичному ключу таблицы из одной строки planner раскрывает в InitPlan и считает
+ * один раз на запрос.
+ *
+ * КЭША НЕТ — по той же причине, что и у `isFeatureEnabled` (`services/feature-flags.ts`): рубильник
+ * заведён ради АВАРИЙНОГО выключения по работающему серверу, и кэш превратил бы «выключили» в
+ * «выключится через минуту», причём на каждом инстансе в свою минуту.
+ *
+ * FAIL-CLOSED, КАК У СОСЕДНЕГО КЛЮЧА: строки нет — `coalesce` отвечает `false`. Отсутствие строки
+ * означает недокаченный выкат, и открывать на нём сужение нельзя — но и тут ответ «выключено»
+ * безопасен в обе стороны: выключенное состояние равно сегодняшнему поведению буквально.
+ *
+ * Таблица названа сырым именем, а не через `${featureFlags}`, по той же причине, что и в
+ * `grantCodesExpr`: внутрь `sql`-объекта drizzle с переписыванием столбцов не заходит, а
+ * псевдоним `ff` делает ссылку однозначной независимо от того, из чего собран внешний запрос.
+ */
+const serviceRequestExecutorScopeExpr = sql<boolean>`coalesce((
+  SELECT ff.is_enabled FROM feature_flags ff WHERE ff.key = ${EXECUTOR_SCOPE_FLAG}
+), false)`;
 
 /** Строка выборки `accessSubjectColumns` — то, из чего собирается субъект доступа. */
 export interface AccessSubjectRow {
@@ -168,6 +211,21 @@ export interface Principal extends AccessSubject {
    * Уходит вместе с `role-addons.ts` на шаге 1e.
    */
   addons: RoleAddon[];
+  /**
+   * Включён ли рубильник `service_request_executor_scope` — сужение области исполнителя в заявках
+   * оргтехники (план `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р3, Р4, Р7).
+   *
+   * ЭТО НЕ СВОЙСТВО УЧЁТКИ, и притворяться им поле не должно: значение одинаково для всех и меняется
+   * `UPDATE`-ом одной строки. Живёт оно здесь ровно потому, что читателей у него много и все они —
+   * предикаты области, которым в базу ходить нельзя (`lib/access.ts` проверяется юнит-тестами без
+   * соединения). Принципал уже собирается одним запросом на входе — это единственное место, куда
+   * признак приезжает бесплатно и откуда его нельзя забыть взять.
+   *
+   * `false` означает **сегодняшнее поведение целиком**, а не «часть правил выключена»: до включения
+   * ни одна ветка Р3/Р7 не срабатывает вовсе. Точечные вопросы «включён ли ключ» по-прежнему задаёт
+   * `isFeatureEnabled` — там, где ответ нужен ручке, а не предикату.
+   */
+  serviceRequestExecutorScopeEnabled: boolean;
   authVersion: number;
 }
 
@@ -189,6 +247,11 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
       // Роль, тип контрагента и наборы — общей выборкой (см. `accessSubjectColumns`): их же
       // спрашивает сборщик адресатов письма, и второй формулы права быть не должно.
       ...accessSubjectColumns,
+      // Рубильник области исполнителя — тем же запросом (Р4). В `accessSubjectColumns` он НЕ входит
+      // намеренно: та выборка отвечает на «что может ЭТА учётка» и её же зовут сборщики адресатов
+      // писем, которым область заявок не считают вовсе, — приписанный туда признак стоил бы им
+      // лишнего подзапроса на каждую строку списка получателей.
+      serviceRequestExecutorScopeEnabled: serviceRequestExecutorScopeExpr,
     })
     .from(users)
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
@@ -218,6 +281,7 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     counterpartyId: u.counterpartyId,
     personId: u.personId,
     ...accessSubjectOf(row),
+    serviceRequestExecutorScopeEnabled: row.serviceRequestExecutorScopeEnabled,
     authVersion: u.authVersion,
   };
 }

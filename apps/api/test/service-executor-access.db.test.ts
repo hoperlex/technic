@@ -1023,6 +1023,20 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
       'PATCH /api/v1/service-requests/:id/decline': { reason: 'проба доступа', version: 0 },
       'PATCH /api/v1/service-requests/:id/start': { version: 0 },
       'PUT /api/v1/service-requests/:id/estimate': { items: [], version: 0 },
+      /*
+       * Раскладка свободного объёма работ по графам (план
+       * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р2). Тело — как у соседки
+       * выше, и по той же причине: схема `.strict()` разбирается ДО стража, а пустой список строк
+       * ей законен (что с ним делать, решает уже ручка).
+       *
+       * ЭТУ ДВЕРЬ ПОДРЯДЧИКУ ЗАКРЫВАЕТ СТРАЖ МАРШРУТА, А НЕ ОБЛАСТЬ, и это не поблажка перебору.
+       * Право `serviceRequests.estimateRewrite` уходит одному набору — «Ведение», — и у оператора
+       * контрагента его нет и быть не должно: он объём работ ПИШЕТ, а не переписывает чужой.
+       * Перебор спрашивает «403 на каждой строке манифеста области», и здесь он его получает; чем
+       * именно отбило эту дверь у каждого держателя, доказывает свой файл
+       * (`service-estimate-breakdown.db.test.ts`, Т7).
+       */
+      'PUT /api/v1/service-requests/:id/estimate/breakdown': { items: [], version: 0 },
       'PATCH /api/v1/service-requests/:id/estimate/submit': { version: 0 },
       'PATCH /api/v1/service-requests/:id/estimate/approval': { approved: true, version: 0 },
       'PATCH /api/v1/service-requests/:id/estimate/reopen': { reason: 'проба доступа', version: 0 },

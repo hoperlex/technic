@@ -758,7 +758,7 @@ export function isGrantable(permission: Permission): boolean {
  * из них — `wasteRequests.create: []` — прямо противоречила бы ADR 0021, где модуль закрывается
  * чтением. Расписать же честные требования всем действиям всех модулей значит принять сейчас
  * решения, которых в ADR 0106 нет, и сделать это в файле, который на этапе 1a обязан только
- * заводить структуры. Поэтому здесь ровно тридцать четыре объявленных требования, а отсутствие
+ * заводить структуры. Поэтому здесь ровно тридцать девять объявленных требований, а отсутствие
  * строки читается как «требование не объявлено», а не как «право ничего не требует»; расширяет
  * таблицу решение, а не молчание. Читают её через `?? []`.
  */
@@ -884,6 +884,14 @@ export const PERMISSION_REQUIRES: Partial<Record<Permission, readonly Permission
   'serviceRequests.status': ['serviceRequests.read'],
   'serviceRequests.approveEstimate': ['serviceRequests.read'],
   'serviceRequests.estimate': ['serviceRequests.read'],
+  /*
+   * Раскладка объёма работ по графам (план
+   * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р2) — то же требование, что у
+   * одиннадцати соседей по модулю, и по той же причине: переписать объём работ заявки, которой не
+   * видно, — действие вслепую. Держателю набора «Ведение» строка ничего не меняет: чтение модуля
+   * стоит в его составе (`ROLE_ADDON_PERMISSIONS`), и барьер выдачи он проходит сам.
+   */
+  'serviceRequests.estimateRewrite': ['serviceRequests.read'],
   'serviceRequests.approveIt': ['serviceRequests.read'],
   'serviceRequests.update': ['serviceRequests.read'],
   'serviceRequests.delete': ['serviceRequests.read'],

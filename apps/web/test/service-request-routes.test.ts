@@ -373,6 +373,10 @@ const DOORS: Record<string, Door> = {
     call: via('saveEstimate'),
     entry: 'окно «Объём работ»: сохранение состава',
   },
+  'PUT /api/v1/service-requests/:id/estimate/breakdown': {
+    call: via('saveEstimateBreakdown'),
+    entry: 'кнопка «Разложить по графам» на вкладке «Объём работ» → то же окно состава',
+  },
   'PATCH /api/v1/service-requests/:id/estimate/submit': {
     call: via('submitEstimate'),
     entry: 'окно «Объём работ»: кнопка предъявления',

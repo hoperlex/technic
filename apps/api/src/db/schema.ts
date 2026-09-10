@@ -3576,6 +3576,25 @@ export const serviceRequests = pgTable(
       .where(sql`${t.isUrgent} AND ${t.deletedAt} IS NULL`),
     createdAtIdx: index('service_requests_created_at_idx').on(t.createdAt),
     /**
+     * Автор заявки (план `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р3, §8;
+     * этап Э6; миграция 0299). До этой волны по `created_by` не спрашивали ничего: авторство
+     * читали уже загруженной строкой — «моя ли это заявка» в страже заказчика, — и индекс был бы
+     * индексом без запроса.
+     *
+     * Спрашивать начинает область чтения исполнителя: «назначен ∨ **автор** ∨ снят» (развилка В6).
+     * Дизъюнкция считается по всей таблице заявок, и без индекса вторая её ветвь тащила бы за собой
+     * seq scan — вместе с двумя соседними `EXISTS`, которые своими индексами закрыты
+     * (`service_request_executors_user_idx` и `service_request_past_executors_user_idx`).
+     * Планировщик собирает такую дизъюнкцию из `BitmapOr`, и одна неиндексированная ветвь означает
+     * последовательное чтение целиком — то есть цену тем большую, чем длиннее история модуля.
+     *
+     * Полным, а не частичным: `created_by` заполнен у каждой строки (`NOT NULL`), архивные заявки
+     * из области исполнителя отсекает соседнее условие `deleted_at IS NULL`, и сузить индекс его
+     * условием значило бы закрыть его для соседей — «что завёл этот человек» спрашивают и отчёты,
+     * и карточка учётки.
+     */
+    createdByIdx: index('service_requests_created_by_idx').on(t.createdBy),
+    /**
      * Признак повторного обращения (план `docs/office-equipment-repeat-request-plan.md`, Р7;
      * миграция `0276`). Частичный: повтор ищется только среди закрытых и отменённых живых заявок,
      * и индекс остаётся размером с архив терминальных, а не со всей таблицей.
@@ -3761,6 +3780,81 @@ export const serviceRequestExecutors = pgTable(
     // Со стороны учётки спрашивают «что висит на мне» — очередь исполнителя в его разделе;
     // первичный ключ читается только слева направо, от заявки, и на этот вопрос не отвечает.
     userIdx: index('service_request_executors_user_idx').on(t.userId),
+  }),
+);
+
+/**
+ * След снятого исполнителя (план `docs/office-equipment-free-estimate-and-executor-scope-plan.md`,
+ * Р5, этап Э4; миграция 0299).
+ *
+ * ЗАЧЕМ ОНА ВООБЩЕ. Заказчик просит, чтобы сисадмин видел не только назначенные ему заявки, но и
+ * те, **с которых его сняли** (развилка В6): человек вёл ремонт, писал в обсуждение, подшивал
+ * бумаги — и после переназначения заявка исчезала у него из списка целиком, вместе с собственной
+ * перепиской. Сегодня снятие исполнителя физически удаляет строку `service_request_executors`
+ * (три логических пути и **четыре** ветки `DELETE`: сброс состава, переназначение и две ветки
+ * отказа исполнителя), то есть спросить «а кого снимали?» после снятия не у кого. Эта таблица и
+ * есть ответ: строка пишется непосредственно ПЕРЕД каждым `DELETE`.
+ *
+ * ПОЧЕМУ ОТДЕЛЬНАЯ ТАБЛИЦА, А НЕ КОЛОНКА `removed_at` В САМОЙ `service_request_executors`. Мягкое
+ * снятие в живой таблице отвергнуто, и это главное решение здесь. Назначения читают 65 раз в
+ * восьми файлах — письма (`service-request-mail.ts`, `service-request-mail-audience.ts`),
+ * обсуждение и его адресация (`service-request-chat.ts`, `service-request-audience.ts`), доступ к
+ * файлам (`routes/files.ts`), область (`lib/access.ts`), DTO и предикаты карточки
+ * (`routes/service-requests.ts`), блоки карточки единицы (`office-equipment-blocks.ts`). Каждое из
+ * этих чтений спрашивает «кто ведёт заявку», и забытый фильтр `removed_at IS NULL` хотя бы в одном
+ * означал бы, что снятый продолжает получать задания, письма и кнопки, — то есть ошибка была бы
+ * молчаливой и в сторону лишнего доступа. Отдельная таблица по построению не открывает ничего:
+ * её единственный читатель — **область чтения** (`serviceRequestVisibilityWhere`), а область
+ * действий (`assertServiceRequestActionable`) в неё не смотрит вовсе. Цена решения названа вслух:
+ * запись при снятии живёт в четырёх ветках, и её отсутствие — это потерянный след, а не открытая
+ * дверь.
+ *
+ * BACKFILL НЕВОЗМОЖЕН, И ЭТО СВОЙСТВО, А НЕ УМОЛЧАНИЕ (находка Н13 плана). Старые строки назначений
+ * удалены физически, а аудит `serviceRequest.reassign` хранит ИМЕНА, а не идентификаторы учёток, —
+ * восстанавливать след неоткуда и не из чего. Семантика поэтому «только вперёд, с даты выката»:
+ * заявки, переданные другому исполнителю раньше, бывшему исполнителю не видны, и портал обязан
+ * сказать это словами в пустом списке, а не молчать.
+ *
+ * Ключ — та же пара «заявка + учётка», что у живого назначения: повторное снятие того же человека с
+ * той же заявки (сняли → назначили снова → сняли) обновляет `removed_at`, а не заводит вторую
+ * строку. Истории снятий, то есть всех дат подряд, таблица не ведёт намеренно — на вопрос «кто и
+ * когда передал заявку» отвечает аудит, а здесь нужен один факт: «этот человек её вёл».
+ */
+export const serviceRequestPastExecutors = pgTable(
+  'service_request_past_executors',
+  {
+    /**
+     * `cascade`, как у живого назначения: след живёт вместе с заявкой и историей её жизни не
+     * является — заявку, удалённую жёстко (уборка опечатки первого дня), он пережить не должен.
+     */
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => serviceRequests.id, { onDelete: 'cascade' }),
+    /**
+     * `restrict` — ровно как у `service_request_executors`: «кто вёл этот ремонт» часть истории
+     * заявки, и удаление учётки, за которой такой след есть, портал обязан отклонить словами, а не
+     * унести его молча. `set null` тут невозможен и физически: колонка входит в первичный ключ.
+     */
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    removedAt: timestamp('removed_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Кто снял — `set null`, как `assigned_by` у назначения: это подробность события, а не его
+     * суть. След обязан пережить увольнение того, кто переназначил заявку; само событие с автором
+     * остаётся в аудите.
+     */
+    removedBy: uuid('removed_by').references(() => users.id, { onDelete: 'set null' }),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.requestId, t.userId] }),
+    /**
+     * Со стороны учётки — «с каких заявок меня снимали»: ровно этот вопрос задаёт третье слагаемое
+     * области чтения бывшего исполнителя (назначен ∨ автор ∨ снят), и первичный ключ, читаемый
+     * слева направо от заявки, на него не отвечает. Вторая колонка в ключе не для сортировки, а
+     * ради index-only scan: `EXISTS` по паре закрывается индексом, не заглядывая в таблицу.
+     */
+    userIdx: index('service_request_past_executors_user_idx').on(t.userId, t.requestId),
   }),
 );
 
@@ -8591,13 +8685,19 @@ export const featureFlags = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => ({
-    // Перечень обязан совпадать с `FEATURE_FLAGS` в контрактах и с `CHECK` миграции 0293. Причина
-    // та же, что у рубильника писем: лишняя строка выглядит настройкой («рубильник включён»), пока
-    // настоящий ключ сидит без строки и молчит fail-closed, — то есть выключение выглядело бы
-    // включением. Новый ключ приходит со своей строкой, то есть со своей миграцией.
+    // Перечень обязан совпадать с `FEATURE_FLAGS` в контрактах и с `CHECK` в базе (завела 0293,
+    // второй ключ дописала 0300). Причина та же, что у рубильника писем: лишняя строка выглядит
+    // настройкой («рубильник включён»), пока настоящий ключ сидит без строки и молчит fail-closed,
+    // — то есть выключение выглядело бы включением. Новый ключ приходит со своей строкой, то есть
+    // со своей миграцией.
+    //
+    // Второй ключ — сужение области исполнителя (план
+    // `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р4; миграция 0300): волна
+    // едет закрытой, а включает её `UPDATE` по работающему серверу. Выключенное состояние обязано
+    // означать сегодняшнее поведение — ради этого уборка карт сквозной области отложена в выпуск B.
     keyCheck: check(
       'feature_flags_key_check',
-      sql`${t.key} IN ('office_equipment_candidate_intake')`,
+      sql`${t.key} IN ('office_equipment_candidate_intake', 'service_request_executor_scope')`,
     ),
   }),
 );
@@ -9035,6 +9135,7 @@ export type ServiceRequestRow = typeof serviceRequests.$inferSelect;
 export type ServiceRequestItemRow = typeof serviceRequestItems.$inferSelect;
 export type ServiceRequestFileRow = typeof serviceRequestFiles.$inferSelect;
 export type ServiceRequestExecutorRow = typeof serviceRequestExecutors.$inferSelect;
+export type ServiceRequestPastExecutorRow = typeof serviceRequestPastExecutors.$inferSelect;
 export type ServiceRequestConsumableRow = typeof serviceRequestConsumables.$inferSelect;
 export type ServiceRequestStatusHistoryRow = typeof serviceRequestStatusHistory.$inferSelect;
 export type ServiceRequestMessageRow = typeof serviceRequestMessages.$inferSelect;

@@ -380,6 +380,22 @@ export const SERVICE_ACCESS_MANIFEST = {
     side: 'executor',
     state: 'serviceEstimatePending',
   },
+  /*
+   * Раскладка свободной записи по графам (план свободного объёма работ, Р2). Сторона — `'operator'`,
+   * и это ЕДИНСТВЕННАЯ сметная дверь, у которой она не `'executor'`: право `serviceRequests.estimateRewrite`
+   * уходит в набор «Ведение» и больше никому, и предикатов стороны исполнителя в теле нет вовсе —
+   * ни `assertExecutorSide`, ни `executorAssignment`. Дверь принадлежит тому, кто ведёт заявку и
+   * переносит присланный подрядчиком перечень в графы, а не тому, кто перечень составил.
+   *
+   * Состояние названо `serviceEstimatePending` — тем же именем, что у соседней правки состава, и по
+   * той же причине: это единственная проверка ручки с собственным предикатом. Статус «В работе» и
+   * снимок согласования читаются прямо в теле полями заявки, называть их в коде нечем.
+   */
+  'PUT /api/v1/service-requests/:id/estimate/breakdown': {
+    scope: 'visibility',
+    side: 'operator',
+    state: 'serviceEstimatePending',
+  },
   'PATCH /api/v1/service-requests/:id/estimate/submit': {
     scope: 'visibility',
     side: 'executor',
