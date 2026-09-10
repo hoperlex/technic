@@ -4,7 +4,7 @@
   [readings-admin-export-plan.md](../readings-admin-export-plan.md), решения Р1–Р12. Схемы миграция
   не требует: право живёт словарём в коде, а администратор получает его по построению
   (`admin: [...PERMISSIONS]`)
-- Домены: показания техники, доступ, выгрузки
+- Домены: гараж, доступ
 - Область: контракты —
   [permissions.ts](../../packages/contracts/src/permissions.ts) (`vehicleReadings.export`),
   [permission-catalog.ts](../../packages/contracts/src/permission-catalog.ts) (витрина и

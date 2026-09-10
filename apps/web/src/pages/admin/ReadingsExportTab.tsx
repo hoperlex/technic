@@ -116,12 +116,12 @@ export function ReadingsExportTab() {
           <Alert
             type="warning"
             showIcon
-            message="Период больше года"
+            title="Период больше года"
             description="Выберите отрезок не длиннее 366 дней: книга собирается целиком в памяти сервера."
           />
         )}
 
-        {failure && <Alert type="error" showIcon message={failure} />}
+        {failure && <Alert type="error" showIcon title={failure} />}
 
         <Card size="small" title="Что внутри книги">
           <Space orientation="vertical" size={8} style={{ display: 'flex' }}>
