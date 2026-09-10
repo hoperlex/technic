@@ -11,7 +11,8 @@ import {
   vehicleOnSitePresenceLabels,
 } from '@technic/contracts';
 import { calendarDayCount } from '../../utils/date';
-import { EarlyEndTag, formatDateOnly, type useEarlyEnd } from './shared';
+import { EarlyEndTag, formatDateOnly } from './shared';
+import type { useEarlyEnd } from './earlyEndActions';
 
 /**
  * Строка среза «На объекте» по частям: ячейки «Сегодня», «Срок» и «Смены», два правила

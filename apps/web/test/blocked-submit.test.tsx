@@ -47,14 +47,18 @@ const PRESENTED = serviceRequest({
 
 describe('отказ на кнопке называет поле', () => {
   it('закрытие заявки ТС без отработанного помечает поле, а не показывает тост', async () => {
-    mockHttp({ 'GET /vehicle-requests/vr-1/shifts': () => json({ onDate: '', items: [] }) });
+    const http = mockHttp({
+      'GET /vehicle-requests/vr-1/shifts': () => json({ onDate: '', items: [] }),
+    });
     const onSubmit = vi.fn();
     renderWithUser(
       <VehicleCompleteModal
         request={REQUEST}
+        onDate="2026-08-05"
         confirmLoading={false}
         onCancel={() => {}}
         onSubmit={onSubmit}
+        onCompleted={() => {}}
       />,
     );
 
@@ -62,12 +66,15 @@ describe('отказ на кнопке называет поле', () => {
     // проверка окна («техника не могла отработать нисколько»).
     const worked = await screen.findByLabelText('Отработано смен');
     fireEvent.change(worked, { target: { value: '0' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Выполнена' }));
+    // Кнопка первого шага у заказа техники на объект зовёт не закрытие, а разговор о последствиях
+    // (ADR 0178): проверка полей стоит до него, и до сервера дело не доходит вовсе.
+    fireEvent.click(screen.getByRole('button', { name: 'Показать последствия' }));
 
     await waitFor(() =>
       expect(fieldError('Отработано смен')).toBe('Укажите, сколько отработала техника'),
     );
     expect(onSubmit).not.toHaveBeenCalled();
+    expect(http.countOf('POST /vehicle-requests/vr-1/completion/preview')).toBe(0);
     expect(document.querySelector('.ant-message-notice')).toBeNull();
   });
 

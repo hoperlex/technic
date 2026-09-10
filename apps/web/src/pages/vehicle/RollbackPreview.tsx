@@ -1,5 +1,8 @@
 import { Alert, Space, Typography } from 'antd';
-import type { VehicleRequestStatusPreviewDto } from '@technic/contracts';
+import type {
+  VehicleRequestCompletionDto,
+  VehicleRequestStatusPreviewDto,
+} from '@technic/contracts';
 import { formatDateOnly } from './shared';
 
 /**
@@ -20,8 +23,28 @@ import { formatDateOnly } from './shared';
  * нечем. Портал говорит только то, что знает точно: чем заказ пойдёт дальше, что сделает сверка
  * ЭСМ-2 и как будет считаться занятость машины.
  */
-export function RollbackPreview({ preview }: { preview: VehicleRequestStatusPreviewDto }) {
+interface Props {
+  preview: VehicleRequestStatusPreviewDto;
+  /**
+   * Снимок закрытия возвращаемой заявки (Р23 ADR 0178): чем закрыли и каким срок был до того. Им
+   * окно называет сокращение числами — «было по 16-е, стало по 12-е», — а не общей оговоркой.
+   * `null` — заявка закрыта не фактической датой (грузоперевозка, арендодатель, закрытие до этой
+   * волны), и сокращать было нечего.
+   */
+  fact: VehicleRequestCompletionDto | null;
+}
+
+export function RollbackPreview({ preview, fact }: Props) {
   const { issue, cancel } = preview.esm2;
+  /*
+   * Срок сокращали — значит есть о чём предупредить конкретными числами. Пара дат берётся из
+   * снимка закрытия, а не считается порталом: разность соседних полей заявки после первой же
+   * правки срока уже не восстановить, ради чего снимок и заведён.
+   */
+  const shortened =
+    fact?.endedOn && fact.previousDateTo && fact.endedOn < fact.previousDateTo
+      ? { endedOn: fact.endedOn, previousDateTo: fact.previousDateTo }
+      : null;
   return (
     <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
       <Alert
@@ -57,6 +80,20 @@ export function RollbackPreview({ preview }: { preview: VehicleRequestStatusPrev
           </ul>
         )}
       </div>
+      {/* Срок возврат не возвращает (Р14 плана `docs/vehicle-request-actual-end-date-plan.md`,
+        решение заказчика по В2). Заявка, закрытая фактической датой, уходила в «Выполнена» с
+        сокращённым сроком и сокращённым листом; возврат в работу отменяет статус, а не сокращение.
+        Сказать это надо до нажатия: человек, возвращающий заявку ради «доработать ещё два дня»,
+        иначе обнаружит прежний укороченный срок уже после — и решит, что портал потерял правку.
+        Снимок прежнего срока при этом остаётся в истории объяснением, а не кнопкой отката. */}
+      {shortened && (
+        <Alert
+          type="info"
+          showIcon
+          title={`Срок останется сокращённым — по ${formatDateOnly(shortened.endedOn)}`}
+          description={`Заказ закрывали фактической датой: срок был по ${formatDateOnly(shortened.previousDateTo)}, стал по ${formatDateOnly(shortened.endedOn)}. Возврат в работу отменяет закрытие, но не сокращение — заявка вернётся с укороченным сроком и укороченным листом. Нужны ещё дни: продлите срок отдельно, и продление выпишет новый лист ЭСМ-2.`}
+        />
+      )}
       <div>
         <Typography.Text strong>Занятость машины</Typography.Text>
         <div>

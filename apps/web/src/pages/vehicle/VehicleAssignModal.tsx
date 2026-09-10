@@ -1280,7 +1280,7 @@ export function VehicleAssignModal({
       footerExtra={secondStep ? <Button onClick={backToForm}>Назад</Button> : undefined}
       width={880}
     >
-      {request && step && <RollbackPreview preview={step.preview} />}
+      {request && step && <RollbackPreview preview={step.preview} fact={request.completion} />}
       {request && consequences && (
         <ReassignPreview preview={consequences.preview} staleReason={staleReason} />
       )}

@@ -153,13 +153,13 @@ import {
   FileEditor,
   RequestAssignmentCell,
   RequestContactsCell,
-  useEarlyEnd,
   VehicleClassificationSelect,
   useFileEditor,
   useVehicleClassificationFilter,
   useVehicleFilter,
   type EditorFile,
 } from './shared';
+import { useEarlyEnd } from './earlyEndActions';
 import {
   WeeklyApprovalCell,
   WeeklyCommentCell,
@@ -1206,10 +1206,17 @@ export function VehicleRequestsTab() {
       setAssignTarget(r);
       return;
     }
-    // Закрытие спрашивает факт — но только там, где есть чем считать: у заявки, взятой в работу
-    // до ADR 0027, машины и ставки нет, и просить отработанное время не у чего. Так же решает
-    // и сервер: факт обязателен при назначенной технике.
-    if (transitionRequiresCompletion(status) && r.assignment) {
+    /*
+     * Закрытие спрашивает факт. У грузоперевозки — только там, где есть чем считать: у заявки,
+     * взятой в работу до ADR 0027, машины и ставки нет; так же решает и сервер. У заказа техники на
+     * объект окно открывается **всегда** (ADR 0178): закрывает его своя дверь, а она факт требует
+     * без оговорок — статусной ручки, закрывавшей такую заявку с прочерком в сумме, больше нет.
+     * Заказ без назначенной техники идёт этим же окном: сумму в нём проставляют руками.
+     */
+    if (
+      transitionRequiresCompletion(status) &&
+      (r.requestType === 'special_equipment' || r.assignment)
+    ) {
       setCompleteTarget(r);
       return;
     }
@@ -2724,10 +2731,12 @@ export function VehicleRequestsTab() {
         }}
       />
 
-      {/* Выполнение: отработанное время и стоимость (ADR 0029). Факт уходит тем же запросом,
-          что и статус, — заявка не бывает выполненной без ответа «сколько стоило». */}
       {/* Отказ по запросу досрочного завершения: причина спрашивается окном хука. */}
       {earlyEnd.node}
+
+      {/* Виза по чужому запросу: своё окно со своим предпросмотром (ADR 0178, Р19) — она
+        применяет сокращение, и последствия обязана показать до нажатия. */}
+      {earlyEnd.approveNode}
 
       {/* Досрочное завершение — то же окно, что и на вкладке «На объекте» (ADR 0044). */}
       <VehicleEarlyEndModal
@@ -2739,10 +2748,16 @@ export function VehicleRequestsTab() {
         onSubmit={earlyEnd.submit}
       />
 
+      {/* Выполнение: отработанное время и стоимость (ADR 0029), а у заказа техники на объект — ещё
+        и фактическая дата окончания работ (ADR 0178). Заказ техники окно закрывает своей дверью и
+        своим предпросмотром — статусная ручка «Выполнена» у него отвечает отказом; `onSubmit` тут
+        остался ровно для грузоперевозки, которая закрывается прежним путём. */}
       <VehicleCompleteModal
         request={completeTarget}
+        onDate={today}
         confirmLoading={statusMut.isPending}
         onCancel={() => setCompleteTarget(null)}
+        onCompleted={() => setCompleteTarget(null)}
         onSubmit={({ completion, comment }) =>
           completeTarget &&
           statusMut.mutate({

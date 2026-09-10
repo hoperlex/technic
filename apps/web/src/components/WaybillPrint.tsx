@@ -296,6 +296,7 @@ export function PrintWaybillButton({
   size = 'small',
   status = 'issued',
   printedAt,
+  hint,
   children,
 }: {
   waybillId: string;
@@ -305,6 +306,18 @@ export function PrintWaybillButton({
   status?: WaybillStatus;
   /** Когда лист печатали в последний раз; пусто — ни разу. */
   printedAt?: string | null;
+  /**
+   * Чем эта печать отличается от обычной — вместо подписи «Печать бланка» (Р13 плана
+   * `docs/vehicle-request-actual-end-date-plan.md`).
+   *
+   * Заведено ради сокращённого листа: печать всегда идёт из снимка, а снимок приведён к факту, и
+   * второй экземпляр выходит с укороченным периодом — то есть не копией того, что лежит на
+   * площадке. Сказать это надо там, где кнопку нажимают, а не в журнале расхождений.
+   *
+   * У запрещённой печати подсказка своя и она сильнее: аннулированный лист не печатают вовсе, и
+   * объяснять особенности бланка, которого не будет, незачем.
+   */
+  hint?: ReactNode;
   children?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -312,7 +325,7 @@ export function PrintWaybillButton({
 
   return (
     <>
-      <Tooltip title={allowed ? 'Печать бланка' : WAYBILL_CANCELLED_PRINT_MESSAGE}>
+      <Tooltip title={allowed ? (hint ?? 'Печать бланка') : WAYBILL_CANCELLED_PRINT_MESSAGE}>
         <span>
           <MarkDot marked={!!printedAt && allowed} at={printedAt} size={size}>
             <Button

@@ -14,7 +14,8 @@ import { useListParams } from '@shared/lib';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleShiftsModal } from './VehicleShiftsModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
-import { useEarlyEnd, useObjectOptions, useVehicleClassificationFilter } from './shared';
+import { useObjectOptions, useVehicleClassificationFilter } from './shared';
+import { useEarlyEnd } from './earlyEndActions';
 import { onSiteCard } from './onSiteCard';
 import { onSiteColumns } from './onSiteColumns';
 import { onSiteFilters } from './onSiteFilters';
@@ -237,6 +238,10 @@ export function VehicleRequestsOnSiteTab() {
 
       {/* Отказ по запросу досрочного завершения: причина спрашивается окном хука. */}
       {earlyEnd.node}
+
+      {/* Виза по чужому запросу: своё окно со своим предпросмотром (ADR 0178, Р19) — она
+        применяет сокращение, и последствия обязана показать до нажатия. */}
+      {earlyEnd.approveNode}
 
       {/* Досрочное завершение — окно то же, что и в списке заявок: спрашивают в нём одно и то же. */}
       <VehicleEarlyEndModal

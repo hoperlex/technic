@@ -1,25 +1,16 @@
 import { useState, type ReactNode } from 'react';
 import { App, Button, Form, Select, Tag, Tooltip, Typography, Upload } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
   assignmentTitle,
-  isPlaceScopedRole,
-  type RequestVehicleEarlyEndInput,
-  type SpecialEquipmentRequestDto,
   type VehicleRequestAssignmentDto,
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
   type VehicleRequestTripDto,
   vehicleOptionLabel,
 } from '@technic/contracts';
-import {
-  counterpartiesApi,
-  driversApi,
-  filesApi,
-  vehicleRequestsApi,
-  vehiclesApi,
-} from '../../api/resources';
+import { counterpartiesApi, driversApi, filesApi, vehiclesApi } from '../../api/resources';
 import type {
   VehicleClassificationGroup,
   VehicleClassificationOption,
@@ -27,13 +18,10 @@ import type {
 import { AutoSelect } from '@shared/ui';
 import { ExpandableCell } from '@shared/ui';
 import type { FilterDefinition } from '@shared/ui';
-import { ReasonModal } from '../../components/CancelReasonModal';
 import { FileLinkList } from '../../components/FileLinks';
 import { PhoneLink } from '../../components/PhoneField';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from '../../utils/date';
-import { garageKeys } from '@entities/garage';
 import { objectsApi, objectKeys } from '@entities/object';
 
 export const FILE_MAX_COUNT = 20;
@@ -521,124 +509,4 @@ export function EarlyEndTag({ earlyEnd }: { earlyEnd: VehicleRequestEarlyEndDto 
       срок сокращён с {formatDateOnly(earlyEnd.previousDateTo)}
     </Typography.Text>
   );
-}
-
-/**
- * Действия досрочного завершения — одни на обе вкладки заказа ТС: запрос сокращения, решение по
- * нему и отзыв. Хук держит и окно запроса, и мутации: вкладки различаются тем, как показывают
- * заявки, а не тем, как их ведут, — разъедься эти действия по двум файлам, они разошлись бы и по
- * поведению (в одном месте спрашивали бы подтверждение отказа, в другом нет).
- */
-export function useEarlyEnd() {
-  const { message, modal } = App.useApp();
-  const { user, can } = useAuth();
-  const qc = useQueryClient();
-  const [target, setTarget] = useState<SpecialEquipmentRequestDto | null>(null);
-
-  /**
-   * Сокращённый срок переписывает и путевые листы: сервер сводит ЭСМ-2 заявки заново (ADR 0037),
-   * и журнал листов без этого показывает смены, которых уже нет.
-   */
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
-    void qc.invalidateQueries({ queryKey: ['waybills'] });
-    void qc.invalidateQueries({ queryKey: garageKeys.root });
-  };
-
-  const requestMut = useMutation({
-    mutationFn: (v: { id: string; body: RequestVehicleEarlyEndInput }) =>
-      vehicleRequestsApi.requestEarlyEnd(v.id, v.body),
-    onSuccess: (res) => {
-      // Сообщение называет то, что произошло на самом деле: запрос визирующего сервер применяет
-      // сразу, и «отправлено на визу» было бы неправдой.
-      const applied =
-        res.requestType === 'special_equipment' && res.earlyEnd?.status === 'approved';
-      message.success(applied ? 'Срок заявки сокращён' : 'Запрос отправлен на визу');
-      setTarget(null);
-      invalidate();
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  const decideMut = useMutation({
-    mutationFn: (v: { id: string; approved: boolean; version: number; comment?: string }) =>
-      vehicleRequestsApi.decideEarlyEnd(v.id, v.approved, v.version, v.comment ?? ''),
-    onSuccess: (_res, v) => {
-      message.success(v.approved ? 'Досрочное завершение согласовано' : 'Запрос отклонён');
-      setRejectTarget(null);
-      invalidate();
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  const cancelMut = useMutation({
-    mutationFn: (id: string) => vehicleRequestsApi.cancelEarlyEnd(id),
-    onSuccess: () => {
-      message.success('Запрос отозван');
-      invalidate();
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  /** Своя виза применяется сразу — тем же правилом, что и при заведении заявки (ADR 0032). */
-  const approvesOwn = isPlaceScopedRole(user?.role ?? null) && can('vehicleRequests.approve');
-
-  /**
-   * Отказ спрашивает причину: заявка остаётся на заказанном сроке, и это надо объяснить.
-   *
-   * Окно — общий `ReasonModal`, а не `confirm` со своим полем внутри: у самодельного поля отказ
-   * «причина не заполнена» показывался тостом поверх окна и не помечал ничего (ADR 0094).
-   */
-  const [rejectTarget, setRejectTarget] = useState<VehicleRequestDto | null>(null);
-
-  const withdraw = (r: VehicleRequestDto) =>
-    modal.confirm({
-      title: `Отозвать запрос на досрочное завершение ${r.displayNumber}?`,
-      content: 'Срок заявки останется прежним.',
-      okText: 'Отозвать',
-      cancelText: 'Отмена',
-      onOk: () => cancelMut.mutateAsync(r.id),
-    });
-
-  return {
-    /** Заявка, для которой открыто окно запроса. */
-    target,
-    /** Окно отказа: рисуется тем, кто хуком пользуется, — хук сам ничего не монтирует. */
-    node: (
-      <ReasonModal
-        open={!!rejectTarget}
-        title={
-          rejectTarget
-            ? `Отклонить досрочное завершение ${rejectTarget.displayNumber}`
-            : 'Отклонить досрочное завершение'
-        }
-        label="Причина отказа"
-        placeholderHint="Например: техника ещё нужна на объекте"
-        okText="Отклонить"
-        danger
-        confirmLoading={decideMut.isPending}
-        onCancel={() => setRejectTarget(null)}
-        onSubmit={(reason) =>
-          rejectTarget &&
-          decideMut.mutate({
-            id: rejectTarget.id,
-            approved: false,
-            version: rejectTarget.version,
-            comment: reason,
-          })
-        }
-      />
-    ),
-    open: setTarget,
-    close: () => setTarget(null),
-    approvesOwn,
-    submit: (body: RequestVehicleEarlyEndInput) => {
-      if (target) requestMut.mutate({ id: target.id, body });
-    },
-    approve: (r: VehicleRequestDto) =>
-      decideMut.mutate({ id: r.id, approved: true, version: r.version }),
-    reject: setRejectTarget,
-    withdraw,
-    pending: requestMut.isPending || decideMut.isPending || cancelMut.isPending,
-  };
 }

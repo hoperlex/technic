@@ -1,118 +1,141 @@
 import { useEffect, useState } from 'react';
-import { Alert, Form, Input, InputNumber, Segmented, Space, Tag, Typography } from 'antd';
-import { useQuery } from '@tanstack/react-query';
+import { App, Button, Form } from 'antd';
+import dayjs, { type Dayjs } from 'dayjs';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  actsForCounterparty,
   approvedMachineHours,
-  requestCustomerName,
-  assignmentRateLabel,
-  assignmentTitle,
   calcVehicleRequestCost,
   type CompleteVehicleRequestInput,
+  type CompletionPreviewDto,
+  completionEndBounds,
   rateForWorkUnit,
-  shiftsCompletionWarning,
-  unapprovedPastShiftDays,
-  VEHICLE_WORK_UNITS,
-  vehicleOwnershipColors,
-  vehicleOwnershipLabels,
   type VehicleRequestDto,
   type VehicleWorkUnit,
-  vehicleWorkUnitLabels,
-  vehicleWorkUnitRateLabels,
-  workedAmountLabel,
 } from '@technic/contracts';
+import { garageKeys } from '@entities/garage';
+import { vehicleRequestKeys, waybillKeys } from '@entities/vehicle-request';
+import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { vehicleRequestsApi } from '../../api/resources';
-import { FormGrid } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
-import { calendarDayCount } from '../../utils/date';
-import { formatMoney } from '../../utils/format';
-import { formatDateOnly } from './shared';
+import { useAuth } from '../../auth/AuthContext';
+import { errorMessage } from '../../utils/format';
+import { CompletionConsequences, CompletionHandshakeFields } from './CompletionConsequences';
+import { CompletionFields, type CompletionFormValues } from './CompletionFields';
+import {
+  bodyOf,
+  type CompletionBody,
+  dateKeyOf,
+  defaultUnit,
+  plannedAmount,
+} from './completionCommand';
+import { reassignStaleReason } from './ReassignPreview';
 
 /**
- * Закрытие заявки фактом (ADR 0029): сколько техника отработала и во сколько это обошлось.
+ * Закрытие заявки фактом (ADR 0029) и фактической датой (ADR 0178).
  *
  * Заявку оформляли планом — «автокран на три дня», — а платят за то, что было: машина вышла на
  * день позже, работала полторы смены, простояла в ожидании фронта работ. Поэтому факт
- * предъявляется при переводе в «Выполнена», тем же запросом, что и статус: заявка не бывает
- * выполненной без ответа на «сколько стоило».
+ * предъявляется при закрытии: заявка не бывает выполненной без ответа на «сколько стоило».
  *
  * Единицу выбирают ту, в которой договорились о ставке (ADR 0027): часами или сменами. Сумма
  * подставляется расчётом «ставка × количество» и правится свободно — счёт арендодателя включает
  * и перегон, и простой, и сходиться она должна со счётом, а не с формулой. Ручная правка видна
  * подсказкой: расхождение с расчётом должно быть замечено, а не проскочить молча.
+ *
+ * ФАКТИЧЕСКАЯ ДАТА И ДВЕ ДВЕРИ. Технику брали до воскресенья, фронт закрылся в среду — закрывают
+ * средой. Заказ техники на объект уходит поэтому в **свою** дверь (`POST /:id/completion`): она
+ * сокращает срок по фактической дате, правит по неё лист недели, гасит решения истории за нею и
+ * стирает часы дней, которых у заказа больше нет. Всё это надо показать до нажатия, отсюда второй
+ * шаг окна — последствия и подтверждение. Статусная ручка это закрытие с того же выпуска отвергает
+ * (Р1), так что второго пути нет ни у кого.
+ *
+ * Грузоперевозка закрывается прежним путём — статусной ручкой у вызывающего (`onSubmit`): срока
+ * работ и недельной бумаги у неё нет, «фактическая дата окончания» ей ничего не значит, и новая
+ * дверь её не принимает вовсе (Р3).
+ *
+ * АРЕНДОДАТЕЛЬ ДАТЫ НЕ ВИДИТ (Р16, решение заказчика по В6). Он закрывает заявку своим коридором,
+ * срок остаётся плановым, бумага не трогается: последствий у такого закрытия нет **по построению**,
+ * значит нет ни второго шага, ни предпросмотра, ни отпечатков. Признак здесь тот же, каким портал
+ * узнаёт арендодателя везде (`actsForCounterparty`), — принадлежность машины признаком не служит:
+ * арендованный заказ закрывают и диспетчер, и администратор, и им дата как раз нужна. Совпадение
+ * контрагента с арендодателем машины портал не проверяет, и проверять ему нечем: чужую заявку
+ * арендодатель не видит вовсе (`assertLessorScope`), а ветвь всё равно считает сервер по субъекту.
  */
 interface Props {
   /** null — окно закрыто; заявка берётся из строки списка. */
   request: VehicleRequestDto | null;
+  /** День среза по Москве: его считает портал общим правилом, часы браузера тут не годятся. */
+  onDate: string;
+  /** Ожидание статусной ручки у вызывающего — то есть только у грузоперевозки. */
   confirmLoading: boolean;
   onCancel: () => void;
+  /** Грузоперевозка: факт уходит статусной ручкой вызывающего, как и уходил. */
   onSubmit: (v: { completion: CompleteVehicleRequestInput; comment: string }) => void;
+  /** Заказ техники закрыт своей дверью: вызывающему остаётся закрыть окно. */
+  onCompleted: () => void;
 }
 
-interface FormValues {
-  workedAmount?: number | null;
-  totalCost?: number | null;
-  comment?: string;
-}
-
-/**
- * Единица по умолчанию: та, за которую есть ставка. Смена — первая, потому что технику на объект
- * так и берут; часами закрывают то, что не доработало до смены.
- */
-function defaultUnit(request: VehicleRequestDto): VehicleWorkUnit {
-  const previous = request.completion?.workedUnit;
-  if (previous) return previous;
-  const a = request.assignment;
-  if (a?.pricePerShift != null) return 'shifts';
-  if (a?.pricePerHour != null) return 'hours';
-  return 'shifts';
-}
-
-/** Максимум дат в перечне: заказ бывает на месяц, и весь список в предупреждение не влезет. */
-const MAX_LISTED_DAYS = 5;
-
-/** Дни без подписи перечнем: «Без подписи: 12.08.2026, 13.08.2026 и ещё 7». */
-function listDays(days: string[]): string {
-  const head = days.slice(0, MAX_LISTED_DAYS).map(formatDateOnly).join(', ');
-  const rest = days.length - MAX_LISTED_DAYS;
-  return `Без подписи: ${head}${rest > 0 ? ` и ещё ${rest}` : ''}`;
-}
-
-/**
- * Сколько отработано «по плану» — им и открывается поле: у спецтехники это длина заказанного
- * периода в сменах (день работы = смена), у грузоперевозки одна подача. Подставленное значение
- * подтверждают или правят; угадывать часы по периоду портал не берётся — их считают по табелю.
- */
-function plannedAmount(request: VehicleRequestDto, unit: VehicleWorkUnit): number | null {
-  if (unit !== 'shifts') return null;
-  if (request.requestType !== 'special_equipment') return 1;
-  return calendarDayCount(request.dateFrom, request.dateTo);
-}
-
-export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubmit }: Props) {
-  const [form] = Form.useForm<FormValues>();
+export function VehicleCompleteModal({
+  request,
+  onDate,
+  confirmLoading,
+  onCancel,
+  onSubmit,
+  onCompleted,
+}: Props) {
+  const [form] = Form.useForm<CompletionFormValues>();
   const blockers = useFormBlockers(form);
+  const { message } = App.useApp();
+  const { user } = useAuth();
+  const qc = useQueryClient();
   const [unit, setUnit] = useState<VehicleWorkUnit>('shifts');
   /** Сумму правили руками — расчёт её больше не переписывает. */
   const [costTouched, setCostTouched] = useState(false);
+  /** Отработанное правили руками — смена фактической даты его больше не переписывает. */
+  const [amountTouched, setAmountTouched] = useState(false);
+  /**
+   * Ключ операции — один на открытое окно, а не на нажатие (Р25): связь оборвалась, ответа нет,
+   * человек жмёт ещё раз — и сервер по тому же ключу возвращает прежний результат вместо второго
+   * закрытия с новыми сгоревшими номерами.
+   */
+  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+  /** Показанные последствия и тело, которому их посчитали: подтверждение отправляет именно его. */
+  const [shown, setShown] = useState<{
+    preview: CompletionPreviewDto;
+    body: CompletionBody;
+  } | null>(null);
+  /** Почему окно вернулось к последствиям само; `null` — человек пришёл сюда обычным порядком. */
+  const [staleReason, setStaleReason] = useState<string | null>(null);
 
   const assignment = request?.assignment ?? null;
   const rate = rateForWorkUnit(assignment, unit);
 
-  // Принятые объектом машиночасы: подписанные дни и есть основание факта. Сумму часов подставляем
-  // в поле, но не запираем: счёт арендодателя включает и перегон, и минимальный срок аренды.
+  /**
+   * Кто закрывает: арендодатель ведёт свой коридор без даты, предпросмотра и отпечатков (Р16).
+   * Заказ техники на объект — своя дверь, грузоперевозка — прежняя статусная ручка (Р3).
+   */
+  const lessor = actsForCounterparty(user, 'vehicle_lessor');
+  const ownDoor = request?.requestType === 'special_equipment';
+  /**
+   * Границы и умолчание фактической даты считают контракты — сервер проверяет теми же (Р2). Своей
+   * арифметики у портала здесь нет и быть не должно: разойдись правила, окно предлагало бы дату,
+   * которую дверь отклонит.
+   */
+  const bounds =
+    request?.requestType === 'special_equipment' && !lessor
+      ? completionEndBounds(request, onDate)
+      : null;
+
+  // Принятые объектом машиночасы: ими открывается поле, если объект уже расписался. Таблица смен
+  // нужна и полям — она же перечисляет дни без подписи, — поэтому спрашивается здесь и уходит вниз
+  // одним ответом: два запроса за теми же строками разошлись бы между собой.
   const { data: shifts } = useQuery({
     queryKey: ['vehicle-requests', 'shifts', request?.id],
     queryFn: () => vehicleRequestsApi.shifts(request!.id),
     enabled: !!request && request.requestType === 'special_equipment',
   });
   const approvedHours = shifts ? approvedMachineHours(shifts.items) : 0;
-
-  // Дни, за которые объект не расписался. Закрытие они не запирают, но проходить незамеченными не
-  // должны: часы таких дней попадают в факт со слов закрывающего, а не с подписи площадки.
-  // Предупреждение считается по сводке из строки списка — она уже здесь, тогда как таблица смен
-  // приходит вторым запросом и до её ответа перечислять было бы нечего.
-  const pendingShifts = request ? shiftsCompletionWarning(request) : null;
-  const pendingDays = shifts ? unapprovedPastShiftDays(shifts.items, shifts.onDate) : [];
 
   // Окно переиспользуется под разные заявки, поэтому поля сбрасываются при смене цели, а не при
   // размонтировании. Повторное закрытие (после отката администратором) открывается на прежнем
@@ -127,35 +150,43 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
     const previous = request.completion;
     setUnit(start);
     setCostTouched(!!previous);
+    setAmountTouched(!!previous);
+    setShown(null);
+    setStaleReason(null);
+    setOperationId(crypto.randomUUID());
+    // Умолчание даты — верхняя граница: сегодня среда, разрешали до воскресенья, подставлять надо
+    // среду (Р2). Отдельного поля под умолчание контракты не отдают намеренно — два имени одного
+    // значения разъехались бы на первой же правке правила.
+    const endedOn = bounds?.max ?? null;
     const amount =
       previous?.workedAmount ??
-      (start === 'hours' && approvedHours > 0 ? approvedHours : plannedAmount(request, start));
+      (start === 'hours' && approvedHours > 0
+        ? approvedHours
+        : plannedAmount(request, start, endedOn));
     form.setFieldsValue({
+      endedOn: endedOn ? dayjs(endedOn) : undefined,
       workedAmount: amount,
       totalCost:
         previous?.totalCost ??
         calcVehicleRequestCost(rateForWorkUnit(request.assignment, start), amount ?? 0),
       comment: '',
+      cancelAck: false,
+      reason: '',
     });
     // Зависимости — заявка и подтверждённые часы: таблица смен приходит вторым запросом, и до
     // её ответа подставлять было нечего. Перерисовка той же заявки поля не трогает — иначе
     // стёрла бы уже набранное.
   }, [targetId, approvedHours]);
 
-  const workedAmount = Form.useWatch('workedAmount', form);
-  const totalCost = Form.useWatch('totalCost', form);
-
-  /** Расчёт по ставке — им подставляется сумма и с ним же сравнивается введённая вручную. */
-  const calculated =
-    workedAmount != null && workedAmount > 0 ? calcVehicleRequestCost(rate, workedAmount) : null;
-  const costDiffers = costTouched && calculated != null && (totalCost ?? null) !== calculated;
+  const endedOn = Form.useWatch('endedOn', form);
 
   /** Смена единицы меняет и ставку: пересчитываем, пока сумму не правили руками. */
   const changeUnit = (next: VehicleWorkUnit) => {
     setUnit(next);
     if (costTouched) return;
     const amount = form.getFieldValue('workedAmount') as number | null | undefined;
-    const nextAmount = amount ?? (request ? plannedAmount(request, next) : null);
+    const nextAmount =
+      amount ?? (request ? plannedAmount(request, next, dateKeyOf(endedOn)) : null);
     form.setFieldsValue({
       workedAmount: nextAmount,
       totalCost: calcVehicleRequestCost(rateForWorkUnit(assignment, next), nextAmount ?? 0),
@@ -163,11 +194,88 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
   };
 
   const changeAmount = (value: number | null) => {
+    setAmountTouched(true);
     if (costTouched) return;
     form.setFieldsValue({ totalCost: calcVehicleRequestCost(rate, value ?? 0) });
   };
 
-  const submit = (v: FormValues) => {
+  /**
+   * Сдвинули фактическую дату — сдвинулось и отработанное: смен ровно столько, сколько дней заказ
+   * работал. Набранное руками при этом не трогаем: человек мог поставить полторы смены за два дня,
+   * и «пересчёт» стёр бы именно то, ради чего поле открыто.
+   */
+  const changeEndedOn = (value: Dayjs | null) => {
+    if (amountTouched || unit !== 'shifts' || !request) return;
+    const amount = plannedAmount(request, unit, dateKeyOf(value));
+    form.setFieldsValue({
+      workedAmount: amount,
+      ...(costTouched ? {} : { totalCost: calcVehicleRequestCost(rate, amount ?? 0) }),
+    });
+  };
+
+  const previewMut = useMutation({
+    mutationFn: async (body: CompletionBody) => ({
+      body,
+      preview: await vehicleRequestsApi.completionPreview(request!.id, body),
+    }),
+    onSuccess: (data) => setShown(data),
+    onError: (e) => message.error(errorMessage(e)),
+  });
+
+  const completeMut = useMutation({
+    mutationFn: (v: CompletionFormValues) => {
+      const dto = shown?.preview ?? null;
+      const body = shown?.body ?? bodyOf(request!, v, unit, lessor ? null : dateKeyOf(v.endedOn));
+      return vehicleRequestsApi.complete(request!.id, {
+        ...body,
+        // Присутствие каждого подтверждения задаёт **ответ сервера**, а не желание клиента: лишний
+        // отпечаток отвергается так же строго, как недостающий, — он означает, что тело посчитано
+        // по другому состоянию. У арендодательской ветви предпросмотра нет вовсе, и не уезжает ни
+        // одного из них.
+        ...(dto ? { previewFingerprint: dto.fingerprint } : {}),
+        ...(dto?.cancelGroupsFingerprint
+          ? { cancelGroupsFingerprint: dto.cancelGroupsFingerprint }
+          : {}),
+        ...(dto?.unlockFingerprint ? { unlockFingerprint: dto.unlockFingerprint } : {}),
+        ...(dto?.clearedShiftsFingerprint
+          ? { clearedShiftsFingerprint: dto.clearedShiftsFingerprint }
+          : {}),
+        ...(dto?.operationRequirement
+          ? { operation: { operationId, reason: (v.reason ?? '').trim() } }
+          : {}),
+      });
+    },
+    onSuccess: (res) => {
+      message.success(
+        res.repeated ? 'Заявка уже была закрыта этой же командой' : 'Заявка выполнена',
+      );
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
+      // Закрытие переписывает бумагу и снимает дни с рейсов: списки листов и маршрутов после него
+      // показывают не то, что в базе. Занятость машины в гараже меняется вместе со сроком.
+      void qc.invalidateQueries({ queryKey: waybillKeys.root });
+      void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
+      void qc.invalidateQueries({ queryKey: garageKeys.root });
+      onCompleted();
+    },
+    onError: (e) => {
+      /*
+       * Последствия изменились между просмотром и нажатием — сервер отвечает 409, и правильный
+       * ответ портала не «повторите», а «посмотрите заново»: перечень мог стать другим, и
+       * подтверждать прежний человек больше не вправе. Тост в этом случае был бы вторым голосом о
+       * том же и увёл бы глаз от экрана, на который и надо смотреть.
+       */
+      const stale = reassignStaleReason(e);
+      if (stale && shown) {
+        setStaleReason(stale);
+        previewMut.mutate(shown.body);
+        return;
+      }
+      message.error(errorMessage(e));
+    },
+  });
+
+  const submit = (v: CompletionFormValues) => {
+    if (!request) return;
     // Аренда — счёт от контрагента (ADR 0027): закрытие без суммы означало бы «сколько заплатили,
     // выясним потом». Тем же правилом отвечает сервер.
     const blocked = blockers.raise({
@@ -179,162 +287,76 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
         'Укажите стоимость — по арендованной технике заявка закрывается со счётом',
     });
     if (blocked || v.workedAmount == null) return;
-    onSubmit({
-      completion: {
-        workedUnit: unit,
-        workedAmount: v.workedAmount,
-        totalCost: v.totalCost ?? null,
-      },
-      comment: (v.comment ?? '').trim(),
-    });
+
+    // Грузоперевозка идёт прежним путём: у неё ни срока работ, ни бумаги, и своей двери нет.
+    if (!ownDoor) {
+      onSubmit({
+        completion: {
+          workedUnit: unit,
+          workedAmount: v.workedAmount,
+          totalCost: v.totalCost ?? null,
+        },
+        comment: (v.comment ?? '').trim(),
+      });
+      return;
+    }
+    // Второй шаг уже показан — подтверждаем именно то тело, которому сервер посчитал последствия.
+    if (shown) {
+      completeMut.mutate(v);
+      return;
+    }
+    // Арендодателю показывать нечего: его ветвь ни срока, ни бумаги не трогает (Р16).
+    if (lessor) {
+      completeMut.mutate(v);
+      return;
+    }
+    previewMut.mutate(bodyOf(request, v, unit, dateKeyOf(v.endedOn)));
   };
+
+  const secondStep = !!shown;
 
   return (
     <FormModal
-      title={request ? `Выполнение заявки ${request.displayNumber}` : 'Выполнение заявки'}
+      title={
+        request
+          ? `${secondStep ? 'Последствия закрытия' : 'Выполнение заявки'} ${request.displayNumber}`
+          : 'Выполнение заявки'
+      }
       open={!!request}
       onCancel={onCancel}
       onSubmit={() => form.submit()}
-      confirmLoading={confirmLoading}
-      okText="Выполнена"
+      confirmLoading={confirmLoading || previewMut.isPending || completeMut.isPending}
+      // Кнопка называет то, что произойдёт: на первом шаге заказа техники следующим будет разговор
+      // о последствиях, а не закрытие, и обещать «Выполнена» ему нельзя.
+      okText={ownDoor && !lessor && !secondStep ? 'Показать последствия' : 'Выполнена'}
+      // «Назад» уводит от отправки — потому и стоит по другую сторону от основного действия.
+      footerExtra={secondStep ? <Button onClick={() => setShown(null)}>Назад</Button> : undefined}
       width={880}
     >
       {request && (
         // Основание (машина и ставка) и факт стоят рядом: сумму сверяют с тем, о чём
         // договаривались, а не листают к нему прокруткой. На телефоне колонка одна.
         <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
-          <FormGrid.Full>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-              {requestCustomerName(request)}
-            </Typography.Paragraph>
+          {shown && <CompletionConsequences preview={shown.preview} staleReason={staleReason} />}
 
-            {/* Чем работали и по какой ставке договаривались: сумму считают именно от этого, и
-              видеть основание нужно там же, где вводят факт. */}
-            {assignment ? (
-              <div style={{ marginBottom: 16, lineHeight: 1.5 }}>
-                <Space size={8} wrap>
-                  <Typography.Text strong>{assignmentTitle(assignment)}</Typography.Text>
-                  <Tag color={vehicleOwnershipColors[assignment.ownership]}>
-                    {vehicleOwnershipLabels[assignment.ownership]}
-                  </Tag>
-                  {assignment.lessorName && <Tag>{assignment.lessorName}</Tag>}
-                </Space>
-                <div>
-                  <Typography.Text type="secondary">
-                    {assignmentRateLabel(assignment) || 'Ставка не указана'}
-                  </Typography.Text>
-                </div>
-              </div>
-            ) : (
-              <Typography.Paragraph type="warning">
-                Техника у заявки не назначена — стоимость считать не по чему, укажите её вручную
-              </Typography.Paragraph>
-            )}
+          {shown && <CompletionHandshakeFields preview={shown.preview} />}
 
-            {/* Незакрытые дни — не отказ, а предупреждение: заявку закрывают и без подписей, но
-              закрывающий должен видеть, что принимает работу за площадку. Даты приходят таблицей
-              смен, поэтому появляются на мгновение позже самого предупреждения. */}
-            {pendingShifts && (
-              <Alert
-                type="warning"
-                showIcon
-                style={{ marginBottom: 16 }}
-                title={pendingShifts}
-                description={pendingDays.length > 0 ? listDays(pendingDays) : undefined}
-              />
-            )}
-          </FormGrid.Full>
-
-          <FormGrid>
-            {/* Единица — та, в которой договорились о ставке. Ветка без ставки не запрещена:
-              стоимость можно проставить и руками, а отработанное — это факт, а не расчёт. */}
-            <FormGrid.Full>
-              <Form.Item label="Считаем работу">
-                <Segmented<VehicleWorkUnit>
-                  block
-                  value={unit}
-                  onChange={changeUnit}
-                  options={VEHICLE_WORK_UNITS.map((u) => {
-                    const unitRate = rateForWorkUnit(assignment, u);
-                    return {
-                      value: u,
-                      label: `${vehicleWorkUnitLabels[u]}${unitRate != null ? ` · ${formatMoney(unitRate)}` : ''}`,
-                    };
-                  })}
-                />
-              </Form.Item>
-            </FormGrid.Full>
-
-            {/* Отработанное и стоимость — соседними ячейками: их сверяют друг с другом. */}
-            <>
-              <Form.Item
-                name="workedAmount"
-                label={unit === 'hours' ? 'Отработано часов' : 'Отработано смен'}
-                rules={[{ required: true, message: 'Укажите отработанное' }]}
-                extra={
-                  request.requestType === 'special_equipment'
-                    ? [
-                        `Заказано: ${calendarDayCount(request.dateFrom, request.dateTo) ?? '—'} дн.`,
-                        // Что приняла площадка — основание факта: расхождение с ним должно быть
-                        // замечено, а не проскочить молча.
-                        approvedHours > 0
-                          ? `согласовано смен: ${workedAmountLabel('hours', approvedHours)}`
-                          : null,
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')
-                    : undefined
-                }
-              >
-                <InputNumber
-                  style={{ width: '100%' }}
-                  min={0}
-                  step={unit === 'hours' ? 1 : 0.5}
-                  precision={2}
-                  onChange={changeAmount}
-                />
-              </Form.Item>
-              <Form.Item
-                name="totalCost"
-                label="Стоимость, ₽"
-                extra={
-                  calculated != null
-                    ? `Расчёт: ${workedAmountLabel(unit, workedAmount ?? 0)} × ${formatMoney(rate)}`
-                    : rate == null
-                      ? `Ставки ${vehicleWorkUnitRateLabels[unit]} нет — укажите сумму`
-                      : undefined
-                }
-              >
-                <InputNumber
-                  style={{ width: '100%' }}
-                  min={0}
-                  step={1000}
-                  precision={2}
-                  onChange={() => setCostTouched(true)}
-                />
-              </Form.Item>
-            </>
-
-            <FormGrid.Full>
-              {costDiffers && (
-                <Typography.Text type="warning">
-                  Сумма отличается от расчёта ({formatMoney(calculated)}) — в заявке сохранится
-                  введённая
-                </Typography.Text>
-              )}
-
-              {/* Комментарий описывает конкретное закрытие («простой 2 ч по вине объекта»), поэтому
-              уходит в историю заявки, а не в её поле комментария. */}
-              <Form.Item name="comment" label="Комментарий" style={{ marginTop: 16 }}>
-                <Input.TextArea
-                  rows={2}
-                  maxLength={2000}
-                  showCount
-                  placeholder="Необязательно: что важно знать об этом выполнении"
-                />
-              </Form.Item>
-            </FormGrid.Full>
-          </FormGrid>
+          {/* Форма на втором шаге не размонтируется, а прячется: «Назад» обязан вернуть окно
+            заполненным, а набранное человеком повторный сбор стоил бы ему уже сделанной работы. */}
+          <div style={{ display: secondStep ? 'none' : undefined }}>
+            <CompletionFields
+              request={request}
+              form={form}
+              bounds={bounds}
+              unit={unit}
+              shifts={shifts}
+              costTouched={costTouched}
+              onUnitChange={changeUnit}
+              onAmountChange={changeAmount}
+              onCostTouched={() => setCostTouched(true)}
+              onEndedOnChange={changeEndedOn}
+            />
+          </div>
         </Form>
       )}
     </FormModal>

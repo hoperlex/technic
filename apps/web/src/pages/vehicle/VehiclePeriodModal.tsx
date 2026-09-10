@@ -1,12 +1,7 @@
 import { useEffect } from 'react';
 import { Alert, App, Checkbox, Form, Input, Skeleton, Space, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  assignmentDimensionLabels,
-  type CancelledAssignmentGroupDto,
-  type PeriodPreviewDto,
-  type SpecialEquipmentRequestDto,
-} from '@technic/contracts';
+import type { PeriodPreviewDto, SpecialEquipmentRequestDto } from '@technic/contracts';
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { garageKeys } from '@entities/garage';
@@ -14,6 +9,7 @@ import { vehicleRequestKeys, waybillKeys } from '@entities/vehicle-request';
 import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '../../api/resources';
 import { calendarDaysLabel } from '../../utils/date';
 import { errorMessage } from '../../utils/format';
+import { cancelGroupLine } from './cancelGroups';
 import { formatDateOnly } from './shared';
 
 /**
@@ -332,30 +328,4 @@ function PeriodConsequences({ preview }: { preview: PeriodPreviewDto }) {
       )}
     </Space>
   );
-}
-
-/**
- * Одна гасимая группа человеческой строкой: с какого числа и что именно уходит.
- *
- * Гашение групповое (В2) — вместе с машиной уходит и назначенный на неё машинист, — поэтому
- * состав перечисляется целиком. Имени машиниста в перечне нет и взяться ему неоткуда: строка
- * шкалы `driver` носит состояние, а не человека, — поэтому окно называет состояние, а не выдумывает
- * фамилию.
- */
-function cancelGroupLine(group: CancelledAssignmentGroupDto): string {
-  const parts = group.rows.map((row) => {
-    if (row.dimension === 'vehicle') {
-      return `${assignmentDimensionLabels.vehicle}: ${row.vehicle?.name ?? 'не названа'}`;
-    }
-    const state = row.driver?.state;
-    const text =
-      state === 'set'
-        ? 'назначенный этим же решением'
-        : state === 'cleared'
-          ? 'снят — участок вёл арендодатель'
-          : 'не восстановлен по бумаге';
-    return `${assignmentDimensionLabels.driver}: ${text}`;
-  });
-  const since = group.rows[0]?.effectiveDate;
-  return `с ${since ? formatDateOnly(since) : '—'} — ${parts.join('; ')}`;
 }

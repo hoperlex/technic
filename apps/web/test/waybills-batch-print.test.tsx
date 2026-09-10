@@ -46,6 +46,10 @@ const ISSUED: WaybillDto = {
   correctionReason: '',
   correctsNumber: null,
   correctedByNumber: null,
+  // Период не сокращали: след правки пуст у всякого листа, выданного и оставшегося собой.
+  periodToOriginal: null,
+  trimmedAt: null,
+  trimReason: '',
   routeId: 'route-1',
   routeNumber: 'Р-12',
   requests: [],

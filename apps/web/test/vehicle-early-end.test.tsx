@@ -1,23 +1,33 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import type { SpecialEquipmentRequestDto, VehicleOwnership } from '@technic/contracts';
+import type {
+  EarlyEndApprovalPreviewDto,
+  SpecialEquipmentRequestDto,
+  VehicleOwnership,
+} from '@technic/contracts';
+import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { dateInput, typeDate } from './antd';
 import { vehicleRequest } from './factories/vehicle';
 import { VehicleEarlyEndModal } from '../src/pages/vehicle/VehicleEarlyEndModal';
+import { VehicleEarlyEndApproveModal } from '../src/pages/vehicle/VehicleEarlyEndApproveModal';
 
 /**
- * Окно досрочного завершения заказа спецтехники (ADR 0044).
+ * Окно досрочного завершения заказа спецтехники (ADR 0044, ADR 0178).
  *
  * Проверяется то, что окно **обещает человеку** до нажатия, а не его вёрстка. Обещаний три, и цена
  * у них разная: сколько дней освободится (по ним считают площадку и аренду), что произойдёт по
- * нажатию — виза или сразу срок, — и сколько бланков строгой отчётности при этом сгорит. Последнее
- * окно считает **само** (`esm2Periods`), и до появления серверного предпросмотра у этой двери
- * тесты здесь — единственное, что держит обещание вровень со сверкой (`docs/assignment-periods-plan.md`,
- * Ю10; метка `ЭСМ2-РАЗРЕЗ` стоит в самом окне).
+ * нажатию — виза или сразу срок, — и что случится с бланками строгой отчётности.
  *
- * «Сегодня» приходит в окно пропом (`onDate`, ADR 0036) — его считает сервер по Москве. Поэтому ни
- * подмены часов, ни сети сценариям не нужно: окно — чистая форма на пропах.
+ * ТРЕТЬЕ ОБЕЩАНИЕ ПЕРЕЕХАЛО НА СЕРВЕР (ADR 0178, Р19). Прежде окно считало его само: резало срок по
+ * календарным неделям и писало «аннулируются листы за такие-то недели, выписываются заново». Тесты
+ * здесь держали ту арифметику вровень со сверкой — и вместе с ней ушли. Неправдой она стала дважды:
+ * у линейного заказа недель не существует вовсе (листы просят по одной), а сокращение с этой волны
+ * лист не перевыписывает, а **правит**, сохраняя номер. Теперь окно показывает то, что посчитал
+ * сервер обезличенным предпросмотром, и носит обратно его отпечаток — это и проверяется.
+ *
+ * «Сегодня» приходит в окно пропом (`onDate`, ADR 0036) — его считает сервер по Москве. Поэтому
+ * подмены часов сценариям не нужно; сеть нужна ровно там, где ходят за предпросмотром.
  */
 
 /** Понедельник 03.08.2026; неделя работ — 10–16.08, следующая — 17–23.08. */
@@ -63,10 +73,38 @@ function inWork(overrides: Partial<SpecialEquipmentRequestDto> = {}): SpecialEqu
   });
 }
 
+/**
+ * Обезличенный ответ предпросмотра (Р26): числа и даты — ни номеров бланков, ни фамилий. Ровно то,
+ * что сервер отдаёт визирующему, у которого прав на журнал листов нет вовсе.
+ */
+const PREVIEW: EarlyEndApprovalPreviewDto = {
+  newDateTo: '2026-08-14',
+  daysSaved: 7,
+  paper: { trimmed: 1, cancelled: 2, trimmedTo: '2026-08-14' },
+  linearDays: { detachable: [], frozen: [] },
+  cancelGroups: [{ effectiveDate: '2026-08-17' }],
+  operationRequirement: {
+    kind: 'assignment_tail',
+    reasonRequired: false,
+    operationIdRequired: true,
+  },
+  asOf: TODAY,
+  fingerprint: 'fp-early-end',
+  cancelGroupsFingerprint: 'fp-groups',
+};
+
 function renderModal(
   request: SpecialEquipmentRequestDto,
-  options: { approvesOwn?: boolean; onSubmit?: (v: unknown) => void; onDate?: string } = {},
-) {
+  options: {
+    approvesOwn?: boolean;
+    onSubmit?: (v: unknown) => Promise<unknown> | undefined;
+    onDate?: string;
+    preview?: EarlyEndApprovalPreviewDto;
+  } = {},
+): HttpMock {
+  const http = mockHttp({
+    'POST /vehicle-requests/vr-1/early-end/preview': () => json(options.preview ?? PREVIEW),
+  });
   renderWithUser(
     <VehicleEarlyEndModal
       request={request}
@@ -74,9 +112,10 @@ function renderModal(
       approvesOwn={options.approvesOwn ?? true}
       confirmLoading={false}
       onCancel={() => {}}
-      onSubmit={options.onSubmit ?? (() => {})}
+      onSubmit={options.onSubmit ?? (() => undefined)}
     />,
   );
+  return http;
 }
 
 /** Причина обязательна — её заполняют почти в каждом сценарии, чтобы дойти до отправки. */
@@ -94,12 +133,11 @@ function fieldError(labelText: string): string | null {
   return item?.querySelector('.ant-form-item-explain-error')?.textContent ?? null;
 }
 
-/** Что обещано про бланки: `null` — окно про листы молчит вовсе. */
-function waybillsNote(): string | null {
-  const found = [...document.querySelectorAll('.ant-typography')].find((el) =>
-    el.textContent?.includes('ЭСМ-2'),
-  );
-  return found?.textContent ?? null;
+/** Дойти до второго шага: заполнить форму и попросить у сервера последствия. */
+async function showConsequences(): Promise<void> {
+  fillReason('фундамент закончен');
+  fireEvent.click(screen.getByText('Показать последствия'));
+  await screen.findByText('Завершить досрочно');
 }
 
 describe('срок и то, что произойдёт по нажатию', () => {
@@ -127,12 +165,11 @@ describe('срок и то, что произойдёт по нажатию', ()
   /**
    * Границы окно берёт из контрактов (`earlyEndDateBounds`) — теми же их проверяет сервер, и
    * предлагать дату, которую он отклонит, портал не должен. Проверяется именно это: набранный день
-   * вне границ формой не принимается, обещание дней не меняется, и на сервер уходит прежняя дата,
-   * а не набранная.
+   * вне границ формой не принимается, и за последствиями окно идёт с прежней датой, а не с
+   * набранной.
    */
   it('дату вне срока заявки окно не принимает', async () => {
-    const onSubmit = vi.fn();
-    renderModal(inWork(), { onSubmit });
+    const http = renderModal(inWork());
     await screen.findByText('Освободится 9 дн. из заказанных');
 
     // Ниже границы — вчера: задним числом период не переписывается.
@@ -140,143 +177,234 @@ describe('срок и то, что произойдёт по нажатию', ()
     // Выше границы — нынешний конец срока: дата, равная ему, ничего не сокращает.
     typeDate('Последний день работ', '21.08.2026');
     fillReason();
-    fireEvent.click(screen.getByText('Завершить досрочно'));
+    fireEvent.click(screen.getByText('Показать последствия'));
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
-    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ newDateTo: '2026-08-12' });
+    await waitFor(() =>
+      expect(http.countOf('POST /vehicle-requests/vr-1/early-end/preview')).toBe(1),
+    );
+    expect(http.lastCall('POST /vehicle-requests/vr-1/early-end/preview')?.body).toMatchObject({
+      newDateTo: '2026-08-12',
+    });
     expect(await screen.findByText('Освободится 9 дн. из заказанных')).toBeDefined();
   });
 
   it('без причины запрос не уходит: решает не тот, кто просит', async () => {
-    const onSubmit = vi.fn();
-    renderModal(inWork(), { onSubmit });
+    const http = renderModal(inWork());
     await screen.findByText('Освободится 9 дн. из заказанных');
 
-    fireEvent.click(screen.getByText('Завершить досрочно'));
+    fireEvent.click(screen.getByText('Показать последствия'));
 
     await waitFor(() => expect(fieldError('Причина')).toContain('Укажите причину'));
-    expect(onSubmit).not.toHaveBeenCalled();
-  });
-
-  it('уходит выбранным днём, причиной и версией заявки', async () => {
-    const onSubmit = vi.fn();
-    renderModal(inWork(), { onSubmit });
-    await screen.findByText('Освободится 9 дн. из заказанных');
-
-    typeDate('Последний день работ', '14.08.2026');
-    fillReason('фундамент закончен');
-    fireEvent.click(screen.getByText('Завершить досрочно'));
-
-    // Версия — та, что была в окне: правка второго человека обязана получить конфликт.
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith({
-        newDateTo: '2026-08-14',
-        reason: 'фундамент закончен',
-        version: 4,
-      }),
-    );
+    expect(http.countOf('POST /vehicle-requests/vr-1/early-end/preview')).toBe(0);
   });
 
   it('кнопка называет то, что произойдёт: сразу или на визу', async () => {
     renderModal(inWork(), { approvesOwn: true });
 
-    expect(await screen.findByText('Завершить досрочно')).toBeDefined();
-    expect(screen.getByText('Срок заявки изменится сразу — вы её и визируете.')).toBeDefined();
+    // У визирующего следующим шагом идёт разговор о последствиях, а не само сокращение.
+    expect(await screen.findByText('Показать последствия')).toBeDefined();
+    expect(screen.getByText(/Срок заявки изменится сразу — вы её и визируете/)).toBeDefined();
   });
 
   it('просящему не обещают завершения — только визу', async () => {
     renderModal(inWork(), { approvesOwn: false });
 
     expect(await screen.findByText('Отправить на визу')).toBeDefined();
-    expect(
-      screen.getByText(
-        'Запрос уйдёт на визу руководителя строительства; до визы срок заявки прежний.',
-      ),
-    ).toBeDefined();
+    expect(screen.getByText(/Запрос уйдёт на визу руководителя строительства/)).toBeDefined();
   });
 });
 
-describe('сколько бланков ЭСМ-2 сгорит', () => {
-  it('срок обрублен посреди недели: она перевыписывается, следующие сгорают', async () => {
+describe('что случится с бумагой — считает сервер', () => {
+  /**
+   * Главная проверка волны ADR 0178: обещание про бланки собрано **из ответа сервера**, а не из
+   * календаря на клиенте. Числа в сцене намеренно такие, каких портальная арифметика недель дать не
+   * могла бы: один сокращённый лист (номер жив), два аннулированных.
+   */
+  it('применяющая ветвь показывает числа предпросмотра и не называет недель срока', async () => {
     renderModal(inWork());
+    await screen.findByText('Освободится 9 дн. из заказанных');
+    typeDate('Последний день работ', '14.08.2026');
+
+    await showConsequences();
+
+    expect(screen.getByText(/1 лист будет сокращено по 14\.08\.2026/)).toBeDefined();
+    expect(screen.getByText(/2 листа будет аннулировано/)).toBeDefined();
+    // Гашение решений истории — датами вступления в силу, без машин и фамилий (Р26).
+    expect(screen.getByText(/Гаснут решения от 17\.08\.2026/)).toBeDefined();
+    // Никаких календарных недель: прежнее «аннулируются листы ЭСМ-2: 10.08–16.08» ушло вместе с
+    // арифметикой, и вернуться незаметно оно не должно.
+    expect(document.body.textContent).not.toContain('10.08.2026–16.08.2026');
+  });
+
+  it('подтверждение носит отпечаток предпросмотра и ключ операции', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    renderModal(inWork(), { onSubmit });
+    await screen.findByText('Освободится 9 дн. из заказанных');
+    typeDate('Последний день работ', '14.08.2026');
+    await showConsequences();
+
+    fireEvent.click(screen.getByText('Завершить досрочно'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const body = onSubmit.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body).toMatchObject({
+      newDateTo: '2026-08-14',
+      reason: 'фундамент закончен',
+      // Версия — та, что была в окне: правка второго человека обязана получить конфликт.
+      version: 4,
+      previewFingerprint: 'fp-early-end',
+      cancelGroupsFingerprint: 'fp-groups',
+    });
+    // Ключ операции — свой у каждого открытия окна, поэтому проверяется его наличие, а не значение.
+    expect(typeof body.operationId).toBe('string');
+  });
+
+  /**
+   * Ветвь, уходящая на визу, ничего не применяет: последствий у неё нет, сервер отвечает на такой
+   * предпросмотр отказом по существу, а присланное подтверждение отвергает 422 (Р19, Р28). Значит,
+   * окно обязано не ходить за предпросмотром и не носить ни отпечатка, ни ключа.
+   */
+  it('ждущий визы запрос уходит без предпросмотра и без подтверждений', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const http = renderModal(inWork(), { approvesOwn: false, onSubmit });
     await screen.findByText('Освободится 9 дн. из заказанных');
 
     typeDate('Последний день работ', '14.08.2026');
+    fillReason('фундамент закончен');
+    fireEvent.click(screen.getByText('Отправить на визу'));
 
-    // Неделя нового последнего дня аннулируется и выписывается заново — по 14-е включительно;
-    // неделя за ней сгорает целиком.
-    await waitFor(() =>
-      expect(waybillsNote()).toBe(
-        'Аннулируются листы ЭСМ-2: 10.08.2026–16.08.2026, 17.08.2026–21.08.2026;' +
-          ' выписываются заново: 10.08.2026–14.08.2026',
-      ),
-    );
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit).toHaveBeenCalledWith({
+      newDateTo: '2026-08-14',
+      reason: 'фундамент закончен',
+      version: 4,
+    });
+    expect(http.countOf('POST /vehicle-requests/vr-1/early-end/preview')).toBe(0);
   });
 
-  it('прошедшие недели в обещание не идут: их листы отработаны', async () => {
-    renderModal(inWork());
+  /**
+   * Гасить нечего — отпечатка перечня нет, и слать его нельзя: лишнее подтверждение сервер
+   * отвергает так же строго, как недостающее (Р28). Заодно проверяется, что при пустом плане окно
+   * не выдумывает последствий.
+   */
+  it('пустой перечень гашений подтверждением не сопровождается', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    renderModal(inWork(), {
+      onSubmit,
+      preview: {
+        ...PREVIEW,
+        paper: { trimmed: 0, cancelled: 0, trimmedTo: null },
+        cancelGroups: [],
+        cancelGroupsFingerprint: null,
+        operationRequirement: null,
+      },
+    });
     await screen.findByText('Освободится 9 дн. из заказанных');
+    await showConsequences();
 
-    typeDate('Последний день работ', '14.08.2026');
+    expect(screen.getByText('Останутся как есть: сокращать и аннулировать нечего.')).toBeDefined();
+    fireEvent.click(screen.getByText('Завершить досрочно'));
 
-    // Первая неделя срока — 03–09.08 — кончилась до дня среза, и сверка её не тронет.
-    await waitFor(() => expect(waybillsNote()).not.toBeNull());
-    expect(waybillsNote()).not.toContain('03.08.2026');
-  });
-
-  it('срок обрублен на границе недели: перевыписывать нечего', async () => {
-    renderModal(inWork());
-    await screen.findByText('Освободится 9 дн. из заказанных');
-
-    // 16.08 — воскресенье: лист этой недели остаётся ровно таким, каким был выписан.
-    typeDate('Последний день работ', '16.08.2026');
-
-    await waitFor(() =>
-      expect(waybillsNote()).toBe('Аннулируются листы ЭСМ-2: 17.08.2026–21.08.2026'),
-    );
-  });
-
-  it('срок начался посреди недели — с того дня и считается первый лист', async () => {
-    // Заказ 05–21.08, день среза — его первый день: не отработано ещё ничего.
-    renderModal(inWork({ dateFrom: '2026-08-05' }), { onDate: '2026-08-05' });
-    await screen.findByText('Заказано: 05.08.2026 – 21.08.2026');
-
-    typeDate('Последний день работ', '07.08.2026');
-
-    // Первая неделя листа начинается днём начала срока, а не понедельником.
-    await waitFor(() =>
-      expect(waybillsNote()).toBe(
-        'Аннулируются листы ЭСМ-2: 05.08.2026–09.08.2026, 10.08.2026–16.08.2026,' +
-          ' 17.08.2026–21.08.2026; выписываются заново: 05.08.2026–07.08.2026',
-      ),
-    );
-  });
-
-  it('арендная техника: бумагу ведёт арендодатель, и обещать нечего', async () => {
-    renderModal(inWork({ assignment: assignmentOf('rental') }));
-    await screen.findByText('Освободится 9 дн. из заказанных');
-
-    typeDate('Последний день работ', '14.08.2026');
-
-    await waitFor(() => expect(dateInput('Последний день работ').value).toBe('14.08.2026'));
-    expect(waybillsNote()).toBeNull();
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0]![0]).not.toHaveProperty('cancelGroupsFingerprint');
   });
 
   /**
    * Линейный заказ (ADR 0100 §5) ведётся режимом `on_demand`: недельных листов портал ему не
-   * заводит вовсе — их просят по одной неделе, — и сверка сокращения смотрит не на срок, а на уже
-   * выписанное (`esm2RequestedPeriods`). Назвать здесь недели срока значило бы пообещать сожжение
-   * бланков, которых никогда не было.
+   * заводит вовсе — их просят по одной неделе. Прежде окно писало ему отдельную оговорку, потому
+   * что считать было нечем; теперь считает сервер, и ответ у линейного заказа такой же по форме —
+   * числа. Проверяется, что своей ветки для линейного у окна не осталось.
    */
-  it('линейный заказ: недель срока не обещают — их никто не выписывал', async () => {
-    renderModal(inWork({ isLinear: true }));
+  it('линейный заказ показывает те же числа, а не особую оговорку', async () => {
+    renderModal(inWork({ isLinear: true }), {
+      preview: {
+        ...PREVIEW,
+        paper: { trimmed: 0, cancelled: 1, trimmedTo: null },
+        linearDays: { detachable: ['2026-08-17', '2026-08-18'], frozen: ['2026-08-20'] },
+      },
+    });
     await screen.findByText('Освободится 9 дн. из заказанных');
 
-    typeDate('Последний день работ', '14.08.2026');
+    await showConsequences();
 
-    await waitFor(() => expect(waybillsNote()).toContain('выписаны по требованию'));
-    // Ни одной календарной недели срока: в обещании нет чисел вовсе.
-    expect(waybillsNote()).not.toContain('10.08.2026');
-    expect(waybillsNote()).not.toContain('17.08.2026');
+    expect(screen.getByText(/1 лист будет аннулировано/)).toBeDefined();
+    expect(screen.getByText(/17\.08\.2026, 18\.08\.2026/)).toBeDefined();
+    // День, по которому уже выписан лист, рейс не отдаст — и об этом сказано отдельно.
+    expect(
+      screen.getByText(/По ним уже выписан действующий путевой лист: 20\.08\.2026/),
+    ).toBeDefined();
+    expect(document.body.textContent).not.toContain('выписаны по требованию');
+  });
+});
+
+describe('виза по чужому запросу', () => {
+  /**
+   * Виза применяет сокращение — двигает срок, гасит решения о технике и переписывает бумагу, — но
+   * делает это спустя часы или дни после обращения и делает **другой человек**. Уходя прямо из
+   * строки списка (как было до ADR 0178), она ставилась вслепую. Отсюда своё окно со своим
+   * предпросмотром: предпросмотр заявителя здесь не годится и физически не подойдёт — имя двери
+   * входит в отпечаток (Р19).
+   */
+  const pending = () =>
+    inWork({
+      earlyEnd: {
+        status: 'pending',
+        newDateTo: '2026-08-14',
+        previousDateTo: '2026-08-21',
+        reason: 'фундамент закончен',
+        requestedBy: 'user-2',
+        requestedByName: 'Прорабов П. П.',
+        requestedAt: '2026-08-12T06:00:00.000Z',
+        decidedBy: null,
+        decidedByName: null,
+        decidedAt: null,
+        decisionComment: '',
+      },
+    });
+
+  function renderApprove(onSubmit = vi.fn().mockResolvedValue(undefined)): HttpMock {
+    const http = mockHttp({
+      'POST /vehicle-requests/vr-1/early-end/decision/preview': () => json(PREVIEW),
+    });
+    renderWithUser(
+      <VehicleEarlyEndApproveModal
+        request={pending()}
+        confirmLoading={false}
+        onCancel={() => {}}
+        onSubmit={onSubmit}
+      />,
+    );
+    return http;
+  }
+
+  it('показывает, о чём просили, и последствия — своим предпросмотром', async () => {
+    const http = renderApprove();
+
+    // Основание решения: визирующий площадку в этот момент не видит и решает по написанному.
+    expect(await screen.findByText('Просят закончить 14.08.2026 вместо 21.08.2026')).toBeDefined();
+    expect(screen.getByText('Прорабов П. П.: фундамент закончен')).toBeDefined();
+    // И цена визы — числами сервера: своей арифметики у окна нет.
+    expect(screen.getByText(/1 лист будет сокращено по 14\.08\.2026/)).toBeDefined();
+    expect(http.countOf('POST /vehicle-requests/vr-1/early-end/decision/preview')).toBe(1);
+  });
+
+  it('виза уносит свой отпечаток, ключ операции и версию заявки', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    renderApprove(onSubmit);
+    await screen.findByText(/1 лист будет сокращено/);
+
+    fireEvent.click(screen.getByText('Согласовать'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const body = onSubmit.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body).toMatchObject({
+      approved: true,
+      // Слово визирующего окно не спрашивает: причиной операции служит причина самого запроса.
+      comment: '',
+      previewFingerprint: 'fp-early-end',
+      cancelGroupsFingerprint: 'fp-groups',
+      version: 4,
+    });
+    expect(typeof body.operationId).toBe('string');
   });
 });

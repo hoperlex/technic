@@ -29,6 +29,8 @@ import { sortOptionsFrom } from '@shared/ui';
 import { useRouteModal } from '@features/route-modal';
 import { useDriverOptions, useOwnVehicleOptions } from './vehicle/shared';
 import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from './waybills/filters';
+// Подсказки метки «коррекция» и печати сокращённого листа — соседним файлом (Р12, Р13).
+import { correctionHint, trimmedPrintHint } from './waybills/hints';
 import {
   ExportWaybillButton,
   PrintWaybillButton,
@@ -236,10 +238,11 @@ export function WaybillsPage() {
         <Space orientation="vertical" size={0}>
           <span>{r.number}</span>
           {/* Метка стоит у номера, а не в столбце статуса: статус отвечает, действует ли бланк, а
-              это — откуда он такой взялся. Признак считает сервер по ссылке на операцию, поэтому
-              метку получает и списанный задним числом лист, у которого замены нет вовсе. */}
+              это — откуда он такой взялся. Признак считает сервер (`isCorrection`) по трём
+              источникам, поэтому метку получает и списанный задним числом лист, у которого замены
+              нет вовсе, и лист, которому закрытие заявки укоротило период. */}
           {r.isCorrection && (
-            <Tooltip title={r.correctionReason || r.cancelReason || 'Правка задним числом'}>
+            <Tooltip title={correctionHint(r)}>
               <Tag color="gold" style={{ marginInlineEnd: 0 }}>
                 коррекция
               </Tag>
@@ -444,12 +447,17 @@ export function WaybillsPage() {
               другое: номер списан, а напечатанный бланк неотличим от действующего.
 
               Синяя точка в углу кнопки — «эта бумага уже уходила»: печатали или выгружали, кто
-              угодно и когда угодно, в том числе пачкой. */}
+              угодно и когда угодно, в том числе пачкой.
+
+              У сокращённого листа подсказка своя (Р13): второй экземпляр выйдет с укороченным
+              периодом, и принять его за дубликат первого нельзя — иначе бухгалтерия увидит два
+              разных бланка под одним номером и не будет знать, какой из них настоящий. */}
           <PrintWaybillButton
             waybillId={r.id}
             number={r.number}
             status={r.status}
             printedAt={r.printedAt}
+            hint={trimmedPrintHint(r)}
           />
           <ExportWaybillButton
             waybillId={r.id}
