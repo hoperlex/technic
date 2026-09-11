@@ -16,6 +16,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { db as AppDb } from '../src/db/client';
 import type * as SchemaNs from '../src/db/schema';
 import type * as AssignmentNs from '../src/services/driver-assignment';
+import type * as RoutePointsNs from '../src/services/route-points';
 
 /**
  * Задание работника на день (ADR 0102, план `docs/driver-portal-plan.md`, этап 2: Р11–Р13, Р16).
@@ -77,7 +78,7 @@ interface Ctx {
   db: typeof AppDb;
   schema: typeof SchemaNs;
   /** Раскладка ездок точками: фикстура зовёт её там же, где рабочие двери (§8 плана). */
-  placeRequestTrips: (typeof import('../src/services/route-points'))['placeRequestTrips'];
+  placeRequestTrips: (typeof RoutePointsNs)['placeRequestTrips'];
   service: typeof AssignmentNs;
   closeDb: () => Promise<void>;
   adminId: string;

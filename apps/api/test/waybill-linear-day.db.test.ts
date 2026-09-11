@@ -9,6 +9,7 @@ import { issueRouteWaybill } from './waybill-issue-helper';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import type * as RoutePointsNs from '../src/services/route-points';
 
 /**
  * Задание 4-П для дня линейного заказа (ADR 0100 §10, миграция 0127).
@@ -92,8 +93,8 @@ interface Ctx {
   db: typeof AppDb;
   closeDb: () => Promise<void>;
   /** Раскладка строк состава точками: ею живёт бумага (Р11б), и подменять её тесту нечем. */
-  placeLinearDay: (typeof import('../src/services/route-points'))['placeLinearDay'];
-  placeRequestTrips: (typeof import('../src/services/route-points'))['placeRequestTrips'];
+  placeLinearDay: (typeof RoutePointsNs)['placeLinearDay'];
+  placeRequestTrips: (typeof RoutePointsNs)['placeRequestTrips'];
   auth: { authorization: string };
   /** Своя грузовая машина с бланком 4-П: рейс заводится только на собственную технику. */
   vehicleId: string;

@@ -14,6 +14,9 @@ import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { db as AppDb } from '../src/db/client';
+import type * as XlsxNs from '../src/lib/xlsx';
+import type * as DirectoryEngineNs from '../src/services/directory-transfer/engine';
+import type * as DirectoryRegistryNs from '../src/services/directory-transfer/registry';
 import type { AnyDirectory } from '../src/services/directory-transfer/types';
 
 /**
@@ -52,9 +55,9 @@ const DB_URL = process.env.TEST_DATABASE_URL;
 
 interface Ctx {
   db: typeof AppDb;
-  directories: (typeof import('../src/services/directory-transfer/registry'))['directories'];
-  engine: typeof import('../src/services/directory-transfer/engine');
-  xlsx: typeof import('../src/lib/xlsx');
+  directories: (typeof DirectoryRegistryNs)['directories'];
+  engine: typeof DirectoryEngineNs;
+  xlsx: typeof XlsxNs;
 }
 
 let ctx: Ctx;

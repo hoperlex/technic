@@ -7,6 +7,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { db as AppDb } from '../src/db/client';
+import type * as RoutePointsNs from '../src/services/route-points';
 
 /**
  * Жизненный цикл ездки (план `docs/route-trips-plan.md`, §11; Р13, Р13а, Р18).
@@ -44,11 +45,11 @@ type Tx = Parameters<Parameters<typeof AppDb.transaction>[0]>[0];
 interface Ctx {
   db: typeof AppDb;
   closeDb: () => Promise<void>;
-  placeRequestTrips: (typeof import('../src/services/route-points'))['placeRequestTrips'];
-  syncRequestTripPlacement: (typeof import('../src/services/route-points'))['syncRequestTripPlacement'];
-  loadRoutePoints: (typeof import('../src/services/route-points'))['loadRoutePoints'];
-  routeTaskRefs: (typeof import('../src/services/route-points'))['routeTaskRefs'];
-  assertRouteCapacity: (typeof import('../src/services/route-points'))['assertRouteCapacity'];
+  placeRequestTrips: (typeof RoutePointsNs)['placeRequestTrips'];
+  syncRequestTripPlacement: (typeof RoutePointsNs)['syncRequestTripPlacement'];
+  loadRoutePoints: (typeof RoutePointsNs)['loadRoutePoints'];
+  routeTaskRefs: (typeof RoutePointsNs)['routeTaskRefs'];
+  assertRouteCapacity: (typeof RoutePointsNs)['assertRouteCapacity'];
 }
 
 let ctx: Ctx;

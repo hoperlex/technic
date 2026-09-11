@@ -21,7 +21,7 @@ import {
   type VehicleRoutePointDto,
   type WaybillFormCode,
 } from '@technic/contracts';
-import { db } from '../db/client';
+import type { db } from '../db/client';
 import {
   constructionObjects,
   departments,

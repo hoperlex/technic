@@ -7,6 +7,8 @@ import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { db as AppDb } from '../src/db/client';
+import type * as RoutePointsNs from '../src/services/route-points';
+import type * as VehicleRoutesNs from '../src/services/vehicle-routes';
 
 /**
  * Смешанный день машины (план `docs/route-trips-plan.md`, §11; Р5, Р5а, Р7, Р11, Р18).
@@ -42,12 +44,12 @@ interface Ctx {
   db: typeof AppDb;
   /** Учётка-автор сцены: её заводит сам файл, см. `AUTHOR_EMAIL`. */
   authorId: string;
-  placeRequestTrips: (typeof import('../src/services/route-points'))['placeRequestTrips'];
-  placeLinearDay: (typeof import('../src/services/route-points'))['placeLinearDay'];
-  loadRoutePoints: (typeof import('../src/services/route-points'))['loadRoutePoints'];
-  routeTaskRefs: (typeof import('../src/services/route-points'))['routeTaskRefs'];
-  assertRouteCapacity: (typeof import('../src/services/route-points'))['assertRouteCapacity'];
-  moveRouteToDate: (typeof import('../src/services/vehicle-routes'))['moveRouteToDate'];
+  placeRequestTrips: (typeof RoutePointsNs)['placeRequestTrips'];
+  placeLinearDay: (typeof RoutePointsNs)['placeLinearDay'];
+  loadRoutePoints: (typeof RoutePointsNs)['loadRoutePoints'];
+  routeTaskRefs: (typeof RoutePointsNs)['routeTaskRefs'];
+  assertRouteCapacity: (typeof RoutePointsNs)['assertRouteCapacity'];
+  moveRouteToDate: (typeof VehicleRoutesNs)['moveRouteToDate'];
 }
 
 let ctx: Ctx;

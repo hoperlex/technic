@@ -3,9 +3,10 @@ import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyMigrations } from '../src/db/migration-journal';
-// Только типы: значения модуля берутся через `await import` уже после того, как выставлено
+// Только типы: значения модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { db as AppDb } from '../src/db/client';
+import type * as RoutePointsNs from '../src/services/route-points';
 
 /**
  * Автосборка точек маршрута (план `docs/route-trips-plan.md`, Р8) — на живой схеме.
@@ -36,9 +37,9 @@ const DB_URL = process.env.TEST_DATABASE_URL;
 interface Ctx {
   db: typeof AppDb;
   closeDb: () => Promise<void>;
-  placeRequestTrips: (typeof import('../src/services/route-points'))['placeRequestTrips'];
-  loadRoutePoints: (typeof import('../src/services/route-points'))['loadRoutePoints'];
-  pointOrderByComposition: (typeof import('../src/services/route-points'))['pointOrderByComposition'];
+  placeRequestTrips: (typeof RoutePointsNs)['placeRequestTrips'];
+  loadRoutePoints: (typeof RoutePointsNs)['loadRoutePoints'];
+  pointOrderByComposition: (typeof RoutePointsNs)['pointOrderByComposition'];
 }
 
 let ctx: Ctx;
