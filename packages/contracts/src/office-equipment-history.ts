@@ -293,7 +293,11 @@ export function projectEquipmentHistoryEventForAudience(
   audience: ServiceRequestAudience,
 ): EquipmentHistoryEventDto {
   const policy = EQUIPMENT_HISTORY_EVENT_AUDIENCE[event.kind];
-  return projectByAudiencePolicy(event, audience, policy as AudiencePolicy<EquipmentHistoryEventDto>);
+  return projectByAudiencePolicy(
+    event,
+    audience,
+    policy as AudiencePolicy<EquipmentHistoryEventDto>,
+  );
 }
 
 /** Сколько событий отдаёт страница и сколько их бывает в ответе максимум (Р79). */

@@ -26,6 +26,7 @@ import {
   acceptServiceRequestSchema,
   actsAsServiceOperator,
   actsForCounterparty,
+  allowsEstimateApprovalInStatus,
   approveServiceEstimateSchema,
   attachServiceFilesSchema,
   can,
@@ -40,6 +41,7 @@ import {
   canResumeService,
   canSubmitServiceEstimate,
   canTransitionServiceStatus,
+  closingKindsForFormat,
   completeServiceRequestSchema,
   createServiceRequestSchema,
   declineServiceRequestSchema,
@@ -2569,6 +2571,11 @@ function assertFileKindAllowed(
       requestId,
     );
   }
+  // Формат действующей ревизии здесь не спрашивается НАМЕРЕННО: вопрос про сам вид бумаги — какую
+  // вообще несут к закрытой заявке (Р16, Р29), — а не про то, закрывает ли этот файл эту заявку.
+  // Половина правила в одиночку законна ровно в таких местах (см. `SERVICE_CLOSING_DOCUMENT_KINDS` в
+  // контрактах), и переводить этот перечень на формат Э3 не должен: сузь его до акта — и обещанный
+  // «счёт пришлю завтра» перестал бы подшиваться к принятой заявке.
   if (isServiceRequestClosed(status) && !SERVICE_CLOSING_DOCUMENT_KINDS.includes(kind)) {
     const closing = SERVICE_CLOSING_DOCUMENT_KINDS.map((k) => serviceFileKindLabels[k]).join(', ');
     throw err.unprocessable(
@@ -2976,6 +2983,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     // документы» (Р114). Планка та же, что у приёмки (Р112): её снимает любой из трёх видов, и
     // прежняя пара «акт и счёт» заставляла бы портал требовать бумагу, которая ничего не запирает.
     // Отменённая заявка сюда не попадает: работ не было, и ждать по ней нечего.
+    //
+    // ЗДЕСЬ ПРАВИЛО ПЕРЕПИСАНО НА SQL, и таких копий на весь модуль ровно две: эта очередь и отбор
+    // автозакрытия (`internal-service-requests.ts`). Остальные читатели спрашивают
+    // `closingKindsForFormat`, а отбор списка спросить его не может: формат — у каждой строки свой,
+    // и одним перечнем видов на всю выборку правило Р5 не выражается. Сегодня перечень отвечает
+    // планкой наследия, и поведение этим не меняется, но Э3 ОБЯЗАН перевести очередь на формат
+    // вместе с сервером: без этой пометки копия разойдётся с контрактами молча — документная
+    // заявка со счётом уйдёт из очереди, так и не закрывшись.
     const hasClosingDocument = exists(
       db
         .select({ x: sql`1` })
@@ -6548,6 +6563,16 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
+      /*
+       * Формат предъявления приезжает ВНЕШНИМ дискриминатором (Р2 плана
+       * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`), и гарантийный ремонт — одно из
+       * его трёх значений, а не отдельное поле тела. Старое плоское `warrantyRepair` сюда не доходит
+       * вовсе: его переводит в `mode` нормализация схемы (`normalizeLegacyEstimateSubmit`) — это и есть
+       * совместимость с вкладкой, которая переживает парный выкат. Признак читается один раз и одним
+       * способом: второй читатель (`body.warrantyRepair`) компилятором уже не ловится, а разошёлся бы
+       * молча — гарантийное предъявление ушло бы с ненулевой подписью.
+       */
+      const warrantyRepair = body.mode === 'warranty';
       const row = await requireEditable(p, req.params.id);
       assertEstimateApplies(row, 'предъявлять');
       const assignment = await executorAssignment(p, row);
@@ -6571,9 +6596,41 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           `${who} не предъявляет объём работ по этой заявке — это шаг исполнителя`,
         );
       }
+      /*
+       * ДОКУМЕНТНЫЙ ФОРМАТ И ЗАЯВЛЕНИЕ ОБ ОСВОБОЖДЕНИИ ЭТОТ ВЫПУСК НЕ ПРИНИМАЕТ — и отказывает вслух,
+       * а не выбрасывает поля молча (§7, шаг 1 плана
+       * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`: «ручка предъявления этого
+       * выпуска документный формат не принимает»).
+       *
+       * ПОЧЕМУ ПРОВЕРКА НУЖНА, ХОТЯ СХЕМА ТАКОЕ ТЕЛО СОБИРАЕТ. Контракты волны едут первым этапом, а
+       * ревизия документа, страницы-основания и исход заявления появятся только с Э4. Без этих двух
+       * строк документное тело разбиралось бы ветвью `items`: предъявление ответило бы 200, счёт не
+       * подшился бы основанием, снимок суммы лёг бы из строк черновика, а в след ушло бы
+       * `warrantyRepair: false` — то есть от попытки принять денежное решение не осталось бы ни
+       * записи, ни следа, хотя на нём держатся все четыре механизма контроля постфактум (Р13).
+       * Молчаливое отбрасывание поля у денежной ручки здесь уже стоило разбора (ADR 0179).
+       *
+       * ЧТО СТАНЕТ С НИМИ НА Э4. Первую строку заменяет чтение рубильника
+       * `service_estimate_document_mode` (`isFeatureEnabled`) — он гасит ВХОД, и выключенный отвечает
+       * этим же отказом. Вторая уходит совсем: рубильник `service_estimate_exemption` гасит не
+       * команду, а ИСХОД (`evaluateExemption` → `observed`), поэтому заявление при выключенном ключе
+       * обязано проходить и оставаться в следе.
+       */
+      if (body.mode === 'document') {
+        throw err.unprocessable(
+          'Подача объёма работ документом пока выключена — предъявите объём работ строками',
+          { mode: 'Формат недоступен' },
+        );
+      }
+      if ('exemption' in body && body.exemption) {
+        throw err.unprocessable(
+          'Освобождение от согласования пока выключено — объём работ предъявляется на подпись',
+          { exemption: 'Недоступно' },
+        );
+      }
       // Гарантийный ремонт — не пустая смета, а осознанное «чиним по гарантии, денег нет», и без
       // названного источника гарантии он ничем не подтверждён (Р27).
-      if (body.warrantyRepair && !row.warrantyClaimSource) {
+      if (warrantyRepair && !row.warrantyClaimSource) {
         throw err.unprocessable(
           'Гарантийный ремонт предъявляют по заявке с обращением по гарантии — укажите источник',
           { warrantyRepair: 'Нет обращения по гарантии' },
@@ -6595,7 +6652,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       });
       const total = await db.transaction(async (tx) => {
         const side = await readServiceSide(tx, row.id);
-        if (body.warrantyRepair) {
+        if (warrantyRepair) {
           await assertEstimateReplaceable(tx, row.id);
           await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, row.id));
           await tx.insert(serviceRequestItems).values({
@@ -6650,7 +6707,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         action: 'serviceRequest.estimate_submit',
         entityType: 'serviceRequest',
         entityId: row.id,
-        metadata: { revision, total, warrantyRepair: body.warrantyRepair },
+        metadata: { revision, total, warrantyRepair },
       });
       return (await getDto(p, row.id))!;
     },
@@ -6692,10 +6749,18 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const row = await requireEditable(p, req.params.id);
       assertEstimateApplies(row, 'согласовывать');
       const assignment = await executorAssignment(p, row);
-      if (row.status !== 'in_work') {
+      /*
+       * КОРИДОР СТАТУСОВ СПРАШИВАЕТСЯ У КОНТРАКТОВ, а не сравнением со «В работе»: после Р9 подпись
+       * бывает и в «Решена» — но только по ожиданию, открытому разрешённым спором, и это правило
+       * целиком живёт в `allowsEstimateApprovalInStatus`. Своё сравнение здесь было бы ВТОРЫМ
+       * носителем статусного правила: оно отбивало бы постспорную подпись 422 при предикате,
+       * отвечающем «да», и разошлось бы молча — отладка пошла бы по предикату, который отвечает
+       * правильно.
+       */
+      if (!allowsEstimateApprovalInStatus(row)) {
         throw err.unprocessable(
-          `Объём работ согласуют в «${serviceRequestStatusLabels.in_work}», а заявка в статусе «${serviceRequestStatusLabels[row.status]}»`,
-          { status: 'Другой статус' },
+          `Объём работ согласуют в «${serviceRequestStatusLabels.in_work}» либо в «${serviceRequestStatusLabels.done}» — по ожиданию, открытому разрешённым спором; заявка в статусе «${serviceRequestStatusLabels[row.status]}» согласования не принимает`,
+          { status: 'Согласование в этом статусе недоступно' },
         );
       }
       if (!serviceEstimatePending(row)) {
@@ -7320,13 +7385,18 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           );
         }
         if (serviceRequestNeedsClosingDocument(locked)) {
+          // Формат действующей ревизии сервер ещё не читает (Э3), и явный `null` здесь означает
+          // планку наследия — акт, счёт или гарантийный талон. Написан он явно не ради типа: так
+          // это место попадает в перечень, который Э3 получит от компилятора, а не от плана.
+          // Формат придёт из той же строки, что прочитана под блокировкой, — между открытием окна
+          // и нажатием помещается раскладка «Ведения», переводящая ревизию в построчную (Р8).
           const [closing] = await tx
             .select({ fileId: serviceRequestFiles.fileId })
             .from(serviceRequestFiles)
             .where(
               and(
                 eq(serviceRequestFiles.requestId, locked.id),
-                inArray(serviceRequestFiles.kind, [...SERVICE_CLOSING_DOCUMENT_KINDS]),
+                inArray(serviceRequestFiles.kind, [...closingKindsForFormat(null)]),
               ),
             )
             .limit(1);
@@ -8174,6 +8244,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        * Считается здесь же, под блокировкой строки: параллельная приёмка и параллельное снятие
        * второго документа выстроены в ту же очередь, и «последний» не устареет между проверкой и
        * удалением.
+       *
+       * ВОПРОСА ЗДЕСЬ ДВА, И ОНИ РАЗНЫЕ. Вид снимаемого файла спрашивается половиной правила
+       * (`isServiceClosingDocument`) — «такую бумагу после приёмки не снимают», про формат ревизии
+       * это условие не знает и знать не должно. А «остался ли ДРУГОЙ закрывающий» — уже полное
+       * правило, и формат ему передан явным `null`: сервер его пока не читает (Э3), и планка
+       * остаётся сегодняшней.
        */
       if (status === 'accepted' && isServiceClosingDocument(link.kind)) {
         const [other] = await tx
@@ -8182,7 +8258,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           .where(
             and(
               eq(serviceRequestFiles.requestId, locked.id),
-              inArray(serviceRequestFiles.kind, [...SERVICE_CLOSING_DOCUMENT_KINDS]),
+              inArray(serviceRequestFiles.kind, [...closingKindsForFormat(null)]),
               ne(serviceRequestFiles.fileId, fileId),
             ),
           )

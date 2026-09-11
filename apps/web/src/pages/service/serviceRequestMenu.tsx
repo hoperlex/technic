@@ -220,7 +220,7 @@ export function serviceRequestMenuItems(
       serviceRequestNeedsClosingDocument({
         kind: request.kind,
         serviceCounterpartyId: request.service?.id ?? null,
-      }) && !hasServiceClosingDocument(request);
+      }) && !hasServiceClosingDocument(request, request.estimateFormat ?? null);
     items.push({
       key: 'complete',
       label: 'Закрыть работы',

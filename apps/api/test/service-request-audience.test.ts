@@ -177,6 +177,40 @@ const FULL: ServiceRequestDto = {
     actorName: 'Петров П. П.',
   },
   estimateRevision: 3,
+  /*
+   * ЧЕТЫРЕ ПОЛЯ ВОЛНЫ ОСВОБОЖДЕНИЯ (план `docs/office-equipment-on-site-and-invoice-estimate-plan.md`,
+   * Р3, Р4, Р9). Заполнены, как и всё в этом образце, намеренно: карта аудиторий вычитает их у
+   * заявителя целиком, и пустое значение здесь доказывало бы ровно ничего — «поле обнулилось» и «поле
+   * и так было пустым» читались бы одинаково.
+   *
+   * Состояние взято самое населённое из возможных — документная подача, освобождение ПРИМЕНЕНО, спор
+   * открыт и разрешён «оставить освобождение», — потому что у каждого из трёх полей есть вариант, в
+   * котором оно пусто законно (`observed` без спора, открытый спор без исхода), и на таком наборе
+   * незаполненные половины снова стали бы неотличимы от вычтенных. Связность с соседями по образцу не
+   * проверяется здесь вовсе: это дело db-тестов §6 плана, а образец отвечает за полноту карты решений.
+   */
+  estimateFormat: 'document',
+  estimatePendingSource: 'submit',
+  exemption: {
+    revision: 3,
+    by: UUID,
+    byName: 'Копиров К. К.',
+    at: '2026-08-15T12:00:00.000Z',
+    note: 'мелкий ремонт на месте',
+    outcome: 'applied',
+  },
+  dispute: {
+    revision: 3,
+    state: 'resolved',
+    reason: 'сумма без согласования выше обычной',
+    openedBy: UUID,
+    openedByName: 'Сидоров С. С.',
+    openedAt: '2026-08-16T08:00:00.000Z',
+    outcome: 'keep',
+    resolvedBy: UUID,
+    resolvedByName: 'Сидоров С. С.',
+    resolvedAt: '2026-08-16T11:00:00.000Z',
+  },
   estimatePendingRevision: 3,
   estimateSubmittedAt: '2026-08-15T12:00:00.000Z',
   estimatedTotalAmount: 7100,
@@ -279,6 +313,16 @@ describe('проекция карточки', () => {
     expect(projected.estimatePendingRevision).toBeNull();
     expect(projected.estimateRevision).toBe(0);
     expect(projected.approval).toBeNull();
+    /*
+     * Устройство денежного решения — тоже деньги (Г4): «принято без согласования», «подана счётом» и
+     * «оспорено» объясняют заявителю цену, которой он не видит. Формат вычитается вместе с остальными
+     * намеренно, хотя цифры в нём нет: без строк и итога слово «Документом (счёт)» сообщало бы ему
+     * только то, что счёт существует и скрыт.
+     */
+    expect(projected.estimateFormat).toBeNull();
+    expect(projected.estimatePendingSource).toBeNull();
+    expect(projected.exemption).toBeNull();
+    expect(projected.dispute).toBeNull();
     expect(projected.completion?.totalAmount).toBeNull();
     expect(projected.completion?.adjustmentAmount).toBeNull();
     expect(projected.completion?.adjustmentReason).toBe('');

@@ -31,6 +31,17 @@ export function serviceActionRow(request: ServiceRequestDto): ServiceActionReque
     executorCount: request.executors.length,
     estimatePendingRevision: request.estimatePendingRevision,
     approvedEstimateRevision: request.approval?.revision ?? null,
+    /*
+     * ДВА ПОЛЯ ПОСТСПОРНОЙ ПОДПИСИ ПЕРЕНОСЯТСЯ ЗДЕСЬ, А НЕ ТАМ, ГДЕ ПОНАДОБЯТСЯ (Р9 плана
+     * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`). На `ServiceActionRequest` они
+     * необязательны ради окна выката — значит забытые, они не ломают сборку, а тихо уводят
+     * `allowsEstimateApprovalInStatus` в fail-closed: пункт «Согласовать объём работ» в «Решена» не
+     * появился бы НИКОГДА, даже когда сервер уже пускает подпись (он-то читает настоящие колонки).
+     * Сегодня источник ожидания пуст и ответ прежний, поэтому расхождение нашёл бы человек на Э5/Э7,
+     * а не прогон.
+     */
+    estimateRevision: request.estimateRevision,
+    estimatePendingSource: request.estimatePendingSource ?? null,
   };
 }
 

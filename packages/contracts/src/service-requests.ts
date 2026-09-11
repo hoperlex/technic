@@ -790,6 +790,24 @@ export interface ServiceActionRequest extends ServiceExecutorsRow {
   estimatePendingRevision: number | null;
   /** Ревизия, под которой стоит подпись; `null` — согласования нет (Р9, «есть что снимать»). */
   approvedEstimateRevision: number | null;
+  /*
+   * ДВА ПОЛЯ ПОСТСПОРНОЙ ПОДПИСИ (Р9 плана
+   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`) — НЕОБЯЗАТЕЛЬНЫЕ, и это
+   * осознанный fail-closed, а не послабление.
+   *
+   * Контракты волны едут первым этапом, сервер и портал — следующими: до них ни одна строка заявки
+   * этих полей не приносит. Отсутствие значения означает «ожидание не постспорное», то есть подпись
+   * в «Решена» закрыта и поведение ровно сегодняшнее. Обязательными они уронили бы сборку у всех
+   * зовущих раньше, чем сервер научился бы их отдавать, — и ради этого же приёма `assignment`
+   * объявлен необязательным у коридора выше.
+   *
+   * Опасная половина здесь одна — открыть согласование в «Решена» лишнему ожиданию, — и она
+   * требует ОБОИХ полей сразу: пустые они дают отказ, а не допуск.
+   */
+  /** Номер действующей ревизии объёма работ: с ним сверяется происхождение ожидания (Р9). */
+  estimateRevision?: number;
+  /** Чем открыто непогашенное ожидание подписи: предъявлением или исходом спора (Р9). */
+  estimatePendingSource?: ServiceEstimatePendingSource | null;
 }
 
 /**
@@ -1330,6 +1348,148 @@ export function canSubmitServiceEstimate(
 }
 
 /**
+ * ВПРАВЕ ЛИ СУБЪЕКТ ЗАЯВИТЬ ОСВОБОЖДЕНИЕ ОТ ПОДПИСИ — галочка «Согласование не требуется» (Р1, Р3
+ * плана `docs/office-equipment-on-site-and-invoice-estimate-plan.md`).
+ *
+ * ТОЛЬКО ОПЕРАТОР КОНТРАГЕНТА-СЕРВИСА, одной веткой вместо трёх (ответ В1 заказчика от
+ * 11.09.2026). Поимённый свой исполнитель такого заявления не делает, и администратор тоже: за
+ * работу своего сотрудника не платят (первая строка, `serviceRequestNeedsEstimate`), а «Ведение»
+ * подпись ставит, а не отменяет. Поэтому здесь НЕ зовётся `actsAsServiceExecutor`: он шире ровно на
+ * эти две ветки, и заявление стало бы доступно обеим сторонам денежного решения сразу.
+ *
+ * Назначение спрашивается тем же признаком, что и всюду: заявление по заявке ЧУЖОГО подрядчика —
+ * не освобождение, а подпись за другого.
+ *
+ * ЭТО ЖЕ УСЛОВИЕ ПОКАЗА ЧЕКБОКСА НА ПОРТАЛЕ, и другого у него нет. Нарисованный шире чекбокс обещал
+ * бы человеку денежное решение, за которым стоит 403; собранная порталом своя копия правила
+ * разошлась бы с этой молча (правило одного места). Нарушение этого предиката — единственное, что
+ * отвечает `403`/`422`: исход заявления отказом не бывает (`evaluateExemption` ниже).
+ *
+ * «Висящего предъявления нет» — тот же замок, что у самого предъявления: заявление едет ВМЕСТЕ с
+ * командой предъявления, одной транзакцией (Р7), и при открытом ожидании предъявлять нечего.
+ */
+export function canDeclareExemption(
+  row: Pick<
+    ServiceActionRequest,
+    'kind' | 'status' | 'serviceCounterpartyId' | 'estimatePendingRevision'
+  >,
+  subject: AccessSubject | null | undefined,
+  assignment: ServiceExecutorAssignment,
+): boolean {
+  if (!subject) return false;
+  if (!serviceRequestNeedsEstimate(row)) return false;
+  if (row.status !== 'in_work') return false;
+  if (serviceEstimatePending(row)) return false;
+  if (!actsForCounterparty(subject, 'service')) return false;
+  return assignment.actsForAssignedCounterparty;
+}
+
+/**
+ * ЧТО ВЫШЛО ИЗ ЗАЯВЛЕНИЯ (Р3). Отдельной функцией от «кому дано заявить» намеренно: то вопрос
+ * доступа, и его нарушение даёт отказ; этот — вопрос ИСХОДА, и отказом он не отвечает никогда.
+ *
+ * ВХОД ОДИН, ПОТОМУ ЧТО БОЛЬШЕ НЕЧЕГО СПРАШИВАТЬ: ни лимита суммы, ни политики по контрагенту, ни
+ * реквизитов счёта заказчик не захотел (ответы В2, В12 и В13 от 11.09.2026). Остался рубильник
+ * `service_estimate_exemption` — единственный предварительный барьер у денег (Р13), — и исходов
+ * поэтому ровно два. Третий заводить нельзя: см. `SERVICE_ESTIMATE_EXEMPTION_OUTCOMES`.
+ *
+ * РУБИЛЬНИК ПРИХОДИТ ЗНАЧЕНИЕМ, А НЕ ЧИТАЕТСЯ ЗДЕСЬ. Сервер знает его по строке `feature_flags`,
+ * портал — по ответу сессии (`hasFeature`), и общего источника у них нет; спроси функция сессию
+ * сама — сервер не смог бы её позвать вовсе. От этого она остаётся чистой и проверяемой обоими
+ * исходами одной строкой теста.
+ */
+export function evaluateExemption(input: {
+  flagEnabled: boolean;
+}): ServiceEstimateExemptionOutcome {
+  return input.flagEnabled ? 'applied' : 'observed';
+}
+
+/**
+ * ПРИЗНАКИ ЗАЯВКИ, КОТОРЫМИ РЕШАЕТСЯ СПОР (Р9), — то, чего ни матрица прав, ни строка заявки не
+ * знают: оба лежат в своих таблицах волны (`service_request_estimate_exemptions` и
+ * `service_request_estimate_disputes`).
+ *
+ * Готовыми, а не чтением внутри предиката — по той же причине, что у `ServiceExecutorAssignment`:
+ * спрашивают предикат двое, и «сходить в базу» умеет только сервер; портал читает их из карточки.
+ */
+export interface ServiceEstimateDisputeFacts {
+  /**
+   * Освобождение по действующей ревизии ПРИМЕНЕНО — исход `applied`, а не `observed` (Р3). Спорить о
+   * наблюдённом заявлении не о чем: подпись по такой заявке и так собирают обычным порядком, и
+   * заморозка лишь отняла бы у «Ведения» возможность её поставить.
+   */
+  exemptionApplied: boolean;
+  /** Спор уже ведётся: второго по той же заявке не бывает — заявка и так остановлена. */
+  disputeOpen: boolean;
+}
+
+/**
+ * СТАТУСЫ, ИЗ КОТОРЫХ ОТКРЫВАЮТ СПОР, — «до приёмки» словами ответа В3 заказчика от 11.09.2026.
+ *
+ * Перечнем в контрактах, а не условием по месту: его спрашивают предикат ниже, ручка открытия спора
+ * и матрица разрешения — ей важно, ОТКУДА спор открыт, потому что возврат в «В работе» из «Решена»
+ * стёр бы факт закрытия, суммы и гарантии (`serviceResetOnTransition`, находка Н12).
+ *
+ * Принятой заявки здесь нет намеренно: приёмка — конец разбирательства, и спорить после неё значило
+ * бы отменять чужое решение задним числом. Заморозки здесь нет по другой причине: остановленная
+ * заявка уже стоит, и второй спор по ней не открывают.
+ */
+export const SERVICE_ESTIMATE_DISPUTE_OPEN_STATUSES = [
+  'in_work',
+  'done',
+] as const satisfies readonly ServiceRequestStatus[];
+
+/**
+ * КТО ВПРАВЕ ОСПОРИТЬ ОСВОБОЖДЕНИЕ (Р9, ответ В3): «Ведение» — тем же правом `serviceRequests.assign`,
+ * каким оно распределяет заявки и каким считается «ведёт ли субъект заявку»
+ * (`canCoordinateServiceRequests`).
+ *
+ * ПОЧЕМУ НЕ ПРАВО СОГЛАСОВАНИЯ. Спор — не подпись и даже не её отсутствие: он останавливает заявку
+ * и может увести её в «Отменена». Это ход того, кто ведёт заявку по циклу, а `approveEstimate`
+ * бывает и у поимённого исполнителя (ответ В2 прошлой волны) — дай мы спор ему, исполнитель
+ * оспаривал бы решение, принятое по его же заявке.
+ *
+ * Оператор контрагента-сервиса исключён явно и раньше права: освобождение заявил он, и спор с самим
+ * собой — не контроль, а его имитация. Без этой строки право, попади оно в набор подрядчика, отдало
+ * бы ему обе стороны сразу — ровно как в `isWaitingOn`.
+ */
+export function canOpenServiceEstimateDispute(
+  row: Pick<ServiceActionRequest, 'kind' | 'status' | 'serviceCounterpartyId'>,
+  subject: AccessSubject | null | undefined,
+  facts: ServiceEstimateDisputeFacts,
+): boolean {
+  if (!subject) return false;
+  if (!serviceRequestNeedsEstimate(row)) return false;
+  if (!SERVICE_ESTIMATE_DISPUTE_OPEN_STATUSES.some((status) => status === row.status)) return false;
+  if (!facts.exemptionApplied) return false;
+  if (facts.disputeOpen) return false;
+  if (actsForCounterparty(subject, 'service')) return false;
+  return can(subject, 'serviceRequests.assign');
+}
+
+/**
+ * КТО ВПРАВЕ РАЗРЕШИТЬ СПОР (Р9). Право то же, что у открытия, и это не совпадение: спор ведёт тот,
+ * кто его начал, — иначе заявку отпускал бы мимо человека, знающего, о чём спорили (тот же довод,
+ * что у пары «заморозка — возврат», `canResumeService`).
+ *
+ * Статус — только «Отложена», и спрашивается он, а не один признак `disputeOpen`: спор останавливает
+ * заявку заморозкой с видом `estimate_exemption_dispute`, и открытый спор по заявке в рабочем
+ * статусе означал бы рассогласование, которое надо увидеть отказом, а не разрешить вторым решением.
+ */
+export function canResolveServiceEstimateDispute(
+  row: Pick<ServiceActionRequest, 'kind' | 'status' | 'serviceCounterpartyId'>,
+  subject: AccessSubject | null | undefined,
+  facts: Pick<ServiceEstimateDisputeFacts, 'disputeOpen'>,
+): boolean {
+  if (!subject) return false;
+  if (!serviceRequestNeedsEstimate(row)) return false;
+  if (row.status !== 'on_hold') return false;
+  if (!facts.disputeOpen) return false;
+  if (actsForCounterparty(subject, 'service')) return false;
+  return can(subject, 'serviceRequests.assign');
+}
+
+/**
  * Согласовать объём работ либо не согласовать (`PATCH /:id/estimate/approval`). Спрашивают предикат
  * двое: кнопки под таблицей объёма работ и пункт меню «Действия», — и одно действие двумя входами
  * не дублирование ровно до тех пор, пока оба спрашивают это правило.
@@ -1345,21 +1505,66 @@ export function canSubmitServiceEstimate(
  * Признак Р4 стоит первым и у согласования — иначе историческое предъявление внутренней заявки
  * по-прежнему звало бы «Ведение» подписаться под ценами, которых по такой заявке не бывает.
  * Погасить его — работа закрытия (Р6), а не подписи.
+ *
+ * СТАТУС БОЛЬШЕ НЕ ОДИН, НО РАСШИРЕН НЕ ПО СТАТУСУ (Р9 плана
+ * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`): условие вынесено в
+ * `allowsEstimateApprovalInStatus` — см. там, почему «Решена» пускает не всякое ожидание.
  */
 export function canApproveServiceEstimate(
   row: Pick<
     ServiceActionRequest,
-    'kind' | 'status' | 'serviceCounterpartyId' | 'estimatePendingRevision'
+    | 'kind'
+    | 'status'
+    | 'serviceCounterpartyId'
+    | 'estimatePendingRevision'
+    | 'estimateRevision'
+    | 'estimatePendingSource'
   >,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
 ): boolean {
   if (!subject) return false;
   if (!serviceRequestNeedsEstimate(row)) return false;
-  if (row.status !== 'in_work') return false;
+  if (!allowsEstimateApprovalInStatus(row)) return false;
   if (!serviceEstimatePending(row)) return false;
   if (actsForCounterparty(subject, 'service')) return false;
   return isWaitingOn(subject, 'approval') || isServiceExecutor(subject, assignment);
+}
+
+/**
+ * ГДЕ ПОДПИСЬ ВООБЩЕ БЫВАЕТ — половина условия согласования, вынесенная отдельно потому, что она
+ * перестала быть одним сравнением статуса (Р9).
+ *
+ * «В работе» — как всегда. «Решена» — ТОЛЬКО постспорному ожиданию ЭТОЙ ревизии, и это прямое
+ * требование плана: расширь мы предикат по статусу безусловно — он открыл бы согласование ЛЮБОМУ
+ * ожиданию, случайно оказавшемуся в «Решена», включая наследственное у старых внутренних заявок.
+ * Происхождение `dispute` ставит ровно одна дорога — исход «нужна подпись» у разрешённого спора.
+ *
+ * ПОЧЕМУ ПОДПИСЬ В «РЕШЕНА», А НЕ ВОЗВРАТ В «В РАБОТЕ». Возврат стирает факт закрытия, суммы и
+ * гарантии матрицей сбросов (`serviceResetOnTransition`, находка Н12) — то есть отменяет
+ * выполнение, которого никто не отменял. Из двух неприятностей выбрана та, что не теряет данные.
+ *
+ * СВЕРКА РЕВИЗИИ СТОИТ ЗДЕСЬ ВТОРЫМ ЗАМКОМ, хотя «предъявлена именно текущая ревизия» держит и
+ * `CHECK` в базе: предикат спрашивают с карточки, которая могла быть открыта до переиздания
+ * ревизии, — а подпись под ожиданием ПРОШЛОЙ ревизии и есть та самая подпись под цифрами, которых
+ * больше нет. Пустой номер ревизии отвечает отказом (см. необязательные поля `ServiceActionRequest`).
+ *
+ * ВЫВЕДЕНА НАРУЖУ ПОТОМУ, ЧТО СПРАШИВАЮТ ЕЁ ДВОЕ: `canApproveServiceEstimate` (а через него портал)
+ * и сама ручка согласования, которой нужен ТЕКСТ отказа раньше предиката. Оставь ручка своё
+ * сравнение со «В работе» — коридор статусов получил бы второго носителя, и постспорная подпись
+ * отбивалась бы 422 при предикате, отвечающем «да» (правило одного места: такие копии расходятся
+ * молча, компилятор их не ловит).
+ */
+export function allowsEstimateApprovalInStatus(
+  row: Pick<
+    ServiceActionRequest,
+    'status' | 'estimatePendingRevision' | 'estimateRevision' | 'estimatePendingSource'
+  >,
+): boolean {
+  if (row.status === 'in_work') return true;
+  if (row.status !== 'done') return false;
+  if (row.estimatePendingSource !== 'dispute') return false;
+  return row.estimateRevision !== undefined && row.estimatePendingRevision === row.estimateRevision;
 }
 
 /**
@@ -1616,6 +1821,154 @@ export function parseServiceRequestNumberSearch(search: string): number | null {
 }
 
 // ── Смета ──
+
+// ── Словарь волны «освобождение от подписи и объём работ документом» ──
+//
+// План `docs/office-equipment-on-site-and-invoice-estimate-plan.md`, решения Р2–Р6, Р9 и Р11. Все
+// перечни волны стоят здесь, а не каждый рядом со своей схемой, по правилу одного места: тот же
+// состав значений обязан совпасть с `CHECK` трёх новых таблиц, с SQL-условием закрывающего
+// документа в очереди и автозакрытии и с подписями портала. Разойдись копии — заявка, законная для
+// сервера, оказалась бы незаконной для очереди, и заметил бы это человек, а не прогон.
+
+/**
+ * ФОРМАТ РЕВИЗИИ ОБЪЁМА РАБОТ (Р2, Р4): чем именно предъявлен объём работ.
+ *
+ * ХРАНИТСЯ, А НЕ ВЫВОДИТСЯ ИЗ ДАННЫХ. Угадать формат по строке заявки нельзя ни одним признаком:
+ * «строк ноль» бывает и у документной ревизии, и у построчной, которую ещё не наполнили; «файл
+ * подшит» — у любой заявки с вложением. И главное: раскладка «Ведения» переиздаёт документную
+ * ревизию в построчную (ADR 0179), и признак обязан это пережить — выведенный из данных, он соврал
+ * бы на первой же раскладке.
+ *
+ * `warranty` — не «пустая смета», а осознанное «чиним по гарантии, денег нет» (Р27 ADR 0085): у
+ * такой ревизии одна служебная строка с нулевой суммой. `document` — счёт БЕЗ СТРОК И БЕЗ СУММЫ
+ * (ответ В5 заказчика от 11.09.2026): сумма не опущена, а неизвестна до разбора документа, и ноль
+ * вместо неё читался бы как «работы бесплатны».
+ */
+export const SERVICE_ESTIMATE_FORMATS = ['items', 'document', 'warranty'] as const;
+export const serviceEstimateFormatSchema = z.enum(SERVICE_ESTIMATE_FORMATS);
+export type ServiceEstimateFormat = (typeof SERVICE_ESTIMATE_FORMATS)[number];
+
+/**
+ * Подписи форматов — карточке, списку и истории. Словами, а не именами значений: формат читает
+ * человек, и он же выбирает его переключателем окна объёма работ (Р10).
+ */
+export const serviceEstimateFormatLabels: Record<ServiceEstimateFormat, string> = {
+  items: 'Строками',
+  document: 'Документом (счёт)',
+  warranty: 'Гарантийный ремонт',
+};
+
+/**
+ * СОСТОЯНИЕ РЕВИЗИИ (Р6, п. 3): ошибочно поданный документ не снимается и не удаляется — прежняя
+ * ревизия становится `superseded`, а действующей делается новая.
+ *
+ * ЗАЧЕМ СОСТОЯНИЕ, ЕСЛИ ЕСТЬ НОМЕР. Номер отвечает «какая по счёту», состояние — «на чём денежное
+ * решение стоит СЕЙЧАС», и это разные вопросы: отозванная через `reopen` ревизия остаётся тем, на
+ * чём решение стояло, и затирать её нельзя (Р6). На состоянии же держится частичный уникальный
+ * индекс «одна активная ревизия на заявку» — без него две активные разошлись бы молча, и предикат
+ * закрывающего документа читал бы формат по жребию.
+ */
+export const SERVICE_ESTIMATE_REVISION_STATES = ['active', 'superseded'] as const;
+export const serviceEstimateRevisionStateSchema = z.enum(SERVICE_ESTIMATE_REVISION_STATES);
+export type ServiceEstimateRevisionState = (typeof SERVICE_ESTIMATE_REVISION_STATES)[number];
+
+/**
+ * ИСХОД ЗАЯВЛЕНИЯ ОБ ОСВОБОЖДЕНИИ (Р3): что вышло из галочки «Согласование не требуется».
+ *
+ * ИСХОДОВ РОВНО ДВА, И ТРЕТЬЕГО ЗАВОДИТЬ НЕЛЬЗЯ. Прежняя редакция плана знала `fallback_to_human`
+ * («сумма больше лимита — собираем подпись»), но заказчик отказался от лимита вовсе (ответ В2 от
+ * 11.09.2026). Ветка, которую не включают никакие данные, — мёртвое плечо: его не проверяет ни один
+ * тест, а первое же ревью принимает его за денежный контроль, которого у освобождения нет (Р13).
+ *
+ * `observed` — не отказ, а НАБЛЮДЕНИЕ: предъявление проходит, заявление остаётся в следе, ожидание
+ * подписи открывается как обычно. Этим служба и узнаёт ДО включения рубильника, сколько заявлений
+ * приходит и на какие суммы; отвечай выключенный рубильник отказом, такой картины не было бы вовсе.
+ */
+export const SERVICE_ESTIMATE_EXEMPTION_OUTCOMES = ['applied', 'observed'] as const;
+export const serviceEstimateExemptionOutcomeSchema = z.enum(SERVICE_ESTIMATE_EXEMPTION_OUTCOMES);
+export type ServiceEstimateExemptionOutcome = (typeof SERVICE_ESTIMATE_EXEMPTION_OUTCOMES)[number];
+
+/**
+ * Исход — словами человека, а не именем значения: по этой строке «Ведение» понимает, собирают по
+ * заявке подпись или уже нет (Р13: тег в списке и строка в карточке — два из четырёх механизмов
+ * контроля постфактум).
+ */
+export const serviceEstimateExemptionOutcomeLabels: Record<
+  ServiceEstimateExemptionOutcome,
+  string
+> = {
+  applied: 'Принято без согласования',
+  observed: 'Заявлено, ждём подписи',
+};
+
+/**
+ * ИСТОЧНИК ПОДПИСИ под ревизией (Р11): подпись поставил человек или её проставило автопринятие.
+ *
+ * ПУСТО = `human`, И ЭТО НЕ МЯГКОСТЬ. Миграции идут при работающем портале и до перезапуска
+ * приложения (AGENTS.md), поэтому заявки, подписанные старым кодом между накатом колонки и
+ * перезапуском, живут с настоящей человеческой подписью и пустым источником; строгая связка
+ * «подпись ⇔ источник» приходит только выпуском B (Э9). До него правило чтения обязано жить в
+ * одном месте — `serviceEstimateApprovalSourceOf`, — иначе карточка, письмо и выгрузка разойдутся
+ * в том, чем считать такую подпись.
+ */
+export const SERVICE_ESTIMATE_APPROVAL_SOURCES = ['human', 'auto'] as const;
+export type ServiceEstimateApprovalSource = (typeof SERVICE_ESTIMATE_APPROVAL_SOURCES)[number];
+
+export const serviceEstimateApprovalSourceLabels: Record<ServiceEstimateApprovalSource, string> = {
+  human: 'Согласовано человеком',
+  auto: 'Принято без согласования: заявил оператор сервиса',
+};
+
+/**
+ * ПРОИСХОЖДЕНИЕ ОЖИДАНИЯ ПОДПИСИ (Р9): ожидание открыло предъявление или исход разрешённого спора.
+ *
+ * ЗАЧЕМ ОНО ЗАВЕДЕНО. Подпись в «Решена» — новая дверь (сегодня `canApproveServiceEstimate` пускает
+ * только «В работе»), и расширить предикат по одному статусу было бы дырой: в «Решена» законно
+ * доживает НАСЛЕДСТВЕННОЕ ожидание старых внутренних заявок, и его открыли бы тоже. Происхождение
+ * отвечает на единственный вопрос, который здесь важен: это ожидание создано разрешением спора —
+ * или просто досталось заявке от прошлого.
+ */
+export const SERVICE_ESTIMATE_PENDING_SOURCES = ['submit', 'dispute'] as const;
+export type ServiceEstimatePendingSource = (typeof SERVICE_ESTIMATE_PENDING_SOURCES)[number];
+
+/** Состояние спора (Р9): спор либо ведётся, либо разрешён — и тогда у него есть исход. */
+export const SERVICE_ESTIMATE_DISPUTE_STATES = ['open', 'resolved'] as const;
+export type ServiceEstimateDisputeState = (typeof SERVICE_ESTIMATE_DISPUTE_STATES)[number];
+
+/**
+ * ИСХОД СПОРА (Р9) — три, и каждый означает своё для статуса заявки:
+ *   · `keep` — освобождение остаётся, заявка возвращается туда, откуда её остановили;
+ *   · `require_signature` — автоподпись снята, ожидание подписи открыто с происхождением `dispute`;
+ *   · `cancel` — заявка в «Отменена», причина обязательна, а факт и документы остаются: отмена их
+ *     не стирает, и переписывать историю мы не будем.
+ * Сама матрица «откуда открыт × исход» живёт на сервере: она про статусы и сбросы, а не про словарь.
+ */
+export const SERVICE_ESTIMATE_DISPUTE_OUTCOMES = ['keep', 'require_signature', 'cancel'] as const;
+export const serviceEstimateDisputeOutcomeSchema = z.enum(SERVICE_ESTIMATE_DISPUTE_OUTCOMES);
+export type ServiceEstimateDisputeOutcome = (typeof SERVICE_ESTIMATE_DISPUTE_OUTCOMES)[number];
+
+export const serviceEstimateDisputeOutcomeLabels: Record<ServiceEstimateDisputeOutcome, string> = {
+  keep: 'Оставить освобождение',
+  require_signature: 'Нужна подпись',
+  cancel: 'Отменить заявку',
+};
+
+/**
+ * ВИД ЗАМОРОЗКИ: сегодня заморозка не различает «ждём запчасть» и «спорим о счёте» (Н11), а
+ * различать обязана — при споре заперты возврат из заморозки, закрытие работ, приёмка и
+ * автозакрытие, и запирать их у заявки, ждущей запчасть, было бы неверно.
+ *
+ * ПЕРЕЧНЕМ, А НЕ ОДНОЙ КОНСТАНТОЙ: состав обязан совпасть с `CHECK` колонки
+ * `service_requests.hold_kind`, а второй вид заморозки план называет возможным продолжением.
+ * Пустой вид — обычная заморозка, какой она была всегда, и этим держится окно выката: старый код
+ * колонки не знает и оставляет её пустой.
+ */
+export const SERVICE_HOLD_KINDS = ['estimate_exemption_dispute'] as const;
+export type ServiceHoldKind = (typeof SERVICE_HOLD_KINDS)[number];
+
+/** Вид заморозки, которой заявку останавливают на время спора об освобождении (Р9). */
+export const SERVICE_ESTIMATE_DISPUTE_HOLD_KIND =
+  'estimate_exemption_dispute' satisfies ServiceHoldKind;
 
 export const SERVICE_ITEM_KINDS = ['part', 'service'] as const;
 export const serviceItemKindSchema = z.enum(SERVICE_ITEM_KINDS);
@@ -2433,15 +2786,160 @@ export const startServiceRequestSchema = z.object({
 });
 
 /**
- * Предъявление сметы. `warrantyRepair` — отдельный режим (Р27): смета из одной служебной строки с
- * нулевой суммой. Он не «пустая смета», а осознанное «чиним по гарантии, денег нет», и требует
- * источника гарантии в самой заявке.
+ * ЗАЯВЛЕНИЕ ОБ ОСВОБОЖДЕНИИ ОТ ПОДПИСИ (Р2, Р3): в теле — только пояснение.
+ *
+ * ЭТО ЗАЯВЛЕНИЕ, А НЕ РЕЗУЛЬТАТ. Исход (`applied` / `observed`) считает сервер рубильником
+ * (`evaluateExemption`); приди он полем от клиента — автоподпись под денежным решением ставил бы
+ * браузер, и выключенный рубильник не значил бы ничего.
+ *
+ * Основание списком не заводится (ответ В4 заказчика от 11.09.2026: «один пункт без выбора»), а
+ * «по условиям договора» в интерфейсе не пишется вовсе: политики нет (ответ В12), договор системе
+ * неизвестен, и обещание, которого она не проверяет, было бы ложью. Пояснение остаётся
+ * необязательным — им исполнитель и скажет «мелкий ремонт на месте», если захочет.
  */
-export const submitServiceEstimateSchema = z.object({
-  warrantyRepair: z.boolean().optional().default(false),
+const serviceEstimateExemptionDeclarationSchema = z
+  .object({
+    note: z.string().trim().max(1000).optional(),
+  })
+  .strict();
+export type ServiceEstimateExemptionDeclaration = z.infer<
+  typeof serviceEstimateExemptionDeclarationSchema
+>;
+
+/** Общая половина всех трёх форм предъявления: слово вдогонку и версия (Р30). */
+const submitServiceEstimateCommonFields = {
   comment: z.string().trim().max(1000).optional().default(''),
   version: z.number().int().nonnegative(),
-});
+};
+
+/** Построчное предъявление — сегодняшнее: строки и их суммы правит своя ручка, тело их не несёт. */
+const submitServiceEstimateItemsSchema = z
+  .object({
+    mode: z.literal('items'),
+    exemption: serviceEstimateExemptionDeclarationSchema.optional(),
+    ...submitServiceEstimateCommonFields,
+  })
+  .strict();
+
+/**
+ * Подача счётом. `fileIds` — страницы одного документа, минимум одна: документный формат без
+ * документа не формат, а пустая ревизия. Суммы и реквизитов счёта тело не принимает вовсе (ответы
+ * В5 и В13): их положит позже разбор документа, а ноль вместо неизвестной суммы читался бы как
+ * «работы бесплатны». Порядок страниц — порядок списка, и его сервер кладёт в `page_no`.
+ */
+const submitServiceEstimateDocumentSchema = z
+  .object({
+    mode: z.literal('document'),
+    fileIds: z.array(uuidSchema).min(1, 'Приложите счёт').max(20),
+    exemption: serviceEstimateExemptionDeclarationSchema.optional(),
+    ...submitServiceEstimateCommonFields,
+  })
+  .strict();
+
+/**
+ * Гарантийный ремонт (Р27): смета из одной служебной строки с нулевой суммой. Освобождения у него
+ * НЕ БЫВАЕТ — и не как запрет, а как отсутствие поля: нулевая сумма не нуждается в подписи, и
+ * освобождать от неё нечего.
+ */
+const submitServiceEstimateWarrantySchema = z
+  .object({
+    mode: z.literal('warranty'),
+    ...submitServiceEstimateCommonFields,
+  })
+  .strict();
+
+/**
+ * СТАРОЕ ТЕЛО ПРЕДЪЯВЛЕНИЯ — плоское `{ warrantyRepair, comment, version }` без формата.
+ *
+ * ПРИНИМАЕТСЯ ПОТОМУ, ЧТО КЛИЕНТ ОБНОВЛЯЕТСЯ ПОЗЖЕ СЕРВЕРА. Уже открытая вкладка портала переживает
+ * парный выкат, баннер обновления ненавязчив и имеет «Позже» — гарантии, что старая форма перестанет
+ * слать старое поле, нет никакой. Поэтому совместимость выражена СХЕМОЙ, а не надеждой: тело без
+ * `mode` нормализуется до разбора — `warrantyRepair: true` означает `warranty`, всё прочее `items`.
+ * Ровно эти два значения старая форма и умела посылать.
+ *
+ * ПОЧЕМУ ПРЕДОБРАБОТКОЙ, А НЕ СОЮЗОМ «НОВАЯ СХЕМА | LEGACY». Союз оставил бы старое плоское тело в
+ * выходном типе, и каждый читатель — ручка, тесты, письмо — разбирал бы два разных представления
+ * одного предъявления; снятие совместимости тогда означало бы правку всех читателей, а не одной
+ * функции. Здесь же наружу выходит ровно союз трёх форматов, а про алиас знает одно место (тот же
+ * приём, что у старого `constructionObjectId` в отделах).
+ *
+ * ОБА ПОЛЯ СРАЗУ — ОТКАЗ, А НЕ СТАРШИНСТВО: тело задаёт формат дважды, и вопрос «какой из двух
+ * главный» ответа не имеет. Старый клиент под это правило не попадает никогда — `mode` он не знает;
+ * попадает только новый код, написавший лишнее.
+ */
+function normalizeLegacyEstimateSubmit(raw: unknown, ctx: z.RefinementCtx): unknown {
+  // Не объект — судить не о чем: пусть об этом скажет сама схема своим обычным сообщением.
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
+  const body = raw as Record<string, unknown>;
+  const legacy = body.warrantyRepair;
+  if (body.mode !== undefined) {
+    if (legacy === undefined) return raw;
+    ctx.addIssue({
+      code: 'custom',
+      message:
+        'Формат объёма работ задан дважды: «mode» и устаревшее «warrantyRepair» — ' +
+        'оставьте только «mode»',
+      path: ['warrantyRepair'],
+    });
+    return raw;
+  }
+  /*
+   * Непохожее на признак значение — отказ, а не «считаем построчным». Старая форма слала сюда
+   * только `true`/`false`, и строка `"true"` в этом поле означала бы не гарантийный ремонт, а
+   * ошибку в чужом коде: молча переведи мы её в `items` — гарантийное предъявление ушло бы с
+   * ненулевой подписью.
+   */
+  if (legacy !== undefined && typeof legacy !== 'boolean') {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'Поле «warrantyRepair» принимает только true или false',
+      path: ['warrantyRepair'],
+    });
+    return raw;
+  }
+  const normalized: Record<string, unknown> = {
+    ...body,
+    mode: legacy === true ? 'warranty' : 'items',
+  };
+  delete normalized.warrantyRepair;
+  return normalized;
+}
+
+/**
+ * ПРЕДЪЯВЛЕНИЕ ОБЪЁМА РАБОТ (Р2 плана
+ * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`): формат — ВНЕШНИЙ дискриминатор, а
+ * не поле внутри плоского тела.
+ *
+ * ЗАЧЕМ СОЮЗ, А НЕ ОБЪЕКТ С ПРОВЕРКАМИ. Законных сочетаний три, и каждое незаконное обязано быть
+ * НЕСОБИРАЕМЫМ, а не отбиваемым: `warranty` с освобождением не существует как тип, `document` без
+ * файлов не проходит `min(1)`. Проверкой поверх плоского тела это жило бы до первой правки — забытая
+ * ветка `superRefine` молчит, а тип нет, — и цена такой тишины здесь денежная: автопринятие суммы.
+ *
+ * `items` + освобождение — ЗАКОННО, и это главный сценарий разбора: мелкий ремонт на месте вписывают
+ * строками и сразу помечают «согласование не требуется» (ответ заказчика 11.09.2026, им же отвергнуто
+ * требование «при освобождении обязателен счёт» — оно закрыло бы этот сценарий целиком).
+ *
+ * ЧТО ОСТАЁТСЯ СЕРВЕРУ ПОД БЛОКИРОВКОЙ: файл, не принадлежащий заявке, недогруженный файл
+ * (`requireActive`, Р7) и право самого заявления (`canDeclareExemption`). Схема отвечает за состав
+ * тела, а не за принадлежность чужих строк.
+ *
+ * `.strict()` у каждой ветки — по той же причине, что у раскладки (ADR 0179): молчаливое
+ * отбрасывание неизвестного поля у денежной ручки уже стоило разбора.
+ *
+ * СОБИРАЕМОЕ ТЕЛО ЕЩЁ НЕ ОЗНАЧАЕТ ПРИНИМАЕМОЕ: контракты волны едут первым выпуском, а документную
+ * ревизию и исход заявления сервер научится записывать только следующим (§7, шаг 1). До тех пор
+ * ручка предъявления отвечает на `document` и на `exemption` отказом 422 — вслух, а не молчаливым
+ * отбрасыванием: иначе документное тело разобралось бы ветвью `items`, и денежное решение осталось бы
+ * без записи. Снятие этих двух отказов — работа Э4, и заменяют их рубильники, а не удаление.
+ */
+export const submitServiceEstimateSchema = z.preprocess(
+  normalizeLegacyEstimateSubmit,
+  z.discriminatedUnion('mode', [
+    submitServiceEstimateItemsSchema,
+    submitServiceEstimateDocumentSchema,
+    submitServiceEstimateWarrantySchema,
+  ]),
+);
 export type SubmitServiceEstimateInput = z.infer<typeof submitServiceEstimateSchema>;
 
 /**
@@ -2507,6 +3005,70 @@ export const reopenServiceEstimateSchema = z.object({
   reason: reasonSchema,
   version: z.number().int().nonnegative(),
 });
+
+// ── Спор об освобождении от подписи (Р9) ──
+//
+// Оспаривает «Ведение», и до приёмки (ответ В3 заказчика от 11.09.2026). Механика остановки —
+// обычная заморозка с видом `estimate_exemption_dispute`: коридор для неё уже есть, включая вход из
+// «Решена», и второго способа остановить заявку модулю не нужно. Кому открыты обе ручки — предикаты
+// `canOpenServiceEstimateDispute` и `canResolveServiceEstimateDispute`.
+
+/**
+ * Открыть спор. Причина ОБЯЗАТЕЛЬНА, и тем же `reasonSchema`, что у отмены, отказа и заморозки:
+ * спор останавливает заявку, и «почему» — единственное, что объясняет исполнителю остановку. Второй
+ * набор правил для той же причины разошёлся бы с первым (см. комментарий у `reasonSchema`).
+ */
+export const openServiceEstimateDisputeSchema = z
+  .object({
+    reason: reasonSchema,
+    version: z.number().int().nonnegative(),
+  })
+  .strict();
+export type OpenServiceEstimateDisputeInput = z.infer<typeof openServiceEstimateDisputeSchema>;
+
+/**
+ * Разрешить спор — союзом по исходу, а не объектом с проверкой, по той же причине, что у
+ * предъявления (Р2): «отменить заявку без причины» не должно СОБИРАТЬСЯ.
+ *
+ * ПРИЧИНА ОБЯЗАТЕЛЬНА РОВНО У `cancel`, и это не экономия на словах. `keep` возвращает заявку туда,
+ * откуда её остановили, а `require_signature` снова собирает подпись — объяснение обоим уже лежит в
+ * самом споре, и требовать второе значило бы спрашивать «почему вы передумали передумывать».
+ * `cancel` же закрывает заявку, и у отмены причина обязательна по общему правилу модуля — тем же
+ * `reasonSchema`, которым её требует ручка `/status`.
+ *
+ * Исход `require_signature` открывает ожидание с происхождением `dispute` — отсюда и подпись в
+ * «Решена» (`allowsEstimateApprovalInStatus`). Куда при каждом исходе уходит статус, решает матрица
+ * на сервере: тело запроса про статусы не знает.
+ */
+const resolveServiceEstimateDisputeCommonFields = {
+  comment: z.string().trim().max(1000).optional().default(''),
+  version: z.number().int().nonnegative(),
+};
+
+export const resolveServiceEstimateDisputeSchema = z.discriminatedUnion('outcome', [
+  z
+    .object({
+      outcome: z.literal('keep'),
+      ...resolveServiceEstimateDisputeCommonFields,
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal('require_signature'),
+      ...resolveServiceEstimateDisputeCommonFields,
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal('cancel'),
+      reason: reasonSchema,
+      ...resolveServiceEstimateDisputeCommonFields,
+    })
+    .strict(),
+]);
+export type ResolveServiceEstimateDisputeInput = z.infer<
+  typeof resolveServiceEstimateDisputeSchema
+>;
 
 /**
  * Закрытие работ. Итог **не принимается**: его считает сервер из строк, иначе сумма строк и итог
@@ -2929,6 +3491,29 @@ export const serviceFileKindLabels: Record<ServiceFileKind, string> = {
 };
 
 /**
+ * РОЛЬ ФАЙЛА В ЗАЯВКЕ (Р5 плана `docs/office-equipment-on-site-and-invoice-estimate-plan.md`): чем
+ * подшитый документ является — подтверждением работ или ОСНОВАНИЕМ денежного решения.
+ *
+ * РОЛЬ НАЗНАЧАЕТ СЕРВЕР, КЛИЕНТ ЕЁ НЕ ВЫБИРАЕТ. `estimate_basis` ставится ровно одной дорогой —
+ * подшивкой из команды предъявления (Р7), — и только виду `invoice`; в базе это закреплено
+ * `CHECK (purpose <> 'estimate_basis' OR (kind = 'invoice' AND estimate_revision IS NOT NULL))`.
+ * Прими роль от клиента обычная подшивка — и фотография поломки стала бы основанием автоподписи, а
+ * снять её было бы уже нельзя: основание не снимается никогда (Р6).
+ *
+ * `closing_evidence` — УМОЛЧАНИЕ И СЕГОДНЯШНЕЕ ПОВЕДЕНИЕ: им миграция размечает все существующие
+ * связи, и им же читается отсутствие значения в окне выката. Раздай умолчание обратную роль —
+ * предикат закрывающего документа счёл бы любое вложение подтверждением работ.
+ */
+export const SERVICE_FILE_PURPOSES = ['closing_evidence', 'estimate_basis'] as const;
+export const serviceFilePurposeSchema = z.enum(SERVICE_FILE_PURPOSES);
+export type ServiceFilePurpose = (typeof SERVICE_FILE_PURPOSES)[number];
+
+export const serviceFilePurposeLabels: Record<ServiceFilePurpose, string> = {
+  closing_evidence: 'Подтверждение работ',
+  estimate_basis: 'Основание объёма работ',
+};
+
+/**
  * Виды документов, которыми подтверждают работу. Их можно подшивать и после приёмки — «акт пришлю
  * завтра» иначе означало бы потерянную бумагу (Р16, Р29); удалять их после приёмки нельзя.
  */
@@ -2938,20 +3523,108 @@ export const SERVICE_CLOSING_DOCUMENT_KINDS: readonly ServiceFileKind[] = [
   'warranty_card',
 ];
 
+/**
+ * ТОЛЬКО ПОЛОВИНА ПРАВИЛА — вид без роли и без формата ревизии (Р5). Спрашивать её в одиночку можно
+ * ровно там, где речь о самом ВИДЕ документа: «такой вид нельзя снимать после приёмки», «такой вид
+ * разрешено подшивать к закрытой заявке». Вопрос «закрывает ли ЭТОТ ФАЙЛ ЭТУ ЗАЯВКУ» она не
+ * отвечает — на него отвечает `isServiceClosingFile` ниже, и читает он два признака, а не один.
+ */
 export function isServiceClosingDocument(kind: ServiceFileKind): boolean {
   return SERVICE_CLOSING_DOCUMENT_KINDS.includes(kind);
 }
 
 /**
- * Планка приёмки (Р112): хватает **любого** закрывающего документа — акта, счёта или гарантийного
- * талона. Ответ булев, а не перечень недостающих видов: перечисление читалось бы как «нужны все
- * три», хотя запирает приёмку отсутствие всех сразу.
+ * Виды, которые закрывают заявку у ДОКУМЕНТНОЙ ревизии, — только акт (ответ В10 заказчика от
+ * 11.09.2026: «закрывает только акт, и только у документного режима»).
+ *
+ * Отдельной константой, а не литералом внутри функции: тот же перечень переписывается на SQL для
+ * очереди «Ожидаются документы» и отбора автозакрытия, и матричный тест сверяет две реализации
+ * правила по клеткам `вид × роль × формат`.
+ */
+export const SERVICE_DOCUMENT_FORMAT_CLOSING_KINDS: readonly ServiceFileKind[] = ['act'];
+
+/**
+ * ПЕРВЫЙ ИЗ ДВУХ ПРИЗНАКОВ ЗАКРЫВАЮЩЕГО ДОКУМЕНТА (Р5): какие виды закрывают заявку ПРИ ЭТОМ
+ * формате действующей ревизии.
+ *
+ * ЗАЧЕМ ФОРМАТ ВООБЩЕ СПРАШИВАЕТСЯ. У документной подачи сам счёт и есть объём работ: сочти его
+ * закрывающим — и заявка закрылась бы тем самым документом, которым её открыли, без акта о
+ * выполненных работах (уточнение заказчика 10–11.09.2026: «документ — это счёт, но закрывается
+ * заявка актом»).
+ *
+ * ПЛАНКА НАСЛЕДИЯ НЕ МЕНЯЕТСЯ ВОВСЕ. У построчной и гарантийной ревизии, у заявки без ревизии и у
+ * ответа старого приложения (`null`) перечень сегодняшний: счёт закрывает, как и закрывал.
+ * Переинтерпретировать прошлое новым правилом значило бы задним числом открыть заявки, которые
+ * служба считала закрытыми.
+ *
+ * `undefined` В ТИП НЕ ВХОДИТ, и это не придирка к форме. Поле карточки необязательно — сервер
+ * формат ещё не отдаёт, — и пройди `undefined` в аргумент молча, «формата в ответе нет» и
+ * «наследственное правило выбрано осознанно» стали бы одним значением. Зовущий пишет `?? null` и
+ * этим отвечает за выбор сам.
+ */
+export function closingKindsForFormat(
+  format: ServiceEstimateFormat | null,
+): readonly ServiceFileKind[] {
+  return format === 'document'
+    ? SERVICE_DOCUMENT_FORMAT_CLOSING_KINDS
+    : SERVICE_CLOSING_DOCUMENT_KINDS;
+}
+
+/**
+ * ЗАКРЫВАЮЩИЙ ЛИ ЭТО ФАЙЛ — правило из ДВУХ признаков (Р5): роль файла И вид, допустимый формату
+ * действующей ревизии.
+ *
+ * ОДНОЙ РОЛИ МАЛО: `estimate_basis` — это всегда `invoice`, и предикат, читающий только вид, счёл бы
+ * основание автоподписи закрывающим документом той же заявки, то есть закрыл бы её тем, чем открыл.
+ * ОДНОГО ВИДА МАЛО С ДРУГОЙ СТОРОНЫ: акт закрывает при любом формате, и перечень без роли пустил бы
+ * в него счёт-основание обратно.
+ *
+ * РОЛЬ ЧИТАЕТСЯ С УМОЛЧАНИЕМ `closing_evidence`, и это обязательное послабление окна выката: старое
+ * приложение `purpose` не отдаёт вовсе, а миграционное умолчание у существующих связей ровно такое.
+ * Fail-open здесь безопасен по построению — документных ревизий до выпуска читателей не существует,
+ * ручка предъявления принимает формат `document` только следующим выпуском (§7, шаги 1–3).
+ *
+ * А ВОТ ФОРМАТ ТАКОГО ПОСЛАБЛЕНИЯ НЕ ПОЛУЧАЕТ — он обязательный аргумент (та же причина, что у
+ * `hasServiceClosingDocument` ниже): перечень мест, которые Э3 обязан перевести на новое правило,
+ * должен приходить от компилятора, а не из памяти. С умолчанием все семь потребителей (Н8)
+ * собрались бы без единой правки и продолжали отвечать старой планкой.
+ */
+export function isServiceClosingFile(
+  file: { kind: ServiceFileKind; purpose?: ServiceFilePurpose | null },
+  format: ServiceEstimateFormat | null,
+): boolean {
+  if ((file.purpose ?? 'closing_evidence') !== 'closing_evidence') return false;
+  return closingKindsForFormat(format).includes(file.kind);
+}
+
+/**
+ * Планка приёмки (Р112): хватает **любого** закрывающего документа — у построчной заявки это акт,
+ * счёт или гарантийный талон, у документной только акт (Р5). Ответ булев, а не перечень недостающих
+ * видов: перечисление читалось бы как «нужны все три», хотя запирает приёмку отсутствие всех сразу.
  *
  * Функция живёт в контрактах, потому что спрашивают её оба: сервер — отказом в приёмке, портал —
  * неактивной кнопкой. Разойдись они, кнопка вела бы в 422.
+ *
+ * ФОРМАТ — ОБЯЗАТЕЛЬНЫЙ ВТОРОЙ АРГУМЕНТ, А НЕ НЕОБЯЗАТЕЛЬНОЕ ПОЛЕ ОБЪЕКТА, и это ответ ревью: у
+ * забытого формата умолчание означало бы «счёт закрывает заявку» — самую дорогую из двух ошибок
+ * (документная заявка закрылась бы тем же счётом, которым открыта). Необязательным он не отличал бы
+ * читателя, ОСОЗНАННО передавшего наследственный `null`, от читателя, который про формат не знает
+ * вовсе, — и список работ по переводу семи потребителей (Н8) на новое правило Э3 получал бы от
+ * плана, а не от компилятора. Теперь забыть его нельзя: каждый зовущий пишет либо поле карточки,
+ * либо явный `null`.
+ *
+ * `null` ЗНАЧЕНИЕМ по-прежнему законен и означает сегодняшнюю планку: ревизии нет вовсе либо
+ * отвечает приложение, не знающее о волне (см. `closingKindsForFormat`). `undefined` в тип не
+ * входит намеренно — читателю с необязательным полем карточки приходится написать `?? null`, то
+ * есть СКАЗАТЬ вслух, что он спрашивает планку наследия. Сервер передаёт формат, прочитанный под
+ * блокировкой: между открытием окна и нажатием помещается раскладка «Ведения», переводящая ревизию
+ * в построчную (Р8).
  */
-export function hasServiceClosingDocument(request: Pick<ServiceRequestDto, 'files'>): boolean {
-  return request.files.some((file) => isServiceClosingDocument(file.kind));
+export function hasServiceClosingDocument(
+  request: Pick<ServiceRequestDto, 'files'>,
+  format: ServiceEstimateFormat | null,
+): boolean {
+  return request.files.some((file) => isServiceClosingFile(file, format));
 }
 
 /**
@@ -3024,6 +3697,13 @@ export function serviceRequestHasEffectivePendingEstimate(request: {
   return serviceRequestNeedsEstimate(request) && serviceEstimatePending(request);
 }
 
+/**
+ * Подшивка документов к заявке. РОЛИ ФАЙЛА (`purpose`) ЗДЕСЬ НЕТ И НЕ БУДЕТ (Р5): её назначает
+ * сервер, и `estimate_basis` ставится ровно одной дорогой — подшивкой внутри команды предъявления
+ * (Р7). Прими эта ручка роль от клиента — любое вложение можно было бы объявить основанием
+ * автоподписи, а снять его потом нельзя: основание не снимается никогда (Р6). Вид документа клиент
+ * выбирает по-прежнему — он описывает бумагу, а не её юридическую роль в заявке.
+ */
 export const attachServiceFilesSchema = z.object({
   fileIds: z.array(uuidSchema).min(1).max(20),
   kind: serviceFileKindSchema.optional().default('attachment'),
@@ -3246,10 +3926,37 @@ export interface ServiceRequestConsumableDto {
 
 export interface ServiceRequestFileDto {
   id: string;
+  /**
+   * У КАРАНТИННОГО ФАЙЛА ИМЯ ПУСТО (Р6, п. 4): имя файла само бывает персональными данными —
+   * «Паспорт_Иванова.pdf» в карточке остаётся утечкой даже без содержимого. Ссылки на скачивание в
+   * карточке нет вовсе, и её карантин закрывает своим замком — приоритетным запретом в
+   * `canAccessFile` раньше любой ветки видимости, иначе «скрытый» документ продолжал бы скачиваться
+   * по прямой ссылке.
+   */
   filename: string;
   contentType: string;
   size: number;
   kind: ServiceFileKind;
+  /**
+   * РОЛЬ ФАЙЛА (Р5): подтверждение работ или основание объёма работ. Порталу она нужна затем, чтобы
+   * у страницы-основания не рисовать кнопку снятия — снять его нельзя никогда (Р6), и кнопка, за
+   * которой стоит отказ, здесь хуже отсутствующей.
+   *
+   * НЕОБЯЗАТЕЛЬНАЯ, И ЭТО ОКНО ВЫКАТА, А НЕ НЕОБЯЗАТЕЛЬНОСТЬ ПРАВИЛА: старое приложение поля не
+   * отдаёт, и его отсутствие читается как `closing_evidence` — тем же умолчанием, каким миграция
+   * размечает существующие связи (`isServiceClosingFile`).
+   */
+  purpose?: ServiceFilePurpose;
+  /**
+   * Файл поставлен в карантин (Р6, п. 4) — аварийный выход для ошибочно загруженного секретного или
+   * чужого документа. Не метка вежливости: содержимое закрыто всем, включая автора, и открыто только
+   * по отдельному праву аудита.
+   *
+   * Признак остаётся ВИДИМЫМ, а сама строка ревизии, её сумма и след освобождения — на месте:
+   * «доказательство скрыто по обращению» и «доказательства не было» — разные факты, и стирать первый
+   * до второго значило бы переписывать историю денежного решения.
+   */
+  quarantined?: boolean;
   attachedAt: string;
 }
 
@@ -3271,6 +3978,76 @@ export interface ServiceRequestApprovalDto {
   at: string;
   /** Какая именно ревизия согласована: по ней сервер и пускает работы к закрытию. */
   revision: number;
+  /**
+   * ЧЕМ ПОСТАВЛЕНА ПОДПИСЬ (Р11): `human` — человеком, `auto` — автопринятием по заявлению оператора
+   * сервиса. У `auto` подписавшего нет вовсе (`by` пуст, `byName` пусто), и карточка обязана сказать
+   * это словами, а не показать подпись без имени.
+   *
+   * ПУСТО ЧИТАЕТСЯ КАК `human`, и причин этому две, обе внешние. `null` в колонке — заявка,
+   * подписанная старым кодом между накатом колонки и перезапуском приложения: подпись там настоящая
+   * человеческая, и назвать её «неизвестной» значило бы соврать про существующий факт. Отсутствие
+   * поля — ответ старого приложения новому порталу в окне выката. Читать это правило руками нельзя
+   * (`?? 'human'` по месту разойдётся), на него есть `serviceEstimateApprovalSourceOf`.
+   */
+  source?: ServiceEstimateApprovalSource | null;
+}
+
+/**
+ * ЧЕМ СЧИТАТЬ ПОДПИСЬ — единственное место правила «пусто = человек» (Р11).
+ *
+ * Своей функцией, а не `?? 'human'` по месту вызова: спрашивают это карточка, тег списка, письмо и
+ * выгрузка истории, и разложенное по ним правило разъехалось бы — а расхождение здесь выглядит как
+ * «принято без согласования» у заявки, которую согласовал живой человек, то есть как обвинение.
+ *
+ * Строгая связка «подпись ⇔ источник» приходит выпуском B (Э9): до неё `null` законен, и функция
+ * обязана его переживать.
+ */
+export function serviceEstimateApprovalSourceOf(
+  approval: Pick<ServiceRequestApprovalDto, 'source'> | null | undefined,
+): ServiceEstimateApprovalSource | null {
+  if (!approval) return null;
+  return approval.source ?? 'human';
+}
+
+/**
+ * ЗАЯВЛЕНИЕ ОБ ОСВОБОЖДЕНИИ И ЕГО ИСХОД (Р3, Р13) — то, чем карточка и список объясняют, почему по
+ * заявке нет подписи либо почему её всё-таки ждут.
+ *
+ * РЕВИЗИЯ В СОСТАВЕ НЕ ЛИШНЯЯ. Заявление относится к той ревизии, под которой его сделали, а
+ * раскладка «Ведения» и возврат в правку переиздают ревизию — ровно как у визы ИТ, карточка обязана
+ * различать «освобождение по действующей ревизии» от «освобождения по прошлой». Без номера она
+ * показывала бы снятое основание как живое.
+ */
+export interface ServiceRequestEstimateExemptionDto {
+  revision: number;
+  /** Кто заявил; `null` — учётки уже нет, и подпись читается по снимку имени. */
+  by: string | null;
+  byName: string;
+  at: string;
+  /** Необязательное пояснение исполнителя: «мелкий ремонт на месте» (Р1). */
+  note: string;
+  outcome: ServiceEstimateExemptionOutcome;
+}
+
+/**
+ * СПОР ОБ ОСВОБОЖДЕНИИ (Р9). Пусто — спора не было ни разу; `state: 'resolved'` — спор был и
+ * разрешён, и его след остаётся: именно он объясняет, почему у заявки второе окно приёмки или почему
+ * подпись собрали уже в «Решена».
+ */
+export interface ServiceRequestEstimateDisputeDto {
+  /** Ревизия, чьё освобождение оспорено: подпись после спора пускается только по ней (Р9). */
+  revision: number;
+  state: ServiceEstimateDisputeState;
+  /** Причина, с которой спор открыт: обязательная, и потому всегда непустая. */
+  reason: string;
+  openedBy: string | null;
+  openedByName: string;
+  openedAt: string;
+  /** Исход; `null` — спор ещё ведётся, и заявка стоит в заморозке. */
+  outcome: ServiceEstimateDisputeOutcome | null;
+  resolvedBy: string | null;
+  resolvedByName: string;
+  resolvedAt: string | null;
 }
 
 export interface ServiceRequestCompletionDto {
@@ -3561,6 +4338,33 @@ export interface ServiceRequestDto {
   repeat?: ServiceRequestRepeatDto;
   /** Объём работ: текущая ревизия и её строки. */
   estimateRevision: number;
+  /*
+   * ПОЛЯ ВОЛНЫ «ОСВОБОЖДЕНИЕ И ОБЪЁМ РАБОТ ДОКУМЕНТОМ» — ЧЕТЫРЕ, И ВСЕ НЕОБЯЗАТЕЛЬНЫЕ ПО ОДНОЙ
+   * ПРИЧИНЕ. Контракты волны едут первым этапом, сервер учится их отдавать следующими; обязательными
+   * они уронили бы сборку сервера и портала раньше, чем появилось бы чему ломаться (тот же довод, что
+   * у `kind` и `consumables` выше). Отсутствие поля означает «отвечает приложение, которое о волне не
+   * знает», и читается оно как сегодняшнее состояние: построчный формат, подпись человека, ни
+   * заявления, ни спора.
+   */
+  /**
+   * ФОРМАТ ДЕЙСТВУЮЩЕЙ РЕВИЗИИ (Р4): чем предъявлен объём работ. `null` — ревизии нет вовсе (объём
+   * работ ни разу не предъявляли либо заявка старше волны).
+   *
+   * ПОРТАЛУ ОН НУЖЕН ТРЕМЯ РАЗНЫМИ МЕСТАМИ: планка закрывающего документа (`hasServiceClosingDocument`
+   * читает его отсюда), «сумма не разобрана» вместо «0 ₽» у документной заявки и скрытые поля окна
+   * объёма работ (Р10). Вывести его из карточки нельзя ничем — см. `SERVICE_ESTIMATE_FORMATS`.
+   */
+  estimateFormat?: ServiceEstimateFormat | null;
+  /**
+   * ЧЕМ ОТКРЫТО НЕПОГАШЕННОЕ ОЖИДАНИЕ ПОДПИСИ (Р9): предъявлением или исходом разрешённого спора.
+   * Полем карточки, потому что этим признаком `canApproveServiceEstimate` решает, пускать ли подпись
+   * в «Решена», — а портал спрашивает тот же предикат теми же полями.
+   */
+  estimatePendingSource?: ServiceEstimatePendingSource | null;
+  /** Заявление об освобождении от подписи и его исход (Р3); `null` — заявления не было. */
+  exemption?: ServiceRequestEstimateExemptionDto | null;
+  /** Спор об освобождении (Р9); `null` — спора не было ни разу. */
+  dispute?: ServiceRequestEstimateDisputeDto | null;
   /**
    * Непогашенное предъявление (Р2): `null` — ответ получен либо исполнитель отозвал предъявление,
    * число — висит предъявление этой ревизии. Полем DTO, а не выводом портала из даты: признаки Р11
@@ -4300,6 +5104,22 @@ export const SERVICE_REQUEST_FIELD_AUDIENCE = {
   estimateSubmittedAt: { requester: null },
   estimatedTotalAmount: { requester: null },
   approval: { requester: null },
+  /*
+   * ЧЕТЫРЕ ПОЛЯ ВОЛНЫ ОСВОБОЖДЕНИЯ — ВСЕ ВЫЧИТАЮТСЯ У ЗАЯВИТЕЛЯ, и это ровно тот вопрос, на который
+   * карта и отвечает (Г4): как в этой заявке обошлись с ДЕНЬГАМИ. «Принято без согласования»,
+   * «подана счётом», «оспорено» — три разных ответа про устройство денежного решения между компанией
+   * и подрядчиком; заявителю, от которого скрыты и суммы, и подпись, они показали бы обсуждение цены,
+   * не показав самой цены.
+   *
+   * Формат вычитается вместе с остальными намеренно, хотя цифры в нём нет. Заявитель не видит ни
+   * строк, ни итога (`items`, `estimatedTotalAmount`), и слово «Документом (счёт)» без них означало бы
+   * для него только одно — что счёт существует и его содержимое от него скрыли. Планку закрывающего
+   * документа это не ломает: её спрашивают те, кто деньги видит, а приёмку заявитель не делает вовсе.
+   */
+  estimateFormat: { requester: null },
+  estimatePendingSource: { requester: null },
+  exemption: { requester: null },
+  dispute: { requester: null },
   items: { requester: [] },
   consumables: 'all',
   /*

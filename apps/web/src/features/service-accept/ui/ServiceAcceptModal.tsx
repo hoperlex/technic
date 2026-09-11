@@ -111,8 +111,15 @@ export function ServiceAcceptModal({
    *
    * Подсказка при этом остаётся: работа без бумаги — повод спросить её у исполнителя, а не повод
    * запретить приёмку. Считается по своей копии заявки — той, что знает о свежей загрузке.
+   *
+   * Формат действующей ревизии передаётся вторым аргументом, и передаётся ЯВНО: у документной подачи
+   * планку снимает только акт (Р5 плана
+   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`), а забытый формат означал бы «счёт
+   * закрывает» — то есть подсказка молчала бы у заявки, которой акта как раз и не хватает. Пока
+   * сервер формат не отдаёт (Э3), сюда уходит явный `null` — сегодняшняя планка из трёх видов.
    */
-  const missingDocument = !rework && !!shown && !hasServiceClosingDocument(shown);
+  const missingDocument =
+    !rework && !!shown && !hasServiceClosingDocument(shown, shown.estimateFormat ?? null);
   const canAttach = can('serviceRequests.files');
   /*
    * Кому положены пояснения (Р11). Считает вызывающий, а не `ServiceHint`: слой сущностей

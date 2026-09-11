@@ -60,9 +60,21 @@ export const SERVICE_CLOSING_DOCUMENT_HINT =
  *
  * Аудитория читается ИЗ DTO, а не считается по правам: сервер уже ответил на этот вопрос для
  * каждой строки, и второй ответ в браузере разошёлся бы с первым (ADR 0160, решение 4).
+ *
+ * ФОРМАТ РЕВИЗИИ ВХОДИТ В ПРОЧИТАННЫЕ ПОЛЯ ПРЯМО СЕЙЧАС, хотя сервер его ещё не отдаёт (Э3): планка
+ * закрывающего документа читает два признака — вид файла и формат (Р5), — и очередь обязана
+ * спрашивать её теми же полями, какими её спрашивают два соседних места по тому же DTO (меню
+ * «Закрыть работы» и окно приёмки: они передают формат карточки). Не окажись поля в перечне,
+ * передавать было бы нечего — предикат получал бы `null` навсегда, — и один портал дал бы по одной
+ * заявке два ответа: тега «ожидает документы» нет, а кнопка «Закрыть работы» заперта. Сегодня
+ * значение пусто и ответ прежний — расхождение появилось бы МОЛЧА, в день, когда сервер начнёт
+ * отдавать формат.
  */
 export function isAwaitingDocuments(
-  request: Pick<ServiceRequestDto, 'status' | 'files' | 'kind' | 'service' | 'audience'>,
+  request: Pick<
+    ServiceRequestDto,
+    'status' | 'files' | 'kind' | 'service' | 'audience' | 'estimateFormat'
+  >,
 ): boolean {
   if (request.audience === 'requester') return false;
   if (request.status !== 'done' && request.status !== 'accepted') return false;
@@ -76,5 +88,7 @@ export function isAwaitingDocuments(
   ) {
     return false;
   }
-  return !hasServiceClosingDocument(request);
+  // `?? null` — не вежливость к типу, а ответ словами: поля в ответе сервера пока нет (Э3), и
+  // очередь сознательно спрашивает планку наследия, а не «формат неизвестен, решай сама».
+  return !hasServiceClosingDocument(request, request.estimateFormat ?? null);
 }

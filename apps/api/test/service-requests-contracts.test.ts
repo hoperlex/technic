@@ -827,19 +827,24 @@ describe('документы заявки', () => {
       kind,
       attachedAt: '2026-08-19T09:00:00.000Z',
     });
+    // Формат действующей ревизии — вторым аргументом и ЯВНЫМ `null`: здесь проверяется
+    // наследственная планка из трёх видов. Документный формат закрывает только акт (Р5), и ему
+    // положен свой матричный тест `вид × роль × формат`.
     for (const kind of ['act', 'invoice', 'warranty_card'] as const) {
-      expect(hasServiceClosingDocument({ files: [file(kind)] }), kind).toBe(true);
+      expect(hasServiceClosingDocument({ files: [file(kind)] }, null), kind).toBe(true);
     }
     // Фотография принтера и смета работу не закрывают: по ним не платят и их не подшивают к акту.
-    expect(hasServiceClosingDocument({ files: [file('attachment')] })).toBe(false);
-    expect(hasServiceClosingDocument({ files: [file('estimate')] })).toBe(false);
-    expect(hasServiceClosingDocument({ files: [file('attachment'), file('estimate')] })).toBe(
+    expect(hasServiceClosingDocument({ files: [file('attachment')] }, null)).toBe(false);
+    expect(hasServiceClosingDocument({ files: [file('estimate')] }, null)).toBe(false);
+    expect(hasServiceClosingDocument({ files: [file('attachment'), file('estimate')] }, null)).toBe(
       false,
     );
     // Заявка без единого файла — тот самый случай, ради которого планку и заводили.
-    expect(hasServiceClosingDocument({ files: [] })).toBe(false);
+    expect(hasServiceClosingDocument({ files: [] }, null)).toBe(false);
     // Комплекта не требуется (§8): счёта достаточно, даже когда акта нет.
-    expect(hasServiceClosingDocument({ files: [file('attachment'), file('invoice')] })).toBe(true);
+    expect(hasServiceClosingDocument({ files: [file('attachment'), file('invoice')] }, null)).toBe(
+      true,
+    );
   });
 
   /**

@@ -127,7 +127,12 @@ export function useEstimateEditor({
       }
       if (!submit) return { version: current, submitted: false };
       const sent = await serviceRequestsApi.submitEstimate(request!.id, {
-        warrantyRepair: false,
+        // Формат предъявления — внешний дискриминатор тела (Р2 плана
+        // `docs/office-equipment-on-site-and-invoice-estimate-plan.md`), и построчная раскладка
+        // называет его прямо. Прежнее `warrantyRepair: false` говорило то же самое отрицанием второго
+        // формата, а форматов теперь три: «не гарантийный» перестало быть ответом на вопрос «каким
+        // предъявлено».
+        mode: 'items',
         comment: comment.trim(),
         version: current,
       });
@@ -154,7 +159,7 @@ export function useEstimateEditor({
   const warrantyMutation = useMutation({
     mutationFn: () =>
       serviceRequestsApi.submitEstimate(request!.id, {
-        warrantyRepair: true,
+        mode: 'warranty',
         comment: comment.trim(),
         version,
       }),
