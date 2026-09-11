@@ -215,23 +215,11 @@ function bullet(x, y, value, width, options = {}) {
   return output;
 }
 
-function callout(x, y, width, height, number, titleValue, body, options = {}) {
-  const { fill = '#fff', stroke = C.line, dotFill = C.blue, titleColor = C.ink } = options;
-  let output = rect(x, y, width, height, { fill, stroke, r: 13, shadow: options.shadow });
-  output += numberDot(number, x + 33, y + 33, { fill: dotFill, radius: 17 });
-  output += text(x + 62, y + 34, titleValue, 17, { fill: titleColor, weight: 700 });
-  output += paragraph(x + 24, y + 72, body, width - 48, 14, {
-    fill: C.muted,
-    lineHeight: 21,
-    maxLines: Math.max(2, Math.floor((height - 78) / 21)),
-  });
-  return output;
-}
-
 /**
- * Шаг колонки: то же, что `callout`, но плотнее — заголовок мельче, строки чаще. Заведён потому,
- * что у памятки колонка узкая и высокая: в `callout` при той же высоте помещаются две строки, а
- * шагу их нужно четыре, и обрезанный многоточием текст в памятке хуже, чем шрифт на кегль меньше.
+ * Шаг колонки: врезка с номером, заголовком и текстом, набранная плотно — заголовок мельче, строки
+ * чаще. Плотность выбрана потому, что у памятки колонка узкая и высокая: при обычном кегле в такую
+ * высоту помещаются две строки, а шагу их нужно четыре, и обрезанный многоточием текст в памятке
+ * хуже, чем шрифт на кегль меньше.
  */
 function stepCard(x, y, width, height, number, titleValue, body, options = {}) {
   const { fill = '#fff', stroke = C.line, dotFill = C.blue } = options;

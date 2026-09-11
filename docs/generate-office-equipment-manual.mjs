@@ -378,24 +378,6 @@ function edgeLabel(x, y, label, who, options = {}) {
   return output;
 }
 
-/** Строка «поле → что в него пишут» для разбора формы. */
-function fieldRow(x, y, width, label, body, options = {}) {
-  const { color = C.blue, labelWidth = 200 } = options;
-  let output = rect(x, y, 4, 40, { fill: color, r: 2 });
-  output += paragraph(x + 16, y + 15, label, labelWidth - 16, 15, {
-    fill: C.ink,
-    weight: 700,
-    lineHeight: 18,
-    maxLines: 2,
-  });
-  output += paragraph(x + labelWidth, y + 14, body, width - labelWidth, 13, {
-    fill: C.muted,
-    lineHeight: 18,
-    maxLines: 2,
-  });
-  return output;
-}
-
 /** Макет портала: боковое меню разделов и рабочая область раздела. */
 function appShell(x, y, width, height, active = 'Орг.техника') {
   const side = 205;

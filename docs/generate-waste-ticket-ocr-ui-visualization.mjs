@@ -93,7 +93,6 @@ function numberCallout(x, y, n, label, color = C.blue) {
 }
 
 function logo(x, y, size = 38) {
-  const r = size / 2;
   const scale = size / 64;
   return `<g transform="translate(${x},${y}) scale(${scale})"><circle cx="32" cy="32" r="32" fill="${C.blue}"/><path d="M22 46 L32 20 L42 46 M25 38 H39" fill="none" stroke="#fff" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"/></g>`;
 }

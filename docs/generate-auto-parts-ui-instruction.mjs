@@ -256,7 +256,6 @@ function stockBadge(x, y, value, unit, zero = false) {
 function mainScreen(x, y, w, h, annotate = false) {
   const side = 168;
   const cx = x + side + 24;
-  const cw = w - side - 48;
   let out = rect(x, y, w, h, { fill: '#fff', stroke: '#dfe3eb', r: 14, shadow: true });
   out += `<clipPath id="mainClip"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="14"/></clipPath><g clip-path="url(#mainClip)">`;
   out += sidebar(x, y, side, h);

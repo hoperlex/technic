@@ -397,7 +397,6 @@ function page1() {
   );
 
   b += rect(55, 452, 1013, 590, { fill: C.bg, stroke: C.line, r: 18 });
-  const centers = [225, 560, 895];
   const cards = [
     {
       n: '1',
