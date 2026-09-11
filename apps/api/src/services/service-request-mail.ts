@@ -158,6 +158,16 @@ export type { ServiceMailAudience } from './service-request-mail-audience';
  * Всё остальное — операторы, поимённые исполнители, их права, ящик компании и копии — читает сама
  * транзакция после блокировки заявки.
  */
+/**
+ * ЧТО ИМЕННО СЛУЧИЛОСЬ С ОБЪЁМОМ РАБОТ — союз из одного места, а не повторённый перечень.
+ *
+ * Перечень читают трое: отбор адресатов (`requiredTargetsOf`), тело письма (`ESTIMATE_ACTION_LABELS`)
+ * и контекст факта (`ServiceLetterExtra`). Пока он стоял словами в каждом, новое действие
+ * приходилось вписывать трижды, и забытое третье место означало бы письмо БЕЗ строки о событии —
+ * самое дорогое из возможных умолчаний: у подрядчика и у службы портала может не быть вовсе.
+ */
+export type ServiceEstimateMailAction = 'submit' | 'approved' | 'reopened' | 'exempted';
+
 export interface ServiceMailIntent {
   event: ModuleMailEvent;
   actor: ServiceMailActor;
@@ -167,8 +177,14 @@ export interface ServiceMailIntent {
    * Что случилось с объёмом работ; есть только у `service_request_estimate`. Ревизия и действие
    * задают якорь дедупликации: повторное предъявление той же ревизии письма не удваивает, а новая
    * ревизия — это новое письмо, потому что предъявили другие числа.
+   *
+   * `exempted` — предъявление, прошедшее МИМО подписи: исполнитель заявил «согласование не
+   * требуется», и рубильник это применил (Р3 плана освобождения). Своим действием, а не признаком
+   * при `submit`: адресат у письма тот же (служба), а сказать оно обязано ровно противоположное —
+   * не «ждём вашего решения», а «решение принято без вас». Письмо здесь — один из четырёх
+   * механизмов контроля постфактум (Р13), и других предварительных барьеров у денег нет.
    */
-  estimate?: { revision: number; action: 'submit' | 'approved' | 'reopened' };
+  estimate?: { revision: number; action: ServiceEstimateMailAction };
   /**
    * Приложенные документы; есть только у `service_request_document`. Цели считает
    * `documentMailTargets` в маршруте — там, где известна сторона приложившего под блокировкой.
@@ -750,7 +766,9 @@ function requiredTargetsOf(intent: ServiceMailIntent, side: ServiceRequestSide):
      * Одна цель на оба случая означала бы, что исполнитель читает собственное предъявление, а
      * служба — собственный отказ.
      */
-    if (intent.estimate?.action === 'submit') return ['office'];
+    if (intent.estimate?.action === 'submit' || intent.estimate?.action === 'exempted') {
+      return ['office'];
+    }
     return hasServiceSide(side) ? ['service'] : [];
   }
   if (intent.event === 'service_request_assigned') {
@@ -1020,7 +1038,7 @@ function assigneesOf(data: ServiceLetterData): string {
 export interface ServiceLetterExtra {
   fromStatus?: ServiceRequestStatus | null;
   comment?: string;
-  estimate?: { revision: number; action: 'submit' | 'approved' | 'reopened' };
+  estimate?: { revision: number; action: ServiceEstimateMailAction };
   document?: { kind: ServiceFileKind; names: string[]; total: number };
   /**
    * Реплика целиком: у подрядчика без учётки письмо — единственный носитель, и «вам написали» без
@@ -1030,10 +1048,13 @@ export interface ServiceLetterExtra {
 }
 
 /** Что произошло с объёмом работ — словами, которыми это называют в портале. */
-const ESTIMATE_ACTION_LABELS: Record<'submit' | 'approved' | 'reopened', string> = {
+const ESTIMATE_ACTION_LABELS: Record<ServiceEstimateMailAction, string> = {
   submit: 'предъявлен',
   approved: 'согласован',
   reopened: 'возвращён в правку',
+  // Не «предъявлен», и не «согласован»: подписи под этой суммой не будет вовсе, и письмо обязано
+  // сказать это первым же словом — именно оно и есть повод прочитать письмо (Р13).
+  exempted: 'предъявлен и принят без согласования: заявил оператор сервисной компании',
 };
 
 /**

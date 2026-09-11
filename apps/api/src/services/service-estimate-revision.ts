@@ -1,11 +1,19 @@
-import { and, eq, inArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import {
   SERVICE_CLOSING_DOCUMENT_KINDS,
   SERVICE_DOCUMENT_FORMAT_CLOSING_KINDS,
+  type ServiceEstimateExemptionOutcome,
   type ServiceEstimateFormat,
+  type ServiceRequestEstimateExemptionDto,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { serviceRequestEstimateRevisions } from '../db/schema';
+import {
+  serviceRequestEstimateExemptions,
+  serviceRequestEstimateRevisions,
+  serviceRequestFiles,
+  users,
+} from '../db/schema';
+import { err } from '../lib/errors';
 
 /**
  * Ревизии объёма работ заявки оргтехники: запись строки ревизии и чтение формата действующей —
@@ -149,17 +157,143 @@ export async function recordEstimateRevision(
  * сметы он удаляет тем же шагом. Историей денежных решений заявки остаётся аудит и лента, а эта
  * таблица описывает живую смету: её формат, автора и снимок суммы.
  *
- * ЧЕГО ЗДЕСЬ ЖДАТЬ НА Э4. Страницы-основания ссылаются на строку ревизии составным ключом
- * `ON DELETE RESTRICT` (`service_request_files_estimate_revision_fk`), то есть у заявки с поданным
- * счётом этот `DELETE` откажет. Сегодня такой заявки не существует по построению — документный
- * формат ручка предъявления не принимает вовсе (§7, шаг 1), — и Э4, открывая формат, обязан решить
- * сброс явно: либо отказывать переназначению понятным 422, либо переносить страницы. Молчаливого
- * каскада здесь не будет намеренно: он унёс бы доказательство денежного решения (Р6).
+ * СБРОС У ЗАЯВКИ С ПОДАННЫМ СЧЁТОМ ОТБИВАЕТСЯ ЗДЕСЬ, А НЕ ОШИБКОЙ БД (Э4, открытый конец Э3).
+ * Страницы-основания ссылаются на строку ревизии составным ключом `ON DELETE RESTRICT`
+ * (`service_request_files_estimate_revision_fk`), и с открытием документного формата такая заявка
+ * появилась: `DELETE` ниже у неё откажет — то есть переназначение и возврат отменённой в «Новую»
+ * упали бы пятисоткой с текстом про внешний ключ. Проверка стоит В ЭТОЙ функции, а не в двух
+ * ручках: полный сброс — одно правило с двумя входами, и третий, заведённый позже, унаследовал бы
+ * отказ, а не ошибку драйвера.
+ *
+ * ИЗ ДВУХ ПУТЕЙ, НАЗВАННЫХ ПЛАНОМ, ВЫБРАН ОТКАЗ, А НЕ ПЕРЕНОС СТРАНИЦ. Переносить их некуда:
+ * сброс обнуляет нумерацию, и ревизии, на которую страница могла бы сослаться, после него не
+ * существует вовсе — «перенос» на деле означал бы снятие роли `estimate_basis`, то есть
+ * превращение счёта-основания обратно в закрывающую бумагу (Р5, ответ В10) и обход замка Р6
+ * «основание не снимается никогда» тем самым кодом, ради которого `RESTRICT` и поставлен. Цена
+ * отказа названа вслух: у заявки, по которой объём работ предъявлен счётом, сменить подрядчика и
+ * вернуть её в «Новую» больше нельзя — разбирают её до конца по месту либо заводят новую. Заявку
+ * это не запирает: отмена сметы не сбрасывает (`serviceResetOnTransition`), и обычный цикл —
+ * возврат в правку, переиздание раскладкой, спор — работает как прежде.
  */
 export async function dropEstimateRevisions(tx: Tx, requestId: string): Promise<void> {
+  const [basis] = await tx
+    .select({ fileId: serviceRequestFiles.fileId })
+    .from(serviceRequestFiles)
+    .where(
+      and(
+        eq(serviceRequestFiles.requestId, requestId),
+        eq(serviceRequestFiles.purpose, 'estimate_basis'),
+      ),
+    )
+    .limit(1);
+  if (basis) {
+    throw err.unprocessable(
+      'Объём работ по заявке предъявлен счётом — страницы счёта остаются основанием денежного ' +
+        'решения и не снимаются: сбросить смету и передать заявку другому подрядчику нельзя, ' +
+        'заведите новую заявку',
+      { estimate: 'Объём работ предъявлен счётом' },
+    );
+  }
+  /*
+   * СЛЕД ОСВОБОЖДЕНИЯ УХОДИТ ВМЕСТЕ С РЕВИЗИЯМИ, и это сказано вслух, потому что план называет эту
+   * таблицу единственным следом разбора постфактум (Р13).
+   *
+   * Ссылка заявления на ревизию — каскад, значит полный сброс сметы уносит и заявления. Останавливать
+   * его тут нечем: ключ заявления — пара «заявка + ревизия», а сброс обнуляет нумерацию, то есть
+   * ревизии, на которую строка ссылается, после него не существует. Сохранить строку можно было бы
+   * только отвязанной от ревизии — и она перестала бы отвечать на главный вопрос разбора, «под каким
+   * именно объёмом работ подпись не собирали».
+   *
+   * Почему этого достаточно. Сброс снимает и само денежное обязательство: подпись, её источник и
+   * номер ревизии обнуляются тем же шагом, то есть разбирать после него нечего — освобождения больше
+   * нет ни в одном смысле. А факт, что оно БЫЛО, остаётся в журнале действий: `estimate_submit` с
+   * форматом и исходом заявления в `metadata`, и запись о самом сбросе рядом. Журнал для этого и
+   * существует — в отличие от строки следа, он не привязан к живой ревизии.
+   */
   await tx
     .delete(serviceRequestEstimateRevisions)
     .where(eq(serviceRequestEstimateRevisions.requestId, requestId));
+}
+
+/**
+ * ЗАЯВЛЕНИЕ ОБ ОСВОБОЖДЕНИИ ОТ ПОДПИСИ И ЕГО ИСХОД (Р3) — строка, ради которой волна и заведена:
+ * денежного контроля у освобождения нет вовсе (Р13), и эта таблица остаётся единственным следом,
+ * по которому его разбирают постфактум.
+ *
+ * ПИШЕТСЯ ТОЙ ЖЕ ТРАНЗАКЦИЕЙ, ЧТО ПРЕДЪЯВЛЕНИЕ, и это не удобство: аудит модуля уходит после
+ * `COMMIT`, и сбой между ними оставил бы подпись без единой записи о том, кто её отменил.
+ *
+ * ИСХОД ПИШЕТСЯ В ОБОИХ СЛУЧАЯХ — и при `applied`, и при `observed`. Выключенный рубильник не
+ * отказ, а наблюдение: до включения служба обязана видеть, сколько заявлений приходит и на какие
+ * суммы, а отброшенное заявление такой картины не дало бы вовсе.
+ *
+ * Ключ строки — пара «заявка + ревизия», и второго заявления по одной ревизии взяться неоткуда:
+ * повторное предъявление поднимает номер.
+ */
+export async function recordEstimateExemption(
+  tx: Tx,
+  params: {
+    requestId: string;
+    revision: number;
+    declaredBy: string;
+    note: string;
+    outcome: ServiceEstimateExemptionOutcome;
+  },
+): Promise<void> {
+  await tx.insert(serviceRequestEstimateExemptions).values({
+    requestId: params.requestId,
+    revision: params.revision,
+    declaredBy: params.declaredBy,
+    declaredAt: new Date(),
+    note: params.note,
+    outcome: params.outcome,
+  });
+}
+
+/**
+ * Заявления об освобождении — одним запросом на страницу, тем же приёмом, что и формат ревизии
+ * выше и по той же причине: карточку собирает общая сборка списка, и строка на заявку стоила бы
+ * полусотни запросов.
+ *
+ * ОТДАЁТСЯ ПОСЛЕДНЕЕ ПО НОМЕРУ РЕВИЗИИ, а не «то, что нашлось». Заявлений по заявке бывает
+ * несколько — предъявили, вернули в правку, предъявили снова, — и карточку интересует нынешнее
+ * положение дел; номер ревизии едет в DTO рядом, и по нему читатель отличает освобождение по
+ * ДЕЙСТВУЮЩЕЙ ревизии от снятого прошлым переизданием (иначе он показывал бы снятое основание как
+ * живое). Порядок задаётся явной сортировкой: «последняя вставленная» строка у таблицы без
+ * хронологии — это план запроса, а не факт.
+ */
+export async function estimateExemptionByRequest(
+  ids: string[],
+): Promise<Map<string, ServiceRequestEstimateExemptionDto>> {
+  const map = new Map<string, ServiceRequestEstimateExemptionDto>();
+  if (ids.length === 0) return map;
+  const rows = await db
+    .select({
+      requestId: serviceRequestEstimateExemptions.requestId,
+      revision: serviceRequestEstimateExemptions.revision,
+      declaredBy: serviceRequestEstimateExemptions.declaredBy,
+      declaredByName: users.fullName,
+      declaredAt: serviceRequestEstimateExemptions.declaredAt,
+      note: serviceRequestEstimateExemptions.note,
+      outcome: serviceRequestEstimateExemptions.outcome,
+    })
+    .from(serviceRequestEstimateExemptions)
+    .leftJoin(users, eq(serviceRequestEstimateExemptions.declaredBy, users.id))
+    .where(inArray(serviceRequestEstimateExemptions.requestId, ids))
+    .orderBy(asc(serviceRequestEstimateExemptions.revision));
+  for (const row of rows) {
+    map.set(row.requestId, {
+      revision: row.revision,
+      by: row.declaredBy,
+      // Учётки может уже не быть (`set null` у ссылки): факт освобождения без имени правдой быть
+      // не перестаёт, а имя события остаётся в аудите.
+      byName: row.declaredByName ?? '',
+      at: row.declaredAt.toISOString(),
+      note: row.note,
+      outcome: row.outcome,
+    });
+  }
+  return map;
 }
 
 /**

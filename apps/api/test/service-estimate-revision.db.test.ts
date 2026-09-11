@@ -571,7 +571,18 @@ describe.skipIf(!DB_URL)('формат ревизии объёма работ с
     expect((await card(withRevision, ctx.customer.auth)).estimateFormat).toBeNull();
   });
 
-  it('затвор документной подачи на месте: 422 и ни одной записанной ревизии', async () => {
+  /**
+   * ЗАТВОР СМЕНИЛСЯ РУБИЛЬНИКОМ (Э4 снял временный отказ и поставил на его место чтение ключа
+   * `service_estimate_document_mode`). Случай оставлен и переписан, а не удалён: он отвечает на
+   * вопрос «что видит сервис, когда подача счётом ещё не включена», и ответ обязан быть отказом с
+   * объяснением, а не молчаливым приёмом пустой ревизии.
+   *
+   * Заявление об освобождении при выключенном рубильнике отказом НЕ отвечает — в этом и смысл
+   * режима наблюдения: заявление записывается, а подпись собирается обычным путём (исход
+   * `observed`). Проверяется это в своём файле волны Э4; здесь важно лишь то, что ревизия от такого
+   * предъявления рождается построчной, а не документной.
+   */
+  it('подача счётом при выключенном рубильнике: 422 и ни одной записанной ревизии', async () => {
     const id = await requestInWork('Затвор документной подачи');
     const fileId = await uploadedFile(ctx.service.id, 'invoice.pdf');
 
@@ -582,17 +593,7 @@ describe.skipIf(!DB_URL)('формат ревизии объёма работ с
       { mode: 'document', fileIds: [fileId], version: await version(id) },
     );
     expect(document.statusCode, document.body).toBe(422);
-    expect(document.json().message).toContain('пока выключена');
-
-    // Заявление об освобождении — второй отказ того же затвора, и он снимается отдельно (Э4).
-    const exemption = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${id}/estimate/submit`,
-      ctx.service.auth,
-      { mode: 'items', exemption: { note: 'Мелкий ремонт на месте' }, version: await version(id) },
-    );
-    expect(exemption.statusCode, exemption.body).toBe(422);
-    expect(exemption.json().message).toContain('Освобождение');
+    expect(document.json().message).toContain('документом');
 
     // Отказ вслух, а не молчаливое отбрасывание поля: ни ревизии, ни номера, ни подшитой страницы.
     expect(await revisions(id)).toEqual([]);
@@ -718,9 +719,23 @@ describe.skipIf(!DB_URL)('формат ревизии объёма работ с
     await attachRaw(id, { kind: 'invoice', purpose: 'estimate_basis', estimateRevision: 1 });
     await attachRaw(id, { kind: 'act' });
 
-    const completed = await completeWork(id);
+    /*
+     * ЗАКРЫТИЕ БЕЗ ПОСТРОЧНОГО ФАКТА, и отметки здесь не «необязательны», а ЗАПРЕЩЕНЫ (Р8, ветвь Э4):
+     * у документной ревизии суммы нет, и присланные строки означали бы итог, которого система не
+     * знает. Фикстура держит строки прошлой построчной ревизии — их и нельзя отправлять, иначе
+     * ручка ответит 422. Прежняя редакция случая звала общий помощник `completeWork`, который шлёт
+     * отметки по всем строкам, и покраснела ровно на этом.
+     */
+    const completed = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${id}/complete`,
+      ctx.service.auth,
+      { completedOn: TODAY, items: [], version: (await card(id)).version },
+    );
     expect(completed.statusCode, completed.body).toBe(200);
     expect((completed.json() as ServiceRequestDto).status).toBe('done');
+    // Итог по акту у документной заявки не считается: ноль читался бы как «работы бесплатны».
+    expect((completed.json() as ServiceRequestDto).completion?.totalAmount).toBeNull();
     expect(await awaitingDocumentIds()).not.toContain(id);
   });
 

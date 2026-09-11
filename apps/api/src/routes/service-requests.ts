@@ -34,6 +34,7 @@ import {
   canAssignServiceExecutors,
   canAttachServiceFile,
   canAttachServiceFileSide,
+  canDeclareExemption,
   canDeclineServiceRequest,
   canHoldService,
   canPickAnyServiceSubject,
@@ -45,6 +46,7 @@ import {
   completeServiceRequestSchema,
   createServiceRequestSchema,
   declineServiceRequestSchema,
+  evaluateExemption,
   formatServiceRequestNumber,
   isDepartmentScopedRole,
   isObjectScopedRole,
@@ -126,6 +128,7 @@ import {
   type ServiceRequestBulkResultDto,
   type ServiceRequestBulkStatusDto,
   type ServiceRequestConsumableDto,
+  type ServiceRequestEstimateExemptionDto,
   type ServiceRequestKind,
   type ServiceWaitingOn,
   type ServiceWarrantyRowDto,
@@ -255,7 +258,9 @@ import {
 import {
   activeEstimateFormatByRequest,
   dropEstimateRevisions,
+  estimateExemptionByRequest,
   readActiveEstimateFormat,
+  recordEstimateExemption,
   recordEstimateRevision,
   serviceHasClosingDocumentSql,
 } from '../services/service-estimate-revision';
@@ -771,6 +776,11 @@ function toDto(
    * список.
    */
   estimateFormat: ServiceEstimateFormat | null,
+  /**
+   * Заявление об освобождении от подписи и его исход (Р3 плана освобождения): `null` — по этой
+   * заявке его не делали. Приходит снимком той же пакетной догрузки, что формат ревизии рядом.
+   */
+  exemption: ServiceRequestEstimateExemptionDto | null,
 ): ServiceRequestDto {
   const r = row.r;
   return {
@@ -1006,6 +1016,21 @@ function toDto(
      * разошёлся бы с сервером молча.
      */
     estimatePendingRevision: r.estimatePendingRevision,
+    /**
+     * ЧЕМ ОТКРЫТО ОЖИДАНИЕ ПОДПИСИ (Р9): предъявлением (`submit`) либо исходом разрешённого спора
+     * (`dispute`). `null` — ожидания нет вовсе либо его открыл старый код, не знавший про
+     * происхождение; читается такое значение как `submit` — тем же правилом, что и в базе.
+     *
+     * Полем DTO, а не выводом портала: этим признаком `canApproveServiceEstimate` решает, пускать ли
+     * подпись в «Решена», и портал зовёт тот же предикат теми же полями.
+     */
+    estimatePendingSource: r.estimatePendingSource,
+    /**
+     * Заявление об освобождении от подписи (Р3, Р13) — одна из четырёх мер контроля постфактум:
+     * карточка обязана сказать словами, почему по заявке нет подписи («Принято без согласования»)
+     * либо почему её всё-таки ждут («Заявлено, ждём подписи»).
+     */
+    exemption,
     // Когда предъявляли в последний раз. Активным предъявлением НЕ является (Р9): возврат в правку
     // эту дату не трогает, и у отозванного она непуста.
     estimateSubmittedAt: r.estimateSubmittedAt ? r.estimateSubmittedAt.toISOString() : null,
@@ -1080,7 +1105,7 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
    * группировка по аппарату приписала бы прошлогодней заявке свежий счёт (план повторов, Р6).
    * При выключенном окне карта приходит пустой, не потревожив базу.
    */
-  const [items, fileMap, executorMap, consumableMap, repeatMap, placeMap, formatMap] =
+  const [items, fileMap, executorMap, consumableMap, repeatMap, placeMap, formatMap, exemptionMap] =
     await Promise.all([
       itemsByRequest(ids),
       filesByRequest(ids),
@@ -1098,6 +1123,11 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
        * превратила бы горячий путь в полсотни запросов.
        */
       activeEstimateFormatByRequest(ids),
+      /*
+       * Заявления об освобождении — тем же пакетным приёмом: тег «принято без согласования» стоит в
+       * строке СПИСКА (Р13), то есть вопрос задают на каждой из полусотни строк страницы.
+       */
+      estimateExemptionByRequest(ids),
     ]);
   const chatMap = await chatSummaryByRequest(
     p,
@@ -1170,6 +1200,9 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
       placeMap.get(row.r.id) ?? null,
       // Ревизий у заявки нет — в карте нет и ключа: `null` здесь и означает планку наследия.
       formatMap.get(row.r.id) ?? null,
+      // Заявления не было — ключа в карте нет: `null` означает «освобождение не заявляли», а не
+      // «не посчитали».
+      exemptionMap.get(row.r.id) ?? null,
     );
   });
 }
@@ -2331,11 +2364,20 @@ async function applyTransition(
     // уходит в `0`, а оставленная pending-ревизия уронила бы саму запись —
     // `service_requests_estimate_pending_check` требует их равенства.
     set.estimatePendingRevision = null;
+    // Происхождение ожидания гаснет ВМЕСТЕ с ожиданием (Н4 волны освобождения): оставленное
+    // `dispute` у заявки без ожидания означало бы «подпись после спора разрешена», и подпись в
+    // «Решена» открылась бы заявке, спора по которой больше нет.
+    set.estimatePendingSource = null;
   }
   if (reset.approval) {
     set.approvedEstimateRevision = null;
     set.estimateApprovedBy = null;
     set.estimateApprovedAt = null;
+    // Источник подписи — четвёртая колонка снимка (Р11), и гасится он во всех четырёх местах Н4.
+    // Оставленный `auto` у заявки без подписи читался бы как «принято без согласования» — то есть
+    // как обвинение, которого никто не выдвигал, — а при следующей человеческой подписи уронил бы
+    // запись: `service_requests_estimate_approval_source_check` запрещает `auto` с автором.
+    set.estimateApprovalSource = null;
   }
   if (reset.completion) {
     /**
@@ -5632,9 +5674,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         // тут и не окажется — переназначение под висящим предъявлением запрещено предикатом
         // выше, — но защита не должна держаться на выводе о соседней проверке (Р2).
         patch.estimatePendingRevision = null;
+        // Происхождение ожидания и источник подписи — вместе с тем, что они описывают (Н4): у
+        // заявки, переданной другому подрядчику, не должно остаться ни «принято без согласования»,
+        // ни «ожидание открыто спором».
+        patch.estimatePendingSource = null;
         patch.approvedEstimateRevision = null;
         patch.estimateApprovedBy = null;
         patch.estimateApprovedAt = null;
+        patch.estimateApprovalSource = null;
       }
 
       const transition = await applyTransition(tx, {
@@ -6542,6 +6589,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           reissueTotal = money(amount);
           patch.estimateRevision = revision;
           patch.estimatePendingRevision = revision;
+          // Переиздание — это предъявление, и происхождение ожидания у него такое же (Н4):
+          // `dispute` пускает подпись в «Решена», и унаследованное от прошлого ожидания оно
+          // открыло бы эту дверь ревизии, о которой спора не было.
+          patch.estimatePendingSource = 'submit';
           patch.estimateSubmittedAt = new Date();
           patch.estimatedTotalAmount = money(amount);
           // Подпись обесценена подъёмом ревизии — снимок согласования снимается целиком, все три
@@ -6549,6 +6600,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           patch.approvedEstimateRevision = null;
           patch.estimateApprovedBy = null;
           patch.estimateApprovedAt = null;
+          // Источник подписи — вместе с самой подписью (Н4): переиздание обесценило её целиком.
+          patch.estimateApprovalSource = null;
         }
         await applyTransition(tx, {
           row: locked,
@@ -6675,37 +6728,57 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         );
       }
       /*
-       * ДОКУМЕНТНЫЙ ФОРМАТ И ЗАЯВЛЕНИЕ ОБ ОСВОБОЖДЕНИИ ЭТОТ ВЫПУСК НЕ ПРИНИМАЕТ — и отказывает вслух,
-       * а не выбрасывает поля молча (§7, шаг 1 плана
-       * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`: «ручка предъявления этого
-       * выпуска документный формат не принимает»).
+       * РУБИЛЬНИК ДОКУМЕНТНОГО РЕЖИМА ГАСИТ ВХОД (Р2, §7 шаг 3 плана
+       * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`), и отказ — тот же самый, что
+       * стоял здесь затвором выпуска A: снаружи «волна ещё не включена» и «волны ещё нет» обязаны
+       * выглядеть одинаково, иначе портал старой версии получал бы два разных объяснения одного
+       * состояния.
        *
-       * ПОЧЕМУ ПРОВЕРКА НУЖНА, ХОТЯ СХЕМА ТАКОЕ ТЕЛО СОБИРАЕТ. Контракты волны едут первым этапом, а
-       * ревизия документа, страницы-основания и исход заявления появятся только с Э4. Без этих двух
-       * строк документное тело разбиралось бы ветвью `items`: предъявление ответило бы 200, счёт не
-       * подшился бы основанием, снимок суммы лёг бы из строк черновика, а в след ушло бы
-       * `warrantyRepair: false` — то есть от попытки принять денежное решение не осталось бы ни
-       * записи, ни следа, хотя на нём держатся все четыре механизма контроля постфактум (Р13).
-       * Молчаливое отбрасывание поля у денежной ручки здесь уже стоило разбора (ADR 0179).
-       *
-       * ЧТО СТАНЕТ С НИМИ НА Э4. Первую строку заменяет чтение рубильника
-       * `service_estimate_document_mode` (`isFeatureEnabled`) — он гасит ВХОД, и выключенный отвечает
-       * этим же отказом. Вторая уходит совсем: рубильник `service_estimate_exemption` гасит не
-       * команду, а ИСХОД (`evaluateExemption` → `observed`), поэтому заявление при выключенном ключе
-       * обязано проходить и оставаться в следе.
+       * ИМЕННО ВХОД, А НЕ ИСХОД — и в этом вся разница с рубильником освобождения ниже. Документная
+       * подача создаёт данные, которых старый читатель не понимает (роль файла, формат ревизии), и
+       * пока он жив в проде, счёт-основание снова стал бы для него закрывающей бумагой (§7, шаг 2).
+       * Поэтому выключенный ключ запрещает КОМАНДУ.
        */
-      if (body.mode === 'document') {
+      if (
+        body.mode === 'document' &&
+        !(await isFeatureEnabled(db, 'service_estimate_document_mode'))
+      ) {
         throw err.unprocessable(
           'Подача объёма работ документом пока выключена — предъявите объём работ строками',
           { mode: 'Формат недоступен' },
         );
       }
-      if ('exemption' in body && body.exemption) {
-        throw err.unprocessable(
-          'Освобождение от согласования пока выключено — объём работ предъявляется на подпись',
-          { exemption: 'Недоступно' },
+      /*
+       * ЗАЯВЛЕНИЕ ОБ ОСВОБОЖДЕНИИ: КОМУ ДАНО ЗАЯВИТЬ И ЧТО ИЗ ЭТОГО ВЫШЛО — два разных вопроса
+       * (Р3), и отвечают на них две разные функции.
+       *
+       * Первый — доступ, и его нарушение единственное, что отвечает отказом: заявление по чужой
+       * заявке либо от той стороны, что подпись СТАВИТ, — это не освобождение, а подпись за другого
+       * (`canDeclareExemption` пускает только оператора назначенного контрагента-сервиса, ответ В1).
+       *
+       * Второй — исход, и отказом он не бывает никогда: выключенный рубильник даёт `observed`, то
+       * есть предъявление проходит, ожидание подписи открывается как обычно, а заявление остаётся в
+       * следе. Этим служба и узнаёт ДО включения ключа, сколько заявлений приходит и на какие суммы;
+       * отвечай выключенный рубильник отказом, такой картины не было бы вовсе.
+       *
+       * Рубильник читается ЗДЕСЬ, до транзакции, и один раз: исход уезжает и в письмо (оно
+       * готовится до транзакции, Р67), и в строку следа внутри неё, и прочитанный дважды он развёл
+       * бы их между собой на переключении ключа.
+       */
+      const declaration = 'exemption' in body ? body.exemption : undefined;
+      if (declaration && !canDeclareExemption(row, p, assignment)) {
+        throw err.forbidden(
+          'Освобождение от согласования заявляет оператор назначенной сервисной компании — ' +
+            'по этой заявке объём работ предъявляется на подпись',
         );
       }
+      const exemptionOutcome = declaration
+        ? evaluateExemption({
+            flagEnabled: await isFeatureEnabled(db, 'service_estimate_exemption'),
+          })
+        : null;
+      // Подпись без подписавшего (Р11): её ставит применённое освобождение, и только оно.
+      const autoApproved = exemptionOutcome === 'applied';
       // Гарантийный ремонт — не пустая смета, а осознанное «чиним по гарантии, денег нет», и без
       // названного источника гарантии он ничем не подтверждён (Р27).
       if (warrantyRepair && !row.warrantyClaimSource) {
@@ -6716,25 +6789,52 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       }
 
       const revision = row.estimateRevision + 1;
+      /*
+       * Страницы счёта — отдельной переменной, а не чтением `body.fileIds` по месту: сужение союза
+       * по `mode` внутри вложенной функции транзакции держится на тонкостях вывода типов, а список
+       * страниц нужен трижды (проверка, подшивка, отметка активными). `null` здесь и означает
+       * «подача не документная».
+       */
+      const documentFileIds = body.mode === 'document' ? body.fileIds : null;
       /**
        * Предъявление адресовано тому, кто отвечает по объёму работ, — службе (§3, № 5). Событие
        * держится не за статус (он не меняется), а за пару «ревизия + действие»: повторное
        * предъявление той же ревизии письма не удвоит, а новая ревизия — это другие числа, о
        * которых обязаны узнать заново.
+       *
+       * ПРИМЕНЁННОЕ ОСВОБОЖДЕНИЕ — СВОЁ ДЕЙСТВИЕ, И АДРЕСАТ У НЕГО ТОТ ЖЕ (Р13). Письмо офису —
+       * один из четырёх механизмов контроля постфактум: подпись не собирают вовсе, и служба обязана
+       * узнать о деньгах, прошедших мимо неё, иначе первым известием станет счёт из бухгалтерии.
+       * Письмо ОДНО, а не два: обычное предъявление ушло бы тому же адресату и говорило бы неправду
+       * — «ждём вашего решения» там, где решение уже принято автопринятием.
+       *
+       * Исход `observed` письма не меняет: подпись по такой заявке собирают обычным порядком, и
+       * уходит обычное предъявление.
        */
+      const mailAction = autoApproved ? 'exempted' : 'submit';
       const mailPlan = await prepareServiceMail({
         event: 'service_request_estimate',
         actor: mailActorOf(p),
         authorId: row.createdBy,
-        estimate: { revision, action: 'submit' },
+        estimate: { revision, action: mailAction },
       });
       const total = await db.transaction(async (tx) => {
-        const side = await readServiceSide(tx, row.id);
+        /*
+         * ВСЯ КОМАНДА — ОДНОЙ ТРАНЗАКЦИЕЙ ПОД БЛОКИРОВКОЙ СТРОКИ (Р7): проверка файлов, подшивка,
+         * строка ревизии, подъём номера, заявление и его исход, письмо и история. Блокировка
+         * появилась здесь вместе с документной подачей и нужна ровно ей: проверка «файл свободен и
+         * догружен» и его подшивка обязаны идти в одной очереди с остальными действиями по заявке —
+         * иначе тот же файл успевает уехать основанием в соседнюю заявку между проверкой и
+         * вставкой. Сверку версии блокировка не отменяет: её делает `applyTransition`, и чужое
+         * действие, вклинившееся до нас, по-прежнему отвечает 409.
+         */
+        const locked = await lockRequest(tx, row.id);
+        const side = await readServiceSide(tx, locked.id);
         if (warrantyRepair) {
-          await assertEstimateReplaceable(tx, row.id);
-          await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, row.id));
+          await assertEstimateReplaceable(tx, locked.id);
+          await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, locked.id));
           await tx.insert(serviceRequestItems).values({
-            requestId: row.id,
+            requestId: locked.id,
             kind: 'service',
             name: WARRANTY_REPAIR_ITEM_NAME,
             quantity: '1',
@@ -6742,31 +6842,98 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             sortOrder: 0,
           });
         }
-        const items = await estimateItems(tx, row.id);
-        if (items.length === 0) {
-          throw err.unprocessable('Объём работ пуст — добавьте хотя бы одну строку');
+        /**
+         * СУММЫ У ДОКУМЕНТНОЙ ПОДАЧИ НЕТ, И ЭТО НЕ ПРОПУЩЕННОЕ ПОЛЕ, А НЕИЗВЕСТНОЕ ЗНАЧЕНИЕ (Р2,
+         * ответ В5 заказчика): содержимое счёта системе станет известно только от разбора
+         * документа. Ноль вместо него читался бы как «работы бесплатны» — тот же запрет, что у
+         * итога по акту, — поэтому `null`, а не `money(0)`.
+         *
+         * ПРОВЕРКА «ОБЪЁМ РАБОТ ПУСТ» К ЭТОМУ ФОРМАТУ НЕ ПРИМЕНЯЕТСЯ по той же причине: у
+         * документной ревизии строк нет вовсе, и требование строки запретило бы формат целиком.
+         * У построчного и гарантийного она остаётся нетронутой.
+         *
+         * СТРОКИ ЧЕРНОВИКА ДОКУМЕНТНАЯ ПОДАЧА НЕ УДАЛЯЕТ. Портал пускает в этот режим, пока набрано
+         * не больше одной строки (Р10), и набранное там обязано пережить переключение режима:
+         * молчаливое удаление состава у денежной ручки — потеря данных, а не уборка.
+         */
+        let amount: number | null = null;
+        if (documentFileIds === null) {
+          const items = await estimateItems(tx, locked.id);
+          if (items.length === 0) {
+            throw err.unprocessable('Объём работ пуст — добавьте хотя бы одну строку');
+          }
+          amount = sumAmounts(items);
+        } else {
+          /*
+           * ФАЙЛЫ ПРОВЕРЯЮТСЯ С `requireActive` (Н13, Р7), в отличие от обычной подшивки: основание
+           * денежного решения не бывает `pending` — у такого файла объекта в хранилище может не
+           * быть вовсе (загрузку оборвали), и через сутки его заберёт уборка. Обычное вложение
+           * переживает это незамеченным, а счёт, которым предъявлен объём работ, — нет: заявка
+           * осталась бы с ревизией, у которой нет ни строк, ни документа.
+           *
+           * Лимит на заявку считается вместе с уже подшитыми: страницы счёта — такие же строки
+           * связи, и отдельного счёта у них нет.
+           */
+          const existing = await tx
+            .select({ fileId: serviceRequestFiles.fileId })
+            .from(serviceRequestFiles)
+            .where(eq(serviceRequestFiles.requestId, locked.id));
+          assertTotalWithinLimit(existing.length, documentFileIds.length);
+          await assertFilesAttachable(tx, documentFileIds, p.id, { requireActive: true });
         }
-        const amount = sumAmounts(items);
+        const now = new Date();
         await applyTransition(tx, {
-          row,
+          row: locked,
           // Статус тот же (Р8). Через помощник перехода ручка всё равно идёт: он — единственная
           // точка, где заявка пишет строку истории и сбрасывает возраст ожидания, и второго пути
           // писать эти две вещи модуль не заводит (Р4).
-          to: row.status,
+          to: locked.status,
           version: body.version,
           actor: p,
           comment: body.comment,
           patch: {
             estimateRevision: revision,
-            // Этим и открывается ожидание подписи (Р2): колонка равна поднятой ревизии, и
-            // `CHECK` в базе сторожит, что предъявлена именно текущая.
-            estimatePendingRevision: revision,
-            estimateSubmittedAt: new Date(),
-            // Снимок предъявленной суммы: по нему потом и сверяется закрытие.
-            estimatedTotalAmount: money(amount),
+            /*
+             * ОЖИДАНИЕ ПОДПИСИ ОТКРЫВАЕТСЯ, ЕСЛИ ПОДПИСЬ СОБИРАЮТ. При применённом освобождении её
+             * не собирают вовсе (Р3): открытое ожидание держало бы заявку в очереди согласования,
+             * а подписывать в ней уже нечего — и `service_requests_estimate_pending_check` тут ни
+             * при чём, он о равенстве номеров.
+             *
+             * Происхождение ожидания — `submit` (Н2/Н4): подпись в «Решена» открыта ТОЛЬКО
+             * ожиданию, созданному разбором спора (`dispute`), и предъявление обязано называть
+             * себя явно — иначе первое же ожидание, доехавшее до «Решена», открыло бы эту дверь.
+             */
+            estimatePendingRevision: autoApproved ? null : revision,
+            estimatePendingSource: autoApproved ? null : 'submit',
+            estimateSubmittedAt: now,
+            // Снимок предъявленной суммы: по нему потом и сверяется закрытие. У документной подачи
+            // пусто — и записывается именно `null`, затирая снимок прошлой ревизии: оставленное
+            // старое число читалось бы как сумма поданного счёта.
+            estimatedTotalAmount: amount === null ? null : money(amount),
+            ...(autoApproved
+              ? {
+                  /*
+                   * ПОДПИСЬ БЕЗ АВТОРА (Р11): ревизия и время есть, подписавшего нет и быть не
+                   * может — за автопринятие не отвечает ни один человек, а подставить сюда
+                   * заявителя освобождения значило бы записать, что оператор сервиса согласовал
+                   * смету сам себе (ровно то, что `canApproveServiceEstimate` запрещает явно).
+                   * Пару «ревизия + время» держит `service_requests_approval_check`, а пустого
+                   * автора он с выпуска A допускает намеренно.
+                   */
+                  approvedEstimateRevision: revision,
+                  estimateApprovedAt: now,
+                  estimateApprovedBy: null,
+                  estimateApprovalSource: 'auto' as const,
+                }
+              : {}),
           },
-          // Ход перешёл к согласующему (`service → approval`) — возраст ожидания начинается заново.
-          touchStatusAt: true,
+          /*
+           * Возраст ожидания сбрасывает только настоящее предъявление: ход перешёл к согласующему
+           * (`service → approval`). У применённого освобождения ход никуда не переходит — заявку
+           * по-прежнему ведёт исполнитель, теперь уже работая, — и обнулённый возраст спрятал бы
+           * из очереди «дольше всех ждут» заявку, которая там стоит по-настоящему.
+           */
+          touchStatusAt: !autoApproved,
           // Письмо ставит не переход (статус не меняется), а само предъявление — ниже.
           mail: null,
         });
@@ -6775,32 +6942,78 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
          * только в самой заявке, а формат предъявления не хранился нигде: читать его было неоткуда,
          * и планка закрывающего документа у всех заявок отвечала наследием.
          *
-         * ПОСЛЕ `applyTransition`, А НЕ ДО: переход сверяет версию заявки и отвечает 409, если её
-         * двинули из-под нас. Записанная раньше ревизия этим откатилась бы вместе со всем прочим —
-         * но до отката успела бы погасить прежнюю активную, а значит цена ошибки в порядке шагов
-         * платится не здесь, а в первом же отказе по версии.
+         * ПОСЛЕ `applyTransition`, А ДО СТРАНИЦ И ЗАЯВЛЕНИЯ. Переход сверяет версию заявки и
+         * отвечает 409, если её двинули из-под нас, — записанная раньше ревизия откатилась бы
+         * вместе со всем прочим, но до отката успела бы погасить прежнюю активную. А страницы и
+         * заявление ссылаются на эту строку составными ключами, и ключи немедленные: обратный
+         * порядок отказал бы на первой же документной подаче.
          */
         await recordEstimateRevision(tx, {
-          requestId: row.id,
+          requestId: locked.id,
           revision,
-          /*
-           * Формат берётся из команды, а не выводится из состава: «строк ноль» у документной подачи
-           * (Э4) и у пустого черновика выглядят одинаково. Документный формат сюда не доходит —
-           * затвор выше отбивает его 422 (§7, шаг 1), — и это видит компилятор: `mode` здесь уже
-           * сужен до двух значений.
-           */
+          // Формат берётся из команды, а не выводится из состава: «строк ноль» у документной подачи
+          // и у пустого черновика выглядят одинаково, а раскладка «Ведения» переиздаёт документную
+          // ревизию в построчную — выведенный признак соврал бы на первой же раскладке.
           format: body.mode,
           submittedBy: p.id,
           // Снимок строк. У гарантийного формата это ноль, и ноль здесь законная цена, а не
-          // «неизвестно»: служебная нулевая строка и есть весь объём работ по гарантии.
-          totalAmount: money(amount),
+          // «неизвестно»: служебная нулевая строка и есть весь объём работ по гарантии. У
+          // документного — `null`: сумма не опущена, а неизвестна.
+          totalAmount: amount === null ? null : money(amount),
         });
+        if (documentFileIds !== null) {
+          /*
+           * СТРАНИЦЫ ОСНОВАНИЯ. Роль назначает СЕРВЕР, клиент её не выбирает (Р5): `estimate_basis`
+           * ставится только здесь и только виду `invoice` — иначе фотография поломки стала бы
+           * «основанием» и выпала из закрывающих бумаг, а заявка перестала бы закрываться.
+           *
+           * Порядок страниц — порядок присланного списка: счёт сканируют по листам, и разбор
+           * документа (Р12) привяжет предложение к листу по этому номеру. Нумерация с единицы —
+           * `service_request_files_page_no_check` отбивает ноль как опечатку.
+           *
+           * ПОЛИТИКА ВИДОВ ДОКУМЕНТА (`assertFileKindAllowed`) ЗДЕСЬ НЕ СПРАШИВАЕТСЯ, и это не
+           * пропуск стража. Та политика отвечает на вопрос «кому и когда разрешено ВЫБРАТЬ этот вид
+           * при подшивке», а вида здесь никто не выбирает: он следствие формата команды. Право же
+           * на саму команду спрошено выше — `canSubmitServiceEstimate`, та же сторона исполнителя, —
+           * и спроси мы политику второй раз, у одного действия завелось бы два ответа на вопрос
+           * «можно ли», расходящихся при первой правке перечня.
+           */
+          await tx.insert(serviceRequestFiles).values(
+            documentFileIds.map((fileId, index) => ({
+              requestId: locked.id,
+              kind: 'invoice' as const,
+              purpose: 'estimate_basis' as const,
+              estimateRevision: revision,
+              pageNo: index + 1,
+              fileId,
+              attachedBy: p.id,
+            })),
+          );
+          await markFilesActive(tx, documentFileIds);
+        }
+        if (declaration && exemptionOutcome) {
+          /*
+           * СЛЕД ЗАЯВЛЕНИЯ — В ТОЙ ЖЕ ТРАНЗАКЦИИ (Р3, Р4). Аудит модуля пишется после `COMMIT`, и
+           * сбой между ними оставил бы денежное решение без единой записи о том, кто его принял, —
+           * а другого следа у освобождения нет: ни лимита, ни политики, ни ловли дублей заказчик не
+           * захотел (Р13).
+           */
+          await recordEstimateExemption(tx, {
+            requestId: locked.id,
+            revision,
+            declaredBy: p.id,
+            note: declaration.note ?? '',
+            outcome: exemptionOutcome,
+          });
+        }
         await queueServiceMailForIntent(tx, {
           prepared: mailPlan,
           side,
-          requestId: row.id,
-          anchor: `${row.id}-rev${revision}-submit`,
-          extra: { estimate: { revision, action: 'submit' } },
+          requestId: locked.id,
+          // Якорь — пара «ревизия + действие», как и само событие: повтор нажатия второго письма не
+          // создаёт, а освобождение и обычное предъявление по одной ревизии не бывают вместе.
+          anchor: `${locked.id}-rev${revision}-${mailAction}`,
+          extra: { estimate: { revision, action: mailAction } },
         });
         return amount;
       });
@@ -6810,7 +7023,22 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         action: 'serviceRequest.estimate_submit',
         entityType: 'serviceRequest',
         entityId: row.id,
-        metadata: { revision, total, warrantyRepair },
+        metadata: {
+          revision,
+          // `null` у документной подачи — «сумма неизвестна», и записанный вместо него ноль читался
+          // бы в журнале как цена (тот же запрет, что у снимка заявки).
+          total,
+          warrantyRepair,
+          // Формат — то, чего по составу заявки не восстановить: разбор денежного решения через
+          // месяц начинается с вопроса «чем предъявляли».
+          format: body.mode,
+          // Исход заявления — в журнале рядом с событием: строка следа отвечает «что решили», а эта
+          // запись — «когда и в каком действии». Без исхода событие не отличило бы автопринятие от
+          // обычного предъявления.
+          ...(exemptionOutcome
+            ? { exemption: { outcome: exemptionOutcome, note: declaration?.note ?? '' } }
+            : {}),
+        },
       });
       return (await getDto(p, row.id))!;
     },
@@ -6922,10 +7150,22 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
                 approvedEstimateRevision: row.estimateRevision,
                 estimateApprovedBy: p.id,
                 estimateApprovedAt: new Date(),
+                /*
+                 * ИСТОЧНИК НАЗЫВАЕТСЯ ЯВНО, хотя пустое значение и читается как `human` (Р11).
+                 * Причина не в красоте записи: подпись человека приходит и поверх автопринятой —
+                 * исход спора «нужна подпись» (Э5) снимает автоподпись и открывает ожидание, — а
+                 * `service_requests_estimate_approval_source_check` запрещает `auto` вместе с
+                 * автором. Оставь мы колонку нетронутой, первое же такое согласование упало бы
+                 * ошибкой БД.
+                 */
+                estimateApprovalSource: 'human',
                 estimatePendingRevision: null,
+                estimatePendingSource: null,
               }
             : {
                 estimatePendingRevision: null,
+                // Ответ получен и у отказа: ожидание гаснет вместе со своим происхождением (Н4).
+                estimatePendingSource: null,
                 /**
                  * Пометка замены больше НЕ ставится за человека (Р8). Прежде отказ ИТ означал «не
                  * чинить, значит менять», и флаг проставляла сама ручка; после слияния подписей «не
@@ -7080,7 +7320,13 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             approvedEstimateRevision: null,
             estimateApprovedBy: null,
             estimateApprovedAt: null,
+            // Источник подписи и происхождение ожидания гаснут вместе с тем, что они описывают
+            // (Н4). Для освобождения это главное место: возврат в правку — единственный способ
+            // снять автоподпись по своей воле, и оставленный `auto` показывал бы «принято без
+            // согласования» у заявки, по которой объём работ предъявляют заново.
+            estimateApprovalSource: null,
             estimatePendingRevision: null,
+            estimatePendingSource: null,
           },
           /**
            * Условный сброс возраста (Р4), и условие здесь не «сменилась ли сторона вообще», а какое
@@ -7449,12 +7695,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
                * потерять прошлое. Историческую вкладку Р7 оставляет читаемой ровно ради этого.
                */
               estimatePendingRevision: null,
+              // Вместе с ожиданием — его происхождение (Н4): признак, переживший гашение, открыл бы
+              // подпись в «Решена» заявке, которой никакой спор не касался.
+              estimatePendingSource: null,
             },
             mail: mailPlan,
           });
           // Ни итога, ни движений склада: внутреннее закрытие их не производит, и ноль в аудите был
           // бы зафиксированной суммой — то есть ответом на вопрос, который по этой заявке не задают.
-          return { internal: true as const };
+          return { mode: 'internal' as const };
         }
 
         /*
@@ -7487,19 +7736,23 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             `Согласована ревизия ${locked.approvedEstimateRevision ?? 0}, а в заявке ${locked.estimateRevision} — согласуйте объём работ заново`,
           );
         }
+        /**
+         * ФОРМАТ ДЕЙСТВУЮЩЕЙ РЕВИЗИИ ЧИТАЕТСЯ ОДИН РАЗ И ПОД БЛОКИРОВКОЙ, и спрашивают его теперь
+         * двое: планка закрывающего документа (Р5) и сама ветвь закрытия (Р8). Чтение идёт той же
+         * транзакцией, в которой взята блокировка заявки, а не до неё: между открытием окна закрытия
+         * и нажатием кнопки помещается раскладка «Ведения», переводящая документную ревизию в
+         * построчную, — и формат, прочитанный заранее, закрыл бы заявку не тем правилом, по которому
+         * она живёт к моменту `COMMIT`.
+         */
+        const format = await readActiveEstimateFormat(tx, locked.id);
         if (serviceRequestNeedsClosingDocument(locked)) {
           /*
-           * Планка закрывающего документа — по формату ДЕЙСТВУЮЩЕЙ ревизии (Р5). Читается он той же
-           * транзакцией, в которой взята блокировка заявки, а не до неё: между открытием окна
-           * закрытия и нажатием кнопки помещается раскладка «Ведения», переводящая документную
-           * ревизию в построчную (Р8), — и прочитанный заранее формат ответил бы про вчерашнее
-           * состояние.
-           *
            * У построчной и гарантийной ревизии, как и у заявки без ревизий, перечень сегодняшний:
-           * акт, счёт или гарантийный талон. Документная подача (Э4) сузит его до акта — тем же
-           * счётом, которым объём работ предъявлен, заявка закрываться не должна.
+           * акт, счёт или гарантийный талон. У документной подачи — только акт: тем же счётом,
+           * которым объём работ предъявлен, заявка закрываться не должна. Перечень называют
+           * контракты (`closingKindsForFormat`), а не этот запрос, — ветвь закрытия ниже своего
+           * перечня видов не держит.
            */
-          const format = await readActiveEstimateFormat(tx, locked.id);
           const [closing] = await tx
             .select({ fileId: serviceRequestFiles.fileId })
             .from(serviceRequestFiles)
@@ -7528,6 +7781,79 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             );
           }
         }
+
+        /**
+         * ДОКУМЕНТНАЯ ЗАЯВКА ЗАКРЫВАЕТСЯ НАЛИЧИЕМ АКТА, А НЕ ПОЛНОТОЙ ДАННЫХ (Р8, ответ В9): объём
+         * работ предъявлен счётом, содержимое счёта системе до распознавания неизвестно, и требовать
+         * от исполнителя цифры, которых он никуда не вводил, нечем. Остаётся дата и слово
+         * исполнителя — ровно столько же, сколько у внутреннего ремонта, но по другой причине.
+         *
+         * ВЕТВЬ ЯВНАЯ, А НЕ «САМО СОЙДЁТСЯ ПРИ НУЛЕ СТРОК», и это не осторожность ради осторожности:
+         * строки ЧЕРНОВИКА документная подача не удаляет (Р10 — набранное до переключения режима не
+         * теряется), то есть строки в заявке лежать МОГУТ. Пройди она общий путь, проверка «отметка
+         * нужна по каждой строке» потребовала бы факт по черновику, которого никто не предъявлял, а
+         * сумма этого черновика стала бы итогом по акту.
+         *
+         * ПРИСЛАННОЕ СОДЕРЖИМОЕ ОТВЕРГАЕТСЯ, А НЕ ИГНОРИРУЕТСЯ (тот же приём и та же причина, что у
+         * внутреннего ремонта выше): молча отброшенное поле у денежной ручки — это «сохранилось, но
+         * не сохранилось», и один такой случай уже стоил разбора (ADR 0179). 422, а не 403: право
+         * закрыть работы у исполнителя есть, негодно именно тело — его собрала залежавшаяся вкладка,
+         * не знающая, что объём работ предъявлен счётом. Одним отказом на все четыре поля: выбора,
+         * какое из них убрать, у человека нет.
+         *
+         * ОТКАЗ ПО ТЕЛУ СТОИТ ПОСЛЕ ПЛАНКИ БУМАГ, А НЕ ПЕРЕД НЕЙ. Планка — предусловие самого хода и
+         * одна для всех форматов: её человек закрывает одним и тем же действием (принести акт) при
+         * любой версии вкладки, а негодное тело исправляет не он, а обновлённый портал. Отвечать
+         * сперва про формат тела значило бы разбирать версию клиента раньше, чем состояние заявки.
+         *
+         * ГАРАНТИЯ ПО ТАКОЙ ЗАЯВКЕ НЕ ФИКСИРУЕТСЯ ВОВСЕ, и сказано это вслух именно здесь. Гарантия
+         * живёт только на строке объёма работ (`service_request_items.warranty_until` с `CHECK`
+         * «гарантия бывает лишь у выполненной строки»), а предъявленных строк у документной ревизии
+         * нет — записать дату некуда, и второго носителя гарантии ради случая, который закроется
+         * распознаванием, не заводят. В реестр гарантий такая заявка не попадает по той же причине:
+         * он собирается из строк. Нужна гарантия раньше распознавания — раскладка «Ведения»
+         * переиздаёт счёт по графам, и заявка возвращается в обычный порядок.
+         */
+        if (format === 'document') {
+          if (
+            body.items.length > 0 ||
+            (body.consumables?.length ?? 0) > 0 ||
+            body.adjustmentAmount != null ||
+            body.adjustmentReason
+          ) {
+            throw err.unprocessable(
+              'Объём работ по этой заявке предъявлен счётом — стоимости выполненного система ещё не знает: закрывайте работы датой и актом о выполненных работах',
+              { items: 'Объём работ предъявлен счётом' },
+            );
+          }
+          await applyTransition(tx, {
+            row,
+            to: 'done',
+            version: body.version,
+            actor: p,
+            comment: body.comment,
+            patch: {
+              completedAt: moscowInstantOf(body.completedOn, '00:00'),
+              /**
+               * ИТОГ ПО АКТУ — `NULL`, А НЕ НОЛЬ, и разница здесь денежная. `sumAmounts([])` даёт
+               * ноль, а записанный ноль читается как «работы бесплатны» (тот же запрет, что у снимка
+               * суммы ревизии и у итога расходников): карточка показала бы «0,00 ₽», отчёт по
+               * затратам — выполненную задаром работу подрядчика. Пустое поле означает «сумма не
+               * разобрана», и ровно это портал и пишет словами.
+               *
+               * Поля пишутся, а не опускаются: заявка могла быть закрыта прежней ревизией, уехать на
+               * доработку и вернуться документной — оставленный снимок прошлого итога стал бы итогом
+               * по новому акту.
+               */
+              finalTotalAmount: null,
+              finalAdjustmentAmount: null,
+              finalAdjustmentReason: '',
+            },
+            mail: mailPlan,
+          });
+          return { mode: 'document' as const };
+        }
+
         const rows = await estimateItems(tx, row.id);
         const sent = new Map(body.items.map((item) => [item.id, item]));
         if (sent.size !== rows.length) {
@@ -7648,7 +7974,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           },
           mail: mailPlan,
         });
-        return { internal: false as const, total, works, movements };
+        return { mode: 'items' as const, total, works, movements };
       });
 
       const after = (await getFullDto(p, row.id))!;
@@ -7664,33 +7990,43 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
          * «стоимость по ним не фиксируется»; ревизия же была бы следом упразднённого шага. Остаётся
          * то единственное, что человек и вводил, — дата выполнения; автора и слово исполнителя
          * несут запись действия и переход статуса.
+         *
+         * У ДОКУМЕНТНОГО ЗАКРЫТИЯ ТА ЖЕ ПРИЧИНА ПРИ ДРУГОМ ОСНОВАНИИ (Р8): ревизия в журнале есть —
+         * она названа счётом и по ней разбирают денежное решение, — а итога и корректировки нет,
+         * потому что стоимости система не знает. Посчитанный ноль, который писал здесь общий путь,
+         * читался бы в журнале ценой, и отчёт по затратам на подрядчиков считал бы такую заявку
+         * бесплатной. Ни `movements` (расходники этой ветвью отвергнуты), ни `changes`, ни
+         * `grantedWarranties`: строк, по которым их собирают, у документной ревизии нет.
          */
-        metadata: outcome.internal
-          ? { completedOn: body.completedOn }
-          : {
-              revision: row.estimateRevision,
-              total: outcome.total,
-              works: outcome.works,
-              adjustment: body.adjustmentAmount ?? null,
-              // Что уехало со склада этим закрытием (Р10): в истории заявки строка «Списано со
-              // склада: Тонер Ricoh 201 — 2 шт» берётся отсюда.
-              movements: outcome.movements,
-              // Что именно предъявил исполнитель: «тормозную площадку не ставили» иначе осталось бы
-              // незамеченным, а гарантию на неё искали бы годом позже.
-              changes: diffServiceCompletion(after.items),
-              /**
-               * Выданные гарантии — снимком (Р77). В самой смете живёт только последнее значение:
-               * возврат на доработку его обнуляет, повторное закрытие перезаписывает, и лента
-               * истории техники не смогла бы ответить, до какого числа обещали в первый раз.
-               */
-              grantedWarranties: after.items
-                .filter((item) => item.warrantyUntil)
-                .map((item) => ({
-                  itemId: item.id,
-                  name: item.name,
-                  warrantyUntil: item.warrantyUntil,
-                })),
-            },
+        metadata:
+          outcome.mode === 'internal'
+            ? { completedOn: body.completedOn }
+            : outcome.mode === 'document'
+              ? { revision: row.estimateRevision, completedOn: body.completedOn }
+              : {
+                  revision: row.estimateRevision,
+                  total: outcome.total,
+                  works: outcome.works,
+                  adjustment: body.adjustmentAmount ?? null,
+                  // Что уехало со склада этим закрытием (Р10): в истории заявки строка «Списано со
+                  // склада: Тонер Ricoh 201 — 2 шт» берётся отсюда.
+                  movements: outcome.movements,
+                  // Что именно предъявил исполнитель: «тормозную площадку не ставили» иначе осталось бы
+                  // незамеченным, а гарантию на неё искали бы годом позже.
+                  changes: diffServiceCompletion(after.items),
+                  /**
+                   * Выданные гарантии — снимком (Р77). В самой смете живёт только последнее значение:
+                   * возврат на доработку его обнуляет, повторное закрытие перезаписывает, и лента
+                   * истории техники не смогла бы ответить, до какого числа обещали в первый раз.
+                   */
+                  grantedWarranties: after.items
+                    .filter((item) => item.warrantyUntil)
+                    .map((item) => ({
+                      itemId: item.id,
+                      name: item.name,
+                      warrantyUntil: item.warrantyUntil,
+                    })),
+                },
       });
       // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
       return forAudience(after);
@@ -7741,6 +8077,45 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        * помощник отвечает сразу.
        */
       await assertCandidateDecided(tx, locked.equipmentCandidateId);
+      /**
+       * СОГЛАСОВАННАЯ РЕВИЗИЯ ОБЯЗАНА СОВПАДАТЬ С ДЕЙСТВУЮЩЕЙ — и до этой правки приёмка не
+       * спрашивала НИЧЕГО о деньгах и бумагах (Н14): планку закрывающего документа держит переход в
+       * «Решена», а здесь оставались лишь коридор, сторона и решение по непроверенному предмету.
+       * Пока подпись нельзя было снять после закрытия работ, этого хватало.
+       *
+       * Теперь можно: автоподпись освобождения снимается исходом спора «нужна подпись» (Р9) прямо в
+       * «Решена», и без этой проверки заявку принимали бы молча — то есть платёж уходил бы по
+       * объёму работ, подпись под которым только что отозвали. Условие — то же, что у закрытия
+       * работ, и буквально по той же причине: принимают по СОГЛАСОВАННОМУ объёму, а не по
+       * предъявленному. Признак `serviceRequestNeedsEstimate` обязателен — у расходников и
+       * внутреннего ремонта подписи не бывает вовсе, и равенство заперло бы их приёмку навсегда.
+       *
+       * НУЛЕВАЯ РЕВИЗИЯ ИЗ ПРОВЕРКИ ИСКЛЮЧЕНА, И ЭТО НЕ ПОСЛАБЛЕНИЕ, А ТА ЖЕ ЛОВУШКА, О КОТОРОЙ
+       * предупреждает закрытие работ: `NULL !== 0` истинно, и условие без этого слагаемого заперло бы
+       * приёмку заявке, по которой объём работ НЕ ПРЕДЪЯВЛЯЛСЯ ВОВСЕ. Такие в «Решена» есть: наследие
+       * до выпуска планки и административный перевод статуса. Дыры это не открывает — у предъявленной
+       * ревизии номер всегда больше нуля, и все состояния со снятой либо устаревшей подписью остаются
+       * заперты.
+       *
+       * ПОД БЛОКИРОВКОЙ И ПО ПЕРЕЧИТАННОЙ СТРОКЕ: снятие подписи — это `UPDATE` той же заявки, и
+       * прочитанное до транзакции состояние к моменту `COMMIT` устаревает ровно в той гонке, ради
+       * которой проверка и заводится.
+       *
+       * ОРИЕНТИР ДЛЯ Э5: сюда же встанет второй новый замок — запрет приёмки при ОТКРЫТОМ СПОРЕ
+       * (`hold_kind = 'estimate_exemption_dispute'`, строка `service_request_estimate_disputes` в
+       * состоянии `open`). Без него спор по заявке в «Решена» закрывают приёмкой, не разрешив его.
+       * Здесь он не сделан намеренно: действие спора, матрица исходов и `auto_close_not_before` —
+       * одна волна, и половина замка без неё запирала бы заявки, которым нечем открыться.
+       */
+      if (
+        serviceRequestNeedsEstimate(locked) &&
+        locked.estimateRevision > 0 &&
+        locked.approvedEstimateRevision !== locked.estimateRevision
+      ) {
+        throw err.conflict(
+          `Согласована ревизия ${locked.approvedEstimateRevision ?? 0}, а в заявке ${locked.estimateRevision} — заявку принимают по согласованному объёму работ, дождитесь подписи`,
+        );
+      }
       await applyTransition(tx, {
         // Переход считается по строке, перечитанной под блокировкой: расхождение с прочитанной
         // до транзакции упрётся в сверку версии и вернёт 409, а не молча пройдёт по старой.
@@ -8288,6 +8663,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const [link] = await tx
         .select({
           kind: serviceRequestFiles.kind,
+          purpose: serviceRequestFiles.purpose,
+          // Обе половины признака основания: роль и ревизия. Зачем спрашивать вторую, когда её
+          // непустоту у роли держит `CHECK`, — сказано у самого замка ниже.
+          estimateRevision: serviceRequestFiles.estimateRevision,
           attachedBy: serviceRequestFiles.attachedBy,
           id: files.id,
           objectKey: files.objectKey,
@@ -8320,6 +8699,43 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         }
       }
 
+      /*
+       * ОСНОВАНИЕ ДЕНЕЖНОГО РЕШЕНИЯ НЕ СНИМАЕТСЯ НИКОГДА (Р6 п. 1 плана освобождения) — ни автором,
+       * ни распорядителем чужими файлами, ни после возврата объёма работ в правку, ни через две
+       * ревизии: отозванная ревизия остаётся тем, на чём решение СТОЯЛО, и страница счёта — её
+       * единственное доказательство.
+       *
+       * Проверка стоит здесь, под той же блокировкой, которой идёт удаление, и внешний ключ её не
+       * заменяет: он сторожит строку РЕВИЗИИ, а связь файла удаляют напрямую (Н7) — `RESTRICT` на
+       * это не отвечает вовсе.
+       *
+       * Замок абсолютный, и потому у него есть аварийный выход — карантин (Р6 п. 4): ошибочно
+       * загруженный секретный или чужой документ закрывают от доступа, а не выдёргивают из заявки,
+       * — «доказательство скрыто по обращению» и «доказательства не было» суть разные факты.
+       *
+       * ОТКАЗ НАЗЫВАЕТ ОБА ВЫХОДА, И ЭТО НЕ ВЕЖЛИВОСТЬ. Запрет без выхода читается как поломка: тот,
+       * кто подал не тот счёт, будет искать обход — попросит распорядителя чужими файлами (а тому
+       * замок тоже откажет), потом администратора с доступом к базе, и снимет связь руками, обойдя
+       * и ключ. Поэтому в тексте стоят ровно те два пути, которыми ошибку и исправляют: новое
+       * предъявление, помечающее прежнюю ревизию недействующей (Р6 п. 3), и закрытие доступа по
+       * обращению (Р6 п. 4). Ручка карантина в тексте не называется намеренно: её заводит соседняя
+       * волна, и адрес, соврав один раз, дороже отсутствующего адреса.
+       *
+       * СПРАШИВАЮТСЯ ОБЕ ПОЛОВИНЫ ПРИЗНАКА — роль и ревизия, — хотя `service_request_files_basis_check`
+       * (миграция 0309) делает их равносильными. Замок, молчащий при расхождении схемы с
+       * представлением о ней, — худший из возможных: ограничение однажды ослабят ради backfill или
+       * восстановления из копии, и единственной ценой этого окажется снятое доказательство денежного
+       * решения. Цена вопроса — один уже прочитанный столбец.
+       */
+      if (link.purpose === 'estimate_basis' || link.estimateRevision !== null) {
+        throw err.unprocessable(
+          'Этим счётом предъявлен объём работ — основание денежного решения из заявки не снимают. ' +
+            'Ошибочный счёт не удаляют, а перестают предъявлять: предъявите объём работ заново с ' +
+            'верным счётом, и прежний станет недействующим. Секретный или чужой документ закрывают ' +
+            'от доступа по обращению в службу, а из заявки он не снимается и так.',
+          { kind: 'Основание объёма работ' },
+        );
+      }
       // Статус — «эффективный» (Р110), тем же правилом, что и виды документов при подшивке:
       // заморозка бумаги не запирает, и смета отложенной «Диагностики» снимается так же, как
       // смета незамороженной.

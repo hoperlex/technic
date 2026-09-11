@@ -511,6 +511,48 @@ describe.skipIf(!DB_URL)('автозакрытие заявок оргтехни
    * Поэтому случаев три: порог в прошлом закрытию не мешает, порог в будущем его держит, пустой
    * порог означает сегодняшнее поведение.
    */
+  /**
+   * ВТОРАЯ ПОЛОВИНА ЗАМКА Н14 — подпись под действующей ревизией. Найдено судьёй волны Э4 прямым
+   * опытом: человеческая приёмка отвечала 409, а воркер ту же заявку закрывал сам, то есть платёж
+   * уходил по объёму работ, подпись под которым отозвана, без участия человека. Состояние «подпись
+   * снята после закрытия работ» создаёт исход спора «нужна подпись», поэтому здесь оно собирается
+   * прямым UPDATE — как и прочие состояния этого файла, которых ручкой не достичь.
+   */
+  it('заявка со снятой подписью не закрывается сама, а с согласованной — закрывается', async () => {
+    const unsigned = await makeRequest('unsigned', { completedAgo: '200 days', service: true });
+    await attachDocument(unsigned, 'act', '200 days');
+    // Ревизия предъявлена, подписи под ней нет: ровно то, что оставляет после себя спор.
+    await ctx.db.execute(sql`
+      UPDATE service_requests
+         SET estimate_revision = 3, approved_estimate_revision = NULL,
+             estimate_approved_at = NULL, estimate_approved_by = NULL
+       WHERE id = ${unsigned}`);
+
+    const stale = await makeRequest('stale-sign', { completedAgo: '200 days', service: true });
+    await attachDocument(stale, 'act', '200 days');
+    // Подпись есть, но под ПРОШЛОЙ ревизией — содержимое с тех пор переиздали.
+    await ctx.db.execute(sql`
+      UPDATE service_requests
+         SET estimate_revision = 4, approved_estimate_revision = 3,
+             estimate_approved_at = now(), estimate_approved_by = NULL
+       WHERE id = ${stale}`);
+
+    const signed = await makeRequest('signed', { completedAgo: '200 days', service: true });
+    await attachDocument(signed, 'act', '200 days');
+    await ctx.db.execute(sql`
+      UPDATE service_requests
+         SET estimate_revision = 2, approved_estimate_revision = 2,
+             estimate_approved_at = now(), estimate_approved_by = NULL
+       WHERE id = ${signed}`);
+
+    await autoClose();
+
+    expect(await statusOf(unsigned)).toBe('done');
+    expect(await statusOf(stale)).toBe('done');
+    // Согласованная ревизия закрытию не мешает — иначе замок запер бы законные заявки.
+    expect(await statusOf(signed)).toBe('accepted');
+  });
+
   it('порог окна приёмки держит заявку до своего срока, а пустой ничего не меняет', async () => {
     const ready = await makeRequest('thr-past', { completedAgo: '200 days', service: true });
     await attachDocument(ready, 'act', '200 days');
