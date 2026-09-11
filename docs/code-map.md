@@ -58,9 +58,9 @@
 - Источник истины: [service-requests.ts](../packages/contracts/src/service-requests.ts), [office-equipment.ts](../packages/contracts/src/office-equipment.ts), [office-equipment-profiles.ts](../packages/contracts/src/office-equipment-profiles.ts)
 - Разделы портала: `office-equipment`
 - API-маршруты: [service-requests.ts](../apps/api/src/routes/service-requests.ts), [office-equipment.ts](../apps/api/src/routes/office-equipment.ts), [office-equipment-types.ts](../apps/api/src/routes/office-equipment-types.ts), [office-equipment-models.ts](../apps/api/src/routes/office-equipment-models.ts), [office-equipment-candidates.ts](../apps/api/src/routes/office-equipment-candidates.ts), [office-equipment-consumables.ts](../apps/api/src/routes/office-equipment-consumables.ts), [office-equipment-purchases.ts](../apps/api/src/routes/office-equipment-purchases.ts), [internal-service-requests.ts](../apps/api/src/routes/internal-service-requests.ts)
-- Остальной API: [service-request-mail.ts](../apps/api/src/services/service-request-mail.ts), [service-request-mail-audience.ts](../apps/api/src/services/service-request-mail-audience.ts)
+- Остальной API: [service-request-mail.ts](../apps/api/src/services/service-request-mail.ts), [service-request-mail-audience.ts](../apps/api/src/services/service-request-mail-audience.ts), [service-estimate-revision.ts](../apps/api/src/services/service-estimate-revision.ts) (формат действующей ревизии объёма работ и SQL-редакция правила закрывающего документа)
 - Web: [service](../apps/web/src/pages/service), [service-request](../apps/web/src/entities/service-request)
-- Тесты: `service-request-*.db.test.ts`, `service-corridors.test.ts`, `office-equipment-*.db.test.ts`
+- Тесты: `service-request-*.db.test.ts`, `service-estimate-*.test.ts`, `service-corridors.test.ts`, `office-equipment-*.db.test.ts`
 - Решения: [ADR 0085](adr/0085-office-equipment-module.md), [ADR 0125](adr/0125-service-request-cycle-changes.md), [ADR 0174](adr/0174-service-request-internal-repair-without-estimate.md)
 
 ## Гараж, показания и ТО
@@ -119,16 +119,16 @@
 - Тесты: `permissions.test.ts`, `access-conditions.test.ts`, `grants-*.test.ts`, `role-migration-*.test.ts`
 - Решения: [ADR 0021](adr/0021-permissions-model.md), [ADR 0106](adr/0106-assignable-permission-grants.md), [ADR 0112](adr/0112-site-role-and-role-grants.md)
 
-## Учётные записи и аудит
+## Администрирование: учётки, аудит и служебные выгрузки
 
 - Домен: `учётки-и-аудит`
-- Источник истины: [users.ts](../packages/contracts/src/users.ts), [audit.ts](../packages/contracts/src/audit.ts), [registration-request.ts](../packages/contracts/src/registration-request.ts)
+- Источник истины: [users.ts](../packages/contracts/src/users.ts), [audit.ts](../packages/contracts/src/audit.ts), [registration-request.ts](../packages/contracts/src/registration-request.ts), [analytics.ts](../packages/contracts/src/analytics.ts) (общий язык сводной аналитики: разряды работы, счётчики, деньги вилкой)
 - Разделы портала: `admin`
-- API-маршруты: [users.ts](../apps/api/src/routes/users.ts), [audit.ts](../apps/api/src/routes/audit.ts)
-- Остальной API: [audit.ts](../apps/api/src/lib/audit.ts), [user-audit-diff.ts](../apps/api/src/services/user-audit-diff.ts)
-- Web: [admin](../apps/web/src/pages/admin), [user-account](../apps/web/src/entities/user-account)
-- Тесты: `users-*.db.test.ts`, `user-audit*.db.test.ts`, `audit-*.db.test.ts`
-- Решения: [ADR 0063](adr/0063-user-archive-lifecycle.md), [ADR 0088](adr/0088-user-audit-tab.md), [ADR 0109](adr/0109-user-audit-changes.md)
+- API-маршруты: [users.ts](../apps/api/src/routes/users.ts), [audit.ts](../apps/api/src/routes/audit.ts), [analytics.ts](../apps/api/src/routes/analytics.ts)
+- Остальной API: [audit.ts](../apps/api/src/lib/audit.ts), [user-audit-diff.ts](../apps/api/src/services/user-audit-diff.ts), [analytics](../apps/api/src/services/analytics) (слой атомов «модуль × заказчик × день × позиция»: загрузчики трёх модулей, группировки, нарезка периода — считает один раз и для книги, и для ручки `GET /analytics/summary`), [analytics-export.ts](../apps/api/src/services/analytics-export.ts) и [analytics-export-charts.ts](../apps/api/src/services/analytics-export-charts.ts) (семь листов книги и витрина графиков), [readings-admin-export.ts](../apps/api/src/services/readings-admin-export.ts) (книга показаний той же вкладки), [xlsx.ts](../apps/api/src/lib/xlsx.ts) (писатель книг: числа, стили, сводная, графики)
+- Web: [admin](../apps/web/src/pages/admin) (в нём реестр выгрузок [ExportsTab.tsx](../apps/web/src/pages/admin/ExportsTab.tsx) — одна вкладка на все книги), [user-account](../apps/web/src/entities/user-account), [analytics](../apps/web/src/entities/analytics)
+- Тесты: `users-*.db.test.ts`, `user-audit*.db.test.ts`, `audit-*.db.test.ts`, `analytics-*.test.ts`, `analytics-facts-*.db.test.ts`, `exports-tab.test.tsx`
+- Решения: [ADR 0063](adr/0063-user-archive-lifecycle.md), [ADR 0088](adr/0088-user-audit-tab.md), [ADR 0109](adr/0109-user-audit-changes.md), [ADR 0180](adr/0180-readings-admin-export.md), [ADR 0182](adr/0182-analytics-summary-export.md)
 
 ## Почта и рассылки
 
