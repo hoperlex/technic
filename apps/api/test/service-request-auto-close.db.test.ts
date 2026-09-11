@@ -496,4 +496,45 @@ describe.skipIf(!DB_URL)('автозакрытие заявок оргтехни
     await autoClose();
     expect(await statusOf(id)).toBe('on_hold');
   });
+
+  /**
+   * ПОРОГ ОКНА ПРИЁМКИ (`auto_close_not_before`) — правило Р9 плана освобождения от согласования,
+   * приехавшее в отбор раньше своего писателя.
+   *
+   * Зачем проверять инертное поле. Писать порог начнёт разрешение спора (Э5): «оставить
+   * освобождение» ставит момент разрешения, «нужна подпись» — момент подписи, и до неё заявка в
+   * выборку не входит вовсе. До тех пор порог пуст у всех заявок, и условие обязано вести себя как
+   * до волны — `GREATEST(completed_at, NULL)` равен `completed_at`, то есть ошибка здесь не видна
+   * глазами НИКАК. А цена её — заявка, закрытая автоматически в тот же час, когда недельный спор
+   * только разобрали: человек не получил ни минуты на реакцию.
+   *
+   * Поэтому случаев три: порог в прошлом закрытию не мешает, порог в будущем его держит, пустой
+   * порог означает сегодняшнее поведение.
+   */
+  it('порог окна приёмки держит заявку до своего срока, а пустой ничего не меняет', async () => {
+    const ready = await makeRequest('thr-past', { completedAgo: '200 days', service: true });
+    await attachDocument(ready, 'act', '200 days');
+    // Порог уже миновал: заявка созрела и по нему, и по суткам молчания.
+    await ctx.db.execute(sql`
+      UPDATE service_requests SET auto_close_not_before = now() - '25 hours'::interval
+       WHERE id = ${ready}`);
+
+    const waiting = await makeRequest('thr-future', { completedAgo: '200 days', service: true });
+    await attachDocument(waiting, 'act', '200 days');
+    // Порог поставлен два часа назад: сутки от него ещё не прошли — значит заявка стоит, хотя по
+    // дате закрытия работ созрела давно.
+    await ctx.db.execute(sql`
+      UPDATE service_requests SET auto_close_not_before = now() - '2 hours'::interval
+       WHERE id = ${waiting}`);
+
+    const plain = await makeRequest('thr-null', { completedAgo: '200 days', service: true });
+    await attachDocument(plain, 'act', '200 days');
+
+    await autoClose();
+
+    expect(await statusOf(ready)).toBe('accepted');
+    expect(await statusOf(waiting)).toBe('done');
+    // Пустой порог — сегодняшнее поведение, и оно обязано остаться ровно прежним.
+    expect(await statusOf(plain)).toBe('accepted');
+  });
 });

@@ -1,6 +1,8 @@
 import { Button, Space, Tag, Tooltip, Typography } from 'antd';
 import { PlayCircleOutlined, SwapOutlined, UserSwitchOutlined } from '@ant-design/icons';
 import {
+  closingKindsForFormat,
+  isServiceClosingFile,
   serviceFileKindLabels,
   type ServiceRequestDto,
   warrantyClaimSourceLabels,
@@ -150,16 +152,33 @@ export function PlaceCell({ request }: { request: ServiceRequestDto }) {
   );
 }
 
-/** Что подшито и хватает ли этого (Р16): по этой ячейке и собирают очередь «Ожидаются документы». */
+/**
+ * Что подшито и хватает ли этого (Р16): по этой ячейке и собирают очередь «Ожидаются документы».
+ *
+ * ЗЕЛЁНЫЕ ТЕГИ И КРАСНЫЙ СЧИТАЮТСЯ ПО ОДНОМУ МНОЖЕСТВУ — тому, которое ЭТУ заявку закрывает
+ * (`isServiceClosingFile`, Р5 плана `docs/office-equipment-on-site-and-invoice-estimate-plan.md`).
+ * Прежде перечень видов стоял здесь литералом — третьей копией правила рядом с контрактами и SQL
+ * очереди, — и с приходом документной подачи ячейка противоречила бы сама себе: зелёный «Счёт» и
+ * красный «нет закрывающих» в одной строке, потому что у документной ревизии заявку закрывает
+ * только акт, а счётом её открыли (он же основание объёма работ). Тег обязан означать «вот чем
+ * закрыто», а не «вот что лежит»: «что лежит» показывает вкладка документов, где видны все виды.
+ *
+ * Формат берётся ИЗ КАРТОЧКИ, второго мнения портал не заводит, а `?? null` сказан вслух: поля в
+ * ответе может не быть вовсе (старое приложение в окне выката), и это сегодняшняя планка из трёх
+ * видов, а не «формат неизвестен, решай сама».
+ */
 export function DocumentsCell({ request }: { request: ServiceRequestDto }) {
-  const counts = serviceDocumentCounts(request.files);
+  const format = request.estimateFormat ?? null;
+  const counts = serviceDocumentCounts(
+    request.files.filter((file) => isServiceClosingFile(file, format)),
+  );
   const awaiting = isAwaitingDocuments(request);
   if (request.files.length === 0 && !awaiting) {
     return <Typography.Text type="secondary">—</Typography.Text>;
   }
   return (
     <Space size={4} wrap>
-      {(['act', 'invoice', 'warranty_card'] as const)
+      {closingKindsForFormat(format)
         .filter((kind) => counts[kind])
         .map((kind) => (
           <Tag key={kind} color="green" style={{ marginInlineEnd: 0 }}>

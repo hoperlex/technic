@@ -118,6 +118,7 @@ import {
   type AccessSubject,
   type EquipmentCandidateInput,
   type ModuleMailOutcome,
+  type ServiceEstimateFormat,
   type ServiceExecutorAssignment,
   type ServiceExecutorsRow,
   type ServiceFileKind,
@@ -246,6 +247,18 @@ import {
   placeNotConfirmedWhere,
   type PlaceConfirmation,
 } from '../services/service-request-place';
+/*
+ * Ревизии объёма работ (Э3 плана освобождения): формат предъявления и SQL-редакция правила «какая
+ * бумага закрывает заявку». Отдельным модулем потому, что второй читатель условия — отбор пачки
+ * автозакрытия в `internal-service-requests.ts`, то есть другой файл и другой процесс.
+ */
+import {
+  activeEstimateFormatByRequest,
+  dropEstimateRevisions,
+  readActiveEstimateFormat,
+  recordEstimateRevision,
+  serviceHasClosingDocumentSql,
+} from '../services/service-estimate-revision';
 import {
   chatSummaryByRequest,
   chatUnreadCount,
@@ -542,6 +555,15 @@ async function filesByRequest(ids: string[]): Promise<Map<string, ServiceRequest
     .select({
       requestId: serviceRequestFiles.requestId,
       kind: serviceRequestFiles.kind,
+      /*
+       * РОЛЬ СВЯЗИ УХОДИТ В КАРТОЧКУ (Р5 плана освобождения от согласования). Сегодня у всех связей
+       * она одна — `closing_evidence` по умолчанию миграции `0306`, — и портал, спрашивая предикат,
+       * получает тот же ответ, что и раньше. Но половина правила «закрывает ли ЭТОТ файл ЭТУ
+       * заявку» живёт именно в роли, и не отдай мы её сейчас, портальная половина осталась бы слепой
+       * ровно в день, когда Э4 заведёт первое основание: зелёный тег «закрывает» вернулся бы на
+       * счёт, которым заявку открыли.
+       */
+      purpose: serviceRequestFiles.purpose,
       attachedAt: serviceRequestFiles.attachedAt,
       id: files.id,
       filename: files.filename,
@@ -560,6 +582,7 @@ async function filesByRequest(ids: string[]): Promise<Map<string, ServiceRequest
       contentType: row.contentType,
       size: row.size,
       kind: row.kind,
+      purpose: row.purpose,
       attachedAt: row.attachedAt.toISOString(),
     });
     map.set(row.requestId, list);
@@ -741,6 +764,13 @@ function toDto(
    * заявку стоила бы полусотни запросов на список.
    */
   placeConfirmation: PlaceConfirmation | null,
+  /**
+   * Формат действующей ревизии объёма работ (Р5 плана освобождения): `null` — ревизий у заявки нет
+   * вовсе, и планка закрывающего документа у неё сегодняшняя. Приходит снимком пакетной догрузки по
+   * той же причине, что и подтверждение места: строка на заявку стоила бы полусотни запросов на
+   * список.
+   */
+  estimateFormat: ServiceEstimateFormat | null,
 ): ServiceRequestDto {
   const r = row.r;
   return {
@@ -960,6 +990,16 @@ function toDto(
     ...(repeat ? { repeat } : {}),
     estimateRevision: r.estimateRevision,
     /**
+     * ЧЕМ ПРЕДЪЯВЛЕН ОБЪЁМ РАБОТ (Р4, Р5): строками, документом либо гарантийным ремонтом. `null` —
+     * ревизий у заявки нет (смету не предъявляли либо её сбросило переназначение), и читается это
+     * как планка наследия: закрывает акт, счёт или гарантийный талон.
+     *
+     * Полем DTO, а не выводом портала из состава: у документной ревизии строк нет вовсе, и «строк
+     * ноль» означало бы сразу и документную подачу, и пустой черновик. От формата зависит, какая
+     * бумага закрывает заявку, — ошибка в нём открывает дверь, а не портит надпись.
+     */
+    estimateFormat,
+    /**
      * Непогашенное предъявление (Р2) — то, что означала «Смета на согласовании». Полем DTO, а не
      * выводом портала из даты: по нему портал считает доступность четырёх действий (согласовать,
      * вернуть в правку, предъявить заново, переназначить), и посчитанный им по-своему ответ
@@ -1040,18 +1080,25 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
    * группировка по аппарату приписала бы прошлогодней заявке свежий счёт (план повторов, Р6).
    * При выключенном окне карта приходит пустой, не потревожив базу.
    */
-  const [items, fileMap, executorMap, consumableMap, repeatMap, placeMap] = await Promise.all([
-    itemsByRequest(ids),
-    filesByRequest(ids),
-    executorsByRequest(ids),
-    consumablesByRequest(ids),
-    serviceRequestRepeatByRequest(
-      p,
-      rows.map((row) => row.r),
-    ),
-    // Подтверждения заявленного места — тем же пакетным приёмом и по той же причине (Р8).
-    confirmedPlaceByRequest(ids),
-  ]);
+  const [items, fileMap, executorMap, consumableMap, repeatMap, placeMap, formatMap] =
+    await Promise.all([
+      itemsByRequest(ids),
+      filesByRequest(ids),
+      executorsByRequest(ids),
+      consumablesByRequest(ids),
+      serviceRequestRepeatByRequest(
+        p,
+        rows.map((row) => row.r),
+      ),
+      // Подтверждения заявленного места — тем же пакетным приёмом и по той же причине (Р8).
+      confirmedPlaceByRequest(ids),
+      /*
+       * Формат действующей ревизии (Р5) — тоже одним запросом на страницу: его спрашивает планка
+       * закрывающего документа, то есть портал зовёт её на каждой строке списка, и строка на заявку
+       * превратила бы горячий путь в полсотни запросов.
+       */
+      activeEstimateFormatByRequest(ids),
+    ]);
   const chatMap = await chatSummaryByRequest(
     p,
     rows.map((row) => ({
@@ -1121,6 +1168,8 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
       }),
       repeatMap.get(row.r.id),
       placeMap.get(row.r.id) ?? null,
+      // Ревизий у заявки нет — в карте нет и ключа: `null` здесь и означает планку наследия.
+      formatMap.get(row.r.id) ?? null,
     );
   });
 }
@@ -2268,6 +2317,13 @@ async function applyTransition(
   if (reset.estimate) {
     await assertEstimateReplaceable(tx, row.id);
     await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, row.id));
+    /*
+     * Ревизии уходят вместе со строками, и это ОБЯЗАТЕЛЬНАЯ часть сброса, а не уборка (Р4): номер
+     * обнуляется строкой ниже, то есть следующее предъявление снова назовётся первым — и столкнулось
+     * бы с прежней «ревизией 1» по первичному ключу. Почему именно `DELETE` и чего тут ждать на Э4 —
+     * при самой `dropEstimateRevisions`.
+     */
+    await dropEstimateRevisions(tx, row.id);
     set.estimateRevision = 0;
     set.estimateSubmittedAt = null;
     set.estimatedTotalAmount = null;
@@ -2986,22 +3042,13 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     //
     // ЗДЕСЬ ПРАВИЛО ПЕРЕПИСАНО НА SQL, и таких копий на весь модуль ровно две: эта очередь и отбор
     // автозакрытия (`internal-service-requests.ts`). Остальные читатели спрашивают
-    // `closingKindsForFormat`, а отбор списка спросить его не может: формат — у каждой строки свой,
-    // и одним перечнем видов на всю выборку правило Р5 не выражается. Сегодня перечень отвечает
-    // планкой наследия, и поведение этим не меняется, но Э3 ОБЯЗАН перевести очередь на формат
-    // вместе с сервером: без этой пометки копия разойдётся с контрактами молча — документная
-    // заявка со счётом уйдёт из очереди, так и не закрывшись.
-    const hasClosingDocument = exists(
-      db
-        .select({ x: sql`1` })
-        .from(serviceRequestFiles)
-        .where(
-          and(
-            eq(serviceRequestFiles.requestId, serviceRequests.id),
-            inArray(serviceRequestFiles.kind, [...SERVICE_CLOSING_DOCUMENT_KINDS]),
-          ),
-        ),
-    );
+    // `closingKindsForFormat` по строке, а отбор списка спросить его не может: формат — у каждой
+    // строки свой, и одним перечнем видов на всю выборку правило Р5 не выражается. Поэтому обе копии
+    // собирает один помощник (`serviceHasClosingDocumentSql`) — он же уезжает в отбор пачки, — а
+    // согласие двух редакций правила держит матричный тест эквивалентности (§6 плана). Формат
+    // читается подзапросом на каждую строку: у заявки без ревизий перечень остаётся сегодняшним,
+    // поэтому очередь ведёт себя ровно как до волны.
+    const hasClosingDocument = serviceHasClosingDocumentSql(serviceRequests.id);
     const searchNum = q.search ? parseServiceRequestNumberSearch(q.search) : null;
     const where = and(
       archiveWhere(p, q.archive, serviceRequests.deletedAt),
@@ -5574,6 +5621,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       if (handedOver) {
         await assertEstimateReplaceable(tx, locked.id);
         await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, locked.id));
+        // Вторая и последняя дорога к полному сбросу — и ревизии снимаются здесь по той же причине,
+        // что и в сбросе по переходу: нумерация начинается заново, а прежние номера заняты.
+        await dropEstimateRevisions(tx, locked.id);
         patch.estimateRevision = 0;
         patch.estimateSubmittedAt = null;
         patch.estimatedTotalAmount = null;
@@ -6470,6 +6520,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         }
         const patch: RequestPatch = {};
         let amount: number | null = null;
+        /**
+         * Тот же итог строкой — для снимка ревизии (ниже). Отдельной переменной, а не `amount!` у
+         * места записи: «итог посчитан» и «номер поднялся» — разные утверждения, и восклицательный
+         * знак выдал бы второе за первое.
+         */
+        let reissueTotal: string | null = null;
         if (reissue) {
           const items = await estimateItems(tx, locked.id);
           // Пустой состав схемой разрешён — что с ним делать, решает ручка, и у переиздания ответ
@@ -6483,6 +6539,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           // Итог пересчитывается ЗДЕСЬ, потому что проставляет его только предъявление (Н5): не
           // сделай этого раскладка — карточка и строки показали бы разные деньги.
           amount = sumAmounts(items);
+          reissueTotal = money(amount);
           patch.estimateRevision = revision;
           patch.estimatePendingRevision = revision;
           patch.estimateSubmittedAt = new Date();
@@ -6507,6 +6564,27 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           // Письмо ставит не переход (статус не меняется), а само предъявление — ниже.
           mail: null,
         });
+        if (reissue) {
+          /*
+           * ПЕРЕИЗДАНИЕ ТОЖЕ ПИШЕТ СТРОКУ РЕВИЗИИ (Р4), и это вторая и последняя дорога к номеру:
+           * оставь её без строки — номер в заявке ушёл бы вперёд таблицы, а планка закрывающего
+           * документа читала бы формат ПРЕДЫДУЩЕГО предъявления. Именно здесь это дороже всего:
+           * раскладка «Ведения» существует затем, чтобы переиздать документную подачу в построчную
+           * (Р8), то есть ровно она и меняет формат — а значит и перечень бумаг, которыми заявка
+           * закрывается.
+           *
+           * Формат всегда `items`: раскладка кладёт строки по графам, и ревизия после неё построчная
+           * по построению, каким бы ни был формат прежней. Сумма — пересчитанный выше итог строк,
+           * тот же, что ушёл в снимок заявки.
+           */
+          await recordEstimateRevision(tx, {
+            requestId: locked.id,
+            revision,
+            format: 'items',
+            submittedBy: p.id,
+            totalAmount: reissueTotal,
+          });
+        }
         if (mailPlan) {
           await queueServiceMailForIntent(tx, {
             prepared: mailPlan,
@@ -6691,6 +6769,31 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           touchStatusAt: true,
           // Письмо ставит не переход (статус не меняется), а само предъявление — ниже.
           mail: null,
+        });
+        /*
+         * СТРОКА РЕВИЗИИ — ТОЙ ЖЕ ТРАНЗАКЦИЕЙ, ЧТО ПОДЪЁМ НОМЕРА (Р4). До этой правки номер жил
+         * только в самой заявке, а формат предъявления не хранился нигде: читать его было неоткуда,
+         * и планка закрывающего документа у всех заявок отвечала наследием.
+         *
+         * ПОСЛЕ `applyTransition`, А НЕ ДО: переход сверяет версию заявки и отвечает 409, если её
+         * двинули из-под нас. Записанная раньше ревизия этим откатилась бы вместе со всем прочим —
+         * но до отката успела бы погасить прежнюю активную, а значит цена ошибки в порядке шагов
+         * платится не здесь, а в первом же отказе по версии.
+         */
+        await recordEstimateRevision(tx, {
+          requestId: row.id,
+          revision,
+          /*
+           * Формат берётся из команды, а не выводится из состава: «строк ноль» у документной подачи
+           * (Э4) и у пустого черновика выглядят одинаково. Документный формат сюда не доходит —
+           * затвор выше отбивает его 422 (§7, шаг 1), — и это видит компилятор: `mode` здесь уже
+           * сужен до двух значений.
+           */
+          format: body.mode,
+          submittedBy: p.id,
+          // Снимок строк. У гарантийного формата это ноль, и ноль здесь законная цена, а не
+          // «неизвестно»: служебная нулевая строка и есть весь объём работ по гарантии.
+          totalAmount: money(amount),
         });
         await queueServiceMailForIntent(tx, {
           prepared: mailPlan,
@@ -7385,24 +7488,42 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           );
         }
         if (serviceRequestNeedsClosingDocument(locked)) {
-          // Формат действующей ревизии сервер ещё не читает (Э3), и явный `null` здесь означает
-          // планку наследия — акт, счёт или гарантийный талон. Написан он явно не ради типа: так
-          // это место попадает в перечень, который Э3 получит от компилятора, а не от плана.
-          // Формат придёт из той же строки, что прочитана под блокировкой, — между открытием окна
-          // и нажатием помещается раскладка «Ведения», переводящая ревизию в построчную (Р8).
+          /*
+           * Планка закрывающего документа — по формату ДЕЙСТВУЮЩЕЙ ревизии (Р5). Читается он той же
+           * транзакцией, в которой взята блокировка заявки, а не до неё: между открытием окна
+           * закрытия и нажатием кнопки помещается раскладка «Ведения», переводящая документную
+           * ревизию в построчную (Р8), — и прочитанный заранее формат ответил бы про вчерашнее
+           * состояние.
+           *
+           * У построчной и гарантийной ревизии, как и у заявки без ревизий, перечень сегодняшний:
+           * акт, счёт или гарантийный талон. Документная подача (Э4) сузит его до акта — тем же
+           * счётом, которым объём работ предъявлен, заявка закрываться не должна.
+           */
+          const format = await readActiveEstimateFormat(tx, locked.id);
           const [closing] = await tx
             .select({ fileId: serviceRequestFiles.fileId })
             .from(serviceRequestFiles)
             .where(
               and(
                 eq(serviceRequestFiles.requestId, locked.id),
-                inArray(serviceRequestFiles.kind, [...closingKindsForFormat(null)]),
+                // Роль — вторая половина правила (`isServiceClosingFile`): счёт-основание денежного
+                // решения закрывающей бумагой не является, иначе заявка закрывалась бы тем же
+                // документом, которым объём работ предъявлен. Сегодня у всех связей роль одна —
+                // умолчание миграции, — и условие ничего не меняет; без него Э4 открыл бы дыру
+                // молча.
+                eq(serviceRequestFiles.purpose, 'closing_evidence'),
+                inArray(serviceRequestFiles.kind, [...closingKindsForFormat(format)]),
               ),
             )
             .limit(1);
           if (!closing) {
+            // Отказ называет ТЕ бумаги, которые закроют ИМЕННО ЭТУ заявку: перечень наследия у
+            // документной подачи (Э4) был бы прямой неправдой — человек принёс бы счёт, уже
+            // лежащий в заявке основанием, и получил бы тот же отказ второй раз.
             throw err.unprocessable(
-              'Перевод в «Решена» требует закрывающего документа — акта, счёта или гарантийного талона',
+              format === 'document'
+                ? 'Перевод в «Решена» требует акта о выполненных работах — счёт, которым предъявлен объём работ, заявку не закрывает'
+                : 'Перевод в «Решена» требует закрывающего документа — акта, счёта или гарантийного талона',
               { files: 'Нет закрывающего документа' },
             );
           }
@@ -8247,18 +8368,23 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        *
        * ВОПРОСА ЗДЕСЬ ДВА, И ОНИ РАЗНЫЕ. Вид снимаемого файла спрашивается половиной правила
        * (`isServiceClosingDocument`) — «такую бумагу после приёмки не снимают», про формат ревизии
-       * это условие не знает и знать не должно. А «остался ли ДРУГОЙ закрывающий» — уже полное
-       * правило, и формат ему передан явным `null`: сервер его пока не читает (Э3), и планка
-       * остаётся сегодняшней.
+       * это условие не знает и знать не должно: бумагу, которая заявку не закрывает, после приёмки
+       * всё равно не выдёргивают. А «остался ли ДРУГОЙ ЗАКРЫВАЮЩИЙ» — уже полное правило, и ему
+       * нужны оба признака: формат действующей ревизии и роль связи. Формат читается той же
+       * транзакцией, которой взята блокировка строки, — «последний» не должен устареть между
+       * проверкой и удалением, и раскладка «Ведения» меняет формат ровно так же, как параллельная
+       * подшивка меняет состав.
        */
       if (status === 'accepted' && isServiceClosingDocument(link.kind)) {
+        const format = await readActiveEstimateFormat(tx, locked.id);
         const [other] = await tx
           .select({ fileId: serviceRequestFiles.fileId })
           .from(serviceRequestFiles)
           .where(
             and(
               eq(serviceRequestFiles.requestId, locked.id),
-              inArray(serviceRequestFiles.kind, [...closingKindsForFormat(null)]),
+              eq(serviceRequestFiles.purpose, 'closing_evidence'),
+              inArray(serviceRequestFiles.kind, [...closingKindsForFormat(format)]),
               ne(serviceRequestFiles.fileId, fileId),
             ),
           )
