@@ -19,7 +19,7 @@
     "src/pages/directories/VehiclesTab.tsx": 740,
     "src/pages/directories/WasteTariffsTab.tsx": 925,
     "src/pages/vehicle/VehicleAssignModal.tsx": 1967,
-    "src/pages/vehicle/VehicleDayRouteModal.tsx": 435,
+    "src/pages/vehicle/VehicleDayRouteModal.tsx": 437,
     "src/pages/vehicle/VehicleRequestDays.tsx": 459,
     "src/pages/vehicle/VehicleRequestViewModal.tsx": 1213,
     "src/pages/vehicle/VehicleRequestsHistoryTab.tsx": 608,
@@ -30,7 +30,7 @@
     "src/pages/vehicle/routeModal.tsx": 403,
     "src/pages/vehicle/shared.tsx": 512,
     "src/pages/vehicle/weeklyComposition.ts": 410,
-    "src/pages/waste/WasteDoneModal.tsx": 463,
+    "src/pages/waste/WasteDoneModal.tsx": 464,
     "src/pages/waste/WasteRequestViewModal.tsx": 566
   }
 }

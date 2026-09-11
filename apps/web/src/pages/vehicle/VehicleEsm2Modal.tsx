@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef } from 'react';
 import { App, DatePicker, Form, Typography } from 'antd';
 import type { Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -83,7 +83,7 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
    */
   const operationId = useRef(crypto.randomUUID());
 
-  useEffect(() => {
+  const resetForRequest = useEffectEvent(() => {
     if (!request) return;
     operationId.current = crypto.randomUUID();
     form.setFieldsValue({
@@ -92,10 +92,10 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
       driverPersonId: undefined,
       reason: undefined,
     });
-    // Зависимость — идентификатор заявки, а не она сама: инвалидация списка приносит ту же заявку
-    // новым объектом, и подстановка стёрла бы уже выбранную неделю (тот же приём в окне
-    // назначения).
-  }, [request?.id]);
+  });
+  // Зависимость — идентификатор заявки, а не она сама: инвалидация списка приносит ту же заявку
+  // новым объектом, и подстановка стёрла бы уже выбранную неделю (тот же приём в окне назначения).
+  useEffect(() => resetForRequest(), [request?.id]);
 
   const weekOf = Form.useWatch('weekOf', form);
 

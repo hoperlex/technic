@@ -1,7 +1,7 @@
 import { App, Button, DatePicker, Form, Input, InputNumber, Space, Typography, Upload } from 'antd';
 import type { Dayjs } from 'dayjs';
 import { CameraOutlined, UploadOutlined } from '@ant-design/icons';
-import { useEffect, useState } from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   calcWasteFactCost,
@@ -114,7 +114,7 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
   // факте: обычно правят одну цифру, а не набирают всё заново. У первого закрытия объём
   // подставляется заявленным — его подтверждают или правят по талону.
   const targetId = request?.id ?? null;
-  useEffect(() => {
+  const fillForRequest = useEffectEvent(() => {
     if (!request) return;
     const previous = request.completion;
     const volumeM3 = factVolumeOf(previous) ?? request.volumeM3 ?? null;
@@ -130,9 +130,10 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
         (volumeM3 != null ? calcWasteFactCost(volumeM3, request.pricePerM3) : null),
       comment: '',
     });
-    // Зависимость — идентификатор заявки, а не сама заявка: перерисовка той же заявки (invalidate
-    // списка после соседнего действия) приходит новым объектом и стёрла бы уже набранное.
-  }, [targetId]);
+  });
+  // Зависимость — идентификатор заявки, а не сама заявка: перерисовка той же заявки (invalidate
+  // списка после соседнего действия) приходит новым объектом и стёрла бы уже набранное.
+  useEffect(() => fillForRequest(), [targetId]);
 
   const volumeM3 = Form.useWatch('volumeM3', form);
   const totalCost = Form.useWatch('totalCost', form);
@@ -145,7 +146,7 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
     const current = form.getFieldValue('volumeM3') as number | null | undefined;
     if (current == null || current <= 0) return;
     form.setFieldsValue({ totalCost: calcWasteFactCost(current, pricePerM3) });
-  }, [pricePerM3, costTouched]);
+  }, [pricePerM3, costTouched, form]);
 
   /** Расчёт по прайсу — им подставляется сумма и с ним же сравнивается введённая вручную. */
   const calculated =

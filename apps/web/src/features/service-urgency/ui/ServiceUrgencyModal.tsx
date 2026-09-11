@@ -42,7 +42,7 @@ export function ServiceUrgencyModal({
 
   useEffect(() => {
     form.setFieldsValue({ reason: request?.urgencyReason ?? '' });
-  }, [request]);
+  }, [request, form]);
 
   const mutation = useMutation({
     mutationFn: () =>

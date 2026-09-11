@@ -72,7 +72,7 @@ export function ServiceAcceptModal({
     // предыдущей.
     setFresh(request);
     if (request) form.resetFields();
-  }, [request, mode]);
+  }, [request, mode, form]);
 
   const mutation = useMutation({
     mutationFn: () =>

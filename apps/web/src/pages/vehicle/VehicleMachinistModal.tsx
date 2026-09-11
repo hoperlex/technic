@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
 import { Alert, App, Button, Form, Input, Space } from 'antd';
 import type { Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -108,7 +108,7 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
   /** Отказ по правам (Р32): его показывают текстом в окне, а не тостом в углу. */
   const [forbidden, setForbidden] = useState<string | null>(null);
 
-  useEffect(() => {
+  const resetForRequest = useEffectEvent(() => {
     if (!request) return;
     setVersion(request.version);
     setOperationId(crypto.randomUUID());
@@ -117,9 +117,10 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
     setStaleReason(null);
     setForbidden(null);
     form.resetFields();
-    // Зависимость — идентификатор заявки: перерисовка той же заявки приходит новым объектом и
-    // стёрла бы уже набранное.
-  }, [targetId]);
+  });
+  // Зависимость — идентификатор заявки: перерисовка той же заявки приходит новым объектом и
+  // стёрла бы уже набранное.
+  useEffect(() => resetForRequest(), [targetId]);
 
   const history = useQuery({
     queryKey: vehicleRequestKeys.history(targetId ?? ''),

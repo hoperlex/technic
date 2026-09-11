@@ -46,7 +46,7 @@ export function ServiceHoldModal({
 
   useEffect(() => {
     if (request) form.resetFields();
-  }, [request, mode]);
+  }, [request, mode, form]);
 
   /** Значение поля берётся у формы: окно об этом ничего не помнит и хранить не должно. */
   const text = () => (form.getFieldValue('text') as string | undefined) ?? '';

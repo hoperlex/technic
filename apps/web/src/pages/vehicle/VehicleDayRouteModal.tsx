@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef } from 'react';
 import { App, Form, Typography } from 'antd';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
@@ -117,7 +117,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
    * Машина подставляется назначенная — у линейного заказа это машина по умолчанию (ADR 0100
    * решение 4), ею закрывают большинство дней. Водитель не подставляется никогда (ADR 0083).
    */
-  useEffect(() => {
+  const resetForDay = useEffectEvent(() => {
     if (!target) return;
     routeTouched.current = false;
     form.setFieldsValue({
@@ -127,7 +127,8 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
       ...emptyTrailerGraphs(),
       reason: undefined,
     });
-  }, [target?.request.id, target?.date]);
+  });
+  useEffect(() => resetForDay(), [target?.request.id, target?.date]);
 
   /*
    * Прошедший день (ADR 0101 п. 4, дыра 1 плана). Правило дней прошлое разрешает — выезд оформляют
@@ -209,10 +210,11 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
    * Умолчание поля «Рейс»: готовый рейс машины, если он есть. Пришедший позже ответ сервера
    * выбранное руками не переписывает — за этим и следит `routeTouched`.
    */
-  useEffect(() => {
+  const applyRouteDefault = useEffectEvent(() => {
     if (routeTouched.current) return;
     form.setFieldsValue({ routeId: routeOptions[0]?.id ?? NEW_ROUTE });
-  }, [suggestion?.routes]);
+  });
+  useEffect(() => applyRouteDefault(), [suggestion?.routes]);
 
   /** Выбран готовый рейс: водитель и реквизиты выезда в нём уже свои, спрашивать их незачем. */
   const joined = routeOptions.find((r) => r.id === routeId) ?? null;

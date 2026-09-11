@@ -152,7 +152,7 @@ export function WasteTariffsTab() {
       t.volumeM3 == null ? ' — вместимость не задана' : ''
     }`,
   }));
-  const operators = operatorsData?.items ?? [];
+  const operators = useMemo(() => operatorsData?.items ?? [], [operatorsData]);
   const operatorOptions = operators.map((o) => ({
     value: o.id,
     label: o.isActive ? o.name : `${o.name} (неактивен)`,
