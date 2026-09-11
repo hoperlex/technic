@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useEffectEvent } from 'react';
 import { Alert, App, Checkbox, Form, Input, Skeleton, Space, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { PeriodPreviewDto, SpecialEquipmentRequestDto } from '@technic/contracts';
@@ -98,10 +98,11 @@ export function VehiclePeriodModal({
   // Окно переиспользуется под разные заявки и под разные сроки: поля сбрасываются при смене цели,
   // иначе галочка, поставленная под прошлый перечень, подтверждала бы новый.
   const targetKey = `${request?.id ?? ''}|${command?.dateFrom ?? ''}|${String(command?.dateTo)}`;
-  useEffect(() => {
+  const resetForTarget = useEffectEvent((_key: string, _open: boolean) => {
     if (!open) return;
     form.setFieldsValue({ cancelAck: false, reason: initialReason ?? '' });
-  }, [targetKey, open]);
+  });
+  useEffect(() => resetForTarget(targetKey, open), [targetKey, open]);
 
   const applyMut = useMutation({
     mutationFn: (v: FormValues) => {

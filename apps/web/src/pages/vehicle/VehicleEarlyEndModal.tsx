@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
 import { App, Button, DatePicker, Form, Input, Typography } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation } from '@tanstack/react-query';
@@ -101,15 +101,16 @@ export function VehicleEarlyEndModal({
   // Окно переиспользуется под разные заявки, поэтому поля сбрасываются при смене цели. Дата
   // по умолчанию — сегодня: чаще всего именно им и заканчивают, «машина уезжает сегодня».
   const targetId = request?.id ?? null;
-  useEffect(() => {
+  const resetForRequest = useEffectEvent((_id: string | null) => {
     if (!request) return;
     form.setFieldsValue({ newDateTo: bounds ? dayjs(bounds.min) : undefined, reason: '' });
     setShown(null);
     setStaleReason(null);
     setOperationId(crypto.randomUUID());
-    // Зависимость — идентификатор заявки: перерисовка той же заявки приходит новым объектом и
-    // стёрла бы уже набранное.
-  }, [targetId]);
+  });
+  // Зависимость — идентификатор заявки: перерисовка той же заявки приходит новым объектом и
+  // стёрла бы уже набранное.
+  useEffect(() => resetForRequest(targetId), [targetId]);
 
   const newDateTo = Form.useWatch('newDateTo', form);
   const newDateKey = newDateTo?.format('YYYY-MM-DD');

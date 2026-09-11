@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   App,
@@ -253,9 +253,7 @@ export function VehicleAssignModal({
   // не помещается, обрезалось бы как раз заказанное. Первый запрос берёт заказанный вид целиком —
   // это то, чем заявку закрывают в девяти случаях из десяти; второй добирает остальное, и его
   // неполнота названа под полем прямо.
-  const vehicleTypeId = request?.vehicleTypeId ?? null;
   const vehicleKindId = request?.vehicleKindId ?? null;
-  const categoryId = request?.vehicleCategoryId ?? null;
   /** Заказанная позиция — левая сторона всех сравнений в этом окне. */
   const ordered = useMemo(
     () =>
@@ -267,7 +265,7 @@ export function VehicleAssignModal({
             categorySpecs: request.vehicleCategorySpecs,
           }
         : null,
-    [request?.id, vehicleTypeId, categoryId],
+    [request],
   );
   const listParams = {
     status: 'active',
@@ -315,7 +313,7 @@ export function VehicleAssignModal({
   // окно на себе: обычно её и подтверждают, а не выбирают заново.
   const targetId = request?.id ?? null;
   const assignment = request?.assignment ?? null;
-  useEffect(() => {
+  const resetForRequest = useEffectEvent((_id: string | null) => {
     if (!request) return;
     const start: VehicleOwnership = assignment?.ownership ?? 'own';
     setOwnership(start);
@@ -357,9 +355,10 @@ export function VehicleAssignModal({
       // новый рейс молча.
       communicationKind: DEFAULT_COMMUNICATION_KIND,
     });
-    // Зависимость — идентификатор заявки: перерисовка той же заявки (инвалидация списка после
-    // соседнего действия) приходит новым объектом и стёрла бы уже выбранное.
-  }, [targetId]);
+  });
+  // Зависимость — идентификатор заявки: перерисовка той же заявки (инвалидация списка после
+  // соседнего действия) приходит новым объектом и стёрла бы уже выбранное.
+  useEffect(() => resetForRequest(targetId), [targetId]);
 
   // ── Откат «Выполнена» → «В работе»: второй шаг с последствиями (§5.4 плана) ──
 
@@ -517,7 +516,7 @@ export function VehicleAssignModal({
       correctionReason: '',
       unlockWaybillIds: [],
     });
-  }, [targetId]);
+  }, [targetId, form]);
 
   const correctionEnabled = (Form.useWatch('correctionEnabled', form) ?? false) && canCorrect;
 
@@ -600,14 +599,13 @@ export function VehicleAssignModal({
 
   /**
    * Линейная техника (ADR 0100): машина, которая вечером возвращается на базу, а за день успевает
-   * поработать на двух-трёх площадках. Заказ такого типа портал ведёт по дням, а не неделей
-   * стояния на объекте, и в этом окне из этого следует ровно две вещи: недельные ЭСМ-2 при
-   * переводе в работу не выписываются вовсе (решение 5), а перегона у такой машины не бывает
-   * (решение 9).
+   * поработать на двух-трёх площадках. Заказ такого типа портал ведёт по дням, а не неделей стояния
+   * на объекте, и в этом окне из этого следует ровно две вещи: недельные ЭСМ-2 при переводе в
+   * работу не выписываются вовсе (решение 5), а перегона у такой машины не бывает (решение 9).
    *
    * Признак спрашивается у **заказанного** типа и приезжает в самой заявке: как заявка ведётся,
-   * решает заказ — ещё до того, как под него нашли единицу, — поэтому тип выбранной машины здесь
-   * ни при чём. У грузоперевозки признака нет: у неё не период работ, а момент подачи.
+   * решает заказ — ещё до того, как под него нашли единицу, — поэтому тип выбранной машины здесь ни
+   * при чём. У грузоперевозки признака нет: у неё не период работ, а момент подачи.
    */
   const isLinear = request?.requestType === 'special_equipment' && request.isLinear;
 
@@ -765,9 +763,9 @@ export function VehicleAssignModal({
       deliveryFrom: '',
       deliveryTo: '',
     });
-  }, [targetId]);
+  }, [targetId, form]);
 
-  useEffect(() => {
+  const applyWeekly = useEffectEvent((_id: string | null, _own: string, _weekly: unknown) => {
     // Ветка принадлежности решает, предлагается ли перегон вообще: у аренды его не бывает, и
     // подстановка ждёт возврата на собственную технику, а не пропадает насовсем.
     if (!weeklyDelivery || ownership !== 'own' || weeklyDeliveryApplied.current) return;
@@ -776,6 +774,9 @@ export function VehicleAssignModal({
     // «Куда» подставляется тем же способом, что и при включении галочки руками: площадка заявки —
     // единственное «куда», какое у доставки бывает.
     toggleDelivery(true);
+  });
+  useEffect(() => {
+    applyWeekly(targetId, ownership, weeklyDelivery);
   }, [targetId, ownership, weeklyDelivery]);
 
   /**
@@ -840,9 +841,8 @@ export function VehicleAssignModal({
 
   /**
    * Рейсы, куда заявку можно положить: со свободной строкой задания и не замороженные выписанным
-   * листом.
-   * Заморозка проверяется тем же правилом, что и на сервере, — иначе список предлагал бы рейсы,
-   * которые он отклонит.
+   * листом. Заморозка проверяется тем же правилом, что и на сервере, — иначе список предлагал бы
+   * рейсы, которые он отклонит.
    */
   const routeOptions = (prefill?.routes ?? []).filter(
     (r) =>
@@ -949,7 +949,7 @@ export function VehicleAssignModal({
     routeTouched.current = false;
   }, [targetId]);
 
-  useEffect(() => {
+  const syncRoute = useEffectEvent((_need: boolean, _vehicleId: unknown, _routes: unknown) => {
     if (!needsRoute) return;
     // Выбранный рейс пропал из подсказки — правили дату подачи, и рейсы теперь другого дня.
     // Молча оставить его нельзя: поле показывало бы рейс, которого сервер в этот день не знает.
@@ -961,6 +961,9 @@ export function VehicleAssignModal({
     if (routeTouched.current) return;
     const own = vehicleId ? routeOptions.find((r) => r.vehicleId === vehicleId) : null;
     form.setFieldsValue({ routeId: own?.id ?? NEW_ROUTE });
+  });
+  useEffect(() => {
+    syncRoute(needsRoute, vehicleId, prefill?.routes);
   }, [needsRoute, vehicleId, prefill?.routes]);
 
   /**
@@ -986,7 +989,7 @@ export function VehicleAssignModal({
     if (driverRoute.current === routeId) return;
     driverRoute.current = routeId;
     form.setFields([{ name: 'driverPersonId', value: undefined, errors: [] }]);
-  }, [routeId]);
+  }, [routeId, form]);
 
   /**
    * Графы шапки наследуются от прошлого рейса этой машины — их правят раз в сезон, а не в рейс.
@@ -1007,7 +1010,7 @@ export function VehicleAssignModal({
       communicationKind: trip.communicationKind || DEFAULT_COMMUNICATION_KIND,
       transportationKind: trip.transportationKind,
     });
-  }, [suggestion?.trip, suggestion?.hitched]);
+  }, [suggestion?.trip, suggestion?.hitched, form]);
 
   /** Ставки предложения аренды: по ним подставляются поля и видно, что цену изменили вручную. */
   const listedRate = selected?.ownership === 'rental' ? selected : null;

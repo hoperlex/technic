@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
 import { Alert, App, Skeleton, Space, Typography } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import type {
@@ -66,15 +66,16 @@ export function VehicleEarlyEndApproveModal({
    * ручкой, наступила полночь), а отпечаток такой предпросмотр уже не подтвердит.
    */
   const targetId = request?.id ?? null;
-  useEffect(() => {
+  const askPreview = useEffectEvent((_id: string | null) => {
     if (!request) return;
     setPreview(null);
     setStaleReason(null);
     setOperationId(crypto.randomUUID());
     previewMut.mutate(request);
-    // Зависимость — идентификатор заявки: перерисовка той же заявки приходит новым объектом и
-    // спрашивала бы план по кругу.
-  }, [targetId]);
+  });
+  // Зависимость — идентификатор заявки: перерисовка той же заявки приходит новым объектом и
+  // спрашивала бы план по кругу.
+  useEffect(() => askPreview(targetId), [targetId]);
 
   const submit = async () => {
     if (!request || !preview) return;

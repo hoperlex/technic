@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
 import { App, Button, Form } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -141,7 +141,7 @@ export function VehicleCompleteModal({
   // размонтировании. Повторное закрытие (после отката администратором) открывается на прежнем
   // факте: обычно правят одну цифру, а не набирают всё заново.
   const targetId = request?.id ?? null;
-  useEffect(() => {
+  const resetForRequest = useEffectEvent((_id: string | null, _hours: number) => {
     if (!request) return;
     // Подтверждённые смены закрывают заявку часами: за них расписался объект, и второй счёт
     // (в сменах) спорил бы с первым. Прежнее закрытие всё равно главнее — его правят, а не
@@ -173,10 +173,11 @@ export function VehicleCompleteModal({
       cancelAck: false,
       reason: '',
     });
-    // Зависимости — заявка и подтверждённые часы: таблица смен приходит вторым запросом, и до
-    // её ответа подставлять было нечего. Перерисовка той же заявки поля не трогает — иначе
-    // стёрла бы уже набранное.
-  }, [targetId, approvedHours]);
+  });
+  // Зависимости — заявка и подтверждённые часы: таблица смен приходит вторым запросом, и до
+  // её ответа подставлять было нечего. Перерисовка той же заявки поля не трогает — иначе
+  // стёрла бы уже набранное.
+  useEffect(() => resetForRequest(targetId, approvedHours), [targetId, approvedHours]);
 
   const endedOn = Form.useWatch('endedOn', form);
 
