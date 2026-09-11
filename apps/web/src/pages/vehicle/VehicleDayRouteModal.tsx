@@ -117,7 +117,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
    * Машина подставляется назначенная — у линейного заказа это машина по умолчанию (ADR 0100
    * решение 4), ею закрывают большинство дней. Водитель не подставляется никогда (ADR 0083).
    */
-  const resetForDay = useEffectEvent(() => {
+  const resetForDay = useEffectEvent((_id?: string, _day?: string) => {
     if (!target) return;
     routeTouched.current = false;
     form.setFieldsValue({
@@ -128,7 +128,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
       reason: undefined,
     });
   });
-  useEffect(() => resetForDay(), [target?.request.id, target?.date]);
+  useEffect(() => resetForDay(request?.id, target?.date), [request?.id, target?.date]);
 
   /*
    * Прошедший день (ADR 0101 п. 4, дыра 1 плана). Правило дней прошлое разрешает — выезд оформляют
@@ -210,11 +210,11 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
    * Умолчание поля «Рейс»: готовый рейс машины, если он есть. Пришедший позже ответ сервера
    * выбранное руками не переписывает — за этим и следит `routeTouched`.
    */
-  const applyRouteDefault = useEffectEvent(() => {
+  const applyRouteDefault = useEffectEvent((_routes: unknown) => {
     if (routeTouched.current) return;
     form.setFieldsValue({ routeId: routeOptions[0]?.id ?? NEW_ROUTE });
   });
-  useEffect(() => applyRouteDefault(), [suggestion?.routes]);
+  useEffect(() => applyRouteDefault(suggestion?.routes), [suggestion?.routes]);
 
   /** Выбран готовый рейс: водитель и реквизиты выезда в нём уже свои, спрашивать их незачем. */
   const joined = routeOptions.find((r) => r.id === routeId) ?? null;

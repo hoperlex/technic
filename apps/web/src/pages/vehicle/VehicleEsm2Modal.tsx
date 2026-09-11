@@ -83,7 +83,7 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
    */
   const operationId = useRef(crypto.randomUUID());
 
-  const resetForRequest = useEffectEvent(() => {
+  const resetForRequest = useEffectEvent((_id: string | undefined) => {
     if (!request) return;
     operationId.current = crypto.randomUUID();
     form.setFieldsValue({
@@ -95,7 +95,7 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
   });
   // Зависимость — идентификатор заявки, а не она сама: инвалидация списка приносит ту же заявку
   // новым объектом, и подстановка стёрла бы уже выбранную неделю (тот же приём в окне назначения).
-  useEffect(() => resetForRequest(), [request?.id]);
+  useEffect(() => resetForRequest(request?.id), [request?.id]);
 
   const weekOf = Form.useWatch('weekOf', form);
 

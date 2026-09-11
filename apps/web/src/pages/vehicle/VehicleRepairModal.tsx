@@ -80,7 +80,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
   /** Отказ по правам (Р32): его показывают текстом в окне, а не тостом в углу. */
   const [forbidden, setForbidden] = useState<string | null>(null);
 
-  const resetForRequest = useEffectEvent(() => {
+  const resetForRequest = useEffectEvent((_id: string | null) => {
     if (!request) return;
     setVersion(request.version);
     setOperationId(crypto.randomUUID());
@@ -91,7 +91,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
   });
   // Зависимость — идентификатор заявки: перерисовка той же заявки приходит новым объектом и
   // стёрла бы уже набранное.
-  useEffect(() => resetForRequest(), [targetId]);
+  useEffect(() => resetForRequest(targetId), [targetId]);
 
   /** Осмотр: что чинить. Первый и единственный запрос, который окно делает само по себе. */
   const state = useQuery({

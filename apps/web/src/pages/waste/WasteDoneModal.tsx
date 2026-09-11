@@ -114,7 +114,7 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
   // факте: обычно правят одну цифру, а не набирают всё заново. У первого закрытия объём
   // подставляется заявленным — его подтверждают или правят по талону.
   const targetId = request?.id ?? null;
-  const fillForRequest = useEffectEvent(() => {
+  const fillForRequest = useEffectEvent((_id: string | null) => {
     if (!request) return;
     const previous = request.completion;
     const volumeM3 = factVolumeOf(previous) ?? request.volumeM3 ?? null;
@@ -133,7 +133,7 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
   });
   // Зависимость — идентификатор заявки, а не сама заявка: перерисовка той же заявки (invalidate
   // списка после соседнего действия) приходит новым объектом и стёрла бы уже набранное.
-  useEffect(() => fillForRequest(), [targetId]);
+  useEffect(() => fillForRequest(targetId), [targetId]);
 
   const volumeM3 = Form.useWatch('volumeM3', form);
   const totalCost = Form.useWatch('totalCost', form);
