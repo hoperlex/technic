@@ -7,11 +7,16 @@ import {
   serviceRequestNeedsEstimate,
   type ServiceRequestDto,
 } from '@technic/contracts';
-import { ServiceEstimateTable, ServiceHint } from '@entities/service-request';
+import { ServiceEstimateTable } from '@entities/service-request';
 import { EstimateEditorModal } from '@features/estimate-editor';
 import type { ActionSheetItem } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
-import { mayActOnServiceRequest, serviceActionRow } from './serviceRequestRow';
+import { ServiceEstimateStateLine } from './serviceEstimateStateLine';
+import {
+  mayActOnServiceRequest,
+  serviceActionRow,
+  serviceExecutorAssignment,
+} from './serviceRequestRow';
 import { formatDateTime, formatMoney } from '../../utils/format';
 
 /** Решения по объёму работ, которые вкладка показывает кнопками: их порядок здесь и есть порядок. */
@@ -80,6 +85,12 @@ export function ServiceRequestEstimate({
    */
   const pending = serviceRequestHasEffectivePendingEstimate(row);
   const coordinator = canCoordinateServiceRequests(user);
+  /*
+   * Объём работ подан документом (Р2): строк у такой ревизии нет вовсе, и суммы тоже — она придёт
+   * разбором счёта. Формат берётся из карточки; второго мнения (например, «строк ноль — значит
+   * документ») портал не заводит: пустой черновик выглядел бы так же.
+   */
+  const documentFormat = request.estimateFormat === 'document';
   // Факт показывается, как только он появился хоть у одной строки: возврат на доработку стирает
   // отметки, и тогда таблица снова становится планом.
   const showFact = request.items.some((item) => item.performed != null);
@@ -118,9 +129,19 @@ export function ServiceRequestEstimate({
    */
   const mayBreakdown =
     !historical &&
-    // Раскладывать нечего — нечего и показывать: у пустой ревизии кнопка открыла бы окно, в
-    // котором «переносить перечень в графы» не из чего, а нажатие переиздало бы пустоту.
-    request.items.length > 0 &&
+    /*
+     * ЕСТЬ ЛИ ЧТО РАСКЛАДЫВАТЬ — ДВА ЗАКОННЫХ ОТВЕТА, А НЕ ОДИН (Р8). Строки — обычный случай: из
+     * них и переносят перечень в графы. Документная ревизия — второй, и ради него раскладка в этой
+     * волне и понадобилась: строк у неё нет вовсе, а раскладывать есть что — приложенный счёт, и
+     * ровно этот выход портал обещает словами в трёх местах (окно объёма работ, окно закрытия,
+     * вкладка). Спроси кнопка один лишь состав, обещанного выхода не существовало бы: человек шёл
+     * бы искать её и не находил, а заявка так и оставалась бы без построчной картины, без суммы и
+     * без гарантий (Р8). Сервер этот путь держит прямо — переиздание пишет ревизию формата `items`.
+     *
+     * Пустой черновик отсекается по-прежнему: у него ни строк, ни счёта — нажатие переиздало бы
+     * пустоту, а сервер отбил бы её отказом «нужна хотя бы одна строка».
+     */
+    (request.items.length > 0 || documentFormat) &&
     request.status === 'in_work' &&
     can('serviceRequests.estimateRewrite') &&
     mayActOnServiceRequest(request, user);
@@ -138,6 +159,15 @@ export function ServiceRequestEstimate({
     <EstimateEditorModal
       request={request}
       intent="breakdown"
+      /*
+       * Перевод карточки для предикатов — ГОТОВЫМ ОТ ЭТОГО СЛОЯ (Р3), тем же единственным, что
+       * живёт рядом. Чекбокса освобождения у раскладки не бывает вовсе («Ведение» подпись ставит, а
+       * не отменяет, и `canDeclareExemption` отвечает ему «нет»), но отвечать на этот вопрос обязан
+       * предикат, а не отсутствие пропа: умолчание fail-closed молчит одинаково и о запрете, и о
+       * забытой проводке — ровно так чекбокс и пропал у второго входа.
+       */
+      actionRow={row}
+      assignment={serviceExecutorAssignment(request, user)}
       onClose={() => setBreakdownOpen(false)}
     />
   );
@@ -183,6 +213,15 @@ export function ServiceRequestEstimate({
     </Typography.Text>
   );
 
+  /*
+   * СОСТОЯНИЕ РЕВИЗИИ — ОДНОЙ ПЛАШКОЙ, И ОНА НУЖНА ОБЕИМ ВЕТКАМ ВКЛАДКИ. У документной ревизии
+   * строк нет вовсе (Р2), то есть заявка с принятым денежным решением попадает в ветку «строк
+   * нет» — и без плашки читала бы «объёма работ пока нет», прямую неправду о приложенном счёте.
+   */
+  const stateHint = (
+    <ServiceEstimateStateLine request={request} coordinator={coordinator} pending={pending} />
+  );
+
   if (request.items.length === 0) {
     /*
      * Строк нет — но решение по нему бывает и здесь: предъявить пустой объём работ сервер
@@ -192,11 +231,26 @@ export function ServiceRequestEstimate({
      *
      * Историческая внутренняя ревизия сюда тоже попадает — и говорит своё: «объём собирает
      * исполнитель» на ней было бы прямой неправдой, собирать его больше некому.
+     *
+     * ДОКУМЕНТНАЯ РЕВИЗИЯ — ТРЕТИЙ СЛУЧАЙ, И ОБА ПРЕЖНИХ ТЕКСТА ЕЙ ЛГУТ: строк у неё нет не потому,
+     * что «считать нечего», и уж тем более не потому, что объём работ ещё не собран, — он подан
+     * счётом, а суммы нет, пока документ не разобран (Р2, Р8).
      */
     return (
       <Space orientation="vertical" size={12} style={{ width: '100%' }}>
         {historical ? (
           historicalLine
+        ) : documentFormat ? (
+          <>
+            {stateHint}
+            <Typography.Text type="secondary">
+              Объём работ подан счётом: строк у такой ревизии нет, сумма из документа не разобрана —
+              она появится после его разбора. Сам счёт лежит на вкладке «Документы».
+              {mayBreakdown
+                ? ' Нужна построчная картина раньше разбора — разложите счёт по графам, и заявка вернётся в обычный порядок.'
+                : ''}
+            </Typography.Text>
+          </>
         ) : (
           <Typography.Text type="secondary">
             {pending
@@ -204,67 +258,24 @@ export function ServiceRequestEstimate({
               : 'Объёма работ пока нет: его собирает исполнитель, взявший заявку в работу.'}
           </Typography.Text>
         )}
-        {decisionButtons}
+        {/* КНОПКА РАСКЛАДКИ НУЖНА И ЗДЕСЬ, И ИМЕННО ЗДЕСЬ ОНА НЕЗАМЕНИМА. Документная ревизия
+            попадает ровно в эту ветку — строк у неё нет вовсе, — и оставь мы кнопку одной лишь
+            построчной ветке, обещанный тремя экранами выход не существовал бы: у заявки со счётом
+            он единственный путь к сумме, гарантиям и построчному факту (Р8). */}
+        {(breakdownButton || decisionButtons) && (
+          <Space wrap>
+            {breakdownButton}
+            {decisionButtons}
+          </Space>
+        )}
+        {breakdownModal}
       </Space>
     );
   }
 
   return (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-      {historical ? (
-        historicalLine
-      ) : (
-        <ServiceHint
-          coordinator={coordinator}
-          // Три состояния, а не два: «ждёт решения» отличается от «согласовано» и от «в правке»
-          // тем, что ход сейчас за согласующим, — и именно об этом вкладку и спрашивают.
-          level={pending ? 'warning' : approval ? 'success' : 'info'}
-          title={
-            pending
-              ? `Ревизия ${request.estimateRevision} предъявлена — ждём решения`
-              : approval
-                ? `Согласована ревизия ${approval.revision}`
-                : `Ревизия ${request.estimateRevision} — согласования нет`
-          }
-          description={
-            pending ? (
-              <span>
-                {request.estimateSubmittedAt
-                  ? `Предъявлена ${formatDateTime(request.estimateSubmittedAt)}`
-                  : 'Предъявлена'}
-                {/* Подпись под прошлой ревизией при висящем предъявлении — обычное дело: объём
-                    предъявили заново, и старое согласование к делу больше не относится. Сказать
-                    это надо прямо, иначе «Согласована ревизия 2» вспоминалось бы как
-                    действующее. */}
-                {approval && approval.revision !== request.estimateRevision && (
-                  <Typography.Text type="secondary">
-                    {' '}
-                    · прошлое согласование (ревизия {approval.revision}) больше не действует
-                  </Typography.Text>
-                )}
-              </span>
-            ) : approval ? (
-              <span>
-                {approval.byName || '—'} · {formatDateTime(approval.at)}
-                {/* Ревизии разошлись — значит объём работ предъявляли после согласования: к работам
-                    сервер пустит только по совпадению номеров (Р14). */}
-                {approval.revision !== request.estimateRevision && (
-                  <Typography.Text type="warning">
-                    {' '}
-                    · объём работ правился, текущая ревизия {request.estimateRevision}
-                  </Typography.Text>
-                )}
-              </span>
-            ) : request.estimateSubmittedAt ? (
-              // Дата непуста, а предъявления нет — значит объём вернули в правку (Р9). Дата отвечает
-              // на «когда предъявляли в последний раз», и подписана она именно так.
-              `В правке у исполнителя · предъявляли ${formatDateTime(request.estimateSubmittedAt)}`
-            ) : (
-              'Черновик исполнителя: на согласование ещё не отправлялся'
-            )
-          }
-        />
-      )}
+      {historical ? historicalLine : stateHint}
 
       <ServiceEstimateTable items={request.items} showFact={showFact} />
 

@@ -1,4 +1,4 @@
-import { App, Space, Typography } from 'antd';
+import { App, Button, Space, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   actsAsRequestCustomer,
@@ -7,11 +7,13 @@ import {
   isServiceRequestClosed,
   SERVICE_FILE_KINDS,
   serviceFileKindLabels,
+  serviceFilePurposeLabels,
   type ServiceRequestDto,
+  type ServiceRequestFileDto,
 } from '@technic/contracts';
 import {
   isAwaitingDocuments,
-  SERVICE_CLOSING_DOCUMENT_HINT,
+  serviceClosingDocumentHint,
   ServiceDocumentUpload,
   ServiceHint,
   serviceRequestKeys,
@@ -28,6 +30,15 @@ import {
   serviceRequestCustomerFacts,
 } from './serviceRequestRow';
 import { errorMessage } from '../../utils/format';
+
+/**
+ * Основание денежного решения (Р5): его не снимает никто и никогда (Р6, замок сервера под
+ * блокировкой). Умолчание `closing_evidence` — окно выката: старое приложение роли не отдаёт, и её
+ * отсутствие означает обычное вложение, а не «роль неизвестна».
+ */
+function isEstimateBasis(file: ServiceRequestFileDto): boolean {
+  return (file.purpose ?? 'closing_evidence') === 'estimate_basis';
+}
 
 /**
  * Документы заявки по видам (§9.4). Общей кучей их держать нельзя: вопрос к этой вкладке — не
@@ -170,7 +181,7 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
         <ServiceHint
           coordinator={coordinator}
           level="warning"
-          title={SERVICE_CLOSING_DOCUMENT_HINT}
+          title={serviceClosingDocumentHint(request.estimateFormat ?? null)}
           description="Пока нет ни одного, заявка стоит в очереди «Ожидаются документы»: работу сервисной компании без закрывающего документа не закрыть, и портал такую заявку не закроет сам — сутки на возражение отсчитываются от подшитой бумаги."
         />
       )}
@@ -178,14 +189,66 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
       {SERVICE_FILE_KINDS.map((fileKind) => {
         const files = request.files.filter((file) => file.kind === fileKind);
         if (files.length === 0) return null;
+        /*
+         * Три судьбы у одного вида документа, и делить их приходится здесь (Р5, Р6 плана
+         * освобождения от подписи).
+         *
+         * КАРАНТИН ИДЁТ ПЕРВЫМ, раньше роли: у такого вложения имя ПУСТОЕ, и общий список показал
+         * бы пустую ссылку — «файл, у которого что-то сломалось» вместо «документ закрыт по
+         * обращению». Строка при этом остаётся: «доказательство скрыто» и «доказательства не было»
+         * — разные факты, и стереть первый значило бы переписать историю денежного решения.
+         *
+         * ОСНОВАНИЕ ОБЪЁМА РАБОТ ИДЁТ БЕЗ КНОПКИ СНЯТИЯ: сервер отказывает по нему всегда — и
+         * автору, и распорядителю чужими файлами, и после возврата объёма работ в правку, — а
+         * кнопка, за которой стоит один отказ, хуже отсутствующей: человек нажмёт её раньше, чем
+         * прочитает отказ, и пойдёт искать обход. Причина и оба выхода названы строкой рядом.
+         *
+         * Роль читается с умолчанием `closing_evidence` — тем же, каким её читает предикат
+         * контрактов: старое приложение поля не отдаёт вовсе, и отсутствие значения означает
+         * сегодняшнее вложение, а не «роль неизвестна».
+         */
+        const quarantined = files.filter((file) => file.quarantined);
+        const open = files.filter((file) => !file.quarantined);
+        const basis = open.filter(isEstimateBasis);
+        const ordinary = open.filter((file) => !isEstimateBasis(file));
         return (
           <div key={fileKind}>
             <Typography.Text strong>{serviceFileKindLabels[fileKind]}</Typography.Text>
-            <FileLinkList
-              files={files}
-              maxNameWidth={420}
-              onRemove={canDetach ? (file) => detach.mutate(file.id) : undefined}
-            />
+            {ordinary.length > 0 && (
+              <FileLinkList
+                files={ordinary}
+                maxNameWidth={420}
+                onRemove={canDetach ? (file) => detach.mutate(file.id) : undefined}
+              />
+            )}
+            {basis.length > 0 && (
+              <>
+                <FileLinkList files={basis} maxNameWidth={420} />
+                <Typography.Text type="secondary">
+                  {serviceFilePurposeLabels.estimate_basis}: этим счётом предъявлен объём работ, и
+                  из заявки он не снимается никогда. Ошибочный счёт не удаляют, а перестают
+                  предъявлять — предъявите объём работ заново с верным, и прежний станет
+                  недействующим; секретный или чужой документ закрывают от доступа по обращению в
+                  службу.
+                </Typography.Text>
+              </>
+            )}
+            {quarantined.map((file) => (
+              <div key={file.id}>
+                <Typography.Text type="secondary">
+                  Документ закрыт по обращению: имя и ссылка скрыты, содержимое открыто только
+                  разбору инцидента.
+                </Typography.Text>
+                {/* Снятие показывается ровно там же, где и у обычного вложения: карантин закрывает
+                    ДОСТУП к содержимому, а прав на связь с заявкой не меняет, — и второе мнение
+                    портала о правах здесь завело бы правило, которого нет у сервера. */}
+                {canDetach && !isEstimateBasis(file) && (
+                  <Button type="link" danger size="small" onClick={() => detach.mutate(file.id)}>
+                    Удалить
+                  </Button>
+                )}
+              </div>
+            ))}
           </div>
         );
       })}

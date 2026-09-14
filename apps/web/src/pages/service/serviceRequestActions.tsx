@@ -156,9 +156,24 @@ export function useServiceRequestActions(): {
   const confirmApprove = (request: ServiceRequestDto) =>
     modal.confirm({
       title: 'Согласовать объём работ?',
-      content: `Ревизия ${request.estimateRevision} на ${formatMoney(
-        request.estimatedTotalAmount,
-      )}. Заявка останется в «В работе».`,
+      /*
+       * У ДОКУМЕНТНОЙ РЕВИЗИИ СУММЫ НЕТ, И СКАЗАТЬ ЭТО НАДО СЛОВАМИ (Р2, §8 плана
+       * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`). Объём работ подан счётом,
+       * строк у него нет, а `estimatedTotalAmount` пуст не потому, что работы бесплатны, а потому,
+       * что содержимое документа системе пока неизвестно: его положит разбор. Прежний текст
+       * подставлял бы сюда прочерк, а он утверждает «суммы нет» — то есть звал бы подписаться под
+       * утверждением, которого никто не делал.
+       *
+       * Формат берётся из карточки; вывод «строк ноль — значит документ» был бы вторым мнением и
+       * совпал бы с пустым черновиком гарантийного ремонта.
+       */
+      content:
+        request.estimateFormat === 'document' && request.estimatedTotalAmount == null
+          ? `Ревизия ${request.estimateRevision} подана счётом: сумма из документа не разобрана — ` +
+            'согласовывается сам приложенный счёт. Заявка останется в «В работе».'
+          : `Ревизия ${request.estimateRevision} на ${formatMoney(
+              request.estimatedTotalAmount,
+            )}. Заявка останется в «В работе».`,
       okText: 'Согласовать',
       cancelText: 'Отмена',
       onOk: () => approveMutation.mutateAsync(request),

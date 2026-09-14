@@ -3,6 +3,7 @@ import { PlayCircleOutlined, SwapOutlined, UserSwitchOutlined } from '@ant-desig
 import {
   closingKindsForFormat,
   isServiceClosingFile,
+  serviceEstimateExemptionOutcomeLabels,
   serviceFileKindLabels,
   type ServiceRequestDto,
   warrantyClaimSourceLabels,
@@ -19,7 +20,8 @@ import { formatMoney } from '../../utils/format';
 
 /**
  * Ячейки списка заявок, которые собирают несколько признаков в одну колонку: реквизиты техники с
- * двумя разными гарантиями, «где стоит» и состояние документов.
+ * двумя разными гарантиями, «где стоит», состояние документов и пометка заявки, принятой без
+ * подписи.
  *
  * Отдельным модулем от самих колонок: обе отвечают на вопрос «что здесь на самом деле показано», и
  * путают их постоянно — гарантию техники с пометкой «заявка по гарантии», подшитый акт с
@@ -55,6 +57,15 @@ export function amountLabel(request: ServiceRequestDto): { value: string; hint: 
   if (request.estimatedTotalAmount != null) {
     return { value: formatMoney(request.estimatedTotalAmount), hint: 'по объёму работ' };
   }
+  /*
+   * ДОКУМЕНТНАЯ РЕВИЗИЯ ГОВОРИТ «НЕ РАЗОБРАНА», А НЕ СТАВИТ ПРОЧЕРК (Р2, §8 плана
+   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`). Прочерк утверждает «суммы нет», а
+   * у заявки, поданной счётом, сумма есть — она лежит в самом документе и системе пока неизвестна:
+   * её положит разбор. Ноль на этом месте был бы ещё хуже — он читается как «работы бесплатны».
+   */
+  if (request.estimateFormat === 'document') {
+    return { value: 'не разобрана', hint: 'сумма из счёта' };
+  }
   return { value: '—', hint: '' };
 }
 
@@ -76,6 +87,37 @@ export function amountLabel(request: ServiceRequestDto): { value: string; hint: 
  */
 export function showsAmount(requests: readonly ServiceRequestDto[]): boolean {
   return requests.length === 0 || requests.some((r) => r.audience === 'finance');
+}
+
+/**
+ * ТЕГ ЗАЯВКИ, ПРИНЯТОЙ БЕЗ ПОДПИСИ (Р13) — один из четырёх механизмов контроля постфактум, и
+ * единственный, который виден, не открывая карточку: служба обязана видеть деньги, прошедшие мимо
+ * согласования, прямо в списке.
+ *
+ * ТОЛЬКО ПРИМЕНЁННОЕ ОСВОБОЖДЕНИЕ И ТОЛЬКО ПО ДЕЙСТВУЮЩЕЙ РЕВИЗИИ. Наблюдённое заявление
+ * (`observed`, рубильник выключен) мимо подписи ничего не пропускает — подпись по такой заявке
+ * собирают обычным порядком, и тег на ней звал бы разбираться там, где разбирать нечего. Заявление
+ * по прошлой ревизии снято переизданием: тег на нём показывал бы снятое основание как живое.
+ *
+ * Подпись под ревизией здесь НЕ спрашивается, в отличие от признаков спора: список отвечает на
+ * вопрос «мимо какой заявки прошли деньги», а не «можно ли по ней спорить прямо сейчас», и факт
+ * заявленного и применённого освобождения остаётся правдой и после возврата объёма в правку.
+ */
+export function ExemptionTag({ request }: { request: ServiceRequestDto }) {
+  const exemption = request.exemption;
+  if (!exemption || exemption.outcome !== 'applied') return null;
+  if (exemption.revision !== request.estimateRevision) return null;
+  return (
+    <Tooltip
+      title={`${serviceEstimateExemptionOutcomeLabels.applied}: заявил ${
+        exemption.byName || '—'
+      }${exemption.note ? ` · ${exemption.note}` : ''}`}
+    >
+      <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+        Без согласования
+      </Tag>
+    </Tooltip>
+  );
 }
 
 /** Реквизиты единицы: модель сверху, номер и тип — подписью. Ими технику и опознают. */

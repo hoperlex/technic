@@ -107,6 +107,23 @@ export function serviceReasonPrompts(request: ServiceRequestDto) {
       success: 'Объём работ возвращён в правку — предъявление и согласование сняты',
       submit: (reason: string) => serviceRequestsApi.reopenEstimate(id, { reason, version }),
     },
+    /*
+     * Открытие спора об освобождении (Р9 плана
+     * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`). Причина обязательна, и это не
+     * общее правило «на всякий случай»: спор ОСТАНАВЛИВАЕТ заявку заморозкой, и «почему» —
+     * единственное, чем остановку объясняют исполнителю, который уже работает.
+     *
+     * Успех называет два следствия сразу: заявка встала и по ней ждут решения того, кто спор начал.
+     * Скажи он одно «спор открыт», человек искал бы заявку в прежнем статусе.
+     */
+    openEstimateDispute: {
+      title: 'Спор об освобождении от подписи',
+      label: 'Причина',
+      okText: 'Оспорить',
+      danger: true,
+      success: 'Спор открыт — заявка отложена до его разрешения',
+      submit: (reason: string) => serviceRequestsApi.openEstimateDispute(id, { reason, version }),
+    },
     rollbackAcceptance: {
       title: 'Отмена приёмки',
       label: 'Причина',

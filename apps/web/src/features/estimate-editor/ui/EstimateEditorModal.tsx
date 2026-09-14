@@ -1,11 +1,17 @@
-import { App, Button, Input, Space, Tooltip, Typography } from 'antd';
-import { canCoordinateServiceRequests, type ServiceRequestDto } from '@technic/contracts';
+import { App, Button, Input, Tooltip, Typography } from 'antd';
+import {
+  canCoordinateServiceRequests,
+  type ServiceActionRequest,
+  type ServiceExecutorAssignment,
+  type ServiceRequestDto,
+} from '@technic/contracts';
 import { ServiceHint } from '@entities/service-request';
 import { ViewModal } from '@shared/ui';
 import { useAuth } from '../../../auth/AuthContext';
 import { useEstimateEditor, type EstimateEditorIntent } from '../model/useEstimateEditor';
-import { EstimateFreeFields, EstimateModeSwitch } from './EstimateFreeMode';
-import { EstimateRowsGroup } from './EstimateRows';
+import { EstimateComposition } from './EstimateComposition';
+import { EstimateDocumentFiles, EstimateDocumentSwitch } from './EstimateDocumentMode';
+import { EstimateExemption } from './EstimateExemption';
 
 /**
  * Что окно не даст сделать, пока висит предъявление (Р9). Одна строка на оба замка, потому что
@@ -26,6 +32,20 @@ const LOCKED_HINT =
 const BREAKDOWN_HINT =
   'Раскладка переиздаёт объём работ: у согласованной ревизии поднимется номер, подпись снимется, ' +
   'а заявка уйдёт на согласование заново — под новым составом подписываются отдельно.';
+
+/**
+ * Откуда брать позиции, когда раскладывают ДОКУМЕНТНУЮ ревизию (Р8) — единственный путь такой
+ * заявки к сумме, гарантиям и построчному факту, и обещан он человеку в трёх местах портала.
+ *
+ * Сказано именно здесь, потому что окно раскладки открывается пустым: строк у документной ревизии
+ * нет вовсе, и без этой строки «Ведение» смотрело бы на пустую таблицу, не понимая, что переносить
+ * и откуда. Счёт лежит на вкладке «Документы» — самим окном он не показывается: вложенная читалка
+ * файла внутри окна раскладки была бы третьим слоем поверх карточки.
+ */
+const BREAKDOWN_DOCUMENT_HINT =
+  'Объём работ подан счётом: строк у ревизии нет, и переносить позиции нужно из самого документа — ' +
+  'он на вкладке «Документы» карточки. После раскладки заявка вернётся в обычный порядок: появятся ' +
+  'сумма, построчный факт и гарантии.';
 
 /**
  * Редактор объёма работ (§9.3): две группы строк либо одна свободная запись, итог на лету.
@@ -55,6 +75,8 @@ const BREAKDOWN_HINT =
 export function EstimateEditorModal({
   request,
   intent = 'estimate',
+  actionRow,
+  assignment,
   onClose,
 }: {
   /**
@@ -67,12 +89,27 @@ export function EstimateEditorModal({
    * прежние входы остаются прежними, не называя себя.
    */
   intent?: EstimateEditorIntent;
+  /**
+   * Перевод карточки в то, чем её видят предикаты контрактов, и признаки назначения на неё —
+   * ГОТОВЫМИ ОТ ВЫЗЫВАЮЩЕГО (Р3): единственный такой перевод живёт на слое разделов
+   * (`serviceActionRow`, `serviceExecutorAssignment`), а второй, собранный окном, разошёлся бы с
+   * ним молча. Не передали — чекбокса освобождения нет: показанный не тому, он обещал бы денежное
+   * решение, за которым стоит 403.
+   */
+  actionRow?: ServiceActionRequest;
+  assignment?: ServiceExecutorAssignment;
   onClose: () => void;
 }) {
   const { message } = App.useApp();
   const { user } = useAuth();
-  const editor = useEstimateEditor({ request, intent, onClose });
+  const editor = useEstimateEditor({ request, intent, actionRow, assignment, onClose });
   const breakdown = intent === 'breakdown';
+  /*
+   * Раскладывают ДОКУМЕНТНУЮ ревизию (Р8): строк на экране нет и не будет — их переносят из счёта.
+   * Формат берётся полем карточки, а не выводом «строк ноль»: пустой черновик выглядел бы так же, и
+   * подсказка звала бы «Ведение» искать документ, которого нет.
+   */
+  const documentBreakdown = breakdown && request?.estimateFormat === 'document';
   /*
    * Кому положены пояснения (Р11): признак считает вызывающий, а не `ServiceHint`, — слой
    * сущностей `AuthContext` не видит, и правило живёт единственной функцией контрактов.
@@ -80,7 +117,18 @@ export function EstimateEditorModal({
   const coordinator = canCoordinateServiceRequests(user);
   const warrantyMode = !!request?.warrantyClaim && !breakdown;
   const { locked, mode, rows, issue, pending } = editor;
-  const freeRow = rows[0];
+  /*
+   * ПОДАЧА СЧЁТОМ УБИРАЕТ ПОЛЯ С ЭКРАНА, А НЕ ГАСИТ ИХ (Р10). У окна уже есть настоящий погашенный
+   * режим — замок висящего предъявления, — и означает он совсем другое: «сначала отзовите
+   * предъявление». Два состояния, выглядящих одинаково, отправили бы человека искать несуществующую
+   * кнопку; здесь же полей не гасят, а не заполняют вовсе — их у документной ревизии нет.
+   */
+  const documentOn = editor.documentOn;
+  /*
+   * Что мешает отправке ПРЯМО СЕЙЧАС: у документной подачи спрашивается один документ, у
+   * построчной — полнота состава. Строка под кнопкой одна, потому что вопрос один.
+   */
+  const problem = documentOn ? editor.documentIssue : issue;
 
   /**
    * Отказ по незаполненному — тостом, и это исключение записано в воротах поимённо (ADR 0094,
@@ -106,6 +154,18 @@ export function EstimateEditorModal({
   const submit = (asDraft: boolean) => {
     if (refuse(asDraft ? editor.draftIssue : issue)) return;
     editor.submit(asDraft);
+  };
+  /*
+   * Одна кнопка на два формата, потому что действие одно — «предъявить»: расходится не оно, а то,
+   * что уезжает в теле (строки либо страницы счёта, Р2). Второй кнопкой рядом окно спрашивало бы
+   * формат дважды — галочкой и нажатием.
+   */
+  const present = () => {
+    if (!documentOn) {
+      submit(false);
+      return;
+    }
+    editor.submitDocument();
   };
   const runBreakdown = () => {
     if (refuse(issue)) return;
@@ -142,7 +202,15 @@ export function EstimateEditorModal({
               </Button>,
             ]
           : [
-              ...(warrantyMode
+              /*
+               * У ПОДАЧИ СЧЁТОМ ПОДВАЛ КОРОЧЕ, И ОБЕ ПРОПАВШИЕ КНОПКИ ПРОПАЛИ ПО ДЕЛУ (Р10).
+               * Черновика у неё нет: сохранять нечего — счёт уже в хранилище, а строк, которые
+               * ложились бы черновиком, режим не набирает вовсе, и нажатие унесло бы спрятанный
+               * состав, которого человек на экране не видит. Гарантийный ремонт — третий формат
+               * ревизии, несобираемый вместе с документом по типу тела: предложенный рядом с
+               * галочкой, он обещал бы выбор, которого нет.
+               */
+              ...(warrantyMode && !documentOn
                 ? [
                     <Tooltip
                       key="warranty"
@@ -166,18 +234,33 @@ export function EstimateEditorModal({
                     </Tooltip>,
                   ]
                 : []),
-              <Button key="draft" disabled={locked || pending} onClick={() => submit(true)}>
-                Сохранить черновик
-              </Button>,
-              <Button
-                key="submit"
-                type="primary"
-                loading={editor.saving}
-                disabled={locked || editor.warrantyPending}
-                onClick={() => submit(false)}
-              >
-                Предъявить на согласование
-              </Button>,
+              ...(documentOn
+                ? []
+                : [
+                    <Button key="draft" disabled={locked || pending} onClick={() => submit(true)}>
+                      Сохранить черновик
+                    </Button>,
+                  ]),
+              /*
+               * Без единой страницы кнопка ЗАПЕРТА, а не отвечает тостом по нажатию, — в отличие
+               * от пропусков состава. Разница в том, что здесь нечего дозаполнять глазами: пустой
+               * список приложенного виден рядом, и причина названа строкой под кнопкой. Отправить
+               * такое тело нельзя и по схеме (`fileIds` минимум один) — кнопка вела бы в 400.
+               */
+              <Tooltip key="submit" title={documentOn ? editor.documentIssue : null}>
+                <span>
+                  <Button
+                    type="primary"
+                    loading={editor.saving || editor.documentPending}
+                    disabled={
+                      locked || editor.warrantyPending || (documentOn && !!editor.documentIssue)
+                    }
+                    onClick={present}
+                  >
+                    Предъявить на согласование
+                  </Button>
+                </span>
+              </Tooltip>,
             ]
       }
     >
@@ -209,7 +292,9 @@ export function EstimateEditorModal({
               level="info"
               title={
                 breakdown
-                  ? 'Перенесите присланный перечень в графы: строка на позицию, цена на строку'
+                  ? documentBreakdown
+                    ? 'Перенесите позиции счёта в графы: строка на позицию, цена на строку'
+                    : 'Перенесите присланный перечень в графы: строка на позицию, цена на строку'
                   : request.estimateRevision > 0
                     ? `Ревизия ${request.estimateRevision} уже предъявлялась — следующее предъявление уйдёт ревизией ${request.estimateRevision + 1}`
                     : 'Черновик можно сохранять сколько угодно: на согласование уйдёт то, что предъявите'
@@ -217,6 +302,7 @@ export function EstimateEditorModal({
               description={
                 [
                   breakdown ? BREAKDOWN_HINT : null,
+                  documentBreakdown ? BREAKDOWN_DOCUMENT_HINT : null,
                   warrantyMode
                     ? 'Заявка заведена как гарантийная — работы можно предъявить без оплаты.'
                     : null,
@@ -232,56 +318,38 @@ export function EstimateEditorModal({
             />
           )}
 
-          {/* Переключатель стоит НАД составом: он меняет то, что под ним, и решение о способе
-              ввода принимают до набора, а не дочитав до итога. */}
-          <Space size={8}>
-            <Typography.Text type="secondary">Как набрать:</Typography.Text>
-            <EstimateModeSwitch
-              mode={mode}
-              rows={rows}
+          {/* Способ подачи решают ДО набора, поэтому галочка стоит выше переключателя: поставленная
+              после, она убрала бы с экрана только что набранное. Рубильник выключен — способа не
+              видно вовсе (§7): кнопка, ведущая в 422, хуже отсутствующей. */}
+          {editor.documentOffered && (
+            <EstimateDocumentSwitch
+              checked={documentOn}
+              allowed={editor.documentFits}
               disabled={locked}
-              onChange={editor.switchMode}
+              onChange={editor.switchDocumentMode}
             />
-          </Space>
-
-          {mode === 'free' && freeRow ? (
-            <EstimateFreeFields
-              row={freeRow}
-              disabled={locked}
-              onChange={(patch) => editor.changeRow(freeRow.key, patch)}
-            />
-          ) : (
-            <>
-              <EstimateRowsGroup
-                kind="part"
-                disabled={locked}
-                rows={rows.filter((row) => row.kind === 'part')}
-                onAdd={editor.addRow}
-                onChange={editor.changeRow}
-                onRemove={editor.removeRow}
-              />
-              <EstimateRowsGroup
-                kind="service"
-                disabled={locked}
-                rows={rows.filter((row) => row.kind === 'service')}
-                onAdd={editor.addRow}
-                onChange={editor.changeRow}
-                onRemove={editor.removeRow}
-              />
-            </>
           )}
 
-          {/* Итог — строка, а не поле: его считает сумма строк, и разойтись с ней он не может. */}
-          <Space size={8} style={{ justifyContent: 'flex-end', width: '100%' }}>
-            <Typography.Text type="secondary">Итого по объёму работ:</Typography.Text>
-            <Typography.Text strong style={{ fontSize: 16 }}>
-              {editor.total.toLocaleString('ru-RU', {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })}{' '}
-              ₽
-            </Typography.Text>
-          </Space>
+          {documentOn ? (
+            <EstimateDocumentFiles
+              files={editor.files}
+              uploading={editor.uploading}
+              disabled={locked}
+              onUpload={editor.addFile}
+              onRemove={editor.removeFile}
+            />
+          ) : (
+            <EstimateComposition
+              mode={mode}
+              rows={rows}
+              total={editor.total}
+              disabled={locked}
+              onSwitchMode={editor.switchMode}
+              onAddRow={editor.addRow}
+              onChangeRow={editor.changeRow}
+              onRemoveRow={editor.removeRow}
+            />
+          )}
 
           {/* Комментарий уходит с ПРЕДЪЯВЛЕНИЕМ, поэтому у раскладки его нет: «Ведение» ничего не
               предъявляет своими словами — предъявление ставит сама ручка, и поле, чей текст никуда
@@ -296,7 +364,22 @@ export function EstimateEditorModal({
               onChange={(e) => editor.setComment(e.target.value)}
             />
           )}
-          {issue && <Typography.Text type="warning">{issue}</Typography.Text>}
+          {/* Чекбокс освобождения виден в ОБОИХ форматах: «строки плюс освобождение» — законное
+              сочетание и главный сценарий разбора (Р2), а не приложение к счёту. Рубильника в
+              условии показа нет намеренно (§7): он гасит ИСХОД, а не команду, — при выключенном
+              заявление проходит и записывается как «наблюдение». Спрятанный чекбокс убил бы режим
+              наблюдения целиком, поэтому ключ уходит текстом рядом, а не условием показа. */}
+          {editor.exemptionOffered && (
+            <EstimateExemption
+              checked={editor.exemption}
+              note={editor.exemptionNote}
+              applies={editor.exemptionApplies}
+              disabled={locked}
+              onChange={editor.setExemption}
+              onNote={editor.setExemptionNote}
+            />
+          )}
+          {problem && <Typography.Text type="warning">{problem}</Typography.Text>}
         </div>
       )}
     </ViewModal>

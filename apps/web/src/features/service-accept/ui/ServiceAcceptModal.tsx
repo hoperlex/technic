@@ -3,12 +3,12 @@ import { Alert, App, Form, Input, Space } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   canCoordinateServiceRequests,
+  closingKindsForFormat,
   hasServiceClosingDocument,
-  SERVICE_CLOSING_DOCUMENT_KINDS,
   type ServiceRequestDto,
 } from '@technic/contracts';
 import {
-  SERVICE_CLOSING_DOCUMENT_HINT,
+  serviceClosingDocumentHint,
   ServiceDocumentUpload,
   ServiceHint,
   ServiceRequestContext,
@@ -177,7 +177,10 @@ export function ServiceAcceptModal({
                 <Alert
                   type="warning"
                   showIcon
-                  title={SERVICE_CLOSING_DOCUMENT_HINT}
+                  /* Перечень видов в тексте — по формату действующей ревизии (Р5): у документной
+                     заявки прежний список из трёх видов звал подшить счёт, которым её как раз и
+                     подали, — и после подшивки она осталась бы в той же очереди. */
+                  title={serviceClosingDocumentHint(shown.estimateFormat ?? null)}
                   description="Работа предъявлена без бумаги — её стоит запросить у исполнителя. Подшить можно прямо здесь; принять работу портал не мешает, но заявка сама уже не закроется."
                 />
               )}
@@ -185,11 +188,17 @@ export function ServiceAcceptModal({
                   решают ровно один вопрос — чем закрыта работа. Право спрашивается то же, что и
                   там: правило «кто подшивает бумаги» записано один раз, иначе первая же новая
                   базовая роль под надстройкой оператора получила бы загрузчик, на который сервер
-                  ответит 403. */}
+                  ответит 403.
+
+                  ПЕРЕЧЕНЬ СЧИТАЕТСЯ ПО ФОРМАТУ РЕВИЗИИ (Р5), а не берётся списком из трёх видов:
+                  у документной подачи закрывает один акт, и «Счёт» в этом выборе был бы
+                  предложением закрыть заявку тем самым документом, которым её открыли. Подшить
+                  счёт при этом по-прежнему можно — на вкладке документов, где решают другой
+                  вопрос. */}
               {canAttach && (
                 <ServiceDocumentUpload
                   requestId={shown.id}
-                  kinds={SERVICE_CLOSING_DOCUMENT_KINDS}
+                  kinds={closingKindsForFormat(shown.estimateFormat ?? null)}
                   upload={filesApi.upload}
                   onUploaded={(updated) => {
                     // Свежая заявка — в своё состояние, и заодно гасим списки: столбец документов

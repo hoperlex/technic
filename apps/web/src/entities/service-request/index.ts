@@ -31,7 +31,7 @@ export {
 export { serviceRepeatHint, serviceRepeatSummary } from './model/repeat';
 export {
   isAwaitingDocuments,
-  SERVICE_CLOSING_DOCUMENT_HINT,
+  serviceClosingDocumentHint,
   serviceDocumentCounts,
 } from './model/documents';
 export {

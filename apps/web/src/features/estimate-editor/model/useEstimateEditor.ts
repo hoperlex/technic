@@ -3,12 +3,15 @@ import { App } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   serviceEstimatePending,
+  type ServiceActionRequest,
+  type ServiceExecutorAssignment,
   type ServiceItemKind,
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { errorMessage } from '@shared/lib';
+import { useEstimatePresentation } from './useEstimatePresentation';
 import {
   estimateDraftIssue,
   estimateIssue,
@@ -38,7 +41,8 @@ import {
 export type EstimateEditorIntent = 'estimate' | 'breakdown';
 
 /**
- * Всё, чем живёт окно объёма работ: строки, режим ввода, версия заявки и три пути отправки.
+ * Всё, чем живёт окно объёма работ: строки, режим ввода, версия заявки и четыре пути отправки —
+ * черновик, построчное предъявление, гарантийный ремонт и подача счётом.
  *
  * ОТДЕЛЬНО ОТ РАЗМЕТКИ, потому что предметы разные: здесь — что происходит с составом и куда он
  * уходит, там — как это выглядит. Разрез появился, когда у окна прибавились режим ввода (Р1) и
@@ -55,11 +59,30 @@ export type EstimateEditorIntent = 'estimate' | 'breakdown';
 export function useEstimateEditor({
   request,
   intent,
+  actionRow,
+  assignment,
   onClose,
 }: {
   /** `null` — окно закрыто; состояние всё равно живёт, чтобы не пересоздавать хук на открытии. */
   request: ServiceRequestDto | null;
   intent: EstimateEditorIntent;
+  /**
+   * Карточка глазами предикатов контрактов и признаки назначения на неё — ПЕРЕВОД ДЕЛАЕТ
+   * ВЫЗЫВАЮЩИЙ, а не окно (Р3 плана
+   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`).
+   *
+   * Так, а не «сложим четыре поля из DTO здесь», по двум причинам сразу. Перевод в этом портале
+   * ровно один — `serviceActionRow`/`serviceExecutorAssignment` на слое разделов, — и второй,
+   * собранный окном по-своему, разошёлся бы с ним молча на первом же поле (там это записано
+   * прямо: «дешевле держать один перевод, чем ловить расхождение на экране»). А достать тот
+   * перевод сюда нельзя: слой сценариев разделов не видит.
+   *
+   * НЕОБЯЗАТЕЛЬНЫ И FAIL-CLOSED: не передали — чекбокса освобождения нет вовсе. Это честнее
+   * умолчания «показать»: за нарисованным шире чекбоксом стоит 403, а денежное решение,
+   * предложенное не тому, читается как разрешение.
+   */
+  actionRow?: ServiceActionRequest;
+  assignment?: ServiceExecutorAssignment;
   onClose: () => void;
 }) {
   const { message } = App.useApp();
@@ -105,6 +128,26 @@ export function useEstimateEditor({
    */
   const locked = !!request && serviceEstimatePending(request);
 
+  /*
+   * ЧЕМ ПРЕДЪЯВЛЯЮТ И НА КАКИХ УСЛОВИЯХ — СВОИМ ХУКОМ (Р2, Р3, Р10): способ подачи, страницы счёта
+   * и заявление об освобождении. Здесь остаётся СОСТАВ и то, куда он уходит; там — чем ревизия
+   * будет вообще и собирают ли под ней подпись. Разрез тот же, что между строками и разметкой:
+   * вместе эти две темы читались бы как одна, каковой они не являются.
+   */
+  const presentation = useEstimatePresentation({
+    request,
+    rows,
+    breakdown,
+    actionRow,
+    assignment,
+  });
+  const { exemptionBody } = presentation;
+  /** Успех называет заявление, а не его исход: исход считает сервер, и портал его ещё не видел. */
+  const submittedMessage = () =>
+    presentation.exemption
+      ? 'Объём работ предъявлен вместе с заявлением об освобождении от подписи'
+      : 'Объём работ предъявлен на согласование';
+
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
     void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
@@ -133,6 +176,10 @@ export function useEstimateEditor({
         // формата, а форматов теперь три: «не гарантийный» перестало быть ответом на вопрос «каким
         // предъявлено».
         mode: 'items',
+        // Освобождение законно и у построчного предъявления, и это главный сценарий разбора
+        // (Р2): мелкий ремонт на месте вписывают строками и тут же помечают «согласование не
+        // требуется». Требование «при освобождении обязателен счёт» заказчик отверг 11.09.2026.
+        ...(exemptionBody() ? { exemption: exemptionBody() } : {}),
         comment: comment.trim(),
         version: current,
       });
@@ -143,7 +190,7 @@ export function useEstimateEditor({
       refresh();
       if (result.submitted) {
         // Не «отправлена»: заявка никуда не уехала — она осталась «В работе» и ждёт подписи (Р8).
-        message.success('Объём работ предъявлен на согласование');
+        message.success(submittedMessage());
         onClose();
       } else {
         message.success('Объём работ сохранён');
@@ -166,6 +213,34 @@ export function useEstimateEditor({
     onSuccess: () => {
       message.success('Гарантийный ремонт предъявлен без оплаты');
       refresh();
+      onClose();
+    },
+    onError: (e) => message.error(errorMessage(e)),
+  });
+
+  /**
+   * ПОДАЧА СЧЁТОМ (Р2): своя команда, а не та же с флагом. У неё другой формат ревизии, и уходит в
+   * ней другое — страницы документа вместо строк; суммы тело не несёт вовсе (ответ В5: «придёт от
+   * разбора документа»), и подставлять вместо неё ноль нельзя — ноль читался бы как «работы
+   * бесплатны».
+   *
+   * СОСТАВ ПЕРЕД ЭТИМ НЕ СОХРАНЯЕТСЯ, в отличие от построчной цепочки: набранное спрятано галочкой
+   * и в документную ревизию не переносится, а сохранённое сейчас легло бы черновиком, которого
+   * человек на экране не видит.
+   */
+  const documentMutation = useMutation({
+    mutationFn: () =>
+      serviceRequestsApi.submitEstimate(request!.id, {
+        mode: 'document',
+        fileIds: presentation.files.map((file) => file.id),
+        ...(exemptionBody() ? { exemption: exemptionBody() } : {}),
+        comment: comment.trim(),
+        version,
+      }),
+    onSuccess: (result) => {
+      setVersion(result.version);
+      refresh();
+      message.success(submittedMessage());
       onClose();
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -214,12 +289,23 @@ export function useEstimateEditor({
    * единого вопроса. Дыра закрывается на первом шаге, а не на втором.
    */
   const draftIssue = estimateDraftIssue(rows, mode);
+  /*
+   * Чего не хватает документной подаче — ровно одного: самого документа. Ни суммы, ни описания,
+   * ни реквизитов счёта у неё не спрашивают вовсе (ответы В5 и В13), и спросить их здесь значило
+   * бы придумать требование, которого нет ни в схеме, ни на сервере.
+   */
 
   return {
     rows,
     mode,
     comment,
     setComment,
+    /*
+     * Способ подачи и заявление об освобождении отдаются наружу как есть: разметке нужны ровно те
+     * же признаки, которыми они считаются, а переименованная по дороге копия разошлась бы с ними
+     * на первой же правке.
+     */
+    ...presentation,
     /** Что не так с набранным: в свободном режиме спрашивается описание и стоимость, не графы. */
     issue,
     /** То же для черновика: пустая запись законна, начатая без стоимости — нет (Д1). */
@@ -233,10 +319,15 @@ export function useEstimateEditor({
     filled: saved.length > 0,
     total: rowsTotal(rows),
     locked,
-    pending: saveMutation.isPending || warrantyMutation.isPending || breakdownMutation.isPending,
+    pending:
+      saveMutation.isPending ||
+      warrantyMutation.isPending ||
+      breakdownMutation.isPending ||
+      documentMutation.isPending,
     saving: saveMutation.isPending,
     warrantyPending: warrantyMutation.isPending,
     breakdownPending: breakdownMutation.isPending,
+    documentPending: documentMutation.isPending,
     /*
      * Смена режима (Р8). В свободный режим состав ПРИВОДИТСЯ, а не просто показывается двумя
      * полями: количество и вид у единственной строки становятся теми, какими их подставит портал,
@@ -262,6 +353,8 @@ export function useEstimateEditor({
      * окно не пускает вовсе.
      */
     submit: (asDraft: boolean) => saveMutation.mutate(!asDraft),
+    /** Предъявление счётом: полноту (есть ли страницы) спрашивает окно — сюда приходит готовое. */
+    submitDocument: () => documentMutation.mutate(),
     runWarranty: () => warrantyMutation.mutate(),
     /** Раскладка по графам: полноту так же спрашивает окно — сюда приходит уже проверенное. */
     runBreakdown: () => breakdownMutation.mutate(),

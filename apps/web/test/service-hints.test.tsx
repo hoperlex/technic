@@ -6,7 +6,7 @@ import {
   MODULE_GRANTS,
   OFFICE_EQUIPMENT_EXECUTOR_GRANT,
 } from '@technic/contracts';
-import { SERVICE_CLOSING_DOCUMENT_HINT, ServiceHint } from '@entities/service-request';
+import { serviceClosingDocumentHint, ServiceHint } from '@entities/service-request';
 import { mockHttp } from './http';
 import { renderWithUser } from './render';
 import {
@@ -154,12 +154,18 @@ const ON_CHECK = serviceRequest({
   },
 });
 
+/**
+ * Планка наследия: у заявки без документной ревизии перечень видов прежний — три. Текст берётся
+ * функцией, а не строкой: он считается по формату (Р5), и константы для него больше нет.
+ */
+const AWAITING_HINT = serviceClosingDocumentHint(null);
+
 describe('признак координатора считает вызывающий (Н14)', () => {
   it('вкладка документов: исполнителю и подрядчику — строка, ведению — плашка с описанием', () => {
     mockHttp({});
     renderWithUser(<ServiceRequestDocuments request={AWAITING} />, { user: IN_HOUSE });
 
-    expect(screen.getByText(SERVICE_CLOSING_DOCUMENT_HINT)).toBeDefined();
+    expect(screen.getByText(AWAITING_HINT)).toBeDefined();
     expect(alerts()).toHaveLength(0);
     expect(screen.queryByText(/Ожидаются документы/)).toBeNull();
   });
@@ -168,7 +174,7 @@ describe('признак координатора считает вызываю�
     mockHttp({});
     renderWithUser(<ServiceRequestDocuments request={AWAITING} />, { user: SERVICE_SIDE });
 
-    expect(screen.getByText(SERVICE_CLOSING_DOCUMENT_HINT)).toBeDefined();
+    expect(screen.getByText(AWAITING_HINT)).toBeDefined();
     expect(alerts()).toHaveLength(0);
   });
 
@@ -177,7 +183,7 @@ describe('признак координатора считает вызываю�
     renderWithUser(<ServiceRequestDocuments request={AWAITING} />, { user: COORDINATOR });
 
     expect(alerts()).toHaveLength(1);
-    expect(screen.getByText(SERVICE_CLOSING_DOCUMENT_HINT)).toBeDefined();
+    expect(screen.getByText(AWAITING_HINT)).toBeDefined();
     // Описание на месте: очередь «Ожидаются документы» разбирают именно по нему.
     expect(screen.getByText(/Ожидаются документы/)).toBeDefined();
   });

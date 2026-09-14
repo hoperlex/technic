@@ -15,6 +15,8 @@ import type {
   ServiceFileKind,
   ServiceRequestDto,
   MarkServiceChatReadInput,
+  OpenServiceEstimateDisputeInput,
+  ResolveServiceEstimateDisputeInput,
   SendServiceChatMessageInput,
   ServiceChatMessageDto,
   ServiceChatPageDto,
@@ -231,6 +233,20 @@ export const serviceRequestsApi = {
    */
   reopenEstimate: (id: string, body: ReasonInput) =>
     patch<ServiceRequestDto>(id, '/estimate/reopen', body),
+
+  /**
+   * Спор об освобождении от подписи — две ручки, а не одна с полем «исход» (Р9 плана
+   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`).
+   *
+   * Открытие останавливает заявку заморозкой с видом «спор» и требует причину: ею объясняют
+   * исполнителю, почему работу остановили. Разрешение несёт исход, а КУДА от него уйдёт заявка,
+   * решает матрица сервера («откуда открыт × исход»): портал про эти статусы не знает и знать не
+   * должен — вторая матрица разошлась бы с первой молча.
+   */
+  openEstimateDispute: (id: string, body: OpenServiceEstimateDisputeInput) =>
+    patch<ServiceRequestDto>(id, '/estimate/dispute', body),
+  resolveEstimateDispute: (id: string, body: ResolveServiceEstimateDisputeInput) =>
+    patch<ServiceRequestDto>(id, '/estimate/dispute/resolution', body),
 
   /**
    * Состав строк номенклатуры целиком (Н9), как и объём работ: это список того, что просят, и

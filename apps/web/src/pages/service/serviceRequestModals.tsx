@@ -15,9 +15,12 @@ import { ServiceCancelModal } from '@features/service-cancel';
 import { ServiceHoldModal, type HoldMode } from '@features/service-hold';
 import { EquipmentMoveFromRequest } from '@features/equipment-move';
 import { ServiceUrgencyModal } from '@features/service-urgency';
+import { ServiceEstimateDisputeModal } from './ServiceEstimateDisputeModal';
 import { ServiceRequestConsumablesModal } from './ServiceRequestConsumables';
 import { reportServiceMail } from './serviceMailNotice';
 import { cancelErases, type ReasonPrompt } from './serviceRequestPrompts';
+import { serviceActionRow, serviceExecutorAssignment } from './serviceRequestRow';
+import { useAuth } from '../../auth/AuthContext';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { errorMessage } from '../../utils/format';
 
@@ -31,6 +34,13 @@ export interface ServiceRequestModals {
    * содержания у него нет, и оно идёт подтверждением прямо из набора действий.
    */
   approval: (request: ServiceRequestDto) => void;
+  /**
+   * Разрешение спора об освобождении от подписи (Р9 плана
+   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`): три исхода в одном окне. Само
+   * ОТКРЫТИЕ спора сюда не заходит — у него из содержания одна лишь причина, и идёт оно общим
+   * окном причины (`ask`), как отказ и откаты.
+   */
+  disputeResolution: (request: ServiceRequestDto) => void;
   /**
    * Состав номенклатуры заявки на расходники (Р15) — то же окно, каким у ремонта правят объём
    * работ: у обоих видов заявки исполнитель отвечает на один вопрос, «что по ней пойдёт».
@@ -80,10 +90,17 @@ export interface ServiceRequestModals {
 export function useServiceRequestModals(): ServiceRequestModals {
   const { message } = App.useApp();
   const qc = useQueryClient();
+  /*
+   * Смотрящий нужен ровно одному окну — объёму работ: признаки назначения на заявку
+   * (`serviceExecutorAssignment`) считаются парой «человек ↔ эта строка», и без человека такой пары
+   * нет. Остальные окна берут его сами через `useAuth`, потому что спрашивают о нём своё.
+   */
+  const { user } = useAuth();
 
   const [assignTarget, setAssignTarget] = useState<ServiceRequestDto | null>(null);
   const [estimateTarget, setEstimateTarget] = useState<ServiceRequestDto | null>(null);
   const [approvalTarget, setApprovalTarget] = useState<ServiceRequestDto | null>(null);
+  const [disputeTarget, setDisputeTarget] = useState<ServiceRequestDto | null>(null);
   const [consumablesTarget, setConsumablesTarget] = useState<ServiceRequestDto | null>(null);
   const [completeTarget, setCompleteTarget] = useState<ServiceRequestDto | null>(null);
   const [issueTarget, setIssueTarget] = useState<ServiceRequestDto | null>(null);
@@ -119,6 +136,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
     setAssignTarget(null);
     setEstimateTarget(null);
     setApprovalTarget(null);
+    setDisputeTarget(null);
     setConsumablesTarget(null);
     setCompleteTarget(null);
     setIssueTarget(null);
@@ -135,6 +153,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
     assign: setAssignTarget,
     estimate: setEstimateTarget,
     approval: setApprovalTarget,
+    disputeResolution: setDisputeTarget,
     consumables: setConsumablesTarget,
     complete: setCompleteTarget,
     issue: setIssueTarget,
@@ -158,11 +177,29 @@ export function useServiceRequestModals(): ServiceRequestModals {
         {assignTarget && (
           <AssignServiceModal request={assignTarget} onClose={() => setAssignTarget(null)} />
         )}
+        {/* Перевод карточки для предикатов — ГОТОВЫМ ОТ ЭТОГО СЛОЯ (Р3 плана освобождения). Окно
+            спрашивает им `canDeclareExemption`, то есть решает, показывать ли чекбокс
+            «Согласование не требуется»; не передай мы его, окно честно уходит в fail-closed — и
+            денежное решение становится недостижимым вовсе, а не «недоступным не тому». Перевод
+            берётся тот единственный, что уже есть в портале (`serviceActionRow`,
+            `serviceExecutorAssignment`): второй, собранный здесь по-своему, разошёлся бы с меню
+            действий молча и ровно на тех полях, по которым сервер отвечает 403. */}
         {estimateTarget && (
-          <EstimateEditorModal request={estimateTarget} onClose={() => setEstimateTarget(null)} />
+          <EstimateEditorModal
+            request={estimateTarget}
+            actionRow={serviceActionRow(estimateTarget)}
+            assignment={serviceExecutorAssignment(estimateTarget, user)}
+            onClose={() => setEstimateTarget(null)}
+          />
         )}
         {approvalTarget && (
           <EstimateApprovalModal request={approvalTarget} onClose={() => setApprovalTarget(null)} />
+        )}
+        {disputeTarget && (
+          <ServiceEstimateDisputeModal
+            request={disputeTarget}
+            onClose={() => setDisputeTarget(null)}
+          />
         )}
         {consumablesTarget && (
           <ServiceRequestConsumablesModal

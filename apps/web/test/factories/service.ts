@@ -259,6 +259,73 @@ export function heldServiceRequest(
   });
 }
 
+/**
+ * Заявка, принятая БЕЗ ПОДПИСИ: оператор сервиса заявил освобождение, рубильник был включён, и
+ * подпись проставило автопринятие (Р3, Р11 плана
+ * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`).
+ *
+ * ЧЕТЫРЕ ПОЛЯ ХОДЯТ ВМЕСТЕ, И ПОРОЗНЬ ИХ НЕ БЫВАЕТ: заявление с исходом `applied` по действующей
+ * ревизии, снимок подписи по ТОЙ ЖЕ ревизии, источник подписи `auto` и пустой автор — этого требует
+ * `service_requests_estimate_approval_source_check` («auto» с автором не бывает). Именно этой
+ * четвёркой сервер считает `exemptionApplied`, и фикстура, собранная наполовину, описывала бы
+ * состояние, которого в базе нет, — а предикаты спора честно отвечали бы на ней «нельзя».
+ */
+export function autoAcceptedServiceRequest(
+  overrides: Partial<ServiceRequestDto> = {},
+): ServiceRequestDto {
+  return serviceRequest({
+    status: 'in_work',
+    service: { ...SERVICE_COUNTERPARTY },
+    estimateRevision: 1,
+    estimatedTotalAmount: 12000,
+    approval: {
+      revision: 1,
+      // Автора у автопринятия нет вовсе: подпись поставил не человек.
+      by: null,
+      byName: '',
+      at: '2026-09-10T09:30:00.000Z',
+      source: 'auto',
+    },
+    exemption: {
+      revision: 1,
+      by: 'user-5',
+      byName: 'Сервисов А. А.',
+      at: '2026-09-10T09:30:00.000Z',
+      note: 'мелкий ремонт на месте',
+      outcome: 'applied',
+    },
+    ...overrides,
+  });
+}
+
+/**
+ * Заявка, остановленная спором об освобождении (Р9): заморозка с видом «спор» и открытая строка
+ * спора. Исходный статус — «В работе»: из «Решена» спор тоже открывают, и такой случай сценарий
+ * задаёт сам, передав `heldFromStatus`.
+ */
+export function disputedServiceRequest(
+  overrides: Partial<ServiceRequestDto> = {},
+): ServiceRequestDto {
+  return autoAcceptedServiceRequest({
+    status: 'on_hold',
+    heldFromStatus: 'in_work',
+    holdReason: 'счёт вдвое выше сметы соседней заявки',
+    dispute: {
+      revision: 1,
+      state: 'open',
+      reason: 'счёт вдвое выше сметы соседней заявки',
+      openedBy: 'user-1',
+      openedByName: 'Штабов С. И.',
+      openedAt: '2026-09-11T08:00:00.000Z',
+      outcome: null,
+      resolvedBy: null,
+      resolvedByName: '',
+      resolvedAt: null,
+    },
+    ...overrides,
+  });
+}
+
 /** Подшитый документ: вид — единственное, чем они различаются для планки приёмки (Р112). */
 export function serviceRequestFile(
   kind: ServiceFileKind = 'act',

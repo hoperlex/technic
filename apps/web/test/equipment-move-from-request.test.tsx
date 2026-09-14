@@ -65,6 +65,7 @@ const MODALS: ServiceRequestModals = {
   assign: () => {},
   estimate: () => {},
   approval: () => {},
+  disputeResolution: () => {},
   consumables: () => {},
   complete: () => {},
   issue: () => {},

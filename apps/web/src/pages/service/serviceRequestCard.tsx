@@ -14,7 +14,7 @@ import type { CardConfig } from '@shared/ui';
 import { ServiceStatusCell } from './ServiceStatusCell';
 import { cardListMenuItems } from './serviceMenuPlacement';
 import type { ServiceGridOptions } from './serviceRequestGrid';
-import { amountLabel } from './serviceRequestCells';
+import { amountLabel, ExemptionTag } from './serviceRequestCells';
 
 /**
  * Карточка заявки на телефоне (§9.7): номер и статус в шапке, дальше — техника и суть.
@@ -37,6 +37,9 @@ export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<Service
             отличие от срочности рядом: причину срочности карточка выносит отдельной строкой, а
             период, за который считали повторы, назвать больше негде. */}
         <RepeatTag repeat={r.repeat} />
+        {/* «Без согласования» — и на телефоне (Р13 плана освобождения от подписи): список читают
+            с него так же часто, а тег отвечает на вопрос «мимо каких заявок прошли деньги». */}
+        <ExemptionTag request={r} />
         {/* Тап по тегу открывает шит переходов, тап по карточке — саму заявку (ADR 0161). */}
         <ServiceStatusCell request={r} items={opts.actions(r)} pending={opts.pendingId === r.id} />
       </Space>

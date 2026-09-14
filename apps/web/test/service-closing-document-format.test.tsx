@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { screen } from '@testing-library/react';
 import type { AuthUser, ServiceEstimateFormat, ServiceRequestDto } from '@technic/contracts';
+import { serviceClosingDocumentHint } from '@entities/service-request';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { emptyList, list } from './factories/common';
@@ -163,7 +164,13 @@ describe('роль файла — вторая половина правила (
 });
 
 describe('окно приёмки считает нехватку бумаги тем же правилом (Р112)', () => {
-  const HINT = 'Нужен один из документов: акт, счёт или гарантийный талон';
+  /*
+   * Текстов теперь два, и это половина того же правила (Р5): перечень видов в подсказке считается
+   * по формату действующей ревизии. Прежний единственный текст звал подшить счёт и у документной
+   * заявки — то есть предлагал закрыть её тем самым документом, которым её открыли.
+   */
+  const LEGACY_HINT = serviceClosingDocumentHint(null);
+  const DOCUMENT_HINT = serviceClosingDocumentHint('document');
 
   function renderAccept(request: ServiceRequestDto): void {
     mockHttp({});
@@ -172,10 +179,12 @@ describe('окно приёмки считает нехватку бумаги �
     });
   }
 
-  it('у документной заявки со счётом предупреждение остаётся', async () => {
+  it('у документной заявки со счётом предупреждение остаётся — и называет один акт', async () => {
     renderAccept(presented('document', [serviceRequestFile('invoice')]));
 
-    expect(await screen.findByText(HINT)).toBeDefined();
+    expect(await screen.findByText(DOCUMENT_HINT)).toBeDefined();
+    // Перечня из трёх видов у неё нет: подшив по нему счёт, человек остался бы в той же очереди.
+    expect(screen.queryByText(LEGACY_HINT)).toBeNull();
     // Приёмку планка не запирает с Н8: окно говорит о нехватке, но закрыть заявку рукой даёт —
     // иначе заявка-наследие без бумаги осталась бы без единого выхода.
     expect((screen.getByRole('button', { name: 'Принять' }) as HTMLButtonElement).disabled).toBe(
@@ -187,13 +196,13 @@ describe('окно приёмки считает нехватку бумаги �
     renderAccept(presented('document', [serviceRequestFile('act')]));
 
     await screen.findByText(/Предъявлено/);
-    expect(screen.queryByText(HINT)).toBeNull();
+    expect(screen.queryByText(DOCUMENT_HINT)).toBeNull();
   });
 
   it('у построчной заявки счёта по-прежнему довольно', async () => {
     renderAccept(presented('items', [serviceRequestFile('invoice')]));
 
     await screen.findByText(/Предъявлено/);
-    expect(screen.queryByText(HINT)).toBeNull();
+    expect(screen.queryByText(LEGACY_HINT)).toBeNull();
   });
 });

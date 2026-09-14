@@ -389,6 +389,19 @@ const DOORS: Record<string, Door> = {
     call: via('reopenEstimate'),
     entry: 'кнопка «Вернуть в правку» под таблицей объёма работ',
   },
+  /*
+   * Спор об освобождении от подписи (Р9 плана
+   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`). Двери две, потому что действий
+   * два: остановить заявку и разрешить спор, — и открывает их «Ведение» из меню действий заявки.
+   */
+  'PATCH /api/v1/service-requests/:id/estimate/dispute': {
+    call: via('openEstimateDispute'),
+    entry: 'пункт «Оспорить освобождение» → окно причины',
+  },
+  'PATCH /api/v1/service-requests/:id/estimate/dispute/resolution': {
+    call: via('resolveEstimateDispute'),
+    entry: 'пункт «Разрешить спор» → окно с тремя исходами',
+  },
   'PUT /api/v1/service-requests/:id/consumables': {
     call: via('putConsumables'),
     entry: 'кнопка под таблицей на вкладке «Расходники»',

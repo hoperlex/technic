@@ -12,6 +12,8 @@ import {
 import { authUser } from './factories/auth';
 import {
   assignedServiceRequest,
+  autoAcceptedServiceRequest,
+  disputedServiceRequest,
   estimatePendingServiceRequest,
   heldServiceRequest,
   SERVICE_COUNTERPARTY,
@@ -167,6 +169,17 @@ const ENTRIES: Record<string, EntryRow> = {
      */
     note: 'две двери в карточке: пункт меню и третья кнопка вкладки — в §4.2 не объявлено',
   },
+  /*
+   * Спор об освобождении (Р9 плана `docs/office-equipment-on-site-and-invoice-estimate-plan.md`) —
+   * два пункта и ни одного второго входа: решение по нему принимают «Действиями», а не кнопкой под
+   * таблицей объёма работ. Кнопок там три, и они про подпись — спор же останавливает заявку
+   * целиком, вплоть до её отмены.
+   *
+   * На теге статуса их нет намеренно, хотя заявку они двигают: дверь открывает не коридор (сервер
+   * его здесь не спрашивает), а у разрешения цель и вовсе считает матрица «откуда открыт × исход».
+   */
+  'estimate-dispute': { label: 'Оспорить освобождение' },
+  'estimate-dispute-resolve': { label: 'Разрешить спор' },
   complete: { label: 'Закрыть работы', statusTag: true },
   accept: { label: 'Принять работу', statusTag: true },
   rework: { label: 'Вернуть на доработку', statusTag: true },
@@ -241,6 +254,7 @@ const MODALS: ServiceRequestModals = {
   assign: () => {},
   estimate: () => {},
   approval: () => {},
+  disputeResolution: () => {},
   consumables: () => {},
   complete: () => {},
   issue: () => {},
@@ -303,11 +317,24 @@ function requestsIn(status: ServiceRequestStatus): ServiceRequestDto[] {
     estimatePendingServiceRequest({ status, service: { ...SERVICE_COUNTERPARTY } }),
     // Расходники: объёма работ у них нет, зато есть состав расходников и отметка выдачи.
     assignedServiceRequest({ status, kind: 'consumable' }),
+    /*
+     * Освобождение от подписи применено (Р3): без этой строки «Оспорить освобождение» не появилось
+     * бы ни разу — предикат спора спрашивает не статус, а четвёрку признаков автопринятия, — и
+     * караул сторожил бы реестр, в котором пункта нет.
+     */
+    autoAcceptedServiceRequest({ status }),
   ];
   // У отложенной цель возврата берётся из самой заявки, и без исходного статуса пункт возобновления
   // не попал бы в список переходов вовсе.
   if (status === 'on_hold') {
-    return [...rows, heldServiceRequest('in_work'), heldServiceRequest('new')];
+    // Третья строка — заявка, остановленная СПОРОМ: обычная заморозка «Разрешить спор» не открывает,
+    // и различает их вид заморозки, а не статус (Р9).
+    return [
+      ...rows,
+      heldServiceRequest('in_work'),
+      heldServiceRequest('new'),
+      disputedServiceRequest(),
+    ];
   }
   return rows;
 }
