@@ -37,6 +37,14 @@ export interface LintMessage {
 }
 
 export interface LintFacts extends ToolRun {
+  /**
+   * Удалось ли получить машинный отчёт.
+   *
+   * Отдельно от `ok`, и это не педантизм: `ok: false` значит «в коде есть ошибки», а
+   * `measured: false` — «инструмент не смог проверить». Спутать их опасно ровно в одну сторону:
+   * ноль ошибок у несработавшего линта выглядит как чистый код и пропускает правку в приём.
+   */
+  readonly measured: boolean;
   readonly errors: number;
   readonly warnings: number;
   readonly byRule: Readonly<Record<string, number>>;

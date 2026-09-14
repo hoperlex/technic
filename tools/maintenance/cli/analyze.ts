@@ -18,6 +18,11 @@ import { renderPacket } from '../work-packets/render.ts';
 import { reviewerPacket } from '../work-packets/reviewer.ts';
 import { fixerPacket } from '../work-packets/fixer.ts';
 import { ensureWorkspace } from '../state/workspace.ts';
+import { collectLint } from '../analyzers/lint.ts';
+import { run, toolRun } from '../analyzers/run.ts';
+import { FileCheckpointTransaction } from '../git/transaction.ts';
+import { snapshotBaseline } from '../verification/behavior-lock.ts';
+import { readBatch, saveBatch } from './verify.ts';
 import type { CommandResult } from './commands.ts';
 import { loadPolicies } from './commands.ts';
 
@@ -250,6 +255,57 @@ export async function fixTask(config: MaintenanceConfig, out: Reporter): Promise
     return { ok: false };
   }
 
+  // Открытая партия означает, что предыдущая правка не проверена. Выдать вторую поверх первой
+  // значит потерять возможность откатить обе: контрольные точки перекроются.
+  if (readBatch(workspace) !== null) {
+    out.error('уже есть открытая партия: завершите её командой verify или снимите командой abort');
+    return { ok: false };
+  }
+
+  /*
+   * Контрольная точка снимается ДО выдачи задания и только с файлов партии.
+   *
+   * Дерево здесь общее: рядом лежит чужая незавершённая работа, и откат «всего дерева» унёс бы её
+   * вместе с неудачной правкой. Поэтому сохраняются ровно те файлы, которые разрешено трогать.
+   *
+   * Вместе с точкой снимается базовая линия инструментов: без неё «стало хуже» не с чем сравнить,
+   * а сравнивать с прошлым прогоном нельзя — дерево между ними меняли другие.
+   */
+  const allowed = [...new Set(selected.flatMap((finding) => finding.files))].sort();
+  out.heading('контрольная точка');
+  out.item('снимаю базовую линию: линт и типы');
+  const lint = collectLint({
+    root: config.root,
+    command: config.analysis.lintCommand,
+    outFile: path.join(workspace.tmp, 'lint-before.json'),
+    keepMessages: 50,
+  });
+  const typecheckRun = run(config.root, config.analysis.typecheckCommand);
+  const typecheck = toolRun(
+    typecheckRun,
+    typecheckRun.code === 0 ? 'типы сходятся' : 'типы не сходятся',
+  );
+  out.item(`линт: ${lint.summary}`);
+  out.item(`типы: ${typecheck.summary}`);
+
+  const transaction = new FileCheckpointTransaction(config.root, workspace.checkpoints);
+  const checkpoint = await transaction.createCheckpoint(allowed);
+  try {
+    saveBatch(workspace, {
+      checkpoint,
+      allowed,
+      findings: selected.map((finding) => finding.id),
+      baseline: snapshotBaseline(config, lint, typecheck),
+      createdAt: new Date().toISOString(),
+    });
+  } catch (cause) {
+    // Точка без записи о партии — сирота: её никто не примет и не откатит, а следующий прогон
+    // увидит открытую партию, которой нет. Поэтому неудачная запись снимает и точку.
+    await transaction.accept(checkpoint);
+    throw cause;
+  }
+  out.item(`сохранено файлов: ${allowed.length}, точка ${checkpoint}`);
+
   const outputFile = path.join(path.relative(config.root, workspace.results), 'fix.json');
   const packet = fixerPacket({
     findings: selected,
@@ -269,6 +325,6 @@ export async function fixTask(config: MaintenanceConfig, out: Reporter): Promise
   out.item(`задание: ${path.relative(config.root, workspace.taskFile)}`);
   out.item(`ответ положить в: ${outputFile}`);
   out.line();
-  out.item('после правки: проверка и приём/откат появятся этапом ЭC плана');
+  out.item('после правки: `pnpm maintain verify` проверит и примет или откатит партию');
   return { ok: true };
 }

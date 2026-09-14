@@ -19,6 +19,10 @@ export interface Workspace {
   readonly results: string;
   readonly reports: string;
   readonly tmp: string;
+  /** Состояние текущей партии: что разрешено править и от чего откатываться. */
+  readonly state: string;
+  /** Контрольные точки: копии файлов партии до правки. */
+  readonly checkpoints: string;
   readonly taskFile: string;
 }
 
@@ -29,6 +33,8 @@ export function workspaceOf(runtimeDir: string): Workspace {
     results: path.join(runtimeDir, 'results'),
     reports: path.join(runtimeDir, 'reports'),
     tmp: path.join(runtimeDir, 'tmp'),
+    state: path.join(runtimeDir, 'state'),
+    checkpoints: path.join(runtimeDir, 'checkpoints'),
     taskFile: path.join(runtimeDir, 'task.md'),
   };
 }
@@ -41,6 +47,8 @@ export function ensureWorkspace(runtimeDir: string): Workspace {
     workspace.results,
     workspace.reports,
     workspace.tmp,
+    workspace.state,
+    workspace.checkpoints,
   ]) {
     mkdirSync(dir, { recursive: true });
   }

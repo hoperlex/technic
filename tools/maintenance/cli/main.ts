@@ -20,6 +20,7 @@ import { ConsoleReporter } from '../reporters/console.ts';
 import type { Severity } from '../core/types.ts';
 import { doctor, showModules, showPolicies, showSurfaces, type CommandResult } from './commands.ts';
 import { analyze, fixTask, review } from './analyze.ts';
+import { abortBatch, verify } from './verify.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const out = new ConsoleReporter();
@@ -35,10 +36,13 @@ function help(): void {
   out.line('  analyze [--all] [--since <ref>] [--pass <id>] [--with-tests]');
   out.line('                          собрать факты и выдать задание ревьюеру');
   out.line('  review [--file <путь>]  разобрать ответ ревьюера и отобрать безопасное');
-  out.line('  fix-task                собрать задание исполнителю по отбору');
+  out.line('  fix-task                снять контрольную точку и собрать задание исполнителю');
+  out.line('  verify [--level <id>] [--allow-concurrent]');
+  out.line('                          проверить правку и принять её либо откатить');
+  out.line('  abort [--rollback]      снять открытую партию: с откатом или оставив дерево');
   out.line();
-  out.line('Дальнейшие команды (verify, converge, deep, report) появляются этапами');
-  out.line('ЭC–ЭF плана docs/maintenance-framework-plan.md.');
+  out.line('Дальнейшие команды (converge, deep, report) появляются этапами ЭD–ЭF плана');
+  out.line('docs/maintenance-framework-plan.md.');
 }
 
 /** Значение именованного аргумента: `--since HEAD~3`. Отсутствует — `null`, а не пустая строка. */
@@ -50,6 +54,20 @@ function valueArg(args: readonly string[], name: string): string | null {
     throw new MaintenanceConfigError('аргументы', `${name} ожидает значение`);
   }
   return value;
+}
+
+/** Повторяемый аргумент: `--level database --level e2e`. */
+function allValues(args: readonly string[], name: string): string[] {
+  const out: string[] = [];
+  args.forEach((arg, index) => {
+    if (arg !== name) return;
+    const value = args[index + 1];
+    if (value === undefined || value.startsWith('--')) {
+      throw new MaintenanceConfigError('аргументы', `${name} ожидает значение`);
+    }
+    out.push(value);
+  });
+  return out;
 }
 
 function severityArg(args: readonly string[]): Severity | null {
@@ -95,6 +113,15 @@ async function main(): Promise<number> {
       break;
     case 'fix-task':
       result = await fixTask(config, out);
+      break;
+    case 'verify':
+      result = await verify(config, out, {
+        levels: allValues(args, '--level'),
+        allowConcurrent: args.includes('--allow-concurrent'),
+      });
+      break;
+    case 'abort':
+      result = await abortBatch(config, out, { rollback: args.includes('--rollback') });
       break;
     default:
       out.error(`неизвестная команда: ${command}`);

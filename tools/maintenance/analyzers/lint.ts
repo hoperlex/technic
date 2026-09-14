@@ -44,6 +44,7 @@ export function collectLint(options: LintOptions): LintFacts {
   if (!Array.isArray(report)) {
     return {
       ok: false,
+      measured: false,
       durationMs: result.durationMs,
       summary: result.failedToStart
         ? `линт не запустился: ${result.stderr.trim().slice(0, 200)}`
@@ -85,6 +86,7 @@ export function collectLint(options: LintOptions): LintFacts {
 
   return {
     ok: errors === 0,
+    measured: true,
     durationMs: result.durationMs,
     summary: `${errors} ошибок, ${warnings} предупреждений`,
     errors,
