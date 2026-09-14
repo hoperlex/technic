@@ -8,8 +8,8 @@
   [ADR 0063](0063-user-archive-lifecycle.md) (архив учётки), [ADR 0070](0070-request-archive-tab.md) (три
   положения архива), [ADR 0086](0086-role-addons.md) (надстройки доступа),
   [ADR 0092](0092-user-email-change.md) (смена адреса), [ADR 0102](0102-driver-cabinet.md)
-  (привязанный работник), план
-  [docs/users-audit-rework-plan.md](../users-audit-rework-plan.md). Миграций нет
+  (привязанный работник); план переделки аудита снят из дерева
+  14.09.2026 и остаётся в истории git. Миграций нет
 
 ## Контекст
 

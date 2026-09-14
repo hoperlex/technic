@@ -8,7 +8,7 @@
   [ADR 0015](0015-vehicle-request-history.md) (история заявки),
   `packages/contracts/src/vehicle-requests.ts`, `apps/api/src/routes/vehicle-requests.ts`,
   `apps/web/src/pages/vehicle/VehicleEarlyEndModal.tsx`, миграция `0071`
-- План постановки: `docs/vehicle-early-end-plan.md`
+- План постановки снят из дерева 14.09.2026 и остаётся в истории git
 
 ## Контекст
 

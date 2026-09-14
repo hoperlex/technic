@@ -9,7 +9,7 @@
   `apps/api/src/services/container-groups.ts`, `apps/api/src/routes/waste-requests.ts`,
   `apps/web/src/pages/waste/containerGroups.ts`, `apps/web/src/pages/WasteRequestsPage.tsx`,
   `apps/web/src/pages/waste/OnSiteTab.tsx`, `apps/web/src/pages/waste/WasteRequestViewModal.tsx`
-- Постановка: [docs/waste-container-ownership-plan.md](../waste-container-ownership-plan.md)
+- Постановка снята из дерева 14.09.2026 и остаётся в истории git
 
 ## Контекст
 
