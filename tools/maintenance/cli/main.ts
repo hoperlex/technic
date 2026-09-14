@@ -21,6 +21,7 @@ import type { Severity } from '../core/types.ts';
 import { doctor, showModules, showPolicies, showSurfaces, type CommandResult } from './commands.ts';
 import { analyze, fixTask, review } from './analyze.ts';
 import { abortBatch, verify } from './verify.ts';
+import { converge, report } from './converge.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const out = new ConsoleReporter();
@@ -41,8 +42,13 @@ function help(): void {
   out.line('                          проверить правку и принять её либо откатить');
   out.line('  abort [--rollback]      снять открытую партию: с откатом или оставив дерево');
   out.line();
-  out.line('Дальнейшие команды (converge, deep, report) появляются этапами ЭD–ЭF плана');
-  out.line('docs/maintenance-framework-plan.md.');
+  out.line('  converge [--status] [--abort] [--allow-concurrent] [--level <id>]');
+  out.line(
+    '                          цикл сходимости: продвигает прогон на шаг и называет следующий',
+  );
+  out.line('  report                  отчёт прогона и список решений для человека');
+  out.line();
+  out.line('Тяжёлое окно (deep) появляется этапом ЭF плана docs/maintenance-framework-plan.md.');
 }
 
 /** Значение именованного аргумента: `--since HEAD~3`. Отсутствует — `null`, а не пустая строка. */
@@ -122,6 +128,17 @@ async function main(): Promise<number> {
       break;
     case 'abort':
       result = await abortBatch(config, out, { rollback: args.includes('--rollback') });
+      break;
+    case 'converge':
+      result = await converge(config, out, {
+        allowConcurrent: args.includes('--allow-concurrent'),
+        levels: allValues(args, '--level'),
+        abort: args.includes('--abort'),
+        status: args.includes('--status'),
+      });
+      break;
+    case 'report':
+      result = await report(config, out);
       break;
     default:
       out.error(`неизвестная команда: ${command}`);
