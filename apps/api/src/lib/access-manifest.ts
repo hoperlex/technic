@@ -959,6 +959,17 @@ export const ACCESS_MANIFEST = {
     anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
     why: 'работа исполнителя: у стороны — право на объём работ, у поимённого — назначение',
   },
+  // Спор об освобождении от подписи (план освобождения от согласования, Р9): открывает и разрешает
+  // тот, кто ведёт заявки, — тем же правом, что и распределяет их. Оператор подрядчика отбит
+  // предикатами явно: спорить с собственным освобождением — не спор, а отмена задним числом.
+  'PATCH /api/v1/service-requests/:id/estimate/dispute': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.assign'],
+  },
+  'PATCH /api/v1/service-requests/:id/estimate/dispute/resolution': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.assign'],
+  },
   'PATCH /api/v1/service-requests/:id/estimate/submit': {
     kind: 'anyOf',
     anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
@@ -1854,6 +1865,19 @@ export const ACCESS_MANIFEST = {
     allOf: ['vehicleReadings.read'],
   },
 
+  // ── Сводная аналитика по заказчикам (`docs/analytics-summary-export-plan.md`) ──
+  //
+  // Право своё — `analytics.export`, и требований у него нет намеренно (Р2): свод сводит заказ
+  // техники, вывоз мусора и механизацию, и требование читать все три модуля закрыло бы его
+  // финансовой службе, ради которой он и заводится. Персональных данных в ответе нет вовсе —
+  // объекты, техника, количества и деньги.
+  //
+  // Область манифест, как обычно, не описывает: требование «вся организация» (Р3) проверяется в
+  // самом обработчике — оно не открывает маршрут, а отказывает держателю права с узкой областью,
+  // чтобы свод не приходил молча усечённым.
+  'GET /api/v1/analytics/summary': { kind: 'permissions', allOf: ['analytics.export'] },
+  'GET /api/v1/analytics/export': { kind: 'permissions', allOf: ['analytics.export'] },
+
   // ── Чеки на автозапчасти (план `docs/auto-part-receipts-plan.md`, Р4а, Р5, Р12; §7) ──
   //
   // Все десять строк — простой вид `permissions`: условных прав в модуле нет ни одного, и это
@@ -1936,6 +1960,12 @@ export const ACCESS_MANIFEST = {
   // Перебором прав это не проверяется, поэтому четыре маршрута объявлены `handlerAuthorized` —
   // и остаются перечислимыми: `route-authorization.test.ts` держит инвариант «`handler:` бывает
   // только у файлов», а само правило доказывает `test/file-access.test.ts`.
+  //
+  // Карантин — исключение из этого правила, и потому он обычное право: запирают файл НЕ по той
+  // заявке, к которой он подшит, а по инциденту с его содержимым (план
+  // `docs/office-equipment-on-site-and-invoice-estimate-plan.md`, Р6, п. 4). Видимость заявки тут
+  // не критерий вовсе — карантин закрывает содержимое всем, включая автора загрузки, — и оба
+  // маршрута закрыты статическим стражем, который перебор прав проверяет обычным порядком.
   'DELETE /api/v1/files/:id': {
     kind: 'handlerAuthorized',
     why: 'файл виден тому, кому видна связанная заявка',
@@ -1955,6 +1985,17 @@ export const ACCESS_MANIFEST = {
     kind: 'handlerAuthorized',
     why: 'файл виден тому, кому видна связанная заявка',
     provenBy: 'test/file-access.test.ts',
+  },
+  // Постановка и снятие — одно право на обе стороны намеренно: запирать, не видя содержимого,
+  // значит запирать наугад, а пара «закрыть может один, открыть другой» теряет документ
+  // (довод целиком — у самого права в `packages/contracts/src/permissions.ts`).
+  'POST /api/v1/files/:id/quarantine': {
+    kind: 'permissions',
+    allOf: ['files.quarantineAudit'],
+  },
+  'POST /api/v1/files/:id/quarantine/release': {
+    kind: 'permissions',
+    allOf: ['files.quarantineAudit'],
   },
 } as const satisfies Record<RouteKey, AccessCondition>;
 

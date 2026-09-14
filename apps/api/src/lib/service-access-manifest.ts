@@ -147,6 +147,9 @@ export type ServiceStateGate =
   | 'canApproveServiceEstimate'
   | 'canReopenServiceEstimate'
   | 'canAssignServiceExecutors'
+  /** Спор об освобождении от подписи (Р9 плана освобождения): кто вправе открыть и кто разрешить. */
+  | 'canOpenServiceEstimateDispute'
+  | 'canResolveServiceEstimateDispute'
   /** Участие в разговоре и закрытость заявки — внутри транзакции, под блокировкой (ADR 0141). */
   | 'canWriteChat'
   /** Куда возвращается отложенная заявка; `null` означает «она не отложена». */
@@ -420,6 +423,27 @@ export const SERVICE_ACCESS_MANIFEST = {
     scope: 'visibility',
     side: 'executor',
     state: 'canReopenServiceEstimate',
+  },
+  /*
+   * СПОР ОБ ОСВОБОЖДЕНИИ ОТ ПОДПИСИ (Р9 плана `office-equipment-on-site-and-invoice-estimate-plan.md`).
+   *
+   * Сторона — «Ведение» (право `serviceRequests.assign`), и оператор контрагента-сервиса отбит
+   * предикатами явно: спорить со своим же освобождением — не спор, а его отмена задним числом.
+   * Область приходит через `requireEditable`, как у всех изменяющих ручек модуля.
+   *
+   * Коридор статусов у обеих дверей НЕ спрашивается, и это то же решение, что у согласования выше:
+   * дуги «Отложена» и «Отменена» приходят правами `hold` и `status`, а спор ведёт держатель
+   * `assign` — спроси мы коридор, сторона Р9 получила бы ручку и не смогла бы ею воспользоваться.
+   */
+  'PATCH /api/v1/service-requests/:id/estimate/dispute': {
+    scope: 'visibility',
+    side: 'operator',
+    state: 'canOpenServiceEstimateDispute',
+  },
+  'PATCH /api/v1/service-requests/:id/estimate/dispute/resolution': {
+    scope: 'visibility',
+    side: 'operator',
+    state: 'canResolveServiceEstimateDispute',
   },
   // Состав расходников подбирает исполнитель, а не заявитель (Р15 плана упрощения цикла).
   // Состояние — перечень статусов поимённо («Новая» и «В работе»), своего предиката у него нет.

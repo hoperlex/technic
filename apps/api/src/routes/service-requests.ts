@@ -37,8 +37,10 @@ import {
   canDeclareExemption,
   canDeclineServiceRequest,
   canHoldService,
+  canOpenServiceEstimateDispute,
   canPickAnyServiceSubject,
   canReopenServiceEstimate,
+  canResolveServiceEstimateDispute,
   canResumeService,
   canSubmitServiceEstimate,
   canTransitionServiceStatus,
@@ -58,12 +60,14 @@ import {
   isWaitingOn,
   moscowInstantOf,
   officeEquipmentTitle,
+  openServiceEstimateDisputeSchema,
   parseServiceRequestNumberSearch,
   projectServiceRequestForAudience,
   putServiceEstimateBreakdownSchema,
   putServiceEstimateSchema,
   putServiceExecutorsSchema,
   reopenServiceEstimateSchema,
+  resolveServiceEstimateDisputeSchema,
   reworkServiceRequestSchema,
   roleLabels,
   putServiceConsumablesSchema,
@@ -73,6 +77,8 @@ import {
   SERVICE_ADMIN_ROLLBACKS,
   isServiceClosingDocument,
   SERVICE_CLOSING_DOCUMENT_KINDS,
+  SERVICE_ESTIMATE_DISPUTE_HOLD_KIND,
+  SERVICE_ESTIMATE_DISPUTE_OPEN_STATUSES,
   SERVICE_REQUEST_STATUSES,
   SERVICE_WAITING_ON,
   serviceCommentSchema,
@@ -120,6 +126,7 @@ import {
   type AccessSubject,
   type EquipmentCandidateInput,
   type ModuleMailOutcome,
+  type ServiceEstimateDisputeFacts,
   type ServiceEstimateFormat,
   type ServiceExecutorAssignment,
   type ServiceExecutorsRow,
@@ -154,6 +161,8 @@ import {
   officeEquipmentConsumableStockEntries,
   officeEquipmentTypes,
   serviceRequestConsumables,
+  serviceRequestEstimateDisputes,
+  serviceRequestEstimateExemptions,
   serviceRequestExecutors,
   serviceRequestFiles,
   serviceRequestItems,
@@ -163,7 +172,12 @@ import {
   users,
 } from '../db/schema';
 import { grantPermissionsExpr } from '../services/user-scopes';
-import { err } from '../lib/errors';
+import { err, type AppError } from '../lib/errors';
+/*
+ * Разбор ошибки PostgreSQL по коду: частичный уникальный индекс открытого спора ловит гонку двух
+ * открытий, и без разбора `23505` второй запрос получил бы 500 вместо внятного 409.
+ */
+import { pgErrorOf } from '../lib/pg-error';
 import { writeAudit } from '../lib/audit';
 import {
   documentMailTargets,
@@ -1834,6 +1848,98 @@ function assertCanHold(p: Principal, action: string): void {
   throw err.forbidden(`${who} не ${action} — это шаг того, кто её ведёт`);
 }
 
+// ── Спор об освобождении от подписи (Р9) ──
+
+/** Второй открытый спор по заявке — один текст на проверку под блокировкой и на разбор `23505`. */
+function disputeAlreadyOpen(): AppError {
+  return err.conflict(
+    'По заявке уже идёт спор об освобождении от подписи — его закрывают решением по спору',
+    { fields: { status: 'По заявке идёт спор' } },
+  );
+}
+
+/**
+ * Гонка двух открытий доходит до частичного уникального индекса: проверка под блокировкой её не
+ * ловит лишь в одном случае — если блокировку заявки взял параллельный запрос и отпустил раньше нас.
+ * Без разбора `23505` второй человек получил бы 500 там, где ему нужно то же самое «спор уже идёт»
+ * (тем же приёмом разбирается занятый код полномочия в `routes/grants.ts`).
+ */
+function asDisputeOpenConflict(e: unknown): unknown {
+  const pg = pgErrorOf(e);
+  if (pg?.code === '23505' && pg.constraint === 'service_request_estimate_disputes_open_unique') {
+    return disputeAlreadyOpen();
+  }
+  return e;
+}
+
+/**
+ * ОТКРЫТЫЙ СПОР ЗАЯВКИ — строкой либо `null`. Открытый бывает ровно один: это держит частичный
+ * уникальный индекс `service_request_estimate_disputes_open_unique`, и запрос поэтому берёт первую
+ * найденную, не сортируя.
+ *
+ * Читается ПОД БЛОКИРОВКОЙ ЗАЯВКИ (`lockRequest` первым шагом транзакции), и это не перестраховка:
+ * и открытие, и разрешение спора меняют ту же строку заявки, поэтому блокировка сериализует их
+ * между собой — прочитанное до транзакции состояние к `COMMIT` устаревает ровно в той гонке, из-за
+ * которой проверка и стоит.
+ */
+async function openDisputeOf(
+  exec: Tx,
+  requestId: string,
+): Promise<{ id: string; revision: number } | null> {
+  const [row] = await exec
+    .select({
+      id: serviceRequestEstimateDisputes.id,
+      revision: serviceRequestEstimateDisputes.revision,
+    })
+    .from(serviceRequestEstimateDisputes)
+    .where(
+      and(
+        eq(serviceRequestEstimateDisputes.requestId, requestId),
+        eq(serviceRequestEstimateDisputes.state, 'open'),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * ПРИЗНАКИ, КОТОРЫМИ РЕШАЕТСЯ СПОР (`ServiceEstimateDisputeFacts` контрактов): предикат принимает их
+ * готовыми, потому что спрашивают его двое — сервер по базе и портал по карточке.
+ *
+ * «ОСВОБОЖДЕНИЕ ПРИМЕНЕНО» СКЛАДЫВАЕТСЯ ИЗ ТРЁХ УСЛОВИЙ, а не из одной строки следа, и каждое
+ * отсекает своё состояние:
+ *
+ *   · строка следа с исходом `applied` ПО ДЕЙСТВУЮЩЕЙ ревизии — наблюдённое заявление (`observed`,
+ *     выключенный рубильник) освобождением не является вовсе, а заявление по прошлой ревизии снято
+ *     переизданием;
+ *   · подпись стоит под действующей ревизией — её мог снять возврат в правку (`/estimate/reopen`),
+ *     который ревизию НЕ поднимает: строка следа при этом остаётся, и спорить было бы не с чем;
+ *   · источник подписи — `auto`. Это и есть ответ на «по подписанному человеком объёму работ спорят
+ *     обычным возвратом в правку»: после исхода `require_signature` человек подписывает ту же
+ *     ревизию, след `applied` остаётся на месте, и без этого слагаемого по заявке открывали бы спор
+ *     по кругу — оспаривая подпись, которую сами же и потребовали.
+ */
+async function disputeFactsOf(exec: Tx, row: RequestRow): Promise<ServiceEstimateDisputeFacts> {
+  const [applied] = await exec
+    .select({ revision: serviceRequestEstimateExemptions.revision })
+    .from(serviceRequestEstimateExemptions)
+    .where(
+      and(
+        eq(serviceRequestEstimateExemptions.requestId, row.id),
+        eq(serviceRequestEstimateExemptions.revision, row.estimateRevision),
+        eq(serviceRequestEstimateExemptions.outcome, 'applied'),
+      ),
+    )
+    .limit(1);
+  return {
+    exemptionApplied:
+      applied !== undefined &&
+      row.estimateApprovalSource === 'auto' &&
+      row.approvedEstimateRevision === row.estimateRevision,
+    disputeOpen: (await openDisputeOf(exec, row.id)) !== null,
+  };
+}
+
 // ── Ссылки на смету по гарантии ──
 
 /**
@@ -2447,6 +2553,15 @@ async function applyTransition(
     // `on_hold`, а `held_from_status` ещё стоит.
     set.heldFromStatus = null;
     set.holdReason = '';
+    /*
+     * ВИД ЗАМОРОЗКИ — ТРЕТЬИМ ЕЁ ПОЛЕМ (Р9 плана освобождения от согласования). Гаснет он здесь же и
+     * на ЛЮБОМ выходе, потому что `service_requests_hold_kind_check` про статус ничего не знает
+     * намеренно (окно выката: старый код возвращает заявку, про колонку не зная) — то есть оставленный
+     * вид ошибкой БД не отзовётся, а тихо останется следом спора у заявки, спора по которой больше
+     * нет. А по этому следу заперты возврат из заморозки и приёмка: заявка, разрешившая спор, была бы
+     * заперта ими навсегда.
+     */
+    set.holdKind = null;
   }
 
   const patch = { ...set, ...(params.patch ?? {}) };
@@ -2885,6 +3000,28 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     preHandler: [
       app.authenticate,
       app.requirePermission('serviceRequests.read', 'Заявки на обслуживание недоступны'),
+    ],
+  };
+  /**
+   * Спор об освобождении от подписи — обе его ручки (Р9). Право `serviceRequests.assign`, то самое,
+   * которым «Ведение» распределяет заявки и которым считается «ведёт ли субъект заявку»
+   * (`canOpenServiceEstimateDispute`, `canResolveServiceEstimateDispute`).
+   *
+   * НЕ `canAssign`, хотя право то же: у стража там свой текст («Назначает сервис оператор
+   * оргтехники»), а человек, которому отказали в споре, не назначает никого — отказ обязан называть
+   * то действие, за которым он пришёл.
+   *
+   * ПРАВО ЗАМОРОЗКИ СТРАЖ НЕ СПРАШИВАЕТ, хотя спор останавливает заявку именно ею: механика
+   * остановки — не разрешение на неё. Спроси мы `hold`, спор отвалился бы у ИТ-службы, у которой
+   * `assign` есть, а `hold` нет, — то есть у одной из двух сторон, ради которых правило и писано.
+   */
+  const canDispute = {
+    preHandler: [
+      app.authenticate,
+      app.requirePermission(
+        'serviceRequests.assign',
+        'Спор об освобождении ведёт тот, кто ведёт заявку',
+      ),
     ],
   };
 
@@ -6323,6 +6460,35 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         { status: 'Заявка не отложена' },
       );
     }
+    /**
+     * ОБЫЧНЫЙ ВОЗВРАТ НЕ РАЗРЕШАЕТ СПОР (Р9 плана освобождения от согласования). Заявку,
+     * остановленную спором об освобождении, отпускает только исход разбора
+     * (`PATCH /:id/estimate/dispute/resolution`): он решает, останется ли освобождение, соберут ли
+     * подпись и не отменят ли заявку вовсе, — а возврат просто вернул бы её в прежний статус, оставив
+     * спор открытым. Заявка работала бы дальше с автоподписью, которую кто-то оспорил и не закрыл.
+     *
+     * ВИД ЗАМОРОЗКИ, А НЕ СТРОКА СПОРА, и это дешевле на одно чтение ровно потому, что вид гасится
+     * вместе с остальными полями заморозки (матрица сбросов): у отложенной заявки «вид есть» и
+     * «спор открыт» — одно и то же состояние, а у любой другой вид пуст.
+     *
+     * ЗАПРЕТ РАБОТАЕТ И В ПАЧКЕ: через эту функцию идёт и массовый возврат (`resumeStep` зовёт
+     * строка пачки), и другого входа в возврат у модуля нет.
+     *
+     * Гонку с открытием спора, случившимся между этим чтением и `COMMIT`, закрывает сверка версии в
+     * `applyTransition`: открытие спора двигает версию заявки, и опоздавший возврат получит 409.
+     *
+     * 422, А НЕ 409, И РЕШАЕТ ЭТО ОТЧЁТ ПАЧКИ. Строка под руками не менялась — у заявки просто
+     * другое состояние, у которого своё действие; а пачка переводит 409 в код `version` с текстом
+     * «строка изменилась» и СВОЙ текст отказа при этом теряет (`classify` в `service-request-bulk`).
+     * Оператор массового возврата прочитал бы «обновите список» вместо «по заявке идёт спор» — то
+     * есть обновлял бы страницу по кругу. 422 приезжает кодом `blocked` и этой самой строкой.
+     */
+    if (row.holdKind === SERVICE_ESTIMATE_DISPUTE_HOLD_KIND) {
+      throw err.unprocessable(
+        'Заявка остановлена спором об освобождении от подписи — её отпускает решение по спору, а не возврат в работу',
+        { status: 'По заявке идёт спор' },
+      );
+    }
     // Возврат к работе — событие переходов; куда именно вернули, знает `serviceResumeTarget`.
     const mailPlan = await prepareTransitionMail(target, p, row.createdBy);
     await bulk.runTx(async (tx, bulkMail) => {
@@ -7133,6 +7299,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           })
         : null;
 
+      /*
+       * Одно время на всю подпись: им помечается и сама подпись, и порог окна приёмки после спора
+       * (Р9). Два вызова `new Date()` разошлись бы на миллисекунды, и «порог равен времени подписи»
+       * перестало бы быть правдой ровно в том месте, где эту пару и сверяют на разборе.
+       */
+      const signedAt = new Date();
       const mailResult = await db.transaction(async (tx) => {
         const side = await readServiceSide(tx, row.id);
         const transition = await applyTransition(tx, {
@@ -7149,7 +7321,24 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             ? {
                 approvedEstimateRevision: row.estimateRevision,
                 estimateApprovedBy: p.id,
-                estimateApprovedAt: new Date(),
+                estimateApprovedAt: signedAt,
+                /**
+                 * ОКНО ПРИЁМКИ ПОСЛЕ СПОРА ОТКРЫВАЕТСЯ ПОДПИСЬЮ, А НЕ РАЗРЕШЕНИЕМ СПОРА (Р9, Н9).
+                 * Порог ставится ровно постспорной подписи — той, чьё ожидание открыл исход «нужна
+                 * подпись» (`estimate_pending_source = 'dispute'`), — и ставится здесь, а не в ручке
+                 * разрешения: отсчитай мы сутки от разрешения, подпись, поставленная через два дня,
+                 * закрыла бы заявку автоматически в ту же минуту — никто не успел бы возразить. До
+                 * подписи заявка в выборку автозакрытия не входит вовсе (`ESTIMATE_SIGNED` в
+                 * `internal-service-requests.ts`): согласованная ревизия там не равна действующей.
+                 *
+                 * ПО ПРОИСХОЖДЕНИЮ ОЖИДАНИЯ, А НЕ ПО СТАТУСУ «Решена»: спор бывает открыт и из «В
+                 * работе», и ветка на статус молчала бы про него. Лишним порог в этом случае не
+                 * становится — он раньше закрытия работ, а отбор берёт `GREATEST` с `completed_at`,
+                 * то есть у такой заявки срок остаётся прежним.
+                 */
+                ...(row.estimatePendingSource === 'dispute'
+                  ? { autoCloseNotBefore: signedAt }
+                  : {}),
                 /*
                  * ИСТОЧНИК НАЗЫВАЕТСЯ ЯВНО, хотя пустое значение и читается как `human` (Р11).
                  * Причина не в красоте записи: подпись человека приходит и поверх автопринятой —
@@ -7352,6 +7541,322 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityType: 'serviceRequest',
         entityId: row.id,
         metadata: { revision: row.estimateRevision, reason: body.reason },
+      });
+      return (await getDto(p, row.id))!;
+    },
+  );
+
+  // ── Спор об освобождении от подписи ──
+  /**
+   * ОТКРЫТЬ СПОР (Р9 плана `docs/office-equipment-on-site-and-invoice-estimate-plan.md`): «Ведение»
+   * не согласно с тем, что подпись под объёмом работ не собирали, и останавливает заявку до разбора.
+   *
+   * МЕХАНИКА ОСТАНОВКИ — ОБЫЧНАЯ ЗАМОРОЗКА с видом `estimate_exemption_dispute`, а не свой статус:
+   * «Отложена» уже умеет и держать заявку, и помнить, куда её вернуть (`held_from_status`), и коридор
+   * для обоих входов — из «В работе» и из «Решена» — существовал до этой волны (находка Н7). Второй
+   * способ остановить заявку означал бы второе правило возврата, расходящееся с первым.
+   *
+   * СТРОКА СПОРА — ТОЙ ЖЕ ТРАНЗАКЦИЕЙ, ЧТО ЗАМОРОЗКА. Порознь они дают два невозможных состояния:
+   * заморозку с видом «спор» без самого спора (разрешать нечего, заявка стоит навсегда) и открытый
+   * спор по работающей заявке (предикат разрешения требует «Отложена» и ответил бы отказом).
+   *
+   * КОРИДОР СТАТУСОВ ЭТА РУЧКА НЕ СПРАШИВАЕТ, и это осознанно — та же причина, что у согласования
+   * объёма работ. Дуга в «Отложена» живёт в `SERVICE_HOLD_TRANSITIONS`, то есть приходит правом
+   * `serviceRequests.hold`, а спор ведёт держатель `serviceRequests.assign`: спроси мы
+   * `assertTransition`, ИТ-служба получила бы ручку и не смогла бы ею воспользоваться. Кто перед
+   * нами, отвечает предикат контрактов, он же исключает оператора подрядчика — освобождение заявил
+   * он, и спор с самим собой не контроль, а его имитация.
+   *
+   * ПОЧЕМУ ПРОВЕРКИ РАЗВЁРНУТЫ, А НЕ СВЕДЕНЫ К ОДНОМУ `if` ПРЕДИКАТА: предикат отвечает «нет» на
+   * четыре разных вопроса — не тот статус, освобождение не применено, спор уже идёт, нет права, — и
+   * человеку нужен тот из них, который про его случай. Сам предикат спрашивается последним и
+   * остаётся единственным носителем правила: ни одна из проверок выше его условий не повторяет, они
+   * лишь называют причину раньше.
+   */
+  r.patch(
+    '/:id/estimate/dispute',
+    { ...canDispute, schema: { params: idParams, body: openServiceEstimateDisputeSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      const row = await requireEditable(p, req.params.id);
+      assertEstimateApplies(row, 'оспаривать');
+      // Остановка — вход в «Отложена», а значит событие переходов: исполнителю важно узнать, что
+      // работу по заявке остановили, и причина уходит той же строкой письма, что у обычной заморозки.
+      const mailPlan = await prepareTransitionMail('on_hold', p, row.createdBy);
+      const opened = await db
+        .transaction(async (tx) => {
+          /*
+           * БЛОКИРОВКА ПЕРВЫМ ШАГОМ (Р112): решение принимается по признакам, которые меняет чужая
+           * ручка, — подпись снимает возврат в правку, ожидание открывает предъявление, — и
+           * прочитанное до транзакции состояние к `COMMIT` устаревает.
+           */
+          const locked = await lockRequest(tx, row.id);
+          const facts = await disputeFactsOf(tx, locked);
+          /*
+           * ВТОРОЙ ОТКРЫТЫЙ СПОР — ВНЯТНЫЙ 409, А НЕ 23505 ИЗ ЧАСТИЧНОГО ИНДЕКСА. Проверка под
+           * блокировкой закрывает обычный случай (две вкладки, два нажатия), а сам индекс остаётся
+           * последним словом: его нарушение разбирается после транзакции тем же текстом.
+           */
+          if (facts.disputeOpen) {
+            throw disputeAlreadyOpen();
+          }
+          /*
+           * СТАТУС СПРАШИВАЕТСЯ ПОСЛЕ ОТКРЫТОГО СПОРА, И ПОРЯДОК ЗДЕСЬ СМЫСЛОВОЙ. Спор останавливает
+           * заявку, то есть уводит её в «Отложена», которой в перечне нет, — спроси мы статус первым,
+           * второе нажатие получило бы «спор открывают до приёмки» вместо «спор уже идёт». Человек
+           * читал бы отказ про статус, которого заявка приняла ИМЕННО из-за его спора.
+           *
+           * Перечень — константой контрактов: его же спрашивает предикат, и второй список статусов
+           * разошёлся бы с ним молча.
+           */
+          if (!SERVICE_ESTIMATE_DISPUTE_OPEN_STATUSES.some((status) => status === locked.status)) {
+            throw err.unprocessable(
+              `Спор открывают до приёмки — в «${serviceRequestStatusLabels.in_work}» либо в «${serviceRequestStatusLabels.done}»; заявка в статусе «${serviceRequestStatusLabels[locked.status]}»`,
+              { status: 'Спор в этом статусе не открывают' },
+            );
+          }
+          if (!facts.exemptionApplied) {
+            throw err.unprocessable(
+              'Освобождение от подписи по действующей ревизии не применено — объём работ, подписанный человеком, возвращают в правку, а не оспаривают',
+              { status: 'Освобождения по этой ревизии нет' },
+            );
+          }
+          if (!canOpenServiceEstimateDispute(locked, p, facts)) {
+            const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+            throw err.forbidden(
+              `${who} не оспаривает освобождение от подписи по этой заявке — это шаг того, кто её ведёт`,
+            );
+          }
+          await applyTransition(tx, {
+            row: locked,
+            to: 'on_hold',
+            version: body.version,
+            actor: p,
+            comment: body.reason,
+            patch: {
+              // Пара «откуда и почему» — как у обычной заморозки: порознь их не примет
+              // `service_requests_hold_check`, а чистит обе выход из «Отложена».
+              heldFromStatus: locked.status,
+              holdReason: body.reason,
+              /*
+               * ВИД ЗАМОРОЗКИ — ЕДИНСТВЕННОЕ, ЧЕМ ЭТА ОСТАНОВКА ОТЛИЧАЕТСЯ ОТ «ждём запчасть», и по
+               * нему заперт обычный возврат (`resumeStep`). Без вида разбор спора обходился бы
+               * возвратом в работу: заявка поехала бы дальше с автоподписью, которую оспорили.
+               */
+              holdKind: SERVICE_ESTIMATE_DISPUTE_HOLD_KIND,
+            },
+            mail: mailPlan,
+          });
+          /*
+           * ПОСЛЕ ПЕРЕХОДА, А НЕ ДО НЕГО — тот же порядок, что у предъявления объёма работ (Р4):
+           * сверку версии делает переход, и заявка, двинутая из-под нас, обязана ответить 409 РАНЬШЕ,
+           * чем мы займём частичный уникальный индекс. Незакоммиченная строка спора видна конкуренту
+           * как занятая — он ждёт на ней до нашего отката, — и обратный порядок подменял бы честный
+           * отказ по версии ожиданием на индексе.
+           */
+          await tx.insert(serviceRequestEstimateDisputes).values({
+            requestId: locked.id,
+            // Ревизия — действующая: спорят о конкретном предъявлении, и подпись после спора
+            // пускается только по ней (`allowsEstimateApprovalInStatus`).
+            revision: locked.estimateRevision,
+            openedBy: p.id,
+            reason: body.reason,
+            state: 'open',
+          });
+          return { revision: locked.estimateRevision, from: locked.status };
+        })
+        .catch((e: unknown) => {
+          throw asDisputeOpenConflict(e);
+        });
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'serviceRequest.estimate_dispute_open',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        // Откуда заявку остановили — в журнал: после разрешения спора поле `held_from_status` гаснет,
+        // и ответить «спорили о работающей или уже решённой заявке» будет нечем.
+        metadata: { revision: opened.revision, from: opened.from, reason: body.reason },
+      });
+      return (await getDto(p, row.id))!;
+    },
+  );
+
+  /**
+   * РАЗРЕШИТЬ СПОР — МАТРИЦА «ОТКУДА ОТКРЫТ × ИСХОД» (Р9). Тело присылает исход, статусы считает
+   * сервер: клиент про них не знает и знать не должен.
+   *
+   * | Открыт из | Исход                 | Куда возвращается                                        |
+   * | --------- | --------------------- | -------------------------------------------------------- |
+   * | `in_work` | оставить освобождение | `in_work`, порог приёмки — момент разрешения             |
+   * | `done`    | оставить освобождение | `done`, факт и гарантии на месте, окно приёмки заново    |
+   * | `in_work` | нужна подпись         | `in_work`, автоподпись снята, ожидание открыто           |
+   * | `done`    | нужна подпись         | `done`, автоподпись снята, ожидание открыто              |
+   * | любой     | отменить заявку       | `cancelled`, причина обязательна, факт и документы целы  |
+   *
+   * ВОЗВРАТ В ПРЕЖНИЙ СТАТУС, А НЕ В «В работе» ВСЕГДА (блокер 4 плана, находка Н12): матрица сбросов
+   * стирает факт закрытия на дуге `done → in_work` — вместе с суммами по акту и датами гарантий, — то
+   * есть «вернуть в работу» для спора из «Решена» означало бы отменить выполнение, которого никто не
+   * отменял. Куда вернуть, помнит сама заявка (`serviceResumeTarget` по `held_from_status`), и второго
+   * носителя этого правила модуль не заводит.
+   *
+   * ИСХОД `require_signature` — ЕДИНСТВЕННАЯ ДОРОГА К ПОДПИСИ В «Решена»: ожидание открывается с
+   * происхождением `dispute`, и ровно его пускает `allowsEstimateApprovalInStatus`. Дальше у человека
+   * две дороги общей ручкой согласования: подпись (она же ставит порог окна приёмки) и отказ, который
+   * по общему правилу модуля отменяет заявку с причиной.
+   *
+   * ИСХОД `cancel` НИЧЕГО НЕ СТИРАЕТ СВЕРХ ОБЫЧНОЙ ОТМЕНЫ: факт закрытия, суммы и документы остаются
+   * — отмена их не стирает, и переписывать историю мы не будем. Снимает она то же, что всякая отмена
+   * (исполнителя и снимок согласования), и делает это матрица сбросов, а не эта ручка.
+   *
+   * КОРИДОР СТАТУСОВ НЕ СПРАШИВАЕТСЯ — по той же причине, что у открытия: возврат из заморозки живёт
+   * предикатом (цель динамическая, таблицей она не выражается), отмена приходит правом
+   * `serviceRequests.status`, а спор ведёт держатель `assign`. Право на само действие спрашивает
+   * предикат контрактов, и оно то же, что у открытия: спор закрывает тот, кто его начал.
+   */
+  r.patch(
+    '/:id/estimate/dispute/resolution',
+    { ...canDispute, schema: { params: idParams, body: resolveServiceEstimateDisputeSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      const row = await requireEditable(p, req.params.id);
+      assertEstimateApplies(row, 'оспаривать');
+      /*
+       * ЦЕЛЬ СЧИТАЕТСЯ ДО ТРАНЗАКЦИИ, ПОТОМУ ЧТО ОТ НЕЁ ЗАВИСИТ ПИСЬМО: подготовка письма читает
+       * настройки процесса и обязана идти снаружи (Р67), а событие у перехода своё у каждого статуса.
+       * Под блокировкой цель считается заново и сверяется с этой: разойдись они — заявку двинули
+       * из-под нас, и письмо готовилось бы под другой статус.
+       */
+      const plannedTo =
+        body.outcome === 'cancel' ? ('cancelled' as const) : serviceResumeTarget(row);
+      if (!plannedTo) {
+        throw err.unprocessable(
+          `Заявка не остановлена спором — она в статусе «${serviceRequestStatusLabels[row.status]}»`,
+          { status: 'Спор по заявке не открыт' },
+        );
+      }
+      const mailPlan = await prepareTransitionMail(plannedTo, p, row.createdBy);
+      const resolvedAt = new Date();
+      const resolved = await db.transaction(async (tx) => {
+        const locked = await lockRequest(tx, row.id);
+        const dispute = await openDisputeOf(tx, locked.id);
+        /*
+         * ОТКРЫТЫЙ СПОР СПРАШИВАЕТСЯ СТРОКОЙ, а не видом заморозки: вид отвечает «заявку остановил
+         * спор», а разрешать надо конкретную запись — ей пишутся исход, автор и время. Предикат ниже
+         * получает тот же признак готовым.
+         */
+        if (!dispute) {
+          throw err.unprocessable(
+            'Открытого спора об освобождении по заявке нет — разрешать нечего',
+            { status: 'Спор по заявке не открыт' },
+          );
+        }
+        if (!canResolveServiceEstimateDispute(locked, p, { disputeOpen: true })) {
+          const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+          throw err.forbidden(
+            `${who} не разрешает спор об освобождении по этой заявке — это шаг того, кто его начал`,
+          );
+        }
+        const to = body.outcome === 'cancel' ? ('cancelled' as const) : serviceResumeTarget(locked);
+        if (to !== plannedTo) throw err.conflict();
+        await applyTransition(tx, {
+          row: locked,
+          to,
+          version: body.version,
+          actor: p,
+          // Отмена объясняется причиной, два других исхода — необязательным словом вдогонку: почему
+          // спорили, уже записано в самом споре, и требовать второе объяснение было бы ритуалом.
+          comment: body.outcome === 'cancel' ? body.reason : body.comment,
+          patch:
+            body.outcome === 'require_signature'
+              ? {
+                  /*
+                   * АВТОПОДПИСЬ СНИМАЕТСЯ ЦЕЛИКОМ — все четыре колонки снимка (Н4): оставленный
+                   * `auto` показывал бы «принято без согласования» у заявки, подпись под которой как
+                   * раз и собирают, а при будущей человеческой подписи уронил бы запись
+                   * (`service_requests_estimate_approval_source_check` запрещает `auto` с автором).
+                   */
+                  approvedEstimateRevision: null,
+                  estimateApprovedAt: null,
+                  estimateApprovedBy: null,
+                  estimateApprovalSource: null,
+                  /*
+                   * ОЖИДАНИЕ — ПО ТЕКУЩЕЙ РЕВИЗИИ, и равенства требует сама база
+                   * (`service_requests_estimate_pending_check`): ждать можно только подписи под тем,
+                   * что предъявлено сейчас. Происхождение `dispute` — то самое, что открывает подпись
+                   * в «Решена», и ставится оно ровно здесь: другой дороги к нему нет.
+                   */
+                  estimatePendingRevision: locked.estimateRevision,
+                  estimatePendingSource: 'dispute',
+                  /*
+                   * ПОРОГ ОКНА ПРИЁМКИ ЗДЕСЬ НЕ СТАВИТСЯ (Н9). Отсчёт «сутки от разрешения» закрыл бы
+                   * заявку автоматически сразу после подписи, поставленной через два дня, — окна на
+                   * возражение не получил бы никто. Порог ставит сама подпись (ручка согласования), а
+                   * до неё заявка в выборку автозакрытия не входит вовсе: согласованная ревизия не
+                   * равна действующей.
+                   */
+                }
+              : body.outcome === 'keep'
+                ? {
+                    /*
+                     * ОКНО ПРИЁМКИ НАЧИНАЕТСЯ ЗАНОВО — от момента разрешения спора. Срок автоприёмки
+                     * идёт от `completed_at` и времени заморозки не вычитает, поэтому заявка,
+                     * простоявшая в споре неделю, созрела бы на первом же прогоне после возврата: её
+                     * закрыли бы автоматически в ту же минуту, в которую спор и разрешили.
+                     *
+                     * Ставится и у спора из «В работе», где порог ни на что не влияет (закрытие
+                     * работ позже, а отбор берёт `GREATEST` с `completed_at`): ветка на статус
+                     * завела бы второе правило там, где общее верно в обоих случаях.
+                     */
+                    autoCloseNotBefore: resolvedAt,
+                  }
+                : /*
+                   * ОТМЕНА НЕ ПИШЕТ НИЧЕГО СВОЕГО: порог окна приёмки отменённой заявке не нужен
+                   * (отбор берёт только «Решена»), а факт закрытия, суммы и документы остаются на
+                   * месте — их не трогает ни эта ручка, ни матрица сбросов отмены.
+                   */
+                  {},
+          mail: mailPlan,
+        });
+        /*
+         * ИСХОД, АВТОР И ВРЕМЯ — ТОЙ ЖЕ ТРАНЗАКЦИЕЙ И ПОСЛЕ ПЕРЕХОДА (тот же порядок, что у
+         * открытия): сверку версии делает переход, и запись, прошедшая раньше него, осталась бы
+         * «разрешённой» у заявки, которая никуда не уехала. Условие `state = 'open'` — защита от
+         * повторного разрешения той же строки: второе нажатие получит ноль строк и 409 ниже.
+         */
+        const [closed] = await tx
+          .update(serviceRequestEstimateDisputes)
+          .set({
+            state: 'resolved',
+            outcome: body.outcome,
+            resolvedBy: p.id,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(
+            and(
+              eq(serviceRequestEstimateDisputes.id, dispute.id),
+              eq(serviceRequestEstimateDisputes.state, 'open'),
+            ),
+          )
+          .returning({ id: serviceRequestEstimateDisputes.id });
+        if (!closed) throw err.conflict();
+        return { revision: dispute.revision, to };
+      });
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'serviceRequest.estimate_dispute_resolve',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        metadata: {
+          revision: resolved.revision,
+          outcome: body.outcome,
+          // Куда заявка ушла: после разрешения `held_from_status` гаснет, и «вернули в работу или
+          // в решённую» по самой заявке уже не восстановить.
+          to: resolved.to,
+          reason: body.outcome === 'cancel' ? body.reason : body.comment,
+        },
       });
       return (await getDto(p, row.id))!;
     },
@@ -7618,6 +8123,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
          *
          * Предварительный отсев чужой стороны остаётся до чтения записи (`assertSideAllowed`):
          * оператору подрядчика «шаг исполнителя» отвечают прямо, а не 404 чужой заявки.
+         */
+        /*
+         * ЗАКРЫТИЕ РАБОТ ПРИ ОТКРЫТОМ СПОРЕ НЕВОЗМОЖНО, и отдельной проверки здесь нет намеренно
+         * (Р9 плана освобождения от согласования): спор останавливает заявку заморозкой, а коридор
+         * ниже пускает в «Решена» только из «В работе» — отложенная упирается в него первой же
+         * строкой. Сказано это комментарием, потому что из кода читается «сработал коридор», а не
+         * «спор запрещает закрытие»: заведись когда-нибудь дуга `on_hold → done`, запрет исчез бы
+         * вместе с коридором молча — и тогда проверку надо ставить тут же, строкой спора
+         * (`openDisputeOf`), как она стоит в приёмке.
          */
         assertTransition(
           p,
@@ -8078,6 +8592,32 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        */
       await assertCandidateDecided(tx, locked.equipmentCandidateId);
       /**
+       * ПРИЁМКА НЕ ЗАКРЫВАЕТ СПОР (Р9, находка Н14). Приёмка — конец разбирательства, и принять
+       * работу по заявке, освобождение которой кто-то оспорил и не закрыл, значило бы разрешить спор
+       * молча и в пользу одной стороны: платёж уходит по сумме, подпись под которой и оспаривали.
+       *
+       * СТРОКОЙ СПОРА, А НЕ ВИДОМ ЗАМОРОЗКИ, в отличие от запрета возврата. Вид живёт ровно пока
+       * заявка отложена — выход из «Отложена» гасит его вместе с остальными полями заморозки, — а
+       * приёмка идёт из «Решена», где вид пуст ВСЕГДА. То есть здесь он не ответил бы ни на что, и
+       * спрашивать надо сам спор.
+       *
+       * ОТКРЫТЫЙ СПОР В «Решена» СЕГОДНЯ НЕДОСТИЖИМ — спор держит заявку в «Отложена», а оттуда
+       * ведут только возврат (заперт видом выше) и отмена, — и замок стоит именно поэтому: он
+       * страхует не известную дыру, а следующий путь из заморозки, который заведут, не вспомнив про
+       * спор. Цена страховки — один `SELECT` по ключу под уже взятой блокировкой.
+       *
+       * 422, А НЕ 409 СОСЕДА НИЖЕ: строка под руками не менялась, и пачка («Принять» бывает
+       * массовой) показала бы у 409 свой текст «обновите список» вместо причины — ровно как у
+       * возврата из заморозки.
+       */
+      const dispute = await openDisputeOf(tx, locked.id);
+      if (dispute) {
+        throw err.unprocessable(
+          `По заявке идёт спор об освобождении от подписи (ревизия ${dispute.revision}) — сначала разрешите спор, приёмка его не закрывает`,
+          { status: 'По заявке идёт спор' },
+        );
+      }
+      /**
        * СОГЛАСОВАННАЯ РЕВИЗИЯ ОБЯЗАНА СОВПАДАТЬ С ДЕЙСТВУЮЩЕЙ — и до этой правки приёмка не
        * спрашивала НИЧЕГО о деньгах и бумагах (Н14): планку закрывающего документа держит переход в
        * «Решена», а здесь оставались лишь коридор, сторона и решение по непроверенному предмету.
@@ -8101,11 +8641,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
        * прочитанное до транзакции состояние к моменту `COMMIT` устаревает ровно в той гонке, ради
        * которой проверка и заводится.
        *
-       * ОРИЕНТИР ДЛЯ Э5: сюда же встанет второй новый замок — запрет приёмки при ОТКРЫТОМ СПОРЕ
-       * (`hold_kind = 'estimate_exemption_dispute'`, строка `service_request_estimate_disputes` в
-       * состоянии `open`). Без него спор по заявке в «Решена» закрывают приёмкой, не разрешив его.
-       * Здесь он не сделан намеренно: действие спора, матрица исходов и `auto_close_not_before` —
-       * одна волна, и половина замка без неё запирала бы заявки, которым нечем открыться.
+       * ВТОРОЙ НОВЫЙ ЗАМОК — ЗАПРЕТ ПРИЁМКИ ПРИ ОТКРЫТОМ СПОРЕ — стоит ниже, перед этой проверкой.
        */
       if (
         serviceRequestNeedsEstimate(locked) &&
