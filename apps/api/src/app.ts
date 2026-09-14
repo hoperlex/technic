@@ -70,6 +70,7 @@ import moduleMailRoutes from './routes/module-mail';
 import internalMailRoutes from './routes/internal-mail';
 import internalServiceRequestRoutes from './routes/internal-service-requests';
 import auditRoutes from './routes/audit';
+import analyticsRoutes from './routes/analytics';
 import releasesRoutes from './routes/releases';
 import manualsRoutes from './routes/manuals';
 
@@ -302,6 +303,10 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // «Решена» → «Закрыта» (план `docs/office-equipment-requests-rework-plan.md`, решение Н7).
   await app.register(internalServiceRequestRoutes, { prefix: '/internal/service-requests' });
   await app.register(auditRoutes, { prefix: '/api/v1/audit' });
+  // Сводная аналитика трёх модулей (`docs/analytics-summary-export-plan.md`, Р14): своим
+  // префиксом, а не веткой заказа техники, — свод не принадлежит ни одному из сводимых модулей, и
+  // экран аналитики придёт за тем же ответом, что и служебная книга.
+  await app.register(analyticsRoutes, { prefix: '/api/v1/analytics' });
   // Журнал обновлений (ADR 0077) — служебное окно, а не раздел: читает любой вошедший, права нет.
   await app.register(releasesRoutes, { prefix: '/api/v1/releases' });
   // Руководства (`docs/manuals-plan.md`) — соседнее служебное окно: список читает любой вошедший,

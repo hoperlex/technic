@@ -7,7 +7,7 @@ import { AccessTab } from './admin/AccessTab';
 import { MailingsTab } from './admin/MailingsTab';
 import { DirectoryTransferTab } from './admin/DirectoryTransferTab';
 import { ManualsTab } from './admin/ManualsTab';
-import { ReadingsExportTab } from './admin/ReadingsExportTab';
+import { ExportsTab } from './admin/ExportsTab';
 
 export function AdministrationPage() {
   // Компактная полоса вкладок на телефоне — как в справочниках: на 360 px обычная съедает
@@ -52,12 +52,14 @@ export function AdministrationPage() {
     ...(can('manuals.manage')
       ? [{ key: 'manuals', label: 'Руководства', children: <ManualsTab /> }]
       : []),
-    // Служебная выгрузка показаний (`docs/readings-admin-export-plan.md`, Р1) — по своему праву:
-    // книга уносит весь парк за период вместе с ФИО водителей, и это не то же самое, что смотреть
-    // показания в гараже. Право входит в `ADMIN_PAGE_PERMISSIONS`, поэтому вкладка открывает
-    // раздел сама, как и «Руководства».
-    ...(can('vehicleReadings.export')
-      ? [{ key: 'readings-export', label: 'Выгрузки', children: <ReadingsExportTab /> }]
+    // Служебные выгрузки — одна вкладка на все книги (`docs/analytics-summary-export-plan.md`,
+    // Р1): вид выбирается списком внутри, реестр живёт в самой вкладке. Прав у книг два и они
+    // независимы — ни одно не входит в ролевые наборы, и держатель любого из них должен попасть
+    // сюда; поэтому дверь открывает любое, а какая книга ему видна, решает реестр. Оба права
+    // входят в `ADMIN_PAGE_PERMISSIONS`, поэтому вкладка открывает раздел сама, как и
+    // «Руководства».
+    ...(can('vehicleReadings.export') || can('analytics.export')
+      ? [{ key: 'exports', label: 'Выгрузки', children: <ExportsTab /> }]
       : []),
   ];
   return (

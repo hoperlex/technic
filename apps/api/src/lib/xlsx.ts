@@ -95,6 +95,9 @@ function columnName(index: number): string {
  *
  * Прочерк неизвестного значения остаётся **строкой** и в числовой колонке: пустая ячейка сводную
  * не искажает, а ноль исказил бы. Поэтому тип ячейки решает вызывающий, а не колонка.
+ *
+ * `digits` — сколько знаков после запятой **показывать**. В ячейке лежит точное число: округление
+ * хранимого значения развело бы напечатанный итог и сумму, которую даёт выделенная колонка.
  */
 export type CellInput =
   string | { readonly num: number; readonly digits?: 0 | 1 } | { readonly date: string };
@@ -130,26 +133,68 @@ export interface SheetInput {
   merges?: readonly string[];
   /** Уровень группировки строки (0 — не сгруппирована): смены машины сворачиваются кнопкой. */
   outline?: number[];
+  /**
+   * Стоит ли под группой строка итога (по умолчанию — стоит, как у книги показаний). Это не
+   * украшение: по этому обещанию редактор решает, к какой группе относится кнопка сворачивания.
+   * Пообещай итог там, где его нет, — и кнопка уедет на соседнюю группу, а свернётся не то, на
+   * что нажимали. У листа, где группа кончается пустой строкой и следующим заголовком, честный
+   * ответ — `false`.
+   */
+  summaryBelow?: boolean;
   /** Лист-источник сводной таблицы человеку не нужен — он скрыт. */
   hidden?: boolean;
+  /**
+   * Графики листа. Они рисуются по его же клеткам: и данные, и график живут на одном листе,
+   * поэтому у графика нет поля «с какого листа брать» — взять с чужого значило бы завести вторую
+   * связь, которую пришлось бы чинить при переименовании листа.
+   */
+  charts?: ChartInput[];
 }
 
 /** Excel запрещает в имени листа `: \ / ? * [ ]` и длину больше 31 знака. */
 const FORBIDDEN_IN_TITLE = /[:\\/?*[\]]/gu;
 
 /**
+ * Края имени: пробелы и апострофы. Апостроф по краям Excel запрещает отдельным правилом — в
+ * формуле имя листа берётся в апострофы (`'Динамика'!$B$2`), и краевой не отличить от кавычки
+ * даже удвоением. Пробелы и апострофы чистятся одним выражением, потому что прячутся друг за
+ * друга: снимешь апостроф — на краю окажется пробел, снимешь пробел — апостроф.
+ */
+const EDGE_IN_TITLE = /^[\s']+|[\s']+$/gu;
+
+/**
+ * Имена, которые Excel держит за собой: так зовётся журнал изменений общей книги. Лист с таким
+ * именем он не создаёт сам и не принимает от файла — книга не открывается вовсе, редактор
+ * предлагает восстановление.
+ */
+const RESERVED_TITLES = ['история', 'history'];
+
+/** Имя внутри 31 знака и без запретных краёв. Обрезка может открыть новый край — отсюда две чистки. */
+function trimTitle(name: string): string {
+  return name.replace(EDGE_IN_TITLE, '').slice(0, 31).replace(EDGE_IN_TITLE, '');
+}
+
+/**
  * Имя листа приводится к тому, что примет Excel, а не отвергается: имя приходит из справочника
- * («Транспорт: спецтехника»), и отказ выгрузить книгу из-за двоеточия в заголовке — не та цена.
- * Совпадения разводятся суффиксом: книгу с двумя одинаковыми именами листов Excel не открывает.
+ * («Транспорт: спецтехника») и из названия площадки, и отказ выгрузить книгу из-за двоеточия в
+ * заголовке — не та цена. Совпадения разводятся суффиксом: книгу с двумя одинаковыми именами
+ * листов Excel не открывает.
+ *
+ * Занятыми именами считаются и зарезервированные: «История» разводится тем же суффиксом, что и
+ * совпадение, — потому что это оно и есть, только имя занято не соседним листом, а редактором.
+ * Второго правила переименования ради одного случая не заводится.
  */
 function sheetTitles(sheets: SheetInput[]): string[] {
-  const used = new Set<string>();
+  const used = new Set(RESERVED_TITLES);
   return sheets.map((sheet, index) => {
-    const clean = sanitizeText(sheet.name).replace(FORBIDDEN_IN_TITLE, ' ').trim().slice(0, 31);
-    let title = clean.trim() || `Лист${index + 1}`;
+    const base =
+      trimTitle(sanitizeText(sheet.name).replace(FORBIDDEN_IN_TITLE, ' ')) || `Лист${index + 1}`;
+    let title = base;
     for (let attempt = 2; used.has(title.toLowerCase()); attempt += 1) {
       const suffix = ` (${attempt})`;
-      title = title.slice(0, 31 - suffix.length).trim() + suffix;
+      // Суффикс наращивается от исходного имени, а не от прошлой попытки: иначе третий одноимённый
+      // лист называется «Лист (2) (3)» — номер попытки поверх номера попытки.
+      title = trimTitle(base.slice(0, 31 - suffix.length)) + suffix;
     }
     used.add(title.toLowerCase());
     return title;
@@ -222,9 +267,23 @@ function excelSerial(date: string): number | null {
   return Math.round((parsed - EXCEL_EPOCH) / 86_400_000);
 }
 
-/** Число в XML — с точкой, независимо от того, какой разделитель показывает редактор. */
-function numberXml(value: number, digits: 0 | 1): string {
-  return value.toFixed(digits);
+/**
+ * Число в XML — с точкой и **точным** значением, каким его дал вызывающий: разрядность задаёт
+ * формат показа ячейки (`numFmt` в стилях), а не то, что в ней лежит.
+ *
+ * Округли писатель значение здесь, и книга заспорила бы сама с собой: у денежных колонок сводной
+ * аналитики разрядность нулевая, две строки по 1000,40 ₽ легли бы тысячами, а подытог считается
+ * по неокруглённым — 2001. Человек выделяет колонку в редакторе и получает сумму, не равную
+ * напечатанному итогу, а какое из двух чисел верное, по книге не понять.
+ *
+ * `String` печатает экспонентой за пределами 1e21 и мельче 1e-6. `1e+21` в `<v>` понимают не все
+ * читалки, поэтому такое значение разворачивается в обычную запись — тем же приёмом, каким она
+ * разворачивается при чтении (`formatNumber`).
+ */
+function numberXml(value: number): string {
+  const text = String(value);
+  if (!text.includes('e')) return text;
+  return value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 20 });
 }
 
 function cellXml(value: CellInput, ref: string, row: RowKind): string {
@@ -238,14 +297,14 @@ function cellXml(value: CellInput, ref: string, row: RowKind): string {
   if ('num' in value) {
     if (!Number.isFinite(value.num)) return '';
     const digits = value.digits ?? 0;
-    return `<c r="${ref}" s="${styleIndex(digits === 0 ? 'int' : 'dec', row)}"><v>${numberXml(value.num, digits)}</v></c>`;
+    return `<c r="${ref}" s="${styleIndex(digits === 0 ? 'int' : 'dec', row)}"><v>${numberXml(value.num)}</v></c>`;
   }
   const serial = excelSerial(value.date);
   if (serial === null) return '';
   return `<c r="${ref}" s="${styleIndex('date', row)}"><v>${serial}</v></c>`;
 }
 
-function sheetXml(sheet: SheetInput): string {
+function sheetXml(sheet: SheetInput, drawingRelId: string | undefined): string {
   const width = rowWidth(sheet.rows);
   const headerRow = sheet.headerRow ?? (sheet.freezeHeader === true ? 1 : 0);
   const hasHeader = headerRow > 0 && sheet.rows.length > 0 && width > 0;
@@ -256,7 +315,10 @@ function sheetXml(sheet: SheetInput): string {
 
   // Порядок частей листа задан схемой и произволу не подлежит: `sheetPr`, `dimension`,
   // `sheetViews`, `cols`, `sheetData`, `autoFilter`, `mergeCells`.
-  if (grouped) parts.push('<sheetPr><outlinePr summaryBelow="1"/></sheetPr>');
+  if (grouped) {
+    const summaryBelow = sheet.summaryBelow === false ? '0' : '1';
+    parts.push(`<sheetPr><outlinePr summaryBelow="${summaryBelow}"/></sheetPr>`);
+  }
   if (width > 0 && sheet.rows.length > 0) {
     parts.push(`<dimension ref="A1:${columnName(width)}${sheet.rows.length}"/>`);
   }
@@ -289,6 +351,9 @@ function sheetXml(sheet: SheetInput): string {
     const merges = sheet.merges.map((ref) => `<mergeCell ref="${ref}"/>`).join('');
     parts.push(`<mergeCells count="${sheet.merges.length}">${merges}</mergeCells>`);
   }
+  // Рисунок с графиками объявляется последним: порядок частей листа задан схемой, и `drawing`
+  // стоит в ней после слитых ячеек.
+  if (drawingRelId !== undefined) parts.push(`<drawing r:id="${drawingRelId}"/>`);
   parts.push('</worksheet>');
   return parts.join('');
 }
@@ -429,6 +494,13 @@ function cacheValue(cell: CellInput | undefined): number | string | null {
 interface CacheField {
   name: string;
   numeric: boolean;
+  /**
+   * Есть ли в колонке пустые клетки. Определение поля обязано сказать об этом вслух: записи несут
+   * пустой элемент (`<m/>`), и поле, объявленное «строк нет, только числа», описывает не их.
+   * Excel такое расхождение переживает — он пересчитывает кэш при открытии, — а у прочих читалок
+   * гарантии нет, и сводная обязана оживать не в одном редакторе (ADR 0180).
+   */
+  blank: boolean;
   /** Значения-словарь для строкового поля: индекс в нём и стоит в записях. */
   items: string[];
 }
@@ -442,6 +514,7 @@ function buildCacheFields(
     const numeric =
       values.some((value) => typeof value === 'number') &&
       !values.some((value) => typeof value === 'string');
+    const blank = values.some((value) => value === null);
     const items: string[] = [];
     if (!numeric) {
       for (const value of values) {
@@ -449,7 +522,7 @@ function buildCacheFields(
         if (!items.includes(text)) items.push(text);
       }
     }
-    return { name: typeof title === 'string' ? title : '', numeric, items };
+    return { name: typeof title === 'string' ? title : '', numeric, blank, items };
   });
 }
 
@@ -462,10 +535,13 @@ function cacheDefinitionXml(
 ): string {
   const dataFields = fields
     .map((field) => {
+      // Пустота объявляется ровно там, где она есть: у вывоза не бывает ни смен, ни моточасов, и
+      // числовая колонка листа «Данные» приходит с дырами. Молчать о них нельзя — записи их несут.
+      const containsBlank = field.blank ? ' containsBlank="1"' : '';
       if (field.numeric) {
         return (
           `<cacheField name="${escapeXml(field.name)}" numFmtId="0">` +
-          '<sharedItems containsSemiMixedTypes="0" containsString="0" containsNumber="1"/>' +
+          `<sharedItems containsSemiMixedTypes="0" containsString="0"${containsBlank} containsNumber="1"/>` +
           '</cacheField>'
         );
       }
@@ -474,7 +550,7 @@ function cacheDefinitionXml(
         .join('');
       return (
         `<cacheField name="${escapeXml(field.name)}" numFmtId="0">` +
-        `<sharedItems count="${field.items.length}">${items}</sharedItems>` +
+        `<sharedItems${containsBlank} count="${field.items.length}">${items}</sharedItems>` +
         '</cacheField>'
       );
     })
@@ -506,7 +582,9 @@ function cacheRecordsXml(fields: readonly CacheField[], body: readonly CellInput
         .map((field, column) => {
           const value = cacheValue(row[column]);
           if (field.numeric) {
-            return typeof value === 'number' ? `<n v="${value}"/>` : '<m/>';
+            // Запись кэша повторяет клетку листа тем же числом: разойдись они, сводная считала бы
+            // не то, что видно на листе-источнике.
+            return typeof value === 'number' ? `<n v="${numberXml(value)}"/>` : '<m/>';
           }
           const index = field.items.indexOf(value === null ? '' : String(value));
           return `<x v="${index < 0 ? 0 : index}"/>`;
@@ -622,10 +700,49 @@ function pivotTableXml(
   );
 }
 
+/**
+ * Связь листа с частью книги. Сводная и графики просят её порознь, а файл связей у листа один: два
+ * писателя, каждый со своим `rId1`, затёрли бы друг друга — лист со сводной и графиком потерял бы
+ * один из них молча. Поэтому номер связи проставляет общий сборщик, когда соседи уже известны.
+ */
+interface SheetRelation {
+  /** Номер листа от нуля. */
+  sheetIndex: number;
+  /** Хвост типа связи: `pivotTable`, `drawing`. */
+  type: string;
+  target: string;
+}
+
+interface SheetRelsParts {
+  files: Record<string, Uint8Array>;
+  /** Номер связи с рисунком по номеру листа: его лист обязан назвать у себя в `<drawing>`. */
+  drawingIds: Map<number, string>;
+}
+
+function sheetRelsFiles(relations: readonly SheetRelation[], count: number): SheetRelsParts {
+  const files: Record<string, Uint8Array> = {};
+  const drawingIds = new Map<number, string>();
+  for (let index = 0; index < count; index += 1) {
+    const own = relations.filter((relation) => relation.sheetIndex === index);
+    if (own.length === 0) continue;
+    const body = own
+      .map((relation, order) => {
+        const id = `rId${order + 1}`;
+        if (relation.type === 'drawing') drawingIds.set(index, id);
+        return `<Relationship Id="${id}" Type="${NS_REL}/${relation.type}" Target="${relation.target}"/>`;
+      })
+      .join('');
+    files[`xl/worksheets/_rels/sheet${index + 1}.xml.rels`] = encoder.encode(
+      `${XML_HEAD}<Relationships xmlns="${NS_PKG_REL}">${body}</Relationships>`,
+    );
+  }
+  return { files, drawingIds };
+}
+
 interface PivotParts {
   files: Record<string, Uint8Array>;
-  /** Номер листа (1-based) со сводной: ему нужна своя связь с частью таблицы. */
-  sheetIndex: number;
+  /** Связь листа со сводной: файл связей листа собирается общим сборщиком. */
+  relation: SheetRelation;
   contentTypes: string;
 }
 
@@ -663,11 +780,6 @@ function pivotParts(
     'xl/pivotTables/pivotTable1.xml': encoder.encode(
       pivotTableXml(fields, pivot, rowFieldIndex, columnFieldIndex),
     ),
-    [`xl/worksheets/_rels/sheet${sheetIndex + 1}.xml.rels`]: encoder.encode(
-      `${XML_HEAD}<Relationships xmlns="${NS_PKG_REL}">` +
-        `<Relationship Id="rId1" Type="${NS_REL}/pivotTable" Target="../pivotTables/pivotTable1.xml"/>` +
-        '</Relationships>',
-    ),
   };
 
   const contentTypes =
@@ -675,7 +787,379 @@ function pivotParts(
     `<Override PartName="/xl/pivotCache/pivotCacheRecords1.xml" ContentType="${CT_PIVOT_CACHE_RECORDS}"/>` +
     `<Override PartName="/xl/pivotTables/pivotTable1.xml" ContentType="${CT_PIVOT_TABLE}"/>`;
 
-  return { files, sheetIndex: sheetIndex + 1, contentTypes };
+  return {
+    files,
+    relation: { sheetIndex, type: 'pivotTable', target: '../pivotTables/pivotTable1.xml' },
+    contentTypes,
+  };
+}
+
+// ── Графики ──
+
+/**
+ * Родные графики книги (`docs/analytics-summary-export-plan.md`, §3 «Лист 3», решения Р18 и Р18а).
+ *
+ * Автор книги описывает график диапазонами листа, а не XML: «эти строки, эта колонка подписей, эти
+ * колонки значений». Серия ссылается на клетки (`'Динамика'!$B$4:$B$16`) и копии чисел не несёт:
+ * правка числа в книге обязана перерисовать график, а читатель — дотянуть диапазон мышью. Запиши
+ * мы рядом кэш значений (`c:numCache`), он разошёлся бы с листом в первой же ручной правке, и
+ * редакторы показали бы разное — Excel считает по диапазону, а кэш держит для битых связей.
+ *
+ * Собирается всё здесь по той же причине, что и сводная: библиотек для xlsx в `apps/api` нет и не
+ * заводится, а из всего богатства диаграмм книге нужны шесть видов, перечисленных в `ChartKind`.
+ */
+export interface ChartSeries {
+  /** Подпись серии: показывается в легенде. */
+  name: string;
+  /** Колонка листа со значениями серии (1-based), строки берутся из диапазона графика. */
+  column: number;
+  /** Линией вместо столбца — для комбинированных графиков. */
+  asLine?: boolean;
+  /** По второй оси: «смены столбцами, моточасы линией» (Р18). */
+  secondaryAxis?: boolean;
+}
+
+export type ChartKind = 'bar' | 'stackedBar' | 'percentBar' | 'line' | 'pie' | 'doughnut';
+
+export interface ChartInput {
+  kind: ChartKind;
+  /** Заголовок над графиком; он же объясняет читателю вариант («А. Столбцы рядом»). */
+  title: string;
+  /** Строки листа с данными (1-based, включительно) и колонка подписей категорий. */
+  firstRow: number;
+  lastRow: number;
+  categoryColumn: number;
+  series: ChartSeries[];
+  /** Куда поставить: якорь «столбец, строка» левого верхнего угла (1-based) и размер в клетках. */
+  anchor: { column: number; row: number; width: number; height: number };
+}
+
+const NS_CHART = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
+const NS_DRAWINGML = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+const NS_SHEET_DRAWING = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing';
+const CT_CHART = 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml';
+const CT_DRAWING = 'application/vnd.openxmlformats-officedocument.drawing+xml';
+
+/**
+ * Номера осей произвольны, но обязаны совпадать у группы серий и у самой оси и различаться между
+ * первой и второй осью: по ним редактор и связывает столбцы с той шкалой, к которой их мерить.
+ */
+const AXIS_CATEGORY = 111_111_111;
+const AXIS_VALUE = 222_222_222;
+const AXIS_CATEGORY_SECOND = 333_333_333;
+const AXIS_VALUE_SECOND = 444_444_444;
+
+/**
+ * Цвета серий проставляются явно, а не наследуются от темы книги. Тема (`xl/theme/theme1.xml`) —
+ * отдельная часть книги, которой у нас нет и заводить её ради шести цветов незачем; но без неё
+ * ссылка на `accent1` никуда не ведёт, и LibreOffice рисует **невидимые** столбцы и сектора:
+ * оси, подписи и проценты на месте, а фигуры не закрашены. Проверено конвертацией — с явными
+ * цветами график рисуется, с наследованием от темы пуст.
+ *
+ * Значения — те же шесть акцентов, которыми Excel красит первую диаграмму по умолчанию: книгу
+ * читают рядом с его собственными, и свой набор оттенков читался бы как другая разметка.
+ */
+const SERIES_COLORS = ['4472C4', 'ED7D31', 'A5A5A5', 'FFC000', '5B9BD5', '70AD47'] as const;
+
+function seriesColor(index: number): string {
+  return SERIES_COLORS[index % SERIES_COLORS.length] ?? '4472C4';
+}
+
+const BAR_GROUPING: Partial<Record<ChartKind, string>> = {
+  bar: 'clustered',
+  stackedBar: 'stacked',
+  percentBar: 'percentStacked',
+};
+
+/**
+ * Ссылка на диапазон листа. Имя листа берётся в апострофы **всегда**: формула с пробелом или
+ * точкой в имени («Инфографика: объект» после чистки — «Инфографика  объект») без кавычек
+ * ломается, а разбирать, какое имя обойдётся без них, значит завести второе правило чистки имён
+ * рядом с `sheetTitles`. Внутренний апостроф удваивается — так его экранирует сам формат.
+ */
+function sheetRange(title: string, column: number, firstRow: number, lastRow: number): string {
+  const name = columnName(column);
+  return `'${title.replace(/'/gu, "''")}'!$${name}$${firstRow}:$${name}$${lastRow}`;
+}
+
+function seriesXml(
+  chart: ChartInput,
+  title: string,
+  series: ChartSeries,
+  index: number,
+  shape: 'bar' | 'line' | 'pie',
+): string {
+  const category = escapeXml(
+    sheetRange(title, chart.categoryColumn, chart.firstRow, chart.lastRow),
+  );
+  const values = escapeXml(sheetRange(title, series.column, chart.firstRow, chart.lastRow));
+  const head =
+    `<c:ser><c:idx val="${index}"/><c:order val="${index}"/>` +
+    `<c:tx><c:v>${escapeXml(sanitizeText(series.name))}</c:v></c:tx>`;
+  // Порядок дочерних элементов серии задан схемой: подписи категорий идут перед значениями.
+  const data =
+    `<c:cat><c:strRef><c:f>${category}</c:f></c:strRef></c:cat>` +
+    `<c:val><c:numRef><c:f>${values}</c:f></c:numRef></c:val>`;
+  const color = seriesColor(index);
+  if (shape === 'line') {
+    return (
+      `${head}<c:spPr><a:ln w="28575" cap="rnd"><a:solidFill><a:srgbClr val="${color}"/></a:solidFill>` +
+      '<a:round/></a:ln></c:spPr>' +
+      `<c:marker><c:symbol val="circle"/><c:size val="5"/>` +
+      `<c:spPr><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></c:spPr></c:marker>` +
+      `${data}<c:smooth val="0"/></c:ser>`
+    );
+  }
+  if (shape === 'pie') {
+    // Круг красится по точкам, а не по серии: серия в нём одна, а цветов нужно столько, сколько
+    // секторов, — иначе весь круг одного цвета и доли неразличимы.
+    const points = Array.from(
+      { length: chart.lastRow - chart.firstRow + 1 },
+      (_, point) =>
+        `<c:dPt><c:idx val="${point}"/><c:bubble3D val="0"/><c:spPr>` +
+        `<a:solidFill><a:srgbClr val="${seriesColor(point)}"/></a:solidFill>` +
+        '<a:ln w="19050"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:ln></c:spPr></c:dPt>',
+    ).join('');
+    // Доли круга подписаны процентом: без подписи круговая отвечает «какой сектор больше», но не
+    // «насколько», а вернуться к числам читателю неоткуда — значения лежат выше по листу.
+    const labels =
+      '<c:dLbls><c:showLegendKey val="0"/><c:showVal val="0"/><c:showCatName val="0"/>' +
+      '<c:showSerName val="0"/><c:showPercent val="1"/><c:showBubbleSize val="0"/></c:dLbls>';
+    return `${head}${points}${labels}${data}</c:ser>`;
+  }
+  return (
+    `${head}<c:spPr><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></c:spPr>` +
+    `<c:invertIfNegative val="0"/>${data}</c:ser>`
+  );
+}
+
+/** Серия рисуется линией, если так сказано у неё самой либо линиями нарисован весь график. */
+function isLineSeries(chart: ChartInput, series: ChartSeries): boolean {
+  return chart.kind === 'line' || series.asLine === true;
+}
+
+interface SeriesEntry {
+  series: ChartSeries;
+  /** Сквозной номер серии в графике: он должен остаться уникальным и после разбивки по группам. */
+  index: number;
+}
+
+function groupXml(
+  chart: ChartInput,
+  title: string,
+  entries: readonly SeriesEntry[],
+  asLine: boolean,
+  secondary: boolean,
+): string {
+  if (entries.length === 0) return '';
+  const body = entries
+    .map((entry) => seriesXml(chart, title, entry.series, entry.index, asLine ? 'line' : 'bar'))
+    .join('');
+  const axes =
+    `<c:axId val="${secondary ? AXIS_CATEGORY_SECOND : AXIS_CATEGORY}"/>` +
+    `<c:axId val="${secondary ? AXIS_VALUE_SECOND : AXIS_VALUE}"/>`;
+  if (asLine) {
+    return `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${body}<c:marker val="1"/>${axes}</c:lineChart>`;
+  }
+  const grouping = BAR_GROUPING[chart.kind] ?? 'clustered';
+  // Накопительным столбцам нужен полный нахлёст: с нулевым они встают рядом, и «накопительный»
+  // остаётся только в разметке — на глаз такой график неотличим от обычного.
+  const overlap = grouping === 'clustered' ? 0 : 100;
+  return (
+    `<c:barChart><c:barDir val="col"/><c:grouping val="${grouping}"/><c:varyColors val="0"/>` +
+    `${body}<c:gapWidth val="150"/><c:overlap val="${overlap}"/>${axes}</c:barChart>`
+  );
+}
+
+function axesXml(chart: ChartInput, secondary: boolean): string {
+  const categoryId = secondary ? AXIS_CATEGORY_SECOND : AXIS_CATEGORY;
+  const valueId = secondary ? AXIS_VALUE_SECOND : AXIS_VALUE;
+  // Своя ось подписей нужна и второй группе — на неё ссылаются её серии, — но рисовать её нельзя:
+  // категории те же, и вторая подпись задвоила бы их под графиком. Поэтому она скрыта.
+  const category =
+    `<c:catAx><c:axId val="${categoryId}"/><c:scaling><c:orientation val="minMax"/></c:scaling>` +
+    `<c:delete val="${secondary ? 1 : 0}"/><c:axPos val="b"/><c:tickLblPos val="nextTo"/>` +
+    `<c:crossAx val="${valueId}"/><c:crosses val="autoZero"/><c:auto val="1"/>` +
+    '<c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/></c:catAx>';
+  // Нормированные столбцы меряются долей: без формата ось показала бы 0,2 вместо 20 %.
+  const percent =
+    !secondary && chart.kind === 'percentBar' ? '<c:numFmt formatCode="0%" sourceLinked="0"/>' : '';
+  const value =
+    `<c:valAx><c:axId val="${valueId}"/><c:scaling><c:orientation val="minMax"/></c:scaling>` +
+    `<c:delete val="0"/><c:axPos val="${secondary ? 'r' : 'l'}"/>` +
+    `${secondary ? '' : '<c:majorGridlines/>'}${percent}` +
+    '<c:majorTickMark val="out"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/>' +
+    `<c:crossAx val="${categoryId}"/><c:crosses val="${secondary ? 'max' : 'autoZero'}"/>` +
+    '<c:crossBetween val="between"/></c:valAx>';
+  return category + value;
+}
+
+function plotAreaXml(chart: ChartInput, title: string): string {
+  if (chart.kind === 'pie' || chart.kind === 'doughnut') {
+    const body = chart.series
+      .map((series, index) => seriesXml(chart, title, series, index, 'pie'))
+      .join('');
+    const tag = chart.kind === 'doughnut' ? 'c:doughnutChart' : 'c:pieChart';
+    // Дырка кольца — половина радиуса: в неё ложится итог, ради которого кольцо и берут.
+    const tail =
+      chart.kind === 'doughnut'
+        ? '<c:firstSliceAng val="0"/><c:holeSize val="50"/>'
+        : '<c:firstSliceAng val="0"/>';
+    return `<c:plotArea><c:layout/><${tag}><c:varyColors val="1"/>${body}${tail}</${tag}></c:plotArea>`;
+  }
+
+  const entries: SeriesEntry[] = chart.series.map((series, index) => ({ series, index }));
+  const primary = entries.filter((entry) => entry.series.secondaryAxis !== true);
+  const second = entries.filter((entry) => entry.series.secondaryAxis === true);
+  const split = (list: readonly SeriesEntry[], asLine: boolean): SeriesEntry[] =>
+    list.filter((entry) => isLineSeries(chart, entry.series) === asLine);
+
+  const groups =
+    groupXml(chart, title, split(primary, false), false, false) +
+    groupXml(chart, title, split(primary, true), true, false) +
+    groupXml(chart, title, split(second, false), false, true) +
+    groupXml(chart, title, split(second, true), true, true);
+  // Ось без единой ссылающейся на неё группы Excel считает разметочным мусором и чинит книгу
+  // «с восстановлением», поэтому пары осей заводятся ровно под те группы, которые есть.
+  const axes =
+    (primary.length > 0 ? axesXml(chart, false) : '') +
+    (second.length > 0 ? axesXml(chart, true) : '');
+  return `<c:plotArea><c:layout/>${groups}${axes}</c:plotArea>`;
+}
+
+function chartXml(chart: ChartInput, title: string): string {
+  const heading =
+    '<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1200" b="1"/></a:pPr>' +
+    `<a:r><a:rPr lang="ru-RU" sz="1200" b="1"/><a:t>${escapeXml(sanitizeText(chart.title))}</a:t></a:r>` +
+    '</a:p></c:rich></c:tx><c:overlay val="0"/></c:title>';
+  return (
+    `${XML_HEAD}<c:chartSpace xmlns:c="${NS_CHART}" xmlns:a="${NS_DRAWINGML}" xmlns:r="${NS_REL}">` +
+    '<c:lang val="ru-RU"/><c:roundedCorners val="0"/><c:chart>' +
+    `${heading}<c:autoTitleDeleted val="0"/>${plotAreaXml(chart, title)}` +
+    '<c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend>' +
+    // Пропуск в ряду рисуется разрывом, а не нулём: месяц без данных — это «не считали», и
+    // проваленная до нуля линия соврала бы про остановку работ.
+    '<c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart></c:chartSpace>'
+  );
+}
+
+function anchorXml(chart: ChartInput, order: number): string {
+  const fromColumn = chart.anchor.column - 1;
+  const fromRow = chart.anchor.row - 1;
+  return (
+    '<xdr:twoCellAnchor>' +
+    `<xdr:from><xdr:col>${fromColumn}</xdr:col><xdr:colOff>0</xdr:colOff>` +
+    `<xdr:row>${fromRow}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>` +
+    `<xdr:to><xdr:col>${fromColumn + chart.anchor.width}</xdr:col><xdr:colOff>0</xdr:colOff>` +
+    `<xdr:row>${fromRow + chart.anchor.height}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>` +
+    '<xdr:graphicFrame macro="">' +
+    `<xdr:nvGraphicFramePr><xdr:cNvPr id="${order + 2}" name="Диаграмма ${order + 1}"/>` +
+    '<xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>' +
+    '<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm>' +
+    `<a:graphic><a:graphicData uri="${NS_CHART}">` +
+    `<c:chart xmlns:c="${NS_CHART}" xmlns:r="${NS_REL}" r:id="rId${order + 1}"/>` +
+    '</a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor>'
+  );
+}
+
+/**
+ * Нарушения контракта графика. Ловятся здесь, а не в редакторе: битая разметка диаграммы не
+ * показывает ошибку, а заставляет Excel чинить книгу целиком — вместе со сводной и стилями.
+ */
+function checkChart(chart: ChartInput, sheet: string): void {
+  const where = `График «${chart.title}» на листе «${sheet}»`;
+  if (chart.series.length === 0) throw new XlsxError(`${where} остался без серий.`);
+  if ((chart.kind === 'pie' || chart.kind === 'doughnut') && chart.series.length !== 1) {
+    // Круг показывает доли одного набора значений; вторая серия рисовалась бы поверх первой.
+    throw new XlsxError(
+      `${where}: круговой и кольцевой берут ровно одну серию, передано ${chart.series.length}.`,
+    );
+  }
+  if (
+    !Number.isInteger(chart.firstRow) ||
+    !Number.isInteger(chart.lastRow) ||
+    chart.firstRow < 1 ||
+    chart.lastRow < chart.firstRow
+  ) {
+    throw new XlsxError(`${where}: строки ${chart.firstRow}–${chart.lastRow} не диапазон листа.`);
+  }
+  const columns = [chart.categoryColumn, ...chart.series.map((series) => series.column)];
+  if (columns.some((column) => !Number.isInteger(column) || column < 1)) {
+    throw new XlsxError(`${where}: колонка листа считается с единицы.`);
+  }
+  if (
+    chart.anchor.width < 1 ||
+    chart.anchor.height < 1 ||
+    chart.anchor.column < 1 ||
+    chart.anchor.row < 1
+  ) {
+    throw new XlsxError(`${where}: размер и место на листе задаются клетками, считая с единицы.`);
+  }
+}
+
+interface ChartParts {
+  files: Record<string, Uint8Array>;
+  contentTypes: string;
+  relations: SheetRelation[];
+}
+
+/**
+ * Части книги, которых требуют графики. `null` — графиков в книге нет, и тогда не появляется ни
+ * одной новой части: книга без графиков обязана собираться байт в байт прежней.
+ *
+ * Имена частей (`chart1.xml`, `drawing1.xml`) живут только здесь — вызывающая сторона описывает
+ * график диапазонами и про нумерацию не знает, как не знает про неё и автор сводной.
+ */
+function chartParts(sheets: readonly SheetInput[], titles: readonly string[]): ChartParts | null {
+  if (!sheets.some((sheet) => (sheet.charts?.length ?? 0) > 0)) return null;
+
+  const files: Record<string, Uint8Array> = {};
+  const types: string[] = [];
+  const relations: SheetRelation[] = [];
+  let drawingNumber = 0;
+  let chartNumber = 0;
+
+  sheets.forEach((sheet, index) => {
+    const charts = sheet.charts ?? [];
+    if (charts.length === 0) return;
+    drawingNumber += 1;
+    // Диапазоны серий ссылаются на лист под тем именем, под которым он попал в книгу, — после
+    // чистки и разведения совпадений: формула с исходным именем указала бы в никуда.
+    const title = titles[index] ?? sheet.name;
+    const anchors: string[] = [];
+    const links: string[] = [];
+
+    charts.forEach((chart, order) => {
+      checkChart(chart, title);
+      chartNumber += 1;
+      files[`xl/charts/chart${chartNumber}.xml`] = encoder.encode(chartXml(chart, title));
+      types.push(
+        `<Override PartName="/xl/charts/chart${chartNumber}.xml" ContentType="${CT_CHART}"/>`,
+      );
+      links.push(
+        `<Relationship Id="rId${order + 1}" Type="${NS_REL}/chart" Target="../charts/chart${chartNumber}.xml"/>`,
+      );
+      anchors.push(anchorXml(chart, order));
+    });
+
+    files[`xl/drawings/drawing${drawingNumber}.xml`] = encoder.encode(
+      `${XML_HEAD}<xdr:wsDr xmlns:xdr="${NS_SHEET_DRAWING}" xmlns:a="${NS_DRAWINGML}">` +
+        `${anchors.join('')}</xdr:wsDr>`,
+    );
+    files[`xl/drawings/_rels/drawing${drawingNumber}.xml.rels`] = encoder.encode(
+      `${XML_HEAD}<Relationships xmlns="${NS_PKG_REL}">${links.join('')}</Relationships>`,
+    );
+    types.push(
+      `<Override PartName="/xl/drawings/drawing${drawingNumber}.xml" ContentType="${CT_DRAWING}"/>`,
+    );
+    relations.push({
+      sheetIndex: index,
+      type: 'drawing',
+      target: `../drawings/drawing${drawingNumber}.xml`,
+    });
+  });
+
+  return { files, contentTypes: types.join(''), relations };
 }
 
 function workbookXml(
@@ -735,8 +1219,17 @@ export function writeWorkbook(sheets: SheetInput[], pivot?: PivotInput): Uint8Ar
   const titles = sheetTitles(input);
 
   const parts = pivotParts(pivot, input, titles);
+  const drawings = chartParts(input, titles);
+  // Связи листов собираются до листов: номер связи с рисунком зависит от того, есть ли на том же
+  // листе сводная, а лист обязан назвать этот номер у себя.
+  const rels = sheetRelsFiles(
+    [...(parts === null ? [] : [parts.relation]), ...(drawings?.relations ?? [])],
+    input.length,
+  );
   const files: Record<string, Uint8Array> = {
-    '[Content_Types].xml': encoder.encode(contentTypesXml(input.length, parts?.contentTypes ?? '')),
+    '[Content_Types].xml': encoder.encode(
+      contentTypesXml(input.length, (parts?.contentTypes ?? '') + (drawings?.contentTypes ?? '')),
+    ),
     '_rels/.rels': encoder.encode(
       `${XML_HEAD}<Relationships xmlns="${NS_PKG_REL}">` +
         `<Relationship Id="rId1" Type="${NS_REL}/officeDocument" Target="xl/workbook.xml"/>` +
@@ -749,9 +1242,13 @@ export function writeWorkbook(sheets: SheetInput[], pivot?: PivotInput): Uint8Ar
     'xl/styles.xml': encoder.encode(STYLES_XML),
   };
   input.forEach((sheet, index) => {
-    files[`xl/worksheets/sheet${index + 1}.xml`] = encoder.encode(sheetXml(sheet));
+    files[`xl/worksheets/sheet${index + 1}.xml`] = encoder.encode(
+      sheetXml(sheet, rels.drawingIds.get(index)),
+    );
   });
   if (parts !== null) Object.assign(files, parts.files);
+  if (drawings !== null) Object.assign(files, drawings.files);
+  Object.assign(files, rels.files);
 
   // Время фиксировано: одинаковая выгрузка обязана давать одинаковые байты, иначе повторная
   // выдача того же справочника выглядит как другой файл. Нижняя граница формата zip, а не эпоха

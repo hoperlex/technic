@@ -309,6 +309,20 @@ describe('совместимость с сегодняшним homePath', () => 
    * держателю справочников «Справочники» открыты и стоят выше «Администрирования». Живых учёток
    * это не двигает: право есть только у администратора, а ему стартовым остаётся «Вывоз мусора».
    */
+  /*
+   * Сводная аналитика (`analytics.export`, план `docs/analytics-summary-export-plan.md`, Р1) —
+   * вторая выгрузка той же вкладки «Администрирования», и список подрос ещё на три пары, буква в
+   * букву те же, что у выгрузки показаний. Это не новая болезнь, а та же самая: пара «право
+   * оргтехники + любое административное» открывает держателю и «Справочники» (по `directories.read`
+   * из `MODULE_ENTRY_PERMISSION`), а они стоят в реестре выше «Администрирования», — тогда как
+   * `legacyHomePath` про справочники знал одно право и отдавал `/admin`. Дыры навигации здесь нет:
+   * оба раздела держателю открыты, спор идёт о том, какой из них стартовый, и реестр отвечает
+   * порядком, одинаковым для меню, маршрута и старта.
+   *
+   * Живых учёток правка не двигает и в этот раз: `analytics.export` не входит ни в один ролевой
+   * набор, у администратора оно есть вместе со всем словарём, а стартовым ему остаётся «Вывоз
+   * мусора» — до пар из списка дело не доходит.
+   */
   it('стартовый раздел совпадает с homePath всюду, кроме перечисленного', () => {
     const changed: string[] = [];
     for (const combo of PERMISSION_COMBOS) {
@@ -324,14 +338,17 @@ describe('совместимость с сегодняшним homePath', () => 
       'directories.export + officeEquipmentConsumables.manage: /admin → /directories',
       'directories.export + officeEquipmentConsumables.stock: /admin → /directories',
       'officeEquipment.write + vehicleReadings.export: /admin → /directories',
+      'officeEquipment.write + analytics.export: /admin → /directories',
       'officeEquipment.write + users.manage: /admin → /directories',
       'officeEquipment.write + mailings.read: /admin → /directories',
       'officeEquipment.write + manuals.manage: /admin → /directories',
       'officeEquipmentConsumables.manage + vehicleReadings.export: /admin → /directories',
+      'officeEquipmentConsumables.manage + analytics.export: /admin → /directories',
       'officeEquipmentConsumables.manage + users.manage: /admin → /directories',
       'officeEquipmentConsumables.manage + mailings.read: /admin → /directories',
       'officeEquipmentConsumables.manage + manuals.manage: /admin → /directories',
       'officeEquipmentConsumables.stock + vehicleReadings.export: /admin → /directories',
+      'officeEquipmentConsumables.stock + analytics.export: /admin → /directories',
       'officeEquipmentConsumables.stock + users.manage: /admin → /directories',
       'officeEquipmentConsumables.stock + mailings.read: /admin → /directories',
       'officeEquipmentConsumables.stock + manuals.manage: /admin → /directories',

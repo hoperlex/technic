@@ -132,3 +132,7 @@ export * from './vehicle-maintenance';
 export * from './releases';
 export * from './manuals';
 export * from './audit';
+/* Сводная аналитика (`analytics.ts`) — последней: она ничего не определяет, а только сводит уже
+ * определённое тремя модулями. Общий язык книги и будущего экрана аналитики
+ * (план `docs/analytics-summary-export-plan.md`, Р14). */
+export * from './analytics';
