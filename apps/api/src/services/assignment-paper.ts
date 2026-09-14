@@ -82,14 +82,15 @@ export interface AssignmentPaperInput {
    * Готовые листы плана: снимок бланка и предупреждения, посчитанные **шагом 6** вместе с самим
    * планом ({@link assignmentPlanIssues}) и показанные человеку предпросмотром.
    *
-   * Необязательно только ради одной двери — ремонта истории: её шаг 12 живёт в маршруте
-   * ([vehicle-request-assignment-repair.ts](../routes/vehicle-request-assignment-repair.ts)), и
-   * дописать туда одно поле в этой волне было нельзя — файл занят соседней работой. Не передали —
-   * листы готовятся здесь же, той же функцией и в той же транзакции: правило остаётся одно, теряется
-   * только **момент** — снимок берётся исполнением, а не планированием, и предупреждений такой
-   * двери подтверждать не с чего. Как только поле дойдёт до маршрута, необязательность снимается.
+   * Обязательно у всех дверей без исключения. Необязательным поле было ровно одну волну — ради
+   * ремонта истории, чей шаг 12 живёт в маршруте
+   * ([vehicle-request-assignment-repair.ts](../routes/vehicle-request-assignment-repair.ts)), — и
+   * стоила эта поблажка не правила, а **момента**: снимок брался исполнением, а не планированием,
+   * и предупреждений такой двери подтверждать было не с чего. Теперь листы считает и эта дверь,
+   * поблажка снята, и умолчания у поля нет: дверь, забывшая его передать, не соберётся, а не
+   * выпишет бланк с набором, которого человек не видел.
    */
-  issues?: Esm2IssuePreparations;
+  issues: Esm2IssuePreparations;
   /**
    * Рукопожатия, принятые шагом 8 этой двери: `issueKey` строкой → отпечаток набора.
    *
@@ -149,24 +150,9 @@ export async function applyAssignmentPaper(
   tx: AssignmentCommandTx,
   params: AssignmentPaperInput,
 ): Promise<Esm2SyncResult> {
-  const { plan, context } = assignmentPaperExecution({ ...params, issues: NO_ISSUES });
-  const issues =
-    params.issues ??
-    // Дверь готового не принесла — готовим тем же расчётом и здесь же (см. `AssignmentPaperInput.issues`).
-    (await prepareEsm2Issues(tx, {
-      requestId: params.requestId,
-      issues: plan.issue.map((item) => ({
-        issueKey: item.issueKey,
-        period: item.period,
-        vehicleId: item.vehicleId,
-        driverPersonId: item.driverPersonId,
-      })),
-    }));
-  return esm2SyncResultOf(await applyEsm2SyncPlanAndAudit(tx, plan, { ...context, issues }));
+  const { plan, context } = assignmentPaperExecution(params);
+  return esm2SyncResultOf(await applyEsm2SyncPlanAndAudit(tx, plan, context));
 }
-
-/** Пустой набор готовых листов: им же считается план, когда его строят ради одних ключей. */
-const NO_ISSUES: Esm2IssuePreparations = new Map();
 
 /**
  * Предупреждения и снимок бланка по **выпускаемым листам плана** — шаг 6, до первой записи (§7).
@@ -269,9 +255,7 @@ export function assertAssignmentIssueAcknowledgements(params: {
  * общему сервису правки срока, а не двери. Ему и передаётся готовая пара: сервис ведёт порядок,
  * этот модуль — «что исполнять и с каким провенансом».
  */
-export function assignmentPaperExecution(
-  params: AssignmentPaperInput & { issues: Esm2IssuePreparations },
-): {
+export function assignmentPaperExecution(params: AssignmentPaperInput): {
   plan: Esm2ScopedPlan;
   context: Esm2ExecutionContext;
 } {

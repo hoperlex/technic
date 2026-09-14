@@ -449,6 +449,25 @@ const postRepair = (account: Account, requestId: string, body: Record<string, un
 
 const operation = (reason: string) => ({ operationId: randomUUID(), reason });
 
+/**
+ * Подписи по листам с непустыми предупреждениями (Б4) — так их собирает и окно.
+ *
+ * Нужны там, где бумагу выпускает сам план (`read_mode = history`): у машинистов сцены документов
+ * нет вовсе, и каждый выписываемый бланк уходит с предупреждением. В `legacy` дверь их не требует,
+ * но присланные проверяет — набор один и тот же, и команда проходит в обоих режимах.
+ */
+const acknowledgementsOf = (
+  issues: readonly { issueKey: number; warnings: unknown[]; warningFingerprint: string }[],
+): Record<string, string> =>
+  Object.fromEntries(
+    issues
+      .filter((issue) => issue.warnings.length > 0)
+      .map((issue) => [String(issue.issueKey), issue.warningFingerprint]),
+  );
+
+/** Предупреждения предпросмотра — общая часть ответа двери (§7). */
+type PreviewIssues = { issueKey: number; warnings: unknown[]; warningFingerprint: string }[];
+
 type Executor = typeof AppDb | Parameters<Parameters<(typeof AppDb)['transaction']>[0]>[0];
 
 async function rowsOf(requestId: string, on: Executor = ctx.db) {
@@ -1768,6 +1787,7 @@ describeReadModes(readMode, 'бумага починенной истории (�
       requiredUnlocks: { waybillId: string }[];
       paperFree: boolean;
       stateAfter: string;
+      issues: PreviewIssues;
     }>();
     /*
      * Предпросмотр в обоих режимах **одинаков**, и это утверждение, а не совпадение: план листов
@@ -1789,6 +1809,7 @@ describeReadModes(readMode, 'бумага починенной истории (�
       ...body,
       previewFingerprint: dto.fingerprint,
       unlockFingerprint: dto.unlockFingerprint!,
+      acknowledgements: acknowledgementsOf(dto.issues),
     });
     expect(applied.statusCode, applied.body).toBe(200);
     expect((await requestState(scene.requestId)).state).toBe('ready');
@@ -1875,6 +1896,7 @@ describeReadModes(readMode, 'бумага починенной истории (�
       unlockFingerprint: string | null;
       stateAfter: string;
       requiredAnchors: { effectiveDate: string }[];
+      issues: PreviewIssues;
     }>();
     // Обе границы названы, чинится одна — потому и `materialized` (Р27).
     expect(dto.requiredAnchors.map((anchor) => anchor.effectiveDate)).toEqual([
@@ -1887,6 +1909,7 @@ describeReadModes(readMode, 'бумага починенной истории (�
       ...body,
       previewFingerprint: dto.fingerprint,
       unlockFingerprint: dto.unlockFingerprint!,
+      acknowledgements: acknowledgementsOf(dto.issues),
     });
     /*
      * Главное утверждение случая: частичный ремонт **проходит**. Постусловия «бумага сошлась с

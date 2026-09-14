@@ -59,7 +59,11 @@ import {
   type VehicleRequestRouteDto,
   waybillAcknowledgeSchema,
 } from './vehicle-routes';
-import type { WaybillWarning } from './waybill-task-rows';
+import {
+  WAYBILL_WARNING_CODES,
+  type WaybillWarning,
+  type WaybillWarningCode,
+} from './waybill-task-rows';
 import {
   requestTripSchema,
   requestTripsSchema,
@@ -1096,6 +1100,16 @@ export const requestVehicleEarlyEndApplySchema = requestVehicleEarlyEndCoreSchem
     operationId: uuidSchema.optional(),
     previewFingerprint: assignmentFingerprintSchema.optional(),
     cancelGroupsFingerprint: assignmentFingerprintSchema.optional(),
+    /**
+     * Подтверждения предупреждений — по одному на выпускаемый лист с непустым набором (Б4).
+     *
+     * Сокращение срока обычно бумагу **правит** (`trim`), и подтверждать там нечего. Но когда
+     * отрезок за новым концом забирает у документа часть дней, лист гаснет и выписывается заново —
+     * и уходит он с теми пробелами в документах машиниста, которые человек обязан увидеть и
+     * подписать. Без этого поля подпись отвергалась бы `.strict()` до обработчика, и лист уходил
+     * бы с умолчанием «не проверяли» даже тогда, когда человек всё подтвердил секунду назад.
+     */
+    acknowledgements: assignmentAcknowledgementsSchema.optional(),
   })
   .strict();
 /** Имя прежнее: тело запроса у портала то же самое, а выросло оно необязательными полями. */
@@ -1137,6 +1151,8 @@ export const decideVehicleEarlyEndApplySchema = z.discriminatedUnion('approved',
       operationId: uuidSchema.optional(),
       previewFingerprint: assignmentFingerprintSchema.optional(),
       cancelGroupsFingerprint: assignmentFingerprintSchema.optional(),
+      /** Подтверждения предупреждений по выпускаемым листам (Б4) — те же, что и у запроса. */
+      acknowledgements: assignmentAcknowledgementsSchema.optional(),
       version: z.number().int().nonnegative(),
     })
     .strict(),
@@ -1180,6 +1196,23 @@ export interface EarlyEndApprovalPreviewDto {
   /** Решения истории, которые погаснут, — только датами вступления в силу. */
   cancelGroups: { effectiveDate: string }[];
   /**
+   * Предупреждения по выпускаемым листам — **обезличенные** (Б4 против Р26).
+   *
+   * Оба правила здесь настоящие, и снять одно ради другого нельзя. Б4 требует подпись по каждому
+   * бланку с непустым набором — иначе лист строгой отчётности уходит с пробелами в документах
+   * машиниста, которых никто не подтверждал. Р26 запрещает называть визирующему бланк и человека:
+   * прав на журнал листов у него нет вовсе.
+   *
+   * Отсюда проекция: `issueKey` — порядковый номер листа в плане, `codes` — **виды** замечаний
+   * («пробелы в документах машиниста»), а не их текст, `warningFingerprint` — отпечаток фактов,
+   * который окно возвращает подписью. Ни номера бланка, ни фамилии, ни идентификатора человека в
+   * ней нет: вид замечания говорит, **что** не в порядке, и молчит о том, **у кого**.
+   *
+   * Пустой список — законный ответ и самый частый: сокращение обычно правит период выданного
+   * листа, а не выписывает новый.
+   */
+  issues: { issueKey: number; codes: WaybillWarningCode[]; warningFingerprint: string }[];
+  /**
    * Своя проекция (Р19): причина у этой двери своя — её назвал сам запрос, — и второго поля
    * причины окно показывать не должно. Отсюда `reasonRequired: false` при `assignment_tail`;
    * `null` — исход `none`, объяснять нечего.
@@ -1212,6 +1245,15 @@ export const earlyEndApprovalPreviewResponseSchema = z
       .object({ detachable: z.array(dateOnlySchema), frozen: z.array(dateOnlySchema) })
       .strict(),
     cancelGroups: z.array(z.object({ effectiveDate: dateOnlySchema }).strict()),
+    issues: z.array(
+      z
+        .object({
+          issueKey: z.number().int().nonnegative(),
+          codes: z.array(z.enum(WAYBILL_WARNING_CODES)),
+          warningFingerprint: assignmentFingerprintSchema,
+        })
+        .strict(),
+    ),
     operationRequirement: z
       .object({
         kind: z.enum(['crew', 'assignment_tail']),
@@ -1508,14 +1550,25 @@ export const changeVehicleAssignmentSchema = z
      * обработчика, а не 400 от схемы.
      *
      * Остальная часть `changeVehicleAssignmentExtrasSchema` — `anchors`, `unlockFingerprint`,
-     * `clearedShiftsFingerprint`, `acknowledgements`, `operation` и коррекционный блок с целью —
-     * приезжает вместе с окном волны 4a. Принять их сейчас значило бы принимать и **молча
-     * игнорировать**: якорей эта дверь пока не пишет (Р22, бэкстоп), а рукопожатие, которое никто
-     * не проверяет, хуже отсутствующего. Коррекционный блок здесь по той же причине остаётся
-     * прежним (`correctAssignmentSchema`): его цель и `operation` — это смена тела, а не
-     * расширение, и она идёт своей волной.
+     * `clearedShiftsFingerprint`, `operation` и коррекционный блок с целью — приезжает вместе с
+     * окном волны 4a. Принять их сейчас значило бы принимать и **молча игнорировать**: якорей эта
+     * дверь пока не пишет (Р22, бэкстоп), а рукопожатие, которое никто не проверяет, хуже
+     * отсутствующего. Коррекционный блок здесь по той же причине остаётся прежним
+     * (`correctAssignmentSchema`): его цель и `operation` — это смена тела, а не расширение, и она
+     * идёт своей волной.
      */
     previewFingerprint: changeVehicleAssignmentExtrasSchema.shape.previewFingerprint,
+    /**
+     * Подтверждения предупреждений — по одному на выпускаемый лист с непустым набором (Б4).
+     *
+     * Это поле из общего расширения дошло до двери раньше остальных, и по той единственной
+     * причине, которая делает поле полем: его **проверяют**. Предпросмотр старой двери называет
+     * предупреждения по каждому выпускаемому листу, а боевая ручка требует по ним подпись там, где
+     * бумагу выпускает сам план (`read_mode = history`), и сверяет присланную в обоих режимах.
+     * Схема объявлена `.strict()` — без этого поля подпись отвергалась бы валидацией **до**
+     * обработчика, то есть окно не смогло бы её прислать вовсе.
+     */
+    acknowledgements: changeVehicleAssignmentExtrasSchema.shape.acknowledgements,
   })
   .strict();
 export type ChangeVehicleAssignmentInput = z.infer<typeof changeVehicleAssignmentSchema>;

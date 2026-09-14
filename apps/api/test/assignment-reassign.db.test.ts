@@ -5,6 +5,7 @@ import {
   moscowDateKeyOf,
   shiftDateKey,
   weekStartKey,
+  type AssignmentIssueWarningsDto,
   type AssignmentPreviewDto,
   type Role,
 } from '@technic/contracts';
@@ -378,6 +379,16 @@ function applyOf(scene: Scene, body: Record<string, unknown>) {
   });
 }
 
+/** Подписи по всем листам, которым есть что подтверждать, — так их собирает и окно (Б4). */
+const acknowledgementsOf = (
+  issues: readonly AssignmentIssueWarningsDto[],
+): Record<string, string> =>
+  Object.fromEntries(
+    issues
+      .filter((issue) => issue.warnings.length > 0)
+      .map((issue) => [String(issue.issueKey), issue.warningFingerprint]),
+  );
+
 /** Коррекционный блок: разблокировать лист отработанной недели — исход `crew` (Р32). */
 function correctionBlock(scene: Scene): Record<string, unknown> {
   return {
@@ -473,7 +484,17 @@ describeReadModes(readMode, 'предпросмотр смены техники'
     expect(preview.statusCode, preview.body).toBe(200);
     const dto = preview.json<AssignmentPreviewDto>();
 
-    const res = await applyOf(scene, { previewFingerprint: dto.fingerprint });
+    /*
+     * Рукопожатие по листам (Б4) едет вместе с отпечатком: у машиниста сцены документов нет вовсе,
+     * и в `history` дверь требует подпись по каждому выписываемому бланку. В `legacy` она не
+     * требуется, но присланная проверяется и там — набор один и тот же, и команда проходит в обоих
+     * режимах. Предмет случая от этого не меняется: он про отпечаток, а подпись сюда приезжает
+     * ровно так же, как её привозит окно.
+     */
+    const res = await applyOf(scene, {
+      previewFingerprint: dto.fingerprint,
+      acknowledgements: acknowledgementsOf(dto.issues),
+    });
     /*
      * Ожидание одно на оба режима, и это утверждение, а не совпадение: отпечаток считается по
      * содержанию последствий, а не по режиму чтения, — и полная история сцены не даёт бэкстопу

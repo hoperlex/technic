@@ -83,6 +83,8 @@ const PREVIEW: EarlyEndApprovalPreviewDto = {
   paper: { trimmed: 1, cancelled: 2, trimmedTo: '2026-08-14' },
   linearDays: { detachable: [], frozen: [] },
   cancelGroups: [{ effectiveDate: '2026-08-17' }],
+  // Обычное сокращение бумагу правит, а не выписывает заново: подтверждать в нём нечего (Б4).
+  issues: [],
   operationRequirement: {
     kind: 'assignment_tail',
     reasonRequired: false,

@@ -345,6 +345,12 @@ import {
   type ReassignCommand,
   type ReassignPlan,
 } from '../services/assignment-reassign';
+// Рукопожатие по листам (Б4) — общим правилом на все двери: своей редакции «когда подпись
+// обязательна» у старой двери смены техники быть не должно.
+import {
+  assertAssignmentIssueAcknowledgements,
+  paperFollowsHistory,
+} from '../services/assignment-paper';
 // Бэкстоп чужих дверей (план Р21, Р22; фаза — Ж5): четыре двери этого файла зовут сверку ЭСМ-2, но
 // машиниста не спрашивают. До переключения чтения расчёт остаётся диагностикой и работу не трогает.
 import { assertAssignmentBackstop } from '../services/assignment-backstop';
@@ -6660,9 +6666,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     { ...canChangeStatus, schema: { params: idParams, body: changeVehicleAssignmentSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      // `previewFingerprint` вынут из `rates` намеренно: остаток уходит в `resolveAssignment`
-      // как назначение, и рукопожатию там не место — оно про разговор с человеком, а не про машину.
-      const { version, route, correction, previewFingerprint, ...rates } = req.body;
+      // Рукопожатия вынуты из `rates` намеренно: остаток уходит в `resolveAssignment` как
+      // назначение, и им там не место — они про разговор с человеком, а не про машину.
+      const { version, route, correction, previewFingerprint, acknowledgements, ...rates } =
+        req.body;
       const before = await getDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, before);
@@ -6778,14 +6785,28 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
        * запроса без отпечатка не происходит **ни одного лишнего чтения**, то есть обычная смена
        * техники идёт ровно тем же путём и с той же ценой, что и до этой волны.
        */
-      const checkPreviewFingerprint = async (
+      const checkPreviewHandshakes = async (
         tx: Tx,
         mode: AssignmentModeSnapshot,
       ): Promise<void> => {
-        if (previewFingerprint === undefined && !historyIsAuthoritative(mode)) return;
+        if (
+          previewFingerprint === undefined &&
+          acknowledgements === undefined &&
+          !historyIsAuthoritative(mode)
+        ) {
+          return;
+        }
         // У грузоперевозки нет ни срока работ, ни недельной бумаги: предпросмотра у неё не бывает,
-        // и спрашивать отпечаток не с чего даже после переключения чтения.
-        if (before.requestType !== 'special_equipment') return;
+        // и спрашивать отпечаток не с чего даже после переключения чтения. Подпись под её листами
+        // при этом не бывает ничем: листов нет, и присланная означает ошибку клиента.
+        if (before.requestType !== 'special_equipment') {
+          assertAssignmentIssueAcknowledgements({
+            issues: [],
+            acknowledgements,
+            required: false,
+          });
+          return;
+        }
         const cmdTx = tx as AssignmentCommandTx;
         const locked = await lockedReassignRequest(cmdTx, before.id);
         const planned = await planReassignCommand(
@@ -6797,6 +6818,28 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           effects: planned.effects,
           computed: planned.fingerprint,
           supplied: previewFingerprint,
+        });
+        /*
+         * Рукопожатие по каждому листу с непустыми предупреждениями (Б4) — после отпечатка
+         * последствий и по тому же посчитанному плану.
+         *
+         * Порядок тот же, что у дверей истории: устаревший предпросмотр обязан кончиться 409
+         * «посмотрите заново», а не 422 «подтвердите то, чего вы не видели». Требуется подпись
+         * там, где бумагу выпускает сам план (`read_mode = history`): в `legacy` листы переписывает
+         * недельная сверка, у которой просителя нет вовсе, и неполный комплект документов её не
+         * останавливает (ADR 0064) — потребуй дверь подпись там, заперлась бы сегодняшняя работа
+         * портала. Присланное подтверждение проверяется в обоих режимах.
+         *
+         * Записывает подпись в бланк не эта проверка, а сама выписка: принятые здесь рукопожатия
+         * уезжают в сверку (`syncEsm2Waybills`) и ложатся в лист тем же порядком, что и у дверей
+         * истории (Р21). Иначе человек подтверждал бы набор, а бланк выходил бы с умолчанием «не
+         * проверяли» — то есть подпись терялась бы ровно в том документе, ради которого её и
+         * спросили.
+         */
+        assertAssignmentIssueAcknowledgements({
+          issues: planned.plan.issues,
+          acknowledgements,
+          required: paperFollowsHistory(mode),
         });
       };
 
@@ -6830,9 +6873,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
          */
         await lockRequestRoutes(tx, before.id, namedRouteIds(route));
         await lockRequestRow(tx, before.id);
-        // Шаг 7: отпечаток — под уже взятыми блокировками и **до** первой записи. Позже он ничего
-        // бы не значил: заявка уже была бы переписана тем состоянием, которое человек не видел.
-        await checkPreviewFingerprint(tx, mode);
+        // Шаги 7 и 8: отпечаток и рукопожатия — под уже взятыми блокировками и **до** первой
+        // записи. Позже они ничего бы не значили: заявка уже была бы переписана тем состоянием,
+        // которое человек не видел.
+        await checkPreviewHandshakes(tx, mode);
         const saved = await resolveAssignment(
           tx,
           { ...rates, route },
@@ -6884,6 +6928,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               ? correction.reason
               : 'Заявке назначена другая техника — путевые листы переоформлены',
           driverPersonId: rates.driverPersonId ?? null,
+          // Подписи, принятые шагом 8 этой двери: ими выписанный лист помнит, под чем он вышел.
+          acknowledgements,
           ...(correctionId && correction
             ? {
                 correction: { id: correctionId, unlockWaybillIds: correction.unlockWaybillIds },
@@ -7250,6 +7296,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         operationId,
         previewFingerprint,
         cancelGroupsFingerprint,
+        acknowledgements,
       } = req.body;
       const before = await getDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
@@ -7268,7 +7315,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             requestId: before.id,
             actor: p,
             command: { branch: 'request', newDateTo, reason },
-            handshake: { operationId, previewFingerprint, cancelGroupsFingerprint },
+            handshake: {
+              operationId,
+              previewFingerprint,
+              cancelGroupsFingerprint,
+              acknowledgements,
+            },
             body: req.body,
             expectedVersion: version,
             asOf: earlyEndAsOf(),
@@ -7283,7 +7335,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
        * субъекту, а не по телу (Р28, вторая граница). Канона здесь нет вовсе, поэтому и повторять
        * нечего: отказ безусловный.
        */
-      if (operationId || previewFingerprint || cancelGroupsFingerprint) {
+      if (operationId || previewFingerprint || cancelGroupsFingerprint || acknowledgements) {
         throw err.unprocessable(
           'Этот запрос ничего не применяет — он ждёт визы руководителя строительства: подтверждать последствия нечем',
           { previewFingerprint: 'Ветвь ничего не применяет' },
@@ -7414,6 +7466,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               operationId: body.operationId,
               previewFingerprint: body.previewFingerprint,
               cancelGroupsFingerprint: body.cancelGroupsFingerprint,
+              acknowledgements: body.acknowledgements,
             },
             body,
             expectedVersion: body.version,

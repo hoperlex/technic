@@ -45,8 +45,14 @@ import { authorizeCrewCommand, authorizeCrewRepeat, fingerprintOf } from './assi
 import { cancelGroupsShape, lastDayOf, shortenTermPlan } from './assignment-shorten-term';
 import type { ShortenTermPlan } from './assignment-shorten-term';
 import { assertAssignmentBackstop } from './assignment-backstop';
-// Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу (§10, Р32).
-import { assignmentPaperExecution, paperFollowsHistory } from './assignment-paper';
+import type { AssignmentModeSnapshot } from './assignment-mode';
+// Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу (§10, Р32). Рукопожатие по
+// листам (Б4) спрашивается тем же общим правилом — своей редакции у этой двери быть не должно.
+import {
+  assertAssignmentIssueAcknowledgements,
+  assignmentPaperExecution,
+  paperFollowsHistory,
+} from './assignment-paper';
 import { afterWorkPeriodChanged } from './vehicle-request-period';
 import {
   linearDayRefOf,
@@ -401,8 +407,13 @@ async function requireSameRequest(
  * и молча пропущенное подтверждение означало бы, что человек подтвердил не то, что произойдёт.
  */
 export function assertEarlyEndHandshake(
+  mode: AssignmentModeSnapshot,
   plan: EarlyEndPlan,
-  input: { cancelGroupsFingerprint?: string | undefined },
+  input: {
+    cancelGroupsFingerprint?: string | undefined;
+    /** Подписи по листам с непустыми предупреждениями: `issueKey` строкой → отпечаток набора. */
+    acknowledgements?: Readonly<Record<string, string>> | undefined;
+  },
 ): void {
   const expected = plan.shorten.cancelGroupsFingerprint;
   if (expected === null) {
@@ -412,9 +423,9 @@ export function assertEarlyEndHandshake(
         { cancelGroupsFingerprint: 'Лишнее подтверждение' },
       );
     }
-    return;
-  }
-  if (input.cancelGroupsFingerprint !== expected) {
+    // Ранний выход отсюда унёс бы вторую проверку целиком: гасить нечего — а бумага у такого
+    // сокращения бывает, и подпись по ней спрашивается всё равно.
+  } else if (input.cancelGroupsFingerprint !== expected) {
     throw err.unprocessable(
       `Сокращение срока гасит решения о технике и машинисте, стоявшие за новым концом срока (${plan.shorten.cancelGroups
         .map((group) => group.rows[0]!.effectiveDate)
@@ -424,6 +435,35 @@ export function assertEarlyEndHandshake(
       { cancelGroupsFingerprint: 'Нужно подтверждение' },
     );
   }
+  assertIssueHandshake(mode, plan, input);
+}
+
+/**
+ * Рукопожатие по листам (Б4) — вторая и последняя проверка этой двери.
+ *
+ * Отдельной функцией, потому что порядок здесь смысловой: перечень гасимых групп отвечает на «что
+ * уйдёт из истории», а подпись — на «что напечатают в бланке», и спрошенная первой она попросила бы
+ * человека подтвердить бумагу решения, которого он ещё не видел.
+ *
+ * Требуется там, где бумагу выпускает **этот** план (`paperFollowsHistory`): в `legacy` листы
+ * ведёт недельная сверка, у которой просителя нет вовсе, и неполный комплект документов её не
+ * останавливает (ADR 0064). Присланное подтверждение проверяется в обоих режимах.
+ *
+ * Обычному сокращению подписывать нечего: лист не гаснет, а **правится** — период документа
+ * становится короче, а напечатанный в нём человек и его документы остаются теми же. Подпись
+ * спрашивается там, где отрезок за новым концом забирает у листа часть дней: документ уходит из
+ * оборота целиком, а взамен выписывается новый — с теми пробелами, которые человек обязан увидеть.
+ */
+function assertIssueHandshake(
+  mode: AssignmentModeSnapshot,
+  plan: EarlyEndPlan,
+  input: { acknowledgements?: Readonly<Record<string, string>> | undefined },
+): void {
+  assertAssignmentIssueAcknowledgements({
+    issues: plan.shorten.issues,
+    acknowledgements: input.acknowledgements,
+    required: paperFollowsHistory(mode),
+  });
 }
 
 // ── Отпечаток предпросмотра (Р20, Р32) ──
@@ -491,11 +531,13 @@ export function earlyEndCommandSpec(params: {
   requestId: string;
   actor: Principal;
   command: EarlyEndCommand;
-  /** Рукопожатия тела: три необязательных поля apply-схемы (Р28). */
+  /** Рукопожатия тела: необязательные поля apply-схемы (Р28). */
   handshake: {
     operationId?: string | undefined;
     previewFingerprint?: string | undefined;
     cancelGroupsFingerprint?: string | undefined;
+    /** Подписи по выпускаемым листам с непустыми предупреждениями (Б4). */
+    acknowledgements?: Readonly<Record<string, string>> | undefined;
   };
   /** Тело запроса целиком: им каркас отличает повтор по ключу от чужого ключа (Р9). */
   body: unknown;
@@ -533,7 +575,7 @@ export function earlyEndCommandSpec(params: {
     requiresPreview: () => true,
     asOf,
     plan: (ctx) => planEarlyEndCommand(ctx, command),
-    handshake: (ctx) => assertEarlyEndHandshake(ctx.plan, handshake),
+    handshake: (ctx) => assertEarlyEndHandshake(ctx.mode, ctx.plan, handshake),
     /*
      * Права по посчитанному исходу (Р32) — и вырасти им здесь не с чего: исход `crew` у этой двери
      * недостижим (инвариант проверен в расчёте), значит `waybills.correct` не спрашивается никогда,
@@ -543,7 +585,7 @@ export function earlyEndCommandSpec(params: {
     authorize: (ctx) => authorizeEarlyEndCommand(actor, ctx),
     authorizeRepeat: (scope) => authorizeCrewRepeat(actor, scope),
     mutate: (ctx) => applyEarlyEnd(ctx, actor, command.branch),
-    syncPaper: (ctx) => syncEarlyEndPaper(ctx, actor),
+    syncPaper: (ctx) => syncEarlyEndPaper(ctx, actor, handshake.acknowledgements),
     payload: (ctx) => ({
       door: DOORS[ctx.plan.branch],
       branch: ctx.plan.branch,
@@ -707,6 +749,8 @@ async function applyEarlyEnd(
 async function syncEarlyEndPaper(
   ctx: AssignmentPaperContext<EarlyEndPlan, AssignmentWriteResult>,
   actor: Principal,
+  /** Рукопожатия, принятые шагом 8: ими лист помнит, под чем его подписали (Р21). */
+  acknowledgements?: Readonly<Record<string, string>> | undefined,
 ): Promise<EarlyEndPaper> {
   const { tx, plan, request } = ctx;
   const reason = `Срок заявки сокращён до ${dateKeyRu(plan.newDateTo)}`;
@@ -772,6 +816,7 @@ async function syncEarlyEndPaper(
               unlockWaybillIds,
               // Снимок бланка и предупреждения — посчитанные шагом 6 и подтверждённые человеком.
               issues: plan.shorten.issuePreparations,
+              acknowledgements,
             }),
           },
         }
@@ -900,6 +945,23 @@ export function earlyEndApprovalPreviewDto(
     // машины и фамилии в них — это то, ради сокрытия чего заведено обезличивание.
     cancelGroups: plan.shorten.cancelGroups.map((group) => ({
       effectiveDate: group.rows[0]!.effectiveDate,
+    })),
+    /*
+     * Предупреждения — видами и отпечатком, без текста и без того, у кого нашли пробел (Б4 и Р26
+     * вместе).
+     *
+     * Подпись по каждому такому листу дверь **требует** там, где бумагу выпускает сам план, и
+     * взять отпечаток человеку больше неоткуда: полного предпросмотра у этой двери нет вовсе.
+     * Отдай мы здесь один отпечаток без вида замечания — человек подписывал бы вслепую; отдай
+     * целиком `AssignmentIssueWarningsDto` — визирующий прочёл бы фамилию машиниста и номер его
+     * удостоверения, то есть ровно то, ради сокрытия чего заведено обезличивание.
+     */
+    issues: plan.shorten.issues.map((issue) => ({
+      issueKey: issue.issueKey,
+      // Виды — множеством и по канону: один и тот же вид в наборе повторяется (у машиниста бывает
+      // и СНИЛС, и удостоверение), а порядок в списке предупреждений человеку ничего не говорит.
+      codes: [...new Set(issue.warnings.map((warning) => warning.facts.code))].sort(),
+      warningFingerprint: issue.warningFingerprint,
     })),
     operationRequirement: operationRequirementOf(effects),
     asOf,

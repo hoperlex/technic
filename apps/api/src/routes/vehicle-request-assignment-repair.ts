@@ -7,6 +7,8 @@ import {
   repairSchema,
   uuidSchema,
   type AssignmentHistoryState,
+  type AssignmentIssueWarningsDto,
+  type AssignmentPlanIssueDto,
   type RepairInput,
   type RepairPreviewDto,
   type RepairResultDto,
@@ -45,6 +47,7 @@ import {
   readRepairContext,
   repairHistoryState,
   repairPaperPlan,
+  repairPlanIssues,
   requiredAnchorsOf,
   requiredUnlocksOf,
   tailMismatchOf,
@@ -56,9 +59,14 @@ import { applyAssignmentMutations, type AssignmentWriteResult } from '../service
 import { assignmentSegments } from '../services/assignment-history';
 import { correctionFingerprint } from '../services/waybill-correction';
 import type { Esm2SheetPlan } from '../services/esm2-plan';
+import type { Esm2IssuePreparations } from '../services/waybill-esm2';
 // Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
-// провенансом (§10, Р32).
-import { applyAssignmentPaper, paperFollowsHistory } from '../services/assignment-paper';
+// провенансом (§10, Р32). Рукопожатие по листам (Б4) спрашивается тем же общим правилом.
+import {
+  applyAssignmentPaper,
+  assertAssignmentIssueAcknowledgements,
+  paperFollowsHistory,
+} from '../services/assignment-paper';
 
 /**
  * Дверь ремонта истории назначения — `POST /vehicle-requests/:id/assignment-changes/repair`
@@ -260,14 +268,32 @@ export default async function vehicleRequestAssignmentRepairRoutes(
                   { unlockFingerprint: 'Лишнее подтверждение' },
                 );
               }
-              return;
-            }
-            if (body.unlockFingerprint !== required) {
+            } else if (body.unlockFingerprint !== required) {
               throw err.unprocessable(
                 'Список переоформляемых бланков изменился — посмотрите последствия заново',
                 { unlockFingerprint: 'Подтвердите заново' },
               );
             }
+            /*
+             * Рукопожатие по каждому листу с непустыми предупреждениями (Б4) — последним и после
+             * разблокировок.
+             *
+             * Порядок смысловой, и он тот же, что у соседних дверей: разблокировка отвечает на
+             * «можно ли вообще трогать эту бумагу», рукопожатие — на «согласен ли человек с тем,
+             * что в ней напечатают». Спроси дверь второе первым, человек подтверждал бы
+             * предупреждения по листам, которых команде всё равно не отдадут.
+             *
+             * Требуется там, где бумагу выпускает **этот** план (`paperFollowsHistory`): в
+             * `legacy` ремонт бумаги не трогает вовсе — её ведёт недельная сверка, у которой
+             * просителя нет, — и требовать там подпись значило бы запереть дверь ради листа,
+             * который она не выпишет. Присланное подтверждение проверяется в обоих режимах:
+             * принять и молча не посмотреть хуже, чем не спрашивать.
+             */
+            assertAssignmentIssueAcknowledgements({
+              issues: ctx.plan.issues,
+              acknowledgements: body.acknowledgements,
+              required: paperFollowsHistory(ctx.mode),
+            });
           },
           authorize: (ctx) => authorizeRepair(p, ctx.effects, ctx.asOf, restore, ctx.request),
           authorizeRepeat: (scope) => authorizeRepeatRepair(p, scope),
@@ -361,6 +387,9 @@ export default async function vehicleRequestAssignmentRepairRoutes(
                 ctx.plan.context.sheets.map((sheet) => [sheet.id, sheet.displayNumber]),
               ),
               unlockWaybillIds: ctx.plan.unlockWaybillIds,
+              // Снимок бланка и предупреждения — посчитанные шагом 6 и подтверждённые человеком.
+              issues: ctx.plan.issuePreparations,
+              acknowledgements: body.acknowledgements,
             });
           },
           payload: (ctx) => ({
@@ -427,6 +456,18 @@ interface RepairComputed {
   unlockFingerprint: string | null;
   /** Листы, названные операцией поимённо (Р11): серверный список, тело носит только отпечаток. */
   unlockWaybillIds: string[];
+  /**
+   * Выпускаемые листы — так, как их показывает окно: в каноническом порядке и с ключами `issueKey`.
+   *
+   * Порядок здесь предмет, а не оформление: по `issueKey` человек подтверждает бумагу, и тем же
+   * ключом её адресует исполнитель. Показанный порядок массива вместо канонического означал бы
+   * подтверждённый один лист и выписанный другой.
+   */
+  previewIssue: AssignmentPlanIssueDto[];
+  /** Предупреждения по каждому выпускаемому листу и их отпечатки — предмет рукопожатия (Б4). */
+  issues: AssignmentIssueWarningsDto[];
+  /** Те же листы шагу 12: снимок бланка и предупреждения, которые исполнение не пересчитывает. */
+  issuePreparations: Esm2IssuePreparations;
   context: RepairContext;
   preview: {
     requiredAnchors: ReturnType<typeof requiredAnchorsOf>;
@@ -517,6 +558,18 @@ async function planRepairCommand(
     correction: effects.needsCorrection,
   });
 
+  /*
+   * Предупреждения и снимок бланка — шагом 6, вместе с планом и до первой записи (§7, Б4).
+   *
+   * Считаются по **исполняемому** плану, а не по пробному: пробный существует ради одного вопроса
+   * («paper-free ли ремонт») и разблокировок не знает, а подтверждает человек то, что выпишется.
+   */
+  const planIssues = await repairPlanIssues(ctx.tx, {
+    requestId: request.id,
+    plan: paperPlan,
+    vehicleNames: context.vehicleNames,
+  });
+
   const blockerFingerprint = blockerFingerprintOf(blockersBefore);
   const computed: RepairComputed = {
     stateBefore,
@@ -529,6 +582,9 @@ async function planRepairCommand(
     restoreRequired,
     unlockFingerprint,
     unlockWaybillIds: unlocks.map((sheet) => sheet.id),
+    previewIssue: planIssues.issue,
+    issues: planIssues.issues,
+    issuePreparations: planIssues.prepared,
     context,
     preview: {
       requiredAnchors: requiredAnchorsOf(
@@ -739,16 +795,12 @@ function previewDto(
        * после разреза пн–вт и ср–вс — два документа с разными машиной и человеком. Имена людей
        * здесь не подставляются: справочник читает предпросмотр портала, а фамилия, подставленная
        * сервером «по последнему листу», уезжает в бланк строгой отчётности настоящей (ADR 0083).
+       *
+       * Список берётся готовым (`repairPlanIssues`), а не собирается здесь вторым проходом: по его
+       * `issueKey` считаны предупреждения и строятся рукопожатия, и второй порядок развёл бы окно
+       * с подписью.
        */
-      issue: plan.paperPlan.issue.map((sheet, index) => ({
-        issueKey: index,
-        from: sheet.from,
-        to: sheet.to,
-        vehicleId: sheet.vehicleId,
-        vehicleName: plan.context.vehicleNames.get(sheet.vehicleId) ?? sheet.vehicleId,
-        driverPersonId: sheet.driver.personId,
-        driverName: '',
-      })),
+      issue: plan.previewIssue,
     },
     requiredAnchors: plan.preview.requiredAnchors,
     requiredVehicleResolution: plan.preview.requiredVehicleResolution,
@@ -766,8 +818,7 @@ function previewDto(
       }),
     ),
     unlockFingerprint: plan.unlockFingerprint,
-    // Предупреждения листа считает сверка, а она приезжает шагом 12 вместе со своей волной.
-    issues: [],
+    issues: plan.issues,
     operationRequirement:
       effects.operationOutcome === 'none'
         ? null

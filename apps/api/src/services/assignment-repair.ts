@@ -5,6 +5,8 @@ import {
   shiftDateKey,
   waybillDisplayNumber,
   type AssignmentChangeTarget,
+  type AssignmentIssueWarningsDto,
+  type AssignmentPlanIssueDto,
   type DriverState,
   type Esm2Mode,
   type KnownFill,
@@ -25,6 +27,7 @@ import {
   waybillSeries,
 } from '../db/schema';
 import { AppError, err } from '../lib/errors';
+import type { AssignmentCommandTx } from './assignment-command';
 import type { AssignmentMutation } from './assignment-effects';
 import { tailEffectiveDate } from './assignment-effects';
 import { assignmentChangeTargetOf } from './assignment-ensure';
@@ -35,6 +38,9 @@ import {
   type AssignmentSegment,
   type AssignmentTerm,
 } from './assignment-history';
+// Предупреждения по выпускаемым листам — общим расчётом шага 6 (§7): шестого места, где решают,
+// что такое пробел в документах машиниста, заводить нельзя.
+import { assignmentPlanIssues } from './assignment-paper';
 import type { AssignmentWriteTx } from './assignment-write';
 import {
   readAssignmentChanges,
@@ -54,6 +60,7 @@ import {
   type Esm2ExistingSheet,
   type Esm2SheetPlan,
 } from './esm2-plan';
+import type { Esm2IssuePreparations } from './waybill-esm2';
 
 /**
  * Правила двери ремонта истории назначения
@@ -1298,6 +1305,58 @@ export function repairPaperPlan(
  */
 export function isPaperFree(plan: Esm2SheetPlan): boolean {
   return plan.cancel.length === 0 && plan.issue.length === 0 && plan.trim.length === 0;
+}
+
+/**
+ * Выпускаемые листы ремонта — так, как их видит окно, — и предупреждения по каждому из них
+ * (§7, Б4, Р21).
+ *
+ * ПОЧЕМУ ЗДЕСЬ, А НЕ В МАРШРУТЕ. Ключ `issueKey` — это индекс в плане, отсортированном по
+ * `(from, to, vehicleId, driverPersonId)`, и тем же каноном его считает исполнитель
+ * ([esm2-plan.ts](./esm2-plan.ts), `esm2ScopedPlan`). Порядок выборки из базы каноном не является:
+ * покажи дверь листы в порядке массива, человек подтвердил бы один лист, а выписался бы другой —
+ * и увидеть это было бы не по чему, потому что оба набора на вид одинаковы.
+ *
+ * ПОЧЕМУ ПРЕДУПРЕЖДЕНИЯ СЧИТАЕТ НЕ ЭТА ФУНКЦИЯ. Их считает `assignmentPlanIssues` — общий вход
+ * шага 6 у всех дверей ([assignment-paper.ts](./assignment-paper.ts)). Своя редакция правила «что
+ * такое пробел в документах машиниста» здесь стала бы шестой, и разошлись бы они молча: набор
+ * подтверждён один, напечатан другой.
+ *
+ * Имя машиниста не подставляется — как и прежде (ADR 0083): справочник людей читает предпросмотр
+ * портала, а фамилия, подставленная сервером «по последнему листу», уезжает в бланк строгой
+ * отчётности настоящей.
+ */
+export async function repairPlanIssues(
+  tx: AssignmentCommandTx,
+  params: {
+    requestId: string;
+    /** Исполняемый план бумаги — тот же, который увидит предпросмотр и исполнит шаг 12. */
+    plan: Esm2SheetPlan;
+    /** Имена машин: ими окно называет человеку выписываемый лист. */
+    vehicleNames: ReadonlyMap<string, string>;
+  },
+): Promise<{
+  issue: AssignmentPlanIssueDto[];
+  issues: AssignmentIssueWarningsDto[];
+  prepared: Esm2IssuePreparations;
+}> {
+  const issue = [...params.plan.issue]
+    .sort((a, b) => {
+      const left = `${a.from}|${a.to}|${a.vehicleId}|${a.driver.personId}`;
+      const right = `${b.from}|${b.to}|${b.vehicleId}|${b.driver.personId}`;
+      return left < right ? -1 : left > right ? 1 : 0;
+    })
+    .map((want, index) => ({
+      issueKey: index,
+      from: want.from,
+      to: want.to,
+      vehicleId: want.vehicleId,
+      vehicleName: params.vehicleNames.get(want.vehicleId) ?? want.vehicleId,
+      driverPersonId: want.driver.personId,
+      driverName: '',
+    }));
+  const planIssues = await assignmentPlanIssues(tx, { requestId: params.requestId, issue });
+  return { issue, issues: planIssues.issues, prepared: planIssues.prepared };
 }
 
 /**
