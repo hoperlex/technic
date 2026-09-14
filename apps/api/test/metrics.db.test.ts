@@ -8,6 +8,7 @@ import type { db as AppDb } from '../src/db/client';
 import type * as DbSchema from '../src/db/schema';
 import type { collectMetrics as CollectMetrics } from '../src/services/metrics';
 import type * as AssignmentCommand from '../src/services/assignment-command';
+import type * as AssignmentRetry from '../src/services/assignment-retry';
 
 /**
  * Метрики почты на живой схеме (§20).
@@ -33,6 +34,8 @@ interface Ctx {
   collectMetrics: typeof CollectMetrics;
   /** Каркас команд истории — ради его счётчика исходов; грузится тем же поздним импортом. */
   command: typeof AssignmentCommand;
+  /** Протокол повторов (В4) — ради его пары счётчиков; тем же поздним импортом. */
+  retry: typeof AssignmentRetry;
   scheduleId: string;
   userId: string;
 }
@@ -85,6 +88,7 @@ describe.skipIf(!DB_URL)('метрики почты (живая схема)', ()
     const schema = await import('../src/db/schema');
     const { collectMetrics } = await import('../src/services/metrics');
     const command = await import('../src/services/assignment-command');
+    const retry = await import('../src/services/assignment-retry');
 
     const [user] = await db
       .insert(schema.users)
@@ -122,6 +126,7 @@ describe.skipIf(!DB_URL)('метрики почты (живая схема)', ()
       schema,
       collectMetrics,
       command,
+      retry,
       scheduleId: schedule!.id,
       userId: user!.id,
     };
@@ -220,6 +225,8 @@ describe.skipIf(!DB_URL)('метрики почты (живая схема)', ()
       'technic_assignment_backstop_shadow',
       'technic_assignment_backstop_refusals',
       'technic_assignment_command',
+      'technic_assignment_retries',
+      'technic_assignment_retry_exhausted',
     ]) {
       expect(text).toContain(`# TYPE ${name} `);
     }
@@ -242,11 +249,13 @@ describe.skipIf(!DB_URL)('метрики почты (живая схема)', ()
 
   it('конфликт сериализации попадает в метрику отдельным исходом, а не в «ошибку»', async () => {
     ctx.command.resetAssignmentCommandCounters();
+    ctx.retry.resetAssignmentRetryCounters();
 
     // Исполнитель, который падает `40001` до всякой работы: ровно то, что делает PostgreSQL,
     // когда две транзакции сошлись на одной строке — в том числе на счётчике номеров бланков,
     // одном на весь портал (спайк §4.3).
     const conflict = Object.assign(new Error('could not serialize access'), { code: '40001' });
+    let attempts = 0;
     const spec = {
       door: 'history',
       journalDoor: 'metrics-probe',
@@ -255,27 +264,40 @@ describe.skipIf(!DB_URL)('метрики почты (живая схема)', ()
       expectedVersion: 0,
       body: {},
       operation: null,
+      // Своя политика: потолок портала берётся из `prod.env`, а метрика проверяется числом — и
+      // прогон не должен ждать боевого джиттера. Само правило повтора проверяет свой файл
+      // (`assignment-retry.test.ts`), здесь — только то, во что оно превращается в `/metrics`.
+      retry: { attempts: 2, backoffMs: 0 },
     } as unknown as Parameters<typeof ctx.command.runAssignmentCommand>[1];
 
     await expect(
       ctx.command.runAssignmentCommand(
         {
           transaction: () => {
+            attempts += 1;
             throw conflict;
           },
         } as unknown as Parameters<typeof ctx.command.runAssignmentCommand>[0],
         spec,
       ),
-    ).rejects.toThrow(/serialize/u);
+      // Наружу выходит исчерпание протокола повторов (В4): 503 с `Retry-After`, а не сырой `40001`.
+    ).rejects.toMatchObject({ statusCode: 503, code: 'assignment_retry_exhausted' });
+    expect(attempts).toBe(2);
 
     const text = await ctx.collectMetrics();
     // Именно `serialization`, а не `error`: 500 разбирают как поломку, а этот отказ — временная
-    // конкуренция, и пока протокола повторов нет, каждый такой случай увидел человек.
+    // конкуренция. Метка та же, что была до протокола повторов, и означает теперь ровно исчерпание
+    // потолка: успешный повтор сюда не попадает, он кончается `ok`.
     expect(text).toContain(
       'technic_assignment_command{door="metrics-probe",outcome="serialization"} 1',
     );
+    // И пара чисел самого протокола: повтор был один, исчерпание одно. По ним и подбирается
+    // потолок `ASSIGNMENT_RETRY_ATTEMPTS`.
+    expect(text).toContain('technic_assignment_retries{door="metrics-probe"} 1');
+    expect(text).toContain('technic_assignment_retry_exhausted{door="metrics-probe"} 1');
 
     ctx.command.resetAssignmentCommandCounters();
+    ctx.retry.resetAssignmentRetryCounters();
   });
 
   it('выключенное расписание просроченным не считается', async () => {

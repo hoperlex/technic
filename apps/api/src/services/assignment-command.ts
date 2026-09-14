@@ -10,7 +10,6 @@ import type { db as AppDb } from '../db/client';
 import { specialEquipmentRequestDetails, vehicleRequests, waybillCorrections } from '../db/schema';
 import { writeAuditTx, type AuditEntry } from '../lib/audit';
 import { AppError, err } from '../lib/errors';
-import { pgErrorOf } from '../lib/pg-error';
 import type { AssignmentEffects } from './assignment-effects';
 import type { AssignmentTerm } from './assignment-history';
 import {
@@ -20,6 +19,11 @@ import {
   type AssignmentDoorClass,
   type AssignmentModeSnapshot,
 } from './assignment-mode';
+import {
+  isSerializationFailure,
+  withAssignmentRetry,
+  type AssignmentRetryPolicy,
+} from './assignment-retry';
 import {
   assertAssignmentDenormalization,
   type AssignmentWriteResult,
@@ -249,6 +253,16 @@ export interface AssignmentCommandSpec<TPlan, TApplied, TPaper> {
   extraRouteIds?: readonly string[];
   /** День расчёта; по умолчанию — сегодня по МСК. Аргументом — ради воспроизводимых тестов. */
   asOf?: string;
+  /**
+   * Своя политика повторов на `40001` (В4); не задана — умолчание портала из настроек
+   * (`ASSIGNMENT_RETRY_*`, [assignment-retry.ts](./assignment-retry.ts)).
+   *
+   * Поле оставлено дверям не ради разнообразия: у служебных прогонов этапа 4 профиль конкуренции
+   * свой и известен заранее, а тестам протокола нужны нулевая пауза и предсказуемый потолок —
+   * иначе проверка повторов зависела бы от `prod.env` того, кто её запускает. Боевые двери его не
+   * задают: одна настройка на портал и есть смысл настройки.
+   */
+  retry?: AssignmentRetryPolicy | undefined;
 
   /** Шаги 4–6. */
   plan(ctx: AssignmentPlanContext): Promise<AssignmentPlanned<TPlan>>;
@@ -357,13 +371,15 @@ export interface AssignmentCommandOutcome<TApplied, TPaper> {
  *   тревога — при всплеске: значит двое правят одну заявку;
  * - `refused` — 422: отказ по существу (нет машиниста, не подтверждены последствия);
  * - `forbidden` — 403;
- * - **`serialization`** — `40001`/`40P01` из PostgreSQL. Главное число этой метрики.
- *   Спайк (§4.3 отчёта) измерил закон: при `W` одновременных писателях по одной строке `k`-й
- *   проходит с `k`-й попытки, и общей строкой для портала является в том числе счётчик номеров
- *   бланков — один на весь портал. Пока протокола повторов (В4) нет, **каждый** такой отказ и
- *   есть исчерпание повторов: человек увидел ошибку. Появится протокол — то же число станет
- *   счётчиком `503 Retry-After`, а потолок повторов, который план велит держать настройкой, а не
- *   константой, будет подбираться по нему же;
+ * - **`serialization`** — `40001`/`40P01` из PostgreSQL, дошедший до человека. Главное число этой
+ *   метрики. Спайк (§4.3 отчёта) измерил закон: при `W` одновременных писателях по одной строке
+ *   `k`-й проходит с `k`-й попытки, и общей строкой для портала является в том числе счётчик
+ *   номеров бланков — один на весь портал. С появлением протокола повторов (В4) эта метка означает
+ *   ровно **исчерпание потолка**: `503` с `Retry-After`, а не 500. Успешный повтор сюда не
+ *   попадает вовсе — он кончился `ok`, — а виден отдельной метрикой повторов
+ *   ([assignment-retry.ts](./assignment-retry.ts)). Потолок, который план велит держать настройкой,
+ *   а не константой, подбирается по этой паре: ненулевые исчерпания при потолке `N` означают, что
+ *   боевое `W` выше `N`;
  * - `error` — всё остальное, то есть 500.
  *
  * Предпросмотр ({@link previewAssignmentCommand}) здесь не считается: он ничего не меняет, и его
@@ -372,6 +388,12 @@ export interface AssignmentCommandOutcome<TApplied, TPaper> {
  */
 export type AssignmentCommandOutcomeKind =
   'ok' | 'repeat' | 'frozen' | 'conflict' | 'refused' | 'forbidden' | 'serialization' | 'error';
+
+/**
+ * Метка предпросмотров в счётчике повторов. Не «дверь», а фаза: см. разбор у
+ * {@link previewAssignmentCommand}.
+ */
+const PREVIEW_DOOR = 'preview';
 
 /** Ключ — «дверь|исход»: две метки в одной строке, разбирается печатью метрики. */
 const outcomes = new Map<string, number>();
@@ -413,11 +435,17 @@ export function resetAssignmentCommandCounters(): void {
  * статуса, а статус точнее «что-то упало».
  */
 function classifyFailure(error: unknown): AssignmentCommandOutcomeKind {
-  const pg = pgErrorOf(error);
-  // Конфликт сериализации и взаимоблокировка — одна беда с точки зрения человека: он не сделал
-  // ничего плохого, а операция не прошла. Разводить их на две метки значило бы просить смотреть
-  // на два графика вместо одного.
-  if (pg?.code === '40001' || pg?.code === '40P01') return 'serialization';
+  /*
+   * Конфликт сериализации спрашивается ПЕРВЫМ и общим предикатом протокола повторов
+   * ([assignment-retry.ts](./assignment-retry.ts)), а не своим перечнем кодов.
+   *
+   * Первым — потому что исчерпание повторов приходит сюда уже завёрнутым в `AppError` 503, а
+   * последняя ошибка PostgreSQL лежит у него в `cause`: спроси мы сначала статус, исчерпание
+   * считалось бы обычной недоступностью сервиса и метка `serialization` замолчала бы ровно в тот
+   * день, когда протокол начал сдаваться. Общим предикатом — потому что вторая копия тех же двух
+   * кодов разошлась бы с первой молча, и счётчик врал бы о собственном протоколе.
+   */
+  if (isSerializationFailure(error)) return 'serialization';
   if (!(error instanceof AppError)) return 'error';
   if (error.code === ASSIGNMENT_MODE_FROZEN_CODE) return 'frozen';
   if (error.statusCode === 409) return 'conflict';
@@ -570,7 +598,24 @@ export async function runAssignmentCommand<TPlan, TApplied, TPaper = void>(
     });
 
   try {
-    const outcome = await command();
+    /*
+     * Повторы живут ЗДЕСЬ, снаружи транзакции, и это единственное место, где они возможны (В4).
+     *
+     * Повторяется `command` целиком — вместе с шагами 4–6, то есть вместе с планированием: план,
+     * посчитанный на снимке, который PostgreSQL только что объявил устаревшим, применять повторно
+     * нельзя ни при каких условиях. Пока мы стояли в очереди за строкой заявки, соседняя команда
+     * могла сменить машину, погасить строку истории или выписать лист — и наш план описывает
+     * состояние, которого больше нет. Повторное планирование видит новый снимок, и дальше исход
+     * решается сам собой: состояние действительно изменилось — шаг 7 ответит 409 по отпечатку и
+     * никакого повтора не будет (`withAssignmentRetry` ловит только `40001`/`40P01`); состояние то
+     * же — команда пройдёт со второй попытки, и человек не узнает, что была первая.
+     *
+     * Обёртка снаружи, а не внутри транзакции, по той же причине, по какой сама транзакция
+     * объявлена функцией: повторять нужно открытие транзакции, а не её тело — тело абортированной
+     * транзакции уже не выполняется, её снимок не оживить, и каждое чтение обязано повториться в
+     * новой.
+     */
+    const outcome = await withAssignmentRetry(spec.journalDoor, command, spec.retry);
     bumpOutcome(spec.journalDoor, outcome.repeated ? 'repeat' : 'ok');
     return outcome;
   } catch (error) {
@@ -592,6 +637,8 @@ export interface AssignmentPreviewSpec<TPlan> {
   requestId: string;
   actor: { id: string };
   asOf?: string | undefined;
+  /** Та же политика повторов, что у боевой команды; не задана — умолчание портала. */
+  retry?: AssignmentRetryPolicy | undefined;
   plan(ctx: AssignmentPlanContext): Promise<AssignmentPlanned<TPlan>>;
 }
 
@@ -624,22 +671,38 @@ export async function previewAssignmentCommand<TPlan>(
   spec: AssignmentPreviewSpec<TPlan>,
 ): Promise<AssignmentPreviewOutcome<TPlan>> {
   const asOf = spec.asOf ?? moscowDateKeyOf(new Date());
-  return executor.transaction(async (raw): Promise<AssignmentPreviewOutcome<TPlan>> => {
-    const tx = raw as AssignmentCommandTx;
-    const mode = await readAssignmentMode(tx);
-    const request = await lockedRequest(tx, spec.requestId);
-    const planned = await spec.plan({
-      tx: readOnlyTx(tx),
-      mode,
-      request,
-      asOf,
-      actor: spec.actor,
-    });
-    if (planned.effects.asOf !== asOf) {
-      throw internal('последствия посчитаны другим днём, чем идёт предпросмотр');
-    }
-    return { ...planned, request, mode, asOf };
-  });
+  /*
+   * Протокол повторов (В4) держит и предпросмотр: «в этой изоляции работают ВСЕ двери, зовущие
+   * общий план», и расчёт, сорванный чужим коммитом, обязан пересчитаться, а не показать человеку
+   * пятисотку в ответ на вопрос «что будет, если». Повторяется здесь ровно то же, что и в бою, —
+   * транзакция вместе с расчётом.
+   *
+   * Метка счётчика у всех предпросмотров одна (`preview`), а не своя на каждую дверь: разбор у них
+   * общий и цена ошибки другая. Повтор предпросмотра выбрасывает расчёт и ничего больше; повтор
+   * боевой команды выбрасывает работу под блокировкой заявки. Смешать эти два числа в одной метке
+   * значило бы смотреть на график, по которому не отличить дорогое от дешёвого.
+   */
+  return withAssignmentRetry(
+    PREVIEW_DOOR,
+    () =>
+      executor.transaction(async (raw): Promise<AssignmentPreviewOutcome<TPlan>> => {
+        const tx = raw as AssignmentCommandTx;
+        const mode = await readAssignmentMode(tx);
+        const request = await lockedRequest(tx, spec.requestId);
+        const planned = await spec.plan({
+          tx: readOnlyTx(tx),
+          mode,
+          request,
+          asOf,
+          actor: spec.actor,
+        });
+        if (planned.effects.asOf !== asOf) {
+          throw internal('последствия посчитаны другим днём, чем идёт предпросмотр');
+        }
+        return { ...planned, request, mode, asOf };
+      }),
+    spec.retry,
+  );
 }
 
 // ── Шаги, принадлежащие скелету ──

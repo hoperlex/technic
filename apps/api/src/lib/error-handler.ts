@@ -11,6 +11,19 @@ export function errorHandler(
   const requestId = String(req.id);
 
   if (error instanceof AppError) {
+    /*
+     * `Retry-After` у отказа, который просит повторить (сегодня это исчерпание протокола повторов
+     * истории назначения — `assignment-retry.ts`, решение В4 плана периодов).
+     *
+     * Признак структурный, а не `instanceof` конкретного класса: обработчик ошибок один на весь
+     * портал и лежит слоем ниже сервисов — импортируй он сервис ради одного отказа, следующий такой
+     * отказ притащил бы сюда второй сервис. Заголовок — часть протокола 503, а не украшение: без
+     * него «попробуйте позже» остаётся пожеланием в тексте, которое клиент прочитать не может.
+     */
+    const retryAfter = (error as { retryAfterSeconds?: unknown }).retryAfterSeconds;
+    if (typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0) {
+      reply.header('Retry-After', String(Math.round(retryAfter)));
+    }
     // `details` уходит рядом с `fields`, а не вместо них: первое разбирает машина (список
     // предупреждений выписки с отпечатком, коды блокеров), второе помечает поля формы. Пустое
     // значение в тело не попадает — `undefined` сериализатор выбрасывает сам.

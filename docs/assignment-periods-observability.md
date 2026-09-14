@@ -4,11 +4,15 @@
   [`assignment-periods-plan.md`](assignment-periods-plan.md), волна 4.2, задание Б
 - Что закрывает: вопрос «готовы ли мы к переключению чтения» — **числами**, и вопрос «что пошло не
   так в проде» — **до звонка диспетчера**
-- Код: метрики — [`src/services/metrics.ts`](../apps/api/src/services/metrics.ts); предикат
+- Код: метрики — [`src/services/metrics.ts`](../apps/api/src/services/metrics.ts); протокол
+  повторов — [`src/services/assignment-retry.ts`](../apps/api/src/services/assignment-retry.ts);
+  предикат
   готовности — [`src/services/assignment-readiness.ts`](../apps/api/src/services/assignment-readiness.ts);
   сводка — [`scripts/assignment-report.ts`](../apps/api/scripts/assignment-report.ts)
 - Проверки: [`test/assignment-report.db.test.ts`](../apps/api/test/assignment-report.db.test.ts),
-  [`test/metrics.db.test.ts`](../apps/api/test/metrics.db.test.ts)
+  [`test/metrics.db.test.ts`](../apps/api/test/metrics.db.test.ts),
+  [`test/assignment-retry.test.ts`](../apps/api/test/assignment-retry.test.ts),
+  [`test/assignment-retry.db.test.ts`](../apps/api/test/assignment-retry.db.test.ts)
 - Миграций не создаёт: всё считается по схеме `0166`/`0167`
 
 ## 0. Три источника, и у каждого своя работа
@@ -40,6 +44,8 @@
 | `technic_assignment_backstop_shadow{door}`               | counter                            | до cutover растёт медленно: это чужие двери, задевшие неготовые заявки                      | резкий рост — либо волна операций по старым заказам, либо новый путь, о котором не знали. Разбор: `audit_log`, `action = 'assignment.backstop_shadow'`                                                           |
 | `technic_assignment_backstop_refusals{door}`             | counter                            | **до cutover ровно 0** — в режиме `legacy` бэкстоп не отказывает                            | после cutover первые сутки ненулевое ожидаемо (риски §11 пп. 12, 15, 16, 23); устойчивый рост — подготовка не доделана, и люди упираются в отказ вместо работы                                                   |
 | `technic_assignment_command{door,outcome}`               | counter                            | `ok`/`repeat` растут; `conflict` — единицы; `refused` — сколько людей ошиблись              | `serialization > 0` — см. ниже; `frozen > 0` вне окна выката — заморозку забыли снять; `error > 0` — 500, разбирается логом                                                                                      |
+| `technic_assignment_retries{door}`                       | counter                            | **растёт — это норма**: конкуренция разобрана повтором, человек её не увидел               | всплеск без роста работы — общая строка портала (счётчик номеров ЭСМ-2) под массовым прогоном; метка `door="preview"` — повторы предпросмотров, они дешёвые                                                      |
+| `technic_assignment_retry_exhausted{door}`               | counter                            | **0**                                                                                       | `> 0` — человек получил `503 Retry-After` вместо результата: боевое `W` выше потолка `ASSIGNMENT_RETRY_ATTEMPTS` либо кто-то запустил многопоточный прогон по общей строке                                       |
 
 ### Почему именно `serialization`
 
@@ -49,10 +55,18 @@
 том числе счётчик номеров бланков ЭСМ-2 — один на всю базу. То есть `W` считается по всему порталу,
 а не по заявке, и «три повтора» хватает только до трёх писателей.
 
-Протокола повторов (В4) в коде пока нет, поэтому **каждый такой отказ означает, что человек увидел
-ошибку**. Когда протокол появится, та же метка станет счётчиком исчерпаний (`503` с `Retry-After`),
-и потолок повторов, который план велит держать настройкой, а не константой, подбирается по ней же:
-ненулевое значение при потолке `N` — повод поднять потолок или разгрузить общую строку.
+Протокол повторов (В4) заведён (`src/services/assignment-retry.ts`), и метка означает теперь ровно
+**исчерпание потолка**: человек получил `503` с `Retry-After`. Успешный повтор сюда не попадает — он
+кончился `ok`, — а виден парой `technic_assignment_retries` / `technic_assignment_retry_exhausted`.
+Читаются эти три числа вместе:
+
+- **повторы растут, исчерпаний нет** — норма под конкуренцией, делать нечего;
+- **исчерпания ненулевые** — потолок (`ASSIGNMENT_RETRY_ATTEMPTS`, умолчание `5`) тесен для боевого
+  профиля: по закону §4.3 потолок `N` покрывает `W ≤ N` одновременных писателей. Поднять потолок или
+  разгрузить общую строку — и в первую очередь проверить, не идёт ли многопоточный прогон, который
+  сам себе делает `W = число потоков`;
+- **исчерпания ненулевые при почти нулевых повторах** — потолок выставлен в `1`, то есть протокол
+  выключен настройкой.
 
 ### Чего в метриках нет намеренно
 
