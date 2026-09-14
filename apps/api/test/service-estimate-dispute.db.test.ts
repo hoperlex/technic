@@ -42,6 +42,10 @@ import type { db as AppDb } from '../src/db/client';
  *  Д10. ТРЕБОВАНИЕ СПОРА ПЕРЕЖИВАЕТ ВОЗВРАТ В ПРАВКУ: после исхода «нужна подпись» повторное
  *       заявление об освобождении отвечает `observed`, автоподписи больше не бывает — иначе исход
  *       спора снимал бы сам подрядчик возвратом и повторным предъявлением.
+ *  Д11. СПОР ВЕДЁТ ЗАКАЗЧИК, А НЕ ПОДРЯДЧИК: обе двери закрыты оператору контрагента-сервиса — и
+ *       тому, у кого права ведения нет (его останавливает страж маршрута), и тому, кому оно
+ *       досталось собранным набором (его останавливает ветка про сторону в предикатах контрактов).
+ *       Второй случай и проверяет саму ветку: без него она держалась бы на отсутствии права.
  *
  * ПОЧЕМУ БАЗА. Предмет — состояния, которых на моках не бывает: частичный уникальный индекс
  * «один открытый спор на заявку», `CHECK` пары «исход ⇔ время разрешения», связка «ожидание равно
@@ -90,6 +94,13 @@ interface Ctx {
   operator: TestUser;
   /** Оператор назначенного контрагента-сервиса: предъявляет объём работ и заявляет освобождение. */
   service: TestUser;
+  /**
+   * Тот же подрядчик, но с правом `serviceRequests.assign` в выданном наборе. Учётка собрана ради
+   * одного вопроса Д11: сторону подрядчика в споре отбивает страж маршрута (права у него нет) ИЛИ
+   * предикат контрактов? Пока право отсутствует, оба ответа выглядят одинаково — 403, — и ветка
+   * «подрядчик не спорит со своим освобождением» держалась бы на одном лишь отсутствии права.
+   */
+  serviceAssign: TestUser;
   objectId: string;
   counterpartyId: string;
   typeId: string;
@@ -460,6 +471,7 @@ describe.skipIf(!DB_URL)('спор об освобождении от подпи
     const customer = await makeUser({ tag: 'cust', role: 'shtab' });
     const operator = await makeUser({ tag: 'oper', role: 'shtab' });
     const service = await makeUser({ tag: 'srv', role: 'operator', counterpartyId });
+    const serviceAssign = await makeUser({ tag: 'srv2', role: 'operator', counterpartyId });
 
     await db.execute(sql`
       INSERT INTO user_construction_objects (user_id, construction_object_id)
@@ -471,6 +483,39 @@ describe.skipIf(!DB_URL)('спор об освобождении от подпи
       // и `hold` (возврат из заморозки), и `status` (приёмка), и `approveEstimate` (подпись).
       await replaceUserAddons(tx, operator.id, ['office_equipment_operator'], adminUser.id);
     });
+
+    /*
+     * НАБОР С ПРАВОМ ВЕДЕНИЯ — ПОДРЯДЧИКУ, и это не описка в завязке, а предмет Д11. Такой набор
+     * администратор сегодня не выдаст (`GRANT_CONFLICTS`: «исполнитель сам себе распределяет
+     * работу»), но барьер осей его не отбивает — клетка «заявки × контрагент» сужает область, а не
+     * запрещает права, — и держатель однажды появится не из злого умысла, а из собранного руками
+     * набора. Ровно на этот случай в предикатах спора стоит отдельная ветка про сторону, и без
+     * такой учётки проверить её нечем: у обычного подрядчика дверь закрывается стражем маршрута,
+     * то есть шагом раньше.
+     *
+     * Правом `serviceRequests.read` набор дополнен по `PERMISSION_REQUIRES`: «ведение» без чтения
+     * не выдаётся нигде, и собранный без него набор был бы непохож на настоящий.
+     */
+    const grantCode = `dsp-service-assign-${RUN}`;
+    const grant = await db.execute<{ id: string }>(sql`
+      INSERT INTO grants (code, name, description, is_system, created_by)
+      VALUES (${grantCode}, ${`Заявки: ведение у подрядчика ${RUN}`},
+              'Собранный руками набор с правом распределения (db-тест спора)', false,
+              ${adminUser.id})
+      RETURNING id`);
+    const grantId = grant.rows[0]!.id;
+    await db.execute(sql`
+      INSERT INTO grant_permissions (grant_id, permission)
+      SELECT ${grantId}, permission
+        FROM unnest(ARRAY['serviceRequests.read', 'serviceRequests.assign']) AS permission`);
+    // Совместимость с ролью спрашивается при сборке принципала соединением с `grant_roles`: без
+    // этой строки набор висел бы на учётке, не давая ей ни одного права.
+    await db.execute(
+      sql`INSERT INTO grant_roles (grant_id, role) VALUES (${grantId}, 'operator'::role)`,
+    );
+    await db.execute(sql`
+      INSERT INTO user_grants (user_id, grant_id, granted_by)
+      VALUES (${serviceAssign.id}, ${grantId}, ${adminUser.id})`);
 
     const typeRow = await db.execute<{ id: string }>(
       sql`SELECT id FROM office_equipment_types WHERE code = 'mfp'`,
@@ -501,6 +546,7 @@ describe.skipIf(!DB_URL)('спор об освобождении от подпи
       customer: await login(customer),
       operator: await login(operator),
       service: await login(service),
+      serviceAssign: await login(serviceAssign),
       objectId,
       counterpartyId,
       typeId,
@@ -1252,6 +1298,59 @@ describe.skipIf(!DB_URL)('спор об освобождении от подпи
         estimate_approval_source: 'auto',
         estimate_pending_revision: null,
       });
+    });
+  });
+
+  // ── Д11. Сторона спора ──
+
+  describe('Д11. подрядчик не спорит со своим освобождением', () => {
+    it('оператор контрагента-сервиса не открывает спор: права ведения у него нет', async () => {
+      const { id } = await exemptRequest('Подрядчик пробует оспорить собственное освобождение');
+      const res = await openDispute(id, { auth: ctx.service.auth });
+      expect(res.statusCode, res.body).toBe(403);
+      // Отказ приходит от стража маршрута, и назван он именно так: сегодня подрядчика останавливает
+      // отсутствие права, а не разбор его стороны, — до предиката дело не доходит.
+      expect(messageOf(res)).toContain('Спор об освобождении ведёт тот, кто ведёт заявку');
+      expect(await disputesOf(id)).toHaveLength(0);
+    });
+
+    it('он же не разрешает чужой спор — вторая дверь закрыта тем же стражем', async () => {
+      const { id } = await exemptRequest('Подрядчик пробует закрыть спор о себе');
+      const opened = await openDispute(id);
+      expect(opened.statusCode, opened.body).toBe(200);
+
+      const res = await resolveDispute(id, 'keep', { auth: ctx.service.auth });
+      expect(res.statusCode, res.body).toBe(403);
+      expect(messageOf(res)).toContain('Спор об освобождении ведёт тот, кто ведёт заявку');
+      // Спор остался открытым, а заявка — остановленной: отбитая попытка ничего не разрешает.
+      expect(await disputesOf(id)).toMatchObject([{ state: 'open', outcome: null }]);
+      expect((await card(id)).status).toBe('on_hold');
+    });
+
+    it('право ведения, попавшее подрядчику, спора ему не даёт: сторону разбирает предикат', async () => {
+      const { id } = await exemptRequest('Подрядчик с правом ведения открывает спор');
+      const res = await openDispute(id, { auth: ctx.serviceAssign.auth });
+      expect(res.statusCode, res.body).toBe(403);
+      /*
+       * ОТКАЗ ЗДЕСЬ — УЖЕ ОТ ПРЕДИКАТА, и разница с двумя случаями выше содержательная: страж
+       * пропустил, статус и освобождение подошли, — остановила подрядчика ровно ветка про сторону.
+       * Освобождение заявил он сам, и спор с самим собой отменял бы это заявление задним числом.
+       */
+      expect(messageOf(res)).toContain('не оспаривает освобождение от подписи по этой заявке');
+      expect(await disputesOf(id)).toHaveLength(0);
+      expect((await card(id)).status).toBe('in_work');
+    });
+
+    it('он же не разрешает открытый спор — вторая дверь отбита той же веткой', async () => {
+      const { id } = await exemptRequest('Подрядчик с правом ведения закрывает спор');
+      const opened = await openDispute(id);
+      expect(opened.statusCode, opened.body).toBe(200);
+
+      const res = await resolveDispute(id, 'keep', { auth: ctx.serviceAssign.auth });
+      expect(res.statusCode, res.body).toBe(403);
+      expect(messageOf(res)).toContain('не разрешает спор об освобождении по этой заявке');
+      expect(await disputesOf(id)).toMatchObject([{ state: 'open', outcome: null }]);
+      expect((await card(id)).status).toBe('on_hold');
     });
   });
 });

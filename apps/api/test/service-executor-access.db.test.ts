@@ -1040,6 +1040,28 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
       'PATCH /api/v1/service-requests/:id/estimate/submit': { version: 0 },
       'PATCH /api/v1/service-requests/:id/estimate/approval': { approved: true, version: 0 },
       'PATCH /api/v1/service-requests/:id/estimate/reopen': { reason: 'проба доступа', version: 0 },
+      /*
+       * Спор об освобождении от подписи — обе двери (Р9 плана
+       * `office-equipment-on-site-and-invoice-estimate-plan.md`). Тела разные: открытие требует
+       * причину, а решение разбирается союзом по исходу — берём `keep`, самый безобидный из трёх,
+       * потому что до применения исхода перебор всё равно не доходит.
+       *
+       * ЗДЕСЬ, КАК И У РАСКЛАДКИ ВЫШЕ, ДВЕРЬ ПОДРЯДЧИКУ ЗАКРЫВАЕТ СТРАЖ МАРШРУТА: спор ведёт
+       * держатель `serviceRequests.assign`, и у оператора контрагента-сервиса его нет — спорить со
+       * своим же освобождением значило бы отменять его задним числом. Перебор спрашивает «403 на
+       * каждой строке манифеста», и обе строки его дают; что именно останавливает подрядчика —
+       * сегодняшнее отсутствие права или ветка про сторону в предикатах контрактов, случись право
+       * у него в собранном наборе, — разбирает свой файл (`service-estimate-dispute.db.test.ts`,
+       * Д11).
+       */
+      'PATCH /api/v1/service-requests/:id/estimate/dispute': {
+        reason: 'проба доступа',
+        version: 0,
+      },
+      'PATCH /api/v1/service-requests/:id/estimate/dispute/resolution': {
+        outcome: 'keep',
+        version: 0,
+      },
       'PUT /api/v1/service-requests/:id/consumables': {
         items: [{ consumableId: '00000000-0000-4000-8000-000000000001', requestedQuantity: 1 }],
         version: 0,
