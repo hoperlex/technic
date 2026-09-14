@@ -91,6 +91,8 @@ async function cleanup(db: typeof AppDb): Promise<void> {
             AND payload->>'requestId' IN (SELECT id::text FROM waste_requests WHERE created_by IN ${mine}))`);
   await db.execute(sql`DELETE FROM waste_requests WHERE created_by IN ${mine}`);
   await db.execute(sql`DELETE FROM mech_requests WHERE created_by IN ${mine}`);
+  // Заявки оргтехники — до файлов и до площадки: связи вложений уходят каскадом за заявкой.
+  await db.execute(sql`DELETE FROM service_requests WHERE created_by IN ${mine}`);
   // Порядок задан внешними ключами: показания держит строка отчёта, строку — лист, лист — заказ.
   await db.execute(sql`DELETE FROM vehicle_readings WHERE created_by IN ${mine}`);
   await db.execute(sql`DELETE FROM driver_daily_reports WHERE created_by IN ${mine}`);
@@ -165,6 +167,26 @@ async function get(url: string, headers = ctx.auth): Promise<{ raw: string; body
 function expectNameHidden(raw: string, locked: TestFile, plain: TestFile, what: string): void {
   expect(raw.includes(plain.filename), `${what}: обычное вложение видно`).toBe(true);
   expect(raw.includes(locked.filename), `${what}: имя карантинного файла УШЛО НАРУЖУ`).toBe(false);
+}
+
+/**
+ * Заявка оргтехники без аппарата: проверяется сборщик вложений, а не предмет заявки, и
+ * `office_equipment_id` у заявки необязателен (заявка «от отдела»). Так фикстуре не нужны ни
+ * карточка парка, ни её тип, ни порядок уборки между ними.
+ */
+async function newServiceRequest(): Promise<string> {
+  const [row] = await ctx.db
+    .insert(ctx.schema.serviceRequests)
+    .values({
+      equipmentObjectId: ctx.objectId,
+      equipmentName: '',
+      description: `${MARK}: заявка оргтехники`,
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+      createdBy: ctx.adminId,
+    })
+    .returning({ id: ctx.schema.serviceRequests.id });
+  return row!.id;
 }
 
 async function newWasteRequest(status: 'new' | 'done' = 'new'): Promise<string> {
@@ -643,6 +665,33 @@ describe.skipIf(!DB_URL)('СУДЬЯ круга 2: улика и имя', () => 
     const list = await get('/api/v1/waste-requests?limit=100');
     expectNameHidden(list.raw, locked, plain, 'вывоз, список');
     // Признак и ссылка обязаны остаться: строка файла — это факт, а не только имя.
+    const dto = card.body as { files: { id: string; filename: string; quarantined?: boolean }[] };
+    const seen = dto.files.find((f) => f.id === locked.id);
+    expect(seen?.filename).toBe('');
+    expect(seen?.quarantined).toBe(true);
+  });
+
+  /**
+   * ОРГТЕХНИКА — МОДУЛЬ, РАДИ КОТОРОГО КАРАНТИН И ЗАВЕДЁН (Р6 плана
+   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`), и до исполнения он единственный из
+   * десяти сборщиков правила не спрашивал: имя запертого файла уходило в карточку, в список и в ответ
+   * каждого действия — всем, кому видна заявка. Перечень модулей здесь ходил мимо него ровно потому,
+   * что дыру искали в чужих модулях.
+   */
+  it('заявки оргтехники: карточка и список', async () => {
+    const requestId = await newServiceRequest();
+    const locked = await newFile();
+    const plain = await newFile();
+    await ctx.db.insert(ctx.schema.serviceRequestFiles).values([
+      { requestId, fileId: locked.id, kind: 'act' },
+      { requestId, fileId: plain.id, kind: 'act' },
+    ]);
+    await quarantine(locked.id);
+    const card = await get(`/api/v1/service-requests/${requestId}`);
+    expectNameHidden(card.raw, locked, plain, 'оргтехника, карточка');
+    const list = await get('/api/v1/service-requests?limit=100');
+    expectNameHidden(list.raw, locked, plain, 'оргтехника, список');
+    // Строка и ссылка остаются: «документ скрыт по обращению» и «документа не было» — разные факты.
     const dto = card.body as { files: { id: string; filename: string; quarantined?: boolean }[] };
     const seen = dto.files.find((f) => f.id === locked.id);
     expect(seen?.filename).toBe('');

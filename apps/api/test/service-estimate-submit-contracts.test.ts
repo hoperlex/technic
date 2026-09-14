@@ -159,8 +159,28 @@ describe('кому дано заявить освобождение и что и
    * нет, потому что нет ни лимита, ни политики — ответы В2 и В12.
    */
   it('исход заявления решает рубильник, и исходов два', () => {
-    expect(evaluateExemption({ flagEnabled: true })).toBe('applied');
-    expect(evaluateExemption({ flagEnabled: false })).toBe('observed');
+    expect(evaluateExemption({ flagEnabled: true, disputeRequiresSignature: false })).toBe(
+      'applied',
+    );
+    expect(evaluateExemption({ flagEnabled: false, disputeRequiresSignature: false })).toBe(
+      'observed',
+    );
+  });
+
+  /**
+   * ПАМЯТЬ СПОРА СИЛЬНЕЕ РУБИЛЬНИКА (Р9). Разрешённый спор с исходом «нужна подпись» — уже принятое
+   * решение «Ведения», а рубильник — общий барьер до всякого решения; пусти мы освобождение при
+   * включённом ключе, исход спора снимался бы возвратом в правку и повторным предъявлением, то есть
+   * ходом самого подрядчика. Все четыре сочетания здесь потому, что дыра была ровно в одном из них
+   * (`flagEnabled: true`), и тест без него краснел бы только на трёх безобидных.
+   */
+  it('после исхода «нужна подпись» освобождение не даётся даже при включённом рубильнике', () => {
+    expect(evaluateExemption({ flagEnabled: true, disputeRequiresSignature: true })).toBe(
+      'observed',
+    );
+    expect(evaluateExemption({ flagEnabled: false, disputeRequiresSignature: true })).toBe(
+      'observed',
+    );
   });
 });
 

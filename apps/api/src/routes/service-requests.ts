@@ -135,6 +135,7 @@ import {
   type ServiceRequestBulkResultDto,
   type ServiceRequestBulkStatusDto,
   type ServiceRequestConsumableDto,
+  type ServiceRequestEstimateDisputeDto,
   type ServiceRequestEstimateExemptionDto,
   type ServiceRequestKind,
   type ServiceWaitingOn,
@@ -272,7 +273,9 @@ import {
 import {
   activeEstimateFormatByRequest,
   dropEstimateRevisions,
+  estimateDisputeByRequest,
   estimateExemptionByRequest,
+  estimateSignatureRequiredByDispute,
   readActiveEstimateFormat,
   recordEstimateExemption,
   recordEstimateRevision,
@@ -308,6 +311,10 @@ import { assertTypeUsable } from '../services/office-equipment-write';
 // Ту же функцию зовут ответы сессии: портал показывает дверь по списку из сессии, а пускает в неё
 // сервер, читая ту же строку, — двум ответам на один вопрос разойтись нечем.
 import { isFeatureEnabled } from '../services/feature-flags';
+// Имя карантинного вложения наружу не уходит (план освобождения от согласования, Р6, п. 4).
+// Правило одно на десять сборщиков вложений и живёт в своём модуле: девять копий условия
+// `quarantinedAt` разошлись бы на первой же новой ручке — ровно этим модуль и заведён.
+import { fileNameView } from '../services/file-view';
 
 /**
  * Заявки на обслуживание оргтехники (ADR 0085).
@@ -586,6 +593,14 @@ async function filesByRequest(ids: string[]): Promise<Map<string, ServiceRequest
       attachedAt: serviceRequestFiles.attachedAt,
       id: files.id,
       filename: files.filename,
+      /*
+       * СОСТОЯНИЕ КАРАНТИНА ЧИТАЕТСЯ ЗДЕСЬ, А СУДЬБУ ИМЕНИ РЕШАЕТ `fileNameView` (Р6, п. 4). Без
+       * колонки сборщик отдавал бы «Паспорт_Иванова_1984.pdf» всякому, кому видна заявка, — то есть
+       * оставлял бы открытой подпись документа, содержимое которого уже заперто: имя файла само
+       * бывает персональными данными, и карантин, закрывший одно и оставивший другое, закрывает не
+       * инцидент, а его половину.
+       */
+      quarantinedAt: files.quarantinedAt,
       contentType: files.contentType,
       size: files.size,
     })
@@ -597,7 +612,10 @@ async function filesByRequest(ids: string[]): Promise<Map<string, ServiceRequest
     const list = map.get(row.requestId) ?? [];
     list.push({
       id: row.id,
-      filename: row.filename,
+      // Имя и признак — парой из общего правила: по отдельности они врут («файл без имени» вместо
+      // «файл скрыт по обращению»). Идентификатор и сама строка остаются намеренно — содержимое
+      // закрывает замок в `canAccessFile`, а «документ скрыт» и «документа не было» — разные факты.
+      ...fileNameView(row),
       contentType: row.contentType,
       size: row.size,
       kind: row.kind,
@@ -795,6 +813,11 @@ function toDto(
    * заявке его не делали. Приходит снимком той же пакетной догрузки, что формат ревизии рядом.
    */
   exemption: ServiceRequestEstimateExemptionDto | null,
+  /**
+   * Спор об освобождении и его исход (Р9 плана освобождения): `null` — спора по заявке не было ни
+   * разу. Приходит снимком той же пакетной догрузки, что формат ревизии и заявление рядом.
+   */
+  dispute: ServiceRequestEstimateDisputeDto | null,
 ): ServiceRequestDto {
   const r = row.r;
   return {
@@ -1045,6 +1068,16 @@ function toDto(
      * либо почему её всё-таки ждут («Заявлено, ждём подписи»).
      */
     exemption,
+    /**
+     * СПОР ОБ ОСВОБОЖДЕНИИ (Р9) — поле карточки, а не вывод портала из причины заморозки. Признак
+     * «спор идёт» портал считает предикатами `canOpenServiceEstimateDispute` и
+     * `canResolveServiceEstimateDispute`, а им нужен готовый `disputeOpen`: вывести его из
+     * `holdReason` — значит угадывать состояние по свободному тексту, который пишет человек.
+     *
+     * РАЗРЕШЁННЫЙ СПОР ОСТАЁТСЯ В КАРТОЧКЕ: он единственный объясняет и второе окно приёмки, и
+     * подпись, собранную уже в «Решена», — ровно то, ради чего поле и заводили.
+     */
+    dispute,
     // Когда предъявляли в последний раз. Активным предъявлением НЕ является (Р9): возврат в правку
     // эту дату не трогает, и у отозванного она непуста.
     estimateSubmittedAt: r.estimateSubmittedAt ? r.estimateSubmittedAt.toISOString() : null,
@@ -1056,6 +1089,16 @@ function toDto(
             byName: row.approvedByName ?? '',
             at: r.estimateApprovedAt.toISOString(),
             revision: r.approvedEstimateRevision,
+            /*
+             * ЧЕМ ПОСТАВЛЕНА ПОДПИСЬ (Р11) — полем, а не выводом портала из пустого автора. Без него
+             * карточка читает подпись как человеческую ВСЕГДА (`serviceEstimateApprovalSourceOf`
+             * так и написана: пусто = `human`), то есть показывает подпись под автопринятием —
+             * ровно то обвинение, от которого правило и оберегает. И тем же признаком считается
+             * «освобождение применено» (`ServiceEstimateDisputeFacts.exemptionApplied`): без него
+             * портал не может позвать `canOpenServiceEstimateDispute` — вывести источник подписи из
+             * карточки больше неоткуда.
+             */
+            source: r.estimateApprovalSource,
           }
         : null,
     items,
@@ -1119,30 +1162,44 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
    * группировка по аппарату приписала бы прошлогодней заявке свежий счёт (план повторов, Р6).
    * При выключенном окне карта приходит пустой, не потревожив базу.
    */
-  const [items, fileMap, executorMap, consumableMap, repeatMap, placeMap, formatMap, exemptionMap] =
-    await Promise.all([
-      itemsByRequest(ids),
-      filesByRequest(ids),
-      executorsByRequest(ids),
-      consumablesByRequest(ids),
-      serviceRequestRepeatByRequest(
-        p,
-        rows.map((row) => row.r),
-      ),
-      // Подтверждения заявленного места — тем же пакетным приёмом и по той же причине (Р8).
-      confirmedPlaceByRequest(ids),
-      /*
-       * Формат действующей ревизии (Р5) — тоже одним запросом на страницу: его спрашивает планка
-       * закрывающего документа, то есть портал зовёт её на каждой строке списка, и строка на заявку
-       * превратила бы горячий путь в полсотни запросов.
-       */
-      activeEstimateFormatByRequest(ids),
-      /*
-       * Заявления об освобождении — тем же пакетным приёмом: тег «принято без согласования» стоит в
-       * строке СПИСКА (Р13), то есть вопрос задают на каждой из полусотни строк страницы.
-       */
-      estimateExemptionByRequest(ids),
-    ]);
+  const [
+    items,
+    fileMap,
+    executorMap,
+    consumableMap,
+    repeatMap,
+    placeMap,
+    formatMap,
+    exemptionMap,
+    disputeMap,
+  ] = await Promise.all([
+    itemsByRequest(ids),
+    filesByRequest(ids),
+    executorsByRequest(ids),
+    consumablesByRequest(ids),
+    serviceRequestRepeatByRequest(
+      p,
+      rows.map((row) => row.r),
+    ),
+    // Подтверждения заявленного места — тем же пакетным приёмом и по той же причине (Р8).
+    confirmedPlaceByRequest(ids),
+    /*
+     * Формат действующей ревизии (Р5) — тоже одним запросом на страницу: его спрашивает планка
+     * закрывающего документа, то есть портал зовёт её на каждой строке списка, и строка на заявку
+     * превратила бы горячий путь в полсотни запросов.
+     */
+    activeEstimateFormatByRequest(ids),
+    /*
+     * Заявления об освобождении — тем же пакетным приёмом: тег «принято без согласования» стоит в
+     * строке СПИСКА (Р13), то есть вопрос задают на каждой из полусотни строк страницы.
+     */
+    estimateExemptionByRequest(ids),
+    /*
+     * Споры — тем же пакетным приёмом и по той же причине: признак «по заявке идёт спор» стоит в
+     * строке СПИСКА, и вопрос задаётся на каждой из полусотни строк страницы.
+     */
+    estimateDisputeByRequest(ids),
+  ]);
   const chatMap = await chatSummaryByRequest(
     p,
     rows.map((row) => ({
@@ -1217,6 +1274,9 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
       // Заявления не было — ключа в карте нет: `null` означает «освобождение не заявляли», а не
       // «не посчитали».
       exemptionMap.get(row.r.id) ?? null,
+      // Спора не было ни разу — ключа в карте нет, и `null` читается так же: «не спорили», а не
+      // «не посчитали».
+      disputeMap.get(row.r.id) ?? null,
     );
   });
 }
@@ -6938,9 +6998,21 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             'по этой заявке объём работ предъявляется на подпись',
         );
       }
+      /*
+       * ПАМЯТЬ СПОРА — ВТОРОЙ ВХОД ИСХОДА (Р9). Разрешённый спор с исходом «нужна подпись» значит,
+       * что подпись по этой заявке собирают, и повторное заявление освободить от неё не может:
+       * иначе исход спора снимался бы возвратом в правку и новым предъявлением — тем же подрядчиком
+       * и без чьего-либо ведома.
+       *
+       * ЧИТАЕТСЯ ДО ТРАНЗАКЦИИ, РЯДОМ С РУБИЛЬНИКОМ, и гонку закрывает не блокировка, а сверка
+       * версии. Требование появляется только разрешением спора, а и открытие, и разрешение спора —
+       * переходы заявки: каждый двигает версию. Предъявление, начатое до разбора, получит от
+       * `applyTransition` честный 409 и повторится уже с новым ответом.
+       */
       const exemptionOutcome = declaration
         ? evaluateExemption({
             flagEnabled: await isFeatureEnabled(db, 'service_estimate_exemption'),
+            disputeRequiresSignature: await estimateSignatureRequiredByDispute(db, row.id),
           })
         : null;
       // Подпись без подписавшего (Р11): её ставит применённое освобождение, и только оно.
@@ -8814,8 +8886,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     // выпал бы из адресатов ровно того письма, ради которого оно и существует (ADR 0153).
     const mailPlan = await prepareTransitionMail(to, p, row.createdBy);
 
-    const transition = await bulk.runTx(async (tx, bulkMail) =>
-      applyTransition(tx, {
+    const transition = await bulk.runTx(async (tx, bulkMail) => {
+      const applied = await applyTransition(tx, {
         row,
         to,
         version: body.version,
@@ -8830,8 +8902,50 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           : undefined,
         mail: mailPlan,
         bulkMail,
-      }),
-    );
+      });
+      /**
+       * ОТМЕНА ЗАКРЫВАЕТ ОТКРЫТЫЙ СПОР ТОЙ ЖЕ ТРАНЗАКЦИЕЙ (Р9). Матрица разрешения обещает исход
+       * КАЖДОМУ спору, и на исходе держится весь постфактумный контроль над освобождениями (Р13):
+       * «чем кончился спор» — это запись, а не догадка по статусу заявки.
+       *
+       * ПОЧЕМУ НЕ ОТКАЗ, КАК У ВОЗВРАТА ИЗ ЗАМОРОЗКИ И ПРИЁМКИ. Там обычная дверь ведёт НЕ ТУДА:
+       * возврат пустил бы заявку работать с автоподписью, которую оспорили, а приёмка оплатила бы
+       * её. Отмена ведёт ровно туда, куда ведёт исход `cancel` матрицы, — в «Отменена», не стирая
+       * ни факта, ни документов; отбивать её значило бы запирать аварийный выход у заявки, которую
+       * и так решено закрыть. Тем более что право `serviceRequests.status` есть и у подрядчика, а
+       * права разрешить спор (`assign`) у него нет и быть не может: отказ оставил бы его заявку
+       * висеть до чужого хода.
+       *
+       * ПОСЛЕ ПЕРЕХОДА — тот же порядок, что у самой ручки разрешения: сверку версии делает переход,
+       * и спор, закрытый раньше него, остался бы «разрешённым» у заявки, которая никуда не уехала.
+       * Условие `state = 'open'` защищает от второго закрытия той же строки.
+       *
+       * ЗАПИСЬ ИДЁТ И В ПАЧКЕ: массовая отмена зовёт этот же шаг, и другого входа в отмену у модуля
+       * нет.
+       */
+      let disputeClosed: { revision: number } | null = null;
+      if (to === 'cancelled') {
+        const now = new Date();
+        const [closed] = await tx
+          .update(serviceRequestEstimateDisputes)
+          .set({
+            state: 'resolved',
+            outcome: 'cancel',
+            resolvedBy: p.id,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(serviceRequestEstimateDisputes.requestId, row.id),
+              eq(serviceRequestEstimateDisputes.state, 'open'),
+            ),
+          )
+          .returning({ revision: serviceRequestEstimateDisputes.revision });
+        disputeClosed = closed ?? null;
+      }
+      return { ...applied, disputeClosed };
+    });
     await writeAudit({
       actorUserId: p.id,
       action: 'serviceRequest.status',
@@ -8858,6 +8972,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
               replacementRecommended: replacement,
               changes: [{ field: 'rejectionResolution', from: '', to: resolution }],
             }
+          : {}),
+        /*
+         * Спор, закрытый этой же отменой, — в журнал: после неё `hold_kind` и `held_from_status`
+         * погашены, и по самой заявке уже не ответить, что её отменили из-под открытого спора.
+         * Ключа нет вовсе у отмены без спора — обычная отмена не должна выглядеть в журнале как
+         * разбор спора.
+         */
+        ...(transition.disputeClosed
+          ? { disputeResolved: { revision: transition.disputeClosed.revision, outcome: 'cancel' } }
           : {}),
         ...bulk.audit,
       },

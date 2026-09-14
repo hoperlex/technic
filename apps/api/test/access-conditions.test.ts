@@ -265,6 +265,18 @@ const ASSIGN_OPERATOR_REFUSAL = 'Оператора назначает дисп�
  * («…проставит тот, кому доверена правка остатка») не зависит.
  */
 const INITIAL_STOCK_REFUSAL = 'Заведите позицию с нулевым остатком';
+/**
+ * Неизменная часть отказа сводной аналитики (`assertWholeOrganizationScope`, план
+ * `docs/analytics-summary-export-plan.md`, Р3): «Выгрузка сводит все площадки; у вашей учётки
+ * область ограничена (<ось>)». Правило живёт в обработчике и правом маршрута не выражается вовсе —
+ * область у ручки не сужается, а запрещается, — а роль перебора (`driver`) стоит на своей оси, то
+ * есть под этот отказ попадает при любом наборе прав. Без строки здесь положительный случай
+ * выглядел бы отказом стража, хотя страж как раз пропустил.
+ *
+ * Взята половина до скобки: название оси в хвосте берётся из `roleScopeAxisLabels` и меняется вместе
+ * со словарём.
+ */
+const WHOLE_ORGANIZATION_REFUSAL = 'Выгрузка сводит все площадки';
 
 const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   // ── Вход и self-service ──
@@ -709,6 +721,27 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
    */
   'PATCH /api/v1/service-requests/:id/estimate/submit': {
     payload: { version: 1 },
+  },
+  /*
+   * СПОР ОБ ОСВОБОЖДЕНИИ ОТ ПОДПИСИ (план
+   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`, Р9) — две ручки, и обеим нужно
+   * ВАЛИДНОЕ ТЕЛО: схема стоит до стража, и перебор без права получал бы 400 разбора вместо 403,
+   * то есть мерил бы валидацию, а не условие маршрута. Причина у открытия обязательна тем же
+   * `reasonSchema`, что у отмены и заморозки; у разрешения тело — союз по исходу, и без `outcome`
+   * он не собирается вовсе.
+   *
+   * Коридора статусов ни у той, ни у другой нет намеренно (вход в «Отложена» приходит правом
+   * `hold`, а спор ведёт держатель `assign`), и «кто перед нами» спрашивают предикаты контрактов
+   * уже за подменённой БД, — отсюда и отсутствие добавки `selfRefusal`.
+   *
+   * Исход выбран `keep` — самый дешёвый вариант союза: у `cancel` схема требует ещё и причину, и
+   * забытая она давала бы ту же 400 вместо отказа.
+   */
+  'PATCH /api/v1/service-requests/:id/estimate/dispute': {
+    payload: { reason: 'счёт вдвое выше прайса, подпись обязательна', version: 1 },
+  },
+  'PATCH /api/v1/service-requests/:id/estimate/dispute/resolution': {
+    payload: { outcome: 'keep', version: 1 },
   },
   'POST /api/v1/service-requests/:id/files': { payload: { fileIds: [RECORD_ID], kind: 'act' } },
   /*
@@ -1231,6 +1264,23 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     query: `from=${PAST_DATE}&to=${PAST_DATE}`,
   },
 
+  // ── Сводная аналитика (план `docs/analytics-summary-export-plan.md`) ──
+  // Период и шаг обязательны схемой у обеих ручек, а схема стоит до стража: без них негативный
+  // случай получал бы 400 и мерил бы валидацию вместо права. Шаг взят крупный намеренно — сутки
+  // периода тут ни на что не влияют, а `week` упёрся бы в потолок отрезков, поменяй кто-нибудь
+  // границы фикстуры.
+  //
+  // Площадки листа инфографики (`chartObjectId`) в запросе нет: поле необязательное, а лишнее
+  // значение в фикстуре пришлось бы держать живым.
+  'GET /api/v1/analytics/summary': {
+    query: `from=${PAST_DATE}&to=${PAST_DATE}&step=month`,
+    selfRefusal: WHOLE_ORGANIZATION_REFUSAL,
+  },
+  'GET /api/v1/analytics/export': {
+    query: `from=${PAST_DATE}&to=${PAST_DATE}&step=month`,
+    selfRefusal: WHOLE_ORGANIZATION_REFUSAL,
+  },
+
   // ── Чеки на автозапчасти (план `docs/auto-part-receipts-plan.md`, §7) ──
   // Тела валидные целиком, потому что схема стоит до стража: чек без строки, без скана и без
   // номера отвергается схемой (Р6, Р11), и негативный случай показал бы 400 вместо 403. Дата —
@@ -1281,6 +1331,17 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   // склада (план `docs/auto-part-receipts-plan.md`, Р2), и все ручки акта закрыты одним правом.
   'POST /api/v1/vehicle-maintenance/:id/void': {
     payload: { version: 0, reason: 'акт заведён по ошибке' },
+  },
+
+  // ── Карантин файла (план `docs/office-equipment-on-site-and-invoice-estimate-plan.md`, Р6) ──
+  // Причина обязательна схемой у обеих ручек, а схема стоит до стража: с пустым телом перебор
+  // получал бы 400 и мерил бы валидацию вместо права. Причина здесь же и по существу — запись
+  // журнала о карантине есть единственный носитель ответа «почему документ заперли».
+  'POST /api/v1/files/:id/quarantine': {
+    payload: { reason: 'в карточку попали чужие персональные данные' },
+  },
+  'POST /api/v1/files/:id/quarantine/release': {
+    payload: { reason: 'обращение оказалось неосновательным' },
   },
 };
 

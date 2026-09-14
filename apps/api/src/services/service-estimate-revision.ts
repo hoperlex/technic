@@ -4,10 +4,13 @@ import {
   SERVICE_DOCUMENT_FORMAT_CLOSING_KINDS,
   type ServiceEstimateExemptionOutcome,
   type ServiceEstimateFormat,
+  type ServiceRequestEstimateDisputeDto,
   type ServiceRequestEstimateExemptionDto,
 } from '@technic/contracts';
+import { alias } from 'drizzle-orm/pg-core';
 import { db } from '../db/client';
 import {
+  serviceRequestEstimateDisputes,
   serviceRequestEstimateExemptions,
   serviceRequestEstimateRevisions,
   serviceRequestFiles,
@@ -294,6 +297,111 @@ export async function estimateExemptionByRequest(
     });
   }
   return map;
+}
+
+/**
+ * СПОРЫ ОБ ОСВОБОЖДЕНИИ — тем же пакетным приёмом, что заявления выше, и тем же одним запросом на
+ * страницу: признак «по заявке спор» стоит в строке СПИСКА, и строка на заявку стоила бы полусотни
+ * запросов.
+ *
+ * ОТДАЁТСЯ ПОСЛЕДНИЙ ПО ВРЕМЕНИ ОТКРЫТИЯ, а не открытый. Споров по заявке бывает несколько — исход
+ * `keep` заявку не меняет, и через неделю, с новыми доводами, её оспаривают снова (потому у таблицы
+ * и суррогатный ключ), — а карточку интересует нынешнее положение дел: идёт ли спор сейчас и чем
+ * кончился прошлый. Открытый при этом всегда последний: второй открывают только после разрешения
+ * первого (частичный уникальный индекс), и «последний» с «открытым, если он есть» не расходятся.
+ *
+ * РАЗРЕШЁННЫЙ СПОР ИЗ КАРТОЧКИ НЕ ИСЧЕЗАЕТ, и это не полнота ради полноты: именно он объясняет
+ * второе окно приёмки у заявки в «Решена» и подпись, собранную уже после закрытия работ (Р9). Без
+ * него портал объяснял бы оба состояния свободным текстом причины заморозки — то есть догадкой по
+ * словам человека.
+ *
+ * Имена обоих участников — снимком через внешние соединения: учётки может уже не быть (`set null` у
+ * обеих ссылок), и факт спора без имени правдой быть не перестаёт.
+ */
+export async function estimateDisputeByRequest(
+  ids: string[],
+): Promise<Map<string, ServiceRequestEstimateDisputeDto>> {
+  const map = new Map<string, ServiceRequestEstimateDisputeDto>();
+  if (ids.length === 0) return map;
+  const openedByUser = alias(users, 'dispute_opened_by_user');
+  const resolvedByUser = alias(users, 'dispute_resolved_by_user');
+  const rows = await db
+    .select({
+      requestId: serviceRequestEstimateDisputes.requestId,
+      revision: serviceRequestEstimateDisputes.revision,
+      state: serviceRequestEstimateDisputes.state,
+      reason: serviceRequestEstimateDisputes.reason,
+      openedBy: serviceRequestEstimateDisputes.openedBy,
+      openedByName: openedByUser.fullName,
+      openedAt: serviceRequestEstimateDisputes.openedAt,
+      outcome: serviceRequestEstimateDisputes.outcome,
+      resolvedBy: serviceRequestEstimateDisputes.resolvedBy,
+      resolvedByName: resolvedByUser.fullName,
+      resolvedAt: serviceRequestEstimateDisputes.resolvedAt,
+    })
+    .from(serviceRequestEstimateDisputes)
+    .leftJoin(openedByUser, eq(serviceRequestEstimateDisputes.openedBy, openedByUser.id))
+    .leftJoin(resolvedByUser, eq(serviceRequestEstimateDisputes.resolvedBy, resolvedByUser.id))
+    .where(inArray(serviceRequestEstimateDisputes.requestId, ids))
+    // Порядок задаётся явно: «последняя вставленная» строка у таблицы без хронологии — это план
+    // запроса, а не факт. Перезапись по ключу карты и оставляет самый поздний спор.
+    .orderBy(asc(serviceRequestEstimateDisputes.openedAt));
+  for (const row of rows) {
+    map.set(row.requestId, {
+      revision: row.revision,
+      state: row.state,
+      reason: row.reason,
+      openedBy: row.openedBy,
+      openedByName: row.openedByName ?? '',
+      openedAt: row.openedAt.toISOString(),
+      outcome: row.outcome,
+      resolvedBy: row.resolvedBy,
+      resolvedByName: row.resolvedByName ?? '',
+      resolvedAt: row.resolvedAt ? row.resolvedAt.toISOString() : null,
+    });
+  }
+  return map;
+}
+
+/**
+ * ПО ЗАЯВКЕ ЕСТЬ РАЗРЕШЁННЫЙ СПОР С ИСХОДОМ «НУЖНА ПОДПИСЬ» (Р9) — вопрос ОДНОЙ заявки, и потому
+ * своей функцией, а не полем карты выше: спрашивает его предъявление объёма работ, а оно идёт по
+ * одной заявке и обязано читать факт ТЕМ ЖЕ исполнителем, в котором взята блокировка.
+ *
+ * ЗАЧЕМ ЭТОТ ФАКТ ВООБЩЕ НУЖЕН. Требование спора иначе снимается тем же подрядчиком и без всякого
+ * разбора: возврат в правку (`/estimate/reopen`) гасит ожидание, следующее предъявление с тем же
+ * заявлением снова получает `applied` — и ревизия подписывается автоматически, работы закрываются,
+ * автоприёмка через сутки принимает заявку. Ни одной человеческой подписи не собрано, а требование
+ * спора не помнит никто. Поэтому его помнит заявка.
+ *
+ * ПО ЗАЯВКЕ ЦЕЛИКОМ, А НЕ ПО РЕВИЗИИ: возврат в правку номер НЕ поднимает, зато следующее
+ * предъявление поднимает, и требование, привязанное к ревизии спора, снималось бы ровно тем ходом,
+ * ради запрета которого заводится.
+ *
+ * ДОРОГИ НАЗАД У ТРЕБОВАНИЯ НЕТ, И ЭТО НЕ ЖЁСТКОСТЬ, А ЕДИНСТВЕННОЕ СОГЛАСОВАННОЕ ЧТЕНИЕ. Снять
+ * его мог бы только новый спор с исходом «оставить освобождение», но такого спора по этой заявке
+ * больше не открыть: спор требует ПРИМЕНЁННОГО освобождения по действующей ревизии (`disputeFactsOf`
+ * — след `applied` плюс автоподпись `auto`), а после этого требования заявление отвечает `observed`
+ * и автоподписи не ставит. То есть «оспорить обратно» нечего. Цена решения названа вслух: заявка,
+ * по которой хоть раз потребовали подпись, собирает её дальше обычным порядком — освобождение по
+ * ней больше не применяется никогда.
+ */
+export async function estimateSignatureRequiredByDispute(
+  exec: Exec,
+  requestId: string,
+): Promise<boolean> {
+  const [row] = await exec
+    .select({ id: serviceRequestEstimateDisputes.id })
+    .from(serviceRequestEstimateDisputes)
+    .where(
+      and(
+        eq(serviceRequestEstimateDisputes.requestId, requestId),
+        eq(serviceRequestEstimateDisputes.state, 'resolved'),
+        eq(serviceRequestEstimateDisputes.outcome, 'require_signature'),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
 }
 
 /**

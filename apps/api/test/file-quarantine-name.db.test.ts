@@ -26,8 +26,14 @@ import type { buildApp } from '../src/app';
  * копий — ровно то состояние, из которого эта работа и начиналась. Взяты три сборщика, сходящиеся в
  * общей функции разными путями: карточка и список вывоза мусора (`routes/waste-requests.ts`,
  * `fileView`), экран разбора талонов (`routes/waste-tickets.ts`, `fileNameView` в чужом DTO со
- * своими полями) и карточка механизации (`services/mech-request-dto.ts`, общий сборщик списка и
- * карточки). Убери условие в общей функции — падают все три.
+ * своими полями), карточка механизации (`services/mech-request-dto.ts`, общий сборщик списка и
+ * карточки) и карточка со списком заявок оргтехники (`routes/service-requests.ts`,
+ * `filesByRequest`). Убери условие в общей функции — падают все четыре.
+ *
+ * ЧЕТВЁРТЫЙ ДОБАВЛЕН ПОЗЖЕ ОСТАЛЬНЫХ И НЕ ЗА КОМПАНИЮ: карантин заведён решением Р6 плана заявок
+ * ОРГТЕХНИКИ, а сборщик этого модуля был единственным из десяти, кто правила не спрашивал вовсе.
+ * Проверка «в трёх чужих модулях» зелёная, пока свой течёт, — ровно та слепота, из-за которой дыра и
+ * дожила до исполнения.
  *
  * ОБРАТНАЯ СТОРОНА В КАЖДОМ СЛУЧАЕ. Рядом с запертым файлом всюду идёт обычный, и он обязан отдать
  * имя: без этой половины «пустое имя» одинаково хорошо объяснялось бы сломанной фикстурой — связью
@@ -117,6 +123,9 @@ async function cleanup(db: typeof AppDb): Promise<void> {
      WHERE type = 'delete_s3_object' AND payload->>'objectKey' LIKE ${`${KEY_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM waste_requests WHERE created_by IN ${admin}`);
   await db.execute(sql`DELETE FROM mech_requests WHERE created_by IN ${admin}`);
+  // Заявки оргтехники — до файлов и до площадки: связи вложений уходят каскадом за заявкой, а
+  // площадку держит `RESTRICT` со снимка.
+  await db.execute(sql`DELETE FROM service_requests WHERE created_by IN ${admin}`);
   await db.execute(sql`DELETE FROM files WHERE object_key LIKE ${`${KEY_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN ${admin}`);
   await db.execute(sql`DELETE FROM users WHERE email = ${ADMIN_EMAIL}`);
@@ -192,6 +201,26 @@ async function newMechRequest(): Promise<string> {
  * путь, которым файл стал вложением, на его работу не влияет. Карантин, наоборот, ставится
  * настоящей ручкой — его поведение и есть предмет проверки.
  */
+/**
+ * Заявка оргтехники БЕЗ АППАРАТА: предмет здесь ни при чём — проверяется сборщик вложений, а
+ * `office_equipment_id` у заявки необязателен (заявка «от отдела»). Так фикстуре не нужны ни
+ * карточка парка, ни её тип, ни порядок уборки между ними.
+ */
+async function newServiceRequest(): Promise<string> {
+  const [row] = await ctx.db
+    .insert(ctx.schema.serviceRequests)
+    .values({
+      equipmentObjectId: ctx.objectId,
+      equipmentName: '',
+      description: `${MARK}: заявка оргтехники`,
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+      createdBy: ctx.adminId,
+    })
+    .returning({ id: ctx.schema.serviceRequests.id });
+  return row!.id;
+}
+
 async function linkWasteFile(
   requestId: string,
   fileId: string,
@@ -202,6 +231,10 @@ async function linkWasteFile(
 
 async function linkMechFile(requestId: string, fileId: string): Promise<void> {
   await ctx.db.insert(ctx.schema.mechRequestFiles).values({ requestId, fileId });
+}
+
+async function linkServiceFile(requestId: string, fileId: string): Promise<void> {
+  await ctx.db.insert(ctx.schema.serviceRequestFiles).values({ requestId, fileId, kind: 'act' });
 }
 
 async function quarantine(fileId: string): Promise<void> {
@@ -427,6 +460,74 @@ describe.skipIf(!DB_URL)('карантин: имя вложения наружу
       const dto = body as { files: SeenFile[] };
       expectHidden(dto.files, locked.id);
       expectVisible(dto.files, plain);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────────────────────
+  // 4. Оргтехника: модуль, РАДИ КОТОРОГО карантин и заведён
+  // ──────────────────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * ЧЕТВЁРТЫЙ СБОРЩИК — И ГЛАВНЫЙ. Карантин заведён решением Р6 плана
+   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`, то есть плана заявок оргтехники, и
+   * буквальный сценарий решения — ошибочно приложенный к заявке чужой документ с персональными
+   * данными. Сборщик вложений этого модуля (`filesByRequest` в `routes/service-requests.ts`)
+   * собирает `ServiceRequestFileDto` своим кодом и дольше всех оставался единственным из десяти, кто
+   * правила не спрашивал: имя запертого файла уходило и в карточку, и в список, и в ответ каждого
+   * действия — всем, кому видна заявка.
+   *
+   * Список проверяется рядом с карточкой не для симметрии: в модуле это РАЗНЫЕ ручки с одной
+   * пакетной догрузкой, и утечка в списке видна большему числу людей, чем утечка в карточке.
+   */
+  describe('оргтехника (routes/service-requests.ts)', () => {
+    it('в карточке заявки у карантинного вложения имя пусто, признак стоит, ссылка на месте', async () => {
+      const requestId = await newServiceRequest();
+      const locked = await newFile();
+      const plain = await newFile();
+      await linkServiceFile(requestId, locked.id);
+      await linkServiceFile(requestId, plain.id);
+      await quarantine(locked.id);
+
+      const { body } = await get(`/api/v1/service-requests/${requestId}`);
+      const dto = body as { files: SeenFile[] };
+      expectHidden(dto.files, locked.id);
+      expectVisible(dto.files, plain);
+      expect(pick(dto.files, locked.id).id).toBe(locked.id);
+    });
+
+    it('то же в списке заявок: правило живёт в сборщике, а не в ручке', async () => {
+      const requestId = await newServiceRequest();
+      const locked = await newFile();
+      const plain = await newFile();
+      await linkServiceFile(requestId, locked.id);
+      await linkServiceFile(requestId, plain.id);
+      await quarantine(locked.id);
+
+      const { body } = await get('/api/v1/service-requests?limit=100');
+      const page = body as { items: { id: string; files: SeenFile[] }[] };
+      const row = page.items.find((r) => r.id === requestId);
+      expect(row, 'заявка нашлась в списке').toBeDefined();
+      expectHidden(row!.files, locked.id);
+      expectVisible(row!.files, plain);
+    });
+
+    it('снятие карантина возвращает имя и здесь — признак остаётся состоянием файла', async () => {
+      const requestId = await newServiceRequest();
+      const file = await newFile();
+      await linkServiceFile(requestId, file.id);
+      await quarantine(file.id);
+
+      const hidden = (await get(`/api/v1/service-requests/${requestId}`)).body as {
+        files: SeenFile[];
+      };
+      expectHidden(hidden.files, file.id);
+
+      await releaseQuarantine(file.id);
+
+      const shown = (await get(`/api/v1/service-requests/${requestId}`)).body as {
+        files: SeenFile[];
+      };
+      expectVisible(shown.files, file);
     });
   });
 });

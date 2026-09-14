@@ -34,6 +34,14 @@ import type { db as AppDb } from '../src/db/client';
  *       отвечает 422 — освобождения по действующей ревизии нет.
  *   Д7. ПОДПИСЬ В «Решена» открыта ТОЛЬКО постспорному ожиданию: до разрешения спора (заявка в
  *       «Отложена») согласование отбивается, после исхода «нужна подпись» — проходит и ставит порог.
+ *   Д8. СПОР ВИДЕН В КАРТОЧКЕ полем `dispute` — и открытый, и разрешённый (второй объясняет второе
+ *       окно приёмки и подпись в «Решена»). Заявителю он вычитается вместе с остальными деньгами.
+ *   Д9. ОБЫЧНАЯ ОТМЕНА ЗАКРЫВАЕТ ОТКРЫТЫЙ СПОР исходом `cancel` — той же транзакцией, и в одиночной
+ *       ручке, и в пачке: иначе спор остаётся открытым навсегда и неразрешимым (обе двери к нему
+ *       после отмены заперты), а матрица обещает исход КАЖДОМУ спору.
+ *  Д10. ТРЕБОВАНИЕ СПОРА ПЕРЕЖИВАЕТ ВОЗВРАТ В ПРАВКУ: после исхода «нужна подпись» повторное
+ *       заявление об освобождении отвечает `observed`, автоподписи больше не бывает — иначе исход
+ *       спора снимал бы сам подрядчик возвратом и повторным предъявлением.
  *
  * ПОЧЕМУ БАЗА. Предмет — состояния, которых на моках не бывает: частичный уникальный индекс
  * «один открытый спор на заявку», `CHECK` пары «исход ⇔ время разрешения», связка «ожидание равно
@@ -965,6 +973,285 @@ describe.skipIf(!DB_URL)('спор об освобождении от подпи
       expect(new Date(state.auto_close_not_before!).getTime()).toBeGreaterThanOrEqual(
         before.getTime() - 1000,
       );
+    });
+  });
+  // ── Д8. Спор виден в карточке ──
+
+  /**
+   * СПОР — ПОЛЕ КАРТОЧКИ, А НЕ ДОГАДКА ПО ПРИЧИНЕ ЗАМОРОЗКИ. Портал считает обе двери (открыть спор,
+   * разрешить спор) предикатами контрактов, а им нужен готовый признак `disputeOpen`: взять его из
+   * `holdReason` — значит читать состояние по свободному тексту, который пишет человек. И
+   * РАЗРЕШЁННЫЙ спор обязан остаться: только он объясняет второе окно приёмки и подпись, собранную
+   * уже в «Решена».
+   */
+  describe('Д8. карточка отдаёт спор', () => {
+    it('открытый спор виден целиком, разрешённый — вместе с исходом, автором и временем', async () => {
+      const { id } = await exemptRequest('Спор в карточке');
+      const opened = await openDispute(id, { reason: 'Счёт вдвое выше прайса — нужна подпись' });
+      expect(opened.statusCode, opened.body).toBe(200);
+
+      const open = (await card(id)).dispute;
+      expect(open).toMatchObject({
+        revision: 1,
+        state: 'open',
+        reason: 'Счёт вдвое выше прайса — нужна подпись',
+        openedBy: ctx.operator.id,
+        // Исход у открытого спора пуст — это и есть «разбор идёт», а не «решили и не исполнили».
+        outcome: null,
+        resolvedBy: null,
+        resolvedAt: null,
+      });
+      expect(open!.openedByName).not.toBe('');
+
+      const resolved = await resolveDispute(id, 'keep');
+      expect(resolved.statusCode, resolved.body).toBe(200);
+
+      const after = (await card(id)).dispute;
+      expect(after).toMatchObject({
+        revision: 1,
+        state: 'resolved',
+        outcome: 'keep',
+        resolvedBy: ctx.operator.id,
+      });
+      expect(after!.resolvedAt).not.toBeNull();
+    });
+
+    /**
+     * ВТОРОЙ ПРИЗНАК, КОТОРОГО ПОРТАЛУ НЕ ХВАТАЛО, — ИСТОЧНИК ПОДПИСИ. «Освобождение применено»
+     * (`ServiceEstimateDisputeFacts.exemptionApplied`) складывается из следа заявления, равенства
+     * ревизий и источника `auto`; без источника в карточке портал не может позвать
+     * `canOpenServiceEstimateDispute` вовсе, а надпись читала бы автопринятие как подпись живого
+     * человека (`serviceEstimateApprovalSourceOf`: пусто = `human`).
+     */
+    it('карточка называет источник подписи: автопринятие — `auto`, подпись после спора — `human`', async () => {
+      const { id } = await exemptRequest('Источник подписи в карточке');
+      expect((await card(id)).approval).toMatchObject({ revision: 1, by: null, source: 'auto' });
+
+      await disputeOk(id, 'require_signature');
+      const signed = await inject(
+        'PATCH',
+        `${REQUESTS}/${id}/estimate/approval`,
+        ctx.operator.auth,
+        { approved: true, version: await versionOf(id) },
+      );
+      expect(signed.statusCode, signed.body).toBe(200);
+      expect((await card(id)).approval).toMatchObject({
+        revision: 1,
+        by: ctx.operator.id,
+        source: 'human',
+      });
+    });
+
+    it('заявке без спора поле пусто, и это «не спорили», а не «не посчитали»', async () => {
+      const { id } = await exemptRequest('Заявка без спора');
+      expect((await card(id)).dispute).toBeNull();
+    });
+
+    it('заявителю спор вычитается вместе с остальными деньгами заявки (карта аудиторий)', async () => {
+      const { id } = await exemptRequest('Спор глазами заявителя');
+      const opened = await openDispute(id);
+      expect(opened.statusCode, opened.body).toBe(200);
+      // «Ведение» спор видит…
+      expect((await card(id, ctx.operator.auth)).dispute).toMatchObject({ state: 'open' });
+      // …а автор заявки — нет: обсуждение цены без самой цены показывало бы ему спор о деньгах,
+      // которых он не видит (Г4).
+      expect((await card(id, ctx.customer.auth)).dispute).toBeNull();
+    });
+  });
+
+  // ── Д9. Отмена поверх открытого спора ──
+
+  /**
+   * МАТРИЦА ОБЕЩАЕТ ИСХОД КАЖДОМУ СПОРУ, И ОБЫЧНАЯ ОТМЕНА ЗДЕСЬ — ТА ЖЕ ДВЕРЬ, ЧТО ИСХОД `cancel`.
+   * Оставленный открытым спор стал бы неразрешимым навсегда: отмена снимает исполнителя, и
+   * `assertEstimateApplies` отвечает потом «заявку ведёт свой сотрудник» (про спор ни слова), а
+   * предикат разрешения требует «Отложена». То есть тот же конец достигался бы другой дверью, а
+   * записи о том, чем кончился спор, не появлялось бы никогда.
+   */
+  describe('Д9. обычная отмена закрывает открытый спор исходом', () => {
+    it('одиночная ручка статуса: спор уходит в `cancel` с автором и временем', async () => {
+      const { id } = await exemptRequest('Отмена поверх открытого спора');
+      const opened = await openDispute(id);
+      expect(opened.statusCode, opened.body).toBe(200);
+
+      const cancelled = await inject('PATCH', `${REQUESTS}/${id}/status`, ctx.operator.auth, {
+        status: 'cancelled',
+        reason: 'Аппарат выводится из эксплуатации, ремонт не нужен',
+        version: await versionOf(id),
+      });
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+
+      const state = await stateOf(id);
+      expect(state.status).toBe('cancelled');
+      // Заморозка погашена целиком — отмена отложенной заявки чистит все три её поля.
+      expectHoldCleared(state);
+
+      const [dispute] = await disputesOf(id);
+      expect(dispute).toMatchObject({
+        state: 'resolved',
+        outcome: 'cancel',
+        resolved_by: ctx.operator.id,
+      });
+      expect(dispute!.resolved_at).not.toBeNull();
+    });
+
+    it('та же запись появляется у массовой отмены — пачка идёт тем же шагом', async () => {
+      const { id } = await exemptRequest('Массовая отмена поверх открытого спора');
+      const opened = await openDispute(id);
+      expect(opened.statusCode, opened.body).toBe(200);
+
+      const res = await inject(
+        'POST',
+        BULK,
+        ctx.operator.auth,
+        {
+          operation: 'cancel',
+          rows: [{ id, version: await versionOf(id) }],
+          reason: 'Заявка закрыта решением службы',
+        },
+        { 'idempotency-key': randomUUID() },
+      );
+      expect(res.statusCode, res.body).toBe(200);
+      const report = res.json() as ServiceRequestBulkResultDto;
+      expect([report.done, report.failed]).toEqual([1, 0]);
+
+      expect((await stateOf(id)).status).toBe('cancelled');
+      expect(await disputesOf(id)).toMatchObject([
+        { state: 'resolved', outcome: 'cancel', resolved_by: ctx.operator.id },
+      ]);
+    });
+
+    it('отмена без спора ничего не выдумывает — строк споров у заявки не появляется', async () => {
+      const { id } = await exemptRequest('Отмена без всякого спора');
+      const cancelled = await inject('PATCH', `${REQUESTS}/${id}/status`, ctx.operator.auth, {
+        status: 'cancelled',
+        reason: 'Заявка заведена по ошибке',
+        version: await versionOf(id),
+      });
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+      expect(await disputesOf(id)).toHaveLength(0);
+    });
+
+    it('разрешённый спор отмена не переписывает: исход остаётся тем, каким его назвали', async () => {
+      const { id } = await exemptRequest('Отмена после разрешённого спора');
+      await disputeOk(id, 'keep');
+      const cancelled = await inject('PATCH', `${REQUESTS}/${id}/status`, ctx.operator.auth, {
+        status: 'cancelled',
+        reason: 'Аппарат списан',
+        version: await versionOf(id),
+      });
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+      // `keep`, а не `cancel`: закрывается только ОТКРЫТЫЙ спор, и переписывать чужой разбор отмена
+      // не вправе.
+      expect(await disputesOf(id)).toMatchObject([{ state: 'resolved', outcome: 'keep' }]);
+    });
+  });
+
+  // ── Д10. Требование спора переживает возврат в правку ──
+
+  /**
+   * ИСХОД «НУЖНА ПОДПИСЬ» СНИМАЛСЯ САМИМ ПОДРЯДЧИКОМ — и без всякого разбора: возврат в правку гасит
+   * ожидание, то же заявление по новой ревизии снова отвечало `applied`, автоподпись вставала на
+   * место, работы закрывались, а автоприёмка через сутки принимала заявку. Ни одной человеческой
+   * подписи, и требование спора не помнил никто. Заявка обязана его помнить.
+   */
+  describe('Д10. после исхода «нужна подпись» освобождение больше не применяется', () => {
+    it('возврат в правку и повторное заявление дают `observed`, а не новую автоподпись', async () => {
+      const { id, itemId } = await exemptRequest('Требование спора против возврата в правку');
+      await disputeOk(id, 'require_signature');
+      expect(await stateOf(id)).toMatchObject({
+        status: 'in_work',
+        estimate_pending_revision: 1,
+        estimate_pending_source: 'dispute',
+        approved_estimate_revision: null,
+      });
+
+      // Ход подрядчика: своё предъявление он вправе отозвать — ожидание спора гаснет вместе с ним.
+      const reopened = await inject(
+        'PATCH',
+        `${REQUESTS}/${id}/estimate/reopen`,
+        ctx.service.auth,
+        {
+          reason: 'Уточняю состав работ',
+          version: await versionOf(id),
+        },
+      );
+      expect(reopened.statusCode, reopened.body).toBe(200);
+      expect(await stateOf(id)).toMatchObject({ estimate_pending_revision: null });
+
+      const again = await inject('PATCH', `${REQUESTS}/${id}/estimate/submit`, ctx.service.auth, {
+        mode: 'items',
+        exemption: { note: 'Всё тот же мелкий ремонт на месте' },
+        version: await versionOf(id),
+      });
+      expect(again.statusCode, again.body).toBe(200);
+
+      /*
+       * РЕВИЗИЯ 2 ПОДПИСЫВАЕТСЯ ЧЕЛОВЕКОМ, А НЕ САМА СОБОЙ: автоподписи нет, ожидание открыто
+       * обычным предъявлением. Именно здесь и была дыра — прежде тут стояли `approved_estimate_revision: 2`
+       * и `estimate_approval_source: 'auto'`.
+       */
+      expect(await stateOf(id)).toMatchObject({
+        estimate_revision: 2,
+        estimate_pending_revision: 2,
+        estimate_pending_source: 'submit',
+        approved_estimate_revision: null,
+        estimate_approval_source: null,
+      });
+
+      // Заявление при этом ЗАПИСАНО — со своим исходом: след остаётся, освобождения не случилось.
+      const exemptions = await ctx.db.execute<{ revision: number; outcome: string }>(sql`
+        SELECT revision, outcome FROM service_request_estimate_exemptions
+         WHERE request_id = ${id} ORDER BY revision`);
+      expect(exemptions.rows).toMatchObject([
+        { revision: 1, outcome: 'applied' },
+        { revision: 2, outcome: 'observed' },
+      ]);
+
+      // И дальше всё идёт обычным порядком: подпись ставит человек, и только после неё — работы.
+      const signed = await inject(
+        'PATCH',
+        `${REQUESTS}/${id}/estimate/approval`,
+        ctx.operator.auth,
+        { approved: true, version: await versionOf(id) },
+      );
+      expect(signed.statusCode, signed.body).toBe(200);
+      expect(await stateOf(id)).toMatchObject({
+        approved_estimate_revision: 2,
+        estimate_approved_by: ctx.operator.id,
+        estimate_approval_source: 'human',
+      });
+      // Строка `itemId` та же: возврат в правку состава не трогает — предмет проверки в подписи.
+      expect(itemId).not.toBe('');
+    });
+
+    it('исход «оставить освобождение» ничего не запрещает: там решили обратное', async () => {
+      const { id } = await exemptRequest('Исход «оставить» освобождение не отнимает');
+      await disputeOk(id, 'keep');
+      const reopened = await inject(
+        'PATCH',
+        `${REQUESTS}/${id}/estimate/reopen`,
+        ctx.service.auth,
+        {
+          reason: 'Добавляю ещё одну работу',
+          version: await versionOf(id),
+        },
+      );
+      expect(reopened.statusCode, reopened.body).toBe(200);
+
+      const again = await inject('PATCH', `${REQUESTS}/${id}/estimate/submit`, ctx.service.auth, {
+        mode: 'items',
+        exemption: { note: 'Мелкий ремонт на месте' },
+        version: await versionOf(id),
+      });
+      expect(again.statusCode, again.body).toBe(200);
+      // Автоподпись на месте: «Ведение» разобрало спор в пользу освобождения, и запрещать нечего.
+      expect(await stateOf(id)).toMatchObject({
+        estimate_revision: 2,
+        approved_estimate_revision: 2,
+        estimate_approval_source: 'auto',
+        estimate_pending_revision: null,
+      });
     });
   });
 });

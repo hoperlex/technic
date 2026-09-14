@@ -2,7 +2,11 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { RequestChangeDto, RequestHistoryEntryDto } from '@technic/contracts';
+import type {
+  RequestChangeDto,
+  RequestHistoryEntryDto,
+  ServiceRequestDto,
+} from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -45,6 +49,12 @@ import type { buildApp } from '../src/app';
  * живёт в нём одном, поэтому сцена взята одна — заявка вывоза. Проверять то же трижды значило бы
  * проверять один и тот же вызов с трёх сторон; а вот сборщиков вложений десять, и там наоборот —
  * соседний файл ходит в три модуля осознанно.
+ *
+ * ВТОРАЯ СЦЕНА — ЗАЯВКА ОРГТЕХНИКИ, И ОНА НЕ ПОВТОР ПЕРВОЙ. У этого модуля СВОЙ читатель истории
+ * (`services/service-request-history.ts` собирает ленту сам — у неё свои статусы, свои виды событий
+ * и своя разметка), и правило имени он зовёт своим вызовом. Общая сцена вывоза его не проверяет
+ * вовсе: дыра в собственном разборе `changes` оставалась бы зелёной при полностью исправном соседе —
+ * ровно так она и прожила выкат, хотя карантин заведён РАДИ этого модуля.
  *
  * Запуск — как у остальных db-тестов:
  *
@@ -128,6 +138,8 @@ async function cleanup(db: typeof AppDb): Promise<void> {
     DELETE FROM jobs
      WHERE type = 'delete_s3_object' AND payload->>'objectKey' LIKE ${`${KEY_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM waste_requests WHERE created_by IN ${mine}`);
+  // Заявки оргтехники — до файлов и до площадки: связи вложений уходят каскадом за заявкой.
+  await db.execute(sql`DELETE FROM service_requests WHERE created_by IN ${mine}`);
   await db.execute(sql`DELETE FROM files WHERE object_key LIKE ${`${KEY_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN ${mine}`);
   await db.execute(sql`DELETE FROM users WHERE email IN (${ADMIN_EMAIL}, ${SITE_EMAIL})`);
@@ -262,6 +274,48 @@ function expectVisible(change: RequestChangeDto, file: TestFile): void {
   expect(seen, `строка файла ${file.id} осталась в событии`).toBeDefined();
   expect(seen!.filename).toBe(file.filename);
   expect(seen!.quarantined).toBeUndefined();
+}
+
+/**
+ * Заявка оргтехники без аппарата: предмет здесь ни при чём — проверяется читатель истории, а
+ * `office_equipment_id` у заявки необязателен (заявка «от отдела»).
+ */
+async function newServiceRequest(): Promise<string> {
+  const [row] = await ctx.db
+    .insert(ctx.schema.serviceRequests)
+    .values({
+      equipmentObjectId: ctx.objectId,
+      equipmentName: '',
+      description: `${MARK}: заявка оргтехники`,
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+      createdBy: ctx.adminId,
+    })
+    .returning({ id: ctx.schema.serviceRequests.id });
+  return row!.id;
+}
+
+async function serviceCard(requestId: string): Promise<ServiceRequestDto> {
+  const res = await ctx.app.inject({
+    method: 'GET',
+    url: `/api/v1/service-requests/${requestId}`,
+    headers: ctx.admin,
+  });
+  expect(res.statusCode, `карточка заявки оргтехники: ${res.body}`).toBe(200);
+  return res.json() as ServiceRequestDto;
+}
+
+async function serviceHistory(
+  requestId: string,
+  as: { authorization: string },
+): Promise<{ entries: RequestHistoryEntryDto[]; raw: string }> {
+  const res = await ctx.app.inject({
+    method: 'GET',
+    url: `/api/v1/service-requests/${requestId}/history`,
+    headers: as,
+  });
+  expect(res.statusCode, `история заявки оргтехники: ${res.body}`).toBe(200);
+  return { entries: res.json() as RequestHistoryEntryDto[], raw: res.body };
 }
 
 describe.skipIf(!DB_URL)('карантин: имя файла не уходит в истории заявки (Р6, п. 4)', () => {
@@ -434,6 +488,89 @@ describe.skipIf(!DB_URL)('карантин: имя файла не уходит 
     expect(added.to).toBe('старый-акт.pdf');
     // Пустого списка файлов у такой записи тоже не появляется: «файлов нет» и «о файлах не
     // записано» читаются по-разному, а дорисовать второе до первого не из чего.
+    expect(added.files).toBeUndefined();
+  });
+  /**
+   * ЗАЯВКА ОРГТЕХНИКИ: СВОЙ ЧИТАТЕЛЬ, СВОЙ ВЫЗОВ ПРАВИЛА — и ровно здесь оно было мертво. Читатель
+   * звал `fileEntriesOf(c)` вместо `fileEntriesOf(c.files)`: функция ждёт МАССИВ пар, и на объекте
+   * изменения первая же проверка `Array.isArray` отвечала ложью — тихим `undefined`. Правило имени
+   * не получало ни одного идентификатора и гасить ему было нечего, а комментарий рядом утверждал
+   * обратное тому, что делает код.
+   *
+   * ЗАПИСЬ СОБИРАЕТ НАСТОЯЩИЙ ПИСАТЕЛЬ (`diffServiceRequests`) ПО ДВУМ НАСТОЯЩИМ КАРТОЧКАМ, а в
+   * журнал кладётся его собственный ответ. Ручкой правки её не получить: файлы в `PATCH /:id` меняет
+   * только гонка с параллельной подшивкой — и это ровно та дверь, которую круг закрывал. Фикстура
+   * поэтому не «похожая на настоящую»: разойдись формат писателя с ожиданием читателя, разойдётся и
+   * она — писатель здесь тот же самый объект кода, а не его описание словами.
+   */
+  it('оргтехника: свой читатель истории гасит имя запертого файла у всех читателей', async () => {
+    const requestId = await newServiceRequest();
+    const locked = await newFile();
+    const plain = await newFile();
+
+    const before = await serviceCard(requestId);
+    // Связи вставляются напрямую: предмет спора — событие ПРАВКИ, а не путь, которым файл стал
+    // вложением. Вид `attachment` — обычное фото поломки, самый частый случай.
+    await ctx.db.insert(ctx.schema.serviceRequestFiles).values([
+      { requestId, fileId: locked.id, kind: 'attachment' },
+      { requestId, fileId: plain.id, kind: 'attachment' },
+    ]);
+    const after = await serviceCard(requestId);
+
+    const { diffServiceRequests } = await import('../src/services/service-request-diff');
+    const changes = diffServiceRequests(before, after);
+    // Писатель обязан положить пары «идентификатор → имя»: без них правило карантина не о чем
+    // спрашивать, и дальше проверять было бы нечего.
+    const added = changes.find((c) => c.field === 'filesAdded');
+    expect(added?.files?.map((f) => f.id).sort()).toEqual([locked.id, plain.id].sort());
+
+    await ctx.db.insert(ctx.schema.auditLog).values({
+      actorUserId: ctx.adminId,
+      action: 'serviceRequest.update',
+      entityType: 'serviceRequest',
+      entityId: requestId,
+      metadata: { changes },
+    });
+
+    // До карантина история называет оба файла — иначе «имени нет» объяснялось бы пустой фикстурой.
+    const seenBefore = await serviceHistory(requestId, ctx.admin);
+    expect(seenBefore.raw).toContain(locked.filename);
+    expectVisible(onlyChange(seenBefore.entries, 'filesAdded'), locked);
+
+    await quarantine(locked.id);
+
+    for (const [who, as] of [
+      ['администратор, он же автор загрузки', ctx.admin],
+      ['площадка', ctx.site],
+    ] as const) {
+      const seen = await serviceHistory(requestId, as);
+      const entry = onlyChange(seen.entries, 'filesAdded');
+      expectHidden(entry, locked.id);
+      expectVisible(entry, plain);
+      // Строка события пересобрана из прошедших правило имён: в ней остался только обычный файл.
+      expect(entry.to).toBe(plain.filename);
+      expect(seen.raw, `имя запертого файла в истории оргтехники: ${who}`).not.toContain(
+        locked.filename,
+      );
+      expect(seen.raw).toContain(plain.filename);
+    }
+  });
+
+  it('оргтехника: запись старого образца читается как прежде — пар в ней нет и не появится', async () => {
+    const requestId = await newServiceRequest();
+    await ctx.db.insert(ctx.schema.auditLog).values({
+      actorUserId: ctx.adminId,
+      action: 'serviceRequest.update',
+      entityType: 'serviceRequest',
+      entityId: requestId,
+      metadata: { changes: [{ field: 'filesAdded', from: null, to: 'старый-акт.pdf' }] },
+    });
+
+    const seen = await serviceHistory(requestId, ctx.admin);
+    const added = onlyChange(seen.entries, 'filesAdded');
+    expect(added.to).toBe('старый-акт.pdf');
+    // Пустого списка файлов у такой записи не появляется: «файлов нет» и «о файлах не записано»
+    // читаются по-разному, и дорисовать второе до первого не из чего.
     expect(added.files).toBeUndefined();
   });
 });
