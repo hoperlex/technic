@@ -49,6 +49,12 @@ const ADMIN_EMAIL = 'db-rollback-admin@example.invalid';
 /** Диспетчер: откат — его право (`requests.rollbackStatus`), а визы у него нет вовсе. */
 const DISPATCHER_EMAIL = 'db-rollback-dispatcher@example.invalid';
 const PASSWORD = 'db-test-password-123';
+/**
+ * Метка своего машиниста — по ней он и заводится, и прибирается. Постоянная, а не прогонная, по той
+ * же причине, что и адреса учёток выше: убирать надо и за упавшим прогоном, который до записи в
+ * список заведённого мог не дойти.
+ */
+const DRIVER_MARK = 'db-rollback-driver';
 
 interface Ctx {
   app: Awaited<ReturnType<typeof buildApp>>;
@@ -241,20 +247,34 @@ describe.skipIf(!DB_URL)('возврат заказа техники в «Нов
       sql`SELECT id FROM construction_objects WHERE is_active ORDER BY id DESC LIMIT 1`,
     );
     /*
-     * Машинист берётся из справочника, а не заводится: своего человека файлу держать незачем — он
-     * его не правит, а только называет в назначении, и заведённый оседал бы в общей базе. Имени и
-     * специализации проверка не спрашивает вовсе (`assertRouteDriver`): ей довольно живой строки.
+     * Машинист заводится СВОЙ, а не берётся из справочника.
+     *
+     * Прежде здесь стояло «первый попавшийся живой человек» с оговоркой, что своего держать
+     * незачем: имени и специализации проверка не спрашивает (`assertRouteDriver`), ей довольно
+     * живой строки. Оговорка неверна на свежей базе: миграции сеют площадки и технику, а людей не
+     * сеют вовсе — `persons` там пуст (проверено: 0 строк на базе `pnpm check:db`). Файл проходил
+     * только потому, что сосед по прогону успел завести человека и ещё не успел прибрать, и на
+     * одиночном прогоне падал в `beforeAll` сообщением «наполнение не применено».
+     *
+     * Заводится по метке и с оглядкой на уже заведённое: повторный прогон по той же базе обязан
+     * находить своего, а не плодить одинаковых.
      */
-    const persons = await db.execute<{ id: string }>(
-      sql`SELECT id FROM persons WHERE deleted_at IS NULL ORDER BY id ASC LIMIT 1`,
-    );
+    const person = (
+      await db.execute<{ id: string }>(sql`
+        WITH existing AS (
+          SELECT id FROM persons WHERE comment = ${DRIVER_MARK} AND deleted_at IS NULL LIMIT 1
+        ), created AS (
+          INSERT INTO persons (last_name, first_name, comment)
+          SELECT 'Тестовый', 'Откатный', ${DRIVER_MARK}
+           WHERE NOT EXISTS (SELECT 1 FROM existing)
+          RETURNING id
+        )
+        SELECT id FROM existing UNION ALL SELECT id FROM created`)
+    ).rows[0];
     const vehicle = vehicles.rows[0];
     const object = objects.rows[0];
-    const person = persons.rows[0];
     if (!vehicle || !object || !person) {
-      throw new Error(
-        'В базе нет своей спецтехники, объекта или человека: наполнение не применено',
-      );
+      throw new Error('В базе нет своей спецтехники или объекта: наполнение не применено');
     }
 
     ctx = {
@@ -294,6 +314,14 @@ describe.skipIf(!DB_URL)('возврат заказа техники в «Нов
         DELETE FROM vehicle_routes WHERE source_request_id IN (${ourRequests})`);
       await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
       await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+      /*
+       * Машинист сносится ПОСЛЕ заявок, и порядок здесь обязательный: на `persons` смотрят четыре
+       * внешних ключа с `RESTRICT` — листы, рейсы, отчёты дня и журнал смен назначения
+       * (`vehicle_request_assignment_changes`). Первые два сняты выше своими запросами, журнал
+       * уходит каскадом вместе с заявкой (`request_id` с `ON DELETE CASCADE`), отчётов дня файл не
+       * заводит вовсе. Снести человека раньше заявки было бы отказом внешнего ключа.
+       */
+      await ctx.db.execute(sql`DELETE FROM persons WHERE comment = ${DRIVER_MARK}`);
     } finally {
       await ctx?.app.close();
       await ctx?.closeDb();

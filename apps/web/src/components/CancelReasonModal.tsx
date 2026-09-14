@@ -142,9 +142,7 @@ export function RollbackReasonModal({ subject, erases, blocker, ...rest }: Rollb
       danger
       notice={
         <>
-          {blocker && (
-            <Alert type="error" showIcon title={blocker} style={{ marginBottom: 12 }} />
-          )}
+          {blocker && <Alert type="error" showIcon title={blocker} style={{ marginBottom: 12 }} />}
           <Alert
             type="warning"
             showIcon

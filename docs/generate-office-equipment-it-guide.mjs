@@ -103,7 +103,15 @@ function paragraph(x, y, value, width, size = 20, options = {}) {
 }
 
 function rect(x, y, w, h, options = {}) {
-  const { fill = 'none', stroke = 'none', sw = 1, r = 0, opacity = 1, shadow = false, dash } = options;
+  const {
+    fill = 'none',
+    stroke = 'none',
+    sw = 1,
+    r = 0,
+    opacity = 1,
+    shadow = false,
+    dash,
+  } = options;
   return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}"${shadow ? ' filter="url(#shadow)"' : ''}${dash ? ` stroke-dasharray="${dash}"` : ''}/>`;
 }
 
@@ -148,11 +156,17 @@ function button(x, y, width, label, options = {}) {
   const color = disabled ? C.faint : primary ? '#fff' : danger ? C.red : C.text;
   let output = rect(x, y, width, height, { fill, stroke, r: 7 });
   if (icon) output += text(x + 16, y + (compact ? 24 : 30), icon, 18, { fill: color, weight: 700 });
-  output += text(x + width / 2 + (icon ? 8 : 0), y + (compact ? 24 : 30), label, compact ? 15 : 17, {
-    fill: color,
-    weight: primary ? 600 : 500,
-    anchor: 'middle',
-  });
+  output += text(
+    x + width / 2 + (icon ? 8 : 0),
+    y + (compact ? 24 : 30),
+    label,
+    compact ? 15 : 17,
+    {
+      fill: color,
+      weight: primary ? 600 : 500,
+      anchor: 'middle',
+    },
+  );
   return output;
 }
 
@@ -169,7 +183,10 @@ function input(x, y, width, label, value, options = {}) {
     fill: placeholder || disabled ? C.faint : C.text,
   });
   if (suffix)
-    output += text(x + width - 12, top + height / 2 + 6, suffix, 14, { fill: C.muted, anchor: 'end' });
+    output += text(x + width - 12, top + height / 2 + 6, suffix, 14, {
+      fill: C.muted,
+      anchor: 'end',
+    });
   return output;
 }
 
@@ -208,7 +225,11 @@ function numberDot(number, x, y, options = {}) {
 
 function bullet(x, y, value, width, options = {}) {
   const { color = C.blue, size = 16, lineHeight = 24, checkmark = false, weight = 400 } = options;
-  let output = circle(x + 7, y - 5, 9, { fill: checkmark ? color : `${color}18`, stroke: color, sw: 1 });
+  let output = circle(x + 7, y - 5, 9, {
+    fill: checkmark ? color : `${color}18`,
+    stroke: color,
+    sw: 1,
+  });
   if (checkmark) output += check(x + 1, y - 5, '#fff');
   else output += circle(x + 7, y - 5, 3, { fill: color });
   output += paragraph(x + 28, y, value, width - 28, size, { fill: C.text, lineHeight, weight });
@@ -237,13 +258,7 @@ function stepCard(x, y, width, height, number, titleValue, body, options = {}) {
 
 /** Врезка без номера: заголовок цветом и текст под ним. Ею подписаны границы и предупреждения. */
 function note(x, y, width, height, titleValue, body, options = {}) {
-  const {
-    fill = C.graySoft,
-    stroke = C.line,
-    color = C.ink,
-    size = 15,
-    lineHeight = 22,
-  } = options;
+  const { fill = C.graySoft, stroke = C.line, color = C.ink, size = 15, lineHeight = 22 } = options;
   return (
     rect(x, y, width, height, { fill, stroke, r: 12 }) +
     text(x + 26, y + 40, titleValue, 18, { fill: color, weight: 700 }) +
@@ -256,10 +271,16 @@ function note(x, y, width, height, titleValue, body, options = {}) {
 }
 
 function tableHeader(x, y, widths, labels) {
-  let output = rect(x, y, widths.reduce((sum, value) => sum + value, 0), 42, {
-    fill: '#fafafa',
-    stroke: C.line,
-  });
+  let output = rect(
+    x,
+    y,
+    widths.reduce((sum, value) => sum + value, 0),
+    42,
+    {
+      fill: '#fafafa',
+      stroke: C.line,
+    },
+  );
   let xx = x;
   labels.forEach((label, i) => {
     output += text(xx + 10, y + 27, label, 12, { fill: C.muted, weight: 600 });
@@ -273,18 +294,31 @@ function tableRow(x, y, widths, values, options = {}) {
   const height = options.height ?? 55;
   const lineHeight = options.lineHeight ?? 17;
   const maxLines = options.maxLines ?? 2;
-  let output = rect(x, y, widths.reduce((sum, value) => sum + value, 0), height, {
-    fill: options.fill ?? '#fff',
-    stroke: C.line,
-  });
+  let output = rect(
+    x,
+    y,
+    widths.reduce((sum, value) => sum + value, 0),
+    height,
+    {
+      fill: options.fill ?? '#fff',
+      stroke: C.line,
+    },
+  );
   let xx = x;
   values.forEach((value, i) => {
-    output += paragraph(xx + 10, y + (options.top ?? 25), value, widths[i] - 20, options.size ?? 12, {
-      fill: options.colors?.[i] ?? C.text,
-      weight: options.weights?.[i] ?? 400,
-      lineHeight,
-      maxLines,
-    });
+    output += paragraph(
+      xx + 10,
+      y + (options.top ?? 25),
+      value,
+      widths[i] - 20,
+      options.size ?? 12,
+      {
+        fill: options.colors?.[i] ?? C.text,
+        weight: options.weights?.[i] ?? 400,
+        lineHeight,
+        maxLines,
+      },
+    );
     xx += widths[i];
     if (i < values.length - 1) output += line(xx, y, xx, y + height, { stroke: C.line });
   });
@@ -344,7 +378,11 @@ function header(page, titleValue, kicker, subtitle) {
   });
   output += line(55, 119, 1068, 119, { stroke: C.line });
   if (subtitle)
-    output += paragraph(55, 158, subtitle, 1005, 16, { fill: C.muted, lineHeight: 23, maxLines: 2 });
+    output += paragraph(55, 158, subtitle, 1005, 16, {
+      fill: C.muted,
+      lineHeight: 23,
+      maxLines: 2,
+    });
   return output;
 }
 
@@ -361,7 +399,11 @@ function footer(label = `Памятка ИТ-специалисту • оргт
 function page1() {
   let b = circle(76, 82, 30, { fill: C.blue });
   b += text(76, 93, 'A', 35, { fill: '#fff', weight: 700, anchor: 'middle' });
-  b += text(121, 73, 'АВТО • ОРГ.ТЕХНИКА • ЗАЯВКИ', 16, { fill: C.blue, weight: 700, letter: 1.45 });
+  b += text(121, 73, 'АВТО • ОРГ.ТЕХНИКА • ЗАЯВКИ', 16, {
+    fill: C.blue,
+    weight: 700,
+    letter: 1.45,
+  });
   b += text(121, 103, 'Памятка исполнителю', 18, { fill: C.muted });
   const badge = pill(843, 59, '«ОРГТЕХНИКА: ИТ-СЛУЖБА»', {
     fill: C.purpleSoft,
@@ -404,13 +446,25 @@ function page1() {
   b += text(721, 545, '«Принять работу»', 13, { fill: C.muted, weight: 600, anchor: 'middle' });
   b += text(721, 613, 'ход «Ведения»', 12, { fill: C.muted, anchor: 'middle' });
 
-  const held = pill(910, 500, 'Отложена', { fill: C.goldSoft, color: C.gold, stroke: '#ffe58f', size: 13, pad: 12 });
+  const held = pill(910, 500, 'Отложена', {
+    fill: C.goldSoft,
+    color: C.gold,
+    stroke: '#ffe58f',
+    size: 13,
+    pad: 12,
+  });
   b += held.svg;
   b += paragraph(910, 552, 'остановка с причиной; вернётся туда, откуда отложили', 140, 12, {
     fill: C.muted,
     lineHeight: 17,
   });
-  const cancelled = pill(910, 616, 'Отменена', { fill: C.redSoft, color: C.red, stroke: '#ffccc7', size: 13, pad: 12 });
+  const cancelled = pill(910, 616, 'Отменена', {
+    fill: C.redSoft,
+    color: C.red,
+    stroke: '#ffccc7',
+    size: 13,
+    pad: 12,
+  });
   b += cancelled.svg;
   b += text(910, 662, 'снимает «Ведение»', 12, { fill: C.muted });
 
@@ -488,7 +542,13 @@ function page2() {
   // Макет карточки заявки
   b += rect(55, 218, 545, 700, { fill: '#fff', stroke: C.line, r: 16, shadow: true });
   b += text(82, 266, 'СО-1482 · Обслуживание', 22, { fill: C.ink, weight: 700 });
-  const status = pill(455, 246, 'В работе', { fill: C.blueSoft, color: C.blue, stroke: '#91caff', size: 13, pad: 12 });
+  const status = pill(455, 246, 'В работе', {
+    fill: C.blueSoft,
+    color: C.blue,
+    stroke: '#91caff',
+    size: 13,
+    pad: 12,
+  });
   b += status.svg;
   b += text(82, 296, 'Ricoh IM 350 · АЛ13, каб. 214', 15, { fill: C.muted });
   b += rect(82, 316, 300, 34, { fill: C.blueSoft, r: 8 });
@@ -829,7 +889,10 @@ function page4() {
 
   b += line(55, 924, 1068, 924, { stroke: C.line });
   b += text(55, 976, 'Документы и вложения', 25, { fill: C.ink, weight: 700 });
-  b += text(1068, 976, '— подшивают кнопкой «Фото и документы»', 16, { fill: C.muted, anchor: 'end' });
+  b += text(1068, 976, '— подшивают кнопкой «Фото и документы»', 16, {
+    fill: C.muted,
+    anchor: 'end',
+  });
 
   const widths = [250, 300, 463];
   b += tableHeader(55, 1004, widths, ['Вид документа', 'Когда его принимают', 'Зачем']);
@@ -838,11 +901,13 @@ function page4() {
     'пока заявка не закрыта',
     'фото поломки, экран с ошибкой, что угодно по делу',
   ]);
-  b += tableRow(55, 1101, widths, [
-    'Объём работ',
-    'только в «В работе»',
-    'счёт или смета сервиса к предъявленному объёму',
-  ], { fill: '#fcfdff' });
+  b += tableRow(
+    55,
+    1101,
+    widths,
+    ['Объём работ', 'только в «В работе»', 'счёт или смета сервиса к предъявленному объёму'],
+    { fill: '#fcfdff' },
+  );
   b += tableRow(55, 1156, widths, [
     'Акт · Счёт · Гарантийный талон',
     'с «В работе» и дальше, в том числе после приёмки',
@@ -882,7 +947,10 @@ function page5() {
   );
 
   b += text(55, 232, 'Заявка на расходники', 25, { fill: C.ink, weight: 700 });
-  b += text(1068, 232, '— «Заполнить расходники», потом «Изменить расходники»', 16, { fill: C.muted, anchor: 'end' });
+  b += text(1068, 232, '— «Заполнить расходники», потом «Изменить расходники»', 16, {
+    fill: C.muted,
+    anchor: 'end',
+  });
 
   b += rect(55, 258, 470, 320, { fill: '#fff', stroke: C.line, r: 14, shadow: true });
   b += text(82, 302, 'Расходники заявки СО-1503', 19, { fill: C.ink, weight: 700 });
@@ -939,7 +1007,10 @@ function page5() {
 
   b += line(55, 756, 1068, 756, { stroke: C.line });
   b += text(55, 812, 'Заявка без аппарата', 25, { fill: C.ink, weight: 700 });
-  b += text(1068, 812, '— «Какой аппарат» у меня необязателен', 16, { fill: C.muted, anchor: 'end' });
+  b += text(1068, 812, '— «Какой аппарат» у меня необязателен', 16, {
+    fill: C.muted,
+    anchor: 'end',
+  });
 
   b += rect(55, 840, 470, 430, { fill: '#fff', stroke: C.line, r: 14, shadow: true });
   b += text(82, 884, 'Новая заявка', 19, { fill: C.ink, weight: 700 });
