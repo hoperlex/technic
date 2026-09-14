@@ -5,7 +5,9 @@ import type {
   CredentialTypeCode,
   DriverDto,
   DriverJobTitleDto,
+  DriverRemovalInput,
   DriverSelectionDto,
+  MachinistSelectionDto,
   MergePointsBody,
   PointOrderBody,
   PointRoleOrderBody,
@@ -169,7 +171,13 @@ export const driversApi = {
   create: (body: CreateDriverBody) => apiFetch<DriverDto>('/drivers', { method: 'POST', body }),
   update: (id: string, body: UpdateDriverInput) =>
     apiFetch<DriverDto>(`/drivers/${id}`, { method: 'PATCH', body }),
-  remove: (id: string) => apiFetch<void>(`/drivers/${id}`, { method: 'DELETE' }),
+  /**
+   * Снять карточку. Тело обязательно, когда портал уже показал перечень последствий: сервер
+   * отвечает `409 driver_removal_ack_required` и ждёт отпечаток **того самого** перечня
+   * (план `machinist-card-removal`, Э2). Карточка без связей снимается без тела, как и раньше.
+   */
+  remove: (id: string, body?: DriverRemovalInput) =>
+    apiFetch<void>(`/drivers/${id}`, { method: 'DELETE', ...(body ? { body } : {}) }),
   /** Удаление насовсем из архива (ADR 0060): вместе с человеком уходят его документы и сканы. */
   purge: (id: string) => apiFetch<{ ok: boolean }>(`/drivers/${id}/purge`, { method: 'DELETE' }),
   addLicense: (id: string, body: DriverLicenseBody) =>
@@ -199,6 +207,15 @@ export const driversApi = {
    * должность приходит из кадров свободным текстом, и перечислить её наперёд портал не может.
    */
   jobTitles: () => apiFetch<DriverJobTitleDto[]>('/drivers/job-titles'),
+  /**
+   * Кого предложить машинистом листа ЭСМ-2 на эти периоды (Э6). Периодов бывает два — неделя на
+   * стыке месяцев режется на два бланка, — и отбор отвечает пересечением: человек, годный только
+   * одному, выписку развалил бы целиком.
+   */
+  machinists: (periods: readonly { from: string; to: string }[]) =>
+    apiFetch<MachinistSelectionDto>('/drivers/machinists', {
+      query: { periods: periods.map((p) => `${p.from}..${p.to}`).join(',') },
+    }),
   /** Кто может сесть за эту машину в эту дату — список выбора при переводе заявки в работу. */
   available: (q: { vehicleId: string; on: string; withTrailer?: boolean }) =>
     apiFetch<DriverSelectionDto>('/drivers/available', {
@@ -1358,6 +1375,15 @@ export const wasteRequestsApi = {
         ...(extra.completion ? { completion: extra.completion } : {}),
         ticketFileIds: extra.ticketFileIds ?? [],
       },
+    }),
+  /**
+   * Добавочные талоны выполненной заявки (ADR 0189) — бумага, не поспевшая к закрытию. Своей
+   * ручкой, а не повторным закрытием: статус заявка уже не меняет, факт остаётся предъявленным.
+   */
+  addTickets: (id: string, ticketFileIds: string[], version: number) =>
+    apiFetch<WasteRequestDto>(`/waste-requests/${id}/ticket-files`, {
+      method: 'POST',
+      body: { ticketFileIds, version },
     }),
   remove: (id: string) =>
     apiFetch<{ ok: boolean; mode: string }>(`/waste-requests/${id}`, { method: 'DELETE' }),

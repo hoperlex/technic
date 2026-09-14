@@ -1202,6 +1202,13 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['wasteRequests.status'],
   },
+  // Догрузка талонов к выполненной заявке (ADR 0189) — тем же правом, что и закрытие: бумагу
+  // приносит тот, кто отмечает заявку выполненной. Соседняя ручка `POST .../:id/tickets` живёт под
+  // правом разбора и делает другое — заводит РАСПОЗНАННЫЙ талон руками; здесь подшивается скан.
+  'POST /api/v1/waste-requests/:id/ticket-files': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.status'],
+  },
   'GET /api/v1/waste-requests/present': { kind: 'permissions', allOf: ['wasteRequests.read'] },
   'GET /api/v1/waste-requests/present-groups': {
     kind: 'permissions',

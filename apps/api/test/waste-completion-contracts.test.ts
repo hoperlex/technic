@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  addWasteTicketsSchema,
   calcWasteFactCost,
   changeWasteRequestStatusSchema,
   completeWasteRequestSchema,
@@ -13,6 +14,7 @@ import {
   wasteFactLabel,
   wasteFactUnit,
   type WasteRequestVehicleDto,
+  wasteTicketsAttachable,
 } from '@technic/contracts';
 
 /**
@@ -255,5 +257,41 @@ describe('состав техники прошлых закрытий', () => {
         vehicle(8, 1, { isDeleted: true, id: OTHER_VEHICLE_ID }),
       ]),
     ).toBe(70);
+  });
+});
+
+/**
+ * Догрузка талонов к выполненной заявке (ADR 0189). Окно приёма считает одна функция на обе
+ * стороны: сервер ею отказывает, портал ею же решает, показывать ли кнопку, — разойдись они, и
+ * карточка предлагала бы то, что кончается отказом.
+ */
+describe('окно приёма добавочных талонов', () => {
+  it('бумагу докладывают только у выполненной заявки', () => {
+    expect(wasteTicketsAttachable('done')).toBe(true);
+    // До выполнения талон едет вместе с закрытием, после завершения разбор объявлен законченным.
+    expect(wasteTicketsAttachable('new')).toBe(false);
+    expect(wasteTicketsAttachable('confirmed')).toBe(false);
+    expect(wasteTicketsAttachable('completed')).toBe(false);
+    expect(wasteTicketsAttachable('cancelled')).toBe(false);
+  });
+
+  it('пустая догрузка отклоняется: «приложить ноль талонов» не событие', () => {
+    expect(addWasteTicketsSchema.safeParse({ ticketFileIds: [], version: 3 }).success).toBe(false);
+  });
+
+  it('статуса и факта в теле нет: операция про бумагу, а не про ход заявки', () => {
+    const parsed = addWasteTicketsSchema.safeParse({
+      ticketFileIds: [FILE_ID],
+      version: 3,
+      status: 'completed',
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('пачка ограничена тем же потолком, что и талоны закрытия', () => {
+    const many = Array.from({ length: 21 }, () => FILE_ID);
+    expect(addWasteTicketsSchema.safeParse({ ticketFileIds: many, version: 3 }).success).toBe(
+      false,
+    );
   });
 });

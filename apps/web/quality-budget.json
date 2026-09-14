@@ -7,8 +7,8 @@
   "rawKeyFiles": 45,
   "antdDeprecated": 17,
   "maxLines": {
-    "src/api/resources.ts": 1433,
-    "src/pages/WasteRequestsPage.tsx": 2003,
+    "src/api/resources.ts": 1442,
+    "src/pages/WasteRequestsPage.tsx": 2034,
     "src/pages/WaybillsPage.tsx": 591,
     "src/pages/admin/UsersTab.tsx": 1361,
     "src/pages/directories/CounterpartiesTab.tsx": 439,
@@ -31,6 +31,6 @@
     "src/pages/vehicle/shared.tsx": 512,
     "src/pages/vehicle/weeklyComposition.ts": 410,
     "src/pages/waste/WasteDoneModal.tsx": 464,
-    "src/pages/waste/WasteRequestViewModal.tsx": 566
+    "src/pages/waste/WasteRequestViewModal.tsx": 590
   }
 }

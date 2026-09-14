@@ -1,6 +1,7 @@
 import {
   factVolumeOf,
   factWeightOf,
+  type FileDto,
   formatMoscowDateTime,
   formatPhone,
   type RequestChangeDto,
@@ -109,6 +110,24 @@ export function ownerMismatchChanges(
       to: `«${r.operatorName ?? '—'}» вывозит контейнер «${r.containerOwnerName ?? '—'}» — ${reason}`,
     },
   ];
+}
+
+/**
+ * Добавочные талоны выполненной заявки (ADR 0189) — своё событие истории, а не «прикреплены
+ * файлы»: талон подтверждает вывоз, и в ленте он обязан читаться не как очередная бумага к
+ * заявке, а как то, чем эта заявка закрыта.
+ *
+ * Событие-список: значима только правая часть — доложенное. Идентификаторы едут рядом с именами
+ * тем же порядком, что у вложений: карантин ошибочно приложенного скана ставят позже, а гасить
+ * его имя приходится при чтении истории, и по одному имени файл не ищется.
+ */
+export function ticketsAddedChanges(tickets: readonly FileDto[]): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.fileList(
+    'ticketsAdded',
+    tickets.map((f) => ({ id: f.id, filename: f.filename })),
+  );
+  return diff.changes;
 }
 
 /**

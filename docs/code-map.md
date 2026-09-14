@@ -15,7 +15,7 @@
 - Разделы портала: `waste`
 - API-маршруты: [waste-requests.ts](../apps/api/src/routes/waste-requests.ts), [waste-tariffs.ts](../apps/api/src/routes/waste-tariffs.ts), [waste-types.ts](../apps/api/src/routes/waste-types.ts), [waste-tickets.ts](../apps/api/src/routes/waste-tickets.ts)
 - Остальной API: [waste-request-vehicles.ts](../apps/api/src/services/waste-request-vehicles.ts), [waste-pricing.ts](../apps/api/src/services/waste-pricing.ts)
-- Web: [waste](../apps/web/src/pages/waste), [waste-request](../apps/web/src/entities/waste-request)
+- Web: [waste](../apps/web/src/pages/waste), [waste-request](../apps/web/src/entities/waste-request), [waste-ticket-attach](../apps/web/src/features/waste-ticket-attach)
 - Тесты: `waste-request-*.db.test.ts`, `waste-tickets*.db.test.ts`, `waste-contracts.test.ts`
 - Решения: [ADR 0009](adr/0009-waste-pricing.md), [ADR 0035](adr/0035-waste-fact-by-volume.md), [ADR 0135](adr/0135-waste-request-completed.md)
 

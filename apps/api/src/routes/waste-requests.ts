@@ -16,6 +16,7 @@ import {
 } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
+  addWasteTicketsSchema,
   calcWasteFactCost,
   assignWasteOperatorSchema,
   changeWasteRequestStatusSchema,
@@ -28,6 +29,7 @@ import {
   type FileDto,
   formatWasteRequestNumber,
   isClosedWasteStatus,
+  MAX_TICKETS_PER_REQUEST,
   MIN_WASTE_VOLUME_M3,
   presentContainerGroupsQuerySchema,
   REQUEST_STATUSES,
@@ -53,6 +55,7 @@ import {
   can,
   type WasteTicketBadgeDto,
   wasteTicketReviewBlocker,
+  wasteTicketsAttachable,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -107,6 +110,7 @@ import {
   diffWasteCompletion,
   diffWasteRequests,
   ownerMismatchChanges,
+  ticketsAddedChanges,
 } from '../services/waste-request-diff';
 import { loadWasteRequestHistory } from '../services/waste-request-history';
 import { fileView } from '../services/file-view';
@@ -1642,6 +1646,111 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         entityId: before.id,
         // Правка примечания — событие истории заявки наравне с правкой её полей (ADR 0012).
         metadata: { changes: diffWasteRequests(before, after) },
+      });
+      return after;
+    },
+  );
+
+  /**
+   * Добавочные талоны выполненной заявки (ADR 0189).
+   *
+   * ВТОРАЯ И ПОСЛЕДНЯЯ ДВЕРЬ К `kind = 'ticket'`. Первая — закрытие заявки, и до этой ручки она
+   * была единственной: бумага, не поспевшая к переходу в «Выполнена», не имела в портале хода
+   * вовсе. Заявку везут несколькими ходками, талон второй машины подписывают на площадке позже,
+   * весовая квитанция приезжает к вечеру — и единственным лечением был откат заявки в «Новую»,
+   * который стирает и факт, и уже приложенные талоны (ADR 0020, ADR 0035). Исполнитель платил за
+   * опоздавшую бумагу потерей всего закрытия.
+   *
+   * ПРАВО ТО ЖЕ, ЧТО У ЗАКРЫТИЯ (`wasteRequests.status`), а не новое и не `ticketReview`. Талон
+   * приносит тот, кто отметил заявку выполненной, — это ровно тот круг лиц, что у самого закрытия
+   * (исполнитель и те, кто ведёт заявку). Право разбора здесь не годится дважды: его нет у
+   * внешнего исполнителя, ради которого ручка и заведена, а разбирающий как раз не должен
+   * пополнять бумагу, которую сам же и проверяет (Р25 плана распознавания).
+   *
+   * ОКНО СЧИТАЕТ ПРЕДИКАТ КОНТРАКТОВ (`wasteTicketsAttachable`), тот же, которым портал гасит
+   * кнопку: правило «талон принимают, пока заявка „Выполнена“» обязано быть одно на обе стороны —
+   * иначе портал предлагал бы то, что кончается отказом.
+   *
+   * Факта операция не касается: сколько вывезли, сказано закрытием. Разойдётся сумма талонов с
+   * предъявленным объёмом — это и есть расхождение, которое считает сверка и показывает тому, кто
+   * разбирает (ADR 0114); молча подправить здесь чужую цифру значило бы стереть само замечание.
+   */
+  r.post(
+    '/:id/ticket-files',
+    { ...canChangeStatus, schema: { params: idParams, body: addWasteTicketsSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { ticketFileIds, version } = req.body;
+      const before = await getRequestDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
+      assertOperatorScope(p, before.operatorCounterpartyId);
+      if (!wasteTicketsAttachable(before.status)) {
+        // Отказы разные, потому что разные и выходы из положения: до выполнения талон едет с
+        // закрытием, после завершения нужен откат. «Талон сюда приложить нельзя» не сказало бы
+        // ни того, ни другого.
+        throw err.badRequest(
+          before.status === 'completed'
+            ? `Заявка завершена — талоны в ней больше не правят. Нужна правка — верните заявку в «${requestStatusLabels.done}»`
+            : 'Талон прикладывают к выполненной заявке: до этого он идёт вместе с закрытием',
+          { ticketFileIds: 'Заявка не принимает талоны' },
+        );
+      }
+      await db.transaction(async (tx) => {
+        // Общий замок контура вывоза — первым действием транзакции, как у закрытия и у каждой
+        // мутации талонов (ADR 0114, решение 4). Без него добавление разошлось бы с фоновой
+        // задачей распознавания и с откатом статуса: талон успел бы привязаться к заявке, которую
+        // в этот момент возвращают в «Новую», — и остался бы на ней бумагой без закрытия.
+        await tx
+          .select({ id: wasteRequests.id })
+          .from(wasteRequests)
+          .where(eq(wasteRequests.id, before.id))
+          .for('update');
+        // Статус перечитывается ПОД ЗАМКОМ: между проверкой выше и этой строкой заявку могли
+        // завершить или откатить, и тогда талон лёг бы мимо окна приёма.
+        const [current] = await tx
+          .select({ status: wasteRequests.status })
+          .from(wasteRequests)
+          .where(eq(wasteRequests.id, before.id));
+        if (!current || !wasteTicketsAttachable(current.status)) throw err.conflict();
+        // Предел считается по состоянию заявки, а не по телу запроса: схема отбивает пачку из
+        // двадцати одного талона разом, а двадцать первый, донесённый по одному, прошёл бы мимо
+        // неё. Своя проверка рядом с общим пределом файлов заявки — они про разное: тот про вес
+        // хранилища, этот про то, что пачка бумаги за одно закрытие конечна (ADR 0024).
+        const existing = await countRequestTickets(tx, before.id);
+        if (existing + ticketFileIds.length > MAX_TICKETS_PER_REQUEST) {
+          throw err.badRequest(`Не более ${MAX_TICKETS_PER_REQUEST} талонов на заявку`, {
+            ticketFileIds: `Уже приложено ${existing}`,
+          });
+        }
+        await linkFiles(tx, before.id, ticketFileIds, p.id, true, 'ticket');
+        // Доложенная бумага уходит на распознавание той же транзакцией и ровно теми же доводами,
+        // что и бумага закрытия: задача, записанная отдельным соединением, уехала бы в очередь
+        // раньше коммита связи, и воркер не нашёл бы, что читать.
+        await enqueueTicketRecognition(tx, before.id, ticketFileIds);
+        const [updated] = await tx
+          .update(wasteRequests)
+          .set({ updatedBy: p.id, version: before.version + 1, updatedAt: new Date() })
+          .where(and(eq(wasteRequests.id, before.id), eq(wasteRequests.version, version)))
+          .returning({ id: wasteRequests.id });
+        if (!updated) throw err.conflict();
+        // Версия двигается, хотя предмет заявки не менялся: талоны видны в карточке и в значке
+        // разбора, и открытая у соседа вкладка обязана узнать, что бумаги стало больше.
+        //
+        // Соседи по номеру НЕ метятся: ключей у доложенного скана ещё нет — их заведёт воркер,
+        // прочитав талон, и он же позовёт пересчёт соседей. Здесь меняется только собственное
+        // состояние заявки: у неё появилась неразобранная бумага, а значит закрылось завершение
+        // (ADR 0135, пятое число значка).
+        await refreshRequestReviewState(tx, before.id);
+      });
+      const after = (await getRequestDto(before.id))!;
+      const added = after.tickets.filter((t) => ticketFileIds.includes(t.id));
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'waste_request.tickets_added',
+        entityType: 'waste_request',
+        entityId: before.id,
+        metadata: { changes: ticketsAddedChanges(added) },
       });
       return after;
     },

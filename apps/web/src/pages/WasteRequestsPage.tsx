@@ -55,6 +55,7 @@ import {
   WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestDto,
   wasteOperatorCommentEditable,
+  wasteTicketsAttachable,
   wasteFactLabel,
   wasteRequestCommentLines,
   wasteSubjectLabel,
@@ -443,6 +444,9 @@ function RequestsTab() {
   const canAssignOperator = can('wasteRequests.assignOperator');
   // Примечание исполнителя (ADR 0053): пишут его оператор и те, кто ведёт заявку.
   const canOperatorComment = can('wasteRequests.operatorComment');
+  // Ведение статусов: им же отпирается догрузка талонов к выполненной заявке (ADR 0189) — бумагу
+  // приносит тот, кто закрывает, и отдельного права у неё нет.
+  const canChangeStatus = can('wasteRequests.status');
   const canRestore = can('archive.restore');
 
   // Объектной роли с одним объектом фильтр зафиксирован на нём; с несколькими — фильтр открыт,
@@ -1127,6 +1131,25 @@ function RequestsTab() {
     },
   });
 
+  /**
+   * Догрузка талонов к выполненной заявке (ADR 0189). Карточка живёт строкой списка, поэтому
+   * обновлённая заявка возвращается в неё сразу: иначе в открытом окне остались бы прежняя версия
+   * и прежний список бумаг, а вторая догрузка подряд упёрлась бы в конфликт версий.
+   */
+  const addTicketsMut = useMutation({
+    mutationFn: (v: { r: WasteRequestDto; ticketFileIds: string[] }) =>
+      wasteRequestsApi.addTickets(v.r.id, v.ticketFileIds, v.r.version),
+    onSuccess: (updated, v) => {
+      setViewRecord(updated);
+      message.success(v.ticketFileIds.length === 1 ? 'Талон приложен' : 'Талоны приложены');
+      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+    },
+    onError: (e) => {
+      message.error(errorMessage(e));
+      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+    },
+  });
+
   const removeMut = useMutation({
     mutationFn: (id: string) => wasteRequestsApi.remove(id),
     onSuccess: (res) => {
@@ -1568,6 +1591,14 @@ function RequestsTab() {
             : undefined
         }
         savingOperatorComment={operatorCommentMut.isPending}
+        // Бумага, не поспевшая к закрытию (ADR 0189): право то же, что у самого закрытия, окно
+        // приёма считает предикат контрактов — тот же, которым сервер отвечает на запрос.
+        onAddTickets={
+          canChangeStatus && viewed && !viewed.deletedAt && wasteTicketsAttachable(viewed.status)
+            ? (r, ticketFileIds) => addTicketsMut.mutate({ r, ticketFileIds })
+            : undefined
+        }
+        addingTickets={addTicketsMut.isPending}
       />
 
       {/* Назначение оператора вывоза при переводе заявки в работу: исполнитель обязателен —

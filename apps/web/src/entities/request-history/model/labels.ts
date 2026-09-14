@@ -94,6 +94,9 @@ export const HISTORY_TITLES: Record<RequestHistoryKind, string> = {
   // Отдельно от выдачи: от неё снятие отличается не значением поля, а смыслом — «этого не было».
   mechIssueRevoked: 'Снята отметка выдачи',
   mechExtended: 'Срок аренды продлён',
+  // Талоны, доложенные к выполненной заявке (ADR 0189): бумага пришла позже закрытия, и в ленте
+  // она читается своей строкой — «чем подтверждён вывоз» и «что в заявке правили» разные вопросы.
+  ticketsAdded: 'Приложены талоны',
   deleted: 'Перемещена в архив',
   restored: 'Восстановлена из архива',
 };
@@ -150,6 +153,9 @@ export const KIND_TAGS: Record<string, { label: string; color?: string }> = {
   mechIssued: { label: 'Выдана', color: 'green' },
   mechIssueRevoked: { label: 'Выдача снята', color: 'orange' },
   mechExtended: { label: 'Продление', color: 'blue' },
+  // Талоны — голубым: зелёный в этой ленте занят предъявленным фактом, и доложенная бумага не
+  // должна читаться как второе закрытие. Ярлык тот же, каким подписан блок талонов в карточке.
+  ticketsAdded: { label: 'Талоны', color: 'cyan' },
   deleted: { label: 'Архив', color: 'red' },
   restored: { label: 'Из архива', color: 'green' },
 };

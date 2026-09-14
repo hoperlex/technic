@@ -22,6 +22,7 @@ import {
   wasteSubjectLabel,
 } from '@technic/contracts';
 import { wasteRequestsApi } from '../../api/resources';
+import { AddTicketsBlock } from '@features/waste-ticket-attach';
 import { TicketRecognitionBanner, WasteTicketsPanel } from '@features/waste-ticket-review';
 import { useAuth } from '../../auth/AuthContext';
 import { FileLinkList, FilesButton } from '../../components/FileLinks';
@@ -59,6 +60,15 @@ interface Props {
    */
   onRollbackToDone?: (r: WasteRequestDto) => void;
   rollingBack?: boolean;
+  /**
+   * Догрузить талоны к выполненной заявке (ADR 0189). Не передан — хода нет: либо нет права
+   * ведения статусов, либо заявка не в том состоянии, либо она в архиве.
+   *
+   * Живёт в карточке, а не в строке списка: талон прикладывают, посмотрев, какие бумаги за
+   * заявкой уже числятся, — иначе один и тот же скан приезжал бы вторым экземпляром.
+   */
+  onAddTickets?: (r: WasteRequestDto, ticketFileIds: string[]) => void;
+  addingTickets?: boolean;
 }
 
 /**
@@ -247,6 +257,8 @@ export function WasteRequestViewModal({
   savingOperatorComment,
   onRollbackToDone,
   rollingBack,
+  onAddTickets,
+  addingTickets,
 }: Props) {
   // Право разбора талонов (ADR 0114, Р25). Оно же управляет видимостью замечаний и журнала
   // попыток: у внешнего исполнителя есть право закрывать заявку, но не проверять собственную бумагу.
@@ -521,7 +533,12 @@ export function WasteRequestViewModal({
           {/* Блок показывается и когда талонов нет вовсе — если заявка выполнена. Бумага должна
               быть: сверка объёма считает «в талонах 0 м³ против 40 в закрытии» и без единого
               файла, а спрятанный блок означал бы посчитанное и никому не показанное замечание. */}
-          {(request.tickets.length > 0 || (canReviewTickets && request.status === 'done')) && (
+          {/* Блок открыт и тому, кто бумагу приносит: пока заявка «Выполнена», талон к ней
+              дополняют (ADR 0189), и кнопке нужно место даже у заявки, за которой не числится
+              ни одного скана. */}
+          {(request.tickets.length > 0 ||
+            !!onAddTickets ||
+            (canReviewTickets && request.status === 'done')) && (
             <div>
               <Typography.Text strong>Талоны</Typography.Text>
               {/* Разбор показывается только с правом `ticketReview` (ADR 0114, Р25): распознанные
@@ -536,7 +553,14 @@ export function WasteRequestViewModal({
                   <WasteTicketsPanel requestId={request.id} />
                 </div>
               ) : (
-                <FileLinkList files={request.tickets} maxNameWidth={420} />
+                <FileLinkList
+                  files={request.tickets}
+                  maxNameWidth={420}
+                  emptyText="Талонов нет"
+                />
+              )}
+              {onAddTickets && (
+                <AddTicketsBlock request={request} onAdd={onAddTickets} adding={addingTickets} />
               )}
             </div>
           )}

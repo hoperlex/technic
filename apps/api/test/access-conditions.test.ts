@@ -919,6 +919,11 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { operatorCounterpartyId: COUNTERPARTY_ID, version: 1 },
   },
   'PATCH /api/v1/waste-requests/:id/status': { payload: { status: 'confirmed', version: 1 } },
+  // Догрузка талонов к выполненной заявке (ADR 0189): тело обязано пройти схему, иначе отказ
+  // пришёл бы от валидации раньше стража — и перебор доказывал бы работу Zod, а не прав.
+  'POST /api/v1/waste-requests/:id/ticket-files': {
+    payload: { ticketFileIds: [RECORD_ID], version: 1 },
+  },
   'GET /api/v1/waste-requests/present-groups': { query: `objectId=${OBJECT_ID}` },
 
   // ── Разбор талонов вывоза (ADR 0114) ──
