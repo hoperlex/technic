@@ -538,15 +538,44 @@ async function previewCrew(tx: SceneTx, scene: Scene, input: AssignmentCommandIn
   return ctx.crew.crewPreviewDto(preview.effects, preview.plan, preview.fingerprint, preview.asOf);
 }
 
+/**
+ * Рукопожатия по всем листам, которым есть что подтверждать (Б4): так их собирает и окно.
+ *
+ * Обязательны с тех пор, как предупреждения считаются вместе с планом (§7): команда, выпускающая
+ * бланк с пробелами в документах машиниста, без подписи человека отвечает 409. Сцены заводят людей
+ * без СНИЛСа и без удостоверения, поэтому подпись нужна почти каждой команде здесь — и собирается
+ * она из **показанного** предпросмотра, а не выдумывается: подтверждают ровно то, что видели.
+ */
+const acknowledgementsOf = (
+  issues: readonly { issueKey: number; warnings: readonly unknown[]; warningFingerprint: string }[],
+): Record<string, string> =>
+  Object.fromEntries(
+    issues
+      .filter((issue) => issue.warnings.length > 0)
+      .map((issue) => [String(issue.issueKey), issue.warningFingerprint]),
+  );
+
 /** Тело боевой команды по посчитанному предпросмотру: отпечаток, разблокировки и envelope. */
 function armed(
   body: AssignmentCommandInput,
-  preview: { fingerprint: string; unlockFingerprint: string | null },
+  preview: {
+    fingerprint: string;
+    unlockFingerprint: string | null;
+    issues: readonly {
+      issueKey: number;
+      warnings: readonly unknown[];
+      warningFingerprint: string;
+    }[];
+  },
   reason?: string,
 ): AssignmentCommandInput {
   return {
     ...body,
     previewFingerprint: preview.fingerprint,
+    // Рукопожатия по листам с предупреждениями (Б4): без них команда отвечает 409.
+    ...(Object.keys(acknowledgementsOf(preview.issues)).length > 0
+      ? { acknowledgements: acknowledgementsOf(preview.issues) }
+      : {}),
     ...(preview.unlockFingerprint ? { unlockFingerprint: preview.unlockFingerprint } : {}),
     ...(reason ? { operation: { operationId: randomUUID(), reason } } : {}),
   } as AssignmentCommandInput;
@@ -1178,7 +1207,11 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
             tx,
             scene,
             DISPATCHER,
-            armed(body, { fingerprint: 'предпросмотра не было', unlockFingerprint: null }),
+            armed(body, {
+              fingerprint: 'предпросмотра не было',
+              unlockFingerprint: null,
+              issues: [],
+            }),
           ),
         );
         expect(live.message).toBe(failure.message);
@@ -1244,7 +1277,11 @@ describeReadModes(readMode, 'границы этапа 3 (Р24, Б1, В3, Д1)',
             tx,
             scene,
             DISPATCHER,
-            armed(body, { fingerprint: 'предпросмотра не было', unlockFingerprint: null }),
+            armed(body, {
+              fingerprint: 'предпросмотра не было',
+              unlockFingerprint: null,
+              issues: [],
+            }),
           ),
         );
         expect(live.statusCode).toBe(422);
@@ -1311,7 +1348,11 @@ describe('рукопожатия каркаса (§8, Р9, Р20)', () => {
           tx,
           scene,
           DISPATCHER,
-          armed(body, { fingerprint: 'не тот отпечаток', unlockFingerprint: null }, 'смена'),
+          armed(
+            body,
+            { fingerprint: 'не тот отпечаток', unlockFingerprint: null, issues: [] },
+            'смена',
+          ),
         ),
       );
       expect(failure.statusCode).toBe(409);

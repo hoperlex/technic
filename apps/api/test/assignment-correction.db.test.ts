@@ -376,15 +376,43 @@ function runCorrection(
   );
 }
 
+/**
+ * Рукопожатия по всем листам, которым есть что подтверждать (Б4): так их собирает и окно.
+ *
+ * Обязательны с тех пор, как предупреждения считаются вместе с планом (§7): команда, выпускающая
+ * бланк с пробелами в документах машиниста, без подписи человека отвечает 409. Сцены заводят людей
+ * без СНИЛСа и без удостоверения, поэтому подпись нужна почти каждой команде здесь — и собирается
+ * она из **показанного** предпросмотра, а не выдумывается: подтверждают ровно то, что видели.
+ */
+const acknowledgementsOf = (
+  issues: readonly { issueKey: number; warnings: readonly unknown[]; warningFingerprint: string }[],
+): Record<string, string> =>
+  Object.fromEntries(
+    issues
+      .filter((issue) => issue.warnings.length > 0)
+      .map((issue) => [String(issue.issueKey), issue.warningFingerprint]),
+  );
+
 /** Тело боевой команды по посчитанному предпросмотру: отпечаток и envelope журнала. */
 function armed(
   body: AssignmentVehicleCorrectionInput,
-  preview: { fingerprint: string },
+  preview: {
+    fingerprint: string;
+    issues: readonly {
+      issueKey: number;
+      warnings: readonly unknown[];
+      warningFingerprint: string;
+    }[];
+  },
   operation?: { operationId: string; reason: string },
 ): AssignmentVehicleCorrectionInput {
   return {
     ...body,
     previewFingerprint: preview.fingerprint,
+    // Рукопожатия по листам с предупреждениями (Б4): без них команда отвечает 409.
+    ...(Object.keys(acknowledgementsOf(preview.issues)).length > 0
+      ? { acknowledgements: acknowledgementsOf(preview.issues) }
+      : {}),
     ...(operation ? { operation } : {}),
   };
 }

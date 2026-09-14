@@ -1,4 +1,9 @@
-import type { VehicleOwnership } from '@technic/contracts';
+import {
+  WAYBILL_ACK_REQUIRED_CODE,
+  type AssignmentIssueWarningsDto,
+  type AssignmentPlanIssueDto,
+  type VehicleOwnership,
+} from '@technic/contracts';
 import { err } from '../lib/errors';
 import type { AssignmentCommandTx } from './assignment-command';
 import type { AssignmentEffects } from './assignment-effects';
@@ -19,8 +24,10 @@ import {
   applyEsm2SyncPlanAndAudit,
   buildEsm2SyncPlan,
   esm2SyncResultOf,
+  prepareEsm2Issues,
   type Esm2ExecutionContext,
   type Esm2ExecutionMode,
+  type Esm2IssuePreparations,
   type Esm2SyncResult,
 } from './waybill-esm2';
 
@@ -71,6 +78,26 @@ export interface AssignmentPaperInput {
   displayNumbers: ReadonlyMap<string, string>;
   /** Листы, названные операцией поимённо (Р11); пусто — прошлое не открывалось. */
   unlockWaybillIds: readonly string[];
+  /**
+   * Готовые листы плана: снимок бланка и предупреждения, посчитанные **шагом 6** вместе с самим
+   * планом ({@link assignmentPlanIssues}) и показанные человеку предпросмотром.
+   *
+   * Необязательно только ради одной двери — ремонта истории: её шаг 12 живёт в маршруте
+   * ([vehicle-request-assignment-repair.ts](../routes/vehicle-request-assignment-repair.ts)), и
+   * дописать туда одно поле в этой волне было нельзя — файл занят соседней работой. Не передали —
+   * листы готовятся здесь же, той же функцией и в той же транзакции: правило остаётся одно, теряется
+   * только **момент** — снимок берётся исполнением, а не планированием, и предупреждений такой
+   * двери подтверждать не с чего. Как только поле дойдёт до маршрута, необязательность снимается.
+   */
+  issues?: Esm2IssuePreparations;
+  /**
+   * Рукопожатия, принятые шагом 8 этой двери: `issueKey` строкой → отпечаток набора.
+   *
+   * Права они не дают и заново не проверяются — их дело в том, чтобы выписанный лист помнил
+   * подпись, под которой вышел (Р21). Без них бланк с предупреждениями уходил бы с умолчанием
+   * «не проверяли» даже тогда, когда человек всё подтвердил секунду назад.
+   */
+  acknowledgements?: Readonly<Record<string, string>> | undefined;
 }
 
 /**
@@ -122,8 +149,115 @@ export async function applyAssignmentPaper(
   tx: AssignmentCommandTx,
   params: AssignmentPaperInput,
 ): Promise<Esm2SyncResult> {
-  const { plan, context } = assignmentPaperExecution(params);
-  return esm2SyncResultOf(await applyEsm2SyncPlanAndAudit(tx, plan, context));
+  const { plan, context } = assignmentPaperExecution({ ...params, issues: NO_ISSUES });
+  const issues =
+    params.issues ??
+    // Дверь готового не принесла — готовим тем же расчётом и здесь же (см. `AssignmentPaperInput.issues`).
+    (await prepareEsm2Issues(tx, {
+      requestId: params.requestId,
+      issues: plan.issue.map((item) => ({
+        issueKey: item.issueKey,
+        period: item.period,
+        vehicleId: item.vehicleId,
+        driverPersonId: item.driverPersonId,
+      })),
+    }));
+  return esm2SyncResultOf(await applyEsm2SyncPlanAndAudit(tx, plan, { ...context, issues }));
+}
+
+/** Пустой набор готовых листов: им же считается план, когда его строят ради одних ключей. */
+const NO_ISSUES: Esm2IssuePreparations = new Map();
+
+/**
+ * Предупреждения и снимок бланка по **выпускаемым листам плана** — шаг 6, до первой записи (§7).
+ *
+ * ЗАЧЕМ ЗДЕСЬ, А НЕ В КАЖДОЙ ДВЕРИ. Дверей пять, и все они показывают человеку один и тот же
+ * `AssignmentPreviewDto`: что сгорит, что выпишется и **под какими предупреждениями**. Пять копий
+ * этого расчёта разошлись бы молча — по ключу `issueKey`, по моменту снимка, по составу набора, — а
+ * по `issueKey` строятся рукопожатия: подтвердили один лист, выписали другой.
+ *
+ * ЧТО ПРИХОДИТ НА ВХОД. Тот самый список `plan.preview.issue`, который дверь уже показала окну.
+ * Пересобирать его здесь из `Esm2SheetPlan` было бы вторым проходом по канону сортировки — а ключи
+ * обязаны совпадать с показанными до последнего.
+ */
+export async function assignmentPlanIssues(
+  tx: AssignmentCommandTx,
+  params: { requestId: string; issue: readonly AssignmentPlanIssueDto[] },
+): Promise<{ issues: AssignmentIssueWarningsDto[]; prepared: Esm2IssuePreparations }> {
+  const prepared = await prepareEsm2Issues(tx, {
+    requestId: params.requestId,
+    issues: params.issue.map((item) => ({
+      issueKey: item.issueKey,
+      period: { from: item.from, to: item.to },
+      vehicleId: item.vehicleId,
+      driverPersonId: item.driverPersonId,
+    })),
+  });
+  return {
+    prepared,
+    issues: params.issue.map((item) => {
+      const one = prepared.get(item.issueKey)!;
+      return {
+        issueKey: item.issueKey,
+        warnings: one.warnings,
+        warningFingerprint: one.warningFingerprint,
+      };
+    }),
+  };
+}
+
+/**
+ * Шаг 8 — рукопожатие по **каждому** листу с непустыми предупреждениями (Б4, В1).
+ *
+ * ПОЧЕМУ ПО ЛИСТУ, А НЕ ОДНИМ ОТПЕЧАТКОМ НА КОМАНДУ. После разреза одна команда выпускает несколько
+ * бланков — с разными людьми и разными пробелами в их документах, — и один отпечаток не может
+ * подтвердить несколько разных наборов. Человек обязан видеть, под чем подписывается по каждому
+ * бланку строгой отчётности, а подтверждение одного не засчитывается другому.
+ *
+ * ЧИСТЫЙ БЛАНК ПРОХОДИТ БЕЗ ЗАПИСИ. Требовать подпись под пустотой не за чем: лист без единого
+ * предупреждения выписывается одним нажатием, как и до Б4.
+ *
+ * ОТКАЗОВ ДВА, И ОНИ РАЗНЫЕ. Подтверждение под листом, которого в плане нет (или которому
+ * подтверждать нечего), — 422: человек прислал не то, и «посмотрите заново» ему не поможет.
+ * Неподтверждённое или устаревшее предупреждение — 409 с кодом `waybill_ack_required` и свежим
+ * списком: набор мог измениться с момента показа, и окно обязано показать новый, а не молча
+ * выписать бланк под вчерашним текстом.
+ *
+ * `required = false` — бумагу этой команды ведёт не план, а недельная сверка (режим `legacy`, §10):
+ * просителя у неё нет вовсе, и неполный комплект документов выписку не останавливает (ADR 0064).
+ * Требовать там подпись значило бы запереть сегодняшнюю работу портала до приезда окна. Но
+ * **присланное** рукопожатие проверяется и там: молча принять и проигнорировать подпись хуже, чем
+ * не спрашивать её вовсе.
+ */
+export function assertAssignmentIssueAcknowledgements(params: {
+  issues: readonly AssignmentIssueWarningsDto[];
+  /** Подтверждения из тела: ключ — `issueKey` десятичной записью (контракт схемы). */
+  acknowledgements: Readonly<Record<string, string>> | undefined;
+  required: boolean;
+}): void {
+  const warned = new Map(
+    params.issues
+      .filter((issue) => issue.warnings.length > 0)
+      .map((issue) => [String(issue.issueKey), issue]),
+  );
+  for (const key of Object.keys(params.acknowledgements ?? {})) {
+    if (warned.has(key)) continue;
+    throw err.unprocessable(
+      `Подтверждение прислано по листу, которому подтверждать нечего (${key}): посмотрите последствия заново и повторите команду по показанным листам`,
+      { acknowledgements: 'Лишнее подтверждение' },
+      { issues: params.issues },
+    );
+  }
+  const stale = [...warned.values()].filter((issue) => {
+    const supplied = params.acknowledgements?.[String(issue.issueKey)];
+    if (supplied === undefined) return params.required;
+    return supplied !== issue.warningFingerprint;
+  });
+  if (stale.length === 0) return;
+  throw err.conflict(
+    `Выписка требует подтверждения: предупреждения по ${stale.length} листу(ам) ЭСМ-2 не подтверждены или изменились — посмотрите их заново`,
+    { code: WAYBILL_ACK_REQUIRED_CODE, details: { issues: params.issues } },
+  );
 }
 
 /**
@@ -135,7 +269,9 @@ export async function applyAssignmentPaper(
  * общему сервису правки срока, а не двери. Ему и передаётся готовая пара: сервис ведёт порядок,
  * этот модуль — «что исполнять и с каким провенансом».
  */
-export function assignmentPaperExecution(params: AssignmentPaperInput): {
+export function assignmentPaperExecution(
+  params: AssignmentPaperInput & { issues: Esm2IssuePreparations },
+): {
   plan: Esm2ScopedPlan;
   context: Esm2ExecutionContext;
 } {
@@ -153,6 +289,10 @@ export function assignmentPaperExecution(params: AssignmentPaperInput): {
     requestId: params.requestId,
     actorUserId: params.actor.id,
     syncReason: params.reason,
+    // Готовые листы плана — тем же ключом `issueKey`, каким их посчитал шаг 6: исполнитель по нему
+    // и берёт снимок с предупреждениями, а несовпадение состава считает внутренней ошибкой.
+    issues: params.issues,
+    acknowledgements: params.acknowledgements,
     ...esm2ExecutionModeOf({
       effects: params.effects,
       operationId: params.operationId,

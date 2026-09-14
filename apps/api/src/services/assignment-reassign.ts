@@ -4,6 +4,7 @@ import {
   esm2SyncPlan,
   periodsOverlap,
   waybillDisplayNumber,
+  type AssignmentIssueWarningsDto,
   type AssignmentPlanCancelDto,
   type AssignmentPlanIssueDto,
   type AssignmentPreviewDto,
@@ -45,6 +46,9 @@ import { historyIsAuthoritative, type AssignmentModeSnapshot } from './assignmen
 import { readShiftDays, toAssignmentShiftDay } from './assignment-shifts';
 import { rangeSetIntersects, type DateRangeSet } from './esm2-plan';
 import { buildEsm2SyncPlan, type Esm2SyncPlanInput } from './waybill-esm2';
+// Предупреждения по выпускаемым листам — общим расчётом шага 6 (§7): пятое место, где решают, что
+// такое пробел в документах машиниста, заводить нельзя.
+import { assignmentPlanIssues } from './assignment-paper';
 
 /**
  * Предпросмотр и отпечаток **старой двери смены техники** — `PATCH /vehicle-requests/:id/assignment`
@@ -143,6 +147,15 @@ export interface ReassignPlan {
   paperScope: DateRangeSet;
   /** Что сгорит и что выпишется — так, как это увидит человек. */
   preview: { cancel: AssignmentPlanCancelDto[]; issue: AssignmentPlanIssueDto[] };
+  /**
+   * Предупреждения по каждому выпускаемому листу и их отпечатки (Б4) — посчитанные вместе с планом.
+   *
+   * Показать их окну эта дверь уже может, а **потребовать** рукопожатие пока нет: боевая половина
+   * старой двери живёт в маршруте (`PATCH /:id/assignment`), и тело запроса сюда не доходит. Пустой
+   * список здесь был бы неправдой: предупреждения у бумаги есть, и человек вправе их видеть до
+   * нажатия.
+   */
+  issues: AssignmentIssueWarningsDto[];
   /** Листы под разблокировку, названные **сервером** (Р11); тело подтверждает отпечаток, а не список. */
   requiredUnlocks: AssignmentUnlockDto[];
   /** Отпечаток серверного множества разблокировок; `null` — исход не `crew`, разблокировок не спрашивают. */
@@ -322,11 +335,21 @@ export async function planReassignCommand(
     asOf,
   });
 
+  /*
+   * Предупреждения — по показанному списку выписок: ключ `issueKey` это индекс в нём, и по нему
+   * окно строит рукопожатия (§7).
+   */
+  const planIssues = await assignmentPlanIssues(tx, {
+    requestId: request.id,
+    issue: preview.issue,
+  });
+
   const plan: ReassignPlan = {
     esm2Mode: base.input.mode,
     effectiveDate,
     paperScope: effects.paperScope,
     preview,
+    issues: planIssues.issues,
     requiredUnlocks: requiredUnlockIds.map((id) => {
       const sheet = sheets.find((s) => s.id === id);
       return {
@@ -463,9 +486,10 @@ export function assertReassignPreviewFingerprint(params: {
  * `requiredVehicleResolution` пуст всегда: расхождение хвоста запирает **расширение срока** (Р31), а
  * смена техники новых дней не открывает — она это расхождение сама и создаёт.
  *
- * `issues` пуст в этой волне: предупреждения по каждому выпускаемому листу собирает отрезковый
- * исполнитель этапа 5, а недельная сверка их не считает вовсе. Пустой список честнее выдуманного:
- * рукопожатий по предупреждениям дверь и не спрашивает.
+ * `issues` дверь показывает, но рукопожатия по ним не спрашивает, и это не половина работы, а
+ * граница файла: боевая половина старой двери живёт в маршруте (`PATCH /:id/assignment`), тело
+ * запроса сюда не приходит, и требовать подтверждение отсюда нечем. Показать предупреждения при
+ * этом обязана: человек должен видеть, с какими пробелами в документах уйдёт бумага.
  */
 export function reassignPreviewDto(
   effects: AssignmentEffects,
@@ -482,7 +506,7 @@ export function reassignPreviewDto(
     clearedShiftsFingerprint: plan.clearedShiftsFingerprint,
     requiredUnlocks: plan.requiredUnlocks,
     unlockFingerprint: plan.unlockFingerprint,
-    issues: [],
+    issues: plan.issues,
     operationRequirement: operationRequirementOf(effects),
     asOf,
     fingerprint,

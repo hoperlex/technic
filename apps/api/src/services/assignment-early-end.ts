@@ -770,6 +770,8 @@ async function syncEarlyEndPaper(
               sheets: plan.shorten.sheets,
               displayNumbers: plan.shorten.sheetNumbers,
               unlockWaybillIds,
+              // Снимок бланка и предупреждения — посчитанные шагом 6 и подтверждённые человеком.
+              issues: plan.shorten.issuePreparations,
             }),
           },
         }

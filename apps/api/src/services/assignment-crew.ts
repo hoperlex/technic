@@ -10,6 +10,7 @@ import {
   type AccessSubject,
   type AssignmentChangeDto,
   type AssignmentCommandInput,
+  type AssignmentIssueWarningsDto,
   type AssignmentPlanCancelDto,
   type AssignmentPlanIssueDto,
   type AssignmentPreviewDto,
@@ -62,7 +63,9 @@ import { historyIsAuthoritative, type AssignmentModeSnapshot } from './assignmen
 // где тратятся номера бланков строгой отчётности.
 import {
   applyAssignmentPaper,
+  assertAssignmentIssueAcknowledgements,
   assertAssignmentPaperConverged,
+  assignmentPlanIssues,
   paperFollowsHistory,
 } from './assignment-paper';
 import {
@@ -86,7 +89,12 @@ import {
   type Esm2SheetPlan,
 } from './esm2-plan';
 import { correctionFingerprint } from './waybill-correction';
-import { buildEsm2SyncPlan, syncEsm2Waybills, type Esm2SyncResult } from './waybill-esm2';
+import {
+  buildEsm2SyncPlan,
+  syncEsm2Waybills,
+  type Esm2IssuePreparations,
+  type Esm2SyncResult,
+} from './waybill-esm2';
 import type {
   AssignmentAuditContext,
   AssignmentCommandSpec,
@@ -158,11 +166,12 @@ import type { db as AppDb } from '../db/client';
  *   revalidation; подняв его здесь «раз уж проверили инвариант», дверь завела бы второй ответ на
  *   вопрос «когда заявка стала `ready`». Дверь зовёт автомат дважды и в двух разных ролях: шагом 5
  *   — расчётом (`planAssignmentHistory`, ни одной записи), шагом 11 — записью, и только там;
- * - **предупреждения выпускаемых листов** (`issues`, рукопожатие Б4) предпросмотр не считает: их
- *   считает `esm2IssueWarnings` внутри барьерного `waybill-esm2.ts` и только в момент выписки. У
- *   недельной сверки просителя нет (`requester: { by: 'sync' }`), подтверждать ей нечего, и пустой
- *   список здесь — правда о сегодняшнем исполнителе, а не заглушка. Наполнится он вместе с
- *   исполнителем отрезкового плана (§8, шаг 12).
+ * - **расчёт предупреждений и снимка бланка** (`issues`, рукопожатие Б4) дверь не пишет сама: он
+ *   живёт в `waybill-esm2.ts` — там же, где тратятся номера строгой отчётности, — и зовётся общим
+ *   входом шага 6 (`assignmentPlanIssues`). Дверь только показывает набор предпросмотром и требует
+ *   по нему рукопожатие шагом 8; выписка берёт **тот же** результат и ничего не пересчитывает (§7).
+ *   Своя редакция правила «что считать пробелом в документах» означала бы подтверждённое одно, а
+ *   напечатанное другое.
  */
 
 // ── Что дверь посчитала ──
@@ -202,6 +211,16 @@ export interface CrewPlan {
   unlockFingerprint: string | null;
   /** Аннулируемые и выписываемые листы — так, как их показывает окно. */
   preview: { cancel: AssignmentPlanCancelDto[]; issue: AssignmentPlanIssueDto[] };
+  /**
+   * Предупреждения по каждому выпускаемому листу и их отпечатки (Б4).
+   *
+   * Считаны шагом 6 — вместе с планом и до первой записи: окно строит по ним рукопожатия, шаг 8 их
+   * спрашивает, а шаг 12 печатает ровно тот набор, который человек видел. Пересчёт при выписке
+   * означал бы подтверждённое одно, а напечатанное другое.
+   */
+  issues: AssignmentIssueWarningsDto[];
+  /** Те же листы шагу 12 — снимком бланка и предупреждениями, которые исполнение не пересчитывает. */
+  issuePreparations: Esm2IssuePreparations;
   /**
    * Машинист, действующий на день расчёта **после** команды. Им идёт недельная сверка шага 12 в
    * режиме `legacy`: «машинист заявки» у неё один, и другого значения, совместимого со старой
@@ -444,6 +463,15 @@ export async function planCrewCommand(
   const numbers = await readSheetNumbers(tx, request.id);
   const names = await readNames(tx, sheetPlan);
   const preview = previewPlanOf(sheetPlan, sheets, numbers, names);
+  /*
+   * Предупреждения и снимок бланка — по **показанному** списку выписок (§7). Ключ `issueKey` это
+   * индекс в нём, и по этому ключу человек подтверждает бумагу: посчитай мы набор своим проходом,
+   * окно и рукопожатия говорили бы о разных листах.
+   */
+  const planIssues = await assignmentPlanIssues(tx, {
+    requestId: request.id,
+    issue: preview.issue,
+  });
   const requiredUnlocks = requiredUnlockIds.map((id) => {
     const sheet = sheets.find((s) => s.id === id);
     return {
@@ -466,6 +494,8 @@ export async function planCrewCommand(
     requiredUnlocks,
     unlockFingerprint: effects.needsCorrection ? fingerprintOf({ requiredUnlockIds }) : null,
     preview,
+    issues: planIssues.issues,
+    issuePreparations: planIssues.prepared,
     legacyDriverPersonId,
     esm2Mode,
     ownershipByVehicle,
@@ -1145,6 +1175,30 @@ export function assertCrewHandshake(
   }
 }
 
+/**
+ * Рукопожатия по листам (Б4) — отдельным шагом от разблокировок и после них.
+ *
+ * Порядок смысловой: разблокировка отвечает на «можно ли вообще трогать эту бумагу», рукопожатие —
+ * на «согласен ли человек с тем, что в ней будет напечатано». Спроси мы второе первым, человек
+ * подтверждал бы предупреждения по листам, которых команде всё равно не отдадут.
+ *
+ * Требуются они там, где бумагу выпускает **этот план** (`paperFollowsHistory`): в `legacy` листы
+ * переписывает недельная сверка, у которой просителя нет вовсе, и неполный комплект документов её
+ * не останавливает (ADR 0064). Присланное подтверждение проверяется в обоих режимах — принять и
+ * молча не посмотреть хуже, чем не спрашивать.
+ */
+export function assertCrewIssueHandshake(
+  mode: AssignmentModeSnapshot,
+  plan: CrewPlan,
+  input: AssignmentCommandInput,
+): void {
+  assertAssignmentIssueAcknowledgements({
+    issues: plan.issues,
+    acknowledgements: input.acknowledgements,
+    required: paperFollowsHistory(mode),
+  });
+}
+
 // ── Условная авторизация (шаг 9, Р32) ──
 
 /**
@@ -1233,7 +1287,10 @@ export function crewCommandSpec(params: {
     previewFingerprint: input.previewFingerprint,
     asOf,
     plan: (ctx) => planCrewCommand(ctx, input),
-    handshake: (ctx) => assertCrewHandshake(ctx.effects, ctx.plan, input),
+    handshake: (ctx) => {
+      assertCrewHandshake(ctx.effects, ctx.plan, input);
+      assertCrewIssueHandshake(ctx.mode, ctx.plan, input);
+    },
     authorize: (ctx) => authorizeCrewCommand(actor, ctx.effects, ctx.asOf),
     authorizeRepeat: (scope) => authorizeCrewRepeat(actor, scope),
     mutate: async (ctx) => {
@@ -1274,6 +1331,7 @@ export function crewCommandSpec(params: {
         plan: ctx.plan,
         effects: ctx.effects,
         correctionId: ctx.operation?.id ?? null,
+        acknowledgements: input.acknowledgements,
       }),
     payload: (ctx) => ({
       kind: ctx.plan.kind,
@@ -1398,6 +1456,8 @@ export async function syncCrewPaper(
     plan: CrewPlan;
     effects: AssignmentEffects;
     correctionId: string | null;
+    /** Рукопожатия, принятые шагом 8: ими лист помнит, под чем его подписали (Р21). */
+    acknowledgements?: Readonly<Record<string, string>> | undefined;
   },
 ): Promise<CrewPaper> {
   /*
@@ -1423,6 +1483,9 @@ export async function syncCrewPaper(
         sheets: params.plan.sheets,
         displayNumbers: params.plan.sheetNumbers,
         unlockWaybillIds,
+        // Снимок бланка и предупреждения — посчитанные шагом 6 и подтверждённые человеком.
+        issues: params.plan.issuePreparations,
+        acknowledgements: params.acknowledgements,
       })
     : await syncEsm2Waybills(tx, {
         requestId: params.requestId,
@@ -1619,7 +1682,9 @@ export function crewPreviewDto(
     clearedShiftsFingerprint: null,
     requiredUnlocks: plan.requiredUnlocks,
     unlockFingerprint: plan.unlockFingerprint,
-    issues: [],
+    // Предупреждения по каждому выпускаемому листу — посчитанные вместе с планом (§7): по ним окно
+    // и строит рукопожатия, которых шаг 8 требует.
+    issues: plan.issues,
     operationRequirement: operationRequirementOf(effects),
     asOf,
     fingerprint,

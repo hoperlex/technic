@@ -2,6 +2,7 @@ import { eq, inArray, ne, and } from 'drizzle-orm';
 import {
   shiftDateKey,
   waybillDisplayNumber,
+  type AssignmentIssueWarningsDto,
   type AssignmentPlanCancelDto,
   type AssignmentPlanIssueDto,
   type AssignmentUnlockDto,
@@ -48,7 +49,10 @@ import {
   type Esm2ExistingSheet,
   type Esm2SheetPlan,
 } from './esm2-plan';
-import { buildEsm2SyncPlan } from './waybill-esm2';
+import { buildEsm2SyncPlan, type Esm2IssuePreparations } from './waybill-esm2';
+// Предупреждения и снимок бланка по выпускаемым листам — общим расчётом шага 6 (§7): считать их
+// здесь своей копией значило бы завести пятое место, где решают, что такое пробел в документах.
+import { assignmentPlanIssues } from './assignment-paper';
 import { planLinearRouteDays, type LinearDaysPlan } from './vehicle-request-days';
 
 /**
@@ -140,6 +144,16 @@ export interface ShortenTermPlan {
   sheetPlan: Esm2SheetPlan;
   /** Аннулируемые и выписываемые листы — так, как их показывает окно. */
   preview: { cancel: AssignmentPlanCancelDto[]; issue: AssignmentPlanIssueDto[] };
+  /**
+   * Предупреждения по каждому выпускаемому листу и их отпечатки — предмет рукопожатий (Б4).
+   *
+   * Считаются здесь, вместе с планом, а не при выписке: иначе окно показывало бы пустой список, а
+   * подтверждать человеку было бы нечего — ровно тот пробел, из-за которого `acknowledgements` и
+   * не работали.
+   */
+  issues: AssignmentIssueWarningsDto[];
+  /** Те же листы для шага 12: снимок бланка и предупреждения, которые исполнение не пересчитывает. */
+  issuePreparations: Esm2IssuePreparations;
   /**
    * Разблокировки идентификаторами и в отсортированном виде — так они входят в отпечаток двери.
    * Пусто при исходе не-`crew`: там разблокировок не спрашивают вовсе (Д4).
@@ -355,6 +369,13 @@ export async function shortenTermPlan(
 
   const numbers = await readSheetNumbers(tx, requestId);
   const names = await readNames(tx, sheetPlan, cancelGroups);
+  const preview = previewPlanOf(sheetPlan, sheets, numbers, names);
+  /*
+   * Предупреждения считаются по **показанному** списку выписок, а не по плану заново: ключ
+   * `issueKey` — индекс в нём, и по этому ключу человек подтверждает бумагу. Второй проход по
+   * канону сортировки дал бы окну один порядок, а рукопожатиям другой.
+   */
+  const planIssues = await assignmentPlanIssues(tx, { requestId, issue: preview.issue });
   /*
    * Дни линейного заказа — последними и только по просьбе двери: чтение это лишнее у заказа,
    * который дней не ведёт вовсе, а порядок остальных чтений от него не зависит.
@@ -378,7 +399,9 @@ export async function shortenTermPlan(
     paperScope,
     esm2Mode,
     sheetPlan,
-    preview: previewPlanOf(sheetPlan, sheets, numbers, names),
+    preview,
+    issues: planIssues.issues,
+    issuePreparations: planIssues.prepared,
     requiredUnlockIds,
     requiredUnlocks: requiredUnlockIds.map((id) => unlockDtoOf(id, sheets, numbers)),
     unlockFingerprint: effects.needsCorrection ? fingerprintOf({ requiredUnlockIds }) : null,

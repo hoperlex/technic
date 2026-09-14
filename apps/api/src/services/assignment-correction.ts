@@ -6,6 +6,7 @@ import {
   type AccessSubject,
   type AssignmentClearedApprovalDto,
   type AssignmentCorrectionPreviewDto,
+  type AssignmentIssueWarningsDto,
   type AssignmentPlanCancelDto,
   type AssignmentPlanIssueDto,
   type AssignmentVehicleCorrectionInput,
@@ -69,13 +70,15 @@ import {
   type Esm2ExistingSheet,
   type Esm2SheetPlan,
 } from './esm2-plan';
-import { buildEsm2SyncPlan, type Esm2SyncResult } from './waybill-esm2';
+import { buildEsm2SyncPlan, type Esm2IssuePreparations, type Esm2SyncResult } from './waybill-esm2';
 import { clearShiftApprovals, type ShiftApproval } from './vehicle-route-correction';
 // Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
 // провенансом (§10, Р32). Своя копия этого решения разошлась бы с соседними дверями молча.
 import {
   applyAssignmentPaper,
+  assertAssignmentIssueAcknowledgements,
   assertAssignmentPaperConverged,
+  assignmentPlanIssues,
   paperFollowsHistory,
 } from './assignment-paper';
 
@@ -189,6 +192,15 @@ export interface VehicleCorrectionPlan {
   sheetPlan: Esm2SheetPlan;
   /** Тот же план глазами окна: что сгорит и что выпишется, с именами и `issueKey`. */
   preview: { cancel: AssignmentPlanCancelDto[]; issue: AssignmentPlanIssueDto[] };
+  /**
+   * Предупреждения по каждому выпускаемому листу и их отпечатки (Б4) — посчитанные шагом 6.
+   *
+   * В `legacy` список пуст вместе с самим планом: команда, которой бумага понадобилась бы,
+   * отвергается рукопожатием, и подтверждать там нечего.
+   */
+  issues: AssignmentIssueWarningsDto[];
+  /** Те же листы шагу 12 — снимком, который исполнение не пересчитывает (§7). */
+  issuePreparations: Esm2IssuePreparations;
   /** Отрезки состава **после** коррекции: по ним считаются бумага и постусловие. */
   segmentsAfter: AssignmentSegment[];
   /** Действующие листы заявки и их напечатанные номера — прочитанные шагом 6 и один раз. */
@@ -389,8 +401,20 @@ export async function planVehicleCorrection(
     };
   });
 
+  const preview = await assignmentPaperPreviewOf(tx, sheetPlan, sheets, numbers);
+  /*
+   * Предупреждения — по показанному списку выписок: ключ `issueKey` это индекс в нём, и по нему
+   * человек подтверждает бумагу (§7).
+   */
+  const planIssues = await assignmentPlanIssues(tx, {
+    requestId: request.id,
+    issue: preview.issue,
+  });
+
   const plan: VehicleCorrectionPlan = {
-    preview: await assignmentPaperPreviewOf(tx, sheetPlan, sheets, numbers),
+    preview,
+    issues: planIssues.issues,
+    issuePreparations: planIssues.prepared,
     target,
     vehicleBefore: target.vehicleId,
     vehicleAfter,
@@ -603,6 +627,8 @@ async function approvalsInRange(
  */
 export async function clearCorrectionApprovals(
   ctx: AssignmentApplyContext<VehicleCorrectionPlan>,
+  /** Тело команды: из него берутся рукопожатия, принятые шагом 8 (Р21, Б4). */
+  input: AssignmentVehicleCorrectionInput,
 ): Promise<CorrectionPaper> {
   /*
    * Порядок шага 12 (§8): сперва бумага, потом подписи. Он не произволен — переоформление бланка
@@ -626,6 +652,9 @@ export async function clearCorrectionApprovals(
         sheets: ctx.plan.sheets,
         displayNumbers: ctx.plan.sheetNumbers,
         unlockWaybillIds: ctx.plan.requiredUnlocks.map((u) => u.waybillId),
+        // Снимок бланка и предупреждения — посчитанные шагом 6 и подтверждённые человеком.
+        issues: ctx.plan.issuePreparations,
+        acknowledgements: input.acknowledgements,
       })
     : { cancelled: [], issued: [], trimmed: [] };
   if (ctx.plan.paperByHistory) {
@@ -713,6 +742,23 @@ export function assertCorrectionHandshake(
   }
 }
 
+/**
+ * Рукопожатия по листам (Б4) — после разблокировок и по тем же правилам, что у двери машиниста.
+ *
+ * Требуются там, где бумагу выпускает этот план: у коррекции это ровно `paperByHistory` — в
+ * `legacy` её плановая бумага пуста по построению, и подтверждать было бы нечего.
+ */
+export function assertCorrectionIssueHandshake(
+  plan: VehicleCorrectionPlan,
+  input: AssignmentVehicleCorrectionInput,
+): void {
+  assertAssignmentIssueAcknowledgements({
+    issues: plan.issues,
+    acknowledgements: input.acknowledgements,
+    required: plan.paperByHistory,
+  });
+}
+
 // ── Отпечаток предпросмотра (Р20, Р32) ──
 
 /**
@@ -794,7 +840,10 @@ export function vehicleCorrectionSpec(params: {
     previewFingerprint: input.previewFingerprint,
     asOf,
     plan: (ctx) => planVehicleCorrection(ctx, input),
-    handshake: (ctx) => assertCorrectionHandshake(ctx.plan, input),
+    handshake: (ctx) => {
+      assertCorrectionHandshake(ctx.plan, input);
+      assertCorrectionIssueHandshake(ctx.plan, input);
+    },
     /*
      * Права спрашиваются по посчитанному исходу (Р32), а не по календарю и не по составу тела:
      * коррекция отрезка, целиком лежащего в будущем, — это правка принятого решения
@@ -822,7 +871,7 @@ export function vehicleCorrectionSpec(params: {
       });
       return { write, applied: write };
     },
-    syncPaper: (ctx) => clearCorrectionApprovals(ctx),
+    syncPaper: (ctx) => clearCorrectionApprovals(ctx, input),
     payload: (ctx) => ({
       door: DOOR,
       target: {
@@ -928,7 +977,8 @@ export function correctionPreviewDto(
     // разблокировки понадобились бы, отвергается рукопожатием.
     requiredUnlocks: plan.requiredUnlocks,
     unlockFingerprint: plan.unlockFingerprint,
-    issues: [],
+    // Предупреждения по каждому выпускаемому листу — посчитанные вместе с планом (§7).
+    issues: plan.issues,
     operationRequirement: operationRequirementOf(effects),
     asOf,
     fingerprint,

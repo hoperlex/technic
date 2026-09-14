@@ -4,6 +4,7 @@ import { z } from 'zod';
 // Обратной зависимости нет — `assignment-periods.ts` про заявку не знает вовсе, — значит и цикла
 // импортов здесь не возникает.
 import {
+  assignmentAcknowledgementsSchema,
   assignmentFingerprintSchema,
   changeVehicleAssignmentExtrasSchema,
   operationInputSchema,
@@ -1804,6 +1805,15 @@ export const completionApplySchema = completionCoreSchema
     cancelGroupsFingerprint: assignmentFingerprintSchema.optional(),
     unlockFingerprint: assignmentFingerprintSchema.optional(),
     clearedShiftsFingerprint: assignmentFingerprintSchema.optional(),
+    /**
+     * Подтверждения предупреждений — по одному на выпускаемый лист с непустым набором (Б4).
+     *
+     * Закрытие фактической датой сокращает срок и **переоформляет** задетую бумагу: сокращённый
+     * бланк остаётся собой, а разрезанная неделя выписывается заново. Пока лист был один на
+     * команду, хватало бы одного отпечатка; после разреза бланков бывает несколько — с разными
+     * людьми и разными пробелами в их документах, — и подтверждать их человек обязан по одному.
+     */
+    acknowledgements: assignmentAcknowledgementsSchema.optional(),
     operation: operationInputSchema.optional(),
   })
   .strict();

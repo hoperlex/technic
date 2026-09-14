@@ -64,7 +64,12 @@ import {
 // разошлось бы с первым на первой же правке.
 // Заказчик путевых листов (миграция 0164) читается общей функцией: настройка одна на все бланки, и
 // второе её чтение здесь разошлось бы с первым — два листа одного дня назвали бы разных заказчиков.
-import { acknowledgeOrThrow, type IssueWarningsRecord, loadWaybillCustomer } from './waybill-issue';
+import {
+  acknowledgeOrThrow,
+  type IssueWarningsRecord,
+  loadWaybillCustomer,
+  warningsFingerprint,
+} from './waybill-issue';
 // Что операция коррекции делает с листом (ADR 0101): списание ссылкой на операцию и пометка
 // рождённого ею номера. Своего кода на это у сверки нет намеренно — правило «лист помнит, какой
 // операцией он рождён и какой списан» одно на все входы, и второе его написание разошлось бы.
@@ -95,6 +100,14 @@ import { findSeriesByCode, seriesCodeOfForm, takeNextNumber } from './waybill-nu
  * неделя. Здесь же он и живёт, а не в соседнем модуле, ровно по одной причине: расход номеров
  * бланков строгой отчётности обязан быть в одном месте. Недельная сверка своего кода записи не
  * имеет вовсе — она строит план и отдаёт его тому же исполнителю.
+ *
+ * ОН ЖЕ СЧИТАЕТ СНИМОК БЛАНКА И ПРЕДУПРЕЖДЕНИЯ — И СЧИТАЕТ ИХ ПРИ ПОСТРОЕНИИ ПЛАНА (§7,
+ * {@link prepareEsm2Issues}). Прежде оба рождались внутри выписки, уже после нажатия «выполнить»:
+ * предпросмотру нечего было показать (`issues` приходил пустым), а рукопожатие по каждому листу
+ * (Б4) требовать было не с чего. Теперь набор считается один раз, приходит в окно вместе с планом,
+ * подтверждается шагом 8 команды — и выписка берёт **готовое**, а не считает заново. Второй копии
+ * этого правила быть не должно: расхождение двух копий не видно вслух, оно проявляется тем, что
+ * человек подтвердил один набор, а в бланк строгой отчётности лёг другой.
  *
  * ЭТОТ МОДУЛЬ — ЕДИНСТВЕННЫЙ ВЛАДЕЛЕЦ СОБЫТИЯ `waybill.esm2_sync`, и пишет он его **в транзакции**
  * (`writeAuditTx`). Прежде событие писали шесть внешних вызовов после коммита и через best-effort
@@ -248,63 +261,138 @@ function monthOf(period: Esm2Period): string {
  * Собирается своим сбором, а не общим с 4-П: у листов не совпадает ни источник (заявка против
  * рейса), ни единица (неделя против дня), ни набор граф — здесь нет ни груза, ни задания, ни граф
  * СНИЛС и удостоверения, зато есть семь строк недели и код объекта затрат.
+ *
+ * СНИМОК НЕПОЛОН, И ЭТО ЕГО ФОРМА, А НЕ НЕДОДЕЛКА (§7 плана периодов назначения). Двух граф —
+ * серии и номера — на момент, когда снимок считается, не существует: номер бланка строгой
+ * отчётности рождается расходом счётчика при выписке, а снимок берётся **при построении плана**,
+ * до первой записи. Поэтому тип у черновика свой, а дописывает эти две графы одна функция
+ * ({@link finishSheetSnapshot}) и только после выделения номера. Без типа запрет жил бы в
+ * комментарии, а положить в графу строгого бланка счётчик вместо печатного номера — ровно тот
+ * промах, который потом читается в журнале учёта бланков.
  */
-async function collectSnapshot(
-  tx: Tx,
+export type Esm2SheetSnapshotDraft = Omit<
+  Record<WaybillSnapshotKey, string>,
+  'waybill_series' | 'waybill_number'
+>;
+
+/**
+ * Реквизиты, одинаковые у всех листов одного плана, — прочитанные **один раз**.
+ *
+ * До разреза лист выписывался по одному, и сбор снимка читал справочники на каждый: организацию,
+ * объект, заказчика и машину. У месячного заказа таких листов пять, у длинного — десятки, и те же
+ * запросы повторялись на предпросмотре и ещё раз на исполнении, причём исполнение держит строку
+ * заявки под блокировкой. От даты листа здесь не зависит ничего: объект заявки, заказчик бланков и
+ * реквизиты машины у недель одни и те же.
+ *
+ * Человека в этом наборе нет намеренно — он единственный, кого читать пакетом нельзя: должность,
+ * табельный номер и годность удостоверения разрешаются **на дату листа** (`findMachinist`), и
+ * внутри длинной заявки должность меняется. Он и читается по ключу `(personId, период.from)`.
+ */
+interface Esm2SnapshotSources {
+  /** Организации-владельцы машин разреза: у заявки их бывает несколько — по одной на машину. */
+  organizations: ReadonlyMap<
+    string,
+    { name: string; address: string; phone: string; okpo: string; ogrn: string }
+  >;
+  /** Машины разреза: после Р5 в одном плане их законно две и больше. */
+  vehicles: ReadonlyMap<
+    string,
+    {
+      registrationNumber: string | null;
+      garageNumber: string | null;
+      inventoryNumber: string | null;
+      modelName: string | null;
+    }
+  >;
+  /** Объект заявки: наименование, адрес и код затрат. `null` — заявки нет (защитная форма). */
+  request: {
+    objectCode: string | null;
+    objectName: string | null;
+    objectAddress: string | null;
+  } | null;
+  /** Заказчик бланков — генподрядчик из настройки портала (миграция 0164), один на все листы. */
+  customer: Awaited<ReturnType<typeof loadWaybillCustomer>>;
+}
+
+/** Прочитать общие реквизиты плана: по одному запросу на справочник, а не на лист. */
+async function loadSnapshotSources(
+  reader: Reader,
   params: {
     requestId: string;
-    vehicleId: string;
-    /**
-     * Машинист, уже прочитанный выпиской (Р22), а не идентификатор под второе чтение: из этой же
-     * записи посчитаны предупреждения о его документах (Р21а), и второй `SELECT` за тем же
-     * человеком означал бы, что подтверждают одно, а печатают другое.
-     *
-     * Пустым он здесь не бывает (ADR 0164): человека без карточки общая точка выпуска не пропускает
-     * вовсе, а специализация печати имени больше не решает. Тип обязателен именно поэтому — снимок
-     * не должен уметь выразить бланк с пустой графой ФИО.
-     */
-    machinist: MachinistOption;
-    organizationId: string;
-    period: Esm2Period;
-    number: string;
-    seriesPrefix: string;
+    vehicleIds: readonly string[];
+    organizationIds: readonly string[];
   },
-): Promise<Record<WaybillSnapshotKey, string>> {
-  const [org] = await tx
-    .select({
-      name: organizations.name,
-      address: organizations.address,
-      phone: organizations.phone,
-      okpo: organizations.okpo,
-      ogrn: organizations.ogrn,
-    })
-    .from(organizations)
-    .where(eq(organizations.id, params.organizationId));
+): Promise<Esm2SnapshotSources> {
+  const organizations_ = new Map<
+    string,
+    { name: string; address: string; phone: string; okpo: string; ogrn: string }
+  >();
+  if (params.organizationIds.length > 0) {
+    const rows = await reader
+      .select({
+        id: organizations.id,
+        name: organizations.name,
+        address: organizations.address,
+        phone: organizations.phone,
+        okpo: organizations.okpo,
+        ogrn: organizations.ogrn,
+      })
+      .from(organizations)
+      .where(inArray(organizations.id, [...params.organizationIds]));
+    for (const row of rows) {
+      organizations_.set(row.id, {
+        name: row.name,
+        address: row.address,
+        phone: row.phone,
+        okpo: row.okpo,
+        ogrn: row.ogrn,
+      });
+    }
+  }
 
-  const [vehicle] = await tx
-    .select({
-      registrationNumber: vehicles.registrationNumber,
-      garageNumber: vehicles.garageNumber,
-      inventoryNumber: vehicles.inventoryNumber,
-      modelName: vehicleModels.name,
-    })
-    .from(vehicles)
-    .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
-    .where(eq(vehicles.id, params.vehicleId));
+  const vehicles_ = new Map<
+    string,
+    {
+      registrationNumber: string | null;
+      garageNumber: string | null;
+      inventoryNumber: string | null;
+      modelName: string | null;
+    }
+  >();
+  if (params.vehicleIds.length > 0) {
+    const rows = await reader
+      .select({
+        id: vehicles.id,
+        registrationNumber: vehicles.registrationNumber,
+        garageNumber: vehicles.garageNumber,
+        inventoryNumber: vehicles.inventoryNumber,
+        modelName: vehicleModels.name,
+      })
+      .from(vehicles)
+      .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
+      .where(inArray(vehicles.id, [...params.vehicleIds]));
+    for (const row of rows) {
+      vehicles_.set(row.id, {
+        registrationNumber: row.registrationNumber,
+        garageNumber: row.garageNumber,
+        inventoryNumber: row.inventoryNumber,
+        modelName: row.modelName,
+      });
+    }
+  }
 
   /*
    * Объект заявки: наименование, адрес и код затрат. Заказчиком он больше не печатается — графа
    * «Заказчик» просит генподрядчика, и его даёт настройка портала, — а печатается шапкой графы
    * работ (`object_line`) на обеих сторонах бланка.
    *
-   * Телефон ответственного за встречу машины отсюда ушёл вовсе: по решению заказчика (§4 плана) в
-   * графе «Заказчик» стоит телефон заказчика, а не площадки. Контакт при этом никуда не делся —
-   * он остаётся в заявке и в кабинете водителя (ADR 0122), где его и смотрят перед выездом; с
-   * бумаги ушла только запись, которую всё равно читал не тот, кто звонит.
+   * Телефон ответственного за встречу машины отсюда ушёл вовсе: по решению заказчика в графе
+   * «Заказчик» стоит телефон заказчика, а не площадки. Контакт при этом никуда не делся — он
+   * остаётся в заявке и в кабинете водителя (ADR 0122), где его и смотрят перед выездом.
    *
    * Заказчик заявки здесь всегда объект: заказать технику на площадку отдел не может (ADR 0040).
    */
-  const [request] = await tx
+  const [request] = await reader
     .select({
       objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
@@ -314,8 +402,43 @@ async function collectSnapshot(
     .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
     .where(eq(vehicleRequests.id, params.requestId));
 
-  const customer = await loadWaybillCustomer(tx);
+  return {
+    organizations: organizations_,
+    vehicles: vehicles_,
+    request: request ?? null,
+    customer: await loadWaybillCustomer(reader),
+  };
+}
 
+/**
+ * Черновик снимка одного листа — чистой сборкой над уже прочитанными реквизитами.
+ *
+ * Чтений здесь нет ни одного, и это условие, а не стиль: снимок обязан относиться к **одному**
+ * состоянию справочников — тому, из которого посчитаны предупреждения (Р21а). Читай сборка сама,
+ * между двумя чтениями одной транзакции легла бы чужая правка карточки, и человек подтвердил бы
+ * одно, а напечаталось другое.
+ */
+function sheetSnapshotDraftOf(
+  sources: Esm2SnapshotSources,
+  params: {
+    vehicleId: string;
+    organizationId: string;
+    /**
+     * Машинист, уже прочитанный планом (Р22), а не идентификатор под второе чтение: из этой же
+     * записи посчитаны предупреждения о его документах (Р21а), и второй `SELECT` за тем же
+     * человеком означал бы, что подтверждают одно, а печатают другое.
+     *
+     * Пустым он здесь не бывает (ADR 0164): человека без карточки общая точка выпуска не пропускает
+     * вовсе, а специализация печати имени больше не решает. Тип обязателен именно поэтому — снимок
+     * не должен уметь выразить бланк с пустой графой ФИО.
+     */
+    machinist: MachinistOption;
+    period: Esm2Period;
+  },
+): Esm2SheetSnapshotDraft {
+  const org = sources.organizations.get(params.organizationId);
+  const vehicle = sources.vehicles.get(params.vehicleId);
+  const { request, customer } = sources;
   // Машинист — снимком, как и всё остальное: человека переведут, а лист остаётся с тем, кто
   // работал. Документ выбран по должности и на начало недели: она и есть дата листа, а годность
   // проверяется на неё же — лист выписывается вперёд, и «годен сегодня» тут ничего не значит.
@@ -350,8 +473,6 @@ async function collectSnapshot(
     org_okpo: org?.okpo ?? '',
     org_ogrn: org?.ogrn ?? '',
 
-    waybill_series: params.seriesPrefix,
-    waybill_number: params.number,
     // Дата составления — первый рабочий день недели: с него лист и начинают вести. Вид у неё
     // общий с 4-П (`formatWaybillDate`): второй расчёт того же «дд.мм.гггг» разошёлся бы с первым.
     // Три клетки бланка рядом — та же дата, разобранная по графам «дата составления».
@@ -448,19 +569,39 @@ async function collectSnapshot(
     task4_contacts: '',
 
     ...dayValues,
-  } as Record<WaybillSnapshotKey, string>;
+  } as Esm2SheetSnapshotDraft;
+}
+
+/**
+ * Дописать в черновик ровно две графы, рождающиеся при выписке (§7): серию и печатный номер.
+ *
+ * Одна функция на весь портал и ни одного места, где эти графы заполняются иначе. Имена полей у
+ * входа названы по смыслу (`seriesPrefix`, `displayNumber`), а не взяты у `IssuedNumber` как есть:
+ * там рядом живут числовой `number`, печатный `display` и `prefix`, и безымянная пара
+ * `{ series, number }` — прямой путь положить в графу строгого бланка счётчик вместо номера,
+ * который на нём напечатан.
+ */
+export function finishSheetSnapshot(
+  draft: Esm2SheetSnapshotDraft,
+  number: { seriesPrefix: string; displayNumber: string },
+): Record<WaybillSnapshotKey, string> {
+  return {
+    ...draft,
+    waybill_series: number.seriesPrefix,
+    waybill_number: number.displayNumber,
+  };
 }
 
 /** Организация, от чьего имени выписывается лист: та, за которой числится машина, иначе основная. */
-async function resolveOrganization(tx: Tx, vehicleId: string): Promise<string> {
-  const [own] = await tx
+async function resolveOrganization(reader: Reader, vehicleId: string): Promise<string> {
+  const [own] = await reader
     .select({ id: organizations.id })
     .from(vehicles)
     .innerJoin(organizations, eq(organizations.id, vehicles.ownerOrganizationId))
     .where(eq(vehicles.id, vehicleId));
   if (own) return own.id;
 
-  const [primary] = await tx
+  const [primary] = await reader
     .select({ id: organizations.id })
     .from(organizations)
     .where(and(eq(organizations.isPrimary, true), eq(organizations.isActive, true)));
@@ -496,11 +637,29 @@ export interface IssuedEsm2 {
  *     подтвердить бумагу, которую он не заказывал.
  *
  * Молчания это второй двери не оставляет. Лист сверки с полным комплектом получает `clean` —
- * «проверено, предупреждений не было», — а с пробелами остаётся при умолчании колонки
- * (`not_checked`), которое ровно это и означает: «выдан мимо рукопожатия». Записать туда `clean`
- * было бы неправдой, а третьего значения у колонки нет (миграция 0136).
+ * «проверено, предупреждений не было». С пробелами ответов два, и разница в том, спрашивал ли
+ * кто-то подпись: команда истории спрашивает её шагом 8 по каждому листу (Б4) и передаёт принятый
+ * отпечаток сюда — такой лист помнит `acknowledged` вместе с набором; у сверки, пришедшей без
+ * рукопожатия, остаётся умолчание колонки (`not_checked`), которое ровно это и означает — «выдан
+ * мимо рукопожатия». Записать туда `clean` было бы неправдой, а четвёртого значения у колонки нет
+ * (миграция 0136).
  */
-type Esm2Requester = { by: 'human'; acknowledge: { fingerprint: string } | null } | { by: 'sync' };
+type Esm2Requester =
+  | { by: 'human'; acknowledge: { fingerprint: string } | null }
+  | {
+      by: 'sync';
+      /**
+       * Отпечаток, который человек подтвердил **у двери** (Б4): шаг 8 команды спросил рукопожатие
+       * по этому листу и принял его.
+       *
+       * Без него лист с предупреждениями оставался бы при умолчании колонки (`not_checked`), то
+       * есть портал забывал бы подпись, которую только что получил, — а `not_checked` читается как
+       * «выдан мимо рукопожатия». Совпал отпечаток с набором — лист помнит и подпись, и то, под
+       * чем она дана; не совпал (или его нет) — прежнее умолчание, потому что подтверждали тогда
+       * не этот набор.
+       */
+      acknowledged?: string | undefined;
+    };
 
 /**
  * Предупреждения выписки недельного листа (Р21) — у ЭСМ-2 их ровно одно возможное.
@@ -521,28 +680,24 @@ type Esm2Requester = { by: 'human'; acknowledge: { fingerprint: string } | null 
  * экскаватора или погрузчика, допущенный удостоверением тракториста-машиниста (ADR 0095). Назвав
  * его «ВУ», портал отправил бы человека искать не ту бумагу.
  */
-async function esm2IssueWarnings(
-  tx: Tx,
+function esm2IssueWarningsOf(
   machinist: MachinistOption,
-  /** Начало недели: на него выбран документ и на него же считается его годность. */
-  on: string,
-): Promise<WaybillWarning[]> {
-  /*
-   * СНИЛС — единственное, чего в прочитанном машинисте нет: графы под него в бланке ЭСМ-2 не
-   * существует, и `findMachinist` его намеренно не читает (реквизит 4-П, приказ Минтранса № 390).
-   * Здесь он спрашивается, потому что комплект документов у человека один на весь портал: свой,
-   * «без СНИЛСа», счёт пробелов разошёлся бы с карточкой водителя и со списком выбора — там человек
-   * числился бы неполным, а в выписке полным.
+  /**
+   * СНИЛС человека — прочитанный снаружи, а не здесь.
+   *
+   * Графы под него в бланке ЭСМ-2 не существует, и `findMachinist` его намеренно не читает
+   * (реквизит 4-П, приказ Минтранса № 390). В счёт пробелов он всё равно входит: комплект
+   * документов у человека один на весь портал, и свой, «без СНИЛСа», счёт разошёлся бы с карточкой
+   * водителя и со списком выбора — там человек числился бы неполным, а в выписке полным.
    *
    * Цена решения названа вслух: формулировка «эти графы останутся пустыми» для СНИЛСа в ЭСМ-2
    * неточна — пустой останется не графа бланка, а строка справочника. Чинится это правкой одного
    * текста в контрактах; вторая ветка правил о комплекте разъезжалась бы молча и навсегда.
    */
-  const [person] = await tx
-    .select({ snils: persons.snils })
-    .from(persons)
-    .where(eq(persons.id, machinist.personId));
-
+  snils: string,
+  /** Начало недели: на него выбран документ и на него же считается его годность. */
+  on: string,
+): WaybillWarning[] {
   /*
    * Удостоверения перечитывать нечем и незачем: `findMachinist` уже выбрал то единственное, которым
    * человек допущен по должности и которое годно на начало недели (`waybillDocumentOf`), и
@@ -552,7 +707,7 @@ async function esm2IssueWarnings(
    */
   const gaps = driverDocumentGaps(
     {
-      snils: person?.snils ?? '',
+      snils,
       jobTitle: machinist.jobTitle,
       licenses: machinist.license ? [machinist.license] : [],
     },
@@ -573,31 +728,210 @@ async function esm2IssueWarnings(
   ];
 }
 
+// ── Снимок и предупреждения листа: считаются при построении плана (§7) ──
+
+/** Выпускаемый лист, каким его называет план: ключ и состав — больше сборке ничего не нужно. */
+export interface Esm2PlannedIssue {
+  /** Стабильный ключ плана (`issueKey`): им лист адресуют и предпросмотр, и рукопожатие, и граф. */
+  issueKey: number;
+  period: Esm2Period;
+  vehicleId: string;
+  driverPersonId: string;
+}
+
+/**
+ * Всё, что о выпускаемом листе посчитано **до** первой записи: снимок бланка и предупреждения.
+ *
+ * ЗАЧЕМ ЭТО ВООБЩЕ ОТДЕЛЬНАЯ ВЕЩЬ. Прежде и снимок, и предупреждения считались в момент выписки —
+ * внутри транзакции, уже после того, как человек нажал «выполнить». Следствий было два, и оба
+ * дорогие: предпросмотр не мог показать ни одного предупреждения (окно отдавало пустой `issues`), а
+ * рукопожатие по каждому листу (Б4) требовать было не с чего — подтверждать нечего, пока набор не
+ * посчитан. Теперь оба считаются один раз, при построении плана, и приходят в предпросмотр вместе с
+ * ним; выписка их **не пересчитывает**, а берёт готовыми.
+ *
+ * ПОЧЕМУ НЕ ДВА РАЗА, А ОДИН. Второй расчёт того же правила не виден вслух: обе копии зелёные, обе
+ * «верные», — а проявляется расхождение тем, что человек подтвердил один набор, а в бланк строгой
+ * отчётности лёг другой. Поэтому исполнитель плана готовых записей **требует** и, не найдя, падает
+ * внутренней ошибкой, а не считает сам.
+ *
+ * `machinist === null` — карточки человека в справочнике нет вовсе. Отказом это становится при
+ * выписке (там же, где и раньше, и теми же словами), а не при планировании: предпросмотр обязан
+ * **показать** последствия, а не ответить отказом вместо плана.
+ */
+export type Esm2IssuePreparation = Esm2PlannedIssue & {
+  /** Предупреждения этого листа — состоянием справочников на момент планирования. */
+  warnings: WaybillWarning[];
+  /**
+   * Отпечаток набора — `sha256` от каноникализованных **фактов** (Р21).
+   *
+   * Он же уходит в предпросмотр и возвращается в `acknowledgements[issueKey]`. Считается с фактов,
+   * а не с текста: подтверждает человек положение дел, а не формулировку на экране, — но меняются
+   * факты, и рукопожатие перестаёт годиться, потому что подтверждало бы вчерашнее.
+   */
+  warningFingerprint: string;
+} & (
+    | { machinist: MachinistOption; organizationId: string; snapshotDraft: Esm2SheetSnapshotDraft }
+    | { machinist: null; organizationId: null; snapshotDraft: null }
+  );
+
+/** Готовые листы плана по ключу: так их носят предпросмотр, отпечаток и исполнение. */
+export type Esm2IssuePreparations = ReadonlyMap<number, Esm2IssuePreparation>;
+
+/** Пустой набор: план без выписок готовить нечего, а форму ответа это не меняет. */
+export const NO_ESM2_ISSUES: Esm2IssuePreparations = new Map();
+
+/**
+ * Посчитать снимок бланка и предупреждения для всех выпускаемых листов плана — **один раз**.
+ *
+ * ЧТО ЧИТАЕТСЯ ПАКЕТОМ, А ЧТО ПО ДАТЕ. Заявка с объектом, заказчик бланков, машины и организации от
+ * даты листа не зависят вовсе — они читаются по разу на план ({@link loadSnapshotSources}). Человек
+ * читается по ключу `(personId, период.from)`: `findMachinist` разрешает на дату листа должность,
+ * табельный номер и годность удостоверения, а должность внутри длинной заявки меняется
+ * ([drivers.ts](./drivers.ts)) — один «сегодняшний» ответ на все недели дал бы листам не тот вид
+ * документа. Повторный ключ второй раз не читается: у длинной заявки он повторяется постоянно.
+ *
+ * ПРАВИЛО ЗДЕСЬ ОДНО НА ВЕСЬ ПОРТАЛ. Этой же функцией готовит свои листы и недельная сверка, и
+ * ручная выписка по требованию: моменты у них разные (у ручной плана нет вовсе — она просит бланк
+ * сейчас), а правило «что считается предупреждением и что ложится в графы» обязано быть общим.
+ * Две редакции этого правила разошлись бы молча — одна отвечала бы 409, вторая писала бы `clean`.
+ *
+ * ЧТО ЭТО НЕ ПРОВЕРЯЕТ. Права, область сверки и допустимость самой выписки — дело вызывающего: сюда
+ * приходит уже посчитанный план, и второе мнение о нём было бы вторым расчётом.
+ */
+export async function prepareEsm2Issues(
+  reader: Reader,
+  params: { requestId: string; issues: readonly Esm2PlannedIssue[] },
+): Promise<Map<number, Esm2IssuePreparation>> {
+  const prepared = new Map<number, Esm2IssuePreparation>();
+  if (params.issues.length === 0) return prepared;
+
+  /*
+   * Машинисты по ключу `(personId, дата листа)`. Снятая карточка читается всегда: решение по ней
+   * принимает выписка и по-разному для двух входов, а отказ, не знающий ни ФИО, ни того, снята
+   * карточка или человека не было вовсе, человеку ничего не объясняет.
+   */
+  const machinists = new Map<string, MachinistOption | null>();
+  for (const issue of params.issues) {
+    const key = `${issue.driverPersonId}|${issue.period.from}`;
+    if (machinists.has(key)) continue;
+    /*
+     * Человека у листа может не быть названо вовсе — так предпросмотр старой двери показывает
+     * неделю, которой сверка ещё не нашла машиниста. Спрашивать о нём справочник нечем (пустая
+     * строка — не идентификатор), и отвечать здесь надо тем же, чем и на отсутствующую карточку:
+     * лист не готов, а отказывает выписка — там, где ей есть что сказать человеку.
+     */
+    machinists.set(
+      key,
+      issue.driverPersonId === ''
+        ? null
+        : await findMachinist(reader, issue.driverPersonId, issue.period.from, {
+            includeDeleted: true,
+          }),
+    );
+  }
+
+  // СНИЛС всех людей плана — одним чтением: реквизит от даты не зависит, а запрос на каждый лист у
+  // длинной заявки повторял бы одну и ту же строку десятки раз.
+  const personIds = [
+    ...new Set(params.issues.map((issue) => issue.driverPersonId).filter((id) => id !== '')),
+  ];
+  const snilsById = new Map<string, string>();
+  if (personIds.length > 0) {
+    const personRows = await reader
+      .select({ id: persons.id, snils: persons.snils })
+      .from(persons)
+      .where(inArray(persons.id, personIds));
+    for (const row of personRows) snilsById.set(row.id, row.snils);
+  }
+
+  /*
+   * Организация листа — та, за которой числится машина (иначе основная). Считается по машине, а не
+   * по листу: машин в плане после разреза бывает несколько, а заявка у них одна.
+   */
+  const vehicleIds = [...new Set(params.issues.map((issue) => issue.vehicleId))];
+  const organizationByVehicle = new Map<string, string>();
+  for (const vehicleId of vehicleIds) {
+    organizationByVehicle.set(vehicleId, await resolveOrganization(reader, vehicleId));
+  }
+
+  const sources = await loadSnapshotSources(reader, {
+    requestId: params.requestId,
+    vehicleIds,
+    organizationIds: [...new Set(organizationByVehicle.values())],
+  });
+
+  for (const issue of params.issues) {
+    const machinist = machinists.get(`${issue.driverPersonId}|${issue.period.from}`) ?? null;
+    if (!machinist) {
+      /*
+       * Человека нет в справочнике — предупреждать не о ком, и выдумывать предупреждение здесь
+       * нельзя: это не «неполный комплект документов», а отсутствие карточки, и ответ на него —
+       * отказ выписки, а не подпись человека под набором.
+       */
+      prepared.set(issue.issueKey, {
+        ...issue,
+        machinist: null,
+        organizationId: null,
+        snapshotDraft: null,
+        warnings: [],
+        warningFingerprint: warningsFingerprint([]),
+      });
+      continue;
+    }
+    const organizationId = organizationByVehicle.get(issue.vehicleId)!;
+    const warnings = esm2IssueWarningsOf(
+      machinist,
+      snilsById.get(issue.driverPersonId) ?? '',
+      issue.period.from,
+    );
+    prepared.set(issue.issueKey, {
+      ...issue,
+      machinist,
+      organizationId,
+      snapshotDraft: sheetSnapshotDraftOf(sources, {
+        vehicleId: issue.vehicleId,
+        organizationId,
+        machinist,
+        period: issue.period,
+      }),
+      warnings,
+      warningFingerprint: warningsFingerprint(warnings),
+    });
+  }
+  return prepared;
+}
+
 /**
  * Что записать в `issue_warnings` этого листа — и выписывать ли его вообще (Р21а).
  *
  * `null` означает «оставить умолчание колонки» и бывает ровно в одном случае: бумагу никто не
  * просил (её переписала сверка), а предупреждения при этом есть. Подробности — у `Esm2Requester`.
+ *
+ * Набор приходит **готовым** — тем самым, который посчитан при построении плана и показан
+ * человеку. Пересчитать его здесь значило бы завести вторую копию правила ровно в том месте, где
+ * расхождение не видно вслух: подтвердили один набор, записали другой.
  */
-async function esm2IssueWarningsRecord(
-  tx: Tx,
-  params: {
-    requestId: string;
-    period: Esm2Period;
-    machinist: MachinistOption;
-    requester: Esm2Requester;
-  },
-): Promise<IssueWarningsRecord | null> {
-  /*
-   * Машинист здесь есть всегда (ADR 0164): человека без карточки общая точка выпуска отвергла до
-   * этого места — обоими входами сразу, а не только ручным. Прежде сверка доходила сюда с `null`,
-   * предупреждать было не о ком, и лист уходил в печать с пустой графой ФИО: дефект был известен и
-   * лечился не рукопожатием, а тем, что специализация перестала решать, печатать ли имя.
-   */
-  const warnings = await esm2IssueWarnings(tx, params.machinist, params.period.from);
-
+function esm2IssueWarningsRecord(params: {
+  requestId: string;
+  period: Esm2Period;
+  warnings: WaybillWarning[];
+  /** Отпечаток набора, посчитанный планом: второй его расчёт здесь был бы второй копией правила. */
+  warningFingerprint: string;
+  requester: Esm2Requester;
+}): IssueWarningsRecord | null {
+  const { warnings } = params;
   if (params.requester.by === 'sync') {
-    return warnings.length === 0 ? { schemaVersion: 1, status: 'clean' } : null;
+    if (warnings.length === 0) return { schemaVersion: 1, status: 'clean' };
+    if (params.requester.acknowledged === params.warningFingerprint) {
+      return {
+        schemaVersion: 1,
+        status: 'acknowledged',
+        fingerprint: params.warningFingerprint,
+        // Список целиком, с сообщениями: через полгода разбираться будут по нему, а не по кодам.
+        warnings,
+      };
+    }
+    return null;
   }
   return acknowledgeOrThrow({
     warnings,
@@ -628,25 +962,22 @@ async function issueEsm2Waybill(
   tx: Tx,
   params: {
     requestId: string;
-    vehicleId: string;
-    driverPersonId: string;
-    period: Esm2Period;
     actorId: string;
+    /**
+     * Лист, посчитанный планом: состав, снимок бланка и предупреждения — всё готовым.
+     *
+     * Здесь не пересчитывается ничего, и это главное правило места (§7): и графы, и предупреждения
+     * взяты из **одного** состояния справочников — того, которое человек видел предпросмотром и
+     * подтвердил рукопожатием. Посчитай выписка их заново, между двумя расчётами легла бы чужая
+     * правка карточки, и в бланк строгой отчётности лёг бы набор, которого никто не подтверждал.
+     */
+    prepared: Esm2IssuePreparation;
     /** Кто просит бланк: им решается, спрашивать ли рукопожатие. */
     requester: Esm2Requester;
   },
 ): Promise<IssuedEsm2> {
-  /*
-   * Машинист читается один раз и до номера (Р22): из этой записи считаются и предупреждения о его
-   * документах, и графы бланка. Двумя чтениями одной транзакции подтверждали бы одно, а печатали
-   * другое — между ними лежит чужая правка карточки.
-   */
-  const machinist = await findMachinist(tx, params.driverPersonId, params.period.from, {
-    // Снятую карточку читаем всегда — решение по ней принимается ниже и по-разному для двух
-    // входов. Иначе отказ не может назвать даже того, о ком он: `null` не помнит ни ФИО, ни того,
-    // удалён человек или его в справочнике не было вовсе.
-    includeDeleted: true,
-  });
+  const { prepared } = params;
+  const period = prepared.period;
 
   /*
    * Пустой графе ФИО здесь конец (ADR 0164). Прежде `null` означал «человек не числится водителем
@@ -659,17 +990,18 @@ async function issueEsm2Waybill(
    * насовсем портал не умеет. Но раз ответ здесь всё равно нужен, он говорит именно то, что видит.
    *
    * Проверка стоит в общей точке выпуска, а не в дверях: сверку зовут пять мест, и каждое из них
-   * рождает листы само — правило, написанное в одной двери, остальные обходили бы молча. Место
-   * выбрано до номера по той же причине, что и рукопожатие ниже: отказывать надо, пока бланк не
-   * израсходован.
+   * рождает листы само — правило, написанное в одной двери, остальные обходили бы молча. И стоит
+   * она **до** номера по той же причине, что и рукопожатие ниже: отказывать надо, пока бланк не
+   * израсходован. Отвечает она по готовой записи плана, а не своим чтением: план уже спрашивал
+   * справочник, и второй ответ на тот же вопрос мог бы разойтись с первым.
    */
-  if (!machinist) {
+  if (!prepared.machinist) {
     logger.error(
       {
         requestId: params.requestId,
-        vehicleId: params.vehicleId,
-        driverPersonId: params.driverPersonId,
-        period: params.period,
+        vehicleId: prepared.vehicleId,
+        driverPersonId: prepared.driverPersonId,
+        period,
         requester: params.requester.by,
       },
       'esm2: машиниста нет в persons — выписка отменена',
@@ -679,6 +1011,7 @@ async function issueEsm2Waybill(
       { driverPersonId: 'Выберите машиниста' },
     );
   }
+  const machinist = prepared.machinist;
 
   /*
    * Снятая карточка (правка ADR 0164 от 14.09.2026). Два входа отвечают на неё по-разному, и
@@ -708,9 +1041,9 @@ async function issueEsm2Waybill(
     logger.warn(
       {
         requestId: params.requestId,
-        vehicleId: params.vehicleId,
-        driverPersonId: params.driverPersonId,
-        period: params.period,
+        vehicleId: prepared.vehicleId,
+        driverPersonId: prepared.driverPersonId,
+        period,
       },
       'esm2: лист переоформлен на снятую карточку машиниста',
     );
@@ -722,26 +1055,24 @@ async function issueEsm2Waybill(
    * (`takeNextNumber`), но отказ после сожжённого номера человек прочитал бы как поломку, а журнал
    * учёта строгой отчётности — как утраченный бланк.
    */
-  const issueWarnings = await esm2IssueWarningsRecord(tx, {
+  const issueWarnings = esm2IssueWarningsRecord({
     requestId: params.requestId,
-    period: params.period,
-    machinist,
+    period,
+    warnings: prepared.warnings,
+    warningFingerprint: prepared.warningFingerprint,
     requester: params.requester,
   });
 
   const series = await findSeriesByCode(seriesCodeOfForm(FORM_CODE));
   if (!series) throw err.conflict('Не заведена серия путевых листов ЭСМ-2');
   const number = await takeNextNumber(tx, series.id);
-  const organizationId = await resolveOrganization(tx, params.vehicleId);
+  const organizationId = prepared.organizationId;
 
-  const data = await collectSnapshot(tx, {
-    requestId: params.requestId,
-    vehicleId: params.vehicleId,
-    machinist,
-    organizationId,
-    period: params.period,
-    number: number.display,
+  // Снимок достраивается, а не собирается: план посчитал все графы, кроме двух, которых до
+  // расхода номера не существовало вовсе (§7).
+  const data = finishSheetSnapshot(prepared.snapshotDraft, {
     seriesPrefix: number.prefix,
+    displayNumber: number.display,
   });
 
   const [created] = await tx
@@ -754,12 +1085,12 @@ async function issueEsm2Waybill(
       // Рейса у недели работы на площадке нет — есть заявка и период (миграция 0087).
       routeId: null,
       sourceRequestId: params.requestId,
-      periodFrom: params.period.from,
-      periodTo: params.period.to,
+      periodFrom: period.from,
+      periodTo: period.to,
       // Дата листа — первый рабочий день недели: журнал, индексы и сортировки работают без правок.
-      issuedForDate: params.period.from,
-      vehicleId: params.vehicleId,
-      driverPersonId: params.driverPersonId,
+      issuedForDate: period.from,
+      vehicleId: prepared.vehicleId,
+      driverPersonId: prepared.driverPersonId,
       garageNumber: data.vehicle_garage_number,
       data,
       /*
@@ -782,7 +1113,7 @@ async function issueEsm2Waybill(
     .insert(waybillRequests)
     .values({ waybillId: created!.id, requestId: params.requestId, slot: 1 });
 
-  return { id: created!.id, number: number.display, period: params.period };
+  return { id: created!.id, number: number.display, period };
 }
 
 // ── Исполнитель плана и единственный владелец строгого события (§7, §8 шаг 12) ──
@@ -829,6 +1160,25 @@ export type Esm2ExecutionContext = {
   actorUserId: string;
   /** Причина сверки: ложится в `cancel_reason`, `correction_reason` и в текст события. */
   syncReason: string;
+  /**
+   * Готовые листы плана по `issueKey`: снимок бланка и предупреждения, посчитанные при построении
+   * плана ({@link prepareEsm2Issues}).
+   *
+   * Обязательное поле, а не необязательное с расчётом «на месте, если не дали». Необязательность
+   * здесь означала бы тихую вторую копию правила: дверь, забывшая передать готовое, получила бы
+   * рабочую выписку — и рабочую ровно до того дня, когда справочник изменится между предпросмотром
+   * и нажатием. Не найдя ключа, исполнитель падает внутренней ошибкой (см. {@link applyEsm2SyncPlan}).
+   */
+  issues: Esm2IssuePreparations;
+  /**
+   * Рукопожатия, **принятые шагом 8** двери: `issueKey` десятичной строкой → отпечаток набора.
+   *
+   * Здесь они не проверяются заново (это работа двери, у которой на руках тело запроса) и ничего
+   * не разрешают: их единственное дело — чтобы выписанный лист помнил подпись, под которой вышел
+   * (Р21). Не совпал отпечаток с посчитанным набором — колонка остаётся при умолчании, как и
+   * прежде: подтверждали тогда не этот набор.
+   */
+  acknowledgements?: Readonly<Record<string, string>> | undefined;
 } & Esm2ExecutionMode;
 
 /**
@@ -1026,16 +1376,40 @@ async function applyEsm2SyncPlan(
 
   const issued: Esm2ApplyResult['issued'] = [];
   for (const item of plan.issue) {
+    /*
+     * Готовая запись плана — по ключу, и её отсутствие это внутренняя ошибка, а не повод посчитать
+     * снимок здесь. Посчитай мы его сейчас, выписка молча разошлась бы с тем, что человек видел и
+     * подтвердил: между планом и исполнением лежит и время, и чужая правка справочника.
+     *
+     * Сверяется заодно и состав: ключ — индекс в отсортированном плане, и запись, посчитанная для
+     * другого листа, означала бы бланк, выписанный не на того человека и не на ту машину.
+     */
+    const prepared = context.issues.get(item.issueKey);
+    if (
+      !prepared ||
+      prepared.vehicleId !== item.vehicleId ||
+      prepared.driverPersonId !== item.driverPersonId ||
+      prepared.period.from !== item.period.from ||
+      prepared.period.to !== item.period.to
+    ) {
+      throw new Error(
+        `Исполнение ЭСМ-2 без посчитанного листа (issueKey ${item.issueKey}): снимок бланка и предупреждения считает план, а не выписка`,
+      );
+    }
     const created = await issueEsm2Waybill(tx, {
       requestId: context.requestId,
-      vehicleId: item.vehicleId,
-      driverPersonId: item.driverPersonId,
-      period: item.period,
       actorId: context.actorUserId,
-      // Рукопожатия у сверки нет и быть не может: бумага здесь — следствие решения по заявке, а не
-      // просьба о бланке (`Esm2Requester`). Предупреждения при этом считаются наравне с ручной
-      // выдачей — ими лист и получает свой `clean` вместо умолчания «не проверяли».
-      requester: { by: 'sync' },
+      prepared,
+      /*
+       * Просителя у сверки нет и быть не может: бумага здесь — следствие решения по заявке, а не
+       * просьба о бланке (`Esm2Requester`), и 409 в ответ на смену срока означал бы «заявку нельзя
+       * вести, пока кадры не дозаполнят карточку» — ровно обратное ADR 0064.
+       *
+       * Подпись человека при этом не теряется: рукопожатие по этому листу спросила **дверь** (шаг
+       * 8, Б4), и принятый ею отпечаток лист записывает в свою колонку. Раньше такой лист уходил с
+       * умолчанием «не проверяли» даже тогда, когда человек только что всё подтвердил.
+       */
+      requester: { by: 'sync', acknowledged: context.acknowledgements?.[String(item.issueKey)] },
     });
     if (context.kind !== 'ordinary') {
       /*
@@ -1504,6 +1878,17 @@ export async function syncEsm2Waybills(
     actorUserId: params.actor.id,
     syncReason: params.reason,
     /*
+     * Снимок бланка и предупреждения — той же функцией, какой их считают двери истории, и по тому
+     * же плану, который сейчас исполняется. Свой момент у недельной сверки только потому, что
+     * своего предпросмотра у неё нет вовсе: план она строит и исполняет одной работой, и разойтись
+     * им негде. Правило же одно на оба пути — вторая его редакция ответила бы на тот же набор
+     * иначе, и увидеть это было бы не по чему.
+     */
+    issues: await prepareEsm2Issues(tx, {
+      requestId: params.requestId,
+      issues: scoped.issue,
+    }),
+    /*
      * Режим исполнения. Недельная сверка неприкосновенность прошлого снимает целиком (у неё это
      * один ключ — `correction`), поэтому непустая ветвь у неё одна — `backdate`: и связь листов с
      * операцией, и `allowPast`, и названные листы приходят вместе. Разделение `operation` и
@@ -1919,14 +2304,31 @@ export async function issueEsm2OnDemand(
    * у человека одна — «нужен лист за эту неделю», — и оставить её наполовину исполненной значило бы
    * выдать документ на август и промолчать про сентябрь.
    */
-  const issued: IssuedEsm2[] = [];
-  for (const period of periods) {
-    const sheet = await issueEsm2Waybill(tx, {
-      requestId: params.requestId,
+  /*
+   * Снимок и предупреждения — тем же расчётом, что и у плановой бумаги, но **своим моментом**: у
+   * ручной выписки плана нет вовсе (§7). Человек просит бланк сейчас, подтверждает собственный
+   * набор и получает его тут же — подтверждать ему нечего, кроме этого расчёта. Общей остаётся
+   * функция: своя редакция правила разошлась бы с плановой ровно в том, что считать пробелом.
+   *
+   * Ключом листа здесь служит порядковый номер в наборе недели: у переходной недели бланков два
+   * (ADR 0142), и различать их надо так же, как их различает план.
+   */
+  const prepared = await prepareEsm2Issues(tx, {
+    requestId: params.requestId,
+    issues: periods.map((period, issueKey) => ({
+      issueKey,
+      period,
       vehicleId: params.vehicleId,
       driverPersonId: params.driverPersonId,
-      period,
+    })),
+  });
+
+  const issued: IssuedEsm2[] = [];
+  for (const issueKey of periods.keys()) {
+    const sheet = await issueEsm2Waybill(tx, {
+      requestId: params.requestId,
       actorId: params.actor.id,
+      prepared: prepared.get(issueKey)!,
       // Бланк просит человек — значит с него и спрашивается рукопожатие (Р21а). Отпечаток
       // проверяет общая точка выпуска, а не эта ручка: пропущенный путь записал бы в свежий лист
       // `not_checked`.

@@ -572,6 +572,16 @@ export const assignmentVehicleCorrectionSchema = z
     previewFingerprint: assignmentFingerprintSchema.optional(),
     /** Отпечаток серверного множества листов под разблокировку; спрашивается при исходе `crew`. */
     unlockFingerprint: assignmentFingerprintSchema.optional(),
+    /**
+     * Подтверждения предупреждений — по одному на выпускаемый лист с непустым набором (Б4).
+     *
+     * У этой двери они нужны ровно затем же, зачем у соседних: после переключения чтения коррекция
+     * переоформляет задетые отрезки сама, и бланк с пробелами в документах машиниста человек
+     * обязан подтвердить по каждому листу отдельно. Схема объявлена `.strict()` — без этого поля
+     * подтверждение отвергалось бы валидацией **до** обработчика, то есть окно не смогло бы его
+     * прислать вовсе.
+     */
+    acknowledgements: assignmentAcknowledgementsSchema.optional(),
     /** Envelope журнала; спрашивает его `operationOutcome`, а не календарь (Р32). */
     operation: operationInputSchema.optional(),
   })

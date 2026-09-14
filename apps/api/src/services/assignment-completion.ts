@@ -55,7 +55,12 @@ import type { AssignmentTerm } from './assignment-history';
 // функция хеширования, что у соседей: два отпечатка одного содержания обязаны совпадать.
 import { authorizeCrewCommand, authorizeCrewRepeat, fingerprintOf } from './assignment-crew';
 import { assertAssignmentBackstop } from './assignment-backstop';
-import { assignmentPaperExecution, paperFollowsHistory } from './assignment-paper';
+import type { AssignmentModeSnapshot } from './assignment-mode';
+import {
+  assertAssignmentIssueAcknowledgements,
+  assignmentPaperExecution,
+  paperFollowsHistory,
+} from './assignment-paper';
 // Общий расчёт изменения срока (Р18): гасимые группы, эффекты, бумага, разблокировки и — данными —
 // план линейных дней. Дверь закрытия его второй вызывающий после двери срока.
 import {
@@ -575,7 +580,12 @@ function assertNoActualEndDate(fact: CompletionFactInput): null {
  * (`requiresPreview` отвечает `false`), и молча принятое поле означало бы, что портал показал
  * человеку предпросмотр, которого у этой ветви нет.
  */
-export function assertCompletionHandshake(plan: CompletionPlan, input: CompletionApplyInput): void {
+export function assertCompletionHandshake(
+  plan: CompletionPlan,
+  input: CompletionApplyInput,
+  /** Режим чтения: им решается, требовать ли рукопожатия по листам (Б4, §10). */
+  mode: AssignmentModeSnapshot,
+): void {
   if (plan.branch === 'paperlessLessorCompletion') {
     const extra =
       input.previewFingerprint ??
@@ -626,6 +636,18 @@ export function assertCompletionHandshake(plan: CompletionPlan, input: Completio
       { requiredUnlocks: shorten.requiredUnlocks },
     );
   }
+
+  /*
+   * Рукопожатия по листам (Б4). Требуются там, где бумагу выпускает этот план: в `legacy` её
+   * переписывает недельная сверка, у которой просителя нет вовсе (ADR 0064). Присланное
+   * подтверждение проверяется в обоих режимах — принять и молча не посмотреть хуже, чем не
+   * спрашивать.
+   */
+  assertAssignmentIssueAcknowledgements({
+    issues: shorten.issues,
+    acknowledgements: input.acknowledgements,
+    required: paperFollowsHistory(mode),
+  });
 
   if (plan.clearedShiftsFingerprint === null) {
     if (input.clearedShiftsFingerprint !== undefined) {
@@ -764,7 +786,7 @@ export function completionCommandSpec(params: {
     requiresPreview: (planned) => planned.plan.branch !== 'paperlessLessorCompletion',
     asOf,
     plan: (ctx) => planCompletionCommand(ctx, input, actor),
-    handshake: (ctx) => assertCompletionHandshake(ctx.plan, input),
+    handshake: (ctx) => assertCompletionHandshake(ctx.plan, input, ctx.mode),
     authorize: (ctx) => authorizeCompletionCommand(actor, ctx),
     /*
      * Повтор (Р9 п. 4) выходит на шаге 2 — мимо `plan` и мимо `authorize`, — поэтому право на
@@ -778,7 +800,7 @@ export function completionCommandSpec(params: {
       authorizeCrewRepeat(actor, scope);
     },
     mutate: (ctx) => applyCompletion(ctx, actor),
-    syncPaper: (ctx) => syncCompletionPaper(ctx, actor),
+    syncPaper: (ctx) => syncCompletionPaper(ctx, actor, input.acknowledgements),
     payload: (ctx) => ({
       door: DOOR,
       branch: ctx.plan.branch,
@@ -962,6 +984,8 @@ async function applyCompletion(
 async function syncCompletionPaper(
   ctx: AssignmentPaperContext<CompletionPlan, CompletionApplied>,
   actor: Principal,
+  /** Рукопожатия, принятые шагом 8: ими лист помнит, под чем его подписали (Р21). */
+  acknowledgements?: Readonly<Record<string, string>> | undefined,
 ): Promise<CompletionPaper> {
   const { tx, plan, request } = ctx;
 
@@ -1024,6 +1048,9 @@ async function syncCompletionPaper(
               sheets: shorten.sheets,
               displayNumbers: shorten.sheetNumbers,
               unlockWaybillIds,
+              // Снимок бланка и предупреждения — посчитанные шагом 6 и подтверждённые человеком.
+              issues: shorten.issuePreparations,
+              acknowledgements,
             }),
           },
         }
@@ -1199,10 +1226,9 @@ export function completionPreviewDto(
     clearedShiftsFingerprint: plan.clearedShiftsFingerprint,
     requiredUnlocks: shorten?.requiredUnlocks ?? [],
     unlockFingerprint: shorten?.unlockFingerprint ?? null,
-    // Предупреждения выписки считает `esm2IssueWarnings` в момент выписки, и у недельной сверки
-    // просителя нет вовсе — подтверждать ей нечего. Пустой список здесь правда о сегодняшнем
-    // исполнителе, а не заглушка (та же граница у двери срока).
-    issues: [],
+    // Предупреждения по каждому выпускаемому листу — посчитанные вместе с планом (§7). Пусто у
+    // заказа без бумаги: там и выписок нет.
+    issues: shorten?.issues ?? [],
     operationRequirement: operationRequirementOf(effects),
     asOf,
     fingerprint,

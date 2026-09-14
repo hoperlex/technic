@@ -6,6 +6,7 @@ import {
   movedRequestDateKey,
   movedRequestStartKey,
   vehicleRequestLeadTimeBlocker,
+  type AssignmentIssueWarningsDto,
   type AssignmentPlanCancelDto,
   type AssignmentPlanIssueDto,
   type AssignmentUnlockDto,
@@ -58,11 +59,16 @@ import {
   type TermCancelGroup,
 } from './assignment-shorten-term';
 import type { DateRangeSet, Esm2ExistingSheet, Esm2SheetPlan } from './esm2-plan';
-import type { Esm2SyncResult } from './waybill-esm2';
+import type { Esm2IssuePreparations, Esm2SyncResult } from './waybill-esm2';
 // Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
 // провенансом (§10, Р32). Порядок работ шага 12 у этой двери свой и остаётся у общего сервиса
 // правки срока — сюда приходит только «что исполнять».
-import { assignmentPaperExecution, paperFollowsHistory } from './assignment-paper';
+import type { AssignmentModeSnapshot } from './assignment-mode';
+import {
+  assertAssignmentIssueAcknowledgements,
+  assignmentPaperExecution,
+  paperFollowsHistory,
+} from './assignment-paper';
 import { afterWorkPeriodChanged } from './vehicle-request-period';
 import type { LinearDaysSyncResult } from './vehicle-request-days';
 
@@ -160,6 +166,10 @@ export interface PeriodPlan {
   paperScope: DateRangeSet;
   /** Аннулируемые и выписываемые листы — так, как их показывает окно. */
   preview: { cancel: AssignmentPlanCancelDto[]; issue: AssignmentPlanIssueDto[] };
+  /** Предупреждения по каждому выпускаемому листу: по ним окно строит рукопожатия (Б4). */
+  issues: AssignmentIssueWarningsDto[];
+  /** Те же листы шагу 12 — снимком, который исполнение не пересчитывает (§7). */
+  issuePreparations: Esm2IssuePreparations;
   requiredUnlocks: AssignmentUnlockDto[];
   /** Отпечаток множества разблокировок; `null` — исход не `crew`, разблокировок не спрашивают (Д4). */
   unlockFingerprint: string | null;
@@ -313,6 +323,8 @@ export async function planPeriodCommand(
     cancelGroupsFingerprint: shorten.cancelGroupsFingerprint,
     paperScope: shorten.paperScope,
     preview: shorten.preview,
+    issues: shorten.issues,
+    issuePreparations: shorten.issuePreparations,
     requiredUnlocks: shorten.requiredUnlocks,
     unlockFingerprint: shorten.unlockFingerprint,
     esm2Mode: shorten.esm2Mode,
@@ -406,7 +418,24 @@ function commandCalendar(input: PeriodCommand): RequestCalendar {
  * 2. **отпечаток разблокировок** (Д4) — присутствие поля определяется исходом, а не желанием
  *    клиента: лишний отпечаток это не «лишнее поле», а заявка на право сжечь чужие номера.
  */
-export function assertPeriodHandshake(plan: PeriodPlan, input: PeriodApplyInput): void {
+export function assertPeriodHandshake(
+  plan: PeriodPlan,
+  input: PeriodApplyInput,
+  /**
+   * Режим чтения: им решается, требовать ли рукопожатия по листам (Б4).
+   *
+   * В `history` бумагу выпускает **этот** план, и предупреждения по каждому бланку человек
+   * подтверждает сам; в `legacy` листы переписывает недельная сверка, у которой просителя нет
+   * вовсе и которую неполный комплект документов не останавливает (ADR 0064). Присланное
+   * подтверждение проверяется в обоих режимах.
+   */
+  mode: AssignmentModeSnapshot,
+): void {
+  assertAssignmentIssueAcknowledgements({
+    issues: plan.issues,
+    acknowledgements: input.acknowledgements,
+    required: paperFollowsHistory(mode),
+  });
   if (plan.cancelGroupsFingerprint === null) {
     if (input.cancelGroupsFingerprint !== undefined) {
       throw err.unprocessable(
@@ -535,7 +564,7 @@ export function periodCommandSpec(params: {
     requiresPreview: () => true,
     asOf,
     plan: (ctx) => planPeriodCommand(ctx, input, actor),
-    handshake: (ctx) => assertPeriodHandshake(ctx.plan, input),
+    handshake: (ctx) => assertPeriodHandshake(ctx.plan, input, ctx.mode),
     /*
      * Права спрашиваются по посчитанному исходу (Р32, Е3), а не по календарю и не по составу тела:
      * продление вперёд — обычная работа площадки под `vehicleRequests.update`, а та же дверь,
@@ -573,7 +602,13 @@ export function periodCommandSpec(params: {
       await ensureAssignmentHistory(ctx.tx, { requestId, asOf: ctx.asOf });
       return { write, applied: write };
     },
-    syncPaper: (ctx) => syncPeriodPaper(ctx, { requestId, actorUserId: actor.id, reason }),
+    syncPaper: (ctx) =>
+      syncPeriodPaper(ctx, {
+        requestId,
+        actorUserId: actor.id,
+        reason,
+        acknowledgements: input.acknowledgements,
+      }),
     payload: (ctx) => ({
       door: DOOR,
       period: { before: ctx.plan.termBefore, after: ctx.plan.termAfter },
@@ -651,7 +686,13 @@ async function clearApproval(tx: AssignmentCommandTx, requestId: string): Promis
  */
 async function syncPeriodPaper(
   ctx: AssignmentPaperContext<PeriodPlan, AssignmentWriteResult>,
-  params: { requestId: string; actorUserId: string; reason: string },
+  params: {
+    requestId: string;
+    actorUserId: string;
+    reason: string;
+    /** Рукопожатия, принятые шагом 8: ими лист помнит, под чем его подписали (Р21). */
+    acknowledgements?: Readonly<Record<string, string>> | undefined;
+  },
 ): Promise<PeriodPaper> {
   const correctionId = ctx.operation?.id ?? null;
   const unlockWaybillIds = ctx.plan.requiredUnlocks.map((u) => u.waybillId);
@@ -690,6 +731,9 @@ async function syncPeriodPaper(
               sheets: ctx.plan.sheets,
               displayNumbers: ctx.plan.sheetNumbers,
               unlockWaybillIds,
+              // Снимок бланка и предупреждения — посчитанные шагом 6 и подтверждённые человеком.
+              issues: ctx.plan.issuePreparations,
+              acknowledgements: params.acknowledgements,
             }),
           },
         }
@@ -815,10 +859,9 @@ export function periodPreviewDto(
     clearedShiftsFingerprint: null,
     requiredUnlocks: plan.requiredUnlocks,
     unlockFingerprint: plan.unlockFingerprint,
-    // Предупреждения выпускаемых листов считает `esm2IssueWarnings` в момент выписки, и у недельной
-    // сверки просителя нет вовсе (`requester: { by: 'sync' }`) — подтверждать ей нечего. Пустой
-    // список здесь правда о сегодняшнем исполнителе, а не заглушка (та же граница у двери машиниста).
-    issues: [],
+    // Предупреждения по каждому выпускаемому листу — посчитанные вместе с планом (§7): окно строит
+    // по ним рукопожатия, а шаг 12 печатает ровно тот набор, который человек подтвердил.
+    issues: plan.issues,
     operationRequirement: operationRequirementOf(effects),
     asOf,
     fingerprint,
