@@ -647,13 +647,29 @@ describe.skipIf(!DB_URL)('карточка заявки на обслужива�
     await assign(plain.id, { userIds: [], serviceCounterpartyId });
     await start(plain.id, ctx.service.auth);
     state.files.plainInvoice = await attach(plain.id, 'invoice', 'счёт-2.pdf', ctx.service);
-    // Переназначение из «В работе» возвращает заявку в «Новую», отказ поимённого снимает последнего
-    // исполнителя — и заявка снова правится заказчиком, сохранив подшитый счёт.
+    // Заявку передают своему сотруднику, затем он от неё отказывается — и она снова правится
+    // заказчиком, сохранив подшитый счёт.
+    //
+    // ВОЗВРАТ В «НОВУЮ» ЗДЕСЬ ОТДЕЛЬНЫМ ХОДОМ, И ЭТО НЕ УКРАШЕНИЕ ФИКСТУРЫ (ADR 0187). Прежде его
+    // делало само переназначение: заявка падала из «В работе» в «Новую», и отказ — он открыт только
+    // из «Новой» — проходил следом. Теперь назначение статуса не трогает, и без этого хода отказ
+    // ответил бы `403`, а вся фикстура разъехалась бы на первом же `expect`.
     await assign(plain.id, {
       userIds: [executor.id],
       serviceCounterpartyId: null,
       reason: 'Передаём своими силами',
     });
+    const rolled = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${plain.id}/status`,
+      ctx.operator.auth,
+      {
+        status: 'new',
+        reason: 'Подрядчик ушёл с заявки — пусть новый исполнитель возьмётся сам',
+        version: await version(plain.id),
+      },
+    );
+    expect(rolled.statusCode, rolled.body).toBe(200);
     const declined = await inject(
       'PATCH',
       `/api/v1/service-requests/${plain.id}/decline`,

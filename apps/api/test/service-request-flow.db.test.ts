@@ -4611,14 +4611,18 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     });
 
     /**
-     * **Переназначение из «В работе» возвращает заявку в «Новую» и СОХРАНЯЕТ назначенных** (Р5).
-     * Ловушка здесь та, из-за которой правилось само решение: прежняя редакция плана вешала на эту
-     * дугу сброс исполнителя, а сброс — это `DELETE ... WHERE request_id = …` по всей заявке, и
-     * шёл бы он ПОСЛЕ вставки новых строк. Заявка оставалась бы ничьей молча: отложенный
-     * `service_requests_executor_present` для эффективного статуса `new` возвращается сразу и
-     * такого не ловит.
+     * **Переназначение из «В работе» СТАТУСА НЕ ТРОГАЕТ и сохраняет назначенных** (ADR 0187).
+     *
+     * Прежде эта ручка возвращала работающую заявку в «Новую» — чтобы новый исполнитель нажал
+     * «Принять в работу» сам. Просьба администраторов и «Ведения» оргтехники обратная: правка
+     * состава не должна отматывать ход. Ручка одна на замену и на добавление, и откат доставался
+     * обоим — добавление помощника к работающей заявке роняло её в «Новую».
+     *
+     * Состав при этом сохраняется — ловушка, из-за которой правилось само решение: повесь мы на
+     * запись сброс исполнителя (`DELETE ... WHERE request_id = …` по всей заявке), он шёл бы ПОСЛЕ
+     * вставки новых строк, и заявка оставалась бы ничьей молча.
      */
-    it('переназначение из «В работе» возвращает заявку в «Новую» и сохраняет новых исполнителей', async () => {
+    it('переназначение из «В работе» оставляет заявку в работе и сохраняет новых исполнителей', async () => {
       const dto = await createRequest(
         ctx.customer.auth,
         await freshUnit(),
@@ -4642,10 +4646,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       );
       expect(reassigned.statusCode, reassigned.body).toBe(200);
       const after = (reassigned.json() as { request: ServiceRequestDto }).request;
-      // Заявка вернулась в «Новую», чтобы новый исполнитель нажал «Принять в работу» сам, — иначе
-      // он унаследовал бы чужое «взялся» и не нажал бы её никогда.
-      expect(after.status).toBe('new');
-      // И вернулась ВМЕСТЕ с только что назначенными: сброс на этой дуге не стоит намеренно.
+      // Заявка осталась «В работе»: статуса назначение не меняет ни при каком исходе (ADR 0187).
+      expect(after.status).toBe('in_work');
+      // И осталась ВМЕСТЕ с только что назначенными: сброса состава здесь нет намеренно.
       expect(after.executors.map((e) => e.userId)).toEqual([ctx.namedExecutor.id]);
       expect(after.service).toBeNull();
       expect(after.waitingOn).toBe('service');
@@ -4655,6 +4658,79 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect(after.estimatePendingRevision).toBeNull();
       expect(after.approval).toBeNull();
       expect(after.items).toEqual([]);
+    });
+
+    /**
+     * **ДОБАВЛЕНИЕ исполнителя к работающей заявке — главный случай просьбы** (ADR 0187). Ручка
+     * состава одна на замену и на добавление, и прежний откат доставался обоим: заявку ведёт
+     * подрядчик, ему в помощь дают своего сисадмина — и заявка падает в «Новую», теряя ход.
+     *
+     * Смета здесь обязана уцелеть, и это второе утверждение теста: `handedOver` ложен (никого не
+     * сняли, подрядчик тот же), а значит ни строки объёма работ, ни согласование не стираются.
+     * Проверяется оно рядом со статусом намеренно — сотри мы смету, «статус не изменился» было бы
+     * правдой о заявке, у которой всё равно нечем работать.
+     */
+    it('добавление второго исполнителя работающей заявке статуса не меняет и смету сохраняет', async () => {
+      const dto = await createRequest(
+        ctx.customer.auth,
+        await freshUnit(),
+        'Помощник к работающей заявке',
+      );
+      await driveTo(dto.id, 'in_work');
+      const inWork = await card(dto.id);
+      expect(inWork.status).toBe('in_work');
+      expect(inWork.estimateRevision).toBeGreaterThan(0);
+
+      const added = await inject(
+        'PUT',
+        `/api/v1/service-requests/${dto.id}/executors`,
+        ctx.operator.auth,
+        {
+          // Подрядчик остаётся, к нему добавляется свой сотрудник.
+          userIds: [ctx.namedExecutor.id],
+          serviceCounterpartyId: ctx.serviceCounterpartyId,
+          version: inWork.version,
+        },
+      );
+      expect(added.statusCode, added.body).toBe(200);
+      const after = (added.json() as { request: ServiceRequestDto }).request;
+      expect(after.status).toBe('in_work');
+      expect(after.service?.id).toBe(ctx.serviceCounterpartyId);
+      expect(after.executors.map((e) => e.userId)).toEqual([ctx.namedExecutor.id]);
+      // Работа прежнего исполнителя на месте: никого не снимали, подрядчик тот же.
+      expect(after.estimateRevision).toBe(inWork.estimateRevision);
+      expect(after.items).toHaveLength(inWork.items.length);
+      expect(after.approval).not.toBeNull();
+    });
+
+    /**
+     * **Тот же состав — отказ, и теперь в ЛЮБОМ статусе** (ADR 0187). Прежде из «В работе» этот
+     * запрос был осмысленным ходом: состав не менялся, а заявка уходила в «Новую», то есть
+     * возвращалась к назначенным. Отката больше нет, и повтор стал тем, чем выглядит, — нажатием
+     * «Сохранить» без единой правки. Пропусти мы его, он обнулил бы возраст ожидания, отправил
+     * исполнителям письмо-задание по заявке, которую они и так ведут, и положил в ленту событие,
+     * за которым ничего не стоит.
+     */
+    it('повтор того же состава из «В работе» отбивается, а не возвращает заявку в «Новую»', async () => {
+      const dto = await createRequest(ctx.customer.auth, await freshUnit(), 'Повтор назначения');
+      await driveTo(dto.id, 'in_work');
+      const inWork = await card(dto.id);
+
+      const again = await inject(
+        'PUT',
+        `/api/v1/service-requests/${dto.id}/executors`,
+        ctx.operator.auth,
+        {
+          userIds: [],
+          serviceCounterpartyId: ctx.serviceCounterpartyId,
+          version: inWork.version,
+        },
+      );
+      expect(again.statusCode, again.body).toBe(422);
+      expect(again.body).toContain('уже назначены');
+      const after = await card(dto.id);
+      expect(after.status).toBe('in_work');
+      expect(after.statusChangedAt).toBe(inWork.statusChangedAt);
     });
 
     /**

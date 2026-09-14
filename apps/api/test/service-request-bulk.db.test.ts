@@ -39,8 +39,8 @@ import type { db as AppDb } from '../src/db/client';
  * `Idempotency-Key`); читающая ручка состояния и её область.
  *
  * ЧТО ЗАКРЕПЛЕНО ПО §11.2 (операции): по случаю на каждый из девяти вариантов — успех, отказ по
- * предикату, побочный эффект; своя цель заморозки и возобновления у каждой строки; возврат
- * переназначенной из «В работе» в «Новую»; сужение массового `start` до назначенных; отказ на весь
+ * предикату, побочный эффект; своя цель заморозки и возобновления у каждой строки; сохранение
+ * статуса у переназначенной из «В работе»; сужение массового `start` до назначенных; отказ на весь
  * запрос у срочности без причины; `403` заявителю с `serviceRequests.delete`; почтовая сводка Р10.
  *
  * ГДЕ ТЕСТ РАСХОДИТСЯ С ПЛАНОМ — сказано на месте, в комментарии случая, и записано под ФАКТИЧЕСКОЕ
@@ -1134,7 +1134,7 @@ describe.skipIf(!DB_URL)('массовые действия над заявка�
       expect(snapshot(after)).toEqual(snapshot(await card(bySingle)));
     });
 
-    it('assign: переназначение из «В работе» возвращает каждую строку в «Новую»', async () => {
+    it('assign: переназначение из «В работе» оставляет каждую строку в работе', async () => {
       const byBulk = await makeRequest();
       const bySingle = await makeRequest();
       const cancelled = await makeRequest();
@@ -1167,8 +1167,9 @@ describe.skipIf(!DB_URL)('массовые действия над заявка�
 
       expect([result.done, result.failed]).toEqual([1, 1]);
       const after = await card(byBulk);
-      // Правило одиночной ручки, которое пачка не меняет: переназначенная возвращается в «Новую».
-      expect(after.status).toBe('new');
+      // Правило одиночной ручки, которое пачка не меняет: назначение статуса не трогает (ADR 0187),
+      // и переназначенная строка остаётся там же, где была.
+      expect(after.status).toBe('in_work');
       expect(after.service?.id).toBe(ctx.otherCounterpartyId);
       expect(snapshot(after)).toEqual(snapshot(await card(bySingle)));
       expect(rowOf(result, cancelled).outcome).toBe('failed');
