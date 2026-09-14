@@ -41,7 +41,7 @@ interface Ctx {
   db: typeof AppDb;
   closeDb: () => Promise<void>;
   admin: Auth;
-  /** Держатель справочников: карточку видит, обслуживание — нет. */
+  /** Держатель справочников (диспетчер): карточку видит, обслуживание — нет. */
   keeper: Auth;
   equipmentId: string;
   objectId: string;
@@ -160,7 +160,14 @@ describe.skipIf(!DB_URL)('лента истории единицы (живая �
     }
 
     const adminEmail = await makeUser('admin', 'admin');
-    const keeperEmail = await makeUser('keeper', 'manager');
+    /*
+     * Держатель справочника — диспетчер: `officeEquipment.read` у него от роли, а прав модуля
+     * заявок нет ни одного. Раньше здесь стоял менеджер, но 10.09.2026 круг заявителя выдали ему
+     * ролью (ADR 0181), и `serviceRequests.read` появился у него в матрице — «без права модуля»
+     * менеджером больше не изображается. Диспетчеру тот же круг приходит набором, а набора здесь
+     * никто не выдаёт.
+     */
+    const keeperEmail = await makeUser('keeper', 'dispatcher');
     ctx = {
       app,
       db,

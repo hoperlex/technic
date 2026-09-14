@@ -85,9 +85,13 @@ interface Ctx {
    * плана предмета заявки так больше не выйдет: `officeEquipment.propose` вошло в
    * `SERVICE_REQUEST_CUSTOMER_PERMISSIONS`, то есть его даёт САМА роль каждому из пяти
    * заказчиков, — и «тот же `shtab` без права» перестал существовать. Поэтому здесь роль без
-   * модуля заявок (`manager`) плюс собранный набор заказчика без сообщения о технике: субъект,
+   * модуля заявок (`dispatcher`) плюс собранный набор заказчика без сообщения о технике: субъект,
    * который завести заявку может, а сообщить о ненайденном аппарате — нет. Именно эту пару
    * ответов файл и проверяет.
+   *
+   * Ролью был `manager`, пока 10.09.2026 круг заявителя не выдали ему прямо в матрице (ADR 0181):
+   * вместе с кругом к нему приехало и `officeEquipment.propose`, то есть отрицательного случая из
+   * него больше не сделать. У диспетчера круг остался набором — здесь ему выдают свой, урезанный.
    */
   plain: TestUser;
   /** Роль отдела: у неё ось площадок отдела (ADR 0062), а заказчиком остаётся её отдел. */
@@ -313,7 +317,7 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
     const adminUser = await makeUser('admin', 'admin');
     const requester = await makeUser('requester', 'shtab');
     const second = await makeUser('second', 'shtab');
-    const plain = await makeUser('plain', 'manager');
+    const plain = await makeUser('plain', 'dispatcher');
     const dept = await makeUser('dept', 'department');
 
     const attachObject = (userId: string, id: string) =>
@@ -322,7 +326,7 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
         VALUES (${userId}, ${id})`);
     await attachObject(requester.id, objectId);
     await attachObject(second.id, objectId);
-    // `plain` площадке не приписывается: у роли `manager` объектной оси нет вовсе, и строка
+    // `plain` площадке не приписывается: у роли `dispatcher` объектной оси нет вовсе, и строка
     // привязки ничего бы не значила. Заявку он заводит глобально — это свойство роли без оси,
     // а не поблажка теста.
 
@@ -365,14 +369,14 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
      *
      * Требования (`PERMISSION_REQUIRES`) в составе соблюдены: правка, удаление и вложения зависят
      * от `serviceRequests.read`, и он на месте. Набор самодостаточен ровно потому, что у роли
-     * `manager` прав модуля заявок нет ни одного.
+     * `dispatcher` прав модуля заявок нет ни одного.
      */
     const plainGrantRow = await db.execute<{ id: string }>(sql`
       INSERT INTO grants (code, name, is_system) VALUES (${`ci_plain_${RUN}`}, 'Заказчик без сообщения', false)
       RETURNING id`);
     const plainGrantId = plainGrantRow.rows[0]!.id;
     await db.execute(sql`
-      INSERT INTO grant_roles (grant_id, role) VALUES (${plainGrantId}, 'manager')`);
+      INSERT INTO grant_roles (grant_id, role) VALUES (${plainGrantId}, 'dispatcher')`);
     await db.execute(sql`
       INSERT INTO grant_permissions (grant_id, permission) VALUES
         (${plainGrantId}, 'officeEquipment.read'),

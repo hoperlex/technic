@@ -109,7 +109,7 @@ interface Ctx {
   operator: TestUser;
   /** Заказчик той же площадки: заявки видит, денег ему не положено — аудитория `requester`. */
   requester: TestUser;
-  /** Держатель справочника без модуля заявок (менеджер): блок заявок ему закрыт правом. */
+  /** Держатель справочника без модуля заявок (диспетчер): блок заявок ему закрыт правом. */
   keeper: TestUser;
   /** «Оргтехника: ИТ-служба»: область СКВОЗНАЯ, поэтому площадка у него намеренно чужая. */
   itApprover: TestUser;
@@ -419,7 +419,15 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
     const adminUser = await makeUser('admin', 'admin');
     const operatorUser = await makeUser('oper', 'shtab', { objectIds: [objectA] });
     const requesterUser = await makeUser('req', 'shtab', { objectIds: [objectA] });
-    const keeperUser = await makeUser('keep', 'manager');
+    /*
+     * Держатель справочника — ДИСПЕТЧЕР, а не менеджер. Роли нужно ровно две вещи: справочник
+     * оргтехники на чтение (иначе карточка закрыта целиком и случай доказывал бы не то) и ни
+     * одного права модуля заявок. Менеджер такую пару изображал до 10.09.2026, а потом круг
+     * заявителя выдали ему РОЛЬЮ (ADR 0181) — и `serviceRequests.read` у него появился прямо в
+     * матрице. У диспетчера круг по-прежнему приходит набором, здесь не выданным, так что пара
+     * сохранилась: `officeEquipment.read` от роли есть, модуля заявок нет.
+     */
+    const keeperUser = await makeUser('keep', 'dispatcher');
     // Площадка у ИТ-службы намеренно ЧУЖАЯ: без сквозной области модуля (`GRANT_MODULE_WIDE_SCOPE`)
     // она не увидела бы ни карточку, ни заявки, и случай доказывал бы область роли, а не набора.
     const itUser = await makeUser('it', 'shtab', { objectIds: [objectB] });
