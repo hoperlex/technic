@@ -179,3 +179,16 @@ export interface PolicySet {
   readonly maintenance: MaintenancePolicy;
   readonly moduleMap: ModuleMap;
 }
+
+/**
+ * Алиас путей проекта: `@shared/*` вместо `apps/web/src/shared/*`.
+ *
+ * `within` ограничивает область действия алиаса. Без него алиас портала распространился бы на
+ * сервер, и одноимённый импорт там разрешился бы в чужой файл — граф зависимостей показал бы
+ * связь, которой нет.
+ */
+export interface AliasEntry {
+  readonly prefix: string;
+  readonly target: string;
+  readonly within?: string;
+}

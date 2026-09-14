@@ -8,6 +8,7 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { DomainProvider } from './contracts.ts';
+import type { AliasEntry } from './types.ts';
 import { MaintenanceConfigError } from './errors.ts';
 
 /**
@@ -27,6 +28,22 @@ export interface VerificationLevel {
   readonly why?: string;
 }
 
+/**
+ * Чем добываются факты. Команды задаются данными, а не кодом: их печатают человеку в отчёте и
+ * повторяют руками, разбирая находку. Токен `{out}` подставляется путём к временному файлу
+ * машинного отчёта.
+ */
+export interface AnalysisConfig {
+  readonly lintCommand: readonly string[];
+  readonly typecheckCommand: readonly string[];
+  readonly aliases: readonly AliasEntry[];
+  readonly sourceExtensions: readonly string[];
+  /** Сколько сообщений линта и самых больших файлов оставлять в фактах. */
+  readonly keepLintMessages?: number;
+  readonly keepLargestFiles?: number;
+  readonly maxCycles?: number;
+}
+
 /** Что система вообще рассматривает как свою область работы. */
 export interface ScopeConfig {
   readonly include: readonly string[];
@@ -42,6 +59,7 @@ export interface MaintenanceConfigInput {
   readonly domains?: DomainProvider;
   readonly verification: readonly VerificationLevel[];
   readonly scope: ScopeConfig;
+  readonly analysis: AnalysisConfig;
 }
 
 /** То, с чем работает ядро: пути уже разрешены относительно корня. */
@@ -59,6 +77,7 @@ export interface MaintenanceConfig {
   readonly domains: DomainProvider | null;
   readonly verification: readonly VerificationLevel[];
   readonly scope: ScopeConfig;
+  readonly analysis: AnalysisConfig;
 }
 
 /**
@@ -87,6 +106,7 @@ export function resolveConfig(root: string, input: MaintenanceConfigInput): Main
     domains: input.domains ?? null,
     verification: input.verification,
     scope: input.scope,
+    analysis: input.analysis,
   };
 }
 

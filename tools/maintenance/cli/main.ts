@@ -19,6 +19,7 @@ import { MaintenanceConfigError } from '../core/errors.ts';
 import { ConsoleReporter } from '../reporters/console.ts';
 import type { Severity } from '../core/types.ts';
 import { doctor, showModules, showPolicies, showSurfaces, type CommandResult } from './commands.ts';
+import { analyze, fixTask, review } from './analyze.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const out = new ConsoleReporter();
@@ -31,8 +32,24 @@ function help(): void {
   out.line('  surfaces [путь …]       защищённые области; с путями — решение по каждому');
   out.line('  modules                 пакеты, направления, слои и домены');
   out.line();
-  out.line('Дальнейшие команды (analyze, review, fix-task, verify, converge, deep, report)');
-  out.line('появляются этапами ЭB–ЭF плана docs/maintenance-framework-plan.md.');
+  out.line('  analyze [--all] [--since <ref>] [--pass <id>] [--with-tests]');
+  out.line('                          собрать факты и выдать задание ревьюеру');
+  out.line('  review [--file <путь>]  разобрать ответ ревьюера и отобрать безопасное');
+  out.line('  fix-task                собрать задание исполнителю по отбору');
+  out.line();
+  out.line('Дальнейшие команды (verify, converge, deep, report) появляются этапами');
+  out.line('ЭC–ЭF плана docs/maintenance-framework-plan.md.');
+}
+
+/** Значение именованного аргумента: `--since HEAD~3`. Отсутствует — `null`, а не пустая строка. */
+function valueArg(args: readonly string[], name: string): string | null {
+  const index = args.indexOf(name);
+  if (index < 0) return null;
+  const value = args[index + 1];
+  if (value === undefined || value.startsWith('--')) {
+    throw new MaintenanceConfigError('аргументы', `${name} ожидает значение`);
+  }
+  return value;
 }
 
 function severityArg(args: readonly string[]): Severity | null {
@@ -64,6 +81,20 @@ async function main(): Promise<number> {
       break;
     case 'modules':
       result = await showModules(config, out);
+      break;
+    case 'analyze':
+      result = await analyze(config, out, {
+        withTests: args.includes('--with-tests'),
+        since: valueArg(args, '--since'),
+        all: args.includes('--all'),
+        pass: valueArg(args, '--pass'),
+      });
+      break;
+    case 'review':
+      result = await review(config, out, { file: valueArg(args, '--file') });
+      break;
+    case 'fix-task':
+      result = await fixTask(config, out);
       break;
     default:
       out.error(`неизвестная команда: ${command}`);

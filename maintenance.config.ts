@@ -45,6 +45,43 @@ export default defineMaintenanceConfig({
   ],
 
   /*
+   * Чем добываются факты.
+   *
+   * Линт зовётся профилем `release`: повседневный профиль ловит ошибки, а обслуживанию нужны ещё и
+   * кандидаты — длина, сложность, отложенное. Числа оттуда идут в факты как СИГНАЛ и целью правки
+   * не становятся.
+   *
+   * Алиасы перечислены с областью действия: `@shared/*` — язык портала, и в сервере такой импорт
+   * разрешался бы в чужой файл, показывая связь, которой нет. Держать их копией больно, но
+   * альтернатива — учить ядро читать tsconfig портала, то есть знать про портал.
+   */
+  analysis: {
+    lintCommand: [
+      'pnpm',
+      'exec',
+      'eslint',
+      '.',
+      '-c',
+      'eslint/release.config.mjs',
+      '--format',
+      'json',
+      '--output-file',
+      '{out}',
+    ],
+    typecheckCommand: ['pnpm', '-r', 'typecheck'],
+    sourceExtensions: ['.ts', '.tsx', '.mjs'],
+    aliases: [
+      { prefix: '@technic/contracts', target: 'packages/contracts/src/index.ts' },
+      { prefix: '@app/', target: 'apps/web/src/app/', within: 'apps/web/' },
+      { prefix: '@pages/', target: 'apps/web/src/pages/', within: 'apps/web/' },
+      { prefix: '@widgets/', target: 'apps/web/src/widgets/', within: 'apps/web/' },
+      { prefix: '@features/', target: 'apps/web/src/features/', within: 'apps/web/' },
+      { prefix: '@entities/', target: 'apps/web/src/entities/', within: 'apps/web/' },
+      { prefix: '@shared/', target: 'apps/web/src/shared/', within: 'apps/web/' },
+    ],
+  },
+
+  /*
    * Область работы системы. `docs/**` сюда не входит намеренно: за документацией следит
    * `check-docs`, и второй проверяющий той же территории только раздвоил бы ответственность.
    */
