@@ -675,11 +675,11 @@ describe.skipIf(!DB_URL)('коррекция назначения задним �
   });
 
   /**
-   * Единственная оставшаяся причина отказа (ADR 0164): карточки в справочнике нет — она удалена, и
-   * выписывать бланк не на кого. Правило стоит в общей точке выпуска, поэтому одинаково отвечает и
-   * ручной выписке, и сверке — прежде сверка на этом месте печатала лист без фамилии машиниста.
+   * Единственная оставшаяся причина отказа ручной выписке (ADR 0164 в редакции от 14.09.2026):
+   * человека, которого в справочнике больше нет, форма не предлагает, и пришёл он из чужой
+   * открытой вкладки. Сверка отвечает на ту же карточку иначе — случай ниже.
    */
-  it('на удалённую карточку машиниста лист не выписывается', async () => {
+  it('на удалённую карточку машиниста лист рукой не выписывается', async () => {
     const request = await confirm(await backdatedRequest(ctx.linearTypeId));
     const removed = await seedDriver('Удалённый');
     await ctx.db.execute(sql`UPDATE persons SET deleted_at = now() WHERE id = ${removed}`);
@@ -690,7 +690,35 @@ describe.skipIf(!DB_URL)('коррекция назначения задним �
       version: request.version,
     });
     expect(refused.statusCode, refused.body).toBe(422);
-    expect(refused.json().message).toContain('карточка удалена');
+    expect(refused.json().message).toContain('удалена из справочника');
+    // Отказ называет, о ком он: по одному идентификатору поддержка искала бы человека руками.
+    expect(refused.json().message).toContain('Коррекцев');
+  });
+
+  /**
+   * Та же карточка со стороны сверки (правка ADR 0164 от 14.09.2026). Человека здесь никто не
+   * выбирает: переоформление берёт его из бумаги заявки, и отказ означал бы, что заявку с удалённым
+   * машинистом нельзя ни продлить, ни сократить, ни закрыть. Бланк при этом остаётся действительным
+   * — удаление мягкое, ФИО в карточке на месте.
+   */
+  it('сверка переоформляет бумагу и на снятую карточку машиниста', async () => {
+    const request = await confirm(await backdatedRequest(ctx.plainTypeId), {
+      driverPersonId: ctx.driverA,
+    });
+    await ctx.db.execute(sql`UPDATE persons SET deleted_at = now() WHERE id = ${ctx.driverA}`);
+    try {
+      const changed = await changeAssignment(request, { vehicleId: ctx.otherVehicleId });
+      expect(changed.statusCode, changed.body).toBe(200);
+      const issued = (await sheetsOf(request.id)).filter((s) => s.status === 'issued');
+      expect(issued.length).toBeGreaterThan(0);
+      for (const sheet of issued) {
+        expect(sheet.driver_person_id).toBe(ctx.driverA);
+        expect(sheet.driver_fio).toContain('Коррекцев');
+      }
+    } finally {
+      // Карточка общая на весь файл: оставленная снятой, она увела бы соседние случаи.
+      await ctx.db.execute(sql`UPDATE persons SET deleted_at = NULL WHERE id = ${ctx.driverA}`);
+    }
   });
 
   /** Пустая коррекция отклоняется (Р31): блок `correction` не должен становиться отмычкой. */
