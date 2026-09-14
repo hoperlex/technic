@@ -77,7 +77,19 @@ function packageOf(file: string, packages: readonly ModulePackage[]): ModulePack
   return best;
 }
 
-export function collectDependencies(options: DependencyOptions): DependencyFacts {
+/**
+ * Результат разбора: факты для отчёта и сам граф.
+ *
+ * Граф наружу отдаётся, но в факты НЕ кладётся: на этом дереве это девять тысяч рёбер, и снимок
+ * фактов, который человек открывает глазами, превратился бы в мегабайт машинного текста. Тому, кто
+ * считает область работы, граф нужен в памяти, а не в файле.
+ */
+export interface DependencyAnalysis {
+  readonly facts: DependencyFacts;
+  readonly graph: ReadonlyMap<string, readonly string[]>;
+}
+
+export function collectDependencies(options: DependencyOptions): DependencyAnalysis {
   const started = Date.now();
   const graph = new Map<string, string[]>();
   const violations: DependencyViolation[] = [];
@@ -143,12 +155,15 @@ export function collectDependencies(options: DependencyOptions): DependencyFacts
   }
 
   return {
-    ok: violations.every((violation) => violation.severity !== 'hard'),
-    durationMs: Date.now() - started,
-    summary: `${graph.size} файлов, ${edges} связей, нарушений: ${violations.length}`,
-    modules: graph.size,
-    edges,
-    violations,
+    facts: {
+      ok: violations.every((violation) => violation.severity !== 'hard'),
+      durationMs: Date.now() - started,
+      summary: `${graph.size} файлов, ${edges} связей, нарушений: ${violations.length}`,
+      modules: graph.size,
+      edges,
+      violations,
+    },
+    graph,
   };
 }
 

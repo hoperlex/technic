@@ -13,6 +13,7 @@ import { run } from '../analyzers/run.ts';
 import { collectLint } from '../analyzers/lint.ts';
 import { toolRun } from '../analyzers/run.ts';
 import { checkBehaviorLock, type BaselineSnapshot, type LockViolation } from './behavior-lock.ts';
+import { createIsolatedTree } from '../git/worktree.ts';
 import path from 'node:path';
 
 export type Outcome = 'accept' | 'rollback' | 'manual-review';
@@ -67,21 +68,114 @@ function tailOf(text: string, lines = 40): string {
   return text.split('\n').slice(-lines).join('\n').trim();
 }
 
-export function verifyBatch(options: VerifyOptions): VerificationResult {
-  const { config } = options;
-
-  const lintAfter = collectLint({
-    root: config.root,
+/**
+ * Где проверять партию.
+ *
+ * ОБЩЕЕ ДЕРЕВО ДЛЯ ЭТОГО НЕ ГОДИТСЯ. В нём всегда лежит чужая незавершённая работа, и ворота
+ * краснеют по чужой причине: верная правка системы откатывается, а человек видит «проверка не
+ * прошла» без объяснения. Проверено трижды на живых прогонах.
+ *
+ * Изолированное дерево отвечает ровно на тот вопрос, который и нужен: «зелено ли HEAD плюс эта
+ * партия». Именно это и уедет в коммит — ни больше, ни меньше.
+ *
+ * Базовая линия снимается ТАМ ЖЕ, только без файлов партии. Сравнивать изолированный прогон с
+ * замером на грязном дереве нельзя: разница тогда означала бы не «стало хуже от правки», а
+ * «дерево другое».
+ */
+function measure(root: string, config: MaintenanceConfig, tmpDir: string, suffix: string) {
+  const lint = collectLint({
+    root,
     command: config.analysis.lintCommand,
-    outFile: path.join(options.tmpDir, 'lint-after.json'),
+    outFile: path.join(tmpDir, `lint-${suffix}.json`),
     keepMessages: 50,
   });
-  const typecheckRun = run(config.root, config.analysis.typecheckCommand);
-  const typecheckAfter = toolRun(
+  const typecheckRun = run(root, config.analysis.typecheckCommand);
+  const typecheck = toolRun(
     typecheckRun,
     typecheckRun.code === 0 ? 'типы сходятся' : `типы не сходятся (код ${typecheckRun.code})`,
   );
+  return { lint, typecheck };
+}
 
+/**
+ * Базовая линия «до правки».
+ *
+ * Снимается там же, где потом пойдёт проверка: в изолированном дереве — от `HEAD` без файлов
+ * партии. Иначе сравнение вышло бы между разными деревьями, и «стало хуже» означало бы «дерево
+ * другое». Без изоляции остаётся прежнее поведение: замер прямо в рабочем дереве.
+ */
+export function measureBaseline(
+  config: MaintenanceConfig,
+  tmpDir: string,
+): { lint: LintFacts; typecheck: ToolRun } {
+  if (config.analysis.isolateVerification !== true) {
+    return measure(config.root, config, tmpDir, 'before');
+  }
+  const tree = createIsolatedTree({
+    root: config.root,
+    home: path.join(tmpDir, 'trees'),
+    files: [],
+    linkPaths: config.analysis.linkPaths ?? [],
+  });
+  try {
+    return measure(tree.path, config, tmpDir, 'before');
+  } finally {
+    tree.dispose();
+  }
+}
+
+/**
+ * Виновата ли партия в падении шага.
+ *
+ * Ответ «нет» означает, что тот же шаг падает на голой базе. Проверяется только при изоляции: без
+ * неё базы как отдельного дерева не существует, и отличить чужую красноту от своей нечем — там
+ * остаётся прежнее поведение, откат.
+ */
+function blameBatch(
+  config: MaintenanceConfig,
+  options: VerifyOptions,
+  failed: readonly LevelResult[],
+): boolean {
+  if (config.analysis.isolateVerification !== true) return true;
+  const base = createIsolatedTree({
+    root: config.root,
+    home: path.join(options.tmpDir, 'trees'),
+    files: [],
+    linkPaths: config.analysis.linkPaths ?? [],
+  });
+  try {
+    for (const level of failed) {
+      const command = config.verification.find((item) => item.id === level.id)?.command;
+      if (command === undefined) continue;
+      // Хоть один шаг, зелёный на базе и красный с партией, — и вина партии доказана.
+      if (run(base.path, command).code === 0) return true;
+    }
+    return false;
+  } finally {
+    base.dispose();
+  }
+}
+
+export function verifyBatch(options: VerifyOptions): VerificationResult {
+  const { config } = options;
+  const isolate = config.analysis.isolateVerification === true;
+
+  const tree = isolate
+    ? createIsolatedTree({
+        root: config.root,
+        home: path.join(options.tmpDir, 'trees'),
+        files: options.allowed,
+        linkPaths: config.analysis.linkPaths ?? [],
+      })
+    : null;
+  const where = tree?.path ?? config.root;
+
+  const measured = measure(where, config, options.tmpDir, 'after');
+  const lintAfter = measured.lint;
+  const typecheckAfter = measured.typecheck;
+
+  // Замок поведения смотрит на ОСНОВНОЕ дерево: он отвечает не «зелено ли», а «что тронул
+  // исполнитель», и ответ на это лежит там, где исполнитель работал.
   const violations = checkBehaviorLock({
     config,
     policies: options.policies,
@@ -105,6 +199,7 @@ export function verifyBatch(options: VerifyOptions): VerificationResult {
       (violation.kind === 'concurrent-change' && !options.allowConcurrent),
   );
   if (outOfControl.length > 0) {
+    tree?.dispose();
     return {
       // Не откат: файлы вне партии система не сохраняла и восстановить их не может, а откат
       // разрешённой половины оставил бы дерево в состоянии, которого не было никогда.
@@ -126,6 +221,7 @@ export function verifyBatch(options: VerifyOptions): VerificationResult {
    */
   const worseBefore = violations.filter((violation) => violation.kind === 'worse-than-before');
   if (worseBefore.length > 0) {
+    tree?.dispose();
     return {
       outcome: 'rollback',
       reason: worseBefore.map((violation) => violation.detail).join('; '),
@@ -139,7 +235,7 @@ export function verifyBatch(options: VerifyOptions): VerificationResult {
   const levels: LevelResult[] = [];
   for (const level of config.verification) {
     if (!level.enabledByDefault && !options.extraLevels.includes(level.id)) continue;
-    const result = run(config.root, level.command);
+    const result = run(where, level.command);
     levels.push({
       id: level.id,
       title: level.title,
@@ -150,9 +246,32 @@ export function verifyBatch(options: VerifyOptions): VerificationResult {
     });
   }
 
+  tree?.dispose();
   const failed = levels.filter((level) => !level.ok);
 
   if (failed.length > 0) {
+    /*
+     * ПЕРЕД ОТКАТОМ СПРАШИВАЕМ, ЧЬЯ ЭТО КРАСНОТА.
+     *
+     * Упавший шаг ещё не значит «правка сломала»: база бывает красной сама по себе — сегодня,
+     * например, `HEAD` этого репозитория не собирается, потому что коммит забрал файл портала, а
+     * его контракты остались незакоммиченными. Откатить в такой ситуации верную правку значит
+     * наказать её за чужую поломку и ничего не починить.
+     *
+     * Поэтому упавший шаг перезапускается на базе БЕЗ партии — и только он один: гонять ради
+     * этого все ворота второй раз стоило бы ещё столько же времени.
+     */
+    const guilty = blameBatch(config, options, failed);
+    if (!guilty) {
+      return {
+        outcome: 'manual-review',
+        reason: `база сама красная: ${failed.map((level) => level.title).join(', ')} падает и без этой правки`,
+        levels,
+        violations,
+        lintAfter,
+        typecheckAfter,
+      };
+    }
     return {
       outcome: 'rollback',
       reason: `проверка не прошла: ${failed.map((level) => level.title).join(', ')}`,

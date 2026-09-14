@@ -15,6 +15,7 @@ import type { MaintenanceConfig } from '../core/config.ts';
 import type { ProjectFacts, RelevanceFacts, SurfaceFact, ToolRun } from '../core/facts.ts';
 import type { PolicySet } from '../core/types.ts';
 import { listFiles } from '../core/files.ts';
+import { resolveIncrementalScope } from '../core/scope.ts';
 import { matchesAny, normalizePath } from '../core/paths.ts';
 import { resolveSurface } from '../policies/surfaces.ts';
 import type { Workspace } from '../state/workspace.ts';
@@ -34,7 +35,16 @@ export interface CollectOptions {
   readonly scopeFiles: readonly string[];
 }
 
-export function collectFacts(options: CollectOptions): ProjectFacts {
+/**
+ * Что отдаёт сборщик: факты (их кладут в файл и показывают человеку) и граф зависимостей,
+ * который живёт только в памяти прогона — см. `DependencyAnalysis`.
+ */
+export interface Collected {
+  readonly facts: ProjectFacts;
+  readonly graph: ReadonlyMap<string, readonly string[]>;
+}
+
+export function collectFacts(options: CollectOptions): Collected {
   const { config, policies, workspace } = options;
   const git = collectGit(config.root);
 
@@ -62,7 +72,7 @@ export function collectFacts(options: CollectOptions): ProjectFacts {
   const tests = options.withTests ? runTests(config) : skipped('запрошен сбор без тестов');
 
   const metrics = collectMetrics(config.root, sourceFiles, config.analysis.keepLargestFiles ?? 30);
-  const dependencies = collectDependencies({
+  const analysis = collectDependencies({
     root: config.root,
     files: sourceFiles,
     packages: policies.moduleMap.packages,
@@ -70,6 +80,7 @@ export function collectFacts(options: CollectOptions): ProjectFacts {
     maxCycles: config.analysis.maxCycles ?? 20,
   });
 
+  const dependencies = analysis.facts;
   const scopeFiles = options.scopeFiles.map((file) => normalizePath(config.root, file)).sort();
   const relevance = relevanceOf(
     config,
@@ -78,16 +89,60 @@ export function collectFacts(options: CollectOptions): ProjectFacts {
   );
 
   return {
-    collectedAt: new Date().toISOString(),
-    root: config.root,
-    git,
-    lint,
-    typecheck,
-    tests,
-    metrics,
-    dependencies,
-    relevance,
-    scopeFiles,
+    facts: {
+      collectedAt: new Date().toISOString(),
+      root: config.root,
+      git,
+      lint,
+      typecheck,
+      tests,
+      metrics,
+      dependencies,
+      relevance,
+      scopeFiles,
+    },
+    graph: analysis.graph,
+  };
+}
+
+/**
+ * Расширение области до соседей по зависимостям.
+ *
+ * Без этого шага ревьюер видит только изменённые файлы — и не видит тех, кто их зовёт. Поломка же
+ * ходит против стрелки импорта: правка в общем модуле проявляется у потребителей, а не у него
+ * самого. Глубина и потолок приходят конфигом: область без границы перестаёт быть областью и
+ * превращается в «посмотрите весь репозиторий».
+ *
+ * Возвращается и строка для человека: чем область ограничена — глубиной, потолком или ничем. Без
+ * неё короткий список файлов читается как «связей нет», хотя на деле их обрезали.
+ */
+export function widenScope(
+  config: MaintenanceConfig,
+  policies: PolicySet,
+  collected: Collected,
+  changedFiles: readonly string[],
+): { readonly facts: ProjectFacts; readonly note: string } {
+  const scope = resolveIncrementalScope({
+    changedFiles: changedFiles.map((file) => normalizePath(config.root, file)),
+    graph: collected.graph,
+    domains: policies.moduleMap.domains,
+    policies: policies.policies,
+    neighbourDepth: config.analysis.neighbourDepth ?? 1,
+    maxFiles: config.analysis.maxScopeFiles ?? 60,
+  });
+  const limit =
+    scope.limitedBy === 'maxFiles'
+      ? ', обрезана потолком'
+      : scope.limitedBy === 'depth'
+        ? ', обрезана глубиной'
+        : '';
+  return {
+    facts: {
+      ...collected.facts,
+      scopeFiles: scope.files,
+      relevance: relevanceOf(config, policies, scope.files),
+    },
+    note: `область: ${changedFiles.length} изменённых → ${scope.files.length} файлов с соседями${limit}`,
   };
 }
 

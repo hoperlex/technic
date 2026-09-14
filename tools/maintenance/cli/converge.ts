@@ -24,21 +24,21 @@ import {
 } from '../core/convergence.ts';
 import { parseFindings } from '../core/finding-io.ts';
 import { selectFindings } from '../core/selector.ts';
-import { collectFacts, saveFacts } from '../analyzers/facts.ts';
+import { collectFacts, saveFacts, widenScope } from '../analyzers/facts.ts';
 import { changedSince } from '../analyzers/git.ts';
-import { collectLint } from '../analyzers/lint.ts';
-import { run, toolRun } from '../analyzers/run.ts';
 import { FileCheckpointTransaction } from '../git/transaction.ts';
 import { renderRunReport, renderVerdictTable } from '../reporters/markdown.ts';
 import { ensureWorkspace, type Workspace } from '../state/workspace.ts';
 import { snapshotBaseline } from '../verification/behavior-lock.ts';
-import { verifyBatch } from '../verification/verifier.ts';
+import { measureBaseline, verifyBatch } from '../verification/verifier.ts';
 import { renderPacket } from '../work-packets/render.ts';
 import { reviewerPacket } from '../work-packets/reviewer.ts';
 import { fixerPacket } from '../work-packets/fixer.ts';
 import type { CommandResult } from './commands.ts';
 import { loadPolicies } from './commands.ts';
 import { readBatch, saveBatch } from './verify.ts';
+import { JsonFindingStore, decide, reconcile, type LedgerEntry } from '../state/ledger.ts';
+import { filesChangedSince, lastChangeOf } from '../analyzers/git.ts';
 
 export interface ConvergeArgs {
   readonly allowConcurrent: boolean;
@@ -140,11 +140,12 @@ async function emitReviewTask(
 
   out.heading(`проход ${state.passes.length}: ${pass.id}`);
   const scopeFiles = changedSince(config.root, 'HEAD');
-  const facts = collectFacts({ config, policies, workspace, withTests: false, scopeFiles });
+  const collected = collectFacts({ config, policies, workspace, withTests: false, scopeFiles });
+  const widened = widenScope(config, policies, collected, scopeFiles);
+  const facts = widened.facts;
+  out.item(widened.note);
   saveFacts(workspace, facts);
-  out.item(
-    `область: ${scopeFiles.length} файлов; линт: ${facts.lint.summary}; зависимости: ${facts.dependencies.summary}`,
-  );
+  out.item(`линт: ${facts.lint.summary}; зависимости: ${facts.dependencies.summary}`);
 
   // Ответ прошлого прохода убирается заранее: иначе следующая команда примет его за новый и
   // отберёт те же находки повторно.
@@ -188,14 +189,56 @@ async function takeReview(
 
   const parsed = parseFindings(readFileSync(file, 'utf8'), path.relative(config.root, file));
   for (const problem of parsed.problems) out.warn(problem);
+
+  /*
+   * Журнал спрашивают ДО отбора, а не после.
+   *
+   * Смысл журнала в том, чтобы решение человека («это осознанный долг», «это ложное срабатывание»)
+   * не спрашивалось каждый прогон заново. Пропусти этот шаг — и отбор честно отработает по
+   * находкам, про которые всё давно решено, а человек получит тот же список третий раз подряд.
+   */
+  const store = new JsonFindingStore(path.join(workspace.state, 'ledger.json'));
+  const known = await store.load();
+  const sifted = reconcile({
+    entries: known,
+    findings: parsed.findings,
+    policy: policies.maintenance.ledger,
+    now: new Date(),
+    codeChanged: codeChangedSince(config.root),
+    policyChanged: policyChangedSince(config.root),
+  });
+  if (sifted.suppressed.length > 0) {
+    out.item(`журнал снял ${sifted.suppressed.length}: про них решение уже принято`);
+    for (const item of sifted.suppressed.slice(0, 5)) {
+      out.line(`      ${item.finding.id} — ${item.why}`);
+    }
+  }
+  if (sifted.reopened.length > 0) out.item(`переоткрыто: ${sifted.reopened.length}`);
+
   const selection = selectFindings({
     config,
     policies,
     budget: policies.maintenance.convergence,
-    findings: parsed.findings,
+    findings: sifted.fresh,
   });
   out.heading('отбор');
   out.line(renderVerdictTable(selection.verdicts));
+
+  /*
+   * Решение отбора записывается в журнал сразу: всё, что не взято в работу, получает статус
+   * «отложено». Иначе следующий прогон принесёт те же находки как новые — и экономии не будет
+   * ровно там, где она нужнее всего, в отклонённом и отложенном.
+   */
+  let entries = sifted.entries;
+  const now = new Date();
+  for (const verdict of selection.verdicts) {
+    if (verdict.decision === 'selected') continue;
+    entries = decide(entries, verdict.finding.fingerprint, 'deferred', {
+      note: `${verdict.decision}: ${verdict.reason}`,
+      now,
+    });
+  }
+  await store.save(entries);
 
   let next = recordSelection(state, selection);
 
@@ -214,17 +257,7 @@ async function takeReview(
   }
 
   const allowed = [...new Set(selection.selected.flatMap((finding) => finding.files))].sort();
-  const lint = collectLint({
-    root: config.root,
-    command: config.analysis.lintCommand,
-    outFile: path.join(workspace.tmp, 'lint-before.json'),
-    keepMessages: 50,
-  });
-  const typecheckRun = run(config.root, config.analysis.typecheckCommand);
-  const typecheck = toolRun(
-    typecheckRun,
-    typecheckRun.code === 0 ? 'типы сходятся' : 'типы не сходятся',
-  );
+  const { lint, typecheck } = measureBaseline(config, workspace.tmp);
 
   const transaction = new FileCheckpointTransaction(config.root, workspace.checkpoints);
   const checkpoint = await transaction.createCheckpoint(allowed);
@@ -259,6 +292,34 @@ async function takeReview(
   out.item(`задание: ${path.relative(config.root, workspace.taskFile)}`);
   out.item(`отчёт положить в ${outputFile}, затем повторить: pnpm maintain converge`);
   return { ok: true };
+}
+
+/**
+ * Менялся ли код находки после решения по ней.
+ *
+ * Список изменённого считается ОДИН раз на дату и запоминается: журнал спрашивает про каждую
+ * запись, а история git на сотне записей опрашивалась бы сотню раз.
+ */
+function codeChangedSince(root: string): (entry: LedgerEntry) => boolean {
+  const cache = new Map<string, Set<string>>();
+  return (entry) => {
+    const since = entry.decidedAt ?? entry.firstSeen;
+    let touched = cache.get(since);
+    if (touched === undefined) {
+      touched = new Set(filesChangedSince(root, since));
+      cache.set(since, touched);
+    }
+    return entry.files.some((file) => touched.has(file));
+  };
+}
+
+/** Менялось ли правило, на которое ссылается находка: по истории файла политик. */
+function policyChangedSince(root: string): (entry: LedgerEntry) => boolean {
+  const changedAt = lastChangeOf(root, 'architecture/policies/architecture.yaml');
+  return (entry) => {
+    if (entry.policy === undefined || changedAt === null) return false;
+    return changedAt > (entry.decidedAt ?? entry.firstSeen);
+  };
 }
 
 /** Шаг 3 прохода: проверить правку, принять или откатить, закрыть проход. */

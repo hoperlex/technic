@@ -12,16 +12,15 @@ import type { PolicySet } from '../core/types.ts';
 import type { TrackedFinding } from '../core/finding.ts';
 import { parseFindings } from '../core/finding-io.ts';
 import { selectFindings, type Selection } from '../core/selector.ts';
-import { collectFacts, saveFacts } from '../analyzers/facts.ts';
+import { collectFacts, saveFacts, widenScope } from '../analyzers/facts.ts';
 import { changedSince } from '../analyzers/git.ts';
 import { renderPacket } from '../work-packets/render.ts';
 import { reviewerPacket } from '../work-packets/reviewer.ts';
 import { fixerPacket } from '../work-packets/fixer.ts';
 import { ensureWorkspace } from '../state/workspace.ts';
-import { collectLint } from '../analyzers/lint.ts';
-import { run, toolRun } from '../analyzers/run.ts';
 import { FileCheckpointTransaction } from '../git/transaction.ts';
 import { snapshotBaseline } from '../verification/behavior-lock.ts';
+import { measureBaseline } from '../verification/verifier.ts';
 import { readBatch, saveBatch } from './verify.ts';
 import type { CommandResult } from './commands.ts';
 import { loadPolicies } from './commands.ts';
@@ -43,19 +42,18 @@ export async function analyze(
 
   const scopeFiles = resolveScope(config, args);
   out.heading('сбор фактов');
-  out.item(
-    args.all
-      ? 'область: всё дерево'
-      : `область: ${scopeFiles.length} файлов${args.since === null ? ' (изменённые в дереве)' : ` (изменённые от ${args.since})`}`,
-  );
+  if (args.all) out.item('область: всё дерево');
 
-  const facts = collectFacts({
+  const collected = collectFacts({
     config,
     policies,
     workspace,
     withTests: args.withTests,
     scopeFiles,
   });
+  const widened = widenScope(config, policies, collected, scopeFiles);
+  const facts = widened.facts;
+  out.item(widened.note);
   const file = saveFacts(workspace, facts);
 
   out.item(`линт: ${facts.lint.summary}`);
@@ -274,17 +272,7 @@ export async function fixTask(config: MaintenanceConfig, out: Reporter): Promise
   const allowed = [...new Set(selected.flatMap((finding) => finding.files))].sort();
   out.heading('контрольная точка');
   out.item('снимаю базовую линию: линт и типы');
-  const lint = collectLint({
-    root: config.root,
-    command: config.analysis.lintCommand,
-    outFile: path.join(workspace.tmp, 'lint-before.json'),
-    keepMessages: 50,
-  });
-  const typecheckRun = run(config.root, config.analysis.typecheckCommand);
-  const typecheck = toolRun(
-    typecheckRun,
-    typecheckRun.code === 0 ? 'типы сходятся' : 'типы не сходятся',
-  );
+  const { lint, typecheck } = measureBaseline(config, workspace.tmp);
   out.item(`линт: ${lint.summary}`);
   out.item(`типы: ${typecheck.summary}`);
 

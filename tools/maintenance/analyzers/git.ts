@@ -56,3 +56,35 @@ export function changedSince(root: string, baseRef: string): string[] {
   }
   return [...files].sort();
 }
+
+/**
+ * Файлы, изменённые начиная с указанного момента.
+ *
+ * Нужны журналу находок: решение человека («это осознанный долг») действует ровно до тех пор, пока
+ * код вокруг находки не изменился. Спрашивается git, а не время правки файла на диске: время
+ * сбрасывается любой выгрузкой дерева, а история — нет.
+ *
+ * В ответ идут и коммиты, и рабочее дерево: незакоммиченная правка — такая же смена обстоятельств,
+ * и ждать коммита, чтобы переоткрыть находку, значило бы спрашивать про заведомо устаревшее.
+ */
+export function filesChangedSince(root: string, since: string): string[] {
+  const files = new Set<string>();
+  const log = run(root, ['git', 'log', `--since=${since}`, '--name-only', '--pretty=format:']);
+  if (log.code === 0) {
+    for (const line of log.stdout.split('\n')) {
+      const file = line.trim();
+      if (file !== '') files.add(file);
+    }
+  }
+  for (const file of run(root, ['git', 'diff', '--name-only', '-z', 'HEAD']).stdout.split('\0')) {
+    if (file.trim() !== '') files.add(file);
+  }
+  return [...files].sort();
+}
+
+/** Когда файл менялся в истории последний раз. `null` — файла в истории нет. */
+export function lastChangeOf(root: string, file: string): string | null {
+  const result = run(root, ['git', 'log', '-1', '--format=%cI', '--', file]);
+  const value = result.stdout.trim();
+  return result.code === 0 && value !== '' ? value : null;
+}

@@ -43,7 +43,7 @@ test('разрешённое направление нарушением не с
     'packages/contracts/src/index.ts': 'export const x = 1;\n',
   });
   try {
-    const facts = collectDependencies({
+    const { facts } = collectDependencies({
       root: dir,
       files: ['apps/api/src/a.ts', 'packages/contracts/src/index.ts'],
       packages: PACKAGES,
@@ -63,7 +63,7 @@ test('импорт словаря из приложения — нарушени
     'apps/api/src/a.ts': 'export const helper = 1;\n',
   });
   try {
-    const facts = collectDependencies({
+    const { facts } = collectDependencies({
       root: dir,
       files: ['packages/contracts/src/index.ts', 'apps/api/src/a.ts'],
       packages: PACKAGES,
@@ -88,7 +88,7 @@ test('взаимный импорт через публичный вход ви�
       "import { helper } from '../index.ts';\nexport const grid = helper;\n",
   });
   try {
-    const facts = collectDependencies({
+    const { facts } = collectDependencies({
       root: dir,
       files: ['apps/web/src/entities/thing/index.ts', 'apps/web/src/entities/thing/ui/grid.ts'],
       packages: PACKAGES,
@@ -113,7 +113,7 @@ test('алиас действует только в своей области', 
       "import { button } from '@shared/ui/button';\nexport const route = button;\n",
   });
   try {
-    const facts = collectDependencies({
+    const { facts } = collectDependencies({
       root: dir,
       files: [
         'apps/web/src/pages/page.ts',

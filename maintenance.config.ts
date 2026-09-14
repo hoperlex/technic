@@ -70,6 +70,25 @@ export default defineMaintenanceConfig({
     ],
     typecheckCommand: ['pnpm', '-r', 'typecheck'],
     sourceExtensions: ['.ts', '.tsx', '.mjs'],
+    // Один шаг соседства и потолок в 60 файлов: замер этого дерева — 1763 файла и 8997 связей,
+    // на двух шагах область вырастает до сотен файлов и перестаёт быть областью.
+    neighbourDepth: 1,
+    maxScopeFiles: 60,
+    /*
+     * Проверка идёт в отдельном дереве: общее дерево здесь почти никогда не бывает зелёным
+     * целиком — рядом всегда чья-то незавершённая работа.
+     *
+     * Пять каталогов зависимостей: корневой и по одному на пакет рабочего пространства. Меньше
+     * нельзя — pnpm не найдёт зависимости пакета; больше не нужно.
+     */
+    isolateVerification: true,
+    linkPaths: [
+      'node_modules',
+      'apps/api/node_modules',
+      'apps/web/node_modules',
+      'apps/worker/node_modules',
+      'packages/contracts/node_modules',
+    ],
     aliases: [
       { prefix: '@technic/contracts', target: 'packages/contracts/src/index.ts' },
       { prefix: '@app/', target: 'apps/web/src/app/', within: 'apps/web/' },
