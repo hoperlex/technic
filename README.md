@@ -173,5 +173,6 @@ deploy-auto --maintenance=off
 
 Подробности деплоя и эксплуатации — в `docs/`. Оттуда же — рабочие инструкции:
 [наполнение справочника сотрудниками](docs/guide-staff-import.md) из кадровой выгрузки,
+[настройка почтовых оповещений оргтехники](docs/guide-office-equipment-mail.md),
 [памятка сотруднику отдела](docs/guide-department.md),
 [памятка руководителю строительства](docs/guide-rukstroy.md).
