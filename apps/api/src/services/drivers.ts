@@ -762,6 +762,15 @@ export interface MachinistOption {
   personnelNo: string;
   jobTitle: string;
   /**
+   * Карточка снята из справочника (`deleted_at`), а человек в бумаге остался.
+   *
+   * Читается такой машинист только по просьбе вызывающего (`includeDeleted`) и нужен ровно там,
+   * где имя уже напечатано в выданном листе: переоформление сгоревшего номера берёт человека не из
+   * формы, а из самого бланка (ADR 0164, правка от 14.09.2026). Кто спрашивает человека у формы,
+   * удалённую карточку получать не должен — за него это поле и проверяют.
+   */
+  cardDeleted: boolean;
+  /**
    * Документ, которым машинист допущен по должности, годный на дату (`waybillDocumentOf`);
    * `null` — годного нет. Бланк ЭСМ-2 его граф не содержит, но ключи листа заполняются из него:
    * снимок листа не должен зависеть от того, какие клетки размечены в шаблоне (ADR 0095).
@@ -827,13 +836,25 @@ export async function findMachinist(
   personId: string,
   /** Дата, на которую читаются должность и документ: у листа ЭСМ-2 это начало недели. */
   on: string,
+  options: {
+    /**
+     * Отдавать и снятую карточку, пометив её `cardDeleted`. Просит об этом только переоформление
+     * уже выданного листа: там человек назван бумагой, а не формой, и «его здесь не должно быть»
+     * (ADR 0101 п. 15) относится к новым назначениям, а не к неделе, которую машина отстояла.
+     */
+    includeDeleted?: boolean;
+  } = {},
 ): Promise<MachinistOption | null> {
   const [row] = await reader
-    .select({ personId: persons.id, fullName: persons.fullName })
+    .select({ personId: persons.id, fullName: persons.fullName, deletedAt: persons.deletedAt })
     .from(persons)
     // Удалённый не возвращается и историческим окном: удаление значит «его здесь не должно
-    // быть», а не «он уволился» (ADR 0101 п. 15).
-    .where(and(eq(persons.id, personId), isNull(persons.deletedAt)));
+    // быть», а не «он уволился» (ADR 0101 п. 15). Исключение — явная просьба выше.
+    .where(
+      options.includeDeleted
+        ? eq(persons.id, personId)
+        : and(eq(persons.id, personId), isNull(persons.deletedAt)),
+    );
   if (!row) return null;
 
   // Табельный номер с должностью — добором: работодателей у человека несколько, и join размножил
@@ -858,8 +879,12 @@ export async function findMachinist(
 
   const jobTitle = employment?.jobTitle ?? '';
   const licenses = (await loadDriverLicenses(reader, [personId])).get(personId) ?? [];
+  // Поля перечислены поимённо, а не разворотом строки: `deleted_at` — дата удаления, а наружу
+  // отдаётся ответ «карточка снята», и метка эта не должна утечь в снимок листа вместе с остальным.
   return {
-    ...row,
+    personId: row.personId,
+    fullName: row.fullName,
+    cardDeleted: row.deletedAt !== null,
     personnelNo: employment?.personnelNo ?? '',
     jobTitle,
     license: waybillDocumentOf(licenses, jobTitle, on),
