@@ -505,7 +505,7 @@ async function waitForWaiters(probe: pg.Client, pid: number, count: number): Pro
     const chain = new Set<number>([pid]);
     const queue: { pid: number; query: string }[] = [];
     // Проход повторяется, пока множество растёт: третий в очереди виден только после второго.
-    for (let grew = true; grew; ) {
+    for (let grew = true; grew;) {
       grew = false;
       for (const row of rows) {
         if (chain.has(row.pid)) continue;
@@ -592,6 +592,26 @@ function issueEsm2(requestId: string, body: Record<string, unknown>): Promise<Re
   return ctx.app.inject({
     method: 'POST',
     url: `/api/v1/vehicle-requests/${requestId}/esm2`,
+    headers: ctx.auth,
+    payload: body,
+  });
+}
+
+/** Смена статуса — вторая из трёх дверей, зовущих общий бумажный план мимо каркаса (Б5). */
+function changeStatus(requestId: string, body: Record<string, unknown>): Promise<Reply> {
+  return ctx.app.inject({
+    method: 'PATCH',
+    url: `/api/v1/vehicle-requests/${requestId}/status`,
+    headers: ctx.auth,
+    payload: body,
+  });
+}
+
+/** Старая дверь смены техники — третья из них. */
+function reassign(requestId: string, body: Record<string, unknown>): Promise<Reply> {
+  return ctx.app.inject({
+    method: 'PATCH',
+    url: `/api/v1/vehicle-requests/${requestId}/assignment`,
     headers: ctx.auth,
     payload: body,
   });
@@ -1711,5 +1731,185 @@ describe.skipIf(!RAW_DB_URL)('гонки дверей истории назна�
     // Работа всё-таки сделана один раз — частичный UNIQUE и есть последняя защита истории.
     const atDate = (await changesOf(scene.requestId)).filter((c) => c.effective_date === date);
     expect(atDate).toHaveLength(1);
+  }, 60_000);
+  // ── 7. Двери, зовущие общий план мимо каркаса (Б5) ──
+
+  /*
+   * ЧЕГО НЕ СТЕРЕЖЁТ СЕКЦИЯ ВЫШЕ. Она смотрит на каркас команд, а общий бумажный план зовут ещё
+   * три двери мимо него: ручная выписка ЭСМ-2 (`POST /:id/esm2`), смена статуса (`PATCH /:id/status`)
+   * и старая дверь смены техники (`PATCH /:id/assignment`). Решение Б5 писалось про **все** двери,
+   * зовущие общий план, и до этой волны три из них открывали транзакцию на изоляции пула — то есть
+   * собирали документ строгой отчётности чтениями с разными снимками.
+   *
+   * СЮЖЕТ У ВСЕХ ТРЁХ ОДИН, И ДРУГОГО У НИХ НЕТ. Два одновременных писателя по одной заявке, оба с
+   * версией `N`, оба поставлены в очередь за держателем строки заявки — параллельность
+   * доказывается очередью, как и во всех случаях этого файла, а не предполагается. Держатель
+   * коммитит, победившая проходит и поднимает версию, проигравшая получает `40001` на своей
+   * блокировке, уходит в штатный повтор и отвечает человеку понятным 409.
+   *
+   * ЧТО ИМЕННО ЗДЕСЬ КРАСНЕЕТ БЕЗ ПРАВКИ, А ЧТО НЕТ. Ответ человеку от уровня изоляции **не
+   * зависит**: 409 проигравшая давала и под `READ COMMITTED` — там она перечитывала строку свежим
+   * снимком и сразу видела чужую версию. Поэтому пара `[200, 409]` ничего не доказывает, и предмет
+   * случаев — **путь**: счётчик повторов двери. Под прежним уровнем `40001` не возникает вовсе,
+   * `retries` остаётся нулём, и все три случая краснеют именно на нём. Рядом проверяется, что
+   * повтор не превратился в двойную работу: версия поднялась один раз, лист один, событие одно.
+   */
+
+  /** Сколько событий такого вида записано по заявке: мера «сколько раз работа сделана». */
+  async function auditCountOf(requestId: string, action: string): Promise<number> {
+    const { rows } = await ctx.db.execute<{ count: string }>(sql`
+      SELECT count(*)::text AS count FROM audit_log
+       WHERE entity_type = 'vehicle_request' AND entity_id = ${requestId} AND action = ${action}`);
+    return Number(rows[0]!.count);
+  }
+
+  /** Повторы и исчерпания одной двери из процессного счётчика протокола (В4). */
+  async function countersOf(door: string): Promise<{ retries: number; exhaustions: number }> {
+    const retry = await import('../src/services/assignment-retry');
+    const all = retry.assignmentRetryCounters();
+    const row = all.find((c) => c.door === door);
+    expect(row, `счётчик двери ${door} не вырос вовсе: ${JSON.stringify(all)}`).toBeDefined();
+    return { retries: row!.retries, exhaustions: row!.exhaustions };
+  }
+
+  /**
+   * РУЧНАЯ ВЫПИСКА ЭСМ-2. Две одновременные просьбы о бланке на одну неделю и одну машину.
+   *
+   * Проигравшая обязана прийти к отказу **повтором**, а не пятисоткой, и её вторая попытка обязана
+   * увидеть чужой лист: это и есть доказательство того, что повторилось планирование, а не
+   * применился посчитанный до него план. Номер строгой отчётности при этом сгорает ровно один.
+   */
+  it('две одновременные выписки ЭСМ-2: штатный повтор, один бланк и понятный отказ второму', async () => {
+    const scene = await seedScene({ linear: true, term: { from: ESM2_TERM_FROM, to: TODAY } });
+    const payload = { weekOf: TODAY, vehicleId: ctx.vehicleA.id, driverPersonId: ctx.personA };
+    const fingerprint = await ackFingerprintOf(scene.requestId, payload);
+    const body = {
+      ...payload,
+      version: scene.version,
+      ...(fingerprint ? { acknowledge: { fingerprint } } : {}),
+    };
+    // Обнуление — после подготовки отпечатка: та проба идёт своей транзакцией и своим отказом.
+    (await import('../src/services/assignment-retry')).resetAssignmentRetryCounters();
+
+    const holder = await openHolder(scene.requestId);
+    const probe = await openProbe();
+    let replies: Reply[];
+    try {
+      const pid = await backendPid(holder);
+      const firstInFlight = issueEsm2(scene.requestId, body);
+      const secondInFlight = issueEsm2(scene.requestId, body);
+      await waitForWaiters(probe, pid, 2);
+      await holder.query('COMMIT');
+      replies = await Promise.all([firstInFlight, secondInFlight]);
+    } finally {
+      await holder.end();
+      await probe.end();
+    }
+
+    const codes = replies.map((r) => r.statusCode).sort();
+    expect(codes, replies.map((r) => r.body).join(' | ')).toEqual([200, 409]);
+    // Отказ — про уже выписанный бланк, а не про сломавшийся сервер: проигравшая пересчитала
+    // неделю заново и увидела лист победившей. Под старой изоляцией она видела бы то же самое, но
+    // без повтора, — различает эти два пути счётчик ниже, а не текст.
+    const lost = replies.find((r) => r.statusCode === 409)!;
+    expect(codeOf(lost), lost.body).toBe('version_conflict');
+
+    const counters = await countersOf('request-esm2');
+    expect(counters.retries).toBe(1);
+    expect(counters.exhaustions).toBe(0);
+    // Номер сожжён один: повтор пересчитал план, а не применил старый.
+    expect(await sheetsOf(scene.requestId)).toHaveLength(1);
+    expect(await versionOf(scene.requestId)).toBe(scene.version + 1);
+  }, 60_000);
+
+  /**
+   * СМЕНА СТАТУСА. Две одновременные отмены одной заявки.
+   *
+   * Дверь горячая, и проверяется у неё то же, что у выписки: проигравшая приходит к 409 повтором,
+   * а не пятисоткой, и переход случается **один раз** — второй строки в истории статусов и второго
+   * события в ленте быть не должно.
+   */
+  it('две одновременные смены статуса: штатный повтор, один переход и 409 второму', async () => {
+    const scene = await seedScene({});
+    const body = { status: 'cancelled', comment: 'отменяем дважды разом', version: scene.version };
+    (await import('../src/services/assignment-retry')).resetAssignmentRetryCounters();
+
+    const holder = await openHolder(scene.requestId);
+    const probe = await openProbe();
+    let replies: Reply[];
+    try {
+      const pid = await backendPid(holder);
+      const firstInFlight = changeStatus(scene.requestId, body);
+      const secondInFlight = changeStatus(scene.requestId, body);
+      await waitForWaiters(probe, pid, 2);
+      await holder.query('COMMIT');
+      replies = await Promise.all([firstInFlight, secondInFlight]);
+    } finally {
+      await holder.end();
+      await probe.end();
+    }
+
+    const codes = replies.map((r) => r.statusCode).sort();
+    expect(codes, replies.map((r) => r.body).join(' | ')).toEqual([200, 409]);
+    expect(codeOf(replies.find((r) => r.statusCode === 409)!)).toBe('version_conflict');
+
+    const counters = await countersOf('request-status');
+    expect(counters.retries).toBe(1);
+    expect(counters.exhaustions).toBe(0);
+    expect(await versionOf(scene.requestId)).toBe(scene.version + 1);
+    // Переход один: событие пишется после коммита, и вторая попытка проигравшей до него не дошла.
+    expect(await auditCountOf(scene.requestId, 'vehicle_request.status')).toBe(1);
+    const history = await ctx.db.execute<{ count: string }>(sql`
+      SELECT count(*)::text AS count FROM vehicle_request_status_history
+       WHERE vehicle_request_id = ${scene.requestId}`);
+    expect(Number(history.rows[0]!.count)).toBe(1);
+  }, 60_000);
+
+  /**
+   * СТАРАЯ ДВЕРЬ СМЕНЫ ТЕХНИКИ. Две одновременные смены машины у одной заявки.
+   *
+   * Самая дорогая из трёх: она переоформляет недельные листы, то есть жжёт номера. Повтор поэтому
+   * обязан быть не только штатным, но и **чистым** — назначение одно, событие одно, версия
+   * поднялась один раз.
+   */
+  it('две одновременные смены техники: штатный повтор, одно назначение и 409 второму', async () => {
+    const scene = await seedScene({});
+    // Машинист называется вместе с машиной: недельный лист без него не выписывается (ADR 0064),
+    // и без этого поля обе двери отказали бы 422 ещё до всякой очереди — гонки бы не случилось.
+    const body = {
+      vehicleId: ctx.vehicleC.id,
+      driverPersonId: ctx.personA,
+      version: scene.version,
+    };
+    (await import('../src/services/assignment-retry')).resetAssignmentRetryCounters();
+
+    const holder = await openHolder(scene.requestId);
+    const probe = await openProbe();
+    let replies: Reply[];
+    try {
+      const pid = await backendPid(holder);
+      const firstInFlight = reassign(scene.requestId, body);
+      const secondInFlight = reassign(scene.requestId, body);
+      await waitForWaiters(probe, pid, 2);
+      await holder.query('COMMIT');
+      replies = await Promise.all([firstInFlight, secondInFlight]);
+    } finally {
+      await holder.end();
+      await probe.end();
+    }
+
+    const codes = replies.map((r) => r.statusCode).sort();
+    expect(codes, replies.map((r) => r.body).join(' | ')).toEqual([200, 409]);
+    expect(codeOf(replies.find((r) => r.statusCode === 409)!)).toBe('version_conflict');
+
+    const counters = await countersOf('request-assignment');
+    expect(counters.retries).toBe(1);
+    expect(counters.exhaustions).toBe(0);
+    expect(await versionOf(scene.requestId)).toBe(scene.version + 1);
+    expect(await auditCountOf(scene.requestId, 'vehicle_request.assign')).toBe(1);
+    const assigned = await ctx.db.execute<{ vehicle_id: string }>(sql`
+      SELECT vehicle_id FROM vehicle_request_assignments WHERE request_id = ${scene.requestId}`);
+    expect(assigned.rows).toHaveLength(1);
+    expect(assigned.rows[0]!.vehicle_id).toBe(ctx.vehicleC.id);
   }, 60_000);
 });
