@@ -13,6 +13,7 @@ import {
   mechRequests,
   users,
 } from '../db/schema';
+import { fileView } from './file-view';
 
 // Как заявка на механизацию выглядит наружу (план `docs/mechanization-module-plan.md`). Отдельно от
 // маршрутов, потому что карточку собирают восемь ручек, и половина из них — внутри транзакции
@@ -140,20 +141,16 @@ export async function mechFilesByRequestIds(
       size: files.size,
       status: files.status,
       createdAt: files.createdAt,
+      // Карантин читается вместе с именем: имя скрытого документа наружу не уходит, и решает это
+      // общее правило (`fileView`), а не этот сборщик (Р6, п. 4).
+      quarantinedAt: files.quarantinedAt,
     })
     .from(mechRequestFiles)
     .innerJoin(files, eq(mechRequestFiles.fileId, files.id))
     .where(and(inArray(mechRequestFiles.requestId, ids), eq(files.status, 'active')));
   for (const row of rows) {
     const list = map.get(row.requestId) ?? [];
-    list.push({
-      id: row.id,
-      filename: row.filename,
-      contentType: row.contentType,
-      size: row.size,
-      status: row.status,
-      createdAt: row.createdAt.toISOString(),
-    });
+    list.push(fileView(row));
     map.set(row.requestId, list);
   }
   return map;

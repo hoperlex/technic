@@ -61,6 +61,7 @@ import {
 } from '../lib/access';
 import { err } from '../lib/errors';
 import { writeAudit, writeAuditTx } from '../lib/audit';
+import { fileNameView } from '../services/file-view';
 import { blindBaselineFingerprint, shouldSampleBlindCheck } from '../services/waste-ticket-blind';
 import { wasteTicketCheckFingerprint, wasteTicketChecks } from '../services/waste-ticket-checks';
 import {
@@ -510,6 +511,9 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           fileId: requestFiles.fileId,
           filename: files.filename,
           contentType: files.contentType,
+          // Карантин читается вместе с именем: имя скрытого талона наружу не уходит, и решает это
+          // общее правило (`fileNameView`), а не этот экран (Р6, п. 4).
+          quarantinedAt: files.quarantinedAt,
           // Связь `request_files` своей даты не имеет — берём дату файла: она и есть «когда талон
           // приложили», потому что файл загружают тем же действием.
           createdAt: files.createdAt,
@@ -531,6 +535,9 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           fileId: wasteTicketFiles.fileId,
           filename: files.filename,
           contentType: files.contentType,
+          // То же общее правило об имени карантинного файла (Р6, п. 4), что и у приложенных
+          // талонов: строка разбора остаётся, имя — нет.
+          quarantinedAt: files.quarantinedAt,
           status: wasteTicketFiles.status,
           reason: wasteTicketFiles.reason,
           errorClass: wasteTicketFiles.errorClass,
@@ -715,7 +722,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       files: [
         ...fileRows.map((f): WasteTicketFileDto => ({
           fileId: f.fileId,
-          filename: f.filename ?? '',
+          ...fileNameView(f),
           contentType: f.contentType ?? '',
           status: f.status,
           reason: f.reason,
@@ -744,7 +751,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           .filter((a) => !fileRows.some((f) => f.fileId === a.fileId))
           .map((a): WasteTicketFileDto => ({
             fileId: a.fileId,
-            filename: a.filename,
+            ...fileNameView(a),
             contentType: a.contentType,
             status: 'not_queued',
             reason:
@@ -1919,6 +1926,9 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           pageNo: wasteTicketPages.pageNo,
           ticketsOnPage: wasteTicketPages.ticketsFound,
           filename: files.filename,
+          // Карантин читается вместе с именем: у скрытого листа имя наружу не уходит даже в
+          // задание проверяющего (Р6, п. 4) — оно живёт тем же общим правилом.
+          quarantinedAt: files.quarantinedAt,
           requestNum: wasteRequests.num,
           objectName: constructionObjects.name,
           createdAt: wasteTicketBlindChecks.createdAt,
@@ -1954,7 +1964,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           requestId: row.requestId,
           pageId: row.pageId,
           fileId: row.fileId,
-          filename: row.filename ?? '',
+          ...fileNameView(row),
           pageNo: row.pageNo,
           requestNum: row.requestNum,
           objectName: row.objectName,

@@ -22,7 +22,12 @@ import {
   serviceRequestStatusHistory,
   users,
 } from '../db/schema';
-import { HISTORY_LIMIT, loadAuditEvents } from './request-history';
+import {
+  applyFileNameRule,
+  fileEntriesOf,
+  HISTORY_LIMIT,
+  loadAuditEvents,
+} from './request-history';
 import { short } from './request-diff';
 
 // История заявки на обслуживание оргтехники (ADR 0012, ADR 0085). Источников четыре, и все они уже
@@ -183,9 +188,21 @@ function fieldChangesOf(metadata: unknown): RequestChangeDto[] {
   if (!metadata || typeof metadata !== 'object') return [];
   const raw = (metadata as { changes?: unknown }).changes;
   if (!Array.isArray(raw)) return [];
-  return raw.filter(
-    (c): c is RequestChangeDto =>
-      !!c && typeof c === 'object' && typeof (c as RequestChangeDto).field === 'string',
+  return (
+    raw
+      .filter(
+        (c): c is RequestChangeDto =>
+          !!c && typeof c === 'object' && typeof (c as RequestChangeDto).field === 'string',
+      )
+      /*
+       * ПАРЫ «ИДЕНТИФИКАТОР → ИМЯ» ОБЯЗАНЫ ДОЙТИ ДО ЧИТАТЕЛЯ (план освобождения от подписи, Р6 п. 4):
+       * без них правило карантина не знает, о каком файле речь, и имя запертого документа осталось бы
+       * в истории. Записи СТАРОГО образца пар не несут — они писались до этой волны, и журнал заявки
+       * не переписывают: такая запись читается как прежде, а имя в ней остаётся видимым. Это осознанная
+       * граница, а не пропуск: карантин закрывает содержимое и будущие упоминания, а прошлую строку
+       * журнала может закрыть только карантин самой записи, которого в модели нет.
+       */
+      .map((c) => ({ ...c, files: fileEntriesOf(c) }))
   );
 }
 
@@ -649,5 +666,13 @@ export async function loadServiceRequestHistory(
     .sort((a, b) => b.at.localeCompare(a.at))
     .slice(0, HISTORY_LIMIT)
     .reverse();
+  /*
+   * ПРАВИЛО ИМЕНИ — ДО АУДИТОРНОГО ФИЛЬТРА, и порядок здесь не вкусовой. Фильтр режет строку
+   * события `to`, и применённый первым, он резал бы строку, собранную из НЕЗАМАСКИРОВАННЫХ имён:
+   * запертое имя уехало бы к читателю внутри урезанного текста. Правило спрашивается общее — то же,
+   * которым живут сборщики вложений и история прочих модулей (`applyFileNameRule`), своей копии
+   * условия «если карантин» здесь нет.
+   */
+  await applyFileNameRule(page);
   return projectHistoryForAudience(page, audience);
 }

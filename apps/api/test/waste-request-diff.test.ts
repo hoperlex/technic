@@ -117,12 +117,25 @@ describe('дифф правки заявки', () => {
     expect(change?.to?.endsWith('…')).toBe(true);
   });
 
-  it('файлы сравниваются по составу, а не по количеству', () => {
+  // Рядом с именами в событии едут идентификаторы файлов (план освобождения от подписи, Р6, п. 4):
+  // имя гасится при ЧТЕНИИ истории — карантин ставят позже подшивки, — и без идентификатора
+  // читатель не знает, о каком файле спрашивать правило.
+  it('файлы сравниваются по составу, а не по количеству, и событие называет файл', () => {
     const before = { ...BASE, files: [file('f1', 'акт.pdf')] };
     const after = { ...BASE, files: [file('f2', 'талон.pdf')] };
     const changes = diffWasteRequests(before, after);
-    expect(changes).toContainEqual({ field: 'filesAdded', from: null, to: 'талон.pdf' });
-    expect(changes).toContainEqual({ field: 'filesRemoved', from: null, to: 'акт.pdf' });
+    expect(changes).toContainEqual({
+      field: 'filesAdded',
+      from: null,
+      to: 'талон.pdf',
+      files: [{ id: 'f2', filename: 'талон.pdf' }],
+    });
+    expect(changes).toContainEqual({
+      field: 'filesRemoved',
+      from: null,
+      to: 'акт.pdf',
+      files: [{ id: 'f1', filename: 'акт.pdf' }],
+    });
   });
 
   // Факт правкой заявки не меняется (ADR 0035): его предъявляет закрытие, и в истории он идёт

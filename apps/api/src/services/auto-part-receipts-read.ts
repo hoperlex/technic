@@ -47,6 +47,7 @@ import {
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { orderByFrom, pageParams } from '../lib/pagination';
+import { attachedFileView } from './file-view';
 
 /**
  * Чтение чеков на автозапчасти (план `docs/auto-part-receipts-plan.md`, Р5, Р8—Р15; миграция
@@ -259,6 +260,9 @@ async function loadReceiptFiles(
       filename: files.filename,
       contentType: files.contentType,
       size: files.size,
+      // Карантин читается вместе с именем: имя скрытого документа наружу не уходит, и решает это
+      // общее правило (`attachedFileView`), а не этот сборщик (Р6, п. 4).
+      quarantinedAt: files.quarantinedAt,
     })
     .from(autoPartReceiptFiles)
     .innerJoin(files, eq(files.id, autoPartReceiptFiles.fileId))
@@ -266,12 +270,7 @@ async function loadReceiptFiles(
     .orderBy(asc(autoPartReceiptFiles.addedAt));
   for (const row of rows) {
     const list = found.get(row.receiptId) ?? [];
-    list.push({
-      id: row.id,
-      filename: row.filename,
-      contentType: row.contentType,
-      size: row.size,
-    });
+    list.push(attachedFileView(row));
     found.set(row.receiptId, list);
   }
   return found;

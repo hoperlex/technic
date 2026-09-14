@@ -1,4 +1,4 @@
-import type { FileDto, RequestChangeDto } from '@technic/contracts';
+import type { FileDto, RequestChangeDto, RequestChangeFileDto } from '@technic/contracts';
 
 // Общая механика диффа правки заявки — то, из чего складывается история в её карточке (ADR 0012).
 // Сравниваются DTO «до» и «после», а не сырые колонки: человеку нужны названия справочников и
@@ -13,6 +13,25 @@ const MAX_VALUE_LENGTH = 300;
 
 export function short(value: string): string {
   return value.length > MAX_VALUE_LENGTH ? `${value.slice(0, MAX_VALUE_LENGTH)}…` : value;
+}
+
+/**
+ * Перечень файлов одной строкой — ОДНОЙ функцией у писателя диффа и у читателя истории
+ * (`request-history.ts`): читатель пересобирает эту строку после того, как имена прошли правило
+ * карантина, и разойдись две сборки, в истории завелись бы два написания одного и того же события.
+ *
+ * Файл без имени в строку не попадает вовсе. Имя запертого файла — пустая строка (правило
+ * `file-view.ts`), и склейка оставила бы на его месте голую запятую, то есть «что-то потерялось»
+ * вместо «файл скрыт по обращению»; сам файл при этом никуда не исчезает — он остаётся строкой в
+ * `files` события вместе со своим признаком.
+ */
+export function fileListText(items: readonly RequestChangeFileDto[]): string {
+  return short(
+    items
+      .map((f) => f.filename)
+      .filter((name) => name !== '')
+      .join(', '),
+  );
 }
 
 /**
@@ -32,20 +51,32 @@ export function changeSet() {
       if (items.length > 0) changes.push({ field, from: null, to: short(items.join(', ')) });
     },
     /**
+     * Событие-список про файлы: рядом с именами едут ИДЕНТИФИКАТОРЫ, и без них событие неполно.
+     *
+     * Имена попадают в журнал в момент подшивки, а карантин ошибочно загруженного документа
+     * ставят позже — по инциденту, который обнаружили потом (план освобождения от подписи, Р6,
+     * п. 4). Журнал заявки не переписывают, значит гасить имя приходится при чтении истории, а для
+     * этого читателю нужно знать, О КАКОМ файле идёт речь. Одного имени для этого не хватает: по
+     * имени файл не ищется — их бывает два одинаковых, и строки файла может уже не быть.
+     */
+    fileList(field: string, items: readonly RequestChangeFileDto[]): void {
+      if (items.length === 0) return;
+      changes.push({ field, from: null, to: fileListText(items), files: [...items] });
+    },
+    /**
      * Файлы сравниваются по составу, а не по количеству: «было 3, стало 3» скрыло бы замену
      * одного документа другим.
      */
     files(before: readonly FileDto[], after: readonly FileDto[]): void {
-      const was = new Map(before.map((f) => [f.id, f.filename]));
-      const now = new Map(after.map((f) => [f.id, f.filename]));
-      this.listed(
-        'filesAdded',
-        [...now].filter(([id]) => !was.has(id)).map(([, name]) => name),
-      );
-      this.listed(
-        'filesRemoved',
-        [...was].filter(([id]) => !now.has(id)).map(([, name]) => name),
-      );
+      const was = new Set(before.map((f) => f.id));
+      const now = new Set(after.map((f) => f.id));
+      const pairs = (
+        rows: readonly FileDto[],
+        other: ReadonlySet<string>,
+      ): RequestChangeFileDto[] =>
+        rows.filter((f) => !other.has(f.id)).map((f) => ({ id: f.id, filename: f.filename }));
+      this.fileList('filesAdded', pairs(after, was));
+      this.fileList('filesRemoved', pairs(before, now));
     },
   };
 }

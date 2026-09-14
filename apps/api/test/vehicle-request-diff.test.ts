@@ -217,13 +217,25 @@ describe('дифф правки заявки на технику', () => {
     expect(change?.to?.endsWith('…')).toBe(true);
   });
 
-  it('файлы сравниваются по составу, а не по количеству', () => {
+  // Идентификаторы в событии — требование читателя истории: имя запертого файла гасится при чтении
+  // (план освобождения от подписи, Р6, п. 4), а по одному имени файл не найти.
+  it('файлы сравниваются по составу, а не по количеству, и событие называет файл', () => {
     const changes = diffVehicleRequests(
       { ...SPECIAL, files: [file('f1', 'заявка.pdf')] },
       { ...SPECIAL, files: [file('f2', 'путевой.pdf')] },
     );
-    expect(changes).toContainEqual({ field: 'filesAdded', from: null, to: 'путевой.pdf' });
-    expect(changes).toContainEqual({ field: 'filesRemoved', from: null, to: 'заявка.pdf' });
+    expect(changes).toContainEqual({
+      field: 'filesAdded',
+      from: null,
+      to: 'путевой.pdf',
+      files: [{ id: 'f2', filename: 'путевой.pdf' }],
+    });
+    expect(changes).toContainEqual({
+      field: 'filesRemoved',
+      from: null,
+      to: 'заявка.pdf',
+      files: [{ id: 'f1', filename: 'заявка.pdf' }],
+    });
   });
 });
 

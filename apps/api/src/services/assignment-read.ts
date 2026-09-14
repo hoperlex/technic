@@ -168,8 +168,14 @@ export async function readAssignmentStatesOn(
  * вовсе, и когда все они позже спрошенного дня, — и оба случая отвечаются одинаково, назначением.
  * Второй случай в жизни означает заявку, чья история начинается позже своего же срока, то есть
  * недовосстановленную; отвечать ей пустотой было бы хуже, чем ответить тем, что известно.
+ *
+ * День приходит либо значением (срез гаража спрашивает один день на весь запрос), либо выражением
+ * — колонкой строки. Второе завела сводная аналитика: у неё день свой у каждой смены, и запрос на
+ * день означал бы запрос в цикле по сменам (план `docs/analytics-summary-export-plan.md`, Р15).
+ * Тело от этого не меняется — `${on}::date` одинаково принимает параметр и кусок SQL, — а копия
+ * правила рядом с ним разошлась бы с оригиналом на первой же правке истории назначения.
  */
-export function requestDayVehicleSql(request: SQL, assigned: SQL, on: string): SQL {
+export function requestDayVehicleSql(request: SQL, assigned: SQL, on: string | SQL): SQL {
   return sql`CASE WHEN ${historyIsAuthoritativeSql()}
       THEN coalesce((SELECT arv.vehicle_id
                        FROM ${vehicleRequestAssignmentChanges} arv

@@ -249,6 +249,7 @@ import {
   markFilesActive,
   scheduleFilesDeletion,
 } from '../services/request-files';
+import { fileView } from '../services/file-view';
 import { registerPurgeRoute } from '../services/directory-purge';
 // Уборка следов недельной заявки при удалении насовсем (ADR 0085 Р15): общая на все четыре
 // вкладки, откуда `purge` доходит до её ссылок.
@@ -1051,20 +1052,16 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>>
       size: files.size,
       status: files.status,
       createdAt: files.createdAt,
+      // Карантин читается вместе с именем: имя скрытого документа наружу не уходит, и решает это
+      // общее правило (`fileView`), а не этот сборщик (Р6, п. 4).
+      quarantinedAt: files.quarantinedAt,
     })
     .from(vehicleRequestFiles)
     .innerJoin(files, eq(vehicleRequestFiles.fileId, files.id))
     .where(and(inArray(vehicleRequestFiles.vehicleRequestId, ids), eq(files.status, 'active')));
   for (const row of rows) {
     const list = map.get(row.requestId) ?? [];
-    list.push({
-      id: row.id,
-      filename: row.filename,
-      contentType: row.contentType,
-      size: row.size,
-      status: row.status,
-      createdAt: row.createdAt.toISOString(),
-    });
+    list.push(fileView(row));
     map.set(row.requestId, list);
   }
   return map;

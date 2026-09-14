@@ -62,6 +62,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams } from '../lib/pagination';
+import { fileView } from '../services/file-view';
 import { PrintAborted, renderPdf, renderPdfBatch } from '../services/office-pdf';
 import { requestBudget } from '../lib/request-budget';
 import { renderOfficeTemplate } from '../services/office-template';
@@ -497,6 +498,9 @@ async function filesByWaybill(ids: string[]): Promise<Map<string, FileDto[]>> {
       size: files.size,
       status: files.status,
       createdAt: files.createdAt,
+      // Карантин читается вместе с именем: имя скрытого документа наружу не уходит, и решает это
+      // общее правило (`fileView`), а не этот сборщик (Р6, п. 4).
+      quarantinedAt: files.quarantinedAt,
     })
     .from(waybillFiles)
     .innerJoin(files, eq(files.id, waybillFiles.fileId))
@@ -505,14 +509,7 @@ async function filesByWaybill(ids: string[]): Promise<Map<string, FileDto[]>> {
 
   for (const row of rows) {
     const list = map.get(row.waybillId) ?? [];
-    list.push({
-      id: row.id,
-      filename: row.filename,
-      contentType: row.contentType,
-      size: row.size,
-      status: row.status,
-      createdAt: row.createdAt.toISOString(),
-    });
+    list.push(fileView(row));
     map.set(row.waybillId, list);
   }
   return map;

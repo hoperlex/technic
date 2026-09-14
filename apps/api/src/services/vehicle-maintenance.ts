@@ -29,6 +29,7 @@ import {
 } from '../db/schema';
 import { writeAuditTx } from '../lib/audit';
 import { err } from '../lib/errors';
+import { attachedFileView } from './file-view';
 import { loadLastExpectedShiftDays, loadLastOdometers } from './readings-aggregate';
 import { assertFilesAttachable, markFilesActive, scheduleFilesDeletion } from './request-files';
 
@@ -185,6 +186,9 @@ async function loadFiles(
       filename: files.filename,
       contentType: files.contentType,
       size: files.size,
+      // Карантин читается вместе с именем: имя скрытого документа наружу не уходит, и решает это
+      // общее правило (`attachedFileView`), а не этот сборщик (Р6, п. 4).
+      quarantinedAt: files.quarantinedAt,
     })
     .from(vehicleMaintenanceFiles)
     .innerJoin(files, eq(files.id, vehicleMaintenanceFiles.fileId))
@@ -192,12 +196,7 @@ async function loadFiles(
     .orderBy(asc(vehicleMaintenanceFiles.addedAt));
   for (const row of rows) {
     const list = found.get(row.maintenanceId) ?? [];
-    list.push({
-      id: row.id,
-      filename: row.filename,
-      contentType: row.contentType,
-      size: row.size,
-    });
+    list.push(attachedFileView(row));
     found.set(row.maintenanceId, list);
   }
   return found;

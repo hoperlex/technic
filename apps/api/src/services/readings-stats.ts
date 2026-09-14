@@ -35,6 +35,7 @@ import {
   waybills,
   waybillSeries,
 } from '../db/schema';
+import { attachedFileView } from './file-view';
 import { EXPECTED_ESM2_FILTER, EXPECTED_ROUTE_FILTER } from './readings-aggregate';
 
 /**
@@ -624,6 +625,9 @@ async function loadReadingFiles(
       filename: files.filename,
       contentType: files.contentType,
       size: files.size,
+      // Карантин читается вместе с именем: имя скрытого документа наружу не уходит, и решает это
+      // общее правило (`attachedFileView`), а не этот сборщик (Р6, п. 4).
+      quarantinedAt: files.quarantinedAt,
     })
     .from(vehicleReadingFiles)
     .innerJoin(files, eq(files.id, vehicleReadingFiles.fileId))
@@ -632,12 +636,7 @@ async function loadReadingFiles(
 
   for (const row of rows) {
     const list = map.get(row.readingId) ?? [];
-    list.push({
-      id: row.id,
-      filename: row.filename,
-      contentType: row.contentType,
-      size: row.size,
-    });
+    list.push(attachedFileView(row));
     map.set(row.readingId, list);
   }
   return map;

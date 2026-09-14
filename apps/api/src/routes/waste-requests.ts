@@ -109,6 +109,7 @@ import {
   ownerMismatchChanges,
 } from '../services/waste-request-diff';
 import { loadWasteRequestHistory } from '../services/waste-request-history';
+import { fileView } from '../services/file-view';
 import { vehiclesByRequestIds } from '../services/waste-request-vehicles';
 import { assertOperatorServesObject } from '../services/object-operators';
 import { enqueueTicketRecognition, purgeRequestRecognition } from '../services/waste-tickets';
@@ -230,20 +231,16 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, RequestFile
       size: files.size,
       status: files.status,
       createdAt: files.createdAt,
+      // Карантин читается вместе с именем: судьбу имени решает общее правило (`fileView`), и без
+      // этой колонки сборщик отдал бы имя скрытого документа (Р6, п. 4).
+      quarantinedAt: files.quarantinedAt,
     })
     .from(requestFiles)
     .innerJoin(files, eq(requestFiles.fileId, files.id))
     .where(and(inArray(requestFiles.requestId, ids), eq(files.status, 'active')));
   for (const row of rows) {
     const groups = map.get(row.requestId) ?? { files: [], tickets: [] };
-    (row.kind === 'ticket' ? groups.tickets : groups.files).push({
-      id: row.id,
-      filename: row.filename,
-      contentType: row.contentType,
-      size: row.size,
-      status: row.status,
-      createdAt: row.createdAt.toISOString(),
-    });
+    (row.kind === 'ticket' ? groups.tickets : groups.files).push(fileView(row));
     map.set(row.requestId, groups);
   }
   return map;

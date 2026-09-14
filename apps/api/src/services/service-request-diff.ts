@@ -90,14 +90,25 @@ export function diffServiceRequests(
     file.kind === 'attachment'
       ? file.filename
       : `${serviceFileKindLabels[file.kind]}: ${file.filename}`;
-  diff.listed(
-    'filesAdded',
-    [...now].filter(([id]) => !was.has(id)).map(([, file]) => label(file)),
-  );
-  diff.listed(
-    'filesRemoved',
-    [...was].filter(([id]) => !now.has(id)).map(([, file]) => label(file)),
-  );
+  /*
+   * РЯДОМ С ИМЕНАМИ ЕДУТ ИДЕНТИФИКАТОРЫ (план освобождения от подписи, Р6 п. 4, как у общего
+   * `changeSet().files()`): имя попадает в журнал в момент подшивки, а карантин ошибочно
+   * загруженного документа ставят позже — по инциденту, обнаруженному потом. Журнал заявки не
+   * переписывают, значит гасить имя приходится при ЧТЕНИИ истории, а читателю нужно знать, о каком
+   * файле речь: по имени файл не ищется — их бывает два одинаковых, и строки файла может уже не
+   * быть.
+   *
+   * Вид документа остаётся в подписи имени («Акт: договор.pdf»): в этом модуле он значим, и
+   * «прикреплён акт» читается не так, как «прикреплено фото». У запертого файла имя пустеет целиком
+   * вместе с подписью вида — иначе перечень видов сам рассказывал бы, что именно заперли.
+   */
+  const pairs = (
+    rows: Map<string, ServiceRequestFileDto>,
+    other: Map<string, ServiceRequestFileDto>,
+  ) =>
+    [...rows].filter(([id]) => !other.has(id)).map(([id, file]) => ({ id, filename: label(file) }));
+  diff.fileList('filesAdded', pairs(now, was));
+  diff.fileList('filesRemoved', pairs(was, now));
   return diff.changes;
 }
 

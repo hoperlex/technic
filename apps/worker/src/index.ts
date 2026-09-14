@@ -694,7 +694,23 @@ const FILE_CLEANUP_PASSES: FileCleanupPass[] = [
   },
 ];
 
-/** Один проход уборки. Возвращает число убранных файлов. */
+/**
+ * Один проход уборки. Возвращает число убранных файлов.
+ *
+ * КАРАНТИННЫЙ ФАЙЛ УБОРКА НЕ БЕРЁТ — условие `quarantined_at IS NULL` стоит в ОБОИХ запросах (план
+ * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`, Р6, п. 4).
+ *
+ * Запертый файл выглядит для уборки идеальным кандидатом: связей у него нет (штатное снятие вложения
+ * связь убирает, а строку файла карантин держит — `scheduleFilesDeletion`), статус остался прежним,
+ * а возраст набегает сам. То есть без этого условия предмет разбора инцидента уносил бы не человек,
+ * а календарь — вместе с хешем, которым содержимое доказано, и тем тише, что никто не нажимал
+ * кнопки.
+ *
+ * В обоих запросах, а не только в отборе кандидатов: подтверждение под блокировкой читает состояние
+ * заново и само решает, что сносить, — поправь одно место, и карантин, поставленный между двумя
+ * запросами, второй запрос всё равно бы снёс. Это та же причина, по которой под блокировкой
+ * перечитываются статус и связанность.
+ */
 async function cleanupUnlinkedFiles(pass: FileCleanupPass): Promise<number> {
   const client = await pool.connect();
   try {
@@ -704,6 +720,7 @@ async function cleanupUnlinkedFiles(pass: FileCleanupPass): Promise<number> {
         WHERE status = $1
           AND created_at < now() - $2::interval
           AND NOT file_is_linked(id)
+          AND quarantined_at IS NULL
         ORDER BY id
         LIMIT ${FILE_CLEANUP_BATCH}
         FOR UPDATE SKIP LOCKED`,
@@ -721,7 +738,8 @@ async function cleanupUnlinkedFiles(pass: FileCleanupPass): Promise<number> {
     const ids = candidates.rows.map((r) => r.id);
     const confirmed = await client.query<{ id: string; object_key: string }>(
       `SELECT id, object_key FROM files
-        WHERE id = ANY($1::uuid[]) AND status = $2 AND NOT file_is_linked(id)`,
+        WHERE id = ANY($1::uuid[]) AND status = $2 AND NOT file_is_linked(id)
+          AND quarantined_at IS NULL`,
       [ids, pass.status],
     );
     if (confirmed.rows.length > 0) {

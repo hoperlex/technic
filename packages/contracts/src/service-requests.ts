@@ -5339,12 +5339,31 @@ function projectHistoryChange(
   // потому что никто не писал строки, которая бы это разрешила.
   if (decision !== 'all' && decision !== 'visible_file_kinds') return [];
   if (decision === 'all') return [change];
-  const kept = (change.to ?? '')
-    .split(HISTORY_LIST_SEPARATOR)
-    .filter((item) => !hiddenPrefixes.some((prefix) => item.startsWith(prefix)));
+  const hidden = (name: string): boolean =>
+    hiddenPrefixes.some((prefix) => name.startsWith(prefix));
+  const kept = (change.to ?? '').split(HISTORY_LIST_SEPARATOR).filter((item) => !hidden(item));
+  /*
+   * ПАРЫ «ИДЕНТИФИКАТОР → ИМЯ» РЕЖУТСЯ ТЕМ ЖЕ ПРАВИЛОМ, ЧТО И СТРОКА.
+   *
+   * Поле `files` заведено волной карантина (план освобождения от подписи, Р6 п. 4), чтобы читатель
+   * истории мог спросить состояние файла и погасить имя запертого. Но оно везёт ИМЕНА — те же самые,
+   * что режет строка `to` по префиксам скрытых видов, — и, оставленное без резки, отдало бы
+   * заявителю «Счёт: счёт.pdf» новым полем, минуя единственное сегодняшнее место, где это
+   * запрещено. Ошибка была бы тихой вдвойне: строка в ленте выглядит урезанной правильно, а имя
+   * уезжает рядом, в поле, которое портал показывает не текстом.
+   */
+  const keptFiles = change.files?.filter((file) => !hidden(file.filename));
   // Изменение, от которого ничего не осталось, уходит: «Прикреплены файлы: » без единого имени —
   // не событие, а пустая строка в ленте.
-  return kept.length > 0 ? [{ ...change, to: kept.join(HISTORY_LIST_SEPARATOR) }] : [];
+  return kept.length > 0
+    ? [
+        {
+          ...change,
+          to: kept.join(HISTORY_LIST_SEPARATOR),
+          ...(change.files ? { files: keptFiles ?? [] } : {}),
+        },
+      ]
+    : [];
 }
 
 /**

@@ -62,6 +62,15 @@ export const PERMISSION_MODULES = [
    * набор не положить. Прецедент модуля из одного права — `files`.
    */
   'manuals',
+  /**
+   * Сводная аналитика (план `docs/analytics-summary-export-plan.md`, Р2) — свой модуль витрины из
+   * одного права, прецедент тот же, что у «Руководств» и «Файлов». В «Администрировании» ему места
+   * нет по той же причине: у модуля `admin` входное право `users.manage` из
+   * `NON_GRANTABLE_PERMISSIONS`, и набор с одной аналитикой показывал бы держателю
+   * «чтения модуля в наборе нет», закрыть которое нечем. Внутрь сведённых модулей его тоже не
+   * положить: приписанный к вывозу, он рассказывал бы, что человек работает в вывозе мусора.
+   */
+  'analytics',
   'admin',
 ] as const;
 export type PermissionModule = (typeof PERMISSION_MODULES)[number];
@@ -83,6 +92,7 @@ export const permissionModuleLabels: Record<PermissionModule, string> = {
   records: 'Архив и откаты',
   files: 'Файлы',
   manuals: 'Руководства',
+  analytics: 'Аналитика',
   admin: 'Администрирование',
 };
 
@@ -508,6 +518,17 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'read',
     label: 'Выгружает служебную книгу показаний',
   },
+  /*
+   * Аналитика живёт своим модулем витрины, а не внутри одного из трёх сведённых: приписанная,
+   * скажем, к вывозу, она показала бы «работает в вывозе мусора» тому, кто в модуле не нажимает
+   * ничего. Действие `read` по той же причине, что у соседа выше: держатель уносит книгу, а не
+   * меняет данные.
+   */
+  'analytics.export': {
+    module: 'analytics',
+    action: 'read',
+    label: 'Выгружает сводную аналитику по заказчикам',
+  },
   'vehicleMaintenance.read': {
     module: 'vehicleMaintenance',
     action: 'read',
@@ -529,6 +550,19 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
   'records.purge': { module: 'records', action: 'delete', label: 'Удаляет запись насовсем' },
 
   'files.manageAny': { module: 'files', action: 'manage', label: 'Удаляет чужие файлы' },
+  /*
+   * Карантин файла (план освобождения от подписи, Р6, п. 4). Действие `manage`, а не `read`, хотя
+   * держатель прежде всего смотрит: право не только открывает содержимое, но и ставит карантин и
+   * снимает его — то есть меняет доступность документа всем остальным. Покажи витрина «чтение», и
+   * держатель выглядел бы наблюдателем, а он единственный, кто может запереть основание денежного
+   * решения. Вторая строка `manage` в модуле — не задвоение: `files.manageAny` удаляет ничей файл,
+   * это право прячет любой, и выдаются они порознь.
+   */
+  'files.quarantineAudit': {
+    module: 'files',
+    action: 'manage',
+    label: 'Разбирает карантин файлов',
+  },
 
   'users.manage': { module: 'admin', action: 'manage', label: 'Ведёт учётные записи' },
   'audit.read': { module: 'admin', action: 'read', label: 'Читает журнал действий' },
@@ -572,6 +606,8 @@ export const MODULE_ENTRY_PERMISSION: Record<PermissionModule, Permission> = {
   // У «Руководств», как и у «Файлов», своего чтения нет: список читают все вошедшие, а модуль
   // состоит из одного права ведения — открывающим считается оно (`docs/manuals-plan.md` §3.1).
   manuals: 'manuals.manage',
+  // Модуль из одного права: открывающим считается оно само — как у «Файлов» и «Руководств».
+  analytics: 'analytics.export',
   admin: 'users.manage',
 };
 
@@ -602,6 +638,9 @@ export const ADMIN_PAGE_PERMISSIONS = [
   // Выгрузка показаний живёт вкладкой «Администрирования» (план, Р1), и без строки здесь раздел не
   // открылся бы тому, у кого из административных прав есть только она.
   'vehicleReadings.export',
+  // Сводная аналитика — вторая выгрузка той же вкладки (план, Р1): без строки здесь раздел не
+  // открылся бы тому, у кого из административных прав есть только она.
+  'analytics.export',
 ] as const satisfies readonly Permission[];
 
 /**

@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { and, eq, exists, inArray, isNotNull, isNull, not, or, type SQL, sql } from 'drizzle-orm';
 import {
   actsForCounterparty,
@@ -46,14 +48,68 @@ import {
   placeObjectVisibilityWhere,
   vehicleRequestVisibilityWhere,
 } from '../lib/access';
-import { isFileLinked } from '../services/request-files';
+import {
+  cancelScheduledObjectDeletion,
+  isFileLinked,
+  scheduleObjectDeletion,
+} from '../services/request-files';
 import type { Principal } from '../auth/principal';
-import { buildObjectKey, deleteObject, headObject, presignGet, presignPut } from '../lib/s3';
+import { buildObjectKey, deleteObject, headObject, presignGet, presignPut, s3 } from '../lib/s3';
 import { enqueueJob, JOB_DELETE_S3_OBJECT } from '../lib/jobs';
+import { logger } from '../logger';
 
 const idParams = z.object({ id: z.string().uuid() });
 const S3_DELETE_DELAY_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * Причина карантина и причина его снятия — обязательны обе (план
+ * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`, Р6, п. 4).
+ *
+ * Карантин запирает содержимое от всех, включая автора и «Ведение», а основание денежного решения
+ * снять нельзя никогда: через месяц на вопрос «почему акт не открывается» ответить может только эта
+ * строка — в самой записи файла остаётся лишь отметка времени. Необязательная причина превратила бы
+ * журнал в «кто-то что-то спрятал».
+ *
+ * Схема лежит здесь, а не в `packages/contracts/src/files.ts`, только потому, что контракты файлов
+ * в эту волну не правятся; место ей там, рядом с остальными схемами модуля (см. поле `open` отчёта).
+ */
+const quarantineBodySchema = z.object({ reason: z.string().trim().min(1).max(1000) });
+
+/**
+ * SHA-256 содержимого объекта — доказательство того, что по праву аудита смотрят ТОТ САМЫЙ файл, а
+ * не подменённый за это время объект хранилища.
+ *
+ * Потоком, а не целиком в память: предел загрузки измеряется десятками мегабайт, а карантин ставят
+ * по инциденту — в момент, когда на сервере и без того происходит разбор.
+ *
+ * **Неудача возвращает `null`, а не исключение.** Хеш считается ПОСЛЕ закрытия доступа, и падение
+ * хранилища не должно превращать поставленный карантин в ошибку запроса: недосчитанный хеш остаётся
+ * пустым и уходит в аудит как «посчитать не удалось» (комментарий колонки `content_hash` в
+ * `db/schema.ts`).
+ */
+async function contentHashOf(objectKey: string): Promise<string | null> {
+  try {
+    const res = await s3.send(new GetObjectCommand({ Bucket: config.s3.bucket, Key: objectKey }));
+    const body = res.Body as AsyncIterable<Uint8Array> | undefined;
+    if (!body) return null;
+    const hash = createHash('sha256');
+    for await (const chunk of body) hash.update(chunk);
+    return hash.digest('hex');
+  } catch (e) {
+    logger.error({ err: e, objectKey }, 'Не удалось посчитать хеш карантинного файла');
+    return null;
+  }
+}
+
+/**
+ * Имя карантинного файла ЭТА функция не прячет намеренно (план освобождения от подписи, Р6, п. 4).
+ *
+ * Запрет живёт в обработчиках: до `toFileDto` карантинный файл доходит только у держателя права
+ * разбора — остальным обе отдающие имя ручки отвечают `404`. Замажь имя здесь, и оно исчезло бы
+ * ровно у того единственного, кому разбор инцидента поручен, а правило о доступе раздвоилось бы на
+ * два места. Сборщики DTO соседних модулей (список файлов карточки) прячут имя у себя — у них
+ * карантинная строка остаётся в ответе признаком, и прятать там нужно не ответ, а поле.
+ */
 export function toFileDto(f: FileRow): FileDto {
   return {
     id: f.id,
@@ -233,7 +289,11 @@ async function wasteTicketScan(fileId: string): Promise<{ requestId: string | nu
  * не те строки (или не писать те).
  */
 type FileAccess =
-  { via: 'denied' } | { via: 'linkedRecord' } | { via: 'ticketAudit'; requestId: string | null };
+  | { via: 'denied' }
+  | { via: 'linkedRecord' }
+  | { via: 'ticketAudit'; requestId: string | null }
+  /** Карантинный файл, открытый правом разбора инцидента: такой доступ всегда пишется в журнал. */
+  | { via: 'quarantineAudit' };
 
 /**
  * «Открывает ли ЭТА заявка субъекту деньги» — `serviceRequestAudienceOf` (ADR 0160, Р1),
@@ -318,7 +378,31 @@ async function canAccessFile(
   p: Principal,
   fileId: string,
   uploadedBy: string | null,
+  quarantinedAt: Date | null,
 ): Promise<FileAccess> {
+  /*
+   * КАРАНТИН ОТБИВАЕТ ДОСТУП ПЕРВЫМ — раньше вывоза, техники, оргтехники, путевых листов, парка и
+   * раньше ветки автора файла (план `docs/office-equipment-on-site-and-invoice-estimate-plan.md`,
+   * Р6, п. 4).
+   *
+   * Порядок здесь — и есть весь карантин. Ставят его по инциденту: в карточку попали чужие
+   * персональные данные или секретный документ, а снять файл нельзя НИКОГДА — основание денежного
+   * решения не снимается ни автором, ни `files.manageAny`, ни после `reopen` (замки 1–2 того же
+   * Р6). Стой эта проверка после ветвей видимости, «скрытый» документ продолжал бы скачиваться по
+   * прямой ссылке всем, кому видна заявка, — то есть карантин был бы меткой в карточке, а
+   * ошибочно загруженные персональные данные — неустранимым инцидентом.
+   *
+   * Ветка автора — не исключение, а главный случай: чаще всего именно он и загрузил не тот файл.
+   * Единственный вход — право разбора инцидента, и он пишется в журнал (см. обработчик ссылки):
+   * сквозное право без следа само стало бы дырой в областях всех модулей разом.
+   *
+   * Спрашивается здесь, а не в обработчике, по той же причине, по которой здесь живёт ветка аудита
+   * талонов: второе мнение о правилах доступа однажды разойдётся с первым — и разойдётся молча.
+   */
+  if (quarantinedAt) {
+    return can(p, 'files.quarantineAudit') ? { via: 'quarantineAudit' } : { via: 'denied' };
+  }
+
   // Связи ищем только по доступным ролям модулям: иначе учётка без роли (и любая новая роль)
   // прошла бы по заявке вывоза — ограничения видимости на неё не действуют, они про штаб и
   // оператора.
@@ -607,6 +691,24 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
     const p = requirePrincipal(req);
     const [file] = await db.select().from(files).where(eq(files.id, req.params.id));
     if (!file || file.deletedAt) throw err.notFound('Файл не найден');
+    /*
+     * ВТОРАЯ РУЧКА, ОТДАЮЩАЯ ИМЯ ФАЙЛА, — и она ходит по тому же правилу (план освобождения от
+     * подписи, Р6, п. 4). Имя само бывает персональными данными: «Паспорт_Иванова.pdf» в ответе
+     * остаётся утечкой и без содержимого, а `toFileDto` ниже отдаёт именно его.
+     *
+     * Ответ — тот же `404`, что у невидимого файла в ссылке, и тем же текстом: разные коды на «нет
+     * такого» и «есть, но не тебе» дают оракул (ADR 0160, решение 6). `403` здесь был бы хуже
+     * прежнего: он сообщал бы автору, что его файл заперли по инциденту, — а узнать об этом он
+     * должен от людей, ведущих разбор, а не перебором ручек.
+     *
+     * Проверка стоит ДО авторства, а не после: ответ про карантин не должен зависеть от того, чей
+     * это файл, иначе пара ответов `403`/`404` снова различала бы «заперт» и «не существует».
+     * Держателю права разбора ручка отвечает по-прежнему — но только на его собственный файл: чужую
+     * незаконченную загрузку она не завершала никому и не начинает.
+     */
+    if (file.quarantinedAt && !can(p, 'files.quarantineAudit')) {
+      throw err.notFound('Файл не найден');
+    }
     if (file.uploadedBy !== p.id) throw err.forbidden();
     if (file.status === 'active') return toFileDto(file);
 
@@ -651,8 +753,21 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
     async (req) => {
       const p = requirePrincipal(req);
       const [file] = await db.select().from(files).where(eq(files.id, req.params.id));
-      if (!file || file.status !== 'active' || file.deletedAt) throw err.notFound('Файл не найден');
-      const access = await canAccessFile(p, file.id, file.uploadedBy);
+      /*
+       * У КАРАНТИННОГО ФАЙЛА СОСТОЯНИЕ ЗАГРУЗКИ БОЛЬШЕ НЕ РЕШАЕТ НИЧЕГО — решает одно правило
+       * карантина ниже (план `docs/office-equipment-on-site-and-invoice-estimate-plan.md`, Р6,
+       * п. 4). Карантин ставят и по УЖЕ СНЯТОМУ вложению: связи нет, строка помечена `deleted`, а
+       * объект жив, потому что постановка сняла задачу его сноса. Останься здесь прежнее
+       * `status !== 'active'`, разбор инцидента не открыл бы ровно тот файл, ради сохранения
+       * которого задачу и снимали, — то есть аварийный выход сводился бы к «спрятали и никому».
+       *
+       * Никому лишнему это не открывает: `canAccessFile` отвечает по карантину первой строкой и
+       * всем, кроме права разбора, возвращает отказ — тот же `404`, что у файла, которого нет.
+       */
+      if (!file || (!file.quarantinedAt && (file.status !== 'active' || file.deletedAt))) {
+        throw err.notFound('Файл не найден');
+      }
+      const access = await canAccessFile(p, file.id, file.uploadedBy, file.quarantinedAt);
       /*
        * `404`, а не `403`, и одинаково для всех модулей (ADR 0160, решение 6). Разные коды на «нет
        * такого файла» и «есть, но не тебе» — это оракул: перебрав идентификаторы, по одному лишь
@@ -666,6 +781,35 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
       if (access.via === 'denied') throw err.notFound('Файл не найден');
       const inline = req.query.disposition === 'inline' && isInlineViewable(file.contentType);
       const url = await presignGet(file.objectKey, file.filename, inline ? 'inline' : 'attachment');
+      if (access.via === 'quarantineAudit') {
+        /*
+         * КАЖДЫЙ доступ к карантинному файлу — запись журнала (план освобождения от подписи, Р6,
+         * п. 4). Причина жёстче, чем у просмотра талона мимо области: право сквозное НАСКВОЗЬ —
+         * карантинный файл приходит из любого модуля, и ни одна область его держателя не сужает.
+         * Уравновешено это единственным: видно, кто смотрел. Оттого и запись на каждое открытие, а
+         * не «одна на первую постановку»: разбор инцидента сам обязан быть прослеживаемым.
+         *
+         * Хеш уходит в строку журнала вместе с ссылкой: им доказывается, что смотрели то самое
+         * содержимое, которое закрыли, а не подменённый за это время объект хранилища. Пустой хеш —
+         * законное состояние (его могло не получиться посчитать), и читается он как «доказательства
+         * содержимого нет», а не как «файл не в карантине».
+         *
+         * `writeAudit`, а не `writeAuditTx`: транзакции здесь нет, а закрытый перечень строгой
+         * записи (`lib/audit.ts`) молча не расширяют — просмотр в него не входит.
+         */
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'file.quarantine_access',
+          entityType: 'file',
+          entityId: file.id,
+          metadata: {
+            filename: file.filename,
+            quarantinedAt: file.quarantinedAt?.toISOString() ?? null,
+            contentHash: file.contentHash,
+            disposition: inline ? 'inline' : 'attachment',
+          },
+        });
+      }
       if (access.via === 'ticketAudit') {
         /*
          * Просмотр скана мимо области — событие журнала (ADR 0137, §4.2). Право сквозное: держатель
@@ -698,6 +842,22 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
     if (!file || file.deletedAt) throw err.notFound('Файл не найден');
     // Свой файл удаляет автор загрузки, чужой — тот, кто ведёт заявки.
     if (file.uploadedBy !== p.id && !can(p, 'files.manageAny')) throw err.forbidden();
+    /*
+     * КАРАНТИННЫЙ ФАЙЛ НЕ УДАЛЯЕТСЯ ВОВСЕ — ни автором, ни держателем `files.manageAny`, ни
+     * держателем права разбора (план освобождения от подписи, Р6, п. 4).
+     *
+     * Пометка «удалён» ставит объекту задачу на физическое удаление из S3 через тридцать суток
+     * (`softDeleteFile`), то есть уносит предмет разбора вместе с хешем, которым он доказан.
+     * «Доказательство скрыто по обращению» и «доказательства не было» — разные факты, и удаление
+     * превратило бы первый во второй руками того, кто чаще всего и есть виновник инцидента.
+     *
+     * `409`, а не `404`: карантин не секрет — признак `quarantined` виден в карточке заявки всякому,
+     * кому видна сама заявка, — и отказ обязан сказать, что делать (сперва снять карантин). Порядок
+     * «снять карантин → удалить» оставляет в журнале обе строки с причинами.
+     */
+    if (file.quarantinedAt) {
+      throw err.conflict('Файл в карантине — сначала снимите карантин');
+    }
     // Прикреплённый к заявке файл удаляется только через редактирование заявки.
     if (await isFileLinked(file.id)) {
       throw err.conflict('Файл прикреплён к заявке — удалите его через редактирование заявки');
@@ -705,4 +865,221 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
     await softDeleteFile(file.id, file.objectKey);
     return { ok: true };
   });
+
+  /*
+   * ── Карантин: аварийный выход для ошибочно загруженного документа (Р6, п. 4) ──
+   *
+   * Право одно на обе ручки и на чтение содержимого — `files.quarantineAudit`, а не
+   * `files.manageAny`. Причин две, и обе про симметрию. Первая: `files.manageAny` приходит МАТРИЦЕЙ
+   * роли (он есть у менеджера и диспетчера целиком), а карантин — работа НАЗВАННОГО человека,
+   * которому инцидент поручен; право поэтому выдаётся одним системным набором поимённо. Вторая:
+   * поставивший карантин обязан видеть, что именно он запер, — иначе он решает наугад, — а
+   * снимающий обязан видеть, что открывает обратно. Разведи постановку и чтение по двум правам, и
+   * получилась бы пара «закрыть может один, открыть другой», в которой документ теряется.
+   */
+  const canQuarantine = {
+    preHandler: [
+      app.authenticate,
+      app.requirePermission(
+        'files.quarantineAudit',
+        'Недостаточно прав для разбора карантина файлов',
+      ),
+    ],
+  };
+
+  /**
+   * Постановка в карантин. Порядок внутри строгий: СНАЧАЛА закрывается доступ, и только потом
+   * считается хеш.
+   *
+   * Почему так — в комментарии колонки `content_hash` (`db/schema.ts`): пары «карантин ⇒ хеш есть» в
+   * базе нет намеренно, потому что такое ограничение сделало бы доступность ХРАНИЛИЩА условием
+   * закрытия доступа. Хеш считается потоком из S3, а карантин ставят по инциденту с персональными
+   * данными — ждать, пока починят сеть, нельзя. Недосчитанный хеш остаётся пустым и уходит в журнал
+   * как «посчитать не удалось», а не как «карантин не состоялся».
+   */
+  r.post(
+    '/:id/quarantine',
+    { ...canQuarantine, schema: { params: idParams, body: quarantineBodySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { reason } = req.body;
+      const [file] = await db.select().from(files).where(eq(files.id, req.params.id));
+      if (!file) throw err.notFound('Файл не найден');
+
+      /*
+       * СНЯТОЕ ВЛОЖЕНИЕ КАРАНТИНИТСЯ, ПОКА ЖИВ ОБЪЕКТ, — и это не послабление, а сам аварийный
+       * выход (план `docs/office-equipment-on-site-and-invoice-estimate-plan.md`, Р6, п. 4).
+       *
+       * Порядок событий, при котором карантин вообще нужен, чаще всего именно такой: вложение сняли,
+       * а инцидент заметили после — через день или через неделю. Строка файла помечена `deleted`,
+       * связи нет, но объект в хранилище живёт ещё тридцать суток, и отказ по одной отметке удаления
+       * закрывал бы аварийный выход ровно в том окне, ради которого он заведён: предмет разбора
+       * уехал бы по календарю, и доказать, что именно было загружено, стало бы нечем.
+       *
+       * УНИЧТОЖЕННЫЙ — по-прежнему `404`: карантинить нечего, а обещать сохранность того, чего нет,
+       * хуже отказа. «Жив ли объект» спрашивается у собственной очереди, а не у хранилища
+       * (`cancelScheduledObjectDeletion`): живая задача сноса означает, что снос ещё не выполнялся.
+       */
+      const outcome = await db.transaction(async (tx) => {
+        /*
+         * Блокировка строки на всю постановку: между «прочитали состояние» и «сняли задачу сноса»
+         * иначе помещается второй такой же запрос — и снятую первым задачу второй не нашёл бы,
+         * ответив `404` по живому файлу, уже стоящему в карантине.
+         */
+        const [row] = await tx
+          .select({ quarantinedAt: files.quarantinedAt, deletedAt: files.deletedAt })
+          .from(files)
+          .where(eq(files.id, file.id))
+          .for('update');
+        if (!row) throw err.notFound('Файл не найден');
+
+        /*
+         * Задача снимается ТОЛЬКО на первой постановке по снятому вложению: у повторного запроса её
+         * уже нет — снял он же, — и отсутствие задачи там означало бы не «объект уничтожен», а
+         * «карантин уже стоит». Оттого условие про `quarantinedAt`, а не про одну отметку удаления.
+         */
+        let deletionCancelled = false;
+        if (!row.quarantinedAt && row.deletedAt) {
+          deletionCancelled = await cancelScheduledObjectDeletion(tx, file.objectKey);
+          if (!deletionCancelled) throw err.notFound('Файл не найден');
+        }
+
+        /*
+         * Условное обновление — `WHERE quarantined_at IS NULL`, — и оно же делает ручку
+         * идемпотентной: повторный запрос (второй клик, повтор после таймаута) не сдвигает время
+         * постановки. Время постановки — единственная отметка в самой записи, по которой потом
+         * сверяют, что смотрели уже запертый файл; перетри её повтор, и первая запись журнала стала
+         * бы ссылаться в будущее.
+         */
+        const [updated] = await tx
+          .update(files)
+          .set({ quarantinedAt: new Date() })
+          .where(and(eq(files.id, file.id), isNull(files.quarantinedAt)))
+          .returning();
+        return {
+          locked: updated,
+          quarantinedAt: updated?.quarantinedAt ?? row.quarantinedAt,
+          deletionCancelled,
+          detached: row.deletedAt !== null,
+        };
+      });
+      const { locked, quarantinedAt, deletionCancelled, detached } = outcome;
+
+      /*
+       * Хеш считается только на первой постановке: у повторной он уже есть, а пересчёт по объекту,
+       * который с тех пор мог подменить кто угодно, затёр бы доказательство содержимого — ровно то,
+       * ради чего хеш и считают.
+       */
+      let contentHash = file.contentHash;
+      if (locked) {
+        contentHash = await contentHashOf(file.objectKey);
+        if (contentHash) {
+          await db.update(files).set({ contentHash }).where(eq(files.id, file.id));
+        }
+      }
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'file.quarantine',
+        entityType: 'file',
+        entityId: file.id,
+        metadata: {
+          reason,
+          filename: file.filename,
+          // Имя поля говорит о факте, а не о попытке: пустой хеш читается как «посчитать не
+          // удалось», и разбор обязан отличать это от «файл не заперт».
+          contentHash,
+          hashComputed: contentHash !== null,
+          repeated: !locked,
+          /*
+           * Снятое вложение и снятая задача сноса — в журнал: через месяц только эта строка
+           * объясняет, почему объект уцелел, хотя файл помечен удалённым, и почему после снятия
+           * карантина отсчёт тридцати суток пошёл заново.
+           */
+          detached,
+          deletionCancelled,
+        },
+      });
+
+      return {
+        id: file.id,
+        quarantined: true,
+        quarantinedAt: quarantinedAt?.toISOString() ?? null,
+        contentHash,
+        deletionCancelled,
+      };
+    },
+  );
+
+  /**
+   * Снятие карантина: ошибка бывает и здесь — заперли не тот файл либо обращение оказалось
+   * неосновательным.
+   *
+   * Тем же правом и тоже с причиной: запись о снятии — единственный носитель ответа на вопрос
+   * «почему документ снова открыт», потому что в самой записи файла после снятия не остаётся ничего.
+   * Хеш при этом НЕ стирается: он доказывает, какое содержимое было закрыто, и после снятия остаётся
+   * единственным следом того, что разбор вообще был.
+   */
+  r.post(
+    '/:id/quarantine/release',
+    { ...canQuarantine, schema: { params: idParams, body: quarantineBodySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { reason } = req.body;
+      const [file] = await db.select().from(files).where(eq(files.id, req.params.id));
+      if (!file) throw err.notFound('Файл не найден');
+      if (!file.quarantinedAt) throw err.conflict('Файл не в карантине');
+
+      const deletionRunAt = await db.transaction(async (tx) => {
+        // Снова условно: два одновременных снятия иначе записали бы в журнал две причины на одно
+        // событие, и читающий не понял бы, которая из них открыла доступ. Заодно это единственный
+        // замок на возврат задачи сноса: пройди оба снятия, файл получил бы две задачи на один
+        // объект.
+        const [released] = await tx
+          .update(files)
+          .set({ quarantinedAt: null })
+          .where(and(eq(files.id, file.id), isNotNull(files.quarantinedAt)))
+          .returning();
+        if (!released) throw err.conflict('Файл не в карантине');
+
+        /*
+         * СНЯТОЕ ВЛОЖЕНИЕ ВОЗВРАЩАЕТСЯ В СВОЁ ПРЕЖНЕЕ СОСТОЯНИЕ — «снят и ждёт сноса»: постановка
+         * карантина задачу сноса сняла, снятие карантина обязано поставить её обратно, иначе
+         * ничейный файл остался бы в хранилище навсегда, и аварийный выход превратился бы в способ
+         * отменить уборку.
+         *
+         * Срок отсчитывается ЗАНОВО, от момента снятия карантина, и это не округление, а смысл
+         * срока: тридцать суток дают время вернуть ошибочно снятое вложение — человек замечает
+         * пропажу документа и приходит за ним. Разбор инцидента этого времени не тратит, он занимает
+         * своё; доживай задача прежний срок, файл, пролежавший в карантине месяц, уехал бы из
+         * хранилища в ту же минуту, когда карантин сняли.
+         *
+         * Задача возвращается только снятому вложению: подшитый файл её не имел и иметь не должен.
+         */
+        return released.deletedAt ? await scheduleObjectDeletion(tx, released.objectKey) : null;
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'file.quarantine_release',
+        entityType: 'file',
+        entityId: file.id,
+        metadata: {
+          reason,
+          filename: file.filename,
+          contentHash: file.contentHash,
+          quarantinedAt: file.quarantinedAt.toISOString(),
+          // Когда снятое вложение уедет из хранилища: пусто у подшитого файла — ему уезжать некуда.
+          deletionScheduledAt: deletionRunAt?.toISOString() ?? null,
+        },
+      });
+
+      return {
+        id: file.id,
+        quarantined: false,
+        contentHash: file.contentHash,
+        deletionScheduledAt: deletionRunAt?.toISOString() ?? null,
+      };
+    },
+  );
 }
