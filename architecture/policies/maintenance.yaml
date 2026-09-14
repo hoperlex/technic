@@ -1,0 +1,86 @@
+# Бюджеты и условия остановки циклов обслуживания.
+#
+# Здесь лежат ЧИСЛА, а не проводка: какие команды считаются проверкой и где искать карту кода —
+# это `maintenance.config.ts`. Разделение не формальное. Числа — предмет договорённости, их правят
+# осознанно и редко, и их изменение видно на ревью одной строкой; проводка — техническая деталь
+# конкретного репозитория.
+#
+# Смысл всех лимитов один: цикл обязан закончиться. Не «сойтись к идеалу», а закончиться — с
+# принятым diff, журналом откатов и остатком в backlog.
+version: 1
+
+runtime:
+  home: .maintenance
+  gitIgnored: true
+
+# Короткий цикл на стабильной точке: три РАЗНЫХ прохода, а не три одинаковых.
+convergence:
+  maxPasses: 3
+  maxFindingsPerPass: 5
+  maxFilesChanged: 25
+  maxChangedLines: 1500
+  # Порог уверенности отбора. Находка ниже порога не исчезает — она уходит в отчёт человеку.
+  minAutofixConfidence: 0.88
+  # Допустимый риск изменения поведения. `low` означает: правка не должна быть способна изменить
+  # наблюдаемое поведение даже теоретически.
+  allowedRisk: low
+  behaviorChanges: forbidden
+  passes:
+    - id: structural
+      goal: >
+        Только структурные дефекты высокой ценности: нарушения жёстких и мягких правил, циклы,
+        неверное направление зависимостей, обход публичного входа слайса, протечка между
+        доменами, дублирующиеся архитектурные сущности.
+      forbids: [beautification, renaming, comment-cleanup]
+    - id: maintainability
+      goal: >
+        Локальная работа: мёртвый код, очевидное дублирование, лишние обёртки, устаревшие
+        абстракции, комментарии, TODO/FIXME, именование при высокой уверенности.
+      forbids: [module-moves, dependency-restructuring]
+    - id: stabilization
+      goal: >
+        Только регрессии, созданные двумя предыдущими проходами, и очевидные остаточные дефекты.
+      forbids: [new-initiatives, scope-expansion]
+
+# Условия остановки. Решение об остановке принимает оркестратор, а не модель: список закрытый.
+stopConditions:
+  - maxPassesReached
+  - noSelectedFindings
+  - improvementBelowThreshold
+  - behaviorRegressionDetected
+  - changeBudgetExceeded
+  - newSevereIssuesExceedResolved
+  - verificationFailedRepeatedly
+  - manualDecisionRequired
+
+# Тяжёлое окно. Выключено до этапа ЭF плана: включать его раньше, чем доказан откат, — ровно та
+# ошибка, от которой предостерегает концепт.
+deepMaintenance:
+  enabled: false
+  windowMinutes: 120
+  maxRepairBatches: 6
+  maxFindingsPerBatch: 3
+  maxFilesPerBatch: 8
+  maxChangedLinesPerBatch: 400
+  fullScan: allowed
+  unresolved: backlog
+  zones:
+    - id: architecture
+      looksFor: [cycles, leakage, ownership, shared-inflation, obsolete-abstractions]
+      mayChange: [boundaries, imports, module-structure]
+      mustNotChange: [product-architecture-without-adr]
+    - id: cleanup
+      looksFor: [dead-code, duplication, stale-wrappers, comments, todo]
+      mayChange: [local-cleanup, deletions, simplifications]
+      mustNotChange: [user-visible-behavior]
+    - id: stabilization
+      looksFor: [regressions-from-batches]
+      mayChange: [defects-created-by-this-run]
+      mustNotChange: [new-refactor-initiatives]
+
+# Журнал находок: как долго помнить решение человека, чтобы не спрашивать дважды.
+ledger:
+  reopenOnCodeChange: true
+  reopenOnPolicyChange: true
+  deferredReviewDays: 90
+  falsePositiveReviewDays: 180

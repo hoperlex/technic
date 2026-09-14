@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    // Импорты пишутся с расширением `.ts`, потому что так их требует Node: он снимает типы, но
+    // путей не достраивает. Компилятору это надо разрешить отдельно, и вместе с этим — запретить
+    // выпуск: собирать нечего, файлы исполняются как есть.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "declaration": false,
+    "verbatimModuleSyntax": true
+  },
+  "include": ["**/*.ts", "../../maintenance.config.ts"]
+}

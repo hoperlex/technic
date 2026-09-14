@@ -1,0 +1,103 @@
+# Защищённые области: где автоматическая правка запрещена или требует человека.
+#
+# Режимов три:
+#   allowed       — обычная область, правка разрешена в пределах бюджета и уверенности;
+#   manual-review — правка возможна, но только как предложение человеку: система не принимает её
+#                   сама даже при зелёной проверке;
+#   forbidden     — автоматическая правка запрещена. Находка превращается в пункт решения.
+#
+# Умолчание — `allowed`: список перечисляет исключения, а не весь репозиторий. Совпадение по
+# самому длинному пути: точечный запрет внутри разрешённой области работает.
+#
+# ЧЕМ ЭТО ОТЛИЧАЕТСЯ ОТ severity В architecture.yaml. Там — насколько строго правило; здесь —
+# насколько дорого ошибиться в этом месте. Область может быть без единого жёсткого правила и всё
+# равно быть `forbidden`: цена ошибки в миграции не зависит от того, нарушает она что-нибудь или
+# нет.
+version: 1
+default: allowed
+
+surfaces:
+  - id: db-schema-and-migrations
+    mode: forbidden
+    paths:
+      - apps/api/drizzle/**
+      - apps/api/src/db/schema.ts
+      - apps/api/src/db/migrate.ts
+      - apps/api/src/db/migration-journal.ts
+      - apps/api/teardown/**
+    why: >
+      Миграции идут при работающем портале и до перезапуска приложения, номера занимают
+      параллельный поток, а часть выкатов необратима. Ошибка здесь стоит данных, и починить её
+      откатом рабочего дерева нельзя — она уже в базе.
+    see: [docs/runbook.md, docs/schema-cutover-protocol.md]
+
+  - id: access-model
+    mode: forbidden
+    paths:
+      - packages/contracts/src/permissions.ts
+      - packages/contracts/src/permission-*.ts
+      - apps/api/src/auth/**
+      - apps/api/src/plugins/auth*.ts
+    why: >
+      Права и вход. Структурно «лишний» слой здесь может оказаться единственной проверкой области
+      видимости, а её потеря видна не падением теста, а чужими данными на экране.
+    see: [docs/access-model.md, docs/adr/0021-permissions-model.md]
+
+  - id: money-and-documents
+    mode: manual-review
+    paths:
+      - apps/api/src/services/*esm2*.ts
+      - apps/api/src/services/waste-pricing.ts
+      - apps/api/src/services/*print*.ts
+      - apps/api/src/services/*waybill*.ts
+    why: >
+      Печатные формы и расчёты: ЭСМ-2, путевые листы, тарифы вывоза. Наблюдаемое поведение здесь
+      — это бумага, которую подписывают; тестами покрыта не каждая её клетка.
+
+  - id: outbound-mail
+    mode: manual-review
+    paths:
+      - apps/api/src/services/*mail*.ts
+      - apps/api/src/mail/**
+      - apps/worker/src/**
+    why: >
+      Письма уходят людям и отменить их нельзя. Ошибка в отборе аудитории не откатывается вместе
+      с рабочим деревом.
+
+  - id: quality-gates
+    mode: forbidden
+    paths:
+      - scripts/check.mjs
+      - scripts/check-db.mjs
+      - scripts/check-docs.mjs
+      - scripts/lib/**
+      - apps/web/scripts/quality.mjs
+      - apps/web/quality-budget.json
+      - eslint.config.mjs
+      - package.json
+      - pnpm-lock.yaml
+    why: >
+      Это та самая проверка, которой система доказывает сохранение поведения. Разрешить правку
+      здесь значит разрешить чинить показания приборов вместо того, что они показывают.
+    see: [docs/adr/0147-quality-gates.md]
+
+  - id: decisions-and-deploy
+    mode: forbidden
+    paths:
+      - docs/adr/**
+      - deploy/**
+      - certs/**
+      - .env.example
+    why: >
+      Решения записывает человек: ADR — это договорённость, а не производный документ. Выкат и
+      ключи автоматической правке не подлежат по той же причине, что и миграции.
+
+  - id: tests-as-behavior-proof
+    mode: manual-review
+    paths:
+      - apps/*/test/**
+      - packages/*/test/**
+    why: >
+      Тест — доказательство поведения. Правка теста вслед за правкой кода превращает зелёный
+      прогон в самоподтверждение. Разрешено только то, что не меняет проверяемого утверждения
+      (переименование, перенос), и только через человека.

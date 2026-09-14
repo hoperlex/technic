@@ -15,6 +15,7 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "lint:release": "eslint . -c eslint/release.config.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "pnpm -r test",
@@ -22,6 +23,8 @@
     "check:db": "node scripts/check-db.mjs",
     "check:docs": "node scripts/check-docs.mjs",
     "test:docs": "node --test scripts/docs-navigation.test.mjs",
+    "maintain": "node tools/maintenance/cli/main.ts",
+    "maintain:typecheck": "tsc --noEmit -p tools/maintenance/tsconfig.json",
     "docs:index": "node scripts/gen-adr-index.mjs",
     "db:generate": "pnpm --filter @technic/api db:generate",
     "db:migrate": "pnpm --filter @technic/api db:migrate",
@@ -30,6 +33,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@types/node": "^24.0.0",
     "eslint": "^9.39.5",
     "eslint-import-resolver-typescript": "4.4.5",
     "eslint-plugin-boundaries": "7.1.0",
@@ -38,6 +42,7 @@
     "globals": "17.11.0",
     "prettier": "3.9.6",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.65.0"
+    "typescript-eslint": "8.65.0",
+    "yaml": "^2.8.0"
   }
 }

@@ -1,0 +1,156 @@
+# Машинная часть архитектурных решений.
+#
+# ADR остаётся человеческим текстом: он объясняет ПОЧЕМУ. Здесь — ЧТО ДОЛЖНО ВЫПОЛНЯТЬСЯ: где
+# правило действует, насколько строго и разрешена ли автоматическая правка. Двух источников не
+# заводится: `rule` пересказывает решение ровно настолько, чтобы его понял агент-ревьюер, а за
+# подробностями стоит ссылка на сам ADR.
+#
+# СТРОГОСТЬ (`severity`):
+#   hard     — нарушение архитектурного инварианта. Находка идёт в первый проход и чинится.
+#   soft     — кандидат на обслуживание. Решает отбор по уверенности и бюджету.
+#   advisory — материал для человека. Автоматическим поводом к правке не является НИКОГДА.
+#
+# КТО ИСПОЛНЯЕТ (`enforcedBy`): eslint | check-docs | quality-budget | tests | ai-review | human.
+# Поле обязательно и нужно ровно для того, чтобы система не проверяла второй раз то, что уже
+# проверено машиной, и не делала вид, будто проверяет то, за чем следит только человек.
+#
+# Правило hard, за которым стоит `ai-review`, — это не «линт помягче»: это инвариант, который
+# нечем проверить статически, и потому он спрашивается с ревьюера отдельным пунктом задания.
+version: 1
+
+policies:
+  - id: web-layer-direction
+    title: Слой портала видит только то, что ниже него, и только через вход слайса
+    status: active
+    severity: hard
+    scope: ['apps/web/src/**']
+    enforcedBy: eslint
+    source: eslint.config.mjs
+    adr: [docs/adr/draft-frontend-architecture.md]
+    autofix: false
+    rule: >
+      Импорт разрешён сверху вниз по порядку слоёв (shared → entities → features → widgets →
+      pages → app) и только через `index.ts` слайса. Импорт соседа по слою запрещён, кроме
+      единственного разрешения: виды заявок берут общее из `entities/request`.
+    exceptions:
+      requireReason: true
+
+  - id: shared-knows-no-domain
+    title: Фундамент портала не знает правил портала
+    status: active
+    severity: hard
+    scope: ['apps/web/src/shared/**']
+    enforcedBy: eslint
+    source: eslint.config.mjs
+    autofix: false
+    rule: >
+      `shared` не импортирует `@technic/contracts`: правила пароля, ФИО, статусов и прав — это
+      домен, и место им в `entities`. Исключение заводится точечно и с обоснованием.
+
+  - id: single-source-of-rule
+    title: Одно правило — один носитель
+    status: active
+    severity: hard
+    scope: ['apps/**', 'packages/**']
+    enforcedBy: ai-review
+    adr: [docs/adr/0021-permissions-model.md, docs/adr/0106-assignable-permission-grants.md]
+    autofix: false
+    rule: >
+      Доступность действия считают предикаты контрактов, а не портал; перечень видов документов,
+      коридоры статусов и словари живут в `packages/contracts` и спрашиваются обеими сторонами.
+      Копия правила на другой стороне — дефект: она расходится с оригиналом молча, и так уже
+      терялись запреты при переделке циклов.
+    detect: >
+      Признак нарушения: условие показа/запрета действия, выписанное в `apps/web` или `apps/api`
+      выражением, эквивалентным предикату из `packages/contracts`.
+
+  - id: no-second-registry
+    title: Машинный реестр не дублируется вторым списком
+    status: active
+    severity: hard
+    scope: ['apps/**', 'packages/**', 'docs/**']
+    enforcedBy: ai-review
+    adr: [docs/adr/0121-portal-sections-registry.md]
+    autofix: false
+    rule: >
+      Разделы портала описывает `portal-sections.ts`, права — `permissions.ts`, домены — карта
+      кода. Документ и код ссылаются на них, а не переписывают. Новый перечень тех же сущностей
+      рядом со старым — нарушение, даже если он короче и удобнее.
+
+  - id: contracts-are-shared-language
+    title: Контракты не зависят от приложений
+    status: active
+    severity: hard
+    scope: ['packages/contracts/**']
+    enforcedBy: ai-review
+    autofix: false
+    rule: >
+      `packages/contracts` не импортирует ничего из `apps/**`. Направление одностороннее: словарь
+      не может зависеть от одного из говорящих на нём.
+
+  - id: migration-survives-window
+    title: Правка схемы обязана пережить окно между накатом и перезапуском
+    status: active
+    severity: hard
+    scope: ['apps/api/drizzle/**', 'apps/api/src/db/**']
+    enforcedBy: human
+    adr: [docs/runbook.md, docs/schema-cutover-protocol.md]
+    autofix: false
+    rule: >
+      Миграции идут при работающем портале и до перезапуска приложения: новый столбец какое-то
+      время пишет только старый код. Автоматическая правка в этой области запрещена целиком —
+      см. защищённые области.
+
+  - id: docs-header-integrity
+    title: Шапки решений и ссылки документации проверяемы
+    status: active
+    severity: hard
+    scope: ['docs/**']
+    enforcedBy: check-docs
+    source: scripts/check-docs.mjs
+    adr: [docs/adr/0176-docs-navigation-layer.md]
+    autofix: false
+    rule: >
+      Ссылка в никуда, задвоенный номер решения и отставший указатель — ошибки. Указатель
+      `docs/adr/README.md` собирается `pnpm docs:index` и руками не правится.
+
+  - id: comment-explains-why
+    title: Комментарий объясняет причину, а не действие
+    status: active
+    severity: soft
+    scope: ['apps/**', 'packages/**', 'scripts/**', 'tools/**']
+    enforcedBy: ai-review
+    autofix: false
+    rule: >
+      Сохраняются: причина нестандартного решения, инварианты, неочевидные бизнес-правила, quirks
+      внешних систем, ссылки на решения. Кандидаты на снятие: пересказ очевидной строки,
+      объяснения в жанре учебника, комментарии к прежней реализации и всё, что противоречит
+      сегодняшнему поведению.
+    notes: >
+      Объём комментариев сам по себе дефектом не считается. Здесь принято писать много и по делу,
+      и наказывать проект за это правило не будет.
+
+  - id: module-size-signal
+    title: Длина файла — сигнал к разбору, а не цель
+    status: active
+    severity: advisory
+    scope: ['apps/web/src/**']
+    enforcedBy: quality-budget
+    source: apps/web/scripts/quality.mjs
+    autofix: false
+    rule: >
+      Файл длиннее 400 строк — повод посмотреть, не смешаны ли в нём ответственности. Само по себе
+      число поводом к дроблению не является: дробление ради зелёного порога прямо запрещено.
+
+  - id: tooling-core-is-portable
+    title: Ядро обслуживания не знает этого проекта
+    status: active
+    severity: hard
+    scope: ['tools/maintenance/**']
+    enforcedBy: ai-review
+    autofix: false
+    rule: >
+      Каталоги `core`, `analyzers`, `policies`, `work-packets`, `git`, `state`, `verification`,
+      `reporters`, `cli` не упоминают путей и команд этого репозитория: ни `apps/`, ни
+      `packages/`, ни `pnpm check`, ни `docs/code-map.md`. Всё это приходит конфигом. Знать
+      репозиторий разрешено единственному каталогу — `project/`.
