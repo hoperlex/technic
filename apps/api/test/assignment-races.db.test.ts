@@ -1362,4 +1362,354 @@ describe.skipIf(!RAW_DB_URL)('гонки дверей истории назна�
     // проверяется поэтому текст — тот самый, которым портал объясняет занятый ключ.
     expect(json(second).message).toMatch(/Ключ операции уже занят другой командой/);
   }, 60_000);
+
+  // ── 6. Изоляция снимка (Б5) ──
+
+  /*
+   * ПОЧЕМУ ЭТИ ЧЕТЫРЕ СЛУЧАЯ ЖИВУТ ЗДЕСЬ, А НЕ В ПРЕДМЕТНЫХ ФАЙЛАХ ДВЕРЕЙ. Уровень изоляции —
+   * свойство **пары** транзакций, как и всё остальное в этом файле: на одном соединении
+   * `READ COMMITTED` и `REPEATABLE READ` неотличимы вовсе, и предметный тест двери зелен при любом
+   * из них. Здесь же рядом с дверью работает второе соединение, и разница видна.
+   *
+   * ЧТО ИМЕННО ДОКАЗЫВАЕТСЯ (решение Б5 плана, §14c):
+   *
+   * 1. снимок **один на всё планирование** — и у предпросмотра, и у боевой команды: правка
+   *    справочника, закоммиченная посреди расчёта, в него не попадает;
+   * 2. плата за снимок — `40001` — **закрыта протоколом повторов** (В4): человек видит понятный
+   *    409, а не пятисотку, и повтор при этом действительно был;
+   * 3. `23505` под новой изоляцией **остаётся** `23505` (спайк, §4.4) — и остаётся признаком
+   *    писателя, пришедшего к истории мимо блокировки строки заявки.
+   */
+
+  /** Фамилия человека — то самое «состояние справочника», что печатается в бланк строгой отчётности. */
+  async function lastNameOf(personId: string): Promise<string> {
+    const { rows } = await ctx.db.execute<{ last_name: string }>(
+      sql`SELECT last_name FROM persons WHERE id = ${personId}`,
+    );
+    return rows[0]!.last_name;
+  }
+
+  /**
+   * Правка справочника **чужим соединением и с коммитом** — посреди расчёта.
+   *
+   * Отдельный клиент, а не `ctx.db`: пул приложения занят транзакцией расчёта, и правка, сделанная
+   * его же соединением, ничего бы не доказала — она была бы своей.
+   */
+  async function renameOutside(personId: string, lastName: string): Promise<void> {
+    const client = new pg.Client({ connectionString: RAW_DB_URL });
+    await client.connect();
+    try {
+      await client.query(`SET lock_timeout = ${LOCK_TIMEOUT_MS}`);
+      await client.query('UPDATE persons SET last_name = $1 WHERE id = $2', [lastName, personId]);
+    } finally {
+      await client.end();
+    }
+  }
+
+  /**
+   * Два чтения одной строки справочника вокруг чужого коммита — и ответ на вопрос «двигается ли
+   * снимок под ногами расчёта».
+   *
+   * Возвращает обе прочитанные фамилии: сравнивает их случай, а не помощник, — иначе провалившееся
+   * ожидание внутри колбэка выглядело бы отказом двери.
+   */
+  async function readAcrossOutsideCommit(
+    tx: { execute: typeof ctx.db.execute },
+    personId: string,
+    renamed: string,
+  ): Promise<[string, string]> {
+    const read = async (): Promise<string> =>
+      (await tx.execute<{ last_name: string }>(sql`SELECT last_name FROM persons WHERE id = ${personId}`))
+        .rows[0]!.last_name;
+    const before = await read();
+    await renameOutside(personId, renamed);
+    return [before, await read()];
+  }
+
+  /**
+   * Пустые последствия для расчёта, которому предмет двери не нужен.
+   *
+   * Случаям этой секции важна транзакция, а не правило: они смотрят, что видит расчёт, а не что он
+   * решает. Настоящие двери проверяются предметными файлами, и повторять их правила здесь значило
+   * бы проверять изоляцию через десять чужих условий.
+   */
+  async function emptyPlanned(planCtx: { tx: unknown; request: { term: unknown }; asOf: string }) {
+    const write = await import('../src/services/assignment-write');
+    const effects = await import('../src/services/assignment-effects');
+    const changes = await write.readAssignmentChanges(
+      planCtx.tx as never,
+      (planCtx as unknown as { request: { id: string } }).request.id,
+      { actualOnly: true },
+    );
+    return {
+      effects: effects.assignmentCommandEffects({
+        changes,
+        term: planCtx.request.term as never,
+        asOf: planCtx.asOf,
+        mutations: [],
+      }),
+      fingerprint: 'fp',
+      plan: null,
+    };
+  }
+
+  /**
+   * ПРЕДПРОСМОТР. Расчёт читает фамилию машиниста, посреди расчёта её меняет и коммитит соседнее
+   * соединение, расчёт читает её снова — и обязан увидеть прежнюю.
+   *
+   * ЧТО СЛОМАЛОСЬ БЫ БЕЗ Б5. В `READ COMMITTED` второе чтение вернуло бы новую фамилию, и человеку
+   * показались бы последствия, собранные из двух разных состояний справочника: машина из одного
+   * мира, машинист из другого. Заметить такое по ответу невозможно — оно правдоподобно.
+   *
+   * Правка выбрана именно справочником, а не заявкой: строку заявки предпросмотр не блокирует
+   * намеренно, и от гонки по ней его защищает отпечаток, а от гонки по справочнику — только
+   * снимок.
+   */
+  it('предпросмотр считает по одному снимку: правка справочника посреди расчёта в него не попадает', async () => {
+    const scene = await seedScene({ issueSheets: true });
+    const command = await import('../src/services/assignment-command');
+    const original = await lastNameOf(ctx.personB);
+    const renamed = `${original}-переименован`;
+    let seen: [string, string] = ['', ''];
+
+    try {
+      await command.previewAssignmentCommand(ctx.db, {
+        requestId: scene.requestId,
+        actor: { id: ctx.userId },
+        asOf: TODAY,
+        plan: async (planCtx) => {
+          seen = await readAcrossOutsideCommit(planCtx.tx, ctx.personB, renamed);
+          return emptyPlanned(planCtx as never) as never;
+        },
+      });
+
+      expect(seen).toEqual([original, original]);
+      // Контроль: правка была настоящей и закоммиченной — следующий запрос её видит. Без него
+      // зелёный выше объяснялся бы и тем, что соседнее соединение ничего не сделало.
+      expect(await lastNameOf(ctx.personB)).toBe(renamed);
+    } finally {
+      await renameOutside(ctx.personB, original);
+    }
+  }, 60_000);
+
+  /**
+   * БОЕВАЯ КОМАНДА. То же самое на пишущей транзакции каркаса: между шагами 4–6 справочник правят
+   * снаружи, и план обязан этого не заметить.
+   *
+   * Дверь здесь пустышка — как в `assignment-write.db.test.ts`: предмет случая не правило двери, а
+   * транзакция, в которой это правило считается. Мутаций у неё нет вовсе, поэтому от сцены остаётся
+   * ровно один след — шаг 14, поднятая версия; он же и доказывает, что транзакция закоммитилась, а
+   * не тихо откатилась.
+   */
+  it('команда считает по одному снимку: правка справочника посреди планирования в него не попадает', async () => {
+    const scene = await seedScene({ issueSheets: true });
+    const command = await import('../src/services/assignment-command');
+    const write = await import('../src/services/assignment-write');
+    const original = await lastNameOf(ctx.personB);
+    const renamed = `${original}-переименован`;
+    let seen: [string, string] = ['', ''];
+
+    try {
+      const outcome = await command.runAssignmentCommand(ctx.db, {
+        door: 'history',
+        journalDoor: 'assignment-changes',
+        requestId: scene.requestId,
+        actor: { id: ctx.userId },
+        expectedVersion: scene.version,
+        body: { probe: 'b5' },
+        operation: null,
+        asOf: TODAY,
+        plan: async (planCtx) => {
+          seen = await readAcrossOutsideCommit(planCtx.tx, ctx.personB, renamed);
+          return emptyPlanned(planCtx as never) as never;
+        },
+        authorize: () => ({
+          schemaVersion: 1,
+          requiresCorrect: false,
+          requiresCorrectBeyondLimit: false,
+          requiresArchiveRestore: false,
+          effectiveDate: TODAY,
+          authorizedAsOf: TODAY,
+        }),
+        authorizeRepeat: () => {},
+        mutate: async (applyCtx) => {
+          const result = await write.applyAssignmentMutations(applyCtx.tx, {
+            requestId: scene.requestId,
+            actorUserId: ctx.userId,
+            correctionId: null,
+            denormalization: { kind: 'keep' },
+            mutations: [],
+          });
+          return { write: result, applied: result };
+        },
+        audit: () => ({ action: 'vehicle_request.assignment_change', metadata: { probe: 'b5' } }),
+      });
+
+      expect(seen).toEqual([original, original]);
+      expect(outcome.version).toBe(scene.version + 1);
+      expect(await lastNameOf(ctx.personB)).toBe(renamed);
+    } finally {
+      await renameOutside(ctx.personB, original);
+    }
+  }, 60_000);
+
+  /**
+   * ПЛАТА ЗА СНИМОК И ЧЕМ ОНА ПОКРЫТА. Тот же сюжет, что у первого случая файла (две команды из
+   * очереди за строкой заявки), но проверяется в нём другое: **как** проигравшая пришла к своему
+   * 409.
+   *
+   * Под `READ COMMITTED` она перечитывала строку заявки свежим снимком и сразу видела новую версию.
+   * Под `REPEATABLE READ` её `FOR UPDATE` по строке, которую победившая успела обновить шагом 14,
+   * законно кончается `40001` — и без протокола повторов (В4) человек получил бы на этом месте
+   * пятисотку. Поэтому случай смотрит на три вещи разом: ответ человеку остался понятным (409
+   * `version_conflict`, а не 500 и не 503), повтор **был** (счётчик двери вырос), и попытки не
+   * исчерпались.
+   *
+   * СЧЁТЧИК ЧИТАЕТСЯ ИЗ ТОГО ЖЕ ПРОЦЕССА, В КОТОРОМ РАБОТАЕТ ДВЕРЬ: он процессный, а не в базе
+   * (следа повтор не оставляет — транзакция откатилась), и приложение здесь поднято `app.inject`,
+   * то есть модуль у теста и у двери один.
+   *
+   * ЗАЧЕМ СВЯЗКА «ПОВТОР БЫЛ» + «ВЕРСИЯ ПОДНЯЛАСЬ ОДИН РАЗ». Повтор всей транзакции вместе с
+   * планированием — единственный безопасный вид повтора: план, посчитанный на устаревшем снимке,
+   * применять нельзя. Работа, сделанная дважды, выглядела бы здесь двумя шагами версии или второй
+   * строкой журнала.
+   */
+  it('проигравшая команда уходит в штатный повтор: 409 человеку, `40001` внутри, работа одна', async () => {
+    const scene = await seedScene({ issueSheets: true });
+    const retry = await import('../src/services/assignment-retry');
+    const body = {
+      kind: 'set',
+      dimension: 'driver',
+      effectiveDate: TERM_FROM,
+      driverPersonId: ctx.personB,
+      version: scene.version,
+    };
+    const first = await armedCrew(scene.requestId, body);
+    const second = await armedCrew(scene.requestId, body);
+    // Обнуление — после подготовки тел: предпросмотры идут своими транзакциями и своей меткой.
+    retry.resetAssignmentRetryCounters();
+
+    const holder = await openHolder(scene.requestId);
+    const probe = await openProbe();
+    let replies: Reply[];
+    try {
+      const pid = await backendPid(holder);
+      const firstInFlight = commandCrew(scene.requestId, first);
+      const secondInFlight = commandCrew(scene.requestId, second);
+      await waitForWaiters(probe, pid, 2);
+      await holder.query('COMMIT');
+      replies = await Promise.all([firstInFlight, secondInFlight]);
+    } finally {
+      await holder.end();
+      await probe.end();
+    }
+
+    const codes = replies.map((r) => r.statusCode).sort();
+    expect(codes, replies.map((r) => r.body).join(' | ')).toEqual([200, 409]);
+    expect(codeOf(replies.find((r) => r.statusCode === 409)!)).toBe('version_conflict');
+
+    const counters = retry.assignmentRetryCounters();
+    const door = counters.find((row) => row.door === 'assignment-changes');
+    expect(door, JSON.stringify(counters)).toBeDefined();
+    // Повтор был ровно один: проигравшая ловит `40001` первым же запросом после блокировки —
+    // ценой выброшенной работы в пару миллисекунд, а не всей транзакции (спайк, §4.3).
+    expect(door!.retries).toBe(1);
+    expect(door!.exhaustions).toBe(0);
+    // И работа сделана один раз: повтор повторил планирование, а не применил старый план.
+    expect(await operationsOf(scene.requestId)).toHaveLength(1);
+    expect(await versionOf(scene.requestId)).toBe(scene.version + 1);
+  }, 60_000);
+
+  /**
+   * `23505` ПОД НОВОЙ ИЗОЛЯЦИЕЙ — ВСЁ ТОТ ЖЕ `23505`, И ЭТО НЕ УПУЩЕНИЕ.
+   *
+   * Спайк (§4.4) показал, что двое писателей истории **мимо** блокировки строки заявки получают
+   * нарушение частичного UNIQUE: второй дописывает актуальную строку на ту же дату по уже
+   * устаревшему решению. `REPEATABLE READ` этого не чинит и чинить не может — проверка
+   * уникальности смотрит не в снимок, а в индекс, где чужая строка уже лежит незакоммиченной.
+   * Больше того: под новой изоляцией «второй» **не увидит** чужую строку и своим чтением, потому
+   * что его снимок старше, — значит и предметной проверкой такую гонку не поймать.
+   *
+   * ПОЧЕМУ ЭТО ПРАВИЛЬНО И ЧТО ИМЕННО СТЕРЕЖЁТ СЛУЧАЙ. Протокол повторов `23505` намеренно не ловит:
+   * этот код означает не конкуренцию, а ошибку в двери — писателя, не взявшего строку заявки. Здесь
+   * это и воспроизведено: два писателя ядра истории на двух соединениях, обоим блокировка не взята.
+   * Ответ — `23505`, и предикат протокола повторов про него говорит «повторять нечего», то есть код
+   * уйдёт наружу, а не растворится в тихом повторе.
+   *
+   * ПОЧЕМУ ЭТОТ СЮЖЕТ НЕДОСТИЖИМ ЧЕРЕЗ ДВЕРЬ. Каркас берёт строку заявки шагом 1 и держит её до
+   * конца, а шаг 14 её **обновляет** — поэтому проигравшая получает `40001` ещё на блокировке
+   * (случай выше) и до вставки не доходит. Связка держится ровно на этих двух шагах вместе: одна
+   * блокировка без обновления версии проигравшую не спасла бы — её снимок остался бы старым, и она
+   * дошла бы до вставки с тем же `23505`.
+   */
+  it('гонка мимо блокировки заявки даёт `23505`, и повтор его не глушит', async () => {
+    const scene = await seedScene({});
+    const write = await import('../src/services/assignment-write');
+    const retry = await import('../src/services/assignment-retry');
+    // Разборщик берётся тем же `await import`, что и всё остальное в файле: модуля с конфигом он не
+    // касается, но два правила импорта в одном файле разошлись бы при первой же правке.
+    const { pgErrorOf } = await import('../src/lib/pg-error');
+    const date = shiftDateKey(TERM_FROM, 3);
+
+    const insert = (tx: Parameters<typeof write.applyAssignmentMutations>[0]) =>
+      write.applyAssignmentMutations(tx, {
+        requestId: scene.requestId,
+        actorUserId: ctx.userId,
+        correctionId: null,
+        denormalization: { kind: 'keep' },
+        mutations: [
+          {
+            kind: 'insert',
+            effectiveDate: date,
+            origin: 'machinist_change',
+            value: { dimension: 'driver', driver: { state: 'set', personId: ctx.personB } },
+          },
+        ],
+      });
+
+    /*
+     * Барьер — тот же, что у остальных случаев файла, но держит он не строку заявки, а сам порядок:
+     * обе транзакции обязаны взять снимок ДО того, как любая из них вставит строку. Иначе вторая
+     * начала бы работу уже после коммита первой, увидела бы её строку своим чтением и отказала бы
+     * предметно — гонка не состоялась бы вовсе.
+     */
+    let bothStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      let left = 2;
+      bothStarted = () => {
+        if ((left -= 1) === 0) resolve();
+      };
+    });
+    const race = (): Promise<void> =>
+      ctx.db.transaction(
+        async (tx) => {
+          // Первый запрос транзакции и есть момент снимка: до барьера, а не после.
+          await tx.execute(sql`SELECT 1`);
+          bothStarted();
+          await started;
+          await insert(tx as never);
+        },
+        { isolationLevel: 'repeatable read' },
+      );
+
+    const results = await Promise.allSettled([race(), race()]);
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(rejected, JSON.stringify(results.map((r) => r.status))).toHaveLength(1);
+    const error = (rejected[0] as PromiseRejectedResult).reason;
+    /*
+     * Код спрашивается общим разборщиком портала, а не полем обёртки: drizzle заворачивает ошибку
+     * драйвера в свою (`DrizzleQueryError`), и `error.code` на верхнем объекте пуст — ровно та
+     * ловушка, ради которой `pgErrorOf` и заведён.
+     */
+    const pg = pgErrorOf(error);
+    expect(pg?.code).toBe('23505');
+    expect(pg?.constraint).toBe('vehicle_request_assignment_changes_actual_unique');
+    // Протокол повторов о нём говорит «повторять нечего»: иначе ошибка в двери выглядела бы
+    // временной конкуренцией и молча повторялась бы до исчерпания попыток.
+    expect(retry.isSerializationFailure(error)).toBe(false);
+
+    // Работа всё-таки сделана один раз — частичный UNIQUE и есть последняя защита истории.
+    const atDate = (await changesOf(scene.requestId)).filter((c) => c.effective_date === date);
+    expect(atDate).toHaveLength(1);
+  }, 60_000);
 });
