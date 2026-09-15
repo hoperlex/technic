@@ -23,6 +23,7 @@ import { analyze, fixTask, review } from './analyze.ts';
 import { abortBatch, verify } from './verify.ts';
 import { converge, report } from './converge.ts';
 import { deep } from './deep.ts';
+import { ledger, parseStatus } from './ledger.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const out = new ConsoleReporter();
@@ -154,6 +155,14 @@ async function main(): Promise<number> {
       break;
     case 'report':
       result = await report(config, out);
+      break;
+    case 'ledger':
+      result = await ledger(config, out, {
+        fingerprint: valueArg(args, '--finding'),
+        status: parseStatus(valueArg(args, '--status')),
+        note: valueArg(args, '--note'),
+        filter: parseStatus(valueArg(args, '--filter')),
+      });
       break;
     case 'deep':
       result = await deep(config, out, {
