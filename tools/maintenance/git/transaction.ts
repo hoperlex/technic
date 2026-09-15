@@ -15,15 +15,8 @@
  * проверка в `verification/`.
  */
 import path from 'node:path';
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-  readdirSync,
-} from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { normalizePath } from '../core/paths.ts';
 
@@ -121,9 +114,36 @@ export class FileCheckpointTransaction implements WorkspaceTransaction {
     rmSync(path.join(this.#home, id), { recursive: true, force: true });
   }
 
-  /** Файлы точки: по ним проверяется, что правка не вышла за границы партии. */
-  filesOf(id: string): string[] {
-    return this.#manifest(id).files.map((record) => record.file);
+  /**
+   * Сколько строк изменила партия: считается по контрольной точке, а не по словам исполнителя.
+   *
+   * ЭТО ЕДИНСТВЕННЫЙ ЧЕСТНЫЙ ИСТОЧНИК ЧИСЛА. Раньше лимит строк в политике стоял, а считать его
+   * было нечем: в автоматы приходил ноль, условие «объём правки превышен» не могло сработать
+   * никогда, и отчёт печатал человеку «изменено 0 строк» на любой правке. Обещание предела, от
+   * которого остался только текст, хуже отсутствия предела.
+   *
+   * Складываются добавленные и удалённые: для бюджета важен объём работы, а не итоговый прирост —
+   * правка, переписавшая сто строк на сто других, стоит проверяющему столько же, сколько сотня
+   * новых.
+   */
+  changedLinesIn(id: string): number {
+    const dir = path.join(this.#home, id, CONTENT);
+    let total = 0;
+    for (const record of this.#manifest(id).files) {
+      const target = path.join(this.#root, record.file);
+      const saved = path.join(dir, record.file);
+      const existsNow = existsSync(target);
+      if (!record.existed) {
+        total += existsNow ? countLines(target) : 0;
+        continue;
+      }
+      if (!existsNow) {
+        total += countLines(saved);
+        continue;
+      }
+      total += diffLines(saved, target);
+    }
+    return total;
   }
 
   /** Какие файлы партии действительно изменились: сравнение по содержимому, а не по времени. */
@@ -141,21 +161,37 @@ export class FileCheckpointTransaction implements WorkspaceTransaction {
     return changed;
   }
 
-  /** Последняя незакрытая точка. Их может быть несколько, если прогон прервали на середине. */
-  latest(): string | null {
-    if (!existsSync(this.#home)) return null;
-    const entries = readdirSync(this.#home, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
-    return entries[entries.length - 1] ?? null;
-  }
-
   #manifest(id: string): Manifest {
     const file = path.join(this.#home, id, MANIFEST);
     if (!existsSync(file)) throw new Error(`контрольной точки ${id} нет`);
     return JSON.parse(readFileSync(file, 'utf8')) as Manifest;
   }
+}
+
+/** Строк в файле. Пустой хвост после последнего перевода строки строкой не считается. */
+function countLines(file: string): number {
+  const text = readFileSync(file, 'utf8');
+  if (text === '') return 0;
+  return text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length;
+}
+
+/**
+ * Добавленные и удалённые строки между двумя версиями файла.
+ *
+ * Считает git, а не собственный проход по строкам: свой наивный счёт («сколько строк не совпало
+ * попарно») врёт на любой вставке — добавленная в начале строка сдвигает файл, и все последующие
+ * выглядят изменёнными. Ошибка была бы в разы и всегда в сторону завышения, то есть бюджет
+ * исчерпывался бы раньше времени.
+ */
+function diffLines(before: string, after: string): number {
+  const result = spawnSync('git', ['diff', '--no-index', '--numstat', '--', before, after], {
+    encoding: 'utf8',
+  });
+  const line = (result.stdout ?? '').split('\n').find((row) => row.trim() !== '');
+  if (line === undefined) return 0;
+  const [added = '0', removed = '0'] = line.split('\t');
+  const sum = Number(added) + Number(removed);
+  return Number.isFinite(sum) ? sum : 0;
 }
 
 function hashOf(file: string): string {

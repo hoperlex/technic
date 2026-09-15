@@ -53,7 +53,7 @@ stopConditions:
   - verificationFailedRepeatedly
   - manualDecisionRequired
 
-# Тяжёлое окно. Выключено до этапа ЭF плана: включать его раньше, чем доказан откат, — ровно та
+# Тяжёлое окно: включать его раньше, чем доказан откат, — ровно та
 # ошибка, от которой предостерегает концепт.
 deepMaintenance:
   # Рубильник включён 15.09.2026 по решению заказчика. «Включено» здесь означает только то, что
@@ -66,7 +66,6 @@ deepMaintenance:
   maxFilesPerBatch: 8
   maxChangedLinesPerBatch: 400
   fullScan: allowed
-  unresolved: backlog
   zones:
     - id: architecture
       looksFor: [cycles, leakage, ownership, shared-inflation, obsolete-abstractions]

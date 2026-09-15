@@ -9,6 +9,12 @@
 import type { TrackedFinding } from '../core/finding.ts';
 import type { ConvergenceBudget, PolicySet } from '../core/types.ts';
 import type { WorkPacket } from './types.ts';
+/*
+ * Согласование числительного берётся из отчёта, а не пишется здесь второй раз: задание читают и
+ * человек, и агент, и «исправить 1 утверждённых находок» выглядит как сбой генератора, подрывая
+ * доверие ко всему тексту. Две реализации одного правила разошлись бы на первом же слове.
+ */
+import { pluralize } from '../reporters/markdown.ts';
 
 const SCHEMA = `{
   "applied": [
@@ -41,19 +47,6 @@ export interface FixerOptions {
   readonly verification: readonly string[];
 }
 
-/**
- * Согласование числительного. Мелочь, но задание читают и человек, и агент: «исправить 1
- * утверждённых находок» выглядит как сбой генератора и подрывает доверие ко всему тексту.
- */
-function plural(count: number, forms: readonly [string, string, string]): string {
-  const tens = count % 100;
-  const ones = count % 10;
-  if (tens >= 11 && tens <= 14) return forms[2];
-  if (ones === 1) return forms[0];
-  if (ones >= 2 && ones <= 4) return forms[1];
-  return forms[2];
-}
-
 export function fixerPacket(options: FixerOptions): WorkPacket {
   const { findings, budget } = options;
   const files = [...new Set(findings.flatMap((finding) => finding.files))].sort();
@@ -70,7 +63,7 @@ export function fixerPacket(options: FixerOptions): WorkPacket {
 
   return {
     role: 'fixer',
-    goal: `Исправить ${findings.length} ${plural(findings.length, ['утверждённую находку', 'утверждённые находки', 'утверждённых находок'])}, не изменив наблюдаемого поведения.`,
+    goal: `Исправить ${pluralize(findings.length, 'утверждённую находку', 'утверждённые находки', 'утверждённых находок')}, не изменив наблюдаемого поведения.`,
     scope: files,
     inputs: [
       { title: 'Утверждённые находки', body: tasks },

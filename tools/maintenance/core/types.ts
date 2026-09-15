@@ -151,7 +151,6 @@ export interface DeepMaintenanceBudget {
   readonly maxFilesPerBatch: number;
   readonly maxChangedLinesPerBatch: number;
   readonly fullScan: 'allowed' | 'forbidden';
-  readonly unresolved: 'backlog' | 'drop';
   readonly zones: readonly DeepMaintenanceZone[];
 }
 

@@ -18,5 +18,9 @@
   человека.
 - `policies/exceptions.yaml` — осознанные исключения с причиной и датой пересмотра.
 - `policies/maintenance.yaml` — бюджеты и условия остановки циклов.
+- `policies/versioning.yaml` — правила версий выпуска ([ADR 0191](../docs/adr/0191-version-numbering.md));
+  единственный файл каталога, который система обслуживания НЕ читает: его исполняет
+  `scripts/check-version.mjs`. Лежит здесь потому, что это тоже машинное правило проекта.
 
-Постановка и этапы — `docs/maintenance-framework-plan.md`.
+Постановка и этапы — [docs/maintenance-framework-plan.md](../docs/maintenance-framework-plan.md),
+порядок работы — [docs/maintenance-guide.md](../docs/maintenance-guide.md).

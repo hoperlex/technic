@@ -104,7 +104,6 @@ export function policySetFixture(overrides: Partial<PolicySet> = {}): PolicySet 
         maxFilesPerBatch: 8,
         maxChangedLinesPerBatch: 400,
         fullScan: 'allowed',
-        unresolved: 'backlog',
         zones: [],
       },
       ledger: {

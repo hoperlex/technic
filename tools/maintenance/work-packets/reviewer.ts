@@ -46,12 +46,13 @@ export interface ReviewerOptions {
 
 export function reviewerPacket(options: ReviewerOptions): WorkPacket {
   const { facts, policies, budget, pass } = options;
-  const scope = facts.scopeFiles.length > 0 ? facts.scopeFiles : [];
 
   return {
     role: 'reviewer',
     goal: `Проход «${pass.id}». ${pass.goal.trim()}`,
-    scope,
+    // Пустой список областью не ограничивает, а означает полный обзор: так его и читает
+    // `renderPacket`. Подменять пустоту на пустоту было нечем — отдаём список как есть.
+    scope: facts.scopeFiles,
     inputs: [
       treeSection(facts),
       toolsSection(facts),

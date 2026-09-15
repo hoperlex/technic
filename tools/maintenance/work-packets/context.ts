@@ -34,7 +34,12 @@ export function toolsSection(facts: ProjectFacts): PacketSection {
     body: [
       `Линт: ${facts.lint.summary}${topRules === '' ? '' : ` (${topRules})`}.`,
       `Типы: ${facts.typecheck.summary}.`,
-      `Тесты: ${facts.tests.skipped === undefined ? facts.tests.summary : `${facts.tests.summary}`}.`,
+      facts.tests.skipped === undefined
+        ? `Тесты: ${facts.tests.summary}.`
+        : // Пропуск тестов — не строка итога, а другая новость: агент не должен читать «шаг не
+          // выполнялся» как «поведение подтверждено». Про то, чего никто не проверял, он обязан
+          // знать заранее — иначе он обопрётся на несуществующую зелёную проверку.
+          `Тесты не запускались (${facts.tests.skipped}) — считать поведение подтверждённым нечем.`,
       `Зависимости: ${facts.dependencies.summary}.`,
       '',
       'Это уже известно системе. Повторять находки, которые видит линт или компилятор, не нужно:',

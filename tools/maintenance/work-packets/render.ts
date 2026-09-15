@@ -13,7 +13,6 @@ const SCOPE_LIST_LIMIT = 60;
 const ROLE_TITLE: Record<WorkPacket['role'], string> = {
   reviewer: 'Ревьюер: найти и описать, не править',
   fixer: 'Исполнитель: исправить утверждённое, не искать новое',
-  verifier: 'Проверяющий: подтвердить или опровергнуть сохранение поведения',
 };
 
 export function renderPacket(packet: WorkPacket): string {

@@ -26,6 +26,7 @@ import {
 } from '../core/deep-window.ts';
 import { rankDebt, type DebtItem } from '../core/debt-queue.ts';
 import { parseFindings } from '../core/finding-io.ts';
+import { EMPTY_FIX_REPORT, parseFixReport } from '../core/fix-report.ts';
 import { selectFindings } from '../core/selector.ts';
 import { collectFacts, saveFacts, widenScope } from '../analyzers/facts.ts';
 import { changedSince, fileHotness } from '../analyzers/git.ts';
@@ -188,6 +189,10 @@ async function emitZoneReview(
    * Изменённые файлы всё равно берутся затравкой — область вокруг них плотнее и понятнее агенту.
    */
   const scopeFiles = policy.fullScan === 'allowed' ? [] : changedSince(config.root, 'HEAD');
+  if (scopeFiles === null) {
+    out.error('git не смог показать изменения рабочего дерева: окно остановлено');
+    return { ok: false };
+  }
   const collected = collectFacts({ config, policies, workspace, withTests: false, scopeFiles });
   const widened = widenScope(config, policies, collected, scopeFiles);
   saveFacts(workspace, widened.facts);
@@ -235,6 +240,12 @@ async function takeZoneReview(
 
   const parsed = parseFindings(readFileSync(answer, 'utf8'), path.relative(config.root, answer));
   for (const problem of parsed.problems) out.warn(problem);
+  if (parsed.findings.length === 0 && parsed.problems.length > 0) {
+    // Неразобранный ответ — не «в зоне чисто»: окно закрылось бы причиной «очередь пуста», то есть
+    // отчиталось бы о разобранном долге там, где не получило ни одного ответа.
+    out.error('ответ ревьюера не разобран: окно ждёт исправленный ответ');
+    return { ok: false };
+  }
 
   const store = new JsonFindingStore(path.join(workspace.state, 'ledger.json'));
   const known = await store.load();
@@ -385,18 +396,33 @@ async function takeBatchFix(
   }
   const transaction = new FileCheckpointTransaction(config.root, workspace.checkpoints);
   const changed = transaction.changedIn(batch.checkpoint);
+  const lines = changed.length === 0 ? 0 : transaction.changedLinesIn(batch.checkpoint);
   if (changed.length === 0) {
     out.heading('ждём правку исполнителя');
     out.item(`разрешено файлов: ${batch.allowed.length}, изменено: 0`);
     return { ok: true };
   }
 
+  /*
+   * Список «что назвал исполнитель» читается из его отчёта, а НЕ подставляется списком изменённых
+   * файлов. Подмена выключала замок поведения целиком: `changedIn` по построению возвращает только
+   * файлы партии, значит «названное» всегда лежало внутри разрешённого, и выход агента за границы
+   * партии становился неотличим от чужой работы рядом — а с `--allow-concurrent` ещё и молча
+   * принимался. В окне, где агенту отдают два часа и много партий подряд, это была самая дорогая
+   * дыра из возможных.
+   */
+  const reportFile = path.join(workspace.results, 'fix.json');
+  const report = existsSync(reportFile)
+    ? parseFixReport(readFileSync(reportFile, 'utf8'))
+    : EMPTY_FIX_REPORT;
+  for (const problem of report.problems) out.warn(problem);
+
   const result = verifyBatch({
     config,
     policies,
     baseline: batch.baseline,
     allowed: batch.allowed,
-    claimed: changed,
+    claimed: report.claimed,
     allowConcurrent: args.allowConcurrent,
     tmpDir: workspace.tmp,
     extraLevels: [],
@@ -429,7 +455,9 @@ async function takeBatchFix(
       outcome: result.outcome,
       reason: result.reason,
       changedFiles: changed,
-      changedLines: 0,
+      // Строки — по контрольной точке: бюджет окна на партию в 400 строк до этого не считался
+      // вовсе и сработать не мог.
+      changedLines: lines,
     },
     new Date(),
   );

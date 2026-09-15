@@ -9,9 +9,8 @@
 import type { MaintenanceConfig } from '../core/config.ts';
 import type { LintFacts, ToolRun } from '../core/facts.ts';
 import type { PolicySet } from '../core/types.ts';
-import { run } from '../analyzers/run.ts';
+import { run, toolRun } from '../analyzers/run.ts';
 import { collectLint } from '../analyzers/lint.ts';
-import { toolRun } from '../analyzers/run.ts';
 import { checkBehaviorLock, type BaselineSnapshot, type LockViolation } from './behavior-lock.ts';
 import { createIsolatedTree } from '../git/worktree.ts';
 import path from 'node:path';
@@ -146,7 +145,17 @@ function blameBatch(
   try {
     for (const level of failed) {
       const command = config.verification.find((item) => item.id === level.id)?.command;
-      if (command === undefined) continue;
+      /*
+       * Промах по id здесь невозможен: `failed` собран из тех же `config.verification`. Но если
+       * конфигурация всё-таки разъедется, тихий пропуск опаснее падения: пропущенный шаг не
+       * перезапускается на базе, а функция возвращает «база сама красная» — то есть партия
+       * уходит человеку с оправданием, которое никто не проверял.
+       */
+      if (command === undefined) {
+        throw new Error(
+          `уровень проверки ${level.id} исчез из конфигурации: перезапустить его на базе нечем`,
+        );
+      }
       // Хоть один шаг, зелёный на базе и красный с партией, — и вина партии доказана.
       if (run(base.path, command).code === 0) return true;
     }
@@ -170,136 +179,152 @@ export function verifyBatch(options: VerifyOptions): VerificationResult {
     : null;
   const where = tree?.path ?? config.root;
 
-  const measured = measure(where, config, options.tmpDir, 'after');
-  const lintAfter = measured.lint;
-  const typecheckAfter = measured.typecheck;
-
-  // Замок поведения смотрит на ОСНОВНОЕ дерево: он отвечает не «зелено ли», а «что тронул
-  // исполнитель», и ответ на это лежит там, где исполнитель работал.
-  const violations = checkBehaviorLock({
-    config,
-    policies: options.policies,
-    baseline: options.baseline,
-    allowed: options.allowed,
-    claimed: options.claimed,
-    lintAfter,
-    typecheckAfter,
-  });
-
   /*
-   * Замок поведения проверяется ДО прогона тестов, и это не оптимизация времени.
-   * Вышедшая за границы партии правка делает любой исход тестов бессмысленным: зелено — значит
-   * зелено вместе с тем, чего мы не разрешали и не сможем откатить.
-   */
-  const outOfControl = violations.filter(
-    (violation) =>
-      violation.kind === 'out-of-scope' ||
-      violation.kind === 'evidence-touched' ||
-      violation.kind === 'protected-touched' ||
-      (violation.kind === 'concurrent-change' && !options.allowConcurrent),
-  );
-  if (outOfControl.length > 0) {
-    tree?.dispose();
-    return {
-      // Не откат: файлы вне партии система не сохраняла и восстановить их не может, а откат
-      // разрешённой половины оставил бы дерево в состоянии, которого не было никогда.
-      outcome: 'manual-review',
-      reason: outOfControl.map((violation) => violation.detail).join('; '),
-      levels: [],
-      violations,
-      lintAfter,
-      typecheckAfter,
-    };
-  }
-
-  /*
-   * «Стало хуже» решается ДО прогона тестов и без него.
+   * ВСЁ ТЕЛО ПРОВЕРКИ — ВНУТРИ `try`, А СНОС ДЕРЕВА — В `finally`.
    *
-   * Если ошибок линта прибавилось или перестали сходиться типы, исход партии уже известен —
-   * откат. Гонять ради этого шестиминутные ворота значит платить временем за ответ, который
-   * получен минуту назад.
+   * Выходов отсюда много: нарушение границ, «стало хуже», красные ворота, приём. Пока снос
+   * стоял на каждом выходе отдельно, он держался на том, что никто не добавит четвёртый и не
+   * забудет его повторить, — а исключение в середине (упал линт, не запустился инструмент)
+   * уносило управление мимо всех трёх вызовов сразу. Цена забытого сноса не абстрактная: в
+   * `.git` остаётся запись worktree, на диске — копия репозитория на гигабайты, и следующий
+   * прогон добавляет к ним ещё одну. `finally` снимает дерево на любом исходе, включая тот,
+   * которого мы не предусмотрели.
    */
-  const worseBefore = violations.filter((violation) => violation.kind === 'worse-than-before');
-  if (worseBefore.length > 0) {
-    tree?.dispose();
-    return {
-      outcome: 'rollback',
-      reason: worseBefore.map((violation) => violation.detail).join('; '),
-      levels: [],
-      violations,
+  try {
+    const measured = measure(where, config, options.tmpDir, 'after');
+    const lintAfter = measured.lint;
+    const typecheckAfter = measured.typecheck;
+
+    // Замок поведения смотрит на ОСНОВНОЕ дерево: он отвечает не «зелено ли», а «что тронул
+    // исполнитель», и ответ на это лежит там, где исполнитель работал.
+    const violations = checkBehaviorLock({
+      config,
+      policies: options.policies,
+      baseline: options.baseline,
+      allowed: options.allowed,
+      claimed: options.claimed,
       lintAfter,
       typecheckAfter,
-    };
-  }
-
-  const levels: LevelResult[] = [];
-  for (const level of config.verification) {
-    if (!level.enabledByDefault && !options.extraLevels.includes(level.id)) continue;
-    const result = run(where, level.command);
-    levels.push({
-      id: level.id,
-      title: level.title,
-      ok: result.code === 0,
-      durationMs: result.durationMs,
-      note: result.code === 0 ? 'зелено' : `код возврата ${result.code}`,
-      output: result.code === 0 ? undefined : tailOf(`${result.stdout}\n${result.stderr}`),
     });
-  }
 
-  tree?.dispose();
-  const failed = levels.filter((level) => !level.ok);
-
-  if (failed.length > 0) {
     /*
-     * ПЕРЕД ОТКАТОМ СПРАШИВАЕМ, ЧЬЯ ЭТО КРАСНОТА.
-     *
-     * Упавший шаг ещё не значит «правка сломала»: база бывает красной сама по себе — сегодня,
-     * например, `HEAD` этого репозитория не собирается, потому что коммит забрал файл портала, а
-     * его контракты остались незакоммиченными. Откатить в такой ситуации верную правку значит
-     * наказать её за чужую поломку и ничего не починить.
-     *
-     * Поэтому упавший шаг перезапускается на базе БЕЗ партии — и только он один: гонять ради
-     * этого все ворота второй раз стоило бы ещё столько же времени.
+     * Замок поведения проверяется ДО прогона тестов, и это не оптимизация времени.
+     * Вышедшая за границы партии правка делает любой исход тестов бессмысленным: зелено — значит
+     * зелено вместе с тем, чего мы не разрешали и не сможем откатить.
      */
-    const guilty = blameBatch(config, options, failed);
-    if (!guilty) {
+    const outOfControl = violations.filter(
+      (violation) =>
+        violation.kind === 'out-of-scope' ||
+        violation.kind === 'evidence-touched' ||
+        violation.kind === 'protected-touched' ||
+        (violation.kind === 'concurrent-change' && !options.allowConcurrent),
+    );
+    if (outOfControl.length > 0) {
       return {
+        // Не откат: файлы вне партии система не сохраняла и восстановить их не может, а откат
+        // разрешённой половины оставил бы дерево в состоянии, которого не было никогда.
         outcome: 'manual-review',
-        reason: `база сама красная: ${failed.map((level) => level.title).join(', ')} падает и без этой правки`,
+        reason: outOfControl.map((violation) => violation.detail).join('; '),
+        levels: [],
+        violations,
+        lintAfter,
+        typecheckAfter,
+      };
+    }
+
+    /*
+     * «Стало хуже» решается ДО прогона тестов и без него.
+     *
+     * Если ошибок линта прибавилось или перестали сходиться типы, исход партии уже известен —
+     * откат. Гонять ради этого шестиминутные ворота значит платить временем за ответ, который
+     * получен минуту назад.
+     */
+    const worseBefore = violations.filter((violation) => violation.kind === 'worse-than-before');
+    if (worseBefore.length > 0) {
+      return {
+        outcome: 'rollback',
+        reason: worseBefore.map((violation) => violation.detail).join('; '),
+        levels: [],
+        violations,
+        lintAfter,
+        typecheckAfter,
+      };
+    }
+
+    const levels: LevelResult[] = [];
+    for (const level of config.verification) {
+      if (!level.enabledByDefault && !options.extraLevels.includes(level.id)) continue;
+      const result = run(where, level.command);
+      levels.push({
+        id: level.id,
+        title: level.title,
+        ok: result.code === 0,
+        durationMs: result.durationMs,
+        note: result.code === 0 ? 'зелено' : `код возврата ${result.code}`,
+        output: result.code === 0 ? undefined : tailOf(`${result.stdout}\n${result.stderr}`),
+      });
+    }
+
+    // Ворота отработали — дерево партии больше не нужно, а `blameBatch` ниже поднимает своё.
+    // Снимаем здесь, чтобы два дерева на гигабайты не лежали на диске одновременно; `finally`
+    // это не отменяет: повторный `dispose` безопасен и остаётся страховкой на случай броска.
+    tree?.dispose();
+    const failed = levels.filter((level) => !level.ok);
+
+    if (failed.length > 0) {
+      /*
+       * ПЕРЕД ОТКАТОМ СПРАШИВАЕМ, ЧЬЯ ЭТО КРАСНОТА.
+       *
+       * Упавший шаг ещё не значит «правка сломала»: база бывает красной сама по себе — сегодня,
+       * например, `HEAD` этого репозитория не собирается, потому что коммит забрал файл портала, а
+       * его контракты остались незакоммиченными. Откатить в такой ситуации верную правку значит
+       * наказать её за чужую поломку и ничего не починить.
+       *
+       * Поэтому упавший шаг перезапускается на базе БЕЗ партии — и только он один: гонять ради
+       * этого все ворота второй раз стоило бы ещё столько же времени.
+       */
+      const guilty = blameBatch(config, options, failed);
+      if (!guilty) {
+        return {
+          outcome: 'manual-review',
+          reason: `база сама красная: ${failed.map((level) => level.title).join(', ')} падает и без этой правки`,
+          levels,
+          violations,
+          lintAfter,
+          typecheckAfter,
+        };
+      }
+      return {
+        outcome: 'rollback',
+        reason: `проверка не прошла: ${failed.map((level) => level.title).join(', ')}`,
         levels,
         violations,
         lintAfter,
         typecheckAfter,
       };
     }
-    return {
-      outcome: 'rollback',
-      reason: `проверка не прошла: ${failed.map((level) => level.title).join(', ')}`,
-      levels,
-      violations,
-      lintAfter,
-      typecheckAfter,
-    };
-  }
-  if (levels.length === 0) {
-    // Пустой список уровней — это не «всё хорошо», а «ничего не проверено». Принять партию на
-    // этом основании значит объявить доказанным то, что никто не доказывал.
-    return {
-      outcome: 'manual-review',
-      reason: 'ни один уровень проверки не выполнялся: подтверждать сохранение поведения нечем',
-      levels,
-      violations,
-      lintAfter,
-      typecheckAfter,
-    };
-  }
+    if (levels.length === 0) {
+      // Пустой список уровней — это не «всё хорошо», а «ничего не проверено». Принять партию на
+      // этом основании значит объявить доказанным то, что никто не доказывал.
+      return {
+        outcome: 'manual-review',
+        reason: 'ни один уровень проверки не выполнялся: подтверждать сохранение поведения нечем',
+        levels,
+        violations,
+        lintAfter,
+        typecheckAfter,
+      };
+    }
 
-  return {
-    outcome: 'accept',
-    reason: `проверка пройдена: ${levels.map((level) => level.title).join(', ')}`,
-    levels,
-    violations,
-    lintAfter,
-    typecheckAfter,
-  };
+    return {
+      outcome: 'accept',
+      reason: `проверка пройдена: ${levels.map((level) => level.title).join(', ')}`,
+      levels,
+      violations,
+      lintAfter,
+      typecheckAfter,
+    };
+  } finally {
+    tree?.dispose();
+  }
 }

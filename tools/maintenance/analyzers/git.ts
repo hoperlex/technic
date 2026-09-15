@@ -41,12 +41,18 @@ export function collectGit(root: string): GitFacts {
  * Файлы, затронутые работой относительно базы.
  *
  * Возвращается объединение коммитов ветки и рабочего дерева: система обязана видеть и то, что уже
- * записано, и то, что лежит рядом незакоммиченным. Не разрешившаяся база — пустой ответ, а не
- * молчаливый переход на всё дерево: ложное сужение области опаснее её отсутствия.
+ * записано, и то, что лежит рядом незакоммиченным. Не разрешившаяся база — `null`, и вызывающий
+ * обязан остановиться: молчаливый переход на всё дерево опаснее отказа.
  */
-export function changedSince(root: string, baseRef: string): string[] {
+export function changedSince(root: string, baseRef: string): string[] | null {
   const diff = run(root, ['git', 'diff', '--name-only', '-z', `${baseRef}...HEAD`]);
-  if (diff.code !== 0) return [];
+  /*
+   * Отказ git возвращается как `null`, а не как пустой список, и это не педантизм типов. Пустой
+   * список ниже по течению означает ПОЛНЫЙ ОБЗОР — так его читает `widenScope` для тяжёлого окна.
+   * Значит опечатка в `--since` или недоступная база молча превращалась бы в задание агенту по
+   * всему репозиторию: ровно то, чего область работы и должна не допускать.
+   */
+  if (diff.code !== 0) return null;
   const worktree = run(root, ['git', 'diff', '--name-only', '-z', 'HEAD']);
   const files = new Set<string>();
   for (const source of [diff.stdout, worktree.stdout]) {
@@ -69,7 +75,21 @@ export function changedSince(root: string, baseRef: string): string[] {
  */
 export function filesChangedSince(root: string, since: string): string[] {
   const files = new Set<string>();
-  const log = run(root, ['git', 'log', `--since=${since}`, '--name-only', '--pretty=format:']);
+  /*
+   * `core.quotepath=false` обязателен: иначе `git log --name-only` кавычит неанглийские имена
+   * (`"docs/\320\230..."`), и такой путь не совпадёт ни с одним нормализованным. Промах молчалив —
+   * решение журнала продолжало бы действовать на изменившемся коде. В истории этого репозитория
+   * таких имён 36 штук, так что случай не гипотетический.
+   */
+  const log = run(root, [
+    'git',
+    '-c',
+    'core.quotepath=false',
+    'log',
+    `--since=${since}`,
+    '--name-only',
+    '--pretty=format:',
+  ]);
   if (log.code === 0) {
     for (const line of log.stdout.split('\n')) {
       const file = line.trim();
@@ -100,8 +120,12 @@ export function lastChangeOf(root: string, file: string): string | null {
  * ничего не говорит о том, сколько раз файл переписывали.
  */
 export function fileHotness(root: string, days: number): Map<string, number> {
+  // Кавычки отключены по той же причине, что и в `filesChangedSince`: закавыченное имя не совпадёт
+  // с путём находки, и горячий файл будет посчитан спящим.
   const result = run(root, [
     'git',
+    '-c',
+    'core.quotepath=false',
     'log',
     `--since=${days} days ago`,
     '--name-only',

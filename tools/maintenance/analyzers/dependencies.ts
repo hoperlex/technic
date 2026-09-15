@@ -24,7 +24,37 @@ export interface DependencyOptions {
   readonly maxCycles: number;
 }
 
-const IMPORT_PATTERN = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"]([^'"]+)['"]/g;
+const IMPORT_PATTERN = /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)['"]([^'"]+)['"]/g;
+
+/**
+ * Настоящий ли это импорт или текст импорта внутри строки.
+ *
+ * Разбор регулярным выражением не различает код и данные, и однажды система обвинила сама себя: в
+ * тесте анализатора лежит фикстура `"import { x } from '../../packages/contracts/...'"`, и граф
+ * увидел в ней зависимость `tools → contracts`, которой нет. Ложное нарушение жёсткого правила
+ * дороже пропущенного: на него тратят время, а доверие к остальным находкам падает разом.
+ *
+ * Признак — чётность кавычек до совпадения В ТОЙ ЖЕ СТРОКЕ. Внутри двойных кавычек или обратных
+ * кавычек открывающая уже стоит, и их число нечётно. Якорить импорт к началу строки нельзя:
+ * prettier переносит длинные списки, и `} from '...'` — обычный вид четверти импортов этого
+ * дерева (проверено: 9086 связей против 6797 при якоре).
+ */
+function insideStringLiteral(text: string, index: number): boolean {
+  const lineStart = text.lastIndexOf('\n', index) + 1;
+  const before = text.slice(lineStart, index);
+  let quotes = 0;
+  let backticks = 0;
+  for (let position = 0; position < before.length; position += 1) {
+    if (before[position] === '\\') {
+      position += 1;
+      continue;
+    }
+    if (before[position] === '"') quotes += 1;
+    if (before[position] === '`') backticks += 1;
+  }
+  return quotes % 2 === 1 || backticks % 2 === 1;
+}
+
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx'];
 
 /** Импорт превращается в путь файла внутри дерева либо в `null`, если он внешний. */
@@ -107,6 +137,7 @@ export function collectDependencies(options: DependencyOptions): DependencyAnaly
     for (const match of text.matchAll(IMPORT_PATTERN)) {
       const specifier = match[1];
       if (specifier === undefined) continue;
+      if (match.index !== undefined && insideStringLiteral(text, match.index)) continue;
       const resolved = resolveImport(options.root, file, specifier, options.aliases);
       if (resolved === null) {
         // Внешний пакет либо алиас, о котором конфиг не знает. Нарушением это не считается: карта

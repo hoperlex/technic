@@ -41,6 +41,12 @@ export async function analyze(
   const workspace = ensureWorkspace(config.runtimeDir);
 
   const scopeFiles = resolveScope(config, args);
+  if (scopeFiles === null) {
+    // Область не определилась — работать не по чему. Молча взять всё дерево нельзя: задание агенту
+    // по всему репозиторию — не то, что человек просил командой про изменённое.
+    out.error(`git не смог показать изменения от ${args.since ?? 'HEAD'}: проверьте ссылку`);
+    return { ok: false };
+  }
   out.heading('сбор фактов');
   if (args.all) out.item('область: всё дерево');
 
@@ -121,7 +127,7 @@ export async function analyze(
  * по неизменённому коду дорого и бессмысленно, а главное — каждый такой прогон заново приносит
  * старые находки, по которым решение уже принималось.
  */
-function resolveScope(config: MaintenanceConfig, args: AnalyzeArgs): string[] {
+function resolveScope(config: MaintenanceConfig, args: AnalyzeArgs): string[] | null {
   if (args.all) return [];
   return changedSince(config.root, args.since ?? 'HEAD');
 }

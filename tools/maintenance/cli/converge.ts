@@ -14,6 +14,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { MaintenanceConfig } from '../core/config.ts';
 import type { Reporter } from '../core/contracts.ts';
 import type { RunState } from '../core/run-state.ts';
+import type { TrackedFinding } from '../core/finding.ts';
 import type { PolicySet } from '../core/types.ts';
 import {
   advance,
@@ -38,6 +39,12 @@ import type { CommandResult } from './commands.ts';
 import { loadPolicies } from './commands.ts';
 import { readBatch, saveBatch } from './verify.ts';
 import { JsonFindingStore, decide, reconcile, type LedgerEntry } from '../state/ledger.ts';
+import {
+  EMPTY_FIX_REPORT,
+  countSevere,
+  parseFixReport,
+  type FixReport,
+} from '../core/fix-report.ts';
 import { filesChangedSince, lastChangeOf } from '../analyzers/git.ts';
 
 export interface ConvergeArgs {
@@ -140,6 +147,10 @@ async function emitReviewTask(
 
   out.heading(`проход ${state.passes.length}: ${pass.id}`);
   const scopeFiles = changedSince(config.root, 'HEAD');
+  if (scopeFiles === null) {
+    out.error('git не смог показать изменения рабочего дерева: прогон остановлен');
+    return { ok: false };
+  }
   const collected = collectFacts({ config, policies, workspace, withTests: false, scopeFiles });
   const widened = widenScope(config, policies, collected, scopeFiles);
   const facts = widened.facts;
@@ -191,6 +202,20 @@ async function takeReview(
   for (const problem of parsed.problems) out.warn(problem);
 
   /*
+   * Ответ, который не разобрался, — это НЕ «находок нет».
+   *
+   * Разница решающая: «находок нет» закрывает проход успехом и останавливает прогон причиной
+   * «чинить больше нечего», то есть система объявляет лучшим исходом собственную неспособность
+   * получить ответ. Пустой ответ без единой жалобы разбора — другое дело: агент честно сказал, что
+   * не нашёл ничего, и это штатный исход.
+   */
+  if (parsed.findings.length === 0 && parsed.problems.length > 0) {
+    out.error('ответ ревьюера не разобран: прогон ждёт исправленный ответ, а не идёт дальше');
+    out.item(`файл: ${path.relative(config.root, file)}`);
+    return { ok: false };
+  }
+
+  /*
    * Журнал спрашивают ДО отбора, а не после.
    *
    * Смысл журнала в том, чтобы решение человека («это осознанный долг», «это ложное срабатывание»)
@@ -232,7 +257,14 @@ async function takeReview(
   let entries = sifted.entries;
   const now = new Date();
   for (const verdict of selection.verdicts) {
-    if (verdict.decision === 'selected') continue;
+    /*
+     * В журнал уходит только то, по чему решение ПРИНЯТО. «Отложено» и «отклонено» — решения
+     * системы, их можно и нужно помнить. А `manual` означает ровно обратное: система сказала
+     * «решать не вправе». Запиши её отложенной — и вопрос, заданный человеку, замолчит на
+     * квартал, если человек не успел его открыть. Такие находки остаются новыми и приходят снова,
+     * пока человек не ответит командой `maintain ledger`.
+     */
+    if (verdict.decision === 'selected' || verdict.decision === 'manual') continue;
     entries = decide(entries, verdict.finding.fingerprint, 'deferred', {
       note: `${verdict.decision}: ${verdict.reason}`,
       now,
@@ -338,6 +370,7 @@ async function takeFix(
   }
   const transaction = new FileCheckpointTransaction(config.root, workspace.checkpoints);
   const changed = transaction.changedIn(batch.checkpoint);
+  const lines = changed.length === 0 ? 0 : transaction.changedLinesIn(batch.checkpoint);
   if (changed.length === 0) {
     out.heading('ждём правку исполнителя');
     out.item(`задание: ${path.relative(config.root, workspace.taskFile)}`);
@@ -345,7 +378,8 @@ async function takeFix(
     return { ok: true };
   }
 
-  const report = readFixReport(workspace);
+  const selected = state.passes.at(-1)?.selectedFindings ?? [];
+  const { report, newSevere, resolvedSevere } = fixReportOf(workspace, selected, out);
   const result = verifyBatch({
     config,
     policies,
@@ -377,9 +411,11 @@ async function takeFix(
     outcome: result.outcome,
     reason: result.reason,
     changedFiles: changed,
-    changedLines: report.lines,
-    newSevere: report.newSevere,
-    resolvedSevere: report.resolvedSevere,
+    // Строки считаются по контрольной точке, а не со слов исполнителя: точка хранит содержимое
+    // «до», и разница по ней — единственное число, которое не зависит от честности отчёта.
+    changedLines: lines,
+    newSevere,
+    resolvedSevere,
   });
   out.item(`решение: ${decisionWord(result.outcome)} — ${result.reason}`);
   return closePass(config, policies, workspace, out, next);
@@ -467,45 +503,32 @@ function decisionWord(outcome: string): string {
   return 'НУЖЕН ЧЕЛОВЕК';
 }
 
-interface FixReport {
-  readonly claimed: string[];
-  readonly lines: number;
-  readonly newSevere: number;
-  readonly resolvedSevere: number;
-}
-
 /**
- * Отчёт исполнителя.
+ * Отчёт исполнителя со стороны цикла: разбор общий, а вот СМЫСЛ счётчиков — здесь.
  *
- * Он необязателен: ручной адаптер его может не оставить. Отсутствие отчёта не выдумывается за
- * исполнителя — все счётчики остаются нулевыми, и условие «создал больше, чем починил» тогда
- * просто не срабатывает. Считать по молчанию значило бы обвинять или оправдывать без данных.
+ * `resolvedSevere` считается по строгости находок ПАРТИИ, а не по длине списка `applied`. Раньше
+ * тремя мелкими правками исполнитель набирал «закрыто три» и заглушал условие «создаёт больше
+ * серьёзного, чем чинит» — единственное, которое ловит работу цикла во вред.
  */
-function readFixReport(workspace: Workspace): FixReport {
+function fixReportOf(
+  workspace: Workspace,
+  batchFindings: readonly TrackedFinding[],
+  out: Reporter,
+): { report: FixReport; newSevere: number; resolvedSevere: number } {
   const file = path.join(workspace.results, 'fix.json');
-  const empty: FixReport = { claimed: [], lines: 0, newSevere: 0, resolvedSevere: 0 };
-  if (!existsSync(file)) return empty;
-  try {
-    const payload = JSON.parse(readFileSync(file, 'utf8')) as {
-      applied?: { files?: unknown; severity?: unknown }[];
-      newFindings?: { severity?: unknown }[];
-    };
-    const claimed = new Set<string>();
-    for (const item of payload.applied ?? []) {
-      if (!Array.isArray(item.files)) continue;
-      for (const name of item.files) if (typeof name === 'string') claimed.add(name);
-    }
-    const severe = (items: readonly { severity?: unknown }[] | undefined) =>
-      (items ?? []).filter((item) => item.severity === 'high').length;
-    return {
-      claimed: [...claimed],
-      lines: 0,
-      newSevere: severe(payload.newFindings),
-      resolvedSevere: (payload.applied ?? []).length,
-    };
-  } catch {
-    return empty;
+  if (!existsSync(file)) {
+    return { report: EMPTY_FIX_REPORT, newSevere: 0, resolvedSevere: 0 };
   }
+  const report = parseFixReport(readFileSync(file, 'utf8'));
+  for (const problem of report.problems) out.warn(problem);
+  const applied = new Set(report.applied);
+  return {
+    report,
+    newSevere: countSevere(report.newSeverities),
+    resolvedSevere: batchFindings.filter(
+      (finding) => applied.has(finding.id) && finding.severity === 'high',
+    ).length,
+  };
 }
 
 /** Отдельная команда отчёта: печатает состояние прогона, ничего не меняя. */

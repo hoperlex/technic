@@ -41,7 +41,6 @@ function policyFixture(overrides: Partial<DeepMaintenanceBudget> = {}): DeepMain
     maxFilesPerBatch: 8,
     maxChangedLinesPerBatch: 400,
     fullScan: 'allowed',
-    unresolved: 'backlog',
     zones: [
       { id: 'architecture', looksFor: ['cycles'], mayChange: ['imports'], mustNotChange: [] },
       { id: 'cleanup', looksFor: ['dead-code'], mayChange: ['deletions'], mustNotChange: [] },

@@ -243,13 +243,6 @@ export class YamlPolicyProvider implements PolicyProvider {
           ['allowed', 'forbidden'] as const,
           'forbidden',
         ),
-        unresolved: oneOf(
-          { file: shortName, at: 'deepMaintenance' },
-          deep,
-          'unresolved',
-          ['backlog', 'drop'] as const,
-          'backlog',
-        ),
         zones,
       },
       ledger: {
