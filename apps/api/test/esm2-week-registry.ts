@@ -493,6 +493,18 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: 'таблица «кому открыт маршрут» (378–463): проверяются только 403 и не-403',
   },
   {
+    file: 'waybill-scope.db.test.ts',
+    klass: 'consumer',
+    status: 'done',
+    note: 'область журнала листов (ADR 0192): вставляет ЭСМ-2 сам, но границы в утверждения не идут — видимость считается по `source_request_id`. Лист заведён отрезком внутри недели (метка ЭСМ2-РАЗРЕЗ у `newEsm2`), разрез файлу безразличен',
+  },
+  {
+    file: 'grants-contracts.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note: 'комментарий к клетке `waybills` матрицы выдачи (ADR 0192) называет заявку-основание ЭСМ-2 как второе слагаемое области листа; недельного разреза файл не касается — он сверяет барьеры выдачи наборов',
+  },
+  {
     file: 'assignment-history.test.ts',
     klass: 'mention',
     status: 'done',

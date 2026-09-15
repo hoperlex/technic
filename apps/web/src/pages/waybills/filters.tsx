@@ -51,7 +51,12 @@ interface Options {
   range: WaybillDateRange;
   onRangeChange: (range: WaybillDateRange) => void;
   vehicles: { options: FilterOption[]; loading: boolean };
-  drivers: { options: FilterOption[]; loading: boolean };
+  /**
+   * `null` — фильтра по водителю нет вовсе: держателю набора «Путевые листы: просмотр и печать»
+   * справочник водителей не открыт (`drivers.read`, ADR 0192), и отбор, который отвечал бы пустым
+   * списком, хуже отсутствующего — человек решил бы, что водителей в портале нет.
+   */
+  drivers: { options: FilterOption[]; loading: boolean } | null;
 }
 
 const DATE = 'YYYY-MM-DD';
@@ -114,17 +119,19 @@ export function waybillFiltersBar(o: Options): ReactNode {
         value={o.values.vehicleId}
         onChange={(v: string | undefined) => o.onChange({ vehicleId: v })}
       />
-      <Select
-        allowClear
-        showSearch
-        optionFilterProp="label"
-        placeholder="Все водители"
-        style={{ width: 220 }}
-        options={o.drivers.options}
-        loading={o.drivers.loading}
-        value={o.values.driverPersonId}
-        onChange={(v: string | undefined) => o.onChange({ driverPersonId: v })}
-      />
+      {o.drivers && (
+        <Select
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          placeholder="Все водители"
+          style={{ width: 220 }}
+          options={o.drivers.options}
+          loading={o.drivers.loading}
+          value={o.values.driverPersonId}
+          onChange={(v: string | undefined) => o.onChange({ driverPersonId: v })}
+        />
+      )}
       {/* Период выдачи: журнал читают по дням, но в отличие от маршрутов не только по ним — за
         номером листа приходят и без даты, поэтому обе границы необязательны. */}
       <DatePicker.RangePicker
@@ -184,16 +191,20 @@ export function waybillMobileFilters(o: Options): FilterDefinition[] {
       loading: o.vehicles.loading,
       onChange: (v) => o.onChange({ vehicleId: v }),
     },
-    {
-      kind: 'select',
-      key: 'driverPersonId',
-      label: 'Водитель',
-      value: o.values.driverPersonId,
-      options: o.drivers.options,
-      placeholder: 'Все водители',
-      loading: o.drivers.loading,
-      onChange: (v) => o.onChange({ driverPersonId: v }),
-    },
+    ...(o.drivers
+      ? [
+          {
+            kind: 'select' as const,
+            key: 'driverPersonId',
+            label: 'Водитель',
+            value: o.values.driverPersonId,
+            options: o.drivers.options,
+            placeholder: 'Все водители',
+            loading: o.drivers.loading,
+            onChange: (v: string | undefined) => o.onChange({ driverPersonId: v }),
+          },
+        ]
+      : []),
     {
       // Выбором из двух значений, а не переключателем: отбор двусторонний (см. полосу десктопа), а
       // переключатель второе значение выразить не может — «выключен» у него значит «не задан».

@@ -37,6 +37,7 @@ import {
   wasteRequests,
   wasteTicketFieldEvents,
   waybillFiles,
+  waybills,
 } from '../db/schema';
 import { writeAudit } from '../lib/audit';
 import { err } from '../lib/errors';
@@ -47,6 +48,7 @@ import {
   serviceRequestVisibilityWhere,
   placeObjectVisibilityWhere,
   vehicleRequestVisibilityWhere,
+  waybillVisibilityWhere,
 } from '../lib/access';
 import {
   cancelScheduledObjectDeletion,
@@ -496,13 +498,20 @@ async function canAccessFile(
   let visibleWaybill = false;
   if (!visibleWaste && !visibleVehicle && !visibleService && canReadWaybills) {
     // Скан, подшитый к бланку строгой отчётности (миграция 0087): оборот, заполненный заказчиком,
-    // отметки, акт. Условие одно — связь: журнал листов не сужается ни объектом, ни контрагентом
-    // (`GET /waybills` фильтрует только запрошенным), и придумывать вложениям область, которой нет
-    // у самого журнала, значило бы прятать файл, который портал в строке показывает.
+    // отметки, акт.
+    //
+    // УСЛОВИЙ ДВА, И ВТОРОЕ ПОЯВИЛОСЬ ВМЕСТЕ С ОБЛАСТЬЮ ЖУРНАЛА (ADR 0192). Прежде здесь стояла
+    // одна связь, и обоснование звучало «придумывать вложениям область, которой нет у самого
+    // журнала, значило бы прятать файл, который портал в строке показывает». Ровно это рассуждение
+    // и требует теперь второго условия: у журнала область появилась, и вложение обязано сужаться
+    // тем же предикатом, что строка, к которой оно подшито. Без него площадка, получившая набор
+    // «Путевые листы: просмотр и печать», открывала бы скан любого листа компании по прямому
+    // идентификатору файла — мимо журнала, который ей этот лист не показывает.
     const waybill = await db
       .select({ id: waybillFiles.waybillId })
       .from(waybillFiles)
-      .where(eq(waybillFiles.fileId, fileId))
+      .innerJoin(waybills, eq(waybills.id, waybillFiles.waybillId))
+      .where(and(eq(waybillFiles.fileId, fileId), waybillVisibilityWhere(p)))
       .limit(1);
     visibleWaybill = waybill.length > 0;
   }

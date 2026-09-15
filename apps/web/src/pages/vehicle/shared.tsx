@@ -174,12 +174,19 @@ export function useLessorOptions() {
 /**
  * Водители для фильтров: весь действующий справочник, по алфавиту. Ни категория, ни полнота
  * документов здесь никого не убирают — это фильтр списка, а не подбор под машину (ADR 0064).
+ *
+ * `enabled` — для страниц, открытых тому, у кого `drivers.read` нет (ADR 0192: журнал путевых
+ * листов площадке). Умолчание `true` оставляет прежних потребителей нетронутыми, а выключенный
+ * запрос не уходит вовсе: карточки водителей — персональные данные (ADR 0037), и просить их «на
+ * всякий случай», чтобы получить 403 и нарисовать пустой список, значит держать в журнале сервера
+ * отказ на каждое открытие страницы.
  */
-export function useDriverOptions() {
+export function useDriverOptions(enabled = true) {
   const { data, isFetching } = useQuery({
     queryKey: ['drivers', 'options'],
     queryFn: () =>
       driversApi.list({ page: 1, pageSize: 500, sortBy: 'fullName', sortOrder: 'asc' }),
+    enabled,
   });
   return {
     options: (data?.items ?? []).map((d) => ({ value: d.id, label: d.fullName })),

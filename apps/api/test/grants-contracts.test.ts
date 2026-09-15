@@ -1647,7 +1647,9 @@ describe('разница эффективных прав', () => {
     ];
     for (const { label, permissions, roles } of NEW_PAIRS) {
       const pairRoles = OFFICE_ROLES.filter((role) => roles.includes(role));
-      expect(pairRoles, `каталог не обещает набор «${label}» ни одной офисной роли`).not.toEqual([]);
+      expect(pairRoles, `каталог не обещает набор «${label}» ни одной офисной роли`).not.toEqual(
+        [],
+      );
       for (const role of pairRoles) {
         const after = [...new Set<Permission>([...ROLE_PERMISSIONS[role], ...permissions])];
         const violations = validateGrantAssignment({
@@ -1768,12 +1770,18 @@ const SCOPED_AXES_BY_MODULE: Partial<Record<PermissionModule, readonly RoleScope
   // officeEquipmentScopeWhere + assertOfficeEquipmentScope — только две площадочные оси: ветки
   // контрагента у предиката нет вовсе (ADR 0085: «его» техника в справочнике ничем не отмечена).
   officeEquipment: ['object', 'department'],
+  // waybillVisibilityWhere (ADR 0192) — обе площадочные оси, и ось у листа ПРОИЗВОДНАЯ: своей
+  // колонки заказчика у бланка нет, область считается по талонам (`waybill_requests` →
+  // `vehicle_requests`) и по заявке-основанию ЭСМ-2 (`waybills.source_request_id`). Ветки
+  // контрагента нет: лист выписан на машину, а не на её арендодателя, и `scoped` в той клетке
+  // обещал бы сужение, которого предикат не делает.
+  waybills: ['object', 'department'],
 };
 
 /**
  * Модули, у которых предиката области нет ни для одной оси: маршрут закрыт правом и больше ничем.
  * Проверено чтением — `routes/garage.ts`, `routes/vehicle-readings.ts`, `routes/vehicle-maintenance.ts`,
- * `routes/drivers.ts`, `routes/waybills.ts`, `routes/audit.ts`, `routes/admin-mailings.ts` спрашивают
+ * `routes/drivers.ts`, `routes/audit.ts`, `routes/admin-mailings.ts` спрашивают
  * только `requirePermission`; у архива слепа ручка возврата (`/:id/restore` у заявок вывоза и заказов
  * ТС поднимает строку по id без проверки области), у файлов `files.manageAny` означает обход владения.
  * У руководств предиката нет и быть не по чему: в `app_manuals` нет колонки, по которой список
@@ -1782,7 +1790,6 @@ const SCOPED_AXES_BY_MODULE: Partial<Record<PermissionModule, readonly RoleScope
 const UNSCOPED_MODULES: readonly PermissionModule[] = [
   'directories',
   'drivers',
-  'waybills',
   'garage',
   'driverCabinet',
   'vehicleReadings',
@@ -1965,9 +1972,18 @@ describe('матрица «ось роли × модуль»', () => {
    * таблицей; эти четыре строки говорят, что таблица — именно та, о которой шла речь.
    */
   it('клетки из плана и ADR стоят там, где обещано', () => {
-    // Инвариант 4 плана §8 дословно: путевые листы и гараж роли с объектной осью не выдаются.
-    expect(grantScopeRule('shtab', 'waybills')).toBe('forbidden');
+    // Инвариант 4 плана §8 дословно: гараж роли с объектной осью не выдаётся — предиката у модуля
+    // нет ни одного.
     expect(grantScopeRule('shtab', 'garage')).toBe('forbidden');
+    // Путевые листы стояли в той же строке инварианта до ADR 0192 и ушли из неё ЕДИНСТВЕННЫМ
+    // допустимым путём: у модуля появился предикат (`waybillVisibilityWhere`), и лишь вслед за ним
+    // сменились клетки. Обе площадочные оси — `scoped`, обе внешние остались закрытыми: у
+    // арендодателя ветви в предикате нет, а водителю наборы не выдаются вовсе.
+    expect(grantScopeRule('shtab', 'waybills')).toBe('scoped');
+    expect(grantScopeRule('site', 'waybills')).toBe('scoped');
+    expect(grantScopeRule('department', 'waybills')).toBe('scoped');
+    expect(grantScopeRule('operator', 'waybills')).toBe('forbidden');
+    expect(grantScopeRule('driver', 'waybills')).toBe('forbidden');
     // ADR 0085: справочника оргтехники у сервисной компании нет намеренно — пометить «свою» технику
     // в схеме нечем, и право означало бы весь парк компании.
     expect(grantScopeRule('operator', 'officeEquipment')).toBe('forbidden');
@@ -2093,7 +2109,10 @@ describe('единая проверка выдачи', () => {
       codesOf(
         validateGrantAssignment({
           roles: ['driver', 'shtab', 'dispatcher'],
-          permissions: ['waybills.read'],
+          // Пример модуля без области — карточки водителей: предиката у `routes/drivers.ts` нет ни
+          // одного. Путевые листы на этой роли работали образцом до ADR 0192, пока у них не
+          // появился свой (`waybillVisibilityWhere`).
+          permissions: ['drivers.read'],
           subjectRole: 'shtab',
           subjectPermissionsAfter: null,
         }),
@@ -2102,18 +2121,20 @@ describe('единая проверка выдачи', () => {
   });
 
   /**
-   * Барьер 3 — декартово произведение против матрицы. Тот самый случай плана: набор с
-   * `waybills.read`, выданный площадке, открыл бы листы всей компании. Проверяется и текст: отказ
-   * обязан называть право, роль и модуль, а не «недопустимую комбинацию» — по такому сообщению
-   * администратор не поймёт, какую галочку снимать.
+   * Барьер 3 — декартово произведение против матрицы. Случай плана дословно: набор с правом
+   * модуля, у которого области нет, выданный площадке, открыл бы данные всей компании. Примером
+   * долго служили путевые листы; с ADR 0192 у них есть предикат, и образец взят из соседней
+   * клетки — карточки водителей и гараж, где фильтрации по-прежнему нет ни для одной оси.
+   * Проверяется и текст: отказ обязан называть право, роль и модуль, а не «недопустимую
+   * комбинацию» — по такому сообщению администратор не поймёт, какую галочку снимать.
    */
   it('право модуля без области отклоняется каждой ролью с осью — и текст называет виновников', () => {
     const violations = validateGrantAssignment({
       roles: ['shtab', 'rukstroy', 'dispatcher'],
-      permissions: ['waybills.read', 'garage.read'],
+      permissions: ['drivers.read', 'garage.read'],
       subjectRole: 'shtab',
       subjectPermissionsAfter: null,
-      grantLabel: 'Журнал листов',
+      grantLabel: 'Карточки водителей',
     });
     // Две роли с осью × два права = четыре нарушения; диспетчер законен и в списке не появляется.
     expect(codesOf(violations)).toEqual([
@@ -2123,22 +2144,22 @@ describe('единая проверка выдачи', () => {
       'module_forbidden_for_axis',
     ]);
     expect(violations.map((violation) => `${violation.role}:${violation.permission}`)).toEqual([
-      'shtab:waybills.read',
+      'shtab:drivers.read',
       'shtab:garage.read',
-      'rukstroy:waybills.read',
+      'rukstroy:drivers.read',
       'rukstroy:garage.read',
     ]);
     const first = violations[0]!;
-    expect(first.message).toContain('Журнал листов');
-    expect(first.message).toContain('waybills.read');
+    expect(first.message).toContain('Карточки водителей');
+    expect(first.message).toContain('drivers.read');
     expect(first.message).toContain('Штаб');
-    expect(first.message).toContain('Путевые листы');
+    expect(first.message).toContain('Водители');
     expect(first.message).toContain('объекты строительства');
     // Тот же набор ролям без оси законен: сужать нечего, и запрет был бы отказом без причины.
     expect(
       validateGrantAssignment({
         roles: ['dispatcher', 'manager', 'chief_mechanic'],
-        permissions: ['waybills.read', 'garage.read'],
+        permissions: ['drivers.read', 'garage.read'],
         subjectRole: 'dispatcher',
         subjectPermissionsAfter: null,
       }),
@@ -2378,7 +2399,7 @@ describe('единая проверка выдачи', () => {
   it('нарушения перечисляются все и в объявленном порядке', () => {
     const violations = validateGrantAssignment({
       roles: ['driver', 'shtab'],
-      permissions: ['users.manage', 'waybills.read'],
+      permissions: ['users.manage', 'drivers.read'],
       subjectRole: 'shtab',
       subjectPermissionsAfter: [
         'waybills.cancel',
@@ -2421,7 +2442,7 @@ describe('единая проверка выдачи', () => {
       codesOf(
         validateGrantAssignment({
           roles: ['driver', 'shtab'],
-          permissions: ['users.manage', 'waybills.read'],
+          permissions: ['users.manage', 'drivers.read'],
           subjectRole: null,
           subjectPermissionsAfter: null,
         }),
@@ -2447,7 +2468,7 @@ describe('единая проверка выдачи', () => {
       codesOf(
         validateGrantAssignment({
           roles: ['shtab', 'shtab', 'driver', 'driver'],
-          permissions: ['users.manage', 'users.manage', 'waybills.read', 'waybills.read'],
+          permissions: ['users.manage', 'users.manage', 'drivers.read', 'drivers.read'],
           subjectRole: 'shtab',
           subjectPermissionsAfter: null,
         }),

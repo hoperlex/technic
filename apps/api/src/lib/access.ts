@@ -58,6 +58,9 @@ import {
   serviceRequestExecutors,
   serviceRequestPastExecutors,
   serviceRequests,
+  vehicleRequests,
+  waybillRequests,
+  waybills,
 } from '../db/schema';
 import { err, type AppError } from './errors';
 import { serviceDenied } from './service-access-denied';
@@ -1538,6 +1541,111 @@ export function officeEquipmentCandidateScopeWhere(
     bases.push(review);
   }
   return or(...bases)!;
+}
+
+// ── Журнал путевых листов (ADR 0037, область — ADR 0192) ──
+
+/**
+ * Колонки листа, по которым считается область. Умолчание — сама таблица: все сегодняшние читатели
+ * спрашивают её напрямую, а параметр оставлен для запроса, где лист приходит под псевдонимом
+ * (журнал соединяет `waybills` сам с собой — заменённый лист и замена, ADR 0101).
+ */
+export interface WaybillVisibilityColumns {
+  readonly id: AnyColumn;
+  readonly sourceRequestId: AnyColumn;
+}
+
+const WAYBILL_COLUMNS: WaybillVisibilityColumns = {
+  id: waybills.id,
+  sourceRequestId: waybills.sourceRequestId,
+};
+
+/**
+ * Какая заявка считается «своей» для области листа: та же пара осей, что у `vehicleRequestVisibilityWhere`,
+ * плюс площадки отделов.
+ *
+ * ОТЛИЧИЕ ОТ «ЗАКАЗА ТС» ОБЪЯВЛЕНО РЕШЕНИЕМ Р3 (ADR 0192) и состоит в одном слагаемом. Там отдел
+ * сравнивается только со **своим отделом**: заявку на технику отдел заводит от себя, и объектной
+ * области у него в том модуле нет вовсе (ADR 0062 п. 3). Здесь к этому добавлены площадки его
+ * отделов (ADR 0062, ADR 0144) — бумага по технике, работающей на площадке отдела, отделу нужна
+ * ровно так же, как по технике, которую он заказал сам. Дизъюнкция, а не выбор одного из двух:
+ * заявка отдела объекта не имеет, заявка площадки не имеет отдела, и сравнение по «обеим колонкам
+ * сразу» не нашло бы ни одной.
+ *
+ * Пустая ось даёт `NEVER_MATCH`, а не отсутствие условия, — то же правило, что во всём файле:
+ * «область не написана» означало бы доступ ко всем строкам сразу.
+ */
+function ownRequestScopeSql(
+  p: Principal,
+  objectColumn: AnyColumn,
+  departmentColumn: AnyColumn,
+): SQL | undefined {
+  if (isObjectScopedRole(p.role)) {
+    const ids = p.constructionObjectIds;
+    return ids.length > 0 ? inArray(objectColumn, ids) : eq(objectColumn, NEVER_MATCH);
+  }
+  if (isDepartmentScopedRole(p.role)) {
+    const own = p.departmentIds;
+    const places = p.departmentObjectIds;
+    const byDepartment = own.length > 0 ? inArray(departmentColumn, own) : undefined;
+    const byPlace = places.length > 0 ? inArray(objectColumn, places) : undefined;
+    // Обе оси пусты — «не видит ничего»: учётку роли отдела без единого отдела портал завести не
+    // даёт (`users.ts`), но выборка не должна зависеть от того, удержалась ли та проверка.
+    if (!byDepartment && !byPlace) return eq(departmentColumn, NEVER_MATCH);
+    return or(byDepartment, byPlace)!;
+  }
+  return undefined;
+}
+
+/**
+ * Видимость путевого листа (ADR 0192): площадка и отдел видят листы, выписанные по их заявкам.
+ *
+ * ОСЬ У ЛИСТА ПРОИЗВОДНАЯ — своей колонки заказчика у него нет. Отсюда два слагаемых, и оба
+ * обязательны:
+ *
+ *  - **талоны** (`waybill_requests`) — заявки, которые машина выполняет по этому листу. Так устроены
+ *    4-П и форма № 3: в листе до десяти слотов, и заказчики в них бывают разные;
+ *  - **заявка-основание** (`waybills.source_request_id`) — недельный лист ЭСМ-2 (миграция 0087), у
+ *    которого рейса нет вовсе, а есть заявка и период. Без этого слагаемого площадка не увидела бы
+ *    ровно ту бумагу, которая заводится на неделю работы её машины.
+ *
+ * ЛИСТ ВИДЕН ЦЕЛИКОМ ТОМУ, ЧЕЙ В НЁМ ХОТЯ БЫ ОДИН ТАЛОН (решение Р2). `EXISTS`, а не «все талоны
+ * мои»: бумага у рейса одна, и машина, заехавшая после моей площадки к соседу, не должна уносить
+ * мой лист из моего журнала. Обратная сторона названа прямо: в таком листе видны номера чужих
+ * заявок и наименования чужих объектов — и в печатной форме тоже, потому что печатается снимок
+ * бланка целиком.
+ *
+ * ЛИСТ БЕЗ ЗАЯВОК НЕ ВИДЕН НИКОМУ ИЗ ПЛОЩАДОК, и это не пробел, а следствие производной оси:
+ * у пустого бланка (ADR 0071) и у листа рейса-перегона считать область не по чему. Такой лист
+ * остаётся диспетчерской — ей область не сужается ничем.
+ *
+ * УДАЛЁННАЯ ЗАЯВКА ОБЛАСТЬ НЕ ОТНИМАЕТ: `deleted_at` здесь не спрашивается намеренно. Лист —
+ * бланк строгой отчётности, он пережил заявку и остаётся в журнале с номером и статусом; исчезни
+ * он у площадки в момент, когда диспетчер удалил основание, — из журнала пропала бы бумага,
+ * которая на объекте уже отработала.
+ */
+export function waybillVisibilityWhere(
+  p: Principal,
+  cols: WaybillVisibilityColumns = WAYBILL_COLUMNS,
+): SQL | undefined {
+  if (!isPlaceScopedRole(p.role)) return undefined;
+  const own = ownRequestScopeSql(p, vehicleRequests.objectId, vehicleRequests.departmentId);
+  // `undefined` от оси означает «сужать нечем», и до сюда такой субъект не доходит: роль с осью
+  // площадки всегда получает условие, а роль без оси отсеяна строкой выше.
+  if (own === undefined) return undefined;
+  return sql`(
+    EXISTS (
+      SELECT 1 FROM ${waybillRequests}
+        JOIN ${vehicleRequests} ON ${vehicleRequests.id} = ${waybillRequests.requestId}
+       WHERE ${waybillRequests.waybillId} = ${cols.id}
+         AND (${own})
+    )
+    OR EXISTS (
+      SELECT 1 FROM ${vehicleRequests}
+       WHERE ${vehicleRequests.id} = ${cols.sourceRequestId}
+         AND (${own})
+    )
+  )`;
 }
 
 // ── Недельная заявка на технику (ADR 0085) ──

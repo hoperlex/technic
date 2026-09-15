@@ -58,9 +58,11 @@ import {
   waybills,
   waybillSeries,
 } from '../db/schema';
+import { waybillVisibilityWhere } from '../lib/access';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
+import type { Principal } from '../auth/principal';
 import { orderByFrom, pageParams } from '../lib/pagination';
 import { fileView } from '../services/file-view';
 import { PrintAborted, renderPdf, renderPdfBatch } from '../services/office-pdf';
@@ -522,8 +524,15 @@ async function filesByWaybill(ids: string[]): Promise<Map<string, FileDto[]>> {
  * состояния листа, а не из того, что команда собиралась записать (Р31, ADR 0101 п. 9). На повторе
  * операции выполнять нечего, и другого способа ответить то же самое, что и с первой попытки, нет.
  */
-async function waybillDtoOr404(id: string): Promise<WaybillDto> {
-  const [row] = await loadRows(and(eq(waybills.id, id)));
+/**
+ * Лист по идентификатору — или 404, в том числе когда лист чужой области (ADR 0192).
+ *
+ * Предикат стоит **в выборке**, а не отдельной проверкой после неё: «нет такого листа» и «этот лист
+ * не ваш» обязаны отвечать одинаково. Отдельный отказ 403 подтверждал бы существование бумаги под
+ * известным номером — вместе с тем, что она у кого-то есть.
+ */
+async function waybillDtoOr404(p: Principal, id: string): Promise<WaybillDto> {
+  const [row] = await loadRows(and(eq(waybills.id, id), waybillVisibilityWhere(p)));
   if (!row) throw err.notFound('Путевой лист не найден');
   const [links, cancelled, attachments, marks] = await Promise.all([
     linksByWaybill([row.id]),
@@ -556,7 +565,12 @@ interface PrintGuardRow {
   numberWidth: number;
 }
 
-async function printGuardRows(ids: string[]): Promise<PrintGuardRow[]> {
+/**
+ * Область здесь та же, что в журнале (ADR 0192): чужой лист не просто не печатается — он не
+ * находится. Выпав из выборки, он попадает в `missing` пачки и отвечает «часть листов не найдена»,
+ * как лист, удалённый из журнала между показом и печатью.
+ */
+async function printGuardRows(ids: string[], p: Principal): Promise<PrintGuardRow[]> {
   return db
     .select({
       id: waybills.id,
@@ -568,7 +582,7 @@ async function printGuardRows(ids: string[]): Promise<PrintGuardRow[]> {
     })
     .from(waybills)
     .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-    .where(inArray(waybills.id, ids));
+    .where(and(inArray(waybills.id, ids), waybillVisibilityWhere(p)));
 }
 
 /**
@@ -658,9 +672,9 @@ function changedNotice(printed: readonly PrintedSheet[], rows: PrintGuardRow[]):
  * поручение, а «откройте печать заново» после него человек выполнил бы впустую, получив тот же
  * отказ вторым заходом.
  */
-async function assertStillPrintable(printed: readonly PrintedSheet[]): Promise<void> {
+async function assertStillPrintable(printed: readonly PrintedSheet[], p: Principal): Promise<void> {
   const orderedIds = printed.map((sheet) => sheet.id);
-  const rows = await printGuardRows(orderedIds);
+  const rows = await printGuardRows(orderedIds, p);
   const notice = cancelledNotice(orderedIds, rows) ?? changedNotice(printed, rows);
   if (notice) throw err.conflict(notice);
 }
@@ -690,8 +704,14 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
     '/',
     { preHandler: [app.authenticate, canRead], schema: { querystring: waybillListQuerySchema } },
     async (req) => {
+      const p = requirePrincipal(req);
       const q = req.query;
       const where = and(
+        // Область журнала (ADR 0192): площадка и отдел видят листы своих заявок, у диспетчерской и
+        // службы механика предикат пуст — им журнал не сужается ничем. Условие идёт первым слагаемым
+        // общего `where`, и потому его же получает счётчик страниц: разойдись они, номера страниц
+        // считались бы по чужой бумаге.
+        waybillVisibilityWhere(p),
         q.dateFrom ? gte(waybills.issuedForDate, q.dateFrom) : undefined,
         q.dateTo ? lte(waybills.issuedForDate, q.dateTo) : undefined,
         q.vehicleId ? eq(waybills.vehicleId, q.vehicleId) : undefined,
@@ -765,7 +785,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
   r.get(
     '/:id',
     { preHandler: [app.authenticate, canRead], schema: { params: idParams } },
-    async (req) => waybillDtoOr404(req.params.id),
+    async (req) => waybillDtoOr404(requirePrincipal(req), req.params.id),
   );
 
   /**
@@ -783,7 +803,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
    * пережившая проверку версия уходит в аудит — без неё «какой именно вариант листа ушёл на
    * площадку» после первой же правки становится невосстановимым.
    */
-  async function renderWaybill(id: string, templates?: Map<string, Uint8Array>) {
+  async function renderWaybill(p: Principal, id: string, templates?: Map<string, Uint8Array>) {
     const [row] = await db
       .select({
         id: waybills.id,
@@ -797,7 +817,9 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       })
       .from(waybills)
       .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-      .where(eq(waybills.id, id));
+      // Область — тем же 404, что и у карточки (ADR 0192): бланк чужой площадки не собирается даже
+      // для того, кто угадал идентификатор.
+      .where(and(eq(waybills.id, id), waybillVisibilityWhere(p)));
     if (!row) throw err.notFound('Путевой лист не найден');
     if (!canPrintWaybill(row.status)) throw err.conflict(WAYBILL_CANCELLED_PRINT_MESSAGE);
 
@@ -822,12 +844,12 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
     },
     async (req, reply) => {
       const p = requirePrincipal(req);
-      const { rendered, id, version, displayNumber } = await renderWaybill(req.params.id);
+      const { rendered, id, version, displayNumber } = await renderWaybill(p, req.params.id);
       // Лист мог быть аннулирован коррекцией или правлен закрытием заявки, пока бланк собирался
       // (Р39, Р21). Сборка xlsx короче печати, но проверка стоит и здесь: файл правят в редакторе и
       // печатают уже из него — то есть устаревший бланк уезжает на бумагу тем же путём, только
       // длиннее, и вернуть его правкой в редакторе никто не догадается.
-      await assertStillPrintable([{ id, version }]);
+      await assertStillPrintable([{ id, version }], p);
 
       // Выгрузка уносит персональные данные водителя из портала — это учётное событие.
       await writeAudit({
@@ -866,12 +888,12 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       // ответом лежат ещё сборка бланка и проверка статуса, и они тоже идут под медленной базой.
       const budget = requestBudget(req, reply, PRINT_BUDGET.handlerMs);
       try {
-        const { rendered, id, version, displayNumber } = await renderWaybill(req.params.id);
+        const { rendered, id, version, displayNumber } = await renderWaybill(p, req.params.id);
         const pdf = await renderPdf(rendered.bytes, budget.signal);
         // Самое длинное окно гонки во всём портале: между чтением листа в `renderWaybill` и этой
         // строкой лежит вся работа LibreOffice (Р39, Р21). Аудит печати ниже — только после
         // проверки: отметка «печатали» не должна появляться у бумаги, которая никуда не ушла.
-        await assertStillPrintable([{ id, version }]);
+        await assertStillPrintable([{ id, version }], p);
 
         await writeAudit({
           actorUserId: p.id,
@@ -927,7 +949,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       // листов сам, а ручке пачка добавляет ещё и сборку бланков по одному.
       const budget = requestBudget(req, reply, PRINT_BUDGET.handlerMs);
       try {
-        const rows = await printGuardRows(ids);
+        const rows = await printGuardRows(ids, p);
 
         const byId = new Map(rows.map((row) => [row.id, row]));
         const missing = ids.filter((id) => !byId.has(id));
@@ -942,7 +964,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         // форму — их в пачке две-три, а листов до полусотни.
         const templates = new Map<string, Uint8Array>();
         const rendered = [];
-        for (const id of ids) rendered.push(await renderWaybill(id, templates));
+        for (const id of ids) rendered.push(await renderWaybill(p, id, templates));
         const pdfs = await renderPdfBatch(
           rendered.map((item) => item.rendered.bytes),
           budget.signal,
@@ -952,7 +974,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         // весь документ — и неполный комплект со стола заберут, не зная об этом (Р39). Версии тоже
         // сверяются по всем: правка одного листа портит пачку ровно так же, как аннулирование, —
         // остальные страницы при этом верны, и подмену в одной из полусотни не заметит никто (Р21).
-        await assertStillPrintable(rendered);
+        await assertStillPrintable(rendered, p);
 
         await Promise.all(
           rendered.map((item) =>
@@ -1141,7 +1163,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         });
       }
 
-      return waybillDtoOr404(row.id);
+      return waybillDtoOr404(p, row.id);
     },
   );
 
@@ -1154,11 +1176,15 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
    *
    * Право своё (`waybills.files`): смотреть журнал может и тот, кто документы к нему не подшивает.
    */
-  async function waybillOr404(id: string): Promise<{ id: string; number: number }> {
+  async function waybillOr404(p: Principal, id: string): Promise<{ id: string; number: number }> {
     const [row] = await db
       .select({ id: waybills.id, number: waybills.number })
       .from(waybills)
-      .where(eq(waybills.id, id));
+      // Область стоит и здесь, хотя обе ручки закрыты `waybills.files`, которого роли с осью не
+      // получают ни матрицей, ни набором (ADR 0192). Проверка не лишняя: она держит соответствие
+      // «журнал и его вложения сужаются одинаково» на случай, когда подшивку однажды выдадут
+      // площадке, — а не полагается на то, что кто-то вспомнит про этот файл.
+      .where(and(eq(waybills.id, id), waybillVisibilityWhere(p)));
     if (!row) throw err.notFound('Путевой лист не найден');
     return row;
   }
@@ -1171,7 +1197,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
     },
     async (req) => {
       const p = requirePrincipal(req);
-      const waybill = await waybillOr404(req.params.id);
+      const waybill = await waybillOr404(p, req.params.id);
       const { addFileIds } = req.body;
 
       await db.transaction(async (tx) => {
@@ -1211,7 +1237,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
     },
     async (req) => {
       const p = requirePrincipal(req);
-      const waybill = await waybillOr404(req.params.id);
+      const waybill = await waybillOr404(p, req.params.id);
       const { fileId } = req.params;
 
       await db.transaction(async (tx) => {

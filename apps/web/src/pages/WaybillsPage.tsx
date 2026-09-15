@@ -96,7 +96,15 @@ export function WaybillsPage() {
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const { options: vehicleOptions, loading: vehiclesLoading } = useOwnVehicleOptions();
-  const { options: driverOptions, loading: driversLoading } = useDriverOptions();
+  /**
+   * Отбор по водителю есть не у всех, кто читает журнал (ADR 0192). Площадка и отдел приходят сюда
+   * набором «Путевые листы: просмотр и печать», а карточки водителей им закрыты (`drivers.read`,
+   * ADR 0037): фамилию в строке журнала они видят — она напечатана в бланке, который у них на
+   * руках, — а справочника людей компании не получают. Поэтому фильтр не просто прячется: без
+   * права запрос за справочником не уходит вовсе.
+   */
+  const canReadDrivers = can('drivers.read');
+  const { options: driverOptions, loading: driversLoading } = useDriverOptions(canReadDrivers);
 
   /**
    * Номер из адреса: сюда приходят по ссылке из маршрута и из карточки заявки — «что стало с этим
@@ -505,7 +513,7 @@ export function WaybillsPage() {
       applyFilter({});
     },
     vehicles: { options: vehicleOptions, loading: vehiclesLoading },
-    drivers: { options: driverOptions, loading: driversLoading },
+    drivers: canReadDrivers ? { options: driverOptions, loading: driversLoading } : null,
   };
 
   return (
