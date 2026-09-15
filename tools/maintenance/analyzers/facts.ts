@@ -122,16 +122,28 @@ export function widenScope(
   collected: Collected,
   changedFiles: readonly string[],
 ): { readonly facts: ProjectFacts; readonly note: string } {
+  /*
+   * Пустой список изменённых — это не «пустая область», а ПОЛНЫЙ ОБЗОР: так его запрашивает
+   * тяжёлое окно. Считать тогда правила и решения не по чему: без затравки цепочка «изменённые →
+   * соседи» даёт ноль файлов, и агент получил бы задание вообще без правил своей зоны. Поэтому
+   * затравкой становится всё дерево, известное графу.
+   */
+  const whole = changedFiles.length === 0;
   const scope = resolveIncrementalScope({
-    changedFiles: changedFiles.map((file) => normalizePath(config.root, file)),
+    changedFiles: whole
+      ? [...collected.graph.keys()]
+      : changedFiles.map((file) => normalizePath(config.root, file)),
     graph: collected.graph,
     domains: policies.moduleMap.domains,
     policies: policies.policies,
     neighbourDepth: config.analysis.neighbourDepth ?? 1,
     maxFiles: config.analysis.maxScopeFiles ?? 60,
   });
-  const limit =
-    scope.limitedBy === 'maxFiles'
+  // При полном обзоре потолок ничего не режет: изменённые (здесь — все) в область входят всегда,
+  // и сообщать об обрезке было бы неправдой.
+  const limit = whole
+    ? ''
+    : scope.limitedBy === 'maxFiles'
       ? ', обрезана потолком'
       : scope.limitedBy === 'depth'
         ? ', обрезана глубиной'
@@ -142,7 +154,9 @@ export function widenScope(
       scopeFiles: scope.files,
       relevance: relevanceOf(config, policies, scope.files),
     },
-    note: `область: ${changedFiles.length} изменённых → ${scope.files.length} файлов с соседями${limit}`,
+    note: whole
+      ? `область: полный обзор, ${scope.files.length} файлов${limit}`
+      : `область: ${changedFiles.length} изменённых → ${scope.files.length} файлов с соседями${limit}`,
   };
 }
 

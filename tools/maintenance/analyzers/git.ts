@@ -88,3 +88,31 @@ export function lastChangeOf(root: string, file: string): string | null {
   const value = result.stdout.trim();
   return result.code === 0 && value !== '' ? value : null;
 }
+
+/**
+ * Как часто файлы менялись за последние дни.
+ *
+ * Нужно очереди долга: долг в живом коде дороже долга в спящем. Файл, который правят каждую
+ * неделю, будет прочитан ещё много раз, и беспорядок в нём стоит дорого; файл, не менявшийся
+ * полгода, работает — и трогать его без нужды рискованнее, чем оставить.
+ *
+ * Считается по истории, а не по датам файлов: дата правки сбрасывается любой выгрузкой дерева и
+ * ничего не говорит о том, сколько раз файл переписывали.
+ */
+export function fileHotness(root: string, days: number): Map<string, number> {
+  const result = run(root, [
+    'git',
+    'log',
+    `--since=${days} days ago`,
+    '--name-only',
+    '--pretty=format:',
+  ]);
+  const counts = new Map<string, number>();
+  if (result.code !== 0) return counts;
+  for (const line of result.stdout.split('\n')) {
+    const file = line.trim();
+    if (file === '') continue;
+    counts.set(file, (counts.get(file) ?? 0) + 1);
+  }
+  return counts;
+}

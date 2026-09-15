@@ -7,6 +7,9 @@
  */
 import type { WorkPacket } from './types.ts';
 
+/** Сколько путей показывать списком: дальше перечень перестаёт читаться и мешает увидеть границу. */
+const SCOPE_LIST_LIMIT = 60;
+
 const ROLE_TITLE: Record<WorkPacket['role'], string> = {
   reviewer: 'Ревьюер: найти и описать, не править',
   fixer: 'Исполнитель: исправить утверждённое, не искать новое',
@@ -32,7 +35,18 @@ export function renderPacket(packet: WorkPacket): string {
   if (packet.scope.length === 0) {
     say('Область не ограничена списком файлов — работайте в пределах, названных в фактах.');
   } else {
-    for (const item of packet.scope) say(`- ${item}`);
+    /*
+     * Перечень обрезается, и это не экономия места. Задание на две тысячи путей перестаёт быть
+     * заданием: читатель — и человек, и модель — видит стену имён вместо границы работы, а сама
+     * граница тонет. При полном обзоре ориентиры дают факты: крупнейшие файлы, нарушения, домены.
+     */
+    for (const item of packet.scope.slice(0, SCOPE_LIST_LIMIT)) say(`- ${item}`);
+    if (packet.scope.length > SCOPE_LIST_LIMIT) {
+      say(
+        `- … и ещё ${packet.scope.length - SCOPE_LIST_LIMIT} файлов: полный список в снимке фактов, ` +
+          '`.maintenance/context/project-facts.json`',
+      );
+    }
   }
   say();
 

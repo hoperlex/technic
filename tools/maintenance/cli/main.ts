@@ -22,6 +22,7 @@ import { doctor, showModules, showPolicies, showSurfaces, type CommandResult } f
 import { analyze, fixTask, review } from './analyze.ts';
 import { abortBatch, verify } from './verify.ts';
 import { converge, report } from './converge.ts';
+import { deep } from './deep.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const out = new ConsoleReporter();
@@ -48,7 +49,10 @@ function help(): void {
   );
   out.line('  report                  отчёт прогона и список решений для человека');
   out.line();
-  out.line('Тяжёлое окно (deep) появляется этапом ЭF плана docs/maintenance-framework-plan.md.');
+  out.line('  deep [--force] [--status] [--abort] [--agent manual|command] [--allow-concurrent]');
+  out.line(
+    '                          тяжёлое окно: зоны, очередь долга, малые партии, бюджет времени',
+  );
 }
 
 /** Значение именованного аргумента: `--since HEAD~3`. Отсутствует — `null`, а не пустая строка. */
@@ -74,6 +78,17 @@ function allValues(args: readonly string[], name: string): string[] {
     out.push(value);
   });
   return out;
+}
+
+/** Каким адаптером относить задание сегодня. Ошибка лучше молчаливого возврата к ручному режиму. */
+function agentArg(args: readonly string[]): 'manual' | 'command' | null {
+  const value = valueArg(args, '--agent');
+  if (value === null) return null;
+  if (value === 'manual' || value === 'command') return value;
+  throw new MaintenanceConfigError(
+    'аргументы',
+    `--agent ожидает manual или command, получено ${value}`,
+  );
 }
 
 function severityArg(args: readonly string[]): Severity | null {
@@ -139,6 +154,15 @@ async function main(): Promise<number> {
       break;
     case 'report':
       result = await report(config, out);
+      break;
+    case 'deep':
+      result = await deep(config, out, {
+        force: args.includes('--force'),
+        allowConcurrent: args.includes('--allow-concurrent'),
+        status: args.includes('--status'),
+        abort: args.includes('--abort'),
+        agent: agentArg(args),
+      });
       break;
     default:
       out.error(`неизвестная команда: ${command}`);

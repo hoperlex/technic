@@ -70,6 +70,24 @@ export interface AnalysisConfig {
   readonly linkPaths?: readonly string[];
 }
 
+/**
+ * Кто относит задание агенту.
+ *
+ * `manual` — сегодняшний порядок: система пишет задание, человек отдаёт его агенту и приносит
+ * ответ. `command` — система зовёт агента сама. Умолчание оставлено ручным намеренно: переключение
+ * меняет не настройку, а то, кто держит руку на дереве, и такое решение принимает человек явно —
+ * строкой в конфиге или флагом `--agent command`.
+ */
+export interface AgentConfig {
+  readonly mode: 'manual' | 'command';
+  /** Команда для `command`: аргументами, без оболочки. Задание уходит ей на stdin. */
+  readonly command?: readonly string[];
+  /** Потолок ожидания. Ноль означал бы «ждать вечно», а зависший агент в цикле некому прервать. */
+  readonly timeoutMs?: number;
+  /** Печатать команду вместо запуска: первый запуск стоит посмотреть глазами. */
+  readonly dryRun?: boolean;
+}
+
 /** Что система вообще рассматривает как свою область работы. */
 export interface ScopeConfig {
   readonly include: readonly string[];
@@ -86,6 +104,7 @@ export interface MaintenanceConfigInput {
   readonly verification: readonly VerificationLevel[];
   readonly scope: ScopeConfig;
   readonly analysis: AnalysisConfig;
+  readonly agent?: AgentConfig;
 }
 
 /** То, с чем работает ядро: пути уже разрешены относительно корня. */
@@ -104,6 +123,7 @@ export interface MaintenanceConfig {
   readonly verification: readonly VerificationLevel[];
   readonly scope: ScopeConfig;
   readonly analysis: AnalysisConfig;
+  readonly agent?: AgentConfig;
 }
 
 /**
@@ -133,6 +153,7 @@ export function resolveConfig(root: string, input: MaintenanceConfigInput): Main
     verification: input.verification,
     scope: input.scope,
     analysis: input.analysis,
+    agent: input.agent,
   };
 }
 
