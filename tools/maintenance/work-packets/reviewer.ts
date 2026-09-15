@@ -7,7 +7,9 @@
  */
 import type { ProjectFacts } from '../core/facts.ts';
 import type { ConvergenceBudget, ConvergencePass, PolicySet } from '../core/types.ts';
+import type { AdrDigest } from '../project/adr-digest.ts';
 import {
+  decisionsSection,
   machineFindingsSection,
   policiesSection,
   sizeSection,
@@ -42,6 +44,8 @@ export interface ReviewerOptions {
   readonly budget: ConvergenceBudget;
   readonly pass: ConvergencePass;
   readonly outputFile: string;
+  /** Выжимки решений области: их собирает вызывающий, потому что читать `docs/adr` ядру нельзя. */
+  readonly decisions?: { readonly digests: readonly AdrDigest[]; readonly omitted: number };
 }
 
 export function reviewerPacket(options: ReviewerOptions): WorkPacket {
@@ -58,6 +62,7 @@ export function reviewerPacket(options: ReviewerOptions): WorkPacket {
       toolsSection(facts),
       machineFindingsSection(facts),
       policiesSection(facts, policies),
+      decisionsSection(options.decisions?.digests ?? [], options.decisions?.omitted ?? 0),
       surfacesSection(facts, policies),
       sizeSection(facts),
     ],

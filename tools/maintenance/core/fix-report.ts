@@ -81,7 +81,10 @@ export function parseFixReport(text: string): FixReport {
       if (item === null || typeof item !== 'object') continue;
       const record = item as { id?: unknown; why?: unknown };
       if (typeof record.id !== 'string') continue;
-      skipped.push({ id: record.id, why: typeof record.why === 'string' ? record.why : 'без причины' });
+      skipped.push({
+        id: record.id,
+        why: typeof record.why === 'string' ? record.why : 'без причины',
+      });
     }
   }
 

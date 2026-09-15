@@ -28,7 +28,7 @@ import { rankDebt, type DebtItem } from '../core/debt-queue.ts';
 import { parseFindings } from '../core/finding-io.ts';
 import { EMPTY_FIX_REPORT, parseFixReport } from '../core/fix-report.ts';
 import { selectFindings } from '../core/selector.ts';
-import { collectFacts, saveFacts, widenScope } from '../analyzers/facts.ts';
+import { collectFacts, decisionsFor, saveFacts, widenScope } from '../analyzers/facts.ts';
 import { changedSince, collectGit, fileHotness } from '../analyzers/git.ts';
 import { decideStart } from '../core/start-gate.ts';
 import { anchorNamed, readReleaseAnchor } from '../project/release-anchor.ts';
@@ -242,6 +242,7 @@ async function emitZoneReview(
     budget: batchBudget(policies),
     pass,
     outputFile,
+    decisions: decisionsFor(config, widened.facts),
   });
   const reply = deliver(adapterFor(config, args.agent), packet, config, workspace, out);
   if (reply.kind !== 'answer') {

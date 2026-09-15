@@ -26,7 +26,7 @@ import {
 } from '../core/convergence.ts';
 import { parseFindings } from '../core/finding-io.ts';
 import { selectFindings } from '../core/selector.ts';
-import { collectFacts, saveFacts, widenScope } from '../analyzers/facts.ts';
+import { collectFacts, decisionsFor, saveFacts, widenScope } from '../analyzers/facts.ts';
 import { changedSince, collectGit } from '../analyzers/git.ts';
 import { run } from '../analyzers/run.ts';
 import { decideStart } from '../core/start-gate.ts';
@@ -235,6 +235,7 @@ async function emitReviewTask(
         budget: policies.maintenance.convergence,
         pass,
         outputFile,
+        decisions: decisionsFor(config, facts),
       }),
     ),
     'utf8',

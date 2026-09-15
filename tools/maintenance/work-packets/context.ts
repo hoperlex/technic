@@ -8,6 +8,7 @@
 import type { ProjectFacts } from '../core/facts.ts';
 import type { PolicySet } from '../core/types.ts';
 import type { PacketSection } from './types.ts';
+import type { AdrDigest } from '../project/adr-digest.ts';
 
 export function treeSection(facts: ProjectFacts): PacketSection {
   const git = facts.git;
@@ -141,5 +142,41 @@ export function sizeSection(facts: ProjectFacts): PacketSection {
       'тогда, когда в файле видно несколько несвязанных ответственностей. Комментарии посчитаны',
       'отдельно и долгом не считаются.',
     ].join('\n'),
+  };
+}
+
+/**
+ * Решения, действующие в области работы.
+ *
+ * ЗАЧЕМ ОНИ В ЗАДАНИИ. Раньше система считала, какие решения относятся к затронутым файлам, и
+ * печатала их ЧИСЛО человеку — а до ревьюера не доходило ни строчки. Агент судил о коде, не зная
+ * договорённостей, по которым код написан, и предлагал «починить» ровно то, что кто-то однажды
+ * решил сделать именно так.
+ *
+ * Подаются не решения целиком, а их ведущие утверждения: раздел «Решение» здесь — нумерованный
+ * свод правил, и именно он нужен ревьюеру. История вопроса остаётся в файле, ссылка на него — в
+ * заголовке пункта.
+ */
+export function decisionsSection(digests: readonly AdrDigest[], omitted: number): PacketSection {
+  if (digests.length === 0) {
+    return {
+      title: 'Решения, действующие здесь',
+      body: 'К затронутым файлам решений не привязано.',
+    };
+  }
+  const body = digests
+    .map((digest) => {
+      const head = `### ${digest.number} — ${digest.title}`;
+      const meta = `Статус: ${digest.status}. Домены: ${digest.domains.join(', ') || 'не назначены'}. Файл: ${digest.path}`;
+      return `${head}\n${meta}\n${digest.essence.trim()}`;
+    })
+    .join('\n\n');
+  const tail =
+    omitted === 0
+      ? ''
+      : `\n\n_Показаны ${digests.length}; ещё ${omitted} решений области не поместились — их список в снимке фактов._`;
+  return {
+    title: 'Решения, действующие здесь',
+    body: `${body}${tail}\n\nЭто договорённости, а не код. Находка, предлагающая сделать иначе, обязана\nссылаться на решение и объяснять, почему оно устарело, — иначе это не находка, а его отмена\nмимо человека.`,
   };
 }

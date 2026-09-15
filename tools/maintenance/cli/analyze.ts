@@ -12,7 +12,7 @@ import type { PolicySet } from '../core/types.ts';
 import type { TrackedFinding } from '../core/finding.ts';
 import { parseFindings } from '../core/finding-io.ts';
 import { selectFindings, type Selection } from '../core/selector.ts';
-import { collectFacts, saveFacts, widenScope } from '../analyzers/facts.ts';
+import { collectFacts, decisionsFor, saveFacts, widenScope } from '../analyzers/facts.ts';
 import { changedSince } from '../analyzers/git.ts';
 import { renderPacket } from '../work-packets/render.ts';
 import { reviewerPacket } from '../work-packets/reviewer.ts';
@@ -108,6 +108,7 @@ export async function analyze(
     budget: policies.maintenance.convergence,
     pass,
     outputFile,
+    decisions: decisionsFor(config, facts),
   });
   writeFileSync(workspace.taskFile, renderPacket(packet), 'utf8');
 

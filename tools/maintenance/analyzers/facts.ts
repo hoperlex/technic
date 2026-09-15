@@ -16,6 +16,7 @@ import type { ProjectFacts, RelevanceFacts, SurfaceFact, ToolRun } from '../core
 import type { PolicySet } from '../core/types.ts';
 import { listFiles } from '../core/files.ts';
 import { resolveIncrementalScope } from '../core/scope.ts';
+import { digestMany, type AdrDigest } from '../project/adr-digest.ts';
 import { matchesAny, normalizePath } from '../core/paths.ts';
 import { resolveSurface } from '../policies/surfaces.ts';
 import type { Workspace } from '../state/workspace.ts';
@@ -158,6 +159,22 @@ export function widenScope(
       ? `область: полный обзор, ${scope.files.length} файлов${limit}`
       : `область: ${changedFiles.length} изменённых → ${scope.files.length} файлов с соседями${limit}`,
   };
+}
+
+/**
+ * Выжимки решений, действующих в области работы.
+ *
+ * Живёт рядом со сбором фактов, а не в каждой команде: цикл и окно обязаны показывать ревьюеру
+ * ОДНИ И ТЕ ЖЕ решения, иначе агент в двух режимах судит по разным договорённостям.
+ */
+export function decisionsFor(
+  config: MaintenanceConfig,
+  facts: ProjectFacts,
+): { digests: readonly AdrDigest[]; omitted: number } {
+  return digestMany(config.root, facts.relevance.adr, {
+    maxAdr: config.analysis.maxAdrInPacket ?? 12,
+    maxCharsEach: config.analysis.maxAdrChars ?? 900,
+  });
 }
 
 /**
