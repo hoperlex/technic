@@ -197,8 +197,33 @@ export class YamlPolicyProvider implements PolicyProvider {
       };
     });
 
+    /*
+     * Условия старта необязательны в файле: политика, написанная до появления F12, обязана
+     * читаться дальше. Умолчание — мягкое (только предупреждать): строгий режим меняет не
+     * настройку, а право прогона вообще начаться, и включать его молча за человека нельзя.
+     */
+    const startNode = root['start'];
+    const start =
+      startNode === undefined || startNode === null
+        ? { requireClean: false, requireGreen: false }
+        : {
+            requireClean: bool(
+              { file: shortName, at: 'start' },
+              asNode(where, startNode),
+              'requireClean',
+              false,
+            ),
+            requireGreen: bool(
+              { file: shortName, at: 'start' },
+              asNode(where, startNode),
+              'requireGreen',
+              false,
+            ),
+          };
+
     return {
       runtimeHome: str({ file: shortName, at: 'runtime' }, runtime, 'home'),
+      start,
       convergence: {
         maxPasses,
         maxFindingsPerPass: num(where, convergence, 'maxFindingsPerPass'),

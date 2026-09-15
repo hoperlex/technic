@@ -10,6 +10,7 @@ import type { PolicySet, Severity } from '../core/types.ts';
 import { YamlPolicyProvider } from '../policies/provider.ts';
 import { resolveSurface } from '../policies/surfaces.ts';
 import { ensureWorkspace, isIgnoredByGit } from '../state/workspace.ts';
+import { lastChangeOf } from '../analyzers/git.ts';
 
 /** Итог команды: код возврата и есть ответ, всё остальное уже напечатано. */
 export type CommandResult = { readonly ok: boolean };
@@ -70,6 +71,12 @@ export async function doctor(config: MaintenanceConfig, out: Reporter): Promise<
       `${policies.maintenance.deepMaintenance.windowMinutes} минут`,
   );
 
+  // Когда последний раз правили сам файл политик: с этой датой сравниваются даты решений ниже.
+  const policyChanged = lastChangeOf(
+    config.root,
+    path.relative(config.root, config.files.policies),
+  );
+
   // Носитель правила, которого нет в дереве, — это правило, за которым никто не следит. Ссылка на
   // несуществующее решение — то же самое для человека.
   for (const policy of policies.policies) {
@@ -79,6 +86,43 @@ export async function doctor(config: MaintenanceConfig, out: Reporter): Promise<
     for (const link of policy.adr) {
       if (!existsSync(path.join(config.root, link))) {
         problems.push(`правило ${policy.id}: ссылки ${link} нет в дереве`);
+      }
+    }
+
+    /*
+     * ОБРАТНАЯ СВЕРКА ПРАВИЛА И РЕШЕНИЯ (решение заказчика 15.09.2026).
+     *
+     * Машинный слой правил живёт рядом с решениями, а не внутри них, и связь между ними до сих пор
+     * была односторонней: правило называло решение, а обратно никто не смотрел. Два молчаливых
+     * расхождения из этого следовали.
+     *
+     * Первое: жёсткое правило без единой ссылки на решение. Строгость `hard` означает «нарушать
+     * нельзя», и такое утверждение обязано иметь записанное обоснование — иначе это мнение автора
+     * политики, которое некому оспорить.
+     *
+     * Второе: решение, изменённое ПОЗЖЕ правила. Текст решения переписали, а машинную часть не
+     * тронули — и правило продолжает стеречь вчерашнюю договорённость. Проверяется историей git, а
+     * не временем файла: время сбрасывается любой выгрузкой дерева.
+     */
+    if (policy.severity === 'hard' && policy.adr.length === 0) {
+      /*
+       * Предупреждение, а не ошибка, и это разница по существу. Ошибка означает «система
+       * неисправна и работать не должна» — а здесь неисправен не механизм, а обоснование: правило
+       * стережёт верную вещь, но записанного решения за ним нет. Роняя прогон, мы бы заставили
+       * человека либо писать решение под давлением, либо снять правило — оба исхода хуже, чем
+       * видимый долг.
+       */
+      warnings.push(
+        `правило ${policy.id}: строгость hard без ссылки на решение — обоснование не записано`,
+      );
+    }
+    for (const link of policy.adr) {
+      const adrChanged = lastChangeOf(config.root, link);
+      if (adrChanged === null || policyChanged === null) continue;
+      if (adrChanged > policyChanged) {
+        warnings.push(
+          `правило ${policy.id}: решение ${link} правили позже правила — сверьте, не отстало ли оно`,
+        );
       }
     }
   }

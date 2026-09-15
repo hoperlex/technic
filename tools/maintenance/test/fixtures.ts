@@ -8,7 +8,12 @@
 import type { MaintenanceConfig } from '../core/config.ts';
 import type { Finding, TrackedFinding } from '../core/finding.ts';
 import { trackFinding } from '../core/finding.ts';
-import type { ArchitecturePolicy, PolicySet, ProtectedSurface } from '../core/types.ts';
+import type {
+  ArchitectureException,
+  ArchitecturePolicy,
+  PolicySet,
+  ProtectedSurface,
+} from '../core/types.ts';
 
 export const ROOT = '/repo';
 
@@ -86,6 +91,7 @@ export function policySetFixture(overrides: Partial<PolicySet> = {}): PolicySet 
     exceptions: [],
     maintenance: {
       runtimeHome: '.maintenance',
+      start: { requireClean: false, requireGreen: false },
       convergence: {
         maxPasses: 3,
         maxFindingsPerPass: 2,
@@ -115,6 +121,28 @@ export function policySetFixture(overrides: Partial<PolicySet> = {}): PolicySet 
       stopConditions: ['maxPassesReached'],
     },
     moduleMap: { packages: [], layers: [], shared: [], domains: [] },
+    ...overrides,
+  };
+}
+
+/**
+ * Действующее исключение: то же правило, что у находки-заготовки с `policy: 'soft-rule'`, та же
+ * маска и срок пересмотра позже дня прогона в тестах.
+ *
+ * Дата задана явно, а не «через год от сегодня»: исключение с плавающим сроком проверяло бы в
+ * тесте сегодняшнее число, а не отбор, и тест о просрочке однажды позеленел бы сам.
+ */
+export function exceptionFixture(
+  overrides: Partial<ArchitectureException> = {},
+): ArchitectureException {
+  return {
+    id: 'E1',
+    policy: 'soft-rule',
+    paths: ['apps/api/src/**'],
+    reason: 'здесь правило нарушено осознанно',
+    approvedBy: 'человек',
+    since: '2026-01-01',
+    reviewBy: '2026-12-31',
     ...overrides,
   };
 }

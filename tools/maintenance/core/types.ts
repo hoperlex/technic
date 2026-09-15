@@ -161,8 +161,15 @@ export interface LedgerPolicy {
   readonly falsePositiveReviewDays: number;
 }
 
+/** Условия старта прогона: насколько строго система требует стабильную точку. */
+export interface StartPolicyConfig {
+  readonly requireClean: boolean;
+  readonly requireGreen: boolean;
+}
+
 export interface MaintenancePolicy {
   readonly runtimeHome: string;
+  readonly start: StartPolicyConfig;
   readonly convergence: ConvergenceBudget;
   readonly deepMaintenance: DeepMaintenanceBudget;
   readonly ledger: LedgerPolicy;

@@ -29,7 +29,9 @@ import { parseFindings } from '../core/finding-io.ts';
 import { EMPTY_FIX_REPORT, parseFixReport } from '../core/fix-report.ts';
 import { selectFindings } from '../core/selector.ts';
 import { collectFacts, saveFacts, widenScope } from '../analyzers/facts.ts';
-import { changedSince, fileHotness } from '../analyzers/git.ts';
+import { changedSince, collectGit, fileHotness } from '../analyzers/git.ts';
+import { decideStart } from '../core/start-gate.ts';
+import { anchorNamed, readReleaseAnchor } from '../project/release-anchor.ts';
 import { FileCheckpointTransaction } from '../git/transaction.ts';
 import { ensureWorkspace, type Workspace } from '../state/workspace.ts';
 import { JsonFindingStore, reconcile } from '../state/ledger.ts';
@@ -145,6 +147,7 @@ export async function deep(
       out.item('провести его разово можно флагом --force');
       return { ok: false };
     }
+    if (!checkWindowStart(config, policies, out)) return { ok: false };
     state = startWindow(policy, new Date());
     saveState(workspace, state, []);
     out.heading(`окно ${state.windowId}`);
@@ -163,6 +166,33 @@ export async function deep(
     return takeZoneReview(config, policies, workspace, out, state, args);
   }
   return takeBatchFix(config, policies, workspace, out, state, args);
+}
+
+/**
+ * Стартовая точка окна: те же правила, что у цикла, и по той же причине.
+ *
+ * Окно длиннее и правит больше, поэтому красная вершина здесь дороже вдвойне: шесть неудачных
+ * партий подряд съедят весь бюджет времени и не дадут ни одной принятой.
+ */
+function checkWindowStart(config: MaintenanceConfig, policies: PolicySet, out: Reporter): boolean {
+  const git = collectGit(config.root);
+  const anchor = readReleaseAnchor(config.root);
+  const decision = decideStart(
+    {
+      treeClean: git.clean,
+      gatesGreen: null,
+      anchorNamed: anchorNamed(anchor),
+      foreignWorkInTree: git.changedFiles.length,
+    },
+    policies.maintenance.start,
+  );
+  out.heading('стартовая точка');
+  out.item(`выпуск: ${anchor.version ?? 'не прочитан'}`);
+  for (const reason of decision.reasons) {
+    if (decision.verdict === 'blocked') out.error(reason);
+    else out.item(reason);
+  }
+  return decision.verdict !== 'blocked';
 }
 
 /** Выдать задание ревьюеру по текущей зоне: окно смотрит зону целиком, а не только изменённое. */

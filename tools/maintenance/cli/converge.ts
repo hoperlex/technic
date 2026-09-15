@@ -14,6 +14,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { MaintenanceConfig } from '../core/config.ts';
 import type { Reporter } from '../core/contracts.ts';
 import type { RunState } from '../core/run-state.ts';
+import type { ProjectFacts } from '../core/facts.ts';
 import type { TrackedFinding } from '../core/finding.ts';
 import type { PolicySet } from '../core/types.ts';
 import {
@@ -26,7 +27,10 @@ import {
 import { parseFindings } from '../core/finding-io.ts';
 import { selectFindings } from '../core/selector.ts';
 import { collectFacts, saveFacts, widenScope } from '../analyzers/facts.ts';
-import { changedSince } from '../analyzers/git.ts';
+import { changedSince, collectGit } from '../analyzers/git.ts';
+import { run } from '../analyzers/run.ts';
+import { decideStart } from '../core/start-gate.ts';
+import { anchorNamed, readReleaseAnchor } from '../project/release-anchor.ts';
 import { FileCheckpointTransaction } from '../git/transaction.ts';
 import { renderRunReport, renderVerdictTable } from '../reporters/markdown.ts';
 import { ensureWorkspace, type Workspace } from '../state/workspace.ts';
@@ -39,6 +43,7 @@ import type { CommandResult } from './commands.ts';
 import { loadPolicies } from './commands.ts';
 import { readBatch, saveBatch } from './verify.ts';
 import { JsonFindingStore, decide, reconcile, type LedgerEntry } from '../state/ledger.ts';
+import { JsonSnapshotStore, diffSnapshots, renderDelta, snapshotOf } from '../state/snapshot.ts';
 import {
   EMPTY_FIX_REPORT,
   countSevere,
@@ -110,6 +115,7 @@ export async function converge(
   }
 
   if (state === null) {
+    if (!checkStart(config, policies, out).allowed) return { ok: false };
     state = startRun(budget.passes);
     state = beginPass(state, budget.passes[0]?.id ?? 'structural');
     saveRun(workspace, state);
@@ -128,6 +134,61 @@ export async function converge(
 
   if (state.step === 'awaiting-review') return takeReview(config, policies, workspace, out, state);
   return takeFix(config, policies, workspace, out, state, args);
+}
+
+/**
+ * Можно ли начинать прогон.
+ *
+ * Спрашивается ОДИН раз — при открытии прогона, а не на каждом шаге: условие относится к точке
+ * старта, а не к каждому движению. Красная вершина запрещает начинать всегда, потому что тогда
+ * краснеет каждая партия не по своей вине; грязь рядом только предупреждает — партия проверяется
+ * в отдельном дереве и откатывается пофайлово, так что чужая работа ей не мешает.
+ *
+ * Ворота до старта гоняются только при `requireGreen`: это шесть минут, и платить их за каждый
+ * прогон без спроса нельзя.
+ */
+function checkStart(
+  config: MaintenanceConfig,
+  policies: PolicySet,
+  out: Reporter,
+): { allowed: boolean } {
+  const policy = policies.maintenance.start;
+  const git = collectGit(config.root);
+  const anchor = readReleaseAnchor(config.root);
+
+  let gatesGreen: boolean | null = null;
+  if (policy.requireGreen) {
+    out.item('политика требует зелёной вершины: гоняю ворота до первой правки');
+    const levels = config.verification.filter((level) => level.enabledByDefault);
+    gatesGreen = levels.every((level) => run(config.root, level.command).code === 0);
+  }
+
+  const decision = decideStart(
+    {
+      treeClean: git.clean,
+      gatesGreen,
+      anchorNamed: anchorNamed(anchor),
+      foreignWorkInTree: git.changedFiles.length,
+    },
+    policy,
+  );
+
+  out.heading('стартовая точка');
+  out.item(
+    `выпуск: ${anchor.version ?? 'не прочитан'}${anchor.tagOnHead ? ', тег на вершине' : ''}`,
+  );
+  for (const problem of anchor.problems) out.line(`      ${problem}`);
+  for (const reason of decision.reasons) {
+    if (decision.verdict === 'blocked') out.error(reason);
+    else out.item(reason);
+  }
+  if (decision.verdict === 'blocked') {
+    out.item(
+      'смягчить это нельзя флагом: правила старта ведёт architecture/policies/maintenance.yaml',
+    );
+    return { allowed: false };
+  }
+  return { allowed: true };
 }
 
 /** Шаг 1 прохода: собрать факты и выдать задание ревьюеру. */
@@ -157,6 +218,7 @@ async function emitReviewTask(
   out.item(widened.note);
   saveFacts(workspace, facts);
   out.item(`линт: ${facts.lint.summary}; зависимости: ${facts.dependencies.summary}`);
+  if (state.passes.length <= 1) await rememberStructure(config, workspace, facts, out);
 
   // Ответ прошлого прохода убирается заранее: иначе следующая команда примет его за новый и
   // отберёт те же находки повторно.
@@ -180,6 +242,42 @@ async function emitReviewTask(
   out.item(`задание ревьюеру: ${path.relative(config.root, workspace.taskFile)}`);
   out.item(`ответ положить в ${outputFile}, затем повторить: pnpm maintain converge`);
   return { ok: true };
+}
+
+/**
+ * Запомнить структуру дерева и показать, что изменилось с прошлого раза.
+ *
+ * Снимок снимается РАЗ НА ПРОГОН, на первом проходе, а не на каждом: он описывает состояние
+ * дерева на стабильной точке, а три снимка внутри одного прогона мерили бы работу самой системы,
+ * а не проекта.
+ *
+ * Без этой памяти нельзя ответить на единственный вопрос эксплуатации, ради которого всё и
+ * затевалось: за пять прогонов стало лучше или хуже. Факты перезаписываются каждым прогоном, и
+ * сравнивать было бы не с чем.
+ */
+async function rememberStructure(
+  config: MaintenanceConfig,
+  workspace: Workspace,
+  facts: ProjectFacts,
+  out: Reporter,
+): Promise<void> {
+  const store = new JsonSnapshotStore(path.join(workspace.state, 'snapshots.json'));
+  const history = await store.load();
+  const previous = history[history.length - 1];
+  const taken = snapshotOf(facts, { version: readReleaseAnchor(config.root).version });
+  await store.append(taken);
+
+  if (previous === undefined) {
+    out.item('снимок структуры сохранён: сравнивать пока не с чем, это первый');
+    return;
+  }
+  const delta = diffSnapshots(previous, taken);
+  if (delta.changes.length === 0) {
+    out.item('структура не изменилась с прошлого прогона');
+    return;
+  }
+  out.heading('что изменилось с прошлого прогона');
+  out.line(renderDelta(delta));
 }
 
 /** Шаг 2 прохода: принять ответ ревьюера, отобрать безопасное, выдать задание исполнителю. */
