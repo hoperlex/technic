@@ -1060,3 +1060,110 @@ export interface DriversImportReportDto {
   /** Однофамилец среди заведённых раньше с другим СНИЛС — повод проверить, не один ли человек. */
   nameCollisions: { who: string; existing: string }[];
 }
+
+// ── Удаление карточки водителя с подтверждением последствий (план `machinist-card-removal`, Э2) ──
+
+/**
+ * Код отказа «подтвердите последствия удаления» — свой, как `waybill_ack_required` у выписки.
+ *
+ * Отдельный код, а не общий 409: исход у человека другой. Расхождение версий лечится обновлением
+ * страницы, а этот отказ — осознанным решением: портал показал, что стоит за спиной у человека, и
+ * ждёт ответа «всё равно удалить». Один код на два исхода отправил бы половину случаев не в то окно.
+ */
+export const DRIVER_REMOVAL_ACK_REQUIRED_CODE = 'driver_removal_ack_required';
+
+/** Заказ, который человек ведёт машинистом, — строка перечня в окне удаления. */
+export interface MachinistCommitmentOrderDto {
+  requestId: string;
+  /** Сквозной номер: «ТС-198». */
+  num: number;
+  /** Площадка или отдел заявки. */
+  customer: string;
+  dateFrom: string;
+  /** Срок, как он записан сейчас. */
+  dateTo: string;
+  /**
+   * Срок, каким он станет после визы по ожидающей недельной заявке. Равен `dateTo`, если продления
+   * нет: число листов считается по нему, а не по нынешнему сроку (Р7).
+   */
+  assumedDateTo: string;
+  /** Номер недельной заявки, которая этот заказ продлевает и ещё не применена. */
+  pendingWeeklyNum: number | null;
+  /** Сколько листов ЭСМ-2 выпишется на этого человека при таком сроке. */
+  futureSheets: number;
+}
+
+/**
+ * Тело отказа `409 driver_removal_ack_required`: что портал показывает перед удалением карточки.
+ *
+ * Число листов считает план бумаги, а не арифметика недель: в неделе законно живут два листа
+ * (разрез отрезком и месячный разрез), у арендной единицы и линейного заказа бумаги может не быть
+ * вовсе. Диалог, назвавший кадровику неверное число, хуже диалога без числа.
+ */
+export interface DriverRemovalAckRequiredDetails {
+  fullName: string;
+  orders: MachinistCommitmentOrderDto[];
+  /** Рейсы 4-П будущих дней, где человек за рулём. */
+  futureRouteDays: number;
+  totalFutureSheets: number;
+  /** Его и возвращают в теле удаления: перечень изменился — отпечаток разошёлся, окно перерисуется. */
+  fingerprint: string;
+}
+
+/**
+ * Тело `DELETE /drivers/:id`. Пустое допустимо и означает «связей нет либо их не показывали»:
+ * карточка без единой связи удаляется молча, как и до этой волны.
+ */
+export const driverRemovalSchema = z
+  .object({
+    acknowledge: z.object({ fingerprint: z.string().min(1) }).optional(),
+  })
+  .strict();
+export type DriverRemovalInput = z.infer<typeof driverRemovalSchema>;
+
+// ── Отбор машинистов ЭСМ-2 по периодам документа (план `machinist-card-removal`, Э6) ──
+
+/**
+ * Периоды документа строкой запроса: `2026-08-31..2026-08-31,2026-09-01..2026-09-06`.
+ *
+ * Список, а не пара дат, потому что просьба у человека одна, а бланков за неё бывает два: неделю на
+ * стыке месяцев закрывает месячный разрез (ADR 0142). Отбор обязан отвечать пересечением по всем —
+ * иначе форма предложит человека, на котором выписка развалится целиком.
+ */
+export const machinistPeriodsSchema = z
+  .string()
+  .min(1)
+  .transform((raw, ctx) => {
+    const periods = raw.split(',').map((chunk) => {
+      const [from = '', to = ''] = chunk.split('..');
+      return { from, to };
+    });
+    const dateKey = /^\d{4}-\d{2}-\d{2}$/u;
+    for (const period of periods) {
+      if (!dateKey.test(period.from) || !dateKey.test(period.to) || period.to < period.from) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Период документа задаётся как «ГГГГ-ММ-ДД..ГГГГ-ММ-ДД»',
+        });
+        return z.NEVER;
+      }
+    }
+    return periods;
+  });
+
+export const machinistSelectionQuerySchema = z.object({ periods: machinistPeriodsSchema });
+export type MachinistSelectionQuery = z.infer<typeof machinistSelectionQuerySchema>;
+
+/** Кого форма ЭСМ-2 предлагает в машинисты на эти периоды. */
+export interface MachinistSelectionDto {
+  drivers: {
+    personId: string;
+    fullName: string;
+    personnelNo: string;
+    /**
+     * `null` — карточка жива. Иначе день, когда её сняли: человек в списке остаётся, потому что
+     * периоду документа он годен (день снятия — ещё рабочий), но форма обязана это показать.
+     */
+    cardRemovedOn: string | null;
+  }[];
+}
