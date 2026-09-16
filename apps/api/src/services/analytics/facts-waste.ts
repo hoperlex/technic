@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   analyticsCountsAsFact,
   type AnalyticsQualityEntry,
+  countsInWasteVolumeSum,
   formatWasteRequestNumber,
   isPricedRequestType,
   REQUEST_STATUSES,
@@ -9,10 +10,11 @@ import {
   type RequestStatus,
   type RequestType,
   usesContainerType,
+  WASTE_TICKET_WORK_KINDS,
   wasteFactUnit,
 } from '@technic/contracts';
 import { db } from '../../db/client';
-import type { AnalyticsAtom, AnalyticsFacts, AnalyticsRange } from './types';
+import type { AnalyticsAtom, AnalyticsFacts, AnalyticsFactsScope, AnalyticsRange } from './types';
 
 /**
  * Атомы вывоза мусора для сводной аналитики (план `docs/analytics-summary-export-plan.md`, Р13).
@@ -65,6 +67,14 @@ const FACT_STATUSES = REQUEST_STATUSES.filter(analyticsCountsAsFact);
 const REMOVAL_TYPES = REQUEST_TYPES.filter((t) => wasteFactUnit(t) !== null);
 const CONTAINER_OP_TYPES = REQUEST_TYPES.filter(usesContainerType);
 const PRICED_TYPES = REQUEST_TYPES.filter(isPricedRequestType);
+/**
+ * Виды работ талона, которые складываются в объём (Р18 ADR 0114). Список считается из контракта
+ * `countsInWasteVolumeSum` и уходит в запрос параметром — тем же приёмом и по той же причине, что
+ * статусы и типы выше: написанное словами внутри SQL `work_kind <> 'idle'` стало бы вторым
+ * определением правила, и разошлось бы оно молча — в ту сторону, где человек видит в карточке
+ * одну сумму, а в статистике другую.
+ */
+const SUMMABLE_KINDS = WASTE_TICKET_WORK_KINDS.filter(countsInWasteVolumeSum);
 
 /**
  * Строка ответа. Все поля атома необязательны, потому что последняя строка набора — не атом, а
@@ -90,6 +100,16 @@ type WasteRow = {
   container_ops: number | null;
   /** `numeric` драйвер отдаёт строкой — числом его делает `num`. */
   volume_m3: string | null;
+  volume_ordered_m3: string | null;
+  volume_confirmed_m3: string | null;
+  volume_confirmed_unpriced_m3: string | null;
+  money_confirmed: string | null;
+  /**
+   * `count(*)` — это `bigint`, и драйвер отдаёт его СТРОКОЙ, как и `numeric`. Тип назван честно
+   * именно поэтому: объявленный `number` молча превратил бы сложение счётчиков в склейку текста
+   * («0» + «1» = «01»), а заметить это можно только на живом ответе.
+   */
+  tickets_without_volume: string | number | null;
   weight_tons: string | null;
   money_fact: string | null;
   money_estimate: string | null;
@@ -138,7 +158,26 @@ function positionOf(row: WasteRow): { key: string; label: string } {
  * отнесения живут условиями внутри, а качество приезжает последней строкой того же набора —
  * отдельной выборкой оно стало бы вторым обходом тех же заявок ради трёх чисел.
  */
-export async function loadWasteFacts(range: AnalyticsRange): Promise<AnalyticsFacts> {
+export async function loadWasteFacts(
+  range: AnalyticsRange,
+  scope: AnalyticsFactsScope = {},
+): Promise<AnalyticsFacts> {
+  /*
+   * СУЖЕНИЕ ВСТАЁТ УСЛОВИЕМ ВНУТРЬ ЗАПРОСА, а не отбором поверх загруженного набора: иначе экран
+   * площадки читал бы заявки всей компании, чтобы выбросить чужие, и потолок атомов считался бы по
+   * тому, чего человек не увидит. Книга зовёт загрузчик без сужения, и её текст запроса остаётся
+   * прежним — обе вставки пусты (`sql.empty()`).
+   *
+   * Пустой список объектов и его отсутствие — РАЗНЫЕ вещи (см. `AnalyticsFactsScope`): `[]` даёт
+   * заведомо ложное условие, `null`/`undefined` не даёт условия вовсе.
+   */
+  const objectFilter =
+    scope.objectIds == null
+      ? sql.empty()
+      : sql` AND r.object_id = ANY(${sql.param([...scope.objectIds])}::uuid[])`;
+  const typeFilter = scope.requestTypes
+    ? sql` AND r.request_type::text = ANY(${sql.param([...scope.requestTypes])}::text[])`
+    : sql.empty();
   const result = await db.execute<WasteRow>(sql`
 WITH scope AS (
     /*
@@ -166,6 +205,13 @@ WITH scope AS (
            c.request_id IS NOT NULL                   AS is_closed,
            c.volume_m3                                AS fact_volume,
            c.weight_tons                              AS fact_weight,
+           /*
+            * Объём САМОЙ ЗАЯВКИ — и под своим именем: рядом уже стоит c.volume_m3 AS fact_volume,
+            * и две колонки с одинаковым исходным именем, одна переименованная, другая нет, — это
+            * заготовленная опечатка. Колонка integer и законно пуста: заявку заводят и без объёма.
+            */
+           r.volume_m3                                AS requested_volume,
+           c.price_per_m3,
            c.total_cost,
            c.removed_on,
            coalesce(c.removed_on, (r.delivery_at AT TIME ZONE ${MOSCOW})::date) AS day,
@@ -178,7 +224,7 @@ WITH scope AS (
      WHERE r.deleted_at IS NULL
        AND r.status <> 'cancelled'
        AND coalesce(c.removed_on, (r.delivery_at AT TIME ZONE ${MOSCOW})::date)
-             BETWEEN ${range.from}::date AND ${range.to}::date
+             BETWEEN ${range.from}::date AND ${range.to}::date${objectFilter}${typeFilter}
 ),
 graded AS (
     /*
@@ -217,9 +263,29 @@ graded AS (
            /*
             * Принятый талон — подтверждённый (status = 'confirmed'): распознанное и неразобранное
             * остаётся предложением, и объём им не подтверждён (см. шапку waste_tickets).
+            *
+            * Признак считается из того же бокового соединения, что и сумма объёма, а не своим
+            * EXISTS: два обращения к талонам заявки разошлись бы ровно в тот день, когда правило
+            * «какой талон принят» поменяется в одном месте из двух.
             */
-           EXISTS (SELECT 1 FROM waste_tickets t
-                    WHERE t.request_id = s.id AND t.status = 'confirmed')       AS has_ticket
+           tk.confirmed_count > 0                                              AS has_ticket,
+           tk.confirmed_volume,
+           tk.tickets_unread,
+           v.ordered_volume,
+           /*
+            * ПОДТВЕРЖДЁННЫЙ ОБЪЁМ, КОТОРЫЙ НЕЧЕМ ОЦЕНИТЬ (Р5). Отдельная величина, а не вывод из
+            * нулевых денег: сложив атомы, свёртка уже не отличит «цены не было» от «подтверждать
+            * было нечего», и прочерк в стоимости ставить стало бы не из чего.
+            */
+           CASE WHEN s.price_per_m3 IS NULL THEN coalesce(tk.confirmed_volume, 0) ELSE 0 END
+                                                                               AS confirmed_unpriced,
+           /*
+            * ПОДТВЕРЖДЁННОЕ В ДЕНЬГАХ (план статистики, Р5): объём талонов × цена закрытия —
+            * снимок прайса, которым посчитана сама заявка. NULL законен: цена у закрытия
+            * необязательна (прайса на пару могло не быть, ADR 0046), и тогда подтверждённому
+            * объёму нечем назначить цену — ноль здесь означал бы бесплатный вывоз.
+            */
+           coalesce(tk.confirmed_volume, 0) * s.price_per_m3                    AS money_confirmed
       FROM scope s
       /* Оценка незакрытой заявки одним выражением: строк нет — сумма заявки, строки есть и все с
          ценой — их сумма, хоть одна без цены — оценки нет вовсе (NULL, а не ноль). */
@@ -227,10 +293,47 @@ graded AS (
                                   WHEN count(*) = 0 THEN s.amount
                                   WHEN count(*) FILTER (WHERE wv.price_per_m3 IS NULL) = 0
                                     THEN sum(wv.amount)
-                                END AS amount
+                                END AS amount,
+                                /*
+                                 * ЗАКАЗАННЫЙ ОБЪЁМ — ИЗ ТОГО ЖЕ МЕСТА, ЧТО И ДЕНЬГИ-ОЦЕНКА (план
+                                 * статистики, Р3). Там, где строки самосвалов заведены, они и
+                                 * описывают, чем и почём договорились везти (ADR 0011), а сумма
+                                 * заявки их не повторяет. Возьми объём только у заявки — и на
+                                 * заявке со строками колонка объёма и колонка денег считали бы
+                                 * разное, то есть ровно ту беду, ради которой Р3 и принято.
+                                 *
+                                 * Ветвь «строки есть, но хотя бы одна без цены» здесь НЕ
+                                 * повторяется: у денег она означает «оценить нечем» (NULL), а
+                                 * объём у строки NOT NULL и известен всегда — заявка без оценки
+                                 * остаётся заявкой с заказанным объёмом.
+                                 */
+                                CASE
+                                  WHEN count(*) = 0 THEN s.requested_volume
+                                  ELSE sum(wv.volume_m3 * wv.vehicle_count)
+                                END AS ordered_volume
                            FROM waste_request_vehicles wv
                           WHERE wv.request_id = s.id
                             AND wv.deleted_at IS NULL) v ON true
+      /*
+       * Талоны заявки одним проходом: сколько принято, сколько кубов они предъявляют и у скольких
+       * объём не прочитан. Талон простоя в сумму не идёт (Р18 ADR 0114) — его объём означает «вывоза
+       * не было», а не «вывезли ноль»; виды приходят параметром из контракта (SUMMABLE_KINDS).
+       *
+       * Непрочитанный объём НЕ становится нулём: sum() пропускает NULL сам, а сколько таких талонов —
+       * считает соседний счётчик. Подставь ноль — и площадка с одной смазанной графой выглядела бы
+       * недовывезшей, причём тем сильнее, чем аккуратнее она собирает бумагу.
+       */
+      LEFT JOIN LATERAL (SELECT count(*)                                        AS confirmed_count,
+                                sum(t.volume_m3) FILTER (
+                                  WHERE t.work_kind = ANY(${sql.param(SUMMABLE_KINDS)}::text[])
+                                )                                               AS confirmed_volume,
+                                count(*) FILTER (
+                                  WHERE t.work_kind = ANY(${sql.param(SUMMABLE_KINDS)}::text[])
+                                    AND t.volume_m3 IS NULL
+                                )                                               AS tickets_unread
+                           FROM waste_tickets t
+                          WHERE t.request_id = s.id
+                            AND t.status = 'confirmed') tk ON true
 ),
 atoms AS (
     SELECT o.id                                       AS customer_id,
@@ -262,6 +365,22 @@ atoms AS (
            CASE WHEN g.is_removal AND g.is_closed THEN 1 ELSE 0 END     AS removals,
            CASE WHEN g.is_container_op AND g.is_fact THEN 1 ELSE 0 END  AS container_ops,
            coalesce(g.fact_volume, 0)::text           AS volume_m3,
+           /*
+            * Заказанное идёт СВОЕЙ колонкой и никогда не смешивается с вывезенным внутри слоя
+            * (см. решение 3 в шапке файла). Кто их складывает — складывает осознанно и подписывает
+            * обе доли; здесь они различимы всегда.
+            */
+           /*
+            * Обнуляется у ЗАКРЫТОЙ заявки: её заказанный объём отвечает на прошлый вопрос —
+            * сколько просили, прежде чем приехала машина. Сложи его с вывезенным — и заявка,
+            * закрытая недовозом, посчиталась бы дважды.
+            */
+           CASE WHEN g.is_closed THEN 0 ELSE coalesce(g.ordered_volume, 0) END::text
+                                                      AS volume_ordered_m3,
+           coalesce(g.confirmed_volume, 0)::text      AS volume_confirmed_m3,
+           g.confirmed_unpriced::text                 AS volume_confirmed_unpriced_m3,
+           coalesce(g.money_confirmed, 0)::text       AS money_confirmed,
+           coalesce(g.tickets_unread, 0)              AS tickets_without_volume,
            coalesce(g.fact_weight, 0)::text           AS weight_tons,
            coalesce(g.money_fact, 0)::text            AS money_fact,
            coalesce(g.money_estimate, 0)::text        AS money_estimate,
@@ -350,6 +469,10 @@ SELECT a.*, q.entries FROM quality q LEFT JOIN atoms a ON false`);
       planShifts: 0,
       trips: 0,
       volumeM3: num(row.volume_m3),
+      volumeOrderedM3: num(row.volume_ordered_m3),
+      volumeConfirmedM3: num(row.volume_confirmed_m3),
+      volumeConfirmedUnpricedM3: num(row.volume_confirmed_unpriced_m3),
+      ticketsWithoutVolume: Number(row.tickets_without_volume ?? 0),
       weightTons: num(row.weight_tons),
       engineHours: 0,
       mechHours: 0,
@@ -361,6 +484,7 @@ SELECT a.*, q.entries FROM quality q LEFT JOIN atoms a ON false`);
       // Оценка у вывоза одна (Р9), поэтому нижняя и верхняя — одно и то же число.
       moneyLow: num(row.money_estimate),
       moneyHigh: num(row.money_estimate),
+      moneyConfirmed: num(row.money_confirmed),
       priced: row.priced!,
     });
   }

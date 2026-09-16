@@ -925,6 +925,18 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { ticketFileIds: [RECORD_ID], version: 1 },
   },
   'GET /api/v1/waste-requests/present-groups': { query: `objectId=${OBJECT_ID}` },
+  /*
+   * Статистика вывоза (план `docs/waste-stats-tab-plan.md`). Месяц в запросе обязателен: без него
+   * схема ответила бы 400 раньше, чем страж — 403, и проверка прав доказывала бы работу схемы.
+   *
+   * `selfRefusal` — тот же приём, что у свода книги: обработчик отбивает учётку с узкой осью
+   * (`assertWasteStatsAudience`), а роль перебора своей области не имеет ни при каком праве.
+   * Положительный случай этим отказом и доказывает, что страж запрос пропустил.
+   */
+  'GET /api/v1/waste-requests/stats': {
+    query: 'month=2026-08',
+    selfRefusal: 'Статистика сводит площадки',
+  },
 
   // ── Разбор талонов вывоза (ADR 0114) ──
   // У всех тел здесь одна задача: пройти схему, чтобы отказ пришёл ОТ СТРАЖА, а не от валидации.

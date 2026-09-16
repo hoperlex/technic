@@ -39,6 +39,7 @@ import {
   requestTypeColors,
   requestTypeLabels,
   parseWasteRequestNumberSearch,
+  roleScopeAxis,
   normalizeTimeInput,
   type CompleteWasteRequestInput,
   actsForCounterparty,
@@ -123,6 +124,7 @@ import {
 } from '@features/waste-ticket-review';
 import { WasteDoneModal } from './waste/WasteDoneModal';
 import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
+import { WasteStatsTab } from './waste/WasteStatsTab';
 import { MOSCOW_TZ } from '@shared/config';
 import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';
 import { containerTypeOptionsQuery } from '@entities/container-type';
@@ -370,12 +372,12 @@ function WasteStatusCell({
 
 // Вкладка живёт в адресе, а не в состоянии: по ссылке из соседнего раздела («№ заявки установки»
 // в списке площадок) сюда приходят с готовым ответом, какую вкладку показать и что на ней открыть.
-const TABS = ['requests', 'on-site', 'history', 'blind-check', 'archive'] as const;
+const TABS = ['requests', 'on-site', 'history', 'blind-check', 'archive', 'stats'] as const;
 
 export function WasteRequestsPage() {
   // Вкладки управляемые: виджет сводки живёт в строке вкладок и показывается только на «Заявках».
   const [sp, setSp] = useSearchParams();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   /**
    * «Архив» — удалённые заявки (ADR 0070): по матрице прав это только администратор. Спрашивается
    * право, а не имя роли: тем же правом закрыта выдача архива на сервере, и разойтись они не
@@ -390,6 +392,15 @@ export function WasteRequestsPage() {
   // а место размещения временное. Окно смонтировано здесь, над вкладками: ссылка `?ticketAudit=1`
   // приходит с любой из них, а внутри вкладки оно открылось бы только на своей.
   const canTicketAudit = can('wasteRequests.ticketAudit');
+  /**
+   * «Статистика» (план `docs/waste-stats-tab-plan.md`) — свод площадок за месяц. Право то же, что
+   * у списка (Р8), а круг читателей уже: исполнителю вывоза и кабинету работника вкладка не
+   * отвечает вовсе (Р7) — свод чужих площадок по своим рейсам не их сведения. Спрашивается ОСЬ
+   * роли, тем же предикатом, которым отказывает сервер: разойдись эти две проверки, вкладка вела
+   * бы в отказ.
+   */
+  const statsAxis = roleScopeAxis(user?.role ?? null);
+  const showStats = statsAxis !== 'counterparty' && statsAxis !== 'person';
   const items = [
     { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
     { key: 'on-site', label: 'На объекте', children: <OnSiteTab /> },
@@ -401,6 +412,9 @@ export function WasteRequestsPage() {
       ? [{ key: 'blind-check', label: 'Перепроверка', children: <BlindCheckQueue /> }]
       : []),
     ...(showArchive ? [{ key: 'archive', label: 'Архив', children: <WasteArchiveTab /> }] : []),
+    // Последней, а не рядом с «Историей»: первые вкладки — работа с заявками, за ними в раздел и
+    // приходят. Вкладка, вставленная в середину, сдвинула бы привычные, а не добавилась к ним.
+    ...(showStats ? [{ key: 'stats', label: 'Статистика', children: <WasteStatsTab /> }] : []),
   ];
 
   const raw = sp.get('tab') ?? '';

@@ -92,6 +92,9 @@ export * from './waste-tickets';
  * талоны отделены от заявки: круг читателей у него свой и ещё уже. Разбирают талоны многие, а
  * смотрят на цену и качество чтения единицы, и право там сквозное (ADR 0137). */
 export * from './waste-ticket-audit';
+/* Статистика вывоза (`waste-stats.ts`) — после талонов, потому что опирается на оба соседа: объём
+ * приходит от заявки, подтверждение — от талона (план `docs/waste-stats-tab-plan.md`). */
+export * from './waste-stats';
 export * from './vehicle-routes';
 export * from './cost-target';
 export * from './vehicle-request-trips';

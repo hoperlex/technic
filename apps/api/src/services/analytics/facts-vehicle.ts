@@ -375,6 +375,12 @@ function emptyAtom(
     planShifts: 0,
     trips: 0,
     volumeM3: 0,
+    // Заказанный объём и талоны — только у вывоза мусора: перевозка везёт груз, а не кубы,
+    // предъявленные бумагой.
+    volumeOrderedM3: 0,
+    volumeConfirmedM3: 0,
+    volumeConfirmedUnpricedM3: 0,
+    ticketsWithoutVolume: 0,
     weightTons: 0,
     engineHours: 0,
     mechHours: 0,
@@ -385,6 +391,7 @@ function emptyAtom(
     moneyFact: 0,
     moneyLow: 0,
     moneyHigh: 0,
+    moneyConfirmed: 0,
     priced,
   };
 }

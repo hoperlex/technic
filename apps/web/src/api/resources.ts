@@ -104,6 +104,7 @@ import type {
   WasteRequestDto,
   WasteRequestHistorySummaryDto,
   WasteRequestSummaryDto,
+  WasteStatsDto,
   ApproveWeeklyRequestBody,
   CreateWeeklyRequestBody,
   UpdateWeeklyRequestBody,
@@ -1316,6 +1317,12 @@ export const wasteRequestsApi = {
   /** Итог журнала по тем же фильтрам: сколько закрыто, чем закончилось, что вывезли. */
   historySummary: (q: Query) =>
     apiFetch<WasteRequestHistorySummaryDto>('/waste-requests/history/summary', { query: q }),
+  /**
+   * Статистика за отчётный месяц — вкладка «Статистика» (план `docs/waste-stats-tab-plan.md`):
+   * площадки, объём и деньги, детализация по видам отходов тем же ответом. Считает её слой
+   * сводной аналитики — тот же, что собирает книгу Excel, второго счёта тех же чисел нет.
+   */
+  stats: (month: string) => apiFetch<WasteStatsDto>('/waste-requests/stats', { query: { month } }),
   get: (id: string) => apiFetch<WasteRequestDto>(`/waste-requests/${id}`),
   /** События заявки в хронологическом порядке: создание, правки, смены статусов (ADR 0012). */
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`/waste-requests/${id}/history`),

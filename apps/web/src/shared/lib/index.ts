@@ -5,6 +5,7 @@
 export * from './avatar';
 export * from './dayBounds';
 export * from './dayjs';
+export * from './monthText';
 export * from './errors';
 export * from './idempotency';
 export * from './listParamsStore';

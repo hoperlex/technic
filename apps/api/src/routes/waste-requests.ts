@@ -52,6 +52,7 @@ import {
   type WasteRequestVehicleDto,
   wasteRequestListQuerySchema,
   wasteRequestSummaryQuerySchema,
+  wasteStatsQuerySchema,
   can,
   type WasteTicketBadgeDto,
   wasteTicketReviewBlocker,
@@ -100,6 +101,7 @@ import {
   scheduleFilesDeletion,
 } from '../services/request-files';
 import { registerPurgeRoute } from '../services/directory-purge';
+import { assertWasteStatsAudience, loadWasteStats } from '../services/waste-stats';
 import { priceWasteRequest, resolveWasteTariffByKind, toNum } from '../services/waste-pricing';
 import {
   assertContainerGroupAvailable,
@@ -1290,6 +1292,33 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       } satisfies WasteRequestHistorySummaryDto;
     },
   );
+
+  /**
+   * Вкладка «Статистика» (план `docs/waste-stats-tab-plan.md`): вывезенное и деньги по площадкам за
+   * отчётный месяц, с детализацией по видам отходов в том же ответе.
+   *
+   * Сводок в модуле три, и различать их надо при первом чтении, иначе следующая правка попадёт не
+   * в ту:
+   *
+   * - `/summary` — сколько заявок в каком статусе, виджет над реестром;
+   * - `/history/summary` — что в этой таблице журнала: итог по выбранным фильтрам (ADR 0135);
+   * - `/stats` — сколько вывезли за месяц и за сколько, с разрезом по площадкам.
+   *
+   * Считает её слой атомов сводной аналитики — тот же, что собирает книгу Excel (Р1): второго
+   * ответа на «сколько вывезли за август» в проекте быть не должно. Право то же, что у списка
+   * (Р8): стоимость закрытия эта роль уже видит колонкой в журнале. Область — обычная
+   * площадочная, но круг читателей уже, чем у списка: исполнителю вывоза и кабинету работника
+   * вкладка не отвечает вовсе (Р7, `assertWasteStatsAudience`).
+   *
+   * Объявлена рядом с `/history/summary`: статический маршрут в fastify выигрывает у `/:id`
+   * независимо от порядка объявления, но читателю файла порядок говорит больше, чем порядок
+   * разбора.
+   */
+  r.get('/stats', { ...auth, schema: { querystring: wasteStatsQuerySchema } }, async (req) => {
+    const p = requirePrincipal(req);
+    assertWasteStatsAudience(p);
+    return loadWasteStats(p, req.query.month);
+  });
 
   r.get('/:id', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);

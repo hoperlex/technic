@@ -340,6 +340,10 @@ SELECT a.*, q.entries FROM quality q LEFT JOIN atoms a ON false`);
       planShifts: 0,
       trips: 0,
       volumeM3: 0,
+      volumeOrderedM3: 0,
+      volumeConfirmedM3: 0,
+      volumeConfirmedUnpricedM3: 0,
+      ticketsWithoutVolume: 0,
       weightTons: 0,
       engineHours: 0,
       mechHours: num(row.mech_hours),
@@ -352,6 +356,7 @@ SELECT a.*, q.entries FROM quality q LEFT JOIN atoms a ON false`);
       // Оценка у механизации одна (Р9), поэтому нижняя и верхняя — одно и то же число.
       moneyLow: estimate,
       moneyHigh: estimate,
+      moneyConfirmed: 0,
       priced: row.priced!,
     });
   }
