@@ -6,7 +6,7 @@ import {
   mechUnitsLabel,
   type RequestChangeDto,
 } from '@technic/contracts';
-import { changeSet, EMPTY, short } from './request-diff';
+import { changeSet, EMPTY, money, short } from './request-diff';
 
 // Что изменило действие над заявкой механизации — для истории в её карточке (план
 // `docs/mechanization-module-plan.md`, Р11). Общая механика диффа — в `request-diff.ts`; здесь
@@ -22,12 +22,6 @@ import { changeSet, EMPTY, short } from './request-diff';
 // «правке», в истории не осталось бы ни «была ставка 1200/час, стала 1500», ни «выдачу отметили
 // ошибочно, причина такая-то», ни «срок продлили на неделю, потому что». Все эти вопросы задают,
 // разбирая счёт.
-
-/** Деньги человеку: 1 200,00 ₽. Ставка и итог показываются одинаково — их и сравнивают глазами. */
-function money(v: number | null): string {
-  if (v == null) return EMPTY;
-  return `${v.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
-}
 
 /**
  * Календарный день человеку: `2026-09-04` → «04.09.2026». Своя разборка строки, а не пересчёт

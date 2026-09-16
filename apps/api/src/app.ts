@@ -228,7 +228,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // Двери истории назначения (план `docs/assignment-periods-plan.md` §8) — второй плагин на том же
   // префиксе: адреса портала от разделения не меняются, а `vehicle-requests.ts` их не вмещает
   // (§16.1 плана — барьерный файл, которого хотят сразу пять дверей). Тот же приём, что у двух
-  // плагинов `vehicle-readings`. Боевых ручек в модуле пока нет: волна 3.1 привезла каркас.
+  // плагинов `vehicle-readings`.
   await app.register(vehicleRequestAssignmentRoutes, { prefix: '/api/v1/vehicle-requests' });
   await app.register(vehicleRequestAssignmentRepairRoutes, { prefix: '/api/v1/vehicle-requests' });
   await app.register(vehicleRequestAssignmentCorrectionRoutes, {

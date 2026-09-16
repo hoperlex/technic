@@ -63,7 +63,7 @@ import {
   type LinearDaysSyncResult,
 } from './vehicle-request-days';
 import { diffVehicleEarlyEnd } from './vehicle-request-diff';
-import { changeSet } from './request-diff';
+import { changeSet, dateKeyRu } from './request-diff';
 import type { Esm2SyncResult } from './waybill-esm2';
 
 /**
@@ -997,12 +997,6 @@ function operationRequirementOf(effects: AssignmentEffects): OperationRequiremen
  */
 function invariant(message: string): AppError {
   return new AppError(500, 'early_end_invariant', `Досрочное завершение: ${message}`);
-}
-
-/** Календарный ключ `YYYY-MM-DD` человеку: `24.07.2026`. Через JS Date он бы поехал на день. */
-function dateKeyRu(key: string): string {
-  const [y, m, d] = key.split('-');
-  return y && m && d ? `${d}.${m}.${y}` : key;
 }
 
 /** День расчёта — сегодня по МСК; тем же поясом границы считает портал (Р32). */

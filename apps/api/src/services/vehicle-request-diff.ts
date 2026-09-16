@@ -16,7 +16,7 @@ import {
   vehicleRequestTypeLabels,
   workedAmountLabel,
 } from '@technic/contracts';
-import { changeSet, EMPTY, short } from './request-diff';
+import { changeSet, dateKeyRu, EMPTY, short } from './request-diff';
 
 // Что изменила правка заявки на технику — для истории в её карточке (ADR 0015). Общая механика
 // диффа — в request-diff.ts; здесь перечень полей этого модуля.
@@ -293,12 +293,6 @@ export function earlyEndReasonChange(reason: string): RequestChangeDto[] {
 
 /** Максимум дат в перечне: заказ бывает на месяц, и весь список в строку события не влезет. */
 const MAX_LISTED_DATES = 5;
-
-/** Календарный ключ `YYYY-MM-DD` человеку: `24.07.2026`. Через JS Date он бы поехал на день. */
-function dateKeyRu(key: string): string {
-  const [y, m, d] = key.split('-');
-  return y && m && d ? `${d}.${m}.${y}` : key;
-}
 
 /**
  * Дни, за которые объект так и не расписался, — строкой события закрытия (ADR 0029).

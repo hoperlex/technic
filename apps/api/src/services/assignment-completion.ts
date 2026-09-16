@@ -87,6 +87,7 @@ import {
   type AssignmentDenormalizationIntent,
   type AssignmentWriteResult,
 } from './assignment-write';
+import { dateKeyRu } from './request-diff';
 import {
   diffVehicleCompletion,
   earlyEndReasonChange,
@@ -1363,16 +1364,6 @@ async function pendingShiftDates(
   return shiftDaysOf({ dateFrom: term.dateFrom, dateTo: until }).filter(
     (day) => !approved.has(day),
   );
-}
-
-/**
- * Календарный ключ человеку: `24.07.2026`. Своя копия рядом с копиями маршрута и оформителя
- * событий: через `Date` дата поехала бы на день в чужом поясе, а тащить сюда общий модуль ради
- * трёх отказов не за чем — контракты этой функции не отдают.
- */
-function dateKeyRu(key: string): string {
-  const [y, m, d] = key.split('-');
-  return y && m && d ? `${d}.${m}.${y}` : key;
 }
 
 /** Меньшая из двух календарных дат — сравнением ключей, как их сравнивает весь портал. */

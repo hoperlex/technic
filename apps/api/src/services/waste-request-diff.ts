@@ -9,15 +9,10 @@ import {
   type WasteRequestCompletionDto,
   type WasteRequestDto,
 } from '@technic/contracts';
-import { changeSet, EMPTY, short } from './request-diff';
+import { changeSet, EMPTY, money, short } from './request-diff';
 
 // Что изменила правка заявки на вывоз — для истории в её карточке (ADR 0012). Общая механика
 // диффа — в request-diff.ts; здесь перечень полей этого модуля.
-
-function money(v: number | null): string {
-  if (v == null) return EMPTY;
-  return `${v.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
-}
 
 function volume(v: number | null): string {
   return v == null ? EMPTY : `${v} м³`;
