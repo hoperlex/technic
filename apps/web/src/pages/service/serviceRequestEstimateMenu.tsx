@@ -18,7 +18,7 @@ import {
   type ServiceExecutorAssignment,
   type ServiceRequestDto,
 } from '@technic/contracts';
-import type { ServiceMenuContext } from './serviceRequestMenu';
+import type { ServiceMenuContext } from './serviceRequestModals';
 import type { serviceReasonPrompts } from './serviceRequestPrompts';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 

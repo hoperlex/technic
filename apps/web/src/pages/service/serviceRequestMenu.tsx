@@ -18,12 +18,11 @@ import {
   hasServiceClosingDocument,
   serviceIsFirstAssignment,
   serviceRequestNeedsClosingDocument,
-  type AuthUser,
   type ServiceRequestDto,
 } from '@technic/contracts';
 import type { HoldMode } from '@features/service-hold';
 import { serviceAcceptLock, type ServiceMenuItem } from './serviceStatusChoices';
-import type { ServiceRequestModals } from './serviceRequestModals';
+import type { ServiceMenuContext } from './serviceRequestModals';
 import { serviceEstimateMenuItems } from './serviceRequestEstimateMenu';
 import { serviceRequestExtraItems } from './serviceRequestExtras';
 import { serviceReasonPrompts } from './serviceRequestPrompts';
@@ -61,30 +60,6 @@ import {
  * следует: сперва ход, затем обстоятельства, и отмена последней, потому что она отнимает работу
  * целиком.
  */
-
-/** Чем перечень пользуется помимо самой заявки: смотрящий, окна и действия без окна. */
-export interface ServiceMenuContext {
-  /** Смотрящий: от него зависят и права, и сторона исполнителя на этой заявке. */
-  user: AuthUser | null;
-  /** Окна заявки: какое открыть — решает пункт, чем оно устроено — набор окон. */
-  modals: ServiceRequestModals;
-  /**
-   * Действия, у которых нет ни окна, ни причины: они уходят прямо в мутацию хука. Передаются
-   * обработчиками, а не мутациями, чтобы перечень пунктов не знал ни про кэш запросов, ни про
-   * подтверждения — иначе разрез потерял бы смысл.
-   */
-  run: {
-    /** «Принять в работу» (Р6): содержания у хода нет вовсе — только версия заявки. */
-    start: (request: ServiceRequestDto) => void;
-    /** «Согласовано» (Р8): подтверждение с суммой и ревизией живёт в хуке, рядом с мутацией. */
-    approve: (request: ServiceRequestDto) => void;
-    /**
-     * Откат «принял в работу» (Р13): `in_work → new`, причины переход не требует
-     * (`serviceStatusChangeRequiresReason` о нём молчит), поэтому и подтверждение живёт в хуке.
-     */
-    rollbackStart: (request: ServiceRequestDto) => void;
-  };
-}
 
 /*
  * Признак `primary` — главный шаг текущего состояния (Р117): к нему ведёт подпись «Вам: …» в

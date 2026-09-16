@@ -16,7 +16,7 @@ import {
   type ServiceRequestDto,
 } from '@technic/contracts';
 import type { ActionSheetItem } from '@shared/ui';
-import type { ServiceMenuContext } from './serviceRequestMenu';
+import type { ServiceMenuContext } from './serviceRequestModals';
 
 /**
  * Действия **вокруг** заявки: те, что заявку не двигают.

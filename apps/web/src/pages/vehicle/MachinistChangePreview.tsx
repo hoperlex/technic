@@ -3,6 +3,7 @@ import type { AssignmentPreviewDto } from '@technic/contracts';
 import { TailMismatchAlert } from './AssignmentHistoryPanel';
 import { driverStateLabel, type AssignmentSegment } from './assignmentTimeline';
 import { formatDateOnly } from './shared';
+import { listStyle } from './consequencesList';
 
 /**
  * Цена смены машиниста, прочитанная человеком **до** нажатия (этап 6 плана
@@ -42,8 +43,6 @@ export function machinistPreviewIsSilent(preview: AssignmentPreviewDto): boolean
     preview.operationRequirement === null
   );
 }
-
-const listStyle = { margin: '4px 0 0', paddingInlineStart: 20 } as const;
 
 interface Props {
   preview: AssignmentPreviewDto;

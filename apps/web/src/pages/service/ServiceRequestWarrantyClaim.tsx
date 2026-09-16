@@ -1,6 +1,6 @@
 import { Form, Select } from 'antd';
 import { warrantyClaimSourceLabels, type WarrantyClaimSource } from '@technic/contracts';
-import type { WarrantyClaimPreset } from './ServiceRequestForm';
+import type { WarrantyClaimPreset } from './serviceRequestSubmit';
 
 /**
  * Источник гарантийного обращения в форме заявки (ADR 0085, Р26): по чьей именно гарантии

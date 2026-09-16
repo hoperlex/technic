@@ -2,6 +2,7 @@ import { Alert, Space, Typography } from 'antd';
 import { type AssignmentPreviewDto, workedAmountLabel } from '@technic/contracts';
 import { isApiError } from '@shared/api';
 import { formatDateOnly } from './shared';
+import { listStyle, totalOf } from './consequencesList';
 
 /**
  * Цена смены техники, прочитанная человеком **до** нажатия (волна 4a плана
@@ -86,13 +87,6 @@ export function reassignPreviewBlocked(preview: AssignmentPreviewDto): boolean {
   return preview.blockedShiftDays.length > 0;
 }
 
-/** Сколько всего снимается — числом, а не длиной списка: цена должна читаться одной строкой. */
-function totalOf(days: readonly { hours: number }[]): string {
-  const hours = days.reduce((sum, day) => sum + day.hours, 0);
-  return `Всего дней: ${days.length} · ${workedAmountLabel('hours', hours)}`;
-}
-
-const listStyle = { margin: '4px 0 0', paddingInlineStart: 20 } as const;
 
 interface Props {
   preview: AssignmentPreviewDto;

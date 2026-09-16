@@ -2,6 +2,7 @@ import { Alert, Checkbox, Form, Input, Space, Typography } from 'antd';
 import { type CompletionPreviewDto, workedAmountLabel } from '@technic/contracts';
 import { cancelGroupLine } from './cancelGroups';
 import { formatDateOnly } from './shared';
+import { listStyle, totalOf } from './consequencesList';
 
 /**
  * Цена закрытия заказа фактической датой, прочитанная человеком **до** нажатия (ADR 0178, план
@@ -34,13 +35,6 @@ import { formatDateOnly } from './shared';
  *   вовсе, и сервер отдаёт их пустыми.
  */
 
-const listStyle = { margin: '4px 0 0', paddingInlineStart: 20 } as const;
-
-/** Сколько всего снимается — числом, а не длиной списка: цена должна читаться одной строкой. */
-function totalOf(days: readonly { hours: number }[]): string {
-  const hours = days.reduce((sum, day) => sum + day.hours, 0);
-  return `Всего дней: ${days.length} · ${workedAmountLabel('hours', hours)}`;
-}
 
 interface Props {
   preview: CompletionPreviewDto;

@@ -1,6 +1,7 @@
 import { Alert, Space, Typography } from 'antd';
 import type { EarlyEndApprovalPreviewDto } from '@technic/contracts';
 import { formatDateOnly } from './shared';
+import { listStyle } from './consequencesList';
 
 /**
  * Цена досрочного завершения, прочитанная **до** нажатия (ADR 0178, Р19, Р26): и тем, кто просит
@@ -22,8 +23,6 @@ import { formatDateOnly } from './shared';
  * диапазон целиком в будущем, а смену будущим днём не заполняют и не подписывают. Множество пусто
  * по построению (Р19), и рисовать под него блок значило бы обещать разговор, которого не будет.
  */
-
-const listStyle = { margin: '4px 0 0', paddingInlineStart: 20 } as const;
 
 /** «2 листа», «5 листов» — счётное слово рядом с числом, иначе строка читается как телеграмма. */
 function sheets(n: number): string {
