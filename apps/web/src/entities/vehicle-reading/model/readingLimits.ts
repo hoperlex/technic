@@ -1,4 +1,5 @@
 import dayjs from 'dayjs';
+import { groupDigits } from '@shared/lib';
 import type { DriverPreviousReading } from '@technic/contracts';
 
 /**
@@ -138,8 +139,6 @@ const PER_DAY: Partial<Record<ReadingField, number>> = {
   engineHours: ENGINE_HOURS_WARN_PER_DAY,
 };
 
-const NBSP = ' ';
-
 /**
  * Разряды пробелами — только при ВЫВОДЕ (П2). При наборе группировка недопустима: она сдвигает
  * позицию курсора на каждой третьей цифре, и человек дописывает пробег в середину числа.
@@ -147,7 +146,7 @@ const NBSP = ' ';
  */
 export function formatReading(value: number): string {
   const [whole = '', fraction] = String(value).split('.');
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/gu, NBSP);
+  const grouped = groupDigits(whole);
   // Запятая, а не точка: так число читают с телефона по-русски. Ввод принимает и то, и другое.
   return fraction ? `${grouped},${fraction}` : grouped;
 }

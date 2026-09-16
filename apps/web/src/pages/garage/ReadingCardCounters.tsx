@@ -2,7 +2,8 @@ import { Space, Typography } from 'antd';
 import dayjs from 'dayjs';
 import type { VehicleReadingCardDto } from '@technic/contracts';
 import { ViewFields } from '@shared/ui';
-import { decimal, kmText } from './readingNumbers';
+import { kmText } from '@shared/lib';
+import { decimal } from './readingNumbers';
 
 /**
  * Шапка карточки машины: последние одометр и моточасы — **на конец выбранного периода** (Р16).

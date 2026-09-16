@@ -3,7 +3,8 @@ import { DeleteOutlined, EditOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { VehicleMaintenanceDto } from '@technic/contracts';
 import { FilesCell } from '../../../components/FileLinks';
-import { SHOWN_DATE, kmText } from '../model/maintenanceText';
+import { kmText } from '@shared/lib';
+import { SHOWN_DATE } from '../model/maintenanceText';
 
 /**
  * Журнал обслуживания машины (Р10, Р30): история хранится целиком, и показывается она тоже целиком.

@@ -20,7 +20,8 @@ import {
   maintenanceErrorText,
 } from '../model/conflict';
 import { useMaintenanceRecordAddress } from '../model/maintenanceAddress';
-import { SHOWN_DATE, isLowerBound, kmSinceText, kmText } from '../model/maintenanceText';
+import { kmText } from '@shared/lib';
+import { SHOWN_DATE, isLowerBound, kmSinceText } from '../model/maintenanceText';
 import { MaintenanceFormModal } from './MaintenanceFormModal';
 import { MaintenanceHistoryTable } from './MaintenanceHistoryTable';
 import { MaintenanceVoidModal } from './MaintenanceVoidModal';

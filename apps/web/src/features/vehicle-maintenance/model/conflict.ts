@@ -1,5 +1,5 @@
 import { isApiError } from '@shared/api';
-import { errorMessage } from '@shared/lib';
+import { errorMessage, isVersionConflictError } from '@shared/lib';
 
 /**
  * Оптимистическая блокировка записи ТО глазами портала (план «Показания техники», Р30) и отказы,
@@ -31,7 +31,7 @@ export const VERSION_CONFLICT_MESSAGE =
 const DOMAIN_CONFLICTS = new Set(['maintenance_voided', 'maintenance_has_stock_movements']);
 
 export function isVersionConflict(e: unknown): boolean {
-  return isApiError(e) && e.status === 409 && !DOMAIN_CONFLICTS.has(e.code);
+  return isVersionConflictError(e, DOMAIN_CONFLICTS);
 }
 
 /**

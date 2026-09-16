@@ -9,7 +9,8 @@ import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { useReadingsAddress } from './readingsAddress';
-import { decimal, kmText } from './readingNumbers';
+import { kmText } from '@shared/lib';
+import { decimal } from './readingNumbers';
 import { ReadingsExportModal } from './ReadingsExportModal';
 import { VehicleReadingCard } from './VehicleReadingCard';
 

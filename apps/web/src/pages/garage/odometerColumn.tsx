@@ -1,5 +1,6 @@
 import { Space, Typography, type TableColumnType } from 'antd';
 import dayjs from 'dayjs';
+import { kmText } from '@shared/lib';
 import type { GarageVehicleDto } from '@technic/contracts';
 
 /**
@@ -18,19 +19,11 @@ import type { GarageVehicleDto } from '@technic/contracts';
  * (`quality-budget.json`), и колонка со своим форматированием в него не помещалась.
  */
 
-/** Неразрывный: «128 400 км» не должно переноситься на две строки посреди числа. */
-const NBSP = ' ';
-
-const SHOWN_DATE = 'DD.MM.YYYY';
-
 /**
- * «128 400 км» — разряды пробелами. Год в дате не сокращается (в отличие от подсказки в кабине,
- * где сверяют свежее): последнее показание бывает и прошлогодним, и «12.08» без года в списке парка
- * читалось бы как этот август.
+ * Год в дате не сокращается (в отличие от подсказки в кабине, где сверяют свежее): последнее
+ * показание бывает и прошлогодним, и «12.08» без года в списке парка читалось бы как этот август.
  */
-function kmText(km: number): string {
-  return `${String(km).replace(/\B(?=(\d{3})+(?!\d))/gu, NBSP)}${NBSP}км`;
-}
+const SHOWN_DATE = 'DD.MM.YYYY';
 
 /**
  * Строка карточки телефона: «одометр: 128 400 км (12.08.2026)». Пусто — показаний нет либо колонка

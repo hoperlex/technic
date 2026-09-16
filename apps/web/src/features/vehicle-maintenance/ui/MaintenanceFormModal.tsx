@@ -13,7 +13,8 @@ import {
   isVersionConflict,
   maintenanceErrorText,
 } from '../model/conflict';
-import { DATE, SHOWN_DATE, kmText, previousOdometerKm } from '../model/maintenanceText';
+import { kmText } from '@shared/lib';
+import { DATE, SHOWN_DATE, previousOdometerKm } from '../model/maintenanceText';
 import { MaintenanceScans, type ScanFile } from './MaintenanceScans';
 
 /**

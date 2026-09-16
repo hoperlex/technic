@@ -4,8 +4,7 @@ import {
   autoPartReceiptInvalidation,
   type AutoPartReceiptCacheChange,
 } from '@entities/auto-part-receipt';
-import { isApiError } from '@shared/api';
-import { errorMessage } from '@shared/lib';
+import { errorMessage, isVersionConflictError } from '@shared/lib';
 
 /**
  * Общее у четырёх мутаций чека (план `docs/auto-part-receipts-plan.md`, Р12, Р18): версия, отказ
@@ -36,7 +35,7 @@ export const RECEIPT_VERSION_CONFLICT_MESSAGE =
 const DOMAIN_CONFLICTS = new Set(['receipt_already_marked', 'receipt_not_marked']);
 
 export function isReceiptVersionConflict(e: unknown): boolean {
-  return isApiError(e) && e.status === 409 && !DOMAIN_CONFLICTS.has(e.code);
+  return isVersionConflictError(e, DOMAIN_CONFLICTS);
 }
 
 /** Отказ словами: про версию — своими, про остальное — серверными. */

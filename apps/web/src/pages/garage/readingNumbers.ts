@@ -1,4 +1,5 @@
 import dayjs from 'dayjs';
+import { NBSP } from '@shared/lib';
 
 /**
  * Как показания печатаются числом (ADR 0103; план «Показания техники», Р27, Р28).
@@ -17,9 +18,6 @@ import dayjs from 'dayjs';
 export function decimal(value: number | null, digits = 1): string {
   return value === null ? '—' : value.toFixed(digits).replace('.', ',');
 }
-
-/** Неразрывный: «128 400 км» не должно переноситься на две строки посреди числа. */
-const NBSP = ' ';
 
 /**
  * Нижняя граница показателя: пары снимков были, но ряд между ними рвался.
@@ -60,10 +58,6 @@ export const LOWER_BOUND_HINT =
  * ([odometerColumn](./odometerColumn.tsx)): одно и то же показание на двух экранах обязано
  * выглядеть одинаково, иначе его начинают сверять глазами.
  */
-export function kmText(km: number): string {
-  return `${String(km).replace(/\B(?=(\d{3})+(?!\d))/gu, NBSP)}${NBSP}км`;
-}
-
 /**
  * «июль 2026» из `2026-07`. Месяц приходит строкой с сервера — он считается по правилу «пара
  * разностей идёт в месяц текущего снимка» (Р4), и портал его не выводит, а только называет

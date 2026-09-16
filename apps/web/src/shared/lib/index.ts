@@ -8,6 +8,7 @@ export * from './dayjs';
 export * from './errors';
 export * from './idempotency';
 export * from './listParamsStore';
+export * from './numberText';
 export * from './selectOptions';
 export * from './siderCollapsed';
 export * from './table';

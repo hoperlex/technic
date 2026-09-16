@@ -44,6 +44,24 @@ export function errorFields(error: unknown): Record<string, string> | null {
     : null;
 }
 
+/**
+ * 409 про версию — против 409 про дело.
+ *
+ * Оптимистическая блокировка отвечает 409, когда запись подвинули в другом окне, и совет тут один:
+ * перечитать и открыть заново. Тем же кодом приходят доменные отказы («чек уже помечен», «акт
+ * аннулирован»), где этот совет не помогает и только путает. Различает их код, и перечень кодов
+ * приходит аргументом: какие отказы у модуля доменные — знает модуль, а не фундамент.
+ *
+ * Механика одна на все такие экраны намеренно: она уже была написана дважды (ведение ТО и чеки
+ * запчастей) слово в слово, и разъехаться двум копиям было негде, кроме как в наборе кодов.
+ */
+export function isVersionConflictError(
+  error: unknown,
+  domainCodes: ReadonlySet<string>,
+): boolean {
+  return isApiErrorShape(error) && error.status === 409 && !domainCodes.has(error.code);
+}
+
 function fieldLabel(path: string, labels: Record<string, string>): string {
   // zod присылает путь вида `vehicles.0.volumeM3` — для подписи важен последний сегмент.
   const last =
