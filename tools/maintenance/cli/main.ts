@@ -44,7 +44,7 @@ function help(): void {
   out.line('                          проверить правку и принять её либо откатить');
   out.line('  abort [--rollback]      снять открытую партию: с откатом или оставив дерево');
   out.line();
-  out.line('  converge [--status] [--abort] [--allow-concurrent] [--level <id>]');
+  out.line('  converge [--status] [--abort] [--allow-concurrent] [--agent manual|command]');
   out.line(
     '                          цикл сходимости: продвигает прогон на шаг и называет следующий',
   );
@@ -147,6 +147,7 @@ async function main(): Promise<number> {
       break;
     case 'converge':
       result = await converge(config, out, {
+        agent: agentArg(args),
         allowConcurrent: args.includes('--allow-concurrent'),
         levels: allValues(args, '--level'),
         abort: args.includes('--abort'),

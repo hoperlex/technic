@@ -24,8 +24,13 @@ const RISKS: readonly BehaviorRisk[] = ['low', 'medium', 'high'];
  * Модель регулярно оборачивает JSON в тройные кавычки или добавляет строку «вот результат».
  * Требовать чистоты бесполезно — дешевле вырезать объект: берём от первой открывающей скобки до
  * последней закрывающей.
+ *
+ * Экспортируется, потому что разборов ответа в системе ДВА — находки и отчёт исполнителя, — и
+ * первый живой прогон показал цену их расхождения: находки читались, а отчёт, обёрнутый в те же
+ * тройные кавычки, — нет. Список «что назвал исполнитель» оставался пустым, и замок поведения
+ * работал вполсилы, не умея отличить выход за границы партии от чужой работы рядом.
  */
-function extractJson(text: string): string | null {
+export function extractJsonObject(text: string): string | null {
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
   if (start < 0 || end <= start) return null;
@@ -34,7 +39,7 @@ function extractJson(text: string): string | null {
 
 export function parseFindings(text: string, source: string): ParseResult {
   const problems: string[] = [];
-  const body = extractJson(text);
+  const body = extractJsonObject(text);
   if (body === null) {
     return { findings: [], problems: [`${source}: объекта JSON в ответе нет`] };
   }

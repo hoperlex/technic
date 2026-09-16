@@ -9,6 +9,8 @@
  * ЗДЕСЬ НЕТ РЕШЕНИЙ, только разбор. Что делать с прочитанным — дело вызывающего: он знает, какие
  * находки выдавал и чем они были.
  */
+import { extractJsonObject } from './finding-io.ts';
+
 export interface FixReport {
   /** Был ли отчёт вообще. Отсутствие отчёта и пустой отчёт — разные новости. */
   readonly present: boolean;
@@ -42,9 +44,19 @@ export const EMPTY_FIX_REPORT: FixReport = {
  */
 export function parseFixReport(text: string): FixReport {
   const problems: string[] = [];
+  // Обёртку из тройных кавычек и пояснений снимает тот же код, что и у находок: первый живой
+  // прогон показал, что иначе отчёт исполнителя просто не читается.
+  const body = extractJsonObject(text);
+  if (body === null) {
+    return {
+      ...EMPTY_FIX_REPORT,
+      present: true,
+      problems: ['в отчёте исполнителя нет объекта JSON'],
+    };
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(body);
   } catch (cause) {
     return {
       ...EMPTY_FIX_REPORT,

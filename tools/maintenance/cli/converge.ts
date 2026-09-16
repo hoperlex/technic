@@ -36,12 +36,12 @@ import { renderRunReport, renderVerdictTable } from '../reporters/markdown.ts';
 import { ensureWorkspace, type Workspace } from '../state/workspace.ts';
 import { snapshotBaseline } from '../verification/behavior-lock.ts';
 import { measureBaseline, verifyBatch } from '../verification/verifier.ts';
-import { renderPacket } from '../work-packets/render.ts';
 import { reviewerPacket } from '../work-packets/reviewer.ts';
 import { fixerPacket } from '../work-packets/fixer.ts';
 import type { CommandResult } from './commands.ts';
 import { loadPolicies } from './commands.ts';
 import { readBatch, saveBatch } from './verify.ts';
+import { adapterFor, deliver } from './agent-runner.ts';
 import { JsonFindingStore, decide, reconcile, type LedgerEntry } from '../state/ledger.ts';
 import { JsonSnapshotStore, diffSnapshots, renderDelta, snapshotOf } from '../state/snapshot.ts';
 import {
@@ -53,6 +53,8 @@ import {
 import { filesChangedSince, lastChangeOf } from '../analyzers/git.ts';
 
 export interface ConvergeArgs {
+  /** Каким адаптером относить задание: ручным или командным. `null` — как сказано в конфиге. */
+  readonly agent: 'manual' | 'command' | null;
   readonly allowConcurrent: boolean;
   readonly levels: readonly string[];
   readonly abort: boolean;
@@ -121,7 +123,15 @@ export async function converge(
     saveRun(workspace, state);
     out.heading(`прогон ${state.runId}`);
     out.item(`проходов в политике: ${budget.passes.length}, лимит: ${budget.maxPasses}`);
-    return emitReviewTask(config, policies, workspace, out, state, budget.passes[0]?.id ?? '');
+    return emitReviewTask(
+      config,
+      policies,
+      workspace,
+      out,
+      state,
+      budget.passes[0]?.id ?? '',
+      args,
+    );
   }
 
   if (state.step === 'finished') {
@@ -132,7 +142,8 @@ export async function converge(
     return { ok: true };
   }
 
-  if (state.step === 'awaiting-review') return takeReview(config, policies, workspace, out, state);
+  if (state.step === 'awaiting-review')
+    return takeReview(config, policies, workspace, out, state, args);
   return takeFix(config, policies, workspace, out, state, args);
 }
 
@@ -199,6 +210,7 @@ async function emitReviewTask(
   out: Reporter,
   state: RunState,
   passId: string,
+  args: ConvergeArgs,
 ): Promise<CommandResult> {
   const pass = policies.maintenance.convergence.passes.find((item) => item.id === passId);
   if (pass === undefined) {
@@ -226,23 +238,34 @@ async function emitReviewTask(
   rmSync(path.join(workspace.results, 'fix.json'), { force: true });
 
   const outputFile = path.join(path.relative(config.root, workspace.results), 'review.json');
-  writeFileSync(
-    workspace.taskFile,
-    renderPacket(
-      reviewerPacket({
-        facts,
-        policies,
-        budget: policies.maintenance.convergence,
-        pass,
-        outputFile,
-        decisions: decisionsFor(config, facts),
-      }),
-    ),
-    'utf8',
+  const packet = reviewerPacket({
+    facts,
+    policies,
+    budget: policies.maintenance.convergence,
+    pass,
+    outputFile,
+    decisions: decisionsFor(config, facts),
+  });
+
+  /*
+   * Задание уходит через адаптер, а не записью в файл напрямую.
+   *
+   * Раньше цикл писал `task.md` сам и слоя адаптеров не знал вовсе — из-за этого самоходный режим
+   * работал только в тяжёлом окне, а повседневный прогон всегда ждал человека с копипастой. Теперь
+   * оба режима идут одной дорогой: ручной адаптер делает ровно то же, что делал цикл, а командный
+   * зовёт агента сам.
+   */
+  const reply = deliver(
+    adapterFor(config, 'reviewer', args.agent, out),
+    packet,
+    config,
+    workspace,
+    out,
   );
-  out.item(`задание ревьюеру: ${path.relative(config.root, workspace.taskFile)}`);
-  out.item(`ответ положить в ${outputFile}, затем повторить: pnpm maintain converge`);
-  return { ok: true };
+  if (reply.kind !== 'answer') return { ok: reply.kind === 'awaiting' };
+
+  // Ответ уже на руках — идём дальше в том же запуске, не заставляя звать команду второй раз.
+  return takeReview(config, policies, workspace, out, state, args);
 }
 
 /**
@@ -288,6 +311,7 @@ async function takeReview(
   workspace: Workspace,
   out: Reporter,
   state: RunState,
+  args: ConvergeArgs,
 ): Promise<CommandResult> {
   const file = path.join(workspace.results, 'review.json');
   if (!existsSync(file)) {
@@ -384,7 +408,7 @@ async function takeReview(
       newSevere: 0,
       resolvedSevere: 0,
     });
-    return closePass(config, policies, workspace, out, next);
+    return closePass(config, policies, workspace, out, next, args);
   }
 
   const allowed = [...new Set(selection.selected.flatMap((finding) => finding.files))].sort();
@@ -401,28 +425,29 @@ async function takeReview(
   });
 
   const outputFile = path.join(path.relative(config.root, workspace.results), 'fix.json');
-  writeFileSync(
-    workspace.taskFile,
-    renderPacket(
-      fixerPacket({
-        findings: selection.selected,
-        policies,
-        budget: policies.maintenance.convergence,
-        outputFile,
-        verification: config.verification
-          .filter((level) => level.enabledByDefault)
-          .map((level) => level.command.join(' ')),
-      }),
-    ),
-    'utf8',
-  );
+  const packet = fixerPacket({
+    findings: selection.selected,
+    policies,
+    budget: policies.maintenance.convergence,
+    outputFile,
+    verification: config.verification
+      .filter((level) => level.enabledByDefault)
+      .map((level) => level.command.join(' ')),
+  });
   saveRun(workspace, next);
 
   out.heading('задание исполнителю');
   out.item(`находок: ${selection.selected.length}, файлов: ${allowed.length}, точка ${checkpoint}`);
-  out.item(`задание: ${path.relative(config.root, workspace.taskFile)}`);
-  out.item(`отчёт положить в ${outputFile}, затем повторить: pnpm maintain converge`);
-  return { ok: true };
+
+  const reply = deliver(
+    adapterFor(config, 'fixer', args.agent, out),
+    packet,
+    config,
+    workspace,
+    out,
+  );
+  if (reply.kind !== 'answer') return { ok: reply.kind === 'awaiting' };
+  return takeFix(config, policies, workspace, out, next, args);
 }
 
 /**
@@ -517,7 +542,7 @@ async function takeFix(
     resolvedSevere,
   });
   out.item(`решение: ${decisionWord(result.outcome)} — ${result.reason}`);
-  return closePass(config, policies, workspace, out, next);
+  return closePass(config, policies, workspace, out, next, args);
 }
 
 /** Закрыть проход: спросить автомат, идти ли дальше, и либо открыть следующий, либо завершить. */
@@ -527,6 +552,7 @@ async function closePass(
   workspace: Workspace,
   out: Reporter,
   state: RunState,
+  args: ConvergeArgs,
 ): Promise<CommandResult> {
   const budget = policies.maintenance.convergence;
   let next = advance(state, budget, policies.maintenance.stopConditions);
@@ -542,7 +568,7 @@ async function closePass(
   const passId = budget.passes[next.passIndex]?.id ?? '';
   next = beginPass(next, passId);
   saveRun(workspace, next);
-  return emitReviewTask(config, policies, workspace, out, next, passId);
+  return emitReviewTask(config, policies, workspace, out, next, passId, args);
 }
 
 function abortRun(workspace: Workspace, config: MaintenanceConfig, out: Reporter): CommandResult {

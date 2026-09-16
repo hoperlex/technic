@@ -244,7 +244,13 @@ async function emitZoneReview(
     outputFile,
     decisions: decisionsFor(config, widened.facts),
   });
-  const reply = deliver(adapterFor(config, args.agent), packet, config, workspace, out);
+  const reply = deliver(
+    adapterFor(config, 'reviewer', args.agent, out),
+    packet,
+    config,
+    workspace,
+    out,
+  );
   if (reply.kind !== 'answer') {
     return { ok: reply.kind === 'awaiting' };
   }
@@ -406,7 +412,13 @@ async function takeNextBatch(
       .filter((level) => level.enabledByDefault)
       .map((level) => level.command.join(' ')),
   });
-  const reply = deliver(adapterFor(config, args.agent), packet, config, workspace, out);
+  const reply = deliver(
+    adapterFor(config, 'fixer', args.agent, out),
+    packet,
+    config,
+    workspace,
+    out,
+  );
   if (reply.kind !== 'answer') return { ok: reply.kind === 'awaiting' };
   return takeBatchFix(config, policies, workspace, out, started, args);
 }
