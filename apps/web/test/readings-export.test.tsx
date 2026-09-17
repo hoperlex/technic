@@ -47,6 +47,7 @@ const ROWS: VehicleReadingStatsRow[] = [
     engineHours: 38.5,
     lastOdometer: { value: 128_400, measuredOn: '2026-07-20' },
     lastEngineHours: { value: 5120.5, measuredOn: '2026-07-20' },
+    hasNorm: false,
     fuelFilledLiters: 620,
     gaps: 1,
     typeName: 'Самосвал',
@@ -55,6 +56,10 @@ const ROWS: VehicleReadingStatsRow[] = [
     shifts: 0,
     missingReadings: 0,
     unacceptedShifts: 0,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
   },
   {
     vehicleId: 'v-2',
@@ -63,6 +68,7 @@ const ROWS: VehicleReadingStatsRow[] = [
     engineHours: 12,
     lastOdometer: null,
     lastEngineHours: null,
+    hasNorm: false,
     fuelFilledLiters: 90,
     gaps: 2,
     typeName: 'Самосвал',
@@ -71,6 +77,10 @@ const ROWS: VehicleReadingStatsRow[] = [
     shifts: 0,
     missingReadings: 0,
     unacceptedShifts: 0,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
   },
 ];
 

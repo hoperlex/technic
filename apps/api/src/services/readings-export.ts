@@ -30,6 +30,7 @@ import {
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeWorkbook, type SheetInput } from '../lib/xlsx';
+import type { FuelNormSeason } from './fuel-norms';
 import {
   loadFleetMonths,
   loadFleetStats,
@@ -49,10 +50,10 @@ import { loadMaintenanceSnapshot } from './vehicle-maintenance';
  *
  * Четыре правила, из которых следует всё остальное:
  *
- * 1. **Ни одного производного показателя** (Р28, §8). Ни «на 100 км», ни «на моточас»: расхода
- *    портал не считает — фактический требует остатков в баке, которых он не хранит, — а цифра,
- *    поделённая на пробег, читается как расход независимо от подписи. В книге с формулами, которую
- *    правят у себя, такая колонка завела бы расход окончательно вне контроля портала.
+ * 1. **Ни одного производного показателя**: ни «на 100 км», ни «на моточас». Расход в книгах с
+ *    приходом норм появился (ADR 0194) — но только как половина сверки, рядом с нормой и охватом;
+ *    а цифра, поделённая на пробег, читается как самостоятельная оценка независимо от подписи, и в
+ *    книге с формулами, которую правят у себя, зажила бы своей жизнью вне контроля портала.
  * 2. **Прочерк вместо нуля** там, где значение неизвестно: пустой месяц, оборванный ряд, машина
  *    без единого снимка счётчика. Ноль в такой ячейке читался бы как «стояла».
  * 3. **Заголовки — те же слова, что в колонках экрана**: файл читают рядом с порталом, и колонка,
@@ -160,6 +161,28 @@ const MONTH_COUNTERS: {
     digits: 1,
     pick: (m) => m.fuelFilledLiters,
     total: (row) => row.fuelFilledLiters,
+    withGaps: false,
+  },
+  /*
+   * Сверка с нормой (план `docs/fuel-norms-plan.md`, §4.3) — двумя листами, а не одним: расход и
+   * норма аддитивны и потому ложатся в матрицу «машина × месяц» как остальные счётчики, а
+   * отклонение между ними не складывается и в матрице означало бы неправду. Кто хочет отклонение —
+   * читает лист сводки, где оно посчитано на каждом уровне отдельно.
+   *
+   * Прочерк вместо нуля ставит `pick`: месяц без сверяемых смен о расходе молчит.
+   */
+  {
+    name: 'Расход по сверке, л',
+    digits: 1,
+    pick: (m) => (m.verifiedShifts === 0 ? null : m.fuelSpentLiters),
+    total: (row) => (row.verifiedShifts === 0 ? null : row.fuelSpentLiters),
+    withGaps: false,
+  },
+  {
+    name: 'Норма расхода, л',
+    digits: 1,
+    pick: (m) => (m.verifiedShifts === 0 ? null : m.fuelNormLiters),
+    total: (row) => (row.verifiedShifts === 0 ? null : row.fuelNormLiters),
     withGaps: false,
   },
 ];
@@ -561,6 +584,12 @@ export interface ReadingsExportRequest {
    * его значило бы раздать данные ТО всем, кто добрался до выгрузок.
    */
   withMaintenance: boolean;
+  /**
+   * Настройки сверки с нормой (план `docs/fuel-norms-plan.md`, Р12б). Приходят решёнными, как и
+   * право на данные ТО: читать их сборщику незачем — допуск нужен книге числом, а не запросом, и
+   * два чтения означали бы два разных допуска у экрана и файла.
+   */
+  season: FuelNormSeason;
 }
 
 export interface ReadingsExportResult {
@@ -623,11 +652,13 @@ export async function buildReadingsExport(
 
   switch (kind) {
     case 'fleetSummary': {
+      // Допуск читается вместе со сводкой: отклонение печатается числом, и считать его без допуска
+      // нельзя — превышение определяется именно им (Р12б).
       const rows = await loadFleetStats(from, to);
       return {
         // Имя прежнее: файл с этим именем уже лежит у диспетчеров в папке за прошлый месяц.
         filename: `Показания техники ${period}.xlsx`,
-        bytes: writeWorkbook([readingStatsSheet(rows, period)]),
+        bytes: writeWorkbook([readingStatsSheet(rows, period, request.season.tolerancePercent)]),
       };
     }
 

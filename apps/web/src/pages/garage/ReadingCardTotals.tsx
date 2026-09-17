@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Space, Tooltip, Typography } from 'antd';
-import type { ReadingTotals } from '@technic/contracts';
+import { fuelDeviation, type ReadingTotals } from '@technic/contracts';
 import { SummaryBar } from '@shared/ui';
 import { LOWER_BOUND_HINT, boundedDecimal, decimal, isLowerBound } from './readingNumbers';
 
@@ -13,8 +13,10 @@ import { LOWER_BOUND_HINT, boundedDecimal, decimal, isLowerBound } from './readi
  * ответа: 4 200 км за 30 ожидаемых смен и те же 4 200 км за 30 смен, из которых 12 без показаний, —
  * это разные утверждения, и различить их должно быть можно, не листая журнал.
  *
- * Производных показателей здесь нет ни одного: ничего, поделённого на пробег или наработку
- * (см. `readingNumbers`).
+ * Сверка с нормой расхода стоит **третьей полосой**, а не в итоге периода (план
+ * `docs/fuel-norms-plan.md`, §4.2): в «Итоге» уже три показателя рядом с полосой качества, и
+ * шестью счётчиками ряд перестаёт читаться. Полоса появляется только у машины с нормой — сверять
+ * без неё нечего, и пустая полоса из прочерков сообщала бы лишь о своём существовании.
  */
 
 const secondary = { fontSize: 12 } as const;
@@ -38,7 +40,17 @@ function bounded(value: number | null, gaps: number, digits: number): ReactNode 
   return isLowerBound(value, gaps) ? hinted(text, LOWER_BOUND_HINT) : text;
 }
 
-export function ReadingCardTotals({ total }: { total: ReadingTotals }) {
+export function ReadingCardTotals({
+  total,
+  hasNorm,
+  tolerancePercent,
+}: {
+  total: ReadingTotals;
+  /** У машины есть норма, действующая в периоде: без неё полосы сверки нет вовсе (Р15а). */
+  hasNorm: boolean;
+  /** Допуск приезжает вместе с числами (Р12б): своей ручки настроек у карточки нет. */
+  tolerancePercent: number;
+}) {
   const period = [
     // Пробег и наработка бывают неизвестны целиком: прочерк — это «пары снимков в периоде не
     // осталось», а не «машина стояла».
@@ -67,6 +79,41 @@ export function ReadingCardTotals({ total }: { total: ReadingTotals }) {
     },
   ];
 
+  /**
+   * Сверка: расход сверяемых смен, норма по ним же и отклонение между ними. Отклонение считается
+   * общей функцией контрактов — той же, какой его считают сводка, полоса парка и книги.
+   */
+  const dev = fuelDeviation(total.fuelSpentLiters, total.fuelNormLiters, tolerancePercent);
+  const deviationText =
+    dev.liters === null || dev.percent === null
+      ? '—'
+      : `${dev.liters > 0 ? '+' : ''}${decimal(dev.liters)} л · ${dev.percent > 0 ? '+' : ''}${decimal(dev.percent)}%`;
+  const check = [
+    {
+      label: 'Расход, л',
+      value: hinted(
+        total.verifiedShifts === 0 ? '—' : decimal(total.fuelSpentLiters),
+        'Расход смен, прошедших сверку: остатки в баке сданы, пара снимков непрерывна',
+      ),
+    },
+    { label: 'Норма, л', value: total.verifiedShifts === 0 ? '—' : decimal(total.fuelNormLiters) },
+    {
+      label: 'Отклонение',
+      value: (
+        <Typography.Text type={dev.exceeded ? 'danger' : undefined} strong={dev.exceeded}>
+          {deviationText}
+        </Typography.Text>
+      ),
+    },
+    {
+      label: 'Охват',
+      value: hinted(
+        `${total.verifiedShifts} из ${total.shiftsWithFuel}`,
+        'Сколько смен прошло сверку из тех, по которым посчитан расход',
+      ),
+    },
+  ];
+
   return (
     <Space orientation="vertical" size={6} style={{ display: 'flex' }}>
       {/* Полосы переносятся, а не сжимаются: на телефоне они встают одна под другой, и качество
@@ -77,6 +124,7 @@ export function ReadingCardTotals({ total }: { total: ReadingTotals }) {
         <Space size={12} wrap>
           <SummaryBar title="Итог за период" items={period} />
           <SummaryBar title="Качество данных" items={quality} />
+          {hasNorm && <SummaryBar title="Сверка с нормой" items={check} />}
         </Space>
       </div>
       <Typography.Text type="secondary" style={secondary}>

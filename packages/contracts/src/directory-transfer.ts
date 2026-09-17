@@ -34,6 +34,8 @@ export const DIRECTORY_KEYS = [
   'vehicle-categories',
   'vehicle-models',
   'vehicles',
+  // После «Техники»: норма ссылается на машину, и связанное идёт следом за тем, на что ссылается.
+  'fuel-norms',
   'office-equipment-types',
   'office-equipment-models',
   'office-equipment',
@@ -65,6 +67,7 @@ export const directoryTitles: Record<DirectoryKey, string> = {
   'vehicle-categories': 'Категории типов ТС',
   'vehicle-models': 'Модели техники',
   vehicles: 'Техника',
+  'fuel-norms': 'Нормы расхода топлива',
   'office-equipment-types': 'Типы оргтехники',
   'office-equipment-models': 'Модели аппаратов',
   'office-equipment': 'Оргтехника',

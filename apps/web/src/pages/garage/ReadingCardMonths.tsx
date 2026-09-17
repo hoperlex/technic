@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Table, Tooltip, Typography, type TableColumnType } from 'antd';
-import type { ReadingMonthRow, ReadingTotals } from '@technic/contracts';
+import { fuelDeviation, type ReadingMonthRow, type ReadingTotals } from '@technic/contracts';
 import {
   LOWER_BOUND_HINT,
   boundedDecimal,
@@ -114,37 +114,97 @@ const METRICS: Metric[] = [
   },
 ];
 
-const columns: TableColumnType<ReadingMonthRow>[] = [
-  {
-    key: 'month',
-    title: 'Месяц',
-    width: 140,
-    fixed: 'left',
-    render: (_v, r) => monthLabel(r.month),
-  },
-  ...METRICS.map<TableColumnType<ReadingMonthRow>>((metric) => ({
-    key: metric.key,
-    title: metric.hint ? (
-      <Tooltip title={metric.hint}>
-        <span>{metric.title}</span>
-      </Tooltip>
-    ) : (
-      metric.title
-    ),
-    width: metric.width,
-    align: 'right',
-    render: (_v, r) => metric.value(r),
-  })),
-];
+/**
+ * Метрики сверки с нормой (план `docs/fuel-norms-plan.md`, §4.2). Приезжают отдельным списком и
+ * только у машины с нормой: у остальных три колонки прочерков занимали бы треть таблицы, ничего не
+ * сообщая.
+ *
+ * Отклонение не хранится и не складывается (Р12а) — считается из пары аддитивных чисел на каждом
+ * уровне: и в строке месяца, и в «Итого». Поэтому оно и здесь общая функция контрактов, а не
+ * местная арифметика.
+ */
+function checkMetrics(tolerancePercent: number): Metric[] {
+  const dash = <Typography.Text type="secondary">—</Typography.Text>;
+  return [
+    {
+      key: 'fuelSpentLiters',
+      title: 'Расход, л',
+      hint: 'Расход смен, прошедших сверку с нормой: остатки сданы, пара снимков непрерывна',
+      width: 130,
+      value: (r) => (r.verifiedShifts === 0 ? dash : decimal(r.fuelSpentLiters)),
+    },
+    {
+      key: 'fuelNormLiters',
+      title: 'Норма, л',
+      width: 130,
+      value: (r) => (r.verifiedShifts === 0 ? dash : decimal(r.fuelNormLiters)),
+    },
+    {
+      key: 'deviation',
+      title: 'Отклонение',
+      width: 150,
+      value: (r) => {
+        const dev = fuelDeviation(r.fuelSpentLiters, r.fuelNormLiters, tolerancePercent);
+        if (dev.liters === null || dev.percent === null) return dash;
+        const sign = dev.liters > 0 ? '+' : '';
+        return (
+          <Typography.Text type={dev.exceeded ? 'danger' : undefined} strong={dev.exceeded}>
+            {sign}
+            {decimal(dev.liters)} л · {sign}
+            {decimal(dev.percent)}%
+          </Typography.Text>
+        );
+      },
+    },
+    {
+      key: 'verifiedShifts',
+      title: 'Сверено смен',
+      hint: 'Сколько смен месяца прошло сверку из тех, по которым посчитан расход',
+      width: 140,
+      value: (r) => `${r.verifiedShifts} из ${r.shiftsWithFuel}`,
+    },
+  ];
+}
+
+function columnsOf(metrics: readonly Metric[]): TableColumnType<ReadingMonthRow>[] {
+  return [
+    {
+      key: 'month',
+      title: 'Месяц',
+      width: 140,
+      fixed: 'left',
+      render: (_v, r) => monthLabel(r.month),
+    },
+    ...metrics.map<TableColumnType<ReadingMonthRow>>((metric) => ({
+      key: metric.key,
+      title: metric.hint ? (
+        <Tooltip title={metric.hint}>
+          <span>{metric.title}</span>
+        </Tooltip>
+      ) : (
+        metric.title
+      ),
+      width: metric.width,
+      align: 'right',
+      render: (_v, r) => metric.value(r),
+    })),
+  ];
+}
 
 export function ReadingCardMonths({
   months,
   total,
+  hasNorm,
+  tolerancePercent,
 }: {
   months: readonly ReadingMonthRow[];
   /** Итог периода из ответа: он же и стоит строкой «Итого» — своего сложения у портала нет. */
   total: ReadingTotals;
+  hasNorm: boolean;
+  tolerancePercent: number;
 }) {
+  const metrics = hasNorm ? [...METRICS, ...checkMetrics(tolerancePercent)] : METRICS;
+  const columns = columnsOf(metrics);
   return (
     <Table<ReadingMonthRow>
       rowKey="month"
@@ -162,7 +222,7 @@ export function ReadingCardMonths({
             <Table.Summary.Cell index={0}>
               <Typography.Text strong>Итого</Typography.Text>
             </Table.Summary.Cell>
-            {METRICS.map((metric, index) => (
+            {metrics.map((metric, index) => (
               <Table.Summary.Cell key={metric.key} index={index + 1} align="right">
                 <Typography.Text strong>{metric.value(total)}</Typography.Text>
               </Table.Summary.Cell>

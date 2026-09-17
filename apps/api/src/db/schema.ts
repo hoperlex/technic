@@ -25,6 +25,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type {
+  FuelNormUnit,
   AddressMeta,
   AssignmentChangeOrigin,
   AssignmentDimension,
@@ -9896,7 +9897,7 @@ export const vehicleReadings = pgTable(
      * ни в сводках, ни в месячных агрегатах, ни в матричных книгах их нет. `fuel_filled_liters` —
      * ПОТОК, заправленное за смену, и складывается только он.
      *
-     * Расход (`начало + заправлено − конец`) стал вычислим, но не считается: решение 12 ADR 0103
+     * Расход (`начало + заправлено − конец`) считается с приходом норм расхода (ADR 0194): решение 12 ADR 0103
      * остаётся в силе по воле заказчика, и снимать его надо явно, а не молча первой колонкой.
      */
     fuelStartLiters: numeric('fuel_start_liters', { precision: 7, scale: 1 }),
@@ -11323,3 +11324,155 @@ export const wasteTicketReviewState = pgTable(
 );
 
 export type WasteTicketReviewStateRow = typeof wasteTicketReviewState.$inferSelect;
+
+// ── Нормы расхода топлива (план `docs/fuel-norms-plan.md`, миграция 0314) ──
+
+/**
+ * Норма машины версиями (план, §2). Три решения схемы, каждое названо в плане:
+ *
+ * 1. **Строка висит на машине, а не на модели** (Р1): приказ адресован госномеру, и «норма модели»
+ *    означала бы, что портал назначил её там, где приказ молчит.
+ * 2. **Правка заводит новую версию** (Р6): живая запись с наибольшей `effectiveFrom` из
+ *    наступивших — и есть норма смены. Отчёт за июль не меняется от августовского приказа.
+ * 3. **Единица лежит в версии** (Р2), а не в машине: приказ, меняющий способ нормирования, меняет
+ *    и её, а прошлые периоды обязаны считаться прежним способом.
+ *
+ * Авторские колонки нулевые намеренно: пустой автор означает «завёл выкат» — у миграции актора нет,
+ * и сид норм по приказу пишет строки от имени портала (приём 0143).
+ */
+export const vehicleFuelNorms = pgTable(
+  'vehicle_fuel_norms',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    vehicleId: uuid('vehicle_id')
+      .notNull()
+      .references(() => vehicles.id, { onDelete: 'cascade' }),
+    /** «Действует с». Дата, а не момент: приказ вступает в силу сутками, а не часами. */
+    effectiveFrom: date('effective_from', { mode: 'string' }).notNull(),
+    /**
+     * `text` с `CHECK`, а не `pgEnum`: у значения enum в PostgreSQL нет снятия (0197, 0218), а
+     * третья единица здесь вероятна. Тот же приём держит `feature_flags`.
+     */
+    unit: text('unit').notNull().$type<FuelNormUnit>(),
+    winterRate: numeric('winter_rate', { precision: 7, scale: 2 }).notNull(),
+    summerRate: numeric('summer_rate', { precision: 7, scale: 2 }).notNull(),
+    /** Справочно (Р4): в сверке не участвует — расход считается в литрах, а не по видам. */
+    fuelType: text('fuel_type').notNull().default(''),
+    note: text('note').notNull().default(''),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+  },
+  (t) => ({
+    /**
+     * Одна живая версия на пару «машина + дата»: повтор даты — правка приказа того же дня, и она
+     * перезаписывает версию, а не заводит вторую (Р7а). Частичный индекс позволяет перекрыть снятую
+     * версию новой на ту же дату; цена приёма названа в плане (Р7б) — вернуть снятую нельзя.
+     */
+    vehicleDate: uniqueIndex('vehicle_fuel_norms_vehicle_date_unique')
+      .on(t.vehicleId, t.effectiveFrom)
+      .where(sql`${t.deletedAt} IS NULL`),
+    /** Рабочий поиск расчёта: действующая версия ищется на КАЖДУЮ смену периода. */
+    vehicleEffective: index('vehicle_fuel_norms_vehicle_effective_idx')
+      .on(t.vehicleId, t.effectiveFrom.desc())
+      .where(sql`${t.deletedAt} IS NULL`),
+    unitCheck: check(
+      'vehicle_fuel_norms_unit_check',
+      sql`${t.unit} IN ('l_per_100km', 'l_per_hour')`,
+    ),
+    // Ноль обратил бы норму смены в ноль, а сожжённое топливо — в бесконечный процент (Р3).
+    winterCheck: check(
+      'vehicle_fuel_norms_winter_rate_check',
+      sql`${t.winterRate} > 0 AND ${t.winterRate} <= 999`,
+    ),
+    summerCheck: check(
+      'vehicle_fuel_norms_summer_rate_check',
+      sql`${t.summerRate} > 0 AND ${t.summerRate} <= 999`,
+    ),
+  }),
+);
+
+export type VehicleFuelNormRow = typeof vehicleFuelNorms.$inferSelect;
+
+/**
+ * Настройки сверки — одиночка (Р8): границы зимнего сезона и допуск в процентах, одни на весь
+ * портал. Версий у них нет осознанно (Р8а), поэтому правка меняет и уже показанные отчёты; след
+ * истории — только `updatedBy`/`updatedAt` и журнал изменений.
+ */
+export const fuelNormSettings = pgTable(
+  'fuel_norm_settings',
+  {
+    /** Ключ-одиночка: значение всегда `true`, вторая строка в таблицу не встаёт (приём 0164). */
+    id: boolean('id').primaryKey().default(true),
+    /**
+     * Пара «месяц-день». Зимний период переходит через Новый год (`from > to`), и это обычное его
+     * состояние, а не особый случай: предикат расчёта написан под него.
+     */
+    winterFromMd: text('winter_from_md').notNull(),
+    winterToMd: text('winter_to_md').notNull(),
+    tolerancePercent: numeric('tolerance_percent', { precision: 5, scale: 2 }).notNull(),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    single: check('fuel_norm_settings_id_check', sql`${t.id}`),
+    // Выражение ловит мусор и тринадцатый месяц; календарность (30 февраля) закрывает форма —
+    // 29 февраля здесь законно намеренно, сезон живёт без года.
+    fromCheck: check(
+      'fuel_norm_settings_winter_from_check',
+      sql`${t.winterFromMd} ~ '^(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'`,
+    ),
+    toCheck: check(
+      'fuel_norm_settings_winter_to_check',
+      sql`${t.winterToMd} ~ '^(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'`,
+    ),
+    toleranceCheck: check(
+      'fuel_norm_settings_tolerance_check',
+      sql`${t.tolerancePercent} >= 0 AND ${t.tolerancePercent} <= 100`,
+    ),
+  }),
+);
+
+export type FuelNormSettingsRow = typeof fuelNormSettings.$inferSelect;
+
+/**
+ * Заготовка под нормы собственного оборудования механизации (план, §7, Р22). Пуста и без внешнего
+ * ключа: сущности «единица оборудования механизации» в базе ещё нет, а `mechModels` — каталог
+ * АРЕНДЫ, то есть другой предмет; повесить норму приказа на него значило бы сказать неправду.
+ *
+ * Мягкого удаления и уникальности нет: вешать их не на что, пока нет ключа единицы. Ссылку, а с ней
+ * и правила каскада, таблица получит вместе с самой единицей — отдельной миграцией того модуля.
+ */
+export const mechEquipmentFuelNorms = pgTable(
+  'mech_equipment_fuel_norms',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Инвентарный номер оборудования из приказа — единственное, чем его сегодня можно назвать. */
+    equipmentRef: text('equipment_ref').notNull(),
+    effectiveFrom: date('effective_from', { mode: 'string' }).notNull(),
+    unit: text('unit').notNull().$type<FuelNormUnit>(),
+    winterRate: numeric('winter_rate', { precision: 7, scale: 2 }).notNull(),
+    summerRate: numeric('summer_rate', { precision: 7, scale: 2 }).notNull(),
+    fuelType: text('fuel_type').notNull().default(''),
+    note: text('note').notNull().default(''),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    unitCheck: check(
+      'mech_equipment_fuel_norms_unit_check',
+      sql`${t.unit} IN ('l_per_100km', 'l_per_hour')`,
+    ),
+    winterCheck: check(
+      'mech_equipment_fuel_norms_winter_rate_check',
+      sql`${t.winterRate} > 0 AND ${t.winterRate} <= 999`,
+    ),
+    summerCheck: check(
+      'mech_equipment_fuel_norms_summer_rate_check',
+      sql`${t.summerRate} > 0 AND ${t.summerRate} <= 999`,
+    ),
+  }),
+);

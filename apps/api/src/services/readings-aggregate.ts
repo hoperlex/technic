@@ -8,6 +8,7 @@ import {
   type VehicleReadingStatsRow,
 } from '@technic/contracts';
 import { db } from '../db/client';
+import { loadFuelNormSeason, loadVehiclesWithNorm, type FuelNormSeason } from './fuel-norms';
 import {
   driverDailyReports,
   vehicleCategories,
@@ -110,6 +111,82 @@ export const EXPECTED_ESM2_FILTER = sql`
        AND w.status <> 'cancelled'
        AND w.period_from IS NOT NULL
        AND w.period_to IS NOT NULL`;
+
+/**
+ * Расход смены: `остаток на начало + заправлено − остаток на конец` (план
+ * `docs/fuel-norms-plan.md`, Р9) — **одна формула на портал и на служебную книгу**.
+ *
+ * Функция, а не константа, и это не вкусовщина: показание подшито разными алиасами у разных
+ * читателей — `p` в наборе агрегата, `vr` в выборке приёма, — а `vr` в агрегате занят рейсом.
+ * Константа заставила бы переименовывать чужие алиасы ради общего фрагмента.
+ *
+ * Считается только там, где известны **оба** остатка: заправленное без остатков — поток за смену, а
+ * не убыль в баке. `coalesce` у заправленного обязателен: пустая заправка означает «не заправляли»,
+ * а не «неизвестно», и без него расход обращался бы в NULL у каждой незаправленной смены.
+ */
+export function fuelSpentSql(alias: string): SQL {
+  const a = sql.raw(alias);
+  return sql`CASE WHEN ${a}.fuel_start_liters IS NOT NULL AND ${a}.fuel_end_liters IS NOT NULL
+                  THEN round(${a}.fuel_start_liters + coalesce(${a}.fuel_filled_liters, 0::numeric)
+                             - ${a}.fuel_end_liters, 1) END`;
+}
+
+/**
+ * База сверяемой смены — величина, которую единица нормы превращает в литры (план §3.3).
+ *
+ * У машины с нормой счётчик задаёт единица, у машины без норм — приоритет: одометр, а если он базы
+ * не дал, моточасы (Р9в). Приоритет, а не «любой из двух», потому что от выбора зависят и число в
+ * колонке, и то, по какой цепочке проверяется непрерывность.
+ */
+const BASE_SQL = sql`CASE
+    WHEN c.norm_unit = 'l_per_100km' THEN c.distance_km::numeric
+    WHEN c.norm_unit = 'l_per_hour'  THEN c.engine_hours
+    WHEN NOT c.has_any_norm AND c.distance_km IS NOT NULL AND c.distance_km > 0
+         THEN c.distance_km::numeric
+    WHEN NOT c.has_any_norm THEN c.engine_hours
+  END`;
+
+/** Непрерывность и аномалия — того же счётчика, что дал базу: цепочки независимы (Р13а). */
+const COUNTER_OK_SQL = sql`CASE
+    WHEN c.norm_unit = 'l_per_100km' THEN c.odometer_continuous AND c.odometer_anomaly_ok
+    WHEN c.norm_unit = 'l_per_hour'  THEN c.engine_continuous AND c.engine_anomaly_ok
+    WHEN NOT c.has_any_norm AND c.distance_km IS NOT NULL AND c.distance_km > 0
+         THEN c.odometer_continuous AND c.odometer_anomaly_ok
+    WHEN NOT c.has_any_norm THEN c.engine_continuous AND c.engine_anomaly_ok
+  END`;
+
+/**
+ * Сверяемая смена (§3.4) — пять условий, и каждое куплено ошибкой разбора:
+ *
+ * 1. расход посчитан и не отрицателен (отрицательный — незаписанная заправка, а не экономия, Р10а);
+ * 2. на дату смены действует версия нормы — либо у машины норм нет вовсе (Р9г, Р9в);
+ * 3. база положительна: смена, простоявшая на месте, норму имела бы нулевую (Р14);
+ * 4. аномалия счётчика базы отсутствует или подтверждена (Р10б);
+ * 5. пара снимков непрерывна (Р13а).
+ *
+ * `coalesce` вокруг сравнений обязателен: у смены без базы оба выражения дают NULL, а трёхзначная
+ * логика увела бы строку не в ту ветвь `CASE`.
+ */
+const VERIFIED_SQL = sql`c.fuel_spent IS NOT NULL
+    AND c.fuel_spent >= 0
+    AND (c.norm_id IS NOT NULL OR NOT c.has_any_norm)
+    AND coalesce(${BASE_SQL} > 0, false)
+    AND coalesce(${COUNTER_OK_SQL}, false)`;
+
+/**
+ * Дата в зимнем сезоне. Предикат повторяет `isWinterMonthDay` контрактов знак в знак — по нему окно
+ * объясняет человеку, какая ставка действует, а db-тест сверяет обе записи на одних датах.
+ *
+ * Сравнение текстовое: `MM-DD` лексикографически совпадает с календарным порядком. Период через
+ * Новый год (`from > to`) — обычное его состояние, а не особый случай.
+ */
+function winterSql(season: { winterFromMd: string; winterToMd: string }): SQL {
+  return sql`CASE WHEN ${season.winterFromMd}::text > ${season.winterToMd}::text
+                  THEN to_char(c.d, 'MM-DD') >= ${season.winterFromMd}
+                    OR to_char(c.d, 'MM-DD') <= ${season.winterToMd}
+                  ELSE to_char(c.d, 'MM-DD') BETWEEN ${season.winterFromMd}
+                                                 AND ${season.winterToMd} END`;
+}
 
 /**
  * Общая часть запросов, которым нужны **ожидаемые смены периода вместе с их строками ожидания**:
@@ -284,6 +361,11 @@ type AggregateRow = {
   missing_readings: number;
   shifts: number;
   unaccepted_shifts: number;
+  /** Сверка: суммы приходят строками (`numeric`), счётчики — числами. */
+  fuel_spent_liters: string | null;
+  fuel_norm_liters: string | null;
+  verified_shifts: number;
+  shifts_with_fuel: number;
   ownership: VehicleOwnership;
   description: string;
   registration_number: string | null;
@@ -304,6 +386,7 @@ async function loadMonthRows(
   from: string,
   to: string,
   vehicleId: string | null,
+  season: FuelNormSeason,
 ): Promise<AggregateRow[]> {
   return db.transaction(async (tx) => {
     /*
@@ -336,14 +419,28 @@ points AS (
            v.odometer_km,
            v.engine_hours,
            v.fuel_filled_liters,
+           /*
+            * Остатки в баке (ADR 0163) — уровень, а не поток: за период они не суммируются, и
+            * попадают сюда ровно ради расхода смены (начало + заправлено − конец), который без
+            * обоих концов не считается вовсе.
+            */
+           v.fuel_start_liters,
+           v.fuel_end_liters,
            v.previous_odometer_id,
            v.previous_engine_hours_id,
            v.odometer_anomaly::text        AS odometer_anomaly,
-           v.engine_hours_anomaly::text    AS engine_hours_anomaly
+           v.engine_hours_anomaly::text    AS engine_hours_anomaly,
+           /*
+            * Подтверждение аномалии нужно сверке (план docs/fuel-norms-plan.md, Р10б):
+            * неподтверждённый скачок одометра даёт базу в тысячи километров и «экономию» под сто
+            * процентов, а подтверждённый — это уже принятое гаражом число.
+            */
+           v.odometer_anomaly_confirmed_at,
+           v.engine_hours_anomaly_confirmed_at
       FROM relation r
       LEFT JOIN vehicle_readings v ON v.item_id = r.item_id
 ),
-observed_metrics AS (
+shift_facts AS (
     /*
      * Числа — по СНИМОЧНОЙ координате: пробег принадлежит той машине и тому дню, к которым привязано
      * показание, а не источнику в его сегодняшнем виде.
@@ -367,7 +464,7 @@ observed_metrics AS (
            CASE WHEN p.engine_hours_anomaly IS DISTINCT FROM 'counter_reset'
                      AND p.engine_hours IS NOT NULL AND pe.engine_hours IS NOT NULL
                 THEN p.engine_hours - pe.engine_hours END     AS engine_hours,
-           /* Заправлено — сумма литров смен, и рядом с ней ничего не делится на пробег (Р28). */
+           /* Заправлено — сумма литров смен, и рядом с ней ничего не делится на пробег: производных портал не печатает и после ADR 0194. */
            coalesce(p.fuel_filled_liters, 0::numeric)         AS fuel_filled_liters,
            /*
             * Разрыв ряда — сброс СВОЕГО счётчика (Р28): цепочки одометра и моточасов независимы.
@@ -392,13 +489,146 @@ observed_metrics AS (
            (p.kind IS DISTINCT FROM 'values'
             OR coalesce(p.odometer_anomaly = 'counter_reset', false)
             OR coalesce(p.engine_hours_anomaly = 'counter_reset', false)) AS row_gap,
-           false AS missing,
-           false AS shift,
-           false AS unaccepted
+           /*
+            * Расход смены (план docs/fuel-norms-plan.md, Р9): одна формула на портал и на
+            * служебную книгу — та же, что печатает книга, и живёт она теперь здесь. Считается
+            * только там, где известны ОБА остатка: заправленное без остатков — это поток за смену,
+            * а не убыль в баке.
+            */
+           ${fuelSpentSql('p')} AS fuel_spent,
+           /*
+            * Даты снимков-предшественников: по ним проверяется непрерывность пары (Р13а). Дата, а
+            * не идентификатор, потому что сравнивать её приходится с ожидаемыми сменами, а у
+            * ожидания идентификатора показания нет вовсе.
+            */
+           po.obs_date AS prev_odometer_date,
+           pe.obs_date AS prev_engine_date,
+           /*
+            * Аномалия своего счётчика годна, если её нет или её подтвердили (Р10б). Сброс счётчика
+            * сюда не входит: его разность обнуляется выше по самому факту сброса, и базы у такой
+            * смены не будет независимо от подтверждения.
+            */
+           NOT coalesce(p.odometer_anomaly = 'implausible_jump'
+                        AND p.odometer_anomaly_confirmed_at IS NULL, false) AS odometer_anomaly_ok,
+           NOT coalesce(p.engine_hours_anomaly = 'implausible_jump'
+                        AND p.engine_hours_anomaly_confirmed_at IS NULL, false)
+                                                                     AS engine_anomaly_ok
       FROM points p
       LEFT JOIN points po ON po.reading_id = p.previous_odometer_id
       LEFT JOIN points pe ON pe.reading_id = p.previous_engine_hours_id
      WHERE p.item_id IS NOT NULL
+),
+shift_checks AS (
+    /*
+     * Второй уровень фактов смены: норма, действующая на её дату, и непрерывность пары снимков.
+     * Отдельным уровнем, а не колонками выше, потому что оба вычисления опираются на разности и
+     * даты предшественников, а сослаться на алиас собственного SELECT в PostgreSQL нельзя.
+     */
+    SELECT f.*,
+           nm.id          AS norm_id,
+           nm.unit        AS norm_unit,
+           nm.winter_rate AS norm_winter_rate,
+           nm.summer_rate AS norm_summer_rate,
+           /*
+            * У машины есть хоть одна живая версия нормы. Признак нужен ровно для того, чтобы
+            * отличить «нормы не заводили» от «смена раньше первого приказа» (Р9в против Р9г): в
+            * первом случае смена сверяется без нормы и её расход виден, во втором — не сверяется
+            * вовсе, иначе расход копил бы то, чего норма не копит, и отклонение врало бы на всю
+            * досидовую историю.
+            */
+           EXISTS (SELECT 1
+                     FROM vehicle_fuel_norms n
+                    WHERE n.vehicle_id = f.vehicle_id
+                      AND n.deleted_at IS NULL)                        AS has_any_norm,
+           /*
+            * НЕПРЕРЫВНОСТЬ ПАРЫ (Р13а) — главное расчётное правило волны.
+            *
+            * Разность счётчика назначается по цепочке показаний: предшественником становится
+            * последний снимок С ЧИСЛОМ, а не предыдущая смена. Поэтому одна разность накрывает все
+            * несданные перед ней смены, и 400 км против одного бака дали бы ложную экономию в 60%.
+            *
+            * Проверять это по снимочной проекции нельзя: у смены, чей день никто не открывал,
+            * строки в наборе нет вовсе — «соседняя строка» и «предшественник цепочки» у неё
+            * совпадают, и разрыв выглядит непрерывностью. Поэтому здесь — осознанное исключение из
+            * правила «числа по снимочной координате»: пропуски ищутся среди ОЖИДАЕМЫХ смен.
+            *
+            * Интервал полуоткрыт: дата предшественника исключительно, дата смены включительно.
+            * Отсюда несимметричность, названная в плане: несданная вторая смена того же дня разрыв
+            * даёт, а вторая смена дня предшественника — нет; позиции смены у ожидания не существует.
+            *
+            * Строгость зависит от документа (Р13б): у рейса день ожидания означает работу, а у
+            * недельного ЭСМ-2 — только действие листа, поэтому у него рвёт лишь день, за который
+            * отчёт открывали, а чисел не дали. Иначе вся техника на недельных листах — то есть всё,
+            * что нормируется в л/час, — осталась бы без сверки вовсе.
+            *
+            * CASE снаружи не украшение: у смены без расхода сверять нечего, и подзапрос по
+            * материализованному CTE для неё не выполняется вовсе.
+            */
+           CASE WHEN f.fuel_spent IS NULL THEN false ELSE NOT EXISTS (
+               SELECT 1 FROM points q
+                WHERE q.exp_vehicle = f.vehicle_id
+                  AND q.exp_date > f.prev_odometer_date
+                  AND q.exp_date <= f.d
+                  AND (NOT q.aligned OR q.reading_id IS NULL OR q.kind = 'no_data'
+                       OR q.odometer_km IS NULL)
+                  AND (q.source_kind = 'route' OR q.exp_report_id IS NOT NULL)
+           ) END AS odometer_continuous,
+           CASE WHEN f.fuel_spent IS NULL THEN false ELSE NOT EXISTS (
+               SELECT 1 FROM points q
+                WHERE q.exp_vehicle = f.vehicle_id
+                  AND q.exp_date > f.prev_engine_date
+                  AND q.exp_date <= f.d
+                  AND (NOT q.aligned OR q.reading_id IS NULL OR q.kind = 'no_data'
+                       OR q.engine_hours IS NULL)
+                  AND (q.source_kind = 'route' OR q.exp_report_id IS NOT NULL)
+           ) END AS engine_continuous
+      FROM shift_facts f
+      LEFT JOIN LATERAL (
+          SELECT n.id, n.unit, n.winter_rate, n.summer_rate
+            FROM vehicle_fuel_norms n
+           WHERE n.vehicle_id = f.vehicle_id
+             AND n.deleted_at IS NULL
+             AND n.effective_from <= f.d
+           ORDER BY n.effective_from DESC
+           LIMIT 1
+      ) nm ON true
+),
+observed_metrics AS (
+    /*
+     * Сверка смены с нормой. Четыре числа наружу — и все аддитивные (Р12а): отклонение, процент и
+     * признак превышения считаются из них на каждом уровне отдельно, потому что процент, сложенный
+     * по месяцам, не значит ничего.
+     */
+    SELECT c.vehicle_id,
+           c.d,
+           c.distance_km,
+           c.engine_hours,
+           c.fuel_filled_liters,
+           c.odometer_gap,
+           c.engine_hours_gap,
+           c.row_gap,
+           false AS missing,
+           false AS shift,
+           false AS unaccepted,
+           /*
+            * Расход сверяемых смен — ровно то, из чего посчитана норма рядом (Р9а). Смена, не
+            * прошедшая сверку, не попадает ни в одну из трёх колонок экрана: иначе человек,
+            * вычитая соседние колонки, получал бы не то, что напечатано в третьей.
+            */
+           CASE WHEN ${VERIFIED_SQL} THEN c.fuel_spent ELSE 0::numeric END AS fuel_spent_verified,
+           /*
+            * Норма смены: база, помноженная на ставку сезона. Сезон выбирается датой снимка (Р11а),
+            * а зимний период переходит через Новый год — это его обычное состояние, а не особый
+            * случай, и предикат написан под него.
+            */
+           CASE WHEN ${VERIFIED_SQL} AND c.norm_id IS NOT NULL THEN
+               round(${BASE_SQL} * (CASE WHEN ${winterSql(season)}
+                                         THEN c.norm_winter_rate ELSE c.norm_summer_rate END)
+                     / (CASE WHEN c.norm_unit = 'l_per_100km' THEN 100 ELSE 1 END), 1)
+           ELSE 0::numeric END AS fuel_norm_liters,
+           (CASE WHEN ${VERIFIED_SQL} THEN 1 ELSE 0 END)            AS verified_shift,
+           (CASE WHEN c.fuel_spent IS NOT NULL THEN 1 ELSE 0 END)   AS shift_with_fuel
+      FROM shift_checks c
 ),
 expected_quality AS (
     /*
@@ -425,7 +655,16 @@ expected_quality AS (
             * Непринятая смена (Р27). IS DISTINCT FROM ловит и неоткрытый день: отчёта нет вовсе,
             * состояние пустое — ровно та строка, которую сводка по строкам отчёта теряла.
             */
-           (p.exp_state IS DISTINCT FROM 'accepted') AS unaccepted
+           (p.exp_state IS DISTINCT FROM 'accepted') AS unaccepted,
+           /*
+            * Зеркальные колонки сверки: проекции склеиваются UNION ALL, и порядок с типом обязаны
+            * совпадать. Нули, а не NULL, потому что это счётчики и суммы — у ожидаемой смены без
+            * показания сверять нечего, и «ноль сверяемых» здесь означает ровно это.
+            */
+           0::numeric AS fuel_spent_verified,
+           0::numeric AS fuel_norm_liters,
+           0          AS verified_shift,
+           0          AS shift_with_fuel
       FROM points p
      WHERE p.exp_vehicle IS NOT NULL
 ),
@@ -441,7 +680,12 @@ totals AS (
            (count(*) FILTER (WHERE u.row_gap))::int             AS row_gaps,
            (count(*) FILTER (WHERE u.missing))::int             AS missing_readings,
            (count(*) FILTER (WHERE u.shift))::int               AS shifts,
-           (count(*) FILTER (WHERE u.unaccepted))::int          AS unaccepted_shifts
+           (count(*) FILTER (WHERE u.unaccepted))::int          AS unaccepted_shifts,
+           /* Сверка с нормой — четыре аддитивных числа (Р12а), из которых считается отклонение. */
+           sum(u.fuel_spent_verified)                           AS fuel_spent_liters,
+           sum(u.fuel_norm_liters)                              AS fuel_norm_liters,
+           (sum(u.verified_shift))::int                         AS verified_shifts,
+           (sum(u.shift_with_fuel))::int                        AS shifts_with_fuel
       FROM (SELECT * FROM observed_metrics UNION ALL SELECT * FROM expected_quality) u
      WHERE ${vehicleId}::uuid IS NULL OR u.vehicle_id = ${vehicleId}::uuid
      GROUP BY u.vehicle_id, to_char(u.d, 'YYYY-MM')
@@ -489,6 +733,15 @@ function monthOf(row: AggregateRow): ReadingMonthRow {
     distanceKm: distance === null ? null : Math.round(distance),
     engineHours: engine === null ? null : round(engine, 1),
     fuelFilledLiters: round(num(row.fuel_filled_liters) ?? 0, 1),
+    /*
+     * Сверка с нормой. Нули хранятся, а печатаются прочерком: месяц без сверяемых смен о расходе
+     * не говорит, и ноль в этой клетке читался бы как «машина не жгла топливо». Правило печати
+     * живёт у портала и у книг — числам же нужно складываться.
+     */
+    fuelSpentLiters: round(num(row.fuel_spent_liters) ?? 0, 1),
+    fuelNormLiters: round(num(row.fuel_norm_liters) ?? 0, 1),
+    verifiedShifts: row.verified_shifts,
+    shiftsWithFuel: row.shifts_with_fuel,
     odometerGaps: row.odometer_gaps,
     engineHoursGaps: row.engine_hours_gaps,
     missingReadings: row.missing_readings,
@@ -509,6 +762,10 @@ function sumMonths(months: readonly ReadingMonthRow[]): ReadingTotals {
     distanceKm: null,
     engineHours: null,
     fuelFilledLiters: 0,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
     odometerGaps: 0,
     engineHoursGaps: 0,
     missingReadings: 0,
@@ -521,6 +778,10 @@ function sumMonths(months: readonly ReadingMonthRow[]): ReadingTotals {
       total.engineHours = (total.engineHours ?? 0) + month.engineHours;
     }
     total.fuelFilledLiters += month.fuelFilledLiters;
+    total.fuelSpentLiters += month.fuelSpentLiters;
+    total.fuelNormLiters += month.fuelNormLiters;
+    total.verifiedShifts += month.verifiedShifts;
+    total.shiftsWithFuel += month.shiftsWithFuel;
     total.odometerGaps += month.odometerGaps;
     total.engineHoursGaps += month.engineHoursGaps;
     total.missingReadings += month.missingReadings;
@@ -529,6 +790,8 @@ function sumMonths(months: readonly ReadingMonthRow[]): ReadingTotals {
   }
   total.engineHours = total.engineHours === null ? null : round(total.engineHours, 1);
   total.fuelFilledLiters = round(total.fuelFilledLiters, 1);
+  total.fuelSpentLiters = round(total.fuelSpentLiters, 1);
+  total.fuelNormLiters = round(total.fuelNormLiters, 1);
   return total;
 }
 
@@ -590,7 +853,7 @@ export async function loadFleetMonths(
   to: string,
   vehicleId?: string,
 ): Promise<Map<string, ReadingMonthRow[]>> {
-  const rows = await loadMonthRows(from, to, vehicleId ?? null);
+  const rows = await loadMonthRows(from, to, vehicleId ?? null, await loadFuelNormSeason());
   return new Map(groupByVehicle(rows).map((entry) => [entry.vehicleId, entry.months]));
 }
 
@@ -612,12 +875,18 @@ export async function loadFleetMonths(
  * список; запрос на строку означал бы полсотни запросов на сводку парка.
  */
 export async function loadFleetStats(from: string, to: string): Promise<VehicleReadingStatsRow[]> {
-  const rows = await loadMonthRows(from, to, null);
+  const rows = await loadMonthRows(from, to, null, await loadFuelNormSeason());
   const entries = groupByVehicle(rows);
   const ids = entries.map((entry) => entry.vehicleId);
-  const [odometers, engineHours] = await Promise.all([
+  const [odometers, engineHours, withNorm] = await Promise.all([
     loadLastReadings(ids, to, 'odometer', from),
     loadLastReadings(ids, to, 'engineHours', from),
+    /*
+     * «У машины есть норма» спрашивается отдельным запросом по машинам ответа (Р15а), а не внутри
+     * расчёта: у машины, попавшей в сводку одними ожидаемыми сменами, строк показаний нет вовсе, и
+     * боковое соединение внутри проекции чисел сказало бы «нормы не заведено» там, где она есть.
+     */
+    loadVehiclesWithNorm(ids, to),
   ]);
   return entries.map((entry) => {
     const total = sumMonths(entry.months);
@@ -639,6 +908,12 @@ export async function loadFleetStats(from: string, to: string): Promise<VehicleR
       shifts: total.shifts,
       missingReadings: total.missingReadings,
       unacceptedShifts: total.unacceptedShifts,
+      // Сверка с нормой — из той же свёртки месяцев: своего счёта у сводки нет и здесь.
+      fuelSpentLiters: total.fuelSpentLiters,
+      fuelNormLiters: total.fuelNormLiters,
+      verifiedShifts: total.verifiedShifts,
+      shiftsWithFuel: total.shiftsWithFuel,
+      hasNorm: withNorm.has(entry.vehicleId),
     };
   });
 }
@@ -820,10 +1095,12 @@ export async function loadVehicleCard(
     .where(eq(vehicles.id, vehicleId));
   if (!vehicle) return null;
 
-  const [rows, odometers, engineHours] = await Promise.all([
-    loadMonthRows(from, to, vehicleId),
+  const season = await loadFuelNormSeason();
+  const [rows, odometers, engineHours, withNorm] = await Promise.all([
+    loadMonthRows(from, to, vehicleId, season),
     loadLastReadings([vehicleId], to, 'odometer'),
     loadLastReadings([vehicleId], to, 'engineHours'),
+    loadVehiclesWithNorm([vehicleId], to),
   ]);
   const months = groupByVehicle(rows)[0]?.months ?? [];
   const odometer = odometers.get(vehicleId) ?? null;
@@ -840,5 +1117,12 @@ export async function loadVehicleCard(
       odometer === null ? null : { km: odometer.value, measuredOn: odometer.measuredOn },
     lastEngineHours:
       engine === null ? null : { value: engine.value, measuredOn: engine.measuredOn },
+    hasNorm: withNorm.has(vehicleId),
+    /*
+     * Допуск едет вместе с числами (Р12б): карточку открывает право показаний, а настройки закрыты
+     * правом справочников — без этого числа она не смогла бы ни покрасить превышение, ни объяснить,
+     * из чего оно вышло.
+     */
+    tolerancePercent: season.tolerancePercent,
   };
 }

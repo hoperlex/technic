@@ -124,6 +124,7 @@ export * from './print-budget';
 export * from './assignment-periods';
 export * from './garage';
 export * from './driver-cabinet';
+export * from './fuel-norms';
 export * from './vehicle-readings';
 /* Чеки на автозапчасти (`auto-part-receipts.ts`) — на месте склада, который они заменили (план
  * `docs/auto-part-receipts-plan.md`, Р1). Контракты склада уехали выпуском 2 «Заморозка» вместе с

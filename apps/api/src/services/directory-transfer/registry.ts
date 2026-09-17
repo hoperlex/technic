@@ -3,6 +3,7 @@ import type { AnyDirectory } from './types';
 import { organizationalDirectories } from './defs/org';
 import { wasteDirectories } from './defs/waste';
 import { vehicleDirectories } from './defs/vehicles';
+import { fuelNormDirectories } from './defs/fuel-norms';
 import { officeDirectories } from './defs/office';
 import { mechDirectories } from './defs/mech';
 import { staffDirectories } from './defs/staff';
@@ -20,6 +21,7 @@ const DEFINITIONS: readonly AnyDirectory[] = [
   ...organizationalDirectories,
   ...wasteDirectories,
   ...vehicleDirectories,
+  ...fuelNormDirectories,
   ...officeDirectories,
   ...mechDirectories,
   ...staffDirectories,

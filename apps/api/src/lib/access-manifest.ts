@@ -1153,6 +1153,33 @@ export const ACCESS_MANIFEST = {
   'PATCH /api/v1/mech-models/:id': { kind: 'permissions', allOf: ['directories.write'] },
   'DELETE /api/v1/mech-models/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
 
+  /*
+   * Нормы расхода топлива (план `docs/fuel-norms-plan.md`, §5). Права — общие права модуля
+   * справочников: своего волна не заводит, потому что у справочников они одни на весь раздел, а не
+   * по вкладкам. Следствие названо в плане вслух: нормы правит всякий, кто ведёт любой справочник.
+   *
+   * Ручек «очистить» и «восстановить» здесь нет намеренно: снятие версии мягкое и необратимое по
+   * устройству частичной уникальности (Р7б), а чистить нечего — норма не бумага, а число приказа.
+   */
+  'GET /api/v1/vehicle-fuel-norms': { kind: 'permissions', allOf: ['directories.read'] },
+  'GET /api/v1/vehicle-fuel-norms/count': { kind: 'permissions', allOf: ['directories.read'] },
+  'POST /api/v1/vehicle-fuel-norms': { kind: 'permissions', allOf: ['directories.write'] },
+  'PATCH /api/v1/vehicle-fuel-norms/:id': { kind: 'permissions', allOf: ['directories.write'] },
+  'DELETE /api/v1/vehicle-fuel-norms/:id': { kind: 'permissions', allOf: ['directories.write'] },
+  /*
+   * Настройки сверки — границы сезона и допуск (Р8). Чтение под правом справочников, а не показаний:
+   * их читает окно норм. Сводке и карточке они приезжают ВМЕСТЕ с числами (Р12б), поэтому читателю
+   * статистики это право не нужно.
+   */
+  'GET /api/v1/vehicle-fuel-norms/settings/current': {
+    kind: 'permissions',
+    allOf: ['directories.read'],
+  },
+  'PUT /api/v1/vehicle-fuel-norms/settings/current': {
+    kind: 'permissions',
+    allOf: ['directories.write'],
+  },
+
   // ── Вывоз мусора ──
   // Два маршрута условные: назначить исполнителя прямо в форме заявки — то же назначение
   // оператора, что и `PATCH /:id/operator`, поэтому право спрашивается по факту присутствия поля.

@@ -49,6 +49,7 @@ const ROWS: VehicleReadingStatsRow[] = [
     engineHours: 38.5,
     lastOdometer: { value: 128_400, measuredOn: '2026-07-20' },
     lastEngineHours: { value: 5120.5, measuredOn: '2026-07-20' },
+    hasNorm: false,
     fuelFilledLiters: 620,
     gaps: 1,
     typeName: 'Самосвал',
@@ -57,6 +58,10 @@ const ROWS: VehicleReadingStatsRow[] = [
     shifts: 0,
     missingReadings: 0,
     unacceptedShifts: 0,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
   },
   {
     vehicleId: 'v-2',
@@ -65,6 +70,7 @@ const ROWS: VehicleReadingStatsRow[] = [
     engineHours: 12,
     lastOdometer: null,
     lastEngineHours: null,
+    hasNorm: false,
     fuelFilledLiters: 90,
     gaps: 2,
     typeName: 'Самосвал',
@@ -73,6 +79,10 @@ const ROWS: VehicleReadingStatsRow[] = [
     shifts: 0,
     missingReadings: 0,
     unacceptedShifts: 0,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
   },
 ];
 
@@ -86,6 +96,10 @@ function totals(over: Partial<ReadingTotals> = {}): ReadingTotals {
     missingReadings: 4,
     shifts: 30,
     unacceptedShifts: 6,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
     ...over,
   };
 }
@@ -108,6 +122,8 @@ function cardDto(over: Partial<VehicleReadingCardDto> = {}): VehicleReadingCardD
     ],
     lastOdometer: { km: 128400, measuredOn: '2026-07-22' },
     lastEngineHours: { value: 1240.5, measuredOn: '2026-07-22' },
+    hasNorm: false,
+    tolerancePercent: 5,
     ...over,
   };
 }

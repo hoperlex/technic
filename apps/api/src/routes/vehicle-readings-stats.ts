@@ -18,6 +18,7 @@ import { err } from '../lib/errors';
 import { loadFleetStats, loadVehicleCard } from '../services/readings-aggregate';
 import { buildAdminReadingsExport } from '../services/readings-admin-export';
 import { buildReadingsExport, type ReadingsExportResult } from '../services/readings-export';
+import { loadFuelNormSeason } from '../services/fuel-norms';
 import { loadReadingIntake } from '../services/readings-intake';
 import { loadVehicleReadingJournal } from '../services/readings-stats';
 
@@ -156,10 +157,23 @@ export default async function vehicleReadingsStatsRoutes(app: FastifyInstance): 
   r.get(
     '/stats',
     { preHandler: guards, schema: { querystring: readingStatsQuerySchema } },
-    async (req): Promise<{ items: VehicleReadingStatsRow[]; from: string; to: string }> => {
+    async (
+      req,
+    ): Promise<{
+      items: VehicleReadingStatsRow[];
+      from: string;
+      to: string;
+      tolerancePercent: number;
+    }> => {
       const { from, to } = req.query;
       checkPeriod(from, to);
-      return { items: await loadFleetStats(from, to), from, to };
+      /*
+       * Допуск едет вместе с числами (план `docs/fuel-norms-plan.md`, Р12б). Отдельной ручкой его
+       * не спросить: настройки закрыты правом справочников, а сводку открывает право показаний, —
+       * и без этого числа экран не смог бы ни покрасить превышение, ни посчитать полосу.
+       */
+      const [items, season] = await Promise.all([loadFleetStats(from, to), loadFuelNormSeason()]);
+      return { items, from, to, tolerancePercent: season.tolerancePercent };
     },
   );
 
@@ -190,6 +204,9 @@ export default async function vehicleReadingsStatsRoutes(app: FastifyInstance): 
         to,
         vehicleId,
         withMaintenance: can(requirePrincipal(req), 'vehicleMaintenance.read'),
+        // Настройки сверки читает ручка, а не сборщик (план `docs/fuel-norms-plan.md`, §3.1):
+        // допуск и границы сезона нужны книге числами, а второе чтение развело бы экран и файл.
+        season: await loadFuelNormSeason(),
       });
       return sendWorkbook(reply, book);
     },
@@ -224,6 +241,7 @@ export default async function vehicleReadingsStatsRoutes(app: FastifyInstance): 
         // Подпись — ФИО и почта того, кто нажал: книгу читают в чужой папке через месяц (Р10).
         actor: `${principal.fullName} (${principal.email})`,
         at: new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }),
+        season: await loadFuelNormSeason(),
       });
       return sendWorkbook(reply, book);
     },
@@ -245,7 +263,13 @@ export default async function vehicleReadingsStatsRoutes(app: FastifyInstance): 
 
       return sendWorkbook(
         reply,
-        await buildReadingsExport({ kind: 'fleetSummary', from, to, withMaintenance: false }),
+        await buildReadingsExport({
+          kind: 'fleetSummary',
+          from,
+          to,
+          withMaintenance: false,
+          season: await loadFuelNormSeason(),
+        }),
       );
     },
   );

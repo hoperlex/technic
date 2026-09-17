@@ -97,6 +97,7 @@ const STATS_ROW: VehicleReadingStatsRow = {
   engineHours: 38.5,
   lastOdometer: { value: 128_400, measuredOn: '2026-07-20' },
   lastEngineHours: { value: 5120.5, measuredOn: '2026-07-20' },
+  hasNorm: false,
   fuelFilledLiters: 620,
   gaps: 0,
   typeName: 'Самосвал',
@@ -105,6 +106,10 @@ const STATS_ROW: VehicleReadingStatsRow = {
   shifts: 0,
   missingReadings: 0,
   unacceptedShifts: 0,
+  fuelSpentLiters: 0,
+  fuelNormLiters: 0,
+  verifiedShifts: 0,
+  shiftsWithFuel: 0,
 };
 
 function totals(): ReadingTotals {
@@ -117,6 +122,10 @@ function totals(): ReadingTotals {
     missingReadings: 0,
     shifts: 20,
     unacceptedShifts: 0,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
   };
 }
 
@@ -131,6 +140,8 @@ function cardDto(from: string, to: string): VehicleReadingCardDto {
     months: [{ month: '2026-07', ...totals() }],
     lastOdometer: { km: 128400, measuredOn: '2026-07-22' },
     lastEngineHours: { value: 1240.5, measuredOn: '2026-07-22' },
+    hasNorm: false,
+    tolerancePercent: 5,
   };
 }
 

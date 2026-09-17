@@ -59,6 +59,7 @@ import wasteRequestsRoutes from './routes/waste-requests';
 import wasteTicketsRoutes from './routes/waste-tickets';
 import ticketAuditRoutes from './routes/ticket-audit';
 import mechRequestsRoutes from './routes/mech-requests';
+import fuelNormsRoutes from './routes/fuel-norms';
 import mechModelsRoutes from './routes/mech-models';
 import wasteTypesRoutes from './routes/waste-types';
 import wasteTariffsRoutes from './routes/waste-tariffs';
@@ -286,6 +287,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // заявкой, хотя ведут его в «Справочниках»: заявка сядет на него этапом Э2, и искать их порознь
   // придётся тому же человеку.
   await app.register(mechModelsRoutes, { prefix: '/api/v1/mech-models' });
+  // Нормы расхода топлива — справочник техники, но своим префиксом: у него своя запись (версии) и
+  // свой читатель (расчёт сверки), а вкладка «Техника» открывает его окном (docs/fuel-norms-plan.md).
+  await app.register(fuelNormsRoutes, { prefix: '/api/v1/vehicle-fuel-norms' });
   await app.register(wasteTypesRoutes, { prefix: '/api/v1/waste-types' });
   await app.register(wasteTariffsRoutes, { prefix: '/api/v1/waste-tariffs' });
   await app.register(filesRoutes, { prefix: '/api/v1/files' });

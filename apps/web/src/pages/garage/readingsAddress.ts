@@ -72,6 +72,17 @@ export interface ReadingsAddress {
   /** Отчёт дня, открытый на разбор (`?report=`, Р29), либо `null`. */
   reportId: string | null;
   openReport: (id: string | null) => void;
+  /**
+   * Показывать только машины с превышением нормы расхода (`?over=1`, план
+   * `docs/fuel-norms-plan.md`, Р16а).
+   *
+   * Отбор клиентский — сводка приходит целиком, и страницами её режет портал, — но живёт он в
+   * адресе, а не в состоянии: «покажи превышения за июль» отправляют ссылкой, а состояние
+   * пересылке не подлежит. Это единственный отбор строк модуля, который в адресе живёт, и
+   * исключение названо здесь же: остальные приходят вместе со страницей, а этот — нет.
+   */
+  overOnly: boolean;
+  setOverOnly: (next: boolean) => void;
 }
 
 /** Умолчание периода: у подвкладок оно разное, потому что вопросы у них разные. */
@@ -109,8 +120,9 @@ function defaultPeriod(sub: ReadingsSub, date: string): [string, string] {
  *
  * Собирается адрес с нуля, а не поверх текущих ключей: общий у «Техники» и «Показаний» ровно один
  * ключ — день среза, а открытые окна вкладки (`journal`, `maintenance`) принадлежат ей, а не той,
- * куда переходят. Отбор строк в адресе не живёт вовсе (`useListParams` — это `useState`), и терять
- * с переходом нечего.
+ * куда переходят. Отбор превышений (`over`) сюда не попадает намеренно: переход из «Техники»
+ * спрашивает про одну машину, и сузить его чужим фильтром значило бы показать пустую карточку.
+ * Остальные отборы строк в адресе не живут (`useListParams` — это `useState`).
  */
 export function vehicleCardHref(vehicleId: string, date: string): string {
   const [from, to] = defaultPeriod('stats', date);
@@ -168,6 +180,9 @@ export function useReadingsAddress(date: string): ReadingsAddress {
         p.set('sub', next);
         p.delete('from');
         p.delete('to');
+        // Отбор превышений принадлежит сводке: в реестре приёма сверять нечего, и ключ, уехавший
+        // туда вместе с переключением, вернулся бы обратно молчаливым фильтром.
+        p.delete('over');
       }, true),
 
     period,
@@ -203,5 +218,16 @@ export function useReadingsAddress(date: string): ReadingsAddress {
         if (id) next.set('report', id);
         else next.delete('report');
       }, false),
+
+    overOnly: params.get('over') === '1',
+    /**
+     * Отбор пишется заменой, как период: перебор «все / только превышения» — это подстройка
+     * экрана, а не переход, и «назад» из неё должно вести на предыдущий экран.
+     */
+    setOverOnly: (next) =>
+      patch((p) => {
+        if (next) p.set('over', '1');
+        else p.delete('over');
+      }, true),
   };
 }

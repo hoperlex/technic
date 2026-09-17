@@ -91,8 +91,17 @@ export function VehicleReadingCard({ vehicleId, vehicleLabel, from, to, onClose 
       {data ? (
         <Space orientation="vertical" size={16} style={{ display: 'flex' }}>
           <ReadingCardCounters card={data} />
-          <ReadingCardTotals total={data.total} />
-          <ReadingCardMonths months={data.months} total={data.total} />
+          <ReadingCardTotals
+            total={data.total}
+            hasNorm={data.hasNorm}
+            tolerancePercent={data.tolerancePercent}
+          />
+          <ReadingCardMonths
+            months={data.months}
+            total={data.total}
+            hasNorm={data.hasNorm}
+            tolerancePercent={data.tolerancePercent}
+          />
           {/* Диаграмма — после таблицы (§7): она отвечает на «как шло», и вопрос этот задают,
               уже посмотрев «сколько». Ленивый чанк живёт внутри неё, а не здесь: карточка не
               должна знать, чем нарисованы столбики. */}

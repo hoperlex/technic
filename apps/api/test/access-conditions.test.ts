@@ -407,6 +407,20 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/mech-models': {
     payload: { code: 'vibroplita-proba', name: 'Виброплита реверсивная Wacker DPU 3070Н' },
   },
+  // Нормы расхода топлива: тело обязано проходить схему, иначе страж прав не успевает ответить —
+  // валидация вернула бы 400 раньше, чем отказ 403, и доказывать было бы нечего.
+  'POST /api/v1/vehicle-fuel-norms': {
+    payload: {
+      vehicleId: RECORD_ID,
+      effectiveFrom: '2026-01-01',
+      unit: 'l_per_100km',
+      winterRate: 42,
+      summerRate: 39,
+    },
+  },
+  'PUT /api/v1/vehicle-fuel-norms/settings/current': {
+    payload: { winterFromMd: '11-01', winterToMd: '03-31', tolerancePercent: 5 },
+  },
   'POST /api/v1/waste-tariffs': {
     payload: {
       operatorCounterpartyId: COUNTERPARTY_ID,

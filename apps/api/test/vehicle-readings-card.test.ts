@@ -48,6 +48,10 @@ const CARD: VehicleReadingCardDto = {
     missingReadings: 2,
     shifts: 60,
     unacceptedShifts: 3,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
   },
   months: [
     {
@@ -60,10 +64,16 @@ const CARD: VehicleReadingCardDto = {
       missingReadings: 2,
       shifts: 60,
       unacceptedShifts: 3,
+      fuelSpentLiters: 0,
+      fuelNormLiters: 0,
+      verifiedShifts: 0,
+      shiftsWithFuel: 0,
     },
   ],
   lastOdometer: { km: 128_400, measuredOn: '2026-03-30' },
   lastEngineHours: { value: 9_310.5, measuredOn: '2026-03-30' },
+  hasNorm: false,
+  tolerancePercent: 5,
 };
 
 /**
@@ -216,10 +226,12 @@ describe('карточка машины в статистике показани
     const res = await get(cardUrl(VEHICLE_ID, '2026-01-01', '2026-03-31'));
     expect(Object.keys(res.json()).sort()).toEqual([
       'from',
+      'hasNorm',
       'lastEngineHours',
       'lastOdometer',
       'months',
       'to',
+      'tolerancePercent',
       'total',
       'vehicleId',
       'vehicleLabel',

@@ -1,4 +1,5 @@
 import {
+  fuelDeviation,
   driverReportStateLabels,
   formatNameWithInitials,
   formatVehicleRouteNumber,
@@ -16,6 +17,7 @@ import {
   type RowStyle,
   type SheetInput,
 } from '../lib/xlsx';
+import type { FuelNormSeason } from './fuel-norms';
 import { loadFleetStats } from './readings-aggregate';
 import { READING_EXPORT_ROW_LIMIT } from './readings-export';
 import { loadIntakeRows, type IntakeSqlRow } from './readings-intake';
@@ -122,7 +124,8 @@ function monthLabel(date: string): string {
 type ShiftRow = IntakeSqlRow;
 
 /**
- * Расход за смену (Р5): `остаток на начало + заправлено − остаток на конец`.
+ * Расход за смену (Р5): `остаток на начало + заправлено − остаток на конец`. Формула переехала в
+ * общий слой агрегата (`fuelSpentSql`, ADR 0194) — книга и портал считают её одним выражением.
  *
  * Считается только там, где известны **оба** остатка; заправленное без остатков расходом не
  * является — это поток за смену, а не убыль в баке. Отсутствие остатков даёт `null`, а не ноль:
@@ -313,6 +316,17 @@ const SUMMARY_HEADER = [
   'Заправлено, л',
   'Расход, л',
   'Смен с остатками',
+  /*
+   * Сверка с нормой (план `docs/fuel-norms-plan.md`, §4.3). Колонки стоят РЯДОМ с полным расходом,
+   * а не вместо него, и называются иначе не для красоты: это разные величины. «Расход, л» — всё,
+   * что сожгли смены с обоими остатками, по живой координате книги; «Расход сверки» — только
+   * смены, прошедшие сверку, по снимочной координате агрегата. Слить их в одну колонку значило бы
+   * назвать одним словом два числа, которые у машины с переназначенным рейсом не совпадают.
+   */
+  'Расход сверки, л',
+  'Норма, л',
+  'Отклонение, %',
+  'Сверено смен',
   'Разрывов ряда',
   'Аномалий',
   // Не «Водители»: по недельному ЭСМ-2 работает машинист, и колонка, названная одной из двух
@@ -322,7 +336,7 @@ const SUMMARY_HEADER = [
 ];
 
 const SUMMARY_WIDTHS = [
-  22, 18, 20, 12, 13, 12, 10, 16, 12, 14, 18, 13, 16, 14, 14, 12, 16, 13, 11, 36, 40,
+  22, 18, 20, 12, 13, 12, 10, 16, 12, 14, 18, 13, 16, 14, 14, 12, 16, 12, 14, 14, 16, 13, 11, 36, 40,
 ];
 
 /** Машина со своими числами: строка свода и её же итоги для листа детализации. */
@@ -352,7 +366,11 @@ function orderVehicles(
   });
 }
 
-function summarySheet(vehicles: readonly VehicleRow[], period: string): SheetInput {
+function summarySheet(
+  vehicles: readonly VehicleRow[],
+  period: string,
+  tolerancePercent: number,
+): SheetInput {
   const rows: CellInput[][] = [[`Показания автотранспорта за ${period}`], [], [...SUMMARY_HEADER]];
   const rowStyles: (RowStyle | undefined)[] = [undefined, undefined, undefined];
 
@@ -377,6 +395,12 @@ function summarySheet(vehicles: readonly VehicleRow[], period: string): SheetInp
       num(extra.fuelSpentLiters, 1),
       // Охват расхода (Р5): без него сумма по трём сменам из двадцати читалась бы как месяц.
       `${extra.shiftsWithFuel} из ${extra.shiftsWithRows}`,
+      // Сверка с нормой — числа агрегата, те же, что на экране сводки. Прочерк вместо нуля: у
+      // машины без сверяемых смен о расходе сказать нечего.
+      stats.verifiedShifts === 0 ? DASH : num(stats.fuelSpentLiters, 1),
+      stats.verifiedShifts === 0 ? DASH : num(stats.fuelNormLiters, 1),
+      num(fuelDeviation(stats.fuelSpentLiters, stats.fuelNormLiters, tolerancePercent).percent, 1),
+      `${stats.verifiedShifts} из ${stats.shiftsWithFuel}`,
       { num: stats.gaps },
       { num: extra.anomalies },
       extra.drivers.join(', ') || DASH,
@@ -641,7 +665,9 @@ function parametersSheet(
   request: AdminExportRequest,
   vehicles: readonly VehicleRow[],
   detailRows: number,
+  season: FuelNormSeason,
 ): SheetInput {
+  const tolerancePercent = season.tolerancePercent;
   const shifts = vehicles.reduce((total, row) => total + row.stats.shifts, 0);
   const missing = vehicles.reduce((total, row) => total + row.stats.missingReadings, 0);
   return {
@@ -668,6 +694,19 @@ function parametersSheet(
         'Расход',
         'остаток на начало + заправлено − остаток на конец; считаются только смены, где известны оба остатка',
       ],
+      [
+        'Расход сверки',
+        'расход смен, прошедших сверку с нормой: оба остатка сданы, пара снимков непрерывна, база положительна. Меньше полного расхода на смены, которые сверить нельзя',
+      ],
+      [
+        'Норма и отклонение',
+        'норма — база смены (пробег или моточасы) по ставке сезона из приказа; отклонение — расход сверки против неё, в процентах',
+      ],
+      ['Допуск сверки', `${tolerancePercent}% — отклонение в его пределах превышением не считается`],
+      [
+        'Зимний сезон',
+        `с ${season.winterFromMd.replace('-', '.')} по ${season.winterToMd.replace('-', '.')}: ставка выбирается датой смены`,
+      ],
       ['Прочерк «—»', 'значение неизвестно; в суммы не входит'],
       [
         'Лист «Данные»',
@@ -687,6 +726,8 @@ export interface AdminExportRequest {
   actor: string;
   /** Когда выгружено, готовой строкой: время книги решает вызывающий, а не сборщик. */
   at: string;
+  /** Настройки сверки — решённым значением, по той же причине, что `actor` и `at`. */
+  season: FuelNormSeason;
 }
 
 export interface AdminExportResult {
@@ -703,6 +744,12 @@ export async function buildAdminReadingsExport(
 ): Promise<AdminExportResult> {
   const { from, to } = request;
 
+  /*
+   * Настройки сверки читаются один раз и передаются листам значением (план, §3.1): допуск нужен
+   * своду (отклонение печатается числом) и «Параметрам» (там он назван словами), а второе чтение
+   * означало бы два разных допуска в одной книге.
+   */
+  const season = request.season;
   const [stats, shifts] = await Promise.all([loadFleetStats(from, to), loadIntakeRows(from, to)]);
 
   /*
@@ -734,10 +781,10 @@ export async function buildAdminReadingsExport(
 
   const period = periodLabel(from, to);
   const sheets: SheetInput[] = [
-    summarySheet(vehicles, period),
+    summarySheet(vehicles, period, season.tolerancePercent),
     detailSheet(vehicles, rowsByVehicle, period),
     pivotSheet(period),
-    parametersSheet(request, vehicles, ordered.length),
+    parametersSheet(request, vehicles, ordered.length, season),
     sourceSheet(ordered, labels),
   ];
 

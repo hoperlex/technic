@@ -192,6 +192,54 @@ suite('обмен справочниками на живой схеме', () => 
     },
   );
 
+  /**
+   * Нормы расхода топлива (план `docs/fuel-norms-plan.md`, §6). Страж выше проверяет их наравне со
+   * всеми, но у этого описания два свойства, которых нет больше ни у кого, и оба легко потерять:
+   *
+   * 1. **Файл возит срез, а правка заводит НОВУЮ версию.** Страж идёт сухим прогоном и `update()`
+   *    не зовёт вовсе — значит «ничего не изменилось» он доказывает только на бумаге. Здесь
+   *    загрузка идёт настоящей, и число строк таблицы до и после обязано совпасть.
+   * 2. **Пустая строка законна, частично заполненная — нет.** У большинства парка нормы нет, и
+   *    отвергни описание пустую строку — нетронутый файл не загрузился бы целиком.
+   */
+  it('«Нормы расхода»: настоящая загрузка нетронутого файла не заводит версий', async () => {
+    const def = ctx.directories.find((d) => d.key === 'fuel-norms')!;
+    const { rows, kept } = await exportFit(def);
+    const before = await ctx.db.execute<{ c: string }>(
+      sql`SELECT count(*)::text AS c FROM vehicle_fuel_norms`,
+    );
+    const report = await ctx.engine.importDirectory(def, bookOf(rows), {
+      dryRun: false,
+      actorUserId: '00000000-0000-0000-0000-000000000000',
+    });
+    const after = await ctx.db.execute<{ c: string }>(
+      sql`SELECT count(*)::text AS c FROM vehicle_fuel_norms`,
+    );
+
+    expect(report.problems).toEqual([]);
+    expect(report.unchanged).toBe(kept);
+    expect(after.rows[0]!.c, 'загрузка нетронутого файла завела версии').toBe(before.rows[0]!.c);
+  });
+
+  it('«Нормы расхода»: половина нормы отвергается до записи', async () => {
+    const def = ctx.directories.find((d) => d.key === 'fuel-norms')!;
+    const { rows } = await exportFit(def);
+    const header = rows[0]!;
+    const winterAt = header.indexOf('Зимняя ставка');
+    expect(winterAt, 'в выгрузке норм нет колонки зимней ставки').toBeGreaterThan(0);
+
+    // Ставка без единицы и без летней ставки: строка заполнена наполовину, и запись с пустыми
+    // числами ушла бы нарушением NOT NULL — то есть пятисоткой вместо человеческих слов.
+    const broken = rows.map((row, index) =>
+      index === 1 ? row.map((cell, at) => (at === winterAt ? '42' : cell)) : row,
+    );
+    const report = await ctx.engine.importDirectory(def, bookOf(broken), {
+      dryRun: true,
+      actorUserId: '00000000-0000-0000-0000-000000000000',
+    });
+    expect(report.problems.join(' ')).toContain('Норма заполняется целиком');
+  });
+
   it('«Контрагенты»: общий email выгружается и принимается обратно', async () => {
     const def = ctx.directories.find((d) => d.key === 'counterparties')!;
     const { rows } = await exportFit(def);

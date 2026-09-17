@@ -41,6 +41,7 @@ const ROWS: VehicleReadingStatsRow[] = [
     engineHours: 38.5,
     lastOdometer: { value: 128_400, measuredOn: '2026-07-20' },
     lastEngineHours: { value: 5120.5, measuredOn: '2026-07-20' },
+    hasNorm: false,
     fuelFilledLiters: 620,
     gaps: 1,
     typeName: 'Самосвал',
@@ -49,6 +50,10 @@ const ROWS: VehicleReadingStatsRow[] = [
     shifts: 0,
     missingReadings: 0,
     unacceptedShifts: 0,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
   },
   {
     /*
@@ -61,6 +66,7 @@ const ROWS: VehicleReadingStatsRow[] = [
     engineHours: null,
     lastOdometer: null,
     lastEngineHours: null,
+    hasNorm: false,
     fuelFilledLiters: 0,
     gaps: 0,
     typeName: 'Самосвал',
@@ -69,6 +75,10 @@ const ROWS: VehicleReadingStatsRow[] = [
     shifts: 0,
     missingReadings: 0,
     unacceptedShifts: 0,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
   },
 ];
 
@@ -125,6 +135,11 @@ describe('сводка показаний: снимки счётчиков за 
       'Моточасы',
       'Наработка, м/ч',
       'Заправлено топлива, л',
+      // Три колонки сверки с нормой стоят вместе и в этом порядке (docs/fuel-norms-plan.md, §4.1):
+      // расход, из которого посчитано отклонение, норма, с которой его сравнили, и сам разрыв.
+      'Расход, л',
+      'Норма, л',
+      'Отклонение',
       'Разрывов ряда',
     ]);
 
@@ -135,6 +150,10 @@ describe('сводка показаний: снимки счётчиков за 
       '5120,5 м/чснято 20.07.2026',
       '38,5',
       '620,0',
+      // Норма машине не заведена: расход не с чем сверять, и все три колонки молчат прочерком.
+      '—',
+      '—',
+      '—',
       '1',
     ]);
   });
@@ -148,6 +167,6 @@ describe('сводка показаний: снимки счётчиков за 
      * колонке одометра означал бы обнулённый счётчик — утверждение, которого никто не делал; ноль
      * в литрах, наоборот, законен: заправок в периоде действительно не было.
      */
-    expect(cellsOf(IDLE)).toEqual([IDLE, '—', '—', '—', '—', '0,0', '—']);
+    expect(cellsOf(IDLE)).toEqual([IDLE, '—', '—', '—', '—', '0,0', '—', '—', '—', '—']);
   });
 });

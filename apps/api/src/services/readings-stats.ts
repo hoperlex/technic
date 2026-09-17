@@ -2,6 +2,7 @@ import { and, asc, count, desc, eq, inArray, ne, sql, type SQL } from 'drizzle-o
 import { alias } from 'drizzle-orm/pg-core';
 import {
   type DiscrepancyKind,
+  fuelDeviation,
   type DriverReportState,
   formatVehicleRouteNumber,
   type ReadingAnomaly,
@@ -53,10 +54,10 @@ import { EXPECTED_ESM2_FILTER, EXPECTED_ROUTE_FILTER } from './readings-aggregat
  * 2. **Приросты журнала берутся по готовой цепочке** (`previous_odometer_id` /
  *    `previous_engine_hours_id`). Цепочку строит модуль показаний при записи; пересчитывать её на
  *    чтении значило бы завести второй ответ на вопрос «кто чей предшественник».
- * 3. **Портал считает заправленное топливо, и только его** (Р28). Ни расхода, ни производных
- *    «на сто километров»: цифра, поделённая на пробег, читается как расход независимо от подписи
- *    в колонке, а фактический расход требует остатков в баке, которых портал не хранит. Поэтому
- *    колонок в листе выгрузки ровно столько же, сколько на экране.
+ * 3. **Портал считает заправленное топливо и — с приходом норм (ADR 0194) — расход сверяемых
+ *    смен.** Производных «на сто километров» по-прежнему нет: цифра, поделённая на пробег, это
+ *    самостоятельная оценка, которой никто не заказывал. Колонок в листе выгрузки ровно столько
+ *    же, сколько на экране, — включая сверку с нормой.
  *
  * Итогов по парку здесь больше нет: пробег, наработку и разрывы считает агрегат
  * `services/readings-aggregate.ts` (план «Показания техники», §5). Он считает их по ожидаемым
@@ -683,23 +684,55 @@ function cell(value: number | null, digits: number): string {
 
 /**
  * Лист сводки для книги Excel. Заголовки — те же слова, что в колонках экрана: файл читают рядом с
- * порталом, и лишняя колонка «на 100 км» в нём завела бы тот самый расход, которого портал не
- * считает (Р28), — только уже вне его контроля, в чужой книге с формулами.
+ * порталом, и расходиться им нельзя.
+ *
+ * Сверка с нормой стоит здесь тем же составом, что на экране (план `docs/fuel-norms-plan.md`,
+ * §4.3): расход СВЕРЯЕМЫХ смен, норма по ним же, отклонение и охват. Отклонение печатается
+ * числом, а не формулой книги, и считается общей функцией контрактов — той же, какой его считает
+ * портал: две записи одного расчёта разошлись бы на первом же округлении.
+ *
+ * Колонки «на 100 км» здесь по-прежнему нет: делить расход на пробег книга не берётся — это
+ * отдельный показатель, которого никто не заказывал, и в чужой книге с формулами он зажил бы
+ * своей жизнью.
  */
-export function readingStatsSheet(rows: readonly VehicleReadingStatsRow[], period: string) {
+export function readingStatsSheet(
+  rows: readonly VehicleReadingStatsRow[],
+  period: string,
+  tolerancePercent: number,
+) {
   return {
     name: `Показания ${period}`,
     freezeHeader: true,
-    widths: [38, 14, 16, 18, 12],
+    widths: [38, 14, 16, 18, 12, 12, 12, 14, 14],
     rows: [
-      ['Техника', 'Пробег, км', 'Наработка, м/ч', 'Заправлено топлива, л', 'Разрывов ряда'],
-      ...rows.map((row) => [
-        row.vehicleLabel,
-        cell(row.distanceKm, 0),
-        cell(row.engineHours, 1),
-        cell(row.fuelFilledLiters, 1),
-        String(row.gaps),
-      ]),
+      [
+        'Техника',
+        'Пробег, км',
+        'Наработка, м/ч',
+        'Заправлено топлива, л',
+        'Разрывов ряда',
+        'Расход, л',
+        'Норма, л',
+        'Отклонение, %',
+        'Сверено смен',
+      ],
+      ...rows.map((row) => {
+        const dev = fuelDeviation(row.fuelSpentLiters, row.fuelNormLiters, tolerancePercent);
+        // Прочерк, а не ноль: у машины без сверяемых смен о расходе сказать нечего, и ноль читался
+        // бы как «не жгла топливо».
+        const verified = row.verifiedShifts > 0;
+        return [
+          row.vehicleLabel,
+          cell(row.distanceKm, 0),
+          cell(row.engineHours, 1),
+          cell(row.fuelFilledLiters, 1),
+          String(row.gaps),
+          verified ? cell(row.fuelSpentLiters, 1) : cell(null, 1),
+          verified ? cell(row.fuelNormLiters, 1) : cell(null, 1),
+          cell(dev.percent, 1),
+          `${row.verifiedShifts} из ${row.shiftsWithFuel}`,
+        ];
+      }),
     ],
   };
 }

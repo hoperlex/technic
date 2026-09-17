@@ -57,6 +57,7 @@ function cleanVehicle(): VehicleReadingStatsRow {
     engineHours: 17,
     lastOdometer: { value: 213_268, measuredOn: '2026-08-04' },
     lastEngineHours: { value: 4798.5, measuredOn: '2026-08-04' },
+    hasNorm: false,
     fuelFilledLiters: 200,
     gaps: 0,
     typeName: 'Самосвал',
@@ -65,6 +66,10 @@ function cleanVehicle(): VehicleReadingStatsRow {
     shifts: 2,
     missingReadings: 0,
     unacceptedShifts: 0,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
   };
 }
 
@@ -77,6 +82,7 @@ function dirtyVehicle(): VehicleReadingStatsRow {
     engineHours: 6,
     lastOdometer: null,
     lastEngineHours: { value: 2980, measuredOn: '2026-08-06' },
+    hasNorm: false,
     fuelFilledLiters: 300,
     gaps: 2,
     typeName: 'Самосвал',
@@ -85,6 +91,10 @@ function dirtyVehicle(): VehicleReadingStatsRow {
     shifts: 3,
     missingReadings: 1,
     unacceptedShifts: 1,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
   };
 }
 
@@ -190,6 +200,8 @@ async function book() {
     to: '2026-08-31',
     actor: 'Петров П.П. (admin@dev.local)',
     at: '10.09.2026, 14:32',
+    // Настройки сверки книга получает решёнными — как `actor` и `at` (docs/fuel-norms-plan.md).
+    season: { winterFromMd: '11-01', winterToMd: '03-31', tolerancePercent: 5 },
   });
   return { result, sheets: readWorkbook(result.bytes) };
 }
@@ -324,7 +336,9 @@ describe('служебная книга показаний', () => {
     expect(shiftRow?.[1]).toBe('—');
     expect(shiftRow?.at(-1)).toBe('не открыт');
     expect(shiftRow?.at(-2)).toBe('не сдано');
-    expect(summary[3]?.[19]).toContain('Сидоров С.С.');
+    // Колонка водителей уехала на четыре позиции: перед ней встала сверка с нормой
+    // (docs/fuel-norms-plan.md, §4.3) — расход сверки, норма, отклонение и охват.
+    expect(summary[3]?.[23]).toContain('Сидоров С.С.');
     expect(source.some((row) => row[4] === 'Сидоров С.С.')).toBe(true);
   });
 

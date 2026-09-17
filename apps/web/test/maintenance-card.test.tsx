@@ -273,6 +273,10 @@ function totals(): ReadingTotals {
     missingReadings: 0,
     shifts: 30,
     unacceptedShifts: 0,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
   };
 }
 
@@ -285,6 +289,8 @@ const CARD_DTO: VehicleReadingCardDto = {
   months: [{ month: '2026-07', ...totals() }],
   lastOdometer: { km: 128340, measuredOn: '2026-07-22' },
   lastEngineHours: null,
+  hasNorm: false,
+  tolerancePercent: 5,
 };
 
 const GARAGE_VEHICLES: GarageVehicleListDto = {

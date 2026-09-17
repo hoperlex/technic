@@ -80,6 +80,10 @@ function totals(over: Partial<ReadingTotals> = {}): ReadingTotals {
     missingReadings: 4,
     shifts: 30,
     unacceptedShifts: 6,
+    fuelSpentLiters: 0,
+    fuelNormLiters: 0,
+    verifiedShifts: 0,
+    shiftsWithFuel: 0,
     ...over,
   };
 }
@@ -109,6 +113,8 @@ function cardDto(over: Partial<VehicleReadingCardDto> = {}): VehicleReadingCardD
     months: MONTHS,
     lastOdometer: { km: 128400, measuredOn: '2026-07-22' },
     lastEngineHours: { value: 1240.5, measuredOn: '2026-07-22' },
+    hasNorm: false,
+    tolerancePercent: 5,
     ...over,
   };
 }

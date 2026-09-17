@@ -19,7 +19,7 @@ import {
   ExclamationCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
-} from '@ant-design/icons';
+  DashboardOutlined,} from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   RENTAL_STATUSES,
@@ -53,6 +53,7 @@ import {
   withSavedClassification,
 } from '../../hooks/useVehicleClassifications';
 import { garageKeys } from '@entities/garage';
+import { FuelNormsModal } from './FuelNormsModal';
 import { unhitchedNotice, VehicleTrailersField } from '@entities/vehicle-trailer';
 import { useVehicleMaintenanceAction } from '@features/vehicle-maintenance';
 import { AutoSelect, DataTable, FormModal, PageTableLayout } from '@shared/ui';
@@ -447,6 +448,8 @@ export function VehiclesTab() {
         );
       },
     },
+    // Ширина задана явно: в живой ветви теперь четыре кнопки, в архивной — тег и две, и
+    // умолчание в 130 px рвало бы их на две строки.
     actionsColumn<VehicleDto>((r) =>
       r.deletedAt ? (
         <Space>
@@ -473,12 +476,25 @@ export function VehiclesTab() {
       ) : (
         <Space>
           {maintenance.button({ id: r.id, label: vehicleTitle(r) })}
+          <Button
+            size="small"
+            icon={<DashboardOutlined />}
+            title="Нормы расхода топлива"
+            onClick={() => setNormsFor({ id: r.id, label: vehicleTitle(r) })}
+          />
           <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
           <Button size="small" danger icon={<DeleteOutlined />} onClick={() => confirmDelete(r)} />
         </Space>
       ),
     ),
   ];
+
+  /**
+   * Справочник норм расхода топлива — окном (план `docs/fuel-norms-plan.md`, §5). Открывается двумя
+   * входами: кнопкой в шапке со всеми нормами и действием строки, суженным до одной машины, —
+   * вопрос «какая норма у этой» задают, стоя в её строке.
+   */
+  const [normsFor, setNormsFor] = useState<{ id: string | null; label?: string } | null>(null);
 
   const { filters, mobileFilters } = useVehicleFilters({
     params,
@@ -527,6 +543,11 @@ export function VehiclesTab() {
           ]
         : [
             ...maintenance.items({ id: r.id, label: vehicleTitle(r) }),
+            {
+              key: 'fuel-norms',
+              label: 'Нормы расхода',
+              onClick: () => setNormsFor({ id: r.id, label: vehicleTitle(r) }),
+            },
             { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
             { key: 'delete', label: 'В архив', danger: true, onClick: () => confirmDelete(r) },
           ],
@@ -536,9 +557,14 @@ export function VehiclesTab() {
     <PageTableLayout
       filters={filters}
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-          Добавить технику
-        </Button>
+        <Space>
+          <Button icon={<DashboardOutlined />} onClick={() => setNormsFor({ id: null })}>
+            Нормы расхода
+          </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+            Добавить технику
+          </Button>
+        </Space>
       }
       mobile={{
         search: {
@@ -554,6 +580,15 @@ export function VehiclesTab() {
           onChange: setSort,
         },
         primaryAction: { label: 'Добавить технику', icon: <PlusOutlined />, onClick: openCreate },
+        // Главное действие на телефоне одно и занято заведением, поэтому справочник норм идёт
+        // вторичным: список вторичных у вкладки заводится этой волной впервые.
+        secondaryActions: [
+          {
+            label: 'Нормы расхода',
+            icon: <DashboardOutlined />,
+            onClick: () => setNormsFor({ id: null }),
+          },
+        ],
       }}
     >
       <DataTable<VehicleDto>
@@ -568,6 +603,14 @@ export function VehiclesTab() {
         sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
+      {/* Справочник норм расхода: одно окно на оба входа — из шапки и из строки машины. */}
+      <FuelNormsModal
+        open={normsFor !== null}
+        vehicleId={normsFor?.id ?? null}
+        vehicleLabel={normsFor?.label}
+        onClose={() => setNormsFor(null)}
+      />
+
       <FormModal
         title={
           record

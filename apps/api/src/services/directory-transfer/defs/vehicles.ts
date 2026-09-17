@@ -145,8 +145,11 @@ const REG_LOOKALIKES: Readonly<Record<string, string>> = {
  * Госномер так, как его сравнивает БД (`vehicle_reg_normalize`, миграция 0015): разделители
  * выброшены, регистр верхний, кириллица заменена латиницей. «В 094 ЕТ 77» и «B094ET77» — один
  * номер, и одна и та же машина, дважды набранная в разных раскладках, не должна заводиться дважды.
+ *
+ * Экспортируется ради справочника норм расхода (`defs/fuel-norms.ts`): он ищет машину тем же
+ * ключом, и второе правило нормализации разошлось бы с базой на первом же номере в кириллице.
  */
-function normalizeRegistration(text: string): string {
+export function normalizeRegistration(text: string): string {
   return text
     .replace(/[^0-9A-Za-zА-Яа-яЁё]+/gu, '')
     .toUpperCase()

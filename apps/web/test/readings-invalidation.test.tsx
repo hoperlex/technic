@@ -45,6 +45,7 @@ const ROW: VehicleReadingStatsRow = {
   engineHours: 38,
   lastOdometer: { value: 128_400, measuredOn: '2026-07-20' },
   lastEngineHours: { value: 5120.5, measuredOn: '2026-07-20' },
+  hasNorm: false,
   fuelFilledLiters: 620,
   gaps: 0,
   typeName: 'Самосвал',
@@ -53,6 +54,10 @@ const ROW: VehicleReadingStatsRow = {
   shifts: 0,
   missingReadings: 0,
   unacceptedShifts: 0,
+  fuelSpentLiters: 0,
+  fuelNormLiters: 0,
+  verifiedShifts: 0,
+  shiftsWithFuel: 0,
 };
 
 const JOURNAL_PAGE: VehicleReadingJournalDto = {
