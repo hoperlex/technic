@@ -631,6 +631,12 @@ function RequestsTab() {
   // Просмотр заявки — отдельное окно, только чтение: в таблице нет места ни автору, ни цене за
   // м³, ни машинам, а разбирать конкретную заявку без них нельзя (ADR 0012).
   const [viewRecord, setViewRecord] = useState<WasteRequestDto | null>(null);
+  /**
+   * Чем открыта карточка: `tickets` — крестиком колонки «Талоны» (ADR 0195), и тогда окно
+   * проматывается к блоку разбора. Обычное открытие оставляет карточку в начале — заявку смотрят
+   * с полей, а не с середины.
+   */
+  const [viewFocus, setViewFocus] = useState<'tickets' | null>(null);
 
   /**
    * Заявка, названная в адресе: сюда приходят по ссылке из списка площадок («№ заявки установки»).
@@ -645,6 +651,9 @@ function RequestsTab() {
   const viewed = viewRecord ?? opened.record;
   const closeView = () => {
     setViewRecord(null);
+    // Фокус гасится вместе с окном: иначе следующее открытие — кликом по строке, за другой
+    // заявкой и другим делом — снова уехало бы к талонам.
+    setViewFocus(null);
     opened.clear();
   };
 
@@ -1276,8 +1285,18 @@ function RequestsTab() {
             key: 'ticketBadge',
             title: 'Талоны',
             dataIndex: 'ticketBadge',
-            width: 130,
-            render: (_v: unknown, r: WasteRequestDto) => <TicketCell request={r} />,
+            // Колонка стала уже вместе с крестиком (ADR 0195): раньше в неё помещалась разбивка
+            // из пяти значков, теперь — одна кнопка, а числа читают в подсказке.
+            width: 90,
+            render: (_v: unknown, r: WasteRequestDto) => (
+              <TicketCell
+                request={r}
+                onReview={(req) => {
+                  setViewRecord(req);
+                  setViewFocus('tickets');
+                }}
+              />
+            ),
           },
         ]
       : []),
@@ -1587,6 +1606,8 @@ function RequestsTab() {
           (ADR 0053) правится прямо в карточке — у оператора формы правки нет вовсе. */}
       <WasteRequestViewModal
         request={viewed}
+        // Пришли крестиком колонки «Талоны» — карточка открывается на разборе (ADR 0195).
+        focus={viewFocus}
         onClose={closeView}
         onEdit={
           viewed && canModify(viewed)

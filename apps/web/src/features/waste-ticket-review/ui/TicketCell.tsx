@@ -21,8 +21,21 @@ import { TicketBadge } from './TicketBadge';
  *
  * Кнопка без надписи (требование заказчика): колонка узкая, а число подтверждаемых талонов человек
  * читает в подсказке — там же, где и обещание «всё сошлось».
+ *
+ * Ход на разбор ячейка не делает сама, а зовёт страницу: карточку открывает список, он же знает,
+ * какую заявку в ней показывать. Передать его обязан ЛЮБОЙ вызывающий — с ADR 0195 на месте
+ * значка стоит кнопка, а кнопке таблица клик по строке не отдаёт (`opensRow`), и без этого хода
+ * колонка лишилась бы того, который у неё был до крестика: клик по тегам проваливался в строку и
+ * открывал карточку.
  */
-export function TicketCell({ request }: { request: WasteRequestDto }) {
+export function TicketCell({
+  request,
+  onReview,
+}: {
+  request: WasteRequestDto;
+  /** Ход на разбор: карточка заявки, прокрученная к талонам (ADR 0195). */
+  onReview: (request: WasteRequestDto) => void;
+}) {
   const { message } = App.useApp();
   const qc = useQueryClient();
   const badge = request.ticketBadge;
@@ -45,7 +58,7 @@ export function TicketCell({ request }: { request: WasteRequestDto }) {
   });
 
   if (!badge || !wasteTicketAutoConfirmReady(badge, request.status)) {
-    return <TicketBadge badge={badge} />;
+    return <TicketBadge badge={badge} onReview={() => onReview(request)} />;
   }
 
   return (

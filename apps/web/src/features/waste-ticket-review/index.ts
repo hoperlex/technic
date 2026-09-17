@@ -4,7 +4,6 @@
  */
 export { BlindCheckPanel } from './ui/BlindCheckPanel';
 export { BlindCheckQueue } from './ui/BlindCheckQueue';
-export { TicketBadge } from './ui/TicketBadge';
 export { TicketCell } from './ui/TicketCell';
 export { TicketFormModal } from './ui/TicketFormModal';
 export { TicketRecognitionBanner } from './ui/TicketRecognitionBanner';

@@ -48,7 +48,9 @@ const readyRequest = (badge: WasteTicketBadgeDto = READY) =>
 describe('сошедшийся талон подтверждается кнопкой из строки списка', () => {
   it('у чистой сверки в ячейке кнопка, а не значки', () => {
     mockHttp({});
-    const { container } = renderWithUser(<TicketCell request={readyRequest()} />);
+    const { container } = renderWithUser(
+      <TicketCell request={readyRequest()} onReview={() => {}} />,
+    );
 
     expect(screen.getByRole('button', { name: 'Подтвердить талоны' })).toBeDefined();
     // Значков рядом с кнопкой нет: два способа сказать одно и то же в узкой колонке — это не
@@ -58,7 +60,7 @@ describe('сошедшийся талон подтверждается кноп�
 
   it('число подтверждаемых талонов человек читает в подсказке', async () => {
     mockHttp({});
-    renderWithUser(<TicketCell request={readyRequest()} />);
+    renderWithUser(<TicketCell request={readyRequest()} onReview={() => {}} />);
 
     // На самой кнопке текста нет по требованию заказчика — колонка узкая; сколько именно талонов
     // уйдёт в подтверждение, обязана сказать подсказка, иначе клик вслепую.
@@ -66,24 +68,27 @@ describe('сошедшийся талон подтверждается кноп�
     expect(await screen.findByText('Подтвердить талоны: 2 — всё сошлось')).toBeDefined();
   });
 
-  it('нечитаемый файл возвращает в ячейку значки, а кнопку убирает', () => {
+  it('нечитаемый файл убирает кнопку подтверждения и ставит крестик разбора', async () => {
     mockHttp({});
     // Талоны те же и по-прежнему готовы к подтверждению — мешает файл, который не прочитался:
     // кликом его не починить, и «всё сошлось» про такую заявку сказать нельзя.
-    const { container } = renderWithUser(
-      <TicketCell request={readyRequest({ ...READY, failures: 1 })} />,
+    renderWithUser(
+      <TicketCell request={readyRequest({ ...READY, failures: 1 })} onReview={() => {}} />,
     );
 
     expect(screen.queryByRole('button', { name: 'Подтвердить талоны' })).toBeNull();
-    expect(container.textContent).toContain('🚫');
-    expect(container.textContent).toContain('⏳');
+    // Вместо подтверждения — ход на разбор (ADR 0195); сами значки уехали в его подсказку.
+    const review = screen.getByRole('button', { name: 'Открыть разбор талонов: поводов 3' });
+    fireEvent.mouseEnter(review);
+    expect(await screen.findByText(/🚫 1/u)).toBeDefined();
+    expect(screen.getByText(/⏳ 2/u)).toBeDefined();
   });
 
   it('клик уходит с отпечатком набора и отвечает числом подтверждённых', async () => {
     const http = mockHttp({ [CONFIRM_READY]: () => json({ ok: true, confirmed: 2 }) });
     const queryClient = createTestQueryClient();
     queryClient.setQueryData(LIST_KEY, { items: [], total: 0 });
-    renderWithUser(<TicketCell request={readyRequest()} />, { queryClient });
+    renderWithUser(<TicketCell request={readyRequest()} onReview={() => {}} />, { queryClient });
 
     fireEvent.click(screen.getByRole('button', { name: 'Подтвердить талоны' }));
 
@@ -106,7 +111,7 @@ describe('сошедшийся талон подтверждается кноп�
     });
     const queryClient = createTestQueryClient();
     queryClient.setQueryData(LIST_KEY, { items: [], total: 0 });
-    renderWithUser(<TicketCell request={readyRequest()} />, { queryClient });
+    renderWithUser(<TicketCell request={readyRequest()} onReview={() => {}} />, { queryClient });
 
     fireEvent.click(screen.getByRole('button', { name: 'Подтвердить талоны' }));
 

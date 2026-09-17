@@ -1,5 +1,5 @@
 import { Button, Input, Popconfirm, Space, Spin, Tag, Typography } from 'antd';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   containerOwnerMismatch,
@@ -69,6 +69,11 @@ interface Props {
    */
   onAddTickets?: (r: WasteRequestDto, ticketFileIds: string[]) => void;
   addingTickets?: boolean;
+  /**
+   * Чем открыта карточка (ADR 0195). `tickets` — крестиком колонки «Талоны»: окно промотается к
+   * блоку разбора, за которым его и открыли. `null`/не передан — карточку показывают с начала.
+   */
+  focus?: 'tickets' | null;
 }
 
 /**
@@ -259,11 +264,30 @@ export function WasteRequestViewModal({
   rollingBack,
   onAddTickets,
   addingTickets,
+  focus,
 }: Props) {
   // Право разбора талонов (ADR 0114, Р25). Оно же управляет видимостью замечаний и журнала
   // попыток: у внешнего исполнителя есть право закрывать заявку, но не проверять собственную бумагу.
   const { can } = useAuth();
   const canReviewTickets = can('wasteRequests.ticketReview');
+
+  /**
+   * Прокрутка к блоку талонов, когда карточку открыли крестиком колонки (ADR 0195).
+   *
+   * Отсрочка не украшение: содержимое окна монтируется до конца анимации, и прокрутка без неё
+   * уезжает в ещё не разложенную высоту — тем же приёмом ходит форма показаний водителя. Сам
+   * `scrollIntoView` вызывается через `?.`: в тестовой среде метода у узла нет.
+   */
+  const ticketsRef = useRef<HTMLDivElement | null>(null);
+  const focusTickets = focus === 'tickets' && !!request;
+  useEffect(() => {
+    if (!focusTickets) return;
+    const timer = setTimeout(
+      () => ticketsRef.current?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }),
+      300,
+    );
+    return () => clearTimeout(timer);
+  }, [focusTickets, request?.id]);
 
   const { data: history, isPending } = useQuery({
     queryKey: ['waste-requests', request?.id, 'history'],
@@ -536,10 +560,14 @@ export function WasteRequestViewModal({
           {/* Блок открыт и тому, кто бумагу приносит: пока заявка «Выполнена», талон к ней
               дополняют (ADR 0189), и кнопке нужно место даже у заявки, за которой не числится
               ни одного скана. */}
+          {/* Блок открыт и тогда, когда значок заявки обещает разбор (ADR 0195): крестик колонки
+              ведёт сюда, а числа значка считаются и по талону, заведённому руками, — у такого
+              файла нет вовсе, и по трём условиям выше блок оказался бы скрыт. Кнопка, ведущая в
+              карточку без панели, хуже прежних значков. */}
           {(request.tickets.length > 0 ||
             !!onAddTickets ||
-            (canReviewTickets && request.status === 'done')) && (
-            <div>
+            (canReviewTickets && (request.status === 'done' || !!request.ticketBadge))) && (
+            <div ref={ticketsRef}>
               <Typography.Text strong>Талоны</Typography.Text>
               {/* Разбор показывается только с правом `ticketReview` (ADR 0114, Р25): распознанные
                   значения — такой же результат сверки, как и замечания, и видеть их проверяемому

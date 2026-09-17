@@ -6,7 +6,7 @@
 
 Как читать строку: номер · заголовок · статус · «изменён/отменён» следующими решениями (в скобках — граница, если решение правится не целиком) · миграции · пути, названные областью. **⛔ стоит только у решения, которое само объявило себя отменённым или заменённым.** Входящая связь показывает, кто его правил, но насколько — знает лишь текст самого решения: ADR 0141 отменяет приём ADR 0053 в модуле оргтехники, а в вывозе мусора тот приём работает.
 
-Решений: 194. Доменов: 16.
+Решений: 195. Доменов: 16.
 
 ## ⚠ Номера, занятые дважды
 
@@ -19,7 +19,7 @@
   - [Орг.техника: справочник единиц, заявки на обслуживание и гарантии](0085-office-equipment-module.md)
   - [Недельная заявка на технику](0085-weekly-vehicle-request.md)
 
-## вывоз-мусора (29)
+## вывоз-мусора (30)
 
 - [0009](0009-waste-pricing.md) — Тарификация вывоза мусора · изменён 0014, 0019 (пп. 5, 6), 0022 (п. 3 — подбор тарифа) · код: `apps/api/drizzle/0021_waste_tariffs.sql`, `apps/api/src/db/schema.ts`, `packages/contracts/src/waste-tariffs.ts`, `apps/api/src/services/waste-pricing.ts`, `apps/api/src/routes/waste-types.ts`, `apps/api/src/routes/waste-tariffs.ts`, `apps/api/src/routes/waste-requests.ts`, `apps/web/src/pages/WasteRequestsPage.tsx`
 - [0010](0010-counterparties.md) — Контрагенты и роль «Оператор вывоза» · код: `apps/api/drizzle/0022_counterparties.sql`, `apps/api/drizzle/0023_operator_counterparty_check.sql`, `apps/api/drizzle/0027_object_operators.sql`, `apps/api/drizzle/0032_counterparty_vehicle_lessor.sql`, `apps/api/drizzle/0033_vehicle_lessors_seed.sql`, `apps/api/src/db/schema.ts`, `packages/contracts/src/counterparties.ts`, `packages/contracts/src/objects.ts`, `packages/contracts/src/enums.ts`, `apps/api/src/routes/counterparties.ts`, `apps/api/src/routes/objects.ts`, `apps/api/src/routes/waste-requests.ts`, `apps/api/src/routes/users.ts`, `apps/api/src/lib/access.ts`, `apps/api/src/services/object-operators.ts`, `apps/web/src/pages/directories/CounterpartiesTab.tsx`, `apps/web/src/pages/directories/ObjectsTab.tsx`, `apps/web/src/pages/WasteRequestsPage.tsx`
@@ -50,6 +50,7 @@
 - [0182](0182-analytics-summary-export.md) — Сводная книга по заказчикам: заказ техники, вывоз мусора и механизация · реализовано · код: `packages/contracts/src/analytics.ts`, `packages/contracts/src/permissions.ts`, `packages/contracts/src/permission-catalog.ts`, `packages/contracts/src/grants.ts`, `packages/contracts/src/grant-scope.ts`, `apps/api/src/routes/analytics.ts`, `apps/api/src/services/analytics/types.ts`, `apps/api/src/services/analytics/facts-vehicle.ts`, `apps/api/src/services/analytics/facts-waste.ts`, `apps/api/src/services/analytics/facts-mech.ts`, `apps/api/src/services/analytics/periods.ts`, `apps/api/src/services/analytics/rollup.ts`, `apps/api/src/services/analytics/summary.ts`, `apps/api/src/services/analytics-export.ts`, `apps/api/src/services/analytics-export-charts.ts`, `apps/api/src/lib/xlsx.ts`, `apps/api/src/lib/access-manifest.ts`, `apps/api/src/app.ts`, `apps/web/src/pages/admin/ExportsTab.tsx`, `apps/web/src/pages/admin/AnalyticsExportTab.tsx`, `apps/web/src/pages/admin/ReadingsExportTab.tsx`, `apps/web/src/pages/AdministrationPage.tsx`, `apps/web/src/entities/analytics/api/analyticsApi.ts`
 - [0189](0189-waste-tickets-after-done.md) — Талон к выполненной заявке докладывают, а не переоткрывают её · реализовано · код: `packages/contracts/src/waste-requests.ts`, `packages/contracts/src/request-history.ts`, `apps/api/src/routes/waste-requests.ts`, `apps/api/src/services/waste-request-diff.ts`, `apps/api/src/services/waste-request-history.ts`, `apps/api/src/lib/access-manifest.ts`, `apps/web/src/features/waste-ticket-attach/ui/AddTicketsBlock.tsx`, `apps/web/src/pages/waste/WasteRequestViewModal.tsx`, `apps/web/src/pages/WasteRequestsPage.tsx`
 - [0193](0193-waste-stats-tab.md) — Статистика вывоза: вкладка месяца поверх атомов сводной аналитики · реализовано · код: `packages/contracts/src/waste-stats.ts`, `packages/contracts/src/common.ts`, `apps/api/src/services/analytics/types.ts`, `apps/api/src/services/analytics/facts-waste.ts`, `apps/api/src/services/waste-stats.ts`, `apps/api/src/routes/waste-requests.ts`, `apps/web/src/pages/waste/WasteStatsTab.tsx`, `apps/web/src/pages/waste/WasteStatsObjectModal.tsx`, `apps/web/src/pages/waste/wasteStatsNumbers.ts`, `apps/web/src/shared/lib/monthText.ts`, `apps/api/test/waste-stats.db.test.ts`, `apps/web/test/waste-stats-tab.test.tsx`
+- [0195](0195-waste-ticket-review-cross.md) — Колонка «Талоны»: крестик вместо разбивки значков · реализовано · код: `apps/web/src/features/waste-ticket-review/ui/ticketBadgeLegend.ts`, `apps/web/src/features/waste-ticket-review/ui/TicketBadge.tsx`, `apps/web/src/features/waste-ticket-review/ui/TicketCell.tsx`, `apps/web/src/pages/WasteRequestsPage.tsx`, `apps/web/src/pages/waste/WasteRequestViewModal.tsx`, `apps/web/test/waste-ticket-cell-review.test.tsx`, `apps/web/test/waste-ticket-confirm-button.test.tsx`
 
 ## заказ-тс (31)
 
@@ -255,9 +256,10 @@
 - [0093](0093-mailing-window-and-digest-tables.md) — Окно дней вместо периодичности, отбор вместо исключений, сводка по листам · изменён 0111 · миграции `0124`
 - [0111](0111-mailing-permission-audience.md) — Адресация рассылок правом вместо роли · миграции `0151` · код: `apps/api/src/services/mailings/role-digest.ts`, `apps/api/src/routes/admin-mailings.ts`, `apps/api/src/check-mailing-audience.ts`, `packages/contracts/src/mailings.ts`, `apps/web/src/pages/admin/MailingAudienceFields.tsx`
 
-## файлы-и-распознавание (1)
+## файлы-и-распознавание (2)
 
 - [0137](0137-waste-ticket-audit-observations.md) — Наблюдение как единица измерения качества распознавания талонов · код: `apps/api/src/services/waste-ticket-events.ts`, `apps/api/src/routes/waste-tickets.ts`, `apps/worker/src/ticket-ocr/job.ts`, `packages/contracts/src/permissions.ts`
+- [0195](0195-waste-ticket-review-cross.md) — Колонка «Талоны»: крестик вместо разбивки значков · реализовано · код: `apps/web/src/features/waste-ticket-review/ui/ticketBadgeLegend.ts`, `apps/web/src/features/waste-ticket-review/ui/TicketBadge.tsx`, `apps/web/src/features/waste-ticket-review/ui/TicketCell.tsx`, `apps/web/src/pages/WasteRequestsPage.tsx`, `apps/web/src/pages/waste/WasteRequestViewModal.tsx`, `apps/web/test/waste-ticket-cell-review.test.tsx`, `apps/web/test/waste-ticket-confirm-button.test.tsx`
 
 ## каркас-портала (8)
 

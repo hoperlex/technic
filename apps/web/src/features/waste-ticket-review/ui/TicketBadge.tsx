@@ -1,23 +1,38 @@
-import { Space, Tag, Tooltip } from 'antd';
+import { Button, Tag, Tooltip } from 'antd';
+import { CloseOutlined } from '@ant-design/icons';
 import type { WasteTicketBadgeDto } from '@technic/contracts';
+import { ticketBadgeLines, ticketBadgeTotal } from './ticketBadgeLegend';
 
 /**
- * Значок разбора талонов в строке списка заявок (ADR 0114, Р24).
+ * Значок разбора талонов в строке списка заявок (ADR 0114, Р24; ADR 0195).
  *
- * Пять чисел, и каждое отвечает на свой вопрос: **⛔** — цифры не сошлись либо два слепых чтения
- * разошлись, нужен разбор; **⚠️** — похоже на расхождение, но бывает законно (похожий номер, чужой
- * адрес); **⏳** — бумага прочитана и ждёт подтверждения человеком; **🚫** — прочитать не удалось
- * вовсе, нужен новый скан или ручной ввод; **📄** — талон приложен, а разбор его не касался: ни
- * одного подтверждённого талона нет.
+ * До ADR 0195 колонка показывала до пяти чисел со значками разом. Числа были верны, но отвечали
+ * не на тот вопрос: из строки списка с ними ничего нельзя сделать, а разбирать всё равно идут в
+ * карточку — причём кликом мимо значка, потому что теги клик отдавали строке. Теперь у заявки с
+ * поводом для разбора стоит **крестик**, и он ведёт ровно туда, ради чего колонку читают;
+ * разбивка переехала в подсказку, где на неё есть место и где каждому значку хватает расшифровки.
  *
- * Показываются только ненулевые: строка списка тесная, а пять нулей подряд не сообщают ничего,
- * кроме того, что колонка существует. Заявка совсем без бумаги значка не получает — `badge` у неё
- * `null`, и это не то же самое, что «все нули»: у первой разбирать нечего, у второй всё разобрано.
+ * ЦВЕТОМ РАЗЛИЧАЕТСЯ РОВНО ОДНО (Р2): красный крестик — есть ⛔, то есть цифры не сошлись и разбор
+ * нужен сейчас; обычный — всё остальное, что смотрят, когда дойдут руки. Пятицветной палитре в
+ * узкой колонке делать нечего: она называет состояния, но не меняет порядок работы.
+ *
+ * Надписи на кнопке нет — как и у соседней кнопки подтверждения (требование заказчика: колонка
+ * узкая). Числа человек читает в подсказке, читалка экрана — в `aria-label`.
  */
-export function TicketBadge({ badge }: { badge: WasteTicketBadgeDto | null }) {
+export function TicketBadge({
+  badge,
+  onReview,
+}: {
+  badge: WasteTicketBadgeDto | null;
+  /** Ход на разбор: карточка заявки, прокрученная к талонам. */
+  onReview: () => void;
+}) {
   if (!badge) return null;
-  const { errors, warnings, pendingConfirmation, failures, unreviewedPaper } = badge;
-  if (errors + warnings + pendingConfirmation + failures + unreviewedPaper === 0) {
+  const lines = ticketBadgeLines(badge);
+  // Разобранная заявка кнопки не получает: разбирать нечего, и крестик звал бы в пустую панель.
+  // «Все нули» — не то же самое, что заявка без бумаги: у первой всё разобрано, у второй значка
+  // нет вовсе.
+  if (lines.length === 0) {
     return (
       <Tooltip title="Талоны разобраны, расхождений нет">
         <Tag color="success" style={{ marginInlineEnd: 0 }}>
@@ -27,44 +42,24 @@ export function TicketBadge({ badge }: { badge: WasteTicketBadgeDto | null }) {
     );
   }
   return (
-    <Space size={4} wrap>
-      {errors > 0 && (
-        <Tooltip title={`Расхождений: ${errors}`}>
-          <Tag color="error" style={{ marginInlineEnd: 0 }}>
-            ⛔ {errors}
-          </Tag>
-        </Tooltip>
-      )}
-      {warnings > 0 && (
-        <Tooltip title={`Предупреждений: ${warnings}`}>
-          <Tag color="warning" style={{ marginInlineEnd: 0 }}>
-            ⚠️ {warnings}
-          </Tag>
-        </Tooltip>
-      )}
-      {pendingConfirmation > 0 && (
-        <Tooltip title={`Ждут подтверждения: ${pendingConfirmation}`}>
-          <Tag color="processing" style={{ marginInlineEnd: 0 }}>
-            ⏳ {pendingConfirmation}
-          </Tag>
-        </Tooltip>
-      )}
-      {failures > 0 && (
-        <Tooltip title={`Не удалось прочитать: ${failures}. Нужен новый скан или ручной ввод`}>
-          <Tag color="default" style={{ marginInlineEnd: 0 }}>
-            🚫 {failures}
-          </Tag>
-        </Tooltip>
-      )}
-      {unreviewedPaper > 0 && (
-        <Tooltip
-          title={`Талон приложен, но не разобран: ${unreviewedPaper}. Распознайте файл или заведите талон руками`}
-        >
-          <Tag color="default" style={{ marginInlineEnd: 0 }}>
-            📄 {unreviewedPaper}
-          </Tag>
-        </Tooltip>
-      )}
-    </Space>
+    <Tooltip
+      title={
+        <div>
+          {lines.map(({ state, count }) => (
+            <div key={state.key}>{`${state.icon} ${count} — ${state.label}`}</div>
+          ))}
+          <div style={{ marginTop: 4 }}>Открыть разбор</div>
+        </div>
+      }
+    >
+      <Button
+        size="small"
+        icon={<CloseOutlined />}
+        // Красный — только у несошедшихся цифр: «иди сейчас» против «посмотри, когда дойдут руки».
+        danger={badge.errors > 0}
+        aria-label={`Открыть разбор талонов: поводов ${ticketBadgeTotal(badge)}`}
+        onClick={onReview}
+      />
+    </Tooltip>
   );
 }
