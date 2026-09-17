@@ -158,8 +158,9 @@ export function UserAuditPathDrawer({ target, onClose }: Props) {
       open={open}
       onClose={onClose}
       // Во весь экран на телефоне и широкой полосой на десктопе: в событии по три-четыре строки
-      // значений, и в узкой панели каждая переносилась бы по слогам.
-      width={isMobile ? '100%' : 520}
+      // значений, и в узкой панели каждая переносилась бы по слогам. Ширина задаётся `size` —
+      // `width` в antd 6 устарел, и тем же именем её задаёт соседняя карточка типа ТС.
+      size={isMobile ? '100%' : 520}
       title={user?.fullName ?? target?.name ?? 'Путь учётной записи'}
       destroyOnHidden
     >

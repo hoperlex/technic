@@ -6,6 +6,7 @@ import {
   type UserAccountDto,
 } from '@technic/contracts';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
+import { userAccountKeys } from '@entities/user-account';
 import { usersApi } from '../../api/resources';
 
 /**
@@ -58,7 +59,7 @@ export function useDepartmentHeadOptions(current: DepartmentHeadRefDto[]): {
 } {
   const queries = useQueries({
     queries: DEPARTMENT_SCOPED_ROLES.map((role) => ({
-      queryKey: ['users', 'department-head-candidates', role],
+      queryKey: userAccountKeys.departmentHeadCandidates(role),
       queryFn: () =>
         usersApi.list({
           page: 1,

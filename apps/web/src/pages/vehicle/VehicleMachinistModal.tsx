@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useState } from 'react';
 import { Alert, App, Button, Form, Input, Space } from 'antd';
 import type { Dayjs } from 'dayjs';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   moscowDateKeyOf,
   type AssignmentPreviewDto,
@@ -12,13 +12,10 @@ import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys, waybillKeys } from '@entities/vehicle-request';
-import {
-  driversApi,
-  vehicleRequestsApi,
-  type AssignmentCommandResultDto,
-} from '../../api/resources';
+import { vehicleRequestsApi, type AssignmentCommandResultDto } from '../../api/resources';
 import { errorMessage } from '../../utils/format';
 import { AssignmentHistoryPanel } from './AssignmentHistoryPanel';
+import { useMachinistDirectory } from './machinistDirectory';
 import { MachinistAnchorFields, MachinistPickFields } from './MachinistFields';
 import {
   assignmentVehicle,
@@ -57,8 +54,6 @@ import { ASSIGNMENT_PREVIEW_STALE } from './ReassignPreview';
  * предпросмотром и проверяются сервером под блокировкой. Портал складывает отрезки только чтобы
  * показать состав по датам — ни одна кнопка от этого расчёта не зависит.
  */
-
-const MACHINISTS_KEY = ['drivers', 'machinists'] as const;
 
 /** Аргумент предпросмотра: команда, уже названные имена и причина возврата к последствиям. */
 interface PreviewArgs {
@@ -122,40 +117,7 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
   // стёрла бы уже набранное.
   useEffect(() => resetForRequest(targetId), [targetId]);
 
-  const history = useQuery({
-    queryKey: vehicleRequestKeys.history(targetId ?? ''),
-    queryFn: () => vehicleRequestsApi.assignmentHistory(targetId!),
-    enabled: open,
-    retry: false,
-  });
-
-  /**
-   * Справочник водителей целиком — тот же список, что у поля машиниста в окне назначения: в бланке
-   * ЭСМ-2 нет ни СНИЛС, ни удостоверения, и отбирать по ним некого (ADR 0055). Это список ВЫБОРА, и
-   * снятые карточки он прячет — предложить удалённого человека нельзя (ADR 0190).
-   */
-  const machinists = useQuery({
-    queryKey: MACHINISTS_KEY,
-    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortDir: 'asc' }),
-    enabled: open,
-  });
-
-  /**
-   * Имена «Состава по датам» приходят ВМЕСТЕ с историей, а не ищутся в списке выбора (ADR 0190,
-   * Э4). Список выбора снятые карточки прячет — и заявка, у которой машиниста как раз и сняли,
-   * писала бы «машиниста нет в справочнике водителей» ровно там, где человек работал и на его имя
-   * выписаны бланки. Спрашивают здесь не «кого можно назначить», а «как зовут того, кто назван».
-   *
-   * Снятая карточка называется снятой прямо в строке: иначе «Состав по датам» выглядит исправным,
-   * а следующий бланк уходит на удалённого молча.
-   */
-  const driverName = (personId: string) => {
-    const person = history.data?.people.find((p) => p.personId === personId);
-    if (person) {
-      return person.cardRemovedOn ? `${person.fullName} (карточка снята)` : person.fullName;
-    }
-    return machinists.data?.items.find((d) => d.id === personId)?.fullName;
-  };
+  const { history, machinists, driverName } = useMachinistDirectory(targetId, open);
 
   const previewMut = useMutation({
     mutationFn: async (v: PreviewArgs) => ({

@@ -3,4 +3,4 @@
  * (план `docs/fuel-norms-plan.md`). Снаружи берут `@entities/fuel-norm`.
  */
 export { fuelNormsApi } from './api/fuelNormsApi';
-export { fuelNormKeys } from './api/keys';
+export { fuelNormKeys, fuelNormVehiclePickerKey } from './api/keys';

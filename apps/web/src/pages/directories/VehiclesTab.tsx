@@ -9,17 +9,8 @@ import {
   Select,
   Space,
   Tag,
-  Tooltip,
-  type TableColumnsType,
 } from 'antd';
-import {
-  DeleteFilled,
-  DeleteOutlined,
-  EditOutlined,
-  ExclamationCircleOutlined,
-  PlusOutlined,
-  ReloadOutlined,
-  DashboardOutlined,} from '@ant-design/icons';
+import { DashboardOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   RENTAL_STATUSES,
@@ -32,7 +23,6 @@ import {
   VEHICLE_STATUSES,
   parseVehicleClassificationKey,
   rentalActivationBlockReason,
-  vehicleOwnershipColors,
   vehicleOwnershipLabels,
   assignmentRateLabel,
   vehicleClassificationLabel,
@@ -57,13 +47,14 @@ import { FuelNormsModal } from './FuelNormsModal';
 import { unhitchedNotice, VehicleTrailersField } from '@entities/vehicle-trailer';
 import { useVehicleMaintenanceAction } from '@features/vehicle-maintenance';
 import { AutoSelect, DataTable, FormModal, PageTableLayout } from '@shared/ui';
-import { actionsColumn, badgeColumn, sortOptionsFrom, textColumn } from '@shared/ui';
+import { sortOptionsFrom } from '@shared/ui';
 import type { CardConfig } from '@shared/ui';
 import { useIsMobile, useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { useVehicleFilters, type VehicleFilterParams } from './VehicleFilters';
+import { vehicleRegistryColumns } from './vehicleRegistryColumns';
 
 // Справочник техники (ADR 0007) с двумя ветками принадлежности (ADR 0018). Один список, а не две
 // вкладки: сравнивать своё и аренду нужно рядом. Переключатель принадлежности не только фильтрует,
@@ -90,9 +81,6 @@ const rentalStatusOptions = RENTAL_STATUSES.map((s) => ({
   value: s,
   label: vehicleStatusLabels[s],
 }));
-
-const money = (v: number | null) =>
-  v == null ? '—' : `${v.toLocaleString('ru-RU', { minimumFractionDigits: 0 })} ₽`;
 
 /**
  * Заведение отвечает голой карточкой — к форме ответа правки его приводит одно место. Снимать
@@ -331,163 +319,18 @@ export function VehiclesTab() {
       onOk: () => removeMut.mutateAsync(r.id),
     });
 
-  const columns: TableColumnsType<VehicleDto> = [
-    // Колонку принадлежности показываем только в общем списке: в отфильтрованном она одинакова.
-    ...(ownershipFilter
-      ? []
-      : [
-          badgeColumn<VehicleDto>({
-            key: 'ownership',
-            title: 'Принадлежность',
-            dataIndex: 'ownership',
-            labels: vehicleOwnershipLabels,
-            colors: vehicleOwnershipColors,
-            width: 150,
-          }),
-        ]),
-    {
-      key: 'typeName',
-      title: 'Тип',
-      dataIndex: 'typeName',
-      width: 180,
-      ellipsis: true,
-      sorter: true,
-    },
-    {
-      key: 'categoryName',
-      title: 'Категория',
-      width: 200,
-      ellipsis: true,
-      sorter: true,
-      render: (_v: unknown, r: VehicleDto) => r.categoryName ?? '—',
-    },
-    ...(showOwnColumns
-      ? [
-          textColumn<VehicleDto>({
-            key: 'registrationNumber',
-            title: 'Госномер',
-            dataIndex: 'registrationNumber',
-            searchable: false,
-            width: 140,
-            render: (_v, r) => r.registrationNumber ?? '—',
-          }),
-          {
-            key: 'modelName',
-            title: 'Марка/модель',
-            width: 180,
-            ellipsis: true,
-            sorter: true,
-            render: (_v: unknown, r: VehicleDto) => r.modelName ?? '—',
-          },
-        ]
-      : []),
-    ...(showRentalColumns
-      ? [
-          {
-            key: 'lessorName',
-            title: 'Арендодатель',
-            width: 220,
-            ellipsis: true,
-            sorter: true,
-            render: (_v: unknown, r: VehicleDto) => r.lessorName ?? '—',
-          },
-          {
-            key: 'description',
-            title: 'Описание',
-            width: 180,
-            ellipsis: true,
-            sorter: true,
-            render: (_v: unknown, r: VehicleDto) => r.description || '—',
-          },
-          {
-            key: 'pricePerHour',
-            title: '₽/час',
-            width: 120,
-            align: 'right' as const,
-            sorter: true,
-            render: (_v: unknown, r: VehicleDto) => money(r.pricePerHour),
-          },
-          {
-            key: 'pricePerShift',
-            title: '₽/смена',
-            width: 140,
-            align: 'right' as const,
-            sorter: true,
-            render: (_v: unknown, r: VehicleDto) =>
-              r.pricePerShift == null ? (
-                '—'
-              ) : (
-                <Tooltip
-                  title={r.shiftHours ? `Смена ${r.shiftHours} ч` : 'Длительность смены не задана'}
-                >
-                  {money(r.pricePerShift)}
-                </Tooltip>
-              ),
-          },
-        ]
-      : []),
-    {
-      key: 'status',
-      title: 'Статус',
-      dataIndex: 'status',
-      width: 160,
-      sorter: true,
-      // У предложения с неактивным арендодателем рядом со статусом висит причина, по которой его
-      // нельзя включить, — иначе выключенный вариант в форме выглядел бы поломкой.
-      render: (v: VehicleStatus, r: VehicleDto) => {
-        const reason = rentalActivationBlockReason(r);
-        return (
-          <Space size={4}>
-            <Tag color={vehicleStatusColors[v]}>{vehicleStatusLabels[v]}</Tag>
-            {reason ? (
-              <Tooltip title={reason}>
-                <ExclamationCircleOutlined style={{ color: '#faad14' }} />
-              </Tooltip>
-            ) : null}
-          </Space>
-        );
-      },
-    },
-    // Ширина задана явно: в живой ветви теперь четыре кнопки, в архивной — тег и две, и
-    // умолчание в 130 px рвало бы их на две строки.
-    actionsColumn<VehicleDto>((r) =>
-      r.deletedAt ? (
-        <Space>
-          <Tag>в архиве</Tag>
-          {canRestore ? (
-            <Button
-              size="small"
-              icon={<ReloadOutlined />}
-              title="Восстановить"
-              onClick={() => restoreMut.mutate(r.id)}
-            />
-          ) : null}
-          {purge.allowed ? (
-            <Button
-              size="small"
-              danger
-              icon={<DeleteFilled />}
-              title="Удалить окончательно"
-              loading={purge.pending}
-              onClick={() => purge.confirm(r.id, vehicleTitle(r))}
-            />
-          ) : null}
-        </Space>
-      ) : (
-        <Space>
-          {maintenance.button({ id: r.id, label: vehicleTitle(r) })}
-          <Button
-            size="small"
-            icon={<DashboardOutlined />}
-            title="Нормы расхода топлива"
-            onClick={() => setNormsFor({ id: r.id, label: vehicleTitle(r) })}
-          />
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => confirmDelete(r)} />
-        </Space>
-      ),
-    ),
-  ];
+  const columns = vehicleRegistryColumns({
+    ownershipFilter,
+    showOwnColumns,
+    showRentalColumns,
+    canRestore,
+    restore: (id) => restoreMut.mutate(id),
+    purge,
+    maintenanceButton: maintenance.button,
+    onFuelNorms: (target) => setNormsFor(target),
+    onEdit: openEdit,
+    onDelete: confirmDelete,
+  });
 
   /**
    * Справочник норм расхода топлива — окном (план `docs/fuel-norms-plan.md`, §5). Открывается двумя
