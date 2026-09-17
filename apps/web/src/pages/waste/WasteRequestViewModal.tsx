@@ -553,11 +553,7 @@ export function WasteRequestViewModal({
                   <WasteTicketsPanel requestId={request.id} />
                 </div>
               ) : (
-                <FileLinkList
-                  files={request.tickets}
-                  maxNameWidth={420}
-                  emptyText="Талонов нет"
-                />
+                <FileLinkList files={request.tickets} maxNameWidth={420} emptyText="Талонов нет" />
               )}
               {onAddTickets && (
                 <AddTicketsBlock request={request} onAdd={onAddTickets} adding={addingTickets} />
