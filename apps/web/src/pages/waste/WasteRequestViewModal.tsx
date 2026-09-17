@@ -1,5 +1,5 @@
 import { Button, Input, Popconfirm, Space, Spin, Tag, Typography } from 'antd';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   containerOwnerMismatch,
@@ -29,6 +29,7 @@ import { FileLinkList, FilesButton } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
+import { useScrollIntoViewWhen } from '@shared/lib';
 import { ViewFields, ViewModal } from '@shared/ui';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 
@@ -69,10 +70,7 @@ interface Props {
    */
   onAddTickets?: (r: WasteRequestDto, ticketFileIds: string[]) => void;
   addingTickets?: boolean;
-  /**
-   * Чем открыта карточка (ADR 0195). `tickets` — крестиком колонки «Талоны»: окно промотается к
-   * блоку разбора, за которым его и открыли. `null`/не передан — карточку показывают с начала.
-   */
+  /** Чем открыта карточка (ADR 0195): `tickets` — крестиком колонки, окно едет к блоку разбора. */
   focus?: 'tickets' | null;
 }
 
@@ -270,24 +268,7 @@ export function WasteRequestViewModal({
   // попыток: у внешнего исполнителя есть право закрывать заявку, но не проверять собственную бумагу.
   const { can } = useAuth();
   const canReviewTickets = can('wasteRequests.ticketReview');
-
-  /**
-   * Прокрутка к блоку талонов, когда карточку открыли крестиком колонки (ADR 0195).
-   *
-   * Отсрочка не украшение: содержимое окна монтируется до конца анимации, и прокрутка без неё
-   * уезжает в ещё не разложенную высоту — тем же приёмом ходит форма показаний водителя. Сам
-   * `scrollIntoView` вызывается через `?.`: в тестовой среде метода у узла нет.
-   */
-  const ticketsRef = useRef<HTMLDivElement | null>(null);
-  const focusTickets = focus === 'tickets' && !!request;
-  useEffect(() => {
-    if (!focusTickets) return;
-    const timer = setTimeout(
-      () => ticketsRef.current?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }),
-      300,
-    );
-    return () => clearTimeout(timer);
-  }, [focusTickets, request?.id]);
+  const ticketsRef = useScrollIntoViewWhen<HTMLDivElement>(focus === 'tickets', request?.id);
 
   const { data: history, isPending } = useQuery({
     queryKey: ['waste-requests', request?.id, 'history'],
@@ -551,19 +532,14 @@ export function WasteRequestViewModal({
             </div>
           )}
 
-          {/* Талоны стоят отдельным блоком от документов заявки: это не сопроводительная
-              бумага, а подтверждение вывоза (ADR 0013). С ADR 0024 список общий у заявки
-              любого типа — по машинам талоны не делятся. */}
-          {/* Блок показывается и когда талонов нет вовсе — если заявка выполнена. Бумага должна
-              быть: сверка объёма считает «в талонах 0 м³ против 40 в закрытии» и без единого
-              файла, а спрятанный блок означал бы посчитанное и никому не показанное замечание. */}
-          {/* Блок открыт и тому, кто бумагу приносит: пока заявка «Выполнена», талон к ней
-              дополняют (ADR 0189), и кнопке нужно место даже у заявки, за которой не числится
-              ни одного скана. */}
-          {/* Блок открыт и тогда, когда значок заявки обещает разбор (ADR 0195): крестик колонки
-              ведёт сюда, а числа значка считаются и по талону, заведённому руками, — у такого
-              файла нет вовсе, и по трём условиям выше блок оказался бы скрыт. Кнопка, ведущая в
-              карточку без панели, хуже прежних значков. */}
+          {/* Талоны стоят отдельным блоком от документов заявки: это не сопроводительная бумага,
+              а подтверждение вывоза (ADR 0013). С ADR 0024 список общий у заявки любого типа —
+              по машинам талоны не делятся. Блок открыт и у заявки без единого скана: выполненной —
+              сверка объёма считает «в талонах 0 м³ против 40 в закрытии» и без файлов, а
+              спрятанный блок означал бы посчитанное и никому не показанное замечание; той, к
+              которой бумагу ещё донесут (ADR 0189) — кнопке нужно место; и всякой, чей значок
+              обещает разбор (ADR 0195) — числа считаются и по талону, заведённому руками, а
+              файла у такого нет вовсе. */}
           {(request.tickets.length > 0 ||
             !!onAddTickets ||
             (canReviewTickets && (request.status === 'done' || !!request.ticketBadge))) && (

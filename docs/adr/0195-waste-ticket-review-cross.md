@@ -21,7 +21,9 @@
   [TicketCell.tsx](../../apps/web/src/features/waste-ticket-review/ui/TicketCell.tsx),
   [WasteRequestsPage.tsx](../../apps/web/src/pages/WasteRequestsPage.tsx) (колонка и фокус
   карточки), [WasteRequestViewModal.tsx](../../apps/web/src/pages/waste/WasteRequestViewModal.tsx)
-  (проматывание к блоку разбора, условие показа блока); тесты —
+  (проматывание к блоку разбора, условие показа блока),
+  [useScrollIntoViewWhen.ts](../../apps/web/src/shared/lib/useScrollIntoViewWhen.ts) (общий хук
+  проматывания: отсрочка под анимацию окна); тесты —
   [waste-ticket-cell-review.test.tsx](../../apps/web/test/waste-ticket-cell-review.test.tsx),
   [waste-ticket-confirm-button.test.tsx](../../apps/web/test/waste-ticket-confirm-button.test.tsx)
 

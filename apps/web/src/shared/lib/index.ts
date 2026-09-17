@@ -18,6 +18,7 @@ export * from './useElementSize';
 export * from './useIsMobile';
 export * from './useListParams';
 export * from './useOpenedRecord';
+export * from './useScrollIntoViewWhen';
 export * from './usePruneMissingFilters';
 export * from './useSoleOptionAutoSelect';
 export * from './useVersionCheck';
