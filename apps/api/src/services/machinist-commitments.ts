@@ -9,7 +9,6 @@ import type { db } from '../db/client';
 import {
   constructionObjects,
   departments,
-  persons,
   specialEquipmentRequestDetails,
   vehicleRequestAssignmentChanges,
   vehicleRequests,
@@ -70,11 +69,20 @@ export interface MachinistCommitments {
 }
 
 /**
- * Чем человек занят как машинист — **один расчёт на две двери** (план `machinist-card-removal`, Э1).
+ * Чем человек занят как машинист — перечень последствий для двери удаления (план
+ * `machinist-card-removal`, Э1). Единственный вызывающий — сама дверь (`routes/drivers.ts`).
  *
- * Им считается и предупреждение удаления карточки, и плашка «машинист снят» в карточке заявки.
- * Второй расчёт того же ответа разошёлся бы с первым — ровно тот порок, который эта волна и лечит:
- * удаление молчало о последствиях, потому что о них никто не спрашивал.
+ * Вопрос у него один: «что сломается, если карточку снять сегодня». Ответ нужен заранее и целиком —
+ * заказами, сроками и числом будущих листов, — потому что диалог обязан назвать последствия до того,
+ * как они наступят, и подтвердить отпечатком именно тот список, который человек видел.
+ *
+ * ПОЧЕМУ ПЛАШКА «МАШИНИСТ СНЯТ» СЧИТАЕТСЯ НЕ ЗДЕСЬ. У неё другой вопрос — не «что сломается», а
+ * «снята ли карточка того, на кого бумага уже идёт»: так его задают карточка заказа
+ * (`driverContactSelection` в `routes/vehicle-requests.ts`), срез «на площадке» (`persons.deletedAt`
+ * рядом с именем) и окно недельной заявки (`machinistCardRemovedSql` ниже). Отвечает на него одно
+ * поле в той же выборке, которая достаёт имя, — и это не второй расчёт того же ответа, а ответ на
+ * другой вопрос. Звать сюда ради плашки значило бы считать на каждую строку списка историю
+ * назначений, план ЭСМ-2 и недельные заявки, да ещё в транзакции.
  *
  * ЧТО СЧИТАЕТСЯ ЗАТРОНУТЫМ. Не только «срок ещё идёт»: недельная заявка продлевает и заказ,
  * кончившийся до неё (`sourceItemBlocker` контрактов — не раньше чем за неделю до начала недели),
@@ -379,22 +387,6 @@ async function ownershipOf(
 function laterOf(current: string, pending: string | null): string {
   if (!pending) return current;
   return pending > current ? pending : current;
-}
-
-/** ФИО и дата снятия карточки — ими диалог и плашка называют человека. */
-export async function personRemovalOf(
-  reader: Tx,
-  personId: string,
-): Promise<{ fullName: string; removedOn: string | null } | null> {
-  const [row] = await reader
-    .select({ fullName: persons.fullName, deletedAt: persons.deletedAt })
-    .from(persons)
-    .where(eq(persons.id, personId));
-  if (!row) return null;
-  return {
-    fullName: row.fullName,
-    removedOn: row.deletedAt ? moscowDateKeyOf(row.deletedAt) : null,
-  };
 }
 
 /**
