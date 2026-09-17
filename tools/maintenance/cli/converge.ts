@@ -335,6 +335,10 @@ async function takeReview(
   if (parsed.findings.length === 0 && parsed.problems.length > 0) {
     out.error('ответ ревьюера не разобран: прогон ждёт исправленный ответ, а не идёт дальше');
     out.item(`файл: ${path.relative(config.root, file)}`);
+    out.item(
+      'исправьте ответ в этом файле или удалите его и повторите команду: тогда задание уйдёт ' +
+        'агенту заново',
+    );
     return { ok: false };
   }
 

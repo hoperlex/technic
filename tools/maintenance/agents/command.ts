@@ -48,7 +48,9 @@ export function commandAdapter(options: CommandAgentOptions): AgentAdapter {
     id: options.id ?? 'command',
     title: options.title ?? `Внешняя команда: ${options.command.join(' ') || 'не задана'}`,
     deliver(packet: WorkPacket, context: AgentContext): AgentReply {
-      const text = renderPacket(packet);
+      // 'stdout': задание просит напечатать ответ, а не записать. Файл здесь пишем мы сами, из
+      // вывода агента, и второе место ответа только запутало бы обоих.
+      const text = renderPacket(packet, 'stdout');
       // Задание пишется на диск и в командном режиме: агент может сослаться на файл, а человек —
       // прочитать его потом, разбирая, на что именно агент отвечал.
       mkdirSync(path.dirname(context.taskFile), { recursive: true });

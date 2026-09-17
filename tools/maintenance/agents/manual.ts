@@ -45,7 +45,7 @@ export function manualAdapter(): AgentAdapter {
 function writeTask(packet: WorkPacket, context: AgentContext): void {
   mkdirSync(path.dirname(context.taskFile), { recursive: true });
   mkdirSync(path.dirname(context.answerFile), { recursive: true });
-  writeFileSync(context.taskFile, renderPacket(packet), 'utf8');
+  writeFileSync(context.taskFile, renderPacket(packet, 'file'), 'utf8');
 }
 
 /** Путь печатается человеку, поэтому он относительный: абсолютный в терминале только мешает. */

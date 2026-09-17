@@ -94,7 +94,7 @@ test('командный адаптер передаёт задание на std
     assert.equal(reply.kind, 'answer');
     const text = reply.kind === 'answer' ? reply.text : '';
     assert.match(text, /найти мёртвый код/);
-    assert.match(text, /\.maintenance\/results\/review\.json/);
+    assert.match(text, /Напечатайте ответ в стандартный вывод/);
     assert.equal(text, readFileSync(box.context.taskFile, 'utf8'));
     // Полученный ответ сохраняется туда, где его ждёт остальной цикл.
     assert.equal(readFileSync(box.context.answerFile, 'utf8'), text);
@@ -218,6 +218,30 @@ test('неположительный таймаут — отказ: ждать �
     });
     assert.equal(reply.kind, 'failed');
     assert.match(reply.kind === 'failed' ? reply.why : '', /таймаут/);
+  } finally {
+    box.dispose();
+  }
+});
+
+/*
+ * Проверка стоит отдельным тестом, потому что её отсутствие уже стоило прогона.
+ *
+ * В первом самоходном прогоне задание требовало «положите ответ в файл», а ревьюеру запись
+ * запрещена флагом запуска. Агент не смог выполнить инструкцию, сказал об этом словами и напечатал
+ * находки таблицей; разбор не нашёл в таблице JSON, и прогон встал на десятой минуте ожидания.
+ */
+test('задание называет способ ответа по адаптеру: ручному — файл, командному — вывод', () => {
+  const box = sandbox();
+  try {
+    manualAdapter().deliver(PACKET, box.context);
+    const manualTask = readFileSync(box.context.taskFile, 'utf8');
+    assert.match(manualTask, /Положите ответ в файл/);
+
+    commandAdapter({ command: ['true'], log: () => {} }).deliver(PACKET, box.context);
+    const commandTask = readFileSync(box.context.taskFile, 'utf8');
+    assert.match(commandTask, /Напечатайте ответ в стандартный вывод/);
+    // Слова про файл в командном задании быть не должно вовсе: агент принял бы его за место ответа.
+    assert.ok(!commandTask.includes('Положите ответ в файл'));
   } finally {
     box.dispose();
   }
