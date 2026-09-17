@@ -104,7 +104,7 @@ export function policySetFixture(overrides: Partial<PolicySet> = {}): PolicySet 
       },
       deepMaintenance: {
         enabled: false,
-        windowMinutes: 120,
+        zoneMinutes: 120,
         maxRepairBatches: 6,
         maxFindingsPerBatch: 3,
         maxFilesPerBatch: 8,

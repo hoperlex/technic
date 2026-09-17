@@ -145,7 +145,14 @@ export interface DeepMaintenanceZone {
 
 export interface DeepMaintenanceBudget {
   readonly enabled: boolean;
-  readonly windowMinutes: number;
+  /**
+   * Бюджет НА ЗОНУ, а не на всё окно.
+   *
+   * Общий счётчик на окно оказался ложной мерой: ревьюер думает минутами, и съеденное им время
+   * отнималось у исполнителя — окно закрывалось, не сделав ни одной правки в последней зоне. Время
+   * отпускается зоне, а когда оно вышло, система не закрывается молча, а спрашивает человека.
+   */
+  readonly zoneMinutes: number;
   readonly maxRepairBatches: number;
   readonly maxFindingsPerBatch: number;
   readonly maxFilesPerBatch: number;

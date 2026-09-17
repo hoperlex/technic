@@ -31,6 +31,7 @@ import { selectFindings } from '../core/selector.ts';
 import { collectFacts, decisionsFor, saveFacts, widenScope } from '../analyzers/facts.ts';
 import { changedSince, collectGit, fileHotness } from '../analyzers/git.ts';
 import { decideStart } from '../core/start-gate.ts';
+import { askChoice } from './ask.ts';
 import { anchorNamed, readReleaseAnchor } from '../project/release-anchor.ts';
 import { FileCheckpointTransaction } from '../git/transaction.ts';
 import { ensureWorkspace, type Workspace } from '../state/workspace.ts';
@@ -151,7 +152,7 @@ export async function deep(
     state = startWindow(policy, new Date());
     saveState(workspace, state, []);
     out.heading(`окно ${state.windowId}`);
-    out.item(`бюджет: ${policy.windowMinutes} мин, партий не больше ${policy.maxRepairBatches}`);
+    out.item(`бюджет: ${policy.zoneMinutes} мин, партий не больше ${policy.maxRepairBatches}`);
     out.item(`зоны: ${policy.zones.map((zone) => zone.id).join(' → ')}`);
     out.item(
       `ход пишется в ${path.relative(config.root, path.join(config.runtimeDir, 'logs', 'maintain.log'))} — за ним можно следить: tail -f`,
@@ -347,6 +348,47 @@ async function takeZoneReview(
 }
 
 /** Взять из очереди следующую партию и выдать её исполнителю. */
+/**
+ * Время зоны вышло: спросить человека, а не закрывать окно молча.
+ *
+ * ПОЧЕМУ ВОПРОС, А НЕ ЧИСЛО В ПОЛИТИКЕ. Сколько времени стоит потратить — известно только сейчас и
+ * только человеку: он видит, что зона разобрана наполовину, и знает, занят ли он ближайший час.
+ * Число в политике этого знать не может, каким бы оно ни было.
+ *
+ * ПОЧЕМУ ЛЕСТНИЦА. Отказ продолжать редко значит «хватит совсем» — чаще «столько не дам». Вопрос
+ * с двумя ответами превращал бы «дам ещё полчаса» в «закрывай».
+ *
+ * Терминала нет (окно запустили из хука или скрипта) — спрашивать некого, и окно закрывается, как
+ * закрывалось раньше. Молчаливое ожидание ответа было бы худшим исходом: команда висела бы вечно.
+ */
+function askForMoreTime(
+  policy: DeepMaintenanceBudget,
+  state: WindowState,
+  out: Reporter,
+): WindowState | null {
+  const zone = policy.zones[state.zoneIndex]?.id ?? 'зона';
+  const full = Math.round(policy.zoneMinutes);
+  const minutes = askChoice(
+    `\n  Время зоны «${zone}» вышло (${full} мин). Продолжить?`,
+    [
+      { key: 'y', title: `ещё ${full} мин`, value: full },
+      { key: '1', title: '120 мин', value: 120 },
+      { key: '2', title: '90 мин', value: 90 },
+      { key: '3', title: '60 мин', value: 60 },
+      { key: 'n', title: 'закрыть окно', value: 0 },
+    ].filter((choice) => choice.value === 0 || choice.value <= full || choice.key === 'y'),
+  );
+  if (minutes === null || minutes <= 0) return null;
+
+  out.item(`добавлено минут: ${minutes}`);
+  return {
+    ...state,
+    step: state.step === 'finished' ? 'awaiting-review' : state.step,
+    stop: null,
+    deadline: new Date(Date.now() + minutes * 60_000).toISOString(),
+  };
+}
+
 async function takeNextBatch(
   config: MaintenanceConfig,
   policies: PolicySet,
@@ -357,7 +399,14 @@ async function takeNextBatch(
   args: DeepArgs,
 ): Promise<CommandResult> {
   const policy = policies.maintenance.deepMaintenance;
-  const advanced = advanceWindow(state, policy, new Date(), queue.length);
+  let advanced = advanceWindow(state, policy, new Date(), queue.length);
+  if (advanced.stop?.reason === 'timeBudgetSpent') {
+    const extended = askForMoreTime(policy, advanced, out);
+    if (extended !== null) {
+      // Время добавлено — окно возвращается к работе с той же зоной и той же очередью.
+      advanced = advanceWindow(extended, policy, new Date(), queue.length);
+    }
+  }
   if (advanced.step === 'finished') {
     saveState(workspace, advanced, queue);
     out.heading('окно закрыто');

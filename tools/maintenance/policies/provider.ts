@@ -248,7 +248,7 @@ export class YamlPolicyProvider implements PolicyProvider {
       },
       deepMaintenance: {
         enabled: bool({ file: shortName, at: 'deepMaintenance' }, deep, 'enabled', false),
-        windowMinutes: num({ file: shortName, at: 'deepMaintenance' }, deep, 'windowMinutes'),
+        zoneMinutes: num({ file: shortName, at: 'deepMaintenance' }, deep, 'zoneMinutes'),
         maxRepairBatches: num({ file: shortName, at: 'deepMaintenance' }, deep, 'maxRepairBatches'),
         maxFindingsPerBatch: num(
           { file: shortName, at: 'deepMaintenance' },

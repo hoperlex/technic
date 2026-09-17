@@ -85,8 +85,10 @@ export interface WindowState {
   /**
    * Срок окна, посчитанный один раз при открытии.
    *
-   * Хранится, а не вычисляется каждый раз из политики: правка `windowMinutes` посреди окна иначе
-   * продлевала бы уже идущее окно молча, и «два часа» означали бы столько, сколько не жалко.
+   * Хранится, а не вычисляется каждый раз из политики: правка `zoneMinutes` посреди окна иначе
+   * продлевала бы уже идущее окно молча, и «три часа» означали бы столько, сколько не жалко.
+   *
+   * Срок относится к ЗОНЕ: переход к следующей отпускает ей своё время, а не остаток общего.
    */
   readonly deadline: string;
   /** Номер текущей зоны в списке политики, считая с нуля. */
@@ -122,14 +124,14 @@ export function startWindow(policy: DeepMaintenanceBudget, now: Date): WindowSta
   if (policy.zones.length === 0) {
     throw new Error('в политике не описано ни одной зоны: разбирать долг нечем');
   }
-  if (policy.windowMinutes <= 0) {
-    throw new Error(`окно длиной ${policy.windowMinutes} мин: времени нет ни на одну партию`);
+  if (policy.zoneMinutes <= 0) {
+    throw new Error(`зона длиной ${policy.zoneMinutes} мин: времени нет ни на одну партию`);
   }
   const startedAt = now.toISOString();
   return {
     windowId: windowIdOf(startedAt),
     startedAt,
-    deadline: new Date(now.getTime() + policy.windowMinutes * MINUTE_MS).toISOString(),
+    deadline: new Date(now.getTime() + policy.zoneMinutes * MINUTE_MS).toISOString(),
     zoneIndex: 0,
     step: 'awaiting-review',
     batches: [],
@@ -359,7 +361,14 @@ export function advanceWindow(
    * очередь закрывает окно выше. Брать нечего — переходим, не тратя на зону партию.
    */
   if (queueLeft <= 0) {
-    return { ...state, zoneIndex: state.zoneIndex + 1, step: 'awaiting-review' };
+    // Новая зона получает СВОЁ время, а не остаток чужого: иначе последняя зона всегда доставалась
+    // бы объедками, а разбирается в ней обычно самое трудное.
+    return {
+      ...state,
+      zoneIndex: state.zoneIndex + 1,
+      step: 'awaiting-review',
+      deadline: new Date(now.getTime() + policy.zoneMinutes * MINUTE_MS).toISOString(),
+    };
   }
 
   return { ...state, step: 'awaiting-review' };
@@ -380,10 +389,10 @@ export function minutesLeft(state: WindowState, now: Date): number {
  *
  * Оценка берётся из двух источников, и берётся худшая из них:
  *
- * 1. план политики — `windowMinutes / maxRepairBatches`, то есть доля окна на партию. Человек,
- *    написавший «два часа и шесть партий», уже сказал, что партия здесь рассчитана на двадцать
- *    минут; выдумывать своё число поверх его собственного незачем. Разрешив одну партию на два
- *    часа, он ровно так же сказал, что партия здесь двухчасовая, — и окно поверит ему;
+ * 1. план политики — `zoneMinutes / maxRepairBatches`, то есть доля зоны на партию. Человек,
+ *    написавший «три часа и шесть партий», уже сказал, что партия здесь рассчитана на полчаса;
+ *    выдумывать своё число поверх его собственного незачем. Разрешив одну партию на три часа, он
+ *    ровно так же сказал, что партия здесь трёхчасовая, — и окно поверит ему;
  * 2. самая длинная ФАКТИЧЕСКИ закрытая партия этого окна. Если партии здесь идут по сорок минут,
  *    план в двадцать — устаревшая надежда, и следующая партия будет такой же, как эти.
  *
@@ -396,7 +405,7 @@ function enoughTimeFor(left: number, needed: number): boolean {
 }
 
 function batchEstimateMinutes(state: WindowState, policy: DeepMaintenanceBudget): number {
-  const planned = policy.windowMinutes / Math.max(policy.maxRepairBatches, 1);
+  const planned = policy.zoneMinutes / Math.max(policy.maxRepairBatches, 1);
   let longest = 0;
   for (const batch of state.batches) {
     if (batch.finishedAt === null) continue;

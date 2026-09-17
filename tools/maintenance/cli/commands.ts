@@ -68,7 +68,7 @@ export async function doctor(config: MaintenanceConfig, out: Reporter): Promise<
   );
   out.item(
     `тяжёлое окно: ${policies.maintenance.deepMaintenance.enabled ? 'включено' : 'выключено'}, ` +
-      `${policies.maintenance.deepMaintenance.windowMinutes} минут`,
+      `${policies.maintenance.deepMaintenance.zoneMinutes} минут`,
   );
 
   // Когда последний раз правили сам файл политик: с этой датой сравниваются даты решений ниже.

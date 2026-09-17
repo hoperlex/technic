@@ -22,6 +22,7 @@ import {
   type BatchOutcomeEntry,
   type WindowState,
 } from '../core/deep-window.ts';
+import { pickChoice } from '../cli/ask.ts';
 import type { DeepMaintenanceBudget } from '../core/types.ts';
 
 const START = new Date('2026-09-15T09:00:00.000Z');
@@ -35,7 +36,7 @@ function at(minutes: number): Date {
 function policyFixture(overrides: Partial<DeepMaintenanceBudget> = {}): DeepMaintenanceBudget {
   return {
     enabled: true,
-    windowMinutes: 120,
+    zoneMinutes: 120,
     maxRepairBatches: 6,
     maxFindingsPerBatch: 3,
     maxFilesPerBatch: 8,
@@ -99,7 +100,7 @@ test('рубильник политики автомат не читает: ег
 
 test('окно без зон и окно нулевой длины не открываются', () => {
   assert.throws(() => startWindow(policyFixture({ zones: [] }), START), /ни одной зоны/);
-  assert.throws(() => startWindow(policyFixture({ windowMinutes: 0 }), START), /ни на одну партию/);
+  assert.throws(() => startWindow(policyFixture({ zoneMinutes: 0 }), START), /ни на одну партию/);
 });
 
 test('функции окна не трогают переданное состояние', () => {
@@ -317,4 +318,41 @@ test('закрытое окно повторным ходом не перепи�
 
 test('исход без открытой партии — ошибка порядка команд', () => {
   assert.throws(() => recordBatchOutcome(fresh(), accepted(), at(5)), /сначала beginBatch/);
+});
+
+/*
+ * Бюджет отпускается ЗОНЕ, а не окну (решение заказчика 17.09.2026). Общий счётчик был ложной
+ * мерой: ревьюер думает минутами, и съеденное им время отнималось у исполнителя — последняя зона
+ * доставалась объедками, хотя разбирается в ней самое трудное.
+ */
+test('переход к следующей зоне отпускает ей своё время', () => {
+  const policy = policyFixture();
+  const opened = startWindow(policy, START);
+  // Час прошёл, очередь зоны пуста: окно переходит к следующей зоне.
+  const later = new Date(START.getTime() + 60 * 60 * 1000);
+  const next = advanceWindow(opened, policy, later, 0);
+
+  assert.equal(next.zoneIndex, opened.zoneIndex + 1);
+  const left = (Date.parse(next.deadline) - later.getTime()) / 60000;
+  assert.ok(
+    Math.abs(left - policy.zoneMinutes) < 1,
+    `у новой зоны ${left} мин вместо полного срока`,
+  );
+});
+
+test('лестница ответов: буква, своё число, отказ', () => {
+  const ladder = [
+    { key: 'y', title: 'ещё', value: 180 },
+    { key: '3', title: '60 мин', value: 60 },
+    { key: 'n', title: 'закрыть', value: 0 },
+  ];
+  assert.equal(pickChoice('y', ladder), 180);
+  assert.equal(pickChoice('3', ladder), 60);
+  assert.equal(pickChoice('n', ladder), 0);
+  // Пустой ответ — отказ: человек нажал Enter, и это «нет», а не «да».
+  assert.equal(pickChoice('', ladder), null);
+  assert.equal(pickChoice(null, ladder), null);
+  // Своё число важнее лестницы: она подсказка, а не ограда.
+  assert.equal(pickChoice('45', ladder), 45);
+  assert.equal(pickChoice('ерунда', ladder), null);
 });
