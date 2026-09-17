@@ -104,10 +104,11 @@ function measure(
     command: config.analysis.lintCommand,
     outFile: path.join(tmpDir, `lint-${suffix}.json`),
     keepMessages: 50,
+    pulse: 'линт',
   });
   notify(`линт: ${lint.summary}`);
   notify('типы');
-  const typecheckRun = run(root, config.analysis.typecheckCommand);
+  const typecheckRun = run(root, config.analysis.typecheckCommand, { pulse: 'типы' });
   const typecheck = toolRun(
     typecheckRun,
     typecheckRun.code === 0 ? 'типы сходятся' : `типы не сходятся (код ${typecheckRun.code})`,
@@ -179,7 +180,7 @@ function blameBatch(
         );
       }
       // Хоть один шаг, зелёный на базе и красный с партией, — и вина партии доказана.
-      if (run(base.path, command).code === 0) return true;
+      if (run(base.path, command, { pulse: `${level.title} на базе` }).code === 0) return true;
     }
     return false;
   } finally {
@@ -279,7 +280,7 @@ export function verifyBatch(options: VerifyOptions): VerificationResult {
     for (const level of config.verification) {
       if (!level.enabledByDefault && !options.extraLevels.includes(level.id)) continue;
       notify(level.title);
-      const result = run(where, level.command);
+      const result = run(where, level.command, { pulse: level.title });
       notify(
         `${level.title}: ${result.code === 0 ? 'зелено' : `код ${result.code}`}` +
           ` за ${Math.round(result.durationMs / 1000)} с`,

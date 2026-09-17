@@ -61,10 +61,11 @@ export function collectFacts(options: CollectOptions): Collected {
     command: config.analysis.lintCommand,
     outFile: lintReport,
     keepMessages: config.analysis.keepLintMessages ?? 200,
+    pulse: 'линт',
   });
   dropReport(lintReport);
 
-  const typecheckRun = run(config.root, config.analysis.typecheckCommand);
+  const typecheckRun = run(config.root, config.analysis.typecheckCommand, { pulse: 'типы' });
   const typecheck: ToolRun = toolRun(
     typecheckRun,
     typecheckRun.code === 0 ? 'типы сходятся' : `типы не сходятся (код ${typecheckRun.code})`,

@@ -26,7 +26,16 @@ import { deep } from './deep.ts';
 import { ledger, parseStatus } from './ledger.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const out = new ConsoleReporter();
+/*
+ * Журнал ведётся всегда, а не по флагу.
+ *
+ * Включаемый журнал не спасает: включить его вспоминают ПОСЛЕ того, как прогон оборвался, а к
+ * этому времени рассказывать уже нечего. Стоит он одной строки на событие, лежит вне истории
+ * (каталог `.maintenance/` в `.gitignore`) и перекладывается сам, когда разрастается.
+ */
+const LOG_FILE = path.join(ROOT, '.maintenance', 'logs', 'maintain.log');
+const out = new ConsoleReporter(LOG_FILE);
+out.note(`=== ${new Date().toISOString()} pnpm maintain ${process.argv.slice(2).join(' ')}`);
 
 function help(): void {
   out.line('pnpm maintain <команда>');

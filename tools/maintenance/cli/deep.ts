@@ -153,6 +153,9 @@ export async function deep(
     out.heading(`окно ${state.windowId}`);
     out.item(`бюджет: ${policy.windowMinutes} мин, партий не больше ${policy.maxRepairBatches}`);
     out.item(`зоны: ${policy.zones.map((zone) => zone.id).join(' → ')}`);
+    out.item(
+      `ход пишется в ${path.relative(config.root, path.join(config.runtimeDir, 'logs', 'maintain.log'))} — за ним можно следить: tail -f`,
+    );
     return emitZoneReview(config, policies, workspace, out, state, args);
   }
 

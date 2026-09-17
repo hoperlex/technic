@@ -26,11 +26,17 @@ export interface LintOptions {
   readonly outFile: string;
   /** Сколько сообщений оставить в фактах. Полный список остаётся в файле отчёта. */
   readonly keepMessages: number;
+  /** Подпись для пульса: линт по репозиторию идёт минутами и обязан подавать признаки жизни. */
+  readonly pulse?: string;
 }
 
 export function collectLint(options: LintOptions): LintFacts {
   const command = withOutFile(options.command, options.outFile);
-  const result = run(options.root, command);
+  const result = run(
+    options.root,
+    command,
+    options.pulse === undefined ? {} : { pulse: options.pulse },
+  );
 
   let report: EslintFileReport[] | null = null;
   try {

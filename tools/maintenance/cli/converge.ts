@@ -123,6 +123,11 @@ export async function converge(
     saveRun(workspace, state);
     out.heading(`прогон ${state.runId}`);
     out.item(`проходов в политике: ${budget.passes.length}, лимит: ${budget.maxPasses}`);
+    // Про журнал говорится один раз, в начале: он нужен ровно тому, кто сейчас решает, ждать ли
+    // ему у терминала следующие полчаса.
+    out.item(
+      `ход пишется в ${path.relative(config.root, path.join(config.runtimeDir, 'logs', 'maintain.log'))} — за ним можно следить: tail -f`,
+    );
     return emitReviewTask(
       config,
       policies,

@@ -18,6 +18,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { startPulse } from '../analyzers/run.ts';
 import type { AgentAdapter, AgentContext, AgentReply } from './adapter.ts';
 import type { WorkPacket } from '../work-packets/types.ts';
 import { renderPacket } from '../work-packets/render.ts';
@@ -77,15 +78,23 @@ export function commandAdapter(options: CommandAgentOptions): AgentAdapter {
         return { kind: 'awaiting', where: path.relative(context.root, context.taskFile) };
       }
 
-      const result = spawnSync(binary, args, {
-        cwd: context.root,
-        encoding: 'utf8',
-        input: text,
-        timeout: context.timeoutMs,
-        // SIGTERM агент может перехватить и продолжить думать; ждать этого мы уже не собираемся.
-        killSignal: 'SIGKILL',
-        maxBuffer: 64 * 1024 * 1024,
-      });
+      // Агент думает минутами и не печатает ни строки, пока не ответит целиком: без пульса это
+      // самый долгий немой участок цикла, и именно на нём прогон обрывали руками.
+      const stopPulse = startPulse(options.title ?? 'агент');
+      let result;
+      try {
+        result = spawnSync(binary, args, {
+          cwd: context.root,
+          encoding: 'utf8',
+          input: text,
+          timeout: context.timeoutMs,
+          // SIGTERM агент может перехватить и продолжить думать; ждать этого мы уже не собираемся.
+          killSignal: 'SIGKILL',
+          maxBuffer: 64 * 1024 * 1024,
+        });
+      } finally {
+        stopPulse();
+      }
 
       if (result.error) {
         const code = (result.error as NodeJS.ErrnoException).code;
