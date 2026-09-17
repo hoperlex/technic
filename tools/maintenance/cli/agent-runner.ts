@@ -93,9 +93,12 @@ export function deliver(
     out.item(`жду ответ агента: это минуты, потолок ${Math.round(timeoutMs / 60000)} мин`);
   }
   const reply = adapter.deliver(packet, {
+    // Корень здесь — это КАТАЛОГ КОДА: агент работает там, где лежит дерево прогона (в цехе —
+    // отдельное дерево). А ответ ложится в рабочий каталог системы, который всегда в репозитории:
+    // складывать ответы в цех значило бы терять их вместе с деревом.
     root: config.root,
     taskFile: workspace.taskFile,
-    answerFile: path.join(config.root, packet.outputFile),
+    answerFile: path.join(workspace.results, path.basename(packet.outputFile)),
     timeoutMs,
   });
 

@@ -5,6 +5,8 @@
  * неанглийские имена (`"docs/\320\272..."`), и любой фильтр по кавычкам молча теряет кириллицу.
  * Нулевой разделитель снимает вопрос целиком — имена приходят как есть.
  */
+import path from 'node:path';
+import { statSync } from 'node:fs';
 import type { GitFacts } from '../core/facts.ts';
 import { run } from './run.ts';
 
@@ -100,6 +102,93 @@ export function filesChangedSince(root: string, since: string): string[] {
     if (file.trim() !== '') files.add(file);
   }
   return [...files].sort();
+}
+
+export interface CoolScope {
+  /** Остывшие файлы: по ним и работает прогон. */
+  readonly files: readonly string[];
+  /** Горячее, исключённое из области: чужая работа прямо сейчас. */
+  readonly hot: readonly string[];
+}
+
+/**
+ * Область прогона, когда дерево не останавливается.
+ *
+ * ПОЧЕМУ ПРИЦЕЛ ПЕРЕВЁРНУТ. Обычная область — «что изменено с HEAD», то есть ровно та работа,
+ * которую сейчас пишут. Когда автор один, это верно: система смотрит то, что человек только что
+ * сделал. Когда рядом работают несколько сессий, это значит «полезем туда, где идёт работа»: файл
+ * переписывается под руками, находка устаревает раньше, чем её успевают выдать исполнителю, а
+ * правка встречается с чужой правкой в том же месте.
+ *
+ * Поэтому здесь берётся ОСТЫВШЕЕ: файлы последних коммитов — работа уже законченная и проверенная
+ * временем настолько, чтобы её автор от неё оторвался, — за вычетом всего, что в дереве не чисто
+ * или менялось на диске последние минуты. Горячее не теряется: оно вернётся в область, как только
+ * остынет.
+ */
+export function coolScope(
+  root: string,
+  options: { readonly commits: number; readonly cooldownMinutes: number },
+): CoolScope | null {
+  const log = run(root, [
+    'git',
+    '-c',
+    'core.quotepath=false',
+    'log',
+    `-n`,
+    String(Math.max(1, options.commits)),
+    '--name-only',
+    '--pretty=format:',
+  ]);
+  // Отказ git — это `null`, а не пустой список: пустой список ниже по течению читается как «полный
+  // обзор», и опечатка обернулась бы заданием по всему репозиторию.
+  if (log.code !== 0) return null;
+
+  const candidates = new Set<string>();
+  for (const line of log.stdout.split('\n')) {
+    const file = line.trim();
+    if (file !== '') candidates.add(file);
+  }
+
+  const hot = new Set<string>();
+  for (const file of dirtyFiles(root)) hot.add(file);
+
+  const cutoff = Date.now() - Math.max(0, options.cooldownMinutes) * 60_000;
+  const files: string[] = [];
+  for (const file of [...candidates].sort()) {
+    if (hot.has(file)) continue;
+    // Файл мог быть закоммичен минуту назад и прямо сейчас дописываться дальше: время правки на
+    // диске ловит это там, где git ещё ничего не видит.
+    if (touchedAfter(root, file, cutoff)) {
+      hot.add(file);
+      continue;
+    }
+    files.push(file);
+  }
+  return { files, hot: [...hot].sort() };
+}
+
+/** Всё, что в дереве не совпадает с HEAD, включая неотслеживаемое. */
+function dirtyFiles(root: string): string[] {
+  const status = run(root, ['git', '-c', 'core.quotepath=false', 'status', '--porcelain', '-z']);
+  if (status.code !== 0) return [];
+  const files: string[] = [];
+  for (const entry of status.stdout.split('\0')) {
+    if (entry.trim() === '') continue;
+    // Форма записи: два знака состояния, пробел, путь. Переименование даёт второй путь отдельной
+    // записью — она придёт следующей и обработается сама.
+    const file = entry.slice(STATUS_LENGTH + 1).trim();
+    if (file !== '') files.push(file);
+  }
+  return files;
+}
+
+function touchedAfter(root: string, file: string, cutoff: number): boolean {
+  try {
+    return statSync(path.join(root, file)).mtimeMs > cutoff;
+  } catch {
+    // Файла нет: он удалён коммитом. Горячим его считать незачем — его и в области не будет.
+    return false;
+  }
 }
 
 /** Когда файл менялся в истории последний раз. `null` — файла в истории нет. */

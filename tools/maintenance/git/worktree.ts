@@ -119,6 +119,29 @@ export function createIsolatedTree(options: IsolateOptions): IsolatedTree {
   };
 }
 
+/**
+ * Цех: то же изолированное дерево, но живущее весь прогон, а не один шаг проверки.
+ *
+ * ПОЧЕМУ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ ФЛАГ. Разница не в устройстве дерева, а в том, кто и когда его
+ * сносит. Проверочное дерево живёт внутри одного вызова и обязано исчезнуть в `finally`. Цех
+ * переживает выход из процесса: прогон идёт несколькими командами, между ними система ждёт агента,
+ * и дерево обязано дождаться следующего запуска. Поэтому владение им не выражается замыканием —
+ * путь записывается в состояние прогона, а сносит дерево тот, кто прогон закрывает.
+ */
+export function openWorkshop(options: Omit<IsolateOptions, 'files'>): IsolatedTree {
+  return createIsolatedTree({ ...options, files: [] });
+}
+
+/**
+ * Снести дерево по пути, без объекта-владельца.
+ *
+ * Нужно ровно для цеха: команда, закрывающая прогон, объекта дерева не создавала — она прочитала
+ * путь из состояния, записанного другим запуском.
+ */
+export function disposeTreeAt(root: string, treePath: string): void {
+  removeTree(path.resolve(root), treePath);
+}
+
 function resolveBase(root: string, ref: string): string {
   const result = run(root, ['git', 'rev-parse', ref]);
   if (result.code !== 0) throw new Error(`нет такой базы для изолированного дерева: ${ref}`);

@@ -64,6 +64,13 @@ export interface RunTotals {
   readonly accepted: number;
 }
 
+/** Цех прогона: отдельное дерево, в котором идёт вся работа. */
+export interface WorkshopRef {
+  readonly path: string;
+  /** Вершина, от которой дерево собрано: с ней сверяется передача коммита в ветку. */
+  readonly base: string;
+}
+
 export interface RunState {
   readonly runId: string;
   readonly startedAt: string;
@@ -73,4 +80,11 @@ export interface RunState {
   readonly passes: readonly PassRecord[];
   readonly stop: { readonly reason: StopReason; readonly detail: string } | null;
   readonly totals: RunTotals;
+  /**
+   * Где прогон работает. `null` или отсутствие — прямо в рабочем дереве, по-старому.
+   *
+   * Лежит в состоянии, а не в памяти команды, потому что прогон идёт несколькими запусками:
+   * дерево создаёт первый, пользуется им каждый следующий, а сносит тот, который прогон закрывает.
+   */
+  readonly workshop?: WorkshopRef | null;
 }

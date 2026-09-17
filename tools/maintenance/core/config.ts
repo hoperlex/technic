@@ -77,6 +77,19 @@ export interface AnalysisConfig {
    */
   readonly maxAdrInPacket?: number;
   readonly maxAdrChars?: number;
+  /**
+   * Сколько последних коммитов даёт область прогона в цехе.
+   *
+   * В цехе незакоммиченного нет, и «что изменено» там пусто по построению: областью становится
+   * недавняя история. Больше десятка коммитов — это уже не «недавняя работа», а обзор.
+   */
+  readonly scopeCommits?: number;
+  /**
+   * Сколько минут файл считается горячим после последней правки на диске.
+   *
+   * Коммит не означает, что автор от файла оторвался: через минуту он может дописывать дальше.
+   */
+  readonly cooldownMinutes?: number;
 }
 
 /**
@@ -119,6 +132,29 @@ export interface ScopeConfig {
 }
 
 /** То, что пишет человек в `maintenance.config.ts`. */
+/**
+ * Цех: где система держит код, с которым работает.
+ *
+ * ПОЧЕМУ НЕ В РАБОЧЕМ ДЕРЕВЕ. Дерево здесь общее и не останавливается: рядом непрерывно правят
+ * несколько сессий. Партия живёт десять-двадцать минут, и за это время чужая правка появляется
+ * почти наверняка — а замок поведения обязан считать её поводом остановиться, потому что отличить
+ * её от выхода исполнителя за границы партии нечем. Получался цикл, который в живом дереве не
+ * может принять ничего.
+ *
+ * В цехе этой беды нет по построению: это отдельное дерево git от `HEAD`, где нет никого, кроме
+ * системы. Рабочее дерево не трогается вовсе — ни файлом, ни индексом.
+ */
+export interface WorkshopConfig {
+  readonly enabled: boolean;
+  /**
+   * Класть ли принятую партию в историю самой системой.
+   *
+   * Иначе правка осталась бы в цехе и до неё никто бы не дошёл: перенести её в рабочее дерево
+   * нельзя — там чужая работа, — а жить вечно каталог цеха не может.
+   */
+  readonly commit?: boolean;
+}
+
 export interface MaintenanceConfigInput {
   /** Каталог машинного слоя архитектуры. По умолчанию `architecture`. */
   readonly architectureDir?: string;
@@ -129,6 +165,7 @@ export interface MaintenanceConfigInput {
   readonly scope: ScopeConfig;
   readonly analysis: AnalysisConfig;
   readonly agent?: AgentConfig;
+  readonly workshop?: WorkshopConfig;
 }
 
 /** То, с чем работает ядро: пути уже разрешены относительно корня. */
@@ -148,6 +185,23 @@ export interface MaintenanceConfig {
   readonly scope: ScopeConfig;
   readonly analysis: AnalysisConfig;
   readonly agent?: AgentConfig;
+  readonly workshop?: WorkshopConfig;
+}
+
+/**
+ * Тот же конфиг, но код берётся из другого дерева.
+ *
+ * ПОЧЕМУ КОПИЯ, А НЕ ВТОРОЕ ПОЛЕ. Половина системы работает с кодом (линт, типы, контрольная
+ * точка, правка агента), половина — с репозиторием (политики, рабочий каталог, история git). Дай
+ * им одно поле `root` и отдельное `workRoot` — и каждый вызов пришлось бы читать с вопросом «а
+ * этот про какое из двух?». Копия отвечает на вопрос типом: кому передали дерево цеха, тот про
+ * код; у кого исходный конфиг, тот про репозиторий.
+ *
+ * Всё остальное в конфиге — абсолютные пути к настоящему репозиторию, и копия их не меняет:
+ * политики, рабочий каталог и файлы архитектуры остаются там, где лежали.
+ */
+export function inTree(config: MaintenanceConfig, treePath: string): MaintenanceConfig {
+  return { ...config, root: treePath };
 }
 
 /**
@@ -178,6 +232,7 @@ export function resolveConfig(root: string, input: MaintenanceConfigInput): Main
     scope: input.scope,
     analysis: input.analysis,
     agent: input.agent,
+    workshop: input.workshop,
   };
 }
 

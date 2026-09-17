@@ -27,7 +27,7 @@ import {
 import { parseFindings } from '../core/finding-io.ts';
 import { selectFindings } from '../core/selector.ts';
 import { collectFacts, decisionsFor, saveFacts, widenScope } from '../analyzers/facts.ts';
-import { changedSince, collectGit } from '../analyzers/git.ts';
+import { collectGit } from '../analyzers/git.ts';
 import { run } from '../analyzers/run.ts';
 import { decideStart } from '../core/start-gate.ts';
 import { anchorNamed, readReleaseAnchor } from '../project/release-anchor.ts';
@@ -42,6 +42,7 @@ import type { CommandResult } from './commands.ts';
 import { loadPolicies } from './commands.ts';
 import { readBatch, saveBatch } from './verify.ts';
 import { adapterFor, deliver } from './agent-runner.ts';
+import { aimAt, closeWorkshop, openWorkshopFor, passOn, workOf } from './workshop.ts';
 import { JsonFindingStore, decide, reconcile, type LedgerEntry } from '../state/ledger.ts';
 import { JsonSnapshotStore, diffSnapshots, renderDelta, snapshotOf } from '../state/snapshot.ts';
 import {
@@ -91,6 +92,14 @@ function readRun(workspace: Workspace): RunState | null {
   };
 }
 
+/**
+ * Где прогон работает с кодом.
+ *
+ * Конфиг у системы один, но корней два: репозиторий (политики, рабочий каталог, история) и место,
+ * где лежит код этого прогона. Без цеха они совпадают; с цехом — нет, и путать их нельзя ни разу:
+ * линт, правка агента и контрольная точка обязаны идти по цеху, а ссылки git и журнал находок —
+ * по репозиторию.
+ */
 function saveRun(workspace: Workspace, state: RunState): void {
   writeFileSync(runFile(workspace), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
 }
@@ -120,9 +129,10 @@ export async function converge(
     if (!checkStart(config, policies, out).allowed) return { ok: false };
     state = startRun(budget.passes);
     state = beginPass(state, budget.passes[0]?.id ?? 'structural');
-    saveRun(workspace, state);
     out.heading(`прогон ${state.runId}`);
     out.item(`проходов в политике: ${budget.passes.length}, лимит: ${budget.maxPasses}`);
+    state = openWorkshopFor(config, workspace, state, out);
+    saveRun(workspace, state);
     // Про журнал говорится один раз, в начале: он нужен ровно тому, кто сейчас решает, ждать ли
     // ему у терминала следующие полчаса.
     out.item(
@@ -227,13 +237,17 @@ async function emitReviewTask(
   }
 
   out.heading(`проход ${state.passes.length}: ${pass.id}`);
-  const scopeFiles = changedSince(config.root, 'HEAD');
-  if (scopeFiles === null) {
-    out.error('git не смог показать изменения рабочего дерева: прогон остановлен');
-    return { ok: false };
-  }
-  const collected = collectFacts({ config, policies, workspace, withTests: false, scopeFiles });
-  const widened = widenScope(config, policies, collected, scopeFiles);
+  const work = workOf(config, state);
+  const scopeFiles = aimAt(config, state, out);
+  if (scopeFiles === null) return { ok: false };
+  const collected = collectFacts({
+    config: work,
+    policies,
+    workspace,
+    withTests: false,
+    scopeFiles,
+  });
+  const widened = widenScope(work, policies, collected, scopeFiles);
   const facts = widened.facts;
   out.item(widened.note);
   saveFacts(workspace, facts);
@@ -265,7 +279,7 @@ async function emitReviewTask(
    */
   const adapter = adapterFor(config, 'reviewer', args.agent, out);
   asked.reviewer = true;
-  const reply = deliver(adapter, packet, config, workspace, out);
+  const reply = deliver(adapter, packet, work, workspace, out);
   if (reply.kind !== 'answer') return { ok: reply.kind === 'awaiting' };
 
   // Ответ уже на руках — идём дальше в том же запуске, не заставляя звать команду второй раз.
@@ -373,6 +387,7 @@ async function takeReview(
   state: RunState,
   args: ConvergeArgs,
 ): Promise<CommandResult> {
+  const work = workOf(config, state);
   const file = path.join(workspace.results, 'review.json');
   if (!existsSync(file)) {
     return noReviewAnswer(config, policies, workspace, out, state, args);
@@ -476,9 +491,9 @@ async function takeReview(
   // Замер базы поднимает отдельное дерево и гоняет по нему линт и типы — это минуты. Человек
   // должен видеть, чем они заняты, иначе тишина читается как зависание.
   out.heading('замер базы до правки');
-  const { lint, typecheck } = measureBaseline(config, workspace.tmp, (text) => out.item(text));
+  const { lint, typecheck } = measureBaseline(work, workspace.tmp, (text) => out.item(text));
 
-  const transaction = new FileCheckpointTransaction(config.root, workspace.checkpoints);
+  const transaction = new FileCheckpointTransaction(work.root, workspace.checkpoints);
   const checkpoint = await transaction.createCheckpoint(allowed);
   saveBatch(workspace, {
     checkpoint,
@@ -503,13 +518,7 @@ async function takeReview(
   out.heading('задание исполнителю');
   out.item(`находок: ${selection.selected.length}, файлов: ${allowed.length}, точка ${checkpoint}`);
 
-  const reply = deliver(
-    adapterFor(config, 'fixer', args.agent, out),
-    packet,
-    config,
-    workspace,
-    out,
-  );
+  const reply = deliver(adapterFor(config, 'fixer', args.agent, out), packet, work, workspace, out);
   if (reply.kind !== 'answer') return { ok: reply.kind === 'awaiting' };
   return takeFix(config, policies, workspace, out, next, args);
 }
@@ -551,12 +560,13 @@ async function takeFix(
   state: RunState,
   args: ConvergeArgs,
 ): Promise<CommandResult> {
+  const work = workOf(config, state);
   const batch = readBatch(workspace);
   if (batch === null) {
     out.error('партии нет, а прогон ждёт правку: снимите прогон командой converge --abort');
     return { ok: false };
   }
-  const transaction = new FileCheckpointTransaction(config.root, workspace.checkpoints);
+  const transaction = new FileCheckpointTransaction(work.root, workspace.checkpoints);
   const changed = transaction.changedIn(batch.checkpoint);
   const lines = changed.length === 0 ? 0 : transaction.changedLinesIn(batch.checkpoint);
   if (changed.length === 0) {
@@ -581,7 +591,9 @@ async function takeFix(
   out.heading('проверка партии');
   const result = verifyBatch({
     notify: (text) => out.item(text),
-    config,
+    // В цехе дерево уже отдельное: второе такое же стоило бы минут и ничего не добавило.
+    isolate: state.workshop ? false : undefined,
+    config: work,
     policies,
     baseline: batch.baseline,
     allowed: batch.allowed,
@@ -596,8 +608,10 @@ async function takeFix(
   for (const level of result.levels) out.item(`${level.title}: ${level.note}`);
   for (const violation of result.violations) out.warn(`${violation.kind}: ${violation.detail}`);
 
-  if (result.outcome === 'accept') await transaction.accept(batch.checkpoint);
-  else if (result.outcome === 'rollback') {
+  if (result.outcome === 'accept') {
+    await transaction.accept(batch.checkpoint);
+    passOn(config, state, batch, selected, out);
+  } else if (result.outcome === 'rollback') {
     const rolled = await transaction.rollback(batch.checkpoint);
     out.item(
       `откачено файлов: ${rolled.restored.length}, удалено созданных: ${rolled.removed.length}`,
@@ -638,6 +652,9 @@ async function closePass(
     out.heading('прогон завершён');
     printState(out, next);
     out.item(`отчёт: ${writeReport(config, workspace, next)}`);
+    // Цех живёт ровно столько, сколько прогон: принятое уже в истории, остальное — мусор, который
+    // иначе остался бы гигабайтами на диске и записью в git.
+    closeWorkshop(config, next, out);
     return { ok: next.stop?.reason !== 'manualDecisionRequired' };
   }
 
@@ -656,6 +673,7 @@ function abortRun(workspace: Workspace, config: MaintenanceConfig, out: Reporter
   // Отчёт пишется даже у снятого прогона: сделанное в нём — уже история, и терять её из-за того,
   // что человек решил начать заново, незачем.
   out.item(`снят прогон ${state.runId}; отчёт: ${writeReport(config, workspace, state)}`);
+  closeWorkshop(config, state, out);
   rmSync(runFile(workspace), { force: true });
   return { ok: true };
 }

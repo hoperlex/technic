@@ -68,6 +68,13 @@ export interface VerifyOptions {
    * для обрыва в цикле нет.
    */
   readonly notify?: (text: string) => void;
+  /**
+   * Поднимать ли отдельное дерево под проверку. Умолчание берётся из конфига.
+   *
+   * Нужно ради цеха: там дерево уже отдельное и чужой работы в нём нет, а второе такое же стоило
+   * бы минуты на каждую партию и не добавило бы ни грамма изоляции.
+   */
+  readonly isolate?: boolean;
   /** Дополнительные уровни проверки сверх включённых по умолчанию. */
   readonly extraLevels: readonly string[];
 }
@@ -191,7 +198,7 @@ function blameBatch(
 export function verifyBatch(options: VerifyOptions): VerificationResult {
   const { config } = options;
   const notify = options.notify ?? (() => {});
-  const isolate = config.analysis.isolateVerification === true;
+  const isolate = options.isolate ?? config.analysis.isolateVerification === true;
 
   if (isolate) notify('отдельное дерево с правкой');
   const tree = isolate
