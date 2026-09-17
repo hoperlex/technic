@@ -491,7 +491,12 @@ async function takeReview(
   // Замер базы поднимает отдельное дерево и гоняет по нему линт и типы — это минуты. Человек
   // должен видеть, чем они заняты, иначе тишина читается как зависание.
   out.heading('замер базы до правки');
-  const { lint, typecheck } = measureBaseline(work, workspace.tmp, (text) => out.item(text));
+  const { lint, typecheck } = measureBaseline(
+    work,
+    workspace.tmp,
+    (text) => out.item(text),
+    state.workshop ? false : undefined,
+  );
 
   const transaction = new FileCheckpointTransaction(work.root, workspace.checkpoints);
   const checkpoint = await transaction.createCheckpoint(allowed);
@@ -593,6 +598,9 @@ async function takeFix(
     notify: (text) => out.item(text),
     // В цехе дерево уже отдельное: второе такое же стоило бы минут и ничего не добавило.
     isolate: state.workshop ? false : undefined,
+    // Память о базе живёт весь прогон: замер ворот на голой вершине стоит столько же, сколько сами
+    // ворота, и платить за него в каждой партии значит удваивать цену прогона.
+    baseGates: state.baseGates ?? null,
     config: work,
     policies,
     baseline: batch.baseline,
@@ -621,7 +629,7 @@ async function takeFix(
     rmSync(path.join(workspace.state, 'batch.json'), { force: true });
   }
 
-  const next = recordVerification(state, {
+  const measured = recordVerification(state, {
     outcome: result.outcome,
     reason: result.reason,
     changedFiles: changed,
@@ -631,6 +639,8 @@ async function takeFix(
     newSevere,
     resolvedSevere,
   });
+  const next =
+    result.baseGates === undefined ? measured : { ...measured, baseGates: result.baseGates };
   out.item(`решение: ${decisionWord(result.outcome)} — ${result.reason}`);
   return closePass(config, policies, workspace, out, next, args);
 }

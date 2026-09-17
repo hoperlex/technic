@@ -129,7 +129,38 @@ export function createIsolatedTree(options: IsolateOptions): IsolatedTree {
  * путь записывается в состояние прогона, а сносит дерево тот, кто прогон закрывает.
  */
 export function openWorkshop(options: Omit<IsolateOptions, 'files'>): IsolatedTree {
+  pruneOldTrees(path.resolve(options.root), options.home);
   return createIsolatedTree({ ...options, files: [] });
+}
+
+/** Через сколько часов брошенное дерево считается мусором. */
+const TREE_MAX_AGE_HOURS = 6;
+
+/**
+ * Убрать деревья, брошенные упавшими прогонами.
+ *
+ * Обрыв на Ctrl-C и падение процесса оставляют дерево на диске и запись в git. Сами по себе они
+ * безвредны, но копятся: на этом репозитории за один день их набралось пять, каждое — копия
+ * дерева. Сносится только заведомо чужое по времени: шесть часов больше самого долгого прогона, и
+ * работающий сосед под нож не попадёт.
+ */
+function pruneOldTrees(root: string, home: string): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(home);
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - TREE_MAX_AGE_HOURS * 60 * 60 * 1000;
+  for (const entry of entries) {
+    const full = path.join(home, entry);
+    try {
+      if (statSync(full).mtimeMs > cutoff) continue;
+    } catch {
+      continue;
+    }
+    removeTree(root, full);
+  }
 }
 
 /**

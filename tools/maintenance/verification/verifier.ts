@@ -31,6 +31,27 @@ export interface LevelResult {
    * верной правки объясняется не ею.
    */
   readonly output?: string;
+  /** Следы падений: по ним сравнивают с базой. У зелёного шага пусто. */
+  readonly marks?: readonly string[];
+}
+
+/**
+ * Чем ворота кончились на голой базе.
+ *
+ * ЗАЧЕМ ПОМНИТЬ. Дерево живёт непрерывной разработкой, и зелёная вершина здесь — редкость: сейчас,
+ * например, ворота фронта красны бюджетами файлов и необработанным отказом в чужом тесте. Пока
+ * условием приёма была ЗЕЛЕНЬ, цикл не мог принять ничего и никогда: любая партия упиралась в
+ * чужую красноту и уходила человеку. Поэтому судим по РАЗНИЦЕ — стало ли хуже, — а для разницы
+ * нужна память о том, как было.
+ *
+ * Память снимается один раз на прогон: база прогона — фиксированный коммит, и второй замер дал бы
+ * тот же ответ за те же семь минут.
+ */
+export interface LevelFacts {
+  readonly id: string;
+  readonly ok: boolean;
+  /** Следы падений: строки вывода, по которым видно, ЧТО упало. Ими и сравнивают. */
+  readonly marks: readonly string[];
 }
 
 export interface VerificationResult {
@@ -40,6 +61,8 @@ export interface VerificationResult {
   readonly violations: readonly LockViolation[];
   readonly lintAfter: LintFacts;
   readonly typecheckAfter: ToolRun;
+  /** Факты базы, если их пришлось снимать: вызывающий обязан их запомнить на весь прогон. */
+  readonly baseGates?: readonly LevelFacts[];
 }
 
 export interface VerifyOptions {
@@ -75,6 +98,10 @@ export interface VerifyOptions {
    * бы минуты на каждую партию и не добавило бы ни грамма изоляции.
    */
   readonly isolate?: boolean;
+  /**
+   * Что ворота давали на голой базе. `null` — ещё не мерили; замерим и вернём в результате.
+   */
+  readonly baseGates?: readonly LevelFacts[] | null;
   /** Дополнительные уровни проверки сверх включённых по умолчанию. */
   readonly extraLevels: readonly string[];
 }
@@ -135,8 +162,11 @@ export function measureBaseline(
   config: MaintenanceConfig,
   tmpDir: string,
   notify: (text: string) => void = () => {},
+  // Цех сам по себе — отдельное дерево, и на момент замера он ещё не тронут: второе дерево под
+  // базу стоило бы минут и не добавило бы изоляции.
+  isolate: boolean = config.analysis.isolateVerification === true,
 ): { lint: LintFacts; typecheck: ToolRun } {
-  if (config.analysis.isolateVerification !== true) {
+  if (!isolate) {
     return measure(config.root, config, tmpDir, 'before', notify);
   }
   notify('отдельное дерево от HEAD');
@@ -160,12 +190,118 @@ export function measureBaseline(
  * неё базы как отдельного дерева не существует, и отличить чужую красноту от своей нечем — там
  * остаётся прежнее поведение, откат.
  */
-function blameBatch(
+/**
+ * Слова, по которым в чужом выводе опознаётся падение.
+ *
+ * Эвристика, и она честно названа эвристикой: система не знает, каким инструментом человек гоняет
+ * ворота, и разбирать вывод каждого было бы обещанием, которого не сдержать. Зато «стало столько
+ * же красного, сколько было» она отличает от «появилось новое красное» — а для решения о партии
+ * нужно именно это.
+ */
+const FAILURE_WORDS = ['fail', 'падение', 'ошибка', 'error', '\u2717', '\u00d7', 'not ok'];
+
+/** Сколько следов помнить: длинный вывод даёт сотни строк, а разницу видно и по первым. */
+const MARKS_LIMIT = 40;
+
+/**
+ * Следы падений в выводе шага.
+ *
+ * Числа из строк вычищаются: длительности, номера попыток и счётчики меняются от прогона к
+ * прогону, и без чистки любые два прогона выглядели бы разными.
+ */
+export function failureMarks(text: string): string[] {
+  const marks = new Set<string>();
+  for (const raw of text.split('\n')) {
+    const line = raw.trim().toLowerCase();
+    if (line === '') continue;
+    if (!FAILURE_WORDS.some((word) => line.includes(word))) continue;
+    marks.add(line.replace(/\d+/gu, '#').replace(/\s+/gu, ' ').slice(0, 200));
+    if (marks.size >= MARKS_LIMIT) break;
+  }
+  return [...marks];
+}
+
+/**
+ * Прогон ворот по дереву.
+ *
+ * Выключенные по умолчанию уровни идут только тем, кто назвал их явно: db-набору нужна своя свежая
+ * база, и на общей он даёт ЛОЖНЫЕ падения — а ложное падение откатывает верную правку.
+ */
+function runLevels(
+  where: string,
+  config: MaintenanceConfig,
+  extraLevels: readonly string[],
+  notify: (text: string) => void,
+): LevelResult[] {
+  const levels: LevelResult[] = [];
+  for (const level of config.verification) {
+    if (!level.enabledByDefault && !extraLevels.includes(level.id)) continue;
+    notify(level.title);
+    const result = run(where, level.command, { pulse: level.title });
+    const ok = result.code === 0;
+    const seconds = Math.round(result.durationMs / 1000);
+    notify(`${level.title}: ${ok ? 'зелено' : `код ${result.code}`} за ${seconds} с`);
+    const whole = `${result.stdout}\n${result.stderr}`;
+    levels.push({
+      id: level.id,
+      title: level.title,
+      ok,
+      durationMs: result.durationMs,
+      note: ok ? 'зелено' : `код возврата ${result.code}`,
+      output: ok ? undefined : tailOf(whole),
+      marks: ok ? [] : failureMarks(whole),
+    });
+  }
+  return levels;
+}
+
+/**
+ * Чья это краснота: партии или базы.
+ *
+ * Вынесено из решения отдельной функцией не ради длины: здесь единственное место, где система
+ * тратит минуты на замер базы, и оно обязано читаться целиком — вместе с условием, при котором
+ * замера не будет.
+ */
+function blame(
   config: MaintenanceConfig,
   options: VerifyOptions,
   failed: readonly LevelResult[],
-): boolean {
-  if (config.analysis.isolateVerification !== true) return true;
+  notify: (text: string) => void,
+): { guilty: LevelResult[]; baseGates: LevelFacts[] } {
+  const known = options.baseGates ?? null;
+  const missing = failed.filter((level) => !known?.some((fact) => fact.id === level.id));
+  const measured = missing.length === 0 ? [] : measureBaseGates(config, options, missing, notify);
+  const baseGates = [...(known ?? []), ...measured];
+  const guilty = failed.filter((level) =>
+    worseThanBase(
+      level,
+      baseGates.find((fact) => fact.id === level.id),
+    ),
+  );
+  return { guilty, baseGates };
+}
+
+/** Появилось ли в партии красное, которого на базе не было. */
+function worseThanBase(level: LevelResult, base: LevelFacts | undefined): boolean {
+  // Шага нет в памяти базы или он там зелёный — краснота принесена партией.
+  if (base === undefined || base.ok) return true;
+  const known = new Set(base.marks);
+  return (level.marks ?? []).some((mark) => !known.has(mark));
+}
+
+/**
+ * Снять ворота на голой базе.
+ *
+ * Дерево собирается от той же вершины, без файлов партии: только так видно, что красное было
+ * красным и до нас. Гоняются лишь названные шаги — прогонять зелёные второй раз значит платить
+ * временем за известный ответ.
+ */
+function measureBaseGates(
+  config: MaintenanceConfig,
+  options: VerifyOptions,
+  levels: readonly LevelResult[],
+  notify: (text: string) => void,
+): LevelFacts[] {
   const base = createIsolatedTree({
     root: config.root,
     home: path.join(options.tmpDir, 'trees'),
@@ -173,23 +309,30 @@ function blameBatch(
     linkPaths: config.analysis.linkPaths ?? [],
   });
   try {
-    for (const level of failed) {
+    const facts: LevelFacts[] = [];
+    for (const level of levels) {
       const command = config.verification.find((item) => item.id === level.id)?.command;
       /*
-       * Промах по id здесь невозможен: `failed` собран из тех же `config.verification`. Но если
-       * конфигурация всё-таки разъедется, тихий пропуск опаснее падения: пропущенный шаг не
-       * перезапускается на базе, а функция возвращает «база сама красная» — то есть партия
-       * уходит человеку с оправданием, которое никто не проверял.
+       * Промах по id здесь невозможен: список собран из тех же `config.verification`. Но если
+       * конфигурация всё-таки разъедется, тихий пропуск опаснее падения: шаг не был бы проверен на
+       * базе, а партия получила бы оправдание, которого никто не проверял.
        */
       if (command === undefined) {
         throw new Error(
           `уровень проверки ${level.id} исчез из конфигурации: перезапустить его на базе нечем`,
         );
       }
-      // Хоть один шаг, зелёный на базе и красный с партией, — и вина партии доказана.
-      if (run(base.path, command, { pulse: `${level.title} на базе` }).code === 0) return true;
+      notify(`${level.title} на базе`);
+      const result = run(base.path, command, { pulse: `${level.title} на базе` });
+      const whole = `${result.stdout}\n${result.stderr}`;
+      notify(`${level.title} на базе: ${result.code === 0 ? 'зелено' : `код ${result.code}`}`);
+      facts.push({
+        id: level.id,
+        ok: result.code === 0,
+        marks: result.code === 0 ? [] : failureMarks(whole),
+      });
     }
-    return false;
+    return facts;
   } finally {
     base.dispose();
   }
@@ -283,26 +426,9 @@ export function verifyBatch(options: VerifyOptions): VerificationResult {
       };
     }
 
-    const levels: LevelResult[] = [];
-    for (const level of config.verification) {
-      if (!level.enabledByDefault && !options.extraLevels.includes(level.id)) continue;
-      notify(level.title);
-      const result = run(where, level.command, { pulse: level.title });
-      notify(
-        `${level.title}: ${result.code === 0 ? 'зелено' : `код ${result.code}`}` +
-          ` за ${Math.round(result.durationMs / 1000)} с`,
-      );
-      levels.push({
-        id: level.id,
-        title: level.title,
-        ok: result.code === 0,
-        durationMs: result.durationMs,
-        note: result.code === 0 ? 'зелено' : `код возврата ${result.code}`,
-        output: result.code === 0 ? undefined : tailOf(`${result.stdout}\n${result.stderr}`),
-      });
-    }
+    const levels = runLevels(where, config, options.extraLevels, notify);
 
-    // Ворота отработали — дерево партии больше не нужно, а `blameBatch` ниже поднимает своё.
+    // Ворота отработали — дерево партии больше не нужно, а замер базы ниже поднимает своё.
     // Снимаем здесь, чтобы два дерева на гигабайты не лежали на диске одновременно; `finally`
     // это не отменяет: повторный `dispose` безопасен и остаётся страховкой на случай броска.
     tree?.dispose();
@@ -320,25 +446,36 @@ export function verifyBatch(options: VerifyOptions): VerificationResult {
        * Поэтому упавший шаг перезапускается на базе БЕЗ партии — и только он один: гонять ради
        * этого все ворота второй раз стоило бы ещё столько же времени.
        */
-      notify(`перепроверка на базе без правки: ${failed.map((level) => level.title).join(', ')}`);
-      const guilty = blameBatch(config, options, failed);
-      if (!guilty) {
+      /*
+       * СУДИМ ПО РАЗНИЦЕ, А НЕ ПО ЗЕЛЕНИ.
+       *
+       * Упавший шаг ещё не значит «партия сломала»: в живом дереве база красна сама по себе —
+       * сегодня это бюджеты фронта и необработанный отказ в чужом тесте. Требуй мы зелени, цикл не
+       * принял бы ничего никогда, а каждая партия стоила бы двух прогонов ворот.
+       *
+       * Поэтому сравниваются следы падений: те же, что были на базе, — не наша беда; появившиеся —
+       * наша, и это откат. Память о базе снимается один раз на прогон и приходит сюда готовой.
+       */
+      const { guilty, baseGates } = blame(config, options, failed, notify);
+      if (guilty.length === 0) {
         return {
-          outcome: 'manual-review',
-          reason: `база сама красная: ${failed.map((level) => level.title).join(', ')} падает и без этой правки`,
+          outcome: 'accept',
+          reason: `принято: ${failed.map((level) => level.title).join(', ')} падает и без этой правки, нового красного не прибавилось`,
           levels,
           violations,
           lintAfter,
           typecheckAfter,
+          baseGates,
         };
       }
       return {
         outcome: 'rollback',
-        reason: `проверка не прошла: ${failed.map((level) => level.title).join(', ')}`,
+        reason: `проверка не прошла: ${guilty.map((level) => level.title).join(', ')}`,
         levels,
         violations,
         lintAfter,
         typecheckAfter,
+        baseGates,
       };
     }
     if (levels.length === 0) {

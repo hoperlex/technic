@@ -9,7 +9,7 @@
  */
 import type { Decision } from './selector.ts';
 import type { TrackedFinding } from './finding.ts';
-import type { Outcome } from '../verification/verifier.ts';
+import type { LevelFacts, Outcome } from '../verification/verifier.ts';
 
 /** На чьём ходу прогон. Шагов ожидания ровно два: ответ ревьюера и правка исполнителя. */
 export type RunStep = 'awaiting-review' | 'awaiting-fix' | 'finished';
@@ -87,4 +87,12 @@ export interface RunState {
    * дерево создаёт первый, пользуется им каждый следующий, а сносит тот, который прогон закрывает.
    */
   readonly workshop?: WorkshopRef | null;
+  /**
+   * Чем ворота кончились на голой базе прогона.
+   *
+   * Снимается один раз: база прогона — фиксированная вершина, и второй замер дал бы тот же ответ
+   * за те же минуты. Нужна, чтобы судить партию по РАЗНИЦЕ: в живом дереве зелёной базы почти
+   * никогда нет, и требование зелени означало бы «не принимать ничего».
+   */
+  readonly baseGates?: readonly LevelFacts[] | null;
 }

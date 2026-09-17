@@ -118,12 +118,12 @@ test('правка партии в изолированном дереве ви�
   }
 });
 
-test('красная база не списывается на партию: это вопрос человеку, а не откат', () => {
+test('красная база не списывается на партию: приём, а не откат', () => {
   const dir = repoWithNeighbourWork();
   try {
     const result = decide(dir, [ALWAYS_RED]);
-    assert.equal(result.outcome, 'manual-review');
-    assert.match(result.reason, /база сама красная/);
+    assert.equal(result.outcome, 'accept');
+    assert.match(result.reason, /падает и без этой правки/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

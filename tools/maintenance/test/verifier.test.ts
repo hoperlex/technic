@@ -71,7 +71,19 @@ const GREEN: VerificationLevel = {
   command: ['true'],
   enabledByDefault: true,
 };
+/** Шаг, красный ВСЕГДА: и с партией, и без неё. Так выглядит чужая краснота в живом дереве. */
 const RED: VerificationLevel = { ...GREEN, command: ['false'] };
+
+/**
+ * Шаг, который ломает ИМЕННО партия: он ищет в файле строку, появившуюся от правки.
+ *
+ * Без такого шага откат стало нечем проверить: с тех пор как решение принимается по разнице с
+ * базой, «красный всегда» перестал означать вину партии — и обязан не означать.
+ */
+const BROKEN_BY_BATCH: VerificationLevel = {
+  ...GREEN,
+  command: ['sh', '-c', 'grep -q стало apps/api/src/a.ts && echo "FAIL сломано правкой" && exit 1'],
+};
 const OPTIONAL_RED: VerificationLevel = {
   id: 'db',
   title: 'db-набор',
@@ -89,13 +101,53 @@ test('зелёная проверка при целом замке — приё�
   }
 });
 
-test('красная проверка — откат, и в отчёте остаётся вывод упавшего шага', () => {
+test('краснота, принесённая партией, — откат, и в отчёте остаётся вывод упавшего шага', () => {
   const dir = repoWithEdit();
   try {
-    const result = decide(dir, [RED]);
+    const result = decide(dir, [BROKEN_BY_BATCH]);
     assert.equal(result.outcome, 'rollback');
     assert.equal(result.levels[0]?.ok, false);
     assert.equal(typeof result.levels[0]?.output, 'string');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/*
+ * Это решение заказчика от 17.09.2026 и оно важнее, чем кажется: в дереве, где разработка не
+ * останавливается, зелёная вершина — редкость. Пока условием приёма была зелень, цикл не мог
+ * принять НИ ОДНОЙ партии: каждая упиралась в чужую красноту и уходила человеку.
+ */
+test('краснота, бывшая и до правки, приёму не мешает', () => {
+  const dir = repoWithEdit();
+  try {
+    const result = decide(dir, [RED]);
+    assert.equal(result.outcome, 'accept');
+    assert.match(result.reason, /падает и без этой правки/);
+    // Память о базе обязана вернуться наверх: второй замер стоил бы тех же минут.
+    assert.equal(result.baseGates?.length, 1);
+    assert.equal(result.baseGates?.[0]?.ok, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('готовую память о базе второй раз не меряют', () => {
+  const dir = repoWithEdit();
+  try {
+    const result = verifyBatch({
+      config: configWith(dir, [RED]),
+      policies: policySetFixture(),
+      baseline: { lintErrors: 0, lintWarnings: 0, typecheckOk: true, dirtyBefore: [] },
+      allowed: ['apps/api/src/a.ts'],
+      claimed: ['apps/api/src/a.ts'],
+      allowConcurrent: false,
+      tmpDir: path.join(dir, 'tmp'),
+      extraLevels: [],
+      // Шаг назван красным заранее — значит дерево под замер поднимать незачем.
+      baseGates: [{ id: 'gates', ok: false, marks: [] }],
+    });
+    assert.equal(result.outcome, 'accept');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
