@@ -22,6 +22,7 @@ import { doctor, showModules, showPolicies, showSurfaces, type CommandResult } f
 import { analyze, fixTask, review } from './analyze.ts';
 import { abortBatch, verify } from './verify.ts';
 import { converge, report } from './converge.ts';
+import { hook } from './hook.ts';
 import { deep } from './deep.ts';
 import { ledger, parseStatus } from './ledger.ts';
 
@@ -58,6 +59,10 @@ function help(): void {
     '                          цикл сходимости: продвигает прогон на шаг и называет следующий',
   );
   out.line('  report                  отчёт прогона и список решений для человека');
+  out.line('  hook [--install [--auto]] [--remove]');
+  out.line(
+    '                          хук коммита: кладёт коммиты в очередь прогона; --auto заводит прогон сам',
+  );
   out.line();
   out.line('  deep [--force] [--status] [--abort] [--agent manual|command] [--allow-concurrent]');
   out.line(
@@ -165,6 +170,13 @@ async function main(): Promise<number> {
       break;
     case 'report':
       result = await report(config, out);
+      break;
+    case 'hook':
+      result = hook(config, out, {
+        install: args.includes('--install'),
+        remove: args.includes('--remove'),
+        auto: args.includes('--auto'),
+      });
       break;
     case 'ledger':
       result = await ledger(config, out, {

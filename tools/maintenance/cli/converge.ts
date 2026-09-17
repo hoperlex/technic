@@ -43,6 +43,7 @@ import { loadPolicies } from './commands.ts';
 import { readBatch, saveBatch } from './verify.ts';
 import { adapterFor, deliver } from './agent-runner.ts';
 import { aimAt, closeWorkshop, openWorkshopFor, passOn, workOf } from './workshop.ts';
+import { lockHolder, takeLock, takeQueue } from './hook.ts';
 import { JsonFindingStore, decide, reconcile, type LedgerEntry } from '../state/ledger.ts';
 import { JsonSnapshotStore, diffSnapshots, renderDelta, snapshotOf } from '../state/snapshot.ts';
 import {
@@ -111,24 +112,56 @@ export async function converge(
 ): Promise<CommandResult> {
   const policies = await loadPolicies(config);
   const workspace = ensureWorkspace(config.runtimeDir);
-  const budget = policies.maintenance.convergence;
 
+  // Состояние показывают и снимают без замка: первое ничего не меняет, второе — последнее
+  // средство, и требовать для него свободного замка значит запирать человека вместе с прогоном.
   if (args.abort) return abortRun(workspace, config, out);
-
-  let state = readRun(workspace);
   if (args.status) {
+    const state = readRun(workspace);
     if (state === null) {
       out.item('прогона нет');
       return { ok: true };
     }
     printState(out, state);
+    const holder = lockHolder(workspace);
+    if (holder !== null) out.item(`прогон занят процессом ${holder.pid} с ${holder.at}`);
     return { ok: true };
   }
+
+  /*
+   * ЗАМОК. Состояние прогона — один файл, и два прогона сразу писали бы в него по очереди: второй
+   * продолжил бы чужой проход как свой, а партию одного проверил бы бюджет другого. В дереве, где
+   * работают несколько сессий и хук на каждый коммит, это не гипотеза.
+   */
+  const lock = takeLock(workspace);
+  if (lock === null) {
+    const holder = lockHolder(workspace);
+    out.item(`прогон уже идёт (процесс ${holder?.pid ?? '?'}, с ${holder?.at ?? '?'}) — жду его`);
+    return { ok: true };
+  }
+  try {
+    return await runConverge(config, policies, workspace, out, args);
+  } finally {
+    lock.release();
+  }
+}
+
+async function runConverge(
+  config: MaintenanceConfig,
+  policies: PolicySet,
+  workspace: Workspace,
+  out: Reporter,
+  args: ConvergeArgs,
+): Promise<CommandResult> {
+  const budget = policies.maintenance.convergence;
+  let state = readRun(workspace);
 
   if (state === null) {
     if (!checkStart(config, policies, out).allowed) return { ok: false };
     state = startRun(budget.passes);
     state = beginPass(state, budget.passes[0]?.id ?? 'structural');
+    const queued = takeQueue(workspace);
+    if (queued.length > 0) state = { ...state, commits: queued };
     out.heading(`прогон ${state.runId}`);
     out.item(`проходов в политике: ${budget.passes.length}, лимит: ${budget.maxPasses}`);
     state = openWorkshopFor(config, workspace, state, out);
@@ -238,7 +271,7 @@ async function emitReviewTask(
 
   out.heading(`проход ${state.passes.length}: ${pass.id}`);
   const work = workOf(config, state);
-  const scopeFiles = aimAt(config, state, out);
+  const scopeFiles = aimAt(config, state, out, state.commits ?? []);
   if (scopeFiles === null) return { ok: false };
   const collected = collectFacts({
     config: work,

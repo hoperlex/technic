@@ -127,18 +127,34 @@ export interface CoolScope {
  */
 export function coolScope(
   root: string,
-  options: { readonly commits: number; readonly cooldownMinutes: number },
+  options: {
+    readonly commits: number;
+    readonly cooldownMinutes: number;
+    /**
+     * Разобрать именно эти коммиты, а не последние подряд.
+     *
+     * Ими полнится очередь, которую ведёт хук: система смотрит ровно ту работу, которую авторы
+     * объявили законченной, и в том порядке, в каком объявили.
+     */
+    readonly shas?: readonly string[];
+  },
 ): CoolScope | null {
-  const log = run(root, [
-    'git',
-    '-c',
-    'core.quotepath=false',
-    'log',
-    `-n`,
-    String(Math.max(1, options.commits)),
-    '--name-only',
-    '--pretty=format:',
-  ]);
+  const named = options.shas ?? [];
+  const log = run(
+    root,
+    named.length > 0
+      ? ['git', '-c', 'core.quotepath=false', 'show', '--name-only', '--pretty=format:', ...named]
+      : [
+          'git',
+          '-c',
+          'core.quotepath=false',
+          'log',
+          '-n',
+          String(Math.max(1, options.commits)),
+          '--name-only',
+          '--pretty=format:',
+        ],
+  );
   // Отказ git — это `null`, а не пустой список: пустой список ниже по течению читается как «полный
   // обзор», и опечатка обернулась бы заданием по всему репозиторию.
   if (log.code !== 0) return null;

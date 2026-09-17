@@ -79,7 +79,13 @@ export function closeWorkshop(config: MaintenanceConfig, state: RunState, out: R
  * `null` означает «git не ответил»: прогон обязан остановиться, потому что пустой список ниже по
  * течению читается как полный обзор.
  */
-export function aimAt(config: MaintenanceConfig, state: RunState, out: Reporter): string[] | null {
+export function aimAt(
+  config: MaintenanceConfig,
+  state: RunState,
+  out: Reporter,
+  /** Коммиты из очереди хука: если они есть, смотрим ровно их. */
+  shas: readonly string[] = [],
+): string[] | null {
   if (!state.workshop) {
     const changed = changedSince(config.root, 'HEAD');
     if (changed === null) {
@@ -91,13 +97,15 @@ export function aimAt(config: MaintenanceConfig, state: RunState, out: Reporter)
   const cool = coolScope(config.root, {
     commits: config.analysis.scopeCommits ?? DEFAULT_SCOPE_COMMITS,
     cooldownMinutes: config.analysis.cooldownMinutes ?? DEFAULT_COOLDOWN_MINUTES,
+    shas,
   });
   if (cool === null) {
     out.error('git не смог показать историю: прогон остановлен');
     return null;
   }
+  const source = shas.length > 0 ? `${shas.length} коммитов из очереди` : 'последних коммитов';
   out.item(
-    `прицел: ${cool.files.length} остывших файлов из последних коммитов; горячих пропущено: ${cool.hot.length}`,
+    `прицел: ${cool.files.length} остывших файлов из ${source}; горячих пропущено: ${cool.hot.length}`,
   );
   if (cool.files.length === 0) {
     out.warn('всё остывшее уже разобрано или занято чужой работой — смотреть нечего');
