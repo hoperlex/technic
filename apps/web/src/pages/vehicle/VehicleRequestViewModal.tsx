@@ -1,7 +1,8 @@
-import { Button, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
+import { Button, Space, Spin, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { type ReactNode, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
+import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import {
   assignmentRateLabel,
@@ -809,6 +810,18 @@ export function VehicleRequestViewModal({
                           <PhoneLink phone={driver.phone} />
                         ) : (
                           <Typography.Text type="secondary">телефон не указан</Typography.Text>
+                        )}
+                        {/* Карточка человека снята из справочника (ADR 0190). Работу это не
+                            отменяет — он и сегодня на этой машине, — но по заказу выпишется ещё
+                            один бланк строгой отчётности на удалённого, и сказать об этом надо
+                            здесь, а не в бухгалтерии заказчика. Кнопка «Сменить машиниста» стоит
+                            рядом: пометка и есть приглашение ею воспользоваться. */}
+                        {driver.cardRemovedOn && (
+                          <Tooltip
+                            title={`Карточка снята ${dayjs(driver.cardRemovedOn).format('DD.MM.YYYY')}. Выписанные бланки остаются в силе, а новые пойдут на снятую карточку — назначьте другого машиниста.`}
+                          >
+                            <Tag color="warning">снят из справочника</Tag>
+                          </Tooltip>
                         )}
                       </>
                     ) : (

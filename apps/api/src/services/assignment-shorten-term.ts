@@ -1,7 +1,6 @@
-import { eq, inArray, ne, and } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import {
   shiftDateKey,
-  waybillDisplayNumber,
   type AssignmentIssueWarningsDto,
   type AssignmentPlanCancelDto,
   type AssignmentPlanIssueDto,
@@ -14,14 +13,7 @@ import {
   type VehicleOwnership,
 } from '@technic/contracts';
 import { err } from '../lib/errors';
-import {
-  persons,
-  vehicleModels,
-  vehicleRequestAssignments,
-  vehicles,
-  waybills,
-  waybillSeries,
-} from '../db/schema';
+import { persons, vehicleModels, vehicleRequestAssignments, vehicles } from '../db/schema';
 import type { AssignmentCommandTx } from './assignment-command';
 import {
   assignmentCommandEffects,
@@ -36,9 +28,10 @@ import {
   type AssignmentTerm,
 } from './assignment-history';
 import type { AssignmentChangeRecord, AssignmentWriteMutation } from './assignment-write';
-// Отпечаток — тот же, что у всех дверей истории: одна функция хеширования на волну, иначе два
-// отпечатка одного и того же содержания разошлись бы на первой же смене алгоритма.
-import { fingerprintOf } from './assignment-crew';
+// Отпечаток и чтение номеров действующих листов — те же, что у всех дверей истории: одна функция
+// хеширования на волну и один отбор бумаги, иначе два отпечатка одного и того же содержания
+// разошлись бы на первой же смене алгоритма, а два отбора — на первой же правке правила.
+import { fingerprintOf, readSheetNumbers } from './assignment-crew';
 import {
   documentClosure,
   esm2RequestedSheetPlan,
@@ -607,26 +600,6 @@ async function readOwnership(
     .from(vehicles)
     .where(inArray(vehicles.id, [...ids]));
   return new Map(rows.map((row) => [row.id, row.ownership]));
-}
-
-/** Напечатанные номера действующих листов: ими окно называет человеку бумагу, о которой говорит. */
-async function readSheetNumbers(
-  tx: AssignmentCommandTx,
-  requestId: string,
-): Promise<Map<string, string>> {
-  const rows = await tx
-    .select({
-      id: waybills.id,
-      number: waybills.number,
-      prefix: waybillSeries.prefix,
-      numberWidth: waybillSeries.numberWidth,
-    })
-    .from(waybills)
-    .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-    .where(and(eq(waybills.sourceRequestId, requestId), ne(waybills.status, 'cancelled')));
-  return new Map(
-    rows.map((row) => [row.id, waybillDisplayNumber(row.prefix, row.number, row.numberWidth)]),
-  );
 }
 
 interface PreviewNames {

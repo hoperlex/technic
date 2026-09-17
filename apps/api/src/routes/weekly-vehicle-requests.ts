@@ -53,6 +53,7 @@ import {
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { db } from '../db/client';
+import { machinistCardRemovedSql } from '../services/machinist-commitments';
 import {
   constructionObjects,
   specialEquipmentRequestDetails,
@@ -201,6 +202,7 @@ const itemSelect = {
   sourceDateFrom: sourceDetails.dateFrom,
   sourceDateTo: sourceDetails.dateTo,
   pendingEarlyEndDate: sourceEarlyEnds.newDateTo,
+  machinistCardRemoved: machinistCardRemovedSql(sql`${sourceRequests}."id"`),
   vehicleTypeId: weeklyVehicleRequestItems.vehicleTypeId,
   vehicleTypeName: orderedTypes.name,
   vehicleCategoryId: weeklyVehicleRequestItems.vehicleCategoryId,
@@ -296,6 +298,7 @@ function orderOf(row: ItemRow): WeeklySourceOrder | null {
     pickupRoute: null,
     leftBy: null,
     pendingEarlyEndDate: row.pendingEarlyEndDate,
+    machinistCardRemoved: row.machinistCardRemoved,
   };
 }
 
@@ -579,6 +582,7 @@ async function loadCandidates(tx: Tx | typeof db, objectId: string, ids?: string
       pendingEarlyEndDate: vehicleRequestEarlyEndings.newDateTo,
       pickupRouteNum: pickupRoutes.num,
       pickupRouteDate: pickupRoutes.routeDate,
+      machinistCardRemoved: machinistCardRemovedSql(sql`${vehicleRequests}."id"`),
     })
     .from(vehicleRequests)
     .innerJoin(
@@ -640,6 +644,7 @@ function candidateOrder(c: Candidate, leftBy: { num: number } | null): WeeklySou
         : null,
     leftBy,
     pendingEarlyEndDate: c.pendingEarlyEndDate,
+    machinistCardRemoved: c.machinistCardRemoved,
   };
 }
 

@@ -178,18 +178,32 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
   }, [fleet, request?.assignment]);
 
   /**
-   * Машинисты — весь справочник водителей, тем же запросом и тем же ключом кэша, что и в форме
-   * перевода в работу: в бланке ЭСМ-2 нет ни граф СНИЛС, ни граф удостоверения (ADR 0095), и
-   * отбирать по документам здесь некого.
+   * Машинисты — своим отбором по **периодам этого документа** (план `machinist-card-removal`, Э6).
+   *
+   * Не списком справочника, как было: тот прячет снятые карточки, и человека, отработавшего неделю
+   * до увольнения, выписать было нечем — сервер его принимает, а форма не предлагала. И не
+   * `/drivers/available`: там требование машины и историческая специализация, которых у недельного
+   * листа нет (ADR 0164).
+   *
+   * Ключ кэша несёт периоды: у недели на стыке месяцев их два, и ответ у них общий — пересечение.
    */
+  const periodsKey = periods.map((p) => `${p.from}..${p.to}`).join(',');
   const { data: drivers, isFetching: driversLoading } = useQuery({
-    queryKey: ['drivers', 'machinists'],
-    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortDir: 'asc' }),
-    enabled: !!request,
+    queryKey: ['drivers', 'machinists', periodsKey],
+    queryFn: () => driversApi.machinists(periods),
+    enabled: !!request && periods.length > 0,
   });
-  const driverOptions = (drivers?.items ?? []).map((d) => ({
-    value: d.id,
-    label: [d.fullName, d.personnelNo && `таб. ${d.personnelNo}`].filter(Boolean).join(' · '),
+  const driverOptions = (drivers?.drivers ?? []).map((d) => ({
+    value: d.personId,
+    label: [
+      d.fullName,
+      d.personnelNo && `таб. ${d.personnelNo}`,
+      // Снятую карточку человек обязан узнать до выбора: она годится этой неделе, но на следующую
+      // его уже не поставить, и молчащий список выглядел бы так, будто человек в строю.
+      d.cardRemovedOn && `карточка снята ${formatDateOnly(d.cardRemovedOn)}`,
+    ]
+      .filter(Boolean)
+      .join(' · '),
   }));
 
   /**

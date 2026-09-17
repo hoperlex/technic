@@ -57,6 +57,7 @@ import {
 } from '../services/assignment-repair';
 import { applyAssignmentMutations, type AssignmentWriteResult } from '../services/assignment-write';
 import { assignmentSegments } from '../services/assignment-history';
+import { assertMachinistSelectable } from '../services/drivers';
 import { correctionFingerprint } from '../services/waybill-correction';
 import type { Esm2SheetPlan } from '../services/esm2-plan';
 import type { Esm2IssuePreparations } from '../services/waybill-esm2';
@@ -507,6 +508,27 @@ async function planRepairCommand(
   const restore = body.mode !== 'inspect' && body.restore === true;
 
   assertRepairDoorOpen(stateBefore, history.unrestorable, body);
+
+  /*
+   * Годность названных людей (план `machinist-card-removal`, Р6) — до расчёта, как и у команды
+   * машиниста. Ремонт называет человека дважды: якорем (пробел в изменяемой части) и заполнением
+   * известного на заблокированных днях, и оба поля — явный выбор.
+   *
+   * Период якоря — от его даты до конца срока: решение действует вперёд. У заполнения период свой и
+   * закрытый — те самые дни, которые оно объявляет отработанными этим человеком, — и именно он
+   * делает ремонт прошлого возможным: карточка, снятая после этих дней, им годится (Р3).
+   */
+  if (body.mode === 'repair') {
+    const termEnd = term.dateTo ?? term.dateFrom;
+    for (const anchor of body.anchors ?? []) {
+      await assertMachinistSelectable(ctx.tx, anchor.driverPersonId, [
+        { from: anchor.effectiveDate, to: termEnd },
+      ]);
+    }
+    for (const fill of body.knownFills ?? []) {
+      await assertMachinistSelectable(ctx.tx, fill.personId, [{ from: fill.from, to: fill.to }]);
+    }
+  }
   // Осмотр (6a) идёт тем же расчётом, что и ремонт, но без единой мутации: окно спрашивает, что
   // чинить, — адреса заполнения и блокеры считает сервер, а `planRepair` на пустом теле законно
   // отвечает «чинить нечего».

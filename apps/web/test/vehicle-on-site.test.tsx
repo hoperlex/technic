@@ -168,6 +168,7 @@ const linearSlice: VehicleOnSiteListDto = {
         vehicleLabel: 'В321ВВ777',
         vehicleModelName: 'МАЗ 6501',
         driverPersonId: 'p-1',
+        driverCardRemovedOn: null,
         driverName: 'Иванов И. И.',
       },
     }),

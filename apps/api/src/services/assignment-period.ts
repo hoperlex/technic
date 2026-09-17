@@ -12,7 +12,6 @@ import {
   type AssignmentUnlockDto,
   type CancelledAssignmentGroupDto,
   type Esm2Mode,
-  type OperationRequirement,
   type PeriodApplyInput,
   type PeriodCommand,
   type PeriodPreviewDto,
@@ -46,8 +45,14 @@ import {
 } from './assignment-write';
 // Право коррекции — одно правило на все двери истории, и живёт оно у двери машиниста (волна 3.2):
 // «`crew` требует `waybills.correct`, глубже тридцати дней — `correctBeyondLimit`». Своя копия
-// разошлась бы с ней при первой же правке правила, а разъезжаются такие пары молча.
-import { authorizeCrewCommand, authorizeCrewRepeat, fingerprintOf } from './assignment-crew';
+// разошлась бы с ней при первой же правке правила, а разъезжаются такие пары молча. Оттуда же
+// отпечаток и требование операции: и то и другое одно на все двери истории.
+import {
+  authorizeCrewCommand,
+  authorizeCrewRepeat,
+  fingerprintOf,
+  operationRequirementOf,
+} from './assignment-crew';
 // Расчёт изменения срока — общий на четыре применяющие ветви (Р18 плана
 // `docs/vehicle-request-actual-end-date-plan.md`): гасимые группы, эффекты, бумага, разблокировки.
 // Дверь срока с него и началась и осталась его первым вызывающим; решения по посчитанному —
@@ -867,16 +872,6 @@ export function periodPreviewDto(
     fingerprint,
     cancelGroups: plan.cancelGroupsPreview,
     cancelGroupsFingerprint: plan.cancelGroupsFingerprint,
-  };
-}
-
-/** Спрашивать ли причину и ключ операции — решает исход (Р32), а не календарь. */
-function operationRequirementOf(effects: AssignmentEffects): OperationRequirement | null {
-  if (!effects.needsOperation) return null;
-  return {
-    kind: effects.operationOutcome === 'crew' ? 'crew' : 'assignment_tail',
-    reasonRequired: true,
-    operationIdRequired: true,
   };
 }
 

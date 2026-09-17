@@ -862,7 +862,7 @@ export async function evaluateShadowTarget(
     requestId,
     scopeFingerprint: SHADOW_SCOPE_FULL,
     status: verdict.status,
-    evaluationFingerprint: fingerprintOf({
+    evaluationFingerprint: shadowFingerprintOf({
       asOf,
       algoVersion: ASSIGNMENT_HISTORY_ALGO_VERSION,
       scope: SHADOW_SCOPE_FULL,
@@ -1056,8 +1056,17 @@ function diffOf(
   };
 }
 
-/** Отпечаток вычисления: одно и то же состояние даёт один и тот же хеш, и наоборот. */
-function fingerprintOf(value: unknown): string {
+/**
+ * Отпечаток теневого вычисления: одно и то же состояние даёт один и тот же хеш, и наоборот.
+ *
+ * Имя своё, а не общее с `fingerprintOf` дверей истории, и различие существенное: тот отпечаток
+ * считается `correctionFingerprint` — с сортировкой ключей и разбором `Date`, потому что сверяется
+ * с телом, пришедшим от клиента, где ни порядок полей, ни форма даты не гарантированы. Здесь
+ * канонизировать нечего: значение собирается тут же литералом с постоянным порядком ключей, из
+ * строк и уже отсортированных списков (`toShadowComparable`), дат в нём не бывает вовсе, а
+ * сравнивается хеш только со своим же прежним значением из `assignment_shadow_checks` (К2).
+ */
+function shadowFingerprintOf(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 

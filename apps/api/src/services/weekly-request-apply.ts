@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
   type BackdateAccess,
   extendBlocker,
@@ -38,6 +38,7 @@ import {
   evaluateAssignmentBackstop,
   type AssignmentBackstopVerdict,
 } from './assignment-backstop';
+import { machinistCardRemovedSql } from './machinist-commitments';
 import { extendSpecialEquipmentPeriod } from './vehicle-request-period';
 import { createSpecialEquipmentRequest } from './vehicle-request-create';
 import { loadLeftBy } from './weekly-request-blockers';
@@ -220,6 +221,9 @@ async function lockOrders(
       status: vehicleRequests.status,
       deletedAt: vehicleRequests.deletedAt,
       version: vehicleRequests.version,
+      // Признак «машинист снят» читается тем же запросом, что и заголовок: предупреждение строки
+      // считается по нему, и второе чтение под блокировкой стоило бы запроса на каждый заказ.
+      machinistCardRemoved: machinistCardRemovedSql(sql`${vehicleRequests}."id"`),
     })
     .from(vehicleRequests)
     .where(inArray(vehicleRequests.id, ids))
@@ -304,6 +308,7 @@ async function lockOrders(
       pickupRoute: pickupByRequest.get(head.id) ?? null,
       leftBy: leftBy.get(head.id) ?? null,
       pendingEarlyEndDate: earlyEndByRequest.get(head.id) ?? null,
+      machinistCardRemoved: head.machinistCardRemoved,
       version: head.version,
       vehicleId: vehicleByRequest.get(head.id) ?? null,
     });

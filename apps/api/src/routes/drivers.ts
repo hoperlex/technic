@@ -26,7 +26,16 @@ import {
   SNILS_CHECKSUM_MESSAGE,
   updateDriverSchema,
   verifyDriverLicenseSchema,
+  DRIVER_REMOVAL_ACK_REQUIRED_CODE,
+  machinistSelectionQuerySchema,
+  type MachinistSelectionDto,
+  type DriverRemovalAckRequiredDetails,
+  driverRemovalSchema,
 } from '@technic/contracts';
+import {
+  machinistCommitmentsOf,
+  type MachinistCommitments,
+} from '../services/machinist-commitments';
 import { db } from '../db/client';
 import {
   credentialTypes,
@@ -51,6 +60,7 @@ import {
   DRIVER_SPECIALIZATION_CODE,
   documentsCompleteCondition,
   driverCondition,
+  selectMachinists,
   normalizedJobTitleSql,
   selectDrivers,
 } from '../services/drivers';
@@ -700,6 +710,25 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
    * `matchesRequiredCategory` рядом с `requiredCategory`, пробелы комплекта — списком `gaps`.
    * Из этих двух пар форма и складывает пометки в строках и предупреждения под полем.
    */
+  /**
+   * Кого предложить машинистом листа ЭСМ-2 на эти периоды (план `machinist-card-removal`, Э6).
+   *
+   * Отдельно от `/available`, и это не дубль: тот отвечает на «кого посадить за эту машину в эту
+   * дату» — с требованием категории, документами и исторической специализацией. У недельного листа
+   * работы машины ничего этого нет (ADR 0164), зато есть период документа, а у переходной недели
+   * их два, и годность снятой карточки считается по ним обоим.
+   */
+  r.get(
+    '/machinists',
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { querystring: machinistSelectionQuerySchema },
+    },
+    async (req): Promise<MachinistSelectionDto> => ({
+      drivers: await selectMachinists(db, req.query.periods),
+    }),
+  );
+
   r.get(
     '/available',
     {
@@ -1146,7 +1175,15 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
    */
   r.delete(
     '/:id',
-    { preHandler: [app.authenticate, canWrite], schema: { params: idParams } },
+    {
+      preHandler: [app.authenticate, canWrite],
+      /*
+       * Тело необязательно и приходит `null` у старой вкладки: она шлёт `DELETE` без тела вовсе, а
+       * `.optional()` такой запрос отвергал бы валидацией — до всякого разговора о последствиях.
+       * Карточка без связей и сегодня снимается без тела, и ломать это нельзя (Р8).
+       */
+      schema: { params: idParams, body: driverRemovalSchema.nullish() },
+    },
     async (req, reply) => {
       const p = requirePrincipal(req);
       const found = await loadDriver(req.params.id);
@@ -1154,7 +1191,45 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
       if (found.row.deletedAt) return reply.code(204).send();
 
       const today = new Date().toISOString().slice(0, 10);
-      await db.transaction(async (tx) => {
+      /** Что человек ведёт машинистом — им и считается перечень окна, и метаданные аудита. */
+      const commitments: MachinistCommitments = await db.transaction(async (tx) => {
+        /*
+         * Последствия — под тем же снимком, что и само удаление (план `machinist-card-removal`, Э2).
+         *
+         * Считать их до транзакции нельзя: между расчётом и записью заказ могли продлить, и человек
+         * подтвердил бы перечень, которого уже нет. Отпечаток сверяется здесь же — им отличается
+         * «подтвердил вот это» от «подтвердил то, что видел минуту назад».
+         *
+         * Пустой перечень рукопожатия не требует вовсе: карточка без связей снимается одним
+         * нажатием, как и до этой волны.
+         */
+        const behind = await machinistCommitmentsOf(tx, found.row.id);
+        if (behind.orders.length > 0 || behind.futureRouteDays > 0) {
+          if (req.body?.acknowledge?.fingerprint !== behind.fingerprint) {
+            throw err.conflict(
+              `Карточку ведут ${behind.orders.length} заказ(ов) — подтвердите удаление`,
+              {
+                code: DRIVER_REMOVAL_ACK_REQUIRED_CODE,
+                details: {
+                  fullName: found.row.fullName,
+                  orders: behind.orders.map((order) => ({
+                    requestId: order.requestId,
+                    num: order.num,
+                    customer: order.customer,
+                    dateFrom: order.dateFrom,
+                    dateTo: order.dateTo,
+                    assumedDateTo: order.assumedDateTo,
+                    pendingWeeklyNum: order.pendingWeeklyNum,
+                    futureSheets: order.futureSheets,
+                  })),
+                  futureRouteDays: behind.futureRouteDays,
+                  totalFutureSheets: behind.totalFutureSheets,
+                  fingerprint: behind.fingerprint,
+                } satisfies DriverRemovalAckRequiredDetails,
+              },
+            );
+          }
+        }
         await tx
           .update(persons)
           .set({ deletedAt: new Date(), deletedBy: p.id, version: found.row.version + 1 })
@@ -1174,13 +1249,29 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
           .where(
             and(eq(personEmployments.personId, found.row.id), isNull(personEmployments.endedOn)),
           );
+        return behind;
       });
 
+      /*
+       * Что снятие оставило за собой — в журнале (Э2). Прежде событие не несло ничего, и разбор
+       * «почему у трёх заявок машинист снят» начинался с нуля: по идентификатору человека искали
+       * заказы руками, задним числом и по памяти.
+       */
+      const left = commitments;
       await writeAudit({
         actorUserId: p.id,
         action: 'driver.delete',
         entityType: 'person',
         entityId: found.row.id,
+        ...(left.orders.length > 0 || left.futureRouteDays > 0
+          ? {
+              metadata: {
+                orders: left.orders.map((order) => order.num),
+                futureSheets: left.totalFutureSheets,
+                futureRouteDays: left.futureRouteDays,
+              },
+            }
+          : {}),
       });
       return reply.code(204).send();
     },

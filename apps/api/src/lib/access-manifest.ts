@@ -513,6 +513,13 @@ export const ACCESS_MANIFEST = {
   },
   'DELETE /api/v1/drivers/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
   'GET /api/v1/drivers/available': { kind: 'permissions', allOf: ['drivers.read'] },
+  /*
+   * Отбор машинистов на периоды листа (ADR 0190): то же право, что у соседнего `/available`, и по
+   * той же причине — это выбор человека из справочника, а не чтение бумаги. Отдельным маршрутом он
+   * стоит потому, что спрашивает другое: у недельного ЭСМ-2 нет ни требуемой категории, ни
+   * документов, зато есть периоды документа, по которым считается годность снятой карточки.
+   */
+  'GET /api/v1/drivers/machinists': { kind: 'permissions', allOf: ['drivers.read'] },
   'GET /api/v1/drivers/job-titles': { kind: 'permissions', allOf: ['drivers.read'] },
   'GET /api/v1/drivers/license-categories': { kind: 'permissions', allOf: ['drivers.read'] },
 

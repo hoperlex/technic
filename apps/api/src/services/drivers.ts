@@ -26,6 +26,7 @@ import {
   requiredCredentialType,
   trailerCategoryCode,
   formatSnils,
+  moscowDateKeyOf,
   type WaybillLicense,
   waybillDocumentOf,
 } from '@technic/contracts';
@@ -45,6 +46,7 @@ import {
   vehicles,
   waybills,
 } from '../db/schema';
+import { err } from '../lib/errors';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 /** Читающие функции годятся и в транзакции выписки листа, и вне её — форме подбора. */
@@ -776,6 +778,132 @@ export interface MachinistOption {
    * снимок листа не должен зависеть от того, какие клетки размечены в шаблоне (ADR 0095).
    */
   license: DriverLicenseRow | null;
+}
+
+/** Период документа, на который человека называют: границы включающие, как у самого бланка. */
+export interface MachinistPeriod {
+  from: string;
+  to: string;
+}
+
+/** Строка отбора машинистов: карточка человека и, если она снята, день снятия. */
+export interface MachinistSelectionRow {
+  personId: string;
+  fullName: string;
+  personnelNo: string;
+  /** `null` — карточка жива. Иначе день по МСК: им форма и помечает такого человека. */
+  cardRemovedOn: string | null;
+}
+
+/**
+ * Кого можно поставить машинистом на **эти** периоды (план `machinist-card-removal`, Р5, Р9).
+ *
+ * Свой отбор, а не `selectDrivers`, и не список справочника. От `selectDrivers` он отличается тем,
+ * что не спрашивает ни требования машины, ни историческую специализацию: у бланка ЭСМ-2 нет ни граф
+ * удостоверения, ни граф СНИЛС, а специализацию из выписки убрал ADR 0164 — вернув её в отбор,
+ * форма снова начала бы прятать человека, которого сервер печатает. От списка справочника — тем,
+ * что показывает снятые карточки, годные периоду.
+ *
+ * ПЕРЕСЕЧЕНИЕ, А НЕ ОБЪЕДИНЕНИЕ. Периодов у одной просьбы бывает несколько: переходную неделю
+ * месячного разреза закрывают два бланка **одной транзакцией**, и человек, годный только
+ * августовскому, развалил бы её целиком. Пересечение выражается одной датой — самым поздним концом
+ * из всех периодов: карточка, снятая не раньше него, годится каждому.
+ *
+ * День снятия считается по московскому календарю прямо в запросе: `deleted_at` — момент времени, а
+ * граница правила — календарный день, и голый `::date` дал бы ответ по часовому поясу соединения
+ * (в контейнере это UTC, и удаление в 02:30 МСК считалось бы вчерашним).
+ */
+export async function selectMachinists(
+  reader: Reader,
+  periods: readonly MachinistPeriod[],
+): Promise<MachinistSelectionRow[]> {
+  const latestTo = periods.reduce((last, period) => (period.to > last ? period.to : last), '');
+  const removedDay = sql`(${persons.deletedAt} AT TIME ZONE 'Europe/Moscow')::date`;
+  const rows = await reader
+    .select({
+      personId: persons.id,
+      fullName: persons.fullName,
+      personnelNo: sql<string>`coalesce(${personEmployments.personnelNo}, '')`,
+      cardRemovedOn: sql<string | null>`CASE WHEN ${persons.deletedAt} IS NULL THEN NULL
+        ELSE to_char(${removedDay}, 'YYYY-MM-DD') END`,
+    })
+    .from(persons)
+    // Табельный номер — той же кадровой записью, что и в списке справочника: незакрытой. Человеку
+    // он подсказка «тот ли это», а не реквизит бланка: реквизит соберёт выписка своим правилом.
+    .leftJoin(
+      personEmployments,
+      and(eq(personEmployments.personId, persons.id), isNull(personEmployments.endedOn)),
+    )
+    .where(
+      and(
+        driverCondition(),
+        latestTo === ''
+          ? isNull(persons.deletedAt)
+          : or(isNull(persons.deletedAt), sql`${removedDay} >= ${latestTo}::date`),
+      ),
+    )
+    .orderBy(asc(persons.fullName));
+  return rows.map((row) => ({
+    personId: row.personId,
+    fullName: row.fullName,
+    personnelNo: row.personnelNo,
+    cardRemovedOn: row.cardRemovedOn,
+  }));
+}
+
+/**
+ * Годен ли человек тому, на что его **называют сейчас** (план `machinist-card-removal`, Р3, Р6).
+ *
+ * Зовут это только двери явного выбора — те, где машиниста называет человек телом запроса. Портал,
+ * унаследовавший машиниста от прежнего листа, отрезка или сгоревшего бланка, сюда не приходит и
+ * приходить не должен: его выбрали не сейчас, и отказ означал бы остановку заявки, которую уже
+ * ведут этим человеком. Ровно так прод и встал 14.09.2026 (ADR 0164 в редакции от 14.09).
+ *
+ * Правило одно: карточка либо жива, либо снята **не раньше** последнего дня каждого названного
+ * периода. День удаления — ещё рабочий, как день увольнения в кадровом окне (ADR 0101 п. 15):
+ * человек, уволенный в среду, за среду ещё ведёт лист.
+ *
+ * Периодов может быть несколько, и проверяются они **все** (Р9): переходную неделю месячного
+ * разреза выписывают двумя бланками одной транзакцией, и годность одному из них — не годность.
+ * Первым отказом называется тот период, из-за которого человек не подошёл: «не годится» без
+ * указания бланка читать невозможно.
+ *
+ * День удаления считается по московскому календарю (`moscowDateKeyOf`), а не приведением
+ * `deleted_at::date` в SQL: там ответ зависел бы от часового пояса соединения — в контейнере это
+ * UTC, и удаление в 02:30 МСК считалось бы вчерашним.
+ */
+export async function assertMachinistSelectable(
+  reader: Reader,
+  personId: string,
+  periods: readonly MachinistPeriod[],
+): Promise<void> {
+  const [row] = await reader
+    .select({ fullName: persons.fullName, deletedAt: persons.deletedAt })
+    .from(persons)
+    .where(eq(persons.id, personId));
+  if (!row) {
+    throw err.unprocessable(
+      'Машиниста нет в справочнике — карточки с таким идентификатором не существует',
+      { driverPersonId: 'Выберите машиниста' },
+    );
+  }
+  if (!row.deletedAt) return;
+
+  const removedOn = moscowDateKeyOf(row.deletedAt);
+  const late = periods.find((period) => period.to > removedOn);
+  if (!late) return;
+  throw err.unprocessable(
+    `Карточка машиниста (${row.fullName}) снята из справочника ${dateRu(removedOn)} — назначить его` +
+      ` на ${dateRu(late.from)} — ${dateRu(late.to)} нельзя. Выберите другого человека или` +
+      ' восстановите карточку из архива',
+    { driverPersonId: 'Выберите машиниста' },
+  );
+}
+
+/** Календарный ключ человеку: «24.07.2026». Через `Date` он бы поехал на день. */
+function dateRu(key: string): string {
+  const [y, m, d] = key.split('-');
+  return y && m && d ? `${d}.${m}.${y}` : key;
 }
 
 /**

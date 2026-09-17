@@ -1,8 +1,7 @@
-import { and, eq, inArray, isNotNull, ne } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import {
   formatVehicleRequestNumber,
   moscowDateKeyOf,
-  waybillDisplayNumber,
   type AccessSubject,
   type AssignmentClearedApprovalDto,
   type AssignmentCorrectionPreviewDto,
@@ -11,19 +10,11 @@ import {
   type AssignmentPlanIssueDto,
   type AssignmentVehicleCorrectionInput,
   type Esm2Period,
-  type OperationRequirement,
   type VehicleOwnership,
 } from '@technic/contracts';
 import { err } from '../lib/errors';
 import type { AuditEntry } from '../lib/audit';
-import {
-  users,
-  vehicleRequestAssignments,
-  vehicleRequestShifts,
-  vehicles,
-  waybills,
-  waybillSeries,
-} from '../db/schema';
+import { users, vehicleRequestAssignments, vehicleRequestShifts, vehicles } from '../db/schema';
 import type {
   AssignmentApplyContext,
   AssignmentCommandSpec,
@@ -57,12 +48,15 @@ import {
 } from './assignment-write';
 // Право коррекции — одно правило на все двери истории, и живёт оно у двери машиниста (волна 3.2).
 // Своя копия «`crew` требует `waybills.correct`, глубже тридцати дней — `correctBeyondLimit`»
-// разошлась бы с ней при первой же правке правила, а разъезжаются такие пары молча.
+// разошлась бы с ней при первой же правке правила, а разъезжаются такие пары молча. Оттуда же
+// отпечаток, требование операции и отбор действующей бумаги — общие на все двери.
 import {
   assignmentPaperPreviewOf,
   authorizeCrewCommand,
   authorizeCrewRepeat,
   fingerprintOf,
+  operationRequirementOf,
+  readSheetNumbers,
 } from './assignment-crew';
 import {
   esm2SheetPlan,
@@ -992,16 +986,6 @@ export function correctionPreviewDto(
   };
 }
 
-/** Спрашивать ли причину и ключ операции — решает исход (Р32), а не календарь. */
-function operationRequirementOf(effects: AssignmentEffects): OperationRequirement | null {
-  if (!effects.needsOperation) return null;
-  return {
-    kind: effects.operationOutcome === 'crew' ? 'crew' : 'assignment_tail',
-    reasonRequired: true,
-    operationIdRequired: true,
-  };
-}
-
 // ── Чтение справочников ──
 
 /**
@@ -1036,26 +1020,6 @@ async function readOwnership(
     rows.flatMap((row) =>
       row.deletedAt && row.id === vehicleAfter ? [] : [[row.id, row.ownership] as const],
     ),
-  );
-}
-
-/** Напечатанные номера действующих листов: ими окно называет человеку бумагу, о которой говорит. */
-async function readSheetNumbers(
-  tx: AssignmentCommandTx,
-  requestId: string,
-): Promise<Map<string, string>> {
-  const rows = await tx
-    .select({
-      id: waybills.id,
-      number: waybills.number,
-      prefix: waybillSeries.prefix,
-      numberWidth: waybillSeries.numberWidth,
-    })
-    .from(waybills)
-    .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-    .where(and(eq(waybills.sourceRequestId, requestId), ne(waybills.status, 'cancelled')));
-  return new Map(
-    rows.map((row) => [row.id, waybillDisplayNumber(row.prefix, row.number, row.numberWidth)]),
   );
 }
 

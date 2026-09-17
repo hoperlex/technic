@@ -1,5 +1,6 @@
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import {
+  type AssignmentPersonDto,
   assignmentDimensionLabels,
   can,
   canCancelWaybill,
@@ -88,6 +89,7 @@ import {
   type Esm2ExistingSheet,
   type Esm2SheetPlan,
 } from './esm2-plan';
+import { assertMachinistSelectable } from './drivers';
 import { correctionFingerprint } from './waybill-correction';
 import {
   buildEsm2SyncPlan,
@@ -307,6 +309,32 @@ export async function planCrewCommand(
       'У линейного заказа машиниста называют при выписке листа, а не на заявке — история состава здесь не ведётся',
       { requestId: 'Линейный заказ' },
     );
+  }
+
+  /*
+   * Годность названных людей (план `machinist-card-removal`, Р6) — до всякого расчёта: команда,
+   * назвавшая снятого человека, не должна доходить ни до плана бумаги, ни до отпечатка.
+   *
+   * Спрашивается и основное поле команды, и **якоря** — они приходят вместе с любой командой, в том
+   * числе с `cancel`, которая сама машиниста не меняет. Дверь, проверившая только `set`, пропускала
+   * бы снятого человека через якорь молча.
+   *
+   * Период у каждого решения — от его даты до конца срока заявки: решение действует вперёд, пока
+   * его не сменит следующее, и человек, снятый посреди этого хвоста, попал бы в листы за дни после
+   * своего удаления. Однодневный заказ (`dateTo` пуст) кончается своим единственным днём.
+   */
+  const termEnd = term.dateTo ?? term.dateFrom;
+  const named: { personId: string; from: string }[] = [
+    ...(input.kind === 'set'
+      ? [{ personId: input.driverPersonId, from: input.effectiveDate }]
+      : []),
+    ...(input.anchors ?? []).map((anchor) => ({
+      personId: anchor.driverPersonId,
+      from: anchor.effectiveDate,
+    })),
+  ];
+  for (const pick of named) {
+    await assertMachinistSelectable(tx, pick.personId, [{ from: pick.from, to: termEnd }]);
   }
 
   const target = input.kind === 'cancel' ? resolveChangeTarget(changes, input.target) : null;
@@ -1074,7 +1102,14 @@ function driverValue(driver: DriverState) {
 
 // ── Отпечаток предпросмотра (Р20, Р32) ──
 
-/** Отпечаток любого серверного множества — один способ на все четыре (§7). */
+/**
+ * Отпечаток любого серверного множества — один способ на все четыре (§7).
+ *
+ * Сквозной вызов `correctionFingerprint`: канонизация (сортировка ключей, разбор `Date`) нужна
+ * именно та, какой считается отпечаток команды задним числом, — иначе окно и боевая ручка сверяли
+ * бы разные хеши. Однофамильца из теневого прогона (`shadowFingerprintOf`) сюда не сводить: он
+ * ничего не канонизирует, и почему — сказано у него.
+ */
 export function fingerprintOf(value: unknown): string {
   return correctionFingerprint(value);
 }
@@ -1541,8 +1576,15 @@ async function readOwnership(
   return new Map(rows.map((row) => [row.id, row.ownership]));
 }
 
-/** Напечатанные номера действующих листов: ими окно называет человеку бумагу, о которой говорит. */
-async function readSheetNumbers(
+/**
+ * Напечатанные номера действующих листов: ими окно называет человеку бумагу, о которой говорит.
+ *
+ * Одна на все двери истории, и живёт она рядом с общим показом бумаги
+ * ({@link assignmentPaperPreviewOf}) по той же причине: номера подаются в этот показ, и своя копия
+ * отбора разошлась бы с ним молча — окно назвало бы бумагу, которой в плане нет, или промолчало о
+ * той, что в нём есть.
+ */
+export async function readSheetNumbers(
   tx: AssignmentCommandTx,
   requestId: string,
 ): Promise<Map<string, string>> {
@@ -1691,8 +1733,15 @@ export function crewPreviewDto(
   };
 }
 
-/** Нужна ли операция журнала и что для неё спросить (Р32); `null` — исход `none`. */
-function operationRequirementOf(effects: AssignmentEffects): OperationRequirement | null {
+/**
+ * Нужна ли операция журнала и что для неё спросить (Р32); `null` — исход `none`.
+ *
+ * Одна на пять дверей истории: смену состава, периодную коррекцию, срок, смену техники и закрытие.
+ * Решает её **исход**, а не календарь и не то, какая дверь спросила, — потому и считается в одном
+ * месте. Досрочное завершение проекцию не берёт: у него `reasonRequired` значит другое, и своя
+ * копия там объяснена (`assignment-early-end.ts`).
+ */
+export function operationRequirementOf(effects: AssignmentEffects): OperationRequirement | null {
   if (!effects.needsOperation) return null;
   return {
     kind: effects.operationOutcome === 'crew' ? 'crew' : 'assignment_tail',
@@ -1759,6 +1808,38 @@ export async function readAssignmentHistoryDto(
     for (const row of found) userNames.set(row.id, row.fullName);
   }
 
+  /*
+   * Имена людей, названных в истории (план `machinist-card-removal`, Э4), — отсюда, а не из
+   * справочника водителей на портале. Справочник снятые карточки прячет, и «Состав по датам» у
+   * заявки, где машиниста как раз и сняли, писал бы «машиниста нет в справочнике» ровно там, где
+   * человек работал и на его имя выписаны бланки.
+   *
+   * Отбора здесь нет вовсе — ни по `deleted_at`, ни по признаку водителя: спрашивают не «кого
+   * можно назначить», а «как зовут того, кто уже назван». Отбор для выбора живёт своей ручкой и
+   * этим запросом не трогается.
+   */
+  const personIds = new Set(
+    rows.flatMap((row) => {
+      const driver = driverStateOf(row);
+      return driver?.state === 'set' ? [driver.personId] : [];
+    }),
+  );
+  const people: AssignmentPersonDto[] = [];
+  if (personIds.size > 0) {
+    const found = await tx
+      .select({
+        personId: persons.id,
+        fullName: persons.fullName,
+        // День снятия по московскому календарю — тем же правилом, каким его считает отбор
+        // машинистов: сутки у карточки календарные, и час сервера их не сдвигает.
+        cardRemovedOn: sql<string | null>`CASE WHEN ${persons.deletedAt} IS NULL THEN NULL
+          ELSE to_char((${persons.deletedAt} AT TIME ZONE 'Europe/Moscow')::date, 'YYYY-MM-DD') END`,
+      })
+      .from(persons)
+      .where(inArray(persons.id, [...personIds]));
+    people.push(...found);
+  }
+
   const changes: AssignmentChangeDto[] = rows.map((row) => ({
     id: row.id,
     effectiveDate: row.effectiveDate,
@@ -1778,6 +1859,7 @@ export async function readAssignmentHistoryDto(
   }));
 
   return {
+    people,
     state: request.state,
     validatedOn: request.validatedOn,
     dirty: request.dirty,

@@ -474,6 +474,9 @@ export function assignmentHistory(
     state: 'ready',
     validatedOn: '2026-08-24',
     dirty: false,
+    // Имена людей истории приходят вместе с ней (ADR 0190): справочник выбора снятые карточки
+    // прячет, и «Состав по датам» без этого списка не назвал бы как раз снятого машиниста.
+    people: [],
     changes: [
       assignmentChange({
         id: 'ch-v1',

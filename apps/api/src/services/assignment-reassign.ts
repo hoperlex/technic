@@ -1,9 +1,8 @@
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import {
   canCancelWaybill,
   esm2SyncPlan,
   periodsOverlap,
-  waybillDisplayNumber,
   type AssignmentIssueWarningsDto,
   type AssignmentPlanCancelDto,
   type AssignmentPlanIssueDto,
@@ -12,7 +11,6 @@ import {
   type AssignmentUnlockDto,
   type Esm2Mode,
   type Esm2Sheet,
-  type OperationRequirement,
   type RequiredAnchor,
 } from '@technic/contracts';
 import { requestIsLinearSql } from '../db/linear-mode';
@@ -23,8 +21,6 @@ import {
   vehicleRequests,
   vehicleTypes,
   vehicles,
-  waybills,
-  waybillSeries,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { evaluateAssignmentBackstop } from './assignment-backstop';
@@ -34,10 +30,11 @@ import type {
   AssignmentPlanned,
   LockedVehicleRequest,
 } from './assignment-command';
-// Отпечаток считается тем же каноникализатором, что у остальных дверей модуля: своя копия
-// «как хешируется содержание» разошлась бы с ними на первой же правке, а разъезжаются такие пары
-// молча — окно показало бы одно, а боевая ручка сверила бы другое.
-import { fingerprintOf } from './assignment-crew';
+// Отпечаток, требование операции и номера листов — общие на все двери истории: свои копии «как
+// хешируется содержание», «что спросить у человека» и «какая бумага у заявки действует» разошлись
+// бы с соседями на первой же правке, а разъезжаются такие пары молча — окно показало бы одно, а
+// боевая ручка сверила бы другое.
+import { fingerprintOf, operationRequirementOf, readSheetNumbers } from './assignment-crew';
 import { assignmentCommandEffects, type AssignmentEffects } from './assignment-effects';
 import { historyIsAuthoritative, type AssignmentModeSnapshot } from './assignment-mode';
 // Смены читает общий сервис (Р10 плана фактической даты): та же выборка нужна двери закрытия, а
@@ -514,16 +511,6 @@ export function reassignPreviewDto(
   };
 }
 
-/** Нужна ли операция журнала и что для неё спросить (Р32); `null` — исход `none`. */
-function operationRequirementOf(effects: AssignmentEffects): OperationRequirement | null {
-  if (!effects.needsOperation) return null;
-  return {
-    kind: effects.operationOutcome === 'crew' ? 'crew' : 'assignment_tail',
-    reasonRequired: true,
-    operationIdRequired: true,
-  };
-}
-
 // ── Заявка под блокировкой ──
 
 /**
@@ -583,26 +570,6 @@ export async function lockedReassignRequest(
 }
 
 // ── Чтения ──
-
-/** Напечатанные номера действующих листов: ими окно называет человеку бумагу, о которой говорит. */
-async function readSheetNumbers(
-  tx: AssignmentCommandTx,
-  requestId: string,
-): Promise<Map<string, string>> {
-  const rows = await tx
-    .select({
-      id: waybills.id,
-      number: waybills.number,
-      prefix: waybillSeries.prefix,
-      numberWidth: waybillSeries.numberWidth,
-    })
-    .from(waybills)
-    .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-    .where(and(eq(waybills.sourceRequestId, requestId), ne(waybills.status, 'cancelled')));
-  return new Map(
-    rows.map((row) => [row.id, waybillDisplayNumber(row.prefix, row.number, row.numberWidth)]),
-  );
-}
 
 /** Режим заказа: подписи снимает только неделя стояния на площадке, но не линейный заказ. */
 async function readIsLinear(tx: AssignmentCommandTx, requestId: string): Promise<boolean> {

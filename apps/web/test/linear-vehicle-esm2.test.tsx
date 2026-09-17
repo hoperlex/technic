@@ -117,6 +117,19 @@ function renderAssign(isLinear: boolean, onSubmit: (v: unknown) => void = () => 
     'GET /vehicles': () => json(list([LIFT, LIFT_2])),
     // Машинисты — весь справочник водителей: отбора по документам у ЭСМ-2 нет (ADR 0095).
     'GET /drivers': () => json(list([MACHINIST])),
+    // Отбор машинистов у формы ЭСМ-2 свой — по периодам документа (ADR 0190): в него попадают и
+    // снятые карточки, годные этой неделе, а требования машины и специализация не спрашиваются.
+    'GET /drivers/machinists': () =>
+      json({
+        drivers: [
+          {
+            personId: MACHINIST.id,
+            fullName: MACHINIST.fullName,
+            personnelNo: MACHINIST.personnelNo,
+            cardRemovedOn: null,
+          },
+        ],
+      }),
   });
   renderWithUser(
     <VehicleAssignModal
@@ -214,6 +227,19 @@ function renderEsm2() {
   const http = mockHttp({
     'GET /vehicles': () => json(list([LIFT, LIFT_2])),
     'GET /drivers': () => json(list([MACHINIST])),
+    // Отбор машинистов у формы ЭСМ-2 свой — по периодам документа (ADR 0190): в него попадают и
+    // снятые карточки, годные этой неделе, а требования машины и специализация не спрашиваются.
+    'GET /drivers/machinists': () =>
+      json({
+        drivers: [
+          {
+            personId: MACHINIST.id,
+            fullName: MACHINIST.fullName,
+            personnelNo: MACHINIST.personnelNo,
+            cardRemovedOn: null,
+          },
+        ],
+      }),
     'POST /vehicle-requests/:id/esm2': () => json(CONFIRMED),
   });
   renderWithUser(<VehicleEsm2Modal request={CONFIRMED} onClose={() => {}} onDone={() => {}} />);

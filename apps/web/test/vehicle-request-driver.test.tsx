@@ -34,6 +34,7 @@ const DRIVER: VehicleRequestDriverDto = {
   personId: 'person-1',
   fullName: 'Иванов Иван Иванович',
   phone: '+7 900 123-45-67',
+  cardRemovedOn: null,
 };
 
 const REQUEST = vehicleRequest({ id: 'r1', status: 'confirmed', assignment: ASSIGNMENT });
@@ -76,6 +77,29 @@ describe('водитель в строке техники карточки за�
 
     renderCard(null);
     expect(await screen.findByText('не назначен')).toBeDefined();
+  });
+
+  /**
+   * Снятая карточка (ADR 0190, Э4). Человек с машины никуда не делся, и строка обязана показать
+   * его имя и телефон — но рядом стоит пометка: по этому заказу выпишется ещё бланк строгой
+   * отчётности на удалённого, и узнать об этом надо здесь, а не в бухгалтерии заказчика.
+   *
+   * Проверяется именно **сочетание**: имя на месте, контакт на месте, пометка рядом. Строка,
+   * которая от снятия карточки замолчала бы, была бы хуже — заказчику всё так же нужно звонить.
+   */
+  it('называет снятую карточку пометкой, не пряча ни имени, ни телефона', async () => {
+    renderCard({ ...DRIVER, cardRemovedOn: '2026-09-14' });
+
+    expect(await screen.findByText(DRIVER.fullName)).toBeDefined();
+    expect(screen.getByRole('link', { name: '+7 (900) 123 45 67' })).toBeDefined();
+    expect(screen.getByText('снят из справочника')).toBeDefined();
+  });
+
+  it('у живой карточки пометки нет', async () => {
+    renderCard(DRIVER);
+
+    expect(await screen.findByText(DRIVER.fullName)).toBeDefined();
+    expect(screen.queryByText('снят из справочника')).toBeNull();
   });
 
   /**

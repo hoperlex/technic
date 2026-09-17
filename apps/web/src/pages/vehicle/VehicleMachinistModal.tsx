@@ -131,16 +131,31 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
 
   /**
    * Справочник водителей целиком — тот же список, что у поля машиниста в окне назначения: в бланке
-   * ЭСМ-2 нет ни СНИЛС, ни удостоверения, и отбирать по ним некого (ADR 0055). Он же даёт имена
-   * составу по датам: строка истории носит состояние, а не человека.
+   * ЭСМ-2 нет ни СНИЛС, ни удостоверения, и отбирать по ним некого (ADR 0055). Это список ВЫБОРА, и
+   * снятые карточки он прячет — предложить удалённого человека нельзя (ADR 0190).
    */
   const machinists = useQuery({
     queryKey: MACHINISTS_KEY,
     queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortDir: 'asc' }),
     enabled: open,
   });
-  const driverName = (personId: string) =>
-    machinists.data?.items.find((d) => d.id === personId)?.fullName;
+
+  /**
+   * Имена «Состава по датам» приходят ВМЕСТЕ с историей, а не ищутся в списке выбора (ADR 0190,
+   * Э4). Список выбора снятые карточки прячет — и заявка, у которой машиниста как раз и сняли,
+   * писала бы «машиниста нет в справочнике водителей» ровно там, где человек работал и на его имя
+   * выписаны бланки. Спрашивают здесь не «кого можно назначить», а «как зовут того, кто назван».
+   *
+   * Снятая карточка называется снятой прямо в строке: иначе «Состав по датам» выглядит исправным,
+   * а следующий бланк уходит на удалённого молча.
+   */
+  const driverName = (personId: string) => {
+    const person = history.data?.people.find((p) => p.personId === personId);
+    if (person) {
+      return person.cardRemovedOn ? `${person.fullName} (карточка снята)` : person.fullName;
+    }
+    return machinists.data?.items.find((d) => d.id === personId)?.fullName;
+  };
 
   const previewMut = useMutation({
     mutationFn: async (v: PreviewArgs) => ({

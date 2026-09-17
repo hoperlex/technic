@@ -135,7 +135,9 @@ export function onSiteVehicleLines(r: SpecialEquipmentRequestDto): {
       details: detailsLine(day.vehicleLabel, [
         day.vehicleModelName,
         day.routeDisplayNumber,
-        day.driverName,
+        // Снятая карточка помечается прямо у имени (ADR 0190): человек на машине остался, а
+        // справочник его больше не держит — и бумага по заказу пойдёт на удалённого.
+        day.driverCardRemovedOn ? `${day.driverName} (карточка снята)` : day.driverName,
       ]),
     };
   }

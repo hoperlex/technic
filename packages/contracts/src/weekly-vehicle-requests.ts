@@ -439,6 +439,14 @@ export interface WeeklySourceOrder {
   leftBy: { num: number } | null;
   /** Дата ожидающего визы досрочного отъезда (ADR 0044); `null` — запроса нет. */
   pendingEarlyEndDate: string | null;
+  /**
+   * Машинист заказа стоит в справочнике снятой карточкой (план `machinist-card-removal`, Э4).
+   *
+   * Продлению это не мешает — бумага наследует того, кто уже в ней напечатан (Р6), — но человек,
+   * визирующий неделю, обязан знать, что очередной бланк строгой отчётности выпишется на
+   * удалённого. Иначе портал делает это молча, и узнают об этом в бухгалтерии заказчика.
+   */
+  machinistCardRemoved: boolean;
 }
 
 /** Неделя и площадка заявки — правая сторона всех проверок состава. */
@@ -654,6 +662,7 @@ export function newItemBlocker(
 export const WEEKLY_ITEM_WARNINGS = [
   'idle_days',
   'esm2_reissue',
+  'machinist_removed',
   'rental',
   'other_weekly',
 ] as const;
@@ -726,6 +735,16 @@ export function itemWarnings(
     warnings.push({
       kind: 'esm2_reissue',
       text: `Лист ЭСМ-2, накрывающий ${dayMonth(last)}, будет аннулирован и перевыписан — номер бланка сгорит`,
+    });
+  }
+
+  // Снятая карточка машиниста (план `machinist-card-removal`, Э4): предупреждение, а не блокер.
+  // Продлить заказ с таким машинистом можно и нужно — иначе заявка встаёт целиком, — но сказать об
+  // этом надо до визы, а не после первого напечатанного бланка.
+  if (newDateTo && order.ownership === 'own' && order.machinistCardRemoved) {
+    warnings.push({
+      kind: 'machinist_removed',
+      text: 'Машинист заказа снят из справочника — листы ЭСМ-2 выпишутся на удалённую карточку; назначьте другого в карточке заказа',
     });
   }
 

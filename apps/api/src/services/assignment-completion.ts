@@ -13,7 +13,6 @@ import {
   type CompletionPreviewDto,
   type LinearDayRef,
   type LinearDaySubject,
-  type OperationRequirement,
   type RequestStatus,
   type ShiftDayRange,
   type VehicleOwnership,
@@ -52,8 +51,14 @@ import { ensureAssignmentHistory, ensureCommandHistory } from './assignment-ensu
 import type { AssignmentTerm } from './assignment-history';
 // Право коррекции — одно правило на все двери истории и живёт оно у двери машиниста: «`crew`
 // требует `waybills.correct`, глубже тридцати дней — `correctBeyondLimit`». Отпечаток — та же
-// функция хеширования, что у соседей: два отпечатка одного содержания обязаны совпадать.
-import { authorizeCrewCommand, authorizeCrewRepeat, fingerprintOf } from './assignment-crew';
+// функция хеширования, что у соседей: два отпечатка одного содержания обязаны совпадать. Требование
+// операции — общая проекция исхода: спрашивает его окно у всех дверей одинаково.
+import {
+  authorizeCrewCommand,
+  authorizeCrewRepeat,
+  fingerprintOf,
+  operationRequirementOf,
+} from './assignment-crew';
 import { assertAssignmentBackstop } from './assignment-backstop';
 import type { AssignmentModeSnapshot } from './assignment-mode';
 import {
@@ -1247,16 +1252,6 @@ export function completionPreviewDto(
       detachable: plan.linearDays.detachable.map(linearDayRefOf),
       frozen: plan.linearDays.frozen.map(linearDayRefOf),
     },
-  };
-}
-
-/** Спрашивать ли причину и ключ операции — решает исход (Р32 плана периодов), а не календарь. */
-function operationRequirementOf(effects: AssignmentEffects): OperationRequirement | null {
-  if (!effects.needsOperation) return null;
-  return {
-    kind: effects.operationOutcome === 'crew' ? 'crew' : 'assignment_tail',
-    reasonRequired: true,
-    operationIdRequired: true,
   };
 }
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   App,
   Button,
@@ -42,6 +42,7 @@ import {
   SNILS_MESSAGE,
 } from '@technic/contracts';
 import { driversApi } from '../../api/resources';
+import { confirmDriverRemoval, driverRemovalDetails } from './driverRemovalConfirm';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';
 import { garageKeys } from '@entities/garage';
 import { DataTable, type CardConfig } from '@shared/ui';
@@ -353,14 +354,33 @@ export function DriversTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  /**
+   * Снятие карточки. Первая попытка идёт без тела: у человека без заказов ничего не меняется, он
+   * снимается одним нажатием. Со связями сервер отвечает `409` с перечнем последствий — портал
+   * показывает его окном и повторяет запрос с отпечатком **того самого** перечня (Э2, Э3).
+   */
   const removeMut = useMutation({
-    mutationFn: (id: string) => driversApi.remove(id),
+    mutationFn: ({ id, acknowledge }: { id: string; acknowledge?: { fingerprint: string } }) =>
+      driversApi.remove(id, acknowledge ? { acknowledge } : undefined),
     onSuccess: () => {
       message.success('Водитель удалён');
       invalidate();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e) => {
+      const details = driverRemovalDetails(e);
+      if (!details) {
+        message.error(errorMessage(e));
+        return;
+      }
+      // Перечень мог измениться, пока окно было открыто: повтор уходит с новым отпечатком, и
+      // сервер сверит его снова — окно тогда просто перерисуется.
+      confirmDriverRemoval(modal, details, (acknowledge) =>
+        removeMut.mutateAsync({ id: removalTarget.current, acknowledge }),
+      );
+    },
   });
+  /** Кого сейчас снимают: отпечаток возвращают тому же человеку, а не «последней строке таблицы». */
+  const removalTarget = useRef<string>('');
 
   // Удаление насовсем (ADR 0060): вместе с человеком уходят его документы и сканы. Только из
   // архива и только администратору — путевые листы держат водителя внешним ключом.
@@ -378,7 +398,10 @@ export function DriversTab() {
       okText: 'Удалить',
       okButtonProps: { danger: true },
       cancelText: 'Отмена',
-      onOk: () => removeMut.mutateAsync(d.id),
+      onOk: () => {
+        removalTarget.current = d.id;
+        return removeMut.mutateAsync({ id: d.id });
+      },
     });
 
   const confirmRevoke = (d: DriverDto, license: DriverLicenseDto) => {

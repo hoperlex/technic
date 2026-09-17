@@ -146,6 +146,39 @@ describe('состав по датам', () => {
     expect(screen.getAllByText(CRANE).length).toBe(2);
   });
 
+  /**
+   * Снятая карточка машиниста (ADR 0190, Э4). Список выбора её прячет — предложить удалённого
+   * человека нельзя, — и до этой волны «Состав по датам» писал у такой строки «машиниста нет в
+   * справочнике водителей»: ровно там, где человек работал и где на его имя выписаны бланки.
+   *
+   * Имя приходит вместе с историей, и снятие названо прямо в строке: состав, выглядящий исправным,
+   * отправил бы следующий бланк на удалённого молча.
+   */
+  it('снятого машиниста называет по имени и помечает снятие', async () => {
+    renderModal({
+      'GET /drivers': () => json(list([SEMENOV])),
+      'GET /vehicle-requests/:id/assignment-changes': () =>
+        json(
+          assignmentHistory({
+            changes: [...START, FUTURE_DRIVER],
+            people: [
+              { personId: SEMENOV.id, fullName: SEMENOV.fullName, cardRemovedOn: null },
+              {
+                personId: KUZNETSOV.id,
+                fullName: KUZNETSOV.fullName,
+                cardRemovedOn: '2026-09-14',
+              },
+            ],
+          }),
+        ),
+    });
+
+    await screen.findByText(`${fmt(day(3))} — ${fmt(day(10))}`);
+    expect(screen.getAllByText(`${KUZNETSOV.fullName} (карточка снята)`).length).toBeGreaterThan(0);
+    // Живая карточка пометки не получает — иначе она перестала бы что-либо означать.
+    expect(screen.getAllByText(SEMENOV.fullName).length).toBeGreaterThan(0);
+  });
+
   it('неизвестное прошлое названо честно и объясняет, почему заявка не готова', async () => {
     renderModal({
       'GET /vehicle-requests/:id/assignment-changes': () =>

@@ -675,23 +675,46 @@ describe.skipIf(!DB_URL)('коррекция назначения задним �
   });
 
   /**
-   * Единственная оставшаяся причина отказа ручной выписке (ADR 0164 в редакции от 14.09.2026):
-   * человека, которого в справочнике больше нет, форма не предлагает, и пришёл он из чужой
-   * открытой вкладки. Сверка отвечает на ту же карточку иначе — случай ниже.
+   * Прошлое снятой карточкой не закрывается (план `machinist-card-removal`, Р3): человек отработал
+   * неделю до того, как его карточку сняли, и лист за неё выписывается — граница проходит по
+   * **последнему дню документа**, а не по «числится ли он сегодня».
    */
-  it('на удалённую карточку машиниста лист рукой не выписывается', async () => {
+  it('за отработанную до удаления неделю лист выписывается и на снятую карточку', async () => {
     const request = await confirm(await backdatedRequest(ctx.linearTypeId));
-    const removed = await seedDriver('Удалённый');
+    const removed = await seedDriver('Снятый');
     await ctx.db.execute(sql`UPDATE persons SET deleted_at = now() WHERE id = ${removed}`);
+
+    const issued = await issueOnDemand(request.id, {
+      vehicleId: ctx.vehicleId,
+      driverPersonId: removed,
+      version: request.version,
+    });
+    expect(issued.statusCode, issued.body).toBe(200);
+    const sheet = (await sheetsOf(request.id)).find((s) => s.driver_person_id === removed);
+    expect(sheet?.driver_fio).toContain('Коррекцев');
+  });
+
+  /**
+   * А вперёд — не выписывается (Р3, Р6): день удаления ещё рабочий, но неделя, кончающаяся позже
+   * него, лист на этого человека уже не получает. Отказ называет и человека, и период — по одному
+   * идентификатору поддержка искала бы обоих руками.
+   */
+  it('на неделю, кончающуюся после удаления, снятого машиниста рукой не назначить', async () => {
+    const request = await confirm(await backdatedRequest(ctx.linearTypeId));
+    const removed = await seedDriver('Снятый вперёд');
+    // Карточку сняли вчера: сегодняшняя неделя кончается позже, и лист на неё уже не выписывается.
+    await ctx.db.execute(
+      sql`UPDATE persons SET deleted_at = now() - interval '1 day' WHERE id = ${removed}`,
+    );
 
     const refused = await issueOnDemand(request.id, {
       vehicleId: ctx.vehicleId,
       driverPersonId: removed,
       version: request.version,
+      weekOf: ctx.today,
     });
     expect(refused.statusCode, refused.body).toBe(422);
-    expect(refused.json().message).toContain('удалена из справочника');
-    // Отказ называет, о ком он: по одному идентификатору поддержка искала бы человека руками.
+    expect(refused.json().message).toContain('снята из справочника');
     expect(refused.json().message).toContain('Коррекцев');
   });
 
@@ -719,6 +742,71 @@ describe.skipIf(!DB_URL)('коррекция назначения задним �
       // Карточка общая на весь файл: оставленная снятой, она увела бы соседние случаи.
       await ctx.db.execute(sql`UPDATE persons SET deleted_at = NULL WHERE id = ${ctx.driverA}`);
     }
+  });
+
+  /**
+   * Удаление карточки перестало быть тихим (план `machinist-card-removal`, Э2). Человека, который
+   * ведёт действующий заказ, справочник снимает только с подтверждением, и подтверждают конкретный
+   * перечень: отпечаток чужого или устаревшего перечня дверь не принимает.
+   */
+  it('карточку машиниста действующего заказа снимают только подтверждением перечня', async () => {
+    const machinist = await seedDriver('Занятый');
+    const request = await confirm(await backdatedRequest(ctx.plainTypeId), {
+      driverPersonId: machinist,
+    });
+    expect((await sheetsOf(request.id)).length).toBeGreaterThan(0);
+
+    const remove = (payload?: unknown): ReturnType<typeof ctx.app.inject> =>
+      ctx.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/drivers/${machinist}`,
+        headers: ctx.auth,
+        ...(payload ? { payload } : {}),
+      });
+
+    // Без тела — отказ с перечнем: номер заказа назван, число листов посчитано планом.
+    const asked = await remove();
+    expect(asked.statusCode, asked.body).toBe(409);
+    const details = asked.json().details as {
+      fullName: string;
+      orders: { num: number; futureSheets: number; assumedDateTo: string }[];
+      totalFutureSheets: number;
+      fingerprint: string;
+    };
+    expect(details.fullName).toContain('Коррекцев');
+    expect(details.orders.length).toBe(1);
+    expect(details.orders[0]!.num).toBeGreaterThan(0);
+    expect(details.fingerprint).toMatch(/^[0-9a-f]{64}$/u);
+
+    // Чужой отпечаток не проходит: подтверждали не этот перечень.
+    const stale = await remove({ acknowledge: { fingerprint: 'a'.repeat(64) } });
+    expect(stale.statusCode, stale.body).toBe(409);
+    const stillThere = await ctx.db.execute<{ deleted: string | null }>(
+      sql`SELECT deleted_at::text AS deleted FROM persons WHERE id = ${machinist}`,
+    );
+    expect(stillThere.rows[0]!.deleted).toBeNull();
+
+    // Со своим — снимается, и заявка после этого продолжает жить: бумага наследует человека.
+    const done = await remove({ acknowledge: { fingerprint: details.fingerprint } });
+    expect(done.statusCode, done.body).toBe(204);
+    const removed = await ctx.db.execute<{ deleted: string | null }>(
+      sql`SELECT deleted_at::text AS deleted FROM persons WHERE id = ${machinist}`,
+    );
+    expect(removed.rows[0]!.deleted).not.toBeNull();
+
+    const extended = await changeAssignment(request, { vehicleId: ctx.otherVehicleId });
+    expect(extended.statusCode, extended.body).toBe(200);
+  });
+
+  /** Карточка без единой связи снимается как раньше — одним нажатием и молча. */
+  it('карточка без заказов снимается без подтверждения', async () => {
+    const idle = await seedDriver('Свободный');
+    const removed = await ctx.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/drivers/${idle}`,
+      headers: ctx.auth,
+    });
+    expect(removed.statusCode, removed.body).toBe(204);
   });
 
   /** Пустая коррекция отклоняется (Р31): блок `correction` не должен становиться отмычкой. */

@@ -461,7 +461,12 @@ import {
 } from '../services/waybill-correction';
 // Последствия изменившегося срока работ — общим сервисом: их же зовёт применение недельной заявки,
 // и два описания одного правила разошлись бы при первой правке.
-import { afterWorkPeriodChanged, clearPendingEarlyEnd } from '../services/vehicle-request-period';
+import {
+  afterWorkPeriodChanged,
+  clearPendingEarlyEnd,
+  loadWorkPeriod,
+} from '../services/vehicle-request-period';
+import { assertMachinistSelectable } from '../services/drivers';
 // Факт выполнения — общий с дверью закрытия фактической датой: правило «ставку берёт сервер» и
 // запрет закрывать аренду без суммы принадлежат факту, а не двери (ADR 0029, Р1 плана закрытия).
 import { resolveCompletion, saveCompletion } from '../services/vehicle-request-completion';
@@ -890,6 +895,7 @@ async function dayVehiclesByRequestIds(
       typeName: vehicleTypes.name,
       driverPersonId: dayRoutes.driverPersonId,
       driverName: persons.fullName,
+      driverDeletedAt: persons.deletedAt,
     })
     .from(dayRouteRequests)
     .innerJoin(dayRoutes, eq(dayRoutes.id, dayRouteRequests.routeId))
@@ -908,6 +914,7 @@ async function dayVehiclesByRequestIds(
       routeDisplayNumber: formatVehicleRouteNumber(row.routeNum),
       vehicleId: row.vehicleId,
       vehicleLabel: vehicleLabel({ ...row, typeName: row.typeName ?? '' }),
+      driverCardRemovedOn: row.driverDeletedAt ? moscowDateKeyOf(row.driverDeletedAt) : null,
       vehicleModelName: row.modelName,
       driverPersonId: row.driverPersonId,
       driverName: row.driverName ?? '',
@@ -982,13 +989,21 @@ async function historyDayVehiclesByRequestIds(
       .where(inArray(vehicles.id, vehicleIds)),
     driverIds.length > 0
       ? db
-          .select({ id: persons.id, fullName: persons.fullName })
+          // Снятая карточка читается вместе с именем (ADR 0190): человек в срезе остаётся — он и
+          // сегодня на этой машине, — но колонка обязана сказать, что справочник его больше не
+          // держит. Прежде срез называл его как обычного, а выписка молчала.
+          .select({ id: persons.id, fullName: persons.fullName, deletedAt: persons.deletedAt })
           .from(persons)
           .where(inArray(persons.id, driverIds))
-      : Promise.resolve([] as { id: string; fullName: string }[]),
+      : Promise.resolve([] as { id: string; fullName: string; deletedAt: Date | null }[]),
   ]);
   const vehicleById = new Map(vehicleRows.map((row) => [row.id, row]));
   const personById = new Map(personRows.map((row) => [row.id, row.fullName]));
+  const personRemovedOn = new Map(
+    personRows
+      .filter((row) => row.deletedAt !== null)
+      .map((row) => [row.id, moscowDateKeyOf(row.deletedAt!)]),
+  );
 
   for (const [requestId, state] of states) {
     const vehicle = state.vehicle && vehicleById.get(state.vehicle.vehicleId);
@@ -1002,6 +1017,7 @@ async function historyDayVehiclesByRequestIds(
       vehicleModelName: vehicle.modelName,
       driverPersonId,
       driverName: (driverPersonId && personById.get(driverPersonId)) || '',
+      driverCardRemovedOn: (driverPersonId && personRemovedOn.get(driverPersonId)) || null,
     });
   }
   return map;
@@ -1028,6 +1044,23 @@ const requestDriverQuerySchema = z.object({ on: dateOnlySchema.optional() });
  * Пустая дата окончания читается однодневным сроком (Р24) — тем же правилом, каким её читают
  * свёртка, сверка ЭСМ-2 и отбор среза.
  */
+/**
+ * Контакт исполнителя одной выборкой на все три пути ручки: свёртка истории, рейс и лист. День
+ * снятия карточки (ADR 0190) идёт вместе с именем — иначе карточка заказа не смогла бы сказать, что
+ * бумага выписывается на удалённого, а собирать его вторым запросом значило бы три разных ответа на
+ * один вопрос.
+ *
+ * Отбора по `deleted_at` здесь нет намеренно: человек с машины никуда не делся, и прятать его —
+ * значит показывать «не назначен» там, где он работает.
+ */
+const driverContactSelection = {
+  personId: persons.id,
+  fullName: persons.fullName,
+  phone: persons.phone,
+  cardRemovedOn: sql<string | null>`CASE WHEN ${persons.deletedAt} IS NULL THEN NULL
+    ELSE to_char((${persons.deletedAt} AT TIME ZONE 'Europe/Moscow')::date, 'YYYY-MM-DD') END`,
+};
+
 async function driverByAssignmentHistory(
   request: VehicleRequestDto,
   on: string | undefined,
@@ -1044,7 +1077,7 @@ async function driverByAssignmentHistory(
   const driver = assignmentStateOn(changes, date).driver;
   if (driver?.state !== 'set') return null;
   const [person] = await db
-    .select({ personId: persons.id, fullName: persons.fullName, phone: persons.phone })
+    .select(driverContactSelection)
     .from(persons)
     .where(eq(persons.id, driver.personId))
     .limit(1);
@@ -5742,7 +5775,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // путевого листа для показа контакта нельзя.
       if (request.route) {
         const [routeDriver] = await db
-          .select({ personId: persons.id, fullName: persons.fullName, phone: persons.phone })
+          .select(driverContactSelection)
           .from(vehicleRoutes)
           .innerJoin(persons, eq(persons.id, vehicleRoutes.driverPersonId))
           .where(eq(vehicleRoutes.id, request.route.id))
@@ -5753,7 +5786,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // Для ЭСМ-2 берём действующий лист, а если работа уже закрыта и лист аннулирован — последний
       // исторический. У одной заявки недель несколько, но сверка выписывает их одному машинисту.
       const [waybillDriver] = await db
-        .select({ personId: persons.id, fullName: persons.fullName, phone: persons.phone })
+        .select(driverContactSelection)
         .from(waybillRequests)
         .innerJoin(waybills, eq(waybills.id, waybillRequests.waybillId))
         .innerJoin(persons, eq(persons.id, waybills.driverPersonId))
@@ -6576,6 +6609,21 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               asOf: today,
               reason: esm2StatusReason(status),
             });
+            /*
+             * Годность названного машиниста (план `machinist-card-removal`, Р6). Человек пришёл
+             * телом запроса — это явный выбор, и спрашивается он по сроку, каким заказ уходит в
+             * работу: срок к этому месту уже записан той же транзакцией, поэтому читается из базы,
+             * а не собирается из тела. Унаследованного сверкой человека это правило не касается —
+             * его не выбирали сейчас.
+             */
+            if (assignment?.driverPersonId) {
+              const workPeriod = await loadWorkPeriod(tx, before.id);
+              if (workPeriod) {
+                await assertMachinistSelectable(tx, assignment.driverPersonId, [
+                  { from: workPeriod.dateFrom, to: workPeriod.effectiveDateTo },
+                ]);
+              }
+            }
             const esm2 = await syncEsm2Waybills(tx, {
               requestId: before.id,
               actor: { id: p.id },
@@ -7013,6 +7061,19 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           requestId: before.id,
           actor: { id: p.id },
         });
+        /*
+         * Годность названного машиниста (план `machinist-card-removal`, Р6): смена назначения — та
+         * же явная дверь, что и перевод в работу, и человека здесь называют телом запроса. Срока
+         * эта дверь не двигает, поэтому он читается как есть.
+         */
+        if (rates.driverPersonId) {
+          const workPeriod = await loadWorkPeriod(tx, before.id);
+          if (workPeriod) {
+            await assertMachinistSelectable(tx, rates.driverPersonId, [
+              { from: workPeriod.dateFrom, to: workPeriod.effectiveDateTo },
+            ]);
+          }
+        }
         esm2 = await syncEsm2Waybills(tx, {
           requestId: before.id,
           actor: { id: p.id },

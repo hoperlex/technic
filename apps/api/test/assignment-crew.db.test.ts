@@ -1410,6 +1410,38 @@ describe('история заявки', () => {
       const vehicle = history!.changes.find((c) => c.dimension === 'vehicle');
       expect(vehicle?.vehicle?.vehicleId).toBe(scene.vehicleA);
       expect(vehicle?.driver).toBeNull();
+
+      /*
+       * Имена людей идут ВМЕСТЕ с историей (ADR 0190, Э4), по одному на идентификатор. Портал их
+       * больше не ищет в справочнике выбора: тот снятые карточки прячет, и «Состав по датам» у
+       * заявки со снятым машинистом писал бы «машиниста нет в справочнике» там, где человек
+       * работал и на его имя выписаны бланки.
+       */
+      expect(history!.people.map((p) => p.personId).sort()).toEqual(
+        [scene.personA, scene.personB].sort(),
+      );
+      expect(history!.people.every((p) => p.fullName.length > 0)).toBe(true);
+      expect(history!.people.every((p) => p.cardRemovedOn === null)).toBe(true);
+    });
+  });
+
+  /**
+   * Снятая карточка: имя обязано остаться, а день снятия — прийти рядом с ним. Это и есть весь
+   * смысл отдельного разрешателя имён — справочник выбора такого человека уже не отдаёт.
+   */
+  it('называет снятого машиниста по имени и отдаёт день снятия', async () => {
+    if (!readMode.enabled) return;
+    await inScene({ driverAtStart: 'person_a', issueSheets: false }, async (tx, scene) => {
+      await tx.execute(
+        sql`UPDATE persons SET deleted_at = '2026-09-14T09:00:00Z'::timestamptz
+             WHERE id = ${scene.personA}::uuid`,
+      );
+
+      const history = await ctx.crew.readAssignmentHistoryDto(tx, scene.requestId);
+      const person = history!.people.find((p) => p.personId === scene.personA);
+      expect(person, 'снятый человек пропал из истории').toBeDefined();
+      expect(person!.fullName.length).toBeGreaterThan(0);
+      expect(person!.cardRemovedOn).toBe('2026-09-14');
     });
   });
 });
