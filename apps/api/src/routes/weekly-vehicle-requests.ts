@@ -84,7 +84,9 @@ import {
   canApproveWeeklyRequest,
   seesWholeWeeklyRequest,
 } from '../lib/access';
-import { applyWeeklyRequest } from '../services/weekly-request-apply';
+// Состояние позиции классификатора для `newItemBlocker` читается тем же справочником, что и на
+// визе: один вопрос цикла — один ответ (см. `loadClassification`).
+import { applyWeeklyRequest, loadClassification } from '../services/weekly-request-apply';
 import {
   assertWeeklyRequestReadable,
   weeklyItemsReadWhere,
@@ -805,7 +807,7 @@ async function buildItemRows(
       comment: item.comment ?? '',
     };
     if (item.kind === 'new') {
-      const classification = await loadClassificationFor(
+      const classification = await loadClassification(
         tx,
         item.vehicleTypeId,
         item.vehicleCategoryId ?? null,
@@ -883,28 +885,6 @@ async function buildItemRows(
     );
   }
   return rows;
-}
-
-/** Состояние позиции классификатора для `newItemBlocker` — тем же справочником, что у формы. */
-async function loadClassificationFor(
-  tx: Tx,
-  typeId: string,
-  categoryId: string | null,
-): Promise<{ typeIsActive: boolean; categoryIsActive: boolean | null; hasCategories: boolean }> {
-  const [type] = await tx
-    .select({ isActive: vehicleTypes.isActive })
-    .from(vehicleTypes)
-    .where(eq(vehicleTypes.id, typeId));
-  const categories = await tx
-    .select({ id: vehicleCategories.id, isActive: vehicleCategories.isActive })
-    .from(vehicleCategories)
-    .where(eq(vehicleCategories.vehicleTypeId, typeId));
-  const chosen = categoryId ? categories.find((c) => c.id === categoryId) : undefined;
-  return {
-    typeIsActive: !!type?.isActive,
-    hasCategories: categories.some((c) => c.isActive),
-    categoryIsActive: categoryId ? !!chosen?.isActive : null,
-  };
 }
 
 /** Переписать состав целиком и поднять версию. Массив переписывается, а не правится построчно. */

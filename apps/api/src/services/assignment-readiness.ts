@@ -5,6 +5,7 @@ import type * as schema from '../db/schema';
 import { ASSIGNMENT_LEGACY_WINDOW_DAYS, countLegacyPeriodCalls } from './assignment-legacy-calls';
 import {
   ASSIGNMENT_HISTORY_ALGO_VERSION,
+  ASSIGNMENT_READINESS_POPULATION,
   ATTESTATION_MAX_AGE_MS,
   type AssignmentReadMode,
   type AssignmentWriteMode,
@@ -66,25 +67,14 @@ export type ReadinessReader = Tx | AppDatabase;
 // ───────────────────────────────── предикат популяции ─────────────────────────────────
 
 /**
- * Предикат готовности Р20 с расширением Р28 — дословно и в одном месте на весь портал.
+ * Предикат готовности Р20 с расширением Р28 — дословно и в одном месте на весь портал; само место
+ * теперь [assignment-mode.ts](./assignment-mode.ts), там же лежит и его обоснование.
  *
- * Готовность требуется от заказа спецтехники в статусе «В работе» или «Выполнена», **включая
- * архивные** (архив сохраняет статус, а восстановление возвращает заявку в бумагообразующий
- * режим), — поэтому `deleted_at` здесь не спрашивается вовсе. Заявка без срока в предикат не
- * входит: срок — это то, по чему считаются отрезки, и без него история не строится ни у кого.
- *
- * Псевдонимы фиксированы: `r` — `vehicle_requests`, `d` — `special_equipment_request_details`.
- * Фрагмент годится и под `JOIN`, и под `LEFT JOIN`: у заявки без деталей `d.date_from` пуст, и
- * условие отсекает её само. Отсюда же требование к вызывающему — не переименовывать псевдонимы.
- *
- * Копия этого предиката жила в прогоне бэкфилла ([scripts/assignment-backfill.ts](../../scripts/assignment-backfill.ts));
- * теперь он берёт её отсюда. Две копии предиката cutover означали бы, что «готово» у прогона и
- * «готово» у отчёта считаются по разным множествам заявок, — а различить это по числам нельзя.
+ * Переизлучается отсюда ради прежних читателей (прогон бэкфилла), но живёт ниже: дверь записи
+ * читает тот же предикат, и, оставаясь здесь, листовое правило замыкало модуль отчёта и модуль
+ * режима друг на друга.
  */
-export const ASSIGNMENT_READINESS_POPULATION = sql`
-  r.request_type = 'special_equipment'
-  AND r.status IN ('confirmed', 'done')
-  AND d.date_from IS NOT NULL`;
+export { ASSIGNMENT_READINESS_POPULATION };
 
 // ───────────────────────────────── числа состояния ─────────────────────────────────
 
