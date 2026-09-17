@@ -19,6 +19,7 @@
     "cutover:verify:0224": "tsx --env-file-if-exists=../../.env.dev scripts/cutover-verify-0224.ts",
     "assignment:attest": "tsx scripts/assignment-attest.ts",
     "assignment:backfill": "tsx scripts/assignment-backfill.ts",
+    "assignment:cutover": "tsx scripts/assignment-cutover.ts",
     "assignment:mode": "tsx scripts/assignment-mode.ts",
     "assignment:report": "tsx scripts/assignment-report.ts",
     "assignment:rollback": "tsx scripts/assignment-rollback.ts",

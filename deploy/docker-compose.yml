@@ -300,6 +300,38 @@ services:
     profiles: [tools]
     networks: [internal]
 
+  # Окно переключения чтения истории назначения одной командой (§10 плана assignment-periods).
+  # Проводит порядок окна целиком: заморозка → ревалидация → поколение сравнения → сводка →
+  # переключение → разморозка, — пропуская шаги, чей результат уже достигнут, и останавливаясь на
+  # первом же отказе. Ни одной проверки двери не заменяет: всё, что решает переход, считает
+  # `setModuleMode` под блокировкой.
+  #
+  # Аттестацию раската команда НЕ снимает (О4): её пишет тот, кто раскатывал, своей ролью
+  # (`assignment-attest`), а сюда приходит её идентификатор. Обёртка, снимающая аттестацию себе же,
+  # вернула бы круговую проверку.
+  #
+  # Объявление порталу ставится СНАРУЖИ — `deploy-auto --maintenance=on`: заморозка закрывает
+  # запись модулю, а не порталу, и без объявления человек видит не окно, а заявку, которая молча не
+  # сохраняется. Env приложения команде нужен целиком — как и сравнению, которое она зовёт.
+  #
+  #   docker compose -p technic --profile tools run --rm assignment-cutover status --build=<sha>
+  #   docker compose -p technic --profile tools run --rm assignment-cutover run \
+  #     --actor=<email> --build=<sha> --attestation=<id> --reason='cutover истории назначения'
+  assignment-cutover:
+    image: technic-api:${TAG:-latest}
+    env_file:
+      - ${ENV_FILE:-/etc/technic-portal/prod.env}
+      - ${MAINTENANCE_ENV_FILE:-${ENV_FILE:-/etc/technic-portal/prod.env}}
+    environment:
+      NODE_ENV: production
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+    entrypoint: ['pnpm', '--filter', '@technic/api', 'assignment:cutover']
+    command: ['help']
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
   # Сводка готовности модуля истории назначения (этап 4 плана assignment-periods, волна 4.2):
   # одним вызовом — сколько заявок в каком состоянии, что с метками, чем обосновано переключение и
   # что именно ему мешает. Ничего не пишет и ничего не разрешает: переключает `assignment-mode`.

@@ -1,19 +1,31 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { asc, eq, inArray, sql } from 'drizzle-orm';
 import { moscowDateKeyOf } from '@technic/contracts';
 import * as schema from '../src/db/schema';
+// Доступ административного пути — общим модулем: правило «своими кредами и никогда прикладными»
+// (П7) живёт в одном месте на все команды maintenance, включая этот прогон.
 import {
-  assignmentHistoryUnrestorableReason,
-  computeAssignmentHistory,
-  ensureAssignmentHistory,
-  readAssignmentHistorySnapshot,
-} from '../src/services/assignment-ensure';
+  buildMaintenancePool,
+  maintenanceAccessLine,
+  readMaintenanceIdentity,
+  resolveMaintenanceAccess,
+} from './maintenance-access';
+import { assignmentHistoryUnrestorableReason } from '../src/services/assignment-ensure';
 import { readAssignmentMode } from '../src/services/assignment-mode';
 import { ASSIGNMENT_READINESS_POPULATION } from '../src/services/assignment-readiness';
-import type { AssignmentHistoryUnrestorable } from '../src/services/assignment-ensure';
+// Обход популяции — общим ядром: та же выборка, та же транзакция на заявку и те же повторы нужны
+// окну переключения (`assignment-cutover.ts`), которое делает ревалидацию. Две копии этой работы
+// означали бы, что «ревалидация прошла» у прогона и у окна считаются по разным заявкам.
+import {
+  ensureOneRequest,
+  nextHistoryPage,
+  planOneRequest,
+  withHistoryRetry,
+  type HistoryRunOutcome,
+  type HistoryRunWork,
+} from './assignment-history-run';
 
 /**
  * Массовый бэкфилл истории назначения — этап 4 плана `docs/assignment-periods-plan.md` (§6
@@ -61,7 +73,9 @@ import type { AssignmentHistoryUnrestorable } from '../src/services/assignment-e
  *
  * ЧЕМ ХОДИТ В БАЗУ. Своим URL: `DATABASE_MAINTENANCE_URL`, а при его отсутствии —
  * `DATABASE_MIGRATION_URL`, ровно как административная дверь режима (`scripts/assignment-mode.ts`,
- * П7). Молчаливого отката на `DATABASE_URL` нет. Прикладной пул не импортируется намеренно (Ю23):
+ * П7), — и не «так же», а тем же кодом: правило берётся из `scripts/maintenance-access.ts`, второй
+ * его копии здесь нет. Молчаливого отката на `DATABASE_URL` нет. Прикладной пул не импортируется
+ * намеренно (Ю23):
  * `src/db/client` тянет `src/config`, а тот валидирует **весь** env приложения, и прогон стал бы
  * заложником портальных секретов, которых у оператора в окне выката может не быть.
  *
@@ -100,8 +114,6 @@ const EXIT_BLOCKING = 3;
 const SAMPLE_LIMIT = 20;
 /** Размер страницы выборки. Работа идёт по одной заявке, страницами берутся только их номера. */
 const PAGE_SIZE = 500;
-/** Повторов транзакции заявки при конфликте сериализации: прогон идёт рядом с живым порталом. */
-const RETRY_LIMIT = 3;
 /** Версия формата файла состояния: чужой формат лучше отвергнуть, чем прочитать наполовину. */
 const STATE_VERSION = 1;
 /**
@@ -178,41 +190,6 @@ function dateFlag(flags: Flags, name: string): string | undefined {
 }
 
 // ───────────────────────────────── соединение ─────────────────────────────────
-
-type Access = { source: 'DATABASE_MAINTENANCE_URL' | 'DATABASE_MIGRATION_URL'; url: string };
-
-/**
- * Выбор доступа — тот же порядок и тот же запрет, что у двери режима (П7): `DATABASE_URL` не
- * подставляется никогда. Прогон пишет историю всей базы, и открывать его прикладными кредами
- * значит вернуть ровно ту границу, ради которой административный контур заведён.
- */
-function resolveAccess(): Access {
-  const maintenance = process.env.DATABASE_MAINTENANCE_URL?.trim();
-  const migration = process.env.DATABASE_MIGRATION_URL?.trim();
-  if (maintenance) return { source: 'DATABASE_MAINTENANCE_URL', url: maintenance };
-  if (migration) return { source: 'DATABASE_MIGRATION_URL', url: migration };
-  throw new Error(
-    'Массовый бэкфилл не ходит прикладными кредами: задайте DATABASE_MAINTENANCE_URL ' +
-      'или, пока контур не разделён, DATABASE_MIGRATION_URL. DATABASE_URL здесь не используется ' +
-      'намеренно — см. П7 плана assignment-periods.',
-  );
-}
-
-/**
- * Пул на одно соединение. `max: 1` — не экономия, а требование однопоточности (спайк §4.3):
- * два соединения этого прогона стали бы двумя одновременными писателями портала.
- */
-function buildPool(access: Access): pg.Pool {
-  const caPath = process.env.PGSSLROOTCERT;
-  const ca = caPath ? readFileSync(caPath, 'utf8') : undefined;
-  const url = new URL(access.url);
-  url.searchParams.delete('sslmode');
-  return new pg.Pool({
-    connectionString: url.toString(),
-    max: 1,
-    ssl: ca ? { ca, rejectUnauthorized: true } : false,
-  });
-}
 
 type Handle = ReturnType<typeof drizzle<typeof schema>>;
 
@@ -365,51 +342,6 @@ async function readPopulation(db: Handle): Promise<Population> {
   return row;
 }
 
-/**
- * Очередная страница заявок к обработке. Что попадает в выборку, решает работа прогона.
- *
- * **Бэкфилл** берёт только `empty` — и это запрет пересборки (Д3): заявка, у которой история
- * появилась (или была отменена человеком до пустоты, но состояние осталось `materialized`), в
- * выборку не попадает никогда.
- *
- * **Ревалидация** (`--revalidate`) берёт обратное: заявки с **непустой** историей, чьё состояние
- * считалось не на сегодняшний `asOf` либо помечено `dirty`. Пересборки здесь тоже нет — путь тот
- * же, `ensureAssignmentHistory`, а он на непустой истории строк не добавляет (Р26): он пересчитывает
- * состояние и снимает метку. Без этого прогона cutover недостижим: дверь активации требует
- * `validated_on = run.as_of` у **всех** заявок с непустой историей, а календарь двигает границу
- * изменяемого сам — каждую полночь у всей популяции.
- *
- * Порядок по `id` — он же курсор возобновления: устойчив к любым правкам данных, в отличие от
- * порядка по номеру или по дате.
- */
-async function nextPage(
-  db: Handle,
-  after: string | null,
-  limit: number,
-  work: Work,
-  asOf: string,
-): Promise<{ id: string; num: number }[]> {
-  const scope =
-    work === 'backfill'
-      ? sql`r.assignment_history_state = 'empty'`
-      : sql`r.assignment_history_state <> 'empty'
-            AND (r.assignment_history_validated_on IS DISTINCT FROM ${asOf}::date
-                 OR r.assignment_history_dirty)`;
-  const rows = await db.execute<{ id: string; num: number }>(sql`
-    SELECT r.id, r.num
-      FROM vehicle_requests r
-      JOIN special_equipment_request_details d ON d.request_id = r.id
-     WHERE ${POPULATION}
-       AND ${scope}
-       ${after === null ? sql`` : sql`AND r.id > ${after}::uuid`}
-     ORDER BY r.id
-     LIMIT ${limit}`);
-  return [...rows.rows];
-}
-
-/** Что делает прогон: достраивает пустую историю либо пересчитывает валидность непустой. */
-type Work = 'backfill' | 'revalidate';
-
 // ───────────────────────────────── человеческие подписи ─────────────────────────────────
 
 /** Листы для отчёта: «серия № номер». Uuid человеку не говорит ничего, а разбирать ему. */
@@ -444,90 +376,6 @@ async function labelVehicle(db: Handle, id: string): Promise<string> {
 
 // ───────────────────────────────── обработка одной заявки ─────────────────────────────────
 
-interface Outcome {
-  state: 'empty' | 'materialized' | 'ready';
-  unrestorable: readonly AssignmentHistoryUnrestorable[];
-  blockers: readonly { date: string; kind: 'unknown' | 'cleared' }[];
-  warnings: readonly { historyVehicleId: string; assignmentVehicleId: string }[];
-  /** Строк истории: записанных (`--apply`) либо тех, что были бы записаны (dry-run). */
-  written: number;
-}
-
-/**
- * Dry-run одной заявки: расчёт без единой записи, и это свойство держит **база**, а не дисциплина.
- *
- * Транзакция объявляется `READ ONLY` первым же запросом, поэтому случайная запись здесь упадёт
- * отказом PostgreSQL, а не уедет в базу. «Dry-run ничего не пишет» — главное свойство режима, и
- * проверяться оно должно чем-то, что нельзя забыть обновить вслед за кодом.
- *
- * Строку заявки dry-run намеренно **не** блокирует: писать ему нечего, а `FOR UPDATE` посреди
- * рабочего дня останавливал бы диспетчеров ради замера.
- */
-async function planOne(db: Handle, requestId: string, asOf: string): Promise<Outcome> {
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`SET TRANSACTION READ ONLY`);
-    const snapshot = await readAssignmentHistorySnapshot(tx, requestId);
-    const computed = computeAssignmentHistory(snapshot, asOf);
-    return {
-      state: computed.state,
-      unrestorable: computed.unrestorable,
-      blockers: computed.blockers,
-      warnings: computed.warnings,
-      written: computed.mutations.length,
-    };
-  });
-}
-
-/**
- * Запись истории одной заявки — одна транзакция на заявку.
- *
- * Единица именно заявка: история заявки атомарна (пара строк одной группы гаснет вместе, Г2), а
- * пакет из сотни заявок в одной транзакции держал бы сотню блокировок строк и рушился бы целиком
- * из-за одной. Порядок захвата канонический — строка заявки первой операцией (этап 2a,
- * подтверждено спайком §4.3): при конфликте отказ приходит на первом же запросе, и выброшенной
- * работы ноль. Блокировка берётся здесь своим запросом, а не через `lockRequestRow`: тот живёт в
- * `services/vehicle-routes.ts`, который импортирует прикладной пул, — а прогон обязан работать без
- * портального окружения (Ю23).
- */
-async function ensureOne(db: Handle, requestId: string, asOf: string): Promise<Outcome> {
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM vehicle_requests WHERE id = ${requestId}::uuid FOR UPDATE`);
-    const ensured = await ensureAssignmentHistory(tx, { requestId, asOf });
-    if (ensured.state === 'empty') {
-      return {
-        state: 'empty' as const,
-        unrestorable: ensured.unrestorable,
-        blockers: [],
-        warnings: [],
-        written: 0,
-      };
-    }
-    return {
-      state: ensured.state,
-      unrestorable: [],
-      blockers: ensured.blockers,
-      warnings: ensured.warnings,
-      written: ensured.materialized.length,
-    };
-  });
-}
-
-/** Конфликт сериализации или разорванный клинч: повторяется, всё остальное — отказ по существу. */
-function isRetryable(error: unknown): boolean {
-  const code = (error as { code?: unknown }).code;
-  return code === '40001' || code === '40P01';
-}
-
-async function withRetry<T>(run: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await run();
-    } catch (error) {
-      if (attempt >= RETRY_LIMIT || !isRetryable(error)) throw error;
-    }
-  }
-}
-
 // ───────────────────────────────── учёт исхода ─────────────────────────────────
 
 /** Короткие подписи причин для таблицы счётчиков; развёрнутые слова даёт сама дверь. */
@@ -554,7 +402,7 @@ async function record(
   db: Handle,
   state: RunState,
   request: { id: string; num: number },
-  outcome: Outcome,
+  outcome: HistoryRunOutcome,
 ): Promise<void> {
   state.counters.rowsWritten += outcome.written;
   if (outcome.state === 'ready') state.counters.ready += 1;
@@ -720,7 +568,7 @@ async function main(): Promise<number> {
    * механизм пересчёта один (`ensureAssignmentHistory`), и вторая команда означала бы второй ответ
    * на вопрос «валидна ли история».
    */
-  const work: Work = boolFlag(flags, 'revalidate') ? 'revalidate' : 'backfill';
+  const work: HistoryRunWork = boolFlag(flags, 'revalidate') ? 'revalidate' : 'backfill';
   const mode: RunState['mode'] = apply ? 'apply' : 'dry-run';
   const asOf = dateFlag(flags, 'asof') ?? moscowDateKeyOf(new Date());
   const statePath = flags.get('state')?.trim() || null;
@@ -729,16 +577,15 @@ async function main(): Promise<number> {
   const progressEvery = intFlag(flags, 'progress', 200);
   const maxFailures = intFlag(flags, 'max-failures', 20);
 
-  const access = resolveAccess();
-  const pool = buildPool(access);
+  const access = resolveMaintenanceAccess();
+  // `max: 1` — не экономия, а требование однопоточности (спайк §4.3): два соединения этого
+  // прогона стали бы двумя одновременными писателями портала.
+  const pool = buildMaintenancePool(access, 1);
   const db = drizzle(pool, { schema, casing: 'snake_case' });
 
   try {
-    const [identity] = (
-      await db.execute<{ role: string; database: string }>(
-        sql`SELECT current_user AS role, current_database() AS database`,
-      )
-    ).rows;
+    const identity = await readMaintenanceIdentity(pool);
+    const [dbRow] = (await db.execute<{ db: string }>(sql`SELECT current_database() AS db`)).rows;
     const moduleMode = await readAssignmentMode(db);
     const before = await readPopulation(db);
 
@@ -747,7 +594,7 @@ async function main(): Promise<number> {
     const state = stored ?? freshState(mode, asOf);
     const headerOf = (): string[] => [
       `${work === 'revalidate' ? 'Ревалидация истории назначения' : 'Массовый бэкфилл истории назначения'} — ${apply ? 'ЗАПИСЬ' : 'dry-run (ничего не пишется)'}`,
-      `База: ${identity?.database ?? '?'}, роль ${identity?.role ?? '?'}, доступ ${access.source}`,
+      `База: ${dbRow?.db ?? '?'}, доступ ${maintenanceAccessLine(access, identity)}`,
       `Режим модуля: запись ${moduleMode.writeMode}, чтение ${moduleMode.readMode}` +
         ' (maintenance-путь идёт мимо гейта по З3)',
       `Валидность считается на ${asOf}` + (limit > 0 ? `; предел прогона — ${limit} заявок` : ''),
@@ -774,7 +621,12 @@ async function main(): Promise<number> {
     let stoppedByLimit = false;
 
     pages: for (;;) {
-      const page = await nextPage(db, state.cursor, PAGE_SIZE, work, asOf);
+      const page = await nextHistoryPage(db, {
+        after: state.cursor,
+        limit: PAGE_SIZE,
+        work,
+        asOf,
+      });
       if (page.length === 0) break;
       // Страница обязана начинаться строго за курсором. Проверка дешёвая и спасает от единственной
       // ошибки этого цикла, у которой нет внешних признаков: не сдвинувшийся курсор даёт не отказ,
@@ -789,10 +641,10 @@ async function main(): Promise<number> {
           stoppedByLimit = true;
           break pages;
         }
-        let outcome: Outcome | null = null;
+        let outcome: HistoryRunOutcome | null = null;
         try {
-          outcome = await withRetry(() =>
-            apply ? ensureOne(db, request.id, asOf) : planOne(db, request.id, asOf),
+          outcome = await withHistoryRetry(() =>
+            apply ? ensureOneRequest(db, request.id, asOf) : planOneRequest(db, request.id, asOf),
           );
           consecutiveFailures = 0;
         } catch (error) {
