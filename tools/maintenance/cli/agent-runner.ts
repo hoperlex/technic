@@ -86,11 +86,17 @@ export function deliver(
   out: Reporter,
 ): AgentReply {
   const started = Date.now();
+  const timeoutMs = config.agent?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // Пока агент думает, команда не печатает ничего: вывод приходит одним куском в конце. Минуты
+  // тишины неотличимы от зависания, поэтому ожидание объявляется заранее и с потолком.
+  if (adapter.id !== 'manual') {
+    out.item(`жду ответ агента: это минуты, потолок ${Math.round(timeoutMs / 60000)} мин`);
+  }
   const reply = adapter.deliver(packet, {
     root: config.root,
     taskFile: workspace.taskFile,
     answerFile: path.join(config.root, packet.outputFile),
-    timeoutMs: config.agent?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    timeoutMs,
   });
 
   if (reply.kind === 'awaiting') {

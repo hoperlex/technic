@@ -212,6 +212,9 @@ async function emitReviewTask(
   passId: string,
   args: ConvergeArgs,
 ): Promise<CommandResult> {
+  // Повторная выдача задания отличается от первой только тем, что снимок структуры уже снят:
+  // второй снимок внутри прогона мерил бы работу самой системы, а не проекта.
+  const again = asked.reviewer;
   const pass = policies.maintenance.convergence.passes.find((item) => item.id === passId);
   if (pass === undefined) {
     out.error(`прохода ${passId} нет в политике`);
@@ -230,7 +233,7 @@ async function emitReviewTask(
   out.item(widened.note);
   saveFacts(workspace, facts);
   out.item(`линт: ${facts.lint.summary}; зависимости: ${facts.dependencies.summary}`);
-  if (state.passes.length <= 1) await rememberStructure(config, workspace, facts, out);
+  if (state.passes.length <= 1 && !again) await rememberStructure(config, workspace, facts, out);
 
   // Ответ прошлого прохода убирается заранее: иначе следующая команда примет его за новый и
   // отберёт те же находки повторно.
@@ -255,13 +258,9 @@ async function emitReviewTask(
    * оба режима идут одной дорогой: ручной адаптер делает ровно то же, что делал цикл, а командный
    * зовёт агента сам.
    */
-  const reply = deliver(
-    adapterFor(config, 'reviewer', args.agent, out),
-    packet,
-    config,
-    workspace,
-    out,
-  );
+  const adapter = adapterFor(config, 'reviewer', args.agent, out);
+  asked.reviewer = true;
+  const reply = deliver(adapter, packet, config, workspace, out);
   if (reply.kind !== 'answer') return { ok: reply.kind === 'awaiting' };
 
   // Ответ уже на руках — идём дальше в том же запуске, не заставляя звать команду второй раз.
@@ -304,6 +303,62 @@ async function rememberStructure(
   out.line(renderDelta(delta));
 }
 
+/**
+ * Звали ли агента в ЭТОМ запуске команды.
+ *
+ * ПОЧЕМУ ЭТО ПАМЯТЬ ПРОЦЕССА, А НЕ ПОЛЕ ПРОГОНА. Вопрос живёт ровно столько, сколько идёт одна
+ * команда: «переспрашивать агента или ждать?». Прогон переживает запуски и хранится на диске —
+ * записанный туда, этот флаг запрещал бы переспрос и в следующий раз, когда переспросить как раз
+ * надо. А ещё его нельзя вести параметром: тогда его пришлось бы протаскивать сквозь каждый шаг
+ * цикла, и подписи функций выросли бы ради одного «да/нет».
+ *
+ * Смысл один: за запуск агента зовут не больше раза на роль, иначе несостоявшийся ответ крутил бы
+ * бесконечный круг «спросили — пусто — спросили».
+ */
+const asked = { reviewer: false };
+
+/**
+ * Ответа ревьюера нет: ждать или переспросить.
+ *
+ * В ручном режиме ожидание и есть работа цикла: задание лежит, человек его отдаст, ответ появится.
+ * В командном ждать некого — задание относит сама система, и «ждём ответ ревьюера» в ответ на
+ * команду означает тупик: прогон стоит в шаге ожидания, а тот, кто должен ответить, никем не
+ * позван. Так и вышло, когда негодный ответ убрали руками: шаг остался, файла нет, и каждая
+ * следующая команда печатала ожидание.
+ *
+ * Поэтому здесь прогон переспрашивает агента сам, заново собрав факты: пока ответа не было, дерево
+ * могло измениться.
+ */
+async function noReviewAnswer(
+  config: MaintenanceConfig,
+  policies: PolicySet,
+  workspace: Workspace,
+  out: Reporter,
+  state: RunState,
+  args: ConvergeArgs,
+): Promise<CommandResult> {
+  const mode = args.agent ?? config.agent?.mode ?? 'manual';
+  if (mode === 'command' && !asked.reviewer) {
+    out.heading('ответа ревьюера нет — зовём агента заново');
+    return emitReviewTask(
+      config,
+      policies,
+      workspace,
+      out,
+      state,
+      state.passes[state.passIndex]?.passId ?? '',
+      args,
+    );
+  }
+  out.heading('ждём ответ ревьюера');
+  out.item(`задание: ${path.relative(config.root, workspace.taskFile)}`);
+  out.item(`ответ: ${path.relative(config.root, path.join(workspace.results, 'review.json'))}`);
+  if (mode === 'command') {
+    out.item('агента уже звали в этом запуске — ответа он не дал; повторите команду');
+  }
+  return { ok: true };
+}
+
 /** Шаг 2 прохода: принять ответ ревьюера, отобрать безопасное, выдать задание исполнителю. */
 async function takeReview(
   config: MaintenanceConfig,
@@ -315,10 +370,7 @@ async function takeReview(
 ): Promise<CommandResult> {
   const file = path.join(workspace.results, 'review.json');
   if (!existsSync(file)) {
-    out.heading('ждём ответ ревьюера');
-    out.item(`задание: ${path.relative(config.root, workspace.taskFile)}`);
-    out.item(`ответ: ${path.relative(config.root, file)}`);
-    return { ok: true };
+    return noReviewAnswer(config, policies, workspace, out, state, args);
   }
 
   const parsed = parseFindings(readFileSync(file, 'utf8'), path.relative(config.root, file));
@@ -416,7 +468,10 @@ async function takeReview(
   }
 
   const allowed = [...new Set(selection.selected.flatMap((finding) => finding.files))].sort();
-  const { lint, typecheck } = measureBaseline(config, workspace.tmp);
+  // Замер базы поднимает отдельное дерево и гоняет по нему линт и типы — это минуты. Человек
+  // должен видеть, чем они заняты, иначе тишина читается как зависание.
+  out.heading('замер базы до правки');
+  const { lint, typecheck } = measureBaseline(config, workspace.tmp, (text) => out.item(text));
 
   const transaction = new FileCheckpointTransaction(config.root, workspace.checkpoints);
   const checkpoint = await transaction.createCheckpoint(allowed);
@@ -503,12 +558,24 @@ async function takeFix(
     out.heading('ждём правку исполнителя');
     out.item(`задание: ${path.relative(config.root, workspace.taskFile)}`);
     out.item(`разрешено файлов: ${batch.allowed.length}, изменено: 0`);
+    /*
+     * В командном режиме ждать уже некого: задание относил не человек, а система, и агент на него
+     * ответил, ничего не изменив. Слово «ждём» тут вводит в заблуждение — прогон остался бы в этом
+     * шаге навсегда, печатая ожидание на каждую команду. Называем положение как есть и даём выход.
+     */
+    if ((args.agent ?? config.agent?.mode ?? 'manual') === 'command') {
+      out.item(
+        'агент правку не внёс: либо внесите её руками, либо снимите прогон — converge --abort',
+      );
+    }
     return { ok: true };
   }
 
   const selected = state.passes.at(-1)?.selectedFindings ?? [];
   const { report, newSevere, resolvedSevere } = fixReportOf(workspace, selected, out);
+  out.heading('проверка партии');
   const result = verifyBatch({
+    notify: (text) => out.item(text),
     config,
     policies,
     baseline: batch.baseline,

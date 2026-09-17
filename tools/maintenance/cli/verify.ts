@@ -104,6 +104,7 @@ export async function verify(
 
   out.heading('проверка');
   const result = verifyBatch({
+    notify: (text) => out.item(text),
     config,
     policies,
     baseline: batch.baseline,

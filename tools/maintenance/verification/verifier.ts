@@ -58,6 +58,16 @@ export interface VerifyOptions {
    */
   readonly allowConcurrent: boolean;
   readonly tmpDir: string;
+  /**
+   * Куда рассказывать о ходе проверки.
+   *
+   * ПОЧЕМУ ЭТО ЧАСТЬ КОНТРАКТА, А НЕ УДОБСТВО. Проверка — самый долгий шаг цикла: она поднимает
+   * отдельное дерево, гоняет линт по всему репозиторию, потом типы, потом ворота. Минуты
+   * молчания после строки «агент ответил» неотличимы от зависания, и человек жмёт Ctrl-C —
+   * ровно в тот момент, когда правка уже в дереве, а решение по ней ещё не принято. Хуже места
+   * для обрыва в цикле нет.
+   */
+  readonly notify?: (text: string) => void;
   /** Дополнительные уровни проверки сверх включённых по умолчанию. */
   readonly extraLevels: readonly string[];
 }
@@ -81,18 +91,28 @@ function tailOf(text: string, lines = 40): string {
  * замером на грязном дереве нельзя: разница тогда означала бы не «стало хуже от правки», а
  * «дерево другое».
  */
-function measure(root: string, config: MaintenanceConfig, tmpDir: string, suffix: string) {
+function measure(
+  root: string,
+  config: MaintenanceConfig,
+  tmpDir: string,
+  suffix: string,
+  notify: (text: string) => void = () => {},
+) {
+  notify('линт');
   const lint = collectLint({
     root,
     command: config.analysis.lintCommand,
     outFile: path.join(tmpDir, `lint-${suffix}.json`),
     keepMessages: 50,
   });
+  notify(`линт: ${lint.summary}`);
+  notify('типы');
   const typecheckRun = run(root, config.analysis.typecheckCommand);
   const typecheck = toolRun(
     typecheckRun,
     typecheckRun.code === 0 ? 'типы сходятся' : `типы не сходятся (код ${typecheckRun.code})`,
   );
+  notify(typecheck.summary);
   return { lint, typecheck };
 }
 
@@ -106,10 +126,12 @@ function measure(root: string, config: MaintenanceConfig, tmpDir: string, suffix
 export function measureBaseline(
   config: MaintenanceConfig,
   tmpDir: string,
+  notify: (text: string) => void = () => {},
 ): { lint: LintFacts; typecheck: ToolRun } {
   if (config.analysis.isolateVerification !== true) {
-    return measure(config.root, config, tmpDir, 'before');
+    return measure(config.root, config, tmpDir, 'before', notify);
   }
+  notify('отдельное дерево от HEAD');
   const tree = createIsolatedTree({
     root: config.root,
     home: path.join(tmpDir, 'trees'),
@@ -117,7 +139,7 @@ export function measureBaseline(
     linkPaths: config.analysis.linkPaths ?? [],
   });
   try {
-    return measure(tree.path, config, tmpDir, 'before');
+    return measure(tree.path, config, tmpDir, 'before', notify);
   } finally {
     tree.dispose();
   }
@@ -167,8 +189,10 @@ function blameBatch(
 
 export function verifyBatch(options: VerifyOptions): VerificationResult {
   const { config } = options;
+  const notify = options.notify ?? (() => {});
   const isolate = config.analysis.isolateVerification === true;
 
+  if (isolate) notify('отдельное дерево с правкой');
   const tree = isolate
     ? createIsolatedTree({
         root: config.root,
@@ -191,7 +215,7 @@ export function verifyBatch(options: VerifyOptions): VerificationResult {
    * которого мы не предусмотрели.
    */
   try {
-    const measured = measure(where, config, options.tmpDir, 'after');
+    const measured = measure(where, config, options.tmpDir, 'after', notify);
     const lintAfter = measured.lint;
     const typecheckAfter = measured.typecheck;
 
@@ -254,7 +278,12 @@ export function verifyBatch(options: VerifyOptions): VerificationResult {
     const levels: LevelResult[] = [];
     for (const level of config.verification) {
       if (!level.enabledByDefault && !options.extraLevels.includes(level.id)) continue;
+      notify(level.title);
       const result = run(where, level.command);
+      notify(
+        `${level.title}: ${result.code === 0 ? 'зелено' : `код ${result.code}`}` +
+          ` за ${Math.round(result.durationMs / 1000)} с`,
+      );
       levels.push({
         id: level.id,
         title: level.title,
@@ -283,6 +312,7 @@ export function verifyBatch(options: VerifyOptions): VerificationResult {
        * Поэтому упавший шаг перезапускается на базе БЕЗ партии — и только он один: гонять ради
        * этого все ворота второй раз стоило бы ещё столько же времени.
        */
+      notify(`перепроверка на базе без правки: ${failed.map((level) => level.title).join(', ')}`);
       const guilty = blameBatch(config, options, failed);
       if (!guilty) {
         return {

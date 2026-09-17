@@ -196,6 +196,13 @@ function checkWindowStart(config: MaintenanceConfig, policies: PolicySet, out: R
 }
 
 /** Выдать задание ревьюеру по текущей зоне: окно смотрит зону целиком, а не только изменённое. */
+/**
+ * Звали ли агента в ЭТОМ запуске команды. Память процесса, а не окна: вопрос «переспрашивать или
+ * ждать» живёт ровно одну команду, а окно переживает запуски и хранится на диске — записанный
+ * туда, флаг запретил бы переспрос и тогда, когда переспросить как раз надо.
+ */
+const asked = { reviewer: false };
+
 async function emitZoneReview(
   config: MaintenanceConfig,
   policies: PolicySet,
@@ -204,6 +211,7 @@ async function emitZoneReview(
   state: WindowState,
   args: DeepArgs,
 ): Promise<CommandResult> {
+  const again = asked.reviewer;
   const policy = policies.maintenance.deepMaintenance;
   const zone = policy.zones[state.zoneIndex];
   if (zone === undefined) {
@@ -211,7 +219,7 @@ async function emitZoneReview(
     return { ok: false };
   }
 
-  out.heading(`зона ${state.zoneIndex + 1}: ${zone.id}`);
+  out.heading(`зона ${state.zoneIndex + 1}: ${zone.id}${again ? ' (задание повторно)' : ''}`);
   out.item(`осталось минут: ${Math.round(minutesLeft(state, new Date()))}`);
 
   /*
@@ -244,13 +252,9 @@ async function emitZoneReview(
     outputFile,
     decisions: decisionsFor(config, widened.facts),
   });
-  const reply = deliver(
-    adapterFor(config, 'reviewer', args.agent, out),
-    packet,
-    config,
-    workspace,
-    out,
-  );
+  const adapter = adapterFor(config, 'reviewer', args.agent, out);
+  asked.reviewer = true;
+  const reply = deliver(adapter, packet, config, workspace, out);
   if (reply.kind !== 'answer') {
     return { ok: reply.kind === 'awaiting' };
   }
@@ -270,6 +274,12 @@ async function takeZoneReview(
 ): Promise<CommandResult> {
   const answer = path.join(workspace.results, 'review.json');
   if (!existsSync(answer)) {
+    // Ждать осмысленно только в ручном режиме: там задание относит человек. В командном ответа
+    // ждать не от кого — окно переспрашивает агента само, иначе шаг стоял бы вечно.
+    if ((args.agent ?? config.agent?.mode ?? 'manual') === 'command' && !asked.reviewer) {
+      out.heading('ответа ревьюера нет — зовём агента заново');
+      return emitZoneReview(config, policies, workspace, out, state, args);
+    }
     out.heading('ждём ответ ревьюера');
     out.item(`ответ положить в ${path.relative(config.root, answer)}, затем: pnpm maintain deep`);
     return { ok: true };
@@ -383,7 +393,8 @@ async function takeNextBatch(
   }
 
   const allowed = [...new Set(selection.selected.flatMap((finding) => finding.files))].sort();
-  const { lint, typecheck } = measureBaseline(config, workspace.tmp);
+  out.heading('замер базы до правки');
+  const { lint, typecheck } = measureBaseline(config, workspace.tmp, (text) => out.item(text));
   const transaction = new FileCheckpointTransaction(config.root, workspace.checkpoints);
   const checkpoint = await transaction.createCheckpoint(allowed);
   saveBatch(workspace, {
@@ -465,7 +476,9 @@ async function takeBatchFix(
     : EMPTY_FIX_REPORT;
   for (const problem of report.problems) out.warn(problem);
 
+  out.heading('проверка партии');
   const result = verifyBatch({
+    notify: (text) => out.item(text),
     config,
     policies,
     baseline: batch.baseline,

@@ -279,7 +279,8 @@ export async function fixTask(config: MaintenanceConfig, out: Reporter): Promise
   const allowed = [...new Set(selected.flatMap((finding) => finding.files))].sort();
   out.heading('контрольная точка');
   out.item('снимаю базовую линию: линт и типы');
-  const { lint, typecheck } = measureBaseline(config, workspace.tmp);
+  out.heading('замер базы до правки');
+  const { lint, typecheck } = measureBaseline(config, workspace.tmp, (text) => out.item(text));
   out.item(`линт: ${lint.summary}`);
   out.item(`типы: ${typecheck.summary}`);
 
