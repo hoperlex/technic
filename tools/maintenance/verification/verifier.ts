@@ -10,7 +10,7 @@ import type { MaintenanceConfig } from '../core/config.ts';
 import type { LintFacts, ToolRun } from '../core/facts.ts';
 import type { PolicySet } from '../core/types.ts';
 import { run, toolRun } from '../analyzers/run.ts';
-import { collectLint } from '../analyzers/lint.ts';
+import { collectLint, dropReport } from '../analyzers/lint.ts';
 import { checkBehaviorLock, type BaselineSnapshot, type LockViolation } from './behavior-lock.ts';
 import { createIsolatedTree } from '../git/worktree.ts';
 import path from 'node:path';
@@ -133,13 +133,17 @@ function measure(
   notify: (text: string) => void = () => {},
 ) {
   notify('линт');
+  const lintReport = path.join(tmpDir, `lint-${suffix}.json`);
   const lint = collectLint({
     root,
     command: config.analysis.lintCommand,
-    outFile: path.join(tmpDir, `lint-${suffix}.json`),
+    outFile: lintReport,
     keepMessages: 50,
     pulse: 'линт',
   });
+  // Машинный отчёт нужен ровно до этой строки. На этом репозитории он весит восемнадцать
+  // мегабайт, и каждая партия оставляла по два таких файла в рабочем каталоге.
+  dropReport(lintReport);
   notify(`линт: ${lint.summary}`);
   notify('типы');
   const typecheckRun = run(root, config.analysis.typecheckCommand, { pulse: 'типы' });
