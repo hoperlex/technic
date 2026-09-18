@@ -19,6 +19,7 @@ import {
   type DeviceParseRuleDto,
   type DeviceParseRuleInput,
 } from '@technic/contracts';
+import type { DeviceParseRulePreviewDto } from '@technic/contracts';
 import { FormModal } from '@shared/ui';
 import { useDeviceRulePreview, useDeviceRuleSave } from '../model/actions';
 
@@ -87,14 +88,21 @@ export function DeviceRuleFormModal({
   onClose: () => void;
 }) {
   const [form] = Form.useForm<Values>();
-  const target: 'identity' | 'metric' = 'identity';
+  const target = Form.useWatch('target', form);
   const [previewId, setPreviewId] = useState('');
+  /*
+   * Ответ проверки держится СВОИМ состоянием, а не полем мутации, и причина не в стиле. Объект
+   * мутации меняется на каждом её шаге, и стоило ему попасть в зависимости эффекта — сброс рождал
+   * новый объект, тот новый сброс, и экран уходил в бесконечный круг. Со своим состоянием сеттер
+   * стабилен, а эффекту незачем знать о мутации вовсе.
+   */
+  const [result, setResult] = useState<DeviceParseRulePreviewDto | null>(null);
   const save = useDeviceRuleSave(rule?.id ?? null, onClose);
   const preview = useDeviceRulePreview();
 
   useEffect(() => {
     if (!open) return;
-    preview.reset();
+    setResult(null);
     setPreviewId('');
     form.setFieldsValue({
       target: rule?.target ?? 'identity',
@@ -112,7 +120,11 @@ export function DeviceRuleFormModal({
       isEnabled: rule?.isEnabled ?? true,
     });
     // Сброс проверки — часть открытия: ответ по прошлому правилу рядом с новым читался бы как его.
-  }, [open, rule, form, preview]);
+    //
+    // ОБЪЕКТА МУТАЦИИ В ЗАВИСИМОСТЯХ БЫТЬ НЕ ДОЛЖНО: он меняется на каждом шаге запроса, и эффект
+    // пересбрасывал бы форму бесконечно — экран уходил в круг, а прогон тестов в таймаут без
+    // единого падения. Сбрасывается своё состояние, и сеттеры у него стабильны.
+  }, [open, rule, form]);
 
   return (
     <FormModal
@@ -196,26 +208,26 @@ export function DeviceRuleFormModal({
             loading={preview.isPending}
             disabled={previewId.trim() === ''}
             onClick={() =>
-              preview.mutate({
-                messageId: previewId.trim(),
-                rule: toInput(form.getFieldsValue()),
-              })
+              preview.mutate(
+                { messageId: previewId.trim(), rule: toInput(form.getFieldsValue()) },
+                { onSuccess: setResult },
+              )
             }
           >
             Проверить
           </Button>
         </Space.Compact>
-        {preview.data && (
+        {result && (
           <Alert
             style={{ marginTop: 8 }}
-            type={preview.data.found ? 'success' : 'warning'}
+            type={result.found ? 'success' : 'warning'}
             showIcon
             title={
-              preview.data.found
-                ? `Нашлось: ${preview.data.value}${preview.data.unitLabel ? ` ${preview.data.unitLabel}` : ''}`
+              result.found
+                ? `Нашлось: ${result.value}${result.unitLabel ? ` ${result.unitLabel}` : ''}`
                 : 'Ничего не нашлось'
             }
-            description={preview.data.note}
+            description={result.note}
           />
         )}
       </Form>
