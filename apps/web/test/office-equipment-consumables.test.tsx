@@ -685,6 +685,9 @@ function renderEquipmentTab(card: OfficeEquipmentDto): HttpMock {
     // присылал писем» — законное состояние, к предмету этого файла отношения не имеющее.
     'GET /office-equipment/:id/telemetry': () =>
       json({ metrics: [], events: { items: [], hasMore: false, nextCursor: null } }),
+    // Рядом с ним — блок «Ключи опознания» (ADR 0200): он спрашивает реестр ключей
+    // карточки, и незамоканный запрос уронил бы файл на общей сверке.
+    'GET /device-mail/identities': () => json({ items: [], hasMore: false, nextCursor: null }),
     // Секция «Обслуживание и гарантии» карточки читает теперь блок «Связанные заявки» (план
     // истории тремя блоками, Р7), а не срез `serviceHistory` ответа карточки.
     'GET /office-equipment/:id/requests': () =>

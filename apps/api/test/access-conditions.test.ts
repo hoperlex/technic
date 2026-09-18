@@ -308,6 +308,29 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/device-mail/messages/:id/bind': {
     payload: { equipmentId: RECORD_ID, kind: 'serial', value: 'W512P900123' },
   },
+  // Реестр ключей и правила разбора (ADR 0200): та же причина, что у привязки выше — схема стоит
+  // до стража, и без годного тела перебор мерил бы валидацию, а не право.
+  'POST /api/v1/device-mail/identities': {
+    payload: { equipmentId: RECORD_ID, kind: 'serial', value: 'W512P900123' },
+  },
+  'GET /api/v1/device-mail/identities/targets': {
+    query: 'kind=serial&value=W512P900123',
+  },
+  'POST /api/v1/device-mail/identities/:id/revoke': {
+    payload: { note: 'перебор доступа' },
+  },
+  'POST /api/v1/device-mail/rules': {
+    payload: { target: 'identity', keyKind: 'serial', matchKind: 'label', expression: 'machine id' },
+  },
+  'PATCH /api/v1/device-mail/rules/:id': {
+    payload: { target: 'identity', keyKind: 'serial', matchKind: 'label', expression: 'machine id' },
+  },
+  'POST /api/v1/device-mail/rules/preview': {
+    payload: {
+      messageId: RECORD_ID,
+      rule: { target: 'identity', keyKind: 'serial', matchKind: 'label', expression: 'machine id' },
+    },
+  },
 
   // ── Учётные записи ──
   'POST /api/v1/users': {
