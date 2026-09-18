@@ -141,23 +141,6 @@ export function weeklyItemsReadWhere(p: Principal): SQL | undefined {
 }
 
 /**
- * Заявки, доступные учётке, из названного списка — пакетной проверкой для ленты, где недельные
- * строки догружаются по идентификаторам. Ответ множеством, а не массивом: вызывающему нужен
- * вопрос «эта видна?», а не порядок.
- */
-export async function readableWeeklyRequestIds(
-  p: Principal,
-  ids: readonly string[],
-): Promise<Set<string>> {
-  if (ids.length === 0) return new Set();
-  const rows = await db
-    .select({ id: weeklyVehicleRequests.id })
-    .from(weeklyVehicleRequests)
-    .where(and(inArray(weeklyVehicleRequests.id, [...ids]), weeklyRequestReadWhereOnTable(p)));
-  return new Set(rows.map((r) => r.id));
-}
-
-/**
  * Заявки площадок, доступных учётке, — вспомогательное условие для мест, где нужен только объект
  * (например, счётчик «ждут визы» по площадкам). Арендодателю счётчики визы не показываются вовсе:
  * визу он не ставит, а «сколько недель ждёт подписи» — цифра площадки, не его.
