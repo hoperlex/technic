@@ -323,11 +323,11 @@ docker compose -f deploy/docker-compose.yml -p technic --profile tools \
 
 # заморозить всю запись модуля перед необратимым выкатом
 docker compose … run --rm assignment-mode set --write=all_frozen \
-  --actor=<email оператора> --reason='<зачем>' --build=<sha образа>
+  --reason='<зачем>' --build=<sha образа>
 
 # вернуть работу
 docker compose … run --rm assignment-mode set --write=normal \
-  --actor=<email> --reason='окно закрыто' --build=<sha>
+  --reason='окно закрыто' --build=<sha>
 
 # журнал переходов
 docker compose … run --rm assignment-mode log --limit=20
@@ -1757,15 +1757,15 @@ docker compose -f deploy/docker-compose.yml -p technic --profile tools \
 # заморозить всю запись модуля (перед необратимым выкатом или на время разбора аварии)
 docker compose -f deploy/docker-compose.yml -p technic --profile tools \
   run --rm assignment-mode set --write=all_frozen \
-  --actor=<email оператора> --reason='<зачем>' --build=<sha образа>
+  --reason='<зачем>' --build=<sha образа>
 
 # заморозить только двери истории, оставив работу портала
 docker compose … run --rm assignment-mode set --write=history_frozen \
-  --actor=<email> --reason='<зачем>' --build=<sha>
+  --reason='<зачем>' --build=<sha>
 
 # вернуть работу
 docker compose … run --rm assignment-mode set --write=normal \
-  --actor=<email> --reason='окно закрыто' --build=<sha>
+  --reason='окно закрыто' --build=<sha>
 
 # журнал переходов: чем и когда переключали
 docker compose … run --rm assignment-mode log --limit=20
@@ -1952,25 +1952,39 @@ docker compose … run --rm assignment-mode log --limit=20
 ниже при этом остаётся полностью: он нужен для разбора отказов, для аварийного входа и для случаев,
 когда шаг хочется сделать отдельно.
 
+Шаги внутри уже закрытого портала проводит [deploy/cutover.sh](../deploy/cutover.sh): он снимает
+аттестацию, переносит её идентификатор в переход и зовёт окно, печатая перед каждым шагом саму
+команду.
+
 ```bash
 # 1. Предполёт — за день до окна и ещё раз перед ним; ничего не меняет
-docker compose -f deploy/docker-compose.yml -p technic --profile tools run --rm \
-  assignment-cutover status --build=<sha>
+deploy/cutover.sh --check
 
-# 2. Объявление порталу (режим техработ ставится СНАРУЖИ: заморозка закрывает запись модулю, а не
-#    порталу, и без объявления человек видит заявку, которая молча не сохраняется)
-deploy-auto --client-floor                      # на проде нужен 4, иначе --maintenance=on откажет
+# 2. Выкат кода и пол версии клиента. Пол поднимается ТОЛЬКО после выката: выше контракта
+#    раздаваемой сборки его поднять нельзя — 426 получат все, включая новую вкладку
+deploy-auto
+deploy-auto --client-floor                  # печатает пол, контракт сборки и что можно сделать
+deploy-auto --client-floor=<контракт>       # у нынешней сборки это 5
+
+# 3. Объявление порталу: заморозка закрывает запись модулю, а не порталу, и без объявления
+#    человек видит не окно, а заявку, которая молча не сохраняется
 deploy-auto --maintenance=on --reason='Переключение истории назначения' --until='<когда>'
 
-# 3. Аттестация — её снимает тот, кто раскатывал сборку (О4); годна 30 минут
-docker compose … run --rm assignment-attest --build=<sha>          # печатает attestation-id
-
-# 4. Окно: заморозка → ревалидация → поколение → сводка → переключение → разморозка
-docker compose … run --rm assignment-cutover run --actor=<email> --build=<sha> \
-  --attestation=<attestation-id> --reason='cutover истории назначения'
+# 4. Окно: аттестация и переход (заморозка → ревалидация → поколение → сводка → переключение →
+#    разморозка). Подписать переход учёткой можно, но не обязательно: --actor=<email> (ADR 0198)
+deploy/cutover.sh
 
 # 5. Снять объявление
 deploy-auto --maintenance=off
+```
+
+Те же шаги 4 вручную, если нужно развести их по времени:
+
+```bash
+docker compose -f deploy/docker-compose.yml -p technic --profile tools run --rm \
+  assignment-attest --build=<sha>                                  # печатает attestation-id
+docker compose … run --rm assignment-cutover run --build=<sha> \
+  --attestation=<attestation-id> --reason='cutover истории назначения'
 ```
 
 Что стоит знать про эту команду, прежде чем на неё положиться:
@@ -1983,7 +1997,7 @@ deploy-auto --maintenance=off
 - **повтор доделывает, а не начинает заново.** Шаг, чей результат уже достигнут, пропускается;
   окно, оборвавшееся после переключения, повторный запуск закрывает одной разморозкой;
 - **свою заморозку она снимает сама**, если дальше что-то не сошлось. Чужую — ту, что стояла до
-  неё, — не трогает: снять её можно `assignment-cutover abort --actor=<email> --build=<sha>`;
+  неё, — не трогает: снять её можно `assignment-cutover abort --build=<sha>`;
 - **`--keep-frozen`** оставляет запись замороженной после переключения — для разбора в закрытом
   портале;
 - **`--run=<uuid>`** продолжает уже заведённое поколение вместо нового (после обрыва на сравнении).
@@ -2034,7 +2048,7 @@ deploy-auto --maintenance=off
 
 ```bash
 # 1. Заморозить запись целиком и дождаться завершения активных писателей
-docker compose … run --rm assignment-mode set --write=all_frozen --actor=<email> --reason='cutover истории назначения' --build=<sha>
+docker compose … run --rm assignment-mode set --write=all_frozen --reason='cutover истории назначения' --build=<sha>
 
 # 1a. Ревалидация: пересчёт состояния всей непустой истории под единым днём. Обязательна и
 #     обязательно здесь — календарь двигает границу изменяемого сам, каждую полночь, а дверь
@@ -2053,10 +2067,10 @@ docker compose … run --rm assignment-attest --build=<sha> # печатает a
 docker compose … run --rm assignment-report --build=<sha> --run=<run-id>
 
 # 5. Переключение чтения. Дверь проверит всё заново под блокировкой и запишет cutover_run_id
-docker compose … run --rm assignment-mode set --read=history --actor=<email> --reason='cutover истории назначения' --build=<sha> --run=<run-id> --attestation=<attestation-id>
+docker compose … run --rm assignment-mode set --read=history --reason='cutover истории назначения' --build=<sha> --run=<run-id> --attestation=<attestation-id>
 
 # 6. Разморозить запись
-docker compose … run --rm assignment-mode set --write=normal --actor=<email> --reason='cutover завершён' --build=<sha>
+docker compose … run --rm assignment-mode set --write=normal --reason='cutover завершён' --build=<sha>
 ```
 
 **Почему шаги нельзя переставить.** Поколение, снятое до заморозки, доказывает состояние, которое
@@ -2082,8 +2096,9 @@ docker compose … run --rm assignment-mode set --write=normal --actor=<email> -
   профиля `tools`. На стенде теневое сравнение без него падает на разборе конфига («JWT_PUBLIC_KEY_PEM
   … received undefined»), потому что зовёт боевой расчёт бумаги. Добавлять флаг руками:
   `./node_modules/.bin/tsx --env-file-if-exists=../../.env.dev scripts/assignment-shadow.ts …`;
-- **`--actor` — существующая учётная запись**, а не любой адрес: дверь ищет человека в `users` и
-  отказывает «Исполнитель не найден» ещё до всякой работы;
+- **`--actor` больше не обязателен** (ADR 0198): переход проводится без подписи, и на репетиции
+  это снимало бы отказ «Исполнитель не найден», случавшийся до всякой работы. Названный адрес
+  по-прежнему обязан быть учёткой портала — журнал ссылается на `users`;
 - **барьеры срабатывают в своём порядке.** Переключение с отклонённым поколением сначала упирается в
   отсутствие аттестации и лишь после неё — в сам исход поколения («к переключению допускается только
   `completed`»). То есть аттестацию придётся снять даже для того, чтобы увидеть отказ по поколению, а
@@ -2116,7 +2131,7 @@ docker compose … run --rm assignment-mode set --write=normal --actor=<email> -
 
 ```bash
 # 1. Режим: history_frozen при откате, all_frozen при незавершённом cutover
-docker compose … run --rm assignment-mode set --write=history_frozen --actor=<email> --reason='откат релиза истории' --build=<sha>
+docker compose … run --rm assignment-mode set --write=history_frozen --reason='откат релиза истории' --build=<sha>
 
 # 2. Дождаться завершения активных писателей и убедиться, что новых записей нет
 psql "$DATABASE_URL" -c "select max(created_at) from vehicle_request_assignment_changes;"
@@ -2124,10 +2139,10 @@ psql "$DATABASE_URL" -c "select max(created_at) from vehicle_request_assignment_
 # 3. Откатить API на нужный образ (digest — в журнале выката)
 
 # 4. Обязательный путь возврата к работе: history_frozen → all_frozen + полная revalidation → normal
-docker compose … run --rm assignment-mode set --write=all_frozen --actor=<email> --reason='возврат после отката' --build=<sha>
+docker compose … run --rm assignment-mode set --write=all_frozen --reason='возврат после отката' --build=<sha>
 docker compose … run --rm assignment-backfill --revalidate --apply
 docker compose … run --rm assignment-report # dirty и stale должны быть нулями
-docker compose … run --rm assignment-mode set --write=normal --actor=<email> --reason='после отката: история пересчитана' --build=<sha>
+docker compose … run --rm assignment-mode set --write=normal --reason='после отката: история пересчитана' --build=<sha>
 ```
 
 Шаг 4 не формальность: в `history_frozen` разрешены `on_demand`, сохранение и подпись смен — они

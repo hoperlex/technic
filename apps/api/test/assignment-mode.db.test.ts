@@ -140,8 +140,8 @@ beforeAll(async () => {
   const mode = await import('../src/services/assignment-mode');
   ALGO = mode.ASSIGNMENT_HISTORY_ALGO_VERSION;
 
-  // Автор перехода — настоящая учётка: `actor_user_id` стоит `ON DELETE RESTRICT`, и «кто разрешил»
-  // обязано пережить увольнение.
+  // Учётка нужна не двери, а случаям, которые проверяют подпись перехода: сам переход автора уже
+  // не требует (ADR 0198), а названный обязан быть настоящей учёткой — журнал ссылается на `users`.
   const one = async <T extends object>(q: Parameters<typeof db.execute>[0]): Promise<T> => {
     const [row] = (await db.execute<T>(q)).rows;
     if (!row) throw new Error('в справочнике пусто: сцену не собрать');
@@ -244,7 +244,7 @@ interface JournalRow {
   build_sha: string;
   algo_version: string;
   reason: string;
-  actor_user_id: string;
+  actor_user_id: string | null;
 }
 
 async function journalAfter(id: number): Promise<JournalRow[]> {
@@ -508,6 +508,28 @@ describe.skipIf(!DB_URL)('матрица переходов режима зап�
       reason: `переход ${from} → ${to}`,
       actor_user_id: ctx.userId,
     });
+  });
+
+  it('переход без автора проходит и пишется с пустой подписью (ADR 0198)', async () => {
+    // Дверь открывается доступом к базе, а не сессией портала: имя приходило бы сюда набранным
+    // вручную, и проверить его нечем. Доказывают переход соседние колонки — сборка, версия
+    // алгоритма, поколение и аттестация, — и они на месте.
+    await force('normal', 'legacy');
+    const top = await journalTop();
+    await setMode(change({ targetWriteMode: 'all_frozen', actorUserId: null }));
+
+    const [written] = await journalAfter(top);
+    expect(written?.actor_user_id).toBeNull();
+    expect(written?.build_sha).toBe(BUILD);
+    expect(written?.to_write_mode).toBe('all_frozen');
+
+    // Управляющая строка тоже остаётся без подписи, а не наследует чужую.
+    const [row] = (
+      await ctx.db.execute<{ updated_by: string | null }>(
+        sql`SELECT updated_by FROM assignment_periods_control WHERE id = true`,
+      )
+    ).rows;
+    expect(row?.updated_by).toBeNull();
   });
 
   const forbidden: ReadonlyArray<[string, string, RegExp]> = [

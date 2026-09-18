@@ -62,7 +62,7 @@ import type {
  *   docker compose -f deploy/docker-compose.yml -p technic --profile tools \
  *     run --rm assignment-mode status
  *   docker compose … run --rm assignment-mode set --write=all_frozen \
- *     --actor=admin@example.org --reason='подготовка к cutover истории' --build=<sha>
+ *     --reason='подготовка к cutover истории' --build=<sha>
  *
  * Локально (dev-база, без прикладного `DATABASE_URL` в окружении):
  *
@@ -192,8 +192,11 @@ async function readTransitions(db: Handle, limit: number) {
 }
 
 /**
- * Исполнитель перехода. Журнал требует пользователя портала (`actor_user_id NOT NULL`): «кто
- * разрешил» обязано пережить и увольнение, и смену пароля, поэтому машинного «system» здесь нет.
+ * Исполнитель перехода, если человек назвал себя сам (ADR 0198).
+ *
+ * Названное имя обязано быть учёткой портала, а не свободной строкой: журнал ссылается на `users`,
+ * и подпись «Иванов», не сходящаяся ни с одной учёткой, доказывала бы ровно ничего. Не назвали —
+ * переход пишется без автора: проверить набранное вручную значение всё равно нечем.
  */
 async function resolveActor(db: Handle, raw: string): Promise<{ id: string; label: string }> {
   const rows = await db
@@ -339,10 +342,10 @@ async function runSet(
     );
   }
   const reason = requireFlag(flags, 'reason', 'переход без причины в журнал не пишется');
-  const actor = await resolveActor(
-    db,
-    requireFlag(flags, 'actor', 'журнал переходов хранит учётку исполнителя, а не «system»'),
-  );
+  // Автор необязателен (ADR 0198): дверь открывается доступом к базе, а не сессией портала, и
+  // проверить набранное вручную имя нечем. Назвавшего себя журнал по-прежнему запомнит.
+  const actorRaw = flags.get('actor')?.trim();
+  const actor = actorRaw ? await resolveActor(db, actorRaw) : null;
   const runId = optionalUuid(flags, 'run');
   const attestationId = optionalUuid(flags, 'attestation');
   /*
@@ -366,7 +369,7 @@ async function runSet(
    */
   const before = await readControl(db);
   console.log(`было       : запись ${before.writeMode}, чтение ${before.readMode}`);
-  console.log(`исполнитель: ${actor.label}`);
+  console.log(`исполнитель: ${actor ? actor.label : 'не назван (--actor не задан)'}`);
   console.log(`сборка     : ${buildSha}`);
 
   /*
@@ -380,7 +383,7 @@ async function runSet(
     {
       targetWriteMode: writeFlag ?? before.writeMode,
       targetReadMode: readFlag ?? before.readMode,
-      actorUserId: actor.id,
+      actorUserId: actor?.id ?? null,
       reason,
       buildSha,
       runId,
@@ -407,8 +410,8 @@ function usage(): void {
       '',
       '  assignment:mode status                     текущий режим и состояние границы',
       '  assignment:mode log [--limit=N]            журнал переходов (по умолчанию 20)',
-      '  assignment:mode set --write=<режим>|--read=<режим> --actor=<uuid|email>',
-      '                      --reason=<текст> --build=<sha> [--run=<uuid>] [--attestation=<uuid>]',
+      '  assignment:mode set --write=<режим>|--read=<режим> --reason=<текст> --build=<sha>',
+      '                      [--actor=<uuid|email>] [--run=<uuid>] [--attestation=<uuid>]',
       '',
       '  За один вызов меняется что-то одно: сначала заморозка, потом чтение, потом разморозка.',
       '',

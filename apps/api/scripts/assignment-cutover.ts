@@ -67,7 +67,7 @@ import type * as Shadow from '../src/services/assignment-shadow';
  *
  *   docker compose -f deploy/docker-compose.yml -p technic --profile tools \
  *     run --rm assignment-cutover status --build=<sha> --attestation=<id>
- *   docker compose … run --rm assignment-cutover run --actor=<email> --build=<sha> \
+ *   docker compose … run --rm assignment-cutover run --build=<sha> \
  *     --attestation=<id> --reason='cutover истории назначения'
  *
  * Порядок окна целиком, вместе с режимом техработ, — `docs/runbook.md`, раздел «Переключение
@@ -141,15 +141,17 @@ function usage(): void {
       '',
       '  assignment-cutover status --build=<sha> [--attestation=<id>]',
       '                        что предстоит сделать и что мешает; ничего не меняет',
-      '  assignment-cutover run --actor=<email> --build=<sha> --attestation=<id>',
+      '  assignment-cutover run --build=<sha> --attestation=<id>',
       '                         [--reason=<текст>] [--run=<uuid>] [--keep-frozen]',
       '                        окно целиком: заморозка → ревалидация → поколение → сводка →',
       '                        переключение → разморозка',
-      '  assignment-cutover abort --actor=<email> --build=<sha> [--reason=<текст>]',
+      '  assignment-cutover abort --build=<sha> [--reason=<текст>]',
       '                        снять заморозку после неудачной попытки; чтение не трогается',
       '',
       '  --attestation  аттестация раската; её снимает тот, кто раскатывал: assignment-attest',
       '                 --build=<sha>. Команда не снимает её сама намеренно (О4)',
+      '  --actor        учётка портала, если переход хотят подписать: журнал её запомнит.',
+      '                 Необязателен (ADR 0198) — проверить набранное вручную имя нечем',
       '  --run          продолжить уже заведённое поколение сравнения вместо нового',
       '  --keep-frozen  не размораживать запись после переключения (разбор в закрытом портале)',
       '',
@@ -239,8 +241,10 @@ async function readAttestationById(db: Handle, id: string): Promise<CutoverAttes
 }
 
 /**
- * Исполнитель перехода. Журнал требует пользователя портала (`actor_user_id NOT NULL`): «кто
- * разрешил» обязано пережить и увольнение, и смену пароля, поэтому машинного «system» здесь нет.
+ * Исполнитель перехода, если человек назвал себя сам (ADR 0198).
+ *
+ * Названное обязано быть учёткой портала: журнал ссылается на `users`, и подпись, не сходящаяся ни
+ * с одной учёткой, не доказывала бы ничего. Не назвали — окно проводится без автора.
  */
 async function resolveActor(db: Handle, raw: string): Promise<{ id: string; label: string }> {
   const rows = await db
@@ -272,7 +276,8 @@ async function loadShadow(): Promise<typeof Shadow> {
 interface StepContext {
   db: Handle;
   shadow: typeof Shadow;
-  actor: { id: string; label: string };
+  /** `null` — окно проводит команда площадки, автора никто не называл (ADR 0198). */
+  actor: { id: string; label: string } | null;
   buildSha: string;
   attestationId: string;
   reason: string;
@@ -288,7 +293,7 @@ async function stepFreeze(ctx: StepContext, readMode: AssignmentReadMode): Promi
       targetWriteMode: 'all_frozen',
       targetReadMode: readMode,
       reason: ctx.reason,
-      actorUserId: ctx.actor.id,
+      actorUserId: ctx.actor?.id ?? null,
       buildSha: ctx.buildSha,
     },
     ctx.db,
@@ -461,7 +466,7 @@ async function stepSwitch(ctx: StepContext, runId: string): Promise<void> {
       targetWriteMode: 'all_frozen',
       targetReadMode: 'history',
       reason: ctx.reason,
-      actorUserId: ctx.actor.id,
+      actorUserId: ctx.actor?.id ?? null,
       buildSha: ctx.buildSha,
       runId,
       attestationId: ctx.attestationId,
@@ -481,7 +486,7 @@ async function stepUnfreeze(
       targetWriteMode: 'normal',
       targetReadMode: readMode,
       reason: ctx.reason,
-      actorUserId: ctx.actor.id,
+      actorUserId: ctx.actor?.id ?? null,
       buildSha: ctx.buildSha,
     },
     ctx.db,
@@ -582,7 +587,7 @@ async function runStatus(db: Handle, flags: Map<string, string>, asOf: string): 
 }
 
 async function runWindow(db: Handle, flags: Map<string, string>, asOf: string): Promise<number> {
-  const actorRaw = requireFlag(flags, 'actor', 'журнал переходов требует человека, а не «system»');
+  const actorRaw = flags.get('actor')?.trim() ?? '';
   const buildSha = requireFlag(flags, 'build', 'журнал обязан помнить, чем переключили');
   const attestationId = requireFlag(
     flags,
@@ -596,7 +601,7 @@ async function runWindow(db: Handle, flags: Map<string, string>, asOf: string): 
   const keepFrozen = flags.has('keep-frozen');
   const namedRun = optionalUuid(flags, 'run') ?? null;
 
-  const actor = await resolveActor(db, actorRaw);
+  const actor = actorRaw ? await resolveActor(db, actorRaw) : null;
   const plan = await preflight(db, {
     buildSha,
     attestationId,
@@ -604,7 +609,7 @@ async function runWindow(db: Handle, flags: Map<string, string>, asOf: string): 
     keepFrozen,
     asOf,
   });
-  console.log(`исполнитель: ${actor.label}`);
+  if (actor) console.log(`исполнитель: ${actor.label}`);
   printPlan(plan);
   if (plan.refusal) return EXIT_BLOCKING;
   if (plan.steps.length === 0) return 0;
@@ -669,7 +674,7 @@ async function runWindow(db: Handle, flags: Map<string, string>, asOf: string): 
   if (keepFrozen) {
     console.log(
       'Запись осталась замороженной (--keep-frozen). Снять: assignment-cutover abort ' +
-        `--actor=${actorRaw} --build=${buildSha}`,
+        `--build=${buildSha}${actorRaw ? ` --actor=${actorRaw}` : ''}`,
     );
   }
   return 0;
@@ -700,14 +705,14 @@ async function recover(ctx: StepContext, frozeHere: boolean): Promise<void> {
         `показывает. Разморозка не прошла: ${error instanceof Error ? error.message : String(error)}`,
     );
     console.error(
-      `Снять руками: assignment-mode set --write=normal --actor=<email> --build=${ctx.buildSha} ` +
+      `Снять руками: assignment-mode set --write=normal --build=${ctx.buildSha} ` +
         "--reason='возврат после неудачного окна'",
     );
   }
 }
 
 async function runAbort(db: Handle, flags: Map<string, string>): Promise<number> {
-  const actorRaw = requireFlag(flags, 'actor', 'журнал переходов требует человека');
+  const actorRaw = flags.get('actor')?.trim() ?? '';
   const buildSha = requireFlag(flags, 'build', 'журнал обязан помнить, чем снимали заморозку');
   const reason = flags.get('reason')?.trim() || 'возврат после неудачного окна';
   const control = await readControlRow(db);
@@ -716,8 +721,8 @@ async function runAbort(db: Handle, flags: Map<string, string>): Promise<number>
     console.log('Запись и так в обычном режиме — снимать нечего');
     return 0;
   }
-  const actor = await resolveActor(db, actorRaw);
-  console.log(`исполнитель: ${actor.label}`);
+  const actor = actorRaw ? await resolveActor(db, actorRaw) : null;
+  if (actor) console.log(`исполнитель: ${actor.label}`);
   await stepUnfreeze({ db, actor, buildSha, reason }, control.readMode);
   return 0;
 }

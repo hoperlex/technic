@@ -296,7 +296,14 @@ export interface AssignmentModeChange {
   targetReadMode: AssignmentReadMode;
   /** Причина обязательна: журнал читают через месяцы, и «переключили» в нём ничего не объясняет. */
   reason: string;
-  actorUserId: string;
+  /**
+   * Кто провёл переход — необязательно (ADR 0198).
+   *
+   * Дверь открывается доступом к базе, а не сессией портала: она не знает, кто её позвал, и имя
+   * приходило бы сюда набранным вручную. Проверить такое значение нечем, поэтому оно перестало
+   * быть условием операции — но осталось возможностью: назвавший себя пишется в журнал.
+   */
+  actorUserId?: string | null;
   /** Сборка, которой идёт переключение. При активации сверяется с набором активных сборок. */
   buildSha: string;
   /** Поколение сверки — только для активации истории. */
@@ -316,7 +323,8 @@ export interface AssignmentModeTransitionRecord {
   buildSha: string;
   algoVersion: string;
   reason: string;
-  actorUserId: string;
+  /** Кто провёл переход; `null` — команда площадки его не называла (ADR 0198). */
+  actorUserId: string | null;
 }
 
 /**
@@ -467,7 +475,7 @@ export async function setModuleMode(
         writeMode: change.targetWriteMode,
         readMode: change.targetReadMode,
         cutoverRunId: nextCutoverRunId,
-        updatedBy: change.actorUserId,
+        updatedBy: change.actorUserId ?? null,
         updatedAt: new Date(),
       })
       .where(eq(assignmentPeriodsControl.id, true));
@@ -484,7 +492,7 @@ export async function setModuleMode(
     const [row] = await tx
       .insert(assignmentPeriodsModeTransitions)
       .values({
-        actorUserId: change.actorUserId,
+        actorUserId: change.actorUserId ?? null,
         fromReadMode: current.readMode,
         toReadMode: change.targetReadMode,
         fromWriteMode: current.writeMode,
@@ -511,7 +519,7 @@ export async function setModuleMode(
       buildSha,
       algoVersion: ASSIGNMENT_HISTORY_ALGO_VERSION,
       reason,
-      actorUserId: change.actorUserId,
+      actorUserId: change.actorUserId ?? null,
     };
   });
 }

@@ -10633,10 +10633,16 @@ export const assignmentPeriodsModeTransitions = pgTable(
   {
     id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
     at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
-    /** RESTRICT: «кто разрешил» обязано пережить увольнение. */
-    actorUserId: uuid('actor_user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * Кто провёл переход — если назвал себя сам (ADR 0198, миграция `0322`).
+     *
+     * Необязателен намеренно. Автора здесь называл человек аргументом командной строки, а не
+     * портал сессией: команда ходит своими кредами и запустившего не знает, — а значение, которое
+     * вводят руками, доказательством не является. Доказывают переход соседние колонки: сборка,
+     * версия алгоритма, поколение сверки и аттестация. RESTRICT остаётся ради прежних записей:
+     * учётку, названную в истории, снести молча нельзя.
+     */
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'restrict' }),
     /** Обе стороны обоих режимов: журнал восстанавливает автомат целиком, а не «чем кончилось». */
     fromReadMode: text('from_read_mode').notNull(),
     toReadMode: text('to_read_mode').notNull(),
