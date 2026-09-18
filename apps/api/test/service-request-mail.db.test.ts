@@ -1167,46 +1167,79 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
   });
   // ── События полного контура (план `office-equipment-mail-expansion-plan.md`, § 3) ──
 
-  /** Включить событие на время проверки: миграция заводит четыре новых выключенными (§5.1). */
-  async function withEvent<T>(event: string, fn: () => Promise<T>): Promise<T> {
+  /**
+   * Щёлкнуть рубильником на время проверки и вернуть его КАК БЫЛО, а не в заранее известное
+   * положение.
+   *
+   * Прежде обе половины были константами — включить перед проверкой, выключить после, — и держалось
+   * это на том, что миграция 0258 заводила четыре новых события выключенными. Миграция 0320 их
+   * включила (этап Э8 плана), и константа в `finally` стала тихо гасить событие для всех следующих
+   * проверок файла: первая же из них увидела бы `event_off` вместо письма, причём не в своём тесте,
+   * а через один. Снимок прежнего значения делает обе стороны хелпера независимыми от того, в каком
+   * положении рубильник приезжает с миграциями.
+   */
+  async function withEventState<T>(
+    event: string,
+    enabled: boolean,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const before = await ctx.db.execute<{ is_enabled: boolean }>(sql`
+      SELECT is_enabled FROM module_mail_event_settings WHERE event = ${event}`);
+    const was = before.rows[0]?.is_enabled ?? false;
     await ctx.db.execute(sql`
-      UPDATE module_mail_event_settings SET is_enabled = true WHERE event = ${event}`);
+      UPDATE module_mail_event_settings SET is_enabled = ${enabled} WHERE event = ${event}`);
     try {
       return await fn();
     } finally {
       await ctx.db.execute(sql`
-        UPDATE module_mail_event_settings SET is_enabled = false WHERE event = ${event}`);
+        UPDATE module_mail_event_settings SET is_enabled = ${was} WHERE event = ${event}`);
     }
   }
 
+  /** Событие включено на время проверки. */
+  async function withEvent<T>(event: string, fn: () => Promise<T>): Promise<T> {
+    return withEventState(event, true, fn);
+  }
+
+  /** Событие выключено на время проверки — то, что проверяет сам рубильник. */
+  async function withoutEvent<T>(event: string, fn: () => Promise<T>): Promise<T> {
+    return withEventState(event, false, fn);
+  }
+
   /**
-   * Рубильник — не украшение настройки, а условие безопасного выката: раздел портала ещё закрыт
-   * заплаткой, а API открыт, и включённое событие шлёт письма НАРУЖУ, подрядчику. Поэтому
-   * проверяется не «настройка сохранилась», а то, что выключенное событие писем не создаёт вовсе,
-   * при этом сама операция проходит: заявка обязана двигаться, даже когда почта молчит.
+   * Рубильник — не украшение настройки, а рабочий тормоз: включённое событие шлёт письма НАРУЖУ,
+   * подрядчику, и гасят зашумевшее событие именно им, не откатывая выпуск. Поэтому проверяется не
+   * «настройка сохранилась», а то, что выключенное событие писем не создаёт вовсе, при этом сама
+   * операция проходит: заявка обязана двигаться, даже когда почта молчит.
+   *
+   * Событие гасится ЯВНО (`withoutEvent`), а не берётся выключенным из миграций: с Э8 плана
+   * (миграция 0320) все четыре приезжают включёнными, и тест, полагавшийся на умолчание, проверял
+   * бы после неё ровно противоположное тому, что написано в его названии.
    */
   it('выключенное событие переходов писем не ставит, а заявку двигает', async () => {
-    const { request } = await createRequest(await ctx.newEquipment('offev'), 'Заедает лоток');
-    const before = (await mailsOf(request.id)).length;
+    await withoutEvent('service_request_status_changed', async () => {
+      const { request } = await createRequest(await ctx.newEquipment('offev'), 'Заедает лоток');
+      const before = (await mailsOf(request.id)).length;
 
-    const held = await inject('PATCH', `/api/v1/service-requests/${request.id}/hold`, ctx.admin, {
-      reason: 'Ждём запчасть',
-      version: request.version,
+      const held = await inject('PATCH', `/api/v1/service-requests/${request.id}/hold`, ctx.admin, {
+        reason: 'Ждём запчасть',
+        version: request.version,
+      });
+      expect(held.statusCode, held.body).toBe(200);
+      expect((held.json() as ServiceRequestDto).status).toBe('on_hold');
+      expect((await mailsOf(request.id)).length).toBe(before);
+
+      /**
+       * След в журнале обязателен и здесь — иначе «письма не было» через месяц не отличить от
+       * «письмо не дошло»: строк очереди у выключенного события не возникает вовсе, и объяснить
+       * тишину больше нечем.
+       */
+      const audit = await ctx.db.execute<{ metadata: { outcome?: string } }>(sql`
+        SELECT metadata FROM audit_log
+         WHERE action = 'serviceRequest.mailPlanned' AND entity_id = ${request.id}
+         ORDER BY created_at DESC LIMIT 1`);
+      expect(audit.rows[0]?.metadata.outcome).toBe('event_off');
     });
-    expect(held.statusCode, held.body).toBe(200);
-    expect((held.json() as ServiceRequestDto).status).toBe('on_hold');
-    expect((await mailsOf(request.id)).length).toBe(before);
-
-    /**
-     * След в журнале обязателен и здесь — иначе «письма не было» через месяц не отличить от
-     * «письмо не дошло»: строк очереди у выключенного события не возникает вовсе, и объяснить
-     * тишину больше нечем.
-     */
-    const audit = await ctx.db.execute<{ metadata: { outcome?: string } }>(sql`
-      SELECT metadata FROM audit_log
-       WHERE action = 'serviceRequest.mailPlanned' AND entity_id = ${request.id}
-       ORDER BY created_at DESC LIMIT 1`);
-    expect(audit.rows[0]?.metadata.outcome).toBe('event_off');
   });
 
   /**
@@ -1236,6 +1269,14 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     );
     expect(started.statusCode, started.body).toBe(200);
 
+    /**
+     * Снимок писем ПЕРЕД заморозкой: с Э8 плана (миграция 0320) событие переходов включено, и приём
+     * в работу выше ставит письма того же вида тем же трём адресатам. Отбор «по виду письма»
+     * перестал означать «письма этого перехода» — их теперь два перехода, и проверка читала бы
+     * шесть строк вместо трёх.
+     */
+    const beforeHold = new Set((await mailsOf(request.id)).map((l) => l.dedupe_key));
+
     await withEvent('service_request_status_changed', async () => {
       const held = await inject('PATCH', `/api/v1/service-requests/${request.id}/hold`, ctx.admin, {
         reason: 'Ждём запчасть от поставщика',
@@ -1245,7 +1286,7 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     });
 
     const letters = (await mailsOf(request.id)).filter(
-      (l) => l.kind === 'service_request_status_changed',
+      (l) => l.kind === 'service_request_status_changed' && !beforeHold.has(l.dedupe_key),
     );
     // Ящик службы и сторона подрядчика: общий ящик компании и её оператор в портале.
     expect(letters.map((l) => l.to_email).sort()).toEqual(
