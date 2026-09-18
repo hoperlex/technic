@@ -392,10 +392,18 @@ function normalizedHintSql(field: string) {
  * как «записать данные одного письма от имени сотни», и такой реализации здесь не заказывали:
  * `sourceRef` у каждого письма свой, и данные каждого — свои.
  */
-export async function bindDeviceMailIdentityTx(
+/**
+ * Завести привязку «ключ → карточка» — БЕЗ применения писем.
+ *
+ * ОТДЕЛЬНОЙ ФУНКЦИЕЙ, потому что писателей у привязки двое: разбор очереди (он применяет письма тут
+ * же) и массовая заливка ключей файлом (она только заводит, а применение человек запускает сам,
+ * глядя на число). Две копии этой вставки разошлись бы на первом же барьере — а барьеров здесь ровно
+ * столько, сколько стоит ошибка: чужая наработка в живой карточке.
+ */
+export async function insertDeviceMailIdentityTx(
   tx: Tx,
-  command: DeviceMailBindCommand,
-): Promise<DeviceMailBindOutcome> {
+  command: Omit<DeviceMailBindCommand, 'messageId'>,
+): Promise<void> {
   const value = normalizeIdentityValue(command.value);
   if (value === '') throw new Error('привязка: пустое значение ключа');
 
@@ -405,11 +413,9 @@ export async function bindDeviceMailIdentityTx(
     .where(and(eq(officeEquipment.id, command.equipmentId), isNull(officeEquipment.deletedAt)));
   if (!equipment) throw new Error('привязка: карточка аппарата не найдена');
 
-  // ── Сама привязка ──
-  //
-  // Уникальный индекс `(key_kind, key_value)` держит обещание «один ключ не может вести к двум
-  // аппаратам». Повтор той же привязки — успех (человек нажал дважды), чужая — отказ словами: без
-  // него ответом была бы ошибка целостности, то есть пятисотка вместо объяснения.
+  // Уникальный индекс `(key_kind, key_value)` среди ЖИВЫХ привязок держит обещание «один ключ не
+  // может вести к двум аппаратам». Повтор той же привязки — успех (человек нажал дважды), чужая —
+  // отказ словами: без него ответом была бы ошибка целостности, то есть пятисотка вместо объяснения.
   const inserted = await tx
     .insert(deviceMailIdentities)
     .values({
@@ -420,11 +426,10 @@ export async function bindDeviceMailIdentityTx(
       note: command.note ?? '',
     })
     // Арбитр — ЧАСТИЧНЫЙ индекс (живые привязки), и условие обязано быть названо здесь дословно:
-    // без `targetWhere` планировщик не выводит индекс вовсе и отвечает «нет ограничения под
-    // ON CONFLICT», то есть пятисоткой на обычном повторном нажатии.
+    // без него планировщик не выводит индекс вовсе и отвечает «нет ограничения под ON CONFLICT»,
+    // то есть пятисоткой на обычном повторном нажатии.
     .onConflictDoNothing({
       target: [deviceMailIdentities.keyKind, deviceMailIdentities.keyValue],
-      // `where` у DO NOTHING — это предикат самого индекса, а не отбор строк.
       where: isNull(deviceMailIdentities.revokedAt),
     })
     .returning({ id: deviceMailIdentities.id });
@@ -445,6 +450,16 @@ export async function bindDeviceMailIdentityTx(
       throw new Error('привязка: этот ключ уже ведёт к другому аппарату');
     }
   }
+}
+
+export async function bindDeviceMailIdentityTx(
+  tx: Tx,
+  command: DeviceMailBindCommand,
+): Promise<DeviceMailBindOutcome> {
+  const value = normalizeIdentityValue(command.value);
+  if (value === '') throw new Error('привязка: пустое значение ключа');
+
+  await insertDeviceMailIdentityTx(tx, command);
 
   // ── Кого применяем ──
   //

@@ -5,6 +5,7 @@ import { wasteDirectories } from './defs/waste';
 import { vehicleDirectories } from './defs/vehicles';
 import { fuelNormDirectories } from './defs/fuel-norms';
 import { officeDirectories } from './defs/office';
+import { deviceKeyDirectories } from './defs/device-keys';
 import { mechDirectories } from './defs/mech';
 import { staffDirectories } from './defs/staff';
 
@@ -23,6 +24,7 @@ const DEFINITIONS: readonly AnyDirectory[] = [
   ...vehicleDirectories,
   ...fuelNormDirectories,
   ...officeDirectories,
+  ...deviceKeyDirectories,
   ...mechDirectories,
   ...staffDirectories,
 ];

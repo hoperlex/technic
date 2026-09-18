@@ -40,6 +40,9 @@ export const DIRECTORY_KEYS = [
   'office-equipment-models',
   'office-equipment',
   'office-equipment-consumables',
+  // Ключи опознания — после самой оргтехники: строка ключа ссылается на карточку инвентарным
+  // номером, и связанное идёт следом за тем, на что ссылается.
+  'device-mail-keys',
   'mech-models',
   'specializations',
   'credential-types',
@@ -72,6 +75,7 @@ export const directoryTitles: Record<DirectoryKey, string> = {
   'office-equipment-models': 'Модели аппаратов',
   'office-equipment': 'Оргтехника',
   'office-equipment-consumables': 'Картриджи и тонеры',
+  'device-mail-keys': 'Ключи опознания аппаратов',
   'mech-models': 'Модели механизации',
   specializations: 'Специализации',
   'credential-types': 'Виды документов',
