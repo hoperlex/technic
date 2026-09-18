@@ -14,7 +14,7 @@ import path from 'node:path';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { MaintenanceConfig } from '../core/config.ts';
 import type { Reporter } from '../core/contracts.ts';
-import type { PolicySet, ConvergenceBudget } from '../core/types.ts';
+import type { DeepMaintenanceBudget, PolicySet, ConvergenceBudget } from '../core/types.ts';
 import type { TrackedFinding } from '../core/finding.ts';
 import type { WindowState } from '../core/deep-window.ts';
 import {
@@ -30,6 +30,7 @@ import { EMPTY_FIX_REPORT, parseFixReport } from '../core/fix-report.ts';
 import { selectFindings } from '../core/selector.ts';
 import { collectFacts, decisionsFor, saveFacts, widenScope } from '../analyzers/facts.ts';
 import { changedSince, collectGit, fileHotness } from '../analyzers/git.ts';
+import { renderWindowReport } from '../reporters/markdown.ts';
 import { decideStart } from '../core/start-gate.ts';
 import { askChoice } from './ask.ts';
 import { anchorNamed, readReleaseAnchor } from '../project/release-anchor.ts';
@@ -50,6 +51,8 @@ export interface DeepArgs {
   readonly force: boolean;
   readonly allowConcurrent: boolean;
   readonly status: boolean;
+  /** Собрать подробный отчёт окна: что делали партии, что осталось в долге. */
+  readonly report: boolean;
   readonly abort: boolean;
   /** Каким адаптером относить задание: ручным или командным. */
   readonly agent: 'manual' | 'command' | null;
@@ -133,12 +136,17 @@ export async function deep(
   }
 
   let state = readWindow(workspace);
-  if (args.status) {
+  if (args.status || args.report) {
     if (state === null) {
       out.item('окна нет');
       return { ok: true };
     }
     printWindow(out, state);
+    // Цифры отвечают на «где оно сейчас», а подробности — на «куда ушли три часа»; второй вопрос
+    // задают чаще, и ответ на него в цифрах не помещается.
+    if (args.report)
+      out.item(`подробный отчёт: ${await writeWindowReport(config, workspace, state)}`);
+    else out.item('подробнее: pnpm maintain deep --report');
     return { ok: true };
   }
 
@@ -163,6 +171,7 @@ export async function deep(
   if (state.step === 'finished') {
     out.heading('окно закрыто');
     printWindow(out, state);
+    out.item(`отчёт: ${await writeWindowReport(config, workspace, state)}`);
     return { ok: true };
   }
 
@@ -411,6 +420,7 @@ async function takeNextBatch(
     saveState(workspace, advanced, queue);
     out.heading('окно закрыто');
     printWindow(out, advanced);
+    out.item(`отчёт: ${await writeWindowReport(config, workspace, advanced)}`);
     return { ok: true };
   }
 
@@ -595,6 +605,35 @@ function ageFromLedger(
     if (Number.isFinite(seen)) ages.set(entry.fingerprint, (now - seen) / 86_400_000);
   }
   return ages;
+}
+
+/**
+ * Собрать и положить отчёт окна.
+ *
+ * Заголовки находок берутся из журнала: партия помнит только отпечатки, и без журнала отчёт
+ * говорил бы «находка a1b2c3d4» — то есть ничего. Журнала может не быть (первое окно), и тогда
+ * отчёт честно покажет отпечатки, а не промолчит.
+ */
+async function writeWindowReport(
+  config: MaintenanceConfig,
+  workspace: Workspace,
+  state: WindowState,
+): Promise<string> {
+  const store = new JsonFindingStore(path.join(workspace.state, 'ledger.json'));
+  const titles = new Map<string, string>();
+  try {
+    for (const entry of await store.load()) titles.set(entry.fingerprint, entry.title);
+  } catch {
+    /* журнала нет — отчёт покажет отпечатки */
+  }
+  const queue = readQueue(workspace).map((item) => ({
+    title: item.finding.title,
+    score: item.score,
+  }));
+  const text = `${renderWindowReport(state, { titles, queue })}\n`;
+  const file = path.join(workspace.reports, `${state.windowId}.md`);
+  writeFileSync(file, text, 'utf8');
+  return path.relative(config.root, file);
 }
 
 function printWindow(out: Reporter, state: WindowState): void {

@@ -481,3 +481,153 @@ function oneLine(text: string): string {
 function moment(iso: string): string {
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(iso) ? iso.slice(0, 16).replace('T', ' ') : iso;
 }
+
+/** Причины закрытия окна человеческим языком: код причины человеку ничего не говорит. */
+const WINDOW_STOP_TITLE: Record<string, string> = {
+  timeBudgetSpent: 'вышло время зоны, и продолжать не стали',
+  maxBatchesReached: 'сделано столько партий, сколько разрешает политика',
+  queueEmpty: 'очередь долга пуста: разбирать было нечего',
+  zonesDone: 'все зоны пройдены',
+  repeatedRollbacks: 'два отката подряд: окно остановилось само',
+  regressionInStabilization: 'откат в зоне стабилизации — признак, что правки идут во вред',
+  manualDecisionRequired: 'партия требует решения человека',
+};
+
+export interface WindowReportOptions {
+  /** Заголовки находок по отпечаткам: сами находки живут в журнале, партия помнит лишь отпечаток. */
+  readonly titles?: ReadonlyMap<string, string>;
+  /** Что осталось в очереди долга: без этого отчёт не отвечает «а что не разобрано». */
+  readonly queue?: readonly { readonly title: string; readonly score: number }[];
+}
+
+/**
+ * Отчёт тяжёлого окна.
+ *
+ * ПОЧЕМУ ОН ОТДЕЛЬНЫЙ ОТ ОТЧЁТА ПРОГОНА. У окна другая единица работы: не проход по всему дереву, а
+ * зона и малая партия внутри неё. Человек, открывающий этот отчёт, спрашивает не «сошлось ли», а
+ * «куда ушли три часа и что из этого осталось в дереве», — и таблица проходов на такой вопрос не
+ * отвечает.
+ */
+export function renderWindowReport(
+  state: {
+    readonly windowId: string;
+    readonly startedAt: string;
+    readonly deadline: string;
+    readonly zoneIndex: number;
+    readonly step: string;
+    readonly batches: readonly {
+      readonly zone: string;
+      readonly startedAt: string;
+      readonly findings: readonly string[];
+      readonly outcome: Outcome | null;
+      readonly reason: string | null;
+      readonly changedFiles: readonly string[];
+      readonly changedLines: number;
+      readonly finishedAt: string | null;
+    }[];
+    readonly stop: { readonly reason: string; readonly detail: string } | null;
+    readonly totals: {
+      readonly files: number;
+      readonly lines: number;
+      readonly accepted: number;
+      readonly rollbacks: number;
+    };
+  },
+  options: WindowReportOptions = {},
+): string {
+  const lines: string[] = [];
+  const say = (text = '') => lines.push(text);
+
+  say(`# Отчёт тяжёлого окна`);
+  say();
+  say(
+    `Окно \`${state.windowId}\`, начато ${moment(state.startedAt)}. ` +
+      `Зон пройдено: ${state.zoneIndex + 1}. ` +
+      `Партий: ${state.batches.length}, принято ${state.totals.accepted}, откачено ${state.totals.rollbacks}.`,
+  );
+  say();
+  if (state.stop !== null) {
+    say(`**Почему закрылось:** ${WINDOW_STOP_TITLE[state.stop.reason] ?? state.stop.reason}.`);
+    say();
+    say(`> ${state.stop.detail}`);
+    say();
+  }
+
+  say('## Партии');
+  say();
+  if (state.batches.length === 0) {
+    say('Ни одной партии не начато: до правок дело не дошло.');
+  } else {
+    lines.push(
+      ...renderTable(
+        [
+          { title: '№', align: 'right' },
+          { title: 'Зона', align: 'left' },
+          { title: 'Исход', align: 'left' },
+          { title: 'Файлов', align: 'right' },
+          { title: 'Строк', align: 'right' },
+          { title: 'Минут', align: 'right' },
+        ],
+        state.batches.map((batch, index) => [
+          String(index + 1),
+          batch.zone,
+          batch.outcome === null ? 'не закончена' : OUTCOME_TITLE[batch.outcome],
+          String(batch.changedFiles.length),
+          String(batch.changedLines),
+          minutesBetween(batch.startedAt, batch.finishedAt),
+        ]),
+      ),
+    );
+    say();
+
+    for (const [index, batch] of state.batches.entries()) {
+      say(`### Партия ${index + 1}: ${batch.zone}`);
+      say();
+      for (const fingerprint of batch.findings) {
+        const title = options.titles?.get(fingerprint);
+        say(`- ${title ?? `находка \`${fingerprint.slice(0, 8)}\``}`);
+      }
+      if (batch.findings.length === 0) say('- находки не записаны');
+      say();
+      if (batch.reason !== null) {
+        // Исход уже назван в таблице выше, и повторять его словом перед причиной значит писать
+        // «принято — принято: ворота падали и до правки». Здесь нужна причина, а не ярлык.
+        say(`**Почему:** ${batch.reason}`);
+        say();
+      }
+      if (batch.changedFiles.length > 0) {
+        say('Файлы партии:');
+        say();
+        for (const file of batch.changedFiles) say(`- \`${file}\``);
+        say();
+      }
+    }
+  }
+
+  const queue = options.queue ?? [];
+  say('## Что осталось в очереди долга');
+  say();
+  if (queue.length === 0) {
+    say('Очередь пуста.');
+  } else {
+    for (const item of queue.slice(0, 20)) say(`- ${item.title} (вес ${item.score.toFixed(2)})`);
+    if (queue.length > 20) say(`- … и ещё ${queue.length - 20}`);
+  }
+  say();
+
+  say('## Где подробности');
+  say();
+  say('- проверка каждой партии: `.maintenance/reports/<окно>-batch-N.json` — базовая линия,');
+  say('  нарушения замка, вывод упавших шагов;');
+  say('- решения по находкам: `.maintenance/state/ledger.json` и `maintain ledger`;');
+  say('- ход окна поминутно: `.maintenance/logs/maintain.log`.');
+  say();
+  return lines.join('\n');
+}
+
+/** Сколько минут заняла партия. Прочерк — не закончена: ноль здесь читался бы как «мгновенно». */
+function minutesBetween(from: string, to: string | null): string {
+  if (to === null) return '—';
+  const minutes = (Date.parse(to) - Date.parse(from)) / 60000;
+  return Number.isFinite(minutes) ? String(Math.round(minutes)) : '—';
+}

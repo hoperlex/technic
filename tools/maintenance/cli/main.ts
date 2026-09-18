@@ -64,7 +64,9 @@ function help(): void {
     '                          хук коммита: кладёт коммиты в очередь прогона; --auto заводит прогон сам',
   );
   out.line();
-  out.line('  deep [--force] [--status] [--abort] [--agent manual|command] [--allow-concurrent]');
+  out.line(
+    '  deep [--force] [--status] [--report] [--abort] [--agent manual|command] [--allow-concurrent]',
+  );
   out.line(
     '                          тяжёлое окно: зоны, очередь долга, малые партии, бюджет времени',
   );
@@ -191,6 +193,7 @@ async function main(): Promise<number> {
         force: args.includes('--force'),
         allowConcurrent: args.includes('--allow-concurrent'),
         status: args.includes('--status'),
+        report: args.includes('--report'),
         abort: args.includes('--abort'),
         agent: agentArg(args),
       });

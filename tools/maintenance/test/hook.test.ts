@@ -18,6 +18,7 @@ import type { Workspace } from '../state/workspace.ts';
 function sandbox(): { workspace: Workspace; dispose: () => void } {
   const root = mkdtempSync(path.join(tmpdir(), 'hook-'));
   const workspace = {
+    home: root,
     root,
     state: path.join(root, 'state'),
     results: path.join(root, 'results'),
