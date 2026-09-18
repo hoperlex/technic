@@ -25,12 +25,9 @@ import { errorMessage } from '@shared/lib';
 import { factIssue, factRowsFrom, factToPayload, factTotal, type FactRow } from '../model/fact';
 import { CompleteRows } from './CompleteRows';
 import { useAuth } from '../../../auth/AuthContext';
+import { formatMoney } from '../../../utils/format';
 
 const DATE = 'YYYY-MM-DD';
-
-function money(value: number): string {
-  return `${value.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
-}
 
 /**
  * НЕИЗВЕСТНАЯ СУММА — СЛОВАМИ, А НЕ НУЛЁМ (§8 плана
@@ -263,7 +260,7 @@ export function ServiceCompleteModal({
                 title={
                   request.estimatedTotalAmount == null
                     ? `Согласована ревизия ${request.approval?.revision ?? request.estimateRevision}: сумма ${UNKNOWN_AMOUNT}`
-                    : `Согласована ревизия ${request.approval?.revision ?? request.estimateRevision} на ${money(request.estimatedTotalAmount)}`
+                    : `Согласована ревизия ${request.approval?.revision ?? request.estimateRevision} на ${formatMoney(request.estimatedTotalAmount)}`
                 }
                 description={
                   documentEstimate
@@ -359,7 +356,7 @@ export function ServiceCompleteModal({
                 <Space size={8} style={{ justifyContent: 'flex-end', width: '100%' }}>
                   <Typography.Text type="secondary">Итого по акту:</Typography.Text>
                   <Typography.Text strong style={{ fontSize: 16 }}>
-                    {money(total)}
+                    {formatMoney(total)}
                   </Typography.Text>
                 </Space>
               </>

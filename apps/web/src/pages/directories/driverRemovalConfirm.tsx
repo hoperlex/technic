@@ -5,6 +5,7 @@ import {
   type DriverRemovalAckRequiredDetails,
 } from '@technic/contracts';
 import { isApiError } from '@shared/api';
+import { formatDateOnly } from '../../utils/date';
 
 /**
  * Подтверждение удаления карточки водителя (план `machinist-card-removal`, Э3).
@@ -27,12 +28,6 @@ export function driverRemovalDetails(e: unknown): DriverRemovalAckRequiredDetail
     return null;
   }
   return details as DriverRemovalAckRequiredDetails;
-}
-
-/** «2026-09-14» → «14.09.2026»: через `Date` дата поехала бы на день. */
-function dateRu(key: string): string {
-  const [y, m, d] = key.split('-');
-  return y && m && d ? `${d}.${m}.${y}` : key;
 }
 
 function sheetsLabel(n: number): string {
@@ -75,9 +70,9 @@ export function confirmDriverRemoval(
             <li key={order.requestId}>
               <Typography.Text>
                 ТС-{order.num}
-                {order.customer && ` · ${order.customer}`} · до {dateRu(order.dateTo)}
+                {order.customer && ` · ${order.customer}`} · до {formatDateOnly(order.dateTo)}
                 {order.assumedDateTo !== order.dateTo &&
-                  ` (продление до ${dateRu(order.assumedDateTo)}${
+                  ` (продление до ${formatDateOnly(order.assumedDateTo)}${
                     order.pendingWeeklyNum ? ` по НЗ-${order.pendingWeeklyNum}` : ''
                   })`}
                 {order.futureSheets > 0 && ` — выпишется ещё ${sheetsLabel(order.futureSheets)}`}

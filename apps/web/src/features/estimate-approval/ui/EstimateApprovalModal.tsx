@@ -13,13 +13,7 @@ import { officeEquipmentKeys } from '@entities/office-equipment';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 import { FileLinkList } from '../../../components/FileLinks';
-
-/** Итог: сервер зафиксировал его при предъявлении — пересчитывать по строкам нельзя. */
-function totalLabel(request: ServiceRequestDto): string {
-  const total = request.estimatedTotalAmount;
-  if (total == null) return '—';
-  return `${total.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
-}
+import { formatMoney } from '../../../utils/format';
 
 /** Поля отказа. Согласия у окна нет вовсе — у него нет содержания, кроме уже видной суммы. */
 interface Values {
@@ -123,7 +117,9 @@ export function EstimateApprovalModal({
             <Alert
               type="warning"
               showIcon
-              title={`Ревизия ${request.estimateRevision} · ${totalLabel(request)}`}
+              /* Итог берётся у заявки: сервер зафиксировал его при предъявлении — пересчитывать
+                 по строкам нельзя. */
+              title={`Ревизия ${request.estimateRevision} · ${formatMoney(request.estimatedTotalAmount)}`}
               description={
                 <Space orientation="vertical" size={0}>
                   <span>

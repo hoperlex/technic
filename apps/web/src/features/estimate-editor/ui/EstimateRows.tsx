@@ -2,11 +2,7 @@ import { Button, Col, Input, InputNumber, Row, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { serviceItemKindLabels, type ServiceItemKind } from '@technic/contracts';
 import { rowAmount, type EstimateRow } from '../model/rows';
-
-/** Денежная сумма в строке редактора: тот же вид, что в карточке заявки и в окне согласования. */
-function money(value: number): string {
-  return `${value.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
-}
+import { formatMoney } from '../../../utils/format';
 
 /**
  * Группа объёма работ: «Запчасти» или «Услуги» (§9.3). Группы разведены не для красоты — по ним
@@ -111,7 +107,7 @@ export function EstimateRowsGroup({
             />
           </Col>
           <Col xs={16} sm={3} style={{ textAlign: 'right' }}>
-            <Typography.Text>{money(rowAmount(row))}</Typography.Text>
+            <Typography.Text>{formatMoney(rowAmount(row))}</Typography.Text>
           </Col>
           <Col xs={8} sm={1} style={{ textAlign: 'right' }}>
             <Button

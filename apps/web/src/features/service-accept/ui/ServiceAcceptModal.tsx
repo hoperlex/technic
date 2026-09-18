@@ -20,13 +20,9 @@ import { FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 import { filesApi } from '../../../api/resources';
 import { useAuth } from '../../../auth/AuthContext';
+import { formatMoney } from '../../../utils/format';
 
 export type AcceptMode = 'accept' | 'rework';
-
-function money(value: number | null): string {
-  if (value == null) return '—';
-  return `${value.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
-}
 
 /**
  * Приёмка и возврат на доработку (§9.3) — два ответа на один и тот же предъявленный факт, и
@@ -158,7 +154,7 @@ export function ServiceAcceptModal({
             title={
               rework
                 ? 'Факт закрытия будет стёрт'
-                : `Предъявлено ${money(shown.completion?.totalAmount ?? null)}`
+                : `Предъявлено ${formatMoney(shown.completion?.totalAmount ?? null)}`
             }
             description={
               rework
