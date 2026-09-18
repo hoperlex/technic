@@ -121,6 +121,29 @@ const rawSchema = z.object({
   // заявок нет человека, от чьего имени они действуют, поэтому и не JWT.
   INTERNAL_API_TOKEN: z.string().optional(),
 
+  // ── Приём писем от оргтехники (план `docs/office-equipment-mail-telemetry-plan.md`) ──
+  //
+  // Здесь ТОЛЬКО то, что читает сам API. Настройки ящика — адрес, учётные данные, транспорт,
+  // период опроса, размер пачки — живут в воркере и читаются им самим
+  // (`apps/worker/src/device-mail/config.ts`): это он ходит в ящик, а не портал.
+  //
+  // Разделение не вкусовое. Держи `DEVICE_MAIL_IMAP_PASSWORD` здесь — и пароль ящика окажется в
+  // конфигурации процесса, которому он не нужен ни одной строкой; риск 9 формы исполнения говорит
+  // прямо: «пароль читает только worker». Лишняя поверхность у секрета — это и есть дефект, даже
+  // когда утечки ещё нет.
+  //
+  // Рубильника приёма тут тоже нет: он живёт строкой в базе (`device_mail_intake`) и меняется
+  // `UPDATE`, а не перезапуском.
+  DEVICE_MAIL_ACCOUNT: z.string().min(1).default('default'),
+  // Потолок размера письма. Тело маршрута приёма считается от него С ПОПРАВКОЙ НА BASE64 — письмо
+  // в четыре мегабайта даёт около 5,6 МБ тела, и лимит, равный потолку, отвергал бы законную почту
+  // до того, как в базе появится хоть строка.
+  DEVICE_MAIL_MAX_SIZE_BYTES: z.coerce.number().int().positive().default(5_242_880),
+  DEVICE_MAIL_ALLOWED_SENDERS: z.string().default(''),
+  // Срок хранения сырья. Тридцать дней — это ограничение на перечитывание, и оно принято вслух:
+  // правка профиля перечитает только свежие письма.
+  DEVICE_MAIL_RAW_TTL_DAYS: z.coerce.number().int().positive().default(30),
+
   // Автозакрытие заявок оргтехники (план `docs/office-equipment-requests-rework-plan.md`, §7.3,
   // решение Н7): сколько созревших заявок портал закрывает за один прогон.
   //
@@ -603,6 +626,22 @@ function loadConfig() {
       registrationExpiryDays: env.MAIL_REGISTRATION_EXPIRY_DAYS,
       internalToken: env.INTERNAL_API_TOKEN ?? '',
       accounts: mailAccountsFromEnv(),
+    },
+    deviceMail: {
+      /**
+       * Ключ ящика в журнале. `min(1)` в схеме не случаен: у воркера умолчание ставится через
+       * `||`, то есть срабатывает и на ПУСТОЙ строке, а `z.default()` — только на отсутствующей.
+       * Разойдись они, и `DEVICE_MAIL_ACCOUNT=` в `prod.env` дал бы порталу пустой ключ против
+       * `default` у воркера — ручка закрывала бы каждое письмо как «не тот ящик», отвечая воркеру
+       * успехом и двигая курсор. То есть ящик вычерпывался бы в `ignored` молча.
+       */
+      account: env.DEVICE_MAIL_ACCOUNT,
+      maxSizeBytes: env.DEVICE_MAIL_MAX_SIZE_BYTES,
+      /** Пусто — верим всем, кто дописался в технический ящик (так выглядит пилот). */
+      allowedSenders: env.DEVICE_MAIL_ALLOWED_SENDERS.split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+      rawTtlDays: env.DEVICE_MAIL_RAW_TTL_DAYS,
     },
     serviceRequests: {
       /** Размер пачки автозакрытия «Решена» → «Закрыта» за один прогон (Н7). */

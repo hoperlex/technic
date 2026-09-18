@@ -56,6 +56,11 @@ const INTERNAL_ROUTES = new Set([
   '/internal/service-requests/auto-close',
   // Уборка пакетных операций (план массовых действий, §6.3): та же дверь по общему секрету.
   '/internal/service-requests/bulk-sweep',
+  // Приём писем от оргтехники (план `docs/office-equipment-mail-telemetry-plan.md`, §9.1): курсор
+  // ящика, сдача письма и перечитывание — три ручки одного внутреннего контура, прав у них нет.
+  '/internal/device-mail/cursor',
+  '/internal/device-mail/messages',
+  '/internal/device-mail/messages/:id/reparse',
 ]);
 
 /** Маршруты «про себя»: доступны любому вошедшему независимо от роли. */

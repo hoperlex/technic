@@ -170,6 +170,11 @@ describe('карточка единицы', () => {
     mockHttp({
       'GET /office-equipment': () => json(list([equipmentDto()])),
       'GET /office-equipment/:id': () => json(equipmentDto()),
+      // Блок «Показания и события» (план `docs/office-equipment-mail-telemetry-plan.md`, §10)
+      // висит в каждой карточке справочника: пустой ответ здесь означает «аппарат ещё не
+      // присылал писем» — законное состояние, к предмету этого файла отношения не имеющее.
+      'GET /office-equipment/:id/telemetry': () =>
+        json({ metrics: [], events: { items: [], hasMore: false, nextCursor: null } }),
       // Секция «Обслуживание и гарантии» карточки читает теперь блок «Связанные заявки» (план
       // истории тремя блоками, Р7), а не срез `serviceHistory` ответа карточки.
       'GET /office-equipment/:id/requests': () =>

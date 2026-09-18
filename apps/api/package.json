@@ -30,6 +30,8 @@
     "check:captcha": "tsx scripts/check-captcha.ts",
     "esm2:month-split": "tsx --env-file-if-exists=../../.env.dev scripts/esm2-month-split.ts",
     "recompute:ticket-review": "tsx --env-file-if-exists=../../.env.dev scripts/recompute-ticket-review.ts",
+    "anonymize:eml": "tsx scripts/anonymize-eml.ts",
+    "device-mail:reparse": "tsx --env-file-if-exists=../../.env.dev scripts/device-mail-reparse.ts",
     "check:grants-preflight": "tsx src/check-grants-preflight.ts",
     "check:mailing-audience": "tsx src/check-mailing-audience.ts",
     "check:role-migration": "tsx src/check-role-migration.ts",
@@ -55,12 +57,14 @@
     "fastify-type-provider-zod": "7.0.0",
     "fflate": "0.8.3",
     "jose": "6.2.3",
+    "mailparser": "3.9.28",
     "pdf-lib": "1.17.1",
     "pg": "8.22.0",
     "pino": "10.3.1",
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.11.0",
     "drizzle-kit": "0.31.10",

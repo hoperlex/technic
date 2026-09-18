@@ -1,0 +1,24 @@
+X-Fixture-Note: Письмо СИНТЕТИЧЕСКОЕ: сочинено вручную для проверки разборщика MIME.
+X-Fixture-Disclaimer: Доказательством пригодности какой-либо модели МФУ не является: ни один живой аппарат такого письма не присылал.
+From: printer-02@device.example.test
+To: devices@portal.example.test
+Subject: =?utf-8?B?0J7RgtGH0ZHRgiDQviDRgdGH0ZHRgtGH0LjQutCw0YUgU1lOMDAwMkJC?=
+Date: Mon, 14 Sep 2026 06:10:00 +0300
+Message-ID: <synthetic-html-0002@device.example.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<html><body>
+<p>Отчёт о счётчиках</p>
+<table border="1">
+<tr><th>Показатель</th><th>Значение</th></tr>
+<tr><td>Серийный номер</td><td>SYN0002BB</td></tr>
+<tr><td>Имя устройства</td><td>SYN-MFP-02</td></tr>
+<tr><td>Модель</td><td>Synthetic LaserPrint 200</td></tr>
+<tr><td>IP-адрес</td><td>10.20.30.42</td></tr>
+<tr><td>Общий счётчик</td><td>2&nbsp;000&nbsp;100</td></tr>
+<tr><td>Напечатано оттисков</td><td>1&nbsp;750&nbsp;050</td></tr>
+<tr><td>Остаток тонера</td><td>72&nbsp;%</td></tr>
+</table>
+</body></html>

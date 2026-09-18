@@ -1,0 +1,31 @@
+X-Fixture-Note: Письмо СИНТЕТИЧЕСКОЕ: сочинено вручную для проверки разборщика MIME.
+X-Fixture-Disclaimer: Доказательством пригодности какой-либо модели МФУ не является: ни один живой аппарат такого письма не присылал.
+From: printer-05@device.example.test
+To: devices@portal.example.test
+Subject: =?utf-8?B?0KPRgNC+0LLQvdC4INGC0L7QvdC10YDQsCBTWU4wMDA1RUU=?=
+Date: Mon, 14 Sep 2026 06:25:00 +0300
+Message-ID: <synthetic-color-0005@device.example.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<html><body>
+<p>Уровни расходных материалов</p>
+<table>
+<tr><td>Серийный номер</td><td>SYN0005EE</td></tr>
+<tr><td>Имя устройства</td><td>SYN-MFP-05</td></tr>
+<tr><td>Модель</td><td>Synthetic ColorPrint 500</td></tr>
+<tr><td>IP-адрес</td><td>10.20.30.45</td></tr>
+</table>
+<table border="1">
+<tr><th>Расходник</th><th>Остаток, %</th><th>Состояние</th></tr>
+<tr><td>Тонер K</td><td>8&nbsp;%</td><td>Заканчивается тонер</td></tr>
+<tr><td>Тонер C</td><td>62&nbsp;%</td><td>Норма</td></tr>
+<tr><td>Тонер M</td><td>47&nbsp;%</td><td>Норма</td></tr>
+<tr><td>Тонер Y</td><td>5&nbsp;%</td><td>Заканчивается тонер</td></tr>
+</table>
+<table>
+<tr><th>Событие</th><th>Время</th></tr>
+<tr><td>Открыта крышка</td><td>14.09.2026 06:24</td></tr>
+</table>
+</body></html>

@@ -39,6 +39,7 @@ import { OfficeEquipmentServiceHistory } from './OfficeEquipmentServiceHistory';
 import { OfficeEquipmentSupplies } from './OfficeEquipmentSupplies';
 import { EquipmentMoveModal } from '@features/equipment-move';
 import { EquipmentHistoryModal } from '@features/equipment-history';
+import { OfficeEquipmentDeviceBlocks } from './OfficeEquipmentDeviceBlocks';
 
 /**
  * Справочник оргтехники (ADR 0085): что стоит по кабинетам и площадкам, за каким отделом
@@ -385,6 +386,7 @@ export function OfficeEquipmentTab() {
                 ремонтом, и ответ на частый вопрос не должен лежать под редким (Р15). */}
             <OfficeEquipmentSupplies equipmentId={record.id} />
             <OfficeEquipmentServiceHistory equipmentId={record.id} />
+            <OfficeEquipmentDeviceBlocks equipment={record} />
           </>
         )}
       </FormModal>

@@ -77,6 +77,8 @@ export * from './directory-transfer';
 export * from './files';
 export * from './mailings';
 export * from './mail-accounts';
+/* Журнал отправки писем: очередь `mail_messages` глазами администратора (ADR 0199). */
+export * from './mail-log';
 export * from './module-mail';
 export * from './request-history';
 export * from './waste-tariffs';
@@ -140,3 +142,8 @@ export * from './audit';
  * определённое тремя модулями. Общий язык книги и будущего экрана аналитики
  * (план `docs/analytics-summary-export-plan.md`, Р14). */
 export * from './analytics';
+/* Телеметрия оргтехники (`device-telemetry.ts`) — общий язык почтового приёма и будущего
+ * коллектора (план `docs/office-equipment-mail-telemetry-plan.md`, Р4). Ниже аналитики по той же
+ * причине, по какой она сама стоит последней: этот файл ничего не определяет в предметной
+ * области модуля, он описывает поток данных, который в неё входит. */
+export * from './device-telemetry';

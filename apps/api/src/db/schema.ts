@@ -8758,6 +8758,12 @@ export const mailMessages = pgTable(
     runIdx: index('mail_messages_run_idx')
       .on(t.mailingRunId)
       .where(sql`${t.mailingRunId} IS NOT NULL`),
+    /**
+     * Журнал отправки на подвкладке «Аудит» (ADR 0199, миграция 0323): страница читается по каналу
+     * и новыми сверху, и без этого индекса каждый её показ сканировал бы очередь целиком — а она
+     * растёт на сотни строк в день и не чистится.
+     */
+    accountIdx: index('mail_messages_account_idx').on(t.account, sql`${t.createdAt} DESC`),
     // Отправленное письмо обязано знать, когда оно ушло: иначе «отправлено» ничем не подтверждено.
     sentAtCheck: check(
       'mail_messages_sent_at_check',
@@ -11479,6 +11485,417 @@ export const mechEquipmentFuelNorms = pgTable(
     summerCheck: check(
       'mech_equipment_fuel_norms_summer_rate_check',
       sql`${t.summerRate} > 0 AND ${t.summerRate} <= 999`,
+    ),
+  }),
+);
+
+// ── Телеметрия оргтехники (план `docs/office-equipment-mail-telemetry-plan.md`, §9) ──
+//
+// Пять таблиц одного потока: состояние ящика, журнал письма, подтверждённые привязки и две таблицы
+// нормализованных данных. Последние две — ОБЩИЕ с будущим коллектором (Р4): он войдёт тем же
+// нормализатором и тем же ключом `(source, source_ref, …)`, и это единственное обязательство
+// Этапа 1 перед Этапом 2.
+//
+// Почему наблюдения и события разведены (Р6): у наблюдения есть число, единица и накопительная
+// природа, у события — код, важность и факт. Сложенные в одну таблицу, они через полгода начнут
+// делить проверки, которых у половины строк нет.
+
+export const deviceMessageStatusEnum = pgEnum('device_message_status', [
+  'received',
+  'parsed',
+  'unmatched',
+  'ambiguous',
+  'unrecognized',
+  'failed',
+  'ignored',
+]);
+
+/**
+ * Состояние сырья письма (§9.1, п. 3). Заведено потому, что между заведением строки и записью
+ * объекта в хранилище процесс может умереть, и без признака это состояние неотличимо от
+ * нормального: строка есть, объекта нет, повторная сдача не знает, дописывать сырьё или ответить
+ * «принято» и уехать курсором.
+ */
+export const deviceRawStateEnum = pgEnum('device_raw_state', ['absent', 'stored', 'purged']);
+export const deviceTelemetrySourceEnum = pgEnum('device_telemetry_source', [
+  'email',
+  'collector',
+  'manual',
+]);
+export const deviceEventSeverityEnum = pgEnum('device_event_severity', [
+  'info',
+  'warning',
+  'critical',
+]);
+
+/**
+ * Состояние почтового ящика: курсор, граница дочитывания архива и счётчик застревания.
+ *
+ * ПОЧЕМУ КУРСОР ЖИВЁТ ЗДЕСЬ, А НЕ В WORKER (Р23). У worker нет своей строки состояния и нет доступа
+ * к базе портала иначе как через `/internal`, а в памяти процесса курсор не переживает перезапуск.
+ * Поэтому worker спрашивает курсор у API перед заходом и двигает его тем же вызовом, которым сдаёт
+ * письмо, а письмо помечает прочитанным ПОСЛЕ ответа: потерянный ответ иначе терял бы письмо
+ * навсегда.
+ */
+export const deviceMailAccounts = pgTable('device_mail_accounts', {
+  account: text('account').primaryKey(),
+  /** Эпоха ящика. Смена означает «ящик пересоздан» и обнуляет курсор. */
+  uidValidity: bigint('uid_validity', { mode: 'bigint' }).notNull().default(0n),
+  lastUid: bigint('last_uid', { mode: 'bigint' }).notNull().default(0n),
+  /**
+   * Граница дочитывания архива (Р32): эпоха и максимальный UID ящика на момент сброса. Барьер
+   * дедупликации применяется только при совпадении эпохи и только к письмам не выше отметки, и
+   * снимается сам, когда отметка пройдена. Без эпохи отметка чужого ящика либо не сняла бы барьер
+   * никогда, либо сняла бы его на архиве, ради которого он и включается.
+   */
+  resetAt: timestamp('reset_at', { withTimezone: true }),
+  resetUidValidity: bigint('reset_uid_validity', { mode: 'bigint' }),
+  resetMaxUid: bigint('reset_max_uid', { mode: 'bigint' }),
+  /**
+   * Счётчик застревания — парой «эпоха + UID» (§9.1, п. 7). Без пары сохранённый номер после смены
+   * эпохи указывал бы на другое письмо нового ящика, которому «осталась одна попытка».
+   */
+  stuckUidValidity: bigint('stuck_uid_validity', { mode: 'bigint' }),
+  stuckUid: bigint('stuck_uid', { mode: 'bigint' }),
+  stuckAttempts: integer('stuck_attempts').notNull().default(0),
+  lastPollAt: timestamp('last_poll_at', { withTimezone: true }),
+  /** Причина, по которой курсор стоит: у застрявшего письма своей строки может не быть вовсе. */
+  lastError: text('last_error').notNull().default(''),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+/**
+ * Журнал принятого письма. Он же носитель СНИМКА разбора (`parsed_payload`, Р20): наблюдения и
+ * события пишутся только при однозначной привязке, а разбор непривязанного письма лежит здесь и
+ * применяется, когда человек привяжет аппарат. Потому очередь и остаётся рабочей после того, как
+ * сырьё вычищено по сроку хранения.
+ */
+export const deviceMailMessages = pgTable(
+  'device_mail_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    account: text('account')
+      .notNull()
+      .references(() => deviceMailAccounts.account, { onDelete: 'restrict' }),
+    uidValidity: bigint('uid_validity', { mode: 'bigint' }).notNull(),
+    uid: bigint('uid', { mode: 'bigint' }).notNull(),
+    /** Заголовок письма. НЕ ссылка: ссылка на эту строку зовётся `mail_message_id`. */
+    messageIdHeader: text('message_id_header').notNull().default(''),
+    rawSha256: text('raw_sha256').notNull().default(''),
+    /**
+     * Хеш сырья плюс `Date` письма. Индекс по нему ОБЫЧНЫЙ, а не уникальный (Р24): барьер —
+     * явная проверка в ручке и только на дочитывании архива. Уникальный индекс срабатывал бы
+     * всегда, и у аппарата с севшей батарейкой RTC второе замятие роняло бы вставку.
+     */
+    dedupeKey: text('dedupe_key').notNull().default(''),
+    fromAddress: citext('from_address').notNull().default(''),
+    envelopeTo: citext('envelope_to').notNull().default(''),
+    subject: text('subject').notNull().default(''),
+    /** Время, объявленное аппаратом. Справочное: порядок ряда задаёт момент приёма (Р21). */
+    deviceTime: timestamp('device_time', { withTimezone: true }),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    s3ObjectKey: text('s3_object_key'),
+    rawState: deviceRawStateEnum('raw_state').notNull().default('absent'),
+    profileCode: text('profile_code'),
+    parserVersion: integer('parser_version'),
+    status: deviceMessageStatusEnum('status').notNull().default('received'),
+    equipmentId: uuid('equipment_id').references(() => officeEquipment.id, {
+      onDelete: 'set null',
+    }),
+    parsedPayload: jsonb('parsed_payload'),
+    errorCode: text('error_code').notNull().default(''),
+    errorClass: text('error_class').notNull().default(''),
+    errorText: text('error_text').notNull().default(''),
+    observationCount: integer('observation_count').notNull().default(0),
+    eventCount: integer('event_count').notNull().default(0),
+    parsedAt: timestamp('parsed_at', { withTimezone: true }),
+    /**
+     * По какому набору правил разбора письмо прочитано (план
+     * `docs/office-equipment-mail-identity-ui-plan.md`, §5.3): снимок `max(updated_at)` правил на
+     * момент разбора. Отбора на перечитывание по ней нет и в этом этапе не планируется — она
+     * отвечает на вопрос «почему разобралось именно так», а не подбирает работу.
+     */
+    rulesRevision: timestamp('rules_revision', { withTimezone: true }),
+    /** Закрывающий след очереди: `stuck`-строку иначе не убрать из отбора ничем. */
+    reviewedBy: uuid('reviewed_by').references(() => users.id, { onDelete: 'set null' }),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Единственный уникальный ключ приёма. Конфликт по нему — штатный успех ручки, а не ошибка:
+    // приём идемпотентен, и отвечать отказом на собственный повтор значило бы застопорить курсор.
+    uidUnique: uniqueIndex('device_mail_messages_uid_unique').on(t.account, t.uidValidity, t.uid),
+    dedupeIdx: index('device_mail_messages_dedupe_idx').on(t.account, t.dedupeKey),
+    queueIdx: index('device_mail_messages_queue_idx').on(t.status, sql`${t.receivedAt} DESC`),
+    equipmentIdx: index('device_mail_messages_equipment_idx')
+      .on(t.equipmentId, sql`${t.receivedAt} DESC`)
+      .where(sql`${t.equipmentId} IS NOT NULL`),
+    // Сырьё есть — есть и ключ объекта; нет ключа — состояние обязано это признавать.
+    rawShape: check(
+      'device_mail_messages_raw_shape_check',
+      sql`(${t.rawState} = 'stored') = (${t.s3ObjectKey} IS NOT NULL)`,
+    ),
+    // Подпись очереди: «кто» без «когда» следом не является — тот же приём, что у виз и подписей.
+    reviewShape: check(
+      'device_mail_messages_review_shape_check',
+      sql`(${t.reviewedBy} IS NULL) = (${t.reviewedAt} IS NULL)`,
+    ),
+  }),
+);
+
+/**
+ * Подтверждённые человеком привязки «ключ → карточка». Заводятся при разборе очереди, и следующее
+ * письмо того же аппарата матчится уже само (Р9.1).
+ */
+export const deviceMailIdentities = pgTable(
+  'device_mail_identities',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    keyKind: text('key_kind').notNull(),
+    /** Нормализованное значение: та же форма, что у уникальных индексов номеров карточки. */
+    keyValue: text('key_value').notNull(),
+    equipmentId: uuid('equipment_id')
+      .notNull()
+      .references(() => officeEquipment.id, { onDelete: 'cascade' }),
+    confirmedBy: uuid('confirmed_by').references(() => users.id, { onDelete: 'set null' }),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }).notNull().defaultNow(),
+    note: text('note').notNull().default(''),
+    /**
+     * Снятие привязки со следом (план `docs/office-equipment-mail-identity-ui-plan.md`, §5.1).
+     * Строка не удаляется: «почему полгода назад эти письма легли в эту карточку» — вопрос,
+     * который задают именно тогда, когда привязку уже сняли.
+     */
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokedBy: uuid('revoked_by').references(() => users.id, { onDelete: 'set null' }),
+    revokeNote: text('revoke_note').notNull().default(''),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    // Один ЖИВОЙ ключ не может вести к двум аппаратам: иначе резолв «однозначно или никак»
+    // перестаёт быть однозначным ровно в том месте, где цена ошибки — чужая наработка в живой
+    // карточке. Частичный — потому что снятый ключ освобождает значение для новой привязки, как
+    // снятая карточка освобождает свой номер.
+    keyUnique: uniqueIndex('device_mail_identities_key_unique')
+      .on(t.keyKind, t.keyValue)
+      .where(sql`${t.revokedAt} IS NULL`),
+    liveIdx: index('device_mail_identities_live_idx')
+      .on(t.keyKind, t.keyValue)
+      .where(sql`${t.revokedAt} IS NULL`),
+    equipmentIdx: index('device_mail_identities_equipment_idx').on(t.equipmentId),
+    // Снятие заполняет время и причину вместе: снятая привязка без объяснения — то же удаление,
+    // только дороже. Автор снятия при этом может исчезнуть из портала, и его наличия не требуют.
+    revokeShape: check(
+      'device_mail_identities_revoke_shape',
+      sql`(${t.revokedAt} IS NULL) = (btrim(${t.revokeNote}) = '')`,
+    ),
+    revokedByShape: check(
+      'device_mail_identities_revoked_by_shape',
+      sql`${t.revokedAt} IS NOT NULL OR ${t.revokedBy} IS NULL`,
+    ),
+    valueNotBlank: check('device_mail_identities_value_not_blank', sql`btrim(${t.keyValue}) <> ''`),
+    kindCheck: check(
+      'device_mail_identities_kind_check',
+      sql`${t.keyKind} IN ('serial','inventory','deviceName','host','envelopeTo','fromAddress')`,
+    ),
+  }),
+);
+
+/**
+ * Нормализованное числовое наблюдение — общая таблица почты, коллектора и ручного ввода.
+ *
+ * `source_ref` — идентификатор того, что данные принесло: для почты это строка письма, для
+ * коллектора его пачка замеров, для ручного ввода сам ввод. Ключ по письму отвергнут осознанно:
+ * он частичный, у коллектора письма нет по определению, и половина будущих писателей осталась бы
+ * без защиты от повторов — а повтор пачки после таймаута молча удвоил бы месячную дельту.
+ */
+export const deviceObservations = pgTable(
+  'device_observations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    equipmentId: uuid('equipment_id')
+      .notNull()
+      .references(() => officeEquipment.id, { onDelete: 'cascade' }),
+    metricCode: text('metric_code').notNull(),
+    /**
+     * Разрез (Р33). `NOT NULL DEFAULT ''`, и это несущее решение: пилот цветной, письмо об уровнях
+     * несёт четыре тонера одним кодом метрики. `NULL` здесь снял бы уникальный ключ у всей группы
+     * счётчиков разом — `NULL` в PostgreSQL не равен `NULL`.
+     */
+    component: text('component').notNull().default(''),
+    value: numeric('value', { precision: 18, scale: 3 }).notNull(),
+    unit: text('unit').notNull(),
+    /** Момент приёма порталом: часы МФУ без NTP уходят на месяцы, а ряд обязан быть монотонным. */
+    observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+    deviceTime: timestamp('device_time', { withTimezone: true }),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    source: deviceTelemetrySourceEnum('source').notNull(),
+    sourceRef: uuid('source_ref').notNull(),
+    mailMessageId: uuid('mail_message_id').references(() => deviceMailMessages.id, {
+      onDelete: 'set null',
+    }),
+    rawLabel: text('raw_label').notNull().default(''),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    sourceUnique: uniqueIndex('device_observations_source_unique').on(
+      t.source,
+      t.sourceRef,
+      t.metricCode,
+      t.component,
+    ),
+    seriesIdx: index('device_observations_series_idx').on(
+      t.equipmentId,
+      t.metricCode,
+      sql`${t.observedAt} DESC`,
+    ),
+    nonNegative: check('device_observations_value_check', sql`${t.value} >= 0`),
+    // Коды и единица — из словарей контрактов; перечень закрыт на записи, а не на чтении.
+    metricCodeCheck: check(
+      'device_observations_metric_code_check',
+      sql`${t.metricCode} IN ('marker_life_total','printed_impressions_total','printed_sheets_total','printed_mono_total','printed_color_total','supply_level_percent','supply_remaining_pages','supply_replacements_total')`,
+    ),
+    unitCheck: check(
+      'device_observations_unit_check',
+      sql`${t.unit} IN ('impressions','sheets','pages','percent','count')`,
+    ),
+    componentCheck: check(
+      'device_observations_component_check',
+      sql`${t.component} IN ('','black','cyan','magenta','yellow','drum','fuser','waste','tray1','tray2','tray3','bypass')`,
+    ),
+  }),
+);
+
+/**
+ * Событие аппарата. Своя уникальность — с `ordinal`: писателей у событий двое (разбор и применение
+ * снимка), и двойное нажатие «привязать» удвоило бы ленту, оставив счётчики целыми.
+ */
+export const deviceEvents = pgTable(
+  'device_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    equipmentId: uuid('equipment_id')
+      .notNull()
+      .references(() => officeEquipment.id, { onDelete: 'cascade' }),
+    eventCode: text('event_code').notNull(),
+    severity: deviceEventSeverityEnum('severity').notNull(),
+    observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+    deviceTime: timestamp('device_time', { withTimezone: true }),
+    source: deviceTelemetrySourceEnum('source').notNull(),
+    sourceRef: uuid('source_ref').notNull(),
+    /** Порядковый номер вхождения кода внутри одного источника; назначает разбор и кладёт в снимок. */
+    ordinal: integer('ordinal').notNull().default(0),
+    mailMessageId: uuid('mail_message_id').references(() => deviceMailMessages.id, {
+      onDelete: 'set null',
+    }),
+    /** Код вендора как есть: открытая часть словаря, без проверки и без реестра. */
+    vendorCode: text('vendor_code').notNull().default(''),
+    text: text('text').notNull().default(''),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    sourceUnique: uniqueIndex('device_events_source_unique').on(
+      t.source,
+      t.sourceRef,
+      t.eventCode,
+      t.ordinal,
+    ),
+    feedIdx: index('device_events_feed_idx').on(t.equipmentId, sql`${t.observedAt} DESC`),
+    eventCodeCheck: check(
+      'device_events_event_code_check',
+      sql`${t.eventCode} IN ('toner_low','toner_empty','drum_low','waste_full','paper_empty','paper_jam','cover_open','service_call','other')`,
+    ),
+  }),
+);
+
+/**
+ * Правила разбора писем от аппаратов: чем именно вынимать ключ опознания и показание (план
+ * `docs/office-equipment-mail-identity-ui-plan.md`, §5.2).
+ *
+ * ОДНА ТАБЛИЦА НА ОБА РОДА. Условие применимости, способ поиска, порядок и след у правила ключа и
+ * правила показания совпадают дословно; две таблицы разошлись бы на первом же новом условии.
+ *
+ * ЕДИНИЦЫ ИЗМЕРЕНИЯ ЗДЕСЬ НЕТ НИ ОДНОЙ КОЛОНКИ, и это не упущение: единица — свойство метрики и
+ * объявлена в контракте (`metricUnits`). Вторая копия разошлась бы с реестром на первой правке, а
+ * разошедшаяся единица — это молча испорченный ряд наработки.
+ *
+ * ПРАВИЛО ВЫКЛЮЧАЮТ, А НЕ УДАЛЯЮТ (решение заказчика 18.09.2026): по выключенному видно, почему
+ * письма разбирались именно так. Удаление остаётся только для правила, ни разу не применявшегося.
+ */
+export const deviceMailParseRules = pgTable(
+  'device_mail_parse_rules',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Что правило добывает: `identity` — ключ опознания, `metric` — число. */
+    target: text('target').notNull(),
+    keyKind: text('key_kind'),
+    metricCode: text('metric_code'),
+    component: text('component'),
+    valueForm: text('value_form'),
+    matchKind: text('match_kind').notNull(),
+    expression: text('expression').notNull(),
+    scope: text('scope').notNull().default('any'),
+    /** Профиль, для которого правило писано; `NULL` — для любого. */
+    whenProfile: text('when_profile'),
+    whenFrom: text('when_from').notNull().default(''),
+    whenSubject: text('when_subject').notNull().default(''),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isEnabled: boolean('is_enabled').notNull().default(true),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Дубль правила — два ответа на один вопрос. `coalesce` потому, что у половины колонок «пусто»
+    // законно, а NULL в уникальном индексе не сравнивается сам с собой.
+    ruleUnique: uniqueIndex('device_mail_parse_rules_unique').on(
+      t.target,
+      sql`coalesce(${t.keyKind}, '')`,
+      sql`coalesce(${t.metricCode}, '')`,
+      sql`coalesce(${t.component}, '')`,
+      t.expression,
+      sql`coalesce(${t.whenProfile}, '')`,
+      t.whenFrom,
+      t.whenSubject,
+    ),
+    orderIdx: index('device_mail_parse_rules_order_idx')
+      .on(t.target, t.sortOrder, t.id)
+      .where(sql`${t.isEnabled}`),
+    targetCheck: check(
+      'device_mail_parse_rules_target_check',
+      sql`${t.target} IN ('identity','metric')`,
+    ),
+    matchKindCheck: check(
+      'device_mail_parse_rules_match_kind_check',
+      sql`${t.matchKind} IN ('label','regex')`,
+    ),
+    scopeCheck: check(
+      'device_mail_parse_rules_scope_check',
+      sql`${t.scope} IN ('any','subject','text','html','attachment')`,
+    ),
+    expressionCheck: check(
+      'device_mail_parse_rules_expression_check',
+      sql`btrim(${t.expression}) <> '' AND length(${t.expression}) <= 200`,
+    ),
+    profileCheck: check(
+      'device_mail_parse_rules_profile_check',
+      sql`${t.whenProfile} IS NULL OR ${t.whenProfile} IN ('ricoh','kyocera','hp','pantum','unknown')`,
+    ),
+    metricCheck: check(
+      'device_mail_parse_rules_metric_check',
+      sql`${t.metricCode} IS NULL OR ${t.metricCode} IN ('marker_life_total','printed_impressions_total','printed_sheets_total','printed_mono_total','printed_color_total','supply_level_percent','supply_remaining_pages','supply_replacements_total')`,
+    ),
+    componentCheck: check(
+      'device_mail_parse_rules_component_check',
+      sql`${t.component} IS NULL OR ${t.component} IN ('','black','cyan','magenta','yellow','drum','fuser','waste','tray1','tray2','tray3','bypass')`,
+    ),
+    // Форма цели: у правила ключа нет кода метрики, у правила показания нет рода ключа. Проверка
+    // стоит здесь, а не в форме: «заполни нужное» рано или поздно заполняет оба.
+    shapeCheck: check(
+      'device_mail_parse_rules_shape_check',
+      sql`(${t.target} = 'identity' AND ${t.keyKind} IN ('serial','inventory','deviceName','host') AND ${t.metricCode} IS NULL AND ${t.component} IS NULL AND ${t.valueForm} IS NULL) OR (${t.target} = 'metric' AND ${t.keyKind} IS NULL AND ${t.metricCode} IS NOT NULL AND ${t.component} IS NOT NULL AND ${t.valueForm} IN ('number','percent'))`,
     ),
   }),
 );

@@ -9,6 +9,7 @@ import { PermanentMailError } from './mail-transport';
 import { RateLimiter } from './mail-rate';
 import { createMailAccounts } from './mail-accounts';
 import { tickMailings } from './mail-scheduler';
+import { readDeviceMailConfig, startDeviceMailPoller } from './device-mail';
 import {
   createEngineFrom,
   markReviewStale,
@@ -127,6 +128,24 @@ const MAIL_MAX_PER_MINUTE = Number(process.env.MAIL_MAX_PER_MINUTE ?? 60);
 const MAILING_TICK_MS = Number(process.env.MAILING_TICK_INTERVAL_MS ?? 60_000);
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL ?? 'http://technic-api:3000';
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN ?? '';
+/**
+ * Приём писем от оргтехники (план `docs/office-equipment-mail-telemetry-plan.md`, Э2). Настройки
+ * читает сам слой: имена и умолчания обязаны совпасть с `apps/api/src/config.ts` до буквы — ящик
+ * один, а читают его два процесса. `null` означает «контур на этом сервере не настроен», и тогда
+ * worker в ящик не ходит вовсе: это решается один раз на старте, а не в каждом тике.
+ */
+const deviceMailConfig = readDeviceMailConfig(process.env);
+/**
+ * Как часто заходить в ящик. IDLE не используется: живого канала к VPS нет, а пять минут для
+ * недельных отчётов и аварийных писем — избыточная точность, а не грубая.
+ */
+const DEVICE_MAIL_TICK_MS = deviceMailConfig?.pollIntervalMs ?? 300_000;
+/**
+ * Перечитать письмо нынешними правилами разбора (Р26). Нагрузка — `{ messageId }` и ничего больше.
+ * Реестр типов задач продублирован здесь и в `apps/api/src/lib/jobs.ts`: первая копия ставит
+ * задачу, вторая её исполняет.
+ */
+const JOB_REPARSE_DEVICE_MESSAGE = 'reparse_device_message';
 /**
  * Часы автозакрытия заявок оргтехники (план `docs/office-equipment-requests-rework-plan.md`, §7.3,
  * решение Н7): раз в пять минут просим API добрать созревшие заявки «Решена» и закрыть их.
@@ -296,6 +315,30 @@ async function handleJob(job: JobRow): Promise<TicketJobResult> {
       return sendEmail(job);
     case JOB_RECOGNIZE_WASTE_TICKET_FILE:
       return recognizeWasteTicketFile(job);
+    case JOB_REPARSE_DEVICE_MESSAGE: {
+      // Задача НИЧЕГО НЕ РАЗБИРАЕТ САМА: словари, профили и правила опознания живут в API (Р2), а
+      // worker подключён к базе голым `pg`. Она зовёт внутреннюю ручку — и только.
+      const messageId = String(job.payload.messageId ?? '');
+      if (!messageId) return;
+      if (!INTERNAL_API_TOKEN) throw new Error('Перечитывание письма: INTERNAL_API_TOKEN не задан');
+      const res = await fetch(
+        `${INTERNAL_API_URL}/internal/device-mail/messages/${messageId}/reparse`,
+        { method: 'POST', headers: { 'x-internal-token': INTERNAL_API_TOKEN } },
+      );
+      // 422 — «перечитывать нечем»: сырьё вычищено по сроку хранения, и это КОНЕЧНЫЙ ответ, а не
+      // сбой. Задача считается сделанной. Бросай здесь исключение — и каждое такое письмо съедало
+      // бы пять попыток и уходило в `dead`; на архиве пилота это тысячи мёртвых задач, которые
+      // никто не разберёт, потому что разбирать в них нечего.
+      if (res.status === 422) {
+        logger.info({ messageId }, 'Перечитывание письма: сырья уже нет, задача закрыта');
+        return;
+      }
+      // 503 — пауза приёма (хранилище недоступно): письмо дождётся следующей попытки очереди.
+      if (!res.ok) {
+        throw new Error(`API ответил ${res.status} на перечитывание письма ${messageId}`);
+      }
+      return;
+    }
     default:
       throw new Error(`Неизвестный тип задачи: ${job.type}`);
   }
@@ -937,12 +980,49 @@ async function cleanupRejectedRegistrations(): Promise<void> {
 let stopping = false;
 let lastCleanup = 0;
 let lastMailingTick = 0;
+let lastDeviceMailTick = 0;
 let lastServiceAutoCloseTick = 0;
 
 /**
  * Тик планировщика рассылок. Пропускается молча, когда почта выключена или секрет не задан: без
  * него `/internal/mail/*` всё равно откажет, и стучаться туда каждую минуту незачем.
  */
+/**
+ * Приёмник ящика оргтехники. Своего таймера у него нет: время в worker держит один цикл, и второй
+ * источник тиков просыпался бы во время остановки и посреди долгой пачки задач.
+ *
+ * Без внутреннего секрета приёмник не собирается вовсе: `/internal/device-mail/*` без него всё
+ * равно откажет, и стучаться туда каждые пять минут незачем.
+ */
+const deviceMailPoller =
+  deviceMailConfig && INTERNAL_API_TOKEN
+    ? startDeviceMailPoller({
+        config: deviceMailConfig,
+        apiBaseUrl: INTERNAL_API_URL,
+        internalToken: INTERNAL_API_TOKEN,
+        log: (meta, msg) => logger.info(meta, msg),
+        warn: (meta, msg) => logger.warn(meta, msg),
+      })
+    : null;
+
+async function tickDeviceMailSafely(): Promise<void> {
+  if (!deviceMailPoller) return;
+  try {
+    const stats = await deviceMailPoller.tick();
+    // В журнал — только заходы, которые что-то сделали или во что-то упёрлись: пустых здесь
+    // большинство, и они превратили бы его в строку каждые пять минут.
+    // Отказ ящика попадает в сводку наравне с приёмом: причина «портал не смог прочитать ящик»
+    // иначе видна только в строке слоя, а сводка молчала бы ровно в том заходе, где важнее всего.
+    if (stats.accepted > 0 || stats.vanished > 0 || stats.paused || stats.mailboxError) {
+      logger.info(stats, 'Приём писем оргтехники');
+    }
+  } catch (e) {
+    // Курсор спрашивается у API, и при выкате его может не быть. Письмо от этого не теряется: оно
+    // остаётся в ящике непрочитанным, курсор не двигается, следующий заход возьмёт то же.
+    logger.warn({ err: e }, 'Приём писем оргтехники: API не ответил');
+  }
+}
+
 async function tickMailingsSafely(): Promise<void> {
   if (!MAIL_ENABLED || !INTERNAL_API_TOKEN) return;
   try {
@@ -1036,6 +1116,10 @@ async function loop(): Promise<void> {
       if (Date.now() - lastMailingTick > MAILING_TICK_MS) {
         lastMailingTick = Date.now();
         await tickMailingsSafely();
+      }
+      if (Date.now() - lastDeviceMailTick > DEVICE_MAIL_TICK_MS) {
+        lastDeviceMailTick = Date.now();
+        await tickDeviceMailSafely();
       }
       if (Date.now() - lastServiceAutoCloseTick > SERVICE_AUTO_CLOSE_TICK_MS) {
         lastServiceAutoCloseTick = Date.now();

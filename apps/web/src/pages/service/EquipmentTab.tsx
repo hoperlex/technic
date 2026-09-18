@@ -30,6 +30,9 @@ import { officeEquipmentCandidatePendingCountQuery } from '@entities/office-equi
 import { EquipmentMoveModal } from '@features/equipment-move';
 import { EquipmentHistoryModal } from '@features/equipment-history';
 import { CandidatesTab } from './CandidatesTab';
+import { DeviceMailReview } from './DeviceMailReview';
+import { DeviceIdentityRegistry } from '@features/device-mail-identities';
+import { DeviceRulesBoard } from '@features/device-mail-rules';
 import { useAuth } from '../../auth/AuthContext';
 import { useCandidateIntake } from '../../auth/candidateIntake';
 
@@ -101,7 +104,10 @@ export function EquipmentTab() {
    * единственное, чем очередь о себе заявляет тому, кто зашёл смотреть парк.
    */
   const { canReview } = useCandidateIntake();
-  const [view, setView] = useState<'park' | 'review'>('park');
+  // Разбор писем аппаратов — своё право (Р30 плана почтовой телеметрии): у ИТ-службы оно есть, у
+  // тех, кто ведёт парк, — нет, и наоборот. Поэтому третий режим, а не пункт внутри проверки.
+  const canTelemetry = can('officeEquipment.telemetry');
+  const [view, setView] = useState<'park' | 'review' | 'mail' | 'keys' | 'rules'>('park');
   const { data: pendingCount = 0 } = useQuery({
     ...officeEquipmentCandidatePendingCountQuery(),
     enabled: canReview,
@@ -312,18 +318,36 @@ export function EquipmentTab() {
 
   // Переключатель виден только проверяющему и стоит рядом с обеими половинами: из очереди в парк
   // ходят так же часто, как обратно.
-  const toolbar = canReview ? (
-    <Segmented<'park' | 'review'>
-      value={view}
-      options={[
-        { value: 'park', label: 'Парк' },
-        { value: 'review', label: pendingCount ? `На проверке (${pendingCount})` : 'На проверке' },
-      ]}
-      onChange={setView}
-    />
-  ) : undefined;
+  const toolbar =
+    canReview || canTelemetry ? (
+      <Segmented<'park' | 'review' | 'mail' | 'keys' | 'rules'>
+        value={view}
+        options={[
+          { value: 'park', label: 'Парк' },
+          ...(canReview
+            ? [
+                {
+                  value: 'review' as const,
+                  label: pendingCount ? `На проверке (${pendingCount})` : 'На проверке',
+                },
+              ]
+            : []),
+          // Счётчика у писем нет намеренно: очередь листается курсором без общего числа, и отдельная
+          // ручка счёта была бы вторым способом посчитать то же — разошлась бы на первой правке.
+          ...(canTelemetry ? [{ value: 'mail' as const, label: 'Письма устройств' }] : []),
+          // Реестр ключей рядом с очередью: разбирая письмо, человек тут же смотрит, чем этот
+          // аппарат уже опознаётся, — одна работа, разведённая по двум входам стала бы двумя.
+          ...(canTelemetry ? [{ value: 'keys' as const, label: 'Ключи аппаратов' }] : []),
+          ...(canTelemetry ? [{ value: 'rules' as const, label: 'Правила разбора' }] : []),
+        ]}
+        onChange={setView}
+      />
+    ) : undefined;
 
   if (canReview && view === 'review') return <CandidatesTab toolbar={toolbar} />;
+  if (canTelemetry && view === 'mail') return <DeviceMailReview toolbar={toolbar} />;
+  if (canTelemetry && view === 'keys') return <DeviceIdentityRegistry toolbar={toolbar} />;
+  if (canTelemetry && view === 'rules') return <DeviceRulesBoard toolbar={toolbar} />;
 
   return (
     <>

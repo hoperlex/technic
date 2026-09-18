@@ -1,6 +1,6 @@
 import { extname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { config } from '../config';
 import { createS3Client, presignGetUrl, presignPutUrl } from './s3-client';
 
@@ -57,6 +57,32 @@ export async function headObject(
   } catch {
     return null;
   }
+}
+
+/**
+ * Запись объекта ИЗ ПРИЛОЖЕНИЯ (план `docs/office-equipment-mail-telemetry-plan.md`, Р25).
+ *
+ * Весь остальной портал грузит файлы иначе — браузером по подписанной ссылке, — и до сих пор
+ * серверной записи здесь не было вовсе. Письмо аппарата так грузить некому: его приносит worker
+ * телом внутреннего запроса, а worker в хранилище писать не умеет (у него импортированы только
+ * удаление и чтение). Отсюда и эта функция: сырьё кладёт API, в одном месте с подсчётом его хеша.
+ *
+ * Тело принимается буфером, а не потоком: письмо ограничено потолком в несколько мегабайт, и
+ * поток здесь дал бы только возможность записать половину.
+ */
+export async function putObject(
+  objectKey: string,
+  body: Buffer,
+  contentType: string,
+): Promise<void> {
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: config.s3.bucket,
+      Key: objectKey,
+      Body: body,
+      ContentType: contentType,
+    }),
+  );
 }
 
 /** Идемпотентно: удаление отсутствующего объекта считается успехом (§15). */

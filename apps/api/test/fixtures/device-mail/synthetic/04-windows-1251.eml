@@ -1,0 +1,33 @@
+X-Fixture-Note: РџРёСЃСЊРјРѕ РЎРРќРўР•РўРР§Р•РЎРљРћР•: СЃРѕС‡РёРЅРµРЅРѕ РІСЂСѓС‡РЅСѓСЋ РґР»СЏ РїСЂРѕРІРµСЂРєРё СЂР°Р·Р±РѕСЂС‰РёРєР° MIME.
+X-Fixture-Disclaimer: Р”РѕРєР°Р·Р°С‚РµР»СЊСЃС‚РІРѕРј РїСЂРёРіРѕРґРЅРѕСЃС‚Рё РєР°РєРѕР№-Р»РёР±Рѕ РјРѕРґРµР»Рё РњР¤РЈ РЅРµ СЏРІР»СЏРµС‚СЃСЏ: РЅРё РѕРґРёРЅ Р¶РёРІРѕР№ Р°РїРїР°СЂР°С‚ С‚Р°РєРѕРіРѕ РїРёСЃСЊРјР° РЅРµ РїСЂРёСЃС‹Р»Р°Р».
+From: printer-04@device.example.test
+To: devices@portal.example.test
+Subject: =?windows-1251?B?wO/v4PDg8iBTWU4wMDA0REQ6IOfg7P/y6OUg4fPs4OPo?=
+Date: Mon, 14 Sep 2026 06:20:00 +0300
+Message-ID: <synthetic-cp1251-0004@device.example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="synthetic-boundary-04"
+
+--synthetic-boundary-04
+Content-Type: text/plain; charset=windows-1251
+Content-Transfer-Encoding: 8bit
+
+Имя устройства: SYN-MFP-04
+Модель: Synthetic LaserPrint 400
+Серийный номер: SYN0004DD
+Инвентарный номер: ИНВ-100-004
+Сетевое имя: syn-mfp-04.office.example.test
+IP-адрес: 10.20.30.44
+Общий счётчик: 4 004 004
+Состояние: Замятие бумаги
+
+--synthetic-boundary-04
+Content-Type: text/plain; charset=koi8-r; name="journal.txt"
+Content-Disposition: attachment; filename="journal.txt"
+Content-Transfer-Encoding: 8bit
+
+цХТОБМ БРРБТБФБ
+пФЛТЩФБ ЛТЩЫЛБ
+ъБНСФЙЕ ВХНБЗЙ
+
+--synthetic-boundary-04--

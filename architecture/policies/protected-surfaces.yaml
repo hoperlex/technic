@@ -60,6 +60,7 @@ surfaces:
       - apps/api/src/services/*mail*.ts
       - apps/api/src/mail/**
       - apps/worker/src/**
+      - apps/api/src/services/device-mail/**
     why: >
       Письма уходят людям и отменить их нельзя. Ошибка в отборе аудитории не откатывается вместе
       с рабочим деревом.

@@ -29,6 +29,10 @@ import officeEquipmentConsumablesRoutes from './routes/office-equipment-consumab
 import officeEquipmentPurchasesRoutes from './routes/office-equipment-purchases';
 import officeEquipmentCandidatesRoutes from './routes/office-equipment-candidates';
 import officeEquipmentRoutes from './routes/office-equipment';
+import officeEquipmentTelemetryRoutes from './routes/office-equipment-telemetry';
+import deviceMailReviewRoutes from './routes/device-mail-review';
+import deviceMailIdentityRoutes from './routes/device-mail-identities';
+import deviceMailRuleRoutes from './routes/device-mail-rules';
 import serviceRequestsRoutes from './routes/service-requests';
 import containerTypesRoutes from './routes/container-types';
 import vehicleKindsRoutes from './routes/vehicle-kinds';
@@ -68,7 +72,9 @@ import directoryTransferRoutes from './routes/directory-transfer';
 import adminMailRoutes from './routes/admin-mail';
 import adminMailingsRoutes from './routes/admin-mailings';
 import moduleMailRoutes from './routes/module-mail';
+import mailLogRoutes from './routes/mail-log';
 import internalMailRoutes from './routes/internal-mail';
+import internalDeviceMailRoutes from './routes/internal-device-mail';
 import internalServiceRequestRoutes from './routes/internal-service-requests';
 import auditRoutes from './routes/audit';
 import analyticsRoutes from './routes/analytics';
@@ -209,6 +215,18 @@ export async function buildApp(options: BuildAppOptions = {}) {
     prefix: '/api/v1/office-equipment-candidates',
   });
   await app.register(officeEquipmentRoutes, { prefix: '/api/v1/office-equipment' });
+  // Телеметрия аппарата (план `docs/office-equipment-mail-telemetry-plan.md`, §10): блок карточки
+  // живёт по адресу справочника, но своим плагином — пишут его почтовый приём и будущий коллектор,
+  // а не портал, и снимать его предстоит целым модулем.
+  await app.register(officeEquipmentTelemetryRoutes, { prefix: '/api/v1/office-equipment' });
+  // Очередь «Письма устройств» (§10 того же плана) — свой префикс, а не адрес внутри
+  // `/office-equipment/:id/…`: у письма в очереди карточки ещё НЕТ, и адрес, начинающийся с единицы
+  // справочника, обещал бы обратное.
+  await app.register(deviceMailReviewRoutes, { prefix: '/api/v1/device-mail' });
+  // Реестр ключей опознания — тот же префикс и то же право, другой предмет: не письма, а привязки.
+  await app.register(deviceMailIdentityRoutes, { prefix: '/api/v1/device-mail' });
+  // Правила разбора: чем именно вынимать ключ и показание из письма.
+  await app.register(deviceMailRuleRoutes, { prefix: '/api/v1/device-mail' });
   // Заявки на обслуживание оргтехники (ADR 0085) — третий модуль заявок: свой префикс, свои права
   // и свой перечень статусов, а не ветка справочника, из которого приходит только предмет заявки.
   await app.register(serviceRequestsRoutes, { prefix: '/api/v1/service-requests' });
@@ -301,11 +319,19 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // Служебные адресаты писем модулей: тот же раздел администрирования, но настраивают в нём не
   // расписание для учёток, а ящик службы, которая портал не открывает.
   await app.register(moduleMailRoutes, { prefix: '/api/v1/admin/mail' });
+  // Журнал отправки (ADR 0199): тот же раздел, но не настройка, а факт — что портал отправлял и чем
+  // это кончилось. Только чтение: повтор письма модуля делает карточка заявки, а не строка очереди.
+  await app.register(mailLogRoutes, { prefix: '/api/v1/admin/mail' });
   // Наружу не проксируется: этим маршрутом ходит только планировщик из worker (ADR 0075).
   await app.register(internalMailRoutes, { prefix: '/internal/mail' });
   // Тот же внутренний контур и тот же секрет: worker будит автозакрытие заявок оргтехники
   // «Решена» → «Закрыта» (план `docs/office-equipment-requests-rework-plan.md`, решение Н7).
   await app.register(internalServiceRequestRoutes, { prefix: '/internal/service-requests' });
+  // Приём писем от оргтехники (план `docs/office-equipment-mail-telemetry-plan.md`, §9.1): тот же
+  // внутренний контур и тот же секрет. Worker здесь только транспорт — спросить курсор ящика, сдать
+  // письмо целиком и позвать перечитывание; разбор живёт в API (Р2). У маршрута свой `bodyLimit`:
+  // письмо едет телом в base64, и общий мегабайт приложения ему мал.
+  await app.register(internalDeviceMailRoutes, { prefix: '/internal/device-mail' });
   await app.register(auditRoutes, { prefix: '/api/v1/audit' });
   // Сводная аналитика трёх модулей (`docs/analytics-summary-export-plan.md`, Р14): своим
   // префиксом, а не веткой заказа техники, — свод не принадлежит ни одному из сводимых модулей, и

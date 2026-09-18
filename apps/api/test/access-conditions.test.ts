@@ -294,6 +294,20 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
 
   // ── Внутренние ручки планировщика ──
   'POST /internal/mail/runs': { payload: { scheduleId: RECORD_ID, plannedAt: FUTURE_AT } },
+  // Приём письма от аппарата (план `docs/office-equipment-mail-telemetry-plan.md`, §9.1): тело
+  // обязательно схемой, и без него ручка отвечает 400 раньше, чем дойдёт до проверки секрета, —
+  // проверка доступа мерила бы валидацию. Сырьё не нужно: до разбора запрос без секрета не доедет.
+  'POST /internal/device-mail/messages': {
+    payload: { account: 'default', uidValidity: 1, uid: 1, size: 0, skipReason: 'too_large' },
+  },
+  // Очередь «Письма устройств»: у обеих ручек привязки схема стоит до стража, и без ключа со
+  // значением ответом был бы 400 от схемы, а не 403 от права — проверка мерила бы валидацию.
+  'GET /api/v1/device-mail/messages/:id/bind-targets': {
+    query: 'kind=serial&value=W512P900123',
+  },
+  'POST /api/v1/device-mail/messages/:id/bind': {
+    payload: { equipmentId: RECORD_ID, kind: 'serial', value: 'W512P900123' },
+  },
 
   // ── Учётные записи ──
   'POST /api/v1/users': {

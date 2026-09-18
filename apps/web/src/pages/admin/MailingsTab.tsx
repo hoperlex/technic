@@ -3,16 +3,19 @@ import { MailingSchedulesBlock } from './MailingSchedulesBlock';
 import { MailDebugBlock } from './MailDebugBlock';
 import { ServiceMailRecipientsBlock } from './ServiceMailRecipientsBlock';
 import { ServiceMailEventsBlock } from './ServiceMailEventsBlock';
+import { MailLogBlock } from './MailLogBlock';
 
 /**
- * Рассылки — четыре разных вопроса, и поэтому четыре подвкладки, а не один длинный свиток.
+ * Рассылки — пять разных вопросов, и поэтому пять подвкладок, а не один длинный свиток.
  *
  * «Расписания» отвечают, кому из **учётных записей** и когда уходит сводка (ADR 0075, 0093).
  * «Служебные адреса» — на какой ящик уходит письмо по событию модуля: у службы, читающей почту
  * вместо портала, нет ни учётки, ни области видимости, и в расписание она не укладывается (план
  * `docs/office-equipment-mail-and-history-plan.md`, Р64, Р71). «События писем» — рубильники: шлём
  * ли мы письма по событию вообще (план `docs/office-equipment-mail-expansion-plan.md`, §5.1).
- * «Отладка» — про вёрстку и доставку одного письма.
+ * «Отладка» — про вёрстку и доставку одного письма. «Аудит» (ADR 0199) — единственная из пяти, где
+ * ничего не настраивают: остальные отвечают, как должно быть, а он — как оказалось, письмо за
+ * письмом, с исходом доставки и телом.
  *
  * События стоят рядом с адресами, а не внутри них: адрес отвечает, кому уходит копия, рубильник —
  * уходит ли письмо; адресов у события бывает сколько угодно, рубильник у него один.
@@ -36,6 +39,7 @@ export function MailingsTab() {
             children: <ServiceMailRecipientsBlock />,
           },
           { key: 'events', label: 'События писем', children: <ServiceMailEventsBlock /> },
+          { key: 'log', label: 'Аудит', children: <MailLogBlock /> },
           { key: 'debug', label: 'Отладка', children: <MailDebugBlock /> },
         ]}
       />

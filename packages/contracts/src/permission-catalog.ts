@@ -436,6 +436,11 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'manage',
     label: 'Проверяет сообщения об отсутствующей технике',
   },
+  'officeEquipment.telemetry': {
+    module: 'officeEquipment',
+    action: 'manage',
+    label: 'Разбирает письма от аппаратов',
+  },
   'officeEquipmentConsumables.manage': {
     module: 'officeEquipment',
     action: 'manage',

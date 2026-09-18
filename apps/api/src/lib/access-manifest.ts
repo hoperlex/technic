@@ -246,6 +246,20 @@ export const ACCESS_MANIFEST = {
     kind: 'internalToken',
     why: 'worker просит закрыть брошенные пачки и снять завершённые по сроку хранения',
   },
+  // Приём писем от оргтехники (план `docs/office-equipment-mail-telemetry-plan.md`, §9.1, Р2): за
+  // письмом аппарата нет человека, от чьего имени оно действует, — дверь та же, общий секрет.
+  'GET /internal/device-mail/cursor': {
+    kind: 'internalToken',
+    why: 'worker спрашивает курсор ящика перед заходом (Р23)',
+  },
+  'POST /internal/device-mail/messages': {
+    kind: 'internalToken',
+    why: 'worker сдаёт письмо аппарата целиком, разбор и сырьё берёт на себя API (Р2, Р25)',
+  },
+  'POST /internal/device-mail/messages/:id/reparse': {
+    kind: 'internalToken',
+    why: 'задача очереди просит перечитать письмо нынешними правилами разбора (Р26)',
+  },
 
   // ── Вход, письма и self-service ──
   // Публичны те ручки, по которым ходит ещё не вошедший: сам вход, регистрация, ссылки из писем
@@ -364,6 +378,12 @@ export const ACCESS_MANIFEST = {
   // что. Щелчок закрыт правом правки: он меняет доставку наружу, подрядчику.
   'GET /api/v1/admin/mail/events': { kind: 'permissions', allOf: ['mailings.read'] },
   'PATCH /api/v1/admin/mail/events/:event': { kind: 'permissions', allOf: ['mailings.manage'] },
+  // Журнал отправки (ADR 0199): что портал отправлял и чем это кончилось. Право читающее — то же,
+  // что у настроек контура: тело письма содержит рабочие данные заявки, и отдавать его можно тому,
+  // кто и так видит их в портале, а `mailings.read` за пределы администратора не выдаётся. Правящей
+  // ручки у журнала нет вовсе: повтор письма модуля делает карточка заявки, а не строка очереди.
+  'GET /api/v1/admin/mail/log': { kind: 'permissions', allOf: ['mailings.read'] },
+  'GET /api/v1/admin/mail/log/:id': { kind: 'permissions', allOf: ['mailings.read'] },
   // Единственное чтение контура под правом правки: список кандидатов нужен только форме
   // добавления адресата, и в нём ФИО с адресами тех, кого ещё не выбрали.
   'GET /api/v1/admin/mail/recipient-candidates': {
@@ -770,6 +790,88 @@ export const ACCESS_MANIFEST = {
   'GET /api/v1/office-equipment/:id/movements': {
     kind: 'permissions',
     allOf: ['officeEquipment.read'],
+  },
+  // Показания и события (план `docs/office-equipment-mail-telemetry-plan.md`, Р30): ЧТЕНИЕ блока
+  // остаётся по `officeEquipment.read` — новое право `officeEquipment.telemetry` закрывает действия
+  // очереди разбора, а не показания в карточке, открытой тем же читателям.
+  'GET /api/v1/office-equipment/:id/telemetry': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.read'],
+  },
+  // Очередь «Письма устройств» (Р30). Новое право закрывает и ДЕЙСТВИЯ, и само ЧТЕНИЕ: это
+  // служебный экран, а не карточка — строка очереди несёт серийник, сетевое имя и адрес
+  // неопознанного аппарата, то есть срез парка в обход области видимости карточек. Требование
+  // `officeEquipment.read` объявлено в `PERMISSION_REQUIRES` и вторым членом здесь не повторяется.
+  'GET /api/v1/device-mail/queue': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'GET /api/v1/device-mail/messages/:id/bind-targets': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'POST /api/v1/device-mail/messages/:id/bind': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'POST /api/v1/device-mail/messages/:id/reviewed': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'POST /api/v1/device-mail/messages/:id/reparse': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  // «Игнорировать» — выход для письма, которое разбирать не надо (§10). Право то же: отбрасывание
+  // меняет статус, то есть выводит письмо и из очереди, и из отбора пачки, — это решение того же
+  // порядка, что и привязка.
+  'POST /api/v1/device-mail/messages/:id/ignore': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  // Реестр ключей опознания аппарата: тот же служебный экран и то же право, что у очереди писем, —
+  // предмет другой (привязки, а не письма), а срез парка строка несёт тот же.
+  'GET /api/v1/device-mail/identities': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'POST /api/v1/device-mail/identities': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'GET /api/v1/device-mail/identities/targets': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'POST /api/v1/device-mail/identities/:id/revoke': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'POST /api/v1/device-mail/identities/:id/apply': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  // Правила разбора писем: чем вынимать ключ и показание. То же право — правило меняет то, как
+  // портал читает письма всего парка, и это решение того же порядка, что привязка ключа.
+  'GET /api/v1/device-mail/rules': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'POST /api/v1/device-mail/rules': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'PATCH /api/v1/device-mail/rules/:id': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'DELETE /api/v1/device-mail/rules/:id': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
+  'POST /api/v1/device-mail/rules/preview': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
   },
   // Перемещение — своё право (план `docs/office-equipment-move-from-request-plan.md`, Р1), и
   // единственная строка модуля, где ведение справочника ключом не служит: подтверждает переезд

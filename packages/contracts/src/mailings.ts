@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
 import { DEFAULT_MAIL_ACCOUNT, MAIL_ACCOUNTS } from './mail-accounts';
+import { mailKindLabels } from './mail-log';
 import type { Role } from './enums';
 import { type Permission, PERMISSIONS } from './permissions';
 import { TIME_FORMAT_MESSAGE, TIME_PATTERN } from './time';
@@ -79,25 +80,18 @@ export const MAIL_TEST_KINDS = [
 ] as const;
 export type MailTestKind = (typeof MAIL_TEST_KINDS)[number];
 
-export const mailTestKindLabels: Record<MailTestKind, string> = {
-  driver_routes: 'Задание водителю на рейсы',
-  role_digest: 'Сводка по ролям',
-  service_request_waiting_it: 'Оргтехника: заявка ждёт разбора',
-  service_request_cancelled: 'Оргтехника: заявка отменена',
-  service_request_assigned: 'Оргтехника: заявка назначена исполнителю',
-  service_request_status_changed: 'Оргтехника: заявка сменила состояние',
-  service_request_estimate: 'Оргтехника: движение по объёму работ',
-  service_request_document: 'Оргтехника: приложены документы',
-  service_request_comment: 'Оргтехника: реплика в обсуждении',
-  office_equipment_candidate_pending: 'Оргтехника: сообщение о технике ждёт проверки',
-  office_equipment_candidate_decided: 'Оргтехника: решение по сообщению о технике',
-  verify_email: 'Подтверждение адреса при регистрации',
-  password_reset: 'Восстановление пароля',
-  password_changed: 'Уведомление о смене пароля',
-  registration_rejected: 'Отказ по заявке на регистрацию',
-  registration_approved: 'Одобрение заявки на регистрацию',
-  account_created: 'Учётная запись заведена администратором',
-};
+/**
+ * Подписи видов, доступных отладочной отправке, — ВЫВЕДЕНЫ из общего словаря `mailKindLabels`
+ * (ADR 0199), а не записаны вторым списком.
+ *
+ * Пока журнала писем не было, список здесь был единственным, и дублировать его было нечему. Теперь
+ * те же виды подписывает журнал, и два литерала разъехались бы на первой же правке формулировки:
+ * администратор читал бы в отладке «заявка ждёт разбора», а в журнале — что-нибудь другое про то же
+ * письмо. `MAIL_TEST_KINDS` — подмножество `MAIL_KINDS`, поэтому выборка тотальна по построению.
+ */
+export const mailTestKindLabels: Record<MailTestKind, string> = Object.fromEntries(
+  MAIL_TEST_KINDS.map((kind) => [kind, mailKindLabels[kind]]),
+) as Record<MailTestKind, string>;
 
 /**
  * Нужна ли виду письма дата, за которую собирается содержимое. У писем про доступ её нет — они

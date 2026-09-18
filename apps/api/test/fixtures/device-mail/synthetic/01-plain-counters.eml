@@ -1,0 +1,23 @@
+X-Fixture-Note: Письмо СИНТЕТИЧЕСКОЕ: сочинено вручную для проверки разборщика MIME.
+X-Fixture-Disclaimer: Доказательством пригодности какой-либо модели МФУ не является: ни один живой аппарат такого письма не присылал.
+From: printer-01@device.example.test
+To: devices@portal.example.test
+Subject: Counter report SYN0001AA
+Date: Mon, 14 Sep 2026 06:05:00 +0300
+Message-ID: <synthetic-plain-0001@device.example.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Device Name: SYN-MFP-01
+Model: Synthetic LaserPrint 100
+Serial Number: SYN0001AA
+Inventory Number: INV-100-001
+Host Name: syn-mfp-01.office.example.test
+IP Address: 10.20.30.41
+Total Counter: 1 234 567
+Printed Sheets: 987 654
+Mono Prints: 1 100 000
+Color Prints: 134 567
+Toner Black: 45 %
+Status: Ready

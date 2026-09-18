@@ -1,0 +1,32 @@
+X-Fixture-Note: Письмо СИНТЕТИЧЕСКОЕ: сочинено вручную для проверки разборщика MIME.
+X-Fixture-Disclaimer: Доказательством пригодности какой-либо модели МФУ не является: ни один живой аппарат такого письма не присылал.
+From: printer-03@device.example.test
+To: office-devices-group@portal.example.test
+Subject: =?utf-8?B?0JXQttC10L3QtdC00LXQu9GM0L3Ri9C5INC+0YLRh9GR0YIgU1lOMDAwM0ND?=
+Date: Mon, 14 Sep 2026 06:15:00 +0300
+Message-ID: <synthetic-csv-0003@device.example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="synthetic-boundary-03"
+
+--synthetic-boundary-03
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Еженедельный отчёт устройства SYN-MFP-03.
+IP Address: 10.20.30.43
+Показатели во вложении.
+
+--synthetic-boundary-03
+Content-Type: text/csv; charset=utf-8; name="counters.csv"
+Content-Disposition: attachment; filename="counters.csv"
+Content-Transfer-Encoding: 8bit
+
+Показатель;Значение
+Серийный номер;SYN0003CC
+Имя устройства;SYN-MFP-03
+Модель;Synthetic LaserPrint 300
+Общий счётчик;3 141 592
+Напечатано листов;2 718 281
+Остаток тонера;31
+
+--synthetic-boundary-03--
