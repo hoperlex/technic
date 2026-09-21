@@ -55,7 +55,7 @@ export function createImapMailbox(
         await next.logout().catch(() => undefined);
         throw new Error(
           `Папка «${cfg.mailbox}» в ящике не открывается: ${e instanceof Error ? e.message : String(e)}. ` +
-            'Проверьте, что папка создана и названа точно так же (у части служб путь начинается с INBOX/).',
+            'Проверьте, что папка создана и названа ровно так же: точный путь отдаёт сам сервер по LIST, и разделитель у служб разный.',
         );
       }
       client = next;
