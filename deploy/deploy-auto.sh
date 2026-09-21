@@ -336,6 +336,121 @@ maint_dir_bootstrap() {
     || warn "не удалось завести $MAINT_DIR (нужен sudo) — режим технических работ включить будет нечем"
 }
 
+# ---------------------------------------------------------------------------
+# Права боевого prod.env.
+#
+# Канон — root:docker 0640 (docs/runbook.md, «One-time setup»): владелец портала состоит в группе
+# docker и обязан файл ЧИТАТЬ — его читают `env_file` каждого сервиса compose и снимок конфига
+# перед выкатом, — а шире 0640 файл не отдаётся: внутри секреты боевого контура.
+#
+# Права ПРОВЕРЯЮТСЯ И ЧИНЯТСЯ, как каталог объявления выше, а не констатируются отказом. Preflight
+# и без того вставал на нечитаемом файле, но словами о должном режиме, не сказав ни слова о
+# фактическом: «нужен root:docker 0640» печаталось одинаково и когда файл стал root:root 0600, и
+# когда владелец выпал из группы docker, и когда непроходимым стал каталог, — а лечатся эти три
+# случая по-разному и различимы машиной. Сам деплой такого не ломает: prod.env он правит только
+# через `chown/chmod --reference` (см. maint_env_write). Приносит это ручная правка — подготовить
+# файл рядом и `sudo mv новый.env prod.env` кладёт на площадку root:root 0600, после чего
+# следующий выкат встаёт на ровном месте, а портал в эту минуту работает.
+#
+# Почему чинить, а не только рассказывать: читать файл даёт группа docker, а её участник и так
+# монтирует `/` в контейнер — 0640 root:docker не открывает ему ничего нового. Открыло бы
+# обратное: оставить файл 0644 «чтобы читался». Поэтому приводим ровно к канону — и когда прав не
+# хватает, и когда их слишком много.
+# ---------------------------------------------------------------------------
+PROD_ENV_OWNER_CANON="root:docker"
+PROD_ENV_MODE_CANON="640"
+# Файл существует, но нашему процессу не виден (непроходимый каталог): `[ -f ]` в этом случае
+# отвечает «нет файла» — то есть врёт о причине ровно там, где причину и ищут.
+PROD_ENV_EXISTS=0
+# Разобранная причина нечитаемости — её печатают отказы вместо общих слов о каноне.
+PROD_ENV_DIAG=""
+
+prod_env_bootstrap() {
+  local dir owner mode was dir_owner dir_mode
+  dir="$(dirname "$PROD_ENV")"
+
+  # Чтобы снять состояние, stat'у хватает права `x` на каталог, поэтому по нечитаемому файлу он
+  # обычно отвечает и сам; sudo здесь — только на случай непроходимого каталога и только на чтение.
+  owner="$(stat -c '%U:%G' "$PROD_ENV" 2>/dev/null || sudo -n stat -c '%U:%G' "$PROD_ENV" 2>/dev/null || true)"
+  mode="$(stat -c '%a' "$PROD_ENV" 2>/dev/null || sudo -n stat -c '%a' "$PROD_ENV" 2>/dev/null || true)"
+  if [ -n "$owner" ] && [ -n "$mode" ]; then PROD_ENV_EXISTS=1; fi
+
+  if [ "$PROD_ENV_EXISTS" -eq 0 ]; then
+    # «Файла нет» и «состояние не снято» — разные ответы, и второй нельзя выдавать за первый:
+    # пропажа prod.env значит одно, а отказ sudo — совсем другое.
+    if ! stat -c '%a' "$dir" >/dev/null 2>&1 && ! sudo -n stat -c '%a' "$dir" >/dev/null 2>&1; then
+      PROD_ENV_DIAG="состояние снять не удалось: каталог $dir не читается даже через sudo -n, и есть ли там файл — неизвестно."
+    fi
+    return 0
+  fi
+
+  if [ "$owner" = "$PROD_ENV_OWNER_CANON" ] && [ "$mode" = "$PROD_ENV_MODE_CANON" ] && [ -r "$PROD_ENV" ]; then
+    return 0
+  fi
+
+  was="$owner $mode"
+  if [ "$owner" != "$PROD_ENV_OWNER_CANON" ] || [ "$mode" != "$PROD_ENV_MODE_CANON" ]; then
+    warn "$PROD_ENV имеет $owner $mode, а нужен $PROD_ENV_OWNER_CANON 0$PROD_ENV_MODE_CANON —
+  владелец портала ($DEPLOY_USER) читает файл через группу docker. Исправляю."
+    if ! getent group docker >/dev/null 2>&1; then
+      # Без группы канон недостижим, и молча «чинить» во что-то другое нельзя: любой иной владелец
+      # файла с секретами — это решение площадки, а не деплоя.
+      PROD_ENV_DIAG="на площадке нет группы docker, и канон root:docker 0640 на ней недостижим: заведите группу и включите в неё $DEPLOY_USER."
+      warn "$PROD_ENV_DIAG"
+      return 0
+    fi
+    if [ "$(id -u)" -eq 0 ]; then
+      { chown "$PROD_ENV_OWNER_CANON" "$PROD_ENV" && chmod "0$PROD_ENV_MODE_CANON" "$PROD_ENV"; } \
+        || warn "не удалось исправить права $PROD_ENV"
+    else
+      sudo -n sh -c 'chown "$2" "$1" && chmod "$3" "$1"' \
+        _ "$PROD_ENV" "$PROD_ENV_OWNER_CANON" "0$PROD_ENV_MODE_CANON" 2>/dev/null \
+        || warn "не удалось исправить права $PROD_ENV (нужен sudo -n)"
+    fi
+    # Состояние переснимается: починка могла и не пройти, а дальше о правах говорят отказы. Верить
+    # намерению вместо факта здесь нельзя — так и родился отказ, называвший должное вместо сущего.
+    owner="$(stat -c '%U:%G' "$PROD_ENV" 2>/dev/null || sudo -n stat -c '%U:%G' "$PROD_ENV" 2>/dev/null || true)"
+    mode="$(stat -c '%a' "$PROD_ENV" 2>/dev/null || sudo -n stat -c '%a' "$PROD_ENV" 2>/dev/null || true)"
+  fi
+
+  if [ -r "$PROD_ENV" ]; then
+    # Говорим вслух и об исходе: правка прав боевого файла с секретами не должна проходить тихо,
+    # даже когда она возвращает его к записанному канону.
+    warn "права $PROD_ENV приведены к $owner $mode (было $was)"
+    return 0
+  fi
+
+  # Файл всё ещё не читается: причина не в его битах. Называем её словами — иначе оператор пойдёт
+  # искать её на площадке сам, а здесь она уже снята.
+  dir_owner="$(stat -c '%U:%G' "$dir" 2>/dev/null || sudo -n stat -c '%U:%G' "$dir" 2>/dev/null || true)"
+  dir_mode="$(stat -c '%a' "$dir" 2>/dev/null || sudo -n stat -c '%a' "$dir" 2>/dev/null || true)"
+  if [ ! -x "$dir" ]; then
+    PROD_ENV_DIAG="каталог $dir (${dir_owner:-?} ${dir_mode:-?}) непроходим для $DEPLOY_USER — до файла не добраться, какими бы ни были его собственные права. Права каталога с секретами деплой вслепую не меняет: выправьте их руками (обычно root:root 0755) и повторите."
+  elif [ "$owner" != "$PROD_ENV_OWNER_CANON" ] || [ "$mode" != "$PROD_ENV_MODE_CANON" ]; then
+    # Починка не прошла — обычно нет беспарольного sudo. Тогда команда и есть ответ: она короткая,
+    # выполняется на месте, и повтор деплоя после неё уже пройдёт.
+    PROD_ENV_DIAG="права остались ${owner:-?} ${mode:-?} — привести их к канону деплой не смог (нет беспарольного sudo?). Выполните: sudo chown $PROD_ENV_OWNER_CANON $PROD_ENV && sudo chmod 0$PROD_ENV_MODE_CANON $PROD_ENV"
+  elif id -nG "$DEPLOY_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+    # Классика: группу выдали, а сеанс остался прежним. Биты при этом каноничны, и человек,
+    # глядя на `ls -l`, причины не увидит вовсе.
+    PROD_ENV_DIAG="права каноничны ($owner $mode), но группа docker не действует в этом сеансе — её выдали $DEPLOY_USER после входа. Выйдите и войдите заново (id -nG должен показать docker) и повторите."
+  else
+    PROD_ENV_DIAG="$DEPLOY_USER не состоит в группе docker, и root:docker 0640 ему не читается: sudo usermod -aG docker $DEPLOY_USER, затем новый вход."
+  fi
+  warn "$PROD_ENV_DIAG"
+}
+
+# Причина отказа по prod.env: разобранная, если bootstrap её назвал, и общая — если состояние снять
+# не удалось вовсе. Ею говорят все проверки читаемости, чтобы отказ в любом режиме был одинаково
+# подробен.
+prod_env_fail_reason() {
+  if [ -n "$PROD_ENV_DIAG" ]; then
+    printf '%s нечитаем владельцем (%s): %s' "$PROD_ENV" "$DEPLOY_USER" "$PROD_ENV_DIAG"
+  else
+    printf '%s нечитаем владельцем (%s) — нужен режим root:docker 0640' "$PROD_ENV" "$DEPLOY_USER"
+  fi
+}
+
 if [ "$(id -u)" -eq 0 ]; then
   install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 755 "$(dirname "$STATE_DIR")"
   install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 750 "$STATE_DIR" "$REPORT_DIR"
@@ -361,6 +476,9 @@ fi
 install -d -m 750 "$REPORT_DIR"
 install -d -m 700 "$BACKUP_DIR" "$CONFIG_DIR"
 maint_dir_bootstrap
+# Здесь, а не в preflight: prod.env нужен КАЖДОМУ режиму — деплою, откату, полу клиента, окну
+# техработ, — и чинить его права в одной ветке значило бы оставить остальные падать по-старому.
+prod_env_bootstrap
 
 # Интерполяция compose для db-tools: UID/GID владельца (файлы дампов — не root-owned)
 # и путь к каталогу бэкапов. Экспорт ДО первого вызова compose.
@@ -801,7 +919,14 @@ if [ "$DO_CLIENT_FLOOR" -eq 1 ]; then
     # Чтение. Печатаем обе стороны и прямо говорим, что можно сделать, — иначе человек пойдёт
     # смотреть prod.env и исходник бандла руками, а это ровно те два места, где легко ошибиться.
     echo "prod.env : $PROD_ENV"
-    echo "пол      : ${FLOOR_NOW:-<не задан> (сервер берёт умолчание 1)}"
+    # Нечитаемый файл и отсутствующая строка — разные ответы. Пустой FLOOR_NOW означает и то и
+    # другое, и печатать его как «<не задан>» значило бы уверенно сообщить умолчание 1 там, где
+    # пол не прочитан вовсе: человек увидел бы «пол низкий» на площадке с поднятым полом.
+    if [ -r "$PROD_ENV" ]; then
+      echo "пол      : ${FLOOR_NOW:-<не задан> (сервер берёт умолчание 1)}"
+    else
+      echo "пол      : НЕ ПРОЧИТАН — $(prod_env_fail_reason)"
+    fi
     if [ -n "$SERVED" ]; then
       echo "сборка   : контракт $SERVED (ревизия ${CURRENT_BEFORE:-<нет>})"
     elif client_contract_module_exists; then
@@ -836,7 +961,10 @@ if [ "$DO_CLIENT_FLOOR" -eq 1 ]; then
   Так портал закрывается ДЛЯ ВСЕХ: 426 получит и только что открытая вкладка.
   Сначала выкатите сборку с нужным контрактом, потом поднимайте пол."
   fi
-  [ -f "$PROD_ENV" ] || fail "нет $PROD_ENV"
+  [ -f "$PROD_ENV" ] || [ "$PROD_ENV_EXISTS" -eq 1 ] || fail "нет $PROD_ENV"
+  # Пол правится через sudo и записался бы даже в нечитаемый файл — но тогда ни текущий пол, ни
+  # предупреждение о его ПОНИЖЕНИИ показать нечем, а операция как раз из тех, где молчание дорого.
+  [ -r "$PROD_ENV" ] || fail "$(prod_env_fail_reason)"
 
   if [ -n "$FLOOR_NOW" ] && [ "$CLIENT_FLOOR_ARG" -lt "$FLOOR_NOW" ]; then
     warn "пол ОПУСКАЕТСЯ с $FLOOR_NOW до $CLIENT_FLOOR_ARG — старые вкладки снова получат доступ."
@@ -1498,8 +1626,8 @@ if [ "$DO_MAINTENANCE" -eq 1 ]; then
   # запись о выкате, которого не было.
   trap - EXIT
 
-  [ -f "$PROD_ENV" ] || fail "нет $PROD_ENV"
-  [ -r "$PROD_ENV" ] || fail "$PROD_ENV нечитаем владельцем ($DEPLOY_USER) — нужен режим root:docker 0640"
+  [ -f "$PROD_ENV" ] || [ "$PROD_ENV_EXISTS" -eq 1 ] || fail "нет $PROD_ENV"
+  [ -r "$PROD_ENV" ] || fail "$(prod_env_fail_reason)"
 
   if [ -z "$MAINTENANCE_ARG" ]; then
     maint_print_state
@@ -2503,8 +2631,10 @@ fi
 # Обычный деплой.
 # ===========================================================================
 log "preflight ($PORTAL_DIR)"
-[ -f "$PROD_ENV" ]      || { REASON="нет $PROD_ENV"; fail "$REASON"; }
-[ -r "$PROD_ENV" ]      || { REASON="$PROD_ENV нечитаем владельцем ($DEPLOY_USER) — нужен режим root:docker 0640"; fail "$REASON"; }
+# `-f` пропускается, когда файл ЕСТЬ, но не виден процессу: иначе непроходимый каталог объявлялся
+# бы пропажей конфигурации, и оператор искал бы файл вместо прав.
+[ -f "$PROD_ENV" ] || [ "$PROD_ENV_EXISTS" -eq 1 ] || { REASON="нет $PROD_ENV"; fail "$REASON"; }
+[ -r "$PROD_ENV" ]      || { REASON="$(prod_env_fail_reason)"; fail "$REASON"; }
 [ -f "$CA_FILE" ]       || { REASON="нет $CA_FILE"; fail "$REASON"; }
 [ -f "$COMPOSE_FILE" ]  || { REASON="нет $COMPOSE_FILE"; fail "$REASON"; }
 docker info >/dev/null 2>&1 || { REASON="docker недоступен"; fail "$REASON"; }

@@ -161,6 +161,73 @@ describe('deploy-auto: ранний режим пола клиента', () => {
   });
 });
 
+describe('deploy-auto: права prod.env', () => {
+  /**
+   * Проверки читаемости `prod.env`, которые ОТКАЗЫВАЮТ, — с номерами строк для сообщения.
+   * Проверки внутри самого bootstrap и тихие `|| return 1` в читателях сюда не входят: первые
+   * составляют починку, вторые ничего человеку не говорят.
+   */
+  function refusingChecks(script: string): { line: number; text: string }[] {
+    return script
+      .split('\n')
+      .map((text, index) => ({ line: index + 1, text }))
+      .filter(({ text }) => /\[ -r "\$PROD_ENV" \]/.test(text) && text.includes('fail'));
+  }
+
+  it('bootstrap прав объявлен и вызван до всякого отказа по читаемости', () => {
+    // Порядок здесь и есть поведение: bash исполняет файл сверху вниз, и вызов, уехавший ниже
+    // preflight (или в одну ветку из четырёх), вернул бы прежний отказ — «нужен root:docker 0640»
+    // на работающем портале, с починкой, до которой дело не дошло.
+    const script = readRepoFile(DEPLOY_AUTO);
+    const definition = script.indexOf('\nprod_env_bootstrap() {');
+    const call = script.indexOf('\nprod_env_bootstrap\n');
+    expect(definition, `${DEPLOY_AUTO}: определение prod_env_bootstrap потеряно`).toBeGreaterThan(0);
+    expect(call, `${DEPLOY_AUTO}: вызов prod_env_bootstrap потерян`).toBeGreaterThan(0);
+    expect(
+      definition,
+      `${DEPLOY_AUTO}: prod_env_bootstrap вызывается раньше своего определения`,
+    ).toBeLessThan(call);
+
+    const checks = refusingChecks(script);
+    expect(checks.length, `${DEPLOY_AUTO}: отказы по читаемости prod.env потеряны`).toBeGreaterThan(
+      0,
+    );
+    const callLine = script.slice(0, call).split('\n').length;
+    for (const check of checks) {
+      expect(
+        check.line,
+        `${DEPLOY_AUTO}:${check.line} — отказ по prod.env стоит до prod_env_bootstrap: починка не успевает`,
+      ).toBeGreaterThan(callLine);
+    }
+  });
+
+  it('отказы по читаемости говорят разобранной причиной, а не общими словами', () => {
+    // Старый отказ называл ДОЛЖНЫЙ режим, ничего не говоря о фактическом, и одинаково печатался
+    // на трёх разных причинах (биты файла, группа docker, непроходимый каталог). Разбор делает
+    // prod_env_fail_reason — мимо него отказ снова стал бы одинаковым для всех трёх.
+    const script = readRepoFile(DEPLOY_AUTO);
+    for (const check of refusingChecks(script)) {
+      expect(
+        check.text,
+        `${DEPLOY_AUTO}:${check.line} — отказ по prod.env не берёт причину из prod_env_fail_reason`,
+      ).toContain('prod_env_fail_reason');
+    }
+  });
+
+  it('канон прав — ровно root:docker 0640, и шире файл не открывается', () => {
+    // Починка приводит файл к канону в обе стороны, и «расширить, чтобы читалось» — ровно та
+    // ошибка, ради которой канон записан числом: 0644 сделал бы секреты боевого контура доступными
+    // всякому на площадке.
+    const script = readRepoFile(DEPLOY_AUTO);
+    expect(script).toContain('PROD_ENV_OWNER_CANON="root:docker"');
+    expect(script).toContain('PROD_ENV_MODE_CANON="640"');
+    const widening = script
+      .split('\n')
+      .filter((line) => /chmod\s+[0-7]+\s+"?\$PROD_ENV/.test(line));
+    expect(widening, `${DEPLOY_AUTO}: права prod.env выставляются числом мимо канона`).toEqual([]);
+  });
+});
+
 /** Строки без комментариев: закомментированная директива не должна сходить за действующую. */
 function nginxLines(conf: string): string[] {
   return conf.split('\n').map((line) => line.replace(/#.*$/, ''));
