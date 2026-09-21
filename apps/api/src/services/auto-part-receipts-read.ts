@@ -294,6 +294,7 @@ async function loadLines(
       receiptId: autoPartReceiptLines.receiptId,
       seq: autoPartReceiptLines.seq,
       vehicleId: autoPartReceiptLines.vehicleId,
+      article: autoPartReceiptLines.article,
       name: autoPartReceiptLines.name,
       quantity: autoPartReceiptLines.quantity,
       unit: autoPartReceiptLines.unit,
@@ -318,6 +319,7 @@ async function loadLines(
       // Пустая строка, а не `null`: подпись портал ПОКАЗЫВАЕТ, а решает по `vehicleId`, и второе
       // поле, по которому можно решать, разъехалось бы с первым (§6).
       vehicleLabel: row.vehicleId === null ? '' : (briefs.get(row.vehicleId)?.label ?? ''),
+      article: row.article,
       name: row.name,
       quantity: row.quantity,
       unit: row.unit,
@@ -411,16 +413,26 @@ function hasLineWith(condition: SQL): SQL {
 }
 
 /**
- * Поиск — три места, где ищут одну и ту же покупку (§6): продавец, номер чека и наименование
- * строки. Наименование обязательно в этом наборе: чек ищут по тому, что купили, чаще, чем по
- * магазину, — а «фильтр масляный» живёт только в строках.
+ * Поиск — четыре места, где ищут одну и ту же покупку (§6): продавец, номер чека, наименование
+ * строки и её артикул. Наименование обязательно в этом наборе: чек ищут по тому, что купили, чаще,
+ * чем по магазину, — а «фильтр масляный» живёт только в строках.
+ *
+ * Артикул добавлен вместе с самим полем (план `docs/auto-part-receipt-ocr-plan.md`, Р2а) и не для
+ * полноты: написание наименования у двух продавцов не совпадёт («Шланг d=18x27мм маслобензостойкий»
+ * и «Шланг 18х27 МБС»), а артикул совпадёт — и «когда мы последний раз брали ШМБС-18х27» отвечается
+ * только им. Без этой строки поле было бы видно и бесполезно.
  */
 function searchWhere(term: string): SQL | undefined {
   const like = `%${term}%`;
+  // Оба поля строки проверяются ОДНИМ подзапросом: два `EXISTS` рядом спрашивали бы таблицу строк
+  // дважды об одном и том же чеке. `or` объявлен возвращающим `SQL | undefined` (пустой список
+  // аргументов), и здесь он непуст — но проверка стоит, чтобы это утверждал компилятор, а не
+  // комментарий.
+  const inLine = or(ilike(filterLines.name, like), ilike(filterLines.article, like));
   return or(
     ilike(autoPartReceipts.sellerName, like),
     ilike(autoPartReceipts.documentNumber, like),
-    hasLineWith(ilike(filterLines.name, like)),
+    inLine ? hasLineWith(inLine) : undefined,
   );
 }
 
@@ -689,6 +701,7 @@ export async function loadVehiclePartsSpend(
       createdAt: autoPartReceipts.createdAt,
       lineId: autoPartReceiptLines.id,
       seq: autoPartReceiptLines.seq,
+      article: autoPartReceiptLines.article,
       name: autoPartReceiptLines.name,
       quantity: autoPartReceiptLines.quantity,
       unit: autoPartReceiptLines.unit,
@@ -712,6 +725,7 @@ export async function loadVehiclePartsSpend(
     sellerName: row.sellerName,
     documentNumber: row.documentNumber,
     lineId: row.lineId,
+    article: row.article,
     name: row.name,
     quantity: row.quantity,
     unit: row.unit,

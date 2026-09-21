@@ -17,7 +17,7 @@ import type {
   RecognitionEngine,
   RecognitionFailure,
   RecognitionOutcome,
-} from '../src/ticket-ocr/engine/types';
+} from '../src/ocr-engine';
 
 /**
  * Задача распознавания — на живой схеме, и главный её случай это ГОНКА.

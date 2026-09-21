@@ -11189,6 +11189,15 @@ export const autoPartReceiptLines = pgTable(
      * неё не убирают выводом из парка.
      */
     vehicleId: uuid('vehicle_id').references(() => vehicles.id, { onDelete: 'restrict' }),
+    /**
+     * Артикул или код позиции из своей графы счёта, как напечатан (план
+     * `docs/auto-part-receipt-ocr-plan.md`, Р2а). Пустая строка — графы не было; `null` здесь
+     * означал бы второе представление того же, и отличать их пришлось бы в каждом чтении.
+     *
+     * Ни `CHECK` на непустоту, ни своего индекса: пусто законно у большинства строк, а ищется
+     * артикул тем же `ilike '%…%'`, что наименование, — на btree такой поиск всё равно не ложится.
+     */
+    article: text('article').notNull().default(''),
     /** Наименование дословно с бумаги (Р7). */
     name: text('name').notNull(),
     /**
@@ -11261,6 +11270,210 @@ export const autoPartReceiptFiles = pgTable(
 export type AutoPartReceiptRow = typeof autoPartReceipts.$inferSelect;
 export type AutoPartReceiptLineRow = typeof autoPartReceiptLines.$inferSelect;
 export type AutoPartReceiptFileRow = typeof autoPartReceiptFiles.$inferSelect;
+
+/*
+ * ── Распознавание чека (план `docs/auto-part-receipt-ocr-plan.md`) ─────────────────────────────
+ *
+ * Три таблицы и ни одной ссылки на сам чек — это главное, что стоит знать про их устройство.
+ *
+ * СКАН ЧИТАЕТСЯ РАНЬШЕ, ЧЕМ ПОЯВЛЯЕТСЯ ЧЕК (Р4). В окне «Принять чек» файл грузят первым, а
+ * документа ещё нет и может не быть вовсе — человек вправе закрыть окно. Поэтому работа висит на
+ * `file_id`, а не на владельце: черновик чека ради этого промежутка завёл бы документ-призрак с
+ * датой, номером и строками, который надо показывать или прятать в ленте, убирать по сроку и
+ * отличать в правах.
+ *
+ * ФАЙЛ ОТВЕЧАЕТ ЗА ОБРАБОТКУ, СТРАНИЦА — ЗА ЧТЕНИЕ. У файла свой статус: отвергнутый по типу
+ * («не изображение и не PDF») страниц не порождает вовсе, и пометить его больше негде. У страницы
+ * свой `page_sha256` — хэш РАСТРА, не файла: тот же лист, вложенный в другой PDF, хэшем файла не
+ * узнать, а именно так выглядит повторная съёмка одной бумаги.
+ *
+ * ПОПЫТКА НЕ ССЫЛАЕТСЯ НИ НА СТРАНИЦУ, НИ НА ФАЙЛ, и это не экономия на внешнем ключе. Она
+ * принадлежит СОДЕРЖИМОМУ и служит кэшем: непривязанный файл сносит и сама форма крестиком, и
+ * уборка сирот воркера, — а с `ON DELETE CASCADE` круг «загрузил → передумал → загрузил снова»
+ * уносил бы кэш, и повторное чтение того же листа снова стоило бы денег. У талонов ссылки нет по
+ * той же причине (там её уносит откат заявки).
+ */
+
+/**
+ * Скан чека как единица обработки: что стало с файлом и сколько в нём страниц.
+ *
+ * Строка заводится в момент постановки задачи и живёт ровно столько же, сколько файл: подшитый к
+ * чеку скан сохраняет её (по ней окно правки показывает «распознано»), снятый — уносит каскадом.
+ */
+export const autoPartReceiptScans = pgTable(
+  'auto_part_receipt_scans',
+  {
+    fileId: uuid('file_id')
+      .primaryKey()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    /**
+     * `pending` — задача поставлена; `done` — файл разобран (страницы завелись); `failed` —
+     * обработка не удалась и повтор возможен; `unsupported` — это не изображение и не PDF, повтора
+     * не будет. Четыре состояния, а не флаг «готово»: окно обязано различать «ещё читается» и
+     * «прочитать не вышло», иначе молчание неотличимо от пустого результата.
+     */
+    status: text('status')
+      .notNull()
+      .default('pending')
+      .$type<'pending' | 'done' | 'failed' | 'unsupported'>(),
+    /** Страниц в файле и сколько разобрано: «в файле 6 страниц, обработано 5 (лимит)». */
+    totalPages: smallint('total_pages').notNull().default(0),
+    processedPages: smallint('processed_pages').notNull().default(0),
+    /** Обе оси классификации отказа — ими окно решает, обещать ли автоматический повтор. */
+    errorClass: text('error_class').notNull().default('').$type<'' | 'transient' | 'terminal'>(),
+    errorScope: text('error_scope').notNull().default('').$type<'' | 'subsystem' | 'item'>(),
+    error: text('error').notNull().default(''),
+    /**
+     * Кто попросил прочитать. `set null`: строка служебная и переживать увольнение обязана, но
+     * имя в ней ни на что не влияет — в отличие от авторов самого чека, где стоит `restrict`.
+     */
+    requestedBy: uuid('requested_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    statusCheck: check(
+      'auto_part_receipt_scans_status_check',
+      sql`${t.status} IN ('pending', 'done', 'failed', 'unsupported')`,
+    ),
+    errorClassCheck: check(
+      'auto_part_receipt_scans_error_class_check',
+      sql`${t.errorClass} IN ('', 'transient', 'terminal')`,
+    ),
+    errorScopeCheck: check(
+      'auto_part_receipt_scans_error_scope_check',
+      sql`${t.errorScope} IN ('', 'subsystem', 'item')`,
+    ),
+    pagesCheck: check(
+      'auto_part_receipt_scans_pages_check',
+      sql`${t.totalPages} >= 0 AND ${t.processedPages} >= 0 AND ${t.processedPages} <= ${t.totalPages}`,
+    ),
+  }),
+);
+
+/** Страница скана — единица чтения и единица кэша: у каждой свой хэш растра. */
+export const autoPartReceiptScanPages = pgTable(
+  'auto_part_receipt_scan_pages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => autoPartReceiptScans.fileId, { onDelete: 'cascade' }),
+    pageNo: smallint('page_no').notNull(),
+    pageSha256: char('page_sha256', { length: 64 }).notNull(),
+    status: text('status').notNull().default('pending').$type<'pending' | 'done' | 'failed'>(),
+    errorClass: text('error_class').notNull().default('').$type<'' | 'transient' | 'terminal'>(),
+    errorScope: text('error_scope').notNull().default('').$type<'' | 'subsystem' | 'item'>(),
+    error: text('error').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    filePageUnique: unique('auto_part_receipt_scan_pages_file_page_unique').on(t.fileId, t.pageNo),
+    pageNoCheck: check('auto_part_receipt_scan_pages_page_no_check', sql`${t.pageNo} >= 1`),
+    statusCheck: check(
+      'auto_part_receipt_scan_pages_status_check',
+      sql`${t.status} IN ('pending', 'done', 'failed')`,
+    ),
+    sha256Check: check(
+      'auto_part_receipt_scan_pages_sha256_check',
+      sql`${t.pageSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    /**
+     * По хэшу отвечают оба вопроса сразу: «читали ли мы уже этот лист» (кэш) и «не подшит ли он к
+     * другому чеку» (Р12) — второе и есть единственная защита от двойного ввода одной покупки:
+     * уникальности у номера чека нет и быть не может, два чека «0001» из разных магазинов законны.
+     */
+    sha256Idx: index('auto_part_receipt_scan_pages_sha256_idx').on(t.pageSha256),
+  }),
+);
+
+/**
+ * Попытка чтения страницы: деньги, качество и разбор «почему прочитано так».
+ *
+ * Состав колонок повторяет `waste_ticket_recognition_attempts` — и это не копипаста, а то же самое
+ * знание о вызове: заказанная модель против фактической (прокси вправе отдать запрос другой),
+ * обе версии задания, расход токенов, идентификаторы для журнала прокси и для биллинга.
+ */
+export const autoPartReceiptRecognitionAttempts = pgTable(
+  'auto_part_receipt_recognition_attempts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    pageSha256: char('page_sha256', { length: 64 }).notNull(),
+    engine: text('engine').notNull().$type<'stub' | 'proxy' | 'ocr'>(),
+    model: text('model').notNull().default(''),
+    modelReported: text('model_reported').notNull().default(''),
+    promptVersion: integer('prompt_version').notNull(),
+    preprocessingVersion: integer('preprocessing_version').notNull(),
+    status: text('status').notNull().$type<'done' | 'failed'>(),
+    /** Принудительный проход мимо кэша: «распознать заново» при тех же версиях задания. */
+    forced: boolean('forced').notNull().default(false),
+    /**
+     * ТОЛЬКО разобранный ответ, прошедший схему. Ни служебных полей провайдера, ни изображения:
+     * это данные, попадающие под вопрос о передаче сканов вовне, и держать их «на всякий случай»
+     * нельзя.
+     */
+    raw: jsonb('raw')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    durationMs: integer('duration_ms'),
+    proxyRequestId: text('proxy_request_id').notNull().default(''),
+    upstreamRequestId: text('upstream_request_id').notNull().default(''),
+    errorCode: text('error_code').notNull().default(''),
+    errorClass: text('error_class').notNull().default('').$type<'' | 'transient' | 'terminal'>(),
+    errorScope: text('error_scope').notNull().default('').$type<'' | 'subsystem' | 'item'>(),
+    error: text('error').notNull().default(''),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    engineCheck: check(
+      'auto_part_receipt_attempts_engine_check',
+      sql`${t.engine} IN ('stub', 'proxy', 'ocr')`,
+    ),
+    statusCheck: check(
+      'auto_part_receipt_attempts_status_check',
+      sql`${t.status} IN ('done', 'failed')`,
+    ),
+    errorClassCheck: check(
+      'auto_part_receipt_attempts_error_class_check',
+      sql`${t.errorClass} IN ('', 'transient', 'terminal')`,
+    ),
+    errorScopeCheck: check(
+      'auto_part_receipt_attempts_error_scope_check',
+      sql`${t.errorScope} IN ('', 'subsystem', 'item')`,
+    ),
+    sha256Check: check(
+      'auto_part_receipt_attempts_sha256_check',
+      sql`${t.pageSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    /**
+     * Кэш: одна успешная попытка на ключ. Условие `NOT forced` обязательно — без него ограничение
+     * не дало бы завести вторую успешную попытку при «распознать заново», и кнопка молча
+     * возвращала бы старый ответ. Неуспешных на тот же ключ бывает сколько угодно: запрет на них
+     * запер бы повтор после разрыва сети.
+     */
+    cacheUnique: uniqueIndex('auto_part_receipt_attempts_cache_unique')
+      .on(
+        t.pageSha256,
+        t.engine,
+        t.model,
+        t.promptVersion,
+        t.preprocessingVersion,
+      )
+      .where(sql`status = 'done' AND NOT forced`),
+    /** Последняя успешная по странице — ею отвечает ручка состояния, и по ней же считается расход. */
+    pageCreatedIdx: index('auto_part_receipt_attempts_page_created_idx').on(
+      t.pageSha256,
+      t.createdAt.desc(),
+    ),
+  }),
+);
+
+export type AutoPartReceiptScanRow = typeof autoPartReceiptScans.$inferSelect;
+export type AutoPartReceiptScanPageRow = typeof autoPartReceiptScanPages.$inferSelect;
+export type AutoPartReceiptAttemptRow = typeof autoPartReceiptRecognitionAttempts.$inferSelect;
 
 /**
  * Состояние разбора талонов заявки — то, что реестр «Требуют разбора» спрашивает запросом (план

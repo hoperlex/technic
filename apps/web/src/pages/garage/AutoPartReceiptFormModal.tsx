@@ -10,6 +10,7 @@ import {
   moscowDateKeyOf,
   type AutoPartReceiptDto,
   type CreateReceiptBody,
+  type ReceiptDraft,
 } from '@technic/contracts';
 import { autoPartReceiptApi } from '@entities/auto-part-receipt';
 import { errorFields, errorMessage } from '@shared/lib';
@@ -18,6 +19,7 @@ import { filesApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { formatMoney } from '../../utils/format';
 import { ReceiptLinesEditor } from './ReceiptLinesEditor';
+import { ReceiptRecognitionPanel } from './ReceiptRecognitionPanel';
 import {
   hasLineErrors,
   newReceiptLine,
@@ -25,6 +27,7 @@ import {
   receiptLinesFromDto,
   receiptLinesPayload,
   receiptLinesTotal,
+  receiptRowsFromDraft,
   validateReceiptLines,
   type ReceiptLineErrors,
   type ReceiptLineRow,
@@ -228,6 +231,34 @@ export function AutoPartReceiptFormModal({
     return files.length === 0 || rows.length === 0 || hasLineErrors(lines);
   };
 
+  /**
+   * Заполнить форму распознанным (§10 плана распознавания).
+   *
+   * Шапка подставляется по полям, а не целиком: дата, которой не может быть (в будущем), и
+   * слишком длинные значения приходят ПУСТЫМИ — их не подставляют молча, а показывают человеку
+   * (Р10а, Р11). Уже набранное руками не затирается пустотой: пустое поле черновика оставляет
+   * то, что стоит в форме.
+   */
+  const applyDraft = (draft: ReceiptDraft) => {
+    const current = form.getFieldsValue();
+    form.setFieldsValue({
+      purchasedOn: draft.header.purchasedOn ? dayjs(draft.header.purchasedOn) : current.purchasedOn,
+      documentNumber: draft.header.documentNumber || current.documentNumber,
+      sellerName: draft.header.sellerName || current.sellerName,
+    });
+    const next = receiptRowsFromDraft(draft);
+    setRows(next.rows);
+    setLineErrors(next.errors);
+    setLinesError(undefined);
+    if (draft.header.purchasedOnIssue) {
+      // Дата в будущем формой не принимается вовсе, и подставлять её значило бы заполнить поле
+      // заведомым отказом. Говорим, что прочитали, и оставляем ввод человеку.
+      message.warning(
+        `${draft.header.purchasedOnIssue}: на бумаге «${draft.header.purchasedOnRaw}»`,
+      );
+    }
+  };
+
   const submit = (v: Values) => {
     if (markOutsideForm()) return;
     save.mutate(v);
@@ -286,6 +317,16 @@ export function AutoPartReceiptFormModal({
               <FileLinkList files={files} onRemove={removeFile} />
             </div>
           )}
+          {/* Чтение скана моделью (план `docs/auto-part-receipt-ocr-plan.md`): читается ПОСЛЕДНИЙ
+              добавленный — тот, который человек только что положил и на который смотрит. */}
+          <div style={{ marginTop: 8 }}>
+            <ReceiptRecognitionPanel
+              fileId={files.at(-1)?.id ?? null}
+              formFilled={rows.some((row) => row.name.trim() !== '' || row.amount !== null)}
+              disabled={busy}
+              onApply={applyDraft}
+            />
+          </div>
         </Form.Item>
 
         <FormGrid>

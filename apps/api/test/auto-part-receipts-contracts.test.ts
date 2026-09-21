@@ -96,6 +96,9 @@ describe('контракт заведения чека на автозапчас
       // «Не отнесено» — законное состояние (Р8), и требовать от формы явный `null` значило бы
       // описывать умолчание дважды.
       vehicleId: null,
+      // Артикул пуст по той же причине, что и продавец: графы артикула нет у доброй половины
+      // бумаг, и «не прислали» здесь ответ, а не пропуск (Р2а).
+      article: '',
       name: 'Фильтр масляный',
       quantity: 1,
       // Единица подписывает число, а не участвует в счёте: «5» без неё — не количество, а загадка.
@@ -308,6 +311,26 @@ describe('контракт заведения чека на автозапчас
         receipt({ lines: [line({ vehicleId: VEHICLE_ID }), line({ vehicleId: VEHICLE_ID })] }),
       ).lines,
     ).toHaveLength(2);
+  });
+
+  it('артикул необязателен, пуст по умолчанию и с потолком в сотню знаков (Р2а)', () => {
+    // Графы артикула нет у доброй половины бумаг — товарный чек из магазина её не печатает вовсе,
+    // — поэтому «не прислали» здесь не пропуск, а ответ, и схема отвечает пустой строкой, а не
+    // `null`: два представления одного и того же пришлось бы отличать в каждом чтении.
+    expect(createReceiptSchema.parse(receipt({ lines: [line({})] })).lines[0]!.article).toBe('');
+    expect(
+      createReceiptSchema.parse(receipt({ lines: [line({ article: '  ШМБС-18х27 ' })] })).lines[0]!
+        .article,
+    ).toBe('ШМБС-18х27');
+    expect(
+      createReceiptSchema.safeParse(receipt({ lines: [line({ article: 'A'.repeat(101) })] }))
+        .success,
+    ).toBe(false);
+    // Сотни знаков хватает и составным кодам продавцов: «L1100x13 (6474EXL)» и длиннее.
+    expect(
+      createReceiptSchema.safeParse(receipt({ lines: [line({ article: 'A'.repeat(100) })] }))
+        .success,
+    ).toBe(true);
   });
 });
 

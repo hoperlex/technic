@@ -19,6 +19,12 @@ import {
   type TicketJobResult,
 } from './ticket-ocr';
 import {
+  createReceiptEngineFrom,
+  readReceiptOcrConfig,
+  runReceiptRecognitionJob,
+} from './receipt-ocr';
+import type { ReceiptJobResult } from './receipt-ocr/job';
+import {
   claimJobs,
   completeJob,
   deferJob,
@@ -115,6 +121,12 @@ const JOB_SEND_EMAIL = 'send_email';
  * на страницы уже сам воркер (Р11).
  */
 const JOB_RECOGNIZE_WASTE_TICKET_FILE = 'recognize_waste_ticket_file';
+/**
+ * Прочитать чек на автозапчасти (план `docs/auto-part-receipt-ocr-plan.md`). Единица работы — файл,
+ * как и у талонов, но владельца у него нет: скан грузят в окне раньше, чем появляется сам чек, и
+ * появится он не всегда.
+ */
+const JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE = 'recognize_auto_part_receipt_file';
 
 // ── Почта ──
 //
@@ -315,6 +327,8 @@ async function handleJob(job: JobRow): Promise<TicketJobResult> {
       return sendEmail(job);
     case JOB_RECOGNIZE_WASTE_TICKET_FILE:
       return recognizeWasteTicketFile(job);
+    case JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE:
+      return recognizeAutoPartReceiptFile(job);
     case JOB_REPARSE_DEVICE_MESSAGE: {
       // Задача НИЧЕГО НЕ РАЗБИРАЕТ САМА: словари, профили и правила опознания живут в API (Р2), а
       // worker подключён к базе голым `pg`. Она зовёт внутреннюю ручку — и только.
@@ -415,6 +429,54 @@ async function recognizeWasteTicketFile(job: JobRow): Promise<TicketJobResult> {
       log: (meta, msg) => logger.info(meta, msg),
     },
     { requestId, fileId, forced: job.payload.forced === true, anchorDeferrals },
+    job.id,
+  );
+}
+
+/**
+ * Потолок обращений к прокси при чтении чеков (`RECEIPT_OCR_MAX_PER_MINUTE`).
+ *
+ * Счётчик свой, а не общий с талонами, и это осознанно: очередь у прокси действительно одна, но
+ * предметы независимы — разбор талонов идёт вечером пачкой при закрытии заявок, а чеки читают
+ * поштучно в течение дня. Общий счётчик означал бы, что вечерняя пачка талонов откладывает чек,
+ * который механик ждёт прямо сейчас, глядя в форму.
+ */
+const receiptRate = new RateLimiter(readReceiptOcrConfig().maxPerMinute);
+
+/**
+ * Чтение скана чека. Порядок шагов и все проверки живут в `receipt-ocr/job.ts` — здесь только
+ * сборка зависимостей и признак «модуль выключен».
+ *
+ * Выключенный модуль не роняет задачу и не тратит попытку: скан мог быть загружен, пока чтение
+ * было включено, — это состояние конфигурации, а не сбой задачи.
+ */
+async function recognizeAutoPartReceiptFile(job: JobRow): Promise<ReceiptJobResult> {
+  const cfg = readReceiptOcrConfig();
+  if (!cfg.enabled) {
+    logger.info({ jobId: job.id }, 'Чтение чеков выключено: задача пропущена');
+    return;
+  }
+  // Квота проверяется ДО скачивания файла и до всякой транзакции: ждать внутри неё значило бы
+  // держать соединение и замок ключа кэша всё время ожидания.
+  if (!receiptRate.take()) {
+    const deferUntil = receiptRate.freeAt();
+    logger.info({ jobId: job.id, deferUntil }, 'Потолок обращений исчерпан: чтение чека отложено');
+    return { deferUntil };
+  }
+  const fileId = String(job.payload.fileId ?? '');
+  if (!fileId) throw new Error('Задача чтения чека без fileId');
+
+  return runReceiptRecognitionJob(
+    {
+      pool,
+      s3,
+      bucket,
+      engine: createReceiptEngineFrom(cfg),
+      model: cfg.model,
+      preprocess: cfg.preprocess,
+      log: (meta, msg) => logger.info(meta, msg),
+    },
+    { fileId, forced: job.payload.forced === true },
     job.id,
   );
 }

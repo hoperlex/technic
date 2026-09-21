@@ -4,6 +4,7 @@ import type {
   AutoPartReceiptsSummaryDto,
   CreateReceiptBody,
   ReceiptDeletionMarkInput,
+  ReceiptRecognitionStateDto,
   UpdateReceiptBody,
   VehiclePartsSpendDto,
   VehiclePartsSpendSnapshotDto,
@@ -38,6 +39,20 @@ export interface VehiclePartsSpendSnapshotResult {
 }
 
 export const autoPartReceiptApi = {
+  /**
+   * Прочитать скан моделью (план `docs/auto-part-receipt-ocr-plan.md`, Р4).
+   *
+   * Адресуется файлом: чека в этот момент ещё нет. `forced` — «распознать заново» при тех же
+   * версиях задания: проход мимо кэша попыток.
+   */
+  recognize: (fileId: string, forced = false) =>
+    apiFetch<ReceiptRecognitionStateDto>(`${BASE}/scans/${fileId}/recognize`, {
+      method: 'POST',
+      body: { forced },
+    }),
+  /** Состояние чтения и черновик формы; окно опрашивает её, пока статус `pending`. */
+  recognition: (fileId: string) =>
+    apiFetch<ReceiptRecognitionStateDto>(`${BASE}/scans/${fileId}/recognition`),
   /** Лента вкладки: период по дате чека, машина, поиск, «помеченные к удалению», страницы (§8). */
   list: (query: Query) => apiFetch<ListResult<AutoPartReceiptListItemDto>>(BASE, { query }),
   /**

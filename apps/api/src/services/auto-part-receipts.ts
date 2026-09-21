@@ -119,6 +119,7 @@ async function replaceLines(
       // Порядок как в чеке: его задаёт массив формы, а не присланное клиентом число (§6).
       seq: index + 1,
       vehicleId: line.vehicleId,
+      article: line.article,
       name: line.name,
       quantity: line.quantity,
       unit: line.unit,

@@ -1,6 +1,14 @@
 import { z } from 'zod';
 import { dateOnlySchema, uuidSchema } from './common';
 import type { RequestStatus } from './enums';
+import {
+  RECOGNITION_ENGINES,
+  RECOGNITION_ERROR_CLASSES,
+  RECOGNITION_ERROR_SCOPES,
+  type RecognitionEngineKind,
+  type RecognitionErrorClass,
+  type RecognitionErrorScope,
+} from './recognition';
 import { dateKeySpan } from './time';
 
 // ── Талоны вывоза: распознавание, разбор и сверка (ADR 0114, план `docs/waste-ticket-ocr-plan.md`) ──
@@ -128,13 +136,11 @@ export const WASTE_TICKET_PAGE_STATUSES = ['pending', 'done', 'failed'] as const
 export type WasteTicketPageStatus = (typeof WASTE_TICKET_PAGE_STATUSES)[number];
 
 /**
- * Чем читали страницу (Р3): `stub` — заглушка для тестов и разработки без сети, `proxy` — боевой
- * путь через LLM-прокси заказчика, `ocr` — внешний OCR с детерминированным парсером (кандидат
- * замера, а не реализация). Движок входит в ключ кэша попытки, поэтому он не «пометка для
- * журнала»: ответ заглушки и ответ модели не должны склеиться на одной и той же странице.
+ * Чем читали страницу (Р3). Словарь общий у всех заданий распознавания и живёт в `recognition.ts`;
+ * здесь — имя, которым его зовут талоны, и на это имя ссылаются сотни мест.
  */
-export const WASTE_TICKET_ENGINES = ['stub', 'proxy', 'ocr'] as const;
-export type WasteTicketEngine = (typeof WASTE_TICKET_ENGINES)[number];
+export const WASTE_TICKET_ENGINES = RECOGNITION_ENGINES;
+export type WasteTicketEngine = RecognitionEngineKind;
 
 /** Чем кончилась попытка. Успешная на ключ кэша одна, неуспешных бывает сколько угодно (Р12). */
 export const WASTE_TICKET_ATTEMPT_STATUSES = ['done', 'failed'] as const;
@@ -148,8 +154,8 @@ export type WasteTicketAttemptStatus = (typeof WASTE_TICKET_ATTEMPT_STATUSES)[nu
  * «Не удалось распознать: отказ доступа, нужен администратор» — разные обещания, и обещать
  * автоматическое восстановление там, где его нет, это тот же обман, что и молчание.
  */
-export const WASTE_TICKET_ERROR_CLASSES = ['transient', 'terminal'] as const;
-export type WasteTicketErrorClass = (typeof WASTE_TICKET_ERROR_CLASSES)[number];
+export const WASTE_TICKET_ERROR_CLASSES = RECOGNITION_ERROR_CLASSES;
+export type WasteTicketErrorClass = RecognitionErrorClass;
 
 /**
  * Чей сбой (Р29). `subsystem` — не отвечает распознавание вообще (эти и поднимают баннер над
@@ -158,8 +164,8 @@ export type WasteTicketErrorClass = (typeof WASTE_TICKET_ERROR_CLASSES)[number];
  * Ось вторая и отдельная именно потому, что один упёршийся в лимит файл не означает, что сервис не
  * настроен: прежнее правило поднимало на нём глобальный красный баннер навсегда.
  */
-export const WASTE_TICKET_ERROR_SCOPES = ['subsystem', 'item'] as const;
-export type WasteTicketErrorScope = (typeof WASTE_TICKET_ERROR_SCOPES)[number];
+export const WASTE_TICKET_ERROR_SCOPES = RECOGNITION_ERROR_SCOPES;
+export type WasteTicketErrorScope = RecognitionErrorScope;
 
 // ── Ответ модели (Р2, Р4) ──
 

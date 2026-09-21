@@ -1,20 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { wasteTicketRecognitionResponseSchema } from '@technic/contracts';
-import { PREPROCESSING_VERSION } from '../preprocess';
+import { PREPROCESSING_VERSION } from '../ticket-ocr/preprocess';
 import { classifyHttpFailure, classifyTransportError, contentFailures } from './errors';
 import { idempotencyKey, type AttemptKeyParts } from './keys';
-import {
-  MAX_TOKENS,
-  PROMPT_VERSION,
-  RESPONSE_JSON_SCHEMA,
-  SYSTEM_PROMPT,
-  USER_TEXT,
-} from './prompt';
 import type {
   AttemptMeta,
   PageImage,
   RecognitionEngine,
   RecognitionOutcome,
+  RecognitionTask,
   RecognizeOptions,
 } from './types';
 
@@ -140,7 +133,10 @@ function looksLikeHtml(text: string): boolean {
   return head.startsWith('<!doctype') || head.startsWith('<html');
 }
 
-export function createProxyEngine(cfg: ProxyEngineConfig): RecognitionEngine {
+export function createProxyEngine<T>(
+  cfg: ProxyEngineConfig,
+  task: RecognitionTask<T>,
+): RecognitionEngine<T> {
   const fetchImpl = cfg.fetchImpl ?? fetch;
   const newRequestId = cfg.newRequestId ?? randomUUID;
   const now = cfg.now ?? Date.now;
@@ -149,21 +145,22 @@ export function createProxyEngine(cfg: ProxyEngineConfig): RecognitionEngine {
 
   return {
     kind: 'proxy',
-    async recognize(page: PageImage, opts: RecognizeOptions): Promise<RecognitionOutcome> {
+    async recognize(page: PageImage, opts: RecognizeOptions): Promise<RecognitionOutcome<T>> {
       const started = now();
       const parts: AttemptKeyParts = {
         pageSha256: page.sha256,
         engine: 'proxy',
         model: opts.model,
-        promptVersion: PROMPT_VERSION,
+        promptVersion: task.promptVersion,
         preprocessingVersion: PREPROCESSING_VERSION,
+        task: task.slug,
       };
       const requestId = newRequestId();
       const meta: AttemptMeta = {
         engine: 'proxy',
         model: opts.model,
         modelReported: '',
-        promptVersion: PROMPT_VERSION,
+        promptVersion: task.promptVersion,
         preprocessingVersion: PREPROCESSING_VERSION,
         inputTokens: null,
         outputTokens: null,
@@ -173,7 +170,7 @@ export function createProxyEngine(cfg: ProxyEngineConfig): RecognitionEngine {
         idempotencyKey: idempotencyKey(parts, opts),
         requestId,
       };
-      const done = <T extends RecognitionOutcome>(outcome: T): T => {
+      const done = <R extends RecognitionOutcome<T>>(outcome: R): R => {
         meta.durationMs = Math.max(0, Math.round(now() - started));
         return outcome;
       };
@@ -181,7 +178,7 @@ export function createProxyEngine(cfg: ProxyEngineConfig): RecognitionEngine {
       const body = JSON.stringify({
         model: opts.model,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: task.systemPrompt },
           {
             role: 'user',
             /*
@@ -199,7 +196,7 @@ export function createProxyEngine(cfg: ProxyEngineConfig): RecognitionEngine {
              * задачу; прочитанная после — конкурирует с уже начатым описанием картинки.
              */
             content: [
-              { type: 'text', text: USER_TEXT },
+              { type: 'text', text: task.userText },
               {
                 type: 'image_url',
                 image_url: {
@@ -209,8 +206,8 @@ export function createProxyEngine(cfg: ProxyEngineConfig): RecognitionEngine {
             ],
           },
         ],
-        response_format: { type: 'json_schema', json_schema: RESPONSE_JSON_SCHEMA },
-        max_tokens: MAX_TOKENS,
+        response_format: { type: 'json_schema', json_schema: task.responseJsonSchema },
+        max_tokens: task.maxTokens,
         // Ноль не «поменьше фантазии», а воспроизводимость: без него две попытки на одной странице
         // дают разные цифры, и «перераспознать» невозможно отличить от ошибки чтения.
         temperature: 0,
@@ -321,11 +318,15 @@ export function createProxyEngine(cfg: ProxyEngineConfig): RecognitionEngine {
         return done({ status: 'failed', failure: contentFailures.invalidJson(content), meta });
       }
 
-      const validated = wasteTicketRecognitionResponseSchema.safeParse(parsed);
+      // Проверку ответа держит ЗАДАНИЕ (Р4): у талонов и у чеков она разная, а «невалидный ответ —
+      // неуспешная попытка» — правило одно и живёт здесь.
+      const validated = task.parse(parsed);
       if (!validated.success) {
-        const issue = validated.error.issues[0];
-        const where = issue ? `${issue.path.join('.') || 'ответ'}: ${issue.message}` : 'неизвестно';
-        return done({ status: 'failed', failure: contentFailures.schemaMismatch(where), meta });
+        return done({
+          status: 'failed',
+          failure: contentFailures.schemaMismatch(validated.where),
+          meta,
+        });
       }
 
       return done({ status: 'done', response: validated.data, meta });

@@ -108,6 +108,7 @@ const SPEND_DTO: VehiclePartsSpendDto = {
       sellerName: 'ООО «Автодеталь»',
       documentNumber: '214',
       lineId: 'l-1',
+      article: '',
       name: 'Фильтр масляный 2101-1012005',
       quantity: 2,
       unit: 'шт',

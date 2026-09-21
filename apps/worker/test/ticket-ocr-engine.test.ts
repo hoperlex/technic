@@ -16,8 +16,9 @@ import {
   RESPONSE_JSON_SCHEMA,
   type PageImage,
   type RecognitionOutcome,
-} from '../src/ticket-ocr/engine';
-import { TICKET_ITEM_PROPERTIES } from '../src/ticket-ocr/engine/prompt';
+} from '../src/ticket-ocr';
+import { TICKET_ITEM_PROPERTIES } from '../src/ticket-ocr/prompt';
+import { wasteTicketTask } from '../src/ticket-ocr/task';
 import { PREPROCESSING_VERSION } from '../src/ticket-ocr/preprocess';
 
 /**
@@ -88,13 +89,17 @@ function engineWith(
     });
     return await responder(String(url), init ?? {});
   }) as unknown as typeof fetch;
-  return createProxyEngine({
-    baseUrl: 'https://llm.example.invalid/',
-    token: 'secret-token',
-    timeoutMs,
-    fetchImpl,
-    newRequestId: () => 'req-0001',
-  });
+  return createProxyEngine(
+    {
+      baseUrl: 'https://llm.example.invalid/',
+      token: 'secret-token',
+      timeoutMs,
+      fetchImpl,
+      newRequestId: () => 'req-0001',
+    },
+    // Задание — то, ЧТО читаем на странице; транспорт про предмет не знает (`ocr-engine/types.ts`).
+    wasteTicketTask,
+  );
 }
 
 const answering =
@@ -157,16 +162,19 @@ describe('запрос к прокси', () => {
 
   it('не отправляет страницу, которая заведомо не пройдёт по размеру', async () => {
     const captured: CapturedRequest[] = [];
-    const engine = createProxyEngine({
-      baseUrl: 'https://llm.example.invalid',
-      token: 't',
-      timeoutMs: 1000,
-      maxRequestBytes: 128,
-      fetchImpl: (async () => {
-        captured.push({ url: '', headers: {}, body: {} });
-        return new Response('', { status: 200 });
-      }) as unknown as typeof fetch,
-    });
+    const engine = createProxyEngine(
+      {
+        baseUrl: 'https://llm.example.invalid',
+        token: 't',
+        timeoutMs: 1000,
+        maxRequestBytes: 128,
+        fetchImpl: (async () => {
+          captured.push({ url: '', headers: {}, body: {} });
+          return new Response('', { status: 200 });
+        }) as unknown as typeof fetch,
+      },
+      wasteTicketTask,
+    );
     const outcome = await engine.recognize(
       { ...PAGE, buffer: Buffer.alloc(4096, 7) },
       { model: 'test-model' },
@@ -490,8 +498,11 @@ describe('заглушка (Р3)', () => {
   });
 
   it('выбирается режимом провайдера, а прокси без адреса не заводится', () => {
-    expect(createRecognitionEngine({ mode: 'stub' }).kind).toBe('stub');
-    expect(() => createRecognitionEngine({ mode: 'proxy' })).toThrow(/PROXY_LLM_BASE_URL/);
+    const parts = { task: wasteTicketTask, makeStub: () => createStubEngine() };
+    expect(createRecognitionEngine({ mode: 'stub', ...parts }).kind).toBe('stub');
+    expect(() => createRecognitionEngine({ mode: 'proxy', ...parts })).toThrow(
+      /PROXY_LLM_BASE_URL/,
+    );
   });
 });
 

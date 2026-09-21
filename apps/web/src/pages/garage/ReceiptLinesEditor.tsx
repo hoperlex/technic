@@ -12,10 +12,15 @@ import type { ReceiptLineErrors, ReceiptLineRow } from './receiptLines';
 /**
  * Таблица строк в окне «Принять чек» (план `docs/auto-part-receipts-plan.md`, §8, Р7—Р10).
  *
- * Строка чека — это шесть полей и ни одного справочника: наименование набирается дословно, как
+ * Строка чека — это семь полей и ни одного справочника: наименование набирается дословно, как
  * напечатано в чеке (Р7), единица — текст с умолчанием «шт» (Р10). Справочник номенклатуры
  * потребовал бы завести позицию **до** ввода чека, то есть вернул бы ровно ту работу, которую этим
  * выпуском снимают.
+ *
+ * Седьмое поле — **артикул** (план `docs/auto-part-receipt-ocr-plan.md`, Р2а): он стоит в счетах
+ * своей графой и опознаёт деталь там, где наименование не помогает, — два продавца напишут её
+ * по-разному, а артикул совпадёт. Пустой артикул законен и обычен: товарный чек из магазина этой
+ * графы не печатает вовсе, поэтому ячейка ничего не требует и не краснеет.
  *
  * Строки живут состоянием формы, а не `Form.List`, по той же причине, что и состав объёма работ у
  * заявки: итог пересчитывается на каждое нажатие клавиши и стоит тут же под таблицей — а это
@@ -29,18 +34,20 @@ import type { ReceiptLineErrors, ReceiptLineRow } from './receiptLines';
 /** Ширины ячеек на десктопе: сумма долей ровно 24, поэтому строка не переносится. */
 const SPAN = {
   vehicle: 5,
-  name: 6,
-  quantity: 3,
+  article: 3,
+  name: 5,
+  quantity: 2,
   unit: 2,
   amount: 3,
-  note: 4,
+  note: 3,
   remove: 1,
 } as const;
 
-/** То же на телефоне: техника и наименование по строке, числа втроём, примечание с кнопкой. */
+/** То же на телефоне: техника строкой, артикул с наименованием парой, числа втроём. */
 const MOBILE_SPAN = {
   vehicle: 24,
-  name: 24,
+  article: 8,
+  name: 16,
   quantity: 8,
   unit: 8,
   amount: 8,
@@ -134,6 +141,7 @@ export function ReceiptLinesEditor({
       {!isMobile && rows.length > 0 && (
         <Row gutter={8} style={{ marginBottom: 4 }}>
           <HeaderCell span={SPAN.vehicle}>Техника</HeaderCell>
+          <HeaderCell span={SPAN.article}>Артикул</HeaderCell>
           <HeaderCell span={SPAN.name}>Наименование</HeaderCell>
           <HeaderCell span={SPAN.quantity}>Кол-во</HeaderCell>
           <HeaderCell span={SPAN.unit}>Ед.</HeaderCell>
@@ -180,6 +188,21 @@ export function ReceiptLinesEditor({
                 onChange={(v: string | undefined) => onChange(row.key, { vehicleId: v ?? null })}
               />
               <CellError text={issue.vehicleId} />
+            </Col>
+
+            <Col xs={MOBILE_SPAN.article} sm={SPAN.article}>
+              {/* Ничего не требует: графы артикула нет у доброй половины бумаг (Р2а), и пустая
+                  ячейка здесь — ответ «в чеке его не было», а не недозаполненная строка. */}
+              <Input
+                maxLength={100}
+                placeholder="Артикул"
+                aria-label="Артикул"
+                disabled={disabled}
+                status={issue.article ? 'error' : undefined}
+                value={row.article}
+                onChange={(e) => onChange(row.key, { article: e.target.value })}
+              />
+              <CellError text={issue.article} />
             </Col>
 
             <Col xs={MOBILE_SPAN.name} sm={SPAN.name}>

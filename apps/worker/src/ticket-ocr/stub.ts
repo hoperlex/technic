@@ -3,9 +3,7 @@ import {
   type WasteTicketRecognitionResponse,
   type WasteTicketWorkKind,
 } from '@technic/contracts';
-import { PREPROCESSING_VERSION } from '../preprocess';
-import { idempotencyKey } from './keys';
-import { PROMPT_VERSION } from './prompt';
+import { idempotencyKey } from '../ocr-engine';
 import type {
   AttemptMeta,
   PageImage,
@@ -13,7 +11,9 @@ import type {
   RecognitionFailure,
   RecognitionOutcome,
   RecognizeOptions,
-} from './types';
+} from '../ocr-engine';
+import { PREPROCESSING_VERSION } from './preprocess';
+import { PROMPT_VERSION } from './prompt';
 
 /**
  * Заглушка движка: предсказуемый ответ без сети и без расхода
@@ -111,11 +111,16 @@ function stubResponse(sha: string): WasteTicketRecognitionResponse {
   return { tickets, unreadable: [...unreadable] };
 }
 
-export function createStubEngine(options: StubEngineOptions = {}): RecognitionEngine {
+export function createStubEngine(
+  options: StubEngineOptions = {},
+): RecognitionEngine<WasteTicketRecognitionResponse> {
   const now = options.now ?? Date.now;
   return {
     kind: 'stub',
-    async recognize(page: PageImage, opts: RecognizeOptions): Promise<RecognitionOutcome> {
+    async recognize(
+      page: PageImage,
+      opts: RecognizeOptions,
+    ): Promise<RecognitionOutcome<WasteTicketRecognitionResponse>> {
       const started = now();
       if (options.latencyMs) {
         await new Promise((resolve) => setTimeout(resolve, options.latencyMs));

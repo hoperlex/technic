@@ -1,12 +1,18 @@
 import type {
-  WasteTicketEngine,
-  WasteTicketErrorClass,
-  WasteTicketErrorScope,
-  WasteTicketRecognitionResponse,
+  RecognitionEngineKind,
+  RecognitionErrorClass,
+  RecognitionErrorScope,
+  RecognitionTaskSlug,
 } from '@technic/contracts';
 
 /**
  * Контракт движка распознавания (ADR 0114, план `docs/waste-ticket-ocr-plan.md`, Р3).
+ *
+ * **Движок ничего не знает о предмете.** Он возит страницу до модели и обратно, а ЧТО на ней
+ * прочитать, описывает задание (`RecognitionTask` ниже): промпт, схема ответа, потолок ответа и
+ * своя проверка результата. Заданий два — талоны вывоза и чеки на автозапчасти
+ * (`docs/auto-part-receipt-ocr-plan.md`, Р6), — и оба ездят одним транспортом: второй его
+ * экземпляр разошёлся бы с первым в разборе ошибок, в идемпотентности и в учёте расхода.
  *
  * `recognize(pageImage) → { tickets[], unreadable[] }` — и **без изменяемых подсказок**. Это не
  * минимализм ради минимализма, а условие целостности кэша (Р12): вызов однозначно задаётся
@@ -55,7 +61,7 @@ export interface RecognizeOptions {
  * `upstreamRequestId` — то, по чему вызов находится в биллинге OpenRouter.
  */
 export interface AttemptMeta {
-  engine: WasteTicketEngine;
+  engine: RecognitionEngineKind;
   model: string;
   modelReported: string;
   promptVersion: number;
@@ -85,8 +91,8 @@ export interface AttemptMeta {
  */
 export interface RecognitionFailure {
   code: string;
-  errorClass: WasteTicketErrorClass;
-  errorScope: WasteTicketErrorScope;
+  errorClass: RecognitionErrorClass;
+  errorScope: RecognitionErrorScope;
   message: string;
   retryAfterMs: number | null;
 }
@@ -97,11 +103,38 @@ export interface RecognitionFailure {
  * исключение — вызывающему пришлось бы собирать `meta` (длительность, идентификаторы запросов,
  * фактическую модель) из воздуха, а именно она и нужна, когда разбираются с оператором прокси.
  */
-export type RecognitionOutcome =
-  | { status: 'done'; response: WasteTicketRecognitionResponse; meta: AttemptMeta }
+export type RecognitionOutcome<T> =
+  | { status: 'done'; response: T; meta: AttemptMeta }
   | { status: 'failed'; failure: RecognitionFailure; meta: AttemptMeta };
 
-export interface RecognitionEngine {
-  readonly kind: WasteTicketEngine;
-  recognize(page: PageImage, opts: RecognizeOptions): Promise<RecognitionOutcome>;
+export interface RecognitionEngine<T> {
+  readonly kind: RecognitionEngineKind;
+  recognize(page: PageImage, opts: RecognizeOptions): Promise<RecognitionOutcome<T>>;
+}
+
+/**
+ * Задание: что именно читать на странице.
+ *
+ * Все его поля **неизменяемы и перечислимы**, и это условие целостности кэша (Р12 плана талонов):
+ * вызов однозначно задаётся содержимым страницы, движком, моделью, двумя версиями и слагом
+ * задания. Позволь мы вызывающему передавать сюда свой текст — два разных вызова стали бы
+ * неразличимы ключом и склеились бы.
+ *
+ * `slug` уезжает в ключ идемпотентности прокси, и только туда (план чеков, Р6): кэши попыток у
+ * заданий разделены таблицами, а дедуп прокси общий — один и тот же лист, прогнанный как талон и
+ * как чек, ушёл бы туда с одинаковым ключом.
+ */
+export interface RecognitionTask<T> {
+  slug: RecognitionTaskSlug;
+  promptVersion: number;
+  systemPrompt: string;
+  /** Текст рядом с картинкой. Идёт ПЕРЕД изображением — см. `proxy.ts`, там замер. */
+  userText: string;
+  responseJsonSchema: Record<string, unknown>;
+  maxTokens: number;
+  /**
+   * Проверка ответа на нашей стороне. Схему мы просим у прокси, но верим только ей: строгий режим
+   * поддержан не всеми моделями каталога, а посредников в цепочке двое.
+   */
+  parse(value: unknown): { success: true; data: T } | { success: false; where: string };
 }

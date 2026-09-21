@@ -17,6 +17,7 @@ import {
   type AutoPartReceiptsSummaryDto,
   type ListResult,
   type VehiclePartsSpendDto,
+  type ReceiptRecognitionStateDto,
   type VehiclePartsSpendSnapshotDto,
 } from '@technic/contracts';
 import { requirePrincipal } from '../auth/plugin';
@@ -28,6 +29,10 @@ import {
   markReceiptForDeletion,
   updateReceipt,
 } from '../services/auto-part-receipts';
+import {
+  loadReceiptRecognitionState,
+  requestReceiptRecognition,
+} from '../services/auto-part-receipt-recognition';
 import {
   listReceipts,
   loadReceiptDto,
@@ -73,6 +78,14 @@ import { db } from '../db/client';
 const receiptParams = z.object({ id: uuidSchema });
 /** `:id` — машина: окно «Запчасти машины» адресуется техникой, а не чеком. */
 const vehicleParams = z.object({ id: uuidSchema });
+/** `:fileId` — скан: чтение адресуется файлом, потому что чека в этот момент ещё нет (Р4). */
+const scanParams = z.object({ fileId: uuidSchema });
+/**
+ * `forced` — «распознать заново» при тех же версиях задания: проход мимо кэша. Необязателен и по
+ * умолчанию ложь; `.strict()`, как все схемы ввода модуля, — лишнее поле означает непонятое
+ * намерение, а не мелочь.
+ */
+const recognizeBody = z.object({ forced: z.boolean().default(false) }).strict().optional();
 
 /**
  * День среза сумм по машинам (Р14): присланный либо сегодняшний московский — тем же приёмом, что
@@ -161,6 +174,42 @@ export default async function autoPartReceiptsRoutes(app: FastifyInstance): Prom
       const spend = await loadVehiclePartsSpend(req.params.id, req.query);
       if (!spend) throw err.notFound('Машина не найдена');
       return spend;
+    },
+  );
+
+  /**
+   * Прочитать скан моделью (план `docs/auto-part-receipt-ocr-plan.md`, Р4, Р5).
+   *
+   * Адресуется ФАЙЛОМ, а не чеком, и это не оплошность именования: в окне «Принять чек» скан
+   * грузят первым, документа ещё нет и может не быть вовсе. Право `autoParts.manage` отвечает
+   * «этот человек ведёт чеки», а «чей это файл» проверяет сервис: непривязанный скан читает только
+   * загрузивший, подшитый — тот, кому виден сам чек.
+   *
+   * Повтор при живой задаче — не отказ, а тот же ответ «читается»: иначе двойной клик заводил бы
+   * вторую задачу и вторую оплаченную попытку.
+   */
+  r.post(
+    '/scans/:fileId/recognize',
+    { ...manage, schema: { params: scanParams, body: recognizeBody } },
+    async (req): Promise<ReceiptRecognitionStateDto> => {
+      const p = requirePrincipal(req);
+      return requestReceiptRecognition(req.params.fileId, p, { forced: req.body?.forced === true });
+    },
+  );
+
+  /**
+   * Состояние чтения и черновик формы.
+   *
+   * Черновик считает сервер (`receiptDraftFrom` в контрактах): правило «что годится для чека»
+   * одно, и второе, живущее в браузере, разошлось бы с первым ровно там, где форма подставила бы
+   * то, что схема потом отобьёт.
+   */
+  r.get(
+    '/scans/:fileId/recognition',
+    { ...manage, schema: { params: scanParams } },
+    async (req): Promise<ReceiptRecognitionStateDto> => {
+      const p = requirePrincipal(req);
+      return loadReceiptRecognitionState(req.params.fileId, p);
     },
   );
 

@@ -19,6 +19,16 @@ export const JOB_SEND_EMAIL = 'send_email';
 export const JOB_RECOGNIZE_WASTE_TICKET_FILE = 'recognize_waste_ticket_file';
 
 /**
+ * Прочитать скан чека на автозапчасти (план `docs/auto-part-receipt-ocr-plan.md`, Р4). Нагрузка —
+ * `{ fileId, forced }`, и владельца в ней нет намеренно: скан грузят в окне РАНЬШЕ, чем появляется
+ * сам чек, а появится он не всегда — человек вправе закрыть окно. Поэтому работа висит на файле.
+ *
+ * Реестр типов задач продублирован здесь и в `apps/worker/src/index.ts`: первая копия ставит
+ * задачу, вторая её исполняет, и обе обязаны знать новый тип.
+ */
+export const JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE = 'recognize_auto_part_receipt_file';
+
+/**
  * Перечитать одно письмо аппарата нынешними правилами разбора (план
  * `docs/office-equipment-mail-telemetry-plan.md`, Р26). Нагрузка — `{ messageId }` и ничего больше.
  *

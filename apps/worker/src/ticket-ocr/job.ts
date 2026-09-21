@@ -48,9 +48,14 @@ import {
 import { prepareTicketFile, PREPROCESSING_VERSION } from './preprocess';
 import { TicketFileError } from './errors';
 import { markReviewStale, markReviewStaleWithNeighbors } from './review-state';
-import { attemptCacheKey, PROXY_CHOOSES_MODEL } from './engine/keys';
-import type { AttemptMeta, PageImage, RecognitionEngine, RecognitionFailure } from './engine/types';
-import { PROMPT_VERSION } from './engine/prompt';
+import { attemptCacheKey, PROXY_CHOOSES_MODEL } from '../ocr-engine';
+import type {
+  AttemptMeta,
+  PageImage,
+  RecognitionEngine,
+  RecognitionFailure,
+} from '../ocr-engine';
+import { PROMPT_VERSION } from './prompt';
 import type { PreparedFile, PreprocessOptions } from './preprocess';
 
 /** Пул `pg` в том виде, в каком его держит воркер: транзакции берутся клиентом из пула. */

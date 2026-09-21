@@ -210,6 +210,15 @@ export function AutoPartReceiptCardModal({
           <Typography.Text type="secondary">не отнесено</Typography.Text>
         ),
     },
+    {
+      key: 'article',
+      // Артикул стоит перед наименованием, как в самом счёте, и показывается прочерком, когда его
+      // в бумаге не было (план `docs/auto-part-receipt-ocr-plan.md`, Р2а).
+      title: 'Артикул',
+      width: 140,
+      dataIndex: 'article',
+      render: (value: unknown) => (value as string) || dash,
+    },
     { key: 'name', title: 'Наименование', dataIndex: 'name' },
     {
       key: 'quantity',

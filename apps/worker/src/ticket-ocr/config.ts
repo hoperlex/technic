@@ -1,4 +1,11 @@
-import { createRecognitionEngine, type ProxyEngineConfig, type RecognitionEngine } from './engine';
+import type { WasteTicketRecognitionResponse } from '@technic/contracts';
+import {
+  createRecognitionEngine,
+  type ProxyEngineConfig,
+  type RecognitionEngine,
+} from '../ocr-engine';
+import { createStubEngine } from './stub';
+import { wasteTicketTask } from './task';
 import type { PreprocessOptions } from './preprocess';
 
 /**
@@ -138,9 +145,11 @@ export function preprocessOptionsFrom(cfg: TicketOcrConfig): PreprocessOptions {
 export function createEngineFrom(
   cfg: TicketOcrConfig,
   overrides: Partial<ProxyEngineConfig> = {},
-): RecognitionEngine {
+): RecognitionEngine<WasteTicketRecognitionResponse> {
   return createRecognitionEngine({
     mode: cfg.mode,
+    task: wasteTicketTask,
+    makeStub: () => createStubEngine(),
     proxy: {
       baseUrl: cfg.baseUrl,
       token: cfg.token,

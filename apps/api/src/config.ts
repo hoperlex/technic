@@ -250,6 +250,17 @@ const rawSchema = z.object({
   // талон, уборка не трогает — это журнал цифры, а не мусор.
   TICKET_OCR_ATTEMPT_TTL_DAYS: z.coerce.number().int().positive().default(180),
 
+  // Чтение чеков на автозапчасти (план `docs/auto-part-receipt-ocr-plan.md`). Транспорт общий с
+  // талонами — прокси у портала один, — а признак модуля, модель и потолок свои: предметы разные
+  // (рукописный бланк A6 против типографской таблицы A4), и выбор, сделанный замером для одного,
+  // не должен молча применяться к другому. Умолчания обязаны совпадать с воркером до цифры
+  // (`apps/worker/src/receipt-ocr/config.ts`): API решает, ставить ли задачу, воркер — как её
+  // выполнять, а общий у них только prod.env.
+  RECEIPT_OCR_ENABLED: boolFromEnv(false),
+  RECEIPT_OCR_MODEL: z.string().default('proxy'),
+  RECEIPT_OCR_MAX_PER_MINUTE: z.coerce.number().int().positive().default(30),
+  RECEIPT_OCR_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+
   /**
    * Пол версии клиента (ADR 0146, решение 7; `src/lib/client-contract.ts`). Запрос к `/api/v1/**`
    * с контрактом НИЖЕ пола отбивается 426; запрос без заголовка читается как контракт `1`.
@@ -661,6 +672,14 @@ function loadConfig() {
         abandonHours: env.SERVICE_REQUEST_BULK_ABANDON_HOURS,
         retentionDays: env.SERVICE_REQUEST_BULK_RETENTION_DAYS,
       },
+    },
+    receiptOcr: {
+      /** Ставить ли задачу чтения скана: модуль отдельно от транспорта. */
+      enabled: env.RECEIPT_OCR_ENABLED,
+      mode: env.AI_PROVIDER_MODE,
+      model: env.RECEIPT_OCR_MODEL,
+      maxPerMinute: env.RECEIPT_OCR_MAX_PER_MINUTE,
+      httpTimeoutMs: env.RECEIPT_OCR_HTTP_TIMEOUT_MS,
     },
     ticketOcr: {
       enabled: env.TICKET_OCR_ENABLED,

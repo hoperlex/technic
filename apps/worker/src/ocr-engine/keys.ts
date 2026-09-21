@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import type { WasteTicketEngine } from '@technic/contracts';
+import {
+  DEFAULT_RECOGNITION_TASK,
+  type RecognitionEngineKind,
+  type RecognitionTaskSlug,
+} from '@technic/contracts';
 
 /**
  * Ключ кэша попытки и ключ идемпотентности прокси (план `docs/waste-ticket-ocr-plan.md`, Р12, Р13).
@@ -16,11 +20,17 @@ import type { WasteTicketEngine } from '@technic/contracts';
 export interface AttemptKeyParts {
   /** Хэш **растра страницы** (Р10), а не файла. */
   pageSha256: string;
-  engine: WasteTicketEngine;
+  engine: RecognitionEngineKind;
   /** Заказанная модель: фактическую (`model_reported`) до вызова не знает никто (Р7). */
   model: string;
   promptVersion: number;
   preprocessingVersion: number;
+  /**
+   * Какое это было задание (план `docs/auto-part-receipt-ocr-plan.md`, Р6). Умолчание —
+   * `waste_ticket`, и оно не вкусовщина: с ним строка ключа у талонов остаётся прежней БАЙТ В
+   * БАЙТ, и появление второго задания не обесценивает дедуп уже работающего.
+   */
+  task?: RecognitionTaskSlug;
 }
 
 /**
@@ -65,7 +75,24 @@ export function idempotencyKey(
   parts: AttemptKeyParts,
   forced?: { forced?: boolean; jobId?: string },
 ): string {
-  const base = createHash('sha256').update(attemptCacheKey(parts)).digest('hex');
+  /*
+   * Слаг задания добавляется ЗДЕСЬ, а не в `attemptCacheKey`, и разница принципиальна.
+   *
+   * Кэш попыток у двух заданий разделён самими таблицами — склеиться его строкам негде, и слаг
+   * там ничего бы не решал. А дедуп прокси общий: тот же лист, прогнанный как талон и как чек,
+   * ушёл бы туда с одинаковым ключом, и второй вызов вернул бы ответ первого — таблицу позиций,
+   * разобранную как талон.
+   *
+   * Умолчание оставляет талонам прежнюю строку байт в байт: допиши мы задание в общую формулу
+   * кэша, сменились бы ключи ВСЕХ талонных вызовов разом, и работающий дедуп перестал бы узнавать
+   * свои же запросы.
+   */
+  const task = parts.task ?? DEFAULT_RECOGNITION_TASK;
+  const scoped =
+    task === DEFAULT_RECOGNITION_TASK
+      ? attemptCacheKey(parts)
+      : `${attemptCacheKey(parts)}|${task}`;
+  const base = createHash('sha256').update(scoped).digest('hex');
   if (!forced?.forced) return base;
   const jobId = forced.jobId ?? '';
   return createHash('sha256').update(`${base}|forced|${jobId}`).digest('hex');

@@ -2066,6 +2066,20 @@ export const ACCESS_MANIFEST = {
     allOf: ['autoParts.manage'],
   },
   'DELETE /api/v1/auto-part-receipts/:id': { kind: 'permissions', allOf: ['autoParts.delete'] },
+  /*
+   * Чтение скана моделью (план `docs/auto-part-receipt-ocr-plan.md`, Р5). Право то же, что у
+   * ведения чеков: распознавание — способ заполнить форму, а не отдельная работа, и новых прав
+   * выпуск не заводит. «Чей это файл» правом не выражается вовсе и проверяется сервисом:
+   * непривязанный скан читает загрузивший, подшитый — тот, кому виден сам чек.
+   */
+  'POST /api/v1/auto-part-receipts/scans/:fileId/recognize': {
+    kind: 'permissions',
+    allOf: ['autoParts.manage'],
+  },
+  'GET /api/v1/auto-part-receipts/scans/:fileId/recognition': {
+    kind: 'permissions',
+    allOf: ['autoParts.manage'],
+  },
 
   // ── Техническое обслуживание ──
   //

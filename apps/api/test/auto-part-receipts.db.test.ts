@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -110,6 +110,9 @@ function prepareEnv(databaseUrl: string): void {
   process.env.S3_SECRET_ACCESS_KEY ??= 'test-secret';
   process.env.LOG_LEVEL ??= 'error';
   process.env.MAIL_ENABLED = 'false';
+  // Чтение сканов включено: ручки отвечают отказом, когда модуль выключен, а предмет этих
+  // сценариев — доступ и состояние, а не рубильник.
+  process.env.RECEIPT_OCR_ENABLED = 'true';
   process.env.RATE_LIMIT_MAX ??= '100000';
 }
 
@@ -141,6 +144,14 @@ async function cleanup(db: typeof AppDb): Promise<void> {
   const mine = sql`(SELECT id FROM files WHERE object_key LIKE ${keyLike})`;
   await db.execute(sql`DELETE FROM jobs WHERE payload->>'objectKey' LIKE ${keyLike}`);
   await db.execute(sql`DELETE FROM waste_ticket_field_events WHERE file_id IN ${mine}`);
+  // Попытки чтения не ссылаются ни на файл, ни на страницу (они принадлежат СОДЕРЖИМОМУ и служат
+  // кэшем), поэтому каскад их не уносит — снимаются по хэшам своих страниц и ДО удаления файлов.
+  await db.execute(
+    sql`DELETE FROM auto_part_receipt_recognition_attempts
+         WHERE page_sha256 IN (
+           SELECT page_sha256 FROM auto_part_receipt_scan_pages WHERE file_id IN ${mine}
+         )`,
+  );
   await db.execute(sql`DELETE FROM auto_part_receipts WHERE created_by IN ${users}`);
   await db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN ${users}`);
   await db.execute(sql`DELETE FROM mech_requests WHERE created_by IN ${users}`);
@@ -281,6 +292,7 @@ async function headersOf(userId: string): Promise<Headers> {
 
 interface LineBody {
   vehicleId?: string | null;
+  article?: string;
   name?: string;
   quantity?: number;
   unit?: string;
@@ -863,6 +875,59 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
     const list = await feed(reader, `?search=${encodeURIComponent(`ЧЕК-НЕОТН-${RUN}`)}`);
     // Колонка «Машины» пуста, а не прочерк и не «—»: собирать подпись из ничего незачем.
     expect(list.json().items[0].vehiclesLabel).toBe('');
+  });
+
+  it('артикул сохраняется, ищется наравне с наименованием и пуст, когда графы не было (Р2а)', async () => {
+    const file = await newFile();
+    const article = `ШМБС-${RUN}`;
+    const dto = await createReceipt(
+      mech,
+      receiptBody({
+        documentNumber: `ЧЕК-АРТ-${RUN}`,
+        fileIds: [file.id],
+        lines: [
+          line({ article, name: 'Шланг d=18x27мм маслобензостойкий', quantity: 10, amount: 3650 }),
+          // Графы артикула в бумаге не было — пустая строка, а не `null`: ответ, а не пропуск.
+          line({ name: 'Ветошь', quantity: 1, unit: 'кг', amount: 240 }),
+        ],
+      }),
+    );
+    expect(dto.lines[0]!.article).toBe(article);
+    expect(dto.lines[1]!.article).toBe('');
+
+    // Ради этого поле и заводилось: написание наименования у двух продавцов не совпадёт, а артикул
+    // совпадёт — и «когда мы последний раз брали ШМБС» отвечается только им.
+    const found = await feed(reader, `?search=${encodeURIComponent(article)}`);
+    expect(found.statusCode, found.body).toBe(200);
+    expect(found.json().items.map((i: { id: string }) => i.id)).toEqual([dto.id]);
+
+    // Правка отдаёт строки целиком и пересоздаёт их: артикул переживает её ровно потому, что
+    // клиент его присылает. Отсюда же подъём пола клиента при выкате — старая вкладка прислала бы
+    // тот же набор без поля, и артикулы обнулились бы молча.
+    const changed = await patch(mech, dto.id, {
+      ...receiptBody({
+        documentNumber: `ЧЕК-АРТ-${RUN}`,
+        fileIds: [file.id],
+        lines: [line({ article, name: 'Шланг d=18x27мм маслобензостойкий', amount: 3650 })],
+      }),
+      version: dto.version,
+    });
+    expect(changed.statusCode, changed.body).toBe(200);
+    expect(changed.json().lines[0].article).toBe(article);
+
+    const afterEdit = await patch(mech, dto.id, {
+      ...receiptBody({
+        documentNumber: `ЧЕК-АРТ-${RUN}`,
+        fileIds: [file.id],
+        lines: [line({ name: 'Шланг d=18x27мм маслобензостойкий', amount: 3650 })],
+      }),
+      version: changed.json().version,
+    });
+    expect(afterEdit.statusCode, afterEdit.body).toBe(200);
+    expect(afterEdit.json().lines[0].article).toBe('');
+    // И тогда по артикулу чек уже не находится: поля в нём не осталось.
+    const gone = await feed(reader, `?search=${encodeURIComponent(article)}`);
+    expect(gone.json().items).toHaveLength(0);
   });
 
   // ── 3. Правка целиком ──
@@ -1592,5 +1657,214 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
       lines: 1,
       files: [file.id],
     });
+  });
+
+  // ── 9. Чтение скана моделью (план `docs/auto-part-receipt-ocr-plan.md`) ──
+
+  /** Страница с готовым ответом модели: предмет сценариев — портал, а не сама модель. */
+  async function pageWithAnswer(
+    fileId: string,
+    pageNo: number,
+    answer: Record<string, unknown>,
+  ): Promise<string> {
+    const sha = createHash('sha256').update(`${fileId}-${pageNo}`).digest('hex');
+    await ctx.db.execute(
+      sql`INSERT INTO auto_part_receipt_scans (file_id, status, total_pages, processed_pages)
+               VALUES (${fileId}, 'done', ${pageNo}, ${pageNo})
+          ON CONFLICT (file_id) DO UPDATE
+             SET status = 'done', total_pages = ${pageNo}, processed_pages = ${pageNo}`,
+    );
+    await ctx.db.execute(
+      sql`INSERT INTO auto_part_receipt_scan_pages (file_id, page_no, page_sha256, status)
+               VALUES (${fileId}, ${pageNo}, ${sha}, 'done')`,
+    );
+    await ctx.db.execute(
+      sql`INSERT INTO auto_part_receipt_recognition_attempts
+            (page_sha256, engine, model, model_reported, prompt_version, preprocessing_version,
+             status, raw)
+          VALUES (${sha}, 'stub', 'm', 'm', 1, 1, 'done', ${JSON.stringify(answer)}::jsonb)`,
+    );
+    return sha;
+  }
+
+  function recognize(headers: Headers, fileId: string) {
+    return ctx.app.inject({
+      method: 'POST',
+      url: `/api/v1/auto-part-receipts/scans/${fileId}/recognize`,
+      headers,
+      payload: {},
+    });
+  }
+
+  function recognition(headers: Headers, fileId: string) {
+    return ctx.app.inject({
+      method: 'GET',
+      url: `/api/v1/auto-part-receipts/scans/${fileId}/recognition`,
+      headers,
+    });
+  }
+
+  it('просьба прочитать ставит ОДНУ задачу на файл, повтор её не удваивает (Р4)', async () => {
+    const file = await newFile();
+    const first = await recognize(mech, file.id);
+    expect(first.statusCode, first.body).toBe(200);
+    expect(first.json()).toMatchObject({ fileId: file.id, status: 'pending', draft: null });
+
+    // Двойной клик по кнопке не заводит вторую задачу и вторую оплаченную попытку: пока чтение
+    // идёт, ответ на просьбу тот же — «читается».
+    const again = await recognize(mech, file.id);
+    expect(again.statusCode, again.body).toBe(200);
+    const queued = await ctx.db.execute(
+      sql`SELECT count(*)::int AS n FROM jobs
+           WHERE type = 'recognize_auto_part_receipt_file' AND payload->>'fileId' = ${file.id}`,
+    );
+    expect((queued.rows[0] as { n: number }).n).toBe(1);
+  });
+
+  it('чужой непривязанный скан не читается, даже держателем ведения чеков (Р5)', async () => {
+    // До сохранения формы файл ничей, кроме автора: это то же правило, по которому он его видит.
+    const strangers = await newFile(ctx.users.admin);
+    const denied = await recognize(mech, strangers.id);
+    expect(denied.statusCode, denied.body).toBe(403);
+
+    // А подшитый к чеку — читает тот, кому виден сам чек.
+    const own = await newFile();
+    await createReceipt(
+      mech,
+      receiptBody({ documentNumber: `ЧЕК-СКАН-${RUN}`, fileIds: [own.id] }),
+    );
+    const allowed = await recognize(mech, own.id);
+    expect(allowed.statusCode, allowed.body).toBe(200);
+  });
+
+  it('без права ведения чеков ручки не отвечают вовсе (Р5)', async () => {
+    const file = await newFile();
+    expect((await recognize(reader, file.id)).statusCode).toBe(403);
+    expect((await recognition(reader, file.id)).statusCode).toBe(403);
+  });
+
+  it('состояние без единой просьбы — `idle`: «не просили» это не «не вышло»', async () => {
+    const file = await newFile();
+    const res = await recognition(mech, file.id);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ status: 'idle', draft: null, duplicate: null });
+  });
+
+  it('черновик собирается из попыток и склеивает страницы одного счёта (Р3, Р13)', async () => {
+    const file = await newFile();
+    await pageWithAnswer(file.id, 1, {
+      documentNumber: '6468',
+      purchasedOn: '2026-09-08',
+      purchasedOnRaw: '8 сентября 2026 г.',
+      sellerName: 'ООО "МС-партс"',
+      linesTotal: null,
+      documentTotal: null,
+      linesTruncated: false,
+      lines: [
+        {
+          article: 'УТ-00010050',
+          name: 'Стекло для двери Bobcat новый тип',
+          quantity: 1,
+          quantityRaw: '1',
+          unit: 'шт',
+          amount: 18900,
+          kind: 'part',
+        },
+      ],
+    });
+    await pageWithAnswer(file.id, 2, {
+      documentNumber: null,
+      purchasedOn: null,
+      purchasedOnRaw: null,
+      sellerName: null,
+      linesTotal: 30000,
+      documentTotal: 30000,
+      linesTruncated: true,
+      lines: [
+        {
+          article: null,
+          name: 'Доставка',
+          quantity: 1,
+          quantityRaw: '1',
+          unit: 'шт',
+          amount: 1500,
+          kind: 'service',
+        },
+      ],
+    });
+
+    const res = await recognition(mech, file.id);
+    expect(res.statusCode, res.body).toBe(200);
+    const state = res.json();
+    // Шапка с первой страницы, итоги — с последней, строки по порядку.
+    expect(state.draft.header).toMatchObject({
+      documentNumber: '6468',
+      purchasedOn: '2026-09-08',
+      sellerName: 'ООО "МС-партс"',
+    });
+    expect(state.draft.lines.map((l: { name: string }) => l.name)).toEqual([
+      'Стекло для двери Bobcat новый тип',
+      'Доставка',
+    ]);
+    // Итог с бумаги живёт рядом с суммой подставленного — им и ловится страница за кадром (Р9).
+    expect(state.draft.notes).toMatchObject({
+      linesTotal: 30000,
+      draftTotal: 20400,
+      linesTruncated: true,
+    });
+    // Вид позиции — мнение модели: оно доезжает до формы, но ничего не запрещает (Р3а).
+    expect(state.draft.lines[1].kind).toBe('service');
+    // Строк чека это НЕ заводит: распознанное живёт в форме до нажатия «Сохранить» (Р13).
+    const lines = await ctx.db.execute(
+      sql`SELECT count(*)::int AS n FROM auto_part_receipt_lines
+           WHERE receipt_id IN (SELECT receipt_id FROM auto_part_receipt_files
+                                 WHERE file_id = ${file.id})`,
+    );
+    expect((lines.rows[0] as { n: number }).n).toBe(0);
+  });
+
+  it('тот же растр, уже подшитый к другому чеку, — предупреждение, а не запрет (Р12)', async () => {
+    const answer = {
+      documentNumber: '1138',
+      purchasedOn: '2026-08-25',
+      purchasedOnRaw: null,
+      sellerName: null,
+      linesTotal: 5660,
+      documentTotal: 5660,
+      linesTruncated: false,
+      lines: [
+        { article: null, name: 'Гидрозамок', quantity: 2, quantityRaw: '2', unit: 'шт', amount: 5660, kind: 'part' },
+      ],
+    };
+    const old = await newFile();
+    const sha = await pageWithAnswer(old.id, 1, answer);
+    const receipt = await createReceipt(
+      mech,
+      receiptBody({ documentNumber: `ЧЕК-ДУБЛЬ-${RUN}`, fileIds: [old.id] }),
+    );
+
+    // Тот же ЛИСТ, переснятый заново: файл другой, растр тот же.
+    const again = await newFile();
+    await ctx.db.execute(
+      sql`INSERT INTO auto_part_receipt_scans (file_id, status, total_pages, processed_pages)
+               VALUES (${again.id}, 'done', 1, 1)`,
+    );
+    await ctx.db.execute(
+      sql`INSERT INTO auto_part_receipt_scan_pages (file_id, page_no, page_sha256, status)
+               VALUES (${again.id}, 1, ${sha}, 'done')`,
+    );
+
+    const res = await recognition(mech, again.id);
+    expect(res.statusCode, res.body).toBe(200);
+    // Двойной ввод одной покупки — единственная ошибка чеков, которая портит суммы незаметно:
+    // уникальности у номера нет и быть не может, два чека «0001» из разных магазинов законны.
+    expect(res.json().duplicate).toMatchObject({
+      receiptId: receipt.id,
+      documentNumber: `ЧЕК-ДУБЛЬ-${RUN}`,
+      visible: true,
+    });
+    // И при этом чтение работает как обычно: запрета нет, есть предупреждение.
+    expect(res.json().status).toBe('done');
+    expect(res.json().draft.lines).toHaveLength(1);
   });
 });

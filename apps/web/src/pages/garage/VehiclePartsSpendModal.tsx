@@ -86,6 +86,15 @@ function columnsOf(
     },
     { key: 'sellerName', title: 'Продавец', width: 220, render: (_v, row) => row.sellerName },
     {
+      key: 'article',
+      title: 'Артикул',
+      width: 140,
+      // Пусто — графы артикула в бумаге не было (план `docs/auto-part-receipt-ocr-plan.md`, Р2а).
+      // Здесь он нужен ровно затем же, зачем в карточке чека: перечень читают, чтобы заказать
+      // такую же деталь, а наименование у другого продавца будет написано иначе.
+      render: (_v, row) => row.article || <Typography.Text type="secondary">—</Typography.Text>,
+    },
+    {
       key: 'name',
       title: 'Наименование',
       // Дословно с бумаги (Р17): «фильтр масляный 2101-1012005» — то, по чему запчасть узнают в

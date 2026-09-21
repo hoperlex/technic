@@ -3,7 +3,7 @@ import { basename, extname, join } from 'node:path';
 import { createEngineFrom, preprocessOptionsFrom, readTicketOcrConfig } from './config';
 import { prepareTicketFile } from './preprocess';
 import { TicketFileError } from './errors';
-import type { RecognitionOutcome } from './engine/types';
+import type { RecognitionOutcome } from '../ocr-engine';
 
 /**
  * Замер на пачке сканов (ADR 0114, этап 1 плана).

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { crc32, deflateSync } from 'node:zlib';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
-import { createStubEngine } from '../src/ticket-ocr/engine';
+import { createStubEngine } from '../src/ticket-ocr';
 import { TicketFileError } from '../src/ticket-ocr/errors';
 import { detectFileType, prepareTicketFile } from '../src/ticket-ocr/preprocess';
 import { assertBinaryPresent, runLimited } from '../src/ticket-ocr/subprocess';

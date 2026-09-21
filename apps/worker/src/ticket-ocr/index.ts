@@ -27,7 +27,10 @@ export {
 export { TicketFileError, brokenSubsystem, retryableFile, unsupportedFile } from './errors';
 export { detectQuarterTurn, detectSheetBox, detectSkew, otsuThreshold } from './layout';
 export { rasterizePdf, type PdfRasterOptions, type PdfRasterResult } from './pdf';
-export * from './engine';
+export * from '../ocr-engine';
+export * from './prompt';
+export * from './stub';
+export { wasteTicketTask } from './task';
 export {
   runTicketRecognitionJob,
   type TicketJobDeps,

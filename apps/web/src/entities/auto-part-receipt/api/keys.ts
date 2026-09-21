@@ -37,6 +37,12 @@ export const autoPartReceiptKeys = createQueryKeys('auto-part-receipts', {
   /** Всё, что портал знает про траты на одну машину, при любом периоде — префикс для гашения. */
   vehicleSpends: (vehicleId: string) => ['vehicle-spend', vehicleId],
   vehicleSpend: (vehicleId: string, params: Query) => ['vehicle-spend', vehicleId, params],
+  /**
+   * Состояние чтения скана — шестое семейство, и ключ у него ФАЙЛОВЫЙ, а не чековый: в окне
+   * «Принять чек» скан читают раньше, чем чек появляется, и чека в ключе может не быть вовсе
+   * (план `docs/auto-part-receipt-ocr-plan.md`, Р4).
+   */
+  recognition: (fileId: string) => ['recognition', fileId],
 });
 
 /**

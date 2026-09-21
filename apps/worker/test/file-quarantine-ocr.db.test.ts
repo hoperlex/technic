@@ -5,7 +5,7 @@ import type {
   PageImage,
   RecognitionEngine,
   RecognitionOutcome,
-} from '../src/ticket-ocr/engine/types';
+} from '../src/ocr-engine';
 
 /**
  * СУДЬЯ КРУГА 2: задача распознавания ВЫПОЛНЯЕТСЯ по карантинному файлу — уходит ли скан наружу.

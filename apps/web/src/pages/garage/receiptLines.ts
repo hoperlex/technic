@@ -3,6 +3,9 @@ import {
   RECEIPT_MAX_QUANTITY,
   type AutoPartReceiptLineDto,
   type CreateReceiptBody,
+  type ReceiptDraft,
+  type ReceiptDraftIssue,
+  type ReceiptDraftLine,
 } from '@technic/contracts';
 import { errorFields } from '@shared/lib';
 
@@ -19,7 +22,7 @@ import { errorFields } from '@shared/lib';
  */
 
 /** Поля строки, у которых бывает отказ: по ним редактор красит ячейку и пишет причину. */
-export type ReceiptLineField = 'vehicleId' | 'name' | 'quantity' | 'unit' | 'amount';
+export type ReceiptLineField = 'vehicleId' | 'article' | 'name' | 'quantity' | 'unit' | 'amount';
 
 /** Отказы по строкам: ключ строки → поле → причина. Пусто — набранное годится. */
 export type ReceiptLineErrors = Record<string, Partial<Record<ReceiptLineField, string>>>;
@@ -38,6 +41,8 @@ export interface ReceiptLineRow {
   key: string;
   /** `null` — «не отнесено»: законное состояние строки, а не незаполненное поле (Р8). */
   vehicleId: string | null;
+  /** Артикул из своей графы счёта; пусто — графы не было, и это норма (Р2а плана распознавания). */
+  article: string;
   name: string;
   quantity: number | null;
   unit: string;
@@ -60,6 +65,7 @@ export function newReceiptLine(): ReceiptLineRow {
   return {
     key: nextKey('line'),
     vehicleId: null,
+    article: '',
     name: '',
     quantity: 1,
     unit: 'шт',
@@ -73,6 +79,7 @@ export function receiptLinesFromDto(lines: readonly AutoPartReceiptLineDto[]): R
   return lines.map((line) => ({
     key: nextKey(`row-${line.id}`),
     vehicleId: line.vehicleId,
+    article: line.article,
     name: line.name,
     quantity: line.quantity,
     unit: line.unit,
@@ -96,6 +103,7 @@ export function receiptLinesTotal(rows: readonly ReceiptLineRow[]): number {
 export function receiptLinesPayload(rows: readonly ReceiptLineRow[]): CreateReceiptBody['lines'] {
   return rows.map((row) => ({
     vehicleId: row.vehicleId,
+    article: row.article.trim(),
     name: row.name.trim(),
     // Пустое количество и пустая сумма сюда не доходят: их отбивает проверка ниже, до отправки.
     quantity: row.quantity ?? 0,
@@ -148,6 +156,7 @@ export function hasLineErrors(errors: ReceiptLineErrors): boolean {
 
 const LINE_FIELDS: readonly ReceiptLineField[] = [
   'vehicleId',
+  'article',
   'name',
   'quantity',
   'unit',
@@ -178,4 +187,77 @@ export function receiptLineErrorsFromApi(
     errors[row.key] = { ...errors[row.key], [field as ReceiptLineField]: message };
   }
   return errors;
+}
+
+/**
+ * Почему поле не подставилось — теми же словами, какими форма отказывает при ручном вводе
+ * (ADR 0094): человек читает поле, а не код. Дословное чтение с бумаги подставляется в текст —
+ * ради него подсказка и существует: портал не угадывает за механика, но показывает, что увидел.
+ */
+function issueText(issue: ReceiptDraftIssue, line: ReceiptDraftLine): string {
+  switch (issue) {
+    case 'quantityFraction':
+      return `В чеке «${line.quantityRaw || 'дробное число'}» — количество целое: перенесите объём в наименование`;
+    case 'quantityRange':
+      return `Количество с бумаги не подходит: «${line.quantityRaw}»`;
+    case 'amountMissing':
+      return 'Сумма не прочиталась — впишите её с бумаги';
+    case 'amountRange':
+      return 'Сумма с бумаги вне допустимых значений';
+    case 'amountKopecks':
+      return 'В сумме больше двух знаков после запятой — впишите её с бумаги';
+    case 'nameMissing':
+      return 'Наименование не прочиталось — впишите его с бумаги';
+    case 'nameTooLong':
+      return 'Наименование длиннее 300 знаков — сократите';
+    case 'articleTooLong':
+      return 'Артикул длиннее 100 знаков — сократите';
+    case 'unitTooLong':
+      return 'Единица длиннее 20 знаков — сократите';
+  }
+}
+
+/**
+ * Черновик распознавания → строки формы и подсказки к ним (план
+ * `docs/auto-part-receipt-ocr-plan.md`, §10).
+ *
+ * Подсказки кладутся в тот же `ReceiptLineErrors`, которым форма показывает свои отказы и отказы
+ * сервера: третьего способа подсветить ячейку в окне нет, и заводить его ради распознавания
+ * значило бы держать два разных красных под одной таблицей.
+ *
+ * **Машина не подставляется никогда** (Р2): рукописные пометки на полях счёта — «ПОЗ 1. КРАН
+ * КС55713 г.н. У2250Р777» — не распознаются вовсе, и колонка остаётся пустой.
+ */
+export function receiptRowsFromDraft(draft: ReceiptDraft): {
+  rows: ReceiptLineRow[];
+  errors: ReceiptLineErrors;
+} {
+  const rows: ReceiptLineRow[] = [];
+  const errors: ReceiptLineErrors = {};
+  for (const line of draft.lines) {
+    const row: ReceiptLineRow = {
+      key: nextKey('ocr'),
+      vehicleId: null,
+      article: line.article,
+      name: line.name,
+      quantity: line.quantity,
+      unit: line.unit,
+      amount: line.amount,
+      // Вид позиции в чек не уезжает: он мнение модели, а не свойство покупки (Р3а). Строку,
+      // непохожую на запчасть, человек видит подсказкой и решает сам — снять её или оставить.
+      note: line.kind === 'part' ? '' : 'похоже, не запчасть',
+    };
+    rows.push(row);
+    const issues: Partial<Record<ReceiptLineField, string>> = {};
+    for (const issue of line.issues) {
+      const text = issueText(issue, line);
+      if (issue.startsWith('quantity')) issues.quantity = text;
+      else if (issue.startsWith('amount')) issues.amount = text;
+      else if (issue.startsWith('name')) issues.name = text;
+      else if (issue.startsWith('article')) issues.article = text;
+      else issues.unit = text;
+    }
+    if (Object.keys(issues).length > 0) errors[row.key] = issues;
+  }
+  return { rows: rows.length > 0 ? rows : [newReceiptLine()], errors };
 }
