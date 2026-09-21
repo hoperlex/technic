@@ -32,6 +32,9 @@ function bool(raw: string | undefined, fallback: boolean): boolean {
  * Выключенный контур — это `null`, а не «настройки с пустым хостом»: тогда «ходить или не ходить»
  * решается один раз на старте, а не в каждом тике, и включение контура без адреса ящика не
  * превращается в предупреждение раз в пять минут навсегда.
+ *
+ * Для транспорта `imap` обязательны ДВА значения — адрес сервера и имя папки. Почему папка
+ * обязательна, сказано ниже, у самой строки.
  */
 export function readDeviceMailConfig(env: NodeJS.ProcessEnv): DeviceMailConfig | null {
   if (!bool(env.DEVICE_MAIL_ENABLED, false)) return null;
@@ -39,8 +42,19 @@ export function readDeviceMailConfig(env: NodeJS.ProcessEnv): DeviceMailConfig |
   const transport = env.DEVICE_MAIL_TRANSPORT === 'dir' ? 'dir' : 'imap';
   const dir = env.DEVICE_MAIL_DIR ?? '';
   const imapHost = env.DEVICE_MAIL_IMAP_HOST ?? '';
+  /**
+   * ПАПКА НАЗЫВАЕТСЯ ЯВНО, УМОЛЧАНИЯ У НЕЁ НЕТ — и это не педантизм, а защита чужой почты.
+   *
+   * Раньше здесь стоял `INBOX`, и забытая строка в окружении означала бы вот что: приёмник
+   * вычерпывает входящие целиком. На выделенном ящике это безобидно, а на общем ящике проекта —
+   * нет: каждое письмо людей уехало бы в хранилище сырьём на тридцать дней (сырьё кладётся ДО
+   * проверки отправителя), получило бы отметку «прочитано» и всплыло бы строкой в очереди разбора,
+   * открытой ИТ-службе. Поэтому папку обязан назвать человек: `INBOX` — тоже законный ответ, но
+   * данный вслух.
+   */
+  const mailbox = (env.DEVICE_MAIL_IMAP_MAILBOX ?? '').trim();
   if (transport === 'dir' && !dir) return null;
-  if (transport === 'imap' && !imapHost) return null;
+  if (transport === 'imap' && (!imapHost || mailbox === '')) return null;
 
   return {
     account: env.DEVICE_MAIL_ACCOUNT || 'default',
@@ -53,7 +67,7 @@ export function readDeviceMailConfig(env: NodeJS.ProcessEnv): DeviceMailConfig |
     imapSecure: bool(env.DEVICE_MAIL_IMAP_SECURE, true),
     imapUser: env.DEVICE_MAIL_IMAP_USER ?? '',
     imapPassword: env.DEVICE_MAIL_IMAP_PASSWORD ?? '',
-    mailbox: env.DEVICE_MAIL_IMAP_MAILBOX || 'INBOX',
+    mailbox,
     processedMailbox: env.DEVICE_MAIL_IMAP_PROCESSED_MAILBOX ?? '',
     pollIntervalMs: num(env.DEVICE_MAIL_POLL_INTERVAL_MS, 300_000),
     batch: num(env.DEVICE_MAIL_BATCH, 50),

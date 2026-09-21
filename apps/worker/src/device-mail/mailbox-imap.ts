@@ -42,7 +42,22 @@ export function createImapMailbox(
         disableAutoIdle: true,
       });
       await next.connect();
-      const mailbox = await next.mailboxOpen(cfg.mailbox);
+      /*
+       * Отсутствующая папка объясняется словами, а не кодом сервера. Строка ошибки доезжает до
+       * шапки очереди («курсор ящика стоит»), и человек, который час назад заводил правило в
+       * почте, обязан по ней понять, что папку не создали или назвали иначе, — а не идти читать,
+       * что такое NoSuchMailbox.
+       */
+      let mailbox;
+      try {
+        mailbox = await next.mailboxOpen(cfg.mailbox);
+      } catch (e) {
+        await next.logout().catch(() => undefined);
+        throw new Error(
+          `Папка «${cfg.mailbox}» в ящике не открывается: ${e instanceof Error ? e.message : String(e)}. ` +
+            'Проверьте, что папка создана и названа точно так же (у части служб путь начинается с INBOX/).',
+        );
+      }
       client = next;
       // Верхняя граница ящика — «следующий номер минус один»: она приезжает вместе с SELECT, и
       // лишнего обхода за ней не нужно. Номер может оказаться незанятым — и пусть: отметка Р32

@@ -389,3 +389,57 @@ describe('приёмник писем оргтехники', () => {
     expect(raw).toContain('показания');
   });
 });
+
+/**
+ * НАСТРОЙКИ ПРИЁМА: что считается настроенным контуром.
+ *
+ * Предмет один и он про чужую почту. Приёмник скачивает КАЖДОЕ письмо своей папки и кладёт сырьё в
+ * хранилище раньше, чем смотрит на отправителя, — значит «какую папку читать» обязан сказать
+ * человек. Умолчание `INBOX`, стоявшее здесь до 21.09.2026, означало бы, что забытая строка в
+ * окружении вычерпывает входящие общего ящика проекта: переписка людей ушла бы в хранилище на
+ * тридцать дней и всплыла бы строками в очереди разбора.
+ */
+describe('настройки приёма писем оргтехники', () => {
+  const base = {
+    DEVICE_MAIL_ENABLED: 'true',
+    DEVICE_MAIL_TRANSPORT: 'imap',
+    DEVICE_MAIL_IMAP_HOST: 'imap.example.invalid',
+  } as NodeJS.ProcessEnv;
+
+  it('без имени папки контур считается ненастроенным', () => {
+    expect(readDeviceMailConfig(base)).toBeNull();
+    // Пробелы — то же самое, что пусто: строка вида «DEVICE_MAIL_IMAP_MAILBOX= » не должна
+    // проходить за ответ человека.
+    expect(readDeviceMailConfig({ ...base, DEVICE_MAIL_IMAP_MAILBOX: '   ' })).toBeNull();
+  });
+
+  it('названная папка берётся как есть, вместе с путём через косую черту', () => {
+    const cfg = readDeviceMailConfig({ ...base, DEVICE_MAIL_IMAP_MAILBOX: 'INBOX/MFP' });
+    expect(cfg?.mailbox).toBe('INBOX/MFP');
+  });
+
+  it('INBOX — законный ответ, но данный вслух', () => {
+    expect(readDeviceMailConfig({ ...base, DEVICE_MAIL_IMAP_MAILBOX: 'INBOX' })?.mailbox).toBe(
+      'INBOX',
+    );
+  });
+
+  it('каталогу с письмами папка не нужна: у него её нет по устройству', () => {
+    const cfg = readDeviceMailConfig({
+      DEVICE_MAIL_ENABLED: 'true',
+      DEVICE_MAIL_TRANSPORT: 'dir',
+      DEVICE_MAIL_DIR: '/tmp/device-mail-probe',
+    } as NodeJS.ProcessEnv);
+    expect(cfg?.transport).toBe('dir');
+  });
+
+  it('без адреса сервера контур не настроен даже с папкой', () => {
+    expect(
+      readDeviceMailConfig({
+        DEVICE_MAIL_ENABLED: 'true',
+        DEVICE_MAIL_TRANSPORT: 'imap',
+        DEVICE_MAIL_IMAP_MAILBOX: 'MFP',
+      } as NodeJS.ProcessEnv),
+    ).toBeNull();
+  });
+});
