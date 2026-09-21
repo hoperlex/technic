@@ -141,14 +141,19 @@ describe('пункты меню следуют из прав', () => {
     expect(screen.queryByText('Справочники')).toBeNull();
   });
 
-  it('отделу не показывают вкладку «На объекте»: спецтехники у него не бывает (ADR 0040)', () => {
-    // Вкладка отбирает спецтехнику на площадках. Отделу она недоступна как тип заявки, и список
-    // был бы пуст всегда — вкладка обещала бы содержимое, которого не бывает.
-    expect(canOrderVehicleRequestType({ role: 'department' }, 'special_equipment')).toBe(false);
-    expect(canOrderVehicleRequestType({ role: 'department_head' }, 'special_equipment')).toBe(
-      false,
-    );
-    expect(canOrderVehicleRequestType({ role: 'department' }, 'freight_transport')).toBe(true);
+  it('вкладка «На объекте» у отдела следует за его площадками (ADR 0201)', () => {
+    // Вкладка отбирает спецтехнику на площадках, и показывает её тот же предикат, которым сервер
+    // решает, принять ли заказ. Отделу без площадок список был бы пуст всегда — вкладка обещала
+    // бы содержимое, которого не бывает; отделу с площадками на ней стоят его же заказы.
+    for (const role of ['department', 'department_head'] as Role[]) {
+      expect(canOrderVehicleRequestType({ role }, 'special_equipment'), role).toBe(false);
+      expect(
+        canOrderVehicleRequestType({ role, departmentObjectIds: ['object-1'] }, 'special_equipment'),
+        role,
+      ).toBe(true);
+      // Грузоперевозка у отдела не зависит от площадок вовсе: её он заводит от себя.
+      expect(canOrderVehicleRequestType({ role }, 'freight_transport'), role).toBe(true);
+    }
     // Остальным заказчикам доступны оба типа — вкладка на месте.
     for (const role of ['shtab', 'rukstroy', 'dispatcher'] as Role[]) {
       expect(canOrderVehicleRequestType({ role }, 'special_equipment'), role).toBe(true);

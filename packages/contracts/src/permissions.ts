@@ -1915,8 +1915,9 @@ export interface ScopedSubject extends AccessSubject {
  * роли — свои, у роли отдела — площадки её отделов. `null` означает «областью не ограничен» и
  * отличается от пустого набора, как «видит всё» отличается от «не видит ничего».
  *
- * Только этот модуль: в «Заказе ТС» у роли отдела заказчик — отдел, и объектной области у неё
- * там нет вовсе (ADR 0062 п. 3).
+ * Ось производная и общая трём модулям: вывоз мусора (ADR 0062), механизация (ADR 0152) и — с
+ * ADR 0201 — заказ спецтехники, где заказчиком тоже всегда стоит объект. Грузоперевозку отдел
+ * по-прежнему заводит и от себя: там у заявки два рода заказчика, и площадка не отменяет отдел.
  */
 export function placeObjectScopeIds(
   subject: ScopedSubject | null | undefined,
@@ -2083,7 +2084,9 @@ export function accessProfileLabel(subject: AccessSubject): string {
 
 /**
  * Роли, которым в модуле «Заказ ТС» доступны не все типы заявки (ADR 0040). Отдел заказывает
- * только грузоперевозки: спецтехника выходит на площадку, а площадки у отдела нет.
+ * грузоперевозки всегда, а спецтехнику — только пока за его отделами закреплена хоть одна
+ * площадка (ADR 0201): заказ «работы на площадке» адресуют объекту, и отделу без площадок
+ * адресовать его некуда.
  *
  * Таблица, а не право `vehicleRequests.freight` и не `if` по имени роли. Право отвечает «что
  * учётка делает», а здесь ограничение по признаку самой строки — это область; в матрице оно
@@ -2096,16 +2099,34 @@ const ROLE_VEHICLE_REQUEST_TYPES: Partial<Record<Role, readonly VehicleRequestTy
   department_head: ['freight_transport'],
 };
 
-/** Типы заявки на технику, доступные субъекту (пустой список невозможен: роли без модуля сюда не доходят). */
+/**
+ * Типы заявки на технику, доступные субъекту (пустой список невозможен: роли без модуля сюда не
+ * доходят).
+ *
+ * Коридор роли **расширяется её областью**, а не снимается таблицей: спецтехника открыта отделу
+ * ровно тогда, когда за его отделами стоят площадки (ADR 0201). Заказчиком у такой заявки
+ * остаётся объект (`vehicle_requests_department_freight_check` не даёт другого), и площадки —
+ * единственное, что делает этот заказ адресуемым.
+ *
+ * Отсюда и площадочный субъект: ответ зависит от справочника, а не только от роли. Отдел, с
+ * которого сняли последнюю площадку, отвечает как прежде — «только грузоперевозки», — и вкладка
+ * «На объекте» у него исчезает тем же ответом, каким появилась.
+ */
 export function allowedVehicleRequestTypes(
-  subject: AccessSubject | null | undefined,
+  subject: ScopedSubject | null | undefined,
 ): readonly VehicleRequestType[] {
   const own = subject?.role ? ROLE_VEHICLE_REQUEST_TYPES[subject.role] : undefined;
-  return own ?? VEHICLE_REQUEST_TYPES;
+  if (!own) return VEHICLE_REQUEST_TYPES;
+  // Площадки спрашиваются тем же `placeObjectScopeIds`, что и в вывозе с механизацией: три модуля
+  // ходят по одной производной оси, и второй способ её посчитать разошёлся бы с ними молча.
+  if (isDepartmentScopedRole(subject?.role) && (placeObjectScopeIds(subject)?.length ?? 0) > 0) {
+    return VEHICLE_REQUEST_TYPES;
+  }
+  return own;
 }
 
 export function canOrderVehicleRequestType(
-  subject: AccessSubject | null | undefined,
+  subject: ScopedSubject | null | undefined,
   requestType: VehicleRequestType,
 ): boolean {
   return allowedVehicleRequestTypes(subject).includes(requestType);

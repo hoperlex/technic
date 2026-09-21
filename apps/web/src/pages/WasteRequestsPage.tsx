@@ -86,7 +86,7 @@ import {
   TicketAuditModal,
   useTicketAuditMobileAction,
 } from '@features/ticket-audit';
-import { useWasteObjectScope } from '../hooks/useWasteObjectScope';
+import { usePlaceObjectScope } from '../hooks/usePlaceObjectScope';
 import { useAuth } from '../auth/AuthContext';
 
 import { errorMessage, formatDate, formatDateTimeMaybe } from '../utils/format';
@@ -257,7 +257,7 @@ function RequestsTab() {
   // Область видимости («свои объекты», «свои заявки»), а не право: от неё зависит, что показывать
   // в фильтрах и колонках, а не что разрешено делать. У роли отдела объекты производны — это
   // площадка её отдела (ADR 0062), и спрашивается она хуком этого модуля, а не общим.
-  const { soleObjectId, objectFieldDisabled, limitObjectOptions } = useWasteObjectScope();
+  const { soleObjectId, objectFieldDisabled, limitObjectOptions } = usePlaceObjectScope();
   // «Оператор вывоза» — это роль исполнителя плюс контрагент-оператор (ADR 0038): по одной роли
   // такой вывод уже неверен, ею же работает арендодатель техники в другом разделе.
   const isOperator = actsForCounterparty(user, 'operator');

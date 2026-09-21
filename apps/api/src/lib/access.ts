@@ -128,8 +128,10 @@ function assertCounterpartyScope(
  *
  * Имя называет **ось, а не модуль**: так работают «Вывоз мусора» и «Механизация», у которых
  * площадка есть у каждой записи. В «Заказе ТС» иначе — там заказчиком бывает сам отдел
- * (ADR 0062 п. 3), и применить эту функцию значило бы молча отдать роли отдела объектные заявки
- * на технику; у того модуля своя — `vehicleRequestVisibilityWhere`.
+ * (ADR 0040), и записи двух родов лежат в одной таблице; площадочная ось у роли отдела там
+ * есть (ADR 0201), но идёт **вдобавок** к отдельской, дизъюнкцией двух колонок, и выражает её
+ * своя функция — `vehicleRequestVisibilityWhere`. Применить эту значило бы потерять заявки,
+ * заведённые отделом от себя.
  *
  * Пустая область означает «не видит ничего», а не «видит всё»: у роли отдела без площадки это
  * рабочее состояние, а у объектной роли — состояние, которого API не допускает, но выборка не
@@ -215,9 +217,18 @@ export interface RequestCustomer {
  * ничего», а не «видит всё»: активировать такую учётку API не даёт, но выборка не должна
  * зависеть от того, удержалась ли эта проверка.
  *
- * Отдельно от `placeObjectVisibilityWhere`, и не только из-за колонок: роль отдела здесь
- * сравнивается со **своим отделом**, а площадка отдела (ADR 0062) в этот модуль не приходит —
- * заявку на технику отдел заводит от себя, и заказчиков у неё по-прежнему двое на выбор.
+ * Отдельно от `placeObjectVisibilityWhere`, и не только из-за колонок: у роли отдела здесь **две**
+ * оси сразу. Своя по заказчику-отделу — заявку на технику отдел заводит от себя (ADR 0040), — и
+ * своя по площадке: с ADR 0201 отдел с закреплёнными площадками работает на них наравне со штабом,
+ * заказывая в том числе спецтехнику, у которой заказчиком стоит объект.
+ *
+ * Дизъюнкция, а не выбор одной из двух, — то же устройство, что у журнала путевых листов
+ * (`ownRequestScopeSql`, ADR 0192): у заявки отдела объекта нет вовсе, у заявки площадки нет
+ * отдела, и сравнение «по обеим колонкам сразу» не нашло бы ни одной строки.
+ *
+ * Тип заявки в условии не участвует намеренно (ADR 0201): площадочная ось отвечает на вопрос «чья
+ * это площадка», а не «что именно на неё заказали», и деление по типу пришлось бы повторять в
+ * каждой проверке модуля — включая те, где типа под рукой нет (файлы, сводка, рассылки).
  */
 export function vehicleRequestVisibilityWhere(
   p: Principal,
@@ -229,10 +240,31 @@ export function vehicleRequestVisibilityWhere(
     return ids.length > 0 ? inArray(objectIdColumn, ids) : eq(objectIdColumn, NEVER_MATCH);
   }
   if (isDepartmentScopedRole(p.role)) {
-    const ids = p.departmentIds;
-    return ids.length > 0 ? inArray(departmentIdColumn, ids) : eq(departmentIdColumn, NEVER_MATCH);
+    const own = p.departmentIds;
+    const places = p.departmentObjectIds;
+    const byDepartment = own.length > 0 ? inArray(departmentIdColumn, own) : undefined;
+    const byPlace = places.length > 0 ? inArray(objectIdColumn, places) : undefined;
+    // Обе оси пусты — «не видит ничего»: учётку роли отдела без единого отдела портал завести не
+    // даёт (`users.ts`), но выборка не должна зависеть от того, удержалась ли та проверка.
+    if (!byDepartment && !byPlace) return eq(departmentIdColumn, NEVER_MATCH);
+    return or(byDepartment, byPlace)!;
   }
   return undefined;
+}
+
+/**
+ * Заявка на технику принадлежит роли отдела (ADR 0201) — одним ответом на все проверки модуля:
+ * видимость строки, виза, область действия и подпись под сменами обязаны отвечать одинаково,
+ * иначе заявка либо прячется от того, кому открыта, либо открывается по прямой ссылке.
+ *
+ * Те же две оси, что в `vehicleRequestVisibilityWhere`, и в том же порядке: сначала свой отдел
+ * (ADR 0040), затем своя площадка (ADR 0062, набором — ADR 0144).
+ */
+function departmentOwnsRequest(p: Principal, customer: RequestCustomer): boolean {
+  return (
+    (!!customer.departmentId && p.departmentIds.includes(customer.departmentId)) ||
+    (!!customer.objectId && p.departmentObjectIds.includes(customer.objectId))
+  );
 }
 
 /**
@@ -246,9 +278,11 @@ export function canApproveRequest(p: Principal, customer: RequestCustomer): bool
   if (isObjectScopedRole(p.role)) {
     return !!customer.objectId && p.constructionObjectIds.includes(customer.objectId);
   }
-  if (isDepartmentScopedRole(p.role)) {
-    return !!customer.departmentId && p.departmentIds.includes(customer.departmentId);
-  }
+  // Руководитель отдела подписывает и заказ на площадке своего отдела (ADR 0201): решение
+  // заказчика о том, что техника нужна и по средствам, принимает тот, кто этот заказ и завёл.
+  // Отсюда принятое следствие: у заявки объекта визирующих два круга — руководитель строительства
+  // площадки и руководители отделов, за которыми она закреплена. Кто подписал, видно в карточке.
+  if (isDepartmentScopedRole(p.role)) return departmentOwnsRequest(p, customer);
   return true;
 }
 
@@ -313,9 +347,14 @@ export function assertRequestScope(p: Principal, customer: RequestCustomer): voi
     return;
   }
   if (isDepartmentScopedRole(p.role)) {
-    if (!customer.departmentId || !p.departmentIds.includes(customer.departmentId)) {
-      throw err.forbidden(`${roleLabels[p.role!]} работает только со своими отделами`);
-    }
+    if (departmentOwnsRequest(p, customer)) return;
+    // Отказ называет ровно те оси, которые у учётки есть. Отделу без площадок «и их площадками»
+    // отвечало бы загадкой — своих площадок ноль, и искать ошибку он пошёл бы не туда.
+    throw err.forbidden(
+      p.departmentObjectIds.length > 0
+        ? `${roleLabels[p.role!]} работает только со своими отделами и их площадками`
+        : `${roleLabels[p.role!]} работает только со своими отделами`,
+    );
   }
 }
 
@@ -357,9 +396,9 @@ export function canConfirmShifts(
   if (isObjectScopedRole(p.role)) {
     return !!request.objectId && p.constructionObjectIds.includes(request.objectId);
   }
-  if (isDepartmentScopedRole(p.role)) {
-    return !!request.departmentId && p.departmentIds.includes(request.departmentId);
-  }
+  // Обе оси роли отдела (ADR 0201): день работы на своей площадке подписывает тот, кто на ней и
+  // работает, — тем же кругом, каким эту заявку заводят.
+  if (isDepartmentScopedRole(p.role)) return departmentOwnsRequest(p, request);
   return true;
 }
 

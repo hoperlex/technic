@@ -152,6 +152,43 @@ describe('состав подбора в заказе ТС (Р3)', () => {
   });
 });
 
+/**
+ * Площадочная ось подбора (ADR 0201): режим `objects: 'place'` спрашивают форма спецтехники и
+ * фильтр трёх списков модуля. Отличается от прямой оси ровно ролью отдела — ей показываются
+ * закреплённые площадки, а не пустая группа.
+ */
+describe('площадочная ось подбора (ADR 0201)', () => {
+  it('роль отдела видит свои площадки рядом со своими отделами', async () => {
+    renderCustomer({ user: departmentUser('dep-1', ['obj-2']), input: { objects: 'place' } });
+
+    await expectGroups([
+      ['Объекты', ['object:obj-2']],
+      ['Отделы', ['department:dep-1']],
+    ]);
+  });
+
+  it('у спецтехники остаются одни площадки: отделов при ней нет вовсе', async () => {
+    renderCustomer({
+      user: departmentUser('dep-1', ['obj-2']),
+      input: { objects: 'place', departments: 'none' },
+    });
+
+    await expectGroups([['Объекты', ['object:obj-2']]]);
+  });
+
+  it('отдел без площадок объектов не получает: группа пуста, а не открыта целиком', async () => {
+    renderCustomer({ user: departmentUser('dep-1'), input: { objects: 'place' } });
+
+    await expectGroups([['Отделы', ['department:dep-1']]]);
+  });
+
+  it('объектной роли площадочная ось равна прямой', async () => {
+    renderCustomer({ user: shtabUser('obj-1'), input: { objects: 'place' } });
+
+    await expectGroups([['Объекты', ['object:obj-1']]]);
+  });
+});
+
 describe('спецтехника отделов не знает (Р4, К8)', () => {
   it('группы «Отделы» нет, а стоящий отдел наружу отдаётся пустым', async () => {
     renderCustomer({

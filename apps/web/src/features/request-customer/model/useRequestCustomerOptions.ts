@@ -5,6 +5,7 @@ import { objectOptionsQuery } from '@entities/object';
 import { flattenOptions, soleOption, withSavedOption } from '@shared/lib';
 import { useDepartmentScope } from '../../../hooks/useDepartmentScope';
 import { useObjectScope } from '../../../hooks/useObjectScope';
+import { usePlaceObjectScope } from '../../../hooks/usePlaceObjectScope';
 
 /**
  * Подбор заказчика «Объект/отдел»: одно поле с составным ключом (план
@@ -64,9 +65,16 @@ export type RequestCustomerSaved = { target: CostTargetRef; label: string };
 
 export interface RequestCustomerInput {
   /**
-   * Откуда берутся объекты: `'scope'` — справочник по оси учётки (заказ ТС, Р3); `'wide'` —
+   * Откуда берутся объекты: `'scope'` — справочник по **прямой** оси учётки (заказ грузоперевозки,
+   * Р3); `'place'` — по площадочной оси (заказ спецтехники, ADR 0201): у объектной роли свои
+   * объекты, у роли отдела площадки её отделов, у роли без оси весь справочник; `'wide'` —
    * справочник целиком, потому что оси у смотрящего нет вовсе (оргтехника, Р6); готовая площадка —
    * объект выбранной единицы (оргтехника, Р11); `null` — единицу ещё не выбрали, площадки нет.
+   *
+   * `'place'` отличается от `'scope'` ровно ролью отдела: там объектов ей не показывают вовсе, а
+   * здесь показывают закреплённые площадки — заказчиком спецтехники стоит объект, и отдел
+   * выбирает из своих. Отдельным значением, а не признаком рядом: оба отвечают на вопрос «откуда
+   * объекты» и исключают друг друга.
    *
    * `'wide'` заведён отдельным значением, а не признаком рядом, потому что отвечает на тот же
    * вопрос «откуда объекты» и исключает прочие ответы. Сужать состав по оси роли он не должен
@@ -75,7 +83,7 @@ export interface RequestCustomerInput {
    * показывают по привязкам. Решает это потребитель: знание о том, чья это область и в каком
    * модуле, есть у него, а здесь его взять неоткуда.
    */
-  objects?: 'scope' | 'wide' | RequestCustomerSite | null;
+  objects?: 'scope' | 'wide' | 'place' | RequestCustomerSite | null;
   /**
    * Какие отделы предлагать:
    *
@@ -147,6 +155,8 @@ export function useRequestCustomerOptions({
 }: RequestCustomerInput = {}): RequestCustomerOptions {
   const { isObjectRole, limitObjectOptions } = useObjectScope();
   const { isDepartmentRole, limitDepartmentOptions } = useDepartmentScope();
+  // Площадочная ось (ADR 0062, ADR 0144, ADR 0201) — та же, по которой список сужает сервер.
+  const place = usePlaceObjectScope();
 
   // Оси спрашиваются готовыми хуками (ADR 0039, ADR 0040), а не по имени роли: предикат один на
   // портал, и вторая его копия здесь открыла бы чужую площадку молча — фильтром, а не отказом.
@@ -155,8 +165,21 @@ export function useRequestCustomerOptions({
   // модуля, и справочник объектов ему положен целиком — потому и запрос включается, и сужение
   // `limitObjectOptions` ниже к нему не применяется.
   const wideObjects = objects === 'wide';
-  const fromObjectDirectory = objects === 'scope' || wideObjects;
-  const wantObjects = wideObjects || (objects === 'scope' && !isDepartmentRole);
+  const placeObjects = objects === 'place';
+  const fromObjectDirectory = objects === 'scope' || wideObjects || placeObjects;
+  /*
+   * По площадочной оси объекты нужны почти каждому: роли отдела — её площадки, объектной — её
+   * объекты, роли без оси — справочник целиком.
+   *
+   * Исключение — пустая ось: у отдела без площадок и у объектной роли без объектов показывать
+   * нечего, и справочник не спрашивается вовсе. Это не экономия запроса ради экономии: список,
+   * который сузится до нуля, всё равно не покажет ни строки, а лишний поход за справочником
+   * объектов видели бы те, кому объекты в этом модуле не положены.
+   */
+  const wantObjects =
+    wideObjects ||
+    (placeObjects && (!place.isScoped || place.ownObjectIds.length > 0)) ||
+    (objects === 'scope' && !isDepartmentRole);
   const wantDepartments = departments !== 'none' && !(departments === 'scope' && isObjectRole);
 
   const objectsQuery = useQuery({ ...objectOptionsQuery(), enabled: wantObjects });
@@ -169,7 +192,9 @@ export function useRequestCustomerOptions({
   const scopeObjects = wantObjects
     ? wideObjects
       ? allObjects
-      : limitObjectOptions(allObjects)
+      : placeObjects
+        ? place.limitObjectOptions(allObjects)
+        : limitObjectOptions(allObjects)
     : [];
   const objectLeaves = fromObjectDirectory
     ? scopeObjects.map((o) => leafOf({ kind: 'object', id: o.value }, o.label))

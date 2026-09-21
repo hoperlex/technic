@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { moscowDateKeyOf, REQUEST_CUSTOMER_LOCKED_MESSAGE } from '@technic/contracts';
+import { moscowDateKeyOf, REQUEST_CUSTOMER_LOCKED_MESSAGE, shiftDateKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -42,6 +42,8 @@ const ADMIN_EMAIL = 'db-request-customer-admin@example.invalid';
 const MANAGER_EMAIL = 'db-request-customer-manager@example.invalid';
 /** Визирующий со стороны отдела: право визы плюс отдел в области (ADR 0040, решение 2 плана). */
 const HEAD_EMAIL = 'db-request-customer-head@example.invalid';
+/** Сотрудник того же отдела: заказывает, но не визирует — им проверяется площадочная ось ADR 0201. */
+const STAFF_EMAIL = 'db-request-customer-staff@example.invalid';
 const PASSWORD = 'db-test-password-123';
 
 /** Метка справочных записей файла: по ней же он за собой и убирает. */
@@ -137,6 +139,7 @@ async function seedUsers(): Promise<void> {
     [ADMIN_EMAIL, 'admin', 'Администратор'],
     [MANAGER_EMAIL, 'manager', 'Менеджер'],
     [HEAD_EMAIL, 'department_head', 'Руководитель'],
+    [STAFF_EMAIL, 'department', 'Сотрудник'],
   ] as const) {
     const [existing] = await db
       .select({ id: schema.users.id })
@@ -164,7 +167,8 @@ async function seedUsers(): Promise<void> {
 async function resetFixtures(): Promise<void> {
   const { db } = await import('../src/db/client');
   const ourUsers = sql`
-    SELECT id FROM users WHERE email IN (${ADMIN_EMAIL}, ${MANAGER_EMAIL}, ${HEAD_EMAIL})`;
+    SELECT id FROM users
+     WHERE email IN (${ADMIN_EMAIL}, ${MANAGER_EMAIL}, ${HEAD_EMAIL}, ${STAFF_EMAIL})`;
   await db.execute(sql`DELETE FROM vehicle_requests WHERE created_by IN (${ourUsers})`);
   // Журнал — по автору: писали в него только здешние учётки, а видов записей у них несколько.
   await db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
@@ -181,11 +185,11 @@ async function createDepartment(suffix: string, name: string): Promise<string> {
   return rows.rows[0]!.id;
 }
 
-async function createObject(): Promise<string> {
+async function createObject(suffix = 'OBJ', name = OBJECT_NAME): Promise<string> {
   const { db } = await import('../src/db/client');
   const rows = await db.execute<{ id: string }>(sql`
     INSERT INTO construction_objects (code, name, address)
-    VALUES (${`${FIXTURE_PREFIX}-OBJ`}, ${OBJECT_NAME}, ${'г Москва, ул Тестовая, д 1'})
+    VALUES (${`${FIXTURE_PREFIX}-${suffix}`}, ${name}, ${'г Москва, ул Тестовая, д 1'})
     RETURNING id`);
   return rows.rows[0]!.id;
 }
@@ -531,6 +535,126 @@ describe.skipIf(!DB_URL)('заказчик заявки: отдел наравн
         .json()
         .items.map((row: { kind: string; order?: { id: string } }) => row.order?.id);
       expect(ids).toEqual(alphabet);
+    });
+  });
+
+  /**
+   * Площадка отдела в заказе спецтехники (ADR 0201). Отдел с закреплённой площадкой работает на
+   * ней наравне со штабом: заказывает «работу на площадке», видит чужие заказы этой площадки, а
+   * его руководитель их подписывает.
+   *
+   * Почему на живой схеме. Ось здесь **производная**: площадки приходят принципалу выражением по
+   * `department_construction_objects` на каждом запросе (`departmentObjectIdsExpr`), а коридор
+   * типов заявки считается уже по ним. Правилами это не проверить — там область подставляют
+   * руками, и тест промолчал бы ровно про то место, где справочник встречается с доступом.
+   */
+  describe('отдел с площадкой заказывает спецтехнику на неё (ADR 0201)', () => {
+    let staffAuth: { authorization: string };
+    let special: { typeId: string; categoryId: string | null };
+    /** Площадка, ни за кем не закреплённая: на неё отдел не заказывает ничего. */
+    let foreignObjectId: string;
+
+    const specialPayload = (objectId: string, over: Record<string, unknown> = {}) => ({
+      requestType: 'special_equipment',
+      objectId,
+      vehicleTypeId: special.typeId,
+      vehicleCategoryId: special.categoryId,
+      // Технику заказывают заранее (ADR 0104): день с запасом, чтобы отбой по сроку не выдавал
+      // себя за отказ по области — 422 и 403 здесь отвечают на разные вопросы.
+      dateFrom: shiftDateKey(ctx.today, 3),
+      responsibleName: 'Петров Пётр Петрович',
+      responsiblePhone: '+79990000001',
+      comment: 'Разработка грунта',
+      ...over,
+    });
+
+    const post = (payload: Record<string, unknown>, auth: { authorization: string }) =>
+      ctx.app.inject({
+        method: 'POST',
+        url: '/api/v1/vehicle-requests',
+        headers: auth,
+        payload,
+      });
+
+    beforeAll(async () => {
+      const schema = await import('../src/db/schema');
+      const rows = await ctx.db.execute<{ type_id: string; category_id: string | null }>(sql`
+        SELECT vt.id AS type_id,
+               (SELECT c.id FROM vehicle_categories c
+                 WHERE c.vehicle_type_id = vt.id AND c.is_active
+                 ORDER BY c.sort_order LIMIT 1) AS category_id
+        FROM vehicle_types vt
+        JOIN vehicle_kinds vk ON vk.id = vt.kind_id
+        WHERE vk.code = 'special_equipment' AND vt.is_active AND vk.is_active
+        ORDER BY vt.sort_order
+        LIMIT 1`);
+      const row = rows.rows[0];
+      if (!row) throw new Error('В справочнике нет активного типа спецтехники: миграции не применены');
+      special = { typeId: row.type_id, categoryId: row.category_id };
+
+      foreignObjectId = await createObject('OBJ2', 'Заказчик-Г площадка (тест)');
+      // Привязка набором (ADR 0144): колонку-проекцию пишет триггер совместимости, а область
+      // принципала читается из этой таблицы — заводить её обходным путём значило бы проверять не
+      // то, что работает на проде.
+      await ctx.db.insert(schema.departmentConstructionObjects).values({
+        departmentId: ctx.headDepartmentId,
+        constructionObjectId: ctx.objectId,
+      });
+
+      const { db } = await import('../src/db/client');
+      const [staff] = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(sql`${schema.users.email} = ${STAFF_EMAIL}`);
+      await db
+        .insert(schema.userDepartments)
+        .values({ userId: staff!.id, departmentId: ctx.headDepartmentId, isHead: false })
+        .onConflictDoNothing();
+      staffAuth = await login(STAFF_EMAIL);
+    }, 60_000);
+
+    it('сотрудник отдела заводит заказ на свою площадку, а на чужую получает отказ', async () => {
+      const own = await post(specialPayload(ctx.objectId), staffAuth);
+      expect(own.statusCode, own.body).toBe(201);
+      expect(own.json().objectId).toBe(ctx.objectId);
+      expect(own.json().departmentId).toBeNull();
+      // Права визы у сотрудника нет: заказ ждёт подписи — руководителя отдела либо площадки.
+      expect(own.json().approvedAt).toBeNull();
+
+      const foreign = await post(specialPayload(foreignObjectId), staffAuth);
+      expect(foreign.statusCode, foreign.body).toBe(403);
+    });
+
+    it('руководитель отдела подписывает заказ своей площадки, в том числе свой собственный', async () => {
+      // Завёл сам — согласование состоялось (ADR 0025 п. 5): виза встаёт тем же действием.
+      const own = await post(specialPayload(ctx.objectId), ctx.headAuth);
+      expect(own.statusCode, own.body).toBe(201);
+      expect(own.json().approvedAt).toBeTruthy();
+
+      // Чужой заказ той же площадки — подписью, а не автоматом: второй круг визирующих у заявки
+      // объекта и есть принятое следствие ADR 0201.
+      const office = await createRequest(specialPayload(ctx.objectId));
+      expect(office.approvedAt).toBeNull();
+      const approved = await setApproval(office.id, office.version, ctx.headAuth);
+      expect(approved.statusCode, approved.body).toBe(200);
+      expect(approved.json().approvedAt).toBeTruthy();
+    });
+
+    it('в списке отдела видны заказы его площадки, а чужой площадки — нет', async () => {
+      const mine = await createRequest(specialPayload(ctx.objectId, { comment: 'видимость-своя' }));
+      const alien = await createRequest(
+        specialPayload(foreignObjectId, { comment: 'видимость-чужая' }),
+      );
+
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/v1/vehicle-requests?pageSize=100',
+        headers: staffAuth,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      const ids = res.json().items.map((r: { id: string }) => r.id);
+      expect(ids).toContain(mine.id);
+      expect(ids).not.toContain(alien.id);
     });
   });
 });

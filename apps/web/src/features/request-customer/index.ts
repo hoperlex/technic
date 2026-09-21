@@ -26,6 +26,9 @@ export type {
   RequestCustomerSaved,
   RequestCustomerSite,
 } from './model/useRequestCustomerOptions';
+/** Умолчание фильтра «Заказчик» (ADR 0201): предрешённый заказчик — и ничего, когда осей две. */
+export { useRequestCustomerDefaults } from './model/useRequestCustomerDefaults';
+export type { RequestCustomerDefaults } from './model/useRequestCustomerDefaults';
 /** Фильтр списка тем же подбором (Р9): пара параметров одним полем и один вид на два экрана. */
 export { useRequestCustomerFilter } from './model/useRequestCustomerFilter';
 export type {

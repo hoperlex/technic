@@ -23,7 +23,7 @@ import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { dayEnd, dayStart } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { useOpenedRecord } from '@shared/lib';
-import { useWasteObjectScope } from '../../hooks/useWasteObjectScope';
+import { usePlaceObjectScope } from '../../hooks/usePlaceObjectScope';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatMoney } from '../../utils/format';
 import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';
@@ -45,7 +45,7 @@ export function WasteHistoryTab() {
   const { user } = useAuth();
   const { message } = App.useApp();
   const qc = useQueryClient();
-  const { soleObjectId, limitObjectOptions } = useWasteObjectScope();
+  const { soleObjectId, limitObjectOptions } = usePlaceObjectScope();
   // Исполнителю фильтр «кто вывозил» повторял бы единственный вариант — свою же компанию
   // (ADR 0038): чужие заявки сервер ему всё равно не отдаёт.
   const isOperator = actsForCounterparty(user, 'operator');

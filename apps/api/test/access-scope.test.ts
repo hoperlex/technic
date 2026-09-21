@@ -213,23 +213,63 @@ describe('видимость заявок ТС по заказчику (ADR 0040
   });
 
   /**
-   * Граница ADR 0062: площадка отдела открывает ему вывоз мусора и ничего больше. В «Заказе ТС»
-   * роль отдела по-прежнему сравнивается со своим отделом, а объектных заявок не видит и не
-   * трогает — иначе сотрудник отдела заказал бы технику на чужую площадку от её имени.
+   * ADR 0201: у отдела с закреплёнными площадками в «Заказе ТС» две оси сразу — свой отдел
+   * (ADR 0040) и своя площадка (ADR 0062, набором — ADR 0144). Дизъюнкция, а не замена: заявку от
+   * себя отдел заводит по-прежнему, и потеряться она не должна.
    */
-  it('площадка отдела в заказ ТС не приходит', () => {
+  it('отдел с площадкой видит и свои заявки, и заявки своей площадки', () => {
     const withObject = principal('department_head', {
       departmentIds: [DEPARTMENT_A],
       departmentObjectIds: [OBJECT_A],
     });
-    expect(paramsOf(visibility(withObject))).toEqual([DEPARTMENT_A]);
-    expect(statusOf(() => assertRequestScope(withObject, onObject(OBJECT_A)))).toBe(403);
-    expect(canApproveRequest(withObject, onObject(OBJECT_A))).toBe(false);
-    // Тип заказа тоже не меняется: спецтехника выходит на площадку, а заказчиком у отдела
-    // остаётся отдел (ADR 0040 п. 10).
-    expect(statusOf(() => assertVehicleRequestTypeAllowed(withObject, 'special_equipment'))).toBe(
-      403,
-    );
+    expect(paramsOf(visibility(withObject))).toEqual([DEPARTMENT_A, OBJECT_A]);
+    expect(statusOf(() => assertRequestScope(withObject, onObject(OBJECT_A)))).toBe(200);
+    expect(statusOf(() => assertRequestScope(withObject, onDepartment(DEPARTMENT_A)))).toBe(200);
+    // Чужая площадка остаётся чужой: расширение даёт закреплённые объекты, а не все подряд.
+    expect(statusOf(() => assertRequestScope(withObject, onObject(OBJECT_B)))).toBe(403);
+  });
+
+  /**
+   * Спецтехника открыта отделу его площадками (ADR 0201) — не ролью: коридор типов расширяет
+   * область, и отдел, с которого сняли последнюю площадку, отвечает как прежде.
+   */
+  it('спецтехнику заказывает отдел с площадкой, отдел без площадок — нет', () => {
+    for (const role of ['department', 'department_head'] as Role[]) {
+      const withPlace = principal(role, {
+        departmentIds: [DEPARTMENT_A],
+        departmentObjectIds: [OBJECT_A],
+      });
+      expect(
+        statusOf(() => assertVehicleRequestTypeAllowed(withPlace, 'special_equipment')),
+        role,
+      ).toBe(200);
+      const noPlace = principal(role, { departmentIds: [DEPARTMENT_A] });
+      expect(
+        statusOf(() => assertVehicleRequestTypeAllowed(noPlace, 'special_equipment')),
+        role,
+      ).toBe(403);
+    }
+  });
+
+  /**
+   * Виза заявки на площадке (ADR 0201): её подписывает и руководитель строительства объекта, и
+   * руководитель отдела, за которым площадка закреплена. Сотрудник отдела не подписывает ничего —
+   * у него нет права визы, и площадка этого не меняет.
+   */
+  it('руководитель отдела визирует заказ на своей площадке, сотрудник — нет', () => {
+    const head = principal('department_head', {
+      departmentIds: [DEPARTMENT_A],
+      departmentObjectIds: [OBJECT_A],
+    });
+    expect(canApproveRequest(head, onObject(OBJECT_A))).toBe(true);
+    expect(canApproveRequest(head, onObject(OBJECT_B))).toBe(false);
+    // Завёл сам — согласование состоялось (ADR 0025 п. 5): виза встаёт тем же действием.
+    expect(approvesOwnRequestOnCreate(head, onObject(OBJECT_A))).toBe(true);
+    const staff = principal('department', {
+      departmentIds: [DEPARTMENT_A],
+      departmentObjectIds: [OBJECT_A],
+    });
+    expect(canApproveRequest(staff, onObject(OBJECT_A))).toBe(false);
   });
 
   it('заявка чужой оси недоступна: у заявки отдела объекта нет вовсе', () => {
@@ -253,7 +293,7 @@ describe('видимость заявок ТС по заказчику (ADR 0040
     expect(approvesOwnRequestOnCreate(staff, onDepartment(DEPARTMENT_A))).toBe(false);
   });
 
-  it('отдел заказывает только грузоперевозки, остальные роли — оба типа', () => {
+  it('отдел без площадок заказывает только грузоперевозки, остальные роли — оба типа', () => {
     for (const role of ['department', 'department_head'] as Role[]) {
       const p = principal(role, { departmentIds: [DEPARTMENT_A] });
       expect(

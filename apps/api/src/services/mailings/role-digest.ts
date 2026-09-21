@@ -455,7 +455,18 @@ async function ownScopeNames(ctx: DigestContext): Promise<string[]> {
       .select({ name: departments.name })
       .from(departments)
       .where(inArray(departments.id, principal.departmentIds));
-    return rows.length > 0 ? [`ваши отделы — ${rows.map((r) => r.name).join(', ')}`] : [];
+    const own = rows.length > 0 ? [`ваши отделы — ${rows.map((r) => r.name).join(', ')}`] : [];
+    // Площадки отделов — вторая ось той же роли (ADR 0201): по ним в сводку попадают заказы,
+    // заведённые на площадке кем угодно. Не назови их охват, письмо обещало бы «ваши отделы», а
+    // считало бы шире — и цифра в нём не сходилась бы с тем, что человек видит в списке.
+    if (principal.departmentObjectIds.length === 0) return own;
+    const places = await db
+      .select({ name: constructionObjects.name })
+      .from(constructionObjects)
+      .where(inArray(constructionObjects.id, principal.departmentObjectIds));
+    return places.length > 0
+      ? [...own, `ваши площадки — ${places.map((r) => r.name).join(', ')}`]
+      : own;
   }
   return [];
 }

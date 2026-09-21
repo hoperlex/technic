@@ -20,7 +20,7 @@ import { onSiteCard } from './onSiteCard';
 import { onSiteColumns } from './onSiteColumns';
 import { onSiteFilters } from './onSiteFilters';
 import { useAuth } from '../../auth/AuthContext';
-import { useObjectScope } from '../../hooks/useObjectScope';
+import { usePlaceObjectScope } from '../../hooks/usePlaceObjectScope';
 import { useWeeklyRequestCreate } from './weeklyShared';
 
 /**
@@ -37,9 +37,12 @@ import { useWeeklyRequestCreate } from './weeklyShared';
  * остаётся то, чем вкладка и является: параметры списка, запросы, сводка и окна.
  */
 export function VehicleRequestsOnSiteTab() {
-  const { soleObjectId, objectFieldDisabled, limitObjectOptions } = useObjectScope();
+  // Ось площадочная (ADR 0201): срез отбирает спецтехнику, а её заказывают и отдел со своими
+  // площадками, и объектная роль. Спроси вкладка прямую привязку, отдел получил бы фильтр без
+  // единого объекта — при списке, в котором его площадки как раз и стоят.
+  const { soleObjectId, objectFieldDisabled, limitObjectOptions } = usePlaceObjectScope();
   // С одним объектом фильтр зафиксирован на нём — как и в списке заявок; с несколькими выбор
-  // сужен до своих (ADR 0039). Сервер всё равно отдаёт только свои (requestVisibilityWhere).
+  // сужен до своих (ADR 0039). Сервер всё равно отдаёт только свои (vehicleRequestVisibilityWhere).
   const ownObjectId = soleObjectId ?? '';
 
   const { params, setParams, setSort, onTableChange } = useListParams<{

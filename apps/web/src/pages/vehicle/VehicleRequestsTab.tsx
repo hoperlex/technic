@@ -49,6 +49,7 @@ import {
   minRequestDateKey,
   isCargoAmountRequired,
   CARGO_AMOUNT_MESSAGE,
+  isPlaceScopedRole,
   isVehicleKindAllowedForRequest,
   moscowDateKeyOf,
   // Какую дату двигает правка и уходит ли она в прошлое (ADR 0101, §4) — тем же контрактом, каким
@@ -102,6 +103,7 @@ import { departmentPlatformQuery } from '@entities/department';
 // поле спрашивает и заявка на обслуживание оргтехники.
 import {
   RequestCustomerSelect,
+  useRequestCustomerDefaults,
   useRequestCustomerFilter,
   useRequestCustomerOptions,
 } from '@features/request-customer';
@@ -135,8 +137,7 @@ import { RequestRelocationsField } from './RequestRelocationsField';
 import { VehicleBackdateFields } from './VehicleBackdateFields';
 import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
 import { useRouteModal } from '@features/route-modal';
-import { useObjectScope } from '../../hooks/useObjectScope';
-import { useDepartmentScope } from '../../hooks/useDepartmentScope';
+import { usePlaceObjectScope } from '../../hooks/usePlaceObjectScope';
 import { MOSCOW_TZ } from '@shared/config';
 import { ApprovalCell, StatusCell } from './requestRowCells';
 import { RequestTripsBlock } from './RequestTripsBlock';
@@ -238,13 +239,11 @@ export function VehicleRequestsTab() {
   // Рейс и список рейсов — окнами поверх этого списка (ADR 0120). Вкладки «Маршруты» больше нет, и
   // вопрос «а где эта заявка едет» перестал стоить ухода с экрана вместе с фильтрами и страницей.
   const { openRoute, openRoutesList } = useRouteModal();
-  // Объектные роли — область видимости (свои объекты, заявка до «В работе»); действия — по
-  // правам (ADR 0021). Виза — право руководителя строительства (ADR 0025).
-  const { isObjectRole, soleObjectId, ownObjectIds } = useObjectScope();
-  // Вторая ось заказчика (ADR 0040): отдел вместо объекта — у роли она ровно одна. Состав подбора
-  // по обеим осям считает `useRequestCustomerOptions`, здесь от них остались только умолчания
-  // фильтра: единственный объект и единственный отдел учётки.
-  const { soleDepartmentId } = useDepartmentScope();
+  // Площадочная ось (ADR 0201): свои объекты у объектной роли, закреплённые — у роли отдела.
+  const { ownObjectIds: ownPlaceObjectIds } = usePlaceObjectScope();
+  // Умолчания фильтра «Заказчик» — общим правилом обеих осей (ADR 0201): предрешённый заказчик
+  // учётки, и ничего, когда осей у неё две. Состав подбора считает `useRequestCustomerOptions`.
+  const customerDefaults = useRequestCustomerDefaults();
   // Отдел заказывает только грузоперевозки: перечень берётся из матрицы, а не из имени роли.
   const requestTypeOptions = allowedVehicleRequestTypes(user).map((t) => ({
     value: t,
@@ -272,10 +271,6 @@ export function VehicleRequestsTab() {
    */
   const showRoutes = canOpenRoute(can);
   const weeklyCreate = useWeeklyRequestCreate();
-
-  // С одним объектом он зафиксирован и в фильтре списка, и в форме заявки; с несколькими —
-  // выбор сужен до своих (ADR 0039). Сервер всё равно отвечает 403 на чужой — assertObjectScope.
-  const ownObjectId = soleObjectId ?? '';
 
   /**
    * Вид документа из адреса: старая вкладка «Недельные заявки» переехала сюда, и её закладки
@@ -312,8 +307,8 @@ export function VehicleRequestsTab() {
     weekStart?: string;
   }>(
     {
-      objectId: ownObjectId || undefined,
-      departmentId: soleDepartmentId ?? undefined,
+      objectId: customerDefaults.objectId,
+      departmentId: customerDefaults.departmentId,
       kind: initialKind,
     },
     { searchKeys: ['comment'] },
@@ -435,7 +430,9 @@ export function VehicleRequestsTab() {
    */
   const customer = useRequestCustomerOptions({
     // Спецтехника отделов не знает (Р4): группы «Отделы» при ней нет вовсе, а стоящее в поле
-    // подразделение убирает сама форма — модуль лишь перестаёт его предлагать (К8).
+    // подразделение убирает сама форма (К8). Объекты при ней — по площадочной оси (ADR 0201):
+    // роли отдела предлагаются её площадки, те самые, на которые сервер заказ и примет.
+    objects: isSpecial ? 'place' : 'scope',
     departments: isSpecial ? 'none' : 'scope',
     saved: savedCustomer,
   });
@@ -458,9 +455,10 @@ export function VehicleRequestsTab() {
     const departmentObjectIds = formCustomer.departmentId
       ? (departmentPlatforms?.get(formCustomer.departmentId) ?? [])
       : [];
-    const ids = [formCustomer.objectId, ...departmentObjectIds, ...ownObjectIds];
+    // Площадки учётки, а не прямые объекты (ADR 0201): у роли отдела вторых нет вовсе.
+    const ids = [formCustomer.objectId, ...departmentObjectIds, ...ownPlaceObjectIds];
     return [...new Set(ids.filter((id): id is string => !!id))];
-  }, [formCustomer.objectId, formCustomer.departmentId, departmentPlatforms, ownObjectIds]);
+  }, [formCustomer.objectId, formCustomer.departmentId, departmentPlatforms, ownPlaceObjectIds]);
 
   /**
    * Тип правимой заявки остаётся в списке, даже если роли он недоступен (ADR 0040): подписать
@@ -1348,8 +1346,10 @@ export function VehicleRequestsTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  // Заказчик правит заявку, пока она «Новая» (ADR 0040 п. 5) — правило обеих осей, и предикат тот
+  // же, каким его спрашивает сервер: одна объектная ось давала бы отделу кнопку с отказом.
   const canModify = (r: VehicleRequestDto) =>
-    !r.deletedAt && (canEdit || canDelete) && (!isObjectRole || r.status === 'new');
+    !r.deletedAt && (canEdit || canDelete) && (!isPlaceScopedRole(user?.role) || r.status === 'new');
 
   /**
    * Снять с заявки копию (ADR 0173) — только с «Новой» и только имея право заводить заявки.

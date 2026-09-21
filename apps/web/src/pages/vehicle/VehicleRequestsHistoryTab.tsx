@@ -30,7 +30,7 @@ import {
   workedAmountLabel,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
-import { useRequestCustomerFilter } from '@features/request-customer';
+import { useRequestCustomerDefaults, useRequestCustomerFilter } from '@features/request-customer';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
@@ -52,8 +52,6 @@ import {
   useVehicleClassificationFilter,
   useVehicleFilter,
 } from './shared';
-import { useObjectScope } from '../../hooks/useObjectScope';
-import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 
 /**
  * Журнал закрытых заказов техники (ADR 0029). Первая вкладка отвечает на «что сейчас в работе»,
@@ -92,8 +90,7 @@ const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
 export function VehicleRequestsHistoryTab() {
   const { user } = useAuth();
-  const { soleObjectId } = useObjectScope();
-  const { soleDepartmentId } = useDepartmentScope();
+  const customerDefaults = useRequestCustomerDefaults();
   // Сам арендодатель видит только свои заявки (ADR 0038) — фильтр «у кого брали» повторял бы ему
   // единственный вариант, а список остальных арендодателей к его работе отношения не имеет.
   const isLessor = actsForCounterparty(user, 'vehicle_lessor');
@@ -113,10 +110,10 @@ export function VehicleRequestsHistoryTab() {
     dateFrom?: string;
     dateTo?: string;
   }>(
-    // Умолчание — единственный заказчик учётки: объект объектной роли (ADR 0039) либо отдел
-    // отдельской (ADR 0040). Сервер и без фильтра отдаёт только своё, а журнал не заставляет
-    // выбирать предрешённое.
-    { objectId: soleObjectId ?? undefined, departmentId: soleDepartmentId ?? undefined },
+    // Умолчание — предрешённый заказчик учётки: объект объектной роли (ADR 0039) либо отдел
+    // отдельской (ADR 0040), а у отдела с площадками — ничего (ADR 0201). Сервер и без фильтра
+    // отдаёт только своё, а журнал не заставляет выбирать предрешённое.
+    { objectId: customerDefaults.objectId, departmentId: customerDefaults.departmentId },
     { searchKeys: ['comment'] },
   );
 
