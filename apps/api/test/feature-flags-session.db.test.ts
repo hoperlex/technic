@@ -175,6 +175,34 @@ function featuresOf(responses: Record<string, AuthUser>): Record<string, string[
   return Object.fromEntries(Object.entries(responses).map(([name, user]) => [name, user.features]));
 }
 
+/**
+ * Есть ли СВОЙ ключ в каждом из четырёх ответов — и ничего про чужие.
+ *
+ * Полным равенством списка это писалось, пока рубильник был один. Ключей с тех пор стало больше
+ * (приём писем от аппаратов открыт миграцией 0328), и равенство ломало бы этот тест на чужой
+ * работе, ничего не проверив про этот ключ. Строгость за своим ключом остаётся полная: он обязан
+ * быть во всех четырёх ответах или не быть ни в одном — половинчатый ответ и есть та беда, ради
+ * которой файл написан.
+ */
+function intakeIn(responses: Record<string, AuthUser>): Record<string, boolean> {
+  return Object.fromEntries(
+    Object.entries(featuresOf(responses)).map(([name, keys]) => [
+      name,
+      // `undefined` — ответ СТАРОГО сервера, не знающего поля вовсе; для этого файла он такой же
+      // «нет ключа», но различать их полезнее, чем схлопывать в `false` молча.
+      Array.isArray(keys) && keys.includes(INTAKE),
+    ]),
+  );
+}
+
+/** Ожидание «ключ виден всюду» / «не виден нигде» — одной строкой на четыре ответа. */
+const everywhere = (seen: boolean) => ({
+  login: seen,
+  refresh: seen,
+  me: seen,
+  changePassword: seen,
+});
+
 async function setIntake(isEnabled: boolean): Promise<void> {
   await ctx.db.execute(
     sql`UPDATE feature_flags SET is_enabled = ${isEnabled}, updated_at = now() WHERE key = ${INTAKE}`,
@@ -259,14 +287,9 @@ describe.skipIf(!DB_URL)('рубильник приёма в ответах се
     it('все четыре ответа сессии называют включённый ключ', async () => {
       const responses = await sessionResponses();
 
-      // Поле присутствует во всех четырёх и называет ключ. Пустой список клиент трактует как
+      // Поле присутствует во всех четырёх и называет ключ. Отсутствие ключа клиент трактует как
       // «закрыто» (fail-closed), и подмена одного другим прошла бы незамеченной без этой строгости.
-      expect(featuresOf(responses)).toEqual({
-        login: [INTAKE],
-        refresh: [INTAKE],
-        me: [INTAKE],
-        changePassword: [INTAKE],
-      });
+      expect(intakeIn(responses)).toEqual(everywhere(true));
     });
 
     it('читатель рубильника отвечает то же, что ответы сессии', async () => {
@@ -286,15 +309,10 @@ describe.skipIf(!DB_URL)('рубильник приёма в ответах се
        * первым проверялось включение. Теперь первым идёт выключение — иначе `setIntake(true)` на
        * уже открытом рубильнике не проверял бы ничего и зеленел бы даже при сломанном чтении.
        *
-       * Fail-closed проверяется выставленным состоянием, а не умолчанием набора: пустой список здесь
-       * означает «выключили», и это ровно тот путь, которым приём гасят на проде.
+       * Fail-closed проверяется выставленным состоянием, а не умолчанием набора: пропавший ключ
+       * здесь означает «выключили», и это ровно тот путь, которым приём гасят на проде.
        */
-      expect(featuresOf(responses)).toEqual({
-        login: [],
-        refresh: [],
-        me: [],
-        changePassword: [],
-      });
+      expect(intakeIn(responses)).toEqual(everywhere(false));
       expect(await ctx.isFeatureEnabled(ctx.db, INTAKE)).toBe(false);
     });
 
@@ -302,12 +320,7 @@ describe.skipIf(!DB_URL)('рубильник приёма в ответах се
       await setIntake(true);
       const responses = await sessionResponses();
 
-      expect(featuresOf(responses)).toEqual({
-        login: [INTAKE],
-        refresh: [INTAKE],
-        me: [INTAKE],
-        changePassword: [INTAKE],
-      });
+      expect(intakeIn(responses)).toEqual(everywhere(true));
       // Перезапуска приложения не было: значение читается на каждый ответ, а не при старте — иначе
       // аварийное выключение не действовало бы вовсе, а обратное включение требовало бы рестарта.
       expect(await ctx.isFeatureEnabled(ctx.db, INTAKE)).toBe(true);
