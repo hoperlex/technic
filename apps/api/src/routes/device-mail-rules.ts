@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, asc, eq, isNotNull, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  DEVICE_RULE_SAMPLE_LIMIT,
   deviceParseRuleInputSchema,
   deviceParseRulePreviewSchema,
   metricUnitLabels,
@@ -10,6 +11,9 @@ import {
   normalizeIdentityValue,
   officeEquipmentTitle,
   type ComponentCode,
+  type DeviceIdentityHints,
+  type DeviceMailSampleDto,
+  type DeviceMessageStatus,
   type DeviceParseRuleDto,
   type DeviceParseRulePreviewDto,
   type MetricCode,
@@ -23,15 +27,19 @@ import { db } from '../db/client';
 import { deviceMailMessages, deviceMailParseRules, officeEquipment, users } from '../db/schema';
 import { requirePrincipal } from '../auth/plugin';
 import { err } from '../lib/errors';
+import { pgErrorOf } from '../lib/pg-error';
 import { parseDeviceMail } from '../services/device-mail/mime';
 import { getDeviceMailRaw } from '../services/device-mail/storage';
 import { chooseProfile } from '../services/device-mail/profiles';
-import { resolveDeviceIdentity } from '../services/device-mail/identity';
+import { normalizeParsedMessage } from '../services/device-mail/normalize';
+import { emptyIdentityHints } from '../services/device-mail/profiles/types';
+import { resolveDeviceIdentity, resolveEquipmentModel } from '../services/device-mail/identity';
 import {
   DeviceRuleError,
   assertSafeExpression,
   findByRule,
-  ruleApplies,
+  ruleMatchContext,
+  ruleMismatch,
   ruleNumber,
   type ParseRuleRow,
 } from '../services/device-mail/rules';
@@ -67,6 +75,7 @@ interface RuleRecord {
   whenProfile: string | null;
   whenFrom: string;
   whenSubject: string;
+  whenModel: string;
   sortOrder: number;
   isEnabled: boolean;
   createdAt: Date;
@@ -119,6 +128,7 @@ function toDto(row: RuleRecord, canDelete: boolean): DeviceParseRuleDto {
     whenProfile: (row.whenProfile as DeviceProfileCode | null) ?? null,
     whenFrom: row.whenFrom,
     whenSubject: row.whenSubject,
+    whenModel: row.whenModel,
     sortOrder: row.sortOrder,
     isEnabled: row.isEnabled,
     updatedAt: row.updatedAt.toISOString(),
@@ -136,6 +146,7 @@ function toColumns(input: z.infer<typeof deviceParseRuleInputSchema>) {
     whenProfile: input.whenProfile,
     whenFrom: input.whenFrom,
     whenSubject: input.whenSubject,
+    whenModel: input.whenModel,
     sortOrder: input.sortOrder,
     isEnabled: input.isEnabled,
   };
@@ -174,6 +185,7 @@ function draftRow(input: z.infer<typeof deviceParseRuleInputSchema>): ParseRuleR
     whenProfile: columns.whenProfile,
     whenFrom: columns.whenFrom,
     whenSubject: columns.whenSubject,
+    whenModel: columns.whenModel,
   };
 }
 
@@ -202,6 +214,7 @@ export default async function deviceMailRuleRoutes(app: FastifyInstance): Promis
         whenProfile: deviceMailParseRules.whenProfile,
         whenFrom: deviceMailParseRules.whenFrom,
         whenSubject: deviceMailParseRules.whenSubject,
+        whenModel: deviceMailParseRules.whenModel,
         sortOrder: deviceMailParseRules.sortOrder,
         isEnabled: deviceMailParseRules.isEnabled,
         createdAt: deviceMailParseRules.createdAt,
@@ -216,6 +229,50 @@ export default async function deviceMailRuleRoutes(app: FastifyInstance): Promis
         asc(deviceMailParseRules.id),
       );
   }
+
+  /**
+   * Письма, на которых правило можно проверить (ADR 0204).
+   *
+   * ОТДЕЛЬНЫЙ ОТБОР, А НЕ ОЧЕРЕДЬ РАЗБОРА, и разница здесь предметная. Очередь показывает то, с
+   * чем человеку надо разобраться: разобранных писем там нет, закрытых просмотром — тоже. А
+   * правило проверяют как раз на письме, которое разобралось хорошо, и после первого же
+   * «просмотрено» оно исчезло бы из выбора, оставшись единственным подходящим образцом формата.
+   *
+   * ЕДИНСТВЕННОЕ УСЛОВИЕ — СЫРЬЁ НА МЕСТЕ. Письмо без сырья проверять не на чем, и предпросмотр
+   * отвечает на него отказом; предлагать такое письмо в списке значило бы звать человека на
+   * кнопку, которая ответит «нечем».
+   *
+   * БЕЗ КУРСОРА И БЕЗ ПОИСКА ПО СЕРВЕРУ: пятьдесят последних писем — это подсказка к форме, а не
+   * реестр. Понадобится искать письмо по теме и отправителю — для этого есть очередь со своим
+   * экраном, своим отбором и своим листанием.
+   */
+  r.get(
+    '/rules/samples',
+    { preHandler: [app.authenticate, canReview] },
+    async (): Promise<{ items: DeviceMailSampleDto[] }> => {
+      const rows = await db
+        .select({
+          id: deviceMailMessages.id,
+          receivedAt: deviceMailMessages.receivedAt,
+          subject: deviceMailMessages.subject,
+          fromAddress: deviceMailMessages.fromAddress,
+          status: deviceMailMessages.status,
+        })
+        .from(deviceMailMessages)
+        .where(eq(deviceMailMessages.rawState, 'stored'))
+        .orderBy(desc(deviceMailMessages.receivedAt), desc(deviceMailMessages.id))
+        .limit(DEVICE_RULE_SAMPLE_LIMIT);
+      return {
+        items: rows.map((row) => ({
+          id: row.id,
+          receivedAt: row.receivedAt.toISOString(),
+          subject: row.subject,
+          fromAddress: row.fromAddress,
+          status: row.status as DeviceMessageStatus,
+        })),
+      };
+    },
+  );
 
   r.get(
     '/rules',
@@ -275,11 +332,23 @@ export default async function deviceMailRuleRoutes(app: FastifyInstance): Promis
           ruleRefusal(e instanceof DeviceRuleError ? e : new DeviceRuleError(String(e)));
         }
       }
-      const updated = await db
-        .update(deviceMailParseRules)
-        .set({ ...toColumns(req.body), updatedBy: principal.id, updatedAt: new Date() })
-        .where(eq(deviceMailParseRules.id, req.params.id))
-        .returning({ id: deviceMailParseRules.id });
+      // Правка вправе свести два правила к одному ключу дубля — убрать условие, которым они
+      // различались (например модель), — и база ответит на это ошибкой целостности. Без перевода
+      // человек получил бы пятисотку там, где заведение того же правила отвечает словами; отказ
+      // обязан звучать одинаково, каким бы запросом его ни вызвали.
+      let updated: { id: string }[];
+      try {
+        updated = await db
+          .update(deviceMailParseRules)
+          .set({ ...toColumns(req.body), updatedBy: principal.id, updatedAt: new Date() })
+          .where(eq(deviceMailParseRules.id, req.params.id))
+          .returning({ id: deviceMailParseRules.id });
+      } catch (e) {
+        if (pgErrorOf(e)?.code === '23505') {
+          throw err.unprocessable('Такое правило уже заведено');
+        }
+        throw e;
+      }
       if (updated.length === 0) throw err.notFound('Правило не найдено');
       const records = await loadRecords();
       const deletable = await deletableIds(records);
@@ -338,9 +407,32 @@ export default async function deviceMailRuleRoutes(app: FastifyInstance): Promis
 
       const ctx = await parseDeviceMail(raw, { envelopeTo: message.envelopeTo });
       const rule = draftRow(req.body.rule);
-      const profile = chooseProfile(ctx).profile.code;
+      const choice = chooseProfile(ctx);
+      // Снимок профиля нужен ровно ради одной подсказки — `model`, — и считается ТОЛЬКО когда
+      // условие по модели задано. Разбор при этом вправе сорваться: письмо, на котором он падает,
+      // это самый желанный образец для нового правила («формат не распознан» и «ошибка разбора» —
+      // главные клиенты правил), и ручка обязана дожить до ответа словами, а не ответить
+      // пятисоткой. Поэтому исход разбора здесь — подсказки или их отсутствие, но не отказ.
+      let hints: DeviceIdentityHints = emptyIdentityHints();
+      if (req.body.rule.whenModel) {
+        try {
+          hints = normalizeParsedMessage(choice.profile, ctx).identity;
+        } catch {
+          // Подсказок нет — условие по модели сверится с темой письма и скажет об этом словами.
+          hints = emptyIdentityHints();
+        }
+      }
+      const equipmentModel = req.body.rule.whenModel
+        ? await resolveEquipmentModel(db, {
+            hints,
+            fromAddress: ctx.fromAddress,
+            envelopeTo: ctx.envelopeTo,
+          })
+        : null;
+      const match = ruleMatchContext(ctx, choice.profile.code, hints, equipmentModel);
 
-      if (!ruleApplies(rule, ctx, profile)) {
+      const mismatch = ruleMismatch(rule, match);
+      if (mismatch !== null) {
         return {
           applies: false,
           found: false,
@@ -348,7 +440,10 @@ export default async function deviceMailRuleRoutes(app: FastifyInstance): Promis
           value: '',
           unitLabel: '',
           resolution: null,
-          note: 'Условия правила к этому письму не подходят: профиль, отправитель или тема другие',
+          // Причина названа поимённо, а не списком условий: «профиль, отправитель или тема другие»
+          // отправляло человека перебирать четыре поля наугад, и с появлением пятого стало бы
+          // просто неверным.
+          note: mismatch,
         };
       }
 

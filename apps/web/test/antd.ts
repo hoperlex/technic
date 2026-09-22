@@ -42,16 +42,23 @@ export async function expectModalClosed(title: string): Promise<void> {
  * отрисована, и синхронный поиск роняет тест не на его смысле, а на пустой ссылке.
  *
  * `labelText` — подпись поля; она же связывает `Form.Item` с самим полем через `id`.
+ *
+ * `scope` — окно или блок, внутри которого искать подпись. Нужен там, где одна и та же форма
+ * живёт на экране дважды (окно заведения и окно правки): закрытое окно antd из разметки не
+ * убирает, и поиск по всему документу взял бы подпись ПЕРВОГО, то есть чаще всего закрытого.
  */
-async function openSelect(labelText: string): Promise<HTMLElement> {
+async function openSelect(labelText: string, scope?: HTMLElement): Promise<HTMLElement> {
   const input = await waitFor(() => {
-    const label = [...document.querySelectorAll('label')].find(
+    const root = scope ?? document;
+    const label = [...root.querySelectorAll('label')].find(
       (el) => el.textContent?.replace(/\s+/g, ' ').trim() === labelText,
     );
     if (!label) throw new Error(`поля «${labelText}» на экране нет`);
     const fieldId = label.getAttribute('for');
     if (!fieldId) throw new Error(`подпись «${labelText}» ни с чем не связана — у поля нет id`);
-    const found = document.getElementById(fieldId);
+    // Внутри области, а не `getElementById`: у двух экземпляров одной формы `id` полей совпадают,
+    // и поиск по документу вернул бы поле чужого окна.
+    const found = root.querySelector<HTMLElement>(`[id="${fieldId}"]`);
     if (!found) throw new Error(`поле «${labelText}» не найдено по id «${fieldId}»`);
     return found;
   });
@@ -83,10 +90,15 @@ export async function openSelectOptions(labelText: string): Promise<HTMLElement[
 /**
  * Выбрать вариант в поле формы (`Select`/`AutoSelect`).
  *
- * `labelText` — подпись поля, `optionText` — текст варианта.
+ * `labelText` — подпись поля, `optionText` — текст варианта, `scope` — окно, если такая же форма
+ * есть на экране ещё раз (см. `openSelect`).
  */
-export async function selectOption(labelText: string, optionText: string | RegExp): Promise<void> {
-  const dropdown = await openSelect(labelText);
+export async function selectOption(
+  labelText: string,
+  optionText: string | RegExp,
+  scope?: HTMLElement,
+): Promise<void> {
+  const dropdown = await openSelect(labelText, scope);
   const option = await within(dropdown).findByText(optionText, {
     selector: '.ant-select-item-option-content, .ant-select-item-option-content *',
   });

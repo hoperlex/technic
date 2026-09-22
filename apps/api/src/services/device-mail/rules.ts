@@ -52,6 +52,7 @@ export interface ParseRuleRow {
   whenProfile: DeviceProfileCode | null;
   whenFrom: string;
   whenSubject: string;
+  whenModel: string;
 }
 
 export interface ParseRuleSet {
@@ -107,20 +108,141 @@ export function compileRule(expression: string): RegExp {
   }
 }
 
-/** Условия применимости: профиль, отправитель, тема. Пустое условие не спрашивает ничего. */
-export function ruleApplies(
-  rule: ParseRuleRow,
+/**
+ * Откуда взялась модель, с которой сверяется условие правила.
+ *
+ * Род назван отдельным типом, потому что человеку его показывают словами: «правило писано для
+ * модели X, а у письма модель Y» без указания, откуда взялась Y, не даёт починить ни правило, ни
+ * карточку.
+ */
+export type RuleModelSource = 'equipment' | 'letter' | 'subject' | 'none';
+
+/**
+ * Всё, с чем сверяются условия применимости правила.
+ *
+ * СОБСТВЕННЫМ ТИПОМ, А НЕ ЧЕТЫРЬМЯ АРГУМЕНТАМИ: условий стало четыре, и следующее добавят не
+ * сегодня. Пара из контекста письма и кода профиля разъезжалась бы по вызовам молча.
+ *
+ * МОДЕЛЬ ПРИХОДИТ СНАРУЖИ, А НЕ ЧИТАЕТСЯ ЗДЕСЬ ИЗ БАЗЫ. Этот файл — чистые функции: профиль и
+ * правила обязаны проверяться на `.eml` без базы, конфигурации и часов. Модель карточки достаёт
+ * тот, у кого база есть (`intake.ts`, ручка предпросмотра), и отдаёт её строкой.
+ */
+export interface RuleMatchContext {
+  ctx: DeviceMailContext;
+  profileCode: DeviceProfileCode;
+  /** Модель карточки ОПОЗНАННОГО аппарата; пусто — аппарат ещё не опознан. */
+  equipmentModel: string;
+  /** Модель, которую назвало само письмо (подсказка профиля); пусто — не назвало. */
+  letterModel: string;
+}
+
+/**
+ * Собрать контекст применимости. Отдельной функцией, чтобы приём и предпросмотр собирали его
+ * ОДИНАКОВО: предпросмотр, соврамший про применимость, хуже отсутствующего — человек сохранит
+ * правило, поверив проверке.
+ */
+export function ruleMatchContext(
   ctx: DeviceMailContext,
   profileCode: DeviceProfileCode,
-): boolean {
-  if (rule.whenProfile && rule.whenProfile !== profileCode) return false;
-  if (rule.whenFrom && !ctx.fromAddress.toLowerCase().includes(rule.whenFrom.toLowerCase())) {
-    return false;
+  hints: Pick<DeviceIdentityHints, 'model'>,
+  equipmentModel: string | null,
+): RuleMatchContext {
+  return {
+    ctx,
+    profileCode,
+    equipmentModel: (equipmentModel ?? '').trim(),
+    letterModel: (hints.model ?? '').trim(),
+  };
+}
+
+/**
+ * Модель, с которой сверяется условие, и её род.
+ *
+ * КАСКАД, А НЕ ПЕРЕБОР ВСЕХ ИСТОЧНИКОВ: первый доступный решает, и следующие не спрашиваются
+ * (решение заказчика 22.09.2026, ADR 0204). Перебирай мы все три, правило «MP C2011» совпало бы у
+ * аппарата, опознанного как совсем другая модель, — достаточно строки в теме пересланного письма.
+ *
+ * Порядок источников — от точного к приблизительному:
+ *
+ * 1. **модель карточки** опознанного аппарата: она из справочника, её ведёт человек;
+ * 2. **модель, названная письмом**: строка прошивки, но сказанная про себя самим аппаратом;
+ * 3. **тема письма**: последняя надежда — часть аппаратов носит модель только там.
+ */
+export function ruleModel(match: RuleMatchContext): { value: string; source: RuleModelSource } {
+  if (match.equipmentModel) return { value: match.equipmentModel, source: 'equipment' };
+  if (match.letterModel) return { value: match.letterModel, source: 'letter' };
+  if (match.ctx.subject.trim()) return { value: match.ctx.subject, source: 'subject' };
+  return { value: '', source: 'none' };
+}
+
+const MODEL_SOURCE_WORDS: Record<RuleModelSource, string> = {
+  equipment: 'из карточки аппарата',
+  letter: 'из письма',
+  subject: 'из темы письма',
+  none: '',
+};
+
+/**
+ * Сравнение модели.
+ *
+ * ПРОБЕЛЫ ПРИВОДЯТСЯ К ОДНОМУ ВИДУ, в отличие от отправителя и темы. Причина предметная: модель
+ * приезжает из HTML-отчёта прошивки, где разряды и слова разделены неразрывными пробелами, а
+ * человек пишет условие обычным. Сравнение «как есть» не совпало бы ни разу, и починить это было
+ * бы нечем — невидимый знак на экране неотличим от обычного.
+ */
+function modelMatches(needle: string, haystack: string): boolean {
+  return normalizeSpaces(haystack)
+    .toLocaleLowerCase('ru-RU')
+    .includes(normalizeSpaces(needle).toLocaleLowerCase('ru-RU'));
+}
+
+/**
+ * Почему правило не подошло письму — словами, или `null`, если подошло.
+ *
+ * ПРИЧИНА И ПРИГОДНОСТЬ СЧИТАЮТСЯ ОДНИМ МЕСТОМ. Раздельно они разошлись бы на первом же новом
+ * условии: проверка молчит, объяснение обещает другое, и разбирается человек с текстом, который
+ * не имеет отношения к правде.
+ */
+export function ruleMismatch(rule: ParseRuleRow, match: RuleMatchContext): string | null {
+  if (rule.whenProfile && rule.whenProfile !== match.profileCode) {
+    return `Правило писано для профиля «${rule.whenProfile}», а письмо разобрано профилем «${match.profileCode}»`;
   }
-  if (rule.whenSubject && !ctx.subject.toLowerCase().includes(rule.whenSubject.toLowerCase())) {
-    return false;
+  if (rule.whenFrom && !match.ctx.fromAddress.toLowerCase().includes(rule.whenFrom.toLowerCase())) {
+    return `Правило ждёт отправителя со строкой «${rule.whenFrom}», а письмо пришло с «${match.ctx.fromAddress || 'без адреса'}»`;
   }
-  return true;
+  if (
+    rule.whenSubject &&
+    !match.ctx.subject.toLowerCase().includes(rule.whenSubject.toLowerCase())
+  ) {
+    return `Правило ждёт тему со строкой «${rule.whenSubject}», а тема письма — «${match.ctx.subject || 'без темы'}»`;
+  }
+  if (rule.whenModel) {
+    const model = ruleModel(match);
+    if (model.source === 'none') {
+      return `Правило писано для модели «${rule.whenModel}», а письмо модель не назвало ничем — ни карточкой, ни текстом, ни темой`;
+    }
+    if (!modelMatches(rule.whenModel, model.value)) {
+      return `Правило писано для модели «${rule.whenModel}», а у письма модель «${model.value}» (${MODEL_SOURCE_WORDS[model.source]})`;
+    }
+  }
+  return null;
+}
+
+/** Условия применимости: профиль, отправитель, тема, модель. Пустое условие не спрашивает ничего. */
+export function ruleApplies(rule: ParseRuleRow, match: RuleMatchContext): boolean {
+  return ruleMismatch(rule, match) === null;
+}
+
+/**
+ * Нужна ли этому набору правил модель карточки.
+ *
+ * СПРАШИВАЕТСЯ ДО РАЗБОРА и стоит одной проверки массива: предварительное опознание ради модели —
+ * лишний поход в базу на каждое письмо, и платить за него, пока правил с моделью нет ни одного,
+ * незачем. Это не оптимизация ради скорости, а отказ менять поведение приёма там, где новое
+ * условие никем не задано.
+ */
+export function ruleSetNeedsModel(set: ParseRuleSet): boolean {
+  return set.rules.some((rule) => rule.whenModel !== '');
 }
 
 /**
@@ -185,17 +307,16 @@ export function findByRule(rule: ParseRuleRow, ctx: DeviceMailContext): string |
  */
 export function applyIdentityRules(
   hints: DeviceIdentityHints,
-  ctx: DeviceMailContext,
+  match: RuleMatchContext,
   set: ParseRuleSet,
-  profileCode: DeviceProfileCode,
 ): DeviceIdentityHints {
   const out = { ...hints };
   const taken = new Set<string>();
   for (const rule of set.rules) {
     if (rule.target !== 'identity' || !rule.keyKind) continue;
     if (taken.has(rule.keyKind)) continue;
-    if (!ruleApplies(rule, ctx, profileCode)) continue;
-    const value = findByRule(rule, ctx);
+    if (!ruleApplies(rule, match)) continue;
+    const value = findByRule(rule, match.ctx);
     if (value === null) continue;
     out[rule.keyKind] = value;
     taken.add(rule.keyKind);
@@ -217,9 +338,8 @@ export function ruleNumber(rule: ParseRuleRow, raw: string): string | null {
  */
 export function applyMetricRules(
   observations: readonly DeviceObservationInput[],
-  ctx: DeviceMailContext,
+  match: RuleMatchContext,
   set: ParseRuleSet,
-  profileCode: DeviceProfileCode,
 ): DeviceObservationInput[] {
   const out = [...observations];
   const indexOf = new Map<string, number>();
@@ -233,8 +353,8 @@ export function applyMetricRules(
     const component = (rule.component ?? COMPONENT_NONE) as ComponentCode;
     const key = `${rule.metricCode}|${component}`;
     if (taken.has(key)) continue;
-    if (!ruleApplies(rule, ctx, profileCode)) continue;
-    const raw = findByRule(rule, ctx);
+    if (!ruleApplies(rule, match)) continue;
+    const raw = findByRule(rule, match.ctx);
     if (raw === null) continue;
     const value = ruleNumber(rule, raw);
     if (value === null) continue;
@@ -260,14 +380,20 @@ export function applyMetricRules(
   return out;
 }
 
-/** Обе правки снимка разом: подсказки и наблюдения. Один вход — одно место, где правила влияют. */
+/**
+ * Обе правки снимка разом: подсказки и наблюдения. Один вход — одно место, где правила влияют.
+ *
+ * УСЛОВИЯ ОБЕИХ ВЕТВЕЙ СЧИТАЮТСЯ ПО ОДНОМУ И ТОМУ ЖЕ СНИМКУ МОДЕЛИ — тому, что собран ДО правил.
+ * Иначе правило ключа, дописавшее подсказку, меняло бы применимость правил показаний в том же
+ * письме, и порядок строк в таблице правил начинал бы значить больше, чем написано в них самих.
+ */
 export function applyParseRules<
   T extends { identity: DeviceIdentityHints; observations: DeviceObservationInput[] },
->(parsed: T, ctx: DeviceMailContext, set: ParseRuleSet, profileCode: DeviceProfileCode): T {
+>(parsed: T, match: RuleMatchContext, set: ParseRuleSet): T {
   if (set.rules.length === 0) return parsed;
   return {
     ...parsed,
-    identity: applyIdentityRules(parsed.identity, ctx, set, profileCode),
-    observations: applyMetricRules(parsed.observations, ctx, set, profileCode),
+    identity: applyIdentityRules(parsed.identity, match, set),
+    observations: applyMetricRules(parsed.observations, match, set),
   };
 }

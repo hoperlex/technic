@@ -784,4 +784,162 @@ describe.skipIf(!DB_URL)('приём писем аппаратов: внутре
     expect(accepted.json()).toMatchObject({ outcome: 'created', status: 'unrecognized' });
     expect(await mailboxLastError(), 'успешный приём снимает причину').toBe('');
   });
+
+  it('правило модельного ряда применяется по модели КАРТОЧКИ опознанного аппарата', async () => {
+    await setIntake(true);
+
+    // Карточка и правило заводятся здесь, а не в общей подготовке: этому утверждению нужен
+    // аппарат с известной моделью, а остальным письмам файла он только мешал бы — серийники в
+    // них выдуманные, и лишняя карточка сделала бы часть из них опознанными.
+    const objectRow = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO construction_objects (code, name, address)
+      VALUES (${`DMM-${RUN}`}, ${`Площадка модели ${RUN}`}, 'г Москва, ул Тестовая, д 2')
+      RETURNING id`);
+    const typeRow = await ctx.db.execute<{ id: string }>(
+      sql`SELECT id FROM office_equipment_types WHERE code = 'mfp'`,
+    );
+    await ctx.db.execute(sql`
+      INSERT INTO office_equipment (equipment_type_id, name, serial_number, inventory_number,
+                                    object_id, location)
+      VALUES (${typeRow.rows[0]!.id}, ${`Ricoh Aficio MP C2011SP ${RUN}`}, 'MODEL-KEY-0001',
+              ${`ИНВ-МОД-${RUN}`}, ${objectRow.rows[0]!.id}, 'кабинет 101')`);
+
+    // Правило писано на модельный ряд, а не на аппарат: метка счётчика у этой прошивки своя, и
+    // без правила профиль её не знает.
+    await ctx.db.execute(sql`
+      INSERT INTO device_mail_parse_rules (target, metric_code, component, value_form, match_kind,
+                                           expression, scope, when_model)
+      VALUES ('metric', 'printed_sheets_total', '', 'number', 'label', 'total pages', 'any',
+              'MP C2011')`);
+
+    const raw = eml('Counter notification', 'Serial Number: MODEL-KEY-0001\r\nTotal pages: 12 480');
+    const res = await post(MESSAGES, envelope(410, raw));
+    expect(res.statusCode, res.body).toBe(200);
+
+    const row = await ctx.db.execute<{ observation_count: number; payload: unknown }>(sql`
+      SELECT observation_count, parsed_payload AS payload FROM device_mail_messages
+       WHERE account = ${ACCOUNT} AND uid_validity = ${UID_VALIDITY} AND uid = 410`);
+    // Модель письмо не называло ни строкой — её дал предварительный резолв по серийнику. Не будь
+    // его, правило молчало бы, и одно правило на модельный ряд не работало бы ни у одного
+    // аппарата, чья прошивка модель не подписывает (а Ricoh её не подписывает).
+    expect(row.rows[0]!.observation_count, 'правило модельного ряда сработало').toBe(1);
+  });
+
+  it('карточка со ссылкой на справочник моделей опознаётся так же', async () => {
+    await setIntake(true);
+
+    // Зеркало и справочник РАЗВЕСТИ НЕЛЬЗЯ: имя карточки переписывает триггер
+    // `office_equipment_model_mirror` (`BEFORE INSERT OR UPDATE`, `ENABLE ALWAYS`) — попытка
+    // записать «зеркало отстало» закончится именем модели из справочника. Поэтому тест проверяет
+    // не источник (он один), а то, что карточка, заведённая ссылкой на справочник, условию по
+    // модели видна: у неё имя приходит не из формы, а из чужой таблицы.
+    const objectRow = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO construction_objects (code, name, address)
+      VALUES (${`DMS-${RUN}`}, ${`Площадка справочника ${RUN}`}, 'г Москва, ул Тестовая, д 3')
+      RETURNING id`);
+    const typeRow = await ctx.db.execute<{ id: string }>(
+      sql`SELECT id FROM office_equipment_types WHERE code = 'mfp'`,
+    );
+    const modelRow = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO office_equipment_models (equipment_type_id, name, manufacturer)
+      VALUES (${typeRow.rows[0]!.id}, ${`Kyocera ECOSYS M3145 ${RUN}`}, 'Kyocera')
+      RETURNING id`);
+    await ctx.db.execute(sql`
+      INSERT INTO office_equipment (equipment_type_id, model_id, name, serial_number,
+                                    inventory_number, object_id, location)
+      VALUES (${typeRow.rows[0]!.id}, ${modelRow.rows[0]!.id}, 'имя перепишет триггер',
+              'MODEL-DIR-0001', ${`ИНВ-СПР-${RUN}`}, ${objectRow.rows[0]!.id}, 'кабинет 102')`);
+
+    await ctx.db.execute(sql`
+      INSERT INTO device_mail_parse_rules (target, metric_code, component, value_form, match_kind,
+                                           expression, scope, when_model)
+      VALUES ('metric', 'printed_color_total', '', 'number', 'label', 'color pages', 'any',
+              'ECOSYS M3145')`);
+
+    const raw = eml('Counter notification', 'Serial Number: MODEL-DIR-0001\r\nColor pages: 3 100');
+    const res = await post(MESSAGES, envelope(412, raw));
+    expect(res.statusCode, res.body).toBe(200);
+
+    const row = await ctx.db.execute<{ observation_count: number }>(sql`
+      SELECT observation_count FROM device_mail_messages
+       WHERE account = ${ACCOUNT} AND uid_validity = ${UID_VALIDITY} AND uid = 412`);
+    expect(row.rows[0]!.observation_count, 'модель из справочника условию видна').toBe(1);
+  });
+
+  it('спорное опознание модели не даёт: правило сверяется с письмом, а не с карточкой', async () => {
+    await setIntake(true);
+
+    // Спор делается ДВУМЯ РАЗНЫМИ КЛЮЧАМИ, ведущими к разным карточкам: один ключ на две карточки
+    // не заведётся — его не пустит частичный уникальный индекс живых привязок. Письмо несёт оба,
+    // и первая же ступень резолва видит двух кандидатов — то самое `ambiguous`, на котором он
+    // обязан остановиться (ADR 0197).
+    const objectRow = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO construction_objects (code, name, address)
+      VALUES (${`DMA-${RUN}`}, ${`Площадка спора ${RUN}`}, 'г Москва, ул Тестовая, д 4')
+      RETURNING id`);
+    const typeRow = await ctx.db.execute<{ id: string }>(
+      sql`SELECT id FROM office_equipment_types WHERE code = 'mfp'`,
+    );
+    // Обе карточки — ОДНОГО модельного ряда, под который писано правило. Разойдись они моделями,
+    // тест проходил бы просто потому, что выбранная моделью карточка не та.
+    const pair = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO office_equipment (equipment_type_id, name, serial_number, inventory_number,
+                                    object_id, location)
+      VALUES (${typeRow.rows[0]!.id}, ${`Ricoh Aficio MP C2011SP A ${RUN}`}, ${`AMB-A-${RUN}`},
+              ${`ИНВ-СП-A-${RUN}`}, ${objectRow.rows[0]!.id}, 'кабинет 103'),
+             (${typeRow.rows[0]!.id}, ${`Ricoh Aficio MP C2011SP B ${RUN}`}, ${`AMB-B-${RUN}`},
+              ${`ИНВ-СП-B-${RUN}`}, ${objectRow.rows[0]!.id}, 'кабинет 104')
+      RETURNING id`);
+    // Значение ключа кладётся В ТОЙ ЖЕ ФОРМЕ, в какой его держит резолв — `upper(btrim(...))`.
+    // Боевой код нормализует его сам (`insertDeviceMailIdentityTx`), а вставка запросом мимо него
+    // молча завела бы привязку, которую резолв никогда не найдёт: тест позеленел бы, ничего не
+    // проверив.
+    await ctx.db.execute(sql`
+      INSERT INTO device_mail_identities (key_kind, key_value, equipment_id)
+      VALUES ('deviceName', upper(btrim(${`СПОР-ИМЯ-${RUN}`})), ${pair.rows[0]!.id}),
+             ('host', upper(btrim(${`СПОР-УЗЕЛ-${RUN}`})), ${pair.rows[1]!.id})`);
+
+    await ctx.db.execute(sql`
+      INSERT INTO device_mail_parse_rules (target, metric_code, component, value_form, match_kind,
+                                           expression, scope, when_model)
+      VALUES ('metric', 'marker_life_total', '', 'number', 'label', 'life counter', 'any',
+              'MP C2011')`);
+
+    // Модель письмо называет ЧУЖУЮ: если опознание спорное, каскад спустится на неё, и правило
+    // промолчит. Возьми портал сторону спора — сработал бы по карточке, и число легло бы в снимок.
+    const raw = eml(
+      'Life counter',
+      `Device name: СПОР-ИМЯ-${RUN}\r\nHost name: СПОР-УЗЕЛ-${RUN}\r\n` +
+        'Model: Kyocera ECOSYS M3145\r\nLife counter: 777',
+    );
+    const res = await post(MESSAGES, envelope(413, raw));
+    expect(res.statusCode, res.body).toBe(200);
+
+    const row = await ctx.db.execute<{ observation_count: number }>(sql`
+      SELECT observation_count FROM device_mail_messages
+       WHERE account = ${ACCOUNT} AND uid_validity = ${UID_VALIDITY} AND uid = 413`);
+    expect(row.rows[0]!.observation_count, 'спорная карточка модели не даёт').toBe(0);
+  });
+
+  it('правило чужого модельного ряда до письма не допускается', async () => {
+    await setIntake(true);
+    await ctx.db.execute(sql`
+      INSERT INTO device_mail_parse_rules (target, metric_code, component, value_form, match_kind,
+                                           expression, scope, when_model)
+      VALUES ('metric', 'printed_mono_total', '', 'number', 'label', 'mono pages', 'any',
+              'ECOSYS M3145')`);
+
+    const raw = eml('Counter notification', 'Serial Number: MODEL-KEY-0001\r\nMono pages: 5 000');
+    const res = await post(MESSAGES, envelope(411, raw));
+    expect(res.statusCode, res.body).toBe(200);
+
+    const row = await ctx.db.execute<{ payload: { observations: unknown[] } | null }>(sql`
+      SELECT parsed_payload AS payload FROM device_mail_messages
+       WHERE account = ${ACCOUNT} AND uid_validity = ${UID_VALIDITY} AND uid = 411`);
+    const observations = row.rows[0]!.payload?.observations ?? [];
+    // Число в письме есть, метка правилу подходит — не подходит модель, и этого довольно.
+    expect(
+      observations.some((o) => (o as { metricCode: string }).metricCode === 'printed_mono_total'),
+    ).toBe(false);
+  });
 });

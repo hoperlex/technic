@@ -873,6 +873,13 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['officeEquipment.telemetry'],
   },
+  // Письма на выбор для проверки правила. Право то же и по той же причине, что у очереди: строка
+  // несёт тему и адрес отправителя аппарата, которого портал ещё не опознал, — то есть срез парка
+  // в обход области видимости карточек.
+  'GET /api/v1/device-mail/rules/samples': {
+    kind: 'permissions',
+    allOf: ['officeEquipment.telemetry'],
+  },
   // Перемещение — своё право (план `docs/office-equipment-move-from-request-plan.md`, Р1), и
   // единственная строка модуля, где ведение справочника ключом не служит: подтверждает переезд
   // тот, кто видел аппарат на месте. Требование `officeEquipment.read` объявлено в

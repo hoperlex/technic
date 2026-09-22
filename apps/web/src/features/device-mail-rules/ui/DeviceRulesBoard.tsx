@@ -82,6 +82,9 @@ export function DeviceRulesBoard({ toolbar }: { toolbar?: ReactNode }) {
           row.whenProfile ? `профиль ${row.whenProfile}` : '',
           row.whenFrom ? `от «${row.whenFrom}»` : '',
           row.whenSubject ? `тема «${row.whenSubject}»` : '',
+          // Условие по модели стоит в одном ряду с остальными и НЕ выделено: все они складываются
+          // «и», и отдельная колонка внушала бы, что модель отбирает письма как-то иначе.
+          row.whenModel ? `модель «${row.whenModel}»` : '',
         ].filter(Boolean);
         return parts.length === 0 ? (
           <Typography.Text type="secondary">к любому письму</Typography.Text>

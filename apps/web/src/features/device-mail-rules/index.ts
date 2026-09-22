@@ -6,5 +6,10 @@
  * реестра метрик, и что проверять правило надо на живом письме до сохранения.
  */
 export { DeviceRulesBoard, RULES_EMPTY_TEXT } from './ui/DeviceRulesBoard';
-export { DeviceRuleFormModal } from './ui/DeviceRuleFormModal';
+export {
+  DeviceRuleFormModal,
+  SAMPLES_EMPTY_TEXT,
+  SAMPLES_FAILED_TEXT,
+  SAMPLES_LIMIT_HINT,
+} from './ui/DeviceRuleFormModal';
 export { useDeviceRulePreview, useDeviceRuleRemove, useDeviceRuleSave } from './model/actions';

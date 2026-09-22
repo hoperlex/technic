@@ -24,6 +24,10 @@ import type { db as AppDb } from '../src/db/client';
  *   иначе оно легло бы в базу и роняло каждое письмо;
  * - **проверка на письме ничего не пишет** и объясняет исход словами — в том числе когда сырья
  *   нет;
+ * - **условие по модели** живёт в ключе дубля: два правила одной метки, писанные под разные
+ *   модельные ряды, — это два правила, а не повтор (миграция 0334);
+ * - **письма для проверки** предлагаются только с сохранённым сырьём: предлагать письмо, на
+ *   котором предпросмотр ответит «нечем», значит звать человека на заведомо пустую кнопку;
  * - **право**: без `officeEquipment.telemetry` закрыты и чтение, и правки.
  *
  * Запуск:
@@ -83,7 +87,12 @@ function nextAddress(): string {
   return `10.${(requestNo >> 16) & 0xff}.${(requestNo >> 8) & 0xff}.${requestNo & 0xff}`;
 }
 
-function inject(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, auth: Auth, payload?: unknown) {
+function inject(
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  url: string,
+  auth: Auth,
+  payload?: unknown,
+) {
   return ctx.app.inject({ method, url, headers: auth, payload, remoteAddress: nextAddress() });
 }
 
@@ -96,6 +105,7 @@ const identityRule = (over: Record<string, unknown> = {}) => ({
   whenProfile: null,
   whenFrom: '',
   whenSubject: '',
+  whenModel: '',
   sortOrder: 100,
   isEnabled: true,
   ...over,
@@ -112,6 +122,7 @@ const metricRule = (over: Record<string, unknown> = {}) => ({
   whenProfile: null,
   whenFrom: '',
   whenSubject: '',
+  whenModel: '',
   sortOrder: 100,
   isEnabled: true,
   ...over,
@@ -373,10 +384,120 @@ describe.skipIf(!DB_URL)('правила разбора писем (живая �
     expect(rule!.canDelete).toBe(false);
   });
 
+  it('правило с условием по модели заводится и читается', async () => {
+    await clear();
+    const res = await inject(
+      'POST',
+      RULES,
+      ctx.reviewer.auth,
+      metricRule({ whenModel: 'MP C2011' }),
+    );
+    expect(res.statusCode, res.body).toBe(201);
+    const [rule] = await listRules(ctx.reviewer);
+    expect(rule!.whenModel).toBe('MP C2011');
+  });
+
+  it('два правила, различающиеся только моделью, дублем не считаются', async () => {
+    await clear();
+    // Ровно то, ради чего миграция 0334 пересобирает ключ дубля: одно правило на модельный ряд
+    // бессмысленно, если второй ряд нельзя завести той же меткой.
+    const first = await inject(
+      'POST',
+      RULES,
+      ctx.reviewer.auth,
+      metricRule({ whenModel: 'MP C2011' }),
+    );
+    expect(first.statusCode, first.body).toBe(201);
+    const second = await inject(
+      'POST',
+      RULES,
+      ctx.reviewer.auth,
+      metricRule({ whenModel: 'ECOSYS M3145' }),
+    );
+    expect(second.statusCode, second.body).toBe(201);
+    expect(await listRules(ctx.reviewer)).toHaveLength(2);
+    // А вот повтор с той же моделью — по-прежнему дубль.
+    const again = await inject(
+      'POST',
+      RULES,
+      ctx.reviewer.auth,
+      metricRule({ whenModel: 'MP C2011' }),
+    );
+    expect(again.statusCode, again.body).toBe(422);
+  });
+
+  it('правка, сводящая два правила к одному ключу, отвечает словами, а не пятисоткой', async () => {
+    await clear();
+    const first = await inject(
+      'POST',
+      RULES,
+      ctx.reviewer.auth,
+      metricRule({ whenModel: 'MP C2011' }),
+    );
+    expect(first.statusCode, first.body).toBe(201);
+    const second = await inject(
+      'POST',
+      RULES,
+      ctx.reviewer.auth,
+      metricRule({ whenModel: 'ECOSYS M3145' }),
+    );
+    expect(second.statusCode, second.body).toBe(201);
+
+    // Снимаем у второго правила условие, которым оно отличалось от первого: теперь их ключи
+    // совпадают. База такое не пустит, и человеку про это надо сказать теми же словами, какими
+    // отвечает заведение дубля.
+    const id = (second.json() as DeviceParseRuleDto).id;
+    const patched = await inject(
+      'PATCH',
+      `${RULES}/${id}`,
+      ctx.reviewer.auth,
+      metricRule({ whenModel: 'MP C2011' }),
+    );
+    expect(patched.statusCode, patched.body).toBe(422);
+    expect(patched.body).toContain('уже заведено');
+  });
+
+  it('для проверки предлагаются только письма с сохранённым сырьём, новые сверху', async () => {
+    await clear();
+    await ctx.db.execute(sql`
+      INSERT INTO device_mail_messages (account, uid_validity, uid, status, raw_state,
+                                        s3_object_key, from_address, subject, received_at)
+      VALUES (${ACCOUNT}, 1, 10, 'unrecognized'::device_message_status, 'stored'::device_raw_state,
+              'device-mail/old.eml', 'mfp@example.invalid', 'Старое', now() - interval '2 days'),
+             (${ACCOUNT}, 1, 11, 'parsed'::device_message_status, 'stored'::device_raw_state,
+              'device-mail/new.eml', 'mfp@example.invalid', 'Свежее', now()),
+             (${ACCOUNT}, 1, 12, 'unmatched'::device_message_status, 'purged'::device_raw_state,
+              NULL, 'mfp@example.invalid', 'Без сырья', now())`);
+
+    const res = await inject('GET', `${RULES}/samples`, ctx.reviewer.auth);
+    expect(res.statusCode, res.body).toBe(200);
+    const items = (res.json() as { items: { subject: string }[] }).items;
+    expect(items.map((row) => row.subject)).toEqual(['Свежее', 'Старое']);
+  });
+
+  it('разобранное письмо из выбора не пропадает', async () => {
+    await clear();
+    // Очередь разбора показывает только то, с чем надо разобраться, и «просмотрено» убирает
+    // строку из неё. Выбор образцов живёт по своему отбору именно поэтому: правило чаще всего
+    // проверяют на письме, которое разобралось удачно.
+    await ctx.db.execute(sql`
+      INSERT INTO device_mail_messages (account, uid_validity, uid, status, raw_state,
+                                        s3_object_key, from_address, subject, received_at,
+                                        reviewed_at, reviewed_by)
+      VALUES (${ACCOUNT}, 1, 20, 'parsed'::device_message_status, 'stored'::device_raw_state,
+              'device-mail/parsed.eml', 'mfp@example.invalid', 'Разобрано', now(), now(),
+              ${ctx.reviewer.id})`);
+    const res = await inject('GET', `${RULES}/samples`, ctx.reviewer.auth);
+    expect(res.statusCode, res.body).toBe(200);
+    expect((res.json() as { items: unknown[] }).items).toHaveLength(1);
+  });
+
   it('без права `officeEquipment.telemetry` закрыты и чтение, и правки', async () => {
     await clear();
     expect((await inject('GET', RULES, ctx.outsider.auth)).statusCode).toBe(403);
     expect((await inject('POST', RULES, ctx.outsider.auth, identityRule())).statusCode).toBe(403);
+    // Выбор писем — та же дверь: список тем и отправителей парка в обход области видимости.
+    expect((await inject('GET', `${RULES}/samples`, ctx.outsider.auth)).statusCode).toBe(403);
   });
 });
 

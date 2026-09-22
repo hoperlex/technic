@@ -31,6 +31,9 @@ export async function loadParseRules(reader: typeof db = db): Promise<ParseRuleS
       whenProfile: deviceMailParseRules.whenProfile,
       whenFrom: deviceMailParseRules.whenFrom,
       whenSubject: deviceMailParseRules.whenSubject,
+      // Условие по модели читается наравне с прочими. Забудь его здесь — и правило, писанное для
+      // одного модельного ряда, применилось бы ко всему парку: колонка есть, а в наборе её нет.
+      whenModel: deviceMailParseRules.whenModel,
       updatedAt: deviceMailParseRules.updatedAt,
     })
     .from(deviceMailParseRules)

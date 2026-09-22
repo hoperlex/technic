@@ -9,6 +9,7 @@ import {
   type DeviceErrorCode,
   type DeviceMailContext,
   type DeviceMessageStatus,
+  type DeviceProfileCode,
   type DeviceSkipReason,
   type ParsedDeviceMessage,
 } from '@technic/contracts';
@@ -23,11 +24,17 @@ import {
 import { AppError, err } from '../../lib/errors';
 import { isFeatureEnabled } from '../feature-flags';
 import { applyResolvedDeviceMessage } from './apply';
-import { resolveDeviceIdentity } from './identity';
+import { resolveDeviceIdentity, resolveEquipmentModel } from './identity';
 import { parseDeviceMail } from './mime';
 import { DeviceParseError, normalizeParsedMessage } from './normalize';
 import { chooseProfile } from './profiles';
-import { applyParseRules, EMPTY_RULE_SET, type ParseRuleSet } from './rules';
+import {
+  applyParseRules,
+  EMPTY_RULE_SET,
+  ruleMatchContext,
+  ruleSetNeedsModel,
+  type ParseRuleSet,
+} from './rules';
 import { loadParseRules } from './rules-store';
 import {
   buildDeviceMailObjectKey,
@@ -526,6 +533,23 @@ interface ParseOutcome {
 }
 
 /**
+ * Модель карточки, которую письмо опознаёт СВОИМИ подсказками, — для условий правил (ADR 0204).
+ *
+ * Своей строчкой, а не вызовом по месту: то же самое обязана делать ручка предпросмотра, и два
+ * набора подсказок, собранные по-разному, дали бы проверку, которая врёт про применимость.
+ */
+async function lookupEquipmentModel(
+  hints: ParsedDeviceMessage['identity'],
+  ctx: DeviceMailContext,
+): Promise<string | null> {
+  return resolveEquipmentModel(db, {
+    hints,
+    fromAddress: ctx.fromAddress,
+    envelopeTo: ctx.envelopeTo,
+  });
+}
+
+/**
  * Разбор письма БЕЗ базы: MIME, профиль, нормализация.
  *
  * Ни одна ветка не выпускает исключение наружу. Ошибка разбора — это статус строки, а не отказ
@@ -557,20 +581,55 @@ async function parseMessage(
   // По той же причине неожидаемое исключение нормализации не перебрасывается, а сводится к
   // `extract_failed`: сырьё сложено, кнопка «перечитать» жива, и разбираться человек будет с
   // причиной в строке, а не с номером ограничения в журнале сервера.
-  let parsed: ParsedDeviceMessage;
+  let draft: ParsedDeviceMessage;
+  let profileCode: DeviceProfileCode;
   let recognized: boolean;
   try {
     const choice = chooseProfile(ctx);
     recognized = choice.recognized;
+    profileCode = choice.profile.code;
+    draft = normalizeParsedMessage(choice.profile, ctx);
+  } catch (e) {
+    if (e instanceof DeviceParseError) {
+      return { status: 'failed', errorCode: e.code, errorText: e.reason, parsed: null, ctx };
+    }
+    return {
+      status: 'failed',
+      errorCode: 'extract_failed',
+      errorText: `разбор письма сорвался: ${e instanceof Error ? e.message : String(e)}`,
+      parsed: null,
+      ctx,
+    };
+  }
+
+  // МОДЕЛЬ КАРТОЧКИ — ЕДИНСТВЕННЫЙ ПОХОД В БАЗУ ВО ВСЁМ РАЗБОРЕ, и он СНАРУЖИ обещания «ошибка
+  // разбора — это статус строки» (ADR 0204).
+  //
+  // Намеренно: отказ базы — беда временная и общая для портала, а не свойство этого письма.
+  // Заверни его в `failed` — и минута недоступности базы навсегда пометила бы десяток писем
+  // ошибкой разбора, которой не было. Исключение отсюда уходит наружу и читается приёмником как
+  // пауза: письмо остаётся непринятым, курсор стоит, следующий тик повторит.
+  //
+  // Спрашивается модель ТОЛЬКО когда ею условлено хоть одно правило: пока таких нет, приём ведёт
+  // себя ровно так, как до этой волны, — ни одного лишнего запроса.
+  //
+  // Опознание здесь ПРЕДВАРИТЕЛЬНОЕ и никуда не записывается: судьбу письма решает резолв в
+  // `finish`, уже по подсказкам ПОСЛЕ правил. Обе его границы (профиль ключа не нашёл; профиль
+  // нашёл один ключ, а правило достанет другой) названы у `resolveEquipmentModel`.
+  const equipmentModel = ruleSetNeedsModel(rules)
+    ? await lookupEquipmentModel(draft.identity, ctx)
+    : null;
+
+  let parsed: ParsedDeviceMessage;
+  try {
     // Правила из базы ПЕРЕКРЫВАЮТ разбор профиля (план
     // `docs/office-equipment-mail-identity-ui-plan.md`, §5.2): правило пишут под конкретный формат,
     // а словарь профиля общий. Стоят они внутри того же обещания, что и сам профиль: кривое
     // правило обязано стать `failed` у одного письма, а не паузой всего ящика.
     parsed = applyParseRules(
-      normalizeParsedMessage(choice.profile, ctx),
-      ctx,
+      draft,
+      ruleMatchContext(ctx, profileCode, draft.identity, equipmentModel),
       rules,
-      choice.profile.code,
     );
   } catch (e) {
     if (e instanceof DeviceParseError) {

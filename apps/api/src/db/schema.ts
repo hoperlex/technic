@@ -11455,13 +11455,7 @@ export const autoPartReceiptRecognitionAttempts = pgTable(
      * запер бы повтор после разрыва сети.
      */
     cacheUnique: uniqueIndex('auto_part_receipt_attempts_cache_unique')
-      .on(
-        t.pageSha256,
-        t.engine,
-        t.model,
-        t.promptVersion,
-        t.preprocessingVersion,
-      )
+      .on(t.pageSha256, t.engine, t.model, t.promptVersion, t.preprocessingVersion)
       .where(sql`status = 'done' AND NOT forced`),
     /** Последняя успешная по странице — ею отвечает ручка состояния, и по ней же считается расход. */
     pageCreatedIdx: index('auto_part_receipt_attempts_page_created_idx').on(
@@ -11845,6 +11839,12 @@ export const deviceMailMessages = pgTable(
     equipmentIdx: index('device_mail_messages_equipment_idx')
       .on(t.equipmentId, sql`${t.receivedAt} DESC`)
       .where(sql`${t.equipmentId} IS NOT NULL`),
+    // Письма, предлагаемые для проверки правила разбора: свежие и с сохранённым сырьём. Частичный
+    // потому, что частичен отбор: строки писем не удаляются никогда, а сырьё чистится по сроку, и
+    // со временем годных становится меньшинство — сплошной индекс тут работал бы вхолостую.
+    samplesIdx: index('device_mail_messages_samples_idx')
+      .on(sql`${t.receivedAt} DESC`, sql`${t.id} DESC`)
+      .where(sql`${t.rawState} = 'stored'`),
     // Сырьё есть — есть и ключ объекта; нет ключа — состояние обязано это признавать.
     rawShape: check(
       'device_mail_messages_raw_shape_check',
@@ -12053,6 +12053,13 @@ export const deviceMailParseRules = pgTable(
     whenProfile: text('when_profile'),
     whenFrom: text('when_from').notNull().default(''),
     whenSubject: text('when_subject').notNull().default(''),
+    /**
+     * Модель, к которой писано правило: одно правило на модельный ряд. Пусто — условия нет.
+     *
+     * Пустая строка, а не `NULL`, — по образцу соседей: «условие не задано» здесь уже выражается
+     * пустой строкой, и третье состояние у четвёртого условия читалось бы как особое.
+     */
+    whenModel: text('when_model').notNull().default(''),
     sortOrder: integer('sort_order').notNull().default(100),
     isEnabled: boolean('is_enabled').notNull().default(true),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
@@ -12072,6 +12079,9 @@ export const deviceMailParseRules = pgTable(
       sql`coalesce(${t.whenProfile}, '')`,
       t.whenFrom,
       t.whenSubject,
+      // Модель входит в ключ дубля наравне с прочими условиями: два правила одной метки, писанные
+      // для разных модельных рядов, — это два разных правила, а не повтор.
+      t.whenModel,
     ),
     orderIdx: index('device_mail_parse_rules_order_idx')
       .on(t.target, t.sortOrder, t.id)

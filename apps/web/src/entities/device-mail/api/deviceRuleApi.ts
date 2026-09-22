@@ -1,4 +1,5 @@
 import type {
+  DeviceMailSampleDto,
   DeviceParseRuleDto,
   DeviceParseRuleInput,
   DeviceParseRulePreviewDto,
@@ -24,4 +25,16 @@ export const deviceRuleApi = {
   /** Проверка черновика на живом письме: ничего не пишет и ни на что не влияет. */
   preview: (body: DeviceParseRulePreviewInput) =>
     apiFetch<DeviceParseRulePreviewDto>(`${PATH}/preview`, { method: 'POST', body }),
+  /**
+   * Письма, на которых правило есть чем проверить.
+   *
+   * СПИСОК, А НЕ ВВОД ИДЕНТИФИКАТОРА. Проверять можно лишь письмо с сохранённым сырьём, и снаружи
+   * это не видно никак: набранный вручную UUID разобранного или вычищенного письма отвечал бы
+   * отказом, который человек прочитал бы как ошибку своего правила. Отбор «у кого сырьё есть»
+   * держит сервер — здесь второй копии этого условия нет.
+   *
+   * Без параметров и без курсора: сервер отдаёт последние `DEVICE_RULE_SAMPLE_LIMIT` писем, новые
+   * сверху. Это не реестр писем, а выбор образца — за полным списком идут в очередь.
+   */
+  samples: () => apiFetch<{ items: DeviceMailSampleDto[] }>(`${PATH}/samples`),
 };
