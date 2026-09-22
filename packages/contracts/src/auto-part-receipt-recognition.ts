@@ -347,3 +347,33 @@ export interface ReceiptRecognitionStateDto {
   message: string;
   duplicate: ReceiptDuplicateScanDto | null;
 }
+
+
+/**
+ * Состояние подсистемы чтения (§11 плана, по образцу баннера талонов).
+ *
+ * Четыре состояния, и `disabled` среди них не для полноты: у выключенного модуля доля отказов
+ * идеальная — ноль из нуля, — и назвать его «работает» значило бы обещать чтение, которого не
+ * будет. Разница между `degraded` и `unconfigured` тоже не косметическая: первое проходит само,
+ * второе ждёт человека, и обещать восстановление там, где его нет, — тот же обман, что и молчание.
+ */
+export const RECEIPT_RECOGNITION_HEALTH_STATES = [
+  'disabled',
+  'ok',
+  'degraded',
+  'unconfigured',
+] as const;
+export type ReceiptRecognitionHealthState = (typeof RECEIPT_RECOGNITION_HEALTH_STATES)[number];
+
+export interface ReceiptRecognitionHealthDto {
+  state: ReceiptRecognitionHealthState;
+  /** С какого момента длится нездоровье; `null` у здоровой и выключенной подсистемы. */
+  since: string | null;
+  /** Код последнего терминального отказа — его и называют оператору прокси. */
+  code: string;
+  /** Попытки за окно и сколько из них — отказ ПОДСИСТЕМЫ: один битый файл сюда не входит. */
+  attempts: number;
+  failed: number;
+  /** Задачи, которые ждут очереди дольше пятнадцати минут: попыток нет, и доля их не покажет. */
+  waiting: number;
+}

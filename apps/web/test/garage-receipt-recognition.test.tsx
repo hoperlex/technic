@@ -137,10 +137,41 @@ describe('панель чтения скана', () => {
             message: 'Отказ доступа к сервису распознавания.',
           }),
         ),
+      // Панель спрашивает состояние подсистемы после любой неудачи — даже когда сервис здоров и
+      // сказать про него нечего.
+      'GET /auto-part-receipts/recognition/health': () =>
+        json({ state: 'ok', since: null, code: '', attempts: 3, failed: 0, waiting: 0 }),
     });
 
     expect(await screen.findByText(/Распознать скан не удалось/)).toBeDefined();
     // Обещать восстановление там, где его нет, — тот же обман, что и молчание.
     expect(screen.getByText(/Автоматического повтора не будет/)).toBeDefined();
+  });
+
+  it('отказ объясняется состоянием сервиса, когда сервис и правда болен (§11)', async () => {
+    renderPanel({
+      'GET /auto-part-receipts/scans/f-1/recognition': () =>
+        json(
+          state({
+            status: 'failed',
+            errorClass: 'terminal',
+            errorScope: 'subsystem',
+            message: 'Отказ доступа.',
+          }),
+        ),
+      'GET /auto-part-receipts/recognition/health': () =>
+        json({
+          state: 'unconfigured',
+          since: '2026-09-21T10:00:00.000Z',
+          code: 'http_403',
+          attempts: 4,
+          failed: 4,
+          waiting: 0,
+        }),
+    });
+
+    // Жать «Ещё раз» на неработающем сервисе бессмысленно, и человек должен знать это сразу, а не
+    // выяснять нажатиями.
+    expect(await screen.findByText(/Сервис распознавания не настроен \(http_403\)/)).toBeDefined();
   });
 });

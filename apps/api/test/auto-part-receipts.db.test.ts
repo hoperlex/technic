@@ -1867,4 +1867,66 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
     expect(res.json().status).toBe('done');
     expect(res.json().draft.lines).toHaveLength(1);
   });
+
+  it('состояние подсистемы: терминальный отказ держится до успеха, порог — с гистерезисом', async () => {
+    const health = () =>
+      ctx.app.inject({ method: 'GET', url: '/api/v1/auto-part-receipts/recognition/health', headers: mech });
+
+    /*
+     * Таблица попыток чистится ЦЕЛИКОМ, и это не небрежность к чужим строкам: ручка считает долю
+     * отказов за час по ВСЕМ попыткам движка `proxy`, и своих от чужих она не отличает — как и не
+     * должна. Оставь мы здесь строки прошлого прогона, тест проверял бы не формулу, а историю
+     * базы. Сама таблица — кэш и журнал расхода: в тестовой базе её содержимое не значит ничего.
+     */
+    await ctx.db.execute(sql`DELETE FROM auto_part_receipt_recognition_attempts`);
+
+    // Час без единой попытки и без очереди — это «работает»: ошибок нет, ждать нечего.
+    expect((await health()).json()).toMatchObject({ state: 'ok', attempts: 0, failed: 0 });
+
+    const sha = (tag: string) => createHash('sha256').update(`${RUN}-${tag}`).digest('hex');
+    const attempt = async (tag: string, over: Record<string, unknown>) => {
+      await ctx.db.execute(
+        sql`INSERT INTO auto_part_receipt_recognition_attempts
+              (page_sha256, engine, model, prompt_version, preprocessing_version, status,
+               error_class, error_scope, error_code)
+            VALUES (${sha(tag)}, 'proxy', 'm', 1, 1,
+                    ${String(over.status ?? 'failed')},
+                    ${String(over.errorClass ?? '')}, ${String(over.errorScope ?? '')},
+                    ${String(over.errorCode ?? '')})`,
+      );
+    };
+
+    // Пять отказов подсистемы из пяти — порог взят (≥ 5 попыток и ≥ 50 %).
+    for (const tag of ['d1', 'd2', 'd3', 'd4', 'd5']) {
+      await attempt(tag, { errorClass: 'transient', errorScope: 'subsystem' });
+    }
+    expect((await health()).json()).toMatchObject({ state: 'degraded', attempts: 5, failed: 5 });
+
+    // Три успеха подряд снимают удержание: без гистерезиса состояние мигало бы на каждой удачной
+    // повторной попытке.
+    for (const tag of ['s1', 's2', 's3']) await attempt(tag, { status: 'done' });
+    expect((await health()).json().state).toBe('ok');
+
+    // 403 от nginx сам не пройдёт, и обещать восстановление нельзя — состояние держится.
+    await attempt('t1', { errorClass: 'terminal', errorScope: 'subsystem', errorCode: 'http_403' });
+    const held = (await health()).json();
+    expect(held).toMatchObject({ state: 'unconfigured', code: 'http_403' });
+    expect(held.since).not.toBeNull();
+
+    // Снимает удержание только успех, случившийся ПОСЛЕ отказа: более ранний не доказывает ничего.
+    // Но удержание и порог — РАЗНЫЕ механизмы: доля отказов за час никуда не делась, и состояние
+    // возвращается к пороговому, а не к здоровому.
+    await attempt('s4', { status: 'done' });
+    expect((await health()).json().state).toBe('degraded');
+
+    // Здоровым его делают три успеха подряд — тот самый гистерезис.
+    for (const tag of ['s5', 's6']) await attempt(tag, { status: 'done' });
+    expect((await health()).json().state).toBe('ok');
+
+    // Один битый файл подсистему не роняет: это отказ предмета, а не сервиса.
+    for (const tag of ['i1', 'i2', 'i3', 'i4', 'i5']) {
+      await attempt(tag, { errorClass: 'terminal', errorScope: 'item', errorCode: 'http_413' });
+    }
+    expect((await health()).json().state).toBe('ok');
+  });
 });

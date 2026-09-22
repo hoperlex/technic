@@ -44,6 +44,7 @@ import {
   wasteTicketNumberFuzzy,
   wasteTicketNumberKey,
   type WasteTicketField,
+  type WasteTicketRecognitionResponse,
 } from '@technic/contracts';
 import { prepareTicketFile, PREPROCESSING_VERSION } from './preprocess';
 import { TicketFileError } from './errors';
@@ -79,7 +80,8 @@ export interface TicketJobDeps {
   pool: JobPool;
   s3: S3Client;
   bucket: string;
-  engine: RecognitionEngine;
+  /** Движок с заданием талонов: транспорт общий, а предмет чтения — свой (`ocr-engine/types.ts`). */
+  engine: RecognitionEngine<WasteTicketRecognitionResponse>;
   model: string;
   escalationModel: string;
   preprocess: PreprocessOptions;

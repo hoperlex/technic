@@ -3,6 +3,7 @@ import { basename, extname, join } from 'node:path';
 import { createEngineFrom, preprocessOptionsFrom, readTicketOcrConfig } from './config';
 import { prepareTicketFile } from './preprocess';
 import { TicketFileError } from './errors';
+import type { WasteTicketRecognitionResponse } from '@technic/contracts';
 import type { RecognitionOutcome } from '../ocr-engine';
 
 /**
@@ -99,7 +100,7 @@ async function main(): Promise<void> {
     report.skippedPages = prepared.skippedPages;
 
     for (const page of prepared.pages) {
-      const outcome: RecognitionOutcome = await engine.recognize(page, {
+      const outcome: RecognitionOutcome<WasteTicketRecognitionResponse> = await engine.recognize(page, {
         model: cfg.model,
         // Замер всегда идёт мимо дедупа: повтор с тем же ключом вернул бы прошлый ответ, и
         // «перемерили после правки промпта» показало бы вчерашние цифры.

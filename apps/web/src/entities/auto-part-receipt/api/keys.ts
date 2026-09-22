@@ -43,6 +43,8 @@ export const autoPartReceiptKeys = createQueryKeys('auto-part-receipts', {
    * (план `docs/auto-part-receipt-ocr-plan.md`, Р4).
    */
   recognition: (fileId: string) => ['recognition', fileId],
+  /** Состояние подсистемы — одно на портал, файла в ключе нет вовсе. */
+  recognitionHealth: () => ['recognition-health'],
 });
 
 /**

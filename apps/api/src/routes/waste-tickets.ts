@@ -60,6 +60,7 @@ import {
   placeObjectVisibilityWhere,
 } from '../lib/access';
 import { err } from '../lib/errors';
+import { isoOf } from '../lib/raw-sql';
 import { writeAudit, writeAuditTx } from '../lib/audit';
 import { fileNameView } from '../services/file-view';
 import { blindBaselineFingerprint, shouldSampleBlindCheck } from '../services/waste-ticket-blind';
@@ -2272,9 +2273,9 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     const stats = await db.execute<{
       total: number;
       failed_subsystem: number;
-      last_terminal_at: Date | null;
+      last_terminal_at: string | null;
       last_terminal_code: string | null;
-      last_success_at: Date | null;
+      last_success_at: string | null;
       recent_statuses: string[];
     }>(sql`
       WITH win AS (
@@ -2300,13 +2301,16 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     const row = stats.rows[0];
     const total = Number(row?.total ?? 0);
     const failed = Number(row?.failed_subsystem ?? 0);
-    const lastTerminalAt = row?.last_terminal_at ?? null;
-    const lastSuccessAt = row?.last_success_at ?? null;
+    // Через `db.execute` время приходит СТРОКОЙ, а не `Date` (`lib/raw-sql.ts`): обобщённый тип
+    // запроса — обещание вызывающего, и прямой `.toISOString()` здесь падал пятисоткой ровно при
+    // терминальном отказе прокси, то есть когда баннер нужнее всего.
+    const lastTerminalAt = isoOf(row?.last_terminal_at);
+    const lastSuccessAt = isoOf(row?.last_success_at);
     const recent = row?.recent_statuses ?? [];
 
     // Задачи, которые ждут дольше пятнадцати минут: очередь есть, а попыток нет — значит их никто
     // не берёт. Такой случай доля ошибок не покажет никогда, потому что делить не на что.
-    const stuck = await db.execute<{ waiting: number; oldest: Date | null }>(sql`
+    const stuck = await db.execute<{ waiting: number; oldest: string | null }>(sql`
       SELECT count(*)::int AS waiting, min(created_at) AS oldest
         FROM jobs
        WHERE type = 'recognize_waste_ticket_file'
@@ -2318,7 +2322,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     if (terminalHeld) {
       return {
         state: 'unconfigured' as const,
-        since: lastTerminalAt?.toISOString() ?? null,
+        since: lastTerminalAt,
         code: row?.last_terminal_code ?? '',
         attempts: total,
         failed,
@@ -2331,7 +2335,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     if ((overThreshold && !recovered) || (total === 0 && waiting > 0)) {
       return {
         state: 'degraded' as const,
-        since: (stuck.rows[0]?.oldest ?? lastSuccessAt)?.toISOString() ?? null,
+        since: isoOf(stuck.rows[0]?.oldest) ?? lastSuccessAt,
         code: '',
         attempts: total,
         failed,

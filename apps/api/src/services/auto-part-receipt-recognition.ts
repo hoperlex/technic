@@ -1,10 +1,12 @@
 import { and, desc, eq, inArray, ne } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import {
   can,
   mergeReceiptPages,
   moscowDateKeyOf,
   receiptDraftFrom,
   receiptRecognitionResponseSchema,
+  type ReceiptRecognitionHealthDto,
   type ReceiptRecognitionStateDto,
   type ReceiptRecognitionStatus,
 } from '@technic/contracts';
@@ -19,6 +21,7 @@ import {
 } from '../db/schema';
 import { config } from '../config';
 import { err } from '../lib/errors';
+import { isoOf } from '../lib/raw-sql';
 import { enqueueJob, JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE } from '../lib/jobs';
 import type { Principal } from '../auth/principal';
 
@@ -261,4 +264,100 @@ async function draftOf(shas: string[]): Promise<ReceiptRecognitionStateDto['draf
   });
   if (parsed.length === 0) return null;
   return receiptDraftFrom(mergeReceiptPages(parsed), moscowDateKeyOf(new Date()));
+}
+
+
+/**
+ * Состояние подсистемы чтения (§11 плана) — тем же правилом, что баннер талонов, и по тем же
+ * причинам, которые там стоили отдельного решения:
+ *
+ * · **выключенный модуль — своё состояние**, а не «работает»: задач он не заводит и попыток не
+ *   делает, и доля отказов у него идеальная — ноль из нуля;
+ * · **считаются только попытки, действительно ходившие в прокси** (`engine = 'proxy'`) и только
+ *   отказы ПОДСИСТЕМЫ: один упёршийся в лимит файл не означает, что сервис не настроен;
+ * · **терминальный отказ держит состояние до первого успеха** — 401 и 403 сами не пройдут, и
+ *   обещать автоматическое восстановление там, где его нет, тот же обман, что и молчание;
+ * · **порог с гистерезисом**: доля ≥ 50 % при не менее чем пяти попытках, и снимается тремя
+ *   успехами подряд, иначе состояние мигало бы на каждой удачной повторной попытке;
+ * · **нулевой трафик при живой очереди** — тоже нездоровье: попыток нет, и доля их не покажет
+ *   никогда, потому что делить не на что.
+ */
+export async function loadReceiptRecognitionHealth(): Promise<ReceiptRecognitionHealthDto> {
+  if (!config.receiptOcr.enabled) {
+    return { state: 'disabled', since: null, code: '', attempts: 0, failed: 0, waiting: 0 };
+  }
+
+  const stats = await db.execute<{
+    total: number;
+    failed_subsystem: number;
+    // Времена объявлены строками намеренно: `db.execute` возвращает то, что дал драйвер, и `Date`
+    // здесь был бы обещанием, которого никто не держит.
+    last_terminal_at: string | null;
+    last_terminal_code: string | null;
+    last_success_at: string | null;
+    recent_statuses: string[];
+  }>(sql`
+    WITH win AS (
+      SELECT status, error_class, error_scope, error_code, created_at
+        FROM auto_part_receipt_recognition_attempts
+       WHERE engine = 'proxy' AND created_at >= now() - interval '1 hour'
+    )
+    SELECT
+      (SELECT count(*) FROM win)::int AS total,
+      (SELECT count(*) FROM win WHERE status = 'failed' AND error_scope = 'subsystem')::int
+        AS failed_subsystem,
+      (SELECT max(created_at) FROM win
+        WHERE status = 'failed' AND error_scope = 'subsystem' AND error_class = 'terminal')
+        AS last_terminal_at,
+      (SELECT error_code FROM win
+        WHERE status = 'failed' AND error_scope = 'subsystem' AND error_class = 'terminal'
+        ORDER BY created_at DESC LIMIT 1) AS last_terminal_code,
+      (SELECT max(created_at) FROM win WHERE status = 'done') AS last_success_at,
+      COALESCE((SELECT array_agg(status ORDER BY created_at DESC)
+                  FROM (SELECT status, created_at FROM win ORDER BY created_at DESC LIMIT 3) t),
+               ARRAY[]::text[]) AS recent_statuses`);
+
+  const row = stats.rows[0];
+  const total = Number(row?.total ?? 0);
+  const failed = Number(row?.failed_subsystem ?? 0);
+  const lastTerminalAt = isoOf(row?.last_terminal_at);
+  const lastSuccessAt = isoOf(row?.last_success_at);
+  const recent = row?.recent_statuses ?? [];
+
+  const stuck = await db.execute<{ waiting: number; oldest: string | null }>(sql`
+    SELECT count(*)::int AS waiting, min(created_at) AS oldest
+      FROM jobs
+     WHERE type = ${JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE}
+       AND status IN ('pending', 'running')
+       AND created_at < now() - interval '15 minutes'`);
+  const waiting = Number(stuck.rows[0]?.waiting ?? 0);
+
+  // Успех, случившийся ПОСЛЕ терминального отказа, доказывает, что сервис отвечает; более ранний
+  // не доказывает ничего.
+  // Сравнение ISO-строк — то же, что сравнение моментов: формат сортируем лексикографически.
+  if (lastTerminalAt && (!lastSuccessAt || lastSuccessAt < lastTerminalAt)) {
+    return {
+      state: 'unconfigured',
+      since: lastTerminalAt,
+      code: row?.last_terminal_code ?? '',
+      attempts: total,
+      failed,
+      waiting,
+    };
+  }
+
+  const overThreshold = total >= 5 && failed / total >= 0.5;
+  const recovered = recent.length >= 3 && recent.every((status) => status === 'done');
+  if ((overThreshold && !recovered) || (total === 0 && waiting > 0)) {
+    return {
+      state: 'degraded',
+      since: isoOf(stuck.rows[0]?.oldest) ?? lastSuccessAt,
+      code: '',
+      attempts: total,
+      failed,
+      waiting,
+    };
+  }
+
+  return { state: 'ok', since: null, code: '', attempts: total, failed, waiting };
 }

@@ -17,6 +17,7 @@ import {
   type AutoPartReceiptsSummaryDto,
   type ListResult,
   type VehiclePartsSpendDto,
+  type ReceiptRecognitionHealthDto,
   type ReceiptRecognitionStateDto,
   type VehiclePartsSpendSnapshotDto,
 } from '@technic/contracts';
@@ -30,6 +31,7 @@ import {
   updateReceipt,
 } from '../services/auto-part-receipts';
 import {
+  loadReceiptRecognitionHealth,
   loadReceiptRecognitionState,
   requestReceiptRecognition,
 } from '../services/auto-part-receipt-recognition';
@@ -211,6 +213,18 @@ export default async function autoPartReceiptsRoutes(app: FastifyInstance): Prom
       const p = requirePrincipal(req);
       return loadReceiptRecognitionState(req.params.fileId, p);
     },
+  );
+
+  /**
+   * Состояние подсистемы чтения (§11 плана): работает, сбоит временно, не настроена или выключена.
+   *
+   * Стоит ПЕРЕД `/:id` намеренно: иначе «recognition» попало бы в него параметром и ручка искала
+   * бы чек с таким идентификатором.
+   */
+  r.get(
+    '/recognition/health',
+    { ...manage },
+    async (): Promise<ReceiptRecognitionHealthDto> => loadReceiptRecognitionHealth(),
   );
 
   /** Карточка чека: шапка, строки, сканы, оба итога и пометка. */

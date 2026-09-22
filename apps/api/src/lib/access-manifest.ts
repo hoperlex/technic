@@ -2080,6 +2080,10 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['autoParts.manage'],
   },
+  'GET /api/v1/auto-part-receipts/recognition/health': {
+    kind: 'permissions',
+    allOf: ['autoParts.manage'],
+  },
 
   // ── Техническое обслуживание ──
   //

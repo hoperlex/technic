@@ -4,6 +4,7 @@ import type {
   AutoPartReceiptsSummaryDto,
   CreateReceiptBody,
   ReceiptDeletionMarkInput,
+  ReceiptRecognitionHealthDto,
   ReceiptRecognitionStateDto,
   UpdateReceiptBody,
   VehiclePartsSpendDto,
@@ -53,6 +54,13 @@ export const autoPartReceiptApi = {
   /** Состояние чтения и черновик формы; окно опрашивает её, пока статус `pending`. */
   recognition: (fileId: string) =>
     apiFetch<ReceiptRecognitionStateDto>(`${BASE}/scans/${fileId}/recognition`),
+  /**
+   * Состояние подсистемы: спрашивается ТОЛЬКО когда чтение не удалось. Отказ на одном скане и
+   * нездоровье сервиса — разные вещи, и объяснять первое вторым имеет смысл лишь тогда, когда
+   * второе действительно есть.
+   */
+  recognitionHealth: () =>
+    apiFetch<ReceiptRecognitionHealthDto>(`${BASE}/recognition/health`),
   /** Лента вкладки: период по дате чека, машина, поиск, «помеченные к удалению», страницы (§8). */
   list: (query: Query) => apiFetch<ListResult<AutoPartReceiptListItemDto>>(BASE, { query }),
   /**

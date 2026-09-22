@@ -1,7 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { Alert, Button, Space, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ReceiptDraft, ReceiptRecognitionStateDto } from '@technic/contracts';
+import type {
+  ReceiptDraft,
+  ReceiptRecognitionHealthDto,
+  ReceiptRecognitionStateDto,
+} from '@technic/contracts';
 import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-receipt';
 import { formatMoney } from '../../utils/format';
 
@@ -56,6 +60,20 @@ function vatText(notes: ReceiptDraft['notes']): string | null {
     : null;
 }
 
+/** Что сказать про саму подсистему, когда скан не прочитался (§11 плана). */
+function healthText(health: ReceiptRecognitionHealthDto): string {
+  switch (health.state) {
+    case 'disabled':
+      return 'Распознавание чеков сейчас выключено — заполняйте форму руками.';
+    case 'unconfigured':
+      return `Сервис распознавания не настроен${health.code ? ` (${health.code})` : ''} — нужен администратор, само не восстановится.`;
+    case 'degraded':
+      return `Сервис распознавания сейчас недоступен: отказов за час ${health.failed} из ${health.attempts}. Попытки продолжатся сами.`;
+    default:
+      return '';
+  }
+}
+
 export interface ReceiptRecognitionPanelProps {
   /** Скан, который читаем: последний добавленный в окне. `null` — сканов ещё нет. */
   fileId: string | null;
@@ -82,6 +100,16 @@ export function ReceiptRecognitionPanel({
       (query.state.data as ReceiptRecognitionStateDto | undefined)?.status === 'pending'
         ? POLL_MS
         : false,
+  });
+
+  /**
+   * Состояние подсистемы спрашивается ТОЛЬКО после неудачи: отказ на одном скане и нездоровье
+   * сервиса — разные вещи, и объяснять первое вторым имеет смысл лишь тогда, когда второе есть.
+   */
+  const health = useQuery({
+    queryKey: autoPartReceiptKeys.recognitionHealth(),
+    queryFn: () => autoPartReceiptApi.recognitionHealth(),
+    enabled: state.data?.status === 'failed',
   });
 
   const recognize = useMutation({
@@ -132,9 +160,19 @@ export function ReceiptRecognitionPanel({
           showIcon
           message="Распознать скан не удалось — заполните чек руками"
           description={
-            data.errorClass === 'terminal'
-              ? `${data.message} Автоматического повтора не будет.`
-              : `${data.message} Можно попробовать ещё раз.`
+            <Space orientation="vertical" size={4}>
+              <Typography.Text>
+                {data.errorClass === 'terminal'
+                  ? `${data.message} Автоматического повтора не будет.`
+                  : `${data.message} Можно попробовать ещё раз.`}
+              </Typography.Text>
+              {/* Состояние подсистемы отличает «не прочитался этот скан» от «сервис не отвечает
+                  никому»: во втором случае жать «Ещё раз» бессмысленно, и человек должен это
+                  знать, а не выяснять нажатиями. */}
+              {health.data && health.data.state !== 'ok' && (
+                <Typography.Text type="secondary">{healthText(health.data)}</Typography.Text>
+              )}
+            </Space>
           }
           action={
             <Button size="small" disabled={disabled} onClick={() => recognize.mutate(true)}>
