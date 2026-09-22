@@ -12122,3 +12122,76 @@ export const deviceMailParseRules = pgTable(
     ),
   }),
 );
+
+/**
+ * ЖУРНАЛ ПОПЫТОК ОПРОСА ПО СЕТИ (решение `docs/adr/0205-device-network-poll.md`).
+ *
+ * ЗАЧЕМ ОТДЕЛЬНАЯ ТАБЛИЦА, РАЗ ПОКАЗАНИЕ ЛОЖИТСЯ В `device_observations`. Потому что записывается
+ * тут в основном НЕ показание. Опрос кончается молчанием, чужим серийником, отсутствием счётчика —
+ * и каждый такой исход это факт об аппарате и о сети, который назавтра спросят («почему за среду
+ * нет числа»). Наблюдения же по построению хранят только удавшееся: строка «ничего не вышло» в
+ * ряду наработки — это и есть испорченный ряд.
+ *
+ * ПОЧЕМУ ЗДЕСЬ НЕТ ЦЕЛИ КАК ССЫЛКИ. Цели живут в настройке окружения (`DEVICE_POLL_TARGETS`), а не
+ * в базе: контур тестовый. Ключ цели поэтому — текст, а не внешний ключ, и правка реестра не
+ * обязана переписывать историю попыток. Когда цели переедут в таблицу, этот столбец станет ссылкой
+ * — до тех пор он честно говорит «так эта цель называлась в тот день».
+ *
+ * COMMUNITY НЕ ХРАНИТСЯ ВОВСЕ: это пароль чтения, и журналу опросов он не нужен ни для чего.
+ */
+export const devicePollAttempts = pgTable(
+  'device_poll_attempts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Ключ цели из настройки — как её звали на момент опроса. */
+    targetKey: text('target_key').notNull(),
+    /** `хост:порт`, по которому шли. Без него исход «нет ответа» ничего не объясняет. */
+    address: text('address').notNull(),
+    /**
+     * Карточка, к которой привязано снятое. `set null`: карточку могут снять, а попытка — часть
+     * истории сети, и терять её вместе с аппаратом незачем.
+     */
+    equipmentId: uuid('equipment_id').references(() => officeEquipment.id, {
+      onDelete: 'set null',
+    }),
+    /** Момент начала опроса; он же становится `observed_at` записанного показания. */
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    durationMs: integer('duration_ms').notNull(),
+    outcome: text('outcome').notNull(),
+    message: text('message').notNull().default(''),
+    sysDescr: text('sys_descr').notNull().default(''),
+    sysName: text('sys_name').notNull().default(''),
+    /** Серийник, которым назвался ответивший аппарат: улика для разбора «ответил не тот». */
+    deviceSerial: text('device_serial').notNull().default(''),
+    metricCode: text('metric_code'),
+    value: numeric('value', { precision: 18, scale: 3 }),
+    unit: text('unit').notNull().default(''),
+    /** Кто нажал кнопку. `set null` — учётку могли снять, а попытка остаётся. */
+    requestedBy: uuid('requested_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    /** Экран показывает последнюю попытку каждой цели — этим индексом он её и берёт. */
+    targetIdx: index('device_poll_attempts_target_idx').on(t.targetKey, sql`${t.startedAt} DESC`),
+    equipmentIdx: index('device_poll_attempts_equipment_idx')
+      .on(t.equipmentId, sql`${t.startedAt} DESC`)
+      .where(sql`${t.equipmentId} IS NOT NULL`),
+    outcomeCheck: check(
+      'device_poll_attempts_outcome_check',
+      sql`${t.outcome} IN ('ok','ok_unverified','no_equipment','serial_mismatch','no_counter','unit_unknown','no_answer','snmp_error','bad_response')`,
+    ),
+    /**
+     * Снятое число и его метрика ходят ПАРОЙ. Число без метрики нечем истолковать (оттиски это или
+     * листы — свойство метрики), метрика без числа ничего не сообщает. Разрешить их порознь
+     * значило бы впустить в журнал полуфакт, который потом прочтут как факт.
+     */
+    readingShape: check(
+      'device_poll_attempts_reading_shape',
+      sql`(${t.metricCode} IS NULL AND ${t.value} IS NULL AND ${t.unit} = '') OR (${t.metricCode} IS NOT NULL AND ${t.value} IS NOT NULL AND ${t.unit} <> '')`,
+    ),
+    valueNonNegative: check(
+      'device_poll_attempts_value_check',
+      sql`${t.value} IS NULL OR ${t.value} >= 0`,
+    ),
+  }),
+);

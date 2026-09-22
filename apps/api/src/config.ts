@@ -144,6 +144,19 @@ const rawSchema = z.object({
   // правка профиля перечитает только свежие письма.
   DEVICE_MAIL_RAW_TTL_DAYS: z.coerce.number().int().positive().default(30),
 
+  // ── Опрос аппаратов по сети (решение `docs/adr/0205-device-network-poll.md`) ──
+  //
+  // Реестр целей строкой, а не таблицей: контур тестовый, аппарат один, и форма цели до ручных
+  // проверок не устоялась. Разбор и смысл полей — `services/device-snmp/targets.ts`.
+  //
+  // COMMUNITY ЕДЕТ ЗДЕСЬ ЖЕ, ВНУТРИ СТРОКИ ЦЕЛИ. В SNMP v2c это пароль чтения, и его место —
+  // среди секретов окружения. Наружу он не выходит ни одной ручкой.
+  DEVICE_POLL_TARGETS: z.string().default(''),
+  // Срок ожидания ответа. Три секунды — потолок УДЕРЖИВАЕМОГО запроса: человек нажал кнопку и
+  // ждёт, а UDP не скажет «сеть недоступна» — молчание и есть ответ. Больше — и вкладка начнёт
+  // выглядеть подвисшей на каждой выключенной машине.
+  DEVICE_POLL_TIMEOUT_MS: z.coerce.number().int().positive().max(15_000).default(3_000),
+
   // Автозакрытие заявок оргтехники (план `docs/office-equipment-requests-rework-plan.md`, §7.3,
   // решение Н7): сколько созревших заявок портал закрывает за один прогон.
   //
@@ -653,6 +666,11 @@ function loadConfig() {
         .map((s) => s.trim().toLowerCase())
         .filter(Boolean),
       rawTtlDays: env.DEVICE_MAIL_RAW_TTL_DAYS,
+    },
+    devicePoll: {
+      /** Сырая строка реестра: разбирает её `parsePollTargets`, и делает это в одном месте. */
+      targets: env.DEVICE_POLL_TARGETS,
+      timeoutMs: env.DEVICE_POLL_TIMEOUT_MS,
     },
     serviceRequests: {
       /** Размер пачки автозакрытия «Решена» → «Закрыта» за один прогон (Н7). */

@@ -6,7 +6,7 @@
 
 Как читать строку: номер · заголовок · статус · «изменён/отменён» следующими решениями (в скобках — граница, если решение правится не целиком) · миграции · пути, названные областью. **⛔ стоит только у решения, которое само объявило себя отменённым или заменённым.** Входящая связь показывает, кто его правил, но насколько — знает лишь текст самого решения: ADR 0141 отменяет приём ADR 0053 в модуле оргтехники, а в вывозе мусора тот приём работает.
 
-Решений: 204. Доменов: 16.
+Решений: 205. Доменов: 16.
 
 ## ⚠ Номера, занятые дважды
 
@@ -125,7 +125,7 @@
 - [0175](0175-mechanization-assignable-grant.md) — «Механизация» — назначаемое полномочие вместо права роли «Площадка» · реализовано · код: `packages/contracts/src/grants.ts`, `packages/contracts/src/permissions.ts`, `packages/contracts/src/role-migration.ts`, `packages/contracts/src/registration-request.ts`, `apps/api/src/db/schema.ts`, `apps/web/src/pages/admin/GrantHoldersModal.tsx`, `apps/api/test/mech-ordering-grant.db.test.ts`, `apps/api/test/mech-scope.db.test.ts`, `apps/api/test/registration-request-contracts.test.ts`
 - [0182](0182-analytics-summary-export.md) — Сводная книга по заказчикам: заказ техники, вывоз мусора и механизация · реализовано · код: `packages/contracts/src/analytics.ts`, `packages/contracts/src/permissions.ts`, `packages/contracts/src/permission-catalog.ts`, `packages/contracts/src/grants.ts`, `packages/contracts/src/grant-scope.ts`, `apps/api/src/routes/analytics.ts`, `apps/api/src/services/analytics/types.ts`, `apps/api/src/services/analytics/facts-vehicle.ts`, `apps/api/src/services/analytics/facts-waste.ts`, `apps/api/src/services/analytics/facts-mech.ts`, `apps/api/src/services/analytics/periods.ts`, `apps/api/src/services/analytics/rollup.ts`, `apps/api/src/services/analytics/summary.ts`, `apps/api/src/services/analytics-export.ts`, `apps/api/src/services/analytics-export-charts.ts`, `apps/api/src/lib/xlsx.ts`, `apps/api/src/lib/access-manifest.ts`, `apps/api/src/app.ts`, `apps/web/src/pages/admin/ExportsTab.tsx`, `apps/web/src/pages/admin/AnalyticsExportTab.tsx`, `apps/web/src/pages/admin/ReadingsExportTab.tsx`, `apps/web/src/pages/AdministrationPage.tsx`, `apps/web/src/entities/analytics/api/analyticsApi.ts`
 
-## оргтехника (30)
+## оргтехника (31)
 
 - [0085](0085-office-equipment-module.md) — Орг.техника: справочник единиц, заявки на обслуживание и гарантии · изменён 0121, 0123, 0125, 0145, 0160 · код: `packages/contracts/src/office-equipment.ts`, `packages/contracts/src/warranty.ts`, `apps/api/src/routes/office-equipment.ts`, `apps/api/src/routes/office-equipment-types.ts`, `apps/api/src/db/schema.ts`, `apps/web/src/pages/directories/OfficeEquipmentTab.tsx`
 - [0096](0096-office-equipment-it-approval.md) — Виза отдела ИТ и полномочие со сквозной областью модуля · отменён 0133 (решения 1, 2 и 4), 0145 («виза и смета несовместимы у одного субъекта») · код: `packages/contracts/src/service-requests.ts`, `packages/contracts/src/role-addons.ts`, `packages/contracts/src/permissions.ts`, `apps/api/src/lib/access.ts`, `apps/api/src/routes/service-requests.ts`
@@ -157,6 +157,7 @@
 - [0197](0197-device-mail-telemetry.md) — Телеметрия оргтехники письмами от аппаратов · код: `packages/contracts/src/device-telemetry.ts`, `apps/api/src/db/schema.ts`, `apps/api/drizzle/0317_device_telemetry.sql`, `apps/api/drizzle/0318_device_telemetry_grant.sql`, `apps/worker/src/device-mail`, `apps/api/src/routes/internal-device-mail.ts`, `apps/api/src/services/device-mail`, `apps/api/src/routes/office-equipment-telemetry.ts`, `apps/api/src/routes/device-mail-review.ts`, `apps/web/src/features/device-telemetry`, `apps/web/src/features/device-mail-review`, `apps/api/scripts/anonymize-eml.ts`, `apps/api/scripts/device-mail-reparse.ts`
 - [0200](0200-device-mail-identity-ui.md) — Ключи опознания аппаратов и правила разбора — в интерфейсе · код: `packages/contracts/src/device-telemetry.ts`, `apps/api/src/db/schema.ts`, `apps/api/drizzle/0324_device_parse_rules.sql`, `apps/api/src/services/device-mail/identity.ts`, `apps/api/src/services/device-mail/apply.ts`, `apps/api/src/services/device-mail/rules.ts`, `apps/api/src/services/device-mail/rules-store.ts`, `apps/api/src/routes/device-mail-identities.ts`, `apps/api/src/routes/device-mail-rules.ts`, `apps/api/src/services/directory-transfer/defs/device-keys.ts`, `apps/web/src/features/device-mail-identities`, `apps/web/src/features/device-mail-rules`
 - [0204](0204-device-parse-rule-model.md) — Правило разбора пишется на модельный ряд, а письмо для проверки выбирается из списка · код: `packages/contracts/src/device-telemetry.ts`, `apps/api/src/db/schema.ts`, `apps/api/src/services/device-mail/rules.ts`, `apps/api/src/services/device-mail/identity.ts`, `apps/api/src/services/device-mail/intake.ts`, `apps/api/src/routes/device-mail-rules.ts`, `apps/web/src/features/device-mail-rules`
+- [0205](0205-device-network-poll.md) — Показание снимается опросом аппарата по сети, и записывается оно только при сверенном серийнике · код: `packages/contracts/src/device-poll.ts`, `apps/api/src/services/device-snmp`, `apps/api/src/routes/device-poll.ts`, `apps/api/src/db/schema.ts`, `apps/web/src/features/device-poll`, `apps/web/src/pages/service/EquipmentTab.tsx`
 
 ## гараж (10)
 
@@ -288,7 +289,7 @@
 - [0136](0136-select-popup-width.md) — Ширина раскрытого списка — правило портала, а не свойство поля · код: `apps/web/src/main.tsx`, `apps/web/src/pages/waste/requestFilters.tsx`, `apps/web/src/pages/waste/WasteHistoryTab.tsx`
 - [0139](0139-list-filters-persist.md) — Набор отборов списка живёт дольше сеанса
 
-## схема-и-выкат (8)
+## схема-и-выкат (9)
 
 - [0077](0077-release-notes.md) — Журнал обновлений: выпуск как логический блок, а не отрезок календаря · изменён 0191 · код: `apps/web/src/shared/lib/useVersionCheck.ts`, `apps/web/src/components/AppUpdateBanner.tsx`, `packages/contracts/src/releases.ts`, `apps/api/src/routes/releases.ts`
 - [0157](0157-maintenance-mode.md) — Портал закрывается на окно работ переменной окружения, а токены гасятся эпохой по `iat` · код: `apps/api/src/lib/maintenance.ts`, `apps/api/src/config.ts`, `apps/api/src/app.ts`, `apps/api/src/auth/tokens.ts`, `apps/api/src/auth/plugin.ts`, `apps/web/src/shared/api/maintenance.ts`, `apps/web/src/app/MaintenanceBoundary.tsx`, `apps/web/src/shared/api/http.ts`, `apps/web/src/main.tsx`, `apps/web/src/auth/AuthContext.tsx`, `apps/web/src/shared/api/clientContract.ts`, `deploy/nginx/spa.conf`, `deploy/nginx/maintenance.html`, `deploy/Dockerfile.web`, `deploy/docker-compose.yml`, `deploy/docker-compose.stand.yml`, `deploy/deploy-auto.sh`
@@ -298,6 +299,7 @@
 - [0191](0191-version-numbering.md) — Версия портала: линия, выпуск и решение — правило, а не договорённость на словах · код: `architecture/policies/versioning.yaml`, `VERSION`, `scripts/check-version.mjs`
 - [0196](0196-assignment-cutover-command.md) — Окно переключения чтения истории назначения — одной командой · код: `apps/api/scripts/assignment-cutover.ts`, `apps/api/scripts/assignment-cutover-plan.ts`, `apps/api/scripts/assignment-history-run.ts`, `apps/api/scripts/assignment-backfill.ts`, `deploy/docker-compose.yml`, `apps/api/test/assignment-cutover-plan.test.ts`
 - [0198](0198-assignment-transition-without-actor.md) — Переход режима модуля истории назначения не требует автора · код: `apps/api/src/db/schema.ts`, `apps/api/src/services/assignment-mode.ts`, `apps/api/scripts/assignment-mode.ts`, `apps/api/scripts/assignment-cutover.ts`, `deploy/cutover.sh`, `apps/api/test/assignment-mode.db.test.ts`
+- [0205](0205-device-network-poll.md) — Показание снимается опросом аппарата по сети, и записывается оно только при сверенном серийнике · код: `packages/contracts/src/device-poll.ts`, `apps/api/src/services/device-snmp`, `apps/api/src/routes/device-poll.ts`, `apps/api/src/db/schema.ts`, `apps/web/src/features/device-poll`, `apps/web/src/pages/service/EquipmentTab.tsx`
 
 ## качество (4)
 

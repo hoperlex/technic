@@ -33,6 +33,7 @@ import { CandidatesTab } from './CandidatesTab';
 import { DeviceMailReview } from './DeviceMailReview';
 import { DeviceIdentityRegistry } from '@features/device-mail-identities';
 import { DeviceRulesBoard } from '@features/device-mail-rules';
+import { DevicePollBoard } from '@features/device-poll';
 import { useAuth } from '../../auth/AuthContext';
 import { useCandidateIntake } from '../../auth/candidateIntake';
 
@@ -107,7 +108,9 @@ export function EquipmentTab() {
   // Разбор писем аппаратов — своё право (Р30 плана почтовой телеметрии): у ИТ-службы оно есть, у
   // тех, кто ведёт парк, — нет, и наоборот. Поэтому третий режим, а не пункт внутри проверки.
   const canTelemetry = can('officeEquipment.telemetry');
-  const [view, setView] = useState<'park' | 'review' | 'mail' | 'keys' | 'rules'>('park');
+  const [view, setView] = useState<'park' | 'review' | 'mail' | 'keys' | 'rules' | 'poll'>(
+    'park',
+  );
   const { data: pendingCount = 0 } = useQuery({
     ...officeEquipmentCandidatePendingCountQuery(),
     enabled: canReview,
@@ -320,7 +323,7 @@ export function EquipmentTab() {
   // ходят так же часто, как обратно.
   const toolbar =
     canReview || canTelemetry ? (
-      <Segmented<'park' | 'review' | 'mail' | 'keys' | 'rules'>
+      <Segmented<'park' | 'review' | 'mail' | 'keys' | 'rules' | 'poll'>
         value={view}
         options={[
           { value: 'park', label: 'Парк' },
@@ -339,6 +342,9 @@ export function EquipmentTab() {
           // аппарат уже опознаётся, — одна работа, разведённая по двум входам стала бы двумя.
           ...(canTelemetry ? [{ value: 'keys' as const, label: 'Ключи аппаратов' }] : []),
           ...(canTelemetry ? [{ value: 'rules' as const, label: 'Правила разбора' }] : []),
+          // Опрос стоит последним, и порядок здесь — порядок работы: сперва разбирают то, что
+          // аппараты прислали сами, и лишь потом спрашивают у них напрямую.
+          ...(canTelemetry ? [{ value: 'poll' as const, label: 'Опрос по сети' }] : []),
         ]}
         onChange={setView}
       />
@@ -348,6 +354,7 @@ export function EquipmentTab() {
   if (canTelemetry && view === 'mail') return <DeviceMailReview toolbar={toolbar} />;
   if (canTelemetry && view === 'keys') return <DeviceIdentityRegistry toolbar={toolbar} />;
   if (canTelemetry && view === 'rules') return <DeviceRulesBoard toolbar={toolbar} />;
+  if (canTelemetry && view === 'poll') return <DevicePollBoard toolbar={toolbar} />;
 
   return (
     <>

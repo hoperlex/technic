@@ -33,6 +33,7 @@ import officeEquipmentTelemetryRoutes from './routes/office-equipment-telemetry'
 import deviceMailReviewRoutes from './routes/device-mail-review';
 import deviceMailIdentityRoutes from './routes/device-mail-identities';
 import deviceMailRuleRoutes from './routes/device-mail-rules';
+import devicePollRoutes from './routes/device-poll';
 import serviceRequestsRoutes from './routes/service-requests';
 import containerTypesRoutes from './routes/container-types';
 import vehicleKindsRoutes from './routes/vehicle-kinds';
@@ -227,6 +228,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(deviceMailIdentityRoutes, { prefix: '/api/v1/device-mail' });
   // Правила разбора: чем именно вынимать ключ и показание из письма.
   await app.register(deviceMailRuleRoutes, { prefix: '/api/v1/device-mail' });
+  // Опрос аппаратов по сети (ADR 0205). СВОЙ префикс, а не `/device-mail`: письмо приходит само,
+  // опрос спрашивает сам, и общий адрес обещал бы, что это две стороны одной почты.
+  await app.register(devicePollRoutes, { prefix: '/api/v1/device-poll' });
   // Заявки на обслуживание оргтехники (ADR 0085) — третий модуль заявок: свой префикс, свои права
   // и свой перечень статусов, а не ветка справочника, из которого приходит только предмет заявки.
   await app.register(serviceRequestsRoutes, { prefix: '/api/v1/service-requests' });
