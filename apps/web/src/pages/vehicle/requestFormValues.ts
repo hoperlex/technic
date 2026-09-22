@@ -1,6 +1,8 @@
 import dayjs, { type Dayjs } from 'dayjs';
 import {
   costTargetKeyOf,
+  type FreightTransportRequestDto,
+  type SpecialEquipmentRequestDto,
   type VehicleRequestDto,
   type VehicleRequestType,
 } from '@technic/contracts';
@@ -72,8 +74,10 @@ export function tripsNeedExpanding(r: VehicleRequestDto): boolean {
   return trips.length > 1 || trips.some(tripNeedsList);
 }
 
-/** Момент подачи грузоперевозки в московском дне. Общий для правки и копии. */
-function scheduledMoment(r: VehicleRequestDto & { requestType: 'freight_transport' }): Dayjs {
+/** Момент подачи грузоперевозки в московском дне. Общий для правки, копии и надписи о ней. */
+export function scheduledMoment(
+  r: VehicleRequestDto & { requestType: 'freight_transport' },
+): Dayjs {
   // Момент с сервера переводится в МСК, а не читается как московское время: `dayjs.tz(iso, tz)`
   // теряет пришедшее смещение и показывал бы подачу на три часа раньше — а правка сохраняла бы
   // этот сдвиг обратно в заявку. Так же читает подачу заявка на вывоз мусора.
@@ -122,17 +126,134 @@ export function editFormValues(r: VehicleRequestDto): Partial<FormValues> {
 }
 
 /**
+ * Заявка, с которой снимают копию, вместе с календарём на момент открытия формы.
+ *
+ * Оба дня снимаются один раз и едут дальше вместе: поля заполняются при открытии, а надпись
+ * рисуется на каждом рендере, и спроси она календарь заново — форма, пережившая 15:00 или
+ * полночь, объясняла бы человеку не тот срок, что стоит у неё же в полях.
+ */
+export interface CopySource {
+  source: VehicleRequestDto;
+  /** Самый ранний день, который примет форма заведения (`vehicleRequestDateRules`). */
+  minDate: Dayjs;
+  /** Сегодняшний московский день `YYYY-MM-DD`. */
+  today: string;
+}
+
+/**
+ * Что копия предлагает вместо прежнего срока спецтехники — и каким из трёх способов (ADR 0206).
+ *
+ * Отдельной функцией от подстановки, потому что тот же ответ нужен надписи в форме (`copyNotice`):
+ * посчитай его каждая сторона сама — и надпись однажды объяснила бы человеку не те даты, которые
+ * стоят в полях. Верят при этом надписи, а не полям: в поля после неё уже не смотрят.
+ *
+ * - `ahead` — срок целиком впереди, он и предложен как есть: его человек и повторяет;
+ * - `remainder` — заказ уже идёт и ещё не кончился, предложен его хвост: начало едет на первый
+ *   доступный день, конец остаётся прежним;
+ * - `shifted` — срок прошёл целиком, он сдвинут вперёд **с сохранением длительности**: «кран на
+ *   пять дней» остаётся заказом на пять дней.
+ */
+export type CopyTermKind = 'ahead' | 'remainder' | 'shifted';
+
+export interface CopyTermPlan {
+  kind: CopyTermKind;
+  dateFrom: Dayjs;
+  dateTo: Dayjs | null;
+}
+
+export function copyTermPlan(
+  r: SpecialEquipmentRequestDto,
+  minDate: Dayjs,
+  today: string,
+): CopyTermPlan {
+  const from = dayjs(r.dateFrom);
+  const to = r.dateTo ? dayjs(r.dateTo) : null;
+  const floor = minDate.startOf('day');
+  /*
+   * Сегодняшний московский день приходит параметром, а не спрашивается здесь: форму открывают
+   * один раз, и надпись обязана объяснять те самые даты, что стоят в полях. Спроси его каждая
+   * сторона сама — и форма, пережившая полночь, показала бы поля одной ветки и текст другой.
+   *
+   * Границу ветки «остаток» держит именно он, а не `minDate`, и подменять одно другим нельзя:
+   * `minDate` — это заблаговременность роли (ADR 0104), заявителю после 15:00 она отдаёт
+   * послезавтра. Спроси ветку у неё — и копия ещё не начавшегося чужого заказа (начало
+   * завтра, конец через неделю) молча превратилась бы в остаток с послезавтра, потеряв день-два
+   * работы вместо честного сдвига всего срока вперёд.
+   *
+   * Дни сравниваются календарными ключами `YYYY-MM-DD`: обе даты `date-only`, и перевод их в
+   * момент браузерного пояса добавил бы к сравнению час, которого в сроке нет.
+   */
+  const floorKey = floor.format('YYYY-MM-DD');
+  // «Уже идёт» — это и заказ, начатый сегодня: техника на объекте с утра, и повторяют её на те же
+  // оставшиеся дни. Строгое «начался раньше сегодня» ошибалось тут у заявителя: заказ 22.09–30.09,
+  // скопированный им после 15:00, уезжал сдвигом на 24.09–02.10 — то есть на два дня за конец
+  // оригинала, ровно то, ради чего ветку «остаток» и заводили.
+  const started = r.dateFrom <= today;
+  // Пустая дата окончания — однодневный срок (тем же `coalesce` его читает сервер), и в ветку
+  // «остаток» такой заказ не попадает по построению: начавшись, он в тот же день и кончился.
+  const end = r.dateTo || r.dateFrom;
+  // Третье условие — «есть что двигать»: заказ, начавшийся сегодня, первый доступный день которого
+  // сегодня же, никакого остатка не образует, и предлагать его надо целиком (`ahead`), иначе
+  // надпись объявляла бы остатком нетронутый срок.
+  if (started && end >= floorKey && floorKey > r.dateFrom) {
+    // Сдвигать длительность у идущего заказа нельзя: конец уехал бы за прежний, то есть копия
+    // заказала бы больше, чем просили, — а просят тут дотянуть до того же дня другой машиной.
+    return { kind: 'remainder', dateFrom: floor, dateTo: to };
+  }
+  // Сдвиг считается сутками календаря, а не арифметикой миллисекунд, и это держится самой
+  // библиотекой: `diff(…, 'day')` вычитает разницу смещений, а `add(n, 'day')` двигает номер дня.
+  // В поясе с переводом часов сырые миллисекунды дали бы 2.96 суток вместо трёх — и копия
+  // трёхдневного заказа стала бы двухдневной у того, кто открыл портал в таком поясе.
+  const shift = Math.max(0, floor.diff(from.startOf('day'), 'day'));
+  return {
+    kind: shift === 0 ? 'ahead' : 'shifted',
+    dateFrom: from.add(shift, 'day'),
+    dateTo: to ? to.add(shift, 'day') : null,
+  };
+}
+
+/**
+ * То же для грузоперевозки: день подачи и час, с которым копия его предлагает (ADR 0206).
+ *
+ * Ветки тут две, а не три: у грузоперевозки не период, а момент подачи — «остатку» неоткуда
+ * взяться. Правило прежнее (ADR 0173) и вынесено сюда по той же причине, что и срок: надпись
+ * называет предложенный день, и считать его дважды — значит однажды разойтись.
+ */
+export interface CopyScheduledPlan {
+  kind: 'ahead' | 'shifted';
+  scheduledDate: Dayjs;
+  /** Час подачи `HH:mm`; `undefined` — время у заявки не задано (в `scheduledAt` полночь МСК). */
+  scheduledTime?: string;
+}
+
+export function copyScheduledPlan(
+  r: FreightTransportRequestDto,
+  minDate: Dayjs,
+): CopyScheduledPlan {
+  const at = scheduledMoment(r);
+  const floor = minDate.startOf('day');
+  const moved = at.isBefore(floor);
+  return {
+    kind: moved ? 'shifted' : 'ahead',
+    scheduledDate: moved ? floor : at,
+    // Час подачи копия сохраняет: «песок к восьми утра» — часть повторяемого заказа, а рабочее
+    // окно у прежней заявки уже проверено. День в него не входит, поэтому сдвиг календаря время
+    // не трогает — вместе с ним переезжают и часы ездок (`copyTrip`).
+    scheduledTime: r.scheduledTimeUnspecified ? undefined : at.format('HH:mm'),
+  };
+}
+
+/**
  * Значения формы для копии заявки (ADR 0173): тот же заказ, заведённый заново.
  *
  * Копия — заявка, а не правка, поэтому подстановка отличается от `editFormValues` тремя вещами, и
  * каждая из них — про то, что новая заявка не наследует:
  *
- * 1. **Календарь двигается вперёд.** Заведение не принимает необъявленное прошлое, а у копии
- *    прошлого срока никакого объяснения и нет — повторяют заказ, а не правят вчерашний день.
- *    Даты, не дотягивающие до `minDate` (в нём же сидит заблаговременность роли), сдвигаются на
- *    неё **с сохранением длительности**: «кран на пять дней» остаётся заказом на пять дней, а
- *    подставленный конец срока раньше начала форма не приняла бы вовсе. Срок, целиком лежащий
- *    впереди, не трогается: его человек и повторяет.
+ * 1. **Календарь предлагается заново** — тремя способами, по `copyTermPlan` и
+ *    `copyScheduledPlan`. Заведение не принимает необъявленное прошлое, а у копии прошлого срока
+ *    никакого объяснения и нет: повторяют заказ, а не правят вчерашний день. Копию при этом
+ *    снимают с заявки любого статуса (ADR 0206), и «сдвинуть на первый доступный день» перестало
+ *    быть единственным ответом — у идущего заказа так уехал бы за прежний и конец.
  * 2. **Позиция классификатора и заказчик подставляются, только если они у копирующего есть.**
  *    Выключенный из справочника тип сервер не примет (`resolveClassification`), а заказчик вне
  *    подбора учётки уйдёт пустой парой (К8) — в обоих случаях поле остаётся пустым и спрашивает
@@ -148,13 +269,15 @@ export function copyFormValues(
   options: {
     /** Самый ранний день, который примет форма заведения (`vehicleRequestDateRules`). */
     minDate: Dayjs;
+    /** Сегодняшний московский день `YYYY-MM-DD` — им ветвится календарь копии. */
+    today: string;
     /** Есть ли позиция классификатора заявки в живом справочнике. */
     hasClassification: boolean;
     /** Есть ли заказчик заявки в подборе копирующего. */
     hasCustomer: boolean;
   },
 ): Partial<FormValues> {
-  const { minDate, hasClassification, hasCustomer } = options;
+  const { minDate, today, hasClassification, hasCustomer } = options;
   const common = {
     requestType: r.requestType,
     customerKey: hasCustomer ? (costTargetKeyOf(r) ?? undefined) : undefined,
@@ -162,27 +285,20 @@ export function copyFormValues(
     comment: r.comment,
   };
   if (r.requestType === 'special_equipment') {
-    const from = dayjs(r.dateFrom);
-    // Сдвиг — по дням календаря, а не по миллисекундам: обе даты `date-only`, и разница в сутках
-    // от летнего времени не зависит.
-    const shift = Math.max(0, minDate.startOf('day').diff(from.startOf('day'), 'day'));
+    const term = copyTermPlan(r, minDate, today);
     return {
       ...common,
-      dateFrom: from.add(shift, 'day'),
-      dateTo: r.dateTo ? dayjs(r.dateTo).add(shift, 'day') : null,
+      dateFrom: term.dateFrom,
+      dateTo: term.dateTo,
       responsibleName: r.responsibleName,
       responsiblePhone: r.responsiblePhone,
     };
   }
-  const at = scheduledMoment(r);
-  const day = at.isBefore(minDate.startOf('day')) ? minDate.startOf('day') : at;
+  const plan = copyScheduledPlan(r, minDate);
   return {
     ...common,
-    scheduledDate: day,
-    // Час подачи копия сохраняет: «песок к восьми утра» — часть повторяемого заказа, а рабочее
-    // окно у прежней заявки уже проверено. День в него не входит, поэтому сдвиг календаря время
-    // не трогает — вместе с ним переезжают и часы ездок (`copyTrip`).
-    scheduledTime: r.scheduledTimeUnspecified ? undefined : at.format('HH:mm'),
+    scheduledDate: plan.scheduledDate,
+    scheduledTime: plan.scheduledTime,
     trips: r.trips.map(copyTrip),
   };
 }

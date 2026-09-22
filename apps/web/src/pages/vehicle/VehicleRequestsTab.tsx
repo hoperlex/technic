@@ -145,10 +145,12 @@ import { blankTrip, editTripBody, newTripBody, type TripFormValue } from './requ
 import { rollbackErases, retypeErases, termLabel } from './requestRowText';
 import {
   copyFormValues,
+  type CopySource,
   editFormValues,
   type FormValues,
   tripsNeedExpanding,
 } from './requestFormValues';
+import { copyNotice } from './copyNotice';
 import {
   EarlyEndTag,
   FileEditor,
@@ -370,12 +372,10 @@ export function VehicleRequestsTab() {
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<VehicleRequestDto | null>(null);
-  /**
-   * Заявка, с которой сняли копию (ADR 0173): формой она не правится и в тело не уходит — по ней
-   * окно называет себя и предупреждает о вложениях. Отдельным состоянием от `record`, потому что
-   * `record` отвечает на другой вопрос: «что сохраняем — правку или заведение».
-   */
-  const [copySource, setCopySource] = useState<VehicleRequestDto | null>(null);
+  // Заявка, с которой сняли копию, и замороженный календарь (`CopySource` — там и причина
+  // заморозки). Отдельно от `record`: тот отвечает, правку мы сохраняем или заведение.
+
+  const [copy, setCopy] = useState<CopySource | null>(null);
   /** Открытая карточка заявки: поля только на чтение и история событий (ADR 0015). */
   const [viewRecord, setViewRecord] = useState<VehicleRequestDto | null>(null);
 
@@ -710,7 +710,7 @@ export function VehicleRequestsTab() {
 
   const openCreate = () => {
     setRecord(null);
-    setCopySource(null);
+    setCopy(null);
     form.resetFields();
     setOperationId(crypto.randomUUID());
     // Штаб заводит заявку только на свой объект, сотрудник отдела — только от своего отдела:
@@ -734,7 +734,7 @@ export function VehicleRequestsTab() {
 
   const openEdit = (r: VehicleRequestDto) => {
     setRecord(r);
-    setCopySource(null);
+    setCopy(null);
     form.resetFields();
     setOperationId(crypto.randomUUID());
     setTripsExpanded(tripsNeedExpanding(r));
@@ -758,8 +758,9 @@ export function VehicleRequestsTab() {
    * Вложения не переносятся (`editor.reset([])`): файл живёт не более чем у одной заявки.
    */
   const openCopy = (r: VehicleRequestDto) => {
+    const today = moscowDateKeyOf(new Date());
     setRecord(null);
-    setCopySource(r);
+    setCopy({ source: r, minDate, today });
     form.resetFields();
     setOperationId(crypto.randomUUID());
     setTripsExpanded(tripsNeedExpanding(r));
@@ -770,6 +771,7 @@ export function VehicleRequestsTab() {
     form.setFieldsValue(
       copyFormValues(r, {
         minDate,
+        today,
         hasClassification: classificationByKey.has(classificationKeyOf(r)),
         hasCustomer: !!pair.objectId || !!pair.departmentId,
       }),
@@ -1349,21 +1351,19 @@ export function VehicleRequestsTab() {
   // Заказчик правит заявку, пока она «Новая» (ADR 0040 п. 5) — правило обеих осей, и предикат тот
   // же, каким его спрашивает сервер: одна объектная ось давала бы отделу кнопку с отказом.
   const canModify = (r: VehicleRequestDto) =>
-    !r.deletedAt && (canEdit || canDelete) && (!isPlaceScopedRole(user?.role) || r.status === 'new');
+    !r.deletedAt &&
+    (canEdit || canDelete) &&
+    (!isPlaceScopedRole(user?.role) || r.status === 'new');
 
   /**
-   * Снять с заявки копию (ADR 0173) — только с «Новой» и только имея право заводить заявки.
-   *
-   * Статус ограничивает не осторожность, а смысл: у работающей и закрытой заявки даты давно
-   * прошли, а состав уже привязан к конкретной машине и рейсу — повторять там нечего, копия
-   * состояла бы из одних сброшенных полей. Тип спрашивается отдельно от права: отделу открыта
-   * одна грузоперевозка, и копия заказа спецтехники ушла бы к отказу сервера.
+   * Снять с заявки копию (ADR 0173) — с любой, кроме архивной: статуса источника действие не
+   * спрашивает вовсе (ADR 0206). Повторяют не состояние записи, а сам заказ — тот же тип, тот же
+   * объект, тот же состав, — и сервер о статусе тоже не спросит: копия уходит обычным заведением.
+   * Ворота у неё те же, что у «Новой заявки»: право заводить и коридор типов учётки — отделу
+   * открыта одна грузоперевозка, и копия заказа спецтехники ушла бы к отказу сервера.
    */
   const canCopy = (r: VehicleRequestDto) =>
-    !r.deletedAt &&
-    r.status === 'new' &&
-    canCreate &&
-    requestTypeOptions.some((o) => o.value === r.requestType);
+    !r.deletedAt && canCreate && requestTypeOptions.some((o) => o.value === r.requestType);
 
   const confirmDelete = (r: VehicleRequestDto) =>
     modal.confirm({
@@ -2288,8 +2288,8 @@ export function VehicleRequestsTab() {
         title={
           record
             ? `Заявка ${record.displayNumber}`
-            : copySource
-              ? `Новая заявка на автотехнику — копия ${copySource.displayNumber}`
+            : copy
+              ? `Новая заявка на автотехнику — по образцу ${copy.source.displayNumber}`
               : 'Новая заявка на автотехнику'
         }
         open={open}
@@ -2300,15 +2300,15 @@ export function VehicleRequestsTab() {
       >
         {/* Поля парами (FormGrid): в одну колонку форма заявки не помещается в экран и половину
             полей прячет под прокрутку. На телефоне колонка одна, порядок полей тот же. */}
-        {/* Копия (ADR 0173) объявляется прямо в форме: заголовок называет источник, а строка под
-          ним — то единственное, чего копия не унесла. Узнать про вложения после сохранения
-          значило бы обнаружить пропажу тогда, когда заявка уже ушла. */}
-        {copySource && !record && (
+        {/* Копия (ADR 0173, ADR 0206) объявляется прямо в форме: «по образцу» в заголовке, а не
+          «копия», потому что у выполненной заявки копия обещала бы наследование состояния,
+          которого в новой не будет; надпись под ним — что остаётся у источника и какой срок. */}
+        {copy && !record && (
           <Alert
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
-            description={`Состав заказа перенесён из заявки ${copySource.displayNumber}; сроки сдвинуты вперёд, если прежние уже прошли. Вложения не переносятся — приложите их заново.`}
+            description={copyNotice(copy.source, copy.minDate, copy.today)}
           />
         )}
         <Form form={form} layout="vertical" onFinish={onFinish}>

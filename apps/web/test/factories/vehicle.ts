@@ -7,6 +7,8 @@ import type {
   VehicleClassificationDto,
   VehicleFeedListDto,
   VehicleFeedRow,
+  VehicleRequestAssignmentDto,
+  VehicleRequestRouteDto,
   RepairPreviewDto,
   VehicleRequestDto,
   VehicleRequestSummaryDto,
@@ -50,6 +52,17 @@ export function vehicleRequest(
     // Линейность заказанного типа (ADR 0100): по умолчанию нет — обычный заказ стоит на площадке
     // весь срок, и именно он нужен большинству сценариев. Линейный включается в самом сценарии.
     isLinear: false,
+    /*
+     * Поля, которых у обычного заказа нет: заявку не застигало переключение линейности (миграция
+     * 0137), заведена она формой, а не неделей, и неделей же не продлевалась.
+     *
+     * Написаны они здесь именно потому, что приведение к DTO в конце фабрики пропустило бы их
+     * пропажу молча — ровно тем провалом, что описан в ADR 0173: поле уезжает в портал `undefined`,
+     * сборка зелёная, а сценарий проверяет состояние, которого не бывает.
+     */
+    linearFrozen: null,
+    weeklyOrigin: null,
+    weeklyExtensions: [],
     status: 'new',
     comment: 'разгрузка плит',
     cancelReason: null,
@@ -78,6 +91,67 @@ export function vehicleRequest(
     costTarget: { kind: 'object', id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
     ...overrides,
   } as SpecialEquipmentRequestDto;
+}
+
+/**
+ * Назначенная на заявку собственная машина (ADR 0027) — то, чем «Новая» отличается от работающей.
+ *
+ * Своей фабрикой, потому что собрать работающую заявку было нечем: `vehicleRequest` отдаёт
+ * `assignment: null`, и каждый сценарий выписывал двадцать полей назначения у себя. Поля при этом
+ * не косметика — по ним карточка спрашивает контакт водителя, а `canReassignVehicle` и
+ * `canCorrectAssignment` решают, что заявке вообще можно.
+ *
+ * Умолчание совпадает с ЗАКАЗАННОЙ позицией `vehicleRequest` (`vt-1` · `vc-1`, 25 т): так выглядит
+ * обычный заказ, закрытый ровно тем, что просили. Расхождение заказанного с назначенным (ADR 0059)
+ * — предмет отдельных сценариев, и называют они его сами, полями `overrides`.
+ */
+export function ownAssignment(
+  overrides: Partial<VehicleRequestAssignmentDto> = {},
+): VehicleRequestAssignmentDto {
+  return {
+    vehicleId: 'v-1',
+    ownership: 'own',
+    vehicleKindId: 'vk-special',
+    vehicleTypeId: 'vt-1',
+    typeName: 'Автокраны',
+    vehicleCategoryId: 'vc-1',
+    categoryName: 'г/п 25 т',
+    categorySpecs: { lift_capacity: 25 },
+    modelName: 'Ивановец КС-45717',
+    registrationNumber: 'Е646СК799',
+    // Срез предложения аренды и цены — у своей машины их нет вовсе (ADR 0027).
+    description: '',
+    lessorId: null,
+    lessorName: null,
+    pricePerHour: null,
+    pricePerShift: null,
+    shiftHours: null,
+    assignedBy: 'user-1',
+    assignedByName: 'Диспетчеров Д. П.',
+    assignedAt: '2026-08-10T06:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/**
+ * Рейс, в котором заявка едет, — тем срезом, каким его видят список и карточка.
+ *
+ * `routeDate` заявке не свой, но с её днём обязан совпадать: по расхождению портал ловит «заявку
+ * перенесли, а рейс остался» (`routeDateMismatch`). Поэтому сценарий, двигающий день заявки,
+ * двигает и его — умолчание же совпадает с днём подачи `freightRequest`.
+ */
+export function requestRoute(
+  overrides: Partial<VehicleRequestRouteDto> = {},
+): VehicleRequestRouteDto {
+  return {
+    id: 'route-1',
+    displayNumber: 'Р-7',
+    routeDate: '2026-08-06',
+    position: 1,
+    hasWaybill: true,
+    version: 1,
+    ...overrides,
+  };
 }
 
 /**
