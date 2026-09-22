@@ -28,7 +28,7 @@
 - Остальной API: [assignment-command.ts](../apps/api/src/services/assignment-command.ts), [assignment-period.ts](../apps/api/src/services/assignment-period.ts)
 - Web: [vehicle](../apps/web/src/pages/vehicle), [vehicle-request](../apps/web/src/entities/vehicle-request)
 - Тесты: `vehicle-request-*.db.test.ts`, `weekly-*.db.test.ts`, `assignment-*.db.test.ts`
-- Решения: [ADR 0004](adr/0004-vehicle-requests.md), [ADR 0104](adr/0104-vehicle-request-lead-time.md), [ADR 0173](adr/0173-vehicle-request-copy.md)
+- Решения: [ADR 0004](adr/0004-vehicle-requests.md), [ADR 0104](adr/0104-vehicle-request-lead-time.md), [ADR 0173](adr/0173-vehicle-request-copy.md), [ADR 0206](adr/0206-vehicle-request-copy-any-status.md)
 
 ## Путевые листы и ЭСМ
 
