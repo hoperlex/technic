@@ -6531,7 +6531,9 @@ export const vehicleRequests = pgTable(
       'vehicle_requests_customer_check',
       sql`num_nonnulls(${t.objectId}, ${t.departmentId}) = 1`,
     ),
-    // У отдела бывают только грузоперевозки: спецтехника выходит на площадку, а её у отдела нет.
+    // Отделом-заказчиком бывает только грузоперевозка: спецтехника выходит на площадку, а площадка
+    // — это объект, и заказчиком у неё стоит он. CHECK запрещает КОЛОНКУ, а не роль: отдел с
+    // закреплённой площадкой спецтехнику как раз заказывает (ADR 0201), но от её имени.
     departmentFreightOnly: check(
       'vehicle_requests_department_freight_check',
       sql`${t.departmentId} is null or ${t.requestType} = 'freight_transport'`,

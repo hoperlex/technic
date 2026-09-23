@@ -1,13 +1,12 @@
 import { useEffect } from 'react';
 import { Alert, Form, Input } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import { isDepartmentScopedRole, type EquipmentCandidateInput } from '@technic/contracts';
+import type { EquipmentCandidateInput } from '@technic/contracts';
 import { objectOptionsQuery } from '@entities/object';
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
 import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
 import { equipmentCandidateDraft, type EquipmentCandidateDraft } from '../model/draft';
-import { useAuth } from '../../../auth/AuthContext';
-import { useObjectScope } from '../../../hooks/useObjectScope';
+import { usePlaceObjectScope } from '../../../hooks/usePlaceObjectScope';
 
 /** Значения окна: те же шесть реквизитов (Р7), без единого поля учёта. */
 type Values = EquipmentCandidateInput;
@@ -46,8 +45,7 @@ export function ReportEquipmentModal({
 }) {
   const [form] = Form.useForm<Values>();
   const blockers = useFormBlockers(form);
-  const { user } = useAuth();
-  const objectScope = useObjectScope();
+  const objectScope = usePlaceObjectScope();
 
   // Справочники спрашиваются только при открытом окне: большинство заводящих заявку сюда не
   // заходит вовсе, и два запроса на каждое открытие формы были бы платой ни за что.
@@ -58,22 +56,16 @@ export function ReportEquipmentModal({
   const { data: objectOptions = [] } = useQuery({ ...objectOptionsQuery(), enabled: open });
 
   /*
-   * ПЛОЩАДКА — ПО ОСИ РОЛИ, тем же правилом, каким её проверяет сервер (Р7): объектная роль
+   * ПЛОЩАДКА — ПО ПЛОЩАДОЧНОЙ ОСИ, тем же правилом, каким её проверяет сервер (Р7): объектная роль
    * называет свои объекты, отдельская — площадки своих отделов, роль без оси выбирает из
    * справочника. Чужой объект сервер отвечает 422, и предлагать в поле отвергаемое нельзя —
    * человек узнал бы об отказе после того, как заполнил шесть полей.
    *
-   * Отдельская ось спрашивается по `departmentObjectIds` учётки, а не по её отделам: связь
-   * «отдел ↔ площадка» портал знает готовым списком (ADR 0062), и второй способ её вычислить
-   * разошёлся бы с серверным на первой же правке привязок.
+   * Ось спрашивается хуком, а не разбирается здесь по ролям и `departmentObjectIds`: она одна на
+   * все модули, где заказчиком стоит объект (ADR 0201), и свой разбор разошёлся бы с общим молча —
+   * на первой же правке того, как площадки отдела считаются.
    */
-  const departmentAxis = isDepartmentScopedRole(user?.role);
-  const ownDepartmentObjects = user?.departmentObjectIds ?? [];
-  const objects = objectScope.isObjectRole
-    ? objectScope.limitObjectOptions(objectOptions)
-    : departmentAxis
-      ? objectOptions.filter((o) => ownDepartmentObjects.includes(o.value))
-      : objectOptions;
+  const objects = objectScope.limitObjectOptions(objectOptions);
 
   useEffect(() => {
     if (!open) return;
@@ -194,7 +186,11 @@ export function ReportEquipmentModal({
         </Form.Item>
 
         <Form.Item name="comment" label="Что ещё важно знать">
-          <Input.TextArea rows={2} maxLength={2000} placeholder="стоит у бухгалтерии, наклейки нет" />
+          <Input.TextArea
+            rows={2}
+            maxLength={2000}
+            placeholder="стоит у бухгалтерии, наклейки нет"
+          />
         </Form.Item>
       </Form>
     </FormModal>

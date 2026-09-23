@@ -10,6 +10,7 @@ export * from './errors';
 export * from './idempotency';
 export * from './listParamsStore';
 export * from './numberText';
+export * from './objectScopeAnswers';
 export * from './selectOptions';
 export * from './siderCollapsed';
 export * from './table';

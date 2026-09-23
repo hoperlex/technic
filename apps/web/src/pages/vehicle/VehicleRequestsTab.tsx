@@ -246,7 +246,7 @@ export function VehicleRequestsTab() {
   // Умолчания фильтра «Заказчик» — общим правилом обеих осей (ADR 0201): предрешённый заказчик
   // учётки, и ничего, когда осей у неё две. Состав подбора считает `useRequestCustomerOptions`.
   const customerDefaults = useRequestCustomerDefaults();
-  // Отдел заказывает только грузоперевозки: перечень берётся из матрицы, а не из имени роли.
+  // Перечень — из матрицы и области учётки: отделу с площадкой доступна и спецтехника (ADR 0201).
   const requestTypeOptions = allowedVehicleRequestTypes(user).map((t) => ({
     value: t,
     label: vehicleRequestTypeLabels[t],

@@ -1,4 +1,5 @@
 import { isObjectScopedRole } from '@technic/contracts';
+import { objectScopeAnswers } from '@shared/lib';
 import { useAuth } from '../auth/AuthContext';
 
 /**
@@ -8,31 +9,19 @@ import { useAuth } from '../auth/AuthContext';
  * объекта двое (ADR 0031), и оставленный список ролей разошёлся бы с `OBJECT_SCOPED_ROLES` молча,
  * фильтром объекта, открытым для чужих площадок.
  *
+ * Хук считает ось, а ответы формы по ней собирает общий `objectScopeAnswers`: они у обеих осей
+ * портала одни и те же, и второе их написание разошлось бы с первым на первой же правке. Роль без
+ * этой оси передаёт туда `null` — «областью не ограничен», а не «объектов ноль»: пустой набор
+ * оставил бы человека без единой строки в списке.
+ *
  * Портал сужает выбор, но не решает доступ: чужой объект сервер всё равно отдаёт как 403
  * (`assertObjectScope`), а список — как пустую выборку (`requestVisibilityWhere`).
  */
 export function useObjectScope() {
   const { user } = useAuth();
   const isObjectRole = isObjectScopedRole(user?.role);
-  const ownObjectIds = isObjectRole ? (user?.constructionObjectIds ?? []) : [];
-
   return {
     isObjectRole,
-    ownObjectIds,
-    /**
-     * Единственный объект учётки: им заполняются фильтр списка и поле формы. `null`, когда
-     * объектов несколько — тогда выбирает человек, и подставлять за него первый попавшийся
-     * значило бы заводить заявку не на ту площадку.
-     */
-    soleObjectId: ownObjectIds.length === 1 ? ownObjectIds[0]! : null,
-    /**
-     * Поле объекта заперто, когда выбирать не из чего: у роли ровно один объект. Не `isObjectRole`:
-     * с несколькими объектами запертое поле показывало бы один из них как единственно возможный.
-     */
-    objectFieldDisabled: isObjectRole && ownObjectIds.length <= 1,
-    /** Оставляет в списке только свои объекты: чужие объектной роли и выбирать незачем. */
-    limitObjectOptions<T extends { value: string }>(options: T[]): T[] {
-      return isObjectRole ? options.filter((o) => ownObjectIds.includes(o.value)) : options;
-    },
+    ...objectScopeAnswers(isObjectRole ? (user?.constructionObjectIds ?? []) : null),
   };
 }

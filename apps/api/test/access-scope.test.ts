@@ -24,6 +24,8 @@ import {
   assertWeeklyRequestScope,
   canApproveRequest,
   canApproveWeeklyRequest,
+  canConfirmShifts,
+  assertShiftApprover,
   seesWholeWeeklyRequest,
   weeklyRequestReadScope,
   type WeeklyRequestReadScope,
@@ -187,8 +189,9 @@ describe('видимость заявок по объекту', () => {
 });
 
 /**
- * Заказчик заявки на технику (ADR 0040): объект или отдел. Ось у роли одна, и заявка чужой оси
- * для неё чужая — у заявки отдела объекта нет вовсе.
+ * Заказчик заявки на технику (ADR 0040): объект или отдел. У объектной роли ось одна, и заявка
+ * отдела для неё чужая — объекта у такой заявки нет вовсе. У роли отдела осей две (ADR 0201): свой
+ * отдел и свои площадки, — и все проверки модуля обязаны отвечать по обеим одинаково.
  */
 describe('видимость заявок ТС по заказчику (ADR 0040)', () => {
   const visibility = (p: Principal) =>
@@ -313,6 +316,46 @@ describe('видимость заявок ТС по заказчику (ADR 0040
         role,
       ).toBe(200);
     }
+  });
+
+  /**
+   * Подпись под сменами — четвёртая проверка модуля, считающая ту же пару осей (ADR 0201), и
+   * единственная, у которой своего права нет вовсе: круг задан вопросом «кто мог бы завести эту
+   * заявку» (ADR 0044 п. 3) — право заведения, разрешённый тип и своя область. Поэтому проверяются
+   * обе половины сразу: чужая площадка остаётся чужой, а отделу без площадок спецтехника закрыта
+   * типом — и подпись под её сменами вместе с ним.
+   */
+  it('отдел с площадкой подписывает смены заказа своей площадки, чужой — нет', () => {
+    const onSite = (objectId: string) => ({
+      ...onObject(objectId),
+      requestType: 'special_equipment' as const,
+    });
+    const ownFreight = {
+      ...onDepartment(DEPARTMENT_A),
+      requestType: 'freight_transport' as const,
+    };
+
+    const withPlace = principal('department', {
+      departmentIds: [DEPARTMENT_A],
+      departmentObjectIds: [OBJECT_A],
+    });
+    expect(canConfirmShifts(withPlace, onSite(OBJECT_A))).toBe(true);
+    expect(canConfirmShifts(withPlace, onSite(OBJECT_B))).toBe(false);
+    // Вторая ось никуда не делась: заявку от себя отдел подписывает по-прежнему.
+    expect(canConfirmShifts(withPlace, ownFreight)).toBe(true);
+    // Половина с отказом — та же: страж обязан отвечать 403 там, где предикат сказал «нет».
+    expect(statusOf(() => assertShiftApprover(withPlace, onSite(OBJECT_A)))).toBe(200);
+    expect(statusOf(() => assertShiftApprover(withPlace, onSite(OBJECT_B)))).toBe(403);
+
+    // Отдел без площадок отвечает как до ADR 0201: спецтехника ему не положена типом.
+    const noPlace = principal('department', { departmentIds: [DEPARTMENT_A] });
+    expect(canConfirmShifts(noPlace, onSite(OBJECT_A))).toBe(false);
+    expect(canConfirmShifts(noPlace, ownFreight)).toBe(true);
+
+    // Объектная ось считается тем же ответом: своя площадка — да, соседняя — нет.
+    const shtab = principal('shtab', { constructionObjectIds: [OBJECT_A] });
+    expect(canConfirmShifts(shtab, onSite(OBJECT_A))).toBe(true);
+    expect(canConfirmShifts(shtab, onSite(OBJECT_B))).toBe(false);
   });
 });
 
@@ -769,7 +812,9 @@ describe('сквозная область модуля оргтехники у �
     );
     expect(paramsOf(mech)).toEqual(paramsOf(mechPlain));
     // Путевые листы: у модуля предиката области нет — «прежняя» означает «модуль закрыт правом».
-    expect(can(itApprover, 'waybills.read'), 'журнал листов закрыт держателю ИТ-набора').toBe(false);
+    expect(can(itApprover, 'waybills.read'), 'журнал листов закрыт держателю ИТ-набора').toBe(
+      false,
+    );
     expect(can(itApprover, 'waybills.cancel')).toBe(false);
   });
 

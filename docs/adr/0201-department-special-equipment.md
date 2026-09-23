@@ -22,7 +22,10 @@
   механизации), [ADR 0036](0036-vehicle-on-site.md) (срез «На объекте»),
   [ADR 0104](0104-vehicle-request-lead-time.md) (срок заказа, который решение не трогает)
 - Область: контракты — [permissions.ts](../../packages/contracts/src/permissions.ts)
-  (`allowedVehicleRequestTypes`, `placeObjectScopeIds`); сервер —
+  (`allowedVehicleRequestTypes`, `placeObjectScopeIds`) и
+  [permission-catalog.ts](../../packages/contracts/src/permission-catalog.ts) (витрина области:
+  текст правила пишется верным при обоих состояниях отдела — площадок учётки предикат не видит);
+  сервер —
   [access.ts](../../apps/api/src/lib/access.ts) (`vehicleRequestVisibilityWhere`,
   `departmentOwnsRequest`, `canApproveRequest`, `assertRequestScope`, `canConfirmShifts`); портал —
   [usePlaceObjectScope.ts](../../apps/web/src/hooks/usePlaceObjectScope.ts) (бывший

@@ -661,7 +661,7 @@ describe.skipIf(!DB_URL)('ролевая сводка: получатели и �
       // должно быть дырой, через которую она к нему приходит.
       expect(hasNumber(text, ctx.requestB.number)).toBe(false);
       expect(text).not.toContain('ул Чужая');
-      // Заявка отдела — тоже не его: ось у роли одна.
+      // Заявка отдела — тоже не его: объектная роль отдельской оси не имеет вовсе.
       expect(hasNumber(text, ctx.requestDept.number)).toBe(false);
     });
 
@@ -669,8 +669,8 @@ describe.skipIf(!DB_URL)('ролевая сводка: получатели и �
       const text = await digestText(ctx.dept);
 
       expect(hasNumber(text, ctx.requestDept.number)).toBe(true);
-      // Ось у роли одна (ADR 0040): отдел заказывает от себя, и площадочные заявки к нему
-      // отношения не имеют — ни своей площадки, ни чужой у него нет вовсе.
+      // У ЭТОГО отдела площадок нет (ADR 0201): вторую ось даёт закрепление, а фикстура заводит
+      // отдел без него — и заявки площадок к нему отношения не имеют, как и до того решения.
       expect(hasNumber(text, ctx.requestA.number)).toBe(false);
       expect(hasNumber(text, ctx.requestB.number)).toBe(false);
     });

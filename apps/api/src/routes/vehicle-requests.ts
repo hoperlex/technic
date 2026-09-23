@@ -4510,8 +4510,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     async (req, reply) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      // Отдел заказывает только грузоперевозки (ADR 0040) — проверяется до области: «вам такой
-      // заказ не положен» точнее, чем «это не ваш объект», когда объекта у роли нет вовсе.
+      // Коридор типов (ADR 0040, ADR 0201) — до области: «вам такой заказ не положен» точнее, чем
+      // «это не ваш объект», когда площадок у роли нет вовсе, а именно ими спецтехника ей и
+      // открывается.
       assertVehicleRequestTypeAllowed(p, body.requestType);
       const customer = customerOf(body);
       assertRequestScope(p, customer);
