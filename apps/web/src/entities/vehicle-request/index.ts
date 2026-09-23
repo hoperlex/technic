@@ -6,7 +6,6 @@
  * Ключей отсюда раздаётся два корня, и это не оплошность: подсказка рейса (`routePrefillKeys`)
  * живёт под собственным корнем, потому что отвечает о рейсах дня, а не о заявке, — разбор в
  * `api/keys.ts`. Оба спрашивает один слайс, поэтому и вход у них один.
-
  */
 export { vehicleRequestKeys, routePrefillKeys } from './api/keys';
 export { vehicleRequestsApi } from './api/vehicleRequestsApi';
