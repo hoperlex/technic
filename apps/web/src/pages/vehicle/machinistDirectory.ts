@@ -33,7 +33,7 @@ export function useMachinistDirectory(targetId: string | null, open: boolean) {
    */
   const machinists = useQuery({
     queryKey: MACHINISTS_KEY,
-    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortDir: 'asc' }),
+    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortOrder: 'asc' }),
     enabled: open,
   });
 

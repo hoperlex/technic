@@ -110,7 +110,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
 
   const machinists = useQuery({
     queryKey: MACHINISTS_KEY,
-    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortDir: 'asc' }),
+    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortOrder: 'asc' }),
     enabled: open,
   });
   const driverName = (personId: string) =>

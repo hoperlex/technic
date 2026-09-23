@@ -12,13 +12,12 @@ import { driverKeys } from './keys';
  * только потребитель, а карточки водителей — персональные данные (ADR 0037), и просить их закрытым
  * окном незачем.
  *
- * `sortDir` перенесён как есть и сортировкой не работает: список принимает `sortOrder`
- * (`baseListQuery`), а неизвестную графу отбрасывает, и состав приходит обратным алфавиту —
- * умолчанием `desc`. Исправление меняет то, что видит человек в трёх окнах, и переносом не
- * делается.
+ * Графа сортировки называется `sortOrder`, а не `sortDir`, и промах здесь ничем не заметен:
+ * `baseListQuery` неизвестную графу отбрасывает молча, оставляя умолчание `desc`, — так три окна
+ * и показывали машинистов обратным алфавиту, пока перенос не свёл их запросы в одно место.
  */
 export const machinistOptionsQuery = () =>
   queryOptions({
     queryKey: driverKeys.machinistOptions(),
-    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortDir: 'asc' }),
+    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortOrder: 'asc' }),
   });

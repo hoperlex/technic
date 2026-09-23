@@ -909,7 +909,7 @@ export function VehicleAssignModal({
   });
   const { data: machinists, isFetching: machinistsLoading } = useQuery({
     queryKey: ['drivers', 'machinists'],
-    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortDir: 'asc' }),
+    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortOrder: 'asc' }),
     enabled: needsMachinist,
   });
   const machinistOptions = (machinists?.items ?? []).map(machinistOption);
