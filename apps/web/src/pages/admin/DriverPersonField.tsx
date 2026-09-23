@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Checkbox, Form, Select, Space, Tag, type FormInstance } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import { formatPhone, isPersonScopedRole } from '@technic/contracts';
-import { FormModal } from '@shared/ui';
-import { userAccountKeys } from '@entities/user-account';
 import {
+  formatPhone,
+  isPersonScopedRole,
+  type UserAccountDto,
+  type UserPersonRefDto,
+} from '@technic/contracts';
+import { FormModal } from '@shared/ui';
+import {
+  userAccountKeys,
   usersApi,
   type PersonCandidateDto,
   type PersonCandidateMatch,
   type RestoreUserBody,
-  type UserAccountDto,
-  type UserPersonRefDto,
-} from '../../api/users';
+} from '@entities/user-account';
 
 /**
  * Выбор работника для учётки водителя (ADR 0102, Р30) — своим файлом, а не блоком внутри

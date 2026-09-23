@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { App, Button, Card, Form, Input, Result, Typography } from 'antd';
 import { normalizeEmail } from '@technic/contracts';
-import { authApi } from '../api/auth';
+import { authApi } from '@entities/session';
 import { CaptchaField } from '../components/CaptchaField';
 import { useCaptcha } from '../components/useCaptcha';
 import { errorFields, errorMessage } from '../utils/format';

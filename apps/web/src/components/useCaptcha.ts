@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import type { CaptchaConfig } from '@technic/contracts';
-import { authApi } from '../api/auth';
+import { authApi } from '@entities/session';
 import { useAuth } from '../auth/AuthContext';
 
 /**

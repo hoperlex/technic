@@ -8,10 +8,10 @@ import {
   requestRoleTitle,
   roleLabels,
   type Role,
+  type UserAccountDto,
 } from '@technic/contracts';
 import { departmentRecordsQuery } from '@entities/department';
-import { grantFormApi, grantKeys } from '../../api/grants';
-import type { UserAccountDto } from '../../api/users';
+import { grantFormApi, grantKeys } from '@entities/grant';
 import {
   matchReasonLabels,
   NO_SUGGESTION,

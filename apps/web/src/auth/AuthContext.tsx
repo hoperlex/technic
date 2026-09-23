@@ -9,7 +9,7 @@ import {
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { canUse as scopedCanUse, type AuthUser, type Permission } from '@technic/contracts';
-import { authApi } from '../api/auth';
+import { authApi } from '@entities/session';
 import { accessFingerprint } from './accessFingerprint';
 import { clear as clearSession, onExpired, onRefreshedUser, refresh } from '@shared/api';
 

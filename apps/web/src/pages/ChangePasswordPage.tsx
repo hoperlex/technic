@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { App, Button, Card, Form, Input, Typography } from 'antd';
 import { useNavigate } from 'react-router';
 import { PASSWORD_MIN } from '@technic/contracts';
-import { authApi } from '../api/auth';
+import { authApi } from '@entities/session';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage } from '../utils/format';
 

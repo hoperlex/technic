@@ -17,7 +17,7 @@ import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { selectOption, typeDate } from './antd';
-import type { MailDigestSampleUser, MailTestDriver, MailTestRecipient } from '../src/api/mailings';
+import type { MailDigestSampleUser, MailTestDriver, MailTestRecipient } from '@entities/mailing';
 import { MailingsTab } from '../src/pages/admin/MailingsTab';
 
 /**

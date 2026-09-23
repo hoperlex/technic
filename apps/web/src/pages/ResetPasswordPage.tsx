@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { App, Button, Card, Form, Result, Typography } from 'antd';
 import { Link, useNavigate, useSearchParams } from 'react-router';
-import { authApi } from '../api/auth';
+import { authApi } from '@entities/session';
 import { PasswordField } from '../components/PasswordField';
 import { errorMessage } from '../utils/format';
 

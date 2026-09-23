@@ -3,8 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { roleLabels, type AudienceMode, type Permission } from '@technic/contracts';
 import { type CheckboxPickerItem, type CheckboxPickerValue } from '@shared/ui';
 import { departmentOptionsQuery } from '@entities/department';
+import { mailingsApi } from '@entities/mailing';
 import { objectOptionsQuery } from '@entities/object';
-import { mailingsApi } from '../../api/mailings';
 import { PermissionPickerField, PickerField } from './MailingAudiencePickers';
 
 /**

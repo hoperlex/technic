@@ -15,8 +15,7 @@ import { withSavedOption } from '@shared/lib';
 import { objectKeys, objectsApi } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
-import { userAccountKeys } from '@entities/user-account';
-import { usersApi } from '../../api/users';
+import { userAccountKeys, usersApi } from '@entities/user-account';
 
 /**
  * Отбор журнала изменений (ADR 0109): по самим событиям — период, действие, администратор — и по

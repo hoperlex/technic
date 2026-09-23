@@ -11,8 +11,8 @@ import {
   type UserAccountDto,
   type UserGrantRefDto,
 } from '@technic/contracts';
+import { grantFormApi, grantKeys } from '@entities/grant';
 import { isApiError } from '@shared/api';
-import { grantFormApi, grantKeys } from '../../api/grants';
 import { GrantProfileField } from './GrantProfileField';
 import { apiViolationTexts, GRANT_ROLES, permissionLabel } from './grantModel';
 import {

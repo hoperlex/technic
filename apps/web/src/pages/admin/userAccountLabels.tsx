@@ -9,8 +9,8 @@ import {
   roleLabels,
   roleMigrationOf,
   type Role,
+  type UserAccountDto,
 } from '@technic/contracts';
-import type { UserAccountDto } from '../../api/users';
 import { hasExternalEmail } from './registrationApproval';
 
 /**

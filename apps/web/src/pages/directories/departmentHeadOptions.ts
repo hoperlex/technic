@@ -6,8 +6,7 @@ import {
   type UserAccountDto,
 } from '@technic/contracts';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
-import { userAccountKeys } from '@entities/user-account';
-import { usersApi } from '../../api/users';
+import { userAccountKeys, usersApi } from '@entities/user-account';
 
 /**
  * Кандидаты в руководители отдела — для карточки справочника (§11.1 плана реструктуризации прав,

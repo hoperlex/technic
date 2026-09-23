@@ -7,11 +7,10 @@ import {
   type GrantDto,
   type GrantHolderDto,
 } from '@technic/contracts';
-import { userAccountKeys } from '@entities/user-account';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { ViewModal } from '@shared/ui';
-import { grantKeys, grantsApi, userGrantsApi } from '../../api/grants';
-import { usersApi } from '../../api/users';
+import { grantKeys, grantsApi, userGrantsApi } from '@entities/grant';
+import { userAccountKeys, usersApi } from '@entities/user-account';
 import { errorMessage, formatDateTime } from '../../utils/format';
 import { GrantImpactConfirm } from './GrantImpactConfirm';
 import {

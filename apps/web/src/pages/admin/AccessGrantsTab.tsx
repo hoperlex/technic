@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import type { GrantDto, GrantKindFilter } from '@technic/contracts';
+import { grantKeys, grantsApi } from '@entities/grant';
 import {
   actionsColumn,
   boolBadgeColumn,
@@ -22,7 +23,6 @@ import {
   type CardConfig,
 } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { grantKeys, grantsApi } from '../../api/grants';
 import { draftOf, GrantBuilderModal, type GrantDraft } from './GrantBuilderModal';
 import { GrantHoldersModal } from './GrantHoldersModal';
 import { roleListText } from './grantModel';

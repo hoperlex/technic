@@ -41,9 +41,10 @@ import {
   ROLES,
   roleLabels,
   type RejectUserBody,
+  type UserAccountDto,
 } from '@technic/contracts';
 import { counterpartiesApi } from '@entities/counterparty';
-import { usersApi, type RestoreUserBody, type UserAccountDto } from '../../api/users';
+import { usersApi, type RestoreUserBody } from '@entities/user-account';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
