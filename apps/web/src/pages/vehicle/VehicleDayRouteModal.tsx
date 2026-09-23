@@ -19,11 +19,11 @@ import {
 import { driversApi } from '@entities/driver';
 import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
-import { vehicleRoutesApi } from '@entities/vehicle-route';
 import {
   emptyTrailerGraphs,
   inheritedTrailerGraphs,
   vehicleRouteKeys,
+  vehicleRoutesApi,
 } from '@entities/vehicle-route';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
@@ -32,7 +32,8 @@ import { TrailerFields, trailerTripBody } from './TrailerFields';
 import { BackdateReasonField } from './VehicleBackdateFields';
 
 /**
- * Поставить день линейного заказа в рейс (ADR 0100 решение 8).
+ * Поставить день заказа техники на объект в рейс (ADR 0100 решение 8, изменённое ADR 0207 §1:
+ * линейность дверь дней больше не воротит).
  *
  * День и объект известны до открытия окна: день — это строка таблицы «Дни работ», объект — сам
  * заказ. Спрашиваются ровно две вещи, которыми дни и отличаются друг от друга, — **какая машина
@@ -61,8 +62,8 @@ const driversKey = (vehicleId: string | undefined, date: string, withTrailer: bo
 
 interface Props {
   /**
-   * Заявка и день, который ставят в рейс; `null` — окно закрыто. Заявка должна быть линейной, в
-   * работе и на собственной машине — это проверила таблица дней правилом `canPlanDay`.
+   * Заявка и день, который ставят в рейс; `null` — окно закрыто. Годность заявки проверила таблица
+   * дней правилом `canPlanDay`: заказ техники на объект, в работе, на собственной машине.
    *
    * `onDate` — день среза, посчитанный сервером (`VehicleRequestDaysDto.onDate`): им и только им
    * решается, прошедший ли это день. Часы браузера бывают сбиты, а разойтись с `backdateGuard`
@@ -114,7 +115,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
    * Поля сбрасываются при смене дня, а не при размонтировании: окно переиспользуется под соседние
    * дни срока, и оставшийся от вторника водитель читался бы как решение по среде.
    *
-   * Машина подставляется назначенная — у линейного заказа это машина по умолчанию (ADR 0100
+   * Машина подставляется назначенная — у заказа техники на объект это машина по умолчанию (ADR 0100
    * решение 4), ею закрывают большинство дней. Водитель не подставляется никогда (ADR 0083).
    */
   const resetForDay = useEffectEvent((_id?: string, _day?: string) => {
@@ -172,9 +173,8 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
     // Назначенная машина могла уйти из активного парка (сломалась, продана), а день ею всё равно
     // отработали. Без этой строки поле показало бы голый идентификатор.
     const assignment = request?.assignment;
-    if (assignment && !options.some((o) => o.value === assignment.vehicleId)) {
+    if (assignment && !options.some((o) => o.value === assignment.vehicleId))
       options.unshift({ value: assignment.vehicleId, label: assignmentTitle(assignment) });
-    }
     return options;
   }, [fleet, request?.assignment]);
 
@@ -196,7 +196,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
 
   /**
    * Куда день можно положить: рейс со свободной строкой задания, не замороженный выписанным листом
-   * и не перегон — у линейной техники перегона не бывает вовсе (ADR 0100 решение 9). Отбор тот же,
+   * и не перегон — перегон едет по своей заявке-основанию и дня работ в состав не берёт. Отбор тот же,
    * что проверит сервер: иначе список предлагал бы рейсы, которые он отклонит.
    */
   const routeOptions = (suggestion?.routes ?? []).filter(
@@ -223,7 +223,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
   const selectedVehicle = (fleet?.items ?? []).find((v) => v.id === vehicleId) ?? null;
 
   /**
-   * Водители на этот день — тем же отбором, что и при переводе в работу (ADR 0064): день линейной
+   * Водители на этот день — тем же отбором, что и при переводе в работу (ADR 0064): день
    * машины печатается обычным 4-П, а в нём графы удостоверения и СНИЛСа. Никого из списка отбор не
    * убирает: пробелы документов помечают строку и объясняются подписью под полем.
    */
@@ -311,7 +311,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
             </Typography.Paragraph>
           </FormGrid.Full>
 
-          {/* Машина спрашивается, а не берётся из назначения молча: у линейного заказа назначение —
+          {/* Машина спрашивается, а не берётся из назначения молча: у заказа на объект назначение —
             машина по умолчанию (ADR 0100 решение 4), и в конкретный день выезжает та, чьим рейсом
             день закрыт. Умолчанием стоит назначенная: ею работают чаще всего. */}
           <Form.Item

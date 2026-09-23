@@ -24,6 +24,7 @@ import {
   vehicleReadings,
   vehicleRequests,
   vehicleRequestTrips,
+  vehicleRouteRequests,
   vehicleRoutes,
   vehicles,
   vehicleTypes,
@@ -50,9 +51,17 @@ import { loadRouteDtos, routeQuery } from './vehicle-routes';
  * контрагентов, объектов — в ней нет вовсе. Единственные идентификаторы здесь свои: рейса и листа,
  * ими сервер потом находит источник показаний.
  *
- * Чего в задании не бывает: листов 4-П и формы № 3 (Р16). Их выезд уже представлен рейсом —
- * `waybills_form_source_check` требует у этих форм заполненный `route_id`, — и своей строкой такой
- * лист задвоил бы одну и ту же смену.
+ * Чего в задании не бывает: листов 4-П и формы № 3 своей строкой (Р16). Их выезд уже представлен
+ * рейсом — `waybills_form_source_check` требует у этих форм заполненный `route_id`.
+ *
+ * Обратное тоже бывает, и одним рейсом дело не закрывается: у заказа техники на объект портал
+ * выписывает 4-П на каждый день срока, а недельный ЭСМ-2 продолжает выписываться сам
+ * (`docs/vehicle-request-day-batch-plan.md`, Р2). Бумаги за день тогда две, а смена одна, и
+ * карточка в задании тоже одна (Р3): состав отчёта показаний выводится отсюда, и вторая карточка
+ * завела бы вторую строку ожидания, закрыть которую нечем. Остаётся карточка недельного листа —
+ * рейс, чей день уже спрашивает ЭСМ-2 той же заявки и той же машины, из задания убирается
+ * (`weeklyCoveredRoutes`), тем же правилом, каким его не ждёт статистика (`EXPECTED_ROUTE_FILTER`
+ * в `readings-aggregate.ts`).
  *
  * Третье свойство появилось после первого показа и разводит двух потребителей: **кабинет строго
  * документален** (`docs/driver-cabinet-ux-plan.md`, Р5) — рейс входит в задание, только если по
@@ -589,6 +598,53 @@ async function esm2Sources(
   }));
 }
 
+/**
+ * Рейсы, чей день уже спрашивает недельный ЭСМ-2 той же заявки и той же машины.
+ *
+ * За день работы техники на объекте бумаги бывает две — недельный лист и дневной 4-П
+ * (`docs/vehicle-request-day-batch-plan.md`, Р2), — а смена одна, и показание за неё одно (Р3).
+ * Карточка в задании поэтому тоже одна: из задания собирается состав отчёта показаний
+ * (`readings.ts`), а строка отчёта привязана ровно к одному источнику — рейсу либо листу с днём.
+ * Вторая карточка завела бы вторую строку, и одна физически сданная смена закрыла бы только одну
+ * из них: второй день горел бы несданным до конца срока заказа.
+ *
+ * Остаётся карточка листа, а не рейса: по ЭСМ-2 смену спрашивает и статистика
+ * (`EXPECTED_ROUTE_FILTER` в `readings-aggregate.ts`), и разойтись кабинету с ней нельзя — гараж
+ * требовал бы показаний по сменам, которых водитель у себя не видит.
+ *
+ * Лист спрашивается **любого** работника, а не этого, и это не недосмотр: правило считает смену
+ * машины, а не человека, и ровно так же оно записано на стороне статистики. Неделю переписали на
+ * подменного машиниста, дневные 4-П остались на прежнем — показание сдаёт тот, на кого выписан
+ * недельный лист, а прежний водитель карточки не получает: сдавать ему нечего.
+ *
+ * Условие узкое: та же заявка, та же машина, тот же день. День берётся у строки состава
+ * (`work_date`), у грузовой строки он пуст, — поэтому грузовой рейс и перегон внутри недели ЭСМ-2
+ * из задания не пропадают: их выезд неделя на площадке не покрывает.
+ */
+async function weeklyCoveredRoutes(routeIds: string[], date: string): Promise<Set<string>> {
+  if (routeIds.length === 0) return new Set();
+  const rows = await db
+    .selectDistinct({ routeId: vehicleRouteRequests.routeId })
+    .from(vehicleRouteRequests)
+    // Машина спрашивается у рейса, а не у строки состава: своей машины у заявки в рейсе нет.
+    .innerJoin(vehicleRoutes, eq(vehicleRoutes.id, vehicleRouteRequests.routeId))
+    .innerJoin(
+      waybills,
+      and(
+        eq(waybills.sourceRequestId, vehicleRouteRequests.requestId),
+        eq(waybills.vehicleId, vehicleRoutes.vehicleId),
+        eq(waybills.formCode, 'esm2'),
+        ne(waybills.status, 'cancelled'),
+        lte(waybills.periodFrom, date),
+        gte(waybills.periodTo, date),
+      ),
+    )
+    .where(
+      and(inArray(vehicleRouteRequests.routeId, routeIds), eq(vehicleRouteRequests.workDate, date)),
+    );
+  return new Set(rows.map((row) => row.routeId));
+}
+
 // ── Прошлый снимок счётчиков ──
 
 /**
@@ -664,6 +720,10 @@ async function previousReadings(
  * бланка нет; цена решения — выехавший до выписки водитель не увидит адресов, и она названа в плане
  * прямо. Недельный ЭСМ-2 фильтра не проходит: он сам себе лист, и в задание входит по своему
  * периоду.
+ *
+ * И здесь же — обратный отбор той же природы: рейс, чей день уже спрашивает недельный лист той же
+ * заявки и той же машины, из задания убирается (`weeklyCoveredRoutes`). Бумаги за день две, а
+ * смена одна, и показание за неё принимают по ЭСМ-2.
  */
 export async function loadDayEntries(
   personId: string,
@@ -674,13 +734,20 @@ export async function loadDayEntries(
     esm2Sources(personId, date),
   ]);
   const routes = byDate.get(date) ?? [];
-  const documented = await documentedRoutes(
-    routes.map((source) => source.entry.sourceId),
-    personId,
-  );
+  const routeIds = routes.map((source) => source.entry.sourceId);
+  const [documented, weeklyCovered] = await Promise.all([
+    documentedRoutes(routeIds, personId),
+    weeklyCoveredRoutes(routeIds, date),
+  ]);
   const sources: EntrySource<DriverAssignmentEntry>[] = [
     ...routes
-      .filter((source) => documented.has(source.entry.sourceId))
+      // Второе условие парное первому и по той же причине — показание. Бумаги за день бывает две
+      // (недельный ЭСМ-2 и дневной 4-П той же заявки), а смена одна: день, который уже спрашивает
+      // недельный лист, второй карточкой задвоил бы строку отчёта, и закрыть её было бы нечем.
+      .filter(
+        (source) =>
+          documented.has(source.entry.sourceId) && !weeklyCovered.has(source.entry.sourceId),
+      )
       .map((source) => ({ vehicleId: source.vehicleId, entry: cabinetEntry(source.entry) })),
     ...weekly,
   ];

@@ -1,10 +1,12 @@
 import type {
   CreateRequestRelocationBody,
+  DayBatchApplyBody,
   IssueRequestEsm2Body,
   PlanVehicleRequestDayBody,
   RequestWaybillDto,
   RouteTripFields,
   SaveVehicleRequestShiftBody,
+  VehicleRequestDayBatchResultDto,
   VehicleRequestDaysDto,
   VehicleRequestDto,
   VehicleRequestShiftsDto,
@@ -132,6 +134,28 @@ export const vehicleRequestExecution = {
    */
   planDay: (id: string, date: string, body: PlanVehicleRequestDayBody) =>
     apiFetch<VehicleRequestDaysDto>(`/vehicle-requests/${id}/days/${date}/route`, {
+      method: 'POST',
+      body,
+    }),
+  /**
+   * Пачка «4-П на весь период» (ADR 0207): один заход проходит срок заказа подряд — на каждый его
+   * день находит или заводит рейс и выписывает по нему лист.
+   *
+   * Дверь **одна** на оба места, откуда её зовут, — галочку окна принятия в работу и кнопку
+   * таблицы дней: правил у пачки своих нет ни одного, она повторяет подённую дверь день за днём, и
+   * вторая дверь означала бы второй набор правил, расходящийся с первым молча.
+   *
+   * Машины в теле нет намеренно (решение 5): её пачка берёт из назначения заявки. Свободный выбор
+   * развёл бы бумагу по двум машинам так, что ни гараж, ни срез «На объекте», ни ЭСМ-2 этого не
+   * показали бы; нужна другая единица на отдельный день — её ставят подённой дверью.
+   *
+   * День, который дверь не пускает, пачку не роняет, а уходит строкой отчёта с причиной
+   * (решение 7): ответ — таблица дней целиком **и** построчный отчёт. Таблица приезжает готовой,
+   * чтобы карточка показала новую картину сразу: сходив за ней вторым запросом, она рискует
+   * показать уже не ту, по которой составлен отчёт.
+   */
+  planDayBatch: (id: string, body: DayBatchApplyBody) =>
+    apiFetch<VehicleRequestDayBatchResultDto>(`/vehicle-requests/${id}/days/batch`, {
       method: 'POST',
       body,
     }),

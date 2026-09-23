@@ -14,21 +14,18 @@ import {
   Tag,
   Typography,
 } from 'antd';
-import dayjs, { type Dayjs } from 'dayjs';
+import dayjs from 'dayjs';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   type AssignmentPreviewDto,
-  type AssignVehicleBody,
   assignmentRateLabel,
   assignmentTitle,
   communicationKindOptions,
-  type ConfirmScheduleBody,
   DEFAULT_COMMUNICATION_KIND,
   formatMoscowDateTime,
   formatWeeklyRequestNumber,
   isRouteEditable,
   routeRequestCapacity,
-  normalizeTimeInput,
   VEHICLE_OWNERSHIPS,
   requestCustomerName,
   vehicleClassificationLabel,
@@ -41,7 +38,6 @@ import {
   vehicleSubstitutionGroupLabels,
   vehicleSubstitutionOf,
   canCorrectWaybill,
-  RELOCATION_COMMUNICATION_KIND,
   weekStartKey,
   moscowDateKeyOf,
   WAYBILL_CORRECTION_CONFIRM,
@@ -50,7 +46,6 @@ import {
   waybillFormLabels,
   waybillRequirement,
 } from '@technic/contracts';
-import type { CorrectAssignmentBody } from '@technic/contracts';
 import { driversApi } from '@entities/driver';
 import { vehiclesApi } from '@entities/vehicle';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
@@ -77,9 +72,18 @@ import {
   plannedEsm2Weeks,
 } from './assignDriverHints';
 import { emptyVehicleListText, vehicleOptionLabel } from './assignVehicleHints';
+import {
+  type AssignCommand,
+  assignCommandBody,
+  type AssignFormValues,
+  assignScheduleOf,
+  NEW_ROUTE,
+} from './assignCommand';
+import { DayBatchFields, type DayBatchFormValues } from './DayBatchFields';
+import { useDayBatch } from './useDayBatch';
 import { RollbackPreview } from './RollbackPreview';
 import { inheritedTrailerGraphs, vehicleRouteKeys } from '@entities/vehicle-route';
-import { TrailerFields, trailerTripBody } from './TrailerFields';
+import { TrailerFields } from './TrailerFields';
 import {
   ReassignPreview,
   reassignPreviewBlocked,
@@ -160,69 +164,19 @@ interface Props {
    * к пересчитанному перечню. Отправитель, которому это не нужно, по-прежнему возвращает `void`:
    * ждать нечего, и ничего не меняется.
    */
-  onSubmit: (v: {
-    assignment: AssignVehicleBody;
-    schedule: ConfirmScheduleBody | null;
-    correction?: CorrectAssignmentBody;
-    previewFingerprint?: string;
-  }) => void | Promise<unknown>;
+  onSubmit: (v: AssignCommand) => void | Promise<unknown>;
 }
 
 /** Что окно отправляет наружу: собирается один раз и уходит сразу либо после подтверждения. */
-type SubmitPayload = Parameters<Props['onSubmit']>[0];
+type SubmitPayload = AssignCommand;
 
-/** Значение селекта «завести новый рейс»: пустая строка неотличима от «ещё не выбрали». */
-const NEW_ROUTE = 'new';
-
-interface FormValues {
-  // ── Фактический срок ──
-  /** Спецтехника: период работ. */
-  dateFrom?: Dayjs | null;
-  dateTo?: Dayjs | null;
-  /** Грузоперевозка: дата подачи и время («чч:мм»); пустое время — подача без точного часа. */
-  scheduledDate?: Dayjs | null;
-  scheduledTime?: string;
-  lessorId?: string;
-  vehicleId?: string;
-  pricePerHour?: number | null;
-  pricePerShift?: number | null;
-  shiftHours?: number | null;
-  // ── Маршрут: готовый рейс (в нём меняют разве что водителя) либо новый целиком ──
-  routeId?: string;
-  /**
-   * За рулём рейса. У нового рейса обязателен — рейса без человека не бывает; у готового поле
-   * отвечает на другой вопрос, «менять ли того, кто уже за рулём», и пустое значение там
-   * законный ответ «не менять» (ADR 0048).
-   */
-  driverPersonId?: string;
-  withTrailer?: boolean;
-  trailer1Model?: string;
-  trailer1RegNumber?: string;
-  trailer2Model?: string;
-  trailer2RegNumber?: string;
-  garageNumber?: string;
-  communicationKind?: string;
-  transportationKind?: string;
-  /**
-   * Машинист заказа техники на объект: на него выписываются недельные листы ЭСМ-2 (миграция
-   * 0087). Отдельное поле, а не `driverPersonId`: тот — водитель рейса грузоперевозки, отобранный
-   * по документам и категории под машину, а здесь годится любой водитель справочника.
-   */
-  machinistId?: string;
-  // ── Доставка техники на объект: перегон по желанию (миграция 0082) ──
-  // ── Коррекция задним числом (ADR 0101, Р8): только при смене машины у работающей заявки ──
-  /** Машину меняют не «с сегодня», а потому, что записана не та: работал другой номер. */
-  correctionEnabled?: boolean;
-  correctionReason?: string;
-  /** Листы ЭСМ-2 отработанных недель, которые переоформить: адресно, а не «все прошлые». */
-  unlockWaybillIds?: string[];
-  /** Спецтехника едет на площадку своим ходом — на эту поездку выписывается 4-П. */
-  deliveryEnabled?: boolean;
-  deliveryDate?: Dayjs | null;
-  deliveryDriverId?: string;
-  deliveryFrom?: string;
-  deliveryTo?: string;
-}
+/**
+ * Поля формы: подбор техники плюс пачка «4-П на весь период» (ADR 0207). Пересечением типов, а не
+ * своим полем внутри `AssignFormValues`: пачка — не часть команды назначения, она уходит второй
+ * дверью и своим телом, и подмешать её поля в сборку назначения значило бы отправить их туда,
+ * где их не ждут.
+ */
+type FormValues = AssignFormValues & DayBatchFormValues;
 
 export function VehicleAssignModal({
   request,
@@ -349,6 +303,11 @@ export function VehicleAssignModal({
       // пустое поле означает «не трогать», а имя, оставшееся от прошлой заявки, пересадило бы за
       // руль чужого рейса человека, которого для него никто не выбирал.
       driverPersonId: undefined,
+      // Пачка 4-П не переезжает между заявками ни галочкой, ни человеком, ни объяснением за
+      // прошлое: оставшаяся от соседнего заказа галочка выписала бы полсотни бланков молча.
+      dayBatchEnabled: false,
+      dayBatchDriverId: undefined,
+      dayBatchReason: undefined,
       // Вид сообщения нового рейса — умолчанием набора: поле стало обязательным, и пустым оно
       // останавливало бы форму на самом частом пути. Ставится здесь, а не только наследованием от
       // прошлого рейса: у машины, выезжающей впервые, наследовать не от чего, а окно
@@ -592,9 +551,12 @@ export function VehicleAssignModal({
   const pricePerShift = Form.useWatch('pricePerShift', form);
   const scheduledDate = Form.useWatch('scheduledDate', form);
   const driverPersonId = Form.useWatch('driverPersonId', form);
-  // Срок работ спецтехники: по нему считаются недели, на которые выпишутся листы ЭСМ-2.
+  // Срок работ спецтехники: по нему считаются недели, на которые выпишутся листы ЭСМ-2, и дни,
+  // на которые пачка выпишет 4-П.
   const dateFrom = Form.useWatch('dateFrom', form);
   const dateTo = Form.useWatch('dateTo', form);
+  /** Машинист заявки: он же умолчание водителя пачки 4-П (ADR 0207 решение 6). */
+  const machinistId = Form.useWatch('machinistId', form);
 
   const isFreight = request?.requestType === 'freight_transport';
 
@@ -922,6 +884,31 @@ export function VehicleAssignModal({
   );
   const machinistExtra = machinistFieldExtra({ reassign, isLinear, currentMachinist, esm2Weeks });
 
+  // ── Пачка «4-П на весь период» (ADR 0207) ──
+
+  /**
+   * Где галочка вообще предлагается. Заказ техники на объект и своя машина — это граница бумаги, а
+   * не типа (Р10 плана): лист на арендную единицу выписывает арендодатель, и обещать его портал не
+   * вправе. Смены техники здесь нет: там срок уже идёт, выписанные листы не переписываются, а
+   * добирают дни кнопкой «Распланировать период» в карточке. Возврата «Выполнена» → «В работе»
+   * тоже: у той заявки дни уже прожиты, и пачка поверх них — не то, о чём просят возвратом.
+   *
+   * Признак линейности в условие не входит намеренно (ADR 0207 решение 1): 4-П за день просят и у
+   * машины, которая неделю стоит на площадке.
+   */
+  const canBatchDays =
+    !reassign && !rollbackToWork && request?.requestType === 'special_equipment' && !isRental;
+  const dayBatchEnabled = (Form.useWatch('dayBatchEnabled', form) ?? false) && canBatchDays;
+
+  /**
+   * Пачка зовётся вторым запросом, уже после перевода в работу, и её отказ не отменяет первого:
+   * заявка к этому моменту в работе, откатывать её нельзя. Поэтому у отказа здесь своя подпись —
+   * человек обязан прочесть, что заявка взята, а бумага не выписана.
+   */
+  const dayBatch = useDayBatch({
+    failureHint: 'Заявка взята в работу, но 4-П на период не выписаны:',
+  });
+
   // Что не так с выбранным водителем — двумя отдельными предупреждениями (ADR 0055, ADR 0064).
   const selectedDriver = selection?.drivers.find((d) => d.personId === driverPersonId);
   const driverCategoryMismatch = driverCategoryNote(selection, selectedDriver);
@@ -1071,36 +1058,10 @@ export function VehicleAssignModal({
     form.setFieldsValue({ routeId: id, ...(target ? vehicleValues(target.vehicleId) : {}) });
   };
 
-  /**
-   * Фактический срок в том виде, в каком его принимает API. Время подачи собирается по МСК — в
-   * этом поясе живут и заявка, и путевой лист; пустое время означает подачу «на дату», как и при
-   * заведении заявки.
-   */
-  const scheduleOf = (v: FormValues): ConfirmScheduleBody | null => {
-    if (!request) return null;
-    if (request.requestType === 'special_equipment') {
-      if (!v.dateFrom) return null;
-      return {
-        requestType: 'special_equipment',
-        dateFrom: v.dateFrom.format('YYYY-MM-DD'),
-        dateTo: v.dateTo ? v.dateTo.format('YYYY-MM-DD') : null,
-      };
-    }
-    if (!v.scheduledDate) return null;
-    const time = normalizeTimeInput(v.scheduledTime ?? '');
-    return {
-      requestType: 'freight_transport',
-      scheduledAt: dayjs
-        .tz(`${v.scheduledDate.format('YYYY-MM-DD')} ${time ?? '00:00'}`, MOSCOW_TZ)
-        .format('YYYY-MM-DDTHH:mm:ssZ'),
-      scheduledTimeUnspecified: time === undefined,
-    };
-  };
-
   const submit = (v: FormValues) => {
     // Срок уточняют только при переводе в работу: у работающей заявки он уже согласован, и
     // смена машины его не трогает (ADR 0048) — сервер `schedule` вне перевода и не примет.
-    const schedule = reassign ? null : scheduleOf(v);
+    const schedule = reassign ? null : assignScheduleOf(request, v);
     // Правила, которые проверяет и сервер. Каждое названо своим полем, а не тостом поверх формы:
     // порядок причин здесь — порядок полей в окне, и к первой из них уедет экран (ADR 0094).
     const blocked = blockers.raise({
@@ -1140,79 +1101,15 @@ export function VehicleAssignModal({
         'Выберите водителя — на рейс выписывается путевой лист',
     });
     if (blocked || !v.vehicleId) return;
-    const payload: SubmitPayload = {
-      assignment: {
-        vehicleId: v.vehicleId,
-        pricePerHour: v.pricePerHour ?? null,
-        pricePerShift: v.pricePerShift ?? null,
-        shiftHours: v.shiftHours ?? null,
-        // Машинист заказа техники на объект: на него выписываются листы ЭСМ-2 за каждую неделю
-        // срока. У грузоперевозки поля нет — там водитель принадлежит рейсу. У линейной заявки
-        // поле уходит пустым, если его не заполнили: назначение без машиниста законно, листы по
-        // ней выписывают отдельно и своим человеком (ADR 0100 решение 6).
-        //
-        // Незаполненное поле уезжает не пустой строкой и не `null`, а отсутствием ключа:
-        // `undefined` теряется при сериализации тела, и сервер получает ровно то, что описано
-        // контрактом, — «машиниста не называли». При смене техники (ADR 0048) это и есть
-        // «оставить прежнего»: сверка ЭСМ-2 возьмёт человека с прежнего листа заявки.
-        ...(needsMachinist ? { driverPersonId: v.machinistId } : {}),
-        // Рейс: готовый — идентификатором и, если человека выбрали, новым водителем; новый —
-        // вместе с водителем и реквизитами выезда.
-        ...(needsRoute
-          ? {
-              route:
-                v.routeId && v.routeId !== NEW_ROUTE
-                  ? {
-                      routeId: v.routeId,
-                      // Ключ уходит только с выбранным именем. Отсутствие ключа контракт читает
-                      // как «водителя не трогать» (ADR 0048), и это единственное, чем окно может
-                      // выразить пустое поле: `null` там означает «снять», а рейс общий — снятие
-                      // оставило бы без водителя и чужие заявки. Такое решение принимают правкой
-                      // маршрута, где виден весь состав (ADR 0082), — здесь его не предлагают.
-                      ...(v.driverPersonId ? { driverPersonId: v.driverPersonId } : {}),
-                    }
-                  : {
-                      newRoute: {
-                        driverPersonId: v.driverPersonId,
-                        trip: {
-                          ...trailerTripBody(v),
-                          garageNumber: v.garageNumber ?? '',
-                          communicationKind: v.communicationKind ?? '',
-                          transportationKind: v.transportationKind ?? '',
-                        },
-                      },
-                    },
-            }
-          : {}),
-        // Доставка техники на объект — отдельный рейс на дату перегона, а не часть маршрута
-        // заявки: у спецтехники маршрута нет вовсе, есть период работы машины на площадке.
-        ...(wantsDelivery
-          ? {
-              delivery: {
-                routeDate: v.deliveryDate!.format('YYYY-MM-DD'),
-                driverPersonId: v.deliveryDriverId,
-                moveFrom: v.deliveryFrom!.trim(),
-                moveTo: v.deliveryTo!.trim(),
-                // Вид сообщения перегона портал ставит сам — окно про него не спрашивает
-                // (`RELOCATION_COMMUNICATION_KIND`): технику везут с базы на площадку по городу.
-                trip: { communicationKind: RELOCATION_COMMUNICATION_KIND },
-              },
-            }
-          : {}),
-      },
+    const payload = assignCommandBody(v, {
       schedule,
-      // Признак коррекции уходит отдельным блоком, а не полем назначения: он не о том, чем заявку
-      // выполняют, а о том, что запрос утверждает про прошедшие дни (ADR 0101, Р8).
-      ...(correctionEnabled
-        ? {
-            correction: {
-              operationId,
-              reason: v.correctionReason!.trim(),
-              unlockWaybillIds: v.unlockWaybillIds ?? [],
-            },
-          }
-        : {}),
-    };
+      needsMachinist,
+      needsRoute,
+      wantsDelivery,
+      // Ключ идемпотентности уходит только с включённой коррекцией: без неё операции журнала не
+      // заводится вовсе, и ключ нечему опознавать.
+      correctionId: correctionEnabled ? operationId : null,
+    });
     // На откате «Выполнена» → «В работе» между «нажали» и «отправили» встаёт вопрос сервера: что
     // именно случится с бумагой и занятостью. Прочие переходы уходят сразу, как уходили.
     if (rollbackToWork) {
@@ -1225,7 +1122,28 @@ export function VehicleAssignModal({
       consequencesMut.mutate({ payload, stale: null });
       return;
     }
-    void onSubmit(payload);
+    /*
+     * Пачка 4-П идёт **вторым** запросом и только вслед за успешным переводом (ADR 0207).
+     *
+     * Одним телом это не сделать, и не по недосмотру: дни ставит дверь дней, а её правило
+     * (`linearDaysBlocker`) требует заявку уже в работе и уже с назначенной машиной — до перевода
+     * в работу планировать нечего и не на чем. Отсюда и порядок: сначала статус, потом бумага.
+     *
+     * Отказ перевода пачку отменяет молча: заявка не в работе, планировать нечего, а о самом
+     * отказе уже сказал тот, кто отправлял. Отказ пачки, наоборот, громкий (`failureHint`):
+     * заявка осталась в работе, и откатывать её из-за невыписанной бумаги нельзя.
+     */
+    if (dayBatchEnabled && request) {
+      const requestId = request.id;
+      void Promise.resolve(onSubmit(payload)).then(
+        () => dayBatch.apply({ requestId, values: v }),
+        () => {},
+      );
+      return;
+    }
+    // Статусная ручка отвечает обещанием (`mutateAsync`), и необработанный отказ шумел бы в
+    // консоли: о нём уже сказал тот, кто отправлял.
+    void Promise.resolve(onSubmit(payload)).catch(() => {});
   };
 
   const emptyText = emptyVehicleListText({ isFetching, ownership, lessorId });
@@ -1261,7 +1179,7 @@ export function VehicleAssignModal({
     setStaleReason(null);
   };
 
-  return (
+  const modal = (
     <FormModal
       title={request ? `${stepTitle}: заявка ${request.displayNumber}` : stepTitle}
       open={!!request}
@@ -1494,6 +1412,31 @@ export function VehicleAssignModal({
                     notFoundContent="В справочнике нет действующих водителей"
                   />
                 </Form.Item>
+              )}
+
+              {/* Пачка «4-П на весь период» (ADR 0207): галочка, водитель на весь срок и причина
+              за прошедшие дни. Стоит сразу под машинистом, и это не случайное место: машинист и
+              есть умолчание водителя пачки, а расхождение с ним блок называет вслух — читать их
+              подряд человек должен в одном месте.
+
+              Машины в блоке нет: её пачка берёт из назначения (решение 5) — того самого, которое
+              собирается этим же окном ниже. Дни считаются по ФАКТИЧЕСКОМУ сроку из формы, а не по
+              заказанному: срок правят тут же, и бумага пойдёт на те числа, что уедут на сервер. */}
+              {canBatchDays && (
+                <DayBatchFields
+                  term={{
+                    dateFrom: dateFrom ? dateFrom.format('YYYY-MM-DD') : '',
+                    dateTo: dateTo ? dateTo.format('YYYY-MM-DD') : null,
+                  }}
+                  onDate={today}
+                  vehicleId={vehicleId}
+                  machinist={{
+                    personId: machinistId,
+                    name: machinists?.items.find((d) => d.id === machinistId)?.fullName ?? null,
+                  }}
+                  enabled={dayBatchEnabled}
+                  toggleLabel="Выписать 4-П на весь период"
+                />
               )}
 
               {/* Шаг 1: каким рейсом заявка поедет. Вопрос стоит до техники, потому что так и
@@ -1967,5 +1910,15 @@ export function VehicleAssignModal({
         </div>
       )}
     </FormModal>
+  );
+
+  // Отчёт пачки — соседом окна, а не его содержимым: к моменту показа перевод уже состоялся,
+  // окно закрыто вызывающим, и вернуться в форму не к чему. Держит его хук, переживающий
+  // закрытие.
+  return (
+    <>
+      {modal}
+      {dayBatch.report}
+    </>
   );
 }

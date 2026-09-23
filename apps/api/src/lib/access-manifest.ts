@@ -1739,6 +1739,17 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['vehicleRequests.read'],
   },
+  /*
+   * Пачка дней «4-П на весь период» (ADR 0207) — та же пара, что у подённой двери, и третьего
+   * права здесь нет намеренно. `waybills.correct` спрашивается не стражем, а `backdateGuard`
+   * внутри — по каждому дню срока и от общей даты: поставь его на маршрут, и пачка на будущий
+   * срок стала бы недоступна всем, кроме коррекционных ролей, а глубина (`correctBeyondLimit`)
+   * из тела запроса не видна вовсе.
+   */
+  'POST /api/v1/vehicle-requests/:id/days/batch': {
+    kind: 'permissions',
+    allOf: ['waybills.read', 'vehicleRequests.status'],
+  },
   'POST /api/v1/vehicle-requests/:id/days/:date/route': {
     kind: 'permissions',
     allOf: ['waybills.read', 'vehicleRequests.status'],

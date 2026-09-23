@@ -1,47 +1,41 @@
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { Alert, App, Button, Select, Space, Spin, Table, Tag, Typography } from 'antd';
-import type { TableColumnType } from 'antd';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  isRouteEditable,
-  LINEAR_DAY_FROZEN_MESSAGE,
   type LinearDaySubject,
-  planDayBlocker,
   type SpecialEquipmentRequestDto,
   type VehicleRequestDayDto,
   type VehicleRequestDaysDto,
-  waybillStatusColors,
-  waybillStatusLabels,
   weeklyWeekLabel,
   weekStartKey,
-  workedAmountLabel,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { useAuth } from '../../auth/AuthContext';
-import { EntityLink } from '@shared/ui';
-import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';
-import { vehicleRouteLink, waybillLink } from '../../utils/links';
 import { garageKeys } from '@entities/garage';
 import { formatDateOnly } from './shared';
 import { useRouteModal } from '@features/route-modal';
+import { dayColumns } from './dayColumns';
+import { VehicleDayBatchModal } from './VehicleDayBatchModal';
 import { VehicleDayRouteModal } from './VehicleDayRouteModal';
 
 /**
- * «Дни работ» — единственное место, где планируют дни линейного заказа (ADR 0100 решение 8).
+ * «Дни работ» — место, где ведут дни заказа техники на объект (ADR 0100 решение 8).
  *
- * Линейная техника вечером возвращается на базу, а за день успевает поработать на двух-трёх
- * площадках. Поэтому её заказ ведётся не неделями стояния на объекте, а днями: каждый день срока —
- * отдельный выезд, который кладут в рейс машины на эту дату и печатают в его 4-П.
+ * День заказа — отдельный выезд: его кладут в рейс машины на эту дату и печатают в его 4-П. Ради
+ * линейной техники дни и заводились — она вечером возвращается на базу, а за день успевает
+ * поработать на двух-трёх площадках, — но признаком типа дверь больше не заперта (ADR 0207): 4-П
+ * за день просят и у машины, которая неделю стоит на площадке.
  *
- * Дверь одна, и она здесь: день знает свой срок и свою заявку, а из карточки маршрута ту же заявку
- * пришлось бы разыскивать по объекту среди всех работающих. Со стороны рейса день виден в составе и
- * снимается оттуда, но не добавляется (`LINEAR_DAY_DOOR_MESSAGE`).
- *
- * Пачки «распланировать неделю» нет намеренно: на разные дни выходят разные машины и разные
- * водители, а пачка умеет ровно одно — повторить один и тот же выбор.
+ * Дверей к дням две, и обе здесь. Подённая — день знает свой срок и свою заявку, а из карточки
+ * маршрута ту же заявку пришлось бы разыскивать по объекту среди всех работающих; со стороны рейса
+ * день виден в составе и снимается оттуда, но не добавляется (`LINEAR_DAY_DOOR_MESSAGE`). Пачка —
+ * «Распланировать период»: ею проходят срок подряд, и нужна она там, где подённой много, — срок
+ * продлили, дни пропустили, листы аннулировали. Прежний запрет на пачку («на разные дни выходят
+ * разные машины и разные водители») снят тем, что машину она берёт из назначения и не спрашивает,
+ * а конфликтный день пропускает с причиной, а не переставляет.
  *
  * Своим файлом, а не блоком карточки заявки: карточка стоит вплотную к своему лимиту длины, а
  * таблица с окном недели, тремя запросами и двумя мутациями — самостоятельная вещь.
@@ -60,7 +54,7 @@ const REQUESTS_KEY = ['vehicle-requests'];
 const ROUTES_KEY = ['vehicle-routes'];
 
 interface Props {
-  /** Заявка карточки. Дни ведут только у линейного заказа — прочим блок не показывают вовсе. */
+  /** Заявка карточки. Дни ведут у любого заказа техники на объект; прочее объяснит `blocker`. */
   request: SpecialEquipmentRequestDto;
   /**
    * Читалка: заявку открыли окном поверх чужого экрана — из состава рейса, журнала листов или
@@ -79,8 +73,6 @@ interface Props {
   readOnly?: boolean;
 }
 
-const dash = <Typography.Text type="secondary">—</Typography.Text>;
-
 export function VehicleRequestDays({ request, readOnly }: Props) {
   const { can } = useAuth();
   const { message } = App.useApp();
@@ -96,6 +88,8 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
   const openedRouteId = readOnly ? params.get('route') : null;
   /** День, который ставят в рейс; `null` — окно планирования закрыто. */
   const [planning, setPlanning] = useState<string | null>(null);
+  /** Открыто ли окно пачки «Распланировать период» (ADR 0207). */
+  const [batching, setBatching] = useState(false);
   /** Неделя, выбранная руками; `null` — показывается неделя дня среза. */
   const [picked, setPicked] = useState<string | null>(null);
 
@@ -185,199 +179,29 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
   const index = weeks.findIndex((w) => w.start === shown);
   const week = index >= 0 ? weeks[index]! : null;
 
-  const busy = unplan.isPending;
-
   /**
-   * Колонка действий: снять день с рейса и поставить его в рейс. В таблицу попадает только у
-   * того, кто дни планирует, и только в рабочем режиме (см. `readOnly`) — оба раза отсутствием
-   * колонки, а не выключенными кнопками. В читалке права как раз хватает, и выключенная кнопка
-   * соврала бы про причину; заказчику, читающему свой план с ADR 0122, права не будет никогда, а
-   * две мёртвые кнопки в каждой строке — шум, которым портал нигде не отвечает на «не положено».
+   * Колонки таблицы, а с ними и колонка действий (снять день с рейса, поставить в рейс). Действия
+   * попадают в таблицу только у того, кто дни планирует, и только в рабочем режиме (см.
+   * `readOnly`) — оба раза отсутствием колонки, а не выключенными кнопками. В читалке права как
+   * раз хватает, и выключенная кнопка соврала бы про причину; заказчику, читающему свой план с
+   * ADR 0122, права не будет никогда, а две мёртвые кнопки в каждой строке — шум, которым портал
+   * нигде не отвечает на «не положено».
    */
-  const actions: TableColumnType<VehicleRequestDayDto> = {
-    key: 'actions',
-    title: '',
-    width: 110,
-    render: (_v, day) => {
-      if (day.route) {
-        // Замороженный выписанным листом рейс день не отдаёт: бланк уже у водителя, и исчезнуть
-        // из него день не может — сначала лист аннулируют.
-        const frozen = !isRouteEditable(day.route.waybill?.status ?? null);
-        return (
-          <span title={frozen ? LINEAR_DAY_FROZEN_MESSAGE : 'Снять день с рейса'}>
-            <Button
-              size="small"
-              danger
-              disabled={frozen || busy}
-              onClick={() => unplan.mutate(day.date)}
-            >
-              Снять
-            </Button>
-          </span>
-        );
-      }
-      // Причина недоступности — та же строка, которой откажет сервер: правило одно на портал и
-      // API, и «день вне срока заявки» портал обязан объяснять теми же словами.
-      const blocker = planDayBlocker(subject, day.date, plannedDays);
-      return (
-        <span title={blocker ?? 'Поставить день в рейс'}>
-          <Button
-            size="small"
-            type="primary"
-            disabled={!!blocker || busy}
-            onClick={() => setPlanning(day.date)}
-          >
-            В рейс
-          </Button>
-        </span>
-      );
-    },
-  };
-
-  const columns: TableColumnType<VehicleRequestDayDto>[] = [
-    {
-      key: 'date',
-      title: 'День',
-      width: 140,
-      render: (_v, day) => (
-        <div style={{ lineHeight: 1.35 }}>
-          <div>{formatDateOnly(day.date)}</div>
-          {/* День за пределами нынешнего срока: в норме таких не бывает — сверка снимает их с
-            рейсов, — но замороженный выписанным листом рейс день не отдаёт. Прятать выданную
-            бумагу нельзя, поэтому день остаётся в таблице с пометкой. */}
-          {day.outOfTerm && (
-            <Tag color="orange" style={{ marginInlineEnd: 0 }}>
-              за сроком
-            </Tag>
-          )}
-        </div>
-      ),
-    },
-    {
-      key: 'route',
-      title: 'Рейс',
-      width: 150,
-      render: (_v, day) =>
-        day.route ? (
-          <div style={{ lineHeight: 1.35 }}>
-            {/* Рейс открывается окном поверх той страницы, где о нём спросили: дни планируют,
-              стоя в заявке, и уход на другую вкладку стоил бы выбранной недели и обратной
-              дороги. Ссылкой, а не кнопкой: Ctrl и средний щелчок обязаны по-прежнему открывать
-              рейс соседней вкладкой браузера — этим пользуются постоянно (`EntityLink`).
-              Рейс, уже открытый под окном заявки, остаётся текстом (см. `openedRouteId`). */}
-            {day.route.id === openedRouteId ? (
-              day.route.displayNumber
-            ) : (
-              <EntityLink
-                to={vehicleRouteLink(can, day.route.id)}
-                title="Открыть маршрут"
-                onActivate={() => openRoute(day.route!.id)}
-              >
-                {day.route.displayNumber}
-              </EntityLink>
-            )}
-            <div>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                строка {day.route.position}
-              </Typography.Text>
-            </div>
-          </div>
-        ) : (
-          <Typography.Text type="secondary">не распланирован</Typography.Text>
-        ),
-    },
-    {
-      key: 'vehicle',
-      title: 'Машина',
-      width: 230,
-      render: (_v, day) =>
-        day.route ? (
-          <div style={{ lineHeight: 1.35 }}>
-            <div>{day.route.vehicleLabel}</div>
-            {/* Машина дня разошлась с назначением — законно и помечается, а не отклоняется
-              (ADR 0100 решение 4): назначение у линейного заказа это машина по умолчанию, а
-              работает в конкретный день та, чьим рейсом день закрыт. */}
-            {day.otherVehicle && (
-              <Tag color="gold" style={{ marginInlineEnd: 0 }}>
-                не машина заявки
-              </Tag>
-            )}
-          </div>
-        ) : (
-          dash
-        ),
-    },
-    {
-      key: 'driver',
-      title: 'Водитель',
-      width: 190,
-      // Пустой водитель — не поломка, а состояние: рейс собрали заранее, человека ставят утром.
-      render: (_v, day) =>
-        day.route ? day.route.driverName || <Tag color="orange">не назначен</Tag> : dash,
-    },
-    {
-      key: 'waybill',
-      title: 'Лист',
-      width: 200,
-      render: (_v, day) => {
-        if (!day.route) return dash;
-        const waybill = day.route.waybill;
-        return waybill ? (
-          <div style={{ lineHeight: 1.35 }}>
-            <EntityLink to={waybillLink(can, waybill.number)} title="Открыть в журнале листов">
-              {waybill.number}
-            </EntityLink>
-            <div>
-              <Tag color={waybillStatusColors[waybill.status]} style={{ marginInlineEnd: 0 }}>
-                {waybillStatusLabels[waybill.status]}
-              </Tag>
-            </div>
-          </div>
-        ) : (
-          <Typography.Text type="secondary">не выписан</Typography.Text>
-        );
-      },
-    },
-    {
-      key: 'shift',
-      title: 'Часы смены',
-      width: 150,
-      // Часы дня ведёт таблица смен (ADR 0100 решение 12): здесь короткая выжимка, полную смену
-      // показывает своя вкладка. Пусто — за этот день часов ещё не вносили.
-      render: (_v, day) =>
-        day.shift ? (
-          <div style={{ lineHeight: 1.35 }}>
-            <div>
-              {day.shift.startedAt && day.shift.endedAt
-                ? `${day.shift.startedAt} – ${day.shift.endedAt}`
-                : '—'}
-            </div>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {workedAmountLabel('hours', day.shift.machineHours)}
-            </Typography.Text>
-          </div>
-        ) : (
-          dash
-        ),
-    },
-    {
-      key: 'approval',
-      title: 'Подпись объекта',
-      width: 190,
-      render: (_v, day) =>
-        day.shift?.approvedAt ? (
-          <Space size={6}>
-            <UserAvatar name={day.shift.approvedByName ?? ''} size={18} />
-            <span>{day.shift.approvedByName}</span>
-          </Space>
-        ) : (
-          <Typography.Text type="secondary">нет</Typography.Text>
-        ),
-    },
-    // Действия — последней колонкой, и только тому, кто в рабочем режиме дни планирует
-    // (см. `actions`).
-    ...(readOnly || !canPlan ? [] : [actions]),
-  ];
+  const columns = dayColumns({
+    can,
+    openRoute,
+    openedRouteId,
+    actions:
+      readOnly || !canPlan
+        ? null
+        : {
+            subject,
+            plannedDays,
+            busy: unplan.isPending,
+            onUnplan: (date) => unplan.mutate(date),
+            onPlan: setPlanning,
+          },
+  });
 
   if (isPending) return <Spin size="small" />;
 
@@ -420,6 +244,12 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
         <Tag color={plannedDays.length === items.length ? 'green' : 'orange'}>
           распланировано {plannedDays.length} из {items.length} дней
         </Tag>
+        {/* Пачка (ADR 0207): срок подряд, машина из назначения, конфликтные дни — в отчёт. Стоит
+          рядом со счётчиком незанятых дней: именно он и есть повод её нажать. Доступна там же, где
+          подённая дверь, — правило одно, и второго условия у кнопки быть не должно. */}
+        {!readOnly && canPlan && (
+          <Button onClick={() => setBatching(true)}>Распланировать период</Button>
+        )}
       </Space>
 
       <Table
@@ -432,8 +262,9 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
       />
 
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        День ставят в рейс по одному: на разные дни выходят разные машины и разные водители. Часы
-        дня подтверждают на вкладке «На объекте», а печатается день строкой задания в листе рейса.
+        День ставят в рейс по одному, когда на него выходит своя машина или свой водитель; весь срок
+        разом проходит «Распланировать период» — машиной назначения и одним человеком. Часы дня
+        подтверждают на вкладке «На объекте», а печатается день строкой задания в листе рейса.
       </Typography.Text>
 
       {/* Форма планирования: день и объект известны, спрашиваются машина и водитель.
@@ -452,6 +283,17 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
             setPlanning(null);
             applyDays(days);
           }}
+        />
+      )}
+
+      {/* Пачка — тем же условием и с тем же днём среза, что и подённое окно: правила у них одни,
+        и вторая проверка доступности разошлась бы с первой. Отчёт окно показывает само — он
+        переживает его закрытие, потому что читают его уже после действия. */}
+      {!readOnly && canPlan && (
+        <VehicleDayBatchModal
+          target={batching && data ? { request, onDate: data.onDate } : null}
+          onClose={() => setBatching(false)}
+          onDone={applyDays}
         />
       )}
     </div>

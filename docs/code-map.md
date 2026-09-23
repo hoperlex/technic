@@ -24,11 +24,11 @@
 - Домен: `заказ-тс`
 - Источник истины: [vehicle-requests.ts](../packages/contracts/src/vehicle-requests.ts), [weekly-vehicle-requests.ts](../packages/contracts/src/weekly-vehicle-requests.ts), [assignment-periods.ts](../packages/contracts/src/assignment-periods.ts)
 - Разделы портала: `vehicle-requests`
-- API-маршруты: [vehicle-requests.ts](../apps/api/src/routes/vehicle-requests.ts), [vehicle-request-assignment.ts](../apps/api/src/routes/vehicle-request-assignment.ts), [vehicle-request-assignment-correction.ts](../apps/api/src/routes/vehicle-request-assignment-correction.ts), [vehicle-request-assignment-repair.ts](../apps/api/src/routes/vehicle-request-assignment-repair.ts), [vehicle-request-period.ts](../apps/api/src/routes/vehicle-request-period.ts), [vehicle-routes.ts](../apps/api/src/routes/vehicle-routes.ts), [weekly-vehicle-requests.ts](../apps/api/src/routes/weekly-vehicle-requests.ts)
-- Остальной API: [assignment-command.ts](../apps/api/src/services/assignment-command.ts), [assignment-period.ts](../apps/api/src/services/assignment-period.ts)
+- API-маршруты: [vehicle-requests.ts](../apps/api/src/routes/vehicle-requests.ts), [vehicle-request-assignment.ts](../apps/api/src/routes/vehicle-request-assignment.ts), [vehicle-request-assignment-correction.ts](../apps/api/src/routes/vehicle-request-assignment-correction.ts), [vehicle-request-assignment-repair.ts](../apps/api/src/routes/vehicle-request-assignment-repair.ts), [vehicle-request-period.ts](../apps/api/src/routes/vehicle-request-period.ts), [vehicle-request-day-batch.ts](../apps/api/src/routes/vehicle-request-day-batch.ts), [vehicle-routes.ts](../apps/api/src/routes/vehicle-routes.ts), [weekly-vehicle-requests.ts](../apps/api/src/routes/weekly-vehicle-requests.ts)
+- Остальной API: [assignment-command.ts](../apps/api/src/services/assignment-command.ts), [assignment-period.ts](../apps/api/src/services/assignment-period.ts), [vehicle-request-day-batch.ts](../apps/api/src/services/vehicle-request-day-batch.ts) (пачка дней: один день — одна транзакция, потому что номер бланка держит строку серии до коммита)
 - Web: [vehicle](../apps/web/src/pages/vehicle), [vehicle-request](../apps/web/src/entities/vehicle-request)
 - Тесты: `vehicle-request-*.db.test.ts`, `weekly-*.db.test.ts`, `assignment-*.db.test.ts`
-- Решения: [ADR 0004](adr/0004-vehicle-requests.md), [ADR 0104](adr/0104-vehicle-request-lead-time.md), [ADR 0173](adr/0173-vehicle-request-copy.md), [ADR 0206](adr/0206-vehicle-request-copy-any-status.md)
+- Решения: [ADR 0004](adr/0004-vehicle-requests.md), [ADR 0104](adr/0104-vehicle-request-lead-time.md), [ADR 0173](adr/0173-vehicle-request-copy.md), [ADR 0206](adr/0206-vehicle-request-copy-any-status.md), [ADR 0207](adr/0207-vehicle-request-day-batch.md)
 
 ## Путевые листы и ЭСМ
 

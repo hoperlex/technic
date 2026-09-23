@@ -1160,6 +1160,21 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/vehicle-requests/:id/assignment-changes/correction/preview': {
     payload: { target: { changeId: RECORD_ID }, vehicleId: RECORD_ID, version: 1 },
   },
+  /*
+   * Пачка «4-П на весь период» (ADR 0207). Оба поля тела обязательны схемой
+   * (`dayBatchApplySchema`), а схема Fastify разбирается ДО `preHandler`: с пустым телом негативные
+   * случаи получали бы 400 от Zod вместо 403 от стража, то есть доказывали бы работу схемы вместо
+   * работы права.
+   *
+   * Ни причины заднего числа, ни ключа операции здесь нет намеренно: схемой они необязательны, а
+   * спрашивает их сервис пачки — и только у прошедших дней, — то есть уже за подменённой БД, куда
+   * перебор не доходит вовсе (первым делом обработчик читает заявку). По той же причине
+   * безразлично и значение `issueWaybills`: третьего права (`waybills.correct`) у маршрута нет,
+   * его считает `backdateGuard` внутри, и телом запроса условие маршрута не меняется.
+   */
+  'POST /api/v1/vehicle-requests/:id/days/batch': {
+    payload: { driverPersonId: PERSON_ID, issueWaybills: true },
+  },
   'POST /api/v1/vehicle-requests/:id/days/:date/route': { payload: { routeId: RECORD_ID } },
   'POST /api/v1/vehicle-requests/:id/early-end': {
     payload: { newDateTo: FUTURE_DATE, reason: 'работы закончены', version: 1 },

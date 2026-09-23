@@ -239,8 +239,10 @@ const SUBMITTED_STATES: DriverReportState[] = ['submitted', 'accepted', 'needs_r
 /**
  * Алиасы источников под общие фрагменты ожидаемой смены: `EXPECTED_ROUTE_FILTER` ждёт строку рейса
  * под именем `vr`, `EXPECTED_ESM2_FILTER` — строку листа под именем `w`. Имена заданы фрагментом, а
- * не выбраны здесь: он один на три читателя, и подстраиваться под него — цена того, что правило
- * «с кого спрашивают показание» записано ровно один раз.
+ * не выбраны здесь: он один на четырёх читателей (двое здешние — `pendingReadingsSql` и
+ * `loadMissingSourceVehicles`, двое в `readings-aggregate.ts`, где фрагмент их и перечисляет), и
+ * подстраиваться под него — цена того, что правило «с кого спрашивают показание» записано ровно
+ * один раз.
  */
 const expectedRoute = alias(vehicleRoutes, 'vr');
 const expectedEsm2 = alias(waybills, 'w');

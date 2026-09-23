@@ -51,6 +51,7 @@ import vehicleRequestAssignmentRepairRoutes from './routes/vehicle-request-assig
 import vehicleRequestAssignmentCorrectionRoutes from './routes/vehicle-request-assignment-correction';
 import vehicleRequestCompletionRoutes from './routes/vehicle-request-completion';
 import vehicleRequestPeriodRoutes from './routes/vehicle-request-period';
+import vehicleRequestDayBatchRoutes from './routes/vehicle-request-day-batch';
 import vehicleRequestsRoutes from './routes/vehicle-requests';
 import weeklyVehicleRequestsRoutes from './routes/weekly-vehicle-requests';
 import vehicleRoutesRoutes from './routes/vehicle-routes';
@@ -258,6 +259,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
     prefix: '/api/v1/vehicle-requests',
   });
   await app.register(vehicleRequestPeriodRoutes, { prefix: '/api/v1/vehicle-requests' });
+  // Пачка дней «4-П на весь период» (ADR 0207) — тот же префикс и та же причина: дверь стоит рядом
+  // с подённой (`/:id/days/:date/route`), а `vehicle-requests.ts` её не вмещает.
+  await app.register(vehicleRequestDayBatchRoutes, { prefix: '/api/v1/vehicle-requests' });
   // Закрытие фактической датой (план `docs/vehicle-request-actual-end-date-plan.md`, Р1) — шестая
   // дверь истории и тот же префикс: заказ закрывают тем днём, которым работы кончились, и той же
   // командой приводят к нему срок, бумагу, часы и рейсы.

@@ -2664,20 +2664,23 @@ export function VehicleRequestsTab() {
         request={assignTarget}
         confirmLoading={statusMut.isPending}
         onCancel={() => setAssignTarget(null)}
-        onSubmit={({ assignment, schedule, previewFingerprint }) => {
-          if (!assignTarget) return;
-          statusMut.mutate({
-            id: assignTarget.id,
-            status: 'confirmed',
-            version: assignTarget.version,
-            assignment,
-            // Срок при переводе в работу окно спрашивает всегда — `null` сюда не приходит.
-            schedule: schedule ?? undefined,
-            // Приходит только с отката «Выполнена» → «В работе»: на прочих переходах окно
-            // предпросмотра не зовёт и обещать серверу нечего.
-            previewFingerprint,
-          });
-        }}
+        onSubmit={({ assignment, schedule, previewFingerprint }) =>
+          // `mutateAsync`, а не `mutate`: вслед за переводом окно вторым запросом зовёт пачку
+          // 4-П (ADR 0207), а дни планируются только у заявки, уже взятой в работу.
+          assignTarget
+            ? statusMut.mutateAsync({
+                id: assignTarget.id,
+                status: 'confirmed',
+                version: assignTarget.version,
+                assignment,
+                // Срок при переводе в работу окно спрашивает всегда — `null` сюда не приходит.
+                schedule: schedule ?? undefined,
+                // Приходит только с отката «Выполнена» → «В работе»: на прочих переходах окно
+                // предпросмотра не зовёт и обещать серверу нечего.
+                previewFingerprint,
+              })
+            : undefined
+        }
       />
 
       {/* Смена техники у заявки в работе (ADR 0048): то же окно подбора, но без фактического
@@ -2791,14 +2794,12 @@ export function VehicleRequestsTab() {
         open={!!rollbackTarget}
         subject={rollbackTarget ? `№ ${rollbackTarget.displayNumber}` : ''}
         erases={rollbackTarget ? rollbackErases(rollbackTarget, rollbackRelocations ?? []) : []}
-        blocker={
-          rollbackTarget?.route?.hasWaybill ||
-          rollbackRelocations?.some(
-            (route) => route.waybill && route.waybill.status !== 'cancelled',
-          )
-            ? ROLLBACK_WAYBILL_MESSAGE
-            : null
-        }
+        // Признак самой заявки, а не её рейса (ADR 0207). У заказа техники на объект своего рейса
+        // не бывает вовсе — бумага висит на рейсах дней и перегонов, — и `route.hasWaybill`
+        // отвечал «листа нет» всегда: окно открывалось, человек набирал причину и упирался в 409.
+        // Перегоны отдельной строкой больше не считаются: поле учитывает и их
+        // (`activeWaybillOfRequest`), а вторая проверка была бы копией серверного правила.
+        blocker={rollbackTarget?.hasActiveWaybill ? ROLLBACK_WAYBILL_MESSAGE : null}
         confirmLoading={statusMut.isPending}
         onCancel={() => setRollbackTarget(null)}
         onSubmit={(reason) =>

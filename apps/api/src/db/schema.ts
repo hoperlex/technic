@@ -8216,6 +8216,11 @@ export const waybillCorrections = pgTable(
         | 'weekly'
         | 'crew'
         | 'assignment_tail'
+        // Пачка дней (миграция 0339): выписка 4-П на весь период заказа техники на объект. Свой
+        // вид, а не `issue`, потому что решение одно, а листов под ним до пятидесяти — в журнале
+        // это обязано читаться одной операцией, иначе «что сделали задним числом» отвечается
+        // полусотней строк, которые нечем связать.
+        | 'day_batch'
       >(),
     reason: text('reason').notNull(),
     /**
@@ -8251,7 +8256,7 @@ export const waybillCorrections = pgTable(
     // числом» отвечается одним словом на два разных события.
     kindCheck: check(
       'waybill_corrections_kind_check',
-      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly', 'crew', 'assignment_tail')`,
+      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly', 'crew', 'assignment_tail', 'day_batch')`,
     ),
     // Снимок обязателен ровно у тех видов, что заведены историей назначения: у остальных его нет и
     // быть не может — миграция их не переписывала.

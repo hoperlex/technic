@@ -93,6 +93,9 @@ const REQUEST: FreightTransportRequestDto = {
   },
   completion: null,
   route: null,
+  // Бумага заявки (ADR 0207): в сценарии её нет — заказ только назначают, листов ему ещё не
+  // выписывали. Признак механический, к проверяемому здесь утверждению отношения не имеет.
+  hasActiveWaybill: false,
   files: [],
   version: 1,
   createdBy: 'user-1',
