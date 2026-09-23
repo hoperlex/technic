@@ -24,6 +24,7 @@ import {
   mailingTypeLabels,
   type MailingScheduleDto,
 } from '@technic/contracts';
+import { driverKeys } from '@entities/driver';
 import { FormModal } from '@shared/ui';
 import { driversApi, mailingsApi } from '../../api/resources';
 import { MailingAudienceFields } from './MailingAudienceFields';
@@ -47,9 +48,6 @@ import {
  * время и окно данных. Недельная рассылка — это набор из одного дня и окно на семь; выражать то же
  * самое вторым способом значило бы держать в форме поле, вычисляемое из соседнего.
  */
-
-/** Ключ справочника водителей этой формы: выборка своя — вся, одной страницей и по алфавиту. */
-const DRIVERS_KEY = ['drivers', 'mailing-exclusions'];
 
 /** Значение «своё число» в списке первого дня: настоящим днём окна отрицательное быть не может. */
 const CUSTOM_FROM = -1;
@@ -126,11 +124,14 @@ export function MailingScheduleForm({ open, editing, onClose, onSaved }: Props) 
   }, [open, editing, form]);
 
   // Справочник водителей спрашивается только при открытой форме задания водителям: в нём
-  // персональные данные, и держать его в кэше ради чужого типа рассылки незачем. Тип сверяется
+  // персональные данные, и запрашивать их ради чужого типа рассылки незачем. Тип сверяется
   // прямым равенством, а не «не сводка»: на первом рендере после открытия значений формы ещё нет,
   // и «не сводка» означало бы запрос персональных данных при правке чужого расписания.
+  //
+  // Сторожит здесь `enabled`, а не отдельный ключ: имя ключа решает, где лежит ответ, а не пойдёт
+  // ли запрос, — и своим ключом форма добивалась лишь второго похода за тем же списком.
   const driversQuery = useQuery({
-    queryKey: DRIVERS_KEY,
+    queryKey: driverKeys.options(),
     queryFn: () =>
       driversApi.list({ page: 1, pageSize: 500, sortBy: 'fullName', sortOrder: 'asc' }),
     enabled: open && watchType === 'driver_routes',

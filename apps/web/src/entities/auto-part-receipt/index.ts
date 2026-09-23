@@ -14,6 +14,5 @@ export { autoPartReceiptApi, type VehiclePartsSpendSnapshotResult } from './api/
 export {
   autoPartReceiptInvalidation,
   autoPartReceiptKeys,
-  ownVehicleKeys,
   type AutoPartReceiptCacheChange,
 } from './api/keys';

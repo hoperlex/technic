@@ -19,7 +19,9 @@ import type { FilterDefinition } from '@shared/ui';
 import { FileLinkList } from '../../components/FileLinks';
 import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from '../../utils/date';
+import { driverKeys } from '@entities/driver';
 import { objectsApi, objectKeys } from '@entities/object';
+import { vehicleKeys } from '@entities/vehicle';
 
 export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
@@ -71,7 +73,7 @@ export function useObjectOptions() {
  */
 export function useOwnVehicleOptions() {
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicles', 'own-options'],
+    queryKey: vehicleKeys.ownOptions(),
     queryFn: () =>
       vehiclesApi.list({ page: 1, pageSize: 500, ownership: 'own', sortBy: 'createdAt' }),
   });
@@ -180,7 +182,7 @@ export function useLessorOptions() {
  */
 export function useDriverOptions(enabled = true) {
   const { data, isFetching } = useQuery({
-    queryKey: ['drivers', 'options'],
+    queryKey: driverKeys.options(),
     queryFn: () =>
       driversApi.list({ page: 1, pageSize: 500, sortBy: 'fullName', sortOrder: 'asc' }),
     enabled,

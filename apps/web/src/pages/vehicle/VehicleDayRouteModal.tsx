@@ -17,6 +17,7 @@ import {
   vehicleLabel,
 } from '@technic/contracts';
 import { driversApi, vehicleRequestsApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
+import { vehicleKeys } from '@entities/vehicle';
 import {
   emptyTrailerGraphs,
   inheritedTrailerGraphs,
@@ -46,9 +47,6 @@ import { BackdateReasonField } from './VehicleBackdateFields';
 
 /** Выбор «завести новый маршрут»: значением поля, как и в форме перевода в работу. */
 const NEW_ROUTE = 'new';
-
-/** Собственный действующий парк — тот же список, из которого выписывают ЭСМ-2 по требованию. */
-const FLEET_KEY = ['vehicles', 'linear-day'];
 
 /** Кто может сесть за эту машину в этот день — тем же ключом, что и при переводе в работу. */
 const driversKey = (vehicleId: string | undefined, date: string, withTrailer: boolean) => [
@@ -146,7 +144,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
    * помечается, а не запрещается (ADR 0100 решение 4), — ради него признак и заведён.
    */
   const { data: fleet, isFetching: fleetLoading } = useQuery({
-    queryKey: FLEET_KEY,
+    queryKey: vehicleKeys.ownActiveOptions(),
     queryFn: () =>
       vehiclesApi.list({
         status: 'active',

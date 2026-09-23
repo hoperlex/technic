@@ -3,7 +3,7 @@ import { Checkbox, DatePicker, Input, Select, Space } from 'antd';
 import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import { vehicleOptionLabel } from '@technic/contracts';
-import { ownVehicleKeys } from '@entities/auto-part-receipt';
+import { vehicleKeys } from '@entities/vehicle';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { FilterReset, type FilterDefinition } from '@shared/ui';
 import { usePruneMissingFilters } from '@shared/lib';
@@ -74,7 +74,7 @@ export function useReceiptFilters({
     isFetching: vehiclesLoading,
     isSuccess: vehiclesReady,
   } = useQuery({
-    queryKey: ownVehicleKeys.options(),
+    queryKey: vehicleKeys.ownOptions(),
     queryFn: () =>
       vehiclesApi.list({
         page: 1,

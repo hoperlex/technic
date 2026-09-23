@@ -3,7 +3,7 @@ import { Button, Col, Input, InputNumber, Row, Select, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { RECEIPT_MAX_AMOUNT, RECEIPT_MAX_QUANTITY, vehicleOptionLabel } from '@technic/contracts';
-import { ownVehicleKeys } from '@entities/auto-part-receipt';
+import { vehicleKeys } from '@entities/vehicle';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { useIsMobile } from '@shared/lib';
 import { vehiclesApi } from '../../api/resources';
@@ -58,7 +58,7 @@ const MOBILE_SPAN = {
 /**
  * Перечень собственной техники для поля строки.
  *
- * Ключ и запрос — те же, что у отбора вкладки (`ownVehicleKeys.options()`): список один, и второй
+ * Ключ и запрос — те же, что у отбора вкладки (`vehicleKeys.ownOptions()`): список один, и второй
  * запрос за ним означал бы вторую копию в кэше, переживающую переименование машины.
  *
  * Только `own`: строка чека ссылается на собственную машину, и это правило сервера (Р21), а не
@@ -67,7 +67,7 @@ const MOBILE_SPAN = {
  */
 function useOwnVehicleOptions(): { options: { value: string; label: string }[]; loading: boolean } {
   const { data, isFetching } = useQuery({
-    queryKey: ownVehicleKeys.options(),
+    queryKey: vehicleKeys.ownOptions(),
     queryFn: () =>
       vehiclesApi.list({
         page: 1,

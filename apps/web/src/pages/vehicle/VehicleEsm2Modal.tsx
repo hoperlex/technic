@@ -14,6 +14,7 @@ import {
   weekStartKey,
 } from '@technic/contracts';
 import { driversApi, vehicleRequestsApi, vehiclesApi } from '../../api/resources';
+import { vehicleKeys } from '@entities/vehicle';
 import { AutoSelect } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
@@ -143,9 +144,13 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
    * Весь активный парк, а не машины дней недели: дни линейного заказа приезжают следующим этапом
    * (ADR 0100 решение 8), и до тех пор сузить список нечем. Ошибиться этим нельзя — какая единица
    * отработала неделю, знает человек, а не портал.
+   *
+   * Ключ общий с окном дня линейного заказа, и список за ним тот же самый: открыв оба окна подряд,
+   * портал сходит за парком один раз. Отбор с сортировкой обязаны совпадать с тем окном до буквы —
+   * разойдясь, они разведут один вопрос по одной ячейке, и второе окно покажет ответ на первый.
    */
   const { data: fleet, isFetching: fleetLoading } = useQuery({
-    queryKey: ['vehicles', 'esm2-issue'],
+    queryKey: vehicleKeys.ownActiveOptions(),
     queryFn: () =>
       vehiclesApi.list({
         status: 'active',
