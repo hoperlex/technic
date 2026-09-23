@@ -3,7 +3,8 @@
 - Статус: Принято
 - Уточняет: решение 10 [ADR 0009](0009-waste-pricing.md) — «справочники и прайс только на чтение»
 - Связано: `packages/contracts/src/waste-tariffs.ts`, `apps/api/src/routes/waste-tariffs.ts`,
-  `apps/api/src/routes/waste-types.ts`, `apps/web/src/api/resources.ts`,
+  `apps/api/src/routes/waste-types.ts`, `apps/web/src/entities/waste-tariff/api/wasteTariffsApi.ts`,
+  `apps/web/src/entities/waste-type/api/wasteTypesApi.ts`,
   `apps/web/src/pages/directories/WasteTariffsTab.tsx`,
   `apps/web/src/pages/directories/WasteTypesTab.tsx`, `apps/web/src/pages/DirectoriesPage.tsx`
 
