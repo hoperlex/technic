@@ -149,7 +149,7 @@ export function ReceiptRecognitionPanel({
         <Alert
           type="info"
           showIcon
-          message="Скан распознаётся — поля заполнятся сами"
+          title="Скан распознаётся — поля заполнятся сами"
           description="Окно можно заполнять и руками: распознанное ничего не затрёт без вашего согласия."
         />
       )}
@@ -158,7 +158,7 @@ export function ReceiptRecognitionPanel({
         <Alert
           type="warning"
           showIcon
-          message="Распознать скан не удалось — заполните чек руками"
+          title="Распознать скан не удалось — заполните чек руками"
           description={
             <Space orientation="vertical" size={4}>
               <Typography.Text>
@@ -183,14 +183,19 @@ export function ReceiptRecognitionPanel({
       )}
 
       {data?.status === 'unsupported' && (
-        <Alert type="warning" showIcon message="Это не изображение и не PDF" description={data.message} />
+        <Alert
+          type="warning"
+          showIcon
+          title="Это не изображение и не PDF"
+          description={data.message}
+        />
       )}
 
       {data?.duplicate && (
         <Alert
           type="warning"
           showIcon
-          message={`Этот скан уже подшит к чеку № ${data.duplicate.documentNumber} от ${data.duplicate.purchasedOn}`}
+          title={`Этот скан уже подшит к чеку № ${data.duplicate.documentNumber} от ${data.duplicate.purchasedOn}`}
           description="Проверьте, не вносите ли покупку второй раз."
         />
       )}
@@ -199,7 +204,7 @@ export function ReceiptRecognitionPanel({
         <Alert
           type="success"
           showIcon
-          message={`Распознано позиций: ${draft.lines.length}`}
+          title={`Распознано позиций: ${draft.lines.length}`}
           description={
             <Space orientation="vertical" size={4}>
               {[truncatedText(draft.notes), totalsText(draft.notes), vatText(draft.notes)]

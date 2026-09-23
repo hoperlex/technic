@@ -1,26 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, App, Form, Input, Select, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   communicationKindOptions,
-  DRIVER_CATEGORY_MISMATCH_HINT,
-  DRIVER_WORKED_ON_VEHICLE_HINT,
-  driverDocumentGapsHint,
-  driverWorkedOnVehicle,
   isRelocationPurpose,
-  vehicleLabel,
-  type VehicleDto,
   type VehicleRouteDto,
-  vehicleStatusLabels,
 } from '@technic/contracts';
-import { driversApi } from '@entities/driver';
-import { vehiclesApi } from '@entities/vehicle';
-import { sameTrailerGraphs, vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
+import { sameTrailerGraphs, vehicleRoutesApi } from '@entities/vehicle-route';
 import { waybillsApi } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 import { RouteCorrectionConsequences } from './RouteCorrectionConsequences';
+import { useRouteCorrectionChoices } from './routeCorrectionChoices';
 import { TrailerFields, trailerTripBody } from './TrailerFields';
 
 /**
@@ -127,73 +119,9 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
     enabled: !!preview?.waybill,
   });
 
-  /**
-   * Парк целиком, включая списанную и стоящую в ремонте технику (Р17): истории статусов у машины
-   * нет, а исправляют задним числом как раз ту единицу, которую с тех пор списали. Состояние
-   * названо в строке выбора — «поехала машина, которой сегодня нет в строю» человек должен видеть.
-   */
-  const { data: fleet, isFetching: fleetLoading } = useQuery({
-    queryKey: ['vehicles', 'own', 'correction'],
-    queryFn: () =>
-      vehiclesApi.list({
-        ownership: 'own',
-        page: 1,
-        pageSize: 500,
-        sortBy: 'registrationNumber',
-        sortOrder: 'asc',
-      }),
-    enabled: !!route,
-  });
-
-  const vehicleOptions = useMemo(
-    () =>
-      (fleet?.items ?? []).map((v: VehicleDto) => ({
-        value: v.id,
-        label: [
-          vehicleLabel(v),
-          v.modelName,
-          v.status === 'active' ? null : vehicleStatusLabels[v.status].toLowerCase(),
-        ]
-          .filter((s): s is string => !!s)
-          .join(' · '),
-      })),
-    [fleet],
-  );
-
-  /**
-   * Прицепы, закреплённые за **выбранной** машиной (§4.2.2 плана прицепов): её здесь меняют, и
-   * спрашиваем о той, что стоит в поле, — закрепление прежней описывало бы уже не тот рейс.
-   */
-  const { data: suggestion } = useQuery({
-    queryKey: vehicleRouteKeys.suggest(vehicleId, route?.routeDate),
-    queryFn: () => vehicleRoutesApi.suggest({ vehicleId: vehicleId!, date: route!.routeDate }),
-    enabled: !!route && !!vehicleId,
-  });
-
-  /**
-   * Кто мог сесть за эту машину **в день рейса**: отбор исторический (ADR 0101 п. 15), и уволенный
-   * после рейса человек из списка не пропадает — иначе лист за прошлую неделю нельзя было бы
-   * выписать на того, кто её и отработал.
-   */
-  const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: ['drivers', 'available', vehicleId, route?.routeDate, withTrailer],
-    queryFn: () =>
-      driversApi.available({ vehicleId: vehicleId!, on: route!.routeDate, withTrailer }),
-    enabled: !!route && !!vehicleId,
-  });
-
-  const driverOptions = (selection?.drivers ?? []).map((d) => ({
-    value: d.personId,
-    label: [
-      d.fullName,
-      d.categories.join(', '),
-      driverDocumentGapsHint(d.gaps, d.credentialTypeCode),
-      d.matchesRequiredCategory ? null : DRIVER_CATEGORY_MISMATCH_HINT,
-      driverWorkedOnVehicle(d) ? DRIVER_WORKED_ON_VEHICLE_HINT : null,
-    ]
-      .filter(Boolean)
-      .join(' · '),
-  }));
+  /** Списки выбора — отдельным модулем: отбор там исторический, причина в его шапке. */
+  const { vehicleOptions, fleetLoading, driverOptions, driversLoading, suggestion, vehicleTypeId } =
+    useRouteCorrectionChoices({ route, vehicleId, withTrailer });
 
   const correct = useMutation({
     mutationFn: (v: FormValues) =>
@@ -335,7 +263,7 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
               secondPlaceholder="Если прицепов было два"
               hitched={suggestion?.hitched}
               vehicleId={vehicleId}
-              vehicleTypeId={fleet?.items.find((v) => v.id === vehicleId)?.vehicleTypeId}
+              vehicleTypeId={vehicleTypeId}
               // День состоялся: закрепление знает о сменённой машине, а о прошлом вторнике — нет.
               substituteOnOpen={false}
             />

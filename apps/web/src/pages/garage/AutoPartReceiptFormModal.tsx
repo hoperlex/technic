@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react';
-import { App, Button, DatePicker, Form, Input, Typography, Upload } from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
+import { App, DatePicker, Form, Input, Typography } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation } from '@tanstack/react-query';
 import {
-  RECEIPT_MAX_FILES,
   RECEIPT_NO_FILES_MESSAGE,
   RECEIPT_NO_LINES_MESSAGE,
   moscowDateKeyOf,
@@ -13,13 +11,11 @@ import {
   type ReceiptDraft,
 } from '@technic/contracts';
 import { autoPartReceiptApi } from '@entities/auto-part-receipt';
-import { errorFields, errorMessage } from '@shared/lib';
+import { errorFields } from '@shared/lib';
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
-import { filesApi } from '@entities/file';
-import { FileLinkList } from '../../components/FileLinks';
 import { formatMoney } from '../../utils/format';
 import { ReceiptLinesEditor } from './ReceiptLinesEditor';
-import { ReceiptRecognitionPanel } from './ReceiptRecognitionPanel';
+import { ReceiptScanField, type ScanFile } from './ReceiptScanField';
 import {
   hasLineErrors,
   newReceiptLine,
@@ -45,9 +41,8 @@ import {
  *
  * Порядок в окне повторяет порядок работы: сверху скан, ниже шапка, ниже строки. Скан идёт первым
  * не для красоты — **без файла чека не существует** (Р6): запись без бумаги это ведомость,
- * перепроверить её не по чему, и распознаванию следующего выпуска не к чему приложиться. Отсюда
- * же поведение крестика у последнего файла: он не прячется, а отказывает словами. Спрятанная
- * кнопка оставляет человека гадать, почему у одного файла крестик есть, а у другого нет.
+ * перепроверить её не по чему, и распознаванию следующего выпуска не к чему приложиться. Сам блок
+ * скана живёт отдельным файлом (`ReceiptScanField.tsx`), там же и причина.
  *
  * **Поля «итог с бумаги» здесь нет вовсе** (Р11). Под таблицей стоит сумма строк, она
  * пересчитывается на глазах при вводе — и это предпросмотр: сверяют с чеком именно её, но
@@ -70,15 +65,6 @@ interface Values {
   note?: string;
 }
 
-/** Скан в форме. `isNew` — загружен в этом окне и до сохранения ничей: снимают его сразу. */
-interface ScanFile {
-  id: string;
-  filename: string;
-  contentType?: string;
-  size?: number;
-  isNew?: boolean;
-}
-
 export function AutoPartReceiptFormModal({
   receipt,
   open,
@@ -98,7 +84,6 @@ export function AutoPartReceiptFormModal({
 
   const [files, setFiles] = useState<ScanFile[]>([]);
   const [filesError, setFilesError] = useState<string | undefined>();
-  const [uploading, setUploading] = useState(false);
   const [rows, setRows] = useState<ReceiptLineRow[]>([]);
   const [linesError, setLinesError] = useState<string | undefined>();
   const [lineErrors, setLineErrors] = useState<ReceiptLineErrors>({});
@@ -124,37 +109,6 @@ export function AutoPartReceiptFormModal({
     setLinesError(undefined);
     setLineErrors({});
   }, [open, receipt, today, form]);
-
-  const upload = async (file: File) => {
-    setUploading(true);
-    try {
-      const dto = await filesApi.upload(file);
-      setFiles((prev) => [...prev, { ...dto, isNew: true }]);
-      setFilesError(undefined);
-    } catch (e) {
-      message.error(errorMessage(e));
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  /**
-   * Снятый скан. Загруженный в этом окне сносится сразу — до сохранения он ничей, и в хранилище
-   * иначе копится мусор от передуманных чеков; уже подшитый отвяжет сервер.
-   *
-   * Последний файл снять нельзя (Р6), и кнопка об этом говорит, а не исчезает: спрятанный крестик
-   * оставлял бы человека гадать, почему у одного файла он есть, а у другого нет. Отказ приходит
-   * пометкой поля, а не тостом в углу (ADR 0094): причина встаёт ровно под тем блоком, в котором
-   * нажали, — то же правило держит и схема на сервере, но услышать его надо до отправки.
-   */
-  const removeFile = (file: ScanFile) => {
-    if (files.length === 1) {
-      setFilesError(`${RECEIPT_NO_FILES_MESSAGE}: прикрепите новый, а этот снимите после`);
-      return;
-    }
-    setFiles((prev) => prev.filter((f) => f.id !== file.id));
-    if (file.isNew) void filesApi.remove(file.id).catch(() => undefined);
-  };
 
   const changeRow = (key: string, patch: Partial<ReceiptLineRow>) => {
     setRows((prev) => prev.map((row) => (row.key === key ? { ...row, ...patch } : row)));
@@ -250,12 +204,14 @@ export function AutoPartReceiptFormModal({
     setRows(next.rows);
     setLineErrors(next.errors);
     setLinesError(undefined);
+    // Дата в будущем формой не принимается вовсе, и подставлять её значило бы заполнить поле
+    // заведомым отказом. Прочитанное называется на самом поле даты, а не тостом в углу (ADR 0094):
+    // заполнять его человеку, и красная пометка с причиной стоит ровно там, куда он смотрит; она
+    // же снимется, как только дату поправят.
     if (draft.header.purchasedOnIssue) {
-      // Дата в будущем формой не принимается вовсе, и подставлять её значило бы заполнить поле
-      // заведомым отказом. Говорим, что прочитали, и оставляем ввод человеку.
-      message.warning(
-        `${draft.header.purchasedOnIssue}: на бумаге «${draft.header.purchasedOnRaw}»`,
-      );
+      blockers.raise({
+        purchasedOn: `${draft.header.purchasedOnIssue}: на бумаге «${draft.header.purchasedOnRaw}»`,
+      });
     }
   };
 
@@ -289,45 +245,15 @@ export function AutoPartReceiptFormModal({
         }}
       >
         {/* Скан первым: чек начинается с бумаги, а не с реквизитов (Р6). */}
-        <Form.Item
-          label="Скан чека"
-          required
-          validateStatus={filesError ? 'error' : undefined}
-          help={filesError ?? 'Длинный чек фотографируют в два кадра — сканов может быть несколько'}
-        >
-          <Upload
-            multiple
-            showUploadList={false}
-            disabled={busy || files.length >= RECEIPT_MAX_FILES}
-            beforeUpload={(file) => {
-              void upload(file);
-              return false;
-            }}
-          >
-            <Button
-              icon={<UploadOutlined />}
-              loading={uploading}
-              disabled={busy || files.length >= RECEIPT_MAX_FILES}
-            >
-              Прикрепить скан
-            </Button>
-          </Upload>
-          {files.length > 0 && (
-            <div style={{ marginTop: 8 }}>
-              <FileLinkList files={files} onRemove={removeFile} />
-            </div>
-          )}
-          {/* Чтение скана моделью (план `docs/auto-part-receipt-ocr-plan.md`): читается ПОСЛЕДНИЙ
-              добавленный — тот, который человек только что положил и на который смотрит. */}
-          <div style={{ marginTop: 8 }}>
-            <ReceiptRecognitionPanel
-              fileId={files.at(-1)?.id ?? null}
-              formFilled={rows.some((row) => row.name.trim() !== '' || row.amount !== null)}
-              disabled={busy}
-              onApply={applyDraft}
-            />
-          </div>
-        </Form.Item>
+        <ReceiptScanField
+          files={files}
+          onChange={setFiles}
+          error={filesError}
+          onError={setFilesError}
+          disabled={busy}
+          formFilled={rows.some((row) => row.name.trim() !== '' || row.amount !== null)}
+          onApplyDraft={applyDraft}
+        />
 
         <FormGrid>
           <Form.Item
