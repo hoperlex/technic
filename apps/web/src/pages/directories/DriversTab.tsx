@@ -42,7 +42,11 @@ import {
   SNILS_MESSAGE,
 } from '@technic/contracts';
 import { driversApi } from '@entities/driver';
-import { confirmDriverRemoval, driverRemovalDetails } from './driverRemovalConfirm';
+import {
+  confirmDriverRemoval,
+  confirmDriverRemovalStart,
+  driverRemovalDetails,
+} from './driverRemovalConfirm';
 import { useDriverFilters } from './DriverFilters';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';
 import { garageKeys } from '@entities/garage';
@@ -392,17 +396,9 @@ export function DriversTab() {
   });
 
   const confirmRemove = (d: DriverDto) =>
-    modal.confirm({
-      title: `Удалить водителя «${d.fullName}»?`,
-      // Пометка, а не стирание: на водителя ссылаются выданные путевые листы.
-      content: 'Выданные путевые листы сохранятся, но в отбор он больше не попадёт.',
-      okText: 'Удалить',
-      okButtonProps: { danger: true },
-      cancelText: 'Отмена',
-      onOk: () => {
-        removalTarget.current = d.id;
-        return removeMut.mutateAsync({ id: d.id });
-      },
+    confirmDriverRemovalStart(modal, d, () => {
+      removalTarget.current = d.id;
+      return removeMut.mutateAsync({ id: d.id });
     });
 
   const confirmRevoke = (d: DriverDto, license: DriverLicenseDto) => {
