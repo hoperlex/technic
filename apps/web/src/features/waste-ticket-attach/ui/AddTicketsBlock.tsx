@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { type FileDto, MAX_TICKETS_PER_REQUEST, type WasteRequestDto } from '@technic/contracts';
 import { FILE_MAX_SIZE } from '@shared/config';
 import { useIsMobile } from '@shared/lib';
-import { filesApi } from '../../../api/resources';
+import { filesApi } from '@entities/file';
 import { FileLinkList } from '../../../components/FileLinks';
 import { errorMessage } from '../../../utils/format';
 

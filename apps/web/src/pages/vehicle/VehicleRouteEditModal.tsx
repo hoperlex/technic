@@ -19,11 +19,9 @@ import {
   type VehicleRouteDto,
   WAYBILL_CORRECTION_DAYS,
 } from '@technic/contracts';
-import { driversApi, vehicleRoutesApi } from '../../api/resources';
-import { vehicleRouteKeys } from '@entities/vehicle-route';
-import { AutoSelect } from '@shared/ui';
-import { FormGrid } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { driversApi } from '@entities/driver';
+import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
+import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';

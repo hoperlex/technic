@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { grantCodeSchema, type GrantDto, type Permission, type Role } from '@technic/contracts';
 import { userAccountKeys } from '@entities/user-account';
 import { FormModal, useFormBlockers } from '@shared/ui';
-import { grantKeys, grantsApi } from '../../api/resources';
+import { grantKeys, grantsApi } from '../../api/grants';
 import { errorMessage } from '../../utils/format';
 import { GrantEffectPanel } from './GrantEffectPanel';
 import { GrantImpactConfirm } from './GrantImpactConfirm';

@@ -20,8 +20,9 @@ import {
   waybillStatusColors,
   waybillStatusLabels,
 } from '@technic/contracts';
-import { driversApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
-import { vehicleRouteKeys } from '@entities/vehicle-route';
+import { driversApi } from '@entities/driver';
+import { vehiclesApi } from '@entities/vehicle';
+import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { EntityLink } from '@shared/ui';
@@ -31,8 +32,7 @@ import { ListToolbar } from '@shared/ui';
 import { ViewModal } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
-import { useIsMobile } from '@shared/lib';
-import { useListParams } from '@shared/lib';
+import { useIsMobile, useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { vehicleRequestViewLink, waybillLink } from '../../utils/links';
 import { useAuth } from '../../auth/AuthContext';

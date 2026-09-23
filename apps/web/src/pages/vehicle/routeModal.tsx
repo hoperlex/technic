@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 import { App, Button, Skeleton } from 'antd';
 import { Outlet, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -8,7 +7,8 @@ import { garageKeys } from '@entities/garage';
 import { ViewModal } from '@shared/ui';
 import { useOpenedRecord } from '@shared/lib';
 import { RouteModalContext, type RouteModalApi } from '@features/route-modal';
-import { vehicleRequestsApi, vehicleRoutesApi } from '../../api/resources';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { useAuth } from '../../auth/AuthContext';
 import { canOpenRoute } from '../../utils/links';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';

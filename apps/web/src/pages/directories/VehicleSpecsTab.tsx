@@ -22,7 +22,7 @@ import {
   type UpdateVehicleSpecInput,
   type VehicleSpecDto,
 } from '@technic/contracts';
-import { vehicleSpecsApi } from '../../api/resources';
+import { vehicleSpecsApi } from '@entities/vehicle-type';
 import { DataTable, type CardConfig, type TableChange } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';

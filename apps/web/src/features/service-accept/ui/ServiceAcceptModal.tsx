@@ -18,7 +18,7 @@ import {
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
-import { filesApi } from '../../../api/resources';
+import { filesApi } from '@entities/file';
 import { useAuth } from '../../../auth/AuthContext';
 import { formatMoney } from '../../../utils/format';
 

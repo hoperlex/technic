@@ -11,7 +11,7 @@ import {
   type DirectoryKey,
   type DirectoryRowReportDto,
 } from '@technic/contracts';
-import { directoriesApi } from '../../api/resources';
+import { directoriesApi } from '@entities/directory-transfer';
 import { ViewModal } from '@shared/ui';
 import { errorMessage, formatBytes } from '../../utils/format';
 

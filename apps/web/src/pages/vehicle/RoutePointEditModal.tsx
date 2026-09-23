@@ -10,9 +10,8 @@ import {
   type VehicleRouteDto,
 } from '@technic/contracts';
 import { AddressField } from '@features/address-input';
-import { FormGrid } from '@shared/ui';
-import { FormModal } from '@shared/ui';
-import { vehicleRoutesApi } from '../../api/resources';
+import { FormGrid, FormModal } from '@shared/ui';
+import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { TimeInput } from '../../components/TimeInput';
 import { errorMessage } from '../../utils/format';
 import { pointRoleInputOf } from './routeAssembly';

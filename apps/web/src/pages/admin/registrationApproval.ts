@@ -1,5 +1,5 @@
 import { isExternalRegistrationEmail, type MailOutcome, type Role } from '@technic/contracts';
-import type { UserAccountDto } from '../../api/resources';
+import type { UserAccountDto } from '../../api/users';
 
 /**
  * Заявка на регистрацию глазами формы: когда её считают рассмотренной и что сказать про письмо.

@@ -10,7 +10,7 @@ import {
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { errorMessage } from '@shared/lib';
-import { filesApi } from '../../../api/resources';
+import { filesApi } from '@entities/file';
 import { useAuth } from '../../../auth/AuthContext';
 import { fitsFreeMode, type EstimateRow } from './rows';
 

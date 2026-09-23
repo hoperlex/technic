@@ -20,7 +20,7 @@ import {
   serviceRequestsApi,
 } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
-import { filesApi } from '../../api/resources';
+import { filesApi } from '@entities/file';
 import { FileLinkList } from '../../components/FileLinks';
 import { useAuth } from '../../auth/AuthContext';
 import {

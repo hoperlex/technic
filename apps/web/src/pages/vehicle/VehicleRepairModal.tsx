@@ -13,8 +13,8 @@ import {
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { garageKeys } from '@entities/garage';
-import { vehicleRequestKeys, waybillKeys } from '@entities/vehicle-request';
-import { driversApi, vehicleRequestsApi } from '../../api/resources';
+import { vehicleRequestKeys, vehicleRequestsApi, waybillKeys } from '@entities/vehicle-request';
+import { driversApi } from '@entities/driver';
 import { errorMessage } from '../../utils/format';
 import { assignmentSegments } from './assignmentTimeline';
 import { MachinistAnchorFields } from './MachinistFields';

@@ -9,11 +9,10 @@ import {
   type VehicleRequestDto,
   type VehicleRouteDto,
 } from '@technic/contracts';
-import { driversApi, vehicleRequestsApi } from '../../api/resources';
+import { driversApi } from '@entities/driver';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { garageKeys } from '@entities/garage';
-import { AutoSelect } from '@shared/ui';
-import { FormGrid } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { AddressField } from '@features/address-input';

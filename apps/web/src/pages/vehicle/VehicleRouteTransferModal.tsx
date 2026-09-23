@@ -11,10 +11,10 @@ import {
   vehicleSubstitutionRank,
   vehicleSubstitutionWarning,
 } from '@technic/contracts';
-import { vehicleRequestsApi, vehicleRoutesApi } from '../../api/resources';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
-import { AutoSelect } from '@shared/ui';
-import { FormModal, useFormBlockers } from '@shared/ui';
+import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 
 /**

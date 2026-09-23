@@ -3,10 +3,9 @@ import { Button, Col, Input, InputNumber, Row, Select, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { RECEIPT_MAX_AMOUNT, RECEIPT_MAX_QUANTITY, vehicleOptionLabel } from '@technic/contracts';
-import { vehicleKeys } from '@entities/vehicle';
+import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { useIsMobile } from '@shared/lib';
-import { vehiclesApi } from '../../api/resources';
 import type { ReceiptLineErrors, ReceiptLineRow } from './receiptLines';
 
 /**

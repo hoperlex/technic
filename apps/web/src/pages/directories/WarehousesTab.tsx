@@ -3,7 +3,7 @@ import { App, Button, Form, Input, Select, Space, Switch, Tag } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type CreateWarehouseInput, formatPhone, type WarehouseDto } from '@technic/contracts';
-import { counterpartiesApi } from '../../api/resources';
+import { counterpartiesApi } from '@entities/counterparty';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';
 import { AddressField } from '@features/address-input';
 import { AutoSelect } from '@shared/ui';

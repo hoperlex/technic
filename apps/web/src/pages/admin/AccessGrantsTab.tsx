@@ -22,7 +22,7 @@ import {
   type CardConfig,
 } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { grantKeys, grantsApi } from '../../api/resources';
+import { grantKeys, grantsApi } from '../../api/grants';
 import { draftOf, GrantBuilderModal, type GrantDraft } from './GrantBuilderModal';
 import { GrantHoldersModal } from './GrantHoldersModal';
 import { roleListText } from './grantModel';

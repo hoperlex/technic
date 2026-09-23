@@ -9,7 +9,10 @@ import {
   weeklyApprovalPermission,
   weeklyWeekBlocker,
 } from '@technic/contracts';
-import type { WeeklyDecisionResultDto, WeeklyRequestHistoryEntryDto } from '../../api/resources';
+import type {
+  WeeklyDecisionResultDto,
+  WeeklyRequestHistoryEntryDto,
+} from '@entities/weekly-request';
 import { weeklyToday } from './weeklyShared';
 
 /**

@@ -11,7 +11,7 @@ import {
   type RestoreUserBody,
   type UserAccountDto,
   type UserPersonRefDto,
-} from '../../api/resources';
+} from '../../api/users';
 
 /**
  * Выбор работника для учётки водителя (ADR 0102, Р30) — своим файлом, а не блоком внутри

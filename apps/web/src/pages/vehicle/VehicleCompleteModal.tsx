@@ -14,9 +14,8 @@ import {
   type VehicleWorkUnit,
 } from '@technic/contracts';
 import { garageKeys } from '@entities/garage';
-import { vehicleRequestKeys, waybillKeys } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi, waybillKeys } from '@entities/vehicle-request';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
-import { vehicleRequestsApi } from '../../api/resources';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';

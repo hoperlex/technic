@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { App, Button, Typography, Upload } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import { FileLinkList } from '../../components/FileLinks';
-import { filesApi } from '../../api/resources';
+import { filesApi } from '@entities/file';
 import { errorMessage } from '../../utils/format';
 
 /** Файл, уже загруженный формой: он ничей, пока заявка не заведена. */

@@ -41,7 +41,7 @@ import {
   SNILS_CHECKSUM_MESSAGE,
   SNILS_MESSAGE,
 } from '@technic/contracts';
-import { driversApi } from '../../api/resources';
+import { driversApi } from '@entities/driver';
 import { confirmDriverRemoval, driverRemovalDetails } from './driverRemovalConfirm';
 import { useDriverFilters } from './DriverFilters';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';

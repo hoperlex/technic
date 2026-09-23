@@ -8,7 +8,7 @@ import {
   type VehicleRouteDto,
 } from '@technic/contracts';
 import { FormModal } from '@shared/ui';
-import { vehicleRoutesApi } from '../../api/resources';
+import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { errorMessage } from '../../utils/format';
 import { actionLabel, pointRoleInputOf } from './routeAssembly';
 

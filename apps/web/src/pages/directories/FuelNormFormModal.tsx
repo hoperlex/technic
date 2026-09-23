@@ -13,7 +13,7 @@ import { AutoSelect, FormModal } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 import { fuelNormKeys, fuelNormVehiclePickerKey, fuelNormsApi } from '@entities/fuel-norm';
 import { vehicleReadingKeys } from '@entities/vehicle-reading';
-import { vehiclesApi } from '../../api/resources';
+import { vehiclesApi } from '@entities/vehicle';
 
 /**
  * Версия нормы: машина, дата начала действия, две ставки и единица (план `docs/fuel-norms-plan.md`,

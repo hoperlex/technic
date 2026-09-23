@@ -10,7 +10,7 @@ import {
 import { ViewFields, type ViewField } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { userAuditKeys } from '@entities/user-audit';
-import { auditApi, usersApi } from '../../api/resources';
+import { auditApi, usersApi } from '../../api/users';
 import { formatDateTime } from '../../utils/format';
 import { AuditEventCell } from './UserAuditChanges';
 

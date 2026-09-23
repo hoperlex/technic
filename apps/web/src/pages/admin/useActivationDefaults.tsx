@@ -11,7 +11,7 @@ import {
 } from '@technic/contracts';
 import { departmentRecordsQuery } from '@entities/department';
 import { grantFormApi, grantKeys } from '../../api/grants';
-import type { UserAccountDto } from '../../api/resources';
+import type { UserAccountDto } from '../../api/users';
 import {
   matchReasonLabels,
   NO_SUGGESTION,

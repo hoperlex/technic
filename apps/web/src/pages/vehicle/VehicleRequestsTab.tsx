@@ -81,7 +81,7 @@ import {
   vehicleRequestTypeLabels,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
-import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '../../api/resources';
+import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '@entities/vehicle-request';
 import { AutoSelect } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '@shared/ui';
@@ -108,9 +108,7 @@ import {
   useRequestCustomerOptions,
 } from '@features/request-customer';
 import { garageKeys } from '@entities/garage';
-import { useIsMobile } from '@shared/lib';
-import { useListParams } from '@shared/lib';
-import { useOpenedRecord } from '@shared/lib';
+import { useIsMobile, useListParams, useOpenedRecord, withSavedOption } from '@shared/lib';
 import {
   classificationKeyOf,
   useVehicleClassifications,
@@ -119,7 +117,6 @@ import {
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDate, formatDateTime } from '../../utils/format';
 import { canOpenRoute, vehicleRouteLink } from '../../utils/links';
-import { withSavedOption } from '@shared/lib';
 import { calendarDaysLabel, vehicleRequestDateRules } from '../../utils/date';
 
 import { FilesCell } from '../../components/FileLinks';

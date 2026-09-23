@@ -15,11 +15,10 @@ import {
   type WasteRequestDto,
 } from '@technic/contracts';
 import { FILE_MAX_SIZE } from '@shared/config';
-import { filesApi } from '../../api/resources';
+import { filesApi } from '@entities/file';
 import { wasteTariffResolveQuery } from '@entities/waste-tariff';
 import { FileLinkList } from '../../components/FileLinks';
-import { FormGrid } from '@shared/ui';
-import { FormModal, useFormBlockers } from '@shared/ui';
+import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage, formatMoney } from '../../utils/format';
 

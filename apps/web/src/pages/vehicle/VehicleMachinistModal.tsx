@@ -12,7 +12,7 @@ import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys, waybillKeys } from '@entities/vehicle-request';
-import { vehicleRequestsApi, type AssignmentCommandResultDto } from '../../api/resources';
+import { vehicleRequestsApi, type AssignmentCommandResultDto } from '@entities/vehicle-request';
 import { errorMessage } from '../../utils/format';
 import { AssignmentHistoryPanel } from './AssignmentHistoryPanel';
 import { useMachinistDirectory } from './machinistDirectory';

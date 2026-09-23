@@ -4,7 +4,7 @@ import type {
   MachinistAnchor,
   SpecialEquipmentRequestDto,
 } from '@technic/contracts';
-import type { AssignmentCommandResultDto } from '../../api/resources';
+import type { AssignmentCommandResultDto } from '@entities/vehicle-request';
 import type { AssignmentSegment } from './assignmentTimeline';
 
 /**

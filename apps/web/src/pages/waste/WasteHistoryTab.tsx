@@ -14,15 +14,14 @@ import {
   requestTypeLabels,
   type WasteRequestDto,
 } from '@technic/contracts';
-import { counterpartiesApi, wasteRequestsApi } from '../../api/resources';
+import { counterpartiesApi } from '@entities/counterparty';
+import { wasteRequestsApi } from '@entities/waste-request';
 import { DataTable } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
-import { dayEnd, dayStart } from '@shared/lib';
-import { useListParams } from '@shared/lib';
-import { useOpenedRecord } from '@shared/lib';
+import { dayEnd, dayStart, useListParams, useOpenedRecord } from '@shared/lib';
 import { usePlaceObjectScope } from '../../hooks/usePlaceObjectScope';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatMoney } from '../../utils/format';

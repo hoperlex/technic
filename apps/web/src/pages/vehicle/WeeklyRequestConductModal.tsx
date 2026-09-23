@@ -6,8 +6,7 @@ import {
   type WeeklyCorrectionBody,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
-import { weeklyRequestsApi } from '../../api/resources';
-import { weeklyRequestKeys } from '@entities/weekly-request';
+import { weeklyRequestKeys, weeklyRequestsApi } from '@entities/weekly-request';
 import { FormModal } from '@shared/ui';
 import { formatDateOnly } from './shared';
 

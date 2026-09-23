@@ -5,7 +5,7 @@ import dayjs from 'dayjs';
 import type { ReportItemDto } from '@technic/contracts';
 import { FILE_MAX_COUNT, FILE_MAX_SIZE } from '@shared/config';
 import { errorMessage } from '@shared/lib';
-import { filesApi } from '../../api/resources';
+import { filesApi } from '@entities/file';
 import { useAuth } from '../../auth/AuthContext';
 import { DayFailure, DayFooter, DayLine, DayNotice, DayRows, OrphanList } from './DriverDayView';
 import { type TransferMode } from './DriverOrphanBlock';

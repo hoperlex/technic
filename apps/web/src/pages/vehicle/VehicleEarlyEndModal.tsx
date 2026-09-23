@@ -10,9 +10,8 @@ import {
   requestCustomerName,
   type SpecialEquipmentRequestDto,
 } from '@technic/contracts';
-import { FormGrid } from '@shared/ui';
-import { FormModal, useFormBlockers } from '@shared/ui';
-import { vehicleRequestsApi } from '../../api/resources';
+import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { calendarDaysLabel } from '../../utils/date';
 import { errorMessage } from '../../utils/format';
 import { EarlyEndConsequences } from './EarlyEndConsequences';

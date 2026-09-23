@@ -16,8 +16,10 @@ import {
   type VehicleRequestDaysDto,
   vehicleLabel,
 } from '@technic/contracts';
-import { driversApi, vehicleRequestsApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
-import { vehicleKeys } from '@entities/vehicle';
+import { driversApi } from '@entities/driver';
+import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRoutesApi } from '@entities/vehicle-route';
 import {
   emptyTrailerGraphs,
   inheritedTrailerGraphs,

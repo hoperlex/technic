@@ -10,7 +10,7 @@ import {
   type WaybillTaskRow,
   type VehicleRouteDto,
 } from '@technic/contracts';
-import { vehicleRoutesApi } from '../../api/resources';
+import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { EntityLink } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
 import { vehicleRequestViewLink } from '../../utils/links';

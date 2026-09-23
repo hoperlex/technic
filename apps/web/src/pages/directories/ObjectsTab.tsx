@@ -3,7 +3,7 @@ import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from
 import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateObjectInput, ObjectDto } from '@technic/contracts';
-import { counterpartiesApi } from '../../api/resources';
+import { counterpartiesApi } from '@entities/counterparty';
 import { AddressField } from '@features/address-input';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';

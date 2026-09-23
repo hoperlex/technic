@@ -14,7 +14,7 @@ import {
   type VehicleRoutePointDto,
   type VehicleRouteDto,
 } from '@technic/contracts';
-import { vehicleRoutesApi } from '../../api/resources';
+import { vehicleRoutesApi } from '@entities/vehicle-route';
 import {
   actionLabel,
   actionPairLabel,

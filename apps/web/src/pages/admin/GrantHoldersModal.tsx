@@ -10,7 +10,8 @@ import {
 import { userAccountKeys } from '@entities/user-account';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { ViewModal } from '@shared/ui';
-import { grantKeys, grantsApi, userGrantsApi, usersApi } from '../../api/resources';
+import { grantKeys, grantsApi, userGrantsApi } from '../../api/grants';
+import { usersApi } from '../../api/users';
 import { errorMessage, formatDateTime } from '../../utils/format';
 import { GrantImpactConfirm } from './GrantImpactConfirm';
 import {

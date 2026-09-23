@@ -24,7 +24,7 @@ import {
   type VehicleRequestShiftDto,
   workedAmountLabel,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '../../api/resources';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { ViewModal } from '@shared/ui';
 import { TimeInput } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';

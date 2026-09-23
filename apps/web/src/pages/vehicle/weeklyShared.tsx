@@ -18,7 +18,7 @@ import {
   weeklyRequestStatusLabels,
   weeklyWeekLabel,
 } from '@technic/contracts';
-import { weeklyRequestsApi } from '../../api/resources';
+import { weeklyRequestsApi } from '@entities/weekly-request';
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { useAuth } from '../../auth/AuthContext';

@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import dayjs from 'dayjs';
 import { monthSchema, type WasteStatsRowDto } from '@technic/contracts';
-import { wasteRequestsApi } from '../../api/resources';
+import { wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';

@@ -31,12 +31,9 @@ import {
   vehicleStatusLabels,
   vehicleTitle,
 } from '@technic/contracts';
-import {
-  counterpartiesApi,
-  vehicleModelsApi,
-  vehiclesApi,
-  vehicleTypesApi,
-} from '../../api/resources';
+import { counterpartiesApi } from '@entities/counterparty';
+import { vehicleModelsApi, vehiclesApi } from '@entities/vehicle';
+import { vehicleTypesApi } from '@entities/vehicle-type';
 import {
   classificationKeyOf,
   useVehicleClassifications,

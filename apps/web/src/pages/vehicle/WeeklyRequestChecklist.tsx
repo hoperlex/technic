@@ -11,7 +11,7 @@ import {
   weeklyItemResultLabels,
   weeklyRequestStatusLabels,
 } from '@technic/contracts';
-import type { WeeklyRequestHistoryEntryDto } from '../../api/resources';
+import type { WeeklyRequestHistoryEntryDto } from '@entities/weekly-request';
 import { EntityLink } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { vehicleRequestLink, waybillLink } from '../../utils/links';

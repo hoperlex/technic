@@ -16,7 +16,7 @@ import {
   trailerSubstitution,
   vehicleTypesForTrailerKey,
 } from '@entities/vehicle-route';
-import { vehicleTypesApi } from '../../api/resources';
+import { vehicleTypesApi } from '@entities/vehicle-type';
 
 /**
  * Применение правила подстановки прицепа (план `docs/vehicle-trailers-plan.md`, §14, Р20–Р21).

@@ -5,7 +5,7 @@ import {
   vehicleClassificationKey,
   type VehicleClassificationDto,
 } from '@technic/contracts';
-import { vehicleClassificationsApi } from '../api/resources';
+import { vehicleClassificationsApi } from '@entities/vehicle-type';
 
 // Классификатор ТС для списков выбора (ADR 0028): позиции — категории типа, а у типа без ТТХ
 // сам тип. Правило «общий тип при наличии категорий не выводится» держит сервер, клиент только

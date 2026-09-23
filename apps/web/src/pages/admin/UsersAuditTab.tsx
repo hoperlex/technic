@@ -8,7 +8,7 @@ import { DataTable, PageTableLayout, textColumn, type CardConfig } from '@shared
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { userAuditKeys } from '@entities/user-audit';
-import { auditApi } from '../../api/resources';
+import { auditApi } from '../../api/users';
 import { formatDateTime } from '../../utils/format';
 import { AuditEventCell } from './UserAuditChanges';
 import { useUserAuditFilters, type AuditFilterParams } from './UserAuditFilters';

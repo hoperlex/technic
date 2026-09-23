@@ -8,20 +8,19 @@ import {
   type VehicleRequestEarlyEndDto,
   vehicleOptionLabel,
 } from '@technic/contracts';
-import { counterpartiesApi, driversApi, filesApi, vehiclesApi } from '../../api/resources';
+import { counterpartiesApi } from '@entities/counterparty';
+import { driverKeys, driversApi } from '@entities/driver';
+import { filesApi } from '@entities/file';
+import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import type {
   VehicleClassificationGroup,
   VehicleClassificationOption,
 } from '../../hooks/useVehicleClassifications';
-import { AutoSelect } from '@shared/ui';
-import { ExpandableCell } from '@shared/ui';
-import type { FilterDefinition } from '@shared/ui';
+import { AutoSelect, ExpandableCell, type FilterDefinition } from '@shared/ui';
 import { FileLinkList } from '../../components/FileLinks';
 import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from '../../utils/date';
-import { driverKeys } from '@entities/driver';
 import { objectsApi, objectKeys } from '@entities/object';
-import { vehicleKeys } from '@entities/vehicle';
 
 export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ

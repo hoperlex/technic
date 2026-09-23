@@ -8,7 +8,7 @@ import {
   type ChangeUserEmailBody,
   type UserDto,
 } from '@technic/contracts';
-import { usersApi } from '../../api/resources';
+import { usersApi } from '../../api/users';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 

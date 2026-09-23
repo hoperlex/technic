@@ -10,7 +10,7 @@ import {
   roleMigrationOf,
   type Role,
 } from '@technic/contracts';
-import type { UserAccountDto } from '../../api/resources';
+import type { UserAccountDto } from '../../api/users';
 import { hasExternalEmail } from './registrationApproval';
 
 /**

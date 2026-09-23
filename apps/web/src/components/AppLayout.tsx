@@ -22,7 +22,7 @@ import {
   roleLabels,
   type PortalShellSectionId,
 } from '@technic/contracts';
-import { usersApi } from '../api/resources';
+import { usersApi } from '../api/users';
 import { useAuth } from '../auth/AuthContext';
 import { UtilityMenu, useUtilityMenu } from '@widgets/utility-menu';
 import { useServiceWaitingCount } from '@features/service-waiting-badge';

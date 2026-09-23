@@ -34,9 +34,8 @@ import {
   type VehicleTypeDto,
   type VehicleTypeSpecDto,
 } from '@technic/contracts';
-import { vehicleCategoriesApi, vehicleSpecsApi, vehicleTypesApi } from '../../api/resources';
-import { AutoSelect } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { vehicleCategoriesApi, vehicleSpecsApi, vehicleTypesApi } from '@entities/vehicle-type';
+import { AutoSelect, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';

@@ -13,9 +13,11 @@ import {
   type VehicleRouteDto,
   vehicleStatusLabels,
 } from '@technic/contracts';
-import { driversApi, vehicleRoutesApi, vehiclesApi, waybillsApi } from '../../api/resources';
+import { driversApi } from '@entities/driver';
+import { vehiclesApi } from '@entities/vehicle';
+import { sameTrailerGraphs, vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
+import { waybillsApi } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
-import { sameTrailerGraphs, vehicleRouteKeys } from '@entities/vehicle-route';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 import { RouteCorrectionConsequences } from './RouteCorrectionConsequences';

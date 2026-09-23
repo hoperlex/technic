@@ -29,7 +29,7 @@ import {
   wasteTypeDuplicateMessage,
   type WasteTypeDto,
 } from '@technic/contracts';
-import { counterpartiesApi } from '../../api/resources';
+import { counterpartiesApi } from '@entities/counterparty';
 import { containerTypeOptionsQuery } from '@entities/container-type';
 import { wasteTariffKeys, wasteTariffsApi } from '@entities/waste-tariff';
 import { wasteTypeKeys, wasteTypeOptionsQuery, wasteTypesApi } from '@entities/waste-type';
@@ -38,8 +38,7 @@ import { DataTable } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import type { FilterDefinition } from '@shared/ui';
-import { useIsMobile } from '@shared/lib';
-import { useListParams } from '@shared/lib';
+import { useIsMobile, useListParams } from '@shared/lib';
 import { errorMessage, formatMoney } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import {

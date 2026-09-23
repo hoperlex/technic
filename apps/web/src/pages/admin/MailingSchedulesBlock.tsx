@@ -10,7 +10,7 @@ import {
 } from '@technic/contracts';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { actionsColumn, DataTable, RowActionButton, textColumn } from '@shared/ui';
-import { mailingsApi } from '../../api/resources';
+import { mailingsApi } from '../../api/mailings';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
 import { MailingScheduleForm } from './MailingScheduleForm';

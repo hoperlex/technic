@@ -13,11 +13,10 @@ import {
   type VehicleRequestDto,
   weekStartKey,
 } from '@technic/contracts';
-import { driversApi, vehicleRequestsApi, vehiclesApi } from '../../api/resources';
-import { vehicleKeys } from '@entities/vehicle';
-import { AutoSelect } from '@shared/ui';
-import { FormGrid } from '@shared/ui';
-import { FormModal, useFormBlockers } from '@shared/ui';
+import { driversApi } from '@entities/driver';
+import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from './shared';

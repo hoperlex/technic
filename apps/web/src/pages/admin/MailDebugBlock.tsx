@@ -30,7 +30,7 @@ import {
   type MailTestKind,
   roleLabels,
 } from '@technic/contracts';
-import { mailingsApi } from '../../api/resources';
+import { mailingsApi } from '../../api/mailings';
 import { WindowFromField } from './MailingScheduleForm';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';

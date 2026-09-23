@@ -7,7 +7,7 @@ import {
 } from '@technic/contracts';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { userAccountKeys } from '@entities/user-account';
-import { usersApi } from '../../api/resources';
+import { usersApi } from '../../api/users';
 
 /**
  * Кандидаты в руководители отдела — для карточки справочника (§11.1 плана реструктуризации прав,

@@ -23,12 +23,12 @@ import {
   waybillStatusColors,
   waybillStatusLabels,
 } from '@technic/contracts';
-import { vehicleRequestsApi, vehicleRoutesApi, waybillsApi } from '../../api/resources';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRoutesApi } from '@entities/vehicle-route';
+import { waybillsApi } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { isApiError } from '@shared/api';
-import { AutoSelect } from '@shared/ui';
-import { EntityLink } from '@shared/ui';
-import { ViewModal } from '@shared/ui';
+import { AutoSelect, EntityLink, ViewModal } from '@shared/ui';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';

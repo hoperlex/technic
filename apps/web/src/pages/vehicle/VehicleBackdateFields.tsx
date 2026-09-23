@@ -9,7 +9,7 @@ import {
   routeDateMismatch,
   type VehicleRequestDto,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '../../api/resources';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { formatDateOnly } from '../../utils/date';
 
 /**

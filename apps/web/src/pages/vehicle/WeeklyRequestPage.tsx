@@ -7,7 +7,7 @@ import {
   type WeeklyCorrectionBody,
   weeklyWeekEffectiveDate,
 } from '@technic/contracts';
-import { weeklyRequestsApi } from '../../api/resources';
+import { weeklyRequestsApi } from '@entities/weekly-request';
 import { garageKeys } from '@entities/garage';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { useAuth } from '../../auth/AuthContext';

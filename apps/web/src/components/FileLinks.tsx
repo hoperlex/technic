@@ -2,7 +2,7 @@ import { App, Alert, Button, List, Popover, Spin, Tooltip, Typography } from 'an
 import { DownloadOutlined, EyeOutlined, PaperClipOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import { isInlineViewable } from '@technic/contracts';
-import { filesApi } from '../api/resources';
+import { filesApi } from '@entities/file';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage, formatBytes } from '../utils/format';
 import { ViewModal } from '@shared/ui';

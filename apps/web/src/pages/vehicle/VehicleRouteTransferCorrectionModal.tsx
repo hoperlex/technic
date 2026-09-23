@@ -8,7 +8,7 @@ import {
   type VehicleRouteRequestDto,
   WAYBILL_CORRECTION_CONFIRM,
 } from '@technic/contracts';
-import { vehicleRoutesApi } from '../../api/resources';
+import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { errorMessage } from '../../utils/format';

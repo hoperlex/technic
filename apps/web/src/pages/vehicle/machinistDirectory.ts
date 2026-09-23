@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { vehicleRequestKeys } from '@entities/vehicle-request';
-import { driversApi, vehicleRequestsApi } from '../../api/resources';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { driversApi } from '@entities/driver';
 
 /**
  * Справочные данные окна «Сменить машиниста»: история заявки, список выбора и имя человека по

@@ -56,13 +56,13 @@ import {
   wasteRequestCommentLines,
   wasteSubjectLabel,
 } from '@technic/contracts';
+import { counterpartiesApi } from '@entities/counterparty';
+import { filesApi } from '@entities/file';
 import {
-  counterpartiesApi,
-  filesApi,
   wasteRequestsApi,
   type WasteRequestPayload,
   type WasteRequestUpdatePayload,
-} from '../api/resources';
+} from '@entities/waste-request';
 import { AutoSelect } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '@shared/ui';

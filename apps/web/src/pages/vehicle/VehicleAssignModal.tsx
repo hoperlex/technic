@@ -51,11 +51,12 @@ import {
   waybillRequirement,
 } from '@technic/contracts';
 import type { CorrectAssignmentBody } from '@technic/contracts';
-import { driversApi, vehicleRequestsApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
+import { driversApi } from '@entities/driver';
+import { vehiclesApi } from '@entities/vehicle';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { useAuth } from '../../auth/AuthContext';
-import { AutoSelect } from '@shared/ui';
-import { FormGrid } from '@shared/ui';
-import { FormModal, useFormBlockers } from '@shared/ui';
+import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { useIsMobile } from '@shared/lib';
 import { useObjectScope } from '../../hooks/useObjectScope';

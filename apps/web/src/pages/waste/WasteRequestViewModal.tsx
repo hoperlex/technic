@@ -21,7 +21,7 @@ import {
   wasteRequestCommentLines,
   wasteSubjectLabel,
 } from '@technic/contracts';
-import { wasteRequestsApi } from '../../api/resources';
+import { wasteRequestsApi } from '@entities/waste-request';
 import { AddTicketsBlock } from '@features/waste-ticket-attach';
 import { TicketRecognitionBanner, WasteTicketsPanel } from '@features/waste-ticket-review';
 import { useAuth } from '../../auth/AuthContext';

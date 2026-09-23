@@ -12,15 +12,14 @@ import {
   vehicleRequestTypeColors,
   vehicleRequestTypeLabels,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '../../api/resources';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { useRequestCustomerFilter } from '@features/request-customer';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
-import { useListParams } from '@shared/lib';
-import { useOpenedRecord } from '@shared/lib';
+import { useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { useAuth } from '../../auth/AuthContext';

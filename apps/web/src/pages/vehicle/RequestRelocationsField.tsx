@@ -9,7 +9,8 @@ import {
   waybillStatusColors,
   waybillStatusLabels,
 } from '@technic/contracts';
-import { vehicleRequestsApi, vehicleRoutesApi } from '../../api/resources';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
 import { EntityLink } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';

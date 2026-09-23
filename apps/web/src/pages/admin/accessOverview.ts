@@ -16,7 +16,7 @@ import {
   type UserDto,
 } from '@technic/contracts';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
-import { usersApi } from '../../api/resources';
+import { usersApi } from '../../api/users';
 
 /**
  * Общие данные и вычисления вкладки «Права» (`docs/permissions-tab-plan.md`).

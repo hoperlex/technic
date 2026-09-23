@@ -1,7 +1,7 @@
 import { Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { type WasteRequestDto } from '@technic/contracts';
-import { wasteRequestsApi } from '../../api/resources';
+import { wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { EntityLink } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';

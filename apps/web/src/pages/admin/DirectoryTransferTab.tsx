@@ -1,10 +1,9 @@
 import { useState } from 'react';
-import { App, Button, Space, Table, Tag, Tooltip, Typography } from 'antd';
-import type { TableColumnsType } from 'antd';
+import { App, Button, Space, Table, Tag, Tooltip, Typography, type TableColumnsType } from 'antd';
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DirectoryInfoDto } from '@technic/contracts';
-import { directoriesApi } from '../../api/resources';
+import { directoriesApi } from '@entities/directory-transfer';
 import { DirectoryImportModal } from './DirectoryImportModal';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';

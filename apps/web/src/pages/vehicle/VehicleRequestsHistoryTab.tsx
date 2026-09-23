@@ -29,7 +29,7 @@ import {
   type VehicleRequestType,
   workedAmountLabel,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '../../api/resources';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { useRequestCustomerDefaults, useRequestCustomerFilter } from '@features/request-customer';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -39,8 +39,7 @@ import { SummaryBar } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
-import { useListParams } from '@shared/lib';
-import { useOpenedRecord } from '@shared/lib';
+import { useListParams, useOpenedRecord } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { formatDate, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { calendarDayCount } from '../../utils/date';

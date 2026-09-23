@@ -15,7 +15,7 @@ import {
 import { autoPartReceiptApi } from '@entities/auto-part-receipt';
 import { errorFields, errorMessage } from '@shared/lib';
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
-import { filesApi } from '../../api/resources';
+import { filesApi } from '@entities/file';
 import { FileLinkList } from '../../components/FileLinks';
 import { formatMoney } from '../../utils/format';
 import { ReceiptLinesEditor } from './ReceiptLinesEditor';

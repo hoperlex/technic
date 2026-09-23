@@ -33,7 +33,7 @@ import {
   waybillStatusLabels,
   weeklyWeekLabel,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '../../api/resources';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { useAuth } from '../../auth/AuthContext';
 import { RequestTripsTable } from './RequestTripsTable';
 import { AddressCell } from '@entities/address';
@@ -42,8 +42,7 @@ import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHi
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
 import { useIsMobile } from '@shared/lib';
-import { EntityLink } from '@shared/ui';
-import { ViewFields, ViewModal } from '@shared/ui';
+import { EntityLink, ViewFields, ViewModal } from '@shared/ui';
 import { canOpenRoute, vehicleRequestLink, vehicleRouteLink, waybillLink } from '../../utils/links';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { PhoneLink } from '../../components/PhoneField';

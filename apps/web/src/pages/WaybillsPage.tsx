@@ -12,11 +12,9 @@ import {
   type WaybillDto,
   waybillFormLabels,
 } from '@technic/contracts';
-import { waybillsApi } from '../api/resources';
+import { waybillsApi } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
-import { DataTable, listScopeKey } from '@shared/ui';
-import { PageTableLayout } from '@shared/ui';
-import { sortOptionsFrom } from '@shared/ui';
+import { DataTable, listScopeKey, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import { useRouteModal } from '@features/route-modal';
 import { useDriverOptions, useOwnVehicleOptions } from './vehicle/shared';
 import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from './waybills/filters';

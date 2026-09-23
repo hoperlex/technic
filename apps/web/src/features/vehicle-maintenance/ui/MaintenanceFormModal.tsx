@@ -4,16 +4,15 @@ import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { MaintenanceBody, VehicleMaintenanceDto } from '@technic/contracts';
 import { vehicleMaintenanceApi, vehicleMaintenanceKeys } from '@entities/vehicle-maintenance';
-import { errorMessage } from '@shared/lib';
+import { errorMessage, kmText } from '@shared/lib';
 import { FormModal } from '@shared/ui';
-import { filesApi } from '../../../api/resources';
+import { filesApi } from '@entities/file';
 import {
   VERSION_CONFLICT_MESSAGE,
   isStaleRecord,
   isVersionConflict,
   maintenanceErrorText,
 } from '../model/conflict';
-import { kmText } from '@shared/lib';
 import { DATE, SHOWN_DATE, previousOdometerKm } from '../model/maintenanceText';
 import { MaintenanceScans, type ScanFile } from './MaintenanceScans';
 

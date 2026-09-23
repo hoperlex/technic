@@ -3,11 +3,10 @@ import { Checkbox, DatePicker, Input, Select, Space } from 'antd';
 import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import { vehicleOptionLabel } from '@technic/contracts';
-import { vehicleKeys } from '@entities/vehicle';
+import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { FilterReset, type FilterDefinition } from '@shared/ui';
 import { usePruneMissingFilters } from '@shared/lib';
-import { vehiclesApi } from '../../api/resources';
 
 /**
  * Отбор ленты чеков — **одним описанием** на десктоп и телефон (план

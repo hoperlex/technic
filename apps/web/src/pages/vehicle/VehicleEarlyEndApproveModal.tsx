@@ -7,7 +7,7 @@ import type {
   SpecialEquipmentRequestDto,
 } from '@technic/contracts';
 import { FormModal } from '@shared/ui';
-import { vehicleRequestsApi } from '../../api/resources';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { errorMessage } from '../../utils/format';
 import { EarlyEndConsequences } from './EarlyEndConsequences';
 import { reassignStaleReason } from './ReassignPreview';

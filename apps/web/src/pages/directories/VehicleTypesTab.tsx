@@ -33,7 +33,7 @@ import {
   vehicleClassificationsApi,
   vehicleKindsApi,
   vehicleTypesApi,
-} from '../../api/resources';
+} from '@entities/vehicle-type';
 import { isApiError } from '@shared/api';
 import { DataTable, type CardConfig, type TableChange } from '@shared/ui';
 import { FormModal } from '@shared/ui';

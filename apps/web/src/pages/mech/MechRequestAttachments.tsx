@@ -4,7 +4,7 @@ import { UploadOutlined } from '@ant-design/icons';
 import type { FileDto, MechRequestDto } from '@technic/contracts';
 import { mechFailureText } from '@entities/mech-request';
 import { FileLinkList } from '../../components/FileLinks';
-import { filesApi } from '../../api/resources';
+import { filesApi } from '@entities/file';
 
 /** Файл, загруженный формой прямо сейчас: он ничей, пока заявка его не забрала. */
 interface UploadedFile {

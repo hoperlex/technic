@@ -24,9 +24,9 @@ import {
   mailingTypeLabels,
   type MailingScheduleDto,
 } from '@technic/contracts';
-import { driverKeys } from '@entities/driver';
+import { driverKeys, driversApi } from '@entities/driver';
 import { FormModal } from '@shared/ui';
-import { driversApi, mailingsApi } from '../../api/resources';
+import { mailingsApi } from '../../api/mailings';
 import { MailingAudienceFields } from './MailingAudienceFields';
 import {
   ALL_WEEKDAYS,

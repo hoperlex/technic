@@ -13,7 +13,7 @@ import {
   counterpartyTypeColors,
   counterpartyTypeLabels,
 } from '@technic/contracts';
-import { counterpartiesApi } from '../../api/resources';
+import { counterpartiesApi } from '@entities/counterparty';
 import {
   CounterpartyFormFields,
   type CounterpartyFormValues,
