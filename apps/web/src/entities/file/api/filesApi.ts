@@ -7,6 +7,22 @@ import type {
 import { apiFetch } from '@shared/api';
 
 /**
+ * Первый и третий шаги загрузки: сессия в хранилище и запись файла по её завершении.
+ *
+ * Наружу они не выставлены — их зовёт только `upload`. Снаружи эти двери означали бы ровно одно:
+ * возможность пройти цикл наполовину, а чем половина кончается, сказано в шапке `filesApi` ниже.
+ * Область видимости держит это надёжнее уговора.
+ */
+const createUploadSession = (filename: string, contentType: string, size: number) =>
+  apiFetch<UploadSessionDto>('/files/upload-session', {
+    method: 'POST',
+    body: { filename, contentType, size },
+  });
+
+const completeUpload = (id: string) =>
+  apiFetch<FileDto>(`/files/${id}/complete`, { method: 'POST' });
+
+/**
  * Вложения портала: загрузка файла в хранилище, ссылка на него и снятие.
  *
  * Ручки общие на все модули сразу — заявки вывоза, заказа ТС, механизации и обслуживания
@@ -17,12 +33,6 @@ import { apiFetch } from '@shared/api';
  * пропустивший `complete` оставляет не вложение, а незаконченную загрузку в состоянии `pending`.
  */
 export const filesApi = {
-  createUploadSession: (filename: string, contentType: string, size: number) =>
-    apiFetch<UploadSessionDto>('/files/upload-session', {
-      method: 'POST',
-      body: { filename, contentType, size },
-    }),
-  complete: (id: string) => apiFetch<FileDto>(`/files/${id}/complete`, { method: 'POST' }),
   downloadUrl: (id: string, disposition: FileDisposition = 'attachment') =>
     apiFetch<DownloadUrlDto>(`/files/${id}/download`, { query: { disposition } }),
   remove: (id: string) => apiFetch<{ ok: boolean }>(`/files/${id}`, { method: 'DELETE' }),
@@ -36,14 +46,14 @@ export const filesApi = {
    */
   async upload(file: File): Promise<FileDto> {
     const contentType = file.type || 'application/octet-stream';
-    const session = await filesApi.createUploadSession(file.name, contentType, file.size);
+    const session = await createUploadSession(file.name, contentType, file.size);
     const put = await fetch(session.uploadUrl, {
       method: 'PUT',
       body: file,
       headers: { 'Content-Type': contentType },
     });
     if (!put.ok) throw new Error(`Ошибка загрузки в хранилище (${put.status})`);
-    return filesApi.complete(session.fileId);
+    return completeUpload(session.fileId);
   },
 
   /**

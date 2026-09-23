@@ -17,10 +17,14 @@ import { apiFetch, type Query } from '@shared/api';
 /**
  * Справочник водителей (ADR 0037). Отдельно от справочников не только маршрутом, но и правом:
  * в карточке персональные данные, и открыта она не всем, кому доступен список типов ТС.
+ *
+ * Двери «карточка по идентификатору» здесь нет намеренно: карточку правит единственный экран —
+ * вкладка справочника, — и строку он держит из уже загруженного списка. Запрос на одну карточку
+ * завёл бы вторую ячейку кэша с теми же персональными данными, гасить её пришлось бы отдельно от
+ * списка, и разойтись с таблицей она могла бы молча.
  */
 export const driversApi = {
   list: (q: Query) => apiFetch<ListResult<DriverDto>>('/drivers', { query: q }),
-  get: (id: string) => apiFetch<DriverDto>(`/drivers/${id}`),
   create: (body: CreateDriverBody) => apiFetch<DriverDto>('/drivers', { method: 'POST', body }),
   update: (id: string, body: UpdateDriverInput) =>
     apiFetch<DriverDto>(`/drivers/${id}`, { method: 'PATCH', body }),
