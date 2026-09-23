@@ -1,5 +1,6 @@
 import { Navigate, useSearchParams } from 'react-router';
 import { canOrderVehicleRequestType } from '@technic/contracts';
+import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { PageTabs } from '../components/PageTabs';
 import { useAuth } from '../auth/AuthContext';
 import { canSeeArchiveTab } from '../utils/links';
@@ -94,7 +95,7 @@ export function VehicleRequestsPage() {
       <PageTabs
         activeKey={tab}
         onChange={(k) => setSp({ tab: k })}
-        refreshQueryKey={['vehicle-requests']}
+        refreshQueryKey={vehicleRequestKeys.root}
         items={items}
       />
     </div>

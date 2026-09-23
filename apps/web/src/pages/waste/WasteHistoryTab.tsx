@@ -14,8 +14,8 @@ import {
   requestTypeLabels,
   type WasteRequestDto,
 } from '@technic/contracts';
-import { counterpartiesApi } from '@entities/counterparty';
-import { wasteRequestsApi } from '@entities/waste-request';
+import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
@@ -84,14 +84,14 @@ export function WasteHistoryTab() {
     deliveryTo: dayEnd(params.deliveryTo),
   };
   const { data, isFetching } = useQuery({
-    queryKey: ['waste-requests', 'history', query],
+    queryKey: wasteRequestKeys.closed(query),
     queryFn: () => wasteRequestsApi.historyList(query),
   });
 
   // Итог считается по тем же фильтрам, что и таблица: сводка, отвечающая не про то, что человек
   // видит перед собой, вводит в заблуждение вернее, чем её отсутствие.
   const { data: summary } = useQuery({
-    queryKey: ['waste-requests', 'history-summary', query],
+    queryKey: wasteRequestKeys.closedSummary(query),
     queryFn: () => wasteRequestsApi.historySummary(query),
   });
 
@@ -113,7 +113,7 @@ export function WasteHistoryTab() {
   );
 
   const { data: operatorsData } = useQuery({
-    queryKey: ['counterparties', 'operators-for-select'],
+    queryKey: counterpartyKeys.activeOperatorOptions(),
     queryFn: () =>
       counterpartiesApi.list({
         page: 1,
@@ -149,11 +149,11 @@ export function WasteHistoryTab() {
       // Заявка уходит из журнала в рабочий список, и сказать об этом обязательно: иначе она
       // выглядит просто исчезнувшей со страницы.
       message.success('Заявка вернулась в «Выполнена» — талоны снова открыты для разбора');
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
     onError: (e) => {
       message.error(errorMessage(e));
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
   });
 
@@ -172,7 +172,7 @@ export function WasteHistoryTab() {
 
   const opened = useOpenedRecord<WasteRequestDto>({
     active: useActiveTabKey() === 'history',
-    queryKey: (id) => ['waste-requests', id],
+    queryKey: (id) => wasteRequestKeys.detail(id),
     fetch: (id) => wasteRequestsApi.get(id),
   });
 

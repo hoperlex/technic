@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { Alert, Checkbox, Form, Input, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { DAY_BATCH_LIMIT, dayBatchPortionMessage, shiftDaysOf } from '@technic/contracts';
-import { driversApi } from '@entities/driver';
+import { driverKeys, driversApi } from '@entities/driver';
 import { AutoSelect, FormGrid } from '@shared/ui';
 import { driverOption } from './assignDriverHints';
 import { formatDateOnly } from './shared';
@@ -33,13 +33,8 @@ import { formatDateOnly } from './shared';
  * принятия в работу: один и тот же список не должен ездить к серверу дважды и тем более
  * отвечать по-разному.
  */
-const driversKey = (vehicleId: string | undefined, date: string) => [
-  'drivers',
-  'available',
-  vehicleId,
-  date,
-  false,
-];
+const driversKey = (vehicleId: string | undefined, date: string) =>
+  driverKeys.available({ vehicleId, on: date, withTrailer: false });
 
 /**
  * Поля формы, которые собирает блок. Имена общие у обоих окон намеренно: тело пачки собирает одна

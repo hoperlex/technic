@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { roleLabels, type AudienceMode, type Permission } from '@technic/contracts';
 import { type CheckboxPickerItem, type CheckboxPickerValue } from '@shared/ui';
 import { departmentOptionsQuery } from '@entities/department';
-import { mailingsApi } from '@entities/mailing';
+import { mailingCandidateKeys, mailingsApi } from '@entities/mailing';
 import { objectOptionsQuery } from '@entities/object';
 import { PermissionPickerField, PickerField } from './MailingAudiencePickers';
 
@@ -49,9 +49,6 @@ export interface AudienceFormValues {
   recipients: AudienceRecipientsValue;
 }
 
-/** Ключ списка кандидатов; хвост ключа — сам отбор, из-за которого список пересобирается. */
-const CANDIDATES_KEY = ['mailing-recipient-candidates'];
-
 interface Props {
   /**
    * Форма открыта. Справочники и список кандидатов спрашиваются только тогда: в кандидатах ФИО
@@ -84,7 +81,8 @@ export function MailingAudienceFields({ active }: Props) {
    * (Р8) в справочник учёток не встроить, а цифра под формой обязана совпасть с планировщиком.
    */
   const candidatesQuery = useQuery({
-    queryKey: [...CANDIDATES_KEY, permissions, scopeMode, objectIds, departmentIds],
+    // Хвост ключа — сам отбор: из-за него список и пересобирается.
+    queryKey: mailingCandidateKeys.byAudience(permissions, scopeMode, objectIds, departmentIds),
     queryFn: () =>
       mailingsApi.recipientCandidates({
         permissions: permissions.join(','),
@@ -109,13 +107,7 @@ export function MailingAudienceFields({ active }: Props) {
    * совпадают с основным запросом, и оба потребителя берут один ответ из кэша.
    */
   const scopeCountsQuery = useQuery({
-    queryKey: [
-      ...CANDIDATES_KEY,
-      permissions,
-      'all' as AudienceMode,
-      [] as string[],
-      [] as string[],
-    ],
+    queryKey: mailingCandidateKeys.byAudience(permissions, 'all', [], []),
     queryFn: () =>
       mailingsApi.recipientCandidates({ permissions: permissions.join(','), scopeMode: 'all' }),
     enabled: active && permissions.length > 0,

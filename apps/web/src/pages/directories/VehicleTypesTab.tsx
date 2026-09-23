@@ -30,8 +30,12 @@ import {
 } from '@technic/contracts';
 import {
   vehicleCategoriesApi,
+  vehicleCategoryKeys,
+  vehicleClassificationKeys,
   vehicleClassificationsApi,
+  vehicleKindKeys,
   vehicleKindsApi,
+  vehicleTypeKeys,
   vehicleTypesApi,
 } from '@entities/vehicle-type';
 import { isApiError } from '@shared/api';
@@ -117,21 +121,21 @@ export function VehicleTypesTab() {
   const patchParams = (patch: Partial<VtParams>) => setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-classifications', params],
+    queryKey: vehicleClassificationKeys.list(params),
     queryFn: () => vehicleClassificationsApi.list(params),
   });
 
   // Сами типы — для правки и карточки: в строке классификатора лежит только то, что показывают,
   // а форме нужен тип целиком (код, вид, описание, порядок). Типов десятки — грузим разом.
   const { data: typesData } = useQuery({
-    queryKey: ['vehicle-types', 'full'],
+    queryKey: vehicleTypeKeys.full(),
     queryFn: () =>
       vehicleTypesApi.list({ page: 1, pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
   });
   const typeById = new Map((typesData?.items ?? []).map((t) => [t.id, t]));
 
   const { data: kindsData, isLoading: kindsLoading } = useQuery({
-    queryKey: ['vehicle-kinds'],
+    queryKey: vehicleKindKeys.root,
     queryFn: () => vehicleKindsApi.list({ pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
   });
   const kindOptions = (kindsData?.items ?? []).map((k) => ({ value: k.id, label: k.name }));
@@ -175,9 +179,9 @@ export function VehicleTypesTab() {
   };
 
   const invalidateTypes = () => {
-    void qc.invalidateQueries({ queryKey: ['vehicle-types'] });
+    void qc.invalidateQueries({ queryKey: vehicleTypeKeys.root });
     // Наименование типа — это и подпись его строк в классификаторе (ADR 0028).
-    void qc.invalidateQueries({ queryKey: ['vehicle-classifications'] });
+    void qc.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
   };
 
   // Заведение типа: признак линейности у нового типа уходит обычным полем — заявок, которых
@@ -374,9 +378,9 @@ export function VehicleTypesTab() {
       message.success(
         `${what} ${v.isActive ? 'активирован' : 'деактивирован'}${v.row.vehicleCategoryId ? 'а' : ''}`,
       );
-      void qc.invalidateQueries({ queryKey: ['vehicle-classifications'] });
-      void qc.invalidateQueries({ queryKey: ['vehicle-types'] });
-      void qc.invalidateQueries({ queryKey: ['vehicle-categories'] });
+      void qc.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
+      void qc.invalidateQueries({ queryKey: vehicleTypeKeys.root });
+      void qc.invalidateQueries({ queryKey: vehicleCategoryKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });

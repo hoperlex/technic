@@ -7,8 +7,10 @@ import {
   type WeeklyCorrectionBody,
   weeklyWeekEffectiveDate,
 } from '@technic/contracts';
-import { weeklyRequestsApi } from '@entities/weekly-request';
+import { weeklyRequestKeys, weeklyRequestsApi } from '@entities/weekly-request';
 import { garageKeys } from '@entities/garage';
+import { vehicleRequestKeys } from '@entities/vehicle-request';
+import { waybillKeys } from '@entities/waybill';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { useAuth } from '../../auth/AuthContext';
 import { useVehicleClassifications } from '../../hooks/useVehicleClassifications';
@@ -37,7 +39,6 @@ import {
   skipReasonsFromError,
   useWeeklyBackdateAccess,
   useWeeklyRequestCreate,
-  WEEKLY_QUERY_KEY,
 } from './weeklyShared';
 
 /**
@@ -72,7 +73,7 @@ export function WeeklyRequestPage() {
   const [conducting, setConducting] = useState(false);
 
   const requestQuery = useQuery({
-    queryKey: ['weekly-vehicle-requests', id],
+    queryKey: weeklyRequestKeys.detail(id),
     queryFn: () => weeklyRequestsApi.get(id),
     enabled: !!id,
     // Исчезнувшую заявку не перезапрашиваем: 404 здесь — это ответ, а не сбой связи (§9).
@@ -87,7 +88,7 @@ export function WeeklyRequestPage() {
   // заморожен, и срез площадки к ней отношения не имеет.
   const suggestionEnabled = composable && can('weeklyRequests.create');
   const suggestionQuery = useQuery({
-    queryKey: ['weekly-vehicle-requests', 'suggestion', request?.objectId, request?.weekStart],
+    queryKey: weeklyRequestKeys.suggestion(request?.objectId, request?.weekStart),
     queryFn: () =>
       weeklyRequestsApi.suggestion({
         objectId: request!.objectId,
@@ -100,12 +101,12 @@ export function WeeklyRequestPage() {
   });
 
   const documentsQuery = useQuery({
-    queryKey: ['weekly-vehicle-requests', id, 'documents'],
+    queryKey: weeklyRequestKeys.documents(id),
     queryFn: () => weeklyRequestsApi.documents(id),
     enabled: !!id && status === 'applied',
   });
   const historyQuery = useQuery({
-    queryKey: ['weekly-vehicle-requests', id, 'history'],
+    queryKey: weeklyRequestKeys.history(id),
     queryFn: () => weeklyRequestsApi.history(id),
     enabled: !!id,
   });
@@ -131,12 +132,12 @@ export function WeeklyRequestPage() {
   }, [composition.dirty]);
 
   const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: WEEKLY_QUERY_KEY });
+    void qc.invalidateQueries({ queryKey: weeklyRequestKeys.root });
     // Применение двигает сроки заказов и порождает новые: список заявок ТС тоже устарел.
-    void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+    void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
     // Продление срока перевыписывает ЭСМ-2 заказа (`extendSpecialEquipmentPeriod` → `syncEsm2Waybills`),
     // поэтому журнал листов после визы недели показывает смены, которых уже нет.
-    void qc.invalidateQueries({ queryKey: ['waybills'] });
+    void qc.invalidateQueries({ queryKey: waybillKeys.root });
     void qc.invalidateQueries({ queryKey: garageKeys.root });
   };
 
@@ -149,7 +150,7 @@ export function WeeklyRequestPage() {
   /** Общий разбор отказа: конфликт версий, исчезнувшая заявка и построчные причины 422. */
   const onError = (e: unknown) => {
     if (hasStatus(e, 409)) {
-      void qc.invalidateQueries({ queryKey: WEEKLY_QUERY_KEY });
+      void qc.invalidateQueries({ queryKey: weeklyRequestKeys.root });
       message.error('Состав изменил другой пользователь — страница обновлена');
       return;
     }
@@ -161,7 +162,7 @@ export function WeeklyRequestPage() {
       if (reasons.size > 0) setSkipReasons(reasons);
       // Срез площадки перечитывается: строка, чей заказ отменили или закрыли, получит свою
       // причину прямо в составе — сверять список с таблицей глазами не придётся.
-      void qc.invalidateQueries({ queryKey: ['weekly-vehicle-requests', 'suggestion'] });
+      void qc.invalidateQueries({ queryKey: weeklyRequestKeys.suggestions() });
     }
     message.error(errorMessage(e));
   };

@@ -8,7 +8,9 @@ import {
   type VehicleRouteRequestDto,
   WAYBILL_CORRECTION_CONFIRM,
 } from '@technic/contracts';
-import { vehicleRoutesApi } from '@entities/vehicle-route';
+import { vehicleRequestKeys } from '@entities/vehicle-request';
+import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
+import { waybillKeys } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
@@ -79,7 +81,7 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
    * их у бланка, решает его форма (ADR 0068), и считает это портал тем же правилом.
    */
   const { data: candidates, isFetching } = useQuery({
-    queryKey: ['vehicle-routes', 'transfer-correction', route?.id],
+    queryKey: vehicleRouteKeys.transferCandidates(route?.id),
     queryFn: () =>
       vehicleRoutesApi.list({
         dateFrom: shiftDateKey(route!.routeDate, -NEIGHBOURHOOD_DAYS),
@@ -112,12 +114,12 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
    * набор тех же правил.
    */
   const sourcePreview = useQuery({
-    queryKey: ['vehicle-routes', route?.id, 'correction'],
+    queryKey: vehicleRouteKeys.correctionPreview(route?.id),
     queryFn: () => vehicleRoutesApi.correctionPreview(route!.id),
     enabled: !!route,
   });
   const targetPreview = useQuery({
-    queryKey: ['vehicle-routes', targetId, 'correction'],
+    queryKey: vehicleRouteKeys.correctionPreview(targetId),
     queryFn: () => vehicleRoutesApi.correctionPreview(targetId!),
     enabled: !!targetId,
   });
@@ -144,13 +146,13 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
           result.target.waybill?.number ?? ''
         }`,
       );
-      qc.setQueryData(['vehicle-routes', result.target.id], result.target);
-      qc.setQueryData(['vehicle-routes', result.source.id], result.source);
+      qc.setQueryData(vehicleRouteKeys.detail(result.target.id), result.target);
+      qc.setQueryData(vehicleRouteKeys.detail(result.source.id), result.source);
       // Журнал листов, заявки и гараж после переноса показывают другое: два списанных номера, новые
       // номера и другую машину дня.
       await Promise.all([
-        qc.invalidateQueries({ queryKey: ['waybills'] }),
-        qc.invalidateQueries({ queryKey: ['vehicle-requests'] }),
+        qc.invalidateQueries({ queryKey: waybillKeys.root }),
+        qc.invalidateQueries({ queryKey: vehicleRequestKeys.root }),
         qc.invalidateQueries({ queryKey: garageKeys.root }),
       ]);
       onDone(result);

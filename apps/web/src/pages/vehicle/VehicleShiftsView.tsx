@@ -5,7 +5,7 @@ import {
   type VehicleRequestShiftDto,
   workedAmountLabel,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { UserAvatar } from '../../components/UserAvatar';
 import { formatDateTime } from '../../utils/format';
 import { formatDateOnly } from './shared';
@@ -85,7 +85,7 @@ export function VehicleShiftsView({ requestId }: Props) {
   // Ключ тот же, что у окна подтверждения смен: таблица одна и та же, и второй раз её тянуть с
   // сервера незачем.
   const { data, isPending } = useQuery({
-    queryKey: ['vehicle-requests', 'shifts', requestId],
+    queryKey: vehicleRequestKeys.shifts(requestId),
     queryFn: () => vehicleRequestsApi.shifts(requestId),
   });
 

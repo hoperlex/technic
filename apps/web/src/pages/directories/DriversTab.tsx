@@ -41,7 +41,7 @@ import {
   SNILS_CHECKSUM_MESSAGE,
   SNILS_MESSAGE,
 } from '@technic/contracts';
-import { driversApi } from '@entities/driver';
+import { driverKeys, driversApi, licenseCategoryKeys } from '@entities/driver';
 import {
   confirmDriverRemoval,
   confirmDriverRemovalStart,
@@ -119,7 +119,7 @@ interface DriverFormValues {
  */
 function useLicenseCategoryOptions(type: CredentialTypeCode) {
   const { data } = useQuery({
-    queryKey: ['license-categories', type],
+    queryKey: licenseCategoryKeys.byType(type),
     queryFn: () => driversApi.licenseCategories(type),
     staleTime: Infinity,
   });
@@ -149,7 +149,7 @@ export function DriversTab() {
     // разбирает запрос сервер (`phoneSearchCondition`).
   }>({}, { searchKeys: ['fullName', 'snils', 'contacts'] });
   const { data, isFetching } = useQuery({
-    queryKey: ['drivers', params],
+    queryKey: driverKeys.list(params),
     queryFn: () => driversApi.list(params),
   });
 
@@ -157,7 +157,7 @@ export function DriversTab() {
   // свободным текстом (ADR 0095), и перечислить их наперёд портал не может. Ключ начинается с
   // `drivers`, чтобы заведённый водитель обновлял и счётчики должностей.
   const { data: jobTitles } = useQuery({
-    queryKey: ['drivers', 'job-titles'],
+    queryKey: driverKeys.jobTitles(),
     queryFn: () => driversApi.jobTitles(),
   });
 
@@ -232,7 +232,7 @@ export function DriversTab() {
   };
 
   const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: ['drivers'] });
+    void qc.invalidateQueries({ queryKey: driverKeys.root });
     void qc.invalidateQueries({ queryKey: garageKeys.root });
   };
 
@@ -392,7 +392,7 @@ export function DriversTab() {
   const purge = usePurgeAction({
     subject: 'водителя',
     purge: driversApi.purge,
-    invalidate: [['drivers']],
+    invalidate: [driverKeys.root],
   });
 
   const confirmRemove = (d: DriverDto) =>

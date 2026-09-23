@@ -46,8 +46,9 @@ import {
   waybillFormLabels,
   waybillRequirement,
 } from '@technic/contracts';
-import { driversApi } from '@entities/driver';
-import { vehiclesApi } from '@entities/vehicle';
+import { driverKeys, driversApi } from '@entities/driver';
+import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
+import { routePrefillKeys, vehicleRequestKeys } from '@entities/vehicle-request';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { useAuth } from '../../auth/AuthContext';
@@ -230,12 +231,12 @@ export function VehicleAssignModal({
     sortOrder: 'asc',
   } as const;
   const ofKind = useQuery({
-    queryKey: ['vehicles', 'for-assignment', vehicleKindId],
+    queryKey: vehicleKeys.forAssignment(vehicleKindId),
     queryFn: () => vehiclesApi.list({ ...listParams, vehicleKindId: vehicleKindId! }),
     enabled: !!vehicleKindId,
   });
   const wholeFleet = useQuery({
-    queryKey: ['vehicles', 'for-assignment', 'all'],
+    queryKey: vehicleKeys.forAssignmentWholeFleet(),
     queryFn: () => vehiclesApi.list(listParams),
     enabled: !!request,
   });
@@ -498,7 +499,7 @@ export function VehicleAssignModal({
    * подбора был бы платой ни за что.
    */
   const { data: requestWaybills } = useQuery({
-    queryKey: ['vehicle-requests', targetId, 'waybills'],
+    queryKey: vehicleRequestKeys.waybills(targetId),
     queryFn: () => vehicleRequestsApi.waybills(targetId!),
     enabled: !!targetId && (correctionEnabled || reassignsMachinist),
   });
@@ -759,7 +760,7 @@ export function VehicleAssignModal({
    * единицы, поэтому список не пересобирается под каждый клик и не спорит с уже выбранным рейсом.
    */
   const { data: prefill } = useQuery({
-    queryKey: ['route-prefill', targetId, formTripDate],
+    queryKey: routePrefillKeys.onTripDate(targetId, formTripDate),
     queryFn: () => vehicleRequestsApi.routePrefill(targetId!, { date: formTripDate }),
     enabled: isFreight && !!targetId,
   });
@@ -856,7 +857,7 @@ export function VehicleAssignModal({
    */
   const driversNeeded = needsRoute || wantsDelivery;
   const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: ['drivers', 'available', vehicleId, driverDate, driverTrailer],
+    queryKey: driverKeys.available({ vehicleId, on: driverDate, withTrailer: driverTrailer }),
     queryFn: () =>
       driversApi.available({ vehicleId: vehicleId!, on: driverDate!, withTrailer: driverTrailer }),
     enabled: driversNeeded && !!vehicleId && !!driverDate,
@@ -871,7 +872,7 @@ export function VehicleAssignModal({
     isLinear,
   });
   const { data: machinists, isFetching: machinistsLoading } = useQuery({
-    queryKey: ['drivers', 'machinists'],
+    queryKey: driverKeys.machinistOptions(),
     queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortOrder: 'asc' }),
     enabled: needsMachinist,
   });

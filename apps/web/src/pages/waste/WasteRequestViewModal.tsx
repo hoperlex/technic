@@ -21,7 +21,7 @@ import {
   wasteRequestCommentLines,
   wasteSubjectLabel,
 } from '@technic/contracts';
-import { wasteRequestsApi } from '@entities/waste-request';
+import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { AddTicketsBlock } from '@features/waste-ticket-attach';
 import { TicketRecognitionBanner, WasteTicketsPanel } from '@features/waste-ticket-review';
 import { useAuth } from '../../auth/AuthContext';
@@ -271,7 +271,7 @@ export function WasteRequestViewModal({
   const ticketsRef = useScrollIntoViewWhen<HTMLDivElement>(focus === 'tickets', request?.id);
 
   const { data: history, isPending } = useQuery({
-    queryKey: ['waste-requests', request?.id, 'history'],
+    queryKey: wasteRequestKeys.history(request?.id),
     queryFn: () => wasteRequestsApi.history(request!.id),
     enabled: !!request,
   });

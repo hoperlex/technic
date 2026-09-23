@@ -13,8 +13,9 @@ import {
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { garageKeys } from '@entities/garage';
-import { vehicleRequestKeys, vehicleRequestsApi, waybillKeys } from '@entities/vehicle-request';
-import { driversApi } from '@entities/driver';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { waybillKeys } from '@entities/waybill';
+import { driverKeys, driversApi } from '@entities/driver';
 import { errorMessage } from '../../utils/format';
 import { assignmentSegments } from './assignmentTimeline';
 import { MachinistAnchorFields } from './MachinistFields';
@@ -43,8 +44,6 @@ import { ASSIGNMENT_PREVIEW_STALE } from './ReassignPreview';
  * утверждает факт о прошлом, за которым портал выпишет бланки строгой отчётности задним числом.
  * Не решает за сервер, нужна ли причина и хватает ли прав, — и то и другое приходит ответом.
  */
-
-const MACHINISTS_KEY = ['drivers', 'machinists'] as const;
 
 interface FormValues {
   tail?: TailResolution['kind'];
@@ -109,7 +108,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
   });
 
   const machinists = useQuery({
-    queryKey: MACHINISTS_KEY,
+    queryKey: driverKeys.machinistOptions(),
     queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortOrder: 'asc' }),
     enabled: open,
   });

@@ -9,7 +9,7 @@ import {
   routeDateMismatch,
   type VehicleRequestDto,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { formatDateOnly } from '../../utils/date';
 
 /**
@@ -93,7 +93,7 @@ export function VehicleBackdateFields({ record, next, effectiveDate }: Props) {
    * незачем.
    */
   const { data: shifts } = useQuery({
-    queryKey: ['vehicle-requests', 'shifts', record?.id],
+    queryKey: vehicleRequestKeys.shifts(record?.id),
     queryFn: () => vehicleRequestsApi.shifts(record!.id),
     enabled: !!record && !!term && (record.status === 'confirmed' || record.status === 'done'),
   });

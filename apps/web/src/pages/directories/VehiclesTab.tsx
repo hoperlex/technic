@@ -1,15 +1,5 @@
 import { useState } from 'react';
-import {
-  App,
-  Button,
-  Form,
-  Input,
-  InputNumber,
-  Segmented,
-  Select,
-  Space,
-  Tag,
-} from 'antd';
+import { App, Button, Form, Input, InputNumber, Segmented, Select, Space, Tag } from 'antd';
 import { DashboardOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -31,9 +21,9 @@ import {
   vehicleStatusLabels,
   vehicleTitle,
 } from '@technic/contracts';
-import { counterpartiesApi } from '@entities/counterparty';
-import { vehicleModelsApi, vehiclesApi } from '@entities/vehicle';
-import { vehicleTypesApi } from '@entities/vehicle-type';
+import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { vehicleKeys, vehicleModelKeys, vehicleModelsApi, vehiclesApi } from '@entities/vehicle';
+import { vehicleTypeKeys, vehicleTypesApi } from '@entities/vehicle-type';
 import {
   classificationKeyOf,
   useVehicleClassifications,
@@ -106,7 +96,7 @@ export function VehiclesTab() {
   const showRentalColumns = ownershipFilter !== 'own';
 
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicles', params],
+    queryKey: vehicleKeys.list(params),
     queryFn: () => vehiclesApi.list(params),
   });
 
@@ -116,7 +106,7 @@ export function VehiclesTab() {
   // Фильтр по типу остаётся типовым: в списке техники сравнивают весь тип целиком — сколько
   // автокранов и чьи они, — а не одну его категорию.
   const { data: typesData } = useQuery({
-    queryKey: ['vehicle-types', 'for-select'],
+    queryKey: vehicleTypeKeys.forSelect(),
     queryFn: () =>
       vehicleTypesApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
   });
@@ -126,7 +116,7 @@ export function VehiclesTab() {
 
   // Арендодатели — контрагенты роли «Арендодатель (ТС)»; учёток за ними нет, это чистый справочник.
   const { data: lessorsData, isLoading: lessorsLoading } = useQuery({
-    queryKey: ['counterparties', 'vehicle-lessors'],
+    queryKey: counterpartyKeys.activeVehicleLessorOptions(),
     queryFn: () =>
       counterpartiesApi.list({
         page: 1,
@@ -167,7 +157,7 @@ export function VehiclesTab() {
 
   // Марки/модели выбранного типа (могут быть пусты, пока не засидированы — ADR 0007).
   const { data: modelsData } = useQuery({
-    queryKey: ['vehicle-models', 'for-select', watchTypeId],
+    queryKey: vehicleModelKeys.forSelect(watchTypeId),
     queryFn: () =>
       vehicleModelsApi.list({
         page: 1,
@@ -269,7 +259,7 @@ export function VehiclesTab() {
       // отдельным тостом и дольше обычного — иначе о нём узнают из чужой жалобы. Ноль — молчим:
       // сообщать не о чем, а «отцеплено 0» читалось бы как сбой.
       if (unhitched) message.warning(unhitchedNotice(unhitched, 'этой правкой'), 8);
-      void qc.invalidateQueries({ queryKey: ['vehicles'] });
+      void qc.invalidateQueries({ queryKey: vehicleKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
       setOpen(false);
     },
@@ -283,7 +273,7 @@ export function VehiclesTab() {
       // Та же дверь §4.2.3, и молчать ей не разрешено тем более: архивная машина исчезает из
       // списков совсем — о сошедшем с неё прицепе сказать больше будет некому.
       if (unhitched) message.warning(unhitchedNotice(unhitched, 'уходом в архив'), 8);
-      void qc.invalidateQueries({ queryKey: ['vehicles'] });
+      void qc.invalidateQueries({ queryKey: vehicleKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -293,7 +283,7 @@ export function VehiclesTab() {
     mutationFn: (id: string) => vehiclesApi.restore(id),
     onSuccess: () => {
       message.success('Восстановлено');
-      void qc.invalidateQueries({ queryKey: ['vehicles'] });
+      void qc.invalidateQueries({ queryKey: vehicleKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -304,7 +294,7 @@ export function VehiclesTab() {
   const purge = usePurgeAction({
     subject: 'технику',
     purge: vehiclesApi.purge,
-    invalidate: [['vehicles']],
+    invalidate: [vehicleKeys.root],
   });
 
   const confirmDelete = (r: VehicleDto) =>

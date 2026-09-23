@@ -81,7 +81,10 @@ import {
   vehicleRequestTypeLabels,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
+import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '@entities/vehicle-request';
+import { vehicleRouteKeys } from '@entities/vehicle-route';
+import { waybillKeys } from '@entities/waybill';
 import { AutoSelect } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '@shared/ui';
@@ -332,7 +335,7 @@ export function VehicleRequestsTab() {
    * который в рейс не ставится, там был бы строкой, которую нельзя выбрать.
    */
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-requests', 'feed', params],
+    queryKey: vehicleRequestKeys.feed(params),
     queryFn: () => vehicleRequestsApi.feed(params),
   });
   const items: FeedRow[] = (data?.items ?? []).map((row) => ({ ...row, id: feedRowId(row) }));
@@ -351,7 +354,7 @@ export function VehicleRequestsTab() {
     vehicleId: params.vehicleId,
   };
   const { data: summary } = useQuery({
-    queryKey: ['vehicle-requests', 'summary', summaryQuery],
+    queryKey: vehicleRequestKeys.summary(summaryQuery),
     queryFn: () => vehicleRequestsApi.summary(summaryQuery),
   });
   const summaryItems = [
@@ -388,7 +391,7 @@ export function VehicleRequestsTab() {
    */
   const opened = useOpenedRecord<VehicleRequestDto>({
     active: useActiveTabKey() === 'requests',
-    queryKey: (id) => ['vehicle-requests', id],
+    queryKey: (id) => vehicleRequestKeys.detail(id),
     fetch: (id) => vehicleRequestsApi.get(id),
   });
   const viewed = viewRecord ?? opened.record;
@@ -901,15 +904,15 @@ export function VehicleRequestsTab() {
     },
     onSuccess: (saved) => {
       message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       // Изменившийся срок работ сводит ЭСМ-2 заново (`afterWorkPeriodChanged`), как и досрочное
       // завершение: правка заявки переписывает уже выписанные листы.
-      void qc.invalidateQueries({ queryKey: ['waybills'] });
+      void qc.invalidateQueries({ queryKey: waybillKeys.root });
       // Правка заявки поднимает версию её рейса (Р18): адреса, контакты, количество и состав ездок
       // попадают в документ, и карточка маршрута обязана перечитаться. Иначе открытый рейс
       // остаётся с прежней версией, и следующее действие из него получает 409 — данные сервер
       // защитит, но экран до обновления недостоверен.
-      void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+      void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
       setOpen(false);
       warnRouteDateMismatch(saved);
@@ -1073,7 +1076,7 @@ export function VehicleRequestsTab() {
    * Ключ тот же, что у карточки заявки: открытая перед этим карточка отдаёт ответ из кэша.
    */
   const { data: rollbackRelocations } = useQuery({
-    queryKey: ['vehicle-requests', rollbackTarget?.id, 'relocations'],
+    queryKey: vehicleRequestKeys.relocations(rollbackTarget?.id),
     queryFn: () => vehicleRequestsApi.relocations(rollbackTarget!.id),
     enabled: !!rollbackTarget && rollbackTarget.requestType === 'special_equipment',
   });
@@ -1125,11 +1128,11 @@ export function VehicleRequestsTab() {
     onSuccess: (_updated, v) => {
       message.success(v.correction ? 'Назначение исправлено задним числом' : 'Техника изменена');
       setReassignTarget(null);
-      void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       // Заявка переезжает в рейс новой машины — списки маршрутов после этого не те же.
-      void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+      void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
       // Смена машины переписывает и путевые листы: сервер сводит ЭСМ-2 рейса заново (ADR 0037).
-      void qc.invalidateQueries({ queryKey: ['waybills'] });
+      void qc.invalidateQueries({ queryKey: waybillKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
     /*
@@ -1173,14 +1176,14 @@ export function VehicleRequestsTab() {
       setRollbackTarget(null);
       setAssignTarget(null);
       setCompleteTarget(null);
-      void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       // Возврат в «Новую» снимает машину, а с ней уходят из рейсов и сама заявка, и её перегоны:
       // списки маршрутов после такого перехода уже не те. Инвалидация общая на все переходы —
       // рейсов касается и закрытие заявки, и её отмена.
-      void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+      void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
       // Перевод в работу выписывает путевой лист, а закрытие и отмена его переписывают (ADR 0037):
       // журнал листов после смены статуса показывает не то, что в базе.
-      void qc.invalidateQueries({ queryKey: ['waybills'] });
+      void qc.invalidateQueries({ queryKey: waybillKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -1225,7 +1228,7 @@ export function VehicleRequestsTab() {
       vehicleRequestsApi.setApproval(v.id, v.approved, v.version),
     onSuccess: (_res, v) => {
       message.success(v.approved ? 'Заявка завизирована' : 'Виза снята');
-      void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -1331,7 +1334,7 @@ export function VehicleRequestsTab() {
     mutationFn: (id: string) => vehicleRequestsApi.remove(id),
     onSuccess: (res) => {
       message.success(res.mode === 'hard' ? 'Удалено' : 'Перемещено в архив');
-      void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -1340,7 +1343,7 @@ export function VehicleRequestsTab() {
     mutationFn: (id: string) => vehicleRequestsApi.restore(id),
     onSuccess: () => {
       message.success('Восстановлено');
-      void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -2714,8 +2717,8 @@ export function VehicleRequestsTab() {
         onCancel={() => setMachinistTarget(null)}
         onApplied={() => {
           // Списки за окном устарели: у заявки другая версия, а у недель — другие номера бланков.
-          void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
-          void qc.invalidateQueries({ queryKey: ['waybills'] });
+          void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
+          void qc.invalidateQueries({ queryKey: waybillKeys.root });
         }}
       />
 
@@ -2726,8 +2729,8 @@ export function VehicleRequestsTab() {
         request={repairTarget}
         onCancel={() => setRepairTarget(null)}
         onRepaired={() => {
-          void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
-          void qc.invalidateQueries({ queryKey: ['waybills'] });
+          void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
+          void qc.invalidateQueries({ queryKey: waybillKeys.root });
         }}
       />
 

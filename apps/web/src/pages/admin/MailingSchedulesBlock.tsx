@@ -8,7 +8,7 @@ import {
   type MailingRunDto,
   type MailingScheduleDto,
 } from '@technic/contracts';
-import { mailingsApi } from '@entities/mailing';
+import { mailingRunKeys, mailingsApi, mailingScheduleKeys } from '@entities/mailing';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { actionsColumn, DataTable, RowActionButton, textColumn } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
@@ -77,8 +77,6 @@ function setupHint(r: MailingScheduleDto): string {
   return lines.join('\n');
 }
 
-const SCHEDULES_KEY = ['mailing-schedules'];
-const RUNS_KEY = ['mailing-runs'];
 /** Запусков за месяц набирается три десятка: страницы по 50 хватает, чтобы листать их редко. */
 const RUNS_PAGE_SIZE = 50;
 
@@ -89,7 +87,7 @@ export function MailingSchedulesBlock() {
   const canManage = can('mailings.manage');
 
   const { data: schedules, isFetching } = useQuery({
-    queryKey: SCHEDULES_KEY,
+    queryKey: mailingScheduleKeys.root,
     queryFn: () => mailingsApi.schedules(),
   });
   const rows = schedules ?? [];
@@ -102,7 +100,7 @@ export function MailingSchedulesBlock() {
   const [runsPageSize, setRunsPageSize] = useState(RUNS_PAGE_SIZE);
 
   const runsQuery = useQuery({
-    queryKey: [...RUNS_KEY, selectedId, runsPage, runsPageSize],
+    queryKey: mailingRunKeys.ofSchedule(selectedId, runsPage, runsPageSize),
     queryFn: () =>
       mailingsApi.runs({
         scheduleId: selectedId,
@@ -137,7 +135,7 @@ export function MailingSchedulesBlock() {
       }),
     onSuccess: () => {
       message.success('Готово');
-      void qc.invalidateQueries({ queryKey: SCHEDULES_KEY });
+      void qc.invalidateQueries({ queryKey: mailingScheduleKeys.root });
     },
     onError: (e) => message.error(saveErrorMessage(e)),
   });
@@ -149,7 +147,7 @@ export function MailingSchedulesBlock() {
       // История удалённого расписания уходит вместе с ним — закрываем её, иначе внизу осталась бы
       // таблица запусков того, чего больше нет.
       if (selectedId === id) setSelectedId(null);
-      void qc.invalidateQueries({ queryKey: SCHEDULES_KEY });
+      void qc.invalidateQueries({ queryKey: mailingScheduleKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -161,8 +159,8 @@ export function MailingSchedulesBlock() {
       // Итоги смотрят в истории — открываем её на этом расписании, чтобы не искать запуск руками.
       setSelectedId(id);
       setRunsPage(1);
-      void qc.invalidateQueries({ queryKey: RUNS_KEY });
-      void qc.invalidateQueries({ queryKey: SCHEDULES_KEY });
+      void qc.invalidateQueries({ queryKey: mailingRunKeys.root });
+      void qc.invalidateQueries({ queryKey: mailingScheduleKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -381,7 +379,7 @@ export function MailingSchedulesBlock() {
         editing={editing}
         onClose={() => setOpen(false)}
         onSaved={() => {
-          void qc.invalidateQueries({ queryKey: SCHEDULES_KEY });
+          void qc.invalidateQueries({ queryKey: mailingScheduleKeys.root });
           setOpen(false);
         }}
       />

@@ -4,7 +4,7 @@ import { PlusOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import type { SpecialEquipmentRequestDto } from '@technic/contracts';
 import { useWaybillFormFilter } from '@features/waybill-form-filter';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { DataTable, PageTableLayout, sortOptionsFrom, SummaryBar } from '@shared/ui';
 import { TabsExtra } from '../../components/PageTabs';
 import { useListParams } from '@shared/lib';
@@ -79,7 +79,7 @@ export function VehicleRequestsOnSiteTab() {
   const formFilter = useWaybillFormFilter({ forms: params.forms, onChange: applyFilter });
 
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-requests', 'on-site', params],
+    queryKey: vehicleRequestKeys.onSite(params),
     queryFn: () => vehicleRequestsApi.onSite(params),
   });
 
@@ -91,7 +91,7 @@ export function VehicleRequestsOnSiteTab() {
   // Итог считается по тем же фильтрам, что и таблица: сводка, отвечающая не про то, что человек
   // видит перед собой, вводит в заблуждение вернее, чем её отсутствие.
   const { data: summary } = useQuery({
-    queryKey: ['vehicle-requests', 'on-site-summary', params],
+    queryKey: vehicleRequestKeys.onSiteSummary(params),
     queryFn: () => vehicleRequestsApi.onSiteSummary(params),
   });
 

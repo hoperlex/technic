@@ -19,7 +19,7 @@ import {
   type VehicleRouteDto,
   WAYBILL_CORRECTION_DAYS,
 } from '@technic/contracts';
-import { driversApi } from '@entities/driver';
+import { driverKeys, driversApi } from '@entities/driver';
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
@@ -155,7 +155,7 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
    * сажает диспетчер.
    */
   const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: ['drivers', 'available', route?.vehicleId, on, withTrailer],
+    queryKey: driverKeys.available({ vehicleId: route?.vehicleId, on, withTrailer }),
     queryFn: () => driversApi.available({ vehicleId: route!.vehicleId, on: on!, withTrailer }),
     enabled: !!route && !!on,
   });
@@ -198,7 +198,7 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
       }),
     onSuccess: (updated) => {
       message.success('Маршрут изменён');
-      qc.setQueryData(['vehicle-routes', updated.id], updated);
+      qc.setQueryData(vehicleRouteKeys.detail(updated.id), updated);
       onSaved(updated);
     },
     onError: (e) => message.error(errorMessage(e)),

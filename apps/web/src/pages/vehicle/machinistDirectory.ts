@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
-import { driversApi } from '@entities/driver';
+import { driverKeys, driversApi } from '@entities/driver';
 
 /**
  * Справочные данные окна «Сменить машиниста»: история заявки, список выбора и имя человека по
@@ -11,12 +11,6 @@ import { driversApi } from '@entities/driver';
  * команды это правило читалось как деталь загрузки, а оно предметное: список выбора снятые
  * карточки прячет, история — нет.
  */
-
-/**
- * Справочник водителей целиком — тот же список, что у поля машиниста в окне назначения: в бланке
- * ЭСМ-2 нет ни СНИЛС, ни удостоверения, и отбирать по ним некого (ADR 0055).
- */
-const MACHINISTS_KEY = ['drivers', 'machinists'] as const;
 
 export function useMachinistDirectory(targetId: string | null, open: boolean) {
   const history = useQuery({
@@ -32,7 +26,7 @@ export function useMachinistDirectory(targetId: string | null, open: boolean) {
    * снятые карточки он прячет — предложить удалённого человека нельзя (ADR 0190).
    */
   const machinists = useQuery({
-    queryKey: MACHINISTS_KEY,
+    queryKey: driverKeys.machinistOptions(),
     queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortOrder: 'asc' }),
     enabled: open,
   });

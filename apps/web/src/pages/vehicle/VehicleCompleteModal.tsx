@@ -14,8 +14,9 @@ import {
   type VehicleWorkUnit,
 } from '@technic/contracts';
 import { garageKeys } from '@entities/garage';
-import { vehicleRequestKeys, vehicleRequestsApi, waybillKeys } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
+import { waybillKeys } from '@entities/waybill';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
@@ -130,7 +131,7 @@ export function VehicleCompleteModal({
   // нужна и полям — она же перечисляет дни без подписи, — поэтому спрашивается здесь и уходит вниз
   // одним ответом: два запроса за теми же строками разошлись бы между собой.
   const { data: shifts } = useQuery({
-    queryKey: ['vehicle-requests', 'shifts', request?.id],
+    queryKey: vehicleRequestKeys.shifts(request?.id),
     queryFn: () => vehicleRequestsApi.shifts(request!.id),
     enabled: !!request && request.requestType === 'special_equipment',
   });

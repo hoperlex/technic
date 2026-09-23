@@ -3,7 +3,7 @@ import { App, Button, Space, Table, Tag, Tooltip, Typography, type TableColumnsT
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DirectoryInfoDto } from '@technic/contracts';
-import { directoriesApi } from '@entities/directory-transfer';
+import { directoriesApi, directoryTransferKeys } from '@entities/directory-transfer';
 import { DirectoryImportModal } from './DirectoryImportModal';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
@@ -20,9 +20,6 @@ import { errorMessage } from '../../utils/format';
  * названием стоит счётчик строк, а он же и есть ответ на вопрос «тот ли файл я потом загружаю».
  */
 
-/** Ключ списка: рядом с названием справочника стоит счётчик строк, и после загрузки он другой. */
-const LIST_KEY = ['directories', 'transfer'];
-
 export function DirectoryTransferTab() {
   const { message } = App.useApp();
   const qc = useQueryClient();
@@ -31,8 +28,9 @@ export function DirectoryTransferTab() {
   /** Какой справочник грузим: он же заголовок окна и адрес запроса. */
   const [importing, setImporting] = useState<DirectoryInfoDto | null>(null);
 
+  // Список держит счётчики строк, и после загрузки они другие: отдельным ключом его и гасят.
   const { data, isFetching } = useQuery({
-    queryKey: LIST_KEY,
+    queryKey: directoryTransferKeys.list(),
     queryFn: () => directoriesApi.list(),
   });
 

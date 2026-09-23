@@ -9,8 +9,8 @@ import {
   waybillStatusColors,
   waybillStatusLabels,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
-import { vehicleRoutesApi } from '@entities/vehicle-route';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
 import { EntityLink } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
@@ -58,15 +58,15 @@ export function RequestRelocationsField({ request }: Props) {
 
   // Ключ тот же, что у карточки заявки: открытая перед этим карточка отдаёт ответ из кэша.
   const { data: relocations, isFetching } = useQuery({
-    queryKey: ['vehicle-requests', request.id, 'relocations'],
+    queryKey: vehicleRequestKeys.relocations(request.id),
     queryFn: () => vehicleRequestsApi.relocations(request.id),
   });
 
   const refresh = async () => {
     await Promise.all([
-      qc.invalidateQueries({ queryKey: ['vehicle-requests', request.id, 'relocations'] }),
-      qc.invalidateQueries({ queryKey: ['vehicle-routes'] }),
-      qc.invalidateQueries({ queryKey: ['vehicle-requests'] }),
+      qc.invalidateQueries({ queryKey: vehicleRequestKeys.relocations(request.id) }),
+      qc.invalidateQueries({ queryKey: vehicleRouteKeys.root }),
+      qc.invalidateQueries({ queryKey: vehicleRequestKeys.root }),
       qc.invalidateQueries({ queryKey: garageKeys.root }),
     ]);
   };

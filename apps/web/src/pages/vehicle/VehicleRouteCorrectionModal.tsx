@@ -6,8 +6,8 @@ import {
   isRelocationPurpose,
   type VehicleRouteDto,
 } from '@technic/contracts';
-import { sameTrailerGraphs, vehicleRoutesApi } from '@entities/vehicle-route';
-import { waybillsApi } from '@entities/waybill';
+import { sameTrailerGraphs, vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
+import { waybillKeys, waybillsApi } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
@@ -103,7 +103,7 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
 
   /** Последствия и блокировки — сервером, теми же правилами, которыми он их и исполнит. */
   const { data: preview, isFetching: previewLoading } = useQuery({
-    queryKey: ['vehicle-routes', route?.id, 'correction'],
+    queryKey: vehicleRouteKeys.correctionPreview(route?.id),
     queryFn: () => vehicleRoutesApi.correctionPreview(route!.id),
     enabled: !!route,
   });
@@ -114,7 +114,7 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
    * ответа на него хуже одного.
    */
   const { data: sheet } = useQuery({
-    queryKey: ['waybills', preview?.waybill?.id],
+    queryKey: waybillKeys.detail(preview?.waybill?.id),
     queryFn: () => waybillsApi.get(preview!.waybill!.id),
     enabled: !!preview?.waybill,
   });
@@ -140,10 +140,10 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
       }),
     onSuccess: async (updated) => {
       message.success(`Рейс исправлен, выписан лист ${updated.waybill?.number ?? ''}`);
-      qc.setQueryData(['vehicle-routes', updated.id], updated);
+      qc.setQueryData(vehicleRouteKeys.detail(updated.id), updated);
       // Журнал листов и гараж после коррекции показывают другое: там списанный номер, новый номер
       // и другая машина дня.
-      await qc.invalidateQueries({ queryKey: ['waybills'] });
+      await qc.invalidateQueries({ queryKey: waybillKeys.root });
       await qc.invalidateQueries({ queryKey: garageKeys.root });
       onSaved(updated);
     },

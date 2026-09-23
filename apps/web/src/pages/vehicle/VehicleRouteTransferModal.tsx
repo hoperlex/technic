@@ -11,8 +11,12 @@ import {
   vehicleSubstitutionRank,
   vehicleSubstitutionWarning,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
-import { vehicleRoutesApi } from '@entities/vehicle-route';
+import {
+  routePrefillKeys,
+  vehicleRequestKeys,
+  vehicleRequestsApi,
+} from '@entities/vehicle-request';
+import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
@@ -54,7 +58,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
    * до выбора техники.
    */
   const { data: prefill, isFetching } = useQuery({
-    queryKey: ['route-prefill', request?.id, 'by-kind'],
+    queryKey: routePrefillKeys.byKind(request?.id),
     queryFn: () => vehicleRequestsApi.routePrefill(request!.id),
     enabled: !!request,
   });
@@ -126,8 +130,8 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
       message.success(`${request!.displayNumber} перенесена в ${updated.displayNumber}`);
       form.resetFields();
       await Promise.all([
-        qc.invalidateQueries({ queryKey: ['vehicle-routes'] }),
-        qc.invalidateQueries({ queryKey: ['vehicle-requests'] }),
+        qc.invalidateQueries({ queryKey: vehicleRouteKeys.root }),
+        qc.invalidateQueries({ queryKey: vehicleRequestKeys.root }),
         qc.invalidateQueries({ queryKey: garageKeys.root }),
       ]);
       onDone(updated);

@@ -22,7 +22,7 @@ import {
   type UpdateVehicleSpecInput,
   type VehicleSpecDto,
 } from '@technic/contracts';
-import { vehicleSpecsApi } from '@entities/vehicle-type';
+import { vehicleSpecKeys, vehicleSpecsApi } from '@entities/vehicle-type';
 import { DataTable, type CardConfig, type TableChange } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -67,7 +67,7 @@ export function VehicleSpecsTab() {
   const purge = usePurgeAction({
     subject: 'ТТХ',
     purge: vehicleSpecsApi.purge,
-    invalidate: [['vehicle-specs']],
+    invalidate: [vehicleSpecKeys.root],
   });
 
   const [params, setParams] = useState<SpecParams>({
@@ -80,7 +80,7 @@ export function VehicleSpecsTab() {
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-specs', params],
+    queryKey: vehicleSpecKeys.list(params),
     queryFn: () => vehicleSpecsApi.list(params),
   });
 
@@ -124,7 +124,7 @@ export function VehicleSpecsTab() {
         : vehicleSpecsApi.update(arg.id, arg.body),
     onSuccess: () => {
       message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['vehicle-specs'] });
+      void qc.invalidateQueries({ queryKey: vehicleSpecKeys.root });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -167,7 +167,7 @@ export function VehicleSpecsTab() {
       vehicleSpecsApi.update(id, { isActive }),
     onSuccess: (_d, v) => {
       message.success(v.isActive ? 'ТТХ активирован' : 'ТТХ деактивирован');
-      void qc.invalidateQueries({ queryKey: ['vehicle-specs'] });
+      void qc.invalidateQueries({ queryKey: vehicleSpecKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });

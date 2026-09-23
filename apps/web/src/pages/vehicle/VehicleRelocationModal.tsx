@@ -9,8 +9,9 @@ import {
   type VehicleRequestDto,
   type VehicleRouteDto,
 } from '@technic/contracts';
-import { driversApi } from '@entities/driver';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { driverKeys, driversApi } from '@entities/driver';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
@@ -99,7 +100,7 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
   // Тот же отбор, что проверит сервер при выписке листа: у кого полный комплект документов на
   // день перегона. Дата именно перегона, а не начала работ: удостоверение может истечь между ними.
   const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: ['drivers', 'available', vehicleId, on, false],
+    queryKey: driverKeys.available({ vehicleId, on, withTrailer: false }),
     queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: on! }),
     enabled: !!request && !!vehicleId && !!on,
   });
@@ -129,8 +130,8 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
     onSuccess: async (route) => {
       message.success(`${routePurposeLabels[purpose]}: маршрут ${route.displayNumber}`);
       await Promise.all([
-        qc.invalidateQueries({ queryKey: ['vehicle-routes'] }),
-        qc.invalidateQueries({ queryKey: ['vehicle-requests'] }),
+        qc.invalidateQueries({ queryKey: vehicleRouteKeys.root }),
+        qc.invalidateQueries({ queryKey: vehicleRequestKeys.root }),
         qc.invalidateQueries({ queryKey: garageKeys.root }),
       ]);
       onDone(route);

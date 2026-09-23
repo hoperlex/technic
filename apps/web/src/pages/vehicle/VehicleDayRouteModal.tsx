@@ -16,7 +16,7 @@ import {
   type VehicleRequestDaysDto,
   vehicleLabel,
 } from '@technic/contracts';
-import { driversApi } from '@entities/driver';
+import { driverKeys, driversApi } from '@entities/driver';
 import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
 import {
@@ -50,15 +50,6 @@ import { BackdateReasonField } from './VehicleBackdateFields';
 
 /** Выбор «завести новый маршрут»: значением поля, как и в форме перевода в работу. */
 const NEW_ROUTE = 'new';
-
-/** Кто может сесть за эту машину в этот день — тем же ключом, что и при переводе в работу. */
-const driversKey = (vehicleId: string | undefined, date: string, withTrailer: boolean) => [
-  'drivers',
-  'available',
-  vehicleId,
-  date,
-  withTrailer,
-];
 
 interface Props {
   /**
@@ -228,7 +219,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
    * убирает: пробелы документов помечают строку и объясняются подписью под полем.
    */
   const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: driversKey(vehicleId, date, withTrailer),
+    queryKey: driverKeys.available({ vehicleId, on: date, withTrailer }),
     queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: date, withTrailer }),
     enabled: !!target && !!vehicleId && !joined,
   });

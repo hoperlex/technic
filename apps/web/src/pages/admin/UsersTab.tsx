@@ -43,8 +43,8 @@ import {
   type RejectUserBody,
   type UserAccountDto,
 } from '@technic/contracts';
-import { counterpartiesApi } from '@entities/counterparty';
-import { usersApi, type RestoreUserBody } from '@entities/user-account';
+import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { userAccountKeys, usersApi, type RestoreUserBody } from '@entities/user-account';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -153,13 +153,13 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
   const canRestore = can('archive.restore');
 
   const { data, isFetching } = useQuery({
-    queryKey: ['users', params],
+    queryKey: userAccountKeys.list(params),
     queryFn: () => usersApi.list(params),
   });
 
   // Счётчик нерассмотренных заявок: он же рисуется бейджем в меню администрирования.
   const { data: pending } = useQuery({
-    queryKey: ['users', 'pending-count'],
+    queryKey: userAccountKeys.pendingCount(),
     queryFn: () => usersApi.pendingCount(),
   });
 
@@ -179,7 +179,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
   // Учётку исполнителя привязываем к контрагенту, за которого в портале работают: оператор
   // вывоза и арендодатель ТС (ADR 0038). У подрядчика заявок нет ни в одном модуле.
   const { data: executors, isLoading: executorsLoading } = useQuery({
-    queryKey: ['counterparties', 'executors-for-select'],
+    queryKey: counterpartyKeys.activeOptions(),
     queryFn: () =>
       counterpartiesApi.list({
         page: 1,
@@ -259,7 +259,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     record,
     // Предложенные — третьим множеством гидратации (§3.6), а не присваиванием в поле.
     suggestedCodes: activation.grantCodes,
-    onReload: () => void qc.invalidateQueries({ queryKey: ['users'] }),
+    onReload: () => void qc.invalidateQueries({ queryKey: userAccountKeys.root }),
   });
 
   const [pwUser, setPwUser] = useState<UserAccountDto | null>(null);
@@ -372,7 +372,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     },
     onSuccess: ({ notified }) => {
       message.success(withMailOutcome('Сохранено', notified, 'пользователю отправлено письмо'));
-      void qc.invalidateQueries({ queryKey: ['users'] });
+      void qc.invalidateQueries({ queryKey: userAccountKeys.root });
       // Отделы — та же привязка, что держит признак руководителя (миграция 0149): отдел, убранный
       // из набора, уносит и руководство им. Справочник об этом не спрашивали, но показывает он то
       // же самое — и в карточке отдела, и подсказкой в этой форме. Ответное гашение стоит в
@@ -393,7 +393,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       // список перезапрашивается тут же.
       if (isApiError(e) && e.status === 409) {
         message.error('Заявку уже рассмотрел другой администратор — обновите список');
-        void qc.invalidateQueries({ queryKey: ['users'] });
+        void qc.invalidateQueries({ queryKey: userAccountKeys.root });
         return;
       }
       message.error(errorMessage(e));
@@ -404,7 +404,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     mutationFn: (r: UserAccountDto) => usersApi.update(r.id, { isActive: !r.isActive }),
     onSuccess: () => {
       message.success('Готово');
-      void qc.invalidateQueries({ queryKey: ['users'] });
+      void qc.invalidateQueries({ queryKey: userAccountKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -413,13 +413,13 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     mutationFn: (id: string) => usersApi.remove(id),
     onSuccess: () => {
       message.success('Пользователь удалён');
-      void qc.invalidateQueries({ queryKey: ['users'] });
+      void qc.invalidateQueries({ queryKey: userAccountKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
 
   /**
-   * Возврат из архива (ADR 0063). Гасится тот же ключ `['users']`, что и остальными действиями:
+   * Возврат из архива (ADR 0063). Гасится тот же корень учёток, что и остальными действиями:
    * им же накрыт счётчик заявок — восстановленный отказ возвращается в очередь, и бейдж обязан
    * это показать.
    */
@@ -428,7 +428,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     onSuccess: () => {
       message.success('Учётная запись восстановлена — она осталась неактивной');
       setRestoring(null);
-      void qc.invalidateQueries({ queryKey: ['users'] });
+      void qc.invalidateQueries({ queryKey: userAccountKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -447,7 +447,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
   const purge = usePurgeAction({
     subject: 'учётную запись',
     purge: usersApi.purge,
-    invalidate: [['users']],
+    invalidate: [userAccountKeys.root],
   });
 
   const [rejecting, setRejecting] = useState<UserAccountDto | null>(null);
@@ -456,7 +456,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     onSuccess: ({ notified }) => {
       message.success(withMailOutcome('Заявка отклонена', notified, 'заявителю отправлено письмо'));
       setRejecting(null);
-      void qc.invalidateQueries({ queryKey: ['users'] });
+      void qc.invalidateQueries({ queryKey: userAccountKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -475,7 +475,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
   // смене себе, и разбирать это посреди вкладки о ролях и области значит смешать два разговора.
   const changeEmail = useChangeEmailAction({
     currentUserId: currentUser?.id,
-    onChanged: () => void qc.invalidateQueries({ queryKey: ['users'] }),
+    onChanged: () => void qc.invalidateQueries({ queryKey: userAccountKeys.root }),
   });
 
   /**

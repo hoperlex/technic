@@ -14,6 +14,7 @@ import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { departmentsApi, departmentKeys } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';
+import { userAccountKeys } from '@entities/user-account';
 import { useDepartmentHeadOptions } from './departmentHeadOptions';
 
 /**
@@ -91,7 +92,7 @@ export function DepartmentsTab() {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: departmentKeys.root });
       // Та же привязка видна в карточке учётки — список пользователей тоже устарел.
-      void qc.invalidateQueries({ queryKey: ['users'] });
+      void qc.invalidateQueries({ queryKey: userAccountKeys.root });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),

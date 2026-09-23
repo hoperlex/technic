@@ -20,8 +20,8 @@ import {
   waybillStatusColors,
   waybillStatusLabels,
 } from '@technic/contracts';
-import { driversApi } from '@entities/driver';
-import { vehiclesApi } from '@entities/vehicle';
+import { driverKeys, driversApi } from '@entities/driver';
+import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
@@ -147,7 +147,7 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
     dateTo: range[1].format(DATE),
   };
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-routes', query],
+    queryKey: vehicleRouteKeys.list(query),
     queryFn: () => vehicleRoutesApi.list(query),
   });
 
@@ -596,7 +596,7 @@ function CreateRouteModal({
 
   // Рейс ведётся только на собственной технике: у арендной лист выписывает арендодатель.
   const { data: vehicles, isFetching } = useQuery({
-    queryKey: ['vehicles', 'for-routes'],
+    queryKey: vehicleKeys.forRoutes(),
     queryFn: () => vehiclesApi.list({ ownership: 'own', status: 'active', page: 1, pageSize: 500 }),
     enabled: open,
   });
@@ -622,7 +622,7 @@ function CreateRouteModal({
   // Прицеп в запросе — не «false на всякий случай», как было до Э4: с ним требование машины растёт
   // с C до CE, и зашитая ложь показывала бы годным того, кому сцепку не доверят (ADR 0055, 0064).
   const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: ['drivers', 'available', vehicleId, on, withTrailer],
+    queryKey: driverKeys.available({ vehicleId, on, withTrailer }),
     queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: on!, withTrailer }),
     enabled: open && !!vehicleId && !!on,
   });

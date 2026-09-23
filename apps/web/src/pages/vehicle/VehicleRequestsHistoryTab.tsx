@@ -29,7 +29,7 @@ import {
   type VehicleRequestType,
   workedAmountLabel,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { useRequestCustomerDefaults, useRequestCustomerFilter } from '@features/request-customer';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -128,14 +128,14 @@ export function VehicleRequestsHistoryTab() {
   const vehicleFilter = useVehicleFilter({ vehicleId: params.vehicleId, onChange: applyFilter });
 
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-requests', 'history', params],
+    queryKey: vehicleRequestKeys.closedList(params),
     queryFn: () => vehicleRequestsApi.historyList(params),
   });
 
   // Итог считается по тем же фильтрам, что и таблица: сводка, отвечающая не про то, что человек
   // видит перед собой, вводит в заблуждение вернее, чем её отсутствие.
   const { data: summary } = useQuery({
-    queryKey: ['vehicle-requests', 'history-summary', params],
+    queryKey: vehicleRequestKeys.closedSummary(params),
     queryFn: () => vehicleRequestsApi.historySummary(params),
   });
 
@@ -164,7 +164,7 @@ export function VehicleRequestsHistoryTab() {
    */
   const opened = useOpenedRecord<VehicleRequestDto>({
     active: useActiveTabKey() === 'history',
-    queryKey: (id) => ['vehicle-requests', id],
+    queryKey: (id) => vehicleRequestKeys.detail(id),
     fetch: (id) => vehicleRequestsApi.get(id),
   });
 

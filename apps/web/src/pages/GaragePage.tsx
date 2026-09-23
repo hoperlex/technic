@@ -3,6 +3,7 @@ import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useSearchParams } from 'react-router';
 import { useIsMobile } from '@shared/lib';
+import { garageKeys } from '@entities/garage';
 import { PageTabs } from '../components/PageTabs';
 import { GarageVehiclesTab } from './garage/GarageVehiclesTab';
 import { GarageDriversTab } from './garage/GarageDriversTab';
@@ -153,7 +154,7 @@ export function GaragePage() {
         activeKey={tab}
         onChange={(k) => go({ tab: k })}
         // Обе вкладки читают один и тот же день: переключение обновляет его данные целиком.
-        refreshQueryKey={['garage']}
+        refreshQueryKey={garageKeys.root}
         items={items}
       />
     </div>

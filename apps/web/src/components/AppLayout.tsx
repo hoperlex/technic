@@ -22,7 +22,7 @@ import {
   roleLabels,
   type PortalShellSectionId,
 } from '@technic/contracts';
-import { usersApi } from '@entities/user-account';
+import { userAccountKeys, usersApi } from '@entities/user-account';
 import { useAuth } from '../auth/AuthContext';
 import { UtilityMenu, useUtilityMenu } from '@widgets/utility-menu';
 import { useServiceWaitingCount } from '@features/service-waiting-badge';
@@ -79,7 +79,7 @@ export function AppLayout() {
    * единственный сигнал администратору, что кто-то ждёт активации (ADR 0034).
    */
   const { data: pendingUsers } = useQuery({
-    queryKey: ['users', 'pending-count'],
+    queryKey: userAccountKeys.pendingCount(),
     queryFn: () => usersApi.pendingCount(),
     enabled: can('users.manage'),
     staleTime: 60_000,

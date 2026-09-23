@@ -8,7 +8,7 @@ import {
   WAYBILL_CANCELLED_PRINT_MESSAGE,
   type WaybillStatus,
 } from '@technic/contracts';
-import { waybillsApi } from '@entities/waybill';
+import { waybillKeys, waybillsApi } from '@entities/waybill';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../utils/format';
 import { ViewModal } from '@shared/ui';
@@ -89,7 +89,7 @@ export function WaybillPrintModal({ target, onClose }: Props) {
         setUrl(revoked);
         // Отметка «печатали» считается по факту запроса бланка (ADR 0037): журнал показывает её
         // точкой на кнопке, и без обновления она появилась бы только при следующем заходе.
-        void qc.invalidateQueries({ queryKey: ['waybills'] });
+        void qc.invalidateQueries({ queryKey: waybillKeys.root });
       })
       .catch((e: unknown) => {
         // Окно закрыли — говорить уже некому и не о чем: отмена не ошибка.
@@ -256,7 +256,7 @@ export function ExportWaybillButton({
     setSaving(true);
     try {
       await waybillsApi.exportFile(waybillId, number);
-      void qc.invalidateQueries({ queryKey: ['waybills'] });
+      void qc.invalidateQueries({ queryKey: waybillKeys.root });
     } catch (e) {
       message.error(errorMessage(e));
     } finally {

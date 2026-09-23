@@ -12,7 +12,7 @@ import {
   vehicleRequestTypeColors,
   vehicleRequestTypeLabels,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { useRequestCustomerFilter } from '@features/request-customer';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -49,7 +49,7 @@ export function VehicleRequestsArchiveTab() {
   /** Удалённая заявка, названная в адресе: ссылки на неё ведут в архив, а не в список. */
   const opened = useOpenedRecord<VehicleRequestDto>({
     active: useActiveTabKey() === 'archive',
-    queryKey: (id) => ['vehicle-requests', id],
+    queryKey: (id) => vehicleRequestKeys.detail(id),
     fetch: (id) => vehicleRequestsApi.get(id),
   });
 
@@ -81,7 +81,7 @@ export function VehicleRequestsArchiveTab() {
   });
 
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-requests', 'archive', params],
+    queryKey: vehicleRequestKeys.deletedList(params),
     queryFn: () =>
       vehicleRequestsApi.list({
         ...params,
@@ -101,7 +101,7 @@ export function VehicleRequestsArchiveTab() {
     onSuccess: () => {
       message.success('Заявка восстановлена');
       setViewRecord(null);
-      void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -112,7 +112,7 @@ export function VehicleRequestsArchiveTab() {
   const purge = usePurgeAction({
     subject: 'заявку',
     purge: vehicleRequestsApi.purge,
-    invalidate: [['vehicle-requests'], WEEKLY_QUERY_KEY],
+    invalidate: [vehicleRequestKeys.root, WEEKLY_QUERY_KEY],
   });
 
   const removePermanently = (r: VehicleRequestDto) => {

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { FileDto } from '@technic/contracts';
 import { filesApi } from '@entities/file';
-import { waybillsApi } from '@entities/waybill';
+import { waybillKeys, waybillsApi } from '@entities/waybill';
 import { FILE_MAX_COUNT, FILE_MAX_SIZE } from '@shared/config';
 import { FileLinkList } from './FileLinks';
 import { errorMessage } from '../utils/format';
@@ -35,7 +35,7 @@ export function WaybillFilesCell({
   const [open, setOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
 
-  const refresh = () => qc.invalidateQueries({ queryKey: ['waybills'] });
+  const refresh = () => qc.invalidateQueries({ queryKey: waybillKeys.root });
 
   const detach = useMutation({
     mutationFn: (fileId: string) => waybillsApi.detachFile(waybillId, fileId),

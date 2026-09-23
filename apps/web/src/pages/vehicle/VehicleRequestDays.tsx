@@ -11,7 +11,8 @@ import {
   weeklyWeekLabel,
   weekStartKey,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { garageKeys } from '@entities/garage';
@@ -40,18 +41,6 @@ import { VehicleDayRouteModal } from './VehicleDayRouteModal';
  * Своим файлом, а не блоком карточки заявки: карточка стоит вплотную к своему лимиту длины, а
  * таблица с окном недели, тремя запросами и двумя мутациями — самостоятельная вещь.
  */
-
-/**
- * Ключ таблицы дней. Одной функцией на файл: его знают и запрос, и обе мутации, и разъехавшийся
- * ключ означал бы таблицу, не заметившую собственной правки.
- */
-const daysKey = (requestId: string) => ['vehicle-requests', requestId, 'days'];
-
-/** Список заявок: в строке видны рейс и машина дня, и после планирования они устарели. */
-const REQUESTS_KEY = ['vehicle-requests'];
-
-/** Список рейсов: день либо встал в чужой рейс, либо завёл новый — состав изменился у обоих. */
-const ROUTES_KEY = ['vehicle-routes'];
 
 interface Props {
   /** Заявка карточки. Дни ведут у любого заказа техники на объект; прочее объяснит `blocker`. */
@@ -94,7 +83,7 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
   const [picked, setPicked] = useState<string | null>(null);
 
   const { data, isPending } = useQuery({
-    queryKey: daysKey(request.id),
+    queryKey: vehicleRequestKeys.days(request.id),
     queryFn: () => vehicleRequestsApi.days(request.id),
   });
 
@@ -129,9 +118,11 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
    * нет, а перечёт свободных строк задания в соседних рейсах портал повторить не может.
    */
   const applyDays = (days: VehicleRequestDaysDto) => {
-    qc.setQueryData(daysKey(request.id), days);
-    void qc.invalidateQueries({ queryKey: REQUESTS_KEY });
-    void qc.invalidateQueries({ queryKey: ROUTES_KEY });
+    qc.setQueryData(vehicleRequestKeys.days(request.id), days);
+    // Список заявок: в строке видны рейс и машина дня, и после планирования они устарели.
+    void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
+    // Список рейсов: день либо встал в чужой рейс, либо завёл новый — состав изменился у обоих.
+    void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
     // Срез гаража: своих таблиц у него нет — день собирается сервером (ADR 0076), — а видно ли в
     // нём работу, решает состав рейса (ADR 0131). Поставленный день состав наполняет, снятый
     // опустошает: опустевший рейс без листа из среза исчезает вовсе, а машина и её водитель

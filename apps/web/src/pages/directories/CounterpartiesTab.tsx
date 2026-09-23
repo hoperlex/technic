@@ -13,7 +13,7 @@ import {
   counterpartyTypeColors,
   counterpartyTypeLabels,
 } from '@technic/contracts';
-import { counterpartiesApi } from '@entities/counterparty';
+import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 import {
   CounterpartyFormFields,
   type CounterpartyFormValues,
@@ -31,6 +31,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { objectsApi, objectKeys } from '@entities/object';
+import { vehicleKeys } from '@entities/vehicle';
 
 export function CounterpartiesTab() {
   const { message, modal } = App.useApp();
@@ -55,7 +56,7 @@ export function CounterpartiesTab() {
     },
   );
   const { data, isFetching } = useQuery({
-    queryKey: ['counterparties', params],
+    queryKey: counterpartyKeys.list(params),
     queryFn: () => counterpartiesApi.list(params),
   });
 
@@ -116,11 +117,11 @@ export function CounterpartiesTab() {
     },
     onSuccess: () => {
       message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['counterparties'] });
+      void qc.invalidateQueries({ queryKey: counterpartyKeys.root });
       // Привязка видна и в справочнике объектов — его список тоже устарел.
       void qc.invalidateQueries({ queryKey: objectKeys.root });
       // Деактивация арендодателя гасит его технику — список техники тоже устарел.
-      void qc.invalidateQueries({ queryKey: ['vehicles'] });
+      void qc.invalidateQueries({ queryKey: vehicleKeys.root });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -130,8 +131,8 @@ export function CounterpartiesTab() {
     mutationFn: (id: string) => counterpartiesApi.remove(id),
     onSuccess: () => {
       message.success('Контрагент удалён');
-      void qc.invalidateQueries({ queryKey: ['counterparties'] });
-      void qc.invalidateQueries({ queryKey: ['vehicles'] });
+      void qc.invalidateQueries({ queryKey: counterpartyKeys.root });
+      void qc.invalidateQueries({ queryKey: vehicleKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -140,8 +141,8 @@ export function CounterpartiesTab() {
     mutationFn: (id: string) => counterpartiesApi.restore(id),
     onSuccess: () => {
       message.success('Контрагент восстановлен');
-      void qc.invalidateQueries({ queryKey: ['counterparties'] });
-      void qc.invalidateQueries({ queryKey: ['vehicles'] });
+      void qc.invalidateQueries({ queryKey: counterpartyKeys.root });
+      void qc.invalidateQueries({ queryKey: vehicleKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -151,7 +152,7 @@ export function CounterpartiesTab() {
   const purge = usePurgeAction({
     subject: 'контрагента',
     purge: counterpartiesApi.purge,
-    invalidate: [['counterparties'], ['vehicles'], objectKeys.root],
+    invalidate: [counterpartyKeys.root, vehicleKeys.root, objectKeys.root],
   });
 
   const confirmDelete = (r: CounterpartyDto) =>

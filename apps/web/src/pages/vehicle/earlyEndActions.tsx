@@ -9,7 +9,8 @@ import {
   type VehicleRequestDto,
 } from '@technic/contracts';
 import { garageKeys } from '@entities/garage';
-import { vehicleRequestKeys, vehicleRequestsApi, waybillKeys } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { waybillKeys } from '@entities/waybill';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';

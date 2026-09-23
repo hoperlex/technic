@@ -8,7 +8,7 @@ import {
   type VehicleRequestEarlyEndDto,
   vehicleOptionLabel,
 } from '@technic/contracts';
-import { counterpartiesApi } from '@entities/counterparty';
+import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 import { driverKeys, driversApi } from '@entities/driver';
 import { filesApi } from '@entities/file';
 import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
@@ -107,7 +107,7 @@ export function useVehicleFilter({
   onChange: (patch: { vehicleId?: string }) => void;
 }): { controls: ReactNode; mobileFilter: FilterDefinition } {
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicles', 'all-options'],
+    queryKey: vehicleKeys.allOptions(),
     queryFn: () => vehiclesApi.list({ page: 1, pageSize: 500, sortBy: 'createdAt' }),
   });
   // Порядок — по подписи, а не по заведению в справочнике: машину ищут глазами по госномеру.
@@ -153,7 +153,7 @@ export function useVehicleFilter({
  */
 export function useLessorOptions() {
   const { data, isFetching } = useQuery({
-    queryKey: ['counterparties', 'vehicle-lessors', 'all'],
+    queryKey: counterpartyKeys.vehicleLessorOptions(),
     queryFn: () =>
       counterpartiesApi.list({
         page: 1,

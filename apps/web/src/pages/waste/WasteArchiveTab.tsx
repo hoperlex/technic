@@ -10,7 +10,7 @@ import {
   requestTypeLabels,
   type WasteRequestDto,
 } from '@technic/contracts';
-import { wasteRequestsApi } from '@entities/waste-request';
+import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
@@ -44,7 +44,7 @@ export function WasteArchiveTab() {
   /** Удалённая заявка, названная в адресе: ссылки на неё ведут в архив, а не в список заявок. */
   const opened = useOpenedRecord<WasteRequestDto>({
     active: useActiveTabKey() === 'archive',
-    queryKey: (id) => ['waste-requests', id],
+    queryKey: (id) => wasteRequestKeys.detail(id),
     fetch: (id) => wasteRequestsApi.get(id),
   });
 
@@ -59,7 +59,7 @@ export function WasteArchiveTab() {
   };
 
   const { data, isFetching } = useQuery({
-    queryKey: ['waste-requests', 'archive', params],
+    queryKey: wasteRequestKeys.archive(params),
     queryFn: () =>
       wasteRequestsApi.list({
         ...params,
@@ -71,7 +71,7 @@ export function WasteArchiveTab() {
   });
 
   /**
-   * Возврат из архива. Гасится корень `['waste-requests']`: восстановленная заявка исчезает
+   * Возврат из архива. Гасится корень `wasteRequestKeys.root`: восстановленная заявка исчезает
    * отсюда и появляется в рабочем списке — обновить нужно оба, а заодно и сводку над ним.
    */
   const restoreMut = useMutation({
@@ -79,7 +79,7 @@ export function WasteArchiveTab() {
     onSuccess: () => {
       message.success('Заявка восстановлена');
       setViewRecord(null);
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -89,7 +89,7 @@ export function WasteArchiveTab() {
   const purge = usePurgeAction({
     subject: 'заявку',
     purge: wasteRequestsApi.purge,
-    invalidate: [['waste-requests']],
+    invalidate: [wasteRequestKeys.root],
   });
 
   const removePermanently = (r: WasteRequestDto) => {

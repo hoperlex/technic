@@ -13,9 +13,10 @@ import {
   type VehicleRequestDto,
   weekStartKey,
 } from '@technic/contracts';
-import { driversApi } from '@entities/driver';
+import { driverKeys, driversApi } from '@entities/driver';
 import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { waybillKeys } from '@entities/waybill';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
@@ -193,7 +194,7 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
    */
   const periodsKey = periods.map((p) => `${p.from}..${p.to}`).join(',');
   const { data: drivers, isFetching: driversLoading } = useQuery({
-    queryKey: ['drivers', 'machinists', periodsKey],
+    queryKey: driverKeys.machinistsForPeriods(periodsKey),
     queryFn: () => driversApi.machinists(periods),
     enabled: !!request && periods.length > 0,
   });
@@ -235,10 +236,10 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
     onSuccess: async (updated) => {
       message.success('Лист ЭСМ-2 выписан');
       await Promise.all([
-        qc.invalidateQueries({ queryKey: ['vehicle-requests'] }),
+        qc.invalidateQueries({ queryKey: vehicleRequestKeys.root }),
         // Печатают лист из журнала, и идут туда сразу же следом за выпиской: непогашенный журнал
         // показал бы вчерашний список ещё десять секунд (`staleTime` приложения).
-        qc.invalidateQueries({ queryKey: ['waybills'] }),
+        qc.invalidateQueries({ queryKey: waybillKeys.root }),
       ]);
       onDone(updated);
     },

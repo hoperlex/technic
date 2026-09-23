@@ -34,7 +34,17 @@ import {
   type VehicleTypeDto,
   type VehicleTypeSpecDto,
 } from '@technic/contracts';
-import { vehicleCategoriesApi, vehicleSpecsApi, vehicleTypesApi } from '@entities/vehicle-type';
+import {
+  vehicleCategoriesApi,
+  vehicleCategoryKeys,
+  vehicleClassificationKeys,
+  vehicleSpecKeys,
+  vehicleSpecsApi,
+  vehicleTypeKeys,
+  vehicleTypeSpecKeys,
+  vehicleTypesApi,
+} from '@entities/vehicle-type';
+import { weeklyRequestKeys } from '@entities/weekly-request';
 import { AutoSelect, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
@@ -74,18 +84,18 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
   const purge = usePurgeAction({
     subject: 'тип',
     purge: vehicleTypesApi.purge,
-    invalidate: [['vehicle-classifications'], ['vehicle-types'], ['weekly-vehicle-requests']],
+    invalidate: [vehicleClassificationKeys.root, vehicleTypeKeys.root, weeklyRequestKeys.root],
   });
 
   const specsQuery = useQuery({
-    queryKey: ['vehicle-type-specs', typeId],
+    queryKey: vehicleTypeSpecKeys.byType(typeId),
     queryFn: () => vehicleTypesApi.specs(typeId),
     enabled: !!typeId,
   });
   const specs = specsQuery.data ?? [];
 
   const categoriesQuery = useQuery({
-    queryKey: ['vehicle-categories', typeId],
+    queryKey: vehicleCategoryKeys.byType(typeId),
     queryFn: () =>
       vehicleCategoriesApi.list({
         vehicleTypeId: typeId,
@@ -99,7 +109,7 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
 
   // Список для выбора при привязке: активные ТТХ, ещё не привязанные к этому типу.
   const allSpecsQuery = useQuery({
-    queryKey: ['vehicle-specs', 'active'],
+    queryKey: vehicleSpecKeys.active(),
     queryFn: () =>
       vehicleSpecsApi.list({
         isActive: 'true',
@@ -111,13 +121,13 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
   });
 
   const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: ['vehicle-type-specs', typeId] });
-    void qc.invalidateQueries({ queryKey: ['vehicle-categories'] });
-    void qc.invalidateQueries({ queryKey: ['vehicle-types'] });
-    void qc.invalidateQueries({ queryKey: ['vehicle-specs'] });
+    void qc.invalidateQueries({ queryKey: vehicleTypeSpecKeys.byType(typeId) });
+    void qc.invalidateQueries({ queryKey: vehicleCategoryKeys.root });
+    void qc.invalidateQueries({ queryKey: vehicleTypeKeys.root });
+    void qc.invalidateQueries({ queryKey: vehicleSpecKeys.root });
     // Классификатор (ADR 0028) собран из типов и категорий: заведённая категория меняет и то,
     // что показывает справочник, и то, что предлагают списки выбора.
-    void qc.invalidateQueries({ queryKey: ['vehicle-classifications'] });
+    void qc.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
   };
 
   // ── ТТХ типа ──
@@ -326,7 +336,7 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
       invalidate();
       // Тем же удалением сервер снимает строки неприменённых недельных заявок, заказывавших эту
       // категорию: состав недели уже другой (ADR 0085 Р15).
-      void qc.invalidateQueries({ queryKey: ['weekly-vehicle-requests'] });
+      void qc.invalidateQueries({ queryKey: weeklyRequestKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });

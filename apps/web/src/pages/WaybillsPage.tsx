@@ -12,7 +12,8 @@ import {
   type WaybillDto,
   waybillFormLabels,
 } from '@technic/contracts';
-import { waybillsApi } from '@entities/waybill';
+import { waybillKeys, waybillsApi } from '@entities/waybill';
+import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
 import { DataTable, listScopeKey, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import { useRouteModal } from '@features/route-modal';
@@ -126,7 +127,7 @@ export function WaybillsPage() {
     dateTo: range?.[1]?.format(DATE),
   };
   const { data, isFetching } = useQuery({
-    queryKey: ['waybills', query],
+    queryKey: waybillKeys.list(query),
     queryFn: () => waybillsApi.list(query),
   });
 
@@ -142,9 +143,9 @@ export function WaybillsPage() {
     }) => waybillsApi.cancel(id, { reason, operationId }),
     onSuccess: () => {
       message.success('Лист аннулирован');
-      void qc.invalidateQueries({ queryKey: ['waybills'] });
+      void qc.invalidateQueries({ queryKey: waybillKeys.root });
       // Аннулирование размораживает рейс: с выписанным листом его править нельзя, без него — можно.
-      void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+      void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),

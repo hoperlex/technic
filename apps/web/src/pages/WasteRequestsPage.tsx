@@ -56,9 +56,10 @@ import {
   wasteRequestCommentLines,
   wasteSubjectLabel,
 } from '@technic/contracts';
-import { counterpartiesApi } from '@entities/counterparty';
+import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 import { filesApi } from '@entities/file';
 import {
+  wasteRequestKeys,
   wasteRequestsApi,
   type WasteRequestPayload,
   type WasteRequestUpdatePayload,
@@ -242,7 +243,7 @@ export function WasteRequestsPage() {
         // Переключение вкладки руками закрывает карточку, открытую по ссылке: адрес остаётся с
         // одним параметром `tab`, а `open` из него уходит.
         onChange={(k) => setSp({ tab: k })}
-        refreshQueryKey={['waste-requests']}
+        refreshQueryKey={wasteRequestKeys.root}
         items={items}
       />
     </div>
@@ -327,14 +328,14 @@ function RequestsTab() {
     deliveryTo: dayEnd(params.deliveryTo),
   };
   const { data, isFetching } = useQuery({
-    queryKey: ['waste-requests', listQuery],
+    queryKey: wasteRequestKeys.list(listQuery),
     queryFn: () => wasteRequestsApi.list(listQuery),
   });
 
-  // Сводка в шапке: сколько заявок ждёт обработки и сколько в работе. Ключ начинается с
-  // 'waste-requests' — значит счётчики обновляются теми же инвалидациями, что и список.
+  // Сводка в шапке: сколько заявок ждёт обработки и сколько в работе. Ключ сидит под тем же
+  // корнем, что и список, — значит счётчики обновляются теми же инвалидациями.
   const { data: summary } = useQuery({
-    queryKey: ['waste-requests', 'summary', params.objectId],
+    queryKey: wasteRequestKeys.summary(params.objectId),
     queryFn: () => wasteRequestsApi.summary({ objectId: params.objectId }),
   });
   // Оператор заявки не обрабатывает — он их выполняет (ADR 0010): «Новых» у него не бывает,
@@ -406,7 +407,7 @@ function RequestsTab() {
   // Операторы вывоза — контрагенты соответствующего типа (ADR 0010). Оператору этот список
   // не нужен: исполнителя он не выбирает.
   const { data: operatorsData, isLoading: operatorsLoading } = useQuery({
-    queryKey: ['counterparties', 'operators-for-select'],
+    queryKey: counterpartyKeys.activeOperatorOptions(),
     queryFn: () =>
       counterpartiesApi.list({
         page: 1,
@@ -451,7 +452,7 @@ function RequestsTab() {
    */
   const opened = useOpenedRecord<WasteRequestDto>({
     active: useActiveTabKey() === 'requests',
-    queryKey: (id) => ['waste-requests', id],
+    queryKey: (id) => wasteRequestKeys.detail(id),
     fetch: (id) => wasteRequestsApi.get(id),
   });
   const viewed = viewRecord ?? opened.record;
@@ -549,7 +550,7 @@ function RequestsTab() {
   // Что и чьё стоит на объекте (ADR 0054): группы присутствия. Ими выбирают контейнер для
   // замены и снятия, ими же считается потолок количества и подсказка «кого звать».
   const { data: presentGroups, isLoading: presentLoading } = useQuery({
-    queryKey: ['waste-requests', 'present-groups', watchObjectId],
+    queryKey: wasteRequestKeys.presentGroups(watchObjectId),
     queryFn: () => wasteRequestsApi.presentGroups(watchObjectId),
     enabled: !!watchObjectId,
   });
@@ -802,7 +803,7 @@ function RequestsTab() {
     },
     onSuccess: () => {
       message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
       setOpen(false);
     },
     onError: (e) => {
@@ -834,7 +835,7 @@ function RequestsTab() {
   // Что стоит на площадке, которой касается назначение: подсказка «кого звать» и основание для
   // предупреждения о чужом контейнере (ADR 0054). Запрос тот же, что у формы, — и кэш общий.
   const { data: targetGroups } = useQuery({
-    queryKey: ['waste-requests', 'present-groups', operatorTarget?.objectId],
+    queryKey: wasteRequestKeys.presentGroups(operatorTarget?.objectId),
     queryFn: () => wasteRequestsApi.presentGroups(operatorTarget!.objectId),
     enabled: !!operatorTarget,
   });
@@ -871,11 +872,11 @@ function RequestsTab() {
       setCancelTarget(null);
       setRollbackTarget(null);
       setDoneTarget(null);
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
     onError: (e) => {
       message.error(errorMessage(e));
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
   });
 
@@ -900,11 +901,11 @@ function RequestsTab() {
     },
     onSuccess: () => {
       setOperatorTarget(null);
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
     onError: (e) => {
       message.error(errorMessage(e));
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
   });
 
@@ -955,11 +956,11 @@ function RequestsTab() {
     onSuccess: (updated) => {
       setViewRecord(updated);
       message.success('Комментарий сохранён');
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
     onError: (e) => {
       message.error(errorMessage(e));
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
   });
 
@@ -974,11 +975,11 @@ function RequestsTab() {
     onSuccess: (updated, v) => {
       setViewRecord(updated);
       message.success(v.ticketFileIds.length === 1 ? 'Талон приложен' : 'Талоны приложены');
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
     onError: (e) => {
       message.error(errorMessage(e));
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
   });
 
@@ -986,7 +987,7 @@ function RequestsTab() {
     mutationFn: (id: string) => wasteRequestsApi.remove(id),
     onSuccess: (res) => {
       message.success(res.mode === 'hard' ? 'Заявка удалена' : 'Заявка перемещена в архив');
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -995,7 +996,7 @@ function RequestsTab() {
     mutationFn: (id: string) => wasteRequestsApi.restore(id),
     onSuccess: () => {
       message.success('Заявка восстановлена');
-      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+      void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });

@@ -7,8 +7,9 @@ import { garageKeys } from '@entities/garage';
 import { ViewModal } from '@shared/ui';
 import { useOpenedRecord } from '@shared/lib';
 import { RouteModalContext, type RouteModalApi } from '@features/route-modal';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
-import { vehicleRoutesApi } from '@entities/vehicle-route';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
+import { waybillKeys } from '@entities/waybill';
 import { useAuth } from '../../auth/AuthContext';
 import { canOpenRoute } from '../../utils/links';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
@@ -67,7 +68,7 @@ export function RouteModalProvider(): ReactElement {
     param: ROUTE_PARAM,
     notFoundMessage: 'Маршрут не найден',
     // Ключ общий с карточкой: рейс спрашивается один раз на двоих, react-query их склеит.
-    queryKey: (id) => ['vehicle-routes', id],
+    queryKey: (id) => vehicleRouteKeys.detail(id),
     fetch: (id) => vehicleRoutesApi.get(id),
   });
 
@@ -80,7 +81,7 @@ export function RouteModalProvider(): ReactElement {
     active: mayOpenRequest,
     param: REQUEST_PARAM,
     notFoundMessage: 'Заявка не найдена или недоступна',
-    queryKey: (id) => ['vehicle-requests', id],
+    queryKey: (id) => vehicleRequestKeys.detail(id),
     fetch: (id) => vehicleRequestsApi.get(id),
   });
 
@@ -178,9 +179,9 @@ export function RouteModalProvider(): ReactElement {
    * гараж — потому что занятость машины и водителя на день это и есть рейсы.
    */
   const refresh = useCallback(() => {
-    void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
-    void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
-    void qc.invalidateQueries({ queryKey: ['waybills'] });
+    void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
+    void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
+    void qc.invalidateQueries({ queryKey: waybillKeys.root });
     void qc.invalidateQueries({ queryKey: garageKeys.root });
   }, [qc]);
 
@@ -376,7 +377,7 @@ function RequestViewById({
   onClose: () => void;
 }): ReactElement {
   const { data } = useQuery({
-    queryKey: ['vehicle-requests', requestId],
+    queryKey: vehicleRequestKeys.detail(requestId),
     queryFn: () => vehicleRequestsApi.get(requestId),
   });
 

@@ -33,7 +33,7 @@ import {
   waybillStatusLabels,
   weeklyWeekLabel,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { useAuth } from '../../auth/AuthContext';
 import { RequestTripsTable } from './RequestTripsTable';
 import { AddressCell } from '@entities/address';
@@ -277,7 +277,7 @@ export function VehicleRequestViewModal({
         })
       : null;
   const { data: history, isPending } = useQuery({
-    queryKey: ['vehicle-requests', request?.id, 'history'],
+    queryKey: vehicleRequestKeys.events(request?.id),
     queryFn: () => vehicleRequestsApi.history(request!.id),
     enabled: !!request,
   });
@@ -289,7 +289,7 @@ export function VehicleRequestViewModal({
    */
   const asksDriver = !!request?.assignment;
   const { data: driver, isPending: isDriverPending } = useQuery({
-    queryKey: ['vehicle-requests', request?.id, 'driver'],
+    queryKey: vehicleRequestKeys.driver(request?.id),
     queryFn: () => vehicleRequestsApi.driver(request!.id),
     enabled: asksDriver,
   });
@@ -305,7 +305,7 @@ export function VehicleRequestViewModal({
    */
   const asksWaybill = !!request && can('waybills.read');
   const { data: waybills } = useQuery({
-    queryKey: ['vehicle-requests', request?.id, 'waybills'],
+    queryKey: vehicleRequestKeys.waybills(request?.id),
     queryFn: () => vehicleRequestsApi.waybills(request!.id),
     enabled: asksWaybill,
   });
@@ -318,7 +318,7 @@ export function VehicleRequestViewModal({
   const asksRelocations =
     !!request && request.requestType === 'special_equipment' && can('waybills.read');
   const { data: relocations } = useQuery({
-    queryKey: ['vehicle-requests', request?.id, 'relocations'],
+    queryKey: vehicleRequestKeys.relocations(request?.id),
     queryFn: () => vehicleRequestsApi.relocations(request!.id),
     enabled: asksRelocations,
   });

@@ -29,7 +29,7 @@ import {
   wasteTypeDuplicateMessage,
   type WasteTypeDto,
 } from '@technic/contracts';
-import { counterpartiesApi } from '@entities/counterparty';
+import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 import { containerTypeOptionsQuery } from '@entities/container-type';
 import { wasteTariffKeys, wasteTariffsApi } from '@entities/waste-tariff';
 import { wasteTypeKeys, wasteTypeOptionsQuery, wasteTypesApi } from '@entities/waste-type';
@@ -134,7 +134,7 @@ export function WasteTariffsTab() {
     containerTypeOptionsQuery({ activeOnly: false }),
   );
   const { data: operatorsData, isLoading: operatorsLoading } = useQuery({
-    queryKey: ['counterparties', 'operators'],
+    queryKey: counterpartyKeys.operatorGridOptions(),
     queryFn: () => counterpartiesApi.list(operatorsQuery),
   });
 

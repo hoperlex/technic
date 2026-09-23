@@ -3,7 +3,7 @@ import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from
 import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateObjectInput, ObjectDto } from '@technic/contracts';
-import { counterpartiesApi } from '@entities/counterparty';
+import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 import { AddressField } from '@features/address-input';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -14,6 +14,7 @@ import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { objectsApi, objectKeys } from '@entities/object';
+import { weeklyRequestKeys } from '@entities/weekly-request';
 
 export function ObjectsTab() {
   const { message, modal } = App.useApp();
@@ -34,7 +35,7 @@ export function ObjectsTab() {
   // описывает сотрудничество с объектом, а не готовность взять заявку прямо сейчас, — иначе
   // уже заведённая привязка осталась бы в форме без наименования.
   const { data: operatorsData } = useQuery({
-    queryKey: ['counterparties', 'operators-for-objects'],
+    queryKey: counterpartyKeys.operatorOptions(),
     queryFn: () =>
       counterpartiesApi.list({
         page: 1,
@@ -76,7 +77,7 @@ export function ObjectsTab() {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: objectKeys.root });
       // Та же привязка видна в карточке контрагента — его список тоже устарел.
-      void qc.invalidateQueries({ queryKey: ['counterparties'] });
+      void qc.invalidateQueries({ queryKey: counterpartyKeys.root });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -97,7 +98,7 @@ export function ObjectsTab() {
   const purge = usePurgeAction({
     subject: 'объект',
     purge: objectsApi.purge,
-    invalidate: [objectKeys.root, ['weekly-vehicle-requests']],
+    invalidate: [objectKeys.root, weeklyRequestKeys.root],
   });
 
   const confirmDelete = (r: ObjectDto) =>

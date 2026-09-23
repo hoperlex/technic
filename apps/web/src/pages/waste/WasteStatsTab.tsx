@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import dayjs from 'dayjs';
 import { monthSchema, type WasteStatsRowDto } from '@technic/contracts';
-import { wasteRequestsApi } from '@entities/waste-request';
+import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
@@ -72,7 +72,7 @@ export function WasteStatsTab() {
   const [openObjectId, setOpenObjectId] = useState<string | null>(null);
 
   const { data, isFetching } = useQuery({
-    queryKey: ['waste-requests', 'stats', month],
+    queryKey: wasteRequestKeys.stats(month),
     queryFn: () => wasteRequestsApi.stats(month),
     /*
      * Только на своей вкладке: скрытая вкладка не размонтируется (`PageTabs`), и без этого условия

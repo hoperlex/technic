@@ -6,8 +6,9 @@ import type {
   VehicleRequestDayBatchResultDto,
   VehicleRequestDaysDto,
 } from '@technic/contracts';
-import { vehicleRequestKeys, vehicleRequestsApi, waybillKeys } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
+import { waybillKeys } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { errorMessage } from '../../utils/format';
 import type { DayBatchFormValues } from './DayBatchFields';

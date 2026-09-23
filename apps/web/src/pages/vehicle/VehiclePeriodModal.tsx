@@ -5,7 +5,8 @@ import type { PeriodPreviewDto, SpecialEquipmentRequestDto } from '@technic/cont
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { garageKeys } from '@entities/garage';
-import { vehicleRequestKeys, waybillKeys } from '@entities/vehicle-request';
+import { vehicleRequestKeys } from '@entities/vehicle-request';
+import { waybillKeys } from '@entities/waybill';
 import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '@entities/vehicle-request';
 import { calendarDaysLabel } from '../../utils/date';
 import { errorMessage } from '../../utils/format';

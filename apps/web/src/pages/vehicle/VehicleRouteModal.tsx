@@ -23,9 +23,9 @@ import {
   waybillStatusColors,
   waybillStatusLabels,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
-import { vehicleRoutesApi } from '@entities/vehicle-route';
-import { waybillsApi } from '@entities/waybill';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
+import { waybillKeys, waybillsApi } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { isApiError } from '@shared/api';
 import { AutoSelect, EntityLink, ViewModal } from '@shared/ui';
@@ -93,7 +93,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
    * тут мало: между правкой заявки и возвратом в карточку проходит секунда.
    */
   const { data: route, isFetching } = useQuery({
-    queryKey: ['vehicle-routes', routeId],
+    queryKey: vehicleRouteKeys.detail(routeId),
     queryFn: () => vehicleRoutesApi.get(routeId!),
     enabled: !!routeId,
     staleTime: 0,
@@ -119,7 +119,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
    * водителя, заявка исчезнуть не может.
    */
   const { data: candidates } = useQuery({
-    queryKey: ['vehicle-requests', 'for-route', route?.routeDate],
+    queryKey: vehicleRequestKeys.forRoute(route?.routeDate),
     queryFn: () =>
       vehicleRequestsApi.list({
         status: 'confirmed',
@@ -139,7 +139,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
   );
 
   const afterChange = (updated: VehicleRouteDto) => {
-    qc.setQueryData(['vehicle-routes', updated.id], updated);
+    qc.setQueryData(vehicleRouteKeys.detail(updated.id), updated);
     onChanged();
   };
 
@@ -155,7 +155,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
   const fail = (e: unknown) => {
     message.error(errorMessage(e));
     if (isApiError(e) && e.status === 409) {
-      void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+      void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
     }
   };
 
@@ -328,10 +328,10 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
     mutationFn: (reason: string) => waybillsApi.cancel(route!.waybill!.id, { reason }),
     onSuccess: async () => {
       message.success('Лист аннулирован — маршрут снова можно править');
-      await qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+      await qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
       // Аннулированный лист остаётся в журнале со своим состоянием: там его и ищут, чтобы понять,
       // почему номер бланка израсходован.
-      await qc.invalidateQueries({ queryKey: ['waybills'] });
+      await qc.invalidateQueries({ queryKey: waybillKeys.root });
       await qc.invalidateQueries({ queryKey: garageKeys.root });
       onChanged();
     },

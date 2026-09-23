@@ -24,7 +24,7 @@ import {
   type VehicleRequestShiftDto,
   workedAmountLabel,
 } from '@technic/contracts';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { ViewModal } from '@shared/ui';
 import { TimeInput } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
@@ -80,7 +80,7 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
 
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-requests', 'shifts', request?.id],
+    queryKey: vehicleRequestKeys.shifts(request?.id),
     queryFn: () => vehicleRequestsApi.shifts(request!.id),
     enabled: !!request,
   });
@@ -92,7 +92,7 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
   // Сводка в строке списка меняется вместе со сменами: от неё зависят и запрет закрытия, и
   // доступность смены машины — поэтому обновляются оба запроса, а не только таблица.
   const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+    void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
   };
 
   const saveMut = useMutation({
@@ -106,7 +106,7 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
       }),
     onSuccess: (res, v) => {
       message.success(`Смена за ${formatDateOnly(v.date)} сохранена`);
-      qc.setQueryData(['vehicle-requests', 'shifts', request!.id], res);
+      qc.setQueryData(vehicleRequestKeys.shifts(request!.id), res);
       setDrafts((d) => {
         const next = { ...d };
         delete next[v.date];
@@ -122,7 +122,7 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
       vehicleRequestsApi.approveShift(request!.id, v.date, v.approved),
     onSuccess: (res, v) => {
       message.success(v.approved ? 'Смена согласована' : 'Согласование снято');
-      qc.setQueryData(['vehicle-requests', 'shifts', request!.id], res);
+      qc.setQueryData(vehicleRequestKeys.shifts(request!.id), res);
       invalidate();
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -132,7 +132,7 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
     mutationFn: (date: string) => vehicleRequestsApi.deleteShift(request!.id, date),
     onSuccess: (res, date) => {
       message.success(`Смена за ${formatDateOnly(date)} удалена`);
-      qc.setQueryData(['vehicle-requests', 'shifts', request!.id], res);
+      qc.setQueryData(vehicleRequestKeys.shifts(request!.id), res);
       setDrafts((d) => {
         const next = { ...d };
         delete next[date];

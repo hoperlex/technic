@@ -1,7 +1,7 @@
 import { Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { type WasteRequestDto } from '@technic/contracts';
-import { wasteRequestsApi } from '@entities/waste-request';
+import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { EntityLink } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -25,7 +25,7 @@ export function OnSiteTab() {
   );
 
   const { data, isFetching } = useQuery({
-    queryKey: ['waste-requests', 'present', params],
+    queryKey: wasteRequestKeys.present(params),
     queryFn: () => wasteRequestsApi.present(params),
   });
 

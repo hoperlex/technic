@@ -30,7 +30,13 @@ import {
   type MailTestKind,
   roleLabels,
 } from '@technic/contracts';
-import { mailingsApi } from '@entities/mailing';
+import {
+  mailAccountKeys,
+  mailDigestSampleUserKeys,
+  mailingsApi,
+  mailTestDriverKeys,
+  mailTestRecipientKeys,
+} from '@entities/mailing';
 import { WindowFromField } from './MailingScheduleForm';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
@@ -77,7 +83,7 @@ export function MailDebugBlock() {
   const [kind, setKind] = useState<MailTestKind>(TEST_KINDS[0]!);
 
   const { data: recipients, isLoading } = useQuery({
-    queryKey: ['mail-test-recipients'],
+    queryKey: mailTestRecipientKeys.root,
     queryFn: () => mailingsApi.testRecipients(),
   });
 
@@ -85,7 +91,7 @@ export function MailDebugBlock() {
   // Ненастроенный канал остаётся в списке, но выбрать его нельзя: письмо легло бы в очередь и ждало
   // настройки, а человек считал бы, что проверил отправку.
   const { data: accounts } = useQuery({
-    queryKey: ['mail-accounts'],
+    queryKey: mailAccountKeys.root,
     queryFn: () => mailingsApi.accounts(),
   });
 
@@ -100,7 +106,7 @@ export function MailDebugBlock() {
   // Список водителей свой на каждую дату: рейсы есть не у всех и не каждый день. Без даты
   // спрашивать нечего, поэтому запрос ждёт её.
   const driversQuery = useQuery({
-    queryKey: ['mail-test-drivers', driversDate],
+    queryKey: mailTestDriverKeys.byDate(driversDate),
     queryFn: () => mailingsApi.driversWithRoutes(driversDate!),
     enabled: needsDriver && !!driversDate,
   });
@@ -110,7 +116,7 @@ export function MailDebugBlock() {
   // Список образцов от даты не зависит и меняется редко, поэтому спрашивается один раз на вид
   // письма, которому он вообще нужен.
   const sampleUsersQuery = useQuery({
-    queryKey: ['mail-digest-sample-users'],
+    queryKey: mailDigestSampleUserKeys.root,
     queryFn: () => mailingsApi.digestSampleUsers(),
     enabled: needsSampleUser,
   });

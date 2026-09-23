@@ -16,7 +16,7 @@ import {
   type UserDto,
 } from '@technic/contracts';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
-import { usersApi } from '@entities/user-account';
+import { userAccountKeys, usersApi } from '@entities/user-account';
 
 /**
  * Общие данные и вычисления вкладки «Права» (`docs/permissions-tab-plan.md`).
@@ -40,8 +40,6 @@ import { usersApi } from '@entities/user-account';
  * ролью» на одной странице списка не посчитать.
  */
 
-const ACCESS_USERS_KEY = ['users', 'access-overview'] as const;
-
 export interface AccessUsers {
   /**
    * Учётка вместе с привязанным работником: список `/users` отвечает `UserAccountDto`, и водителю
@@ -57,7 +55,7 @@ export interface AccessUsers {
 
 export function useAccessUsers(): AccessUsers {
   const { data, isFetching } = useQuery({
-    queryKey: ACCESS_USERS_KEY,
+    queryKey: userAccountKeys.accessOverview(),
     queryFn: () =>
       usersApi.list({
         page: 1,
