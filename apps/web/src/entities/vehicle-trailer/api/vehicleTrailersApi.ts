@@ -8,12 +8,12 @@ import type {
 import { apiFetch, type ListResult, type Query } from '@shared/api';
 
 /**
- * The trailer registry (plan `docs/vehicle-trailers-plan.md`). Its own handles, not a branch of
+ * The trailer registry (plan `docs/vehicle-trailers-plan.md`). Its own endpoints, not a branch of
  * the vehicle ones: a trailer does not live in `vehicles` and must not show up in the lists of
  * orderable equipment (Р7).
  *
  * Its own slice for the same reason the trailer has its own table: the registry owns both the
- * handles and the cache keys (`keys.ts` next door), and those two belong side by side.
+ * endpoints and the cache keys (`keys.ts` next door), and those two belong side by side.
  */
 export const vehicleTrailersApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleTrailerDto>>('/vehicle-trailers', { query: q }),

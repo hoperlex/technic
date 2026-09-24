@@ -4,9 +4,10 @@
  * Outside code takes `@entities/vehicle-type`; the slice's inner modules stay invisible, so it can
  * be rebuilt without touching consumers.
  *
- * Five handles in one slice is a stage-2 decision (docs/frontend-fsd-stage-2.md §2.1), and it does
- * not rest on brevity: the rule "no common type is derived once categories exist" is one rule for
- * all five, and a slice per handle would have needed same-layer neighbour imports from day one.
+ * Five endpoint groups in one slice is a stage-2 decision (docs/frontend-fsd-stage-2.md §2.1), and
+ * it does not rest on brevity: the rule "no common type is derived once categories exist" is one
+ * rule for all five, and a slice per group would have needed same-layer neighbour imports from day
+ * one.
  *
  * The machines themselves (`vehiclesApi`, `vehicleModelsApi`) do not belong here — that is the
  * neighbouring `vehicle` slice. The border follows the question: here we answer "what kinds of

@@ -11,7 +11,7 @@ import { PhoneInput } from './PhoneInput';
 type FieldName = string | (string | number)[];
 
 interface Props {
-  /** Имя поля ФИО в форме; телефон лежит в `phoneName`. */
+  /** Имя поля ФИО в форме; телефон лежит в `phoneField`. */
   nameField: FieldName;
   phoneField: FieldName;
   nameLabel: string;

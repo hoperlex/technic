@@ -14,8 +14,13 @@ import { useAuth } from '../auth/AuthContext';
  * этой оси передаёт туда `null` — «областью не ограничен», а не «объектов ноль»: пустой набор
  * оставил бы человека без единой строки в списке.
  *
- * Портал сужает выбор, но не решает доступ: чужой объект сервер всё равно отдаёт как 403
- * (`assertPlaceObjectScope`), а список — как пустую выборку (`placeObjectVisibilityWhere`).
+ * Портал сужает выбор, но не решает доступ: чужой объект сервер всё равно отдаёт как 403, а список
+ * — как пустую выборку. Замок у каждого модуля свой: заказ ТС закрывают `assertRequestScope` и
+ * `vehicleRequestVisibilityWhere`, заявку оргтехники — `assertServiceRequestVisible` и
+ * `serviceRequestVisibilityWhere`. Площадочную пару (`assertPlaceObjectScope`,
+ * `placeObjectVisibilityWhere`) сюда подставлять нельзя: она сторожит вторую ось
+ * (`usePlaceObjectScope`) и зовётся только из вывоза мусора и механизации, а этот хук спрашивают
+ * заказ ТС, оргтехника и гараж — имя существовало бы, но указывало на замок соседней двери.
  */
 export function useObjectScope() {
   const { user } = useAuth();
