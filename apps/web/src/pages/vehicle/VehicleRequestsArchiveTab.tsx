@@ -13,6 +13,7 @@ import {
   vehicleRequestTypeLabels,
 } from '@technic/contracts';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { weeklyRequestKeys } from '@entities/weekly-request';
 import { useRequestCustomerFilter } from '@features/request-customer';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -25,7 +26,6 @@ import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
-import { WEEKLY_QUERY_KEY } from './weeklyShared';
 
 /**
  * Архив заказов техники (ADR 0070) — удалённые заявки и два действия над ними: вернуть в работу
@@ -112,7 +112,7 @@ export function VehicleRequestsArchiveTab() {
   const purge = usePurgeAction({
     subject: 'заявку',
     purge: vehicleRequestsApi.purge,
-    invalidate: [vehicleRequestKeys.root, WEEKLY_QUERY_KEY],
+    invalidate: [vehicleRequestKeys.root, weeklyRequestKeys.root],
   });
 
   const removePermanently = (r: VehicleRequestDto) => {

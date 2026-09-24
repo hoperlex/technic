@@ -18,7 +18,7 @@ import {
   weeklyRequestStatusLabels,
   weeklyWeekLabel,
 } from '@technic/contracts';
-import { weeklyRequestKeys, weeklyRequestsApi } from '@entities/weekly-request';
+import { weeklyRequestsApi } from '@entities/weekly-request';
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { useAuth } from '../../auth/AuthContext';
@@ -36,13 +36,6 @@ import { useObjectOptions } from './shared';
  * `weeklyWeekLabel`): второй реализации на клиенте быть не должно — иначе портал обещал бы не те
  * листы, которые появятся.
  */
-
-/**
- * Ключ запросов раздела: им гасят недельные заявки там, где их задело действие над соседним
- * разделом. Значение берётся у фабрики слайса — собранный здесь заново, он разошёлся бы с ключами
- * самих запросов молча, и гашение било бы мимо кэша.
- */
-export const WEEKLY_QUERY_KEY = weeklyRequestKeys.root;
 
 /** Адрес страницы сборки и карточки — отдельной, а не модального окна (§5 шаг 1). */
 export const weeklyRequestPath = (id: string): string => `/vehicle-requests/weekly/${id}`;
