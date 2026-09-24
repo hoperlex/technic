@@ -319,15 +319,12 @@ export function DriverReadingsPage() {
        * впустую (Р2). Отказ чтения не глотается: отчёт со старой версией, оставшийся в кэше, дал бы
        * следующей отправке тот же 409 — снимок объявляется устаревшим, и чтение уйдёт само.
        */
-      if (failed.stale)
+      if (failed.stale) {
+        const reportKey = driverCabinetKeys.report(date);
         await gate
-          .run(async () =>
-            queryClient.setQueryData(
-              driverCabinetKeys.report(date),
-              await driverCabinetApi.report(date),
-            ),
-          )
-          .catch(() => queryClient.invalidateQueries({ queryKey: driverCabinetKeys.report(date) }));
+          .run(async () => queryClient.setQueryData(reportKey, await driverCabinetApi.report(date)))
+          .catch(() => queryClient.invalidateQueries({ queryKey: reportKey }));
+      }
     } finally {
       setSubmitting(false);
     }
