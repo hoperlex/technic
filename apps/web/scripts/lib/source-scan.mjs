@@ -27,10 +27,24 @@ export function walkTs(dir, files = []) {
  * the first one is switched off after its first false alarm, and then it guards nothing at all.
  *
  * Widening the detector means adding a name here, not loosening the shape test below.
+ *
+ * Two shapes stay out of reach whatever names are listed, and both fail towards silence, so a zero
+ * from this walk is a strong claim about literals at the call site and a weak one about the file as
+ * a whole. A key declared in one file and used in another is invisible to both halves: the
+ * declaring file holds no key position, and in the using file the name is an import this walk does
+ * not resolve. And a key spelled as a TYPE (`{ queryKey: ['drivers', string] }`) is a tuple type,
+ * not an array literal, so no amount of names in these sets will reach it.
  */
 
-/** Properties whose value is one key: `queryKey: [...]`, including `(id) => [...]` factories. */
-const KEY_PROPS = new Set(['queryKey']);
+/**
+ * Properties whose value is one key: `queryKey: [...]`, including `(id) => [...]` factories.
+ *
+ * `refreshQueryKey` is one of these: `PageTabs` takes it as a prop and hands it straight to
+ * `invalidateQueries` (`src/components/PageTabs.tsx`), so a literal written at any of its five call
+ * sites reaches the cache exactly like a `queryKey` does. It is listed here because a key position
+ * is defined by where the value ends up, not by the name the prop happens to carry.
+ */
+const KEY_PROPS = new Set(['queryKey', 'refreshQueryKey']);
 
 /**
  * Properties whose value is a LIST of keys. `usePurgeAction({ invalidate })` takes whole keys, not
