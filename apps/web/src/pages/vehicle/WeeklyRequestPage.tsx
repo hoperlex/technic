@@ -147,7 +147,6 @@ export function WeeklyRequestPage() {
     setSkipReasons(new Map());
   };
 
-  /** Общий разбор отказа: конфликт версий, исчезнувшая заявка и построчные причины 422. */
   const onError = (e: unknown) => {
     if (hasStatus(e, 409)) {
       void qc.invalidateQueries({ queryKey: weeklyRequestKeys.root });

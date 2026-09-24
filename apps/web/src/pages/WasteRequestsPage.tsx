@@ -685,7 +685,6 @@ function RequestsTab() {
     setOpen(true);
   };
 
-  // Смена типа заявки очищает поля предыдущего варианта.
   const handleRequestTypeChange = () => {
     form.setFieldsValue({
       containerTypeId: undefined,

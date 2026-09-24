@@ -88,11 +88,7 @@ import { waybillKeys } from '@entities/waybill';
 import { AutoSelect } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '@shared/ui';
-import { EntityLink } from '@shared/ui';
-import { ExpandableCell } from '@shared/ui';
-import { FormGrid } from '@shared/ui';
-import { FormModal } from '@shared/ui';
-import { PageTableLayout } from '@shared/ui';
+import { EntityLink, ExpandableCell, FormGrid, FormModal, PageTableLayout } from '@shared/ui';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
@@ -1094,12 +1090,12 @@ export function VehicleRequestsTab() {
    */
   const [machinistTarget, setMachinistTarget] = useState<SpecialEquipmentRequestDto | null>(null);
   const [repairTarget, setRepairTarget] = useState<SpecialEquipmentRequestDto | null>(null);
-  /** Заявка, которую переносят в другой рейс (ADR 0052); null — окно переноса закрыто. */
   /** Заведение перегона: заявка и что именно заводим — доставку или вывоз. */
   const [relocation, setRelocation] = useState<{
     request: VehicleRequestDto;
     purpose: 'delivery' | 'pickup';
   } | null>(null);
+  /** Заявка, которую переносят в другой рейс (ADR 0052); null — окно переноса закрыто. */
   const [transferTarget, setTransferTarget] = useState<VehicleRequestDto | null>(null);
   /** Заявка, по которой выписывают недельный ЭСМ-2 (ADR 0100); null — окно закрыто. */
   const [esm2Target, setEsm2Target] = useState<VehicleRequestDto | null>(null);

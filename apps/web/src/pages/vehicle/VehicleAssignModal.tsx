@@ -1152,7 +1152,6 @@ export function VehicleAssignModal({
   /** Второй шаг — какой бы он ни был: дальше окно говорит не про подбор, а про цену действия. */
   const secondStep = !!step || !!consequences;
 
-  /** Заголовок шага: на втором окно говорит уже не про подбор, а про последствия. */
   const stepTitle = step
     ? 'Последствия возврата'
     : consequences
