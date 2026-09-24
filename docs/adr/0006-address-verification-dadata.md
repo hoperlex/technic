@@ -4,8 +4,8 @@
 - Основано на: [ADR 0004](0004-vehicle-requests.md) (модуль «Заказ ТС»)
 - Связано: `packages/contracts/src/vehicle-requests.ts` (`addressMetaSchema`,
   `verifiedAddressMetaSchema`, `isAddressVerified`), `apps/api/drizzle/0013_freight_address_meta.sql`,
-  `apps/api/src/db/schema.ts`, `apps/api/src/routes/vehicle-requests.ts`, `apps/web/src/api/dadata.ts`,
-  `apps/web/src/pages/vehicle/AddressAutoComplete.tsx`,
+  `apps/api/src/db/schema.ts`, `apps/api/src/routes/vehicle-requests.ts`,
+  `apps/web/src/shared/api/dadata.ts`, `apps/web/src/entities/address/ui/AddressAutoComplete.tsx`,
   `apps/web/src/pages/vehicle/FreightTransportRequestsTab.tsx`
 
 > **Пересмотр решения.** Первая редакция ADR принимала «мягкую» модель (`manual` разрешён,
