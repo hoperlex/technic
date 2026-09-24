@@ -13,7 +13,7 @@ import { MOSCOW_TZ } from '@shared/config';
 import { useAuth } from '../../auth/AuthContext';
 import { PortalLogo } from '../../components/PortalLogo';
 import { UserAvatar } from '../../components/UserAvatar';
-import { cabinetRead, driverCabinetApi, driverKeys } from './api';
+import { cabinetRead, driverCabinetApi, driverCabinetKeys } from './api';
 import { clearUserDrafts, pruneDrafts } from './draftStore';
 import { DRIVER_FONT_SCALE, DRIVER_NUMBER_SCALE, driverTheme } from './theme';
 
@@ -172,7 +172,7 @@ const PENDING_DAYS_CHECKED = 3;
  * строку вовсе.
  *
  * Ключи запросов те же, что у экрана дня, и это единственное, чем строка обновляется: отчёт живёт
- * в `driverKeys.report(date)` одним кэшем (Р8), и успешная отправка кладёт свой ответ прямо туда.
+ * в `driverCabinetKeys.report(date)` одним кэшем (Р8), и успешная отправка кладёт свой ответ прямо туда.
  * Прежде день переставал считаться незакрытым от корневой инвалидации — то есть от лишнего чтения
  * того, что портал уже получил ответом; теперь строка пересчитывается по тому же снимку, который
  * показывает форма, и разъехаться им нечем.
@@ -203,14 +203,14 @@ function usePendingDays(today: string, shown: string): string[] {
       : cabinetRead;
   const reports = useQueries({
     queries: dates.map((date) => ({
-      queryKey: driverKeys.report(date),
+      queryKey: driverCabinetKeys.report(date),
       queryFn: () => driverCabinetApi.report(date),
       ...read(date),
     })),
   });
   const assignments = useQueries({
     queries: dates.map((date) => ({
-      queryKey: driverKeys.assignment(date),
+      queryKey: driverCabinetKeys.assignment(date),
       queryFn: () => driverCabinetApi.assignment(date),
       ...read(date),
     })),

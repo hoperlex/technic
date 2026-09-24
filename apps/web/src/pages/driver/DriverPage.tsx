@@ -7,7 +7,7 @@ import type {
   DriverAssignmentPoint,
 } from '@technic/contracts';
 import { errorMessage } from '@shared/lib';
-import { cabinetRead, driverCabinetApi, driverKeys } from './api';
+import { cabinetRead, driverCabinetApi, driverCabinetKeys } from './api';
 import { useDriverDate } from './DriverLayout';
 
 /**
@@ -200,7 +200,7 @@ export function DriverPage() {
    * `open`, ни `submit` отсюда не уходят, а задание — чтение, которому нечего затирать.
    */
   const { data, isPending, error } = useQuery({
-    queryKey: driverKeys.assignment(date),
+    queryKey: driverCabinetKeys.assignment(date),
     queryFn: () => driverCabinetApi.assignment(date),
     ...cabinetRead,
   });

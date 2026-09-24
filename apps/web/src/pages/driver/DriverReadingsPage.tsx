@@ -12,7 +12,7 @@ import { type TransferMode } from './DriverOrphanBlock';
 import { useDriverDate } from './DriverLayout';
 import { useAssignment, useAutoOpen, useDayState, usePreviousOf, useReadGate } from './dayState';
 import { useKeyboardInset } from './keyboardInset';
-import { driverCabinetApi, driverKeys, newIdempotencyKey, type DraftItem } from './api';
+import { driverCabinetApi, driverCabinetKeys, newIdempotencyKey, type DraftItem } from './api';
 import {
   bodyFingerprint,
   draftPrefix,
@@ -60,7 +60,7 @@ import { driverContentStyle } from './theme';
  * 3. **Что рисовать и звать ли `open`, решает матрица дня** ([dayState.ts](dayState.ts)), а не
  *    разметка. Там же живёт протокол открытия — задержка, учёт открытых дат, гейт чтений (Р7, Р8):
  *    страница им пользуется, а не владеет.
- * 4. **Отчёт живёт в кэше запроса, а не в состоянии страницы** (Р8): `driverKeys.report(date)` —
+ * 4. **Отчёт живёт в кэше запроса, а не в состоянии страницы** (Р8): `driverCabinetKeys.report(date)` —
  *    единственное место, куда ложатся и ответ `open`, и ответ `submit`. Своя копия рядом
  *    разъехалась бы с ним на первом обновлении по возврату, а строка долга в шапке читает кэш.
  */
@@ -290,7 +290,7 @@ export function DriverReadingsPage() {
       // записью влезло бы чтение «до отправки», то есть гарантированный 409 на следующей.
       await gate.run(async () => {
         const dto = await driverCabinetApi.submit(date, { version, items }, key);
-        queryClient.setQueryData(driverKeys.report(date), dto);
+        queryClient.setQueryData(driverCabinetKeys.report(date), dto);
       });
       /*
        * Страница после отправки живёт дальше — и обязана сама стать «днём после отправки» (Р12):
@@ -305,7 +305,7 @@ export function DriverReadingsPage() {
       // Точечно, а не корневой инвалидацией (Р8): корень унёс бы с собой и `report(date)` — тот
       // самый ключ, куда только что лёг ответ отправки. Заданию перечитаться есть зачем — в нём
       // живут предыдущие снимки счётчиков, а отправка их и меняет.
-      await queryClient.invalidateQueries({ queryKey: driverKeys.assignment(date) });
+      await queryClient.invalidateQueries({ queryKey: driverCabinetKeys.assignment(date) });
       if (stillShown()) message.success('Показания переданы');
     } catch (e) {
       // Исход, названный самим API, закрывает попытку; обрыв и отказ шлюза оставляют её `pending`:
@@ -322,9 +322,12 @@ export function DriverReadingsPage() {
       if (failed.stale)
         await gate
           .run(async () =>
-            queryClient.setQueryData(driverKeys.report(date), await driverCabinetApi.report(date)),
+            queryClient.setQueryData(
+              driverCabinetKeys.report(date),
+              await driverCabinetApi.report(date),
+            ),
           )
-          .catch(() => queryClient.invalidateQueries({ queryKey: driverKeys.report(date) }));
+          .catch(() => queryClient.invalidateQueries({ queryKey: driverCabinetKeys.report(date) }));
     } finally {
       setSubmitting(false);
     }

@@ -20,7 +20,13 @@ import { apiFetch, createQueryKeys } from '@shared/api';
 
 // ── Запросы ──
 
-export const driverKeys = createQueryKeys('driver-cabinet', {
+/**
+ * Cabinet keys. Named apart from the `driverKeys` of `@entities/driver` on purpose: that slice
+ * answers "which drivers exist" for the directory, this root holds one person's own day. While
+ * both were spelled `driverKeys`, a reader of any single use site could not tell which root was
+ * meant, and the roots are not interchangeable — invalidating one leaves the other stale.
+ */
+export const driverCabinetKeys = createQueryKeys('driver-cabinet', {
   /** Задание на дату: ключ по дате — переключение стрелками не перезапрашивает уже показанный день. */
   assignment: (date: string) => ['assignment', date],
   /**

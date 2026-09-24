@@ -8,7 +8,7 @@ import {
   type ReportItemDto,
 } from '@technic/contracts';
 import { errorMessage } from '@shared/lib';
-import { cabinetRead, driverCabinetApi, driverKeys } from './api';
+import { cabinetRead, driverCabinetApi, driverCabinetKeys } from './api';
 import { sourceKey } from './readingsDraft';
 
 /**
@@ -162,7 +162,7 @@ function stateOf(
  */
 export function useAssignment(date: string, enabled: boolean) {
   return useQuery({
-    queryKey: driverKeys.assignment(date),
+    queryKey: driverCabinetKeys.assignment(date),
     queryFn: () => driverCabinetApi.assignment(date),
     ...cabinetRead,
     enabled,
@@ -189,7 +189,7 @@ export function usePreviousOf(
  * половине ответов, а показать «Передать показания» над днём, который уже приняли, значило бы
  * предложить правку там, где её не примут.
  *
- * Отчёт спрашивается по ключу `driverKeys.report(date)` — тому единственному, где отчёт и живёт
+ * Отчёт спрашивается по ключу `driverCabinetKeys.report(date)` — тому единственному, где отчёт и живёт
  * (Р8). Ответы `open` и `submit` кладутся туда же, поэтому матрица считается по свежему отчёту, а
  * не по снимку «до»: второй кэш разъехался бы с этим, и первой это увидела бы строка долга в шапке.
  *
@@ -218,7 +218,7 @@ export function useDayState(
   enabled: boolean,
 ): DayState | null {
   const stored = useQuery({
-    queryKey: driverKeys.report(date),
+    queryKey: driverCabinetKeys.report(date),
     queryFn: () => driverCabinetApi.report(date),
     ...cabinetRead,
     enabled,
@@ -280,7 +280,7 @@ export function useReadGate(date: string): ReadGate {
     async <T>(work: () => Promise<T>): Promise<T> => {
       setFlights((count) => count + 1);
       try {
-        await queryClient.cancelQueries({ queryKey: driverKeys.report(date) });
+        await queryClient.cancelQueries({ queryKey: driverCabinetKeys.report(date) });
         return await work();
       } finally {
         setFlights((count) => count - 1);
@@ -348,7 +348,7 @@ export function useAutoOpen(
           // Учёт и кэш обновляются внутри полёта, до того как гейт откроется: между открытием гейта
           // и записью успело бы влезть фоновое чтение — то самое, ради которого гейт и заводился.
           opened.current.set(date, sources);
-          queryClient.setQueryData(driverKeys.report(date), dto);
+          queryClient.setQueryData(driverCabinetKeys.report(date), dto);
         })
         .catch((e: unknown) => setFailure({ date, message: errorMessage(e) }));
     }, OPEN_DELAY_MS);
