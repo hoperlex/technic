@@ -35,8 +35,8 @@ function isApiErrorShape(error: unknown): error is ApiErrorShape {
  * такими путями, какими их прислал сервер.
  *
  * Подписи сюда не передаются и передаваться не должны: по этим путям форма ищет свои поля
- * (`utils/formErrors`), сопоставляя их с именами `Form.Item`. Подставленная подпись сопоставление
- * сломала бы — ошибка перестала бы показываться на поле и осталась бы только тостом.
+ * (`shared/ui/formBlockers.ts`), сопоставляя их с именами `Form.Item`. Подставленная подпись
+ * сопоставление сломала бы — ошибка перестала бы показываться на поле и осталась бы только тостом.
  */
 export function errorFields(error: unknown): Record<string, string> | null {
   return isApiErrorShape(error) && error.fields && Object.keys(error.fields).length > 0

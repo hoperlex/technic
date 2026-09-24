@@ -1,20 +1,22 @@
 /**
- * Классификатор техники: чем машина является, прежде чем стать конкретной машиной, — вид, тип,
- * ТТХ типа, категория и сведённый из них список позиций (ADR 0016, ADR 0028). Снаружи берут
- * `@entities/vehicle-type` — внутренние модули слайса не видны, и перестроить его можно, не трогая
- * потребителей.
+ * The equipment classifier: what a machine IS before it becomes a particular machine — kind, type,
+ * the type's specs, category and the position list assembled from them (ADR 0016, ADR 0028).
+ * Outside code takes `@entities/vehicle-type`; the slice's inner modules stay invisible, so it can
+ * be rebuilt without touching consumers.
  *
- * Пять ручек одним слайсом — решение этапа 2 (docs/frontend-fsd-stage-2.md §2.1), и держится оно
- * не на краткости: правило «общий тип при наличии категорий не выводится» одно на все пять, и
- * слайс на каждую ручку потребовал бы импортов соседа по слою с первого дня.
+ * Five handles in one slice is a stage-2 decision (docs/frontend-fsd-stage-2.md §2.1), and it does
+ * not rest on brevity: the rule "no common type is derived once categories exist" is one rule for
+ * all five, and a slice per handle would have needed same-layer neighbour imports from day one.
  *
- * Сами машины (`vehiclesApi`, `vehicleModelsApi`) сюда не входят: это соседний слайс `vehicle`.
- * Граница проходит по вопросу — здесь отвечают «что за техника бывает», там «какая техника есть».
+ * The machines themselves (`vehiclesApi`, `vehicleModelsApi`) do not belong here — that is the
+ * neighbouring `vehicle` slice. The border follows the question: here we answer "what kinds of
+ * equipment exist", there "which equipment we have".
  *
- * `useVehicleClassifications` план кладёт сюда же, но хук остался в `hooks/`: он живёт в списке
- * отложенного (`apps/web/scripts/check-stage2-layout.mjs`) вместе с `useVehicleClassificationFilter`,
- * и переезжать им вдвоём — фильтр построен на том же наборе позиций. До переезда ключ
- * `vehicleClassificationKeys.forSelect` потребителей не имеет: хук собирает его литералом.
+ * The plan puts `useVehicleClassifications` here too, but the hook stayed in `hooks/`: it sits in
+ * the deferred list (`apps/web/scripts/check-stage2-layout.mjs`) next to
+ * `useVehicleClassificationFilter`, and the two have to move together — the filter is built on the
+ * same position set. The hook already takes its key from this slice
+ * (`vehicleClassificationKeys.forSelect`), so the move stays a file move and shifts no cache cell.
  */
 export {
   vehicleCategoriesApi,

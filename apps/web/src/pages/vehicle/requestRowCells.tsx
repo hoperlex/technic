@@ -133,7 +133,7 @@ export function ApprovalCell({
   approved: boolean;
   approvedByName: string | null;
   approvedAt: string | null;
-  /** Право визы у роли; чужой объект сервер отсечёт сам (assertObjectScope). */
+  /** Право визы у роли; чужой объект сервер отсечёт сам (assertRequestScope). */
   canApprove: boolean;
   pending: boolean;
   onChange: (approved: boolean) => void;

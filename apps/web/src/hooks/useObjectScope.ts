@@ -15,7 +15,7 @@ import { useAuth } from '../auth/AuthContext';
  * оставил бы человека без единой строки в списке.
  *
  * Портал сужает выбор, но не решает доступ: чужой объект сервер всё равно отдаёт как 403
- * (`assertObjectScope`), а список — как пустую выборку (`requestVisibilityWhere`).
+ * (`assertPlaceObjectScope`), а список — как пустую выборку (`placeObjectVisibilityWhere`).
  */
 export function useObjectScope() {
   const { user } = useAuth();

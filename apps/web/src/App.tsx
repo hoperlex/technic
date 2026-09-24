@@ -60,8 +60,8 @@ const SECTION_PAGES: Record<PortalShellSectionId, ReactNode> = {
   'vehicle-requests': <VehicleRequestsPage />,
   waybills: <WaybillsPage />,
   garage: <GaragePage />,
-  // «Механизация» открывается списком заявок на аренду: вкладка присутствия «В аренде» (Р13
-  // плана `docs/mechanization-module-plan.md`) приходит следующим этапом и живёт внутри раздела.
+  // "Механизация" opens with the rental request list; presence ("В аренде"), the closed-request
+  // journal and the archive are tabs inside that page, not sections of their own.
   mechanization: <MechRequestsPage />,
   // «Орг.техника» (ADR 0085) открывается заявками на обслуживание; парк техники — вкладка внутри.
   'office-equipment': <ServiceRequestsPage />,

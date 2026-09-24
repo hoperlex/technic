@@ -75,8 +75,11 @@ export function AppLayout() {
     });
 
   /**
-   * Заявки на регистрацию никуда не уведомляют — почты у портала нет. Бейдж в меню и есть
-   * единственный сигнал администратору, что кто-то ждёт активации (ADR 0034).
+   * A new registration request still notifies nobody. The portal does have mail (ADR 0087), but
+   * only for the DECISION on a request — `registration_approved` / `registration_rejected` — and
+   * it goes to the applicant; no mail kind says "someone is waiting for activation". So this badge
+   * remains the only signal an administrator gets, and removing it would make pending requests
+   * visible only to whoever happens to open the users tab (ADR 0034).
    */
   const { data: pendingUsers } = useQuery({
     queryKey: userAccountKeys.pendingCount(),

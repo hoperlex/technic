@@ -153,7 +153,10 @@ export function GaragePage() {
       <PageTabs
         activeKey={tab}
         onChange={(k) => go({ tab: k })}
-        // Обе вкладки читают один и тот же день: переключение обновляет его данные целиком.
+        // The root covers the day slice only — "Техника" and "Водители"; "Показания" and
+        // "Автозапчасти" ask their own keys about their own periods and are untouched by this.
+        // Switching tabs means "show me how it is now": a hidden tab stays mounted, so without
+        // this the day would come back from cache as it was before the neighbour's work.
         refreshQueryKey={garageKeys.root}
         items={items}
       />
