@@ -28,17 +28,13 @@ import {
 } from './rows';
 
 /**
- * Чья дверь открыла редактор (план
- * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р2).
+ * The entry intent selects both the presentation and the command semantics.
  *
- * Не украшение и не вид показа: от неё зависит РУЧКА, в которую уйдёт состав, а последствия у двух
- * ручек разные. `estimate` — исполнитель правит свой черновик: состав заменяется, номер ревизии и
- * подписи не трогаются. `breakdown` — «Ведение» переносит присланный подрядчиком перечень в графы,
- * и по СОГЛАСОВАННОЙ ревизии это переиздание документа: номер поднимается, подпись снимается,
- * итог пересчитывается, заявка ждёт новой подписи (ADR 0133 — подписанное содержимое под прежней
- * ревизией не меняется).
+ * `estimate` keeps the legacy row editor for existing flows and tests. `breakdown` lets the
+ * coordinator reissue a document revision as item rows. `document` is the direct file flow with
+ * normal approval, while `work_done` adds the service-company exemption and continues to the act.
  */
-export type EstimateEditorIntent = 'estimate' | 'breakdown';
+export type EstimateEditorIntent = 'estimate' | 'breakdown' | 'document' | 'work_done';
 
 /**
  * Всё, чем живёт окно объёма работ: строки, режим ввода, версия заявки и четыре пути отправки —
@@ -62,6 +58,7 @@ export function useEstimateEditor({
   actionRow,
   assignment,
   onClose,
+  onDocumentSubmitted,
 }: {
   /** `null` — окно закрыто; состояние всё равно живёт, чтобы не пересоздавать хук на открытии. */
   request: ServiceRequestDto | null;
@@ -84,10 +81,14 @@ export function useEstimateEditor({
   actionRow?: ServiceActionRequest;
   assignment?: ServiceExecutorAssignment;
   onClose: () => void;
+  /** Keeps the modal open for a following workflow step, such as attaching the closing act. */
+  onDocumentSubmitted?: (request: ServiceRequestDto) => void;
 }) {
   const { message } = App.useApp();
   const qc = useQueryClient();
   const breakdown = intent === 'breakdown';
+  const directDocument = intent === 'document' || intent === 'work_done';
+  const workDone = intent === 'work_done';
 
   const [rows, setRows] = useState<EstimateRow[]>([]);
   /*
@@ -140,9 +141,11 @@ export function useEstimateEditor({
     breakdown,
     actionRow,
     assignment,
+    forceDocument: directDocument,
+    forceExemption: workDone,
   });
   const { exemptionBody } = presentation;
-  /** Успех называет заявление, а не его исход: исход считает сервер, и портал его ещё не видел. */
+  // The server decides whether the declaration is applied; this message only confirms its input.
   const submittedMessage = () =>
     presentation.exemption
       ? 'Объём работ предъявлен вместе с заявлением об освобождении от подписи'
@@ -240,8 +243,17 @@ export function useEstimateEditor({
     onSuccess: (result) => {
       setVersion(result.version);
       refresh();
-      message.success(submittedMessage());
-      onClose();
+      const automaticallyApproved =
+        result.approval?.revision === result.estimateRevision && result.approval.source === 'auto';
+      message.success(
+        workDone && automaticallyApproved
+          ? 'Работы отмечены выполненными, документ согласован автоматически'
+          : directDocument
+            ? 'Документ выполненных работ передан на согласование'
+            : submittedMessage(),
+      );
+      if (onDocumentSubmitted) onDocumentSubmitted(result);
+      else onClose();
     },
     onError: (e) => message.error(errorMessage(e)),
   });

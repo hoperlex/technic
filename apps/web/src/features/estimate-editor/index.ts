@@ -19,5 +19,10 @@
  * в базе это одинаковые строки, признака формата там нет. Дверей тоже две: исполнитель правит свой
  * черновик, «Ведение» раскладывает присланный перечень по графам (`intent="breakdown"`), и по
  * согласованной ревизии вторая ручка переиздаёт документ — заявка уходит за новой подписью.
+ *
+ * ADR 0208 makes the external executor's normal door document-only. The service-company operator
+ * enters through `work_done`, which submits the existing exemption declaration and keeps the modal
+ * open for the closing act; named executors use `document` and retain human approval.
  */
 export { EstimateEditorModal } from './ui/EstimateEditorModal';
+export type { EstimateEditorIntent } from './model/useEstimateEditor';

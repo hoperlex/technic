@@ -40,7 +40,9 @@ import { RequestsTab } from '../src/pages/service/RequestsTab';
 /** «Ведение»: распределяет, согласует и принимает — у него и живут пункты назначения. */
 const OPERATOR: AuthUser = serviceOperator();
 /** Подрядчик: закрытие работ — его ход, и планка закрывающего документа стоит именно ему. */
-const EXECUTOR: AuthUser = serviceExecutor();
+const EXECUTOR: AuthUser = serviceExecutor({
+  features: ['service_estimate_document_mode', 'service_estimate_exemption'],
+});
 
 /** Текст, которым портал объясняет закрытую дверь «Закрыть работы» (Н8, `serviceRequestMenu`). */
 const CLOSING_DOCUMENT_REASON = /Сначала подшейте акт/;
@@ -280,7 +282,7 @@ describe('до меню действий добираются с клавиат�
     const menu = await openedMenu();
 
     // Пункты доступны как пункты меню и по своим именам, а не «по третьему `div` сверху».
-    expect(within(menu).getByRole('menuitem', { name: 'Объём работ' })).toBeDefined();
+    expect(within(menu).getByRole('menuitem', { name: 'Работы выполнены' })).toBeDefined();
     expect(within(menu).getByRole('menuitem', { name: 'Обсуждение' })).toBeDefined();
 
     /*
@@ -318,7 +320,7 @@ describe('до меню действий добираются с клавиат�
     pressKey(trigger, ' ');
 
     const menu = await openedMenu();
-    expect(within(menu).getByRole('menuitem', { name: 'Объём работ' })).toBeDefined();
+    expect(within(menu).getByRole('menuitem', { name: 'Работы выполнены' })).toBeDefined();
   });
 
   it('меню карточки открывается с клавиатуры и закрывается Escape', async () => {
@@ -330,7 +332,7 @@ describe('до меню действий добираются с клавиат�
     pressKey(trigger, 'Enter');
 
     const menu = await openedMenu();
-    expect(within(menu).getByRole('menuitem', { name: 'Объём работ' })).toBeDefined();
+    expect(within(menu).getByRole('menuitem', { name: 'Работы выполнены' })).toBeDefined();
 
     fireEvent.keyDown(window, { key: 'Escape', code: 'Escape', keyCode: 27 });
     await expectMenuClosed();
@@ -532,7 +534,7 @@ describe('на телефоне действия открываются шито
     const labels = [...sheet.querySelectorAll<HTMLElement>('.action-sheet button')].map(
       (el) => el.textContent,
     );
-    expect(labels).toContain('Объём работ');
+    expect(labels).toContain('Работы выполнены');
     // «Закрыть работы» здесь выключено: у заявки нет закрывающего документа. Подпись поэтому не
     // равна названию — в доступное имя кнопки входит ещё и причина запрета, спрятанная от глаз
     // (иначе на телефоне она доставалась бы только подсказке, которая по касанию не открывается).
@@ -556,7 +558,7 @@ describe('на телефоне действия открываются шито
     });
 
     const item = [...sheet.querySelectorAll<HTMLElement>('button')].find(
-      (el) => el.textContent === 'Объём работ',
+      (el) => el.textContent === 'Работы выполнены',
     )!;
     fireEvent.click(item);
 
@@ -564,7 +566,7 @@ describe('на телефоне действия открываются шито
     await waitFor(() =>
       expect(
         [...document.querySelectorAll('.ant-drawer-title')].map((el) => el.textContent),
-      ).toContain('Объём работ заявки СО-14'),
+      ).toContain('Работы выполнены СО-14'),
     );
     /*
      * А карточка заявки — нет. Шит рисуется порталом, но событие идёт по дереву React, то есть

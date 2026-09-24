@@ -142,7 +142,7 @@ const ENTRIES: Record<string, EntryRow> = {
   // Отказ статуса не меняет (Р7): заявка остаётся «Новой», меняется состав исполнителей, — и в
   // списке переходов ему делать нечего.
   decline: { label: 'Отказаться от заявки' },
-  estimate: { label: 'Объём работ' },
+  estimate: { label: 'Работы выполнены' },
   approve: {
     label: 'Согласовать объём работ',
     hiddenInCard: true,
@@ -296,7 +296,9 @@ const SUBJECTS: AuthUser[] = [
     }),
   ),
   serviceOperator(),
-  serviceExecutor(),
+  serviceExecutor({
+    features: ['service_estimate_document_mode', 'service_estimate_exemption'],
+  }),
   serviceInHouseExecutor(),
   serviceCustomer(),
   authUser({ role: 'admin' }),

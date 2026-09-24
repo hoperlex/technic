@@ -5,7 +5,7 @@ import type { AuthUser, ModuleMailOutcome, ServiceRequestDto } from '@technic/co
 import { serviceRequestKeys } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { AssignServiceModal } from '@features/assign-service';
-import { EstimateEditorModal } from '@features/estimate-editor';
+import { EstimateEditorModal, type EstimateEditorIntent } from '@features/estimate-editor';
 import { EstimateApprovalModal } from '@features/estimate-approval';
 import { ServiceChatModal } from '@features/service-chat';
 import { ServiceCompleteModal } from '@features/service-complete';
@@ -27,8 +27,8 @@ import { errorMessage } from '../../utils/format';
 /** Чем открывается каждое окно заявки: заявкой, а у двойных — ещё и стороной действия. */
 export interface ServiceRequestModals {
   assign: (request: ServiceRequestDto) => void;
-  /** Редактор объёма работ исполнителя: строки, сумма и предъявление (Р8). */
-  estimate: (request: ServiceRequestDto) => void;
+  /** Completed-work document flow or the coordinator's item breakdown. */
+  estimate: (request: ServiceRequestDto, intent?: EstimateEditorIntent) => void;
   /**
    * Отказ по объёму работ (Р8, Р12): причина, решение и галочка замены. Согласие сюда не заходит —
    * содержания у него нет, и оно идёт подтверждением прямо из набора действий.
@@ -100,7 +100,6 @@ export interface ServiceMenuContext {
   };
 }
 
-
 /**
  * Окна заявки на обслуживание: какое открыто и чем.
  *
@@ -123,7 +122,10 @@ export function useServiceRequestModals(): ServiceRequestModals {
   const { user } = useAuth();
 
   const [assignTarget, setAssignTarget] = useState<ServiceRequestDto | null>(null);
-  const [estimateTarget, setEstimateTarget] = useState<ServiceRequestDto | null>(null);
+  const [estimateTarget, setEstimateTarget] = useState<{
+    request: ServiceRequestDto;
+    intent: EstimateEditorIntent;
+  } | null>(null);
   const [approvalTarget, setApprovalTarget] = useState<ServiceRequestDto | null>(null);
   const [disputeTarget, setDisputeTarget] = useState<ServiceRequestDto | null>(null);
   const [consumablesTarget, setConsumablesTarget] = useState<ServiceRequestDto | null>(null);
@@ -176,7 +178,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
 
   return {
     assign: setAssignTarget,
-    estimate: setEstimateTarget,
+    estimate: (request, intent = 'document') => setEstimateTarget({ request, intent }),
     approval: setApprovalTarget,
     disputeResolution: setDisputeTarget,
     consumables: setConsumablesTarget,
@@ -211,9 +213,10 @@ export function useServiceRequestModals(): ServiceRequestModals {
             действий молча и ровно на тех полях, по которым сервер отвечает 403. */}
         {estimateTarget && (
           <EstimateEditorModal
-            request={estimateTarget}
-            actionRow={serviceActionRow(estimateTarget)}
-            assignment={serviceExecutorAssignment(estimateTarget, user)}
+            request={estimateTarget.request}
+            intent={estimateTarget.intent}
+            actionRow={serviceActionRow(estimateTarget.request)}
+            assignment={serviceExecutorAssignment(estimateTarget.request, user)}
             onClose={() => setEstimateTarget(null)}
           />
         )}

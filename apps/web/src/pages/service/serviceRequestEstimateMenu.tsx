@@ -1,5 +1,6 @@
 import {
   AuditOutlined,
+  CheckCircleOutlined,
   CloseSquareOutlined,
   FileTextOutlined,
   FlagOutlined,
@@ -8,10 +9,13 @@ import {
 } from '@ant-design/icons';
 import {
   canApproveServiceEstimate,
+  canDeclareExemption,
   canOpenServiceEstimateDispute,
   canReopenServiceEstimate,
   canResolveServiceEstimateDispute,
   canSubmitServiceEstimate,
+  evaluateExemption,
+  hasFeature,
   serviceEstimateApprovalSourceOf,
   type ServiceActionRequest,
   type ServiceEstimateDisputeFacts,
@@ -116,14 +120,26 @@ export function serviceEstimateMenuItems(
    * нечего и не у кого, — и вид заявки предикат проверяет сам.
    */
   if (canSubmitServiceEstimate(row, ctx.user, assignment)) {
-    items.push({
-      key: 'estimate',
-      label: 'Объём работ',
-      icon: <FileTextOutlined />,
-      // Главный шаг, пока объём работ ни разу не предъявляли: дальше главное — закрыть работы.
-      primary: !request.estimateSubmittedAt,
-      onClick: () => ctx.modals.estimate(request),
-    });
+    const documentEnabled = hasFeature(ctx.user, 'service_estimate_document_mode');
+    const automaticallyApproved =
+      documentEnabled &&
+      canDeclareExemption(row, ctx.user, assignment) &&
+      evaluateExemption({
+        flagEnabled: hasFeature(ctx.user, 'service_estimate_exemption'),
+        disputeRequiresSignature:
+          request.dispute?.state === 'resolved' && request.dispute.outcome === 'require_signature',
+      }) === 'applied';
+    if (documentEnabled) {
+      items.push({
+        key: 'estimate',
+        label: automaticallyApproved ? 'Работы выполнены' : 'Передать документ на согласование',
+        icon: automaticallyApproved ? <CheckCircleOutlined /> : <FileTextOutlined />,
+        // This is the primary step until the executor has submitted the first work document.
+        primary: !request.estimateSubmittedAt,
+        onClick: () =>
+          ctx.modals.estimate(request, automaticallyApproved ? 'work_done' : 'document'),
+      });
+    }
   }
 
   /*

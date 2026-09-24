@@ -3,6 +3,7 @@ import { App } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import {
   canDeclareExemption,
+  evaluateExemption,
   hasFeature,
   type ServiceActionRequest,
   type ServiceEstimateExemptionDeclaration,
@@ -44,6 +45,8 @@ export function useEstimatePresentation({
   breakdown,
   actionRow,
   assignment,
+  forceDocument = false,
+  forceExemption = false,
 }: {
   request: ServiceRequestDto | null;
   /** Набранное прямо сейчас: по нему решается, не потеряется ли состав под галочкой (Р10). */
@@ -59,6 +62,10 @@ export function useEstimatePresentation({
    */
   actionRow?: ServiceActionRequest;
   assignment?: ServiceExecutorAssignment;
+  /** Direct workflow entry: the executor supplies a document instead of composing service rows. */
+  forceDocument?: boolean;
+  /** "Work completed" declares the existing signature exemption without another checkbox. */
+  forceExemption?: boolean;
 }) {
   const { message } = App.useApp();
   const { user } = useAuth();
@@ -87,11 +94,11 @@ export function useEstimatePresentation({
      * и уцелевшая галочка «согласование не требуется» стала бы денежным решением, которого по этой
      * заявке никто не принимал, а чужой счёт — её основанием.
      */
-    setDocumentMode(false);
+    setDocumentMode(forceDocument);
     setFiles([]);
-    setExemption(false);
+    setExemption(forceExemption);
     setExemptionNote('');
-  }, [request]);
+  }, [request, forceDocument, forceExemption]);
 
   /**
    * ЗАГРУЗКА СТРАНИЦЫ СЧЁТА — ОТДЕЛЬНЫМ ХОДОМ И ДО ПРЕДЪЯВЛЕНИЯ (Р7). Связь с заявкой ставит сама
@@ -107,7 +114,8 @@ export function useEstimatePresentation({
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  const documentOffered = !breakdown && hasFeature(user, 'service_estimate_document_mode');
+  const documentOffered =
+    !breakdown && (forceDocument || hasFeature(user, 'service_estimate_document_mode'));
   /*
    * НАБРАННОЕ НЕ ТЕРЯЕТСЯ (Р10). Счёт подают ВМЕСТО состава — у документной ревизии строк нет
    * вовсе, — и спрятать под галочкой больше одной строки значило бы унести набранное молча.
@@ -115,7 +123,7 @@ export function useEstimatePresentation({
    * набранное в одну запись», а два похожих ответа на один вопрос разошлись бы.
    */
   const documentFits = fitsFreeMode(rows);
-  const documentOn = documentOffered && documentMode;
+  const documentOn = documentOffered && (forceDocument || documentMode);
   /*
    * ПОКАЗ ЧЕКБОКСА ОСВОБОЖДЕНИЯ СЧИТАЕТ ПРЕДИКАТ КОНТРАКТОВ, И ДРУГОГО УСЛОВИЯ У НЕГО НЕТ (Р3):
    * `canDeclareExemption` — то же самое правило, которым сервер отвечает 403, и собранная порталом
@@ -154,8 +162,11 @@ export function useEstimatePresentation({
   const signatureRequiredByDispute =
     request?.dispute?.state === 'resolved' && request.dispute.outcome === 'require_signature';
   const exemptionApplies =
-    hasFeature(user, 'service_estimate_exemption') && !signatureRequiredByDispute;
-  const exemptionOn = exemptionOffered && exemption;
+    evaluateExemption({
+      flagEnabled: hasFeature(user, 'service_estimate_exemption'),
+      disputeRequiresSignature: signatureRequiredByDispute,
+    }) === 'applied';
+  const exemptionOn = exemptionOffered && (forceExemption || exemption);
 
   return {
     documentOffered,
@@ -175,7 +186,7 @@ export function useEstimatePresentation({
      */
     documentIssue:
       files.length === 0
-        ? 'Приложите счёт: документная подача без документа — пустая ревизия'
+        ? 'Приложите счёт или скриншот: документная подача без файла невозможна'
         : null,
     /**
      * ЗАЯВЛЕНИЕ, А НЕ ИСХОД (Р3): в теле едет одно необязательное пояснение, а применено оно или
@@ -201,7 +212,9 @@ export function useEstimatePresentation({
      * состояние остаётся целым; гасить эти поля было бы вторым погашенным режимом рядом с
      * настоящим — замком висящего предъявления, который означает совсем другое.
      */
-    switchDocumentMode: (next: boolean) => setDocumentMode(next),
+    switchDocumentMode: (next: boolean) => {
+      if (!forceDocument) setDocumentMode(next);
+    },
     addFile: (file: File) => uploadMutation.mutate(file),
     /*
      * Снять страницу МОЖНО ТОЛЬКО ДО ПРЕДЪЯВЛЕНИЯ, и это единственное место, где такая кнопка

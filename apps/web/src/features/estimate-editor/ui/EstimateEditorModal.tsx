@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { App, Button, Input, Tooltip, Typography } from 'antd';
 import {
   canCoordinateServiceRequests,
@@ -11,6 +12,12 @@ import { useAuth } from '../../../auth/AuthContext';
 import { useEstimateEditor, type EstimateEditorIntent } from '../model/useEstimateEditor';
 import { EstimateComposition } from './EstimateComposition';
 import { EstimateDocumentFiles, EstimateDocumentSwitch } from './EstimateDocumentMode';
+import {
+  DirectDocumentIntro,
+  estimateEditorModalTitle,
+  WorkCompletedActStep,
+  WorkDoneNotice,
+} from './EstimateDocumentWorkflow';
 import { EstimateExemption } from './EstimateExemption';
 
 /**
@@ -48,29 +55,10 @@ const BREAKDOWN_DOCUMENT_HINT =
   'сумма, построчный факт и гарантии.';
 
 /**
- * Редактор объёма работ (§9.3): две группы строк либо одна свободная запись, итог на лету.
- *
- * ДВА РЕЖИМА ВВОДА, ОДНА МОДЕЛЬ (план
- * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р1 и Р8). Свободная запись —
- * обычная строка `kind = service`, `quantity = 1`, `unitPrice` = общая стоимость; второго
- * источника суммы не заводится, потому что итог, согласование, акт, факт, реестр гарантий и разбор
- * спора читают строки — вторая дорога заставила бы каждое из шести мест отвечать, какой источник
- * главный. Признака формата в БД нет: разложенная «Ведением» смета оставила бы его ложью.
- *
- * ДВЕ ДВЕРИ, ОДНО ОКНО (Р2). Исполнитель правит черновик (`PUT /:id/estimate`), «Ведение»
- * раскладывает присланный перечень по графам (`PUT /:id/estimate/breakdown`) — и по согласованной
- * ревизии вторая ручка переиздаёт документ. Второго окна для того же набора строк не заводится:
- * оно разошлось бы с этим на первой же правке состава.
- *
- * **Пока предъявление висит, окно не пускает никуда** (Р9). Прежде эту дверь запирал статус:
- * предъявленная смета стояла в «Смете на согласовании», где ни правка состава, ни повторное
- * предъявление были недоступны. Статуса больше нет, замок остался — и оба его засова сервер
- * держит одним признаком `serviceEstimatePending`, отвечая 409. Здесь про это сказано словами и
- * до нажатия: «ошибка сервера» на кнопке «Сохранить» читалась бы как поломка портала, а не как
- * «сначала отзовите предъявление».
- *
- * Состав, версия и три пути отправки живут в `useEstimateEditor` — здесь только то, как это
- * выглядит.
+ * Presents four doors over one revision model: legacy item editing, coordinator breakdown,
+ * direct document submission, and completed work with automatic approval. The model hook owns
+ * commands and revision locks; this component only selects the visible workflow. A pending
+ * revision locks every door because an approver must sign exactly what was presented.
  */
 export function EstimateEditorModal({
   request,
@@ -85,8 +73,8 @@ export function EstimateEditorModal({
    */
   request: ServiceRequestDto | null;
   /**
-   * Чем окно открыли (Р2). Умолчание — правка исполнителя: так его открывали до этой волны, и все
-   * прежние входы остаются прежними, не называя себя.
+   * The caller names the workflow door: legacy rows, coordinator breakdown, direct document, or
+   * completed work with automatic approval. The legacy default preserves direct test callers.
    */
   intent?: EstimateEditorIntent;
   /**
@@ -102,8 +90,19 @@ export function EstimateEditorModal({
 }) {
   const { message } = App.useApp();
   const { user } = useAuth();
-  const editor = useEstimateEditor({ request, intent, actionRow, assignment, onClose });
   const breakdown = intent === 'breakdown';
+  const directDocument = intent === 'document' || intent === 'work_done';
+  const workDone = intent === 'work_done';
+  const [submittedRequest, setSubmittedRequest] = useState<ServiceRequestDto | null>(null);
+  useEffect(() => setSubmittedRequest(null), [request?.id, intent]);
+  const editor = useEstimateEditor({
+    request,
+    intent,
+    actionRow,
+    assignment,
+    onClose,
+    onDocumentSubmitted: workDone ? setSubmittedRequest : undefined,
+  });
   /*
    * Раскладывают ДОКУМЕНТНУЮ ревизию (Р8): строк на экране нет и не будет — их переносят из счёта.
    * Формат берётся полем карточки, а не выводом «строк ноль»: пустой черновик выглядел бы так же, и
@@ -172,13 +171,13 @@ export function EstimateEditorModal({
     editor.runBreakdown();
   };
 
+  if (submittedRequest) {
+    return <WorkCompletedActStep request={submittedRequest} onClose={onClose} />;
+  }
+
   return (
     <ViewModal
-      title={
-        request
-          ? `${breakdown ? 'Раскладка объёма работ заявки' : 'Объём работ заявки'} ${request.displayNumber}`
-          : 'Объём работ'
-      }
+      title={estimateEditorModalTitle(request, intent)}
       open={!!request}
       onClose={onClose}
       width={860}
@@ -257,7 +256,11 @@ export function EstimateEditorModal({
                     }
                     onClick={present}
                   >
-                    Предъявить на согласование
+                    {workDone
+                      ? 'Работы выполнены'
+                      : directDocument
+                        ? 'Передать документ на согласование'
+                        : 'Предъявить на согласование'}
                   </Button>
                 </span>
               </Tooltip>,
@@ -284,6 +287,8 @@ export function EstimateEditorModal({
               title={`Ревизия ${request.estimatePendingRevision} предъявлена и ждёт ответа — правка закрыта`}
               description={`Пока предъявление висит, сервер не примет ни изменённый состав, ни повторное предъявление: согласующий подписывает то, что видит. ${LOCKED_HINT}`}
             />
+          ) : directDocument ? (
+            <DirectDocumentIntro workDone={workDone} />
           ) : (
             // Как считается итог и что случится со старой подписью — пояснение о правилах цикла:
             // вне «Ведения» его не рисуют вовсе, сумма же видна в самом окне и без плашки.
@@ -321,7 +326,7 @@ export function EstimateEditorModal({
           {/* Способ подачи решают ДО набора, поэтому галочка стоит выше переключателя: поставленная
               после, она убрала бы с экрана только что набранное. Рубильник выключен — способа не
               видно вовсе (§7): кнопка, ведущая в 422, хуже отсутствующей. */}
-          {editor.documentOffered && (
+          {!directDocument && editor.documentOffered && (
             <EstimateDocumentSwitch
               checked={documentOn}
               allowed={editor.documentFits}
@@ -360,7 +365,11 @@ export function EstimateEditorModal({
               maxLength={1000}
               disabled={locked}
               value={editor.comment}
-              placeholder="Комментарий к объёму работ: что нашли при диагностике"
+              placeholder={
+                directDocument
+                  ? 'Комментарий к выполненным работам'
+                  : 'Комментарий к объёму работ: что нашли при диагностике'
+              }
               onChange={(e) => editor.setComment(e.target.value)}
             />
           )}
@@ -369,7 +378,8 @@ export function EstimateEditorModal({
               условии показа нет намеренно (§7): он гасит ИСХОД, а не команду, — при выключенном
               заявление проходит и записывается как «наблюдение». Спрятанный чекбокс убил бы режим
               наблюдения целиком, поэтому ключ уходит текстом рядом, а не условием показа. */}
-          {editor.exemptionOffered && (
+          {workDone && <WorkDoneNotice />}
+          {!workDone && editor.exemptionOffered && (
             <EstimateExemption
               checked={editor.exemption}
               note={editor.exemptionNote}

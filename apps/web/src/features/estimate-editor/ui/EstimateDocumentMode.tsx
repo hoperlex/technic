@@ -113,12 +113,12 @@ export function EstimateDocumentFiles({
         }}
       >
         <Button icon={<UploadOutlined />} loading={uploading} disabled={disabled}>
-          Приложить счёт
+          Приложить счёт или скриншот
         </Button>
       </Upload>
       {files.length === 0 ? (
         <Typography.Text type="secondary">
-          Документа ещё нет: предъявить нечего — ревизия без счёта не документная, а пустая.
+          Документа ещё нет: приложите файл счёта либо его скриншот.
         </Typography.Text>
       ) : (
         files.map((file) => (

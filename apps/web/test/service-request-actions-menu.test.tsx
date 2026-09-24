@@ -40,7 +40,9 @@ import { RequestsTab } from '../src/pages/service/RequestsTab';
 
 const OPERATOR: AuthUser = serviceOperator();
 /** Исполнитель: назначен на заявку контрагентом-сервисом — свой шаг по циклу у него есть. */
-const EXECUTOR: AuthUser = serviceExecutor();
+const EXECUTOR: AuthUser = serviceExecutor({
+  features: ['service_estimate_document_mode', 'service_estimate_exemption'],
+});
 /** Заказчик: тот же штаб, но без надстройки — решений по заявке не принимает (Р102). */
 const CUSTOMER: AuthUser = serviceCustomer();
 
@@ -468,14 +470,14 @@ describe('решения по объёму работ: в списке пунк�
  * проверяется её собственный набор, а не общий список.
  */
 describe('оставленные пункты живы', () => {
-  it('исполнителю по «В работе» меню строки предлагает «Объём работ»', async () => {
+  it('исполнителю по «В работе» меню строки предлагает «Работы выполнены»', async () => {
     const labels = await labelsAt(
       LIST_PLACES[0]!,
       EXECUTOR,
       assignedServiceRequest({ status: 'in_work' }),
     );
 
-    expect(labels).toContain('Объём работ');
+    expect(labels).toContain('Работы выполнены');
   });
 
   it('и то же самое — из карточки: набор один, различается только место', async () => {
@@ -485,7 +487,7 @@ describe('оставленные пункты живы', () => {
       assignedServiceRequest({ status: 'in_work' }),
     );
 
-    expect(labels).toContain('Объём работ');
+    expect(labels).toContain('Работы выполнены');
   });
 
   it('оператору по «В работе» — заморозка, срочность, обсуждение и отмена', async () => {

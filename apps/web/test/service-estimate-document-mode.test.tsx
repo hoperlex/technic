@@ -8,6 +8,7 @@ import {
   serviceExecutor,
   serviceOperator,
   serviceRequest,
+  serviceRequestFile,
 } from './factories/service';
 import {
   serviceActionRow,
@@ -110,7 +111,15 @@ const UPLOAD_ROUTES: RouteMap = {
 
 function renderEditor(
   request: ServiceRequestDto,
-  { user = EXECUTOR, routes = {} }: { user?: AuthUser; routes?: RouteMap } = {},
+  {
+    user = EXECUTOR,
+    routes = {},
+    intent,
+  }: {
+    user?: AuthUser;
+    routes?: RouteMap;
+    intent?: 'estimate' | 'breakdown' | 'document' | 'work_done';
+  } = {},
 ): HttpMock {
   const http = mockHttp({
     ...UPLOAD_ROUTES,
@@ -127,6 +136,7 @@ function renderEditor(
   renderWithUser(
     <EstimateEditorModal
       request={request}
+      intent={intent}
       actionRow={serviceActionRow(request)}
       assignment={serviceExecutorAssignment(request, user)}
       onClose={() => {}}
@@ -372,7 +382,7 @@ describe('предъявление счётом: без документа не�
 
     expect(submitButton().disabled).toBe(true);
     expect(
-      screen.getByText('Приложите счёт: документная подача без документа — пустая ревизия'),
+      screen.getByText('Приложите счёт или скриншот: документная подача без файла невозможна'),
     ).toBeDefined();
   });
 
@@ -407,6 +417,72 @@ describe('предъявление счётом: без документа не�
      * сохранённые сейчас легли бы черновиком, которого человек на экране не видит.
      */
     expect(http.countOf('PUT /service-requests/:id/estimate')).toBe(0);
+  });
+});
+
+describe('действие «Работы выполнены» завершает денежный шаг и ведёт к акту', () => {
+  it('подаёт счёт с автосогласованием и сразу открывает подшивку акта', async () => {
+    const request = editableRequest();
+    const submitted = serviceRequest({
+      ...request,
+      version: request.version + 1,
+      estimateRevision: 1,
+      estimateFormat: 'document',
+      estimatePendingRevision: null,
+      estimateSubmittedAt: '2026-09-24T10:00:00.000Z',
+      approval: {
+        revision: 1,
+        by: null,
+        byName: '',
+        at: '2026-09-24T10:00:00.000Z',
+        source: 'auto',
+      },
+      files: [serviceRequestFile('invoice', { purpose: 'estimate_basis' })],
+    });
+    const withAct = serviceRequest({
+      ...submitted,
+      version: submitted.version + 1,
+      files: [...submitted.files, serviceRequestFile('act')],
+    });
+    const http = renderEditor(request, {
+      intent: 'work_done',
+      routes: {
+        'PATCH /service-requests/:id/estimate/submit': () => json(submitted),
+        'POST /service-requests/:id/files': () => json(withAct),
+      },
+    });
+
+    expect(screen.queryByText('Как набрать:')).toBeNull();
+    expect(screen.getByRole('button', { name: /Приложить счёт или скриншот/ })).toBeDefined();
+    expect(screen.queryByText('Согласование не требуется')).toBeNull();
+
+    attachInvoice('screen.png');
+    await screen.findByText('Счёт № 412.pdf');
+    fireEvent.click(screen.getByRole('button', { name: 'Работы выполнены' }));
+
+    await screen.findByText('Документ принят, согласование выполнено автоматически.');
+    expect(submitBody(http)).toEqual({
+      mode: 'document',
+      fileIds: ['file-invoice'],
+      exemption: {},
+      comment: '',
+      version: request.version,
+    });
+    expect(screen.getByRole('button', { name: /Подшить документ/ })).toBeDefined();
+
+    const act = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'Акт.pdf', {
+      type: 'application/pdf',
+    });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [act] },
+    });
+
+    await waitFor(() => expect(http.countOf('POST /service-requests/:id/files')).toBe(1));
+    expect(http.lastCall('POST /service-requests/:id/files')?.body).toEqual({
+      fileIds: ['file-invoice'],
+      kind: 'act',
+    });
+    expect(await screen.findByText(/Акт подшит/)).toBeDefined();
   });
 });
 
