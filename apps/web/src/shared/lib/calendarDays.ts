@@ -15,8 +15,14 @@ export function formatDateOnly(value: string): string {
 }
 
 /**
- * Length of a period in calendar days, both ends counted. `null` means the period does not add up
- * (the end is before the start), and then there is nothing to hint at.
+ * Length of a period in calendar days, both ends counted: 01.08 through 03.08 is three days, not
+ * two. `null` means the period does not add up (the end is before the start), and then there is
+ * nothing to hint at.
+ *
+ * An empty end date means a one-day term, and that is shared with the server: it counts the same
+ * period as `coalesce(date_to, date_from)` when it looks for overlapping requests. Change the rule
+ * on one side only and the two disagree in silence — the portal would hint at one length while the
+ * server refuses the request for overlapping with another.
  */
 export function calendarDayCount(fromKey: string, toKey?: string | null): number | null {
   const from = Date.parse(`${fromKey}T00:00:00Z`);

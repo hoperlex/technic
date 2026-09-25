@@ -18,9 +18,12 @@ import {
 // её выбор мешал бы правкам — там остаётся прежнее «не в прошлое».
 
 /*
- * Остаток каталога вне слоёв FSD: разбор дня и длина периода уехали в `@shared/lib` (узел У1
- * волны `docs/frontend-unmarked-layer-plan.md`) — правила портала в них нет. Здесь остался домен:
- * граница «не раньше сегодня» и срок заявки на технику. Он ждёт своих слайсов (узел У8).
+ * What is left of a directory that stands outside the FSD layers. Day parsing and period length
+ * have moved to `@shared/lib` — they carry no portal rule. What stayed is domain: the boundary «not
+ * earlier than today» and the lead time of an equipment request, and both wait for a slice of their
+ * own. The whole file exists for one reason: that boundary is drawn in Moscow, not in the browser's
+ * timezone, and a dispatcher in another region would otherwise have a different «today» from the
+ * server's.
  */
 
 /** Минимальная дата новой заявки: сегодня по МСК. Она же — значение по умолчанию. */
@@ -29,9 +32,9 @@ export function minRequestDate(): Dayjs {
 }
 
 /**
- * Начало сегодняшнего дня в поясе браузера. Не экспортируется: снаружи его не звал никто, а
- * публичное имя без потребителя — приглашение завести сравнение «с сегодня» мимо московской
- * границы суток, ради которой весь этот файл и написан.
+ * Start of today in the browser's timezone. Deliberately not exported: nothing outside ever called
+ * it, and a public name with no caller is an invitation to compare against «today» while bypassing
+ * the Moscow day boundary this file exists for.
  */
 function startOfToday(): Dayjs {
   return dayjs().startOf('day');

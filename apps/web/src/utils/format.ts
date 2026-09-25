@@ -2,13 +2,26 @@ import { isApiError } from '@shared/api';
 import { formatDate, formatDateTime, errorMessage as sharedErrorMessage } from '@shared/lib';
 
 /*
- * Остаток каталога вне слоёв FSD: форматирование отсюда уехало в `@shared/lib` (узел У1 волны
- * `docs/frontend-unmarked-layer-plan.md`), а здесь ждут своей очереди два разных предмета.
+ * What is left of a directory that stands outside the FSD layers. The four typography helpers have
+ * moved to `@shared/lib`; three things stayed, and each stayed for its own reason.
  *
- * Подписи полей — словарь экранов, ещё не разложенный по слайсам-владельцам (узел У3); правило
- * «словарь доменный и приходит параметром» записано в `shared/lib/errors.ts` и исполнено пока
- * наполовину. `formatDateTimeMaybe` спрашивает о заявке, а не о времени, и ждёт слайса заявок
- * (узел У8).
+ * `FIELD_LABELS` with `errorMessage` — the labels of screens not yet moved into slices. The rule
+ * itself is written in `shared/lib/errors.ts`: the dictionary is domain knowledge and arrives as an
+ * argument, one entity labelling its own fields. It is followed only halfway today — around a
+ * hundred screens call this wrapper and get labels, while about as many call the shared function
+ * with no dictionary at all and print `newPassword` where a person expects «Новый пароль». Moving
+ * the labels to their owners is what finishes the rule; until then this dictionary is the half that
+ * works.
+ *
+ * `formatDateTimeMaybe` asks about a request, not about a moment: with `timeUnspecified` only the
+ * date is agreed, and printing «00:00» would claim an hour nobody agreed. That makes it a request's
+ * knowledge, and it waits for a slice of its own.
+ *
+ * `errorFields` is a DUPLICATE and the only thing here that should not simply move: the same
+ * function stands in `shared/lib/errors.ts`, both guarded by the same shape test. Its three callers
+ * are the login and registration pages; merging them is a change of one import each, and the reason
+ * it has not happened yet is that nobody noticed two — which is exactly how a duplicate earns its
+ * keep.
  */
 
 /**

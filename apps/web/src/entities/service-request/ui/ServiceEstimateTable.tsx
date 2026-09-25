@@ -7,12 +7,7 @@ import {
   warrantyStateColors,
   warrantyToday,
 } from '@technic/contracts';
-
-/** Деньги одним видом на все экраны объёма работ: «4 200,00 ₽». */
-function money(value: number | null | undefined): string {
-  if (value == null) return '—';
-  return `${value.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
-}
+import { formatMoney as money } from '@shared/lib';
 
 /**
  * Объём работ на чтение: строки плана и, если работы закрыты, факт по каждой из них.

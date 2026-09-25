@@ -1,9 +1,6 @@
 import { afterEach } from 'vitest';
 import { cleanup, configure } from '@testing-library/react';
-import dayjs from 'dayjs';
-import 'dayjs/locale/ru';
-import utc from 'dayjs/plugin/utc';
-import timezone from 'dayjs/plugin/timezone';
+import { setupDayjs } from '../src/shared/lib';
 import { installMatchMedia, resetViewport } from './viewport';
 import { restoreContentHeights } from './clamp';
 import { restoreHttpMock } from './http';
@@ -44,12 +41,12 @@ import { __resetSessionForTests } from '../src/shared/api';
  */
 configure({ asyncUtilTimeout: 5_000 });
 
-// Даты портал показывает в МСК (utils/format), а плагины dayjs подключает точка входа — в тестах
-// её нет, и без этих трёх строк любой рендер с датой падает на `dayjs(...).tz is not a function`.
-dayjs.extend(utc);
-dayjs.extend(timezone);
-dayjs.locale('ru');
-dayjs.tz.setDefault('Europe/Moscow');
+// Тем же вызовом, каким настраивается приложение (`main.tsx`): плагины dayjs здесь обязательны —
+// портал печатает даты в МСК (`shared/lib/format.ts`), и без них любой рендер с датой падает на
+// `dayjs(...).tz is not a function`. Раньше эти четыре строки стояли здесь копией, с поясом
+// литералом вместо константы, — второе место одного правила, которое шапка `setupDayjs` уже
+// объявляла сведённым.
+setupDayjs();
 
 // jsdom не реализует ни того, ни другого, а antd опирается на оба: без заглушек падает любой
 // рендер компонента с выпадающим списком. matchMedia к тому же управляемый — им же тесты
