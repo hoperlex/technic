@@ -1,6 +1,4 @@
-import { useDepartmentScope } from '../../../hooks/useDepartmentScope';
-import { useObjectScope } from '../../../hooks/useObjectScope';
-import { usePlaceObjectScope } from '../../../hooks/usePlaceObjectScope';
+import { useDepartmentScope, useObjectScope, usePlaceObjectScope } from '@entities/session';
 
 /**
  * Умолчание фильтра «Заказчик» в списках модуля «Заказ ТС»: с чего список открывается, пока

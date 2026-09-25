@@ -5,10 +5,8 @@ import type { ServiceRequestDto } from '@technic/contracts';
 import { objectOptionsQuery } from '@entities/object';
 import { WarrantyTag } from '@entities/office-equipment';
 import { serviceRequestEquipmentName, serviceRequestPlaceLine } from '@entities/service-request';
-import { useAuth } from '@entities/session';
+import { useAuth, useDepartmentScope, useObjectScope } from '@entities/session';
 import { AutoSelect } from '@shared/ui';
-import { useDepartmentScope } from '../../hooks/useDepartmentScope';
-import { useObjectScope } from '../../hooks/useObjectScope';
 
 /**
  * Выбранная единица глазами этого блока: реквизиты снимка и два ответа об области (Р2 плана

@@ -28,7 +28,7 @@ import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '@shared
 import { useListParams } from '@shared/lib';
 import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
-import { usePurgeAction } from '../../hooks/usePurgeAction';
+import { usePurgeAction } from '@features/purge-record';
 import { objectsApi, objectKeys } from '@entities/object';
 import { vehicleKeys } from '@entities/vehicle';
 

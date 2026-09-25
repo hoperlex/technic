@@ -21,9 +21,8 @@ import {
 import { weeklyRequestsApi } from '@entities/weekly-request';
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
-import { useAuth } from '@entities/session';
+import { useAuth, useObjectScope } from '@entities/session';
 import { errorMessage } from '../../utils/format';
-import { useObjectScope } from '../../hooks/useObjectScope';
 import { useObjectOptions } from './shared';
 
 /**

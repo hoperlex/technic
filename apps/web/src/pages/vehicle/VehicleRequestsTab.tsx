@@ -134,7 +134,7 @@ import { RequestRelocationsField } from './RequestRelocationsField';
 import { VehicleBackdateFields } from './VehicleBackdateFields';
 import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
 import { useRouteModal } from '@features/route-modal';
-import { usePlaceObjectScope } from '../../hooks/usePlaceObjectScope';
+import { usePlaceObjectScope } from '@entities/session';
 import { MOSCOW_TZ } from '@shared/config';
 import { ApprovalCell, StatusCell } from './requestRowCells';
 import { RequestTripsBlock } from './RequestTripsBlock';

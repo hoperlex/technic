@@ -2,10 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import { costTargetKey, type CostTargetKey, type CostTargetRef } from '@technic/contracts';
 import { departmentOptionsQuery } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';
+import { useDepartmentScope, useObjectScope, usePlaceObjectScope } from '@entities/session';
 import { flattenOptions, soleOption, withSavedOption } from '@shared/lib';
-import { useDepartmentScope } from '../../../hooks/useDepartmentScope';
-import { useObjectScope } from '../../../hooks/useObjectScope';
-import { usePlaceObjectScope } from '../../../hooks/usePlaceObjectScope';
 
 /**
  * Подбор заказчика «Объект/отдел»: одно поле с составным ключом (план

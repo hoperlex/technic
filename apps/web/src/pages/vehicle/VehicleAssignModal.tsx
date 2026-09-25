@@ -55,7 +55,7 @@ import { useAuth } from '@entities/session';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { formatDateOnly, formatMoney, useIsMobile } from '@shared/lib';
-import { useObjectScope } from '../../hooks/useObjectScope';
+import { useObjectScope } from '@entities/session';
 import { AddressField } from '@features/address-input';
 
 import { errorMessage } from '../../utils/format';

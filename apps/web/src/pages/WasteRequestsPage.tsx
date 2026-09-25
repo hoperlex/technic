@@ -88,7 +88,7 @@ import {
   TicketAuditModal,
   useTicketAuditMobileAction,
 } from '@features/ticket-audit';
-import { usePlaceObjectScope } from '../hooks/usePlaceObjectScope';
+import { usePlaceObjectScope } from '@entities/session';
 
 import { errorMessage, formatDateTimeMaybe } from '../utils/format';
 import { withSavedOption } from '@shared/lib';

@@ -48,7 +48,7 @@ import { weeklyRequestKeys } from '@entities/weekly-request';
 import { AutoSelect, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
-import { usePurgeAction } from '../../hooks/usePurgeAction';
+import { usePurgeAction } from '@features/purge-record';
 
 // Карточка типа ТС (ADR 0016): состав ТТХ и категории — комбинации их значений. Живут в одной
 // карточке, потому что это один инвариант: привязка ТТХ обязывает каждую категорию иметь по нему

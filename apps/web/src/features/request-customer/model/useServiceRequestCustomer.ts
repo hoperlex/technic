@@ -4,9 +4,7 @@ import {
   type CostTargetKey,
   type ServiceRequestDto,
 } from '@technic/contracts';
-import { useAuth } from '@entities/session';
-import { useDepartmentScope } from '../../../hooks/useDepartmentScope';
-import { useObjectScope } from '../../../hooks/useObjectScope';
+import { useAuth, useDepartmentScope, useObjectScope } from '@entities/session';
 import {
   useRequestCustomerOptions,
   type RequestCustomerOptions,

@@ -3,8 +3,8 @@ import { Select } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { GARAGE_OBJECT_FILTER_MAX } from '@technic/contracts';
 import { objectOptionsQuery } from '@entities/object';
+import { useObjectScope } from '@entities/session';
 import type { FilterDefinition } from '@shared/ui';
-import { useObjectScope } from '../../hooks/useObjectScope';
 
 /**
  * Отбор среза дня по площадке — набором, обеим вкладкам гаража (план «Срезы дня», Р8–Р10).

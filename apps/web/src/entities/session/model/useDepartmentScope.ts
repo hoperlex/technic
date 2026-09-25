@@ -1,5 +1,5 @@
 import { isDepartmentScopedRole } from '@technic/contracts';
-import { useAuth } from '@entities/session';
+import { useAuth } from './authContext';
 
 /**
  * Область роли отдела на портале (ADR 0040) — вторая ось рядом с объектной (`useObjectScope`).
@@ -7,6 +7,10 @@ import { useAuth } from '@entities/session';
  *
  * Двумя хуками, а не одним «заказчиком»: оси взаимоисключающие, и место, спрашивающее сразу обе,
  * должно делать это явно — иначе выбор поля в форме заявки свёлся бы к «что не пусто».
+ *
+ * Адрес — тот же, что у соседней оси, и по той же причине: хук читает `useAuth` (подробно — в шапке
+ * `index.ts` слайса). Развести пару осей по разным слоям нельзя и без этого: обе спрашивают сразу и
+ * подбор заказчика в `features`, и форма предмета заявки в `pages`, так что адрес у них общий.
  */
 export function useDepartmentScope() {
   const { user } = useAuth();

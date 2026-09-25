@@ -8,11 +8,10 @@ import {
   officeEquipmentSelectorPickedQuery,
   type OfficeEquipmentSelectorOption,
 } from '@entities/office-equipment';
-import { useAuth } from '@entities/session';
+import { useAuth, useObjectScope } from '@entities/session';
 import { EquipmentNotFoundLink, type EquipmentCandidateDraft } from '@features/missing-equipment';
 import { AutoSelect } from '@shared/ui';
 import { ServiceRequestSubject } from './ServiceRequestSubject';
-import { useObjectScope } from '../../hooks/useObjectScope';
 
 /**
  * Опция поля «Какой аппарат» — ОТДЕЛЬНАЯ ПРОЕКЦИЯ СЕЛЕКТОРА (план

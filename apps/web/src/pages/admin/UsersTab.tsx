@@ -79,7 +79,7 @@ import { isApiError } from '@shared/api';
 import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { usePurgeAction } from '../../hooks/usePurgeAction';
+import { usePurgeAction } from '@features/purge-record';
 import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';
 import { objectsApi, objectKeys } from '@entities/object';

@@ -40,7 +40,7 @@ import { PageTableLayout } from '@shared/ui';
 import type { FilterDefinition } from '@shared/ui';
 import { formatMoney, useIsMobile, useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
-import { usePurgeAction } from '../../hooks/usePurgeAction';
+import { usePurgeAction } from '@features/purge-record';
 import {
   buildWasteTariffGrid,
   wasteTariffColumnOperators,

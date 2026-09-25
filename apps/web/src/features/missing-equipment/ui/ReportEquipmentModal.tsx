@@ -4,9 +4,9 @@ import { useQuery } from '@tanstack/react-query';
 import type { EquipmentCandidateInput } from '@technic/contracts';
 import { objectOptionsQuery } from '@entities/object';
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
+import { usePlaceObjectScope } from '@entities/session';
 import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
 import { equipmentCandidateDraft, type EquipmentCandidateDraft } from '../model/draft';
-import { usePlaceObjectScope } from '../../../hooks/usePlaceObjectScope';
 
 /** Значения окна: те же шесть реквизитов (Р7), без единого поля учёта. */
 type Values = EquipmentCandidateInput;

@@ -23,7 +23,7 @@ import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
-import { usePurgeAction } from '../../hooks/usePurgeAction';
+import { usePurgeAction } from '@features/purge-record';
 import { errorMessage } from '../../utils/format';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 

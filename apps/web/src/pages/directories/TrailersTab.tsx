@@ -14,7 +14,7 @@ import type { FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
-import { usePurgeAction } from '../../hooks/usePurgeAction';
+import { usePurgeAction } from '@features/purge-record';
 import { TrailerFormModal, type TrailerFormValues } from './TrailerFormModal';
 import { type HitchFormValues, TrailerHitchModal } from './TrailerHitchModal';
 import {
