@@ -12,8 +12,8 @@ import {
   type DeviceMetricValueDto,
   type MetricUnit,
 } from '@technic/contracts';
+import { formatDateTime } from '@shared/lib';
 import { deviceTelemetryApi, deviceTelemetryKeys } from '@entities/device-telemetry';
-import { formatDateTime } from '../../../utils/format';
 
 /**
  * Блок карточки «Показания и события» (план `docs/office-equipment-mail-telemetry-plan.md`, §10).

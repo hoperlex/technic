@@ -12,7 +12,7 @@ import {
 } from '@technic/contracts';
 import { deviceMailKeys, deviceRuleApi } from '@entities/device-mail';
 import { PageTableLayout } from '@shared/ui';
-import { formatDateTime } from '../../../utils/format';
+import { formatDateTime } from '@shared/lib';
 import { useDeviceRuleRemove } from '../model/actions';
 import { DeviceRuleFormModal } from './DeviceRuleFormModal';
 

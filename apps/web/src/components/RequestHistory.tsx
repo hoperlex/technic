@@ -13,9 +13,8 @@ import {
   requestStatusColors,
   requestStatusLabels,
 } from '@technic/contracts';
-import { useIsMobile } from '@shared/lib';
+import { formatDateTime, useIsMobile } from '@shared/lib';
 import { HISTORY_TITLES, KIND_TAGS } from '@entities/request-history';
-import { formatDateTime } from '../utils/format';
 
 /**
  * История заявки списком, а не лентой (ADR 0012): слева баблы статусов со стрелкой (у событий

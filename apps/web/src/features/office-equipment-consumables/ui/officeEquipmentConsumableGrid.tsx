@@ -8,7 +8,7 @@ import {
 } from '@ant-design/icons';
 import type { OfficeEquipmentConsumableDto } from '@technic/contracts';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
-import { formatDateTime } from '../../../utils/format';
+import { formatDateTime } from '@shared/lib';
 import {
   ALREADY_ORDERED_HINT,
   DEFICIT_HINT,

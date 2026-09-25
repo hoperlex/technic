@@ -12,7 +12,7 @@ import {
 } from '@technic/contracts';
 import { devicePollApi, devicePollKeys } from '@entities/device-poll';
 import { PageTableLayout } from '@shared/ui';
-import { formatDateTime } from '../../../utils/format';
+import { formatDateTime } from '@shared/lib';
 import { useDevicePoll } from '../model/actions';
 
 /**

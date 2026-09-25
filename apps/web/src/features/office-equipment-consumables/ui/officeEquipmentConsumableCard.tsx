@@ -1,7 +1,7 @@
 import { Tag } from 'antd';
 import type { OfficeEquipmentConsumableDto } from '@technic/contracts';
 import type { CardConfig } from '@shared/ui';
-import { formatDateTime } from '../../../utils/format';
+import { formatDateTime } from '@shared/lib';
 import type { OfficeEquipmentConsumableGridActions } from './officeEquipmentConsumableGrid';
 
 /**

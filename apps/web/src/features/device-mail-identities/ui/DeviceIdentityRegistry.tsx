@@ -12,7 +12,7 @@ import {
 } from '@technic/contracts';
 import { deviceIdentityApi, deviceMailKeys } from '@entities/device-mail';
 import { PageTableLayout } from '@shared/ui';
-import { formatDateTime } from '../../../utils/format';
+import { formatDateTime } from '@shared/lib';
 import { useDeviceIdentityApply, useDeviceIdentityRevoke } from '../model/actions';
 import { DeviceIdentityAddModal } from './DeviceIdentityAddModal';
 import { RevokeIdentityModal } from './RevokeIdentityModal';

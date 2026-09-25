@@ -1,8 +1,8 @@
 import { Space, Table, Tag, Typography } from 'antd';
 import { Link } from 'react-router';
 import { EQUIPMENT_BLOCK_PAGE_SIZE, type EquipmentMovementRowDto } from '@technic/contracts';
+import { formatDate } from '@shared/lib';
 import { officeEquipmentApi, officeEquipmentKeys } from '@entities/office-equipment';
-import { formatDate } from '../../../utils/format';
 import { EquipmentBlockView, useEquipmentBlockPages } from './blockPages';
 import { placeOf, stateOf } from './place';
 

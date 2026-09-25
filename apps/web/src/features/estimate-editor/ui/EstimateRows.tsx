@@ -1,8 +1,8 @@
 import { Button, Col, Input, InputNumber, Row, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { serviceItemKindLabels, type ServiceItemKind } from '@technic/contracts';
+import { formatMoney } from '@shared/lib';
 import { rowAmount, type EstimateRow } from '../model/rows';
-import { formatMoney } from '../../../utils/format';
 
 /**
  * Группа объёма работ: «Запчасти» или «Услуги» (§9.3). Группы разведены не для красоты — по ним

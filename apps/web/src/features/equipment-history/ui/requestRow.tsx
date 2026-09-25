@@ -7,8 +7,8 @@ import {
   type EquipmentRequestRowDto,
   type OfficeEquipmentItemWarrantyDto,
 } from '@technic/contracts';
+import { formatDate, formatMoney } from '@shared/lib';
 import { WarrantyTag } from '@entities/office-equipment';
-import { formatDate, formatMoney } from '../../../utils/format';
 
 /**
  * Из чего сложена строка заявки — одинаково в блоке окна и в секции карточки (Р7, К7).

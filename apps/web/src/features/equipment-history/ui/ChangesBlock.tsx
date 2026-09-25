@@ -4,8 +4,8 @@ import {
   EQUIPMENT_CHANGE_NO_DETAILS_LABEL,
   type EquipmentChangeRowDto,
 } from '@technic/contracts';
+import { formatDateTime } from '@shared/lib';
 import { officeEquipmentApi, officeEquipmentKeys } from '@entities/office-equipment';
-import { formatDateTime } from '../../../utils/format';
 import { EquipmentBlockView, useEquipmentBlockPages } from './blockPages';
 import { fieldLabels } from './fieldLabels';
 

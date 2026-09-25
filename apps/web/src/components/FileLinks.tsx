@@ -3,8 +3,8 @@ import { DownloadOutlined, EyeOutlined, PaperClipOutlined } from '@ant-design/ic
 import { useEffect, useState } from 'react';
 import { isInlineViewable } from '@technic/contracts';
 import { filesApi } from '@entities/file';
-import { useIsMobile } from '@shared/lib';
-import { errorMessage, formatBytes } from '../utils/format';
+import { formatBytes, useIsMobile } from '@shared/lib';
+import { errorMessage } from '../utils/format';
 import { ViewModal } from '@shared/ui';
 
 /**

@@ -1,6 +1,6 @@
 import { Alert, Space, Typography } from 'antd';
 import type { DeviceMailboxStateDto } from '@technic/contracts';
-import { formatDateTime } from '../../../utils/format';
+import { formatDateTime } from '@shared/lib';
 
 /**
  * Состояние почтовых ящиков в шапке очереди (план

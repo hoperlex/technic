@@ -8,9 +8,9 @@ import {
   type DeviceIdentityDto,
   type OfficeEquipmentDto,
 } from '@technic/contracts';
+import { formatDateTime } from '@shared/lib';
 import { deviceIdentityApi, deviceMailKeys } from '@entities/device-mail';
 import { useAuth } from '../../../auth/AuthContext';
-import { formatDateTime } from '../../../utils/format';
 import { DeviceIdentityAddModal } from './DeviceIdentityAddModal';
 
 /**

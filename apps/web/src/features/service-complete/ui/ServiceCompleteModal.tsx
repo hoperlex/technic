@@ -21,11 +21,10 @@ import {
 } from '@entities/service-request';
 import { officeEquipmentConsumableKeys, officeEquipmentKeys } from '@entities/office-equipment';
 import { FormModal } from '@shared/ui';
-import { errorMessage } from '@shared/lib';
+import { errorMessage, formatMoney } from '@shared/lib';
 import { factIssue, factRowsFrom, factToPayload, factTotal, type FactRow } from '../model/fact';
 import { CompleteRows } from './CompleteRows';
 import { useAuth } from '../../../auth/AuthContext';
-import { formatMoney } from '../../../utils/format';
 
 const DATE = 'YYYY-MM-DD';
 

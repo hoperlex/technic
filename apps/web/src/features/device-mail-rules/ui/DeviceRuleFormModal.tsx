@@ -25,7 +25,7 @@ import {
 import type { DeviceParseRulePreviewDto } from '@technic/contracts';
 import { deviceMailKeys, deviceRuleApi } from '@entities/device-mail';
 import { FormModal } from '@shared/ui';
-import { formatDateTime } from '../../../utils/format';
+import { formatDateTime } from '@shared/lib';
 import { useDeviceRulePreview, useDeviceRuleSave } from '../model/actions';
 
 /**

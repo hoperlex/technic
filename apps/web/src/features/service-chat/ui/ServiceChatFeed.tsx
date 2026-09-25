@@ -5,8 +5,8 @@ import {
   type ServiceChatMessageDto,
   type ServiceRequestDto,
 } from '@technic/contracts';
+import { formatDateTime } from '@shared/lib';
 import type { ServiceChatFeedState } from '../model/useServiceChatFeed';
-import { formatDateTime } from '../../../utils/format';
 
 /** Ярлыки адресатов реплики: сторонами и людьми — ровно теми списками, какими они и хранятся. */
 function AddresseeTags({ addressees }: { addressees: ServiceChatMessageDto['addressees'] }) {

@@ -8,8 +8,8 @@ import {
   serviceRequestStatusLabels,
   type EquipmentHistoryEventDto,
 } from '@technic/contracts';
+import { formatDate, formatMoney } from '@shared/lib';
 import { officeEquipmentApi, officeEquipmentKeys } from '@entities/office-equipment';
-import { formatDate, formatMoney } from '../../../utils/format';
 import { fieldLabels } from './fieldLabels';
 import { placeOf, stateOf } from './place';
 
