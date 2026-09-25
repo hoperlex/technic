@@ -25,3 +25,9 @@ export {
   subjectCheckTitle,
   type ServiceRequestSubjectCheck,
 } from './model/subject';
+/**
+ * Who the report screens are open to — a pure predicate over the account, because both callers sit
+ * in layers above this one and neither may be reached from here. It lives in this slice and not
+ * next to the session, so the two answers stay side by side with the candidate they are about.
+ */
+export { candidateIntakeAccess, type CandidateIntakeAccess } from './model/intake';

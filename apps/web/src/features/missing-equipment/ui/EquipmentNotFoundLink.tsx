@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { Alert, Button, Space, Typography } from 'antd';
 import { CustomerServiceOutlined } from '@ant-design/icons';
 import type { OfficeEquipmentDto } from '@technic/contracts';
-import { subjectCheckTitle } from '@entities/office-equipment-candidate';
+import { candidateIntakeAccess, subjectCheckTitle } from '@entities/office-equipment-candidate';
+import { useAuth } from '@entities/session';
 import { SupportContactsModal } from '../../../components/SupportContactsModal';
-import { useCandidateIntake } from '../../../auth/candidateIntake';
 import { QuickCreateEquipmentModal } from './QuickCreateEquipmentModal';
 import { ReportEquipmentModal } from './ReportEquipmentModal';
 import type { EquipmentCandidateDraft } from '../model/draft';
@@ -89,7 +89,10 @@ export function EquipmentNotFoundLink({
   const [reportOpen, setReportOpen] = useState(false);
   const [hintOpen, setHintOpen] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
-  const { canPropose } = useCandidateIntake();
+  // The account goes to the predicate whole: the answer is composed of the intake switch and the
+  // permission, and the entity layer that owns that composition cannot reach the session itself.
+  const { user } = useAuth();
+  const { canPropose } = candidateIntakeAccess(user);
   const text = supportText(search, objectName);
 
   // Ветка считается один раз и наверху: разложенная по трём `onClick` и трём условиям показа, она

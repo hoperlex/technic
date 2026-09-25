@@ -26,7 +26,11 @@ import {
 } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
-import { officeEquipmentCandidatePendingCountQuery } from '@entities/office-equipment-candidate';
+import {
+  candidateIntakeAccess,
+  officeEquipmentCandidatePendingCountQuery,
+} from '@entities/office-equipment-candidate';
+import { useAuth } from '@entities/session';
 import { EquipmentMoveModal } from '@features/equipment-move';
 import { EquipmentHistoryModal } from '@features/equipment-history';
 import { CandidatesTab } from './CandidatesTab';
@@ -34,8 +38,6 @@ import { DeviceMailReview } from './DeviceMailReview';
 import { DeviceIdentityRegistry } from '@features/device-mail-identities';
 import { DeviceRulesBoard } from '@features/device-mail-rules';
 import { DevicePollBoard } from '@features/device-poll';
-import { useAuth } from '../../auth/AuthContext';
-import { useCandidateIntake } from '../../auth/candidateIntake';
 
 /**
  * Парк оргтехники в самом модуле (план `docs/office-equipment-mail-and-history-plan.md`, Р72–Р74).
@@ -96,21 +98,22 @@ export function EquipmentTab() {
   // заявки спрашивают одно и то же, иначе у действия два замка разной строгости.
   const canMove = can('officeEquipment.move');
   /*
-   * ПОДВКЛАДКА «НА ПРОВЕРКЕ» — ЗДЕСЬ, А НЕ ОТДЕЛЬНОЙ ВКЛАДКОЙ РАЗДЕЛА (§9). Очередь отвечает на тот
-   * же вопрос, что и парк, — «что у нас за техника», — только про ту, которой в справочнике ещё
-   * нет. Отдельная вкладка раздела развела бы по двум входам одну работу: проверяющий приходит
-   * сюда, чтобы завести карточку, и тут же смотрит, нет ли её в парке.
+   * THE «UNDER REVIEW» SUB-TAB BELONGS HERE, NOT IN A SECTION TAB OF ITS OWN (§9). The queue answers
+   * the same question as the park — "what equipment do we have" — only about the units that are not
+   * in the directory yet. A separate section tab would split one job across two entrances: the
+   * reviewer comes here to create the card and looks straight away whether the park already has it.
    *
-   * Счётчик стоит в самой подписи переключателя: срока проверки у модуля нет вовсе (В3), и число —
-   * единственное, чем очередь о себе заявляет тому, кто зашёл смотреть парк.
+   * The counter sits inside the switch label: the module has no review deadline at all (Q3), and the
+   * number is the only way the queue announces itself to someone who came to look at the park.
+   *
+   * The account goes to the predicate whole: the composition "switch plus permission" has a single
+   * carrier, and it lives in the candidate slice, below this page.
    */
-  const { canReview } = useCandidateIntake();
+  const { canReview } = candidateIntakeAccess(user);
   // Разбор писем аппаратов — своё право (Р30 плана почтовой телеметрии): у ИТ-службы оно есть, у
   // тех, кто ведёт парк, — нет, и наоборот. Поэтому третий режим, а не пункт внутри проверки.
   const canTelemetry = can('officeEquipment.telemetry');
-  const [view, setView] = useState<'park' | 'review' | 'mail' | 'keys' | 'rules' | 'poll'>(
-    'park',
-  );
+  const [view, setView] = useState<'park' | 'review' | 'mail' | 'keys' | 'rules' | 'poll'>('park');
   const { data: pendingCount = 0 } = useQuery({
     ...officeEquipmentCandidatePendingCountQuery(),
     enabled: canReview,

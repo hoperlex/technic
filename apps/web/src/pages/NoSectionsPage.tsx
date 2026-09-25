@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Button, Empty, Space, Typography } from 'antd';
 import { CustomerServiceOutlined, LogoutOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router';
-import { useAuth } from '../auth/AuthContext';
+import { useAuth } from '@entities/session';
 // Тем же относительным путём, каким окно зовут фичи: `components/` — легаси-каталог без алиаса и
 // без публичного входа, и заводить ему `@`-псевдоним ради одной страницы значило бы закрепить
 // каталог, который планово разбирается по слоям.

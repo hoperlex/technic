@@ -1,56 +1,71 @@
 import { describe, expect, it } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import type { AuthUser, FeatureFlagKey, Permission } from '@technic/contracts';
-import { useCandidateIntake } from '../src/auth/candidateIntake';
+import { candidateIntakeAccess } from '@entities/office-equipment-candidate';
+import { useAuth } from '@entities/session';
 import { apiFetch } from '../src/shared/api';
 import { apiError, json, mockHttp } from './http';
 import { renderWithSession } from './render';
 import { authUser, loginResponse } from './factories/auth';
 
 /**
- * Рубильник приёма сообщений о технике доезжает до экрана ответом сессии — и, главное, **его
- * отсутствие означает «закрыто»** (план `docs/office-equipment-request-subject-plan.md`, Р10;
- * контракт — `docs/office-equipment-candidate-plan.md`, §14).
+ * The candidate intake switch reaches the screen through the session response — and, above all, its
+ * ABSENCE means "closed" (plan `docs/office-equipment-request-subject-plan.md`, R10; the contract —
+ * `docs/office-equipment-candidate-plan.md`, §14).
  *
- * ЗАЧЕМ ЭТОТ ФАЙЛ, если условие — одна строка в `useCandidateIntake`. Проверяется не строка, а
- * УМОЛЧАНИЕ на границе версий. Портал выкатывается отдельно от приложения, и в окне выката новая
- * сборка получает ответ старого сервера — без поля `features` вовсе. Ошибка здесь не видна ни
- * типом (поле необязательно ровно поэтому), ни глазами: `?? true` выглядит так же безобидно, как
- * `?? false`, — а означает открытый приём кандидатов ровно в том окне, ради которого рубильник и
- * заводился (Р11: миграция прав применяется ДО перезапуска приложения).
+ * WHY THIS FILE EXISTS when the condition is one line in `candidateIntakeAccess`. What is checked is
+ * not the line but the DEFAULT ON A VERSION BOUNDARY. The portal is deployed separately from the
+ * application, and inside the deploy window a new bundle gets the answer of an old server — with no
+ * `features` field at all. The mistake is invisible both to the type (that is exactly why the field
+ * is optional) and to the eye: `?? true` looks as harmless as `?? false` — and means intake wide
+ * open in the very window the switch was built for (R11: the permission migration is applied BEFORE
+ * the application restarts).
  *
- * ЧЕГО ЗДЕСЬ НЕТ. Серверного отказа прямому `POST /service-requests` — он проверяется db-тестом и
- * не зависит от портала вовсе: клиент рубильником только прячет дверь, а запирает её сервер, читая
- * ту же строку базы. Три ветви «Не нашли технику?» живут в `missing-equipment.test.tsx`.
+ * THE ACCOUNTS CARRY A SUBJECT, NOT A HAND-WRITTEN LIST OF EFFECTIVE PERMISSIONS, and that is a
+ * requirement of the predicate, not a matter of taste: it asks the permission of the contracts
+ * matrix (role, addons, grant sets), so an account holding a right only in `permissions` describes a
+ * state the server never sends — it fills `permissions` with `permissionsFor(subject)` itself. The
+ * proposer here is therefore a role that grants `officeEquipment.propose`, and the reviewer gets
+ * `officeEquipment.review` the way production gives it: with a grant set, not with a role.
  *
- * НАСТОЯЩИЙ `AuthProvider`, а не подставленный контекст: предмет проверки — что портал прочитал из
- * ОТВЕТА СЕРВЕРА, и подстановка готового пользователя проверяла бы фикстуру, а не чтение.
+ * WHAT IS NOT HERE. The server refusing a direct `POST /service-requests` — that is checked by a db
+ * test and does not depend on the portal at all: the client only hides the door with the switch, the
+ * server locks it, reading the same database row. The three branches of "Equipment not found?" live
+ * in `missing-equipment.test.tsx`.
+ *
+ * A REAL `AuthProvider`, not a substituted context: the subject under test is what the portal read
+ * FROM THE SERVER ANSWER, and substituting a ready-made user would test the fixture instead.
  */
 
-/** Права заявителя, которому выпуск B выдаст `propose`: без них рубильник нечему открывать. */
-const PROPOSER_PERMISSIONS: Permission[] = [
-  'serviceRequests.create',
-  'serviceRequests.read',
-  'officeEquipment.read',
-  'officeEquipment.propose',
-];
+/**
+ * The role of a requester who may report a device: `officeEquipment.propose` comes to five site and
+ * department roles plus the office `manager` as part of the requester circle (ADR 0165), and `shtab`
+ * is one of them. Without the permission the switch would have nothing to open.
+ */
+const PROPOSER_ROLE = 'shtab';
 
-/** Он же с правом разбора очереди: рубильник вход гасит, а проверку — нет. */
-const REVIEWER_PERMISSIONS: Permission[] = [...PROPOSER_PERMISSIONS, 'officeEquipment.review'];
+/**
+ * The permission to work the review queue, exactly as production hands it out: with the grant set
+ * «Оргтехника: ведение», never with a role. The switch stops the inflow, not the review.
+ */
+const REVIEWER_GRANT: Permission[] = ['officeEquipment.review'];
 
-/** Учётка старого ответа: поля `features` в ней нет вовсе — не пустое, а отсутствующее. */
-function oldApiUser(permissions: Permission[] = PROPOSER_PERMISSIONS): AuthUser {
-  return authUser({ role: 'shtab', constructionObjectIds: ['obj-1'], permissions });
+/** An account from an old answer: it has no `features` field at all — not empty, absent. */
+function oldApiUser(grantPermissions: Permission[] = []): AuthUser {
+  return authUser({ role: PROPOSER_ROLE, constructionObjectIds: ['obj-1'], grantPermissions });
 }
 
-/** Ответ нового сервера: список включённых ключей приходит всегда, пусть и пустой. */
+/** The answer of a new server: the list of enabled keys always arrives, even if empty. */
 function withFeatures(user: AuthUser, ...features: FeatureFlagKey[]): AuthUser {
   return { ...user, features };
 }
 
-/** Экран, показывающий оба ответа хука: различить «вход закрыт» и «закрыто всё» иначе нечем. */
+/** A screen showing both answers: nothing else tells "entrance closed" from "everything closed". */
 function IntakeProbe() {
-  const { canPropose, canReview } = useCandidateIntake();
+  // The account is read here and handed to the predicate whole — the entity layer that owns the
+  // composition "switch plus permission" cannot reach the session itself.
+  const { user } = useAuth();
+  const { canPropose, canReview } = candidateIntakeAccess(user);
   return (
     <div>
       <div data-testid="propose">{canPropose ? 'открыт' : 'закрыт'}</div>
@@ -63,9 +78,9 @@ function IntakeProbe() {
 }
 
 /**
- * Вкладка открыта ответом `before`, а следующее обновление токена вернёт `after`. Первый `refresh`
- * — bootstrap вкладки, поэтому учётку меняет второй (тот же приём, что в
- * `flow-session-refresh-permissions`).
+ * The tab opens with the `before` answer, and the next token refresh returns `after`. The first
+ * `refresh` is the tab bootstrap, so it is the second one that swaps the account (the same device as
+ * in `flow-session-refresh-permissions`).
  */
 function mount(before: AuthUser, after: AuthUser = before) {
   let refreshes = 0;
@@ -76,7 +91,8 @@ function mount(before: AuthUser, after: AuthUser = before) {
       return json(loginResponse(refreshes === 1 ? before : after));
     },
     'GET /auth/me': () => json(before),
-    // Обычный запрос упирается в 401 — сервером учётка уже пересчитана; после обновления проходит.
+    // An ordinary request hits a 401 — the server has already recomputed the account; after the
+    // refresh it goes through.
     'GET /objects': () => {
       objectCalls += 1;
       return objectCalls === 1
@@ -93,14 +109,14 @@ const shown = (id: 'propose' | 'review') => screen.getByTestId(id).textContent;
 describe('приём кандидатов открывает только ответ сессии', () => {
   it('ответ БЕЗ поля features закрывает приём даже держателю propose', async () => {
     const user = oldApiUser();
-    // Фикстура — это и есть предмет проверки: поле обязано ОТСУТСТВОВАТЬ, а не быть пустым.
-    // Пустой массив проверял бы соседнее умолчание («ключа нет в списке»), и подмена одного другим
-    // прошла бы незамеченной.
+    // The fixture is the subject under test: the field must be ABSENT, not empty. An empty array
+    // would check the neighbouring default ("the key is not in the list"), and swapping one for the
+    // other would go unnoticed.
     expect('features' in user).toBe(false);
     mount(user);
 
     await waitFor(() => expect(shown('propose')).toBe('закрыт'));
-    // Право при этом есть: закрыл вход именно рубильник, а не отсутствие полномочия.
+    // The permission is there: what closed the entrance is the switch, not a missing right.
     expect(user.permissions).toContain('officeEquipment.propose');
   });
 
@@ -117,20 +133,21 @@ describe('приём кандидатов открывает только отв
   });
 
   it('включённый рубильник не заменяет права: без propose вход закрыт', async () => {
-    const plain = authUser({
-      role: 'shtab',
-      constructionObjectIds: ['obj-1'],
-      permissions: ['serviceRequests.create', 'serviceRequests.read', 'officeEquipment.read'],
-    });
+    // A role that sees the equipment directory but is not in the requester circle: the dispatcher
+    // does not report devices. The permission has to be absent from the SUBJECT — stripping it from
+    // the effective list alone would describe an account the server never sends.
+    const plain = authUser({ role: 'dispatcher', constructionObjectIds: ['obj-1'] });
+    expect(plain.permissions).not.toContain('officeEquipment.propose');
     mount(withFeatures(plain, 'office_equipment_candidate_intake'));
 
     await waitFor(() => expect(shown('propose')).toBe('закрыт'));
   });
 
   it('выключенный приём оставляет очередь проверки открытой', async () => {
-    // Аварийное выключение прекращает приток, но разобрать уже принятое кто-то обязан: заперев
-    // вместе со входом и проверку, рубильник оставил бы кандидатов без единственной двери решения.
-    mount(oldApiUser(REVIEWER_PERMISSIONS));
+    // An emergency shutdown stops the inflow, but somebody still has to work through what was
+    // already accepted: locking the review away with the entrance would leave candidates without
+    // their only door to a decision.
+    mount(oldApiUser(REVIEWER_GRANT));
 
     await waitFor(() => expect(shown('review')).toBe('открыт'));
     expect(shown('propose')).toBe('закрыт');
@@ -143,10 +160,11 @@ describe('приём кандидатов открывает только отв
     await waitFor(() => expect(shown('propose')).toBe('открыт'));
     screen.getByText('обновить список').click();
 
-    // Сначала само обновление, потом экран: два ожидания вместо одного дают запросам своё окно.
+    // First the refresh itself, then the screen: two waits instead of one give the requests their
+    // own window.
     await waitFor(() => expect(http.countOf('POST /auth/refresh')).toBe(2));
     await waitFor(() => expect(shown('propose')).toBe('закрыт'));
-    // Ни перезагрузки, ни повторного «кто я»: рубильник приехал тем же ответом, что и токен.
+    // No reload and no second "who am I": the switch arrived in the same answer as the token.
     expect(http.countOf('GET /auth/me')).toBe(1);
   });
 });
