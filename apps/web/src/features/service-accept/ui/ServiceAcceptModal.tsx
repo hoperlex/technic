@@ -19,7 +19,7 @@ import { officeEquipmentKeys } from '@entities/office-equipment';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage, formatMoney } from '@shared/lib';
 import { filesApi } from '@entities/file';
-import { useAuth } from '../../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 
 export type AcceptMode = 'accept' | 'rework';
 

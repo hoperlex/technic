@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Button, Tooltip } from 'antd';
 import { ToolOutlined } from '@ant-design/icons';
 import type { ActionSheetItem } from '@shared/ui';
-import { useAuth } from '../../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { useMaintenanceAddress } from '../model/maintenanceAddress';
 import { VehicleMaintenanceModal, type MaintenanceVehicle } from './VehicleMaintenanceModal';
 

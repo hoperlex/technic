@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Typography } from 'antd';
-import { useAuth } from '../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import type { CaptchaState } from '../components/useCaptcha';
 
 /**

@@ -2,8 +2,7 @@ import { useState } from 'react';
 import { App, Button, Card, Form, Input, Typography } from 'antd';
 import { useNavigate } from 'react-router';
 import { PASSWORD_MIN } from '@technic/contracts';
-import { authApi } from '@entities/session';
-import { useAuth } from '../auth/AuthContext';
+import { authApi, useAuth } from '@entities/session';
 import { errorMessage } from '../utils/format';
 
 export function ChangePasswordPage() {

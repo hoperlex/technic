@@ -10,7 +10,7 @@ import {
 } from '@technic/contracts';
 import { formatDateTime } from '@shared/lib';
 import { deviceIdentityApi, deviceMailKeys } from '@entities/device-mail';
-import { useAuth } from '../../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { DeviceIdentityAddModal } from './DeviceIdentityAddModal';
 
 /**

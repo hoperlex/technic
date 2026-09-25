@@ -45,6 +45,7 @@ import {
 } from '@technic/contracts';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 import { userAccountKeys, usersApi, type RestoreUserBody } from '@entities/user-account';
+import { useAuth } from '@entities/session';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -78,7 +79,6 @@ import { isApiError } from '@shared/api';
 import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';

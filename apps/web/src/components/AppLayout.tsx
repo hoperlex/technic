@@ -23,7 +23,7 @@ import {
   type PortalShellSectionId,
 } from '@technic/contracts';
 import { userAccountKeys, usersApi } from '@entities/user-account';
-import { useAuth } from '../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { UtilityMenu, useUtilityMenu } from '@widgets/utility-menu';
 import { useServiceWaitingCount } from '@features/service-waiting-badge';
 import { useServiceChatUnreadCount } from '@features/service-chat';

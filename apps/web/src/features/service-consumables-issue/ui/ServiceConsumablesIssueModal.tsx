@@ -15,8 +15,8 @@ import {
   type ConsumableFactRow,
 } from '@entities/service-request';
 import { officeEquipmentConsumableKeys, officeEquipmentKeys } from '@entities/office-equipment';
+import { useAuth } from '@entities/session';
 import { FormModal } from '@shared/ui';
-import { useAuth } from '../../../auth/AuthContext';
 
 /**
  * Правка факта выдачи (Р6): склад двигает **изменение факта**, а не смена статуса.

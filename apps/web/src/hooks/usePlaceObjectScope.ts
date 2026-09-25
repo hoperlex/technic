@@ -1,6 +1,6 @@
 import { placeObjectScopeIds } from '@technic/contracts';
 import { objectScopeAnswers } from '@shared/lib';
-import { useAuth } from '../auth/AuthContext';
+import { useAuth } from '@entities/session';
 
 /**
  * **Площадочная** область учётки (ADR 0062): у объектной роли — свои объекты, у роли отдела —

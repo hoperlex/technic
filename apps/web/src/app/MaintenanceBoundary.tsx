@@ -12,7 +12,7 @@ import {
   type MaintenanceModeNotice,
 } from '@shared/api';
 import { MOSCOW_TZ } from '@shared/config';
-import { resetAuthBootstrap } from '../auth/AuthContext';
+import { resetAuthBootstrap } from '@entities/session';
 
 /**
  * Граница режима технических работ: пока портал закрыт, приложение не смонтировано вовсе.

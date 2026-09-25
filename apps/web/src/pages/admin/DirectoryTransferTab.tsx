@@ -4,9 +4,9 @@ import { DownloadOutlined, UploadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DirectoryInfoDto } from '@technic/contracts';
 import { directoriesApi, directoryTransferKeys } from '@entities/directory-transfer';
+import { useAuth } from '@entities/session';
 import { DirectoryImportModal } from './DirectoryImportModal';
 import { useIsMobile } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 
 /**

@@ -1,7 +1,7 @@
 import { Tabs } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@shared/lib';
-import { useAuth } from '../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { UsersTab } from './admin/UsersTab';
 import { AccessTab } from './admin/AccessTab';
 import { MailingsTab } from './admin/MailingsTab';

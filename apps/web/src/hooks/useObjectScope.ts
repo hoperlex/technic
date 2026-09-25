@@ -1,6 +1,6 @@
 import { isObjectScopedRole } from '@technic/contracts';
 import { objectScopeAnswers } from '@shared/lib';
-import { useAuth } from '../auth/AuthContext';
+import { useAuth } from '@entities/session';
 
 /**
  * Область объектной роли на портале (ADR 0039): объектов у учётки набор, а не один.

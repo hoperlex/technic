@@ -9,10 +9,10 @@ import {
   type MailingScheduleDto,
 } from '@technic/contracts';
 import { mailingRunKeys, mailingsApi, mailingScheduleKeys } from '@entities/mailing';
+import { useAuth } from '@entities/session';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { actionsColumn, DataTable, RowActionButton, textColumn } from '@shared/ui';
 import { formatDateTime } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { MailingScheduleForm } from './MailingScheduleForm';
 import { mailingRunColumns } from './mailingRunColumns';

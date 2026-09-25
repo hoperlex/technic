@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { App, Button, Card, Form, Input, Typography } from 'antd';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { normalizeEmail } from '@technic/contracts';
-import { useAuth } from '../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '../utils/format';
 
 export function LoginPage() {

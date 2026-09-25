@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
-import { useAuth } from '../../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 
 /**
  * Синий бейдж раздела: сколько заявок несут непрочитанное, адресованное МНЕ (ADR 0141, решение 5).

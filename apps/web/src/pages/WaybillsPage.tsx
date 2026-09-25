@@ -15,6 +15,7 @@ import {
 import { waybillKeys, waybillsApi } from '@entities/waybill';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
+import { useAuth } from '@entities/session';
 import { DataTable, listScopeKey, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import { useRouteModal } from '@features/route-modal';
 import { useDriverOptions, useOwnVehicleOptions } from './vehicle/shared';
@@ -23,7 +24,6 @@ import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from '
 import { useWaybillJournalColumns } from './waybills/columns';
 import { WaybillPrintModal, type PrintTarget } from '../components/WaybillPrint';
 import { useListParams } from '@shared/lib';
-import { useAuth } from '../auth/AuthContext';
 import { errorMessage } from '../utils/format';
 
 /**

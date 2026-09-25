@@ -7,8 +7,8 @@ import {
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { ServiceHint } from '@entities/service-request';
+import { useAuth } from '@entities/session';
 import { ViewModal } from '@shared/ui';
-import { useAuth } from '../../../auth/AuthContext';
 import { useEstimateEditor, type EstimateEditorIntent } from '../model/useEstimateEditor';
 import { EstimateComposition } from './EstimateComposition';
 import { EstimateDocumentFiles, EstimateDocumentSwitch } from './EstimateDocumentMode';

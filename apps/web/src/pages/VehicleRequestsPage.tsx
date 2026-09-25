@@ -1,8 +1,8 @@
 import { Navigate, useSearchParams } from 'react-router';
 import { canOrderVehicleRequestType } from '@technic/contracts';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
+import { useAuth } from '@entities/session';
 import { PageTabs } from '../components/PageTabs';
-import { useAuth } from '../auth/AuthContext';
 import { canSeeArchiveTab } from '../utils/links';
 import { VehicleRequestsTab } from './vehicle/VehicleRequestsTab';
 import { VehicleRequestsOnSiteTab } from './vehicle/VehicleRequestsOnSiteTab';

@@ -12,7 +12,7 @@ import {
 } from '@technic/contracts';
 import { errorMessage } from '@shared/lib';
 import { filesApi } from '@entities/file';
-import { useAuth } from '../../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { fitsFreeMode, type EstimateRow } from './rows';
 
 /** Страница приложенного счёта: идентификатор для тела запроса, имя — для списка на экране. */

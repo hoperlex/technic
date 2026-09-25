@@ -1,6 +1,7 @@
 import { Tabs } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@shared/lib';
+import { useAuth } from '@entities/session';
 import { ObjectsTab } from './directories/ObjectsTab';
 import { DepartmentsTab } from './directories/DepartmentsTab';
 import { CounterpartiesTab } from './directories/CounterpartiesTab';
@@ -14,7 +15,6 @@ import { VehiclesTab } from './directories/VehiclesTab';
 import { TrailersTab } from './directories/TrailersTab';
 import { OfficeEquipmentTab } from './directories/OfficeEquipmentTab';
 import { DriversTab } from './directories/DriversTab';
-import { useAuth } from '../auth/AuthContext';
 
 export function DirectoriesPage() {
   // Вкладок восемь-девять: на телефоне они прокручиваются, и компактный размер оставляет им

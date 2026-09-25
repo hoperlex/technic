@@ -4,13 +4,13 @@ import dayjs from 'dayjs';
 import { useSearchParams } from 'react-router';
 import { useIsMobile } from '@shared/lib';
 import { garageKeys } from '@entities/garage';
+import { useAuth } from '@entities/session';
 import { PageTabs } from '../components/PageTabs';
 import { GarageVehiclesTab } from './garage/GarageVehiclesTab';
 import { GarageDriversTab } from './garage/GarageDriversTab';
 import { ReadingsTab } from './garage/ReadingsTab';
 import { AutoPartReceiptsTab } from './garage/AutoPartReceiptsTab';
 import { readingsSub } from './garage/readingsAddress';
-import { useAuth } from '../auth/AuthContext';
 
 /**
  * Гараж (ADR 0076): чем заняты собственная техника и водители в конкретный день.

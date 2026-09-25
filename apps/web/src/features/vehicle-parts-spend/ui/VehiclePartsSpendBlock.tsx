@@ -1,9 +1,9 @@
 import { Alert, Skeleton, Space, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-receipt';
+import { useAuth } from '@entities/session';
 import { errorMessage, formatMoney } from '@shared/lib';
 import { EntityLink } from '@shared/ui';
-import { useAuth } from '../../../auth/AuthContext';
 
 /**
  * Блок «Автозапчасти» в карточке машины (план `docs/auto-part-receipts-plan.md`, Р16): сколько на

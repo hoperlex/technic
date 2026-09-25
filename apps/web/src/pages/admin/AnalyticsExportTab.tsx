@@ -14,7 +14,7 @@ import {
 } from '@technic/contracts';
 import { analyticsApi } from '@entities/analytics';
 import { objectOptionsQuery } from '@entities/object';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
 
 /**

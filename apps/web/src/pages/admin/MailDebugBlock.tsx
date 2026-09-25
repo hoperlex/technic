@@ -37,8 +37,8 @@ import {
   mailTestDriverKeys,
   mailTestRecipientKeys,
 } from '@entities/mailing';
+import { useAuth } from '@entities/session';
 import { WindowFromField } from './MailingScheduleForm';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 
 interface FormValues {

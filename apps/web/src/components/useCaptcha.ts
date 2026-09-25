@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import type { CaptchaConfig } from '@technic/contracts';
-import { authApi } from '@entities/session';
-import { useAuth } from '../auth/AuthContext';
+import { authApi, useAuth } from '@entities/session';
 
 /**
  * Состояние капчи для формы (план `docs/smart-captcha-plan.md` §5).

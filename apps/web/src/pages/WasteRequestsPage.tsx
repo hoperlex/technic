@@ -64,6 +64,7 @@ import {
   type WasteRequestPayload,
   type WasteRequestUpdatePayload,
 } from '@entities/waste-request';
+import { useAuth } from '@entities/session';
 import { AutoSelect } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '@shared/ui';
@@ -88,7 +89,6 @@ import {
   useTicketAuditMobileAction,
 } from '@features/ticket-audit';
 import { usePlaceObjectScope } from '../hooks/usePlaceObjectScope';
-import { useAuth } from '../auth/AuthContext';
 
 import { errorMessage, formatDateTimeMaybe } from '../utils/format';
 import { withSavedOption } from '@shared/lib';

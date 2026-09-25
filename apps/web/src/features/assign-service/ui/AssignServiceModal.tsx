@@ -14,9 +14,9 @@ import {
   serviceRequestsApi,
 } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
+import { useAuth } from '@entities/session';
 import { FormModal } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
-import { useAuth } from '../../../auth/AuthContext';
 
 /**
  * Строки поля различаются приставкой, а не соседним полем (Н6): в одном списке лежат люди и

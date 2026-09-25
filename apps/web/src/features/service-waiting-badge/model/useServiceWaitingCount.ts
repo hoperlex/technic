@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { isWaitingOn, SERVICE_WAITING_ON } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
-import { useAuth } from '../../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 
 /**
  * Бейдж «ждёт меня» на разделе оргтехники (ADR 0085, Р39).

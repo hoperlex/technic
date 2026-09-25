@@ -1,6 +1,6 @@
 import { App } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useAuth } from '../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '../utils/format';
 
 interface Options {

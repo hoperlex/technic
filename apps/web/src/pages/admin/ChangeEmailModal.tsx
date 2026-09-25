@@ -9,7 +9,7 @@ import {
   type UserDto,
 } from '@technic/contracts';
 import { usersApi } from '@entities/user-account';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
 
 interface Props {

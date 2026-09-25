@@ -10,9 +10,9 @@ import {
   type VehicleMaintenanceDto,
 } from '@technic/contracts';
 import { vehicleMaintenanceApi, vehicleMaintenanceKeys } from '@entities/vehicle-maintenance';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '@shared/lib';
 import { ViewFields } from '@shared/ui';
-import { useAuth } from '../../../auth/AuthContext';
 import {
   VERSION_CONFLICT_MESSAGE,
   isStaleRecord,

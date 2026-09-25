@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Alert, Select, Space, Typography } from 'antd';
 import type { Permission } from '@technic/contracts';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { ReadingsExportTab } from './ReadingsExportTab';
 import { AnalyticsExportTab } from './AnalyticsExportTab';
 

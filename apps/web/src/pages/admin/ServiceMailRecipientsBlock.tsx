@@ -32,7 +32,7 @@ import {
 import { isApiError } from '@shared/api';
 import { formatDateTime } from '@shared/lib';
 import { moduleMailApi, moduleMailKeys } from '@entities/module-mail';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
 
 /**

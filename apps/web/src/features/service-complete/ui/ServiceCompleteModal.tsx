@@ -20,11 +20,11 @@ import {
   type ConsumableFactRow,
 } from '@entities/service-request';
 import { officeEquipmentConsumableKeys, officeEquipmentKeys } from '@entities/office-equipment';
+import { useAuth } from '@entities/session';
 import { FormModal } from '@shared/ui';
 import { errorMessage, formatMoney } from '@shared/lib';
 import { factIssue, factRowsFrom, factToPayload, factTotal, type FactRow } from '../model/fact';
 import { CompleteRows } from './CompleteRows';
-import { useAuth } from '../../../auth/AuthContext';
 
 const DATE = 'YYYY-MM-DD';
 

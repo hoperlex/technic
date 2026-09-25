@@ -1,5 +1,5 @@
 import { isDepartmentScopedRole } from '@technic/contracts';
-import { useAuth } from '../auth/AuthContext';
+import { useAuth } from '@entities/session';
 
 /**
  * Область роли отдела на портале (ADR 0040) — вторая ось рядом с объектной (`useObjectScope`).
