@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import type { AuthUser } from '@technic/contracts';
-import { accessFingerprint } from '../src/auth/accessFingerprint';
+import { accessFingerprint } from '@entities/session';
 import { useAuth } from '../src/auth/AuthContext';
 import { apiFetch } from '../src/shared/api';
 
