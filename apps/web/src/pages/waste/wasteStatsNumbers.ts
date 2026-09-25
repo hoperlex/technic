@@ -1,5 +1,5 @@
 import type { WasteStatsFigures } from '@technic/contracts';
-import { formatMoney } from '../../utils/format';
+import { formatMoney } from '@shared/lib';
 
 /**
  * Числа вкладки «Статистика» вывоза (план `docs/waste-stats-tab-plan.md`) — одним местом на

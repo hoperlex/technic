@@ -1,7 +1,6 @@
 import { Modal, Table, Typography, type TableColumnsType } from 'antd';
 import type { WasteStatsPositionDto, WasteStatsRowDto } from '@technic/contracts';
-import { monthLabel } from '@shared/lib';
-import { formatMoney } from '../../utils/format';
+import { formatMoney, monthLabel } from '@shared/lib';
 import { confirmedNotes, costNotes, volumeNotes, volumeText } from './wasteStatsNumbers';
 
 /**

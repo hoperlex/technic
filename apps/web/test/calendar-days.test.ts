@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calendarDaysLabel } from '../src/utils/date';
+import { calendarDaysLabel } from '@shared/lib';
 
 /**
  * Подсказка о длине периода в заявке на технику: обе границы входят в срок, пустая дата

@@ -6,10 +6,9 @@ import dayjs from 'dayjs';
 import { monthSchema, type WasteStatsRowDto } from '@technic/contracts';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
-import { useListParams } from '@shared/lib';
+import { formatMoney, useListParams } from '@shared/lib';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
-import { formatMoney } from '../../utils/format';
 import { confirmedNotes, costNotes, volumeNotes, volumeText } from './wasteStatsNumbers';
 import { WasteStatsObjectModal } from './WasteStatsObjectModal';
 

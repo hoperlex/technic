@@ -3,7 +3,7 @@ import type { ResolvedWasteTariffDto, WasteRequestDto } from '@technic/contracts
 import { wasteAmountLine, wastePricingHint } from '../src/pages/waste/pricingHint';
 // Числа сверяются через тот же форматтер: разделитель разрядов в ru-RU — неразрывный пробел,
 // и вписанный в ожидание руками он делает тест ложно красным.
-import { formatMoney } from '../src/utils/format';
+import { formatMoney } from '@shared/lib';
 
 /**
  * Строка расчёта в форме заявки и строка стоимости в списке. Незаданный тариф — предупреждение,

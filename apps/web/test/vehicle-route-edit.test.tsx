@@ -10,7 +10,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { dateInput, selectOption, typeDate } from './antd';
-import { formatDateOnly } from '../src/utils/date';
+import { formatDateOnly } from '@shared/lib';
 import { VehicleRouteEditModal } from '../src/pages/vehicle/VehicleRouteEditModal';
 
 /**
