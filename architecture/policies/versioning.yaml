@@ -50,14 +50,34 @@ sources:
   # Единственный источник в репозитории. Манифесты пакетов версию НЕ несут: их четыре, синхронного
   # смысла у них нет, и `0.1.0` там — техническая заглушка рабочего пространства pnpm.
   file: VERSION
-  # Тег на коммите, который выкачен. Нужен системе обслуживания как точка старта и отката.
+  # The release tag (amended 25.09.2026, ADR 0191 §6). It marks the commit that BROUGHT the release
+  # migration, because that commit is unambiguous and checkable from history alone; "the deployed
+  # commit" was neither — deploys go in batches, and nothing in the repository records them. So the
+  # tag means "the release is built", not "the release is deployed": what runs in production is
+  # answered by `deploy-auto --status`. The maintenance system needs the tag as its start and
+  # rollback point, and a built release is exactly that.
   tag:
     pattern: 'v{version}'
+    # Annotated only: a lightweight tag carries no author, date or message, so nobody can tell
+    # afterwards who placed it and on what grounds.
+    kind: annotated
+    # The oldest commit that added the migration inserting this release into `app_releases`
+    # (`git log --diff-filter=A -- <migration> | tail -1`).
+    target: release-migration-commit
     since: '0.1.83.0191'
+    # Releases before `since` stay untagged: 82 of them were deployed without tags, and for some
+    # the release commit cannot be determined reliably. A tag restored by guess is worse than none —
+    # it looks like a fact. The releases 0.1.83.0192…0.1.99.0208 are NOT such a guess: they are at
+    # or above the threshold, and their tags were restored on 25.09.2026 by the migration commit,
+    # which is unambiguous.
     retroactive: false
-    # Задним числом теги не расставляются: 82 прежних выпуска выкатывались без них, и коммит
-    # выпуска у части из них достоверно не определить. Восстановленный наугад тег хуже
-    # отсутствующего — он выглядит как факт.
+    # Tags are pushed so that every clone sees the same start points; a local-only tag is
+    # a warning under `--remote`, a tag that differs from origin is an error.
+    push: origin
+    # The person who pushes the release commit to origin/main places and pushes the tag right after
+    # that push. Not the deploy: a batch deploy spans several releases, and the tag does not depend on
+    # it — each release keeps its own tag on its own migration commit.
+    placedBy: pusher-of-release-commit
   journal:
     table: app_releases
     written_by: migration
@@ -82,6 +102,25 @@ knownCollisions:
       Справочник моделей механизации (выпуск 76) и цветность печати оргтехники (выпуск 77) заняли
       один номер тем же порядком.
 
+# KNOWN SHARED RELEASE COMMITS — several releases brought by one commit, as exact sets of versions.
+#
+# Legal: such a commit gets one tag per release, and VERSION in it shows the eldest of them. Named
+# one by one for the same reason as the collisions above: were "two tags on one commit" allowed in
+# general, a tag placed on the wrong commit would pass as one more such case. A new case is a
+# warning of `pnpm check:version`; `commit` is checked too, so a stale entry does not linger.
+knownSharedReleaseCommits:
+  - commit: 'f7246a0f'
+    versions: ['0.1.87.0197', '0.1.89.0199']
+    reason: >
+      «Аппараты сообщают о себе письмами» (0.1.87.0197) и журнал отправки писем (0.1.89.0199)
+      приехали одним коммитом; 0.1.88.0197 из b5421fb9 — его предок, то есть выпуск 87 появился в
+      истории позже выпуска 88. VERSION в коммите — 0.1.89.0199.
+  - commit: '6b3c3330'
+    versions: ['0.1.92.0202', '0.1.93.0203']
+    reason: >
+      Артикул в строке чека (0.1.92.0202) и распознавание скана чека (0.1.93.0203) приехали одним
+      коммитом. VERSION в коммите — 0.1.93.0203.
+
 consistency:
   check: scripts/check-version.mjs
   command: pnpm check:version
@@ -99,11 +138,49 @@ consistency:
       text: >
         Решение из хвоста версии существует в `docs/adr` — либо повторяет хвост предыдущего
         выпуска.
+    # Tag rules. `mode` names the flag that turns a rule on: the default run stays cheap and
+    # offline, the audit reads the whole history, and only `--remote` touches the network.
     - id: tag-present
       severity: warning
+      mode: default
       text: >
-        У выпуска начиная с `tag.since` есть тег `v<версия>`. Предупреждение, а не ошибка: тег
-        ставится в момент выката, а проверка запускается и до него.
+        У каждого выпуска начиная с `tag.since` есть тег `v<версия>` — у всех, а не только у
+        текущего. Предупреждение, а не ошибка: тег ставится после пуша коммита выпуска, а проверка
+        запускается и до него.
+    - id: release-commit-shared
+      severity: warning
+      mode: default
+      text: >
+        Несколько выпусков, привезённых одним коммитом, перечислены в `knownSharedReleaseCommits`
+        точным множеством; новый такой случай — предупреждение, устаревшая запись — тоже.
+    - id: tag-annotated
+      severity: error
+      mode: --tags
+      text: >
+        Тег выпуска аннотированный (`git tag -a`), а не лёгкий.
+    - id: tag-on-release-migration-commit
+      severity: error
+      mode: --tags
+      text: >
+        Тег `v<версия>` указывает (`^{commit}`) ровно на коммит, который добавил миграцию с
+        записью этого выпуска в `app_releases`. Тег без такой записи — тоже ошибка.
+    - id: tag-commit-version
+      severity: warning
+      mode: --tags
+      text: >
+        В помеченном коммите `VERSION` показывает старший из выпусков, которые этот коммит привёз.
+    - id: tag-pushed
+      severity: warning
+      mode: --remote
+      text: >
+        Тег выпуска запушен в origin; тег, который есть в origin, но не локально, — тоже
+        предупреждение.
+    - id: tag-matches-origin
+      severity: error
+      mode: --remote
+      text: >
+        Тег в origin указывает на тот же коммит, что и локальный: иначе две машины называют одним
+        выпуском разные коммиты.
 
 firstMajor:
   # Условия перехода на 1.0. Дата не назначается: major поднимается тогда, когда все условия
@@ -124,7 +201,7 @@ firstMajor:
     - id: version-anchored
       text: >
         Версия согласована в трёх местах — `VERSION`, тег выпуска, запись журнала, — и это
-        подтверждает `pnpm check:version`.
+        подтверждает `pnpm check:version -- --tags --remote` без ошибок.
     - id: release-convergence-runs
       text: >
         Релизный цикл системы обслуживания отработал на выпуске целиком: партии приняты или
