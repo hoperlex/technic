@@ -3,8 +3,8 @@ import { App, DatePicker, Form, Input, InputNumber, Modal, Radio, Typography } f
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { WasteTicketDto, WasteTicketWorkKind } from '@technic/contracts';
-import { wasteTicketKeys, wasteTicketsApi } from '@entities/waste-ticket';
-import { errorMessage } from '../../../utils/format';
+import { wasteTicketErrorLabels, wasteTicketKeys, wasteTicketsApi } from '@entities/waste-ticket';
+import { errorMessage } from '@shared/lib';
 
 /**
  * Талон руками: заведение и правка одним окном (ADR 0114, Р15, Р27).
@@ -84,7 +84,7 @@ export function TicketFormModal({
       onClose();
     },
     onError: (e) => {
-      const text = errorMessage(e);
+      const text = errorMessage(e, wasteTicketErrorLabels);
       // 409 про номер — не отказ, а вопрос: та же бумага или другая с тем же номером. Поле причины
       // появляется прямо в этом окне, и следующая отправка уходит вместе с ней.
       if (text.includes('уже предъявлен')) {

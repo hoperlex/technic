@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Spin, Tooltip, Typography } from 'antd';
 import { FileImageOutlined } from '@ant-design/icons';
-import { useIsMobile } from '@shared/lib';
+import { errorMessage, useIsMobile } from '@shared/lib';
 import { ViewModal } from '@shared/ui';
 import { filesApi } from '@entities/file';
-import { errorMessage } from '../../../utils/format';
 import { SCAN_GONE_NOTE, scanAriaLabel, scanTitle } from '../model/eventRows';
 
 /**

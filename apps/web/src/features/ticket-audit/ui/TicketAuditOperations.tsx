@@ -2,8 +2,7 @@ import { Alert, Button, Skeleton, Space, Tooltip, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import type { TicketAuditOperationsDto } from '@technic/contracts';
 import { ticketAuditOperationsQuery } from '@entities/waste-ticket';
-import { useIsMobile } from '@shared/lib';
-import { errorMessage } from '../../../utils/format';
+import { errorMessage, useIsMobile } from '@shared/lib';
 import {
   OPERATIONS_NO_PERIOD_NOTE,
   OPERATIONS_STATES,

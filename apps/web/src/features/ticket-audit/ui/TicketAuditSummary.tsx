@@ -7,9 +7,8 @@ import {
   type TicketAuditPeriod,
   type TicketAuditSummaryDto,
 } from '@technic/contracts';
-import { ticketAuditSummaryQuery } from '@entities/waste-ticket';
-import { useIsMobile } from '@shared/lib';
-import { errorMessage } from '../../../utils/format';
+import { ticketAuditErrorLabels, ticketAuditSummaryQuery } from '@entities/waste-ticket';
+import { errorMessage, useIsMobile } from '@shared/lib';
 import { CASCADE_FIELDS_NOTE } from '../model/numbers';
 import { FieldCards, FieldTable } from './FieldRows';
 import { PeriodBar } from './PeriodBar';
@@ -48,7 +47,7 @@ export function TicketAuditSummary({ period, onPeriodChange, enabled }: Props) {
           type="error"
           showIcon
           title="Сводка не загрузилась"
-          description={errorMessage(error)}
+          description={errorMessage(error, ticketAuditErrorLabels)}
           // Кнопка, а не молчаливое повторение: сеть отвалилась на минуту — человек решает сам,
           // ждать ли ему ещё; отчёт за прошедший период никуда не убежит.
           action={

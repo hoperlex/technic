@@ -28,6 +28,7 @@ export {
   consumableLabel,
   type ConsumableFactRow,
 } from './model/consumables';
+export { serviceChatErrorLabels } from './model/fieldLabels';
 export { serviceRepeatHint, serviceRepeatSummary } from './model/repeat';
 export {
   isAwaitingDocuments,

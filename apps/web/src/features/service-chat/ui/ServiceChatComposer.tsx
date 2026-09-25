@@ -9,7 +9,8 @@ import {
   type ServiceChatMessageDto,
   type ServiceRequestDto,
 } from '@technic/contracts';
-import { serviceRequestsApi } from '@entities/service-request';
+import { serviceChatErrorLabels, serviceRequestsApi } from '@entities/service-request';
+import { errorMessage } from '@shared/lib';
 import { useServiceChatInvalidate } from '../model/invalidate';
 import {
   addresseeOptions,
@@ -18,7 +19,6 @@ import {
   splitAddressees,
   type AddresseeValue,
 } from '../model/addressees';
-import { errorMessage } from '../../../utils/format';
 
 /** Подписи полей связаны с ними по `id`: своей формы у окна нет, а метка нужна и мыши, и экрану. */
 const ADDRESSEE_FIELD = 'service-chat-addressees';
@@ -76,7 +76,7 @@ export function ServiceChatComposer({
       setBody('');
       invalidate(request.id);
     },
-    onError: (e) => toast.error(errorMessage(e)),
+    onError: (e) => toast.error(errorMessage(e, serviceChatErrorLabels)),
   });
 
   // Наблюдатель и закрытая заявка (§3.1): и то и другое сервер проверяет сам, а `canWrite` — его

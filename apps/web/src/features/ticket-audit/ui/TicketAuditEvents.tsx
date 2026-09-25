@@ -2,9 +2,12 @@ import { Alert, App, Button, Empty, Pagination, Skeleton, Space, Typography } fr
 import { DownloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type { TicketAuditEventsDto, TicketAuditPeriod } from '@technic/contracts';
-import { ticketAuditEventsQuery, wasteTicketsApi } from '@entities/waste-ticket';
-import { useIsMobile } from '@shared/lib';
-import { errorMessage } from '../../../utils/format';
+import {
+  ticketAuditErrorLabels,
+  ticketAuditEventsQuery,
+  wasteTicketsApi,
+} from '@entities/waste-ticket';
+import { errorMessage, useIsMobile } from '@shared/lib';
 import { EVENTS_EXPORT_NOTE, FIRST_PAGE, ticketAuditEventsRequest } from '../model/eventFilters';
 import { EVENTS_PERIOD_NOTE } from '../model/period';
 import { useTicketAuditEvents } from '../model/useTicketAuditEvents';
@@ -56,7 +59,7 @@ export function TicketAuditEvents({ period, onPeriodChange, enabled }: Props) {
    */
   const exportCsv = useMutation({
     mutationFn: () => wasteTicketsApi.auditEventsCsv(request),
-    onError: (e: unknown) => message.error(errorMessage(e)),
+    onError: (e: unknown) => message.error(errorMessage(e, ticketAuditErrorLabels)),
   });
 
   return (
@@ -93,7 +96,7 @@ export function TicketAuditEvents({ period, onPeriodChange, enabled }: Props) {
           type="error"
           showIcon
           title="Лента не загрузилась"
-          description={errorMessage(error)}
+          description={errorMessage(error, ticketAuditErrorLabels)}
           // Кнопка, а не молчаливое повторение: сеть отвалилась на минуту — человек решает сам,
           // ждать ли ему ещё; журнал за прошедшие дни никуда не убежит.
           action={

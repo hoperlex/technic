@@ -8,8 +8,8 @@ import type {
   WasteTicketBlindCheckField,
   WasteTicketReadingDto,
 } from '@technic/contracts';
-import { wasteTicketKeys, wasteTicketsApi } from '@entities/waste-ticket';
-import { errorMessage } from '../../../utils/format';
+import { wasteTicketErrorLabels, wasteTicketKeys, wasteTicketsApi } from '@entities/waste-ticket';
+import { errorMessage } from '@shared/lib';
 import { ticketDate } from './ticketDate';
 
 /**
@@ -202,7 +202,7 @@ function ArbitrateModal({
       message.success('Расхождение разобрано');
       onClose();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e) => message.error(errorMessage(e, wasteTicketErrorLabels)),
   });
 
   return (

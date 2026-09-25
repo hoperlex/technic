@@ -1,9 +1,8 @@
 import { Alert, Button, Empty, Skeleton, Space, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import type { TicketAuditCohortsDto, TicketAuditPeriod } from '@technic/contracts';
-import { ticketAuditCohortsQuery } from '@entities/waste-ticket';
-import { useIsMobile } from '@shared/lib';
-import { errorMessage } from '../../../utils/format';
+import { ticketAuditCohortsQuery, ticketAuditErrorLabels } from '@entities/waste-ticket';
+import { errorMessage, useIsMobile } from '@shared/lib';
 import { sortCohorts } from '../model/cohorts';
 import { COHORTS_INCOMPARABLE_NOTE } from '../model/numbers';
 import { CohortCards, CohortTable } from './CohortRows';
@@ -45,7 +44,7 @@ export function TicketAuditCohorts({ period, onPeriodChange, enabled }: Props) {
           type="error"
           showIcon
           title="Когорты не загрузились"
-          description={errorMessage(error)}
+          description={errorMessage(error, ticketAuditErrorLabels)}
           // Кнопка, а не молчаливое повторение: сеть отвалилась на минуту — человек решает сам,
           // ждать ли ему ещё; отчёт за прошедший период никуда не убежит.
           action={

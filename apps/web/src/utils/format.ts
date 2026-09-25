@@ -6,11 +6,13 @@ import { formatDate, formatDateTime, errorMessage as sharedErrorMessage } from '
  *
  * `FIELD_LABELS` with `errorMessage` — the labels of screens not yet moved into slices. The rule
  * itself is written in `shared/lib/errors.ts`: the dictionary is domain knowledge and arrives as an
- * argument, one entity labelling its own fields. It is followed only halfway today — around a
- * hundred screens call this wrapper and get labels, while about as many call the shared function
- * with no dictionary at all and print `newPassword` where a person expects «Новый пароль». Moving
- * the labels to their owners is what finishes the rule; until then this dictionary is the half that
- * works.
+ * argument, one entity labelling its own fields. It is followed only halfway today — some ninety
+ * screens, nearly all of them pages, call this wrapper and get labels, while some fifty more call
+ * the shared function with no dictionary at all and print `newPassword` where a person expects
+ * «Новый пароль». Moving the labels to their owners is what finishes the rule, and the waste ticket
+ * has already gone that way (`entities/waste-ticket/model/fieldLabels.ts`): it is the worked example
+ * of where the next dictionary belongs and of which keys are deliberately left unlabelled. Until
+ * then this dictionary is the half that works.
  *
  * `formatDateTimeMaybe` asks about a request, not about a moment: with `timeUnspecified` only the
  * date is agreed, and printing «00:00» would claim an hour nobody agreed. That makes it a request's

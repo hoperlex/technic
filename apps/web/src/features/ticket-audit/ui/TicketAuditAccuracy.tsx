@@ -1,9 +1,8 @@
 import { Alert, Button, Empty, Skeleton, Space, Tooltip, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import type { TicketAuditAccuracyDto, TicketAuditPeriod } from '@technic/contracts';
-import { ticketAuditAccuracyQuery } from '@entities/waste-ticket';
-import { useIsMobile } from '@shared/lib';
-import { errorMessage } from '../../../utils/format';
+import { ticketAuditAccuracyQuery, ticketAuditErrorLabels } from '@entities/waste-ticket';
+import { errorMessage, useIsMobile } from '@shared/lib';
 import {
   ACCURACY_ARBITRATION_NOTE,
   ACCURACY_BIAS_NOTE,
@@ -63,7 +62,7 @@ export function TicketAuditAccuracy({ period, onPeriodChange, enabled }: Props) 
           type="error"
           showIcon
           title="Точность не загрузилась"
-          description={errorMessage(error)}
+          description={errorMessage(error, ticketAuditErrorLabels)}
           // Кнопка, а не молчаливое повторение: сеть отвалилась на минуту — человек решает сам,
           // ждать ли ему ещё; отчёт за прошедший период никуда не убежит.
           action={

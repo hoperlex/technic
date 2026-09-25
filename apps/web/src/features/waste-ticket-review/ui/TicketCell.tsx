@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { wasteTicketAutoConfirmReady, type WasteRequestDto } from '@technic/contracts';
 import { wasteRequestKeys } from '@entities/waste-request';
 import { wasteTicketsApi } from '@entities/waste-ticket';
-import { errorMessage } from '../../../utils/format';
+import { errorMessage } from '@shared/lib';
 import { TicketBadge } from './TicketBadge';
 
 /**

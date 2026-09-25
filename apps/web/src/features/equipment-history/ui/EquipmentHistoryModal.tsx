@@ -4,8 +4,7 @@ import { officeEquipmentTitle, type OfficeEquipmentDto } from '@technic/contract
 import { officeEquipmentApi, WarrantyTag } from '@entities/office-equipment';
 import { useAuth } from '@entities/session';
 import { ViewModal } from '@shared/ui';
-import { formatDate } from '@shared/lib';
-import { errorMessage } from '../../../utils/format';
+import { errorMessage, formatDate } from '@shared/lib';
 import { ChangesBlock } from './ChangesBlock';
 import { FullHistoryBlock } from './FullHistoryBlock';
 import { MovementsBlock } from './MovementsBlock';

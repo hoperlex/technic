@@ -5,6 +5,7 @@
 export { wasteTicketsApi } from './api/wasteTicketsApi';
 export type { TicketRecognitionHealth } from './api/wasteTicketsApi';
 export { wasteTicketKeys } from './api/keys';
+export { ticketAuditErrorLabels, wasteTicketErrorLabels } from './model/fieldLabels';
 export {
   ticketAuditAccuracyQuery,
   ticketAuditCohortsQuery,
