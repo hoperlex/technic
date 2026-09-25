@@ -6,8 +6,7 @@ import {
   type WeeklySuggestionDto,
   type WeeklySuggestionOrderDto,
 } from '@technic/contracts';
-import { useIsMobile } from '@shared/lib';
-import { formatDateOnly } from '../../utils/date';
+import { formatDateOnly, useIsMobile } from '@shared/lib';
 import type { WeeklyOrderDecision, WeeklyOrderRow } from './weeklyComposition';
 import { ItemWarnings, weeklyPreviousText } from './weeklyShared';
 

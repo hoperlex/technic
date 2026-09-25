@@ -108,15 +108,16 @@ import {
 } from '@features/request-customer';
 import { garageKeys } from '@entities/garage';
 import { useIsMobile, useListParams, useOpenedRecord, withSavedOption } from '@shared/lib';
+import { calendarDaysLabel, formatDate, formatDateTime } from '@shared/lib';
 import {
   classificationKeyOf,
   useVehicleClassifications,
   withSavedClassification,
 } from '../../hooks/useVehicleClassifications';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage, formatDate, formatDateTime } from '../../utils/format';
+import { errorMessage } from '../../utils/format';
 import { canOpenRoute, vehicleRouteLink } from '../../utils/links';
-import { calendarDaysLabel, vehicleRequestDateRules } from '../../utils/date';
+import { vehicleRequestDateRules } from '../../utils/date';
 
 import { FilesCell } from '../../components/FileLinks';
 import { VehicleAssignModal } from './VehicleAssignModal';

@@ -1,8 +1,8 @@
 import { Alert } from 'antd';
 import { WAYBILL_CORRECTION_CONFIRM, type VehicleRouteDto } from '@technic/contracts';
+import { formatDateTime } from '@shared/lib';
 import type { vehicleRoutesApi } from '@entities/vehicle-route';
 import type { waybillsApi } from '@entities/waybill';
-import { formatDateTime } from '../../utils/format';
 import { formatDateOnly } from './shared';
 
 /**

@@ -5,9 +5,9 @@ import {
   type VehicleRequestShiftDto,
   workedAmountLabel,
 } from '@technic/contracts';
+import { formatDateTime } from '@shared/lib';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { UserAvatar } from '../../components/UserAvatar';
-import { formatDateTime } from '../../utils/format';
 import { formatDateOnly } from './shared';
 
 /**

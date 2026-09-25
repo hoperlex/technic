@@ -9,8 +9,8 @@ import {
   routeDateMismatch,
   type VehicleRequestDto,
 } from '@technic/contracts';
+import { formatDateOnly } from '@shared/lib';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
-import { formatDateOnly } from '../../utils/date';
 
 /**
  * Задним числом (ADR 0101, Р6 и Р15): причина правки и её цена — в той же форме, где выбрали дату.

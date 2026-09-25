@@ -7,8 +7,8 @@ import {
   type VehicleRequestDto,
   type VehicleRouteDto,
 } from '@technic/contracts';
+import { formatDateOnly } from '@shared/lib';
 import { formatDateTimeMaybe } from '../../utils/format';
-import { formatDateOnly } from '../../utils/date';
 
 /**
  * Текст о заявке, собранный по её собственным данным: срок строкой и два перечня того, что заявка

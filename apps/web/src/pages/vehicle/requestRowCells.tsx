@@ -14,9 +14,8 @@ import {
   requestStatusLabels,
 } from '@technic/contracts';
 import { ActionSheet } from '@shared/ui';
-import { useIsMobile } from '@shared/lib';
+import { formatDateTime, useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
-import { formatDateTime } from '../../utils/format';
 
 /**
  * Две ячейки, которыми заявкой распоряжаются прямо из строки списка: статус (ADR 0021) и виза

@@ -4,7 +4,7 @@ import type {
   VehicleRequestDto,
   VehicleWorkUnit,
 } from '@technic/contracts';
-import { calendarDayCount } from '../../utils/date';
+import { calendarDayCount } from '@shared/lib';
 import type { CompletionFormValues } from './CompletionFields';
 
 /**

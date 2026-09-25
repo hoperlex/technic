@@ -42,12 +42,12 @@ import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHi
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
 import { useIsMobile } from '@shared/lib';
+import { calendarDaysLabel, formatDate, formatDateTime, formatMoney } from '@shared/lib';
 import { EntityLink, ViewFields, ViewModal } from '@shared/ui';
 import { canOpenRoute, vehicleRequestLink, vehicleRouteLink, waybillLink } from '../../utils/links';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { PhoneLink } from '../../components/PhoneField';
-import { calendarDaysLabel } from '../../utils/date';
-import { formatDate, formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
+import { formatDateTimeMaybe } from '../../utils/format';
 import { formatDateOnly, tripsCountLabel } from './shared';
 import { useRouteModal } from '@features/route-modal';
 import { vehicleRequestCardFooter } from './VehicleRequestCardFooter';

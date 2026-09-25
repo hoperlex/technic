@@ -17,17 +17,17 @@ import type {
   VehicleClassificationOption,
 } from '../../hooks/useVehicleClassifications';
 import { AutoSelect, ExpandableCell, type FilterDefinition } from '@shared/ui';
+import { formatDateOnly } from '@shared/lib';
 import { FileLinkList } from '../../components/FileLinks';
 import { errorMessage } from '../../utils/format';
-import { formatDateOnly } from '../../utils/date';
 import { objectsApi, objectKeys } from '@entities/object';
 
 export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 
 /**
- * Дата без времени переехала к остальным правилам дат (`utils/date`): её печатает и гараж
- * (ADR 0076), которому эта страница не видна. Реэкспорт — для прежних потребителей.
+ * Date-only formatting lives in the foundation (`@shared/lib`): the garage prints it too
+ * (ADR 0076) and this page is invisible from there. Re-exported here for earlier consumers.
  */
 export { formatDateOnly };
 

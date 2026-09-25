@@ -1,7 +1,7 @@
 import type { Dayjs } from 'dayjs';
 import type { ReactNode } from 'react';
 import type { RequestStatus, VehicleRequestDto } from '@technic/contracts';
-import { formatDateOnly } from '../../utils/date';
+import { formatDateOnly } from '@shared/lib';
 import { copyScheduledPlan, copyTermPlan, scheduledMoment } from './requestFormValues';
 
 /**

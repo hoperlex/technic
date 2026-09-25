@@ -11,8 +11,8 @@ import {
   type SpecialEquipmentRequestDto,
 } from '@technic/contracts';
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
+import { calendarDaysLabel } from '@shared/lib';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
-import { calendarDaysLabel } from '../../utils/date';
 import { errorMessage } from '../../utils/format';
 import { EarlyEndConsequences } from './EarlyEndConsequences';
 import { reassignStaleReason } from './ReassignPreview';

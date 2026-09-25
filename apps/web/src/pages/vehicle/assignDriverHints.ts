@@ -17,7 +17,7 @@ import {
   type WaybillFormCode,
   waybillFormShortLabels,
 } from '@technic/contracts';
-import { formatDateOnly } from '../../utils/date';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Что окно назначения техники говорит про человека: машиниста ЭСМ-2 и водителя рейса.

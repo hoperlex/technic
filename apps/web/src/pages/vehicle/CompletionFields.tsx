@@ -31,8 +31,7 @@ import {
   workedAmountLabel,
 } from '@technic/contracts';
 import { FormGrid } from '@shared/ui';
-import { calendarDayCount } from '../../utils/date';
-import { formatMoney } from '../../utils/format';
+import { calendarDayCount, formatMoney } from '@shared/lib';
 import { formatDateOnly } from './shared';
 
 /**

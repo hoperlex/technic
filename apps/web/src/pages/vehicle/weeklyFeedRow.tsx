@@ -6,8 +6,7 @@ import {
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { ExpandableCell } from '@shared/ui';
-import { formatDateOnly } from '../../utils/date';
-import { formatDateTime } from '../../utils/format';
+import { formatDateOnly, formatDateTime } from '@shared/lib';
 
 /**
  * Ячейки недельной заявки в общем списке «Заказ автотехники».
