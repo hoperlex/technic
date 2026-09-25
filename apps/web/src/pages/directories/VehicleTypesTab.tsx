@@ -43,7 +43,7 @@ import { DataTable, type CardConfig, type TableChange } from '@shared/ui';
 import { FormModal, PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, textColumn } from '@shared/ui';
-import { formatDateOnly } from '../../utils/date';
+import { formatDateOnly } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { VehicleTypeCardDrawer } from './VehicleTypeCardDrawer';
 import { VehicleTypeFormFields, type VtFormValues } from './VehicleTypeFormFields';

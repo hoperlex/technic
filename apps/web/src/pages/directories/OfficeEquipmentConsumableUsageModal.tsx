@@ -19,13 +19,12 @@ import {
 } from '@technic/contracts';
 import { Link } from 'react-router';
 import { SummaryBar, ViewModal } from '@shared/ui';
-import { errorMessage, useIsMobile } from '@shared/lib';
+import { errorMessage, formatDateTime, useIsMobile } from '@shared/lib';
 import {
   officeEquipmentConsumablePickerQuery,
   officeEquipmentConsumableKeys,
   officeEquipmentConsumablesApi,
 } from '@entities/office-equipment';
-import { formatDateTime } from '../../utils/format';
 
 /**
  * Расход расходников за период (наброски переработки заявок, Р10; опрос В18).

@@ -17,9 +17,8 @@ import {
   type MailStatus,
 } from '@technic/contracts';
 import { MOSCOW_TZ } from '@shared/config';
-import { useListParams } from '@shared/lib';
+import { formatDateTime, useListParams } from '@shared/lib';
 import { mailLogApi, mailLogKeys } from '@entities/mail-log';
-import { formatDateTime } from '../../utils/format';
 import { MailLogModal } from './MailLogModal';
 
 /**

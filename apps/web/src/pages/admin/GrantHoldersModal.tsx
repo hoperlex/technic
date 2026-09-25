@@ -9,9 +9,10 @@ import {
 } from '@technic/contracts';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { ViewModal } from '@shared/ui';
+import { formatDateTime } from '@shared/lib';
 import { grantKeys, grantsApi, userGrantsApi } from '@entities/grant';
 import { userAccountKeys, usersApi } from '@entities/user-account';
-import { errorMessage, formatDateTime } from '../../utils/format';
+import { errorMessage } from '../../utils/format';
 import { GrantImpactConfirm } from './GrantImpactConfirm';
 import {
   isPendingRoleMigration,

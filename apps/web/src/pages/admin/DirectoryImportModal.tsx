@@ -13,7 +13,8 @@ import {
 } from '@technic/contracts';
 import { directoriesApi } from '@entities/directory-transfer';
 import { ViewModal } from '@shared/ui';
-import { errorMessage, formatBytes } from '../../utils/format';
+import { formatBytes } from '@shared/lib';
+import { errorMessage } from '../../utils/format';
 
 /**
  * Загрузка правленого справочника файлом Excel (ADR 0073).

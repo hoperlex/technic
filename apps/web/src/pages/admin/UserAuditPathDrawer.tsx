@@ -8,10 +8,9 @@ import {
   type UserAccountDto,
 } from '@technic/contracts';
 import { ViewFields, type ViewField } from '@shared/ui';
-import { useIsMobile } from '@shared/lib';
+import { formatDateTime, useIsMobile } from '@shared/lib';
 import { usersApi } from '@entities/user-account';
 import { auditApi, userAuditKeys } from '@entities/user-audit';
-import { formatDateTime } from '../../utils/format';
 import { AuditEventCell } from './UserAuditChanges';
 
 /**

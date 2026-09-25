@@ -7,8 +7,8 @@ import {
   mailStatusColors,
   mailStatusLabels,
 } from '@technic/contracts';
+import { formatDateTime } from '@shared/lib';
 import { mailLogApi, mailLogKeys } from '@entities/mail-log';
-import { formatDateTime } from '../../utils/format';
 
 /**
  * Письмо целиком — по клику на строке журнала (ADR 0199).

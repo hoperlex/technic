@@ -30,9 +30,10 @@ import {
   type ReplyToMode,
 } from '@technic/contracts';
 import { isApiError } from '@shared/api';
+import { formatDateTime } from '@shared/lib';
 import { moduleMailApi, moduleMailKeys } from '@entities/module-mail';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage, formatDateTime } from '../../utils/format';
+import { errorMessage } from '../../utils/format';
 
 /**
  * Служебные адреса: на какой ящик уходит письмо по событию модуля (план

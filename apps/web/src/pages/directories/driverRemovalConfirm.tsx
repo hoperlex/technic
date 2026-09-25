@@ -5,7 +5,7 @@ import {
   type DriverRemovalAckRequiredDetails,
 } from '@technic/contracts';
 import { isApiError } from '@shared/api';
-import { formatDateOnly } from '../../utils/date';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Подтверждение удаления карточки водителя (решение `docs/adr/0190-person-soft-removal.md`, п. 5;

@@ -5,8 +5,7 @@ import {
   type MailingRunDto,
 } from '@technic/contracts';
 import { textColumn } from '@shared/ui';
-import { formatDateTime } from '../../utils/format';
-import { formatDateOnly } from '../../utils/date';
+import { formatDateOnly, formatDateTime } from '@shared/lib';
 
 /**
  * История запусков рассылки: чем кончился каждый её выход.

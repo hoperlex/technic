@@ -11,8 +11,9 @@ import {
 import { mailingRunKeys, mailingsApi, mailingScheduleKeys } from '@entities/mailing';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { actionsColumn, DataTable, RowActionButton, textColumn } from '@shared/ui';
+import { formatDateTime } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage, formatDateTime } from '../../utils/format';
+import { errorMessage } from '../../utils/format';
 import { MailingScheduleForm } from './MailingScheduleForm';
 import { mailingRunColumns } from './mailingRunColumns';
 import { permissionLabel } from './grantModel';

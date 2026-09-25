@@ -6,9 +6,10 @@ import {
   type ModuleMailEventSettingDto,
 } from '@technic/contracts';
 import { isApiError } from '@shared/api';
+import { formatDateTime } from '@shared/lib';
 import { moduleMailEventKeys, moduleMailEventsApi } from '@entities/module-mail';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage, formatDateTime } from '../../utils/format';
+import { errorMessage } from '../../utils/format';
 
 /**
  * Рубильники событий: уходит ли письмо по событию вообще (план

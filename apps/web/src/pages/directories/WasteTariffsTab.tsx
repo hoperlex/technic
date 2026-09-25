@@ -38,8 +38,8 @@ import { DataTable } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import type { FilterDefinition } from '@shared/ui';
-import { useIsMobile, useListParams } from '@shared/lib';
-import { errorMessage, formatMoney } from '../../utils/format';
+import { formatMoney, useIsMobile, useListParams } from '@shared/lib';
+import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import {
   buildWasteTariffGrid,
