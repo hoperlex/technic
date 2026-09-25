@@ -13,7 +13,7 @@ import {
 import { EntityLink } from '@shared/ui';
 import { UserAvatar } from '../../components/UserAvatar';
 import { vehicleRouteLink, waybillLink } from '../../utils/links';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Колонки таблицы «Дни работ»: чем день закрыт, кем, какой бумагой и что за него подтвердили.

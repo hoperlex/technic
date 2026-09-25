@@ -18,9 +18,8 @@ import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { waybillKeys } from '@entities/waybill';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
-import { useIsMobile } from '@shared/lib';
+import { formatDateOnly, useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
-import { formatDateOnly } from './shared';
 import { BackdateReasonField } from './VehicleBackdateFields';
 import { ackRequiredDetails, confirmWaybillWarnings } from './waybillAckConfirm';
 

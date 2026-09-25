@@ -31,8 +31,7 @@ import {
   workedAmountLabel,
 } from '@technic/contracts';
 import { FormGrid } from '@shared/ui';
-import { calendarDayCount, formatMoney } from '@shared/lib';
-import { formatDateOnly } from './shared';
+import { calendarDayCount, formatDateOnly, formatMoney } from '@shared/lib';
 
 /**
  * Поля факта закрытия: фактическая дата, отработанное, стоимость и комментарий (ADR 0029, ADR 0178).

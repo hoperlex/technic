@@ -8,7 +8,7 @@ import {
 } from '@technic/contracts';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { FormGrid, FormModal } from '@shared/ui';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 import { DayBatchFields, type DayBatchFormValues } from './DayBatchFields';
 import { useDayBatch } from './useDayBatch';
 

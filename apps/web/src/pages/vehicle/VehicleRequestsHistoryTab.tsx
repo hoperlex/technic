@@ -39,13 +39,12 @@ import { SummaryBar } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
-import { useListParams, useOpenedRecord } from '@shared/lib';
+import { formatDateOnly, useListParams, useOpenedRecord } from '@shared/lib';
 import { calendarDayCount, formatDate, formatMoney } from '@shared/lib';
 import { useAuth } from '@entities/session';
 import { formatDateTimeMaybe } from '../../utils/format';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import {
-  formatDateOnly,
   RequestAssignmentCell,
   useLessorOptions,
   useVehicleClassificationFilter,

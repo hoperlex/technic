@@ -1,9 +1,8 @@
 import { Alert } from 'antd';
 import { WAYBILL_CORRECTION_CONFIRM, type VehicleRouteDto } from '@technic/contracts';
-import { formatDateTime } from '@shared/lib';
+import { formatDateOnly, formatDateTime } from '@shared/lib';
 import type { vehicleRoutesApi } from '@entities/vehicle-route';
 import type { waybillsApi } from '@entities/waybill';
-import { formatDateOnly } from './shared';
 
 /**
  * Цена коррекции рейса, прочитанная человеком **до** нажатия (ADR 0101, Р18 и Р36): какой номер

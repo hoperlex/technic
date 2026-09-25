@@ -1,4 +1,3 @@
-import { isApiError } from '@shared/api';
 import { formatDate, formatDateTime, errorMessage as sharedErrorMessage } from '@shared/lib';
 
 /*
@@ -16,12 +15,6 @@ import { formatDate, formatDateTime, errorMessage as sharedErrorMessage } from '
  * `formatDateTimeMaybe` asks about a request, not about a moment: with `timeUnspecified` only the
  * date is agreed, and printing «00:00» would claim an hour nobody agreed. That makes it a request's
  * knowledge, and it waits for a slice of its own.
- *
- * `errorFields` is a DUPLICATE and the only thing here that should not simply move: the same
- * function stands in `shared/lib/errors.ts`, both guarded by the same shape test. Its three callers
- * are the login and registration pages; merging them is a change of one import each, and the reason
- * it has not happened yet is that nobody noticed two — which is exactly how a duplicate earns its
- * keep.
  */
 
 /**
@@ -67,11 +60,6 @@ const FIELD_LABELS: Record<string, string> = {
   password: 'Пароль',
   newPassword: 'Новый пароль',
 };
-
-/** Поля с ошибками из ответа сервера (`validation_error` или доменная 400 с `fields`). */
-export function errorFields(e: unknown): Record<string, string> | null {
-  return isApiError(e) && e.fields && Object.keys(e.fields).length > 0 ? e.fields : null;
-}
 
 /**
  * Человекочитаемое сообщение об ошибке: механизм общий (`shared/lib`), здесь — только словарь

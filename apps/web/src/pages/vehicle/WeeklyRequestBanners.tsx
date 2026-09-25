@@ -1,6 +1,6 @@
 import { Alert, Button, Space } from 'antd';
 import type { WeeklyItemCounts, WeeklyVehicleRequestDto } from '@technic/contracts';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 import { weeklyOverdueWord } from './weeklyShared';
 
 /**

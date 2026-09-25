@@ -2,7 +2,7 @@ import { Alert, Space, Typography } from 'antd';
 import type { AssignmentPreviewDto } from '@technic/contracts';
 import { TailMismatchAlert } from './AssignmentHistoryPanel';
 import { driverStateLabel, type AssignmentSegment } from './assignmentTimeline';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 import { listStyle } from './consequencesList';
 
 /**
@@ -66,12 +66,7 @@ export function MachinistChangePreview({ preview, cancelling, driverName, staleR
   return (
     <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
       {staleReason && (
-        <Alert
-          type="warning"
-          showIcon
-          title="Последствия пересчитаны"
-          description={staleReason}
-        />
+        <Alert type="warning" showIcon title="Последствия пересчитаны" description={staleReason} />
       )}
 
       {/* Расхождение хвоста, если сервер его назвал. Поле общее у пяти дверей модуля (§7), и

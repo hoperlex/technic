@@ -33,11 +33,11 @@ import { ListToolbar } from '@shared/ui';
 import { ViewModal } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
-import { useIsMobile, useListParams } from '@shared/lib';
+import { formatDateOnly, useIsMobile, useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { vehicleRequestViewLink, waybillLink } from '../../utils/links';
 import { useRouteModal } from '@features/route-modal';
-import { formatDateOnly, useDriverOptions, useOwnVehicleOptions } from './shared';
+import { useDriverOptions, useOwnVehicleOptions } from './shared';
 import { TrailerFields, trailerTripBody } from './TrailerFields';
 
 /**

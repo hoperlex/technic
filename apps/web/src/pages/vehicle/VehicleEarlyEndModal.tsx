@@ -11,12 +11,11 @@ import {
   type SpecialEquipmentRequestDto,
 } from '@technic/contracts';
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
-import { calendarDaysLabel } from '@shared/lib';
+import { calendarDaysLabel, formatDateOnly } from '@shared/lib';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { errorMessage } from '../../utils/format';
 import { EarlyEndConsequences } from './EarlyEndConsequences';
 import { reassignStaleReason } from './ReassignPreview';
-import { formatDateOnly } from './shared';
 
 /**
  * Досрочное завершение заказа спецтехники (ADR 0044): техника освободилась раньше срока.

@@ -14,7 +14,7 @@ import { waybillKeys } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Перенос заявки между рейсами прошедших дней (ADR 0101 п. 14, Р30): «оформили средой, а ехали

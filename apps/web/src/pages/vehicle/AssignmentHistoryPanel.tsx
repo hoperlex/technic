@@ -10,7 +10,7 @@ import {
   type AssignmentSegment,
   type AssignmentTerm,
 } from './assignmentTimeline';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * «Состав по датам» — история заявки, прочитанная человеком (этап 6 плана

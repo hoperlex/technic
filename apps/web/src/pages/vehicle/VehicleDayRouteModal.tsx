@@ -27,7 +27,7 @@ import {
 } from '@entities/vehicle-route';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 import { TrailerFields, trailerTripBody } from './TrailerFields';
 import { BackdateReasonField } from './VehicleBackdateFields';
 

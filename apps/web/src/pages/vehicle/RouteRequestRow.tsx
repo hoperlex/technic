@@ -9,7 +9,7 @@ import { EntityLink } from '@shared/ui';
 import { useAuth } from '@entities/session';
 import { vehicleRequestViewLink } from '../../utils/links';
 import { useRouteModal } from '@features/route-modal';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Заявка в составе: номер, заказчик и то, ради чего строка в рейсе стоит.

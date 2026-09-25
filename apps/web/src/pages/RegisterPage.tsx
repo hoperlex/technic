@@ -18,7 +18,8 @@ import { useCaptcha } from '../components/useCaptcha';
 import { PasswordField } from '../components/PasswordField';
 import { PersonNameFields } from '../components/PersonNameFields';
 import { PhoneField } from '../components/PhoneField';
-import { errorFields, errorMessage } from '../utils/format';
+import { errorFields } from '@shared/lib';
+import { errorMessage } from '../utils/format';
 import {
   captchaBlocksSubmit,
   CaptchaSubmitNote,

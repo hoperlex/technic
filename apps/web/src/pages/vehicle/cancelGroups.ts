@@ -1,5 +1,5 @@
 import { assignmentDimensionLabels, type CancelledAssignmentGroupDto } from '@technic/contracts';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Гасимые сокращением срока решения о технике — человеческой строкой (Д2 плана

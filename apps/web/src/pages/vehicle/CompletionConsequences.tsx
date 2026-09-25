@@ -1,7 +1,7 @@
 import { Alert, Checkbox, Form, Input, Space, Typography } from 'antd';
 import { type CompletionPreviewDto, workedAmountLabel } from '@technic/contracts';
 import { cancelGroupLine } from './cancelGroups';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 import { listStyle, totalOf } from './consequencesList';
 
 /**
@@ -34,7 +34,6 @@ import { listStyle, totalOf } from './consequencesList';
  * - **`issues`** — предупреждения по каждому выписываемому листу: у недельной сверки просителя нет
  *   вовсе, и сервер отдаёт их пустыми.
  */
-
 
 interface Props {
   preview: CompletionPreviewDto;

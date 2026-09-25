@@ -54,12 +54,11 @@ import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { useAuth } from '@entities/session';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
-import { formatMoney, useIsMobile } from '@shared/lib';
+import { formatDateOnly, formatMoney, useIsMobile } from '@shared/lib';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { AddressField } from '@features/address-input';
 
 import { errorMessage } from '../../utils/format';
-import { formatDateOnly } from './shared';
 import {
   currentMachinistName,
   driverCategoryNote,

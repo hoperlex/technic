@@ -4,14 +4,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { PeriodPreviewDto, SpecialEquipmentRequestDto } from '@technic/contracts';
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
-import { calendarDaysLabel } from '@shared/lib';
+import { calendarDaysLabel, formatDateOnly } from '@shared/lib';
 import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { waybillKeys } from '@entities/waybill';
 import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '@entities/vehicle-request';
 import { errorMessage } from '../../utils/format';
 import { cancelGroupLine } from './cancelGroups';
-import { formatDateOnly } from './shared';
 
 /**
  * Правка срока заказа спецтехники через свою дверь (`docs/assignment-periods-plan.md`, волна 4a;

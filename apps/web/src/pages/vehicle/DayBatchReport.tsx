@@ -8,7 +8,7 @@ import {
   type VehicleRequestDayBatchRowDto,
 } from '@technic/contracts';
 import { ViewModal } from '@shared/ui';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Отчёт пачки «4-П на весь период» (ADR 0207 решение 7): что пачка сделала за каждый день срока.

@@ -17,7 +17,7 @@ import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
 import { vehicleRouteLink } from '../../utils/links';
 import { useRouteModal } from '@features/route-modal';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 import { VehicleRelocationModal } from './VehicleRelocationModal';
 
 /**

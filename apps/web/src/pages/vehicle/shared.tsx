@@ -25,12 +25,6 @@ import { objectsApi, objectKeys } from '@entities/object';
 export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 
-/**
- * Date-only formatting lives in the foundation (`@shared/lib`): the garage prints it too
- * (ADR 0076) and this page is invisible from there. Re-exported here for earlier consumers.
- */
-export { formatDateOnly };
-
 export interface EditorFile {
   id: string;
   filename: string;

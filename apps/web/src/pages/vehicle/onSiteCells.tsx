@@ -10,8 +10,8 @@ import {
   vehicleOnSitePresenceColors,
   vehicleOnSitePresenceLabels,
 } from '@technic/contracts';
-import { calendarDayCount } from '@shared/lib';
-import { EarlyEndTag, formatDateOnly } from './shared';
+import { calendarDayCount, formatDateOnly } from '@shared/lib';
+import { EarlyEndTag } from './shared';
 import type { useEarlyEnd } from './earlyEndActions';
 
 /**

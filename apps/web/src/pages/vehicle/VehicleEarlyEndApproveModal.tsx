@@ -11,7 +11,7 @@ import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { errorMessage } from '../../utils/format';
 import { EarlyEndConsequences } from './EarlyEndConsequences';
 import { reassignStaleReason } from './ReassignPreview';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Виза на досрочное завершение: последствия чужого запроса и подтверждение (ADR 0178, Р19).

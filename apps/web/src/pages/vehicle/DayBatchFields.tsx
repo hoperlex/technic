@@ -5,7 +5,7 @@ import { DAY_BATCH_LIMIT, dayBatchPortionMessage, shiftDaysOf } from '@technic/c
 import { driverKeys, driversApi } from '@entities/driver';
 import { AutoSelect, FormGrid } from '@shared/ui';
 import { driverOption } from './assignDriverHints';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Поля пачки «4-П на весь период» (ADR 0207): кто поедет весь срок и чем объясняются прошедшие

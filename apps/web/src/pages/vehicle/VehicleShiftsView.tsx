@@ -5,10 +5,9 @@ import {
   type VehicleRequestShiftDto,
   workedAmountLabel,
 } from '@technic/contracts';
-import { formatDateTime } from '@shared/lib';
+import { formatDateOnly, formatDateTime } from '@shared/lib';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { UserAvatar } from '../../components/UserAvatar';
-import { formatDateOnly } from './shared';
 
 /**
  * Смены заказа спецтехники — только чтение: так их видят в карточке заявки.

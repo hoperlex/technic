@@ -4,7 +4,7 @@ import { AutoSelect } from '@shared/ui';
 import dayjs from 'dayjs';
 import { machinistOption } from './assignDriverHints';
 import type { AssignmentSegment } from './assignmentTimeline';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Поля окна «Починка истории» (подэтап 6a плана `docs/assignment-periods-plan.md`, Р29, Р31, Ц4).

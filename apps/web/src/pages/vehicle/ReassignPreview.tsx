@@ -1,7 +1,7 @@
 import { Alert, Space, Typography } from 'antd';
 import { type AssignmentPreviewDto, workedAmountLabel } from '@technic/contracts';
 import { isApiError } from '@shared/api';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 import { listStyle, totalOf } from './consequencesList';
 
 /**
@@ -87,7 +87,6 @@ export function reassignPreviewBlocked(preview: AssignmentPreviewDto): boolean {
   return preview.blockedShiftDays.length > 0;
 }
 
-
 interface Props {
   preview: AssignmentPreviewDto;
   /**
@@ -105,12 +104,7 @@ export function ReassignPreview({ preview, staleReason }: Props) {
   return (
     <Space orientation="vertical" size={12} style={{ display: 'flex' }}>
       {staleReason && (
-        <Alert
-          type="warning"
-          showIcon
-          title="Последствия пересчитаны"
-          description={staleReason}
-        />
+        <Alert type="warning" showIcon title="Последствия пересчитаны" description={staleReason} />
       )}
 
       {/* Замок подписанных дней — первым: всё, что ниже, при нём не случится вовсе, и читать

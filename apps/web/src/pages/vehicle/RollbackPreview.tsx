@@ -3,7 +3,7 @@ import type {
   VehicleRequestCompletionDto,
   VehicleRequestStatusPreviewDto,
 } from '@technic/contracts';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Второй шаг окна назначения на откате «Выполнена» → «В работе»: что случится после возврата.

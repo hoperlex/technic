@@ -1,6 +1,6 @@
 import { Alert, Space, Typography } from 'antd';
 import type { EarlyEndApprovalPreviewDto } from '@technic/contracts';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 import { listStyle } from './consequencesList';
 
 /**

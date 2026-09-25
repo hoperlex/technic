@@ -8,7 +8,7 @@ import {
 } from '@technic/contracts';
 import { weeklyRequestKeys, weeklyRequestsApi } from '@entities/weekly-request';
 import { FormModal } from '@shared/ui';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Проведение просроченной недели задним числом (ADR 0085 + ADR 0101).

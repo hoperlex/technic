@@ -5,7 +5,8 @@ import { normalizeEmail } from '@technic/contracts';
 import { authApi } from '@entities/session';
 import { CaptchaField } from '../components/CaptchaField';
 import { useCaptcha } from '../components/useCaptcha';
-import { errorFields, errorMessage } from '../utils/format';
+import { errorFields } from '@shared/lib';
+import { errorMessage } from '../utils/format';
 import {
   captchaBlocksSubmit,
   CaptchaSubmitNote,

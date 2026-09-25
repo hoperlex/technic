@@ -29,7 +29,7 @@ import { ViewModal } from '@shared/ui';
 import { TimeInput } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Подтверждение смен по заказу спецтехники: день работы, его показатели и подпись объекта.

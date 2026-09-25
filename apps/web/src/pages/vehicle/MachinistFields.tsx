@@ -2,7 +2,7 @@ import { Alert, DatePicker, Form, Typography } from 'antd';
 import type { DriverDto, RequiredAnchor, SpecialEquipmentRequestDto } from '@technic/contracts';
 import { AutoSelect } from '@shared/ui';
 import { machinistOption } from './assignDriverHints';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 
 /**
  * Поля окна «Сменить машиниста» (этап 6 плана `docs/assignment-periods-plan.md`, §9): кого сажают

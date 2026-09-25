@@ -16,7 +16,7 @@ import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
 import { garageKeys } from '@entities/garage';
-import { formatDateOnly } from './shared';
+import { formatDateOnly } from '@shared/lib';
 import { useRouteModal } from '@features/route-modal';
 import { dayColumns } from './dayColumns';
 import { VehicleDayBatchModal } from './VehicleDayBatchModal';
