@@ -17,22 +17,28 @@ import {
 // Редактирования правило не касается: у заведённой заявки дата бывает и вчерашней, запрет на
 // её выбор мешал бы правкам — там остаётся прежнее «не в прошлое».
 
-/**
- * Дата без времени (`YYYY-MM-DD`) — как есть, без пересчёта часовых поясов: часа в ней нет,
- * а перевод в МСК из браузера восточнее Москвы сдвинул бы срок спецтехники на день назад.
+/*
+ * Времянка волны «неразмеченный слой» (docs/frontend-unmarked-layer-plan.md, узел У1).
+ *
+ * Разбор дня и длина периода уехали в `@shared/lib` — правила портала в них нет, а слою сущностей
+ * этот каталог не виден, отчего у него уже завелась своя копия разбора. Здесь они перевыставлены,
+ * пока экраны переходят на новый адрес партиями; снимается вместе с последней партией.
+ *
+ * Ниже остаётся домен — он ждёт своих слайсов (узел У8).
  */
-export function formatDateOnly(value: string): string {
-  const [y, m, d] = value.split('-');
-  return y && m && d ? `${d}.${m}.${y}` : value;
-}
+export { calendarDayCount, calendarDaysLabel, formatDateOnly } from '@shared/lib';
 
 /** Минимальная дата новой заявки: сегодня по МСК. Она же — значение по умолчанию. */
 export function minRequestDate(): Dayjs {
   return dayjs(minRequestDateKey()).startOf('day');
 }
 
-/** Начало сегодняшнего дня в поясе браузера. */
-export function startOfToday(): Dayjs {
+/**
+ * Начало сегодняшнего дня в поясе браузера. Не экспортируется: снаружи его не звал никто, а
+ * публичное имя без потребителя — приглашение завести сравнение «с сегодня» мимо московской
+ * границы суток, ради которой весь этот файл и написан.
+ */
+function startOfToday(): Dayjs {
   return dayjs().startOf('day');
 }
 
@@ -99,42 +105,4 @@ export function vehicleRequestDateRules(subject: AccessSubject | null | undefine
     leadTimeHint:
       minKey > moscowDateKeyOf(new Date()) ? VEHICLE_REQUEST_LEAD_TIME_MESSAGE : undefined,
   };
-}
-
-/**
- * Число календарных дней периода, включая обе границы: с 01.08 по 03.08 — три дня, а не два.
- * Пустая дата окончания — однодневный срок: тем же `coalesce(date_to, date_from)` считает
- * период сервер, когда ищет пересечения заявок.
- *
- * Границы разбираются как календарные ключи `YYYY-MM-DD` в UTC: в поясе браузера с переводом
- * часов сутки бывают короче 24 часов, и разница дат теряла бы день. `null` — период не
- * складывается (конец раньше начала); подсказывать в этом случае нечего.
- */
-export function calendarDayCount(fromKey: string, toKey?: string | null): number | null {
-  const from = Date.parse(`${fromKey}T00:00:00Z`);
-  const to = Date.parse(`${toKey || fromKey}T00:00:00Z`);
-  if (Number.isNaN(from) || Number.isNaN(to) || to < from) return null;
-  return Math.round((to - from) / 86_400_000) + 1;
-}
-
-/**
- * Длина периода словами — «5 календарных дней». Считать дни по календарю в уме легко
- * ошибиться (особенно через границу месяца), а заказывают технику и считают аренду именно
- * в днях, поэтому подсказка стоит и в форме заявки, и в её карточке.
- */
-export function calendarDaysLabel(fromKey: string, toKey?: string | null): string | null {
-  const days = calendarDayCount(fromKey, toKey);
-  if (days === null) return null;
-  // Русское склонение: 1 день, 2–4 дня, 5–20 дней; 11–14 — всегда «дней».
-  const tail = days % 100;
-  const last = days % 10;
-  const form =
-    tail >= 11 && tail <= 14
-      ? 'календарных дней'
-      : last === 1
-        ? 'календарный день'
-        : last >= 2 && last <= 4
-          ? 'календарных дня'
-          : 'календарных дней';
-  return `${days} ${form}`;
 }

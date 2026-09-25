@@ -1,19 +1,17 @@
-import dayjs from 'dayjs';
-
 import { isApiError } from '@shared/api';
-import { MOSCOW_TZ } from '@shared/config';
-import { errorMessage as sharedErrorMessage } from '@shared/lib';
+import { formatDate, formatDateTime, errorMessage as sharedErrorMessage } from '@shared/lib';
 
-export function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  return dayjs(iso).tz(MOSCOW_TZ).format('DD.MM.YYYY HH:mm');
-}
-
-/** Только дата, без времени. */
-export function formatDate(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  return dayjs(iso).tz(MOSCOW_TZ).format('DD.MM.YYYY');
-}
+/*
+ * Времянка волны «неразмеченный слой» (docs/frontend-unmarked-layer-plan.md, узел У1).
+ *
+ * Четыре форматтера уехали в `@shared/lib` и здесь только перевыставлены, чтобы экраны переходили
+ * на новый адрес партиями по каталогам, а не все сразу. Реэкспорт, а не копия: копия развела бы
+ * два поведения, и разошлись бы они молча.
+ *
+ * Снимается вместе с последней партией. Всё, что ниже реэкспорта, — работа других узлов: подписи
+ * полей ждут раскладки по владельцам (У3), а `formatDateTimeMaybe` — слайса заявок (У8).
+ */
+export { formatBytes, formatDate, formatDateTime, formatMoney } from '@shared/lib';
 
 /**
  * Дата со временем, если оно задано. У заявок время необязательно: при `timeUnspecified`
@@ -25,18 +23,6 @@ export function formatDateTimeMaybe(
 ): string {
   if (!iso) return '—';
   return timeUnspecified ? formatDate(iso) : formatDateTime(iso);
-}
-
-export function formatBytes(n: number): string {
-  if (n < 1024) return `${n} Б`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} КБ`;
-  return `${(n / 1024 / 1024).toFixed(1)} МБ`;
-}
-
-/** Денежная сумма в рублях: «15 000,00 ₽». */
-export function formatMoney(v: number | null | undefined): string {
-  if (v == null) return '—';
-  return `${v.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
 }
 
 /**

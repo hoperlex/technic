@@ -3,10 +3,12 @@
  * а не отдельные модули внутри — так линт границ отличает пользование от залезания внутрь.
  */
 export * from './avatar';
+export * from './calendarDays';
 export * from './dayBounds';
 export * from './dayjs';
 export * from './monthText';
 export * from './errors';
+export * from './format';
 export * from './idempotency';
 export * from './listParamsStore';
 export * from './numberText';
