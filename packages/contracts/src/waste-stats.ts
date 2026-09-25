@@ -3,76 +3,100 @@ import { monthSchema } from './common';
 import type { AnalyticsQualityEntry } from './analytics';
 
 /**
- * Статистика вывоза мусора за отчётный месяц — вкладка «Статистика» раздела «Вывоз мусора»
- * (план `docs/waste-stats-tab-plan.md`).
+ * Waste removal statistics for a reporting month — the "Statistics" tab of the waste section
+ * (ADR 0193, three-volume rework — ADR 0209).
  *
- * Здесь только форма ответа. Считает его слой атомов сводной аналитики
- * (`apps/api/src/services/analytics/`) — тот же, что собирает книгу Excel: второго ответа на
- * «сколько вывезли за август» в проекте быть не должно (Р1; правило Р13–Р14 плана аналитики).
+ * Only the response shape lives here. The numbers are counted by the analytics atom layer
+ * (`apps/api/src/services/analytics/`) — the same one that builds the Excel book: there must be no
+ * second answer to "how much was removed in August" (R1; R13–R14 of the analytics plan).
  *
- * Три решения, без которых числа читаются неверно:
+ * Three decisions without which the numbers are misread:
  *
- * 1. **Объём и стоимость складывают вывезенное и заказанное** (Р3). Деньги незакрытой заявки
- *    посчитаны прайсом ровно из её заказанного объёма, и колонка объёма, считающая другой набор
- *    заявок, сделала бы строку неразложимой: «412 м³» рядом с деньгами за 460 м³ не дают цены за
- *    куб. Поэтому у каждой величины есть поле-доля (`volumeOrderedM3`, `costEstimated`) — то, что
- *    ещё не состоялось; портал показывает их подписью под числом.
- * 2. **Подтверждает объём только принятый талон** (Р4): распознанное, но не разобранное человеком
- *    остаётся предложением машины. Талон без прочитанного объёма — неизвестность, а не ноль: он не
- *    входит в сумму и считается отдельно (`ticketsWithoutVolume`).
- * 3. **Только вывоз мусора кубами** (Р6). Металлолома (тонны, денег нет вовсе — ADR 0067) и
- *    контейнерных операций (не тарифицируются, ADR 0019) здесь не бывает ни строкой, ни позицией:
- *    вкладка отвечает на вопрос «сколько кубов вывезли и за сколько», и всё, что на него не
- *    отвечает, из неё уходит. Следствие принято сознательно — площадка, у которой за месяц только
- *    лом или только замены контейнеров, в ответе отсутствует.
+ * 1. **Three volumes, each with its own money** (ADR 0209). Ordered — every valid request of the
+ *    month, including new ones, by its ordered volume; removed — requests in a fact status ("done" /
+ *    "completed"), by the completion; confirmed — accepted tickets of removed requests, summed as
+ *    they are (they may exceed the removed volume). Every volume comes with the money of the same
+ *    requests, so a price per cubic metre can be read off any pair.
+ * 2. **Only an accepted ticket confirms a volume** (R4 of ADR 0193): what is recognised but not
+ *    reviewed by a person stays a machine suggestion. A ticket without a read volume is unknown,
+ *    not zero: it is not in the sum and is counted separately (`ticketsWithoutVolume`).
+ * 3. **Only waste removal in cubic metres** (R6 of ADR 0193). Scrap metal (tonnes, no money at all
+ *    — ADR 0067) and container operations (not billed, ADR 0019) never appear here, neither as a
+ *    row nor as a position: a site that only had those in the month is absent from the response.
  */
 
 export const wasteStatsQuerySchema = z.object({ month: monthSchema }).strict();
 export type WasteStatsQuery = z.infer<typeof wasteStatsQuerySchema>;
 
 /**
- * Числа одной клетки: строки площадки, позиции внутри неё или итога — форма у всех трёх одна.
+ * Figures of one cell: a site row, a position inside it or the total — all three share one shape.
  *
- * Общая форма здесь не ради экономии: сумма позиций обязана сходиться со строкой, а строк — с
- * итогом (Р11), и разные наборы полей у трёх уровней сделали бы это сравнение невыразимым. Имя
- * при этом добавляют себе строка и позиция, а не наследует итог: у строки «Всего» нет ни ключа
- * позиции, ни площадки, и поля, которые нечем заполнить, первый же экран начал бы показывать
- * пустыми.
+ * The shared shape is not about saving lines: positions must add up to their row and rows to the
+ * total (R11), and different field sets on the three levels would make that comparison impossible
+ * to express. The row and the position add their own names; the total does not inherit them,
+ * because it has neither a position key nor a site, and fields with nothing to fill would be shown
+ * empty by the first screen that reads them.
  */
 export interface WasteStatsFigures {
-  /** Вывезенное по закрытиям плюс заказанное незакрытыми заявками (Р3). */
-  volumeM3: number;
-  /** Из него ещё не вывезено. Ноль — весь объём предъявлен закрытиями. */
-  volumeOrderedM3: number;
-  /** Факт закрытий плюс оценка незакрытых заявок (Р3). */
-  totalCost: number;
-  /** Из неё оценка — деньги, которые портал посчитал прайсом, а не взял у закрытия. */
-  costEstimated: number;
-  /** Объём принятых талонов, кроме талонов простоя (Р4). */
+  /**
+   * ORDERED volume of every valid request of the month, whatever its status (decision Z3): truck
+   * rows, else the request volume, else — for old requests filed without one — the removed volume.
+   */
+  plannedVolumeM3: number;
+  /**
+   * Money of the ordered volume, from the same source. `null` — none of that volume has a price
+   * (a dash, not zero); a number with `plannedVolumeUnpricedM3 > 0` is understated and must be
+   * signed.
+   */
+  plannedCost: number | null;
+  /** Share of the ordered volume without money. */
+  plannedVolumeUnpricedM3: number;
+  /** REMOVED volume: completions of requests in a fact status ("done" / "completed"). */
+  doneVolumeM3: number;
+  /** Completion sums of those requests; `null` — none of the removed volume has a sum. */
+  doneCost: number | null;
+  /** Share of the removed volume whose completion has no sum. */
+  doneVolumeUnpricedM3: number;
+  /**
+   * Volume of accepted tickets of removed requests, idle tickets excluded (R4). Summed as it is —
+   * it may exceed `doneVolumeM3` (decision Z4).
+   */
   confirmedVolumeM3: number;
   /**
-   * Из подтверждённого — объём, оценить который нечем: у закрытия нет цены (Р5). Отдельное поле, а
-   * не вывод из нулевой суммы: ноль в деньгах означает разом «цены не было» и «подтверждать было
-   * нечего», и после сложения атомов эти случаи уже не различить.
+   * Of the confirmed volume — the part that cannot be priced: its completion has no price (R5). A
+   * field of its own and not a conclusion from zero money: zero money means both "there was no
+   * price" and "there was nothing to confirm", and after atoms are summed these cannot be told apart.
    */
   confirmedVolumeUnpricedM3: number;
   /**
-   * Подтверждённый объём в деньгах: объём талонов × цена закрытия (Р5).
+   * Confirmed volume in money: ticket volume × completion price (R5).
    *
-   * `null` — весь подтверждённый объём клетки оказался без цены закрытия. Ноль здесь означал бы
-   * бесплатный вывоз, а не отсутствие цены. Смешанный случай (часть заявок с ценой, часть без)
-   * даёт ЧИСЛО, и его обязана сопровождать подпись из `confirmedVolumeUnpricedM3`: заниженная
-   * сумма без пометки выглядит посчитанной.
+   * `null` — the whole confirmed volume of the cell has no completion price. Zero here would mean a
+   * free removal, not a missing price. A mixed case gives a NUMBER, and `confirmedVolumeUnpricedM3`
+   * must be signed next to it: an understated sum without a note looks calculated.
    */
   confirmedCost: number | null;
-  /** Принятых талонов, чей объём не прочитан: они не в сумме, и об этом надо сказать (Р4). */
+  /** Accepted tickets whose volume is unread: they are not in the sum, and that must be said (R4). */
   ticketsWithoutVolume: number;
-  /** Заявок, которые не удалось оценить вовсе: ноль в деньгах обязан означать бесплатно. */
+  /** Requests that could not be priced at all: zero money must mean free work. */
   unpricedRequests: number;
-  /** Состоявшихся вывозов — закрытых заявок; считаются заявки, а не самосвалы (Р21 аналитики). */
+  /** Removals — requests in a fact status; requests are counted, not trucks (R21 of analytics). */
   removals: number;
-  /** Всего заявок месяца, включая ещё не закрытые. */
+  /** All requests of the month, unfinished ones included. */
   requests: number;
+  /**
+   * @deprecated Removed + ordered-but-unfinished in one number (R3 of ADR 0193, cancelled by
+   * ADR 0209). Kept only for tabs opened with a build older than ADR 0209: they read it without a
+   * check, and there is no error boundary. Remove when the client floor on production rises above
+   * the `CLIENT_CONTRACT` this release was served with (6).
+   */
+  volumeM3: number;
+  /** @deprecated Ordered share of `volumeM3`; see `volumeM3` for the removal condition. */
+  volumeOrderedM3: number;
+  /** @deprecated Fact plus estimate in one number; see `volumeM3` for the removal condition. */
+  totalCost: number;
+  /** @deprecated Estimated share of `totalCost`; see `volumeM3` for the removal condition. */
+  costEstimated: number;
 }
 
 /** Позиция окна детализации: вид отходов. */
@@ -112,8 +136,10 @@ export interface WasteStatsDto {
   /** Итог по всем строкам. Считается из тех же атомов, а не сложением строк ответа. */
   totals: WasteStatsFigures;
   /**
-   * Насколько числам можно верить: вывозы без принятого талона, заявки без цены, закрытия без
-   * фактической даты (Р10). Те же счётчики, что у листа «Качество данных» книги.
+   * How far the numbers can be trusted (R10): removals without an accepted ticket, requests without
+   * a price, completions without an actual date, requests without an ordered volume and "done"
+   * requests without a completion (ADR 0209). The same counters as the "Data quality" sheet of the
+   * book.
    */
   quality: AnalyticsQualityEntry[];
 }

@@ -1,72 +1,97 @@
-import { useState } from 'react';
-import { Button, DatePicker, Space, Tooltip, Typography, type TableColumnsType } from 'antd';
+import { useState, type ReactNode } from 'react';
+import {
+  Button,
+  DatePicker,
+  Empty,
+  Space,
+  Table,
+  Tooltip,
+  Typography,
+  type TableColumnsType,
+} from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import dayjs from 'dayjs';
-import { monthSchema, type WasteStatsRowDto } from '@technic/contracts';
+import { monthSchema, type WasteStatsFigures, type WasteStatsRowDto } from '@technic/contracts';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
-import { formatMoney, useListParams } from '@shared/lib';
+import { useIsMobile, useListParams } from '@shared/lib';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
-import { confirmedNotes, costNotes, volumeNotes, volumeText } from './wasteStatsNumbers';
+import { FIGURES_WIDTH, figureColumns, figureSummaryCells } from './wasteStatsColumns';
 import { WasteStatsObjectModal } from './WasteStatsObjectModal';
 
 const MONTH = 'YYYY-MM';
 
 /**
- * «Вывоз мусора» → «Статистика»: сколько кубов вывезли с каждой площадки за отчётный месяц и во
- * сколько это обошлось (план `docs/waste-stats-tab-plan.md`).
+ * The "Итого" row of the site table. A plain function, not a component, and its top node is
+ * `Table.Summary fixed` itself: rc-table pins the summary only after checking the element type, and
+ * a wrapper component would silently turn the pinned row into a footer inside the scroll.
+ */
+function totalsSummary(totals: WasteStatsFigures): ReactNode {
+  return (
+    <Table.Summary fixed>
+      <Table.Summary.Row>
+        <Table.Summary.Cell index={0}>
+          <Typography.Text strong>Итого</Typography.Text>
+        </Table.Summary.Cell>
+        {figureSummaryCells(totals, 1)}
+      </Table.Summary.Row>
+    </Table.Summary>
+  );
+}
+
+/**
+ * "Вывоз мусора" → "Статистика": per site and reporting month — how much was ordered, removed and
+ * confirmed by tickets, and at what cost (ADR 0193, three-volume columns — ADR 0209).
  *
- * ЧИСЛА СЧИТАЕТ СЕРВЕР, портал только печатает пришедшее (Р1): вкладка и книга сводной аналитики
- * берут их из одного слоя, и своего счёта — хотя бы сложения строк ради итога — здесь нет вовсе.
- * Итог приходит отдельным полем ответа именно поэтому.
+ * THE SERVER COUNTS, the portal only prints what arrived (R1): the tab and the analytics book take
+ * their numbers from one layer, and there is no counting of its own here — not even adding the rows
+ * up for the total. That is why the total arrives as a separate field of the response.
  *
- * ЧТО СТОИТ В КОЛОНКАХ. Объём и стоимость складывают состоявшееся с заказанным (Р3): деньги
- * незакрытой заявки посчитаны прайсом из её заказанного объёма, и колонка объёма, считающая другой
- * набор заявок, сделала бы строку неразложимой. Доли подписаны второй строкой в ячейке — «в т. ч.
- * заказано», «в т. ч. оценка»: без них подтверждённый талонами объём читался бы как недовывоз, хотя
- * у незакрытой заявки талонов не бывает по порядку работы.
+ * THE COLUMNS (ADR 0209): Ordered · Removed · By tickets · Cost. The cost is the removed cost; the
+ * planned and the confirmed cost are captions under it. Every volume goes with the money of the
+ * same requests, and a money figure is a dash, not zero, when none of its volume has a price.
  *
- * ЛОМА И КОНТЕЙНЕРНЫХ ОПЕРАЦИЙ ЗДЕСЬ НЕТ ВОВСЕ (Р6): лом принимают тоннами и денег у него нет,
- * операции не тарифицируются. Площадка, у которой за месяц только они, во вкладке не появляется —
- * её работа видна в «Заявках» и в «Истории».
+ * NO SCRAP METAL AND NO CONTAINER OPERATIONS (R6): metal is accepted in tonnes and has no money,
+ * operations are not billed. A site that had only those in the month does not appear in the tab —
+ * its work is visible in "Заявки" and "История".
  */
 export function WasteStatsTab() {
   const active = useActiveTabKey() === 'stats';
+  const isMobile = useIsMobile();
   const [sp, setSp] = useSearchParams();
 
   /**
-   * Отчётный месяц живёт в адресе (Р9): «статистику за август» отправляют ссылкой, а состояние
-   * вкладки пересылке не подлежит — оно теряется и от перезагрузки, и от «назад».
+   * The reporting month lives in the address (R9): "statistics for August" is sent as a link, while
+   * the tab's state is not — it is lost on reload and on "back".
    *
-   * Мусорная строка вкладку не ломает: портал падает на текущий месяц, и до сервера она не
-   * доходит. А вот БУДУЩИЙ месяц законен и не подменяется: заявка с доставкой в сентябре относится
-   * к сентябрю и приносит туда заказанный объём с оценкой (Р2, Р3), то есть «Статистика» за
-   * следующий месяц отвечает на «сколько уже заказано». Подмени её текущим — и единственный
-   * экран, который на этот вопрос отвечает, стало бы не открыть.
+   * A garbage value does not break the tab: the portal falls back to the current month, and the
+   * value never reaches the server. A FUTURE month is valid and is not replaced: a request delivered
+   * in September belongs to September and brings its ordered volume there (R2), so the statistics
+   * of next month answer "how much is already ordered". Replacing it with the current month would
+   * make the only screen answering that question impossible to open.
    */
   const raw = sp.get('month') ?? '';
   /*
-   * Годность месяца спрашивается У КОНТРАКТА, а не у dayjs: `dayjs('2026-13-01')` считает себя
-   * действительной датой и молча переносит месяц в январь следующего года — портал отправил бы на
-   * сервер значение, которое тот отвергает схемой, и человек получил бы ошибку валидации вместо
-   * экрана. Схема здесь ровно та же, которой маршрут проверяет запрос: второе правило «какой месяц
-   * бывает» разошлось бы с первым на тринадцатом.
+   * Validity of the month is asked from the CONTRACT, not from dayjs: `dayjs('2026-13-01')` considers
+   * itself a valid date and silently moves the month to January of the next year — the portal would
+   * send a value the server rejects by its schema, and the person would get a validation error
+   * instead of a screen. The schema is the very one the route checks the request with.
    */
   const month = monthSchema.safeParse(raw).success ? raw : dayjs().format(MONTH);
   /*
-   * `tab` пишется вместе с месяцем не для полноты: страница переключает вкладки через
-   * `setSp({ tab })`, то есть чистит адрес целиком, — и месяц при уходе на «Заявки» законно
-   * теряется. Но потерять `tab`, меняя месяц, значило бы вернуть человека на «Заявки» нажатием на
-   * календарь.
+   * `tab` is written together with the month on purpose: the page switches tabs via
+   * `setSp({ tab })`, i.e. it clears the whole address — losing the month when leaving for "Заявки"
+   * is fine, but losing `tab` while changing the month would send the person back to "Заявки" by a
+   * click on the calendar.
    */
   const setMonth = (next: string) => setSp({ tab: 'stats', month: next });
 
   const { params, onTableChange } = useListParams<Record<string, never>>({}, { searchKeys: [] });
   /**
-   * Площадка открытого окна — состоянием, а не адресом: предмет ссылки здесь месяц, а окно
-   * показывает то, что уже приехало вместе с таблицей, и своего запроса не делает (Р11).
+   * The site of the open window is state, not address: the subject of a link here is the month, and
+   * the window shows what already came with the table without a request of its own (R11).
    */
   const [openObjectId, setOpenObjectId] = useState<string | null>(null);
 
@@ -74,60 +99,34 @@ export function WasteStatsTab() {
     queryKey: wasteRequestKeys.stats(month),
     queryFn: () => wasteRequestsApi.stats(month),
     /*
-     * Только на своей вкладке: скрытая вкладка не размонтируется (`PageTabs`), и без этого условия
-     * месяц пересчитывался бы на сервере всякий раз, когда открывают список заявок.
+     * Only on its own tab: a hidden tab is not unmounted (`PageTabs`), and without this condition
+     * the month would be recounted on the server every time the request list is opened.
      */
     enabled: active,
   });
 
-  const rows = data?.rows ?? [];
-  // Страницами режет портал: ответ приходит целиком — его и показываем тем же составом.
+  /*
+   * A new build against an old server — the rollout window or a tab that survived
+   * `deploy-auto --previous` — gets a response without the ADR 0209 fields. There is no error
+   * boundary in the portal, so printing it would throw in render and blank the whole portal; the
+   * tab shows a stub instead. One field is enough: the server always sends all of them together.
+   */
+  const outdated = data !== undefined && typeof data.totals.doneVolumeM3 !== 'number';
+
+  const rows = outdated ? [] : (data?.rows ?? []);
+  // The portal pages the response itself: it arrives whole and is shown with the same content.
   const page = rows.slice((params.page - 1) * params.pageSize, params.page * params.pageSize);
   const totals = data?.totals;
   const opened = rows.find((r) => r.objectId === openObjectId) ?? null;
 
+  // The volumes and the money live in the "Итого" row now (decision Z9): the bar keeps the counts.
   const summaryItems = totals
     ? [
         { label: 'Площадок', value: rows.length },
+        { label: 'Заявок', value: totals.requests },
         { label: 'Вывозов', value: totals.removals },
-        {
-          label: 'Объём',
-          value: (
-            <Tooltip title={volumeNotes(totals).join('; ') || undefined}>
-              {volumeText(totals.volumeM3)}
-            </Tooltip>
-          ),
-        },
-        {
-          label: 'Стоимость',
-          value: (
-            <Tooltip title={costNotes(totals).join('; ') || undefined}>
-              {formatMoney(totals.totalCost)}
-            </Tooltip>
-          ),
-        },
-        {
-          label: 'Подтверждено',
-          value: (
-            <Tooltip title={confirmedNotes(totals).join('; ') || undefined}>
-              {volumeText(totals.confirmedVolumeM3)}
-            </Tooltip>
-          ),
-        },
       ]
     : [];
-
-  /** Величина крупно, из чего она состоит — подписью под ней. */
-  const cell = (value: string, notes: string[]) => (
-    <div style={{ lineHeight: 1.35 }}>
-      <div>{value}</div>
-      {notes.map((note) => (
-        <Typography.Text key={note} type="secondary" style={{ fontSize: 12 }}>
-          {note}
-        </Typography.Text>
-      ))}
-    </div>
-  );
 
   const columns: TableColumnsType<WasteStatsRowDto> = [
     {
@@ -135,8 +134,9 @@ export function WasteStatsTab() {
       title: 'Площадка',
       width: OBJECT_COLUMN_WIDTH,
       /*
-       * Название — вход в детализацию: вопрос «а из чего эти 412 м³» задают именно ему. Кнопкой,
-       * а не ссылкой: адрес окно не меняет, и настоящая ссылка обещала бы переход.
+       * The name is the entry to the breakdown: "what are these 412 m3 made of" is asked of it. A
+       * button, not a link: the window does not change the address, and a real link would promise
+       * navigation.
        */
       render: (_v, r) => (
         <Button
@@ -148,33 +148,52 @@ export function WasteStatsTab() {
         </Button>
       ),
     },
-    {
-      key: 'volume',
-      title: 'Объём',
-      align: 'right',
-      width: 180,
-      render: (_v, r) => cell(volumeText(r.volumeM3), volumeNotes(r)),
-    },
-    {
-      key: 'cost',
-      title: 'Стоимость',
-      align: 'right',
-      width: 200,
-      render: (_v, r) => cell(formatMoney(r.totalCost), costNotes(r)),
-    },
+    ...figureColumns<WasteStatsRowDto>(),
   ];
 
+  /*
+   * How far the numbers can be trusted (R10): the same counters as the "Data quality" sheet of the
+   * book. A table where "confirmed 0 of 340 m3" looks like under-delivery rather than a pile of
+   * unreviewed tickets misleads more surely than no table.
+   *
+   * On the desktop the bar stands ABOVE the table: the table takes 100 % of the height, and under it
+   * the bar fell below the `overflow: hidden` of the tabs. On a phone the pinned toolbar would turn
+   * five quality rows into a permanent band over the list, so there it stays after the table,
+   * inside the scrolling body.
+   */
+  const qualityBar =
+    data && !outdated && data.quality.length > 0 ? (
+      <Space size={16} wrap>
+        {/*
+         * "Of visible requests": the scope and the type filter are part of the query, so these
+         * numbers are about the table, not the whole organisation. The same counters in the book
+         * have other denominators, and the caption must say so in words.
+         */}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          По видимым заявкам вывоза за месяц:
+        </Typography.Text>
+        {data.quality.map((q) => (
+          <Tooltip key={q.key} title={q.note}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {q.label}: {q.value}
+              {q.outOf != null ? ` из ${q.outOf}` : ''}
+            </Typography.Text>
+          </Tooltip>
+        ))}
+      </Space>
+    ) : null;
+
   return (
-    <PageTableLayout>
+    <PageTableLayout toolbar={isMobile ? undefined : qualityBar}>
       <TabsExtra tabKey="stats">
         <Space size={12} wrap>
           <DatePicker
             picker="month"
             allowClear={false}
             /*
-             * Формат строкой, а не функцией: функция печатает то же «май 2026», но лишает поле
-             * ввода — antd разбирает набранное ровно этим форматом, и календарь остаётся
-             * единственным способом выбрать месяц. Подпись при этом та же, что у `monthLabel`.
+             * The format is a string, not a function: a function prints the same "май 2026" but
+             * takes the input away — antd parses what was typed by exactly this format, and the
+             * calendar would remain the only way to pick a month. The caption equals `monthLabel`.
              */
             format="MMMM YYYY"
             value={dayjs(`${month}-01`)}
@@ -186,50 +205,30 @@ export function WasteStatsTab() {
         </Space>
       </TabsExtra>
 
-      <DataTable<WasteStatsRowDto>
-        rowKey="objectId"
-        columns={columns}
-        data={page}
-        total={rows.length}
-        loading={isFetching}
-        page={params.page}
-        pageSize={params.pageSize}
-        fitWidth={700}
-        onRowClick={(r) => setOpenObjectId(r.objectId)}
-        onChange={onTableChange}
-      />
-
-      {/*
-       * Насколько числам можно верить (Р10): те же счётчики, что у листа «Качество данных» книги.
-       * Таблица, где «подтверждено 0 из 340 м³» выглядит недовывозом, а не горой неразобранных
-       * талонов, вводит в заблуждение вернее, чем её отсутствие.
-       */}
-      {data && data.quality.length > 0 && (
-        <div style={{ padding: '8px 0' }}>
-          <Space size={16} wrap>
-            {/*
-             * «По видимым заявкам»: область и отбор типов стоят в самой выборке, поэтому числа
-             * здесь — про таблицу под ними, а не про всю организацию. Те же счётчики в книге
-             * аналитики дадут другие знаменатели, и подпись обязана сказать это словами.
-             */}
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              По видимым заявкам вывоза за месяц:
-            </Typography.Text>
-            {data.quality.map((q) => (
-              <Tooltip key={q.key} title={q.note}>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {q.label}: {q.value}
-                  {q.outOf != null ? ` из ${q.outOf}` : ''}
-                </Typography.Text>
-              </Tooltip>
-            ))}
-          </Space>
-        </div>
+      {outdated ? (
+        <Empty description="Сервер ещё отдаёт статистику в прежнем виде — обновите страницу" />
+      ) : (
+        <DataTable<WasteStatsRowDto>
+          rowKey="objectId"
+          columns={columns}
+          data={page}
+          total={rows.length}
+          loading={isFetching}
+          page={params.page}
+          pageSize={params.pageSize}
+          fitWidth={OBJECT_COLUMN_WIDTH + FIGURES_WIDTH}
+          // rc-table draws a summary even under an empty table: "Итого 0 м³" under "no data".
+          summary={totals && rows.length > 0 ? totalsSummary(totals) : undefined}
+          onRowClick={(r) => setOpenObjectId(r.objectId)}
+          onChange={onTableChange}
+        />
       )}
 
+      {isMobile && qualityBar && <div style={{ padding: '8px 0' }}>{qualityBar}</div>}
+
       {/*
-       * Окно рисуется в портале поверх всей страницы, поэтому показывает его только своя вкладка:
-       * без проверки `active` уход на «Заявки» оставил бы его висеть над чужим списком.
+       * The window is rendered into a portal over the whole page, so only its own tab shows it:
+       * without the `active` check, leaving for "Заявки" would leave it hanging over another list.
        */}
       {active && opened && (
         <WasteStatsObjectModal row={opened} month={month} onClose={() => setOpenObjectId(null)} />

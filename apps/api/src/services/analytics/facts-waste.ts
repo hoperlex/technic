@@ -17,41 +17,44 @@ import { db } from '../../db/client';
 import type { AnalyticsAtom, AnalyticsFacts, AnalyticsFactsScope, AnalyticsRange } from './types';
 
 /**
- * Атомы вывоза мусора для сводной аналитики (план `docs/analytics-summary-export-plan.md`, Р13).
+ * Waste-removal atoms for the analytics layer (plan `docs/analytics-summary-export-plan.md`, R13).
  *
- * Модуль отвечает на «сколько вывезли и за сколько» ровно один раз: и книга, и будущий экран
- * берут числа здесь, а не считают свои (Р14). Ближайший родственник — итог журнала вывоза
- * (`GET /waste-requests/history/summary`), и правило вывезенного унаследовано от него целиком:
- * **объём и вес не складываются** (Р17) — мусор меряют кубами, лом принимают тоннами, и общей
- * колонки «сколько» с единицей в подписи здесь нет (ADR 0067).
+ * This module answers "how much was removed and at what cost" exactly once: the Excel book and the
+ * waste statistics tab both take their numbers here instead of counting their own (R14). The
+ * closest relative is the waste history summary (`GET /waste-requests/history/summary`), and the
+ * removed-quantity rule is inherited from it: **volume and weight never add up** (R17) — debris is
+ * measured in cubic metres, scrap metal is accepted in tonnes, and there is no common "how much"
+ * column with a unit in its caption (ADR 0067).
  *
- * Четыре решения, каждое из которых иначе даёт другое число:
+ * Four decisions, each of which would otherwise produce a different number:
  *
- * 1. **Заказчик — всегда объект.** `waste_requests.object_id` обязателен, отделов у вывоза не
- *    бывает вовсе, поэтому `customerKind` здесь константа, а не разбор двух случаев, как у
- *    заказа ТС.
- * 2. **Считаем ЗАЯВКИ, а не самосвалы** (Р21, дословное решение заказчика: «количество машин —
- *    это проблема контрагента»). Колонки машин в атоме нет вовсе, и строки
- *    `waste_request_vehicles` читаются только ради денег незакрытой заявки.
- * 3. **Количество считает СОСТОЯВШЕЕСЯ, а не заказанное; оценкой бывают лишь деньги.** У
- *    незакрытой заявки нет ни объёма (`volumeM3 = 0`), ни самого вывоза (`removals = 0`): и то и
- *    другое берётся у закрытия, а заявленный объём и плановый день — это план (ADR 0035). Поставь сюда заявленный
- *    объём — и «вывезли 620 м³» перестало бы отличаться от «заказали 620 м³» ровно там, где это
- *    важнее всего. Посчитай вывозом плановый день — и заявка с доставкой 30.08, закрытая 02.09,
- *    окажется вывозом августа в книге, напечатанной 31.08, и вывозом сентября во всякой
- *    следующей: два соседних отчёта дадут два вывоза на один, и ни один из них не соврёт
- *    заметно. Деньги-оценка у незакрытой заявки при этом остаются — атом никуда не девается,
- *    нулём становится только счётчик количества.
+ * 1. **The customer is always a construction object.** `waste_requests.object_id` is mandatory and
+ *    waste requests never belong to a department, so `customerKind` is a constant here rather than
+ *    the two-way split vehicle requests need.
+ * 2. **REQUESTS are counted, not trucks** (R21, the customer's own words: "the number of trucks is
+ *    the contractor's problem"). The atom has no truck column at all. `waste_request_vehicles` rows
+ *    are read for two things only — the estimate of a request that is not done yet and the ordered
+ *    volume of the statistics tab — and both take the same branch, so the ordered volume and its
+ *    money always describe the same set of trucks.
+ * 3. **"Removed" is decided by the request STATUS, not by the presence of a completion row**
+ *    (waste stats three-volumes decision Z5). A request counts as removed — volume, weight, one
+ *    removal, confirmed tickets — only while its status is a fact status ("done" / "completed",
+ *    `analyticsCountsAsFact`). The rollback "done -> in progress" keeps the completion row so that
+ *    re-closing does not ask for the same figures again; counting that row would report a removal
+ *    the administrator has just withdrawn, while the money column (always status-based) already
+ *    treated the request as not done. Volume, weight and the removal counter therefore move to the
+ *    status together: switching only one of them would put a volume into one cell and zero removals
+ *    into the next.
  *
- *    Контейнерная операция считается тем же правилом, но признак у неё ДРУГОЙ, потому что
- *    предъявлять ей нечего: факта вывезенного у неё нет вовсе (`wasteFactUnit` пуст, сервер
- *    отвечает «вывезенное предъявляют только заявки на вывоз»), строки закрытия не бывает
- *    никогда, и «сделали» у неё означает статус-факт. Спроси у неё закрытие — и колонка
- *    «Конт. опер.» обнулилась бы целиком; спроси у вывоза статус вместо закрытия — и вывоз с
- *    закрытием, но откаченным статусом дал бы объём в одной клетке и ноль вывозов в соседней.
- * 4. **Атом на заявку, а не на день работы.** У вывоза день отнесения один на всю заявку (Р11),
- *    поэтому деньги раскладывать не по чему — заявка целиком лежит в своём дне. Раскладка по
- *    дням (Р28) нужна там, где заявка живёт неделями: у механизации и у заказа ТС.
+ *    The ordered volume is never mixed into the removed one inside this layer: the atom carries
+ *    `volumeOrderedM3` (not done yet) and `volumePlannedM3` (ordered, for every request) as separate
+ *    fields, so "removed 620 m3" stays distinguishable from "ordered 620 m3". A container operation
+ *    follows the same status rule for its own counter: it never has a completion row at all.
+ * 4. **One atom per request, not per working day.** A waste request has a single attribution day
+ *    (R11): the actual removal day, or the Moscow delivery day while there is none. That day is taken
+ *    from the completion row regardless of status, so a rolled-back request stays in the same month
+ *    and only stops being "removed". Spreading money over days (R28) is only needed where a request
+ *    lives for weeks: mechanization and vehicle requests.
  */
 
 /** Московские сутки: сервер живёт в UTC, а календарный день портала — МСК (`moscowDateKeyOf`). */
@@ -65,6 +68,14 @@ const MOSCOW = 'Europe/Moscow';
  */
 const FACT_STATUSES = REQUEST_STATUSES.filter(analyticsCountsAsFact);
 const REMOVAL_TYPES = REQUEST_TYPES.filter((t) => wasteFactUnit(t) !== null);
+/**
+ * Request types whose fact is measured in cubic metres — the only ones that have an ordered volume.
+ * Exported because the statistics tab narrows the loader by exactly this list: a second copy of the
+ * filter there would drift from this one the first time a new volume type appears.
+ */
+export const VOLUME_REQUEST_TYPES: RequestType[] = REQUEST_TYPES.filter(
+  (t) => wasteFactUnit(t) === 'volume_m3',
+);
 const CONTAINER_OP_TYPES = REQUEST_TYPES.filter(usesContainerType);
 const PRICED_TYPES = REQUEST_TYPES.filter(isPricedRequestType);
 /**
@@ -103,6 +114,10 @@ type WasteRow = {
   volume_ordered_m3: string | null;
   volume_confirmed_m3: string | null;
   volume_confirmed_unpriced_m3: string | null;
+  volume_planned_m3: string | null;
+  money_planned: string | null;
+  volume_planned_unpriced_m3: string | null;
+  volume_fact_unpriced_m3: string | null;
   money_confirmed: string | null;
   /**
    * `count(*)` — это `bigint`, и драйвер отдаёт его СТРОКОЙ, как и `numeric`. Тип назван честно
@@ -217,6 +232,7 @@ WITH scope AS (
            coalesce(c.removed_on, (r.delivery_at AT TIME ZONE ${MOSCOW})::date) AS day,
            r.status::text = ANY(${sql.param(FACT_STATUSES)}::text[])       AS is_fact,
            r.request_type::text = ANY(${sql.param(REMOVAL_TYPES)}::text[]) AS is_removal,
+           r.request_type::text = ANY(${sql.param(VOLUME_REQUEST_TYPES)}::text[]) AS is_volume_removal,
            r.request_type::text = ANY(${sql.param(CONTAINER_OP_TYPES)}::text[]) AS is_container_op,
            r.request_type::text = ANY(${sql.param(PRICED_TYPES)}::text[])  AS is_priced_type
       FROM waste_requests r
@@ -273,6 +289,30 @@ graded AS (
            tk.tickets_unread,
            v.ordered_volume,
            /*
+            * ORDERED ("planned") VOLUME AND ITS MONEY — for every request of a volume type, closed
+            * or not (waste stats three-volumes decision Z3). The ordered volume comes from the
+            * truck rows or from the request itself; an old request that was filed without any
+            * volume falls back to the removed volume of its completion.
+            *
+            * Both columns take the branch on ONE condition. The request amount is GENERATED from
+            * waste_requests.volume_m3, so a request without an ordered volume has no amount either:
+            * taking the volume from the completion and the money from the request would put cubic
+            * metres into the planned column without their roubles. The fallback therefore moves the
+            * money to the same completion (its total_cost).
+            *
+            * money_estimate above is left untouched and is not derived from these: the book reads
+            * it as the estimate of requests that are not done yet, while this pair describes the
+            * plan of every request.
+            */
+           CASE WHEN s.is_volume_removal
+                THEN CASE WHEN v.ordered_volume IS NOT NULL THEN v.ordered_volume
+                          ELSE s.fact_volume END
+           END                                                                 AS planned_volume,
+           CASE WHEN s.is_volume_removal
+                THEN CASE WHEN v.ordered_volume IS NOT NULL THEN v.amount
+                          ELSE s.total_cost END
+           END                                                                 AS planned_money,
+           /*
             * ПОДТВЕРЖДЁННЫЙ ОБЪЁМ, КОТОРЫЙ НЕЧЕМ ОЦЕНИТЬ (Р5). Отдельная величина, а не вывод из
             * нулевых денег: сложив атомы, свёртка уже не отличит «цены не было» от «подтверждать
             * было нечего», и прочерк в стоимости ставить стало бы не из чего.
@@ -295,17 +335,17 @@ graded AS (
                                     THEN sum(wv.amount)
                                 END AS amount,
                                 /*
-                                 * ЗАКАЗАННЫЙ ОБЪЁМ — ИЗ ТОГО ЖЕ МЕСТА, ЧТО И ДЕНЬГИ-ОЦЕНКА (план
-                                 * статистики, Р3). Там, где строки самосвалов заведены, они и
-                                 * описывают, чем и почём договорились везти (ADR 0011), а сумма
-                                 * заявки их не повторяет. Возьми объём только у заявки — и на
-                                 * заявке со строками колонка объёма и колонка денег считали бы
-                                 * разное, то есть ровно ту беду, ради которой Р3 и принято.
+                                 * ORDERED VOLUME COMES FROM THE SAME PLACE AS THE ESTIMATE.
+                                 * Where truck rows exist they describe what was agreed to be
+                                 * carried and at what price (ADR 0011), and the request amount
+                                 * does not repeat them. Taking the volume from the request alone
+                                 * would make the volume and the money of one request describe
+                                 * different removals.
                                  *
-                                 * Ветвь «строки есть, но хотя бы одна без цены» здесь НЕ
-                                 * повторяется: у денег она означает «оценить нечем» (NULL), а
-                                 * объём у строки NOT NULL и известен всегда — заявка без оценки
-                                 * остаётся заявкой с заказанным объёмом.
+                                 * The branch "rows exist but one has no price" is NOT repeated
+                                 * here: for money it means "cannot be estimated" (NULL), while a
+                                 * row volume is NOT NULL and always known — a request without an
+                                 * estimate is still a request with an ordered volume.
                                  */
                                 CASE
                                   WHEN count(*) = 0 THEN s.requested_volume
@@ -351,37 +391,63 @@ atoms AS (
            g.request_type,
            g.status                                   AS request_status,
            /*
-            * Счётчик считает ЗАЯВКИ (Р21), в том числе у контейнерных операций: заявка на снятие
-            * трёх контейнеров — одна договорённость и один выезд, а containers_count отвечает на
-            * другой вопрос (сколько единиц погашено на площадке) и живёт в своём модуле.
+            * Both counters count REQUESTS (R21), container operations included: removing three
+            * containers is one agreement and one trip, while containers_count answers another
+            * question (how many units left the site) and lives in its own module.
             *
-            * Оба счётчика считают СОСТОЯВШЕЕСЯ: колонка отвечает на «сколько сделали», а не
-            * «сколько заказали». У вывоза это закрытие — оно же источник объёма и дня отнесения,
-            * поэтому количество и объём в соседних клетках сходятся всегда. У контейнерной
-            * операции закрытия не бывает по построению (предъявлять ей нечего), и «сделали» у неё
-            * означает статус-факт. Заявка, чей день ещё только запланирован, даёт по своему
-            * счётчику ноль и остаётся в книге деньгами-оценкой.
+            * Both counters also count what HAPPENED, and "happened" is the fact status for both
+            * (header, decision 3): a completion row alone is not a removal, because the rollback
+            * "done -> in progress" keeps that row. Volume, weight and the confirmed tickets below
+            * use the same condition, so the removal counter and its volume always agree in
+            * neighbouring cells. A request that is only planned gives zero here and stays in the
+            * book as an estimate.
             */
-           CASE WHEN g.is_removal AND g.is_closed THEN 1 ELSE 0 END     AS removals,
+           CASE WHEN g.is_removal AND g.is_fact THEN 1 ELSE 0 END       AS removals,
            CASE WHEN g.is_container_op AND g.is_fact THEN 1 ELSE 0 END  AS container_ops,
-           coalesce(g.fact_volume, 0)::text           AS volume_m3,
+           CASE WHEN g.is_fact THEN coalesce(g.fact_volume, 0) ELSE 0 END::text
+                                                      AS volume_m3,
            /*
-            * Заказанное идёт СВОЕЙ колонкой и никогда не смешивается с вывезенным внутри слоя
-            * (см. решение 3 в шапке файла). Кто их складывает — складывает осознанно и подписывает
-            * обе доли; здесь они различимы всегда.
+            * The ordered volume of a request that is not done yet, in a column of its own: it is
+            * never mixed into the removed volume inside this layer. Zero once the request is done —
+            * its ordered volume then answers an old question (how much was asked before the truck
+            * came), and adding it to the removed one would count an under-delivered request twice.
+            * The switch is the fact status, like everything above, so a rolled-back request
+            * returns to "ordered".
             */
-           /*
-            * Обнуляется у ЗАКРЫТОЙ заявки: её заказанный объём отвечает на прошлый вопрос —
-            * сколько просили, прежде чем приехала машина. Сложи его с вывезенным — и заявка,
-            * закрытая недовозом, посчиталась бы дважды.
-            */
-           CASE WHEN g.is_closed THEN 0 ELSE coalesce(g.ordered_volume, 0) END::text
+           CASE WHEN g.is_fact THEN 0 ELSE coalesce(g.ordered_volume, 0) END::text
                                                       AS volume_ordered_m3,
-           coalesce(g.confirmed_volume, 0)::text      AS volume_confirmed_m3,
-           g.confirmed_unpriced::text                 AS volume_confirmed_unpriced_m3,
-           coalesce(g.money_confirmed, 0)::text       AS money_confirmed,
-           coalesce(g.tickets_unread, 0)              AS tickets_without_volume,
-           coalesce(g.fact_weight, 0)::text           AS weight_tons,
+           /*
+            * Confirmed tickets belong to removed requests only: a rolled-back request keeps its
+            * tickets, but confirming a removal that no longer counts would make the confirmed
+            * column larger than the removed one for no real reason.
+            */
+           CASE WHEN g.is_fact THEN coalesce(g.confirmed_volume, 0) ELSE 0 END::text
+                                                      AS volume_confirmed_m3,
+           CASE WHEN g.is_fact THEN g.confirmed_unpriced ELSE 0 END::text
+                                                      AS volume_confirmed_unpriced_m3,
+           CASE WHEN g.is_fact THEN coalesce(g.money_confirmed, 0) ELSE 0 END::text
+                                                      AS money_confirmed,
+           CASE WHEN g.is_fact THEN coalesce(g.tickets_unread, 0) ELSE 0 END
+                                                      AS tickets_without_volume,
+           /*
+            * Planned volume and money of the statistics tab (see graded). The unpriced share is a
+            * separate field and not a conclusion from zero money: after atoms are summed, "there
+            * was no price" and "there was nothing to price" can no longer be told apart, and the
+            * tab could not decide between a dash and a number.
+            */
+           coalesce(g.planned_volume, 0)::text        AS volume_planned_m3,
+           coalesce(g.planned_money, 0)::text         AS money_planned,
+           CASE WHEN g.planned_money IS NULL THEN coalesce(g.planned_volume, 0) ELSE 0 END::text
+                                                      AS volume_planned_unpriced_m3,
+           /*
+            * Removed volume whose completion has no amount: the same dash rule for the main cost
+            * of the statistics tab. A completion may legally be saved without a sum.
+            */
+           CASE WHEN g.is_volume_removal AND g.is_fact AND g.total_cost IS NULL
+                THEN coalesce(g.fact_volume, 0) ELSE 0 END::text
+                                                      AS volume_fact_unpriced_m3,
+           CASE WHEN g.is_fact THEN coalesce(g.fact_weight, 0) ELSE 0 END::text
+                                                      AS weight_tons,
            coalesce(g.money_fact, 0)::text            AS money_fact,
            coalesce(g.money_estimate, 0)::text        AS money_estimate,
            g.priced
@@ -391,7 +457,7 @@ atoms AS (
       LEFT JOIN container_types ct ON ct.id = g.container_type_id
 ),
 quality AS (
-    /* Лист «Качество данных» (Р20): три числа о том, насколько цифрам модуля можно верить. */
+    /* The "Data quality" sheet (R20): how far the numbers of this module can be trusted. */
     SELECT jsonb_build_array(
              jsonb_build_object(
                'key',   'waste.completions_without_removed_on',
@@ -400,22 +466,48 @@ quality AS (
                'outOf', count(*) FILTER (WHERE g.is_closed),
                'note',  'Такие вывозы отнесены к дню доставки, а не к дню вывоза'),
              /*
-              * Знаменатель — те же состоявшиеся вывозы, что стоят в колонке «Вывозов»: считай
-              * здесь и незакрытые заявки, и «5 из 6» не сошлось бы ни с одной клеткой книги, а
-              * талона у заявки, которую ещё не закрыли, не бывает и по порядку работы.
+              * The denominator is the same set of removals as the "Removals" column — requests of
+              * a removal type in a fact status. Counting unfinished requests here would give a
+              * "5 of 6" that matches no cell of the book, and a request that is not done has no
+              * ticket by the order of work anyway.
               */
              jsonb_build_object(
                'key',   'waste.removals_without_ticket',
                'label', 'Вывозов без принятого талона',
-               'value', count(*) FILTER (WHERE g.is_removal AND g.is_closed AND NOT g.has_ticket),
-               'outOf', count(*) FILTER (WHERE g.is_removal AND g.is_closed),
+               'value', count(*) FILTER (WHERE g.is_removal AND g.is_fact AND NOT g.has_ticket),
+               'outOf', count(*) FILTER (WHERE g.is_removal AND g.is_fact),
                'note',  'Объём и вес не подтверждены документом'),
              jsonb_build_object(
                'key',   'waste.requests_without_price',
                'label', 'Заявок вывоза без цены',
                'value', count(*) FILTER (WHERE NOT g.priced),
                'outOf', count(*),
-               'note',  'В деньги не вошли ни фактом, ни оценкой')
+               'note',  'В деньги не вошли ни фактом, ни оценкой'),
+             /*
+              * Volume-type requests filed without an ordered volume (old data). The statistics tab
+              * takes their plan from the completion; while they are not closed, their plan is zero.
+              * The note avoids the tab's column name on purpose: the same row is printed on the
+              * quality sheet of the book, which has no such column.
+              */
+             jsonb_build_object(
+               'key',   'waste.requests_without_ordered_volume',
+               'label', 'Заявок вывоза без заказанного объёма',
+               'value', count(*) FILTER (WHERE g.is_volume_removal AND g.ordered_volume IS NULL),
+               'outOf', count(*) FILTER (WHERE g.is_volume_removal),
+               'note',  'Заказанный объём не указан: статистика вывоза берёт плановым объём закрытия, а у незакрытой заявки — ноль'),
+             /*
+              * A removal in a fact status without a completion counts as one removal with no volume,
+              * weight or money (header, decision 3). Status changes cannot create such a request
+              * any more ("done" requires a completion), but old data and a done container operation
+              * whose type was later edited to a removal can: the edit checks units only when a
+              * completion exists. The row is unconditional — zero is harmless, silence is not.
+              */
+             jsonb_build_object(
+               'key',   'waste.done_without_completion',
+               'label', 'Выполненных заявок вывоза без закрытия',
+               'value', count(*) FILTER (WHERE g.is_removal AND g.is_fact AND NOT g.is_closed),
+               'outOf', count(*) FILTER (WHERE g.is_removal AND g.is_fact),
+               'note',  'Вывоз засчитан, но объёма, веса и суммы у него нет')
            ) AS entries
       FROM graded g
 )
@@ -472,6 +564,10 @@ SELECT a.*, q.entries FROM quality q LEFT JOIN atoms a ON false`);
       volumeOrderedM3: num(row.volume_ordered_m3),
       volumeConfirmedM3: num(row.volume_confirmed_m3),
       volumeConfirmedUnpricedM3: num(row.volume_confirmed_unpriced_m3),
+      volumePlannedM3: num(row.volume_planned_m3),
+      moneyPlanned: num(row.money_planned),
+      volumePlannedUnpricedM3: num(row.volume_planned_unpriced_m3),
+      volumeFactUnpricedM3: num(row.volume_fact_unpriced_m3),
       ticketsWithoutVolume: Number(row.tickets_without_volume ?? 0),
       weightTons: num(row.weight_tons),
       engineHours: 0,

@@ -1,4 +1,4 @@
-import { useState, type MouseEvent, type ReactNode } from 'react';
+import { useLayoutEffect, useState, type MouseEvent, type ReactNode } from 'react';
 import {
   Empty,
   Pagination,
@@ -90,11 +90,28 @@ interface DataTableProps<T> {
    */
   onRowClick?: (record: T) => void;
   onChange: (change: TableChange) => void;
+  /**
+   * A summary row under the list: a ready `Table.Summary` element from the page, not a function of
+   * the data. rc-table would pass such a function only the rows of the current page, while a total
+   * must come from the server — the page prints it, the table adds nothing up. Give `Table.Summary`
+   * with `fixed` to pin it under the scrolling body; the table then measures its height and leaves
+   * room for it. Not combined with `selection`: the selection column shifts cell indexes.
+   */
+  summary?: ReactNode;
 }
 
-// Приблизительные высоты строки заголовка и блока пагинации (для расчёта scroll.y)
+// Approximate heights of the header row and the pagination block, for `scroll.y`.
 const THEAD_HEIGHT = 47;
 const PAGINATION_HEIGHT = 64;
+
+/**
+ * Height of the scrolling body: the container minus the header, the pagination and a pinned
+ * summary, never below 160 px. A pure function because the heights cannot be observed in jsdom
+ * (`ResizeObserver` is a stub there), and the formula still needs a test.
+ */
+export function tableScrollY(height: number, summaryHeight: number): number {
+  return Math.max(160, height - THEAD_HEIGHT - PAGINATION_HEIGHT - summaryHeight);
+}
 
 /**
  * Справочник на телефоне остаётся таблицей (ADR 0030): его читают сравнением строк, и прокрутка
@@ -201,12 +218,31 @@ function ListCard<T>({ record, card }: { record: T; card: CardConfig<T> }) {
 export type { TableChange };
 
 export function DataTable<T extends object>(props: DataTableProps<T>) {
-  const { ref, height } = useElementSize<HTMLDivElement>();
+  const { ref, width, height } = useElementSize<HTMLDivElement>();
   const isMobile = useIsMobile();
-  const scrollY = Math.max(160, height - THEAD_HEIGHT - PAGINATION_HEIGHT);
   const rowKey = props.rowKey ?? 'id';
   /** Выбор гасится при смене того, что видно: правило общее для портала, см. `scopeKey`. */
   const selection = useScopedSelection(props.selection);
+  // An explicit check rather than a type: a summary beside the selection column would misalign.
+  const summary = selection ? undefined : props.summary;
+  /*
+   * Height of the pinned summary, measured from the DOM. `useElementSize` cannot do it — it
+   * subscribes once on mount, while the summary holder is an inner node of rc-table that appears
+   * only after the data — and a constant from the page cannot either: the page does not know how its
+   * captions wrap. The effect runs before the `isMobile` branch (rules of hooks) and re-reads the
+   * height on every change of the summary or of the container size; the state changes only when the
+   * number does, and the summary height does not depend on `scrollY`, so there is no loop. Without a
+   * summary nothing is read, and every other list gets the same number as before.
+   */
+  const [summaryHeight, setSummaryHeight] = useState(0);
+  useLayoutEffect(() => {
+    const next =
+      summary && !isMobile
+        ? (ref.current?.querySelector<HTMLElement>('div.ant-table-summary')?.offsetHeight ?? 0)
+        : 0;
+    setSummaryHeight((prev) => (prev === next ? prev : next));
+  }, [summary, isMobile, ref, width, height]);
+  const scrollY = tableScrollY(height, summaryHeight);
   const columns = selection
     ? withSelectionColumn(props.columns, selection, props.data, rowKey)
     : props.columns;
@@ -299,6 +335,7 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
           loading={props.loading}
           size="small"
           scroll={{ x: 'max-content' }}
+          summary={summary ? () => summary : undefined}
           onChange={handleChange}
           pagination={false}
           // Подсказка сортировки выключена, как и в таблице ниже.
@@ -334,6 +371,7 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
         size="middle"
         sticky
         scroll={{ y: scrollY, x: props.fitWidth ?? 'max-content' }}
+        summary={summary ? () => summary : undefined}
         onChange={handleChange}
         /* Подсказка «Нажмите для сортировки по возрастанию» убрана совсем, а не спрятана стилями:
            с `false` antd не оборачивает заголовок в `Tooltip` вовсе, и всплывать нечему. Она

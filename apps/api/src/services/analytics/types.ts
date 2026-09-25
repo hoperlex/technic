@@ -69,14 +69,12 @@ export interface AnalyticsAtom {
   trips: number;
   volumeM3: number;
   /**
-   * ЗАКАЗАННЫЙ объём заявки, у которой ещё нет закрытия; у закрытой — ноль (вывоз мусора,
-   * `docs/waste-stats-tab-plan.md`, Р3).
+   * ORDERED volume of a waste request that is not done yet (fact status, `analyticsCountsAsFact`);
+   * zero once it is done.
    *
-   * Отдельным полем, а не прибавкой к `volumeM3`, и это то же решение, что описано в шапке
-   * `facts-waste.ts`: «вывезли 620 м³» обязано отличаться от «заказали 620 м³». Книга поле не
-   * читает вовсе; вкладка «Статистика» складывает оба и подписывает долю — у неё деньги считают
-   * факт вместе с оценкой, а значит и объём обязан считать тот же набор заявок, иначе цена за куб
-   * из строки не выводится.
+   * A field of its own rather than an addition to `volumeM3`: "removed 620 m3" must stay
+   * distinguishable from "ordered 620 m3" (header of `facts-waste.ts`). The book does not read it;
+   * the statistics tab reads it only for its deprecated combined figures.
    */
   volumeOrderedM3: number;
   /**
@@ -95,6 +93,26 @@ export interface AnalyticsAtom {
    * «подтверждать было нечего», и прочерк в стоимости ставить стало бы не из чего.
    */
   volumeConfirmedUnpricedM3: number;
+  /**
+   * Planned volume of the statistics tab: the ordered volume of EVERY waste request of a volume
+   * type, done or not; an old request filed without a volume takes the removed one. Kept apart from
+   * `volumeOrderedM3`, which is zero for done requests and so cannot answer "what was ordered".
+   */
+  volumePlannedM3: number;
+  /**
+   * Money of `volumePlannedM3`, taken from the same source as the volume (request amount, truck
+   * rows or — in the fallback — the completion sum), so the planned pair always describes the same
+   * requests. Not the book estimate: `moneyLow` covers unfinished requests only.
+   */
+  moneyPlanned: number;
+  /** Share of `volumePlannedM3` that has no money: a dash, not zero, in the tab (see below). */
+  volumePlannedUnpricedM3: number;
+  /**
+   * Share of the removed volume whose completion has no sum. The same reason as
+   * `volumeConfirmedUnpricedM3`: after atoms are summed, zero money no longer tells "no price" from
+   * "nothing to price".
+   */
+  volumeFactUnpricedM3: number;
   /**
    * Принятых талонов заявки, чей объём не прочитан. Складывается как обычный счётчик и нужен рядом
    * с `volumeConfirmedM3`: без него «подтверждено 380 из 412 м³» читается как недовывоз, хотя

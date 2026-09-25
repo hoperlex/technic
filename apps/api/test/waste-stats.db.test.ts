@@ -2,7 +2,13 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { AnalyticsSummaryDto, WasteStatsDto, WasteStatsRowDto } from '@technic/contracts';
+import {
+  analyticsCountsAsFact,
+  type AnalyticsSummaryDto,
+  type WasteStatsDto,
+  type WasteStatsFigures,
+  type WasteStatsRowDto,
+} from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -11,22 +17,29 @@ import type { db as AppDb } from '../src/db/client';
 import type * as SchemaNs from '../src/db/schema';
 
 /**
- * Статистика вывоза мусора за отчётный месяц (план `docs/waste-stats-tab-plan.md`).
+ * Waste removal statistics for a reporting month (plan `docs/waste-stats-tab-plan.md`, three-volume
+ * rework — ADR 0209).
  *
- * Зачем база. Всё, что проверяет этот файл, живёт в SQL и только в нём: день отнесения, отбор
- * месяца, сумма принятых талонов, заказанный объём незакрытой заявки, площадочная область. Подмени
- * выборку — и проверялась бы подмена; вопрос же стоит ровно в том, что отвечает настоящий запрос
- * на строках, лежащих в базе.
+ * Why a database. Everything this file checks lives in SQL and only there: the attribution day, the
+ * month filter, the sum of confirmed tickets, the ordered volume, the status that makes a request
+ * "removed", the site scope. Stub the query and the stub would be tested; the question is exactly
+ * what the real query answers on rows lying in the database.
  *
- * Отдельная проверка — СВЕРКА С КНИГОЙ. Вкладка и книга Excel обязаны отвечать одинаково на
- * «сколько вывезли за март», потому что считают одни и те же атомы (Р1); тест сравнивает их прямо,
- * и это единственный способ заметить расхождение раньше, чем его заметят сличением двух экранов.
+ * A separate check is the RECONCILIATION WITH THE BOOK. The tab and the Excel book must give the
+ * same answer to "how much was removed in March" because they count the same atoms (R1); the test
+ * compares them directly — only the figures that have a pair in the book (removed volume, removals,
+ * fact money); the ordered and confirmed volumes are guarded by internal equalities instead.
  *
- * Месяц у теста свой и далёкий (`2031-03`): выборка идёт по всем видимым администратору
- * площадкам, и на общей базе только собственный месяц позволяет утверждать что-то про ИТОГ, а не
- * только про свою строку.
+ * Three sites. A holds the original ADR 0193 cases and keeps its expectations, which now guard the
+ * deprecated combined fields; B holds only scrap metal and a container operation and must not
+ * appear; C holds the cases of the three-volume rework (rollback, no ordered volume, tickets above
+ * the completion, completion without a sum, "done" without a completion) and a month with unfinished
+ * requests only. C is not assigned to the site account, so the scope checks do not see it.
  *
- * Запуск — как у остальных db-тестов:
+ * The month is far away (`2031-03`): the admin sees every site, and only a month of its own lets the
+ * test say something about the TOTAL and not only about its own row.
+ *
+ * Run like the other db tests:
  *
  *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/technic_archive_test \
  *     pnpm --filter @technic/api test waste-stats
@@ -43,11 +56,14 @@ const PASSWORD = 'db-test-password-123';
 /** «яя» в начале кода — требование соседства: половина db-тестов берёт объект `ORDER BY … LIMIT 1`. */
 const OBJECT_CODE = `яя-waste-stats-a-${RUN}`;
 const OTHER_CODE = `яя-waste-stats-b-${RUN}`;
+const THIRD_CODE = `яя-waste-stats-c-${RUN}`;
 const KEY_PREFIX = `db-waste-stats-${RUN}/`;
 
 /** Отчётный месяц теста и соседний — в него уезжает заявка, закрытая позже. */
 const MONTH = '2031-03';
 const NEXT_MONTH = '2031-04';
+/** A month of site C with unfinished requests only: the plan exists, nothing is removed yet. */
+const OPEN_MONTH = '2031-05';
 
 interface Ctx {
   app: Awaited<ReturnType<typeof buildApp>>;
@@ -62,10 +78,13 @@ interface Ctx {
   adminId: string;
   objectId: string;
   otherObjectId: string;
+  thirdObjectId: string;
   typeMixedId: string;
   typeFreeId: string;
   typeRowsId: string;
   typePartialId: string;
+  /** Waste types of site C, one per case, so every case is its own position. */
+  typeC: Record<'rollback' | 'noOrder' | 'over' | 'noSum' | 'noClose', string>;
   containerTypeId: string;
   range: { from: string; to: string };
 }
@@ -204,6 +223,11 @@ function rowOf(dto: WasteStatsDto, objectId: string): WasteStatsRowDto | undefin
   return dto.rows.find((r) => r.objectId === objectId);
 }
 
+/** Position of site C by the tail of its waste type name — one case per position. */
+function caseOf(row: WasteStatsRowDto | undefined, label: string): WasteStatsFigures | undefined {
+  return row?.positions.find((p) => p.label.includes(label));
+}
+
 describe.skipIf(!DB_URL)('вывоз: статистика за отчётный месяц', () => {
   beforeAll(async () => {
     prepareEnv(DB_URL!);
@@ -229,6 +253,7 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
       .values([
         { code: OBJECT_CODE, name: `Площадка статистики А ${RUN}`, address: 'г. Москва, тест, 1' },
         { code: OTHER_CODE, name: `Площадка статистики Б ${RUN}`, address: 'г. Москва, тест, 2' },
+        { code: THIRD_CODE, name: `Площадка статистики В ${RUN}`, address: 'г. Москва, тест, 3' },
       ])
       .returning({ id: schema.constructionObjects.id });
 
@@ -240,6 +265,11 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
         { code: `test_free_${RUN}`, name: `ТЕСТ бесценный ${RUN}` },
         { code: `test_rows_${RUN}`, name: `ТЕСТ самосвалами ${RUN}` },
         { code: `test_part_${RUN}`, name: `ТЕСТ частично ${RUN}` },
+        { code: `test_rollback_${RUN}`, name: `ТЕСТ откат ${RUN}` },
+        { code: `test_noorder_${RUN}`, name: `ТЕСТ без объёма ${RUN}` },
+        { code: `test_over_${RUN}`, name: `ТЕСТ талоны сверх ${RUN}` },
+        { code: `test_nosum_${RUN}`, name: `ТЕСТ без суммы ${RUN}` },
+        { code: `test_noclose_${RUN}`, name: `ТЕСТ без закрытия ${RUN}` },
       ])
       .returning({ id: schema.wasteTypes.id });
 
@@ -287,10 +317,18 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
       adminId,
       objectId: objects[0]!.id,
       otherObjectId: objects[1]!.id,
+      thirdObjectId: objects[2]!.id,
       typeMixedId: types[0]!.id,
       typeFreeId: types[1]!.id,
       typeRowsId: types[2]!.id,
       typePartialId: types[3]!.id,
+      typeC: {
+        rollback: types[4]!.id,
+        noOrder: types[5]!.id,
+        over: types[6]!.id,
+        noSum: types[7]!.id,
+        noClose: types[8]!.id,
+      },
       containerTypeId: '',
       range: { from: `${MONTH}-01`, to: `${MONTH}-31` },
     };
@@ -459,6 +497,70 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
       deliveryDay: `${MONTH}-19`,
       status: 'done',
     });
+
+    // ── Site C: the three-volume cases (ADR 0209) ──
+    const priced100 = { pricePerM3: '100.00', wasteTariffId: tariff!.id };
+    /*
+     * Rolled back "done -> in progress": the completion (12 m3, 1200 RUB) and a confirmed ticket
+     * stay, but the request is no longer removed. It is ordered only — 10 m3, 1000 RUB by the
+     * request's own price snapshot.
+     */
+    const rollback = await newRequest({
+      objectId: ctx.thirdObjectId,
+      wasteTypeId: ctx.typeC.rollback,
+      volumeM3: 10,
+      deliveryDay: `${MONTH}-04`,
+      status: 'confirmed',
+      ...priced100,
+    });
+    await close(rollback, { volumeM3: '12.000', removedOn: `${MONTH}-05` });
+    await seedTicket(rollback, { volumeM3: '12.000' });
+    // Old request filed without an ordered volume: the plan falls back to the completion, 6 m3 / 600.
+    const noOrder = await newRequest({
+      objectId: ctx.thirdObjectId,
+      wasteTypeId: ctx.typeC.noOrder,
+      volumeM3: null,
+      deliveryDay: `${MONTH}-06`,
+    });
+    await close(noOrder, { volumeM3: '6.000', removedOn: `${MONTH}-06` });
+    // Tickets above the completion (Z4): 5 + 5 confirmed against 8 removed — the sum as it is.
+    const over = await newRequest({
+      objectId: ctx.thirdObjectId,
+      wasteTypeId: ctx.typeC.over,
+      volumeM3: 8,
+      deliveryDay: `${MONTH}-07`,
+      ...priced100,
+    });
+    await close(over, { volumeM3: '8.000', removedOn: `${MONTH}-07` });
+    await seedTicket(over, { volumeM3: '5.000' });
+    await seedTicket(over, { volumeM3: '5.000' });
+    // Completion saved without a sum: its removed volume has no money — a dash, not zero.
+    const noSum = await newRequest({
+      objectId: ctx.thirdObjectId,
+      wasteTypeId: ctx.typeC.noSum,
+      volumeM3: 4,
+      deliveryDay: `${MONTH}-08`,
+      ...priced100,
+    });
+    await close(noSum, { volumeM3: '4.000', price: null, removedOn: `${MONTH}-08` });
+    // "Done" without a completion (old data): one removal with no volume and no money.
+    await newRequest({
+      objectId: ctx.thirdObjectId,
+      wasteTypeId: ctx.typeC.noClose,
+      volumeM3: 3,
+      deliveryDay: `${MONTH}-09`,
+      status: 'done',
+      ...priced100,
+    });
+    // A month with unfinished requests only: 7 m3 / 700 RUB planned, nothing removed.
+    await newRequest({
+      objectId: ctx.thirdObjectId,
+      wasteTypeId: ctx.typeC.rollback,
+      volumeM3: 7,
+      deliveryDay: `${OPEN_MONTH}-10`,
+      status: 'new',
+      ...priced100,
+    });
   }, 90_000);
 
   afterAll(async () => {
@@ -475,7 +577,7 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
       DELETE FROM user_construction_objects WHERE user_id IN
         (SELECT id FROM users WHERE email IN ${emails})`);
     await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code IN
-      (${OBJECT_CODE}, ${OTHER_CODE})`);
+      (${OBJECT_CODE}, ${OTHER_CODE}, ${THIRD_CODE})`);
     // Учётки раньше контрагента: на нём висит учётка исполнителя (`users_counterparty_id_fkey`).
     await ctx.db.execute(sql`DELETE FROM users WHERE email IN ${emails}`);
     await ctx.db.execute(sql`DELETE FROM counterparties WHERE name LIKE ${`%${RUN}`}`);
@@ -557,6 +659,7 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
     const empty = await stats(ctx.emptyScopeAuth);
     expect(empty.rows).toEqual([]);
     expect(empty.totals.volumeM3).toBe(0);
+    expect(empty.totals.plannedVolumeM3).toBe(0);
     expect(empty.totals.requests).toBe(0);
 
     const denied = await ctx.app.inject({
@@ -593,9 +696,15 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
       expect(sum((p) => p.volumeM3)).toBe(row.volumeM3);
       expect(sum((p) => p.totalCost)).toBe(row.totalCost);
       expect(sum((p) => p.confirmedVolumeM3)).toBe(row.confirmedVolumeM3);
+      expect(sum((p) => p.plannedVolumeM3)).toBe(row.plannedVolumeM3);
+      expect(sum((p) => p.doneVolumeM3)).toBe(row.doneVolumeM3);
     }
-    const rowsVolume = Number(dto.rows.reduce((acc, r) => acc + r.volumeM3, 0).toFixed(3));
-    expect(dto.totals.volumeM3).toBe(rowsVolume);
+    const total = (pick: (r: WasteStatsRowDto) => number): number =>
+      Number(dto.rows.reduce((acc, r) => acc + pick(r), 0).toFixed(3));
+    expect(dto.totals.volumeM3).toBe(total((r) => r.volumeM3));
+    expect(dto.totals.plannedVolumeM3).toBe(total((r) => r.plannedVolumeM3));
+    expect(dto.totals.doneVolumeM3).toBe(total((r) => r.doneVolumeM3));
+    expect(dto.totals.confirmedVolumeM3).toBe(total((r) => r.confirmedVolumeM3));
     expect(dto.totals.requests).toBe(dto.rows.reduce((acc, r) => acc + r.requests, 0));
   });
 
@@ -609,47 +718,190 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
      * площадок и всех типов, включая лом и контейнерные операции), а с `opts` он — ровно
      * подмножество: заявки видимых площадок и типа «вывоз мусора».
      */
-    const { loadWasteFacts } = await import('../src/services/analytics/facts-waste');
+    const { loadWasteFacts, VOLUME_REQUEST_TYPES } =
+      await import('../src/services/analytics/facts-waste');
+    const sites = [ctx.objectId, ctx.thirdObjectId];
     const full = await loadWasteFacts(ctx.range);
     const narrowed = await loadWasteFacts(ctx.range, {
-      objectIds: [ctx.objectId],
-      requestTypes: ['waste_removal'],
+      objectIds: sites,
+      requestTypes: VOLUME_REQUEST_TYPES,
     });
 
-    const mine = full.atoms.filter((a) => a.customerId === ctx.objectId);
+    const mine = full.atoms.filter((a) => sites.includes(a.customerId));
     const others = full.atoms.filter((a) => a.customerId === ctx.otherObjectId);
     // Лом и контейнерная операция площадки Б в полном наборе есть — их убирает только сужение.
     expect(others.length).toBe(2);
     expect(narrowed.atoms.map((a) => a.requestId).sort()).toEqual(
       mine.map((a) => a.requestId).sort(),
     );
-    // Числа атома от сужения не поехали: это тот же атом, а не пересчитанный.
+    // Atom figures did not move with the narrowing: it is the same atom, not a recalculated one.
     const byId = new Map(full.atoms.map((a) => [a.requestId, a]));
+    const fields = [
+      'volumeM3',
+      'weightTons',
+      'removals',
+      'moneyFact',
+      'volumeConfirmedM3',
+      'volumePlannedM3',
+      'moneyPlanned',
+      'volumePlannedUnpricedM3',
+      'volumeFactUnpricedM3',
+    ] as const;
     for (const atom of narrowed.atoms) {
-      expect(atom.volumeM3).toBe(byId.get(atom.requestId)?.volumeM3);
-      expect(atom.moneyFact).toBe(byId.get(atom.requestId)?.moneyFact);
-      expect(atom.volumeConfirmedM3).toBe(byId.get(atom.requestId)?.volumeConfirmedM3);
+      for (const field of fields) {
+        expect(atom[field], `${atom.requestLabel}: ${field}`).toBe(
+          byId.get(atom.requestId)?.[field],
+        );
+      }
+    }
+    /*
+     * The plan is tied to the book by an equality on atoms: for a request that is not done and has
+     * an ordered volume, the planned money is exactly the book estimate — both are the request
+     * amount or its truck rows.
+     */
+    for (const atom of mine) {
+      if (analyticsCountsAsFact(atom.requestStatus) || atom.volumeOrderedM3 === 0) continue;
+      expect(atom.moneyPlanned, atom.requestLabel).toBe(atom.moneyLow);
     }
   });
 
-  it('вкладка и книга аналитики отвечают одинаково про вывезенное и деньги-факт', async () => {
+  it('вкладка и книга аналитики отвечают одинаково про вывезенное, вывозы и деньги-факт', async () => {
     const dto = await stats();
-    const row = rowOf(dto, ctx.objectId)!;
     const book = await ctx.app.inject({
       method: 'GET',
       url: `/api/v1/analytics/summary?from=${dto.from}&to=${dto.to}&step=month`,
       headers: ctx.auth,
     });
     expect(book.statusCode, book.body).toBe(200);
-    const customer = (book.json() as AnalyticsSummaryDto).rows.find((r) => r.id === ctx.objectId);
+    const customers = (book.json() as AnalyticsSummaryDto).rows;
     /*
-     * Сверяется ВЫВЕЗЕННОЕ и ФАКТ — то, что у обоих ответов означает одно и то же. Заказанное и
-     * оценка в сверку не идут: книга держит их в других колонках, а вкладка складывает с фактом
-     * осознанно (Р3), и вычесть долю — единственный способ спросить у неё то же самое число.
-     *
-     * Лома у площадки А нет вовсе, поэтому отбор типов вкладки на эту сверку не влияет.
+     * Only figures with a pair in the book are reconciled: the removed volume, the removal counter
+     * and the fact money. The book has no ordered or confirmed volume at all — those are guarded by
+     * the internal equalities above. Neither site A nor site C has scrap metal, so the tab's type
+     * filter does not affect this comparison; site C adds the rollback and the "done" without a
+     * completion, i.e. the status rule on both sides.
      */
-    expect(customer?.byModule.waste.volumeM3).toBe(row.volumeM3 - row.volumeOrderedM3);
-    expect(customer?.money.fact).toBe(row.totalCost - row.costEstimated);
+    for (const objectId of [ctx.objectId, ctx.thirdObjectId]) {
+      const row = rowOf(dto, objectId)!;
+      const customer = customers.find((r) => r.id === objectId);
+      expect(customer?.byModule.waste.volumeM3).toBe(row.doneVolumeM3);
+      expect(customer?.byModule.waste.removals).toBe(row.removals);
+      expect(customer?.money.fact).toBe(row.doneCost ?? 0);
+      // The deprecated combined figures still decompose into the book's removed volume and fact.
+      expect(customer?.byModule.waste.volumeM3).toBe(row.volumeM3 - row.volumeOrderedM3);
+      expect(customer?.money.fact).toBe(row.totalCost - row.costEstimated);
+    }
+  });
+
+  it('site A: ordered, removed and confirmed volumes with their money', async () => {
+    const row = rowOf(await stats(), ctx.objectId);
+    // Ordered: closed requests keep their order — 20 + 10 + 5 + 10 + 4, the open one 15, the truck
+    // rows 16 (not the 99 of the request).
+    expect(row?.plannedVolumeM3).toBe(80);
+    /*
+     * Only the open request (1500) and the truck rows (1600) carry a price snapshot; the closed ones
+     * were filed without it. 49 m3 of the plan has no money, so the planned cost is a number that
+     * the portal signs "без цены 49 м³", not a dash.
+     */
+    expect(row?.plannedCost).toBe(3100);
+    expect(row?.plannedVolumeUnpricedM3).toBe(49);
+    // Removed: five completions in a fact status; two of them have no price (5 + 4 m3).
+    expect(row?.doneVolumeM3).toBe(49);
+    expect(row?.doneCost).toBe(4000);
+    expect(row?.doneVolumeUnpricedM3).toBe(9);
+    expect(row?.confirmedVolumeM3).toBe(39);
+  });
+
+  it('site C: a rolled-back request is only ordered, even with its completion and tickets', async () => {
+    const rollback = caseOf(rowOf(await stats(), ctx.thirdObjectId), 'откат');
+    expect(rollback).toMatchObject({
+      plannedVolumeM3: 10,
+      plannedCost: 1000,
+      doneVolumeM3: 0,
+      doneCost: 0,
+      confirmedVolumeM3: 0,
+      ticketsWithoutVolume: 0,
+      removals: 0,
+      requests: 1,
+    });
+  });
+
+  it('site C: a request without an ordered volume takes the plan and its money from the completion', async () => {
+    const noOrder = caseOf(rowOf(await stats(), ctx.thirdObjectId), 'без объёма');
+    expect(noOrder).toMatchObject({
+      plannedVolumeM3: 6,
+      plannedCost: 600,
+      plannedVolumeUnpricedM3: 0,
+      doneVolumeM3: 6,
+      doneCost: 600,
+    });
+  });
+
+  it('site C: confirmed tickets are summed as they are, above the removed volume (Z4)', async () => {
+    const over = caseOf(rowOf(await stats(), ctx.thirdObjectId), 'талоны сверх');
+    expect(over).toMatchObject({
+      doneVolumeM3: 8,
+      doneCost: 800,
+      confirmedVolumeM3: 10,
+      confirmedCost: 1000,
+    });
+  });
+
+  it('site C: removed volume without a completion sum is a dash, not zero', async () => {
+    const row = rowOf(await stats(), ctx.thirdObjectId);
+    // The whole position has no money: a dash.
+    expect(caseOf(row, 'без суммы')).toMatchObject({
+      doneVolumeM3: 4,
+      doneVolumeUnpricedM3: 4,
+      doneCost: null,
+      plannedCost: 400,
+    });
+    // The row has priced removals too: a number, understated by the 4 m3 the portal names.
+    expect(row?.doneVolumeM3).toBe(18);
+    expect(row?.doneCost).toBe(1400);
+    expect(row?.doneVolumeUnpricedM3).toBe(4);
+  });
+
+  it('site C: "done" without a completion is one removal with nothing in it', async () => {
+    const row = rowOf(await stats(), ctx.thirdObjectId);
+    expect(caseOf(row, 'без закрытия')).toMatchObject({
+      plannedVolumeM3: 3,
+      plannedCost: 300,
+      doneVolumeM3: 0,
+      doneCost: 0,
+      removals: 1,
+    });
+    expect(row).toMatchObject({
+      plannedVolumeM3: 31,
+      plannedCost: 3100,
+      confirmedVolumeM3: 10,
+      removals: 4,
+      requests: 5,
+      // The completion without a sum and the "done" without a completion could not be priced.
+      unpricedRequests: 2,
+    });
+
+    const { loadWasteFacts, VOLUME_REQUEST_TYPES } =
+      await import('../src/services/analytics/facts-waste');
+    const { quality } = await loadWasteFacts(ctx.range, {
+      objectIds: [ctx.thirdObjectId],
+      requestTypes: VOLUME_REQUEST_TYPES,
+    });
+    const entry = (key: string) => quality.find((q) => q.key === key);
+    expect(entry('waste.done_without_completion')).toMatchObject({ value: 1, outOf: 4 });
+    expect(entry('waste.requests_without_ordered_volume')).toMatchObject({ value: 1, outOf: 5 });
+  });
+
+  it('a month with unfinished requests only has a plan and nothing removed', async () => {
+    const row = rowOf(await stats(ctx.auth, OPEN_MONTH), ctx.thirdObjectId);
+    expect(row).toMatchObject({
+      plannedVolumeM3: 7,
+      plannedCost: 700,
+      doneVolumeM3: 0,
+      doneCost: 0,
+      confirmedVolumeM3: 0,
+      removals: 0,
+      requests: 1,
+    });
   });
 });

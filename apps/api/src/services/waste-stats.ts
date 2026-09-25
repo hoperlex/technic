@@ -1,11 +1,8 @@
 import {
   monthRange,
-  REQUEST_TYPES,
-  type RequestType,
   roleScopeAxis,
   roleScopeAxisLabels,
   placeObjectScopeIds,
-  wasteFactUnit,
   type WasteStatsFigures,
   type WasteStatsDto,
   type WasteStatsPositionDto,
@@ -13,38 +10,33 @@ import {
 } from '@technic/contracts';
 import type { Principal } from '../auth/principal';
 import { err } from '../lib/errors';
-import { loadWasteFacts } from './analytics/facts-waste';
+import { loadWasteFacts, VOLUME_REQUEST_TYPES } from './analytics/facts-waste';
 import { ANALYTICS_ATOM_LIMIT, type AnalyticsAtom } from './analytics/types';
 
 /**
- * Статистика вывоза мусора за отчётный месяц (план `docs/waste-stats-tab-plan.md`).
+ * Waste removal statistics for a reporting month (plan `docs/waste-stats-tab-plan.md`, three-volume
+ * rework — ADR 0209).
  *
- * СВОИХ ЧИСЕЛ ЗДЕСЬ НЕТ (Р1). Слой берёт атомы `loadWasteFacts` — те же, из которых собирается
- * книга Excel, — и только группирует их по площадке и виду отходов. Собственный `SELECT sum(...)`
- * «специально для вкладки» завёл бы второй ответ на «сколько вывезли за август»: день отнесения,
- * правило факта и правило денег разошлись бы с книгой молча, а заметить это можно было бы только
- * сличив два экрана глазами. Сторож этого решения — тест сверки вкладки со сводом книги.
+ * THERE ARE NO NUMBERS OF ITS OWN HERE (R1). The service takes the atoms of `loadWasteFacts` — the
+ * same ones the Excel book is built from — and only groups them by site and waste type. A
+ * `SELECT sum(...)` "just for the tab" would create a second answer to "how much was removed in
+ * August": the attribution day, the fact rule and the money rule would drift from the book
+ * silently. The guard of this decision is the db test reconciling the tab with the book.
  *
- * Разница со сводом ровно в трёх вещах, и каждая — решение постановки:
+ * It differs from the book in exactly three things, each a decision of the task:
  *
- * 1. **Область обычная, площадочная** (Р7): свод отказывает узкой области целиком, а вкладка живёт
- *    внутри модуля, и площадка видит в ней свои объекты. Роли от контрагента и кабинету работника
- *    вкладка не открывается вовсе — см. `assertWasteStatsAudience`.
- * 2. **Только вывоз мусора кубами** (Р6): лом (тонны, денег нет вовсе) и контейнерные операции (не
- *    тарифицируются) не попадают в выборку, а не отсеиваются после неё.
- * 3. **Объём и деньги складывают состоявшееся с заказанным** (Р3): у свода это разные колонки, у
- *    вкладки — одна с подписанной долей. Складывает их эта функция, и потому обе доли остаются в
- *    ответе отдельными полями: число, у которого нельзя спросить «сколько здесь ещё не вывезено»,
- *    предъявить площадке нечем.
+ * 1. **The usual site scope** (R7): the book refuses a narrow scope altogether, while the tab lives
+ *    inside the module and a site sees its own objects. Counterparty roles and the worker cabinet
+ *    do not get the tab at all — see `assertWasteStatsAudience`.
+ * 2. **Only waste removal in cubic metres** (R6): scrap metal (tonnes, no money at all) and
+ *    container operations (not billed) are filtered out by the query, not after it. The type list
+ *    is the loader's `VOLUME_REQUEST_TYPES`, not a copy.
+ * 3. **Three volumes instead of one** (ADR 0209): ordered (every valid request), removed (requests
+ *    in a fact status) and confirmed by tickets, with one cost column — the removed cost, the plan
+ *    and the confirmed cost shown under it. Every volume travels with its money from the same set
+ *    of requests, and each money figure is a dash rather than zero when none of its volume has a
+ *    price.
  */
-
-/**
- * Типы заявок вкладки: те, чей факт меряется кубами. Спрашивается контракт, а не переписывается
- * список — появившийся завтра объёмный тип иначе пришлось бы вспоминать и здесь, и в `wasteFactUnit`.
- */
-const VOLUME_REQUEST_TYPES: RequestType[] = REQUEST_TYPES.filter(
-  (t) => wasteFactUnit(t) === 'volume_m3',
-);
 
 /**
  * Кому вкладка не отвечает вовсе (Р7).
@@ -65,9 +57,13 @@ export function assertWasteStatsAudience(p: Principal): void {
   );
 }
 
-/** Накопитель клетки: складывается всё, что складывается, остальное — множества заявок. */
+/** Cell accumulator: everything additive is summed, the rest are sets of requests. */
 interface Acc {
   volumeFact: number;
+  volumeFactUnpriced: number;
+  volumePlanned: number;
+  volumePlannedUnpriced: number;
+  moneyPlanned: number;
   volumeOrdered: number;
   moneyFact: number;
   moneyEstimate: number;
@@ -83,6 +79,10 @@ interface Acc {
 function emptyAcc(): Acc {
   return {
     volumeFact: 0,
+    volumeFactUnpriced: 0,
+    volumePlanned: 0,
+    volumePlannedUnpriced: 0,
+    moneyPlanned: 0,
     volumeOrdered: 0,
     moneyFact: 0,
     moneyEstimate: 0,
@@ -98,9 +98,13 @@ function emptyAcc(): Acc {
 
 function add(acc: Acc, atom: AnalyticsAtom): void {
   acc.volumeFact += atom.volumeM3;
+  acc.volumeFactUnpriced += atom.volumeFactUnpricedM3;
+  acc.volumePlanned += atom.volumePlannedM3;
+  acc.volumePlannedUnpriced += atom.volumePlannedUnpricedM3;
+  acc.moneyPlanned += atom.moneyPlanned;
   acc.volumeOrdered += atom.volumeOrderedM3;
   acc.moneyFact += atom.moneyFact;
-  // Оценка у вывоза одна, нижняя и верхняя совпадают (Р9 аналитики) — берём одну сторону вилки.
+  // A waste estimate is a single number, low and high are equal (R9 of analytics): one side is enough.
   acc.moneyEstimate += atom.moneyLow;
   acc.confirmedVolume += atom.volumeConfirmedM3;
   acc.confirmedUnpriced += atom.volumeConfirmedUnpricedM3;
@@ -109,53 +113,71 @@ function add(acc: Acc, atom: AnalyticsAtom): void {
   acc.removals += atom.removals;
   acc.requests.add(atom.requestId);
   /*
-   * «Без цены» считается ПО ЗАЯВКАМ, а не по атомам: у вывоза атом на заявку один, но правило
-   * повторяет счётчик книги намеренно — разойдись зерно атома завтра, вкладка не начала бы
-   * объявлять одну неоценённую заявку десятью.
+   * "Unpriced" is counted BY REQUESTS, not by atoms: a waste request has one atom today, but the
+   * rule repeats the book counter on purpose — if the atom grain changes, the tab must not start
+   * reporting one unpriced request as ten.
    */
   if (!atom.priced) acc.unpriced.add(atom.requestId);
 }
 
 /**
- * Округление **один раз, в конце** (правило `rollup.ts`): слагаемые не округляются, иначе копейка,
- * потерянная на каждой заявке, уводит итог площадки, и сумма позиций перестаёт сходиться со
- * строкой.
+ * Rounding happens **once, at the end** (the `rollup.ts` rule): the addends are not rounded, or a
+ * kopeck lost on every request would move the site total, and positions would stop adding up to
+ * their row.
  */
 function round(value: number, digits: number): number {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
 }
 
+/**
+ * Money of a volume, or a DASH (`null`) when none of that volume has a price (R5 of ADR 0193, now
+ * shared by all three money figures). Zero money alone cannot decide it: after atoms are summed it
+ * means both "there was no price" and "there was nothing to price". So the rule reads two numbers:
+ *
+ * - nothing to price — zero, an honest empty cell;
+ * - the whole volume without a price — a dash: there is nothing to multiply by;
+ * - part of it without a price — a NUMBER, and the portal signs "без цены 12,5 м³" next to it: an
+ *   understated sum without that note looks calculated.
+ */
+function costOrDash(volume: number, unpricedVolume: number, money: number): number | null {
+  return volume > 0 && unpricedVolume === volume ? null : money;
+}
+
 function figuresOf(acc: Acc): WasteStatsFigures {
+  const plannedVolumeM3 = round(acc.volumePlanned, 3);
+  const plannedVolumeUnpricedM3 = round(acc.volumePlannedUnpriced, 3);
+  const doneVolumeM3 = round(acc.volumeFact, 3);
+  const doneVolumeUnpricedM3 = round(acc.volumeFactUnpriced, 3);
   const confirmedVolumeM3 = round(acc.confirmedVolume, 3);
   const confirmedVolumeUnpricedM3 = round(acc.confirmedUnpriced, 3);
-  const moneyConfirmed = round(acc.moneyConfirmed, 2);
   return {
-    // Вывезенное и заказанное одним числом (Р3), доля — соседним полем.
-    volumeM3: round(acc.volumeFact + acc.volumeOrdered, 3),
-    volumeOrderedM3: round(acc.volumeOrdered, 3),
-    totalCost: round(acc.moneyFact + acc.moneyEstimate, 2),
-    costEstimated: round(acc.moneyEstimate, 2),
+    plannedVolumeM3,
+    plannedCost: costOrDash(plannedVolumeM3, plannedVolumeUnpricedM3, round(acc.moneyPlanned, 2)),
+    plannedVolumeUnpricedM3,
+    doneVolumeM3,
+    doneCost: costOrDash(doneVolumeM3, doneVolumeUnpricedM3, round(acc.moneyFact, 2)),
+    doneVolumeUnpricedM3,
     confirmedVolumeM3,
     confirmedVolumeUnpricedM3,
-    /*
-     * ПРОЧЕРК, А НЕ НОЛЬ (Р5) — и спрашивается он у ОБЪЁМА, а не у денег. Ноль в деньгах означает
-     * разом два разных случая: «цены не было» и «подтверждать было нечего», а после сложения
-     * атомов они уже неразличимы. Поэтому правило читается по двум числам:
-     *
-     * - подтверждать нечего — ноль, клетка пуста и честна;
-     * - весь подтверждённый объём без цены — прочерк: умножать не на что;
-     * - часть без цены — ЧИСЛО, а рядом подпись «без цены 12,5 м³»: сумма занижена, и молчать об
-     *   этом нельзя, заниженная стоимость без пометки выглядит посчитанной.
-     */
-    confirmedCost:
-      confirmedVolumeM3 > 0 && confirmedVolumeUnpricedM3 === confirmedVolumeM3
-        ? null
-        : moneyConfirmed,
+    confirmedCost: costOrDash(
+      confirmedVolumeM3,
+      confirmedVolumeUnpricedM3,
+      round(acc.moneyConfirmed, 2),
+    ),
     ticketsWithoutVolume: acc.ticketsWithoutVolume,
     unpricedRequests: acc.unpriced.size,
     removals: acc.removals,
     requests: acc.requests.size,
+    /*
+     * Deprecated combined figures of the pre-ADR 0209 portal (removed + ordered in one number,
+     * R3 of ADR 0193). A tab opened with an old build reads them without any check, so they stay
+     * until the client floor rises above the contract of the release that stopped reading them.
+     */
+    volumeM3: round(acc.volumeFact + acc.volumeOrdered, 3),
+    volumeOrderedM3: round(acc.volumeOrdered, 3),
+    totalCost: round(acc.moneyFact + acc.moneyEstimate, 2),
+    costEstimated: round(acc.moneyEstimate, 2),
   };
 }
 

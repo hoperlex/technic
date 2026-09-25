@@ -395,6 +395,35 @@ describe.skipIf(!DB_URL)('атомы аналитики: вывоз мусора
       VALUES (${ids['partial-priced']}, ${truckId}, 10, 1, ${tariffId}, 50),
              (${ids['partial-priced']}, ${truckId}, 6, 1, NULL, NULL)`);
 
+    /*
+     * 12. Rolled back "done -> in progress" (ADR 0209, decision Z5). The completion stays — here
+     * without a removal date, so the request keeps the Moscow delivery day — and so does a confirmed
+     * ticket, but the request is no longer removed: it goes back to the estimate. It has an ordered
+     * volume, otherwise the "without ordered volume" quality row would not be "0 of 7".
+     */
+    await waste('rollback-waste', {
+      type: 'waste_removal',
+      status: 'confirmed',
+      deliveryAt: '2026-08-14T09:00:00+03:00',
+      wasteTypeId,
+      containerTypeId: truckId,
+      volumeM3: 10,
+      priced: true,
+    });
+    await closeWaste(ids['rollback-waste']!, { volumeM3: 10, totalCost: 1000 });
+    await db.execute(sql`
+      INSERT INTO waste_tickets (request_id, origin, status, confirmed_by, confirmed_at, volume_m3,
+                                 work_kind)
+      VALUES (${ids['rollback-waste']}, 'manual', 'confirmed', ${userId}, now(), 10, 'removal')`);
+
+    /* 13. Rolled-back scrap metal with a removal date: its tonnes must leave the book too. */
+    await waste('rollback-metal', {
+      type: 'metal_removal',
+      status: 'confirmed',
+      deliveryAt: '2026-08-13T10:00:00+03:00',
+    });
+    await closeWaste(ids['rollback-metal']!, { weightTons: 2.5, removedOn: '2026-08-13' });
+
     // ── Аренды механизации ──
     const mech = async (
       tag: string,
@@ -705,6 +734,34 @@ describe.skipIf(!DB_URL)('атомы аналитики: вывоз мусора
       expect(atomsOf(ctx.waste, 'cancelled')).toHaveLength(0);
       expect(atomsOf(ctx.waste, 'waste-deleted')).toHaveLength(0);
     });
+
+    /*
+     * Z5 of ADR 0209: "removed" is the status, not the completion row. The rollback keeps both the
+     * completion and the ticket, and the book still treats the request as not done: no removal, no
+     * volume, no tonnes, no confirmed tickets — only the estimate.
+     */
+    it('откаченная заявка вывоза остаётся в периоде, но вывозом не считается', () => {
+      const atom = oneAtom(ctx.waste, 'rollback-waste');
+      expect(atom.date, 'без фактической даты — день доставки, как у любого закрытия').toBe(
+        '2026-08-14',
+      );
+      expect(atom.removals).toBe(0);
+      expect(atom.volumeM3).toBe(0);
+      expect(atom.volumeConfirmedM3).toBe(0);
+      expect(atom.ticketsWithoutVolume).toBe(0);
+      expect(atom.moneyFact).toBe(0);
+      expect(atom.moneyLow, '10 м³ × 100 ₽ — снова оценка').toBe(1000);
+      expect(atom.volumeOrderedM3).toBe(10);
+      expect(atom.volumePlannedM3).toBe(10);
+      expect(atom.moneyPlanned).toBe(1000);
+    });
+
+    it('откаченный вывоз лома уносит из книги и тонны', () => {
+      const atom = oneAtom(ctx.waste, 'rollback-metal');
+      expect(atom.removals).toBe(0);
+      expect(atom.weightTons).toBe(0);
+      expect(atom.volumePlannedM3, 'у лома плана в кубах нет').toBe(0);
+    });
   });
 
   describe('вывоз мусора: деньги (Р9)', () => {
@@ -758,25 +815,46 @@ describe.skipIf(!DB_URL)('атомы аналитики: вывоз мусора
   });
 
   describe('вывоз мусора: качество данных (Р20)', () => {
-    it('закрытия без фактической даты — одно из трёх закрытий периода', () => {
+    /*
+     * Expectations moved with the two rollbacks of ADR 0209, and each shift has its own reason
+     * (fixture snapshot of 25.09.2026):
+     * - the new completions grow the denominators of completion-based rows (3 -> 5);
+     * - the waste rollback has no removal date, so it also enters that numerator (1 -> 2): the row
+     *   stays on the completion, not on the status;
+     * - "removals without a ticket" keeps 2 of 3 — the status rule leaves both rollbacks out, and
+     *   that unchanged denominator is the check of Z5 itself;
+     * - "requests without a price" counts every request of the period (9 -> 11).
+     */
+    it('закрытия без фактической даты считаются по закрытиям, а не по статусу', () => {
       expect(quality(ctx.waste, 'waste.completions_without_removed_on')).toEqual({
-        value: 1,
-        outOf: 3,
+        value: 2,
+        outOf: 5,
       });
     });
 
     /*
-     * Знаменатель — состоявшиеся вывозы, те же три, что стоят в колонке «Вывозов»: закрытий в
-     * периоде три (вывоз с датой, вывоз без даты, лом), талон подтверждён у одного. Считай здесь
-     * и незакрытые заявки — и «5 из 6» не сошлось бы ни с одной клеткой книги.
+     * Знаменатель — состоявшиеся вывозы, те же три, что стоят в колонке «Вывозов»: вывоз с датой,
+     * вывоз без даты и лом, талон подтверждён у одного. Откаченные заявки со своими закрытиями и
+     * талоном сюда не идут — они больше не вывозы.
      */
     it('вывозы без принятого талона считаются по состоявшимся вывозам', () => {
       expect(quality(ctx.waste, 'waste.removals_without_ticket')).toEqual({ value: 2, outOf: 3 });
     });
 
-    it('заявок без цены — две из девяти, и лом с контейнерными операциями в счёт не идут', () => {
+    it('заявок без цены — две из одиннадцати, и лом с контейнерными операциями в счёт не идут', () => {
       // Без цены: заявка без тарифа вовсе и заявка, где тариф есть лишь у части строк (Д3).
-      expect(quality(ctx.waste, 'waste.requests_without_price')).toEqual({ value: 2, outOf: 9 });
+      expect(quality(ctx.waste, 'waste.requests_without_price')).toEqual({ value: 2, outOf: 11 });
+    });
+
+    it('заявок без заказанного объёма нет: знаменатель — только объёмные типы', () => {
+      expect(quality(ctx.waste, 'waste.requests_without_ordered_volume')).toEqual({
+        value: 0,
+        outOf: 7,
+      });
+    });
+
+    it('выполненных без закрытия нет: знаменатель — те же состоявшиеся вывозы', () => {
+      expect(quality(ctx.waste, 'waste.done_without_completion')).toEqual({ value: 0, outOf: 3 });
     });
   });
 
