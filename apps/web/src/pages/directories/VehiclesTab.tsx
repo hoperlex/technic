@@ -32,12 +32,12 @@ import {
 import { garageKeys } from '@entities/garage';
 import { FuelNormsModal } from './FuelNormsModal';
 import { unhitchedNotice, VehicleTrailersField } from '@entities/vehicle-trailer';
+import { useAuth } from '@entities/session';
 import { useVehicleMaintenanceAction } from '@features/vehicle-maintenance';
 import { AutoSelect, DataTable, FormModal, PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import type { CardConfig } from '@shared/ui';
 import { useIsMobile, useListParams } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { useVehicleFilters, type VehicleFilterParams } from './VehicleFilters';

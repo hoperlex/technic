@@ -16,7 +16,7 @@ import {
   vehicleRouteLink,
   waybillLink,
 } from '../../utils/links';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { useRouteModal } from '@features/route-modal';
 
 /**

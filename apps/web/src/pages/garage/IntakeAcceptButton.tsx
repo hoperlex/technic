@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { REPORT_ACCEPT_BATCH_LIMIT, type ReadingIntakeReport } from '@technic/contracts';
 import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-reading';
 import { errorMessage } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 
 /**
  * Пакетный приём отчётов дня (план «Показания техники», Р8, Р9, Р9а).

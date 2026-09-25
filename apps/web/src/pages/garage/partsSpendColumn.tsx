@@ -6,7 +6,7 @@ import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-rec
 import { EntityLink, type ActionSheetItem } from '@shared/ui';
 import { formatMoney } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { useVehicleSpendAddress } from './receiptsAddress';
 import { VehiclePartsSpendModal } from './VehiclePartsSpendModal';
 

@@ -7,7 +7,7 @@ import { fuelNormUnitLabels, type VehicleFuelNormDto } from '@technic/contracts'
 import { DataTable, ViewModal } from '@shared/ui';
 import { errorMessage, useIsMobile, useListParams } from '@shared/lib';
 import { fuelNormKeys, fuelNormsApi } from '@entities/fuel-norm';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { FuelNormFormModal } from './FuelNormFormModal';
 import { FuelNormSettingsModal } from './FuelNormSettingsModal';
 

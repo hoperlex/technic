@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ReadingIntakeRow } from '@technic/contracts';
 import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-reading';
 import { errorMessage } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 
 /**
  * Вход в отчёт из строки реестра — включая тот день, которого ещё нет (план «Показания техники»,

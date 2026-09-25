@@ -5,7 +5,7 @@ import type { AutoPartReceiptListItemDto } from '@technic/contracts';
 import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-receipt';
 import { DataTable, PageTableLayout, SummaryBar, sortOptionsFrom } from '@shared/ui';
 import { formatMoney, useListParams } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { AutoPartReceiptCardModal } from './AutoPartReceiptCardModal';
 import { AutoPartReceiptFormModal } from './AutoPartReceiptFormModal';

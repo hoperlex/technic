@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Button, Empty, Space, Spin, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { officeEquipmentApi, officeEquipmentKeys } from '@entities/office-equipment';
+import { useAuth } from '@entities/session';
 import {
   EquipmentHistoryModal,
   EquipmentRequestLine,
@@ -9,7 +10,6 @@ import {
   REQUESTS_PREVIEW_LIMIT,
   useEquipmentRequestsPreview,
 } from '@features/equipment-history';
-import { useAuth } from '../../auth/AuthContext';
 
 /**
  * История обслуживания единицы и гарантии её ремонтов (§8.2) — первые строки блока «Связанные

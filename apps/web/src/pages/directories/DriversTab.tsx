@@ -56,7 +56,7 @@ import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import {

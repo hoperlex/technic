@@ -18,7 +18,7 @@ import {
   officeEquipmentModelsApi,
   OfficeEquipmentModelFormModal,
 } from '@entities/office-equipment';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import {
   MODEL_COUNT_HINT,
   officeEquipmentModelCard,

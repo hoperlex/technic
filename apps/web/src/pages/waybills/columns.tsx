@@ -16,7 +16,7 @@ import { WaybillFilesCell } from '../../components/WaybillFiles';
 import { EntityLink } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 import { ExportWaybillButton, PrintWaybillButton } from '../../components/WaybillPrint';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { correctionHint, trimmedPrintHint } from './hints';
 import { vehicleRequestViewLink, vehicleRouteLink } from '../../utils/links';
 

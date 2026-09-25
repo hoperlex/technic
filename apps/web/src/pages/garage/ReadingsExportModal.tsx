@@ -8,7 +8,7 @@ import {
   type ReadingExportKind,
 } from '@technic/contracts';
 import { vehicleReadingsApi } from '@entities/vehicle-reading';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
 
 /**

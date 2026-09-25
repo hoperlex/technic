@@ -6,7 +6,7 @@ import type { AutoPartReceiptDto, AutoPartReceiptLineDto } from '@technic/contra
 import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-receipt';
 import { EntityLink, ViewFields, ViewModal, type ViewField } from '@shared/ui';
 import { errorMessage, formatMoney, type AddressParam } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { FileLinkList } from '../../components/FileLinks';
 import { AutoPartReceiptFormModal } from './AutoPartReceiptFormModal';
 import { ReceiptDeletionMarkModal } from './ReceiptDeletionMarkModal';

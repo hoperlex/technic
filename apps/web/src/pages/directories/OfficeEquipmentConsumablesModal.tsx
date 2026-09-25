@@ -18,7 +18,7 @@ import {
   officeEquipmentModelKeys,
   officeEquipmentModelPickerQuery,
 } from '@entities/office-equipment';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import {
   CONSUMABLE_SORT_LABELS,
   officeEquipmentConsumableCard,

@@ -9,7 +9,7 @@ import { sortOptionsFrom } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { useJournalAddress } from './journalAddress';
 import { useBusyExpand } from './busyColumns';
 import { driverCard, driverColumns } from './driverColumns';

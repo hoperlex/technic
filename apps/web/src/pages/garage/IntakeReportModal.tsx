@@ -12,7 +12,7 @@ import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-readin
 import { isApiError } from '@shared/api';
 import { errorMessage } from '@shared/lib';
 import { ViewModal } from '@shared/ui';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { IntakeReportDiscrepancies } from './IntakeReportDiscrepancies';
 import { IntakeReportItems } from './IntakeReportItems';
 import { IntakeReadingForm } from './IntakeReadingForm';

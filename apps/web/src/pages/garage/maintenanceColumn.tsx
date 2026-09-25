@@ -9,9 +9,9 @@ import {
   type VehicleMaintenanceSummaryDto,
 } from '@technic/contracts';
 import { vehicleMaintenanceApi, vehicleMaintenanceKeys } from '@entities/vehicle-maintenance';
+import { useAuth } from '@entities/session';
 import { useMaintenanceAddress, VehicleMaintenanceModal } from '@features/vehicle-maintenance';
 import { EntityLink, type ActionSheetItem } from '@shared/ui';
-import { useAuth } from '../../auth/AuthContext';
 
 /**
  * Колонка «ТО» вкладки «Техника» и вход механика в сводку обслуживания (план «Показания техники»,

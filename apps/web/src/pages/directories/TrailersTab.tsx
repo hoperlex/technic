@@ -12,7 +12,7 @@ import { trailerKeys, vehicleTrailersApi } from '@entities/vehicle-trailer';
 import { DataTable, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import type { FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { TrailerFormModal, type TrailerFormValues } from './TrailerFormModal';

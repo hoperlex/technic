@@ -10,7 +10,7 @@ import {
   formatShortName,
 } from '@technic/contracts';
 import { MOSCOW_TZ } from '@shared/config';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { PortalLogo } from '../../components/PortalLogo';
 import { UserAvatar } from '../../components/UserAvatar';
 import { cabinetRead, driverCabinetApi, driverCabinetKeys } from './api';
