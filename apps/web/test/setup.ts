@@ -5,7 +5,7 @@ import { installMatchMedia, resetViewport } from './viewport';
 import { restoreContentHeights } from './clamp';
 import { restoreHttpMock } from './http';
 import { resetCaptcha } from './captcha';
-import { __resetAuthForTests } from '../src/auth/AuthContext';
+import { __resetAuthForTests } from '@entities/session';
 import { __resetSessionForTests } from '../src/shared/api';
 
 /*

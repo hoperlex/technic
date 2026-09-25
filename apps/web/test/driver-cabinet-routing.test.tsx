@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
-import { HomeRedirect, RequireSection } from '../src/auth/ProtectedRoute';
+import { HomeRedirect, RequireSection } from '../src/app/routing/ProtectedRoute';
 
 /**
  * Кабинет водителя (ADR 0102) — второй контур портала, и попадать в него должна одна роль.

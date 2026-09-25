@@ -13,7 +13,7 @@ import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
 import { AppLayout } from '../src/components/AppLayout';
 import { AdministrationPage } from '../src/pages/AdministrationPage';
-import { HomeRedirect, RequireSection } from '../src/auth/ProtectedRoute';
+import { HomeRedirect, RequireSection } from '../src/app/routing/ProtectedRoute';
 
 /**
  * Гейты администрирования (`docs/manuals-plan.md` §3.6).

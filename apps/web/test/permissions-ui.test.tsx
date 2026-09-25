@@ -18,7 +18,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { AppLayout } from '../src/components/AppLayout';
-import { RequirePermission } from '../src/auth/ProtectedRoute';
+import { RequirePermission } from '../src/app/routing/ProtectedRoute';
 import { canOpenRoute } from '../src/utils/links';
 
 /**
@@ -148,7 +148,10 @@ describe('пункты меню следуют из прав', () => {
     for (const role of ['department', 'department_head'] as Role[]) {
       expect(canOrderVehicleRequestType({ role }, 'special_equipment'), role).toBe(false);
       expect(
-        canOrderVehicleRequestType({ role, departmentObjectIds: ['object-1'] }, 'special_equipment'),
+        canOrderVehicleRequestType(
+          { role, departmentObjectIds: ['object-1'] },
+          'special_equipment',
+        ),
         role,
       ).toBe(true);
       // Грузоперевозка у отдела не зависит от площадок вовсе: её он заводит от себя.

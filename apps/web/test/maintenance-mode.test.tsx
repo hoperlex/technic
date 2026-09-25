@@ -11,7 +11,7 @@ import {
   refresh,
 } from '@shared/api';
 import { MaintenanceBoundary } from '@app/MaintenanceBoundary';
-import { AuthProvider, useAuth } from '../src/auth/AuthContext';
+import { AuthProvider, useAuth } from '@entities/session';
 import { authApi } from '@entities/session';
 import { createTestQueryClient } from './render';
 import { authUser } from './factories/auth';

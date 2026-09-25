@@ -8,7 +8,7 @@ import { authUser } from './factories/auth';
 import { list } from './factories/common';
 import { AppLayout } from '../src/components/AppLayout';
 import { AdministrationPage } from '../src/pages/AdministrationPage';
-import { HomeRedirect, RequirePermission } from '../src/auth/ProtectedRoute';
+import { HomeRedirect, RequirePermission } from '../src/app/routing/ProtectedRoute';
 
 /**
  * Вкладка ведения руководств (`docs/manuals-plan.md`, этап 4).

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import type { AuthUser, Permission } from '@technic/contracts';
-import { useAuth } from '../src/auth/AuthContext';
+import { useAuth } from '@entities/session';
 import {
   __resetSessionForTests,
   apiFetch,

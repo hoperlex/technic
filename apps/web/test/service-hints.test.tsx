@@ -17,7 +17,7 @@ import {
   serviceRequest,
   serviceRequestFile,
 } from './factories/service';
-import { useAuth } from '../src/auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { ServiceRequestDocuments } from '../src/pages/service/ServiceRequestDocuments';
 import { ServiceRequestEstimate } from '../src/pages/service/ServiceRequestEstimate';
 import { ServiceRequestSubjectName } from '../src/pages/service/ServiceRequestSubjectName';

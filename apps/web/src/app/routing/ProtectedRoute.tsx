@@ -8,10 +8,10 @@ import {
   type PortalSectionId,
   type SectionAccess,
 } from '@technic/contracts';
-import { useAuth } from './AuthContext';
+import { useAuth } from '@entities/session';
 // Экран «разделов нет» — из `pages`: стартовая страница его рисует, а не уводит на него, и своего
 // адреса у него нет вовсе.
-import { NoSectionsPage } from '../pages/NoSectionsPage';
+import { NoSectionsPage } from '../../pages/NoSectionsPage';
 
 function FullScreenSpin() {
   return (

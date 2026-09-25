@@ -7,7 +7,7 @@ import ruRU from 'antd/locale/ru_RU';
 import { MemoryRouter } from 'react-router';
 import type { AuthUser } from '@technic/contracts';
 import { RouteModalContext, type RouteModalApi } from '@features/route-modal';
-import { AuthContext, AuthProvider, permissionChecks } from '../src/auth/AuthContext';
+import { AuthContext, AuthProvider, permissionChecks } from '@entities/session';
 import { themeFor } from '../src/theme';
 import { FORM_VALIDATE_MESSAGES } from '../src/shared/config';
 import { setViewport, DESKTOP_VIEWPORT, type Viewport } from './viewport';

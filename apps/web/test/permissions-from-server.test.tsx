@@ -6,7 +6,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser, departmentUser } from './factories/auth';
 import { AppLayout } from '../src/components/AppLayout';
-import { RequirePermission } from '../src/auth/ProtectedRoute';
+import { RequirePermission } from '../src/app/routing/ProtectedRoute';
 
 /**
  * Портал берёт права из списка, который отдал сервер (ADR 0106, этап 2), а не выводит их из роли.

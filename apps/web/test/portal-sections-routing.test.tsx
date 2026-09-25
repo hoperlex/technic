@@ -6,7 +6,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser, loginResponse } from './factories/auth';
 import { AppLayout } from '../src/components/AppLayout';
-import { HomeRedirect, ProtectedRoute, RequireSection } from '../src/auth/ProtectedRoute';
+import { HomeRedirect, ProtectedRoute, RequireSection } from '../src/app/routing/ProtectedRoute';
 import { LoginPage } from '../src/pages/LoginPage';
 import { ChangePasswordPage } from '../src/pages/ChangePasswordPage';
 

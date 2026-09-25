@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
-import { useAuth } from '../src/auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { useQuery } from '@tanstack/react-query';
 
 import { json, mockHttp } from './http';

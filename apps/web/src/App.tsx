@@ -13,7 +13,7 @@ import {
   ProtectedRoute,
   RequirePermission,
   RequireSection,
-} from './auth/ProtectedRoute';
+} from './app/routing/ProtectedRoute';
 import { WaybillsPage } from './pages/WaybillsPage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
