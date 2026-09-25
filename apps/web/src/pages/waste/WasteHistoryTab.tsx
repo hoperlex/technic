@@ -15,6 +15,7 @@ import {
   type WasteRequestDto,
 } from '@technic/contracts';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { useAuth } from '@entities/session';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -23,7 +24,6 @@ import { SummaryBar } from '@shared/ui';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { dayEnd, dayStart, formatMoney, useListParams, useOpenedRecord } from '@shared/lib';
 import { usePlaceObjectScope } from '../../hooks/usePlaceObjectScope';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';
 import { wasteHistoryCard, wasteHistoryColumns } from './wasteHistoryColumns';

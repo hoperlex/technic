@@ -81,6 +81,7 @@ import {
   vehicleRequestTypeLabels,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
+import { useAuth } from '@entities/session';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '@entities/vehicle-request';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
@@ -114,7 +115,6 @@ import {
   useVehicleClassifications,
   withSavedClassification,
 } from '../../hooks/useVehicleClassifications';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { canOpenRoute, vehicleRouteLink } from '../../utils/links';
 import { vehicleRequestDateRules } from '../../utils/date';

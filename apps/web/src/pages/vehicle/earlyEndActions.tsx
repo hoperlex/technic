@@ -9,10 +9,10 @@ import {
   type VehicleRequestDto,
 } from '@technic/contracts';
 import { garageKeys } from '@entities/garage';
+import { useAuth } from '@entities/session';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { waybillKeys } from '@entities/waybill';
 import { ReasonModal } from '../../components/CancelReasonModal';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { VehicleEarlyEndApproveModal } from './VehicleEarlyEndApproveModal';
 import { reassignStaleReason } from './ReassignPreview';

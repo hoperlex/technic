@@ -10,6 +10,7 @@ import {
   requestTypeLabels,
   type WasteRequestDto,
 } from '@technic/contracts';
+import { useAuth } from '@entities/session';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -19,7 +20,6 @@ import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { WasteRequestViewModal } from './WasteRequestViewModal';
 

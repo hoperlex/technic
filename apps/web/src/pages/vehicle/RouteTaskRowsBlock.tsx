@@ -12,7 +12,7 @@ import {
 } from '@technic/contracts';
 import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { EntityLink } from '@shared/ui';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { vehicleRequestViewLink } from '../../utils/links';
 import { blockerMessage, reorderedPointRoles, type RouteAssembly } from './routeAssembly';
 import { useRouteModal } from '@features/route-modal';

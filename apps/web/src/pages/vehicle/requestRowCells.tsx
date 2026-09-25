@@ -15,7 +15,7 @@ import {
 } from '@technic/contracts';
 import { ActionSheet } from '@shared/ui';
 import { formatDateTime, useIsMobile } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 
 /**
  * Две ячейки, которыми заявкой распоряжаются прямо из строки списка: статус (ADR 0021) и виза

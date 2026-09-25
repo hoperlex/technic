@@ -4,6 +4,7 @@ import { PlusOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import type { SpecialEquipmentRequestDto } from '@technic/contracts';
 import { useWaybillFormFilter } from '@features/waybill-form-filter';
+import { useAuth } from '@entities/session';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { DataTable, PageTableLayout, sortOptionsFrom, SummaryBar } from '@shared/ui';
 import { TabsExtra } from '../../components/PageTabs';
@@ -16,7 +17,6 @@ import { useEarlyEnd } from './earlyEndActions';
 import { onSiteCard } from './onSiteCard';
 import { onSiteColumns } from './onSiteColumns';
 import { onSiteFilters } from './onSiteFilters';
-import { useAuth } from '../../auth/AuthContext';
 import { usePlaceObjectScope } from '../../hooks/usePlaceObjectScope';
 import { useWeeklyRequestCreate } from './weeklyShared';
 

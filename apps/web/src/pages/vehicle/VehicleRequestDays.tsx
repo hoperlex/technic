@@ -13,7 +13,7 @@ import {
 } from '@technic/contracts';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
 import { garageKeys } from '@entities/garage';
 import { formatDateOnly } from './shared';

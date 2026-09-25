@@ -27,10 +27,10 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { waybillKeys, waybillsApi } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
+import { useAuth } from '@entities/session';
 import { isApiError } from '@shared/api';
 import { AutoSelect, EntityLink, ViewModal } from '@shared/ui';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { canOpenRoute, vehicleRequestViewLink } from '../../utils/links';
 import { assembleRoute, blockerMessage } from './routeAssembly';

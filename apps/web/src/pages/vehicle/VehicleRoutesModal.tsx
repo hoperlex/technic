@@ -21,6 +21,7 @@ import {
   waybillStatusLabels,
 } from '@technic/contracts';
 import { driverKeys, driversApi } from '@entities/driver';
+import { useAuth } from '@entities/session';
 import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { AutoSelect } from '@shared/ui';
@@ -35,7 +36,6 @@ import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useIsMobile, useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { vehicleRequestViewLink, waybillLink } from '../../utils/links';
-import { useAuth } from '../../auth/AuthContext';
 import { useRouteModal } from '@features/route-modal';
 import { formatDateOnly, useDriverOptions, useOwnVehicleOptions } from './shared';
 import { TrailerFields, trailerTripBody } from './TrailerFields';

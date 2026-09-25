@@ -18,7 +18,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import { FormModal, useFormBlockers } from '@shared/ui';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
 import { CompletionConsequences, CompletionHandshakeFields } from './CompletionConsequences';
 import { CompletionFields, type CompletionFormValues } from './CompletionFields';

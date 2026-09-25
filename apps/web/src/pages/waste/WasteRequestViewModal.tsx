@@ -24,7 +24,7 @@ import {
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { AddTicketsBlock } from '@features/waste-ticket-attach';
 import { TicketRecognitionBanner, WasteTicketsPanel } from '@features/waste-ticket-review';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { FileLinkList, FilesButton } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';

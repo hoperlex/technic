@@ -34,7 +34,7 @@ import {
   weeklyWeekLabel,
 } from '@technic/contracts';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { RequestTripsTable } from './RequestTripsTable';
 import { AddressCell } from '@entities/address';
 import { FileLinkList } from '../../components/FileLinks';

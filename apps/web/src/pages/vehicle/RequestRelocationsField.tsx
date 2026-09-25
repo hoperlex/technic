@@ -13,7 +13,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
 import { EntityLink } from '@shared/ui';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { errorMessage } from '../../utils/format';
 import { vehicleRouteLink } from '../../utils/links';
 import { useRouteModal } from '@features/route-modal';

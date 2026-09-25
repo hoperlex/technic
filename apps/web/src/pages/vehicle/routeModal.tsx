@@ -10,7 +10,7 @@ import { RouteModalContext, type RouteModalApi } from '@features/route-modal';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { canOpenRoute } from '../../utils/links';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { VehicleRouteEditModal } from './VehicleRouteEditModal';

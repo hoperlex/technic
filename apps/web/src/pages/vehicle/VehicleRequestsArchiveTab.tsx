@@ -12,6 +12,7 @@ import {
   vehicleRequestTypeColors,
   vehicleRequestTypeLabels,
 } from '@technic/contracts';
+import { useAuth } from '@entities/session';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { weeklyRequestKeys } from '@entities/weekly-request';
 import { useRequestCustomerFilter } from '@features/request-customer';
@@ -23,7 +24,6 @@ import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 

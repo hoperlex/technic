@@ -51,7 +51,7 @@ import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import { routePrefillKeys, vehicleRequestKeys } from '@entities/vehicle-request';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRoutesApi } from '@entities/vehicle-route';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { formatMoney, useIsMobile } from '@shared/lib';

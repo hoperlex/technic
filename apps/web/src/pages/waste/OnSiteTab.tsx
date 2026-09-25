@@ -1,6 +1,7 @@
 import { Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { type WasteRequestDto } from '@technic/contracts';
+import { useAuth } from '@entities/session';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { EntityLink } from '@shared/ui';
@@ -11,7 +12,6 @@ import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { formatDate, useListParams } from '@shared/lib';
 import { formatDateTimeMaybe } from '../../utils/format';
 import { wasteRequestLink } from '../../utils/links';
-import { useAuth } from '../../auth/AuthContext';
 
 /**
  * Контейнеры, присутствующие или планируемые на площадках — производный вид

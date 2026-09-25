@@ -6,7 +6,7 @@ import {
   type VehicleRouteRequestDto,
 } from '@technic/contracts';
 import { EntityLink } from '@shared/ui';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import { vehicleRequestViewLink } from '../../utils/links';
 import { useRouteModal } from '@features/route-modal';
 import { formatDateOnly } from './shared';
