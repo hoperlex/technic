@@ -72,6 +72,13 @@ interface CategoryFormValues {
   isActive?: boolean;
 }
 
+const sectionHeadStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginBottom: 8,
+};
+
 export function VehicleTypeCardDrawer({ type, onClose }: Props) {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
@@ -107,7 +114,6 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
   });
   const categories = categoriesQuery.data?.items ?? [];
 
-  // Список для выбора при привязке: активные ТТХ, ещё не привязанные к этому типу.
   const allSpecsQuery = useQuery({
     queryKey: vehicleSpecKeys.active(),
     queryFn: () =>
@@ -417,11 +423,9 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
       // экрана, но с боковым зазором, за которым видно ненужный сейчас список (ADR 0030).
       size={isMobile ? '100%' : 960}
       destroyOnHidden
-      /**
-       * Удаление типа насовсем (ADR 0060) живёт здесь, а не в строке списка: список — плоский
-       * классификатор, и у типа с категориями собственной строки в нём нет вовсе (ADR 0028).
-       * А карточка вдобавок показывает, что уйдёт вместе с типом: его ТТХ и категории.
-       */
+      // Удаление типа насовсем (ADR 0060) живёт здесь, а не в строке списка: список — плоский
+      // классификатор, и у типа с категориями собственной строки в нём нет вовсе (ADR 0028).
+      // А карточка вдобавок показывает, что уйдёт вместе с типом: его ТТХ и категории.
       footer={
         type && !type.isActive && purge.allowed ? (
           <Button
@@ -472,14 +476,7 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
         ) : null}
 
         <div>
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 8,
-            }}
-          >
+          <div style={sectionHeadStyle}>
             <Typography.Title level={5} style={{ margin: 0 }}>
               ТТХ типа
             </Typography.Title>
@@ -512,14 +509,7 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
         </div>
 
         <div>
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 8,
-            }}
-          >
+          <div style={sectionHeadStyle}>
             <Typography.Title level={5} style={{ margin: 0 }}>
               Категории
             </Typography.Title>

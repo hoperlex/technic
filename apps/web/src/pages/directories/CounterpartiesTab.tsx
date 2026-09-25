@@ -22,8 +22,7 @@ import {
   typeOptions,
 } from './CounterpartyFormFields';
 import { DataTable, type CardConfig } from '@shared/ui';
-import { FormModal } from '@shared/ui';
-import { PageTableLayout } from '@shared/ui';
+import { FormModal, PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { useListParams } from '@shared/lib';

@@ -40,8 +40,7 @@ import {
 } from '@entities/vehicle-type';
 import { isApiError } from '@shared/api';
 import { DataTable, type CardConfig, type TableChange } from '@shared/ui';
-import { FormModal } from '@shared/ui';
-import { PageTableLayout } from '@shared/ui';
+import { FormModal, PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, textColumn } from '@shared/ui';
 import { formatDateOnly } from '../../utils/date';
@@ -61,6 +60,11 @@ interface VtParams {
   [key: string]: unknown;
 }
 
+const activityOptions = [
+  { value: 'true', label: 'Активные' },
+  { value: 'false', label: 'Неактивные' },
+];
+
 /** Русское склонение счётного слова: 1 заявка, 2 заявки, 5 заявок. */
 function plural(n: number, one: string, few: string, many: string): string {
   const tail = n % 100;
@@ -78,8 +82,7 @@ const requestsCount = (n: number) => `${n} ${plural(n, 'заявка', 'заяв
  * Что сказать про привязки, снятые переводом типа на «форму № 3» (план §4.2.3, четвёртая дверь).
  * Чисел два, а не одно: правка одной строки справочника проходит по всему типу, и счёт прицепов
  * сам по себе размера не называет — «3 у трёх машин» и «3 у одной» это разные новости.
- */
-/*
+ *
  * Фраза начинается с того, что человек **нажал**: в форме он ставит галочку «Легковой транспорт»,
  * а слова «форма № 3» стоят подписью под ней. Начни с бланка — и связку «галочка → бланк → графы
  * прицепа» он достраивал бы сам, глядя на уже случившееся отцепление, которого не просил.
@@ -411,8 +414,7 @@ export function VehicleTypesTab() {
       sortOrder: c.sortOrder ?? 'asc',
     }));
 
-  // Колонки: Вид → Тип/категория → ТТХ → Линейная → Активен → Действия. Отдельного счётчика
-  // категорий больше нет — категории и есть строки списка.
+  // Отдельного счётчика категорий здесь нет: категории и есть строки списка (ADR 0028).
   const columns: TableColumnType<VehicleClassificationDto>[] = [
     textColumn<VehicleClassificationDto>({
       key: 'kindName',
@@ -564,10 +566,7 @@ export function VehicleTypesTab() {
         allowClear
         placeholder="Активность"
         style={{ width: 150 }}
-        options={[
-          { value: 'true', label: 'Активные' },
-          { value: 'false', label: 'Неактивные' },
-        ]}
+        options={activityOptions}
         value={params.isActive}
         onChange={(v) => patchParams({ isActive: v })}
       />
@@ -592,10 +591,7 @@ export function VehicleTypesTab() {
       key: 'isActive',
       label: 'Активность',
       value: params.isActive,
-      options: [
-        { value: 'true', label: 'Активные' },
-        { value: 'false', label: 'Неактивные' },
-      ],
+      options: activityOptions,
       placeholder: 'Все',
       onChange: (v) => patchParams({ isActive: v }),
     },
