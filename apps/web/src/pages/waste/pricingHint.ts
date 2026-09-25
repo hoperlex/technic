@@ -1,6 +1,6 @@
 import { calcWasteAmount, isPricedRequestType, isVolumeAllowed } from '@technic/contracts';
 import type { ResolvedWasteTariffDto, WasteRequestDto } from '@technic/contracts';
-import { formatMoney } from '../../utils/format';
+import { formatMoney } from '@shared/lib';
 
 /**
  * Строка расчёта под полями «тип мусора — объём». Поля стоимости в форме нет: цену даёт прайс

@@ -10,6 +10,7 @@ import {
 import { ServiceEstimateTable } from '@entities/service-request';
 import { EstimateEditorModal } from '@features/estimate-editor';
 import type { ActionSheetItem } from '@shared/ui';
+import { formatDateTime, formatMoney } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { ServiceEstimateStateLine } from './serviceEstimateStateLine';
 import {
@@ -17,7 +18,6 @@ import {
   serviceActionRow,
   serviceExecutorAssignment,
 } from './serviceRequestRow';
-import { formatDateTime, formatMoney } from '../../utils/format';
 
 /** Решения по объёму работ, которые вкладка показывает кнопками: их порядок здесь и есть порядок. */
 const DECISION_KEYS = ['approve', 'reject', 'reopen'] as const;

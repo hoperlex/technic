@@ -15,13 +15,13 @@ import {
 } from '@entities/service-request';
 import { WarrantyTag } from '@entities/office-equipment';
 import type { ViewField } from '@shared/ui';
+import { formatDateTime } from '@shared/lib';
 import { MoveEquipmentButton } from './serviceRequestCells';
 import { serviceRepeatFields } from './serviceRequestRepeat';
 import { ServiceRequestSubjectName } from './ServiceRequestSubjectName';
 import { ServiceStatusCell } from './ServiceStatusCell';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
-import { formatDateTime } from '../../utils/format';
 
 /**
  * Поля карточки заявки на обслуживание (§9.4) — вкладка «Заявка».

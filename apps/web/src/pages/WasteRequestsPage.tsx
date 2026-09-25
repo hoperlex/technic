@@ -78,7 +78,7 @@ import { SummaryBar } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../components/ObjectCell';
 import { TimeInput, optionalWorkTimeRule } from '../components/TimeInput';
-import { useIsMobile } from '@shared/lib';
+import { formatDate, useIsMobile } from '@shared/lib';
 import { dayEnd, dayStart } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { useOpenedRecord } from '@shared/lib';
@@ -90,7 +90,7 @@ import {
 import { usePlaceObjectScope } from '../hooks/usePlaceObjectScope';
 import { useAuth } from '../auth/AuthContext';
 
-import { errorMessage, formatDate, formatDateTimeMaybe } from '../utils/format';
+import { errorMessage, formatDateTimeMaybe } from '../utils/format';
 import { withSavedOption } from '@shared/lib';
 import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';

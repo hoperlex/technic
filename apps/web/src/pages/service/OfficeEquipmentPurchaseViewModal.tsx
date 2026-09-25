@@ -7,13 +7,12 @@ import {
   type OfficeEquipmentPurchaseItemDto,
 } from '@technic/contracts';
 import { FormModal, ViewFields, ViewModal, type ViewField } from '@shared/ui';
-import { errorMessage } from '@shared/lib';
+import { errorMessage, formatDateTime } from '@shared/lib';
 import {
   officeEquipmentConsumableKeys,
   officeEquipmentPurchaseKeys,
   officeEquipmentPurchasesApi,
 } from '@entities/office-equipment';
-import { formatDateTime } from '../../utils/format';
 import { purchaseConflictOf, statusConflictOf } from './officeEquipmentPurchaseConflicts';
 import { OfficeEquipmentPurchaseCloseModal } from './OfficeEquipmentPurchaseCloseModal';
 import { OfficeEquipmentPurchaseFormModal } from './OfficeEquipmentPurchaseFormModal';

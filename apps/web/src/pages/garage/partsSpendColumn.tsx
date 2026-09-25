@@ -4,9 +4,9 @@ import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-receipt';
 import { EntityLink, type ActionSheetItem } from '@shared/ui';
+import { formatMoney } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
 import { useAuth } from '../../auth/AuthContext';
-import { formatMoney } from '../../utils/format';
 import { useVehicleSpendAddress } from './receiptsAddress';
 import { VehiclePartsSpendModal } from './VehiclePartsSpendModal';
 

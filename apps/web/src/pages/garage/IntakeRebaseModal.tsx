@@ -2,7 +2,7 @@ import { Alert, Form, Input, Typography } from 'antd';
 import type { DriverReportDto, ReportDiscrepancyDto } from '@technic/contracts';
 import { vehicleReadingsApi } from '@entities/vehicle-reading';
 import { FormModal } from '@shared/ui';
-import { formatDateOnly } from '../../utils/date';
+import { formatDateOnly } from '@shared/lib';
 import { useIntakeAction } from './intakeAction';
 
 /**

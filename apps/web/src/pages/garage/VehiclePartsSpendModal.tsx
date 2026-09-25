@@ -5,8 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { VehiclePartsSpendRowDto } from '@technic/contracts';
 import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-receipt';
 import { EntityLink, SummaryBar, ViewModal } from '@shared/ui';
-import { useIsMobile } from '@shared/lib';
-import { formatMoney } from '../../utils/format';
+import { formatMoney, useIsMobile } from '@shared/lib';
 import { useReceiptAddress } from './receiptsAddress';
 
 /**

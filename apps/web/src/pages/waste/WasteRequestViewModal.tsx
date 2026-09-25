@@ -29,9 +29,9 @@ import { FileLinkList, FilesButton } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
-import { useScrollIntoViewWhen } from '@shared/lib';
+import { formatDateTime, formatMoney, useScrollIntoViewWhen } from '@shared/lib';
 import { ViewFields, ViewModal } from '@shared/ui';
-import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
+import { formatDateTimeMaybe } from '../../utils/format';
 
 /**
  * Карточка заявки: поля на чтение и история событий (ADR 0012). Открывается кнопкой в

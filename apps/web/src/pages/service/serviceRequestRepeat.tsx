@@ -4,10 +4,9 @@ import { RetweetOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router';
 import type { ServiceRequestDto } from '@technic/contracts';
 import { serviceRepeatSummary } from '@entities/service-request';
-import type { BaseParams } from '@shared/lib';
+import { formatDate, type BaseParams } from '@shared/lib';
 import { EntityLink, type ViewField } from '@shared/ui';
 import { SERVICE_FILTER_FIELDS, type ServiceListFilters } from './serviceRequestFilters';
-import { formatDate } from '../../utils/format';
 
 /**
  * Ссылка «предыдущие» и режим списка, в который она ведёт (план

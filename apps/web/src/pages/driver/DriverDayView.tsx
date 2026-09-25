@@ -1,7 +1,7 @@
 import { Link } from 'react-router';
 import { Alert, Button, Typography } from 'antd';
 import type { DriverPreviousReading, DriverReportDto, ReportItemDto } from '@technic/contracts';
-import { formatDateTime } from '../../utils/format';
+import { formatDateTime } from '@shared/lib';
 import type { DraftItem } from './api';
 import { CONTENT_WIDTH } from './DriverLayout';
 import { OrphanBlock, type TransferMode, type TransferTarget } from './DriverOrphanBlock';

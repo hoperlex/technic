@@ -1,7 +1,7 @@
 import { Fragment, useState } from 'react';
 import { Alert, Button, Radio, Space, Typography } from 'antd';
 import { ViewModal } from '@shared/ui';
-import { formatDateTime } from '../../utils/format';
+import { formatDateTime } from '@shared/lib';
 import type { DraftItem } from './api';
 
 /**

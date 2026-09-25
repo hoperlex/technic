@@ -5,7 +5,7 @@ import {
   licenseDefectLabels,
   licenseDisplayState,
 } from '@technic/contracts';
-import { formatDateOnly } from '../../utils/date';
+import { formatDateOnly } from '@shared/lib';
 import { DASH, SUB } from './shared';
 
 /**

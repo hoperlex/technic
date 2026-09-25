@@ -5,7 +5,7 @@ import {
   type ServiceRequestEstimateExemptionDto,
 } from '@technic/contracts';
 import { ServiceHint } from '@entities/service-request';
-import { formatDateTime } from '../../utils/format';
+import { formatDateTime } from '@shared/lib';
 
 /**
  * СОСТОЯНИЕ ДЕЙСТВУЮЩЕЙ РЕВИЗИИ ОДНОЙ ПЛАШКОЙ: ждут решения, согласована человеком либо принята

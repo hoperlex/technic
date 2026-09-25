@@ -7,7 +7,7 @@ import type {
   ReceiptRecognitionStateDto,
 } from '@technic/contracts';
 import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-receipt';
-import { formatMoney } from '../../utils/format';
+import { formatMoney } from '@shared/lib';
 
 /**
  * Чтение скана в окне «Принять чек» (план `docs/auto-part-receipt-ocr-plan.md`, §10).

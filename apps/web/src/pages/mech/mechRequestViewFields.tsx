@@ -12,9 +12,9 @@ import {
   MechStateTag,
 } from '@entities/mech-request';
 import type { ViewField } from '@shared/ui';
+import { formatDateTime } from '@shared/lib';
 import { FileLinkList } from '../../components/FileLinks';
 import { PhoneLink } from '../../components/PhoneField';
-import { formatDateTime } from '../../utils/format';
 
 /**
  * Поля карточки аренды — отдельным модулем от самого окна: их полтора десятка, у каждого своё

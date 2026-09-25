@@ -7,12 +7,11 @@ import {
   type OfficeEquipmentPurchaseStatus,
 } from '@technic/contracts';
 import { DataTable, textColumn, type CardConfig } from '@shared/ui';
-import { useListParams } from '@shared/lib';
+import { formatDateTime, useListParams } from '@shared/lib';
 import {
   officeEquipmentPurchaseKeys,
   officeEquipmentPurchasesApi,
 } from '@entities/office-equipment';
-import { formatDateTime } from '../../utils/format';
 
 /**
  * Список плановых закупок (план `docs/office-equipment-consumables-and-purchase-plan.md`, Р9, Р10).

@@ -4,7 +4,7 @@ import { PaperClipOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { AutoPartReceiptDeletionDto, AutoPartReceiptListItemDto } from '@technic/contracts';
 import { textColumn, type CardConfig } from '@shared/ui';
-import { formatMoney } from '../../utils/format';
+import { formatMoney } from '@shared/lib';
 
 /**
  * Как лента чеков выглядит списком: колонки таблицы и карточка строки на телефоне (план

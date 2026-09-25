@@ -16,7 +16,7 @@ import {
 } from '@entities/service-request';
 import { WarrantyTag } from '@entities/office-equipment';
 import type { ActionSheetItem } from '@shared/ui';
-import { formatMoney } from '../../utils/format';
+import { formatMoney } from '@shared/lib';
 
 /**
  * Ячейки списка заявок, которые собирают несколько признаков в одну колонку: реквизиты техники с

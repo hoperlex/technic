@@ -20,11 +20,11 @@ import {
   textColumn,
   type CardConfig,
 } from '@shared/ui';
-import { useListParams, useOpenedRecord } from '@shared/lib';
+import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage, formatDateTime } from '../../utils/format';
+import { errorMessage } from '../../utils/format';
 import { ServiceRequestViewModal } from './ServiceRequestViewModal';
 
 /**

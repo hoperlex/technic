@@ -17,7 +17,7 @@ import {
   useDeviceMailReviewed,
 } from '@features/device-mail-review';
 import { PageTableLayout } from '@shared/ui';
-import { formatDateTime } from '../../utils/format';
+import { formatDateTime } from '@shared/lib';
 
 /**
  * ОЧЕРЕДЬ «ПИСЬМА УСТРОЙСТВ» — режим внутри вкладки «Техника» (план

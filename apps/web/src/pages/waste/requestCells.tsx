@@ -14,9 +14,8 @@ import {
   type WasteRequestDto,
 } from '@technic/contracts';
 import { ActionSheet, ExpandableCell } from '@shared/ui';
-import { useIsMobile } from '@shared/lib';
+import { formatMoney, useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
-import { formatMoney } from '../../utils/format';
 
 /**
  * Ячейки строки заявки на вывоз: комментарий, предмет, статус и перечень того, что сотрёт возврат

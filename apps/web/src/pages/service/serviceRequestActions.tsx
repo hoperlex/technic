@@ -5,12 +5,13 @@ import type { ServiceRequestDto } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { isApiError } from '@shared/api';
+import { formatMoney } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { useServiceRequestModals } from './serviceRequestModals';
 import { serviceRequestMenuItems } from './serviceRequestMenu';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 import { reportServiceMail } from './serviceMailNotice';
-import { errorMessage, formatMoney } from '../../utils/format';
+import { errorMessage } from '../../utils/format';
 
 /**
  * Чем действие заявки делается: мутации без окна, подтверждения и владение набором окон.

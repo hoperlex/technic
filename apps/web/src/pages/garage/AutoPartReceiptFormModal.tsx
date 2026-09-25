@@ -11,9 +11,8 @@ import {
   type ReceiptDraft,
 } from '@technic/contracts';
 import { autoPartReceiptApi } from '@entities/auto-part-receipt';
-import { errorFields } from '@shared/lib';
+import { errorFields, formatMoney } from '@shared/lib';
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
-import { formatMoney } from '../../utils/format';
 import { ReceiptLinesEditor } from './ReceiptLinesEditor';
 import { ReceiptScanField, type ScanFile } from './ReceiptScanField';
 import {

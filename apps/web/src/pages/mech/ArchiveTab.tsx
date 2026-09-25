@@ -24,11 +24,10 @@ import {
   sortOptionsFrom,
   type CardConfig,
 } from '@shared/ui';
-import { useListParams, useOpenedRecord } from '@shared/lib';
+import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { useAuth } from '../../auth/AuthContext';
-import { formatDateTime } from '../../utils/format';
 import { MechRequestViewModal } from './MechRequestViewModal';
 
 /**

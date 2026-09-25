@@ -19,8 +19,8 @@ import { filesApi } from '@entities/file';
 import { wasteTariffResolveQuery } from '@entities/waste-tariff';
 import { FileLinkList } from '../../components/FileLinks';
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
-import { useIsMobile } from '@shared/lib';
-import { errorMessage, formatMoney } from '../../utils/format';
+import { formatMoney, useIsMobile } from '@shared/lib';
+import { errorMessage } from '../../utils/format';
 
 /**
  * Закрытие заявки: факт предъявляется вместе со сменой статуса, а не после неё.
