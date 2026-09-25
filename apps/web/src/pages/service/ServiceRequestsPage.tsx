@@ -1,7 +1,7 @@
 import { useSearchParams } from 'react-router';
 import { serviceRequestKeys } from '@entities/service-request';
+import { useAuth } from '@entities/session';
 import { PageTabs } from '../../components/PageTabs';
-import { useAuth } from '../../auth/AuthContext';
 import { canSeeArchiveTab } from '../../utils/links';
 import { RequestsTab } from './RequestsTab';
 import { WarrantiesTab } from './WarrantiesTab';

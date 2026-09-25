@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { AuthUser, ModuleMailOutcome, ServiceRequestDto } from '@technic/contracts';
 import { serviceRequestKeys } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
+import { useAuth } from '@entities/session';
 import { AssignServiceModal } from '@features/assign-service';
 import { EstimateEditorModal, type EstimateEditorIntent } from '@features/estimate-editor';
 import { EstimateApprovalModal } from '@features/estimate-approval';
@@ -20,7 +21,6 @@ import { ServiceRequestConsumablesModal } from './ServiceRequestConsumables';
 import { reportServiceMail } from './serviceMailNotice';
 import { cancelErases, type ReasonPrompt } from './serviceRequestPrompts';
 import { serviceActionRow, serviceExecutorAssignment } from './serviceRequestRow';
-import { useAuth } from '../../auth/AuthContext';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { errorMessage } from '../../utils/format';
 

@@ -11,11 +11,11 @@ import {
 } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
+import { useAuth } from '@entities/session';
 import { MarkAllChatReadButton } from '@features/service-chat';
 import { DataTable, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { serviceRequestColumns, serviceGridView } from './serviceRequestGrid';
 import { serviceRequestCard } from './serviceRequestCard';

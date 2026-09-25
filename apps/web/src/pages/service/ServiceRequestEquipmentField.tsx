@@ -8,10 +8,10 @@ import {
   officeEquipmentSelectorPickedQuery,
   type OfficeEquipmentSelectorOption,
 } from '@entities/office-equipment';
+import { useAuth } from '@entities/session';
 import { EquipmentNotFoundLink, type EquipmentCandidateDraft } from '@features/missing-equipment';
 import { AutoSelect } from '@shared/ui';
 import { ServiceRequestSubject } from './ServiceRequestSubject';
-import { useAuth } from '../../auth/AuthContext';
 import { useObjectScope } from '../../hooks/useObjectScope';
 
 /**

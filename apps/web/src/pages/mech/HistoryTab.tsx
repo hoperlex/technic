@@ -14,6 +14,7 @@ import {
   mechRequestKeys,
   mechRequestsApi,
 } from '@entities/mech-request';
+import { useAuth } from '@entities/session';
 import { DataTable, PageTableLayout, SummaryBar, sortOptionsFrom } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
@@ -25,7 +26,6 @@ import {
   type MechListFilters,
 } from './mechRequestFilters';
 import { MechRequestViewModal } from './MechRequestViewModal';
-import { useAuth } from '../../auth/AuthContext';
 
 /**
  * «История» (§7, вкладка 3; Э3): закрытые заявки — «Выполнена» и «Отменена» — с итогами за

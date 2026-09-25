@@ -15,10 +15,10 @@ import {
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
+import { useAuth } from '@entities/session';
 import { ActionMenuButton, ActionSheet, ViewFields, ViewModal } from '@shared/ui';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 import { useIsMobile } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ServiceRequestDocuments } from './ServiceRequestDocuments';
 import { ServiceRequestEstimate } from './ServiceRequestEstimate';

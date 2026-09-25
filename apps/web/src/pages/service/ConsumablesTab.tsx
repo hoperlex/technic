@@ -16,6 +16,7 @@ import {
   officeEquipmentConsumablesApi,
   officeEquipmentModelPickerQuery,
 } from '@entities/office-equipment';
+import { useAuth } from '@entities/session';
 import {
   CONSUMABLE_SORT_LABELS,
   officeEquipmentConsumableCard,
@@ -26,7 +27,6 @@ import {
   PARK_COUNT_HINT,
   STOCK_HINT,
 } from '@features/office-equipment-consumables';
-import { useAuth } from '../../auth/AuthContext';
 import { OfficeEquipmentPurchaseFormModal } from './OfficeEquipmentPurchaseFormModal';
 import { OfficeEquipmentPurchasesList } from './OfficeEquipmentPurchasesList';
 import { OfficeEquipmentPurchaseViewModal } from './OfficeEquipmentPurchaseViewModal';

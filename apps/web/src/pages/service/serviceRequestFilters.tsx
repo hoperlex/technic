@@ -8,9 +8,9 @@ import { serviceCompanyOptionsQuery } from '@entities/service-request';
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
+import { useAuth } from '@entities/session';
 import { type FilterDefinition } from '@shared/ui';
 import { usePruneMissingFilters } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
 
 /**
  * Фильтры списка заявок на обслуживание — **одним описанием** на десктоп и телефон (§9.2).

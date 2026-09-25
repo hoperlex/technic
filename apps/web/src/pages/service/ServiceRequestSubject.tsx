@@ -5,8 +5,8 @@ import type { ServiceRequestDto } from '@technic/contracts';
 import { objectOptionsQuery } from '@entities/object';
 import { WarrantyTag } from '@entities/office-equipment';
 import { serviceRequestEquipmentName, serviceRequestPlaceLine } from '@entities/service-request';
+import { useAuth } from '@entities/session';
 import { AutoSelect } from '@shared/ui';
-import { useAuth } from '../../auth/AuthContext';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import { useObjectScope } from '../../hooks/useObjectScope';
 

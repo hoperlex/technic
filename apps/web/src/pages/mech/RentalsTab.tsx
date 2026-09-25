@@ -6,6 +6,7 @@ import {
   type MechRequestDto,
 } from '@technic/contracts';
 import { mechRequestKeys, mechRequestsApi } from '@entities/mech-request';
+import { useAuth } from '@entities/session';
 import {
   DataTable,
   PageTableLayout,
@@ -25,7 +26,6 @@ import {
 import { useMechRequestActions } from './mechRequestActions';
 import { MECH_RENTAL_ACTION_KEYS } from './mechRequestMenu';
 import { MechRequestViewModal } from './MechRequestViewModal';
-import { useAuth } from '../../auth/AuthContext';
 
 /**
  * «В аренде» (Р13, §7): что сейчас стоит на площадках и до какого числа.

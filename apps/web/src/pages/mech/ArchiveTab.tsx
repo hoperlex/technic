@@ -16,6 +16,7 @@ import {
   mechRequestsApi,
   MechStateTag,
 } from '@entities/mech-request';
+import { useAuth } from '@entities/session';
 import {
   actionsColumn,
   DataTable,
@@ -27,7 +28,6 @@ import {
 import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
-import { useAuth } from '../../auth/AuthContext';
 import { MechRequestViewModal } from './MechRequestViewModal';
 
 /**

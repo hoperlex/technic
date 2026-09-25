@@ -10,6 +10,7 @@ import {
 } from '@technic/contracts';
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { serviceRequestKeys } from '@entities/service-request';
+import { useAuth } from '@entities/session';
 import { ServiceRequestCustomerField, useServiceRequestCustomer } from '@features/request-customer';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import {
@@ -31,7 +32,6 @@ import { useRequesterPlace } from './ServiceRequestRequesterPlace';
 import { reportServiceMail } from './serviceMailNotice';
 import { reportServiceRequestFailure } from './serviceRequestFailure';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
-import { useAuth } from '../../auth/AuthContext';
 
 /** Поля формы объявлены рядом с отправкой (`serviceRequestSubmit`): они — её вход. */
 type Values = ServiceFormValues;

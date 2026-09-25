@@ -21,8 +21,8 @@ import {
 } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { filesApi } from '@entities/file';
+import { useAuth } from '@entities/session';
 import { FileLinkList } from '../../components/FileLinks';
-import { useAuth } from '../../auth/AuthContext';
 import {
   mayActOnServiceRequest,
   serviceActionRow,

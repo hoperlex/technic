@@ -10,9 +10,9 @@ import {
   officeEquipmentOptionsQuery,
 } from '@entities/office-equipment';
 import { consumableLabel, serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
+import { useAuth } from '@entities/session';
 import { AutoSelect, FormModal } from '@shared/ui';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 
 /** Строка формы: позиция справочника и сколько её просят. Пустая строка — только что добавленная. */

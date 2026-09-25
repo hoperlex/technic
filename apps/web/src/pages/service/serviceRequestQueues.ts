@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 import type { BaseParams } from '@shared/lib';
+import { useAuth } from '@entities/session';
 import type { ServiceListFilters } from './serviceRequestFilters';
-import { useAuth } from '../../auth/AuthContext';
 
 /**
  * Очереди-пресеты над таблицей заявок (§9.2): с них начинают работу оператор и сервис.

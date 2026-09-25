@@ -8,13 +8,13 @@ import {
   type RequestStatus,
 } from '@technic/contracts';
 import { mechFailureText, mechRequestKeys, mechRequestsApi } from '@entities/mech-request';
+import { useAuth } from '@entities/session';
 import { MechTakeInWorkModal } from '@features/mech-take-in-work';
 import { MechIssueModal, MechRevokeIssueModal } from '@features/mech-issue';
 import { MechCompleteModal } from '@features/mech-complete';
 import { MechExtendModal } from '@features/mech-extend';
 import type { ActionSheetItem } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
-import { useAuth } from '../../auth/AuthContext';
 import { mechMenuItems } from './mechRequestMenu';
 
 /**

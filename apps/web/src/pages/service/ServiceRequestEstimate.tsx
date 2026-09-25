@@ -8,10 +8,10 @@ import {
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { ServiceEstimateTable } from '@entities/service-request';
+import { useAuth } from '@entities/session';
 import { EstimateEditorModal } from '@features/estimate-editor';
 import type { ActionSheetItem } from '@shared/ui';
 import { formatDateTime, formatMoney } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
 import { ServiceEstimateStateLine } from './serviceEstimateStateLine';
 import {
   mayActOnServiceRequest,

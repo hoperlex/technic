@@ -11,6 +11,7 @@ import {
   ServiceStatusTag,
 } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
+import { useAuth } from '@entities/session';
 import {
   actionsColumn,
   DataTable,
@@ -23,7 +24,6 @@ import {
 import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
-import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { ServiceRequestViewModal } from './ServiceRequestViewModal';
 

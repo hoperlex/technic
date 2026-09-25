@@ -6,7 +6,7 @@ import {
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { listScopeKey, type SelectionConfig } from '@shared/ui';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 import {
   readServiceBulkRun,

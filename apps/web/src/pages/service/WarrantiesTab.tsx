@@ -6,10 +6,10 @@ import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-reques
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
+import { useAuth } from '@entities/session';
 import { DataTable, PageTableLayout, sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams, usePruneMissingFilters } from '@shared/lib';
 import { OPEN_PARAM } from '@shared/lib';
-import { useAuth } from '../../auth/AuthContext';
 import { ServiceFilterBar } from './ServiceFilterBar';
 import { warrantyCard, warrantyColumns } from './warrantyGrid';
 import { ServiceRequestForm, type WarrantyClaimPreset } from './ServiceRequestForm';

@@ -6,7 +6,7 @@ import {
   subjectCheckTitle,
 } from '@entities/office-equipment-candidate';
 import { ServiceHint, serviceRequestEquipmentName } from '@entities/service-request';
-import { useAuth } from '../../auth/AuthContext';
+import { useAuth } from '@entities/session';
 
 /**
  * Чем называется предмет заявки в её карточке — и что с ним сейчас происходит (план

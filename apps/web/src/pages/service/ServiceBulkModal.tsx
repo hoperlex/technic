@@ -11,9 +11,9 @@ import {
 } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
+import { useAuth } from '@entities/session';
 import { newIdempotencyKey } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
-import { useAuth } from '../../auth/AuthContext';
 import {
   clearServiceBulkRun,
   saveServiceBulkRun,
