@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { App, Button, Card, Form, Result, Typography } from 'antd';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { authApi } from '@entities/session';
-import { PasswordField } from '../components/PasswordField';
+import { PasswordField } from '@entities/user-account';
 import { errorMessage } from '../utils/format';
 
 interface FormValues {

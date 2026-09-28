@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { App, Button, Card, Form, Input, Result, Typography } from 'antd';
 import { normalizeEmail } from '@technic/contracts';
 import { authApi } from '@entities/session';
-import { CaptchaField } from '../components/CaptchaField';
-import { useCaptcha } from '../components/useCaptcha';
+import { CaptchaField } from '@entities/session';
+import { useCaptcha } from '@entities/session';
 import { errorFields } from '@shared/lib';
 import { errorMessage } from '../utils/format';
 import {

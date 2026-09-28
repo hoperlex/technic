@@ -15,7 +15,7 @@ import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import type {
   VehicleClassificationGroup,
   VehicleClassificationOption,
-} from '../../hooks/useVehicleClassifications';
+} from '@entities/vehicle-type';
 import { AutoSelect, ExpandableCell, type FilterDefinition } from '@shared/ui';
 import { formatDateOnly } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
@@ -184,13 +184,6 @@ export function useDriverOptions(enabled = true) {
     loading: isFetching,
   };
 }
-
-/**
- * Фильтр по заказанной технике переехал к самому классификатору (`useVehicleClassificationFilter`):
- * его спрашивает и гараж (ADR 0076), а импорт чужой страницы запрещён границами слоёв. Реэкспорт
- * держится для прежних потребителей — они берут его отсюда вместе с остальным общим этой страницы.
- */
-export { useVehicleClassificationFilter } from '../../hooks/useVehicleClassificationFilter';
 
 /** Редактор прикреплённых файлов (загрузка в S3 + список add/remove). */
 export function useFileEditor() {

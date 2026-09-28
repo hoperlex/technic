@@ -28,7 +28,7 @@ import {
   classificationKeyOf,
   useVehicleClassifications,
   withSavedClassification,
-} from '../../hooks/useVehicleClassifications';
+} from '@entities/vehicle-type';
 import { garageKeys } from '@entities/garage';
 import { FuelNormsModal } from './FuelNormsModal';
 import { unhitchedNotice, VehicleTrailersField } from '@entities/vehicle-trailer';

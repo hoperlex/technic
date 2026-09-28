@@ -8,8 +8,8 @@ import {
 } from '@ant-design/icons';
 import { type SpecialEquipmentRequestDto, vehicleClassificationLabel } from '@technic/contracts';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
-import { UserAvatar } from '../../components/UserAvatar';
-import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
+import { UserAvatar } from '@shared/ui';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import {
   dash,
   decidable,

@@ -28,7 +28,7 @@ import { useAuth } from '@entities/session';
 import { FileLinkList, FilesButton } from '@entities/file';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
-import { UserAvatar } from '../../components/UserAvatar';
+import { UserAvatar } from '@shared/ui';
 import { formatDateTime, formatMoney, useScrollIntoViewWhen } from '@shared/lib';
 import { ViewFields, ViewModal } from '@shared/ui';
 import { formatDateTimeMaybe } from '../../utils/format';

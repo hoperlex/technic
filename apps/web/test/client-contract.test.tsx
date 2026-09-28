@@ -11,7 +11,7 @@ import {
   refresh,
 } from '@shared/api';
 import { renderWithUser } from './render';
-import { AppUpdateBanner } from '../src/components/AppUpdateBanner';
+import { AppUpdateBanner } from '@widgets/app-update-banner';
 
 /**
  * Гейт минимальной версии клиента со стороны портала (ADR 0146, решение 7; план

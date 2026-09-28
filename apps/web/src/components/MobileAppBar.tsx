@@ -1,6 +1,5 @@
 import { Badge, Dropdown, type MenuProps, Typography } from 'antd';
-import { PortalLogo } from './PortalLogo';
-import { UserAvatar } from './UserAvatar';
+import { PortalLogo, UserAvatar } from '@shared/ui';
 
 interface Props {
   /** Название открытого раздела: на телефоне подписи разделов в навигации сокращены. */

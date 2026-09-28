@@ -11,8 +11,8 @@ import {
 } from '@technic/contracts';
 import { MOSCOW_TZ } from '@shared/config';
 import { useAuth } from '@entities/session';
-import { PortalLogo } from '../../components/PortalLogo';
-import { UserAvatar } from '../../components/UserAvatar';
+import { PortalLogo } from '@shared/ui';
+import { UserAvatar } from '@shared/ui';
 import { cabinetRead, driverCabinetApi, driverCabinetKeys } from './api';
 import { clearUserDrafts, pruneDrafts } from './draftStore';
 import { DRIVER_FONT_SCALE, DRIVER_NUMBER_SCALE, driverTheme } from './theme';

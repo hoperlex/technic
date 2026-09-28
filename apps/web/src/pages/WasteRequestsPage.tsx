@@ -76,7 +76,7 @@ import { sortOptionsFrom } from '@shared/ui';
 import { PageTabs, TabsExtra, useActiveTabKey } from '../components/PageTabs';
 import { SummaryBar } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
-import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../components/ObjectCell';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { TimeInput, optionalWorkTimeRule } from '../components/TimeInput';
 import { formatDate, useIsMobile } from '@shared/lib';
 import { dayEnd, dayStart } from '@shared/lib';

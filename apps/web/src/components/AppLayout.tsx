@@ -30,8 +30,7 @@ import { useServiceChatUnreadCount } from '@features/service-chat';
 import { readSiderCollapsed, useIsMobile, writeSiderCollapsed } from '@shared/lib';
 import { MobileAppBar } from './MobileAppBar';
 import { MobileNav, type MobileNavItem } from './MobileNav';
-import { PortalLogo } from './PortalLogo';
-import { UserAvatar } from './UserAvatar';
+import { PortalLogo, UserAvatar } from '@shared/ui';
 
 const { Sider, Content } = Layout;
 const SIDER_WIDTH = 230;

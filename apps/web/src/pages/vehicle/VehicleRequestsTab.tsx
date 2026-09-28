@@ -96,8 +96,8 @@ import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { SummaryBar } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
-import { UserAvatar } from '../../components/UserAvatar';
-import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
+import { UserAvatar } from '@shared/ui';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { departmentPlatformQuery } from '@entities/department';
 // Подбор «Объект/отдел» — общий модуль (план `docs/department-requests-plan.md`, §9 п. 1): то же
 // поле спрашивает и заявка на обслуживание оргтехники.
@@ -114,7 +114,7 @@ import {
   classificationKeyOf,
   useVehicleClassifications,
   withSavedClassification,
-} from '../../hooks/useVehicleClassifications';
+} from '@entities/vehicle-type';
 import { errorMessage } from '../../utils/format';
 import { canOpenRoute, vehicleRouteLink } from '../../utils/links';
 import { vehicleRequestDateRules } from '../../utils/date';
@@ -155,10 +155,10 @@ import {
   RequestContactsCell,
   VehicleClassificationSelect,
   useFileEditor,
-  useVehicleClassificationFilter,
   useVehicleFilter,
   type EditorFile,
 } from './shared';
+import { useVehicleClassificationFilter } from '@entities/vehicle-type';
 import { useEarlyEnd } from './earlyEndActions';
 import {
   WeeklyApprovalCell,

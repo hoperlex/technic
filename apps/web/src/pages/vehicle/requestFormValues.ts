@@ -7,7 +7,7 @@ import {
   type VehicleRequestType,
 } from '@technic/contracts';
 import { MOSCOW_TZ } from '@shared/config';
-import { classificationKeyOf } from '../../hooks/useVehicleClassifications';
+import { classificationKeyOf } from '@entities/vehicle-type';
 import { copyTrip, tripNeedsList, tripToForm, type TripFormValue } from './requestTripsForm';
 
 /**

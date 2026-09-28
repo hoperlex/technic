@@ -6,7 +6,7 @@ import {
   type GarageVehicleState,
 } from '@technic/contracts';
 import type { FilterDefinition } from '@shared/ui';
-import { useVehicleClassificationFilter } from '../../hooks/useVehicleClassificationFilter';
+import { useVehicleClassificationFilter } from '@entities/vehicle-type';
 import { useObjectsFilter } from './objectsFilter';
 
 /**

@@ -34,3 +34,19 @@ export {
   vehicleTypeKeys,
   vehicleTypeSpecKeys,
 } from './api/keys';
+
+/*
+ * Классификатор позиций и фильтр по нему. Ключ запросов хук брал у этого слайса ещё до переезда,
+ * поэтому перенос не сдвинул ни одной ячейки кэша. Хук и фильтр выведены вместе: фильтр построен на
+ * том же наборе позиций, и порознь они дали бы два разных представления об одном наборе.
+ */
+export {
+  classificationFilterGroups,
+  classificationGroups,
+  classificationKeyOf,
+  useVehicleClassifications,
+  withSavedClassification,
+  type VehicleClassificationGroup,
+  type VehicleClassificationOption,
+} from './model/useVehicleClassifications';
+export { useVehicleClassificationFilter } from './ui/useVehicleClassificationFilter';

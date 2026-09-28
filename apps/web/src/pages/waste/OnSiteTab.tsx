@@ -8,7 +8,7 @@ import { EntityLink } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { textColumn } from '@shared/ui';
-import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { formatDate, useListParams } from '@shared/lib';
 import { formatDateTimeMaybe } from '../../utils/format';
 import { wasteRequestLink } from '../../utils/links';

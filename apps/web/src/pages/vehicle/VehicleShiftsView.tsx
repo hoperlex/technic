@@ -7,7 +7,7 @@ import {
 } from '@technic/contracts';
 import { formatDateOnly, formatDateTime } from '@shared/lib';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
-import { UserAvatar } from '../../components/UserAvatar';
+import { UserAvatar } from '@shared/ui';
 
 /**
  * Смены заказа спецтехники — только чтение: так их видят в карточке заявки.

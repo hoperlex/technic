@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { Typography } from 'antd';
 import { useAuth } from '@entities/session';
-import type { CaptchaState } from '../components/useCaptcha';
+import type { CaptchaState } from '@entities/session';
 
 /**
  * Общее для трёх страниц с капчей: регистрация, «Забыли пароль?», подтверждение адреса

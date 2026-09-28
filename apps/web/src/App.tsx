@@ -7,7 +7,7 @@ import {
   type PortalShellSectionId,
 } from '@technic/contracts';
 import { AppLayout } from './components/AppLayout';
-import { AppUpdateBanner } from './components/AppUpdateBanner';
+import { AppUpdateBanner } from '@widgets/app-update-banner';
 import {
   HomeRedirect,
   ProtectedRoute,

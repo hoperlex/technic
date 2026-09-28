@@ -13,10 +13,10 @@ import {
 } from '@technic/contracts';
 import { authApi } from '@entities/session';
 import { AutoSelect } from '@shared/ui';
-import { CaptchaField } from '../components/CaptchaField';
-import { useCaptcha } from '../components/useCaptcha';
-import { PasswordField } from '../components/PasswordField';
-import { PersonNameFields } from '../components/PersonNameFields';
+import { CaptchaField } from '@entities/session';
+import { useCaptcha } from '@entities/session';
+import { PasswordField } from '@entities/user-account';
+import { PersonNameFields } from '@entities/user-account';
 import { PhoneField } from '../components/PhoneField';
 import { errorFields } from '@shared/lib';
 import { errorMessage } from '../utils/format';

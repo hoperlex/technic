@@ -3,7 +3,7 @@ import { Button, Checkbox, DatePicker, Input, Select, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { PhoneInput } from '../../components/PhoneInput';
-import type { VehicleClassificationGroup } from '../../hooks/useVehicleClassifications';
+import type { VehicleClassificationGroup } from '@entities/vehicle-type';
 import type { WeeklyNewRow } from './weeklyComposition';
 
 /**

@@ -7,3 +7,4 @@ export { objectsApi } from './api/objectsApi';
 export { objectKeys } from './api/keys';
 export { objectAddressOptionsQuery, objectOptionsQuery } from './api/queries';
 export { objectFilterOptionLabel } from './model/optionLabel';
+export { ObjectCell, OBJECT_COLUMN_WIDTH } from './ui/ObjectCell';

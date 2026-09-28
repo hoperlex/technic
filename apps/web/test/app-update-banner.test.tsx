@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen } from '@testing-library/react';
 import type * as SharedLib from '@shared/lib';
 import { renderWithUser } from './render';
-import { AppUpdateBanner } from '../src/components/AppUpdateBanner';
+import { AppUpdateBanner } from '@widgets/app-update-banner';
 
 /**
  * Баннер новой версии приложения: сколько у него действий и где (план

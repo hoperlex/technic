@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Select } from 'antd';
 import { CLASSIFICATION_FILTER_MAX, serializeClassificationFilter } from '@technic/contracts';
 import type { FilterDefinition } from '@shared/ui';
-import { useVehicleClassifications } from './useVehicleClassifications';
+import { useVehicleClassifications } from '../model/useVehicleClassifications';
 
 /**
  * Фильтр по технике классификатора — общий для списка заявок, журнала и гаража: вопрос «какая это

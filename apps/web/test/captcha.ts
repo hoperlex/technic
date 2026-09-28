@@ -23,8 +23,8 @@
 import { act, waitFor } from '@testing-library/react';
 import { expect, vi, type Mock } from 'vitest';
 import { json, type MockResponse, type RouteHandler } from './http';
-import { __resetCaptchaScriptForTests } from '../src/components/CaptchaField';
-import { __resetCaptchaConfigForTests } from '../src/components/useCaptcha';
+import { __resetCaptchaScriptForTests } from '@entities/session';
+import { __resetCaptchaConfigForTests } from '@entities/session';
 
 /** Хост, с которого портал тянет виджет: по нему тесты и узнают чужой скрипт в документе. */
 const SCRIPT_HOST = 'smartcaptcha.cloud.yandex.ru';

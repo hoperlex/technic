@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import type { CaptchaConfig } from '@technic/contracts';
-import { authApi, useAuth } from '@entities/session';
+/*
+ * Direct module paths, not the slice barrel `@entities/session`: that barrel re-exports this very
+ * module, so going through it would close an import cycle. Inside a slice the barrel is never the
+ * way in.
+ */
+import { authApi } from '../api/authApi';
+import { useAuth } from './authContext';
 
 /**
  * Состояние капчи для формы (план `docs/smart-captcha-plan.md` §5).

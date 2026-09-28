@@ -13,7 +13,7 @@ import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { waybillKeys } from '@entities/waybill';
 import { useAuth } from '@entities/session';
 import { ReasonModal } from '../../components/CancelReasonModal';
-import { useVehicleClassifications } from '../../hooks/useVehicleClassifications';
+import { useVehicleClassifications } from '@entities/vehicle-type';
 import { errorMessage } from '../../utils/format';
 import { useWeeklyComposition } from './weeklyComposition';
 import { WeeklyRequestActions } from './WeeklyRequestActions';

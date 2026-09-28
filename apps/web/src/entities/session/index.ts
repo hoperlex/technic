@@ -76,3 +76,16 @@ export { accessFingerprint } from './model/accessFingerprint';
 export { useDepartmentScope } from './model/useDepartmentScope';
 export { useObjectScope } from './model/useObjectScope';
 export { usePlaceObjectScope } from './model/usePlaceObjectScope';
+/*
+ * Каптча — часть сессии, а не общий элемент интерфейса: её проходят ровно затем, чтобы завести или
+ * восстановить учётку, а хук читает `useAuth` — статус вкладки решает, ходить ли за ключом вовсе
+ * (ADR 0130). `shared` ей закрыт контрактами (`CaptchaConfig`), любой другой слайс `entities` —
+ * соседством: ключ приносит `authApi`, живущий здесь же.
+ *
+ * Поле и хук — пара, и врозь бессмысленны: поле рисует виджет, хук ведёт жизненный цикл токена и
+ * говорит форме, пускать ли отправку. Оба сброса для тестов выведены наружу по той же причине, что
+ * и `__resetAuthForTests`: иначе оснастка полезла бы внутрь слайса относительным путём, а этого
+ * запрет на внутренности не ловит.
+ */
+export { CaptchaField, __resetCaptchaScriptForTests } from './ui/CaptchaField';
+export { useCaptcha, __resetCaptchaConfigForTests, type CaptchaState } from './model/useCaptcha';

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Button, Space, Spin, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import { useCaptcha } from './useCaptcha';
+import { useCaptcha } from '../model/useCaptcha';
 
 /*
  * Типы SDK Яндекса объявлены здесь: `captcha.js` подключается тегом скрипта и типов с собой не

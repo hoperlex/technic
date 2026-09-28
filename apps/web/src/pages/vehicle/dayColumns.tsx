@@ -11,7 +11,7 @@ import {
   workedAmountLabel,
 } from '@technic/contracts';
 import { EntityLink } from '@shared/ui';
-import { UserAvatar } from '../../components/UserAvatar';
+import { UserAvatar } from '@shared/ui';
 import { vehicleRouteLink, waybillLink } from '../../utils/links';
 import { formatDateOnly } from '@shared/lib';
 

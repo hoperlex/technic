@@ -4,10 +4,7 @@ import {
   type VehicleDto,
   vehicleOptionLabel,
 } from '@technic/contracts';
-import {
-  classificationFilterGroups,
-  classificationGroups,
-} from '../src/hooks/useVehicleClassifications';
+import { classificationFilterGroups, classificationGroups } from '@entities/vehicle-type';
 
 /**
  * Варианты выбора техники: в форме заявки — конечные позиции классификатора (ADR 0028), в фильтре

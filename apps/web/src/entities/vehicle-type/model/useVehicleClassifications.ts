@@ -5,7 +5,8 @@ import {
   vehicleClassificationKey,
   type VehicleClassificationDto,
 } from '@technic/contracts';
-import { vehicleClassificationKeys, vehicleClassificationsApi } from '@entities/vehicle-type';
+import { vehicleClassificationKeys } from '../api/keys';
+import { vehicleClassificationsApi } from '../api/vehicleTypesApi';
 
 // Классификатор ТС для списков выбора (ADR 0028): позиции — категории типа, а у типа без ТТХ
 // сам тип. Правило «общий тип при наличии категорий не выводится» держит сервер, клиент только
@@ -175,5 +176,3 @@ export function classificationKeyOf(v: {
 }): string {
   return vehicleClassificationKey(v.vehicleTypeId, v.vehicleCategoryId);
 }
-
-export type { VehicleClassificationDto };

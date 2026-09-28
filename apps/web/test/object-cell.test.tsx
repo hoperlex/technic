@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { screen } from '@testing-library/react';
 import { requestCustomerLabel } from '@technic/contracts';
 import { renderWithUser } from './render';
-import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../src/components/ObjectCell';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 
 /**
  * Ячейка заказчика в списках: наименование объекта (или код отдела) и адрес под ним.

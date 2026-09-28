@@ -17,3 +17,11 @@ export type {
   RestoreUserBody,
   UserAccountMutationResult,
 } from './api/usersApi';
+
+/*
+ * Поля учётки: правила пароля и разбор ФИО. Оба спрашивают контракты (`passwordStrength`,
+ * `namePartIssue`), и оба нужны и регистрации, и администратору — держать их у одного из экранов
+ * значило бы, что второй читает правило через чужую страницу.
+ */
+export { PasswordField } from './ui/PasswordField';
+export { PersonNameFields } from './ui/PersonNameFields';

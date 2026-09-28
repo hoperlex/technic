@@ -37,19 +37,15 @@ import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { SummaryBar } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
-import { UserAvatar } from '../../components/UserAvatar';
-import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
+import { UserAvatar } from '@shared/ui';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { formatDateOnly, useListParams, useOpenedRecord } from '@shared/lib';
 import { calendarDayCount, formatDate, formatMoney } from '@shared/lib';
 import { useAuth } from '@entities/session';
 import { formatDateTimeMaybe } from '../../utils/format';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
-import {
-  RequestAssignmentCell,
-  useLessorOptions,
-  useVehicleClassificationFilter,
-  useVehicleFilter,
-} from './shared';
+import { RequestAssignmentCell, useLessorOptions, useVehicleFilter } from './shared';
+import { useVehicleClassificationFilter } from '@entities/vehicle-type';
 
 /**
  * Журнал закрытых заказов техники (ADR 0029). Первая вкладка отвечает на «что сейчас в работе»,
