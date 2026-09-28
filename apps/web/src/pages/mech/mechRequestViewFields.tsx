@@ -14,7 +14,7 @@ import {
 import type { ViewField } from '@shared/ui';
 import { formatDateTime } from '@shared/lib';
 import { FileLinkList } from '@entities/file';
-import { PhoneLink } from '../../components/PhoneField';
+import { PhoneLink } from '@entities/user-account';
 
 /**
  * Поля карточки аренды — отдельным модулем от самого окна: их полтора десятка, у каждого своё

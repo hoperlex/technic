@@ -16,7 +16,7 @@ import { monthSchema, type WasteStatsFigures, type WasteStatsRowDto } from '@tec
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
 import { useIsMobile, useListParams } from '@shared/lib';
-import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { FIGURES_WIDTH, figureColumns, figureSummaryCells } from './wasteStatsColumns';
 import { WasteStatsObjectModal } from './WasteStatsObjectModal';

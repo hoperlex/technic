@@ -5,7 +5,7 @@ import { SHELL_SECTIONS, type AuthUser } from '@technic/contracts';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser, loginResponse } from './factories/auth';
-import { AppLayout } from '../src/components/AppLayout';
+import { AppLayout } from '../src/app/layout';
 import { HomeRedirect, ProtectedRoute, RequireSection } from '../src/app/routing/ProtectedRoute';
 import { LoginPage } from '../src/pages/LoginPage';
 import { ChangePasswordPage } from '../src/pages/ChangePasswordPage';

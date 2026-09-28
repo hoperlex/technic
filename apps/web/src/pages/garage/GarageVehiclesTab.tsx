@@ -8,7 +8,7 @@ import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { useAuth } from '@entities/session';
 import { useJournalAddress } from './journalAddress';
 import { useMaintenanceColumn } from './maintenanceColumn';

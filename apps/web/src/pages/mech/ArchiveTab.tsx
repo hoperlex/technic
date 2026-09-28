@@ -26,7 +26,7 @@ import {
   type CardConfig,
 } from '@shared/ui';
 import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
-import { useActiveTabKey } from '../../components/PageTabs';
+import { useActiveTabKey } from '@shared/ui';
 import { usePurgeAction } from '@features/purge-record';
 import { MechRequestViewModal } from './MechRequestViewModal';
 

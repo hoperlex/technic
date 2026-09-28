@@ -53,7 +53,7 @@ import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { useAuth } from '@entities/session';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
-import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
+import { TimeInput, optionalWorkTimeRule } from '@entities/request';
 import { formatDateOnly, formatMoney, useIsMobile } from '@shared/lib';
 import { useObjectScope } from '@entities/session';
 import { AddressField } from '@features/address-input';

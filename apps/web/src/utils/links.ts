@@ -2,42 +2,47 @@ import {
   isClosedWasteStatus,
   vehicleRequestPath,
   vehicleRequestTab,
-  vehicleRequestViewPath,
-  vehicleRoutePath,
-  waybillPath,
   type Permission,
   type RequestStatus,
 } from '@technic/contracts';
 
 /**
- * Право на переход по номеру записи, названному в чужом списке.
+ * Право на переход по номеру записи, названному в чужом списке — то, что от этого файла осталось.
  *
  * Переход состоит из двух половин, и врозь они расходятся: адрес («какой список показать» или
- * «какое окно открыть») и право на него («показывать ли ссылку вообще»). Здесь осталась вторая:
- * сами адреса переехали в контракты (`packages/contracts/src/links.ts`), потому что спрашивают их
- * двое — портал и почта, печатающая номер заявки в сводке. Разойдись эти два места, ссылка из
- * письма привела бы на список, в котором записи нет.
+ * «какое окно открыть») и право на него («показывать ли ссылку вообще»). Здесь вторая: сами адреса
+ * переехали в контракты (`packages/contracts/src/links.ts`), потому что спрашивают их двое —
+ * портал и почта, печатающая номер заявки в сводке. Разойдись эти два места, ссылка из письма
+ * привела бы на список, в котором записи нет.
  *
  * Прав контракты не знают намеренно: у портала это `can`, у письма — область видимости
  * получателя. Каждая функция здесь возвращает `null`, если цель этой роли не положена: место
  * вызова тогда рисует прежний текст. Ссылка, ведущая туда, куда роль не пускают, кончается пустым
  * экраном, редиректом или сообщением «не найдена» — это хуже, чем номер обычным текстом, каким он
  * и был.
+ *
+ * WHAT IS LEFT HERE AND WHY. The wrappers whose right belongs to one record have moved to that
+ * record's slice: the route and the permission behind it to `@entities/vehicle-route`, the waybill
+ * to `@entities/waybill`, the read-only window of a vehicle request to `@entities/vehicle-request`.
+ * Three names stayed, and they stayed together on purpose: `canSeeArchiveTab` is asked by three
+ * modules at once (vehicle, mechanization, office equipment) and by the two wrappers below, so its
+ * home is `entities/request` — the slice both kinds of request are allowed to read. Until that
+ * slice has a public entry, moving the two wrappers alone would mean either an entity reaching into
+ * this unlayered directory (which the boundary rule forbids) or a second copy of the archive
+ * predicate — and a link that disagrees with the tab it leads to is exactly the failure the
+ * wrappers exist to prevent.
+ *
+ * The rest of the file is a bridge: `canOpenRoute`, `vehicleRouteLink`, `waybillLink` and
+ * `vehicleRequestViewLink` are re-exported, not copied, for the callers that another pair of hands
+ * is moving in the same wave. Re-export and not copy, because a copy would let the two answers to
+ * «may this role follow the link» drift apart.
  */
 
 type Can = (permission: Permission) => boolean;
 
-/**
- * Рейс собственной машины — карточкой и списком (ADR 0120, окна поверх экрана). Спрашиваются оба
- * права, которыми закрыты ручки рейсов: `waybills.read` — потому что в рейсе виден водитель
- * (ADR 0037 п. 13), `vehicleRequests.status` — потому что рейс ведёт тот же, кто двигает заявки.
- *
- * Условие то же, что было у вкладки «Маршруты», — изменилось только место, куда ведёт номер. Его
- * же спрашивает держатель адреса окон (`pages/vehicle/routeModal`): и ссылка, и параметр адреса
- * закрыты одним правилом, иначе прямой ссылкой открывалось бы то, чего в интерфейсе не показывают.
- */
-export const canOpenRoute = (can: Can): boolean =>
-  can('waybills.read') && can('vehicleRequests.status');
+export { canOpenRoute, vehicleRouteLink } from '@entities/vehicle-route';
+export { waybillLink } from '@entities/waybill';
+export { vehicleRequestViewLink } from '@entities/vehicle-request';
 
 /** Архив удалённых записей (ADR 0070, ADR 0063) — по матрице прав это администратор. */
 export const canSeeArchiveTab = (can: Can): boolean => can('archive.read');
@@ -53,30 +58,6 @@ export function vehicleRequestLink(
   if (vehicleRequestTab(request.status, request.deleted) === 'archive' && !canSeeArchiveTab(can))
     return null;
   return vehicleRequestPath(request);
-}
-
-/** Рейс: окно карточки поверх той страницы, где номер и увидели. */
-export function vehicleRouteLink(can: Can, routeId: string): string | null {
-  if (!canOpenRoute(can)) return null;
-  return vehicleRoutePath(routeId);
-}
-
-/**
- * Заявка окном на чтение — статус для этого не нужен: адрес один на любое её состояние.
- * Спрашивают состав рейса, задание путевого листа, талоны журнала и занятость гаража, где статуса
- * заявки нет вовсе.
- *
- * Право здесь — не формальность, а тот самый барьер, который держит `vehicleRequestLink`. У
- * механика и главного механика есть и журнал листов, и гараж (`waybills.read`, `garage.read`), а
- * `vehicleRequests.read` нет вовсе (`packages/contracts/src/permissions.ts` — `mechanic`): без
- * проверки номера талонов в обоих разделах стали бы для них ссылками, кончающимися сообщением
- * «Заявка не найдена или недоступна». Сейчас они видят там обычный текст, и так и должно
- * остаться. Прав контракты не знают намеренно (шапка `packages/contracts/src/links.ts`), поэтому
- * `vehicleRequestViewPath` из мест вызова не зовётся напрямую — только отсюда.
- */
-export function vehicleRequestViewLink(can: Can, requestId: string): string | null {
-  if (!can('vehicleRequests.read')) return null;
-  return vehicleRequestViewPath(requestId);
 }
 
 /**
@@ -100,10 +81,4 @@ export function wasteRequestLink(
       ? 'history'
       : 'requests';
   return `/waste?tab=${tab}&open=${request.id}`;
-}
-
-/** Путевой лист: журнал учёта с поиском по номеру. */
-export function waybillLink(can: Can, number: string): string | null {
-  if (!can('waybills.read')) return null;
-  return waybillPath(number);
 }

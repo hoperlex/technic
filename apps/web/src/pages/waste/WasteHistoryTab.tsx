@@ -21,7 +21,7 @@ import { DataTable } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
-import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { dayEnd, dayStart, formatMoney, useListParams, useOpenedRecord } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';

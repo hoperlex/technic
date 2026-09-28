@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from 'antd';
 import type { WasteRequestDto } from '@technic/contracts';
-import { RequestHistoryTable, type HistoryRow } from '../src/components/RequestHistory';
+import { RequestHistoryTable, type HistoryRow } from '../src/entities/request-history';
 import { WasteDoneModal } from '../src/pages/waste/WasteDoneModal';
 import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport } from './viewport';
 

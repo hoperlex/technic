@@ -12,7 +12,8 @@ import {
 } from '@technic/contracts';
 import { EntityLink } from '@shared/ui';
 import { UserAvatar } from '@shared/ui';
-import { vehicleRouteLink, waybillLink } from '../../utils/links';
+import { vehicleRouteLink } from '@entities/vehicle-route';
+import { waybillLink } from '@entities/waybill';
 import { formatDateOnly } from '@shared/lib';
 
 /**

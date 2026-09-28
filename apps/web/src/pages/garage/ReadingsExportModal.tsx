@@ -231,9 +231,7 @@ export function ReadingsExportModal({ from, to, vehicles, vehicleId, onClose }: 
           </Space>
         )}
 
-        {failure && (
-          <Alert type="error" showIcon title="Книга не собрана" description={failure} />
-        )}
+        {failure && <Alert type="error" showIcon title="Книга не собрана" description={failure} />}
       </Space>
     </Modal>
   );

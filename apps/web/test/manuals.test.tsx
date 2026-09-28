@@ -9,7 +9,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
 import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, type Viewport } from './viewport';
-import { AppLayout } from '../src/components/AppLayout';
+import { AppLayout } from '../src/app/layout';
 
 /**
  * Руководства пользователя (`docs/manuals-plan.md`) — третий служебный пункт того же угла меню,

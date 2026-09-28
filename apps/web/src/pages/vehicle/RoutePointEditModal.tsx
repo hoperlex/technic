@@ -12,7 +12,7 @@ import {
 import { AddressField } from '@features/address-input';
 import { FormGrid, FormModal } from '@shared/ui';
 import { vehicleRoutesApi } from '@entities/vehicle-route';
-import { TimeInput } from '../../components/TimeInput';
+import { TimeInput } from '@entities/request';
 import { errorMessage } from '../../utils/format';
 import { pointRoleInputOf } from './routeAssembly';
 

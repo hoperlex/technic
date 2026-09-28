@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-receipt';
 import { EntityLink, type ActionSheetItem } from '@shared/ui';
 import { formatMoney } from '@shared/lib';
-import { useActiveTabKey } from '../../components/PageTabs';
+import { useActiveTabKey } from '@shared/ui';
 import { useAuth } from '@entities/session';
 import { useVehicleSpendAddress } from './receiptsAddress';
 import { VehiclePartsSpendModal } from './VehiclePartsSpendModal';

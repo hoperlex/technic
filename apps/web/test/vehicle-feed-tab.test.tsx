@@ -16,7 +16,7 @@ import {
   weeklyRequest,
 } from './factories/vehicle';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
-import { PageTabs } from '../src/components/PageTabs';
+import { PageTabs } from '../src/shared/ui';
 import { VehicleRequestsPage } from '../src/pages/VehicleRequestsPage';
 
 /**

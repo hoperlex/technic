@@ -12,3 +12,10 @@
 export { wasteRequestKeys } from './api/keys';
 export { wasteRequestsApi } from './api/wasteRequestsApi';
 export type { WasteRequestPayload, WasteRequestUpdatePayload } from './api/wasteRequestsApi';
+
+/*
+ * Границы календаря заявки на вывоз: «не раньше чем на сегодня» при заведении и «не назад в
+ * прошлое» при правке. Считаются по Москве той же функцией контрактов, какой сервер проверяет
+ * создание, — иначе у диспетчера из другого региона «сегодня» разошлось бы с ответом API.
+ */
+export { isBeforeMinRequestDate, isPastDate, minRequestDate } from './model/requestDates';

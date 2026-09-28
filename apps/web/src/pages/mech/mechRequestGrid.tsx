@@ -15,7 +15,7 @@ import {
 } from '@entities/mech-request';
 import { actionsColumn, ExpandableCell, type ActionSheetItem, type CardConfig } from '@shared/ui';
 import { FilesCell } from '@entities/file';
-import { PhoneLink } from '../../components/PhoneField';
+import { PhoneLink } from '@entities/user-account';
 
 /**
  * Список аренд: колонки таблицы и карточка телефона из одних и тех же ячеек (§7).

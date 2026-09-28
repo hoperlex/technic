@@ -5,7 +5,7 @@ import type { ReadingIntakeRow } from '@technic/contracts';
 import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-reading';
 import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { useReadingsAddress } from './readingsAddress';
 import { intakeColumns } from './intakeColumns';
 import { IntakeAcceptButton } from './IntakeAcceptButton';

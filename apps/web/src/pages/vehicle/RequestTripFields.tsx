@@ -3,7 +3,7 @@ import { isAddressVerified, type VehicleRequestTripDto } from '@technic/contract
 import { FormGrid } from '@shared/ui';
 import { AddressField } from '@features/address-input';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
-import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
+import { TimeInput, optionalWorkTimeRule } from '@entities/request';
 
 /**
  * Поля **одной** ездки заявки (§4.1 плана `docs/route-trips-plan.md`, этап 6).

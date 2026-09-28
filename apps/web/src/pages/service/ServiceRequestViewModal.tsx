@@ -19,7 +19,7 @@ import { useAuth } from '@entities/session';
 import { ActionMenuButton, ActionSheet, ViewFields, ViewModal } from '@shared/ui';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 import { useIsMobile } from '@shared/lib';
-import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
+import { type HistoryRow, RequestHistoryTable } from '@entities/request-history';
 import { ServiceRequestDocuments } from './ServiceRequestDocuments';
 import { ServiceRequestEstimate } from './ServiceRequestEstimate';
 import { cardMenuItems } from './serviceMenuPlacement';

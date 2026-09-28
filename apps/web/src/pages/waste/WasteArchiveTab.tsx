@@ -18,7 +18,7 @@ import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
-import { useActiveTabKey } from '../../components/PageTabs';
+import { useActiveTabKey } from '@shared/ui';
 import { usePurgeAction } from '@features/purge-record';
 import { errorMessage } from '../../utils/format';
 import { WasteRequestViewModal } from './WasteRequestViewModal';

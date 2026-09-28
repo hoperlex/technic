@@ -11,7 +11,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import { useAuth } from '@entities/session';
-import { canOpenRoute } from '../../utils/links';
+import { canOpenRoute } from '@entities/vehicle-route';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { VehicleRouteEditModal } from './VehicleRouteEditModal';
 import { VehicleRouteModal } from './VehicleRouteModal';
@@ -52,8 +52,8 @@ export function RouteModalProvider(): ReactElement {
 
   /**
    * Рейсом распоряжается тот же, кто ведёт заявки и видит водителя, — условие то же, что на ручках
-   * рейсов и на ссылках, которые сюда ведут (`utils/links`). Заявка спрашивается отдельно: у
-   * механика есть журнал листов и гараж, а заявок нет вовсе.
+   * рейсов и на ссылках, которые сюда ведут (`@entities/vehicle-route`). Заявка спрашивается
+   * отдельно: у механика есть журнал листов и гараж, а заявок нет вовсе.
    */
   const mayOpenRoute = canOpenRoute(can);
   const mayOpenRequest = can('vehicleRequests.read');

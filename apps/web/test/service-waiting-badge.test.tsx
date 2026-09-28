@@ -5,7 +5,7 @@ import type { AuthUser } from '@technic/contracts';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
-import { AppLayout } from '../src/components/AppLayout';
+import { AppLayout } from '../src/app/layout';
 
 /**
  * Бейдж «ждёт меня» на пункте меню «Орг.техника» (ADR 0085, Р39).

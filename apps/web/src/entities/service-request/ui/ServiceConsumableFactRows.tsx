@@ -1,9 +1,5 @@
 import { Col, Input, InputNumber, Row, Typography } from 'antd';
-import {
-  consumableFactDelta,
-  consumableLabel,
-  type ConsumableFactRow,
-} from '../model/consumables';
+import { consumableFactDelta, consumableLabel, type ConsumableFactRow } from '../model/consumables';
 
 /** Куда уйдёт разница: событие журнала пишется на неё, а не на всё количество (Р6). */
 function deltaHint(row: ConsumableFactRow): string {

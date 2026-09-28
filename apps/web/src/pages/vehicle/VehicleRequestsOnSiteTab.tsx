@@ -7,7 +7,7 @@ import { useWaybillFormFilter } from '@features/waybill-form-filter';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { DataTable, PageTableLayout, sortOptionsFrom, SummaryBar } from '@shared/ui';
-import { TabsExtra } from '../../components/PageTabs';
+import { TabsExtra } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleShiftsModal } from './VehicleShiftsModal';

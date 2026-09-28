@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import dayjs from 'dayjs';
-import { vehicleRequestDateRules } from '../src/utils/date';
+import { vehicleRequestDateRules } from '@entities/vehicle-request';
 
 /**
  * Календарь формы заявки на технику (ADR 0104). Проверяется здесь именно то, что видит человек:

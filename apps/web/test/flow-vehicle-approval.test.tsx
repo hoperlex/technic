@@ -14,7 +14,7 @@ import {
   vehicleSummary,
 } from './factories/vehicle';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
-import { PageTabs } from '../src/components/PageTabs';
+import { PageTabs } from '../src/shared/ui';
 
 /**
  * Виза руководителя строительства на заявке ТС (ADR 0025).

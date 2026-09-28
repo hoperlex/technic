@@ -6,7 +6,7 @@ import {
   SHELL_SECTIONS,
   type PortalShellSectionId,
 } from '@technic/contracts';
-import { AppLayout } from './components/AppLayout';
+import { AppLayout } from './app/layout';
 import { AppUpdateBanner } from '@widgets/app-update-banner';
 import {
   HomeRedirect,
@@ -111,9 +111,10 @@ export default function App() {
           {/* Окна рейса, списка рейсов и заявки (ADR 0120) — отдельным элементом маршрутизации над
               всей веткой портала: рейс открывают из заявок, из гаража и из журнала листов, то есть
               со страниц трёх разных разделов, и держатель его адреса обязан стоять выше их всех.
-              Здесь, а не в `AppLayout`: тот лежит в легаси-`components`, которым импорт `pages`
-              запрещён матрицей границ, — а окна живут в `pages/vehicle`. Заодно провайдер не
-              попадает в кабинет водителя: у того свой контур, вне этой ветки. */}
+              Здесь, а не в `AppLayout`: каркас лежит в `app`, а окна — внутри `pages/vehicle`, и
+              матрица границ пускает слой к слою только через публичный вход слайса, которого у
+              страниц нет. Заодно провайдер не попадает в кабинет водителя: у того свой контур, вне
+              этой ветки. */}
           <Route element={<RouteModalProvider />}>
             <Route element={<AppLayout />}>
               {/* Стартовая страница гейтом НЕ накрывается, и это условие устройства, а не

@@ -26,7 +26,7 @@ import { AddTicketsBlock } from '@features/waste-ticket-attach';
 import { TicketRecognitionBanner, WasteTicketsPanel } from '@features/waste-ticket-review';
 import { useAuth } from '@entities/session';
 import { FileLinkList, FilesButton } from '@entities/file';
-import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
+import { type HistoryRow, RequestHistoryTable } from '@entities/request-history';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '@shared/ui';
 import { formatDateTime, formatMoney, useScrollIntoViewWhen } from '@shared/lib';

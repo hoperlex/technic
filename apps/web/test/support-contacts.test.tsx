@@ -11,7 +11,7 @@ import {
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { MOBILE_VIEWPORT, DESKTOP_VIEWPORT, type Viewport } from './viewport';
-import { AppLayout } from '../src/components/AppLayout';
+import { AppLayout } from '../src/app/layout';
 
 /**
  * Руководства, помощь и новости портала — не разделы: за ними нет страницы, и права на них не

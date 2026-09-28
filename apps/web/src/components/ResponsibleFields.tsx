@@ -1,7 +1,6 @@
 import { Col, Form, Input, Row, Space, Typography } from 'antd';
 import { contactIssue } from '@technic/contracts';
-import { PhoneLink } from './PhoneField';
-import { PhoneInput } from './PhoneInput';
+import { PhoneInput, PhoneLink } from '@entities/user-account';
 
 /**
  * Имя поля формы: строка либо путь. Путь нужен спискам — контакты ездок лежат в

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
-import { PhoneInput } from '../src/components/PhoneInput';
+import { PhoneInput } from '@entities/user-account';
 
 /**
  * Маска телефона (ADR 0066). Проверяется ровно то, ради чего её заводили: человек набирает номер

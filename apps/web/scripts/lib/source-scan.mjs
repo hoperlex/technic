@@ -40,7 +40,7 @@ export function walkTs(dir, files = []) {
  * Properties whose value is one key: `queryKey: [...]`, including `(id) => [...]` factories.
  *
  * `refreshQueryKey` is one of these: `PageTabs` takes it as a prop and hands it straight to
- * `invalidateQueries` (`src/components/PageTabs.tsx`), so a literal written at any of its five call
+ * `invalidateQueries` (`src/shared/ui/PageTabs.tsx`), so a literal written at any of its five call
  * sites reaches the cache exactly like a `queryKey` does. It is listed here because a key position
  * is defined by where the value ends up, not by the name the prop happens to carry.
  */

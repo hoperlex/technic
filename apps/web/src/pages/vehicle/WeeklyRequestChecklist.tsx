@@ -14,7 +14,8 @@ import {
 import type { WeeklyRequestHistoryEntryDto } from '@entities/weekly-request';
 import { EntityLink } from '@shared/ui';
 import { formatDateTime, useIsMobile } from '@shared/lib';
-import { vehicleRequestLink, waybillLink } from '../../utils/links';
+import { waybillLink } from '@entities/waybill';
+import { vehicleRequestLink } from '../../utils/links';
 import { ItemWarnings } from './weeklyShared';
 
 /**

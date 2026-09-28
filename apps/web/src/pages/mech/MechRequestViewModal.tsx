@@ -5,7 +5,7 @@ import { mechRequestChangeLabels, type MechRequestDto } from '@technic/contracts
 import { mechRequestKeys, mechRequestsApi } from '@entities/mech-request';
 import { ActionSheet, ViewFields, ViewModal, type ActionSheetItem } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
-import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
+import { type HistoryRow, RequestHistoryTable } from '@entities/request-history';
 import { mechRequestViewFields } from './mechRequestViewFields';
 
 /**

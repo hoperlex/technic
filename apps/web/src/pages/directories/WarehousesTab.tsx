@@ -4,7 +4,7 @@ import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type CreateWarehouseInput, formatPhone, type WarehouseDto } from '@technic/contracts';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
-import { PhoneField, PhoneLink } from '../../components/PhoneField';
+import { PhoneField, PhoneLink } from '@entities/user-account';
 import { AddressField } from '@features/address-input';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';

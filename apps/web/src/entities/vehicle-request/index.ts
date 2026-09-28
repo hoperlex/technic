@@ -14,3 +14,14 @@ export type {
   VehicleRequestCompletionResultDto,
   VehicleRequestPeriodResultDto,
 } from './api/vehicleRequestsApi';
+
+/*
+ * Календарь формы заказа и право перейти к заявке по её номеру. Оба — домен заказа, а не
+ * оформление: срок заблаговременности (ADR 0104) и задний ход (ADR 0101, Р37) делят один календарь,
+ * и спрашивает их та же функция контрактов, что и сервер.
+ *
+ * `vehicleRequestLink`, выбирающий вкладку по состоянию заявки, рядом не лежит: он спрашивает
+ * предикат архива, общий трём модулям заявок, — разбор у самого `model/links.ts`.
+ */
+export { vehicleRequestDateRules } from './model/dateRules';
+export { vehicleRequestViewLink } from './model/links';

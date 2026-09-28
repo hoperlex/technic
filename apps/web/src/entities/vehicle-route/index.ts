@@ -35,3 +35,10 @@ export {
   type TrailerSubstitution,
   trailerSubstitution,
 } from './model/hitchedTrailers';
+
+/*
+ * Право перейти к рейсу по его номеру (ADR 0120). Оно здесь, а не у списков, которые этот номер
+ * печатают: рейс открывается окном из пяти разных мест, и условие показа ссылки обязано быть у них
+ * общим с условием, по которому окно открывается адресом.
+ */
+export { canOpenRoute, vehicleRouteLink } from './model/links';

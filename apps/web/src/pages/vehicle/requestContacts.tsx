@@ -1,7 +1,7 @@
 import { Typography } from 'antd';
 import type { VehicleRequestDto, VehicleRequestTripDto } from '@technic/contracts';
 import { ExpandableCell } from '@shared/ui';
-import { PhoneLink } from '../../components/PhoneField';
+import { PhoneLink } from '@entities/user-account';
 
 /**
  * Контакты заявки на технику и счёт её ездок — всё, чем строка списка отвечает на вопрос «к кому

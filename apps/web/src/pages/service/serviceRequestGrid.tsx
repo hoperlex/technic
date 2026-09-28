@@ -25,7 +25,7 @@ import {
   StartWorkButton,
   AssignButton,
 } from './serviceRequestCells';
-import { PhoneLink } from '../../components/PhoneField';
+import { PhoneLink } from '@entities/user-account';
 
 /**
  * Список заявок на обслуживание: ядро колонок одно, а вопросы у ролей разные (§9.2).

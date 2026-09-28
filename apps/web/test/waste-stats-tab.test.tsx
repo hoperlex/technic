@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import dayjs from 'dayjs';
 import type { WasteStatsDto } from '@technic/contracts';
 import { useSearchParams } from 'react-router';
-import { PageTabs } from '../src/components/PageTabs';
+import { PageTabs } from '../src/shared/ui';
 import { WasteStatsTab } from '../src/pages/waste/WasteStatsTab';
 import { confirmedNotes, pluralForm } from '../src/pages/waste/wasteStatsNumbers';
 import { json, mockHttp, type HttpMock } from './http';

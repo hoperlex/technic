@@ -14,7 +14,7 @@ import { MechIssueModal, MechRevokeIssueModal } from '@features/mech-issue';
 import { MechCompleteModal } from '@features/mech-complete';
 import { MechExtendModal } from '@features/mech-extend';
 import type { ActionSheetItem } from '@shared/ui';
-import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
+import { CancelReasonModal, RollbackReasonModal } from '@entities/request';
 import { mechMenuItems } from './mechRequestMenu';
 
 /**

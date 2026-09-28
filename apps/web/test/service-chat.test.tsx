@@ -16,7 +16,7 @@ import { objectDto } from './factories/waste';
 import { openSelectOptions } from './antd';
 import { RequestsTab } from '../src/pages/service/RequestsTab';
 import { ServiceRequestsPage } from '../src/pages/service/ServiceRequestsPage';
-import { AppLayout } from '../src/components/AppLayout';
+import { AppLayout } from '../src/app/layout';
 
 /**
  * Обсуждение заявки на обслуживание (ADR 0141): лента реплик, адресат-пометка и непрочитанное.

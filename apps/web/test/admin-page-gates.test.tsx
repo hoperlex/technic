@@ -11,7 +11,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
-import { AppLayout } from '../src/components/AppLayout';
+import { AppLayout } from '../src/app/layout';
 import { AdministrationPage } from '../src/pages/AdministrationPage';
 import { HomeRedirect, RequireSection } from '../src/app/routing/ProtectedRoute';
 

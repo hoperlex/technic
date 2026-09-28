@@ -21,7 +21,7 @@ import { ServiceRequestConsumablesModal } from './ServiceRequestConsumables';
 import { reportServiceMail } from './serviceMailNotice';
 import { cancelErases, type ReasonPrompt } from './serviceRequestPrompts';
 import { serviceActionRow, serviceExecutorAssignment } from './serviceRequestRow';
-import { ReasonModal } from '../../components/CancelReasonModal';
+import { ReasonModal } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 
 /** Чем открывается каждое окно заявки: заявкой, а у двойных — ещё и стороной действия. */
@@ -293,7 +293,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
            * блока не рисует: терять нечего, и предупреждать не о чем.
            *
            * Тот же блок собственными руками рисует окно отмены (Р10): общим его не сделать —
-           * `ReasonModal` живёт в `components` и служит трём модулям сразу, а перечень потерь у
+           * `ReasonModal` живёт в `@shared/ui` и служит трём модулям сразу, а перечень потерь у
            * каждого свой.
            */
           notice={

@@ -26,7 +26,7 @@ import {
 } from '@technic/contracts';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { ViewModal } from '@shared/ui';
-import { TimeInput } from '../../components/TimeInput';
+import { TimeInput } from '@entities/request';
 import { UserAvatar } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from '@shared/lib';

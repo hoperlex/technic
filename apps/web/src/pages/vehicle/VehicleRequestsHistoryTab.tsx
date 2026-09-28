@@ -34,7 +34,7 @@ import { useRequestCustomerDefaults, useRequestCustomerFilter } from '@features/
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
-import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { UserAvatar } from '@shared/ui';

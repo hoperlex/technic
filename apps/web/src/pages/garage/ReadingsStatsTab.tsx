@@ -15,7 +15,7 @@ import { fuelDeviation, type VehicleReadingStatsRow } from '@technic/contracts';
 import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-reading';
 import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { useReadingsAddress } from './readingsAddress';
 import { kmText } from '@shared/lib';
 import { decimal } from './readingNumbers';
@@ -248,9 +248,9 @@ export function ReadingsStatsTab({ date }: { date: string }) {
           </Button>
           <SummaryBar title="Период" items={summaryItems} />
           {/*
-            * Вторая полоса — про сверку с нормой. Обёртка с прокруткой обязательна: `SummaryBar`
-            * не переносит содержимое, а на телефоне слот вкладок узкий.
-            */}
+           * Вторая полоса — про сверку с нормой. Обёртка с прокруткой обязательна: `SummaryBar`
+           * не переносит содержимое, а на телефоне слот вкладок узкий.
+           */}
           <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
             <SummaryBar title="Сверка с нормой" items={checkItems} />
           </div>

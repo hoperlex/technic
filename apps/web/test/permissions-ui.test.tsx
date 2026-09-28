@@ -17,7 +17,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
-import { AppLayout } from '../src/components/AppLayout';
+import { AppLayout } from '@app/layout';
 import { RequirePermission } from '../src/app/routing/ProtectedRoute';
 import { canOpenRoute } from '../src/utils/links';
 

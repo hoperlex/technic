@@ -10,12 +10,9 @@ import {
   routePurposeShortLabels,
 } from '@technic/contracts';
 import { EntityLink, type ActionSheetItem } from '@shared/ui';
-import {
-  canOpenRoute,
-  vehicleRequestViewLink,
-  vehicleRouteLink,
-  waybillLink,
-} from '../../utils/links';
+import { vehicleRequestViewLink } from '@entities/vehicle-request';
+import { canOpenRoute, vehicleRouteLink } from '@entities/vehicle-route';
+import { waybillLink } from '@entities/waybill';
 import { useAuth } from '@entities/session';
 import { useRouteModal } from '@features/route-modal';
 
@@ -23,8 +20,8 @@ import { useRouteModal } from '@features/route-modal';
  * Общее двух вкладок гаража: чем занят день — строками со ссылками на записи, которыми эта работа
  * заведена.
  *
- * Своих адресов у гаража нет: номер заявки, рейса и бланка спрашиваются у общих обёрток
- * (`utils/links`), и те возвращают `null` там, где роли цель не положена, — тогда номер остаётся
+ * Своих адресов у гаража нет: номер заявки, рейса и бланка спрашиваются у обёрток тех слайсов,
+ * чьи это записи, и те возвращают `null` там, где роли цель не положена, — тогда номер остаётся
  * текстом, а не ссылкой в пустой экран. Это не отвлечённая осторожность: механику и главному
  * механику гараж открыт (`garage.read`), а заявок у них нет вовсе, и номера заявок в занятости
  * обязаны остаться для них обычным текстом.

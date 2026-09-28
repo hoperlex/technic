@@ -17,7 +17,7 @@ import {
 import { useAuth } from '@entities/session';
 import { DataTable, PageTableLayout, SummaryBar, sortOptionsFrom } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
-import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { mechHistoryCard, mechHistoryColumns } from './mechHistoryGrid';
 import {
   MECH_HISTORY_FILTER_FIELDS,

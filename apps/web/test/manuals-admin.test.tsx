@@ -6,7 +6,7 @@ import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
-import { AppLayout } from '../src/components/AppLayout';
+import { AppLayout } from '../src/app/layout';
 import { AdministrationPage } from '../src/pages/AdministrationPage';
 import { HomeRedirect, RequirePermission } from '../src/app/routing/ProtectedRoute';
 

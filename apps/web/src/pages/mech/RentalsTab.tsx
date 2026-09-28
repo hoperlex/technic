@@ -15,7 +15,7 @@ import {
   type ActionSheetItem,
 } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
-import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { mechRentalCard, mechRentalColumns } from './mechRentalGrid';
 import {
   MECH_FILTER_FIELDS,

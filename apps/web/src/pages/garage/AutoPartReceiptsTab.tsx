@@ -6,7 +6,7 @@ import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-rec
 import { DataTable, PageTableLayout, SummaryBar, sortOptionsFrom } from '@shared/ui';
 import { formatMoney, useListParams } from '@shared/lib';
 import { useAuth } from '@entities/session';
-import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { AutoPartReceiptCardModal } from './AutoPartReceiptCardModal';
 import { AutoPartReceiptFormModal } from './AutoPartReceiptFormModal';
 import { receiptCard, receiptColumns } from './receiptColumns';

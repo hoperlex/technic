@@ -5,7 +5,7 @@ import { can as matrixCan, type AuthUser, type Permission } from '@technic/contr
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser, departmentUser } from './factories/auth';
-import { AppLayout } from '../src/components/AppLayout';
+import { AppLayout } from '../src/app/layout';
 import { RequirePermission } from '../src/app/routing/ProtectedRoute';
 
 /**

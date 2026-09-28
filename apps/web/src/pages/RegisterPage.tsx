@@ -17,7 +17,7 @@ import { CaptchaField } from '@entities/session';
 import { useCaptcha } from '@entities/session';
 import { PasswordField } from '@entities/user-account';
 import { PersonNameFields } from '@entities/user-account';
-import { PhoneField } from '../components/PhoneField';
+import { PhoneField } from '@entities/user-account';
 import { errorFields } from '@shared/lib';
 import { errorMessage } from '../utils/format';
 import {

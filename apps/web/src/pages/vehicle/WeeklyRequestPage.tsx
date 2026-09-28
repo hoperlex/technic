@@ -12,7 +12,7 @@ import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { waybillKeys } from '@entities/waybill';
 import { useAuth } from '@entities/session';
-import { ReasonModal } from '../../components/CancelReasonModal';
+import { ReasonModal } from '@shared/ui';
 import { useVehicleClassifications } from '@entities/vehicle-type';
 import { errorMessage } from '../../utils/format';
 import { useWeeklyComposition } from './weeklyComposition';

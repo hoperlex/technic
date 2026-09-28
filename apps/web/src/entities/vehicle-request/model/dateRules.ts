@@ -8,54 +8,6 @@ import {
   VEHICLE_REQUEST_LEAD_TIME_MESSAGE,
 } from '@technic/contracts';
 
-// Правило форм заявок: новую заявку назначают не раньше чем на сегодня — тем же правилом
-// сервер проверяет создание (`minRequestDateKey` в контрактах). Отсчёт ведётся по Москве, а не
-// по поясу браузера: у диспетчера из другого региона своя граница суток, и «сегодня» у него
-// разошлось бы с ответом API. Сравниваем календарные дни как `YYYY-MM-DD` — DatePicker отдаёт
-// локальный Dayjs, но день в нём тот самый, который человек выбрал в календаре.
-//
-// Редактирования правило не касается: у заведённой заявки дата бывает и вчерашней, запрет на
-// её выбор мешал бы правкам — там остаётся прежнее «не в прошлое».
-
-/*
- * What is left of a directory that stands outside the FSD layers. Day parsing and period length
- * have moved to `@shared/lib` — they carry no portal rule. What stayed is domain: the boundary «not
- * earlier than today» and the lead time of an equipment request, and both wait for a slice of their
- * own. The whole file exists for one reason: that boundary is drawn in Moscow, not in the browser's
- * timezone, and a dispatcher in another region would otherwise have a different «today» from the
- * server's.
- */
-
-/** Минимальная дата новой заявки: сегодня по МСК. Она же — значение по умолчанию. */
-export function minRequestDate(): Dayjs {
-  return dayjs(minRequestDateKey()).startOf('day');
-}
-
-/**
- * Start of today in the browser's timezone. Deliberately not exported: nothing outside ever called
- * it, and a public name with no caller is an invitation to compare against «today» while bypassing
- * the Moscow day boundary this file exists for.
- */
-function startOfToday(): Dayjs {
-  return dayjs().startOf('day');
-}
-
-/**
- * Дата раньше сегодняшней по МСК — для `DatePicker.disabledDate` в форме создания заявки.
- * Запрещает только выбор: уже сохранённое значение при редактировании остаётся видимым в поле.
- */
-export function isBeforeMinRequestDate(d: Dayjs): boolean {
-  return d.format('YYYY-MM-DD') < minRequestDateKey();
-}
-
-/**
- * Прошедшая дата — для `DatePicker.disabledDate` при редактировании заявки:
- * перенести её на сегодня можно, назад в прошлое — нет.
- */
-export function isPastDate(d: Dayjs): boolean {
-  return d.isBefore(startOfToday(), 'day');
-}
-
 /**
  * Календарь формы заявки на технику: ближайший доступный день, запрет на всё, что ближе, и
  * подсказка о том, почему он такой (ADR 0104).

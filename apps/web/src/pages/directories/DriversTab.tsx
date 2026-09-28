@@ -48,7 +48,7 @@ import {
   driverRemovalDetails,
 } from './driverRemovalConfirm';
 import { useDriverFilters } from './DriverFilters';
-import { PhoneField, PhoneLink } from '../../components/PhoneField';
+import { PhoneField, PhoneLink } from '@entities/user-account';
 import { garageKeys } from '@entities/garage';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';

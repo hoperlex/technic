@@ -14,7 +14,7 @@ import {
   requestStatusLabels,
 } from '@technic/contracts';
 import { formatDateTime, useIsMobile } from '@shared/lib';
-import { HISTORY_TITLES, KIND_TAGS } from '@entities/request-history';
+import { HISTORY_TITLES, KIND_TAGS } from '../model/labels';
 
 /**
  * История заявки списком, а не лентой (ADR 0012): слева баблы статусов со стрелкой (у событий
@@ -60,7 +60,7 @@ export interface HistoryRow {
  * ТС»), но у модуля обслуживания оргтехники цикл свой (ADR 0085), и его статусы этот словарь не
  * знает: без параметра переход подписывался бы чужими словами или пустотой.
  */
-export interface HistoryStatusDict {
+interface HistoryStatusDict {
   labels: Record<string, string>;
   colors: Record<string, string>;
 }

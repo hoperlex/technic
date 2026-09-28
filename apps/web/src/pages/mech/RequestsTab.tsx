@@ -11,7 +11,7 @@ import { mechRequestKeys, mechRequestsApi } from '@entities/mech-request';
 import { useAuth } from '@entities/session';
 import { DataTable, PageTableLayout, SummaryBar, sortOptionsFrom } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
-import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { mechRequestCard, mechRequestColumns } from './mechRequestGrid';
 import {
   MECH_FILTER_FIELDS,

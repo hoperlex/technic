@@ -87,15 +87,15 @@ import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '@entitie
 import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import { AutoSelect } from '@shared/ui';
-import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
+import { CancelReasonModal, RollbackReasonModal } from '@entities/request';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { EntityLink, ExpandableCell, FormGrid, FormModal, PageTableLayout } from '@shared/ui';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
-import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
-import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
+import { TimeInput, optionalWorkTimeRule } from '@entities/request';
 import { UserAvatar } from '@shared/ui';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { departmentPlatformQuery } from '@entities/department';
@@ -117,7 +117,7 @@ import {
 } from '@entities/vehicle-type';
 import { errorMessage } from '../../utils/format';
 import { canOpenRoute, vehicleRouteLink } from '../../utils/links';
-import { vehicleRequestDateRules } from '../../utils/date';
+import { vehicleRequestDateRules } from '@entities/vehicle-request';
 
 import { FilesCell } from '@entities/file';
 import { VehicleAssignModal } from './VehicleAssignModal';

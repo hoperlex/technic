@@ -52,7 +52,7 @@ import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { PasswordField } from '@entities/user-account';
 import { PersonNameFields } from '@entities/user-account';
-import { PhoneField, PhoneLink } from '../../components/PhoneField';
+import { PhoneField, PhoneLink } from '@entities/user-account';
 import { useChangeEmailAction } from './ChangeEmailModal';
 import {
   DriverPersonField,

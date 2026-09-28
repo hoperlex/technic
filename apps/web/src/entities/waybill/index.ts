@@ -22,3 +22,10 @@ export {
   PrintWaybillButton,
   WaybillPrintModal,
 } from './ui/WaybillPrint';
+
+/*
+ * Право перейти к бланку по его номеру. Журнал листов — отдельный экран без окна, и номер уводит
+ * туда же, куда уводил; `null` вместо адреса оставляет номер текстом у роли, которой журнал не
+ * положен.
+ */
+export { waybillLink } from './model/links';
