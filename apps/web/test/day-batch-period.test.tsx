@@ -377,7 +377,11 @@ describe('отчёт пачки', () => {
     expect(failed.getByText('—')).toBeDefined();
     expect(failed.getByText('не выписан')).toBeDefined();
     expect(failed.getByText('Сбой выписки').closest('.ant-typography-danger')).toBeTruthy();
-    expect(view.getByText('В рейсе нет строк').closest('.ant-typography-danger')).toBeNull();
+    // A skipped day is the one to finish by hand, so its row names both why and which route
+    // refused it: "no task rows left" without the route number does not say where to look.
+    const skipped = within(row('12.08.2026'));
+    expect(skipped.getByText('Р-9')).toBeDefined();
+    expect(skipped.getByText('В рейсе нет строк').closest('.ant-typography-danger')).toBeNull();
     // Nothing left beyond this press, so no promise of another one.
     expect(view.queryByText(/нажмите «Распланировать период» ещё раз/)).toBeNull();
   });

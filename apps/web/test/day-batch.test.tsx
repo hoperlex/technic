@@ -243,8 +243,8 @@ describe('водитель на весь период', () => {
     expect(selectedText('Водитель на весь период')).toBeNull();
   });
 
-  it('выбранного водителя подстановка не перетирает — и расхождение названо вслух', async () => {
-    renderAssign();
+  it('выбранного водителя подстановка не перетирает — расхождение названо, и в тело уходит он', async () => {
+    const { http } = renderAssign();
     await enableBatch();
     await selectOption('Водитель на весь период', /Тестовый Водитель Первый/);
     // The machinist arrives after the choice: the default must not win over a human decision.
@@ -255,6 +255,11 @@ describe('водитель на весь период', () => {
       ),
     ).toBeDefined();
     expect(selectedText('Водитель на весь период')).toMatch(/^Тестовый Водитель Первый/);
+
+    // The screen and the paper must agree: the person the window shows is the one on fifty waybills.
+    takeIntoWork();
+    await waitFor(() => expect(http.countOf(BATCH)).toBe(1));
+    expect(http.lastCall(BATCH)!.body).toMatchObject({ driverPersonId: DRIVER.personId });
   });
 });
 
@@ -336,16 +341,27 @@ describe('порядок: сначала перевод в работу, пот�
   });
 
   /*
-   * A RISK, NOT A LIVE DEFECT. `onSubmit` may return `void`, and the batch is chained on
-   * `Promise.resolve(onSubmit(payload))`: such a caller releases it before the transition answers,
-   * and the server rejects a batch for an order not in work. The only caller today returns
-   * `mutateAsync`; the next one passing a plain `mutate` would not. Expected to fail until fixed.
+   * DEFECT, latent: pinned as it is, not as it should be. Tracked in the task journal as a portal
+   * tail of the tails-wave card ("пачка 4-П уходит до ответа перевода, если окну дать mutate
+   * вместо mutateAsync").
+   *
+   * `onSubmit` is typed `void | Promise<unknown>`, and the batch is chained on
+   * `Promise.resolve(onSubmit(payload))`. A caller that returns nothing (a plain `mutate`) makes
+   * that an already-resolved promise, so the batch leaves at once, without waiting for the
+   * transition — and the server refuses a batch for an order that is not in work yet. The only
+   * caller today returns `mutateAsync`, which is why nothing breaks in the portal. The fix belongs
+   * in `VehicleAssignModal` (require a promise, or move the batch after the caller's own success);
+   * when it lands, this test must flip to "no batch before the transition answers".
    */
-  it.fails('перевод без обещания не должен отпускать пачку раньше ответа', async () => {
+  it('[DEFECT: пачка до ответа перевода] перевод без обещания отпускает пачку сразу', async () => {
     const onSubmit = vi.fn(() => {});
     const { http } = renderAssign({ onSubmit });
     await readyToTake();
-    await takeExpectingNoBatch(http, onSubmit);
+
+    takeIntoWork();
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    // Nothing was awaited: the transition never answered, yet the batch is already out.
+    await waitFor(() => expect(http.countOf(BATCH)).toBe(1));
   });
 });
 
