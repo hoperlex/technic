@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { byReadMode, describeReadModes, useReadModeDatabase } from './assignment-read-mode';
+import { describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 import {
   esm2Periods,
   esm2WeekDays,
@@ -507,23 +507,17 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
       const request = await approvedRequest(ctx.plainTypeId);
 
       /*
-       * РАСХОЖДЕНИЕ РЕЖИМОВ, достижимое уже сегодня. Отказывают оба, но **разные сторожа**: в
-       * `legacy` до бэкстопа доходит сама сверка и просит машиниста для бланка; в `history` раньше
-       * срабатывает бэкстоп чужой двери (Р22) — история назначения стала источником истины, и
-       * статусная ручка не имеет права её достраивать. Человеку это видно текстом: во втором случае
-       * ему называют дверь, которой машиниста назначают.
+       * Both modes refuse with the same words. In `legacy` the weekly sweep asks for the machinist
+       * of the sheet; in `history` the status door writes the entry history itself and asks first
+       * (ADR 0212, decision 1). The backstop used to answer here with "name him with Change
+       * machinist" — a door a new request does not have.
        */
       const res = await confirm(request);
       expect(res.statusCode, res.body).toBe(422);
-      expect(res.json().message).toContain(
-        byReadMode(mode, {
-          legacy: 'Укажите машиниста',
-          history: 'в истории не назван машинист',
-        }),
-      );
+      expect(res.json().message).toContain('Укажите машиниста');
 
-      // With the machinist in the body both guards are satisfied in both read modes: the sync has
-      // its person, and the backstop does not ask the door for a person it has just named.
+      // With the machinist in the body both modes take the request into work: `legacy` gives the
+      // weekly sweep its person, `history` writes the pair into history and issues paper from it.
       const ok = await confirm(request, { driverPersonId: ctx.driverA });
       expect(ok.statusCode, ok.body).toBe(200);
       expect(ok.json().isLinear).toBe(false);

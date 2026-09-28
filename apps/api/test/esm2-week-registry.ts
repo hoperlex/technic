@@ -165,6 +165,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
       'разрезом (§15)',
   },
   {
+    file: 'assignment-work-entry.db.test.ts',
+    klass: 'sync',
+    status: 'done',
+    note: 'перевод в работу пишет начальную историю (ADR 0212, решения 1–2), оба прогона. В `legacy` строк нет и бумагу ведёт недельная сверка; в `history` пара ложится на `dateFrom` у первого перевода и на сегодня у повторного после отката, бумагу выпускает отрезковый план. Границы листов цифрой не пишутся: утверждаются покрытие сегодняшнего дня, машина и человек каждого листа и то, что листы новой пары не заходят на дни прежней',
+  },
+  {
     file: 'assignment-lock-order.db.test.ts',
     klass: 'sync',
     readModeIrrelevant: true,

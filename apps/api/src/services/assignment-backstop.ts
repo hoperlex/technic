@@ -242,13 +242,13 @@ export interface AssignmentBackstopParams {
   opensTerm?: boolean;
   /**
    * Machinist named explicitly in this request's body — the status door's "Take into work" form
-   * requires one, and the ESM-2 sync issues every sheet it (re)writes to this person.
+   * requires one, and the weekly ESM-2 sweep issues every sheet it (re)writes to this person.
    *
    * When present, machinist gaps are not asked: the backstop exists to stop paper from being
-   * issued to a person nobody chose, and here a person was just chosen. Without this, a fresh order
-   * (no history rows, no sheets yet) folds into `driver = unknown` from `dateFrom`, and in
-   * `read_mode = history` every "Take into work" of an own vehicle was refused, pointing at
-   * "Change machinist", which a new order does not have. The tail check (R31) is unaffected.
+   * issued to a person nobody chose, and here a person was just chosen. A fresh order (no rows, no
+   * sheets yet) folds into `driver = unknown` from `dateFrom`, so without this every entry of an own
+   * vehicle is a shadow finding in `legacy`. In `history` the entry does not come here at all: it
+   * writes its own history (`assignment-work-entry.ts`). The tail check (R31) is unaffected.
    */
   namedDriverPersonId?: string | null;
 }

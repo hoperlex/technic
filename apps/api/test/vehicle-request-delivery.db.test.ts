@@ -349,8 +349,8 @@ describe.skipIf(!DB_URL)('перевод заказа спецтехники в 
       payload: confirmPayload(request.version, true),
     });
 
-    // Both read modes must pass: the body names the machinist, so the backstop has nothing to
-    // ask. In `history` this used to be a 422 on every own-vehicle order.
+    // Both read modes must pass: the body names the machinist. In `history` the door writes the
+    // entry history itself (ADR 0212); this used to be a 422 on every own-vehicle order.
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json().status).toBe('confirmed');
     expect(res.json().assignment?.vehicleId).toBe(ctx.vehicle.id);

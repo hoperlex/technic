@@ -365,6 +365,7 @@ import {
 // Бэкстоп чужих дверей (план Р21, Р22; фаза — Ж5): четыре двери этого файла зовут сверку ЭСМ-2, но
 // машиниста не спрашивают. До переключения чтения расчёт остаётся диагностикой и работу не трогает.
 import { assertAssignmentBackstop } from '../services/assignment-backstop';
+import { enterWorkWithHistory } from '../services/assignment-work-entry';
 import { noteLegacyPeriodCall } from '../services/assignment-legacy-note';
 import { markAssignmentHistoryDirty } from '../services/assignment-dirty';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
@@ -6515,9 +6516,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const { assigned, completed, earlyEndDropped, droppedRelocations, detachedDays, esm2, days } =
         await withAssignmentRetry(REQUEST_STATUS_DOOR, () =>
           db.transaction(async (tx) => {
-            // Шаг 0 канонического порядка — гейт режима (§10), до типа и до рейсов: смена статуса
-            // назначает технику и переоформляет бумагу, то есть дверь класса `history`.
-            await requireOpenDoor(tx, 'history');
+            // Step 0 of the canonical order — the mode gate (§10), before the type and the routes: a
+            // status change assigns a vehicle and re-issues paper, so this is a `history` door. The
+            // snapshot is kept: taking into work writes history only when history is read.
+            const mode = await requireOpenDoor(tx, 'history');
             /*
              * Блокировки — первым делом и в этом порядке: тип, рейсы, заявка (Р5, Р11, Р17).
              *
@@ -6767,19 +6769,34 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
              * wanted, and every sheet whose week is not over burns whatever the vehicle. So the
              * sheets it cancels are the ones the preview named.
              */
+            /*
+             * Taking a request into work while history is read writes that history itself (ADR
+             * 0212, `assignment-work-entry.ts`): the pair is named by this body, the rows and the
+             * paper follow it, and there is nothing for the backstop to ask — the door is no longer
+             * foreign to the machinist. Every other transition, and every transition in `legacy`,
+             * keeps the backstop and the weekly sweep below.
+             */
+            const entersWorkByHistory =
+              before.requestType === 'special_equipment' &&
+              before.status === 'new' &&
+              status === 'confirmed' &&
+              historyIsAuthoritative(mode);
             // Backstop R21 runs before the paper. A status change opens no new days, so the tail
             // (R31) is not asked. Machinist gaps are asked, since sheets born here cover exactly the
             // days history is silent about, unless this body names the machinist: the sync writes
-            // every sheet to that person, and asking again deadlocked "Take into work" in
-            // `read_mode = history`. `asOf` is the sync's `today`, so midnight cannot split them.
-            await assertAssignmentBackstop(tx, {
-              door: 'request_status',
-              requestId: before.id,
-              actor: { id: p.id },
-              asOf: today,
-              reason: esm2StatusReason(status),
-              namedDriverPersonId: assignment?.driverPersonId ?? null,
-            });
+            // every sheet to that person, and in `legacy` asking again only fills the shadow log
+            // with entries nobody has to repair. `asOf` is the sync's `today`, so midnight cannot
+            // split them.
+            if (!entersWorkByHistory) {
+              await assertAssignmentBackstop(tx, {
+                door: 'request_status',
+                requestId: before.id,
+                actor: { id: p.id },
+                asOf: today,
+                reason: esm2StatusReason(status),
+                namedDriverPersonId: assignment?.driverPersonId ?? null,
+              });
+            }
             /*
              * Eligibility of the named machinist (plan `machinist-card-removal`, Р6). The person came
              * in the body — an explicit choice — and is checked against the term the order goes
@@ -6795,15 +6812,25 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
                 ]);
               }
             }
-            const esm2 = await syncEsm2Waybills(tx, {
-              requestId: before.id,
-              actor: { id: p.id },
-              reason: esm2StatusReason(status),
-              driverPersonId: assignment?.driverPersonId ?? null,
-              // The very day the fingerprints were computed by (Р12): were the sweep to ask for
-              // «today» itself, a midnight would give it another set of weeks than the one confirmed.
-              asOf: today,
-            });
+            const esm2 = entersWorkByHistory
+              ? await enterWorkWithHistory(tx as AssignmentCommandTx, {
+                  requestId: before.id,
+                  actor: { id: p.id },
+                  asOf: today,
+                  mode,
+                  driverPersonId: assignment?.driverPersonId ?? null,
+                  reason: esm2StatusReason(status),
+                })
+              : await syncEsm2Waybills(tx, {
+                  requestId: before.id,
+                  actor: { id: p.id },
+                  reason: esm2StatusReason(status),
+                  driverPersonId: assignment?.driverPersonId ?? null,
+                  // The very day the fingerprints were computed by (Р12): were the sweep to ask for
+                  // «today» itself, a midnight would give it another set of weeks than the one
+                  // confirmed.
+                  asOf: today,
+                });
             /*
              * The day plan (ADR 0100 §11) — in the same order and for the same reason as the paper:
              * the sweep reads the request from the database. Cancellation and the rollback have
