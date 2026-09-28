@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { describe, expect, it } from 'vitest';
 import {
@@ -9,7 +10,10 @@ import {
   type VehicleRequestShiftsSummaryDto,
 } from '@technic/contracts';
 import * as schema from '../src/db/schema';
-import { shiftDayHasOwnRouteSql } from '../src/services/shift-approval-scope';
+import {
+  approvalLockingReassignmentSql,
+  shiftDayHasOwnRouteSql,
+} from '../src/services/shift-approval-scope';
 
 /**
  * The rule of ADR 0210 without a database: which approved days stand under the assignment's
@@ -88,5 +92,32 @@ describe('"this day sits in its own route" keeps its correlation (drizzle rewrit
       .toSQL();
     expect(text).toContain('own_route.request_id = "vehicle_request_shifts"."request_id"');
     expect(text).toContain('own_route.work_date = "vehicle_request_shifts"."shift_date"');
+  });
+
+  it('the lock predicate carries the route rule and the term bound in one expression', () => {
+    // The summary counts by it and the door re-reads by it: both halves must be inside, or the
+    // two answers could differ. The term needs the details table, as both callers join it.
+    const db = drizzle({ client: {} as never, schema, casing: 'snake_case' });
+    const { sql: text } = db
+      .select({ locks: approvalLockingReassignmentSql(true) })
+      .from(schema.vehicleRequestShifts)
+      .innerJoin(
+        schema.specialEquipmentRequestDetails,
+        eq(schema.specialEquipmentRequestDetails.requestId, schema.vehicleRequestShifts.requestId),
+      )
+      .toSQL();
+    expect(text).toContain('"vehicle_request_shifts"."approved_at" IS NOT NULL');
+    expect(text).toContain('NOT EXISTS');
+    expect(text).toContain('"special_equipment_request_details"."date_from"');
+    // With a rented vehicle the routes are swept, and the route clause drops out.
+    const { sql: rented } = db
+      .select({ locks: approvalLockingReassignmentSql(false) })
+      .from(schema.vehicleRequestShifts)
+      .innerJoin(
+        schema.specialEquipmentRequestDetails,
+        eq(schema.specialEquipmentRequestDetails.requestId, schema.vehicleRequestShifts.requestId),
+      )
+      .toSQL();
+    expect(rented).not.toContain('own_route');
   });
 });

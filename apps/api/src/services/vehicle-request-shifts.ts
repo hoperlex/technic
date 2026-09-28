@@ -11,7 +11,7 @@ import {
 } from '@technic/contracts';
 import { db } from '../db/client';
 import { specialEquipmentRequestDetails, users, vehicleRequestShifts } from '../db/schema';
-import { shiftDayHasOwnRouteSql } from './shift-approval-scope';
+import { approvalLockingReassignmentSql, shiftWithinTermSql } from './shift-approval-scope';
 
 // Подтверждение смен по заказу спецтехники: день работы, его показатели и подпись объекта.
 // Здесь только данные — проверки прав, статусов и границ дня живут в маршруте, а правило «какой
@@ -45,10 +45,12 @@ export interface ShiftSummarySubject {
   dateTo: string | null;
 }
 
-/** «Смена внутри нынешнего срока заявки» — условие, общее для сводки и для отбора среза. */
-const withinTerm = sql`${vehicleRequestShifts.shiftDate}
-  BETWEEN ${specialEquipmentRequestDetails.dateFrom}
-  AND coalesce(${specialEquipmentRequestDetails.dateTo}, ${specialEquipmentRequestDetails.dateFrom})`;
+/**
+ * "The shift row lies inside the current term" — one expression with the lock of a plain
+ * reassignment (`shift-approval-scope.ts`), so the counts here and the days the door refuses by
+ * cannot use different bounds.
+ */
+const withinTerm = shiftWithinTermSql();
 
 /** numeric из pg приходит строкой; часы всегда заполнены — нечисло читается как ноль. */
 function hours(v: string | null): number {
@@ -148,9 +150,10 @@ export async function loadRequestShift(
 }
 
 /**
- * Сводка смен для строк списка: сколько дней подтверждено и сколько прошедших дней ещё ждёт
- * подписи. Двумя числами — их хватает трём правилам сразу (предупреждение при закрытии, смена
- * машины, предупреждение в срезе), а даты нужны только в перечне дней и в самой таблице смен.
+ * Shift summary of a list row: how many days are approved, how many of them lock a plain
+ * reassignment, and how many past days still wait for a sign-off. Counts, not dates: they serve the
+ * warning at closing, the lock of the vehicle and of the rollback, and the "On site" warning, and
+ * dates are needed only in the day list and in the shift table itself.
  *
  * Долг считается только у заявки в работе: у «Новой» на объект никто не выходил, у отменённой
  * работы не было, а у выполненной он остался бы навсегда — заявки, закрытые до появления смен,
@@ -172,12 +175,12 @@ export async function shiftSummaries(
       approvedDays: sql<number>`count(*) FILTER (
         WHERE ${vehicleRequestShifts.approvedAt} IS NOT NULL AND ${withinTerm}
       )`,
-      // The subset that locks a plain reassignment (ADR 0210): a day in its own day route was
-      // worked by the route's vehicle. Its "has a route" is the same expression the correction and
-      // the preview use — a second spelling here is how a lock and a clearing would drift apart.
+      // The days that lock a plain reassignment (ADR 0210) — counted by the very predicate the door
+      // re-reads under its locks and the preview names them by; a day in its own route was worked
+      // by the route's vehicle and does not count. `true`: the list does not know the next vehicle
+      // and counts the own case, the door asks again with the rented one.
       approvedDaysWithoutRoute: sql<number>`count(*) FILTER (
-        WHERE ${vehicleRequestShifts.approvedAt} IS NOT NULL AND ${withinTerm}
-          AND NOT ${shiftDayHasOwnRouteSql()}
+        WHERE ${approvalLockingReassignmentSql(true)}
       )`,
       approvedPastDays: sql<number>`count(*) FILTER (
         WHERE ${vehicleRequestShifts.approvedAt} IS NOT NULL AND ${withinTerm}

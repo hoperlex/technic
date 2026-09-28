@@ -36,11 +36,13 @@ export interface ShiftSubject {
 }
 
 /**
- * Сводка смен заявки: сколько дней подтверждено и сколько прошедших дней ещё ждут подписи.
+ * Shift summary of a request: approved days, the part of them that locks a plain reassignment, and
+ * past days still waiting for a sign-off.
  *
- * Двумя числами, а не списком дат: сводка едет в каждой строке списка и обслуживает три правила
- * — предупреждение при закрытии, запрет смены машины и предупреждение в срезе. Конкретные даты
- * нужны только в самой таблице смен, и там их отдаёт сервер.
+ * Counts, not dates: the summary rides in every list row and serves four rules — the warning at
+ * closing, the lock of the rollback to "new" (`approvedDays`), the lock of a plain reassignment
+ * (`approvedDaysWithoutRoute`) and the "On site" warning. The dates themselves are needed only in
+ * the shift table and in the reassignment preview, and the server gives them there.
  */
 export interface VehicleRequestShiftsSummaryDto {
   approvedDays: number;
@@ -229,10 +231,13 @@ export function shiftsCompletionWarning(r: ShiftSubject): string | null {
 }
 
 /**
- * Почему нельзя сменить назначенную машину или откатить заявку в «Новую»: за подтверждёнными
- * днями стоит работа конкретной техники, и подмена задним числом превратила бы подпись объекта в
- * подпись под чужими часами. Откат заперт тем же условием не для строгости: он стирает
- * назначение, и без него запрет обходился бы в один шаг.
+ * Why a request cannot be rolled back to "new": the rollback erases the assignment and the shifts
+ * themselves, so ANY approved day inside the term locks it — a day in its own route included, since
+ * its hours and the object's sign-off would go with the rest. Without this lock the rollback would
+ * also be a one-step way around the lock of a plain reassignment.
+ *
+ * It is no longer the lock of a plain reassignment: that one counts only the days under the
+ * assignment's vehicle (`reassignApprovedShiftsBlocker`, ADR 0210).
  */
 export function approvedShiftsBlocker(r: ShiftSubject): string | null {
   if (r.requestType !== 'special_equipment') return null;

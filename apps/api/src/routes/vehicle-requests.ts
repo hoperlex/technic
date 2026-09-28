@@ -458,7 +458,9 @@ import { clearShiftApprovals, type ShiftApproval } from '../services/vehicle-rou
 // correction, its preview and the period correction (ADR 0210) — per-door copies are how they had
 // already drifted apart.
 import {
+  approvalsLockingReassignment,
   approvalsUnderAssignment,
+  touchLockInputs,
   type ShiftApprovalScope,
 } from '../services/shift-approval-scope';
 // Задний ход даты заявки (ADR 0101, Р6 и Р15): право и глубину спрашивает общий предикат, а
@@ -3383,14 +3385,17 @@ async function planAssignmentCorrection(
   const approvals = await approvalsUnderAssignment(db, approvalScope);
 
   /*
-   * Эффективная дата — по таблице §4 плана: у листа ЭСМ-2 (и существующего, и новой прошедшей
-   * недели) это `periodTo`, тем же концом недели, каким её считает `canCancelWaybill`. Снятая
-   * подпись стоит в этом ряду наравне: день, за который объект расписался, — такой же прошедший
-   * день, и операция утверждает о нём, что работала другая машина.
+   * The effective date follows the table in §4 of the plan: for an ESM-2 sheet (an existing one or a
+   * new past week) it is `periodTo`, the same end of week `canCancelWaybill` uses. A cleared
+   * sign-off ranks alongside: a day the object signed is a past day too, and the operation states
+   * about it that another vehicle worked.
    *
-   * Пусто — операции нечего утверждать о прошлом: ни листа к перевыписке, ни недели без бумаги, ни
-   * подписи. Такой запрос отклоняется, а не проходит молча (Р31, «пустая коррекция»): иначе блок
-   * `correction` стал бы способом обойти замок подтверждённых дней, ничего не корректируя.
+   * Empty — the operation has nothing to state about the past: no sheet to reissue, no week without
+   * paper, no sign-off under the assignment's vehicle. Such a request is refused rather than passed
+   * silently (R31, "empty correction"): otherwise the `correction` block would be a way around the
+   * lock of approved days that corrects nothing. Sign-offs of days in their own routes do not make
+   * it non-empty — they do not lock a plain reassignment either (ADR 0210), so there is nothing to
+   * get around.
    */
   const touched = [
     ...unlocked.map((s) => s.periodTo),
@@ -3408,9 +3413,48 @@ async function planAssignmentCorrection(
   };
 }
 
+/** The refusal of a plain reassignment locked by approved days — one text for both checks. */
+function reassignLockedError(blocker: string): Error {
+  return err.unprocessable(`${blocker}: подтверждённые дни — это работа нынешней машины`, {
+    vehicleId: 'Есть согласованные смены',
+  });
+}
+
+/**
+ * The lock of a plain reassignment, asked inside its transaction after the request's routes and
+ * row are locked (ADR 0210). The count comes from the same predicate the list summary uses
+ * (`approvalsLockingReassignment`), so the answer is the one the portal would give with the named
+ * vehicle — only now from a snapshot `touchLockInputs` has proven current.
+ */
+async function assertReassignNotLocked(
+  tx: Tx,
+  before: VehicleRequestDto,
+  nextOwnership: VehicleOwnership,
+): Promise<void> {
+  if (before.requestType !== 'special_equipment') return;
+  const locking = await approvalsLockingReassignment(tx, {
+    requestId: before.id,
+    dayRoutesKept: dayRoutesKeptWith(nextOwnership),
+  });
+  // The fresh count goes through the contract blocker for its wording: the refusal must read the
+  // same whether it came before the transaction or from here.
+  const count = locking.length;
+  const blocker = reassignApprovedShiftsBlocker(
+    {
+      ...before,
+      shifts: { approvedDays: count, approvedDaysWithoutRoute: count, unapprovedPastDays: 0 },
+    },
+    nextOwnership,
+  );
+  if (blocker) throw reassignLockedError(blocker);
+}
+
 /**
  * The set of sign-offs a correction clears, asked again inside its transaction — after the request's
- * routes and the request row are locked and before the first write (ADR 0210).
+ * routes and the request row are locked and before the command writes anything of its own (ADR
+ * 0210). The one row already written by then is the operation's journal row, which `runCorrection`
+ * inserts before calling `perform`; it is in the same transaction and a refusal here rolls it back
+ * with everything else.
  *
  * Why. The plan is computed on the pool before the transaction (see the comment on the correction
  * branch: it is not retried), and since ADR 0210 the set depends on day routes as well as on
@@ -6943,6 +6987,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // назначение, и им там не место — они про разговор с человеком, а не про машину.
       const { version, route, correction, previewFingerprint, acknowledgements, ...rates } =
         req.body;
+      /** Ownership of the vehicle the plain reassignment names; decides whether day routes survive. */
+      let nextOwnership: VehicleOwnership = 'own';
       const before = await getDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, before);
@@ -6962,29 +7008,28 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           );
         }
         /*
-         * The lock of approved days — the other half of `canReassignVehicle`, asked here with the
-         * vehicle actually named (ADR 0210). An approved day without its own day route was worked
-         * by the assigned vehicle, and a swap would rewrite what the object signed; a day in its
-         * own route was worked by the route's vehicle and does not lock. With a rented vehicle the
-         * day sync below sweeps the routes, those days fall under the assignment, and every
-         * approved day locks again — the portal cannot know the next vehicle and offers the button
-         * by the own case, so this refusal is the only place the rented case is answered.
+         * The lock of approved days (ADR 0210), asked here with the vehicle actually named — the
+         * list row's `canReassignVehicle` cannot know it. An approved day without its own day
+         * route was worked by the assigned vehicle, and a swap would rewrite what the object
+         * signed; a day in its own route was worked by the route's vehicle and does not lock. With
+         * a rented vehicle the day sync below sweeps the routes, those days fall under the
+         * assignment, and every approved day locks again: the list offers the button by the own
+         * case, the preview already names the rented case's days (`blockedShiftDays`), and this is
+         * the refusal behind both. It reads the summary taken before the transaction; the
+         * authoritative answer comes again under the locks (`assertReassignNotLocked`).
          */
         const [next] = await db
           .select({ ownership: vehicles.ownership })
           .from(vehicles)
           .where(eq(vehicles.id, rates.vehicleId));
-        const approvedShifts = reassignApprovedShiftsBlocker(before, next?.ownership ?? 'own');
-        if (approvedShifts) {
-          throw err.unprocessable(
-            `${approvedShifts}: подтверждённые дни — это работа нынешней машины`,
-            { vehicleId: 'Есть согласованные смены' },
-          );
-        }
+        nextOwnership = next?.ownership ?? 'own';
+        const approvedShifts = reassignApprovedShiftsBlocker(before, nextOwnership);
+        if (approvedShifts) throw reassignLockedError(approvedShifts);
       } else if (!canCorrectAssignment(before)) {
-        // Коррекция снимает у того же предиката ровно одну половину — замок подтверждённых дней
-        // (Р5): их подпись и есть то, что операция сознательно снимает. Состояние заявки остаётся
-        // запретом и под правом, а закрытой он объясняется порядком совместной работы (Р38).
+        // A correction lifts exactly one of the two refusals — the lock of approved days (R5): the
+        // sign-offs under the assignment's vehicle are what it clears on purpose. The state of the
+        // request stays a refusal even with the right, and a closed one is explained by the order
+        // of joint work (R38).
         throw err.unprocessable(
           before.status === 'confirmed'
             ? 'У заявки нет назначенной техники — её назначает перевод в работу'
@@ -7161,10 +7206,18 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         // Шаги 7 и 8: отпечаток и рукопожатия — под уже взятыми блокировками и **до** первой
         // записи. Позже они ничего бы не значили: заявка уже была бы переписана тем состоянием,
         // которое человек не видел.
+        // A plain reassignment's snapshot predates these locks; make it fail with 40001 if what the
+        // lock depends on changed while it queued, so the retry reads a fresh one (see the helper).
+        if (correctionId === null && before.requestType === 'special_equipment') {
+          await touchLockInputs(tx, before.id);
+        }
         await checkPreviewHandshakes(tx, mode);
         // The correction's own half of step 7: the cleared set is re-asked under the locks just
         // taken, whether or not a fingerprint came with the body (see the helper).
         if (correctionId !== null && plan) await assertCorrectionApprovalsUnchanged(tx, plan);
+        // The plain reassignment's lock, answered again under the locks: the check before the
+        // transaction read a summary that a sign-off or a route change may have outdated since.
+        if (correctionId === null) await assertReassignNotLocked(tx, before, nextOwnership);
         const saved = await resolveAssignment(
           tx,
           { ...rates, route },
@@ -7412,8 +7465,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    * единственной дверью бумаги, у которой предпросмотра не было вовсе. Из-за этого человек узнавал
    * о последствиях постфактум: какие номера ЭСМ-2 сгорят, какие выпишутся заново, какие подписи
    * объекта снимутся и почему заявка вообще не даётся в правку. Ответ на последний вопрос Р18
-   * обещает брать **отсюда**, а не из агрегата `VehicleRequestShiftsSummaryDto`: тот несёт два
-   * числа без дат, потому что едет в каждой строке списка, и «есть 4 подтверждённых дня» не
+   * обещает брать **отсюда**, а не из агрегата `VehicleRequestShiftsSummaryDto`: тот несёт одни
+   * счётчики без дат, потому что едет в каждой строке списка, и «есть 4 подтверждённых дня» не
    * говорит человеку, какие именно сутки ему мешают.
    *
    * ТЕЛО ТО ЖЕ, ЧТО У БОЕВОЙ РУЧКИ, и это правило модуля: расчёт обязан идти по тем входам, по

@@ -1416,11 +1416,15 @@ export type AssignVehicleBody = z.input<typeof assignVehicleSchema>;
 // ── Смена назначенной техники у заявки в работе (ADR 0048) ──
 
 /**
- * Можно ли сменить машину, не трогая статус. Заявка в работе — и только она: у «Новой» менять
- * нечего (машину назначает сам перевод в работу), а закрытая и отменённая — история, которую
- * правят откатом, а не подменой машины задним числом.
+ * Whether the portal offers "change vehicle" on a list row: a request in work — and only one — whose
+ * approved days do not lock the swap. A "new" request gets its vehicle from the move into work; a
+ * closed or cancelled one is history, corrected by a rollback, not by a backdated swap.
  *
- * Предикат один на портал и API: кнопка не должна предлагать действие, которое сервер отклонит.
+ * The portal's half of the rule, not the server's gate. The next vehicle is not chosen yet, so the
+ * lock is counted for an own one (`reassignLockingApprovedDays`); for a rented one the button is
+ * still offered, the preview names the days that would lock it (`blockedShiftDays`), and the door
+ * refuses by the same predicate with the real vehicle (`canCorrectAssignment` for the state,
+ * `reassignApprovedShiftsBlocker` for the lock).
  */
 export function canReassignVehicle(request: {
   status: RequestStatus;

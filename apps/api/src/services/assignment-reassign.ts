@@ -4,7 +4,6 @@ import {
   dayRoutesKeptWith,
   esm2SyncPlan,
   formatVehicleRequestNumber,
-  isShiftDayInTerm,
   periodsOverlap,
   type AssignmentIssueWarningsDto,
   type AssignmentPlanCancelDto,
@@ -45,7 +44,7 @@ import { readShiftDays, toAssignmentShiftDay } from './assignment-shifts';
 // Which sign-offs stand under the assignment's vehicle — what locks a plain reassignment and what a
 // correction clears — is one rule with the door and the period correction (ADR 0210); this preview
 // hashes its answer into the fingerprint the door re-checks.
-import { approvalsUnderAssignment } from './shift-approval-scope';
+import { approvalsLockingReassignment, approvalsUnderAssignment } from './shift-approval-scope';
 import { rangeSetIntersects, type DateRangeSet } from './esm2-plan';
 import { buildEsm2SyncPlan, type Esm2SyncPlanInput } from './waybill-esm2';
 // Предупреждения по выпускаемым листам — общим расчётом шага 6 (§7): пятое место, где решают, что
@@ -303,8 +302,8 @@ export async function planReassignCommand(
    * Two sets of shift days (R18, C2) — "why the command is impossible" and "what it devalues". They
    * answer different questions, and one set would answer both equally wrong.
    *
-   * Both are the approved days that stand under the assignment's vehicle — the shared rule of
-   * ADR 0210 (`approvalsUnderAssignment`), asked with the very inputs the executing door uses: a
+   * Both are the approved days that stand under the assignment's vehicle — the shared predicate of
+   * ADR 0210 (`shift-approval-scope.ts`), asked with the very inputs the executing door uses: a
    * day in its own day route was worked by the route's vehicle and neither locks nor loses its
    * sign-off; a route-less day does both; with a rented next vehicle the door's day sync sweeps the
    * routes, so every approved day counts. Linearity plays no part. A local copy of that rule would
@@ -312,9 +311,10 @@ export async function planReassignCommand(
    *
    * - A plain reassignment is locked by such a day ANYWHERE inside the term, not by one inside the
    *   command's range. The range lock is R18 and changes together with the R6 split and only with
-   *   it (§15: weakening an existing protection is the customer's call). The term bound is the one
-   *   the door's lock reads through the shift summary (`reassignApprovedShiftsBlocker`) — a wider
-   *   set here would grey the button out where the door would let the command through.
+   *   it (§15: weakening an existing protection is the customer's call). The set is read by
+   *   `approvalsLockingReassignment` — the predicate the shift summary counts and the door
+   *   re-reads under its locks, term bound included; a wider set here would grey the button out
+   *   where the door would let the command through.
    * - A correction does not lock those days — it CLEARS their sign-off (`clearShiftApprovals`),
    *   inside the term or not, as it always has: the hours stay, but the object has to accept them
    *   again, by the vehicle that actually worked. Hours are shown next to each day so the price of
@@ -325,21 +325,22 @@ export async function planReassignCommand(
    * (`dropUnapprovedShiftsInRange` in the shared shift service), but it was built for closing by
    * the actual date — having the mechanism is not a permission to use it here.
    */
-  const underAssignment = new Set(
-    (
-      await approvalsUnderAssignment(tx, {
-        requestId: request.id,
-        displayNumber: formatVehicleRequestNumber(request.num),
-        range: null,
-        dayRoutesKept: dayRoutesKeptWith(next.ownership),
-      })
-    ).map((approval) => approval.date),
+  const dayRoutesKept = dayRoutesKeptWith(next.ownership);
+  const named = new Set(
+    input.correction
+      ? (
+          await approvalsUnderAssignment(tx, {
+            requestId: request.id,
+            displayNumber: formatVehicleRequestNumber(request.num),
+            range: null,
+            dayRoutesKept,
+          })
+        ).map((approval) => approval.date)
+      : await approvalsLockingReassignment(tx, { requestId: request.id, dayRoutesKept }),
   );
-  const approvedUnder = shifts.filter((row) => row.approved && underAssignment.has(row.date));
-  const blockedShiftDays = input.correction
-    ? []
-    : approvedUnder.filter((row) => isShiftDayInTerm(term, row.date)).map(toAssignmentShiftDay);
-  const clearedShiftDays = input.correction ? approvedUnder.map(toAssignmentShiftDay) : [];
+  const namedDays = shifts.filter((row) => named.has(row.date)).map(toAssignmentShiftDay);
+  const blockedShiftDays = input.correction ? [] : namedDays;
+  const clearedShiftDays = input.correction ? namedDays : [];
 
   /*
    * Пробелы машиниста (Р16) — тем же расчётом, каким их считает бэкстоп чужих дверей: он и есть

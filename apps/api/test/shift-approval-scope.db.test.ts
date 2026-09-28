@@ -37,7 +37,10 @@ import type * as AssignmentWrite from '../src/services/assignment-write';
  *   not lock it, a route-less one does, and a rented next vehicle makes every approved day lock —
  *   the summary the portal reads, the preview and the door agree;
  * - the correction re-asks its set under its locks: a sign-off appearing between the plan and the
- *   transaction ends in 409, not in clearing a set nobody saw.
+ *   transaction ends in 409, not in clearing a set nobody saw;
+ * - the plain reassignment re-asks its lock under its locks from a snapshot proven current: a
+ *   sign-off landing while it queues locks it, even when the sign door did not touch the request
+ *   row.
  *
  * WHY A DATABASE. The carrier of "the day had a route" is a composition row
  * (`vehicle_route_requests.work_date`) tied to its route by a composite FK; the sign-off is
@@ -389,6 +392,61 @@ describe.skipIf(!DB_URL)('подписи объекта при коррекци�
       // Nothing cleared, nothing reassigned: the refusal came before the first write.
       expect(await approvedDays(request.id)).toEqual([PLAIN_DAY, LATE_DAY].sort());
       expect(await assignedVehicle(request.id)).toBe(ctx.vehicleA);
+    },
+    SLOW,
+  );
+
+  it(
+    'подпись дня без рейса, поставленная пока обычная смена ждёт блокировку, запирает её',
+    async () => {
+      /*
+       * The mechanism the lock must survive (ADR 0210 §8): the plain reassignment runs under
+       * `REPEATABLE READ`, its snapshot is taken before it queues for the request row, and the sign
+       * door touches that row only to raise the dirty mark — not at all when the mark is already
+       * up. The holder below plays such a sign door: it takes the request row, signs a day that was
+       * filled earlier (an UPDATE of an existing shift row, as `setShiftApproval` does) and leaves
+       * the request row untouched. Without the locking read the swap answered 200 from its old
+       * snapshot, over the fresh signature.
+       */
+      const request = await confirmed(ctx.plainTypeId, { driverPersonId: ctx.driver });
+      await ctx.db.execute(sql`
+        INSERT INTO vehicle_request_shifts (request_id, shift_date, machine_hours, comment, filled_by)
+        VALUES (${request.id}, ${PLAIN_DAY}, 8, '', ${ctx.adminId})`);
+      await ctx.db.execute(
+        sql`UPDATE vehicle_requests SET assignment_history_dirty = true WHERE id = ${request.id}`,
+      );
+      const version = (await requestDto(request.id)).version;
+
+      const holder = new pg.Client({ connectionString: readMode.url });
+      const probe = new pg.Client({ connectionString: readMode.url });
+      await holder.connect();
+      await probe.connect();
+      let res: Awaited<ReturnType<typeof ctx.app.inject>>;
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT id FROM vehicle_requests WHERE id = $1 FOR UPDATE', [
+          request.id,
+        ]);
+        const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid'))
+          .rows[0]!.pid;
+        const inFlight = reassignPlain({ id: request.id, version }, ctx.vehicleC);
+        await waitUntilBlocked(probe, holderPid);
+        await holder.query(
+          `UPDATE vehicle_request_shifts SET approved_by = $3, approved_at = now()
+            WHERE request_id = $1 AND shift_date = $2`,
+          [request.id, PLAIN_DAY, ctx.adminId],
+        );
+        await holder.query('COMMIT');
+        res = await inFlight;
+      } finally {
+        await holder.end();
+        await probe.end();
+      }
+
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json<{ message: string }>().message).toContain('согласовано смен: 1');
+      expect(await assignedVehicle(request.id)).toBe(ctx.vehicleA);
+      expect(await approvedDays(request.id)).toEqual([PLAIN_DAY]);
     },
     SLOW,
   );

@@ -61,16 +61,18 @@ export interface RequestShiftDay {
 }
 
 /**
- * Дни работы заявки с часами и состоянием подписи — общий вход всех расчётов по сменам.
+ * The request's work days with hours and sign-off state — the common input of every shift
+ * computation of the doors.
  *
- * Читается **весь** заказ, а не диапазон: у смены техники множества считаются по всей заявке
- * (`canReassignVehicle` запирает любой подписанный день), у закрытия — по диапазону за фактом, и
- * второе чтение тех же строк ради второго вопроса дало бы две картины состояния внутри одной
- * транзакции. Отбор по диапазону делается уже над прочитанным (`splitShiftDaysByRange`).
+ * The whole request is read, not a range: the reassignment preview names days across the whole
+ * request (which of them lock or are cleared is `shift-approval-scope.ts`'s answer, ADR 0210), the
+ * closing door takes the range beyond the actual end, and a second read of the same rows for a
+ * second question would give two pictures of the state inside one transaction. The range is cut
+ * from what was read (`splitShiftDaysByRange`).
  *
- * Порядок по дате детерминирован намеренно: этими днями окно называет человеку цену подтверждения,
- * и перечень, меняющий порядок между двумя одинаковыми запросами, читался бы как другой перечень —
- * а его ещё и хешируют отпечатком.
+ * Ordered by date on purpose: the window names these days to a person as the price of confirming,
+ * a list that reorders between two identical requests would read as a different list — and it is
+ * hashed into the fingerprint as well.
  */
 export async function readShiftDays(tx: ShiftsTx, requestId: string): Promise<RequestShiftDay[]> {
   const rows = await tx

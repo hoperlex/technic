@@ -1,7 +1,12 @@
-import { and, eq, isNotNull, not, sql, type SQL } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type * as schema from '../db/schema';
-import { users, vehicleRequestShifts, vehicleRouteRequests } from '../db/schema';
+import {
+  specialEquipmentRequestDetails,
+  users,
+  vehicleRequestShifts,
+  vehicleRouteRequests,
+} from '../db/schema';
 import type { ShiftsTx } from './assignment-shifts';
 import type { DateRangeSet } from './esm2-plan';
 import type { ShiftApproval } from './vehicle-route-correction';
@@ -23,9 +28,10 @@ import type { ShiftApproval } from './vehicle-route-correction';
  *   another;
  * - the period correction (`planVehicleCorrection`, `assignment-correction.ts`) clears the same set
  *   inside its own `approvalClearRange`;
- * - the shift summary of a list row (`shiftSummaries`, `vehicle-request-shifts.ts`) counts it as
- *   `approvedDaysWithoutRoute` through `shiftDayHasOwnRouteSql`; the contract predicates
- *   `canReassignVehicle` / `reassignApprovedShiftsBlocker` lock the button and the door by it.
+ * - the shift summary of a list row (`shiftSummaries`, `vehicle-request-shifts.ts`) counts the lock
+ *   as `approvedDaysWithoutRoute` through `approvalLockingReassignmentSql`; the contract predicates
+ *   `canReassignVehicle` / `reassignApprovedShiftsBlocker` offer the button and refuse by it, and
+ *   the door re-reads the same set under its locks (`approvalsLockingReassignment`).
  *
  * Before ADR 0210 these were separate hand-written variants and had drifted apart: the reassign
  * door skipped linear requests, the preview read linearity by another expression, the period
@@ -78,6 +84,47 @@ export function shiftDayHasOwnRouteSql(): SQL<boolean> {
        AND own_route.work_date = ${vehicleRequestShifts}."shift_date")`;
 }
 
+/**
+ * "This shift row lies inside the request's current term" — the bound every shift count uses: the
+ * summary of a list row, the cut of "On site", and the lock of a plain reassignment. A row outside
+ * the term is left over from a term edit and no longer belongs to the order.
+ *
+ * Needs `special_equipment_request_details` joined to the query: the term lives there. An empty
+ * `date_to` is a one-day term, as everywhere in the module.
+ */
+export function shiftWithinTermSql(): SQL<boolean> {
+  return sql<boolean>`${vehicleRequestShifts.shiftDate}
+  BETWEEN ${specialEquipmentRequestDetails.dateFrom}
+  AND coalesce(${specialEquipmentRequestDetails.dateTo}, ${specialEquipmentRequestDetails.dateFrom})`;
+}
+
+/**
+ * "This sign-off stands under the assignment's vehicle" — THE predicate of ADR 0210, correlated to
+ * the `vehicle_request_shifts` row of the surrounding query: the row is approved and, unless the
+ * command sweeps the day routes (`dayRoutesKeptWith` in the contracts), the day is not in its own
+ * route. A correction clears exactly these rows; a plain reassignment is locked by them inside the
+ * term (`approvalLockingReassignmentSql`). Writing "approved and not routed" anywhere else is how a
+ * lock and a clearing would drift apart.
+ */
+export function approvalUnderAssignmentSql(dayRoutesKept: boolean): SQL<boolean> {
+  return dayRoutesKept
+    ? sql<boolean>`(${vehicleRequestShifts.approvedAt} IS NOT NULL AND NOT ${shiftDayHasOwnRouteSql()})`
+    : sql<boolean>`(${vehicleRequestShifts.approvedAt} IS NOT NULL)`;
+}
+
+/**
+ * The sign-offs that lock a plain reassignment: under the assignment's vehicle AND inside the term.
+ *
+ * The term bound is the summary's (`shiftWithinTermSql`) and nobody else's: the portal offers the
+ * button by the summary, the door refuses by it and re-reads the same set under its locks, and the
+ * preview names the same days — three answers from one expression. A correction does not apply
+ * the bound: it clears every sign-off under the assignment, inside the term or not, as it always
+ * has.
+ */
+export function approvalLockingReassignmentSql(dayRoutesKept: boolean): SQL<boolean> {
+  return sql<boolean>`(${approvalUnderAssignmentSql(dayRoutesKept)} AND ${shiftWithinTermSql()})`;
+}
+
 export interface ShiftApprovalScope {
   requestId: string;
   /** "ТС-123": the operation snapshot names the request by it. */
@@ -105,8 +152,7 @@ export interface ShiftApprovalScope {
  * the operation's snapshot is the only answer left.
  *
  * Every approved row counts, inside the term or not: a correction has always cleared all of them.
- * The lock of a plain reassignment is narrower — the term, like the rest of the shift summary — and
- * callers that answer for the lock filter by the term themselves.
+ * The lock of a plain reassignment is narrower — see `approvalsLockingReassignment`.
  *
  * Ordered by date: the preview hashes the set into its fingerprint and names it to a person, and a
  * list that reorders between two identical reads would read as a different list.
@@ -128,8 +174,7 @@ export async function approvalsUnderAssignment(
     .where(
       and(
         eq(vehicleRequestShifts.requestId, scope.requestId),
-        isNotNull(vehicleRequestShifts.approvedAt),
-        scope.dayRoutesKept ? not(shiftDayHasOwnRouteSql()) : undefined,
+        approvalUnderAssignmentSql(scope.dayRoutesKept),
       ),
     )
     .orderBy(vehicleRequestShifts.shiftDate);
@@ -150,4 +195,68 @@ export async function approvalsUnderAssignment(
         ]
       : [],
   );
+}
+
+/**
+ * The days whose sign-off locks a plain reassignment of this request to a vehicle that keeps (or
+ * sweeps) the day routes — by date, in order. The preview names them as `blockedShiftDays`, the
+ * door refuses by them after taking its locks.
+ */
+export async function approvalsLockingReassignment(
+  reader: Reader,
+  scope: { requestId: string; dayRoutesKept: boolean },
+): Promise<string[]> {
+  const rows = await reader
+    .select({ shiftDate: vehicleRequestShifts.shiftDate })
+    .from(vehicleRequestShifts)
+    .innerJoin(
+      specialEquipmentRequestDetails,
+      eq(specialEquipmentRequestDetails.requestId, vehicleRequestShifts.requestId),
+    )
+    .where(
+      and(
+        eq(vehicleRequestShifts.requestId, scope.requestId),
+        approvalLockingReassignmentSql(scope.dayRoutesKept),
+      ),
+    )
+    .orderBy(vehicleRequestShifts.shiftDate);
+  return rows.map((row) => row.shiftDate);
+}
+
+/**
+ * Make a `REPEATABLE READ` command notice a sign-off or a route change it cannot see.
+ *
+ * The plain reassignment runs under the snapshot isolation of the history doors
+ * (`SNAPSHOT_ISOLATION`), and its snapshot is taken by the first query — before it queues for the
+ * request row. A shift door that signs a day meanwhile holds the same row, but updates it only to
+ * raise the dirty mark (`markAssignmentHistoryDirty`), and not at all when the mark is already up:
+ * the waiting `FOR UPDATE` then returns without `40001`, and every later read — the lock, the
+ * preview fingerprint — answers from the snapshot without the new sign-off. The swap would go
+ * through over a signature the object put a moment earlier.
+ *
+ * A locking read of the rows the lock depends on closes that: `FOR SHARE` on a row updated or
+ * deleted after the snapshot fails with `40001` in `REPEATABLE READ`, the retry protocol
+ * (`withAssignmentRetry`) starts over with a fresh snapshot, and the lock is asked again. The rows
+ * are the request's shifts (a sign-off is an `UPDATE` of an existing row — `setShiftApproval`) and
+ * its day-route composition rows (a day taken off a route, a route deleted or moved to another
+ * date — each changes or removes such a row, and a route-less day may lock where a routed one did
+ * not). Called after the request row is locked, so these rows follow it in the canonical order.
+ *
+ * What it cannot see: a row INSERTED after the snapshot. A day both filled and signed while the
+ * command queued is invisible to it — two more requests inside a wait of milliseconds, and only on
+ * a request whose dirty mark was already up (otherwise the mark itself updates the request row and
+ * the lock ends in `40001`). A day newly put into a route only loosens the lock, so missing it
+ * errs on the safe side.
+ */
+export async function touchLockInputs(reader: ShiftsTx, requestId: string): Promise<void> {
+  await reader
+    .select({ date: vehicleRequestShifts.shiftDate })
+    .from(vehicleRequestShifts)
+    .where(eq(vehicleRequestShifts.requestId, requestId))
+    .for('share');
+  await reader
+    .select({ routeId: vehicleRouteRequests.routeId })
+    .from(vehicleRouteRequests)
+    .where(eq(vehicleRouteRequests.requestId, requestId))
+    .for('share');
 }
