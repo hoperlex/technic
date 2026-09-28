@@ -83,8 +83,7 @@ import {
 
 /**
  * Day batch for a special-equipment request on a site: "issue a 4-П for the whole term"
- * ([ADR 0207](../../../../docs/adr/0207-vehicle-request-day-batch.md), plan
- * [docs/vehicle-request-day-batch-plan.md](../../../../docs/vehicle-request-day-batch-plan.md)).
+ * ([ADR 0207](../../../../docs/adr/0207-vehicle-request-day-batch.md)).
  *
  * THE BATCH HAS NOT A SINGLE RULE OF ITS OWN. It walks the term day after day and on every day does
  * exactly what the per-day door (`POST /vehicle-requests/:id/days/:date/route`) and the per-route

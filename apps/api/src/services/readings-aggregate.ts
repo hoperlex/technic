@@ -107,30 +107,32 @@ export const EXPECTED_ROUTE_FILTER = sql`
                           AND q.deleted_at IS NULL
                           AND q.status <> 'cancelled'))
        /*
-        * Бумаги за день бывает две, а смена одна. У заказа техники на объект портал выписывает и
-        * недельный ЭСМ-2, и дневной 4-П на тот же день той же машины
-        * (docs/vehicle-request-day-batch-plan.md, Р2 и Р3): двойная бумага принята заказчиком
-        * осознанно, двойной учёт — нет. Машина отработала одну смену, показание за неё одно, и
-        * спрашивают его по недельному листу; рейс этого дня ожидаемой сменой не считается.
+        * Two papers for a day, one shift. For a special-equipment request on a site the portal
+        * issues both the weekly ESM-2 and the daily 4-П for the same day of the same vehicle
+        * (ADR 0207 §2 and §3): the customer accepted the double paper deliberately, double
+        * accounting he did not. The vehicle worked one shift, its reading is one, and it is asked
+        * for by the weekly waybill; the route of that day does not count as an expected shift.
         *
-        * Подавляется рейс, а не лист: недельный ЭСМ-2 и есть рапорт о работе машины на площадке —
-        * им эта неделя закрывается в учёте, — а дневной бланк диспетчер волен аннулировать и
-        * выписать заново (Р2), и ожидание смены не должно ездить вслед за перевыписываемой
-        * бумагой. Не подави портал одну из двух, вторую закрыть было бы нечем: строка отчёта
-        * привязана ровно к одному источнику — либо к рейсу, либо к листу с днём, — и одна
-        * физически сданная смена закрывает ровно одно ожидание. Второе висело бы несданным весь
-        * срок заказа: гараж красный каждый день, качество данных вдвое хуже, а служебная книга
-        * показаний с задвоенными строками.
+        * The route is suppressed, not the waybill: the weekly ESM-2 is the very report of the
+        * vehicle's work on the site, the week is closed by it in accounting, while the daily blank
+        * the dispatcher is free to cancel and reissue (ADR 0207 §2), and the shift expectation must
+        * not travel after a paper that gets reissued. Were the portal to suppress neither, the
+        * second would have nothing to close it: a report row is tied to exactly one source, either
+        * a route or a waybill with a day, and one physically submitted shift closes exactly one
+        * expectation. The other would hang unsubmitted for the whole term: the garage red every
+        * day, data quality halved, and the service readings book with doubled rows.
         *
-        * Условие узкое: та же заявка, та же машина, тот же день. День берётся у строки состава —
-        * work_date физически равен дню рейса (vehicle_route_requests_route_date_fk), а у
-        * грузовой строки он пуст. Поэтому грузовой рейс и перегон внутри недели ЭСМ-2 остаются
-        * ожидаемыми сменами, как и были: их выезд неделя на площадке не покрывает.
+        * The condition is narrow: same request, same vehicle, same day. The day is taken from the
+        * composition row, whose work_date physically equals the route's day
+        * (vehicle_route_requests_route_date_fk) and is empty on a freight row. So a freight route
+        * and a relocation inside an ESM-2 week stay expected shifts, as they were: a week on the
+        * site does not cover their trip.
         *
-        * Водитель в условии не участвует: считается смена машины, а не человека. Неделю переписали
-        * на подменного машиниста, дневные 4-П остались на прежнем — показание сдаёт тот, на кого
-        * выписан недельный лист. Ровно так же подавляет карточку кабинет водителя
-        * (driver-assignment.ts), и разойтись им нельзя: состав отчёта собирается там.
+        * The driver takes no part in the condition: the vehicle's shift is counted, not the
+        * person's. When the week is reissued to a substitute machinist while the daily 4-П stay on
+        * the former one, the reading is submitted by whoever the weekly waybill names. The driver
+        * cabinet suppresses the card exactly the same way (driver-assignment.ts), and the two must
+        * not drift: the report composition is assembled there.
         */
        AND NOT EXISTS (SELECT 1
                          FROM waybills ew

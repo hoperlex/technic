@@ -27,8 +27,7 @@ import type { db as AppDb } from '../src/db/client';
 /**
  * The «4-П for the whole term» batch of a special-equipment request on a site —
  * `POST /vehicle-requests/:id/days/batch`
- * ([ADR 0207](../../../docs/adr/0207-vehicle-request-day-batch.md), plan
- * [docs/vehicle-request-day-batch-plan.md](../../../docs/vehicle-request-day-batch-plan.md)).
+ * ([ADR 0207](../../../docs/adr/0207-vehicle-request-day-batch.md)).
  *
  * WHY A LIVE DATABASE. The subject of the batch is not a rule but a SEQUENCE OF WRITES: its own
  * transaction per day (§8), the «Р-» numbers and the blank numbers that never return to their
@@ -39,8 +38,7 @@ import type { db as AppDb } from '../src/db/client';
  * What is proven here:
  *
  * - **linearity no longer bars the door** (§1): the term of a NON-LINEAR request passes whole, and
- *   for the same day its weekly ESM-2 stays — double paper is named as boundary G1, not as a defect
- *   (§2);
+ *   for the same day its weekly ESM-2 stays — double paper is the price §2 accepts, not a defect;
  * - **the report is per-day and the counters add up** — the header "issued N, skipped M" is read
  *   where the rows are not shown at all;
  * - **a conflicting day is skipped while the batch goes on** (§7) — and each of the five obstacles
@@ -440,7 +438,7 @@ async function dayWaybills(requestId: string): Promise<DayWaybillRow[]> {
   }));
 }
 
-/** Weekly ESM-2 waybills of the request: they prove the batch left them alone (§2, boundary G1). */
+/** Weekly ESM-2 waybills of the request: they prove the batch left them alone (§2). */
 async function esm2Count(requestId: string): Promise<number> {
   const rows = await ctx.db.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM waybills
@@ -624,7 +622,7 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
    * The request here is NON-LINEAR — the very one that was allowed no days at all before ADR 0207.
    * What is checked is not only "the batch passed" but both halves of the price: its table of days
    * is no longer empty and shows no blocker, while the weekly ESM-2 for the same day stayed where
-   * it was (boundary G1).
+   * it was (the double paper §2 accepts).
    */
   it('срок нелинейного заказа проходит целиком: дни в рейсах, листы выписаны, отчёт построчный', async () => {
     const vehicleId = ctx.vehicles[0]!;
@@ -677,7 +675,7 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
       expect(waybill.correctionId).toBeNull();
     }
 
-    // Double paper is named as boundary G1: the weekly ESM-2 is in place, the daily 4-П beside it.
+    // Double paper is the price §2 accepts: the weekly ESM-2 is in place, the daily 4-П beside it.
     expect(await esm2Count(request.id)).toBe(esm2Before);
   });
 
@@ -773,7 +771,7 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
   });
 
   /**
-   * §7 and the consequence "a waybill issued in advance freezes the route" (G2).
+   * §7 and the consequence "a waybill issued in advance freezes the route".
    *
    * The dearest part here is the second half: beside a frozen route the batch does NOT create its
    * own. Were it to create one, the vehicle would hold two blanks for one day's work, and that
@@ -845,7 +843,7 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
   });
 
   /**
-   * §7, R9 of the plan: the past without the `waybills.correct` right is an obstacle of EVERY past
+   * §7 and §9: the past without the `waybills.correct` right is an obstacle of EVERY past
    * day, not a refusal of the whole batch.
    *
    * The manager is not allowed the past at all (ADR 0101 §4), and the batch must say so per day
@@ -1068,8 +1066,8 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
    */
   describe('отказ предпроверки не оставляет в базе ни строки', () => {
     it('арендная машина: дней у такого заказа не бывает вовсе', async () => {
-      // Rental is a boundary of the paper, not of the type (R10 of the plan): a waybill for a
-      // rental vehicle is issued by the lessor. The rate is obligatory — without money such an
+      // Rental is a boundary of the paper, not of the type (§1 opens days to the company's own
+      // vehicle only): a waybill for a rental vehicle is issued by the lessor. The rate is obligatory — without money such an
       // assignment is not accepted at all.
       const request = await requestInProgress({
         vehicleId: ctx.rentalVehicleId,

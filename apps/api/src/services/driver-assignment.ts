@@ -54,14 +54,14 @@ import { loadRouteDtos, routeQuery } from './vehicle-routes';
  * Чего в задании не бывает: листов 4-П и формы № 3 своей строкой (Р16). Их выезд уже представлен
  * рейсом — `waybills_form_source_check` требует у этих форм заполненный `route_id`.
  *
- * Обратное тоже бывает, и одним рейсом дело не закрывается: у заказа техники на объект портал
- * выписывает 4-П на каждый день срока, а недельный ЭСМ-2 продолжает выписываться сам
- * (`docs/vehicle-request-day-batch-plan.md`, Р2). Бумаги за день тогда две, а смена одна, и
- * карточка в задании тоже одна (Р3): состав отчёта показаний выводится отсюда, и вторая карточка
- * завела бы вторую строку ожидания, закрыть которую нечем. Остаётся карточка недельного листа —
- * рейс, чей день уже спрашивает ЭСМ-2 той же заявки и той же машины, из задания убирается
- * (`weeklyCoveredRoutes`), тем же правилом, каким его не ждёт статистика (`EXPECTED_ROUTE_FILTER`
- * в `readings-aggregate.ts`).
+ * The reverse happens too, and one route does not settle it: for a special-equipment request on a
+ * site the portal issues a 4-П for every day of the term, while the weekly ESM-2 keeps issuing
+ * itself (ADR 0207 §2). There are then two papers for a day but one shift, and the task holds one
+ * card as well (ADR 0207 §3): the composition of the readings report is derived from here, and a
+ * second card would open a second expectation row that nothing can close. The weekly waybill's card
+ * stays — a route whose day is already asked for by an ESM-2 of the same request and the same
+ * vehicle is dropped from the task (`weeklyCoveredRoutes`), by the same rule by which the
+ * statistics do not expect it (`EXPECTED_ROUTE_FILTER` in `readings-aggregate.ts`).
  *
  * Третье свойство появилось после первого показа и разводит двух потребителей: **кабинет строго
  * документален** (`docs/driver-cabinet-ux-plan.md`, Р5) — рейс входит в задание, только если по
@@ -599,27 +599,29 @@ async function esm2Sources(
 }
 
 /**
- * Рейсы, чей день уже спрашивает недельный ЭСМ-2 той же заявки и той же машины.
+ * Routes whose day is already asked for by a weekly ESM-2 of the same request and the same vehicle.
  *
- * За день работы техники на объекте бумаги бывает две — недельный лист и дневной 4-П
- * (`docs/vehicle-request-day-batch-plan.md`, Р2), — а смена одна, и показание за неё одно (Р3).
- * Карточка в задании поэтому тоже одна: из задания собирается состав отчёта показаний
- * (`readings.ts`), а строка отчёта привязана ровно к одному источнику — рейсу либо листу с днём.
- * Вторая карточка завела бы вторую строку, и одна физически сданная смена закрыла бы только одну
- * из них: второй день горел бы несданным до конца срока заказа.
+ * A day of on-site work can have two papers — the weekly waybill and the daily 4-П (ADR 0207 §2) —
+ * but the shift is one, and so is its reading (ADR 0207 §3). Hence the task holds one card as well:
+ * the composition of the readings report is assembled from the task (`readings.ts`), and a report
+ * row is tied to exactly one source — a route or a waybill with a day. A second card would open a
+ * second row, and one physically submitted shift would close only one of them: the other day would
+ * burn as not submitted until the end of the request's term.
  *
- * Остаётся карточка листа, а не рейса: по ЭСМ-2 смену спрашивает и статистика
- * (`EXPECTED_ROUTE_FILTER` в `readings-aggregate.ts`), и разойтись кабинету с ней нельзя — гараж
- * требовал бы показаний по сменам, которых водитель у себя не видит.
+ * The waybill's card stays, not the route's: the statistics ask for the shift by the ESM-2 too
+ * (`EXPECTED_ROUTE_FILTER` in `readings-aggregate.ts`), and the cabinet must not drift from them —
+ * the garage would demand readings for shifts the driver cannot see in his cabinet.
  *
- * Лист спрашивается **любого** работника, а не этого, и это не недосмотр: правило считает смену
- * машины, а не человека, и ровно так же оно записано на стороне статистики. Неделю переписали на
- * подменного машиниста, дневные 4-П остались на прежнем — показание сдаёт тот, на кого выписан
- * недельный лист, а прежний водитель карточки не получает: сдавать ему нечего.
+ * The waybill is asked of ANY worker, not of this one, and that is no oversight: the rule counts the
+ * vehicle's shift, not the person's, and the statistics side writes it exactly the same way. When
+ * the week is reissued to a substitute machinist while the daily 4-П stay on the former one, the
+ * reading is submitted by whoever the weekly waybill names, and the former driver gets no card: he
+ * has nothing to submit.
  *
- * Условие узкое: та же заявка, та же машина, тот же день. День берётся у строки состава
- * (`work_date`), у грузовой строки он пуст, — поэтому грузовой рейс и перегон внутри недели ЭСМ-2
- * из задания не пропадают: их выезд неделя на площадке не покрывает.
+ * The condition is narrow: same request, same vehicle, same day. The day is taken from the
+ * composition row (`work_date`), which is empty on a freight row, so a freight route and a
+ * relocation inside an ESM-2 week do not vanish from the task: a week on the site does not cover
+ * their trip.
  */
 async function weeklyCoveredRoutes(routeIds: string[], date: string): Promise<Set<string>> {
   if (routeIds.length === 0) return new Set();

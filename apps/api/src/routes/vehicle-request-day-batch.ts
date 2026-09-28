@@ -17,8 +17,7 @@ import { runVehicleRequestDayBatch } from '../services/vehicle-request-day-batch
 
 /**
  * The day batch of a special-equipment request on a site — `POST /vehicle-requests/:id/days/batch`
- * ([ADR 0207](../../../../docs/adr/0207-vehicle-request-day-batch.md), plan
- * [docs/vehicle-request-day-batch-plan.md](../../../../docs/vehicle-request-day-batch-plan.md)).
+ * ([ADR 0207](../../../../docs/adr/0207-vehicle-request-day-batch.md)).
  *
  * WHY A SEPARATE ROUTE MODULE. By the same device that keeps the assignment-history doors and the
  * term edit standing beside it: `vehicle-requests.ts` is a barrier file that several doors want at
