@@ -6,6 +6,7 @@ import {
   moscowDateKeyOf,
   shiftDateKey,
   weekStartKey,
+  WAYBILL_ACK_REQUIRED_CODE,
   type Role,
 } from '@technic/contracts';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -19,59 +20,70 @@ import type * as Esm2 from '../src/services/waybill-esm2';
 import { byReadMode, describeReadModes, useReadModeDatabase } from './assignment-read-mode';
 
 /*
- * ФАЙЛУ НУЖНА СВОЯ БАЗА. Каждая команда здесь берёт управляющую строку модуля `FOR SHARE` (шаг 0
- * канона), а соседние файлы модуля эту же строку меняют и замораживают (план Ю27, Ю30). Мало того,
- * теперь файл её и **двигает** сам — блок бумаги идёт двумя режимами, — так что общая база топила
- * бы соседей не гонкой, а прямой записью. Заводит и сносит базу механика `useReadModeDatabase`
- * ([assignment-read-mode.ts](assignment-read-mode.ts)); вне блока бумаги режим остаётся тем, каким
- * его привозит миграция `0167`, — `legacy`.
+ * THE FILE NEEDS ITS OWN DATABASE. Every command here takes the module's control row `FOR SHARE`
+ * (step 0 of the canon), and the neighbouring files of the module change and freeze that same row
+ * (plan Yu27, Yu30). On top of that, this file MOVES the row itself — most blocks run in both read
+ * modes — so a shared database would sink the neighbours by a direct write, not merely by a race.
+ * The database is created and dropped by `useReadModeDatabase`
+ * ([assignment-read-mode.ts](assignment-read-mode.ts)); outside the two-mode blocks the mode stays
+ * what migration `0167` brings, `legacy`.
  */
 
 /**
- * Дверь ремонта истории назначения
+ * The assignment-history repair door
  * ([assignment-repair.ts](../src/services/assignment-repair.ts),
  * [vehicle-request-assignment-repair.ts](../src/routes/vehicle-request-assignment-repair.ts);
- * план `docs/assignment-periods-plan.md`, Р16, Р21, Р26–Р31; решения Ц3, Ц4, Х1, Ф1, Щ2, Э1–Э3, Ю2).
+ * plan `docs/assignment-periods-plan.md`, R16, R21, R26–R31; decisions C3, C4, X1, F1, Shch2,
+ * E1–E3, Yu2).
  *
- * ЧТО ЗДЕСЬ ПРОВЕРЯЕТСЯ. Пять предметов, и ни один из них не виден в коде двери по чтению:
+ * WHAT IS CHECKED HERE. None of these subjects is visible by reading the door's code:
  *
- * 1. **условный контракт прав (Р29, Ц3)** — единственная часть, которую нельзя проверить иначе, чем
- *    по HTTP с настоящими ролями: `waybills.correct` спрашивается **по посчитанному исходу**, а не
- *    по составу тела; глубже тридцати дней добавляется `correctBeyondLimit`; архивная заявка
- *    открывается **по идентификатору без `archive.read`**, а `restore` остаётся администраторским;
- * 2. **готовность по Р27** — сравнение множеств, а не проверка инварианта: все блокеры сняты —
- *    `ready`, часть осталась — `materialized`, занесён новый — 422 и ни одной записи;
- * 3. **заполнение `unknown` и его отмена** (Ф1, Щ1, Щ2, Э1, Ю2) — четыре положения отрезка внутри
- *    дыры, отмена каждого и цикл «отменил → заполнил заново, начиная раньше». Эти тесты идут
- *    **мимо флага** {@link AssignmentRepair.KNOWN_FILLS_ENABLED}: логика готова целиком, и включение
- *    фичи обязано быть снятием одного флага, а не дописыванием кода;
- * 4. **механический запрет** (Х1) — тот же флаг со стороны HTTP: тело с `knownFills` проходит схему
- *    (Ц4 — иначе человек прочёл бы «лишнее поле» вместо объяснения) и упирается в `409
- *    backdated_issue_not_authorized` на обеих ручках;
- * 5. **решение хвоста** (Р31) — дремлющая граница значением назначения, её провенанс и группа, и
- *    переключение на `history_wins` одной транзакцией;
- * 6. **бумага починенной истории** (§10, этап 5) — единственный предмет файла, у которого поведение
- *    зависит от **режима чтения**, и потому единственный, что идёт двумя прогонами: в `legacy`
- *    дверь бумаги не трогает вовсе (её ведёт недельная сверка, знающая одного машиниста на заявку),
- *    в `history` тот же ремонт переоформляет листы по отрезкам истории.
+ * 1. **the conditional rights contract (R29, C3)** — the one part that can only be checked over
+ *    HTTP with real roles: `waybills.correct` is asked by the COMPUTED outcome, not by the body's
+ *    shape; deeper than thirty days adds `correctBeyondLimit`; an archived request opens BY ID
+ *    WITHOUT `archive.read`, while `restore` stays an administrator's action;
+ * 2. **readiness by R27** — a set comparison, not an invariant check: all blockers gone — `ready`,
+ *    some left — `materialized`, a new one introduced — 422 and not a single write;
+ * 3. **the known-fill planner and its cancellation** (F1, Shch1, Shch2, E1, Yu2) — four positions
+ *    of a fill inside a gap, cancelling each, and the "cancel, then fill again starting earlier"
+ *    cycle. These go through the pure planner, past the switch
+ *    {@link AssignmentRepair.KNOWN_FILLS_ENABLED}: the logic is complete, and turning the feature
+ *    off or on must remain one value, not a code change;
+ * 4. **the switch itself** (X1) — it is the only condition, and an empty list never trips it;
+ * 5. **the tail decision** (R31) — the dormant boundary valued by the assignment, its provenance
+ *    and group, and the switch to `history_wins` in one transaction;
+ * 6. **paper of a repaired history** (§10, stage 5) — `legacy` leaves paper to the weekly sync,
+ *    which knows one machinist per request; `history` re-issues sheets by history segments;
+ * 7. **the door against paper** — a fill and its cancellation, the tail decision, an archived
+ *    request with `restore`, the per-sheet handshake (B4) and the keyed replay (R9), each asserting
+ *    what happens to the strict-reporting blanks in both read modes. Cases marked DIVERGENCE there
+ *    record where the code, as of this commit, does not do what the plan says.
  *
- * ПОЧЕМУ ДВУМЯ ПРОГОНАМИ ИДЁТ ТОЛЬКО ШЕСТОЙ. Остальные пять сцен бумаги не имеют вовсе
- * (`issueSheets` у них не стоит), и шаг 12 в них — пустой план в обоих режимах: две половины
- * ожиданий совпадали бы навсегда, а не до cutover. Оборачивать их значило бы удвоить прогон ради
- * одинаковых чисел и спрятать единственное настоящее расхождение среди двадцати восьми мнимых.
+ * WHY ALMOST EVERYTHING RUNS IN BOTH READ MODES. The door always computes its paper plan and the
+ * mode decides only whether step 12 executes it, so any case that reaches step 12 can differ
+ * between the modes — and the earlier assumption that paperless scenes make the two halves
+ * identical forever did not hold: in `history` the plan also MINTS blanks for repaired days that
+ * never had paper, each under warnings that demand a signature (B4). The rights, readiness, tail
+ * and replay cases of blocks 1, 2, 5 and 6 therefore run twice, sending the signatures the preview
+ * asked for exactly as the portal window does (see `handshakeOf`); what the paper then looks like
+ * is asserted in block 7, not there.
  *
- * ПОЧЕМУ ЧАСТЬ ТЕСТОВ ИДЁТ ПО HTTP, А ЧАСТЬ — ПО СЕРВИСУ. Права, отпечаток и идемпотентность живут
- * в ручке и проверяются только через неё. Правила заполнения живут в чистом планировщике, и гонять
- * их через HTTP значило бы проверять флаг вместо правил — а флаг сегодня закрыт. Бумага — снова по
- * HTTP: шаг 12 ремонта живёт в **ручке** (`syncPaper` её команды), и вызов сервиса напрямую прошёл
- * бы мимо предмета.
+ * WHAT STILL RUNS ONCE, AND WHY. Block 3 calls the planner and the write core inside a rolled-back
+ * transaction and never reaches step 12, so the read mode cannot reach it either; block 4 is a
+ * constant. Both would produce identical halves by construction, not by coincidence.
  *
- * Запуск (база из переменной может быть любой — своя всё равно заводится рядом и сносится следом):
+ * WHY SOME CASES GO OVER HTTP AND SOME THROUGH THE SERVICE. Rights, fingerprint, idempotency and
+ * step 12 live in the route (`syncPaper` of its command) and are checked only through it. The fill
+ * rules live in a pure planner, and driving them through HTTP would test the plumbing around them
+ * instead of the rules.
+ *
+ * Running (the database in the variable can be any — the file creates its own next to it and drops
+ * it afterwards):
  *
  *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/ap_repair \
  *     npx vitest run test/assignment-repair.db.test.ts
  *
- * Без `TEST_DATABASE_URL` файл пропускается — как и остальные `*.db.test.ts`.
+ * Without `TEST_DATABASE_URL` the file is skipped, like every other `*.db.test.ts`.
  */
 
 /** Своя база и режим чтения на ней; стоит до собственного `beforeAll` — см. шапку механики. */
@@ -468,6 +480,58 @@ const acknowledgementsOf = (
 /** Предупреждения предпросмотра — общая часть ответа двери (§7). */
 type PreviewIssues = { issueKey: number; warnings: unknown[]; warningFingerprint: string }[];
 
+/** The repair preview fields the cases read. */
+interface RepairPreview {
+  fingerprint: string;
+  unlockFingerprint: string | null;
+  requiredUnlocks: { waybillId: string }[];
+  paperFree: boolean;
+  restoreRequired: boolean;
+  archived: boolean;
+  state: string;
+  stateAfter: string;
+  operationRequirement: { kind: string; reasonRequired: boolean } | null;
+  fillableGaps: { from: string; to: string }[];
+  requiredAnchors: { effectiveDate: string; from: string; to: string }[];
+  blockedDays: { from: string; to: string }[];
+  plan: {
+    cancel: { waybillId: string }[];
+    issue: { from: string; to: string; vehicleId: string; driverPersonId: string }[];
+  };
+  issues: PreviewIssues;
+}
+
+/**
+ * Handshake part of a command body, built from the preview the way the portal window builds it:
+ * the fingerprint of the consequences, the unlock fingerprint when the server asked for one, and a
+ * signature per warned sheet (B4).
+ *
+ * Signatures are sent in both read modes on purpose. In `history` the door issues the blanks from
+ * this very plan and demands them; in `legacy` it does not demand them but still checks the ones
+ * it gets — so one body passes in both worlds, and a case whose subject is rights or readiness is
+ * not silently turned into a case about signatures. An unrequested `unlockFingerprint`, on the
+ * other hand, is a 422 of its own (see "лишнее подтверждение разблокировок").
+ */
+const handshakeOf = (dto: RepairPreview) => ({
+  previewFingerprint: dto.fingerprint,
+  ...(dto.unlockFingerprint ? { unlockFingerprint: dto.unlockFingerprint } : {}),
+  acknowledgements: acknowledgementsOf(dto.issues),
+});
+
+/** A preview's planned blanks by composition — the same shape as `compositionOf` below. */
+const planIssueOf = (dto: RepairPreview): string[] =>
+  dto.plan.issue.map(
+    (sheet) => `${sheet.from}|${sheet.to}|${sheet.vehicleId}|${sheet.driverPersonId}`,
+  );
+
+/**
+ * Expected composition of a range: the portal's own cut of it (weeks and month ends, ADR 0142),
+ * one vehicle, one person. Counted by `esm2Periods`, never written out by hand, for the reason
+ * `PAPER_PERIODS` gives.
+ */
+const periodsOf = (from: string, to: string, vehicleId: string, personId: string): string[] =>
+  esm2Periods(from, to).map((period) => `${period.from}|${period.to}|${vehicleId}|${personId}`);
+
 type Executor = typeof AppDb | Parameters<Parameters<(typeof AppDb)['transaction']>[0]>[0];
 
 async function rowsOf(requestId: string, on: Executor = ctx.db) {
@@ -510,9 +574,9 @@ async function requestState(requestId: string) {
   return row!;
 }
 
-// ── 1. Условный контракт прав (Р29, Ц3) ──
+// ── 1. The conditional rights contract (R29, C3) ──
 
-describe('права двери ремонта — условный контракт (Р29)', () => {
+describeReadModes(readMode, 'права двери ремонта — условный контракт (Р29)', () => {
   it('исторический якорь требует waybills.correct: менеджеру 403, диспетчеру и админу — да', async () => {
     if (!DB_URL) return;
     const scene = await makeScene();
@@ -523,25 +587,25 @@ describe('права двери ремонта — условный контра
       operation: operation('Восстанавливаем машиниста по табелю'),
     };
 
-    // Предпросмотр считает те же последствия и права не спрашивает: 403 посреди операции хуже,
-    // чем отказ до неё, — но и запрещать смотреть последствия праву не за что.
+    // The preview computes the same consequences and asks no rights: a 403 in the middle of an
+    // operation is worse than a refusal before it, and there is no right to forbid looking.
     const preview = await previewRepair(ctx.manager, scene.requestId, body);
     expect(preview.statusCode, preview.body).toBe(200);
-    expect(
-      preview.json<{ operationRequirement: { kind: string } | null }>().operationRequirement,
-    ).toEqual({ kind: 'crew', reasonRequired: true, operationIdRequired: true });
-
-    const denied = await postRepair(ctx.manager, scene.requestId, {
-      ...body,
-      previewFingerprint: preview.json<{ fingerprint: string }>().fingerprint,
+    const dto = preview.json<RepairPreview>();
+    expect(dto.operationRequirement).toEqual({
+      kind: 'crew',
+      reasonRequired: true,
+      operationIdRequired: true,
     });
+
+    const denied = await postRepair(ctx.manager, scene.requestId, { ...body, ...handshakeOf(dto) });
     expect(denied.statusCode, denied.body).toBe(403);
     expect(await rowsOf(scene.requestId)).toHaveLength(2);
 
     const allowed = await postRepair(ctx.dispatcher, scene.requestId, {
       ...body,
       operation: operation('Восстанавливаем машиниста по табелю'),
-      previewFingerprint: preview.json<{ fingerprint: string }>().fingerprint,
+      ...handshakeOf(dto),
     });
     expect(allowed.statusCode, allowed.body).toBe(200);
   });
@@ -556,11 +620,11 @@ describe('права двери ремонта — условный контра
     };
     const preview = await previewRepair(ctx.admin, scene.requestId, body);
     expect(preview.statusCode, preview.body).toBe(200);
-    const fingerprint = preview.json<{ fingerprint: string }>().fingerprint;
+    const dto = preview.json<RepairPreview>();
 
     const denied = await postRepair(ctx.dispatcher, scene.requestId, {
       ...body,
-      previewFingerprint: fingerprint,
+      ...handshakeOf(dto),
       operation: operation('Миграционный долг'),
     });
     expect(denied.statusCode, denied.body).toBe(403);
@@ -568,7 +632,7 @@ describe('права двери ремонта — условный контра
 
     const allowed = await postRepair(ctx.admin, scene.requestId, {
       ...body,
-      previewFingerprint: fingerprint,
+      ...handshakeOf(dto),
       operation: operation('Миграционный долг'),
     });
     expect(allowed.statusCode, allowed.body).toBe(200);
@@ -584,31 +648,27 @@ describe('права двери ремонта — условный контра
       anchors: [{ effectiveDate: NEAR_FROM, driverPersonId: ctx.personA }],
     };
 
-    // Диспетчер `archive.read` не имеет и по решению п. 8 иметь не будет: дверь пускает его к
-    // архивной заявке по идентификатору, не показывая архив ни в списках, ни в поиске.
+    // The dispatcher has no `archive.read` and by decision 8 never will: the door lets them reach
+    // an archived request by id, without showing the archive in lists or search.
     const preview = await previewRepair(ctx.dispatcher, scene.requestId, body);
     expect(preview.statusCode, preview.body).toBe(200);
-    const dto = preview.json<{
-      archived: boolean;
-      restoreRequired: boolean;
-      fingerprint: string;
-    }>();
+    const dto = preview.json<RepairPreview>();
     expect(dto.archived).toBe(true);
-    // Листы архивной заявки остаются действующими, и «paper-free» решает расчёт, а не архивный
-    // статус: у этой заявки план непуст, и ремонт без восстановления отклоняется.
+    // Paper-free is decided by the computed plan, not by the archive flag: this request's plan is
+    // non-empty (the repaired days still want blanks), so a repair without restore is refused.
     expect(dto.restoreRequired).toBe(true);
 
     const withoutRestore = await postRepair(ctx.dispatcher, scene.requestId, {
       ...body,
-      previewFingerprint: dto.fingerprint,
+      ...handshakeOf(dto),
       operation: operation('Ремонт архива'),
     });
     expect(withoutRestore.statusCode, withoutRestore.body).toBe(422);
     expect(withoutRestore.json<{ message: string }>().message).toMatch(/восстановлен/i);
 
-    // `restore` остаётся администраторским — это вторая половина отступления Ц3.
-    // Отпечаток берётся у предпросмотра **того же** тела: `restore` входит в последствия, и
-    // подставить сюда отпечаток предыдущего просмотра значило бы получить 409 вместо 403.
+    // `restore` stays an administrator's action — the other half of the C3 deviation. The
+    // fingerprint comes from a preview of the SAME body: `restore` is part of the consequences, and
+    // reusing the previous preview's fingerprint would yield a 409 instead of the 403 under test.
     const restorePreview = await previewRepair(ctx.dispatcher, scene.requestId, {
       ...body,
       restore: true,
@@ -617,7 +677,7 @@ describe('права двери ремонта — условный контра
     const dispatcherRestore = await postRepair(ctx.dispatcher, scene.requestId, {
       ...body,
       restore: true,
-      previewFingerprint: restorePreview.json<{ fingerprint: string }>().fingerprint,
+      ...handshakeOf(restorePreview.json<RepairPreview>()),
       operation: operation('Ремонт архива'),
     });
     expect(dispatcherRestore.statusCode, dispatcherRestore.body).toBe(403);
@@ -630,20 +690,21 @@ describe('права двери ремонта — условный контра
     const adminRestore = await postRepair(ctx.admin, scene.requestId, {
       ...body,
       restore: true,
-      previewFingerprint: adminPreview.json<{ fingerprint: string }>().fingerprint,
+      ...handshakeOf(adminPreview.json<RepairPreview>()),
       operation: operation('Ремонт архива'),
     });
     expect(adminRestore.statusCode, adminRestore.body).toBe(200);
     const after = await requestState(scene.requestId);
-    // Одна транзакция: и архив снят, и история починена. Половинчатого исхода не бывает (Р29).
+    // One transaction: the archive is lifted and the history repaired together; a half outcome
+    // does not exist (R29).
     expect(after.deleted_at).toBeNull();
     expect(after.state).toBe('ready');
   });
 });
 
-// ── 2. Готовность по Р27 ──
+// ── 2. Readiness by R27 ──
 
-describe('готовность истории (Р26, Р27)', () => {
+describeReadModes(readMode, 'готовность истории (Р26, Р27)', () => {
   it('снятый блокер даёт ready, оставшийся — materialized', async () => {
     if (!DB_URL) return;
     const mid = shiftDateKey(TODAY, 3);
@@ -651,7 +712,7 @@ describe('готовность истории (Р26, Р27)', () => {
       history: [
         { effectiveDate: NEAR_FROM, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id },
         { effectiveDate: NEAR_FROM, dimension: 'driver', driverState: 'unknown' },
-        // Второй, независимый блокер: собственный отрезок со снятым машинистом (Р16).
+        // A second, independent blocker: an own-vehicle segment with the machinist cleared (R16).
         { effectiveDate: mid, dimension: 'driver', driverState: 'cleared' },
       ],
     });
@@ -662,25 +723,22 @@ describe('готовность истории (Р26, Р27)', () => {
     };
     const preview = await previewRepair(ctx.admin, scene.requestId, partial);
     expect(preview.statusCode, preview.body).toBe(200);
-    const dto = preview.json<{
-      stateAfter: string;
-      requiredAnchors: { effectiveDate: string }[];
-      blockedDays: { from: string; to: string }[];
-    }>();
-    // Предпросмотр называет обе границы: чинят их по очереди, и вторая не запирает первую.
+    const dto = preview.json<RepairPreview>();
+    // The preview names both boundaries: they are repaired one at a time, and the second does not
+    // lock the first.
     expect(dto.requiredAnchors.map((a) => a.effectiveDate).sort()).toEqual([NEAR_FROM, mid].sort());
     expect(dto.stateAfter).toBe('materialized');
     expect(dto.blockedDays.length).toBeGreaterThan(0);
 
     const applied = await postRepair(ctx.admin, scene.requestId, {
       ...partial,
-      previewFingerprint: preview.json<{ fingerprint: string }>().fingerprint,
+      ...handshakeOf(dto),
       operation: operation('Первый из двух пробелов'),
     });
     expect(applied.statusCode, applied.body).toBe(200);
     const half = await requestState(scene.requestId);
-    // Частичный ремонт записан, а состояние осталось `materialized`: чужой блокер команда не
-    // обязана ни чинить, ни ухудшать.
+    // The partial repair is written and the state stays `materialized`: a command is obliged
+    // neither to fix nor to worsen somebody else's blocker.
     expect(half.state).toBe('materialized');
     expect(half.validated_on).toBe(TODAY);
     expect(half.dirty).toBe(false);
@@ -693,7 +751,7 @@ describe('готовность истории (Р26, Р27)', () => {
     const secondPreview = await previewRepair(ctx.admin, scene.requestId, second);
     const done = await postRepair(ctx.admin, scene.requestId, {
       ...second,
-      previewFingerprint: secondPreview.json<{ fingerprint: string }>().fingerprint,
+      ...handshakeOf(secondPreview.json<RepairPreview>()),
       operation: operation('Второй пробел'),
     });
     expect(done.statusCode, done.body).toBe(200);
@@ -705,13 +763,13 @@ describe('готовность истории (Р26, Р27)', () => {
     const before = [{ date: '2026-01-01', kind: 'unknown' as const }];
     const after = [
       { date: '2026-01-01', kind: 'unknown' as const },
-      // Тот же день, другая причина: сравнение по одним дням выдало бы это за частичный ремонт.
+      // Same day, different cause: comparing by days alone would pass this off as a partial repair.
       { date: '2026-01-01', kind: 'cleared' as const },
     ];
     expect(() => ctx.repair.repairHistoryState(before, after)).toThrowError(/новые пробелы/);
     expect(ctx.repair.repairHistoryState(before, before)).toBe('materialized');
     expect(ctx.repair.repairHistoryState(before, [])).toBe('ready');
-    // Расширение блокера на соседний день даёт новую пару — ловится тем же сравнением.
+    // A blocker spreading to a neighbouring day is a new pair and is caught by the same comparison.
     expect(() =>
       ctx.repair.repairHistoryState(before, [...before, { date: '2026-01-02', kind: 'unknown' }]),
     ).toThrowError(/новые пробелы/);
@@ -719,8 +777,8 @@ describe('готовность истории (Р26, Р27)', () => {
 
   it('`unknown` в заблокированном прошлом блокером не является, а mismatch хвоста — тем более (Р30)', async () => {
     if (!DB_URL) return;
-    // Срок кончился: изменяемых дней нет вовсе, значит нет и блокеров, — а хвост при этом
-    // расходится с назначением. Р30: это предупреждение, а не блокер.
+    // The term is over: no mutable days, hence no blockers — while the tail disagrees with the
+    // assignment. R30: that is a warning, not a blocker.
     const scene = await makeScene({
       dateFrom: DEEP_FROM,
       dateTo: shiftDateKey(TODAY, -10),
@@ -750,15 +808,15 @@ describe('готовность истории (Р26, Р27)', () => {
         assignmentVehicleId: ctx.ownVehicleB.id,
       }),
     );
-    // Тот же `unknown` заблокированного прошлого — адрес заполнения, а не якоря (Ц4).
+    // The same `unknown` of locked past is a fill address, not an anchor's (C4).
     expect(dto.fillableGaps).toEqual([{ from: DEEP_FROM, to: shiftDateKey(TODAY, -10) }]);
   });
 
   /*
-   * Осмотр (подэтап 6a). Окно портала обязано спросить «что чинить» до того, как назовёт работу:
-   * какие `unknown`-промежутки заблокированы и адресуются заполнением, а какие правятся якорями,
-   * знает только сервер. Предпросмотром это не спросить — его тело нарочно одно с боевым и пустоты
-   * не допускает.
+   * Inspection (sub-stage 6a). The portal window has to ask "what to repair" before naming any
+   * work: which `unknown` gaps are locked and addressed by a fill, and which are fixed by anchors,
+   * only the server knows. The preview cannot answer it — its body is deliberately the command's
+   * body and admits no emptiness.
    */
   it('осмотр называет адреса заполнения и не пишет ни строки', async () => {
     if (!DB_URL) return;
@@ -783,18 +841,17 @@ describe('готовность истории (Р26, Р27)', () => {
     }>();
 
     expect(dto.fillableGaps).toEqual([{ from: DEEP_FROM, to: shiftDateKey(TODAY, -10) }]);
-    // Осмотр ничего не обещает: состояние после равно состоянию до, план бумаги пуст.
+    // Inspection promises nothing: the state after equals the state before, the paper plan is empty.
     expect(dto.stateAfter).toBe(dto.state);
     expect(dto.plan.cancel).toEqual([]);
     expect(dto.plan.issue).toEqual([]);
-    // И ничего не пишет: строки истории те же, что были до запроса.
+    // And writes nothing: the history rows are the ones there were before the request.
     expect(await rowsOf(scene.requestId)).toEqual(before);
   });
 
   /*
-   * Полная история — не отказ, а ответ. Прежде дверь на `ready` отвечала 422 «ремонтировать
-   * нечего», и окно, открытое ради отмены заполнения, не смогло бы даже показать список сделанных
-   * заполнений.
+   * A complete history is an answer, not a refusal. The door used to answer `ready` with 422
+   * "nothing to repair", and a window opened to cancel a fill could not even list the fills made.
    */
   it('осмотр проходит и на полной истории, где ремонту отказано', async () => {
     if (!DB_URL) return;
@@ -822,7 +879,7 @@ describe('готовность истории (Р26, Р27)', () => {
     expect(seen.statusCode, seen.body).toBe(200);
     expect(seen.json<{ state: string }>().state).toBe('ready');
 
-    // Тот же запрос телом ремонта — законный отказ: чинить в полной истории нечего.
+    // The same request with a repair body is a lawful refusal: a complete history has nothing to fix.
     const refused = await previewRepair(ctx.admin, scene.requestId, {
       mode: 'repair',
       version: 0,
@@ -833,69 +890,36 @@ describe('готовность истории (Р26, Р27)', () => {
   });
 });
 
-// ── 3. Механический запрет заполнения (Х1, Ц4) ──
+// ── 3. The mechanical switch of known fills (X1, C4) ──
 
 describe('заполнение `unknown` открыто (Х1, Ц4)', () => {
   /*
-   * Бухгалтерия согласовала выписку бланков задним числом (§15 п. 16, решение владельца от
-   * 24.08.2026), и рубильник переведён. Прежде здесь стояли два случая на отказ — они и были
-   * проверкой флага; теперь проверяется работа.
+   * Accounting approved issuing blanks retroactively (§15 item 16, owner's decision of
+   * 24.08.2026), and the switch was flipped. The cases that used to stand here were refusals and
+   * thus checks of the flag; the work itself is now checked in both read modes by the block
+   * "заполнение unknown и его отмена против бумаги" below, since what a fill does to paper is
+   * exactly what the read mode decides.
    *
-   * Рубильник при этом никуда не делся: свернуть фичу — то же одно значение. Второй случай ниже
-   * стережёт именно это свойство, а не текущее состояние.
+   * The switch has not gone anywhere: rolling the feature back is still one value. The case below
+   * guards that property, not the current position of the switch.
    */
-  it('заполнение проходит обеими ручками и доводит историю до полной', async () => {
-    if (!DB_URL) return;
-    // Сцена с настоящей дырой: машина известна, человек — нет. Прежде здесь стояла сцена без
-    // `unknown`, и это не замечалось: отказ по флагу срабатывал раньше расчёта.
-    const scene = await makeScene({
-      dateFrom: DEEP_FROM,
-      dateTo: shiftDateKey(TODAY, -10),
-      history: [
-        { effectiveDate: DEEP_FROM, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id },
-        { effectiveDate: DEEP_FROM, dimension: 'driver', driverState: 'unknown' },
-      ],
-    });
-    const body = {
-      mode: 'repair',
-      version: 0,
-      knownFills: [{ from: DEEP_FROM, to: shiftDateKey(TODAY, -30), personId: ctx.personA }],
-      operation: operation('Нашли табель'),
-    };
-
-    const preview = await previewRepair(ctx.admin, scene.requestId, body);
-    expect(preview.statusCode, preview.body).toBe(200);
-    // Предпросмотр по-прежнему ничего не пишет: строк столько же, сколько было до него.
-    expect(await rowsOf(scene.requestId)).toHaveLength(2);
-
-    const applied = await postRepair(ctx.admin, scene.requestId, {
-      ...body,
-      version: preview.json<{ version?: number }>().version ?? 0,
-    });
-    expect([200, 409]).toContain(applied.statusCode);
-    if (applied.statusCode === 409) {
-      // Версия сцены разошлась — предмет случая не в ней; главное, что отказ уже не про флаг.
-      expect(applied.json<{ code: string }>().code).not.toBe('backdated_issue_not_authorized');
-      return;
-    }
-    // Записана пара заполнения: `set` на начале отрезка и граница `unknown` за его концом (Ш4).
-    const rows = await rowsOf(scene.requestId);
-    expect(rows.length).toBeGreaterThan(2);
-    expect(rows.some((r) => r.origin === 'known_fill')).toBe(true);
-  });
-
   it('рубильник остался единственным условием: пустой список отказа не образует', () => {
     if (!DB_URL) return;
     expect(ctx.repair.KNOWN_FILLS_ENABLED).toBe(true);
-    // Пустой список поля не образует: отказывать «на всякий случай» дверь не должна — это верно
-    // при любом положении рубильника.
+    // An empty list is not a fill: refusing it "just in case" would be wrong in either position
+    // of the switch.
     expect(() => ctx.repair.assertKnownFillsAllowed(undefined)).not.toThrow();
     expect(() => ctx.repair.assertKnownFillsAllowed([])).not.toThrow();
   });
 });
 
-// ── 4. Правила заполнения и отмены — мимо флага (Ф1, Щ1, Щ2, Э1, Ю2) ──
+// ── 4. Fill and cancel rules — past the switch (F1, Shch1, Shch2, E1, Yu2) ──
 
+/*
+ * One run on purpose: these cases call the planner and the write core directly and stop before
+ * step 12, which is the only place the read mode is consulted. What the same fill and cancel do to
+ * paper through the door is block 7's subject, in both modes.
+ */
 describe('заполнение отрезка и его отмена (Щ1, Щ2, Э1)', () => {
   /**
    * Дыра `unknown` на весь заблокированный срок и заполнение внутри неё.
@@ -1379,9 +1403,9 @@ describe('заполнение отрезка и его отмена (Щ1, Щ2, 
   }
 });
 
-// ── 5. Решение хвоста (Р31) ──
+// ── 5. The tail decision (R31) ──
 
-describe('решение расхождения хвоста (Р31)', () => {
+describeReadModes(readMode, 'решение расхождения хвоста (Р31)', () => {
   const PAST_TO = shiftDateKey(TODAY, -10);
   const SINCE = shiftDateKey(PAST_TO, 1);
 
@@ -1409,8 +1433,8 @@ describe('решение расхождения хвоста (Р31)', () => {
     const body = { mode: 'repair', version: 0, tailResolution: { kind: 'assignment_wins' } };
     const preview = await previewRepair(ctx.admin, scene.requestId, body);
     expect(preview.statusCode, preview.body).toBe(200);
-    // Дремлющее решение бумаги не трогает, но операцию журнала требует: оно правит принятое
-    // решение и обязано быть объяснено (Р32).
+    // A dormant decision leaves paper alone yet requires a journal operation: it amends a decision
+    // already taken and has to be explained (R32).
     expect(
       preview.json<{ operationRequirement: { kind: string } }>().operationRequirement.kind,
     ).toBe('assignment_tail');
@@ -1430,9 +1454,10 @@ describe('решение расхождения хвоста (Р31)', () => {
       await ctx.db.execute<{ vehicle_id: string }>(sql`
         SELECT vehicle_id FROM vehicle_request_assignments WHERE request_id = ${scene.requestId}`)
     ).rows;
-    // Р17, исключение 1: назначение и ставки решение не трогает — они уже его.
+    // R17, exception 1: the decision leaves the assignment and the rates alone — they are already
+    // its own.
     expect(assignment!.vehicle_id).toBe(ctx.ownVehicleB.id);
-    // Заявка была `ready` и осталась: расхождение хвоста readiness не касается (Р30).
+    // The request was `ready` and stays so: a tail mismatch does not touch readiness (R30).
     expect((await requestState(scene.requestId)).state).toBe('ready');
   });
 
@@ -1487,18 +1512,19 @@ describe('решение расхождения хвоста (Р31)', () => {
       await ctx.db.execute<{ vehicle_id: string }>(sql`
         SELECT vehicle_id FROM vehicle_request_assignments WHERE request_id = ${scene.requestId}`)
     ).rows;
-    // Р17 `follow`: назначение обязано показать хвост истории, и ядро сверило это по живому
-    // состоянию.
+    // R17 `follow`: the assignment must show the history's tail, and the core checked that against
+    // the live state.
     expect(assignment!.vehicle_id).toBe(ctx.ownVehicle.id);
   });
 
   /*
-   * Ю51: отказ называет **состояние заявки**, а не термин плана. Слово «хвост» человеку в окне не
-   * говорит ничего — у заявки есть конец срока и машина, которая за ней числится после него.
+   * Yu51: the refusal names the STATE OF THE REQUEST, not a term of the plan. The word "tail" means
+   * nothing to a person at the window — a request has an end of term and the machine it is booked
+   * to after it.
    */
   it('расхождения нет — отказ говорит, что история и назначение сошлись, а не «хвост согласован»', async () => {
     if (!DB_URL) return;
-    // Назначение той же машины, что ведёт история: выбирать не из чего.
+    // The assignment names the very machine the history runs: there is nothing to choose from.
     const scene = await tailScene(ctx.ownVehicle);
     const res = await previewRepair(ctx.admin, scene.requestId, {
       mode: 'repair',
@@ -1524,16 +1550,16 @@ describe('решение расхождения хвоста (Р31)', () => {
   });
 });
 
-// ── 6. Допуск двери, рукопожатие и повтор ──
+// ── 6. Admission, fingerprint and replay ──
 
-describe('допуск, отпечаток и повтор', () => {
+describeReadModes(readMode, 'допуск, отпечаток и повтор', () => {
   it('состояние `empty` дверь не пускает, `ready` — только ради хвоста (Р29)', async () => {
     if (!DB_URL) return;
     /*
-     * Волна 3.5 подключила ленивый бэкфилл: заявку в `empty` с живым назначением дверь больше не
-     * отвергает — расчёт восстанавливает историю и пускает ремонт (это проверяет
-     * `assignment-wire.db.test.ts`). Отказ остался там, где восстанавливать **нечем**: без
-     * назначения у бэкфилла нет опоры (Р20), и дверь называет причину.
+     * Wave 3.5 wired the lazy backfill: the door no longer refuses an `empty` request with a live
+     * assignment — the computation restores the history and admits the repair (checked by
+     * `assignment-wire.db.test.ts`). The refusal remains where there is NOTHING to restore from:
+     * without an assignment the backfill has no footing (R20), and the door names the reason.
      */
     const empty = await makeScene({ state: 'empty', history: [] });
     await ctx.db.execute(
@@ -1570,8 +1596,8 @@ describe('допуск, отпечаток и повтор', () => {
   });
 
   /*
-   * Ю51: отказ сформулирован про **действие человека**, а не про поле запроса. «Разблокировок нет,
-   * а тело их подтверждает» отвечало на вопрос, которого человек не задавал.
+   * Yu51: the refusal speaks of the PERSON'S ACTION, not of a request field. "There are no unlocks,
+   * yet the body confirms some" answered a question the person never asked.
    */
   it('лишнее подтверждение разблокировок — отказ говорит, что переоформлять нечего', async () => {
     if (!DB_URL) return;
@@ -1586,12 +1612,12 @@ describe('допуск, отпечаток и повтор', () => {
     expect(preview.statusCode, preview.body).toBe(200);
     const res = await postRepair(ctx.admin, scene.requestId, {
       ...body,
-      previewFingerprint: preview.json<{ fingerprint: string }>().fingerprint,
+      ...handshakeOf(preview.json<RepairPreview>()),
       unlockFingerprint: 'подтверждение, которого не просили',
     });
     expect(res.statusCode, res.body).toBe(422);
     expect(res.json<{ message: string }>().message).toMatch(/подтверждать нечего/);
-    // Команда не прошла: история осталась той, какой её собрала сцена.
+    // The command did not go through: the history is the one the scene built.
     expect(await rowsOf(scene.requestId)).toHaveLength(2);
   });
 
@@ -1624,15 +1650,12 @@ describe('допуск, отпечаток и повтор', () => {
     expect(stale.json<{ code: string }>().code).toBe('assignment_preview_stale');
 
     const preview = await previewRepair(ctx.admin, scene.requestId, body);
-    const payload = {
-      ...body,
-      previewFingerprint: preview.json<{ fingerprint: string }>().fingerprint,
-    };
+    const payload = { ...body, ...handshakeOf(preview.json<RepairPreview>()) };
     const first = await postRepair(ctx.admin, scene.requestId, payload);
     expect(first.statusCode, first.body).toBe(200);
     const version = first.json<{ version: number }>().version;
 
-    // Тот же ключ, то же тело: работы второй раз не происходит, версия не двигается (Р9).
+    // Same key, same body: no work happens the second time and the version does not move (R9).
     const repeat = await postRepair(ctx.admin, scene.requestId, payload);
     expect(repeat.statusCode, repeat.body).toBe(200);
     expect(repeat.json<{ repeated: boolean; version: number }>()).toMatchObject({
@@ -1658,7 +1681,7 @@ describe('допуск, отпечаток и повтор', () => {
     const preview = await previewRepair(ctx.admin, scene.requestId, body);
     const res = await postRepair(ctx.admin, scene.requestId, {
       ...body,
-      previewFingerprint: preview.json<{ fingerprint: string }>().fingerprint,
+      ...handshakeOf(preview.json<RepairPreview>()),
     });
     expect(res.statusCode, res.body).toBe(200);
     const [row] = (
@@ -2054,5 +2077,706 @@ describeReadModes(readMode, 'бумага починенной истории (�
     expect(compositionOf(after)).toEqual(compositionOf(before));
     expect(burnedOf(after)).toEqual([]);
     expect(await esm2EventsOf(scene.requestId)).toHaveLength(0);
+  });
+});
+
+// ── 7. The repair door against paper, in both read modes (X1, F1, E1, R29, R31, B4, R9) ──
+//
+// Everything below runs twice. The door always COMPUTES the paper plan (it answers "is this repair
+// paper-free", R29, and names the sheets the operation must unlock, R11); the read mode decides
+// only whether step 12 EXECUTES it. So every case asserts the same command in both worlds and
+// states, per mode, what happened to the strict-reporting blanks.
+//
+// Cases marked DIVERGENCE document where the code, as of this commit, does not do what the plan
+// (`docs/assignment-periods-plan.md`) says. They assert what the code does, not what the plan
+// wants, so the suite stays a faithful record rather than a wish list; the comment names the plan
+// rule, and whoever fixes the code must flip the marked assertions together with it.
+
+/**
+ * Provenance of every sheet of the request: which journal operation minted it, which one burned
+ * it, and why. The composition helpers above answer "what the paper says"; these columns answer
+ * "who is accountable for it", which is the whole point of issuing strict-reporting blanks
+ * retroactively through the correction journal (F1, R21).
+ */
+async function provenanceOf(requestId: string) {
+  return (
+    await ctx.db.execute<{
+      id: string;
+      period_from: string;
+      period_to: string;
+      vehicle_id: string;
+      driver_person_id: string;
+      status: string;
+      correction_id: string | null;
+      correction_reason: string;
+      cancel_correction_id: string | null;
+    }>(sql`
+      SELECT id, period_from, period_to, vehicle_id, driver_person_id, status, correction_id,
+             correction_reason, cancel_correction_id
+        FROM waybills WHERE source_request_id = ${requestId}
+       ORDER BY period_from, id`)
+  ).rows;
+}
+
+/** The journal row of an operation, looked up by the idempotency key the body carried. */
+async function journalRowOf(operationId: string) {
+  const rows = (
+    await ctx.db.execute<{
+      id: string;
+      kind: string;
+      reason: string;
+      authorization_scope: { requiresCorrect: boolean; requiresCorrectBeyondLimit: boolean };
+    }>(sql`
+      SELECT id, kind, reason, authorization_scope FROM waybill_corrections
+       WHERE operation_id = ${operationId}`)
+  ).rows;
+  // One key, one row: a second row would mean the replay did the work twice (R9).
+  expect(rows).toHaveLength(1);
+  return rows[0]!;
+}
+
+/** Portal events of the request by action, oldest first. */
+async function auditActionsOf(requestId: string): Promise<string[]> {
+  return (
+    await ctx.db.execute<{ action: string }>(sql`
+      SELECT action FROM audit_log WHERE entity_id = ${requestId} ORDER BY created_at, id`)
+  ).rows.map((row) => row.action);
+}
+
+/*
+ * The fill scene: a term lying wholly in locked past, the machine known, the person not, and no
+ * paper at all — the normal backfill outcome where no blank was ever issued (F1). The fill covers
+ * the head of the gap and leaves a tail, so both rows of a fill group get written (Sh4).
+ */
+const GAP_TO = shiftDateKey(TODAY, -10);
+const FILL_TO = shiftDateKey(TODAY, -30);
+
+const gapHistory = (): NonNullable<SceneOptions['history']> => [
+  { effectiveDate: DEEP_FROM, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id },
+  { effectiveDate: DEEP_FROM, dimension: 'driver', driverState: 'unknown' },
+];
+
+const fillBody = (reason: string) => ({
+  mode: 'repair',
+  version: 0,
+  knownFills: [{ from: DEEP_FROM, to: FILL_TO, personId: ctx.personA }],
+  operation: operation(reason),
+});
+
+/*
+ * The paper scene shared by the handshake, replay and archive cases: two weeks of weekly paper
+ * on one person, and a repair that names somebody else from the first day. In `history` it
+ * re-issues every sheet of the term, each with warnings (the scene's people carry no documents),
+ * which is exactly what makes the per-sheet handshake load-bearing.
+ */
+const paperScene = (options: Pick<SceneOptions, 'archived'> = {}) =>
+  makeScene({
+    dateFrom: PREV_MONDAY,
+    dateTo: PAPER_TO,
+    history: [
+      { effectiveDate: PREV_MONDAY, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id },
+      { effectiveDate: PREV_MONDAY, dimension: 'driver', driverState: 'unknown' },
+    ],
+    issueSheets: { driverPersonId: ctx.personA },
+    ...options,
+  });
+
+const anchorBody = (reason: string) => ({
+  mode: 'repair',
+  version: 0,
+  anchors: [{ effectiveDate: PREV_MONDAY, driverPersonId: ctx.personB }],
+  operation: operation(reason),
+});
+
+describeReadModes(
+  readMode,
+  'заполнение unknown и его отмена против бумаги (Х1, Ф1, Э1)',
+  (mode) => {
+    it('заполнение дыры без бумаги: отпечаток обязателен, в history бланки выписываются задним числом', async () => {
+      if (!DB_URL) return;
+      const scene = await makeScene({ dateFrom: DEEP_FROM, dateTo: GAP_TO, history: gapHistory() });
+      const body = fillBody('Нашли табель');
+
+      /*
+       * The fill used to be posted blind (no preview fingerprint) and the case accepted `[200, 409]`,
+       * returning early on 409 — which is what it always got, so the write path of a fill was never
+       * asserted. The repair door declares no `requiresPreview`, so step 7 falls back to the
+       * framework default: any command with history mutations must carry the fingerprint.
+       */
+      const blind = await postRepair(ctx.admin, scene.requestId, body);
+      expect(blind.statusCode, blind.body).toBe(409);
+      expect(blind.json<{ code: string }>().code).toBe('assignment_preview_stale');
+      expect(await rowsOf(scene.requestId)).toHaveLength(2);
+
+      const preview = await previewRepair(ctx.admin, scene.requestId, body);
+      expect(preview.statusCode, preview.body).toBe(200);
+      const dto = preview.json<RepairPreview>();
+      // A fill touches locked history, so its outcome is `crew` (R29, R32) in both modes.
+      expect(dto.operationRequirement).toMatchObject({ kind: 'crew' });
+      expect(dto.stateAfter).toBe('ready');
+      expect(dto.unlockFingerprint).toBeNull();
+      expect(dto.plan.cancel).toEqual([]);
+      // The preview is mode-independent: it promises one blank per portal period of the filled days.
+      const filled = periodsOf(DEEP_FROM, FILL_TO, ctx.ownVehicle.id, ctx.personA);
+      expect(planIssueOf(dto)).toEqual(filled);
+      expect(dto.issues.some((issue) => issue.warnings.length > 0)).toBe(true);
+      /*
+       * DIVERGENCE (R29, contract `RepairPreviewDto.paperFree`: "is the paper plan empty"): the
+       * preview reports `paperFree: true` while its own plan issues blanks. `paperFree` is taken from
+       * the probe plan, which has neither unlocks nor the correction permit, and a probe cannot see
+       * work that lies wholly in the locked past. The archive case below shows what this costs.
+       */
+      expect(dto.paperFree).toBe(true);
+
+      const applied = await postRepair(ctx.admin, scene.requestId, {
+        ...body,
+        ...handshakeOf(dto),
+      });
+      expect(applied.statusCode, applied.body).toBe(200);
+      expect(applied.json<{ state: string; version: number }>()).toMatchObject({
+        state: 'ready',
+        version: 1,
+      });
+
+      // History is written the same way in both modes: `set` replaces the backfill row on `from`
+      // (Shch2) and the remainder boundary lands on `to + 1`; both carry the operation (Shch3).
+      const journal = await journalRowOf(body.operation.operationId);
+      expect(journal).toMatchObject({ kind: 'crew', reason: 'Нашли табель' });
+      expect(journal.authorization_scope).toMatchObject({
+        requiresCorrect: true,
+        requiresCorrectBeyondLimit: true,
+      });
+      const rows = await rowsOf(scene.requestId);
+      const replaced = rows.find((row) => row.origin === 'backfill' && row.dimension === 'driver')!;
+      expect(replaced.superseded_kind).toBe('replaced');
+      const fill = actual(rows).filter((row) => row.correction_id === journal.id);
+      expect(fill.map((row) => [row.effective_date, row.origin, row.driver_person_id])).toEqual([
+        [DEEP_FROM, 'known_fill', ctx.personA],
+        [shiftDateKey(FILL_TO, 1), 'unknown_remainder', null],
+      ]);
+
+      const sheets = await provenanceOf(scene.requestId);
+      const events = await esm2EventsOf(scene.requestId);
+      if (mode === 'legacy') {
+        // The weekly sync owns legacy paper and knows nothing of fills: no blank, no event.
+        expect(sheets).toEqual([]);
+        expect(events).toHaveLength(0);
+        return;
+      }
+      // History: every missing blank is minted retroactively, under the fill's own operation and
+      // reason, and one strict sync event names all the new numbers (F1, R35).
+      expect(compositionOf(await sheetsOf(scene.requestId))).toEqual(filled);
+      expect(sheets.every((sheet) => sheet.status === 'issued')).toBe(true);
+      expect(sheets.every((sheet) => sheet.correction_id === journal.id)).toBe(true);
+      expect(sheets.every((sheet) => sheet.correction_reason === 'Нашли табель')).toBe(true);
+      expect(events).toHaveLength(1);
+      expect(events[0]!.metadata.reason).toBe('Нашли табель');
+      expect(events[0]!.metadata.cancelled).toEqual([]);
+      expect(new Set(events[0]!.metadata.issued).size).toBe(filled.length);
+    });
+
+    it('отмена заполнения: в history гаснут только бланки, не совпавшие с неделей дыры (Э2)', async () => {
+      if (!DB_URL) return;
+      const scene = await makeScene({ dateFrom: DEEP_FROM, dateTo: GAP_TO, history: gapHistory() });
+      const fill = fillBody('Нашли табель');
+      const fillPreview = (
+        await previewRepair(ctx.admin, scene.requestId, fill)
+      ).json<RepairPreview>();
+      const filled = await postRepair(ctx.admin, scene.requestId, {
+        ...fill,
+        ...handshakeOf(fillPreview),
+      });
+      expect(filled.statusCode, filled.body).toBe(200);
+      const minted = await provenanceOf(scene.requestId);
+      expect(minted).toHaveLength(
+        byReadMode(mode, { legacy: 0, history: fillPreview.plan.issue.length }),
+      );
+
+      const group = actual(await rowsOf(scene.requestId)).find(
+        (row) => row.origin === 'known_fill',
+      )!.change_group_id;
+      const body = {
+        mode: 'cancel_fill',
+        version: filled.json<{ version: number }>().version,
+        target: { changeGroupId: group },
+        operation: operation('Табель оказался от другой машины'),
+      };
+      const preview = await previewRepair(ctx.admin, scene.requestId, body);
+      expect(preview.statusCode, preview.body).toBe(200);
+      const dto = preview.json<RepairPreview>();
+      // Retracting a claim about the past is a correction of the past (R13, E2).
+      expect(dto.operationRequirement).toMatchObject({ kind: 'crew' });
+      expect(dto.plan.issue).toEqual([]);
+
+      /*
+       * After the cancel the gap is `unknown` again, and an `unknown` day accepts any printed person
+       * (R19, `sheetMatchesWanted`). So a minted blank survives whenever its period coincides with a
+       * portal period of the restored gap, and burns only when the fill's own end cut it short.
+       */
+      const gapPeriods = esm2Periods(DEEP_FROM, GAP_TO);
+      const cutShort = minted
+        .filter(
+          (sheet) =>
+            !gapPeriods.some((p) => p.from === sheet.period_from && p.to === sheet.period_to),
+        )
+        .map((sheet) => sheet.id);
+      expect(dto.plan.cancel.map((sheet) => sheet.waybillId)).toEqual(cutShort);
+      // Every minted blank is locked past and lies in the command's paper scope, so all of them must
+      // be unlocked by name — even the ones the plan then keeps.
+      expect(dto.requiredUnlocks.map((sheet) => sheet.waybillId)).toEqual(
+        minted.map((sheet) => sheet.id),
+      );
+
+      const res = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
+      expect(res.statusCode, res.body).toBe(200);
+      // The fill group is gone and the left edge keeps an `unknown` row: nothing on the left of the
+      // term was `unknown`, so without it the fold would carry no claim at all (Shch2).
+      const driverRows = actual(await rowsOf(scene.requestId)).filter(
+        (row) => row.dimension === 'driver',
+      );
+      expect(driverRows.map((row) => [row.effective_date, row.driver_state, row.origin])).toEqual([
+        [DEEP_FROM, 'unknown', 'unknown_remainder'],
+      ]);
+
+      const after = await provenanceOf(scene.requestId);
+      const events = await esm2EventsOf(scene.requestId);
+      if (mode === 'legacy') {
+        expect(after).toEqual([]);
+        expect(events).toHaveLength(0);
+        return;
+      }
+      const cancelJournal = await journalRowOf(body.operation.operationId);
+      const burned = after.filter((sheet) => sheet.status === 'cancelled');
+      expect(burned.map((sheet) => sheet.id)).toEqual(cutShort);
+      expect(burned.every((sheet) => sheet.cancel_correction_id === cancelJournal.id)).toBe(true);
+      /*
+       * DIVERGENCE (plan R13, E2: "the blanks issued under the fill are annulled, as with any
+       * correction of the past"): the blanks the fill minted outlive its cancellation. They keep
+       * naming the person the history no longer claims, because R19 treats an `unknown` day as a
+       * match for any printed name — a rule written for blanks issued before the history existed,
+       * not for blanks minted by the very claim being withdrawn.
+       */
+      const survivors = after.filter((sheet) => sheet.status === 'issued');
+      // Never empty: the first minted period starts where the gap does and ends on the same
+      // Sunday or month end, so it always coincides with a period of the restored gap.
+      expect(survivors.length).toBeGreaterThan(0);
+      expect(survivors.map((sheet) => sheet.id)).toEqual(
+        minted.filter((sheet) => !cutShort.includes(sheet.id)).map((sheet) => sheet.id),
+      );
+      expect(survivors.every((sheet) => sheet.driver_person_id === ctx.personA)).toBe(true);
+      // One event per paper-touching command: the fill's, plus the cancel's only if it burned.
+      expect(events).toHaveLength(cutShort.length > 0 ? 2 : 1);
+    });
+
+    it('заполнение поверх отработанного листа с другим человеком: план ждёт 422, дверь переоформляет бланк (Ф1)', async () => {
+      if (!DB_URL) return;
+      const scene = await paperScene();
+      const before = await sheetsOf(scene.requestId);
+      const fillTo = shiftDateKey(PREV_MONDAY, 2);
+      // The prior week's blank is worked-out, hence locked (R21): its days are a fill address (C4).
+      const seen = (await inspectRepair(ctx.admin, scene.requestId)).json<RepairPreview>();
+      expect(seen.fillableGaps[0]).toMatchObject({ from: PREV_MONDAY });
+      expect(seen.fillableGaps[0]!.to >= fillTo).toBe(true);
+      const touched = before.filter(
+        (sheet) => sheet.period_to < TODAY && sheet.period_from <= fillTo,
+      );
+      expect(touched.length).toBeGreaterThan(0);
+
+      const body = {
+        mode: 'repair',
+        version: 0,
+        knownFills: [{ from: PREV_MONDAY, to: fillTo, personId: ctx.personB }],
+        operation: operation('По табелю начало прошлой недели отработал сменщик'),
+      };
+      const preview = await previewRepair(ctx.admin, scene.requestId, body);
+      /*
+       * DIVERGENCE (plan R29/F1, section 13 "known fills": "a day already covered by a live sheet
+       * requires the named person to match the printed one — otherwise 422 with the number"): no
+       * such check exists. The door instead asks to unlock the locked blank by name and plans to
+       * burn it, re-issuing only the filled days — the rest of the burned week is left with no blank.
+       */
+      expect(preview.statusCode, preview.body).toBe(200);
+      const dto = preview.json<RepairPreview>();
+      expect(dto.requiredUnlocks.map((sheet) => sheet.waybillId)).toEqual(
+        touched.map((sheet) => sheet.id),
+      );
+      expect(dto.plan.cancel.map((sheet) => sheet.waybillId)).toEqual(
+        touched.map((sheet) => sheet.id),
+      );
+      expect(planIssueOf(dto)).toEqual(
+        periodsOf(PREV_MONDAY, fillTo, ctx.ownVehicle.id, ctx.personB),
+      );
+
+      const res = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
+      expect(res.statusCode, res.body).toBe(200);
+
+      const after = await sheetsOf(scene.requestId);
+      if (mode === 'legacy') {
+        // Legacy leaves the blank alone, so the live sheet now contradicts the history it covers.
+        expect(compositionOf(after)).toEqual(compositionOf(before));
+        expect(burnedOf(after)).toEqual([]);
+        return;
+      }
+      expect(burnedOf(after)).toEqual(touched.map((sheet) => sheet.id).sort());
+      const live = after.filter((sheet) => sheet.status !== 'cancelled');
+      // The day after the fill used to be covered by the burned blank and is covered by nothing now.
+      const orphan = shiftDateKey(fillTo, 1);
+      if (touched.some((sheet) => sheet.period_to >= orphan)) {
+        expect(live.some((sheet) => sheet.period_from <= orphan && sheet.period_to >= orphan)).toBe(
+          false,
+        );
+      }
+    });
+
+    it('заполнение до конца заблокированной части называет человека и в изменяемых днях (Ц4)', async () => {
+      if (!DB_URL) return;
+      /*
+       * The gap starts in locked past and runs on into mutable days (today to the end of term).
+       * Only its locked part is a fill address; the mutable part is a blocker that an anchor closes
+       * (C4: "on mutable days the same hole is repaired by anchors, and no second way to name a
+       * person is introduced there").
+       */
+      const scene = await makeScene({
+        dateFrom: DEEP_FROM,
+        dateTo: TERM_TO,
+        history: gapHistory(),
+      });
+      const seen = (await inspectRepair(ctx.admin, scene.requestId)).json<RepairPreview>();
+      const lockedEnd = shiftDateKey(TODAY, -1);
+      expect(seen.fillableGaps).toEqual([{ from: DEEP_FROM, to: lockedEnd }]);
+      expect(seen.requiredAnchors.map((anchor) => anchor.effectiveDate)).toEqual([DEEP_FROM]);
+      expect(seen.state).toBe('materialized');
+
+      const body = {
+        mode: 'repair',
+        version: 0,
+        knownFills: [{ from: DEEP_FROM, to: lockedEnd, personId: ctx.personA }],
+        operation: operation('Табель по вчерашний день'),
+      };
+      const preview = await previewRepair(ctx.admin, scene.requestId, body);
+      expect(preview.statusCode, preview.body).toBe(200);
+      const dto = preview.json<RepairPreview>();
+      /*
+       * DIVERGENCE (C4): the fill writes no `unknown_remainder` when it ends on the last locked day,
+       * because `planFills` bounds the remainder by the fill address (`boundary <= gap.to`) rather
+       * than by the `unknown` segment. The `set` therefore runs on through today and the future,
+       * the mutable blocker disappears without an anchor, and the history reports `ready`.
+       */
+      expect(dto.stateAfter).toBe('ready');
+      expect(planIssueOf(dto)).toEqual(
+        periodsOf(DEEP_FROM, TERM_TO, ctx.ownVehicle.id, ctx.personA),
+      );
+
+      const res = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json<{ state: string }>().state).toBe('ready');
+      const driverRows = actual(await rowsOf(scene.requestId)).filter(
+        (row) => row.dimension === 'driver',
+      );
+      expect(driverRows.map((row) => [row.effective_date, row.origin])).toEqual([
+        [DEEP_FROM, 'known_fill'],
+      ]);
+      // In `history` the leak reaches paper: blanks are minted for today and the days ahead as well.
+      expect(compositionOf(await sheetsOf(scene.requestId))).toEqual(
+        byReadMode(mode, {
+          legacy: [] as string[],
+          history: periodsOf(DEEP_FROM, TERM_TO, ctx.ownVehicle.id, ctx.personA),
+        }),
+      );
+    });
+  },
+);
+
+describeReadModes(readMode, 'решение хвоста не трогает бумагу срока (Р31)', () => {
+  it('assignment_wins и переключение на history_wins не жгут ни одного листа', async () => {
+    if (!DB_URL) return;
+    /*
+     * The R30 case as backfill leaves it: history and paper agree on machine A for the whole term,
+     * and only the denormalization drifted to B. The term runs through this week, so the current
+     * sheet is still cancellable — a tail decision that disturbed in-term paper would show here.
+     */
+    const scene = await makeScene({
+      dateFrom: PREV_MONDAY,
+      dateTo: PAPER_TO,
+      history: [
+        { effectiveDate: PREV_MONDAY, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id },
+        {
+          effectiveDate: PREV_MONDAY,
+          dimension: 'driver',
+          driverState: 'set',
+          driverPersonId: ctx.personA,
+          origin: 'machinist_change',
+        },
+      ],
+      state: 'ready',
+      issueSheets: { driverPersonId: ctx.personA },
+    });
+    await ctx.db.execute(sql`
+      UPDATE vehicle_request_assignments
+         SET vehicle_id = ${ctx.ownVehicleB.id}, vehicle_type_id = ${ctx.ownVehicleB.typeId}
+       WHERE request_id = ${scene.requestId}`);
+    const before = await sheetsOf(scene.requestId);
+    expect(compositionOf(before)).toEqual(
+      periodsOf(PREV_MONDAY, PAPER_TO, ctx.ownVehicle.id, ctx.personA),
+    );
+    expect(before.some((sheet) => sheet.period_to >= TODAY)).toBe(true);
+
+    const first = { mode: 'repair', version: 0, tailResolution: { kind: 'assignment_wins' } };
+    const firstPreview = await previewRepair(ctx.admin, scene.requestId, first);
+    expect(firstPreview.statusCode, firstPreview.body).toBe(200);
+    const firstDto = firstPreview.json<RepairPreview>();
+    expect(firstDto.operationRequirement).toMatchObject({ kind: 'assignment_tail' });
+    expect(firstDto.plan).toEqual({ cancel: [], issue: [] });
+    expect(firstDto.unlockFingerprint).toBeNull();
+    expect(firstDto.paperFree).toBe(true);
+    const firstApply = await postRepair(ctx.admin, scene.requestId, {
+      ...first,
+      ...handshakeOf(firstDto),
+      operation: operation('Дальше работает машина назначения'),
+    });
+    expect(firstApply.statusCode, firstApply.body).toBe(200);
+    const border = actual(await rowsOf(scene.requestId)).find(
+      (row) => row.origin === 'tail_resolution',
+    )!;
+    // The dormant boundary lies past the term: it describes no working day yet (R24, R31).
+    expect(border.effective_date).toBe(NEXT_MONDAY);
+    expect(await sheetsOf(scene.requestId)).toEqual(before);
+
+    const second = {
+      mode: 'repair',
+      version: firstApply.json<{ version: number }>().version,
+      tailResolution: { kind: 'history_wins' },
+    };
+    const secondPreview = await previewRepair(ctx.admin, scene.requestId, second);
+    expect(secondPreview.statusCode, secondPreview.body).toBe(200);
+    const secondDto = secondPreview.json<RepairPreview>();
+    expect(secondDto.plan).toEqual({ cancel: [], issue: [] });
+    const switched = await postRepair(ctx.admin, scene.requestId, {
+      ...second,
+      ...handshakeOf(secondDto),
+      operation: operation('Назначение было записано ошибочно'),
+    });
+    expect(switched.statusCode, switched.body).toBe(200);
+    const [assignment] = (
+      await ctx.db.execute<{ vehicle_id: string }>(sql`
+        SELECT vehicle_id FROM vehicle_request_assignments WHERE request_id = ${scene.requestId}`)
+    ).rows;
+    expect(assignment!.vehicle_id).toBe(ctx.ownVehicle.id);
+
+    /*
+     * One expectation for both modes, and that is the claim rather than a shortcut: neither
+     * decision changes who worked on any day inside the term, so there is nothing for either paper
+     * executor to do — the same rows, the same numbers, no sync event.
+     */
+    expect(await sheetsOf(scene.requestId)).toEqual(before);
+    expect(await esm2EventsOf(scene.requestId)).toHaveLength(0);
+  });
+});
+
+describeReadModes(readMode, 'ремонт архивной заявки против бумаги (Р29)', (mode) => {
+  it('restore: true — архив снят той же транзакцией, в history бланк переоформлен', async () => {
+    if (!DB_URL) return;
+    /*
+     * Paper first, archive second — the order R29 is about: soft deletion never calls the sync, so
+     * blanks issued before the request was archived stay live, and the archive says nothing about
+     * paper. Archiving the scene at insert would give the sync nothing to issue at all.
+     */
+    const scene = await paperScene();
+    await ctx.db.execute(sql`
+      UPDATE vehicle_requests SET deleted_at = now(), deleted_by = ${ctx.admin.id}
+       WHERE id = ${scene.requestId}`);
+    const before = await sheetsOf(scene.requestId);
+    const body = anchorBody('Вернули заявку из архива: работал сменщик');
+
+    const plain = (await previewRepair(ctx.admin, scene.requestId, body)).json<RepairPreview>();
+    expect(plain.archived).toBe(true);
+    expect(plain.paperFree).toBe(false);
+    expect(plain.restoreRequired).toBe(true);
+
+    const preview = await previewRepair(ctx.admin, scene.requestId, { ...body, restore: true });
+    expect(preview.statusCode, preview.body).toBe(200);
+    const dto = preview.json<RepairPreview>();
+    expect(planIssueOf(dto)).toEqual(
+      periodsOf(PREV_MONDAY, PAPER_TO, ctx.ownVehicle.id, ctx.personB),
+    );
+
+    const res = await postRepair(ctx.admin, scene.requestId, {
+      ...body,
+      restore: true,
+      ...handshakeOf(dto),
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const state = await requestState(scene.requestId);
+    expect(state.deleted_at).toBeNull();
+    expect(state.state).toBe('ready');
+    // Two facts, two events: the history repair and the way back from the archive.
+    const actions = await auditActionsOf(scene.requestId);
+    expect(actions).toContain('vehicle_request.assignment_repair');
+    expect(actions).toContain('vehicle_request.restore');
+
+    const after = await sheetsOf(scene.requestId);
+    const expected = byReadMode(mode, {
+      // The archive is lifted and the history repaired, but the weekly sync is not called: the
+      // restored request goes on living with blanks that name the person history no longer does.
+      legacy: { composition: compositionOf(before), burned: [] as string[], events: 0 },
+      history: {
+        composition: periodsOf(PREV_MONDAY, PAPER_TO, ctx.ownVehicle.id, ctx.personB),
+        burned: before.map((sheet) => sheet.id).sort(),
+        events: 1,
+      },
+    });
+    expect(compositionOf(after)).toEqual(expected.composition);
+    expect(burnedOf(after)).toEqual(expected.burned);
+    expect(await esm2EventsOf(scene.requestId)).toHaveLength(expected.events);
+  });
+
+  it('заполнение архивной заявки не просит восстановления, а в history выписывает ей бланки (Р29)', async () => {
+    if (!DB_URL) return;
+    const scene = await makeScene({
+      dateFrom: DEEP_FROM,
+      dateTo: GAP_TO,
+      history: gapHistory(),
+      archived: true,
+    });
+    const body = fillBody('Табель архивной заявки');
+    const preview = await previewRepair(ctx.admin, scene.requestId, body);
+    expect(preview.statusCode, preview.body).toBe(200);
+    const dto = preview.json<RepairPreview>();
+    expect(dto.archived).toBe(true);
+    expect(dto.plan.issue.length).toBeGreaterThan(0);
+    /*
+     * DIVERGENCE (R29: "a non-empty plan rejects the repair and demands `restore: true`; one
+     * transaction lifts the archive, writes history and calls the sync"): the same probe-plan
+     * blind spot as in the paperless fill above. The plan issues blanks, yet `paperFree` is true
+     * and `restoreRequired` false, so the repair goes through with the archive left in place.
+     */
+    expect(dto.paperFree).toBe(true);
+    expect(dto.restoreRequired).toBe(false);
+
+    const res = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
+    expect(res.statusCode, res.body).toBe(200);
+    expect((await requestState(scene.requestId)).deleted_at).not.toBeNull();
+    // In `history` the blanks are really minted — for a request that stays in the archive.
+    expect(compositionOf(await sheetsOf(scene.requestId))).toEqual(
+      byReadMode(mode, { legacy: [] as string[], history: planIssueOf(dto) }),
+    );
+  });
+});
+
+describeReadModes(readMode, 'рукопожатие и повтор двери ремонта против бумаги (Б4, Р9)', (mode) => {
+  it('подписи по листам: без них history отвечает 409, legacy проходит; чужая подпись — 409 в обоих', async () => {
+    if (!DB_URL) return;
+    const scene = await paperScene();
+    const before = await sheetsOf(scene.requestId);
+    const body = anchorBody('По табелю обе недели отработал сменщик');
+    const dto = (await previewRepair(ctx.admin, scene.requestId, body)).json<RepairPreview>();
+    // The preview names the sheets to sign in both modes: the plan is computed regardless (§10).
+    const warned = dto.issues.filter((issue) => issue.warnings.length > 0);
+    expect(warned.length).toBeGreaterThan(0);
+    const armed = (acknowledgements?: Record<string, string>) => ({
+      ...body,
+      operation: operation(body.operation.reason),
+      previewFingerprint: dto.fingerprint,
+      unlockFingerprint: dto.unlockFingerprint!,
+      ...(acknowledgements ? { acknowledgements } : {}),
+    });
+    const untouched = async () => {
+      expect(await sheetsOf(scene.requestId)).toEqual(before);
+      expect(await rowsOf(scene.requestId)).toHaveLength(2);
+      expect((await requestState(scene.requestId)).version).toBe(0);
+    };
+
+    // A signature under a different warning set is stale, not merely extra: 409 with the fresh list
+    // in both modes, because a supplied signature is checked even where it is not required.
+    const forged = await postRepair(
+      ctx.admin,
+      scene.requestId,
+      armed({
+        ...acknowledgementsOf(dto.issues),
+        [String(warned[0]!.issueKey)]: 'чужой отпечаток',
+      }),
+    );
+    expect(forged.statusCode, forged.body).toBe(409);
+    expect(forged.json<{ code: string }>().code).toBe(WAYBILL_ACK_REQUIRED_CODE);
+    await untouched();
+
+    // A signature for a sheet the plan does not warn about is the other refusal: 422 in both modes.
+    const stray = await postRepair(
+      ctx.admin,
+      scene.requestId,
+      armed({ ...acknowledgementsOf(dto.issues), '9999': 'подпись без листа' }),
+    );
+    expect(stray.statusCode, stray.body).toBe(422);
+    await untouched();
+
+    /*
+     * No signatures at all: `history` issues the blanks from this plan and demands one per warned
+     * sheet; `legacy` leaves paper to the weekly sync, which has no requester to ask (ADR 0064).
+     */
+    const unsigned = await postRepair(ctx.admin, scene.requestId, armed());
+    expect(unsigned.statusCode, unsigned.body).toBe(
+      byReadMode(mode, { legacy: 200, history: 409 }),
+    );
+    if (mode === 'history') {
+      expect(unsigned.json<{ code: string }>().code).toBe(WAYBILL_ACK_REQUIRED_CODE);
+      await untouched();
+      // The refusal was about the signatures and nothing else: with them the same command passes.
+      const signed = await postRepair(
+        ctx.admin,
+        scene.requestId,
+        armed(acknowledgementsOf(dto.issues)),
+      );
+      expect(signed.statusCode, signed.body).toBe(200);
+    }
+    expect(compositionOf(await sheetsOf(scene.requestId))).toEqual(
+      byReadMode(mode, {
+        legacy: compositionOf(before),
+        history: periodsOf(PREV_MONDAY, PAPER_TO, ctx.ownVehicle.id, ctx.personB),
+      }),
+    );
+  });
+
+  it('повтор по ключу с бумагой: номера не горят второй раз, событие сверки одно', async () => {
+    if (!DB_URL) return;
+    const scene = await paperScene();
+    const before = await sheetsOf(scene.requestId);
+    const body = anchorBody('По табелю обе недели отработал сменщик');
+    const dto = (await previewRepair(ctx.admin, scene.requestId, body)).json<RepairPreview>();
+    const payload = { ...body, ...handshakeOf(dto) };
+
+    const first = await postRepair(ctx.admin, scene.requestId, payload);
+    expect(first.statusCode, first.body).toBe(200);
+    expect(first.json<{ repeated: boolean }>().repeated).toBe(false);
+    const version = first.json<{ version: number }>().version;
+    const afterFirst = await sheetsOf(scene.requestId);
+    const rowsAfterFirst = await rowsOf(scene.requestId);
+
+    // The client lost the answer and sent the very same request again (R9).
+    const repeat = await postRepair(ctx.admin, scene.requestId, payload);
+    expect(repeat.statusCode, repeat.body).toBe(200);
+    expect(repeat.json<{ repeated: boolean; version: number }>()).toMatchObject({
+      repeated: true,
+      version,
+    });
+    expect((await requestState(scene.requestId)).version).toBe(version);
+    expect(await rowsOf(scene.requestId)).toEqual(rowsAfterFirst);
+    await journalRowOf(body.operation.operationId);
+
+    /*
+     * The replay branch returns before planning, so step 12 never runs twice: the same rows, the
+     * same numbers, and — in `history` — exactly the one sync event of the first run. A replay
+     * that re-executed the plan would burn the fresh blanks and mint a third set.
+     */
+    const afterRepeat = await sheetsOf(scene.requestId);
+    expect(afterRepeat).toEqual(afterFirst);
+    expect(burnedOf(afterRepeat)).toEqual(
+      byReadMode(mode, { legacy: [] as string[], history: before.map((sheet) => sheet.id).sort() }),
+    );
+    expect(afterRepeat).toHaveLength(
+      byReadMode(mode, { legacy: before.length, history: before.length + PAPER_PERIODS.length }),
+    );
+    expect(await esm2EventsOf(scene.requestId)).toHaveLength(
+      byReadMode(mode, { legacy: 0, history: 1 }),
+    );
   });
 });

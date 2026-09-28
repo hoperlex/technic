@@ -7,6 +7,7 @@ import {
   moscowDateKeyOf,
   shiftDateKey,
   weekStartKey,
+  WAYBILL_ACK_REQUIRED_CODE,
   type PeriodApplyInput,
   type PeriodCommand,
 } from '@technic/contracts';
@@ -20,31 +21,39 @@ import type * as AssignmentWrite from '../src/services/assignment-write';
 import type * as Esm2 from '../src/services/waybill-esm2';
 
 /*
- * ФАЙЛУ НУЖНА СВОЯ БАЗА. Каждая команда здесь берёт управляющую строку модуля `FOR SHARE` (шаг 0
- * канона), а соседние файлы модуля эту же строку меняют и замораживают (план Ю27, Ю30). Заводит и
- * сносит базу механика `useReadModeDatabase`, она же и двигает на ней режим чтения: два блока
- * файла идут двумя прогонами, а вне их режим остаётся тем, каким его привозит миграция `0167`, —
- * `legacy`.
+ * THE FILE NEEDS ITS OWN DATABASE. Every command here takes the module's control row `FOR SHARE`
+ * (step 0 of the canon), and the neighbouring files of the module change and freeze that same row
+ * (plan Yu27, Yu30). The database is created and dropped by `useReadModeDatabase`, which also moves
+ * the read mode on it: four blocks of the file run twice, and outside them the mode stays what
+ * migration `0167` brings, `legacy`.
  *
- * ЧТО У ФАЙЛА ЗАВИСИТ ОТ РЕЖИМА ЧТЕНИЯ. Два блока из шести — «продление и сокращение» и «права по
- * исходу»: в них дверь доходит до шага 12, а шаг 12 исполняется **по режиму** (§10, этап 5). До
- * cutover бумагу правки срока ведёт недельная сверка: она знает **одну** пару «машина + машинист»
- * — ту, что стоит в денормализации заявки, — и печатает её во всех листах. После переключения тот
- * же шаг исполняет отрезковый план, и пару он берёт из истории на каждый отрезок. Разошлись они
- * там, где эти два источника не совпадают: после гашения хвостовой группы денормализация ещё
- * показывает машину хвоста (Р17 её не двигает), а история за срок — уже машину начала.
+ * WHAT DEPENDS ON THE READ MODE. Step 8 and step 12. Step 12 is executed BY MODE (§10, stage 5):
+ * before cutover the weekly sync owns the paper of a term edit — it knows ONE vehicle-and-machinist
+ * pair, the one in the request's denormalization, and prints it on every sheet; after the switch
+ * the same step executes the segment plan, taking the pair from the history of each segment. They
+ * part where those two sources disagree: after the tail group is cancelled the denormalization still
+ * shows the tail vehicle (R17 does not move it), while the history within the term already shows
+ * the starting one. Step 8 depends on the mode through the per-sheet signatures (B4): required only
+ * where this plan issues the blanks, i.e. in `history`, and checked FIRST among the handshakes.
  *
- * Оба набора ожиданий написаны **до** cutover: в окно `all_frozen` чинить набор нечем (У1).
+ * Hence the two-run blocks: "продление и сокращение" and "права по исходу" (step 12 diverges),
+ * "подтверждение гашения" (step 8 order; the halves coincide only because `armed()` signs what the
+ * preview asked for, and one case drops the signatures to show the order) and "повтор по ключу"
+ * (the first run does mode-specific paper work, and the replay must not repeat it in either mode).
  *
- * ЧЕГО В ЭТИХ ДВУХ ПРОГОНАХ НЕТ. Бэкстопа: разговор с ним ведёт чужая дверь, и проверяется он
- * двумя прогонами в `assignment-backstop.db.test.ts`. Сокращение с гашением упирается в
- * расхождение хвоста (Р31) не по правилу правки срока, а по правилу бэкстопа — и с Ю86 больше не
- * упирается вовсе: направление правки дверь называет явно (`opensTerm`).
+ * Both sets of expectations are written BEFORE cutover: the `all_frozen` window has no time to fix
+ * the suite (U1).
  *
- * ОСТАЛЬНЫЕ ЧЕТЫРЕ БЛОКА ИДУТ ОДНИМ ПРОГОНОМ. Предпросмотр ничего не пишет, подтверждение гашения
- * отказывает до шага 12, повтор по ключу возвращает прежний результат, а у заказа без техники
- * бумаги нет вовсе: во всех четырёх шаг 12 исполняет пустой план, и две половины ожиданий
- * совпадали бы навсегда, а не до переключения.
+ * WHAT THESE RUNS DO NOT COVER. The backstop: that conversation belongs to another door and is
+ * checked in two runs in `assignment-backstop.db.test.ts`. A shortening with cancellation runs into
+ * the tail mismatch (R31) by the backstop's rule, not the term edit's — and since Yu86 not at all:
+ * the door names the direction of the edit explicitly (`opensTerm`).
+ *
+ * WHAT RUNS ONCE, AND WHY. The preview writes nothing and is the same computation in both modes —
+ * the mode is read by the preview, but consulted only by steps 8 and 12, which a preview never
+ * reaches. An order without a vehicle has neither history nor paper, so its step 12 executes an
+ * empty plan in both modes and it issues nothing to sign. Two runs there would give identical
+ * halves by construction.
  */
 
 /**
@@ -853,15 +862,26 @@ describeReadModes(readMode, 'правка срока: продление и со
   });
 });
 
-// ── Д2: подтверждение перечня гасимых групп ──
+// ── D2: confirming the list of cancelled groups ──
 
-describe.skipIf(!DB_URL)('правка срока: подтверждение гашения (Д2)', () => {
+/*
+ * Two runs, and the claim is that the halves coincide — which is not automatic here. Step 8 of this
+ * door checks the per-sheet signatures FIRST (B4, required only in `history`) and the group
+ * confirmation second, so a body without signatures would get 409 `waybill_ack_required` in
+ * `history` where `legacy` answers the 422 under test. `armed()` sends the signatures the preview
+ * asked for, as the portal window does, and that is what makes the halves equal; the last case of
+ * the block drops them on purpose to pin the order down.
+ */
+describeReadModes(readMode, 'правка срока: подтверждение гашения (Д2)', (mode) => {
   it('без подтверждения — 422 с перечнем, и срок остаётся прежним', async () => {
     await inScene(
       { status: 'done', dateTo: EXTENDED_TO, splitAt: NEXT, issueSheets: true },
       async (tx, scene) => {
         const command: PeriodCommand = { version: 0, dateTo: TERM_TO };
         const preview = await previewPeriod(tx, scene, DISPATCHER, command);
+        // Nothing is issued by this shortening, so there is nothing to sign: the only handshake in
+        // play is the group confirmation itself.
+        expect(preview.issues).toEqual([]);
 
         const error = await errorOf(() =>
           runPeriod(
@@ -876,7 +896,7 @@ describe.skipIf(!DB_URL)('правка срока: подтверждение г
         expect(error.statusCode).toBe(422);
         expect(error.message).toContain('Подтвердите перечень');
 
-        // Ничего не записано: ни срока, ни гашения, ни версии.
+        // Nothing written: no term, no cancellation, no version.
         expect(await termOf(tx, scene.requestId)).toMatchObject({ date_to: EXTENDED_TO });
         expect((await rowsOf(tx, scene.requestId)).every((r) => r.superseded_at === null)).toBe(
           true,
@@ -911,6 +931,9 @@ describe.skipIf(!DB_URL)('правка срока: подтверждение г
     await inScene({ status: 'confirmed', issueSheets: true }, async (tx, scene) => {
       const command: PeriodCommand = { version: 0, dateTo: EXTENDED_TO };
       const preview = await previewPeriod(tx, scene, DISPATCHER, command);
+      // The extension issues warned sheets, so `armed()` really does sign them here: this is the
+      // case where the signatures, checked first, have to pass for the 422 below to be reached.
+      expect(preview.issues.some((issue) => issue.warnings.length > 0)).toBe(true);
 
       const error = await errorOf(() =>
         runPeriod(tx, scene, DISPATCHER, {
@@ -920,17 +943,75 @@ describe.skipIf(!DB_URL)('правка срока: подтверждение г
       );
       expect(error.statusCode).toBe(422);
       expect(error.message).toContain('ничего не гасит в истории назначения');
+      expect(await versionOf(tx, scene.requestId)).toBe(0);
     });
   });
 
   /*
-   * Отпечаток у этой двери спрашивается **безусловно** — и после того, как сверка переехала из её
-   * рукопожатия в шаг 7 каркаса (Р17, Э4а), тоже. Сцена выбрана ровно там, где умолчание каркаса
-   * («непустые `effects.mutations`») дверь пропустило бы: продление истории не пишет ни строки, а
-   * бумага у него непустая. Признак `requiresPreview` двери и есть то, чем эта сцена держится.
+   * The order of step 8, pinned down. A shortening that re-issues a worked-out sheet needs three
+   * handshakes at once: signatures (B4), the group confirmation (D2) and the unlock fingerprint
+   * (D4). This door checks the signatures first, so with none of the three supplied `history`
+   * answers 409 `waybill_ack_required` and `legacy`, where signatures are not required, answers the
+   * D2 422.
    *
-   * Код и текст отказа проверяются поимённо: портал разбирает 409 по `assignment_preview_stale`,
-   * и переезд проверки обязан оставить ему ту же ошибку на том же месте, а не другую.
+   * DIVERGENCE (order, not outcome): the repair door checks unlocks before signatures and says why
+   * ("sign only sheets the command will actually get"), and plan §8 step 8 lists the unlock
+   * fingerprint before the acknowledgements too; this door does the opposite. Nothing is written
+   * either way — the difference is which refusal the person reads first.
+   */
+  it('порядок рукопожатий: без подписей history отвечает 409 раньше, чем 422 за перечень групп', async () => {
+    const splitAt = shiftDateKey(PREV, 2);
+    await inScene(
+      { status: 'done', dateTo: EXTENDED_TO, splitAt, issueSheets: true },
+      async (tx, scene) => {
+        const command: PeriodCommand = { version: 0, dateTo: shiftDateKey(splitAt, -1) };
+        const preview = await previewPeriod(tx, scene, DISPATCHER, command);
+        expect(preview.cancelGroupsFingerprint).not.toBeNull();
+        expect(preview.unlockFingerprint).not.toBeNull();
+        // The preview is mode-independent: the re-issued sheet and its warnings are shown in both.
+        expect(preview.issues.some((issue) => issue.warnings.length > 0)).toBe(true);
+        const operation = { operationId: randomUUID(), reason: 'машина ушла с объекта раньше' };
+
+        const bare = await errorOf(() =>
+          runPeriod(tx, scene, DISPATCHER, {
+            ...command,
+            previewFingerprint: preview.fingerprint,
+            operation,
+          }),
+        );
+        expect({ status: bare.statusCode, code: bare.code }).toEqual(
+          byReadMode(mode, {
+            legacy: { status: 422, code: 'unprocessable_entity' },
+            history: { status: 409, code: WAYBILL_ACK_REQUIRED_CODE },
+          }),
+        );
+        if (mode === 'legacy') expect(bare.message).toContain('Подтвердите перечень');
+
+        // Signed and confirmed, but the unlock fingerprint is still missing: 422 in both modes.
+        const unlockMissing = await errorOf(() =>
+          runPeriod(
+            tx,
+            scene,
+            DISPATCHER,
+            armed(command, preview, { confirmGroups: true, operation }),
+          ),
+        );
+        expect(unlockMissing.statusCode).toBe(422);
+        expect(unlockMissing.message).toContain('Список отработанных листов');
+        expect(await versionOf(tx, scene.requestId)).toBe(0);
+        expect(await termOf(tx, scene.requestId)).toMatchObject({ date_to: EXTENDED_TO });
+      },
+    );
+  });
+
+  /*
+   * The fingerprint is asked UNCONDITIONALLY by this door — also after the check moved from its own
+   * handshake into step 7 of the framework (R17, E4a). The scene sits exactly where the framework
+   * default ("non-empty `effects.mutations`") would let the door through: an extension writes no
+   * history row while its paper is non-empty. The door's `requiresPreview` is what holds the scene.
+   *
+   * Code and text are checked by name: the portal dispatches the 409 on `assignment_preview_stale`,
+   * and moving the check had to leave it the same error in the same place.
    */
   it('устаревший предпросмотр — 409, даже когда история команды пуста', async () => {
     await inScene({ status: 'confirmed', issueSheets: true }, async (tx, scene) => {
@@ -948,10 +1029,10 @@ describe.skipIf(!DB_URL)('правка срока: подтверждение г
   });
 
   /*
-   * Пропущенный отпечаток — тот же 409, а не «тело без поля»: до Э4а на него отвечало дверное
-   * рукопожатие (`undefined !== plan.fingerprint`), теперь отвечает шаг 7 по признаку двери.
-   * Разница видна только здесь: у продления история пуста, и умолчание каркаса эту команду
-   * применило бы без подтверждения вовсе.
+   * A missing fingerprint is the same 409, not "body without a field": before E4a the door's own
+   * handshake answered it (`undefined !== plan.fingerprint`), now step 7 does by the door's flag.
+   * The difference shows only here: an extension has empty history, and the framework default
+   * would apply this command with no confirmation at all.
    */
   it('вовсе не присланный отпечаток у продления — тот же отказ, а не тихое применение', async () => {
     await inScene({ status: 'confirmed', issueSheets: true }, async (tx, scene) => {
@@ -964,9 +1045,24 @@ describe.skipIf(!DB_URL)('правка срока: подтверждение г
   });
 });
 
-// ── Р9: идемпотентность по ключу операции ──
+// ── R9: idempotency by the operation key ──
 
-describe.skipIf(!DB_URL)('правка срока: повтор по ключу операции (Р9)', () => {
+/** Strict sync events of the request: one per paper-touching run, written by the plan executor. */
+async function esm2EventsOf(tx: SceneTx, requestId: string): Promise<number> {
+  return (
+    await tx.execute<{ id: string }>(sql`
+      SELECT id FROM audit_log WHERE entity_id = ${requestId} AND action = 'waybill.esm2_sync'`)
+  ).rows.length;
+}
+
+/*
+ * Two runs, because the first command does paper work at step 12 and that work differs by mode:
+ * `legacy` has the weekly sync burn (or trim) sheets, `history` executes the segment plan, which
+ * may burn AND re-issue. A replay that reached step 12 again would do that work twice — burn the
+ * fresh numbers and mint a third set — so each case compares the paper after the replay with the
+ * paper after the first run row for row, versions and trim trail included.
+ */
+describeReadModes(readMode, 'правка срока: повтор по ключу операции (Р9)', (mode) => {
   it('второй запрос с тем же ключом возвращает прежний результат и не гасит второй раз', async () => {
     await inScene(
       { status: 'done', dateTo: EXTENDED_TO, splitAt: NEXT, issueSheets: true },
@@ -975,19 +1071,87 @@ describe.skipIf(!DB_URL)('правка срока: повтор по ключу 
         const preview = await previewPeriod(tx, scene, DISPATCHER, command);
         const operation = { operationId: randomUUID(), reason: 'техника уехала раньше' };
         const body = armed(command, preview, { confirmGroups: true, operation });
+        const before = await sheetsOf(tx, scene.requestId);
+        // The scene issued its paper through the weekly sync, which already wrote one event.
+        const eventsBefore = await esm2EventsOf(tx, scene.requestId);
 
         const first = await runPeriod(tx, scene, DISPATCHER, body);
         expect(first.repeated).toBe(false);
         const versionAfter = await versionOf(tx, scene.requestId);
         const rowsAfter = await rowsOf(tx, scene.requestId);
+        const sheetsAfter = await sheetsOf(tx, scene.requestId);
+        // The first run did burn paper: every sheet beyond the new end of term, in both modes.
+        const beyond = before.filter((sheet) => sheet.period_from > TERM_TO).map((s) => s.id);
+        expect(beyond.length).toBeGreaterThan(0);
+        expect(
+          sheetsAfter.filter((sheet) => sheet.status === 'cancelled').map((s) => s.id),
+        ).toEqual(beyond);
+        expect(first.paper?.esm2.cancelled).toHaveLength(beyond.length);
+        expect(await esm2EventsOf(tx, scene.requestId)).toBe(eventsBefore + 1);
 
-        // Повтор идёт **тем же телом**: клиент потерял ответ и прислал запрос заново. Версия к
-        // этому моменту уже другая, и именно поэтому повтор ищется до её сверки (§8, шаг 2).
+        // The replay comes with the SAME body: the client lost the answer and resent the request.
+        // The version has moved by now, which is why the replay is looked up before the version
+        // check (§8, step 2).
         const second = await runPeriod(tx, scene, DISPATCHER, body);
         expect(second.repeated).toBe(true);
         expect(second.operation?.operationId).toBe(operation.operationId);
+        expect(second.paper).toBeNull();
         expect(await versionOf(tx, scene.requestId)).toBe(versionAfter);
         expect(await rowsOf(tx, scene.requestId)).toEqual(rowsAfter);
+        expect(await journalOf(tx, scene.requestId)).toHaveLength(1);
+        expect(await sheetsOf(tx, scene.requestId)).toEqual(sheetsAfter);
+        expect(await esm2EventsOf(tx, scene.requestId)).toBe(eventsBefore + 1);
+      },
+    );
+  });
+
+  it('повтор сокращения, переоформившего отработанный лист, не трогает бумагу второй раз', async () => {
+    /*
+     * The scene where the two executors part ways on the first run (see "права по исходу"): the
+     * sheet covering the new last day is trimmed in place in `legacy` and burned and re-issued in
+     * `history`. That is the state a replay must leave untouched — a second trim would bump the
+     * version again, a second re-issue would burn the replacement.
+     */
+    const splitAt = shiftDateKey(PREV, 2);
+    const lastDay = shiftDateKey(splitAt, -1);
+    await inScene(
+      { status: 'done', dateTo: EXTENDED_TO, splitAt, issueSheets: true },
+      async (tx, scene) => {
+        const command: PeriodCommand = { version: 0, dateTo: lastDay };
+        const preview = await previewPeriod(tx, scene, DISPATCHER, command);
+        const operation = { operationId: randomUUID(), reason: 'машина ушла с объекта раньше' };
+        const body = {
+          ...armed(command, preview, { confirmGroups: true, operation }),
+          unlockFingerprint: preview.unlockFingerprint!,
+        };
+        const before = await sheetsOf(tx, scene.requestId);
+        const eventsBefore = await esm2EventsOf(tx, scene.requestId);
+        const covering = before.find(
+          (row) => row.period_from <= lastDay && row.period_to >= lastDay,
+        )!;
+
+        const first = await runPeriod(tx, scene, DISPATCHER, body);
+        expect(first.repeated).toBe(false);
+        const sheetsAfter = await sheetsOf(tx, scene.requestId);
+        const coveringAfter = sheetsAfter.find((row) => row.id === covering.id)!;
+        expect({ status: coveringAfter.status, version: coveringAfter.version }).toEqual(
+          byReadMode(mode, {
+            legacy: { status: 'issued', version: covering.version + 1 },
+            history: { status: 'cancelled', version: covering.version },
+          }),
+        );
+        // `history` minted a replacement for it; `legacy` kept the same number.
+        expect(sheetsAfter.length - before.length).toBe(
+          byReadMode(mode, { legacy: 0, history: first.paper?.esm2.issued.length ?? -1 }),
+        );
+        if (mode === 'history') expect(first.paper?.esm2.issued.length).toBeGreaterThan(0);
+        expect(await esm2EventsOf(tx, scene.requestId)).toBe(eventsBefore + 1);
+
+        const second = await runPeriod(tx, scene, DISPATCHER, body);
+        expect(second.repeated).toBe(true);
+        expect(second.paper).toBeNull();
+        expect(await sheetsOf(tx, scene.requestId)).toEqual(sheetsAfter);
+        expect(await esm2EventsOf(tx, scene.requestId)).toBe(eventsBefore + 1);
         expect(await journalOf(tx, scene.requestId)).toHaveLength(1);
       },
     );
