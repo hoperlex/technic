@@ -224,17 +224,19 @@ export function DayBatchFields({
             </FormGrid.Full>
           )}
 
-          {/* Прошедшие дни идут одной операцией журнала коррекций (ADR 0207 решение 9), и причина
-            у неё одна: объясняют не каждый день по отдельности, а само решение оформить прошедший
-            период. Она же печатается в каждом таком листе. */}
+          {/* Past days go as one corrections-journal operation (ADR 0207 §9), so the reason is one:
+            it explains the decision to paper the past period, not each day separately. The same
+            reason is printed on every such waybill. */}
           {pastDays.length > 0 && (
             <FormGrid.Full>
               <Form.Item
                 name="dayBatchReason"
                 label="Причина заднего числа"
-                // Обязательна на сервере (`backdateGuard` ответит 422) — значит обязательна и
-                // здесь: отправлять заведомо отклоняемое тело форма не должна.
-                rules={[{ required: true, message: 'Укажите причину' }]}
+                // Required by the server (`backdateGuard` answers 422), so required here too: the
+                // form must not send a body that is bound to be refused. `whitespace` matters
+                // because `useDayBatch` trims the reason and drops it when empty — a reason of
+                // spaces would pass a bare `required` and reach the server as no reason at all.
+                rules={[{ required: true, whitespace: true, message: 'Укажите причину' }]}
                 extra={`В сроке ${pastDays.length} дн. до ${formatDateOnly(onDate)}: они пройдут одной операцией журнала коррекций — с вашим именем и этой причиной в каждом листе`}
               >
                 <Input.TextArea

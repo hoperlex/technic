@@ -247,24 +247,25 @@ describe('окно «Распланировать период»', () => {
   });
 
   /*
-   * DEFECT. The reason field carries `required` without `whitespace: true`, so a reason of spaces
-   * passes the form; `dayBatchBody` then trims it away and sends no `reason` at all, and the
-   * server's `backdateGuard` answers 422. `DayBatchFields` says the opposite in its own comment:
-   * the form must not send a body that is certain to be rejected. `ReasonModal` already guards
-   * this with `whitespace: true`. Expected to fail until the rule is added.
+   * `dayBatchBody` trims the reason and drops it when nothing is left, so a reason of spaces would
+   * reach the server as no reason at all and `backdateGuard` would answer 422 on the whole batch.
+   * The field therefore refuses blank text, not only an empty one — both are checked, because the
+   * second is exactly what a bare `required` lets through.
    */
-  it.fails('причина из одних пробелов не должна пропускаться формой', async () => {
+  it('без причины и с причиной из одних пробелов пачка не уходит', async () => {
     const http = renderDays();
     await openBatch();
-    giveReason('   ');
 
     fireEvent.click(screen.getByText('Распланировать'));
-    // Either outcome settles the question: the body leaves, or the field complains.
-    await waitFor(() =>
-      expect(http.countOf(BATCH) > 0 || !!screen.queryByText('Укажите причину')).toBe(true),
-    );
+    expect(await screen.findByText('Укажите причину')).toBeDefined();
     expect(http.countOf(BATCH)).toBe(0);
-    expect(screen.getByText('Укажите причину')).toBeDefined();
+
+    giveReason('   ');
+    fireEvent.click(screen.getByText('Распланировать'));
+    await waitFor(() => expect(screen.getByText('Укажите причину')).toBeDefined());
+    // Give a premature request time to leave: the absence is asserted after the form settled.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(http.countOf(BATCH)).toBe(0);
   });
 
   it('после успеха таблица берётся из ответа, окно закрывается, отчёт остаётся', async () => {
