@@ -11,6 +11,7 @@ import {
   DAY_BATCH_SKIP_FROZEN,
   DAY_BATCH_SKIP_NO_ROOM,
   DAY_BATCH_SKIP_PLANNED,
+  ROLLBACK_WAYBILL_MESSAGE,
   WAYBILL_CORRECTION_DAYS,
   moscowDateKeyOf,
   shiftDateKey,
@@ -393,6 +394,7 @@ async function routesOfVehicle(vehicleId: string): Promise<number> {
 }
 
 interface DayWaybillRow {
+  id: string;
   number: string;
   formCode: string;
   status: string;
@@ -401,9 +403,10 @@ interface DayWaybillRow {
   correctionReason: string;
 }
 
-/** Листы, выписанные по рейсам дней этой заявки, — по дню выезда. */
+/** Waybills issued on the routes of this request's days, ordered by the day they cover. */
 async function dayWaybills(requestId: string): Promise<DayWaybillRow[]> {
   const rows = await ctx.db.execute<{
+    id: string;
     number: string;
     form_code: string;
     status: string;
@@ -411,7 +414,7 @@ async function dayWaybills(requestId: string): Promise<DayWaybillRow[]> {
     correction_id: string | null;
     correction_reason: string;
   }>(sql`
-    SELECT w.number::text AS number, w.form_code, w.status::text AS status,
+    SELECT w.id::text AS id, w.number::text AS number, w.form_code, w.status::text AS status,
            w.issued_for_date::text AS issued_for_date, w.correction_id::text AS correction_id,
            w.correction_reason
       FROM waybills w
@@ -419,6 +422,7 @@ async function dayWaybills(requestId: string): Promise<DayWaybillRow[]> {
      WHERE rr.request_id = ${requestId}
      ORDER BY w.issued_for_date`);
   return rows.rows.map((row) => ({
+    id: row.id,
     number: row.number,
     formCode: row.form_code,
     status: row.status,
@@ -434,6 +438,31 @@ async function esm2Count(requestId: string): Promise<number> {
     SELECT count(*)::int AS n FROM waybills
      WHERE source_request_id = ${requestId} AND form_code = 'esm2' AND status <> 'cancelled'`);
   return rows.rows[0]!.n;
+}
+
+/**
+ * The request as its card reads it: `hasActiveWaybill` and the version the status door wants.
+ * Read through the HTTP door on purpose — the flag is a column of the list/card selection, and a
+ * direct query would re-derive it rather than test the one the portal gets.
+ */
+async function requestCard(
+  requestId: string,
+): Promise<{ hasActiveWaybill: boolean; version: number }> {
+  const res = await inject('GET', `/api/v1/vehicle-requests/${requestId}`, ctx.admin);
+  expect(res.statusCode, res.body).toBe(200);
+  return {
+    hasActiveWaybill: res.json().hasActiveWaybill as boolean,
+    version: res.json().version as number,
+  };
+}
+
+/** Rolling the request back to «Новая» — the move `hasActiveWaybill` warns about in advance. */
+function rollbackToNew(requestId: string, version: number): Promise<LightMyRequestResponse> {
+  return inject('PATCH', `/api/v1/vehicle-requests/${requestId}/status`, ctx.admin, {
+    status: 'new',
+    comment: 'машина ушла на другой объект',
+    version,
+  });
 }
 
 /** Строки журнала коррекций по ключу операции: их обязана быть ровно одна на пачку. */
@@ -956,6 +985,54 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
       expect(waybills.find((w) => w.issuedForDate === date)!.number).toBe(number);
     }
     for (const waybill of waybills) expect(waybill.correctionId).toBe(correctionId);
+  });
+
+  /**
+   * `hasActiveWaybill` and the rollback refusal answer one question with one condition (ADR 0207,
+   * «Последствия»: a day waybill holds the rollback to «Новая» just as a freight one does).
+   *
+   * The flag is an expression of the request selection that repeats `activeWaybillOfRequest`, the
+   * function the status door refuses with; nothing ties them but a comment. If they drift, the
+   * portal either promises a rollback the server then refuses after the reason has been typed, or
+   * hides one the server would allow. So the scene checks both sides at each step, on a NON-linear
+   * order — the one that has both kinds of paper at once:
+   *
+   * - with only the weekly ESM-2 the flag is off: ESM-2 hangs on the request, not on a route, and
+   *   does not hold the rollback;
+   * - after the batch the real day 4-P waybills turn it on, and the door answers 409 with
+   *   `ROLLBACK_WAYBILL_MESSAGE`;
+   * - once the day waybills are cancelled the flag is off again and the door lets the rollback
+   *   through — the cancelled form is written off and no longer carries the request's work.
+   */
+  it('признак «действующий лист» и отказ отката в «Новую» отвечают одним условием', async () => {
+    const vehicleId = ctx.vehicles[12]!;
+    const request = await requestInProgress({ vehicleId });
+    expect(await esm2Count(request.id)).toBeGreaterThan(0);
+    expect((await requestCard(request.id)).hasActiveWaybill).toBe(false);
+
+    const result = await batchOk(request.id);
+    expect(result.issued).toBe(4);
+
+    const held = await requestCard(request.id);
+    expect(held.hasActiveWaybill).toBe(true);
+    const refused = await rollbackToNew(request.id, held.version);
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json().message).toContain(ROLLBACK_WAYBILL_MESSAGE);
+
+    const waybills = await dayWaybills(request.id);
+    expect(waybills).toHaveLength(4);
+    for (const waybill of waybills) {
+      const cancelled = await inject('POST', `/api/v1/waybills/${waybill.id}/cancel`, ctx.admin, {
+        reason: 'лишний бланк: день ведётся недельным ЭСМ-2',
+      });
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+    }
+
+    const released = await requestCard(request.id);
+    expect(released.hasActiveWaybill).toBe(false);
+    const rolled = await rollbackToNew(request.id, released.version);
+    expect(rolled.statusCode, rolled.body).toBe(200);
+    expect(rolled.json().status).toBe('new');
   });
 
   /**

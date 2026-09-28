@@ -136,6 +136,20 @@ const LINEAR = {
   scope: '2099-09-28',
 };
 
+/**
+ * A NON-linear order with planned days (ADR 0207 §1): the weekly ESM-2 is still issued on its own,
+ * so the week and the days overlap. Its own week in December, clear of every window above — the
+ * table is read by a role without scope and sees everything that falls into the window.
+ */
+const NONLINEAR = {
+  week: { from: '2099-12-07', to: '2099-12-11' },
+  /** Two days planned with a day 4-P — half of the week. */
+  first: '2099-12-09',
+  second: '2099-12-10',
+  /** Monday of the same week: nothing planned, so a one-day window here must show the week. */
+  unplanned: '2099-12-07',
+};
+
 interface TestRequest {
   id: string;
   /** «ТС-461» — то, чем заявку называют в разговоре и что ищут в письме глазами. */
@@ -1164,6 +1178,65 @@ describe.skipIf(!DB_URL)('сводка по путевым листам (жив�
     // стояния машины на площадке, а линейная вечером уезжает на базу. Выезды уже названы днями, и
     // вторая строка про ту же неделю читалась бы как вторая работа.
     expect(table!.rows.flat().map((cell) => cell.text)).not.toContain(weekly);
+  });
+
+  /**
+   * The same guarantee for a NON-linear order, where linearity no longer cuts the week off.
+   *
+   * Since ADR 0207 any on-site order can have day 4-P waybills while its weekly ESM-2 keeps being
+   * issued automatically. The linear case above never exercised the week-yields-to-days condition
+   * of `esm2Rows`: linearity dropped the week before it was reached. Here it is the only thing
+   * standing between the order and two rows for one job.
+   *
+   * Three windows, three answers:
+   * - one day with a planned day — the day row only;
+   * - the whole week, half planned — the day rows only, and the unplanned tail is not shown: the
+   *   boundary named in `esm2Rows`, honest because nothing is scheduled or issued for those days;
+   * - one day of the same week with nothing planned in it — the week row is back, so the yield is
+   *   bounded by the window, not by the order's term.
+   */
+  it('нелинейный заказ не задваивается: неделя уступает дням окна, а без дней в окне возвращается', async () => {
+    const linearity = await ctx.db.execute<{ is_linear: boolean }>(
+      sql`SELECT is_linear FROM vehicle_types WHERE id = ${ctx.specialTypeId}`,
+    );
+    // The premise, stated rather than assumed: a linear type would hide the week by itself.
+    expect(linearity.rows[0]!.is_linear).toBe(false);
+
+    const request = await makeSpecialRequest('нелинейный с днями', NONLINEAR.week);
+    const weekly = await makeEsm2({
+      requestId: request.id,
+      from: NONLINEAR.week.from,
+      to: NONLINEAR.week.to,
+    });
+    const first = await planDay({
+      requestId: request.id,
+      date: NONLINEAR.first,
+      vehicleId: ctx.specialVehicleId,
+      waybill: true,
+    });
+    const second = await planDay({
+      requestId: request.id,
+      date: NONLINEAR.second,
+      vehicleId: ctx.specialVehicleId,
+      waybill: true,
+    });
+
+    const onDay = await onsiteOn(NONLINEAR.first);
+    expect(onDay!.total).toBe(1);
+    expect(onDay!.rows[0]![0]!.text).toBe(first.waybillNumber);
+    expect(onDay!.rows.flat().map((cell) => cell.text)).not.toContain(weekly);
+
+    const wide = await onsiteBetween(NONLINEAR.week.from, NONLINEAR.week.to);
+    expect(wide!.total).toBe(1);
+    expect(wide!.rows[0]![0]!.text).toBe(`${first.waybillNumber}, ${second.waybillNumber}`);
+    expect(wide!.rows[0]![0]!.sub).toBe('9, 10 декабря');
+    expect(wide!.rows.flat().map((cell) => cell.text)).not.toContain(weekly);
+
+    const bare = await onsiteOn(NONLINEAR.unplanned);
+    expect(bare!.total).toBe(1);
+    expect(bare!.rows[0]![0]!.text).toBe(weekly);
+    expect(bare!.rows[0]![0]!.sub).toBe('7 декабря');
+    expect(bare!.rows[0]![1]!.text).toContain(request.number);
   });
 
   it('область видимости строки дня считается по заявке, а не по её документу', async () => {

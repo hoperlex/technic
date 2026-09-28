@@ -270,22 +270,27 @@ async function newRoute(
 }
 
 /*
- * ЭСМ2-РАЗРЕЗ. Лист умеет быть **отрезком**, а не только неделей: после переключения чтения (этап 5)
- * состав меняется внутри срока, и неделя разрезается на два листа. Умолчание оставлено недельным —
- * прочие случаи файла проверяют не разрез, и переписывать их значило бы менять их предмет, — а
- * случаи разреза передают границы явно.
+ * ЭСМ2-РАЗРЕЗ. A sheet can be a **segment**, not only a week: after the read switch-over (stage 5)
+ * the crew changes inside the term and the week is cut into two sheets. The default stays weekly —
+ * the other cases of this file do not test the split, and rewriting them would change their
+ * subject — while the split cases pass the bounds explicitly.
  *
- * Проверено здесь: ожидаемые смены считаются **днями действия листа** (`period_from…period_to`), и
- * это верно для любой его длины. От семидневности не зависит ничего — семёрка была следствием
- * недельной фикстуры, а не правилом.
+ * Proven here: expected shifts are counted by the sheet's **days of validity**
+ * (`period_from…period_to`), whatever its length. Nothing depends on seven days — the seven was a
+ * consequence of the weekly fixture, not a rule.
+ *
+ * `requestId` ties the sheet to a given request instead of a fresh dummy one: the one-shift rule of
+ * ADR 0207 suppresses a day route only when the ESM-2 and the route's day row share the request.
+ * `cancelled` writes the sheet off right away — a cancelled ESM-2 must suppress nothing.
  */
 async function newEsm2(
   vehicleId: string,
   personId: string,
   date: string,
-  span?: { from: string; to: string },
+  options: { span?: { from: string; to: string }; requestId?: string; cancelled?: boolean } = {},
 ): Promise<string> {
   waybillNo += 1;
+  const { span } = options;
   const from = span ? span.from : weekStartKey(date);
   const [waybill] = await ctx.db
     .insert(ctx.schema.waybills)
@@ -293,18 +298,62 @@ async function newEsm2(
       seriesId: ctx.seriesId,
       number: WAYBILL_NUMBER_BASE + waybillNo,
       formCode: 'esm2',
-      status: 'issued',
       organizationId: ctx.organizationId,
       vehicleId,
       driverPersonId: personId,
       issuedForDate: from,
-      sourceRequestId: await newRequest(),
+      sourceRequestId: options.requestId ?? (await newRequest()),
       periodFrom: from,
       periodTo: span ? span.to : shiftDateKey(from, 6),
       issuedBy: ctx.adminId,
+      ...(options.cancelled
+        ? {
+            status: 'cancelled' as const,
+            cancelledAt: new Date(),
+            cancelledBy: ctx.adminId,
+            cancelReason: 'лишний бланк: день ведётся дневным 4-П',
+          }
+        : { status: 'issued' as const }),
     })
     .returning({ id: ctx.schema.waybills.id });
   return waybill!.id;
+}
+
+/**
+ * A request day's route, as the day batch of ADR 0207 leaves it: a freight route of the machine on
+ * the date, a composition row of the request carrying that `work_date`, and a 4-P issued to the
+ * route's driver. Each part is something `EXPECTED_ROUTE_FILTER` asks for — a live composition and
+ * a waybill on the same driver — so without the one-shift rule this route WOULD be an expected
+ * shift, and the suppression tests below prove something only because of that.
+ *
+ * `freightRow: true` writes the composition row without a day (`work_date` NULL), the way a
+ * freight order stands in a route: the control case the suppression must not reach.
+ */
+async function newDayRoute(
+  vehicleId: string,
+  date: string,
+  personId: string,
+  requestId: string,
+  options: { freightRow?: boolean } = {},
+): Promise<string> {
+  const [route] = await ctx.db
+    .insert(ctx.schema.vehicleRoutes)
+    .values({
+      vehicleId,
+      routeDate: date,
+      purpose: 'freight',
+      driverPersonId: personId,
+      createdBy: ctx.adminId,
+    })
+    .returning({ id: ctx.schema.vehicleRoutes.id });
+  await ctx.db.insert(ctx.schema.vehicleRouteRequests).values({
+    routeId: route!.id,
+    requestId,
+    position: 1,
+    workDate: options.freightRow ? null : date,
+  });
+  await issueWaybillFor(route!.id, vehicleId, personId, date);
+  return route!.id;
 }
 
 /**
@@ -782,8 +831,10 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       // День в прошлом: показания снимают с прибора, и окно записи будущего не пускает.
       const monday = weekStartKey(day(12));
       const split = shiftDateKey(monday, 3); // четверг — первый день второго отрезка
-      await newEsm2(vehicle, person, monday, { from: monday, to: shiftDateKey(monday, 2) });
-      await newEsm2(vehicle, person, split, { from: split, to: shiftDateKey(monday, 6) });
+      await newEsm2(vehicle, person, monday, {
+        span: { from: monday, to: shiftDateKey(monday, 2) },
+      });
+      await newEsm2(vehicle, person, split, { span: { from: split, to: shiftDateKey(monday, 6) } });
 
       // Оба отрезка ждут своих дней: разрез не отменяет ожиданий, он их делит.
       for (
@@ -831,6 +882,150 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       await submit(person, date, [line(second!.id, values({ engineHours: 3 }))]);
       expect(await stateOf(date, vehicle)).toBe('reported');
       expect(await isPending(date, vehicle)).toBe(false);
+    });
+  });
+
+  /**
+   * Two papers for one day, one shift (ADR 0207 §3).
+   *
+   * An on-site order now gets a day 4-P for every day of its term while the weekly ESM-2 keeps being
+   * issued automatically, so one day of work can carry both. The paper may double; the accounting
+   * must not: a report item is tied to exactly one source, and one physically submitted shift closes
+   * one expectation — a second one would stay "not submitted" for the whole term.
+   *
+   * The rule is written twice, and not by oversight: as SQL in `EXPECTED_ROUTE_FILTER` (statistics,
+   * garage, intake, maintenance tail) and as a query in `weeklyCoveredRoutes` (the driver cabinet,
+   * which the report composition is built from). Both sides' comments demand that they agree; these
+   * scenes are what holds them to it — every assertion on the cabinet is paired with one on the
+   * garage or the summary.
+   */
+  describe('две бумаги за день — одна смена (ADR 0207)', () => {
+    it('кабинет и гараж видят одну смену: карточка ЭСМ-2, рейс дня не ждётся', async () => {
+      const person = await newPerson('Двубумажный');
+      const vehicle = await newVehicle();
+      const request = await newRequest();
+      const date = day(9);
+      const esm2 = await newEsm2(vehicle, person, date, { requestId: request });
+      await newDayRoute(vehicle, date, person, request);
+
+      // The cabinet keeps the weekly sheet's card and drops the day route's one...
+      expect(await cabinetSourceIds(person, date)).toEqual([esm2]);
+      // ...and the garage and the summary wait for exactly that one shift, not two.
+      expect(await isPending(date, vehicle)).toBe(true);
+      expect(await statsOf(vehicle, date, date)).toMatchObject({ shifts: 1, missingReadings: 1 });
+    });
+
+    it('день ждётся одной строкой отчёта — по ЭСМ-2 — и гаснет с её сдачей', async () => {
+      const person = await newPerson('Однострочный');
+      const vehicle = await newVehicle();
+      const request = await newRequest();
+      const date = day(10);
+      const esm2 = await newEsm2(vehicle, person, date, { requestId: request });
+      await newDayRoute(vehicle, date, person, request);
+
+      const opened = await report(person, date);
+      // One expectation row, and it is the weekly sheet's: a second row for the day route would
+      // have nothing to close it, and the day would burn red until the order ends.
+      expect(opened.items).toHaveLength(1);
+      expect(opened.items[0]).toMatchObject({ sourceKind: 'esm2', sourceId: esm2 });
+      expect(await isPending(date, vehicle)).toBe(true);
+
+      await submit(person, date, [line(opened.items[0]!.id, values({ engineHours: 8 }))]);
+
+      // The single submitted row closes the whole day: nothing is left waiting behind the 4-P.
+      expect(await isPending(date, vehicle)).toBe(false);
+      expect(await stateOf(date, vehicle)).toBe('reported');
+      expect(await statsOf(vehicle, date, date)).toMatchObject({ shifts: 1, missingReadings: 0 });
+    });
+
+    it('неделя переписана на подменного машиниста: карточка у того, на кого выписан ЭСМ-2', async () => {
+      const dayDriver = await newPerson('Дневной');
+      const standIn = await newPerson('Подменный');
+      const vehicle = await newVehicle();
+      const request = await newRequest();
+      const date = day(11);
+      // The week was reissued to the stand-in; the day 4-P stayed on the original driver.
+      const esm2 = await newEsm2(vehicle, standIn, date, { requestId: request });
+      await newDayRoute(vehicle, date, dayDriver, request);
+
+      // The rule counts the machine's shift, not the person: the day driver gets no card at all,
+      // the stand-in gets the weekly one, and the summary waits for one shift.
+      expect(await cabinetSourceIds(dayDriver, date)).toEqual([]);
+      expect(await cabinetSourceIds(standIn, date)).toEqual([esm2]);
+      expect(await statsOf(vehicle, date, date)).toMatchObject({ shifts: 1 });
+
+      // The stand-in's reading closes the day; nobody is left owing one for the day route.
+      const opened = await report(standIn, date);
+      expect(opened.items).toHaveLength(1);
+      await submit(standIn, date, [line(opened.items[0]!.id, values({ engineHours: 6 }))]);
+      expect(await isPending(date, vehicle)).toBe(false);
+      expect(await statsOf(vehicle, date, date)).toMatchObject({ shifts: 1, missingReadings: 0 });
+    });
+
+    /**
+     * The condition is narrow — same request, same machine, same day, a live ESM-2 — and each of
+     * the four controls breaks exactly one part of it. Every such route stays an expected shift on
+     * both sides: the summary counts it, the cabinet shows it.
+     */
+    it('подавление узкое: грузовая строка, чужая заявка, чужая машина и аннулированный ЭСМ-2 рейс не гасят', async () => {
+      const person = await newPerson('Контрольный');
+      const date = day(12);
+
+      // A freight composition row of the same request: no `work_date`, so no day to match. A
+      // week on the site does not cover a freight run.
+      const freightVehicle = await newVehicle();
+      const freightRequest = await newRequest();
+      const freightEsm2 = await newEsm2(freightVehicle, person, date, {
+        requestId: freightRequest,
+      });
+      const freightRoute = await newDayRoute(freightVehicle, date, person, freightRequest, {
+        freightRow: true,
+      });
+
+      // A day row of ANOTHER request on a machine whose ESM-2 belongs to a different one.
+      const foreignVehicle = await newVehicle();
+      const foreignEsm2 = await newEsm2(foreignVehicle, person, date, {
+        requestId: await newRequest(),
+      });
+      const foreignRoute = await newDayRoute(foreignVehicle, date, person, await newRequest());
+
+      // The request's day driven by ANOTHER machine (the single-day door accepts any own vehicle,
+      // ADR 0207 §5): the ESM-2 stands on the assigned one and says nothing about this run.
+      const sheetVehicle = await newVehicle();
+      const otherVehicle = await newVehicle();
+      const movedRequest = await newRequest();
+      const sheetEsm2 = await newEsm2(sheetVehicle, person, date, { requestId: movedRequest });
+      const movedRoute = await newDayRoute(otherVehicle, date, person, movedRequest);
+
+      // A cancelled ESM-2 is written off: it neither waits itself nor hides the day route.
+      const cancelledVehicle = await newVehicle();
+      const cancelledRequest = await newRequest();
+      await newEsm2(cancelledVehicle, person, date, {
+        requestId: cancelledRequest,
+        cancelled: true,
+      });
+      const keptRoute = await newDayRoute(cancelledVehicle, date, person, cancelledRequest);
+
+      expect(await statsOf(freightVehicle, date, date)).toMatchObject({ shifts: 2 });
+      expect(await statsOf(foreignVehicle, date, date)).toMatchObject({ shifts: 2 });
+      expect(await statsOf(sheetVehicle, date, date)).toMatchObject({ shifts: 1 });
+      expect(await statsOf(otherVehicle, date, date)).toMatchObject({ shifts: 1 });
+      expect(await statsOf(cancelledVehicle, date, date)).toMatchObject({ shifts: 1 });
+      expect(await isPending(date, otherVehicle)).toBe(true);
+      expect(await isPending(date, cancelledVehicle)).toBe(true);
+
+      // The cabinet agrees route for route: all four stay cards next to the three live sheets.
+      expect(new Set(await cabinetSourceIds(person, date))).toEqual(
+        new Set([
+          freightRoute,
+          foreignRoute,
+          movedRoute,
+          keptRoute,
+          freightEsm2,
+          foreignEsm2,
+          sheetEsm2,
+        ]),
+      );
     });
   });
 
