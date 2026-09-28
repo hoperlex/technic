@@ -240,17 +240,21 @@ async function issueWaybillFor(
 }
 
 /**
- * Рейс-перегон с выписанным по нему листом: он виден в задании всегда, тогда как грузовой пропадает,
- * оставшись без живых заявок состава, — а тесту нужен источник, а не проверка отбора заданий.
+ * A relocation route with a waybill issued over it: it is always visible in the task, whereas a
+ * freight route disappears once no live request is left in its composition — and the tests need a
+ * source, not a check of how tasks are selected.
  *
- * `waybill: false` оставляет рейс без бумаги — это не «неполная фикстура», а самостоятельный
- * сценарий: такой рейс заданием не является (Р5), и ни кабинет, ни гараж показаний по нему не ждут.
+ * `waybill: false` leaves the route without paper — not an "incomplete fixture" but a scenario of
+ * its own: such a route is not a task (Р5), and neither the cabinet nor the garage expects readings
+ * for it. `sourceRequestId` makes a given request the route's basis instead of a fresh dummy one —
+ * the one-shift rule of ADR 0207 is keyed on the request, and a relocation of the SAME request is
+ * the case where suppressing it by mistake would look most plausible.
  */
 async function newRoute(
   vehicleId: string,
   date: string,
   personId: string,
-  options: { waybill?: boolean } = {},
+  options: { waybill?: boolean; sourceRequestId?: string } = {},
 ): Promise<string> {
   const [route] = await ctx.db
     .insert(ctx.schema.vehicleRoutes)
@@ -258,7 +262,7 @@ async function newRoute(
       vehicleId,
       routeDate: date,
       purpose: 'delivery',
-      sourceRequestId: await newRequest(),
+      sourceRequestId: options.sourceRequestId ?? (await newRequest()),
       moveFrom: 'База',
       moveTo: 'Объект',
       driverPersonId: personId,
@@ -1026,6 +1030,50 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
           sheetEsm2,
         ]),
       );
+    });
+
+    /**
+     * A relocation of the SAME request inside the ESM-2 week stays a shift of its own: the week on
+     * the site does not cover the trip that brought the machine there. The rule matches the day on
+     * the composition row (`work_date`), and a relocation route has no composition at all — the
+     * other kind of route besides the freight row above that must slip past the suppression.
+     */
+    it('перегон той же заявки внутри недели ЭСМ-2 остаётся своей сменой', async () => {
+      const person = await newPerson('Перегонный');
+      const vehicle = await newVehicle();
+      const request = await newRequest();
+      const date = day(13);
+      const esm2 = await newEsm2(vehicle, person, date, { requestId: request });
+      const relocation = await newRoute(vehicle, date, person, { sourceRequestId: request });
+
+      expect(await statsOf(vehicle, date, date)).toMatchObject({ shifts: 2 });
+      expect(new Set(await cabinetSourceIds(person, date))).toEqual(new Set([esm2, relocation]));
+    });
+
+    /**
+     * ЭСМ2-РАЗРЕЗ. The sheet suppresses only the days it covers. After the read switch-over a week
+     * can be cut into segments, and a day of the same request beyond the segment has no sheet
+     * behind it — its route must keep asking for the reading. The day inside the segment is the
+     * pair that shows the boundary is the sheet's period and not the calendar week.
+     */
+    it('лист-отрезок гасит только свои дни: день той же заявки за его концом ждётся рейсом', async () => {
+      const person = await newPerson('Отрезочный');
+      const vehicle = await newVehicle();
+      const request = await newRequest();
+      const monday = weekStartKey(day(5));
+      const [inside, beyond] = [shiftDateKey(monday, 1), shiftDateKey(monday, 3)];
+      const esm2 = await newEsm2(vehicle, person, monday, {
+        span: { from: monday, to: shiftDateKey(monday, 2) },
+        requestId: request,
+      });
+      await newDayRoute(vehicle, inside, person, request);
+      const beyondRoute = await newDayRoute(vehicle, beyond, person, request);
+
+      expect(await cabinetSourceIds(person, inside)).toEqual([esm2]);
+      expect(await statsOf(vehicle, inside, inside)).toMatchObject({ shifts: 1 });
+      expect(await cabinetSourceIds(person, beyond)).toEqual([beyondRoute]);
+      expect(await statsOf(vehicle, beyond, beyond)).toMatchObject({ shifts: 1 });
+      expect(await isPending(beyond, vehicle)).toBe(true);
     });
   });
 
