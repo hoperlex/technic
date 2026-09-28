@@ -240,6 +240,17 @@ export interface AssignmentBackstopParams {
    * открывают дни, либо не открывают никогда.
    */
   opensTerm?: boolean;
+  /**
+   * Machinist named explicitly in this request's body — the status door's "Take into work" form
+   * requires one, and the ESM-2 sync issues every sheet it (re)writes to this person.
+   *
+   * When present, machinist gaps are not asked: the backstop exists to stop paper from being
+   * issued to a person nobody chose, and here a person was just chosen. Without this, a fresh order
+   * (no history rows, no sheets yet) folds into `driver = unknown` from `dateFrom`, and in
+   * `read_mode = history` every "Take into work" of an own vehicle was refused, pointing at
+   * "Change machinist", which a new order does not have. The tail check (R31) is unaffected.
+   */
+  namedDriverPersonId?: string | null;
 }
 
 /**
@@ -305,13 +316,16 @@ export async function evaluateAssignmentBackstop(
 
   const segments = assignmentSegments(computed.changes, term);
   const mutable = mutableRangesOf(term, snapshot.sheets, asOf);
-  const requiredAnchors = requiredAnchorsOf(
-    { id: params.requestId, num: head.num },
-    segments,
-    term,
-    snapshot.ownershipByVehicle,
-    mutable,
-  );
+  // A machinist named by the request itself fills the gaps the sync is about to write paper for.
+  const requiredAnchors = params.namedDriverPersonId
+    ? []
+    : requiredAnchorsOf(
+        { id: params.requestId, num: head.num },
+        segments,
+        term,
+        snapshot.ownershipByVehicle,
+        mutable,
+      );
   /*
    * Направление правки сильнее умолчания двери (Ю78). `opensTerm` описывает дверь целиком, но у
    * правки срока оно зависит от команды: продление открывает дни, сокращение — закрывает. Спрашивать
