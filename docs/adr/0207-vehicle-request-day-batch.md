@@ -32,6 +32,9 @@
   [ADR 0080](0080-waybill-batch-print.md) (предел пачки печати),
   [ADR 0107](0107-linear-mode-freeze.md) (режим заявки читается снимком),
   план [docs/vehicle-request-day-batch-plan.md](../vehicle-request-day-batch-plan.md)
+- Изменён: [ADR 0210](0210-assignment-correction-shift-approvals-by-day.md) — к последствию «смена машины выписанные 4-П не переписывает» добавлено парное:
+  подписи объекта под днями в рейсах коррекция назначения тоже не снимает, а правило подписей
+  больше не смотрит на линейность
 
 ## Контекст
 
