@@ -16,7 +16,8 @@
     "check:stage1-layout": "node scripts/check-stage1-layout.mjs",
     "check:stage2-layout": "node scripts/check-stage2-layout.mjs",
     "check:form-blockers": "node scripts/check-form-blockers.mjs",
-    "check:portal-routes": "node scripts/check-portal-routes.mjs"
+    "check:portal-routes": "node scripts/check-portal-routes.mjs",
+    "check:cache-invalidation": "node scripts/check-cache-invalidation.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "6.3.2",

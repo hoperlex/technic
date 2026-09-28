@@ -3,7 +3,7 @@ import { CheckOutlined } from '@ant-design/icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { wasteTicketAutoConfirmReady, type WasteRequestDto } from '@technic/contracts';
 import { wasteRequestKeys } from '@entities/waste-request';
-import { wasteTicketsApi } from '@entities/waste-ticket';
+import { wasteTicketKeys, wasteTicketsApi } from '@entities/waste-ticket';
 import { errorMessage } from '@shared/lib';
 import { TicketBadge } from './TicketBadge';
 
@@ -44,6 +44,12 @@ export function TicketCell({
     mutationFn: (fingerprint: string) => wasteTicketsApi.confirmReady(request.id, { fingerprint }),
     onSuccess: async (res) => {
       await qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
+      // Подтверждение меняет САМИ талоны, а не только значок в строке: каждый переходит в
+      // подтверждённый, и состояние разбора заявки пересчитывается целиком. Панель талонов и
+      // очередь слепых перепроверок живут под своим корнем, и окно карточки открывается прямо
+      // отсюда (ADR 0140) — без этого гашения оно показало бы талоны, которые только что
+      // подтвердили, и предложило бы подтвердить их снова.
+      await qc.invalidateQueries({ queryKey: wasteTicketKeys.root });
       // Число берётся из ответа, а не из значка: сервер подтверждает под замком заявки и знает,
       // сколько талонов на самом деле легло, — значок же показывал обещание.
       message.success(`Подтверждено талонов: ${res.confirmed}`);
@@ -52,7 +58,9 @@ export function TicketCell({
       // Список гасится и на отказе — это отдельное требование Р27, а не копия успешной ветки.
       // Сервер отвечает 409 ровно тогда, когда сверка успела измениться: оставь мы строку как
       // была, в ней осталась бы кнопка, которой только что отказали, и человек жал бы её снова.
+      // Талоны — по той же причине: изменилась именно сверка, то есть их состояние.
       await qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
+      await qc.invalidateQueries({ queryKey: wasteTicketKeys.root });
       message.error(errorMessage(e));
     },
   });

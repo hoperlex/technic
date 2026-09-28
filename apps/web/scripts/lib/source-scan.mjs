@@ -4,6 +4,14 @@
  * It is a module of its own not for brevity: raw query keys are detected by two checks
  * (`check-stage2-layout` and the quality budgets). Once their copies drift apart they start
  * counting differently, and the disagreement shows up exactly when one of them is being relied on.
+ *
+ * `check-cache-invalidation` is the third consumer, and it needs the same pieces one level down:
+ * the parser (`parseSource`), the local-name table (`collectBindings`), and above all the three
+ * sets naming the CACHE ENTRY POINTS — `KEY_PROPS`, `KEY_LIST_PROPS`, `KEY_FIRST_ARG_CALLS`. Those
+ * sets are the answer to "where does a key reach the cache", and a second copy of that answer is
+ * the drift this module exists to prevent: adding `resetQueries` here must teach every check at
+ * once, or the check that missed it goes green for the wrong reason. Everything below is exported
+ * additively — `quality.mjs` is protected and keeps calling `hasRawQueryKey(code)` unchanged.
  */
 import { readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -44,16 +52,16 @@ export function walkTs(dir, files = []) {
  * sites reaches the cache exactly like a `queryKey` does. It is listed here because a key position
  * is defined by where the value ends up, not by the name the prop happens to carry.
  */
-const KEY_PROPS = new Set(['queryKey', 'refreshQueryKey']);
+export const KEY_PROPS = new Set(['queryKey', 'refreshQueryKey']);
 
 /**
  * Properties whose value is a LIST of keys. `usePurgeAction({ invalidate })` takes whole keys, not
  * their first segments (see the hook's own comment): every element is a key in its own right.
  */
-const KEY_LIST_PROPS = new Set(['invalidate']);
+export const KEY_LIST_PROPS = new Set(['invalidate']);
 
 /** `QueryClient` methods that take the key as their first argument. */
-const KEY_FIRST_ARG_CALLS = new Set([
+export const KEY_FIRST_ARG_CALLS = new Set([
   'setQueryData',
   'setQueriesData',
   'getQueryData',
@@ -94,7 +102,7 @@ const ARRAY_OPENED_BY_STRING = /\[(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*['"`]/;
  * `parseDiagnostics` is internal to TypeScript. If a future version stops exposing it the retry
  * simply never fires and the preferred kind stands — the same behaviour as having no retry at all.
  */
-function parseSource(code, fileName) {
+export function parseSource(code, fileName) {
   const preferTsx = !fileName || fileName.endsWith('.tsx');
   const parse = (kind) =>
     ts.createSourceFile(fileName ?? 'source.tsx', code, ts.ScriptTarget.Latest, false, kind);
@@ -115,7 +123,7 @@ function parseSource(code, fileName) {
  * with two different meanings. In that case we prefer to miss the key over blaming an array that
  * merely shares a name with one.
  */
-function collectBindings(sf) {
+export function collectBindings(sf) {
   const bindings = new Map();
   const remember = (name, node) => bindings.set(name, bindings.has(name) ? null : node);
 
@@ -133,7 +141,7 @@ function collectBindings(sf) {
 /** Hops through names and calls: a bound on mutually referring declarations, not on nesting depth. */
 const MAX_HOPS = 8;
 
-function unwrap(node) {
+export function unwrap(node) {
   while (
     node &&
     (ts.isParenthesizedExpression(node) ||
@@ -231,7 +239,7 @@ function listHoldsRawKey(node, bindings, hops = 0) {
   return false;
 }
 
-function propertyName(name) {
+export function propertyName(name) {
   return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : undefined;
 }
 
