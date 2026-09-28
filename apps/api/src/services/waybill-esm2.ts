@@ -3,6 +3,7 @@ import {
   driverDocumentGaps,
   driverDocumentGapsWarning,
   type Esm2AckRequiredDetails,
+  type Esm2CancelPreviewDto,
   type Esm2Period,
   esm2Mode,
   esm2Periods,
@@ -1580,6 +1581,16 @@ export async function buildEsm2SyncPlan(
      */
     ownership?: VehicleOwnership;
     /**
+     * Status the request is about to get: the mode is computed from it instead of the stored one.
+     *
+     * Needed where the consequences of a status change are asked before the change — the rollback
+     * preview (ADR 0211). The door writes the status first and runs the sweep after, so the sweep
+     * sees the real status; the preview must see the same one without writing anything. Same
+     * reasoning as `assumeDateTo`: a second, hand-written «what the rollback cancels» would drift
+     * from the sweep on its first change. Not passed — the stored status.
+     */
+    assumeStatus?: RequestStatus;
+    /**
      * Дата расчёта — ключ дня по МСК; не передана, значит сегодня.
      *
      * Захватывается вызывающим один раз на транзакцию (Р12): полночь между принятым отпечатком и
@@ -1596,7 +1607,7 @@ export async function buildEsm2SyncPlan(
 
   const mode = esm2Mode({
     requestType: request.requestType,
-    status: request.status,
+    status: params.assumeStatus ?? request.status,
     ownership: params.ownership ?? request.ownership,
     deletedAt: request.deletedAt ? request.deletedAt.toISOString() : null,
     isLinear: request.isLinear,
@@ -1654,6 +1665,41 @@ export async function buildEsm2SyncPlan(
     correction: params.correction ? { allowed: true } : undefined,
   };
   return { input, plan: esm2SyncPlan(input) };
+}
+
+/**
+ * Sheets named for a human, not by ids: in a dialog he looks for his own form and his own week,
+ * and «2 sheets will burn» without numbers gives him nothing to check the promise against.
+ *
+ * One reader for both previews that name sheets — the «Выполнена» → «В работе» rollback and the
+ * rollback to «Новая» (ADR 0211): a second projection of the same row would print the number in a
+ * second format on its first change. Ordered by the week, because the dialog reads as a calendar,
+ * not in the order the sweep happened to collect its list.
+ */
+export async function esm2SheetPreviews(
+  reader: Reader,
+  ids: readonly string[],
+): Promise<Esm2CancelPreviewDto[]> {
+  if (ids.length === 0) return [];
+  const rows = await reader
+    .select({
+      id: waybills.id,
+      number: waybills.number,
+      prefix: waybillSeries.prefix,
+      numberWidth: waybillSeries.numberWidth,
+      periodFrom: waybills.periodFrom,
+      periodTo: waybills.periodTo,
+    })
+    .from(waybills)
+    .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+    .where(inArray(waybills.id, [...ids]))
+    .orderBy(waybills.periodFrom);
+  return rows.map((row) => ({
+    id: row.id,
+    number: waybillDisplayNumber(row.prefix, row.number, row.numberWidth),
+    from: row.periodFrom ?? '',
+    to: row.periodTo ?? '',
+  }));
 }
 
 /**

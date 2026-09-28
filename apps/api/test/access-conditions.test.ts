@@ -1218,6 +1218,7 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
       version: 1,
     },
   },
+  'POST /api/v1/vehicle-requests/:id/rollback/preview': { payload: { version: 1 } },
   'PUT /api/v1/vehicle-requests/:id/shifts/:date': { payload: { machineHours: 8 } },
   'POST /api/v1/vehicle-requests/:id/shifts/:date/approval': { payload: { approved: true } },
   'PATCH /api/v1/vehicle-requests/:id/status': { payload: { status: 'confirmed', version: 1 } },

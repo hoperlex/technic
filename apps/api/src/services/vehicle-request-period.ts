@@ -64,6 +64,27 @@ export async function clearPendingEarlyEnd(tx: Tx, requestId: string): Promise<b
 }
 
 /**
+ * The early-end request still waiting for approval, if any — what `clearPendingEarlyEnd` would
+ * delete. Read by the rollback plan (ADR 0211): the rollback drops it silently for the approver,
+ * and the human who rolls back must hear about it before, not find it gone from the queue after.
+ */
+export async function pendingEarlyEndOf(
+  reader: Tx | typeof db,
+  requestId: string,
+): Promise<{ newDateTo: string } | null> {
+  const [row] = await reader
+    .select({ newDateTo: vehicleRequestEarlyEndings.newDateTo })
+    .from(vehicleRequestEarlyEndings)
+    .where(
+      and(
+        eq(vehicleRequestEarlyEndings.requestId, requestId),
+        eq(vehicleRequestEarlyEndings.status, 'pending'),
+      ),
+    );
+  return row ?? null;
+}
+
+/**
  * Контекст проверенной операции коррекции (ADR 0101) — тот же, что принимает сверка ЭСМ-2.
  *
  * Проезжает через правку срока насквозь и без единой проверки: право `waybills.correct`, причину и

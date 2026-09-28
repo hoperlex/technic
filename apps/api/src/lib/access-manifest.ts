@@ -1815,6 +1815,13 @@ export const ACCESS_MANIFEST = {
     allOf: ['vehicleRequests.update'],
   },
   'POST /api/v1/vehicle-requests/:id/restore': { kind: 'permissions', allOf: ['archive.restore'] },
+  // The rollback preview (ADR 0211) is under the door's own right and nothing more: the rollback
+  // comes in grants without the waybill journal, so `waybills.read` here would hide the preview
+  // from exactly the holder who needs it. Sheet numbers inside the answer are gated separately.
+  'POST /api/v1/vehicle-requests/:id/rollback/preview': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status'],
+  },
   'GET /api/v1/vehicle-requests/:id/route-prefill': {
     kind: 'permissions',
     allOf: ['waybills.read', 'vehicleRequests.status'],

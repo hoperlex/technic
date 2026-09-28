@@ -1132,37 +1132,71 @@ export async function relocationRoutesOfRequest(
   return loadRouteDtos(reader, rows);
 }
 
+/** A relocation route of the request as the rollback plan names it (ADR 0211). */
+export interface PlannedRelocation {
+  id: string;
+  num: number;
+  purpose: RoutePurpose;
+  routeDate: string;
+}
+
 /**
- * Запланированный перегон при отмене заявки: рейса не будет, и держать его в плане незачем — так
- * же, как отменённая заявка выбывает из состава грузового маршрута (`shouldDetachOnStatus`).
+ * Which relocations leave together with the request when it is cancelled or returned to «Новая»:
+ * there will be no trip, and keeping it in the plan makes no sense — the same way a cancelled
+ * request leaves a freight route (`shouldDetachOnStatus`).
  *
- * Убирается только рейс, по которому не выписывали ни одного листа. Аннулированный лист рейс тоже
- * держит: он ссылается на него из журнала, а журнал помнит и списанные бланки — пропуск в
- * нумерации означал бы утраченный бланк, а не отменённый рейс (ADR 0037 п. 11).
+ * Only a route no waybill was ever issued for is dropped. A cancelled waybill holds the route as
+ * well: the journal refers to it and remembers spoiled forms too — a gap in the numbering would read
+ * as a lost form, not as a cancelled trip (ADR 0037 п. 11).
  *
- * Возвращает номера убранных рейсов: они уходят в журнал аудита вместе со сменой статуса.
+ * Pure reading, shared by the rollback preview and the status door (ADR 0211): a promise «this
+ * relocation stays» is only true while the same function decides it for both. Ordered by `id`, the
+ * lock order of every route of the module (Р17) — the door deletes in this order.
  */
-export async function dropPlannedRelocations(tx: Tx, requestId: string): Promise<string[]> {
-  const rows = await tx
-    .select({ id: vehicleRoutes.id, num: vehicleRoutes.num })
+export async function planRelocationDrop(
+  reader: Reader,
+  requestId: string,
+): Promise<{ drop: PlannedRelocation[]; keep: PlannedRelocation[] }> {
+  const rows = await reader
+    .select({
+      id: vehicleRoutes.id,
+      num: vehicleRoutes.num,
+      purpose: vehicleRoutes.purpose,
+      routeDate: vehicleRoutes.routeDate,
+    })
     .from(vehicleRoutes)
     .where(eq(vehicleRoutes.sourceRequestId, requestId))
-    // Порядок захвата — по возрастанию `id`, как и у всех рейсов модуля (Р17): перегонов у заявки
-    // два (доставка и вывоз), и оставленный планировщику порядок был бы вторым порядком на тех же
-    // строках. `LockRows` в плане стоит над `Sort`, поэтому строки берутся именно в этом порядке.
-    .orderBy(asc(vehicleRoutes.id))
-    .for('update');
+    .orderBy(asc(vehicleRoutes.id));
 
-  const dropped: string[] = [];
+  const drop: PlannedRelocation[] = [];
+  const keep: PlannedRelocation[] = [];
   for (const row of rows) {
-    const [documented] = await tx
+    const [documented] = await reader
       .select({ id: waybills.id })
       .from(waybills)
       .where(eq(waybills.routeId, row.id))
       .limit(1);
-    if (documented) continue;
-    await tx.delete(vehicleRoutes).where(eq(vehicleRoutes.id, row.id));
-    dropped.push(formatVehicleRouteNumber(row.num));
+    (documented ? keep : drop).push(row);
+  }
+  return { drop, keep };
+}
+
+/**
+ * Delete the relocations the plan decided to drop; returns their numbers for the audit event.
+ *
+ * No `FOR UPDATE` here on purpose: the only caller — the status door — has already taken every
+ * route of the request (`lockRequestRoutes`, relocations included) and then the request row, and
+ * the locked request row freezes the set of its routes until the transaction ends. Locking again
+ * would change nothing; locking in another order would be the deadlock Р17 forbids.
+ */
+export async function dropRelocations(
+  tx: Tx,
+  routes: readonly PlannedRelocation[],
+): Promise<string[]> {
+  const dropped: string[] = [];
+  for (const route of routes) {
+    await tx.delete(vehicleRoutes).where(eq(vehicleRoutes.id, route.id));
+    dropped.push(formatVehicleRouteNumber(route.num));
   }
   return dropped;
 }

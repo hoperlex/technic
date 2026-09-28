@@ -56,6 +56,7 @@ import {
   assignRouteSchema,
   createRelocationRouteSchema,
   MAX_ROUTE_REQUESTS,
+  type RoutePurpose,
   type VehicleRequestRouteDto,
   waybillAcknowledgeSchema,
 } from './vehicle-routes';
@@ -1954,6 +1955,11 @@ export const changeVehicleRequestStatusSchema = z
      *
      * Живёт вместе с предпросмотром: он остаётся и после уборки снимков — обещание «выпишется
      * столько-то листов» обязано быть верным независимо от того, жив ли костыль.
+     *
+     * The rollback «В работе» → «Новая» takes the fingerprint of its own preview
+     * (`POST /vehicle-requests/:id/rollback/preview`, ADR 0211), and there it is optional: tabs
+     * opened before the preview existed send the rollback without it and must keep working. Sent
+     * and not matching the plan recomputed under the locks — 409.
      */
     previewFingerprint: z.string().min(1).optional(),
     version: z.number().int().nonnegative(),
@@ -2030,6 +2036,114 @@ export interface VehicleRequestStatusPreviewDto {
    * `previewFingerprint`: между просмотром и нажатием план меняется, не тронув заявку, — признак
    * типа переключили, лист аннулировали своей ручкой, наступила полночь. `version` заявки ни
    * одного из этих трёх случаев не ловит.
+   */
+  fingerprint: string;
+}
+
+// ── Rollback to «Новая» preview (ADR 0211) ──
+
+/**
+ * Body of `POST /vehicle-requests/:id/rollback/preview`: only the version the human is looking at.
+ *
+ * The rollback takes no input besides the reason, and the reason changes nothing in what gets
+ * erased — so the preview asks for nothing else. The version is checked the same way the door
+ * checks it: consequences computed for a request that has already moved on are worse than none.
+ */
+export const previewVehicleRequestRollbackSchema = z
+  .object({ version: z.number().int().nonnegative() })
+  .strict();
+export type PreviewVehicleRequestRollbackInput = z.infer<
+  typeof previewVehicleRequestRollbackSchema
+>;
+
+/**
+ * Why the door would refuse the rollback right now. Codes, not only texts: the portal decides by
+ * the code whether to offer the button at all, and shows the message — the very words the door
+ * answers with, so the window and the refusal never disagree.
+ */
+export const VEHICLE_REQUEST_ROLLBACK_BLOCKERS = ['approved_shifts', 'active_waybill'] as const;
+export type VehicleRequestRollbackBlockerCode = (typeof VEHICLE_REQUEST_ROLLBACK_BLOCKERS)[number];
+
+export interface VehicleRequestRollbackBlockerDto {
+  code: VehicleRequestRollbackBlockerCode;
+  message: string;
+}
+
+/**
+ * A place of the request in a route: a day of an on-site order (ADR 0207) or the single seat of a
+ * freight request. `date` is the work day of the row, and for a freight seat — the route date.
+ */
+export interface VehicleRequestRollbackRouteDto {
+  /** «Р-12». */
+  routeNumber: string;
+  date: string;
+}
+
+/** A relocation route (delivery or pickup, ADR 0057) as the human recognises it. */
+export interface VehicleRequestRollbackRelocationDto {
+  routeNumber: string;
+  purpose: RoutePurpose;
+  routeDate: string;
+}
+
+/**
+ * What returning a request from «В работе» to «Новая» will erase and what it will keep —
+ * computed by the server with the very functions the door executes (ADR 0211).
+ *
+ * The list used to be assembled by the portal from the request DTO and got two things wrong: it
+ * kept silent about the days in routes, the shift drafts, the pending early-end request and the
+ * ESM-2 sheets, and it promised to remove every relocation, while one that ever had a waybill —
+ * even a cancelled one — stays (the waybill journal refers to it).
+ *
+ * Every list is the plan itself, not a restatement of it: the same builder answers the preview and
+ * drives the door, so a new consequence shows up here without a second place to update.
+ */
+export interface VehicleRequestRollbackPreviewDto {
+  /** Non-empty — the door will refuse; the rest still describes the request as it stands. */
+  blockers: VehicleRequestRollbackBlockerDto[];
+  /** The assigned vehicle with its rates goes away (ADR 0027 п. 8). */
+  assignment: boolean;
+  /** The presented completion goes away (ADR 0029): it exists after a «Выполнена» → «В работе». */
+  completion: boolean;
+  /**
+   * Places in routes: `detach` leave their routes, `frozen` stay because an active waybill holds
+   * the route. A frozen one means a blocker too — it is listed so the human sees which day holds.
+   */
+  routes: { detach: VehicleRequestRollbackRouteDto[]; frozen: VehicleRequestRollbackRouteDto[] };
+  /**
+   * Relocations: `drop` are deleted, `keep` stay because a waybill was issued for them at least
+   * once — the journal of strict-accounting forms refers to the route (ADR 0037 п. 11).
+   */
+  relocations: {
+    drop: VehicleRequestRollbackRelocationDto[];
+    keep: VehicleRequestRollbackRelocationDto[];
+  };
+  /**
+   * Shift rows that get deleted — every row of the request, as the door deletes them. `approved`
+   * can be true only for a day outside the current term: an approved day inside it is a blocker.
+   */
+  shifts: { date: string; approved: boolean }[];
+  /** The early-end request waiting for approval (ADR 0044) — deleted with the work. */
+  earlyEnd: { newDateTo: string } | null;
+  /**
+   * Weekly ESM-2 sheets: `cancel` get cancelled, `keep` stay active because their week is over
+   * (`canCancelWaybill`). Counters are for everyone; the sheets with numbers — only for a holder of
+   * `waybills.read` (`null` otherwise): the rollback right comes in grants without the journal
+   * (ADR 0106), and a strict-accounting number is not something the rollback right opens.
+   */
+  esm2: {
+    cancelCount: number;
+    keepCount: number;
+    sheets: { cancel: Esm2CancelPreviewDto[]; keep: Esm2CancelPreviewDto[] } | null;
+  };
+  /**
+   * The request worked by a linearity snapshot (ADR 0107), and leaving «В работе» drops it: taken
+   * into work again, it follows the vehicle type directory as it is by then.
+   */
+  dropsLinearFreeze: boolean;
+  /**
+   * Fingerprint of the consequences above. Optional in `PATCH /status` for now (old tabs send the
+   * rollback without it); when sent and not matching — 409, look again.
    */
   fingerprint: string;
 }

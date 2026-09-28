@@ -61,9 +61,6 @@ import {
   // Недели ЭСМ-2 считаются теми же функциями, что и в самой сверке: правка срока обязана знать,
   // какую бумагу она задевает, до того как её тронет (ADR 0101, Р36).
   esm2Mode,
-  // Аннулируемый лист в предпросмотре отката (§5.4): номер человеку, период — чтобы он узнал
-  // свою неделю.
-  type Esm2CancelPreviewDto,
   type Esm2Period,
   esm2Periods,
   esm2RequestedPeriods,
@@ -85,11 +82,12 @@ import {
   // план обязан считаться по тем входам, по которым его потом исполнит боевая ручка.
   previewVehicleRequestStatusSchema,
   type VehicleRequestStatusPreviewDto,
+  // Rollback to «Новая» preview (ADR 0211): the body is just the version, the answer is the plan.
+  previewVehicleRequestRollbackSchema,
+  type VehicleRequestRollbackPreviewDto,
   type VehicleRequestDaysDto,
-  ROLLBACK_WAYBILL_MESSAGE,
   ROUTE_FROZEN_MESSAGE,
   ROUTE_LEGACY_WAYBILL_MESSAGE,
-  shouldDetachOnStatus,
   type VehicleRouteDto,
   waybillFormLabels,
   isAllowedEarlyEndDate,
@@ -369,15 +367,24 @@ import { assertAssignmentBackstop } from '../services/assignment-backstop';
 import { noteLegacyPeriodCall } from '../services/assignment-legacy-note';
 import { markAssignmentHistoryDirty } from '../services/assignment-dirty';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
+// The rollback plan (ADR 0211): one builder for the preview and the status door, so the window
+// names exactly what the door erases.
+import {
+  applyStatusDetach,
+  buildRollbackPlan,
+  planStatusDetach,
+  rollbackPlanFingerprint,
+  rollbackPreviewOf,
+  rollbackShiftsBlocker,
+  rollbackWaybillBlocker,
+} from '../services/vehicle-request-rollback-plan';
 import { categorySpecsSql } from '../services/vehicle-categories';
 import {
-  activeWaybillOfRequest,
   assertRouteDriver,
   attachRequest,
   bumpRouteVersion,
   createRelocationRoute,
   detachRequest,
-  dropPlannedRelocations,
   lastTripFields,
   legacyWaybillOf,
   loadRouteDto,
@@ -429,6 +436,7 @@ import {
   // Тот же вход и тот же план, что у боевой сверки, но без единой записи (§5.4): им предпросмотр
   // отвечает «что случится», а боевая ручка сверяет, что обещанное ещё верно.
   buildEsm2SyncPlan,
+  esm2SheetPreviews,
   // Что коррекция назначения задела бы в прошлом (Р8, Р36): действующие листы заявки и прошедшие
   // недели, у которых бумаги нет вовсе. Считается до первой правки — эффективной датой отсюда
   // спрашивается право и глубина.
@@ -2743,56 +2751,13 @@ async function addRelocation(
 }
 
 /**
- * Заявка уходит из «В работе»: отмена и возврат в «Новую» вынимают её из рейса — рейса не будет,
- * и держать её в плане незачем. «Выполнена» состав не трогает: рейс состоялся, и связь заявки с
- * маршрутом стала историей. Из замороженного рейса заявка не выбывает ни при каком статусе —
- * бланк уже у водителя, и исчезнуть из него она не может.
- *
- * Рейсов у заявки бывает и несколько: у заказа техники на объект их столько, сколько дней
- * распланировано (ADR 0100 §2, а с ADR 0207 признак типа этого больше не решает), и снимаются они
- * **все** — отменённая заявка не оставляет за собой ни одного дня.
- * Замороженные при этом остаются, каждый со своей бумагой: правило одно и то же на день и на
- * грузовую заявку.
- *
- * Запланированные перегоны уходят по тому же правилу: рейс без единого выписанного листа
- * убирается, а с листом — хоть бы и аннулированным — остаётся, потому что на него ссылается
- * журнал бланков строгой отчётности.
- */
-async function detachOnStatus(
-  tx: Tx,
-  requestId: string,
-  next: RequestStatus,
-  actorId: string,
-): Promise<{ droppedRelocations: string[]; detachedDays: string[] }> {
-  // Перегоны: та же граница «отмена и возврат в „Новую“», но состава у них нет — убирается сам
-  // рейс. «Выполнена» их не трогает: технику вывозят и после того, как работы закрыли.
-  const droppedRelocations =
-    next === 'cancelled' || next === 'new' ? await dropPlannedRelocations(tx, requestId) : [];
-
-  const detachedDays: string[] = [];
-  // Порядок блокировок один на модуль: рейсы берутся по возрастанию `id`, иначе две встречные
-  // смены статуса встанут во взаимную блокировку (тем же порядком работает `lockRoutePair`), а
-  // связь перечитывается уже под блокировкой (Р17) — иначе отмена сняла бы заявку с того рейса, в
-  // котором её на самом деле уже нет.
-  for (const route of await lockRoutesOfRequest(tx, requestId)) {
-    const waybill = await routeWaybill(tx, route.id);
-    const frozen = !isRouteEditable(waybill?.status ?? null);
-    if (!shouldDetachOnStatus(next, frozen)) continue;
-    const removed = await detachRequest(tx, route.id, requestId);
-    await bumpRouteVersion(tx, route.id, actorId);
-    if (removed?.workDate) detachedDays.push(removed.workDate);
-  }
-  return { droppedRelocations, detachedDays };
-}
-
-/**
  * Заявка переезжает в рейс новой машины (ADR 0048). Рейс заведён на конкретную машину, поэтому
  * смена техники — это всегда переезд, а не правка: заявка вынимается из прежнего маршрута и
  * кладётся в маршрут новой единицы тем же путём, что и при переводе в работу.
  *
  * Замороженный выписанным листом рейс не отдаёт заявку: бланк уже у водителя, и исчезнуть из него
  * задним числом она не может — сначала лист аннулируют (`waybills.cancel`). Тем же правилом рейс
- * держит заявку при смене статуса (`detachOnStatus`).
+ * держит заявку при смене статуса (`planStatusDetach`).
  *
  * Водитель приезжает вместе с рейсом (`route.driverPersonId`) и правится там же, где заявка
  * встаёт в состав, — ответ отдаётся наверх, ручке, которая пишет о нём событие рейса.
@@ -2981,35 +2946,6 @@ function statusPreviewFingerprint(
   return createHash('md5')
     .update(`${canonicalJson(planInput)}|${action}`)
     .digest('hex');
-}
-
-/**
- * Аннулируемые листы — человеку, а не идентификаторами: в диалоге он ищет свой бланк и свою
- * неделю, и «сгорит 2 листа» без номеров не даёт проверить обещание ничем.
- */
-async function esm2CancelPreview(tx: Tx, ids: readonly string[]): Promise<Esm2CancelPreviewDto[]> {
-  if (ids.length === 0) return [];
-  const rows = await tx
-    .select({
-      id: waybills.id,
-      number: waybills.number,
-      prefix: waybillSeries.prefix,
-      numberWidth: waybillSeries.numberWidth,
-      periodFrom: waybills.periodFrom,
-      periodTo: waybills.periodTo,
-    })
-    .from(waybills)
-    .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-    .where(inArray(waybills.id, [...ids]))
-    // Неделя за неделей: порядок в диалоге читается календарём, а не порядком, в каком сверка
-    // сложила свой список.
-    .orderBy(waybills.periodFrom);
-  return rows.map((row) => ({
-    id: row.id,
-    number: waybillDisplayNumber(row.prefix, row.number, row.numberWidth),
-    from: row.periodFrom ?? '',
-    to: row.periodTo ?? '',
-  }));
 }
 
 /** Календарный ключ `YYYY-MM-DD` человеку: `24.07.2026`. Через JS Date он бы поехал на день. */
@@ -6253,7 +6189,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           mode: isLinear ? 'daily' : 'weekly',
           esm2: {
             issue: planned?.plan.issue ?? [],
-            cancel: await esm2CancelPreview(tx, planned?.plan.cancel ?? []),
+            cancel: await esm2SheetPreviews(tx, planned?.plan.cancel ?? []),
           },
           // Вторая половина последствий: недельный заказ занимает машину на весь срок, линейный —
           // только распланированными днями.
@@ -6261,6 +6197,57 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           fingerprint: statusPreviewFingerprint(planned?.input ?? null, body),
         };
       });
+    },
+  );
+
+  /**
+   * What the rollback «В работе» → «Новая» will erase and what it will keep (ADR 0211) — before the
+   * rollback, from the plan the door itself executes.
+   *
+   * A route of its own, not a branch of `/:id/status/preview`, for two reasons. Rights: that route
+   * demands `waybills.read` at the door, while the rollback right comes in grants without the
+   * waybill journal (ADR 0106) — a holder who may roll back must be able to see what he erases, and
+   * only the sheet numbers are for the journal's holders. Body: that route takes the whole status
+   * body (vehicle, driver, term, completion) because its plan depends on them; the rollback takes
+   * nothing but a reason, so its preview asks for the version and nothing else.
+   *
+   * Access is the door's, in the door's order: `vehicleRequests.status` on the route, then scope,
+   * lessor scope and the transition itself (`requests.rollbackStatus`) — a preview that let through
+   * someone the door refuses would be a way around it.
+   */
+  r.post(
+    '/:id/rollback/preview',
+    {
+      ...canChangeStatus,
+      schema: { params: idParams, body: previewVehicleRequestRollbackSchema },
+    },
+    async (req): Promise<VehicleRequestRollbackPreviewDto> => {
+      const p = requirePrincipal(req);
+      const before = await getDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      assertRequestScope(p, before);
+      assertLessorScope(p, before.assignment?.lessorId ?? null);
+      assertTransitionAllowed(p, before.status, 'new', 'vehicle');
+      // «Отменена» → «Новая» is a rollback too, but it erases nothing (ADR 0172): there is no plan
+      // to show, and an empty one would read as «nothing to lose» for the wrong reason.
+      if (!transitionResetsWork(before.status, 'new')) {
+        throw err.unprocessable(
+          `Последствия считаются только для возврата из «${requestStatusLabels.confirmed}» в «${requestStatusLabels.new}» — другой возврат ничего не стирает`,
+        );
+      }
+      if (before.version !== req.body.version) throw err.conflict();
+
+      // One day for the whole answer (Р12): the door computes its plan by its own `today`, and the
+      // fingerprint catches a midnight only if it changed the consequences.
+      const asOf = moscowDateKeyOf(new Date());
+      // One read-only snapshot: the places, the sheets and their numbers must describe one state.
+      return db.transaction(
+        async (tx) => {
+          const plan = await buildRollbackPlan(tx, { request: before, asOf });
+          return rollbackPreviewOf(tx, plan, { showSheetNumbers: can(p, 'waybills.read') });
+        },
+        { ...SNAPSHOT_ISOLATION, accessMode: 'read only' },
+      );
     },
   );
 
@@ -6393,16 +6380,13 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           { comment: 'Укажите причину' },
         );
       }
-      // Откат снимает назначение — и вместе с ним позволил бы поставить другую машину на дни,
-      // работу которых объект уже принял. Тот же запрет, что и у прямой смены техники: иначе он
-      // обходился бы в один шаг. Снятие подписи — отдельное видимое действие, и начинают с него.
+      // The rollback removes the assignment — and with it would let another vehicle onto days
+      // whose work the site has already accepted. Same ban as a direct vehicle change, otherwise
+      // it would be bypassed in one step; removing the approval is a separate visible action and
+      // comes first. Worded by the rollback plan: its preview shows this very text (ADR 0211).
       if (resetsWork) {
-        const approvedShifts = approvedShiftsBlocker(before);
-        if (approvedShifts) {
-          throw err.unprocessable(
-            `${approvedShifts}: возврат в «${requestStatusLabels.new}» снимает технику, а согласованные дни — это работа именно её`,
-          );
-        }
+        const approvedShifts = rollbackShiftsBlocker(before);
+        if (approvedShifts) throw err.unprocessable(approvedShifts);
       }
 
       // Откат «Выполнена» → «В работе» у заказа техники на объект — единственный переход, которому
@@ -6525,13 +6509,36 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               }
             }
 
-            // Возврат в «Новую» не спорит с выданной бумагой: заявку, стоящую в действующем листе,
-            // стереть с работы нельзя — она пошла бы в чей-то следующий рейс, и одна работа
-            // оказалась бы сразу в двух документах (ADR 0050). Заявка к этому моменту уже под
-            // `FOR UPDATE`: без блокировки лист успел бы родиться между проверкой и сбросом.
-            if (resetsWork) {
-              const issued = await activeWaybillOfRequest(tx, before.id);
-              if (issued) throw err.conflict(`${ROLLBACK_WAYBILL_MESSAGE} (${issued})`);
+            /*
+             * The rollback plan (ADR 0211) — built here, under the locks and before the first
+             * write, by the builder that answered the preview. Everything the door erases below is
+             * either executed from it (places in routes, relocations) or deleted by the same key it
+             * was read by; so what the window promised is what happens.
+             *
+             * Its first use is the refusal: a request standing in an active route waybill cannot
+             * lose its work — it would go into someone's next trip, and one work would sit in two
+             * documents at once (ADR 0050). The request row is already `FOR UPDATE` here: without
+             * it a waybill could be born between the check and the reset.
+             *
+             * The fingerprint is optional for this transition: tabs opened before the preview
+             * existed send the rollback without it and must keep working. Sent and not matching —
+             * the consequences changed after the human looked (a relocation got a waybill, a week
+             * became worked, a shift draft appeared), and he looks again.
+             */
+            const rollback = resetsWork
+              ? await buildRollbackPlan(tx, { request: before, asOf: today })
+              : null;
+            if (rollback?.blockers.activeWaybill) {
+              throw err.conflict(rollbackWaybillBlocker(rollback.blockers.activeWaybill));
+            }
+            if (
+              rollback &&
+              previewFingerprint !== undefined &&
+              rollbackPlanFingerprint(rollback) !== previewFingerprint
+            ) {
+              throw err.conflict(
+                `Данные изменились с момента просмотра: посмотрите заново, что снимет возврат в «${requestStatusLabels.new}»`,
+              );
             }
             // Срок — первым: дату рейса путевой лист берёт из заявки, и записанный после выписки он
             // отправил бы лист на заказанное время вместо согласованного.
@@ -6573,12 +6580,18 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
                 }
               }
             }
-            // Уход из «В работе» рейс не ломает: закрытая заявка остаётся талоном состоявшегося
-            // рейса, отменённая и возвращённая в «Новую» выбывает — но только пока рейс не заморожен
-            // выписанным листом.
+            // Leaving «В работе» does not break a route: a completed request stays the ticket of a
+            // trip that happened, a cancelled or rolled-back one leaves — but only while the route
+            // is not frozen by an issued waybill. The rollback executes its own plan; cancellation
+            // plans the same part right here, by the same function.
             const detached =
               before.status === 'confirmed' && status !== 'confirmed'
-                ? await detachOnStatus(tx, before.id, status, p.id)
+                ? await applyStatusDetach(
+                    tx,
+                    before.id,
+                    rollback?.detach ?? (await planStatusDetach(tx, before.id, status)),
+                    p.id,
+                  )
                 : { droppedRelocations: [], detachedDays: [] };
             // Ставка берётся из назначения — того, что стоит на заявке сейчас: сменить машину, не
             // меняя статуса, нельзя (ADR 0027), поэтому оно же и было в работе.
@@ -6590,11 +6603,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               });
               await saveCompletion(tx, before.id, closed);
             }
-            // Возврат в «Новую» снимает и назначение, и факт: «Новая» с машиной, ставками и суммой
-            // закрытия читалась бы как заявка, которую с работы не снимали, а повторный перевод в
-            // работу молча обошёлся бы прежней техникой (ADR 0027 п. 8) — то есть той самой, из-за
-            // которой заявку и откатили. Факт остаётся у заявок, откатанных из «Выполнена» в
-            // «В работе», — там его берегут намеренно, и снимает его только следующий шаг назад.
+            // The rollback removes both the assignment and the completion: a «Новая» with a vehicle,
+            // rates and a closing sum would read as a request never taken off work, and the next
+            // take-into-work would silently reuse the very vehicle it was rolled back for (ADR 0027
+            // п. 8). The completion survives «Выполнена» → «В работе» on purpose; only this next
+            // step back removes it. Rows go by request id — the key the rollback plan read them by
+            // (`assignment`, `completion`, `shifts` of the plan), under the same locks.
             if (resetsWork) {
               await tx
                 .delete(vehicleRequestAssignments)
@@ -6641,20 +6655,30 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               changedBy: p.id,
               comment,
             });
-            // Ожидающий визы запрос на досрочное завершение уходит вместе со статусом (ADR 0044):
-            // у закрытой и отменённой заявки сокращать нечего, а «ждёт визы» на ней висело бы вечно
-            // и считалось бы в сводке среза.
+            // The early-end request waiting for approval leaves with the status (ADR 0044): a closed,
+            // cancelled or rolled-back request has nothing to shorten, and «awaiting approval» would
+            // hang on it forever and count in the site summary. The rollback plan names it
+            // beforehand (`earlyEnd`), read by the same key this delete uses.
             const droppedEarlyEnd =
               before.status === 'confirmed' && status !== 'confirmed'
                 ? await clearPendingEarlyEnd(tx, before.id)
                 : false;
             /*
-             * Путевые листы ЭСМ-2 (миграция 0087) — после смены статуса, а не до: сверка читает
-             * заявку из базы, и на прежнем статусе она посчитала бы не тот набор недель.
+             * ESM-2 sheets (migration 0087) — after the status change, not before: the sweep reads
+             * the request from the database, and on the previous status it would compute the wrong
+             * set of weeks.
              *
-             * Переводом в работу листы рождаются на все недели срока; отменой и возвратом в «Новую»
-             * аннулируются вместе с работой. Закрытие срока не меняет и потому ничего не трогает —
-             * сверка на нём молчит сама, отдельного условия для этого не нужно.
+             * Taking into work issues sheets for every week of the term; cancellation and the
+             * rollback cancel them together with the work, except the sheets of weeks already worked
+             * (`canCancelWaybill`). Completion does not change the term and so touches nothing — the
+             * sweep keeps silent on it by itself.
+             *
+             * For the rollback this is the same builder the plan asked with `assumeStatus: 'new'`
+             * (ADR 0211), now seeing the status really written, on the same `today`. Nothing written
+             * in between touches the request's sheets. The deleted assignment does change one input
+             * — the vehicle — but not the outcome: under «Новая» the mode is `none`, no week is
+             * wanted, and every sheet whose week is not over burns whatever the vehicle. So the
+             * sheets it cancels are the ones the preview named.
              */
             // Backstop R21 runs before the paper. A status change opens no new days, so the tail
             // (R31) is not asked. Machinist gaps are asked, since sheets born here cover exactly the
@@ -6696,7 +6720,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             /*
              * План по дням (ADR 0100 §11) — тем же порядком и по той же причине, что и бумага:
              * сверка читает заявку из базы. Отмена и возврат в «Новую» снимают дни уже выше
-             * (`detachOnStatus`, там же спрашивается заморозка), но сверка идёт и по ним: она же
+             * (`applyStatusDetach`, там же спрашивается заморозка), но сверка идёт и по ним: она же
              * ловит дни, оставшиеся за сроком после уточнения периода тем же запросом.
              */
             const days = await syncLinearRouteDays(tx, {

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
   pastShiftDaysCount,
@@ -303,6 +303,29 @@ export async function deleteRequestShift(tx: Tx, requestId: string, date: string
     .where(
       and(eq(vehicleRequestShifts.requestId, requestId), eq(vehicleRequestShifts.shiftDate, date)),
     );
+}
+
+/**
+ * Every shift row of the request with its approval mark — exactly the rows `dropRequestShifts`
+ * deletes, read by the rollback plan (ADR 0211) so the preview names what the door erases.
+ *
+ * All rows, not only the days of the current term: the door deletes by request, and an approved
+ * day left outside the term by an earlier start-date edit goes too — it does not block the rollback
+ * (`approvedShiftsBlocker` counts days inside the term only), so the preview must say it aloud.
+ */
+export async function requestShiftRows(
+  reader: Reader,
+  requestId: string,
+): Promise<{ date: string; approved: boolean }[]> {
+  const rows = await reader
+    .select({
+      shiftDate: vehicleRequestShifts.shiftDate,
+      approvedAt: vehicleRequestShifts.approvedAt,
+    })
+    .from(vehicleRequestShifts)
+    .where(eq(vehicleRequestShifts.requestId, requestId))
+    .orderBy(asc(vehicleRequestShifts.shiftDate));
+  return rows.map((row) => ({ date: row.shiftDate, approved: row.approvedAt !== null }));
 }
 
 /**
