@@ -108,16 +108,40 @@ function endpointIdentity(endpoint: TaskEndpoint): PointIdentitySource {
   };
 }
 
+/** The two object columns a request day takes its site from; both are `null` without an object. */
+export interface SiteLocationSource {
+  objectName: string | null;
+  objectAddress: string | null;
+}
+
 /**
- * Адрес объекта так, как его печатает бланк линейного дня (ADR 0100 §10, `waybill-issue.ts`):
- * наименование и адрес через запятую.
+ * The object's location exactly as the day's waybill prints it (ADR 0100 §10, `waybill-issue.ts`):
+ * name and address joined by a comma.
  *
- * Склейка повторена, а не выведена: у дня в бланке «куда» это именно эта строка, и точка обязана
- * нести её же — иначе собранное задание разошлось бы с напечатанным, а `address_mismatch` (Р10)
- * загорался бы на ровном месте у каждого линейного дня.
+ * The join is repeated rather than derived because the day's "where to" line on the form is this
+ * very string, and the route point must carry the same one: otherwise the assembled task would
+ * diverge from the printed form, and `address_mismatch` (Р10) would light up on every request day
+ * for no reason.
  */
-function objectLocation(row: { objectName: string | null; objectAddress: string | null }): string {
+export function objectLocation(row: SiteLocationSource): string {
   return [row.objectName, row.objectAddress].filter(Boolean).join(', ');
+}
+
+/**
+ * Whether the request's object can serve as a day's site address — the single carrier of this rule
+ * for `placeLinearDay` and for the day batch pre-check (`vehicle-request-day-batch.ts`).
+ *
+ * A route point without a location cannot exist (CHECK `vehicle_route_points_location_not_blank`),
+ * and substituting the request number would send the driver nowhere. Two callers must agree: the
+ * batch asks the same question up front precisely so that `placeLinearDay` cannot refuse halfway
+ * through a batch, and a second copy of the condition would let them drift apart silently.
+ *
+ * The question is asked per part, not of the joined string: a whitespace-only name and address
+ * glue into `" , "`, which passes the database CHECK yet is no address at all. At least one part
+ * must carry text.
+ */
+export function hasSiteLocation(row: SiteLocationSource): boolean {
+  return [row.objectName, row.objectAddress].some((part) => (part ?? '').trim() !== '');
 }
 
 /**
@@ -934,11 +958,9 @@ export async function placeLinearDay(
     );
   }
 
-  const location = objectLocation(row);
-  if (location.trim() === '') {
-    // Точка без адреса не заводится (CHECK `location_not_blank`), и подставлять сюда номер заявки
-    // нельзя: по такому «адресу» водитель никуда не приедет. Заказ техники на объект без объекта —
-    // испорченная запись, и человек должен узнать об этом здесь, а не у принтера.
+  if (!hasSiteLocation(row)) {
+    // An on-site order without an addressable object is a corrupted record, and the person must
+    // learn it here rather than at the printer.
     throw err.unprocessable(
       'У заявки не выбран объект — дню линейного заказа неоткуда взять адрес площадки',
       { routeId: 'Нет объекта заявки' },
@@ -950,7 +972,7 @@ export async function placeLinearDay(
 
   const placed = await placedPointsOf(tx, routeId);
   const endpoint: TaskEndpoint = {
-    location,
+    location: objectLocation(row),
     address: objectAddressMeta(row.objectId),
     contactName: row.responsibleName ?? '',
     contactPhone: row.responsiblePhone ?? '',

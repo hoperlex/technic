@@ -41,7 +41,7 @@ import { AppError, err } from '../lib/errors';
 import { logger } from '../logger';
 import { assignmentStateOn } from './assignment-history';
 import { readActualChanges, readHistoryIsAuthoritative } from './assignment-read';
-import { assertRoutePlacement, placeLinearDay } from './route-points';
+import { assertRoutePlacement, hasSiteLocation, placeLinearDay } from './route-points';
 import {
   asDayRaceConflict,
   assertDayRouteVehicle,
@@ -812,17 +812,25 @@ async function openCorrection(tx: Tx, ctx: DayContext): Promise<CorrectionRecord
 // ── Предпроверки ──
 
 /**
- * Объект заявки и его адрес — до первой записи.
+ * The request's object is addressable — asked before the first write.
  *
- * `placeLinearDay` откажет без адреса площадки (точка без адреса не заводится, CHECK
- * `location_not_blank`), и отказ этот пришёл бы на середине пачки — после того, как рейс дня уже
- * заведён и его номер сожжён. Правило от этого не раздвоилось: решает по-прежнему `placeLinearDay`,
- * здесь только вопрос «есть ли чему быть адресом», заданный заранее.
+ * WHY BEFORE THE LOOP. `placeLinearDay` refuses a day without a site address (a route point
+ * without a location cannot exist), and that refusal would arrive in the middle of the batch —
+ * after the day's route has already been created and its «Р-» number burned, since the identity
+ * sequence does not roll back with the transaction. The rule itself is not duplicated: both places
+ * ask the same predicate, `hasSiteLocation` from `route-points.ts`.
+ *
+ * WHY IT IS A GUARD, NOT A BRANCH. By the schema the refusal is unreachable. An on-site order
+ * always has an object (CHECK `vehicle_requests_customer_check` requires exactly one customer, and
+ * `vehicle_requests_department_freight_check` gives departments freight only, which
+ * `linearDaysBlocker` has already turned away), and an object's name is non-blank by the directory
+ * form. The check stays for records written past the API — a seed, a migration, a manual fix —
+ * where the alternative is a half-done batch. `notFound` is reachable only in a race with the
+ * request's deletion after `loadLinearRequest` has read it.
  */
 async function assertObjectAddressable(requestId: string): Promise<void> {
   const [row] = await db
     .select({
-      objectId: vehicleRequests.objectId,
       objectName: constructionObjects.name,
       objectAddress: constructionObjects.address,
     })
@@ -830,10 +838,7 @@ async function assertObjectAddressable(requestId: string): Promise<void> {
     .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
     .where(eq(vehicleRequests.id, requestId));
   if (!row) throw err.notFound('Заявка не найдена');
-  if (
-    !row.objectId ||
-    [row.objectName, row.objectAddress].filter(Boolean).join(', ').trim() === ''
-  ) {
+  if (!hasSiteLocation(row)) {
     throw err.unprocessable(
       'У заявки не выбран объект — дням заказа неоткуда взять адрес площадки',
       { objectId: 'Нет объекта заявки' },
