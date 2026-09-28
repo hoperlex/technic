@@ -195,7 +195,6 @@ import {
   vehicleModels,
   vehicleRequestAssignments,
   vehicleRequestCompletions,
-  vehicleRequestShifts,
   // Ездки заявки (миграция 0136, Р1) и раскладка их по точкам маршрута (Р4, Р5): адреса,
   // количество и контакты живут здесь, а не в строке деталей грузоперевозки.
   vehicleRequestTrips,
@@ -443,9 +442,15 @@ import {
   issueEsm2OnDemand,
   syncEsm2Waybills,
 } from '../services/waybill-esm2';
-// Снятие подписей объекта под днями работы (Р5) — общим кодом с коррекцией рейса: подпись снимают
-// обе операции, и второе написание того же `UPDATE` разошлось бы с первым.
+// Clearing object sign-offs (R5) is shared with the route correction: both operations clear them,
+// and a second copy of the same `UPDATE` would drift from the first.
 import { clearShiftApprovals, type ShiftApproval } from '../services/vehicle-route-correction';
+// WHICH sign-offs a correction clears is one rule for this door, its preview and the period
+// correction (ADR 0210) — a copy here is how the three had already drifted apart.
+import {
+  approvalsClearedByAssignmentCorrection,
+  dayRoutesKeptWith,
+} from '../services/shift-approval-scope';
 // Задний ход даты заявки (ADR 0101, Р6 и Р15): право и глубину спрашивает общий предикат, а
 // причину, автора и след кладёт общая транзакционная операция — та же, что у бланков.
 import {
@@ -3314,52 +3319,6 @@ async function pastEsm2WeeksTouched(
 
 // ── Коррекция назначения задним числом (ADR 0101, Р8) ──
 
-/**
- * Подписи объекта под днями работы заявки — те, которые коррекция снимет (Р5, ADR 0101 п. 16).
- *
- * Все подтверждённые дни, а не выборка: назначение у заявки одно на весь срок, и, переписав в нём
- * машину, операция меняет то, чем работали **во все** подписанные дни разом. Дня, которого правка
- * не коснулась, здесь просто не бывает.
- *
- * Прежние `approvedBy`/`approvedAt` читаются вместе со строками: в таблице после снятия их не
- * останется, а в снимке операции они и есть ответ на «кто принял эти часы» через два месяца.
- */
-async function approvedShiftsOfRequest(
-  requestId: string,
-  displayNumber: string,
-): Promise<ShiftApproval[]> {
-  const rows = await db
-    .select({
-      shiftDate: vehicleRequestShifts.shiftDate,
-      approvedBy: vehicleRequestShifts.approvedBy,
-      approvedByName: users.fullName,
-      approvedAt: vehicleRequestShifts.approvedAt,
-    })
-    .from(vehicleRequestShifts)
-    .innerJoin(users, eq(users.id, vehicleRequestShifts.approvedBy))
-    .where(
-      and(
-        eq(vehicleRequestShifts.requestId, requestId),
-        isNotNull(vehicleRequestShifts.approvedAt),
-      ),
-    )
-    .orderBy(vehicleRequestShifts.shiftDate);
-  return rows.flatMap((row) =>
-    row.approvedBy && row.approvedAt
-      ? [
-          {
-            requestId,
-            displayNumber,
-            date: row.shiftDate,
-            approvedBy: row.approvedBy,
-            approvedByName: row.approvedByName,
-            approvedAt: row.approvedAt.toISOString(),
-          },
-        ]
-      : [],
-  );
-}
-
 /** Что коррекция назначения задевает в прошлом — и, значит, за что она отвечает правом. */
 interface AssignmentCorrectionPlan {
   /**
@@ -3462,15 +3421,21 @@ async function planAssignmentCorrection(
   }
 
   /*
-   * Подписи смен снимает не всякая коррекция назначения, и линейный заказ — тот случай, где не
-   * снимает (ADR 0100 §4, backlog «Машина в таблице смен»). Там машина дня — машина **рейса**
-   * дня, а назначение остаётся машиной по умолчанию: подпись объекта под часами относится к
-   * единице, которая в этот день вышла, и правка умолчания её не опровергает. У обычного заказа
-   * наоборот — машина одна на весь срок, и подпись стоит ровно под её работой.
+   * Which sign-offs this correction clears is the shared rule of ADR 0210, and the preview asks the
+   * very same call (`planReassignCommand`): the window, its fingerprint and the table change must
+   * name one set of days. A day in a day route keeps its sign-off — its vehicle is the route's and
+   * is corrected by the route correction; a route-less day loses it — it was worked by the
+   * assignment's vehicle, which is what this correction rewrites. Linearity plays no part.
+   *
+   * No range: this door rewrites the single assignment for the whole term. Day routes survive only
+   * if the next vehicle is own — for a rented one the door's day sync below sweeps them.
    */
-  const approvals = isLinearRequest(before)
-    ? []
-    : await approvedShiftsOfRequest(before.id, before.displayNumber);
+  const approvals = await approvalsClearedByAssignmentCorrection(db, {
+    requestId: before.id,
+    displayNumber: before.displayNumber,
+    range: null,
+    dayRoutesKept: dayRoutesKeptWith(next?.ownership ?? 'own'),
+  });
 
   /*
    * Эффективная дата — по таблице §4 плана: у листа ЭСМ-2 (и существующего, и новой прошедшей

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import {
   formatVehicleRequestNumber,
   moscowDateKeyOf,
@@ -14,7 +14,7 @@ import {
 } from '@technic/contracts';
 import { err } from '../lib/errors';
 import type { AuditEntry } from '../lib/audit';
-import { users, vehicleRequestAssignments, vehicleRequestShifts, vehicles } from '../db/schema';
+import { vehicleRequestAssignments, vehicles } from '../db/schema';
 import type {
   AssignmentApplyContext,
   AssignmentCommandSpec,
@@ -66,6 +66,9 @@ import {
 } from './esm2-plan';
 import { buildEsm2SyncPlan, type Esm2IssuePreparations, type Esm2SyncResult } from './waybill-esm2';
 import { clearShiftApprovals, type ShiftApproval } from './vehicle-route-correction';
+// Which sign-offs a vehicle correction clears is one rule for this door and the reassign door with
+// its preview (ADR 0210): a per-door copy is exactly how route days and linearity drifted apart.
+import { approvalsClearedByAssignmentCorrection } from './shift-approval-scope';
 // Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
 // провенансом (§10, Р32). Своя копия этого решения разошлась бы с соседними дверями молча.
 import {
@@ -80,19 +83,22 @@ import {
  * Периодная коррекция — правка **прошлого решения о машине**, адресуемая целью
  * (`docs/assignment-periods-plan.md`, Р7, Р10–Р13, Р32; §8, волна 3.3).
  *
- * ЧТО ЭТА ДВЕРЬ ДЕЛАЕТ. До истории назначение было одно на весь срок, и «в марте работала другая
- * машина» выражалось единственным способом: переписать назначение целиком и переоформить всю
- * бумагу заявки, сняв заодно **все** её подписи ([vehicle-requests.ts](../routes/vehicle-requests.ts),
- * `approvedShiftsOfRequest`). С разрезом у заявки появляются отрезки, и правится один из них:
+ * WHAT THIS DOOR DOES. Before the history the assignment was one for the whole term, and "another
+ * vehicle worked in March" could be said only one way: rewrite the assignment entirely and reissue
+ * all of the request's paper, clearing its sign-offs on the way
+ * ([vehicle-requests.ts](../routes/vehicle-requests.ts), `planAssignmentCorrection`). With the split
+ * a request has segments, and one of them is corrected:
  *
  * - **цель называется явно** (Р10) — идентификатором изменения либо логическим ключом
  *   «шкала + дата». Второй адрес не удобство: у заявки, история которой ещё не материализована,
  *   `changeId` не существует вовсе, и исправить восстановленную из листов смену было бы нечем;
  * - **последствия считаются по диапазону цели** (Р11) — до следующего изменения той же шкалы, а не
  *   «на весь срок»;
- * - **подписи снимаются ровно в `approvalClearRange`** — единственной границе снятия. `paperRange`
- *   шире: он включает и смены машиниста, а фамилии машиниста в `vehicle_request_shifts` нет вовсе,
- *   и переподписывать часы объекту из-за смены человека не за что.
+ * - **sign-offs are cleared only inside `approvalClearRange`** — the one range bound. `paperRange` is
+ *   wider: it includes machinist changes too, `vehicle_request_shifts` has no machinist at all, and
+ *   there is nothing to make the object re-approve when only the person changed. Inside the range
+ *   the shared rule of ADR 0210 (`shift-approval-scope.ts`) still spares days that sat in a day
+ *   route: their vehicle is the route's, not the segment's;
  *
  * ЧЕГО ОНА НЕ ДЕЛАЕТ И ПОЧЕМУ (границы — предметные, а не технические):
  *
@@ -206,7 +212,10 @@ export interface VehicleCorrectionPlan {
   term: AssignmentTerm;
   /** Бумагу ведёт отрезковый план (`read_mode = history`), а не недельная сверка (§10). */
   paperByHistory: boolean;
-  /** Подписи, попавшие в `approvalClearRange`: ровно они и будут сняты шагом 12. */
+  /**
+   * Sign-offs step 12 clears: route-less days inside `approvalClearRange` (ADR 0210). Computed once
+   * here and hashed into the fingerprint — step 12 does not re-read them.
+   */
   approvals: ShiftApproval[];
 }
 
@@ -260,9 +269,11 @@ export async function planVehicleCorrection(
   const esm2Mode = base.input.mode;
   const sheets: Esm2ExistingSheet[] = [...base.input.existing];
   if (esm2Mode === 'on_demand') {
-    // Р14: у линейного заказа машина дня — машина рейса, а назначение остаётся умолчанием
-    // (ADR 0100 §4). Правка умолчания задним числом не опровергает ни бумагу дня, ни подпись под
-    // его часами, и делать вид, что опровергает, дверь не будет.
+    // R14: a linear request keeps no assignment history (ADR 0126) — its ESM-2 is issued on demand
+    // with the vehicle named explicitly, and the assignment is only the default (ADR 0100 §4), so
+    // there is no segment here to correct. This is a door refusal, not a sign-off rule: the route-less days of
+    // such a request are corrected, sign-offs included, by the reassign door's correction, which
+    // rewrites the default as a whole (ADR 0210).
     throw err.unprocessable(
       'У линейного заказа машину дня задаёт рейс, а не назначение — правьте рейс и его лист, а не историю заявки',
       { requestId: 'Линейный заказ' },
@@ -349,12 +360,20 @@ export async function planVehicleCorrection(
     }))
     .sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
 
-  const approvals = await approvalsInRange(
-    tx,
-    request.id,
-    formatVehicleRequestNumber(request.num),
-    effects.approvalClearRange,
-  );
+  /*
+   * The sign-offs this correction clears — the shared rule of ADR 0210 inside this command's own
+   * `approvalClearRange`: a route-less day of the corrected segment loses its sign-off, a day that
+   * sat in a day route keeps it (its vehicle is the route's, and the route correction owns it). The
+   * reassign door and its preview ask the same function, so a request corrected by either door
+   * loses the same days. Day routes survive this command: it neither changes ownership
+   * (`assertNewVehicle`) nor runs the day sync.
+   */
+  const approvals = await approvalsClearedByAssignmentCorrection(tx, {
+    requestId: request.id,
+    displayNumber: formatVehicleRequestNumber(request.num),
+    range: effects.approvalClearRange,
+    dayRoutesKept: true,
+  });
 
   /*
    * Бумага коррекции — только в режиме `history` (§10). Считается тем же порядком, что и у двери
@@ -558,58 +577,6 @@ function previousVehicle(
 }
 
 // ── Подписи объекта (Р11) ──
-
-/**
- * Подписи, попавшие в `approvalClearRange`, — и **только** в него.
- *
- * Сегодняшний код снимает все подписи заявки, обосновывая это тем, что «назначение у заявки одно на
- * весь срок»; после разреза это неправда: у мартовской коррекции нет права трогать апрельскую
- * подпись, потому что в апреле работала другая машина, и её часы объект принял по делу.
- *
- * Прежние `approvedBy`/`approvedAt` читаются вместе со строками: в таблице после снятия их не
- * останется, а в снимке операции они и есть ответ на «кто принял эти часы» через два месяца.
- */
-async function approvalsInRange(
-  tx: AssignmentCommandTx,
-  requestId: string,
-  displayNumber: string,
-  ranges: DateRangeSet,
-): Promise<ShiftApproval[]> {
-  if (ranges.length === 0) return [];
-  const rows = await tx
-    .select({
-      shiftDate: vehicleRequestShifts.shiftDate,
-      approvedBy: vehicleRequestShifts.approvedBy,
-      approvedByName: users.fullName,
-      approvedAt: vehicleRequestShifts.approvedAt,
-    })
-    .from(vehicleRequestShifts)
-    .innerJoin(users, eq(users.id, vehicleRequestShifts.approvedBy))
-    .where(
-      and(
-        eq(vehicleRequestShifts.requestId, requestId),
-        isNotNull(vehicleRequestShifts.approvedAt),
-      ),
-    )
-    .orderBy(vehicleRequestShifts.shiftDate);
-  // Отбор диапазоном идёт здесь, а не в SQL: диапазонов у команды бывает несколько (Р11), и
-  // собранное из них `OR` читалось бы хуже, чем то же условие на посчитанных проекциях. Дней у
-  // заявки столько, сколько в её сроке, — счёт идёт на сотни.
-  return rows.flatMap((row) =>
-    row.approvedBy && row.approvedAt && dateInRanges(ranges, row.shiftDate)
-      ? [
-          {
-            requestId,
-            displayNumber,
-            date: row.shiftDate,
-            approvedBy: row.approvedBy,
-            approvedByName: row.approvedByName,
-            approvedAt: row.approvedAt.toISOString(),
-          },
-        ]
-      : [],
-  );
-}
 
 /**
  * Шаг 12: снять подписи — ровно те, что назвал расчёт.
@@ -1033,9 +1000,4 @@ export function correctionAsOf(): string {
 /** Пересекается ли документ с областью: границы включительные с обеих сторон. */
 function rangesOverlap(ranges: DateRangeSet, from: string, to: string): boolean {
   return ranges.some((range) => range.from <= to && from <= range.to);
-}
-
-/** Лежит ли день внутри области. */
-function dateInRanges(ranges: DateRangeSet, date: string): boolean {
-  return ranges.some((range) => range.from <= date && date <= range.to);
 }

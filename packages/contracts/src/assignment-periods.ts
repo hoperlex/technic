@@ -618,7 +618,10 @@ export interface AssignmentCorrectionPreviewDto extends AssignmentPreviewDto {
   blockingSheets: AssignmentUnlockDto[];
   /** Диапазон снятия подписей (`approvalClearRange`, Р11) — только дни изменённой машины. */
   approvalClearRange: { from: string; to: string }[];
-  /** Подписи, попавшие в этот диапазон: ровно они и будут сняты. */
+  /**
+   * Sign-offs the command will clear: approved days inside the range that did not sit in a day
+   * route (ADR 0210 — a route day's vehicle is the route's, and the route correction owns it).
+   */
   clearedApprovals: AssignmentClearedApprovalDto[];
 }
 
