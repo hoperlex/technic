@@ -415,9 +415,15 @@ describeReadModes(readMode, 'предпросмотр смены техники'
     // Второе множество пусто: обычная смена подписей не снимает — она об них разбивается.
     expect(dto.clearedShiftDays).toEqual([]);
     expect(dto.clearedShiftsFingerprint).toBeNull();
-    // План бумаги непустой: машина в бланке напечатана, и сменить её можно только перевыпиской.
+    // The paper plan is not empty: the vehicle is printed on the sheet, and only re-issue changes it.
+    // From today every sheet goes to the new vehicle. In `history` a change made mid-week also
+    // re-issues the days before it onto the previous vehicle (ADR 0212), so only those are exempt.
     expect(dto.plan.issue.length).toBeGreaterThan(0);
-    expect(dto.plan.issue.every((sheet) => sheet.vehicleId === ctx.vehicleB.id)).toBe(true);
+    expect(
+      dto.plan.issue
+        .filter((sheet) => sheet.to >= TODAY)
+        .every((sheet) => sheet.vehicleId === ctx.vehicleB.id),
+    ).toBe(true);
     expect(dto.fingerprint).not.toBe('');
     expect(dto.asOf).toBe(TODAY);
     // Исход `none`: обычная смена с сегодняшнего дня прошлого не трогает и причины не требует (Р32).
@@ -496,9 +502,10 @@ describeReadModes(readMode, 'предпросмотр смены техники'
       acknowledgements: acknowledgementsOf(dto.issues),
     });
     /*
-     * Ожидание одно на оба режима, и это утверждение, а не совпадение: отпечаток считается по
-     * содержанию последствий, а не по режиму чтения, — и полная история сцены не даёт бэкстопу
-     * чужих дверей ни одного пробела машиниста, из-за которого он отказал бы в `history` (Р22).
+     * One expectation for both modes, and it is a statement, not a coincidence: the fingerprint is
+     * computed from the content of the consequences, not from the read mode; and in `history` the
+     * door writes the history itself (ADR 0212) and inherits the scene's machinist, so nothing is
+     * left for it to refuse.
      */
     const expected = byReadMode(mode, { legacy: 200, history: 200 });
     expect(res.statusCode, res.body).toBe(expected);
@@ -510,7 +517,9 @@ describeReadModes(readMode, 'предпросмотр смены техники'
          WHERE source_request_id = ${scene.requestId} AND status <> 'cancelled'
            AND vehicle_id = ${ctx.vehicleB.id}`)
     ).rows;
-    expect(Number(issued!.n)).toBe(dto.plan.issue.length);
+    expect(Number(issued!.n)).toBe(
+      dto.plan.issue.filter((sheet) => sheet.vehicleId === ctx.vehicleB.id).length,
+    );
   });
 
   it('запрос без отпечатка: в `legacy` работает по-старому, в `history` — 409 с просьбой обновиться', async () => {

@@ -29,12 +29,17 @@ import type { AssignmentWriteTx } from './assignment-write';
  * Бэкстоп чужих дверей: что скажет история той двери, которая машиниста не спрашивает
  * (`docs/assignment-periods-plan.md`, Р16, Р21, Р22, Р23, Р30, Р31; фазирование — Ж5).
  *
- * ЗАЧЕМ ОН. Бумагу ЭСМ-2 сверяет не одна дверь. `syncEsm2Waybills` зовут шесть мест: статусная
- * ручка, смена назначения, обе ветки досрочного завершения, правка срока и недельная операция
- * (Р21). Ни одна из них не спрашивает у человека, кто работал, — и любая может задеть дни, у
- * которых в истории машинист `unknown` или у которых хвост истории разошёлся с назначением. Тогда
- * сверка либо откажет невнятно («укажите машиниста» из своей глубины), либо — если человек в
- * денормализации всё-таки нашёлся — молча выпишет бланк строгой отчётности не на того.
+ * WHY IT EXISTS. ESM-2 paper is reconciled by more than one door. The weekly sweep is called from
+ * six places: the status door, the reassignment door, both early-end branches, the term edit and
+ * the weekly operation (R21). None of them asks who worked, and any of them can touch days whose
+ * history machinist is `unknown` or whose history tail has drifted from the assignment. The sweep
+ * would then either refuse vaguely ("name the machinist" from its depths) or — when a person is
+ * found in the denormalization — silently issue a strict-reporting sheet to the wrong one.
+ *
+ * Two of the six are no longer foreign while history is read (ADR 0212): taking a request into
+ * work and changing its vehicle write the history themselves — the body names the pair, and the
+ * paper follows the written rows — so in `read_mode = history` they do not come here at all. In
+ * `legacy` both still do, with the machinist named by the body (`namedDriverPersonId`).
  *
  * ЧЕГО ОН НЕ ДЕЛАЕТ — НЕ НАЗЫВАЕТ МАШИНИСТА (Р22). Соблазн протащить в правку срока поле `anchors`
  * разобран планом и отвергнут дважды. По правам: обычная правка заявки защищена одним

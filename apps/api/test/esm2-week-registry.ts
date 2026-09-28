@@ -165,6 +165,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
       'разрезом (§15)',
   },
   {
+    file: 'assignment-reassign-history.db.test.ts',
+    klass: 'sync',
+    status: 'done',
+    note: 'смена техники пишет историю (ADR 0212, решение 3), оба прогона. В `legacy` строк нет и бумагу ведёт недельная сверка; в `history` строка машины ложится на сегодня, бумага режется по дню смены отрезковым планом, аренда снимает машиниста. Границы листов цифрой не пишутся: утверждается, что листы новой машины не заходят на дни до смены, а листы прежней — на дни с неё',
+  },
+  {
     file: 'assignment-work-entry.db.test.ts',
     klass: 'sync',
     status: 'done',

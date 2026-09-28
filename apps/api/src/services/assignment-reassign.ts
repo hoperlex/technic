@@ -50,6 +50,7 @@ import { buildEsm2SyncPlan, type Esm2SyncPlanInput } from './waybill-esm2';
 // Предупреждения по выпускаемым листам — общим расчётом шага 6 (§7): пятое место, где решают, что
 // такое пробел в документах машиниста, заводить нельзя.
 import { assignmentPlanIssues } from './assignment-paper';
+import { planReassignHistory, type ReassignHistoryApply } from './assignment-reassign-history';
 
 /**
  * Предпросмотр и отпечаток **старой двери смены техники** — `PATCH /vehicle-requests/:id/assignment`
@@ -70,13 +71,15 @@ import { assignmentPlanIssues } from './assignment-paper';
  * пользуется тем же расчётом только ради сверки отпечатка (шаг 7) и дальше идёт своим путём —
  * `resolveAssignment`, `saveAssignment`, `syncEsm2Waybills` — который волна 3 не переписывает.
  *
- * ПОЧЕМУ ИСТОРИЯ ЗДЕСЬ ПУСТАЯ (`changes: []`). Это не заглушка, а описание того, что дверь делает
- * **сегодня**. Разреза (Р6) у неё пока нет: `saveAssignment` переписывает назначение целиком, и
- * логический эффект команды — «эта машина с такой-то даты и до конца срока». Ровно это и даёт
- * `assignmentCommandEffects` на пустой истории, и ровно по этому диапазону работают проекции Р11.
- * Подставь мы сюда восстановленную историю, предпросмотр обещал бы отрезковые последствия, которых
- * дверь не производит, — а заодно и отказывал бы там, где историю восстановить нечем, то есть менял
- * бы поведение двери. Историю сюда принесёт этап 5 вместе с самим разрезом.
+ * TWO MODES, TWO COMPUTATIONS (ADR 0212, decision 3). With `read_mode = history` the door is a
+ * history command: the plan is computed on the real history by `planReassignHistory`
+ * ([assignment-reassign-history.ts](./assignment-reassign-history.ts)) — a vehicle row from the
+ * command date, the segment paper plan, the machinist gaps of its own range — and the executing
+ * door writes that history and issues that paper. In `legacy` (the rollback mode) nothing changes:
+ * the effects are computed on an empty history (`changes: []`), because there the door rewrites
+ * the assignment whole and the weekly sweep issues the paper — its logical effect really is "this
+ * vehicle from that date to the end of the term". A linear request keeps that computation in both
+ * modes: its paper is issued on demand, and history only records its default vehicle.
  *
  * ДВЕ ФОРМЫ ОДНОЙ КОМАНДЫ. Обычная смена техники и коррекция назначения задним числом (ADR 0101,
  * Р8) идут этой же дверью и отличаются блоком `correction`. Отличие для расчёта одно — **дата**:
@@ -89,11 +92,9 @@ import { assignmentPlanIssues } from './assignment-paper';
 const DOOR = 'request-assignment';
 
 /**
- * Происхождение будущей строки истории — то же, каким её пишет периодная коррекция: по составу
- * обе команды и есть «смена машины», а отличает их не `origin`, а `correction_id`.
- *
- * Строк эта дверь пока не пишет (dual-write придёт этапом 5), но происхождение входит в проекции
- * Р11 через `isOrdinaryVehicleChange`, и назвать его надо уже сейчас.
+ * Origin of the history row — the same the period correction writes: by content both commands are
+ * "change of vehicle", and `correction_id` tells them apart. The empty-history effects of `legacy`
+ * name it too: it enters the R11 projections through `isOrdinaryVehicleChange`.
  */
 const REASSIGN_ORIGIN = 'reassignment' as const;
 
@@ -178,6 +179,11 @@ export interface ReassignPlan {
    * подтверждение, выданное на другое состояние, обязано перестать годиться.
    */
   workBlockShiftDays: { date: string; hours: number; approved: boolean }[];
+  /**
+   * What the executing door writes and issues in `history` (ADR 0212, decision 3); `null` in
+   * `legacy`. Not part of the fingerprint: it is derived from the very fields the fingerprint hashes.
+   */
+  history: ReassignHistoryApply | null;
 }
 
 // ── Расчёт (шаги 4–6 канона в расчётной половине) ──
@@ -219,7 +225,8 @@ export async function planReassignCommand(
     asOf,
   });
   if (!base) throw err.notFound('Заявка не найдена');
-  const sheets = base.input.existing;
+  const baseInput = base.input;
+  const sheets = baseInput.existing;
 
   /*
    * Логическая дата команды (Р11, Р32).
@@ -237,65 +244,108 @@ export async function planReassignCommand(
       ? term.dateFrom
       : asOf;
 
-  const effects = assignmentCommandEffects({
-    // Истории здесь нет намеренно — см. шапку модуля: разреза у двери пока не существует, и её
-    // логический эффект тянется от даты команды до конца срока.
-    changes: [],
-    term,
-    asOf,
-    mutations: [{ kind: 'insert', dimension: 'vehicle', effectiveDate, origin: REASSIGN_ORIGIN }],
-    sheets,
-    wanted: base.input.wanted,
-  });
+  /** The weekly-sweep computation: `legacy`, and linear requests in both modes. */
+  async function legacyPaper() {
+    const effects = assignmentCommandEffects({
+      // Empty history on purpose — see the module header: here the door rewrites the assignment
+      // whole, and its logical effect runs from the command date to the end of the term.
+      changes: [],
+      term,
+      asOf,
+      mutations: [{ kind: 'insert', dimension: 'vehicle', effectiveDate, origin: REASSIGN_ORIGIN }],
+      sheets,
+      wanted: baseInput.wanted,
+    });
+
+    /*
+     * Разблокировки считает **сервер**, а тело их только подтверждает (Р11, Б3). Множество — это
+     * действующие листы, которые пересекают область бумаги и которых обычная сверка не тронет:
+     * их неделя отработана, и без разблокировки коррекция аннулировала бы номер без замены.
+     *
+     * Спрашивается оно только при исходе `crew`: у команды, которая прошлого не трогает, жечь нечего,
+     * а непустой список при исходе `none` был бы заявкой на право сжечь чужие номера (Д4).
+     */
+    const requiredUnlockIds = effects.needsCorrection
+      ? sheets
+          .filter(
+            (sheet) =>
+              rangeSetIntersects(effects.paperScope, {
+                from: sheet.periodFrom,
+                to: sheet.periodTo,
+              }) &&
+              !canCancelWaybill(
+                { issuedForDate: sheet.periodFrom, periodTo: sheet.periodTo },
+                asOf,
+              ),
+          )
+          .map((sheet) => sheet.id)
+          .sort()
+      : [];
+
+    /*
+     * План, который дверь исполнит. Машина подменяется в уже собранном входе, а не читается из базы:
+     * `syncEsm2Waybills` зовётся **после** `saveAssignment`, то есть видит уже новую единицу, и
+     * предпросмотр обязан считать по тому же состоянию, иначе он показывал бы план прежней машины.
+     */
+    const planInput: Esm2SyncPlanInput = {
+      ...baseInput,
+      vehicleId: input.vehicleId,
+      ...(input.correction
+        ? {
+            unlockWaybillIds: input.correction.unlockWaybillIds,
+            correction: { allowed: true as const },
+          }
+        : {}),
+    };
+    const sheetPlan = esm2SyncPlan(planInput);
+
+    const preview = await previewPlanOf(tx, {
+      plan: sheetPlan,
+      sheets,
+      numbers,
+      mode: baseInput.mode,
+      vehicleId: input.vehicleId,
+      driverPersonId: baseInput.driverPersonId,
+    });
+    const planIssues = await assignmentPlanIssues(tx, {
+      requestId: request.id,
+      issue: preview.issue,
+    });
+    return { effects, requiredUnlockIds, preview, issues: planIssues.issues };
+  }
 
   const numbers = await readSheetNumbers(tx, request.id);
   /*
-   * Разблокировки считает **сервер**, а тело их только подтверждает (Р11, Б3). Множество — это
-   * действующие листы, которые пересекают область бумаги и которых обычная сверка не тронет:
-   * их неделя отработана, и без разблокировки коррекция аннулировала бы номер без замены.
-   *
-   * Спрашивается оно только при исходе `crew`: у команды, которая прошлого не трогает, жечь нечего,
-   * а непустой список при исходе `none` был бы заявкой на право сжечь чужие номера (Д4).
+   * In `history` the plan is the history command's (ADR 0212, decision 3): the real history, the
+   * segment paper plan and the gaps of the command's own range. A linear request comes back with
+   * `effects: null` — its paper is issued on demand, so the empty-history computation below stays
+   * its answer in both modes.
    */
-  const requiredUnlockIds = effects.needsCorrection
-    ? sheets
-        .filter(
-          (sheet) =>
-            rangeSetIntersects(effects.paperScope, {
-              from: sheet.periodFrom,
-              to: sheet.periodTo,
-            }) &&
-            !canCancelWaybill({ issuedForDate: sheet.periodFrom, periodTo: sheet.periodTo }, asOf),
-        )
-        .map((sheet) => sheet.id)
-        .sort()
-    : [];
-
-  /*
-   * План, который дверь исполнит. Машина подменяется в уже собранном входе, а не читается из базы:
-   * `syncEsm2Waybills` зовётся **после** `saveAssignment`, то есть видит уже новую единицу, и
-   * предпросмотр обязан считать по тому же состоянию, иначе он показывал бы план прежней машины.
-   */
-  const planInput: Esm2SyncPlanInput = {
-    ...base.input,
-    vehicleId: input.vehicleId,
-    ...(input.correction
-      ? {
-          unlockWaybillIds: input.correction.unlockWaybillIds,
-          correction: { allowed: true as const },
-        }
-      : {}),
-  };
-  const sheetPlan = esm2SyncPlan(planInput);
-
-  const preview = await previewPlanOf(tx, {
-    plan: sheetPlan,
-    sheets,
-    numbers,
-    mode: base.input.mode,
-    vehicleId: input.vehicleId,
-    driverPersonId: base.input.driverPersonId,
-  });
+  const history = historyIsAuthoritative(ctx.mode)
+    ? await planReassignHistory(tx, {
+        request: { id: request.id, num: request.num, term },
+        asOf,
+        effectiveDate,
+        vehicleId: input.vehicleId,
+        nextOwnership: next.ownership,
+        driverPersonId: input.driverPersonId ?? null,
+        unlockWaybillIds: input.correction?.unlockWaybillIds ?? [],
+        correction: !!input.correction,
+        sheets,
+        numbers,
+      })
+    : null;
+  const paper = history?.effects
+    ? {
+        effects: history.effects,
+        requiredUnlockIds: history.requiredUnlockIds,
+        preview: history.preview,
+        issues: history.issues,
+      }
+    : await legacyPaper();
+  const effects = paper.effects;
+  const requiredUnlockIds = paper.requiredUnlockIds;
+  const preview = paper.preview;
 
   const shifts = await readShiftDays(tx, request.id);
   /*
@@ -343,31 +393,27 @@ export async function planReassignCommand(
   const clearedShiftDays = input.correction ? namedDays : [];
 
   /*
-   * Пробелы машиниста (Р16) — тем же расчётом, каким их считает бэкстоп чужих дверей: он и есть
-   * то, чем эта дверь откажет после переключения чтения (Р22, фаза — Ж5). Считается без единой
-   * записи: диагностику пишет сам бэкстоп в боевой транзакции, а предпросмотр не коммитит (Р20).
+   * Machinist gaps (R16). In `history` they are the command's own: an own segment of its range left
+   * without a person, which the door refuses with "name the machinist". In `legacy` they are what the
+   * backstop of foreign doors would say (R22) — computed without a write: the backstop writes its own
+   * diagnostics in the executing transaction, and the preview does not commit (R20).
    */
-  const verdict = await evaluateAssignmentBackstop(tx, {
-    door: 'request_assignment',
-    requestId: request.id,
-    asOf,
-  });
-
-  /*
-   * Предупреждения — по показанному списку выписок: ключ `issueKey` это индекс в нём, и по нему
-   * окно строит рукопожатия (§7).
-   */
-  const planIssues = await assignmentPlanIssues(tx, {
-    requestId: request.id,
-    issue: preview.issue,
-  });
+  const requiredAnchors = history
+    ? history.requiredAnchors
+    : ((
+        await evaluateAssignmentBackstop(tx, {
+          door: 'request_assignment',
+          requestId: request.id,
+          asOf,
+        })
+      )?.requiredAnchors ?? []);
 
   const plan: ReassignPlan = {
     esm2Mode: base.input.mode,
     effectiveDate,
     paperScope: effects.paperScope,
     preview,
-    issues: planIssues.issues,
+    issues: paper.issues,
     requiredUnlocks: requiredUnlockIds.map((id) => {
       const sheet = sheets.find((s) => s.id === id);
       return {
@@ -378,7 +424,7 @@ export async function planReassignCommand(
       };
     }),
     unlockFingerprint: effects.needsCorrection ? fingerprintOf({ requiredUnlockIds }) : null,
-    requiredAnchors: verdict?.requiredAnchors ?? [],
+    requiredAnchors,
     blockedShiftDays,
     clearedShiftDays,
     clearedShiftsFingerprint:
@@ -386,6 +432,7 @@ export async function planReassignCommand(
     workBlockShiftDays: shifts.filter((row) =>
       rangeSetIntersects(effects.workBlockRange, { from: row.date, to: row.date }),
     ),
+    history: history?.apply ?? null,
   };
 
   return {

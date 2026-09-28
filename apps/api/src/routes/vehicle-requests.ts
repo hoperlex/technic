@@ -356,6 +356,8 @@ import {
   type ReassignCommand,
   type ReassignPlan,
 } from '../services/assignment-reassign';
+import { applyReassignHistory } from '../services/assignment-reassign-history';
+import type { AssignmentEffects } from '../services/assignment-effects';
 // Рукопожатие по листам (Б4) — общим правилом на все двери: своей редакции «когда подпись
 // обязательна» у старой двери смены техники быть не должно.
 import {
@@ -7145,13 +7147,13 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const checkPreviewHandshakes = async (
         tx: Tx,
         mode: AssignmentModeSnapshot,
-      ): Promise<void> => {
+      ): Promise<{ plan: ReassignPlan; effects: AssignmentEffects } | null> => {
         if (
           previewFingerprint === undefined &&
           acknowledgements === undefined &&
           !historyIsAuthoritative(mode)
         ) {
-          return;
+          return null;
         }
         // У грузоперевозки нет ни срока работ, ни недельной бумаги: предпросмотра у неё не бывает,
         // и спрашивать отпечаток не с чего даже после переключения чтения. Подпись под её листами
@@ -7162,7 +7164,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             acknowledgements,
             required: false,
           });
-          return;
+          return null;
         }
         const cmdTx = tx as AssignmentCommandTx;
         const locked = await lockedReassignRequest(cmdTx, before.id);
@@ -7198,6 +7200,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           acknowledgements,
           required: paperFollowsHistory(mode),
         });
+        return { plan: planned.plan, effects: planned.effects };
       };
 
       let esm2: Esm2SyncResult = { cancelled: [], issued: [], trimmed: [] };
@@ -7238,13 +7241,25 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         if (correctionId === null && before.requestType === 'special_equipment') {
           await touchLockInputs(tx, before.id);
         }
-        await checkPreviewHandshakes(tx, mode);
+        const planned = await checkPreviewHandshakes(tx, mode);
         // The correction's own half of step 7: the cleared set is re-asked under the locks just
         // taken, whether or not a fingerprint came with the body (see the helper).
         if (correctionId !== null && plan) await assertCorrectionApprovalsUnchanged(tx, plan);
         // The plain reassignment's lock, answered again under the locks: the check before the
         // transaction read a summary that a sign-off or a route change may have outdated since.
         if (correctionId === null) await assertReassignNotLocked(tx, before, nextOwnership);
+        /*
+         * In `history` this door is a history command (ADR 0212, decision 3): the plan above is the
+         * one it executes, and an own segment of its range left without a person is refused here,
+         * before the first write — the body has the machinist field, so the advice is actionable.
+         */
+        const historyPlan = planned?.plan.history ?? null;
+        if (historyPlan && planned!.plan.requiredAnchors.length > 0) {
+          throw err.unprocessable(
+            'Укажите машиниста — новая машина собственная, а прежнего человека у отрезка нет',
+            { driverPersonId: 'Выберите машиниста' },
+          );
+        }
         const saved = await resolveAssignment(
           tx,
           { ...rates, route },
@@ -7283,11 +7298,13 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         // людей. Хвост (Р31) у неё не спрашивается: новых дней смена техники не открывает, а
         // расхождение «история против назначения» она сама и создаёт — история догонит его
         // dual-write'ом, а не отказом здесь.
-        await assertAssignmentBackstop(tx, {
-          door: 'request_assignment',
-          requestId: before.id,
-          actor: { id: p.id },
-        });
+        if (!historyPlan) {
+          await assertAssignmentBackstop(tx, {
+            door: 'request_assignment',
+            requestId: before.id,
+            actor: { id: p.id },
+          });
+        }
         /*
          * Годность названного машиниста (план `machinist-card-removal`, Р6): смена назначения — та
          * же явная дверь, что и перевод в работу, и человека здесь называют телом запроса. Срока
@@ -7301,22 +7318,41 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             ]);
           }
         }
-        esm2 = await syncEsm2Waybills(tx, {
-          requestId: before.id,
-          actor: { id: p.id },
-          reason:
-            correctionId && correction
-              ? correction.reason
-              : 'Заявке назначена другая техника — путевые листы переоформлены',
-          driverPersonId: rates.driverPersonId ?? null,
-          // Подписи, принятые шагом 8 этой двери: ими выписанный лист помнит, под чем он вышел.
-          acknowledgements,
-          ...(correctionId && correction
-            ? {
-                correction: { id: correctionId, unlockWaybillIds: correction.unlockWaybillIds },
-              }
-            : {}),
-        });
+        const reason =
+          correctionId && correction
+            ? correction.reason
+            : 'Заявке назначена другая техника — путевые листы переоформлены';
+        // In `history` the history rows go first and the paper follows them (ADR 0212); a linear
+        // request gets its vehicle row here and keeps the weekly sweep below for its paper.
+        const byHistory = historyPlan
+          ? await applyReassignHistory(tx as AssignmentCommandTx, {
+              requestId: before.id,
+              actor: { id: p.id },
+              asOf: today,
+              mode,
+              correctionId,
+              reason,
+              effects: historyPlan.linear ? null : planned!.effects,
+              apply: historyPlan,
+              unlockWaybillIds: correction?.unlockWaybillIds ?? [],
+              acknowledgements,
+            })
+          : null;
+        esm2 =
+          byHistory ??
+          (await syncEsm2Waybills(tx, {
+            requestId: before.id,
+            actor: { id: p.id },
+            reason,
+            driverPersonId: rates.driverPersonId ?? null,
+            // Подписи, принятые шагом 8 этой двери: ими выписанный лист помнит, под чем он вышел.
+            acknowledgements,
+            ...(correctionId && correction
+              ? {
+                  correction: { id: correctionId, unlockWaybillIds: correction.unlockWaybillIds },
+                }
+              : {}),
+          }));
         // План по дням смена машины не двигает (ADR 0100 §4) — сверка зовётся ради другого: новая
         // машина бывает арендной, а арендную технику ведёт арендодатель, и в рейсах ей не место.
         days = await syncLinearRouteDays(tx, {
