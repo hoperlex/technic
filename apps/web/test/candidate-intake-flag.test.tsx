@@ -21,12 +21,12 @@ import { authUser, loginResponse } from './factories/auth';
  * open in the very window the switch was built for (R11: the permission migration is applied BEFORE
  * the application restarts).
  *
- * THE ACCOUNTS CARRY A SUBJECT, NOT A HAND-WRITTEN LIST OF EFFECTIVE PERMISSIONS, and that is a
- * requirement of the predicate, not a matter of taste: it asks the permission of the contracts
- * matrix (role, addons, grant sets), so an account holding a right only in `permissions` describes a
- * state the server never sends — it fills `permissions` with `permissionsFor(subject)` itself. The
- * proposer here is therefore a role that grants `officeEquipment.propose`, and the reviewer gets
- * `officeEquipment.review` the way production gives it: with a grant set, not with a role.
+ * THE ACCOUNTS CARRY A SUBJECT, NOT A HAND-WRITTEN LIST OF EFFECTIVE PERMISSIONS. The predicate now
+ * asks the server list (`useAuth().can`), so a hand-written list would work here — and would test
+ * half the path. The fixture builds the list from the subject the way the server does
+ * (`permissionsFor` inside `authUser`), which keeps the account whole: the proposer is a role that
+ * grants `officeEquipment.propose`, and the reviewer gets `officeEquipment.review` the way
+ * production gives it — with a grant set, not with a role.
  *
  * WHAT IS NOT HERE. The server refusing a direct `POST /service-requests` — that is checked by a db
  * test and does not depend on the portal at all: the client only hides the door with the switch, the
@@ -64,8 +64,8 @@ function withFeatures(user: AuthUser, ...features: FeatureFlagKey[]): AuthUser {
 function IntakeProbe() {
   // The account is read here and handed to the predicate whole — the entity layer that owns the
   // composition "switch plus permission" cannot reach the session itself.
-  const { user } = useAuth();
-  const { canPropose, canReview } = candidateIntakeAccess(user);
+  const { user, can } = useAuth();
+  const { canPropose, canReview } = candidateIntakeAccess(user, can);
   return (
     <div>
       <div data-testid="propose">{canPropose ? 'открыт' : 'закрыт'}</div>

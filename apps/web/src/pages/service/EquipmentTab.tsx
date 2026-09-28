@@ -106,10 +106,11 @@ export function EquipmentTab() {
    * The counter sits inside the switch label: the module has no review deadline at all (Q3), and the
    * number is the only way the queue announces itself to someone who came to look at the park.
    *
-   * The account goes to the predicate whole: the composition "switch plus permission" has a single
-   * carrier, and it lives in the candidate slice, below this page.
+   * The account goes to the predicate whole and `can` goes with it: the composition "switch plus
+   * permission" has a single carrier, and it lives in the candidate slice, below this page — which
+   * cannot reach the session, so the reader of the server list is handed down from here.
    */
-  const { canReview } = candidateIntakeAccess(user);
+  const { canReview } = candidateIntakeAccess(user, can);
   // Разбор писем аппаратов — своё право (Р30 плана почтовой телеметрии): у ИТ-службы оно есть, у
   // тех, кто ведёт парк, — нет, и наоборот. Поэтому третий режим, а не пункт внутри проверки.
   const canTelemetry = can('officeEquipment.telemetry');

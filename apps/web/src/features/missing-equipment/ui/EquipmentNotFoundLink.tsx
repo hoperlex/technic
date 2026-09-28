@@ -89,10 +89,12 @@ export function EquipmentNotFoundLink({
   const [reportOpen, setReportOpen] = useState(false);
   const [hintOpen, setHintOpen] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
-  // The account goes to the predicate whole: the answer is composed of the intake switch and the
-  // permission, and the entity layer that owns that composition cannot reach the session itself.
-  const { user } = useAuth();
-  const { canPropose } = candidateIntakeAccess(user);
+  // The account goes to the predicate whole and the permission check goes with it: the answer is
+  // composed of the intake switch (server state on the account) and the permission (membership of
+  // the list the server computed), and the entity layer that owns that composition cannot reach the
+  // session itself.
+  const { user, can } = useAuth();
+  const { canPropose } = candidateIntakeAccess(user, can);
   const text = supportText(search, objectName);
 
   // Ветка считается один раз и наверху: разложенная по трём `onClick` и трём условиям показа, она
