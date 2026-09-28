@@ -39,7 +39,6 @@ import {
   ASSIGNMENT_CORRECTION_CLOSED_MESSAGE,
   BACKDATE_PERMISSION_MESSAGE,
   canCorrectAssignment,
-  canReassignVehicle,
   type CorrectAssignmentInput,
   canShortenWorkPeriodByEdit,
   changeVehicleAssignmentSchema,
@@ -118,8 +117,9 @@ import {
   requestVehicleEarlyEndApplySchema,
   requestVehicleEarlyEndPreviewSchema,
   type RequestWaybillDto,
-  approvedShiftsBlocker,
   approveVehicleRequestShiftSchema,
+  dayRoutesKeptWith,
+  reassignApprovedShiftsBlocker,
   saveVehicleRequestShiftSchema,
   shiftDayBlocker,
   shiftsCompletionWarning,
@@ -351,6 +351,7 @@ import {
   assertReassignPreviewFingerprint,
   lockedReassignRequest,
   planReassignCommand,
+  REASSIGN_PREVIEW_STALE,
   reassignPreviewDto,
   type ReassignCommand,
   type ReassignPlan,
@@ -453,11 +454,12 @@ import {
 // Clearing object sign-offs (R5) is shared with the route correction: both operations clear them,
 // and a second copy of the same `UPDATE` would drift from the first.
 import { clearShiftApprovals, type ShiftApproval } from '../services/vehicle-route-correction';
-// WHICH sign-offs a correction clears is one rule for this door, its preview and the period
-// correction (ADR 0210) — a copy here is how the three had already drifted apart.
+// WHICH sign-offs stand under the assignment's vehicle is one rule for this door's lock and
+// correction, its preview and the period correction (ADR 0210) — per-door copies are how they had
+// already drifted apart.
 import {
-  approvalsClearedByAssignmentCorrection,
-  dayRoutesKeptWith,
+  approvalsUnderAssignment,
+  type ShiftApprovalScope,
 } from '../services/shift-approval-scope';
 // Задний ход даты заявки (ADR 0101, Р6 и Р15): право и глубину спрашивает общий предикат, а
 // причину, автора и след кладёт общая транзакционная операция — та же, что у бланков.
@@ -1567,7 +1569,7 @@ function toDto(
       earlyEnd: toEarlyEndDto(r),
       // Сводка смен: пустая пара нулей у заявки, по которой ещё ничего не подтверждали, — так же
       // читается «долга нет». Считается запросом рядом с файлами (`toDtos`).
-      shifts: shifts ?? { approvedDays: 0, unapprovedPastDays: 0 },
+      shifts: shifts ?? { approvedDays: 0, approvedDaysWithoutRoute: 0, unapprovedPastDays: 0 },
       // «Создан по НЗ-12» и «Продления: НЗ-15, НЗ-18» (ADR 0085): основание одно, продлений бывает
       // несколько. Считаются запросом на страницу там же, где файлы и смены.
       weeklyOrigin: weekly?.origin ?? null,
@@ -3269,6 +3271,11 @@ interface AssignmentCorrectionPlan {
   pastWeeks: Esm2Period[];
   /** Подписи объекта, которые операция снимет. */
   approvals: ShiftApproval[];
+  /**
+   * The inputs `approvals` were computed from — kept so the transaction can ask the same rule again
+   * under its locks (`assertCorrectionApprovalsUnchanged`) instead of trusting a pool read.
+   */
+  approvalScope: ShiftApprovalScope;
 }
 
 export const ASSIGNMENT_CORRECTION_EMPTY_MESSAGE =
@@ -3367,12 +3374,13 @@ async function planAssignmentCorrection(
    * No range: this door rewrites the single assignment for the whole term. Day routes survive only
    * if the next vehicle is own — for a rented one the door's day sync below sweeps them.
    */
-  const approvals = await approvalsClearedByAssignmentCorrection(db, {
+  const approvalScope: ShiftApprovalScope = {
     requestId: before.id,
     displayNumber: before.displayNumber,
     range: null,
     dayRoutesKept: dayRoutesKeptWith(next?.ownership ?? 'own'),
-  });
+  };
+  const approvals = await approvalsUnderAssignment(db, approvalScope);
 
   /*
    * Эффективная дата — по таблице §4 плана: у листа ЭСМ-2 (и существующего, и новой прошедшей
@@ -3396,7 +3404,38 @@ async function planAssignmentCorrection(
     unlocked,
     pastWeeks: scope.pastWeeks,
     approvals,
+    approvalScope,
   };
+}
+
+/**
+ * The set of sign-offs a correction clears, asked again inside its transaction — after the request's
+ * routes and the request row are locked and before the first write (ADR 0210).
+ *
+ * Why. The plan is computed on the pool before the transaction (see the comment on the correction
+ * branch: it is not retried), and since ADR 0210 the set depends on day routes as well as on
+ * sign-offs. Without a fingerprint — the `legacy` read mode of an old client — nothing else
+ * notices that a day was put into a route, taken out of one, signed or unsigned in between, and the
+ * operation would clear a set nobody saw and store it in its snapshot. Under these locks the set is
+ * stable: sign-off doors, the per-day route door and the route correction all take the request row,
+ * and routes already holding the request are locked here first.
+ *
+ * Compared by day and by signing time: a day unsigned and signed again by someone else keeps its
+ * date, but the snapshot would name the wrong signer.
+ */
+async function assertCorrectionApprovalsUnchanged(
+  tx: Tx,
+  plan: AssignmentCorrectionPlan,
+): Promise<void> {
+  const now = await approvalsUnderAssignment(tx, plan.approvalScope);
+  const keyOf = (a: ShiftApproval) => `${a.date}@${a.approvedAt}`;
+  const planned = plan.approvals.map(keyOf).join('|');
+  if (now.map(keyOf).join('|') !== planned) {
+    throw err.conflict(
+      'Подписи объекта или рейсы дней заявки изменились, пока готовилась коррекция, — посмотрите последствия заново и повторите',
+      { code: REASSIGN_PREVIEW_STALE },
+    );
+  }
 }
 
 /**
@@ -6911,23 +6950,35 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // решение: сменить машину он мог бы только на свою, а вместе с ней и исполнителя заявки.
       assertLessorScope(p, before.assignment?.lessorId ?? null);
       if (!correction) {
-        // Предикат общий с порталом (`canReassignVehicle`): у «Новой» машину назначает сам перевод
-        // в работу, у закрытой и отменённой менять нечего — там это уже история, а у заявки с
-        // принятыми днями работы подмена машины переписала бы задним числом то, под чем стоит
-        // подпись объекта.
-        if (!canReassignVehicle(before)) {
-          const approvedShifts = approvedShiftsBlocker(before);
-          if (approvedShifts) {
-            throw err.unprocessable(
-              `${approvedShifts}: подтверждённые дни — это работа нынешней машины`,
-              { vehicleId: 'Есть согласованные смены' },
-            );
-          }
+        // The state half is shared with the portal and the correction (`canCorrectAssignment`): a
+        // "new" request gets its vehicle from the move into work, a closed or cancelled one is
+        // history and is not rewritten by a swap.
+        if (!canCorrectAssignment(before)) {
           throw err.unprocessable(
             before.status === 'confirmed'
               ? 'У заявки нет назначенной техники — её назначает перевод в работу'
               : 'Сменить технику можно только у заявки в работе',
             { vehicleId: 'Заявка не в работе' },
+          );
+        }
+        /*
+         * The lock of approved days — the other half of `canReassignVehicle`, asked here with the
+         * vehicle actually named (ADR 0210). An approved day without its own day route was worked
+         * by the assigned vehicle, and a swap would rewrite what the object signed; a day in its
+         * own route was worked by the route's vehicle and does not lock. With a rented vehicle the
+         * day sync below sweeps the routes, those days fall under the assignment, and every
+         * approved day locks again — the portal cannot know the next vehicle and offers the button
+         * by the own case, so this refusal is the only place the rented case is answered.
+         */
+        const [next] = await db
+          .select({ ownership: vehicles.ownership })
+          .from(vehicles)
+          .where(eq(vehicles.id, rates.vehicleId));
+        const approvedShifts = reassignApprovedShiftsBlocker(before, next?.ownership ?? 'own');
+        if (approvedShifts) {
+          throw err.unprocessable(
+            `${approvedShifts}: подтверждённые дни — это работа нынешней машины`,
+            { vehicleId: 'Есть согласованные смены' },
           );
         }
       } else if (!canCorrectAssignment(before)) {
@@ -7111,6 +7162,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         // записи. Позже они ничего бы не значили: заявка уже была бы переписана тем состоянием,
         // которое человек не видел.
         await checkPreviewHandshakes(tx, mode);
+        // The correction's own half of step 7: the cleared set is re-asked under the locks just
+        // taken, whether or not a fingerprint came with the body (see the helper).
+        if (correctionId !== null && plan) await assertCorrectionApprovalsUnchanged(tx, plan);
         const saved = await resolveAssignment(
           tx,
           { ...rates, route },

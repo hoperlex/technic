@@ -68,7 +68,7 @@ import { buildEsm2SyncPlan, type Esm2IssuePreparations, type Esm2SyncResult } fr
 import { clearShiftApprovals, type ShiftApproval } from './vehicle-route-correction';
 // Which sign-offs a vehicle correction clears is one rule for this door and the reassign door with
 // its preview (ADR 0210): a per-door copy is exactly how route days and linearity drifted apart.
-import { approvalsClearedByAssignmentCorrection } from './shift-approval-scope';
+import { approvalsUnderAssignment } from './shift-approval-scope';
 // Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
 // провенансом (§10, Р32). Своя копия этого решения разошлась бы с соседними дверями молча.
 import {
@@ -368,7 +368,7 @@ export async function planVehicleCorrection(
    * loses the same days. Day routes survive this command: it neither changes ownership
    * (`assertNewVehicle`) nor runs the day sync.
    */
-  const approvals = await approvalsClearedByAssignmentCorrection(tx, {
+  const approvals = await approvalsUnderAssignment(tx, {
     requestId: request.id,
     displayNumber: formatVehicleRequestNumber(request.num),
     range: effects.approvalClearRange,

@@ -80,7 +80,10 @@ import {
   moscowMinutesOf,
   shiftDateKey,
 } from './time';
-import type { VehicleRequestShiftsSummaryDto } from './vehicle-request-shifts';
+import {
+  reassignLockingApprovedDays,
+  type VehicleRequestShiftsSummaryDto,
+} from './vehicle-request-shifts';
 import {
   classificationFilterSchema,
   withSingleClassificationForm,
@@ -1427,9 +1430,12 @@ export function canReassignVehicle(request: {
   shifts?: VehicleRequestShiftsSummaryDto | null;
 }): boolean {
   if (!canCorrectAssignment(request)) return false;
-  // Подтверждённая смена запирает машину: за подписью объекта стоит работа конкретной техники,
-  // и подмена задним числом превратила бы её в подпись под чужими часами (`approvedShiftsBlocker`).
-  return (request.shifts?.approvedDays ?? 0) === 0;
+  // An approved day locks the vehicle: the object's sign-off stands under the work of a specific
+  // unit, and a swap would turn it into a sign-off under someone else's hours. Only days without
+  // their own day route count (ADR 0210) — the rest were worked by the route's vehicle. The next
+  // vehicle is not known here, so the optimistic own case is asked; the door re-checks with the
+  // real one (`reassignApprovedShiftsBlocker`).
+  return reassignLockingApprovedDays(request.shifts) === 0;
 }
 
 // ── Коррекция назначения задним числом (ADR 0101, Р8) ──

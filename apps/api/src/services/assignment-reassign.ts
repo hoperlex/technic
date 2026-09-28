@@ -1,8 +1,10 @@
 import { eq, inArray } from 'drizzle-orm';
 import {
   canCancelWaybill,
+  dayRoutesKeptWith,
   esm2SyncPlan,
   formatVehicleRequestNumber,
+  isShiftDayInTerm,
   periodsOverlap,
   type AssignmentIssueWarningsDto,
   type AssignmentPlanCancelDto,
@@ -40,9 +42,10 @@ import { historyIsAuthoritative, type AssignmentModeSnapshot } from './assignmen
 // написанная там второй раз она разошлась бы с этой молча — окно показывало бы один состав дней,
 // а команда снимала другой.
 import { readShiftDays, toAssignmentShiftDay } from './assignment-shifts';
-// Which sign-offs a correction clears — the one rule the executing door and the period correction
-// also ask (ADR 0210); this preview hashes its answer into the fingerprint the door re-checks.
-import { approvalsClearedByAssignmentCorrection, dayRoutesKeptWith } from './shift-approval-scope';
+// Which sign-offs stand under the assignment's vehicle — what locks a plain reassignment and what a
+// correction clears — is one rule with the door and the period correction (ADR 0210); this preview
+// hashes its answer into the fingerprint the door re-checks.
+import { approvalsUnderAssignment } from './shift-approval-scope';
 import { rangeSetIntersects, type DateRangeSet } from './esm2-plan';
 import { buildEsm2SyncPlan, type Esm2SyncPlanInput } from './waybill-esm2';
 // Предупреждения по выпускаемым листам — общим расчётом шага 6 (§7): пятое место, где решают, что
@@ -296,47 +299,47 @@ export async function planReassignCommand(
   });
 
   const shifts = await readShiftDays(tx, request.id);
-  const approved = shifts.filter((row) => row.approved);
   /*
    * Two sets of shift days (R18, C2) — "why the command is impossible" and "what it devalues". They
    * answer different questions, and one set would answer both equally wrong.
    *
-   * Both follow the door's CURRENT rule, not a future one:
+   * Both are the approved days that stand under the assignment's vehicle — the shared rule of
+   * ADR 0210 (`approvalsUnderAssignment`), asked with the very inputs the executing door uses: a
+   * day in its own day route was worked by the route's vehicle and neither locks nor loses its
+   * sign-off; a route-less day does both; with a rented next vehicle the door's day sync sweeps the
+   * routes, so every approved day counts. Linearity plays no part. A local copy of that rule would
+   * make this window and the door name different days while the fingerprint still matched.
    *
-   * - a plain reassignment is locked by ANY approved day of the request (`canReassignVehicle`), not
-   *   by an approved day of a range. The range lock is R18 and changes together with the R6 split
-   *   and only with it (§15: weakening an existing protection is the customer's call). A preview
-   *   showing the range would promise work the door then refuses;
-   * - a correction does not lock those days — it CLEARS the sign-off of some of them
-   *   (`clearShiftApprovals`): the hours stay, but the object has to accept them again, by the
-   *   vehicle that actually worked. Which days is the shared rule of ADR 0210
-   *   (`approvalsClearedByAssignmentCorrection`), asked with the very inputs the executing door
-   *   uses — a day in a day route keeps its sign-off, a route-less day loses it, linearity plays no
-   *   part. A local copy of that rule would make this preview and the door's own clearing name
-   *   different days while the fingerprint still matched; hours are shown next to each day so the
-   *   price of confirming is seen, not implied.
+   * - A plain reassignment is locked by such a day ANYWHERE inside the term, not by one inside the
+   *   command's range. The range lock is R18 and changes together with the R6 split and only with
+   *   it (§15: weakening an existing protection is the customer's call). The term bound is the one
+   *   the door's lock reads through the shift summary (`reassignApprovedShiftsBlocker`) — a wider
+   *   set here would grey the button out where the door would let the command through.
+   * - A correction does not lock those days — it CLEARS their sign-off (`clearShiftApprovals`),
+   *   inside the term or not, as it always has: the hours stay, but the object has to accept them
+   *   again, by the vehicle that actually worked. Hours are shown next to each day so the price of
+   *   confirming is seen, not implied.
    *
    * Deleting filled but unapproved hours is still NOT done by this door and must not be promised:
    * it comes with the same §15 decision as the range lock. The executor exists since stage E7
    * (`dropUnapprovedShiftsInRange` in the shared shift service), but it was built for closing by
    * the actual date — having the mechanism is not a permission to use it here.
    */
-  const clearedDates = input.correction
-    ? new Set(
-        (
-          await approvalsClearedByAssignmentCorrection(tx, {
-            requestId: request.id,
-            displayNumber: formatVehicleRequestNumber(request.num),
-            range: null,
-            dayRoutesKept: dayRoutesKeptWith(next.ownership),
-          })
-        ).map((approval) => approval.date),
-      )
-    : new Set<string>();
-  const blockedShiftDays = input.correction ? [] : approved.map(toAssignmentShiftDay);
-  const clearedShiftDays = approved
-    .filter((row) => clearedDates.has(row.date))
-    .map(toAssignmentShiftDay);
+  const underAssignment = new Set(
+    (
+      await approvalsUnderAssignment(tx, {
+        requestId: request.id,
+        displayNumber: formatVehicleRequestNumber(request.num),
+        range: null,
+        dayRoutesKept: dayRoutesKeptWith(next.ownership),
+      })
+    ).map((approval) => approval.date),
+  );
+  const approvedUnder = shifts.filter((row) => row.approved && underAssignment.has(row.date));
+  const blockedShiftDays = input.correction
+    ? []
+    : approvedUnder.filter((row) => isShiftDayInTerm(term, row.date)).map(toAssignmentShiftDay);
+  const clearedShiftDays = input.correction ? approvedUnder.map(toAssignmentShiftDay) : [];
 
   /*
    * Пробелы машиниста (Р16) — тем же расчётом, каким их считает бэкстоп чужих дверей: он и есть

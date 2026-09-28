@@ -1,46 +1,92 @@
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { describe, expect, it } from 'vitest';
 import {
-  assignmentCorrectionClearsDay,
+  approvedShiftsBlocker,
+  canReassignVehicle,
   dayRoutesKeptWith,
-} from '../src/services/shift-approval-scope';
+  reassignApprovedShiftsBlocker,
+  reassignLockingApprovedDays,
+  type VehicleRequestShiftsSummaryDto,
+} from '@technic/contracts';
+import * as schema from '../src/db/schema';
+import { shiftDayHasOwnRouteSql } from '../src/services/shift-approval-scope';
 
 /**
- * The rule of ADR 0210 without a database: which sign-offs an assignment correction clears.
+ * The rule of ADR 0210 without a database: which approved days stand under the assignment's
+ * vehicle — they lock a plain reassignment and are what a correction clears.
  *
- * The db suite (`shift-approval-scope.db.test.ts`) proves that the three callers ask this rule and
- * agree with each other; here the rule itself is pinned, so a change to it shows up as a failing
- * line of the decision rather than as a drifted fixture.
+ * The db suite (`shift-approval-scope.db.test.ts`) proves that the doors ask this rule and agree
+ * with each other; here the contract half is pinned (the lock the portal and the door share, and
+ * its behaviour against an older server), and so is the shape of the one SQL expression that says
+ * "this day sits in its own route".
  */
-describe('assignment correction and object sign-offs (ADR 0210)', () => {
-  const routeDays = new Set(['2026-09-08']);
 
-  it('a day in a day route keeps its sign-off — its vehicle is the route’s', () => {
-    expect(assignmentCorrectionClearsDay('2026-09-08', { routeDays, range: null })).toBe(false);
-    // Even inside the command's own range: the range says which days changed vehicle on the
-    // assignment, and a route day was never the assignment's to begin with.
-    expect(
-      assignmentCorrectionClearsDay('2026-09-08', {
-        routeDays,
-        range: [{ from: '2026-09-01', to: '2026-09-30' }],
-      }),
-    ).toBe(false);
+const summary = (
+  approvedDays: number,
+  approvedDaysWithoutRoute?: number,
+): VehicleRequestShiftsSummaryDto => ({
+  approvedDays,
+  ...(approvedDaysWithoutRoute === undefined ? {} : { approvedDaysWithoutRoute }),
+  unapprovedPastDays: 0,
+});
+
+const inWork = {
+  requestType: 'special_equipment' as const,
+  status: 'confirmed' as const,
+  assignment: { vehicleId: 'v-1' } as never,
+  deletedAt: null,
+};
+
+describe('lock of a plain reassignment (ADR 0210)', () => {
+  it('a sign-off of a day in its own route does not lock; a route-less one does', () => {
+    // Two approved days, both in routes: the assigned vehicle did not work them.
+    expect(canReassignVehicle({ ...inWork, shifts: summary(2, 0) })).toBe(true);
+    expect(reassignApprovedShiftsBlocker({ ...inWork, shifts: summary(2, 0) })).toBeNull();
+    // One of them without a route: the assigned vehicle worked it, and a swap would rewrite it.
+    expect(canReassignVehicle({ ...inWork, shifts: summary(2, 1) })).toBe(false);
+    expect(reassignApprovedShiftsBlocker({ ...inWork, shifts: summary(2, 1) })).toMatch(
+      /согласовано смен: 1/,
+    );
   });
 
-  it('a route-less day loses its sign-off — it was worked by the assignment’s vehicle', () => {
-    expect(assignmentCorrectionClearsDay('2026-09-09', { routeDays, range: null })).toBe(true);
-  });
-
-  it('a range bounds the clearing, and an empty range clears nothing', () => {
-    const range = [{ from: '2026-09-01', to: '2026-09-07' }];
-    expect(assignmentCorrectionClearsDay('2026-09-07', { routeDays, range })).toBe(true);
-    expect(assignmentCorrectionClearsDay('2026-09-09', { routeDays, range })).toBe(false);
-    expect(assignmentCorrectionClearsDay('2026-09-09', { routeDays, range: [] })).toBe(false);
-  });
-
-  it('day routes outlive the command only when the vehicle left on the assignment is own', () => {
-    // A rented vehicle does not go on routes: the reassign door's day sync sweeps every day off
-    // its route, and those days fall under the assignment again.
+  it('a rented next vehicle sweeps the day routes, so every approved day locks again', () => {
     expect(dayRoutesKeptWith('own')).toBe(true);
     expect(dayRoutesKeptWith('rental')).toBe(false);
+    expect(reassignLockingApprovedDays(summary(2, 0), 'rental')).toBe(2);
+    expect(reassignApprovedShiftsBlocker({ ...inWork, shifts: summary(2, 0) }, 'rental')).toMatch(
+      /согласовано смен: 2/,
+    );
+  });
+
+  it('a summary from a server older than ADR 0210 locks by every approved day', () => {
+    // No `approvedDaysWithoutRoute` means "unknown", not zero: offering the button would lead the
+    // person into the old server's refusal.
+    expect(reassignLockingApprovedDays(summary(1))).toBe(1);
+    expect(canReassignVehicle({ ...inWork, shifts: summary(1) })).toBe(false);
+    expect(canReassignVehicle({ ...inWork, shifts: summary(0) })).toBe(true);
+  });
+
+  it('the rollback lock stays wider: it erases the shifts themselves, route or not', () => {
+    expect(approvedShiftsBlocker({ ...inWork, shifts: summary(2, 0) })).toMatch(
+      /согласовано смен: 2/,
+    );
+  });
+});
+
+describe('"this day sits in its own route" keeps its correlation (drizzle rewrite trap)', () => {
+  /**
+   * The worst place for the expression: the select list of a single-table query, where drizzle
+   * rewrites top-level column chunks to bare identifiers. A bare `"request_id"` inside the subquery
+   * would bind to `own_route` itself and make every day "routed" — silently. No query is executed:
+   * `toSQL()` only renders.
+   */
+  it('references the outer shift row by a qualified name', () => {
+    const db = drizzle({ client: {} as never, schema, casing: 'snake_case' });
+    const { sql: text } = db
+      .select({ routed: shiftDayHasOwnRouteSql() })
+      .from(schema.vehicleRequestShifts)
+      .toSQL();
+    expect(text).toContain('own_route.request_id = "vehicle_request_shifts"."request_id"');
+    expect(text).toContain('own_route.work_date = "vehicle_request_shifts"."shift_date"');
   });
 });

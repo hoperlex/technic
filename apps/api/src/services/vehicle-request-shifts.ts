@@ -11,6 +11,7 @@ import {
 } from '@technic/contracts';
 import { db } from '../db/client';
 import { specialEquipmentRequestDetails, users, vehicleRequestShifts } from '../db/schema';
+import { shiftDayHasOwnRouteSql } from './shift-approval-scope';
 
 // Подтверждение смен по заказу спецтехники: день работы, его показатели и подпись объекта.
 // Здесь только данные — проверки прав, статусов и границ дня живут в маршруте, а правило «какой
@@ -171,6 +172,13 @@ export async function shiftSummaries(
       approvedDays: sql<number>`count(*) FILTER (
         WHERE ${vehicleRequestShifts.approvedAt} IS NOT NULL AND ${withinTerm}
       )`,
+      // The subset that locks a plain reassignment (ADR 0210): a day in its own day route was
+      // worked by the route's vehicle. Its "has a route" is the same expression the correction and
+      // the preview use — a second spelling here is how a lock and a clearing would drift apart.
+      approvedDaysWithoutRoute: sql<number>`count(*) FILTER (
+        WHERE ${vehicleRequestShifts.approvedAt} IS NOT NULL AND ${withinTerm}
+          AND NOT ${shiftDayHasOwnRouteSql()}
+      )`,
       approvedPastDays: sql<number>`count(*) FILTER (
         WHERE ${vehicleRequestShifts.approvedAt} IS NOT NULL AND ${withinTerm}
           AND ${vehicleRequestShifts.shiftDate} <= ${onDate}::date
@@ -198,6 +206,7 @@ export async function shiftSummaries(
         : 0;
     summaries.set(r.id, {
       approvedDays: Number(row?.approvedDays ?? 0),
+      approvedDaysWithoutRoute: Number(row?.approvedDaysWithoutRoute ?? 0),
       unapprovedPastDays: Math.max(0, pastDays - Number(row?.approvedPastDays ?? 0)),
     });
   }

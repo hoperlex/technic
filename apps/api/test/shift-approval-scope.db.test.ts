@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
+import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   moscowDateKeyOf,
@@ -8,6 +9,7 @@ import {
   type AccessSubject,
   type AssignmentPreviewDto,
   type AssignmentVehicleCorrectionInput,
+  type VehicleRequestDto,
 } from '@technic/contracts';
 import { useReadModeDatabase } from './assignment-read-mode';
 // Types only: the values are imported with `await import` once the environment is set — the config
@@ -30,7 +32,12 @@ import type * as AssignmentWrite from '../src/services/assignment-write';
  *   door accepts the preview's fingerprint, which it recomputes under its own locks: had the two
  *   sets differed, the command would have answered 409;
  * - the period correction (`assignment-correction.ts`) applies the same rule inside its own
- *   `approvalClearRange`.
+ *   `approvalClearRange`;
+ * - a plain reassignment is locked by exactly the same days: an approved day in its own route does
+ *   not lock it, a route-less one does, and a rented next vehicle makes every approved day lock —
+ *   the summary the portal reads, the preview and the door agree;
+ * - the correction re-asks its set under its locks: a sign-off appearing between the plan and the
+ *   transaction ends in 409, not in clearing a set nobody saw.
  *
  * WHY A DATABASE. The carrier of "the day had a route" is a composition row
  * (`vehicle_route_requests.work_date`) tied to its route by a composite FK; the sign-off is
@@ -241,6 +248,151 @@ describe.skipIf(!DB_URL)('подписи объекта при коррекци�
     SLOW,
   );
 
+  // ── The lock of a plain reassignment ──
+
+  it(
+    'обычная смена: подписи только дней в рейсах не запирают — и портал, и дверь',
+    async () => {
+      const request = await confirmed(ctx.plainTypeId, { driverPersonId: ctx.driver });
+      await signOff(request.id, ROUTE_DAY);
+      await putIntoRoute(request.id, ROUTE_DAY, ctx.vehicleB);
+
+      // The summary the portal locks by: one approved day, none of them the assignment's.
+      const dto = await requestDto(request.id);
+      expect(dto.shifts).toMatchObject({ approvedDays: 1, approvedDaysWithoutRoute: 0 });
+
+      const preview = await previewPlain(request, ctx.vehicleC);
+      expect(preview.blockedShiftDays).toEqual([]);
+      const res = await reassignPlain(request, ctx.vehicleC, preview.fingerprint);
+      expect(res.statusCode, res.body).toBe(200);
+      // The route day keeps its sign-off: a plain reassignment never clears one.
+      expect(await approvedDays(request.id)).toEqual([ROUTE_DAY]);
+    },
+    SLOW,
+  );
+
+  it(
+    'обычная смена: подписанный день без рейса запирает',
+    async () => {
+      const request = await confirmed(ctx.plainTypeId, { driverPersonId: ctx.driver });
+      await signOff(request.id, ROUTE_DAY);
+      await signOff(request.id, PLAIN_DAY);
+      await putIntoRoute(request.id, ROUTE_DAY, ctx.vehicleB);
+
+      const dto = await requestDto(request.id);
+      expect(dto.shifts).toMatchObject({ approvedDays: 2, approvedDaysWithoutRoute: 1 });
+      const preview = await previewPlain(request, ctx.vehicleC);
+      expect(preview.blockedShiftDays.map((day) => day.date)).toEqual([PLAIN_DAY]);
+
+      const res = await reassignPlain(request, ctx.vehicleC);
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json<{ message: string }>().message).toContain('согласовано смен: 1');
+      expect(await assignedVehicle(request.id)).toBe(ctx.vehicleA);
+    },
+    SLOW,
+  );
+
+  it(
+    'линейный заказ: тот же замок — день в рейсе не запирает, день без рейса запирает',
+    async () => {
+      const routed = await confirmed(ctx.linearTypeId);
+      await signOff(routed.id, ROUTE_DAY);
+      await putIntoRoute(routed.id, ROUTE_DAY, ctx.vehicleB);
+      const passed = await reassignPlain(routed, ctx.vehicleC);
+      expect(passed.statusCode, passed.body).toBe(200);
+
+      const plain = await confirmed(ctx.linearTypeId);
+      await signOff(plain.id, PLAIN_DAY);
+      const refused = await reassignPlain(plain, ctx.vehicleC);
+      expect(refused.statusCode, refused.body).toBe(422);
+      expect(refused.json<{ message: string }>().message).toContain('подтверждённые дни');
+    },
+    SLOW,
+  );
+
+  it(
+    'обычная смена на арендную машину запирается и днём в рейсе: рейсы уйдут вместе с ней',
+    async () => {
+      // The portal offers the button (it cannot know the next vehicle), the door refuses: with a
+      // rented vehicle the day sync sweeps the route, and the approved day would fall under it.
+      const request = await confirmed(ctx.linearTypeId);
+      await signOff(request.id, ROUTE_DAY);
+      await putIntoRoute(request.id, ROUTE_DAY, ctx.vehicleB);
+
+      const preview = await previewPlain(request, ctx.rentalVehicle, { pricePerHour: 1000 });
+      expect(preview.blockedShiftDays.map((day) => day.date)).toEqual([ROUTE_DAY]);
+      const res = await reassignPlain(request, ctx.rentalVehicle, undefined, {
+        pricePerHour: 1000,
+      });
+      expect(res.statusCode, res.body).toBe(422);
+      expect(await routeDays(request.id)).toEqual([ROUTE_DAY]);
+    },
+    SLOW,
+  );
+
+  // ── The correction's set is re-asked under its locks ──
+
+  it(
+    'подпись, появившаяся между планом коррекции и её транзакцией, даёт 409 и ничего не снимает',
+    async () => {
+      const request = await confirmed(ctx.plainTypeId, { driverPersonId: ctx.driver });
+      await signOff(request.id, PLAIN_DAY);
+      const LATE_DAY = shiftDateKey(PAST_FROM, 3);
+
+      // The holder takes the request row the way every shift door does; the correction plans on the
+      // pool, then queues behind it. The late sign-off lands while it waits — after its plan.
+      const holder = new pg.Client({ connectionString: readMode.url });
+      const probe = new pg.Client({ connectionString: readMode.url });
+      await holder.connect();
+      await probe.connect();
+      let res: Awaited<ReturnType<typeof ctx.app.inject>>;
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT id FROM vehicle_requests WHERE id = $1 FOR UPDATE', [
+          request.id,
+        ]);
+        const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid'))
+          .rows[0]!.pid;
+        const inFlight = ctx.app.inject({
+          method: 'PATCH',
+          url: `/api/v1/vehicle-requests/${request.id}/assignment`,
+          headers: ctx.auth,
+          payload: {
+            vehicleId: ctx.vehicleC,
+            // Named so that the command, once let through, would really run to the end: the
+            // correction issues the past week afresh and needs a machinist for it.
+            driverPersonId: ctx.driver,
+            version: request.version,
+            correction: {
+              operationId: randomUUID(),
+              reason: 'На объекте работала другая машина',
+              unlockWaybillIds: [],
+            },
+          },
+        });
+        await waitUntilBlocked(probe, holderPid);
+        await holder.query(
+          `INSERT INTO vehicle_request_shifts (request_id, shift_date, machine_hours, comment,
+                                               filled_by, approved_by, approved_at)
+           VALUES ($1, $2, 8, '', $3, $3, now())`,
+          [request.id, LATE_DAY, ctx.adminId],
+        );
+        await holder.query('COMMIT');
+        res = await inFlight;
+      } finally {
+        await holder.end();
+        await probe.end();
+      }
+
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json<{ code: string }>().code).toBe('assignment_preview_stale');
+      // Nothing cleared, nothing reassigned: the refusal came before the first write.
+      expect(await approvedDays(request.id)).toEqual([PLAIN_DAY, LATE_DAY].sort());
+      expect(await assignedVehicle(request.id)).toBe(ctx.vehicleA);
+    },
+    SLOW,
+  );
+
   // ── The period correction ──
 
   it(
@@ -401,6 +553,79 @@ async function confirmed(
   });
   expect(res.statusCode, res.body).toBe(200);
   return { id: request.id, version: res.json<{ version: number }>().version };
+}
+
+/** The request as the portal reads it — the shift summary is what its lock predicate sees. */
+async function requestDto(requestId: string): Promise<VehicleRequestDto> {
+  const res = await ctx.app.inject({
+    method: 'GET',
+    url: `/api/v1/vehicle-requests/${requestId}`,
+    headers: ctx.auth,
+  });
+  expect(res.statusCode, res.body).toBe(200);
+  return res.json<VehicleRequestDto>();
+}
+
+function previewPlain(
+  request: { id: string; version: number },
+  vehicleId: string,
+  rates: { pricePerHour?: number } = {},
+): Promise<AssignmentPreviewDto> {
+  return ctx.app
+    .inject({
+      method: 'POST',
+      url: `/api/v1/vehicle-requests/${request.id}/assignment/preview`,
+      headers: ctx.auth,
+      payload: { vehicleId, version: request.version, ...rates },
+    })
+    .then((res) => {
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json<AssignmentPreviewDto>();
+    });
+}
+
+/**
+ * A plain reassignment. The fingerprint is optional: the file runs in `legacy`, where the door
+ * checks it only when it comes — the lock itself must hold without it.
+ */
+function reassignPlain(
+  request: { id: string; version: number },
+  vehicleId: string,
+  previewFingerprint?: string,
+  rates: { pricePerHour?: number } = {},
+) {
+  return ctx.app.inject({
+    method: 'PATCH',
+    url: `/api/v1/vehicle-requests/${request.id}/assignment`,
+    headers: ctx.auth,
+    payload: {
+      vehicleId,
+      version: request.version,
+      ...rates,
+      ...(previewFingerprint ? { previewFingerprint } : {}),
+    },
+  });
+}
+
+async function assignedVehicle(requestId: string): Promise<string> {
+  return (
+    await ctx.db.execute<{ vehicle_id: string }>(
+      sql`SELECT vehicle_id FROM vehicle_request_assignments WHERE request_id = ${requestId}`,
+    )
+  ).rows[0]!.vehicle_id;
+}
+
+/** Wait until some backend is blocked by the holder — the command has reached its locks. */
+async function waitUntilBlocked(probe: pg.Client, holderPid: number): Promise<void> {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    const { rows } = await probe.query<{ n: string }>(
+      'SELECT count(*) AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))',
+      [holderPid],
+    );
+    if (Number(rows[0]!.n) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('the command never queued behind the holder');
 }
 
 /** Eight hours signed off by the object — the row the shift doors would have written. */

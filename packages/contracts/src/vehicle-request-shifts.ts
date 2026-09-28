@@ -7,6 +7,7 @@ import {
   TIME_FORMAT_MESSAGE,
   TIME_PATTERN,
 } from './time';
+import type { VehicleOwnership } from './vehicles';
 
 // ── Подтверждение смен по заказу спецтехники ──
 // Техника стоит на объекте неделями, а работа считается по дням: за каждый день заказа — время
@@ -43,6 +44,17 @@ export interface ShiftSubject {
  */
 export interface VehicleRequestShiftsSummaryDto {
   approvedDays: number;
+  /**
+   * Approved days inside the term that do NOT sit in their own day route — the sign-offs that stand
+   * under the assignment's vehicle and therefore lock a plain reassignment (ADR 0210). A day in a
+   * route was worked by the route's vehicle; changing the assignment does not contradict it.
+   *
+   * Optional on purpose, and absence means "unknown", not zero: a server older than ADR 0210 does
+   * not send it, and a newer portal must then lock by `approvedDays` — conservatively — instead of
+   * offering a reassignment that server would refuse. An older portal ignores the field and keeps
+   * locking by `approvedDays`, which is conservative too; the server decides by the new rule.
+   */
+  approvedDaysWithoutRoute?: number;
   /** Дни заказа, которые уже наступили, но не подтверждены. Ими и предупреждают о закрытии. */
   unapprovedPastDays: number;
 }
@@ -227,6 +239,56 @@ export function approvedShiftsBlocker(r: ShiftSubject): string | null {
   const approved = r.shifts?.approvedDays ?? 0;
   if (approved <= 0) return null;
   return `По заявке согласовано смен: ${approved} — сначала снимите согласование`;
+}
+
+/**
+ * Whether the request's day routes outlive a reassignment that leaves a vehicle of this ownership
+ * on the assignment (ADR 0210).
+ *
+ * The reassign door runs the day sync after writing the assignment, and the sync sweeps every day
+ * off its route once the assigned vehicle is rented (`linearDaysBlocker`: a rented vehicle does not
+ * go on routes, its lessor issues the paper). Such a day becomes route-less and falls under the
+ * assignment again — so its sign-off counts as the assignment's, both for the lock of a plain
+ * reassignment and for what a correction clears. Days frozen by an issued waybill are treated as
+ * swept too: for the lock that is the conservative side, and a correction refuses them anyway.
+ */
+export function dayRoutesKeptWith(ownership: VehicleOwnership): boolean {
+  return ownership === 'own';
+}
+
+/**
+ * How many approved days lock a plain reassignment to a vehicle of `nextOwnership` (ADR 0210):
+ * the days without their own route; with a rented vehicle — all of them, see `dayRoutesKeptWith`.
+ *
+ * `nextOwnership` defaults to `own` for a list row, where the next vehicle is not chosen yet: the
+ * button is offered by the optimistic case, and the door re-checks with the real vehicle.
+ * A summary without `approvedDaysWithoutRoute` (a server older than ADR 0210) counts every approved
+ * day — the old, conservative lock.
+ */
+export function reassignLockingApprovedDays(
+  shifts: VehicleRequestShiftsSummaryDto | null | undefined,
+  nextOwnership: VehicleOwnership = 'own',
+): number {
+  if (!shifts) return 0;
+  if (!dayRoutesKeptWith(nextOwnership)) return shifts.approvedDays;
+  return shifts.approvedDaysWithoutRoute ?? shifts.approvedDays;
+}
+
+/**
+ * Why a plain reassignment is refused: approved days stand under the work of the assigned vehicle,
+ * and swapping it would turn the object's sign-off into a sign-off under someone else's hours.
+ * Unlike `approvedShiftsBlocker`, a day that sat in its own day route does not count — its vehicle
+ * is the route's (ADR 0210). The rollback to "new" keeps the older, wider lock on purpose: it erases
+ * the shifts themselves, route or not.
+ */
+export function reassignApprovedShiftsBlocker(
+  r: ShiftSubject,
+  nextOwnership: VehicleOwnership = 'own',
+): string | null {
+  if (r.requestType !== 'special_equipment') return null;
+  const locking = reassignLockingApprovedDays(r.shifts, nextOwnership);
+  if (locking <= 0) return null;
+  return `По заявке согласовано смен: ${locking} — сначала снимите согласование`;
 }
 
 /** «3 смены», «11 смен» — количество с русским склонением. */
