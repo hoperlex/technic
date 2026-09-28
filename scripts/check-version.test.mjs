@@ -4,9 +4,10 @@
  *
  * WHY FIXTURE REPOSITORIES. The live tree's tags are placed by hand and change with every release,
  * so "green on the tree today" promises nothing about the rule itself. Each test builds a small git
- * repository with its own policy, release migrations and tags, and pins exactly one rule; only the
- * policy file is also read from the live tree, because a quoting slip there (an unquoted hex
- * commit parses as a number) would silently empty an exact set.
+ * repository with its own policy, release migrations and tags, and pins exactly one rule. The live
+ * policy file is read too, but only for its invariants and never for its values: the lists grow
+ * with every release, while a quoting slip (an unquoted hex commit parses as a number) or a
+ * malformed entry would silently empty an exact set.
  *
  * `node:test` without dependencies, like `docs-navigation.test.mjs`: root scripts have no
  * `package.json` of their own, and a second test stack for them would buy nothing.
@@ -15,10 +16,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import process from 'node:process';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { checkVersion, compareReleases, loadPolicy, parseVersion } from './check-version.mjs';
+
+// Variables that point git at a particular repository. Inherited from a hook or a wrapper, they
+// would send fixture commits — and the check's own git calls, which use `process.env` — into that
+// repository instead of the fixture, so they are dropped for the whole test process.
+for (const name of [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_NAMESPACE',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_DISCOVERY_ACROSS_FILESYSTEM',
+]) {
+  delete process.env[name];
+}
 
 // Fixture commits must not depend on the machine's git setup: a global signing or hook config
 // would make tag creation fail or prompt instead of testing the check.
@@ -395,27 +413,57 @@ test('вне репозитория: без флагов — предупреж�
   const f = fixture();
   f.release('0.1.2.0010');
   rmSync(path.join(f.root, '.git'), { recursive: true, force: true });
-  const plain = run(f.root);
-  assert.deepEqual(plain.errors, []);
-  assert.ok(has(plain.warnings, /git не ответил/));
-  assert.ok(has(run(f.root, { tags: true }).errors, /git не ответил/));
+  // TMPDIR may itself lie inside a clone (a worktree, a sandbox under the project), and git would
+  // then find that repository above the fixture. The ceiling stops the upward search at the
+  // fixture, so "not a repository" does not depend on where the temporary directory is.
+  process.env.GIT_CEILING_DIRECTORIES = realpathSync(path.dirname(f.root));
+  try {
+    assert.throws(
+      () => execFileSync('git', ['rev-parse', '--git-dir'], { cwd: f.root, stdio: 'ignore' }),
+      undefined,
+      'предусловие: git не должен находить репозиторий над фикстурой',
+    );
+    const plain = run(f.root);
+    assert.deepEqual(plain.errors, []);
+    assert.ok(has(plain.warnings, /git не ответил/));
+    assert.ok(has(run(f.root, { tags: true }).errors, /git не ответил/));
+  } finally {
+    delete process.env.GIT_CEILING_DIRECTORIES;
+  }
 });
 
-test('политика дерева читается: порог и точные множества на месте', () => {
+test('кривая запись политики — ошибка чтения политики, а не молча пустое множество', () => {
+  const f = fixture({ outOfOrder: "[{ versions: ['0.1.2.0010', '0.1.3.0011', '0.1.4.0012'] }]" });
+  f.release('0.1.2.0010');
+  assert.ok(has(run(f.root).errors, /knownOutOfOrderReleases\[0\]\.versions — нужно ровно две/));
+});
+
+test('политика дерева читается и держит свои инварианты', () => {
+  // Invariants only: the lists grow with releases, and pinning today's values would break the
+  // test on every legitimate new entry.
   const policy = loadPolicy(path.resolve(import.meta.dirname, '..'));
-  assert.equal(policy.since.raw, '0.1.83.0191');
-  assert.deepEqual(
-    policy.knownCollisions.map((k) => k.versions),
-    [
-      ['0.1.64.0154', '0.1.64.0155'],
-      ['0.1.66.0156', '0.1.66.0158'],
-    ],
-  );
-  assert.deepEqual(
-    policy.knownSharedCommits.map((k) => [k.commit, k.versions]),
-    [
-      ['f7246a0f', ['0.1.87.0197', '0.1.89.0199']],
-      ['6b3c3330', ['0.1.92.0202', '0.1.93.0203']],
-    ],
-  );
+  const atOrAfterSince = (v) => compareReleases(parseVersion(v), policy.since) >= 0;
+  const keyOf = (k) => [...k.versions].sort().join('|');
+
+  for (const k of policy.knownCollisions) {
+    const [a, b] = k.versions.map(parseVersion);
+    assert.equal(k.versions.length, 2, `коллизия — пара: ${keyOf(k)}`);
+    assert.equal(compareReleases(a, b), 0, `коллизия — один номер выпуска: ${keyOf(k)}`);
+    assert.notEqual(a.raw, b.raw);
+  }
+  for (const k of policy.knownSharedCommits) {
+    // A quoted abbreviated sha; an unquoted one may come back as a number or as Infinity.
+    assert.match(k.commit ?? '', /^[0-9a-f]{7,40}$/, `коммит строкой: ${keyOf(k)}`);
+    assert.equal(new Set(k.versions).size, k.versions.length);
+    assert.ok(k.versions.every(atOrAfterSince), `общий коммит от порога: ${keyOf(k)}`);
+  }
+  for (const k of policy.knownOutOfOrder) {
+    const [a, b] = k.versions.map(parseVersion);
+    assert.notEqual(compareReleases(a, b), 0, `пара с разными номерами: ${keyOf(k)}`);
+    assert.ok(k.versions.every(atOrAfterSince), `исключение порядка от порога: ${keyOf(k)}`);
+  }
+  for (const list of [policy.knownCollisions, policy.knownSharedCommits, policy.knownOutOfOrder]) {
+    const keys = list.map(keyOf);
+    assert.equal(new Set(keys).size, keys.length, 'запись повторена дважды');
+  }
 });
