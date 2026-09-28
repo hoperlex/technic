@@ -7,7 +7,7 @@
   [ADR 0005](0005-vehicle-types-flatten.md) (плоский классификатор),
   `packages/contracts/src/waybills.ts`, `apps/api/src/services/waybill-issue.ts`,
   `apps/api/src/services/office-pdf.ts`, `apps/api/src/routes/waybills.ts`,
-  `apps/api/scripts/mark-waybill-templates.ts`, `apps/web/src/components/WaybillPrint.tsx`,
+  `apps/api/scripts/mark-waybill-templates.ts`, `apps/web/src/entities/waybill/ui/WaybillPrint.tsx`,
   `deploy/Dockerfile.api`
 
 ## Контекст

@@ -17,7 +17,7 @@
   [docs/manuals-plan.md](../manuals-plan.md) §3.6 (та же болезнь, вылеченная списком
   `ADMIN_PAGE_PERMISSIONS`), план [docs/portal-sections-plan.md](../portal-sections-plan.md);
   `packages/contracts/src/portal-sections.ts`, `apps/web/src/App.tsx`,
-  `apps/web/src/components/AppLayout.tsx`, `apps/web/src/auth/ProtectedRoute.tsx`,
+  `apps/web/src/components/AppLayout.tsx`, `apps/web/src/app/routing/ProtectedRoute.tsx`,
   `apps/web/src/pages/NoSectionsPage.tsx`, `apps/api/test/portal-sections.test.ts`
 - Миграций не требует, сервер не трогает
 

@@ -10,7 +10,7 @@
   портал — [maintenance.ts](../../apps/web/src/shared/api/maintenance.ts) (новый),
   [MaintenanceBoundary.tsx](../../apps/web/src/app/MaintenanceBoundary.tsx) (новый),
   [http.ts](../../apps/web/src/shared/api/http.ts), [main.tsx](../../apps/web/src/main.tsx),
-  [AuthContext.tsx](../../apps/web/src/auth/AuthContext.tsx),
+  [AuthContext.tsx](../../apps/web/src/entities/session/model/authContext.tsx),
   [clientContract.ts](../../apps/web/src/shared/api/clientContract.ts) (контракт 3 → 4),
   веб-слой — [spa.conf](../../deploy/nginx/spa.conf),
   [maintenance.html](../../deploy/nginx/maintenance.html) (новый),

@@ -12,7 +12,7 @@
   `packages/contracts/src/print-budget.ts`, `apps/api/src/services/office-pdf.ts`,
   `apps/api/src/lib/request-budget.ts`, `apps/api/src/routes/waybills.ts`,
   `apps/api/test/print-budget.test.ts`, `deploy/nginx/spa.conf`, `deploy/nginx/technic.conf`,
-  `deploy/nginx/stand.conf`, `apps/web/src/components/WaybillPrint.tsx`,
+  `deploy/nginx/stand.conf`, `apps/web/src/entities/waybill/ui/WaybillPrint.tsx`,
   `apps/web/src/shared/api/http.ts`
 
 ## Контекст

@@ -6,7 +6,7 @@
   которое теперь есть и у диспетчера)
 - Связано: `packages/contracts/src/permissions.ts`, `apps/api/src/auth/plugin.ts`,
   `apps/api/src/lib/access.ts`, все `apps/api/src/routes/*.ts`,
-  `apps/web/src/auth/AuthContext.tsx`, `apps/web/src/auth/ProtectedRoute.tsx`,
+  `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/app/routing/ProtectedRoute.tsx`,
   `apps/web/src/components/AppLayout.tsx`, `apps/api/test/route-authorization.test.ts`
 
 ## Контекст

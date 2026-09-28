@@ -11,7 +11,7 @@
   `apps/api/src/lib/access.ts`, `apps/api/src/auth/principal.ts`,
   `apps/api/src/routes/vehicle-requests.ts`, `apps/api/src/routes/users.ts`,
   `apps/api/src/routes/counterparties.ts`, `apps/api/src/routes/files.ts`,
-  `apps/web/src/auth/AuthContext.tsx`, `apps/web/src/pages/admin/UsersTab.tsx`,
+  `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/pages/admin/UsersTab.tsx`,
   `apps/api/test/permissions.test.ts`, `apps/api/test/access-scope.test.ts`,
   `apps/api/test/access-matrix.test.ts`, `apps/web/test/permissions-ui.test.tsx`
 

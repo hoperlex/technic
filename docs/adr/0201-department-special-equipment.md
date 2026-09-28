@@ -28,7 +28,7 @@
   сервер —
   [access.ts](../../apps/api/src/lib/access.ts) (`vehicleRequestVisibilityWhere`,
   `departmentOwnsRequest`, `canApproveRequest`, `assertRequestScope`, `canConfirmShifts`); портал —
-  [usePlaceObjectScope.ts](../../apps/web/src/hooks/usePlaceObjectScope.ts) (бывший
+  [usePlaceObjectScope.ts](../../apps/web/src/entities/session/model/usePlaceObjectScope.ts) (бывший
   `useWasteObjectScope`),
   [useRequestCustomerOptions.ts](../../apps/web/src/features/request-customer/model/useRequestCustomerOptions.ts)
   (режим `objects: 'place'`),

@@ -2,12 +2,12 @@
 
 - Статус: Принято
 - Домены: путевые-листы
-- Область: `apps/api/src/routes/waybills.ts`, `apps/api/src/services/office-pdf.ts`, `apps/api/src/services/pdf-merge.ts`, `apps/web/src/components/WaybillPrint.tsx`, `apps/web/src/shared/ui/DataTable.tsx`
+- Область: `apps/api/src/routes/waybills.ts`, `apps/api/src/services/office-pdf.ts`, `apps/api/src/services/pdf-merge.ts`, `apps/web/src/entities/waybill/ui/WaybillPrint.tsx`, `apps/web/src/shared/ui/DataTable.tsx`
 - Связано: [ADR 0041](0041-waybill-freight-only-and-printing.md) (печать бланка PDF инлайном),
   [ADR 0037](0037-freight-transport-waybill.md) (журнал учёта, снимок значений листа),
   [ADR 0030](0030-responsive-layout.md) (списки и их управление),
   `apps/api/src/routes/waybills.ts`, `apps/api/src/services/office-pdf.ts`,
-  `apps/api/src/services/pdf-merge.ts`, `apps/web/src/components/WaybillPrint.tsx`,
+  `apps/api/src/services/pdf-merge.ts`, `apps/web/src/entities/waybill/ui/WaybillPrint.tsx`,
   `apps/web/src/shared/ui/DataTable.tsx`. Миграций не требует
 
 ## Контекст

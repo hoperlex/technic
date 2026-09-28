@@ -9,7 +9,7 @@
   `packages/contracts/src/permissions.ts`, `packages/contracts/src/permission-catalog.ts`,
   `packages/contracts/src/role-addons.ts`, `apps/api/src/auth/principal.ts`,
   `apps/api/src/services/user-scopes.ts`,
-  `apps/api/src/routes/users.ts`, `apps/web/src/auth/AuthContext.tsx`,
+  `apps/api/src/routes/users.ts`, `apps/web/src/entities/session/model/authContext.tsx`,
   `apps/web/src/pages/admin/`, `apps/api/test/access-matrix.test.ts`,
   `apps/api/test/route-authorization.test.ts`
 

@@ -29,7 +29,7 @@
   [serviceRequestSubmit.ts](../../apps/web/src/pages/service/serviceRequestSubmit.ts),
   [useServiceRequestCustomer.ts](../../apps/web/src/features/request-customer/model/useServiceRequestCustomer.ts),
   [EquipmentNotFoundLink.tsx](../../apps/web/src/features/missing-equipment/ui/EquipmentNotFoundLink.tsx),
-  [candidateIntake.ts](../../apps/web/src/auth/candidateIntake.ts); тесты —
+  [candidateIntake.ts](../../apps/web/src/entities/office-equipment-candidate/model/intake.ts); тесты —
   [office-equipment-selector.db.test.ts](../../apps/api/test/office-equipment-selector.db.test.ts),
   [service-request-subject.db.test.ts](../../apps/api/test/service-request-subject.db.test.ts),
   [service-request-urgency.db.test.ts](../../apps/api/test/service-request-urgency.db.test.ts),

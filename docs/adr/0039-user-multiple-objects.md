@@ -6,7 +6,7 @@
   (объектные роли), [ADR 0010](0010-counterparties.md) (связь «объект ↔ оператор» как образец),
   `apps/api/drizzle/0063_user_construction_objects.sql`,
   `apps/api/src/services/user-scopes.ts`, `apps/api/src/lib/access.ts`,
-  `apps/web/src/hooks/useObjectScope.ts`, `apps/api/test/access-scope.test.ts`
+  `apps/web/src/entities/session/model/useObjectScope.ts`, `apps/api/test/access-scope.test.ts`
 
 ## Контекст
 
