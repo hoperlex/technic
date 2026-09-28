@@ -40,11 +40,15 @@ import type {
  * закрывает её, как закрывал, очередь ведёт себя как прежде, и ни один сценарий не начал требовать
  * бумагу, которой не требовал. Поэтому половина случаев здесь — про то, что НЕ изменилось.
  *
- * ДОКУМЕНТНАЯ РЕВИЗИЯ СТАВИТСЯ ПРЯМЫМ SQL, И ЭТО НЕ СОКРАЩЕНИЕ ПУТИ. Ручка предъявления документный
- * формат не принимает вовсе — отвечает 422 (§7 плана, шаг 1; отдельный случай ниже это и
- * подтверждает), — а читатели формата выкачены уже сейчас и обязаны быть проверены ДО того, как
- * затвор снимет Э4: иначе первая же документная подача поедет в прод по непроверенному правилу.
- * Строка ревизии — единственное, что подделывается; всё остальное заявка проходит своими ручками.
+ * DOCUMENT REVISIONS ARE INSERTED BY DIRECT SQL, AND THAT IS NOT A SHORTCUT. The file was written
+ * while the submit endpoint refused the document format outright (422, plan §7 step 1) and the
+ * readers of the format, already deployed, had to be proven before E4 lifted the gate. Since
+ * migration 0341 (ADR 0208) the `service_estimate_document_mode` switch is on by default and the
+ * endpoint accepts document submissions; that path is covered by
+ * `service-estimate-document-submit.db`. Here the readers still get a raw revision row, so these
+ * cases check the "which paper closes the request" rule itself, independent of the submit path and
+ * of the switch state. The revision row is the only forged thing; everything else goes through the
+ * request's own endpoints. The one case that needs the switch off turns it off itself.
  *
  * СВОЯ БАЗА, А НЕ ОБЩАЯ `technic_archive_test`: файл гоняет автозакрытие, которое берёт заявки
  * ВСЕЙ базы пачкой, и в общей базе он закрывал бы чужие заявки, а соседи — его. Механизм тот же,
@@ -300,10 +304,10 @@ async function attach(id: string, kind: 'act' | 'invoice' | 'warranty_card'): Pr
 }
 
 /**
- * Подшивка со заданным возрастом — прямым SQL, и в двух случаях иначе нельзя: роль
- * `estimate_basis` ручки этого выпуска не ставят вовсе (её ставит предъявление документом, то есть
- * Э4), а состарить бумагу на сутки ручкой невозможно в принципе — а срок автозакрытия считается
- * именно от времени подшивки.
+ * Attaches a file with a given age by direct SQL; two things here cannot go through endpoints. The
+ * `estimate_basis` role is set only by a document submission, and this file forges document
+ * revisions by SQL (see the header), so their basis page has to be forged alongside them. And no
+ * endpoint can age a paper by a day, while the auto-close deadline counts from the attach time.
  */
 async function attachRaw(
   id: string,
@@ -357,6 +361,23 @@ async function awaitingDocumentIds(): Promise<string[]> {
   );
   expect(res.statusCode, res.body).toBe(200);
   return (res.json().items as ServiceRequestDto[]).map((row) => row.id);
+}
+
+/**
+ * Sets a feature switch and returns its previous value, so a case can put it back. The route reads
+ * the switch without a cache, so the UPDATE takes effect on the next request.
+ */
+async function setFeatureFlag(key: string, enabled: boolean): Promise<boolean> {
+  const before = await ctx.db.execute<{ enabled: boolean }>(
+    sql`SELECT is_enabled AS enabled FROM feature_flags WHERE key = ${key}`,
+  );
+  // A missing row would mean migration 0307 is not applied; the route then treats the switch as
+  // off, and a case that believes it toggled the switch would be checking nothing.
+  expect(before.rows, `feature flag ${key} not found`).toHaveLength(1);
+  await ctx.db.execute(
+    sql`UPDATE feature_flags SET is_enabled = ${enabled}, updated_at = now() WHERE key = ${key}`,
+  );
+  return before.rows[0]!.enabled;
 }
 
 /** Прогон автозакрытия — той же ручкой, которой его будит worker. */
@@ -572,32 +593,43 @@ describe.skipIf(!DB_URL)('формат ревизии объёма работ с
   });
 
   /**
-   * ЗАТВОР СМЕНИЛСЯ РУБИЛЬНИКОМ (Э4 снял временный отказ и поставил на его место чтение ключа
-   * `service_estimate_document_mode`). Случай оставлен и переписан, а не удалён: он отвечает на
-   * вопрос «что видит сервис, когда подача счётом ещё не включена», и ответ обязан быть отказом с
-   * объяснением, а не молчаливым приёмом пустой ревизии.
+   * The temporary refusal of wave E4 became the `service_estimate_document_mode` switch. The case
+   * answers "what does the service see while invoice submission is off", and the answer must be a
+   * refusal with an explanation, never a silently accepted empty revision.
    *
-   * Заявление об освобождении при выключенном рубильнике отказом НЕ отвечает — в этом и смысл
-   * режима наблюдения: заявление записывается, а подпись собирается обычным путём (исход
-   * `observed`). Проверяется это в своём файле волны Э4; здесь важно лишь то, что ревизия от такого
-   * предъявления рождается построчной, а не документной.
+   * The switch is turned off here explicitly because migration 0341 (ADR 0208) enables it by
+   * default. With the switch on, the gate no longer refuses first, and the request is turned down
+   * by the next check instead (the fixture file is still `pending`, so 400 "upload not finished").
+   * The case would then prove nothing about the switch. It runs in this file's own database, so
+   * flipping the switch cannot leak into other files; `finally` restores the previous value for the
+   * cases that follow.
+   *
+   * An exemption claim is not refused while its own switch is off; that is the point of observation
+   * mode, where the claim is recorded and approval is collected the usual way (outcome
+   * `observed`). That is covered by the E4 wave's own file; here it only matters that such a
+   * submission yields an item revision, not a document one.
    */
   it('подача счётом при выключенном рубильнике: 422 и ни одной записанной ревизии', async () => {
-    const id = await requestInWork('Затвор документной подачи');
-    const fileId = await uploadedFile(ctx.service.id, 'invoice.pdf');
+    const wasEnabled = await setFeatureFlag('service_estimate_document_mode', false);
+    try {
+      const id = await requestInWork('Затвор документной подачи');
+      const fileId = await uploadedFile(ctx.service.id, 'invoice.pdf');
 
-    const document = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${id}/estimate/submit`,
-      ctx.service.auth,
-      { mode: 'document', fileIds: [fileId], version: await version(id) },
-    );
-    expect(document.statusCode, document.body).toBe(422);
-    expect(document.json().message).toContain('документом');
+      const document = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${id}/estimate/submit`,
+        ctx.service.auth,
+        { mode: 'document', fileIds: [fileId], version: await version(id) },
+      );
+      expect(document.statusCode, document.body).toBe(422);
+      expect(document.json().message).toContain('документом пока выключена');
 
-    // Отказ вслух, а не молчаливое отбрасывание поля: ни ревизии, ни номера, ни подшитой страницы.
-    expect(await revisions(id)).toEqual([]);
-    expect((await card(id)).estimateRevision).toBe(0);
+      // A refusal out loud, not a silently dropped field: no revision, no number, no attached page.
+      expect(await revisions(id)).toEqual([]);
+      expect((await card(id)).estimateRevision).toBe(0);
+    } finally {
+      await setFeatureFlag('service_estimate_document_mode', wasEnabled);
+    }
   });
 
   it('планка наследия цела: счёт закрывает построчную заявку, и она уходит из очереди', async () => {

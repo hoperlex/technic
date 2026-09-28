@@ -450,6 +450,48 @@ async function tablesCascadedFrom(parents: readonly string[]): Promise<string[]>
   return res.rows.filter((r) => parents.includes(r.parent)).map((r) => r.table);
 }
 
+/**
+ * Tables that extend the file row itself rather than attach it to an owner: the primary key is
+ * exactly the foreign key to `files`, deletion cascades from `files`, and no other foreign key is
+ * mandatory. Such a row describes the file (the receipt-scan recognition cache,
+ * `auto_part_receipt_scans`, migration 0331) and dies with it; it never says "this file belongs to
+ * that document".
+ *
+ * Naming one in `file_is_linked` would be a defect, not extra safety: a scan that was only read,
+ * never attached, would count as linked. Attaching it to a receipt would then be refused
+ * (`services/request-files.ts` rejects already linked files), and the orphan sweep would keep the
+ * file forever.
+ *
+ * The third condition is what keeps a real link out of this set. A link with at most one owner per
+ * file is naturally keyed by `file_id` too (`waste_ticket_files` has exactly that shape), but it
+ * always carries a NOT NULL reference to its owner. Without that check a future link table of this
+ * shape would be silently excused from the function.
+ */
+async function fileExtensionTables(): Promise<string[]> {
+  const res = await ctx.db.execute<{ table: string }>(sql`
+    SELECT DISTINCT c.conrelid::regclass::text AS table
+      FROM pg_constraint c
+      JOIN pg_constraint pk ON pk.conrelid = c.conrelid AND pk.contype = 'p'
+     WHERE c.contype = 'f'
+       AND c.confrelid = 'files'::regclass
+       AND c.confdeltype = 'c'
+       AND pk.conkey @> c.conkey AND pk.conkey <@ c.conkey
+       AND NOT EXISTS (
+             SELECT 1
+               FROM pg_constraint other
+              WHERE other.conrelid = c.conrelid
+                AND other.contype = 'f'
+                AND other.oid <> c.oid
+                AND NOT EXISTS (
+                      SELECT 1
+                        FROM pg_attribute a
+                       WHERE a.attrelid = other.conrelid
+                         AND a.attnum = ANY (other.conkey)
+                         AND NOT a.attnotnull))
+     ORDER BY 1`);
+  return res.rows.map((r) => r.table);
+}
+
 /** Таблицы, названные в теле функции: определение читается у самой базы, а не из файла миграции. */
 async function tablesKnownToFunction(): Promise<string[]> {
   const res = await ctx.db.execute<{ def: string }>(
@@ -613,25 +655,31 @@ describe.skipIf(!DB_URL)('жизненный цикл файла: связи и 
     );
 
     it('в функции названы все таблицы, ссылающиеся на files внешним ключом', async () => {
-      // Сверка идёт со схемой, а не со списком в тесте: новая таблица связи заводится вместе с
-      // новым модулем, и её обязаны дописать в функцию той же миграцией. Список в тесте пришлось
-      // бы пополнять руками — то есть он молчал бы ровно в том случае, ради которого написан.
+      // The check reads the schema, not a list in the test: a new link table arrives with a new
+      // module and must be added to the function by the same migration. A hand-kept list would stay
+      // silent in exactly the case it exists for.
       const known = await tablesKnownToFunction();
-      // Спутники таблиц привязки исключаются по свойству, а не по списку имён: строка
-      // `waste_ticket_files` (ADR 0114) держит составной ключ на `request_files` с `ON DELETE
-      // CASCADE` и пережить привязку талона не может. Внеси её в функцию — и файл, у которого
-      // связь расклеилась, стал бы неудаляемым навсегда.
+      // Companions of link tables are excused by a property, not by name: a `waste_ticket_files`
+      // row (ADR 0114) holds a composite key to `request_files` with ON DELETE CASCADE and cannot
+      // outlive the ticket's link. Naming it in the function would make a file whose link came
+      // apart undeletable forever.
       const companions = await tablesCascadedFrom(known);
+      // File extensions are excused by a property as well; see `fileExtensionTables` for why
+      // naming one in the function would break attaching the file.
+      const extensions = await fileExtensionTables();
+      // Guards the property itself: a table the function already names is a link by definition,
+      // so if the property ever matched one, it would be excusing real links too.
+      expect(extensions.filter((t) => known.includes(t))).toEqual([]);
       const missing = (await fileLinkTables()).filter(
-        (t) => !known.includes(t) && !companions.includes(t),
+        (t) => !known.includes(t) && !companions.includes(t) && !extensions.includes(t),
       );
 
-      // Исключений нет: перечень собирают по внешним ключам к `files`, а не по тому, какие ручки
-      // уже написаны. `person_credential_files` (миграция 0019) — тот случай, ради которого это
-      // правило и заведено: строк в таблицу пока не пишет ни одна ручка портала, и обе прежние
-      // копии перечня о ней не знали, — а появись загрузка сканов при неполной функции, второй
-      // проход уборки счёл бы удостоверения и медсправки сиротами и снёс их из хранилища через
-      // неделю после загрузки.
+      // Beyond the two properties above there are no exceptions: the list is built from foreign
+      // keys to `files`, not from which endpoints already exist. `person_credential_files`
+      // (migration 0019) is the case this rule was made for: no portal endpoint writes to it yet,
+      // and both earlier copies of the list missed it. Had scan upload shipped with an incomplete
+      // function, the second sweep pass would have treated ID documents and medical certificates
+      // as orphans and removed them from storage a week after upload.
       expect(missing).toEqual([]);
     });
   });

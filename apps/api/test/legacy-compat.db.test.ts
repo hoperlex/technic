@@ -51,10 +51,12 @@ import { applyMigrations, readMigration } from '../src/db/migration-journal';
  *    сеет ни одна миграция: `SELECT id FROM users … LIMIT 1` отвечал пусто. Теперь и то и другое
  *    файл заводит себе сам — на копии, которая всё равно уходит `DROP DATABASE`.
  *
- * Запуск (нужны `pg_dump` и `psql` в PATH — копия снимается ими, а не `CREATE DATABASE …
- * TEMPLATE`: шаблон требует, чтобы к источнику не было ни одного подключения, а соседние db-тесты
- * идут параллельно и держат его открытым). База-источник — накопленная либо чистая, миграции файл
- * накатывает сам:
+ * Running it needs `pg_dump` and `psql` of the same major version as the server: the copy is taken
+ * with them rather than with `CREATE DATABASE … TEMPLATE`, because a template requires the source
+ * to have no connections at all, and neighbouring db tests run in parallel and keep it open. The
+ * pair is picked by `resolveCopyTools` (`PG_BIN_DIR`, then `/usr/lib/postgresql/<major>/bin`, then
+ * PATH). The source database may be an accumulated one or empty; the file applies migrations
+ * itself:
  *
  *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/technic_archive_test \
  *     pnpm --filter @technic/api test legacy-compat
@@ -255,12 +257,109 @@ async function migrate(databaseUrl: string): Promise<void> {
   }
 }
 
+/** The `pg_dump` and `psql` executables that copy the source database within its own cluster. */
+interface PgCopyTools {
+  pgDump: string;
+  psql: string;
+}
+
+/** Major version of the server behind `url`, from `server_version_num` (170011 → 17). */
+async function serverMajorOf(url: string): Promise<number> {
+  const client = new pg.Client({ connectionString: url });
+  await client.connect();
+  try {
+    const { rows } = await client.query<{ server_version_num: string }>('SHOW server_version_num');
+    return Math.floor(Number(rows[0]!.server_version_num) / 10_000);
+  } finally {
+    await client.end();
+  }
+}
+
+/** Major version a client binary reports about itself; `null` when it is missing or unreadable. */
+async function clientMajorOf(binary: string): Promise<number | null> {
+  try {
+    const { code, out } = await run(binary, ['--version']);
+    const match = /\(PostgreSQL\)\s+(\d+)/u.exec(out);
+    return code === 0 && match ? Number(match[1]) : null;
+  } catch {
+    // `spawn` rejects with ENOENT when the binary does not exist at all.
+    return null;
+  }
+}
+
+/**
+ * Picks a `pg_dump`/`psql` pair whose major version equals the server's, and refuses before any
+ * side effect if there is none.
+ *
+ * Why the exact major and not "pg_dump at least as new as the server". An older pg_dump refuses a
+ * newer server outright ("server version mismatch"), which is how this file used to fail on a
+ * PostgreSQL 17 cluster with the Ubuntu default client 16. A newer pg_dump reads an older server
+ * fine, but its output is only meant to load into its own major or later, and here it is restored
+ * into the very cluster it came from: pg_dump 17 writes `SET transaction_timeout = 0` even when
+ * dumping a 16 server, and psql with ON_ERROR_STOP stops on it there.
+ *
+ * Why psql must match as well. A plain dump is a psql script, and its meta-commands belong to
+ * pg_dump's release (`\restrict`/`\unrestrict` since 17.6 and 16.10; an older psql stops with
+ * "invalid command"). The tools on PATH are not guaranteed to be a pair: on Debian and Ubuntu PATH
+ * holds `pg_wrapper`, which picks a version per tool on its own (on the host this was written on it
+ * gave pg_dump 16 next to psql 17). That is also why versions are asked from the binaries
+ * themselves rather than inferred from the directory.
+ *
+ * Search order: `PG_BIN_DIR` when set, and then only it, because an explicit choice that does not
+ * fit must be reported, not silently replaced by another client; otherwise the Debian/Ubuntu
+ * layout `/usr/lib/postgresql/<major>/bin`, which keeps every installed major side by side, and
+ * finally PATH.
+ */
+async function resolveCopyTools(sourceUrl: string): Promise<PgCopyTools> {
+  const serverMajor = await serverMajorOf(sourceUrl);
+  const explicit = process.env.PG_BIN_DIR?.trim();
+  const candidates: { origin: string; dir: string | null }[] = explicit
+    ? [{ origin: `PG_BIN_DIR=${explicit}`, dir: explicit }]
+    : [
+        {
+          origin: `/usr/lib/postgresql/${serverMajor}/bin`,
+          dir: `/usr/lib/postgresql/${serverMajor}/bin`,
+        },
+        { origin: 'PATH', dir: null },
+      ];
+
+  const seen: { origin: string; dumpMajor: number | null; psqlMajor: number | null }[] = [];
+  for (const { origin, dir } of candidates) {
+    const tools = {
+      pgDump: dir ? join(dir, 'pg_dump') : 'pg_dump',
+      psql: dir ? join(dir, 'psql') : 'psql',
+    };
+    const [dumpMajor, psqlMajor] = await Promise.all([
+      clientMajorOf(tools.pgDump),
+      clientMajorOf(tools.psql),
+    ]);
+    if (dumpMajor === serverMajor && psqlMajor === serverMajor) return tools;
+    seen.push({ origin, dumpMajor, psqlMajor });
+  }
+
+  // The headline names the first client actually found (the one a bare `pg_dump` would have
+  // been); the tail lists every place that was checked.
+  const first = seen.find((c) => c.dumpMajor !== null);
+  const headline = !first
+    ? `pg_dump для кластера ${serverMajor} не найден`
+    : first.dumpMajor !== serverMajor
+      ? `pg_dump ${first.dumpMajor} не снимает кластер ${serverMajor}`
+      : `pg_dump ${serverMajor} найден, но psql при нём ${first.psqlMajor ?? 'не найден'}`;
+  const checked = seen
+    .map((c) => `${c.origin}: pg_dump ${c.dumpMajor ?? 'нет'}, psql ${c.psqlMajor ?? 'нет'}`)
+    .join('; ');
+  throw new Error(
+    `${headline}: поставьте postgresql-client-${serverMajor} или задайте PG_BIN_DIR ` +
+      `(нужны pg_dump и psql версии ${serverMajor}; проверено — ${checked})`,
+  );
+}
+
 /** Копия базы `pg_dump | psql`: поток идёт мимо диска, 80 МБ тестовой базы копируются за секунды. */
-async function copyDatabase(source: string, target: string): Promise<void> {
-  const dump = spawn('pg_dump', ['--no-owner', '--no-privileges', source], {
+async function copyDatabase(tools: PgCopyTools, source: string, target: string): Promise<void> {
+  const dump = spawn(tools.pgDump, ['--no-owner', '--no-privileges', source], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const restore = spawn('psql', ['--quiet', '--no-psqlrc', '-v', 'ON_ERROR_STOP=1', target], {
+  const restore = spawn(tools.psql, ['--quiet', '--no-psqlrc', '-v', 'ON_ERROR_STOP=1', target], {
     stdio: ['pipe', 'ignore', 'pipe'],
   });
   let errors = '';
@@ -697,7 +796,10 @@ async function printedTask(db: pg.Client, waybillId: string): Promise<string> {
 
 beforeAll(async () => {
   if (!DB_URL) return;
-  // Первое действие файла: схема источника обязана быть на голове, иначе копировать нечего.
+  // Chosen before anything is touched: without a fitting client the file cannot copy the source,
+  // and the refusal must name the missing client instead of surfacing as a pg_dump error halfway.
+  const tools = await resolveCopyTools(DB_URL);
+  // The source schema must be at head, otherwise there is nothing to copy.
   await migrate(DB_URL);
 
   const copyUrl = copyUrlOf(DB_URL);
@@ -713,7 +815,7 @@ beforeAll(async () => {
   } finally {
     await admin.end();
   }
-  await copyDatabase(DB_URL, copyUrl);
+  await copyDatabase(tools, DB_URL, copyUrl);
 
   const db = new pg.Client({ connectionString: copyUrl });
   await db.connect();

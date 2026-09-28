@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { esm2Periods, moscowDateKeyOf, shiftDateKey, type Esm2Period } from '@technic/contracts';
 import { describeReadModes, inLegacy, useReadModeDatabase } from './assignment-read-mode';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -270,11 +271,20 @@ interface WorkingRequest {
  * ручка упирается в бэкстоп (Р22), а предмет файла — заморозка работающих заказов при переключении
  * линейности, не она.
  */
-async function requestInProgress(typeId: string): Promise<WorkingRequest> {
-  return inLegacy(readMode, () => requestInProgressNow(typeId));
+async function requestInProgress(
+  typeId: string,
+  term: RequestTerm = { dateFrom: ctx.today, dateTo: ctx.dateTo },
+): Promise<WorkingRequest> {
+  return inLegacy(readMode, () => requestInProgressNow(typeId, term));
 }
 
-async function requestInProgressNow(typeId: string): Promise<WorkingRequest> {
+/** Order term; most cases take the file's default, the closing case picks its own length. */
+interface RequestTerm {
+  dateFrom: string;
+  dateTo: string;
+}
+
+async function requestInProgressNow(typeId: string, term: RequestTerm): Promise<WorkingRequest> {
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-requests',
@@ -283,8 +293,8 @@ async function requestInProgressNow(typeId: string): Promise<WorkingRequest> {
       requestType: 'special_equipment',
       objectId: ctx.objectId,
       vehicleTypeId: typeId,
-      dateFrom: ctx.today,
-      dateTo: ctx.dateTo,
+      dateFrom: term.dateFrom,
+      dateTo: term.dateTo,
       responsibleName: 'Прорабов Пётр Петрович',
       responsiblePhone: '+7 900 000-00-01',
       comment: 'Работы по переключению режима',
@@ -308,7 +318,7 @@ async function requestInProgressNow(typeId: string): Promise<WorkingRequest> {
         shiftHours: null,
         driverPersonId: ctx.driverId,
       },
-      schedule: { requestType: 'special_equipment', dateFrom: ctx.today, dateTo: ctx.dateTo },
+      schedule: { requestType: 'special_equipment', dateFrom: term.dateFrom, dateTo: term.dateTo },
     },
   });
   expect(confirmed.statusCode, confirmed.body).toBe(200);
@@ -326,8 +336,11 @@ async function requestInProgressNow(typeId: string): Promise<WorkingRequest> {
  * объект отвечает 422 и отправляет в окно закрытия (Р1). Дверь спрашивает отпечаток последствий
  * всегда, поэтому предпросмотр здесь не украшение сцены, а часть разговора с сервером.
  *
- * Дата — сегодняшний день: сцены файла заводят заказ с сегодняшнего дня, и закрытие сегодня
- * повторяет то, что делала статусная ручка, у которой фактической даты не было вовсе.
+ * The actual end date is today: every scene starts its order today, and the server refuses a date
+ * in the future. When the term runs past today, closing shortens it to today (ADR 0178): sheets
+ * past that date are cancelled and the one crossing it is trimmed. So closing can reduce the number
+ * of sheets, and a case that asks what paper survived has to derive it from the periods rather than
+ * compare counts taken before and after.
  */
 async function closeRequest(id: string): Promise<number> {
   const body = {
@@ -388,6 +401,15 @@ async function esm2Count(requestId: string): Promise<number> {
     SELECT count(*) AS n FROM waybills
     WHERE source_request_id = ${requestId} AND form_code = 'esm2' AND status <> 'cancelled'`);
   return Number(res.rows[0]!.n);
+}
+
+/** Active ESM-2 sheets of a request as periods, in date order. */
+async function esm2Sheets(requestId: string): Promise<Esm2Period[]> {
+  const res = await ctx.db.execute<{ period_from: string; period_to: string }>(sql`
+    SELECT period_from, period_to FROM waybills
+    WHERE source_request_id = ${requestId} AND form_code = 'esm2' AND status <> 'cancelled'
+    ORDER BY period_from, period_to`);
+  return res.rows.map((row) => ({ from: row.period_from, to: row.period_to }));
 }
 
 /** Строка гаража на сегодня: состояние машины и перечень занятостей одним ответом. */
@@ -453,8 +475,10 @@ describe.skipIf(!DB_URL)('переключение признака линейн
     if (!object) throw new Error('в базе нет объекта: миграции не применены');
     const kind = { id: assigned.kind_id };
     const driverId = await seedDriver();
-    const today = new Date().toISOString().slice(0, 10);
-    const dateTo = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+    // Moscow date, not UTC: the server checks the actual end date against its own Moscow "today"
+    // (`asOf`), and between 00:00 and 03:00 MSK the UTC date is still yesterday.
+    const today = moscowDateKeyOf(new Date());
+    const dateTo = shiftDateKey(today, 3);
 
     const login = await app.inject({
       method: 'POST',
@@ -797,24 +821,56 @@ describe.skipIf(!DB_URL)('переключение признака линейн
     expect(free.json().items.some((v: { id: string }) => v.id === ctx.vehicleId)).toBe(false);
   });
 
-  it('закрытие снимает заморозку, и крайняя неделя ЭСМ-2 при этом выписывается', async () => {
-    const type = await createType();
-    const working = await requestInProgress(type.id);
-    const shown = await preview(type.id, true);
-    await switchLinear(type.id, { isLinear: true, fingerprint: shown.json().fingerprint });
-    const before = await esm2Count(working.id);
+  /*
+   * Two terms, chosen so that the outcome does not depend on the day the suite runs. A one-day term
+   * is always a single period. An eight-day term always crosses a period boundary: its first seven
+   * days contain a Sunday, which ends a period before the term's last day, so there are at least
+   * two periods. The file's default term (today plus three days) crosses a boundary only on some
+   * weekdays and near a month end, and this case used to pass or fail depending on the calendar.
+   */
+  it.each([
+    { scene: 'однодневный срок', lastDay: 0, crossesBoundary: false },
+    { scene: 'восемь дней, срок пересекает границу периода', lastDay: 7, crossesBoundary: true },
+  ])(
+    'закрытие снимает заморозку, и крайняя неделя ЭСМ-2 при этом выписывается ($scene)',
+    async ({ lastDay, crossesBoundary }) => {
+      const type = await createType();
+      const term = { dateFrom: ctx.today, dateTo: shiftDateKey(ctx.today, lastDay) };
+      const working = await requestInProgress(type.id, term);
+      const shown = await preview(type.id, true);
+      await switchLinear(type.id, { isLinear: true, fingerprint: shown.json().fingerprint });
 
-    // Закрытие идёт дверью (ADR 0178): статусная ручка «Выполнена» у заказа техники отвечает 422.
-    expect(await closeRequest(working.id)).toBe(200);
+      // The frozen order is still served weekly: a sheet per period of its term. In the crossing
+      // scene some of them lie past the end date, so the second check below is not vacuous.
+      const periodsBefore = esm2Periods(term.dateFrom, term.dateTo);
+      expect(periodsBefore.length > 1).toBe(crossesBoundary);
+      expect(await esm2Sheets(working.id)).toEqual(periodsBefore);
 
-    /*
-     * Порядок Р4: сверка ЭСМ-2 отрабатывает ДО снятия снимка. Сними его раньше — и заявка уехала
-     * бы в закрытие уже дневной, а неделя за отработанное так и не выписалась бы.
-     */
-    expect(await esm2Count(working.id)).toBeGreaterThanOrEqual(before);
-    expect((await frozenOf(working.id)).isLinear).toBeNull();
-    expect((await frozenOf(working.id)).at).toBeNull();
-  });
+      // Закрытие идёт дверью (ADR 0178): статусная ручка «Выполнена» у заказа техники отвечает 422.
+      expect(await closeRequest(working.id)).toBe(200);
+
+      /*
+       * Order R4: ESM-2 reconciliation runs BEFORE the snapshot is cleared. Clear it first, and the
+       * order would be closed as a daily (linear) one, leaving the worked week without its sheet.
+       * The check is about which days the paper covers, not how many sheets there are: closing by
+       * the actual date also cancels sheets past it (see `closeRequest`).
+       */
+      const endedOn = ctx.today;
+      const sheets = await esm2Sheets(working.id);
+      for (const owed of esm2Periods(term.dateFrom, endedOn)) {
+        expect(
+          sheets.some((sheet) => sheet.from <= owed.from && owed.to <= sheet.to),
+          `worked period ${owed.from}..${owed.to} has no active ESM-2 sheet`,
+        ).toBe(true);
+      }
+      expect(
+        sheets.filter((sheet) => sheet.from > endedOn),
+        'active ESM-2 sheets after the actual end date',
+      ).toEqual([]);
+      expect((await frozenOf(working.id)).isLinear).toBeNull();
+      expect((await frozenOf(working.id)).at).toBeNull();
+    },
+  );
 
   it('отмена и возврат в «Новую» снимают заморозку', async () => {
     const type = await createType();
