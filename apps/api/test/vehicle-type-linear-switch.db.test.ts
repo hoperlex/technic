@@ -3,7 +3,12 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { esm2Periods, moscowDateKeyOf, shiftDateKey, type Esm2Period } from '@technic/contracts';
-import { describeReadModes, inLegacy, useReadModeDatabase } from './assignment-read-mode';
+import {
+  byReadMode,
+  describeReadModes,
+  inLegacy,
+  useReadModeDatabase,
+} from './assignment-read-mode';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -363,6 +368,31 @@ async function closeRequest(id: string): Promise<number> {
   });
   expect(res.statusCode, res.body).toBe(200);
   return res.statusCode;
+}
+
+/**
+ * Closing without asserting its outcome: the preview answer if it refuses, otherwise the command's.
+ * The case that pins different outcomes per read mode needs the reply itself, not a 200 check.
+ */
+async function tryCloseRequest(id: string): Promise<Awaited<ReturnType<typeof ctx.app.inject>>> {
+  const body = {
+    version: (await readRequest(id)).version,
+    comment: '',
+    completion: { workedUnit: 'hours', workedAmount: 8, totalCost: 8000, endedOn: ctx.today },
+  };
+  const shown = await ctx.app.inject({
+    method: 'POST',
+    url: `/api/v1/vehicle-requests/${id}/completion/preview`,
+    headers: ctx.auth,
+    payload: body,
+  });
+  if (shown.statusCode !== 200) return shown;
+  return ctx.app.inject({
+    method: 'POST',
+    url: `/api/v1/vehicle-requests/${id}/completion`,
+    headers: ctx.auth,
+    payload: { ...body, previewFingerprint: shown.json().fingerprint },
+  });
 }
 
 /**
@@ -896,13 +926,15 @@ describe.skipIf(!DB_URL)('переключение признака линейн
    * fail: no sheet is issued. A one-day term keeps the scene independent of the calendar and
    * avoids the confirmation closing asks for when assignment decisions lie past the end date.
    *
-   * Legacy read mode only, for two reasons. In `history` the door applies paper from a plan
-   * computed before any write (`paper: { kind: 'plan' }` in `afterWorkPeriodChanged`), so where
-   * the unfreeze step stands cannot change the paper there. And the scene cannot be closed there at
+   * The order R4 is a legacy matter. In `history` the door applies paper from a plan computed
+   * before any write (`paper: { kind: 'plan' }` in `afterWorkPeriodChanged`), so where the
+   * unfreeze step stands cannot change the paper there — and the scene cannot be closed there at
    * all: the order was taken into work in legacy, and with its only sheet annulled the history
-   * backstop finds no machinist and refuses (`assignment_history_incomplete`).
+   * backstop finds no machinist and refuses (`assignment_history_incomplete`). Both halves are
+   * pinned by `byReadMode`, as the read-mode protocol demands: a `history` run that skipped the
+   * case would stop noticing the day that refusal turns into a close with or without the sheet.
    */
-  it.skipIf(mode === 'history')(
+  it(
     'крайняя неделя ЭСМ-2 выписывается при закрытии по замороженному режиму (порядок Р4)',
     async () => {
       const type = await createType();
@@ -925,11 +957,18 @@ describe.skipIf(!DB_URL)('переключение признака линейн
       // Without this the last check would pass on the old sheet and say nothing about the closing.
       expect(await esm2Sheets(working.id)).toEqual([]);
 
-      expect(await closeRequest(working.id)).toBe(200);
-
-      expect(await esm2Sheets(working.id)).toEqual(esm2Periods(term.dateFrom, ctx.today));
-      expect((await frozenOf(working.id)).isLinear).toBeNull();
-      expect((await frozenOf(working.id)).at).toBeNull();
+      const closing = await tryCloseRequest(working.id);
+      const expected = byReadMode(mode, {
+        legacy: { status: 200, code: undefined, sheets: esm2Periods(term.dateFrom, ctx.today) },
+        history: { status: 422, code: 'assignment_history_incomplete', sheets: [] },
+      });
+      expect(closing.statusCode, closing.body).toBe(expected.status);
+      expect(closing.json<{ code?: string }>().code).toBe(expected.code);
+      expect(await esm2Sheets(working.id)).toEqual(expected.sheets);
+      if (mode === 'legacy') {
+        expect((await frozenOf(working.id)).isLinear).toBeNull();
+        expect((await frozenOf(working.id)).at).toBeNull();
+      }
     },
   );
 

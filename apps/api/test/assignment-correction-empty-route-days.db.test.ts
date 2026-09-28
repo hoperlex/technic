@@ -9,12 +9,14 @@ import type { db as AppDb } from '../src/db/client';
 
 /**
  * An assignment correction whose every signed day sits in a day route is EMPTY, and the door
- * refuses it (Р31) — the meeting point of two rules that live in different places.
+ * refuses it (Р31) — while the plain change of vehicle, which that same sign-off used to lock, now
+ * goes through. Both are the meeting point of rules that live in different places.
  *
- * - Which sign-offs a correction clears is the single carrier of
+ * - Which sign-offs stand under the assignment's vehicle is the single carrier of
  *   [ADR 0210](../../../docs/adr/0210-assignment-correction-shift-approvals-by-day.md),
- *   `approvalsClearedByAssignmentCorrection` in `services/shift-approval-scope.ts`: a day that sits
- *   in a day route keeps its sign-off, because the route names its own vehicle.
+ *   `approvalsUnderAssignment` / `approvalLockingReassignmentSql` in
+ *   `services/shift-approval-scope.ts`: a day that sits in a day route keeps its sign-off under a
+ *   correction and does not lock a plain reassignment, because the route names its own vehicle.
  * - The effective date of the correction (`planAssignmentCorrection` in `routes/vehicle-requests.ts`)
  *   is assembled from the sheets to reissue, the past weeks without paper and the sign-offs to
  *   clear — the latter taken from that same carrier. When all three are empty, the correction says
@@ -36,11 +38,16 @@ import type { db as AppDb } from '../src/db/client';
  * route" is `vehicle_route_requests.work_date` tied to the route's date by a composite FK, and the
  * refusal comes from a live HTTP door. None of that is reproducible on rules.
  *
+ * THE SECOND HALF OF THE SCENE is the complaint ADR 0210 lists among its options: with only routed
+ * days signed and no sheets to reissue, the correction is empty (422) — and before the lock was
+ * aligned, the plain reassignment was locked by the very same sign-off, so the only way out was to
+ * remove the signature by hand and put it back. Now the plain door answers 200 on the same scene,
+ * and the routed day keeps its sign-off.
+ *
  * Carried over from the parallel 4-П session's `assignment-correction-day-approvals.db.test.ts`,
  * re-pointed from its own carrier of the rule (which was not taken) to the ADR 0210 one. Its
- * second assertion — that the plain reassign door is locked by the same sign-off — is not carried:
- * the plain door's lock is being reworked to the same day rule, and pinning today's answer here
- * would fight that change instead of guarding this one.
+ * second assertion — that the plain door is LOCKED by that sign-off — is inverted here: it pinned
+ * the answer ADR 0210 was written to change.
  *
  * Run (the harness creates and migrates its own database, and drops it afterwards):
  *
@@ -360,7 +367,7 @@ describe.skipIf(!DB_URL)('коррекция назначения при дня�
     await ctx?.closeDb();
   });
 
-  it('коррекция, у которой все подписанные дни стоят в рейсах, пуста и отклоняется', async () => {
+  it('коррекция при подписях только дней в рейсах пуста, а обычная смена техники проходит', async () => {
     const request = await orderInWork();
     await signDay(request.id, ctx.dayInRoute);
     await planDayInRoute(request.id, ctx.dayInRoute, ctx.dayVehicleId);
@@ -373,5 +380,19 @@ describe.skipIf(!DB_URL)('коррекция назначения при дня�
     const assigned = await ctx.db.execute<{ vehicle_id: string }>(sql`
       SELECT vehicle_id FROM vehicle_request_assignments WHERE request_id = ${request.id}`);
     expect(assigned.rows.map((row) => row.vehicle_id)).toEqual([ctx.vehicleId]);
+
+    // The way out ADR 0210 opened: the plain change of vehicle is no longer locked by a sign-off
+    // the route's vehicle earned, and it leaves that sign-off where it is.
+    const plain = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/vehicle-requests/${request.id}/assignment`,
+      headers: ctx.auth,
+      payload: { vehicleId: ctx.otherVehicleId, version: request.version },
+    });
+    expect(plain.statusCode, plain.body).toBe(200);
+    expect(await signedDaysOf(request.id)).toEqual({ [ctx.dayInRoute]: true });
+    const moved = await ctx.db.execute<{ vehicle_id: string }>(sql`
+      SELECT vehicle_id FROM vehicle_request_assignments WHERE request_id = ${request.id}`);
+    expect(moved.rows.map((row) => row.vehicle_id)).toEqual([ctx.otherVehicleId]);
   });
 });
