@@ -1,7 +1,7 @@
 # ADR 0210. Коррекция назначения снимает подпись объекта по дню: день в рейсе её сохраняет, день без рейса теряет
 
 - Статус: Принято (28.09.2026). Решение заказчика — опрос 25.09.2026, вариант A. Реализуется
-  выпуском 112
+  выпуском 114
 - Домены: заказ-тс, путевые-листы
 - Изменяет: **решение 4 [ADR 0100](0100-linear-vehicle-days.md)** в части подписей смен —
   «подпись под часами линейного дня правка назначения не опровергает» было выведено из типа ТС, а
@@ -18,7 +18,7 @@
   состава), [ADR 0107](0107-linear-mode-freeze.md) (режим заявки читается снимком — правилу он
   больше не нужен)
 - Миграции: только запись выпуска
-  [`0344`](../../apps/api/drizzle/0344_releases_shift_approvals_by_day.sql); схема не меняется
+  [`0346`](../../apps/api/drizzle/0346_releases_shift_approvals_by_day.sql); схема не меняется
 - Область: сервер — [shift-approval-scope.ts](../../apps/api/src/services/shift-approval-scope.ts)
   (носитель правила), [vehicle-requests.ts](../../apps/api/src/routes/vehicle-requests.ts)
   (`planAssignmentCorrection`), [assignment-reassign.ts](../../apps/api/src/services/assignment-reassign.ts)
