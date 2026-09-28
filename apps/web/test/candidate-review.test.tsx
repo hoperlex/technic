@@ -9,7 +9,6 @@ import type {
   OfficeEquipmentDto,
   OfficeEquipmentModelDto,
   OfficeEquipmentTypeDto,
-  Permission,
   RejectOfficeEquipmentCandidateInput,
 } from '@technic/contracts';
 import { selectOption } from './antd';
@@ -111,27 +110,27 @@ function candidateDto(
 /** Подпись сообщения в очереди — та же, что показывает и заявка: по ней строку и открывают. */
 const TITLE = 'Kyocera M3145 · инв. 0012345';
 
-/** Проверяющий: `review` требует `officeEquipment.write` — на нём и держится весь замок (Р8). */
-const REVIEWER_RIGHTS: Permission[] = [
-  'officeEquipment.read',
-  'officeEquipment.write',
-  'officeEquipment.review',
-  'serviceRequests.read',
-];
-
+/**
+ * Проверяющий — ровно так, как его выдаёт прод: право `officeEquipment.review` роль не даёт никому,
+ * кроме администратора, и приходит оно надстройкой «Оргтехника: оператор». Вместе с ним надстройка
+ * приносит `officeEquipment.write`, на котором и держится замок (Р8).
+ *
+ * Список прав здесь НЕ подставляется руками, и это важно: экран спрашивает право у матрицы
+ * контрактов, а не у серверного списка, поэтому учётка, у которой право лежит только в списке,
+ * закрыта для него — состояния, которое сервер никогда не пришлёт, тест описывать не должен.
+ */
 const REVIEWER: AuthUser = authUser({
   id: 'user-review',
   role: 'shtab',
+  addons: ['office_equipment_operator'],
   constructionObjectIds: ['obj-1'],
-  permissions: REVIEWER_RIGHTS,
 });
 
-/** Тот же человек без права проверки: подвкладки он не видит вовсе. */
+/** Тот же человек без надстройки: права проверки у него нет, и подвкладок он не видит вовсе. */
 const KEEPER: AuthUser = authUser({
   id: 'user-keeper',
   role: 'shtab',
   constructionObjectIds: ['obj-1'],
-  permissions: REVIEWER_RIGHTS.filter((p) => p !== 'officeEquipment.review'),
 });
 
 function renderTab(user: AuthUser, over: RouteMap = {}): HttpMock {
