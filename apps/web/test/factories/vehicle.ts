@@ -2,6 +2,8 @@ import type {
   AssignmentChangeDto,
   AssignmentPreviewDto,
   DriverDto,
+  DriverOptionDto,
+  DriverSelectionDto,
   FreightTransportRequestDto,
   SpecialEquipmentRequestDto,
   VehicleClassificationDto,
@@ -14,6 +16,9 @@ import type {
   VehicleRequestSummaryDto,
   VehicleRequestTripDto,
   RequestAssignmentHistoryDto,
+  VehicleDto,
+  VehicleRequestDayBatchResultDto,
+  VehicleRequestDayDto,
   WeeklyRequestItemDto,
   WeeklyVehicleRequestDto,
 } from '@technic/contracts';
@@ -574,6 +579,112 @@ export function assignmentHistory(
       }),
       assignmentChange(),
     ],
+    ...overrides,
+  };
+}
+
+/**
+ * A fleet unit as the vehicle directory returns it (`GET /vehicles`).
+ *
+ * The default is the own unit that `ownAssignment` describes (`v-1`, `vt-1` / `vc-1`): the assign
+ * window resolves a preset assignment against this list, so both defaults must name the same
+ * machine, or the window opens on a vehicle it cannot find.
+ */
+export function fleetVehicle(overrides: Partial<VehicleDto> = {}): VehicleDto {
+  return {
+    id: 'v-1',
+    ownership: 'own',
+    vehicleKindId: 'vk-special',
+    kindName: 'Спецтехника',
+    vehicleTypeId: 'vt-1',
+    typeName: 'Автокраны',
+    waybillFormCode: '4p',
+    vehicleCategoryId: 'vc-1',
+    categoryName: 'г/п 25 т',
+    categorySpecs: { lift_capacity: 25 },
+    vehicleModelId: 'm-1',
+    modelName: 'Ивановец КС-45717',
+    registrationNumber: 'Е646СК799',
+    passportNumber: null,
+    lessorId: null,
+    lessorName: null,
+    lessorIsActive: null,
+    deactivatedWithLessor: false,
+    description: '',
+    pricePerHour: null,
+    pricePerShift: null,
+    shiftHours: null,
+    status: 'active',
+    note: '',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    deletedAt: null,
+    ...overrides,
+  };
+}
+
+/**
+ * One row of the server-side driver selection (`GET /drivers/available`).
+ *
+ * Documents are complete and verified by default: gaps and category mismatches change the option
+ * label, and a scenario that is not about them should not have to read around them.
+ */
+export function availableDriver(overrides: Partial<DriverOptionDto> = {}): DriverOptionDto {
+  return {
+    personId: 'p-1',
+    fullName: 'Тестовый Водитель Первый',
+    personnelNo: 'Т-001',
+    credentialTypeCode: 'driver_license',
+    licenseNumber: '00 00 000001',
+    licenseExpiresOn: '2031-03-12',
+    verificationStatus: 'verified',
+    categories: ['C'],
+    gaps: [],
+    matchesRequiredCategory: true,
+    workedRoutes: 0,
+    lastWorkedOn: null,
+    ...overrides,
+  };
+}
+
+/** The selection answer as a whole: the portal shows it as is and never rebuilds the list. */
+export function driverSelection(
+  drivers: DriverOptionDto[] = [availableDriver()],
+  overrides: Partial<DriverSelectionDto> = {},
+): DriverSelectionDto {
+  return {
+    requiredCategory: 'C',
+    requiredCategoryType: 'driver_license',
+    drivers,
+    ...overrides,
+  };
+}
+
+/** A day of an on-site order that no route covers yet: the row exists, the plan does not. */
+export function requestDay(
+  date: string,
+  overrides: Partial<VehicleRequestDayDto> = {},
+): VehicleRequestDayDto {
+  return { date, outOfTerm: false, route: null, shift: null, otherVehicle: false, ...overrides };
+}
+
+/**
+ * Answer of the day batch door (`POST /vehicle-requests/:id/days/batch`, ADR 0207).
+ *
+ * Every counter is zero by default. The report prints the server's own numbers instead of counting
+ * `rows`, so a scenario that reads the report header has to name each counter it relies on.
+ */
+export function dayBatchResult(
+  overrides: Partial<VehicleRequestDayBatchResultDto> = {},
+): VehicleRequestDayBatchResultDto {
+  return {
+    days: { onDate: '2026-08-12', blocker: null, items: [] },
+    rows: [],
+    planned: 0,
+    issued: 0,
+    skipped: 0,
+    failed: 0,
+    remaining: 0,
     ...overrides,
   };
 }

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import type {
-  VehicleRequestAssignmentDto,
-  VehicleRequestCompletionDto,
-  VehicleRouteDto,
+import {
+  ROLLBACK_WAYBILL_MESSAGE,
+  type VehicleRequestAssignmentDto,
+  type VehicleRequestCompletionDto,
+  type VehicleRouteDto,
 } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
@@ -352,6 +353,22 @@ describe('возврат заявки на технику в «Новую»', ()
     // заботится, а прежний статус на экране читался бы как «возврат не прошёл».
     await waitFor(() => expect(http.countOf('GET /vehicle-requests/feed')).toBe(2));
     await expectModalClosed('Возврат заявки в «Новую»');
+  });
+
+  /*
+   * An on-site order has no route of its own: its paper hangs on day and delivery routes (ADR 0207),
+   * so only the order's `hasActiveWaybill` can warn before a reason is typed in vain for a 409.
+   */
+  it('заказ на объект с листом дня предупреждает до набора причины, хотя рейса у него нет', async () => {
+    const withSheet = approvedVehicleRequest({ ...IN_WORK, route: null, hasActiveWaybill: true });
+    renderTab({
+      'GET /vehicle-requests/feed': () => json(vehicleFeed([withSheet])),
+      'GET /vehicle-requests/:id/relocations': () => json([]),
+    });
+    expect(await screen.findByText('Т-42')).toBeDefined();
+    await openStatusMenu('Новая');
+    expect(await screen.findByText('Возврат заявки в «Новую»')).toBeDefined();
+    expect(screen.getByText(ROLLBACK_WAYBILL_MESSAGE)).toBeDefined();
   });
 
   it('на телефоне окно открывается тем же путём — из списка статусов снизу', async () => {
