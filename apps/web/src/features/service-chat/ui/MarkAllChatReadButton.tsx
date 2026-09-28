@@ -4,7 +4,7 @@ import { useMutation } from '@tanstack/react-query';
 import { serviceRequestsApi } from '@entities/service-request';
 import type { Query } from '@shared/api';
 import { useServiceChatInvalidate } from '../model/invalidate';
-import { errorMessage } from '../../../utils/format';
+import { errorMessage } from '@shared/lib';
 
 /**
  * «Отметить все прочитанными» по заявкам ТЕКУЩЕГО ОТБОРА (§3.4).
@@ -34,6 +34,15 @@ export function MarkAllChatReadButton({ filters }: { filters: Query }) {
       );
       invalidate();
     },
+    /*
+     * Без словаря подписей, и это решение, а не пропуск. Тело запроса — набор отбора списка
+     * целиком, а не форма этой кнопки: из девяти его полей у портала подписано одно, `objectId`,
+     * причём словом «Объект строительства» — в оргтехнике тот же отбор называется «Объект». То
+     * есть словарь дал бы здесь ровно одну подпись, и неверную. Подписи этих ключей уже имеют
+     * носителя — реестр фильтров раздела, — и вторая их редакция расходилась бы с панелью, на
+     * которую человек смотрит. Сам отказ по ним почти недостижим: значения приходят из контролов
+     * отбора, а не из набора руками.
+     */
     onError: (e) => message.error(errorMessage(e)),
   });
 

@@ -1,7 +1,7 @@
 import { App } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../../utils/format';
+import { errorMessage } from '@shared/lib';
 
 interface Options {
   /** Что удаляем — подставляется в заголовок подтверждения: «объект „Восток“». */
