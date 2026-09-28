@@ -238,12 +238,16 @@ function harvestApiObject(objName, obj, file, objects, unresolved, localVerbs) {
     if (!ts.isPropertyAssignment(member) && !ts.isMethodDeclaration(member)) continue;
     const name = propertyName(member.name);
     if (!name) continue;
-    const verb = apiFetchVerb(ts.isPropertyAssignment(member) ? member.initializer : member, localVerbs);
+    const verb = apiFetchVerb(
+      ts.isPropertyAssignment(member) ? member.initializer : member,
+      localVerbs,
+    );
     if (verb) members.set(name, verb);
   }
   // A literal that reaches no request at all is not an API object: a config, a dictionary, a map of
   // labels. Keeping those would fill the table with names that answer nothing.
-  if (members.size > 0 || spreads.length > 0) objects.add(objName, { members, spreads, file: rel(file) });
+  if (members.size > 0 || spreads.length > 0)
+    objects.add(objName, { members, spreads, file: rel(file) });
 }
 
 /**
@@ -506,7 +510,10 @@ function followCall(name, call, ctx, acc, hops, seen) {
   const local = ctx.bindings.get(name);
   if (local) {
     const fn = unwrap(local);
-    if (fn && (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn) || ts.isFunctionDeclaration(fn))) {
+    if (
+      fn &&
+      (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn) || ts.isFunctionDeclaration(fn))
+    ) {
       collectCacheEffects(fn.body, ctx, acc, hops + 1, new Set([...seen, name]));
       return;
     }
@@ -609,7 +616,8 @@ function classifyWrites(handles, ctx) {
     const verb = ctx.api.get(handle);
     if (verb === undefined) unknown.push(handle);
     else if (verb === null) unknown.push(handle);
-    else if (WRITING_METHODS.has(verb) && !isPreviewHandle(handle)) writes.push(`${handle} ${verb}`);
+    else if (WRITING_METHODS.has(verb) && !isPreviewHandle(handle))
+      writes.push(`${handle} ${verb}`);
     else reads.push(`${handle} ${verb}`);
   }
   return { writes, reads, unknown };
@@ -624,7 +632,8 @@ function scanFileMutations(ctx) {
     let next = hint;
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) next = node.name.text;
     else if (ts.isFunctionDeclaration(node) && node.name) next = node.name.text;
-    else if (ts.isMethodDeclaration(node) && propertyName(node.name)) next = propertyName(node.name);
+    else if (ts.isMethodDeclaration(node) && propertyName(node.name))
+      next = propertyName(node.name);
 
     if (ts.isCallExpression(node)) {
       const callee = unwrap(node.expression);
@@ -632,7 +641,9 @@ function scanFileMutations(ctx) {
       const options = node.arguments.map(unwrap).find((a) => a && ts.isObjectLiteralExpression(a));
 
       if (name === 'useMutation') {
-        mutations.push(readUseMutation(node, options, hint ?? '<anonymous>', ctx, mutationFnRanges));
+        mutations.push(
+          readUseMutation(node, options, hint ?? '<anonymous>', ctx, mutationFnRanges),
+        );
       } else if (name && /^use[A-Z]/.test(name) && options) {
         const declared = options.properties.some(
           (p) => ts.isPropertyAssignment(p) && KEY_LIST_PROPS.has(propertyName(p.name) ?? ''),
@@ -804,7 +815,8 @@ function buildMap() {
     // Every file of a slice's `api/` directory is parsed regardless of what its text looks like: the
     // parts a slice API is spread from are named after what they do (`vehicleRequestLifecycle`), not
     // after the object they end up in, and a pattern looking for `…Api = {` never sees them.
-    const declares = /createQueryKeys|Api\s*=\s*\{|=\s*\[\s*['"`]/.test(code) || /\/api\//.test(rel(file));
+    const declares =
+      /createQueryKeys|Api\s*=\s*\{|=\s*\[\s*['"`]/.test(code) || /\/api\//.test(rel(file));
     const acts = /useMutation/.test(code) || CACHE_MENTION.test(code);
     if (!declares && !acts) continue;
 
@@ -863,7 +875,9 @@ function buildMap() {
     void sf;
   }
 
-  mutations.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.name.localeCompare(b.name));
+  mutations.sort(
+    (a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.name.localeCompare(b.name),
+  );
 
   /*
    * The HOME roots of a mutation: the key roots declared in the same slice as the handle it writes
@@ -905,7 +919,10 @@ function buildMap() {
     for (const why of m.unresolved)
       unresolved.push({ file: m.file, form: `${m.name} (${m.kind}, line ${m.line})`, why });
 
-  unresolved.sort((a, b) => a.file.localeCompare(b.file) || a.why.localeCompare(b.why) || a.form.localeCompare(b.form));
+  unresolved.sort(
+    (a, b) =>
+      a.file.localeCompare(b.file) || a.why.localeCompare(b.why) || a.form.localeCompare(b.form),
+  );
 
   return {
     roots: Object.fromEntries([...rootOwners.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
@@ -1032,7 +1049,9 @@ console.log(`Карта: ${path.relative(WEB, MAP_FILE)}`);
 // in one way only — by understanding nothing and reporting nothing — and the count below is the one
 // number that tells that apart from "nothing to report".
 if (map.unresolved.length > 0) {
-  console.log(`Неразобранного: ${map.unresolved.length} (форм: ${countBy(map.unresolved, (u) => u.why) && Object.keys(countBy(map.unresolved, (u) => u.why)).length})`);
+  console.log(
+    `Неразобранного: ${map.unresolved.length} (форм: ${countBy(map.unresolved, (u) => u.why) && Object.keys(countBy(map.unresolved, (u) => u.why)).length})`,
+  );
   const byWhy = countBy(map.unresolved, (u) => u.why);
   for (const why of Object.keys(byWhy).sort()) console.log(`  · ${why}: ${byWhy[why]}`);
 }
