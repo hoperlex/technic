@@ -19,48 +19,53 @@ import {
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 import { issueRouteWaybill } from './waybill-issue-helper';
-// Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
-// окружение, — конфиг проверяет его при импорте и без него падает.
+// Types only: the values of these modules are taken through `await import` once the environment is
+// set — the config checks it at import time and crashes without it.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
 
 /**
- * Пачка «4-П на весь период заказа техники на объект» — `POST /vehicle-requests/:id/days/batch`
- * ([ADR 0207](../../../docs/adr/0207-vehicle-request-day-batch.md), план
+ * The «4-П for the whole term» batch of a special-equipment request on a site —
+ * `POST /vehicle-requests/:id/days/batch`
+ * ([ADR 0207](../../../docs/adr/0207-vehicle-request-day-batch.md), plan
  * [docs/vehicle-request-day-batch-plan.md](../../../docs/vehicle-request-day-batch-plan.md)).
  *
- * ЗАЧЕМ ЖИВАЯ БАЗА. Предмет пачки — не правило, а ПОСЛЕДОВАТЕЛЬНОСТЬ ЗАПИСЕЙ: своя транзакция на
- * каждый день (§8), номера «Р-» и номера бланков, которые из последовательностей не возвращаются,
- * ленивая строка журнала коррекций (§9) и повтор по ключу операции. Ни одно из этого не
- * воспроизводится на правилах: там, где пачка ошибётся, разойдутся код и база, а цена ошибки —
- * выданная и не названная бумага.
+ * WHY A LIVE DATABASE. The subject of the batch is not a rule but a SEQUENCE OF WRITES: its own
+ * transaction per day (§8), the «Р-» numbers and the blank numbers that never return to their
+ * sequences, the lazy corrections journal row (§9) and the retry by operation key. None of that is
+ * reproducible on rules: where the batch errs, the code and the database drift apart, and the price
+ * of the error is paper issued and never named.
  *
- * Что доказывается:
+ * What is proven here:
  *
- * - **линейность дверь не воротит** (§1): срок НЕЛИНЕЙНОГО заказа проходит целиком, и за тот же
- *   день у него остаётся недельный ЭСМ-2 — двойная бумага названа границей Г1, а не дефектом (§2);
- * - **отчёт построчный и счётчики сходятся** — шапку «выписано N, пропущено M» читают там, где
- *   строк не показывают вовсе;
- * - **конфликтный день пропускается, а пачка идёт дальше** (§7) — и каждая из пяти помех
- *   называется СВОИМИ словами: день уже в рейсе, два рейса у машины, рейс заморожен листом, в
- *   бланке кончились строки задания, прошлое без права либо глубже предела;
- * - **замороженный рейс не обходится вторым рейсом** — иначе у машины на день оказалось бы два
- *   бланка на одну работу;
- * - **прошедшие дни идут одной операцией** (§9): строка `waybill_corrections` вида `day_batch`
- *   одна на пачку, заводится лениво и помечает причиной каждый рождённый ею лист;
- * - **предпроверка стоит до первой записи**: отказ пачки не оставляет в `vehicle_routes` ни строки,
- *   то есть не жжёт номера «Р-» (последствие ADR 0207 про рваные номера — про оборвавшуюся пачку,
- *   а не про отказ на входе);
- * - **длинный срок идёт порциями** (§11): нажатие берёт первые `DAY_BATCH_LIMIT` нераспланированных
- *   дней, называет остаток, а второе нажатие добирает хвост — уже сделанные дни места не занимают;
- * - **повтор по ключу операции продолжает работу, а не выписывает вторую стопку**.
+ * - **linearity no longer bars the door** (§1): the term of a NON-LINEAR request passes whole, and
+ *   for the same day its weekly ESM-2 stays — double paper is named as boundary G1, not as a defect
+ *   (§2);
+ * - **the report is per-day and the counters add up** — the header "issued N, skipped M" is read
+ *   where the rows are not shown at all;
+ * - **a conflicting day is skipped while the batch goes on** (§7) — and each of the five obstacles
+ *   is named IN ITS OWN WORDS: the day is already in a route, the vehicle has two routes, the route
+ *   is frozen by a waybill, the blank has run out of task rows, the past without the right or
+ *   deeper than the limit;
+ * - **a frozen route is not bypassed with a second route** — otherwise the vehicle would hold two
+ *   blanks for one day's work;
+ * - **past days go under one operation** (§9): the `waybill_corrections` row of kind `day_batch` is
+ *   one per batch, is opened lazily and marks every waybill it gave birth to with the reason;
+ * - **the pre-check stands before the first write**: a refusal of the batch leaves not a row in
+ *   `vehicle_routes`, that is, burns no «Р-» numbers (the ADR 0207 consequence about ragged numbers
+ *   is about a batch broken off midway, not about a refusal at the entrance);
+ * - **a long term is walked in portions** (§11): a click takes the first `DAY_BATCH_LIMIT`
+ *   unplanned days and names the remainder, and a second click picks up the tail — days already
+ *   done take up no room;
+ * - **a retry by operation key continues the work instead of issuing a second stack**.
  *
- * СВОЯ БАЗА. Файл заводит собственную базу и сносит её за собой: общая база db-тестов врёт в обе
- * стороны (шапка `apps/api/scripts/quality-db.ts`), а пачка считает рейсы МАШИНЫ НА ДАТУ — чужой
- * рейс, заведённый соседним файлом на ту же единицу и тот же день, превратил бы «ноль кандидатов»
- * в «их несколько» и покрасил бы невиновного. Из `TEST_DATABASE_URL` берётся только кластер.
+ * ITS OWN DATABASE. The file creates a database of its own and drops it behind itself: the shared
+ * db-test database lies in both directions (the header of `apps/api/scripts/quality-db.ts`), while
+ * the batch counts the routes OF A VEHICLE ON A DATE — somebody else's route, created by a
+ * neighbouring file on the same unit and the same day, would turn "zero candidates" into "there are
+ * several" and paint an innocent red. Only the cluster is taken from `TEST_DATABASE_URL`.
  *
- * Запуск:
+ * To run:
  *
  *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/technic_dev \
  *     pnpm --filter @technic/api exec vitest run vehicle-request-day-batch.db
@@ -68,24 +73,24 @@ import type { db as AppDb } from '../src/db/client';
 
 const DB_URL = process.env.TEST_DATABASE_URL;
 /**
- * Имя своей базы ПРОИЗВОДНОЕ от основной — `<основная>_day_batch`, а не постоянное.
+ * The name of its own database is DERIVED from the main one — `<main>_day_batch`, not a constant.
  *
- * Уборка `pnpm check:db` сносит базу прогона вместе со всем, что названо `<основная>_%`
- * (`apps/api/scripts/quality-db.ts`): оборванный прогон не доходит до своего `afterAll`, и база с
- * постоянным именем пережила бы его, а снаружи её от чужой не отличить. Производное имя делает
- * «сносится за собой» правдой и для прогона, убитого посередине.
+ * The cleanup of `pnpm check:db` drops the run's database together with everything named `<main>_%`
+ * (`apps/api/scripts/quality-db.ts`): a run broken off never reaches its own `afterAll`, and a
+ * database with a constant name would outlive it while being indistinguishable from a foreign one
+ * from the outside. A derived name makes "drops it behind itself" true for a run killed midway too.
  */
 const OWN_DB_NAME = `${DB_URL?.replace(/^.*\//, '') ?? ''}_day_batch`;
 const OWN_DB = DB_URL?.replace(/\/[^/]+$/, `/${OWN_DB_NAME}`);
 const ADMIN_DB = DB_URL?.replace(/\/[^/]+$/, '/postgres');
 
 const PASSWORD = 'db-day-batch-password-123';
-/** Хвост прогона: база своя, но коды справочников уникальны и внутри неё. */
+/** The run's suffix: the database is its own, yet directory codes are unique inside it as well. */
 const RUN = randomUUID().slice(0, 8);
 /**
- * Код площадки — с «яя»: половина кода берёт объект выражением `ORDER BY … LIMIT 1`, и запись,
- * ставшая первой, увела бы чужие заявки на тестовую площадку. У типа ТС тот же приём в имени: код
- * у него только латиницей.
+ * The site code starts with «яя»: half the code picks an object by an `ORDER BY … LIMIT 1`
+ * expression, and a record that became the first one would carry other people's requests off to the
+ * test site. The vehicle type uses the same device in its name: its code is Latin only.
  */
 const OBJECT_CODE = `яя-day-batch-${RUN}`;
 const TYPE_PREFIX = `day_batch_${RUN}`;
@@ -98,36 +103,36 @@ interface Ctx {
   app: Awaited<ReturnType<typeof buildApp>>;
   db: typeof AppDb;
   closeDb: () => Promise<void>;
-  /** Администратор: им собираются сцены и им же спрашивается прошлое глубже предела. */
+  /** The administrator: he builds the scenes, and the past beyond the limit is asked of him. */
   admin: Auth;
-  /** Диспетчер — `waybills.correct` есть, `waybills.correctBeyondLimit` нет (ADR 0101 п. 4). */
+  /** Dispatcher: `waybills.correct` granted, `waybills.correctBeyondLimit` not (ADR 0101 §4). */
   dispatcher: Auth;
-  /** Менеджер — прошлого ему не положено вовсе: им проверяется пропуск прошедших дней. */
+  /** The manager — the past is not for him at all: he is what proves past days get skipped. */
   manager: Auth;
   objectId: string;
   driverId: string;
-  /** Тип нелинейный: ради него ADR 0207 §1 и снимал замок. */
+  /** A non-linear type: it is the one ADR 0207 §1 unlocked the door for. */
   plainTypeId: string;
-  /** Линейный тип — им собирается обстановка: у него портал не выписывает недельных ЭСМ-2. */
+  /** The linear type — scenes are built with it: the portal issues no weekly ESM-2 for it. */
   linearTypeId: string;
   /**
-   * Свои грузовые машины с бланком 4-П — по одной на случай.
+   * Own freight vehicles with the 4-П blank — one per case.
    *
-   * Разные машины у разных случаев не аккуратность, а условие: рейс принадлежит паре
-   * «машина + дата», и два случая на одной единице в одни и те же дни видели бы рейсы друг друга —
-   * «ноль кандидатов» превращалось бы в «их несколько» в зависимости от порядка тестов.
+   * Different vehicles for different cases are not tidiness but a condition: a route belongs to the
+   * pair "vehicle + date", and two cases on one unit over the same days would see each other's
+   * routes — "zero candidates" would turn into "there are several" depending on the order of tests.
    */
   vehicles: string[];
-  /** Машина, снятая с линии: ею проверяется отказ предпроверки. */
+  /** A vehicle taken off the line: the refusal of the pre-check is proven with it. */
   inactiveVehicleId: string;
-  /** Арендная машина: дней у такого заказа не бывает вовсе. */
+  /** A rental vehicle: a request like that never has days at all. */
   rentalVehicleId: string;
   today: string;
 }
 
 let ctx: Ctx;
 
-/** Конфиг читается при импорте, поэтому окружение выставляется до первого `import('../src/...')`. */
+/** The config is read at import, so the environment is set before any `import('../src/...')`. */
 function prepareEnv(databaseUrl: string): void {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   process.env.DATABASE_URL = databaseUrl;
@@ -136,7 +141,7 @@ function prepareEnv(databaseUrl: string): void {
   process.env.CSRF_SECRET ??= 'test-csrf-secret-0123456789abcdef';
   process.env.JWT_PRIVATE_KEY_PEM = String(privateKey.export({ type: 'pkcs8', format: 'pem' }));
   process.env.JWT_PUBLIC_KEY_PEM = String(publicKey.export({ type: 'spki', format: 'pem' }));
-  // S3 в этом сценарии не участвует, но конфиг обязателен — заглушки заведомо нерабочие.
+  // S3 takes no part in this scenario, but the config demands it — the stubs are knowingly dead.
   process.env.S3_ENDPOINT ??= 'http://localhost:9000';
   process.env.S3_BUCKET ??= 'test';
   process.env.S3_ACCESS_KEY_ID ??= 'test';
@@ -145,13 +150,14 @@ function prepareEnv(databaseUrl: string): void {
   process.env.MAIL_ENABLED ??= 'false';
 }
 
-/** Своя база с нуля: заводится, промигрируется и сносится в `afterAll`. */
+/** Its own database from scratch: created, migrated and dropped in `afterAll`. */
 async function createOwnDatabase(): Promise<void> {
   const admin = new pg.Client({ connectionString: ADMIN_DB });
   await admin.connect();
   try {
-    // `FORCE` — от соединений ПРОШЛОГО прогона, брошенных упавшим или убитым процессом: без него
-    // остаток вчерашней сессии не даёт завести базу, и файл краснеет не своей виной.
+    // `FORCE` is against connections of a PREVIOUS run abandoned by a crashed or killed process:
+    // without it the remains of yesterday's session keep the database from being created, and the
+    // file goes red through no fault of its own.
     await admin.query(`DROP DATABASE IF EXISTS "${OWN_DB_NAME}" WITH (FORCE)`);
     await admin.query(`CREATE DATABASE "${OWN_DB_NAME}"`);
   } finally {
@@ -180,9 +186,10 @@ async function seedUser(role: 'admin' | 'dispatcher' | 'manager'): Promise<strin
 }
 
 /**
- * Водитель рейса: человек со специализацией «водитель». Удостоверений не заводим — отбор ставит
- * одно условие, «человек есть и он водитель» (ADR 0064), а пробелы в документах превращаются в
- * предупреждения выписки, и именно их пачка подтверждает за человека сама (§10).
+ * The route's driver: a person with the "driver" specialization. No licences are created — the
+ * selection sets one condition, "the person exists and he is a driver" (ADR 0064), while gaps in
+ * the documents turn into issue warnings, and those are exactly the ones the batch confirms for the
+ * human itself (§10).
  */
 async function seedDriver(): Promise<string> {
   const { db } = await import('../src/db/client');
@@ -202,7 +209,7 @@ async function seedDriver(): Promise<string> {
   return rows.rows[0]!.id;
 }
 
-// ── Обращения к порталу ──
+// ── Calls to the portal ──
 
 function inject(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
@@ -213,7 +220,7 @@ function inject(
   return ctx.app.inject({ method, url, headers: auth, ...(payload ? { payload } : {}) });
 }
 
-/** Виза руководителя: без неё заявку в работу не берут. */
+/** The head's approval: without it a request is not taken into work. */
 async function approve(request: { id: string; version: number }): Promise<number> {
   const res = await inject('PATCH', `/api/v1/vehicle-requests/${request.id}/approval`, ctx.admin, {
     approved: true,
@@ -228,13 +235,13 @@ interface RequestOptions {
   vehicleId?: string;
   dateFrom?: string;
   dateTo?: string;
-  /** Объявленное прошлое: без него схема заявки не пропустит вчерашний срок. */
+  /** The declared past: without it the request schema will not pass yesterday's term. */
   backdateReason?: string;
-  /** Ставка: у арендной машины назначение без денег не принимается вовсе. */
+  /** The rate: for a rental vehicle an assignment without money is not accepted at all. */
   pricePerHour?: number;
 }
 
-/** Заказ техники на объект, доведённый до работы: начало почти каждого случая. */
+/** A special-equipment request on a site brought into work: the start of almost every case. */
 async function requestInProgress(
   options: RequestOptions = {},
 ): Promise<{ id: string; version: number; dateFrom: string; dateTo: string }> {
@@ -286,21 +293,21 @@ async function requestInProgress(
   };
 }
 
-/** Пустой рейс на дату — им собираются обстановки «рейс уже есть» и «их два». */
+/** An empty route on a date — it builds the scenes "a route already exists" and "there are two". */
 async function createRoute(vehicleId: string, routeDate: string): Promise<string> {
   const created = await inject('POST', '/api/v1/vehicle-routes', ctx.admin, {
     vehicleId,
     routeDate,
     driverPersonId: ctx.driverId,
     trip: { communicationKind: 'городское' },
-    // Прошедшая дата рейса требует объяснения (ADR 0101 п. 4); у будущей причина игнорируется.
+    // A past route date needs an explanation (ADR 0101 §4); on a future one the reason is ignored.
     reason: 'подготовка обстановки теста',
   });
   expect(created.statusCode, created.body).toBe(201);
   return created.json().id as string;
 }
 
-/** Рейс глазами карточки: версия нужна выписке, номер — сверке строк отчёта. */
+/** The route as the card sees it: issue needs the version, report rows need the number. */
 async function routeOf(routeId: string): Promise<{ version: number; displayNumber: string }> {
   const res = await inject('GET', `/api/v1/vehicle-routes/${routeId}`, ctx.admin);
   expect(res.statusCode, res.body).toBe(200);
@@ -311,10 +318,11 @@ async function routeOf(routeId: string): Promise<{ version: number; displayNumbe
 }
 
 /**
- * Выписать лист по рейсу — им рейс и замораживается.
+ * Issue a waybill on the route — that is what freezes the route.
  *
- * Через помощника: предмет случая — судьба дня под выданной бумагой, а не сама выписка, и
- * рукопожатие (ADR 0108 п. 21) здесь срабатывает всегда — документов тестовому водителю не заводят.
+ * Through the helper: the subject of the case is the fate of a day under paper already issued, not
+ * the issue itself, and the handshake (ADR 0108 §21) always fires here — no documents are created
+ * for the test driver.
  */
 async function freezeRoute(routeId: string): Promise<void> {
   await issueRouteWaybill({
@@ -325,7 +333,7 @@ async function freezeRoute(routeId: string): Promise<void> {
   });
 }
 
-/** Поставить один день подённой дверью — той самой, чьи правила пачка и повторяет. */
+/** Place one day through the per-day door — the very door whose rules the batch repeats. */
 async function planDay(
   requestId: string,
   date: string,
@@ -365,7 +373,7 @@ function batch(
   });
 }
 
-/** Пачка, которая обязана была пройти: 200 и разобранный отчёт. */
+/** A batch that was obliged to pass: 200 and a parsed report. */
 async function batchOk(
   requestId: string,
   body: BatchBody = {},
@@ -376,9 +384,9 @@ async function batchOk(
   return res.json() as VehicleRequestDayBatchResultDto;
 }
 
-// ── Вопросы к базе ──
+// ── Questions to the database ──
 
-/** Сколько рейсов у машины на дату: им и проверяется, сожжён ли номер «Р-». */
+/** How many routes the vehicle has on a date: it proves whether a «Р-» number was burnt. */
 async function routeCount(vehicleId: string, date: string): Promise<number> {
   const rows = await ctx.db.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM vehicle_routes
@@ -386,7 +394,7 @@ async function routeCount(vehicleId: string, date: string): Promise<number> {
   return rows.rows[0]!.n;
 }
 
-/** Все рейсы этой машины, сколько бы дней ни прошло: ими считается «ни одной записи». */
+/** All routes of this vehicle, however many days pass: "not a single row" is counted by them. */
 async function routesOfVehicle(vehicleId: string): Promise<number> {
   const rows = await ctx.db.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM vehicle_routes WHERE vehicle_id = ${vehicleId}`);
@@ -432,7 +440,7 @@ async function dayWaybills(requestId: string): Promise<DayWaybillRow[]> {
   }));
 }
 
-/** Недельные ЭСМ-2 заявки: ими проверяется, что пачка их не тронула (§2, граница Г1). */
+/** Weekly ESM-2 waybills of the request: they prove the batch left them alone (§2, boundary G1). */
 async function esm2Count(requestId: string): Promise<number> {
   const rows = await ctx.db.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM waybills
@@ -465,7 +473,7 @@ function rollbackToNew(requestId: string, version: number): Promise<LightMyReque
   });
 }
 
-/** Строки журнала коррекций по ключу операции: их обязана быть ровно одна на пачку. */
+/** Corrections journal rows by operation key: there must be exactly one of them per batch. */
 async function correctionsOf(
   operationId: string,
 ): Promise<{ id: string; kind: string; reason: string; payload: Record<string, unknown> }[]> {
@@ -480,7 +488,7 @@ async function correctionsOf(
   return rows.rows;
 }
 
-/** Заявки, которых операция коснулась: по этой связи её находит карточка разбирательства. */
+/** The requests the operation touched: by this link the investigation card finds it. */
 async function linkedRequests(correctionId: string): Promise<string[]> {
   const rows = await ctx.db.execute<{ request_id: string }>(sql`
     SELECT request_id::text AS request_id FROM vehicle_request_corrections
@@ -488,7 +496,7 @@ async function linkedRequests(correctionId: string): Promise<string[]> {
   return rows.rows.map((row) => row.request_id);
 }
 
-/** Строки состава рейса: ими считается ёмкость задания бланка. */
+/** The route composition rows: the blank's task capacity is counted by them. */
 async function routeRequestCount(routeId: string): Promise<number> {
   const rows = await ctx.db.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM vehicle_route_requests WHERE route_id = ${routeId}`);
@@ -497,9 +505,9 @@ async function routeRequestCount(routeId: string): Promise<number> {
 
 describe.skipIf(!DB_URL)('пачка «4-П на весь период» (живая схема)', () => {
   /*
-   * Сроки здесь измеряются десятками транзакций: каждый день пачки — своя транзакция с номером
-   * бланка под `FOR UPDATE` (§8), а подготовка заводит заявки настоящими ручками. Пятисекундный
-   * предел vitest по умолчанию рассчитан не на это.
+   * Terms here are measured in tens of transactions: every day of the batch is its own transaction
+   * with a blank number under `FOR UPDATE` (§8), while the setup creates requests through the real
+   * handles. The five-second default limit of vitest is not meant for that.
    */
   vi.setConfig({ testTimeout: 300_000, hookTimeout: 900_000 });
 
@@ -519,8 +527,8 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
       RETURNING id`);
 
     /*
-     * Машины — из справочника: их наполняют миграции, и рейс заводится только на собственную
-     * активную технику. Грузовой вид с бланком 4-П — тот самый документ, который печатает день.
+     * Vehicles come from the directory: migrations fill it, and a route is created only for an own
+     * active unit. The freight kind with the 4-П blank is the very document a day prints.
      */
     const own = await db.execute<{ id: string; kind_id: string }>(sql`
       SELECT v.id, vt.kind_id
@@ -573,8 +581,8 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
       return res.json().id as string;
     }
 
-    // Последняя из шестнадцати уезжает в ремонт посреди работающего заказа — это делает сам
-    // случай. Единица у него своя, чтобы у остальных ничего под ногами не менялось.
+    // The last of the sixteen leaves for repair in the middle of a working request — the case
+    // itself does that. Its unit is its own so that nothing shifts under the others' feet.
     const inactiveVehicleId = own.rows[15]!.id;
 
     ctx = {
@@ -596,7 +604,8 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
   });
 
   afterAll(async () => {
-    // Уборки за собой нет намеренно: база своя и сносится целиком — вычищать в ней нечего.
+    // There is deliberately no cleanup of rows: the database is ours and is dropped whole — there
+    // is nothing left inside it to clean.
     await ctx?.app.close();
     await ctx?.closeDb();
     if (!DB_URL) return;
@@ -610,17 +619,19 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
   });
 
   /**
-   * §1 и §2 разом: замок линейности снят, а ЭСМ-2 не тронут.
+   * §1 and §2 at once: the linearity lock is gone, while the ESM-2 is untouched.
    *
-   * Заявка здесь НЕЛИНЕЙНАЯ — та самая, которой до ADR 0207 дней не полагалось вовсе. Проверяется
-   * не только «пачка прошла», но и обе половины цены: таблица дней у неё больше не пуста и блока
-   * не показывает, а недельный ЭСМ-2 за тот же день остался на месте (граница Г1).
+   * The request here is NON-LINEAR — the very one that was allowed no days at all before ADR 0207.
+   * What is checked is not only "the batch passed" but both halves of the price: its table of days
+   * is no longer empty and shows no blocker, while the weekly ESM-2 for the same day stayed where
+   * it was (boundary G1).
    */
   it('срок нелинейного заказа проходит целиком: дни в рейсах, листы выписаны, отчёт построчный', async () => {
     const vehicleId = ctx.vehicles[0]!;
     const request = await requestInProgress({ vehicleId });
     const days = [0, 1, 2, 3].map((n) => shiftDateKey(request.dateFrom, n));
-    // Недельный лист заказу выписал сам перевод в работу: пачка его не отменяет и не заменяет.
+    // The weekly waybill was issued to the request by the move into work itself: the batch neither
+    // cancels nor replaces it.
     const esm2Before = await esm2Count(request.id);
     expect(esm2Before).toBeGreaterThan(0);
 
@@ -630,7 +641,7 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     expect(result.planned).toBe(0);
     expect(result.skipped).toBe(0);
     expect(result.failed).toBe(0);
-    // Срок короче предела порции — за окном не осталось ничего (§11).
+    // The term is shorter than the portion limit — nothing was left outside the window (§11).
     expect(result.remaining).toBe(0);
     expect(result.rows.map((row) => row.date)).toEqual(days);
     for (const row of result.rows) {
@@ -639,20 +650,20 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
       expect(row.routeNumber).toMatch(/^Р-\d+$/);
       expect(row.waybillNumber).toBeTruthy();
     }
-    // Рейс у каждого дня свой: рейс принадлежит паре «машина + дата», и один на четыре дня был бы
-    // невозможен физически (составной FK, миграция 0127).
+    // Every day has a route of its own: a route belongs to the pair "vehicle + date", and one route
+    // for four days would be physically impossible (the composite FK, migration 0127).
     expect(new Set(result.rows.map((row) => row.routeNumber)).size).toBe(4);
 
     /*
-     * Таблица дней приезжает вместе с отчётом и уже новая (§«Ответ» сервиса): карточка обязана
-     * показать ту картину, по которой составлен отчёт.
+     * The table of days arrives together with the report and is already the new one (the "response"
+     * section of the service): the card must show the picture the report was built from.
      */
     expect(result.days.blocker).toBeNull();
     expect(result.days.items).toHaveLength(4);
     for (const item of result.days.items) {
       expect(item.route).not.toBeNull();
       expect(item.route!.vehicleId).toBe(vehicleId);
-      // Машина взята из назначения (§5) — расхождения нет и помечать нечего.
+      // The vehicle was taken from the assignment (§5) — there is no divergence to mark.
       expect(item.otherVehicle).toBe(false);
       expect(item.route!.waybill).not.toBeNull();
     }
@@ -662,17 +673,18 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     for (const waybill of waybills) {
       expect(waybill.formCode).toBe('4p');
       expect(waybill.status).toBe('issued');
-      // Сегодняшняя и будущая бумага операцией коррекции не является: строки журнала у неё нет.
+      // Today's and future paper is no correction operation: it has no journal row.
       expect(waybill.correctionId).toBeNull();
     }
 
-    // Двойная бумага названа границей Г1: недельный ЭСМ-2 на месте, дневные 4-П рядом.
+    // Double paper is named as boundary G1: the weekly ESM-2 is in place, the daily 4-П beside it.
     expect(await esm2Count(request.id)).toBe(esm2Before);
   });
 
   /**
-   * Вторая половина решения §«Тело пачки»: `issueWaybills: false` расставляет дни и не расходует
-   * ни одного номера бланка. Рейс собирают заранее, бумагу выдают тогда, когда она поедет.
+   * The second half of the "batch body" decision: `issueWaybills: false` places the days and spends
+   * not a single blank number. The route is assembled in advance, the paper is handed out when it
+   * is about to travel.
    */
   it('без выписки листов пачка только заводит рейсы — номера бланков не расходуются', async () => {
     const request = await requestInProgress({ vehicleId: ctx.vehicles[1]! });
@@ -695,10 +707,11 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
   });
 
   /**
-   * §7, первая из пяти помех: день, уже стоящий в рейсе этой заявки, пачка не трогает.
+   * §7, the first of the five obstacles: a day already standing in a route of this request the
+   * batch does not touch.
    *
-   * Важно не только то, что он пропущен, но и то, что пачка ПОШЛА ДАЛЬШЕ: ради этого исход и
-   * заведён отдельным от `failed`.
+   * What matters is not only that it is skipped but that the batch WENT ON: that is what the
+   * outcome was made separate from `failed` for.
    */
   it('день, уже стоящий в рейсе, пропускается своими словами, а пачка идёт дальше', async () => {
     const vehicleId = ctx.vehicles[2]!;
@@ -714,9 +727,9 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     const skipped = result.rows.find((row) => row.date === days[1]);
     expect(skipped!.outcome).toBe('skipped');
     expect(skipped!.reason).toBe(DAY_BATCH_SKIP_PLANNED);
-    // Второй рейс на тот же день пачка не завела: у машины на эту дату по-прежнему один.
+    // The batch created no second route for that day: the vehicle still has one on that date.
     expect(await routeCount(vehicleId, days[1]!)).toBe(1);
-    // И бумагу по чужому рейсу не выписала: пропущенный день пачка не трогает вовсе.
+    // And it issued no paper on the foreign route: a skipped day the batch does not touch at all.
     expect((await dayWaybills(request.id)).map((w) => w.issuedForDate)).toEqual([
       days[0],
       days[2],
@@ -725,10 +738,11 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
   });
 
   /**
-   * §7 и правило выбора рейса: два грузовых рейса машины на дату — законное состояние (утро и
-   * вечер), и выбор между ними пачка на себя не берёт.
+   * §7 and the route picking rule: two freight routes of a vehicle on one date are a legitimate
+   * state (morning and evening), and the batch does not take that choice upon itself.
    *
-   * Ошибись она — день уехал бы в чужое задание, а заметили бы это у принтера.
+   * Were it to err — the day would travel into somebody else's task, and that would be noticed at
+   * the printer.
    */
   it('два рейса машины на дату: день пропускается, выбор остаётся диспетчеру', async () => {
     const vehicleId = ctx.vehicles[3]!;
@@ -747,30 +761,32 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     expect(skipped!.outcome).toBe('skipped');
     expect(skipped!.reason).toBe(DAY_BATCH_SKIP_AMBIGUOUS_ROUTE);
     /*
-     * Рейс назван поимённо: в отчёте на полсотни строк «где-то у машины два рейса» неисполнимо.
-     * Который из двух — не оговорено и оговорено быть не может: кандидаты берутся под блокировку
-     * по возрастанию `id`, а `id` случаен. Утверждение поэтому о принадлежности, а не о порядке.
+     * The route is named by name: in a report of half a hundred rows "the vehicle has two routes
+     * somewhere" is unactionable. Which of the two is not stipulated and cannot be: candidates are
+     * taken under lock by ascending `id`, and `id` is random. The assertion is therefore about
+     * membership, not about order.
      */
     expect(numbers).toContain(skipped!.routeNumber);
     expect(result.issued).toBe(3);
-    // Третьего рейса пачка не завела — иначе у машины на день стало бы три бумаги.
+    // The batch created no third route — otherwise the vehicle would have three papers for a day.
     expect(await routeCount(vehicleId, days[2]!)).toBe(2);
   });
 
   /**
-   * §7 и последствие «выписанный наперёд лист замораживает рейс» (Г2).
+   * §7 and the consequence "a waybill issued in advance freezes the route" (G2).
    *
-   * Самое дорогое здесь — вторая половина: рядом с замороженным рейсом пачка НЕ заводит свой.
-   * Заведи она — и у машины на один день оказалось бы два бланка на одну работу, а нашлось бы это
-   * у принтера.
+   * The dearest part here is the second half: beside a frozen route the batch does NOT create its
+   * own. Were it to create one, the vehicle would hold two blanks for one day's work, and that
+   * would be found at the printer.
    */
   it('рейс, замороженный выписанным листом, день не принимает — и второго рейса рядом не заводится', async () => {
     const vehicleId = ctx.vehicles[4]!;
     const request = await requestInProgress({ vehicleId });
     const days = [0, 1, 2, 3].map((n) => shiftDateKey(request.dateFrom, n));
 
-    // Чужой день в рейсе этой машины: лист по нему и замораживает рейс. Сосед — линейного типа,
-    // чтобы перевод в работу не выписывал ему недельных ЭСМ-2, до которых этому случаю нет дела.
+    // Somebody else's day in a route of this vehicle: the waybill on it is what freezes the route.
+    // The neighbour is of the linear type, so that the move into work issues it no weekly ESM-2 —
+    // this case has no business with those.
     const neighbour = await requestInProgress({ typeId: ctx.linearTypeId, vehicleId });
     const occupied = await planDay(neighbour.id, days[3]!, { vehicleId });
     expect(occupied.statusCode, occupied.body).toBe(200);
@@ -785,18 +801,18 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     const skipped = result.rows.find((row) => row.date === days[3]);
     expect(skipped!.outcome).toBe('skipped');
     expect(skipped!.reason).toBe(DAY_BATCH_SKIP_FROZEN);
-    // Назван тот самый рейс, который день не принял: человеку идти аннулировать именно его.
+    // The very route that did not take the day is named: that is the one the human goes to cancel.
     expect(skipped!.routeNumber).toBe(frozen.displayNumber);
     expect(result.issued).toBe(3);
     expect(await routeCount(vehicleId, days[3]!)).toBe(1);
   });
 
   /**
-   * §7 и ADR 0068: вместимость задаёт бланк рейса, и пачка её не обходит.
+   * §7 and ADR 0068: the capacity is set by the route's blank, and the batch does not go around it.
    *
-   * Семь строк задания 4-П набираются днями семи соседних заказов — тем же подённым путём, каким
-   * их набрал бы диспетчер. Ответить «ноль кандидатов» здесь было бы неправдой: рейс есть, и
-   * человеку важно знать, что уплотнять день больше нечем.
+   * The seven task rows of a 4-П are filled with days of seven neighbouring requests — by the same
+   * per-day path the dispatcher would fill them. Answering "zero candidates" here would be untrue:
+   * the route exists, and the human needs to know there is nothing left to pack the day with.
    */
   it('в бланке рейса кончились строки задания — день пропускается своей причиной', async () => {
     const vehicleId = ctx.vehicles[5]!;
@@ -806,7 +822,7 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     const routeId = await createRoute(vehicleId, full);
     const routeNumber = (await routeOf(routeId)).displayNumber;
 
-    // Семь — ёмкость 4-П (`ROUTE_REQUEST_CAPACITY`): восьмой строке в бланке места нет.
+    // Seven is the 4-П capacity (`ROUTE_REQUEST_CAPACITY`): an eighth row has no room in the blank.
     for (let i = 0; i < 7; i += 1) {
       const filler = await requestInProgress({ typeId: ctx.linearTypeId, vehicleId });
       const placed = await planDay(filler.id, full, { routeId });
@@ -819,20 +835,21 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     const skipped = result.rows.find((row) => row.date === full);
     expect(skipped!.outcome).toBe('skipped');
     expect(skipped!.reason).toBe(DAY_BATCH_SKIP_NO_ROOM);
-    // Назван тот рейс, в котором места не осталось: именно рядом с ним заводят второй.
+    // The route that has no room left is named: it is beside that one that a second is created.
     expect(skipped!.routeNumber).toBe(routeNumber);
     expect(result.issued).toBe(3);
-    // Свой рейс рядом с полным пачка не завела: «заведите второй маршрут» — решение диспетчера.
+    // The batch created no route of its own beside the full one: "create a second route" is the
+    // dispatcher's call.
     expect(await routeCount(vehicleId, full)).toBe(1);
     expect(await routeRequestCount(routeId)).toBe(7);
   });
 
   /**
-   * §7, Р9 плана: прошлое без права `waybills.correct` — помеха КАЖДОГО прошедшего дня, а не
-   * отказ всей пачке.
+   * §7, R9 of the plan: the past without the `waybills.correct` right is an obstacle of EVERY past
+   * day, not a refusal of the whole batch.
    *
-   * Менеджеру прошлое не положено вовсе (ADR 0101 п. 4), и пачка обязана сказать это построчно, не
-   * заведя ни одного рейса: дней в этом сроке нет ни одного будущего.
+   * The manager is not allowed the past at all (ADR 0101 §4), and the batch must say so per day
+   * without creating a single route: not one day of this term is in the future.
    */
   it('без права оформлять задним числом прошедшие дни пропускаются, и ни одной бумаги не выписано', async () => {
     const vehicleId = ctx.vehicles[6]!;
@@ -851,8 +868,8 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     expect(result.skipped).toBe(4);
     expect(result.issued + result.planned + result.failed).toBe(0);
     for (const row of result.rows) {
-      // Один текст на «нет права» и «слишком давно» отправил бы половину людей не туда: здесь
-      // права нет вовсе, и выдаётся оно обычным порядком.
+      // One text for "no right" and "too long ago" would send half the people to the wrong place:
+      // here the right is absent entirely, and it is granted the ordinary way.
       expect(row.reason).toBe(DAY_BATCH_SKIP_BACKDATED);
     }
     expect(await routesOfVehicle(vehicleId)).toBe(0);
@@ -860,13 +877,13 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
   });
 
   /**
-   * §9 целиком: прошедшие дни идут ОДНОЙ операцией, и она лениво заводится первым днём, дошедшим
-   * до выписки.
+   * §9 in full: past days go under ONE operation, and it is opened lazily by the first day that
+   * reached issue.
    *
-   * Тем же прогоном проверяется вторая граница прошлого — глубина. У диспетчера есть
-   * `waybills.correct` и нет `waybills.correctBeyondLimit`, поэтому дни глубже
-   * `WAYBILL_CORRECTION_DAYS` уходят в пропуск СВОИМ текстом: там право есть, а снимает предел
-   * только то, что не назначается никому. Этот случай прежде не был покрыт ничем.
+   * The same run checks the second boundary of the past — the depth. The dispatcher has
+   * `waybills.correct` and lacks `waybills.correctBeyondLimit`, so days deeper than
+   * `WAYBILL_CORRECTION_DAYS` leave as skips with THEIR OWN text: there the right is present, and
+   * the limit is lifted only by what is granted to nobody. That case used to be covered by nothing.
    */
   it('прошедшие дни: одна строка операции на пачку, причина в каждом листе, глубокое прошлое — пропуск', async () => {
     const vehicleId = ctx.vehicles[7]!;
@@ -886,7 +903,8 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
 
     const result = await batchOk(request.id, { reason, operationId }, ctx.dispatcher);
 
-    // Глубже предела — свой текст: право у диспетчера есть, а глубину снимает неназначаемое.
+    // Deeper than the limit — its own text: the dispatcher has the right, and the depth is lifted
+    // only by the ungrantable one.
     for (const date of deep) {
       const row = result.rows.find((r) => r.date === date)!;
       expect(row.outcome).toBe('skipped');
@@ -896,14 +914,15 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     expect(result.issued).toBe(2);
     expect(result.rows.filter((r) => r.outcome === 'issued').map((r) => r.date)).toEqual(allowed);
 
-    // Строка операции ровно одна на всю пачку — ради этого §9 и заводил свой вид `day_batch`.
+    // There is exactly one operation row for the whole batch — that is what §9 introduced its own
+    // `day_batch` kind for.
     const corrections = await correctionsOf(operationId);
     expect(corrections).toHaveLength(1);
     expect(corrections[0]!.kind).toBe('day_batch');
     expect(corrections[0]!.reason).toBe(reason);
-    // Связь ведётся с заявкой: листов под операцией до пятидесяти, а заказ один.
+    // The link is kept to the request: up to fifty waybills under the operation, but one request.
     expect(await linkedRequests(corrections[0]!.id)).toEqual([request.id]);
-    // Снимок операции перечисляет то, что ею и сделано: только выписанные задним числом листы.
+    // The operation snapshot lists what it did itself: only the waybills issued with a past date.
     const payload = corrections[0]!.payload as {
       waybills?: { date: string; number: string }[];
       term?: { days?: number };
@@ -911,7 +930,7 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     expect(payload.waybills?.map((w) => w.date)).toEqual(allowed);
     expect(payload.term?.days).toBe(4);
 
-    // Каждый лист прошедшего дня помечен той же причиной и той же операцией.
+    // Every waybill of a past day is marked with the same reason and the same operation.
     const waybills = await dayWaybills(request.id);
     expect(waybills.map((w) => w.issuedForDate)).toEqual(allowed);
     for (const waybill of waybills) {
@@ -921,12 +940,13 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
   });
 
   /**
-   * §9 и §«Повтор»: тот же ключ операции и то же тело продолжают прежнюю работу, а не выписывают
-   * вторую стопку.
+   * §9 and the "retry" section: the same operation key with the same body continues the former work
+   * instead of issuing a second stack.
    *
-   * Сцена собрана так, что первой пачке есть чего не доделать: на один день у машины стоят два
-   * рейса, и он уходит в пропуск. Лишний рейс убирают — и повтор доделывает этот день ПОД ТОЙ ЖЕ
-   * строкой операции, а уже выписанные дни отсекаются своим UNIQUE и уходят в пропуск.
+   * The scene is built so that the first batch has something left undone: on one day the vehicle
+   * has two routes, and that day leaves as a skip. The spare route is removed — and the retry
+   * finishes that day UNDER THE SAME operation row, while the days already issued are cut off by
+   * their own UNIQUE and leave as skips.
    */
   it('повтор с тем же ключом операции доделывает пропущенное и не жжёт вторых номеров', async () => {
     const vehicleId = ctx.vehicles[8]!;
@@ -940,7 +960,8 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
       dateTo,
       backdateReason: 'работы шли на прошлой неделе',
     });
-    // Два рейса на среднем дне: первая пачка его не возьмёт — выбирать между ними она не вправе.
+    // Two routes on the middle day: the first batch will not take it — it has no right to choose
+    // between them.
     const spare = await createRoute(vehicleId, days[1]!);
     await createRoute(vehicleId, days[1]!);
 
@@ -957,7 +978,8 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     );
     expect([...issuedFirst.keys()]).toEqual([days[0], days[2]]);
 
-    // Лишний рейс убран — неоднозначности больше нет, и повтор тем же ключом доделывает день.
+    // The spare route is gone — the ambiguity is over, and the retry with the same key finishes
+    // the day.
     const removed = await inject('DELETE', `/api/v1/vehicle-routes/${spare}`, ctx.admin);
     expect(removed.statusCode, removed.body).toBe(200);
 
@@ -965,22 +987,24 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
 
     expect(second.issued).toBe(1);
     expect(second.rows.find((row) => row.date === days[1])!.outcome).toBe('issued');
-    // Уже сделанные дни не переделываются: их отсекает UNIQUE дня, а не вторая стопка бумаги.
+    // Days already done are not redone: the day's UNIQUE cuts them off, not a second stack of
+    // paper.
     expect(second.skipped).toBe(2);
     for (const date of [days[0], days[2]]) {
       expect(second.rows.find((row) => row.date === date)!.reason).toBe(DAY_BATCH_SKIP_PLANNED);
     }
 
-    // Операция осталась одна и та же: ключ отвечает на «повтор?», а не заводит вторую работу.
+    // The operation stayed one and the same: the key answers "a retry?" and opens no second work.
     const corrections = await correctionsOf(operationId);
     expect(corrections).toHaveLength(1);
     expect(corrections[0]!.id).toBe(correctionId);
 
-    // Три листа на три дня, и ни одним больше: второй стопки повтор не выписал.
+    // Three waybills for three days and not one more: the retry issued no second stack.
     const waybills = await dayWaybills(request.id);
     expect(waybills).toHaveLength(3);
     expect(waybills.map((w) => w.issuedForDate)).toEqual(days);
-    // Номера первых двух дней остались ТЕМИ ЖЕ: повтор их не переписывал и не дублировал.
+    // The numbers of the first two days stayed THE SAME: the retry neither rewrote nor doubled
+    // them.
     for (const [date, number] of issuedFirst) {
       expect(waybills.find((w) => w.issuedForDate === date)!.number).toBe(number);
     }
@@ -1036,16 +1060,17 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
   });
 
   /**
-   * Предпроверка стоит ДО первой записи — и это не про аккуратность, а про номера.
+   * The pre-check stands BEFORE the first write — and this is not about tidiness but about numbers.
    *
-   * `identity` последовательности «Р-» с транзакцией не откатывается: рейс, заведённый до отказа,
-   * уносит свой номер навсегда. Поэтому всё, что относится ко ВСЕЙ пачке и узнаётся заранее,
-   * обязано отказывать маршрутом, оставляя `vehicle_routes` нетронутым.
+   * The `identity` of the «Р-» sequence is not rolled back with the transaction: a route created
+   * before a refusal carries its number away forever. So everything that concerns the WHOLE batch
+   * and is known in advance must refuse at the route, leaving `vehicle_routes` untouched.
    */
   describe('отказ предпроверки не оставляет в базе ни строки', () => {
     it('арендная машина: дней у такого заказа не бывает вовсе', async () => {
-      // Аренда — граница бумаги, а не типа (Р10 плана): лист на арендную машину выписывает
-      // арендодатель. Ставка обязательна — без денег такое назначение не принимается вовсе.
+      // Rental is a boundary of the paper, not of the type (R10 of the plan): a waybill for a
+      // rental vehicle is issued by the lessor. The rate is obligatory — without money such an
+      // assignment is not accepted at all.
       const request = await requestInProgress({
         vehicleId: ctx.rentalVehicleId,
         pricePerHour: 1000,
@@ -1059,9 +1084,10 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
 
     it('машина снята с линии: отказ приходит до первого рейса', async () => {
       /*
-       * Машина снимается с линии ПОСЛЕ назначения — потому что иначе её не назначить вовсе: ровно
-       * тот же отказ приходит из назначения. Это и есть настоящая жизнь такого заказа: заявку
-       * взяли в работу исправной машиной, а к моменту выписки бумаг она уехала в ремонт.
+       * The vehicle is taken off the line AFTER the assignment — because otherwise it could not be
+       * assigned at all: the assignment refuses in exactly the same words. And this is the real
+       * life of such a request: it was taken into work with a sound vehicle, and by the time the
+       * papers are issued it has left for repair.
        */
       const request = await requestInProgress({ vehicleId: ctx.inactiveVehicleId });
       await ctx.db.execute(
@@ -1094,15 +1120,15 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
         backdateReason: 'работы шли позавчера',
       });
 
-      // Причина — одна на пачку и спрашивается до первой записи: объясняют само решение оформить
-      // прошедший период, а не каждый день по отдельности.
+      // The reason is one per batch and is asked before the first write: what gets explained is the
+      // decision to paper the past period, not each day separately.
       const noReason = await batch(request.id, {}, ctx.dispatcher);
       expect(noReason.statusCode, noReason.body).toBe(422);
       expect(noReason.json().fields.reason).toBe('Нужна причина');
       expect(await routesOfVehicle(vehicleId)).toBe(0);
 
-      // Ключ обязателен ровно там, где пачка сожжёт номера бланков задним числом: повтор после
-      // обрыва связи обязан продолжить прежнюю работу, а не выписать вторую стопку.
+      // The key is required exactly where the batch will burn blank numbers with a past date: a
+      // retry after a dropped connection must continue the former work, not issue a second stack.
       const noKey = await batch(request.id, { reason: 'оформляем позавчерашнее' }, ctx.dispatcher);
       expect(noKey.statusCode, noKey.body).toBe(422);
       expect(noKey.json().fields.operationId).toBe('Не передан ключ операции');
@@ -1111,20 +1137,20 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
   });
 
   /**
-   * §11 в нынешней редакции: предел стоит на ПОРЦИИ нажатия, а не на сроке.
+   * §11 in its current wording: the limit stands on the PORTION of a click, not on the term.
    *
-   * Прежде длинный срок отказывался целиком (`dayBatchTermLimitMessage`), и это отрезало от кнопки
-   * ровно тот случай, ради которого её просили, — квартальный заказ. Теперь нажатие берёт первые
-   * `DAY_BATCH_LIMIT` НЕРАСПЛАНИРОВАННЫХ дней и говорит, сколько осталось за окном; второе нажатие
-   * добирает хвост, а уже сделанные дни места в порции не занимают — иначе кнопку жали бы до
-   * бесконечности, а бумага не двигалась.
+   * Formerly a long term was refused whole (`dayBatchTermLimitMessage`), and that cut off from the
+   * button the very case it was asked for — a quarterly request. Now a click takes the first
+   * `DAY_BATCH_LIMIT` UNPLANNED days and says how many are left outside the window; the second
+   * click picks up the tail, while days already done take up no room in the portion — otherwise the
+   * button would be pressed endlessly while the paper stood still.
    *
-   * Бумаги здесь не просят намеренно: предмет случая — окно порции и остаток, а полсотни номеров
-   * строгой отчётности к этому вопросу ничего не добавляют.
+   * No paper is asked for here on purpose: the subject of the case is the portion window and the
+   * remainder, and half a hundred numbered blanks add nothing to that question.
    */
   it('срок длиннее предела проходится порциями: остаток назван, второе нажатие добирает хвост', async () => {
     const vehicleId = ctx.vehicles[9]!;
-    // Квартальный заказ — ровно тот случай, ради которого кнопку и просили: девяносто дней.
+    // A quarterly request is exactly the case the button was asked for: ninety days.
     const term = 90;
     const tail = term - DAY_BATCH_LIMIT;
     const dateFrom = ctx.today;
@@ -1135,19 +1161,20 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     expect(first.rows).toHaveLength(DAY_BATCH_LIMIT);
     expect(first.planned).toBe(DAY_BATCH_LIMIT);
     expect(first.skipped + first.failed + first.issued).toBe(0);
-    // Хвост назван числом: без него длинный срок молча обрывался бы на полусотне дней.
+    // The tail is named by a number: without it a long term would break off silently at fifty days.
     expect(first.remaining).toBe(tail);
     expect(first.days.items).toHaveLength(DAY_BATCH_LIMIT + tail);
     expect(first.days.items.filter((item) => item.route !== null)).toHaveLength(DAY_BATCH_LIMIT);
 
     const second = await batchOk(request.id, { issueWaybills: false });
 
-    // Второе нажатие добрало хвост: сделанные дни в порцию не зачлись, и окно дотянулось до конца.
+    // The second click picked up the tail: the days already done did not count into the portion,
+    // and the window reached the end of the term.
     expect(second.planned).toBe(tail);
     expect(second.remaining).toBe(0);
     expect(second.rows).toHaveLength(DAY_BATCH_LIMIT + tail);
-    // Пройденные дни промолчать не могут: пачка прошла их и не сделала ничего — молчание читалось
-    // бы как «сделала».
+    // Days already walked cannot stay silent: the batch walked them and did nothing — silence would
+    // read as "it did".
     expect(second.skipped).toBe(DAY_BATCH_LIMIT);
     for (const row of second.rows.slice(0, DAY_BATCH_LIMIT)) {
       expect(row.reason).toBe(DAY_BATCH_SKIP_PLANNED);

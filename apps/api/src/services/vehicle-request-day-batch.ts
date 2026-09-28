@@ -82,60 +82,63 @@ import {
 } from './waybill-issue';
 
 /**
- * Пачка дней заказа техники на объект: «выписать 4-П на весь период»
- * ([ADR 0207](../../../../docs/adr/0207-vehicle-request-day-batch.md), план
+ * Day batch for a special-equipment request on a site: "issue a 4-П for the whole term"
+ * ([ADR 0207](../../../../docs/adr/0207-vehicle-request-day-batch.md), plan
  * [docs/vehicle-request-day-batch-plan.md](../../../../docs/vehicle-request-day-batch-plan.md)).
  *
- * СВОИХ ПРАВИЛ У ПАЧКИ НЕТ НИ ОДНОГО. Она проходит срок подряд и на каждом дне делает ровно то же,
- * что делает подённая дверь (`POST /vehicle-requests/:id/days/:date/route`) и выписка листа по
- * рейсу: те же предикаты (`planDayBlocker`, `canJoinRoute`, `canIssueWaybill`), тот же порядок
- * блокировок (сначала рейс, потом заявка), та же общая точка выпуска листа. Второй набор правил
- * разошёлся бы с первым молча, и один и тот же день оказался бы то доступен, то нет в зависимости
- * от того, какой кнопкой его тронули.
+ * THE BATCH HAS NOT A SINGLE RULE OF ITS OWN. It walks the term day after day and on every day does
+ * exactly what the per-day door (`POST /vehicle-requests/:id/days/:date/route`) and the per-route
+ * waybill issue do: the same predicates (`planDayBlocker`, `canJoinRoute`, `canIssueWaybill`), the
+ * same lock order (route first, request second), the same shared waybill issue point. A second set
+ * of rules would drift away from the first one silently, and one and the same day would turn out
+ * available or not depending on which button touched it.
  *
- * ОДНО ИСКЛЮЧЕНИЕ НАЗВАНО ВСЛУХ — рукопожатие предупреждений (§10): его пачка считает сама
- * (`issueDayWaybill`), и человек в нём не участвует. Предупреждения он читает уже в построчном
- * отчёте, после выписки.
+ * ONE EXCEPTION IS NAMED OUT LOUD — the warning handshake (§10): the batch computes it itself
+ * (`issueDayWaybill`), and no human takes part in it. He reads the warnings in the per-day report,
+ * after the paper is issued.
  *
- * ЧТО У ПАЧКИ СВОЁ — ровно четыре вещи, и каждая названа решением ADR:
+ * WHAT THE BATCH DOES OWN — exactly four things, and every one of them is named by a decision of
+ * the ADR:
  *
- * 1. **Порция, а не весь срок** (§11). За нажатие берутся первые `DAY_BATCH_LIMIT` дней срока,
- *    которые ещё не стоят в рейсах; остаток добирается повторным нажатием — своим ключом операции
- *    и своей строкой журнала коррекций (`portionOf`).
- * 2. **Транзакция на день, а не на пачку** (§8). `takeNextNumber` держит строку серии под
- *    `FOR UPDATE` до конца транзакции, а серия `main` общая для всех 4-П портала: одна транзакция
- *    на пятьдесят листов остановила бы выписку бумаги во всём портале на всё время пачки. Платой
- *    стала неатомарность — оборвавшаяся посередине пачка оставляет сделанное сделанным, и это
- *    правильнее, чем откатывать уже выданную бумагу.
- * 3. **Отказ дня не роняет пачку** (§7). Ожидаемая помеха (день уже в рейсе, рейс заморожен, два
- *    рейса у машины, нет строк задания, прошлое без права) уходит строкой отчёта с готовым текстом
- *    контракта; всё прочее — `failed` с текстом отказа. Цикл идёт дальше.
- * 4. **Строка операции коррекции — ленивая, одна на пачку** (§9). Заводится в транзакции первого
- *    прошедшего дня, ДОШЕДШЕГО ДО ВЫПИСКИ: операция без единого листа засоряла бы журнал
- *    коррекций тем же способом, каким его засорила бы подённая дверь, если бы заводила операцию на
- *    каждую постановку дня.
+ * 1. **A portion, not the whole term** (§11). One click takes the first `DAY_BATCH_LIMIT` days of
+ *    the term that do not stand in routes yet; the rest is picked up by clicking again — with its
+ *    own operation key and its own row in the corrections journal (`portionOf`).
+ * 2. **A transaction per day, not per batch** (§8). `takeNextNumber` holds the series row under
+ *    `FOR UPDATE` until the transaction ends, and the `main` series is shared by every 4-П of the
+ *    portal: one transaction over fifty waybills would stop paper issue across the whole portal for
+ *    as long as the batch runs. The price paid is non-atomicity — a batch broken off midway leaves
+ *    what is done done, and that is more right than rolling back paper already handed out.
+ * 3. **A day's refusal does not bring the batch down** (§7). An expected obstacle (the day already
+ *    in a route, the route frozen, two routes on the vehicle, no task rows left, the past without
+ *    the right) leaves as a report row carrying the contract's ready text; everything else becomes
+ *    `failed` with the refusal text. The loop goes on.
+ * 4. **The correction operation row is lazy, one per batch** (§9). It is opened inside the
+ *    transaction of the first past day THAT REACHED ISSUE: an operation without a single waybill
+ *    would litter the corrections journal the same way the per-day door would litter it if it
+ *    opened an operation for every day it places.
  *
- * МАШИНА БЕРЁТСЯ ИЗ НАЗНАЧЕНИЯ, А НЕ ИЗ ТЕЛА (§5) — и на каждый день своя: заказ мог сменить
- * машину внутри срока (`docs/assignment-periods-plan.md`, Р3), и день обязан лечь на ту единицу,
- * которая работала именно в этот день. Свободный выбор в пачке развёл бы бумагу по двум машинам
- * так, что ни один экран этого не показал бы.
+ * THE VEHICLE COMES FROM THE ASSIGNMENT, NOT FROM THE BODY (§5) — and a separate one per day: the
+ * request may have changed vehicles inside its term (`docs/assignment-periods-plan.md`, R3), and a
+ * day must land on the unit that worked exactly that day. A free choice inside the batch would
+ * spread the paper over two vehicles in a way no screen would ever show.
  */
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
- * Ожидаемая помеха дня — исключением, а не возвращённым значением.
+ * An expected obstacle of a day travels as an exception, not as a returned value.
  *
- * Причина в том, что помеха бывает найдена и ПОСЛЕ первой записи: рейс дня мог быть заведён, а
- * заявка под блокировкой сказать «этот день только что поставили в другой рейс». Возврат значения
- * оставил бы такой рейс в базе пустым и нигде не названным; брошенное исключение откатывает
- * транзакцию дня целиком, и в базе не остаётся ничего, кроме дырки в последовательности «Р-»
- * (ADR 0207, последствия: identity с транзакцией не откатывается).
+ * The reason is that an obstacle is sometimes found AFTER the first write as well: the day's route
+ * may already be created when the request under its lock says "this day has just been placed into
+ * another route". Returning a value would leave such a route in the database empty and named
+ * nowhere; a thrown exception rolls the day's transaction back whole, and nothing is left in the
+ * database but a gap in the «Р-» sequence (ADR 0207, consequences: identity is not rolled back
+ * together with the transaction).
  */
 class DaySkip extends Error {
   constructor(
     readonly skipReason: string,
-    /** Рейс, который день не принял: в отчёте он называется человеку. */
+    /** The route that did not take the day: the report names it to the human. */
     readonly routeNumber?: string,
   ) {
     super(skipReason);
@@ -143,29 +146,30 @@ class DaySkip extends Error {
   }
 }
 
-/** Чем кончился день, дошедший до коммита. */
+/** How a day that reached its commit ended. */
 interface DayDone {
   routeId: string;
   routeNumber: string;
-  /** Лист дня; `null` — пачку звали без выписки (`issueWaybills: false`). */
+  /** The day's waybill; `null` when the batch was called without issue (`issueWaybills: false`). */
   waybill: { id: string; number: string } | null;
-  /** Строка операции, если этот день её завёл или нашёл: наружу она уезжает одна на пачку. */
+  /** The operation row, if this day opened or found it: only one per batch travels outwards. */
   correction: CorrectionRecord | null;
   backdated: boolean;
 }
 
 export interface DayBatchParams {
   requestId: string;
-  /** Субъект: им спрашиваются права заднего числа и им же подписаны события журнала. */
+  /** The subject: backdating rights are asked of him, and audit events are signed by him. */
   actor: Principal;
   input: DayBatchApplyInput;
 }
 
 /**
- * Выписать 4-П на весь период заказа.
+ * Issue a 4-П for the whole term of the request.
  *
- * Возвращает построчный отчёт и новую таблицу дней: карточка обязана показать новую картину сразу,
- * а сходив за ней вторым запросом, она рискует показать уже не ту, по которой составлен отчёт.
+ * Returns the per-day report together with the new table of days: the card must show the new
+ * picture at once, and by fetching it with a second request it risks showing a picture other than
+ * the one the report was built from.
  */
 export async function runVehicleRequestDayBatch(
   params: DayBatchParams,
@@ -173,16 +177,16 @@ export async function runVehicleRequestDayBatch(
   const { requestId, actor, input } = params;
   const reason = input.reason?.trim() ?? '';
   /*
-   * Сегодня по Москве — ОДИН раз на всю пачку и дальше параметром.
+   * Today in Moscow time — taken ONCE for the whole batch and passed down as a parameter.
    *
-   * Пятьдесят дней проходят не мгновенно, и пачка, начатая в 23:59, посчитала бы первую половину
-   * дней по одной границе прошлого, а вторую — по другой: день «сегодня» стал бы прошедшим прямо
-   * посреди работы, потребовал бы права коррекции и ушёл бы в пропуск. Граница заднего числа у
-   * одного нажатия обязана быть одна.
+   * Fifty days do not pass in an instant, and a batch started at 23:59 would weigh the first half
+   * of its days against one boundary of the past and the second half against another: the day that
+   * is "today" would become a past day right in the middle of the work, would demand the correction
+   * right and would end up skipped. One click must have one backdating boundary.
    */
   const today = moscowDateKeyOf(new Date());
 
-  // ── Предпроверка: всё, что способно отказать, спрашивается ДО первой записи ──
+  // ── Pre-check: everything able to refuse is asked BEFORE the first write ──
 
   const request = await loadLinearRequest(db, requestId);
   if (!request) throw err.notFound('Заявка не найдена');
@@ -191,14 +195,16 @@ export async function runVehicleRequestDayBatch(
 
   const termDays = shiftDaysOf(request);
   /*
-   * Порция нажатия считается ДО первой записи и по одному чтению уже распланированных дней.
+   * The portion of one click is measured BEFORE the first write and from a single read of the days
+   * already planned.
    *
-   * Чтение вне цикла и без блокировки — намеренно: как ЗАПРЕТ эти дни всё равно перечитывает
-   * каждая транзакция дня под блокировкой заявки (`assertDayPlannable`), а здесь они нужны как
-   * МЕРА порции, и мера считается один раз на нажатие. Разойдись картина за время пачки — день
-   * уйдёт в отчёт пропуском, а не в чужой рейс.
+   * Reading them outside the loop and without a lock is deliberate: as a PROHIBITION these days are
+   * re-read anyway by every day's transaction under the request lock (`assertDayPlannable`), while
+   * here they are needed as the MEASURE of the portion, and the measure is taken once per click.
+   * Should the picture drift while the batch runs, the day leaves as a skip in the report, not into
+   * someone else's route.
    *
-   * Транзакция здесь только ради сигнатуры `plannedDaysOfRequest` — записей в ней нет ни одной.
+   * The transaction here serves only the signature of `plannedDaysOfRequest` — it writes nothing.
    */
   const { days, remaining } = portionOf(
     termDays,
@@ -210,13 +216,14 @@ export async function runVehicleRequestDayBatch(
 
   const vehicleByDay = await dayVehiclesOf(request, days);
   /*
-   * Машина проверяется ОДИН раз на каждую свою единицу и до цикла (`assertDayRouteVehicle`).
-   * Внутри цикла это значило бы читать одну и ту же строку полсотни раз, а отказать — посреди уже
-   * заведённых рейсов, каждый из которых успел сжечь свой номер «Р-» из последовательности.
+   * A vehicle is checked ONCE per unit and before the loop (`assertDayRouteVehicle`). Inside the
+   * loop that would mean reading the same row half a hundred times, and refusing in the middle of
+   * routes already created, each of which has burnt its own «Р-» number out of the sequence.
    *
-   * Единиц бывает больше одной: заказ, сменивший машину внутри срока, работает первую половину
-   * периода одной, вторую другой, и обе обязаны быть собственными и живыми до того, как пачка
-   * заведёт первый рейс. Транзакция здесь только ради сигнатуры — записей в ней нет ни одной.
+   * There is sometimes more than one unit: a request that changed vehicles inside its term works
+   * the first half of the period with one and the second half with another, and both must be owned
+   * and alive before the batch creates its first route. The transaction here serves only the
+   * signature — it writes nothing.
    */
   const vehicleIds = [...new Set(vehicleByDay.values())];
   await db.transaction(async (tx) => {
@@ -230,18 +237,20 @@ export async function runVehicleRequestDayBatch(
     ]),
   );
   /*
-   * Причина — одна на пачку и спрашивается ДО первой записи: объясняют не каждый день по
-   * отдельности, а само решение оформить прошедший период. Отказ приходит только там, где причина
-   * и есть единственное недостающее (`code === 'reason'`): нет права или слишком глубоко — это
-   * помеха конкретных дней, а не всей пачки, и такие дни пропускаются, пока остальные идут.
+   * The reason is one per batch and is asked BEFORE the first write: what gets explained is not
+   * each day separately but the decision to paper the past period at all. A refusal comes only
+   * where the reason is the single thing missing (`code === 'reason'`): no right, or too deep in
+   * the past, is an obstacle of particular days rather than of the whole batch, and such days are
+   * skipped while the others go on.
    */
   if ([...verdicts.values()].some((v) => !v.ok && v.code === 'reason')) {
     throw err.unprocessable(BACKDATE_REASON_MESSAGE, { reason: 'Нужна причина' });
   }
   /*
-   * Ключ операции обязателен ровно там, где пачка заведёт строку журнала коррекций и сожжёт
-   * номера бланков задним числом: повтор после обрыва связи обязан продолжить прежнюю работу, а не
-   * выписать вторую стопку. Сегодняшняя и будущая бумага операцией не является и ключа не требует.
+   * The operation key is required exactly where the batch will open a corrections journal row and
+   * burn numbered blanks with a past date: a retry after a dropped connection must continue the
+   * former work instead of issuing a second stack. Today's and future paper is not a correction
+   * operation and demands no key.
    */
   const willBackdate =
     input.issueWaybills && [...verdicts.values()].some((v) => v.ok && v.backdated);
@@ -251,27 +260,27 @@ export async function runVehicleRequestDayBatch(
     });
   }
 
-  // ── Цикл: своя транзакция на каждый день ──
+  // ── The loop: its own transaction for every day ──
 
   const fingerprint = correctionFingerprint({ kind: 'day_batch', target: requestId, body: input });
   const rows: VehicleRequestDayBatchRowDto[] = [];
-  /** Строка операции — одна на пачку; заводит её первый прошедший день, дошедший до выписки. */
+  /** The operation row is one per batch; the first past day reaching issue opens it. */
   let correction: CorrectionRecord | null = null;
-  /** Листы, рождённые прошлым числом: ими объясняется операция в журнале коррекций. */
+  /** Waybills born with a past date: they are what the corrections journal operation explains. */
   const backdatedWaybills: { date: string; number: string; routeNumber: string }[] = [];
 
   for (const date of days) {
     const verdict = verdicts.get(date)!;
     if (!verdict.ok) {
       /*
-       * Право и глубина — помеха этого дня, а не пачки (ADR 0207 §7): остальные дни срока к
-       * прошлому отношения не имеют и выписываются как обычно.
+       * The right and the depth are an obstacle of THIS day, not of the batch (ADR 0207 §7): the
+       * other days of the term have nothing to do with the past and are issued as usual.
        *
-       * Два отказа, а не один: нет права — его выдают обычным порядком и человеку идти к
-       * администратору за назначением; слишком давно — право у него есть, а глубину снимает
-       * `waybills.correctBeyondLimit`, которое не назначается никому. Один текст на оба случая
-       * отправил бы половину людей не туда. Отказ `reason` сюда не доходит: причина спрошена до
-       * цикла, одна на пачку.
+       * Two refusals, not one: no right — it is granted the ordinary way, and the human has to go
+       * to an administrator for that grant; too long ago — the right he has, and the depth is
+       * lifted only by `waybills.correctBeyondLimit`, which is granted to nobody. One text for both
+       * cases would send half the people to the wrong place. The `reason` refusal never reaches
+       * here: the reason is asked before the loop, one per batch.
        */
       rows.push({
         date,
@@ -292,8 +301,8 @@ export async function runVehicleRequestDayBatch(
           reason,
           backdated: verdict.backdated,
           fingerprint,
-          // Найденная прежним днём операция едет вниз: искать её заново каждый день значило бы
-          // читать журнал коррекций полсотни раз ради одной и той же строки.
+          // The operation found by an earlier day travels down: looking it up anew every day
+          // would mean reading the corrections journal half a hundred times for the same row.
           correction,
         }),
       );
@@ -327,9 +336,10 @@ export async function runVehicleRequestDayBatch(
         continue;
       }
       /*
-       * `failed` — всё, что не разобрано как ожидаемая помеха. Текст доменного отказа (422/409/404)
-       * написан для человека и уходит в отчёт как есть; непредвиденный сбой отчёт называет общими
-       * словами, а разбор оставляет логу — иначе в отчёт уехало бы содержимое исключения.
+       * `failed` is everything not recognised as an expected obstacle. The text of a domain refusal
+       * (422/409/404) is written for a human and goes into the report as it is; an unforeseen
+       * failure the report names in general words, leaving the analysis to the log — otherwise the
+       * contents of the exception would travel into the report.
        */
       rows.push({ date, outcome: 'failed', reason: failureReasonOf(e) });
       logger.error(
@@ -340,11 +350,13 @@ export async function runVehicleRequestDayBatch(
   }
 
   /*
-   * Снимок операции и её связь с заявкой — ПОСЛЕ цикла и своей короткой транзакцией.
+   * The operation snapshot and its link to the request — AFTER the loop and in a short transaction
+   * of its own.
    *
-   * После — потому что «что именно сделано задним числом» становится известно только когда сделано
-   * всё; своей транзакцией — потому что транзакции дня к этому моменту уже закоммичены, а `db` в
-   * эти функции не передаётся: строка журнала коррекций правится только из транзакции.
+   * After, because "what exactly was done with a past date" becomes known only once everything is
+   * done; in its own transaction, because the day transactions are committed by then and `db` is
+   * not passed into these functions: a corrections journal row is only ever written from a
+   * transaction.
    */
   if (correction) {
     const id = correction.id;
@@ -354,15 +366,15 @@ export async function runVehicleRequestDayBatch(
         term: {
           dateFrom: request.dateFrom ?? null,
           dateTo: request.dateTo ?? null,
-          // Длина СРОКА, а не порции: снимок объясняет, какой период оформлен задним числом, и
-          // «50» вместо «90» у квартального заказа читалось бы как урезанный срок заявки. Что
-          // сделано именно этим нажатием, перечислено ниже поимённо — листами.
+          // The length of the TERM, not of the portion: the snapshot explains which period was
+          // papered with a past date, and "50" instead of "90" on a quarterly request would read
+          // as a trimmed request term. What this very click did is listed below by name — waybills.
           days: termDays.length,
         },
         waybills: backdatedWaybills,
       });
-      // Заявка у пачки одна, зато листов под операцией до пятидесяти: связь ведётся с заявкой, по
-      // ней операцию и находит карточка разбирательства.
+      // The batch has one request but up to fifty waybills under the operation: the link is kept
+      // to the request, and that is how the investigation card finds the operation.
       await linkCorrectionRequests(tx, id, [requestId]);
     });
   }
@@ -374,30 +386,32 @@ export async function runVehicleRequestDayBatch(
     issued: rows.filter((row) => row.outcome === 'issued').length,
     skipped: rows.filter((row) => row.outcome === 'skipped').length,
     failed: rows.filter((row) => row.outcome === 'failed').length,
-    // Остаток считается по картине ДО нажатия и означает ровно «дни, которые в это нажатие не
-    // вошли»: пересчитывать его после цикла значило бы вернуть в остаток и те дни порции, которые
-    // пачка пропустила, — повтор с ними ничего не сделает, и «нажмите ещё раз» стало бы неправдой.
+    // The remainder is counted from the picture BEFORE the click and means exactly "days this click
+    // did not include": recounting it after the loop would return the portion's skipped days into
+    // the remainder — a retry does nothing with them, and "press again" would become a lie.
     remaining,
   };
 }
 
 /**
- * ПОРЦИЯ ОДНОГО НАЖАТИЯ (ADR 0207 решение 11): первые `DAY_BATCH_LIMIT` дней срока, которые ещё не
- * стоят в рейсах заявки, плюс остаток — сколько нераспланированных дней осталось за окном.
+ * THE PORTION OF ONE CLICK (ADR 0207, decision 11): the first `DAY_BATCH_LIMIT` days of the term
+ * that do not stand in the request's routes yet, plus the remainder — how many unplanned days are
+ * left outside the window.
  *
- * Предел стоит на порции, а не на сроке. Отказ всему сроку отрезал бы от кнопки ровно тот случай,
- * ради которого её просили, — квартальный заказ: девяносто дней не прошли бы ни одним нажатием, и
- * диспетчер остался бы с таблицей «Дни работ» и девяноста заходами по три нажатия.
+ * The limit stands on the portion, not on the term. Refusing the whole term would cut off from the
+ * button the very case it was asked for — a quarterly request: ninety days would not pass in any
+ * single click, and the dispatcher would be left with the «Дни работ» table and ninety visits of
+ * three clicks each.
  *
- * МЕСТО В ПОРЦИИ ЗАНИМАЮТ ТОЛЬКО НЕРАСПЛАНИРОВАННЫЕ ДНИ. Уже стоящий в рейсе день пачка всё равно
- * пропустит (`DAY_BATCH_SKIP_PLANNED`), и, считай он за взятый, второе нажатие первым делом
- * упёрлось бы в полсотни своих же вчерашних дней и до хвоста срока не добралось бы никогда —
- * кнопку жали бы до бесконечности, а бумага не двигалась.
+ * ONLY UNPLANNED DAYS TAKE UP ROOM IN THE PORTION. A day already standing in a route the batch will
+ * skip anyway (`DAY_BATCH_SKIP_PLANNED`), and were it counted as taken, the second click would
+ * first run into half a hundred of its own yesterday's days and would never reach the tail of the
+ * term — the button would be pressed endlessly while the paper stood still.
  *
- * В ОКНО такой день при этом попадает и строку отчёта получает: пачка прошла его и не сделала
- * ничего — промолчи она, это читалось бы как «сделала». Ради того же и окно не обрезается по
- * первому нераспланированному дню: когда распланировано уже всё, отчёт обязан объяснить пустую
- * работу, а не приехать пустым.
+ * THE WINDOW does take such a day in, and it does get a report row: the batch walked it and did
+ * nothing — keeping silent would read as "it did". For the same sake the window is not cut at the
+ * first unplanned day: when everything is planned already, the report must explain the empty work
+ * instead of arriving empty.
  */
 function portionOf(
   termDays: readonly string[],
@@ -418,7 +432,7 @@ function portionOf(
   return { days, remaining };
 }
 
-// ── Один день ──
+// ── One day ──
 
 interface DayContext {
   request: LinearRequestState;
@@ -428,9 +442,10 @@ interface DayContext {
   input: DayBatchApplyInput;
   reason: string;
   /**
-   * Идёт ли этот день задним числом — вердикт, посчитанный до цикла от общего «сегодня»
-   * (`checkBackdate`). Пересчитывать его внутри транзакции нечем и незачем: второго «сегодня» у
-   * одного нажатия не бывает, а календарь за время пачки успевает перевалить за полночь.
+   * Whether this day runs with a past date — the verdict computed before the loop against the
+   * shared "today" (`checkBackdate`). Recomputing it inside the transaction is neither possible nor
+   * needed: one click never has a second "today", while the calendar does manage to cross midnight
+   * while the batch runs.
    */
   backdated: boolean;
   fingerprint: string;
@@ -438,25 +453,27 @@ interface DayContext {
 }
 
 /**
- * Один день пачки — в своей транзакции и тем же порядком, каким его проходит подённая дверь:
- * выбрать рейс → положить день в состав → разложить точку → проверить бланк → поднять версию →
- * (если просили) выписать лист.
+ * One day of the batch — in its own transaction and in the same order the per-day door walks it:
+ * pick a route → put the day into the composition → lay out the point → check the blank → bump the
+ * version → (if asked) issue the waybill.
  *
- * Порядок блокировок общий для модуля: сначала рейс, потом заявка. Обратный порядок здесь и был бы
- * клинчем со сменой статуса заявки, которая берёт те же строки в обратную сторону.
+ * The lock order is shared across the module: route first, request second. The reverse order right
+ * here is what would deadlock against the request status change, which takes the same rows the
+ * other way round.
  */
 async function runDay(tx: Tx, ctx: DayContext): Promise<DayDone> {
   const { date, request, actor } = ctx;
 
   /*
-   * Дешёвая проверка правилом — ДО того, как заведётся рейс: у нового маршрута номер берётся из
-   * последовательности, и отказ по сроку после его заведения сжёг бы «Р-» ни на что. Под
-   * блокировкой она повторится теми же словами — здесь она про порядок, а не про правильность.
+   * The cheap check by the rule comes BEFORE any route is created: a new route takes its number
+   * from a sequence, and a refusal on the term after it was created would burn a «Р-» for nothing.
+   * Under the lock the check repeats in the same words — here it is about order, not about
+   * correctness.
    */
   await assertDayPlannable(tx, request, date, await plannedDaysOfRequest(tx, request.id));
 
   const route = await pickDayRoute(tx, ctx);
-  // Заявка — после рейса: порядок блокировок в модуле общий.
+  // The request comes after the route: the lock order is shared across the module.
   const state = await lockLinearRequest(tx, request.id);
   if (!state) throw err.notFound('Заявка не найдена');
   const plannedDays = await plannedDaysOfRequest(tx, request.id);
@@ -467,8 +484,9 @@ async function runDay(tx: Tx, ctx: DayContext): Promise<DayDone> {
   if (!isRouteEditable(waybill?.status ?? null))
     throw new DaySkip(DAY_BATCH_SKIP_FROZEN, routeNumber);
   if (route.routeDate !== date) {
-    // Составной FK (миграция 0127) день строки состава и день рейса держит равными: рейс соседнего
-    // дня база просто не примет, и объяснять это отказом целостности нельзя.
+    // The composite FK (migration 0127) keeps the composition row's day equal to the route's day:
+    // a neighbouring day's route the database simply will not take, and an integrity failure must
+    // not be what explains that to the human.
     throw err.unprocessable(
       `Маршрут ${routeNumber} заведён на ${route.routeDate}, а планируется день ${date}`,
       { routeId: 'Рейс другого дня' },
@@ -476,9 +494,10 @@ async function runDay(tx: Tx, ctx: DayContext): Promise<DayDone> {
   }
 
   /*
-   * Бланк рейса читается один раз: он задаёт и вместимость состава (`canJoinRoute`), и ёмкость
-   * строк задания (`assertRoutePlacement`). Внутри одной транзакции справочник под нами не
-   * меняется, а два чтения одного и того же — лишний запрос на каждый из пятидесяти дней.
+   * The route's blank is read once: it sets both the capacity of the composition (`canJoinRoute`)
+   * and the capacity of the task rows (`assertRoutePlacement`). Inside one transaction the
+   * directory does not change under us, while reading the same thing twice is an extra query on
+   * each of fifty days.
    */
   const formCode = (
     await routeWaybillFormFor(tx, { purpose: route.purpose, vehicleId: route.vehicleId })
@@ -505,25 +524,27 @@ async function runDay(tx: Tx, ctx: DayContext): Promise<DayDone> {
   try {
     await attachRequest(tx, route.id, request.id, date);
   } catch (e) {
-    // Гонка двух диспетчеров: ловит её уникальный индекс, а не проверка выше.
+    // A race of two dispatchers: the unique index catches it, not the check above.
     throw asDayRaceConflict(e, date);
   }
   /*
-   * Точка задания — той же транзакцией, что и строка состава: без неё день стоял бы в рейсе, но не
-   * печатался — задание листа собирается из точек, а не из состава.
+   * The task point goes in the same transaction as the composition row: without it the day would
+   * stand in the route but would not print — the waybill's task is assembled from points, not from
+   * the composition.
    */
   await placeLinearDay(tx, route.id, request.id, date);
-  // Ёмкость проверяется после раскладки: считать надо строки задания (ездки плюс линейные дни), а
-  // до постановки дня их на одну меньше.
+  // Capacity is checked after the layout: what has to be counted are the task rows (trips plus
+  // linear days), and before the day is placed there is one fewer of them.
   await assertRoutePlacement(tx, { routeId: route.id, formCode });
   await bumpRouteVersion(tx, route.id, actor.id);
 
   if (!ctx.input.issueWaybills) {
     /*
-     * Бумаги не просили — день только встал в рейс. Задний ход при этом не исчезает: постановка
-     * прошедшего дня прошла тот же `backdateGuard`, и событие журнала обязано это сказать. Своей
-     * строки в журнале коррекций у такого дня нет по тому же правилу, что и у подённой двери:
-     * номера строгой отчётности он не расходует, и операция без единого листа засоряла бы журнал.
+     * No paper was asked for — the day only took its place in the route. The backdating does not
+     * disappear because of that: placing a past day went through the same `backdateGuard`, and the
+     * audit event must say so. Such a day has no row of its own in the corrections journal, by the
+     * same rule that holds for the per-day door: it spends no numbered blank, and an operation
+     * without a single waybill would litter the journal.
      */
     return {
       routeId: route.id,
@@ -537,12 +558,15 @@ async function runDay(tx: Tx, ctx: DayContext): Promise<DayDone> {
 }
 
 /**
- * Почему этот день не планируется — с разделением «ожидаемая помеха» и «сбой».
+ * Why this day is not planned — with "an expected obstacle" told apart from "a failure".
  *
- * Занятый день это ровно то, ради чего повтор пачки безопасен: он отсекается своим UNIQUE и здесь
- * называется готовым текстом контракта. Всё остальное, что вернул бы `planDayBlocker` (заявку
- * увели из работы, сняли технику, подвинули срок посреди пачки), помехой дня не является — это
- * смена состояния заказа, и молчаливым пропуском её объявлять нельзя.
+ * A day already taken is exactly what makes a batch retry safe: this very check cuts it off and
+ * names it with the contract's ready text. The day's unique index is not what produces this skip —
+ * it only guards the race of two dispatchers, and its breach becomes a failure row, not a skip.
+ * Everything else `planDayBlocker` would return (the
+ * request was taken out of work, the vehicle was withdrawn, the term was moved in the middle of the
+ * batch) is not an obstacle of the day — it is a change of the request's state, and declaring that
+ * with a silent skip is not allowed.
  */
 async function assertDayPlannable(
   tx: Tx,
@@ -551,9 +575,10 @@ async function assertDayPlannable(
   plannedDays: readonly string[],
 ): Promise<void> {
   if (plannedDays.includes(date)) {
-    // Рейс называется по имени: в отчёте на полсотни строк «день уже стоит в рейсе» без номера
-    // не говорит, в каком именно, а диспетчер идёт разбираться именно туда. Запрос уходит только
-    // на этой ветке — она и есть пропуск, — а не на каждом дне пачки.
+    // The route is named: in a report of half a hundred rows "the day already stands in a route"
+    // without a number does not say which one, and that is exactly where the dispatcher goes to
+    // sort it out. The query is issued only on this branch — the branch that is the skip itself —
+    // and not on every day of the batch.
     throw new DaySkip(DAY_BATCH_SKIP_PLANNED, await plannedDayRouteNumber(tx, subject.id, date));
   }
   const blocker = planDayBlocker(subject, date, plannedDays);
@@ -561,13 +586,15 @@ async function assertDayPlannable(
 }
 
 /**
- * Рейс, в котором день уже стоит. Строка состава ведёт в рейс составным ключом (миграция 0127), и
- * день без рейса тут не бывает по устройству — «Р-» у такого дня известен всегда.
+ * The route the day already stands in. The composition row leads to the route by a composite key
+ * (migration 0127), and a day without a route does not happen here by construction — the «Р-» of
+ * such a day is always known.
  *
- * Почти всегда: `undefined` остаётся законным ответом на гонку. Первый заход `assertDayPlannable`
- * идёт до блокировки заявки, и между чтением распланированных дней и этим запросом чужая
- * транзакция успевает снять день с рейса. Ронять из-за этого пачку нечем и незачем: пропуск от
- * такого дня всё равно правильный, просто без имени рейса.
+ * Almost always: `undefined` stays a legitimate answer to a race. The first pass of
+ * `assertDayPlannable` runs before the request is locked, and between reading the planned days and
+ * this query another transaction manages to take the day off its route. There is nothing to bring
+ * the batch down with over that, and no reason to: the skip from such a day is right anyway, only
+ * without the route's name.
  */
 async function plannedDayRouteNumber(
   tx: Tx,
@@ -585,29 +612,30 @@ async function plannedDayRouteNumber(
 }
 
 /**
- * ПРАВИЛО ВЫБОРА РЕЙСА ДНЯ — своё, потому что готового запроса под него нет.
+ * THE RULE FOR PICKING A DAY'S ROUTE is its own, because no ready query fits it.
  *
- * `GET /vehicle-routes/suggest` не годится: он отдаёт диспетчеру всё, что есть у машины на дату, и
- * выбирает человек — глазами и без блокировки. Пачке выбирать некому, а между чтением и вставкой
- * лежит чужая транзакция, поэтому кандидаты берутся под `FOR UPDATE` и решение принимается по уже
- * заблокированным строкам.
+ * `GET /vehicle-routes/suggest` will not do: it hands the dispatcher everything the vehicle has on
+ * the date, and a human chooses — by eye and without a lock. The batch has nobody to choose for it,
+ * and another transaction lies between the read and the insert, so candidates are taken under
+ * `FOR UPDATE` and the decision is made on rows that are already locked.
  *
- * Кандидаты — грузовые рейсы этой машины на эту дату. Перегон отсеивается раньше всего и не
- * считается кандидатом вовсе: состава у него нет по устройству (он едет по своей
- * заявке-основанию), и «у машины два рейса» про него было бы неправдой.
+ * The candidates are the freight routes of this vehicle on this date. A relocation is filtered out
+ * before anything else and is no candidate at all: it has no composition by construction (it runs
+ * under its own grounding request), and "the vehicle has two routes" would be untrue about it.
  *
- * Дальше решают три числа, и порядок между ними именно такой:
+ * Then three counts decide, and their order is exactly this:
  *
- *   нет ни одного грузового рейса   → пачка заводит свой (`openDayRoute`);
- *   годных больше одного            → день пропускается (`DAY_BATCH_SKIP_AMBIGUOUS_ROUTE`);
- *   годен ровно один                → день едет в него;
- *   есть рейсы, но ни один не годен → называется причина первого: заморожен либо нет места.
+ *   not a single freight route       → the batch creates its own (`openDayRoute`);
+ *   more than one eligible           → the day is skipped (`DAY_BATCH_SKIP_AMBIGUOUS_ROUTE`);
+ *   exactly one eligible             → the day goes into it;
+ *   routes exist, none eligible      → the first one's reason is named: frozen, or no room.
  *
- * Последняя строка — не мелочь. Заведи пачка второй рейс рядом с замороженным, и у машины на день
- * оказалось бы два бланка на одну работу; ответь она «ноль кандидатов» там, где в бланке кончились
- * строки, — диспетчер не узнал бы, что уплотнять день больше нечем. Выбор между двумя годными
- * рейсами (утро и вечер — законное состояние) пачка на себя не берёт: ошибись она, день уехал бы в
- * чужое задание, а заметили бы это у принтера.
+ * That last line is no trifle. Were the batch to create a second route beside a frozen one, the
+ * vehicle would hold two blanks for one day's work; were it to answer "zero candidates" where the
+ * blank has run out of task rows, the dispatcher would never learn that there is nothing left to
+ * pack the day with. The choice between two eligible routes (morning and evening is a legitimate
+ * state) the batch does not take upon itself: get it wrong, and the day would travel into somebody
+ * else's task, and that would be noticed at the printer.
  */
 async function pickDayRoute(tx: Tx, ctx: DayContext): Promise<RouteRow> {
   const ids = await tx
@@ -617,8 +645,8 @@ async function pickDayRoute(tx: Tx, ctx: DayContext): Promise<RouteRow> {
     .orderBy(asc(vehicleRoutes.id));
 
   const candidates: RouteRow[] = [];
-  // Порядок блокировок один на модуль: рейсы берутся по возрастанию `id`, иначе две встречные
-  // команды на тех же рейсах встанут во взаимную блокировку.
+  // The lock order is one for the whole module: routes are taken by ascending `id`, or two opposing
+  // commands on the same routes will deadlock against each other.
   for (const row of ids) {
     if (isRelocationPurpose(row.purpose)) continue;
     candidates.push(await lockRoute(tx, row.id));
@@ -626,8 +654,9 @@ async function pickDayRoute(tx: Tx, ctx: DayContext): Promise<RouteRow> {
   if (candidates.length === 0) {
     return openDayRoute(tx, {
       body: {
-        // Машина — из назначения на этот день (ADR 0207 §5), водитель — один на весь период
-        // (§6): поля машины в окне нет вовсе, а человека без ответа не подставляют (ADR 0083).
+        // The vehicle comes from the assignment for this day (ADR 0207 §5), the driver is one for
+        // the whole period (§6): there is no vehicle field in the window at all, and a person is
+        // never filled in without being asked (ADR 0083).
         newRoute: { vehicleId: ctx.vehicleId, driverPersonId: ctx.input.driverPersonId },
       },
       date: ctx.date,
@@ -661,22 +690,25 @@ async function pickDayRoute(tx: Tx, ctx: DayContext): Promise<RouteRow> {
 }
 
 /**
- * Лист дня: `lockRoute` → `canIssueWaybill` → `issueWaybillForRoute`.
+ * The day's waybill: `lockRoute` → `canIssueWaybill` → `issueWaybillForRoute`.
  *
- * РУКОПОЖАТИЕ ПАЧКА СЧИТАЕТ САМА (ADR 0207 §10). У одиночной выписки отпечаток набора
- * предупреждений приносит человек — он их прочитал в окне; пачке приносить его неоткуда: наборов
- * до пятидесяти, и каждый известен только под уже взятыми блокировками. Поэтому сервер собирает
- * контекст, считает набор и подставляет его отпечаток в `acknowledge` сам.
+ * THE BATCH COMPUTES THE HANDSHAKE ITSELF (ADR 0207 §10). For a single issue the fingerprint of the
+ * warning set is brought by a human — he has read them in the window; the batch has nowhere to
+ * bring it from: there are up to fifty sets, and each one becomes known only under locks that are
+ * already taken. So the server assembles the context, computes the set and fills its fingerprint
+ * into `acknowledge` itself.
  *
- * ЦЕНА НАЗВАНА ПРЯМО: у пачки рукопожатия человека нет вовсе. Он не подтверждает ни сводку (её не
- * показывают: двери предпросмотра у пачки не существует), ни набор по каждому листу — и узнаёт о
- * предупреждениях из построчного отчёта, когда бумага уже выписана. `acknowledge` здесь означает
- * не «человек прочитал», а «набор посчитан при выпуске», и в листе остаётся ровно тем, чем был
- * при рождении. У одиночной выписки правило (ADR 0108 п. 21) не меняется ничем.
+ * THE PRICE IS NAMED OUTRIGHT: the batch has no human handshake at all. He confirms neither the
+ * summary (it is not shown: the batch has no preview door) nor the set of each waybill — and learns
+ * of the warnings from the per-day report, when the paper is already issued. `acknowledge` here
+ * means not "the human has read it" but "the set was computed at issue", and in the waybill it
+ * stays exactly what it was at birth. For a single issue the rule (ADR 0108 §21) does not change at
+ * all.
  *
- * Контекст читается дважды — здесь и внутри `issueWaybillForRoute`. Это чтение, а не запись, и
- * альтернатива ему — поле «уже посчитанный набор» в сигнатуре общей точки выпуска, то есть ровно
- * та дыра, ради закрытия которой рукопожатие и живёт внутри неё (`waybill-issue.ts`, Р21а).
+ * The context is read twice — here and inside `issueWaybillForRoute`. This is a read, not a write,
+ * and the alternative to it is an "already computed set" field in the signature of the shared issue
+ * point, that is, precisely the hole the handshake lives inside that point to close
+ * (`waybill-issue.ts`, R21a).
  */
 async function issueDayWaybill(
   tx: Tx,
@@ -685,16 +717,18 @@ async function issueDayWaybill(
   routeNumber: string,
   formCode: WaybillFormCode | null,
 ): Promise<DayDone> {
-  // Рейс перечитывается под той же блокировкой: версия выросла раскладкой дня, а в контекст листа
-  // уезжают реквизиты рейса — брать их из строки, прочитанной до правки, значило бы печатать не то.
+  // The route is re-read under the same lock: its version grew when the day was laid out, and the
+  // route's details travel into the waybill context — taking them from a row read before the change
+  // would mean printing the wrong thing.
   const route = await lockRoute(tx, locked.id);
   const backdated = ctx.backdated;
 
   /*
-   * Состав берётся под `FOR UPDATE` строк заявок и по возрастанию их `id` — тем же порядком, каким
-   * их берёт аннулирование листа (`waybill-locks.ts`). Два порядка на одних строках это клинч на
-   * первом же рейсе, где номера талонов идут не в порядке идентификаторов; позиция талона важна
-   * бумаге и поэтому сортируется уже в памяти.
+   * The composition is taken under `FOR UPDATE` of the request rows and by ascending `id` — the
+   * same order in which waybill cancellation takes them (`waybill-locks.ts`). Two orders on the
+   * same rows are a deadlock on the very first route where the ticket numbers do not run in the
+   * order of the identifiers; the ticket position matters to the paper and is therefore sorted in
+   * memory instead.
    */
   const composition = await tx
     .select({
@@ -713,7 +747,8 @@ async function issueDayWaybill(
   const check = canIssueWaybill({
     purpose: route.purpose,
     driverPersonId: route.driverPersonId,
-    // Пустого бланка у пачки не бывает по устройству: день только что встал в состав этого рейса.
+    // A blank without requests cannot happen in a batch by construction: the day has just entered
+    // the composition of this very route.
     blankAllowed: false,
     formCode,
     requests: rows.map((row) => ({
@@ -754,8 +789,9 @@ async function issueDayWaybill(
   const warnings = issueWarningsOf(await loadWaybillIssueContext(tx, context));
   const issued = await issueWaybillForRoute(tx, {
     ...context,
-    // Пустой набор рукопожатия не требует вовсе, и подставлять отпечаток пустого списка незачем:
-    // общая точка выпуска запишет в лист `clean` — «проверено, предупреждений не было».
+    // An empty set needs no handshake at all, and filling in the fingerprint of an empty list is
+    // pointless: the shared issue point writes `clean` into the waybill — "checked, there were no
+    // warnings".
     acknowledge: warnings.length > 0 ? { fingerprint: warningsFingerprint(warnings) } : null,
   });
 
@@ -763,37 +799,40 @@ async function issueDayWaybill(
     return { routeId: route.id, routeNumber, waybill: issued, correction: null, backdated };
   }
   /*
-   * ЛЕНИВАЯ СТРОКА ОПЕРАЦИИ (ADR 0207 §9): заводится здесь — в транзакции первого прошедшего дня,
-   * дошедшего до выписки, — и ни минутой раньше. Заведи её пачка до цикла, и журнал коррекций
-   * пополнялся бы операцией на каждое нажатие, в том числе на то, где все прошедшие дни оказались
-   * пропущены и ни одного номера не сгорело. По тому же правилу подённая дверь не заводит операцию
-   * вовсе: постановка дня в рейс номера строгой отчётности не расходует.
+   * THE LAZY OPERATION ROW (ADR 0207 §9): it is opened right here — inside the transaction of the
+   * first past day that reached issue — and not a minute earlier. Had the batch opened it before
+   * the loop, the corrections journal would gain an operation on every click, including the click
+   * where every past day turned out skipped and not a single number was burnt. By the same rule the
+   * per-day door opens no operation at all: placing a day into a route spends no numbered blank.
    *
-   * `runCorrection` здесь не годится и не используется: он открывает СВОЮ транзакцию вокруг всей
-   * работы, а у пачки транзакция своя на каждый день (§8). Поэтому те же три шага вызываются
-   * вручную — но именно те же самые функции: собственный INSERT в журнал коррекций запрещён, там
-   * про это написано прямо.
+   * `runCorrection` does not fit here and is not used: it opens its OWN transaction around the
+   * whole work, while the batch has its own transaction per day (§8). So the same three steps are
+   * called by hand — but exactly the same functions: an INSERT of one's own into the corrections
+   * journal is forbidden, and it says so there in plain words.
    */
   const correction = ctx.correction ?? (await openCorrection(tx, ctx));
   await markCorrectionWaybill(tx, {
     waybillId: issued.id,
     correctionId: correction.id,
     reason: ctx.reason,
-    // Заменять было нечего: лист прошедшего дня рождён не взамен другого, и объяснён причиной при
-    // пустой ссылке (`waybills_correction_issue_reason_check`).
+    // There was nothing to replace: a past day's waybill is born not instead of another one, and is
+    // explained by the reason while the reference stays empty
+    // (`waybills_correction_issue_reason_check`).
     correctsWaybillId: null,
   });
   return { routeId: route.id, routeNumber, waybill: issued, correction, backdated };
 }
 
 /**
- * Строка операции по ключу клиента: нашлась — сверяется теми же двумя признаками, что и у всех
- * прочих входов коррекции (автор и отпечаток тела), не нашлась — вставляется.
+ * The operation row by the client's key: found — it is verified by the same two marks as every
+ * other correction entrance (the author and the fingerprint of the body); not found — it is
+ * inserted.
  *
- * Повтор с ТЕМ ЖЕ телом продолжает работу прежней пачки: дни, уже поставленные в рейсы, отсекутся
- * своим UNIQUE и уйдут в пропуск, а недоделанные доделаются под той же операцией. Повтор с ДРУГИМ
- * телом упирается в `sameCorrectionOrThrow` — и это правильный исход: ключ отвечает лишь на
- * «повтор?», и клиент, переиспользовавший uuid, иначе молча получил бы чужую работу.
+ * A retry with the SAME body continues the work of the former batch: days already placed into
+ * routes are cut off by `assertDayPlannable` and leave as skips, while the unfinished ones get finished
+ * under the same operation. A retry with a DIFFERENT body runs into `sameCorrectionOrThrow` — and
+ * that is the right outcome: the key answers only "a retry?", and a client that reused a uuid would
+ * otherwise silently receive somebody else's work.
  */
 async function openCorrection(tx: Tx, ctx: DayContext): Promise<CorrectionRecord> {
   const expected = { actorUserId: ctx.actor.id, fingerprint: ctx.fingerprint };
@@ -809,7 +848,7 @@ async function openCorrection(tx: Tx, ctx: DayContext): Promise<CorrectionRecord
   });
 }
 
-// ── Предпроверки ──
+// ── Pre-checks ──
 
 /**
  * The request's object is addressable — asked before the first write.
@@ -847,11 +886,12 @@ async function assertObjectAddressable(requestId: string): Promise<void> {
 }
 
 /**
- * Водитель существует и не снят.
+ * The driver exists and is not withdrawn.
  *
- * Существование, а не допуск: допуск спрашивается отбором при выписке листа (ADR 0037 п. 6) — там
- * же, где он и проверяется у одиночной выписки. Здесь важно другое: человек один на весь период, и
- * «такого нет» обязано прозвучать до того, как пачка заведёт полсотни рейсов с ссылкой на него.
+ * Existence, not eligibility: eligibility is asked by the selection at waybill issue (ADR 0037 §6)
+ * — the same place where it is checked for a single issue. What matters here is different: one
+ * person covers the whole period, and "there is no such person" must sound before the batch creates
+ * half a hundred routes referring to him.
  */
 async function assertDriverAlive(driverPersonId: string): Promise<void> {
   const [driver] = await db
@@ -862,23 +902,26 @@ async function assertDriverAlive(driverPersonId: string): Promise<void> {
 }
 
 /**
- * Машина каждого дня срока — тем же правилом, каким её читают соседи (`requestDayVehicleSql`,
- * [assignment-read.ts](./assignment-read.ts)): в режиме `history` отвечает последнее действующее
- * изменение шкалы машины не позже дня, а где истории нет — назначение, ровно как в `legacy`.
+ * The vehicle of each day of the term — by the same rule its neighbours read it with
+ * (`requestDayVehicleSql`, [assignment-read.ts](./assignment-read.ts)): in `history` mode the
+ * answer is the last effective change of the vehicle timeline no later than the day, and where
+ * there is no history — the assignment, exactly as in `legacy`.
  *
- * TS-формой того же правила, а не SQL-выражением, и по двум причинам. Первая: дней до пятидесяти, а
- * вопрос к истории один — прочитать её строки один раз и свернуть в памяти дешевле полусотни
- * коррелированных подзапросов. Вторая: `requestDayVehicleSql` живёт в `WHERE` и в условиях
- * соединения, а в списке столбцов односоставного запроса drizzle теряет квалификацию колонок
- * (`office-equipment-sql-correlation.test.ts`). Настоящая свёртка (`assignmentStateOn`) — тот же
- * единственный носитель правила, к которому SQL-форма и отсылает.
+ * In the TS form of that same rule rather than as a SQL expression, for two reasons. First: there
+ * are up to fifty days but only one question to the history — reading its rows once and folding
+ * them in memory is cheaper than half a hundred correlated subqueries. Second:
+ * `requestDayVehicleSql` lives in `WHERE` and in join conditions, while in the column list of a
+ * single-table query drizzle loses the column qualification
+ * (`office-equipment-sql-correlation.test.ts`). The real fold (`assignmentStateOn`) is that same
+ * single carrier of the rule the SQL form refers to.
  */
 async function dayVehiclesOf(
   request: LinearRequestState,
   days: readonly string[],
 ): Promise<Map<string, string>> {
-  // Назначение непусто: без него `linearDaysBlocker` не пустил бы пачку дальше («на заявку не
-  // назначена техника»), — но ответ на вопрос «чем работали» это всё равно запасной.
+  // The assignment is non-empty: without it `linearDaysBlocker` would not have let the batch
+  // through ("no vehicle assigned to the request") — but as an answer to "what did the work" it is
+  // a fallback all the same.
   const assigned = request.vehicleId;
   if (!assigned) throw err.unprocessable('На заявку не назначена техника — дни планировать нечем');
 
@@ -893,16 +936,17 @@ async function dayVehiclesOf(
   return map;
 }
 
-// ── Ответ и журнал ──
+// ── The response and the audit log ──
 
-/** Таблица дней после пачки — тем же составом, каким её отдаёт чтение карточки. */
+/** The table of days after the batch — in the same shape the card's read hands it out. */
 async function daysResponse(
   requestId: string,
   fallback: LinearRequestState,
   today: string,
 ): Promise<VehicleRequestDaysDto> {
-  // Состояние перечитывается: пачка шла полсотни транзакций, и отвечать таблицей, построенной по
-  // состоянию до неё, значило бы показать не то, о чём только что составлен отчёт.
+  // The state is re-read: the batch ran half a hundred transactions, and answering with a table
+  // built from the state before it would mean showing something other than what the report has just
+  // been built about.
   const request = (await loadLinearRequest(db, requestId)) ?? fallback;
   return {
     items: await loadRequestDays(db, request),
@@ -912,12 +956,12 @@ async function daysResponse(
 }
 
 /**
- * События дня — теми же именами, что у одиночных дверей, и ПОСЛЕ коммита дня.
+ * The day's audit events — under the same names the single doors use, and AFTER the day's commit.
  *
- * Имена общие намеренно: состав рейса изменился и номер бланка выдан — в журнале это обязано
- * читаться одинаково, откуда бы ни пришли. Задний ход объясняется прямо в событии: у постановки дня
- * своей строки в журнале коррекций нет, и «почему день поставлен прошедшим числом» рассказывается
- * здесь.
+ * The names are shared deliberately: the route composition changed and a blank number was handed
+ * out — in the journal that must read the same way, no matter which door it came from. Backdating
+ * is explained right in the event: placing a day has no row of its own in the corrections journal,
+ * so "why was this day placed with a past date" is told here.
  */
 async function auditDay(
   actor: Principal,
@@ -951,11 +995,11 @@ async function auditDay(
 }
 
 /**
- * Чем отчёт объясняет сорвавшийся день.
+ * How the report explains a day that broke down.
  *
- * Доменный отказ (422, 409, 404) написан для человека и ничего лишнего не раскрывает — он уходит в
- * отчёт как есть. Всё прочее называется общими словами: содержимое непредвиденного исключения в
- * отчёте не помогает никому, а разбор лежит в логе по заявке и дате.
+ * A domain refusal (422, 409, 404) is written for a human and reveals nothing extra — it goes into
+ * the report as it is. Everything else is named in general words: the contents of an unforeseen
+ * exception help nobody in the report, while the analysis lies in the log, by request and date.
  */
 function failureReasonOf(e: unknown): string {
   if (e instanceof AppError && e.statusCode >= 400 && e.statusCode < 500) {

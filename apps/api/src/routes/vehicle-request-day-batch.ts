@@ -16,41 +16,44 @@ import { err } from '../lib/errors';
 import { runVehicleRequestDayBatch } from '../services/vehicle-request-day-batch';
 
 /**
- * Пачка дней заказа техники на объект — `POST /vehicle-requests/:id/days/batch`
- * ([ADR 0207](../../../../docs/adr/0207-vehicle-request-day-batch.md), план
+ * The day batch of a special-equipment request on a site — `POST /vehicle-requests/:id/days/batch`
+ * ([ADR 0207](../../../../docs/adr/0207-vehicle-request-day-batch.md), plan
  * [docs/vehicle-request-day-batch-plan.md](../../../../docs/vehicle-request-day-batch-plan.md)).
  *
- * ПОЧЕМУ ОТДЕЛЬНЫЙ РОУТ-МОДУЛЬ. Тем же приёмом, каким рядом стоят двери истории назначения и
- * правка срока: `vehicle-requests.ts` — барьерный файл, которого одновременно хотят несколько
- * дверей, и дописанные в него двери конфликтуют при любом порядке работ. Префикс тот же —
- * `/api/v1/vehicle-requests`: адреса портала от разделения не меняются, и пачка стоит ровно там
- * же, где подённая дверь (`/:id/days/:date/route`).
+ * WHY A SEPARATE ROUTE MODULE. By the same device that keeps the assignment-history doors and the
+ * term edit standing beside it: `vehicle-requests.ts` is a barrier file that several doors want at
+ * once, and doors appended to it conflict in any order of work. The prefix is the same —
+ * `/api/v1/vehicle-requests`: the portal's addresses do not change because of the split, and the
+ * batch stands exactly where the per-day door stands (`/:id/days/:date/route`).
  *
- * ДВЕРЬ ОДНА, ЗОВУТ ЕЁ ДВА МЕСТА (ADR 0207 §4): галочка «и выписать листы» в окне принятия заказа
- * в работу и кнопка в карточке заявки — для продлённого срока и добора пропущенного. Со стороны
- * рейса такой двери нет и не будет: рейс не знает срока заказа.
+ * ONE DOOR, CALLED FROM TWO PLACES (ADR 0207 §4): the "and issue the waybills" checkbox in the
+ * window that takes a request into work, and the button in the request card — for an extended term
+ * and for picking up what was missed. On the route's side there is no such door and there will not
+ * be: a route does not know the request's term.
  *
- * ПРАВА — ТА ЖЕ ПАРА, ЧТО У ПОДЁННОЙ ДВЕРИ: `waybills.read` (в рейсе виден водитель) и
- * `vehicleRequests.status` (планирование дней — это ход работы по заявке). Третьего права у пачки
- * нет намеренно: `waybills.correct` спрашивается не стражем, а `backdateGuard` внутри — по
- * КАЖДОМУ дню и от общей даты. Поставь его на маршрут — и пачка на будущий срок, которой прошлое
- * не нужно вовсе, стала бы недоступна всем, кроме коррекционных ролей; а день глубже предела
- * требует ещё и `waybills.correctBeyondLimit`, чего страж по телу запроса не видит вовсе.
+ * THE RIGHTS ARE THE SAME PAIR AS THE PER-DAY DOOR'S: `waybills.read` (the driver is visible in the
+ * route) and `vehicleRequests.status` (planning days is the progress of work on the request). The
+ * batch deliberately has no third right: `waybills.correct` is asked not by the guard but by
+ * `backdateGuard` inside — for EVERY day and against the shared date. Put it on the route, and a
+ * batch over a future term, which needs no past at all, would become unavailable to everyone but
+ * the correction roles; and a day deeper than the limit demands `waybills.correctBeyondLimit` on
+ * top, which a guard reading the request body does not see at all.
  */
 
 const idParams = z.object({ id: uuidSchema });
 
 /**
- * Заявка видима этой учётке и ведётся ею.
+ * The request is visible to this account and is run by it.
  *
- * Область спрашивается ДО всякой работы и по тем же правилам, что у подённой двери: объектная и
- * отдельская роли работают со своим, арендодатель — со своей техникой. Внутрь пачки это не
- * переносится: там уже идут транзакции дней, и отказ по области означал бы взятые и тут же
- * отпущенные блокировки — да ещё и посреди выписанных бумаг.
+ * The scope is asked BEFORE any work and by the same rules as the per-day door's: an object role
+ * and a department role work with their own, a lessor with its own vehicles. This is not carried
+ * inside the batch: day transactions are already running there, and a refusal by scope would mean
+ * locks taken and released at once — and that in the middle of issued paper.
  *
- * `assertObjectRoleEditable` здесь нет, и это не пропуск: площадочная роль правит заявку только в
- * «Новой», а пачка работает по заявке В РАБОТЕ — дальше её всё равно не пустит `linearDaysBlocker`,
- * и второй отказ о том же говорил бы другими словами.
+ * `assertObjectRoleEditable` is absent here, and that is not an omission: a site role edits a
+ * request only while it is new, whereas the batch works on a request IN WORK — `linearDaysBlocker`
+ * will not let it any further anyway, and a second refusal would say the same thing in different
+ * words.
  */
 async function assertBatchAllowed(p: Principal, requestId: string): Promise<void> {
   const [row] = await db
@@ -70,8 +73,8 @@ async function assertBatchAllowed(p: Principal, requestId: string): Promise<void
   if (!row) throw err.notFound('Заявка не найдена');
   assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
   assertRequestScope(p, row);
-  // Арендодатель ведёт свои заявки (ADR 0038), но чужой парк и его водители — не его дело: в дни
-  // заказа встают машины и люди собственного парка.
+  // A lessor runs its own requests (ADR 0038), but somebody else's fleet and its drivers are not
+  // its business: the days of a request are filled with vehicles and people of the own fleet.
   assertLessorScope(p, row.lessorId);
 }
 
@@ -79,20 +82,24 @@ export default async function vehicleRequestDayBatchRoutes(app: FastifyInstance)
   const r = app.withTypeProvider<ZodTypeProvider>();
 
   /**
-   * Выписать 4-П на весь период заказа: день за днём — рейс назначенной машины и, если просили,
-   * лист по нему.
+   * Issue a 4-П for the whole term of the request: day after day — a route of the assigned vehicle
+   * and, if asked, a waybill on it.
    *
-   * Отвечает 200 с ПОСТРОЧНЫМ ОТЧЁТОМ даже тогда, когда часть дней не прошла: пачка делает всё,
-   * что может, и рассказывает, чего не смогла (ADR 0207 §7). Отказом маршрута кончается только то,
-   * что относится ко всей пачке целиком и узнаётся до первой записи: дней у заявки нет вовсе (422
-   * текстом `linearDaysBlocker`), нет причины для прошедших дней или ключа операции под них.
-   * Длина срока отказом не бывает: сверх предела пачка берёт порцию и называет остаток в ответе
-   * (`remaining`), который добирают повторным нажатием — решение 11 ADR 0207.
+   * Answers 200 with a PER-DAY REPORT even when part of the days did not pass: the batch does
+   * everything it can and tells what it could not (ADR 0207 §7). The route refuses only with what
+   * concerns the whole batch and is known before the first write: the request has no days at all
+   * (422 with the text of `linearDaysBlocker`), there is no reason for past days, or no operation
+   * key for them. The length of the term is never a refusal: beyond the limit the batch takes a
+   * portion and names the remainder in the response (`remaining`), which is picked up by clicking
+   * again — decision 11 of ADR 0207.
    *
-   * Повтор с тем же ключом операции и тем же телом продолжает работу: уже поставленный день
-   * отсекается уникальным индексом дня (миграция 0127) и уходит в отчёт пропуском, второй лист на
-   * рейс — индексом `waybills_route_unique`. Повтор с другим телом упирается в сверку операции —
-   * так и должно быть: ключ отвечает только на «повтор?».
+   * A retry with the same operation key and the same body continues the work: a day already placed
+   * is cut off by `assertDayPlannable` and leaves as a skip in the report, and a route already
+   * frozen by a waybill — by `isRouteEditable`. The unique indexes behind both (the day's own and
+   * `waybills_route_unique`) are the last line against a race, and a breach of either becomes a
+   * failure row, not a skip: naming them as the cause sends the reader past the real check. A retry
+   * with a different body runs into the operation check — and so it must: the key answers only
+   * "a retry?".
    */
   r.post(
     '/:id/days/batch',
