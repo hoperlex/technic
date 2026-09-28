@@ -522,18 +522,9 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
         }),
       );
 
-      /*
-       * С машинистом в теле сверка довольна, но в `history` дверь всё равно упирается в бэкстоп:
-       * машинист назван **в запросе**, а истории назначения у заказа нет, и статусная ручка её не
-       * пишет (Р22). Это и есть смысл разделения дверей — до переключения чтения оно ещё не
-       * чувствуется, после становится обязательным.
-       */
+      // With the machinist in the body both guards are satisfied in both read modes: the sync has
+      // its person, and the backstop does not ask the door for a person it has just named.
       const ok = await confirm(request, { driverPersonId: ctx.driverA });
-      if (mode === 'history') {
-        expect(ok.statusCode, ok.body).toBe(422);
-        expect(ok.json().code).toBe('assignment_history_incomplete');
-        return;
-      }
       expect(ok.statusCode, ok.body).toBe(200);
       expect(ok.json().isLinear).toBe(false);
       const sheets = await sheetsOf(request.id);
@@ -643,18 +634,6 @@ describe.skipIf(!DB_URL)('ЭСМ-2 по требованию у линейног
     it('нелинейный заказ руками бланка не получает: его листы ведёт портал', async () => {
       const request = await approvedRequest(ctx.plainTypeId);
       const confirmed = await confirm(request, { driverPersonId: ctx.driverA });
-      /*
-       * РАСХОЖДЕНИЕ РЕЖИМОВ. В `legacy` заказ переводится в работу и получает свои недельные листы. В
-       * `history` статусная ручка сперва упирается в бэкстоп: у заказа нет истории назначения, а
-       * достраивать её чужой двери не положено (Р22) — сперва машинист назначается своей дверью.
-       * Предмет самого случая (ручная выписка нелинейному отказана) в этом режиме недостижим, и
-       * притворяться, что он проверен, нельзя.
-       */
-      if (mode === 'history') {
-        expect(confirmed.statusCode, confirmed.body).toBe(422);
-        expect(confirmed.json().code).toBe('assignment_history_incomplete');
-        return;
-      }
       expect(confirmed.statusCode, confirmed.body).toBe(200);
 
       const res = await issueEsm2(request.id, {

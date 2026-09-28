@@ -426,6 +426,28 @@ describe.skipIf(!readMode.enabled)('вердикты бэкстопа: расч�
     });
   });
 
+  it('машинист, названный телом перевода в работу, закрывает пробел истории', async () => {
+    await inScene({ driver: 'unknown' }, async (tx, scene) => {
+      // Same gap, same door: without a named person the status door must still ask for it.
+      const silent = await ctx.backstop.evaluateAssignmentBackstop(tx, {
+        door: 'request_status',
+        requestId: scene.requestId,
+        asOf: AS_OF,
+      });
+      expect(silent?.requiredAnchors[0]).toMatchObject({ effectiveDate: TERM_FROM });
+
+      // The "Take into work" form names the machinist, and the sync writes every sheet to them:
+      // asking again is what refused every own-vehicle order in `read_mode = history`.
+      const named = await ctx.backstop.evaluateAssignmentBackstop(tx, {
+        door: 'request_status',
+        requestId: scene.requestId,
+        asOf: AS_OF,
+        namedDriverPersonId: scene.personA,
+      });
+      expect(named).toBeNull();
+    });
+  });
+
   it('расхождение хвоста спрашивают только двери, расширяющие срок (Р30, Р31)', async () => {
     await inScene({ driver: 'named', tailMismatch: true }, async (tx, scene) => {
       // Недельная операция открывает новые дни — на них хвост истории и оживает, поэтому Р31

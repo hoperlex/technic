@@ -349,19 +349,8 @@ describe.skipIf(!DB_URL)('перевод заказа спецтехники в 
       payload: confirmPayload(request.version, true),
     });
 
-    /*
-     * РАСХОЖДЕНИЕ РЕЖИМОВ. Предмет этого файла — **сама статусная ручка**, поэтому подготовку сюда
-     * не завернуть (`inLegacy` спрятал бы проверяемое). В `history` ручка упирается в бэкстоп: у
-     * заказа нет истории назначения, а достраивать её чужой двери не положено (Р22) — машинист
-     * назначается своей дверью до перевода в работу. Дальнейшее в этом режиме недостижимо, и
-     * притворяться, что оно проверено, нельзя.
-     */
-    if (mode === 'history') {
-      expect(res.statusCode, res.body).toBe(422);
-      expect(res.json().code).toBe('assignment_history_incomplete');
-      return;
-    }
-
+    // Both read modes must pass: the body names the machinist, so the backstop has nothing to
+    // ask. In `history` this used to be a 422 on every own-vehicle order.
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json().status).toBe('confirmed');
     expect(res.json().assignment?.vehicleId).toBe(ctx.vehicle.id);
@@ -404,19 +393,6 @@ describe.skipIf(!DB_URL)('перевод заказа спецтехники в 
       payload: confirmPayload(request.version, false),
     });
 
-    /*
-     * РАСХОЖДЕНИЕ РЕЖИМОВ. Предмет этого файла — **сама статусная ручка**, поэтому подготовку сюда
-     * не завернуть (`inLegacy` спрятал бы проверяемое). В `history` ручка упирается в бэкстоп: у
-     * заказа нет истории назначения, а достраивать её чужой двери не положено (Р22) — машинист
-     * назначается своей дверью до перевода в работу. Дальнейшее в этом режиме недостижимо, и
-     * притворяться, что оно проверено, нельзя.
-     */
-    if (mode === 'history') {
-      expect(res.statusCode, res.body).toBe(422);
-      expect(res.json().code).toBe('assignment_history_incomplete');
-      return;
-    }
-
     expect(res.statusCode, res.body).toBe(200);
     const relocations = await ctx.app.inject({
       method: 'GET',
@@ -434,13 +410,6 @@ describe.skipIf(!DB_URL)('перевод заказа спецтехники в 
       headers: ctx.auth,
       payload: confirmPayload(request.version, true),
     });
-    // РАСХОЖДЕНИЕ РЕЖИМОВ: см. первый случай блока — в `history` статусная ручка отказывает до
-    // всякой работы, и второй перегон завести не на чем.
-    if (mode === 'history') {
-      expect(first.statusCode, first.body).toBe(422);
-      expect(first.json().code).toBe('assignment_history_incomplete');
-      return;
-    }
     expect(first.statusCode, first.body).toBe(200);
 
     // Повторный перегон заводят уже из карточки заявки — тем же правилом «одна доставка и один

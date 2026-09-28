@@ -6691,16 +6691,18 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
              * аннулируются вместе с работой. Закрытие срока не меняет и потому ничего не трогает —
              * сверка на нём молчит сама, отдельного условия для этого не нужно.
              */
-            // Бэкстоп Р21 — перед бумагой. Статус новых дней не открывает, поэтому решения по хвосту
-            // (Р31) с него не спрашивают; пробелы машиниста спрашивают: рождённые этим переходом
-            // листы выписываются на те же дни, о которых история молчит. День расчёта — тот же
-            // `today`, каким считает сверка: полночь между двумя расчётами дала бы разные ответы.
+            // Backstop R21 runs before the paper. A status change opens no new days, so the tail
+            // (R31) is not asked. Machinist gaps are asked, since sheets born here cover exactly the
+            // days history is silent about, unless this body names the machinist: the sync writes
+            // every sheet to that person, and asking again deadlocked "Take into work" in
+            // `read_mode = history`. `asOf` is the sync's `today`, so midnight cannot split them.
             await assertAssignmentBackstop(tx, {
               door: 'request_status',
               requestId: before.id,
               actor: { id: p.id },
               asOf: today,
               reason: esm2StatusReason(status),
+              namedDriverPersonId: assignment?.driverPersonId ?? null,
             });
             /*
              * Годность названного машиниста (план `machinist-card-removal`, Р6). Человек пришёл
