@@ -2751,16 +2751,17 @@ async function addRelocation(
 }
 
 /**
- * Заявка переезжает в рейс новой машины (ADR 0048). Рейс заведён на конкретную машину, поэтому
- * смена техники — это всегда переезд, а не правка: заявка вынимается из прежнего маршрута и
- * кладётся в маршрут новой единицы тем же путём, что и при переводе в работу.
+ * The request moves into the route of the new vehicle (ADR 0048). A route belongs to one vehicle,
+ * so changing the vehicle is always a move, not an edit: the request leaves its old route and is
+ * put into the new unit's route the same way taking into work puts it there.
  *
- * Замороженный выписанным листом рейс не отдаёт заявку: бланк уже у водителя, и исчезнуть из него
- * задним числом она не может — сначала лист аннулируют (`waybills.cancel`). Тем же правилом рейс
- * держит заявку при смене статуса (`planStatusDetach`).
+ * A route frozen by an issued waybill does not give the request up: the form is already with the
+ * driver, and the request cannot vanish from it after the fact — the waybill is cancelled first
+ * (`waybills.cancel`). The same rule keeps the request in a route on a status change
+ * (`planStatusDetach`).
  *
- * Водитель приезжает вместе с рейсом (`route.driverPersonId`) и правится там же, где заявка
- * встаёт в состав, — ответ отдаётся наверх, ручке, которая пишет о нём событие рейса.
+ * The driver comes with the route (`route.driverPersonId`) and is edited where the request joins
+ * the composition; the change is returned up to the handler, which writes the route's event.
  */
 async function moveToRouteOfVehicle(
   tx: Tx,
@@ -6369,10 +6370,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       if (schedule && schedule.requestType !== before.requestType) {
         throw err.unprocessable('Тип заявки изменить нельзя', { schedule: 'Другой тип заявки' });
       }
-      // Возврат в «Новую» стирает работу заявки, и причина ему нужна так же, как отмене: в
-      // истории иначе осталась бы пара переходов, по которой не понять, ошиблись машиной,
-      // отказался исполнитель или заявку завели не тому объекту. Схема тела спросить это не
-      // может — она знает только целевой статус, а требование зависит от исходного.
+      // The rollback to «Новая» erases the request's work and needs a reason just as a cancellation
+      // does: otherwise the history keeps a pair of transitions that cannot tell a wrong vehicle
+      // from a refusing contractor or a request filed for the wrong site. The body schema cannot
+      // ask for it — it knows only the target status, and the requirement depends on the source.
       const resetsWork = transitionResetsWork(before.status, status);
       if (resetsWork && !comment) {
         throw err.unprocessable(
@@ -6540,37 +6541,37 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
                 `Данные изменились с момента просмотра: посмотрите заново, что снимет возврат в «${requestStatusLabels.new}»`,
               );
             }
-            // Срок — первым: дату рейса путевой лист берёт из заявки, и записанный после выписки он
-            // отправил бы лист на заказанное время вместо согласованного.
+            // The term goes first: the waybill takes the trip date from the request, and a term
+            // written after the issue would send the sheet to the ordered time, not the agreed one.
             if (schedule) await applyConfirmedSchedule(tx, before.id, schedule);
             let saved: VehicleRequestAssignmentDto | null = null;
             if (assignment) {
               saved = await resolveAssignment(tx, assignment, { id: p.id, name: p.fullName });
               await saveAssignment(tx, before.id, before.vehicleTypeId, saved);
 
-              // Заявка кладётся в рейс в этой же транзакции (маршруты): состояния «в работе, а рейса
-              // нет» перевод в работу не создаёт. Документ при этом не рождается — лист выписывают с
-              // рейса, когда состав собран. На заказ техники на объект, на аренду и на типы без
-              // бланка рейс не ведётся вовсе, и это нормальный ход, а не ошибка.
+              // The request goes into a route in this same transaction: taking into work never
+              // leaves «in work, but no route». No document is born here — the sheet is issued from
+              // the route once its composition is assembled. On-site orders, rentals and types
+              // without a form have no route at all, and that is the normal path, not an error.
               if (transitionRequiresAssignment(status)) {
                 routeDriver = await attachToRoute(tx, {
-                  // Режим — перечитанный под блокировкой (Р5), а не `before.isLinear`. Укладку в
-                  // рейс он больше не решает (ADR 0207 §1), но идёт отсюда дальше — в перегон, где
-                  // решает до сих пор, — и устаревшее значение развело бы две двери одной
-                  // транзакции по разным ответам.
+                  // The mode re-read under the lock (Р5), not `before.isLinear`. It no longer
+                  // decides placement into a route (ADR 0207 §1), but it goes on from here into the
+                  // relocation, where it still decides — and a stale value would send two doors of
+                  // one transaction to different answers.
                   request: { ...before, isLinear },
                   assignment: saved,
                   route: assignment.route,
                   actor: { id: p.id },
                 });
 
-                // Доставка техники на объект — по желанию: спецтехника доезжает до площадки своим
-                // ходом, и на эту поездку выписывается 4-П, но повезти её могут и тралом. Вывоз
-                // заводят позже, из карточки заявки: в этот момент его дату ещё не знают.
+                // Delivery to the site is optional: a machine may drive there on its own, and that
+                // trip gets a 4-П, but it may also go on a low-loader. The pickup is filed later,
+                // from the request card: its date is not known yet at this moment.
                 if (assignment.delivery) {
                   await addRelocation(tx, {
-                    // Тот же перечитанный признак: линейной технике перегон не заводят вовсе, и
-                    // отказ обязан считаться по режиму, действующему в этой транзакции.
+                    // The same re-read flag: a linear machine gets no relocation at all, and the
+                    // refusal must follow the mode in force in this transaction.
                     request: { ...before, isLinear },
                     assignment: saved,
                     purpose: 'delivery',
@@ -6593,8 +6594,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
                     p.id,
                   )
                 : { droppedRelocations: [], detachedDays: [] };
-            // Ставка берётся из назначения — того, что стоит на заявке сейчас: сменить машину, не
-            // меняя статуса, нельзя (ADR 0027), поэтому оно же и было в работе.
+            // The rate comes from the assignment standing on the request now: the vehicle cannot
+            // change without a status change (ADR 0027), so this is the one that was in work.
             let closed: VehicleRequestCompletionDto | null = null;
             if (completion) {
               closed = resolveCompletion(before.assignment, completion, {
@@ -6616,28 +6617,31 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               await tx
                 .delete(vehicleRequestCompletions)
                 .where(eq(vehicleRequestCompletions.requestId, before.id));
-              // Дни работы уходят вместе с машиной: машины нет — нет и её смен. Подтверждённых
-              // среди них уже не бывает, с ними откат отклонён выше, — стираются черновики часов.
+              // The work days leave with the vehicle: no vehicle, no shifts of it. Approved days
+              // inside the term cannot be here — the rollback was refused above — so what goes are
+              // hour drafts (and any approved row left outside the term, which the preview names).
               await dropRequestShifts(tx, before.id);
             }
             const [updated] = await tx
               .update(vehicleRequests)
               /*
-               * Виза откат переживает (ADR 0172). Возврат в «Новую» стирает то, чем заявку
-               * собирались выполнять, — машину, факт, рейс, дни, — но согласие площадки «техника
-               * нужна и по средствам» ему не подчинено: откатывают ошибку ведения (дали не ту
-               * машину, отказался исполнитель), а не решение руководителя строительства.
+               * The approval survives the rollback (ADR 0172). Returning to «Новая» erases what the
+               * request was to be executed with — vehicle, completion, route, days — but the site's
+               * consent «the machine is needed and affordable» is not subject to it: a rollback
+               * undoes a mistake of running the order (wrong vehicle, refusing contractor), not the
+               * construction manager's decision.
                *
-               * Прежде она снималась здесь же, и цена была не в лишнем нажатии: заявка, откаченная
-               * диспетчером в пятницу вечером, ждала чужого рабочего дня, чтобы вернуться в работу.
-               * При этом соседний путь в ту же «Новую» — возврат из «Отменена» — визу не трогал
-               * никогда, и два отката в один статус отвечали на вопрос о визе по-разному.
+               * It used to be dropped right here, and the cost was not an extra click: a request
+               * rolled back by the dispatcher on Friday evening waited for someone else's working
+               * day to go back into work. Meanwhile the other road into the same «Новая» — back
+               * from «Отменена» — never touched the approval, so two rollbacks into one status
+               * answered the approval question differently.
                *
-               * Снять её по-прежнему есть чем, и обе двери ведут туда, где решение принимает тот,
-               * кто его принимал: руководитель строительства отзывает визу сам (у «Новой» она
-               * снимается, `isApprovalChangeable`), а правка заявки по существу не визирующим
-               * снимает её без спроса (`dropApproval`) — то есть переписанную после отката заявку
-               * согласовывают заново, как и всякую переписанную.
+               * It can still be removed, and both doors lead to whoever made the decision: the
+               * construction manager revokes it (a «Новая» allows that, `isApprovalChangeable`),
+               * and a substantive edit by someone who cannot approve drops it silently
+               * (`dropApproval`) — a request rewritten after the rollback is approved anew, like any
+               * rewritten one.
                */
               .set({
                 status,
@@ -6694,11 +6698,11 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               namedDriverPersonId: assignment?.driverPersonId ?? null,
             });
             /*
-             * Годность названного машиниста (план `machinist-card-removal`, Р6). Человек пришёл
-             * телом запроса — это явный выбор, и спрашивается он по сроку, каким заказ уходит в
-             * работу: срок к этому месту уже записан той же транзакцией, поэтому читается из базы,
-             * а не собирается из тела. Унаследованного сверкой человека это правило не касается —
-             * его не выбирали сейчас.
+             * Eligibility of the named machinist (plan `machinist-card-removal`, Р6). The person came
+             * in the body — an explicit choice — and is checked against the term the order goes
+             * into work with: that term is already written by this transaction, so it is read from
+             * the database, not assembled from the body. A person inherited by the sweep is not
+             * subject to this rule — nobody chose them now.
              */
             if (assignment?.driverPersonId) {
               const workPeriod = await loadWorkPeriod(tx, before.id);
@@ -6713,15 +6717,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               actor: { id: p.id },
               reason: esm2StatusReason(status),
               driverPersonId: assignment?.driverPersonId ?? null,
-              // Тот самый день, которым посчитан отпечаток (Р12): спроси сверка «сегодня» сама,
-              // полночь дала бы ей другой набор недель, чем тот, что подтвердил человек.
+              // The very day the fingerprints were computed by (Р12): were the sweep to ask for
+              // «today» itself, a midnight would give it another set of weeks than the one confirmed.
               asOf: today,
             });
             /*
-             * План по дням (ADR 0100 §11) — тем же порядком и по той же причине, что и бумага:
-             * сверка читает заявку из базы. Отмена и возврат в «Новую» снимают дни уже выше
-             * (`applyStatusDetach`, там же спрашивается заморозка), но сверка идёт и по ним: она же
-             * ловит дни, оставшиеся за сроком после уточнения периода тем же запросом.
+             * The day plan (ADR 0100 §11) — in the same order and for the same reason as the paper:
+             * the sweep reads the request from the database. Cancellation and the rollback have
+             * already taken the days off above (`applyStatusDetach`, which also asks about the
+             * freeze), yet the sweep runs for them too: it is what catches days left beyond the
+             * term after the same request refined the period.
              */
             const days = await syncLinearRouteDays(tx, {
               requestId: before.id,
@@ -6729,15 +6734,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               reason: `Заявка переведена в «${requestStatusLabels[status]}»`,
             });
             /*
-             * Снятие заморозки режима (Р4) — **последним шагом** транзакции, строго после обеих
-             * сверок. Заявка дорабатывала по снимку, и уход из «В работе» возвращает её справочнику:
-             * снимок относится к работе, а не к закрытому заказу. Сними его раньше — и обе сверки
-             * посчитали бы уже по новому режиму: крайняя неделя ЭСМ-2 не выписалась бы вовсе, и
-             * заявка ушла бы в закрытие без бумаги за отработанное.
+             * Dropping the mode freeze (Р4) is the **last step** of the transaction, strictly after
+             * both sweeps. The request finished its work by the snapshot, and leaving «В работе»
+             * returns it to the directory: the snapshot belongs to the work, not to a closed order.
+             * Drop it earlier and both sweeps would compute by the new mode: the last ESM-2 week
+             * would not be issued at all, and the request would close without paper for work done.
+             * The rollback preview announces this drop (`dropsLinearFreeze`, ADR 0211).
              *
-             * Условие только про уход из работы: мягкое удаление статуса не меняет и заморозку не
-             * снимает — архивная заявка остаётся «В работе», и восстановление обязано вернуть её
-             * ровно такой, какой её спрятали (§5.5).
+             * The condition is only about leaving work: a soft delete changes no status and keeps
+             * the freeze — an archived request stays «В работе», and restoring it must bring it
+             * back exactly as it was hidden (§5.5).
              */
             if (before.status === 'confirmed' && locked.isLinearFrozen !== null) {
               await tx
@@ -6765,30 +6771,31 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           from: before.status,
           to: status,
           comment,
-          // Убранные перегоны — часть того же события: рейс исчез не сам по себе, а вместе со
-          // сменой статуса, и в журнале это должно читаться одной записью.
+          // Dropped relocations belong to the same event: the route did not vanish on its own
+          // but with the status change, and the journal must read it as one record.
           ...(droppedRelocations.length > 0 ? { droppedRelocations } : {}),
-          // Доставка, заведённая прошедшим днём (ADR 0101, Р29): своего события у неё нет — рейс
-          // родился внутри перевода в работу, — поэтому объяснение живёт здесь, рядом с ним.
+          // A delivery filed for a past day (ADR 0101, Р29) has no event of its own — the route
+          // was born inside taking into work — so its explanation lives here, next to it.
           ...(deliveryBackdated
             ? { deliveryBackdated: true, deliveryBackdateReason: deliveryReason }
             : {}),
-          // Снятые дни заказа — тем же порядком: их сняла не сверка сама по себе, а
-          // смена статуса, и в истории это одно событие (ADR 0100 §11).
+          // Detached days of the order, the same way: the status change took them off, not the
+          // sweep by itself, and in the history it is one event (ADR 0100 §11).
           ...(detachedDays.length > 0 ? { detachedDays } : {}),
-          // Сброс отмечается и в самом переходе: по журналу должно быть видно, что заявка не
-          // просто вернулась в «Новую», а лишилась всего, чем её собирались выполнять.
+          // The reset is marked on the transition itself: the journal must show that the request
+          // did not just return to «Новая» but lost everything it was to be executed with.
           ...(resetsWork ? { reset: true } : {}),
-          // Выписанные и сгоревшие номера — тем же событием: бланки строгой отчётности изменились
-          // не сами по себе, а сменой статуса заявки.
+          // Issued and burned numbers in the same event: the strict-accounting forms changed not
+          // on their own but by the request's status change.
           ...(esm2.issued.length > 0 ? { esm2Issued: esm2.issued } : {}),
           ...(esm2.cancelled.length > 0 ? { esm2Cancelled: esm2.cancelled } : {}),
         },
       });
-      // Назначение — отдельное событие истории: «в работе» и «на такой-то машине по такой-то
-      // ставке» отвечают на разные вопросы, и второе нужно предъявлять с составом изменений.
-      // Снятое возвратом в «Новую» назначение — то же событие с прочерками справа: вопрос «чем
-      // выполняли заявку» один, и «ничем, машину сняли» — такой же ответ на него.
+      // The assignment is a separate history event: «in work» and «on such a vehicle at such a
+      // rate» answer different questions, and the second is shown with its list of changes. An
+      // assignment removed by the rollback to «Новая» is the same event with dashes on the right:
+      // «what executes the request» is one question, and «nothing, the vehicle was taken off» is
+      // an answer to it like any other.
       if (assigned || (resetsWork && before.assignment)) {
         await writeAudit({
           actorUserId: p.id,
@@ -6801,13 +6808,13 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           },
         });
       }
-      // Водитель готового рейса, если его назвали переводом в работу (ADR 0048): событие рейса, а
-      // не заявки — правку читают в журнале маршрута, и общий он для всех своих заявок.
+      // The driver of a ready route, if taking into work named one (ADR 0048): an event of the
+      // route, not of the request — it is read in the route journal and shared by its requests.
       if (routeDriver) await auditRouteDriverChange(p.id, before.id, routeDriver);
-      // Факт выполнения — тоже своё событие: «Выполнена» отвечает «что с заявкой», закрытие —
-      // «сколько отработали и сколько это стоило». Повторное закрытие после отката видно
-      // составом изменений: та же работа, но другое время и другая сумма, — а снятый возвратом
-      // в «Новую» факт виден прочерками: предъявлять по этой заявке больше нечего.
+      // The completion is an event of its own too: «Выполнена» answers «what is with the
+      // request», the completion — «how long it worked and what it cost». A repeated completion
+      // after a rollback shows as a list of changes (same work, other time and sum), and a
+      // completion removed by the rollback to «Новая» shows as dashes: nothing left to present.
       if (completed || (resetsWork && before.completion)) {
         await writeAudit({
           actorUserId: p.id,
@@ -6817,15 +6824,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           metadata: {
             changes: [
               ...diffVehicleCompletion(before.completion, completed),
-              // Дни, за которые объект так и не расписался: закрытие их принимает молча, а спорят о
-              // машиночасах через два месяца — по истории, и она обязана помнить, что подписи не было.
+              // Days the site never signed for: completion accepts them silently, but machine
+              // hours are disputed two months later by the history, which must remember there was
+              // no signature.
               ...(completed ? shiftsPendingChange(pendingShiftDates) : []),
             ],
           },
         });
       }
-      // Снятый закрытием запрос на досрочное завершение — своё событие: иначе он просто исчезает
-      // из списка ожидающих визы, и по истории непонятно, чем кончился.
+      // An early-end request dropped with the status is an event of its own: otherwise it just
+      // disappears from the approval queue, and the history cannot tell how it ended. The
+      // rollback preview names it beforehand (`earlyEnd`, ADR 0211).
       if (earlyEndDropped) {
         await writeAudit({
           actorUserId: p.id,
@@ -6839,10 +6848,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         });
       }
       /*
-       * Событию отзыва визы здесь больше не место (ADR 0172): возврат в «Новую» её не снимает, и
-       * запись «виза отозвана» рядом с переходом означала бы в истории то, чего не случилось.
-       * Само событие `vehicle_request.approval_revoke` осталось за теми, кто визу действительно
-       * снимает, — ручкой отзыва и правкой по существу.
+       * No approval-revoke event here any more (ADR 0172): the rollback to «Новая» keeps the
+       * approval, and «approval revoked» next to the transition would record what did not happen.
+       * `vehicle_request.approval_revoke` stays with those who really remove it — the revoke
+       * handle and a substantive edit.
        */
       await auditLinearDaysSync({
         actorUserId: p.id,
@@ -6851,9 +6860,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         result: days,
       });
       const after = (await getDto(before.id))!;
-      // Уточнённый срок — событие правки, а не назначения: заказывали на одно время, вышли на
-      // другое, и в истории это читается теми же строками «было → стало», что и обычная правка
-      // заявки. Совпал с заказанным — события нет: «уточнили и не изменили» истории не событие.
+      // A refined term is an edit event, not an assignment one: ordered for one time, went out
+      // at another, and the history reads it with the same «was → became» lines as an ordinary
+      // edit. Equal to the ordered one — no event: «refined and left unchanged» is not history.
       if (schedule) {
         const changes = diffVehicleRequests(before, after);
         if (changes.length > 0) {
