@@ -48,7 +48,7 @@ import {
   driverRemovalDetails,
 } from './driverRemovalConfirm';
 import { useDriverFilters } from './DriverFilters';
-import { PhoneField, PhoneLink } from '@entities/user-account';
+import { PhoneField, PhoneLink, userAccountKeys } from '@entities/user-account';
 import { garageKeys } from '@entities/garage';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
@@ -269,6 +269,12 @@ export function DriversTab() {
     onSuccess: () => {
       message.success('Сохранено');
       invalidate();
+      // The card owns the name and the phone, so the server copies both into the live account of
+      // that same person (`PATCH /drivers/:id`). Accounts sit under their own root, which
+      // `driverKeys.root` does not cover — without this the «Пользователи» tab and every account
+      // picker keep offering the person under the old name. Of the directory's doors only this one
+      // writes to `users`: purging a driver refuses outright while a live account points at him.
+      void qc.invalidateQueries({ queryKey: userAccountKeys.root });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),

@@ -65,6 +65,7 @@ import {
   type WasteRequestUpdatePayload,
 } from '@entities/waste-request';
 import { useAuth } from '@entities/session';
+import { wasteTicketKeys } from '@entities/waste-ticket';
 import { AutoSelect } from '@shared/ui';
 import { PhoneInput } from '@entities/user-account';
 import { CancelReasonModal, ResponsibleFields, RollbackReasonModal } from '@entities/request';
@@ -871,6 +872,11 @@ function RequestsTab() {
       setRollbackTarget(null);
       setDoneTarget(null);
       void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
+      // Rollback to "new" deletes the request's tickets, pages, file rows and accepted mismatches
+      // in the same transaction as the status (`purgeRequestRecognition`), and closing enqueues the
+      // fresh paper. Neither reaches the request root — without this the card keeps listing erased
+      // tickets and offering actions on rows that no longer exist.
+      void qc.invalidateQueries({ queryKey: wasteTicketKeys.root });
     },
     onError: (e) => {
       message.error(errorMessage(e));

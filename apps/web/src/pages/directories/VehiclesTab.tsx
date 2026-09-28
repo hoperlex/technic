@@ -31,7 +31,7 @@ import {
 } from '@entities/vehicle-type';
 import { garageKeys } from '@entities/garage';
 import { FuelNormsModal } from './FuelNormsModal';
-import { unhitchedNotice, VehicleTrailersField } from '@entities/vehicle-trailer';
+import { trailerKeys, unhitchedNotice, VehicleTrailersField } from '@entities/vehicle-trailer';
 import { useAuth } from '@entities/session';
 import { useVehicleMaintenanceAction } from '@features/vehicle-maintenance';
 import { AutoSelect, DataTable, FormModal, PageTableLayout } from '@shared/ui';
@@ -260,6 +260,12 @@ export function VehiclesTab() {
       // сообщать не о чем, а «отцеплено 0» читалось бы как сбой.
       if (unhitched) message.warning(unhitchedNotice(unhitched, 'этой правкой'), 8);
       void qc.invalidateQueries({ queryKey: vehicleKeys.root });
+      // The trailer registry sits under its own root, out of reach of `vehicleKeys.root`, and this
+      // edit rewrites it twice over: retiring the machine or moving it onto the "форма № 3" blank
+      // releases its hitches (`releaseHitchesOfVehicle`), and every trailer row carries the tractor
+      // it stands behind (`hitchedVehicle`). Without the drop the registry and the
+      // "Прицепы за машиной" slots keep showing hitches the server has already let go.
+      void qc.invalidateQueries({ queryKey: trailerKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
       setOpen(false);
     },

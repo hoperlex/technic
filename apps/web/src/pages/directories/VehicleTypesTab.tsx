@@ -38,6 +38,7 @@ import {
   vehicleTypeKeys,
   vehicleTypesApi,
 } from '@entities/vehicle-type';
+import { trailerKeys } from '@entities/vehicle-trailer';
 import { isApiError } from '@shared/api';
 import { DataTable, type CardConfig, type TableChange } from '@shared/ui';
 import { FormModal, PageTableLayout } from '@shared/ui';
@@ -326,6 +327,12 @@ export function VehicleTypesTab() {
       // всех машин типа. Предупреждением и дольше обычного, как в VehiclesTab; при нуле — молчим.
       if (saved.unhitchedTrailers)
         message.warning(unhitchedNotice(saved.unhitchedTrailers, saved.unhitchedVehicles), 8);
+      // Moving a type onto the "форма № 3" blank strips the hitches of EVERY vehicle of that type
+      // (`releaseHitchesOfVehicleType`) — trailer rows, under their own root, missed by
+      // `invalidateTypes`. Here and not in the `finally`: the release rides in the PATCH
+      // transaction, so a failed save let no hitch go. Skip it and freed trailers still show a
+      // tractor whose blank has no slot to print them in.
+      void qc.invalidateQueries({ queryKey: trailerKeys.root });
       setOpen(false);
     } catch (e) {
       // Переключение прошло, а правка остальных полей — нет: «не сохранено» здесь было бы
