@@ -543,13 +543,15 @@ describe.skipIf(!DB_URL)('переключение признака линейн
   });
 
   /*
-   * Случаи гоняются в обоих режимах чтения; инфраструктура файла (`beforeAll`/`afterAll`) остаётся
-   * снаружи — два блока означали бы два `afterAll`, и первый закрыл бы соединение.
+   * Cases run in both read modes; the file's infrastructure (`beforeAll`/`afterAll`) stays outside,
+   * since two blocks would mean two `afterAll`s and the first would close the connection.
    *
-   * Сегодня половины совпадают: заморозка считает работающие заказы и их листы, а нарезка бумаги на счёт не влияет. На этапе 5 число листов у заказа может вырасти, и счётчик операции придётся пересчитать.
+   * The two halves expect the same today: freezing counts working orders and their sheets, and how
+   * paper is cut does not change the count. At stage 5 an order may get more sheets, and the
+   * operation's counter will have to be recalculated. One case is legacy-only, with the reason
+   * next to it: the order of unfreezing and reconciling at closing is visible only there.
    */
   describeReadModes(readMode, 'переключение линейности', (mode) => {
-    void mode;
 
   it('переключение морозит работающие заказы и отвечает номерами этой операции', async () => {
     const type = await createType();
@@ -822,6 +824,14 @@ describe.skipIf(!DB_URL)('переключение признака линейн
   });
 
   /*
+   * What closing a frozen order leaves behind: the snapshot is gone, the worked periods keep their
+   * paper, and nothing is left past the actual end date (ADR 0178).
+   *
+   * This case does NOT see the order of reconciling and unfreezing (R4): every sheet was issued
+   * when the order was taken into work, and with the paper complete the frozen weekly mode and the
+   * linear mode it would read as after unfreezing give the same result. The next case builds the
+   * scene where they differ.
+   *
    * Two terms, chosen so that the outcome does not depend on the day the suite runs. A one-day term
    * is always a single period. An eight-day term always crosses a period boundary: its first seven
    * days contain a Sunday, which ends a period before the term's last day, so there are at least
@@ -832,7 +842,7 @@ describe.skipIf(!DB_URL)('переключение признака линейн
     { scene: 'однодневный срок', lastDay: 0, crossesBoundary: false },
     { scene: 'восемь дней, срок пересекает границу периода', lastDay: 7, crossesBoundary: true },
   ])(
-    'закрытие снимает заморозку, и крайняя неделя ЭСМ-2 при этом выписывается ($scene)',
+    'закрытие фактической датой снимает заморозку, и бумага кончается этой датой ($scene)',
     async ({ lastDay, crossesBoundary }) => {
       const type = await createType();
       const term = { dateFrom: ctx.today, dateTo: shiftDateKey(ctx.today, lastDay) };
@@ -849,12 +859,8 @@ describe.skipIf(!DB_URL)('переключение признака линейн
       // Закрытие идёт дверью (ADR 0178): статусная ручка «Выполнена» у заказа техники отвечает 422.
       expect(await closeRequest(working.id)).toBe(200);
 
-      /*
-       * Order R4: ESM-2 reconciliation runs BEFORE the snapshot is cleared. Clear it first, and the
-       * order would be closed as a daily (linear) one, leaving the worked week without its sheet.
-       * The check is about which days the paper covers, not how many sheets there are: closing by
-       * the actual date also cancels sheets past it (see `closeRequest`).
-       */
+      // Which days the paper covers, not how many sheets there are: closing by the actual date
+      // cancels sheets past it and trims the one crossing it (see `closeRequest`).
       const endedOn = ctx.today;
       const sheets = await esm2Sheets(working.id);
       for (const owed of esm2Periods(term.dateFrom, endedOn)) {
@@ -867,6 +873,61 @@ describe.skipIf(!DB_URL)('переключение признака линейн
         sheets.filter((sheet) => sheet.from > endedOn),
         'active ESM-2 sheets after the actual end date',
       ).toEqual([]);
+      expect((await frozenOf(working.id)).isLinear).toBeNull();
+      expect((await frozenOf(working.id)).at).toBeNull();
+    },
+  );
+
+  /*
+   * Order R4: at closing, ESM-2 reconciliation runs BEFORE the mode snapshot is cleared.
+   *
+   * The two modes disagree only about a worked period that has no sheet. The frozen weekly mode
+   * (`auto`) wants a sheet for every period of the worked term and issues the missing one. The
+   * mode the order reads as once the snapshot is gone (`on_demand`, its type being linear now)
+   * wants only the periods that still have living sheets, so the day would stay without paper.
+   * With every sheet in place, as right after taking the order into work, both give the same
+   * result and the order of the two steps cannot be seen; that is why the previous case cannot
+   * catch it.
+   *
+   * The gap is made the way it happens in practice: the week's sheet is spoiled and written off
+   * through the annulment door, which does not reconcile, so the replacement waits for the next
+   * reconciliation, here the closing one. Clearing the snapshot by SQL just before closing (the
+   * state the wrong order would leave for the reconciliation) makes the sheet check after closing
+   * fail: no sheet is issued. A one-day term keeps the scene independent of the calendar and
+   * avoids the confirmation closing asks for when assignment decisions lie past the end date.
+   *
+   * Legacy read mode only, for two reasons. In `history` the door applies paper from a plan
+   * computed before any write (`paper: { kind: 'plan' }` in `afterWorkPeriodChanged`), so where
+   * the unfreeze step stands cannot change the paper there. And the scene cannot be closed there at
+   * all: the order was taken into work in legacy, and with its only sheet annulled the history
+   * backstop finds no machinist and refuses (`assignment_history_incomplete`).
+   */
+  it.skipIf(mode === 'history')(
+    'крайняя неделя ЭСМ-2 выписывается при закрытии по замороженному режиму (порядок Р4)',
+    async () => {
+      const type = await createType();
+      const term = { dateFrom: ctx.today, dateTo: ctx.today };
+      const working = await requestInProgress(type.id, term);
+      const shown = await preview(type.id, true);
+      await switchLinear(type.id, { isLinear: true, fingerprint: shown.json().fingerprint });
+
+      const issued = await ctx.db.execute<{ id: string }>(sql`
+        SELECT id FROM waybills
+        WHERE source_request_id = ${working.id} AND form_code = 'esm2' AND status <> 'cancelled'`);
+      expect(issued.rows).toHaveLength(1);
+      const annulled = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/waybills/${issued.rows[0]!.id}/cancel`,
+        headers: ctx.auth,
+        payload: { reason: 'Бланк испорчен при печати' },
+      });
+      expect(annulled.statusCode, annulled.body).toBe(200);
+      // Without this the last check would pass on the old sheet and say nothing about the closing.
+      expect(await esm2Sheets(working.id)).toEqual([]);
+
+      expect(await closeRequest(working.id)).toBe(200);
+
+      expect(await esm2Sheets(working.id)).toEqual(esm2Periods(term.dateFrom, ctx.today));
       expect((await frozenOf(working.id)).isLinear).toBeNull();
       expect((await frozenOf(working.id)).at).toBeNull();
     },
