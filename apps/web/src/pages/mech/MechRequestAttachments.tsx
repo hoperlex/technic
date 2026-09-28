@@ -3,8 +3,7 @@ import { App, Button, Typography, Upload } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import type { FileDto, MechRequestDto } from '@technic/contracts';
 import { mechFailureText } from '@entities/mech-request';
-import { FileLinkList } from '../../components/FileLinks';
-import { filesApi } from '@entities/file';
+import { FileLinkList, filesApi } from '@entities/file';
 
 /** Файл, загруженный формой прямо сейчас: он ничей, пока заявка его не забрала. */
 interface UploadedFile {

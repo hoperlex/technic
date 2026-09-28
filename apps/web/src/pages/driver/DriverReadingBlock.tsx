@@ -7,7 +7,7 @@ import {
   type ReportItemDto,
 } from '@technic/contracts';
 import { parseReadingNumber, readingWarnings, type ReadingField } from '@entities/vehicle-reading';
-import { FileLinkList } from '../../components/FileLinks';
+import { FileLinkList } from '@entities/file';
 import type { DraftItem } from './api';
 import { ReadingFields, fieldLabelStyle, hintStyle, keepVisible } from './DriverReadingFields';
 

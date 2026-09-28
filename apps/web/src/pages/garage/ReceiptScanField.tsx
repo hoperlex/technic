@@ -2,9 +2,8 @@ import { useState } from 'react';
 import { App, Button, Form, Upload } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import { RECEIPT_MAX_FILES, RECEIPT_NO_FILES_MESSAGE, type ReceiptDraft } from '@technic/contracts';
-import { filesApi } from '@entities/file';
+import { FileLinkList, filesApi } from '@entities/file';
 import { errorMessage } from '@shared/lib';
-import { FileLinkList } from '../../components/FileLinks';
 import { ReceiptRecognitionPanel } from './ReceiptRecognitionPanel';
 
 /**

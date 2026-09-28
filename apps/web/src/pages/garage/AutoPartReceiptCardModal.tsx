@@ -7,7 +7,7 @@ import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-rec
 import { EntityLink, ViewFields, ViewModal, type ViewField } from '@shared/ui';
 import { errorMessage, formatMoney, type AddressParam } from '@shared/lib';
 import { useAuth } from '@entities/session';
-import { FileLinkList } from '../../components/FileLinks';
+import { FileLinkList } from '@entities/file';
 import { AutoPartReceiptFormModal } from './AutoPartReceiptFormModal';
 import { ReceiptDeletionMarkModal } from './ReceiptDeletionMarkModal';
 import { receiptErrorText, receiptVehicleIds, useReceiptInvalidation } from './receiptMutations';

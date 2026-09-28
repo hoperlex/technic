@@ -2,7 +2,7 @@ import { Alert, Button, Space, Table, Tag, Tooltip, Typography, type TableColumn
 import { DeleteOutlined, EditOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { VehicleMaintenanceDto } from '@technic/contracts';
-import { FilesCell } from '../../../components/FileLinks';
+import { FilesCell } from '@entities/file';
 import { kmText } from '@shared/lib';
 import { SHOWN_DATE } from '../model/maintenanceText';
 

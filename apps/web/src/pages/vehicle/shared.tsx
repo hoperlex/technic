@@ -10,7 +10,7 @@ import {
 } from '@technic/contracts';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 import { driverKeys, driversApi } from '@entities/driver';
-import { filesApi } from '@entities/file';
+import { FileLinkList, filesApi } from '@entities/file';
 import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import type {
   VehicleClassificationGroup,
@@ -18,7 +18,6 @@ import type {
 } from '../../hooks/useVehicleClassifications';
 import { AutoSelect, ExpandableCell, type FilterDefinition } from '@shared/ui';
 import { formatDateOnly } from '@shared/lib';
-import { FileLinkList } from '../../components/FileLinks';
 import { errorMessage } from '../../utils/format';
 import { objectsApi, objectKeys } from '@entities/object';
 

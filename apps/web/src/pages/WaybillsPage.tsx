@@ -12,7 +12,7 @@ import {
   type WaybillDto,
   waybillFormLabels,
 } from '@technic/contracts';
-import { waybillKeys, waybillsApi } from '@entities/waybill';
+import { type PrintTarget, waybillKeys, WaybillPrintModal, waybillsApi } from '@entities/waybill';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
 import { objectFilterOptionLabel, objectOptionsQuery } from '@entities/object';
@@ -23,7 +23,6 @@ import { useDriverOptions, useOwnVehicleOptions } from './vehicle/shared';
 import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from './waybills/filters';
 // Подсказки метки «коррекция» и печати сокращённого листа — соседним файлом (Р12, Р13).
 import { useWaybillJournalColumns } from './waybills/columns';
-import { WaybillPrintModal, type PrintTarget } from '../components/WaybillPrint';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../utils/format';
 

@@ -57,7 +57,7 @@ import {
   wasteSubjectLabel,
 } from '@technic/contracts';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
-import { filesApi } from '@entities/file';
+import { FileLinkList, filesApi, FilesCell } from '@entities/file';
 import {
   wasteRequestKeys,
   wasteRequestsApi,
@@ -68,7 +68,6 @@ import { useAuth } from '@entities/session';
 import { AutoSelect } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '@shared/ui';
-import { FileLinkList, FilesCell } from '../components/FileLinks';
 import { FormGrid } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';

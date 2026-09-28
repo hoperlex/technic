@@ -3,10 +3,8 @@ import { CameraOutlined, UploadOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import { type FileDto, MAX_TICKETS_PER_REQUEST, type WasteRequestDto } from '@technic/contracts';
 import { FILE_MAX_SIZE } from '@shared/config';
-import { useIsMobile } from '@shared/lib';
-import { filesApi } from '@entities/file';
-import { FileLinkList } from '../../../components/FileLinks';
-import { errorMessage } from '../../../utils/format';
+import { errorMessage, useIsMobile } from '@shared/lib';
+import { FileLinkList, filesApi } from '@entities/file';
 
 /**
  * Догрузка талонов к выполненной заявке (ADR 0189): бумага, не поспевшая к закрытию, — талон
@@ -41,6 +39,14 @@ export function AddTicketsBlock({
       const uploaded = await filesApi.upload(file);
       setPending((prev) => [...prev, uploaded]);
     } catch (e) {
+      /*
+       * No field dictionary here, and that is an answer rather than an omission: the only refusal
+       * this screen can get is from the upload itself (`POST /files/upload-session`), whose fields
+       * are `filename`, `contentType` and `size` — the browser fills all three from the chosen file.
+       * A rejection on them is a portal defect, not a mistake in a form, so the person reporting it
+       * needs the server's own word, not a caption; the ticket labels next door name blank fields,
+       * and none of them can ever come back from this call.
+       */
       message.error(errorMessage(e));
     } finally {
       setUploading(false);
@@ -93,7 +99,12 @@ export function AddTicketsBlock({
           <Button
             type="primary"
             loading={adding}
-            onClick={() => onAdd(request, pending.map((f) => f.id))}
+            onClick={() =>
+              onAdd(
+                request,
+                pending.map((f) => f.id),
+              )
+            }
           >
             Приложить к заявке ({pending.length})
           </Button>

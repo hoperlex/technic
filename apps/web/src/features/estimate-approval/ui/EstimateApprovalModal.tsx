@@ -12,7 +12,7 @@ import {
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage, formatMoney } from '@shared/lib';
-import { FileLinkList } from '../../../components/FileLinks';
+import { FileLinkList } from '@entities/file';
 
 /** Поля отказа. Согласия у окна нет вовсе — у него нет содержания, кроме уже видной суммы. */
 interface Values {

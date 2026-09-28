@@ -8,11 +8,17 @@
  * оба сняты вместе с переводом потребителей. Почему две копии одного кортежа были безопасны, а
  * правка одной из них — нет, сказано у самого ключа.
  *
- * `WaybillPrint` план этапа 2 кладёт сюда же (docs/frontend-fsd-stage-2.md §2.1), но компонент
- * остался в `components/`: сообщение об ошибке он берёт из `utils/format`, а legacy из `entities`
- * запрещён границами. Рядом остался и `WaybillFiles` — у него барьера два: тот же `utils/format`
- * и вложения, которые он собирает из `filesApi` со списком ссылок `FileLinks`, то есть в слайсе
- * стал бы импортом соседа `waybill` → `file`. Оба переедут вслед за тем, на чём стоят.
+ * PRINTING LIVES HERE, ATTACHING DOES NOT, and the two used to be listed side by side as waiting
+ * for the same barrier. Printing asks the journal for a blank and marks the sheet as gone — nothing
+ * but this slice is involved, so `ui/WaybillPrint.tsx` is at home. Attaching a scan to a sheet needs
+ * the file slice as well (upload to storage, the shared list of links), and one entity may not reach
+ * for another on its own layer: that cell is a feature, `@features/waybill-files`.
  */
 export { waybillKeys } from './api/keys';
 export { waybillsApi } from './api/waybillsApi';
+export {
+  ExportWaybillButton,
+  type PrintTarget,
+  PrintWaybillButton,
+  WaybillPrintModal,
+} from './ui/WaybillPrint';

@@ -11,7 +11,7 @@ import {
 import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-reading';
 import { DataTable, ViewModal } from '@shared/ui';
 import { useIsMobile, useListParams } from '@shared/lib';
-import { FilesCell } from '../../components/FileLinks';
+import { FilesCell } from '@entities/file';
 
 /**
  * Журнал показаний машины (ADR 0103, Р27): день, смена, кто передал, два счётчика и три числа

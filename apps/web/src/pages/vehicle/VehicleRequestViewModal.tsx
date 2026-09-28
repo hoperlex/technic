@@ -37,7 +37,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { useAuth } from '@entities/session';
 import { RequestTripsTable } from './RequestTripsTable';
 import { AddressCell } from '@entities/address';
-import { FileLinkList } from '../../components/FileLinks';
+import { FileLinkList } from '@entities/file';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
@@ -45,7 +45,7 @@ import { formatDateOnly, useIsMobile } from '@shared/lib';
 import { calendarDaysLabel, formatDate, formatDateTime, formatMoney } from '@shared/lib';
 import { EntityLink, ViewFields, ViewModal } from '@shared/ui';
 import { canOpenRoute, vehicleRequestLink, vehicleRouteLink, waybillLink } from '../../utils/links';
-import { PrintWaybillButton } from '../../components/WaybillPrint';
+import { PrintWaybillButton } from '@entities/waybill';
 import { PhoneLink } from '../../components/PhoneField';
 import { formatDateTimeMaybe } from '../../utils/format';
 import { tripsCountLabel } from './shared';

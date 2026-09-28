@@ -2,9 +2,14 @@ import { useState } from 'react';
 import { Alert, App, Button, Collapse, Empty, Space, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { WasteTicketDto } from '@technic/contracts';
-import { wasteTicketKeys, wasteTicketsApi, wasteTicketsQuery } from '@entities/waste-ticket';
-import { FilePreviewModal } from '../../../components/FileLinks';
-import { errorMessage } from '../../../utils/format';
+import {
+  wasteTicketErrorLabels,
+  wasteTicketKeys,
+  wasteTicketsApi,
+  wasteTicketsQuery,
+} from '@entities/waste-ticket';
+import { FilePreviewModal } from '@entities/file';
+import { errorMessage } from '@shared/lib';
 import { BlindCheckPanel } from './BlindCheckPanel';
 import { TicketFormModal } from './TicketFormModal';
 import { TicketCard } from './TicketCard';
@@ -51,7 +56,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
           : 'Талон подтверждён',
       );
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e) => message.error(errorMessage(e, wasteTicketErrorLabels)),
     onSettled: () => setBusyId(null),
   });
 
@@ -61,7 +66,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
       await invalidate();
       message.success('Талон снят');
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e) => message.error(errorMessage(e, wasteTicketErrorLabels)),
     onSettled: () => setBusyId(null),
   });
 
@@ -74,7 +79,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
       await invalidate();
       message.success('Новое чтение принято');
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e) => message.error(errorMessage(e, wasteTicketErrorLabels)),
     onSettled: () => setBusyId(null),
   });
 
@@ -84,7 +89,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
       await invalidate();
       message.success('Предложение отклонено');
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e) => message.error(errorMessage(e, wasteTicketErrorLabels)),
     onSettled: () => setBusyId(null),
   });
 
@@ -113,7 +118,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
     },
     onError: async (e) => {
       await invalidate();
-      message.error(errorMessage(e));
+      message.error(errorMessage(e, wasteTicketErrorLabels));
     },
     onSettled: () => setBusyId(null),
   });
@@ -124,7 +129,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
       await invalidate();
       message.success('Файл отправлен на повторное распознавание');
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e) => message.error(errorMessage(e, wasteTicketErrorLabels)),
   });
 
   if (isLoading) return <Typography.Text type="secondary">Загружаем талоны…</Typography.Text>;
@@ -173,7 +178,7 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
       { ticketId: ticket.id },
       {
         onError: (e) => {
-          const text = errorMessage(e);
+          const text = errorMessage(e, wasteTicketErrorLabels);
           // 409 про номер — не отказ, а вопрос: та же бумага или другая с тем же номером.
           if (text.includes('уже предъявлен')) askOverride(ticket, text);
           else message.error(text);

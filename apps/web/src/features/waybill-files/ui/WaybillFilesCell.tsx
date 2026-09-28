@@ -3,11 +3,10 @@ import { PaperClipOutlined, UploadOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { FileDto } from '@technic/contracts';
-import { filesApi } from '@entities/file';
+import { FileLinkList, filesApi } from '@entities/file';
 import { waybillKeys, waybillsApi } from '@entities/waybill';
 import { FILE_MAX_COUNT, FILE_MAX_SIZE } from '@shared/config';
-import { FileLinkList } from './FileLinks';
-import { errorMessage } from '../utils/format';
+import { errorMessage } from '@shared/lib';
 
 /**
  * Вложения путевого листа (миграция 0087).

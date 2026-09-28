@@ -119,7 +119,7 @@ import { errorMessage } from '../../utils/format';
 import { canOpenRoute, vehicleRouteLink } from '../../utils/links';
 import { vehicleRequestDateRules } from '../../utils/date';
 
-import { FilesCell } from '../../components/FileLinks';
+import { FilesCell } from '@entities/file';
 import { VehicleAssignModal } from './VehicleAssignModal';
 import { reassignStaleReason } from './ReassignPreview';
 import { VehicleCompleteModal } from './VehicleCompleteModal';

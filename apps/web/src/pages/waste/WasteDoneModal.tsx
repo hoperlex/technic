@@ -15,9 +15,8 @@ import {
   type WasteRequestDto,
 } from '@technic/contracts';
 import { FILE_MAX_SIZE } from '@shared/config';
-import { filesApi } from '@entities/file';
+import { FileLinkList, filesApi } from '@entities/file';
 import { wasteTariffResolveQuery } from '@entities/waste-tariff';
-import { FileLinkList } from '../../components/FileLinks';
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { formatMoney, useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';

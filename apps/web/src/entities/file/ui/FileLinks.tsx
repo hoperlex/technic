@@ -2,9 +2,8 @@ import { App, Alert, Button, List, Popover, Spin, Tooltip, Typography } from 'an
 import { DownloadOutlined, EyeOutlined, PaperClipOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import { isInlineViewable } from '@technic/contracts';
-import { filesApi } from '@entities/file';
-import { formatBytes, useIsMobile } from '@shared/lib';
-import { errorMessage } from '../utils/format';
+import { errorMessage, formatBytes, useIsMobile } from '@shared/lib';
+import { filesApi } from '../api/filesApi';
 import { ViewModal } from '@shared/ui';
 
 /**
@@ -12,7 +11,7 @@ import { ViewModal } from '@shared/ui';
  * формы хранят только имя и размер) — без него файл считается нечитаемым в браузере и просто
  * скачивается.
  */
-export interface FileRef {
+interface FileRef {
   id: string;
   filename: string;
   contentType?: string;
@@ -121,7 +120,7 @@ export function FilePreviewModal({
  * Имя файла ссылкой. Фото талона и PDF открываются окном просмотра — их смотрят, а не хранят;
  * остальные типы скачиваются: показать их браузер всё равно не может.
  */
-export function FileLink({ file, maxWidth = 320 }: { file: FileRef; maxWidth?: number }) {
+function FileLink({ file, maxWidth = 320 }: { file: FileRef; maxWidth?: number }) {
   const { message } = App.useApp();
   const [preview, setPreview] = useState(false);
   const inline = isInlineViewable(file.contentType ?? '');
@@ -156,7 +155,7 @@ export function FileLink({ file, maxWidth = 320 }: { file: FileRef; maxWidth?: n
 }
 
 /** Кнопка «Скачать» рядом со ссылкой: просмотр окном файл на диск не сохраняет. */
-export function FileDownloadButton({ file }: { file: FileRef }) {
+function FileDownloadButton({ file }: { file: FileRef }) {
   const { message } = App.useApp();
   const download = async () => {
     try {
@@ -183,7 +182,7 @@ export function FileDownloadButton({ file }: { file: FileRef }) {
  * (архив, документ), она недоступна — «просмотр», молча сохраняющий файл на диск, вводил бы
  * в заблуждение.
  */
-export function FileViewButton({ file }: { file: FileRef }) {
+function FileViewButton({ file }: { file: FileRef }) {
   const [preview, setPreview] = useState(false);
   const inline = isInlineViewable(file.contentType ?? '');
   return (
@@ -261,7 +260,7 @@ export function FileLinkList<T extends FileRef>({
  * приложены не к самой записи, а к её части (талоны машины): в строку они не помещаются, а
  * разбирают их по одному — открыть, посмотреть, при надобности сохранить.
  */
-export function FileListModal({
+function FileListModal({
   title,
   files,
   open,

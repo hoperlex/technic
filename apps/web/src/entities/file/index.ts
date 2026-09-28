@@ -10,8 +10,13 @@
  * файлов. Заведённый «на всякий случай» корень был бы ячейкой кэша, которую никто не наполняет и
  * никто не гасит, — вторым местом, где записано то же правило, и разошлось бы оно молча.
  *
- * `FileLinks` план этапа 2 кладёт сюда же (docs/frontend-fsd-stage-2.md §2.1), но компонент
- * остался в `components/`: подпись размера он берёт из `utils/format`, а legacy из `entities`
- * запрещён границами. Переедет вместе с форматированием, не раньше.
+ * FOUR NAMES OUT OF `ui/FileLinks.tsx` ARE PUBLIC, and that is the whole list: a preview window, a
+ * list of attachments, a button with a counter and a table cell. The row parts (`FileRef`,
+ * `FileLink`, `FileDownloadButton`, `FileViewButton`, `FileListModal`) are file-local on purpose —
+ * they were exported only because the file used to live outside the layers, where a public entrance
+ * did not exist and `export` cost nothing. Published here they would become the slice's contract,
+ * and a list of attachments assembled by hand out of the parts would no longer be the same list on
+ * every screen — which is the single reason this component is shared at all.
  */
 export { filesApi } from './api/filesApi';
+export { FileLinkList, FilePreviewModal, FilesButton, FilesCell } from './ui/FileLinks';

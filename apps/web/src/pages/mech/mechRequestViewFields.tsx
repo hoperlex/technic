@@ -13,7 +13,7 @@ import {
 } from '@entities/mech-request';
 import type { ViewField } from '@shared/ui';
 import { formatDateTime } from '@shared/lib';
-import { FileLinkList } from '../../components/FileLinks';
+import { FileLinkList } from '@entities/file';
 import { PhoneLink } from '../../components/PhoneField';
 
 /**

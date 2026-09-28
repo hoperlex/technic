@@ -20,9 +20,8 @@ import {
   serviceRequestsApi,
 } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
-import { filesApi } from '@entities/file';
+import { FileLinkList, filesApi } from '@entities/file';
 import { useAuth } from '@entities/session';
-import { FileLinkList } from '../../components/FileLinks';
 import {
   mayActOnServiceRequest,
   serviceActionRow,

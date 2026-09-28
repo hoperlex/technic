@@ -1,6 +1,6 @@
 import { Button, Typography, Upload } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
-import { FileLinkList } from '../../../components/FileLinks';
+import { FileLinkList } from '@entities/file';
 
 /**
  * Скан акта в форме записи ТО (Р10). Файлов может не быть вовсе — запись ведут и по бумажному

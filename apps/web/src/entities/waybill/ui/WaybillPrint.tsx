@@ -8,9 +8,9 @@ import {
   WAYBILL_CANCELLED_PRINT_MESSAGE,
   type WaybillStatus,
 } from '@technic/contracts';
-import { waybillKeys, waybillsApi } from '@entities/waybill';
-import { useIsMobile } from '@shared/lib';
-import { errorMessage } from '../utils/format';
+import { errorMessage, useIsMobile } from '@shared/lib';
+import { waybillKeys } from '../api/keys';
+import { waybillsApi } from '../api/waybillsApi';
 import { ViewModal } from '@shared/ui';
 
 /**

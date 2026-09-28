@@ -57,7 +57,6 @@ const LEGACY = {
     'AppUpdateBanner.tsx',
     'CancelReasonModal.tsx',
     'CaptchaField.tsx',
-    'FileLinks.tsx',
     'MobileAppBar.tsx',
     'MobileNav.tsx',
     'ObjectCell.tsx',
@@ -76,9 +75,6 @@ const LEGACY = {
     // `CaptchaField.tsx`, отделённая только потому, что поле рисует, а хук ведёт. Порознь они
     // бессмысленны и переедут одним куском.
     'useCaptcha.ts',
-    // Вложения путевого листа: зовут waybillsApi и filesApi — уедут в `waybill` вместе с печатью.
-    'WaybillFiles.tsx',
-    'WaybillPrint.tsx',
   ],
 };
 

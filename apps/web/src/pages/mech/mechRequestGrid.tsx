@@ -14,7 +14,7 @@ import {
   MechTermCell,
 } from '@entities/mech-request';
 import { actionsColumn, ExpandableCell, type ActionSheetItem, type CardConfig } from '@shared/ui';
-import { FilesCell } from '../../components/FileLinks';
+import { FilesCell } from '@entities/file';
 import { PhoneLink } from '../../components/PhoneField';
 
 /**

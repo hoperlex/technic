@@ -1,11 +1,28 @@
 import { useState } from 'react';
-import { App, Alert, Button, DatePicker, Empty, Form, Input, InputNumber, Space, Table, Typography } from 'antd';
+import {
+  App,
+  Alert,
+  Button,
+  DatePicker,
+  Empty,
+  Form,
+  Input,
+  InputNumber,
+  Space,
+  Table,
+  Typography,
+} from 'antd';
 import type { Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { WasteTicketBlindCheckTaskDto } from '@technic/contracts';
-import { wasteTicketBlindQueueQuery, wasteTicketKeys, wasteTicketsApi } from '@entities/waste-ticket';
-import { FilePreviewModal } from '../../../components/FileLinks';
-import { errorMessage } from '../../../utils/format';
+import {
+  wasteTicketBlindQueueQuery,
+  wasteTicketErrorLabels,
+  wasteTicketKeys,
+  wasteTicketsApi,
+} from '@entities/waste-ticket';
+import { FilePreviewModal } from '@entities/file';
+import { errorMessage } from '@shared/lib';
 
 /**
  * Очередь слепой перепроверки: экран второго человека (ADR 0114, Р31).
@@ -57,7 +74,7 @@ export function BlindCheckQueue() {
       setActive(null);
       form.resetFields();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e) => message.error(errorMessage(e, wasteTicketErrorLabels)),
   });
 
   if (isLoading) return <Typography.Text type="secondary">Загружаем очередь…</Typography.Text>;

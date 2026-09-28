@@ -12,10 +12,10 @@ import {
   waybillStatusColors,
   waybillStatusLabels,
 } from '@technic/contracts';
-import { WaybillFilesCell } from '../../components/WaybillFiles';
+import { WaybillFilesCell } from '@features/waybill-files';
 import { EntityLink } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
-import { ExportWaybillButton, PrintWaybillButton } from '../../components/WaybillPrint';
+import { ExportWaybillButton, PrintWaybillButton } from '@entities/waybill';
 import { useAuth } from '@entities/session';
 import { correctionHint, trimmedPrintHint } from './hints';
 import { vehicleRequestViewLink, vehicleRouteLink } from '../../utils/links';
