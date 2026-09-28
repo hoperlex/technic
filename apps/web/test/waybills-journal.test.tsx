@@ -103,12 +103,13 @@ const TRIMMED: WaybillDto = {
 };
 
 /**
- * Панель фильтров спрашивает справочники: техника и водители стоят в ней выпадающими списками.
- * Отвечаем пустыми — тесты журнала не про них, а незаявленный маршрут ронял бы прогон.
+ * The filter bar asks for directories (vehicles, drivers, sites). Answered empty: these tests are
+ * not about filtering, and an undeclared route would fail the run.
  */
 const DIRECTORIES = {
   'GET /vehicles': () => json(list([])),
   'GET /drivers': () => json(list([])),
+  'GET /objects': () => json(list([])),
 };
 
 function renderJournal(items: WaybillDto[] = [TRIP, WEEK]) {

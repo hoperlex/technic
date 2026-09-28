@@ -302,9 +302,10 @@ describe('барьер механика: номера заявок и рейса
     for (const role of MECHANICS) {
       mockHttp({
         'GET /waybills': () => json(list([WAYBILL])),
-        // Справочники панели фильтров: водителей механик читает, техника ему тоже положена.
+        // Filter-bar directories: the mechanic reads drivers, vehicles and sites alike.
         'GET /vehicles': () => json(emptyList()),
         'GET /drivers': () => json(emptyList()),
+        'GET /objects': () => json(emptyList()),
       });
       const { routeModal, unmount } = renderWithUser(<WaybillsPage />, {
         user: authUser({ role }),

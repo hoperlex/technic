@@ -1594,12 +1594,12 @@ export function officeEquipmentCandidateScopeWhere(
   return or(...bases)!;
 }
 
-// ── Журнал путевых листов (ADR 0037, область — ADR 0192) ──
+// ── Waybill journal (ADR 0037, scope — ADR 0192) ──
 
 /**
- * Колонки листа, по которым считается область. Умолчание — сама таблица: все сегодняшние читатели
- * спрашивают её напрямую, а параметр оставлен для запроса, где лист приходит под псевдонимом
- * (журнал соединяет `waybills` сам с собой — заменённый лист и замена, ADR 0101).
+ * Sheet columns the derived customer is computed from. Defaults to the table itself; the parameter
+ * exists for queries that see the sheet under an alias (the journal self-joins `waybills` for the
+ * replaced sheet and its replacement, ADR 0101).
  */
 export interface WaybillVisibilityColumns {
   readonly id: AnyColumn;
@@ -1612,31 +1612,57 @@ const WAYBILL_COLUMNS: WaybillVisibilityColumns = {
 };
 
 /**
- * Видимость путевого листа (ADR 0192): площадка и отдел видят листы, выписанные по их заявкам.
+ * A sheet serves at least one order satisfying `requestCondition` — a condition over
+ * `vehicle_requests` columns. This is the one place that says which orders a sheet belongs to;
+ * the journal scope and the journal's site filter both ask it, so a new link kind added here
+ * reaches both, while a copy in either would silently drift and show paper by one rule and
+ * narrow it by another.
  *
- * ОСЬ У ЛИСТА ПРОИЗВОДНАЯ — своей колонки заказчика у него нет. Отсюда два слагаемых, и оба
- * обязательны:
+ * A SHEET HAS NO CUSTOMER COLUMN — the customer is derived, and both terms are required:
  *
- *  - **талоны** (`waybill_requests`) — заявки, которые машина выполняет по этому листу. Так устроены
- *    4-П и форма № 3: в листе до десяти слотов, и заказчики в них бывают разные;
- *  - **заявка-основание** (`waybills.source_request_id`) — недельный лист ЭСМ-2 (миграция 0087), у
- *    которого рейса нет вовсе, а есть заявка и период. Без этого слагаемого площадка не увидела бы
- *    ровно ту бумагу, которая заводится на неделю работы её машины.
+ *  - **coupons** (`waybill_requests`): orders the vehicle serves by this sheet. That is how 4-P and
+ *    form No. 3 work — up to ten slots, often with different customers;
+ *  - **source order** (`waybills.source_request_id`): the weekly ESM-2 (migration 0087) has no trip,
+ *    only an order and a period. Its issuer writes a coupon as well, but the answer must not
+ *    depend on that: the source order is the link the weekly sheet is built on.
  *
- * ЛИСТ ВИДЕН ЦЕЛИКОМ ТОМУ, ЧЕЙ В НЁМ ХОТЯ БЫ ОДИН ТАЛОН (решение Р2). `EXISTS`, а не «все талоны
- * мои»: бумага у рейса одна, и машина, заехавшая после моей площадки к соседу, не должна уносить
- * мой лист из моего журнала. Обратная сторона названа прямо: в таком листе видны номера чужих
- * заявок и наименования чужих объектов — и в печатной форме тоже, потому что печатается снимок
- * бланка целиком.
+ * `EXISTS`, not "all orders match" (ADR 0192, P2): one trip means one paper, and a vehicle that
+ * drove to a neighbour after my site must not take my sheet out of my journal or my filter.
  *
- * ЛИСТ БЕЗ ЗАЯВОК НЕ ВИДЕН НИКОМУ ИЗ ПЛОЩАДОК, и это не пробел, а следствие производной оси:
- * у пустого бланка (ADR 0071) и у листа рейса-перегона считать область не по чему. Такой лист
- * остаётся диспетчерской — ей область не сужается ничем.
+ * DELETED ORDERS STILL COUNT: `deleted_at` is not checked on purpose. The sheet is a strict
+ * accounting blank that outlives the order; if it vanished when a dispatcher deleted the order,
+ * paper that has already been used on site would disappear from the journal.
+ */
+export function waybillServesRequestWhere(
+  requestCondition: SQL,
+  cols: WaybillVisibilityColumns = WAYBILL_COLUMNS,
+): SQL {
+  return sql`(
+    EXISTS (
+      SELECT 1 FROM ${waybillRequests}
+        JOIN ${vehicleRequests} ON ${vehicleRequests.id} = ${waybillRequests.requestId}
+       WHERE ${waybillRequests.waybillId} = ${cols.id}
+         AND (${requestCondition})
+    )
+    OR EXISTS (
+      SELECT 1 FROM ${vehicleRequests}
+       WHERE ${vehicleRequests.id} = ${cols.sourceRequestId}
+         AND (${requestCondition})
+    )
+  )`;
+}
+
+/**
+ * Waybill visibility (ADR 0192): a site or a department sees the sheets serving its own orders.
  *
- * УДАЛЁННАЯ ЗАЯВКА ОБЛАСТЬ НЕ ОТНИМАЕТ: `deleted_at` здесь не спрашивается намеренно. Лист —
- * бланк строгой отчётности, он пережил заявку и остаётся в журнале с номером и статусом; исчезни
- * он у площадки в момент, когда диспетчер удалил основание, — из журнала пропала бы бумага,
- * которая на объекте уже отработала.
+ * The sheet is visible WHOLE to anyone owning at least one of its orders
+ * (`waybillServesRequestWhere`). The price is stated openly: in a mixed sheet the reader sees
+ * other customers' order numbers and site names — in the journal and in print, because the printed
+ * form is the full snapshot, and cutting the task per reader would no longer be a waybill.
+ *
+ * A SHEET WITHOUT ORDERS IS VISIBLE TO NO SITE — not a gap but a consequence of the derived axis:
+ * a blank sheet (ADR 0071) or an empty-run sheet has nothing to compute a scope from. Such a sheet
+ * stays with the dispatch office, whose journal is not narrowed at all.
  */
 export function waybillVisibilityWhere(
   p: Principal,
@@ -1644,35 +1670,24 @@ export function waybillVisibilityWhere(
 ): SQL | undefined {
   if (!isPlaceScopedRole(p.role)) return undefined;
   /*
-   * «Своя заявка» здесь ровно та же, что в «Заказе ТС», и спрашивается его же функцией. Своё
-   * написание этого правила тут жило с ADR 0192 (решение Р3) и отличалось одним слагаемым —
-   * площадками отделов; ADR 0201 добавил это слагаемое и в «Заказ ТС», два тела совпали дословно,
-   * и второе снято: разойтись им было нечем, кроме правки, внесённой в то, на которое наткнулись.
+   * "Own order" here is exactly the one of the vehicle-order module and is asked through its
+   * function. A separate spelling lived here since ADR 0192 (P3) and differed by one term —
+   * department sites; ADR 0201 added that term to vehicle orders, the two bodies became identical,
+   * and this copy was removed: they could only drift through an edit made to whichever one
+   * someone happened to find.
    *
-   * Колонками, а не таблицей: условие уходит внутрь `EXISTS` по заявкам рейса — сравнивается
-   * строка присоединённой заявки, а не строка листа, у которого своего заказчика нет.
+   * Passed as columns, not as the table: the condition runs inside the `EXISTS` over the sheet's
+   * orders and compares the joined order row, since the sheet itself has no customer.
    */
   const own = vehicleRequestVisibilityWhere(
     p,
     vehicleRequests.objectId,
     vehicleRequests.departmentId,
   );
-  // `undefined` от оси означает «сужать нечем», и до сюда такой субъект не доходит: роль с осью
-  // площадки всегда получает условие, а роль без оси отсеяна строкой выше.
+  // `undefined` means "nothing to narrow by", and no principal reaches here with it: a role with a
+  // site axis always gets a condition, and a role without one was filtered out above.
   if (own === undefined) return undefined;
-  return sql`(
-    EXISTS (
-      SELECT 1 FROM ${waybillRequests}
-        JOIN ${vehicleRequests} ON ${vehicleRequests.id} = ${waybillRequests.requestId}
-       WHERE ${waybillRequests.waybillId} = ${cols.id}
-         AND (${own})
-    )
-    OR EXISTS (
-      SELECT 1 FROM ${vehicleRequests}
-       WHERE ${vehicleRequests.id} = ${cols.sourceRequestId}
-         AND (${own})
-    )
-  )`;
+  return waybillServesRequestWhere(own, cols);
 }
 
 // ── Недельная заявка на технику (ADR 0085) ──

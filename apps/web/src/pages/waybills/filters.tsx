@@ -10,53 +10,57 @@ import {
 import type { FilterDefinition, FilterOption } from '@shared/ui';
 
 /**
- * Отбор журнала путевых листов: полоса полей для десктопа и те же значения описаниями для шита
- * телефона (ADR 0079, ADR 0030).
+ * Waybill journal filters: a field bar for desktop and the same values as descriptions for the
+ * phone sheet (ADR 0079, ADR 0030).
  *
- * Отдельным файлом, потому что фильтров семь и собираются они дважды — панелью и шитом. Держать
- * два этих набора в самой странице значило бы утопить в них журнал: печать, аннулирование и выбор
- * пачки читаются рядом, а фильтры от них ничего не требуют, кроме значений.
+ * A separate file because every filter is built twice — bar and sheet; keeping both sets in the
+ * page would bury the journal's own logic (printing, cancellation, batch selection) under them.
  */
 
 /**
- * Что журнал спрашивает у сервера: значения фильтров без страницы и сортировки.
+ * Filter values the journal sends to the server, without paging and sorting.
  *
- * Индекс-сигнатура — та же, что у параметров списка (`BaseParams`): значения приходят прямо из них
- * и туда же уходят патчем, и без неё два описания одного набора не сошлись бы по типам.
+ * The index signature matches the list params (`BaseParams`): values come straight from them and
+ * go back as a patch, and without it the two descriptions of one set would not type-check.
  */
 export interface WaybillFilterValues {
   search?: string;
   formCode?: string;
   status?: string;
+  objectId?: string;
   vehicleId?: string;
   driverPersonId?: string;
   /**
-   * Только коррекции (ADR 0101 п. 20) — строкой `'true'`, как и прочие флаги списков портала:
-   * значения фильтров уходят в адрес запроса как есть, и булев тип пришлось бы переводить туда и
-   * обратно в двух местах.
+   * Corrections (ADR 0101 item 20) as the string `'true'`/`'false'`, like other portal list flags:
+   * filter values go into the request URL as is, and a boolean would need converting both ways.
    */
   correction?: string;
   [key: string]: unknown;
 }
 
-/** Период выдачи: обе границы необязательны — за номером листа приходят и без даты. */
+/** Both bounds are optional: people look a sheet up by number without knowing its date. */
 export type WaybillDateRange = [dayjs.Dayjs | null, dayjs.Dayjs | null] | null;
+
+/**
+ * Options of a directory-backed filter. `null` means the filter is absent altogether: the reader
+ * has no right to the directory, and a filter answering with an empty list is worse than none —
+ * it reads as "there are no drivers/sites in the portal".
+ */
+type DirectoryFilter = { options: FilterOption[]; loading: boolean } | null;
 
 interface Options {
   values: WaybillFilterValues;
   onChange: (patch: WaybillFilterValues) => void;
-  /** Текст в поле поиска: искомое приходит и снаружи (ссылка `?number=…`), и его видно в поле. */
+  /** Kept separately because the searched number also arrives from outside (`?number=…` link). */
   searchText: string;
   onSearchTextChange: (text: string) => void;
   range: WaybillDateRange;
   onRangeChange: (range: WaybillDateRange) => void;
   vehicles: { options: FilterOption[]; loading: boolean };
-  /**
-   * `null` — фильтра по водителю нет вовсе: держателю набора «Путевые листы: просмотр и печать»
-   * справочник водителей не открыт (`drivers.read`, ADR 0192), и отбор, который отвечал бы пустым
-   * списком, хуже отсутствующего — человек решил бы, что водителей в портале нет.
-   */
-  drivers: { options: FilterOption[]; loading: boolean } | null;
+  /** Holders of the "view and print" grant have no `drivers.read` (ADR 0192). */
+  drivers: DirectoryFilter;
+  /** Sites of the orders the sheet serves; `null` without `directories.read`. */
+  objects: DirectoryFilter;
 }
 
 const DATE = 'YYYY-MM-DD';
@@ -70,22 +74,18 @@ const statusOptions = WAYBILL_STATUSES.map((status) => ({
   label: waybillStatusLabels[status],
 }));
 
-/**
- * Коррекции — отбор двусторонний (ADR 0101 п. 20). Значения строковые, потому что фильтры живут в
- * адресной строке: `correction=true|false` уходит в запрос как есть, а снятый отбор не уходит вовсе.
- */
+/** Two-sided on purpose (ADR 0101 item 20): "ordinary only" is asked as often as the reverse. */
 const correctionOptions = [
   { value: 'true', label: 'Только коррекции' },
   { value: 'false', label: 'Без коррекций' },
 ];
 
-/** Полоса фильтров: номер, бланк, статус, машина, водитель, период выдачи и коррекции. */
 export function waybillFiltersBar(o: Options): ReactNode {
   return (
     <Space size={[12, 8]} wrap>
       <Input.Search
         allowClear
-        // Номер ищется и целиком, и хвостом: «00000004897» на бумаге называют «4897».
+        // Matches both the full number and its tail: "00000004897" is called "4897" on paper.
         placeholder="Номер листа"
         style={{ width: 220 }}
         value={o.searchText}
@@ -108,6 +108,19 @@ export function waybillFiltersBar(o: Options): ReactNode {
         value={o.values.status}
         onChange={(v: string | undefined) => o.onChange({ status: v })}
       />
+      {o.objects && (
+        <Select
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          placeholder="Все площадки"
+          style={{ width: 260 }}
+          options={o.objects.options}
+          loading={o.objects.loading}
+          value={o.values.objectId}
+          onChange={(v: string | undefined) => o.onChange({ objectId: v })}
+        />
+      )}
       <Select
         allowClear
         showSearch
@@ -132,8 +145,6 @@ export function waybillFiltersBar(o: Options): ReactNode {
           onChange={(v: string | undefined) => o.onChange({ driverPersonId: v })}
         />
       )}
-      {/* Период выдачи: журнал читают по дням, но в отличие от маршрутов не только по ним — за
-        номером листа приходят и без даты, поэтому обе границы необязательны. */}
       <DatePicker.RangePicker
         format="DD.MM.YYYY"
         style={{ width: 250 }}
@@ -142,12 +153,8 @@ export function waybillFiltersBar(o: Options): ReactNode {
         value={o.range}
         onChange={(v) => o.onRangeChange(v as WaybillDateRange)}
       />
-      {/* Коррекции (ADR 0101 п. 20): этим журнал читает бухгалтерия — «что правилось задним
-        числом» — и им же объясняется день, в котором стоят два номера.
-
-        Select, а не флажок: отбор двусторонний и на сервере, и в контракте. Вопрос «что шло
-        обычным порядком» задают не реже обратного — им сверяют месяц, из которого коррекции
-        вынуты, — а флажок отвечает только на один из двух и второй делает недостижимым. */}
+      {/* A select, not a checkbox: the filter is two-sided, and a checkbox can express only one
+        side, making "ordinary only" unreachable. */}
       <Select
         allowClear
         placeholder="Все листы"
@@ -160,7 +167,6 @@ export function waybillFiltersBar(o: Options): ReactNode {
   );
 }
 
-/** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
 export function waybillMobileFilters(o: Options): FilterDefinition[] {
   return [
     {
@@ -181,6 +187,20 @@ export function waybillMobileFilters(o: Options): FilterDefinition[] {
       placeholder: 'Все статусы',
       onChange: (v) => o.onChange({ status: v }),
     },
+    ...(o.objects
+      ? [
+          {
+            kind: 'select' as const,
+            key: 'objectId',
+            label: 'Площадка',
+            value: o.values.objectId,
+            options: o.objects.options,
+            placeholder: 'Все площадки',
+            loading: o.objects.loading,
+            onChange: (v: string | undefined) => o.onChange({ objectId: v }),
+          },
+        ]
+      : []),
     {
       kind: 'select',
       key: 'vehicleId',
@@ -206,8 +226,7 @@ export function waybillMobileFilters(o: Options): FilterDefinition[] {
         ]
       : []),
     {
-      // Выбором из двух значений, а не переключателем: отбор двусторонний (см. полосу десктопа), а
-      // переключатель второе значение выразить не может — «выключен» у него значит «не задан».
+      // A select for the same reason as on desktop: a switch's "off" means "unset", not "false".
       kind: 'select',
       key: 'correction',
       label: 'Коррекции',

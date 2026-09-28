@@ -12,34 +12,33 @@ import type * as SchemaNs from '../src/db/schema';
 import type * as TokensNs from '../src/auth/tokens';
 
 /**
- * Журнал путевых листов площадке и отделу: область, её производный характер и все двери к бумаге
- * (ADR 0192).
+ * Waybill journal for sites and departments: the scope, its derived nature, and every door to the
+ * paper (ADR 0192) — plus the journal's site filter, which rides the same derived axis.
  *
- * **Зачем этому файлу база.** Область листа — единственная в портале, которая не выражена колонкой:
- * своего заказчика у бланка нет вовсе, и считается она подзапросами — по талонам
- * (`waybill_requests` → `vehicle_requests`) и по заявке-основанию ЭСМ-2 (`source_request_id`).
- * Проверить такое на подменах нечем:
+ * **Why this file needs a database.** The sheet's customer is the only one in the portal not held
+ * in a column: it is computed by subqueries — over coupons (`waybill_requests` →
+ * `vehicle_requests`) and over the ESM-2 source order (`source_request_id`). Stubs cannot check:
  *
- * 1. **смешанный лист** (талоны двух площадок) — это строки двух таблиц, и утверждение «виден тому,
- *    чей в нём хотя бы один талон» проверяемо только на настоящем `EXISTS`;
- * 2. **лист без заявок** (пустой бланк, рейс-перегон) отличается от чужого ничем, кроме отсутствия
- *    строк связи, — а отвечать на него портал обязан одинаково: «не найден»;
- * 3. **отдел** сравнивается сразу с двумя осями — своим отделом и площадками своих отделов
- *    (ADR 0062, ADR 0144), и вторая приходит подзапросом в `department_construction_objects`;
- * 4. **двери** к одному и тому же листу разные — список, карточка, печать, выгрузка, пачка и
- *    скачивание вложения, — и каждая ходит в базу своим запросом. Пропущенный предикат в любой из
- *    них не ошибка, а тишина: бумага чужой площадки просто отдаётся.
+ * 1. a **mixed sheet** (coupons of two sites) — rows in two tables; "visible to anyone owning one
+ *    coupon" and "matches either site" are only verifiable on a real `EXISTS`;
+ * 2. a **sheet without orders** (blank, empty run) differs from a foreign one only by missing link
+ *    rows, yet the portal must answer both the same way: "not found";
+ * 3. a **department** is compared against two axes at once — its own department and its
+ *    departments' sites (ADR 0062, ADR 0144), the second via `department_construction_objects`;
+ * 4. the **doors** to one sheet — list, card, print, export, batch, attachment download — each
+ *    query the database on their own. A predicate missing from any of them is not an error but
+ *    silence: a foreign site's paper is simply served.
  *
- * **Чего файл не проверяет.** Матрицу выдачи и барьеры наборов без базы — `grants-contracts.test.ts`;
- * отбор, сортировку и отметки печати — `waybill-journal.db.test.ts`; состав каталога — страж
- * `grants-catalog.db.test.ts`.
+ * **Not checked here.** The grant matrix and set barriers without a database —
+ * `grants-contracts.test.ts`; number search, sorting and print marks — `waybill-journal.db.test.ts`;
+ * catalog contents — the `grants-catalog.db.test.ts` guard.
  *
- * Запуск — как у остальных db-тестов:
+ * Run like the other db tests:
  *
  *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/technic_scope_test \
  *     npx vitest run test/waybill-scope.db.test.ts
  *
- * Без `TEST_DATABASE_URL` файл пропускается.
+ * Skipped without `TEST_DATABASE_URL`.
  */
 
 const DB_URL = process.env.TEST_DATABASE_URL;
@@ -349,10 +348,10 @@ async function headersOf(userId: string): Promise<{ authorization: string }> {
 }
 
 /** Идентификаторы листов, которые журнал показал учётке. */
-async function journalIds(userId: string): Promise<string[]> {
+async function journalIds(userId: string, filter = ''): Promise<string[]> {
   const res = await ctx.app.inject({
     method: 'GET',
-    url: '/api/v1/waybills?pageSize=100',
+    url: `/api/v1/waybills?pageSize=100${filter}`,
     headers: await headersOf(userId),
   });
   expect(res.statusCode, res.body).toBe(200);
@@ -374,6 +373,9 @@ describe.skipIf(!DB_URL)('область журнала путевых лист�
   let wbDeptPlace = '';
   let fileOfMine = '';
   let fileOfOther = '';
+  let objMine = '';
+  let objOther = '';
+  let objDeptPlace = '';
 
   beforeAll(async () => {
     prepareEnv(DB_URL!);
@@ -429,6 +431,7 @@ describe.skipIf(!DB_URL)('область журнала путевых лист�
     const mine = await newObject('mine');
     const other = await newObject('other');
     const deptPlace = await newObject('deptplace');
+    [objMine, objOther, objDeptPlace] = [mine, other, deptPlace];
     const department = await newDepartment('own');
     await linkDepartmentObject(department, deptPlace);
 
@@ -567,6 +570,30 @@ describe.skipIf(!DB_URL)('область журнала путевых лист�
    * Право приходит НАБОРОМ, а не ролью: та же учётка без галочки в окне учётки журнала не видит
    * вовсе. Без этой проверки файл доказывал бы область, но не то, чем она включается.
    */
+  /*
+   * The site filter goes through the same order links as the scope. Sites are this run's own, so
+   * no other file's sheets can reference them and the answers are compared exactly.
+   *
+   * The ESM-2 fixture has no coupon row, so it is found by the source-order term alone; a mixed
+   * sheet must match both of its sites.
+   */
+  it('отбор по площадке: смешанный лист — под обеими, ЭСМ-2 — по основанию', async () => {
+    const byMine = await journalIds(dispatcher, `&objectId=${objMine}`);
+    expect([...byMine].sort()).toEqual([wbMine, wbMixed, wbEsm2Mine].sort());
+    const byOther = await journalIds(dispatcher, `&objectId=${objOther}`);
+    expect([...byOther].sort()).toEqual([wbOther, wbMixed].sort());
+  });
+
+  /*
+   * The filter narrows the scope, never widens it: a site asking for a foreign site gets only the
+   * mixed sheet it already sees, and a department filtering by its site loses its own-department
+   * sheet, which has no site at all.
+   */
+  it('отбор по площадке не расширяет область: чужая площадка даёт только свой смешанный лист', async () => {
+    expect(await journalIds(sitePerson, `&objectId=${objOther}`)).toEqual([wbMixed]);
+    expect(await journalIds(deptPerson, `&objectId=${objDeptPlace}`)).toEqual([wbDeptPlace]);
+  });
+
   it('без набора площадка не открывает журнал вовсе', async () => {
     const res = await ctx.app.inject({
       method: 'GET',

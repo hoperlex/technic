@@ -995,30 +995,39 @@ export interface RequestWaybillDto {
 export const WAYBILL_SORT_FIELDS = ['issuedForDate', 'number', 'issuedAt'] as const;
 
 export const waybillListQuerySchema = baseListQuery(WAYBILL_SORT_FIELDS).extend({
-  /** Период выдачи: журнал читают по дням, а не по всей истории сразу. */
+  /** Issue-date window: the journal is read day by day, not across the whole history at once. */
   dateFrom: dateOnlySchema.optional(),
   dateTo: dateOnlySchema.optional(),
   vehicleId: uuidSchema.optional(),
   driverPersonId: uuidSchema.optional(),
   status: waybillStatusSchema.optional(),
   /**
-   * Бланк: 4-П, форма № 3 или ЭСМ-2. Журнал у них один — журнал строгой отчётности, — а читают
-   * их разные люди по разным поводам, и без этого сужения недельные листы спецтехники тонут в
-   * ежедневных рейсовых.
+   * Blank form: 4-P, form No. 3 or ESM-2. All three share one strict-accounting journal but are
+   * read by different people for different reasons; without this narrowing the weekly
+   * special-equipment sheets drown among the daily trip sheets.
    */
   formCode: waybillFormCodeSchema.optional(),
   /**
-   * Только коррекции — седьмой фильтр журнала (Р28, ADR 0101 п. 20). Им бухгалтерия читает, что
-   * правилось задним числом, и той же выгрузкой забирает; им же объясняется разрыв нумерации за
-   * день, в котором стоят два номера.
+   * Construction site of the orders the sheet serves. A waybill has no customer column of its
+   * own: the site is derived from its orders — the customer coupons (`waybill_requests`) and, for
+   * a weekly ESM-2, the source order — exactly the way the journal scope is derived (ADR 0192).
    *
-   * Отбор двусторонний: `false` оставляет журнал без коррекций — вопрос «что шло обычным
-   * порядком» задают ровно так же часто, а один флаг «только коррекции» на него не отвечает.
+   * A mixed sheet (coupons of two sites) matches both sites: the trip and the paper are one, and
+   * the "my site's paper" question has to find it from either side, same as the scope does (P2).
+   * Department-customer orders carry no site, so their sheets never match this filter.
+   */
+  objectId: uuidSchema.optional(),
+  /**
+   * Corrections filter (P28, ADR 0101 item 20): accounting reads what was changed retroactively
+   * and exports that selection; it also explains a numbering gap on a day that holds two numbers.
    *
-   * Считается ровно тем же, чем `isCorrection`, — всеми тремя источниками, включая сокращение
-   * периода (Р12). Правится поэтому **и та и другая ветвь**: забудь третье условие в ветви `false`,
-   * и сокращённый лист попал бы в отбор «шло обычным порядком», то есть отбор соврал бы там, где
-   * его и заводили ради сверки.
+   * Two-sided on purpose: `false` answers "what went the ordinary way", which is asked just as
+   * often, and a lone "corrections only" flag cannot express it.
+   *
+   * Must be computed from the same three sources as `isCorrection`, period trimming included
+   * (P12), and **both branches** must be edited together: drop the third condition from the
+   * `false` branch and a trimmed sheet lands in "ordinary" — the filter would lie exactly where it
+   * exists for reconciliation, and nothing would fail to signal it.
    */
   correction: z
     .enum(['true', 'false'])

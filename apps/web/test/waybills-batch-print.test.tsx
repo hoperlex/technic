@@ -80,6 +80,7 @@ const CANCELLED: WaybillDto = {
 const DIRECTORIES = {
   'GET /vehicles': () => json(list([])),
   'GET /drivers': () => json(list([])),
+  'GET /objects': () => json(list([])),
 };
 
 function renderJournal(items: WaybillDto[]) {

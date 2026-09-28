@@ -157,12 +157,13 @@ const linkFor = (text: string): HTMLAnchorElement | null =>
   [...document.querySelectorAll('a')].find((a) => a.textContent === text) ?? null;
 
 /**
- * Справочники панели фильтров: техника и водители спрашиваются обоими списками — маршрутами и
- * журналом листов. Здесь они пустые: тест про ссылки между вкладками, а не про отбор.
+ * Filter-bar directories of the routes list and the waybill journal. Empty: this test is about
+ * links between tabs, not about filtering.
  */
 const DIRECTORIES: RouteMap = {
   'GET /vehicles': () => json(list([])),
   'GET /drivers': () => json(list([])),
+  'GET /objects': () => json(list([])),
 };
 
 function routesRoutes(over: RouteMap = {}): RouteMap {

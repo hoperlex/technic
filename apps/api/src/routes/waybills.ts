@@ -58,7 +58,7 @@ import {
   waybills,
   waybillSeries,
 } from '../db/schema';
-import { waybillVisibilityWhere } from '../lib/access';
+import { waybillServesRequestWhere, waybillVisibilityWhere } from '../lib/access';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
@@ -707,30 +707,31 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       const p = requirePrincipal(req);
       const q = req.query;
       const where = and(
-        // Область журнала (ADR 0192): площадка и отдел видят листы своих заявок, у диспетчерской и
-        // службы механика предикат пуст — им журнал не сужается ничем. Условие идёт первым слагаемым
-        // общего `where`, и потому его же получает счётчик страниц: разойдись они, номера страниц
-        // считались бы по чужой бумаге.
+        // Journal scope (ADR 0192): sites and departments see the sheets of their own orders; for
+        // the dispatch office and the mechanics the predicate is empty. It is part of the shared
+        // `where`, so the page counter gets it too — otherwise pages would be counted over paper
+        // the reader cannot see.
         waybillVisibilityWhere(p),
         q.dateFrom ? gte(waybills.issuedForDate, q.dateFrom) : undefined,
         q.dateTo ? lte(waybills.issuedForDate, q.dateTo) : undefined,
         q.vehicleId ? eq(waybills.vehicleId, q.vehicleId) : undefined,
         q.driverPersonId ? eq(waybills.driverPersonId, q.driverPersonId) : undefined,
         q.status ? eq(waybills.status, q.status) : undefined,
-        // Бланк: журнал у трёх форм один, а читают их разные люди по разным поводам — без этого
-        // сужения недельные листы спецтехники тонут в ежедневных рейсовых.
         q.formCode ? eq(waybills.formCode, q.formCode) : undefined,
+        // Through the same order links the scope uses, so a scoped reader gets the intersection of
+        // "my paper" and "this site" rather than a second, differently derived notion of the site.
+        q.objectId
+          ? waybillServesRequestWhere(eq(vehicleRequests.objectId, q.objectId))
+          : undefined,
         /*
-         * Коррекции (ADR 0101 п. 20): по ссылке на операцию, а не по заменённому номеру — списание
-         * без перевыписки и выписка задним числом заменяемого листа не имеют, но правкой
-         * прошедшего дня являются ровно так же.
+         * Corrections (ADR 0101 item 20) are detected by the operation link, not by a replaced
+         * number: a write-off without reissue and a backdated issue replace no sheet, yet both are
+         * edits of a past day.
          *
-         * Условий три, и они те же, из которых сложен `isCorrection` (Р12): третье — сокращение
-         * периода. Правятся **обе** ветви, и это не симметрия ради красоты: ветвь `false` — не
-         * «всё остальное», а собственный вопрос «что шло обычным порядком», и сокращённый лист,
-         * не исключённый из неё, отвечал бы на него ложью. Держать оба списка условий в одном
-         * месте обязательно ещё и потому, что расходятся они молча: отбор просто начинает
-         * показывать не то, а ошибки не случается ни в какой момент.
+         * The three conditions are the ones `isCorrection` is built from (P12), the third being
+         * period trimming. **Both** branches are edited together: `false` is its own question —
+         * "what went the ordinary way" — and a trimmed sheet left in it would answer that
+         * question falsely, with no error at any point.
          */
         q.correction === undefined
           ? undefined
@@ -750,8 +751,8 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       const pg = pageParams(q);
       const [rows, totalRows] = await Promise.all([
         loadRows(where, pg.limit, pg.offset, { sortBy: q.sortBy, sortOrder: q.sortOrder }),
-        // Счётчик идёт теми же join'ами, что и выборка: поиск по номеру читает серию, а без неё
-        // условие сослалось бы на таблицу, которой в запросе нет.
+        // The counter uses the same joins as the page: the number search reads the series, and
+        // without the join the condition would reference a table missing from the query.
         db
           .select({ c: count() })
           .from(waybills)

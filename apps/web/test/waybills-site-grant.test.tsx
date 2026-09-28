@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type { Role, WaybillDto } from '@technic/contracts';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
+import { objectDto } from './factories/waste';
 import { WaybillsPage } from '../src/pages/WaybillsPage';
 
 /**
@@ -85,11 +86,21 @@ function siteHolder() {
   });
 }
 
+/** The site holder's own site and a foreign one: the filter must offer only the first. */
+const OWN_SITE = objectDto({ id: 'object-1', code: 'ОБ-1', name: 'Своя площадка', address: '' });
+const FOREIGN_SITE = objectDto({
+  id: 'object-2',
+  code: 'ОБ-2',
+  name: 'Чужая площадка',
+  address: '',
+});
+
 function renderFor(user: ReturnType<typeof authUser>) {
   const http = mockHttp({
     'GET /waybills': () => json(list([SHEET])),
     'GET /vehicles': () => json(list([])),
     'GET /drivers': () => json(list([])),
+    'GET /objects': () => json(list([OWN_SITE, FOREIGN_SITE])),
   });
   const rendered = renderWithUser(<WaybillsPage />, { user });
   return { http, rendered };
@@ -123,6 +134,32 @@ describe('журнал листов у держателя набора (ADR 0192
     );
     expect(placeholders).toContain('Все водители');
     await waitFor(() => expect(http.countOf('GET /drivers')).toBe(1));
+  });
+
+  /*
+   * The server intersects the site filter with the scope, so a foreign site would find at most a
+   * mixed sheet already visible under the holder's own site; it must not be offered. The chosen
+   * site must reach the journal request, otherwise the field would narrow nothing.
+   */
+  it('площадке в отборе предлагаются только её площадки, и выбранная уходит в запрос журнала', async () => {
+    const { http } = renderFor(siteHolder());
+    await waitFor(() => expect(http.countOf('GET /objects')).toBe(1));
+
+    const field = [...document.querySelectorAll<HTMLElement>('.ant-select')].find(
+      (el) => el.textContent?.trim() === 'Все площадки',
+    );
+    expect(field, 'site filter').toBeTruthy();
+    fireEvent.mouseDown(field!.querySelector('.ant-select-selector') ?? field!);
+    const option = await waitFor(() => {
+      const options = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')];
+      expect(options.map((o) => o.textContent)).toEqual(['ОБ-1 — Своя площадка']);
+      return options[0]!;
+    });
+    fireEvent.click(option);
+
+    await waitFor(() =>
+      expect(http.lastCall('GET /waybills')!.query.get('objectId')).toBe('object-1'),
+    );
   });
 
   /**

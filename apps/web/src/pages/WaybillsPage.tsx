@@ -15,7 +15,8 @@ import {
 import { waybillKeys, waybillsApi } from '@entities/waybill';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
-import { useAuth } from '@entities/session';
+import { objectFilterOptionLabel, objectOptionsQuery } from '@entities/object';
+import { useAuth, usePlaceObjectScope } from '@entities/session';
 import { DataTable, listScopeKey, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import { useRouteModal } from '@features/route-modal';
 import { useDriverOptions, useOwnVehicleOptions } from './vehicle/shared';
@@ -59,36 +60,44 @@ export function WaybillsPage() {
   const canCorrectDeep = can('waybills.correctBeyondLimit');
   const qc = useQueryClient();
 
-  /**
-   * Фильтры журнала — полосой над таблицей, как на остальных списках портала: часть значений
-   * (техника, водитель) это справочники, которым в выпадашке столбца места нет, а период и
-   * подавно. Раньше они были разделены надвое — период в шапке страницы, бланк и статус в
-   * заголовках столбцов, — и «чем сейчас сужен журнал» приходилось собирать глазами по экрану.
-   */
   const [range, setRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
   const { params, setParams, setSort, onTableChange } = useListParams<{
     status?: string;
     formCode?: string;
+    objectId?: string;
     vehicleId?: string;
     driverPersonId?: string;
-    /** «Только коррекции» (ADR 0101 п. 20) — им журнал читает бухгалтерия. */
     correction?: string;
   }>({}, { searchKeys: [] });
 
-  /** Смена любого фильтра возвращает журнал на первую страницу. */
+  /** Any filter change resets to page one: the same page under another filter is other rows. */
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const { options: vehicleOptions, loading: vehiclesLoading } = useOwnVehicleOptions();
   /**
-   * Отбор по водителю есть не у всех, кто читает журнал (ADR 0192). Площадка и отдел приходят сюда
-   * набором «Путевые листы: просмотр и печать», а карточки водителей им закрыты (`drivers.read`,
-   * ADR 0037): фамилию в строке журнала они видят — она напечатана в бланке, который у них на
-   * руках, — а справочника людей компании не получают. Поэтому фильтр не просто прячется: без
-   * права запрос за справочником не уходит вовсе.
+   * Not every journal reader has the driver filter (ADR 0192). Sites and departments come with the
+   * "view and print" grant and have no `drivers.read` (ADR 0037): they see the surname printed on
+   * the sheet they hold, but not the company's people directory. So without the right the
+   * directory request is not even sent, rather than just hidden.
    */
   const canReadDrivers = can('drivers.read');
   const { options: driverOptions, loading: driversLoading } = useDriverOptions(canReadDrivers);
+
+  /*
+   * Closed sites included: the journal is history, and a closed site's sheets stay in it. Options
+   * are narrowed to the reader's own sites (for a department — its sites): the server intersects
+   * the filter with the scope, so a foreign site finds at most a mixed sheet the reader already
+   * sees under their own site, and offering it would read as "that site has almost no paper".
+   * The label carries the address because sites are asked about by street as often as by name.
+   */
+  const canReadObjects = can('directories.read');
+  const { limitObjectOptions } = usePlaceObjectScope();
+  const { data: objectOptions = [], isFetching: objectsLoading } = useQuery({
+    ...objectOptionsQuery({ activeOnly: false }),
+    select: (r) => r.items.map((o) => ({ value: o.id, label: objectFilterOptionLabel(o) })),
+    enabled: canReadObjects,
+  });
 
   /**
    * Номер из адреса: сюда приходят по ссылке из маршрута и из карточки заявки — «что стало с этим
@@ -229,10 +238,6 @@ export function WaybillsPage() {
     openRoute,
   });
 
-  /**
-   * Фильтры собираются рядом с журналом, но живут своим файлом: их шесть, и каждый описан дважды —
-   * полосой для десктопа и описанием для шита телефона.
-   */
   const filterOptions = {
     values: params,
     onChange: applyFilter,
@@ -245,6 +250,9 @@ export function WaybillsPage() {
     },
     vehicles: { options: vehicleOptions, loading: vehiclesLoading },
     drivers: canReadDrivers ? { options: driverOptions, loading: driversLoading } : null,
+    objects: canReadObjects
+      ? { options: limitObjectOptions(objectOptions), loading: objectsLoading }
+      : null,
   };
 
   return (
