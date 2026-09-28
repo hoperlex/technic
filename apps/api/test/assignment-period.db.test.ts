@@ -959,7 +959,7 @@ describeReadModes(readMode, 'правка срока: подтверждение
    * fingerprint before the acknowledgements too; this door does the opposite. Nothing is written
    * either way — the difference is which refusal the person reads first.
    */
-  it('порядок рукопожатий: без подписей history отвечает 409 раньше, чем 422 за перечень групп', async () => {
+  it('[DIVERGENCE: history paper defects card] порядок рукопожатий: без подписей history отвечает 409 раньше, чем 422 за перечень групп', async () => {
     const splitAt = shiftDateKey(PREV, 2);
     await inScene(
       { status: 'done', dateTo: EXTENDED_TO, splitAt, issueSheets: true },

@@ -2090,7 +2090,10 @@ describeReadModes(readMode, 'бумага починенной истории (�
 // Cases marked DIVERGENCE document where the code, as of this commit, does not do what the plan
 // (`docs/assignment-periods-plan.md`) says. They assert what the code does, not what the plan
 // wants, so the suite stays a faithful record rather than a wish list; the comment names the plan
-// rule, and whoever fixes the code must flip the marked assertions together with it.
+// rule, and whoever fixes the code must flip the marked assertions together with it. The test NAME
+// carries the `[DIVERGENCE: …]` label as well: a run report lists names, not comments, and a green
+// name without the label would read as the norm. The defects are tracked as one task-journal card
+// ("дверь ремонта в history расходится с планом в шести местах"); cutover waits for their fix.
 
 /**
  * Provenance of every sheet of the request: which journal operation minted it, which one burned
@@ -2192,7 +2195,7 @@ describeReadModes(
   readMode,
   'заполнение unknown и его отмена против бумаги (Х1, Ф1, Э1)',
   (mode) => {
-    it('заполнение дыры без бумаги: отпечаток обязателен, в history бланки выписываются задним числом', async () => {
+    it('[DIVERGENCE: history paper defects card] заполнение дыры без бумаги: отпечаток обязателен, в history бланки выписываются задним числом', async () => {
       if (!DB_URL) return;
       const scene = await makeScene({ dateFrom: DEEP_FROM, dateTo: GAP_TO, history: gapHistory() });
       const body = fillBody('Нашли табель');
@@ -2275,7 +2278,7 @@ describeReadModes(
       expect(new Set(events[0]!.metadata.issued).size).toBe(filled.length);
     });
 
-    it('отмена заполнения: в history гаснут только бланки, не совпавшие с неделей дыры (Э2)', async () => {
+    it('[DIVERGENCE: history paper defects card] отмена заполнения: в history гаснут только бланки, не совпавшие с неделей дыры (Э2)', async () => {
       if (!DB_URL) return;
       const scene = await makeScene({ dateFrom: DEEP_FROM, dateTo: GAP_TO, history: gapHistory() });
       const fill = fillBody('Нашли табель');
@@ -2368,7 +2371,7 @@ describeReadModes(
       expect(events).toHaveLength(cutShort.length > 0 ? 2 : 1);
     });
 
-    it('заполнение поверх отработанного листа с другим человеком: план ждёт 422, дверь переоформляет бланк (Ф1)', async () => {
+    it('[DIVERGENCE: history paper defects card] заполнение поверх отработанного листа с другим человеком: план ждёт 422, дверь переоформляет бланк (Ф1)', async () => {
       if (!DB_URL) return;
       const scene = await paperScene();
       const before = await sheetsOf(scene.requestId);
@@ -2428,7 +2431,7 @@ describeReadModes(
       }
     });
 
-    it('заполнение до конца заблокированной части называет человека и в изменяемых днях (Ц4)', async () => {
+    it('[DIVERGENCE: history paper defects card] заполнение до конца заблокированной части называет человека и в изменяемых днях (Ц4)', async () => {
       if (!DB_URL) return;
       /*
        * The gap starts in locked past and runs on into mutable days (today to the end of term).
@@ -2630,7 +2633,7 @@ describeReadModes(readMode, 'ремонт архивной заявки прот
     expect(await esm2EventsOf(scene.requestId)).toHaveLength(expected.events);
   });
 
-  it('заполнение архивной заявки не просит восстановления, а в history выписывает ей бланки (Р29)', async () => {
+  it('[DIVERGENCE: history paper defects card] заполнение архивной заявки не просит восстановления, а в history выписывает ей бланки (Р29)', async () => {
     if (!DB_URL) return;
     const scene = await makeScene({
       dateFrom: DEEP_FROM,
