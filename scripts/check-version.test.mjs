@@ -307,6 +307,46 @@ test('порядок прихода: известная пара — не оши
   );
 });
 
+test('миграция, внесённая самим merge-коммитом, закоммичена им, и тег на нём проходит сверку', () => {
+  // Conflict resolution or an evil merge: the file is in neither parent, only in the merge.
+  const f = fixture();
+  f.release('0.1.2.0010');
+  f.git('checkout', '-q', '-b', 'side');
+  f.write('side.txt', 'side\n');
+  f.commit('side work');
+  f.git('checkout', '-q', 'main');
+  f.write('main.txt', 'main\n');
+  f.commit('main work');
+  f.git('merge', '-q', '--no-ff', '--no-commit', 'side');
+  f.write('apps/api/drizzle/0300_releases.sql', releaseSql('0.1.3.0011'));
+  f.write('VERSION', '0.1.3.0011\n');
+  const merge = f.commit('merge side, release 0.1.3 written in the merge');
+  assert.equal(f.git('rev-list', '--parents', '-n', '1', 'HEAD').split(' ').length, 3);
+
+  const plain = run(f.root);
+  assert.deepEqual(plain.errors, []);
+  assert.ok(!has(plain.warnings, /ещё не закоммичена/), plain.warnings.join('\n'));
+  assert.ok(has(plain.warnings, new RegExp(`0\\.1\\.3\\.0011.*место — ${merge.slice(0, 8)}`)));
+
+  f.tag('0.1.3.0011', merge);
+  assert.deepEqual(run(f.root, { tags: true }).errors, []);
+});
+
+test('миграция с боковой ветки: тег — на её коммите, а не на merge', () => {
+  const f = fixture();
+  f.release('0.1.2.0010');
+  f.git('checkout', '-q', '-b', 'side');
+  f.write('apps/api/drizzle/0300_releases.sql', releaseSql('0.1.3.0011'));
+  f.write('VERSION', '0.1.3.0011\n');
+  const side = f.commit('side release 0.1.3');
+  f.git('checkout', '-q', 'main');
+  f.write('main.txt', 'main\n');
+  f.commit('main work');
+  f.git('merge', '-q', '--no-ff', '-m', 'merge side', 'side');
+  f.tag('0.1.3.0011', side);
+  assert.deepEqual(run(f.root, { tags: true }).errors, []);
+});
+
 test('порядок прихода: выпуски до порога не сверяются', () => {
   const f = fixture();
   f.write('apps/api/drizzle/0200_releases.sql', releaseSql('0.1.2.0010'));

@@ -183,6 +183,7 @@ function addedFiles(root, extraArgs) {
   for (const line of res.out.split('\n')) {
     if (line.startsWith('@')) {
       commit = line.slice(1);
+      // With `-m` a merge is printed once per parent; it is still one point in history.
       if (seen.at(-1) !== commit) seen.push(commit);
     } else if (line.trim() !== '' && commit) {
       // The walk runs newest first, so a later line overwrites with an older commit.
@@ -202,6 +203,11 @@ function addedFiles(root, extraArgs) {
  *
  * `added` — the oldest commit that added the file: the tag target, matching
  * `git log --diff-filter=A -- <file> | tail -1`, the command the tags were restored with.
+ * `-m` shows merges' own diffs: without it a migration introduced by a merge commit itself
+ * (conflict resolution, an evil merge) is listed by no commit at all and reads as "not committed
+ * yet". A file that merely came from a side branch is then listed twice — by the side commit and
+ * by the merge — and `--topo-order` guarantees the side commit, an ancestor, is printed later, so
+ * "the last one seen" stays the commit that really wrote it even with skewed commit dates.
  *
  * `arrival` — the first-parent commit at which the file reached HEAD's line: the merge for a file
  * that came from a side branch, the adding commit otherwise. This is the order for the
@@ -210,7 +216,7 @@ function addedFiles(root, extraArgs) {
  * `--no-renames` keeps both answers independent of local diff settings.
  */
 export function migrationHistory(root) {
-  const added = addedFiles(root, []);
+  const added = addedFiles(root, ['--topo-order', '-m']);
   const arrival = addedFiles(root, ['--first-parent', '--diff-merges=first-parent']);
   if (!added || !arrival) return null;
   return { added, arrival };
