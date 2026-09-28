@@ -62,6 +62,17 @@ export interface FormValues {
 }
 
 /**
+ * A complete fill of the form: every field of `FormValues` is named, even when the answer is
+ * "nothing". `Partial<FormValues>` let a branch forget a new field silently, and a forgotten field
+ * is not an empty one only by luck of `resetFields`. Here a new field fails the build in each of the
+ * four branches below until it says what an edit and a copy carry over, if anything.
+ *
+ * Mapped over `Required<FormValues>` rather than with `-?`: that modifier also strips the explicit
+ * `| undefined`, and "this field is deliberately empty" could not be written at all.
+ */
+export type FormFill = { [K in keyof Required<FormValues>]: FormValues[K] | undefined };
+
+/**
  * Разворачивать ли список ездок при открытии формы.
  *
  * Свёрнутый вид годится не всякой заявке (§4.1): списком открываются те, у кого ездок несколько, и
@@ -85,7 +96,7 @@ export function scheduledMoment(
 }
 
 /** Значения формы для правки заявки: заявка как есть, включая прошедшие даты. */
-export function editFormValues(r: VehicleRequestDto): Partial<FormValues> {
+export function editFormValues(r: VehicleRequestDto): FormFill {
   if (r.requestType === 'special_equipment') {
     return {
       requestType: r.requestType,
@@ -97,7 +108,13 @@ export function editFormValues(r: VehicleRequestDto): Partial<FormValues> {
       dateTo: r.dateTo ? dayjs(r.dateTo) : null,
       responsibleName: r.responsibleName,
       responsiblePhone: r.responsiblePhone,
+      // An on-site order has a term, not a delivery moment, and no trips of its own.
+      scheduledDate: undefined,
+      scheduledTime: undefined,
+      trips: undefined,
       comment: r.comment,
+      // The reason explains one backdated save and is asked anew by the dates of this one.
+      backdateReason: undefined,
     };
   }
   const at = scheduledMoment(r);
@@ -117,11 +134,18 @@ export function editFormValues(r: VehicleRequestDto): Partial<FormValues> {
     requestType: r.requestType,
     customerKey: costTargetKeyOf(r) ?? undefined,
     classificationKey: classificationKeyOf(r),
+    // Freight has a delivery moment instead of a term, and its contacts live on each trip.
+    dateFrom: undefined,
+    dateTo: undefined,
+    responsibleName: undefined,
+    responsiblePhone: undefined,
     scheduledDate: at,
     // Время не задано — поле остаётся пустым (в scheduledAt лежит полночь МСК).
     scheduledTime: r.scheduledTimeUnspecified ? undefined : at.format('HH:mm'),
     trips: r.trips.map(tripToForm),
     comment: r.comment,
+    // Same as above: a backdate reason belongs to one save, never to the order.
+    backdateReason: undefined,
   };
 }
 
@@ -276,13 +300,16 @@ export function copyFormValues(
     /** Есть ли заказчик заявки в подборе копирующего. */
     hasCustomer: boolean;
   },
-): Partial<FormValues> {
+): FormFill {
   const { minDate, today, hasClassification, hasCustomer } = options;
   const common = {
     requestType: r.requestType,
     customerKey: hasCustomer ? (costTargetKeyOf(r) ?? undefined) : undefined,
     classificationKey: hasClassification ? classificationKeyOf(r) : '',
     comment: r.comment,
+    // A copy is proposed inside the allowed window (`copyTermPlan`, `copyScheduledPlan`), so there
+    // is no past to explain; moved back by hand, it is asked for a reason of the person copying.
+    backdateReason: undefined,
   };
   if (r.requestType === 'special_equipment') {
     const term = copyTermPlan(r, minDate, today);
@@ -292,11 +319,20 @@ export function copyFormValues(
       dateTo: term.dateTo,
       responsibleName: r.responsibleName,
       responsiblePhone: r.responsiblePhone,
+      // An on-site order has a term, not a delivery moment, and no trips of its own.
+      scheduledDate: undefined,
+      scheduledTime: undefined,
+      trips: undefined,
     };
   }
   const plan = copyScheduledPlan(r, minDate);
   return {
     ...common,
+    // Freight has a delivery moment instead of a term, and its contacts live on each trip.
+    dateFrom: undefined,
+    dateTo: undefined,
+    responsibleName: undefined,
+    responsiblePhone: undefined,
     scheduledDate: plan.scheduledDate,
     scheduledTime: plan.scheduledTime,
     trips: r.trips.map(copyTrip),
