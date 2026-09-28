@@ -70,10 +70,6 @@ const LEGACY = {
     'PortalLogo.tsx',
     'RequestHistory.tsx',
     'ResponsibleFields.tsx',
-    // Контакты поддержки открывает не только служебное меню каркаса (оно уже виджет), но и
-    // `features/quick-create-equipment`, а импорт из фичи в виджет запрещён матрицей границ:
-    // окно ждёт переезда второго потребителя, а не первого.
-    'SupportContactsModal.tsx',
     'TimeInput.tsx',
     'UserAvatar.tsx',
     // Загрузка виджета SmartCaptcha и жизненный цикл токена (ADR 0130) — вторая половина

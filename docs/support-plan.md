@@ -351,7 +351,7 @@ WHERE status = 'closed' AND closed_at < now() - ($1 || ' days')::interval;
 
 **Шаг 0 — уже в портале.** Пункт «Техподдержка» существует и сейчас, но открывает не форму, а окно
 с контактами: Telegram, MAX и телефон для срочного случая
-([SupportContactsModal.tsx](../apps/web/src/components/SupportContactsModal.tsx), сами контакты —
+([SupportContactsModal.tsx](../apps/web/src/entities/support/ui/SupportContactsModal.tsx), сами контакты —
 [shared/config/support.ts](../apps/web/src/shared/config/support.ts)). На десктопе он стоит в
 подвале боковой панели, на телефоне — в меню учётной записи: нижняя навигация занята разделами
 целиком (ADR 0030). Переписка занимает **этот же** пункт, а не заводит второй — меняется

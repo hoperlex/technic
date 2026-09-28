@@ -3,12 +3,12 @@ import { Badge, type MenuProps } from 'antd';
 import { CustomerServiceOutlined, NotificationOutlined, ReadOutlined } from '@ant-design/icons';
 import { useReleases } from '@entities/release';
 /*
- * Окно контактов зовётся из легаси-каталога, а не переехало сюда вместе с журналом: его открывает
- * ещё и `missing-equipment`, а импорт из фичи в виджет — снизу вверх, то есть запрещённый
- * матрицей границ. Путь относительный — тем же способом окно зовёт сегодня сама фича; уедет оно
- * вместе с ней, а не вместе с каркасом.
+ * The contacts window is a slice of its own and not a `ui/` file of this widget, unlike the two
+ * windows next to it: `features/missing-equipment` and `pages/NoSectionsPage` open it too, and
+ * reaching a widget from a feature or a page is an import upwards — forbidden by the boundaries
+ * matrix. Whoever pulls it back in here breaks those two callers, not this menu.
  */
-import { SupportContactsModal } from '../../../components/SupportContactsModal';
+import { SupportContactsModal } from '@entities/support';
 import { ManualsModal } from '../ui/ManualsModal';
 import { ReleaseNotesModal } from '../ui/ReleaseNotesModal';
 

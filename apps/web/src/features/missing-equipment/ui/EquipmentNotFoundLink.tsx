@@ -4,7 +4,7 @@ import { CustomerServiceOutlined } from '@ant-design/icons';
 import type { OfficeEquipmentDto } from '@technic/contracts';
 import { candidateIntakeAccess, subjectCheckTitle } from '@entities/office-equipment-candidate';
 import { useAuth } from '@entities/session';
-import { SupportContactsModal } from '../../../components/SupportContactsModal';
+import { SupportContactsModal } from '@entities/support';
 import { QuickCreateEquipmentModal } from './QuickCreateEquipmentModal';
 import { ReportEquipmentModal } from './ReportEquipmentModal';
 import type { EquipmentCandidateDraft } from '../model/draft';
