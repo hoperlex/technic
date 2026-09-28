@@ -1,5 +1,4 @@
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
-import pg from 'pg';
+import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { LightMyRequestResponse } from 'fastify';
@@ -10,7 +9,12 @@ import {
   type VehicleRequestRollbackPreviewDto,
   weekStartKey,
 } from '@technic/contracts';
-import { applyMigrations } from '../src/db/migration-journal';
+import {
+  describeReadModes,
+  inLegacy,
+  type TestReadMode,
+  useReadModeDatabase,
+} from './assignment-read-mode';
 import { issueRouteWaybill } from './waybill-issue-helper';
 // Types only: the values of these modules are imported with `await import` after the environment
 // is set — the config checks it at import time and fails without it.
@@ -40,15 +44,30 @@ import type { db as AppDb } from '../src/db/client';
  * - **sheet numbers only with `waybills.read`**: a holder of the rollback right without the journal
  *   gets the same counters and the same fingerprint, but no numbers;
  * - **the fingerprint is optional**: wrong — 409 and nothing changed; absent — the rollback passes;
+ * - **every part of the fingerprint catches its own change**: after the preview a day is planned, a
+ *   relocation gets a waybill, a shift draft appears, an early end is requested and withdrawn, an
+ *   ESM-2 sheet is cancelled by its own handle, the vehicle type is switched under the order — each
+ *   time the request version stays the one the tab holds or is re-read, so only the fingerprint can
+ *   refuse, and it answers 409 with nothing erased. A fixed garbage fingerprint would not prove this:
+ *   it fails for any plan, including one that forgot half of its consequences;
  * - **blockers are the door's own words**: an approved shift (422) and an active route waybill (409)
  *   are named by the preview with exactly the message the door answers;
  * - **the route's bounds**: another rollback («Отменена» → «Новая») erases nothing and gets 422,
  *   a subject without the rollback right gets 403.
  *
- * OWN DATABASE. The file creates its own database and drops it afterwards: the shared db-test base
- * lies both ways (`apps/api/scripts/quality-db.ts`), and the scene counts routes of a VEHICLE ON A
- * DATE — a route from a neighbouring file on the same unit and day would change what the day
- * planning does. Only the cluster is taken from `TEST_DATABASE_URL`.
+ * OWN DATABASE. The file runs on its own database, created and dropped by the read-mode harness
+ * (`useReadModeDatabase`, name `<main>_rm_rbprev_<run>`): the shared db-test base lies both ways
+ * (`apps/api/scripts/quality-db.ts`), and the scene counts routes of a VEHICLE ON A DATE — a route
+ * from a neighbouring file on the same unit and day would change what the day planning does.
+ *
+ * TWO READ MODES. Every case runs under `read_mode = legacy` and `history` (`describeReadModes`).
+ * The halves are expected to coincide, and that is the claim being checked, not a formality: the
+ * door writes the paper with the same weekly sweep in both modes, the backstop it calls reads the
+ * status already written as «Новая» (paper mode `none`) and stays silent, and the preview reads no
+ * history at all. The scene itself — taking into work, the correction of a worked week, days,
+ * relocations, shifts, early end — is prepared in `legacy` (`inLegacy`): in `history` those doors
+ * answer by the assignment history, which is not the subject here; only the preview and the
+ * rollback run in the mode under test.
  *
  * Run:
  *
@@ -56,15 +75,13 @@ import type { db as AppDb } from '../src/db/client';
  *     pnpm --filter @technic/api exec vitest run vehicle-request-rollback-preview.db
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
-/**
- * The own database name is DERIVED from the main one — `<main>_rollback_preview`: the cleanup of
- * `pnpm check:db` drops everything named `<main>_%`, so a run killed before its `afterAll` does not
- * leave a database nobody can tell from someone else's.
+/*
+ * Registered first, before the file's own hooks: the harness sets the environment in its
+ * `beforeAll` before anything imports `../src/...`, and drops the database in an `afterAll` that
+ * runs after the file has closed its pool (hooks run in reverse order).
  */
-const OWN_DB_NAME = `${DB_URL?.replace(/^.*\//, '') ?? ''}_rollback_preview`;
-const OWN_DB = DB_URL?.replace(/\/[^/]+$/, `/${OWN_DB_NAME}`);
-const ADMIN_DB = DB_URL?.replace(/\/[^/]+$/, '/postgres');
+const readMode = useReadModeDatabase('rbprev');
+const DB_URL = readMode.enabled ? process.env.TEST_DATABASE_URL : undefined;
 
 const PASSWORD = 'db-rollback-preview-password-123';
 const RUN = randomUUID().slice(0, 8);
@@ -91,7 +108,13 @@ interface Ctx {
   objectId: string;
   driverId: string;
   typeId: string;
-  /** Own freight vehicles with the 4-П form — one per case, so cases never share a route. */
+  /** Kind of the test types: a case that switches linearity creates a type of its own. */
+  kindId: string;
+  /**
+   * Own freight vehicles with the 4-П form — one per case and per read mode (`vehicleOf`): a route
+   * belongs to «vehicle + date», and a case sharing a unit with another, or with its own run in the
+   * other mode, would find that one's routes on its days.
+   */
   vehicles: string[];
   today: string;
   /** Monday and Sunday of the previous calendar week: worked at whatever day the test runs. */
@@ -100,47 +123,6 @@ interface Ctx {
 }
 
 let ctx: Ctx;
-
-/** The config is read at import, so the environment is set before the first `import('../src/...')`. */
-function prepareEnv(databaseUrl: string): void {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  process.env.DATABASE_URL = databaseUrl;
-  process.env.PUBLIC_ORIGIN ??= 'http://localhost:5173';
-  process.env.COOKIE_SECRET ??= 'test-cookie-secret-0123456789abcdef';
-  process.env.CSRF_SECRET ??= 'test-csrf-secret-0123456789abcdef';
-  process.env.JWT_PRIVATE_KEY_PEM = String(privateKey.export({ type: 'pkcs8', format: 'pem' }));
-  process.env.JWT_PUBLIC_KEY_PEM = String(publicKey.export({ type: 'spki', format: 'pem' }));
-  // S3 is not part of the scene, but the config requires it — deliberately non-working stubs.
-  process.env.S3_ENDPOINT ??= 'http://localhost:9000';
-  process.env.S3_BUCKET ??= 'test';
-  process.env.S3_ACCESS_KEY_ID ??= 'test';
-  process.env.S3_SECRET_ACCESS_KEY ??= 'test-secret';
-  process.env.LOG_LEVEL ??= 'error';
-  process.env.MAIL_ENABLED ??= 'false';
-}
-
-/** Own database from scratch: created, migrated and dropped in `afterAll`. */
-async function createOwnDatabase(): Promise<void> {
-  const admin = new pg.Client({ connectionString: ADMIN_DB });
-  await admin.connect();
-  try {
-    // `FORCE` — against connections of a PREVIOUS run left by a killed process.
-    await admin.query(`DROP DATABASE IF EXISTS "${OWN_DB_NAME}" WITH (FORCE)`);
-    await admin.query(`CREATE DATABASE "${OWN_DB_NAME}"`);
-  } finally {
-    await admin.end();
-  }
-  const client = new pg.Client({ connectionString: OWN_DB });
-  await client.connect();
-  try {
-    await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
-    await client.query('CREATE EXTENSION IF NOT EXISTS citext');
-    await client.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
-    await applyMigrations(client);
-  } finally {
-    await client.end();
-  }
-}
 
 /**
  * A user; with `grant` the rights come in an assigned grant (ADR 0106), inserted directly — the
@@ -230,6 +212,7 @@ async function requestInProgress(options: {
   vehicleId: string;
   dateFrom: string;
   dateTo: string;
+  typeId?: string;
 }): Promise<string> {
   const { vehicleId, dateFrom, dateTo } = options;
   const backdated = dateFrom < ctx.today;
@@ -237,7 +220,7 @@ async function requestInProgress(options: {
     inject('POST', '/api/v1/vehicle-requests', ctx.admin, {
       requestType: 'special_equipment',
       objectId: ctx.objectId,
-      vehicleTypeId: ctx.typeId,
+      vehicleTypeId: options.typeId ?? ctx.typeId,
       dateFrom,
       dateTo,
       responsibleName: 'Прорабов Пётр Петрович',
@@ -446,13 +429,53 @@ async function lastStatusAudit(requestId: string): Promise<Record<string, unknow
 const byDate = <T extends { date: string }>(items: readonly T[]) =>
   [...items].sort((a, b) => a.date.localeCompare(b.date));
 
+/** Cases per read mode; each takes its own slot of `ctx.vehicles`. */
+const CASES_PER_MODE = 4;
+
+function vehicleOf(mode: TestReadMode, slot: number): string {
+  const offset = mode === 'legacy' ? 0 : CASES_PER_MODE;
+  return ctx.vehicles[offset + slot]!;
+}
+
+/** Scene preparation happens in `legacy` whatever the mode under test (see the file header). */
+function prepare<T>(run: () => Promise<T>): Promise<T> {
+  return inLegacy(readMode, run);
+}
+
+/**
+ * One «the consequences changed after the preview» step: preview, change the world, then send the
+ * rollback with the CURRENT version and the STALE fingerprint — so the version check cannot be what
+ * refuses, only the fingerprint can. Checks 409 with the fingerprint's own words, nothing erased,
+ * and a fresh preview that differs; the caller names what exactly differs.
+ */
+async function expectStaleAfter(
+  requestId: string,
+  change: () => Promise<void>,
+  differs: (
+    shown: VehicleRequestRollbackPreviewDto,
+    fresh: VehicleRequestRollbackPreviewDto,
+  ) => void,
+): Promise<VehicleRequestRollbackPreviewDto> {
+  const shown = await previewOk(requestId);
+  await prepare(change);
+  const changed = await stateOf(requestId);
+  const res = await rollback(requestId, await versionOf(requestId), shown.fingerprint);
+  expect(res.statusCode, res.body).toBe(409);
+  expect(res.json().message).toContain('посмотрите заново');
+  expect(await stateOf(requestId)).toEqual(changed);
+  const fresh = await previewOk(requestId);
+  expect(fresh.fingerprint).not.toBe(shown.fingerprint);
+  differs(shown, fresh);
+  return fresh;
+}
+
 describe.skipIf(!DB_URL)('предпросмотр возврата заказа в «Новую» (живая схема)', () => {
   // Scenes are built through real handlers, dozens of transactions each; five seconds is not it.
   vi.setConfig({ testTimeout: 300_000, hookTimeout: 900_000 });
 
   beforeAll(async () => {
-    await createOwnDatabase();
-    prepareEnv(OWN_DB!);
+    // Environment and the own database are ready by the harness (`useReadModeDatabase`).
+    process.env.MAIL_ENABLED ??= 'false';
 
     const { db, closeDb } = await import('../src/db/client');
     const adminEmail = await seedUser('admin', 'admin');
@@ -473,6 +496,7 @@ describe.skipIf(!DB_URL)('предпросмотр возврата заказа
      * Own freight vehicles with the 4-П form: a day of the order is printed by 4-П (ADR 0207), the
      * relocation too, and the weekly ESM-2 is issued to any own vehicle of an on-site order.
      */
+    const needed = CASES_PER_MODE * 2;
     const own = await db.execute<{ id: string; kind_id: string }>(sql`
       SELECT v.id, vt.kind_id
         FROM vehicles v
@@ -481,9 +505,9 @@ describe.skipIf(!DB_URL)('предпросмотр возврата заказа
        WHERE v.ownership = 'own' AND v.status = 'active' AND v.deleted_at IS NULL
          AND vt.waybill_form_code = '4p' AND vk.code = 'freight_transport'
        ORDER BY v.registration_number
-       LIMIT 3`);
-    if (own.rows.length < 3) {
-      throw new Error('в базе нет трёх своих грузовых машин с 4-П: миграции не применены');
+       LIMIT ${needed}`);
+    if (own.rows.length < needed) {
+      throw new Error(`в базе нет ${needed} своих грузовых машин с 4-П: миграции не применены`);
     }
 
     const { buildApp: build } = await import('../src/app');
@@ -526,6 +550,7 @@ describe.skipIf(!DB_URL)('предпросмотр возврата заказа
       objectId: objectRow.rows[0]!.id,
       driverId,
       typeId: type.json().id as string,
+      kindId: own.rows[0]!.kind_id,
       vehicles: own.rows.map((row) => row.id),
       today,
       pastFrom: shiftDateKey(monday, -7),
@@ -534,268 +559,445 @@ describe.skipIf(!DB_URL)('предпросмотр возврата заказа
   });
 
   afterAll(async () => {
-    // No cleanup inside: the database is own and dropped whole.
+    // No cleanup inside: the database is own and dropped whole by the harness right after this.
     await ctx?.app.close();
     await ctx?.closeDb();
-    if (!DB_URL) return;
-    const admin = new pg.Client({ connectionString: ADMIN_DB });
-    await admin.connect();
-    try {
-      await admin.query(`DROP DATABASE IF EXISTS "${OWN_DB_NAME}" WITH (FORCE)`);
-    } finally {
-      await admin.end();
-    }
-  });
+  }, 60_000);
 
-  /**
-   * The whole scene: an order started last week, with days in routes, two relocations (one without
-   * a waybill, one whose waybill was issued and cancelled), two shift drafts, a pending early end,
-   * and ESM-2 of a worked week plus the current one. Preview, a wrong fingerprint, the rollback —
-   * and every consequence compared with the preview item by item.
+  /*
+   * Both read modes. The infrastructure (`beforeAll`/`afterAll`) stays outside: two blocks would
+   * mean two `afterAll`, and the first would close the pool under the second.
    */
-  it('всё, что назвал предпросмотр, и есть то, что сделал откат', async () => {
-    const vehicleId = ctx.vehicles[0]!;
-    const dateTo = shiftDateKey(ctx.today, 6);
-    const requestId = await requestInProgress({ vehicleId, dateFrom: ctx.pastFrom, dateTo });
+  describeReadModes(readMode, 'откат в «Новую» и его предпросмотр', (mode) => {
+    /**
+     * The whole scene: an order started last week, with days in routes, two relocations (one
+     * without a waybill, one whose waybill was issued and cancelled), two shift drafts, a pending
+     * early end, and ESM-2 of a worked week plus the current one. Preview, a garbage fingerprint,
+     * the rollback — and every consequence compared with the preview item by item.
+     */
+    it('всё, что назвал предпросмотр, и есть то, что сделал откат', async () => {
+      const vehicleId = vehicleOf(mode, 0);
+      const dateTo = shiftDateKey(ctx.today, 6);
+      const dayA = shiftDateKey(ctx.today, 1);
+      const dayB = shiftDateKey(ctx.today, 2);
 
-    // The worked week gets its sheet only by a correction (ADR 0101, Р21): same vehicle, declared.
-    await ok(
-      inject('PATCH', `/api/v1/vehicle-requests/${requestId}/assignment`, ctx.admin, {
-        vehicleId,
-        version: await versionOf(requestId),
-        correction: { operationId: randomUUID(), reason: 'Бумага за отработанную неделю' },
-      }),
-    );
+      const { requestId, pickupId } = await prepare(async () => {
+        const id = await requestInProgress({ vehicleId, dateFrom: ctx.pastFrom, dateTo });
+        // The worked week gets its sheet only by a correction (ADR 0101, Р21): same vehicle.
+        await ok(
+          inject('PATCH', `/api/v1/vehicle-requests/${id}/assignment`, ctx.admin, {
+            vehicleId,
+            version: await versionOf(id),
+            correction: { operationId: randomUUID(), reason: 'Бумага за отработанную неделю' },
+          }),
+        );
+        await planDay(id, dayA, vehicleId);
+        await planDay(id, dayB, vehicleId);
+        await addRelocation(id, 'delivery', ctx.today);
+        // A relocation that once had a waybill: the waybill is cancelled, the route still stays.
+        const pickup = await addRelocation(id, 'pickup', dateTo);
+        const pickupWaybill = await issueWaybill(pickup);
+        await ok(
+          inject('POST', `/api/v1/waybills/${pickupWaybill}/cancel`, ctx.admin, {
+            reason: 'бланк испорчен при печати',
+          }),
+        );
+        await fillShift(id, shiftDateKey(ctx.pastFrom, 1));
+        await fillShift(id, ctx.today);
+        await ok(
+          inject('POST', `/api/v1/vehicle-requests/${id}/early-end`, ctx.admin, {
+            newDateTo: shiftDateKey(ctx.today, 4),
+            reason: 'Работы на фундаменте закончены раньше',
+            version: await versionOf(id),
+          }),
+        );
+        return { requestId: id, pickupId: pickup };
+      });
 
-    const dayA = shiftDateKey(ctx.today, 1);
-    const dayB = shiftDateKey(ctx.today, 2);
-    await planDay(requestId, dayA, vehicleId);
-    await planDay(requestId, dayB, vehicleId);
+      const before = await stateOf(requestId);
+      // The scene is what it claims to be — otherwise equality below would prove nothing.
+      expect(before.status).toBe('confirmed');
+      expect(before.seats.map((s) => s.date).sort()).toEqual([dayA, dayB]);
+      expect(before.relocations).toHaveLength(2);
+      expect(before.shifts).toHaveLength(2);
+      expect(before.earlyEnd?.status).toBe('pending');
+      const liveBefore = before.esm2.filter((s) => s.status !== 'cancelled');
+      expect(liveBefore.some((s) => s.to < ctx.today)).toBe(true);
+      expect(liveBefore.some((s) => s.to >= ctx.today)).toBe(true);
 
-    await addRelocation(requestId, 'delivery', ctx.today);
-    // A relocation that once had a waybill: the waybill is cancelled, the route still stays.
-    const pickupId = await addRelocation(requestId, 'pickup', dateTo);
-    const pickupWaybill = await issueWaybill(pickupId);
-    await ok(
-      inject('POST', `/api/v1/waybills/${pickupWaybill}/cancel`, ctx.admin, {
-        reason: 'бланк испорчен при печати',
-      }),
-    );
+      const shown = await previewOk(requestId);
+      // The preview writes nothing: the state is the same, to the version.
+      expect(await stateOf(requestId)).toEqual(before);
 
-    await fillShift(requestId, shiftDateKey(ctx.pastFrom, 1));
-    await fillShift(requestId, ctx.today);
+      expect(shown.blockers).toEqual([]);
+      expect(shown.assignment).toBe(true);
+      expect(shown.completion).toBe(false);
+      expect(byDate(shown.routes.detach)).toEqual(byDate(before.seats));
+      expect(shown.routes.frozen).toEqual([]);
+      const pickup = before.relocations.find((r) => r.id === pickupId)!;
+      const delivery = before.relocations.find((r) => r.id !== pickupId)!;
+      expect(shown.relocations.drop).toEqual([
+        { routeNumber: delivery.routeNumber, purpose: 'delivery', routeDate: ctx.today },
+      ]);
+      expect(shown.relocations.keep).toEqual([
+        { routeNumber: pickup.routeNumber, purpose: 'pickup', routeDate: dateTo },
+      ]);
+      expect(shown.shifts).toEqual(before.shifts);
+      expect(shown.earlyEnd).toEqual({ newDateTo: before.earlyEnd!.newDateTo });
+      expect(shown.dropsLinearFreeze).toBe(before.isLinearFrozen !== null);
+      // ESM-2: the current and later weeks burn, the worked one stays (`canCancelWaybill`).
+      const cancelIds = shown.esm2.sheets!.cancel.map((s) => s.id).sort();
+      const keepIds = shown.esm2.sheets!.keep.map((s) => s.id).sort();
+      expect(cancelIds).toEqual(
+        liveBefore
+          .filter((s) => s.to >= ctx.today)
+          .map((s) => s.id)
+          .sort(),
+      );
+      expect(keepIds).toEqual(
+        liveBefore
+          .filter((s) => s.to < ctx.today)
+          .map((s) => s.id)
+          .sort(),
+      );
+      expect(shown.esm2.cancelCount).toBe(cancelIds.length);
+      expect(shown.esm2.keepCount).toBe(keepIds.length);
+      for (const sheet of shown.esm2.sheets!.cancel) expect(sheet.number).toMatch(/\d/);
 
-    await ok(
-      inject('POST', `/api/v1/vehicle-requests/${requestId}/early-end`, ctx.admin, {
-        newDateTo: shiftDateKey(ctx.today, 4),
-        reason: 'Работы на фундаменте закончены раньше',
-        version: await versionOf(requestId),
-      }),
-    );
+      // The rollback right without the journal: same plan, same fingerprint, no numbers.
+      const blind = await previewOk(requestId, ctx.rollbackNoJournal);
+      expect(blind.esm2.sheets).toBeNull();
+      expect(blind.esm2.cancelCount).toBe(shown.esm2.cancelCount);
+      expect(blind.esm2.keepCount).toBe(shown.esm2.keepCount);
+      expect(blind.fingerprint).toBe(shown.fingerprint);
+      expect({ ...blind, esm2: null }).toEqual({ ...shown, esm2: null });
 
-    const before = await stateOf(requestId);
-    // The scene is what it claims to be — otherwise equality below would prove nothing.
-    expect(before.status).toBe('confirmed');
-    expect(before.seats.map((s) => s.date).sort()).toEqual([dayA, dayB]);
-    expect(before.relocations).toHaveLength(2);
-    expect(before.shifts).toHaveLength(2);
-    expect(before.earlyEnd?.status).toBe('pending');
-    const liveBefore = before.esm2.filter((s) => s.status !== 'cancelled');
-    expect(liveBefore.some((s) => s.to < ctx.today)).toBe(true);
-    expect(liveBefore.some((s) => s.to >= ctx.today)).toBe(true);
+      // A fingerprint that matches no plan at all — 409, and nothing is erased.
+      const version = await versionOf(requestId);
+      const garbage = await rollback(requestId, version, 'f'.repeat(64));
+      expect(garbage.statusCode, garbage.body).toBe(409);
+      expect(garbage.json().message).toContain('посмотрите заново');
+      expect(await stateOf(requestId)).toEqual(before);
 
-    const shown = await previewOk(requestId);
-    // The preview writes nothing: the state is the same, to the version.
-    expect(await stateOf(requestId)).toEqual(before);
+      await ok(rollback(requestId, version, shown.fingerprint));
 
-    expect(shown.blockers).toEqual([]);
-    expect(shown.assignment).toBe(true);
-    expect(shown.completion).toBe(false);
-    expect(byDate(shown.routes.detach)).toEqual(byDate(before.seats));
-    expect(shown.routes.frozen).toEqual([]);
-    const pickup = before.relocations.find((r) => r.id === pickupId)!;
-    const delivery = before.relocations.find((r) => r.id !== pickupId)!;
-    expect(shown.relocations.drop).toEqual([
-      { routeNumber: delivery.routeNumber, purpose: 'delivery', routeDate: ctx.today },
-    ]);
-    expect(shown.relocations.keep).toEqual([
-      { routeNumber: pickup.routeNumber, purpose: 'pickup', routeDate: dateTo },
-    ]);
-    expect(shown.shifts).toEqual(before.shifts);
-    expect(shown.earlyEnd).toEqual({ newDateTo: before.earlyEnd!.newDateTo });
-    expect(shown.dropsLinearFreeze).toBe(before.isLinearFrozen !== null);
-    // ESM-2: the current and later weeks burn, the worked one stays (`canCancelWaybill`).
-    const cancelIds = shown.esm2.sheets!.cancel.map((s) => s.id).sort();
-    const keepIds = shown.esm2.sheets!.keep.map((s) => s.id).sort();
-    expect(cancelIds).toEqual(
-      liveBefore
-        .filter((s) => s.to >= ctx.today)
-        .map((s) => s.id)
-        .sort(),
-    );
-    expect(keepIds).toEqual(
-      liveBefore
-        .filter((s) => s.to < ctx.today)
-        .map((s) => s.id)
-        .sort(),
-    );
-    expect(shown.esm2.cancelCount).toBe(cancelIds.length);
-    expect(shown.esm2.keepCount).toBe(keepIds.length);
-    for (const sheet of shown.esm2.sheets!.cancel) expect(sheet.number).toMatch(/\d/);
+      const after = await stateOf(requestId);
+      expect(after.status).toBe('new');
+      // The approval survives the rollback (ADR 0172) — the preview never listed it.
+      expect(after.approved).toBe(true);
+      expect(after.assignment).toBe(false);
+      expect(after.completion).toBe(false);
+      // Places: all the preview named are gone, none other existed.
+      expect(after.seats).toEqual([]);
+      // Relocations: exactly the kept ones remain.
+      expect(after.relocations.map((r) => r.routeNumber)).toEqual(
+        shown.relocations.keep.map((r) => r.routeNumber),
+      );
+      expect(after.shifts).toEqual([]);
+      expect(after.earlyEnd).toBeNull();
+      expect(after.isLinearFrozen).toBeNull();
+      // ESM-2: named to cancel — cancelled; named to keep — active; no other sheet was touched.
+      const statusById = new Map(after.esm2.map((s) => [s.id, s.status]));
+      for (const id of cancelIds) expect(statusById.get(id)).toBe('cancelled');
+      for (const id of keepIds) expect(statusById.get(id)).toBe('issued');
+      expect(
+        after.esm2
+          .filter((s) => s.status !== 'cancelled')
+          .map((s) => s.id)
+          .sort(),
+      ).toEqual(keepIds);
+      expect(after.esm2.map((s) => s.id).sort()).toEqual(before.esm2.map((s) => s.id).sort());
 
-    // The rollback right without the journal: same plan, same fingerprint, no numbers.
-    const blind = await previewOk(requestId, ctx.rollbackNoJournal);
-    expect(blind.esm2.sheets).toBeNull();
-    expect(blind.esm2.cancelCount).toBe(shown.esm2.cancelCount);
-    expect(blind.esm2.keepCount).toBe(shown.esm2.keepCount);
-    expect(blind.fingerprint).toBe(shown.fingerprint);
-    expect({ ...blind, esm2: null }).toEqual({ ...shown, esm2: null });
-
-    // A fingerprint that does not match — 409, and nothing is erased.
-    const version = await versionOf(requestId);
-    const stale = await rollback(requestId, version, 'f'.repeat(64));
-    expect(stale.statusCode, stale.body).toBe(409);
-    expect(stale.json().message).toContain('посмотрите заново');
-    expect(await stateOf(requestId)).toEqual(before);
-
-    await ok(rollback(requestId, version, shown.fingerprint));
-
-    const after = await stateOf(requestId);
-    expect(after.status).toBe('new');
-    // The approval survives the rollback (ADR 0172) — the preview never listed it.
-    expect(after.approved).toBe(true);
-    expect(after.assignment).toBe(false);
-    expect(after.completion).toBe(false);
-    // Places: all the preview named are gone, none other existed.
-    expect(after.seats).toEqual([]);
-    // Relocations: exactly the kept ones remain.
-    expect(after.relocations.map((r) => r.routeNumber)).toEqual(
-      shown.relocations.keep.map((r) => r.routeNumber),
-    );
-    expect(after.shifts).toEqual([]);
-    expect(after.earlyEnd).toBeNull();
-    expect(after.isLinearFrozen).toBeNull();
-    // ESM-2: named to cancel — cancelled; named to keep — active; no other sheet was touched.
-    const statusById = new Map(after.esm2.map((s) => [s.id, s.status]));
-    for (const id of cancelIds) expect(statusById.get(id)).toBe('cancelled');
-    for (const id of keepIds) expect(statusById.get(id)).toBe('issued');
-    expect(
-      after.esm2
-        .filter((s) => s.status !== 'cancelled')
-        .map((s) => s.id)
-        .sort(),
-    ).toEqual(keepIds);
-    expect(after.esm2.map((s) => s.id).sort()).toEqual(before.esm2.map((s) => s.id).sort());
-
-    // The door's own audit names the same days and relocations the preview showed.
-    const audit = await lastStatusAudit(requestId);
-    expect(audit.reset).toBe(true);
-    expect([...((audit.detachedDays as string[]) ?? [])].sort()).toEqual(
-      shown.routes.detach.map((s) => s.date).sort(),
-    );
-    expect(audit.droppedRelocations).toEqual(shown.relocations.drop.map((r) => r.routeNumber));
-  });
-
-  /**
-   * Blockers are the door's refusals, word for word: an approved shift answers 422, an active
-   * waybill of a day's route answers 409 — and the preview names both with the same messages, still
-   * describing the rest of the request, frozen day included.
-   */
-  it('блокировки предпросмотр называет словами двери', async () => {
-    const vehicleId = ctx.vehicles[1]!;
-    const requestId = await requestInProgress({
-      vehicleId,
-      dateFrom: ctx.today,
-      dateTo: shiftDateKey(ctx.today, 3),
-    });
-    const frozenDay = shiftDateKey(ctx.today, 1);
-    const frozenRoute = await planDay(requestId, frozenDay, vehicleId);
-    await issueWaybill(frozenRoute);
-    await fillShift(requestId, ctx.today);
-    await ok(
-      inject(
-        'POST',
-        `/api/v1/vehicle-requests/${requestId}/shifts/${ctx.today}/approval`,
-        ctx.admin,
-        { approved: true },
-      ),
-    );
-
-    const both = await previewOk(requestId);
-    expect(both.blockers.map((b) => b.code)).toEqual(['approved_shifts', 'active_waybill']);
-    expect(both.routes.detach).toEqual([]);
-    expect(both.routes.frozen.map((s) => s.date)).toEqual([frozenDay]);
-    expect(both.shifts).toEqual([{ date: ctx.today, approved: true }]);
-
-    const refusedShifts = await rollback(requestId, await versionOf(requestId));
-    expect(refusedShifts.statusCode, refusedShifts.body).toBe(422);
-    expect(refusedShifts.json().message).toBe(both.blockers[0]!.message);
-
-    await ok(
-      inject(
-        'POST',
-        `/api/v1/vehicle-requests/${requestId}/shifts/${ctx.today}/approval`,
-        ctx.admin,
-        { approved: false },
-      ),
-    );
-    const waybillOnly = await previewOk(requestId);
-    expect(waybillOnly.blockers.map((b) => b.code)).toEqual(['active_waybill']);
-    const refusedWaybill = await rollback(requestId, await versionOf(requestId));
-    expect(refusedWaybill.statusCode, refusedWaybill.body).toBe(409);
-    expect(refusedWaybill.json().message).toBe(waybillOnly.blockers[0]!.message);
-    expect((await stateOf(requestId)).status).toBe('confirmed');
-  });
-
-  /**
-   * The fingerprint is optional on the transition period: a tab opened before the preview existed
-   * sends the rollback without it and must keep working. Plus the route's own bounds.
-   */
-  it('без отпечатка откат проходит; чужой возврат и чужое право — отказ', async () => {
-    const requestId = await requestInProgress({
-      vehicleId: ctx.vehicles[2]!,
-      dateFrom: ctx.today,
-      dateTo: shiftDateKey(ctx.today, 2),
+      // The door's own audit names the same days and relocations the preview showed.
+      const audit = await lastStatusAudit(requestId);
+      expect(audit.reset).toBe(true);
+      expect([...((audit.detachedDays as string[]) ?? [])].sort()).toEqual(
+        shown.routes.detach.map((s) => s.date).sort(),
+      );
+      expect(audit.droppedRelocations).toEqual(shown.relocations.drop.map((r) => r.routeNumber));
     });
 
-    // Status right without the rollback right: the preview refuses exactly like the door.
-    const forbidden = await preview(requestId, await versionOf(requestId), ctx.statusOnly);
-    expect(forbidden.statusCode, forbidden.body).toBe(403);
-    const doorForbidden = await inject(
-      'PATCH',
-      `/api/v1/vehicle-requests/${requestId}/status`,
-      ctx.statusOnly,
-      { status: 'new', comment: 'нет права', version: await versionOf(requestId) },
-    );
-    expect(doorForbidden.statusCode, doorForbidden.body).toBe(403);
+    /**
+     * Each part of the fingerprint against its own real change after the preview (see
+     * `expectStaleAfter`). The order is chosen so every step starts from a plan where its part is
+     * present: the delivery relocation is still to drop, the early end still to be asked, and so on.
+     * The order's own vehicle type is switched last: it changes nothing but the linearity snapshot.
+     *
+     * Not covered, because they cannot change while the version stays: `assignment` and
+     * `completion` — both move only together with the status or the assignment door, which bump the
+     * version, and a stale version is refused before the fingerprint is ever compared.
+     */
+    it('после просмотра изменилось последствие — 409, и ничего не стёрто', async () => {
+      const vehicleId = vehicleOf(mode, 1);
+      const dateTo = shiftDateKey(ctx.today, 13);
+      const newDay = shiftDateKey(ctx.today, 1);
+      const earlyEndTo = shiftDateKey(ctx.today, 4);
 
-    // A stale version is a conflict, as at the door.
-    const staleVersion = await preview(requestId, (await versionOf(requestId)) - 1);
-    expect(staleVersion.statusCode, staleVersion.body).toBe(409);
+      const { requestId, typeId, deliveryId } = await prepare(async () => {
+        // A type of its own: switching it must not touch the orders of the other cases.
+        const created = await ok(
+          inject('POST', '/api/v1/vehicle-types', ctx.admin, {
+            kindId: ctx.kindId,
+            code: `${TYPE_CODE}_${mode}`,
+            name: `Ямобуры отката, переключаемые ${RUN} ${mode}`,
+            isLinear: false,
+          }),
+          201,
+        );
+        const ownType = created.json().id as string;
+        const id = await requestInProgress({
+          vehicleId,
+          dateFrom: ctx.today,
+          dateTo,
+          typeId: ownType,
+        });
+        const delivery = await addRelocation(id, 'delivery', ctx.today);
+        return { requestId: id, typeId: ownType, deliveryId: delivery };
+      });
 
-    const shown = await previewOk(requestId);
-    expect(shown.esm2.cancelCount).toBeGreaterThan(0);
-    const cancelIds = shown.esm2.sheets!.cancel.map((s) => s.id).sort();
+      // Places in routes: a day planned after the preview.
+      await expectStaleAfter(
+        requestId,
+        async () => {
+          await planDay(requestId, newDay, vehicleId);
+        },
+        (shown, fresh) => {
+          expect(shown.routes.detach).toEqual([]);
+          expect(fresh.routes.detach.map((s) => s.date)).toEqual([newDay]);
+        },
+      );
 
-    await ok(rollback(requestId, await versionOf(requestId)));
-    const after = await stateOf(requestId);
-    expect(after.status).toBe('new');
-    expect(
-      after.esm2
-        .filter((s) => s.status === 'cancelled')
-        .map((s) => s.id)
-        .sort(),
-    ).toEqual(cancelIds);
+      // Relocations: the delivery got a waybill (issued and cancelled — an active one would be a
+      // blocker, refused before the fingerprint). It moves from «drop» to «keep».
+      await expectStaleAfter(
+        requestId,
+        async () => {
+          const waybill = await issueWaybill(deliveryId);
+          await ok(
+            inject('POST', `/api/v1/waybills/${waybill}/cancel`, ctx.admin, {
+              reason: 'бланк испорчен при печати',
+            }),
+          );
+        },
+        (shown, fresh) => {
+          expect(shown.relocations.drop).toHaveLength(1);
+          expect(shown.relocations.keep).toEqual([]);
+          expect(fresh.relocations.drop).toEqual([]);
+          expect(fresh.relocations.keep).toEqual(shown.relocations.drop);
+        },
+      );
 
-    // «Отменена» → «Новая» is a rollback that erases nothing: no plan to show.
-    await ok(
-      inject('PATCH', `/api/v1/vehicle-requests/${requestId}/status`, ctx.admin, {
-        status: 'cancelled',
-        comment: 'Заказ снят',
-        version: await versionOf(requestId),
-      }),
-    );
-    const fromCancelled = await preview(requestId, await versionOf(requestId));
-    expect(fromCancelled.statusCode, fromCancelled.body).toBe(422);
+      // Shifts: a draft appeared.
+      await expectStaleAfter(
+        requestId,
+        () => fillShift(requestId, ctx.today),
+        (shown, fresh) => {
+          expect(shown.shifts).toEqual([]);
+          expect(fresh.shifts).toEqual([{ date: ctx.today, approved: false }]);
+        },
+      );
+
+      // Early end: requested after the preview…
+      await expectStaleAfter(
+        requestId,
+        async () => {
+          await ok(
+            inject('POST', `/api/v1/vehicle-requests/${requestId}/early-end`, ctx.admin, {
+              newDateTo: earlyEndTo,
+              reason: 'Работы закончены раньше',
+              version: await versionOf(requestId),
+            }),
+          );
+        },
+        (shown, fresh) => {
+          expect(shown.earlyEnd).toBeNull();
+          expect(fresh.earlyEnd).toEqual({ newDateTo: earlyEndTo });
+        },
+      );
+      // …and withdrawn after the next one.
+      await expectStaleAfter(
+        requestId,
+        async () => {
+          await ok(inject('DELETE', `/api/v1/vehicle-requests/${requestId}/early-end`, ctx.admin));
+        },
+        (shown, fresh) => {
+          expect(shown.earlyEnd).toEqual({ newDateTo: earlyEndTo });
+          expect(fresh.earlyEnd).toBeNull();
+        },
+      );
+
+      // ESM-2: a sheet of a coming week cancelled by its own handle — the rollback has one less.
+      let burned = '';
+      await expectStaleAfter(
+        requestId,
+        async () => {
+          const sheets = (await previewOk(requestId)).esm2.sheets!.cancel;
+          burned = sheets[sheets.length - 1]!.id;
+          await ok(
+            inject('POST', `/api/v1/waybills/${burned}/cancel`, ctx.admin, {
+              reason: 'бланк испорчен при печати',
+            }),
+          );
+        },
+        (shown, fresh) => {
+          expect(shown.esm2.sheets!.cancel.map((s) => s.id)).toContain(burned);
+          expect(fresh.esm2.sheets!.cancel.map((s) => s.id)).not.toContain(burned);
+          expect(fresh.esm2.cancelCount).toBe(shown.esm2.cancelCount - 1);
+        },
+      );
+
+      // Linearity snapshot: the order's type switched under it (ADR 0107). The switch writes the
+      // snapshot without touching the request version — exactly the case only the fingerprint sees.
+      await expectStaleAfter(
+        requestId,
+        async () => {
+          const switchPreview = await ok(
+            inject(
+              'GET',
+              `/api/v1/vehicle-types/${typeId}/linear-switch-preview?isLinear=true`,
+              ctx.admin,
+            ),
+          );
+          await ok(
+            inject('POST', `/api/v1/vehicle-types/${typeId}/linear`, ctx.admin, {
+              isLinear: true,
+              fingerprint: switchPreview.json().fingerprint,
+            }),
+          );
+        },
+        (shown, fresh) => {
+          expect(shown.dropsLinearFreeze).toBe(false);
+          expect(fresh.dropsLinearFreeze).toBe(true);
+        },
+      );
+
+      // With the fingerprint of what is true now, the rollback goes — and does exactly that.
+      const last = await previewOk(requestId);
+      await ok(rollback(requestId, await versionOf(requestId), last.fingerprint));
+      const after = await stateOf(requestId);
+      expect(after.status).toBe('new');
+      expect(after.seats).toEqual([]);
+      expect(after.relocations.map((r) => r.routeNumber)).toEqual(
+        last.relocations.keep.map((r) => r.routeNumber),
+      );
+      expect(after.shifts).toEqual([]);
+      expect(after.earlyEnd).toBeNull();
+      expect(after.isLinearFrozen).toBeNull();
+      expect(
+        after.esm2
+          .filter((s) => s.status !== 'cancelled')
+          .map((s) => s.id)
+          .sort(),
+      ).toEqual(last.esm2.sheets!.keep.map((s) => s.id).sort());
+    });
+
+    /**
+     * Blockers are the door's refusals, word for word: an approved shift answers 422, an active
+     * waybill of a day's route answers 409 — and the preview names both with the same messages,
+     * still describing the rest of the request, frozen day included.
+     */
+    it('блокировки предпросмотр называет словами двери', async () => {
+      const vehicleId = vehicleOf(mode, 2);
+      const frozenDay = shiftDateKey(ctx.today, 1);
+      const requestId = await prepare(async () => {
+        const id = await requestInProgress({
+          vehicleId,
+          dateFrom: ctx.today,
+          dateTo: shiftDateKey(ctx.today, 3),
+        });
+        const frozenRoute = await planDay(id, frozenDay, vehicleId);
+        await issueWaybill(frozenRoute);
+        await fillShift(id, ctx.today);
+        await ok(
+          inject('POST', `/api/v1/vehicle-requests/${id}/shifts/${ctx.today}/approval`, ctx.admin, {
+            approved: true,
+          }),
+        );
+        return id;
+      });
+
+      const both = await previewOk(requestId);
+      expect(both.blockers.map((b) => b.code)).toEqual(['approved_shifts', 'active_waybill']);
+      expect(both.routes.detach).toEqual([]);
+      expect(both.routes.frozen.map((s) => s.date)).toEqual([frozenDay]);
+      expect(both.shifts).toEqual([{ date: ctx.today, approved: true }]);
+
+      const refusedShifts = await rollback(requestId, await versionOf(requestId));
+      expect(refusedShifts.statusCode, refusedShifts.body).toBe(422);
+      expect(refusedShifts.json().message).toBe(both.blockers[0]!.message);
+
+      await prepare(async () => {
+        await ok(
+          inject(
+            'POST',
+            `/api/v1/vehicle-requests/${requestId}/shifts/${ctx.today}/approval`,
+            ctx.admin,
+            { approved: false },
+          ),
+        );
+      });
+      const waybillOnly = await previewOk(requestId);
+      expect(waybillOnly.blockers.map((b) => b.code)).toEqual(['active_waybill']);
+      const refusedWaybill = await rollback(requestId, await versionOf(requestId));
+      expect(refusedWaybill.statusCode, refusedWaybill.body).toBe(409);
+      expect(refusedWaybill.json().message).toBe(waybillOnly.blockers[0]!.message);
+      expect((await stateOf(requestId)).status).toBe('confirmed');
+    });
+
+    /**
+     * The fingerprint is optional on the transition period: a tab opened before the preview
+     * existed sends the rollback without it and must keep working. Plus the route's own bounds.
+     */
+    it('без отпечатка откат проходит; чужой возврат и чужое право — отказ', async () => {
+      const requestId = await prepare(() =>
+        requestInProgress({
+          vehicleId: vehicleOf(mode, 3),
+          dateFrom: ctx.today,
+          dateTo: shiftDateKey(ctx.today, 2),
+        }),
+      );
+
+      // Status right without the rollback right: the preview refuses exactly like the door.
+      const forbidden = await preview(requestId, await versionOf(requestId), ctx.statusOnly);
+      expect(forbidden.statusCode, forbidden.body).toBe(403);
+      const doorForbidden = await inject(
+        'PATCH',
+        `/api/v1/vehicle-requests/${requestId}/status`,
+        ctx.statusOnly,
+        { status: 'new', comment: 'нет права', version: await versionOf(requestId) },
+      );
+      expect(doorForbidden.statusCode, doorForbidden.body).toBe(403);
+
+      // A stale version is a conflict, as at the door.
+      const staleVersion = await preview(requestId, (await versionOf(requestId)) - 1);
+      expect(staleVersion.statusCode, staleVersion.body).toBe(409);
+
+      const shown = await previewOk(requestId);
+      expect(shown.esm2.cancelCount).toBeGreaterThan(0);
+      const cancelIds = shown.esm2.sheets!.cancel.map((s) => s.id).sort();
+
+      await ok(rollback(requestId, await versionOf(requestId)));
+      const after = await stateOf(requestId);
+      expect(after.status).toBe('new');
+      expect(
+        after.esm2
+          .filter((s) => s.status === 'cancelled')
+          .map((s) => s.id)
+          .sort(),
+      ).toEqual(cancelIds);
+
+      // «Отменена» → «Новая» is a rollback that erases nothing: no plan to show.
+      await prepare(async () => {
+        await ok(
+          inject('PATCH', `/api/v1/vehicle-requests/${requestId}/status`, ctx.admin, {
+            status: 'cancelled',
+            comment: 'Заказ снят',
+            version: await versionOf(requestId),
+          }),
+        );
+      });
+      const fromCancelled = await preview(requestId, await versionOf(requestId));
+      expect(fromCancelled.statusCode, fromCancelled.body).toBe(422);
+    });
   });
 });
