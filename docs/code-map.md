@@ -159,7 +159,7 @@
 - Разделы портала: —
 - API-маршруты: —
 - Остальной API: —
-- Web: [AppLayout.tsx](../apps/web/src/components/AppLayout.tsx), [ui](../apps/web/src/shared/ui), [App.tsx](../apps/web/src/App.tsx)
+- Web: [layout](../apps/web/src/app/layout), [ui](../apps/web/src/shared/ui), [App.tsx](../apps/web/src/App.tsx)
 - Тесты: `boundaries.test.ts`, `portal-sections.test.ts`, `*-list.test.tsx`
 - Решения: [ADR 0030](adr/0030-responsive-layout.md), [ADR 0121](adr/0121-portal-sections-registry.md), [ADR 0136](adr/0136-select-popup-width.md)
 
