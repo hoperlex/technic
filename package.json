@@ -23,7 +23,7 @@
     "check:db": "node scripts/check-db.mjs",
     "check:docs": "node scripts/check-docs.mjs",
     "check:version": "node scripts/check-version.mjs",
-    "test:docs": "node --test scripts/docs-navigation.test.mjs",
+    "test:docs": "node --test scripts/docs-navigation.test.mjs scripts/check-version.test.mjs",
     "maintain": "node tools/maintenance/cli/main.ts",
     "maintain:typecheck": "tsc --noEmit -p tools/maintenance/tsconfig.json",
     "maintain:test": "node --test tools/maintenance/test/*.test.ts",
