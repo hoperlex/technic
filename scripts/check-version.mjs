@@ -14,9 +14,19 @@
  *
  * MODES.
  *   default   VERSION against the latest release row, release numbers within a line, the decision
- *             tail, and every release at or above `tag.since` that has no tag yet (one warning each,
- *             not only the current one: an old gap is as real as a fresh one). A missing tag is a
- *             warning because the check also runs before the push, when tagging is premature.
+ *             tail, the arrival order of releases in HEAD's history, and every release at or above
+ *             `tag.since` that has no tag yet (one warning each, not only the current one: an old
+ *             gap is as real as a fresh one). A missing tag is a warning because the check also
+ *             runs before the push, when tagging is premature.
+ *
+ *             ARRIVAL ORDER. Releases from the threshold on, taken in the order their migrations
+ *             reached HEAD's first-parent line, must strictly grow in both `seq` and release
+ *             number. Parallel branches each take "the next free" pair, and the one that lands
+ *             second arrives with numbers below a release already in history (and possibly
+ *             already deployed): the feed then goes backwards and VERSION in that commit lags
+ *             behind the latest release. Sorting by number alone would never notice it, which is
+ *             why the order comes from history. The first-parent line is used because it is total
+ *             (a merged branch arrives at its merge) and it is the order deploys follow.
  *   --tags    audit of the existing `v*` tags: each must be annotated and peel (`^{commit}`) to
  *             exactly the commit that added its release migration. A mismatch is an error: a tag
  *             that looks like a fact but points elsewhere is worse than no tag (ADR 0191, §4).
@@ -30,9 +40,10 @@
  * deployed is answered by `deploy-auto --status`. It is not part of `pnpm check`: the gates check
  * code, and a red release state must not block everyday development.
  *
- * The threshold and both exact sets (known number collisions, known shared release commits) are
- * read from the policy rather than copied here: a second copy of an exact set drifts from the first
- * without anyone noticing, which is the very failure this check exists to catch.
+ * The threshold and the exact sets (known number collisions, known shared release commits, known
+ * out-of-order arrivals) are read from the policy rather than copied here: a second copy of an
+ * exact set drifts from the first without anyone noticing, which is the very failure this check
+ * exists to catch.
  *
  * Rules: architecture/policies/versioning.yaml. Decision: docs/adr/0191-version-numbering.md.
  */
@@ -81,13 +92,16 @@ export function loadPolicy(root) {
   const doc = parseYaml(readFileSync(path.join(root, POLICY_FILE), 'utf8')) ?? {};
   const since = parseVersion(String(doc.sources?.tag?.since ?? ''));
   if (!since) throw new Error(`${POLICY_FILE}: sources.tag.since не разбирается как версия.`);
-  const sets = (key) => {
+  const sets = (key, { exactlyTwo = false } = {}) => {
     const list = doc[key] ?? [];
     if (!Array.isArray(list)) throw new Error(`${POLICY_FILE}: ${key} — не список.`);
     return list.map((entry, i) => {
       const versions = Array.isArray(entry?.versions) ? entry.versions.map(String) : [];
-      if (versions.length < 2 || !versions.every((v) => parseVersion(v))) {
-        throw new Error(`${POLICY_FILE}: ${key}[${i}].versions — нужно не меньше двух версий.`);
+      const sizeOk = exactlyTwo ? versions.length === 2 : versions.length >= 2;
+      if (!sizeOk || !versions.every((v) => parseVersion(v))) {
+        throw new Error(
+          `${POLICY_FILE}: ${key}[${i}].versions — нужно ${exactlyTwo ? 'ровно две' : 'не меньше двух'} версии.`,
+        );
       }
       return { versions, commit: entry.commit == null ? null : String(entry.commit) };
     });
@@ -96,6 +110,8 @@ export function loadPolicy(root) {
     since,
     knownCollisions: sets('knownCollisions'),
     knownSharedCommits: sets('knownSharedReleaseCommits'),
+    // A pair, not a group: the exception names the late release and the one it arrived below.
+    knownOutOfOrder: sets('knownOutOfOrderReleases', { exactlyTwo: true }),
   };
 }
 
@@ -112,9 +128,18 @@ export function readReleases(root) {
     if (!/INSERT\s+INTO\s+app_releases/i.test(sql)) continue;
     // A rollback hint in a comment repeats the version; counting it twice would fake a collision.
     const versions = new Set([...sql.matchAll(/'(\d+\.\d+\.\d+\.\d{4})'/g)].map((m) => m[1]));
+    // `seq` is taken from the row itself, and only when the column list starts with
+    // `(seq, version`: every release migration is written that way, and guessing the position in
+    // any other shape could pair a version with the wrong number.
+    const seqs = new Map();
+    if (/INSERT\s+INTO\s+app_releases\s*\(\s*seq\s*,\s*version\s*[,)]/i.test(sql)) {
+      for (const m of sql.matchAll(/\(\s*(\d+)\s*,\s*'(\d+\.\d+\.\d+\.\d{4})'/g)) {
+        seqs.set(m[2], Number(m[1]));
+      }
+    }
     for (const version of versions) {
       const parsed = parseVersion(version);
-      if (parsed) releases.push({ ...parsed, file: name });
+      if (parsed) releases.push({ ...parsed, file: name, seq: seqs.get(version) ?? null });
     }
   }
   return releases;
@@ -137,16 +162,13 @@ function git(root, args, extra = {}) {
 }
 
 /**
- * The commit that added each migration file, from one walk of HEAD's history.
- *
- * The oldest adding commit wins, matching `git log --diff-filter=A -- <file> | tail -1`, the
- * command the tags were restored with. `--no-renames` keeps the answer independent of local diff
- * settings. `null` means git did not answer (not a repository), which the caller reports instead
- * of treating every tag as wrong.
+ * Added migration files per commit from a newest-first `git log`, as the oldest commit per file
+ * plus that commit's age (0 = oldest commit of the walk). `null` when git did not answer.
  */
-export function migrationAddCommits(root) {
+function addedFiles(root, extraArgs) {
   const res = git(root, [
     'log',
+    ...extraArgs,
     '--diff-filter=A',
     '--no-renames',
     '--format=@%H',
@@ -155,14 +177,43 @@ export function migrationAddCommits(root) {
     DRIZZLE_DIR,
   ]);
   if (!res.ok) return null;
-  const map = new Map();
+  const seen = [];
+  const newestFirst = new Map();
   let commit = null;
   for (const line of res.out.split('\n')) {
-    if (line.startsWith('@')) commit = line.slice(1);
-    // The log runs newest first, so a later line overwrites with an older commit.
-    else if (line.trim() !== '' && commit) map.set(path.posix.basename(line.trim()), commit);
+    if (line.startsWith('@')) {
+      commit = line.slice(1);
+      if (seen.at(-1) !== commit) seen.push(commit);
+    } else if (line.trim() !== '' && commit) {
+      // The walk runs newest first, so a later line overwrites with an older commit.
+      newestFirst.set(path.posix.basename(line.trim()), { commit, position: seen.length - 1 });
+    }
   }
-  return map;
+  const files = new Map();
+  for (const [file, { commit: sha, position }] of newestFirst) {
+    files.set(file, { commit: sha, age: seen.length - 1 - position });
+  }
+  return files;
+}
+
+/**
+ * Where each migration file entered HEAD's history, from two walks. `null` means git did not
+ * answer (not a repository), which the caller reports instead of treating every tag as wrong.
+ *
+ * `added` — the oldest commit that added the file: the tag target, matching
+ * `git log --diff-filter=A -- <file> | tail -1`, the command the tags were restored with.
+ *
+ * `arrival` — the first-parent commit at which the file reached HEAD's line: the merge for a file
+ * that came from a side branch, the adding commit otherwise. This is the order for the
+ * seq/number check (see the header).
+ *
+ * `--no-renames` keeps both answers independent of local diff settings.
+ */
+export function migrationHistory(root) {
+  const added = addedFiles(root, []);
+  const arrival = addedFiles(root, ['--first-parent', '--diff-merges=first-parent']);
+  if (!added || !arrival) return null;
+  return { added, arrival };
 }
 
 /**
@@ -325,8 +376,8 @@ export function checkVersion({ root = ROOT, tags: auditTags = false, remote = fa
   const releaseByRaw = new Map(releases.map((r) => [r.raw, r]));
 
   const tags = localTags(root);
-  const addCommits = migrationAddCommits(root);
-  if (!tags || !addCommits) {
+  const history = migrationHistory(root);
+  if (!tags || !history) {
     // A plain run may happen outside a clone; an explicitly requested audit that could not run
     // must not end green.
     (auditTags || remote ? errors : warnings).push(
@@ -334,7 +385,7 @@ export function checkVersion({ root = ROOT, tags: auditTags = false, remote = fa
     );
     return result;
   }
-  const commitOf = (r) => addCommits.get(r.file) ?? null;
+  const commitOf = (r) => history.added.get(r.file)?.commit ?? null;
 
   const untagged = tagged.filter((r) => !tags.has(`v${r.raw}`));
   for (const r of untagged) {
@@ -394,7 +445,66 @@ export function checkVersion({ root = ROOT, tags: auditTags = false, remote = fa
     }
   }
 
-  // ── 7. Tag audit (--tags) ──────────────────────────────────────────────────
+  // ── 7. Arrival order: seq and release number grow along HEAD's line ────────
+  for (const r of tagged) {
+    if (r.seq === null) {
+      warnings.push(`seq выпуска ${r.raw} в ${r.file} не прочитан — порядок по seq не сверен.`);
+    }
+  }
+  const arriving = tagged
+    .map((r) => ({ r, at: history.arrival.get(r.file) }))
+    .filter((x) => x.at)
+    // Releases arriving in one commit have no order of their own; ranking them by number keeps
+    // a legal group from failing against itself while still comparing its seqs.
+    .sort((a, b) => a.at.age - b.at.age || compareReleases(a.r, b.r));
+  const usedOutOfOrder = new Set();
+  let topNumber = null;
+  let topSeq = null;
+  for (const cur of arriving) {
+    const { r } = cur;
+    const earlier = [topNumber, topSeq].filter((x, i, all) => x && all.indexOf(x) === i);
+    for (const prev of earlier) {
+      const numberBack = compareReleases(r, prev.r) <= 0;
+      const seqBack = r.seq !== null && prev.r.seq !== null && r.seq <= prev.r.seq;
+      if (!numberBack && !seqBack) continue;
+      const known = policy.knownOutOfOrder.findIndex((k) =>
+        sameSet(k.versions, [r.raw, prev.r.raw]),
+      );
+      if (known >= 0) {
+        usedOutOfOrder.add(known);
+        if (auditTags) {
+          notes.push(
+            `Выпуск ${r.raw} пришёл в историю позже ${prev.r.raw}, но ниже его — известное ` +
+              'исключение (knownOutOfOrderReleases).',
+          );
+        }
+        continue;
+      }
+      const what = [
+        numberBack ? `номер ${r.raw} не старше ${prev.r.raw}` : null,
+        seqBack ? `seq ${r.seq} не больше ${prev.r.seq}` : null,
+      ].filter(Boolean);
+      errors.push(
+        `Выпуск ${r.raw} (seq ${r.seq ?? '?'}, ${r.file}) пришёл в историю коммитом ` +
+          `${short(cur.at.commit)} — позже выпуска ${prev.r.raw} (seq ${prev.r.seq ?? '?'}, ` +
+          `${prev.r.file}, коммит ${short(prev.at.commit)}), но ${what.join(' и ')}. Выпуск, ` +
+          'пришедший позже, занимает следующие свободные seq и номер после уже существующих.',
+      );
+    }
+    if (!topNumber || compareReleases(r, topNumber.r) > 0) topNumber = cur;
+    if (r.seq !== null && (!topSeq || r.seq > topSeq.r.seq)) topSeq = cur;
+  }
+  policy.knownOutOfOrder.forEach((k, i) => {
+    if (usedOutOfOrder.has(i)) return;
+    const members = k.versions.map((v) => releaseByRaw.get(v));
+    if (members.some((r) => !r || !history.arrival.has(r.file))) return;
+    warnings.push(
+      `knownOutOfOrderReleases: выпуски ${k.versions.join(', ')} пришли в историю по порядку — ` +
+        'запись политики устарела.',
+    );
+  });
+
+  // ── 8. Tag audit (--tags) ──────────────────────────────────────────────────
   if (auditTags) {
     let audited = 0;
     let matched = 0;
@@ -488,7 +598,7 @@ export function checkVersion({ root = ROOT, tags: auditTags = false, remote = fa
     );
   }
 
-  // ── 8. Origin (--remote) ───────────────────────────────────────────────────
+  // ── 9. Origin (--remote) ───────────────────────────────────────────────────
   if (remote) {
     const { error, tags: onOrigin } = remoteTags(root);
     if (error) {

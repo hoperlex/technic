@@ -32,7 +32,7 @@ const GIT_ENV = {
   GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
 };
 
-const POLICY = (shared = '[]') => `
+const POLICY = ({ shared = '[]', outOfOrder = '[]' } = {}) => `
 sources:
   file: VERSION
   tag:
@@ -41,11 +41,13 @@ sources:
     retroactive: false
 knownCollisions: []
 knownSharedReleaseCommits: ${shared}
+knownOutOfOrderReleases: ${outOfOrder}
 `;
 
-const releaseSql = (version) =>
+// `seq` follows the release number unless a test says otherwise, so ordinary fixtures are in order.
+const releaseSql = (version, seq = Number(version.split('.')[2])) =>
   `INSERT INTO app_releases (seq, version, released_on, title, adrs, items) VALUES (\n` +
-  `  1, '${version}', '2026-09-25', 'fixture', '{}', '[]'::jsonb\n);\n` +
+  `  ${seq}, '${version}', '2026-09-25', 'fixture', '{}', '[]'::jsonb\n);\n` +
   `-- rollback: DELETE FROM app_releases WHERE version = '${version}';\n`;
 
 const cleanups = [];
@@ -53,7 +55,7 @@ test.after(() => {
   for (const dir of cleanups) rmSync(dir, { recursive: true, force: true });
 });
 
-function fixture({ shared } = {}) {
+function fixture(policy = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'check-version-'));
   cleanups.push(root);
   const git = (...args) =>
@@ -64,7 +66,7 @@ function fixture({ shared } = {}) {
     writeFileSync(full, text);
   };
   git('init', '-q', '-b', 'main');
-  write('architecture/policies/versioning.yaml', POLICY(shared));
+  write('architecture/policies/versioning.yaml', POLICY(policy));
   for (const n of ['0010', '0011', '0012']) write(`docs/adr/${n}-fixture.md`, `# ADR ${n}. X\n`);
   write('apps/api/drizzle/0000_schema.sql', 'CREATE TABLE app_releases (version text);\n');
 
@@ -218,6 +220,101 @@ test('--tags: VERSION в помеченном коммите не старший
   const r = run(f.root, { tags: true });
   assert.deepEqual(r.errors, []);
   assert.ok(has(r.warnings, /VERSION = 0\.1\.1\.0010, а старший выпуск.*0\.1\.2\.0010/));
+});
+
+test('порядок прихода: выпуск, пришедший позже с меньшими seq и номером, — ошибка с обоими коммитами', () => {
+  // The shape of 0344/0345: the branch that lands second took the pair "next free" at its start.
+  const f = fixture();
+  f.write('apps/api/drizzle/0200_releases.sql', releaseSql('0.1.3.0011', 3));
+  f.write('VERSION', '0.1.3.0011\n');
+  const higher = f.commit('release 0.1.3');
+  f.write('apps/api/drizzle/0199_releases.sql', releaseSql('0.1.2.0010', 2));
+  const lower = f.commit('late release 0.1.2');
+  const r = run(f.root);
+  assert.equal(r.errors.length, 1, r.errors.join('\n'));
+  assert.match(
+    r.errors[0],
+    new RegExp(`0\\.1\\.2\\.0010.*${lower.slice(0, 8)}.*${higher.slice(0, 8)}`),
+  );
+  assert.match(r.errors[0], /номер 0\.1\.2\.0010 не старше 0\.1\.3\.0011 и seq 2 не больше 3/);
+});
+
+test('порядок прихода: ловится и один seq, если номер вырос', () => {
+  const f = fixture();
+  f.write('apps/api/drizzle/0200_releases.sql', releaseSql('0.1.2.0010', 5));
+  f.commit('release 0.1.2 with seq 5');
+  f.write('apps/api/drizzle/0201_releases.sql', releaseSql('0.1.3.0011', 4));
+  f.write('VERSION', '0.1.3.0011\n');
+  f.commit('release 0.1.3 with seq 4');
+  const r = run(f.root);
+  assert.equal(r.errors.length, 1, r.errors.join('\n'));
+  assert.match(r.errors[0], /seq 4 не больше 5/);
+  assert.doesNotMatch(r.errors[0], /номер 0\.1\.3\.0011 не старше/);
+});
+
+test('порядок прихода: ветка, влитая позже, приходит merge-коммитом первородительской линии', () => {
+  const late = fixture();
+  late.release('0.1.2.0010');
+  late.git('checkout', '-q', '-b', 'side');
+  late.write('apps/api/drizzle/0300_releases.sql', releaseSql('0.1.3.0011'));
+  late.commit('side takes 0.1.3');
+  late.git('checkout', '-q', 'main');
+  late.write('apps/api/drizzle/0301_releases.sql', releaseSql('0.1.4.0012'));
+  late.write('VERSION', '0.1.4.0012\n');
+  const mainline = late.commit('main takes 0.1.4 first');
+  late.git('merge', '-q', '--no-ff', '-m', 'merge side', 'side');
+  const merge = late.git('rev-parse', 'HEAD');
+  const r = run(late.root);
+  assert.equal(r.errors.length, 1, r.errors.join('\n'));
+  assert.match(
+    r.errors[0],
+    new RegExp(`0\\.1\\.3\\.0011.*${merge.slice(0, 8)}.*${mainline.slice(0, 8)}`),
+  );
+
+  // Landing in number order is fine even when the branch was written in parallel.
+  const early = fixture();
+  early.release('0.1.2.0010');
+  early.git('checkout', '-q', '-b', 'side');
+  early.write('apps/api/drizzle/0300_releases.sql', releaseSql('0.1.3.0011'));
+  early.commit('side takes 0.1.3');
+  early.git('checkout', '-q', 'main');
+  early.git('merge', '-q', '--no-ff', '-m', 'merge side', 'side');
+  early.write('apps/api/drizzle/0301_releases.sql', releaseSql('0.1.4.0012'));
+  early.write('VERSION', '0.1.4.0012\n');
+  early.commit('main takes 0.1.4 after the merge');
+  assert.deepEqual(run(early.root).errors, []);
+});
+
+test('порядок прихода: известная пара — не ошибка, а примечание; пара по порядку — запись устарела', () => {
+  const outOfOrder = "[{ versions: ['0.1.2.0010', '0.1.3.0011'] }]";
+  const f = fixture({ outOfOrder });
+  f.write('apps/api/drizzle/0200_releases.sql', releaseSql('0.1.3.0011'));
+  f.write('VERSION', '0.1.3.0011\n');
+  f.commit('release 0.1.3');
+  f.write('apps/api/drizzle/0199_releases.sql', releaseSql('0.1.2.0010'));
+  f.commit('late release 0.1.2');
+  const r = run(f.root, { tags: true });
+  assert.deepEqual(r.errors, []);
+  assert.ok(
+    has(r.notes, /0\.1\.2\.0010 пришёл в историю позже 0\.1\.3\.0011.*известное исключение/),
+  );
+
+  const g = fixture({ outOfOrder });
+  g.release('0.1.2.0010');
+  g.release('0.1.3.0011');
+  assert.ok(
+    has(run(g.root).warnings, /knownOutOfOrderReleases.*по порядку — запись политики устарела/),
+  );
+});
+
+test('порядок прихода: выпуски до порога не сверяются', () => {
+  const f = fixture();
+  f.write('apps/api/drizzle/0200_releases.sql', releaseSql('0.1.2.0010'));
+  f.write('VERSION', '0.1.2.0010\n');
+  f.commit('release 0.1.2');
+  f.write('apps/api/drizzle/0100_releases.sql', releaseSql('0.1.1.0010'));
+  f.commit('journal backfill below the threshold');
+  assert.deepEqual(run(f.root).errors, []);
 });
 
 test('--remote: незапушенный тег — предупреждение, расхождение с origin — ошибка', () => {

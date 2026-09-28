@@ -121,6 +121,22 @@ knownSharedReleaseCommits:
       Артикул в строке чека (0.1.92.0202) и распознавание скана чека (0.1.93.0203) приехали одним
       коммитом. VERSION в коммите — 0.1.93.0203.
 
+# KNOWN OUT-OF-ORDER ARRIVALS — pairs of releases where the later one in HEAD's history carries a
+# lower seq and release number, as exact pairs.
+#
+# From the threshold on, releases taken in the order their migrations reached HEAD's first-parent
+# line must strictly grow in both seq and number (rule `release-grows`). Parallel work breaks this:
+# each branch takes "the next free" pair, and the one that lands second arrives below a release
+# that is already in history. A pair and not a release: excusing "0.1.87 may arrive late" in
+# general would also excuse it against a release that has not been written yet. A stale entry (the
+# pair no longer arrives out of order) is a warning, so the list cannot rot.
+knownOutOfOrderReleases:
+  - versions: ['0.1.87.0197', '0.1.88.0197']
+    reason: >
+      0.1.87.0197 (seq 98) приехал в f7246a0f, а 0.1.88.0197 (seq 99) — раньше, в b5421fb9, его
+      предке: выпуск 87 появился в истории позже выпуска 88. Оба уже в журнале на проде и в
+      тегах, перенумеровать поздно.
+
 consistency:
   check: scripts/check-version.mjs
   command: pnpm check:version
@@ -129,10 +145,16 @@ consistency:
       severity: error
       text: >
         Версия в `VERSION` совпадает с версией последней записи выпуска в миграциях.
+    # "Previous" means previous in HEAD's history, not previous by number: sorting by number would
+    # hide exactly the case the rule exists for — a release that lands after a higher one.
     - id: release-grows
       severity: error
+      mode: default
       text: >
-        Номер выпуска в линии строго больше предыдущего, а линия не убывает.
+        Номер выпуска в линии строго больше предыдущего, а линия не убывает. Начиная с `tag.since`
+        «предыдущий» — пришедший в первородительскую линию HEAD раньше: в порядке прихода миграций
+        выпуска и seq, и номер строго растут. Нарушение — ошибка с обоими коммитами; известные пары
+        — в `knownOutOfOrderReleases`.
     - id: decision-exists
       severity: error
       text: >
