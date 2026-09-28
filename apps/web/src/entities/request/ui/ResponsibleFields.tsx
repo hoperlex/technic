@@ -1,6 +1,6 @@
-import { Col, Form, Input, Row, Space, Typography } from 'antd';
+import type { ComponentType } from 'react';
+import { Col, Form, Input, Row } from 'antd';
 import { contactIssue } from '@technic/contracts';
-import { PhoneInput, PhoneLink } from '@entities/user-account';
 
 /**
  * Имя поля формы: строка либо путь. Путь нужен спискам — контакты ездок лежат в
@@ -34,6 +34,16 @@ interface Props {
    * и послаблять нечего: так работают все прочие места, где стоит этот компонент.
    */
   kept?: { name: string; phone: string };
+  /**
+   * Маска номера, переданная вызывающим.
+   *
+   * Слой заявки не может взять её у слайса учёток, где она живёт: это сосед по слою, и границы
+   * такой импорт запрещают. Вниз, в фундамент, маска не уедет — она спрашивает контракты о числе
+   * цифр и о подсказке, а фундаменту правила портала недоступны. Значит либо второе написание
+   * маски здесь, либо проп: выбран проп, потому что разошедшиеся маски человек увидит только на
+   * телефоне, который не сохранился.
+   */
+  phoneInput: ComponentType<{ disabled?: boolean }>;
 }
 
 /**
@@ -70,6 +80,7 @@ export function ResponsibleFields({
   phoneLabel,
   disabled,
   kept,
+  phoneInput: PhoneInputControl,
 }: Props) {
   return (
     // На десктопе ФИО и телефон встают в строку, на телефоне Row переносит их сам (ADR 0030).
@@ -92,23 +103,9 @@ export function ResponsibleFields({
           validateTrigger="onBlur"
           rules={[rule('phone', kept?.phone)]}
         >
-          <PhoneInput disabled={disabled} />
+          <PhoneInputControl disabled={disabled} />
         </Form.Item>
       </Col>
     </Row>
-  );
-}
-
-/**
- * Контакт в карточке заявки: ФИО и телефон ссылкой `tel:`. Пусто — заявка заведена до появления
- * контакта (миграция 0062).
- */
-export function ResponsibleValue({ name, phone }: { name: string; phone: string }) {
-  if (!name && !phone) return <Typography.Text type="secondary">—</Typography.Text>;
-  return (
-    <Space size={8} wrap>
-      <span>{name || '—'}</span>
-      {!!phone && <PhoneLink phone={phone} />}
-    </Space>
   );
 }

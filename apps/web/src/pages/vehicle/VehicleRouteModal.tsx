@@ -24,15 +24,14 @@ import {
   waybillStatusLabels,
 } from '@technic/contracts';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
-import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
-import { waybillKeys, waybillsApi } from '@entities/waybill';
+import { canOpenRoute, vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
+import { PrintWaybillButton, waybillKeys, waybillsApi } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { useAuth } from '@entities/session';
 import { isApiError } from '@shared/api';
 import { AutoSelect, EntityLink, ViewModal } from '@shared/ui';
-import { PrintWaybillButton } from '@entities/waybill';
 import { errorMessage } from '../../utils/format';
-import { canOpenRoute, vehicleRequestViewLink } from '../../utils/links';
+import { vehicleRequestViewLink } from '@entities/vehicle-request';
 import { assembleRoute, blockerMessage } from './routeAssembly';
 import { useRouteModal } from '@features/route-modal';
 import { RoutePointsBlock } from './RoutePointsBlock';

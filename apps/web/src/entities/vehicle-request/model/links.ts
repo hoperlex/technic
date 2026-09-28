@@ -1,4 +1,11 @@
-import { vehicleRequestViewPath, type Permission } from '@technic/contracts';
+import {
+  vehicleRequestPath,
+  vehicleRequestTab,
+  vehicleRequestViewPath,
+  type Permission,
+  type RequestStatus,
+} from '@technic/contracts';
+import { canSeeArchiveTab } from '@entities/request';
 
 /**
  * Право на переход к заявке на технику по её номеру, названному в чужом списке.
@@ -39,4 +46,23 @@ type Can = (permission: Permission) => boolean;
 export function vehicleRequestViewLink(can: Can, requestId: string): string | null {
   if (!can('vehicleRequests.read')) return null;
   return vehicleRequestViewPath(requestId);
+}
+
+/**
+ * Заявка на технику: вкладка по её состоянию плюс просьба открыть карточку.
+ *
+ * Право на архив спрашивается у слайса заявки (`@entities/request`) — единственного, читать который
+ * этому слайсу разрешено матрицей границ. Своя копия предиката разошлась бы с той, которой
+ * пользуется сам список: ссылка предложилась бы роли, у которой архив не открывается.
+ */
+export function vehicleRequestLink(
+  can: Can,
+  request: { id: string; status: RequestStatus; deleted?: boolean },
+): string | null {
+  if (!can('vehicleRequests.read')) return null;
+  // Вкладка спрашивается тем же правилом, каким её выберет адрес: удалённая заявка живёт в
+  // архиве, и без этой проверки ссылка на неё показалась бы роли, которой архив не положен.
+  if (vehicleRequestTab(request.status, request.deleted) === 'archive' && !canSeeArchiveTab(can))
+    return null;
+  return vehicleRequestPath(request);
 }

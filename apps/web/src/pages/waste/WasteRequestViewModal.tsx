@@ -27,10 +27,10 @@ import { TicketRecognitionBanner, WasteTicketsPanel } from '@features/waste-tick
 import { useAuth } from '@entities/session';
 import { FileLinkList, FilesButton } from '@entities/file';
 import { type HistoryRow, RequestHistoryTable } from '@entities/request-history';
-import { ResponsibleValue } from '../../components/ResponsibleFields';
-import { UserAvatar } from '@shared/ui';
+import { ResponsibleValue } from '@entities/user-account';
+
 import { formatDateTime, formatMoney, useScrollIntoViewWhen } from '@shared/lib';
-import { ViewFields, ViewModal } from '@shared/ui';
+import { UserAvatar, ViewFields, ViewModal } from '@shared/ui';
 import { formatDateTimeMaybe } from '../../utils/format';
 
 /**

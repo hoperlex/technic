@@ -31,7 +31,8 @@ import { ServiceRequestWarrantyClaim } from './ServiceRequestWarrantyClaim';
 import { useRequesterPlace } from './ServiceRequestRequesterPlace';
 import { reportServiceMail } from './serviceMailNotice';
 import { reportServiceRequestFailure } from './serviceRequestFailure';
-import { ResponsibleFields } from '../../components/ResponsibleFields';
+import { PhoneInput } from '@entities/user-account';
+import { ResponsibleFields } from '@entities/request';
 
 /** Поля формы объявлены рядом с отправкой (`serviceRequestSubmit`): они — её вход. */
 type Values = ServiceFormValues;
@@ -347,6 +348,7 @@ export function ServiceRequestForm({
           phoneField="responsiblePhone"
           nameLabel="Кто обращается"
           phoneLabel="Телефон для связи"
+          phoneInput={PhoneInput}
         />
 
         {/* Откуда сам заявитель (Н11) — рядом с его контактом, а не рядом с заказчиком: это два

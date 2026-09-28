@@ -21,7 +21,7 @@ import { serviceRepeatFields } from './serviceRequestRepeat';
 import { ServiceRequestSubjectName } from './ServiceRequestSubjectName';
 import { ServiceStatusCell } from './ServiceStatusCell';
 import type { ServiceMenuItem } from './serviceStatusChoices';
-import { ResponsibleValue } from '../../components/ResponsibleFields';
+import { ResponsibleValue } from '@entities/user-account';
 
 /**
  * Поля карточки заявки на обслуживание (§9.4) — вкладка «Заявка».

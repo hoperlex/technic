@@ -2,7 +2,7 @@ import { useSearchParams } from 'react-router';
 import { mechRequestKeys } from '@entities/mech-request';
 import { useAuth } from '@entities/session';
 import { PageTabs } from '@shared/ui';
-import { canSeeArchiveTab } from '../../utils/links';
+import { canSeeArchiveTab } from '@entities/request';
 import { RequestsTab } from './RequestsTab';
 import { RentalsTab } from './RentalsTab';
 import { HistoryTab } from './HistoryTab';

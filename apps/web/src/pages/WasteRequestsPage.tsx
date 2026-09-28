@@ -66,12 +66,12 @@ import {
 } from '@entities/waste-request';
 import { useAuth } from '@entities/session';
 import { AutoSelect } from '@shared/ui';
-import { CancelReasonModal, RollbackReasonModal } from '@entities/request';
+import { PhoneInput } from '@entities/user-account';
+import { CancelReasonModal, ResponsibleFields, RollbackReasonModal } from '@entities/request';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
-import { ResponsibleFields } from '../components/ResponsibleFields';
 import { sortOptionsFrom } from '@shared/ui';
 import { PageTabs, TabsExtra, useActiveTabKey } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
@@ -1815,6 +1815,7 @@ function RequestsTab() {
                 phoneField="responsiblePhone"
                 nameLabel="Ответственный на площадке"
                 phoneLabel="Контактный телефон"
+                phoneInput={PhoneInput}
               />
               {/* Комментарий площадки: строку исполнителя он пишет сам, в карточке заявки
                 (ADR 0053) — форма заявки её не трогает. */}

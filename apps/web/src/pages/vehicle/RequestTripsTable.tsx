@@ -2,7 +2,7 @@ import { Table, Typography } from 'antd';
 import { tripCargoLabel, type VehicleRequestTripDto } from '@technic/contracts';
 import { formatDateTime } from '@shared/lib';
 import { AddressCell } from '@entities/address';
-import { ResponsibleValue } from '../../components/ResponsibleFields';
+import { ResponsibleValue } from '@entities/user-account';
 
 /**
  * Ездки заявки в карточке: таблица и её ячейка «откуда/куда».

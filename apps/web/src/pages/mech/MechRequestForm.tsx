@@ -9,7 +9,8 @@ import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
 import { withSavedOption } from '@shared/lib';
 import { MechRequestAttachments, useMechAttachments } from './MechRequestAttachments';
 import { useMechRequesterFields } from './MechRequesterFields';
-import { ResponsibleFields } from '../../components/ResponsibleFields';
+import { PhoneInput } from '@entities/user-account';
+import { ResponsibleFields } from '@entities/request';
 
 const DATE = 'YYYY-MM-DD';
 
@@ -277,6 +278,7 @@ export function MechRequestForm({
           kept={
             request ? { name: request.responsibleName, phone: request.responsiblePhone } : undefined
           }
+          phoneInput={PhoneInput}
         />
 
         <Form.Item name="comment" label="Комментарий">

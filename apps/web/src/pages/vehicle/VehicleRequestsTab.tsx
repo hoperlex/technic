@@ -84,13 +84,13 @@ import {
 import { useAuth } from '@entities/session';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '@entities/vehicle-request';
-import { vehicleRouteKeys } from '@entities/vehicle-route';
+import { canOpenRoute, vehicleRouteKeys, vehicleRouteLink } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import { AutoSelect } from '@shared/ui';
-import { CancelReasonModal, RollbackReasonModal } from '@entities/request';
+import { PhoneInput } from '@entities/user-account';
+import { CancelReasonModal, ResponsibleFields, RollbackReasonModal } from '@entities/request';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { EntityLink, ExpandableCell, FormGrid, FormModal, PageTableLayout } from '@shared/ui';
-import { ResponsibleFields } from '../../components/ResponsibleFields';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
@@ -114,9 +114,9 @@ import {
   classificationKeyOf,
   useVehicleClassifications,
   withSavedClassification,
+  useVehicleClassificationFilter,
 } from '@entities/vehicle-type';
 import { errorMessage } from '../../utils/format';
-import { canOpenRoute, vehicleRouteLink } from '../../utils/links';
 import { vehicleRequestDateRules } from '@entities/vehicle-request';
 
 import { FilesCell } from '@entities/file';
@@ -158,7 +158,6 @@ import {
   useVehicleFilter,
   type EditorFile,
 } from './shared';
-import { useVehicleClassificationFilter } from '@entities/vehicle-type';
 import { useEarlyEnd } from './earlyEndActions';
 import {
   WeeklyApprovalCell,
@@ -2418,6 +2417,7 @@ export function VehicleRequestsTab() {
                     phoneField="responsiblePhone"
                     nameLabel="Ответственный на объекте"
                     phoneLabel="Контактный телефон"
+                    phoneInput={PhoneInput}
                   />
                 </FormGrid.Full>
 

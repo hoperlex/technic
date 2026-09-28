@@ -19,7 +19,7 @@ import { authUser } from './factories/auth';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { AppLayout } from '@app/layout';
 import { RequirePermission } from '../src/app/routing/ProtectedRoute';
-import { canOpenRoute } from '../src/utils/links';
+import { canOpenRoute } from '@entities/vehicle-route';
 
 /**
  * Портал скрывает недоступное по той же матрице, по которой API запрещает (ADR 0021).

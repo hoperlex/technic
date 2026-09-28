@@ -3,7 +3,7 @@ import { canOrderVehicleRequestType } from '@technic/contracts';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { useAuth } from '@entities/session';
 import { PageTabs } from '@shared/ui';
-import { canSeeArchiveTab } from '../utils/links';
+import { canSeeArchiveTab } from '@entities/request';
 import { VehicleRequestsTab } from './vehicle/VehicleRequestsTab';
 import { VehicleRequestsOnSiteTab } from './vehicle/VehicleRequestsOnSiteTab';
 import { VehicleRequestsHistoryTab } from './vehicle/VehicleRequestsHistoryTab';

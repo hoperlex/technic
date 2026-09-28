@@ -19,3 +19,5 @@ export type { WasteRequestPayload, WasteRequestUpdatePayload } from './api/waste
  * создание, — иначе у диспетчера из другого региона «сегодня» разошлось бы с ответом API.
  */
 export { isBeforeMinRequestDate, isPastDate, minRequestDate } from './model/requestDates';
+/** Адрес заявки вывоза с правом на вкладку: право берётся у слайса заявки, копии здесь нет. */
+export { wasteRequestLink } from './model/links';

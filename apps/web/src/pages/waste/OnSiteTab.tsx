@@ -11,7 +11,7 @@ import { textColumn } from '@shared/ui';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { formatDate, useListParams } from '@shared/lib';
 import { formatDateTimeMaybe } from '../../utils/format';
-import { wasteRequestLink } from '../../utils/links';
+import { wasteRequestLink } from '@entities/waste-request';
 
 /**
  * Контейнеры, присутствующие или планируемые на площадках — производный вид

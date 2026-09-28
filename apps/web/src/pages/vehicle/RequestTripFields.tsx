@@ -2,7 +2,8 @@ import { Form, Input, InputNumber } from 'antd';
 import { isAddressVerified, type VehicleRequestTripDto } from '@technic/contracts';
 import { FormGrid } from '@shared/ui';
 import { AddressField } from '@features/address-input';
-import { ResponsibleFields } from '../../components/ResponsibleFields';
+import { PhoneInput } from '@entities/user-account';
+import { ResponsibleFields } from '@entities/request';
 import { TimeInput, optionalWorkTimeRule } from '@entities/request';
 
 /**
@@ -108,6 +109,7 @@ function TripEnd({ index, side, saved, suggestObjectIds }: EndProps) {
         nameLabel={labels.responsible}
         phoneLabel="Телефон"
         kept={saved ? { name: savedName ?? '', phone: savedPhone ?? '' } : undefined}
+        phoneInput={PhoneInput}
       />
     </>
   );
