@@ -30,8 +30,9 @@ export interface CandidateIntakeAccess {
  * `permissions` with `permissionsFor(subject)` and ships the whole subject alongside it (role,
  * addons, `grantPermissions`), so the matrix run over `AuthUser` recomputes the same answer. What
  * holds that agreement is an agreement, not a type and not a test, and the debt is written down
- * once for the whole portal (`docs/frontend-unmarked-layer-plan.md`, §9, D1) — with the note that
- * the eventual convergence goes towards the server list. Practical consequence for anyone building
+ * once for the whole portal as a debt, and the convergence, when it happens, goes towards the server
+ * list: ADR 0106 and `docs/access-model.md` build the answer on it, and the list protects the portal
+ * from a matrix version drifting inside a deploy window. Practical consequence for anyone building
  * a subject by hand: an account carrying only `permissions` is a state production never produces,
  * and here it reads as "no permission" — `officeEquipment.review` comes from a grant set, not from
  * a role, so it reaches the matrix through `grantPermissions` only.

@@ -115,7 +115,7 @@
 - Разделы портала: —
 - API-маршруты: [auth.ts](../apps/api/src/routes/auth.ts), [grants.ts](../apps/api/src/routes/grants.ts), [user-grants.ts](../apps/api/src/routes/user-grants.ts)
 - Остальной API: [auth](../apps/api/src/auth), [access.ts](../apps/api/src/lib/access.ts), [access-manifest.ts](../apps/api/src/lib/access-manifest.ts)
-- Web: [auth](../apps/web/src/auth)
+- Web: [session](../apps/web/src/entities/session), [routing](../apps/web/src/app/routing)
 - Тесты: `permissions.test.ts`, `access-conditions.test.ts`, `grants-*.test.ts`, `role-migration-*.test.ts`
 - Решения: [ADR 0021](adr/0021-permissions-model.md), [ADR 0106](adr/0106-assignable-permission-grants.md), [ADR 0112](adr/0112-site-role-and-role-grants.md)
 
