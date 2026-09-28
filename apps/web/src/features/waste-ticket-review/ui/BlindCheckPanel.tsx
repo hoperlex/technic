@@ -1,5 +1,18 @@
 import { useState } from 'react';
-import { App, Button, Checkbox, DatePicker, Form, Input, InputNumber, Modal, Space, Table, Tag, Typography } from 'antd';
+import {
+  App,
+  Button,
+  Checkbox,
+  DatePicker,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Space,
+  Table,
+  Tag,
+  Typography,
+} from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type {
@@ -8,6 +21,9 @@ import type {
   WasteTicketBlindCheckField,
   WasteTicketReadingDto,
 } from '@technic/contracts';
+// Подписи трёх полей берутся у контрактов, а не пишутся здесь: те же слова печатает сервер в своих
+// отказах и таблица аудита, и третья их редакция разошлась бы с обеими молча.
+import { wasteTicketFieldLabels } from '@technic/contracts';
 import { wasteTicketErrorLabels, wasteTicketKeys, wasteTicketsApi } from '@entities/waste-ticket';
 import { errorMessage } from '@shared/lib';
 import { ticketDate } from './ticketDate';
@@ -26,12 +42,6 @@ import { ticketDate } from './ticketDate';
  * тем, что выглядит законченной (это же держит `CHECK` в базе, здесь — чтобы отказ пришёл до
  * запроса).
  */
-const FIELD_LABELS: Record<WasteTicketBlindCheckField, string> = {
-  number: 'Номер',
-  issuedOn: 'Дата',
-  volumeM3: 'Объём',
-};
-
 /**
  * Значение поля любого из трёх чтений. У итога арбитража номер обнуляем («верного номера на бланке
  * нет»), у чтений — пустая строка: для чтения «не читается» это ответ, а не отсутствие ответа.
@@ -50,8 +60,10 @@ function readingValue(
 function divergedFields(check: WasteTicketBlindCheckDto): WasteTicketBlindCheckField[] {
   const fields: WasteTicketBlindCheckField[] = [];
   if ((check.review.number || '') !== (check.baseline.number || '')) fields.push('number');
-  if ((check.review.issuedOn ?? null) !== (check.baseline.issuedOn ?? null)) fields.push('issuedOn');
-  if ((check.review.volumeM3 ?? null) !== (check.baseline.volumeM3 ?? null)) fields.push('volumeM3');
+  if ((check.review.issuedOn ?? null) !== (check.baseline.issuedOn ?? null))
+    fields.push('issuedOn');
+  if ((check.review.volumeM3 ?? null) !== (check.baseline.volumeM3 ?? null))
+    fields.push('volumeM3');
   return fields;
 }
 
@@ -109,7 +121,7 @@ export function BlindCheckPanel({
                       type={diverged.has(field) ? 'danger' : 'secondary'}
                       style={{ fontSize: 12 }}
                     >
-                      {FIELD_LABELS[field]}: {readingValue(row.baseline, field)} /{' '}
+                      {wasteTicketFieldLabels[field]}: {readingValue(row.baseline, field)} /{' '}
                       {readingValue(row.review, field)}
                       {row.final && row.resolvedFields.includes(field)
                         ? ` → ${readingValue(row.final, field)}`
@@ -232,7 +244,7 @@ function ArbitrateModal({
             const missing = diverged.filter((f) => !(v.fields ?? []).includes(f));
             if (missing.length > 0) {
               message.error(
-                `Разберите все разошедшиеся поля: ${missing.map((f) => FIELD_LABELS[f]).join(', ')}`,
+                `Разберите все разошедшиеся поля: ${missing.map((f) => wasteTicketFieldLabels[f]).join(', ')}`,
               );
               return;
             }
@@ -240,14 +252,14 @@ function ArbitrateModal({
           }}
         >
           <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-            Слева — что прочитала машина, справа — второй человек. Впишите верное значение; если
-            его на бланке нет вовсе, оставьте поле пустым.
+            Слева — что прочитала машина, справа — второй человек. Впишите верное значение; если его
+            на бланке нет вовсе, оставьте поле пустым.
           </Typography.Paragraph>
           <Form.Item name="fields" label="Разобранные поля">
             <Checkbox.Group
               options={diverged.map((f) => ({
                 value: f,
-                label: `${FIELD_LABELS[f]}: ${readingValue(check.baseline, f)} / ${readingValue(check.review, f)}`,
+                label: `${wasteTicketFieldLabels[f]}: ${readingValue(check.baseline, f)} / ${readingValue(check.review, f)}`,
               }))}
             />
           </Form.Item>
