@@ -739,7 +739,7 @@ function leakOf(input: {
       manual.push(`лист ${sheet.number} захватывает и заполненные, и протекшие дни`);
     } else if (sheet.to > through) {
       manual.push(`лист ${sheet.number} выходит за протекшие дни (до ${through})`);
-    } else if (!canCancelWaybill(sheet, asOf)) {
+    } else if (!canCancelWaybill({ issuedForDate: sheet.issuedForDate, periodTo: sheet.to }, asOf)) {
       manual.push(`лист ${sheet.number} отработан (кончился ${sheet.to})`);
     } else if (sheet.driverPersonId !== fill.personId) {
       manual.push(`лист ${sheet.number} печатает не того человека, что заполнение`);

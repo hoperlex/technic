@@ -328,5 +328,78 @@ describe.skipIf(!readMode.enabled)(
       ]);
       expect((await plan(request.id)).kind).toBe('clean');
     });
+
+    it('новая своя машина после последнего листа: машинист не протягивается, а «не знаем»', async () => {
+      const personA = await newPerson('Хвостов');
+      const request = await scene(personA);
+      // The lost reassignment moved the assignment after the paper had ended: the blanks from the
+      // current week on are gone, and nothing was printed on B.
+      await ctx.db.execute(sql`
+        UPDATE waybills
+           SET status = 'cancelled', cancelled_at = now(), cancelled_by = ${ctx.userId},
+               cancel_reason = 'test scene'
+         WHERE source_request_id = ${request.id} AND period_to >= ${TODAY}`);
+      await ctx.db.execute(sql`
+        UPDATE vehicle_request_assignments SET vehicle_id = ${ctx.vehicleB}
+         WHERE request_id = ${request.id}`);
+      const [lastSheet] = (
+        await ctx.db.execute<{ t: string }>(sql`
+          SELECT max(period_to)::text AS t FROM waybills
+           WHERE source_request_id = ${request.id} AND status <> 'cancelled'`)
+      ).rows;
+      const after = shiftDateKey(lastSheet!.t, 1);
+
+      expect((await repair(request.id)).kind).toBe('repair');
+      // Before 29.09.2026 the tail carried `driver: null`, and A's machinist ran on onto B through
+      // days no blank names; the backfill's tail rule says `unknown` for an own unit instead.
+      expect(await rowsOf(request.id)).toEqual([
+        `${TERM_FROM} vehicle A assignment`,
+        `${TERM_FROM} driver ${personA} assignment`,
+        `${after} vehicle B reassignment`,
+        `${after} driver unknown backfill`,
+      ]);
+      expect((await plan(request.id)).kind).toBe('clean');
+      // The mutable days after the paper have nobody on B: the request asks for an anchor.
+      const [state] = (
+        await ctx.db.execute<{ s: string }>(sql`
+          SELECT assignment_history_state AS s FROM vehicle_requests WHERE id = ${request.id}`)
+      ).rows;
+      expect(state!.s).toBe('materialized');
+    });
+
+    it('«не знаем» под напечатанным человеком — не расхождение (Р19)', async () => {
+      const personA = await newPerson('Незнаев');
+      const request = await scene(personA);
+      // Paper older than history: the blanks name the person, history admits it does not know.
+      await ctx.db.execute(sql`
+        UPDATE vehicle_request_assignment_changes
+           SET driver_state = 'unknown', driver_person_id = NULL, origin = 'backfill'
+         WHERE request_id = ${request.id} AND dimension = 'driver'`);
+      const rows = await rowsOf(request.id);
+
+      expect((await plan(request.id)).kind).toBe('clean');
+      expect((await repair(request.id)).kind).toBe('clean');
+      expect(await rowsOf(request.id)).toEqual(rows);
+    });
+
+    it('архивная заявка — в отчёт с тем, что было бы починено, без записи', async () => {
+      const personA = await newPerson('Архивнов');
+      const request = await scene(personA);
+      await lostReassignment(request.id, ctx.vehicleB, null);
+      await ctx.db.execute(sql`
+        UPDATE vehicle_requests SET deleted_at = now(), deleted_by = ${ctx.userId}
+         WHERE id = ${request.id}`);
+      const boundary = await firstSheetOn(request.id, ctx.vehicleB);
+      const rows = await rowsOf(request.id);
+
+      const candidates = await ctx.core.listDriftCandidates(ctx.db as never, {
+        nums: [request.num],
+      });
+      expect(candidates).toEqual([{ id: request.id, num: request.num, archived: true }]);
+      const verdict = await repair(request.id);
+      expect(verdict).toMatchObject({ kind: 'manual', reason: 'archived' });
+      if (verdict.kind === 'manual') expect(verdict.withheld?.boundary).toBe(boundary);
+      expect(await rowsOf(request.id)).toEqual(rows);
+    });
   },
 );

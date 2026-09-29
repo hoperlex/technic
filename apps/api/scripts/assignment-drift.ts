@@ -184,8 +184,11 @@ function addTraceLines(
   out: TraceSections,
   traces: RequestTraces,
   plan: TraceHealPlan | null,
-  fixes: ReadonlySet<DriftFix>,
+  /** The fixes of a writing run; `null` — a report, where nothing is "not selected". */
+  applied: ReadonlySet<DriftFix> | null,
 ): void {
+  const skipped = (fix: DriftFix): string =>
+    applied && !applied.has(fix) ? ' (не выбрано в --fix)' : '';
   const head = formatVehicleRequestNumber(traces.num);
   const cancelled = new Set(plan?.cancels.map((sheet) => sheet.id) ?? []);
   const healedLeak = new Set(
@@ -223,9 +226,9 @@ function addTraceLines(
       lines.push(
         `      → лечится --fix=leak: граница «не знаем» на ${leak.day}` +
           (leak.forward.length > 0
-            ? `, аннулировать задним числом ${leak.forward.map((s) => s.number).join(', ')}`
+            ? `, аннулировать через журнал коррекций ${leak.forward.map((s) => s.number).join(', ')}`
             : '') +
-          (fixes.has('leak') ? '' : ' (не выбрано)'),
+          skipped('leak'),
       );
     }
     out.leak.push(...lines);
@@ -248,8 +251,8 @@ function addTraceLines(
       } else {
         out.curable += 1;
         out.cancelled_fill.push(
-          `      ${sheetLine(item.sheet)} → лечится --fix=fill-paper: аннулировать задним числом` +
-            (fixes.has('fill-paper') ? '' : ' (не выбрано)'),
+          `      ${sheetLine(item.sheet)} → лечится --fix=fill-paper: аннулировать через журнал коррекций` +
+            skipped('fill-paper'),
         );
       }
     }
@@ -387,7 +390,7 @@ async function main(): Promise<number> {
         const kinds = traceKindsOf(before);
         if (kinds.length > 0) {
           tracedRequests += 1;
-          addTraceLines(sections, before, plan, fixes);
+          addTraceLines(sections, before, plan, apply ? fixes : null);
         }
         if (!request.drift) continue;
 
