@@ -183,6 +183,21 @@ export interface Esm2PlanContext {
    * у сегодняшней сверки (ADR 0101, Р21).
    */
   correction?: { allowed: true };
+  /**
+   * Sheets whose own content is being withdrawn by the operation: they may neither be `kept` nor
+   * trimmed, and reach `cancel` whenever they are not `locked` (ADR 0214).
+   *
+   * The case is the cancellation of a known fill. After it the filled days are `unknown` again,
+   * and an `unknown` day matches any printed person (R19) — a rule written for blanks older than
+   * the history, which say something the history merely failed to record. A blank minted BY the
+   * fill says nothing of the kind: it prints the very claim being withdrawn, and R19 would keep it
+   * alive naming a person the history no longer claims. Which sheets these are is decided by the
+   * caller from the sheet's provenance (`waybills.correction_id`); the plan does not guess.
+   *
+   * The `locked` gate still comes first: a worked-out sheet goes to `cancel` only when it is also
+   * named in `unlockWaybillIds`, so the preview names every number that burns (R11).
+   */
+  distrustWaybillIds?: readonly string[];
 }
 
 // ── Отрезки бумаги ──
@@ -374,6 +389,7 @@ function esm2PlanOfWanted(
 ): Esm2SheetPlan {
   const scope = context.scope ? normalizeRangeSet(context.scope) : null;
   const unlocked = new Set(context.unlockWaybillIds ?? []);
+  const distrusted = new Set(context.distrustWaybillIds ?? []);
 
   const cancel: string[] = [];
   const trim: Esm2Trim[] = [];
@@ -422,7 +438,10 @@ function esm2PlanOfWanted(
       busy.push(period);
       continue;
     }
-    const match = wanted.find((expected) => sheetMatchesWanted(sheet, expected));
+    // A distrusted sheet never matches: its content is what the operation withdraws.
+    const match = distrusted.has(sheet.id)
+      ? undefined
+      : wanted.find((expected) => sheetMatchesWanted(sheet, expected));
     if (match) {
       kept.push(sheet.id);
       covered.add(match);
@@ -447,7 +466,8 @@ function esm2PlanOfWanted(
    * иначе половина недели молча останется без бумаги (§7, документное замыкание).
    */
   for (const sheet of pending) {
-    const shortened = sheetTrimTarget(sheet, wanted, covered);
+    // Nor is it trimmed: a shorter blank would still print the withdrawn claim.
+    const shortened = distrusted.has(sheet.id) ? null : sheetTrimTarget(sheet, wanted, covered);
     if (shortened) {
       trim.push({ waybillId: sheet.id, to: shortened.to });
       covered.add(shortened);

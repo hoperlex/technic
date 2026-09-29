@@ -2376,7 +2376,7 @@ describeReadModes(
       expect(new Set(events[0]!.metadata.issued).size).toBe(filled.length);
     });
 
-    it('[DIVERGENCE: history paper defects card] отмена заполнения: в history гаснут только бланки, не совпавшие с неделей дыры (Э2)', async () => {
+    it('отмена заполнения гасит все бланки, выписанные этим заполнением (Э2)', async () => {
       if (!DB_URL) return;
       const scene = await makeScene({ dateFrom: DEEP_FROM, dateTo: GAP_TO, history: gapHistory() });
       const fill = fillBody('Нашли табель');
@@ -2410,23 +2410,17 @@ describeReadModes(
       expect(dto.plan.issue).toEqual([]);
 
       /*
-       * After the cancel the gap is `unknown` again, and an `unknown` day accepts any printed person
-       * (R19, `sheetMatchesWanted`). So a minted blank survives whenever its period coincides with a
-       * portal period of the restored gap, and burns only when the fill's own end cut it short.
+       * Every blank the fill minted burns with it, the ones whose period coincides with a period of
+       * the restored gap included (E2, ADR 0214). R19 lets an `unknown` day match any printed
+       * person — right for blanks older than the history, wrong for a blank that prints the very
+       * claim being withdrawn. Such blanks are told apart by provenance: minted by the fill's own
+       * operation, on the fill's days. They are locked past, so the preview names each of them to
+       * unlock — the person sees every number that burns.
        */
-      const gapPeriods = esm2Periods(DEEP_FROM, GAP_TO);
-      const cutShort = minted
-        .filter(
-          (sheet) =>
-            !gapPeriods.some((p) => p.from === sheet.period_from && p.to === sheet.period_to),
-        )
-        .map((sheet) => sheet.id);
-      expect(dto.plan.cancel.map((sheet) => sheet.waybillId)).toEqual(cutShort);
-      // Every minted blank is locked past and lies in the command's paper scope, so all of them must
-      // be unlocked by name — even the ones the plan then keeps.
-      expect(dto.requiredUnlocks.map((sheet) => sheet.waybillId)).toEqual(
-        minted.map((sheet) => sheet.id),
-      );
+      const mintedIds = minted.map((sheet) => sheet.id);
+      expect(dto.plan.cancel.map((sheet) => sheet.waybillId)).toEqual(mintedIds);
+      expect(dto.requiredUnlocks.map((sheet) => sheet.waybillId)).toEqual(mintedIds);
+      expect(dto.paperFree).toBe(mintedIds.length === 0);
 
       const res = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
       expect(res.statusCode, res.body).toBe(200);
@@ -2447,26 +2441,14 @@ describeReadModes(
         return;
       }
       const cancelJournal = await journalRowOf(body.operation.operationId);
-      const burned = after.filter((sheet) => sheet.status === 'cancelled');
-      expect(burned.map((sheet) => sheet.id)).toEqual(cutShort);
-      expect(burned.every((sheet) => sheet.cancel_correction_id === cancelJournal.id)).toBe(true);
-      /*
-       * DIVERGENCE (plan R13, E2: "the blanks issued under the fill are annulled, as with any
-       * correction of the past"): the blanks the fill minted outlive its cancellation. They keep
-       * naming the person the history no longer claims, because R19 treats an `unknown` day as a
-       * match for any printed name — a rule written for blanks issued before the history existed,
-       * not for blanks minted by the very claim being withdrawn.
-       */
-      const survivors = after.filter((sheet) => sheet.status === 'issued');
-      // Never empty: the first minted period starts where the gap does and ends on the same
-      // Sunday or month end, so it always coincides with a period of the restored gap.
-      expect(survivors.length).toBeGreaterThan(0);
-      expect(survivors.map((sheet) => sheet.id)).toEqual(
-        minted.filter((sheet) => !cutShort.includes(sheet.id)).map((sheet) => sheet.id),
-      );
-      expect(survivors.every((sheet) => sheet.driver_person_id === ctx.personA)).toBe(true);
-      // One event per paper-touching command: the fill's, plus the cancel's only if it burned.
-      expect(events).toHaveLength(cutShort.length > 0 ? 2 : 1);
+      expect(after.every((sheet) => sheet.status === 'cancelled')).toBe(true);
+      expect(after.map((sheet) => sheet.id)).toEqual(mintedIds);
+      expect(after.every((sheet) => sheet.cancel_correction_id === cancelJournal.id)).toBe(true);
+      // Two paper-touching commands, two strict sync events: the fill's and the cancel's.
+      expect(events).toHaveLength(2);
+      // The event names the burned blanks by their printed numbers, one per minted sheet.
+      expect(new Set(events[1]!.metadata.cancelled).size).toBe(mintedIds.length);
+      expect(events[1]!.metadata.issued).toEqual([]);
     });
 
     it('[DIVERGENCE: history paper defects card] заполнение поверх отработанного листа с другим человеком: план ждёт 422, дверь переоформляет бланк (Ф1)', async () => {

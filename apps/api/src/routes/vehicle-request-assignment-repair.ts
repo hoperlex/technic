@@ -578,14 +578,25 @@ async function planRepairCommand(
    * for the locked past looked paper-free. For an archived request that meant a fill went through
    * without `restore` and minted blanks for a request left in the archive (R29, ADR 0214).
    */
-  const probePlan = repairPaperPlan(context, plan.changesAfter, term, asOf);
+  const probePlan = repairPaperPlan(
+    context,
+    plan.changesAfter,
+    term,
+    asOf,
+    undefined,
+    plan.distrustWaybillIds,
+  );
   const unlocks = requiredUnlocksOf(context, probePlan, effects.paperScope);
   const unlockFingerprint =
     unlocks.length === 0 ? null : correctionFingerprint(unlocks.map((sheet) => sheet.id).sort());
-  const paperPlan = repairPaperPlan(context, plan.changesAfter, term, asOf, {
-    waybillIds: unlocks.map((sheet) => sheet.id),
-    correction: effects.needsCorrection,
-  });
+  const paperPlan = repairPaperPlan(
+    context,
+    plan.changesAfter,
+    term,
+    asOf,
+    { waybillIds: unlocks.map((sheet) => sheet.id), correction: effects.needsCorrection },
+    plan.distrustWaybillIds,
+  );
   const paperFree = isPaperFree(paperPlan);
   /*
    * R29: paper-free is decided by the computed plan, not by the archive flag. Soft deletion never

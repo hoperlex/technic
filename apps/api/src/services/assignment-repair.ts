@@ -144,9 +144,16 @@ export function assertKnownFillsAllowed(fills: readonly KnownFill[] | undefined)
 
 // ── Контекст ремонта ──
 
-/** Действующий лист заявки: сверке нужны границы и состав, человеку — номер. */
+/** A live sheet of the request: the sync needs its bounds and composition, a person its number. */
 export interface RepairSheet extends Esm2ExistingSheet {
   displayNumber: string;
+  /**
+   * The journal operation that minted the sheet (`waybills.correction_id`); `null` — ordinary
+   * work. It is the sheet's provenance: cancelling a known fill burns exactly the blanks that the
+   * fill's own operation minted on its days (E2, ADR 0214), and a fill checks worked-out paper
+   * against everything except those of an already cancelled fill (F1).
+   */
+  correctionId: string | null;
 }
 
 /**
@@ -320,9 +327,9 @@ async function readRepairPaperMode(
 }
 
 /**
- * Действующие листы заявки — тем же условием, каким их отбирает сверка: основание и не
- * аннулирован. Вида бланка среди условий нет намеренно: `source_request_id` заполняется только у
- * ЭСМ-2, и лишнее условие означало бы второе определение того же отбора.
+ * The request's live sheets — by the same condition the sync uses: the source request and not
+ * cancelled. The blank kind is deliberately not a condition: `source_request_id` is filled only
+ * for ESM-2, and an extra condition would be a second definition of the same selection.
  */
 async function readRepairSheets(tx: AssignmentWriteTx, requestId: string): Promise<RepairSheet[]> {
   const rows = await tx
@@ -335,6 +342,7 @@ async function readRepairSheets(tx: AssignmentWriteTx, requestId: string): Promi
       number: waybills.number,
       prefix: waybillSeries.prefix,
       numberWidth: waybillSeries.numberWidth,
+      correctionId: waybills.correctionId,
     })
     .from(waybills)
     .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
@@ -350,6 +358,7 @@ async function readRepairSheets(tx: AssignmentWriteTx, requestId: string): Promi
             vehicleId: row.vehicleId,
             driverPersonId: row.driverPersonId,
             displayNumber: waybillDisplayNumber(row.prefix, row.number, row.numberWidth),
+            correctionId: row.correctionId,
           },
         ]
       : [],
@@ -703,6 +712,11 @@ export interface RepairPlan {
   } | null;
   /** Гипотетическая история после команды — вход блокеров `after` и плана бумаги. */
   changesAfter: AssignmentChangeRecord[];
+  /**
+   * Sheets the paper plan may neither keep nor trim: the blanks a cancelled fill minted on its
+   * own days (E2, ADR 0214). Empty for every other command.
+   */
+  distrustWaybillIds: string[];
   /** Что именно чинили: снимок операции и аудит собираются из этого, а не из тела. */
   summary: {
     anchors: { effectiveDate: string; driverPersonId: string }[];
@@ -756,6 +770,7 @@ export function inspectRepair(changes: readonly AssignmentChangeRecord[]): Repai
     denormalization: { kind: 'keep' },
     assignmentUpdate: null,
     changesAfter: [...changes],
+    distrustWaybillIds: [],
     summary: { anchors: [], fills: [], cancelledFillGroup: null, tail: null },
   };
 }
@@ -768,6 +783,7 @@ export function planRepair(input: RepairPlanInput): RepairPlan {
     denormalization: { kind: 'keep' },
     assignmentUpdate: null,
     changesAfter: [],
+    distrustWaybillIds: [],
     summary: { anchors: [], fills: [], cancelledFillGroup: null, tail: null },
   };
 
@@ -775,7 +791,7 @@ export function planRepair(input: RepairPlanInput): RepairPlan {
   const mutable = mutableRangesOf(term, context.sheets, asOf);
 
   if (body.mode === 'cancel_fill') {
-    planCancelFill(plan, context, body.target.changeGroupId);
+    planCancelFill(plan, context, term, body.target.changeGroupId);
   } else {
     planAnchors(plan, context, request, segments, term, mutable, body.anchors ?? []);
     planFills(plan, context, segments, term, mutable, body.knownFills ?? []);
@@ -1044,24 +1060,34 @@ function fillNeedsRemainder(
 }
 
 /**
- * Отмена заполнения (Э2, Ю2, Щ2, Э1).
+ * Cancellation of a known fill (E2, Yu2, Shch2, E1).
  *
- * Отменяемую группу определяет **провенанс, а не состав**: ровно одна актуальная `known_fill` плюс
- * не более одной `unknown_remainder`. Иначе отмена превратила бы **известного** человека обратно в
- * `unknown` — молча, необратимо в одну команду и ровно в той подсистеме, где `unknown` означает
- * «мы не знаем».
+ * The cancellable group is defined by PROVENANCE, not by composition: exactly one actual
+ * `known_fill` plus at most one `unknown_remainder`. Otherwise a cancel would turn a KNOWN person
+ * back into `unknown` — silently, irreversibly in one command, and in exactly the subsystem where
+ * `unknown` means "we do not know".
  *
- * Правило самой отмены — развилка Э1 по состоянию **непосредственно слева** от `from`:
+ * The rule of the cancel itself is the E1 fork on the state IMMEDIATELY to the left of `from`:
  *
- * - слева `unknown` — `set` гасится, и свёртка сама тянет дыру от прежней границы;
- * - слева не `unknown` — на дате `from` обязана остаться строка `unknown`: там `set` заменил
- *   исходную границу, а погашенное не оживает (Р3), и через пустую дату протянулось бы состояние,
- *   действовавшее **до** неё, — то есть отмена дописала бы историю, которой никто не заявлял.
+ * - `unknown` on the left — the `set` is cancelled and the fold carries the gap on by itself;
+ * - anything else on the left — an `unknown` row must remain on `from`: there the `set` replaced
+ *   the original boundary, the cancelled does not come back to life (R3), and through an empty
+ *   date the state in force BEFORE it would be carried on — the cancel would write history nobody
+ *   claimed.
  *
- * Вторая ветка пишет `unknown` с `origin = 'unknown_remainder'`: `unknown` внутри коррекции иначе не
- * представим — `CHECK` таблицы разрешает его либо бэкфиллу без операции, либо остатку с ней.
+ * The second branch writes `unknown` with `origin = 'unknown_remainder'`: inside a correction
+ * `unknown` cannot be expressed otherwise — the table CHECK allows it either to the backfill with
+ * no operation or to a remainder with one.
+ *
+ * THE FILL'S BLANKS BURN WITH IT (E2, ADR 0214). Sheets the fill's own operation minted on its days
+ * are handed to the paper plan as distrusted — see {@link fillBlanksOf}.
  */
-function planCancelFill(plan: RepairPlan, context: RepairContext, changeGroupId: string): void {
+function planCancelFill(
+  plan: RepairPlan,
+  context: RepairContext,
+  term: AssignmentTerm,
+  changeGroupId: string,
+): void {
   const members = context.changes.filter(
     (row) => row.changeGroupId === changeGroupId && row.supersededAt === null,
   );
@@ -1080,7 +1106,7 @@ function planCancelFill(plan: RepairPlan, context: RepairContext, changeGroupId:
   }
   const head = fills[0]!;
 
-  // Гасится вся группа разом: `set` и его граница рождены одним решением и снимаются вместе (В2).
+  // The whole group goes at once: the `set` and its boundary were born of one decision (V2).
   plan.writeMutations.push({ kind: 'cancel', target: assignmentChangeTargetOf(head) });
   plan.effectMutations.push({ kind: 'cancel', changeId: head.id });
 
@@ -1099,7 +1125,51 @@ function planCancelFill(plan: RepairPlan, context: RepairContext, changeGroupId:
       origin: 'unknown_remainder',
     });
   }
+  plan.distrustWaybillIds = fillBlanksOf(context, term, head).map((sheet) => sheet.id);
   plan.summary.cancelledFillGroup = changeGroupId;
+}
+
+/**
+ * The live blanks a fill minted: its own operation (`waybills.correction_id` equal to the fill
+ * row's) and lying on its days (E2, ADR 0214).
+ *
+ * WHY BY PROVENANCE. After the cancel the filled days are `unknown` again, and an `unknown` day
+ * matches any printed person (R19). That rule is right for blanks older than the history — they
+ * say who worked, the history merely failed to record it. A blank minted by the fill says nothing
+ * of its own: it prints the claim being withdrawn. Left to R19 it would survive the cancel, naming
+ * a person the history no longer claims, whenever its period happened to coincide with a period
+ * of the restored gap — which the first week of a gap always does.
+ *
+ * WHY ON ITS DAYS. One operation may carry more than the fill: anchors in the same command, or a
+ * second fill of another person. Their blanks share the `correction_id` and must not burn with this
+ * fill. The fill's days run from its `from` to the day before the next actual driver change (its
+ * remainder, or whatever was written later), else to the end of the term — so blanks a leaking
+ * fill minted forward before ADR 0214 are its blanks too.
+ */
+function fillBlanksOf(
+  context: RepairContext,
+  term: AssignmentTerm,
+  head: AssignmentChangeRecord,
+): RepairSheet[] {
+  if (!head.correctionId) return [];
+  const next = context.changes
+    .filter(
+      (row) =>
+        row.dimension === 'driver' &&
+        row.supersededAt === null &&
+        row.effectiveDate > head.effectiveDate,
+    )
+    .map((row) => row.effectiveDate)
+    .sort()[0];
+  const days: AssignmentRange = {
+    from: head.effectiveDate,
+    to: next ? shiftDateKey(next, -1) : term.dateTo || term.dateFrom,
+  };
+  return context.sheets.filter(
+    (sheet) =>
+      sheet.correctionId === head.correctionId &&
+      rangesIntersect(days, { from: sheet.periodFrom, to: sheet.periodTo }),
+  );
 }
 
 // ── Решение хвоста (Р31) ──
@@ -1383,6 +1453,16 @@ export function repairPaperPlan(
    * past looked paper-free while its executable plan minted blanks (ADR 0214).
    */
   unlock?: { waybillIds: readonly string[]; correction: boolean },
+  /**
+   * Sheets the plan may neither keep nor trim — the blanks of a fill being cancelled
+   * ({@link RepairPlan.distrustWaybillIds}). Both plans get them: the probe so that its `locked`
+   * is judged by the same plan, the executable one so that it burns them.
+   *
+   * Only the cut branch uses them. An `on_demand` request derives its wanted sheets FROM its
+   * blanks (ADR 0100 §5), so a distrusted blank there would burn and come back as its own twin; a
+   * fill mints nothing for it in the first place, its paper coming only from the requester.
+   */
+  distrustWaybillIds: readonly string[] = [],
 ): Esm2SheetPlan {
   const planContext = {
     ownershipByVehicle: context.ownershipByVehicle,
@@ -1392,7 +1472,10 @@ export function repairPaperPlan(
   };
   return context.paperMode === 'on_demand'
     ? esm2RequestedSheetPlan(context.sheets, term, planContext)
-    : esm2SheetPlan(assignmentSegments(changesAfter, term), term, context.sheets, planContext);
+    : esm2SheetPlan(assignmentSegments(changesAfter, term), term, context.sheets, {
+        ...planContext,
+        distrustWaybillIds,
+      });
 }
 
 /**
