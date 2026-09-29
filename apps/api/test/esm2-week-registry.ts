@@ -165,6 +165,13 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
       'разрезом (§15)',
   },
   {
+    file: 'assignment-drift.db.test.ts',
+    klass: 'sync',
+    readModeIrrelevant: true,
+    status: 'done',
+    note: 'починка истории по выданным листам (ADR 0212, решение 5): сцены кладут бумагу прямым `syncEsm2Waybills`, «потерянную» смену техники воспроизводит недельная сверка после правки назначения. Починка от режима чтения не зависит — сверяет историю с листами и пишет только историю, — поэтому один прогон. Границы листов цифрой не пишутся: граница починки берётся из самих листов (первый лист на новой машине, день после последнего листа)',
+  },
+  {
     file: 'assignment-reassign-history.db.test.ts',
     klass: 'sync',
     status: 'done',

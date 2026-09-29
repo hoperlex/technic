@@ -268,6 +268,29 @@ services:
     profiles: [tools]
     networks: [internal]
 
+  # Сверка истории назначения с выданными листами ЭСМ-2 и её починка (ADR 0212, решение 5): смена
+  # техники и повторный перевод в работу между переключением чтения и выкатом ADR 0212 оставили
+  # историю, расходящуюся с бумагой. По умолчанию — отчёт, ничего не пишет; запись — `--apply` с
+  # автором. Однопоточная, как бэкфилл: второй такой контейнер параллельно не запускать.
+  #
+  #   docker compose -p technic --profile tools run --rm assignment-drift
+  #   docker compose -p technic --profile tools run --rm assignment-drift --apply --actor=<email>
+  assignment-drift:
+    image: technic-api:${TAG:-latest}
+    env_file:
+      - ${ENV_FILE:-/etc/technic-portal/prod.env}
+      - ${MAINTENANCE_ENV_FILE:-${ENV_FILE:-/etc/technic-portal/prod.env}}
+    environment:
+      NODE_ENV: production
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+      - ${ASSIGNMENT_WORK_DIR:-/var/lib/technic/assignment}:/var/lib/technic/assignment
+    entrypoint: ['pnpm', '--filter', '@technic/api', 'assignment:drift']
+    command: []
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
   # Обратный прогон истории назначения (этап 4 плана assignment-periods, волна 4.2): удаляет
   # восстановленную историю и возвращает заявки в состояние `empty`. Путь назад, а не forward-fix.
   #
