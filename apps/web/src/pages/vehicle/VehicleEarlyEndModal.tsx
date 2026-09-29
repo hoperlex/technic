@@ -14,6 +14,8 @@ import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { calendarDaysLabel, formatDateOnly } from '@shared/lib';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
+import { WarnedSheetsConfirm } from '@entities/waybill';
+import { acknowledgementsOf, anonymousWarnedSheetsOf, recheckReasonOf } from './assignmentWarnings';
 import { EarlyEndConsequences } from './EarlyEndConsequences';
 import { reassignStaleReason } from './ReassignPreview';
 
@@ -61,6 +63,8 @@ interface Props {
 interface FormValues {
   newDateTo?: Dayjs;
   reason?: string;
+  /** Signature of the confirmed warning set (`WarnedSheetsConfirm`), not a plain boolean. */
+  warningsAck?: string;
 }
 
 /** Семантическая половина команды: ею считают предпросмотр, ею же потом сокращают срок (Л1). */
@@ -140,6 +144,9 @@ export function VehicleEarlyEndModal({
               ...(preview.cancelGroupsFingerprint
                 ? { cancelGroupsFingerprint: preview.cancelGroupsFingerprint }
                 : {}),
+              // Signatures per warned sheet (B4): a shortening that takes days from a sheet
+              // replaces it with a new blank, and in `history` an unconfirmed warned one is refused.
+              ...acknowledgementsOf(preview.issues),
             }
           : {}),
       });
@@ -149,7 +156,8 @@ export function VehicleEarlyEndModal({
        * ответ окна не «повторите», а «посмотрите заново»: перечень мог стать другим, и подтверждать
        * прежний человек больше не вправе. Прочие отказы показывает тостом общий хук.
        */
-      const stale = reassignStaleReason(e);
+      // Changed warnings of a sheet are the same question and get the same answer.
+      const stale = reassignStaleReason(e) ?? recheckReasonOf(e);
       if (!stale) return;
       setStaleReason(stale);
       previewMut.mutate(body);
@@ -210,6 +218,14 @@ export function VehicleEarlyEndModal({
       {request && (
         <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
           {shown && <EarlyEndConsequences preview={shown.preview} staleReason={staleReason} />}
+
+          {/* Validated by the same `form.submit()` that sends the shortening. */}
+          {shown && (
+            <WarnedSheetsConfirm
+              name="warningsAck"
+              sheets={anonymousWarnedSheetsOf(shown.preview)}
+            />
+          )}
 
           {/* Форма на втором шаге не размонтируется, а прячется: «Назад» обязан вернуть окно
             заполненным — набранная причина стоит человеку отдельной работы. */}

@@ -339,6 +339,83 @@ describe('что случится с бумагой — считает серв�
   });
 });
 
+/**
+ * Warned sheets of a shortening (B4, defect N1 of the repair wave). A shortening that takes days
+ * from a sheet replaces it with a new blank, and in `history` the door refuses a warned one nobody
+ * confirmed — 409 `waybill_ack_required`. The preview is the approver's projection (R26): only the
+ * kinds of warnings, no driver and no blank number, so the window names the kinds in words and the
+ * sheet by its place in the plan.
+ */
+const WARNED: EarlyEndApprovalPreviewDto = {
+  ...PREVIEW,
+  issues: [
+    { issueKey: 0, codes: ['driver_documents'], warningFingerprint: 'fp-warn-1' },
+    { issueKey: 1, codes: [], warningFingerprint: 'fp-clean' },
+  ],
+};
+const WARNED_AGAIN: EarlyEndApprovalPreviewDto = {
+  ...PREVIEW,
+  issues: [{ issueKey: 0, codes: ['driver_documents', 'blank_task'], warningFingerprint: 'fp-2' }],
+};
+const TICK = /Согласен: листы выпишутся с перечисленными предупреждениями/;
+const ACK_REFUSAL = {
+  code: 'waybill_ack_required',
+  status: 409,
+  message: 'Выписка требует подтверждения: предупреждения по 1 листу(ам) ЭСМ-2 изменились',
+  details: { issues: WARNED_AGAIN.issues },
+};
+
+describe('досрочное завершение: предупреждения по выписываемым листам', () => {
+  it('называет вид замечания словами и без галочки не уходит; подпись — только по нему', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    renderModal(inWork(), { onSubmit, preview: WARNED });
+    await screen.findByText('Освободится 9 дн. из заказанных');
+    await showConsequences();
+
+    expect(screen.getByText('Листы выпишутся с предупреждениями')).toBeDefined();
+    expect(screen.getByText('Выписываемый лист № 1')).toBeDefined();
+    expect(screen.getByText(/В документах машиниста есть пробелы/)).toBeDefined();
+    // The clean sheet is not in the block: there is nothing on it to confirm.
+    expect(screen.queryByText('Выписываемый лист № 2')).toBeNull();
+
+    fireEvent.click(screen.getByText('Завершить досрочно'));
+    await screen.findByText('Подтвердите предупреждения по листам');
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByText('Завершить досрочно'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const body = onSubmit.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body.acknowledgements).toEqual({ '0': 'fp-warn-1' });
+  });
+
+  it('409 «предупреждения изменились» — перезапрос предпросмотра, новая галочка', async () => {
+    const onSubmit = vi.fn().mockRejectedValueOnce(ACK_REFUSAL).mockResolvedValue(undefined);
+    const http = renderModal(inWork(), { onSubmit });
+    let previews = 0;
+    http.use({
+      'POST /vehicle-requests/vr-1/early-end/preview': () => {
+        previews += 1;
+        return json(previews === 1 ? WARNED : WARNED_AGAIN);
+      },
+    });
+    await screen.findByText('Освободится 9 дн. из заказанных');
+    await showConsequences();
+    fireEvent.click(screen.getByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByText('Завершить досрочно'));
+
+    await screen.findByText('Задание в листе пустое');
+    expect(screen.getByText(/Предупреждения по листам изменились/)).toBeDefined();
+    expect(screen.getByRole('checkbox', { name: TICK })).toHaveProperty('checked', false);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByText('Завершить досрочно'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    const body = onSubmit.mock.calls[1]![0] as Record<string, unknown>;
+    expect(body.acknowledgements).toEqual({ '0': 'fp-2' });
+  });
+});
+
 describe('виза по чужому запросу', () => {
   /**
    * Виза применяет сокращение — двигает срок, гасит решения о технике и переписывает бумагу, — но

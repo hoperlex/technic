@@ -15,6 +15,7 @@ import { waybillKeys } from '@entities/waybill';
 import { ReasonModal } from '@shared/ui';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { VehicleEarlyEndApproveModal } from './VehicleEarlyEndApproveModal';
+import { recheckReasonOf } from './assignmentWarnings';
 import { reassignStaleReason } from './ReassignPreview';
 
 /**
@@ -63,7 +64,7 @@ export function useEarlyEnd() {
      * вторым голосом о том же — и увёл бы глаз от экрана, на который человеку и надо смотреть.
      */
     onError: (e) => {
-      if (reassignStaleReason(e)) return;
+      if (reassignStaleReason(e) ?? recheckReasonOf(e)) return;
       message.error(errorMessage(e));
     },
   });

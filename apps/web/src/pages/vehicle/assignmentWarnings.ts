@@ -2,21 +2,24 @@ import {
   assignmentAcknowledgementsOf,
   assignmentIssueNeedsAcknowledgement,
   WAYBILL_ACK_REQUIRED_CODE,
+  WAYBILL_WARNING_CODE_LABELS,
   type AssignmentPreviewDto,
+  type EarlyEndApprovalPreviewDto,
 } from '@technic/contracts';
 import { isApiError } from '@shared/api';
 import { formatDateOnly } from '@shared/lib';
-import type { WarnedSheet } from '@entities/waybill';
+import { waybillWarningLines, type WarnedSheet } from '@entities/waybill';
 import { ASSIGNMENT_PREVIEW_STALE } from './ReassignPreview';
 
 /**
  * Per-sheet warning signatures of the assignment doors (B4) — the adapter between their preview and
  * the shared confirmation block of `@entities/waybill`.
  *
- * WHY THE WINDOWS NEED IT. In `history` read mode the repair and period doors issue ESM-2 blanks
- * from their own plan and demand a signature for every sheet with warnings; without one the command
- * answers 409 `waybill_ack_required`. The portal used to send none, so any plan with a warned sheet
- * was a dead end in those windows: a toast and no way forward.
+ * WHY THE WINDOWS NEED IT. In `history` read mode the history doors (repair, period, machinist,
+ * completion, early end) issue ESM-2 blanks from their own plan and demand a signature for every
+ * sheet with warnings; without one the command answers 409 `waybill_ack_required`. The portal used
+ * to send none, so any plan with a warned sheet was a dead end in those windows: a toast and no way
+ * forward.
  *
  * WHAT IS READ, NOT DECIDED. The warnings, the fingerprints and which sheets carry them all come
  * from the preview. "A sheet needs a signature iff its warning set is non-empty" is asked of the
@@ -40,10 +43,29 @@ export function warnedSheetsOf(
       title: sheet
         ? `Лист за ${formatDateOnly(sheet.from)} — ${formatDateOnly(sheet.to)}: ${sheet.vehicleName}, машинист ${sheet.driverName}`
         : `Лист № ${issue.issueKey + 1} плана`,
-      warnings: issue.warnings,
+      lines: waybillWarningLines(issue.warnings),
       fingerprint: issue.warningFingerprint,
     };
   });
+}
+
+/**
+ * Warned sheets of an early-end preview — anonymized: kinds of warnings, no texts, no names.
+ *
+ * Both early-end doors answer with the approver's projection (R26): the approver has no right to
+ * the waybill journal, so neither the driver nor the blank is named, and the sheet is known only by
+ * its place in the plan. The kind is still named in words from the contracts dictionary: a
+ * signature under a bare code would be a signature in the dark.
+ */
+export function anonymousWarnedSheetsOf(
+  preview: Pick<EarlyEndApprovalPreviewDto, 'issues'>,
+): WarnedSheet[] {
+  return preview.issues.filter(assignmentIssueNeedsAcknowledgement).map((issue) => ({
+    key: String(issue.issueKey),
+    title: `Выписываемый лист № ${issue.issueKey + 1}`,
+    lines: issue.codes.map((code) => ({ key: code, text: WAYBILL_WARNING_CODE_LABELS[code] })),
+    fingerprint: issue.warningFingerprint,
+  }));
 }
 
 /**

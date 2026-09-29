@@ -924,6 +924,26 @@ export const WAYBILL_WARNING_CODES = [
 export type WaybillWarningCode = (typeof WAYBILL_WARNING_CODES)[number];
 
 /**
+ * What each kind of warning is called where the reader may see the kind but not the text.
+ *
+ * The early-end approver signs the warned sheets of the shortening but has no right to the waybill
+ * journal (R26): the preview hands over only the kinds (`codes`), never the driver's name or the
+ * blank number. The kind still has to be readable — a signature under an unnamed code is a
+ * signature in the dark. Kept here, next to the codes, so that a new code cannot be added without
+ * its words: the `Record` makes a missing label a type error.
+ */
+export const WAYBILL_WARNING_CODE_LABELS: Record<WaybillWarningCode, string> = {
+  driver_documents: 'В документах машиниста есть пробелы — графы бланка останутся пустыми',
+  address_mismatch: 'Адрес точки расходится с адресом, записанным в заявке',
+  task_row_overflow: 'Строка задания не помещается в бланк целиком',
+  multiple_cost_targets: 'В листе больше одного объекта затрат — в шапке будет только первый',
+  blank_task: 'Задание в листе пустое',
+  trailer_graphs_blank: 'Рейс с прицепом, а графы прицепа пусты',
+  trailer_graphs_incomplete: 'В графах прицепа заполнена одна графа из двух',
+  hitched_trailer_missing: 'Закреплённого за машиной прицепа нет в графах рейса',
+};
+
+/**
  * Факты предупреждения — то, **о чём** оно, а не то, как оно сформулировано.
  *
  * Отпечаток (Р21) считается от фактов по одной причине: подтверждает человек положение дел, а не

@@ -28,7 +28,13 @@ export {
  * one (route and weekly ESM-2 issue, the assignment doors); the doors keep only their adapters,
  * because the answers they read differ in shape.
  */
-export { type WarnedSheet, WarnedSheetsConfirm, WaybillWarningList } from './ui/WaybillWarnings';
+export {
+  type WarnedLine,
+  type WarnedSheet,
+  WarnedSheetsConfirm,
+  WaybillWarningList,
+  waybillWarningLines,
+} from './ui/WaybillWarnings';
 
 /*
  * Право перейти к бланку по его номеру. Журнал листов — отдельный экран без окна, и номер уводит
