@@ -441,9 +441,13 @@ describe('виза по чужому запросу', () => {
       },
     });
 
-  function renderApprove(onSubmit = vi.fn().mockResolvedValue(undefined)): HttpMock {
+  function renderApprove(
+    onSubmit = vi.fn().mockResolvedValue(undefined),
+    // The preview is asked on mount: a route swapped in after the render would come too late.
+    preview: () => ReturnType<typeof json> = () => json(PREVIEW),
+  ): HttpMock {
     const http = mockHttp({
-      'POST /vehicle-requests/vr-1/early-end/decision/preview': () => json(PREVIEW),
+      'POST /vehicle-requests/vr-1/early-end/decision/preview': preview,
     });
     renderWithUser(
       <VehicleEarlyEndApproveModal
@@ -485,5 +489,49 @@ describe('виза по чужому запросу', () => {
       version: 4,
     });
     expect(typeof body.operationId).toBe('string');
+    // Nothing is warned in this plan: no signature is sent — the server would reject an empty one.
+    expect(body).not.toHaveProperty('acknowledgements');
+  });
+
+  it('листы с предупреждениями: виды словами, без галочки виза не уходит', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    renderApprove(onSubmit, () => json(WARNED));
+    await screen.findByText('Листы выпишутся с предупреждениями');
+    // Kinds only, in words: the approver sees neither the driver nor the blank number (R26).
+    expect(screen.getByText(/В документах машиниста есть пробелы/)).toBeDefined();
+    expect(screen.getByText('Выписываемый лист № 1')).toBeDefined();
+
+    fireEvent.click(screen.getByText('Согласовать'));
+    await screen.findByText('Подтвердите предупреждения по листам');
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByText('Согласовать'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const body = onSubmit.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body.acknowledgements).toEqual({ '0': 'fp-warn-1' });
+  });
+
+  it('409 «предупреждения изменились» — виза пересчитывает последствия, а не тост', async () => {
+    const onSubmit = vi.fn().mockRejectedValueOnce(ACK_REFUSAL).mockResolvedValue(undefined);
+    let previews = 0;
+    const http = renderApprove(onSubmit, () => {
+      previews += 1;
+      return json(previews === 1 ? WARNED : WARNED_AGAIN);
+    });
+    await screen.findByText('Листы выпишутся с предупреждениями');
+    fireEvent.click(screen.getByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByText('Согласовать'));
+
+    await screen.findByText('Задание в листе пустое');
+    expect(http.countOf('POST /vehicle-requests/vr-1/early-end/decision/preview')).toBe(2);
+    expect(screen.getByText(/Предупреждения по листам изменились/)).toBeDefined();
+    expect(screen.getByRole('checkbox', { name: TICK })).toHaveProperty('checked', false);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByText('Согласовать'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    const body = onSubmit.mock.calls[1]![0] as Record<string, unknown>;
+    expect(body.acknowledgements).toEqual({ '0': 'fp-2' });
   });
 });

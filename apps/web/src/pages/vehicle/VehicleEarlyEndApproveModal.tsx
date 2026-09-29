@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useState } from 'react';
-import { Alert, App, Skeleton, Space, Typography } from 'antd';
+import { Alert, App, Form, Skeleton, Space, Typography } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import type {
   DecideVehicleEarlyEndBody,
@@ -9,6 +9,8 @@ import type {
 import { FormModal } from '@shared/ui';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
+import { WarnedSheetsConfirm } from '@entities/waybill';
+import { acknowledgementsOf, anonymousWarnedSheetsOf, recheckReasonOf } from './assignmentWarnings';
 import { EarlyEndConsequences } from './EarlyEndConsequences';
 import { reassignStaleReason } from './ReassignPreview';
 import { formatDateOnly } from '@shared/lib';
@@ -27,6 +29,10 @@ import { formatDateOnly } from '@shared/lib';
  *
  * Причину окно не спрашивает: она уже названа самим запросом («что случилось на объекте»), и второе
  * поле под неё означало бы два разных объяснения одного действия (Р19).
+ *
+ * WARNED SHEETS (B4). The visa may replace a shortened sheet with a new blank, and in `history` the
+ * door refuses a warned one nobody confirmed. The approver sees only the kinds of warnings (R26),
+ * named in words; the tick is the one input this window has, hence the form around it.
  */
 interface Props {
   /** `null` — окно закрыто. Только заказ спецтехники: у грузоперевозки срока работ нет. */
@@ -50,6 +56,7 @@ export function VehicleEarlyEndApproveModal({
    * сокращения с новыми сгоревшими номерами.
    */
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+  const [form] = Form.useForm<{ warningsAck?: string }>();
   const [preview, setPreview] = useState<EarlyEndApprovalPreviewDto | null>(null);
   const [staleReason, setStaleReason] = useState<string | null>(null);
 
@@ -71,14 +78,24 @@ export function VehicleEarlyEndApproveModal({
     setPreview(null);
     setStaleReason(null);
     setOperationId(crypto.randomUUID());
+    form.resetFields();
     previewMut.mutate(request);
   });
   // Зависимость — идентификатор заявки: перерисовка той же заявки приходит новым объектом и
   // спрашивала бы план по кругу.
   useEffect(() => askPreview(targetId), [targetId]);
 
+  const warned = preview ? anonymousWarnedSheetsOf(preview) : [];
   const submit = async () => {
     if (!request || !preview) return;
+    if (warned.length > 0) {
+      // The rule under the tick shows its own message; nothing is sent without it.
+      const confirmed = await form.validateFields(['warningsAck']).then(
+        () => true,
+        () => false,
+      );
+      if (!confirmed) return;
+    }
     try {
       await onSubmit({
         approved: true,
@@ -92,6 +109,7 @@ export function VehicleEarlyEndApproveModal({
         ...(preview.cancelGroupsFingerprint
           ? { cancelGroupsFingerprint: preview.cancelGroupsFingerprint }
           : {}),
+        ...acknowledgementsOf(preview.issues),
         version: request.version,
       });
     } catch (e) {
@@ -100,7 +118,8 @@ export function VehicleEarlyEndApproveModal({
        * ответ окна не «повторите», а «посмотрите заново»: перечень мог стать другим, и подтверждать
        * прежний визирующий больше не вправе. Прочие отказы показывает тостом общий хук.
        */
-      const stale = reassignStaleReason(e);
+      // Changed warnings of a sheet are the same question and get the same answer.
+      const stale = reassignStaleReason(e) ?? recheckReasonOf(e);
       if (!stale) return;
       setStaleReason(stale);
       previewMut.mutate(request);
@@ -153,6 +172,9 @@ export function VehicleEarlyEndApproveModal({
           />
         )}
         {preview && <EarlyEndConsequences preview={preview} staleReason={staleReason} />}
+        <Form form={form} layout="vertical">
+          <WarnedSheetsConfirm name="warningsAck" sheets={warned} />
+        </Form>
       </Space>
     </FormModal>
   );

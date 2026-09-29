@@ -77,7 +77,12 @@ export function useEarlyEnd() {
       setRejectTarget(null);
       invalidate();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    // Stale consequences or changed warnings are answered by the visa window itself (it recomputes
+    // the preview); a toast on top would be a second voice about the same thing.
+    onError: (e) => {
+      if (reassignStaleReason(e) ?? recheckReasonOf(e)) return;
+      message.error(errorMessage(e));
+    },
   });
 
   const cancelMut = useMutation({
