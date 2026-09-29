@@ -12,7 +12,7 @@ import {
   Space,
   Typography,
 } from 'antd';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type dayjs from 'dayjs';
 import {
   DEFAULT_MAIL_ACCOUNT,
@@ -37,6 +37,7 @@ import {
   mailTestDriverKeys,
   mailTestRecipientKeys,
 } from '@entities/mailing';
+import { mailLogKeys } from '@entities/mail-log';
 import { useAuth } from '@entities/session';
 import { WindowFromField } from './MailingScheduleForm';
 import { errorMessage } from '../../utils/format';
@@ -80,6 +81,7 @@ export function MailDebugBlock() {
   const { can } = useAuth();
   const canManage = can('mailings.manage');
   const [form] = Form.useForm<FormValues>();
+  const qc = useQueryClient();
   const [kind, setKind] = useState<MailTestKind>(TEST_KINDS[0]!);
 
   const { data: recipients, isLoading } = useQuery({
@@ -139,7 +141,14 @@ export function MailDebugBlock() {
         ...(values.sampleUserId ? { sampleUserId: values.sampleUserId } : {}),
         ...(values.sampleRequestId ? { sampleRequestId: values.sampleRequestId } : {}),
       }),
-    onSuccess: (res) => message.success(res.message),
+    onSuccess: (res) => {
+      message.success(res.message);
+      // Отладочное письмо — такая же строка журнала, как рабочее: ручка заводит его в
+      // `mail_messages` с пометкой, о чём и написано в плашке выше. Журнал живёт под своим корнем и
+      // открывается соседней вкладкой этого же раздела — без гашения человек, отправивший тест и
+      // ушедший его проверять, своего письма там не находит.
+      void qc.invalidateQueries({ queryKey: mailLogKeys.root });
+    },
     onError: (e) => message.error(errorMessage(e)),
   });
 

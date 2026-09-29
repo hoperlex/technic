@@ -8,7 +8,7 @@
   "antdDeprecated": 17,
   "maxLines": {
     "src/pages/WasteRequestsPage.tsx": 1874,
-    "src/pages/admin/UsersTab.tsx": 1358,
+    "src/pages/admin/UsersTab.tsx": 1367,
     "src/pages/directories/CounterpartiesTab.tsx": 439,
     "src/pages/directories/DriversTab.tsx": 882,
     "src/pages/directories/VehicleSpecsTab.tsx": 480,

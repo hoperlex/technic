@@ -461,6 +461,15 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  /*
+   * cache-invalidation: none — смена пароля не меняет ничего, что показывает список.
+   *
+   * Сервер переписывает хэш, ставит `mustChangePassword`, поднимает `authVersion` и отзывает выданные
+   * сессии. Из этого в списке не видно ни одного поля: пароль не показывается, флаг читается только
+   * для СВОЕЙ учётки (из ответа сессии, `ProtectedRoute`), а `updatedAt` учётки таблица не выводит.
+   * Запись в журнале изменений появляется, и её гасит переключение на вкладку «Аудит» — там это и
+   * решается, у самого журнала.
+   */
   const passwordMut = useMutation({
     mutationFn: (v: { id: string; newPassword: string }) =>
       usersApi.setPassword(v.id, v.newPassword),

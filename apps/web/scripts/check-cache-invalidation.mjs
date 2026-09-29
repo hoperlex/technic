@@ -14,6 +14,24 @@
  * пишет. Оба — только по мутациям, разобранным ПОЛНОСТЬЮ: обвинять код в том, чего не понял
  * разборщик, значит получить отключённую проверку. Подробнее — у самих правил.
  *
+ * ЧЕМ ОПРАВДАНО МОЛЧАНИЕ. Первая очередь была 28 мест, и ни одно не оказалось дефектом — это были
+ * четыре разных вида законного молчания, и каждый пришлось назвать, иначе правило сняли бы целиком:
+ *
+ *   — ДВЕРЬ ПРЕДПРОСМОТРА (`*Preview`) — чтение, которому нужно тело запроса; она ничего не пишет;
+ *   — ФАЙЛОВОЕ ХРАНИЛИЩЕ (`filesApi.upload`/`remove`) стоит вне агрегатов: до сохранения формы файл
+ *     ничей и живёт в состоянии экрана;
+ *   — ОБНОВЛЕНИЕ ОТДАНО НАВЕРХ (`onChanged()`, `onSaved?.()`) — гасит вызывающий, из другого файла;
+ *     это отдельный признак, а не `unresolved`: правило 2 к такой мутации по-прежнему применяется;
+ *   — ПОМОЩНИК ЧУЖОЙ МУТАЦИИ (`mutationFn: saveComposition`, `await runLinearSwitch(…)`) — шаг, а не
+ *     точка: кэш гасится там, где шаг заканчивается.
+ *
+ * Пятый вид не выводится из кода никак — «эта запись не меняет ничего видимого». Он объявляется
+ * маркером в комментарии рядом с мутацией (`cache-invalidation: none — причина`, см.
+ * `declaresNoCacheEffect`), и единственное такое место сегодня — смена пароля учётки.
+ *
+ * Дефект в очереди всё-таки нашёлся, но не в ней: отладочная отправка письма заводит строку журнала
+ * и не гасила его корень — рядом, соседней вкладкой того же раздела.
+ *
  * ЧЕГО ПРОВЕРКА НЕ УМЕЕТ, и это главная часть шапки:
  *
  *   — Она не знает, что меняет СЕРВЕР. Три дефекта, из-за которых она написана, выведены чтением
@@ -32,6 +50,9 @@
  *     первый смысл.
  *   — `setQueryData` считается эффектом кэша наравне с гашением: правка строки на месте — законный
  *     способ, и требовать поверх неё `invalidateQueries` проверка не вправе.
+ *   — Правило 2 молчит там, где у слайса НЕСКОЛЬКО корней (9 слайсов из 39: у рассылок их семь, у
+ *     типов техники шесть). «Погаси хоть один свой корень» для них не значит ничего, и сказанное
+ *     полем `homeAmbiguous` в карте честнее сработавшего наугад правила.
  *
  * ПОЧЕМУ `unresolved` ПЕЧАТАЕТСЯ ВСЕГДА. Такая проверка портится единственным способом — перестаёт
  * понимать код и оттого зеленеет. Счёт неразобранного в каждом прогоне — единственное, что отличает
@@ -84,6 +105,21 @@ function isPreviewHandle(handle) {
   const member = handle.slice(handle.indexOf('.') + 1);
   return member === 'preview' || /Preview$/.test(member);
 }
+
+/**
+ * FILE STORAGE stands outside every aggregate, so a write to it owes the cache nothing.
+ *
+ * A file uploaded in a form belongs to nobody until the form is saved: it lives in the screen's own
+ * state, and the server attaches it inside the saving transaction (`request-files`). Removing one is
+ * the same act backwards — the screen drops it from its list and deletes the orphan so storage does
+ * not collect files from abandoned forms. Neither touches a row any query reads, and there are nine
+ * such places, all with that comment already written beside them.
+ *
+ * Deliberately narrow: only upload and remove. Everything else about files — quarantine, attaching
+ * to a request, the audit of a recognised ticket — writes rows that screens do read, and those go
+ * through their own handles which stay under the rule.
+ */
+const STORAGE_HANDLES = new Set(['filesApi.upload', 'filesApi.remove']);
 
 /**
  * Shared API factories (`src/shared/api/resource.ts`) and the handles they spread into a slice API.
@@ -444,6 +480,11 @@ function collectCacheEffects(node, ctx, acc, hops = 0, seen = new Set()) {
         readKeyArgument(n, ctx, acc);
       } else if (callee && ts.isIdentifier(callee)) {
         followCall(callee.text, n, ctx, acc, hops, seen);
+      } else if (method && isCallbackName(method)) {
+        // `opts.onChanged()` — the update is handed UP, out of this file, and the caller drops the
+        // cache. Nothing here can see that, and calling it "drops nothing" would blame a screen that
+        // does the right thing through its parent.
+        acc.handsUp.add(method);
       }
     }
 
@@ -536,6 +577,7 @@ function followCall(name, call, ctx, acc, hops, seen) {
   if (helper) {
     helper.roots.forEach((r) => acc.roots.add(r));
     helper.why.forEach((w) => acc.why.add(w));
+    (helper.handsUp ?? []).forEach((h) => acc.handsUp.add(h));
     if (helper.wholeCache) acc.wholeCache = true;
     return;
   }
@@ -550,6 +592,38 @@ function followCall(name, call, ctx, acc, hops, seen) {
    */
   if (/invalidat|refetch|refresh|reload|reset|purge|drop|evict/i.test(name))
     acc.why.add(`unresolved-call-that-may-drop-the-cache:${name}`);
+  // A prop callback by the portal's own naming convention (`onSaved`, `onChanged`, `onUploaded`):
+  // the effect lives in the caller, one file up, and is unknowable from here.
+  else if (isCallbackName(name)) acc.handsUp.add(name);
+}
+
+/**
+ * React callback convention as this portal writes it: `onSaved`, `onChanged`, `onUploaded`, `onDone`.
+ *
+ * Used to tell "the update went up to the caller" from "nothing happened". A heuristic on a name,
+ * and named as such: the price of getting it wrong is a mutation reported unresolved instead of
+ * blamed, which is the safe direction. The opposite default — treating an unopenable call as no
+ * effect — is what made the rule blame seven honest screens.
+ */
+/**
+ * A mutation may DECLARE that touching no cache is the right answer, with a marker in the comment
+ * beside it: `cache-invalidation: none — <reason>`.
+ *
+ * In the comment and not in a list inside this script, because the repository forbids a second
+ * registry for a rule that already has a carrier: the reason belongs next to the code it excuses,
+ * where the next reader of that mutation sees it, and where it goes stale together with the code
+ * instead of quietly outliving it in a JSON file nobody opens.
+ *
+ * Read from the node's full text, which includes its leading comments. A marker without a reason is
+ * still accepted — the rule cannot judge prose — but writing one without saying why wastes the only
+ * thing this mechanism is for.
+ */
+function declaresNoCacheEffect(sf, node) {
+  return /cache-invalidation:\s*none/.test(sf.text.slice(node.pos, node.end));
+}
+
+function isCallbackName(name) {
+  return /^on[A-Z]/.test(name);
 }
 
 /** Every API handle a body reaches, with the HTTP verb the registry knows for it. */
@@ -597,13 +671,17 @@ function optionProp(obj, name) {
 }
 
 function emptyAcc() {
-  return { roots: new Set(), why: new Set(), wholeCache: false };
+  return { roots: new Set(), why: new Set(), wholeCache: false, handsUp: new Set() };
 }
 
 function finish(acc) {
   return {
     invalidates: [...acc.roots].sort(),
     wholeCache: acc.wholeCache,
+    // Kept apart from `unresolved` on purpose. "The update went up to the caller" is not ignorance:
+    // it excuses a mutation from rule 1 (its effect is one file up) but leaves rule 2 in force — a
+    // screen that drops a neighbour's root itself is still answerable for missing its own.
+    handsUp: [...acc.handsUp].sort(),
     unresolved: [...acc.why].sort(),
   };
 }
@@ -616,7 +694,7 @@ function classifyWrites(handles, ctx) {
     const verb = ctx.api.get(handle);
     if (verb === undefined) unknown.push(handle);
     else if (verb === null) unknown.push(handle);
-    else if (WRITING_METHODS.has(verb) && !isPreviewHandle(handle))
+    else if (WRITING_METHODS.has(verb) && !isPreviewHandle(handle) && !STORAGE_HANDLES.has(handle))
       writes.push(`${handle} ${verb}`);
     else reads.push(`${handle} ${verb}`);
   }
@@ -628,12 +706,22 @@ function scanFileMutations(ctx) {
   const mutations = [];
   const mutationFnRanges = [];
 
-  const visit = (node, hint) => {
+  const visit = (node, hint, stmt) => {
     let next = hint;
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) next = node.name.text;
-    else if (ts.isFunctionDeclaration(node) && node.name) next = node.name.text;
+    let nextStmt = stmt;
+    /*
+     * The STATEMENT travels alongside the name. A marker comment sits above `const x = useMutation(`,
+     * so it is leading trivia of the VariableStatement — not of the declaration (which starts after
+     * `const`) and not of the call (which starts after `=`). Parsed without parent links, the only
+     * way to reach it is to carry it down.
+     */
+    if (ts.isVariableStatement(node) || ts.isExpressionStatement(node)) nextStmt = node;
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name))
+      next = { name: node.name.text, decl: nextStmt ?? node };
+    else if (ts.isFunctionDeclaration(node) && node.name)
+      next = { name: node.name.text, decl: node };
     else if (ts.isMethodDeclaration(node) && propertyName(node.name))
-      next = propertyName(node.name);
+      next = { name: propertyName(node.name), decl: node };
 
     if (ts.isCallExpression(node)) {
       const callee = unwrap(node.expression);
@@ -641,9 +729,7 @@ function scanFileMutations(ctx) {
       const options = node.arguments.map(unwrap).find((a) => a && ts.isObjectLiteralExpression(a));
 
       if (name === 'useMutation') {
-        mutations.push(
-          readUseMutation(node, options, hint ?? '<anonymous>', ctx, mutationFnRanges),
-        );
+        mutations.push(readUseMutation(node, options, hint, ctx, mutationFnRanges));
       } else if (name && /^use[A-Z]/.test(name) && options) {
         const declared = options.properties.some(
           (p) => ts.isPropertyAssignment(p) && KEY_LIST_PROPS.has(propertyName(p.name) ?? ''),
@@ -652,14 +738,15 @@ function scanFileMutations(ctx) {
       }
     }
 
-    ts.forEachChild(node, (child) => visit(child, next));
+    ts.forEachChild(node, (child) => visit(child, next, nextStmt));
   };
 
-  visit(sf, undefined);
+  visit(sf, undefined, undefined);
   return { mutations, mutationFnRanges };
 }
 
-function readUseMutation(call, options, hint, ctx, mutationFnRanges) {
+function readUseMutation(call, options, owner, ctx, mutationFnRanges) {
+  const hint = owner?.name ?? '<anonymous>';
   const line = lineOf(ctx.sf, call);
   const acc = emptyAcc();
   const handles = new Set();
@@ -679,7 +766,32 @@ function readUseMutation(call, options, hint, ctx, mutationFnRanges) {
       const handler = optionProp(options, h);
       if (!handler) continue;
       handlers.push(h);
-      collectCacheEffects(handler, ctx, acc);
+      /*
+       * A handler given as a NAME (`onSuccess: onChanged`) is a call this walk has to make itself:
+       * the value is a prop, a hook result or a helper, and the invalidation usually lives inside
+       * it. Walking the identifier as an expression finds nothing there, and the mutation would come
+       * out "resolved, drops nothing" — the same silent miss as a call of an unopenable value, and
+       * the point block of a route is exactly that shape.
+       */
+      const named = unwrap(handler);
+      if (named && ts.isIdentifier(named)) {
+        const seen = {
+          why: acc.why.size,
+          roots: acc.roots.size,
+          whole: acc.wholeCache,
+          up: acc.handsUp.size,
+        };
+        followCall(named.text, undefined, ctx, acc, 0, new Set());
+        // Nothing came back — neither an effect nor a reason. The name was a prop or a value this
+        // walk cannot open, and calling that "no invalidation" is a verdict on evidence we lack.
+        if (
+          acc.why.size === seen.why &&
+          acc.roots.size === seen.roots &&
+          acc.wholeCache === seen.whole &&
+          acc.handsUp.size === seen.up
+        )
+          acc.why.add(`handler-is-a-name-this-walk-cannot-open:${named.text}`);
+      } else collectCacheEffects(handler, ctx, acc);
     }
   }
 
@@ -687,6 +799,9 @@ function readUseMutation(call, options, hint, ctx, mutationFnRanges) {
   unknown.forEach((h) => acc.why.add(`api-handle-of-an-unknown-verb:${h}`));
 
   return {
+    declaredNoop:
+      declaresNoCacheEffect(ctx.sf, call) ||
+      (!!owner?.decl && declaresNoCacheEffect(ctx.sf, owner.decl)),
     id: `${ctx.rel}:${line}:${hint}`,
     file: ctx.rel,
     line,
@@ -773,6 +888,49 @@ function scanDirectWrites(ctx, mutationFnRanges) {
 
   visit(sf, undefined);
 
+  /*
+   * A direct-call writer that somebody ELSE in this file drives is not a mutation of its own — it is
+   * a step of theirs, and the cache is dropped where the step ends. Two shapes, both real:
+   *
+   *   `mutationFn: saveComposition`   — the function IS the mutation body, named a line above;
+   *   `await runLinearSwitch(type, …)`— a preview-confirm-write helper called from the form's save,
+   *                                     which drops the roots once, after the whole sequence.
+   *
+   * Without this, rule 1 blamed the helper and credited the caller, i.e. reported the one place that
+   * could not drop the cache and stayed silent about the one that did. Only callers that themselves
+   * reach the cache (or hand the update up) count as owners: a helper called from a screen that
+   * drops nothing at all is still unaccounted for, and must stay under the rule.
+   */
+  const names = new Set(found.keys());
+  const ownedByAnother = new Set();
+  const mentionsIn = (node, skip) => {
+    const seen = new Set();
+    const walk = (n) => {
+      if (ts.isIdentifier(n) && names.has(n.text) && n.text !== skip) seen.add(n.text);
+      ts.forEachChild(n, walk);
+    };
+    walk(node);
+    return seen;
+  };
+  // Anything mentioned inside a `useMutation(...)` call belongs to that mutation.
+  const scanForOwners = (node) => {
+    if (ts.isCallExpression(node)) {
+      const callee = unwrap(node.expression);
+      if (callee && ts.isIdentifier(callee) && callee.text === 'useMutation')
+        for (const name of mentionsIn(node, undefined)) ownedByAnother.add(name);
+    }
+    ts.forEachChild(node, scanForOwners);
+  };
+  scanForOwners(sf);
+  // And anything mentioned by another direct-call writer that does reach the cache itself.
+  for (const [name, { owner }] of found) {
+    const acc = emptyAcc();
+    collectCacheEffects(owner.node.body ?? owner.node, ctx, acc);
+    if (acc.roots.size === 0 && !acc.wholeCache && acc.handsUp.size === 0) continue;
+    for (const mentioned of mentionsIn(owner.node, name)) ownedByAnother.add(mentioned);
+  }
+  for (const name of ownedByAnother) found.delete(name);
+
   return [...found.values()].map(({ owner, handles }) => {
     const acc = emptyAcc();
     collectCacheEffects(owner.node.body ?? owner.node, ctx, acc);
@@ -780,6 +938,7 @@ function scanDirectWrites(ctx, mutationFnRanges) {
     const { writes, reads, unknown } = classifyWrites(handles, ctx);
     unknown.forEach((h) => acc.why.add(`api-handle-of-an-unknown-verb:${h}`));
     return {
+      declaredNoop: declaresNoCacheEffect(sf, owner.node),
       id: `${ctx.rel}:${line}:${owner.name}`,
       file: ctx.rel,
       line,
@@ -846,12 +1005,17 @@ function buildMap() {
       const decl = helperNodes.get(name);
       if (decl === undefined) return undefined;
       if (decl === null) return null;
-      if (computing.has(name)) return { roots: [], why: [], wholeCache: false };
+      if (computing.has(name)) return { roots: [], why: [], wholeCache: false, handsUp: [] };
       computing.add(name);
       const acc = emptyAcc();
       collectCacheEffects(decl.node.body ?? decl.node, decl.ctx, acc);
       computing.delete(name);
-      const value = { roots: [...acc.roots], why: [...acc.why], wholeCache: acc.wholeCache };
+      const value = {
+        roots: [...acc.roots],
+        why: [...acc.why],
+        wholeCache: acc.wholeCache,
+        handsUp: [...acc.handsUp],
+      };
       helperCache.set(name, value);
       return value;
     },
@@ -899,6 +1063,7 @@ function buildMap() {
   }
   for (const m of mutations) {
     const home = new Set();
+    const ambiguous = new Set();
     for (const write of m.writes) {
       const handle = write.slice(0, write.indexOf(' '));
       const hit = api.byName.get(handle);
@@ -909,10 +1074,27 @@ function buildMap() {
       const slice = sliceOf(hit.file);
       // A handle outside a slice (a page calling `apiFetch` itself) has no home root by definition,
       // and saying so out loud beats treating it as "nothing owed".
-      if (!slice) m.unresolved.push(`write-handle-outside-a-slice:${handle}`);
-      else for (const root of rootsBySlice.get(slice) ?? []) home.add(root);
+      if (!slice) {
+        m.unresolved.push(`write-handle-outside-a-slice:${handle}`);
+        continue;
+      }
+      const roots = rootsBySlice.get(slice) ?? [];
+      /*
+       * ONE root in the slice, or no home root at all — and that limit is the rule's honesty.
+       *
+       * `entities/mailing` keeps seven roots (accounts, schedules, runs, three kinds of recipients),
+       * `entities/vehicle-type` six. For such a slice "drop at least one of your own roots" means
+       * nothing: sending a test letter touches none of the seven, and the rule fired on a screen
+       * doing everything right. Where the slice keeps exactly one root — 30 of 39 — the handle and
+       * the root are the two halves of one act, and that is the case the rule reasons about.
+       */
+      if (roots.length === 1) home.add(roots[0]);
+      else if (roots.length > 1) ambiguous.add(slice);
     }
     m.homeRoots = [...home].sort();
+    // Printed in the map rather than dropped: "the rule did not apply here, and why" is the part a
+    // reader needs to trust the green.
+    if (ambiguous.size > 0) m.homeAmbiguous = [...ambiguous].sort();
   }
 
   for (const m of mutations)
@@ -985,7 +1167,9 @@ function ruleWritesNothingDropped(map) {
     .filter(
       (m) =>
         m.writes.length > 0 &&
+        !m.declaredNoop &&
         m.unresolved.length === 0 &&
+        m.handsUp.length === 0 &&
         !m.wholeCache &&
         m.invalidates.length === 0,
     )
