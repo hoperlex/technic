@@ -1,8 +1,11 @@
 import { Alert } from 'antd';
+import type { RepairPreviewDto, RepairResultDto } from '@technic/contracts';
+import { formatDateOnly } from '@shared/lib';
+import { listStyle } from './consequencesList';
 
 /**
  * What the "History repair" window says about itself, apart from the consequences list: why a
- * repair will also restore an archived request.
+ * repair will also restore an archived request, and what is still left after a repair went through.
  *
  * A file of its own because the window is a conversation (inspect, preview, refusals, confirmation)
  * and these are two of its replies; keeping them there would push the window past the length budget
@@ -35,3 +38,61 @@ export function RepairRestoreAlert() {
  */
 export const RESTORE_RECHECK =
   'Ремонт этой архивной заявки проходит только вместе с её восстановлением — последствия пересчитаны с ним. Прочитайте и подтвердите заново.';
+
+/**
+ * The toast after a repair, chosen by the fresh inspection: "history fixed" only when nothing is
+ * left; otherwise the toast says there is more, and the window lists it.
+ */
+export function repairDoneMessage(res: RepairResultDto, after: RepairPreviewDto | undefined) {
+  if (res.repeated) return 'Этот ремонт уже был проведён';
+  return after && repairLeftoverLines(after).length > 0
+    ? 'Ремонт записан — в истории осталось, что чинить'
+    : 'История заявки исправлена';
+}
+
+/**
+ * What the fresh inspection still finds after a repair — shown instead of a bare "history fixed".
+ *
+ * WHY. Filling unknown days is allowed only on locked days, and the server stops the named person
+ * at the last locked day: from the first day that can still be changed the driver stays unknown
+ * (decision R5, "two operations"). The request then needs an anchor as a separate command, and a
+ * window that just said "fixed" would hide exactly that. The list below is the server's inspection,
+ * not a portal guess: the same `requiredAnchors`, `fillableGaps` and tail the window asks about.
+ *
+ * Renders nothing when there is nothing left; the window then says the history is complete.
+ */
+export function RepairLeftoverAlert({ state }: { state: RepairPreviewDto }) {
+  const lines = repairLeftoverLines(state);
+  if (lines.length === 0) return null;
+  return (
+    <Alert
+      type="info"
+      showIcon
+      title="Ремонт записан, но история ещё не полна"
+      description={
+        <ul style={listStyle}>
+          {lines.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      }
+    />
+  );
+}
+
+/** What is left, one line per piece of work; empty — the history is complete. */
+export function repairLeftoverLines(state: RepairPreviewDto): string[] {
+  return [
+    ...state.requiredAnchors.map(
+      (gap) =>
+        `${formatDateOnly(gap.from)} — ${formatDateOnly(gap.to)}: машинист неизвестен. Эти дни ещё изменяемые, заполнением их не закрыть — назовите машиниста ниже, это отдельная операция.`,
+    ),
+    ...state.fillableGaps.map(
+      (gap) =>
+        `${formatDateOnly(gap.from)} — ${formatDateOnly(gap.to)}: закрытые дни, машинист по-прежнему неизвестен.`,
+    ),
+    ...(state.requiredVehicleResolution
+      ? ['Не решено, чем заявка закрыта после конца срока.']
+      : []),
+  ];
+}

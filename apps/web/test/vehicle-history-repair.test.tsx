@@ -367,3 +367,106 @@ describe('починка истории архивной заявки', () => {
     expect(applied.previewFingerprint).toBe('fp-restore');
   });
 });
+
+/**
+ * "Two operations" (defect D3, decision R5): a fill stops at the last locked day, and if the driver
+ * is unknown on the first changeable day, the request needs an anchor — a separate command.
+ *
+ * The window used to step back with a bare "history fixed" toast; after the server fix that would
+ * hide exactly the leftover. Now it waits for the fresh inspection, says what is left, and offers
+ * the anchor field right there.
+ */
+describe('починка истории: что осталось после заполнения', () => {
+  const ANCHOR = {
+    requestId: 'vr-1',
+    requestNumber: 'ТС-1',
+    effectiveDate: day(-29),
+    from: day(-29),
+    to: day(10),
+  };
+
+  it('поле заполнения объясняет, что касается только закрытых дней', async () => {
+    renderModal();
+    await screen.findByText(/Заполнение касается только закрытых дней/);
+  });
+
+  it('после заполнения показывает остаток и предлагает якорь отдельной операцией', async () => {
+    let repaired = false;
+    const http = renderModal({
+      'GET /vehicle-requests/:id/assignment-changes/repair/state': () =>
+        json(
+          repaired
+            ? repairPreview({ state: 'materialized', requiredAnchors: [ANCHOR] })
+            : repairPreview({ state: 'materialized', fillableGaps: [GAP] }),
+        ),
+      'POST /vehicle-requests/:id/assignment-changes/repair': () => {
+        repaired = true;
+        return json({
+          ok: true,
+          repeated: false,
+          version: 4,
+          state: 'materialized',
+          operationId: null,
+          archived: false,
+        });
+      },
+    });
+    await screen.findByText('Кто работал в неизвестные дни');
+    await selectOption(`Кто работал ${fmt(GAP.from)} — ${fmt(GAP.to)}`, /Семёнов/);
+    press('Показать последствия');
+    await screen.findByRole('button', { name: 'Подтвердить' });
+    press('Подтвердить');
+
+    // Not "history fixed": the toast and the window both say there is more to do.
+    await screen.findByText('Ремонт записан, но история ещё не полна');
+    await screen.findByText('Ремонт записан — в истории осталось, что чинить');
+    expect(screen.queryByText('История заявки исправлена')).toBeNull();
+    expect(
+      screen.getByText(new RegExp(`${fmt(ANCHOR.from)} — ${fmt(ANCHOR.to)}: машинист неизвестен`)),
+    ).toBeDefined();
+
+    // The anchor is offered in the same window, and it goes as a separate command.
+    await selectOption(`Кто работал ${fmt(ANCHOR.from)} — ${fmt(ANCHOR.to)}`, /Кузнецов/);
+    press('Показать последствия');
+    await waitFor(() =>
+      expect(http.countOf('POST /vehicle-requests/:id/assignment-changes/repair/preview')).toBe(2),
+    );
+    const second = bodyOf(http, 'POST /vehicle-requests/:id/assignment-changes/repair/preview');
+    expect(second.anchors).toEqual([
+      { effectiveDate: ANCHOR.effectiveDate, driverPersonId: KUZNETSOV.id },
+    ]);
+    expect(second.knownFills).toBeUndefined();
+  });
+
+  it('полная после ремонта история — «исправлена», без списка остатка', async () => {
+    let repaired = false;
+    renderModal({
+      'GET /vehicle-requests/:id/assignment-changes/repair/state': () =>
+        json(
+          repaired
+            ? repairPreview()
+            : repairPreview({ state: 'materialized', fillableGaps: [GAP] }),
+        ),
+      'POST /vehicle-requests/:id/assignment-changes/repair': () => {
+        repaired = true;
+        return json({
+          ok: true,
+          repeated: false,
+          version: 4,
+          state: 'ready',
+          operationId: null,
+          archived: false,
+        });
+      },
+    });
+    await screen.findByText('Кто работал в неизвестные дни');
+    await selectOption(`Кто работал ${fmt(GAP.from)} — ${fmt(GAP.to)}`, /Семёнов/);
+    press('Показать последствия');
+    await screen.findByRole('button', { name: 'Подтвердить' });
+    press('Подтвердить');
+
+    await screen.findByText('История заявки исправлена');
+    await screen.findByText('История заявки полна: чинить в ней нечего.');
+    expect(screen.queryByText('Ремонт записан, но история ещё не полна')).toBeNull();
+  });
+});

@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   type KnownFill,
   type MachinistAnchor,
+  type RepairPreviewDto,
   type RepairResultDto,
   type SpecialEquipmentRequestDto,
   type TailResolution,
@@ -29,7 +30,12 @@ import {
   type RepairDraft,
   type RepairShown,
 } from './repairCommand';
-import { RepairRestoreAlert, RESTORE_RECHECK } from './RepairNotices';
+import {
+  RepairLeftoverAlert,
+  repairDoneMessage,
+  RepairRestoreAlert,
+  RESTORE_RECHECK,
+} from './RepairNotices';
 
 /**
  * Окно «Починка истории» (подэтап 6a плана `docs/assignment-periods-plan.md`, Р29, Р31, Ц4).
@@ -95,6 +101,8 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
   const [staleReason, setStaleReason] = useState<string | null>(null);
   /** Отказ по правам (Р32): его показывают текстом в окне, а не тостом в углу. */
   const [forbidden, setForbidden] = useState<string | null>(null);
+  /** A repair went through in this window: the fresh inspection is then read as "what is left". */
+  const [repaired, setRepaired] = useState(false);
 
   const resetForRequest = useEffectEvent((_id: string | null) => {
     if (!request) return;
@@ -103,6 +111,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
     setShown(null);
     setStaleReason(null);
     setForbidden(null);
+    setRepaired(false);
     form.resetFields();
   });
   // Зависимость — идентификатор заявки: перерисовка той же заявки приходит новым объектом и
@@ -164,15 +173,25 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
         targetId!,
         repairCommandBody(v, { version, operationId, reason: v.reason }),
       ),
-    onSuccess: (res) => {
-      message.success(res.repeated ? 'Этот ремонт уже был проведён' : 'История заявки исправлена');
+    onSuccess: async (res) => {
+      /*
+       * The window waits for the fresh inspection before it steps back: after a fill the history
+       * may still be incomplete (the named person stops at the last locked day, and the first
+       * changeable day needs an anchor as a separate command), and a bare "history fixed" over the
+       * old inspection would hide exactly that.
+       */
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: vehicleRequestKeys.repairState(targetId!) }),
+        qc.invalidateQueries({ queryKey: vehicleRequestKeys.history(targetId!) }),
+      ]);
+      const after = qc.getQueryData<RepairPreviewDto>(vehicleRequestKeys.repairState(targetId!));
+      message.success(repairDoneMessage(res, after));
       setVersion(res.version);
       setShown(null);
       setStaleReason(null);
+      setRepaired(true);
       setOperationId(crypto.randomUUID());
       form.resetFields();
-      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.repairState(targetId!) });
-      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.history(targetId!) });
       void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       // Ремонт переписывает бумагу: заполнение выписывает листы задним числом, отмена их гасит.
       void qc.invalidateQueries({ queryKey: waybillKeys.root });
@@ -222,6 +241,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
 
   const askPreview = (draft: RepairDraft) => {
     setForbidden(null);
+    setRepaired(false);
     previewMut.mutate({ draft, stale: null });
   };
 
@@ -293,6 +313,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
             повторяются, иначе подтверждение читается по диагонали. */}
           {!secondStep && seen && (
             <>
+              {repaired && <RepairLeftoverAlert state={seen} />}
               {seen.archived && (
                 <Alert
                   type="warning"

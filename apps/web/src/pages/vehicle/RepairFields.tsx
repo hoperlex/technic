@@ -117,6 +117,15 @@ export function KnownFillFields({
               />
             </Form.Item>
           </Space>
+          {/* The whole gap stays the default range: the server itself stops the named person at
+            the last locked day (R5, "two operations"). What the person must know is the other
+            half — the fill never reaches the changeable days, and an unknown driver there is
+            named afterwards, as a separate anchor, which the window then offers. */}
+          <Typography.Text type="secondary">
+            Заполнение касается только закрытых дней выбранного отрезка — дальше история не
+            меняется. Если и после него машинист неизвестен, а дни там ещё изменяемые, окно после
+            записи попросит назвать его отдельной операцией.
+          </Typography.Text>
         </Space>
       ))}
     </Space>
