@@ -1,4 +1,9 @@
-import { WAYBILL_ACK_REQUIRED_CODE, type AssignmentPreviewDto } from '@technic/contracts';
+import {
+  assignmentAcknowledgementsOf,
+  assignmentIssueNeedsAcknowledgement,
+  WAYBILL_ACK_REQUIRED_CODE,
+  type AssignmentPreviewDto,
+} from '@technic/contracts';
 import { isApiError } from '@shared/api';
 import { formatDateOnly } from '@shared/lib';
 import type { WarnedSheet } from '@entities/waybill';
@@ -14,9 +19,9 @@ import { ASSIGNMENT_PREVIEW_STALE } from './ReassignPreview';
  * was a dead end in those windows: a toast and no way forward.
  *
  * WHAT IS READ, NOT DECIDED. The warnings, the fingerprints and which sheets carry them all come
- * from the preview. "A sheet needs a signature iff its warning set is non-empty" is the contract of
- * `assignmentAcknowledgementsSchema`, not a portal rule: sending one for a clean sheet is rejected
- * as superfluous, so the filter below mirrors the contract instead of choosing.
+ * from the preview. "A sheet needs a signature iff its warning set is non-empty" is asked of the
+ * contracts (`assignmentIssueNeedsAcknowledgement`), the same predicate the server checks with:
+ * a signature for a clean sheet is rejected as superfluous, so the window must not choose.
  */
 
 /** Warned sheets of a preview, named the way the consequences list names them. */
@@ -24,38 +29,35 @@ export function warnedSheetsOf(
   preview: Pick<AssignmentPreviewDto, 'plan' | 'issues'>,
 ): WarnedSheet[] {
   const planned = new Map(preview.plan.issue.map((sheet) => [sheet.issueKey, sheet]));
-  return preview.issues
-    .filter((issue) => issue.warnings.length > 0)
-    .map((issue) => {
-      const sheet = planned.get(issue.issueKey);
-      return {
-        // The contract's canonical key: the decimal `issueKey`, no leading zeros — `String` gives
-        // exactly that, and a second spelling would sign the same sheet twice.
-        key: String(issue.issueKey),
-        // Composition, not just dates: a week can be split between people, and "the sheet for
-        // 10–16 August" would not say whose documents the warning is about.
-        title: sheet
-          ? `Лист за ${formatDateOnly(sheet.from)} — ${formatDateOnly(sheet.to)}: ${sheet.vehicleName}, машинист ${sheet.driverName}`
-          : `Лист № ${issue.issueKey + 1} плана`,
-        warnings: issue.warnings,
-        fingerprint: issue.warningFingerprint,
-      };
-    });
+  return preview.issues.filter(assignmentIssueNeedsAcknowledgement).map((issue) => {
+    const sheet = planned.get(issue.issueKey);
+    return {
+      // The contract's canonical key: the decimal `issueKey`, no leading zeros — `String` gives
+      // exactly that, and a second spelling would sign the same sheet twice.
+      key: String(issue.issueKey),
+      // Composition, not just dates: a week can be split between people, and "the sheet for
+      // 10–16 August" would not say whose documents the warning is about.
+      title: sheet
+        ? `Лист за ${formatDateOnly(sheet.from)} — ${formatDateOnly(sheet.to)}: ${sheet.vehicleName}, машинист ${sheet.driverName}`
+        : `Лист № ${issue.issueKey + 1} плана`,
+      warnings: issue.warnings,
+      fingerprint: issue.warningFingerprint,
+    };
+  });
 }
 
 /**
- * The `acknowledgements` part of a command body; nothing at all when no sheet is warned.
+ * The `acknowledgements` part of a command body, built by the contracts from the confirmed preview;
+ * nothing at all when no sheet needs a signature.
  *
  * The field is omitted rather than sent empty for the same reason every other handshake of these
  * doors is: its presence is dictated by the server's answer, not by the client.
  */
-export function acknowledgementsOf(sheets: readonly WarnedSheet[]): {
+export function acknowledgementsOf(issues: Parameters<typeof assignmentAcknowledgementsOf>[0]): {
   acknowledgements?: Record<string, string>;
 } {
-  if (sheets.length === 0) return {};
-  return {
-    acknowledgements: Object.fromEntries(sheets.map((sheet) => [sheet.key, sheet.fingerprint])),
-  };
+  const acknowledgements = assignmentAcknowledgementsOf(issues);
+  return Object.keys(acknowledgements).length > 0 ? { acknowledgements } : {};
 }
 
 /**

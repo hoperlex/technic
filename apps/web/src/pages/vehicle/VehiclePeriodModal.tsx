@@ -133,7 +133,7 @@ export function VehiclePeriodModal({
         ...(dto.unlockFingerprint !== null ? { unlockFingerprint: dto.unlockFingerprint } : {}),
         // Built from the same preview the person just confirmed; the form rule has already
         // checked that the tick belongs to exactly this set.
-        ...acknowledgementsOf(warnedSheetsOf(dto)),
+        ...acknowledgementsOf(dto.issues),
         ...(dto.operationRequirement
           ? { operation: { operationId, reason: (v.reason ?? '').trim() } }
           : {}),

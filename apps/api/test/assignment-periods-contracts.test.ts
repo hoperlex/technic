@@ -6,7 +6,9 @@ import {
   ASSIGNMENT_OPERATION_OUTCOMES,
   ASSIGNMENT_SUPERSEDE_KINDS,
   DRIVER_STATE_KINDS,
+  assignmentAcknowledgementsOf,
   assignmentAcknowledgementsSchema,
+  assignmentIssueNeedsAcknowledgement,
   assignmentChangeTargetSchema,
   assignmentCommandSchema,
   changeVehicleAssignmentExtrasSchema,
@@ -185,6 +187,26 @@ describe('рукопожатие по каждому листу (Б4)', () => {
     expect(assignmentAcknowledgementsSchema.safeParse({ esm2: 'f'.repeat(64) }).success).toBe(
       false,
     );
+  });
+
+  // One carrier of "sign only a non-empty set": the server check and the portal windows both ask it.
+  it('подпись нужна только листу с непустым набором — в обеих формах набора', () => {
+    expect(assignmentIssueNeedsAcknowledgement({ warnings: [{}] })).toBe(true);
+    expect(assignmentIssueNeedsAcknowledgement({ warnings: [] })).toBe(false);
+    // The approver's anonymized projection: the codes of the same warnings.
+    expect(assignmentIssueNeedsAcknowledgement({ codes: ['driver_documents'] })).toBe(true);
+    expect(assignmentIssueNeedsAcknowledgement({ codes: [] })).toBe(false);
+  });
+
+  it('подписи собираются по листам с предупреждениями, ключом канонической записи', () => {
+    const signed = assignmentAcknowledgementsOf([
+      { issueKey: 0, warnings: [{}], warningFingerprint: 'a'.repeat(64) },
+      { issueKey: 1, warnings: [], warningFingerprint: 'b'.repeat(64) },
+      { issueKey: 10, codes: ['blank_task'], warningFingerprint: 'c'.repeat(64) },
+    ]);
+    expect(signed).toEqual({ '0': 'a'.repeat(64), '10': 'c'.repeat(64) });
+    // What the helper builds is what the schema accepts: the two halves of one contract.
+    expect(assignmentAcknowledgementsSchema.safeParse(signed).success).toBe(true);
   });
 });
 

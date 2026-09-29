@@ -359,6 +359,42 @@ export const assignmentAcknowledgementsSchema = z.record(
 );
 
 /**
+ * Does a planned sheet need a signature (B4)? Only when its warning set is non-empty.
+ *
+ * ONE CARRIER. The server demands signatures by this rule and rejects a signature for a sheet it
+ * does not hold (`assertAssignmentIssueAcknowledgements`); the portal windows decide by it which
+ * sheets to show for confirmation and which signatures to send. Two copies of the filter would
+ * drift silently, and the first sign would be a door refusing a signature the window was sure it
+ * had to send.
+ *
+ * Two shapes of the same set are accepted: the full `warnings` of the dispatcher's preview and the
+ * anonymized `codes` of the early-end approver's (R26). `codes` is the set of the warnings' codes,
+ * so it is non-empty exactly when the warnings are.
+ */
+export function assignmentIssueNeedsAcknowledgement(
+  issue: { warnings: readonly unknown[] } | { codes: readonly unknown[] },
+): boolean {
+  return ('warnings' in issue ? issue.warnings : issue.codes).length > 0;
+}
+
+/**
+ * The signatures a command carries for the preview the person confirmed: one per sheet that needs
+ * one, under the canonical key (decimal `issueKey`, no leading zeros — what `String` of an integer
+ * gives). An empty object means nothing to sign; the doors do not want the field at all then.
+ */
+export function assignmentAcknowledgementsOf(
+  issues: readonly ({ issueKey: number; warningFingerprint: string } & (
+    { warnings: readonly unknown[] } | { codes: readonly unknown[] }
+  ))[],
+): Record<string, string> {
+  return Object.fromEntries(
+    issues
+      .filter(assignmentIssueNeedsAcknowledgement)
+      .map((issue) => [String(issue.issueKey), issue.warningFingerprint]),
+  );
+}
+
+/**
  * Цель команды над существующим изменением (Р10) — адресуется двумя способами, и оба нужны.
  *
  * `changeId` — для готовой истории и для портала, который её уже прочитал. Логический ключ

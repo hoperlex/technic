@@ -5,7 +5,7 @@ import type {
   RepairPreviewDto,
   TailResolution,
 } from '@technic/contracts';
-import { acknowledgementsOf, warnedSheetsOf } from './assignmentWarnings';
+import { acknowledgementsOf } from './assignmentWarnings';
 
 /**
  * Сборка тела двери ремонта (подэтап 6a плана `docs/assignment-periods-plan.md`, Р29).
@@ -105,7 +105,7 @@ export function repairCommandBody(
       ? { operationId: hand.operationId, reason: hand.reason.trim() }
       : null,
     restore: shown.restore,
-    ...acknowledgementsOf(warnedSheetsOf(dto)),
+    ...acknowledgementsOf(dto.issues),
   });
 }
 

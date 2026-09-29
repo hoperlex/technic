@@ -1,4 +1,5 @@
 import {
+  assignmentIssueNeedsAcknowledgement,
   WAYBILL_ACK_REQUIRED_CODE,
   type AssignmentIssueWarningsDto,
   type AssignmentPlanIssueDto,
@@ -221,9 +222,11 @@ export function assertAssignmentIssueAcknowledgements(params: {
   acknowledgements: Readonly<Record<string, string>> | undefined;
   required: boolean;
 }): void {
+  // The rule "sign only a non-empty set" lives in the contracts: the portal windows decide by the
+  // same predicate what to show and what to send, and a second copy here would drift from theirs.
   const warned = new Map(
     params.issues
-      .filter((issue) => issue.warnings.length > 0)
+      .filter(assignmentIssueNeedsAcknowledgement)
       .map((issue) => [String(issue.issueKey), issue]),
   );
   for (const key of Object.keys(params.acknowledgements ?? {})) {
