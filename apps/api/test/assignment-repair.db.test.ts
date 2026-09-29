@@ -2451,7 +2451,7 @@ describeReadModes(
       expect(events[1]!.metadata.issued).toEqual([]);
     });
 
-    it('[DIVERGENCE: history paper defects card] заполнение поверх отработанного листа с другим человеком: план ждёт 422, дверь переоформляет бланк (Ф1)', async () => {
+    it('заполнение поверх отработанного листа с другим человеком — 422 с номером листа (Ф1)', async () => {
       if (!DB_URL) return;
       const scene = await paperScene();
       const before = await sheetsOf(scene.requestId);
@@ -2471,44 +2471,229 @@ describeReadModes(
         knownFills: [{ from: PREV_MONDAY, to: fillTo, personId: ctx.personB }],
         operation: operation('По табелю начало прошлой недели отработал сменщик'),
       };
-      const preview = await previewRepair(ctx.admin, scene.requestId, body);
       /*
-       * DIVERGENCE (plan R29/F1, section 13 "known fills": "a day already covered by a live sheet
-       * requires the named person to match the printed one — otherwise 422 with the number"): no
-       * such check exists. The door instead asks to unlock the locked blank by name and plans to
-       * burn it, re-issuing only the filled days — the rest of the burned week is left with no blank.
+       * F1 (decision of 29.09.2026, ADR 0214): a day covered by a live blank requires the named
+       * person to match the printed one — otherwise 422 with the number. A fill does not re-issue
+       * worked-out paper: before this refusal the door burned the blank and re-issued only the
+       * filled days, leaving the rest of its week with no blank at all. The refusal comes from the
+       * plan, so it is the same in both modes and the same for the preview and the command.
        */
+      const preview = await previewRepair(ctx.admin, scene.requestId, body);
+      expect(preview.statusCode, preview.body).toBe(422);
+      const refusal = preview.json<{
+        code: string;
+        message: string;
+        details: { waybillId: string; displayNumber: string };
+      }>();
+      expect(refusal.code).toBe('known_fill_contradicts_sheet');
+      expect(touched.map((sheet) => sheet.id)).toContain(refusal.details.waybillId);
+      expect(refusal.message).toContain(`№ ${refusal.details.displayNumber}`);
+      // The refusal leads to the crew correction, the door that re-issues a blank whole.
+      expect(refusal.message).toContain('Сменить машиниста');
+
+      const blind = await postRepair(ctx.admin, scene.requestId, body);
+      expect(blind.statusCode, blind.body).toBe(422);
+      expect(blind.json<{ code: string }>().code).toBe('known_fill_contradicts_sheet');
+      expect(await sheetsOf(scene.requestId)).toEqual(before);
+      expect(await rowsOf(scene.requestId)).toHaveLength(2);
+      expect((await requestState(scene.requestId)).version).toBe(0);
+    });
+
+    it('тот же человек, но граница заполнения внутри листа — 422; по границам листа — проходит без гашения (Ф1)', async () => {
+      if (!DB_URL) return;
+      const scene = await paperScene();
+      const before = await sheetsOf(scene.requestId);
+      /*
+       * The first worked-out blank of at least two days: the prior week, cut at most once by a
+       * month end, always has one. Filling it short by a day keeps the person of the blank and
+       * still cuts it — the strict half of F1.
+       */
+      const sheet = before.find(
+        (row) => row.period_to < TODAY && row.period_to > row.period_from,
+      )!;
+      expect(sheet).toBeDefined();
+      const gap = (await inspectRepair(ctx.admin, scene.requestId)).json<RepairPreview>()
+        .fillableGaps[0]!;
+      expect(gap.from <= sheet.period_from && sheet.period_to <= gap.to).toBe(true);
+
+      const short = {
+        mode: 'repair',
+        version: 0,
+        knownFills: [
+          { from: sheet.period_from, to: shiftDateKey(sheet.period_to, -1), personId: ctx.personA },
+        ],
+        operation: operation('По табелю — тот же машинист, что в листе'),
+      };
+      const cut = await previewRepair(ctx.admin, scene.requestId, short);
+      expect(cut.statusCode, cut.body).toBe(422);
+      const refusal = cut.json<{ code: string; message: string; details: { waybillId: string } }>();
+      expect(refusal.code).toBe('known_fill_cuts_sheet');
+      expect(refusal.details.waybillId).toBe(sheet.id);
+      expect(refusal.message).toMatch(/Расширьте заполнение до границ листа/);
+
+      // Extended to the blank's bounds, the same fill passes and burns nothing: the blank already
+      // says what the fill says, so it is kept (after being named for unlock, as any locked
+      // blank in the command's paper scope is — R11).
+      const whole = {
+        ...short,
+        knownFills: [{ from: sheet.period_from, to: sheet.period_to, personId: ctx.personA }],
+      };
+      const preview = await previewRepair(ctx.admin, scene.requestId, whole);
       expect(preview.statusCode, preview.body).toBe(200);
       const dto = preview.json<RepairPreview>();
+      expect(dto.plan.cancel).toEqual([]);
+      expect(dto.plan.issue).toEqual([]);
+      expect(dto.paperFree).toBe(true);
+      const res = await postRepair(ctx.admin, scene.requestId, { ...whole, ...handshakeOf(dto) });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(await sheetsOf(scene.requestId)).toEqual(before);
+      expect(
+        actual(await rowsOf(scene.requestId))
+          .filter((row) => row.origin === 'known_fill')
+          .map((row) => [row.effective_date, row.driver_person_id]),
+      ).toEqual([[sheet.period_from, ctx.personA]]);
+    });
+
+    it('после отмены заполнения повторное заполнение тех же дней другим человеком проходит (Ф1, Э2)', async () => {
+      if (!DB_URL) return;
+      /*
+       * The cycle the F1 exception exists for: filled with the wrong person, cancelled, filling
+       * with the right one. Under `history` the first fill minted blanks for its days; the cancel
+       * burns them (E2), so the second fill meets no live blank there and mints its own.
+       */
+      const scene = await makeScene({ dateFrom: DEEP_FROM, dateTo: GAP_TO, history: gapHistory() });
+      const wrong = fillBody('Табель по ошибке от другого машиниста');
+      const wrongDto = (await previewRepair(ctx.admin, scene.requestId, wrong)).json<RepairPreview>();
+      const first = await postRepair(ctx.admin, scene.requestId, { ...wrong, ...handshakeOf(wrongDto) });
+      expect(first.statusCode, first.body).toBe(200);
+      const minted = (await provenanceOf(scene.requestId)).map((sheet) => sheet.id);
+
+      const group = actual(await rowsOf(scene.requestId)).find(
+        (row) => row.origin === 'known_fill',
+      )!.change_group_id;
+      const cancel = {
+        mode: 'cancel_fill',
+        version: first.json<{ version: number }>().version,
+        target: { changeGroupId: group },
+        operation: operation('Табель был от другой машины'),
+      };
+      const cancelDto = (
+        await previewRepair(ctx.admin, scene.requestId, cancel)
+      ).json<RepairPreview>();
+      const cancelled = await postRepair(ctx.admin, scene.requestId, {
+        ...cancel,
+        ...handshakeOf(cancelDto),
+      });
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+
+      const right = {
+        mode: 'repair',
+        version: cancelled.json<{ version: number }>().version,
+        knownFills: [{ from: DEEP_FROM, to: FILL_TO, personId: ctx.personB }],
+        operation: operation('Нашли верный табель'),
+      };
+      const rightPreview = await previewRepair(ctx.admin, scene.requestId, right);
+      expect(rightPreview.statusCode, rightPreview.body).toBe(200);
+      const rightDto = rightPreview.json<RepairPreview>();
+      expect(planIssueOf(rightDto)).toEqual(
+        periodsOf(DEEP_FROM, FILL_TO, ctx.ownVehicle.id, ctx.personB),
+      );
+      const second = await postRepair(ctx.admin, scene.requestId, {
+        ...right,
+        ...handshakeOf(rightDto),
+      });
+      expect(second.statusCode, second.body).toBe(200);
+
+      const sheets = await sheetsOf(scene.requestId);
+      expect(compositionOf(sheets)).toEqual(
+        byReadMode(mode, {
+          legacy: [] as string[],
+          history: periodsOf(DEEP_FROM, FILL_TO, ctx.ownVehicle.id, ctx.personB),
+        }),
+      );
+      expect(burnedOf(sheets)).toEqual([...minted].sort());
+    });
+
+    it('бланк заполнения, отменённого до ADR 0214, не защищает дни от нового заполнения (Ф1)', async () => {
+      if (!DB_URL) return;
+      // Such a blank exists only where a fill minted paper, that is under `history`.
+      if (mode !== 'history') return;
+      /*
+       * The residue of the defect E2 fixed: before ADR 0214 a cancelled fill left its blanks live.
+       * The scene reproduces it — the fill goes through the door and mints blanks, the cancel is
+       * written by the planner and the write core alone, the way the old door left paper alone.
+       */
+      const scene = await makeScene({ dateFrom: DEEP_FROM, dateTo: GAP_TO, history: gapHistory() });
+      const wrong = fillBody('Табель по ошибке от другого машиниста');
+      const wrongDto = (await previewRepair(ctx.admin, scene.requestId, wrong)).json<RepairPreview>();
+      const first = await postRepair(ctx.admin, scene.requestId, { ...wrong, ...handshakeOf(wrongDto) });
+      expect(first.statusCode, first.body).toBe(200);
+      const minted = await provenanceOf(scene.requestId);
+      expect(minted.length).toBeGreaterThan(0);
+
+      const group = actual(await rowsOf(scene.requestId)).find(
+        (row) => row.origin === 'known_fill',
+      )!.change_group_id;
+      await ctx.db.transaction(async (tx) => {
+        const [correction] = (
+          await tx.execute<{ id: string }>(sql`
+            INSERT INTO waybill_corrections (operation_id, fingerprint, kind, reason, actor_user_id,
+                                             authorization_scope)
+            VALUES (${randomUUID()}, ${randomUUID()}, 'crew', 'Отмена до ADR 0214', ${ctx.admin.id},
+                    ${JSON.stringify({
+                      schemaVersion: 1,
+                      requiresCorrect: true,
+                      requiresCorrectBeyondLimit: true,
+                      requiresArchiveRestore: false,
+                      effectiveDate: DEEP_FROM,
+                      authorizedAsOf: TODAY,
+                    })}::jsonb)
+            RETURNING id`)
+        ).rows;
+        const plan = ctx.repair.planRepair({
+          context: await ctx.repair.readRepairContext(tx, scene.requestId),
+          term: { dateFrom: DEEP_FROM, dateTo: GAP_TO },
+          asOf: TODAY,
+          request: { id: scene.requestId, num: 1 },
+          body: { mode: 'cancel_fill', target: { changeGroupId: group } },
+        });
+        await ctx.write.applyAssignmentMutations(tx, {
+          requestId: scene.requestId,
+          actorUserId: ctx.admin.id,
+          correctionId: correction!.id,
+          mutations: plan.writeMutations,
+          denormalization: plan.denormalization,
+        });
+      });
+      // The residue: the fill is withdrawn from history, its blanks are still live and print A.
+      expect(
+        (await provenanceOf(scene.requestId)).every((sheet) => sheet.status === 'issued'),
+      ).toBe(true);
+
+      const right = {
+        mode: 'repair',
+        version: first.json<{ version: number }>().version,
+        knownFills: [{ from: DEEP_FROM, to: FILL_TO, personId: ctx.personB }],
+        operation: operation('Нашли верный табель'),
+      };
+      const preview = await previewRepair(ctx.admin, scene.requestId, right);
+      // Without the exception this would be `known_fill_contradicts_sheet` on the wrong blank.
+      expect(preview.statusCode, preview.body).toBe(200);
+      const dto = preview.json<RepairPreview>();
+      // The withdrawn blanks are locked past: named for unlock, then burned and replaced.
       expect(dto.requiredUnlocks.map((sheet) => sheet.waybillId)).toEqual(
-        touched.map((sheet) => sheet.id),
+        minted.map((sheet) => sheet.id),
       );
       expect(dto.plan.cancel.map((sheet) => sheet.waybillId)).toEqual(
-        touched.map((sheet) => sheet.id),
+        minted.map((sheet) => sheet.id),
       );
-      expect(planIssueOf(dto)).toEqual(
-        periodsOf(PREV_MONDAY, fillTo, ctx.ownVehicle.id, ctx.personB),
-      );
-
-      const res = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
+      const res = await postRepair(ctx.admin, scene.requestId, { ...right, ...handshakeOf(dto) });
       expect(res.statusCode, res.body).toBe(200);
-
-      const after = await sheetsOf(scene.requestId);
-      if (mode === 'legacy') {
-        // Legacy leaves the blank alone, so the live sheet now contradicts the history it covers.
-        expect(compositionOf(after)).toEqual(compositionOf(before));
-        expect(burnedOf(after)).toEqual([]);
-        return;
-      }
-      expect(burnedOf(after)).toEqual(touched.map((sheet) => sheet.id).sort());
-      const live = after.filter((sheet) => sheet.status !== 'cancelled');
-      // The day after the fill used to be covered by the burned blank and is covered by nothing now.
-      const orphan = shiftDateKey(fillTo, 1);
-      if (touched.some((sheet) => sheet.period_to >= orphan)) {
-        expect(live.some((sheet) => sheet.period_from <= orphan && sheet.period_to >= orphan)).toBe(
-          false,
-        );
-      }
+      const sheets = await sheetsOf(scene.requestId);
+      expect(compositionOf(sheets)).toEqual(
+        periodsOf(DEEP_FROM, FILL_TO, ctx.ownVehicle.id, ctx.personB),
+      );
+      expect(burnedOf(sheets)).toEqual(minted.map((sheet) => sheet.id).sort());
     });
 
     it('заполнение по вчерашний день не протекает в изменяемые дни: якорь — второй операцией (Ц4)', async () => {

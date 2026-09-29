@@ -19,6 +19,7 @@ import {
 import { createHash } from 'node:crypto';
 import { requestIsLinearSql } from '../db/linear-mode';
 import {
+  vehicleRequestAssignmentChanges,
   vehicleRequestAssignments,
   vehicleRequests,
   vehicles,
@@ -191,6 +192,16 @@ export interface RepairContext {
    * идёт чужая команда.
    */
   paperMode: Esm2Mode;
+  /**
+   * Operations of known fills that were cancelled later (their `known_fill` row is superseded
+   * as `cancelled`). A live blank minted by such an operation prints a withdrawn claim and does
+   * not protect its days from a new fill (F1, ADR 0214) — otherwise "filled with the wrong
+   * person → cancelled → filling with the right one" would hit the 422 of the wrong blank.
+   *
+   * Since ADR 0214 the cancel burns those blanks itself (E2); live ones remain only from cancels
+   * made before it, and this set is what keeps them from locking the days for good.
+   */
+  retractedFillCorrectionIds: ReadonlySet<string>;
 }
 
 /**
@@ -252,12 +263,28 @@ export async function readRepairContext(
     }
   }
 
+  // Superseded rows are not in `changes` (the door works on the actual history), so the cancelled
+  // fills are read on their own: only their operations are needed, not their rows.
+  const retracted = await tx
+    .selectDistinct({ correctionId: vehicleRequestAssignmentChanges.correctionId })
+    .from(vehicleRequestAssignmentChanges)
+    .where(
+      and(
+        eq(vehicleRequestAssignmentChanges.requestId, requestId),
+        eq(vehicleRequestAssignmentChanges.origin, 'known_fill'),
+        eq(vehicleRequestAssignmentChanges.supersededKind, 'cancelled'),
+      ),
+    );
+
   return {
     changes,
     sheets,
     ownershipByVehicle,
     vehicleNames,
     vehicleTypes,
+    retractedFillCorrectionIds: new Set(
+      retracted.flatMap((row) => (row.correctionId ? [row.correctionId] : [])),
+    ),
     assignmentVehicleId: assignment?.vehicleId ?? null,
     assignmentVehicleTypeId: assignment?.vehicleTypeId ?? null,
     paperMode: await readRepairPaperMode(
@@ -939,6 +966,9 @@ function planAnchors(
  * of a gap often falls exactly on an ownership turn where the backfill `unknown` shares a group
  * with the vehicle row. A cancel would take the vehicle boundary along — the fill would erase a
  * decision about the vehicle.
+ *
+ * A FILL DOES NOT RE-ISSUE WORKED-OUT PAPER (F1, ADR 0214): a live blank on the filled days must
+ * print the same person and lie within the fill whole — see {@link assertFillMatchesSheets}.
  */
 function planFills(
   plan: RepairPlan,
@@ -958,6 +988,7 @@ function planFills(
         { knownFills: 'Отрезок вне промежутка' },
       );
     }
+    assertFillMatchesSheets(context, fill);
     const group = `fill-${index}`;
 
     // 1. The row standing on `from` is REPLACED (Shch2), not cancelled, and the replacement goes
@@ -1057,6 +1088,71 @@ function fillNeedsRemainder(
   if (actualOn(changes, 'driver', boundary)) return false;
   if (fills.some((other) => other.from === boundary)) return false;
   return blockerKindOf(assignmentStateOn(changes, boundary).driver) === 'unknown';
+}
+
+/**
+ * A fill against the blanks already issued for its days (F1, decision of 29.09.2026, ADR 0214).
+ *
+ * A fill states who worked; it is not a crew correction. Where a live blank already covers the
+ * filled days, two things are refused with the blank's number:
+ *
+ * - **the blank prints another person.** The fill would contradict a worked-out strict reporting
+ *   document. Before this check the door asked to unlock the blank, burned it and re-issued only
+ *   the filled days — the rest of its week was left with no blank at all, and nothing reported
+ *   the orphaned days. Who worked is corrected by a crew correction ("Сменить машиниста" with a
+ *   past date), which re-issues the whole blank under the journal; a fill does not;
+ * - **a fill boundary falls strictly inside the blank**, even with the same person. The cut makes
+ *   the blank match no wanted sheet, and the same burn-and-orphan follows. The fill must cover the
+ *   blank whole — the blank itself names one person for all its days.
+ *
+ * The exception is a blank minted by a fill that was cancelled later
+ * ({@link RepairContext.retractedFillCorrectionIds}): it prints a withdrawn claim, and protecting
+ * its days would lock the cycle "filled with the wrong person → cancelled → filling again".
+ * Since the cancel burns such blanks itself (E2), only blanks from cancels made before ADR 0214
+ * can still be live.
+ *
+ * Days of a fill lie in the locked past by construction (a fill address is locked days only), so
+ * every blank here is worked-out paper: no cancellable blank exists that the fill could rightly
+ * re-issue.
+ */
+function assertFillMatchesSheets(context: RepairContext, fill: KnownFill): void {
+  for (const sheet of context.sheets) {
+    const period = { from: sheet.periodFrom, to: sheet.periodTo };
+    if (!rangesIntersect(period, fill)) continue;
+    if (sheet.correctionId && context.retractedFillCorrectionIds.has(sheet.correctionId)) continue;
+    const details = {
+      waybillId: sheet.id,
+      displayNumber: sheet.displayNumber,
+      periodFrom: sheet.periodFrom,
+      periodTo: sheet.periodTo,
+    };
+    if (sheet.driverPersonId !== fill.personId) {
+      throw new AppError(
+        422,
+        'known_fill_contradicts_sheet',
+        `На дни заполнения ${fill.from} — ${fill.to} уже выдан лист № ${sheet.displayNumber} ` +
+          `(${sheet.periodFrom} — ${sheet.periodTo}), и в нём напечатан другой машинист. ` +
+          'Заполнение не переоформляет выданные бланки: если лист верен, заполните эти дни ' +
+          'человеком из листа; если в листе ошибка — исправьте состав действием «Сменить ' +
+          'машиниста» задним числом, и лист переоформится через журнал коррекций',
+        { knownFills: `Расходится с листом № ${sheet.displayNumber}` },
+        details,
+      );
+    }
+    if (sheet.periodFrom < fill.from || sheet.periodTo > fill.to) {
+      throw new AppError(
+        422,
+        'known_fill_cuts_sheet',
+        `Заполнение ${fill.from} — ${fill.to} режет выданный лист № ${sheet.displayNumber} ` +
+          `(${sheet.periodFrom} — ${sheet.periodTo}): заполнение не переоформляет бланки и ` +
+          `обязано покрывать лист целиком. Расширьте заполнение до границ листа № ` +
+          `${sheet.displayNumber}; если часть его дней в истории уже названа — исправьте состав ` +
+          'действием «Сменить машиниста» задним числом',
+        { knownFills: `Режет лист № ${sheet.displayNumber}` },
+        details,
+      );
+    }
+  }
 }
 
 /**
