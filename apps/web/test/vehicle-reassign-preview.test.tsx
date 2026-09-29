@@ -289,3 +289,93 @@ describe('последствия смены техники', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Warned sheets of a vehicle change (B4, defect N1 of the repair wave). In `history` the door
+ * issues the blanks itself and refuses a warned one nobody confirmed — 409 `waybill_ack_required`;
+ * the window used to send no signature, so such a change ended in a toast.
+ */
+describe('смена техники: предупреждения по выписываемым листам', () => {
+  const warning = (gap: 'snils' | 'license', message: string) => ({
+    facts: { code: 'driver_documents' as const, personId: 'p-kuznetsov', gaps: [gap] },
+    message,
+    entities: ['Кузнецов К. К.'],
+  });
+  const SNILS = warning('snils', 'У машиниста Кузнецов К. К. нет СНИЛС');
+  const LICENSE = warning('license', 'У машиниста Кузнецов К. К. нет удостоверения');
+  const warned = (w: typeof SNILS, fingerprint: string) =>
+    assignmentPreview({
+      ...LOUD,
+      issues: [{ issueKey: 0, warnings: [w], warningFingerprint: fingerprint }],
+    });
+  const TICK = /Согласен: листы выпишутся с перечисленными предупреждениями/;
+  const payload = (onSubmit: ComponentProps<typeof VehicleAssignModal>['onSubmit'], call = -1) =>
+    vi.mocked(onSubmit).mock.calls.at(call)![0];
+
+  it('показывает лист с предупреждением и шлёт подпись только после галочки', async () => {
+    const { onSubmit } = renderModal({ preview: warned(SNILS, 'fp-warn-1') });
+    pressChange();
+
+    await screen.findByText('Листы выпишутся с предупреждениями');
+    expect(
+      screen.getByText(
+        'Лист за 10.08.2026 — 16.08.2026: Liebherr LTM 1130 Х001ХХ199, машинист Кузнецов К. К.',
+      ),
+    ).toBeDefined();
+    expect(screen.getByText(SNILS.message)).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить смену' }));
+    await screen.findByText('Подтвердите предупреждения по листам');
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить смену' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(payload(onSubmit).acknowledgements).toEqual({ '0': 'fp-warn-1' });
+    expect(payload(onSubmit).previewFingerprint).toBe('fp-loud');
+  });
+
+  it('без предупреждений не спрашивает галочки и подписей не шлёт', async () => {
+    const { onSubmit } = renderModal({ preview: LOUD });
+    pressChange();
+    await screen.findByText(/Сгорит № 260604-646-00000004897/);
+    expect(screen.queryByText('Листы выпишутся с предупреждениями')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить смену' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(payload(onSubmit)).not.toHaveProperty('acknowledgements');
+  });
+
+  it('409 «предупреждения изменились» — перезапрос последствий и новая галочка', async () => {
+    const refusal = {
+      code: 'waybill_ack_required',
+      status: 409,
+      message: 'Выписка требует подтверждения: предупреждения по 1 листу(ам) ЭСМ-2 изменились',
+      details: { issues: warned(LICENSE, 'fp-warn-2').issues },
+    };
+    const onSubmit = vi.fn().mockRejectedValueOnce(refusal).mockResolvedValue(undefined);
+    let previews = 0;
+    const { http } = renderModal({
+      onSubmit,
+      previewResponse: () => {
+        previews += 1;
+        return json(previews === 1 ? warned(SNILS, 'fp-warn-1') : warned(LICENSE, 'fp-warn-2'));
+      },
+    });
+    pressChange();
+    fireEvent.click(await screen.findByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить смену' }));
+
+    await screen.findByText(LICENSE.message);
+    expect(http.countOf('POST /vehicle-requests/:id/assignment/preview')).toBe(2);
+    expect(screen.getByText(/Предупреждения по листам изменились/)).toBeDefined();
+    expect(screen.getByRole('checkbox', { name: TICK })).toHaveProperty('checked', false);
+    // The round is closed by a press, not by itself.
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить смену' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    expect(payload(onSubmit).acknowledgements).toEqual({ '0': 'fp-warn-2' });
+  });
+});

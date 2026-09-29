@@ -19,9 +19,11 @@ import { listStyle, totalOf } from './consequencesList';
  * обещало бы не то, что произойдёт.
  *
  * Чего здесь нет и почему. `requiredVehicleResolution` у этой двери пуст всегда: расхождение хвоста
- * запирает расширение срока, а смена техники новых дней не открывает. `issues` — предупреждения по
- * каждому выписываемому листу — в этой волне сервер не считает вовсе и отдаёт пустыми; рисовать
- * пустой блок значило бы обещать разговор, которого не будет.
+ * запирает расширение срока, а смена техники новых дней не открывает.
+ *
+ * Warned sheets (`issues`) are not drawn here either, though the server computes them: they need a
+ * confirmation, and the tick with its form lives in `reassignConsequences.tsx`, next to the command
+ * that carries the signatures.
  */
 
 /** 409, на котором окно не ругается, а переспрашивает: последствия успели измениться (Р32, И5). */

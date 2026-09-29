@@ -121,6 +121,7 @@ import { vehicleRequestDateRules } from '@entities/vehicle-request';
 import { FilesCell } from '@entities/file';
 import { VehicleAssignModal } from './VehicleAssignModal';
 import { reassignStaleReason } from './ReassignPreview';
+import { recheckReasonOf } from './assignmentWarnings';
 import { type AssignCommand, reassignRequestBody } from './assignCommand';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
@@ -1122,7 +1123,7 @@ export function VehicleRequestsTab() {
      * вторым голосом о том же — и увёл бы глаз от экрана, на который человеку и надо смотреть.
      */
     onError: (e) => {
-      if (reassignStaleReason(e)) return;
+      if (reassignStaleReason(e) ?? recheckReasonOf(e)) return;
       message.error(errorMessage(e));
     },
   });

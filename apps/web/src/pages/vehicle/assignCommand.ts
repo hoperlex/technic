@@ -90,6 +90,8 @@ export interface AssignCommand {
    * грузоперевозки и у сервера старее портала.
    */
   previewFingerprint?: string;
+  /** Signatures per warned sheet (B4) of the shown vehicle-change preview; see `assignmentWarnings`. */
+  acknowledgements?: Record<string, string>;
 }
 
 /**
@@ -109,6 +111,7 @@ export function reassignRequestBody(
     version,
     ...(command.correction ? { correction: command.correction } : {}),
     ...(command.previewFingerprint ? { previewFingerprint: command.previewFingerprint } : {}),
+    ...(command.acknowledgements ? { acknowledgements: command.acknowledgements } : {}),
   };
 }
 

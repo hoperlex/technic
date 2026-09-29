@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { App } from 'antd';
+import { App, Form } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import type { AssignmentPreviewDto, VehicleRequestDto } from '@technic/contracts';
 import { isApiError } from '@shared/api';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { WarnedSheetsConfirm } from '@entities/waybill';
 import { errorMessage } from '../../utils/format';
 import type { AssignCommand } from './assignCommand';
+import { acknowledgementsOf, recheckReasonOf, warnedSheetsOf } from './assignmentWarnings';
 import {
   ReassignPreview,
   reassignPreviewBlocked,
@@ -21,10 +23,13 @@ import {
  * the consequences step is a conversation with the history door: preview, the person's
  * confirmations, the command with the handshakes the preview handed out, and a recomputed list when
  * the server says the shown one is no longer true. Adding the per-sheet signatures (B4) to that
- * conversation inside the window would grow a file already at its length budget; out here the
+ * conversation inside the window would have grown a file already at its length budget; out here the
  * step is one hook, and the window only asks it to start, confirm, go back and render.
  *
- * WHAT GOES WITH THE COMMAND. Exactly the body the preview was computed from, plus its fingerprint.
+ * WHAT GOES WITH THE COMMAND. Exactly the body the preview was computed from, plus its fingerprint
+ * and a signature per warned sheet. In `history` read mode the door issues the blanks itself and
+ * refuses a warned sheet nobody confirmed (409 `waybill_ack_required`); the tick below the
+ * consequences is that confirmation, bound to the set it was given for.
  *
  * Only a special-equipment request previews the change: a freight request has neither a term nor
  * weekly paper, and the server asks no fingerprint of it. The window decides that and calls `start`
@@ -39,6 +44,7 @@ export function useReassignConsequences({
   onSubmit: (v: AssignCommand) => void | Promise<unknown>;
 }) {
   const { message } = App.useApp();
+  const [form] = Form.useForm<{ warningsAck?: string }>();
   /** Shown consequences and the body they were computed for: the confirmation sends exactly it. */
   const [shown, setShown] = useState<{
     preview: AssignmentPreviewDto;
@@ -53,19 +59,26 @@ export function useReassignConsequences({
   }, [targetId]);
 
   /**
-   * Send the command — with the fingerprint of the preview, if one was shown.
+   * Send the command — with the fingerprint and the signatures of the preview, if one was shown.
    *
-   * A 409 at this door is a question, not an error: between reading and pressing the plan changed
-   * without touching the request (someone else's command took the date, a sheet was cancelled,
-   * midnight), and `version` catches none of it. The answer is a recomputed list with the reason the window stepped
+   * A 409 (or a 422 on the signatures) at this door is a question, not an error: between reading and
+   * pressing the plan or the warnings changed without touching the request (someone else's command
+   * took the date, a sheet was cancelled, a driver's documents were completed, midnight), and
+   * `version` catches none of it. The answer is a recomputed list with the reason the window stepped
    * back, not a toast. There is no loop: every round needs a press.
    *
    * Any other refusal is swallowed here: the sender has already said it.
    */
   function send(payload: AssignCommand, preview?: AssignmentPreviewDto): void {
-    const command = preview ? { ...payload, previewFingerprint: preview.fingerprint } : payload;
+    const command = preview
+      ? {
+          ...payload,
+          previewFingerprint: preview.fingerprint,
+          ...acknowledgementsOf(preview.issues),
+        }
+      : payload;
     void Promise.resolve(onSubmit(command)).catch((e: unknown) => {
-      const reason = reassignStaleReason(e);
+      const reason = reassignStaleReason(e) ?? recheckReasonOf(e);
       if (reason) mut.mutate({ payload, stale: reason });
     });
   }
@@ -88,7 +101,8 @@ export function useReassignConsequences({
       /*
        * Nothing to talk about — the command goes at once, with the fingerprint. No second screen on
        * purpose: an empty "nothing will happen, press again" teaches pressing without reading, and
-       * then the screen fails the one time it has something to say.
+       * then the screen fails the one time it has something to say. A preview with warned sheets is
+       * never silent — it has sheets to issue — so this path never skips the tick.
        *
        * After a 409 the rule is lifted: silently repeating a command the server has just refused
        * would do it behind the person's back, even if the recomputed plan came out empty.
@@ -115,15 +129,21 @@ export function useReassignConsequences({
     },
   });
 
+  const warned = shown ? warnedSheetsOf(shown.preview) : [];
+
   return {
     /** The consequences are on screen: the window is on its second step. */
     shown: !!shown,
     pending: mut.isPending,
     /** Ask the consequences of the filled form. */
     start: (payload: AssignCommand) => mut.mutate({ payload, stale: null }),
-    /** Confirm what is shown: the command goes with exactly the body the preview was computed for. */
+    /** Confirm what is shown: the tick first (its rule shows its own message), then the command. */
     confirm: () => {
-      if (shown) send(shown.payload, shown.preview);
+      if (!shown) return;
+      void form
+        .validateFields(warned.length > 0 ? ['warningsAck'] : [])
+        .then(() => send(shown.payload, shown.preview))
+        .catch(() => undefined);
     },
     back: () => {
       setShown(null);
@@ -135,6 +155,13 @@ export function useReassignConsequences({
      * broken.
      */
     okDisabled: shown ? reassignPreviewBlocked(shown.preview) : undefined,
-    node: shown ? <ReassignPreview preview={shown.preview} staleReason={staleReason} /> : null,
+    node: shown ? (
+      <>
+        <ReassignPreview preview={shown.preview} staleReason={staleReason} />
+        <Form form={form} layout="vertical">
+          <WarnedSheetsConfirm name="warningsAck" sheets={warned} />
+        </Form>
+      </>
+    ) : null,
   };
 }
