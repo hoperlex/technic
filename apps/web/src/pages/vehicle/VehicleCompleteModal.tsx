@@ -16,7 +16,7 @@ import {
 import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
-import { waybillKeys } from '@entities/waybill';
+import { waybillKeys, WarnedSheetsConfirm } from '@entities/waybill';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { useAuth } from '@entities/session';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
@@ -29,6 +29,7 @@ import {
   defaultUnit,
   plannedAmount,
 } from './completionCommand';
+import { acknowledgementsOf, recheckReasonOf, warnedSheetsOf } from './assignmentWarnings';
 import { reassignStaleReason } from './ReassignPreview';
 
 /**
@@ -244,6 +245,9 @@ export function VehicleCompleteModal({
         ...(dto?.operationRequirement
           ? { operation: { operationId, reason: (v.reason ?? '').trim() } }
           : {}),
+        // Signatures per warned sheet (B4): the closing trims the week's sheet and may issue a
+        // new one, and in `history` the door refuses a warned blank nobody confirmed.
+        ...(dto ? acknowledgementsOf(dto.issues) : {}),
       });
     },
     onSuccess: (res) => {
@@ -265,7 +269,8 @@ export function VehicleCompleteModal({
        * подтверждать прежний человек больше не вправе. Тост в этом случае был бы вторым голосом о
        * том же и увёл бы глаз от экрана, на который и надо смотреть.
        */
-      const stale = reassignStaleReason(e);
+      // The warnings of a sheet changing is the same question and gets the same answer.
+      const stale = reassignStaleReason(e) ?? recheckReasonOf(e);
       if (stale && shown) {
         setStaleReason(stale);
         previewMut.mutate(shown.body);
@@ -341,6 +346,11 @@ export function VehicleCompleteModal({
           {shown && <CompletionConsequences preview={shown.preview} staleReason={staleReason} />}
 
           {shown && <CompletionHandshakeFields preview={shown.preview} />}
+
+          {/* Validated by the same `form.submit()` as the other confirmations of this step. */}
+          {shown && (
+            <WarnedSheetsConfirm name="warningsAck" sheets={warnedSheetsOf(shown.preview)} />
+          )}
 
           {/* Форма на втором шаге не размонтируется, а прячется: «Назад» обязан вернуть окно
             заполненным, а набранное человеком повторный сбор стоил бы ему уже сделанной работы. */}

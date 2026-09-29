@@ -319,3 +319,118 @@ describe('арендодатель закрывает без даты', () => {
     expect(body).not.toHaveProperty('previewFingerprint');
   });
 });
+
+/**
+ * Warned sheets (B4, defect N1 of the repair wave): in `history` the door issues the replacement
+ * blank itself and refuses a warned one nobody confirmed — 409 `waybill_ack_required`. The window
+ * used to send no signature, so such a closing ended in a toast.
+ */
+describe('закрытие: предупреждения по выписываемым листам', () => {
+  const warning = (gap: 'snils' | 'license', message: string) => ({
+    facts: { code: 'driver_documents' as const, personId: 'p-1', gaps: [gap] },
+    message,
+    entities: ['Иванов И. И.'],
+  });
+  const SNILS = warning('snils', 'У машиниста Иванов И. И. нет СНИЛС');
+  const LICENSE = warning('license', 'У машиниста Иванов И. И. нет удостоверения');
+  const warned = (w: typeof SNILS, fingerprint: string): CompletionPreviewDto => ({
+    ...PREVIEW,
+    plan: {
+      cancel: [],
+      issue: [
+        {
+          issueKey: 0,
+          from: '2026-08-10',
+          to: TODAY,
+          vehicleId: 'v-1',
+          vehicleName: 'КС-45717 А111АА77',
+          driverPersonId: 'p-1',
+          driverName: 'Иванов И. И.',
+        },
+      ],
+    },
+    issues: [{ issueKey: 0, warnings: [w], warningFingerprint: fingerprint }],
+    clearedShiftDays: [],
+    clearedShiftsFingerprint: null,
+    cancelGroups: [],
+    cancelGroupsFingerprint: null,
+    linearDays: { detachable: [], frozen: [] },
+  });
+  const TICK = /Согласен: листы выпишутся с перечисленными предупреждениями/;
+
+  it('показывает лист с предупреждением и шлёт подпись только после галочки', async () => {
+    const http = renderModal(inWork(), { preview: warned(SNILS, 'fp-warn-1') });
+    await waitFor(() => expect(dateInput('Фактическое окончание работ').value).toBe('12.08.2026'));
+    await showConsequences();
+
+    await screen.findByText('Листы выпишутся с предупреждениями');
+    expect(screen.getByText(SNILS.message)).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Выполнена' }));
+    await screen.findByText('Подтвердите предупреждения по листам');
+    expect(http.countOf(COMPLETION_ROUTE)).toBe(0);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByRole('button', { name: 'Выполнена' }));
+    await waitFor(() => expect(http.countOf(COMPLETION_ROUTE)).toBe(1));
+    const body = http.lastCall(COMPLETION_ROUTE)?.body as Record<string, unknown>;
+    expect(body.acknowledgements).toEqual({ '0': 'fp-warn-1' });
+    expect(http.lastCall(PREVIEW_ROUTE)?.body).not.toHaveProperty('acknowledgements');
+  });
+
+  it('409 «предупреждения изменились» — перезапрос предпросмотра, а не тост', async () => {
+    const http = renderModal(inWork());
+    let previews = 0;
+    let commands = 0;
+    const refusal = 'Выписка требует подтверждения: предупреждения по 1 листу(ам) ЭСМ-2 изменились';
+    http.use({
+      [PREVIEW_ROUTE]: () => {
+        previews += 1;
+        return json(previews === 1 ? warned(SNILS, 'fp-warn-1') : warned(LICENSE, 'fp-warn-2'));
+      },
+      [COMPLETION_ROUTE]: () => {
+        commands += 1;
+        if (commands === 1) {
+          return json(
+            {
+              code: 'waybill_ack_required',
+              message: refusal,
+              details: { issues: warned(LICENSE, 'fp-warn-2').issues },
+            },
+            409,
+          );
+        }
+        return json({
+          version: 8,
+          repeated: false,
+          status: 'done',
+          dateFrom: '2026-08-10',
+          dateTo: TODAY,
+          endedOn: TODAY,
+          previousDateTo: '2026-08-16',
+          esm2: { cancelled: [], issued: [], trimmed: [] },
+          earlyEndDropped: false,
+          clearedShiftDays: [],
+          detachedDays: [],
+          operationId: null,
+        });
+      },
+    });
+    await waitFor(() => expect(dateInput('Фактическое окончание работ').value).toBe('12.08.2026'));
+    await showConsequences();
+    fireEvent.click(await screen.findByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByRole('button', { name: 'Выполнена' }));
+
+    await screen.findByText(LICENSE.message);
+    expect(screen.getByText('Последствия пересчитаны')).toBeDefined();
+    expect(screen.getByText(/Предупреждения по листам изменились/)).toBeDefined();
+    expect(screen.queryByText(refusal)).toBeNull();
+    expect(screen.getByRole('checkbox', { name: TICK })).toHaveProperty('checked', false);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: TICK }));
+    fireEvent.click(screen.getByRole('button', { name: 'Выполнена' }));
+    await waitFor(() => expect(http.countOf(COMPLETION_ROUTE)).toBe(2));
+    const body = http.lastCall(COMPLETION_ROUTE)?.body as Record<string, unknown>;
+    expect(body.acknowledgements).toEqual({ '0': 'fp-warn-2' });
+  });
+});
