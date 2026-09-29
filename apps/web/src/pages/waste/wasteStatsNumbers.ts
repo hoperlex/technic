@@ -2,19 +2,29 @@ import type { WasteStatsFigures } from '@technic/contracts';
 import { formatMoney } from '@shared/lib';
 
 /**
- * Numbers of the waste "Statistics" tab (ADR 0209) — one place for the table, the site window and
- * the total: the same figure on two screens must look the same, otherwise people start reconciling
- * them by eye.
+ * Numbers of the waste "Statistics" tab (ADR 0209, warnings — ADR 0213) — one place for the table,
+ * the site window and the total: the same figure on two screens must look the same, otherwise
+ * people start reconciling them by eye.
  */
 
 /**
- * A caption under a figure. `key` names the figure the caption belongs to: two captions of one
- * cell may read the same ("без цены 5 м³" under the removed cost and under the tickets), and React
- * keys must not collide.
+ * Why a figure cannot be taken at face value: the lines of the tooltip on its warning icon. Empty —
+ * the figure is complete, and no icon is drawn.
+ *
+ * A warning, not a caption (ADR 0213): captions like "без цены 216 м³" under every sum turned the
+ * cost cell into four lines of reservations, and still did not say why the price was missing. The
+ * icon keeps the cell to its figures, and the tooltip has room to name the volume and the reason.
+ */
+export type StatsWarning = string[];
+
+/**
+ * A caption under a figure, optionally with a warning of its own. `key` names the figure the
+ * caption belongs to, so React keys never depend on the caption text.
  */
 export interface StatsNote {
   key: string;
   text: string;
+  warning?: StatsWarning;
 }
 
 /**
@@ -48,56 +58,98 @@ export function pluralForm(n: number, forms: readonly [string, string, string]):
   return forms[2];
 }
 
-/** A share is signed only when it is PART of the figure: the whole figure unpriced is a dash. */
-function partlyUnpriced(unpriced: number, volume: number): boolean {
-  return unpriced > 0 && unpriced < volume;
-}
-
-/** "N заявок" under "Заказано" — the only caption decision Z7 keeps besides the reliability ones. */
+/** "N заявок" under "Заказано" — the only caption decision Z7 keeps besides the money ones. */
 export function plannedNotes(a: WasteStatsFigures): StatsNote[] {
   const n = a.requests;
   return [{ key: 'requests', text: `${n} ${pluralForm(n, ['заявка', 'заявки', 'заявок'])}` }];
 }
 
 /**
- * Captions of the confirmed volume. A ticket with an unread volume is unknown, not zero (R4):
- * without this caption the shortfall would be looked for in the completion, while it lies in the
- * smudged paper. After "у" the genitive is needed — "у 1 талона", "у 2 талонов", "у 21 талона".
+ * Where a price comes from, said once per tooltip. Without it "без цены" reads as a portal defect,
+ * while the fix is a price list position — and a price reaches a request only when it is filed or
+ * closed, never later (ADR 0009).
  */
-export function confirmedNotes(a: WasteStatsFigures): StatsNote[] {
-  const notes: StatsNote[] = [];
-  const n = a.ticketsWithoutVolume;
-  if (n > 0) {
-    notes.push({
-      key: 'unread',
-      text: `объём не прочитан у ${n} ${pluralForm(n, ['талона', 'талонов', 'талонов'])}`,
-    });
-  }
-  if (partlyUnpriced(a.confirmedVolumeUnpricedM3, a.confirmedVolumeM3)) {
-    notes.push({ key: 'unpriced', text: `без цены ${volumeText(a.confirmedVolumeUnpricedM3)}` });
-  }
-  return notes;
+const PRICE_SOURCE = 'Цена берётся из прайса вывоза, когда заявку заводят и закрывают';
+
+/**
+ * The unpriced share of a money figure. A partly priced sum is a NUMBER that is understated; a
+ * wholly unpriced one is a dash (R3 of ADR 0209) — both get the icon, because a bare dash explained
+ * nothing either.
+ */
+function unpricedWarning(unpriced: number, volume: number, whose: string): StatsWarning {
+  if (unpriced <= 0 || volume <= 0) return [];
+  const head =
+    unpriced >= volume
+      ? `Суммы нет: без цены все ${volumeText(volume)} ${whose}`
+      : `Сумма неполная: без цены ${volumeText(unpriced)} из ${volumeText(volume)} ${whose}`;
+  return [head, PRICE_SOURCE];
 }
 
 /**
- * Captions of the cost cell (decisions Z2, Z7). The cell's own figure is the removed cost; under it
- * go the unpriced share of the removed volume, the planned cost and the confirmed cost. The planned
- * caption carries its unpriced share in the same line, so the "без цены" captions of one cell can
- * never be mistaken for each other; the confirmed one stays under "По талонам" and is not repeated.
- * "N без цены" is not shown (Z7).
+ * What the ticket figure holds besides accepted paper (ADR 0213): readings nobody has reviewed,
+ * tickets whose volume was not read, and scans the recognition could not read at all.
+ *
+ * After "у" the genitive is needed — "у 1 талона", "у 2 талонов", "у 21 талона".
+ */
+export function ticketWarning(a: WasteStatsFigures): StatsWarning {
+  const lines: StatsWarning = [];
+  const unconfirmed = a.ticketsUnconfirmed;
+  if (unconfirmed > 0) {
+    const volume = a.ticketVolumeUnconfirmedM3;
+    const tickets = `${unconfirmed} ${pluralForm(unconfirmed, ['талон', 'талона', 'талонов'])}`;
+    lines.push(
+      volume > 0
+        ? `Не подтверждено: ${tickets} на ${volumeText(volume)}`
+        : `Не подтверждено: ${tickets}`,
+    );
+  }
+  const unread = a.ticketsWithoutVolume;
+  if (unread > 0) {
+    lines.push(
+      `Объём не прочитан у ${unread} ${pluralForm(unread, ['талона', 'талонов', 'талонов'])}`,
+    );
+  }
+  const filesUnread = a.ticketFilesUnread;
+  const filesEmpty = a.ticketFilesWithoutTickets;
+  const files = filesUnread + filesEmpty;
+  if (files > 0) {
+    const count = `${files} ${pluralForm(files, ['файл', 'файла', 'файлов'])}`;
+    const why =
+      filesUnread > 0 && filesEmpty > 0
+        ? `не удалось прочитать ${filesUnread}, талоны не найдены в ${filesEmpty}`
+        : filesUnread > 0
+          ? 'не удалось прочитать'
+          : 'талоны не найдены';
+    lines.push(`Не распознано: ${count} — ${why}`);
+  }
+  return lines;
+}
+
+/** Warning of the removed cost — the large figure of the cost cell. */
+export function doneCostWarning(a: WasteStatsFigures): StatsWarning {
+  return unpricedWarning(a.doneVolumeUnpricedM3, a.doneVolumeM3, 'вывезенного');
+}
+
+/**
+ * Captions of the cost cell (decision Z2): the planned cost and the ticket cost, each with its own
+ * warning. The ticket cost carries both kinds — the unpriced share and the unreviewed paper — since
+ * a person reading "по талонам 27 000 ₽" needs to know both before trusting it. With no tickets at
+ * all the caption stays "по талонам 0,00 ₽" (user decision of 29.09.2026).
  */
 export function costNotes(a: WasteStatsFigures): StatsNote[] {
-  const notes: StatsNote[] = [];
-  if (partlyUnpriced(a.doneVolumeUnpricedM3, a.doneVolumeM3)) {
-    notes.push({ key: 'doneUnpriced', text: `без цены ${volumeText(a.doneVolumeUnpricedM3)}` });
-  }
-  const plan = `план ${costText(a.plannedCost)}`;
-  notes.push({
-    key: 'planned',
-    text: partlyUnpriced(a.plannedVolumeUnpricedM3, a.plannedVolumeM3)
-      ? `${plan}, без цены ${volumeText(a.plannedVolumeUnpricedM3)}`
-      : plan,
-  });
-  notes.push({ key: 'confirmed', text: `по талонам ${costText(a.confirmedCost)}` });
-  return notes;
+  return [
+    {
+      key: 'planned',
+      text: `план ${costText(a.plannedCost)}`,
+      warning: unpricedWarning(a.plannedVolumeUnpricedM3, a.plannedVolumeM3, 'заказанного'),
+    },
+    {
+      key: 'tickets',
+      text: `по талонам ${costText(a.ticketCost)}`,
+      warning: [
+        ...unpricedWarning(a.ticketVolumeUnpricedM3, a.ticketVolumeM3, 'по талонам'),
+        ...ticketWarning(a),
+      ],
+    },
+  ];
 }

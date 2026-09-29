@@ -4,7 +4,7 @@ import type { AnalyticsQualityEntry } from './analytics';
 
 /**
  * Waste removal statistics for a reporting month — the "Statistics" tab of the waste section
- * (ADR 0193, three-volume rework — ADR 0209).
+ * (ADR 0193, three-volume rework — ADR 0209, tickets and warnings — ADR 0213).
  *
  * Only the response shape lives here. The numbers are counted by the analytics atom layer
  * (`apps/api/src/services/analytics/`) — the same one that builds the Excel book: there must be no
@@ -14,12 +14,14 @@ import type { AnalyticsQualityEntry } from './analytics';
  *
  * 1. **Three volumes, each with its own money** (ADR 0209). Ordered — every valid request of the
  *    month, including new ones, by its ordered volume; removed — requests in a fact status ("done" /
- *    "completed"), by the completion; confirmed — accepted tickets of removed requests, summed as
- *    they are (they may exceed the removed volume). Every volume comes with the money of the same
- *    requests, so a price per cubic metre can be read off any pair.
- * 2. **Only an accepted ticket confirms a volume** (R4 of ADR 0193): what is recognised but not
- *    reviewed by a person stays a machine suggestion. A ticket without a read volume is unknown,
- *    not zero: it is not in the sum and is counted separately (`ticketsWithoutVolume`).
+ *    "completed"), by the completion; by tickets — every ticket of removed requests that is not
+ *    dismissed, summed as it is (it may exceed the removed volume). Every volume comes with the
+ *    money of the same requests, so a price per cubic metre can be read off any pair.
+ * 2. **The ticket figure counts unreviewed readings too, and says how many** (ADR 0213, replacing
+ *    R4 of ADR 0193 for this tab): most paper sits unreviewed, and a column of accepted tickets only
+ *    read as "nothing was brought". The unconfirmed share, tickets with an unread volume and scans
+ *    the recognition could not read travel beside the figure, so the portal can mark it. A ticket
+ *    without a read volume is unknown, not zero: it is not in the sum.
  * 3. **Only waste removal in cubic metres** (R6 of ADR 0193). Scrap metal (tonnes, no money at all
  *    — ADR 0067) and container operations (not billed, ADR 0019) never appear here, neither as a
  *    row nor as a position: a site that only had those in the month is absent from the response.
@@ -58,26 +60,36 @@ export interface WasteStatsFigures {
   /** Share of the removed volume whose completion has no sum. */
   doneVolumeUnpricedM3: number;
   /**
-   * Volume of accepted tickets of removed requests, idle tickets excluded (R4). Summed as it is —
-   * it may exceed `doneVolumeM3` (decision Z4).
+   * TICKET volume of removed requests: every ticket that is not dismissed — accepted and
+   * recognised-but-unreviewed alike — idle tickets excluded (ADR 0213). Summed as it is: it may
+   * exceed `doneVolumeM3` (decision Z4 of ADR 0209).
    */
-  confirmedVolumeM3: number;
+  ticketVolumeM3: number;
+  /** Of the ticket volume — the part nobody has accepted yet; above zero the figure is marked. */
+  ticketVolumeUnconfirmedM3: number;
   /**
-   * Of the confirmed volume — the part that cannot be priced: its completion has no price (R5). A
-   * field of its own and not a conclusion from zero money: zero money means both "there was no
-   * price" and "there was nothing to confirm", and after atoms are summed these cannot be told apart.
+   * Of the ticket volume — the part that cannot be priced: its completion has no price (R5 of
+   * ADR 0193). A field of its own and not a conclusion from zero money: zero money means both
+   * "there was no price" and "there was nothing to price", and after atoms are summed these cannot
+   * be told apart.
    */
-  confirmedVolumeUnpricedM3: number;
+  ticketVolumeUnpricedM3: number;
   /**
-   * Confirmed volume in money: ticket volume × completion price (R5).
+   * Ticket volume in money: ticket volume × completion price.
    *
-   * `null` — the whole confirmed volume of the cell has no completion price. Zero here would mean a
-   * free removal, not a missing price. A mixed case gives a NUMBER, and `confirmedVolumeUnpricedM3`
-   * must be signed next to it: an understated sum without a note looks calculated.
+   * `null` — the whole ticket volume of the cell has no completion price. Zero here would mean a
+   * free removal, not a missing price. A mixed case gives a NUMBER, and `ticketVolumeUnpricedM3`
+   * must be shown next to it: an understated sum without a mark looks calculated.
    */
-  confirmedCost: number | null;
-  /** Accepted tickets whose volume is unread: they are not in the sum, and that must be said (R4). */
+  ticketCost: number | null;
+  /** Tickets (not dismissed, not idle) whose volume is unread: not in the sum, and that must be said. */
   ticketsWithoutVolume: number;
+  /** Tickets recognised but not reviewed by a person yet (ADR 0213). */
+  ticketsUnconfirmed: number;
+  /** Ticket scans the recognition could not read: rejected or out of attempts (ADR 0213). */
+  ticketFilesUnread: number;
+  /** Ticket scans read without a single ticket found on them (ADR 0213). */
+  ticketFilesWithoutTickets: number;
   /** Requests that could not be priced at all: zero money must mean free work. */
   unpricedRequests: number;
   /** Removals — requests in a fact status; requests are counted, not trucks (R21 of analytics). */
@@ -97,6 +109,18 @@ export interface WasteStatsFigures {
   totalCost: number;
   /** @deprecated Estimated share of `totalCost`; see `volumeM3` for the removal condition. */
   costEstimated: number;
+  /**
+   * @deprecated Same value as `ticketVolumeM3`. Kept only for tabs opened with a build older than
+   * ADR 0213: they read it without a check, and there is no error boundary. Carries the new
+   * meaning on purpose — such a tab labels it "По талонам", which is what ADR 0213 counts. Remove
+   * when the client floor on production rises above the `CLIENT_CONTRACT` this release was served
+   * with (6).
+   */
+  confirmedVolumeM3: number;
+  /** @deprecated Same value as `ticketVolumeUnpricedM3`; see `confirmedVolumeM3`. */
+  confirmedVolumeUnpricedM3: number;
+  /** @deprecated Same value as `ticketCost`; see `confirmedVolumeM3`. */
+  confirmedCost: number | null;
 }
 
 /** Позиция окна детализации: вид отходов. */

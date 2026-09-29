@@ -181,6 +181,8 @@ async function seedTicket(
     volumeM3: string | null;
     status?: 'unconfirmed' | 'confirmed' | 'dismissed';
     workKind?: 'removal' | 'idle' | 'other';
+    /** The recognised page the ticket was read from; only machine readings have one. */
+    pageId?: string;
   },
 ): Promise<void> {
   ticketNo += 1;
@@ -199,11 +201,54 @@ async function seedTicket(
      * его ввёл человек, и ждать, пока он подтвердит сам себя, не за чем. Неразобранная бумага
      * бывает только машинной — ею и заводится.
      */
-    origin: status === 'unconfirmed' ? 'ocr' : 'manual',
+    origin: status === 'unconfirmed' || input.pageId ? 'ocr' : 'manual',
+    pageId: input.pageId ?? null,
     status,
     confirmedBy: status === 'confirmed' ? ctx.adminId : null,
     confirmedAt: status === 'confirmed' ? new Date() : null,
   });
+}
+
+/**
+ * A ticket scan of the request with its recognition row (ADR 0213). A read file gets one page;
+ * `found: 'dismissed'` puts a ticket on it that a person dismissed — the file was read and
+ * reviewed, so it is not "no tickets found".
+ */
+async function seedScan(
+  requestId: string,
+  status: 'pending' | 'done' | 'failed' | 'unsupported',
+  found: 'none' | 'dismissed' = 'none',
+): Promise<void> {
+  const [file] = await ctx.db
+    .insert(ctx.schema.files)
+    .values({
+      bucket: 'test',
+      objectKey: `${KEY_PREFIX}${randomUUID()}.pdf`,
+      filename: 'talon.pdf',
+      contentType: 'application/pdf',
+      size: 1024,
+      status: 'active',
+      uploadedBy: ctx.adminId,
+    })
+    .returning({ id: ctx.schema.files.id });
+  const fileId = file!.id;
+  await ctx.db.insert(ctx.schema.requestFiles).values({ requestId, fileId, kind: 'ticket' });
+  await ctx.db.insert(ctx.schema.wasteTicketFiles).values({ fileId, requestId, status });
+  if (status !== 'done') return;
+  const [page] = await ctx.db
+    .insert(ctx.schema.wasteTicketPages)
+    .values({
+      requestId,
+      fileId,
+      pageNo: 1,
+      pageSha256: randomUUID().replace(/-/g, '').padEnd(64, '0'),
+      status: 'done',
+      ticketsFound: found === 'none' ? 0 : 1,
+    })
+    .returning({ id: ctx.schema.wasteTicketPages.id });
+  if (found === 'dismissed') {
+    await seedTicket(requestId, { volumeM3: '3.000', status: 'dismissed', pageId: page!.id });
+  }
 }
 
 async function stats(
@@ -534,6 +579,18 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
     await close(over, { volumeM3: '8.000', removedOn: `${MONTH}-07` });
     await seedTicket(over, { volumeM3: '5.000' });
     await seedTicket(over, { volumeM3: '5.000' });
+    /*
+     * Scans of the same request (ADR 0213): two the recognition could not read, one read without a
+     * ticket, one read and reviewed (its only reading dismissed — 3 m3 that must not reach the sum)
+     * and one still in the queue. Only the first three are "not recognised".
+     */
+    await seedScan(over, 'failed');
+    await seedScan(over, 'unsupported');
+    await seedScan(over, 'done');
+    await seedScan(over, 'done', 'dismissed');
+    await seedScan(over, 'pending');
+    // A rolled-back request is not removed, so its unreadable scan warns about nothing.
+    await seedScan(rollback, 'failed');
     // Completion saved without a sum: its removed volume has no money — a dash, not zero.
     const noSum = await newRequest({
       objectId: ctx.thirdObjectId,
@@ -610,35 +667,44 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
     expect(row?.unpricedRequests).toBe(2);
   });
 
-  it('объём подтверждают только принятые талоны, и простой в сумму не идёт', async () => {
+  it('по талонам — все неотклонённые талоны, и неподтверждённые названы отдельно', async () => {
     const row = rowOf(await stats(), ctx.objectId);
-    // 12 + 8 у первой заявки, 5 у бесценной, 10 + 4 у смешанной позиции; простой, неразобранный и
-    // отклонённый — мимо.
-    expect(row?.confirmedVolumeM3).toBe(39);
-    // Талон с непрочитанной графой не ноль, а неизвестность: он считается отдельно.
+    /*
+     * 12 + 8 at the first request, 10 unconfirmed at the second, 5 at the unpriced one, 10 + 4 at
+     * the partly priced position (ADR 0213): the unreviewed reading is in the figure now. The idle
+     * ticket and the dismissed one stay out.
+     */
+    expect(row?.ticketVolumeM3).toBe(49);
+    expect(row?.ticketsUnconfirmed).toBe(1);
+    expect(row?.ticketVolumeUnconfirmedM3).toBe(10);
+    // A ticket with an unread field is not zero but unknown: it is counted separately.
     expect(row?.ticketsWithoutVolume).toBe(1);
+    // The deprecated name carries the same figure for tabs of an older build.
+    expect(row?.confirmedVolumeM3).toBe(row?.ticketVolumeM3);
+    expect(row?.confirmedCost).toBe(row?.ticketCost);
   });
 
-  it('подтверждённое в деньгах считается ценой закрытия, а без цены — прочерком', async () => {
+  it('талоны в деньгах считаются ценой закрытия, а без цены — прочерком', async () => {
     const row = rowOf(await stats(), ctx.objectId);
     const mixed = row?.positions.find((p) => p.label.includes('смешанный'));
     const free = row?.positions.find((p) => p.label.includes('бесценный'));
     const partial = row?.positions.find((p) => p.label.includes('частично'));
-    // 20 подтверждённых кубов по цене закрытия 100 ₽.
-    expect(mixed?.confirmedVolumeM3).toBe(20);
-    expect(mixed?.confirmedCost).toBe(2000);
-    expect(mixed?.confirmedVolumeUnpricedM3).toBe(0);
+    // 20 accepted and 10 unconfirmed cubic metres at the completion price of 100 RUB.
+    expect(mixed?.ticketVolumeM3).toBe(30);
+    expect(mixed?.ticketCost).toBe(3000);
+    expect(mixed?.ticketVolumeUnpricedM3).toBe(0);
     // Кубы предъявлены, а цены у закрытия нет НИ У ОДНОЙ заявки позиции: прочерк, а не ноль.
-    expect(free?.confirmedVolumeM3).toBe(5);
-    expect(free?.confirmedVolumeUnpricedM3).toBe(5);
-    expect(free?.confirmedCost).toBeNull();
+    expect(free?.ticketVolumeM3).toBe(5);
+    expect(free?.ticketVolumeUnpricedM3).toBe(5);
+    expect(free?.ticketCost).toBeNull();
     /*
-     * Смешанный случай: часть объёма оценить нечем. Стоимость — ЧИСЛО (10 × 100), но занижена, и
-     * ровно об этом говорит соседнее поле: молчащая заниженная сумма выглядит посчитанной.
+     * The mixed case: part of the volume cannot be priced. The cost is a NUMBER (10 × 100), but it
+     * is understated, and the neighbouring field says exactly that: an understated sum without a
+     * mark looks calculated.
      */
-    expect(partial?.confirmedVolumeM3).toBe(14);
-    expect(partial?.confirmedVolumeUnpricedM3).toBe(4);
-    expect(partial?.confirmedCost).toBe(1000);
+    expect(partial?.ticketVolumeM3).toBe(14);
+    expect(partial?.ticketVolumeUnpricedM3).toBe(4);
+    expect(partial?.ticketCost).toBe(1000);
   });
 
   it('лом и контейнерные операции в статистику не попадают вовсе', async () => {
@@ -695,7 +761,8 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
         Number(row.positions.reduce((acc, p) => acc + pick(p), 0).toFixed(3));
       expect(sum((p) => p.volumeM3)).toBe(row.volumeM3);
       expect(sum((p) => p.totalCost)).toBe(row.totalCost);
-      expect(sum((p) => p.confirmedVolumeM3)).toBe(row.confirmedVolumeM3);
+      expect(sum((p) => p.ticketVolumeM3)).toBe(row.ticketVolumeM3);
+      expect(sum((p) => p.ticketFilesUnread)).toBe(row.ticketFilesUnread);
       expect(sum((p) => p.plannedVolumeM3)).toBe(row.plannedVolumeM3);
       expect(sum((p) => p.doneVolumeM3)).toBe(row.doneVolumeM3);
     }
@@ -704,7 +771,8 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
     expect(dto.totals.volumeM3).toBe(total((r) => r.volumeM3));
     expect(dto.totals.plannedVolumeM3).toBe(total((r) => r.plannedVolumeM3));
     expect(dto.totals.doneVolumeM3).toBe(total((r) => r.doneVolumeM3));
-    expect(dto.totals.confirmedVolumeM3).toBe(total((r) => r.confirmedVolumeM3));
+    expect(dto.totals.ticketVolumeM3).toBe(total((r) => r.ticketVolumeM3));
+    expect(dto.totals.ticketsUnconfirmed).toBe(total((r) => r.ticketsUnconfirmed));
     expect(dto.totals.requests).toBe(dto.rows.reduce((acc, r) => acc + r.requests, 0));
   });
 
@@ -741,7 +809,11 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
       'weightTons',
       'removals',
       'moneyFact',
-      'volumeConfirmedM3',
+      'volumeTicketsM3',
+      'volumeTicketsUnconfirmedM3',
+      'ticketsUnconfirmed',
+      'ticketFilesUnread',
+      'ticketFilesWithoutTickets',
       'volumePlannedM3',
       'moneyPlanned',
       'volumePlannedUnpricedM3',
@@ -793,7 +865,7 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
     }
   });
 
-  it('site A: ordered, removed and confirmed volumes with their money', async () => {
+  it('site A: ordered, removed and ticket volumes with their money', async () => {
     const row = rowOf(await stats(), ctx.objectId);
     // Ordered: closed requests keep their order — 20 + 10 + 5 + 10 + 4, the open one 15, the truck
     // rows 16 (not the 99 of the request).
@@ -809,7 +881,7 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
     expect(row?.doneVolumeM3).toBe(49);
     expect(row?.doneCost).toBe(4000);
     expect(row?.doneVolumeUnpricedM3).toBe(9);
-    expect(row?.confirmedVolumeM3).toBe(39);
+    expect(row?.ticketVolumeM3).toBe(49);
   });
 
   it('site C: a rolled-back request is only ordered, even with its completion and tickets', async () => {
@@ -819,8 +891,9 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
       plannedCost: 1000,
       doneVolumeM3: 0,
       doneCost: 0,
-      confirmedVolumeM3: 0,
+      ticketVolumeM3: 0,
       ticketsWithoutVolume: 0,
+      ticketFilesUnread: 0,
       removals: 0,
       requests: 1,
     });
@@ -837,14 +910,25 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
     });
   });
 
-  it('site C: confirmed tickets are summed as they are, above the removed volume (Z4)', async () => {
+  it('site C: tickets are summed as they are, above the removed volume (Z4)', async () => {
     const over = caseOf(rowOf(await stats(), ctx.thirdObjectId), 'талоны сверх');
     expect(over).toMatchObject({
       doneVolumeM3: 8,
       doneCost: 800,
-      confirmedVolumeM3: 10,
-      confirmedCost: 1000,
+      // The dismissed reading on the reviewed scan (3 m3) is not in the sum.
+      ticketVolumeM3: 10,
+      ticketCost: 1000,
     });
+  });
+
+  it('site C: unreadable scans and scans without tickets are counted, queued and reviewed ones not', async () => {
+    const row = rowOf(await stats(), ctx.thirdObjectId);
+    expect(caseOf(row, 'талоны сверх')).toMatchObject({
+      ticketFilesUnread: 2,
+      ticketFilesWithoutTickets: 1,
+    });
+    // The rolled-back request's failed scan stays out, like its tickets.
+    expect(row).toMatchObject({ ticketFilesUnread: 2, ticketFilesWithoutTickets: 1 });
   });
 
   it('site C: removed volume without a completion sum is a dash, not zero', async () => {
@@ -874,7 +958,7 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
     expect(row).toMatchObject({
       plannedVolumeM3: 31,
       plannedCost: 3100,
-      confirmedVolumeM3: 10,
+      ticketVolumeM3: 10,
       removals: 4,
       requests: 5,
       // The completion without a sum and the "done" without a completion could not be priced.
@@ -899,7 +983,7 @@ describe.skipIf(!DB_URL)('вывоз: статистика за отчётный
       plannedCost: 700,
       doneVolumeM3: 0,
       doneCost: 0,
-      confirmedVolumeM3: 0,
+      ticketVolumeM3: 0,
       removals: 0,
       requests: 1,
     });

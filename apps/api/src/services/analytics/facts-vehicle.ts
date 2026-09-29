@@ -378,13 +378,17 @@ function emptyAtom(
     // Ordered and planned volume and tickets exist only for waste removal: a vehicle request
     // carries cargo, not cubic metres proven by paper.
     volumeOrderedM3: 0,
-    volumeConfirmedM3: 0,
-    volumeConfirmedUnpricedM3: 0,
+    volumeTicketsM3: 0,
+    volumeTicketsUnpricedM3: 0,
+    volumeTicketsUnconfirmedM3: 0,
     volumePlannedM3: 0,
     moneyPlanned: 0,
     volumePlannedUnpricedM3: 0,
     volumeFactUnpricedM3: 0,
     ticketsWithoutVolume: 0,
+    ticketsUnconfirmed: 0,
+    ticketFilesUnread: 0,
+    ticketFilesWithoutTickets: 0,
     weightTons: 0,
     engineHours: 0,
     mechHours: 0,
@@ -395,7 +399,7 @@ function emptyAtom(
     moneyFact: 0,
     moneyLow: 0,
     moneyHigh: 0,
-    moneyConfirmed: 0,
+    moneyTickets: 0,
     priced,
   };
 }

@@ -747,7 +747,7 @@ describe.skipIf(!DB_URL)('атомы аналитики: вывоз мусора
       );
       expect(atom.removals).toBe(0);
       expect(atom.volumeM3).toBe(0);
-      expect(atom.volumeConfirmedM3).toBe(0);
+      expect(atom.volumeTicketsM3).toBe(0);
       expect(atom.ticketsWithoutVolume).toBe(0);
       expect(atom.moneyFact).toBe(0);
       expect(atom.moneyLow, '10 м³ × 100 ₽ — снова оценка').toBe(1000);

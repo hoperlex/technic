@@ -5,21 +5,29 @@ import type { WasteStatsDto } from '@technic/contracts';
 import { useSearchParams } from 'react-router';
 import { PageTabs } from '../src/shared/ui';
 import { WasteStatsTab } from '../src/pages/waste/WasteStatsTab';
-import { confirmedNotes, pluralForm } from '../src/pages/waste/wasteStatsNumbers';
+import {
+  costNotes,
+  doneCostWarning,
+  pluralForm,
+  ticketWarning,
+} from '../src/pages/waste/wasteStatsNumbers';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 
 /**
- * The waste "Statistics" tab (ADR 0193, three-volume columns — ADR 0209).
+ * The waste "Statistics" tab (ADR 0193, three-volume columns — ADR 0209, warnings — ADR 0213).
  *
  * What is checked is what the portal decides itself — everything else is counted by the server:
  *
  * - the reporting month comes from the address and goes to the request with it (R9); a bad value
  *   does not break the tab;
  * - the columns and captions of ADR 0209: Ordered · Removed · By tickets · Cost, "N заявок" under
- *   the ordered volume only, the plan and the confirmed cost under the cost, every caption on a line
- *   of its own, a dash instead of zero where nothing has a price, no "N без цены" (decision Z7);
+ *   the ordered volume only, the plan and the ticket cost under the cost, every caption on a line
+ *   of its own, a dash instead of zero where nothing has a price;
+ * - the warnings of ADR 0213: no "без цены …" captions any more — an incomplete figure gets an icon
+ *   whose tooltip (and accessible name) names the unpriced volume, the unconfirmed tickets and the
+ *   unrecognised scans; a complete figure gets no icon;
  * - the "Итого" row prints the server total, not a sum of the rows;
  * - a response without the new fields (a new build against an old server) shows a stub instead of
  *   throwing in render;
@@ -34,8 +42,24 @@ const text = (node: Element | null | undefined): string =>
 const hasText = (needle: string) => (_content: string, node: Element | null) =>
   node?.children.length === 0 && text(node).includes(needle);
 
-/** Deprecated combined fields: required by the type, no longer read by the tab. */
-const LEGACY = { volumeM3: 0, volumeOrderedM3: 0, totalCost: 0, costEstimated: 0 };
+/** Deprecated fields: required by the type, no longer read by the tab. */
+const LEGACY = {
+  volumeM3: 0,
+  volumeOrderedM3: 0,
+  totalCost: 0,
+  costEstimated: 0,
+  confirmedVolumeM3: 0,
+  confirmedVolumeUnpricedM3: 0,
+  confirmedCost: 0,
+};
+
+/** Paper counters of a figure with nothing unreviewed and nothing unrecognised. */
+const CLEAN_PAPER = {
+  ticketVolumeUnconfirmedM3: 0,
+  ticketsUnconfirmed: 0,
+  ticketFilesUnread: 0,
+  ticketFilesWithoutTickets: 0,
+};
 
 function dto(over: Partial<WasteStatsDto> = {}): WasteStatsDto {
   return {
@@ -55,10 +79,14 @@ function dto(over: Partial<WasteStatsDto> = {}): WasteStatsDto {
         doneVolumeM3: 45,
         doneCost: 4000,
         doneVolumeUnpricedM3: 5,
-        confirmedVolumeM3: 25,
-        confirmedVolumeUnpricedM3: 5,
-        confirmedCost: 2000,
+        ticketVolumeM3: 25,
+        ticketVolumeUnpricedM3: 5,
+        ticketCost: 2000,
         ticketsWithoutVolume: 1,
+        ticketVolumeUnconfirmedM3: 10,
+        ticketsUnconfirmed: 3,
+        ticketFilesUnread: 1,
+        ticketFilesWithoutTickets: 0,
         unpricedRequests: 1,
         removals: 3,
         requests: 4,
@@ -73,10 +101,11 @@ function dto(over: Partial<WasteStatsDto> = {}): WasteStatsDto {
             doneVolumeM3: 40,
             doneCost: 4000,
             doneVolumeUnpricedM3: 0,
-            confirmedVolumeM3: 20,
-            confirmedVolumeUnpricedM3: 0,
-            confirmedCost: 2000,
+            ticketVolumeM3: 20,
+            ticketVolumeUnpricedM3: 0,
+            ticketCost: 2000,
             ticketsWithoutVolume: 1,
+            ...CLEAN_PAPER,
             unpricedRequests: 0,
             removals: 2,
             requests: 3,
@@ -92,10 +121,11 @@ function dto(over: Partial<WasteStatsDto> = {}): WasteStatsDto {
             doneVolumeM3: 5,
             doneCost: null,
             doneVolumeUnpricedM3: 5,
-            confirmedVolumeM3: 5,
-            confirmedVolumeUnpricedM3: 5,
-            confirmedCost: null,
+            ticketVolumeM3: 5,
+            ticketVolumeUnpricedM3: 5,
+            ticketCost: null,
             ticketsWithoutVolume: 0,
+            ...CLEAN_PAPER,
             unpricedRequests: 1,
             removals: 1,
             requests: 1,
@@ -112,10 +142,14 @@ function dto(over: Partial<WasteStatsDto> = {}): WasteStatsDto {
       doneVolumeM3: 52,
       doneCost: 4700,
       doneVolumeUnpricedM3: 5,
-      confirmedVolumeM3: 30,
-      confirmedVolumeUnpricedM3: 5,
-      confirmedCost: 2500,
+      ticketVolumeM3: 30,
+      ticketVolumeUnpricedM3: 5,
+      ticketCost: 2500,
       ticketsWithoutVolume: 1,
+      ticketVolumeUnconfirmedM3: 10,
+      ticketsUnconfirmed: 3,
+      ticketFilesUnread: 1,
+      ticketFilesWithoutTickets: 2,
       unpricedRequests: 1,
       removals: 4,
       requests: 5,
@@ -140,17 +174,18 @@ function dto(over: Partial<WasteStatsDto> = {}): WasteStatsDto {
   };
 }
 
-/** The same response as an old server sends it: without the ADR 0209 fields. */
+/** The same response as an ADR 0209 server sends it: without the ADR 0213 fields. */
 function legacyDto(): WasteStatsDto {
   const strip = (f: object) => {
     const copy: Record<string, unknown> = { ...f };
     for (const key of [
-      'plannedVolumeM3',
-      'plannedCost',
-      'plannedVolumeUnpricedM3',
-      'doneVolumeM3',
-      'doneCost',
-      'doneVolumeUnpricedM3',
+      'ticketVolumeM3',
+      'ticketVolumeUnconfirmedM3',
+      'ticketVolumeUnpricedM3',
+      'ticketCost',
+      'ticketsUnconfirmed',
+      'ticketFilesUnread',
+      'ticketFilesWithoutTickets',
     ]) {
       delete copy[key];
     }
@@ -273,11 +308,8 @@ describe('вывоз: вкладка «Статистика»', () => {
     expect(text(row)).toContain('25 м³');
     expect(text(row)).toContain('4 000,00 ₽');
     expect(r.getByText('4 заявки')).toBeTruthy();
-    expect(r.getByText('план 5 400,00 ₽, без цены 6 м³')).toBeTruthy();
+    expect(r.getByText('план 5 400,00 ₽')).toBeTruthy();
     expect(r.getByText('по талонам 2 000,00 ₽')).toBeTruthy();
-    expect(r.getByText('объём не прочитан у 1 талона')).toBeTruthy();
-    // Two captions read the same — under the removed cost and under the tickets — and both are shown.
-    expect(r.getAllByText('без цены 5 м³')).toHaveLength(2);
     /*
      * Every caption is a line of its own: inline captions in a row are glued into one string, and
      * a check by `textContent` would not notice.
@@ -287,10 +319,36 @@ describe('вывоз: вкладка «Статистика»', () => {
       r.getByText(/^по талонам /),
       r.getByText('4 заявки'),
     ]) {
-      expect(node.style.display).toBe('block');
+      expect(node.parentElement?.tagName).toBe('DIV');
     }
-    // "N без цены" is not shown (decision Z7), while "без цены … м³" in the same row is legitimate.
-    expect(r.queryByText(/^\d+ без цены$/)).toBeNull();
+    // The reservations left the cell for the icons (ADR 0213): no caption says "без цены" any more.
+    expect(text(row)).not.toContain('без цены');
+    expect(text(row)).not.toContain('не прочитан');
+
+    // Four figures of the row are incomplete, each with its reasons as the icon's name.
+    const marks = r.getAllByRole('img').map((el) => el.getAttribute('aria-label'));
+    expect(marks).toHaveLength(4);
+    expect(marks).toContain(
+      'Сумма неполная: без цены 5 м³ из 45 м³ вывезенного. ' +
+        'Цена берётся из прайса вывоза, когда заявку заводят и закрывают',
+    );
+    expect(
+      marks.some((m) => m?.startsWith('Сумма неполная: без цены 6 м³ из 60 м³ заказанного')),
+    ).toBe(true);
+    const paper =
+      'Не подтверждено: 3 талона на 10 м³. Объём не прочитан у 1 талона. ' +
+      'Не распознано: 1 файл — не удалось прочитать';
+    expect(marks).toContain(paper);
+    expect(marks).toContain(
+      'Сумма неполная: без цены 5 м³ из 25 м³ по талонам. ' +
+        `Цена берётся из прайса вывоза, когда заявку заводят и закрывают. ${paper}`,
+    );
+
+    // The reasons are readable by pointing at the icon, one line each.
+    const ticketsMark = r.getAllByRole('img').find((el) => el.getAttribute('aria-label') === paper);
+    fireEvent.mouseEnter(ticketsMark!);
+    expect(await screen.findByText('Не подтверждено: 3 талона на 10 м³')).toBeTruthy();
+    expect(screen.getByText('Не распознано: 1 файл — не удалось прочитать')).toBeTruthy();
 
     // Quality is shown next to the numbers, the new rows of ADR 0209 included.
     expect(screen.getByText(hasText('Вывозов без принятого талона: 1 из 3'))).toBeTruthy();
@@ -344,7 +402,13 @@ describe('вывоз: вкладка «Статистика»', () => {
     expect(http.calls.filter((c) => c.path === '/waste-requests/stats')).toHaveLength(1);
 
     // Непрочитанная графа названа: недостачу ищут в бумаге, а не в закрытии.
-    expect(text(modal)).toContain('объём не прочитан у 1 талона');
+    const waste = [...modal.querySelectorAll('tbody tr')].find((tr) =>
+      text(tr).includes('Строительный мусор'),
+    ) as HTMLElement;
+    // Both ticket figures hold the same paper — the volume and its money — so both carry the mark.
+    expect(
+      within(waste).getAllByRole('img', { name: 'Объём не прочитан у 1 талона' }),
+    ).toHaveLength(2);
 
     const total = modal.querySelector('.ant-table-summary tr');
     expect(text(total)).toContain('Итого');
@@ -357,6 +421,12 @@ describe('вывоз: вкладка «Статистика»', () => {
     const ground = [...modal.querySelectorAll('tbody tr')].find((tr) => text(tr).includes('Грунт'));
     expect(text(ground)).toContain('план —');
     expect(text(ground)).toContain('по талонам —');
+    // A bare dash explained nothing (ADR 0213): it gets the icon with the reason too.
+    expect(
+      within(ground as HTMLElement).getByRole('img', {
+        name: /^Суммы нет: без цены все 5 м³ вывезенного\./,
+      }),
+    ).toBeTruthy();
   });
 });
 
@@ -376,11 +446,43 @@ describe('вывоз: числа вкладки «Статистика»', () =>
 
   it('после «у» талоны стоят в родительном падеже', () => {
     const unread = (n: number) =>
-      confirmedNotes({ ...dto().totals, ticketsWithoutVolume: n }).find((x) => x.key === 'unread')
-        ?.text;
-    expect(unread(1)).toBe('объём не прочитан у 1 талона');
-    expect(unread(2)).toBe('объём не прочитан у 2 талонов');
-    expect(unread(21)).toBe('объём не прочитан у 21 талона');
-    expect(unread(11)).toBe('объём не прочитан у 11 талонов');
+      ticketWarning({ ...dto().totals, ...CLEAN_PAPER, ticketsWithoutVolume: n });
+    expect(unread(1)).toEqual(['Объём не прочитан у 1 талона']);
+    expect(unread(2)).toEqual(['Объём не прочитан у 2 талонов']);
+    expect(unread(21)).toEqual(['Объём не прочитан у 21 талона']);
+    expect(unread(11)).toEqual(['Объём не прочитан у 11 талонов']);
+  });
+
+  it('неподтверждённые талоны и нераспознанные файлы названы числом и склоняются', () => {
+    const paper = (over: Partial<WasteStatsDto['totals']>) =>
+      ticketWarning({ ...dto().totals, ...CLEAN_PAPER, ticketsWithoutVolume: 0, ...over });
+    expect(paper({ ticketsUnconfirmed: 1, ticketVolumeUnconfirmedM3: 12.5 })).toEqual([
+      'Не подтверждено: 1 талон на 12,5 м³',
+    ]);
+    // Unconfirmed readings without a read volume: no "на 0 м³".
+    expect(paper({ ticketsUnconfirmed: 5 })).toEqual(['Не подтверждено: 5 талонов']);
+    expect(paper({ ticketFilesWithoutTickets: 2 })).toEqual([
+      'Не распознано: 2 файла — талоны не найдены',
+    ]);
+    expect(paper({ ticketFilesUnread: 1, ticketFilesWithoutTickets: 4 })).toEqual([
+      'Не распознано: 5 файлов — не удалось прочитать 1, талоны не найдены в 4',
+    ]);
+  });
+
+  it('полная величина значка не получает', () => {
+    const complete = {
+      ...dto().totals,
+      ...CLEAN_PAPER,
+      ticketsWithoutVolume: 0,
+      plannedVolumeUnpricedM3: 0,
+      doneVolumeUnpricedM3: 0,
+      ticketVolumeUnpricedM3: 0,
+    };
+    expect(doneCostWarning(complete)).toEqual([]);
+    expect(ticketWarning(complete)).toEqual([]);
+    expect(costNotes(complete).map((note) => note.warning)).toEqual([[], []]);
+    // No tickets at all: the caption stays "по талонам 0,00 ₽" (user decision of 29.09.2026).
+    const noPaper = { ...complete, ticketVolumeM3: 0, ticketCost: 0 };
+    expect(costNotes(noPaper).map((note) => note.text)).toContain('по талонам 0,00 ₽');
   });
 });

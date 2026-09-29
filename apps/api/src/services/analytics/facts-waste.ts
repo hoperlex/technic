@@ -38,7 +38,7 @@ import type { AnalyticsAtom, AnalyticsFacts, AnalyticsFactsScope, AnalyticsRange
  *    money always describe the same set of trucks.
  * 3. **"Removed" is decided by the request STATUS, not by the presence of a completion row**
  *    (waste stats three-volumes decision Z5). A request counts as removed — volume, weight, one
- *    removal, confirmed tickets — only while its status is a fact status ("done" / "completed",
+ *    removal, tickets — only while its status is a fact status ("done" / "completed",
  *    `analyticsCountsAsFact`). The rollback "done -> in progress" keeps the completion row so that
  *    re-closing does not ask for the same figures again; counting that row would report a removal
  *    the administrator has just withdrawn, while the money column (always status-based) already
@@ -112,19 +112,23 @@ type WasteRow = {
   /** `numeric` драйвер отдаёт строкой — числом его делает `num`. */
   volume_m3: string | null;
   volume_ordered_m3: string | null;
-  volume_confirmed_m3: string | null;
-  volume_confirmed_unpriced_m3: string | null;
+  volume_tickets_m3: string | null;
+  volume_tickets_unpriced_m3: string | null;
+  volume_tickets_unconfirmed_m3: string | null;
   volume_planned_m3: string | null;
   money_planned: string | null;
   volume_planned_unpriced_m3: string | null;
   volume_fact_unpriced_m3: string | null;
-  money_confirmed: string | null;
+  money_tickets: string | null;
   /**
    * `count(*)` — это `bigint`, и драйвер отдаёт его СТРОКОЙ, как и `numeric`. Тип назван честно
    * именно поэтому: объявленный `number` молча превратил бы сложение счётчиков в склейку текста
    * («0» + «1» = «01»), а заметить это можно только на живом ответе.
    */
   tickets_without_volume: string | number | null;
+  tickets_unconfirmed: string | number | null;
+  ticket_files_unread: string | number | null;
+  ticket_files_without_tickets: string | number | null;
   weight_tons: string | null;
   money_fact: string | null;
   money_estimate: string | null;
@@ -277,16 +281,22 @@ graded AS (
             OR (CASE WHEN s.is_fact THEN s.total_cost
                      ELSE v.amount END) IS NOT NULL)                            AS priced,
            /*
-            * Принятый талон — подтверждённый (status = 'confirmed'): распознанное и неразобранное
-            * остаётся предложением, и объём им не подтверждён (см. шапку waste_tickets).
+            * "Has a ticket" for the quality row still means an ACCEPTED one (status = 'confirmed'):
+            * the row answers "is the volume backed by a document a person accepted", and a machine
+            * reading is not that yet (see the waste_tickets header). The ticket volume below is a
+            * different question and counts unconfirmed readings too (ADR 0213).
             *
-            * Признак считается из того же бокового соединения, что и сумма объёма, а не своим
-            * EXISTS: два обращения к талонам заявки разошлись бы ровно в тот день, когда правило
-            * «какой талон принят» поменяется в одном месте из двух.
+            * The flag comes from the same lateral join as the volume, not from an EXISTS of its own:
+            * two reads of the request's tickets would drift apart the day the ticket rule changes in
+            * one of them.
             */
            tk.confirmed_count > 0                                              AS has_ticket,
-           tk.confirmed_volume,
+           tk.ticket_volume,
            tk.tickets_unread,
+           tk.tickets_unconfirmed,
+           tk.unconfirmed_volume,
+           tf.files_unread,
+           tf.files_without_tickets,
            v.ordered_volume,
            /*
             * ORDERED ("planned") VOLUME AND ITS MONEY — for every request of a volume type, closed
@@ -313,19 +323,19 @@ graded AS (
                           ELSE s.total_cost END
            END                                                                 AS planned_money,
            /*
-            * ПОДТВЕРЖДЁННЫЙ ОБЪЁМ, КОТОРЫЙ НЕЧЕМ ОЦЕНИТЬ (Р5). Отдельная величина, а не вывод из
-            * нулевых денег: сложив атомы, свёртка уже не отличит «цены не было» от «подтверждать
-            * было нечего», и прочерк в стоимости ставить стало бы не из чего.
+            * TICKET VOLUME THAT CANNOT BE PRICED (R5 of the stats plan). A value of its own and not a
+            * conclusion from zero money: once atoms are summed, "there was no price" can no longer
+            * be told from "there was nothing to price", and the cost cell could not choose between
+            * a dash and a number.
             */
-           CASE WHEN s.price_per_m3 IS NULL THEN coalesce(tk.confirmed_volume, 0) ELSE 0 END
-                                                                               AS confirmed_unpriced,
+           CASE WHEN s.price_per_m3 IS NULL THEN coalesce(tk.ticket_volume, 0) ELSE 0 END
+                                                                               AS ticket_unpriced,
            /*
-            * ПОДТВЕРЖДЁННОЕ В ДЕНЬГАХ (план статистики, Р5): объём талонов × цена закрытия —
-            * снимок прайса, которым посчитана сама заявка. NULL законен: цена у закрытия
-            * необязательна (прайса на пару могло не быть, ADR 0046), и тогда подтверждённому
-            * объёму нечем назначить цену — ноль здесь означал бы бесплатный вывоз.
+            * TICKET VOLUME IN MONEY (R5): ticket volume × completion price — the price list snapshot
+            * the request itself was priced with. NULL is legal: a completion may have no price (no
+            * price list position for the pair, ADR 0046), and zero here would mean a free removal.
             */
-           coalesce(tk.confirmed_volume, 0) * s.price_per_m3                    AS money_confirmed
+           coalesce(tk.ticket_volume, 0) * s.price_per_m3                       AS money_tickets
       FROM scope s
       /* Оценка незакрытой заявки одним выражением: строк нет — сумма заявки, строки есть и все с
          ценой — их сумма, хоть одна без цены — оценки нет вовсе (NULL, а не ноль). */
@@ -355,25 +365,62 @@ graded AS (
                           WHERE wv.request_id = s.id
                             AND wv.deleted_at IS NULL) v ON true
       /*
-       * Талоны заявки одним проходом: сколько принято, сколько кубов они предъявляют и у скольких
-       * объём не прочитан. Талон простоя в сумму не идёт (Р18 ADR 0114) — его объём означает «вывоза
-       * не было», а не «вывезли ноль»; виды приходят параметром из контракта (SUMMABLE_KINDS).
+       * The request's tickets in one pass (ADR 0213). The ticket volume counts every ticket that is
+       * not dismissed — accepted AND recognised-but-unreviewed: most of the paper sits unreviewed,
+       * and a column of accepted tickets only read as "nothing was brought" when it was. The
+       * unconfirmed share is counted beside it, so the portal can say how much of the figure is
+       * still a machine reading. A dismissed ticket ("this is not a ticket") is out: a person
+       * decided it carries no volume.
        *
-       * Непрочитанный объём НЕ становится нулём: sum() пропускает NULL сам, а сколько таких талонов —
-       * считает соседний счётчик. Подставь ноль — и площадка с одной смазанной графой выглядела бы
-       * недовывезшей, причём тем сильнее, чем аккуратнее она собирает бумагу.
+       * An idle ticket stays out of the sum (R18 of ADR 0114): its volume means "there was no
+       * removal", not "zero was removed"; the kinds come from the contract (SUMMABLE_KINDS).
+       *
+       * An unread volume does NOT become zero: sum() skips NULL by itself, and the neighbouring
+       * counter says how many such tickets there are. Put a zero in and a site with one smudged
+       * field would look under-delivered — the more so, the more carefully it collects paper.
        */
-      LEFT JOIN LATERAL (SELECT count(*)                                        AS confirmed_count,
+      LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE t.status = 'confirmed')    AS confirmed_count,
                                 sum(t.volume_m3) FILTER (
                                   WHERE t.work_kind = ANY(${sql.param(SUMMABLE_KINDS)}::text[])
-                                )                                               AS confirmed_volume,
+                                )                                               AS ticket_volume,
                                 count(*) FILTER (
                                   WHERE t.work_kind = ANY(${sql.param(SUMMABLE_KINDS)}::text[])
                                     AND t.volume_m3 IS NULL
-                                )                                               AS tickets_unread
+                                )                                               AS tickets_unread,
+                                count(*) FILTER (
+                                  WHERE t.work_kind = ANY(${sql.param(SUMMABLE_KINDS)}::text[])
+                                    AND t.status = 'unconfirmed'
+                                )                                               AS tickets_unconfirmed,
+                                sum(t.volume_m3) FILTER (
+                                  WHERE t.work_kind = ANY(${sql.param(SUMMABLE_KINDS)}::text[])
+                                    AND t.status = 'unconfirmed'
+                                )                                               AS unconfirmed_volume
                            FROM waste_tickets t
                           WHERE t.request_id = s.id
-                            AND t.status = 'confirmed') tk ON true
+                            AND t.status <> 'dismissed') tk ON true
+      /*
+       * Ticket scans the ticket volume cannot contain (ADR 0213): a file the recognition could not
+       * read (rejected or out of attempts) and a file it read without finding a single ticket.
+       * Counted by FILES — how many tickets such a scan holds is exactly what is unknown.
+       *
+       * "No tickets found" asks for any ticket row of the file, dismissed ones included: a file
+       * whose readings a person dismissed has been reviewed, and calling it unrecognised would send
+       * people to look at it again. A file still in the queue is neither: it is not late yet. A
+       * scan that never entered recognition (the module was off) has no row here and is not counted
+       * either — it was never an attempt to read.
+       */
+      LEFT JOIN LATERAL (SELECT count(*) FILTER (
+                                  WHERE f.status IN ('failed', 'unsupported')
+                                )                                               AS files_unread,
+                                count(*) FILTER (
+                                  WHERE f.status = 'done'
+                                    AND NOT EXISTS (SELECT 1
+                                                      FROM waste_ticket_pages p
+                                                      JOIN waste_tickets t ON t.page_id = p.id
+                                                     WHERE p.file_id = f.file_id)
+                                )                                               AS files_without_tickets
+                           FROM waste_ticket_files f
+                          WHERE f.request_id = s.id) tf ON true
 ),
 atoms AS (
     SELECT o.id                                       AS customer_id,
@@ -397,7 +444,7 @@ atoms AS (
             *
             * Both counters also count what HAPPENED, and "happened" is the fact status for both
             * (header, decision 3): a completion row alone is not a removal, because the rollback
-            * "done -> in progress" keeps that row. Volume, weight and the confirmed tickets below
+            * "done -> in progress" keeps that row. Volume, weight and the tickets below
             * use the same condition, so the removal counter and its volume always agree in
             * neighbouring cells. A request that is only planned gives zero here and stays in the
             * book as an estimate.
@@ -417,18 +464,28 @@ atoms AS (
            CASE WHEN g.is_fact THEN 0 ELSE coalesce(g.ordered_volume, 0) END::text
                                                       AS volume_ordered_m3,
            /*
-            * Confirmed tickets belong to removed requests only: a rolled-back request keeps its
-            * tickets, but confirming a removal that no longer counts would make the confirmed
-            * column larger than the removed one for no real reason.
+            * Tickets belong to removed requests only: a rolled-back request keeps its tickets, but
+            * backing a removal that no longer counts would make the ticket column larger than the
+            * removed one for no real reason. The counters of unconfirmed tickets and unrecognised
+            * scans follow the same switch, so the portal never warns about paper of a request the
+            * column does not include.
             */
-           CASE WHEN g.is_fact THEN coalesce(g.confirmed_volume, 0) ELSE 0 END::text
-                                                      AS volume_confirmed_m3,
-           CASE WHEN g.is_fact THEN g.confirmed_unpriced ELSE 0 END::text
-                                                      AS volume_confirmed_unpriced_m3,
-           CASE WHEN g.is_fact THEN coalesce(g.money_confirmed, 0) ELSE 0 END::text
-                                                      AS money_confirmed,
+           CASE WHEN g.is_fact THEN coalesce(g.ticket_volume, 0) ELSE 0 END::text
+                                                      AS volume_tickets_m3,
+           CASE WHEN g.is_fact THEN g.ticket_unpriced ELSE 0 END::text
+                                                      AS volume_tickets_unpriced_m3,
+           CASE WHEN g.is_fact THEN coalesce(g.money_tickets, 0) ELSE 0 END::text
+                                                      AS money_tickets,
            CASE WHEN g.is_fact THEN coalesce(g.tickets_unread, 0) ELSE 0 END
                                                       AS tickets_without_volume,
+           CASE WHEN g.is_fact THEN coalesce(g.tickets_unconfirmed, 0) ELSE 0 END
+                                                      AS tickets_unconfirmed,
+           CASE WHEN g.is_fact THEN coalesce(g.unconfirmed_volume, 0) ELSE 0 END::text
+                                                      AS volume_tickets_unconfirmed_m3,
+           CASE WHEN g.is_fact THEN coalesce(g.files_unread, 0) ELSE 0 END
+                                                      AS ticket_files_unread,
+           CASE WHEN g.is_fact THEN coalesce(g.files_without_tickets, 0) ELSE 0 END
+                                                      AS ticket_files_without_tickets,
            /*
             * Planned volume and money of the statistics tab (see graded). The unpriced share is a
             * separate field and not a conclusion from zero money: after atoms are summed, "there
@@ -562,13 +619,17 @@ SELECT a.*, q.entries FROM quality q LEFT JOIN atoms a ON false`);
       trips: 0,
       volumeM3: num(row.volume_m3),
       volumeOrderedM3: num(row.volume_ordered_m3),
-      volumeConfirmedM3: num(row.volume_confirmed_m3),
-      volumeConfirmedUnpricedM3: num(row.volume_confirmed_unpriced_m3),
+      volumeTicketsM3: num(row.volume_tickets_m3),
+      volumeTicketsUnpricedM3: num(row.volume_tickets_unpriced_m3),
+      volumeTicketsUnconfirmedM3: num(row.volume_tickets_unconfirmed_m3),
       volumePlannedM3: num(row.volume_planned_m3),
       moneyPlanned: num(row.money_planned),
       volumePlannedUnpricedM3: num(row.volume_planned_unpriced_m3),
       volumeFactUnpricedM3: num(row.volume_fact_unpriced_m3),
       ticketsWithoutVolume: Number(row.tickets_without_volume ?? 0),
+      ticketsUnconfirmed: Number(row.tickets_unconfirmed ?? 0),
+      ticketFilesUnread: Number(row.ticket_files_unread ?? 0),
+      ticketFilesWithoutTickets: Number(row.ticket_files_without_tickets ?? 0),
       weightTons: num(row.weight_tons),
       engineHours: 0,
       mechHours: 0,
@@ -580,7 +641,7 @@ SELECT a.*, q.entries FROM quality q LEFT JOIN atoms a ON false`);
       // Оценка у вывоза одна (Р9), поэтому нижняя и верхняя — одно и то же число.
       moneyLow: num(row.money_estimate),
       moneyHigh: num(row.money_estimate),
-      moneyConfirmed: num(row.money_confirmed),
+      moneyTickets: num(row.money_tickets),
       priced: row.priced!,
     });
   }

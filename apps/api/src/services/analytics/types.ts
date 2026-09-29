@@ -78,21 +78,24 @@ export interface AnalyticsAtom {
    */
   volumeOrderedM3: number;
   /**
-   * Объём ПРИНЯТЫХ талонов заявки, кроме талонов простоя (Р4 плана статистики; правило суммы —
-   * `countsInWasteVolumeSum`). Распознанное, но не разобранное человеком сюда не идёт: оно
-   * остаётся предложением машины, и включи мы его — величина менялась бы задним числом при каждой
-   * правке прочитанного.
+   * Ticket volume of the request (ADR 0213): every ticket that is not dismissed — accepted and
+   * recognised-but-unreviewed alike — except idle tickets (sum rule: `countsInWasteVolumeSum`).
+   * Until ADR 0213 only accepted tickets counted; with most paper unreviewed, that column read as
+   * "nothing was brought". How much of it is still a machine reading says
+   * `volumeTicketsUnconfirmedM3`.
    *
-   * Талон с непрочитанным объёмом в сумму не входит; сколько таких — считает `ticketsWithoutVolume`
-   * строки качества вкладки, потому что ноль здесь означал бы пустой рейс.
+   * A ticket with an unread volume is not in the sum; `ticketsWithoutVolume` counts them, because a
+   * zero here would mean an empty trip.
    */
-  volumeConfirmedM3: number;
+  volumeTicketsM3: number;
   /**
-   * Из `volumeConfirmedM3` — объём, у чьего закрытия нет цены (Р5 плана статистики). Отдельное
-   * поле, а не вывод из нулевых денег: сложив атомы, читатель уже не отличит «цены не было» от
-   * «подтверждать было нечего», и прочерк в стоимости ставить стало бы не из чего.
+   * Of `volumeTicketsM3` — the volume whose completion has no price (R5 of the stats plan). A field
+   * of its own and not a conclusion from zero money: once atoms are summed, "there was no price"
+   * can no longer be told from "there was nothing to price".
    */
-  volumeConfirmedUnpricedM3: number;
+  volumeTicketsUnpricedM3: number;
+  /** Of `volumeTicketsM3` — the volume of tickets nobody has accepted yet (ADR 0213). */
+  volumeTicketsUnconfirmedM3: number;
   /**
    * Planned volume of the statistics tab: the ordered volume of EVERY waste request of a volume
    * type, done or not; an old request filed without a volume takes the removed one. Kept apart from
@@ -109,16 +112,25 @@ export interface AnalyticsAtom {
   volumePlannedUnpricedM3: number;
   /**
    * Share of the removed volume whose completion has no sum. The same reason as
-   * `volumeConfirmedUnpricedM3`: after atoms are summed, zero money no longer tells "no price" from
+   * `volumeTicketsUnpricedM3`: after atoms are summed, zero money no longer tells "no price" from
    * "nothing to price".
    */
   volumeFactUnpricedM3: number;
   /**
-   * Принятых талонов заявки, чей объём не прочитан. Складывается как обычный счётчик и нужен рядом
-   * с `volumeConfirmedM3`: без него «подтверждено 380 из 412 м³» читается как недовывоз, хотя
-   * недостача может целиком лежать в смазанной графе одного талона.
+   * Tickets of the request (not dismissed, not idle) whose volume is unread. Summed as a plain
+   * counter and needed next to `volumeTicketsM3`: without it "380 of 412 m3 by tickets" reads as
+   * under-delivery, while the shortfall may lie entirely in one smudged field.
    */
   ticketsWithoutVolume: number;
+  /** Tickets (not idle) recognised but not reviewed by a person yet (ADR 0213). */
+  ticketsUnconfirmed: number;
+  /**
+   * Ticket scans the recognition could not read — rejected or out of attempts (ADR 0213). Counted
+   * by files: how many tickets such a scan holds is exactly what is unknown.
+   */
+  ticketFilesUnread: number;
+  /** Ticket scans read without a single ticket found on them (ADR 0213). */
+  ticketFilesWithoutTickets: number;
   weightTons: number;
   engineHours: number;
   mechHours: number;
@@ -133,14 +145,14 @@ export interface AnalyticsAtom {
   moneyLow: number;
   moneyHigh: number;
   /**
-   * Подтверждённый талонами объём в деньгах: `volumeConfirmedM3 × price_per_m3` закрытия (Р5 плана
-   * статистики). Ноль, когда цены у закрытия нет вовсе, — вкладка отличает «не из чего считать» от
-   * «бесплатно» по `priced` и по своему счётчику, а не по нулю в этом поле.
+   * Ticket volume in money: `volumeTicketsM3 × price_per_m3` of the completion (R5 of the stats
+   * plan). Zero when the completion has no price at all — the tab tells "nothing to price" from
+   * "free" by `volumeTicketsUnpricedM3`, not by a zero in this field.
    *
-   * Не доля от `moneyFact`: цена — снимок на момент закрытия (ADR 0022, ADR 0026), умножение на
-   * неё объясняется само, а пропорция от суммы — нет.
+   * Not a share of `moneyFact`: the price is a snapshot taken at closing (ADR 0022, ADR 0026), and a
+   * multiplication by it explains itself, while a proportion of the sum does not.
    */
-  moneyConfirmed: number;
+  moneyTickets: number;
   /**
    * Удалось ли оценить заявку хоть как-нибудь. Флаг живёт на атоме, а считается по заявке:
    * `count(DISTINCT requestId) FILTER (WHERE NOT priced)` — иначе заявка с десятью сменами дала бы

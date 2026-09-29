@@ -32,8 +32,8 @@ import { ANALYTICS_ATOM_LIMIT, type AnalyticsAtom } from './analytics/types';
  *    container operations (not billed) are filtered out by the query, not after it. The type list
  *    is the loader's `VOLUME_REQUEST_TYPES`, not a copy.
  * 3. **Three volumes instead of one** (ADR 0209): ordered (every valid request), removed (requests
- *    in a fact status) and confirmed by tickets, with one cost column — the removed cost, the plan
- *    and the confirmed cost shown under it. Every volume travels with its money from the same set
+ *    in a fact status) and by tickets (every ticket not dismissed, ADR 0213), with one cost column —
+ *    the removed cost, the plan and the ticket cost shown under it. Every volume travels with its money from the same set
  *    of requests, and each money figure is a dash rather than zero when none of its volume has a
  *    price.
  */
@@ -67,10 +67,14 @@ interface Acc {
   volumeOrdered: number;
   moneyFact: number;
   moneyEstimate: number;
-  confirmedVolume: number;
-  confirmedUnpriced: number;
-  moneyConfirmed: number;
+  ticketVolume: number;
+  ticketUnconfirmed: number;
+  ticketUnpriced: number;
+  moneyTickets: number;
   ticketsWithoutVolume: number;
+  ticketsUnconfirmed: number;
+  ticketFilesUnread: number;
+  ticketFilesWithoutTickets: number;
   removals: number;
   requests: Set<string>;
   unpriced: Set<string>;
@@ -86,10 +90,14 @@ function emptyAcc(): Acc {
     volumeOrdered: 0,
     moneyFact: 0,
     moneyEstimate: 0,
-    confirmedVolume: 0,
-    confirmedUnpriced: 0,
-    moneyConfirmed: 0,
+    ticketVolume: 0,
+    ticketUnconfirmed: 0,
+    ticketUnpriced: 0,
+    moneyTickets: 0,
     ticketsWithoutVolume: 0,
+    ticketsUnconfirmed: 0,
+    ticketFilesUnread: 0,
+    ticketFilesWithoutTickets: 0,
     removals: 0,
     requests: new Set(),
     unpriced: new Set(),
@@ -106,10 +114,14 @@ function add(acc: Acc, atom: AnalyticsAtom): void {
   acc.moneyFact += atom.moneyFact;
   // A waste estimate is a single number, low and high are equal (R9 of analytics): one side is enough.
   acc.moneyEstimate += atom.moneyLow;
-  acc.confirmedVolume += atom.volumeConfirmedM3;
-  acc.confirmedUnpriced += atom.volumeConfirmedUnpricedM3;
-  acc.moneyConfirmed += atom.moneyConfirmed;
+  acc.ticketVolume += atom.volumeTicketsM3;
+  acc.ticketUnconfirmed += atom.volumeTicketsUnconfirmedM3;
+  acc.ticketUnpriced += atom.volumeTicketsUnpricedM3;
+  acc.moneyTickets += atom.moneyTickets;
   acc.ticketsWithoutVolume += atom.ticketsWithoutVolume;
+  acc.ticketsUnconfirmed += atom.ticketsUnconfirmed;
+  acc.ticketFilesUnread += atom.ticketFilesUnread;
+  acc.ticketFilesWithoutTickets += atom.ticketFilesWithoutTickets;
   acc.removals += atom.removals;
   acc.requests.add(atom.requestId);
   /*
@@ -137,8 +149,8 @@ function round(value: number, digits: number): number {
  *
  * - nothing to price — zero, an honest empty cell;
  * - the whole volume without a price — a dash: there is nothing to multiply by;
- * - part of it without a price — a NUMBER, and the portal signs "без цены 12,5 м³" next to it: an
- *   understated sum without that note looks calculated.
+ * - part of it without a price — a NUMBER, and the portal marks it with a warning that names the
+ *   unpriced volume (ADR 0213): an understated sum without a mark looks calculated.
  */
 function costOrDash(volume: number, unpricedVolume: number, money: number): number | null {
   return volume > 0 && unpricedVolume === volume ? null : money;
@@ -149,8 +161,9 @@ function figuresOf(acc: Acc): WasteStatsFigures {
   const plannedVolumeUnpricedM3 = round(acc.volumePlannedUnpriced, 3);
   const doneVolumeM3 = round(acc.volumeFact, 3);
   const doneVolumeUnpricedM3 = round(acc.volumeFactUnpriced, 3);
-  const confirmedVolumeM3 = round(acc.confirmedVolume, 3);
-  const confirmedVolumeUnpricedM3 = round(acc.confirmedUnpriced, 3);
+  const ticketVolumeM3 = round(acc.ticketVolume, 3);
+  const ticketVolumeUnpricedM3 = round(acc.ticketUnpriced, 3);
+  const ticketCost = costOrDash(ticketVolumeM3, ticketVolumeUnpricedM3, round(acc.moneyTickets, 2));
   return {
     plannedVolumeM3,
     plannedCost: costOrDash(plannedVolumeM3, plannedVolumeUnpricedM3, round(acc.moneyPlanned, 2)),
@@ -158,14 +171,14 @@ function figuresOf(acc: Acc): WasteStatsFigures {
     doneVolumeM3,
     doneCost: costOrDash(doneVolumeM3, doneVolumeUnpricedM3, round(acc.moneyFact, 2)),
     doneVolumeUnpricedM3,
-    confirmedVolumeM3,
-    confirmedVolumeUnpricedM3,
-    confirmedCost: costOrDash(
-      confirmedVolumeM3,
-      confirmedVolumeUnpricedM3,
-      round(acc.moneyConfirmed, 2),
-    ),
+    ticketVolumeM3,
+    ticketVolumeUnconfirmedM3: round(acc.ticketUnconfirmed, 3),
+    ticketVolumeUnpricedM3,
+    ticketCost,
     ticketsWithoutVolume: acc.ticketsWithoutVolume,
+    ticketsUnconfirmed: acc.ticketsUnconfirmed,
+    ticketFilesUnread: acc.ticketFilesUnread,
+    ticketFilesWithoutTickets: acc.ticketFilesWithoutTickets,
     unpricedRequests: acc.unpriced.size,
     removals: acc.removals,
     requests: acc.requests.size,
@@ -178,6 +191,10 @@ function figuresOf(acc: Acc): WasteStatsFigures {
     volumeOrderedM3: round(acc.volumeOrdered, 3),
     totalCost: round(acc.moneyFact + acc.moneyEstimate, 2),
     costEstimated: round(acc.moneyEstimate, 2),
+    // Deprecated names of the ticket figure (ADR 0213) — same values, see the contract.
+    confirmedVolumeM3: ticketVolumeM3,
+    confirmedVolumeUnpricedM3: ticketVolumeUnpricedM3,
+    confirmedCost: ticketCost,
   };
 }
 

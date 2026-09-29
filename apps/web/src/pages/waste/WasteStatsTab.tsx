@@ -107,11 +107,12 @@ export function WasteStatsTab() {
 
   /*
    * A new build against an old server — the rollout window or a tab that survived
-   * `deploy-auto --previous` — gets a response without the ADR 0209 fields. There is no error
-   * boundary in the portal, so printing it would throw in render and blank the whole portal; the
-   * tab shows a stub instead. One field is enough: the server always sends all of them together.
+   * `deploy-auto --previous` — gets a response without the ADR 0209 or ADR 0213 fields. There is no
+   * error boundary in the portal, so printing it would throw in render and blank the whole portal;
+   * the tab shows a stub instead. One field per release is enough: the server always sends a
+   * release's fields together, and an ADR 0213 server also sends the ADR 0209 ones.
    */
-  const outdated = data !== undefined && typeof data.totals.doneVolumeM3 !== 'number';
+  const outdated = data !== undefined && typeof data.totals.ticketVolumeM3 !== 'number';
 
   const rows = outdated ? [] : (data?.rows ?? []);
   // The portal pages the response itself: it arrives whole and is shown with the same content.
