@@ -436,6 +436,14 @@ export function assertPeriodHandshake(
    */
   mode: AssignmentModeSnapshot,
 ): void {
+  /*
+   * This door asks the per-sheet signatures first, then the groups, then the unlocks; the repair
+   * door asks unlocks before signatures. The order is this door's own and deliberately left so
+   * (decision of 29.09.2026, ADR 0214): all three are checked under the lock and before any write,
+   * each refusal writes nothing, and the command passes only when all three agree — so the outcome
+   * is the same in any order. What differs is which refusal a person reads first, and the portal
+   * window collects all three from one preview anyway.
+   */
   assertAssignmentIssueAcknowledgements({
     issues: plan.issues,
     acknowledgements: input.acknowledgements,

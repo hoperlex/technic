@@ -954,12 +954,15 @@ describeReadModes(readMode, 'правка срока: подтверждение
    * answers 409 `waybill_ack_required` and `legacy`, where signatures are not required, answers the
    * D2 422.
    *
-   * DIVERGENCE (order, not outcome): the repair door checks unlocks before signatures and says why
-   * ("sign only sheets the command will actually get"), and plan §8 step 8 lists the unlock
-   * fingerprint before the acknowledgements too; this door does the opposite. Nothing is written
-   * either way — the difference is which refusal the person reads first.
+   * The order is this door's own, and it is accepted as indifferent (decision of 29.09.2026,
+   * ADR 0214). The repair door checks unlocks before signatures, and plan §8 step 8 lists the
+   * unlock fingerprint first too; here signatures come first. It does not matter: every refusal is
+   * given under the lock and before any write, and the command passes only with all three
+   * handshakes — so the outcome and the absence of writes are the same in any order, and only the
+   * first refusal a person reads differs. The case pins the order down so that a change of it is
+   * a decision, not an accident.
    */
-  it('[DIVERGENCE: history paper defects card] порядок рукопожатий: без подписей history отвечает 409 раньше, чем 422 за перечень групп', async () => {
+  it('порядок рукопожатий: без подписей history отвечает 409 раньше, чем 422 за перечень групп', async () => {
     const splitAt = shiftDateKey(PREV, 2);
     await inScene(
       { status: 'done', dateTo: EXTENDED_TO, splitAt, issueSheets: true },
