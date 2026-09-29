@@ -12,9 +12,10 @@ import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
-import { waybillKeys } from '@entities/waybill';
+import { waybillKeys, WarnedSheetsConfirm } from '@entities/waybill';
 import { vehicleRequestsApi, type AssignmentCommandResultDto } from '@entities/vehicle-request';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
+import { acknowledgementsOf, recheckReasonOf, warnedSheetsOf } from './assignmentWarnings';
 import { AssignmentHistoryPanel } from './AssignmentHistoryPanel';
 import { useMachinistDirectory } from './machinistDirectory';
 import { MachinistAnchorFields, MachinistPickFields } from './MachinistFields';
@@ -31,9 +32,6 @@ import {
   MachinistForbiddenAlert,
   machinistPreviewIsSilent,
 } from './MachinistChangePreview';
-// Код отказа берётся у соседней двери, а не объявляется второй раз: рукопожатие у модуля одно
-// (§8), и два своих написания одной строки разошлись бы молча (волна 4a).
-import { ASSIGNMENT_PREVIEW_STALE } from './ReassignPreview';
 
 /**
  * Окно «Сменить машиниста» (этап 6 плана `docs/assignment-periods-plan.md`, §9).
@@ -54,6 +52,11 @@ import { ASSIGNMENT_PREVIEW_STALE } from './ReassignPreview';
  * ЧТО ОКНО СЧИТАЕТ САМО. Ничего из решений: последствия, исход, права и рукопожатия приходят
  * предпросмотром и проверяются сервером под блокировкой. Портал складывает отрезки только чтобы
  * показать состав по датам — ни одна кнопка от этого расчёта не зависит.
+ *
+ * WARNED SHEETS (B4). In `history` read mode the door issues the blanks itself and refuses a warned
+ * sheet without a signature (409 `waybill_ack_required`), so the confirmation step lists every
+ * warned sheet and sends the signatures only after an explicit tick. A preview with warnings is
+ * never "silent": it has sheets to issue, so the auto-send above cannot skip the tick.
  */
 
 /** Аргумент предпросмотра: команда, уже названные имена и причина возврата к последствиям. */
@@ -69,6 +72,8 @@ interface FormValues {
   effectiveDate?: Dayjs;
   /** Имена на границах, которые назвал предпросмотр (Р16): ключ — дата якоря. */
   anchors?: Record<string, string | undefined>;
+  /** Signature of the confirmed warning set (`WarnedSheetsConfirm`), not a plain boolean. */
+  warningsAck?: string;
   reason?: string;
 }
 
@@ -163,6 +168,7 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
           // отпечаток отвергается так же строго, как недостающий.
           unlockFingerprint: v.dto.unlockFingerprint,
           operation: v.dto.operationRequirement ? { operationId, reason: v.reason.trim() } : null,
+          ...acknowledgementsOf(v.dto.issues),
         }),
       ),
     onSuccess: (res) => {
@@ -185,18 +191,14 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
     },
     onError: (e, v) => {
       /*
-       * 409 — не ошибка, а вопрос: между просмотром и нажатием план изменился, не тронув заявку
-       * вовсе (чужая команда заняла дату, лист аннулировали своей ручкой, наступила полночь), и
-       * `version` ни одного из этих случаев не ловит. Ответ на него — не тост, а пересчитанный
-       * перечень с объяснением, почему окно вернуло человека назад.
+       * A question, not an error: between reading and pressing the plan changed without touching
+       * the request (someone else's command took the date, a sheet was cancelled, midnight), or the
+       * warnings of a sheet changed — and `version` catches none of it. The answer is a recomputed
+       * list with the reason the window stepped back, not a toast.
        */
-      if (isApiError(e) && e.code === ASSIGNMENT_PREVIEW_STALE) {
-        previewMut.mutate({
-          draft: v.draft,
-          anchors: v.anchors,
-          stale:
-            'Последствия изменились с того момента, как вы их смотрели, — вот что произойдёт теперь. Прочитайте и подтвердите заново.',
-        });
+      const recheck = recheckReasonOf(e);
+      if (recheck) {
+        previewMut.mutate({ draft: v.draft, anchors: v.anchors, stale: recheck });
         return;
       }
       // Коррекционные права спрашивает сервер и по посчитанному исходу (Р32) — из тела это не
@@ -217,6 +219,7 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
   const busy = previewMut.isPending || applyMut.isPending;
   const dto = shown?.dto ?? null;
   const asking = dto ? dto.requiredAnchors : [];
+  const warned = dto && asking.length === 0 ? warnedSheetsOf(dto) : [];
   /** Второй шаг: дальше окно говорит не про подбор, а про цену действия либо про пробелы. */
   const secondStep = !!dto;
 
@@ -256,7 +259,10 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
       return;
     }
     void form
-      .validateFields(dto.operationRequirement ? ['reason'] : [])
+      .validateFields([
+        ...(dto.operationRequirement ? ['reason'] : []),
+        ...(warned.length > 0 ? ['warningsAck'] : []),
+      ])
       .then((v) => applyMut.mutate({ draft: shown.draft, dto, anchors, reason: v.reason ?? '' }))
       .catch(() => undefined);
   };
@@ -325,12 +331,15 @@ export function VehicleMachinistModal({ request, onCancel, onApplied }: Props) {
           )}
 
           {dto && asking.length === 0 && shown && (
-            <MachinistChangePreview
-              preview={dto}
-              cancelling={shown.draft.kind === 'cancel' ? shown.draft.segment : null}
-              driverName={driverName}
-              staleReason={staleReason}
-            />
+            <>
+              <MachinistChangePreview
+                preview={dto}
+                cancelling={shown.draft.kind === 'cancel' ? shown.draft.segment : null}
+                driverName={driverName}
+                staleReason={staleReason}
+              />
+              <WarnedSheetsConfirm name="warningsAck" sheets={warned} />
+            </>
           )}
 
           {/* Причина спрашивается по `operationRequirement`, а не по календарю (Р32): её требует

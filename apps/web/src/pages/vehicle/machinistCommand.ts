@@ -61,6 +61,8 @@ export interface MachinistCommandExtras {
   unlockFingerprint?: string | null;
   /** Причина и ключ идемпотентности — там, где их спросил `operationRequirement` (Р32). */
   operation?: { operationId: string; reason: string } | null;
+  /** Signatures per warned sheet (B4) from the shown preview; see `assignmentWarnings.ts`. */
+  acknowledgements?: Record<string, string>;
 }
 
 /** Тело команды — одно на предпросмотр и на боевую ручку (§8). */
@@ -76,6 +78,7 @@ export function machinistCommandBody(
     ...(extras.previewFingerprint ? { previewFingerprint: extras.previewFingerprint } : {}),
     ...(extras.unlockFingerprint ? { unlockFingerprint: extras.unlockFingerprint } : {}),
     ...(extras.operation ? { operation: extras.operation } : {}),
+    ...(extras.acknowledgements ? { acknowledgements: extras.acknowledgements } : {}),
   };
   return draft.kind === 'set'
     ? {

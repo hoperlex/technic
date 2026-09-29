@@ -7,7 +7,7 @@ import {
   type AssignmentPreviewDto,
   type WaybillWarning,
 } from '@technic/contracts';
-import { selectOption } from './antd';
+import { selectOption, typeDate } from './antd';
 import { json, mockHttp, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
@@ -18,6 +18,7 @@ import {
   repairPreview,
   vehicleRequest,
 } from './factories/vehicle';
+import { VehicleMachinistModal } from '../src/pages/vehicle/VehicleMachinistModal';
 import { VehiclePeriodModal } from '../src/pages/vehicle/VehiclePeriodModal';
 import { VehicleRepairModal } from '../src/pages/vehicle/VehicleRepairModal';
 
@@ -368,5 +369,89 @@ describe('починка истории: предупреждения по вы�
     const body = http.lastCall('POST /vehicle-requests/:id/assignment-changes/repair')!
       .body as Record<string, unknown>;
     expect(body.acknowledgements).toEqual({ '0': 'fp-warn-2' });
+  });
+});
+
+/** Answers in order, the last one repeating: "409 first, then the real answer". */
+function inTurn(...answers: (() => ReturnType<typeof json>)[]) {
+  let call = 0;
+  return () => answers[Math.min(call++, answers.length - 1)]!();
+}
+
+/** The last body sent to a route. */
+const sentTo = (http: ReturnType<typeof mockHttp>, route: string) =>
+  http.lastCall(route)!.body as Record<string, unknown>;
+
+describe('смена машиниста: предупреждения по выписываемым листам', () => {
+  const SEMENOV = machinist();
+  const COMMAND = 'POST /vehicle-requests/:id/assignment-changes';
+  const PREVIEW = 'POST /vehicle-requests/:id/assignment-changes/preview';
+  const applied = () =>
+    json({
+      version: 6,
+      repeated: false,
+      esm2: { cancelled: [], issued: [] },
+      history: assignmentHistory(),
+    });
+
+  function renderMachinist(routes: RouteMap) {
+    const http = mockHttp({
+      'GET /drivers': () => json(list([SEMENOV])),
+      'GET /vehicle-requests/:id/assignment-changes': () => json(assignmentHistory()),
+      [COMMAND]: applied,
+      ...routes,
+    });
+    renderWithUser(
+      <VehicleMachinistModal request={REQUEST} onCancel={() => {}} onApplied={() => {}} />,
+    );
+    return http;
+  }
+
+  async function showConsequences() {
+    await selectOption('Машинист', /Семёнов/);
+    typeDate('Работает с', fmt(day(3)));
+    press('Сменить машиниста');
+    await screen.findByRole('button', { name: 'Подтвердить' });
+  }
+
+  it('показывает листы с предупреждениями и шлёт подпись только после галочки', async () => {
+    const http = renderMachinist({ [PREVIEW]: () => json(assignmentPreview({ ...FIRST })) });
+    await showConsequences();
+
+    expect(modalText()).toContain('Листы выпишутся с предупреждениями');
+    expect(modalText()).toContain(SNILS.message);
+
+    press('Подтвердить');
+    await screen.findByText('Подтвердите предупреждения по листам');
+    expect(http.countOf(COMMAND)).toBe(0);
+
+    tick();
+    press('Подтвердить');
+    await waitFor(() => expect(http.countOf(COMMAND)).toBe(1));
+    expect(sentTo(http, COMMAND).acknowledgements).toEqual({ '0': 'fp-warn-1' });
+    expect(sentTo(http, PREVIEW)).not.toHaveProperty('acknowledgements');
+  });
+
+  it('409 «предупреждения изменились» — перезапрос предпросмотра и новая галочка', async () => {
+    const http = renderMachinist({
+      [PREVIEW]: inTurn(
+        () => json(assignmentPreview({ ...FIRST })),
+        () => json(assignmentPreview({ ...SECOND })),
+      ),
+      [COMMAND]: inTurn(ackRequired, applied),
+    });
+    await showConsequences();
+    tick();
+    press('Подтвердить');
+
+    await screen.findByText(LICENSE.message);
+    expect(modalText()).toContain('Предупреждения по листам изменились');
+    expect(screen.queryByText(ACK_REFUSAL)).toBeNull();
+    expect(screen.getByRole('checkbox', { name: TICK })).toHaveProperty('checked', false);
+
+    tick();
+    press('Подтвердить');
+    await waitFor(() => expect(http.countOf(COMMAND)).toBe(2));
+    expect(sentTo(http, COMMAND).acknowledgements).toEqual({ '0': 'fp-warn-2' });
   });
 });
