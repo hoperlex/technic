@@ -2508,9 +2508,7 @@ describeReadModes(
        * month end, always has one. Filling it short by a day keeps the person of the blank and
        * still cuts it — the strict half of F1.
        */
-      const sheet = before.find(
-        (row) => row.period_to < TODAY && row.period_to > row.period_from,
-      )!;
+      const sheet = before.find((row) => row.period_to < TODAY && row.period_to > row.period_from)!;
       expect(sheet).toBeDefined();
       const gap = (await inspectRepair(ctx.admin, scene.requestId)).json<RepairPreview>()
         .fillableGaps[0]!;
@@ -2563,8 +2561,13 @@ describeReadModes(
        */
       const scene = await makeScene({ dateFrom: DEEP_FROM, dateTo: GAP_TO, history: gapHistory() });
       const wrong = fillBody('Табель по ошибке от другого машиниста');
-      const wrongDto = (await previewRepair(ctx.admin, scene.requestId, wrong)).json<RepairPreview>();
-      const first = await postRepair(ctx.admin, scene.requestId, { ...wrong, ...handshakeOf(wrongDto) });
+      const wrongDto = (
+        await previewRepair(ctx.admin, scene.requestId, wrong)
+      ).json<RepairPreview>();
+      const first = await postRepair(ctx.admin, scene.requestId, {
+        ...wrong,
+        ...handshakeOf(wrongDto),
+      });
       expect(first.statusCode, first.body).toBe(200);
       const minted = (await provenanceOf(scene.requestId)).map((sheet) => sheet.id);
 
@@ -2625,8 +2628,13 @@ describeReadModes(
        */
       const scene = await makeScene({ dateFrom: DEEP_FROM, dateTo: GAP_TO, history: gapHistory() });
       const wrong = fillBody('Табель по ошибке от другого машиниста');
-      const wrongDto = (await previewRepair(ctx.admin, scene.requestId, wrong)).json<RepairPreview>();
-      const first = await postRepair(ctx.admin, scene.requestId, { ...wrong, ...handshakeOf(wrongDto) });
+      const wrongDto = (
+        await previewRepair(ctx.admin, scene.requestId, wrong)
+      ).json<RepairPreview>();
+      const first = await postRepair(ctx.admin, scene.requestId, {
+        ...wrong,
+        ...handshakeOf(wrongDto),
+      });
       expect(first.statusCode, first.body).toBe(200);
       const minted = await provenanceOf(scene.requestId);
       expect(minted.length).toBeGreaterThan(0);
