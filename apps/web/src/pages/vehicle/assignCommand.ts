@@ -1,6 +1,7 @@
 import dayjs, { type Dayjs } from 'dayjs';
 import {
   type AssignVehicleBody,
+  type ChangeVehicleAssignmentBody,
   type ConfirmScheduleBody,
   type CorrectAssignmentBody,
   normalizeTimeInput,
@@ -81,8 +82,34 @@ export interface AssignFormValues {
 export interface AssignCommand {
   assignment: AssignVehicleBody;
   schedule: ConfirmScheduleBody | null;
+  /** Смена машины задним числом (ADR 0101, Р8): причина, ключ операции и листы к перевыписке. */
   correction?: CorrectAssignmentBody;
+  /**
+   * Отпечаток последствий, показанных вторым шагом окна: им сервер сверяет под блокировками, что
+   * обещанное человеку ещё верно. Не приходит там, где предпросмотра не было вовсе, — у
+   * грузоперевозки и у сервера старее портала.
+   */
   previewFingerprint?: string;
+}
+
+/**
+ * The body of `PATCH …/assignment` (vehicle change, ADR 0048) from the window's command.
+ *
+ * Every handshake goes only when the window has one: its presence is dictated by the server's
+ * answer, and a superfluous one is rejected as strictly as a missing one. Assembled here, next to
+ * the command, rather than in the list that sends it: the list only knows "send this command",
+ * and a second assembly there would drift from the one the preview was computed with.
+ */
+export function reassignRequestBody(
+  command: AssignCommand,
+  version: number,
+): ChangeVehicleAssignmentBody {
+  return {
+    ...command.assignment,
+    version,
+    ...(command.correction ? { correction: command.correction } : {}),
+    ...(command.previewFingerprint ? { previewFingerprint: command.previewFingerprint } : {}),
+  };
 }
 
 /**

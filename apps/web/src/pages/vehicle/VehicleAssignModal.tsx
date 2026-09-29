@@ -17,7 +17,6 @@ import {
 import dayjs from 'dayjs';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
-  type AssignmentPreviewDto,
   assignmentRateLabel,
   assignmentTitle,
   communicationKindOptions,
@@ -84,13 +83,7 @@ import { useDayBatch } from './useDayBatch';
 import { RollbackPreview } from './RollbackPreview';
 import { inheritedTrailerGraphs, vehicleRouteKeys } from '@entities/vehicle-route';
 import { TrailerFields } from './TrailerFields';
-import {
-  ReassignPreview,
-  reassignPreviewBlocked,
-  reassignPreviewIsSilent,
-  reassignStaleReason,
-} from './ReassignPreview';
-import { isApiError } from '@shared/api';
+import { useReassignConsequences } from './reassignConsequences';
 import { MOSCOW_TZ } from '@shared/config';
 
 /**
@@ -369,87 +362,8 @@ export function VehicleAssignModal({
    * переключения чтения. Перевод в работу сюда не заходит вовсе — там ещё нечему сгорать.
    */
   const previewsConsequences = reassign && request?.requestType === 'special_equipment';
-
-  /** Показанные последствия и тело, которое их получило: подтверждение отправляет именно его. */
-  const [consequences, setConsequences] = useState<{
-    preview: AssignmentPreviewDto;
-    payload: SubmitPayload;
-  } | null>(null);
-  /**
-   * Почему окно вернулось к последствиям само: сервер ответил, что показанное устарело. `null` —
-   * человек пришёл сюда обычным порядком, нажав «Сменить технику».
-   */
-  const [staleReason, setStaleReason] = useState<string | null>(null);
-  useEffect(() => {
-    setConsequences(null);
-    setStaleReason(null);
-  }, [targetId]);
-
-  /**
-   * Отправить команду — с отпечатком последствий, если они показывались.
-   *
-   * 409 у этой двери — не ошибка, а вопрос: между просмотром и нажатием план изменился, не тронув
-   * заявку вовсе (чужая команда заняла дату, лист аннулировали своей ручкой, наступила полночь), и
-   * `version` ни одного из этих случаев не ловит. Ответ на него — не тост, а пересчитанный
-   * перечень: окно спрашивает последствия заново и показывает их с объяснением, почему вернулось.
-   * Петли здесь нет — каждый круг требует нажатия.
-   *
-   * Чужой отказ окно проглатывает молча: о нём уже сказал тот, кто отправлял.
-   */
-  function sendCommand(payload: SubmitPayload, previewFingerprint?: string): void {
-    void Promise.resolve(
-      onSubmit(previewFingerprint ? { ...payload, previewFingerprint } : payload),
-    ).catch((e: unknown) => {
-      const reason = reassignStaleReason(e);
-      if (reason) consequencesMut.mutate({ payload, stale: reason });
-    });
-  }
-
-  const consequencesMut = useMutation({
-    /*
-     * Тело — то же самое, каким потом уедет команда: план считается по машине, машинисту и блоку
-     * коррекции, и вторая сборка тела разошлась бы с первой, а вместе с ней разошёлся бы отпечаток.
-     */
-    mutationFn: async (v: { payload: SubmitPayload; stale: string | null }) => ({
-      ...v,
-      preview: await vehicleRequestsApi.assignmentPreview(request!.id, {
-        ...v.payload.assignment,
-        version: request!.version,
-        ...(v.payload.correction ? { correction: v.payload.correction } : {}),
-      }),
-    }),
-    onSuccess: ({ payload, preview, stale }) => {
-      /*
-       * Говорить не о чем — команда уходит сразу, вместе с отпечатком. Второго экрана здесь нет
-       * намеренно: пустое «ничего не произойдёт, нажмите ещё раз» приучает нажимать не читая, и
-       * тогда экран не работает в тот единственный раз, когда сказать ему есть что.
-       *
-       * После 409 это правило снимается: молча повторить команду, которую сервер только что не
-       * принял, — значит сделать её за спиной у человека, даже если пересчитанный план опустел.
-       */
-      if (!stale && reassignPreviewIsSilent(preview)) {
-        sendCommand(payload, preview.fingerprint);
-        return;
-      }
-      setStaleReason(stale);
-      setConsequences({ preview, payload });
-    },
-    onError: (e, v) => {
-      /*
-       * Сервер старее портала: ручки предпросмотра у него ещё нет, и отпечатка он не спрашивает
-       * (фаза `legacy`, И5). Выкат портала и сервера не обязан быть одномоментным, поэтому смена
-       * техники идёт по-старому — ровно так, как шла до этой волны.
-       *
-       * Только на первом заходе: после 409 отпечаток обязателен по определению, и «тихо отправить
-       * без него» означало бы обойти защиту, которая только что сработала.
-       */
-      if (isApiError(e) && (e.status === 404 || e.status === 405) && !v.stale) {
-        sendCommand(v.payload);
-        return;
-      }
-      message.error(errorMessage(e));
-    },
-  });
+  /** The consequences step itself — preview, confirmations, command, recount — is its own module. */
+  const consequences = useReassignConsequences({ request, onSubmit });
 
   // ── Коррекция задним числом: смена машины у прошедших дней (ADR 0101, Р8) ──
 
@@ -1119,7 +1033,7 @@ export function VehicleAssignModal({
     // Смена техники спрашивает то же самое, и по той же причине: цену действия человек обязан
     // узнать до нажатия, а не по факту сгоревших номеров (волна 4a).
     if (previewsConsequences) {
-      consequencesMut.mutate({ payload, stale: null });
+      consequences.start(payload);
       return;
     }
     /*
@@ -1149,11 +1063,11 @@ export function VehicleAssignModal({
   const emptyText = emptyVehicleListText({ isFetching, ownership, lessorId });
 
   /** Второй шаг — какой бы он ни был: дальше окно говорит не про подбор, а про цену действия. */
-  const secondStep = !!step || !!consequences;
+  const secondStep = !!step || consequences.shown;
 
   const stepTitle = step
     ? 'Последствия возврата'
-    : consequences
+    : consequences.shown
       ? 'Последствия смены техники'
       : reassign
         ? 'Смена техники'
@@ -1165,7 +1079,7 @@ export function VehicleAssignModal({
    */
   const okText = step
     ? 'Вернуть в работу'
-    : consequences
+    : consequences.shown
       ? 'Подтвердить смену'
       : reassign
         ? 'Сменить технику'
@@ -1174,8 +1088,7 @@ export function VehicleAssignModal({
   /** Уйти со второго шага назад к форме — обоими путями сразу: открыт всегда только один. */
   const backToForm = () => {
     setStep(null);
-    setConsequences(null);
-    setStaleReason(null);
+    consequences.back();
   };
 
   const modal = (
@@ -1188,23 +1101,19 @@ export function VehicleAssignModal({
           ? // Подтверждение отправляет то самое тело, которому сервер и посчитал последствия, —
             // вместе с отпечатком, которым он сверит, что обещанное ещё верно.
             void onSubmit({ ...step.payload, previewFingerprint: step.preview.fingerprint })
-          : consequences
-            ? sendCommand(consequences.payload, consequences.preview.fingerprint)
+          : consequences.shown
+            ? consequences.confirm()
             : form.submit()
       }
-      confirmLoading={confirmLoading || previewMut.isPending || consequencesMut.isPending}
+      confirmLoading={confirmLoading || previewMut.isPending || consequences.pending}
       okText={okText}
-      // Подписанные объектом дни запирают команду — сервер откажет тем же условием (Р18). Кнопка
-      // гаснет, а причина стоит в теле окна: неактивная кнопка без объяснения читается как поломка.
-      okDisabled={consequences ? reassignPreviewBlocked(consequences.preview) : undefined}
+      okDisabled={consequences.okDisabled}
       // «Назад» уводит от отправки — потому и стоит по другую сторону от основного действия.
       footerExtra={secondStep ? <Button onClick={backToForm}>Назад</Button> : undefined}
       width={880}
     >
       {request && step && <RollbackPreview preview={step.preview} fact={request.completion} />}
-      {request && consequences && (
-        <ReassignPreview preview={consequences.preview} staleReason={staleReason} />
-      )}
+      {request && consequences.node}
       {request && (
         // Форма на втором шаге не размонтируется, а прячется: «Назад» обязан вернуть окно
         // заполненным, а половина его полей собрана из ответов сервера — повторный их сбор стоил

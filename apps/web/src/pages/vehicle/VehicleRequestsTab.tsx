@@ -30,7 +30,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
   type AssignVehicleBody,
-  type CorrectAssignmentBody,
   type ConfirmScheduleBody,
   assignmentRateLabel,
   assignmentTitle,
@@ -122,6 +121,7 @@ import { vehicleRequestDateRules } from '@entities/vehicle-request';
 import { FilesCell } from '@entities/file';
 import { VehicleAssignModal } from './VehicleAssignModal';
 import { reassignStaleReason } from './ReassignPreview';
+import { type AssignCommand, reassignRequestBody } from './assignCommand';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleEsm2Modal } from './VehicleEsm2Modal';
@@ -1101,28 +1101,13 @@ export function VehicleRequestsTab() {
   const [esm2Target, setEsm2Target] = useState<VehicleRequestDto | null>(null);
 
   const reassignMut = useMutation({
-    mutationFn: (v: {
-      id: string;
-      version: number;
-      assignment: AssignVehicleBody;
-      /** Смена машины задним числом (ADR 0101, Р8): причина, ключ операции и листы к перевыписке. */
-      correction?: CorrectAssignmentBody;
-      /**
-       * Отпечаток последствий, показанных вторым шагом окна (волна 4a плана
-       * `docs/assignment-periods-plan.md`): им сервер сверяет под блокировками, что обещанное
-       * человеку ещё верно. Не приходит там, где предпросмотра не было вовсе, — у грузоперевозки и
-       * у сервера старее портала.
-       */
-      previewFingerprint?: string;
-    }) =>
-      vehicleRequestsApi.changeAssignment(v.id, {
-        ...v.assignment,
-        version: v.version,
-        ...(v.correction ? { correction: v.correction } : {}),
-        ...(v.previewFingerprint ? { previewFingerprint: v.previewFingerprint } : {}),
-      }),
+    // The window's command as it is — handshakes included; the body is assembled next to it.
+    mutationFn: (v: { id: string; version: number; command: AssignCommand }) =>
+      vehicleRequestsApi.changeAssignment(v.id, reassignRequestBody(v.command, v.version)),
     onSuccess: (_updated, v) => {
-      message.success(v.correction ? 'Назначение исправлено задним числом' : 'Техника изменена');
+      message.success(
+        v.command.correction ? 'Назначение исправлено задним числом' : 'Техника изменена',
+      );
       setReassignTarget(null);
       void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       // Заявка переезжает в рейс новой машины — списки маршрутов после этого не те же.
@@ -2692,14 +2677,12 @@ export function VehicleRequestsTab() {
         onCancel={() => setReassignTarget(null)}
         // `mutateAsync`, а не `mutate`: окно ждёт ответа сервера — 409 «последствия изменились»
         // лечится повторным показом, и узнать об отказе обязано именно оно (волна 4a).
-        onSubmit={({ assignment, correction, previewFingerprint }) =>
+        onSubmit={(command) =>
           reassignTarget
             ? reassignMut.mutateAsync({
                 id: reassignTarget.id,
                 version: reassignTarget.version,
-                assignment,
-                correction,
-                previewFingerprint,
+                command,
               })
             : undefined
         }
